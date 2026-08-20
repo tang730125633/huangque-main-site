@@ -393,7 +393,7 @@ VIDEO_FUNCTIONS = [
     {
         "key": "minimax",
         "name": "麦克视频",
-        "desc": "用人物参考图生成身份稳定的真人剧情短片",
+        "desc": "使用文本或人物参考图生成 2K 剧情短片",
         "order": 70,
         "frontend_selector": '[data-function="minimax"]',
         "service": "content",
@@ -407,7 +407,7 @@ VIDEO_FUNCTIONS = [
         ],
         "modes": [{
             "key": "video.minimax.image",
-            "name": "多参考图生视频",
+            "name": "文本 / 多参考图生视频",
             "entrypoints": [_endpoint("POST", "/api/gen/xiaole_video")],
             "task_match": {"kind": "xiaole_video", "channel": "minimax"},
             "price_keys": ["video.minimax_h3.768p"],

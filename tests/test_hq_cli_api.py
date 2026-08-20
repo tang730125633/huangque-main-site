@@ -4,6 +4,7 @@ import importlib
 import json
 import os
 import sqlite3
+import sys
 import tempfile
 import threading
 import unittest
@@ -15,6 +16,10 @@ from http.server import ThreadingHTTPServer
 from unittest import mock
 
 
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "server"))
+
+
 class HQCLIAPITests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -24,6 +29,8 @@ class HQCLIAPITests(unittest.TestCase):
         self.auth.DB = os.path.join(self.tmp.name, "users.db")
         self.auth.AUTH_COOKIE_SECURE = False
         self.auth.INTERNAL_TOKEN = "test-internal-secret"
+        self.auth.feature_flags.DB_PATH = Path(self.tmp.name) / "feature_flags.db"
+        self.auth.feature_flags.invalidate_cache()
         self.auth.init_db()
         self.auth.create_user("alice", "secret123", 100, "member")
         self.auth.hq_cli_api._START_HITS.clear()
@@ -40,12 +47,13 @@ class HQCLIAPITests(unittest.TestCase):
         self.thread.join(timeout=3)
         self.tmp.cleanup()
 
-    def _request(self, path, payload=None, token="", browser=None, origin=None, method=None):
+    def _request(self, path, payload=None, token="", browser=None, origin=None, method=None, extra_headers=None):
         headers = {"Content-Type": "application/json"}
         if token:
             headers["Authorization"] = "Bearer " + token
         if origin:
             headers["Origin"] = origin
+        headers.update(extra_headers or {})
         data = None if payload is None else json.dumps(payload).encode()
         request = urllib.request.Request(self.base + path, data=data, headers=headers,
                                          method=method or ("POST" if payload is not None else "GET"))
@@ -56,7 +64,8 @@ class HQCLIAPITests(unittest.TestCase):
         except urllib.error.HTTPError as exc:
             return exc.code, json.loads(exc.read())
 
-    def _raw_request(self, path, raw, token="", content_type="image/png", confirm=True):
+    def _raw_request(self, path, raw, token="", content_type="image/png", confirm=True,
+                     extra_headers=None):
         headers = {
             "Content-Type": content_type,
             ("X-HQ-Video-SHA256" if content_type.startswith("video/")
@@ -66,6 +75,7 @@ class HQCLIAPITests(unittest.TestCase):
             headers["Authorization"] = "Bearer " + token
         if confirm:
             headers["X-HQ-Confirm"] = "true"
+        headers.update(extra_headers or {})
         request = urllib.request.Request(self.base + path, data=raw, headers=headers, method="POST")
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         try:
@@ -100,6 +110,368 @@ class HQCLIAPITests(unittest.TestCase):
         status, payload = self._request("/api/auth/cli/device/poll", {"device_code": start["device_code"]})
         self.assertEqual(200, status, payload)
         return payload["access_token"]
+
+    def _enable_ip12_bridge(self):
+        self.auth.IP12_AGENT_ALLOWED_ACCOUNT_IDS = frozenset({"*"})
+        self.auth.feature_flags.init_db()
+        return self.auth.feature_flags.set_enabled("ip12_agent_production_v1", True, "test")
+
+    def _agent_account_id(self):
+        return self.auth.ensure_account_id("alice")
+
+    def _agent_headers(self):
+        return {"X-HQ-Internal-Token": self.auth.INTERNAL_TOKEN}
+
+    def test_ip12_agent_catalog_enumerates_every_registered_action_with_safe_schema(self):
+        self._enable_ip12_bridge()
+        status, payload = self._request(
+            "/api/auth/internal/ip12/agent/catalog", {"account_id": self._agent_account_id()},
+            extra_headers=self._agent_headers(),
+        )
+        self.assertEqual(200, status, payload)
+        self.assertEqual(self.auth.hq_cli_api.ACTION_CATALOG_VERSION, payload["version"])
+        actions = {item["action"]: item for item in payload["actions"]}
+        self.assertEqual(set(self.auth.hq_cli_api._ACTION_INPUTS) | {"image-upload", "video-upload"}, set(actions))
+        for action, item in actions.items():
+            with self.subTest(action=action):
+                self.assertEqual("object", item["input_schema"]["type"])
+                self.assertFalse(item["input_schema"]["additionalProperties"])
+                self.assertIn("required", item["input_schema"])
+                self.assertIn("purpose", item)
+                self.assertIn("constraints", item)
+                self.assertIn("billing", item)
+                self.assertIn("external_effect", item)
+                self.assertIn("confirmation_required", item)
+                self.assertIn("risk", item)
+                self.assertIn("result", item)
+                self.assertIn("result_type", item)
+                self.assertIn("ui_route", item)
+                self.assertIn("transport", item)
+                self.assertIn("availability", item)
+                self.assertNotIn("http", json.dumps(item, ensure_ascii=False).lower())
+
+    def test_ip12_agent_catalog_has_full_media_canvas_schemas_and_upload_transports(self):
+        self._enable_ip12_bridge()
+        status, payload = self._request(
+            "/api/auth/internal/ip12/agent/catalog", {"account_id": self._agent_account_id()},
+            extra_headers=self._agent_headers(),
+        )
+        self.assertEqual(200, status, payload)
+        actions = {item["action"]: item for item in payload["actions"]}
+        expected = {
+            "image-generate": ("image", ["prompt"]),
+            "audio-generate": ("audio", ["text"]),
+            "video-generate": ("video", ["prompt"]),
+            "canvas-agent-plan": ("canvas", ["prompt", "project_id", "snapshot_digest", "scope", "nodes", "edges", "selected_node_ids"]),
+            "canvas-ops": ("canvas", ["board_id", "base_version", "op_id", "ops"]),
+            "digital-ip-text-generate": ("video", ["avatar_id", "text", "voice"]),
+            "cinematic-motion-generate": ("video", ["avatar_id", "reference_video_upload_ids"]),
+        }
+        for action, (family, required) in expected.items():
+            with self.subTest(action=action):
+                item = actions[action]
+                self.assertEqual(family, item["family"])
+                self.assertEqual(required, item["input_schema"]["required"])
+                self.assertTrue(item["constraints"])
+                self.assertEqual("action", item["transport"]["kind"])
+        self.assertEqual("人物图片", actions["tryon-fast-generate"]["input_schema"]
+                         ["properties"]["person_image_upload_id"]["title"])
+        self.assertEqual("服装图片", actions["tryon-fast-generate"]["input_schema"]
+                         ["properties"]["clothes_upload_id"]["title"])
+        for action, family, maximum in (("image-upload", "image", 10 * 1024 * 1024),
+                                        ("video-upload", "video", 32 * 1024 * 1024)):
+            with self.subTest(action=action):
+                item = actions[action]
+                self.assertEqual(family, item["family"])
+                self.assertEqual(["file"], item["input_schema"]["required"])
+                self.assertEqual(maximum, item["input_schema"]["properties"]["file"]["maxBytes"])
+                self.assertEqual("dedicated_upload", item["transport"]["kind"])
+                self.assertNotIn(action, self.auth.hq_cli_api.ACTION_CATALOG_MAP)
+
+    def test_ip12_video_catalog_matches_executable_channel_contract(self):
+        self._enable_ip12_bridge()
+        status, payload = self._request(
+            "/api/auth/internal/ip12/agent/catalog", {"account_id": self._agent_account_id()},
+            extra_headers=self._agent_headers(),
+        )
+        self.assertEqual(200, status, payload)
+        video = {item["action"]: item for item in payload["actions"]}["video-generate"]
+        schema = video["input_schema"]
+        self.assertIn("2k", schema["properties"]["resolution"]["enum"])
+        self.assertTrue(schema["allOf"])
+        rules = schema["x-hq-channel-rules"]
+        self.assertEqual(
+            ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive"],
+            rules["minimax"]["ratios"],
+        )
+        self.assertEqual([4, 15], rules["minimax"]["duration"])
+        self.assertEqual(["2k"], rules["minimax"]["resolutions"])
+        self.assertEqual([3, 10], rules["omni"]["duration"])
+        self.assertEqual(["720p"], rules["omni"]["resolutions"])
+        self.assertEqual(
+            {"sora-2": ["720p"], "sora-2-pro": ["720p", "1024p", "1080p"]},
+            rules["sora"]["model_resolutions"],
+        )
+
+        catalog_path = Path(__file__).resolve().parents[1] / "tools" / "hq-cli" / "src" / "hq_cli" / "catalog.py"
+        spec = importlib.util.spec_from_file_location("pr1100_hq_cli_catalog", catalog_path)
+        cli_catalog = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cli_catalog)
+        self.assertEqual(rules, cli_catalog.VIDEO_CHANNEL_RULES)
+        cli_schema = cli_catalog.CAPABILITIES["video-generate"]["input_schema"]
+        server_schema = self.auth.hq_cli_api._MEDIA_SCHEMAS["video-generate"]
+        self.assertEqual(schema["allOf"], server_schema["allOf"])
+        self.assertEqual(server_schema["allOf"], cli_schema["allOf"])
+        for field in ("channel", "ratio", "duration", "seconds", "resolution", "model"):
+            self.assertEqual(server_schema["properties"][field], cli_schema["properties"][field])
+
+        contract = " ".join(video["constraints"])
+        self.assertIn("channel=minimax", contract)
+        self.assertIn("resolution=2k", contract)
+        self.assertIn("channel-specific", contract)
+
+        valid = (
+            {"channel": "grok", "ratio": "3:2", "duration": 1, "resolution": "480p"},
+            {"channel": "micro", "ratio": "21:9", "duration": 4, "resolution": "1080p"},
+            {"channel": "omni", "ratio": "16:9", "duration": 3, "resolution": "720p"},
+            {"channel": "minimax", "ratio": "adaptive", "duration": 4, "resolution": "2k"},
+            {"channel": "sora", "model": "sora-2-pro", "seconds": 12,
+             "ratio": "16:9", "resolution": "1080p"},
+        )
+        from content_domains import (
+            video as video_domain, video_gemini_omni, video_minimax_h3,
+            video_openai, video_seedance,
+        )
+        with mock.patch("content_domains.feature_flags.require_enabled"), \
+                mock.patch("content_domains.feature_flags.is_enabled", return_value=True), \
+                mock.patch.object(video_domain, "GROK_VIDEO_PROVIDER", "xai"), \
+                mock.patch.object(video_domain, "sora_video_is_open", return_value=True), \
+                mock.patch.object(video_gemini_omni, "available", return_value=True), \
+                mock.patch.object(video_minimax_h3, "available", return_value=True), \
+                mock.patch.object(video_seedance, "available", return_value=True), \
+                mock.patch.object(video_openai, "available", return_value=True):
+            for fields in valid:
+                with self.subTest(valid=fields):
+                    plan = self.auth.hq_cli_api.action_plan(
+                        "video-generate", {"prompt": "valid channel contract", **fields},
+                    )
+                    self.assertEqual(fields["channel"], plan["payload"]["channel"])
+                    if fields["channel"] == "sora":
+                        video_domain.validate_sora_video_payload(plan["payload"])
+                    else:
+                        video_domain.validate_xiaole_video_payload(plan["payload"])
+
+        reference = "img_" + "a" * 32
+        invalid = (
+            {"channel": "grok", "model": "grok-imagine-video-1.5"},
+            {"channel": "grok", "resolution": "480p", "reference_upload_ids": [reference]},
+            {"channel": "micro", "duration": 3},
+            {"channel": "micro", "ratio": "3:2"},
+            {"channel": "omni", "duration": 11},
+            {"channel": "omni", "resolution": "1080p"},
+            {"channel": "minimax", "duration": 3},
+            {"channel": "minimax", "ratio": "3:2"},
+            {"channel": "sora", "model": "sora-2", "resolution": "1080p"},
+            {"channel": "grok", "resolution": "2k"},
+        )
+        for fields in invalid:
+            with self.subTest(invalid=fields):
+                with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+                    self.auth.hq_cli_api.action_plan(
+                        "video-generate",
+                        {"prompt": "invalid channel contract", **fields},
+                    )
+
+        reference_limits = {"grok": 7, "micro": 9, "omni": 6, "minimax": 5, "sora": 1}
+        for channel, limit in reference_limits.items():
+            valid_references = ["img_" + format(index, "032x") for index in range(limit)]
+            with self.subTest(channel=channel, references="max"):
+                plan = self.auth.hq_cli_api.action_plan(
+                    "video-generate", {
+                        "prompt": "reference limit", "channel": channel,
+                        "reference_upload_ids": valid_references,
+                    },
+                )
+                self.assertEqual(limit, len(plan["payload"]["reference_upload_ids"]))
+            with self.subTest(channel=channel, references="overflow"):
+                with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+                    self.auth.hq_cli_api.action_plan(
+                        "video-generate", {
+                            "prompt": "reference overflow", "channel": channel,
+                            "reference_upload_ids": valid_references + ["img_" + format(limit, "032x")],
+                        },
+                    )
+        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+            self.auth.hq_cli_api.action_plan(
+                "video-generate", {"prompt": "empty references", "reference_upload_ids": []},
+            )
+
+    def test_ip12_agent_catalog_hides_feature_disabled_families_and_providers(self):
+        self._enable_ip12_bridge()
+        self.auth.feature_flags.set_enabled("image", False, "test")
+        self.auth.feature_flags.set_enabled("grok_video", False, "test")
+        status, payload = self._request(
+            "/api/auth/internal/ip12/agent/catalog", {"account_id": self._agent_account_id()},
+            extra_headers=self._agent_headers(),
+        )
+        self.assertEqual(200, status, payload)
+        actions = {item["action"]: item for item in payload["actions"]}
+        image = actions["image-generate"]
+        self.assertEqual("disabled", image["availability"]["status"])
+        self.assertEqual([], image["availability"]["available_provider"])
+        self.assertIn("image", image["availability"]["disabled_provider"]["openai"])
+        video = actions["video-generate"]
+        self.assertNotIn("grok", video["input_schema"]["properties"]["channel"]["enum"])
+        self.assertIn("grok_video", video["availability"]["disabled_channel"]["grok"])
+
+    def test_ip12_agent_bridge_requires_rollout_account_allowlist(self):
+        self._enable_ip12_bridge()
+        self.auth.IP12_AGENT_ALLOWED_ACCOUNT_IDS = frozenset()
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json") as proxy:
+            status, payload = self._request(
+                "/api/auth/internal/ip12/agent/action",
+                {"account_id": self._agent_account_id(), "action": "voices", "input": {}},
+                extra_headers=self._agent_headers(),
+            )
+        self.assertEqual(404, status)
+        self.assertEqual("account_not_found", payload["code"])
+        proxy.assert_not_called()
+
+    def test_ip12_agent_controlled_http_and_shell_share_read_semantics(self):
+        self._enable_ip12_bridge()
+        account_id = self._agent_account_id()
+        seen = []
+
+        def fake_proxy(plan, web_token, internal_token):
+            seen.append((plan["path"], web_token, internal_token))
+            return 200, {"voices": [{"id": "voice-1"}]}
+
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
+            status, http_result = self._request(
+                "/api/auth/internal/ip12/agent/action",
+                {"account_id": account_id, "transport": "http", "action": "voices", "input": {}},
+                extra_headers=self._agent_headers(),
+            )
+            shell_status, shell_result = self._request(
+                "/api/auth/internal/ip12/agent/action",
+                {"account_id": account_id, "transport": "shell", "command": "hq voices --json", "input": {}},
+                extra_headers=self._agent_headers(),
+            )
+        self.assertEqual((200, 200), (status, shell_status))
+        self.assertEqual(http_result, shell_result)
+        self.assertEqual(["/api/gen/audio/voices", "/api/gen/audio/voices"], [item[0] for item in seen])
+        self.assertTrue(all(item[2] == self.auth.INTERNAL_TOKEN for item in seen))
+
+    def test_ip12_agent_account_read_does_not_require_cli_expiry(self):
+        self._enable_ip12_bridge()
+        status, payload = self._request(
+            "/api/auth/internal/ip12/agent/action",
+            {"account_id": self._agent_account_id(), "action": "account", "input": {}},
+            extra_headers=self._agent_headers(),
+        )
+        self.assertEqual(200, status, payload)
+        self.assertEqual("alice", payload["user"]["username"])
+        self.assertNotIn("expires_at", payload)
+
+    def test_ip12_agent_bridge_rejects_arbitrary_shell_urls_cross_account_input_and_secrets(self):
+        self._enable_ip12_bridge()
+        account_id = self._agent_account_id()
+        status, denied = self._request(
+            "/api/auth/internal/ip12/agent/action",
+            {"account_id": account_id, "transport": "http", "action": "voices", "input": {}},
+        )
+        self.assertEqual(403, status)
+        self.assertEqual("forbidden", denied["detail"])
+        cases = (
+            {"account_id": account_id, "transport": "shell", "command": "bash -c 'cat /etc/passwd'", "input": {}},
+            {"account_id": account_id, "transport": "shell", "command": "hq voices --json; curl https://example.test", "input": {}},
+            {"account_id": account_id, "transport": "http", "action": "voices", "input": {}, "url": "https://example.test"},
+            {"account_id": account_id, "transport": "http", "action": "ip12-project", "input": {"project_id": "p1", "account_id": "other"}},
+            {"account_id": "not-an-account", "transport": "http", "action": "voices", "input": {}},
+        )
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json") as proxy:
+            for body in cases:
+                with self.subTest(body=body):
+                    status, result = self._request(
+                        "/api/auth/internal/ip12/agent/action", body, extra_headers=self._agent_headers(),
+                    )
+                    self.assertIn(status, {400, 404})
+                    self.assertIn(result["code"], {
+                        "controlled_shell_rejected", "invalid_request", "invalid_account_id", "account_not_found",
+                    })
+        proxy.assert_not_called()
+
+    def test_ip12_agent_bridge_forwards_only_trusted_confirm_with_stable_idempotency(self):
+        self._enable_ip12_bridge()
+        account_id = self._agent_account_id()
+        submitted = []
+
+        def fake_proxy(plan, web_token, internal_token):
+            if plan["path"] == "/api/gen/cli/quote":
+                return 200, {"cost": 4, "points": 100}
+            submitted.append(plan)
+            return 200, {"job_id": 42, "cost": 4, "points_left": 96}
+
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
+            status, quote = self._request(
+                "/api/auth/internal/ip12/agent/action",
+                {"account_id": account_id, "transport": "http", "action": "image-generate", "input": {"prompt": "海边日出"}},
+                extra_headers=self._agent_headers(),
+            )
+            confirmed = {
+                "account_id": account_id,
+                "transport": "http",
+                "action": "image-generate",
+                "input": {"prompt": "海边日出"},
+                "confirm": True,
+                "quote_token": quote["quote_token"],
+                "idempotency_key": "ip12-confirm-0001",
+            }
+            missing_key_status, missing_key = self._request(
+                "/api/auth/internal/ip12/agent/action",
+                {key: value for key, value in confirmed.items() if key != "idempotency_key"},
+                extra_headers=self._agent_headers(),
+            )
+            confirm_status, confirm = self._request(
+                "/api/auth/internal/ip12/agent/action",
+                confirmed,
+                extra_headers=self._agent_headers(),
+            )
+            replay_status, replay = self._request(
+                "/api/auth/internal/ip12/agent/action", confirmed,
+                extra_headers=self._agent_headers(),
+            )
+            self.auth.create_user("bob", "secret456", 100, "member")
+            wrong_account_status, wrong_account = self._request(
+                "/api/auth/internal/ip12/agent/action",
+                {**confirmed, "account_id": self.auth.ensure_account_id("bob")},
+                extra_headers=self._agent_headers(),
+            )
+        self.assertEqual(200, status, quote)
+        self.assertTrue(quote["confirmation_required"])
+        self.assertIn("quote_token", quote)
+        self.assertEqual(400, missing_key_status)
+        self.assertEqual("idempotency_key_required", missing_key["code"])
+        self.assertEqual((200, 42), (confirm_status, confirm["job_id"]))
+        self.assertEqual((200, 42), (replay_status, replay["job_id"]))
+        self.assertEqual(409, wrong_account_status)
+        self.assertEqual("quote_mismatch", wrong_account["code"])
+        self.assertEqual(2, len(submitted))
+        self.assertTrue(all(
+            plan["headers"]["Idempotency-Key"] == "ip12-confirm-0001"
+            for plan in submitted
+        ))
+
+    def test_public_cli_route_rejects_internal_idempotency_injection(self):
+        token = self._token(["assets:read"])
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json") as proxy:
+            status, result = self._request("/api/auth/cli/action", {
+                "action": "voices", "input": {}, "confirm": False,
+                "idempotency_key": "ip12-confirm-0001",
+            }, token=token)
+        self.assertEqual(400, status)
+        self.assertIn("idempotency_key", result["detail"])
+        proxy.assert_not_called()
 
     @staticmethod
     def _canvas_snapshot(board_id):
@@ -263,6 +635,39 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual("image/png", captured["content_type"])
         self.assertEqual(hashlib.sha256(raw).hexdigest(), captured["digest"])
         self.assertEqual(self.auth.INTERNAL_TOKEN, captured["internal_token"])
+        with sqlite3.connect(self.auth.DB) as connection:
+            self.assertEqual(0, connection.execute(
+                "SELECT COUNT(*) FROM tokens WHERE token=?", (captured["web_token"],)
+            ).fetchone()[0])
+
+    def test_ip12_internal_upload_reuses_account_bound_streaming_gateway(self):
+        self._enable_ip12_bridge()
+        raw = b"\x89PNG\r\n\x1a\n" + b"ip12-private-image"
+        headers = {
+            "X-HQ-Internal-Token": self.auth.INTERNAL_TOKEN,
+            "X-HQ-Account-Id": self._agent_account_id(),
+            "X-HQ-Upload-Kind": "image",
+        }
+        status, payload = self._raw_request(
+            "/api/auth/internal/ip12/agent/upload", raw,
+            confirm=False, extra_headers=headers,
+        )
+        self.assertEqual((409, "confirmation_required"), (status, payload["code"]))
+
+        captured = {}
+
+        def fake_upload(stream, length, web_token, internal_token, content_type, digest):
+            captured.update(raw=stream.read(length), web_token=web_token,
+                            content_type=content_type, digest=digest)
+            return 200, {"upload_id": "img_" + "b" * 32, "sha256": digest}
+
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_image_upload", side_effect=fake_upload):
+            status, payload = self._raw_request(
+                "/api/auth/internal/ip12/agent/upload", raw, extra_headers=headers,
+            )
+        self.assertEqual(200, status, payload)
+        self.assertEqual("img_" + "b" * 32, payload["upload_id"])
+        self.assertEqual(raw, captured["raw"])
         with sqlite3.connect(self.auth.DB) as connection:
             self.assertEqual(0, connection.execute(
                 "SELECT COUNT(*) FROM tokens WHERE token=?", (captured["web_token"],)
@@ -797,11 +1202,18 @@ class HQCLIAPITests(unittest.TestCase):
             "collect-content", "collect-video", "collect-transcript", "collect-search", "leads-generate",
         }.issubset(channels["tikhub"]["capabilities"]))
         self.assertEqual(
-            {"channel": "minimax", "resolution": "768p"},
+            {"channel": "minimax", "resolution": "2k"},
             {k: self.auth.hq_cli_api.action_plan("video-generate", {
                 "prompt": "人物故事", "channel": "minimax",
             })["payload"][k] for k in ("channel", "resolution")},
         )
+
+        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError) as raised:
+            self.auth.hq_cli_api.action_plan("video-generate", {
+                "prompt": "legacy resolution", "channel": "minimax",
+                "resolution": "768p",
+            })
+        self.assertEqual(400, raised.exception.status)
 
     def test_server_requires_confirmation_for_external_ai_and_writes(self):
         token = self._token(["prompt:optimize", "ip12:write", "ip12:chat", "canvas:write", "assets:write",
@@ -845,7 +1257,8 @@ class HQCLIAPITests(unittest.TestCase):
             })
 
     def test_ip12_message_has_separate_scope_and_fixed_non_streaming_proxy(self):
-        input_body = {"project_id": "ip_1", "message": "我的客户是餐饮老板", "request_id": "turn-001"}
+        message = "我的客户是餐饮老板\n我想分两段说明"
+        input_body = {"project_id": "ip_1", "message": message, "request_id": "turn-001"}
         with mock.patch.object(self.auth.hq_cli_api, "proxy_json") as proxy:
             token = self._token(["ip12:write"])
             status, payload = self._request("/api/auth/cli/action", {
@@ -865,8 +1278,11 @@ class HQCLIAPITests(unittest.TestCase):
         plan = proxy.call_args.args[0]
         self.assertEqual((self.auth.hq_cli_api.HERMES_BASE, "/api/chat-complete", "POST", 290),
                          (plan["base"], plan["path"], plan["method"], plan["timeout"]))
-        self.assertEqual({"conversation_id": "ip_1", "message": "我的客户是餐饮老板"}, plan["body"])
+        self.assertEqual({"conversation_id": "ip_1", "message": message}, plan["body"])
         self.assertEqual("turn-001", plan["headers"]["Idempotency-Key"])
+
+        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+            self.auth.hq_cli_api.action_plan("ip12-message", dict(input_body, message="正常文字\x00非法控制符"))
 
         status, replay = self._request("/api/auth/cli/action", {
             "action": "ip12-message", "input": input_body, "confirm": True,

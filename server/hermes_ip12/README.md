@@ -11,8 +11,8 @@ cd /home/ubuntu/hermes-web
 python3 -c 'import server; server.app.run(host="127.0.0.1", port=3102, debug=False)'
 ```
 
-`/` serves the current v6 workbench. `/classic` preserves the original
-report-and-deliverable interface against the same conversations.
+`/` serves the current Project workbench. `/classic` is a compatibility alias
+for the same page; the former session interface is retired.
 
 ## One-time artifact ownership migration
 

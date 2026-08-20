@@ -11,13 +11,115 @@ import re
 import uuid
 
 
+# Production remains a suggestion until the server has checked the selected
+# action against the first-party capability bridge.  Keeping this small map in
+# the pure harness lets the conversation layer make a deterministic, testable
+# recommendation without turning a natural-language reply into an execution.
+PRODUCTION_FAMILIES = {
+    "image": ("image-generate",),
+    "audio": ("audio-generate",),
+    "video": ("digital-ip-text-generate", "video-generate"),
+    "canvas": ("canvas-ops",),
+}
+
+INTAKE_FOLLOW_UP_PATTERNS = (
+    ("preferred_name", r"(?:怎么称呼|如何称呼|称呼你|叫什么|名字)"),
+    ("age", r"(?:年龄段|年龄|多大|几岁)"),
+    ("city", r"(?:哪座城市|哪个城市|所在城市|目前在(?:哪|哪里)|生活在(?:哪|哪里))"),
+    ("experience_years", r"(?:从业|入行|做这行).{0,8}(?:多久|几年|多长时间)"),
+    ("prior_roles", r"(?:做过|从事过).{0,12}(?:行业|岗位|工作)"),
+    ("income", r"(?:收入来源|收入区间|收入范围|大致收入|主要收入)"),
+    ("current_role", r"(?:目前|现在|当前).{0,12}(?:从事什么|做什么|职业.{0,4}是什么|身份.{0,4}是什么|主要工作)"),
+)
+
+
+def intake_follow_up_topic(reply):
+    """Classify one of the bounded intake questions from the visible reply."""
+    segments = [item for item in re.split(r"[。！？!?\n]+", str(reply or "")) if item.strip()]
+    for segment in reversed(segments):
+        for topic, pattern in INTAKE_FOLLOW_UP_PATTERNS:
+            if re.search(pattern, segment):
+                return topic
+    return ""
+
+
+def _intake_has_core_profile(value, updates, evidence_text):
+    state = normalize_state(value)
+    fields = {
+        str(item.get("field") or "").lower()
+        for item in list(state["intake"].get("profile_updates") or []) + list(updates or [])
+        if isinstance(item, dict)
+    }
+    required_groups = (
+        ("identity", "role", "current"),
+        ("experience", "career", "work"),
+        ("interest",),
+        ("audience",),
+    )
+    has_help_goal = any(
+        token in field for field in fields for token in ("goal", "benefit", "value", "help")
+    ) or re.search(r"(?:希望|想要|目标).{0,30}(?:帮助|让|解决|服务)", str(evidence_text or ""))
+    return (
+        all(any(token in field for field in fields for token in group) for group in required_groups)
+        and sum("skill" in field for field in fields) >= 2
+        and bool(has_help_goal)
+    )
+
+
+def production_recommendation(requested_result, preferred_action=None):
+    """Return the bounded production candidates for an IP12 project.
+
+    This deliberately does not validate provider parameters or submit work;
+    those are account-scoped responsibilities of the production bridge.
+    """
+    family = str(requested_result or "").strip().lower()
+    candidates = PRODUCTION_FAMILIES.get(family)
+    if not candidates:
+        raise HarnessError("暂不支持该制作类型")
+    preferred = str(preferred_action or "").strip()
+    if preferred and preferred not in candidates:
+        raise HarnessError("所选能力与制作类型不匹配")
+    return {
+        "capability_family": family,
+        "recommended_action": preferred or candidates[0],
+        "candidate_actions": list(candidates),
+    }
+
+
+def production_intent(message):
+    """Recognize an explicit request to turn the selected script into an asset."""
+    text = re.sub(r"\s+", "", str(message or "")).lower()
+    text = re.sub(
+        r"(?:不要|无需|不需要|别)(?:再)?(?:生成|制作|做成|转成|转换成|配成)?(?:一张|一个|一条)?"
+        r"(?:图片|海报|封面|配图|音频|配音|语音|视频|短片|数字人)"
+        r"(?:(?:、|,|，|或|和|以及)(?:图片|海报|封面|配图|音频|配音|语音|视频|短片|数字人))*",
+        "",
+        text,
+    )
+    patterns = (
+        ("canvas", r"(?:放到|放进|整理到|添加到|转到).{0,32}(?:canvas|画布)|(?:canvas|画布).{0,32}(?:放入|整理|添加)"),
+        ("audio", r"(?:生成|制作|做成|转成|转换成|配成).{0,32}(?:音频|配音|语音)|(?:音频|配音|语音).{0,32}(?:生成|制作)"),
+        ("video", r"(?:生成|制作|做成|转成|转换成).{0,32}(?:视频|短片|数字人)|(?:视频|短片|数字人).{0,32}(?:生成|制作)"),
+        ("image", r"(?:生成|制作|做成|转成|转换成|配(?:一张|张|个)?).{0,32}(?:图片|海报|封面|配图)|(?:图片|海报|封面|配图).{0,32}(?:生成|制作)"),
+    )
+    for family, pattern in patterns:
+        if re.search(pattern, text, re.I):
+            preferred = ""
+            if family == "video" and re.search(r"grok|文生视频|画面视频", text, re.I):
+                preferred = "video-generate"
+            elif family == "video" and re.search(r"数字人|口播视频", text):
+                preferred = "digital-ip-text-generate"
+            return production_recommendation(family, preferred)
+    return None
+
+
 AVAILABLE_MODULE_COUNT = 6
 SCHEMA_VERSION = 1
 
 MODULE_WORKFLOWS = {
     1: {
         "name": "定位诊断",
-        "required": "关键经历、至少两项核心技能、长期兴趣、至少两项价值观、目标人群",
+        "required": "关键经历、至少两项核心技能、长期兴趣、目标人群，以及明确表达的价值观或帮助目标",
         "checkpoints": (
             "提炼 3–5 个核心关键词",
             "生成三套差异化定位方案",
@@ -27,7 +129,7 @@ MODULE_WORKFLOWS = {
     },
     2: {
         "name": "人设塑造",
-        "required": "复用已确认经历和目标人群，补充人格特质、价值观与未来目标",
+        "required": "从模块 1 已确认的经历、行为、价值观和目标中提炼人格候选，允许用户修正",
         "checkpoints": (
             "提炼人格关键词与核心价值观",
             "生成三套差异化人设画像",
@@ -37,7 +139,7 @@ MODULE_WORKFLOWS = {
     },
     3: {
         "name": "价值主张",
-        "required": "核心优势、目标人群首要痛点、所在领域、第一印象和长期影响力",
+        "required": "复用已确认的定位、人设、核心优势、价值观、目标人群、所在领域和未来目标",
         "checkpoints": (
             "提炼 3–5 个价值关键词",
             "生成三条差异化价值主张",
@@ -47,13 +149,12 @@ MODULE_WORKFLOWS = {
     },
     4: {
         "name": "故事资产",
-        "required": "真实重要经历、共鸣点、展现的品质、核心价值观和长期主题",
+        "required": "复用已确认的真实经历、职业转折、共鸣点、核心价值观和未来目标",
         "checkpoints": (
             "提炼 3–5 个关键故事节点",
             "将故事分为挫折型、成长型和愿景型",
             "为每个故事生成名称、梗概、情绪点和传播场景",
-            "汇总故事资产清单",
-            "推荐长期核心故事并说明理由",
+            "汇总故事资产清单，推荐长期核心故事并说明理由",
         ),
     },
     5: {
@@ -62,25 +163,31 @@ MODULE_WORKFLOWS = {
         "checkpoints": (
             "确定 3 个长期选题种类并说明各自边界",
             "为每个种类设计 10 个具体选题，共 30 个",
-            "确认 3×10 选题库并说明首批内容顺序",
+            "确认 3×10 选题库并精选每类 1 个重点选题",
         ),
     },
     6: {
         "name": "文案口播",
         "required": "主题、目标人群、身份设定、传播目标和表达风格偏好",
         "checkpoints": (
-            "确认 30 篇口播文案的表达风格、时长和行动目标",
-            "审阅 3 个种类下各 10 篇口播文案",
-            "确认首批 30 篇口播文案成果",
+            "确认 3 篇精选口播文案的表达风格、时长和行动目标",
+            "审阅 3 个精选选题及对应完整口播文案",
+            "确认首批 3 篇完整口播文案成果",
         ),
     },
 }
 
-CONFIRM_TEXTS = frozenset({"确认", "确认无误", "没有问题", "没问题", "内容正确", "就按这个", "可以确认"})
-EDIT_TEXTS = frozenset({"需要修改", "我要修改", "修改", "有问题", "不对", "重新填写", "改一下"})
+CONFIRM_TEXTS = frozenset({
+    "确认", "确认无误", "确认资料", "确认补充", "确认这一步", "确认本模块",
+    "没有问题", "没问题", "内容正确", "就按这个", "可以确认", "嗯好", "保留并继续",
+})
+EDIT_TEXTS = frozenset({
+    "需要修改", "我要修改", "修改", "有问题", "不对", "重新填写", "改一下",
+    "继续修改", "修改当前内容",
+})
 CONTINUE_TEXTS = frozenset({
     "继续", "下一步", "进入下一步", "继续下一步", "请继续", "开始下一步",
-    "好的继续", "嗯好继续", "好的下一步", "嗯好下一步",
+    "好的继续", "嗯好继续", "好的下一步", "嗯好下一步", "保留并继续",
 })
 FIELD_RE = re.compile(r"[a-z][a-z0-9_]{1,63}\Z")
 DURATION_RE = re.compile(r"(?:\d+(?:\.\d+)?|[零〇一二两三四五六七八九十半]+)\s*(?:年|个?月)")
@@ -90,7 +197,11 @@ RISKY_CLAIM_RE = re.compile(
     r"深厚.{0,4}经验|丰富.{0,4}经验|多年.{0,4}经验|跨行业经验|"
     r"成功案例|推动.{0,12}成功|知识渊博|全球受众|跨国社区"
 )
-NEGATED_CLAIM_RE = re.compile(r"(?:不|并非|不是|没有|尚未|避免|不能|不把).{0,8}$")
+CLAIM_BOUNDARY_RE = re.compile(r"[，,。.;；！？!?\n：:]|但是|但|可是|而是|却是|却|然而|反而|不过|所以|因此")
+NEGATED_CLAIM_RE = re.compile(
+    r"(?:不(?:把|会|能|要|应|该|得|以|做|当|作为|属于|包装|声称|自称|冒充|夸大|具备|拥有)|"
+    r"并非|不是|没有|尚未|避免|不能|无需|拒绝)"
+)
 FUTURE_CLAIM_RE = re.compile(r"(?:未来|希望|想要?|目标|计划|愿景|以后|准备|打算|争取|成为).{0,12}$")
 PAST_CLAIM_RE = re.compile(r"(?:以前|过去|曾经|原来|做过|曾任|前任).{0,12}$")
 TOPIC_FIELD_RE = re.compile(r"topic_[123]_(?:0[1-9]|10)\Z")
@@ -213,7 +324,7 @@ def initial_state():
         "completed_modules": [],
         "module_step": 0,
         "pending": None,
-        "intake": {"status": "collecting", "round": 1, "answers": {}},
+        "intake": {"status": "collecting", "round": 1, "answers": {}, "asked_follow_ups": []},
     }
 
 
@@ -275,6 +386,10 @@ def normalize_state(value):
         status=status,
         round=round_number,
         answers=deepcopy(intake.get("answers")) if isinstance(intake.get("answers"), dict) else {},
+        asked_follow_ups=[
+            item for item in intake.get("asked_follow_ups", [])
+            if isinstance(item, str) and item in {topic for topic, _ in INTAKE_FOLLOW_UP_PATTERNS}
+        ],
     )
     state["intake"] = intake
 
@@ -332,7 +447,7 @@ def shortcut_action(value, message):
     if not actions:
         return None
     by_type = {item["type"]: item for item in actions}
-    if normalized in CONFIRM_TEXTS:
+    if normalized in CONFIRM_TEXTS or normalized in CONTINUE_TEXTS:
         key = "confirm_intake" if "confirm_intake" in by_type else "confirm_checkpoint"
         return {"type": key, "target_id": by_type[key]["target_id"]}
     if normalized in EDIT_TEXTS:
@@ -344,6 +459,15 @@ def shortcut_action(value, message):
 def is_continue_message(message):
     normalized = re.sub(r"[\s，,。.!！?？]+", "", str(message or "")).lower()
     return normalized in CONTINUE_TEXTS
+
+
+def is_content_review_message(message):
+    text = re.sub(r"\s+", "", str(message or "")).lower()
+    return bool(re.search(
+        r"(?:想看|要看|先看|看看|看一下|看一看|查看|展示|发我|给我看|给我).{0,8}(?:文案|口播|正文|文章)|"
+        r"(?:文案|口播|正文|文章).{0,8}(?:我)?(?:想看|要看|先看|看看|看一下|看一看|查看|展示|发来|给我看)",
+        text,
+    ))
 
 
 def _require_revision(state, expected_revision):
@@ -492,15 +616,24 @@ def apply_action(value, action, expected_revision):
 
 def _claim_has_current_evidence(claim, evidence):
     for match in re.finditer(re.escape(claim), evidence):
-        prefix = evidence[max(0, match.start() - 20):match.start()]
+        prefix = CLAIM_BOUNDARY_RE.split(evidence[:match.start()])[-1]
         if not any(pattern.search(prefix) for pattern in (NEGATED_CLAIM_RE, FUTURE_CLAIM_RE, PAST_CLAIM_RE)):
             return True
     return False
 
 
+def _strip_unsupported_acronym_expansions(text, evidence):
+    """Keep user acronyms verbatim unless the user supplied the expansion."""
+    return re.sub(
+        r"\b([A-Z][A-Z0-9]{1,7})\s*[（(]([^()（）\n]{2,80})[）)]",
+        lambda match: match.group(0) if match.group(2).strip() in evidence else match.group(1),
+        str(text or ""),
+    )
+
+
 def _validate_confirmable_claims(draft, evidence):
     for match in RISKY_CLAIM_RE.finditer(draft):
-        prefix = draft[max(0, match.start() - 12):match.start()]
+        prefix = CLAIM_BOUNDARY_RE.split(draft[:match.start()])[-1]
         if any(pattern.search(prefix) for pattern in (NEGATED_CLAIM_RE, FUTURE_CLAIM_RE, PAST_CLAIM_RE)):
             continue
         claim = match.group(0)
@@ -550,11 +683,56 @@ def validate_model_decision(
         checkpoint = int(raw.get("checkpoint", 0))
     except (TypeError, ValueError) as exc:
         raise HarnessError("模型返回了无效 checkpoint") from exc
-    reply = str(raw.get("reply") or "").strip()[:4000]
-    draft = str(raw.get("draft") or "").strip()[:12000]
+    evidence = str(evidence_text or "")
+    reply = _strip_unsupported_acronym_expansions(raw.get("reply"), evidence).strip()[:4000]
+    draft = _strip_unsupported_acronym_expansions(raw.get("draft"), evidence).strip()[:12000]
     self_review = str(raw.get("self_review") or "").strip()[:500]
+    if decision == "propose_checkpoint":
+        if not draft and len(re.sub(r"\s+", "", reply)) >= 120:
+            draft = reply
+        if draft and not self_review:
+            self_review = "已按当前断点和现有证据整理，仍需用户本人确认。"
     if not reply:
         raise HarnessError("模型回复为空")
+    if decision == "ask_follow_up" and state["module_step"] == 0:
+        profile = state["ip_profile"]
+        facts = profile["facts"]
+        selections = profile["ai_selections"]
+        pending = state.get("pending") if isinstance(state.get("pending"), dict) else {}
+        known_fields = set(facts) | {
+            str(item.get("field") or "")
+            for item in pending.get("profile_updates") or [] if isinstance(item, dict)
+        }
+        confirmed_modules = {
+            str(key).split("-", 1)[0] for key in profile["confirmed_outputs"]
+        }
+        if state["current_module"] == 1 and all(
+            any(token in field for field in known_fields) for token in (
+                "skill", "interest", "audience", "experience",
+            )
+        ) and any(
+            token in field for field in known_fields for token in ("goal", "benefit", "value")
+        ):
+            raise HarnessError("模块 1 已有经历、能力、兴趣、目标人群和帮助目标，必须直接提炼候选关键词")
+        if state["current_module"] == 2 and "1" in confirmed_modules:
+            raise HarnessError("模块 1 已确认，必须从已有经历、行为和价值观直接提炼人格候选")
+        if state["current_module"] == 3 and (
+            {"1", "2"}.issubset(confirmed_modules)
+            or (
+                any(key.startswith("core_value_") for key in selections)
+                and any(key in facts for key in ("target_audience", "target_audience_basis"))
+                and any(key in facts for key in ("current_occupation", "current_identity_basis", "work_focus"))
+            )
+        ):
+            raise HarnessError("模块 3 已有确认的价值观、目标人群和领域，必须直接提炼候选关键词")
+        if state["current_module"] == 4 and (
+            {"1", "2", "3"}.issubset(confirmed_modules)
+            or (
+                any(key in facts for key in ("turning_point_reflection", "career_transition", "career_transition_basis"))
+                and any(key in facts for key in ("previous_jobs", "career_background", "past_workplace_feelings"))
+            )
+        ):
+            raise HarnessError("模块 4 已有确认的真实经历和职业转折，必须直接提炼候选故事节点")
     expected_checkpoint = expected_checkpoint or state["module_step"] + 1
     if decision == "propose_checkpoint":
         if checkpoint != expected_checkpoint or checkpoint > len(MODULE_WORKFLOWS[state["current_module"]]["checkpoints"]):
@@ -575,18 +753,26 @@ def validate_model_decision(
     if not isinstance(updates, list) or len(updates) > 40:
         raise HarnessError("模型返回了无效 profile_updates")
     clean_updates = []
-    evidence = str(evidence_text or "")
     for item in updates:
         if not isinstance(item, dict):
             raise HarnessError("模型返回了无效档案更新")
         field = str(item.get("field") or "").strip()
-        value_text = str(item.get("value") or "").strip()[:1200]
+        value_text = _strip_unsupported_acronym_expansions(item.get("value"), evidence).strip()[:1200]
         kind = str(item.get("kind") or "")
         quote = str(item.get("evidence_quote") or "").strip()[:300]
         if not FIELD_RE.fullmatch(field) or not value_text or kind not in {"user_fact", "user_preference", "ai_option"}:
             raise HarnessError("模型返回了无效档案字段")
         if kind != "ai_option" and (not quote or quote not in evidence):
-            if allow_partial_profile_updates and decision == "ask_follow_up":
+            if allow_partial_profile_updates and (
+                decision == "ask_follow_up"
+                or (
+                    decision == "propose_checkpoint"
+                    and (
+                        state.get("pending")
+                        or state["intake"]["status"] in {"awaiting_confirmation", "editing"}
+                    )
+                )
+            ):
                 continue
             raise HarnessError("模型档案更新缺少可回查的用户原话")
         clean_updates.append({"field": field, "value": value_text, "kind": kind, "evidence_quote": quote})
@@ -629,9 +815,14 @@ def compile_module_five_topics(raw, value, evidence_text, evidence_sources):
     self_review = str(raw.get("self_review") or "").strip()[:500]
     if not reply or not isinstance(categories, list):
         raise HarnessError("模型没有返回可用的模块 5 内容")
+    source = str(
+        ((state["ip_profile"].get("confirmed_outputs") or {}).get("5-1") or {}).get("content") or ""
+    )
     if decision != "propose_checkpoint":
         if categories or self_review:
             raise HarnessError("非生成回复不能携带 3×10 内容")
+        if decision == "ask_follow_up" and source and not state.get("pending"):
+            raise HarnessError("模块 5 的 3 个种类已经确认，必须直接生成完整 3×10 选题")
         return validate_model_decision({
             "decision": decision,
             "checkpoint": 0,
@@ -642,9 +833,6 @@ def compile_module_five_topics(raw, value, evidence_text, evidence_sources):
             "confidence": raw.get("confidence", 0),
         }, state, evidence_text)
 
-    source = str(
-        ((state["ip_profile"].get("confirmed_outputs") or {}).get("5-1") or {}).get("content") or ""
-    )
     if len(categories) != 3 or not self_review or not source:
         raise HarnessError("模块 5 必须返回已确认 3 个种类下的完整 3×10 选题")
     names = [str(item.get("name") or "").strip() for item in categories if isinstance(item, dict)]
@@ -723,24 +911,21 @@ def compile_module_five_confirmation(value):
     )
     categories = confirmed_module_five_topics(state)
 
-    first_batch = []
-    for topic_index in range(2):
-        for category in categories:
-            first_batch.append((category["name"], category["topics"][topic_index]))
+    featured = [(category["name"], category["topics"][0]) for category in categories]
     draft = "\n".join([
         "### 已确认的 3×10 选题库",
         *("- %s：10 个选题" % category["name"] for category in categories),
         "",
-        "### 首批 6 条发布顺序",
+        "### 精选 3 个重点选题",
         *("%d. 【%s】%s" % (index, category, title)
-          for index, (category, title) in enumerate(first_batch, 1)),
+          for index, (category, title) in enumerate(featured, 1)),
     ])
     return validate_model_decision({
         "decision": "propose_checkpoint",
         "checkpoint": 3,
-        "reply": "30 个选题已经保存。下面只确认首批发布顺序，不会重新生成选题。",
+        "reply": "30 个备选题已经保存，并从每个种类精选了 1 个重点选题；确认后会直接写成 3 篇完整口播文案。",
         "draft": draft,
-        "self_review": "只复用已确认的 3×10 选题，并按三个种类交错排序。",
+        "self_review": "保留已确认的 3×10 题库，每个种类只精选排序第一的重点选题。",
         "profile_updates": [],
         "confidence": 1.0,
     }, state, source)
@@ -753,44 +938,51 @@ def compile_module_six_checkpoint(value, pack):
     categories = (pack or {}).get("categories") if isinstance(pack, dict) else None
     if (
         (pack or {}).get("kind") != "content_pack_v1"
+        or (pack or {}).get("format") != "featured_3_v1"
         or not isinstance(categories, list)
         or len(categories) != 3
-        or any(len((item or {}).get("topics") or []) != 10 for item in categories)
+        or any(len((item or {}).get("topics") or []) != 1 for item in categories)
     ):
-        raise HarnessError("模块 6 尚未形成完整的 3×10 口播内容库")
+        raise HarnessError("模块 6 尚未形成 3 个精选选题及对应完整文案")
+    featured = []
+    for category in categories:
+        topic = category["topics"][0]
+        versions = topic.get("versions") or []
+        script = str((versions[-1] if versions else {}).get("content") or "").strip()
+        if len(re.sub(r"\s+", "", script)) < 120:
+            raise HarnessError("模块 6 的精选选题缺少完整文案")
+        featured.append((category, topic, script))
     evidence = "\n".join(
         text
-        for category in categories
-        for text in (
-            [str(category.get("name") or "")]
-            + [str(topic.get("title") or "") for topic in category.get("topics") or []]
-        )
+        for category, topic, script in featured
+        for text in (str(category.get("name") or ""), str(topic.get("title") or ""), script)
     )
     if state["module_step"] == 1:
         draft = "\n\n".join(
-            "### %s\n%s" % (
+            "### %d. %s｜%s\n**精选理由：** %s\n\n%s" % (
+                index,
                 category.get("name"),
-                "\n".join(
-                    "%d. %s" % (index, topic.get("title"))
-                    for index, topic in enumerate(category.get("topics") or [], 1)
-                ),
+                topic.get("title"),
+                category.get("description") or "最符合当前定位与内容方向",
+                script,
             )
-            for category in categories
+            for index, (category, topic, script) in enumerate(featured, 1)
         )
-        reply = "30 篇口播已经按模块 5 的原 3×10 选题生成，可在右侧逐篇打开审阅。"
+        reply = "我已从 3×10 备选题库中按每个种类精选 1 个选题，并把 3 篇完整口播文案直接列在下面；右侧也会同时打开全文。"
         checkpoint = 2
     else:
-        draft = "### 已完成的 3×10 口播成果\n" + "\n".join(
-            "- %s：10 篇" % category.get("name") for category in categories
+        draft = "### 已完成的 3 篇完整文案\n" + "\n".join(
+            "- 【%s】%s" % (category.get("name"), topic.get("title"))
+            for category, topic, _script in featured
         )
-        reply = "3 个种类、30 个原选题和对应 30 篇口播均已保留，下面只确认整套成果。"
+        reply = "30 个备选题仍完整保留；本轮交付的是每个种类 1 篇、共 3 篇完整口播文案，下面只确认这 3 篇成品。"
         checkpoint = 3
     return validate_model_decision({
         "decision": "propose_checkpoint",
         "checkpoint": checkpoint,
         "reply": reply,
         "draft": draft,
-        "self_review": "只读取已生成内容库，不重新生成或改写种类与选题。",
+        "self_review": "只读取 3 个精选选题及其完整正文，30 个其余选题仅作为备选题库。",
         "profile_updates": [],
         "confidence": 1.0,
     }, state, evidence)
@@ -798,7 +990,7 @@ def compile_module_six_checkpoint(value, pack):
 
 def compile_module_six_style(value, evidence_text):
     state = normalize_state(value)
-    if state["current_module"] != 6 or state["module_step"] != 0:
+    if state["current_module"] != 6 or state["module_step"] != 0 or state.get("pending"):
         return None
     evidence = str(evidence_text or "")
     sentences = [
@@ -808,23 +1000,33 @@ def compile_module_six_style(value, evidence_text):
     ]
     relevant = [
         item for item in sentences
-        if re.search(r"大白话|口语|分享|教学|讲解|语气|风格|口播|秒|分钟|收藏|留言|关注|私信|咨询", item)
+        if re.search(r"大白话|口语|分享|教学|讲解|语气|风格|口播|秒|分钟|minute|mins?|点赞|评论|收藏|留言|关注|私信|咨询", item, re.I)
     ]
-    requirements = "；".join(dict.fromkeys(relevant))[:800]
+    requirements = "；".join(
+        dict.fromkeys(item.rstrip("。！？!?；;").strip() for item in relevant)
+    )[:800]
     if not (
         re.search(r"大白话|口语|分享|教学|讲解|语气|风格", requirements)
-        and re.search(r"\d+\s*(?:到|至|-)?\s*\d*\s*(?:秒|分钟)", requirements)
-        and re.search(r"收藏|留言|关注|私信|咨询", requirements)
+        and re.search(
+            r"(?:\d+\s*(?:到|至|-)?\s*\d*|[一二两三四五六七八九十半]+)\s*"
+            r"(?:秒|分钟|minute(?:s)?|mins?|m)(?![A-Za-z])",
+            requirements,
+            re.I,
+        )
+        and re.search(r"点赞|评论|收藏|留言|关注|私信|咨询", requirements)
     ):
         return None
-    quote = next((item for item in relevant if item in evidence and len(item) <= 300), "")
-    if not quote:
+    starts = [evidence.find(item) for item in relevant]
+    quote_start = min((item for item in starts if item >= 0), default=-1)
+    quote_end = max((evidence.find(item) + len(item) for item in relevant if item in evidence), default=-1)
+    quote = evidence[quote_start:quote_end] if 0 <= quote_start < quote_end else ""
+    if not quote or len(quote) > 300:
         return None
     return validate_model_decision({
         "decision": "propose_checkpoint",
         "checkpoint": 1,
         "reply": "我已按你说过的表达方式、时长和行动引导整理统一口播标准，不再重复追问。",
-        "draft": "### 30 篇口播统一标准\n- %s" % requirements,
+        "draft": "### 3 篇精选口播统一标准\n- %s" % requirements,
         "self_review": "只引用用户已提供的口播偏好，不补写新的要求。",
         "profile_updates": [{
             "field": "module_6_delivery_preferences",
@@ -839,21 +1041,36 @@ def compile_module_six_style(value, evidence_text):
 def _reply_already_contains_draft(reply, draft):
     clean = lambda text: re.sub(r"[\W_]+", "", text).lower()
     reply_text, draft_text = clean(reply), clean(draft)
+    draft_items = [
+        clean(item) for item in re.findall(
+            r"(?m)^\s*(?:\d+[.、)]|[-*])\s*(.+?)\s*$", draft
+        ) if clean(item)
+    ]
+    repeated_items = sum(item in reply_text for item in draft_items)
     return bool(draft_text) and (
-        draft_text in reply_text or SequenceMatcher(None, reply_text, draft_text).ratio() >= 0.82
+        draft_text in reply_text or SequenceMatcher(None, reply_text, draft_text).ratio() >= 0.75
+        or (len(draft_items) >= 3 and repeated_items >= max(3, (len(draft_items) * 4 + 4) // 5))
     )
+
+
+def _render_confirmable_reply(reply, draft, suffix):
+    if _reply_already_contains_draft(reply, draft):
+        reply = "请核对这版内容。"
+    return reply + "\n\n" + draft + "\n\n" + suffix
 
 
 def render_model_reply(decision):
     reply = decision["reply"]
     if decision["decision"] == "propose_checkpoint":
-        if not _reply_already_contains_draft(reply, decision["draft"]):
-            reply += "\n\n" + decision["draft"]
-        reply += "\n\n内容不准确时直接告诉我；保留后我会继续，不需要你重复说明。"
+        reply = _render_confirmable_reply(
+            reply, decision["draft"],
+            "内容不准确时直接告诉我；保留后我会继续，不需要你重复说明。",
+        )
     elif decision["decision"] == "revise_intake":
-        if decision["draft"] not in reply:
-            reply += "\n\n" + decision["draft"]
-        reply += "\n\n这只是更新后的基础资料核对稿。请确认补充，或继续修改；当前模块不会自动推进。"
+        reply = _render_confirmable_reply(
+            reply, decision["draft"],
+            "这只是更新后的基础资料核对稿。请确认补充，或继续修改；当前模块不会自动推进。",
+        )
     return reply
 
 
@@ -883,6 +1100,15 @@ def apply_intake_decision(value, raw, evidence_text):
         expected_checkpoint=1,
         allow_partial_profile_updates=True,
     )
+    if (
+        intake["status"] in {"collecting", "editing"}
+        and decision["decision"] in {"ask_follow_up", "answer_only"}
+        and _intake_has_core_profile(state, decision["profile_updates"], evidence_text)
+    ):
+        raise HarnessError(
+            "基础资料已有关键经历、至少两项技能、长期兴趣、目标人群和帮助目标；"
+            "不要追问可选人口信息或只作解释，直接生成完整核对稿"
+        )
     if decision["decision"] == "propose_checkpoint":
         intake.update(
             status="awaiting_confirmation",
@@ -891,6 +1117,14 @@ def apply_intake_decision(value, raw, evidence_text):
             profile_updates=decision["profile_updates"],
         )
     elif decision["decision"] == "ask_follow_up":
+        follow_up_topic = intake_follow_up_topic(decision["reply"])
+        asked_follow_ups = intake.setdefault("asked_follow_ups", [])
+        if follow_up_topic in asked_follow_ups:
+            raise HarnessError(
+                "基础访谈重复追问了已经问过的可选信息；请改问其他未回答项，或直接整理现有资料"
+            )
+        if follow_up_topic:
+            asked_follow_ups.append(follow_up_topic)
         merged_updates = {}
         for item in (intake.get("profile_updates") or []) + decision["profile_updates"]:
             merged_updates.pop(item["field"], None)
@@ -904,9 +1138,10 @@ def apply_intake_decision(value, raw, evidence_text):
     _bump(state)
     reply = decision["reply"]
     if decision["decision"] == "propose_checkpoint":
-        if not _reply_already_contains_draft(reply, decision["draft"]):
-            reply += "\n\n" + decision["draft"]
-        reply += "\n\n请确认资料，或者直接补充、纠正；我会说明理解错在哪里并立即重整。"
+        reply = _render_confirmable_reply(
+            reply, decision["draft"],
+            "请确认资料，或者直接补充、纠正；我会说明理解错在哪里并立即重整。",
+        )
     return state, decision, reply
 
 
@@ -986,14 +1221,16 @@ def apply_model_decision(value, raw, evidence_text, pending_id=None, discard_pen
 def intake_system_prompt(value):
     return """你是黄雀 IP12 的中立访谈教练，正在自然地了解用户基础情况。
 
-需要了解的信息包括：希望的称呼、年龄或年龄段、所在城市、当前职业或身份、从业年限、做过的行业或岗位、主要收入来源和大致收入区间。性别、手机号、收入等敏感信息都可拒答或跳过，不得强迫。
+整理定位所需的核心信息是：希望的称呼或当前身份、真实经历、至少两项核心技能、长期兴趣、目标人群，以及希望帮助对方解决什么问题。年龄、城市、收入、性别和手机号都只是可选背景；没有直接用途时不要主动追问，不得强迫，拒答或跳过也绝不能阻塞核对稿。
 
 对话规则：
 - 接受任意顺序和自然表达；用户可一次说一项或多项，不要求固定格式，不把访谈做成选择题。
 - 先查看完整对话历史和当前待核对资料；已经回答、明确不知道或拒绝回答的内容不要重复追问。
-- 信息不足或含糊时 decision=ask_follow_up，只问一个最有价值且尚未回答的问题。
+- 每个基础问题最多主动问一次；用户没有回答而继续补充其他内容，视为暂时跳过，不得再次追问。
+- 核心信息不足或含糊时 decision=ask_follow_up，只问一个最有价值且尚未回答的核心问题。
 - decision=ask_follow_up 时 checkpoint=0、draft 和 self_review 为空；可以把本轮已明确说出的用户事实或偏好放入 profile_updates，等待最终核对，绝不能宣布确认。
-- 用户只是在提问、讨论或暂时跑题时 decision=answer_only；先自然回应，需要时再轻轻带回访谈，不改变已有资料。
+- 用户在采集阶段提问时先直接回答；若核心信息已经足够，同一条回复必须 decision=propose_checkpoint 并附完整核对稿；若仍缺核心信息，则 decision=ask_follow_up，并在回答后只问一个缺失问题。
+- decision=answer_only 仅用于解释已经展示的待确认稿，或确实没有合适下一步的情况；不能让仍在采集或编辑中的访谈停在解释上。
 - decision=answer_only 时 checkpoint=0，draft、self_review 和 profile_updates 都为空。
 - 信息足够整理，或用户要求查看当前记录时，decision=propose_checkpoint、checkpoint=1；draft 必须是合并全部已知内容后的完整核对稿。
 - 用户补充、纠正或反悔时，以最新原话为准，重新生成完整核对稿；“确认/可以”等字样与补充或纠正同时出现时，内容变更优先，绝不能宣布已确认。

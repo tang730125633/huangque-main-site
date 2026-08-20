@@ -210,21 +210,26 @@ class CanvasAgentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "引导目标"):
             canvas_agent.normalize_model_result(bad, request)
 
-    def test_model_call_uses_terra_responses_with_bounded_structured_context(self):
+    def test_model_call_uses_luna_responses_with_bounded_structured_context(self):
         reply = json.dumps({"content": "可以。", "actions": [], "guides": [], "warnings": []}, ensure_ascii=False)
         captured = {}
 
-        def fake_post(path, body, content_type, timeout):
-            captured.update(path=path, body=json.loads(body), content_type=content_type, timeout=timeout)
+        def fake_post(path, body, content_type, base, key, timeout):
+            captured.update(path=path, body=json.loads(body), content_type=content_type,
+                            base=base, key=key, timeout=timeout)
             return {"status": "completed", "output": [{"type": "message", "content": [
                 {"type": "output_text", "text": reply},
             ]}]}
 
-        with mock.patch.object(canvas_agent, "_post", side_effect=fake_post):
+        with mock.patch.object(canvas_agent, "_post", side_effect=fake_post), \
+             mock.patch.object(canvas_agent, "API_BASE", "https://api.openai.com/v1"), \
+             mock.patch.object(canvas_agent, "API_KEY", "test-key"):
             result = canvas_agent.gen_canvas_agent(payload())
         self.assertEqual(result["content"], "可以。")
         self.assertEqual(captured["path"], "/v1/responses")
-        self.assertEqual(captured["body"]["model"], "gpt-5.6-terra")
+        self.assertEqual(captured["body"]["model"], "gpt-5.6-luna")
+        self.assertEqual(captured["base"], "https://api.openai.com/v1")
+        self.assertEqual(captured["key"], "test-key")
         self.assertEqual(captured["body"]["reasoning"], {"effort": "low"})
         self.assertTrue(captured["body"]["text"]["format"]["strict"])
         self.assertEqual(captured["body"]["text"]["format"]["schema"], canvas_agent.CANVAS_AGENT_SCHEMA)

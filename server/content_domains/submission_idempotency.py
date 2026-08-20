@@ -22,6 +22,28 @@ def _request_hash(body):
     canonical = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
+
+def replay_existing(db_factory, username, endpoint, key, accepted_bodies):
+    """Inspect an existing claim without creating one or relaxing key conflicts."""
+    if not key:
+        return "disabled", None
+    accepted = {_request_hash(body) for body in accepted_bodies}
+    with closing(db_factory()) as connection:
+        ensure_table(connection)
+        row = connection.execute(
+            "SELECT request_hash,response_json FROM submission_idempotency "
+            "WHERE username=? AND endpoint=? AND idem_key=?",
+            (username, endpoint, key),
+        ).fetchone()
+        if not row:
+            return "missing", None
+        if row["request_hash"] not in accepted:
+            return "conflict", None
+        return (
+            ("replay", json.loads(row["response_json"]))
+            if row["response_json"] else ("processing", None)
+        )
+
 def begin(db_factory, username, endpoint, key, body):
     if not key:
         return "disabled", None

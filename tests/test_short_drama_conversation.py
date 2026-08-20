@@ -12,7 +12,7 @@ SERVER_DIR = str(Path(__file__).resolve().parents[1] / "server")
 if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
 
-from content_domains import short_drama, short_drama_conversation
+from content_domains import short_drama, short_drama_conversation, short_drama_storyboard
 
 
 class Handler:
@@ -196,6 +196,90 @@ class ShortDramaDialogueTimingTests(unittest.TestCase):
                 script, script["shots"][0], 6,
             )
         self.assertEqual("shot_duration_invalid", raised.exception.code)
+
+
+class ShortDramaStoryboardQualityTests(unittest.TestCase):
+    def _compile_single_fact(self, shot_count):
+        return short_drama_storyboard.compile_storyboard(
+            payload(shot_count=shot_count, target_duration=60),
+            ["主持人在舞台上面对突发质疑，必须作出回应"],
+            [{
+                "character_key": "host", "name": "主持人",
+                "role_type": "main", "identity": "主持人",
+                "personality": "沉着",
+            }],
+        )
+
+    def test_repeated_story_phases_compile_distinct_visuals_before_generation(self):
+        script = self._compile_single_fact(10)
+
+        self.assertNotEqual("blocked", script["quality_gate"]["status"])
+        self.assertFalse(script["quality_gate"]["blockers"])
+        visuals = [shot["visual"] for shot in script["shots"]]
+        self.assertEqual(len(visuals), len(set(visuals)))
+        self.assertTrue(all(shot["provider_prompt"] for shot in script["shots"]))
+
+    def test_fifteen_shot_boundary_keeps_each_visual_distinct(self):
+        script = self._compile_single_fact(15)
+
+        self.assertNotEqual("blocked", script["quality_gate"]["status"])
+        self.assertFalse(script["quality_gate"]["blockers"])
+        visuals = [shot["visual"] for shot in script["shots"]]
+        self.assertEqual(15, len(set(visuals)))
+
+    def test_four_plus_phase_occurrences_use_visible_state_transitions(self):
+        progressions = [
+            short_drama_storyboard._phase_progression("change", occurrence, 5)
+            for occurrence in range(1, 6)
+        ]
+
+        self.assertEqual([
+            "先展示变化前的状态",
+            "人物伸手触碰关键物件，变化动作刚刚启动",
+            "关键物件被移动或打开，人物位置随之改变",
+            "人物完成推动动作，表情与双方距离形成新的可见状态",
+            "最后呈现变化后的表情与关系",
+        ], progressions)
+
+        script = self._compile_single_fact(17)
+        transition_visuals = [
+            shot["visual"] for shot in script["shots"]
+            if "人物伸手触碰关键物件" in shot["visual"]
+            or "人物完成推动动作" in shot["visual"]
+        ]
+        self.assertFalse(script["quality_gate"]["blockers"])
+        self.assertEqual(2, len(transition_visuals))
+        self.assertTrue(any(
+            "人物伸手触碰关键物件" in visual
+            for visual in transition_visuals
+        ))
+        self.assertTrue(any(
+            "人物完成推动动作" in visual
+            for visual in transition_visuals
+        ))
+        provider_prompts = [
+            shot["provider_prompt"] for shot in script["shots"]
+            if shot["visual"] in transition_visuals
+        ]
+        self.assertTrue(any(
+            "人物伸手触碰关键物件" in prompt
+            for prompt in provider_prompts
+        ))
+        self.assertTrue(any(
+            "人物完成推动动作" in prompt
+            for prompt in provider_prompts
+        ))
+
+    def test_quality_gate_still_rejects_genuinely_identical_visuals(self):
+        script = self._compile_single_fact(6)
+        script["shots"][1]["visual"] = script["shots"][0]["visual"]
+
+        quality = short_drama_storyboard.analyze_quality(script)
+
+        self.assertIn(
+            "duplicate_visual",
+            [item["code"] for item in quality["blockers"]],
+        )
 
 
 class ShortDramaConversationTests(unittest.TestCase):
@@ -1945,7 +2029,7 @@ class ShortDramaConversationTests(unittest.TestCase):
         self.assertFalse(any("剧情是怎么样" in item for item in dialogue))
         self.assertIn("两位旧友在雨夜重逢", script["overview"]["logline"])
         self.assertEqual(
-            "conversation-storyboard-v4",
+            "conversation-storyboard-v5",
             generated["current_script"]["model_version"],
         )
         self.assertEqual(

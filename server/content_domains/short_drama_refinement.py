@@ -36,6 +36,9 @@ ACCEPTANCE_CHECKS = (
     "transition_quality",
 )
 _REASSEMBLY_ENDPOINT = "/api/gen/short-drama/refinement/reassemble"
+_CANDIDATE_REASSEMBLY_ENDPOINT = (
+    "/api/gen/short-drama/refinement/candidates/reassemble"
+)
 _REASSEMBLY_LEASE_SECONDS = 30
 _DELIVERY_REFUND_LEASE_SECONDS = 60
 _MEDIA_PREFERENCE_MIGRATION = "refinement_media_preferences_provider_audio_v1"
@@ -76,6 +79,7 @@ CREATE TABLE IF NOT EXISTS short_drama_refinement_jobs (
   idempotency_key TEXT NOT NULL,
   request_hash TEXT NOT NULL,
   replacement_provider_version_id TEXT,
+  defer_reassembly INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL CHECK(status IN
     ('queued','running','succeeded','failed','canceled')),
   progress INTEGER NOT NULL DEFAULT 0,
@@ -229,6 +233,11 @@ def init_db(db_factory):
             conn.execute(
                 "ALTER TABLE short_drama_refinement_jobs ADD COLUMN "
                 "replacement_provider_version_id TEXT"
+            )
+        if "defer_reassembly" not in columns:
+            conn.execute(
+                "ALTER TABLE short_drama_refinement_jobs ADD COLUMN "
+                "defer_reassembly INTEGER NOT NULL DEFAULT 0"
             )
         version_columns = {
             str(row[1]) for row in conn.execute(
@@ -570,7 +579,9 @@ def _issue_revision(source, shot):
     }))
 
 
-def _refinement_request_hash(project_id, source, shot, replacement):
+def _refinement_request_hash(
+    project_id, source, shot, replacement, defer_reassembly=False
+):
     issue = shot.get("issue") if isinstance(shot.get("issue"), dict) else {}
     version_floor = int(
         issue.get("provider_version_floor")
@@ -591,6 +602,7 @@ def _refinement_request_hash(project_id, source, shot, replacement):
         "replacement_provider_job_id": str(
             replacement["internal_provider_job_id"]
         ),
+        "defer_reassembly": bool(defer_reassembly),
     })
 
 
@@ -633,6 +645,7 @@ def _job(row):
     if item:
         item["progress"] = int(item["progress"])
         item["poll_count"] = int(item["poll_count"])
+        item["defer_reassembly"] = bool(item.get("defer_reassembly"))
         if "cost" in item:
             item["cost"] = int(item["cost"])
     return item
@@ -874,10 +887,31 @@ def _latest_refinement(conn, project_id):
     ).fetchone())
 
 
+def _candidate_reassembly_state(
+        conn, project_id, source_version_id, completed=None):
+    """Validate the live source or completed result for the strict workflow."""
+    current = _latest_refinement(conn, project_id)
+    expected_id = str((completed or {}).get("id") or source_version_id)
+    if not current or current["id"] != expected_id:
+        raise RefinementError(
+            "refinement_version_stale",
+            "预览版本已变化，请刷新后重试",
+            409,
+        )
+    if current.get("issues"):
+        raise RefinementError(
+            "refinement_issues_remaining",
+            "仍有待处理镜头，全部采用满意候选后才能统一重新合成",
+            409,
+        )
+    return current
+
+
 def _refinement_assembly_status(conn, project, refinement):
     """Compare the preview duration with all physical shot media."""
     from . import short_drama_autodraft
 
+    staged = list((refinement.get("media") or {}).get("staged_replacements") or [])
     source_duration_ms = 0
     shot_durations = []
     try:
@@ -894,8 +928,16 @@ def _refinement_assembly_status(conn, project, refinement):
             shot_durations.append({"shot_key": shot_key, "duration_ms": duration_ms})
     except (OSError, ValueError, RefinementError, media_plan.MediaPlanError,
             short_drama_autodraft.AutodraftError):
-        return {"available": False, "reassembly_required": False,
-                "message": "暂时无法核对完整镜头时长"}
+        return {
+            "available": False,
+            "reassembly_required": bool(staged),
+            "staged_replacements": staged,
+            "staged_count": len(staged),
+            "message": (
+                "候选镜头已采用，但暂时无法核对全部素材；重新合成完成前不能验收"
+                if staged else "暂时无法核对完整镜头时长"
+            ),
+        }
 
     validation = (refinement.get("media") or {}).get("media_validation") or {}
     preview_duration_ms = int(validation.get("duration_ms") or 0)
@@ -906,15 +948,21 @@ def _refinement_assembly_status(conn, project, refinement):
     if preview_duration_ms <= 0:
         preview_duration_ms = planned_duration_ms
     missing_ms = max(0, source_duration_ms - preview_duration_ms)
-    required = missing_ms > 500
+    required = bool(staged) or missing_ms > 500
     return {
         "available": True, "reassembly_required": required,
         "source_duration_ms": source_duration_ms,
         "preview_duration_ms": preview_duration_ms,
         "missing_duration_ms": missing_ms,
         "shot_durations": shot_durations,
-        "message": ("现有预览没有包含全部镜头时长，请免费重新装配完整预览"
-                    if required else "当前预览已包含全部镜头"),
+        "staged_replacements": staged,
+        "staged_count": len(staged),
+        "message": (
+            "已有候选镜头采用成功，等待重新合成完整预览"
+            if staged else
+            "现有预览没有包含全部镜头时长，请免费重新装配完整预览"
+            if required else "当前预览已包含全部镜头"
+        ),
     }
 
 
@@ -1230,6 +1278,102 @@ def _render_refinement_preview(conn, job, source):
     }
 
 
+def _stage_refinement_replacement(conn, job, source):
+    """Adopt one generated shot without rebuilding the full preview.
+
+    The paid Provider result is already a complete standalone candidate.  Keep
+    the current full preview intact until the user has accepted every problem
+    shot, then let the existing free reassembly endpoint rebuild the movie once.
+    """
+    from . import short_drama_autodraft
+
+    latest = _latest_refinement(conn, job["project_id"])
+    if not latest or latest["id"] != source["id"]:
+        raise RefinementError(
+            "refinement_source_stale",
+            "问题镜头来源版本已经变化，请基于当前版本重新选择候选镜头",
+            409,
+        )
+    source_shot = next((
+        item for item in source["shots"]
+        if str(item.get("shot_key") or "") == job["shot_key"]
+    ), None)
+    if not source_shot:
+        raise RefinementError("shot_not_found", "目标镜头不存在", 404)
+    replacement = _replacement_provider_asset(
+        conn, job["project_id"], source_shot,
+        str(job.get("replacement_provider_version_id") or ""),
+    )
+    try:
+        path = short_drama_autodraft._controlled_provider_file(replacement["file"])
+        probe = media_plan.probe_media(path)
+    except short_drama_autodraft.AutodraftError as error:
+        raise RefinementError(error.code, str(error), error.status) from error
+    except media_plan.MediaPlanError as error:
+        raise RefinementError(error.code, str(error), 409) from error
+    duration_ms = int(probe.get("duration_ms") or 0)
+    if not probe.get("video") or duration_ms <= 0:
+        raise RefinementError(
+            "refinement_provider_media_invalid",
+            "候选镜头缺少有效视频流或时长", 409,
+        )
+    expected_ms = max(
+        0, int(source_shot.get("end_ms") or 0)
+        - int(source_shot.get("start_ms") or 0)
+    )
+    if expected_ms and abs(duration_ms - expected_ms) > max(
+        1500, int(expected_ms * 0.35)
+    ):
+        raise RefinementError(
+            "refinement_provider_duration_invalid",
+            "候选镜头时长与锁定镜头时间线不一致", 409,
+        )
+    file_hash = _file_hash(path)
+    shots = []
+    for original in source["shots"]:
+        shot = dict(original)
+        if str(shot.get("shot_key") or "") == job["shot_key"]:
+            shot.update({
+                "status": "ready",
+                "visual_source": "provider_regeneration",
+                "provider": str(replacement.get("provider") or ""),
+                "provider_version_id": str(replacement["id"]),
+                "provider_version": int(replacement["version"]),
+                "provider_job_id": str(replacement.get("provider_job_id") or ""),
+                "file": str(replacement["file"]),
+                "url": str(replacement["url"]),
+                "file_hash": file_hash,
+                "input_hash": str(replacement["input_hash"]),
+                "media_validation": {
+                    "duration_ms": duration_ms,
+                    "video": True,
+                    "audio": bool(probe.get("audio")),
+                },
+                "issue": None,
+            })
+        shots.append(shot)
+    media = dict(source.get("media") or {})
+    staged = list(media.get("staged_replacements") or [])
+    staged = [
+        item for item in staged
+        if str(item.get("shot_key") or "") != job["shot_key"]
+    ]
+    staged.append({
+        "shot_key": job["shot_key"],
+        "provider_version_id": str(replacement["id"]),
+        "provider_version": int(replacement["version"]),
+        "accepted_at": int(time.time()),
+    })
+    media["staged_replacements"] = staged
+    return {
+        "shots": shots,
+        "media": media,
+        "replacement": replacement,
+        "file_hash": file_hash,
+        "duration_ms": duration_ms,
+    }
+
+
 def _refinement_preview_media_contract(conn, project, source, autodraft=None):
     """Keep a visual redo independent from the final voice/subtitle gate.
 
@@ -1243,7 +1387,10 @@ def _refinement_preview_media_contract(conn, project, source, autodraft=None):
         from . import short_drama_autodraft as autodraft
 
     live = dict(autodraft._locked_media_contract(conn, project) or {})
-    if live.get("delivery_eligible") is True:
+    if (
+        live.get("delivery_eligible") is True
+        and live.get("preview_only") is not True
+    ):
         return live
 
     source_media = source.get("media") or {}
@@ -1256,7 +1403,10 @@ def _refinement_preview_media_contract(conn, project, source, autodraft=None):
         ).fetchone()
         manifest = _json(row["manifest_json"], {}) if row else {}
         source_contract = dict(manifest.get("media_contract") or {})
-    if source_contract.get("delivery_eligible") is True:
+    if (
+        source_contract.get("delivery_eligible") is True
+        and source_contract.get("preview_only") is not True
+    ):
         return source_contract
 
     mode = str(source_contract.get("media_mode") or "provider_audio")
@@ -1266,8 +1416,8 @@ def _refinement_preview_media_contract(conn, project, source, autodraft=None):
     return {
         "contract_version": "short-drama-locked-media-v1",
         "evidence_source": "refinement_preview_audio_fallback",
-        "delivery_eligible": True,
-        "reason": "",
+        "delivery_eligible": False,
+        "reason": "refinement_preview_audio_fallback",
         "media_mode": mode,
         "silent_confirmed": mode == "silent",
         "audio_tracks": [],
@@ -1285,6 +1435,23 @@ def _refinement_preview_media_contract(conn, project, source, autodraft=None):
         "subtitle_required": False,
         "preview_only": True,
     }
+
+
+def _require_deliverable_media_contract(snapshot):
+    media = (snapshot or {}).get("media_contract") or {}
+    if media.get("preview_only") is True:
+        raise RefinementError(
+            "refinement_preview_only_media",
+            "当前音频仅供精修预览，请先锁定正式音轨或明确确认无声模式",
+            409,
+        )
+    if media.get("delivery_eligible") is not True:
+        raise RefinementError(
+            "delivery_media_incomplete",
+            "正式交付缺少已锁定音轨或字幕时间线",
+            409,
+        )
+    return media
 
 
 def _complete_refinement(conn, row, rendered=None):
@@ -1318,15 +1485,30 @@ def _complete_refinement(conn, row, rendered=None):
         str(job.get("replacement_provider_version_id") or ""),
     )
     if job["request_hash"] != _refinement_request_hash(
-        job["project_id"], source, source_shot, replacement
+        job["project_id"], source, source_shot, replacement,
+        job.get("defer_reassembly") is True,
     ):
         raise RefinementError(
             "refinement_request_stale",
             "问题或 Provider 替换版本已经变化，请重新提交重做任务",
             409,
         )
-    rendered = rendered or _render_refinement_preview(conn, job, source)
-    shots = rendered["shots"]
+    staged = None
+    if job.get("defer_reassembly") is True:
+        staged = _stage_refinement_replacement(conn, job, source)
+        shots = staged["shots"]
+        media = staged["media"]
+        preview_url = source["url"]
+        preview_file_hash = str(source.get("preview_file_hash") or "")
+        preview_file = str(media.get("preview_file") or "")
+        material_hash = ""
+    else:
+        rendered = rendered or _render_refinement_preview(conn, job, source)
+        shots = rendered["shots"]
+        preview_url = rendered["url"]
+        preview_file_hash = rendered["file_hash"]
+        preview_file = rendered["file"]
+        material_hash = rendered["media_contract"]["material_hash"]
     issues = [
         item for item in source["issues"]
         if str(item.get("shot_key")) != job["shot_key"]
@@ -1339,7 +1521,11 @@ def _complete_refinement(conn, row, rendered=None):
     version_id = uuid.uuid4().hex
     input_hash = _hash({
         "source": source["input_hash"], "shot_key": job["shot_key"],
-        "operation": "provider_regeneration", "version": version,
+        "operation": (
+            "candidate_adopted"
+            if job.get("defer_reassembly") is True
+            else "provider_regeneration"
+        ), "version": version,
         "request_hash": job["request_hash"],
         "issue_revision": _issue_revision(source, source_shot),
         "source_provider_version_id": str(
@@ -1347,8 +1533,8 @@ def _complete_refinement(conn, row, rendered=None):
         ),
         "replacement_provider_version_id": job["replacement_provider_version_id"],
         "replacement_provider_job_id": replacement["internal_provider_job_id"],
-        "preview_file_hash": rendered["file_hash"],
-        "material_hash": rendered["media_contract"]["material_hash"],
+        "preview_file_hash": preview_file_hash,
+        "material_hash": material_hash,
     })
     conn.execute(
         "UPDATE short_drama_refinement_acceptances SET invalidated_at=?,"
@@ -1366,21 +1552,26 @@ def _complete_refinement(conn, row, rendered=None):
         "created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             version_id, job["project_id"], source["source_draft_version_id"],
-            version, "draft", rendered["url"], _json_text(shots),
-            _json_text(issues), input_hash, rendered["file_hash"],
-            _json_text({
-                "preview_file": rendered["file"],
-                "preview_file_hash": rendered["file_hash"],
+            version, "draft", preview_url, _json_text(shots),
+            _json_text(issues), input_hash, preview_file_hash,
+            _json_text(media if staged else {
+                "preview_file": preview_file,
+                "preview_file_hash": preview_file_hash,
                 "media_validation": rendered["probe"],
                 "media_contract": rendered["media_contract"],
-            }), "重做并重新装配镜头 " + job["shot_key"],
+            }), (
+                "采用候选镜头 %s，等待重新合成" % job["shot_key"]
+                if staged else "重做并重新装配镜头 " + job["shot_key"]
+            ),
             job["actor_username"], now,
         ),
     )
     result = {
         "version_id": version_id, "version": version,
         "shot_key": job["shot_key"], "remaining_issues": len(issues),
-        "url": rendered["url"], "preview_file_hash": rendered["file_hash"],
+        "url": preview_url, "preview_file_hash": preview_file_hash,
+        "candidate_adopted": bool(staged),
+        "reassembly_required": bool(staged),
         "issue_revision": _issue_revision(source, source_shot),
         "source_provider_version_id": str(
             source_shot.get("provider_version_id") or ""
@@ -1415,9 +1606,13 @@ def _advance_refinement(conn, row):
                 raise RefinementError(
                     "refinement_source_missing", "精修来源版本不存在", 409
                 )
-            # Rendering and media probing happen before the write savepoint so a
-            # slow external process never holds a SQLite write transaction.
-            rendered = _render_refinement_preview(conn, job, source)
+            # Candidate adoption only validates the new standalone shot.  Full
+            # preview rendering is deferred until all issue shots are accepted.
+            rendered = None
+            if not job.get("defer_reassembly"):
+                # Rendering and media probing happen before the write savepoint
+                # so a slow external process never holds a SQLite transaction.
+                rendered = _render_refinement_preview(conn, job, source)
             conn.execute("SAVEPOINT refinement_complete")
             savepoint_active = True
             completed = _complete_refinement(conn, row, rendered=rendered)
@@ -1843,6 +2038,26 @@ def workspace(db_factory, owner_username, actor_username, project_id, can_edit=T
 def reassemble_refinement(
         db_factory, owner_username, actor_username, body, idempotency_key):
     """Idempotently create one local reassembly per source version."""
+    return _reassemble_refinement(
+        db_factory, owner_username, actor_username, body, idempotency_key,
+        endpoint=_REASSEMBLY_ENDPOINT,
+        require_all_issues_resolved=False,
+    )
+
+
+def reassemble_refinement_candidates(
+        db_factory, owner_username, actor_username, body, idempotency_key):
+    """Finish the candidate workflow only after every issue is resolved."""
+    return _reassemble_refinement(
+        db_factory, owner_username, actor_username, body, idempotency_key,
+        endpoint=_CANDIDATE_REASSEMBLY_ENDPOINT,
+        require_all_issues_resolved=True,
+    )
+
+
+def _reassemble_refinement(
+        db_factory, owner_username, actor_username, body, idempotency_key,
+        *, endpoint, require_all_issues_resolved):
     key = submission_idempotency.clean_key(idempotency_key)
     if not key:
         raise RefinementError(
@@ -1855,7 +2070,7 @@ def reassemble_refinement(
     }
     idem_db = _idempotency_db_factory(db_factory)
     state, response = submission_idempotency.begin(
-        idem_db, actor_username, _REASSEMBLY_ENDPOINT, key, request,
+        idem_db, actor_username, endpoint, key, request,
     )
     if state == "conflict":
         raise RefinementError(
@@ -1868,24 +2083,35 @@ def reassemble_refinement(
             "相同重新装配请求正在处理中", 409,
         )
     if state == "replay":
+        if require_all_issues_resolved:
+            conn = _connection(db_factory)
+            try:
+                _project(conn, owner_username, request["project_id"])
+                _candidate_reassembly_state(
+                    conn, request["project_id"], request["version_id"], response
+                )
+            finally:
+                conn.close()
         return response
     try:
         result = _perform_reassemble_refinement(
             db_factory, owner_username, actor_username, request, key,
+            require_all_issues_resolved=require_all_issues_resolved,
         )
         submission_idempotency.complete(
-            idem_db, actor_username, _REASSEMBLY_ENDPOINT, key, result,
+            idem_db, actor_username, endpoint, key, result,
         )
         return result
     except Exception:
         submission_idempotency.abort(
-            idem_db, actor_username, _REASSEMBLY_ENDPOINT, key,
+            idem_db, actor_username, endpoint, key,
         )
         raise
 
 
 def _perform_reassemble_refinement(
-        db_factory, owner_username, actor_username, body, idempotency_key):
+        db_factory, owner_username, actor_username, body, idempotency_key,
+        *, require_all_issues_resolved=False):
     """Create a complete preview from existing paid shot files only."""
     from . import short_drama_autodraft
 
@@ -1903,7 +2129,12 @@ def _perform_reassemble_refinement(
     lease_keeper = None
     try:
         project = _project(conn, owner_username, project_id)
+        source = None
         completed = _reassembly_for_source(conn, project_id, source_version_id)
+        if require_all_issues_resolved:
+            source = _candidate_reassembly_state(
+                conn, project_id, source_version_id, completed
+            )
         if completed:
             completed["assembly_status"] = _refinement_assembly_status(
                 conn, project, completed
@@ -1912,10 +2143,22 @@ def _perform_reassemble_refinement(
             completed["provider_called"] = False
             completed["idempotent_replay"] = True
             return completed
-        source = _latest_refinement(conn, project_id)
-        if not source or source["id"] != source_version_id:
+        if source is None:
+            source = _latest_refinement(conn, project_id)
+            if not source or source["id"] != source_version_id:
+                raise RefinementError(
+                    "refinement_version_stale", "预览版本已变化，请刷新后重试", 409
+                )
+        staged_replacements = list(
+            (source.get("media") or {}).get("staged_replacements") or []
+        )
+        if source.get("issues") and (
+            require_all_issues_resolved or staged_replacements
+        ):
             raise RefinementError(
-                "refinement_version_stale", "预览版本已变化，请刷新后重试", 409
+                "refinement_issues_remaining",
+                "仍有待处理镜头，全部采用满意候选后才能统一重新合成",
+                409,
             )
         if conn.execute(
             "SELECT 1 FROM short_drama_refinement_jobs WHERE project_id=? "
@@ -1938,6 +2181,10 @@ def _perform_reassemble_refinement(
                 raise RefinementError(
                     "refinement_reassembly_result_missing",
                     "重新装配记录缺少成功版本，请稍后重试", 409,
+                )
+            if require_all_issues_resolved:
+                _candidate_reassembly_state(
+                    conn, project_id, source_version_id, completed
                 )
             completed["assembly_status"] = _refinement_assembly_status(
                 conn, project, completed
@@ -2047,6 +2294,10 @@ def _perform_reassemble_refinement(
         lease_keeper.ensure_active()
         completed = _reassembly_for_source(conn, project_id, source_version_id)
         if completed:
+            if require_all_issues_resolved:
+                _candidate_reassembly_state(
+                    conn, project_id, source_version_id, completed
+                )
             now = int(time.time())
             conn.execute(
                 "UPDATE short_drama_reassembly_operations SET "
@@ -2328,10 +2579,15 @@ def mark_issue(db_factory, owner_username, actor_username, body):
 
 
 def start_refinement_job(
-    db_factory, owner_username, actor_username, body, idempotency_key
+    db_factory, owner_username, actor_username, body, idempotency_key,
+    *, candidate_adoption=False,
 ):
     project_id = str(body.get("project_id") or "").strip()
     shot_key = str(body.get("shot_key") or "").strip()
+    requested_source_id = str(body.get("source_version_id") or "").strip()
+    # Deferred full-preview assembly belongs exclusively to candidate adoption.
+    # The legacy refinement route must not let a client opt into that workflow.
+    defer_reassembly = bool(candidate_adoption)
     key = _key(idempotency_key)
     conn = _connection(db_factory)
     try:
@@ -2343,15 +2599,21 @@ def start_refinement_job(
         ).fetchone()
         if existing:
             item = _job(existing)
-            requested_replacement = str(
+            requested_replacement_id = str(
                 body.get("replacement_provider_version_id") or ""
             )
             if (
                 item["project_id"] != project_id
                 or item["shot_key"] != shot_key
+                or item.get("defer_reassembly") is not defer_reassembly
                 or (
-                    requested_replacement
-                    and requested_replacement
+                    requested_source_id
+                    and requested_source_id
+                    != str(item.get("source_version_id") or "")
+                )
+                or (
+                    requested_replacement_id
+                    and requested_replacement_id
                     != str(item.get("replacement_provider_version_id") or "")
                 )
             ):
@@ -2364,8 +2626,7 @@ def start_refinement_job(
             conn.commit()
             return item
         source = _seed_refinement(conn, project_id, actor_username)
-        requested_source = str(body.get("source_version_id") or "")
-        if requested_source and requested_source != source["id"]:
+        if requested_source_id and requested_source_id != source["id"]:
             raise RefinementError(
                 "refinement_source_stale",
                 "精修来源版本已变化，请重新预览后提交",
@@ -2379,12 +2640,23 @@ def start_refinement_job(
             item for item in source["shots"]
             if str(item.get("shot_key")) == shot_key
         )
+        if candidate_adoption:
+            has_active_issue = bool(source_shot.get("issue")) and any(
+                str(item.get("shot_key") or "") == shot_key
+                for item in source.get("issues") or []
+            )
+            if not has_active_issue:
+                raise RefinementError(
+                    "refinement_candidate_not_required",
+                    "该镜头没有待处理问题，不能进入候选采用流程",
+                    409,
+                )
         replacement = _replacement_provider_asset(
             conn, project_id, source_shot,
             str(body.get("replacement_provider_version_id") or ""),
         )
         request_hash = _refinement_request_hash(
-            project_id, source, source_shot, replacement
+            project_id, source, source_shot, replacement, defer_reassembly
         )
         if conn.execute(
             "SELECT 1 FROM short_drama_refinement_jobs WHERE project_id=? "
@@ -2397,11 +2669,12 @@ def start_refinement_job(
             "INSERT INTO short_drama_refinement_jobs "
             "(id,project_id,source_version_id,shot_key,actor_username,"
             "idempotency_key,request_hash,replacement_provider_version_id,status,"
-            "progress,poll_count,created_at,updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,'queued',5,0,?,?)",
+            "defer_reassembly,progress,poll_count,created_at,updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,'queued',?,5,0,?,?)",
             (
                 job_id, project_id, source["id"], shot_key, actor_username,
-                key, request_hash, replacement["id"], now, now,
+                key, request_hash, replacement["id"], int(defer_reassembly),
+                now, now,
             ),
         )
         conn.commit()
@@ -2415,6 +2688,36 @@ def start_refinement_job(
         raise
     finally:
         conn.close()
+
+
+def adopt_refinement_candidate(
+    db_factory, owner_username, actor_username, body, idempotency_key
+):
+    """Adopt one candidate without rebuilding the full preview.
+
+    This endpoint owns the workflow invariant.  Callers cannot turn candidate
+    adoption into the legacy immediate-reassembly operation by changing a
+    client-provided boolean.
+    """
+    if not isinstance(body, dict):
+        raise RefinementError(
+            "refinement_candidate_invalid", "候选镜头采用请求无效", 422
+        )
+    required = (
+        "project_id", "shot_key", "source_version_id",
+        "replacement_provider_version_id",
+    )
+    missing = [name for name in required if not str(body.get(name) or "").strip()]
+    if missing:
+        raise RefinementError(
+            "refinement_candidate_invalid",
+            "候选镜头采用缺少必填字段：" + "、".join(missing),
+            422,
+        )
+    return start_refinement_job(
+        db_factory, owner_username, actor_username, body, idempotency_key,
+        candidate_adoption=True,
+    )
 
 
 def get_refinement_job(db_factory, owner_username, project_id, job_id):
@@ -2456,6 +2759,13 @@ def confirm_refinement(db_factory, owner_username, actor_username, body):
             raise RefinementError(
                 "refinement_issues_remaining", "仍有待处理镜头，不能确认正式交付", 409
             )
+        assembly_status = _refinement_assembly_status(conn, project, current)
+        if assembly_status.get("reassembly_required") is True:
+            raise RefinementError(
+                "refinement_reassembly_required",
+                "候选镜头已采用，请先重新合成完整预览后再验收",
+                409,
+            )
         checklist = body.get("checklist")
         if (
             not isinstance(checklist, dict)
@@ -2466,6 +2776,7 @@ def confirm_refinement(db_factory, owner_username, actor_username, body):
                 "refinement_acceptance_incomplete", "必须完整通过六项全片验收", 409
             )
         source_hashes, snapshot = _acceptance_evidence(conn, project, current)
+        _require_deliverable_media_contract(snapshot)
         if snapshot.get("media_current") is not True:
             raise RefinementError(
                 "refinement_source_stale",
@@ -2600,11 +2911,7 @@ def create_delivery_quote(db_factory, owner_username, body):
             )
         acceptance = _valid_acceptance(conn, project, source, require=True)
         _require_complete_assembly(conn, project, source)
-        media = acceptance["snapshot"].get("media_contract") or {}
-        if capability.get("deliverable") and media.get("delivery_eligible") is not True:
-            raise RefinementError(
-                "delivery_media_incomplete", "正式交付缺少已锁定音轨或字幕时间线", 409
-            )
+        _require_deliverable_media_contract(acceptance["snapshot"])
         now = int(time.time())
         token = uuid.uuid4().hex
         cost = _formal_cost(capability)
@@ -2719,11 +3026,7 @@ def start_delivery_job(
             )
         acceptance = _valid_acceptance(conn, project, source, require=True)
         _require_complete_assembly(conn, project, source)
-        media = acceptance["snapshot"].get("media_contract") or {}
-        if capability.get("deliverable") and media.get("delivery_eligible") is not True:
-            raise RefinementError(
-                "delivery_media_incomplete", "正式交付缺少已锁定音轨或字幕时间线", 409
-            )
+        _require_deliverable_media_contract(acceptance["snapshot"])
         expected = _hash({
             "project_id": project_id, "version_id": quote["refinement_version_id"],
             "source_hash": source["input_hash"] if source else "",

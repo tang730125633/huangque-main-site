@@ -17,7 +17,9 @@ except ImportError:  # Windows does not provide POSIX fcntl.
                 os.lseek(file_descriptor, current, os.SEEK_SET)
 
     fcntl = _WindowsFcntlCompat()
+import email.utils
 import hashlib
+import http.client
 import importlib.util
 import io
 import ipaddress
@@ -1271,6 +1273,83 @@ def _xiaole_ref_to_url(data_url):
         print("[video] 参考图转存COS失败，回退原始数据: %s" % e, flush=True)
         return s
 
+def _minimax_idempotency_body(
+    payload, resolution=None, *, validate_references=True,
+):
+    """Normalize a MiniMax body for stable claims and historical replay hashes."""
+    if not isinstance(payload, dict):
+        raise ValueError("请求体不是合法 JSON")
+    cleaned = {
+        key: value for key, value in payload.items()
+        if not str(key).startswith("_")
+    }
+    if str(cleaned.get("channel") or "").strip().lower() != "minimax":
+        return []
+    from . import video_minimax_h3
+    prompt = str(cleaned.get("prompt") or "").strip()
+    refs = cleaned.get("reference_images") or []
+    if not isinstance(refs, list):
+        raise ValueError("reference_images 必须是数组")
+    refs = [str(item or "").strip() for item in refs if str(item or "").strip()]
+    upload_refs = cleaned.get("reference_upload_ids") or []
+    if not isinstance(upload_refs, list):
+        raise ValueError("reference_upload_ids 必须是数组")
+    upload_ref_count = sum(bool(str(item or "").strip()) for item in upload_refs)
+    validate_image_mentions(prompt, len(refs) + upload_ref_count)
+    model = str(cleaned.get("model") or video_minimax_h3.MODEL).strip()
+    if model != video_minimax_h3.MODEL:
+        raise ValueError("麦克视频模型不支持：%s" % model)
+    ratio = str(cleaned.get("ratio") or "9:16").strip()
+    duration = cleaned.get("duration", 5)
+    # Historical replay candidates are hash-only and can contain legacy remote
+    # references.  Never let them authorize a new submission, but preserve the
+    # old body shape so an existing idempotency record can still be reconciled.
+    provider_refs = refs if validate_references else []
+    provider_request = video_minimax_h3.build_request(
+        prompt, provider_refs, ratio, duration,
+        str(resolution or cleaned.get("resolution") or "2k").strip(),
+        allow_legacy_resolution=True,
+    )
+    cleaned.update({
+        "channel": "minimax", "prompt": prompt, "operation": "generate",
+        "model": model, "ratio": ratio, "duration": int(duration),
+        "resolution": provider_request["resolution"].lower(),
+        "reference_images": refs,
+    })
+    return cleaned
+
+
+def minimax_idempotency_claim_body(payload):
+    """Return the stable current-contract body used for a new claim."""
+    if not isinstance(payload, dict):
+        raise ValueError("请求体不是合法 JSON")
+    if str(payload.get("channel") or "").strip().lower() != "minimax":
+        return dict(payload)
+    return _minimax_idempotency_body(payload, "2k")
+
+
+def minimax_idempotency_replay_bodies(payload):
+    """Build historical hash candidates without authorizing a new job."""
+    if not isinstance(payload, dict):
+        raise ValueError("请求体不是合法 JSON")
+    if str(payload.get("channel") or "").strip().lower() != "minimax":
+        return []
+    from . import video_minimax_h3
+    requested = str(payload.get("resolution") or "").strip()
+    resolutions = [requested] if requested else ["2k", "768p"]
+    candidates = []
+    for resolution in resolutions:
+        cleaned = _minimax_idempotency_body(
+            payload, resolution, validate_references=False,
+        )
+        candidates.append(dict(cleaned))
+        for base in video_minimax_h3.ORIGIN_API_BASES.values():
+            candidates.append(dict(cleaned, _minimax_api_base=base))
+        for origin in video_minimax_h3.ORIGIN_API_BASES:
+            candidates.append(dict(cleaned, _minimax_origin=origin))
+    return candidates
+
+
 def validate_xiaole_video_payload(payload, username=None):
     """校验共用任务入口；micro / omni 只允许各自官方适配器。"""
     if not isinstance(payload, dict):
@@ -1319,12 +1398,18 @@ def validate_xiaole_video_payload(payload, username=None):
                 raise ValueError("麦克视频模型不支持：%s" % model)
             ratio = str(cleaned.get("ratio") or "9:16").strip()
             duration = cleaned.get("duration", 5)
-            resolution = str(cleaned.get("resolution") or "768p").strip()
-            video_minimax_h3.build_request(prompt, refs, ratio, duration, resolution)
+            resolution = str(cleaned.get("resolution") or "2k").strip()
+            provider_request = video_minimax_h3.build_request(
+                prompt, refs, ratio, duration, resolution
+            )
             cleaned.update({
                 "operation": "generate", "model": model, "ratio": ratio,
-                "duration": int(duration), "resolution": "768p",
+                "duration": int(duration),
+                "resolution": provider_request["resolution"].lower(),
                 "reference_images": refs,
+                # Persist the server-selected origin before provider submission.
+                # Client-supplied internal fields were stripped above.
+                "_minimax_origin": video_minimax_h3.new_task_origin(),
             })
             return cleaned
 
@@ -2042,6 +2127,48 @@ def _persist_seedance_upscale_prediction(job_id, prediction_id):
             raise RuntimeError("AI 超清任务编号未能持久化")
         c.commit()
     return prediction_id
+
+
+def _persist_minimax_origin(job_id, origin):
+    """Backfill a pre-marker running job once, before its next provider GET."""
+    from . import video_minimax_h3
+    origin = str(origin or "").strip().lower()
+    video_minimax_h3.api_base_for_origin(origin)
+    if not job_id:
+        raise video_minimax_h3.MiniMaxOriginUnknown(
+            "旧麦克视频任务缺少本地任务编号，无法安全回填来源"
+        )
+    now = int(time.time())
+    with closing(jdb()) as c:
+        c.execute("BEGIN IMMEDIATE")
+        row = c.execute(
+            "SELECT payload,status FROM jobs WHERE id=?", (job_id,)
+        ).fetchone()
+        if not row or row["status"] != "running":
+            raise RuntimeError("旧麦克视频任务已不在运行状态")
+        try:
+            stored = json.loads(row["payload"] or "{}")
+        except Exception as exc:
+            raise video_minimax_h3.MiniMaxOriginUnknown(
+                "旧麦克视频任务参数损坏，无法安全回填来源"
+            ) from exc
+        if not isinstance(stored, dict):
+            raise video_minimax_h3.MiniMaxOriginUnknown(
+                "旧麦克视频任务参数无效，无法安全回填来源"
+            )
+        existing = str(stored.get("_minimax_origin") or "").strip().lower()
+        if existing and existing != origin:
+            raise RuntimeError("麦克视频任务来源回填冲突，已停止自动恢复")
+        stored["_minimax_origin"] = origin
+        stored.pop("_minimax_api_base", None)
+        changed = c.execute(
+            "UPDATE jobs SET payload=?,updated_at=? WHERE id=? AND status='running'",
+            (json.dumps(stored, ensure_ascii=False), now, job_id),
+        )
+        if changed.rowcount != 1:
+            raise RuntimeError("麦克视频任务来源未能持久化")
+        c.commit()
+    return origin
 
 def get_resumable_xai_request(job_id):
     if not job_id:
@@ -3598,6 +3725,7 @@ def _heygen_retry_net(fn, what=""):
 
 
 def _read_download_limited(response, max_bytes):
+    declared_size = None
     declared = response.headers.get("Content-Length")
     if declared:
         try:
@@ -3615,6 +3743,8 @@ def _read_download_limited(response, max_bytes):
         total += len(chunk)
         if total > max_bytes:
             raise ValueError("下载文件超过大小限制")
+    if declared_size is not None and total != declared_size:
+        raise http.client.IncompleteRead(b"", declared_size - total)
     return b"".join(chunks)
 
 
@@ -3637,7 +3767,7 @@ def _heygen_read_retry(open_fn, what, max_bytes=None):
             if data:
                 return data
             last = RuntimeError("下载内容为空")
-        except OSError as e:
+        except (OSError, http.client.IncompleteRead) as e:
             last = e
             print("[heygen] %s 网络抖动，重试(%d/%d): %s"
                   % (what, i + 1, HEYGEN_NET_RETRIES, str(getattr(e, "reason", e))[:120]), flush=True)
@@ -3653,6 +3783,7 @@ def _stream_download_retry(open_fn, destination, what, max_bytes):
         completed = False
         try:
             total = 0
+            declared_size = None
             with open_fn() as response:
                 declared = response.headers.get("Content-Length")
                 if declared:
@@ -3673,11 +3804,13 @@ def _stream_download_retry(open_fn, destination, what, max_bytes):
                             raise ValueError("下载文件超过大小限制")
                     output.flush()
                     os.fsync(output.fileno())
+            if declared_size is not None and total != declared_size:
+                raise http.client.IncompleteRead(b"", declared_size - total)
             if total:
                 completed = True
                 return total
             last = RuntimeError("下载内容为空")
-        except OSError as error:
+        except (OSError, http.client.IncompleteRead) as error:
             last = error
             print("[heygen] %s 网络抖动，重试(%d/%d): %s" % (
                 what, attempt + 1, HEYGEN_NET_RETRIES,
@@ -3976,13 +4109,12 @@ def _download_video_file_direct(url, prefix="vid", *, allowed_hosts=None, max_by
         opener = _heygen_direct_opener()
     fn = "video/%s_%s.mp4" % (prefix, uuid.uuid4().hex)  # 不可猜键(#185)
     target = _out_path(fn)
-    req = urllib.request.Request(url, headers={"User-Agent": "huangque-content/1.0"})
     if allowed_hosts is not None:
         temporary = target.with_name(target.name + ".part-" + uuid.uuid4().hex)
         try:
-            _stream_download_retry(
-                lambda: opener.open(req, timeout=360), temporary,
-                "成片直连下载", max_bytes,
+            _stream_resumable_video_download(
+                opener.open, url, {"User-Agent": "huangque-content/1.0"},
+                temporary, max_bytes, retries=HEYGEN_NET_RETRIES,
             )
             with temporary.open("rb") as downloaded:
                 if downloaded.read(8)[4:8] != b"ftyp":
@@ -3996,6 +4128,7 @@ def _download_video_file_direct(url, prefix="vid", *, allowed_hosts=None, max_by
                 pass
     else:
         # Legacy HeyGen callers retain their existing unbounded contract.
+        req = urllib.request.Request(url, headers={"User-Agent": "huangque-content/1.0"})
         data = _heygen_read_retry(
             lambda: opener.open(req, timeout=360), "成片直连下载"
         )
@@ -4906,11 +5039,20 @@ class CompletedVideoDownloadError(RuntimeError):
     """Provider completed, but the bounded local output transfer did not."""
 
 
+class _CompletedVideoLocalIOError(CompletedVideoDownloadError):
+    """Local persistence failed; changing network routes cannot recover it."""
+
+
+class _CompletedVideoCandidateError(ValueError):
+    """One proxy/relay route returned unusable response data."""
+
+
 class _RestartCompletedVideoDownload(RuntimeError):
     """The partial file cannot be trusted and must be downloaded from byte zero."""
 
 
 _CONTENT_RANGE_RE = re.compile(r"bytes\s+(\d+)-(\d+)/(\d+|\*)\Z", re.I)
+_STRONG_ETAG_RE = re.compile(r'"[\x21\x23-\x7e\x80-\xff]*"\Z')
 
 
 def _response_status(response):
@@ -4938,9 +5080,24 @@ def _header_int(headers, name):
 
 def _download_validator(headers):
     etag = str(headers.get("ETag") or "").strip() if headers else ""
-    if etag and not etag.lower().startswith("w/"):
+    if _STRONG_ETAG_RE.fullmatch(etag):
         return etag
-    return str(headers.get("Last-Modified") or "").strip() if headers else ""
+    last_modified = str(headers.get("Last-Modified") or "").strip() if headers else ""
+    response_date = str(headers.get("Date") or "").strip() if headers else ""
+    if not last_modified or not response_date:
+        return ""
+    try:
+        modified_at = email.utils.parsedate_to_datetime(last_modified)
+        served_at = email.utils.parsedate_to_datetime(response_date)
+    except (TypeError, ValueError, OverflowError):
+        return ""
+    if (
+        modified_at is None or served_at is None
+        or modified_at.tzinfo is None or served_at.tzinfo is None
+        or (served_at - modified_at).total_seconds() < 60
+    ):
+        return ""
+    return last_modified
 
 
 def _xiaole_response_plan(response, offset, max_bytes):
@@ -4949,11 +5106,14 @@ def _xiaole_response_plan(response, offset, max_bytes):
     content_type = str(headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
     if content_type.startswith("text/") or content_type in {
             "application/json", "application/xml", "application/xhtml+xml"}:
-        raise ValueError("视频下载返回了非视频内容: %s" % content_type)
+        raise _CompletedVideoCandidateError(
+            "视频下载返回了非视频内容: %s" % content_type
+        )
 
     declared = _header_int(headers, "Content-Length")
     append = False
     expected_total = declared
+    expected_range_length = None
     if status == 206:
         match = _CONTENT_RANGE_RE.fullmatch(str(headers.get("Content-Range") or "").strip())
         if not match or int(match.group(1)) != offset:
@@ -4965,7 +5125,8 @@ def _xiaole_response_plan(response, offset, max_bytes):
             raise _RestartCompletedVideoDownload(
                 "视频断点续传响应的 Content-Range 无效"
             )
-        if declared is not None and declared != end - start + 1:
+        expected_range_length = end - start + 1
+        if declared is not None and declared != expected_range_length:
             raise _RestartCompletedVideoDownload(
                 "视频断点续传响应长度不一致"
             )
@@ -4994,15 +5155,28 @@ def _xiaole_response_plan(response, offset, max_bytes):
         raise ValueError("视频下载文件超过大小限制")
     if declared is not None and offset + declared > max_bytes:
         raise ValueError("视频下载文件超过大小限制")
-    return append, offset, declared, expected_total, _download_validator(headers)
+    return (
+        append, offset, declared, expected_total,
+        _download_validator(headers), expected_range_length,
+    )
 
 
-def _stream_xiaole_download(opener_open, fetch_url, headers, temporary, max_bytes):
+def _stream_resumable_video_download(
+        opener_open, fetch_url, headers, temporary, max_bytes, *, retries=None):
     last_error = None
     known_total = None
     validator = ""
-    for attempt in range(max(1, _xiaole_dl_retries)):
-        offset = temporary.stat().st_size if temporary.is_file() else 0
+    retry_limit = max(1, retries if retries is not None else _xiaole_dl_retries)
+    for attempt in range(retry_limit):
+        if os.path.lexists(str(temporary)):
+            try:
+                offset = temporary.stat().st_size
+            except OSError as error:
+                raise _CompletedVideoLocalIOError(
+                    "视频下载本地文件状态无法确认"
+                ) from error
+        else:
+            offset = 0
         if offset and not validator:
             # A byte range alone cannot prove that two responses are the same
             # object. Without a strong ETag or Last-Modified, discard the
@@ -5023,10 +5197,19 @@ def _stream_xiaole_download(opener_open, fetch_url, headers, temporary, max_byte
         expected_total = None
         try:
             request = urllib.request.Request(fetch_url, headers=request_headers)
-            with opener_open(request, timeout=300) as response:
-                append, offset, declared, expected_total, response_validator = _xiaole_response_plan(
-                    response, offset, max_bytes
-                )
+            try:
+                response_context = opener_open(request, timeout=300)
+            except urllib.error.HTTPError as error:
+                if offset and error.code == 416:
+                    raise _RestartCompletedVideoDownload(
+                        "视频断点续传范围已失效"
+                    ) from error
+                raise
+            with response_context as response:
+                (
+                    append, offset, declared, expected_total,
+                    response_validator, expected_range_length,
+                ) = _xiaole_response_plan(response, offset, max_bytes)
                 if append and known_total is not None and expected_total not in {None, known_total}:
                     raise _RestartCompletedVideoDownload(
                         "视频断点续传期间远端文件大小发生变化"
@@ -5042,7 +5225,13 @@ def _stream_xiaole_download(opener_open, fetch_url, headers, temporary, max_byte
                     known_total = known_total if known_total is not None else expected_total
                     validator = validator or response_validator
                 received = 0
-                with temporary.open("ab" if append else "wb") as output:
+                try:
+                    output_context = temporary.open("ab" if append else "wb")
+                except OSError as error:
+                    raise _CompletedVideoLocalIOError(
+                        "视频下载本地临时文件无法打开"
+                    ) from error
+                with output_context as output:
                     while True:
                         remaining = max_bytes - (offset + received)
                         chunk = response.read(min(
@@ -5050,20 +5239,45 @@ def _stream_xiaole_download(opener_open, fetch_url, headers, temporary, max_byte
                         ))
                         if not chunk:
                             break
-                        output.write(chunk)
+                        try:
+                            written = output.write(chunk)
+                        except OSError as error:
+                            raise _CompletedVideoLocalIOError(
+                                "视频下载本地文件写入失败"
+                            ) from error
+                        if written is not None and written != len(chunk):
+                            raise _CompletedVideoLocalIOError(
+                                "视频下载本地文件写入不完整"
+                            )
                         received += len(chunk)
                         if offset + received > max_bytes:
                             raise ValueError("视频下载文件超过大小限制")
-                    output.flush()
-                    os.fsync(output.fileno())
+                    try:
+                        output.flush()
+                        os.fsync(output.fileno())
+                    except OSError as error:
+                        raise _CompletedVideoLocalIOError(
+                            "视频下载本地文件同步失败"
+                        ) from error
+                if expected_range_length is not None and received != expected_range_length:
+                    raise _RestartCompletedVideoDownload(
+                        "视频断点续传响应区间长度不一致"
+                    )
                 if declared is not None and received != declared:
                     raise OSError("视频下载提前结束: %d/%d 字节" % (received, declared))
-                total = temporary.stat().st_size
+                try:
+                    total = temporary.stat().st_size
+                except OSError as error:
+                    raise _CompletedVideoLocalIOError(
+                        "视频下载本地文件状态无法确认"
+                    ) from error
                 if expected_total is not None and total != expected_total:
                     raise OSError("视频下载不完整: %d/%d 字节" % (total, expected_total))
                 if total <= 0:
                     raise RuntimeError("视频下载为空")
                 return total
+        except (_CompletedVideoLocalIOError, _CompletedVideoCandidateError):
+            raise
         except _RestartCompletedVideoDownload as error:
             last_error = error
             try:
@@ -5075,23 +5289,29 @@ def _stream_xiaole_download(opener_open, fetch_url, headers, temporary, max_byte
             known_total = None
             validator = ""
             print("[video] 下载对象变化，已丢弃临时文件并从零重试(%d/%d): %s" % (
-                attempt + 1, max(1, _xiaole_dl_retries), str(error)[:100]
+                attempt + 1, retry_limit, str(error)[:100]
             ), flush=True)
-            if attempt + 1 < max(1, _xiaole_dl_retries):
+            if attempt + 1 < retry_limit:
                 time.sleep(3 * (attempt + 1))
         except ValueError:
             raise
         except Exception as error:
             # Some TLS stacks raise after delivering the final bytes. When the
             # authenticated HTTP length is already complete, keep the file.
-            if (expected_total is not None and temporary.is_file()
-                    and temporary.stat().st_size == expected_total):
-                return expected_total
+            if expected_total is not None and os.path.lexists(str(temporary)):
+                try:
+                    current_size = temporary.stat().st_size
+                except OSError as local_error:
+                    raise _CompletedVideoLocalIOError(
+                        "视频下载本地文件状态无法确认"
+                    ) from local_error
+                if current_size == expected_total:
+                    return expected_total
             last_error = error
             print("[video] 下载失败重试(%d/%d): %s" % (
-                attempt + 1, max(1, _xiaole_dl_retries), str(error)[:100]
+                attempt + 1, retry_limit, str(error)[:100]
             ), flush=True)
-            if attempt + 1 < max(1, _xiaole_dl_retries):
+            if attempt + 1 < retry_limit:
                 time.sleep(3 * (attempt + 1))
     raise CompletedVideoDownloadError(
         "视频下载在有限重试后仍失败: %s"
@@ -5132,14 +5352,25 @@ def _download_xiaole_video(
                     opener_open = (
                         egress._opener(proxy).open if proxy else urllib.request.urlopen
                     )
-                _stream_xiaole_download(
+                _stream_resumable_video_download(
                     opener_open, fetch_url, headers, temporary,
                     XIAOLE_VIDEO_DOWNLOAD_MAX_BYTES,
                 )
-                _validate_downloaded_video_file(temporary)
+                try:
+                    _validate_downloaded_video_file(temporary)
+                except ValueError as error:
+                    raise _CompletedVideoCandidateError(str(error)) from error
                 temporary.replace(target)
                 completed = True
                 return _faststart_video_file(filename)
+            except _CompletedVideoLocalIOError:
+                raise
+            except _CompletedVideoCandidateError as error:
+                last_err = error
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
             except ValueError as error:
                 # Invalid HTTP metadata/content is deterministic and must not be
                 # retried through another route as if it were a network flap.
@@ -5778,6 +6009,18 @@ def gen_xiaole_video(payload):
 
         duration = int(payload.get("duration") or 5)
         if existing:
+            try:
+                origin = video_minimax_h3.origin_from_payload(payload)
+            except video_minimax_h3.MiniMaxOriginUnknown:
+                origin = video_minimax_h3.historical_origin_from_environment()
+            if not payload.get("_minimax_origin"):
+                _persist_minimax_origin(job_id, origin)
+                payload["_minimax_origin"] = origin
+                payload.pop("_minimax_api_base", None)
+        else:
+            origin = video_minimax_h3.new_task_origin()
+        api_base = video_minimax_h3.api_base_for_origin(origin)
+        if existing:
             candidate = _bound_provider_key(
                 "minimax", existing.get("provider_key_id")
             )
@@ -5785,6 +6028,8 @@ def gen_xiaole_video(payload):
                 existing["request_id"], duration, ratio,
                 job_id=job_id, heartbeat=minimax_heartbeat,
                 api_key=candidate["secret"], provider_key_id=candidate["id"],
+                resolution=payload.get("resolution") or "2K",
+                api_base=api_base,
             )
         else:
             rendered, candidate = _create_with_provider_key(
@@ -5792,9 +6037,10 @@ def gen_xiaole_video(payload):
                 video_minimax_h3.MiniMaxCredentialRejected,
                 lambda selected: video_minimax_h3.generate(
                     prompt, ref_images, ratio=ratio, duration=duration,
-                    resolution="768P", job_id=job_id,
+                    resolution=payload.get("resolution") or "2K", job_id=job_id,
                     heartbeat=minimax_heartbeat, api_key=selected["secret"],
                     provider_key_id=selected["id"],
+                    api_base=api_base,
                 ),
             )
         source_url = rendered["source_video_url"]
@@ -5805,11 +6051,18 @@ def gen_xiaole_video(payload):
                 provider_key_id=candidate["id"], model=video_minimax_h3.MODEL,
             )
         try:
-            video_file = _download_xiaole_video(source_url, "minimax_h3")
+            video_file = _download_video_file_direct(
+                source_url,
+                prefix="minimax_h3",
+                allowed_hosts=video_minimax_h3.RESULT_HOSTS,
+                max_bytes=video_minimax_h3.RESULT_MAX_BYTES,
+            )
         except CompletedVideoDownloadError:
             # Provider generation is already complete and all bounded GET/resume
             # routes were exhausted. End/refund instead of requeueing forever.
             raise
+        except HeyGenNetworkError as exc:
+            raise video_minimax_h3.TransientMiniMaxError(str(exc)) from exc
         except RuntimeError as exc:
             if str(exc).startswith("视频下载失败"):
                 raise video_minimax_h3.TransientMiniMaxError(str(exc)) from exc

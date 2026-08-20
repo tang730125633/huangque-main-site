@@ -18,8 +18,10 @@ NODE_TYPES = {"text", "image", "reverse", "gen", "video", "shortDrama"}
 GUIDE_TARGETS = {"ip12", "script", "image", "video"}
 MEDIA_MARKERS = ("data:image/", "data:video/", ";base64,", "blob:")
 BASE64_RE = re.compile(r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{512,}={0,2}(?![A-Za-z0-9+/_=-])")
-MODEL = os.environ.get("CANVAS_AGENT_MODEL", "gpt-5.6-terra").strip() or "gpt-5.6-terra"
+MODEL = os.environ.get("CANVAS_AGENT_MODEL", "gpt-5.6-luna").strip() or "gpt-5.6-luna"
 REASONING_EFFORT = os.environ.get("CANVAS_AGENT_REASONING_EFFORT", "low").strip() or "low"
+API_BASE = os.environ.get("CANVAS_AGENT_API_BASE", "").strip() or None
+API_KEY = os.environ.get("CANVAS_AGENT_API_KEY", "").strip() or None
 
 
 def _schema(properties):
@@ -93,7 +95,7 @@ def _responses_chat(context):
         ).hexdigest()[:32],
     }
     response = _post("/v1/responses", json.dumps(request, ensure_ascii=False).encode(),
-                     "application/json", timeout=120)
+                     "application/json", base=API_BASE, key=API_KEY, timeout=120)
     status = response.get("status")
     if status not in (None, "completed"):
         raise ValueError("Agent 思考未完成，请重试")

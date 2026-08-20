@@ -1308,6 +1308,20 @@
     }
     renderBoardHome();
   }
+  function exitCanvas(){
+    try{
+      var target=new URL(location.href).searchParams.get('return_to');
+      if(target){
+        var url=new URL(target,location.origin);
+        if(url.origin===location.origin){
+          saveCurrentBoard();
+          location.assign(url.pathname+url.search+url.hash);
+          return;
+        }
+      }
+    }catch(e){}
+    showBoardHome();
+  }
   function createBoard(){
     var id=createBoardRecord();
     renderBoardHome();
@@ -4139,7 +4153,7 @@
     showMenuFromButton(fsTplMenu,templateMenuItems(fsTplMenu));
   });
   bindButton(fsRun,function(){ document.getElementById('ncRunAll').click(); });
-  bindButton(fsExit,function(){ showBoardHome(); });
+  bindButton(fsExit,exitCanvas);
   bindButton(fsMore,function(){
     showMenuFromButton(fsMore,moreMenuItems());
   });

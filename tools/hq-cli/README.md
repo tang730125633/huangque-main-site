@@ -28,7 +28,7 @@ $ hq capabilities --json
 Windows 10/11（PowerShell 5.1 或 7）：
 
 ```powershell
-irm https://raw.githubusercontent.com/tang730125633/huangque-cli/v0.10.0/install.ps1 | iex
+irm https://huangquechuanmei.com/downloads/hq/install.ps1 | iex
 ```
 
 安装后重新打开 PowerShell，运行 `hq version --json`。程序安装到 `%LOCALAPPDATA%\Huangque\hq-cli`，安装器会幂等更新当前用户 PATH。卸载时下载同版本 `uninstall.ps1` 后运行；默认保留登录凭据，加 `-PurgeCredentials` 才会删除。
@@ -36,7 +36,7 @@ irm https://raw.githubusercontent.com/tang730125633/huangque-cli/v0.10.0/install
 macOS / Linux：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/tang730125633/huangque-cli/v0.10.0/install.sh | sh
+curl -fsSL https://huangquechuanmei.com/downloads/hq/install.sh | sh
 ```
 
 安装脚本会校验版本化 wheel 的 SHA-256，将程序放到 `~/.local/share/hq-cli/`，并创建 `~/.local/bin/hq`。

@@ -713,15 +713,18 @@
         </button>
         <div id="omniCostNote" class="talking-cost" style="margin-top:9px;"></div>
         <div id="omniStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:8px;">正在检查 Omni 官方通道...</div>
+        <div id="omniPendingActions" class="seg hidden" style="grid-template-columns:1fr;margin-top:8px;">
+          <button id="omniDiscardPendingBtn" type="button" aria-describedby="omniStatus" disabled>核对后放弃待确认请求</button>
+        </div>
       </div>
 
       <div id="minimaxPanel" class="function-panel motion-panel hidden">
         <div class="row">
           <div>
             <div class="label">麦克视频 <span class="pill-fixed" style="margin-left:7px;">真人剧情</span></div>
-            <div class="muted" style="font-size:12px;margin-top:6px;">上传人物参考图，生成身份稳定的真人剧情短片</div>
+            <div class="muted" style="font-size:12px;margin-top:6px;">输入文本，可选人物参考图，生成 2K 剧情短片</div>
           </div>
-          <span class="faint" style="font-size:11.5px;">768P · 失败自动退点</span>
+          <span class="faint" style="font-size:11.5px;">2K · 失败自动退点</span>
         </div>
         <div class="cine-notice">
           <b>适合人物剧情，不是动作模仿</b>
@@ -734,7 +737,7 @@
           <textarea id="minimaxPrompt" rows="5" maxlength="7000" placeholder="例如：@图片1仅作为女主角身份参考。生成一段 15 秒真人电影质感短片……" style="width:100%;min-height:132px;resize:vertical;background:rgba(7,11,19,.5);border:1px solid rgba(148,164,187,.16);border-radius:12px;color:#eaf1fa;padding:12px 14px;font:inherit;font-size:14px;"></textarea>
         </div>
         <div class="panel" style="margin-top:12px;">
-          <div class="faint" style="font-size:12px;margin-bottom:8px;">人物参考图 <span style="color:#5c6b82;">· 必传 1–5 张；可点击上传、拖入或 Ctrl/⌘V 粘贴</span></div>
+          <div class="faint" style="font-size:12px;margin-bottom:8px;">人物参考图 <span style="color:#5c6b82;">· 可选，最多 5 张；可点击上传、拖入或 Ctrl/⌘V 粘贴</span></div>
           <div id="minimaxRefGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:8px;">
             <label id="minimaxRefAdd" style="position:relative;display:flex;align-items:center;justify-content:center;min-height:74px;border:1px dashed rgba(148,164,187,.28);border-radius:12px;background:rgba(7,11,19,.4);cursor:pointer;">
               <input id="minimaxRefFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
@@ -757,6 +760,9 @@
         </button>
         <div id="minimaxCostNote" class="talking-cost" style="margin-top:9px;"></div>
         <div id="minimaxStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:8px;">正在检查麦克视频通道...</div>
+        <div id="minimaxPendingActions" class="seg hidden" style="grid-template-columns:1fr;margin-top:8px;">
+          <button id="minimaxDiscardPendingBtn" type="button" aria-describedby="minimaxStatus" disabled>核对后放弃待确认请求</button>
+        </div>
       </div>
 
       <div id="microPanel" class="function-panel motion-panel hidden">
@@ -814,6 +820,9 @@
         </button>
         <div id="microCostNote" class="talking-cost" style="margin-top:9px;"></div>
         <div id="microStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:8px;">正在检查 Seedance 官方通道...</div>
+        <div id="microPendingActions" class="seg hidden" style="grid-template-columns:1fr;margin-top:8px;">
+          <button id="microDiscardPendingBtn" type="button" aria-describedby="microStatus" disabled>核对后放弃待确认请求</button>
+        </div>
       </div>
     </section>
 
@@ -2397,7 +2406,7 @@
       $('modeSummary').textContent='Gemini Omni Flash 官方视频：720p 有声，支持 3–10 秒与参考图';
       if($('modeName')) $('modeName').textContent='Omni 视频';
     }else if(videoFunction==='minimax'){
-      $('modeSummary').textContent='麦克视频：上传人物参考图，生成 4–15 秒 768P 真人剧情短片';
+      $('modeSummary').textContent='麦克视频：使用文本或人物参考图，生成 4–15 秒 2K 剧情短片';
       if($('modeName')) $('modeName').textContent='麦克视频';
     }else{
       updateMode(mode);
@@ -2954,6 +2963,33 @@
       });
     }).catch(function(e){setSubmitLock('talking',false);setBusy(false);if(currentVideoDraft){currentVideoDraft.status='error';renderVideoDrafts([currentVideoDraft]);}toast(e.message||'配音资产读取失败');});
   };
+  function canonicalOfficialRetryValue(value){
+    if(Array.isArray(value))return value.map(canonicalOfficialRetryValue);
+    if(value&&typeof value==='object'){
+      var out={};Object.keys(value).sort().forEach(function(key){out[key]=canonicalOfficialRetryValue(value[key]);});return out;
+    }
+    return value;
+  }
+  function restoreOfficialRetryHiddenFields(saved,current){
+    if(Object.prototype.hasOwnProperty.call(saved,'source_inspiration_id'))current.source_inspiration_id=saved.source_inspiration_id;
+    else delete current.source_inspiration_id;
+  }
+  function officialVideoRetryCompatible(savedBody,currentBody){
+    try{
+      var saved=JSON.parse(savedBody),current=JSON.parse(currentBody);
+      restoreOfficialRetryHiddenFields(saved,current);
+      return JSON.stringify(canonicalOfficialRetryValue(saved))===JSON.stringify(canonicalOfficialRetryValue(current));
+    }catch(e){return false;}
+  }
+  function minimaxLegacyRetryCompatible(savedBody,currentBody){
+    try{
+      var saved=JSON.parse(savedBody),current=JSON.parse(currentBody);
+      if(String(saved.resolution||'').toLowerCase()!=='768p'||String(current.resolution||'').toLowerCase()!=='2k')return false;
+      restoreOfficialRetryHiddenFields(saved,current);
+      delete saved.resolution;delete current.resolution;
+      return JSON.stringify(canonicalOfficialRetryValue(saved))===JSON.stringify(canonicalOfficialRetryValue(current));
+    }catch(e){return false;}
+  }
   function officialVideoRetryState(channel){
     var state=officialVideoRetry[channel];
     if(!state || state.key) return state;
@@ -2989,10 +3025,34 @@
     }
     return false;
   }
+  function setOfficialVideoRetryActions(channel,visible){
+    var actions=$(channel+'PendingActions'),button=$(channel+'DiscardPendingBtn');
+    if(actions)actions.classList.toggle('hidden',!visible);
+    if(button)button.disabled=!visible;
+  }
   function clearOfficialVideoRetry(channel){
     officialVideoRetry[channel]={key:'',body:'',blocked:false};
     try{sessionStorage.removeItem(OFFICIAL_VIDEO_RETRY_STORAGE[channel]);}catch(e){}
     try{localStorage.removeItem(OFFICIAL_VIDEO_BLOCK_STORAGE[channel]);}catch(e){}
+    setOfficialVideoRetryActions(channel,false);
+  }
+  function discardOfficialVideoRetry(channel){
+    var warning='上一笔请求可能已成功提交并扣点。请先到任务列表核对；只有确认没有对应任务时才应放弃。仍要放弃并生成新的请求编号吗？';
+    if(!window.confirm(warning)){
+      toast('已保留待确认请求；请先到任务列表核对后再决定');
+      return;
+    }
+    clearOfficialVideoRetry(channel);
+    var status=$(channel+'Status'),prompt=$(channel+'Prompt');
+    if(status)status.textContent='已放弃上一笔待确认请求，可以修改参数后重新生成';
+    if(prompt&&prompt.focus)prompt.focus();
+    toast('已放弃待确认请求，下次生成将使用新请求编号');
+  }
+  function bindOfficialVideoRetryControls(){
+    ['omni','micro','minimax'].forEach(function(channel){
+      var button=$(channel+'DiscardPendingBtn');
+      if(button)button.onclick=function(){discardOfficialVideoRetry(channel);};
+    });
   }
   function newVideoIdempotencyKey(prefix){
     var random=(window.crypto&&window.crypto.randomUUID)
@@ -3006,11 +3066,13 @@
       if(state&&state.blocked&&!state.body){
         var blockedStatus=$(channel+'Status');
         if(blockedStatus) blockedStatus.textContent='上一笔大素材提交结果待核对；请先到任务列表确认，不能重复提交';
+        setOfficialVideoRetryActions(channel,true);
         return;
       }
-      if(!state||!state.body)return;
+      if(!state||!state.body){setOfficialVideoRetryActions(channel,false);return;}
       try{payload=JSON.parse(state.body);}catch(e){clearOfficialVideoRetry(channel);return;}
       if(!payload||!payload.prompt){clearOfficialVideoRetry(channel);return;}
+      setOfficialVideoRetryActions(channel,true);
       if(channel==='omni'){
         selectedOmniRatio=payload.ratio==='9:16'?'9:16':'16:9';
         selectedOmniDuration=Math.max(3,Math.min(10,Number(payload.duration)||5));
@@ -3039,7 +3101,7 @@
   }
   var sourceInspirationId=0;
   try{sourceInspirationId=Number(new URLSearchParams(location.search).get('inspiration')||0);if(sourceInspirationId<1000000)sourceInspirationId=0}catch(e){}
-  // 共用现有 xiaole_video 任务外壳；micro / omni / minimax 在后端只走官方 API。
+  // 共用现有 xiaole_video 任务外壳；各渠道在后端调用对应 Provider API。
   function submitXiaole(channel){
     if(!token){ location.href='../login.html?redirect=workbench/video'; return; }
     if(channel==='omni'&&!omniAvailable){toast(officialVideoHealthKnown?'Omni 测试通道暂未开放':'正在检查 Omni 官方通道');return;}
@@ -3054,7 +3116,6 @@
     if(editing && !grokEditVideoData){toast('请先上传不超过 8.7 秒的 MP4 参考视频');return;}
     var ratio=channel==='grok'?(editing?null:selectedGrokRatio):(channel==='omni'?selectedOmniRatio:(channel==='minimax'?selectedMiniMaxRatio:selectedSeedanceRatio));
     var _refArr=channel==='grok'?grokRefData:(channel==='micro'?microRefData:(channel==='omni'?omniRefData:(channel==='minimax'?minimaxRefData:null)));
-    if(channel==='minimax'&&(!_refArr||!_refArr.length)){toast('请至少上传 1 张人物参考图');return;}
     if(channel==='grok' && !editing && selectedGrokModel==='grok-imagine-video-1.5' && (!_refArr||!_refArr.length)){
       toast('Grok Video 1.5 至少上传1张参考图（最多7张）'); return;
     }
@@ -3073,7 +3134,7 @@
       xlPayload.duration=selectedOmniDuration;xlPayload.resolution='720p';
     }else if(channel==='minimax'){
       xlPayload.model='MiniMax-H3';xlPayload.ratio=selectedMiniMaxRatio;
-      xlPayload.duration=selectedMiniMaxDuration;xlPayload.resolution='768p';
+      xlPayload.duration=selectedMiniMaxDuration;xlPayload.resolution='2k';
     }else{
       xlPayload.model=selectedSeedanceModel;xlPayload.ratio=selectedSeedanceRatio;
       xlPayload.duration=selectedSeedanceDuration;xlPayload.resolution=selectedSeedanceResolution;
@@ -3085,7 +3146,10 @@
     if(official){
       var retry=officialVideoRetryState(channel);
       if(retry.blocked&&!retry.body){toast('上一笔提交结果待核对，请先到任务列表确认，不能重复提交');return;}
-      if(retry.key&&retry.body!==body){toast('上一笔提交结果尚未确认，请保持原参数重试');return;}
+      if(retry.key&&retry.body!==body){
+        if(officialVideoRetryCompatible(retry.body,body)||(channel==='minimax'&&minimaxLegacyRetryCompatible(retry.body,body))){body=retry.body;}
+        else{toast('上一笔提交结果尚未确认，请保持原参数重试');return;}
+      }
       if(!retry.key){
         retry.key=newVideoIdempotencyKey(channel);retry.body=body;
         if(!saveOfficialVideoRetry(channel)){
@@ -3098,14 +3162,19 @@
     }
     setSubmitLock('xiaole',true);
     setBusy(true);
+    if(official)setOfficialVideoRetryActions(channel,false);
     if(statusEl) statusEl.textContent='正在提交'+label+'任务，请勿重复点击...';
-    var fixedDuration=channel==='grok'?(editing?grokEditDuration:selectedGrokDuration):(channel==='omni'?selectedOmniDuration:(channel==='minimax'?selectedMiniMaxDuration:selectedSeedanceDuration));
-    var sourceResolution=channel==='micro'?selectedSeedanceResolution:null;
-    var resolution=channel==='grok'?selectedGrokResolution:(channel==='omni'?'720p':(channel==='minimax'?'768p':(selectedSeedanceUpscale?'1080p':selectedSeedanceResolution)));
-    var currentModel=channel==='grok'?selectedGrokModel:(channel==='omni'?'gemini-omni-flash-preview':(channel==='minimax'?'MiniMax-H3':selectedSeedanceModel));
+    var sentPayload=xlPayload;
+    try{sentPayload=JSON.parse(body);}catch(e){}
+    prompt=String(sentPayload.prompt||prompt);ratio=sentPayload.ratio==null?ratio:sentPayload.ratio;
+    var fixedDuration=channel==='grok'?(editing?grokEditDuration:Number(sentPayload.duration||selectedGrokDuration)):Number(sentPayload.duration||(channel==='omni'?selectedOmniDuration:(channel==='minimax'?selectedMiniMaxDuration:selectedSeedanceDuration)));
+    var sourceResolution=channel==='micro'?String(sentPayload.resolution||selectedSeedanceResolution):null;
+    var resolution=String(sentPayload.resolution||(channel==='grok'?selectedGrokResolution:(channel==='omni'?'720p':(channel==='minimax'?'2k':selectedSeedanceResolution))));
+    if(channel==='micro'&&sentPayload.upscale===true)resolution='1080p';
+    var currentModel=String(sentPayload.model||(channel==='grok'?selectedGrokModel:(channel==='omni'?'gemini-omni-flash-preview':(channel==='minimax'?'MiniMax-H3':selectedSeedanceModel))));
     currentVideoDraft={mode:channel,text:prompt,ratio:ratio,motion:label,duration:fixedDuration,
-      resolution:resolution,model:currentModel,generate_audio:channel==='micro'?selectedSeedanceAudio:null,
-      source_resolution:sourceResolution,upscale:channel==='micro'&&selectedSeedanceUpscale,
+      resolution:resolution,model:currentModel,generate_audio:channel==='micro'?sentPayload.generate_audio:null,
+      source_resolution:sourceResolution,upscale:channel==='micro'&&sentPayload.upscale===true,
       status:'processing',phase:channel==='omni'?'omni_submitting':(channel==='micro'?'seedance_submitting':(channel==='minimax'?'minimax_submitting':'queued')),created_at:Math.floor(Date.now()/1000)};
     renderVideoDrafts([currentVideoDraft]);
     var headers={Authorization:'Bearer '+token,'Content-Type':'application/json'};
@@ -3126,7 +3195,7 @@
         if(official)clearOfficialVideoRetry(channel);
         if(statusEl) statusEl.textContent=label+'任务已提交'+(res.data.cost!=null?' · '+res.data.cost+'点':'')+'，生成中...';
         setTimeout(loadVideoHistory,700);
-        trackVideoJob(res.data.job_id,{status:'queued',phase:channel==='omni'?'omni_queued':(channel==='micro'?'seedance_queued':(channel==='minimax'?'minimax_queued':'queued')),label:label,mode:channel,modeLabel:label,ratio:ratio,model:currentModel,resolution:resolution,source_resolution:sourceResolution,upscale:channel==='micro'&&selectedSeedanceUpscale,duration:fixedDuration,generate_audio:channel==='micro'?selectedSeedanceAudio:null});
+        trackVideoJob(res.data.job_id,{status:'queued',phase:channel==='omni'?'omni_queued':(channel==='micro'?'seedance_queued':(channel==='minimax'?'minimax_queued':'queued')),label:label,mode:channel,modeLabel:label,ratio:ratio,model:currentModel,resolution:resolution,source_resolution:sourceResolution,upscale:channel==='micro'&&sentPayload.upscale===true,duration:fixedDuration,generate_audio:channel==='micro'?sentPayload.generate_audio:null});
         setSubmitLock('xiaole',false);
         pollJob(res.data.job_id,0);
       })
@@ -3134,7 +3203,7 @@
         setSubmitLock('xiaole',false);
         setBusy(false);
         var uncertain=official&&(e.uncertain||!e.httpStatus||e.httpStatus>=500||(e.httpStatus===409&&e.errorCode==='idempotency_in_progress'));
-        if(official){if(uncertain)saveOfficialVideoRetry(channel);else clearOfficialVideoRetry(channel);}
+        if(official){if(uncertain){saveOfficialVideoRetry(channel);setOfficialVideoRetryActions(channel,true);}else clearOfficialVideoRetry(channel);}
         if(currentVideoDraft){currentVideoDraft.status=uncertain?'processing':'error';renderVideoDrafts([currentVideoDraft]);}
         var message=uncertain?'提交结果暂未确认；请保持参数不变后重试，系统会复用同一请求编号':(e.message||'提交失败');
         if(statusEl) statusEl.textContent=message;
@@ -3229,6 +3298,7 @@
   if($('microGenerateBtn')) $('microGenerateBtn').onclick=function(){submitXiaole('micro');};
   if($('omniGenerateBtn')) $('omniGenerateBtn').onclick=function(){submitXiaole('omni');};
   if($('minimaxGenerateBtn')) $('minimaxGenerateBtn').onclick=function(){submitXiaole('minimax');};
+  bindOfficialVideoRetryControls();
   document.querySelectorAll('[data-sora-model]').forEach(function(b){b.onclick=function(){selectedSoraModel=b.dataset.soraModel;updateSoraControls();};});
   document.querySelectorAll('[data-sora-ratio]').forEach(function(b){b.onclick=function(){selectedSoraRatio=b.dataset.soraRatio;document.querySelectorAll('[data-sora-ratio]').forEach(function(x){x.classList.toggle('on',x===b);});};});
   document.querySelectorAll('[data-sora-seconds]').forEach(function(b){b.onclick=function(){selectedSoraSeconds=Number(b.dataset.soraSeconds);document.querySelectorAll('[data-sora-seconds]').forEach(function(x){x.classList.toggle('on',x===b);});updateVideoCosts();};});

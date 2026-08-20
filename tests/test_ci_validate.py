@@ -6,6 +6,7 @@ from unittest import TestCase
 from scripts.ci_validate import (
     candidate_paths,
     check_redlines,
+    check_secret_literals,
     is_dynamic_or_external,
     load_json_strict,
     parse_json_strict,
@@ -32,6 +33,43 @@ class RedlineTests(TestCase):
         ]
 
         self.assertEqual(check_redlines(files), [])
+
+    def test_rejects_hardcoded_production_secrets(self) -> None:
+        path = Path("scripts/_secret_guard_test.py")
+        path.write_text('QG_' + 'KEY = "not-a-real-key"\n', encoding="utf-8")
+        try:
+            errors = check_secret_literals([PurePosixPath(path)])
+        finally:
+            path.unlink()
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("QG_KEY", errors[0])
+        self.assertNotIn("not-a-real-key", errors[0])
+
+    def test_allows_environment_reads_and_placeholders(self) -> None:
+        path = Path("scripts/_secret_guard_test.py")
+        path.write_text(
+            'QG_KEY = os.environ.get("QG_KEY", "")\n'
+            'LEADGEN_WORKER_TOKEN=change-me\n',
+            encoding="utf-8",
+        )
+        try:
+            errors = check_secret_literals([PurePosixPath(path)])
+        finally:
+            path.unlink()
+
+        self.assertEqual(errors, [])
+
+    def test_rejects_worker_token_in_url(self) -> None:
+        path = Path("worker/_secret_guard_test.py")
+        path.write_text('url = "/api/claim?token=" + token\n', encoding="utf-8")
+        try:
+            errors = check_secret_literals([PurePosixPath(path)])
+        finally:
+            path.unlink()
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("X-Worker-Token", errors[0])
 
 
 class HtmlReferenceTests(TestCase):
@@ -152,7 +190,7 @@ if (!result.info.description.includes('共 1 个操作')) process.exit(1);
             for method, route_paths in route_table.items()
             for path in route_paths
         }
-        self.assertEqual(126, len(short_drama_registered))
+        self.assertEqual(128, len(short_drama_registered))
         self.assertEqual(set(), short_drama_registered - documented)
 
     def test_openapi_validates_live_action_import_and_role_saves(self) -> None:
@@ -277,6 +315,36 @@ if (!result.info.description.includes('共 1 个操作')) process.exit(1);
                 self.assertIn("401", operation["responses"])
                 if method == "post":
                     self.assertIn("requestBody", operation)
+
+    def test_openapi_candidate_adoption_is_server_owned(self) -> None:
+        spec = load_json_strict(Path("docs/api/openapi.json"))
+        operation = spec["paths"][
+            "/api/gen/short-drama/refinement/candidates/adopt"
+        ]["post"]
+        schema = operation["requestBody"]["content"]["application/json"]["schema"]
+
+        self.assertEqual(
+            [
+                "project_id", "shot_key", "source_version_id",
+                "replacement_provider_version_id",
+            ],
+            schema["required"],
+        )
+        self.assertNotIn("defer_reassembly", schema["properties"])
+        self.assertTrue(next(
+            item for item in operation["parameters"]
+            if item["name"] == "Idempotency-Key"
+        )["required"])
+
+        reassembly = spec["paths"][
+            "/api/gen/short-drama/refinement/candidates/reassemble"
+        ]["post"]
+        reassembly_schema = reassembly["requestBody"]["content"][
+            "application/json"
+        ]["schema"]
+        self.assertEqual(
+            ["project_id", "version_id"], reassembly_schema["required"]
+        )
 
     def _assert_openapi_sample(self, spec, schema, value) -> None:
         if "$ref" in schema:
