@@ -6,6 +6,7 @@ from unittest import TestCase
 from scripts.ci_validate import (
     candidate_paths,
     check_redlines,
+    check_secret_literals,
     is_dynamic_or_external,
     load_json_strict,
     parse_json_strict,
@@ -32,6 +33,43 @@ class RedlineTests(TestCase):
         ]
 
         self.assertEqual(check_redlines(files), [])
+
+    def test_rejects_hardcoded_production_secrets(self) -> None:
+        path = Path("scripts/_secret_guard_test.py")
+        path.write_text('QG_' + 'KEY = "not-a-real-key"\n', encoding="utf-8")
+        try:
+            errors = check_secret_literals([PurePosixPath(path)])
+        finally:
+            path.unlink()
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("QG_KEY", errors[0])
+        self.assertNotIn("not-a-real-key", errors[0])
+
+    def test_allows_environment_reads_and_placeholders(self) -> None:
+        path = Path("scripts/_secret_guard_test.py")
+        path.write_text(
+            'QG_KEY = os.environ.get("QG_KEY", "")\n'
+            'LEADGEN_WORKER_TOKEN=change-me\n',
+            encoding="utf-8",
+        )
+        try:
+            errors = check_secret_literals([PurePosixPath(path)])
+        finally:
+            path.unlink()
+
+        self.assertEqual(errors, [])
+
+    def test_rejects_worker_token_in_url(self) -> None:
+        path = Path("worker/_secret_guard_test.py")
+        path.write_text('url = "/api/claim?token=" + token\n', encoding="utf-8")
+        try:
+            errors = check_secret_literals([PurePosixPath(path)])
+        finally:
+            path.unlink()
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("X-Worker-Token", errors[0])
 
 
 class HtmlReferenceTests(TestCase):

@@ -4692,7 +4692,7 @@ class H(BaseHTTPRequestHandler):
             c.execute("DELETE FROM tokens WHERE token=?", (token,))
             c.commit(); c.close()
 
-    def _cli_media_upload(self, kind):
+    def _account_media_upload(self, kind, row):
         video = kind == "video"
         label = "视频" if video else "图片"
         max_bytes = hq_cli_api.VIDEO_UPLOAD_MAX_BYTES if video else hq_cli_api.IMAGE_UPLOAD_MAX_BYTES
@@ -4702,12 +4702,6 @@ class H(BaseHTTPRequestHandler):
         slots = hq_cli_api.VIDEO_UPLOAD_SLOTS if video else hq_cli_api.IMAGE_UPLOAD_SLOTS
         proxy = hq_cli_api.proxy_video_upload if video else hq_cli_api.proxy_image_upload
         invalid_code = "invalid_%s_upload" % kind
-        auth = self._cli_user()
-        if not auth:
-            return self._cli_send(401, {"detail": "CLI 未登录或授权已过期", "code": "cli_unauthorized"})
-        row, scopes = auth
-        if "assets:upload" not in scopes:
-            return self._cli_send(403, {"detail": "当前 CLI 授权缺少权限：assets:upload", "code": "insufficient_scope"})
         if (self.headers.get("X-HQ-Confirm") or "").strip().lower() != "true":
             return self._cli_send(409, {"detail": "上传本地%s需要显式确认" % label, "code": "confirmation_required"})
         if self.headers.get("Transfer-Encoding"):
@@ -4745,6 +4739,29 @@ class H(BaseHTTPRequestHandler):
             finally:
                 slots.release()
         return self._cli_send(status, result)
+
+    def _cli_media_upload(self, kind):
+        auth = self._cli_user()
+        if not auth:
+            return self._cli_send(401, {"detail": "CLI 未登录或授权已过期", "code": "cli_unauthorized"})
+        row, scopes = auth
+        if "assets:upload" not in scopes:
+            return self._cli_send(403, {"detail": "当前 CLI 授权缺少权限：assets:upload", "code": "insufficient_scope"})
+        return self._account_media_upload(kind, row)
+
+    def _internal_ip12_agent_upload(self):
+        if not self._ip12_agent_bridge_enabled():
+            return self._cli_send(503, {"detail": "IP12 执行桥未启用", "code": "feature_disabled"})
+        kind = (self.headers.get("X-HQ-Upload-Kind") or "").strip().lower()
+        if kind not in {"image", "video"}:
+            return self._cli_send(400, {"detail": "上传类型只支持 image 或 video", "code": "invalid_upload_kind"})
+        try:
+            row = self._ip12_agent_row((self.headers.get("X-HQ-Account-Id") or "").strip())
+        except hq_cli_api.CLIAPIError as exc:
+            return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
+        if not row:
+            return self._cli_send(404, {"detail": "账号不存在", "code": "account_not_found"})
+        return self._account_media_upload(kind, row)
 
     def _cli_image_upload(self):
         return self._cli_media_upload("image")
@@ -4981,7 +4998,8 @@ class H(BaseHTTPRequestHandler):
             return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
         if not row:
             return self._cli_send(404, {"detail": "账号不存在", "code": "account_not_found"})
-        return self._cli_send(200, {"account_id": row["account_id"], **hq_cli_api.action_catalog()})
+        states = {flag: feature_flags.is_enabled(flag) for flag in hq_cli_api.CATALOG_FEATURE_FLAGS}
+        return self._cli_send(200, {"account_id": row["account_id"], **hq_cli_api.action_catalog(states)})
 
     def _internal_ip12_agent_action(self, body):
         if not self._ip12_agent_bridge_enabled():
@@ -5162,6 +5180,10 @@ class H(BaseHTTPRequestHandler):
             if self._bad_json():
                 return self._cli_send(400, {"detail": "请求体不是合法 JSON", "code": "invalid_request"})
             return self._internal_ip12_agent_action(d)
+        if p == "/api/auth/internal/ip12/agent/upload":
+            if not self._require_internal():
+                return
+            return self._internal_ip12_agent_upload()
         if p == "/api/auth/internal/canvas/access":
             if not self._require_internal():
                 return

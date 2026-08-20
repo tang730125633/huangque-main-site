@@ -530,6 +530,24 @@ class IP12HarnessTests(unittest.TestCase):
                 raw, state, source + "\n" + quote, {"E1": quote}
             )
 
+    def test_module_five_does_not_reask_audience_after_categories_are_confirmed(self):
+        state = self.complete_intake()
+        state.update(current_module=5, module_step=1, completed_modules=[1, 2, 3, 4])
+        state["foundation_report"] = {"status": "confirmed"}
+        state["ip_profile"]["confirmed_outputs"]["5-1"] = {
+            "content": "1. AI Agent 搭建\n2. AI 需求拆解\n3. 跨行业学习"
+        }
+        raw = {
+            "decision": "ask_follow_up",
+            "reply": "请补充三类各自最想吸引的人群。",
+            "categories": [],
+            "self_review": "",
+            "confidence": 0.8,
+        }
+
+        with self.assertRaisesRegex(harness.HarnessError, "必须直接生成完整 3×10"):
+            harness.compile_module_five_topics(raw, state, "已有充分资料", {"E1": "已有充分资料"})
+
     def test_module_five_final_checkpoint_reuses_the_confirmed_3x10_without_a_model(self):
         state = self.complete_intake()
         state.update(current_module=5, module_step=2, completed_modules=[1, 2, 3, 4])
@@ -562,8 +580,14 @@ class IP12HarnessTests(unittest.TestCase):
     def test_explicit_asset_requests_map_to_bounded_production_actions(self):
         cases = {
             "把这篇做成一张封面图片": ("image", "image-generate"),
+            "给这篇口播配一张竖屏封面图": ("image", "image-generate"),
+            "请根据当前口播生成一张 9:16 的社交媒体配图": ("image", "image-generate"),
             "请把当前口播生成音频": ("audio", "audio-generate"),
+            "把第一篇做成音频，不要生成图片或视频": ("audio", "audio-generate"),
             "用 Grok 把这篇做成视频": ("video", "video-generate"),
+            "把第一篇做成 9:16 竖屏画面视频，不要生成图片或音频": ("video", "video-generate"),
+            "不要生成音频，只生成视频": ("video", "digital-ip-text-generate"),
+            "把当前口播生成一条 9:16 竖屏数字人口播视频": ("video", "digital-ip-text-generate"),
             "把这篇放到 Canvas 画布": ("canvas", "canvas-ops"),
         }
         for message, expected in cases.items():
@@ -573,6 +597,7 @@ class IP12HarnessTests(unittest.TestCase):
                     (intent["capability_family"], intent["recommended_action"]), expected
                 )
         self.assertIsNone(harness.production_intent("视频和图片分别是什么格式？"))
+        self.assertIsNone(harness.production_intent("不要生成图片、音频或视频"))
 
     def test_module_six_checkpoints_reuse_one_generated_content_pack(self):
         state = self.complete_intake()
@@ -627,6 +652,24 @@ class IP12HarnessTests(unittest.TestCase):
         exact = harness.compile_module_six_style(state, exact_words)
         self.assertEqual(exact["checkpoint"], 1)
         self.assertIn("点赞、评论", exact["draft"])
+        self.assertNotIn("；；", exact["draft"])
+
+        state["pending"] = {
+            "id": "module-six-style",
+            "kind": "checkpoint",
+            "status": "awaiting_confirmation",
+            "module": 6,
+            "step": 1,
+            "draft": exact["draft"],
+            "self_review": exact["self_review"],
+            "profile_updates": exact["profile_updates"],
+            "confidence": 1.0,
+        }
+        self.assertIsNone(
+            harness.compile_module_six_style(
+                state, exact_words + "把重复的分号改成单个，其他不变。"
+            )
+        )
 
     def test_semantically_duplicate_reply_does_not_repeat_the_draft(self):
         draft = (

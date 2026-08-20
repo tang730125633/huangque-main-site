@@ -32,6 +32,8 @@ class IP12AgentProductionUITests(unittest.TestCase):
         self.assertIn("为什么推荐", panel)
         self.assertIn("素材与参数", panel)
         self.assertIn("实时报价", panel)
+        self.assertIn("本次消耗", panel)
+        self.assertIn("当前余额", panel)
         self.assertIn("任务与结果", panel)
         result = self.html[self.html.index("function productionResultHtml"):self.html.index("function productionOptionsHtml")]
         self.assertIn("<img", result)
@@ -58,7 +60,7 @@ class IP12AgentProductionUITests(unittest.TestCase):
         message = self.html[self.html.index("function sendMessage"):self.html.index("async function sendTurn")]
         self.assertIn("var turn={message:text}", message)
         self.assertNotIn("confirmProduction", message)
-        continuation = self.html[self.html.index("async function sendJumpMsg"):self.html.index("function toggleConvos")]
+        continuation = self.html[self.html.index("async function sendJumpMsg"):self.html.index("function renderProjectPanel")]
         self.assertNotIn("confirmProduction", continuation)
 
     def test_missing_and_schema_render_typed_controls_and_gate_quote(self):
@@ -162,7 +164,11 @@ global.fetch=async (url,init)=>{
 };
 function rememberProduction(record){productions[record.id]=record;return record}
 function updateProductionQuoteGate(){}
-function updateProductionFromPayload(){}
+function updateProductionFromPayload(data){
+  const id=data.id||data.production_id;
+  const record=Object.assign({},productions[id]||{},data,{id});
+  productions[record.id]=record;activeProductionId=record.id;return record;
+}
 function openPanel(){}
 function toast(){}
 (async()=>{
@@ -174,6 +180,7 @@ function toast(){}
     parameter_schema:{type:'object',properties:{avatar_id:{type:'integer'}},required:['avatar_id']}
   });
   const prepareCall=calls[calls.length-1];
+  activeProductionId='production-1';
   const beforeBlocked=calls.length;
   productions['production-1'].options={};
   fieldNodes=[{dataset:{field:'avatar_id'},value:''}];
@@ -192,6 +199,22 @@ function toast(){}
         self.assertEqual(got["prepare"], {"avatar_id": 7})
         self.assertTrue(got["missingPreventedFetch"])
 
+    def test_agent_auto_runs_prepare_quotes_then_polls_one_job_and_delivers_in_chat(self):
+        prepare = self.html[self.html.index("async function prepareProduction"):self.html.index("async function requestProductionQuote")]
+        self.assertIn("await requestProductionQuote(record.id)", prepare)
+        send = self.html[self.html.index("async function sendTurn"):self.html.index("async function sendJumpMsg")]
+        self.assertIn("item.type==='prepare_production'", send)
+        self.assertIn("else if(autoAction)await runStateAction(autoAction)", send)
+        polling = self.html[self.html.index("function stopProductionPoll"):self.html.index("function productionRoute")]
+        self.assertIn("['submitting','queued','running']", polling)
+        self.assertIn("refreshProduction(true,record.id)", polling)
+        self.assertNotIn("confirmProduction(record.id)", polling)
+        chat = self.html[self.html.index("function productionMessageHtml"):self.html.index("function isSafeMarkdownUrl")]
+        self.assertIn("data-production-message", chat)
+        self.assertIn("productionResultHtml(record)", chat)
+        result = self.html[self.html.index("function productionResultHtml"):self.html.index("function productionFieldControl")]
+        self.assertIn("continueProductionRevision(this.dataset.productionId)", result)
+
     def test_restore_and_direct_navigation_keep_conversation_context(self):
         select = self.html[self.html.index("async function selectConvo"):self.html.index("async function jumpModule")]
         self.assertIn("productions=productionMap(c.productions)", select)
@@ -207,6 +230,9 @@ function toast(){}
         self.assertIn("url.searchParams.set('conversation_id',cid||'')", navigation)
         self.assertIn("url.searchParams.set('project_id',cid||'')", navigation)
         self.assertIn("url.searchParams.set('return_to',location.pathname+location.search)", navigation)
+        route = self.html[self.html.index("function productionRoute"):self.html.index("function continueProductionRevision")]
+        self.assertIn("if(!value)return null", route)
+        self.assertIn("'/workbench/canvas?collab='+encodeURIComponent(canvas.board_id)", route)
 
     def test_unquoted_local_field_draft_restores_but_cannot_override_server_quote(self):
         if not shutil.which("node"):
@@ -246,6 +272,78 @@ console.log(JSON.stringify({
         self.assertNotIn("e.message", source)
         self.assertNotIn("detail.error", source)
         self.assertNotIn("安全整理", self.html)
+
+    def test_generic_array_and_object_fields_require_valid_json(self):
+        if not shutil.which("node"):
+            self.skipTest("node unavailable")
+        start = self.html.index("function productionParameterSchema")
+        end = self.html.index("function productionDraftKey", start)
+        quote_start = self.html.index("function productionQuote")
+        quote_end = self.html.index("function renderProductionPanel", quote_start)
+        functions = self.html[start:end] + self.html[quote_start:quote_end]
+        script = functions + r"""
+const record = {
+  missing_prerequisites:['upload_ids', 'settings'], options:{},
+  parameter_schema:{type:'object', properties:{
+    upload_ids:{type:'array'}, settings:{type:'object'}
+  }, required:['upload_ids', 'settings']}
+};
+const specs = productionFieldSpecs(record);
+const invalid = typedProductionOptions(record, {upload_ids:'[not json]', settings:'{"quality":"high"}'});
+const valid = typedProductionOptions(record, {upload_ids:'["up_1","up_2"]', settings:'{"quality":"high"}'});
+console.log(JSON.stringify({
+  types:specs.map(spec => spec.type), invalid:productionUnfilledFields(record, invalid),
+  valid:productionUnfilledFields(record, valid), values:valid,
+  confirmBlocked:productionHasValidQuote(Object.assign({}, record, {status:'quoted', cost:1, options:invalid}))
+}));
+"""
+        got = json.loads(subprocess.run(
+            ["node", "-e", script], capture_output=True, text=True, check=True,
+        ).stdout)
+        self.assertEqual(got["types"], ["array", "object"])
+        self.assertEqual(got["invalid"], ["upload_ids"])
+        self.assertEqual(got["valid"], [])
+        self.assertEqual(got["values"], {"upload_ids": ["up_1", "up_2"], "settings": {"quality": "high"}})
+        self.assertFalse(got["confirmBlocked"])
+        self.assertIn("JSON.parse", functions)
+        self.assertNotIn("eval(", functions)
+
+    def test_generic_action_results_are_escaped_and_upload_prerequisites_use_chat_upload(self):
+        result = self.html[self.html.index("function productionActionResultHtml"):self.html.index("function productionFieldControl")]
+        self.assertIn("record&&record.action_result", result)
+        self.assertIn("<pre>", result)
+        self.assertIn("eHtml(text.slice(0,4000))", result)
+        controls = self.html[self.html.index("function productionUiRoute"):self.html.index("function productionOptionsHtml")]
+        self.assertIn("productionUploadPrerequisite", controls)
+        self.assertIn("spec.uploadKind", controls)
+        self.assertIn("material-upload-btn", controls)
+        self.assertIn("openProductionUpload(this.dataset.productionId,this.dataset.uploadField)", controls)
+        self.assertNotIn("前往对应功能页准备素材", controls)
+        navigation = self.html[self.html.index("function navigateToProductionRoute"):self.html.index("function openProductionCanvas")]
+        self.assertIn("conversation_id", navigation)
+        self.assertIn("project_id", navigation)
+        self.assertIn("return_to", navigation)
+
+    def test_chat_material_upload_is_explicit_bound_and_never_confirms_a_paid_job(self):
+        self.assertIn('id="materialInput" type="file" hidden', self.html)
+        self.assertIn('id="attachBtn"', self.html)
+        upload = self.html[
+            self.html.index("function pendingProductionUpload"):
+            self.html.index("async function productionRequest")
+        ]
+        self.assertIn("new FormData()", upload)
+        self.assertIn("/api/ip12/productions/upload", upload)
+        self.assertIn("conversation_id", upload)
+        self.assertIn("production_id", upload)
+        self.assertIn("expected_revision", upload)
+        self.assertIn("field", upload)
+        self.assertIn("appendProductionMessage(data.material_message)", upload)
+        self.assertNotIn("confirmProduction", upload)
+        prepare = self.html[
+            self.html.index("async function prepareProduction"):
+            self.html.index("async function requestProductionQuote")
+        ]
+        self.assertIn("appendProductionMessage(data.material_request_message)", prepare)
 
 
 if __name__ == "__main__":

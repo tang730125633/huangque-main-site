@@ -57,7 +57,7 @@ class HermesIP12SourceTests(unittest.TestCase):
         for path in HERMES.glob("*.py"):
             routes.update(pattern.findall(path.read_text(encoding="utf-8")))
 
-        self.assertEqual(len(routes), 80)
+        self.assertEqual(len(routes), 81)
         self.assertTrue(
             {
                 "/api/chat",
@@ -199,6 +199,11 @@ class HermesIP12SourceTests(unittest.TestCase):
             self.assertIn("function submitFoundationAnnotations()", source)
             self.assertIn("定位原文（可选）", source)
             self.assertIn("把批注交给 Agent", source)
+            self.assertIn(
+                "foundationEditing=false;closeFoundationReviewer();"
+                "document.getElementById('userInput').placeholder='输入消息...'",
+                source,
+            )
             self.assertIn("@media", source)
 
     def test_service_security_boundary_is_registered(self):
@@ -584,7 +589,7 @@ revision = state["revision"]
 target = {"category_id": "category_1", "topic_id": "topic_1"}
 intent_response = client.post("/api/chat-complete", json={
     "conversation_id": cid,
-    "message": "用 Grok 把这篇做成视频",
+    "message": "用 Grok 把这篇做成 9:16 竖屏视频",
     "content_target": target,
     "expected_revision": revision,
     "request_id": "prepare-video-from-chat",
@@ -594,9 +599,28 @@ intent_body = intent_response.get_json()
 assert intent_body["actions"][0]["type"] == "prepare_production", intent_body
 assert intent_body["actions"][0]["requested_result"] == "video", intent_body
 assert intent_body["actions"][0]["preferred_action"] == "video-generate", intent_body
+assert intent_body["actions"][0]["options"]["ratio"] == "9:16", intent_body
+assert "Grok" in intent_body["actions"][0]["options"]["prompt"], intent_body
+assert "完整口播正文" in intent_body["actions"][0]["options"]["prompt"], intent_body
 assert not server.load_conversation(cid).get("productions"), intent_body
 revision = intent_body["state"]["revision"]
 original_messages = json.loads(json.dumps(server.load_conversation(cid)["messages"], ensure_ascii=False))
+
+def resource_bridge(account_id, action, input_body, **kwargs):
+    assert account_id == "acct_a", account_id
+    if action == "video-avatars":
+        return {"items": [
+            {"id": avatar_id, "name": "我的形象 %s" % avatar_id, "status": "ready"}
+            for avatar_id in (7, 8, 9)
+        ]}
+    if action == "voices":
+        return {"items": [{"voice_key": "voice-demo", "display_name": "我的声音"}]}
+    if action == "canvas-list":
+        return {"boards": [
+            {"id": "board_canvas_1", "name": "IP12 内容画布", "version": 3, "role": "owner"},
+            {"id": "board_canvas_2", "name": "IP12 恢复画布", "version": 1, "role": "editor"},
+        ]}
+    raise AssertionError(action)
 
 def prepare(family, options_marker=None, preferred_action=None):
     body = {
@@ -609,7 +633,8 @@ def prepare(family, options_marker=None, preferred_action=None):
         body["options"] = options_marker
     if preferred_action is not None:
         body["preferred_action"] = preferred_action
-    response = client.post("/api/ip12/productions/prepare", json=body)
+    with patch.object(server, "_bridge_action", side_effect=resource_bridge):
+        response = client.post("/api/ip12/productions/prepare", json=body)
     assert response.status_code == 200, response.get_data(as_text=True)
     return response.get_json()
 
@@ -627,20 +652,39 @@ assert bad_image["status"] == "blocked_prerequisite", bad_image
 assert bad_image["missing"] == [], bad_image
 assert "类型" in bad_image["validation_error"], bad_image
 
-audio = prepare("audio", {"text": "请用自然语气读出这段旁白。"})
+audio = prepare("audio")
 video = prepare("video", {"avatar_id": 7, "voice": "voice-demo"})
-canvas = prepare("canvas", {"board_id": "board_canvas_1", "base_version": 1, "prompt": "把这篇口播放进画布。"})
+missing_canvas = prepare("canvas")
+canvas = prepare("canvas", {"board_id": "board_canvas_1"})
 generic_video = prepare("video", {"prompt": "把正文改编成海边日出短片。"}, "video-generate")
-for prepared, required in (
-    (audio, "text"), (video, "avatar_id"), (canvas, "prompt"),
-):
+for prepared in (audio, video, canvas):
     assert prepared["status"] == "draft", prepared
-    assert required in prepared["schema"]["required"], prepared
+assert audio["schema"]["required"] == [], audio
+assert video["schema"]["required"] == ["avatar_id", "voice"], video
+assert video["schema"]["properties"]["avatar_id"]["oneOf"] == [
+    {"const": 7, "title": "我的形象 7"},
+    {"const": 8, "title": "我的形象 8"},
+    {"const": 9, "title": "我的形象 9"},
+], video
+assert missing_canvas["missing"] == ["board_id"], missing_canvas
+assert canvas["schema"]["required"] == ["board_id"], canvas
 assert canvas["recommended_action"] == "canvas-ops", canvas
 assert generic_video["recommended_action"] == "video-generate", generic_video
 assert generic_video["status"] == "draft" and "prompt" in generic_video["schema"]["required"]
 audio_record = server.load_conversation(cid)["productions"][audio["production_id"]]
 assert server._production_input(audio_record, {"text": "第一段。\n\n第二段。\t继续。"})["text"] == "第一段。 第二段。 继续。"
+assert server._production_input(audio_record, {})["text"] == "这是用户确认过、可直接进入生产的完整口播正文。"
+canvas_record = server.load_conversation(cid)["productions"][canvas["production_id"]]
+canvas_input = server._production_input(canvas_record, {"board_id": "board_canvas_1"})
+assert canvas_input["base_version"] == 3, canvas_input
+assert canvas_input["ops"][0]["node"]["params"]["text"] == "这是用户确认过、可直接进入生产的完整口播正文。"
+canvas_record["source_text"] = "第一段。\n\n第二段。\t继续。"
+multiline_canvas_input = server._production_input(canvas_record, {"board_id": "board_canvas_1"})
+assert multiline_canvas_input["ops"][0]["node"]["params"]["text"] == "第一段。 第二段。 继续。"
+assert hq_cli_api.action_plan("canvas-ops", multiline_canvas_input)["kind"] == "canvas-ops"
+video_record = dict(server.load_conversation(cid)["productions"][video["production_id"]])
+video_record["source_text"] = "第一段。\n\n第二段。\t继续。"
+assert server._production_input(video_record, {"avatar_id": 7, "voice": "voice-demo"})["text"] == "第一段。 第二段。 继续。"
 
 # The HTTP helper uses the unified internal action contract and never places
 # account_id inside the action input.
@@ -686,6 +730,8 @@ with patch.object(server, "_bridge_action", side_effect=image_bridge):
 assert quoted.status_code == 200, quoted.get_data(as_text=True)
 quoted_body = quoted.get_json()
 assert quoted_body["billing"] == "paid" and quoted_body["cost"] == 4, quoted_body
+assert quoted_body["production"]["quote"]["expires_at"] > 0, quoted_body
+assert "token" not in quoted_body["production"]["quote"], quoted_body
 filled = server.load_conversation(cid)["productions"][image_id]
 assert filled["options"] == {"prompt": "第一版海报"}
 assert filled["input_digest"] != empty_digest
@@ -847,6 +893,7 @@ with patch.object(server, "_bridge_action", side_effect=canvas_bridge):
         "confirmation_id": "confirm-canvas-001",
     })
 assert canvas_quote.get_json()["billing"] == "free" and canvas_quote.get_json()["cost"] == 0
+assert canvas_quote.get_json()["points"] is None
 assert canvas_done.get_json()["production"]["status"] == "done"
 assert canvas_done.get_json()["production"]["canvas_ref"] == {"board_id": "board_canvas_1", "version": 2}
 assert canvas_replay.get_json()["replayed"] is True
@@ -898,12 +945,18 @@ assert stale_response.get_json()["production"]["status"] == "stale"
 assert stale_response.get_json()["production"]["last_error_code"] == "source_changed"
 
 # All four families survive a project refresh, private quote tokens stay on the
-# server, accounts remain isolated, and production never mutates chat messages.
+# server, completed productions are delivered exactly once, and accounts stay isolated.
 public_project = client.get(f"/api/conversations/{cid}").get_json()
 families = {item["capability_family"] for item in public_project["productions"]}
 assert {"image", "audio", "video", "canvas"}.issubset(families), families
 assert "private-" not in json.dumps(public_project, ensure_ascii=False)
-assert server.load_conversation(cid)["messages"] == original_messages
+messages = server.load_conversation(cid)["messages"]
+assert messages[:len(original_messages)] == original_messages
+deliveries = [item for item in messages if item.get("production_id")]
+assert {item["production_id"] for item in deliveries} == {
+    image_id, video_id, canvas_id, recovery_id,
+}, deliveries
+assert len(deliveries) == 4, deliveries
 server.current_account_id = lambda: "acct_b"
 assert client.get(f"/api/conversations/{cid}").status_code == 404
 assert client.get(f"/api/ip12/productions/{image_id}?conversation_id={cid}").status_code == 404
@@ -926,6 +979,115 @@ print("IP12_PRODUCTION_RUNTIME_OK")
             )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("IP12_PRODUCTION_RUNTIME_OK", result.stdout)
+
+
+@unittest.skipUnless(
+    importlib.util.find_spec("flask") and importlib.util.find_spec("requests"),
+    "Hermes runtime dependencies are not installed",
+)
+class HermesIP12ProjectRuntimeTests(unittest.TestCase):
+    def test_project_limit_receipt_recovery_and_first_artifact_notice(self):
+        script = r'''
+import server
+import security
+import threading
+
+server.current_account_id = lambda: "acct_limit"
+server.MAX_PROJECTS_PER_ACCOUNT = 2
+security._validate_token = lambda token: {"account_id": "acct_limit", "username": "limit", "role": "member"}
+security.RATE_REQUESTS = 100
+client = server.app.test_client()
+client.environ_base["HTTP_AUTHORIZATION"] = "Bearer test-token"
+
+one = client.post("/api/conversations", json={"title": "Project 1"})
+two = client.post("/api/conversations", json={"title": "Project 2"})
+assert one.status_code == 200 and two.status_code == 200
+three = client.post("/api/conversations", json={"title": "Project 3"})
+assert three.status_code == 409
+assert three.get_json() == {
+    "ok": False, "code": "ip12_project_limit", "error": "最多允许创建两个 Project",
+}
+assert client.delete(f"/api/conversations/{two.get_json()['id']}").status_code == 200
+replacement = client.post("/api/conversations", json={"title": "Replacement"})
+assert replacement.status_code == 200
+replacement_id = replacement.get_json()["id"]
+stale_replacement = server.load_conversation(replacement_id)
+assert client.delete(f"/api/conversations/{replacement_id}").status_code == 200
+assert server.save_conversation(replacement_id, stale_replacement) is False
+assert not server.conversation_path(replacement_id).exists()
+assert client.post("/api/conversations", json={"title": "Replacement 2"}).status_code == 200
+
+cid = one.get_json()["id"]
+convo = server.load_conversation(cid)
+convo["turn_receipts"] = [{
+    "request_id": "recover_turn_1",
+    "result": {"ok": True, "assistant": "已恢复", "state": convo["coach_state"]},
+}]
+server.save_conversation(cid, convo)
+pending = client.get(f"/api/conversations/{cid}?receipt=still_processing")
+assert pending.status_code == 202
+assert pending.get_json() == {"ok": True, "status": "processing"}
+recovered = client.get(f"/api/conversations/{cid}?receipt=recover_turn_1")
+assert recovered.status_code == 200
+assert recovered.get_json()["replayed"] is True
+assert recovered.get_json()["assistant"] == "已恢复"
+assert client.get(f"/api/conversations/{cid}?receipt=bad%20receipt").status_code == 400
+
+calls = []
+entered = threading.Event()
+release = threading.Event()
+original_model_turn = server._process_model_turn
+def slow_model_turn(*args, **kwargs):
+    calls.append(args[1])
+    entered.set()
+    assert release.wait(2)
+    state = server.load_conversation(cid)["coach_state"]
+    return server._chat_result("并发完成", state), 200
+server._process_model_turn = slow_model_turn
+body = {
+    "conversation_id": cid,
+    "message": "只处理一次",
+    "expected_revision": server.load_conversation(cid)["coach_state"]["revision"],
+    "request_id": "concurrent_turn_1",
+}
+first_result = []
+worker = threading.Thread(target=lambda: first_result.append(server.process_chat_request(body)))
+worker.start()
+assert entered.wait(2)
+duplicate = server.process_chat_request(body)
+assert duplicate[1] == 202 and duplicate[0]["status"] == "processing"
+blocked_delete = client.delete(f"/api/conversations/{cid}")
+assert blocked_delete.status_code == 409
+assert blocked_delete.get_json()["error"] == "请等待当前回复完成后再删除 Project"
+release.set()
+worker.join(2)
+assert not worker.is_alive()
+assert len(calls) == 1 and first_result[0][1] == 200
+assert server.process_chat_request(body)[0]["replayed"] is True
+server._process_model_turn = original_model_turn
+
+server.generate_module_report = lambda convo_id, module_id: "报告正文"
+first_report = client.post("/api/generate-report", json={"conversation_id": cid, "module": 1})
+second_report = client.post("/api/generate-report", json={"conversation_id": cid, "module": 1})
+assert first_report.status_code == 200 and second_report.status_code == 200
+assert first_report.get_json()["artifact_notice"] == server.FIRST_ARTIFACT_NOTICE
+assert second_report.get_json()["artifact_notice"] == ""
+saved = server.load_conversation(cid)
+assert saved["artifact_notice_sent"] is True
+assert saved["artifact_notice_module"] == 1
+assert [item["content"] for item in saved["messages"]].count(server.FIRST_ARTIFACT_NOTICE) == 1
+assert b"IP Project" in client.get("/classic").data
+print("IP12_PROJECT_RUNTIME_OK")
+'''
+        with tempfile.TemporaryDirectory() as data_dir:
+            env = os.environ.copy()
+            env.update(OPENAI_API_KEY="dummy", HERMES_HOME=data_dir, HERMES_DATA_DIR=data_dir)
+            result = subprocess.run(
+                [sys.executable, "-c", script], cwd=HERMES, env=env,
+                capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("IP12_PROJECT_RUNTIME_OK", result.stdout)
 
 
 @unittest.skipUnless(
@@ -962,6 +1124,7 @@ import video_replica
 import video_vision
 
 server.current_account_id = lambda: "acct_a"
+server.MAX_PROJECTS_PER_ACCOUNT = 1000
 security._validate_token = lambda token: {
     "admin-token": {"account_id": "acct_a", "username": "admin", "role": "admin"},
     "member-a-token": {"account_id": "acct_a", "username": "member-a", "role": "member"},
@@ -1209,6 +1372,20 @@ server.save_conversation(production_cid, {
     }]}},
 })
 revision = production_state["revision"]
+natural_intent_response = client.post("/api/chat-complete", json={
+    "conversation_id": production_cid,
+    "message": "把模块 6 第一篇《精选选题》的当前完整口播放进 Canvas。请直接调用黄雀 Canvas 能力，不要生成图片、音频或视频。",
+    "expected_revision": revision,
+    "request_id": "prepare-canvas-from-natural-target",
+})
+assert natural_intent_response.status_code == 200, natural_intent_response.get_data(as_text=True)
+natural_intent_body = natural_intent_response.get_json()
+assert natural_intent_body["actions"][0]["requested_result"] == "canvas", natural_intent_body
+assert natural_intent_body["actions"][0]["preferred_action"] == "canvas-ops", natural_intent_body
+assert natural_intent_body["actions"][0]["content_target"] == {
+    "category_id": "category_1", "topic_id": "topic_1",
+}, natural_intent_body
+revision = natural_intent_body["state"]["revision"]
 intent_response = client.post("/api/chat-complete", json={
     "conversation_id": production_cid,
     "message": "用 Grok 把这篇做成视频",

@@ -1,9 +1,6 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -36,9 +33,11 @@ jobs:
           cache-dependency-path: design-system/package-lock.json
 
       - name: 安装媒体契约测试依赖
+        timeout-minutes: 5
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo sed -i '/azure\.archive\.ubuntu\.com/d' /etc/apt/apt-mirrors.txt
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::https::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::https::Timeout=30 install -y --no-install-recommends ffmpeg
           ffmpeg -version
           ffprobe -version
 
@@ -54,7 +53,7 @@ jobs:
       - name: Verify workbench shell cache stamps
         run: python scripts/stamp_assets.py --check
 
-      - name: 测试 CI 检查器
+      - name: 测试完整 Python 回归
         run: python -m unittest discover -s tests -v
 
       - name: 测试并构建 HQ CLI

@@ -7,6 +7,8 @@ import os
 import pathlib
 import re
 import sqlite3
+import subprocess
+import tempfile
 import threading
 import time
 import urllib.error
@@ -15,6 +17,7 @@ import urllib.request
 import uuid
 from contextlib import closing
 from decimal import Decimal, ROUND_HALF_UP
+from difflib import SequenceMatcher
 
 from .core import OUT_DIR, public_url
 from . import audio as audio_domain
@@ -51,6 +54,11 @@ _MAX_CAPTION_UNITS = 28
 _MAX_CAPTION_CUES = 100
 _CAPTION_SENTENCE_BOUNDARIES = frozenset("。！？!?；;：:\n")
 _CAPTION_CLAUSE_BOUNDARIES = frozenset("，,、 ")
+_CAPTION_ALIGN_TMP_ROOT = pathlib.Path(tempfile.gettempdir()) / "huangque-caption-align"
+_CAPTION_ALIGN_STALE_SECONDS = 3600
+_CAPTION_ALIGN_MIN_RECOGNIZED_RATIO = 0.6
+_CAPTION_ALIGN_MIN_MATCHED_RATIO = 0.55
+_CAPTION_ALIGN_MIN_SIMILARITY = 0.6
 
 DEFAULT_STYLE = "realistic_commercial"
 DEFAULT_PUBLIC_VOICE = "zh-CN-YunjianNeural"
@@ -945,6 +953,19 @@ def _hard_split_caption(text, max_units):
         current_units += char_units
     if current:
         parts.append("".join(current))
+
+    for index in range(len(parts) - 1, 0, -1):
+        pair = parts[index - 1] + parts[index]
+        candidates = []
+        for offset in range(1, len(pair)):
+            left = pair[:offset]
+            right = pair[offset:]
+            left_units = _display_units(left)
+            right_units = _display_units(right)
+            if left_units <= max_units and right_units <= max_units:
+                candidates.append((abs(left_units - right_units), offset, left, right))
+        if candidates:
+            _, _, parts[index - 1], parts[index] = min(candidates)
     return parts
 
 
@@ -998,6 +1019,196 @@ def _split_caption_text(text, max_units=_MAX_CAPTION_UNITS):
     return result
 
 
+def _spoken_caption_units(text):
+    return [char for char in str(text or "") if char.isalnum()]
+
+
+def _validate_caption_recognition(source_units, recognized_units):
+    if not source_units or not recognized_units:
+        raise ValueError("字幕对齐识别结果不足")
+    recognized_ratio = len(recognized_units) / len(source_units)
+    matcher = SequenceMatcher(
+        None, source_units, recognized_units, autojunk=False
+    )
+    matched_count = sum(block.size for block in matcher.get_matching_blocks())
+    matched_ratio = matched_count / len(source_units)
+    if (
+        recognized_ratio < _CAPTION_ALIGN_MIN_RECOGNIZED_RATIO
+        or matched_ratio < _CAPTION_ALIGN_MIN_MATCHED_RATIO
+        or matcher.ratio() < _CAPTION_ALIGN_MIN_SIMILARITY
+    ):
+        raise ValueError("字幕对齐识别内容与原文不匹配")
+    return [block for block in matcher.get_matching_blocks() if block.size]
+
+
+def _recognized_boundary_index(source_index, matching_blocks, recognized_count):
+    candidates = {
+        block.b + source_index - block.a
+        for block in matching_blocks
+        if block.a <= source_index <= block.a + block.size
+    }
+    if len(candidates) != 1:
+        raise ValueError("字幕边界无法映射到识别结果")
+    recognized_index = candidates.pop()
+    if not 0 < recognized_index < recognized_count:
+        raise ValueError("字幕边界无法映射到识别结果")
+    return recognized_index
+
+
+def _caption_cues_from_word_timestamps(text, cue_texts, words, duration):
+    """Map display-only cue boundaries onto real ASR word timing."""
+    total_duration = float(duration)
+    if total_duration <= 0 or not cue_texts:
+        raise ValueError("字幕对齐音频时长无效")
+    if "".join(cue_texts) != text:
+        raise ValueError("字幕对齐文本与原文不一致")
+
+    recognized_units = []
+    timed_units = []
+    for word in words or []:
+        value = str(word.get("text") or "").strip()
+        start = word.get("start")
+        end = word.get("end")
+        if (
+            not value
+            or not isinstance(start, (int, float))
+            or isinstance(start, bool)
+            or not isinstance(end, (int, float))
+            or isinstance(end, bool)
+            or end <= start
+        ):
+            continue
+        units = _spoken_caption_units(value)
+        if not units:
+            continue
+        span = float(end) - float(start)
+        for index, unit in enumerate(units):
+            recognized_units.append(unit)
+            timed_units.append({
+                "start": float(start) + span * index / len(units),
+                "end": float(start) + span * (index + 1) / len(units),
+            })
+
+    source_units = _spoken_caption_units(text)
+    if not source_units or len(timed_units) < len(cue_texts):
+        raise ValueError("字幕对齐识别结果不足")
+    matching_blocks = _validate_caption_recognition(
+        source_units, recognized_units
+    )
+
+    boundaries = [0.0]
+    consumed = 0
+    for cue_text in cue_texts[:-1]:
+        consumed += len(_spoken_caption_units(cue_text))
+        token_index = _recognized_boundary_index(
+            consumed, matching_blocks, len(timed_units)
+        )
+        boundary = max(0.0, min(total_duration, timed_units[token_index]["start"]))
+        if boundary <= boundaries[-1] + 0.04:
+            raise ValueError("字幕对齐时间轴没有递增")
+        boundaries.append(boundary)
+    boundaries.append(total_duration)
+
+    if any(end <= start for start, end in zip(boundaries, boundaries[1:])):
+        raise ValueError("字幕对齐时间轴无效")
+    return [
+        {
+            "text": cue_text,
+            "start_time": round(boundaries[index], 3),
+            "end_time": round(boundaries[index + 1], 3),
+        }
+        for index, cue_text in enumerate(cue_texts)
+    ]
+
+
+def _cleanup_stale_caption_alignment_files(now=None):
+    _CAPTION_ALIGN_TMP_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        os.chmod(_CAPTION_ALIGN_TMP_ROOT, 0o700)
+    except OSError:
+        pass
+    cutoff = float(time.time() if now is None else now) - _CAPTION_ALIGN_STALE_SECONDS
+    for candidate in _CAPTION_ALIGN_TMP_ROOT.glob("caption-align-*.mp3"):
+        try:
+            if candidate.is_file() and candidate.stat().st_mtime < cutoff:
+                candidate.unlink()
+        except OSError:
+            continue
+
+
+def _write_private_caption_alignment_audio(audio_content):
+    _cleanup_stale_caption_alignment_files()
+    descriptor, path = tempfile.mkstemp(
+        prefix="caption-align-", suffix=".mp3", dir=str(_CAPTION_ALIGN_TMP_ROOT)
+    )
+    try:
+        output = os.fdopen(descriptor, "wb")
+    except Exception:
+        os.close(descriptor)
+        pathlib.Path(path).unlink(missing_ok=True)
+        raise
+    try:
+        with output:
+            output.write(audio_content)
+    except Exception:
+        pathlib.Path(path).unlink(missing_ok=True)
+        raise
+    return pathlib.Path(path)
+
+
+def _aligned_caption_cues(text, audio_content):
+    """Align one continuous TTS result; fall back to display-only cues on ASR failure."""
+    cue_texts = _split_caption_text(text)
+    if len(cue_texts) == 1:
+        return [{"text": cue_texts[0]}]
+
+    audio_path = None
+    try:
+        audio_path = _write_private_caption_alignment_audio(audio_content)
+        probe = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1", str(audio_path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        duration = float(probe.stdout.strip())
+        if duration <= 0:
+            raise ValueError("字幕对齐音频时长无效")
+
+        from . import video as video_domain
+        with video_domain._whisper_sem:
+            model = video_domain._get_whisper_model()
+            segments, _ = model.transcribe(
+                str(audio_path),
+                language="zh",
+                vad_filter=True,
+                word_timestamps=True,
+            )
+            words = []
+            for segment in segments:
+                for word in getattr(segment, "words", None) or []:
+                    words.append({
+                        "text": str(getattr(word, "word", "") or ""),
+                        "start": getattr(word, "start", None),
+                        "end": getattr(word, "end", None),
+                    })
+        return _caption_cues_from_word_timestamps(
+            text, cue_texts, words, duration
+        )
+    except Exception:
+        return [{"text": cue_text} for cue_text in cue_texts]
+    finally:
+        if audio_path is not None:
+            try:
+                audio_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 def _personal_narration_segments(payload):
     username = str(payload.get("_username") or "").strip()
     voice_key = str(payload.get("voice_key") or "").strip()
@@ -1024,9 +1235,7 @@ def _personal_narration_segments(payload):
         segments.append({
             "text": text,
             "audio_asset_id": asset_id,
-            "caption_cues": [
-                {"text": cue_text} for cue_text in _split_caption_text(text)
-            ],
+            "caption_cues": _aligned_caption_cues(text, audio["content"]),
         })
     return segments
 
