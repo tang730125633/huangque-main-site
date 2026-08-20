@@ -4053,6 +4053,10 @@ def _heygen_direct_req(method, url, body=None, ctype="application/json", timeout
         detail = e.read().decode("utf-8", "replace").replace("\n", " ")[:400]
         raise RuntimeError("HeyGen直连失败: HTTP %s %s" % (e.code, detail)) from e
 
+class _TransientRestrictedDownloadError(OSError):
+    """A temporary DNS failure that can recover without changing the request."""
+
+
 def _validate_restricted_download_url(url, allowed_hosts):
     try:
         parsed = urllib.parse.urlsplit(str(url or ""))
@@ -4072,6 +4076,10 @@ def _validate_restricted_download_url(url, allowed_hosts):
             )
         }
     except OSError as error:
+        if getattr(error, "errno", None) == socket.EAI_AGAIN:
+            raise _TransientRestrictedDownloadError(
+                "下载地址暂时无法解析"
+            ) from error
         raise ValueError("下载地址无法解析") from error
     if not addresses:
         raise ValueError("下载地址无法解析")
@@ -4107,7 +4115,27 @@ def _download_video_file_direct(url, prefix="vid", *, allowed_hosts=None, max_by
         raise RuntimeError("直连未返回视频地址")
     if allowed_hosts is not None:
         hosts = frozenset(str(host).lower().rstrip(".") for host in allowed_hosts)
-        _validate_restricted_download_url(url, hosts)
+        validation_error = None
+        retry_limit = max(1, HEYGEN_NET_RETRIES)
+        for attempt in range(retry_limit):
+            try:
+                _validate_restricted_download_url(url, hosts)
+                validation_error = None
+                break
+            except _TransientRestrictedDownloadError as error:
+                validation_error = error
+                if attempt + 1 < retry_limit:
+                    print("[video] 下载地址解析失败重试(%d/%d): %s" % (
+                        attempt + 1, retry_limit, str(error)[:100]
+                    ), flush=True)
+                    time.sleep(3 * (attempt + 1))
+            except ValueError as error:
+                raise CompletedVideoDownloadError(str(error)) from error
+        if validation_error is not None:
+            raise CompletedVideoDownloadError(
+                "下载地址在有限重试后仍无法解析: %s"
+                % str(validation_error)[:160]
+            ) from validation_error
         opener = _restricted_download_opener(hosts)
         if not max_bytes or max_bytes <= 0:
             raise ValueError("受限下载必须设置有效的大小上限")
@@ -4117,15 +4145,21 @@ def _download_video_file_direct(url, prefix="vid", *, allowed_hosts=None, max_by
     target = _out_path(fn)
     if allowed_hosts is not None:
         temporary = target.with_name(target.name + ".part-" + uuid.uuid4().hex)
+        published = False
         try:
-            _stream_resumable_video_download(
-                opener.open, url, {"User-Agent": "huangque-content/1.0"},
-                temporary, max_bytes, retries=HEYGEN_NET_RETRIES,
-            )
+            try:
+                _stream_resumable_video_download(
+                    opener.open, url, {"User-Agent": "huangque-content/1.0"},
+                    temporary, max_bytes, retries=HEYGEN_NET_RETRIES,
+                )
+            except ValueError as error:
+                raise CompletedVideoDownloadError(str(error)) from error
             try:
                 with temporary.open("rb") as downloaded:
                     if downloaded.read(8)[4:8] != b"ftyp":
-                        raise ValueError("下载结果不是有效的 MP4 容器")
+                        raise CompletedVideoDownloadError(
+                            "下载结果不是有效的 MP4 容器"
+                        )
             except OSError as error:
                 raise _CompletedVideoLocalIOError(
                     "视频下载结果无法读取校验"
@@ -4138,17 +4172,20 @@ def _download_video_file_direct(url, prefix="vid", *, allowed_hosts=None, max_by
                 raise _CompletedVideoLocalIOError(
                     "视频下载结果无法读取校验"
                 ) from error
+            except ValueError as error:
+                raise CompletedVideoDownloadError(str(error)) from error
             try:
                 temporary.replace(target)
+                published = True
             except OSError as error:
                 raise _CompletedVideoLocalIOError(
                     "视频下载结果无法原子发布"
                 ) from error
         finally:
-            try:
-                temporary.unlink(missing_ok=True)
-            except OSError:
-                pass
+            if not published:
+                _remove_completed_video_partial(
+                    temporary, "视频下载临时文件无法安全清理"
+                )
     else:
         # Legacy HeyGen callers retain their existing unbounded contract.
         req = urllib.request.Request(url, headers={"User-Agent": "huangque-content/1.0"})
