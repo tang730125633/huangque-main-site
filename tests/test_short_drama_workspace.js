@@ -338,6 +338,30 @@ test('客户端使用 Cookie 会话、独立接口和幂等键', async () => {
   }
 });
 
+test('点数不足响应保留所需点数并生成明确的视频提交提示', async () => {
+  const client = workspace.createClient(async () => ({
+    ok:false,
+    status:402,
+    text:async () => JSON.stringify({
+      detail:'点数不足',
+      code:'charge_rejected',
+      need:42,
+    }),
+  }));
+  await assert.rejects(
+    client.startProviderJob({project_id:'project a', quote_token:'quote-1'}),
+    error => {
+      assert.equal(error.status, 402);
+      assert.equal(error.need, 42);
+      assert.equal(
+        workspace.providerStartFailureMessage(error, 36),
+        '点数不足，本次需要 42 点，请充值后再试'
+      );
+      return true;
+    }
+  );
+});
+
 test('Avatar response loss replays the immutable request across project revisions', async () => {
   const calls = [];
   const storage = new Map();
@@ -756,7 +780,7 @@ test('视频轮询只局部更新进度并保持工作区视口稳定', () => {
   assert.match(workspaceStyle,/\.sd-workspace\{box-sizing:border-box;height:100dvh;padding-top:68px/);
 });
 
-test('麦克活动任务显示真实阶段并使用不确定进度条', () => {
+test('视频活动任务显示真实阶段并使用不确定进度条', () => {
   const queued={
     id:'90',shot_key:'shot_05',provider:'minimax_h3',status:'queued',
     phase:'minimax_queued',progress:35,progress_indeterminate:true
@@ -765,12 +789,48 @@ test('麦克活动任务显示真实阶段并使用不确定进度条', () => {
   const media=workspace.shotMediaHtml(
     {shot_key:'shot_05'}, {versions:[],job:queued}
   );
-  assert.equal(display.label,'麦克模型排队中');
+  assert.equal(display.label,'视频任务排队中');
   assert.equal(display.indeterminate,true);
-  assert.match(media,/麦克模型排队中/);
+  assert.match(media,/视频任务排队中/);
+  assert.doesNotMatch(media,/麦克/);
   assert.match(media,/sd-progress indeterminate/);
   assert.doesNotMatch(media,/35%/);
   assert.match(workspaceStyle,/\.sd-progress\.indeterminate i/);
+});
+
+test('麦克视频生成中不向用户显示模型名称', () => {
+  const running={
+    id:'153',shot_key:'shot_09',provider:'minimax_h3',status:'running',
+    phase:'minimax_running',progress:35,progress_indeterminate:true
+  };
+  const display=workspace.providerJobDisplay(running);
+  const media=workspace.shotMediaHtml(
+    {shot_key:'shot_09'}, {versions:[],job:running}
+  );
+
+  assert.equal(display.label,'正在生成视频');
+  assert.match(media,/正在生成视频/);
+  assert.match(media,/后台任务 153/);
+  assert.doesNotMatch(media,/麦克模型正在生成视频/);
+});
+
+test('视频生成全流程只显示当前操作而不显示底层模型名称', () => {
+  const phases=[
+    [{status:'submitting',phase:'minimax_submitting'},'正在提交视频任务'],
+    [{status:'queued',phase:'minimax_preparing'},'视频任务排队中'],
+    [{status:'running',phase:'minimax_retrying'},'正在重新连接视频服务'],
+    [{status:'running',phase:'minimax_running'},'正在生成视频'],
+    [{status:'running',phase:'minimax_downloading'},'正在下载并保存视频']
+  ];
+
+  phases.forEach(function(entry,index){
+    const display=workspace.providerJobDisplay(Object.assign({
+      id:String(160+index),provider:'minimax_h3',progress_indeterminate:true
+    },entry[0]));
+    assert.equal(display.label,entry[1]);
+    assert.doesNotMatch(display.heading,/麦克/);
+    assert.doesNotMatch(display.taskLabel,/麦克/);
+  });
 });
 
 test('镜头视频随可用宽度伸缩并为竖屏项目限制合理高度', () => {
@@ -796,6 +856,50 @@ test('镜头角色更换会同步提示词且不改动未替换角色', () => {
     '陈宇走进教室，陈宇回头。'
   );
   assert.equal(workspace.syncShotBindingPrompt('林默走进教室。',['林默'],[]),'林默走进教室。');
+});
+
+test('同场景同版本严格为尾帧保留第五个参考图位置', () => {
+  assert.equal(typeof workspace.shotReferenceSelectionPolicy,'function');
+  assert.deepEqual(
+    workspace.shotReferenceSelectionPolicy(
+      {scene_key:'scene:memorial',version_id:'scene-v2'},
+      {scene_key:'scene:memorial',version_id:'scene-v2'},
+      true
+    ),
+    {
+      same_scene_reference:true,tail_required:true,
+      selected_reference_limit:4,character_limit:3
+    }
+  );
+  assert.deepEqual(
+    workspace.shotReferenceSelectionPolicy(
+      {scene_key:'scene:memorial',version_id:'scene-v2'},
+      {scene_key:'scene:memorial',version_id:'scene-v1'},
+      true
+    ),
+    {
+      same_scene_reference:false,tail_required:false,
+      selected_reference_limit:5,character_limit:4
+    }
+  );
+});
+
+test('镜头生成要求只读展示已确认台词及同时说话关系', () => {
+  assert.equal(typeof workspace.confirmedShotDialogueHtml,'function');
+  const html=workspace.confirmedShotDialogueHtml([
+    {kind:'dialogue',speaker:'顾承川',text:'别回头',speech_rate:1,timing_mode:'sequential'},
+    {kind:'dialogue',speaker:'许安',text:'快走',speech_rate:1.15,timing_mode:'simultaneous'},
+    {kind:'on_screen_text',text:'六年前',speech_rate:1,timing_mode:'sequential'}
+  ]);
+  assert.match(html,/已确认台词/);
+  assert.match(html,/顾承川/);
+  assert.match(html,/别回头/);
+  assert.match(html,/许安/);
+  assert.match(html,/快走/);
+  assert.match(html,/与上一条同时说/);
+  assert.match(html,/1\.15×/);
+  assert.match(html,/画面文字/);
+  assert.doesNotMatch(html,/<textarea|<select|<input/);
 });
 
 test('镜头执行编辑器可显式绑定锁定场景并保留场景补充', () => {
@@ -2083,6 +2187,36 @@ test('Provider video generation explains why it is disabled before the script is
   assert.match(output, /data-action="provider-preflight" data-shot-key="shot_01" type="button" disabled/);
   assert.match(output, /sd-shot-provider-disabled-reason/);
   assert.match(output, /请先确认并锁定当前剧本/);
+});
+
+test('single-shot generation errors render only inside the matching shot provider panel', () => {
+  const providerState = {
+    confirmed_plan:{id:'plan-1'},
+    provider_poc:{
+      provider:'minimax_h3_video',
+      shots:[{
+        shot_key:'shot_01',sort_order:1,duration_ms:5000,scene:'park',
+        character_keys:['boy'],primary_character_key:'boy',binding_ready:true,
+        sequence_ready:true
+      }],
+      characters:[{character_key:'boy',name:'Boy',binding_ready:true}]
+    },
+    production:{provider:{selected:'minimax_h3_video'}}
+  };
+  const message = '点数不足，本次需要 42 点，请充值后再试';
+  const matching = workspace.providerShotControlsHtml(
+    {shot_key:'shot_01'}, providerState, true, 'shot_01', '',
+    {shot_01:message}
+  );
+  const otherShot = workspace.providerShotControlsHtml(
+    {shot_key:'shot_01'}, providerState, true, 'shot_01', '',
+    {shot_02:message}
+  );
+
+  assert.match(matching, /class="sd-check warning sd-shot-provider-error" role="alert"/);
+  assert.match(matching, /本次生成未提交/);
+  assert.match(matching, /点数不足，本次需要 42 点，请充值后再试/);
+  assert.doesNotMatch(otherShot, /点数不足，本次需要 42 点，请充值后再试/);
 });
 
 test('all Provider shots expose the free 1080p assembly stage', () => {

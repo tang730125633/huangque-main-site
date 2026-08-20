@@ -281,6 +281,11 @@ class ShortDramaAssetGraphTests(unittest.TestCase):
         self.assertEqual("雨夜街道", reference["name"])
         self.assertTrue(reference["file"].startswith("short_drama_scene_uploads/scene_"))
         self.assertEqual(reference["scene_key"], selected_reference["scene_key"])
+        self.assertEqual(
+            locked["scenes"][0]["preview"]["version_id"],
+            reference["version_id"],
+        )
+        self.assertGreater(reference["version"], 0)
         self.assertIsNone(missing_reference)
 
     def test_scene_semantic_changes_retire_locked_references_until_reconfirmed(self):

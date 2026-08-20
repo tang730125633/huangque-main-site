@@ -213,6 +213,13 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
                     "character_key": str(item.get("character_key") or "").strip(),
                     "name": str(item.get("name") or "").strip(),
                     "reference_version": int(item.get("reference_version") or 0),
+                    "scene_key": str(item.get("scene_key") or "").strip(),
+                    "scene_version_id": str(
+                        item.get("scene_version_id") or ""
+                    ).strip(),
+                    "continuity_shot_key": str(
+                        item.get("continuity_shot_key") or ""
+                    ).strip(),
                 })
             else:
                 raise VisualProviderError("visual_reference_invalid", "角色标准图格式不正确")

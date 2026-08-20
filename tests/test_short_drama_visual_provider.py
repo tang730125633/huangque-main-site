@@ -158,6 +158,28 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
         self.assertEqual("2k", result["resolution"])
         self.assertEqual(2, len(result["reference_images"]))
 
+    def test_minimax_h3_preserves_scene_reference_identity_for_next_shot(self):
+        provider = MiniMaxH3ShotProvider()
+        with mock.patch.object(
+            provider, "_reference_value", return_value="data:image/png;base64,AA=="
+        ):
+            result = provider.validate_request({
+                "prompt": "人物走进纪念广场",
+                "ratio": "16:9",
+                "resolution": "2k",
+                "duration_seconds": 5,
+                "reference_images": [{
+                    "character_key": "__scene_reference__",
+                    "scene_key": "scene:memorial-square",
+                    "scene_version_id": "scene-version-2",
+                    "url": "https://cdn.example/memorial-square.png",
+                }],
+            })
+
+        scene = result["reference_images"][0]
+        self.assertEqual("scene:memorial-square", scene["scene_key"])
+        self.assertEqual("scene-version-2", scene["scene_version_id"])
+
     def test_minimax_h3_encodes_local_png_without_public_storage(self):
         provider = MiniMaxH3ShotProvider()
         with tempfile.TemporaryDirectory() as directory:

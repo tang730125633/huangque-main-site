@@ -1495,7 +1495,8 @@ def locked_scene_reference(conn, project_id, shot_key, scene_key=None):
     if not scene or not scene.get("current_version_id"):
         return None
     version = conn.execute(
-        "SELECT prompt,references_json,status FROM short_drama_graph_versions WHERE id=?",
+        "SELECT id,version,prompt,references_json,status "
+        "FROM short_drama_graph_versions WHERE id=?",
         (scene["current_version_id"],),
     ).fetchone()
     if not version or version["status"] != "locked":
@@ -1506,11 +1507,29 @@ def locked_scene_reference(conn, project_id, shot_key, scene_key=None):
         return None
     return {
         "scene_key": _scene_key(scene),
+        "version_id": _text(version["id"], 160),
+        "version": int(version["version"] or 0),
         "name": _text(scene["scene_description"], 200) or "锁定场景",
         "prompt": _text(version["prompt"], 8000),
         "file": _text(reference.get("file"), 1000),
         "url": _text(reference.get("url"), 2000),
     }
+
+
+def bound_scene_key(conn, project_id, shot_key, scene_key=None):
+    """Return the scene bound to a shot even when its reference is not ready."""
+    conn.row_factory = sqlite3.Row
+    rows = _scene_rows(conn, project_id)
+    requested_scene_key = _text(scene_key, 160)
+    if requested_scene_key:
+        scene = next(
+            (row for row in rows if _scene_key(row) == requested_scene_key), None,
+        )
+    else:
+        scene = next(
+            (row for row in rows if row.get("shot_key") == shot_key), None,
+        )
+    return _scene_key(scene) if scene else ""
 
 
 def create_asset(db_factory, owner, actor, body):

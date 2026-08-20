@@ -1311,8 +1311,7 @@ def _previous_shot_reference(conn, project_id, shots, shot_key):
     if index in (None, 0):
         return None
     previous_key = str(ordered[index - 1].get("shot_key") or "")
-    row = conn.execute(
-        "SELECT version.shot_key,version.file,version.url,job.result_json "
+    query_tail = (
         "FROM short_drama_provider_shot_versions version "
         "JOIN short_drama_provider_shot_jobs job ON job.id=version.job_id "
         "LEFT JOIN short_drama_provider_shot_selections selected "
@@ -1320,9 +1319,22 @@ def _previous_shot_reference(conn, project_id, shots, shot_key):
         "AND selected.shot_key=version.shot_key AND selected.version_id=version.id "
         "WHERE version.project_id=? AND version.shot_key=? AND version.status='ready' "
         "ORDER BY CASE WHEN selected.version_id IS NOT NULL THEN 0 ELSE 1 END, "
-        "version.version DESC LIMIT 1",
-        (project_id, previous_key),
-    ).fetchone()
+        "version.version DESC LIMIT 1"
+    )
+    try:
+        row = conn.execute(
+            "SELECT version.shot_key,version.file,version.url,job.request_json,"
+            "job.result_json " + query_tail,
+            (project_id, previous_key),
+        ).fetchone()
+    except sqlite3.OperationalError as error:
+        if "request_json" not in str(error):
+            raise
+        row = conn.execute(
+            "SELECT version.shot_key,version.file,version.url,"
+            "'{}' AS request_json,job.result_json " + query_tail,
+            (project_id, previous_key),
+        ).fetchone()
     if not row:
         raise AutodraftError(
             "provider_previous_shot_required",
@@ -1330,6 +1342,16 @@ def _previous_shot_reference(conn, project_id, shots, shot_key):
             409,
         )
     result = _json(row["result_json"], {})
+    request = _json(row["request_json"], {})
+    scene_reference = next(
+        (
+            item for item in request.get("reference_images") or []
+            if isinstance(item, dict)
+            and str(item.get("character_key") or "").strip()
+            == "__scene_reference__"
+        ),
+        {},
+    )
     tail = {
         "file": str(result.get("continuity_tail_file") or "").strip(),
         "url": str(result.get("continuity_tail_url") or "").strip(),
@@ -1340,6 +1362,10 @@ def _previous_shot_reference(conn, project_id, shots, shot_key):
         "shot_key": previous_key,
         "file": str(tail.get("file") or "").strip(),
         "url": str(tail.get("url") or "").strip(),
+        "scene_key": str(scene_reference.get("scene_key") or "").strip(),
+        "scene_version_id": str(
+            scene_reference.get("scene_version_id") or ""
+        ).strip(),
     }
 
 
@@ -1447,7 +1473,9 @@ def _native_audio_brief(shot, character_names=None):
         )
         timing = (
             "（与上一条同时说）"
-            if item.get("timing_mode") == "simultaneous_with_previous"
+            if item.get("timing_mode") in {
+                "simultaneous", "simultaneous_with_previous",
+            }
             else ""
         )
         dialogue_lines.append("%s%s：%s" % (speaker, timing, text))
@@ -1664,6 +1692,8 @@ def preview_provider_request(
     reference_images = []
     scene_reference = None
     previous_reference = None
+    previous_scene_reference = None
+    bound_scene_key = ""
     avatar = None
     character_names = {}
     if provider.name == "minimax_h3":
@@ -1672,37 +1702,95 @@ def preview_provider_request(
                 "provider_character_required", "当前镜头没有可用于生成的出镜角色", 422
             )
         with _read_connection(db_factory, connection) as conn:
+            requested_scene_key = str(
+                execution.get("scene_key") if execution else ""
+            ).strip()
+            bound_scene_key = (
+                requested_scene_key
+                or short_drama_asset_graph.bound_scene_key(
+                    conn, project_id, shot_key,
+                )
+            )
             scene_reference = short_drama_asset_graph.locked_scene_reference(
                 conn, project_id, shot_key,
-                execution.get("scene_key") if execution else None,
+                requested_scene_key or None,
             )
             previous_reference = _previous_shot_reference(
                 conn, project_id, shots, shot_key,
             )
-        if execution and execution.get("include_continuity_reference") is False:
+            if previous_reference:
+                previous_scene_reference = (
+                    short_drama_asset_graph.locked_scene_reference(
+                        conn, project_id, previous_reference["shot_key"],
+                    )
+                )
+        if (
+            bound_scene_key
+            and (not execution or execution.get("include_scene_reference") is not False)
+            and not scene_reference
+        ):
+            raise AutodraftError(
+                "provider_scene_reference_required",
+                "当前镜头绑定的场景参考图尚未锁定或不可用",
+                422,
+            )
+        previous_identity = previous_reference or {}
+        previous_identity_fallback = previous_scene_reference or {}
+        current_scene_key = str(
+            (scene_reference or {}).get("scene_key") or ""
+        ).strip()
+        current_scene_version_id = str(
+            (scene_reference or {}).get("version_id") or ""
+        ).strip()
+        previous_scene_key = str(
+            previous_identity.get("scene_key")
+            or previous_identity_fallback.get("scene_key")
+            or ""
+        ).strip()
+        previous_scene_version_id = str(
+            previous_identity.get("scene_version_id")
+            or previous_identity.get("version_id")
+            or previous_identity_fallback.get("scene_version_id")
+            or previous_identity_fallback.get("version_id")
+            or ""
+        ).strip()
+        same_scene_reference = bool(
+            current_scene_key
+            and previous_scene_key == current_scene_key
+            and current_scene_version_id
+            and previous_scene_version_id == current_scene_version_id
+        )
+        if previous_reference and not same_scene_reference:
             previous_reference = None
         if execution and execution.get("include_scene_reference") is False:
             scene_reference = None
         # Historical optional references can be URL-only. MiniMax now accepts
         # only project-owned local bytes, so omit those optional hints instead
         # of advertising a request that its Provider must reject.
-        if previous_reference and not str(
-            previous_reference.get("file") or ""
-        ).strip():
+        if previous_reference and not str(previous_reference.get("file") or "").strip():
+            if same_scene_reference:
+                raise AutodraftError(
+                    "provider_previous_tail_required",
+                    "同场景连续镜头必须保留上一镜头尾帧，请先重新生成上一镜头",
+                    409,
+                )
             previous_reference = None
         if scene_reference and not str(
             scene_reference.get("file") or ""
         ).strip():
             scene_reference = None
-        extra_reference_count = int(bool(
-            previous_reference
-            and (previous_reference.get("file") or previous_reference.get("url"))
-        ) or bool(scene_reference))
+        tail_required = bool(same_scene_reference and previous_reference)
+        extra_reference_count = int(bool(scene_reference)) + int(tail_required)
         maximum_characters = 5 - extra_reference_count
         if len(required_character_keys) > maximum_characters:
+            message = (
+                "同场景镜头必须保留上一镜头尾帧，人物标准图与场景图合计最多 4 张"
+                if tail_required else
+                "当前镜头的人物标准图与场景图合计最多 5 张"
+            )
             raise AutodraftError(
                 "provider_reference_limit_exceeded",
-                "当前镜头的角色与场景参考图总数超过视频服务上限",
+                message,
                 422,
             )
         with _read_connection(db_factory, connection) as conn:
@@ -1733,23 +1821,22 @@ def preview_provider_request(
                 "url": str(row["reference_url"] or "").strip(),
                 "reference_version": int(row["reference_version"] or 0),
             })
-        if previous_reference and (
-            previous_reference.get("file") or previous_reference.get("url")
-        ):
+        if scene_reference:
+            reference_images.append({
+                "character_key": "__scene_reference__",
+                "scene_key": scene_reference["scene_key"],
+                "scene_version_id": scene_reference.get("version_id") or "",
+                "name": scene_reference["name"],
+                "file": scene_reference["file"],
+                "url": scene_reference["url"],
+            })
+        if tail_required:
             reference_images.append({
                 "character_key": "__continuity_tail__",
                 "continuity_shot_key": previous_reference["shot_key"],
                 "name": "上一镜头尾帧",
                 "file": previous_reference.get("file") or "",
                 "url": previous_reference.get("url") or "",
-            })
-        elif scene_reference:
-            reference_images.append({
-                "character_key": "__scene_reference__",
-                "scene_key": scene_reference["scene_key"],
-                "name": scene_reference["name"],
-                "file": scene_reference["file"],
-                "url": scene_reference["url"],
             })
         primary = by_key[required_character_keys[0]]
         character_key = required_character_keys[0]
@@ -1941,6 +2028,7 @@ def preview_provider_request(
         "scene_reference": ({
             "locked": True, "name": scene_reference["name"],
             "scene_key": scene_reference["scene_key"],
+            "version_id": scene_reference.get("version_id") or "",
         } if scene_reference else {"locked": False}),
         "continuity_reference": ({
             "ready": bool(previous_reference.get("file") or previous_reference.get("url")),
@@ -2160,12 +2248,29 @@ def _provider_version(row):
     item["version"] = int(item["version"])
     if "request_json" in item:
         request = _json(item.pop("request_json"), {})
+        scene_reference = next(
+            (
+                reference for reference in request.get("reference_images") or []
+                if isinstance(reference, dict)
+                and str(reference.get("character_key") or "").strip()
+                == "__scene_reference__"
+            ),
+            {},
+        )
         item["request_snapshot"] = {
             "prompt": str(request.get("prompt") or ""),
             "negative_prompt": str(request.get("negative_prompt") or ""),
             "ratio": str(request.get("ratio") or ""),
             "resolution": str(request.get("resolution") or ""),
             "duration_seconds": int(request.get("duration_seconds") or 0),
+            "scene_reference": ({
+                "scene_key": str(
+                    scene_reference.get("scene_key") or ""
+                ).strip(),
+                "version_id": str(
+                    scene_reference.get("scene_version_id") or ""
+                ).strip(),
+            } if scene_reference else None),
         }
     if "result_json" in item:
         result = _json(item.pop("result_json"), {})
@@ -2175,6 +2280,10 @@ def _provider_version(row):
         item["native_audio"] = _sanitized_native_audio(
             result.get("native_audio")
             or (item["native_media"].get("audio") if item["native_media"] else None)
+        )
+        item["continuity_tail_ready"] = bool(
+            str(result.get("continuity_tail_file") or "").strip()
+            or str(result.get("continuity_tail_url") or "").strip()
         )
     item["selected"] = bool(item.pop("selected", 0))
     return item

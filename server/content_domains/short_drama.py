@@ -5860,13 +5860,17 @@ def _http_error(handler, error, *, operation_terminal=False):
         handler._send(403, {"detail": str(error)[:220], "code": "forbidden", **terminal})
     elif error.__class__.__name__ == "AuthPointsError":
         status = int(getattr(error, "status", 502) or 502)
+        payload = {
+            "detail": str(getattr(error, "detail", error))[:220],
+            "code": "charge_rejected" if status == 402 else "charge_unavailable",
+            **terminal,
+        }
+        error_data = getattr(error, "data", None)
+        if status == 402 and isinstance(error_data, dict) and error_data.get("need") is not None:
+            payload["need"] = error_data["need"]
         handler._send(
             status if status in {400, 402, 403, 502, 503} else 502,
-            {
-                "detail": str(getattr(error, "detail", error))[:220],
-                "code": "charge_rejected" if status == 402 else "charge_unavailable",
-                **terminal,
-            },
+            payload,
         )
     else:
         handler._send(400, {"detail": str(error)[:220], **terminal})
@@ -7556,5 +7560,9 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
             short_drama_assembly.PreviewBlocked,
             short_drama_playback.PlaybackError,
             short_drama_completion.CompletionError) as error:
+        _http_error(handler, error)
+    except Exception as error:
+        if error.__class__.__name__ != "AuthPointsError":
+            raise
         _http_error(handler, error)
     return True
