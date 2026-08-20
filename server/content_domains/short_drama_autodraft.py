@@ -1366,6 +1366,9 @@ def _previous_shot_reference(conn, project_id, shots, shot_key):
         "scene_version_id": str(
             scene_reference.get("scene_version_id") or ""
         ).strip(),
+        "scene_reference_identity": str(
+            scene_reference.get("scene_reference_identity") or ""
+        ).strip(),
     }
 
 
@@ -1511,16 +1514,11 @@ def _clean_execution(value):
                 "provider_execution_too_long", "镜头生成要求中的内容过长", 422,
             )
         result[key] = text
-    # Character reference images are mandatory for identity consistency. The
-    # continuity tail and locked scene image are optional diagnostic inputs:
-    # users may temporarily disable either after a provider moderation failure
-    # without changing the locked script or deleting any asset.
-    result["include_continuity_reference"] = (
-        value.get("include_continuity_reference") is not False
-    )
-    result["include_scene_reference"] = (
-        value.get("include_scene_reference") is not False
-    )
+    # Character and bound-scene references are mandatory identity inputs. The
+    # continuity tail is derived from immutable scene identities below rather
+    # than trusted from a client toggle.
+    result["include_continuity_reference"] = True
+    result["include_scene_reference"] = True
     result["scene_key"] = str(value.get("scene_key") or "").strip()[:160]
     if "character_keys" in value:
         raw_character_keys = value.get("character_keys")
@@ -1538,10 +1536,10 @@ def _clean_execution(value):
             raise AutodraftError(
                 "provider_character_required", "请至少选择一个出镜角色", 422,
             )
-        if len(character_keys) > 4:
+        if len(character_keys) > 5:
             raise AutodraftError(
                 "provider_character_limit_exceeded",
-                "单个镜头最多绑定四个出镜角色", 422,
+                "单个镜头最多绑定五个出镜角色", 422,
             )
         result["character_keys"] = character_keys
     if not result["provider_prompt"]:
@@ -1692,7 +1690,6 @@ def preview_provider_request(
     reference_images = []
     scene_reference = None
     previous_reference = None
-    previous_scene_reference = None
     bound_scene_key = ""
     avatar = None
     character_names = {}
@@ -1718,15 +1715,8 @@ def preview_provider_request(
             previous_reference = _previous_shot_reference(
                 conn, project_id, shots, shot_key,
             )
-            if previous_reference:
-                previous_scene_reference = (
-                    short_drama_asset_graph.locked_scene_reference(
-                        conn, project_id, previous_reference["shot_key"],
-                    )
-                )
         if (
-            bound_scene_key
-            and (not execution or execution.get("include_scene_reference") is not False)
+            (requested_scene_key or bound_scene_key)
             and not scene_reference
         ):
             raise AutodraftError(
@@ -1735,30 +1725,26 @@ def preview_provider_request(
                 422,
             )
         previous_identity = previous_reference or {}
-        previous_identity_fallback = previous_scene_reference or {}
         current_scene_key = str(
             (scene_reference or {}).get("scene_key") or ""
         ).strip()
-        current_scene_version_id = str(
-            (scene_reference or {}).get("version_id") or ""
+        current_scene_reference_identity = str(
+            (scene_reference or {}).get("reference_identity") or ""
         ).strip()
         previous_scene_key = str(
             previous_identity.get("scene_key")
-            or previous_identity_fallback.get("scene_key")
             or ""
         ).strip()
-        previous_scene_version_id = str(
-            previous_identity.get("scene_version_id")
-            or previous_identity.get("version_id")
-            or previous_identity_fallback.get("scene_version_id")
-            or previous_identity_fallback.get("version_id")
+        previous_scene_reference_identity = str(
+            previous_identity.get("scene_reference_identity")
             or ""
         ).strip()
         same_scene_reference = bool(
             current_scene_key
             and previous_scene_key == current_scene_key
-            and current_scene_version_id
-            and previous_scene_version_id == current_scene_version_id
+            and current_scene_reference_identity
+            and previous_scene_reference_identity
+            == current_scene_reference_identity
         )
         if previous_reference and not same_scene_reference:
             previous_reference = None
@@ -1826,6 +1812,9 @@ def preview_provider_request(
                 "character_key": "__scene_reference__",
                 "scene_key": scene_reference["scene_key"],
                 "scene_version_id": scene_reference.get("version_id") or "",
+                "scene_reference_identity": (
+                    scene_reference.get("reference_identity") or ""
+                ),
                 "name": scene_reference["name"],
                 "file": scene_reference["file"],
                 "url": scene_reference["url"],
@@ -2029,6 +2018,9 @@ def preview_provider_request(
             "locked": True, "name": scene_reference["name"],
             "scene_key": scene_reference["scene_key"],
             "version_id": scene_reference.get("version_id") or "",
+            "reference_identity": (
+                scene_reference.get("reference_identity") or ""
+            ),
         } if scene_reference else {"locked": False}),
         "continuity_reference": ({
             "ready": bool(previous_reference.get("file") or previous_reference.get("url")),
@@ -2269,6 +2261,9 @@ def _provider_version(row):
                 ).strip(),
                 "version_id": str(
                     scene_reference.get("scene_version_id") or ""
+                ).strip(),
+                "reference_identity": str(
+                    scene_reference.get("scene_reference_identity") or ""
                 ).strip(),
             } if scene_reference else None),
         }

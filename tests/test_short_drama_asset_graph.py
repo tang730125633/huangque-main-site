@@ -236,6 +236,16 @@ class ShortDramaAssetGraphTests(unittest.TestCase):
             self.assertEqual(count, 0)
 
     def test_scene_reference_is_grouped_locked_and_available_to_video_request(self):
+        with closing(self.db()) as conn:
+            conn.execute(
+                "INSERT INTO short_drama_shots"
+                "(id,project_id,shot_key,sort_order,scene_description,camera_description,"
+                "image_prompt,video_prompt,character_keys_json) "
+                "SELECT 's2',project_id,'shot_002',2,scene_description,camera_description,"
+                "image_prompt,video_prompt,character_keys_json "
+                "FROM short_drama_shots WHERE id='s1'"
+            )
+            conn.commit()
         graph.sync_foundation(self.db, "alice", "alice", "p1")
         scenes = graph.scene_workspace(self.db, "alice", "p1")
         self.assertEqual(1, len(scenes["scenes"]))
@@ -272,6 +282,7 @@ class ShortDramaAssetGraphTests(unittest.TestCase):
         self.assertTrue(locked["scenes"][0]["locked"])
         with closing(self.db()) as conn:
             reference = graph.locked_scene_reference(conn, "p1", "shot_001")
+            second_reference = graph.locked_scene_reference(conn, "p1", "shot_002")
             selected_reference = graph.locked_scene_reference(
                 conn, "p1", "shot_001", scene["scene_key"],
             )
@@ -281,6 +292,15 @@ class ShortDramaAssetGraphTests(unittest.TestCase):
         self.assertEqual("雨夜街道", reference["name"])
         self.assertTrue(reference["file"].startswith("short_drama_scene_uploads/scene_"))
         self.assertEqual(reference["scene_key"], selected_reference["scene_key"])
+        self.assertNotEqual(reference["version_id"], second_reference["version_id"])
+        self.assertEqual(
+            reference["reference_identity"],
+            second_reference["reference_identity"],
+        )
+        self.assertEqual(
+            locked["scenes"][0]["preview"]["reference_identity"],
+            reference["reference_identity"],
+        )
         self.assertEqual(
             locked["scenes"][0]["preview"]["version_id"],
             reference["version_id"],

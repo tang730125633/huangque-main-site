@@ -977,6 +977,17 @@ def _scene_version(conn, entity_id):
     ).fetchone()
 
 
+def _scene_reference_identity(version):
+    """Return the immutable identity shared by one grouped-scene update."""
+    if not version:
+        return ""
+    attributes = _json(version["attributes_json"], {})
+    return (
+        _text(attributes.get("scene_operation_id"), 160)
+        or _text(version["content_hash"], 160)
+    )
+
+
 def scene_workspace(db_factory, owner, project_id):
     """Return user-facing scene groups without exposing graph internals."""
     with closing(_connection(db_factory)) as conn:
@@ -1013,6 +1024,7 @@ def scene_workspace(db_factory, owner, project_id):
             reference = references[0] if references and isinstance(references[0], dict) else {}
             candidate = {
                 "version_id": version["id"], "version": int(version["version"]),
+                "reference_identity": _scene_reference_identity(version),
                 "status": version["status"], "prompt": version["prompt"],
                 "source": _json(version["attributes_json"], {}).get("source", ""),
                 "file": _text(reference.get("file"), 1000),
@@ -1495,7 +1507,7 @@ def locked_scene_reference(conn, project_id, shot_key, scene_key=None):
     if not scene or not scene.get("current_version_id"):
         return None
     version = conn.execute(
-        "SELECT id,version,prompt,references_json,status "
+        "SELECT id,version,prompt,references_json,attributes_json,content_hash,status "
         "FROM short_drama_graph_versions WHERE id=?",
         (scene["current_version_id"],),
     ).fetchone()
@@ -1508,6 +1520,7 @@ def locked_scene_reference(conn, project_id, shot_key, scene_key=None):
     return {
         "scene_key": _scene_key(scene),
         "version_id": _text(version["id"], 160),
+        "reference_identity": _scene_reference_identity(version),
         "version": int(version["version"] or 0),
         "name": _text(scene["scene_description"], 200) or "锁定场景",
         "prompt": _text(version["prompt"], 8000),

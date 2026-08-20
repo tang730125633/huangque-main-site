@@ -8,8 +8,8 @@
   function text(value){return String(value==null?'':value);}
   function shotReferenceSelectionPolicy(currentIdentity,previousIdentity,previousTailReady){
     currentIdentity=currentIdentity||{};previousIdentity=previousIdentity||{};
-    var currentKey=text(currentIdentity.scene_key).trim(),currentVersion=text(currentIdentity.version_id).trim();
-    var previousKey=text(previousIdentity.scene_key).trim(),previousVersion=text(previousIdentity.version_id).trim();
+    var currentKey=text(currentIdentity.scene_key).trim(),currentVersion=text(currentIdentity.reference_identity).trim();
+    var previousKey=text(previousIdentity.scene_key).trim(),previousVersion=text(previousIdentity.reference_identity).trim();
     var hasScene=!!currentKey;
     var same=!!(previousTailReady&&hasScene&&currentVersion&&currentKey===previousKey&&currentVersion===previousVersion);
     var selectedLimit=same?4:5;
@@ -18,6 +18,15 @@
       tail_required:same,
       selected_reference_limit:selectedLimit,
       character_limit:Math.max(0,selectedLimit-(hasScene?1:0))
+    };
+  }
+  function effectiveSceneReferenceIdentity(selectedIdentity,defaultIdentity){
+    selectedIdentity=selectedIdentity||{};defaultIdentity=defaultIdentity||{};
+    var selectedKey=text(selectedIdentity.scene_key).trim();
+    var identity=selectedKey?selectedIdentity:defaultIdentity;
+    return {
+      scene_key:text(identity.scene_key).trim(),
+      reference_identity:text(identity.reference_identity).trim()
     };
   }
   function dialogueReadingSeconds(value,speechRate){
@@ -1168,8 +1177,8 @@
     var candidateHtml=review.candidates.length?'<div class="sd-sensitive-tags"><span>建议重点检查</span>'+review.candidates.map(function(item){return '<b>'+escapeHtml(item)+'</b>';}).join('')+'</div>':'';
     var mismatchHtml=review.unexpected.length&&review.expected.length===1?'<p class="sd-sensitive-mismatch"><b>角色名称不一致：</b>当前镜头绑定“'+escapeHtml(review.expected[0])+'”，提示词中出现“'+escapeHtml(review.unexpected.join('、'))+'”。</p>':'';
     var bindingHtml=review.expected.length&&!review.unexpected.length?'<p class="sd-sensitive-binding-ok"><b>角色绑定正常：</b>本次实际提交的是“'+escapeHtml(review.expected.join('、'))+'”及对应角色标准图；失败原因是内容审核，不需要更换绑定角色。</p>':'';
-    var refs=review.references.length?'<div class="sd-sensitive-refs">'+review.references.map(function(item){return '<span class="'+item.type+'"><b>'+escapeHtml(item.name)+'</b><small>'+(item.required?'角色标准图 · 必须保留':item.type==='continuity'?'上一镜头尾帧 · 可临时停用':'场景参考图 · 可临时停用')+'</small></span>';}).join('')+'</div>':'';
-    return '<div class="sd-sensitive-recovery">'+billing+'<header><span>输入内容未通过审核</span><b>修改后再重新生成</b><p>不是 API Key 或余额问题。本次文字或参考素材被生成服务拦截，重复提交原内容仍会失败。</p></header>'+candidateHtml+mismatchHtml+bindingHtml+refs+'<ol><li>检查并优化最终提示词</li><li>确认角色名称与绑定角色一致</li><li>必要时临时停用上一镜头尾帧或场景图</li><li>免费预检通过后，再获取报价并生成</li></ol><button type="button" data-action="optimize-and-preflight-sensitive" data-shot-key="'+escapeHtml(job.shot_key||'')+'">优化文字并免费重新预检</button><button type="button" class="secondary" data-action="edit-shot-execution" data-shot-key="'+escapeHtml(job.shot_key||'')+'">手动调整生成要求</button></div>';
+    var refs=review.references.length?'<div class="sd-sensitive-refs">'+review.references.map(function(item){return '<span class="'+item.type+'"><b>'+escapeHtml(item.name)+'</b><small>'+(item.required?'角色标准图 · 必须保留':item.type==='continuity'?'上一镜头尾帧 · 同场景同版本时必须保留':'场景参考图 · 已绑定时必须保留')+'</small></span>';}).join('')+'</div>':'';
+    return '<div class="sd-sensitive-recovery">'+billing+'<header><span>输入内容未通过审核</span><b>修改后再重新生成</b><p>不是 API Key 或余额问题。本次文字或参考素材被生成服务拦截，重复提交原内容仍会失败。</p></header>'+candidateHtml+mismatchHtml+bindingHtml+refs+'<ol><li>检查并优化最终提示词</li><li>确认角色名称与绑定角色一致</li><li>场景图与同场景同版本的上一镜头尾帧属于连续性约束，不能停用</li><li>免费预检通过后，再获取报价并生成</li></ol><button type="button" data-action="optimize-and-preflight-sensitive" data-shot-key="'+escapeHtml(job.shot_key||'')+'">优化文字并免费重新预检</button><button type="button" class="secondary" data-action="edit-shot-execution" data-shot-key="'+escapeHtml(job.shot_key||'')+'">手动调整生成要求</button></div>';
   }
   function providerLabel(){
     return '视频生成服务';
@@ -1379,7 +1388,7 @@
     }
     function sceneIdentityByKey(sceneKey){
       var scene=((sceneWorkspace&&sceneWorkspace.scenes)||[]).filter(function(item){return text(item&&item.scene_key)===text(sceneKey);})[0]||{};
-      return {scene_key:text(scene.scene_key).trim(),version_id:text(scene.preview&&scene.preview.version_id).trim()};
+      return {scene_key:text(scene.scene_key).trim(),reference_identity:text(scene.preview&&scene.preview.reference_identity).trim()};
     }
     function previousShotReferenceContext(providerShot){
       var previousShotKey=text(providerShot&&providerShot.previous_shot_key).trim();
@@ -1390,22 +1399,16 @@
         return Number(right.version||0)-Number(left.version||0);
       });
       var version=versions[0]||null,snapshot=version&&version.request_snapshot||{},identity=snapshot.scene_reference||null;
-      if(!identity||!text(identity.scene_key).trim()){
-        var saved=(autodraft.provider_execution_overrides||{})[previousShotKey]||{};
-        var fallbackKey=text(saved.scene_key).trim();
-        if(!fallbackKey){
-          var fallbackScene=((sceneWorkspace&&sceneWorkspace.scenes)||[]).filter(function(item){return (item.shots||[]).some(function(link){return text(link.shot_key)===previousShotKey;});})[0]||{};
-          fallbackKey=text(fallbackScene.scene_key).trim();
-        }
-        identity=sceneIdentityByKey(fallbackKey);
-      }
       return {identity:identity||{},tail_ready:!!version};
     }
     function shotExecutionReferenceState(form){
       var selectedCharacters=Array.prototype.slice.call(form.querySelectorAll('input[name="character_keys"]:checked'));
       var selectedScene=form.querySelector('input[name="scene_key"]:checked');
-      var currentIdentity={scene_key:text(selectedScene&&selectedScene.value).trim(),version_id:text(selectedScene&&selectedScene.getAttribute('data-scene-version-id')).trim()};
-      var previousIdentity={scene_key:text(form.getAttribute('data-previous-scene-key')).trim(),version_id:text(form.getAttribute('data-previous-scene-version-id')).trim()};
+      var currentIdentity=effectiveSceneReferenceIdentity(
+        {scene_key:text(selectedScene&&selectedScene.value).trim(),reference_identity:text(selectedScene&&selectedScene.getAttribute('data-scene-reference-identity')).trim()},
+        {scene_key:text(form.getAttribute('data-default-scene-key')).trim(),reference_identity:text(form.getAttribute('data-default-scene-reference-identity')).trim()}
+      );
+      var previousIdentity={scene_key:text(form.getAttribute('data-previous-scene-key')).trim(),reference_identity:text(form.getAttribute('data-previous-scene-reference-identity')).trim()};
       var policy=shotReferenceSelectionPolicy(currentIdentity,previousIdentity,form.getAttribute('data-previous-tail-ready')==='1');
       return {characters:selectedCharacters,current_identity:currentIdentity,policy:policy,selected_count:selectedCharacters.length+(currentIdentity.scene_key?1:0)};
     }
@@ -1551,9 +1554,10 @@
         var lockedScenes=((sceneWorkspace&&sceneWorkspace.scenes)||[]).filter(function(item){return item&&item.locked&&item.preview&&(item.preview.url||item.preview.file);});
         var defaultScene=lockedScenes.filter(function(item){return (item.shots||[]).some(function(link){return link.shot_key===shot.shot_key;});})[0]||null;
         var selectedSceneKey=Object.prototype.hasOwnProperty.call(saved,'scene_key')?text(saved.scene_key):text(defaultScene&&defaultScene.scene_key);
-        var selectedSceneIdentity=sceneIdentityByKey(selectedSceneKey),previousReferenceContext=previousShotReferenceContext(providerShot);
+        var defaultSceneIdentity=sceneIdentityByKey(defaultScene&&defaultScene.scene_key);
+        var selectedSceneIdentity=effectiveSceneReferenceIdentity(sceneIdentityByKey(selectedSceneKey),defaultSceneIdentity),previousReferenceContext=previousShotReferenceContext(providerShot);
         var initialReferencePolicy=shotReferenceSelectionPolicy(selectedSceneIdentity,previousReferenceContext.identity,previousReferenceContext.tail_ready);
-        var initialReferenceCount=selectedCharacterKeys.length+(selectedSceneKey?1:0);
+        var initialReferenceCount=selectedCharacterKeys.length+(selectedSceneIdentity.scene_key?1:0);
         var initialReferenceStatus=initialReferencePolicy.tail_required?'人物与场景已选择 '+initialReferenceCount+'/4 张；系统会强制追加上一镜头尾帧（总计最多 5 张）。':'人物与场景已选择 '+initialReferenceCount+'/5 张；场景参考图不同，本镜头不会提交上一镜头尾帧。';
         characterBinding='<fieldset class="wide sd-shot-character-binding"><legend>本镜头角色绑定</legend><p>选择下一次生成真正使用的人物及标准图。只影响当前镜头，不会修改其他镜头或覆盖旧视频。</p><div>'+characterBindingOptions+'</div><small id="sdShotCharacterBindingStatus" class="'+(initialReferenceCount>initialReferencePolicy.selected_reference_limit?'error':'')+'">'+escapeHtml(initialReferenceStatus)+'</small></fieldset>';
         var detailChips=function(field,items,current){return '<div class="sd-shot-detail-chips">'+items.map(function(item){return '<button type="button" data-action="set-shot-detail" data-detail-field="'+escapeHtml(field)+'" data-detail-value="'+escapeHtml(item.value)+'" class="'+(text(current)===text(item.value)?'active':'')+'">'+escapeHtml(item.label)+'</button>';}).join('')+'</div>';};
@@ -1563,15 +1567,15 @@
         var compositionChips=detailChips('composition_style',[{label:'系统判断',value:''},{label:'近景',value:'近景构图'},{label:'中景',value:'中景构图'},{label:'全景',value:'全景构图'},{label:'固定镜头',value:'固定机位'},{label:'缓慢推进',value:'镜头缓慢推进'},{label:'跟拍',value:'跟随人物运动拍摄'},{label:'手持感',value:'轻微手持纪实感'}],compositionValue);
         var sceneBindingOptions=lockedScenes.map(function(item){
           var preview=item.preview||{},image=preview.url||(preview.file?'/api/gen/file/'+String(preview.file).replace(/^\/+/, ''):''),selected=selectedSceneKey===text(item.scene_key);
-          return '<label class="sd-shot-scene-option '+(selected?'selected':'')+'"><input type="radio" name="scene_key" data-scene-version-id="'+escapeHtml(preview.version_id||'')+'" value="'+escapeHtml(item.scene_key||'')+'" '+(selected?'checked':'')+'><span>'+(image?'<button type="button" data-action="preview-character-image" data-image-url="'+escapeHtml(image)+'" data-image-title="'+escapeHtml((item.name||'场景')+' · 场景预览')+'"><img src="'+escapeHtml(image)+'" alt=""></button>':'<i>景</i>')+'<b>'+escapeHtml(item.name||'锁定场景')+'</b><small>已锁定 · '+(item.shots||[]).length+' 个关联镜头</small></span></label>';
+          return '<label class="sd-shot-scene-option '+(selected?'selected':'')+'"><input type="radio" name="scene_key" data-scene-reference-identity="'+escapeHtml(preview.reference_identity||'')+'" value="'+escapeHtml(item.scene_key||'')+'" '+(selected?'checked':'')+'><span>'+(image?'<button type="button" data-action="preview-character-image" data-image-url="'+escapeHtml(image)+'" data-image-title="'+escapeHtml((item.name||'场景')+' · 场景预览')+'"><img src="'+escapeHtml(image)+'" alt=""></button>':'<i>景</i>')+'<b>'+escapeHtml(item.name||'锁定场景')+'</b><small>已锁定 · '+(item.shots||[]).length+' 个关联镜头</small></span></label>';
         }).join('');
-        var sceneBinding='<fieldset class="wide sd-shot-scene-binding"><legend>本镜头场景绑定</legend><p>选择上方已锁定的场景图。生成时会同时带入场景图、场景描述和角色标准图；修改只影响下一次生成。</p><div>'+(sceneBindingOptions||'<p class="sd-shot-scene-empty">暂无已锁定场景，请先在“场景锁定”中上传或生成并锁定场景图。</p>')+'</div>'+(sceneBindingOptions?'<label class="sd-shot-scene-none"><input type="radio" name="scene_key" value="" '+(!selectedSceneKey?'checked':'')+'>本镜头暂不使用场景图</label>':'')+'</fieldset>';
+        var sceneBinding='<fieldset class="wide sd-shot-scene-binding"><legend>本镜头场景绑定</legend><p>选择上方已锁定的场景图。生成时会同时带入场景图、场景描述和角色标准图；修改只影响下一次生成。</p><div>'+(sceneBindingOptions||'<p class="sd-shot-scene-empty">暂无已锁定场景，请先在“场景锁定”中上传或生成并锁定场景图。</p>')+'</div>'+(sceneBindingOptions?'<label class="sd-shot-scene-none"><input type="radio" name="scene_key" value="" '+(!selectedSceneKey?'checked':'')+'>沿用故事镜头当前绑定场景</label>':'')+'</fieldset>';
         var reviewBanner=inputReview.sensitive?'<section class="sd-sensitive-editor-alert"><span>上次生成未通过内容审核</span><h4>请检查文字和参考素材后重新预检</h4><p>以下修改只影响下一次生成，不会覆盖旧视频，也不会修改已锁定剧本。</p>'+(inputReview.candidates.length?'<div>'+inputReview.candidates.map(function(item){return '<b>'+escapeHtml(item)+'</b>';}).join('')+'</div>':'')+(inputReview.unexpected.length&&inputReview.expected.length===1?'<p class="mismatch">当前绑定角色为“'+escapeHtml(inputReview.expected[0])+'”，提示词中出现“'+escapeHtml(inputReview.unexpected.join('、'))+'”。</p>':'')+(inputReview.expected.length&&!inputReview.unexpected.length?'<p class="sd-sensitive-binding-ok"><b>角色绑定正常：</b>本次使用“'+escapeHtml(inputReview.expected.join('、'))+'”及对应标准图，失败来自内容审核。</p>':'')+'</section>':'';
         var optionalTypes=inputReview.references.map(function(item){return item.type;});
         var referenceControls=inputReview.sensitive&&optionalTypes.some(function(type){return type==='continuity'||type==='scene';})?'<fieldset class="wide sd-reference-controls"><legend>本次参考素材</legend><p>角色标准图和锁定场景图必须保留；只有当前镜头与上一镜头使用同一场景、同一版本时，系统才会强制追加上一镜头尾帧。</p></fieldset>':'';
         var confirmedDialogue=confirmedShotDialogueHtml(lines);
         var promptTools='<div class="sd-final-prompt-tools"><button type="button" data-action="optimize-sensitive-prompt">优化敏感表达</button>'+(inputReview.unexpected.length&&inputReview.expected.length===1?'<button type="button" data-action="sync-shot-character-names">统一为绑定角色“'+escapeHtml(inputReview.expected[0])+'”</button>':'')+'<span id="sdPromptAssistStatus"></span></div>';
-        body.innerHTML='<form id="sdShotExecutionEditor" class="sd-shot-editor sd-shot-execution-editor" data-previous-scene-key="'+escapeHtml(previousReferenceContext.identity.scene_key||'')+'" data-previous-scene-version-id="'+escapeHtml(previousReferenceContext.identity.version_id||'')+'" data-previous-tail-ready="'+(previousReferenceContext.tail_ready?'1':'0')+'">'+reviewBanner+'<header class="sd-execution-intro"><span>仅影响下一次视频生成</span><h3>调整镜头执行要求</h3><p>这里的修改不会改动已确认剧本。角色标准图和已锁定场景仍会自动带入。</p></header><div class="sd-shot-editor-grid">'+characterBinding+sceneBinding+
+        body.innerHTML='<form id="sdShotExecutionEditor" class="sd-shot-editor sd-shot-execution-editor" data-default-scene-key="'+escapeHtml(defaultSceneIdentity.scene_key||'')+'" data-default-scene-reference-identity="'+escapeHtml(defaultSceneIdentity.reference_identity||'')+'" data-previous-scene-key="'+escapeHtml(previousReferenceContext.identity.scene_key||'')+'" data-previous-scene-reference-identity="'+escapeHtml(previousReferenceContext.identity.reference_identity||'')+'" data-previous-tail-ready="'+(previousReferenceContext.tail_ready?'1':'0')+'">'+reviewBanner+'<header class="sd-execution-intro"><span>仅影响下一次视频生成</span><h3>调整镜头执行要求</h3><p>这里的修改不会改动已确认剧本。角色标准图和已锁定场景仍会自动带入。</p></header><div class="sd-shot-editor-grid">'+characterBinding+sceneBinding+
           '<label class="wide">画面与人物动作<textarea name="visual" maxlength="600" placeholder="人物做什么、物体如何变化、画面最终呈现什么">'+value('visual',shot.visual)+'</textarea></label>'+
           '<label>景别与运镜<textarea name="camera" maxlength="300" placeholder="例如：中近景，缓慢推近，稳定镜头">'+value('camera',shot.camera)+'</textarea></label>'+
           '<label>表演与情绪<textarea name="performance" maxlength="300" placeholder="例如：先得意，发现同伴后略显犹豫">'+value('performance','')+'</textarea></label>'+
@@ -2109,8 +2113,8 @@
         ['visual','camera','performance','scene','lighting','composition_style','continuity','sound_design','negative_prompt','provider_prompt'].forEach(function(fieldName){
           execution[fieldName]=syncShotBindingPrompt(execution[fieldName],previousNames,nextNames);
         });
-        execution.include_continuity_reference=referenceState.policy.tail_required;
-        execution.include_scene_reference=!!execution.scene_key;
+        execution.include_continuity_reference=true;
+        execution.include_scene_reference=true;
         busy(true);show('',false);
         client.providerPreflight({project_id:projectId,plan_id:confirmedPlan.id,shot_key:executionShot.shot_key,avatar_id:'',character_key:execution.character_keys[0],execution:execution}).then(function(result){
           autodraft.provider_preview=result;autodraft.provider_quote=null;
@@ -3000,5 +3004,5 @@
     }).catch(function(error){show(error.message||'工作区加载失败',true);}).finally(function(){busy(false);render();});
     return {render:render,getState:function(){return state;},getPreflight:function(){return preflight;},getAutodraft:function(){return autodraft;},getRefinement:function(){return refinement;}};
   }
-  return {createClient:createClient,shotReferenceSelectionPolicy:shotReferenceSelectionPolicy,confirmedShotDialogueHtml:confirmedShotDialogueHtml,characterImageOperationState:characterImageOperationState,characterImageAction:characterImageAction,avatarCreateUrl:avatarCreateUrl,shotDraftStorageKey:shotDraftStorageKey,discardLegacyShotDraft:discardLegacyShotDraft,cloneProjectPayload:cloneProjectPayload,normalize:normalize,conversationWorkspaceMode:conversationWorkspaceMode,sceneWorkspaceRequired:sceneWorkspaceRequired,dialogueReadingSeconds:dialogueReadingSeconds,shotTimingIssue:shotTimingIssue,shotTimingStatus:shotTimingStatus,editableShotDialogues:editableShotDialogues,setWorkspaceControlDisabled:setWorkspaceControlDisabled,applyConversationMode:applyConversationMode,quickReplyPresentation:quickReplyPresentation,messageHtml:messageHtml,importContractHtml:importContractHtml,importContractTechnicalHtml:importContractTechnicalHtml,storyActsHtml:storyActsHtml,storyboardQualityHtml:storyboardQualityHtml,scriptHeaderState:scriptHeaderState,shotMediaIndex:shotMediaIndex,activeProviderJobs:activeProviderJobs,providerJobsWithResult:providerJobsWithResult,providerJobDisplay:providerJobDisplay,currentShotExecutionPrompt:currentShotExecutionPrompt,defaultWorkspaceShotKey:defaultWorkspaceShotKey,shotStructureCapabilities:shotStructureCapabilities,shotGenerationOverviewHtml:shotGenerationOverviewHtml,sceneLockingHtml:sceneLockingHtml,shotMediaHtml:shotMediaHtml,providerShotControlsHtml:providerShotControlsHtml,scriptHtml:scriptHtml,versionHtml:versionHtml,preflightHtml:preflightHtml,autodraftActionsHtml:autodraftActionsHtml,draftHtml:draftHtml,refinementIssueGroups:refinementIssueGroups,refinementTimelineTime:refinementTimelineTime,refinementShotTimeline:refinementShotTimeline,refinementShotLocatorHtml:refinementShotLocatorHtml,refinementShotCandidateHtml:refinementShotCandidateHtml,refinementCandidateRequest:refinementCandidateRequest,refinementRedoGenerationHtml:refinementRedoGenerationHtml,refinementRedoSummaryHtml:refinementRedoSummaryHtml,refinementRedoHtml:refinementRedoHtml,refinementHtml:refinementHtml,refinementActionsHtml:refinementActionsHtml,refinementProviderHtml:refinementProviderHtml,shellHtml:shellHtml,authoritativeCharacterList:authoritativeCharacterList,movieAvatarRequired:movieAvatarRequired,userFacingVideoMessage:userFacingVideoMessage,providerStartFailureMessage:providerStartFailureMessage,sensitiveProviderFailure:sensitiveProviderFailure,saferProviderPrompt:saferProviderPrompt,providerInputReview:providerInputReview,syncProviderCharacterNames:syncProviderCharacterNames,syncShotBindingPrompt:syncShotBindingPrompt,providerFailureRecoveryHtml:providerFailureRecoveryHtml,providerLabel:providerLabel,setWorkspaceBusyState:setWorkspaceBusyState,mount:mount};
+  return {createClient:createClient,shotReferenceSelectionPolicy:shotReferenceSelectionPolicy,effectiveSceneReferenceIdentity:effectiveSceneReferenceIdentity,confirmedShotDialogueHtml:confirmedShotDialogueHtml,characterImageOperationState:characterImageOperationState,characterImageAction:characterImageAction,avatarCreateUrl:avatarCreateUrl,shotDraftStorageKey:shotDraftStorageKey,discardLegacyShotDraft:discardLegacyShotDraft,cloneProjectPayload:cloneProjectPayload,normalize:normalize,conversationWorkspaceMode:conversationWorkspaceMode,sceneWorkspaceRequired:sceneWorkspaceRequired,dialogueReadingSeconds:dialogueReadingSeconds,shotTimingIssue:shotTimingIssue,shotTimingStatus:shotTimingStatus,editableShotDialogues:editableShotDialogues,setWorkspaceControlDisabled:setWorkspaceControlDisabled,applyConversationMode:applyConversationMode,quickReplyPresentation:quickReplyPresentation,messageHtml:messageHtml,importContractHtml:importContractHtml,importContractTechnicalHtml:importContractTechnicalHtml,storyActsHtml:storyActsHtml,storyboardQualityHtml:storyboardQualityHtml,scriptHeaderState:scriptHeaderState,shotMediaIndex:shotMediaIndex,activeProviderJobs:activeProviderJobs,providerJobsWithResult:providerJobsWithResult,providerJobDisplay:providerJobDisplay,currentShotExecutionPrompt:currentShotExecutionPrompt,defaultWorkspaceShotKey:defaultWorkspaceShotKey,shotStructureCapabilities:shotStructureCapabilities,shotGenerationOverviewHtml:shotGenerationOverviewHtml,sceneLockingHtml:sceneLockingHtml,shotMediaHtml:shotMediaHtml,providerShotControlsHtml:providerShotControlsHtml,scriptHtml:scriptHtml,versionHtml:versionHtml,preflightHtml:preflightHtml,autodraftActionsHtml:autodraftActionsHtml,draftHtml:draftHtml,refinementIssueGroups:refinementIssueGroups,refinementTimelineTime:refinementTimelineTime,refinementShotTimeline:refinementShotTimeline,refinementShotLocatorHtml:refinementShotLocatorHtml,refinementShotCandidateHtml:refinementShotCandidateHtml,refinementCandidateRequest:refinementCandidateRequest,refinementRedoGenerationHtml:refinementRedoGenerationHtml,refinementRedoSummaryHtml:refinementRedoSummaryHtml,refinementRedoHtml:refinementRedoHtml,refinementHtml:refinementHtml,refinementActionsHtml:refinementActionsHtml,refinementProviderHtml:refinementProviderHtml,shellHtml:shellHtml,authoritativeCharacterList:authoritativeCharacterList,movieAvatarRequired:movieAvatarRequired,userFacingVideoMessage:userFacingVideoMessage,providerStartFailureMessage:providerStartFailureMessage,sensitiveProviderFailure:sensitiveProviderFailure,saferProviderPrompt:saferProviderPrompt,providerInputReview:providerInputReview,syncProviderCharacterNames:syncProviderCharacterNames,syncShotBindingPrompt:syncShotBindingPrompt,providerFailureRecoveryHtml:providerFailureRecoveryHtml,providerLabel:providerLabel,setWorkspaceBusyState:setWorkspaceBusyState,mount:mount};
 });

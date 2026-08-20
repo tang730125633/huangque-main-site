@@ -743,7 +743,8 @@ test('敏感审核失败提供可操作的中文恢复流程', () => {
   assert.deepEqual(review.unexpected,['林默']);
   assert.match(html,/输入内容未通过审核/);
   assert.match(html,/角色名称不一致/);
-  assert.match(html,/上一镜头尾帧 · 可临时停用/);
+  assert.match(html,/上一镜头尾帧 · 同场景同版本时必须保留/);
+  assert.match(html,/场景图与同场景同版本的上一镜头尾帧属于连续性约束，不能停用/);
   assert.match(html,/data-action="edit-shot-execution"/);
   assert.equal(workspace.saferProviderPrompt(shot.provider_prompt),'普通室内教室里，清瘦人物林默独自收拾书包');
   assert.match(workspace.syncProviderCharacterNames(shot.provider_prompt,review),/陈宇/);
@@ -862,8 +863,8 @@ test('同场景同版本严格为尾帧保留第五个参考图位置', () => {
   assert.equal(typeof workspace.shotReferenceSelectionPolicy,'function');
   assert.deepEqual(
     workspace.shotReferenceSelectionPolicy(
-      {scene_key:'scene:memorial',version_id:'scene-v2'},
-      {scene_key:'scene:memorial',version_id:'scene-v2'},
+      {scene_key:'scene:memorial',reference_identity:'scene-operation-v2'},
+      {scene_key:'scene:memorial',reference_identity:'scene-operation-v2'},
       true
     ),
     {
@@ -873,14 +874,36 @@ test('同场景同版本严格为尾帧保留第五个参考图位置', () => {
   );
   assert.deepEqual(
     workspace.shotReferenceSelectionPolicy(
-      {scene_key:'scene:memorial',version_id:'scene-v2'},
-      {scene_key:'scene:memorial',version_id:'scene-v1'},
+      {scene_key:'scene:memorial',reference_identity:'scene-operation-v2'},
+      {scene_key:'scene:memorial',reference_identity:'scene-operation-v1'},
       true
     ),
     {
       same_scene_reference:false,tail_required:false,
       selected_reference_limit:5,character_limit:4
     }
+  );
+});
+
+test('沿用故事镜头绑定场景时仍按有效场景身份预留参考图位置', () => {
+  assert.deepEqual(
+    workspace.effectiveSceneReferenceIdentity(
+      {scene_key:'',reference_identity:''},
+      {scene_key:'scene:memorial',reference_identity:'scene-operation-v2'}
+    ),
+    {scene_key:'scene:memorial',reference_identity:'scene-operation-v2'}
+  );
+  const inherited=workspace.effectiveSceneReferenceIdentity(
+    {scene_key:'',reference_identity:''},
+    {scene_key:'scene:memorial',reference_identity:'scene-operation-v2'}
+  );
+  assert.equal(
+    workspace.shotReferenceSelectionPolicy(
+      inherited,
+      {scene_key:'scene:memorial',reference_identity:'scene-operation-v2'},
+      true
+    ).character_limit,
+    3
   );
 });
 
@@ -907,6 +930,11 @@ test('镜头执行编辑器可显式绑定锁定场景并保留场景补充', ()
   assert.match(workspaceSource,/name="scene_key"/);
   assert.match(workspaceSource,/补充当前镜头的场景细节/);
   assert.match(workspaceSource,/execution\.scene_key=/);
+  assert.match(workspaceSource,/execution\.include_scene_reference=true/);
+  assert.match(workspaceSource,/data-default-scene-key=/);
+  assert.match(workspaceSource,/data-default-scene-reference-identity=/);
+  assert.doesNotMatch(workspaceSource,/本镜头暂不使用场景图/);
+  assert.doesNotMatch(workspaceSource,/fallbackScene/);
   assert.match(workspaceStyle,/\.sd-shot-scene-binding/);
 });
 

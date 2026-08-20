@@ -217,6 +217,9 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
                     "scene_version_id": str(
                         item.get("scene_version_id") or ""
                     ).strip(),
+                    "scene_reference_identity": str(
+                        item.get("scene_reference_identity") or ""
+                    ).strip(),
                     "continuity_shot_key": str(
                         item.get("continuity_shot_key") or ""
                     ).strip(),

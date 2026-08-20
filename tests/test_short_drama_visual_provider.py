@@ -172,6 +172,7 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
                     "character_key": "__scene_reference__",
                     "scene_key": "scene:memorial-square",
                     "scene_version_id": "scene-version-2",
+                    "scene_reference_identity": "scene-operation-2",
                     "url": "https://cdn.example/memorial-square.png",
                 }],
             })
@@ -179,6 +180,9 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
         scene = result["reference_images"][0]
         self.assertEqual("scene:memorial-square", scene["scene_key"])
         self.assertEqual("scene-version-2", scene["scene_version_id"])
+        self.assertEqual(
+            "scene-operation-2", scene["scene_reference_identity"],
+        )
 
     def test_minimax_h3_encodes_local_png_without_public_storage(self):
         provider = MiniMaxH3ShotProvider()

@@ -902,14 +902,14 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             workspace["provider_execution_overrides"][shot["shot_key"]]["sound_design"],
         )
 
-    def test_sensitive_failure_is_localized_and_optional_references_are_persisted(self):
+    def test_sensitive_failure_cannot_disable_continuity_or_scene_references(self):
         execution = short_drama_autodraft._clean_execution({
             "provider_prompt": "校园教室里，学生收拾书包",
             "include_continuity_reference": False,
             "include_scene_reference": True,
             "scene_key": "scene-group:locked-classroom",
         })
-        self.assertFalse(execution["include_continuity_reference"])
+        self.assertTrue(execution["include_continuity_reference"])
         self.assertTrue(execution["include_scene_reference"])
         self.assertEqual("scene-group:locked-classroom", execution["scene_key"])
         error = short_drama_autodraft._provider_failure_error({
@@ -1065,6 +1065,7 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         self._lock_project_character_references()
         conn = self.db()
         try:
+
             conn.execute(
                 "UPDATE short_drama_characters SET reference_file='' "
                 "WHERE project_id=?",
@@ -4264,6 +4265,151 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             ).fetchone()[0])
         finally:
             conn.close()
+
+
+    def test_minimax_legacy_previous_shot_without_scene_identity_skips_tail(self):
+        scene = {
+            "scene_key": "scene:memorial-square",
+            "version_id": "scene-version-current",
+            "reference_identity": "scene-operation-current",
+            "name": "Memorial square",
+            "prompt": "Rainy memorial wall",
+            "file": "short_drama_scenes/memorial-square.png",
+            "url": "https://cdn.example/memorial-square.png",
+        }
+        result = self._preview_second_minimax_shot_with_scene_references(
+            scene, dict(scene), recorded_previous_identity=False,
+        )
+
+        self.assertNotIn(
+            "continuity",
+            [item["type"] for item in result["request"]["reference_inputs"]],
+        )
+
+    def test_minimax_bound_scene_cannot_disable_locked_reference_requirement(self):
+        self._lock_project_character_references()
+        conn = self.db()
+        try:
+            plan = json.loads(conn.execute(
+                "SELECT plan_json FROM short_drama_production_plans WHERE id=?",
+                (self.plan_id,),
+            ).fetchone()[0])
+            shot = plan["material_plan"][0]
+        finally:
+            conn.close()
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+            "MINIMAX_API_KEY": "configured-for-preflight-only",
+        }), mock.patch.object(
+            short_drama_autodraft.short_drama_asset_graph,
+            "locked_scene_reference", return_value=None,
+        ), mock.patch.object(
+            short_drama_autodraft.short_drama_asset_graph,
+            "bound_scene_key", return_value="scene:memorial-square",
+        ):
+            with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+                short_drama_autodraft.preview_provider_request(
+                    self.db, "alice", "alice", {
+                        "project_id": self.project["id"],
+                        "plan_id": self.plan_id,
+                        "shot_key": shot["shot_key"],
+                        "execution": {
+                            "provider_prompt": "Actor stands before the memorial wall",
+                            "include_scene_reference": False,
+                        },
+                    },
+                )
+
+        self.assertEqual("provider_scene_reference_required", raised.exception.code)
+
+    def test_minimax_unknown_explicit_scene_key_is_rejected(self):
+        self._lock_project_character_references()
+        conn = self.db()
+        try:
+            plan = json.loads(conn.execute(
+                "SELECT plan_json FROM short_drama_production_plans WHERE id=?",
+                (self.plan_id,),
+            ).fetchone()[0])
+            shot = plan["material_plan"][0]
+        finally:
+            conn.close()
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+            "MINIMAX_API_KEY": "configured-for-preflight-only",
+        }), mock.patch.object(
+            short_drama_autodraft.short_drama_asset_graph,
+            "locked_scene_reference", return_value=None,
+        ), mock.patch.object(
+            short_drama_autodraft.short_drama_asset_graph,
+            "bound_scene_key", return_value="",
+        ):
+            with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+                short_drama_autodraft.preview_provider_request(
+                    self.db, "alice", "alice", {
+                        "project_id": self.project["id"],
+                        "plan_id": self.plan_id,
+                        "shot_key": shot["shot_key"],
+                        "execution": {
+                            "provider_prompt": "Actor stands before the memorial wall",
+                            "scene_key": "scene:does-not-exist",
+                        },
+                    },
+                )
+
+        self.assertEqual("provider_scene_reference_required", raised.exception.code)
+
+    def test_minimax_without_scene_accepts_five_character_references(self):
+        character_keys = ["ensemble_%d" % index for index in range(1, 6)]
+        conn = self.db()
+        try:
+            for index, key in enumerate(character_keys, 1):
+                conn.execute(
+                    "INSERT INTO short_drama_characters "
+                    "(id,project_id,character_key,name,source_type,reference_file,"
+                    "reference_url,reference_version,reference_locked,sort_order) "
+                    "VALUES (?,?,?,?,?,?,?,?,1,?)",
+                    (
+                        "ensemble-character-%d" % index, self.project["id"], key,
+                        "Ensemble %d" % index, "ai_character",
+                        "short_drama_refs/ensemble-%d.png" % index,
+                        "https://cdn.example/ensemble-%d.png" % index, 1, index,
+                    ),
+                )
+            plan = json.loads(conn.execute(
+                "SELECT plan_json FROM short_drama_production_plans WHERE id=?",
+                (self.plan_id,),
+            ).fetchone()[0])
+            shot = plan["material_plan"][0]
+            shot["dialogue"] = []
+            shot["character_keys"] = list(character_keys)
+            conn.execute(
+                "UPDATE short_drama_production_plans SET plan_json=? WHERE id=?",
+                (json.dumps(plan, ensure_ascii=False), self.plan_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+            "MINIMAX_API_KEY": "configured-for-preflight-only",
+        }):
+            result = short_drama_autodraft.preview_provider_request(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"],
+                    "plan_id": self.plan_id,
+                    "shot_key": shot["shot_key"],
+                    "execution": {
+                        "provider_prompt": "Five actors enter an empty hall together",
+                        "character_keys": character_keys,
+                    },
+                }, include_private=True,
+            )
+
+        self.assertEqual(5, len(result["character_keys"]))
+        self.assertEqual(5, result["request"]["reference_count"])
 
 
 class ShortDramaContinuityChainTests(unittest.TestCase):
