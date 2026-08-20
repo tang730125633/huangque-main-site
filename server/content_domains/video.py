@@ -4116,11 +4116,26 @@ def _download_video_file_direct(url, prefix="vid", *, allowed_hosts=None, max_by
                 opener.open, url, {"User-Agent": "huangque-content/1.0"},
                 temporary, max_bytes, retries=HEYGEN_NET_RETRIES,
             )
-            with temporary.open("rb") as downloaded:
-                if downloaded.read(8)[4:8] != b"ftyp":
-                    raise ValueError("下载结果不是有效的 MP4 容器")
-            _validate_downloaded_video_file(temporary)
-            temporary.replace(target)
+            try:
+                with temporary.open("rb") as downloaded:
+                    if downloaded.read(8)[4:8] != b"ftyp":
+                        raise ValueError("下载结果不是有效的 MP4 容器")
+            except OSError as error:
+                raise _CompletedVideoLocalIOError(
+                    "视频下载结果无法读取校验"
+                ) from error
+            try:
+                _validate_downloaded_video_file(temporary)
+            except OSError as error:
+                raise _CompletedVideoLocalIOError(
+                    "视频下载结果无法读取校验"
+                ) from error
+            try:
+                temporary.replace(target)
+            except OSError as error:
+                raise _CompletedVideoLocalIOError(
+                    "视频下载结果无法原子发布"
+                ) from error
         finally:
             try:
                 temporary.unlink(missing_ok=True)
@@ -5231,34 +5246,50 @@ def _stream_resumable_video_download(
                     raise _CompletedVideoLocalIOError(
                         "视频下载本地临时文件无法打开"
                     ) from error
-                with output_context as output:
-                    while True:
-                        remaining = max_bytes - (offset + received)
-                        chunk = response.read(min(
-                            XIAOLE_VIDEO_DOWNLOAD_CHUNK_BYTES, remaining + 1
-                        ))
-                        if not chunk:
-                            break
+                remote_read_error = None
+                try:
+                    with output_context as output:
+                        while True:
+                            remaining = max_bytes - (offset + received)
+                            try:
+                                chunk = response.read(min(
+                                    XIAOLE_VIDEO_DOWNLOAD_CHUNK_BYTES, remaining + 1
+                                ))
+                            except Exception as error:
+                                # Close and durably flush the local file before the
+                                # outer network-recovery path considers its length.
+                                remote_read_error = error
+                                break
+                            if not chunk:
+                                break
+                            try:
+                                written = output.write(chunk)
+                            except OSError as error:
+                                raise _CompletedVideoLocalIOError(
+                                    "视频下载本地文件写入失败"
+                                ) from error
+                            if written is not None and written != len(chunk):
+                                raise _CompletedVideoLocalIOError(
+                                    "视频下载本地文件写入不完整"
+                                )
+                            received += len(chunk)
+                            if offset + received > max_bytes:
+                                raise ValueError("视频下载文件超过大小限制")
                         try:
-                            written = output.write(chunk)
+                            output.flush()
+                            os.fsync(output.fileno())
                         except OSError as error:
                             raise _CompletedVideoLocalIOError(
-                                "视频下载本地文件写入失败"
+                                "视频下载本地文件同步失败"
                             ) from error
-                        if written is not None and written != len(chunk):
-                            raise _CompletedVideoLocalIOError(
-                                "视频下载本地文件写入不完整"
-                            )
-                        received += len(chunk)
-                        if offset + received > max_bytes:
-                            raise ValueError("视频下载文件超过大小限制")
-                    try:
-                        output.flush()
-                        os.fsync(output.fileno())
-                    except OSError as error:
-                        raise _CompletedVideoLocalIOError(
-                            "视频下载本地文件同步失败"
-                        ) from error
+                except _CompletedVideoLocalIOError:
+                    raise
+                except OSError as error:
+                    raise _CompletedVideoLocalIOError(
+                        "视频下载本地文件关闭失败"
+                    ) from error
+                if remote_read_error is not None:
+                    raise remote_read_error
                 if expected_range_length is not None and received != expected_range_length:
                     raise _RestartCompletedVideoDownload(
                         "视频断点续传响应区间长度不一致"
@@ -5358,9 +5389,18 @@ def _download_xiaole_video(
                 )
                 try:
                     _validate_downloaded_video_file(temporary)
+                except OSError as error:
+                    raise _CompletedVideoLocalIOError(
+                        "视频下载结果无法读取校验"
+                    ) from error
                 except ValueError as error:
                     raise _CompletedVideoCandidateError(str(error)) from error
-                temporary.replace(target)
+                try:
+                    temporary.replace(target)
+                except OSError as error:
+                    raise _CompletedVideoLocalIOError(
+                        "视频下载结果无法原子发布"
+                    ) from error
                 completed = True
                 return _faststart_video_file(filename)
             except _CompletedVideoLocalIOError:

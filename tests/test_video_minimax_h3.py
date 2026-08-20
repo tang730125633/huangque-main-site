@@ -575,6 +575,94 @@ class MiniMaxH3VideoTests(unittest.TestCase):
             self.assertEqual(payload, (output_root / result).read_bytes())
         self.assertEqual(2, len(requests))
 
+    def test_restricted_minimax_download_wraps_validation_close_failure(self):
+        payload = b"\x00\x00\x00\x18ftypisomminimax-local-close"
+        requests = []
+
+        class Response:
+            status = 200
+            headers = {
+                "Content-Length": str(len(payload)),
+                "Content-Type": "video/mp4",
+                "ETag": '"version-1"',
+            }
+
+            def __init__(self): self.offset = 0
+            def __enter__(self): return self
+            def __exit__(self, *_args): return False
+
+            def read(self, size=-1):
+                end = len(payload) if size < 0 else min(len(payload), self.offset + size)
+                chunk = payload[self.offset:end]
+                self.offset = end
+                return chunk
+
+        class Opener:
+            def open(self, _request, timeout=None):
+                self_outer.assertEqual(300, timeout)
+                requests.append(True)
+                return Response()
+
+        class ReadCloseFailingFile:
+            def __init__(self, raw): self.raw = raw
+            def __enter__(self): return self
+
+            def __exit__(self, *_args):
+                self.raw.close()
+                raise OSError("validation close failed")
+
+            def read(self, size=-1): return self.raw.read(size)
+
+        self_outer = self
+        real_open = Path.open
+
+        def open_with_validation_close_failure(path, *args, **kwargs):
+            raw = real_open(path, *args, **kwargs)
+            mode = args[0] if args else kwargs.get("mode", "r")
+            if mode == "rb":
+                return ReadCloseFailingFile(raw)
+            return raw
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_root = Path(temp_dir)
+            (output_root / "video").mkdir()
+            with patch.object(video, "_validate_restricted_download_url"), \
+                    patch.object(video, "_restricted_download_opener", return_value=Opener()), \
+                    patch.object(video, "_out_path", side_effect=lambda rel: output_root / rel), \
+                    patch.object(Path, "open", autospec=True,
+                                 side_effect=open_with_validation_close_failure), \
+                    patch.object(video, "_validate_downloaded_video_file") as validate, \
+                    patch.object(Path, "replace", autospec=True) as publish, \
+                    patch.object(video.time, "sleep"):
+                with self.assertRaises(video.CompletedVideoDownloadError):
+                    video._download_video_file_direct(
+                        "https://cdn.example/minimax.mp4", "minimax_h3",
+                        allowed_hosts={"cdn.example"}, max_bytes=1024,
+                    )
+            self.assertEqual([True], requests)
+            validate.assert_not_called()
+            publish.assert_not_called()
+            self.assertEqual(list((output_root / "video").iterdir()), [])
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_root = Path(temp_dir)
+            (output_root / "video").mkdir()
+            with patch.object(video, "_validate_restricted_download_url"), \
+                    patch.object(video, "_restricted_download_opener", return_value=Opener()), \
+                    patch.object(video, "_out_path", side_effect=lambda rel: output_root / rel), \
+                    patch.object(video, "_validate_downloaded_video_file",
+                                 side_effect=OSError("probe read failed")), \
+                    patch.object(Path, "replace", autospec=True) as publish, \
+                    patch.object(video.time, "sleep"):
+                with self.assertRaises(video.CompletedVideoDownloadError):
+                    video._download_video_file_direct(
+                        "https://cdn.example/minimax.mp4", "minimax_h3",
+                        allowed_hosts={"cdn.example"}, max_bytes=1024,
+                    )
+            self.assertEqual([True, True], requests)
+            publish.assert_not_called()
+            self.assertEqual(list((output_root / "video").iterdir()), [])
+
     def test_shared_resume_routes_legacy_and_new_tasks_to_their_origin(self):
         rendered = {
             "request_id": "h3-task-1", "source_video_url": "https://cdn.example/h3.mp4",
