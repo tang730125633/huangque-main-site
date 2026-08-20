@@ -1,4 +1,5 @@
 import base64
+import contextlib
 import hashlib
 import io
 import json
@@ -11,6 +12,28 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 
+class _DownloadResponse:
+    def __init__(self, body, headers, *, fail_after=None, status=200):
+        self.body = body
+        self.headers = headers
+        self.fail_after = fail_after
+        self.status = status
+        self.offset = 0
+
+    def __enter__(self): return self
+    def __exit__(self, *_args): return False
+
+    def read(self, size=-1):
+        if self.fail_after is not None and self.offset >= self.fail_after:
+            raise ssl.SSLError("early eof")
+        end = len(self.body) if size < 0 else min(len(self.body), self.offset + size)
+        if self.fail_after is not None:
+            end = min(end, self.fail_after)
+        chunk = self.body[self.offset:end]
+        self.offset = end
+        return chunk
+
+
 class XiaoleVideoTests(unittest.TestCase):
     def setUp(self):
         server_dir = str(Path(__file__).resolve().parents[1] / "server")
@@ -18,6 +41,58 @@ class XiaoleVideoTests(unittest.TestCase):
             sys.path.insert(0, server_dir)
         from content_domains import video
         self.video = video
+
+    def _assert_unlink_failure_stops_candidate_switch(
+            self, open_response, requests, expected_requests, *,
+            validation_side_effect=None, retries=None):
+        original_unlink = Path.unlink
+        unlink_attempts = []
+
+        def fail_first_partial_unlink(path, *args, **kwargs):
+            if ".part-" in path.name:
+                unlink_attempts.append(path)
+                if len(unlink_attempts) == 1:
+                    raise OSError("partial unlink failed")
+            return original_unlink(path, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_root = Path(temp_dir)
+            (output_root / "video").mkdir()
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(patch.object(
+                    self.video, "_xiaole_download_candidates", return_value=[
+                        ("https://relay.example/video.mp4", {}, None),
+                        ("https://cdn.example/video.mp4", {}, None),
+                    ]
+                ))
+                stack.enter_context(patch.object(
+                    self.video.urllib.request, "urlopen", side_effect=open_response
+                ))
+                stack.enter_context(patch.object(
+                    self.video, "_out_path", side_effect=lambda rel: output_root / rel
+                ))
+                stack.enter_context(patch.object(
+                    Path, "unlink", autospec=True,
+                    side_effect=fail_first_partial_unlink,
+                ))
+                stack.enter_context(patch.object(
+                    self.video, "_validate_downloaded_video_file",
+                    side_effect=validation_side_effect,
+                ))
+                stack.enter_context(patch.object(
+                    self.video, "_faststart_video_file", side_effect=lambda rel: rel
+                ))
+                stack.enter_context(patch.object(self.video.time, "sleep"))
+                if retries is not None:
+                    stack.enter_context(patch.object(
+                        self.video, "_xiaole_dl_retries", retries
+                    ))
+                with self.assertRaises(self.video._CompletedVideoLocalIOError):
+                    self.video._download_xiaole_video(
+                        "https://cdn.example/video.mp4", "minimax_h3",
+                    )
+            self.assertEqual(requests, expected_requests)
+            self.assertEqual(list((output_root / "video").glob("*.mp4")), [])
 
     def test_xiaole_request_retry_deadline_caps_internal_backoff(self):
         now = [0.0]
@@ -206,6 +281,24 @@ class XiaoleVideoTests(unittest.TestCase):
                 )
             self.assertEqual((output_root / result).read_bytes(), second)
             self.assertEqual(len(requests), 2)
+
+    def test_completed_video_download_stops_when_unvalidated_partial_cannot_be_removed(self):
+        payload = b"\x00\x00\x00\x18ftypisom-unvalidated-partial"
+        split = 12
+        requests = []
+        headers = {
+            "Content-Length": str(len(payload)),
+            "Content-Type": "video/mp4",
+        }
+
+        def open_response(request, timeout=None):
+            self.assertEqual(timeout, 300)
+            requests.append(request.full_url)
+            return _DownloadResponse(payload, headers, fail_after=split)
+
+        self._assert_unlink_failure_stops_candidate_switch(
+            open_response, requests, ["https://relay.example/video.mp4"]
+        )
 
     def test_completed_video_download_restarts_from_zero_for_invalid_etags(self):
         payload = b"\x00\x00\x00\x18ftypisomvalidator"
@@ -1071,6 +1164,35 @@ class XiaoleVideoTests(unittest.TestCase):
             self.assertEqual((output_root / result).read_bytes(), payload)
             self.assertEqual(len(calls), 3)
 
+    def test_completed_video_download_stops_when_416_partial_cannot_be_removed(self):
+        payload = b"\x00\x00\x00\x18ftypisomrange-416-unlink"
+        split = 8
+        requests = []
+        headers = {
+            "Content-Length": str(len(payload)),
+            "Content-Type": "video/mp4",
+            "ETag": '"version-1"',
+        }
+
+        def open_response(request, timeout=None):
+            self.assertEqual(timeout, 300)
+            requests.append((request.full_url, request.get_header("Range")))
+            if len(requests) == 1:
+                return _DownloadResponse(payload, headers, fail_after=split)
+            if len(requests) == 2:
+                raise urllib.error.HTTPError(
+                    request.full_url, 416, "Range Not Satisfiable",
+                    {"Content-Range": "bytes */%d" % len(payload)}, io.BytesIO(),
+                )
+            return _DownloadResponse(payload, headers)
+
+        self._assert_unlink_failure_stops_candidate_switch(
+            open_response, requests, [
+                ("https://relay.example/video.mp4", None),
+                ("https://relay.example/video.mp4", "bytes=8-"),
+            ]
+        )
+
     def test_exhausted_completed_video_download_is_terminal_not_requeued(self):
         with patch.object(self.video, "recover_official_video_paid_job") as recover:
             held = self.video.recover_paid_video_error(
@@ -1298,6 +1420,46 @@ class XiaoleVideoTests(unittest.TestCase):
                 "https://cdn.example/video.mp4",
             ])
             self.assertEqual((output_root / result).read_bytes(), second)
+
+    def test_completed_video_download_stops_when_failed_candidate_cannot_be_removed(self):
+        payload = b"\x00\x00\x00\x18ftypisomcandidate-cleanup"
+        requested = []
+        headers = {
+            "Content-Length": str(len(payload)),
+            "Content-Type": "video/mp4",
+            "ETag": '"version-1"',
+        }
+
+        def open_response(request, timeout=None):
+            self.assertEqual(timeout, 300)
+            requested.append(request.full_url)
+            return _DownloadResponse(payload, headers)
+
+        self._assert_unlink_failure_stops_candidate_switch(
+            open_response, requested, ["https://relay.example/video.mp4"],
+            validation_side_effect=[ValueError("invalid media"), None],
+        )
+
+    def test_completed_video_download_stops_when_exhausted_candidate_cannot_be_removed(self):
+        payload = b"\x00\x00\x00\x18ftypisomfallback-candidate"
+        requested = []
+        headers = {
+            "Content-Length": str(len(payload)),
+            "Content-Type": "video/mp4",
+            "ETag": '"version-1"',
+        }
+
+        def open_response(request, timeout=None):
+            self.assertEqual(timeout, 300)
+            requested.append(request.full_url)
+            if len(requested) == 1:
+                raise urllib.error.URLError("relay unavailable")
+            return _DownloadResponse(payload, headers)
+
+        self._assert_unlink_failure_stops_candidate_switch(
+            open_response, requested, ["https://relay.example/video.mp4"],
+            retries=1,
+        )
 
     def test_authenticated_download_header_is_not_forwarded_to_relay(self):
         import os as _os

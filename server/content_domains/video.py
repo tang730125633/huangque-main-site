@@ -5070,6 +5070,14 @@ class _CompletedVideoCandidateError(ValueError):
     """One proxy/relay route returned unusable response data."""
 
 
+def _remove_completed_video_partial(path, message):
+    """Remove retry state before a transition, or fail closed on local I/O."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as error:
+        raise _CompletedVideoLocalIOError(message) from error
+
+
 class _RestartCompletedVideoDownload(RuntimeError):
     """The partial file cannot be trusted and must be downloaded from byte zero."""
 
@@ -5204,12 +5212,9 @@ def _stream_resumable_video_download(
             # A byte range alone cannot prove that two responses are the same
             # object. Without a strong ETag or Last-Modified, discard the
             # partial and retry a full GET instead of stitching versions.
-            try:
-                temporary.unlink()
-            except OSError as error:
-                raise CompletedVideoDownloadError(
-                    "视频下载临时文件无法安全重置"
-                ) from error
+            _remove_completed_video_partial(
+                temporary, "视频下载临时文件无法安全重置"
+            )
             offset = 0
             known_total = None
         request_headers = dict(headers or {})
@@ -5319,12 +5324,9 @@ def _stream_resumable_video_download(
             raise
         except _RestartCompletedVideoDownload as error:
             last_error = error
-            try:
-                temporary.unlink(missing_ok=True)
-            except OSError as cleanup_error:
-                raise CompletedVideoDownloadError(
-                    "视频下载临时文件无法安全重置"
-                ) from cleanup_error
+            _remove_completed_video_partial(
+                temporary, "视频下载临时文件无法安全重置"
+            )
             known_total = None
             validator = ""
             print("[video] 下载对象变化，已丢弃临时文件并从零重试(%d/%d): %s" % (
@@ -5417,20 +5419,18 @@ def _download_xiaole_video(
                 raise
             except _CompletedVideoCandidateError as error:
                 last_err = error
-                try:
-                    temporary.unlink(missing_ok=True)
-                except OSError:
-                    pass
+                _remove_completed_video_partial(
+                    temporary, "视频下载候选文件无法安全清理"
+                )
             except ValueError as error:
                 # Invalid HTTP metadata/content is deterministic and must not be
                 # retried through another route as if it were a network flap.
                 raise CompletedVideoDownloadError(str(error)) from error
             except CompletedVideoDownloadError as error:
                 last_err = error
-                try:
-                    temporary.unlink(missing_ok=True)
-                except OSError:
-                    pass
+                _remove_completed_video_partial(
+                    temporary, "视频下载候选文件无法安全清理"
+                )
         raise CompletedVideoDownloadError(
             "视频下载失败: %s" % (str(last_err)[:160] if last_err else "未知")
         )
