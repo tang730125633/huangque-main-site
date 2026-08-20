@@ -99,8 +99,9 @@ class CLIImageUploadTests(unittest.TestCase):
         handler = Handler()
         seen = {}
 
-        def validate(payload):
+        def validate(payload, username):
             seen.update(payload)
+            seen["username"] = username
             return payload
 
         cli_gateway.handle_quote(
@@ -113,6 +114,7 @@ class CLIImageUploadTests(unittest.TestCase):
         self.assertEqual(200, handler.result[0], handler.result[1])
         self.assertEqual(1, len(seen["reference_images"]))
         self.assertNotIn("reference_upload_ids", seen)
+        self.assertEqual("alice", seen["username"])
 
     def test_digest_mime_expiry_and_combinations_fail_closed(self):
         with self.assertRaisesRegex(ValueError, "发生变化"):

@@ -158,7 +158,7 @@ set -eu
 echo "python $*" >> "$FAKE_COMMAND_LOG"
 case " $* " in
   *" -m pip "*) test "${HERMES_FAULT_AFTER:-}" != pip || exit 86 ;;
-  *" -c "*) printf '80\n' ;;
+  *" -c "*) printf '81\n' ;;
 esac
 """,
         )
