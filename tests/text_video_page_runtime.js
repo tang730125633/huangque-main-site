@@ -362,9 +362,35 @@ async function scenarioSceneAvatarInvalidation() {
   };
 }
 
+async function scenarioMissingAvatarHint() {
+  const runtime = createRuntime();
+  await flush();
+  runtime.get('talkingMaterialEnabled').checked = true;
+  runtime.get('talkingMaterialEnabled').dispatch('change');
+  const beforeUpload = {
+    disabled: runtime.get('generateBtn').disabled,
+    hintHidden: runtime.get('talkingAvatarRequirement').hidden,
+    hint: runtime.get('talkingAvatarRequirement').textContent,
+    title: runtime.get('generateBtn').getAttribute('title'),
+  };
+
+  await upload(runtime, {type: 'image/png', size: 100, data: 'data:image/png;base64,AAAA'});
+  runtime.requests.avatars[0].resolve(response(200, {asset_id: 'avatar-base', preview_url: '/avatar-base'}));
+  await flush();
+
+  return {
+    beforeUpload,
+    afterUpload: {
+      disabled: runtime.get('generateBtn').disabled,
+      hintHidden: runtime.get('talkingAvatarRequirement').hidden,
+      title: runtime.get('generateBtn').getAttribute('title'),
+    },
+  };
+}
+
 async function main() {
   const scenario = process.argv[2];
-  const handlers = {latePlan: scenarioLatePlan, avatarRace: scenarioAvatarRace, phase: scenarioPhase, disabledPath: scenarioDisabledPath, planMutations: scenarioPlanMutations, sceneAvatarRace: scenarioSceneAvatarRace, sceneAvatarInvalidation: scenarioSceneAvatarInvalidation};
+  const handlers = {latePlan: scenarioLatePlan, avatarRace: scenarioAvatarRace, phase: scenarioPhase, disabledPath: scenarioDisabledPath, planMutations: scenarioPlanMutations, sceneAvatarRace: scenarioSceneAvatarRace, sceneAvatarInvalidation: scenarioSceneAvatarInvalidation, missingAvatarHint: scenarioMissingAvatarHint};
   if (!handlers[scenario]) throw new Error('Unknown scenario: ' + scenario);
   process.stdout.write(JSON.stringify(await handlers[scenario]()));
 }
