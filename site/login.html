@@ -379,6 +379,7 @@
   teamLogin.onclick=doLogin;
   registerToggle.onclick=function(){ setRegisterMode(!registering); };
   if(inviteCode) setRegisterMode(true);
+  else if(new URLSearchParams(location.search).get("mode")==="register") setRegisterMode(true);
   ["username","code","password","displayName","confirmPassword"].forEach(function(id){
     var el=document.getElementById(id); if(el) el.addEventListener("keydown",function(e){ if(e.key==="Enter") doLogin(); });
   });

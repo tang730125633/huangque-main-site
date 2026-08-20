@@ -545,9 +545,31 @@
     return '';
   }
   var sourceInspirationId=0;
-  // 灵感页「做同款」：从 ?prompt= / ?engine= 预填提示词 + 切引擎，并尽量从提示词里还原比例
+  function applyInspiration(item){
+    if(!item||!item.prompt)return false;
+    var prompt=String(item.prompt).slice(0,2000);
+    pr.value=prompt;pr.dispatchEvent(new Event('input'));
+    var inferredRatio=detectPromptRatio(prompt);if(inferredRatio)selectRatio(inferredRatio,false);
+    if(item.model)selectEngineByKey(item.model);
+    setNote('✅ 已带入分享案例的风格，可修改后生成','#2bd576');
+    return true;
+  }
+  function loadInspiration(caseId){
+    var handoff=null;
+    try{handoff=JSON.parse(sessionStorage.getItem('hq_followcreate_case_v1')||'null');sessionStorage.removeItem('hq_followcreate_case_v1');}catch(e){}
+    if(handoff&&handoff.id===String(caseId)&&Date.now()-Number(handoff.created_at)>=0&&Date.now()-Number(handoff.created_at)<=600000&&applyInspiration(handoff))return;
+    Promise.all([
+      fetch('inspirations.json',{cache:'no-cache'}).then(function(r){if(!r.ok)throw new Error('static');return r.json();}).catch(function(){return [];}),
+      fetch('/api/admin/public/inspirations',{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('managed');return r.json();}).then(function(d){return d.items||[];}).catch(function(){return [];})
+    ]).then(function(all){
+      var item=all[0].concat(all[1]).filter(function(x){return String(x&&x.id)===String(caseId);})[0];
+      if(!applyInspiration(item))setNote('案例不存在或已下架，请返回灵感案例重新选择','#f4708a');
+    });
+  }
+  // 灵感页「做同款」：分享链接只带案例编号；保留旧 prompt / engine 深链兼容。
   try{ var ip=new URLSearchParams(location.search);
-    sourceInspirationId=Number(ip.get('inspiration')||0);if(sourceInspirationId<1000000)sourceInspirationId=0;
+    var inspirationId=Number(ip.get('inspiration')||0);
+    sourceInspirationId=inspirationId>=1000000?inspirationId:0;
     if(ip.get('prefill')==='ip12'){
       try{
         var rawHandoff=sessionStorage.getItem('hq_ip12_product_handoff_v1');
@@ -567,6 +589,7 @@
       if(inferredRatio) selectRatio(inferredRatio, false);
     }
     var pe=ip.get('engine'); if(pe) selectEngineByKey(pe);   // 合卡后 nb2/pro 不再是 data-engine，走映射（兼容老深链）
+    if(inspirationId>0&&!pp)loadInspiration(inspirationId);
   }catch(e){}
 
   // 手气不错：不知道写啥 → 从灵感提示词库随机装一条进输入框（复用 inspirations.json，随灵感页自动更新）
