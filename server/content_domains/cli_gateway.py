@@ -203,7 +203,7 @@ def handle_quote(handler, path, verify, must_change_password, is_shutting_down,
             payload.pop("short_drama_references", None)
         elif kind == "xiaole_video":
             payload = cli_uploads.expand_image_payload(payload, user["username"])
-            payload = video.validate_xiaole_video_payload(payload)
+            payload = video.validate_xiaole_video_payload(payload, user["username"])
         elif kind == "sora_video":
             payload = cli_uploads.expand_image_payload(payload, user["username"])
             payload = video.validate_sora_video_payload(payload)

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""MiniMax 中国区 H3 官方异步视频适配器。"""
+"""MetaSo MiniMax-H3 asynchronous video adapter."""
 
 import base64
 import io
@@ -15,7 +15,17 @@ from . import provider_keys
 
 
 MODEL = "MiniMax-H3"
-API_BASE = os.environ.get("MINIMAX_API_BASE", "https://api.minimaxi.com").rstrip("/")
+ORIGIN_METASO = "metaso"
+ORIGIN_LEGACY = "legacy"
+METASO_API_BASE = "https://metaso.cn/api/minimax"
+LEGACY_API_BASE = "https://api.minimaxi.com"
+ORIGIN_API_BASES = {
+    ORIGIN_METASO: METASO_API_BASE,
+    ORIGIN_LEGACY: LEGACY_API_BASE,
+}
+# Compatibility alias for callers which submit new tasks. Recovery must use
+# api_base_for_origin() and never a mutable environment value.
+API_BASE = METASO_API_BASE
 API_KEY = os.environ.get("MINIMAX_API_KEY", "").strip()
 TIMEOUT = max(120, int(os.environ.get("MINIMAX_H3_TIMEOUT", "1800") or 1800))
 POLL_INTERVAL = max(5, int(os.environ.get("MINIMAX_H3_POLL_INTERVAL", "10") or 10))
@@ -23,6 +33,15 @@ TRANSIENT_CODES = {408, 429} | set(range(500, 600))
 RATIOS = {"21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive"}
 MAX_REFERENCE_IMAGES = 5
 MAX_IMAGE_BYTES = 30 * 1024 * 1024
+DEFAULT_RESOLUTION = "2K"
+RESOLUTIONS = {DEFAULT_RESOLUTION}
+RESULT_HOSTS = {
+    "cdn.hailuoai.com",
+    "cdn.minimax.chat",
+    "file.cdn.minimax.io",
+    "filecdn.minimax.chat",
+}
+RESULT_MAX_BYTES = 250 * 1024 * 1024
 
 
 class CreateOutcomeUnknown(RuntimeError):
@@ -42,6 +61,10 @@ class MiniMaxProviderFailed(RuntimeError):
 
 
 class TransientMiniMaxError(RuntimeError):
+    pass
+
+
+class MiniMaxOriginUnknown(ValueError):
     pass
 
 
@@ -73,22 +96,78 @@ def _base_error(payload):
 def _human_error(code, detail):
     low = str(detail or "").lower()
     if code in {401, 403, 1004} or "login fail" in low or "invalid api key" in low:
-        return "MiniMax 开放平台密钥无效，请在接口密钥页面重新创建并配置 API Key"
+        return "MetaSo MiniMax 密钥无效，请重新创建并配置 API Key"
     if code == 402 or any(x in low for x in ("balance", "insufficient", "余额", "欠费")):
-        return "MiniMax 开放平台余额不足，请充值后重试"
+        return "MetaSo MiniMax 余额不足，请充值后重试"
     if any(x in low for x in ("moderation", "sensitive", "risk", "审核", "敏感")):
         return "视频内容未通过安全审核，请调整提示词或首帧图片"
     if "media metadata is invalid" in low or "2013" in low:
-        return "麦克视频参考图无法识别，请重新上传 JPG 或 PNG 图片"
+        return "麦克视频请求参数或参考图无法识别，请检查参数及 JPG/PNG 图片"
     if code == 429:
         return "MiniMax 当前并发繁忙，请稍后重试"
-    return "MiniMax 开放平台接口失败：%s" % (detail or code)
+    return "MetaSo MiniMax 接口失败：%s" % (detail or code)
 
 
-def _request_json(opener, method, path, body=None, timeout=90, api_key=None):
+def _api_base(value=None):
+    base = str(value or API_BASE).strip().rstrip("/")
+    if base not in {API_BASE, LEGACY_API_BASE}:
+        raise ValueError("麦克视频任务来源无效，已停止自动恢复")
+    return base
+
+
+def api_base_for_origin(origin):
+    value = str(origin or ORIGIN_LEGACY).strip().lower()
+    try:
+        return ORIGIN_API_BASES[value]
+    except KeyError as exc:
+        raise ValueError("麦克视频任务来源无效，已停止自动恢复") from exc
+
+
+def new_task_origin():
+    """Single source of truth for every new paid MiniMax submission."""
+    return ORIGIN_METASO
+
+
+def new_task_api_base():
+    return api_base_for_origin(new_task_origin())
+
+
+def historical_origin_from_environment():
+    """Infer a pre-marker task only from the endpoint used by the old release."""
+    base = str(os.environ.get("MINIMAX_API_BASE") or "").strip().rstrip("/")
+    if not base:
+        return ORIGIN_LEGACY
+    for origin, canonical_base in ORIGIN_API_BASES.items():
+        if base == canonical_base:
+            return origin
+    raise MiniMaxOriginUnknown(
+        "旧麦克视频任务来源无法安全判定，请人工确认原提交端点后恢复"
+    )
+
+
+def origin_from_payload(payload):
+    payload = payload or {}
+    origin = str(payload.get("_minimax_origin") or "").strip().lower()
+    if origin:
+        api_base_for_origin(origin)
+        return origin
+    legacy_base = str(payload.get("_minimax_api_base") or "").strip().rstrip("/")
+    if legacy_base:
+        for candidate_origin, candidate_base in ORIGIN_API_BASES.items():
+            if legacy_base == candidate_base:
+                return candidate_origin
+        raise ValueError("麦克视频任务来源无效，已停止自动恢复")
+    raise MiniMaxOriginUnknown(
+        "旧麦克视频任务缺少来源标记，请先完成来源回填"
+    )
+
+
+def _request_json(
+    opener, method, path, body=None, timeout=90, api_key=None, api_base=None,
+):
     api_key = API_KEY if api_key is None else str(api_key).strip()
     if not api_key:
-        raise MiniMaxCredentialRejected("尚未配置 MiniMax 开放平台 API Key")
+        raise MiniMaxCredentialRejected("尚未配置 MetaSo MiniMax API Key")
     headers = {
         "Authorization": "Bearer " + api_key,
         "Accept": "application/json",
@@ -99,7 +178,8 @@ def _request_json(opener, method, path, body=None, timeout=90, api_key=None):
         headers["Content-Type"] = "application/json"
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
-        API_BASE + "/" + path.lstrip("/"), data=data, headers=headers, method=method
+        _api_base(api_base) + "/" + path.lstrip("/"),
+        data=data, headers=headers, method=method,
     )
     try:
         with opener.open(request, timeout=timeout) as response:
@@ -147,54 +227,60 @@ def check_credentials(api_key, opener=None):
     return True
 
 
-def _image_item(value):
+def validate_reference_input(value):
+    """Return a provider-safe data URI; remote URLs are never forwarded.
+
+    MiniMax resolves URL references outside our network boundary, so a local
+    DNS check cannot pin its eventual destination or redirect chain.  Keep the
+    submission contract to bytes we have decoded and validated ourselves.
+    """
     value = str(value or "").strip()
     match = re.fullmatch(
         r"data:(image/(?:jpeg|jpg|png|webp));base64,([A-Za-z0-9+/=\s]+)",
         value,
         re.IGNORECASE,
     )
-    if match:
-        try:
-            raw = base64.b64decode(re.sub(r"\s+", "", match.group(2)), validate=True)
-        except (ValueError, TypeError) as exc:
-            raise ValueError("麦克视频参考图数据无效") from exc
-        if not raw or len(raw) > MAX_IMAGE_BYTES:
-            raise ValueError("麦克视频单张参考图必须小于 30MB")
-        try:
-            from PIL import Image
-            with Image.open(io.BytesIO(raw)) as image:
-                expected = (
-                    "JPEG"
-                    if match.group(1).lower() in {"image/jpeg", "image/jpg"}
-                    else match.group(1)[6:].upper()
-                )
-                if image.format != expected:
-                    raise ValueError("麦克视频参考图格式与图片内容不一致")
-                if not 256 <= image.width <= 5760 or not 256 <= image.height <= 5760:
-                    raise ValueError("麦克视频参考图宽高必须为 256～5760 像素")
-                image.load()
-                if image.format != "PNG" or image.mode not in {"RGB", "RGBA"}:
-                    clean = image.convert("RGBA" if "A" in image.getbands() else "RGB")
-                    output = io.BytesIO()
-                    clean.save(output, "PNG", optimize=True)
-                    raw = output.getvalue()
-                    value = "data:image/png;base64," + base64.b64encode(raw).decode("ascii")
-        except ValueError:
-            raise
-        except Exception:
-            raise ValueError(
-                "麦克视频参考图无法识别，请重新上传 JPG 或 PNG 图片"
-            ) from None
-    else:
-        parsed = urllib.parse.urlsplit(value)
-        if (
-            parsed.scheme not in {"http", "https"}
-            or not parsed.hostname
-            or parsed.username
-            or parsed.password
-        ):
-            raise ValueError("麦克视频参考图必须是图片数据或公网 URL")
+    if not match:
+        raise ValueError("麦克视频参考图必须使用已上传的本地图片数据")
+    try:
+        raw = base64.b64decode(re.sub(r"\s+", "", match.group(2)), validate=True)
+    except (ValueError, TypeError) as exc:
+        raise ValueError("麦克视频参考图数据无效") from exc
+    if not raw or len(raw) > MAX_IMAGE_BYTES:
+        raise ValueError("麦克视频单张参考图必须小于 30MB")
+    try:
+        from PIL import Image
+        with Image.open(io.BytesIO(raw)) as image:
+            expected = (
+                "JPEG"
+                if match.group(1).lower() in {"image/jpeg", "image/jpg"}
+                else match.group(1)[6:].upper()
+            )
+            if image.format != expected:
+                raise ValueError("麦克视频参考图格式与图片内容不一致")
+            if not 256 <= image.width <= 5760 or not 256 <= image.height <= 5760:
+                raise ValueError("麦克视频参考图宽高必须为 256～5760 像素")
+            image.load()
+            if image.format != "PNG" or image.mode not in {"RGB", "RGBA"}:
+                clean = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+                output = io.BytesIO()
+                clean.save(output, "PNG", optimize=True)
+                raw = output.getvalue()
+                if len(raw) > MAX_IMAGE_BYTES:
+                    raise ValueError("麦克视频单张参考图必须小于 30MB")
+                return "data:image/png;base64," + base64.b64encode(raw).decode("ascii")
+    except ValueError:
+        raise
+    except Exception:
+        raise ValueError(
+            "麦克视频参考图无法识别，请重新上传 JPG 或 PNG 图片"
+        ) from None
+    mime = "image/jpeg" if expected == "JPEG" else "image/" + expected.lower()
+    return "data:%s;base64,%s" % (mime, base64.b64encode(raw).decode("ascii"))
+
+
+def _image_item(value):
+    value = validate_reference_input(value)
     return {
         "type": "image_url",
         "image_url": {"url": value},
@@ -202,7 +288,10 @@ def _image_item(value):
     }
 
 
-def build_request(prompt, reference_images, ratio="9:16", duration=5, resolution="768P"):
+def build_request(
+    prompt, reference_images=None, ratio="9:16", duration=5,
+    resolution=DEFAULT_RESOLUTION, allow_legacy_resolution=False,
+):
     prompt = str(prompt or "").strip()
     if not prompt or len(prompt) > 7000:
         raise ValueError("麦克视频提示词必须为 1～7000 个字符")
@@ -220,33 +309,37 @@ def build_request(prompt, reference_images, ratio="9:16", duration=5, resolution
     ratio = str(ratio or "").strip()
     if ratio not in RATIOS:
         raise ValueError("麦克视频不支持该画面比例")
-    if str(resolution or "").strip().upper() != "768P":
-        raise ValueError("麦克视频当前固定使用 768P")
+    resolution = str(resolution or DEFAULT_RESOLUTION).strip().upper()
+    allowed_resolutions = (
+        RESOLUTIONS | {"768P"} if allow_legacy_resolution else RESOLUTIONS
+    )
+    if resolution not in allowed_resolutions:
+        raise ValueError("麦克视频分辨率仅支持 2K；旧任务可继续使用 768P")
     return {
         "model": MODEL,
         "content": [{"type": "text", "text": prompt}] + [_image_item(x) for x in refs],
         "duration": duration,
-        "resolution": "768P",
+        "resolution": resolution,
         "ratio": ratio,
     }
 
 
-def query_task(task_id, api_key, opener=None):
+def query_task(task_id, api_key, opener=None, api_base=None):
     return _request_json(
         opener or _opener(), "GET",
         "/v2/query/video_generation/" + urllib.parse.quote(str(task_id), safe=""),
-        timeout=60, api_key=api_key,
+        timeout=60, api_key=api_key, api_base=api_base,
     )
 
 
-def _poll(opener, task_id, duration, ratio, job_id=None, heartbeat=None,
-          now=None, sleep=None, api_key=None, provider_key_id=None):
+def _poll(opener, task_id, duration, ratio, resolution, job_id=None, heartbeat=None,
+          now=None, sleep=None, api_key=None, provider_key_id=None, api_base=None):
     now, sleep = now or time.time, sleep or time.sleep
     deadline = now() + TIMEOUT
     last_error = None
     while now() < deadline:
         try:
-            payload = query_task(task_id, api_key, opener)
+            payload = query_task(task_id, api_key, opener, api_base=api_base)
             last_error = None
         except TransientMiniMaxError as exc:
             last_error = exc
@@ -268,9 +361,10 @@ def _poll(opener, task_id, duration, ratio, job_id=None, heartbeat=None,
             url = str(content.get("url") or "").strip() if isinstance(content, dict) else ""
             if not url:
                 raise MiniMaxProviderFailed("麦克视频已完成但没有返回成片地址")
+            resolved = str(task.get("resolution") or resolution).strip().lower()
             return {"request_id": task_id, "source_video_url": url, "model": MODEL,
                     "duration": task.get("duration") or duration,
-                    "ratio": task.get("ratio") or ratio, "resolution": "768p",
+                    "ratio": task.get("ratio") or ratio, "resolution": resolved,
                     "provider": "minimax_h3_cn"}
         if status in {"failed", "cancelled", "canceled"}:
             raise MiniMaxProviderFailed(
@@ -284,27 +378,34 @@ def _poll(opener, task_id, duration, ratio, job_id=None, heartbeat=None,
     raise TimeoutError("麦克视频生成超时")
 
 
-def generate(prompt, reference_images, ratio="9:16", duration=5, resolution="768P",
+def generate(prompt, reference_images=None, ratio="9:16", duration=5,
+             resolution=DEFAULT_RESOLUTION,
              job_id=None, heartbeat=None, now=None, sleep=None, api_key=None,
-             provider_key_id=None):
+             provider_key_id=None, api_base=None):
     body = build_request(prompt, reference_images, ratio, duration, resolution)
     opener = _opener()
     created = _request_json(opener, "POST", "/v2/video_generation", body,
-                            timeout=120, api_key=api_key)
+                            timeout=120, api_key=api_key, api_base=api_base)
     task_id = str(created.get("task_id") or "").strip()
     if not task_id:
         raise CreateOutcomeUnknown("麦克视频提交结果未知：未返回任务编号")
     if heartbeat:
         heartbeat(job_id, "minimax_queued", provider_video_id=task_id,
                   provider_key_id=provider_key_id, model=MODEL, error="")
-    return _poll(opener, task_id, body["duration"], body["ratio"], job_id, heartbeat,
-                 now, sleep, api_key, provider_key_id)
+    return _poll(
+        opener, task_id, body["duration"], body["ratio"], body["resolution"],
+        job_id, heartbeat, now, sleep, api_key, provider_key_id,
+        api_base,
+    )
 
 
 def resume(task_id, duration=5, ratio="9:16", job_id=None, heartbeat=None,
-           now=None, sleep=None, api_key=None, provider_key_id=None):
+           now=None, sleep=None, api_key=None, provider_key_id=None,
+           resolution=DEFAULT_RESOLUTION, api_base=None):
     task_id = str(task_id or "").strip()
     if not task_id:
         raise ValueError("恢复麦克视频缺少任务编号")
-    return _poll(_opener(), task_id, int(duration), ratio, job_id, heartbeat,
-                 now, sleep, api_key, provider_key_id)
+    return _poll(
+        _opener(), task_id, int(duration), ratio, resolution, job_id, heartbeat,
+        now, sleep, api_key, provider_key_id, api_base,
+    )

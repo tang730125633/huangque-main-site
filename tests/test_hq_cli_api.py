@@ -4,6 +4,7 @@ import importlib
 import json
 import os
 import sqlite3
+import sys
 import tempfile
 import threading
 import unittest
@@ -13,6 +14,10 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from http.server import ThreadingHTTPServer
 from unittest import mock
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "server"))
 
 
 class HQCLIAPITests(unittest.TestCase):
@@ -182,6 +187,124 @@ class HQCLIAPITests(unittest.TestCase):
                 self.assertEqual(maximum, item["input_schema"]["properties"]["file"]["maxBytes"])
                 self.assertEqual("dedicated_upload", item["transport"]["kind"])
                 self.assertNotIn(action, self.auth.hq_cli_api.ACTION_CATALOG_MAP)
+
+    def test_ip12_video_catalog_matches_executable_channel_contract(self):
+        self._enable_ip12_bridge()
+        status, payload = self._request(
+            "/api/auth/internal/ip12/agent/catalog", {"account_id": self._agent_account_id()},
+            extra_headers=self._agent_headers(),
+        )
+        self.assertEqual(200, status, payload)
+        video = {item["action"]: item for item in payload["actions"]}["video-generate"]
+        schema = video["input_schema"]
+        self.assertIn("2k", schema["properties"]["resolution"]["enum"])
+        self.assertTrue(schema["allOf"])
+        rules = schema["x-hq-channel-rules"]
+        self.assertEqual(
+            ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive"],
+            rules["minimax"]["ratios"],
+        )
+        self.assertEqual([4, 15], rules["minimax"]["duration"])
+        self.assertEqual(["2k"], rules["minimax"]["resolutions"])
+        self.assertEqual([3, 10], rules["omni"]["duration"])
+        self.assertEqual(["720p"], rules["omni"]["resolutions"])
+        self.assertEqual(
+            {"sora-2": ["720p"], "sora-2-pro": ["720p", "1024p", "1080p"]},
+            rules["sora"]["model_resolutions"],
+        )
+
+        catalog_path = Path(__file__).resolve().parents[1] / "tools" / "hq-cli" / "src" / "hq_cli" / "catalog.py"
+        spec = importlib.util.spec_from_file_location("pr1100_hq_cli_catalog", catalog_path)
+        cli_catalog = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cli_catalog)
+        self.assertEqual(rules, cli_catalog.VIDEO_CHANNEL_RULES)
+        cli_schema = cli_catalog.CAPABILITIES["video-generate"]["input_schema"]
+        server_schema = self.auth.hq_cli_api._MEDIA_SCHEMAS["video-generate"]
+        self.assertEqual(schema["allOf"], server_schema["allOf"])
+        self.assertEqual(server_schema["allOf"], cli_schema["allOf"])
+        for field in ("channel", "ratio", "duration", "seconds", "resolution", "model"):
+            self.assertEqual(server_schema["properties"][field], cli_schema["properties"][field])
+
+        contract = " ".join(video["constraints"])
+        self.assertIn("channel=minimax", contract)
+        self.assertIn("resolution=2k", contract)
+        self.assertIn("channel-specific", contract)
+
+        valid = (
+            {"channel": "grok", "ratio": "3:2", "duration": 1, "resolution": "480p"},
+            {"channel": "micro", "ratio": "21:9", "duration": 4, "resolution": "1080p"},
+            {"channel": "omni", "ratio": "16:9", "duration": 3, "resolution": "720p"},
+            {"channel": "minimax", "ratio": "adaptive", "duration": 4, "resolution": "2k"},
+            {"channel": "sora", "model": "sora-2-pro", "seconds": 12,
+             "ratio": "16:9", "resolution": "1080p"},
+        )
+        from content_domains import (
+            video as video_domain, video_gemini_omni, video_minimax_h3,
+            video_openai, video_seedance,
+        )
+        with mock.patch("content_domains.feature_flags.require_enabled"), \
+                mock.patch("content_domains.feature_flags.is_enabled", return_value=True), \
+                mock.patch.object(video_domain, "GROK_VIDEO_PROVIDER", "xai"), \
+                mock.patch.object(video_domain, "sora_video_is_open", return_value=True), \
+                mock.patch.object(video_gemini_omni, "available", return_value=True), \
+                mock.patch.object(video_minimax_h3, "available", return_value=True), \
+                mock.patch.object(video_seedance, "available", return_value=True), \
+                mock.patch.object(video_openai, "available", return_value=True):
+            for fields in valid:
+                with self.subTest(valid=fields):
+                    plan = self.auth.hq_cli_api.action_plan(
+                        "video-generate", {"prompt": "valid channel contract", **fields},
+                    )
+                    self.assertEqual(fields["channel"], plan["payload"]["channel"])
+                    if fields["channel"] == "sora":
+                        video_domain.validate_sora_video_payload(plan["payload"])
+                    else:
+                        video_domain.validate_xiaole_video_payload(plan["payload"])
+
+        reference = "img_" + "a" * 32
+        invalid = (
+            {"channel": "grok", "model": "grok-imagine-video-1.5"},
+            {"channel": "grok", "resolution": "480p", "reference_upload_ids": [reference]},
+            {"channel": "micro", "duration": 3},
+            {"channel": "micro", "ratio": "3:2"},
+            {"channel": "omni", "duration": 11},
+            {"channel": "omni", "resolution": "1080p"},
+            {"channel": "minimax", "duration": 3},
+            {"channel": "minimax", "ratio": "3:2"},
+            {"channel": "sora", "model": "sora-2", "resolution": "1080p"},
+            {"channel": "grok", "resolution": "2k"},
+        )
+        for fields in invalid:
+            with self.subTest(invalid=fields):
+                with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+                    self.auth.hq_cli_api.action_plan(
+                        "video-generate",
+                        {"prompt": "invalid channel contract", **fields},
+                    )
+
+        reference_limits = {"grok": 7, "micro": 9, "omni": 6, "minimax": 5, "sora": 1}
+        for channel, limit in reference_limits.items():
+            valid_references = ["img_" + format(index, "032x") for index in range(limit)]
+            with self.subTest(channel=channel, references="max"):
+                plan = self.auth.hq_cli_api.action_plan(
+                    "video-generate", {
+                        "prompt": "reference limit", "channel": channel,
+                        "reference_upload_ids": valid_references,
+                    },
+                )
+                self.assertEqual(limit, len(plan["payload"]["reference_upload_ids"]))
+            with self.subTest(channel=channel, references="overflow"):
+                with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+                    self.auth.hq_cli_api.action_plan(
+                        "video-generate", {
+                            "prompt": "reference overflow", "channel": channel,
+                            "reference_upload_ids": valid_references + ["img_" + format(limit, "032x")],
+                        },
+                    )
+        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+            self.auth.hq_cli_api.action_plan(
+                "video-generate", {"prompt": "empty references", "reference_upload_ids": []},
+            )
 
     def test_ip12_agent_catalog_hides_feature_disabled_families_and_providers(self):
         self._enable_ip12_bridge()
@@ -1079,11 +1202,18 @@ class HQCLIAPITests(unittest.TestCase):
             "collect-content", "collect-video", "collect-transcript", "collect-search", "leads-generate",
         }.issubset(channels["tikhub"]["capabilities"]))
         self.assertEqual(
-            {"channel": "minimax", "resolution": "768p"},
+            {"channel": "minimax", "resolution": "2k"},
             {k: self.auth.hq_cli_api.action_plan("video-generate", {
                 "prompt": "人物故事", "channel": "minimax",
             })["payload"][k] for k in ("channel", "resolution")},
         )
+
+        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError) as raised:
+            self.auth.hq_cli_api.action_plan("video-generate", {
+                "prompt": "legacy resolution", "channel": "minimax",
+                "resolution": "768p",
+            })
+        self.assertEqual(400, raised.exception.status)
 
     def test_server_requires_confirmation_for_external_ai_and_writes(self):
         token = self._token(["prompt:optimize", "ip12:write", "ip12:chat", "canvas:write", "assets:write",

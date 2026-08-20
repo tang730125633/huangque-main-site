@@ -12,7 +12,10 @@ import webbrowser
 
 from . import __version__
 from . import client
-from .catalog import CAPABILITIES, ENVIRONMENTS, capability_list, resolve_url
+from .catalog import (
+    CAPABILITIES, ENVIRONMENTS, VIDEO_CHANNEL_RULES,
+    capability_list, resolve_url,
+)
 
 
 EXIT_USAGE = 2
@@ -116,6 +119,52 @@ def _load_json(source):
     return payload
 
 
+def _validate_video_channel(payload):
+    channel = payload.get("channel", "grok")
+    rule = VIDEO_CHANNEL_RULES[channel]
+    ratio = payload.get("ratio", rule["default_ratio"])
+    if ratio not in rule["ratios"]:
+        raise CliError(EXIT_INPUT, "input_error", "video ratio is not supported by channel=%s" % channel)
+    references = payload.get("reference_upload_ids")
+    if references is not None and not 1 <= len(references) <= rule["reference_max"]:
+        raise CliError(
+            EXIT_INPUT, "input_error",
+            "video reference_upload_ids exceeds channel=%s limit" % channel,
+        )
+    resolution = payload.get("resolution", rule["default_resolution"])
+    if channel == "sora":
+        if "duration" in payload or "generate_audio" in payload:
+            raise CliError(EXIT_INPUT, "input_error", "sora uses seconds and rejects duration or generate_audio")
+        seconds = payload.get("seconds", rule["default_seconds"])
+        if seconds not in rule["seconds"]:
+            raise CliError(EXIT_INPUT, "input_error", "sora seconds must be 4, 8, or 12")
+        model = payload.get("model", rule["default_model"])
+        if model not in rule["models"]:
+            raise CliError(EXIT_INPUT, "input_error", "unsupported sora model")
+        if resolution not in rule["model_resolutions"][model]:
+            raise CliError(EXIT_INPUT, "input_error", "video resolution is not supported by sora model")
+        return
+    if "seconds" in payload:
+        raise CliError(EXIT_INPUT, "input_error", "seconds is only supported by channel=sora")
+    duration = payload.get("duration", rule["default_duration"])
+    if not rule["duration"][0] <= duration <= rule["duration"][1]:
+        raise CliError(EXIT_INPUT, "input_error", "video duration is not supported by channel=%s" % channel)
+    if resolution not in rule["resolutions"]:
+        raise CliError(EXIT_INPUT, "input_error", "video resolution is not supported by channel=%s" % channel)
+    if "model" in payload and channel != "grok":
+        raise CliError(EXIT_INPUT, "input_error", "model is only supported by grok or sora")
+    if "generate_audio" in payload and not rule["generate_audio"]:
+        raise CliError(EXIT_INPUT, "input_error", "generate_audio is only supported by channel=micro")
+    if channel == "grok":
+        model = payload.get("model", rule["default_model"])
+        if model not in rule["models"]:
+            raise CliError(EXIT_INPUT, "input_error", "unsupported grok model")
+        if model in rule["reference_required_models"] and not references:
+            raise CliError(EXIT_INPUT, "input_error", "grok video 1.5 requires reference_upload_ids")
+        if references and resolution not in rule["reference_resolutions"]:
+            raise CliError(EXIT_INPUT, "input_error", "grok reference video resolution must be 720p")
+
+
 def _validate(capability, payload):
     schema = capability["input_schema"]
     properties = schema["properties"]
@@ -185,6 +234,8 @@ def _validate(capability, payload):
             raise CliError(EXIT_INPUT, "input_error", "input field %s is below minimum" % key)
         if "maximum" in definition and value > definition["maximum"]:
             raise CliError(EXIT_INPUT, "input_error", "input field %s is above maximum" % key)
+    if capability.get("id") == "video-generate":
+        _validate_video_channel(payload)
     if capability.get("id") == "leads-generate":
         platforms = payload.get("platforms") or []
         if any(platform in {"douyin", "xhs"} for platform in platforms) and not payload.get("keyword"):
