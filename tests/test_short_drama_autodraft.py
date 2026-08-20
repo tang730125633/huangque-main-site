@@ -889,6 +889,18 @@ class ShortDramaAutodraftTests(unittest.TestCase):
                 }, avatar_lookup=lambda _username, _avatar_id: avatar,
             )
         self.assertIn(execution["provider_prompt"], result["request"]["prompt"])
+        self.assertIn(
+            "景别与运镜：中近景，缓慢推近",
+            result["request"]["prompt"],
+        )
+        self.assertIn(
+            "画面与人物动作：男孩把糖果递给女孩",
+            result["request"]["prompt"],
+        )
+        self.assertIn(
+            "补充生成要求：" + execution["provider_prompt"],
+            result["request"]["prompt"],
+        )
         self.assertEqual(result["request"]["prompt"], repeated["request"]["prompt"])
         workspace = short_drama_autodraft.workspace(
             self.db, "alice", "alice", self.project["id"],
@@ -901,6 +913,18 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             execution["sound_design"],
             workspace["provider_execution_overrides"][shot["shot_key"]]["sound_design"],
         )
+
+    def test_structured_execution_fields_are_valid_without_manual_prompt(self):
+        execution = short_drama_autodraft._clean_execution({
+            "visual": "顾承川停在纪念墙前",
+            "camera": "固定中近景，对焦顾承川，背景虚化",
+            "continuity": "服装和人物位置承接上一镜头",
+        })
+        self.assertEqual("", execution["provider_prompt"])
+        prompt = short_drama_autodraft._execution_visual_prompt(execution)
+        self.assertIn("画面与人物动作：顾承川停在纪念墙前", prompt)
+        self.assertIn("景别与运镜：固定中近景，对焦顾承川，背景虚化", prompt)
+        self.assertIn("连续性要求：服装和人物位置承接上一镜头", prompt)
 
     def test_sensitive_failure_cannot_disable_continuity_or_scene_references(self):
         execution = short_drama_autodraft._clean_execution({

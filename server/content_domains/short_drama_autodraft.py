@@ -1460,6 +1460,29 @@ def _visual_prompt(shot):
     return " ".join(parts)
 
 
+def _execution_visual_prompt(execution):
+    supplement = str(execution.get("provider_prompt") or "").strip()
+    fields = (
+        ("画面与人物动作", "visual"),
+        ("景别与运镜", "camera"),
+        ("表演与情绪", "performance"),
+        ("当前镜头场景补充", "scene"),
+        ("光线、时间与天气", "lighting"),
+        ("构图与运镜补充", "composition_style"),
+        ("连续性要求", "continuity"),
+    )
+    structured = [
+        "%s：%s" % (label, str(execution.get(key) or "").strip())
+        for label, key in fields
+        if str(execution.get(key) or "").strip()
+    ]
+    if not structured:
+        return supplement
+    if supplement:
+        structured.append("补充生成要求：" + supplement)
+    return "；".join(structured)
+
+
 def _native_audio_brief(shot, character_names=None):
     names = dict(character_names or {})
     dialogue_lines = []
@@ -1542,14 +1565,10 @@ def _clean_execution(value):
                 "单个镜头最多绑定五个出镜角色", 422,
             )
         result["character_keys"] = character_keys
-    if not result["provider_prompt"]:
-        parts = [
-            result["visual"], result["camera"], result["performance"],
-            result["scene"], result["lighting"], result["composition_style"],
-            result["continuity"],
-        ]
-        result["provider_prompt"] = "；".join(item for item in parts if item)
-    if not result["provider_prompt"]:
+    if not any(result[key] for key in (
+        "visual", "camera", "performance", "scene", "lighting",
+        "composition_style", "continuity", "provider_prompt",
+    )):
         raise AutodraftError("provider_prompt_required", "请填写视频生成提示词", 422)
     return result
 
@@ -1638,6 +1657,7 @@ def preview_provider_request(
         ]
         if any(visual_parts):
             shot["visual_prompt"] = "；".join(item for item in visual_parts if item)
+        shot["provider_prompt"] = _execution_visual_prompt(execution)
         if "character_keys" in execution:
             shot["character_keys"] = list(execution["character_keys"])
             character_key = execution["character_keys"][0]

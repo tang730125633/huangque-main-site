@@ -35,6 +35,15 @@ test('镜头编辑提供单一声音设计区域并独立保存', () => {
   assert.match(workspaceSource, /sound_design:text\(fields\.sound_design/);
 });
 
+test('执行编辑器把最终提示词改为可选补充而不覆盖结构化字段', () => {
+  assert.match(workspaceSource, /补充生成要求（可选）/);
+  assert.match(workspaceSource, /结构化设置会始终加入最终提示词/);
+  assert.doesNotMatch(
+    workspaceSource,
+    /name="provider_prompt" required maxlength="1600"/
+  );
+});
+
 test('生成执行编辑器显示并提交声音设计', () => {
   const soundDesignFields = workspaceSource.match(
     /声音设计<textarea name="sound_design" maxlength="600"/g
@@ -953,7 +962,7 @@ test('镜头细节默认折叠并提供快捷选择、系统连续性和保护�
   assert.match(workspaceSource,/连续性（系统自动继承）/);
   assert.match(workspaceSource,/data-action="edit-shot-continuity"/);
   assert.match(workspaceSource,/系统保护规则/);
-  assert.match(workspaceSource,/本镜头实际生成要求/);
+  assert.match(workspaceSource,/补充生成要求（可选）/);
   assert.match(workspaceStyle,/\.sd-shot-detail-chips/);
 });
 
