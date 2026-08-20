@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -91,6 +92,7 @@ def _run(command, cancel_event=None, timeout=1800):
 
 def render_native_2k(
     sources, ratio, duration_ms, media_contract, output, cancel_event=None,
+    shot_durations_ms=None,
 ):
     """Concatenate ordered native shots; never consumes a composed preview."""
     paths = [Path(item) for item in sources]
@@ -113,6 +115,17 @@ def render_native_2k(
         except media_plan.MediaPlanError as error:
             raise FormalRenderError(error.code, str(error)) from error
 
+    locked_durations = [int(value or 0) for value in (shot_durations_ms or [])]
+    if (
+        len(locked_durations) != len(paths)
+        or any(value <= 0 for value in locked_durations)
+        or sum(locked_durations) != int(duration_ms or 0)
+    ):
+        raise FormalRenderError(
+            "delivery_locked_timeline_invalid",
+            "正式成片缺少完整且连续的锁定镜头时间线",
+        )
+
     subtitles = list((media_contract or {}).get("subtitles") or [])
     subtitle_input = None
     if subtitles:
@@ -127,7 +140,7 @@ def render_native_2k(
                 "delivery_native_streams_missing",
                 "原生 2K 镜头必须同时包含画面和声音",
             )
-        shot_duration = max(0.001, int(probe.get("duration_ms") or 0) / 1000.0)
+        shot_duration = locked_durations[index] / 1000.0
         filters.append(
             "[%d:v:0]scale=%d:%d:force_original_aspect_ratio=increase:flags=lanczos,"
             "crop=%d:%d,fps=25,setsar=1,"
@@ -208,3 +221,75 @@ def render_native_2k(
         "probe": probe, "subtitle_streams": subtitle_count,
         "native_audio": native_audio, "sha256": digest.hexdigest(),
     }
+
+
+def _digest_and_identity(path):
+    path = Path(path)
+    try:
+        before = path.stat()
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        after = path.stat()
+    except OSError as error:
+        raise FormalRenderError(
+            "delivery_output_identity_changed",
+            "正式成片在发布前已被删除或替换",
+        ) from error
+    identity_before = (
+        before.st_dev, before.st_ino, before.st_size,
+        before.st_mtime_ns, before.st_ctime_ns,
+    )
+    identity_after = (
+        after.st_dev, after.st_ino, after.st_size,
+        after.st_mtime_ns, after.st_ctime_ns,
+    )
+    if identity_before != identity_after:
+        raise FormalRenderError(
+            "delivery_output_identity_changed",
+            "正式成片在校验期间发生变化",
+        )
+    return digest.hexdigest(), identity_after
+
+
+def publish_validated_output(temp_dir, target_dir, filename, expected_sha256):
+    """Atomically publish exactly the bytes validated by the renderer."""
+    temp_dir = Path(temp_dir)
+    target_dir = Path(target_dir)
+    source = temp_dir / str(filename)
+    expected = str(expected_sha256 or "").lower()
+    digest, identity = _digest_and_identity(source)
+    if not expected or digest != expected:
+        raise FormalRenderError(
+            "delivery_output_identity_changed",
+            "正式成片发布前哈希与渲染结果不一致",
+        )
+    if target_dir.exists():
+        raise FormalRenderError(
+            "delivery_output_publish_conflict", "正式成片发布目标已存在",
+        )
+    target_dir.parent.mkdir(parents=True, exist_ok=True)
+    published = False
+    try:
+        temp_dir.rename(target_dir)
+        published = True
+        published_digest, published_identity = _digest_and_identity(
+            target_dir / str(filename),
+        )
+        if published_identity != identity or published_digest != expected:
+            raise FormalRenderError(
+                "delivery_output_identity_changed",
+                "正式成片在原子发布期间被替换",
+            )
+    except FormalRenderError:
+        if published:
+            shutil.rmtree(target_dir, ignore_errors=True)
+        raise
+    except OSError as error:
+        if published:
+            shutil.rmtree(target_dir, ignore_errors=True)
+        raise FormalRenderError(
+            "delivery_output_publish_failed", "正式成片原子发布失败", 503,
+        ) from error
+    return {"sha256": published_digest, "identity": published_identity}

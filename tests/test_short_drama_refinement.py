@@ -535,10 +535,12 @@ class ShortDramaRefinementTests(unittest.TestCase):
             "shots": [
                 {
                     "shot_key": "shot_02", "provider": "minimax_h3",
+                    "start_ms": 0, "end_ms": 2000,
                     "native_media": native_media("shot-02", "c" * 64),
                 },
                 {
                     "shot_key": "shot_01", "provider": "minimax_h3",
+                    "start_ms": 2000, "end_ms": 3000,
                     "native_media": native_media("shot-01", "a" * 64),
                 },
             ],
@@ -548,7 +550,29 @@ class ShortDramaRefinementTests(unittest.TestCase):
             ["video/shot-02-raw.mp4", "video/shot-01-raw.mp4"],
             [item["file"] for item in assembly["shots"]],
         )
+        self.assertEqual(
+            [2000, 1000], [item["duration_ms"] for item in assembly["shots"]],
+        )
         self.assertNotIn("preview-1080p.mp4", json.dumps(assembly))
+
+    def test_formal_native_assembly_rejects_non_contiguous_timeline(self):
+        evidence = {
+            "raw": {"file": "video/raw.mp4", "sha256": "a" * 64,
+                    "size_bytes": 123},
+            "derived": {"file": "video/faststart.mp4", "sha256": "b" * 64,
+                        "size_bytes": 120, "derived_from_sha256": "a" * 64},
+            "resolution": {"width": 2560, "height": 1440},
+            "audio": {"audible": True, "codec": "aac", "sample_rate": 48000,
+                      "channels": 2, "mean_volume_dbfs": -21.0,
+                      "max_volume_dbfs": -3.0},
+            "inspected_at": 1,
+        }
+        with self.assertRaises(short_drama_refinement.RefinementError) as raised:
+            short_drama_refinement._formal_native_assembly({"shots": [{
+                "shot_key": "shot_01", "provider": "minimax_h3",
+                "start_ms": 500, "end_ms": 1500, "native_media": evidence,
+            }]})
+        self.assertEqual("delivery_locked_timeline_invalid", raised.exception.code)
 
     def test_paid_delivery_never_reads_1080p_preview_as_video_input(self):
         raw_paths = self.install_mock_native_evidence()
@@ -561,6 +585,8 @@ class ShortDramaRefinementTests(unittest.TestCase):
             "formal_cost": 0, "reason": "local_2k_renderer",
         }
         captured = {}
+        published_without_db_lock = []
+        real_publish = short_drama_formal_renderer.publish_validated_output
 
         def verify(assembly, snapshot_dir):
             captured["assembly"] = assembly
@@ -583,6 +609,19 @@ class ShortDramaRefinementTests(unittest.TestCase):
                 "sha256": short_drama_refinement._file_hash(output),
             }
 
+        def publish(*args, **kwargs):
+            concurrent = sqlite3.connect(self.database, timeout=0.1)
+            try:
+                concurrent.execute(
+                    "UPDATE short_drama_projects SET title=title WHERE id=?",
+                    (self.project["id"],),
+                )
+                concurrent.commit()
+            finally:
+                concurrent.close()
+            published_without_db_lock.append(True)
+            return real_publish(*args, **kwargs)
+
         with mock.patch.object(
             short_drama_refinement, "_delivery_capability", return_value=capability,
         ), mock.patch.object(
@@ -596,6 +635,9 @@ class ShortDramaRefinementTests(unittest.TestCase):
         ), mock.patch(
             "content_domains.short_drama_formal_renderer.render_native_2k",
             side_effect=render,
+        ), mock.patch(
+            "content_domains.short_drama_formal_renderer.publish_validated_output",
+            side_effect=publish,
         ):
             quote = short_drama_refinement.create_delivery_quote(
                 self.db, "alice", {
@@ -617,6 +659,7 @@ class ShortDramaRefinementTests(unittest.TestCase):
         self.assertEqual("succeeded", job["status"], job.get("error"))
         self.assertEqual(raw_paths, captured["sources"])
         self.assertNotIn("preview-1080p", json.dumps(captured["assembly"]))
+        self.assertEqual([True], published_without_db_lock)
 
     def test_fresh_provider_draft_delivers_without_replacing_a_shot(self):
         raw_paths = self.install_mock_native_evidence()
@@ -646,6 +689,15 @@ class ShortDramaRefinementTests(unittest.TestCase):
                 "SELECT manifest_json FROM short_drama_autodraft_versions "
                 "WHERE id='draft-v1'"
             ).fetchone()[0])
+            locked_shots = {
+                item["shot_key"]: item for item in manifest.get("shots") or []
+            }
+            for card in cards:
+                locked = locked_shots[card["shot_key"]]
+                card.update({
+                    "start_ms": locked["start_ms"],
+                    "end_ms": locked["end_ms"],
+                })
             manifest.update({"resolution": "1080p", "shots": cards, "issues": []})
             conn.execute(
                 "UPDATE short_drama_autodraft_versions SET status='ready',"
@@ -741,19 +793,49 @@ class ShortDramaRefinementTests(unittest.TestCase):
             result = short_drama_formal_renderer.render_native_2k(
                 [source_a, source_b], "16:9", 3000,
                 {"subtitle_required": False}, output,
+                shot_durations_ms=[1000, 2000],
             )
         command = captured["command"]
         inputs = [command[index + 1] for index, value in enumerate(command) if value == "-i"]
         self.assertEqual([str(source_a), str(source_b)], inputs)
         self.assertNotIn("preview-1080p", " ".join(command))
         filters = command[command.index("-filter_complex") + 1]
-        self.assertIn("tpad=stop_mode=clone:stop_duration=1.200", filters)
-        self.assertIn("apad=whole_dur=1.800", filters)
+        self.assertIn("tpad=stop_mode=clone:stop_duration=1.000", filters)
+        self.assertIn("trim=duration=1.000", filters)
+        self.assertIn("apad=whole_dur=2.000", filters)
+        self.assertIn("atrim=duration=2.000", filters)
         self.assertIn(
             "[v0][a0][v1][a1]concat=n=2:v=1:a=1[outv][outa]", filters,
         )
         self.assertEqual(1, filters.count("concat="))
         self.assertEqual(short_drama_refinement._file_hash(output), result["sha256"])
+
+    def test_publish_rejects_render_output_replaced_after_validation(self):
+        temp = Path(self.tmp.name) / ".job.owner.tmp"
+        target = Path(self.tmp.name) / "job"
+        temp.mkdir()
+        rendered = temp / "final-2k.mp4"
+        rendered.write_bytes(b"validated-formal-output")
+        expected_hash = short_drama_refinement._file_hash(rendered)
+        original_rename = Path.rename
+
+        def replace_then_rename(path, destination):
+            rendered.write_bytes(b"replacement-with-different-bytes")
+            return original_rename(path, destination)
+
+        with mock.patch.object(
+            Path, "rename", autospec=True, side_effect=replace_then_rename,
+        ):
+            with self.assertRaises(
+                short_drama_formal_renderer.FormalRenderError,
+            ) as raised:
+                short_drama_formal_renderer.publish_validated_output(
+                    temp, target, "final-2k.mp4", expected_hash,
+                )
+        self.assertEqual(
+            "delivery_output_identity_changed", raised.exception.code,
+        )
+        self.assertFalse(target.exists())
 
     def test_delivery_render_has_single_poll_owner(self):
         version = self.confirmed_version("single-render-owner")
@@ -1079,18 +1161,22 @@ class ShortDramaRefinementTests(unittest.TestCase):
             native = subprocess.run([
                 ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
                 "-f", "lavfi", "-i",
-                "color=c=%s:size=%s:rate=25:duration=1" % (
+                "color=c=%s:size=%s:rate=25:duration=2" % (
                     "red" if index == 1 else "green", native_size,
                 ),
                 "-f", "lavfi", "-i",
-                "sine=frequency=%d:duration=1" % (440 + index * 110),
+                "sine=frequency=%d:duration=2" % (440 + index * 110),
                 "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264",
                 "-preset", "ultrafast", "-pix_fmt", "yuv420p",
                 "-c:a", "aac", "-shortest", str(raw),
             ], capture_output=True, text=True, timeout=60)
             self.assertEqual(0, native.returncode, native.stderr)
             derived = root / derived_relative
-            shutil.copyfile(raw, derived)
+            derived_result = subprocess.run([
+                ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+                "-i", str(raw), "-t", "1", "-c", "copy", str(derived),
+            ], capture_output=True, text=True, timeout=60)
+            self.assertEqual(0, derived_result.returncode, derived_result.stderr)
             raw_hash = short_drama_refinement._file_hash(raw)
             derived_hash = short_drama_refinement._file_hash(derived)
             native_evidence[shot_key] = {
@@ -1185,12 +1271,33 @@ class ShortDramaRefinementTests(unittest.TestCase):
                 )
         self.assertEqual("succeeded", job["status"], job.get("error"))
         output = root / job["result"]["url"].removeprefix("/api/gen/file/")
+        conn = self.db()
+        try:
+            snapshot = json.loads(conn.execute(
+                "SELECT snapshot_json FROM short_drama_delivery_versions "
+                "WHERE job_id=?", (job["id"],),
+            ).fetchone()[0])
+        finally:
+            conn.close()
+        self.assertEqual(
+            [1000, 1000],
+            [item["duration_ms"] for item in snapshot["native_inputs"]],
+        )
         probe = short_drama_refinement.media_plan.probe_media(output)
         self.assertEqual(expected_size, (
             int(probe["video"]["width"]), int(probe["video"]["height"]),
         ))
         self.assertIsNotNone(probe["audio"])
         self.assertLessEqual(abs(int(probe["duration_ms"]) - 2000), 300)
+        second_shot_pixel = subprocess.run([
+            ffmpeg, "-hide_banner", "-loglevel", "error", "-ss", "1.5",
+            "-i", str(output), "-frames:v", "1", "-vf",
+            "scale=1:1,format=rgb24", "-f", "rawvideo", "-",
+        ], capture_output=True, timeout=30)
+        self.assertEqual(0, second_shot_pixel.returncode, second_shot_pixel.stderr)
+        self.assertGreaterEqual(len(second_shot_pixel.stdout), 3)
+        red, green, _blue = second_shot_pixel.stdout[:3]
+        self.assertGreater(green, red, "the locked second shot must start at 1s")
         subtitle = subprocess.run([
             ffprobe, "-v", "error", "-select_streams", "s",
             "-show_entries", "stream=index", "-of", "csv=p=0", str(output),
@@ -3450,6 +3557,18 @@ class ShortDramaRefinementTests(unittest.TestCase):
         self.assertFalse(capability["delivery_enabled"])
         self.assertFalse(capability["deliverable"])
         self.assertEqual("missing_ffmpeg", capability["reason"])
+
+        project = {"target_duration": 60}
+        refinement = {
+            "media": {"media_validation": {"duration_ms": 64480}},
+            "shots": [{"end_ms": 60000}],
+        }
+        self.assertEqual(
+            60000,
+            short_drama_refinement._confirmed_refinement_duration_ms(
+                project, refinement
+            ),
+        )
 
     def test_local_ffmpeg_capability_rejects_each_required_dependency(self):
         def run_result(command, encoders=" V..... libx264 A..... aac "):

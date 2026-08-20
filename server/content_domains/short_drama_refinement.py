@@ -1815,14 +1815,14 @@ def _validate_delivery_media(
 
 
 def _confirmed_refinement_duration_ms(project, refinement):
-    validation = (refinement.get("media") or {}).get("media_validation") or {}
-    duration_ms = int(validation.get("duration_ms") or 0)
-    if duration_ms > 0:
-        return duration_ms
     duration_ms = max(
         [int(item.get("end_ms") or 0) for item in refinement.get("shots") or []]
         or [0]
     )
+    if duration_ms > 0:
+        return duration_ms
+    validation = (refinement.get("media") or {}).get("media_validation") or {}
+    duration_ms = int(validation.get("duration_ms") or 0)
     if duration_ms > 0:
         return duration_ms
     return int(project.get("target_duration") or 0) * 1000
@@ -1833,6 +1833,7 @@ def _formal_native_assembly(source):
     from . import short_drama_autodraft
 
     shots = []
+    cursor_ms = 0
     for index, value in enumerate(source.get("shots") or []):
         item = dict(value) if isinstance(value, dict) else {}
         shot_key = str(item.get("shot_key") or "shot_%02d" % (index + 1))
@@ -1851,9 +1852,19 @@ def _formal_native_assembly(source):
                 "%s 缺少可信的原生 2K 媒体证据" % shot_key,
                 409,
             )
+        start_ms = int(item.get("start_ms") or 0)
+        end_ms = int(item.get("end_ms") or 0)
+        if start_ms != cursor_ms or end_ms <= start_ms:
+            raise RefinementError(
+                "delivery_locked_timeline_invalid",
+                "%s 缺少连续的锁定镜头时间线" % shot_key,
+                409,
+            )
         item["file"] = native_media["raw"]["file"]
         item["native_media"] = native_media
+        item["duration_ms"] = end_ms - start_ms
         shots.append(item)
+        cursor_ms = end_ms
     if not shots:
         raise RefinementError(
             "delivery_native_sources_missing",
@@ -1874,6 +1885,9 @@ def _delivery_contract_binding(project_id, source, capability, acceptance):
                 "file": item["native_media"]["raw"]["file"],
                 "sha256": item["native_media"]["raw"]["sha256"],
                 "size_bytes": item["native_media"]["raw"]["size_bytes"],
+                "start_ms": int(item["start_ms"]),
+                "end_ms": int(item["end_ms"]),
+                "duration_ms": int(item["duration_ms"]),
             }
             for item in assembly["shots"]
         ]
@@ -1972,6 +1986,9 @@ def _complete_delivery(conn, row, cancel_event=None):
                     "file": item["file"],
                     "sha256": item["native_media"]["raw"]["sha256"],
                     "size_bytes": item["native_media"]["raw"]["size_bytes"],
+                    "start_ms": int(item["start_ms"]),
+                    "end_ms": int(item["end_ms"]),
+                    "duration_ms": int(item["duration_ms"]),
                 }
                 for item in assembly["shots"]
             ]
@@ -1982,6 +1999,9 @@ def _complete_delivery(conn, row, cancel_event=None):
                 sources, project["ratio"],
                 _confirmed_refinement_duration_ms(project, source),
                 media_contract, rendered, cancel_event=cancel_event,
+                shot_durations_ms=[
+                    int(item["duration_ms"]) for item in assembly["shots"]
+                ],
             )
         except short_drama_autodraft.AutodraftError as error:
             shutil.rmtree(temp, ignore_errors=True)
@@ -2000,16 +2020,45 @@ def _complete_delivery(conn, row, cancel_event=None):
             raise RefinementError(
                 "delivery_render_lease_lost", "2K 正式导出执行权已失效", 409,
             )
-        if target.exists():
-            shutil.rmtree(target)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temp.rename(target)
         output_file = (
             Path("short_drama_delivery") / job["project_id"] / job["id"] /
             "final-2k.mp4"
         ).as_posix()
         output_url = "/api/gen/file/" + output_file
         output_hash = validation["sha256"]
+    if deliverable:
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+        refreshed = conn.execute(
+            "UPDATE short_drama_delivery_jobs SET updated_at=? WHERE id=? "
+            "AND status IN ('queued','running') AND phase=?",
+            (int(time.time()), job["id"], job["phase"]),
+        )
+        if refreshed.rowcount != 1:
+            raise RefinementError(
+                "delivery_render_lease_lost", "2K 正式导出执行权已失效", 409,
+            )
+        conn.commit()
+        if target.exists():
+            shutil.rmtree(target)
+        short_drama_formal_renderer.publish_validated_output(
+            temp, target, "final-2k.mp4", output_hash,
+        )
+        if cancel_event is not None and cancel_event.is_set():
+            raise RefinementError(
+                "delivery_render_lease_lost", "2K 正式导出执行权已失效", 409,
+            )
+    if not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    owner_row = conn.execute(
+        "SELECT phase FROM short_drama_delivery_jobs WHERE id=? "
+        "AND status IN ('queued','running')",
+        (job["id"],),
+    ).fetchone()
+    if not owner_row or str(owner_row[0]) != str(job["phase"]):
+        raise RefinementError(
+            "delivery_render_lease_lost", "2K 正式导出执行权已失效", 409,
+        )
     version = int(conn.execute(
         "SELECT COALESCE(MAX(version),0)+1 FROM short_drama_delivery_versions "
         "WHERE project_id=?", (job["project_id"],),
