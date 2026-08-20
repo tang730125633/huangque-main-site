@@ -174,6 +174,137 @@ _ID_SCHEMA = {"type": "string", "minLength": 1, "maxLength": 160}
 _INT_ID_SCHEMA = {"type": "integer", "minimum": 1, "maximum": 2**63 - 1}
 _IMAGE_UPLOAD_SCHEMA = {"type": "string", "pattern": "^img_[0-9a-f]{32}$"}
 _VIDEO_UPLOAD_SCHEMA = {"type": "string", "pattern": "^vid_[0-9a-f]{32}$"}
+
+# Keep discovery and executable planning on one channel matrix.  The public
+# CLI carries an identical table and the cross-package contract test prevents
+# the two distributions from drifting apart.
+_VIDEO_CHANNEL_RULES = {
+    "grok": {
+        "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"],
+        "duration": [1, 15], "seconds": [],
+        "resolutions": ["480p", "720p"],
+        "models": ["grok-imagine-video", "grok-imagine-video-1.5"],
+        "reference_max": 7, "generate_audio": False,
+        "default_ratio": "16:9", "default_duration": 10,
+        "default_resolution": "720p", "default_model": "grok-imagine-video",
+        "reference_resolutions": ["720p"],
+        "reference_required_models": ["grok-imagine-video-1.5"],
+    },
+    "micro": {
+        "ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive"],
+        "duration": [4, 15], "seconds": [],
+        "resolutions": ["480p", "720p", "1080p"], "models": [],
+        "reference_max": 9, "generate_audio": True,
+        "default_ratio": "9:16", "default_duration": 5,
+        "default_resolution": "720p", "default_model": "",
+    },
+    "omni": {
+        "ratios": ["9:16", "16:9"], "duration": [3, 10], "seconds": [],
+        "resolutions": ["720p"], "models": [],
+        "reference_max": 6, "generate_audio": False,
+        "default_ratio": "16:9", "default_duration": 5,
+        "default_resolution": "720p", "default_model": "",
+    },
+    "minimax": {
+        "ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive"],
+        "duration": [4, 15], "seconds": [],
+        "resolutions": ["2k"], "models": [],
+        "reference_max": 5, "generate_audio": False,
+        "default_ratio": "9:16", "default_duration": 5,
+        "default_resolution": "2k", "default_model": "",
+    },
+    "sora": {
+        "ratios": ["9:16", "16:9"], "duration": [], "seconds": [4, 8, 12],
+        "resolutions": ["720p", "1024p", "1080p"],
+        "models": ["sora-2", "sora-2-pro"],
+        "reference_max": 1, "generate_audio": False,
+        "default_ratio": "9:16", "default_seconds": 4,
+        "default_resolution": "720p", "default_model": "sora-2",
+        "model_resolutions": {
+            "sora-2": ["720p"],
+            "sora-2-pro": ["720p", "1024p", "1080p"],
+        },
+    },
+}
+
+
+def _video_channel_then(rule):
+    properties = {
+        "ratio": {"enum": list(rule["ratios"])},
+        "resolution": {"enum": list(rule["resolutions"])},
+        "reference_upload_ids": {
+            "type": "array", "minItems": 1,
+            "maxItems": int(rule["reference_max"]),
+        },
+    }
+    forbidden = []
+    if rule["duration"]:
+        properties["duration"] = {
+            "type": "integer", "minimum": rule["duration"][0],
+            "maximum": rule["duration"][1],
+        }
+        forbidden.append("seconds")
+    else:
+        properties["seconds"] = {"type": "integer", "enum": list(rule["seconds"])}
+        forbidden.append("duration")
+    if rule["models"]:
+        properties["model"] = {"type": "string", "enum": list(rule["models"])}
+    else:
+        forbidden.append("model")
+    if not rule["generate_audio"]:
+        forbidden.append("generate_audio")
+    result = {"properties": properties}
+    if forbidden:
+        result["not"] = {"anyOf": [{"required": [field]} for field in forbidden]}
+    return result
+
+
+def _video_channel_schema():
+    clauses = []
+    for channel, rule in _VIDEO_CHANNEL_RULES.items():
+        clauses.append({
+            "if": {"properties": {"channel": {"const": channel}}, "required": ["channel"]},
+            "then": _video_channel_then(rule),
+        })
+    clauses.append({
+        "if": {"not": {"required": ["channel"]}},
+        "then": _video_channel_then(_VIDEO_CHANNEL_RULES["grok"]),
+    })
+    grok_selector = {"anyOf": [
+        {"not": {"required": ["channel"]}},
+        {"properties": {"channel": {"const": "grok"}}, "required": ["channel"]},
+    ]}
+    clauses.append({
+        "if": {"allOf": [grok_selector, {"required": ["reference_upload_ids"]}]},
+        "then": {"properties": {"resolution": {"enum": ["720p"]}}},
+    })
+    clauses.append({
+        "if": {"allOf": [grok_selector, {
+            "properties": {"model": {"const": "grok-imagine-video-1.5"}},
+            "required": ["model"],
+        }]},
+        "then": {
+            "required": ["reference_upload_ids"],
+            "properties": {"resolution": {"enum": ["720p"]}},
+        },
+    })
+    sora_selector = {
+        "properties": {"channel": {"const": "sora"}}, "required": ["channel"],
+    }
+    for model, resolutions in _VIDEO_CHANNEL_RULES["sora"]["model_resolutions"].items():
+        clauses.append({
+            "if": {"allOf": [sora_selector, {
+                "properties": {"model": {"const": model}}, "required": ["model"],
+            }]},
+            "then": {"properties": {"resolution": {"enum": list(resolutions)}}},
+        })
+    clauses.append({
+        "if": {"allOf": [sora_selector, {"not": {"required": ["model"]}}]},
+        "then": {"properties": {"resolution": {"enum": ["720p"]}}},
+    })
+    return clauses
+
+
 _MEDIA_SCHEMAS = {
     "image-generate": {
         "required": ["prompt"], "properties": {
@@ -199,17 +330,22 @@ _MEDIA_SCHEMAS = {
         "required": ["prompt"], "properties": {
             "prompt": {"type": "string", "minLength": 1, "maxLength": 2000},
             "channel": {"type": "string", "enum": ["grok", "micro", "omni", "minimax", "sora"]},
-            "ratio": {"type": "string", "enum": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"]},
+            "ratio": {"type": "string", "enum": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9", "adaptive"]},
             "duration": {"type": "integer", "minimum": 1, "maximum": 15},
             "seconds": {"type": "integer", "enum": [4, 8, 12]},
-            "resolution": {"type": "string", "enum": ["480p", "720p", "768p", "1024p", "1080p"]},
+            "resolution": {"type": "string", "enum": ["480p", "720p", "1024p", "1080p", "2k"]},
             "model": {"type": "string", "enum": ["grok-imagine-video", "grok-imagine-video-1.5", "sora-2", "sora-2-pro"]},
             "generate_audio": {"type": "boolean"},
             "reference_upload_ids": {"type": "array", "minItems": 1, "maxItems": 9,
                                      "items": _IMAGE_UPLOAD_SCHEMA},
         },
+        "allOf": _video_channel_schema(),
+        "x-hq-channel-rules": _VIDEO_CHANNEL_RULES,
         "constraints": [
             "reference_upload_ids limit: grok=7, micro=9, omni=6, minimax=5",
+            "channel=minimax accepts only resolution=2k for new tasks",
+            "resolution=2k is only valid when channel=minimax",
+            "channel-specific ratio, duration/seconds, resolution, model, and reference rules are machine-readable in input_schema.allOf",
             "sora uses model=sora-2|sora-2-pro, seconds=4|8|12, ratio=9:16|16:9, resolution=720p|1024p|1080p, and exactly one reference when supplied",
             "sora rejects duration and generate_audio; seconds is only for sora; model is otherwise only for grok",
             "generate_audio is only a boolean for micro",
@@ -431,6 +567,9 @@ def _catalog_entry(action, fields):
         "required": list(details.get("required", ())),
         "properties": details.get("properties") or {field: {"type": _catalog_type(field)} for field in fields},
     }
+    for keyword in ("allOf", "anyOf", "oneOf", "x-hq-channel-rules"):
+        if keyword in details:
+            schema[keyword] = details[keyword]
     result_type = "quote" if generation else ("account" if action == "account" else "json")
     return {
         "action": action,
@@ -1827,23 +1966,25 @@ def _generation_payload(action, value):
             "model", "generate_audio", "reference_upload_ids",
         }, ("prompt",))
         channel = _enum(value.get("channel", "grok"), "channel", ("grok", "micro", "omni", "minimax", "sora"))
+        rule = _VIDEO_CHANNEL_RULES[channel]
         if channel == "sora":
             if "duration" in value or "generate_audio" in value:
                 raise CLIAPIError(400, "Sora 使用 seconds，且不支持 generate_audio")
+            model = _enum(value.get("model", rule["default_model"]), "model", tuple(rule["models"]))
             body = {
                 "prompt": _string(value["prompt"], "prompt", 1, 2000),
                 "channel": "sora",
-                "model": _enum(value.get("model", "sora-2"), "model", ("sora-2", "sora-2-pro")),
-                "seconds": _integer(value.get("seconds", 4), "seconds", 4, 12),
-                "ratio": _enum(value.get("ratio", "9:16"), "ratio", ("9:16", "16:9")),
-                "resolution": _enum(value.get("resolution", "720p"), "resolution", ("720p", "1024p", "1080p")),
+                "model": model,
+                "seconds": _integer(value.get("seconds", rule["default_seconds"]), "seconds", min(rule["seconds"]), max(rule["seconds"])),
+                "ratio": _enum(value.get("ratio", rule["default_ratio"]), "ratio", tuple(rule["ratios"])),
+                "resolution": _enum(value.get("resolution", rule["default_resolution"]), "resolution", tuple(rule["model_resolutions"][model])),
                 "source_page": "video",
             }
-            if body["seconds"] not in {4, 8, 12}:
+            if body["seconds"] not in set(rule["seconds"]):
                 raise CLIAPIError(400, "Sora seconds 仅支持 4、8、12")
             if "reference_upload_ids" in value:
                 references = value["reference_upload_ids"]
-                if not isinstance(references, list) or len(references) != 1:
+                if not isinstance(references, list) or not 1 <= len(references) <= rule["reference_max"]:
                     raise CLIAPIError(400, "Sora reference_upload_ids 必须包含 1 项")
                 body["reference_upload_ids"] = [_upload_id(references[0], "reference_upload_ids")]
             return body, "sora_video", "/api/gen/sora_video"
@@ -1852,26 +1993,24 @@ def _generation_payload(action, value):
         body = {
             "prompt": _string(value["prompt"], "prompt", 1, 2000),
             "channel": channel,
-            "ratio": _enum(value.get("ratio", "16:9" if channel in {"grok", "omni"} else "9:16"),
-                           "ratio", ("1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3")),
-            "duration": _integer(value.get("duration", 10 if channel == "grok" else 5), "duration", 1, 15),
-            "resolution": _enum(value.get("resolution", "2k" if channel == "minimax" else "720p"),
-                                "resolution", ("480p", "720p", "768p", "1080p", "2k")),
+            "ratio": _enum(value.get("ratio", rule["default_ratio"]), "ratio", tuple(rule["ratios"])),
+            "duration": _integer(value.get("duration", rule["default_duration"]), "duration", rule["duration"][0], rule["duration"][1]),
+            "resolution": _enum(value.get("resolution", rule["default_resolution"]), "resolution", tuple(rule["resolutions"])),
             "source_page": "video",
         }
-        if channel == "minimax" and body["resolution"] != "2k":
-            raise CLIAPIError(400, "MiniMax 新任务 resolution 仅支持 2k")
+        selected_model = rule["default_model"]
         if "model" in value:
-            body["model"] = _enum(value["model"], "model", ("grok-imagine-video", "grok-imagine-video-1.5"))
             if channel != "grok":
                 raise CLIAPIError(400, "model 参数仅用于 grok")
+            selected_model = _enum(value["model"], "model", tuple(rule["models"]))
+            body["model"] = selected_model
         if "generate_audio" in value:
             if not isinstance(value["generate_audio"], bool) or channel != "micro":
                 raise CLIAPIError(400, "generate_audio 仅用于 micro 且必须是布尔值")
             body["generate_audio"] = value["generate_audio"]
         if "reference_upload_ids" in value:
             references = value["reference_upload_ids"]
-            limit = {"grok": 7, "micro": 9, "omni": 6, "minimax": 5}[channel]
+            limit = rule["reference_max"]
             if not isinstance(references, list) or not 1 <= len(references) <= limit:
                 raise CLIAPIError(400, "reference_upload_ids 必须包含 1-%d 项" % limit)
             body["reference_upload_ids"] = []
@@ -1879,6 +2018,11 @@ def _generation_payload(action, value):
                 clean = _upload_id(item, "reference_upload_ids")
                 if clean not in body["reference_upload_ids"]:
                     body["reference_upload_ids"].append(clean)
+        if channel == "grok":
+            if selected_model in rule["reference_required_models"] and not body.get("reference_upload_ids"):
+                raise CLIAPIError(400, "Grok Video 1.5 至少需要 1 张参考图")
+            if body.get("reference_upload_ids") and body["resolution"] not in rule["reference_resolutions"]:
+                raise CLIAPIError(400, "Grok 参考图生成仅支持 720p")
         return body, "xiaole_video", "/api/gen/xiaole_video"
     _strict_object(value, {"text", "voice", "speed", "pitch", "volume"}, ("text",))
     body = {"text": _string(value["text"], "text", 1, 1000), "source_page": "audio"}

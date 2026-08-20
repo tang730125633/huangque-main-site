@@ -167,6 +167,8 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         }
 
     def _lock_project_character_references(self):
+        from PIL import Image
+
         conn = self.db()
         try:
             plan_row = conn.execute(
@@ -202,12 +204,18 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             ).fetchall()
             self.assertTrue(rows)
             for index, row in enumerate(rows, 1):
+                relative = "short_drama_refs/character-%d.png" % index
+                reference_path = Path(self.tmp.name) / relative
+                reference_path.parent.mkdir(parents=True, exist_ok=True)
+                Image.new("RGB", (256, 256), (30, 80, 120)).save(
+                    reference_path, "PNG"
+                )
                 conn.execute(
                     "UPDATE short_drama_characters SET reference_file=?,"
                     "reference_url=?,reference_version=1,reference_locked=1 "
                     "WHERE project_id=? AND character_key=?",
                     (
-                        "short_drama_refs/character-%d.png" % index,
+                        relative,
                         "https://cdn.example/short-drama/character-%d.png" % index,
                         self.project["id"], row[0],
                     ),
@@ -984,7 +992,10 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         avatar_lookup = mock.Mock(side_effect=AssertionError(
             "MiniMax preflight must not resolve a client supplied avatar_id"
         ))
-        with mock.patch.dict(os.environ, {
+        with mock.patch(
+            "content_domains.core._out_path",
+            side_effect=lambda relative: Path(self.tmp.name) / relative,
+        ), mock.patch.dict(os.environ, {
             "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
             "MINIMAX_API_KEY": "configured-for-preflight-only",
         }):
@@ -1000,6 +1011,119 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         self.assertFalse(handler.response[1]["billable"])
         self.assertFalse(handler.response[1]["external_submission"])
         avatar_lookup.assert_not_called()
+
+    def test_minimax_url_only_locked_character_is_not_reported_ready(self):
+        self._lock_project_character_references()
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_characters SET reference_file='' "
+                "WHERE project_id=?",
+                (self.project["id"],),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+            "MINIMAX_API_KEY": "configured-for-preflight-only",
+        }):
+            workspace = short_drama_autodraft.workspace(
+                self.db, "alice", "alice", self.project["id"],
+                avatar_list=lambda _username, _limit: [],
+            )
+            provider_poc = workspace["provider_poc"]
+            self.assertFalse(provider_poc["all_roles_bound"])
+            self.assertTrue(any(
+                not character["binding_ready"]
+                for character in provider_poc["characters"]
+            ))
+            shot = next(
+                item for item in provider_poc["shots"]
+                if item["character_keys"]
+            )
+            with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+                short_drama_autodraft.preview_provider_request(
+                    self.db,
+                    "alice",
+                    "alice",
+                    {
+                        "project_id": self.project["id"],
+                        "plan_id": self.plan_id,
+                        "shot_key": shot["shot_key"],
+                        "character_key": shot["primary_character_key"],
+                    },
+                    include_private=True,
+                )
+        self.assertEqual("provider_avatar_not_ready", raised.exception.code)
+
+    def test_minimax_omits_url_only_optional_references(self):
+        self._lock_project_character_references()
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+            "MINIMAX_API_KEY": "configured-for-preflight-only",
+        }), mock.patch(
+            "content_domains.core._out_path",
+            side_effect=lambda relative: Path(self.tmp.name) / relative,
+        ):
+            workspace = short_drama_autodraft.workspace(
+                self.db, "alice", "alice", self.project["id"],
+                avatar_list=lambda _username, _limit: [],
+            )
+            shots = [
+                item for item in workspace["provider_poc"]["shots"]
+                if item["character_keys"]
+            ]
+            cases = (
+                (
+                    "scene",
+                    shots[0],
+                    None,
+                    {
+                        "scene_key": "scene-legacy", "name": "旧场景",
+                        "file": "", "url": "https://cdn.example/scene.png",
+                    },
+                    "__scene_reference__",
+                ),
+                (
+                    "continuity",
+                    shots[1],
+                    {
+                        "shot_key": shots[0]["shot_key"],
+                        "file": "", "url": "https://cdn.example/tail.png",
+                    },
+                    None,
+                    "__continuity_tail__",
+                ),
+            )
+            for label, shot, previous, scene, forbidden_key in cases:
+                with self.subTest(optional_reference=label), mock.patch.object(
+                    short_drama_autodraft,
+                    "_previous_shot_reference",
+                    return_value=previous,
+                ), mock.patch.object(
+                    short_drama_autodraft.short_drama_asset_graph,
+                    "locked_scene_reference",
+                    return_value=scene,
+                ):
+                    result = short_drama_autodraft.preview_provider_request(
+                        self.db,
+                        "alice",
+                        "alice",
+                        {
+                            "project_id": self.project["id"],
+                            "plan_id": self.plan_id,
+                            "shot_key": shot["shot_key"],
+                            "character_key": shot["primary_character_key"],
+                        },
+                        include_private=True,
+                    )
+                    reference_keys = {
+                        item["character_key"]
+                        for item in result["_provider_request"]["reference_images"]
+                    }
+                    self.assertNotIn(forbidden_key, reference_keys)
 
     def test_start_is_idempotent_and_rejects_changed_request(self):
         first = self._start("same-key")

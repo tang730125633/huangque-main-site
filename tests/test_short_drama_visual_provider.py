@@ -172,8 +172,38 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
             image_path = Path(directory) / "role.png"
             Image.new("RGB", (256, 256), (30, 80, 120)).save(image_path, "PNG")
             with mock.patch("content_domains.core._out_path", return_value=image_path):
-                value = provider._reference_value({"file": "image/role.png"})
+                value = provider._reference_value({
+                    "file": "image/role.png",
+                    "url": "http://169.254.169.254/latest/meta-data",
+                })
         self.assertTrue(value.startswith("data:image/png;base64,"))
+
+    def test_minimax_h3_rejects_metadata_reference_before_provider_submission(self):
+        provider = MiniMaxH3ShotProvider()
+        candidate = {"id": "minimax-key-2", "secret": "test-only-secret"}
+        request = {
+            "prompt": "人物走进电梯",
+            "ratio": "16:9",
+            "duration_seconds": 5,
+            "reference_images": [{
+                "url": "http://169.254.169.254/latest/meta-data",
+            }],
+            "_provider_key_id": candidate["id"],
+            "_minimax_origin": "metaso",
+        }
+        with mock.patch.object(
+            provider_keys, "has_candidate", return_value=True,
+        ), mock.patch.object(
+            provider, "_bound_key", return_value=candidate,
+        ), mock.patch.object(
+            video_minimax_h3, "_request_json",
+            side_effect=AssertionError("unsafe reference reached provider submission"),
+        ) as submit:
+            with self.assertRaises(VisualProviderError) as raised:
+                provider.create_job(request)
+        self.assertEqual("visual_reference_invalid", raised.exception.code)
+        self.assertFalse(raised.exception.submitted)
+        submit.assert_not_called()
 
     def test_minimax_h3_preflight_rejects_corrupt_local_reference(self):
         provider = MiniMaxH3ShotProvider()
@@ -240,14 +270,16 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
 
     def test_minimax_h3_create_poll_and_fetch_preserve_key_affinity(self):
         provider = MiniMaxH3ShotProvider()
+        output = io.BytesIO()
+        Image.new("RGB", (256, 256), (30, 80, 120)).save(output, "PNG")
+        reference = "data:image/png;base64," + base64.b64encode(
+            output.getvalue()
+        ).decode("ascii")
         request = {
             "prompt": "两个孩子在长椅上分享糖果",
             "ratio": "16:9",
             "duration_seconds": 5,
-            "reference_images": [
-                {"url": "https://cdn.example/boy.png"},
-                {"url": "https://cdn.example/girl.png"},
-            ],
+            "reference_images": [reference, reference],
         }
         candidate = {"id": "minimax-key-2", "secret": "test-only-secret"}
         with mock.patch.object(provider_keys, "has_candidate", return_value=True), \
@@ -266,7 +298,11 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
         submitted = request_json.call_args_list[0].args[3]
         self.assertEqual("MiniMax-H3", submitted["model"])
         self.assertEqual("2K", submitted["resolution"])
-        self.assertTrue(submitted["content"][1]["image_url"]["url"].startswith("https://"))
+        self.assertTrue(
+            submitted["content"][1]["image_url"]["url"].startswith(
+                "data:image/png;base64,"
+            )
+        )
         self.assertEqual("/v2/video_generation", request_json.call_args_list[0].args[2])
         self.assertEqual("/v2/query/video_generation/task-8", request_json.call_args_list[1].args[2])
         self.assertEqual("test-only-secret", request_json.call_args_list[0].kwargs["api_key"])

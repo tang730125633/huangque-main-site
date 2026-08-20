@@ -2,7 +2,6 @@
 
 import base64
 import json
-import urllib.parse
 
 from .base import ShotVisualCapability, ShotVisualProvider, VisualProviderError
 
@@ -115,12 +114,20 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
         else:
             value = str((item or {}).get("url") or "").strip()
             relative = str((item or {}).get("file") or "").strip()
-        if value.startswith(("http://", "https://", "data:image/")):
-            return value
         if not relative:
-            raise VisualProviderError(
-                "visual_reference_required", "麦克视频缺少可用的人物参考图"
-            )
+            if not value:
+                raise VisualProviderError(
+                    "visual_reference_required", "麦克视频缺少可用的人物参考图"
+                )
+            try:
+                from content_domains import video_minimax_h3
+
+                return video_minimax_h3.validate_reference_input(value)
+            except ValueError as error:
+                raise VisualProviderError(
+                    "visual_reference_invalid",
+                    "麦克视频参考图必须是已上传并归属当前项目的本地图片",
+                ) from error
         from content_domains.core import _out_path
 
         try:
@@ -151,9 +158,9 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
             mime, base64.b64encode(raw).decode("ascii")
         )
         try:
-            from content_domains.video_minimax_h3 import _image_item
+            from content_domains.video_minimax_h3 import validate_reference_input
 
-            return _image_item(value)["image_url"]["url"]
+            return validate_reference_input(value)
         except ValueError as error:
             raise VisualProviderError(
                 "visual_reference_invalid",

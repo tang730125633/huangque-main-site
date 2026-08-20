@@ -290,7 +290,27 @@ class HQCLIContentTests(unittest.TestCase):
         expanded = dict(request)
         expanded.pop("reference_upload_ids")
         expanded["reference_images"] = ["https://example.com/reference.png"]
+        with mock.patch.object(
+            core, "_domains", return_value=(audio, self.points, video),
+        ), mock.patch.object(
+            core, "HANDLERS", {"xiaole_video": lambda payload: payload},
+        ), mock.patch.object(
+            core.submission_idempotency, "replay_existing",
+            return_value=("replay", {"job_id": 91, "cost": 24}),
+        ), mock.patch.object(
+            video, "minimax_idempotency_claim_body",
+            side_effect=AssertionError("historical replay must precede strict claim validation"),
+        ):
+            status, result = self._post(
+                "/api/gen/xiaole_video", expanded, expected=24,
+                idempotency_key="minimax-legacy-url-replay-001",
+            )
+        self.assertEqual((200, 91), (status, result["job_id"]))
+
+        with self.assertRaisesRegex(ValueError, "参考图"):
+            video.minimax_idempotency_claim_body(expanded)
         old_body = video.minimax_idempotency_replay_bodies(expanded)[0]
+        self.assertEqual(expanded["reference_images"], old_body["reference_images"])
 
         with tempfile.TemporaryDirectory() as folder:
             database = Path(folder) / "jobs.db"

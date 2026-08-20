@@ -10,10 +10,10 @@ $ErrorActionPreference = "Stop"
 $env:PYTHONUTF8 = "1"
 $env:PIP_DISABLE_PIP_VERSION_CHECK = "1"
 
-$Version = "0.10.1"
+$Version = "0.10.3"
 $WheelName = "huangque_hq_cli-$Version-py3-none-any.whl"
-$WheelSha256 = "18188f6b5888b2ee414c694cb8f0ff4edc6dd3e06fa07ec07d7640b20a5963aa"
-$WheelUrl = "https://huangquechuanmei.com/downloads/hq/v0.10.1/$WheelName"
+$WheelSha256 = "5554a5f6b0f47f91be14e0a61f450a18bf9a0b176fded0ca37ea33dc0cce242f"
+$WheelUrl = "https://huangquechuanmei.com/downloads/hq/v0.10.3/$WheelName"
 $MarkerText = "Huangque HQ CLI managed installation"
 
 function Fail([string]$Message) {
@@ -37,8 +37,15 @@ function Find-Python {
     foreach ($Candidate in $Candidates) {
         $Exe = $Candidate[0]
         $Prefix = @($Candidate | Select-Object -Skip 1)
-        & $Exe @Prefix -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" 2>$null
-        if ($LASTEXITCODE -eq 0) {
+        $CandidateExitCode = 1
+        try {
+            & $Exe @Prefix -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" 2>$null
+            $CandidateExitCode = $LASTEXITCODE
+        }
+        catch {
+            $CandidateExitCode = 1
+        }
+        if ($CandidateExitCode -eq 0) {
             return @{ Exe = $Exe; Prefix = $Prefix }
         }
     }

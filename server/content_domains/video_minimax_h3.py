@@ -227,54 +227,60 @@ def check_credentials(api_key, opener=None):
     return True
 
 
-def _image_item(value):
+def validate_reference_input(value):
+    """Return a provider-safe data URI; remote URLs are never forwarded.
+
+    MiniMax resolves URL references outside our network boundary, so a local
+    DNS check cannot pin its eventual destination or redirect chain.  Keep the
+    submission contract to bytes we have decoded and validated ourselves.
+    """
     value = str(value or "").strip()
     match = re.fullmatch(
         r"data:(image/(?:jpeg|jpg|png|webp));base64,([A-Za-z0-9+/=\s]+)",
         value,
         re.IGNORECASE,
     )
-    if match:
-        try:
-            raw = base64.b64decode(re.sub(r"\s+", "", match.group(2)), validate=True)
-        except (ValueError, TypeError) as exc:
-            raise ValueError("麦克视频参考图数据无效") from exc
-        if not raw or len(raw) > MAX_IMAGE_BYTES:
-            raise ValueError("麦克视频单张参考图必须小于 30MB")
-        try:
-            from PIL import Image
-            with Image.open(io.BytesIO(raw)) as image:
-                expected = (
-                    "JPEG"
-                    if match.group(1).lower() in {"image/jpeg", "image/jpg"}
-                    else match.group(1)[6:].upper()
-                )
-                if image.format != expected:
-                    raise ValueError("麦克视频参考图格式与图片内容不一致")
-                if not 256 <= image.width <= 5760 or not 256 <= image.height <= 5760:
-                    raise ValueError("麦克视频参考图宽高必须为 256～5760 像素")
-                image.load()
-                if image.format != "PNG" or image.mode not in {"RGB", "RGBA"}:
-                    clean = image.convert("RGBA" if "A" in image.getbands() else "RGB")
-                    output = io.BytesIO()
-                    clean.save(output, "PNG", optimize=True)
-                    raw = output.getvalue()
-                    value = "data:image/png;base64," + base64.b64encode(raw).decode("ascii")
-        except ValueError:
-            raise
-        except Exception:
-            raise ValueError(
-                "麦克视频参考图无法识别，请重新上传 JPG 或 PNG 图片"
-            ) from None
-    else:
-        parsed = urllib.parse.urlsplit(value)
-        if (
-            parsed.scheme not in {"http", "https"}
-            or not parsed.hostname
-            or parsed.username
-            or parsed.password
-        ):
-            raise ValueError("麦克视频参考图必须是图片数据或公网 URL")
+    if not match:
+        raise ValueError("麦克视频参考图必须使用已上传的本地图片数据")
+    try:
+        raw = base64.b64decode(re.sub(r"\s+", "", match.group(2)), validate=True)
+    except (ValueError, TypeError) as exc:
+        raise ValueError("麦克视频参考图数据无效") from exc
+    if not raw or len(raw) > MAX_IMAGE_BYTES:
+        raise ValueError("麦克视频单张参考图必须小于 30MB")
+    try:
+        from PIL import Image
+        with Image.open(io.BytesIO(raw)) as image:
+            expected = (
+                "JPEG"
+                if match.group(1).lower() in {"image/jpeg", "image/jpg"}
+                else match.group(1)[6:].upper()
+            )
+            if image.format != expected:
+                raise ValueError("麦克视频参考图格式与图片内容不一致")
+            if not 256 <= image.width <= 5760 or not 256 <= image.height <= 5760:
+                raise ValueError("麦克视频参考图宽高必须为 256～5760 像素")
+            image.load()
+            if image.format != "PNG" or image.mode not in {"RGB", "RGBA"}:
+                clean = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+                output = io.BytesIO()
+                clean.save(output, "PNG", optimize=True)
+                raw = output.getvalue()
+                if len(raw) > MAX_IMAGE_BYTES:
+                    raise ValueError("麦克视频单张参考图必须小于 30MB")
+                return "data:image/png;base64," + base64.b64encode(raw).decode("ascii")
+    except ValueError:
+        raise
+    except Exception:
+        raise ValueError(
+            "麦克视频参考图无法识别，请重新上传 JPG 或 PNG 图片"
+        ) from None
+    mime = "image/jpeg" if expected == "JPEG" else "image/" + expected.lower()
+    return "data:%s;base64,%s" % (mime, base64.b64encode(raw).decode("ascii"))
+
+
+def _image_item(value):
+    value = validate_reference_input(value)
     return {
         "type": "image_url",
         "image_url": {"url": value},

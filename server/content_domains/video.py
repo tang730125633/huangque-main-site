@@ -1268,7 +1268,9 @@ def _xiaole_ref_to_url(data_url):
         print("[video] 参考图转存COS失败，回退原始数据: %s" % e, flush=True)
         return s
 
-def _minimax_idempotency_body(payload, resolution=None):
+def _minimax_idempotency_body(
+    payload, resolution=None, *, validate_references=True,
+):
     """Normalize a MiniMax body for stable claims and historical replay hashes."""
     if not isinstance(payload, dict):
         raise ValueError("请求体不是合法 JSON")
@@ -1294,8 +1296,12 @@ def _minimax_idempotency_body(payload, resolution=None):
         raise ValueError("麦克视频模型不支持：%s" % model)
     ratio = str(cleaned.get("ratio") or "9:16").strip()
     duration = cleaned.get("duration", 5)
+    # Historical replay candidates are hash-only and can contain legacy remote
+    # references.  Never let them authorize a new submission, but preserve the
+    # old body shape so an existing idempotency record can still be reconciled.
+    provider_refs = refs if validate_references else []
     provider_request = video_minimax_h3.build_request(
-        prompt, refs, ratio, duration,
+        prompt, provider_refs, ratio, duration,
         str(resolution or cleaned.get("resolution") or "2k").strip(),
         allow_legacy_resolution=True,
     )
@@ -1328,7 +1334,9 @@ def minimax_idempotency_replay_bodies(payload):
     resolutions = [requested] if requested else ["2k", "768p"]
     candidates = []
     for resolution in resolutions:
-        cleaned = _minimax_idempotency_body(payload, resolution)
+        cleaned = _minimax_idempotency_body(
+            payload, resolution, validate_references=False,
+        )
         candidates.append(dict(cleaned))
         for base in video_minimax_h3.ORIGIN_API_BASES.values():
             candidates.append(dict(cleaned, _minimax_api_base=base))

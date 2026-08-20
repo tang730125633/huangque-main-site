@@ -2920,9 +2920,6 @@ class H(BaseHTTPRequestHandler):
                     early_key = _idempotency_key(
                         self.headers.get("Idempotency-Key")
                     )
-                    minimax_idem_body = video_domain.minimax_idempotency_claim_body(
-                        body
-                    )
                     if early_key:
                         early_state, early_response = submission_idempotency.replay_existing(
                             jdb, user["username"], p, early_key,
@@ -2944,6 +2941,12 @@ class H(BaseHTTPRequestHandler):
                                 "detail": "同一个 Idempotency-Key 不能用于不同请求",
                                 "code": "idempotency_conflict",
                             })
+                    # Existing records must replay before current-contract
+                    # validation: historical bodies can contain legacy
+                    # references that are forbidden for every new claim.
+                    minimax_idem_body = video_domain.minimax_idempotency_claim_body(
+                        body
+                    )
                 # content checks, price binding, idempotency, and deduction.
                 if not is_still_route and kind in {"image", "xiaole_video", "sora_video"}:
                     body = cli_uploads.expand_image_payload(body, user["username"])

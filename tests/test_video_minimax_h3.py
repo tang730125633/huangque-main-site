@@ -3,6 +3,7 @@ import base64
 import io
 import json
 import os
+import socket
 import sqlite3
 import sys
 import tempfile
@@ -44,6 +45,38 @@ class MiniMaxH3VideoTests(unittest.TestCase):
             self.assertEqual(points.cost_of("xiaole_video", {
                 "channel": "minimax", "duration": 15, "resolution": "2k",
             }), 90)
+
+    def test_generate_rejects_remote_reference_urls_before_provider_submission(self):
+        direct_targets = (
+            "https://10.0.0.8/reference.png",
+            "https://127.0.0.1/reference.png",
+            "http://169.254.169.254/latest/meta-data",
+        )
+        for target in direct_targets:
+            with self.subTest(target=target), patch.object(
+                video_minimax_h3, "_request_json",
+                side_effect=AssertionError("unsafe reference reached provider submission"),
+            ) as submit:
+                with self.assertRaisesRegex(ValueError, "参考图"):
+                    video_minimax_h3.generate(
+                        "人物走进电梯", [target], api_key="test-only-secret",
+                    )
+                submit.assert_not_called()
+
+        private_dns = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.1.8", 443)),
+        ]
+        with patch("socket.getaddrinfo", return_value=private_dns), patch.object(
+            video_minimax_h3, "_request_json",
+            side_effect=AssertionError("private DNS target reached provider submission"),
+        ) as submit:
+            with self.assertRaisesRegex(ValueError, "参考图"):
+                video_minimax_h3.generate(
+                    "人物走进电梯",
+                    ["https://reference.example/character.png"],
+                    api_key="test-only-secret",
+                )
+            submit.assert_not_called()
 
     def test_verified_metaso_text_only_2k_request_contract(self):
         self.assertEqual(
