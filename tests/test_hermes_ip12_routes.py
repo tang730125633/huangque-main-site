@@ -757,6 +757,28 @@ assert [item["const"] for item in public_allowed["schema"]["properties"]["voice"
     "voice-demo", "public-demo",
 ], public_allowed
 assert public_allowed["status"] == "draft", public_allowed
+legacy = prepare("video")
+legacy_id = legacy["production_id"]
+legacy_convo = server.load_conversation(cid)
+legacy_record = legacy_convo["productions"][legacy_id]
+legacy_record.pop("material_context_version", None)
+legacy_record["parameter_schema"]["properties"]["voice"]["oneOf"].append({
+    "const": "public-demo", "title": "旧公共声音",
+})
+legacy_record["options"] = {"avatar_id": 7, "voice": "public-demo"}
+legacy_record["status"] = "blocked_prerequisite"
+server.save_conversation(cid, legacy_convo)
+with patch.object(server, "_bridge_action", side_effect=resource_bridge):
+    refreshed = client.get(f"/api/conversations/{cid}")
+assert refreshed.status_code == 200, refreshed.get_data(as_text=True)
+refreshed_record = next(
+    item for item in refreshed.get_json()["productions"] if item["id"] == legacy_id
+)
+assert refreshed_record["material_context_version"] == 2, refreshed_record
+assert refreshed_record["options"] == {"avatar_id": 7}, refreshed_record
+assert [item["const"] for item in refreshed_record["parameter_schema"]["properties"]["voice"]["oneOf"]] == [
+    "voice-demo",
+], refreshed_record
 assert missing_canvas["missing"] == ["board_id"], missing_canvas
 assert canvas["schema"]["required"] == ["board_id"], canvas
 assert canvas["recommended_action"] == "canvas-ops", canvas
@@ -1057,7 +1079,10 @@ assert {"image", "audio", "video", "canvas"}.issubset(families), families
 assert "private-" not in json.dumps(public_project, ensure_ascii=False)
 messages = server.load_conversation(cid)["messages"]
 assert messages[:len(original_messages)] == original_messages
-deliveries = [item for item in messages if item.get("production_id")]
+deliveries = [
+    item for item in messages
+    if str(item.get("message_id") or "").startswith("prodmsg_")
+]
 assert {item["production_id"] for item in deliveries} == {
     image_id, video_id, canvas_id, recovery_id,
 }, deliveries

@@ -1062,6 +1062,7 @@ def _production_parameter_context(account_id, action, catalog_entry=None, allow_
     properties = schema.setdefault("properties", {})
     schema.setdefault("required", [])
     context = {}
+    material_reads_ok = True
     request_key = "ip12-read-" + uuid.uuid4().hex
 
     def read(capability, input_body):
@@ -1079,6 +1080,7 @@ def _production_parameter_context(account_id, action, catalog_entry=None, allow_
         schema["required"] = []
     if "avatar_id" in properties:
         avatars = read("video-avatars", {"limit": 120})
+        material_reads_ok = material_reads_ok and avatars is not None
         avatar_items = avatars.get("items", []) if isinstance(avatars, dict) else []
         avatar_choices = [
             {
@@ -1105,6 +1107,7 @@ def _production_parameter_context(account_id, action, catalog_entry=None, allow_
     voice_field = "voice" if "voice" in properties else ("voice_key" if "voice_key" in properties else "")
     if voice_field:
         voices = read("voices", {})
+        material_reads_ok = material_reads_ok and voices is not None
         voice_items = voices.get("items", []) if isinstance(voices, dict) else []
         allowed_voices = [
             item for item in voice_items
@@ -1162,7 +1165,65 @@ def _production_parameter_context(account_id, action, catalog_entry=None, allow_
             and isinstance(item.get("version"), int)
             and item.get("role") in {"owner", "editor"}
         }
+    if action in {"digital-ip-text-generate", "digital-ip-batch-generate"} and material_reads_ok:
+        context["material_context_version"] = 2
     return schema, context
+
+
+def _refresh_unsubmitted_production_materials(cid, production_id):
+    with CONVERSATION_STATE_LOCK:
+        convo = _production_conversation(cid)
+        record = (convo or {}).get("productions", {}).get(production_id)
+        if not isinstance(record, dict):
+            return
+        if record.get("action") != "digital-ip-text-generate":
+            return
+        if record.get("status") not in {"draft", "blocked_prerequisite", "stale"}:
+            return
+        if int(record.get("material_context_version") or 0) >= 2:
+            return
+        family = record.get("capability_family") or "video"
+        allow_system_media = bool(record.get("allow_system_media"))
+    recommendation = _production_recommendation(
+        current_account_id(), family, "digital-ip-text-generate"
+    )
+    schema, context = _production_parameter_context(
+        current_account_id(), "digital-ip-text-generate",
+        recommendation.get("catalog_entry"), allow_system_media=allow_system_media,
+    )
+    if int(context.get("material_context_version") or 0) < 2:
+        return
+    with CONVERSATION_STATE_LOCK:
+        convo = _production_conversation(cid)
+        record = (convo or {}).get("productions", {}).get(production_id)
+        if not isinstance(record, dict):
+            return
+        if record.get("status") not in {"draft", "blocked_prerequisite", "stale"}:
+            return
+        properties = schema.get("properties") or {}
+        options = {}
+        for name, value in (record.get("options") or {}).items():
+            descriptor = properties.get(name)
+            if not isinstance(descriptor, dict):
+                continue
+            choices = descriptor.get("oneOf")
+            if isinstance(choices, list) and not any(
+                isinstance(choice, dict) and choice.get("const") == value
+                for choice in choices
+            ):
+                continue
+            options[name] = value
+        record["parameter_schema"] = schema
+        record.update(context)
+        _production_set_options(record, options)
+        valid, _, missing = _production_plan_or_error(record, record["options"])
+        record.update(
+            status="draft" if valid else "blocked_prerequisite",
+            last_error_code="" if valid else "missing_prerequisite",
+            updated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
+        )
+        _ensure_production_material_request_message(convo, record, missing)
+        save_conversation(cid, convo)
 
 
 def _production_missing_fields(record, options):
@@ -2326,6 +2387,15 @@ def api_get_convo(cid):
         return jsonify({"ok": False, "error": "Project 升级暂时无法保存，请稍后重试"}), 503
     if convo is None:
         return jsonify({"ok": False, "error": "诊断不存在"}), 404
+    for production_id, record in list((convo.get("productions") or {}).items()):
+        if (
+            isinstance(record, dict)
+            and record.get("action") == "digital-ip-text-generate"
+            and record.get("status") in {"draft", "blocked_prerequisite", "stale"}
+            and int(record.get("material_context_version") or 0) < 2
+        ):
+            _refresh_unsubmitted_production_materials(cid, production_id)
+    convo = _migrate_owned_conversation(cid)
     receipt_id = str(request.args.get("receipt") or "").strip()
     if receipt_id:
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", receipt_id):
@@ -2856,6 +2926,7 @@ def api_confirm_production():
 @app.route("/api/ip12/productions/<production_id>", methods=["GET"])
 def api_get_production(production_id):
     cid = str(request.args.get("conversation_id") or "")
+    _refresh_unsubmitted_production_materials(cid, production_id)
     with CONVERSATION_STATE_LOCK:
         convo = _production_conversation(cid)
         if convo is None:
