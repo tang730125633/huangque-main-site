@@ -45,6 +45,24 @@ def intake_decision(*, kind="propose_checkpoint", reply="这是我整理的基�
 
 
 class IP12HarnessTests(unittest.TestCase):
+    def test_future_schema_is_rejected_without_downgrading_the_project(self):
+        future = {
+            "schema_version": 2,
+            "revision": 7,
+            "current_module": 1,
+            "completed_modules": [],
+            "module_step": 1,
+        }
+        with self.assertRaises(harness.HarnessError):
+            harness.normalize_state(future)
+        self.assertEqual(future["schema_version"], 2)
+        self.assertEqual(future["revision"], 7)
+        for invalid in (True, 1.5, "not-a-version", "2"):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(harness.HarnessError):
+                    harness.normalize_state({"schema_version": invalid})
+        self.assertEqual(harness.normalize_state({"schema_version": 1})["schema_version"], 1)
+
     def test_production_recommendations_stay_bounded_by_capability_family(self):
         expected = {
             "image": "image-generate",

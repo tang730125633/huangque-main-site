@@ -330,6 +330,16 @@ def initial_state():
 
 def normalize_state(value):
     state = deepcopy(value) if isinstance(value, dict) else initial_state()
+    raw_version = state.get("schema_version", SCHEMA_VERSION)
+    if (
+        isinstance(raw_version, bool)
+        or not isinstance(raw_version, (int, str))
+        or not str(raw_version).isdigit()
+    ):
+        raise HarnessError("Project schema 版本无效")
+    raw_version = int(raw_version)
+    if raw_version > SCHEMA_VERSION:
+        raise HarnessError("Project 来自更新版本；当前服务只读保护已生效，请恢复新版本服务")
     state["schema_version"] = SCHEMA_VERSION
     try:
         state["revision"] = max(1, int(state.get("revision", 1)))
