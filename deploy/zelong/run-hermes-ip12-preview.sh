@@ -10,7 +10,7 @@ set +a
 : "${COPY_API_KEY:?COPY_API_KEY is required}"
 export OPENAI_API_BASE="$COPY_BASE"
 export OPENAI_API_KEY="$COPY_API_KEY"
-export HERMES_MODEL="${HERMES_PREVIEW_MODEL:-gpt-5.4}"
+export HERMES_MODEL="${HERMES_PREVIEW_MODEL:-gemini-3.5-flash}"
 export HERMES_HOME=/home/ubuntu/hermes-preview
 export HERMES_DATA_DIR=/home/ubuntu/hermes-preview-data
 export HERMES_DATA_QUOTA_MB=512
