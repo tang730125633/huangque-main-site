@@ -207,6 +207,7 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
             "server/hermes_ip12/server.py": (20, "/home/ubuntu/hermes-preview/server.py", "hermes", 0),
             "server/hermes_ip12/templates/index_clean.html": (20, "/home/ubuntu/hermes-preview/templates/index_clean.html", "hermes", 0),
             "deploy/zelong/run-hermes-ip12-preview.sh": (25, "/home/ubuntu/hermes-preview/run-preview.sh", "hermes", 0),
+            "deploy/zelong/hermes-ip12-preview-requirements.txt": (25, "/home/ubuntu/hermes-preview/preview-requirements.txt", "hermes", 0),
             "deploy/zelong/nginx-hermes-ip12-preview.conf": (35, "/etc/nginx/snippets/hermes-ip12-preview.conf", "hermes", 0),
             "deploy/zelong/hermes-ip12-preview.service": (35, "/etc/systemd/system/hermes-ip12-preview.service", "hermes", 1),
             "site/workbench/cloud-shell.js": (40, "/var/www/huangquechuanmei/workbench/cloud-shell.js", "-", 0),
@@ -300,12 +301,16 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
         self.assertIn("server/hermes_ip12/requirements.txt", files)
         self.assertIn("server/hermes_ip12/templates/index_clean.html", files)
         self.assertIn("deploy/zelong/hermes-ip12-preview.service", files)
+        self.assertIn("deploy/zelong/hermes-ip12-preview-requirements.txt", files)
         self.assertIn("deploy/zelong/nginx-hermes-ip12-preview.conf", files)
         self.assertIn("deploy/zelong/run-hermes-ip12-preview.sh", files)
         self.assertTrue(all(not path.endswith((".env", ".db")) for path in files))
         self.assertIn("--ip12-preview 只允许 origin/main", SRC)
         self.assertIn("HERMES_ENABLE_INTERNAL_TOOLS=0", (ROOT / "deploy/zelong/run-hermes-ip12-preview.sh").read_text())
         self.assertIn("--target /home/ubuntu/hermes-preview-deps", SRC)
+        preview_requirements = (ROOT / "deploy/zelong/hermes-ip12-preview-requirements.txt").read_text()
+        self.assertIn("Flask", preview_requirements)
+        self.assertNotIn("playwright", preview_requirements.lower())
         self.assertNotIn(" -m venv ", SRC)
         self.assertGreaterEqual(SRC.count('get("release_sha", "")'), 2)
 
