@@ -887,20 +887,43 @@ def _apply_profile_updates(profile, updates):
 
 def duration_conflict_decision(value, message):
     state = normalize_state(value)
-    current = {item.replace(" ", "") for item in DURATION_RE.findall(str(message or ""))}
+    message_text = str(message or "")
+    current = {item.replace(" ", "") for item in DURATION_RE.findall(message_text)}
     if not current:
         return None
+
+    def contexts(text):
+        source = str(text or "")
+        result = []
+        for match in DURATION_RE.finditer(source):
+            fragment = source[max(0, match.start() - 28):match.end() + 28]
+            fragment = DURATION_RE.sub("", fragment)
+            fragment = re.sub(r"[^a-zA-Z0-9\u4e00-\u9fff]+", "", fragment).lower()
+            if fragment:
+                result.append(fragment)
+        return result
+
+    current_contexts = contexts(message_text)
     for field, item in state["ip_profile"]["facts"].items():
         if not isinstance(item, dict):
             continue
         if not any(token in field for token in DURATION_FIELDS):
             continue
-        confirmed = {part.replace(" ", "") for part in DURATION_RE.findall(str(item.get("value") or ""))}
-        if confirmed and current.isdisjoint(confirmed):
+        confirmed_text = str(item.get("evidence_quote") or item.get("value") or "")
+        confirmed = {part.replace(" ", "") for part in DURATION_RE.findall(confirmed_text)}
+        confirmed_contexts = contexts(confirmed_text)
+        same_topic = any(
+            SequenceMatcher(None, old_context, new_context).find_longest_match(
+                0, len(old_context), 0, len(new_context)
+            ).size >= 4
+            for old_context in confirmed_contexts
+            for new_context in current_contexts
+        )
+        if confirmed and current.isdisjoint(confirmed) and same_topic:
             old, new = sorted(confirmed)[0], sorted(current)[0]
             return {
                 "decision": "ask_follow_up", "checkpoint": 0,
-                "reply": "你前面确认的从业时间是“%s”，这次又提到“%s”。这两个时间分别指什么？比如“%s是整体从业时间，%s是 AI/Agent 实践时间”，或者告诉我需要更正哪一个。" % (old, new, old, new),
+                "reply": "你前面确认的相关时间是“%s”，这次又提到“%s”。请说明这两个时间分别对应哪段经历或阶段，或者告诉我需要更正哪一个。" % (old, new),
                 "draft": "", "self_review": "", "profile_updates": [], "confidence": 1.0,
             }
     return None

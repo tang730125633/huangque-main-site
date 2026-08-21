@@ -1425,13 +1425,23 @@ class IP12HarnessTests(unittest.TestCase):
     def test_conflicting_duration_requires_one_clarification(self):
         state = self.complete_intake()
         state["ip_profile"]["facts"]["years_in_current_industry"] = {
-            "value": "2年", "evidence_quote": "我做了2年",
+            "value": "在 AI 和 Agent 领域做了2年",
+            "evidence_quote": "我在 AI 和 Agent 领域做了2年",
         }
         result = harness.duration_conflict_decision(state, "我进入 AI 和 Agent 领域只有三个月")
         self.assertEqual(result["decision"], "ask_follow_up")
         self.assertIn("2年", result["reply"])
         self.assertIn("三个月", result["reply"])
         self.assertIsNone(harness.duration_conflict_decision(state, "整体从业2年，其中 AI 实践三个月"))
+
+        state["ip_profile"]["facts"]["past_experience"] = {
+            "value": "做了快十年行政",
+            "evidence_quote": "之前做了快十年行政",
+        }
+        self.assertIsNone(harness.duration_conflict_decision(
+            state,
+            "删除我没说过的‘两年来逐步完善业务模式’，只保留事实原话。",
+        ))
 
     def test_modules_five_and_six_only_show_pdf_badge_when_pdf_is_ready(self):
         templates = Path(__file__).parents[1] / "server" / "hermes_ip12" / "templates"
