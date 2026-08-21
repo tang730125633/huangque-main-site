@@ -655,6 +655,7 @@ def _post_module_six_production_action(convo):
                 "requested_result": "video",
                 "preferred_action": "digital-ip-text-generate",
                 "candidate_actions": ["digital-ip-text-generate"],
+                "allow_system_media": False,
                 "options": {},
                 "script_title": str(topic.get("title") or "第一篇口播文案"),
             }
@@ -677,7 +678,9 @@ def _post_module_six_handoff_reply(action):
     return (
         "六步已经完成，我可以继续调用黄雀的图片、音频和视频制作能力。"
         "根据当前成果，我建议先把《%s》制作成数字人口播视频。"
-        "文案会自动复用；接下来只需要选择数字人形象和声音。"
+        "文案会自动复用；接下来请先确认你自己上传的形象和可试听声音。"
+        "如果还没有素材，可以先上传照片创建形象，或上传音频创建个人声音。"
+        "系统公共素材默认不会展示；只有你明确要求使用时才会提供。"
         "我会先显示实时报价，未经你确认不会提交或扣点。"
         % action.get("script_title", "第一篇口播文案")
     )
@@ -988,10 +991,20 @@ def _production_field_label(record, field):
     return str(descriptor.get("title") or _CAPABILITY_FIELD_LABELS.get(field, field))
 
 
+def _explicit_system_media_request(message):
+    text = re.sub(r"\s+", "", str(message or ""))
+    media = r"(?:系统|公共|预设|平台|自带|温柔女声|活力女声|沉稳男声|亲和女声)"
+    if re.search(r"(?:不要|不使用|别用|禁止).{0,8}" + media, text):
+        return False
+    return bool(re.search(r"(?:使用|选|选择|就用|采用).{0,12}" + media, text))
+
+
 def _ensure_production_material_request_message(convo, record, missing):
     fields = [name for name in missing if _production_upload_kind(record, name)]
     needs_account_audio = "audio_file" in missing
-    if not fields and not needs_account_audio:
+    needs_avatar = "avatar_id" in missing
+    needs_voice = "voice" in missing or "voice_key" in missing
+    if not fields and not needs_account_audio and not needs_avatar and not needs_voice:
         return None
     message_id = str(record.get("material_request_message_id") or "")
     if message_id:
@@ -1008,6 +1021,16 @@ def _ensure_production_material_request_message(convo, record, missing):
         parts.append(
             "这项制作还需要音频素材。当前只能选择你黄雀账号里已有的音频资产；"
             "本地音频暂时不能直接上传到这条生成链路。"
+        )
+    if needs_avatar:
+        parts.append(
+            "数字人口播需要先确认本人形象。请选择一张你以前上传创建的形象；"
+            "如果没有合适的，请点击“上传照片创建我的形象”。选择前必须能看到图片预览。"
+        )
+    if needs_voice:
+        parts.append(
+            "声音默认只展示有试听样音的个人声音；如果还没有，请点击“上传音频创建我的声音”。"
+            "系统公共音色不会自动出现，只有你明确提出使用后才会展示试听卡。"
         )
     message = _append_assistant_message(
         convo, "\n\n".join(parts), "production_bridge",
@@ -1031,7 +1054,7 @@ def _production_source_fields(action, properties):
     return tuple(name for name in wanted if name in properties)
 
 
-def _production_parameter_context(account_id, action, catalog_entry=None):
+def _production_parameter_context(account_id, action, catalog_entry=None, allow_system_media=False):
     """Expose account-owned choices while keeping derived source fields out of the UI."""
     # canvas-ops keeps the existing prompt-shaped adapter; the bridge still
     # validates the expanded op batch against the canonical action contract.
@@ -1057,16 +1080,25 @@ def _production_parameter_context(account_id, action, catalog_entry=None):
     if "avatar_id" in properties:
         avatars = read("video-avatars", {"limit": 120})
         avatar_items = avatars.get("items", []) if isinstance(avatars, dict) else []
+        avatar_choices = [
+            {
+                "const": item["id"],
+                "title": str(item.get("name") or "未命名形象"),
+                "preview_url": str(item.get("image_url") or ""),
+                "preview_kind": "image",
+                "source": "personal",
+            }
+            for item in avatar_items
+            if isinstance(item, dict) and isinstance(item.get("id"), int)
+            and item.get("status") == "ready" and str(item.get("image_url") or "").strip()
+        ]
         properties["avatar_id"].update({
             "title": "数字人形象",
-            "oneOf": [
-                {"const": item["id"], "title": str(item.get("name") or "未命名形象")}
-                for item in avatar_items
-                if isinstance(item, dict) and isinstance(item.get("id"), int)
-                and item.get("status") == "ready"
-            ],
+            "oneOf": avatar_choices,
+            "x-hq-upload-route": "/workbench/digital-ip",
+            "x-hq-upload-label": "上传照片创建我的形象",
             "description": (
-                "从当前账号已经准备好的数字人形象中选择。"
+                "只展示当前账号由用户上传照片创建、且可以预览的形象。"
                 if avatars is not None else "暂时无法读取当前账号的数字人形象，请稍后重新打开。"
             ),
         })
@@ -1074,15 +1106,34 @@ def _production_parameter_context(account_id, action, catalog_entry=None):
     if voice_field:
         voices = read("voices", {})
         voice_items = voices.get("items", []) if isinstance(voices, dict) else []
+        allowed_voices = [
+            item for item in voice_items
+            if isinstance(item, dict)
+            and str(item.get("voice_key") or "").strip()
+            and str(item.get("preview_url") or "").strip()
+            and (item.get("scope") == "personal" or allow_system_media)
+        ]
         properties[voice_field].update({
             "title": "声音",
             "oneOf": [
-                {"const": item["voice_key"], "title": str(item.get("display_name") or "未命名声音")}
-                for item in voice_items
-                if isinstance(item, dict) and str(item.get("voice_key") or "").strip()
+                {
+                    "const": item["voice_key"],
+                    "title": str(item.get("display_name") or "未命名声音"),
+                    "preview_url": str(item.get("preview_url") or ""),
+                    "preview_kind": "audio",
+                    "source": str(item.get("scope") or "personal"),
+                }
+                for item in allowed_voices
             ],
+            "x-hq-upload-route": "/workbench/audio",
+            "x-hq-upload-label": "上传音频创建我的声音",
+            "x-hq-system-media-allowed": bool(allow_system_media),
             "description": (
-                "从当前账号可用的公共或个人声音中选择。"
+                (
+                    "你已明确要求使用系统素材；这里只展示有试听样音的个人或公共声音。"
+                    if allow_system_media else
+                    "默认只展示有试听样音的个人声音；如需公共音色，请明确告诉 Agent。"
+                )
                 if voices is not None else "暂时无法读取当前账号的声音，请稍后重新打开。"
             ),
         })
@@ -2329,8 +2380,10 @@ def _production_conversation(cid):
 def api_prepare_production():
     try:
         body = _production_request_body()
-        if set(body) - {"conversation_id", "content_target", "expected_revision", "requested_result", "preferred_action", "options"}:
+        if set(body) - {"conversation_id", "content_target", "expected_revision", "requested_result", "preferred_action", "options", "allow_system_media"}:
             return _production_error("invalid_request", "包含不支持的参数", 400)
+        if "allow_system_media" in body and not isinstance(body["allow_system_media"], bool):
+            return _production_error("invalid_request", "系统素材授权必须是布尔值", 400)
         cid = str(body.get("conversation_id") or "")
         recommendation = _production_recommendation(
             current_account_id(), body.get("requested_result"), body.get("preferred_action")
@@ -2350,7 +2403,8 @@ def api_prepare_production():
                 convo, body.get("content_target"), unbound=source_unbound
             )
         parameter_schema, resource_context = _production_parameter_context(
-            current_account_id(), recommendation["recommended_action"], catalog_entry
+            current_account_id(), recommendation["recommended_action"], catalog_entry,
+            allow_system_media=bool(body.get("allow_system_media")),
         )
         with CONVERSATION_STATE_LOCK:
             convo = _production_conversation(cid)
@@ -2378,6 +2432,7 @@ def api_prepare_production():
                 "ui_route": str(catalog_entry.get("ui_route") or ""),
                 "transport": catalog_entry.get("transport") or {"kind": "action"},
                 "constraints": list(catalog_entry.get("constraints") or []),
+                "allow_system_media": bool(body.get("allow_system_media")),
                 "brief": {"reason": "基于当前已确认口播制作", "audience": "当前 IP 的目标受众", "goal": "将当前内容转为可交付成品"},
                 "options": {}, "input_digest": "", "status": "draft", "quote": {},
                 "job_id": None, "asset_refs": [], "canvas_ref": None,
@@ -4076,6 +4131,7 @@ def _process_production_intent_turn(
         "requested_result": family,
         "preferred_action": selected_action,
         "candidate_actions": intent["candidate_actions"],
+        "allow_system_media": _explicit_system_media_request(user_message),
         "options": options,
     }]
     return result, 200
