@@ -1315,6 +1315,22 @@ normalized_state, normalized_decision, _ = server.coach_harness.apply_model_deci
 assert len(normalized_decision["choices"]) == 3
 assert normalized_state["pending"]["id"] == "normalized-choice-target"
 
+choice_follow_up = {
+    "decision": "ask_follow_up", "checkpoint": 0,
+    "reply": "还缺一个关键事实：你最想帮助哪类人？", "draft": "",
+    "self_review": "", "profile_updates": [], "choices": [], "confidence": 0.7,
+}
+class ChoiceFollowUpResponse:
+    def json(self):
+        return {"choices": [{"message": {"content": server.json.dumps(choice_follow_up, ensure_ascii=False)}}]}
+server.call_ai = lambda *args, **kwargs: ChoiceFollowUpResponse()
+preserved_follow_up, follow_up_evidence = server._coach_model_decision(server.load_conversation(cid), "继续")
+assert preserved_follow_up["decision"] == "ask_follow_up" and preserved_follow_up["checkpoint"] == 0
+follow_up_state, follow_up_decision, _ = server.coach_harness.apply_model_decision(
+    loaded["coach_state"], preserved_follow_up, follow_up_evidence, pending_id="choice-follow-up",
+)
+assert follow_up_decision["choices"] == [] and follow_up_state["pending"] is None
+
 non_choice_state = server.coach_harness.initial_state()
 non_choice_state["intake"] = {"status": "complete", "round": 3, "answers": {}}
 drifted_non_choice = {

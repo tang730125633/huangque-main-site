@@ -2860,8 +2860,11 @@ def _coach_model_decision(
     unknown_fields = set(decision) - set(coach_harness.DECISION_SCHEMA["properties"])
     if unknown_fields:
         raise RuntimeError("AI 返回了不支持的结构化字段")
-    if coach_harness.is_choice_checkpoint(
-        state["current_module"], state["module_step"] + 1
+    if (
+        coach_harness.is_choice_checkpoint(
+            state["current_module"], state["module_step"] + 1
+        )
+        and decision.get("choices")
     ):
         decision.update(
             decision="propose_checkpoint",
@@ -2869,7 +2872,9 @@ def _coach_model_decision(
             draft="",
             profile_updates=[],
         )
-    else:
+    elif not coach_harness.is_choice_checkpoint(
+        state["current_module"], state["module_step"] + 1
+    ):
         decision["choices"] = []
     evidence = "\n".join(
         item["content"] for item in history if item["role"] == "user"
