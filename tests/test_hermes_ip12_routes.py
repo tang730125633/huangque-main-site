@@ -863,7 +863,7 @@ assert server.load_conversation(cid)["productions"][image_id]["options"] == {"pr
 audio_id = audio["production_id"]
 def audio_bridge(account_id, action, input_body, **kwargs):
     if action == "task":
-        return {"job_id": "202", "status": "failed", "code": "provider_failed", "refund_status": "refunded"}
+        return {"job_id": "202", "status": "error", "code": "provider_failed", "cost": 2, "refunded": True}
     if kwargs.get("confirm"):
         return {"job_id": "202", "status": "queued"}
     return {"quote_token": "private-audio-quote", "cost": 2, "points": 2, "expires_in": 300}
@@ -879,6 +879,12 @@ with patch.object(server, "_bridge_action", side_effect=audio_bridge):
 failed_record = failed.get_json()["production"]
 assert failed_record["status"] == "failed" and failed_record["refund_status"] == "refunded", failed_record
 assert failed_record["last_error_code"] == "provider_failed"
+
+pending_refund = {"action": "audio-generate", "capability_family": "audio", "asset_refs": []}
+server._set_production_result(pending_refund, {
+    "job_id": "203", "status": "error", "code": "provider_failed", "cost": 2, "refunded": False,
+})
+assert pending_refund["status"] == "failed" and pending_refund["refund_status"] == "pending", pending_refund
 
 # A successful submit response without a durable result reference stays in
 # submitting and is recovered with the same idempotency key.
@@ -1384,7 +1390,55 @@ server._coach_model_decision = original_coach_model
 server._coach_model_decision(saved, "请解释一下")
 coach_payload = "\n".join(item["content"] for item in captured_messages)
 assert "我选择 2：方向二" in coach_payload
+assert "结合经验和工具" in coach_payload
+assert "识别度集中" in coach_payload and "避免硬推销" in coach_payload
 assert "拆解真实问题" not in coach_payload and "记录长期成长" not in coach_payload
+
+foundation_cid = "foundation-choice-context"
+foundation_state = server.json.loads(server.json.dumps(selected_result["state"], ensure_ascii=False))
+foundation_state.update(current_module=4, completed_modules=[1, 2, 3, 4], module_step=4, pending=None)
+foundation_state["foundation_report"] = {"status": "failed"}
+foundation_state["ip_profile"]["confirmed_outputs"]["2-2"] = {
+    "module": 2, "step": 2, "title": "已选人设", "content": "已确认人设：耐心的工具陪跑者；13800138000",
+}
+foundation_state["ip_profile"]["confirmed_outputs"]["3-2"] = {
+    "module": 3, "step": 2, "title": "已选价值", "content": "已确认价值：陪用户把复杂事情做成",
+}
+for module in range(1, 5):
+    for step in range(1, 5):
+        key = f"{module}-{step}"
+        foundation_state["ip_profile"]["confirmed_outputs"].setdefault(key, {
+            "module": module, "step": step, "title": f"已确认 {key}",
+            "content": f"已确认 {key} 内容：" + ("事实" * 1600),
+        })
+foundation_state["ip_profile"]["confirmed_outputs"]["4-4"] = {
+    "module": 4, "step": 4, "title": "故事最终汇总",
+    "content": "模块4最终已确认：长期故事主线" + ("故事" * 1600),
+}
+server.save_conversation(foundation_cid, {
+    "id": foundation_cid, "title": "foundation context", "owner_account_id": "acct_choice",
+    "messages": saved["messages"], "coach_state": foundation_state,
+    "reports": {}, "deliverables": {},
+})
+foundation_messages = []
+def capture_foundation(messages, **_kwargs):
+    foundation_messages.extend(messages)
+    raise RuntimeError("foundation payload captured")
+server.call_ai = capture_foundation
+try:
+    server.generate_foundation_report(foundation_cid)
+    raise AssertionError("foundation payload capture did not stop")
+except RuntimeError as exc:
+    assert "foundation payload captured" in str(exc)
+foundation_payload = "\n".join(item["content"] for item in foundation_messages)
+assert "结合经验和工具" in foundation_payload
+assert "已确认人设：耐心的工具陪跑者" in foundation_payload
+assert "已确认价值：陪用户把复杂事情做成" in foundation_payload
+assert "模块4最终已确认：长期故事主线" in foundation_payload
+assert "13800138000" not in foundation_payload
+assert "三套人设方案" not in foundation_payload and "三套价值主张方案" not in foundation_payload
+assert "拆解真实问题" not in foundation_payload and "记录长期成长" not in foundation_payload
+server.call_ai = capture_coach
 
 editing_state = server.coach_harness.initial_state()
 editing_state["intake"] = {"status": "complete", "round": 3, "answers": {}}
