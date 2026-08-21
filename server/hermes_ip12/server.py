@@ -1535,10 +1535,12 @@ def generate_foundation_report(convo_id):
     return record
 
 def call_ai(messages, stream=False, temperature=0.7, max_tokens=None, response_format=None,
-            timeout_seconds=AI_DEFAULT_TIMEOUT_SECONDS):
+            timeout_seconds=AI_DEFAULT_TIMEOUT_SECONDS, reasoning_effort=None):
     payload_messages = [dict(item) for item in messages]
     modern_model = MODEL.lower().startswith(("gpt-5", "o1", "o3", "o4"))
     payload = {"model": MODEL, "messages": payload_messages, "stream": stream}
+    if reasoning_effort and modern_model:
+        payload["reasoning_effort"] = str(reasoning_effort)
     if not modern_model:
         payload["temperature"] = temperature
     if max_tokens:
@@ -2789,6 +2791,13 @@ def _coach_model_decision(
         response = call_ai(
             messages, stream=False, temperature=0.3, max_tokens=5000,
             response_format=response_format, timeout_seconds=timeout_seconds,
+            reasoning_effort=(
+                "low"
+                if coach_harness.is_choice_checkpoint(
+                    state["current_module"], state["module_step"] + 1
+                )
+                else None
+            ),
         )
     except Exception as exc:
         raise RuntimeError(str(exc)) from exc
@@ -2798,8 +2807,20 @@ def _coach_model_decision(
             content = "".join(str(item.get("text") or "") for item in content if isinstance(item, dict))
         decision = json.loads(str(content or ""))
     except Exception as exc:
+        if coach_harness.is_choice_checkpoint(
+            state["current_module"], state["module_step"] + 1
+        ):
+            raise coach_harness.ChoiceValidationError(
+                "choice_response_shape", "模型没有返回可解析的候选 JSON"
+            ) from exc
         raise RuntimeError("AI 没有返回可验证的结构化结果") from exc
     if not isinstance(decision, dict):
+        if coach_harness.is_choice_checkpoint(
+            state["current_module"], state["module_step"] + 1
+        ):
+            raise coach_harness.ChoiceValidationError(
+                "choice_response_shape", "候选响应必须是 JSON 对象"
+            )
         raise RuntimeError("AI 没有返回可验证的结构化结果")
     unknown_fields = set(decision) - set(coach_harness.DECISION_SCHEMA["properties"])
     if unknown_fields:
@@ -3159,6 +3180,7 @@ def _process_model_turn(
         choice_deadline = time.monotonic() + CHOICE_TOTAL_TIMEOUT_SECONDS if choice_turn else None
         choice_started = time.monotonic() if choice_turn else None
         choice_attempts = 0
+        choice_repaired = False
 
     def choice_timeout(limit):
         if choice_deadline is None:
@@ -3189,13 +3211,29 @@ def _process_model_turn(
         else:
             if choice_turn:
                 choice_attempts += 1
-            raw, evidence = _coach_model_decision(
-                snapshot, user_message,
-                timeout_seconds=(
-                    choice_timeout(CHOICE_FIRST_TIMEOUT_SECONDS)
-                    if choice_turn else AI_DEFAULT_TIMEOUT_SECONDS
-                ),
-            )
+            try:
+                raw, evidence = _coach_model_decision(
+                    snapshot, user_message,
+                    timeout_seconds=(
+                        choice_timeout(CHOICE_FIRST_TIMEOUT_SECONDS)
+                        if choice_turn else AI_DEFAULT_TIMEOUT_SECONDS
+                    ),
+                )
+            except coach_harness.ChoiceValidationError as exc:
+                if not choice_turn:
+                    raise
+                choice_attempts += 1
+                choice_repaired = True
+                app.logger.info(
+                    "IP12 choice response retry code=%s elapsed_ms=%s",
+                    exc.code, int((time.monotonic() - choice_started) * 1000),
+                )
+                raw, evidence = _coach_model_decision(
+                    snapshot,
+                    user_message,
+                    repair_error="%s：%s" % (exc.code, exc),
+                    timeout_seconds=choice_timeout(CHOICE_REPAIR_TIMEOUT_SECONDS),
+                )
             if choice_turn and time.monotonic() >= choice_deadline:
                 raise RuntimeError("候选生成超过 %s 秒总期限" % CHOICE_TOTAL_TIMEOUT_SECONDS)
         try:
@@ -3213,7 +3251,10 @@ def _process_model_turn(
             raise
         except coach_harness.ChoiceValidationError as exc:
             if choice_turn:
+                if choice_repaired:
+                    raise
                 choice_attempts += 1
+                choice_repaired = True
                 app.logger.info(
                     "IP12 choice validation retry code=%s elapsed_ms=%s",
                     exc.code, int((time.monotonic() - choice_started) * 1000),

@@ -1117,10 +1117,17 @@ def validate_model_decision(
     draft = _strip_unsupported_acronym_expansions(raw.get("draft"), evidence).strip()[:12000]
     self_review = str(raw.get("self_review") or "").strip()[:500]
     expected_checkpoint = expected_checkpoint or state["module_step"] + 1
+    expected_choice_checkpoint = is_choice_checkpoint(
+        state["current_module"], expected_checkpoint
+    )
     choice_checkpoint = decision == "propose_checkpoint" and is_choice_checkpoint(
         state["current_module"], checkpoint
     )
     raw_choices = raw.get("choices") or []
+    if raw_choices and expected_choice_checkpoint and not choice_checkpoint:
+        decision = "propose_checkpoint"
+        checkpoint = expected_checkpoint
+        choice_checkpoint = True
     if choice_checkpoint:
         if draft:
             raise ChoiceValidationError("choice_draft_present", "选择断点不能同时返回 Markdown draft")

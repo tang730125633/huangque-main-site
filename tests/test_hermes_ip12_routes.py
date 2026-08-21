@@ -1251,6 +1251,21 @@ legacy_stored = next(item for item in server.load_conversation(cid)["messages"] 
 assert "agent_trace" not in legacy_stored
 
 original_call_ai = server.call_ai
+empty_call = {}
+class EmptyChoiceResponse:
+    def json(self):
+        return {"choices": [{"message": {"content": ""}}]}
+def empty_choice_response(*_args, **kwargs):
+    empty_call.update(kwargs)
+    return EmptyChoiceResponse()
+server.call_ai = empty_choice_response
+try:
+    server._coach_model_decision(server.load_conversation(cid), "继续")
+    raise AssertionError("empty choice response was accepted")
+except server.coach_harness.ChoiceValidationError as exc:
+    assert exc.code == "choice_response_shape"
+    assert empty_call["reasoning_effort"] == "low"
+
 spoofed = {
     "decision": "answer_only", "checkpoint": 0, "reply": "伪造来源",
     "draft": "", "self_review": "", "profile_updates": [], "choices": [],
@@ -1471,6 +1486,25 @@ def choice_decision(valid):
     }, "用户原话"
 
 real_monotonic = server.time.monotonic
+shape_action, shape_revision = create_ready("choice-shape-retry")
+shape_calls = []
+def shape_retry_model(*_args, **_kwargs):
+    shape_calls.append(1)
+    if len(shape_calls) == 1:
+        raise server.coach_harness.ChoiceValidationError(
+            "choice_response_shape", "empty response"
+        )
+    return choice_decision(True)
+server._coach_model_decision = shape_retry_model
+shape_result, shape_status = server.process_chat_request({
+    "conversation_id": "choice-shape-retry",
+    "action": {"type": shape_action["type"], "target_id": shape_action["target_id"]},
+    "expected_revision": shape_revision,
+    "request_id": "choice-shape-retry-request",
+})
+assert shape_status == 200 and len(shape_calls) == 2
+assert len([x for x in shape_result["actions"] if x["type"] == "select_checkpoint_choice"]) == 3
+
 ordinary = server.coach_harness.initial_state()
 ordinary["intake"] = {"status": "complete", "round": 3, "answers": {}}
 server.save_conversation("non-choice-repair", {

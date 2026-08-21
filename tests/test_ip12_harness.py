@@ -1222,6 +1222,17 @@ class IP12HarnessTests(unittest.TestCase):
         )
         self.assertEqual(len(boundary_decision["choices"]), 3)
         self.assertEqual(len(boundary_state["pending"]["choices"]), 3)
+        for drifted in (
+            {**valid, "checkpoint": 1},
+            {**valid, "decision": "answer_only", "checkpoint": 0},
+        ):
+            with self.subTest(drifted=drifted):
+                _, normalized, _ = harness.apply_model_decision(
+                    state, drifted, "用户原话"
+                )
+                self.assertEqual(normalized["decision"], "propose_checkpoint")
+                self.assertEqual(normalized["checkpoint"], 2)
+                self.assertEqual(len(normalized["choices"]), 3)
 
     def test_choice_selection_persists_one_snapshot_without_profile_pollution(self):
         state = self.complete_intake()
