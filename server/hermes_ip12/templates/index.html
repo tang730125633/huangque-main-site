@@ -95,6 +95,7 @@ button:focus-visible,textarea:focus-visible,input:focus-visible{outline:2px soli
 .lsb-ft button:first-child{border-color:rgba(231,178,76,.25);background:rgba(231,178,76,.1);color:#f1c768}
 .lsb-ft button:hover{transform:translateY(-1px);border-color:rgba(231,178,76,.28);background:rgba(231,178,76,.1);color:#fff}
 .project-panel-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}.project-panel-head h3{font-size:14px}.project-count{color:var(--acb);font-size:10px}.project-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px;border:1px solid rgba(148,164,187,.1);border-radius:9px;margin-top:7px;background:rgba(148,164,187,.025);cursor:pointer}.project-row:hover{border-color:rgba(231,178,76,.25);background:rgba(231,178,76,.06)}.project-row-main{min-width:0}.project-row-title{font-size:12px;color:#e8eef7}.project-row-meta{margin-top:3px;color:var(--dim);font-size:9px}.project-delete{border:0;background:transparent;color:#ef7777;cursor:pointer;padding:5px}.project-empty,.project-loading,.project-error{padding:20px 6px;color:var(--dim);font-size:11px;text-align:center}.project-error{color:#ef9a9a}
+.project-tools{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 0 3px}.project-tools small{color:var(--dim);font-size:9px}.project-tool,.project-export{border:1px solid rgba(148,164,187,.16);border-radius:7px;background:rgba(148,164,187,.05);color:#c9d4e2;cursor:pointer;padding:6px 8px;font-size:9px}.project-tool:hover,.project-export:hover{border-color:rgba(231,178,76,.3);color:#f1c768}.project-row-actions{display:flex;align-items:center;gap:3px;flex-shrink:0}
 
 /* ── CENTER CHAT ── */
 .main{position:relative;flex:1;display:flex;flex-direction:column;height:100vh;min-width:0;background:linear-gradient(180deg,rgba(7,11,19,.24),rgba(7,11,19,.74))}
@@ -338,6 +339,7 @@ body.pdf-review-resizing{cursor:col-resize;user-select:none}body.pdf-review-resi
 
 <div id="convoOverlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:100;display:none;align-items:center;justify-content:center" onclick="if(event.target===this)toggleProjects()">
   <div id="convoPanel" style="background:var(--sb);border:1px solid var(--bd);border-radius:var(--r);width:400px;max-height:70vh;overflow-y:auto;padding:16px"></div>
+  <input id="projectImportInput" type="file" accept="application/json,.json" hidden onchange="importProjectBackup(event)">
 </div>
 
 <script>
@@ -850,7 +852,25 @@ async function sendJumpMsg(mid){
   return sendTurn({message:'请从当前模块继续'},'继续模块 '+mid+'：'+(M[mid-1]?M[mid-1].name:''))
 }
 
-function renderProjectPanel(){var p=document.getElementById('convoPanel');p.innerHTML='<button style="float:right;background:none;border:none;color:var(--dim);cursor:pointer;font-size:16px" onclick="toggleProjects()">✕</button><div class="project-panel-head"><h3>IP Project</h3><span class="project-count">'+convos.length+'/2</span></div>'+(convos.length?convos.map(function(c){return '<div class="project-row" data-id="'+eHtml(c.id)+'" onclick="openProject(this.dataset.id)"><div class="project-row-main"><div class="project-row-title">'+eHtml(c.title)+'</div><div class="project-row-meta">模块 '+eHtml(c.current_module)+' · '+eHtml(c.message_count)+' 条对话</div></div><button class="project-delete" data-id="'+eHtml(c.id)+'" aria-label="删除 Project" onclick="event.stopPropagation();deleteProject(this.dataset.id)">删除</button></div>'}).join(''):'<div class="project-empty">还没有 Project，可以创建一个新诊断。</div>')}
+function renderProjectPanel(){
+  var p=document.getElementById('convoPanel');
+  var tools='<div class="project-tools"><button class="project-tool" type="button" onclick="openProjectImport()">导入备份</button><small>恢复诊断内容，不含制作任务</small></div>';
+  var rows=convos.length?convos.map(function(c){return '<div class="project-row" data-id="'+eHtml(c.id)+'" onclick="openProject(this.dataset.id)"><div class="project-row-main"><div class="project-row-title">'+eHtml(c.title)+'</div><div class="project-row-meta">模块 '+eHtml(c.current_module)+' · '+eHtml(c.message_count)+' 条对话</div></div><div class="project-row-actions"><button class="project-export" data-id="'+eHtml(c.id)+'" aria-label="导出 Project 备份" onclick="event.stopPropagation();exportProjectBackup(this.dataset.id)">导出备份</button><button class="project-delete" data-id="'+eHtml(c.id)+'" aria-label="删除 Project" onclick="event.stopPropagation();deleteProject(this.dataset.id)">删除</button></div></div>'}).join(''):'<div class="project-empty">还没有 Project，可以导入备份或创建新诊断。</div>';
+  p.innerHTML='<button style="float:right;background:none;border:none;color:var(--dim);cursor:pointer;font-size:16px" onclick="toggleProjects()">✕</button><div class="project-panel-head"><h3>IP Project</h3><span class="project-count">'+convos.length+'/2</span></div>'+tools+rows
+}
+function exportProjectBackup(id){location.href='/api/conversations/'+encodeURIComponent(id)+'/export'}
+function openProjectImport(){document.getElementById('projectImportInput').click()}
+async function importProjectBackup(event){
+  var input=event.target,file=input.files&&input.files[0];if(!file)return;
+  if(file.size>24*1024*1024){input.value='';toast('Project 备份不能超过 24 MB');return}
+  var form=new FormData();form.append('backup',file,file.name);toast('正在恢复 Project 备份…');
+  try{
+    var r=await fetch('/api/conversations/import',{method:'POST',body:form}),d={};try{d=await r.json()}catch(ignore){}
+    if(!r.ok||!d.ok)throw new Error(d.error||'Project 备份恢复失败');
+    await loadConvos();await selectConvo(d.id);toggleProjects();toast('✅ Project 已从备份恢复')
+  }catch(e){toast(e.message||'Project 备份恢复失败')}
+  finally{input.value=''}
+}
 async function openProject(id){try{await selectConvo(id);toggleProjects()}catch(e){toast('Project 暂时加载失败')}}
 async function toggleProjects(forceOpen){
   var o=document.getElementById('convoOverlay'),p=document.getElementById('convoPanel');if(o.style.display==='flex'&&!forceOpen){o.style.display='none';return}o.style.display='flex';p.innerHTML='<div class="project-panel-head"><h3>IP Project</h3><span class="project-count">加载中</span></div><div class="project-loading">正在读取 Project…</div>';

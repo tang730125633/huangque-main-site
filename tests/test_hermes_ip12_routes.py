@@ -88,7 +88,7 @@ assert payload['state_schema'] == 2, payload
         for path in HERMES.glob("*.py"):
             routes.update(pattern.findall(path.read_text(encoding="utf-8")))
 
-        self.assertEqual(len(routes), 81)
+        self.assertEqual(len(routes), 83)
         self.assertTrue(
             {
                 "/api/chat",
@@ -106,6 +106,8 @@ assert payload['state_schema'] == 2, payload
                 "/api/ip12/productions/quote",
                 "/api/ip12/productions/confirm",
                 "/api/ip12/productions/<production_id>",
+                "/api/conversations/<cid>/export",
+                "/api/conversations/import",
                 "/classic",
                 "/skills",
                 "/analytics",
@@ -1137,6 +1139,106 @@ print("IP12_PROJECT_RUNTIME_OK")
             )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("IP12_PROJECT_RUNTIME_OK", result.stdout)
+
+    def test_project_backup_round_trip_excludes_production_and_billing_state(self):
+        script = r'''
+import base64
+import io
+import json
+import server
+import security
+
+server.current_account_id = lambda: "acct_backup"
+security._validate_token = lambda token: {"account_id": "acct_backup", "username": "backup", "role": "member"}
+security.RATE_REQUESTS = 100
+client = server.app.test_client()
+client.environ_base["HTTP_AUTHORIZATION"] = "Bearer test-token"
+
+created = client.post("/api/conversations", json={"title": "气球人设"})
+assert created.status_code == 200
+cid = created.get_json()["id"]
+convo = server.load_conversation(cid)
+convo["messages"].append({"role": "user", "content": "我在广州做气球派对布置"})
+state = server.normalize_coach_state(convo["coach_state"])
+state.update(current_module=5, completed_modules=[1, 2, 3, 4], module_step=0, revision=7)
+state["ip_profile"]["facts"]["current_identity"] = {
+    "value": "广州气球派对布置师", "evidence_quote": "我在广州做气球派对布置",
+}
+state["foundation_report"] = {"status": "confirmed", "report_id": "report-1"}
+convo["coach_state"] = state
+convo["reports"] = {"1": "定位报告"}
+convo["deliverables"] = {"5": {"title": "30 个选题"}}
+convo["productions"] = {"prod-secret": {"quote_token": "must-not-export", "status": "done"}}
+convo["turn_receipts"] = [{"request_id": "must-not-export"}]
+server.save_conversation(cid, convo)
+
+def validate_pdf(path):
+    assert path.read_bytes().startswith(b"%PDF-")
+server._validate_foundation_pdf = validate_pdf
+server.FOUNDATION_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+pdf_bytes = b"%PDF-1.4\nbackup\n%%EOF\n"
+(server.FOUNDATION_REPORTS_DIR / f"{cid}.pdf").write_bytes(pdf_bytes)
+
+exported = client.get(f"/api/conversations/{cid}/export")
+assert exported.status_code == 200
+assert exported.headers["Content-Disposition"].startswith("attachment;")
+assert exported.headers["Cache-Control"] == "no-store"
+backup = json.loads(exported.data)
+assert backup["schema"] == server.PROJECT_BACKUP_SCHEMA
+assert backup["source_project_id"] == cid
+assert base64.b64decode(backup["foundation_pdf"]["data"]) == pdf_bytes
+assert "owner_account_id" not in backup["project"]
+assert "productions" not in backup["project"]
+assert "turn_receipts" not in backup["project"]
+
+assert client.delete(f"/api/conversations/{cid}").status_code == 200
+assert client.get(f"/api/conversations/{cid}").status_code == 404
+restored_response = client.post(
+    "/api/conversations/import",
+    data={"backup": (io.BytesIO(exported.data), "project.json")},
+    content_type="multipart/form-data",
+)
+assert restored_response.status_code == 200, restored_response.get_json()
+restored_id = restored_response.get_json()["id"]
+assert restored_id != cid
+restored = server.load_conversation(restored_id)
+assert restored["title"] == "气球人设（恢复）"
+assert restored["owner_account_id"] == "acct_backup"
+assert restored["restored_from_project_id"] == cid
+assert restored["messages"][-1]["content"] == "我在广州做气球派对布置"
+assert restored["coach_state"]["ip_profile"]["facts"]["current_identity"]["value"] == "广州气球派对布置师"
+assert restored["reports"] == {"1": "定位报告"}
+assert restored["deliverables"] == {"5": {"title": "30 个选题"}}
+assert restored["productions"] == {}
+assert "turn_receipts" not in restored
+assert (server.FOUNDATION_REPORTS_DIR / f"{restored_id}.pdf").read_bytes() == pdf_bytes
+
+invalid = client.post(
+    "/api/conversations/import",
+    data={"backup": (io.BytesIO(b'{"schema":"other"}'), "bad.json")},
+    content_type="multipart/form-data",
+)
+assert invalid.status_code == 400
+assert invalid.get_json()["error"] == "备份版本不受支持"
+assert client.post("/api/conversations", json={"title": "第二个 Project"}).status_code == 200
+full = client.post(
+    "/api/conversations/import",
+    data={"backup": (io.BytesIO(exported.data), "project.json")},
+    content_type="multipart/form-data",
+)
+assert full.status_code == 409
+assert full.get_json()["code"] == "ip12_project_limit"
+print("IP12_PROJECT_BACKUP_OK")
+'''
+        with tempfile.TemporaryDirectory() as data_dir:
+            env = os.environ.copy()
+            env.update(OPENAI_API_KEY="dummy", HERMES_HOME=data_dir, HERMES_DATA_DIR=data_dir)
+            result = subprocess.run(
+                [sys.executable, "-c", script], cwd=HERMES, env=env,
+                capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("IP12_PROJECT_BACKUP_OK", result.stdout)
 
     def test_choice_routes_migrate_select_trace_and_replay_after_receipt_eviction(self):
         script = r'''
