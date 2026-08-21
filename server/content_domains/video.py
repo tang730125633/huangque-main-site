@@ -2487,6 +2487,12 @@ def recover_paid_video_error(job_id, kind, payload, error, requeue=None,
         if any(marker in str(error) for marker in (
                 "HTTP 400", "HTTP 401", "HTTP 403", "HTTP 404", "HTTP 422")):
             return False
+        if recovery.get("submission_unknown") and "_mcp_" in recovery.get("phase", ""):
+            update_video_asset_phase(
+                job_id, "heygen_lipsync_mcp_recovery_required",
+                error=str(error)[:300],
+            )
+            return True
         if requeue and requeue(job_id):
             update_video_asset_phase(
                 job_id, "heygen_lipsync_retrying", error=str(error)[:300],
@@ -4099,18 +4105,28 @@ def _heygen_poll_video(video_id, direct=False, deadline_s=None, mcp=False):
     raise TimeoutError("HeyGen视频生成超时")
 
 
-def _heygen_poll_lipsync(lipsync_id, deadline_s=None):
+def _heygen_poll_lipsync(lipsync_id, deadline_s=None, mcp=False):
     deadline = time.time() + (deadline_s or VIDEO_GEN_DEADLINE)
     while time.time() < deadline:
         try:
-            data = _heygen_request_json(
-                "GET", "/lipsyncs/" + urllib.parse.quote(lipsync_id),
-                timeout=90, direct=True,
-            )
+            if mcp:
+                try:
+                    data = _heygen_mcp_call(
+                        "get_lipsync", {"lipsyncId": lipsync_id}, timeout=90)
+                except RuntimeError:
+                    data = _heygen_request_json(
+                        "GET", "/lipsyncs/" + urllib.parse.quote(lipsync_id),
+                        timeout=90, direct=True,
+                    )
+            else:
+                data = _heygen_request_json(
+                    "GET", "/lipsyncs/" + urllib.parse.quote(lipsync_id),
+                    timeout=90, direct=True,
+                )
         except HeyGenNetworkError:
             time.sleep(HEYGEN_POLL_INTERVAL)
             continue
-        info = data.get("data") or {}
+        info = (data.get("data") or data) if isinstance(data, dict) else {}
         status = str(info.get("status") or "").lower()
         if status == "completed":
             if not info.get("video_url"):
@@ -4137,50 +4153,82 @@ def generate_heygen_lipsync(source_video_file, audio_file, quality="speed",
     request_id = str(job_id or hashlib.sha256(
         (str(source_video_file) + "\0" + str(audio_file) + "\0" + str(quality)).encode()
     ).hexdigest()[:32])
-    update_video_asset_phase(
-        job_id, "heygen_lipsync_uploading",
-        reference_video_file=source_video_file, audio_file=audio_file,
-    )
-    video_asset_id = _heygen_retry_net(
-        lambda: _heygen_upload_asset(source_path, direct=True), "口型原视频上传")
-    audio_asset_id = _heygen_retry_net(
-        lambda: _heygen_upload_asset(audio_path, direct=True), "口型音频上传")
-    payload = {
-        "video": {"type": "asset_id", "asset_id": video_asset_id},
-        "audio": {"type": "asset_id", "asset_id": audio_asset_id},
-        "mode": quality,
-        "title": "huangque-video-lipsync-%s" % request_id,
-        "enable_dynamic_duration": bool(dynamic_duration),
-        "disable_music_track": True,
-        "keep_the_same_format": True,
-        "fps_mode": "passthrough",
-    }
-    update_video_asset_phase(
-        job_id, "heygen_lipsync_submitting",
-        reference_asset_id=video_asset_id, audio_asset_id=audio_asset_id,
-    )
-    headers = {
-        "Content-Type": "application/json",
-        "Idempotency-Key": "huangque-lipsync-job-%s" % request_id,
-    }
-    data = _heygen_retry_429(
-        lambda: _heygen_request_json(
-            "POST", "/lipsyncs",
-            json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers, timeout=120, direct=True,
-        ),
-        "口型同步提交",
-    )
-    lipsync_id = str((data.get("data") or {}).get("lipsync_id") or "").strip()
+    mcp = _heygen_mcp_enabled()
+    video_asset_id = audio_asset_id = None
+    if mcp:
+        payload = {
+            "video": {"type": "url", "url": public_url(
+                source_video_file, "video/mp4", private=True)},
+            "audio": {"type": "url", "url": public_url(
+                audio_file, "audio/mpeg", private=True)},
+            "mode": quality,
+            "title": "huangque-video-lipsync-%s" % request_id,
+            "enableDynamicDuration": bool(dynamic_duration),
+            "disableMusicTrack": True,
+            "keepTheSameFormat": True,
+            "fpsMode": "passthrough",
+        }
+        update_video_asset_phase(
+            job_id, "heygen_lipsync_mcp_submitting",
+            reference_video_file=source_video_file, audio_file=audio_file,
+        )
+        try:
+            data = _heygen_retry_429(
+                lambda: _heygen_mcp_call("create_lipsync", payload, timeout=120),
+                "口型同步提交",
+            )
+        except RuntimeError as error:
+            if any(marker in str(error).lower() for marker in (
+                    "insufficient credit", "invalid", "required", "not found")):
+                raise HeyGenLipsyncProviderFailed(str(error)) from error
+            raise
+    else:
+        update_video_asset_phase(
+            job_id, "heygen_lipsync_uploading",
+            reference_video_file=source_video_file, audio_file=audio_file,
+        )
+        video_asset_id = _heygen_retry_net(
+            lambda: _heygen_upload_asset(source_path, direct=True), "口型原视频上传")
+        audio_asset_id = _heygen_retry_net(
+            lambda: _heygen_upload_asset(audio_path, direct=True), "口型音频上传")
+        payload = {
+            "video": {"type": "asset_id", "asset_id": video_asset_id},
+            "audio": {"type": "asset_id", "asset_id": audio_asset_id},
+            "mode": quality,
+            "title": "huangque-video-lipsync-%s" % request_id,
+            "enable_dynamic_duration": bool(dynamic_duration),
+            "disable_music_track": True,
+            "keep_the_same_format": True,
+            "fps_mode": "passthrough",
+        }
+        update_video_asset_phase(
+            job_id, "heygen_lipsync_submitting",
+            reference_asset_id=video_asset_id, audio_asset_id=audio_asset_id,
+        )
+        headers = {
+            "Content-Type": "application/json",
+            "Idempotency-Key": "huangque-lipsync-job-%s" % request_id,
+        }
+        data = _heygen_retry_429(
+            lambda: _heygen_request_json(
+                "POST", "/lipsyncs",
+                json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers, timeout=120, direct=True,
+            ),
+            "口型同步提交",
+        )
+    node = (data.get("data") or data) if isinstance(data, dict) else {}
+    lipsync_id = str(node.get("lipsync_id") or node.get("id") or "").strip()
     if not lipsync_id:
         raise RuntimeError(
             "HeyGen口型同步未返回lipsync_id: "
             + json.dumps(data, ensure_ascii=False)[:300]
         )
     update_video_asset_phase(
-        job_id, "heygen_lipsync_polling", provider_video_id=lipsync_id,
+        job_id, "heygen_lipsync_mcp_polling" if mcp else "heygen_lipsync_polling",
+        provider_video_id=lipsync_id,
     )
-    info = _heygen_poll_lipsync(lipsync_id)
+    info = _heygen_poll_lipsync(lipsync_id, mcp=mcp)
     update_video_asset_phase(job_id, "heygen_lipsync_downloading")
     output_file = _download_video_file_direct(
         info["video_url"], "heygen_lipsync",
