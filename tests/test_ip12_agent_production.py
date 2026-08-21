@@ -50,7 +50,7 @@ server.save_conversation(cid, {
 message = "这条原话必须先落盘"
 seen_before_model = []
 
-def fail_model(snapshot, user_message, repair_error=""):
+def fail_model(snapshot, user_message, repair_error="", timeout_seconds=180):
     saved = server.load_conversation(cid).get("messages", [])
     seen_before_model.append(any(
         item.get("role") == "user" and item.get("content") == message

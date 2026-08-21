@@ -11,6 +11,25 @@ import ip12_harness as harness
 
 def decision(state, *, kind="propose_checkpoint", reply="这是当前结果", draft="可确认草稿"):
     updates = []
+    choices = []
+    if kind == "propose_checkpoint" and harness.is_choice_checkpoint(
+        state["current_module"], state["module_step"] + 1
+    ):
+        draft = ""
+        choices = [
+            {
+                "title": "方向一", "summary": "清晰拆解真实问题",
+                "reason": "行动路径明确", "caution": "记忆点需加强", "recommended": False,
+            },
+            {
+                "title": "方向二", "summary": "结合经验与工具实践",
+                "reason": "个人识别集中", "caution": "避免硬性推销", "recommended": True,
+            },
+            {
+                "title": "方向三", "summary": "用成长经历连接用户",
+                "reason": "情感连接更强", "caution": "注意隐私边界", "recommended": False,
+            },
+        ]
     if kind == "propose_checkpoint" and state["current_module"] == 5 and state["module_step"] == 1:
         titles = ["第 %02d 个真实选题" % index for index in range(1, 31)]
         draft = "\n".join("%d. %s" % (index, title) for index, title in enumerate(titles, 1))
@@ -26,6 +45,7 @@ def decision(state, *, kind="propose_checkpoint", reply="这是当前结果", dr
         "reply": reply,
         "draft": draft if kind == "propose_checkpoint" else "",
         "self_review": "资料来源清楚，仍需本人确认。" if kind == "propose_checkpoint" else "",
+        "choices": choices,
         "profile_updates": updates,
         "confidence": 0.9,
     }
@@ -39,30 +59,13 @@ def intake_decision(*, kind="propose_checkpoint", reply="这是我整理的基�
         "reply": reply,
         "draft": draft if has_draft else "",
         "self_review": "只整理了用户原话，仍需本人确认。" if has_draft else "",
+        "choices": [],
         "profile_updates": updates or [],
         "confidence": 0.9,
     }
 
 
 class IP12HarnessTests(unittest.TestCase):
-    def test_future_schema_is_rejected_without_downgrading_the_project(self):
-        future = {
-            "schema_version": 2,
-            "revision": 7,
-            "current_module": 1,
-            "completed_modules": [],
-            "module_step": 1,
-        }
-        with self.assertRaises(harness.HarnessError):
-            harness.normalize_state(future)
-        self.assertEqual(future["schema_version"], 2)
-        self.assertEqual(future["revision"], 7)
-        for invalid in (True, 1.5, "not-a-version", "2"):
-            with self.subTest(invalid=invalid):
-                with self.assertRaises(harness.HarnessError):
-                    harness.normalize_state({"schema_version": invalid})
-        self.assertEqual(harness.normalize_state({"schema_version": 1})["schema_version"], 1)
-
     def test_production_recommendations_stay_bounded_by_capability_family(self):
         expected = {
             "image": "image-generate",
@@ -1046,6 +1049,270 @@ class IP12HarnessTests(unittest.TestCase):
         self.assertEqual(event["assistant_prefix"], "")
         self.assertIn("1-1", next_state["ip_profile"]["confirmed_outputs"])
 
+    def test_agent_release_manifest_builds_explicit_message_trace(self):
+        trace = harness.agent_trace(
+            ["module_checkpoint", "diagnostic_choice"],
+            prompt_version="diagnostic-choice-v1",
+            model="test-model",
+            release_sha="abc123",
+        )
+        self.assertEqual(trace["agent_release"], "ip12-a0.1")
+        self.assertEqual(trace["state_schema"], 2)
+        self.assertEqual(
+            trace["skills"],
+            [
+                {"id": "module_checkpoint", "version": "1.0.0"},
+                {"id": "diagnostic_choice", "version": "1.0.0"},
+            ],
+        )
+        self.assertEqual(trace["prompt_version"], "diagnostic-choice-v1")
+        self.assertEqual(trace["model"], "test-model")
+        self.assertEqual(trace["release_sha"], "abc123")
+        with self.assertRaises(harness.HarnessError):
+            harness.agent_trace("unknown-skill")
+
+    def test_schema_v1_migrates_before_normalization_and_is_idempotent(self):
+        legacy = {
+            "schema_version": 1,
+            "revision": 7,
+            "current_module": 1,
+            "completed_modules": [],
+            "module_step": 3,
+            "pending": {
+                "id": "old-pending", "kind": "checkpoint", "status": "awaiting_confirmation",
+                "module": 1, "step": 4, "draft": "旧推荐稿",
+            },
+            "intake": {"status": "complete", "round": 3, "answers": {}},
+            "ip_profile": {
+                "facts": {}, "preferences": {}, "ai_selections": {},
+                "confirmed_outputs": {
+                    "1-1": {"content": "已确认关键词"},
+                    "1-2": {"content": "旧三套方案"},
+                    "1-3": {"content": "旧比较稿"},
+                },
+            },
+        }
+        migrated = harness.normalize_state(legacy)
+        self.assertEqual(migrated["schema_version"], 2)
+        self.assertEqual(migrated["module_step"], 1)
+        self.assertIsNone(migrated["pending"])
+        self.assertEqual(migrated["ip_profile"]["confirmed_outputs"]["1-1"]["content"], "已确认关键词")
+        self.assertNotIn("1-2", migrated["ip_profile"]["confirmed_outputs"])
+        self.assertIn("1-2", migrated["migration_archive"]["v1_confirmed_outputs"])
+        self.assertTrue(migrated["migration"]["needs_choice_generation"])
+        self.assertEqual(harness.available_actions(migrated)[0]["type"], "resume_choice_generation")
+        self.assertEqual(harness.normalize_state(migrated), migrated)
+        with self.assertRaises(harness.HarnessError):
+            harness.normalize_state({"schema_version": 3})
+        for damaged in (
+            {**legacy, "schema_version": "1"},
+            {**legacy, "schema_version": 0},
+            {**legacy, "completed_modules": 7},
+            {**legacy, "migration_archive": "broken"},
+            {**legacy, "ip_profile": {**legacy["ip_profile"], "confirmed_outputs": []}},
+        ):
+            with self.subTest(damaged=damaged):
+                with self.assertRaises(harness.HarnessError):
+                    harness.normalize_state(damaged)
+
+    def test_resume_choice_generation_keeps_marker_until_valid_choices_exist(self):
+        state = harness.normalize_state({
+            "schema_version": 1,
+            "revision": 2,
+            "current_module": 2,
+            "completed_modules": [1],
+            "module_step": 1,
+            "intake": {"status": "complete", "round": 3, "answers": {}},
+            "ip_profile": {"facts": {}, "preferences": {}, "ai_selections": {}, "confirmed_outputs": {}},
+        })
+        action = harness.available_actions(state)[0]
+        next_state, event = harness.apply_action(state, action, state["revision"], request_id="resume-1")
+        self.assertTrue(next_state["migration"]["needs_choice_generation"])
+        self.assertTrue(event["continue_model"])
+        self.assertEqual(event["user_label"], "生成新的三个方案")
+        self.assertEqual(next_state["revision"], state["revision"] + 1)
+        self.assertEqual(harness.shortcut_action(state, "继续")["type"], "resume_choice_generation")
+        self.assertEqual(harness.shortcut_action(state, "确认")["type"], "resume_choice_generation")
+        self.assertIsNone(harness.shortcut_action(state, "修改"))
+
+    def test_completed_legacy_modules_keep_only_the_confirmed_final_choice_active(self):
+        migrated = harness.normalize_state({
+            "schema_version": 1,
+            "revision": 9,
+            "current_module": 2,
+            "completed_modules": [1],
+            "module_step": 0,
+            "pending": None,
+            "intake": {"status": "complete", "round": 3, "answers": {}},
+            "ip_profile": {
+                "facts": {}, "preferences": {},
+                "ai_selections": {
+                    "legacy_candidate": {"value": "未选择候选哨兵", "evidence_quote": "用户原话"},
+                    "unrelated_selection": {"value": "保留项", "evidence_quote": "用户原话"},
+                },
+                "confirmed_outputs": {
+                    "1-1": {"content": "关键词：真实、AI"},
+                    "1-2": {"content": "候选：未选择候选哨兵、方向二、方向三"},
+                    "1-3": {"content": "三项比较稿"},
+                    "1-4": {"content": "最终确认：AI 工具实践型"},
+                },
+            },
+        })
+        outputs = migrated["ip_profile"]["confirmed_outputs"]
+        self.assertEqual(outputs["1-2"]["content"], "最终确认：AI 工具实践型")
+        self.assertNotIn("1-3", outputs)
+        self.assertNotIn("1-4", outputs)
+        self.assertIn("1-4", migrated["migration_archive"]["v1_confirmed_outputs"])
+        self.assertNotIn("legacy_candidate", migrated["ip_profile"]["ai_selections"])
+        self.assertIn("legacy_candidate", migrated["migration_archive"]["v1_ai_selections"])
+        self.assertIn("unrelated_selection", migrated["ip_profile"]["ai_selections"])
+
+    def test_choice_validation_rejects_every_non_canonical_shape(self):
+        state = self.complete_intake()
+        state, _ = self.confirm_checkpoint(state)
+        valid = decision(state)
+        bad_cases = []
+        bad_cases.append(({**valid, "choices": valid["choices"][:2]}, "choice_count"))
+        duplicate = [dict(item) for item in valid["choices"]]
+        duplicate[1]["title"] = "方向 一"
+        bad_cases.append(({**valid, "choices": duplicate}, "choice_duplicate"))
+        too_long = [dict(item) for item in valid["choices"]]
+        too_long[0]["title"] = "长" * 17
+        bad_cases.append(({**valid, "choices": too_long}, "choice_content_length"))
+        recommended = [dict(item, recommended=True) for item in valid["choices"]]
+        bad_cases.append(({**valid, "choices": recommended}, "choice_recommendation_count"))
+        non_object = [dict(item) for item in valid["choices"]]
+        non_object[0] = "not-an-object"
+        bad_cases.append(({**valid, "choices": non_object}, "choice_shape"))
+        missing = [dict(item) for item in valid["choices"]]
+        missing[0].pop("reason")
+        bad_cases.append(({**valid, "choices": missing}, "choice_shape"))
+        blank = [dict(item) for item in valid["choices"]]
+        blank[0]["summary"] = "   "
+        bad_cases.append(({**valid, "choices": blank}, "choice_content_length"))
+        non_boolean = [dict(item) for item in valid["choices"]]
+        non_boolean[0]["recommended"] = "false"
+        bad_cases.append(({**valid, "choices": non_boolean}, "choice_shape"))
+        for non_text in ([], {}, True, 7):
+            wrong_type = [dict(item) for item in valid["choices"]]
+            wrong_type[0]["summary"] = non_text
+            bad_cases.append(({**valid, "choices": wrong_type}, "choice_shape"))
+        extra = [dict(item) for item in valid["choices"]]
+        extra[0]["internal_note"] = "not allowed"
+        bad_cases.append(({**valid, "choices": extra}, "choice_shape"))
+        bad_cases.append(({**valid, "draft": "第二份候选正本"}, "choice_draft_present"))
+        bad_cases.append(({**valid, "profile_updates": [{"field": "x"}]}, "choice_profile_updates"))
+        for raw, code in bad_cases:
+            with self.subTest(code=code):
+                with self.assertRaises(harness.ChoiceValidationError) as caught:
+                    harness.apply_model_decision(state, raw, "用户原话")
+                self.assertEqual(caught.exception.code, code)
+        boundary = [
+            {
+                "title": "😀" * 15 + suffix,
+                "summary": "界" * 35 + "😀",
+                "reason": "e\u0301" * 8,
+                "caution": "边" * 16,
+                "recommended": index == 0,
+            }
+            for index, suffix in enumerate(("一", "二", "三"))
+        ]
+        boundary_state, boundary_decision, _ = harness.apply_model_decision(
+            state, {**valid, "choices": boundary}, "用户原话"
+        )
+        self.assertEqual(len(boundary_decision["choices"]), 3)
+        self.assertEqual(len(boundary_state["pending"]["choices"]), 3)
+        for drifted in (
+            {**valid, "checkpoint": 1},
+            {**valid, "decision": "answer_only", "checkpoint": 0},
+        ):
+            with self.subTest(drifted=drifted):
+                _, normalized, _ = harness.apply_model_decision(
+                    state, drifted, "用户原话"
+                )
+                self.assertEqual(normalized["decision"], "propose_checkpoint")
+                self.assertEqual(normalized["checkpoint"], 2)
+                self.assertEqual(len(normalized["choices"]), 3)
+
+    def test_choice_selection_persists_one_snapshot_without_profile_pollution(self):
+        state = self.complete_intake()
+        state, _ = self.confirm_checkpoint(state)
+        state, result, reply = harness.apply_model_decision(
+            state, decision(state), "用户原话", pending_id="choice-target"
+        )
+        self.assertEqual(reply, "这是当前结果")
+        self.assertEqual(len(result["choices"]), 3)
+        actions = harness.available_actions(state)
+        self.assertEqual([item["type"] for item in actions].count("select_checkpoint_choice"), 3)
+        with self.assertRaises(harness.HarnessConflict):
+            harness.apply_action(
+                state,
+                {"type": "confirm_checkpoint", "target_id": "choice-target"},
+                state["revision"],
+            )
+        selected = actions[1]
+        next_state, event = harness.apply_action(
+            state,
+            {"type": selected["type"], "target_id": selected["target_id"], "choice_id": selected["choice_id"]},
+            state["revision"],
+            request_id="choose-2",
+            selected_at="2026-08-21T12:00:00Z",
+        )
+        output = next_state["ip_profile"]["confirmed_outputs"]["1-2"]
+        self.assertIn("方向二", output["content"])
+        self.assertEqual(output["choice_snapshot"]["selected_choice_id"], "choice-2")
+        self.assertEqual(output["choice_snapshot"]["request_id"], "choose-2")
+        self.assertEqual(next_state["ip_profile"]["ai_selections"], {})
+        self.assertEqual(event["user_label"], "我选择 2：方向二")
+        self.assertEqual(next_state["current_module"], 2)
+        model_profile = harness.profile_for_model(next_state)
+        self.assertNotIn("choice_snapshot", model_profile["confirmed_outputs"]["1-2"])
+        self.assertIn("choice_snapshot", next_state["ip_profile"]["confirmed_outputs"]["1-2"])
+
+        ordinary = self.complete_intake()
+        ordinary, _, _ = harness.apply_model_decision(
+            ordinary, decision(ordinary), "用户原话", pending_id="ordinary-target"
+        )
+        with self.assertRaises(harness.HarnessConflict):
+            harness.apply_action(
+                ordinary,
+                {
+                    "type": "select_checkpoint_choice",
+                    "target_id": "ordinary-target",
+                    "choice_id": "choice-1",
+                },
+                ordinary["revision"],
+            )
+
+    def test_choice_shortcuts_are_exact_and_never_match_unrelated_numbers(self):
+        state = self.complete_intake()
+        state, _ = self.confirm_checkpoint(state)
+        state, _, _ = harness.apply_model_decision(state, decision(state), "用户原话", pending_id="choice-target")
+        for text, expected in (("1", "choice-1"), ("第二个", "choice-2"), ("我选第二个", "choice-2"), ("选择方案二", "choice-2"), ("选第三项", "choice-3")):
+            with self.subTest(text=text):
+                self.assertEqual(harness.shortcut_action(state, text)["choice_id"], expected)
+        self.assertIsNone(harness.shortcut_action(state, "我有 1 个技能"))
+        self.assertIsNone(harness.shortcut_action(state, "4"))
+        self.assertEqual(harness.shortcut_action(state, "都不合适，我要修改")["type"], "edit_checkpoint")
+
+    def test_choice_edit_prompt_includes_the_old_choices_without_a_markdown_draft(self):
+        state = self.complete_intake()
+        state, _ = self.confirm_checkpoint(state)
+        state, _, _ = harness.apply_model_decision(state, decision(state), "用户原话", pending_id="choice-target")
+        edit = next(item for item in harness.available_actions(state) if item["type"] == "edit_checkpoint")
+        state, _ = harness.apply_action(state, edit, state["revision"])
+        prompt = harness.system_prompt(state)
+        self.assertIn("候选正文会作为不可信资料单独提供", prompt)
+        self.assertNotIn("方向一", prompt)
+        self.assertNotIn("用户正在修改的旧稿：\n\n", prompt)
+
+        follow_up = decision(state, kind="ask_follow_up", reply="你更希望突出经验还是工具？")
+        state, _, _ = harness.apply_model_decision(state, follow_up, "用户原话")
+        state = harness.normalize_state(state)
+        self.assertEqual(state["pending"]["status"], "editing")
+        self.assertEqual(len(state["pending"]["choices"]), 3)
+        self.assertNotIn("方向一", harness.system_prompt(state))
+
     def test_stale_confirmation_is_rejected(self):
         state = self.complete_intake()
         state, _, _ = harness.apply_model_decision(state, decision(state), "用户原话", pending_id="p1")
@@ -1158,7 +1425,10 @@ class IP12HarnessTests(unittest.TestCase):
             "module_step": 4,
             "intake": {"status": "complete", "round": 3, "answers": {}},
         })
-        self.assertEqual(state["module_step"], 3)
+        self.assertEqual(state["schema_version"], 2)
+        self.assertEqual(state["module_step"], 1)
+        self.assertTrue(state["migration"]["needs_choice_generation"])
+        self.assertEqual(harness.available_actions(state)[0]["type"], "resume_choice_generation")
 
     def test_confirmed_legacy_module_advances_without_parsing_model_words(self):
         state = harness.normalize_state({

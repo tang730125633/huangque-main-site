@@ -3,6 +3,8 @@
 #   /usr/bin/python3 -m pip install -r deploy/requirements-content.txt
 # Admin customer-page QA also needs: /usr/bin/python3 -m playwright install chromium
 cos-python-sdk-v5==1.9.44
+# CI 的 Hermes 路由与浏览器回归会导入 Flask；版本与 Hermes 运行依赖保持一致。
+Flask>=3.1,<4
 # Seedance reference images are fully decoded before private staging.
 Pillow==12.2.0
 playwright==1.45.0

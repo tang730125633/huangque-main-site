@@ -6,6 +6,53 @@ TEMPLATES = Path(__file__).parents[1] / "server" / "hermes_ip12" / "templates"
 
 
 class IP12HarnessActionsUITests(unittest.TestCase):
+    def test_main_view_consumes_server_choice_actions_without_rebuilding_business_rules(self):
+        source = (TEMPLATES / "index.html").read_text(encoding="utf-8")
+        self.assertIn("c.harness_actions", source)
+        self.assertIn("function currentActions()", source)
+        self.assertIn("function pageActions()", source)
+        self.assertNotIn("function stateActions()", source)
+        self.assertNotIn("p&&p.status==='awaiting_confirmation'", source)
+
+    def test_choice_cards_use_inert_dom_text_and_submit_choice_id(self):
+        source = (TEMPLATES / "index.html").read_text(encoding="utf-8")
+        render = source[source.index("function renderChoiceActions"):source.index("function choiceSnapshots")]
+        self.assertIn("document.createElement", render)
+        self.assertIn("textContent", render)
+        self.assertIn("addEventListener", render)
+        self.assertNotIn("innerHTML", render)
+        send = source[source.index("function sendHarnessAction"):source.index("function sendMessage")]
+        self.assertIn("action.choice_id=item.choice_id", send)
+        self.assertIn("我选择", send)
+
+    def test_choice_receipt_is_read_only_and_accessible(self):
+        source = (TEMPLATES / "index.html").read_text(encoding="utf-8")
+        receipt = source[source.index("function appendChoiceReceipt"):source.index("function renderChoiceReceiptsInDom")]
+        self.assertIn("document.createElement('details')", receipt)
+        self.assertIn("choice_snapshot", source)
+        self.assertNotIn("runStateAction", receipt)
+        self.assertNotIn("createElement('button')", receipt)
+        self.assertIn("aria-live", source)
+        self.assertIn("aria-describedby", source)
+        self.assertIn("aria-label", source)
+        self.assertIn("choiceLine('说明：',item.summary)", receipt)
+        self.assertIn("min-height:44px", source)
+        editing = source[source.index("function appendEditingChoiceContext"):source.index("function attachHarnessActions")]
+        self.assertIn("document.createElement('details')", editing)
+        self.assertIn("pending.choices", editing)
+        self.assertNotIn("createElement('button')", editing)
+
+    def test_failed_choice_restores_server_state_and_keyboard_focus(self):
+        source = (TEMPLATES / "index.html").read_text(encoding="utf-8")
+        send_turn = source[source.index("async function sendTurn"):source.index("async function sendJumpMsg")]
+        self.assertIn("pendingChoiceFocus", source)
+        self.assertIn("await selectConvo(turnCid)", send_turn)
+        self.assertIn("#chatArea .harness-actions button", send_turn)
+        self.assertIn("if(streaming||materialUploading)return", source)
+        self.assertIn("restoreChoice>0?", send_turn)
+        self.assertIn("document.querySelector('.choice-edit')", send_turn)
+        self.assertIn("restoredStatus.setAttribute('role','alert')", send_turn)
+
     def test_only_latest_assistant_reply_keeps_confirmation_actions(self):
         # Regression: ISSUE-001 — old assistant replies repeated the current action buttons.
         # Found by /qa on 2026-08-12.
@@ -38,7 +85,8 @@ class IP12HarnessActionsUITests(unittest.TestCase):
         for filename in ("index.html", "index_clean.html"):
             with self.subTest(filename=filename):
                 source = (TEMPLATES / filename).read_text(encoding="utf-8")
-                state_actions = source[source.index("function stateActions"):source.index("function renderChat")]
+                action_function = "function pageActions" if "function pageActions" in source else "function stateActions"
+                state_actions = source[source.index(action_function):source.index("function renderChat")]
                 self.assertIn("foundation.status==='awaiting_confirmation'", state_actions)
                 self.assertIn("open_foundation_report", state_actions)
                 self.assertIn("confirm_foundation_report", state_actions)
