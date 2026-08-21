@@ -236,6 +236,23 @@ TOPIC_SAFE_REPLACEMENTS = {
     "转化率": "待验证结果",
     "效率提升": "待验证结果",
 }
+MODULE_FOUR_EXAGGERATION_RE = re.compile(
+    r"过人(?:的)?天赋|天赋异禀|非凡(?:的)?天赋|卓越(?:的)?天赋|远超常人"
+)
+MODULE_FOUR_PAST_CLIENT_RE = re.compile(
+    r"(?:在服务客户的过程中|在服务过程中|你(?:曾经|过去)?遇到(?:过)?(?:很多|许多)?|"
+    r"你(?:曾经|过去)?发现(?:过)?|很多客户|许多客户|客户们|她们).{0,100}"
+    r"(?:自我怀疑|害怕|恐惧|内疚|羞耻|焦虑|承受.{0,12}指责|被迫.{0,8}丢弃)"
+)
+MODULE_FOUR_PAST_CLIENT_EVIDENCE_RE = re.compile(
+    r"(?:我|我的|本人|曾经|过去|之前|工作中|服务时).{0,40}"
+    r"(?:服务过|接触过|遇到过|客户说|客户反馈|有客户).{0,100}"
+    r"(?:自我怀疑|害怕|恐惧|内疚|羞耻|焦虑|指责|被迫.{0,8}丢弃)"
+)
+MODULE_FOUR_INNER_STATE_TERMS = ("自我怀疑", "害怕", "恐惧", "内疚", "羞耻", "成就感")
+MODULE_FOUR_QUOTE_RE = re.compile(
+    r"(?:事实原话|未来方向原话)[*_`\s]*[：:][*_`\s]*([^\n]+)"
+)
 
 DECISION_SCHEMA = {
     "type": "object",
@@ -870,20 +887,43 @@ def _apply_profile_updates(profile, updates):
 
 def duration_conflict_decision(value, message):
     state = normalize_state(value)
-    current = {item.replace(" ", "") for item in DURATION_RE.findall(str(message or ""))}
+    message_text = str(message or "")
+    current = {item.replace(" ", "") for item in DURATION_RE.findall(message_text)}
     if not current:
         return None
+
+    def contexts(text):
+        source = str(text or "")
+        result = []
+        for match in DURATION_RE.finditer(source):
+            fragment = source[max(0, match.start() - 28):match.end() + 28]
+            fragment = DURATION_RE.sub("", fragment)
+            fragment = re.sub(r"[^a-zA-Z0-9\u4e00-\u9fff]+", "", fragment).lower()
+            if fragment:
+                result.append(fragment)
+        return result
+
+    current_contexts = contexts(message_text)
     for field, item in state["ip_profile"]["facts"].items():
         if not isinstance(item, dict):
             continue
         if not any(token in field for token in DURATION_FIELDS):
             continue
-        confirmed = {part.replace(" ", "") for part in DURATION_RE.findall(str(item.get("value") or ""))}
-        if confirmed and current.isdisjoint(confirmed):
+        confirmed_text = str(item.get("evidence_quote") or item.get("value") or "")
+        confirmed = {part.replace(" ", "") for part in DURATION_RE.findall(confirmed_text)}
+        confirmed_contexts = contexts(confirmed_text)
+        same_topic = any(
+            SequenceMatcher(None, old_context, new_context).find_longest_match(
+                0, len(old_context), 0, len(new_context)
+            ).size >= 4
+            for old_context in confirmed_contexts
+            for new_context in current_contexts
+        )
+        if confirmed and current.isdisjoint(confirmed) and same_topic:
             old, new = sorted(confirmed)[0], sorted(current)[0]
             return {
                 "decision": "ask_follow_up", "checkpoint": 0,
-                "reply": "你前面确认的从业时间是“%s”，这次又提到“%s”。这两个时间分别指什么？比如“%s是整体从业时间，%s是 AI/Agent 实践时间”，或者告诉我需要更正哪一个。" % (old, new, old, new),
+                "reply": "你前面确认的相关时间是“%s”，这次又提到“%s”。请说明这两个时间分别对应哪段经历或阶段，或者告诉我需要更正哪一个。" % (old, new),
                 "draft": "", "self_review": "", "profile_updates": [], "confidence": 1.0,
             }
     return None
@@ -1072,6 +1112,42 @@ def _validate_confirmable_claims(draft, evidence):
             )
 
 
+def _validate_module_four_story_claims(draft, evidence):
+    draft_text = str(draft or "")
+    evidence_text = str(evidence or "")
+    if "故事内容" in draft_text:
+        raise HarnessError(
+            "模块 4 不再允许模型自由扩写过去式故事内容；每个节点必须改用逐字的事实原话或未来方向原话"
+        )
+    quotes = []
+    for match in MODULE_FOUR_QUOTE_RE.finditer(draft_text):
+        quote = re.sub(r"[*_`]+", "", match.group(1)).strip().strip("“”\"'")
+        if quote:
+            quotes.append(quote)
+    if not quotes or len(quotes) > 5:
+        raise HarnessError("模块 4 必须提供 1–5 条逐字的事实原话或未来方向原话")
+    for quote in quotes:
+        if quote not in evidence_text:
+            raise HarnessError("模块 4 的故事节点缺少可回查原话：“%s”" % quote[:120])
+    exaggeration = MODULE_FOUR_EXAGGERATION_RE.search(draft_text)
+    if exaggeration and exaggeration.group(0) not in evidence_text:
+        raise HarnessError(
+            "模块 4 把用户原话夸大成“%s”；请改回用户实际表达" % exaggeration.group(0)
+        )
+    if (
+        MODULE_FOUR_PAST_CLIENT_RE.search(draft_text)
+        and not MODULE_FOUR_PAST_CLIENT_EVIDENCE_RE.search(evidence_text)
+    ):
+        raise HarnessError(
+            "模块 4 把目标人群或内容偏好编造成过去的客户经历；请改写为未来想服务的人群或待验证方向"
+        )
+    for term in MODULE_FOUR_INNER_STATE_TERMS:
+        if term in draft_text and term not in evidence_text:
+            raise HarnessError(
+                "模块 4 编写了用户没有说过的内心感受“%s”；请删除或改为未来假设" % term
+            )
+
+
 def _validate_module_five_topics(updates, draft, evidence):
     topics = [item for item in updates if TOPIC_FIELD_RE.fullmatch(item["field"])]
     expected_fields = {
@@ -1236,6 +1312,8 @@ def validate_model_decision(
         _validate_confirmable_claims(choice_text, evidence)
     elif decision in {"propose_checkpoint", "revise_intake"}:
         _validate_confirmable_claims(draft, evidence)
+    if decision == "propose_checkpoint" and state["current_module"] == 4:
+        _validate_module_four_story_claims(draft, evidence)
     if decision == "propose_checkpoint" and state["current_module"] == 5 and checkpoint == 2:
         _validate_module_five_topics(clean_updates, draft, evidence)
     if (
@@ -1749,6 +1827,14 @@ def system_prompt(value):
 - 当前是固定三选一断点。信息足够时 decision=propose_checkpoint、checkpoint=2，choices 必须恰好 {CHOICE_COUNT} 项，draft 和 profile_updates 必须为空。
 - 每项 choices 只含 title、summary、reason、caution、recommended；长度分别不超过 {CHOICE_FIELD_LIMITS['title']}、{CHOICE_FIELD_LIMITS['summary']}、{CHOICE_FIELD_LIMITS['reason']}、{CHOICE_FIELD_LIMITS['caution']} 个 Unicode 字符，标题不得重复，最多一项 recommended=true。
 - reply 只用一句话说明现在要选择什么，不在 reply 中重复三项内容，不替用户选择。"""
+    story_rules = ""
+    if module == 4:
+        story_rules = """
+- 模块 4 的过去经历只能来自用户明确说过的真实事件；不得补写客户数量、客户反馈、他人心理状态、个人感受或天赋评价。
+- 目标人群、希望帮助的人和内容偏好只能写成未来想服务的人群、未来内容方向或待验证假设，绝不能改写成已经服务过的客户经历。
+- 每个节点必须单独包含“事实原话：”或“未来方向原话：”，后面逐字引用对话或已确认资料；不得使用“故事内容：”自由改写过去经历。
+- 标题、故事类型、情绪点和传播场景可以是 AI 建议，但必须明确作为包装建议，不能夹带新的过去事实。
+- 不使用“过人的天赋”“自我怀疑”“害怕”“成就感”等用户没有亲口说过的评价或内心感受。证据不足时少写节点，不能为了凑数量编故事。"""
     return f"""你是黄雀 IP12 的中立 IP 咨询教练，适用于任何职业和行业。
 
 当前模块：{module}. {workflow['name']}
@@ -1765,6 +1851,7 @@ def system_prompt(value):
 - 用户只是在提问或跑题时 decision=answer_only，checkpoint=0，draft、self_review 和 profile_updates 都为空。
 - 非固定三选一断点信息足够时 decision=propose_checkpoint，draft 只包含当前断点的完整可确认内容，profile_updates 必须是当前断点的完整最新快照。
 {choice_rules}
+{story_rules}
 - 用户只是询问、讨论现有草稿或暂时跑题时 decision=answer_only，不改变断点；用户补充、纠正或反悔时，重做当前断点的完整草稿。
 - 用户指出重复、理解错误、遗漏或体验问题时，先用一句话明确说明刚才错在哪里，再给出已经采取的修正；能从上下文判断时立即修改，不能把定位和操作责任推回用户。
 - 不复述已经确认的完整内容。只说明本轮新增、删除或改变的部分；需要核对完整稿时再展示当前完整稿一次。

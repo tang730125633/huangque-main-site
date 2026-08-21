@@ -620,6 +620,18 @@ def _production_target_from_message(convo, message):
     raise coach_harness.HarnessError("请先打开模块 6 中要制作的具体文案，或在消息里写明完整标题")
 
 
+def _content_revision_target_from_message(convo, message):
+    """Route an explicit numbered-script edit through the versioned content editor."""
+    if not _content_pack_ready((convo.get("deliverables") or {}).get("6") or {}):
+        return None
+    if not re.search(r"修改|删(?:掉|除)|改成|换成|补到|保持不变|保留.{0,8}不变", str(message or "")):
+        return None
+    try:
+        return _production_target_from_message(convo, message)
+    except coach_harness.HarnessError:
+        return None
+
+
 def _post_module_six_production_action(convo):
     state = normalize_coach_state(convo.get("coach_state"))
     if 6 not in state.get("completed_modules", []) or convo.get("productions"):
@@ -1703,7 +1715,7 @@ def generate_foundation_report(convo_id):
     content = call_ai(messages, stream=False, temperature=0.4, max_tokens=16000).json()["choices"][0]["message"]["content"]
     if not isinstance(content, str) or not content.strip():
         raise RuntimeError("AI report is empty")
-    content = content.strip()
+    content = _ground_foundation_story_section(content.strip(), foundation_outputs)
     FOUNDATION_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     playwright_browser = ""
     try:
@@ -1757,6 +1769,22 @@ def generate_foundation_report(convo_id):
         state["revision"] += 1
         save_conversation(convo_id, convo)
     return record
+
+
+def _ground_foundation_story_section(content, foundation_outputs):
+    """Reuse the confirmed story asset instead of letting the report rewrite history."""
+    confirmed = str(((foundation_outputs or {}).get("4-4") or {}).get("content") or "").strip()
+    if not confirmed:
+        return content
+    section = "## 模块四｜故事资产挖掘\n\n### 已确认故事资产\n\n" + confirmed
+    start = re.search(r"(?m)^##\s*模块四[｜|]\s*故事资产挖掘\s*$", content)
+    if not start:
+        return content.rstrip() + "\n\n" + section
+    end = re.search(r"(?m)^##\s*优化建议汇总\s*$", content[start.end():])
+    if not end:
+        return content[:start.start()].rstrip() + "\n\n" + section
+    end_at = start.end() + end.start()
+    return content[:start.start()].rstrip() + "\n\n" + section + "\n\n" + content[end_at:].lstrip()
 
 def call_ai(messages, stream=False, temperature=0.7, max_tokens=None, response_format=None,
             timeout_seconds=AI_DEFAULT_TIMEOUT_SECONDS, reasoning_effort=None):
@@ -4236,6 +4264,8 @@ def process_chat_request(body):
                             _expanded_production_intent(user_message)
                             or coach_harness.production_intent(user_message)
                         )
+                    if production_intent is None and content_target is None:
+                        content_target = _content_revision_target_from_message(convo, user_message)
                     source_optional = production_intent and production_intent.get("recommended_action") in _SOURCE_FREE_ACTIONS
                     source_optional = source_optional or bool(
                         production_intent and production_intent.get("help_only")
