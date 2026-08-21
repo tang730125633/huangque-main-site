@@ -21,6 +21,14 @@ _TTL = 5
 
 CATALOG = [
     {
+        "key": "ip12_agent_production_v1",
+        "name": "IP12 Agent 生产闭环",
+        "desc": "仅允许 IP12 后端经内部凭据发现、读取或询价黄雀能力；不允许代替用户确认付费或写入操作",
+        "page": "IP12",
+        "service": "auth",
+        "default_enabled": False,
+    },
+    {
         "key": "short_drama_lipsync_multi_v1",
         "name": "短剧多人对白口型",
         "desc": "项目内人物跟踪、人工确认与多人轮流对白口型",
@@ -53,7 +61,7 @@ CATALOG = [
     {"key": "sora_video", "name": "Sora 2", "desc": "OpenAI Sora 2 / Pro 非真人通用视频（2026-09-24 下线）", "page": "视频生成", "service": "content", "default_enabled": False},
     {"key": "omni_video", "name": "Omni 视频", "desc": "Gemini Omni Flash 官方视频生成", "page": "视频生成", "service": "content", "default_enabled": False},
     {"key": "seedance_video", "name": "Seedance 视频", "desc": "火山方舟 Seedance 2.0 官方视频生成", "page": "视频生成", "service": "content", "default_enabled": False},
-    {"key": "minimax_h3_video", "name": "麦克视频", "desc": "768P 人物参考剧情视频", "page": "视频生成", "service": "content", "default_enabled": False},
+    {"key": "minimax_h3_video", "name": "麦克视频", "desc": "2K 文本或人物参考剧情视频", "page": "视频生成", "service": "content", "default_enabled": False},
     {"key": "avatar", "name": "数字人形象", "desc": "上传照片创建可复用的数字人形象", "page": "视频生成", "service": "content"},
     {"key": "cinematic", "name": "电影化身", "desc": "动作模仿与开放式电影化生成", "page": "视频生成", "service": "content"},
     {"key": "tryon", "name": "换装换背景", "desc": "同一入口内按素材执行换装、换背景或两者组合", "page": "视频生成", "service": "content"},

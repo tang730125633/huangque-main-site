@@ -158,7 +158,11 @@ set -eu
 echo "python $*" >> "$FAKE_COMMAND_LOG"
 case " $* " in
   *" -m pip "*) test "${HERMES_FAULT_AFTER:-}" != pip || exit 86 ;;
-  *" -c "*) printf '76\n' ;;
+  *"release_sha"*)
+    payload="$(cat)"
+    [[ "$payload" = *release_sha* && "$payload" = *"${HERMES_EXPECTED_SHA:-}"* ]]
+    ;;
+  *" -c "*) printf '81\n' ;;
 esac
 """,
         )
@@ -166,6 +170,12 @@ esac
             "curl",
             """#!/usr/bin/env bash
 echo "curl $*" >> "$FAKE_COMMAND_LOG"
+if test "${FAKE_TRANSIENT_HEALTH:-}" = 1 \
+    && [[ "$*" = *"http://public.test/healthz"* ]] \
+    && test ! -f "$FAKE_STATE/transient-health-seen"; then
+  touch "$FAKE_STATE/transient-health-seen"
+  exit 89
+fi
 if test "${HERMES_ROLLBACK_ACTIVE:-}" = 1 \
     && test "${HERMES_ROLLBACK_FAULT:-}" = curl \
     && test "$*" = "-fsS http://local.test/healthz"; then
@@ -174,6 +184,12 @@ fi
 case "$*" in
   *public.test*) test "${HERMES_FAULT_AFTER:-}" != health || exit 88 ;;
 esac
+fake_sha="${FAKE_HEALTH_SHA-deadbeef}"
+case "$*" in
+  *local.test*) fake_sha="${FAKE_LOCAL_HEALTH_SHA-$fake_sha}" ;;
+  *public.test*) fake_sha="${FAKE_PUBLIC_HEALTH_SHA-$fake_sha}" ;;
+esac
+printf '{"ok":true,"agent_release":"ip12-a0.1","state_schema":2,"release_sha":"%s"}\n' "$fake_sha"
 exit 0
 """,
         )
@@ -203,7 +219,7 @@ exit 0
         path.write_text(content, encoding="utf-8", newline="\n")
         path.chmod(0o755)
 
-    def _run(self, fault, rollback_fault=""):
+    def _run(self, fault, rollback_fault="", extra_environment=None):
         environment = os.environ.copy()
         fake_path = str(self.bin) + os.pathsep + environment.get("PATH", "")
         environment.update(
@@ -224,12 +240,15 @@ exit 0
             HERMES_COMMAND_PATH=fake_path,
             HERMES_LOCAL_HEALTH_URL="http://local.test/healthz",
             HERMES_PUBLIC_HEALTH_URLS="http://public.test/healthz",
+            HERMES_HEALTH_ATTEMPTS="3",
+            HERMES_HEALTH_RETRY_DELAY_SECONDS="0",
             HERMES_FAULT_AFTER=fault,
             HERMES_ROLLBACK_FAULT=rollback_fault,
             FAKE_COMMAND_LOG=str(self.log),
             FAKE_STATE=str(self.state),
             PATH=fake_path,
         )
+        environment.update(extra_environment or {})
         return subprocess.run(
             ["bash", str(SCRIPT)],
             cwd=ROOT,
@@ -245,6 +264,7 @@ exit 0
         self.assertIn("Hermes rollback completed:", result.stderr)
         self.assertNotIn("Hermes rollback FAILED", result.stderr)
         self.assertEqual((self.app / "version.txt").read_text(), "old\n")
+        self.assertFalse((self.app / ".ip12-release-sha").exists())
         self.assertFalse((self.app / "scripts").exists())
         self.assertEqual(self.unit.read_text(), "old unit\n")
         self.assertEqual(self.direct_available.read_text(), "old direct\n")
@@ -279,6 +299,7 @@ exit 0
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         backup = Path((self.root / "last-backup").read_text().strip())
         self.assertTrue((backup / "code").is_dir())
+        self.assertEqual((self.app / ".ip12-release-sha").read_text(), "deadbeef\n")
         commands = self.log.read_text(encoding="utf-8")
         ownership = (
             f"install -d -o {self.deploy_user} -g {self.deploy_group} "
@@ -294,6 +315,38 @@ exit 0
 
     def test_rolls_back_when_health_gate_fails(self):
         self._assert_rolled_back("health")
+
+    def test_rolls_back_when_release_sha_is_missing_or_mismatched(self):
+        for index, observed in enumerate(("", "wrong-sha"), 1):
+            with self.subTest(observed=observed):
+                (self.app / ".ip12-release-sha").write_text("old-sha\n", encoding="utf-8")
+                result = self._run("", extra_environment={
+                    "FAKE_HEALTH_SHA": observed,
+                    "HERMES_SHA": f"deadbeef-{index}",
+                })
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("Hermes rollback completed:", result.stderr)
+                self.assertEqual((self.app / ".ip12-release-sha").read_text(), "old-sha\n")
+
+    def test_rolls_back_when_public_release_sha_is_stale(self):
+        result = self._run("", extra_environment={
+            "FAKE_LOCAL_HEALTH_SHA": "deadbeef",
+            "FAKE_PUBLIC_HEALTH_SHA": "stale-public-sha",
+        })
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Hermes rollback completed:", result.stderr)
+
+    def test_retries_a_transient_health_failure(self):
+        result = self._run("", extra_environment={"FAKE_TRANSIENT_HEALTH": "1"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        commands = self.log.read_text(encoding="utf-8")
+        self.assertEqual(sum("http://public.test/healthz" in line for line in commands.splitlines()), 2)
+
+    def test_route_check_matches_the_systemd_internal_tools_environment(self):
+        self.assertIn(
+            'HERMES_ENABLE_INTERNAL_TOOLS=1 "$PYTHON" -c',
+            SCRIPT.read_text(encoding="utf-8"),
+        )
 
     def test_reports_manual_recovery_when_rollback_rsync_fails(self):
         commands = self._assert_rollback_failure(

@@ -44,7 +44,7 @@
       var draft=project.creation_status==='draft';
       var matchesStage=stage==='all_projects'?true:
         stage==='creation_draft'?draft:
-        stage==='active_projects'?!draft&&project.stage!=='setup'&&project.stage!=='completed':
+        stage==='active_projects'?!draft&&project.stage!=='completed':
         stage==='blocked_projects'?!draft&&project.stage==='setup':
         !draft&&(!stage||project.stage===stage);
       return project.board_id===null&&matchesStage&&(!query||(project.title+' '+project.synopsis).toLowerCase().indexOf(query)>=0);
@@ -54,7 +54,7 @@
     var normalized=(projects||[]).map(normalizeProject).filter(function(project){return project.board_id===null;}),items=normalized.filter(function(project){return project.creation_status!=='draft';});
     return {
       all:normalized.length,
-      active:items.filter(function(p){return p.stage!=='setup'&&p.stage!=='completed';}).length,
+      active:items.filter(function(p){return p.stage!=='completed';}).length,
       blocked:items.filter(function(p){return p.stage==='setup';}).length,
       done:items.filter(function(p){return p.stage==='completed';}).length,
       draft:normalized.filter(function(p){return p.creation_status==='draft';}).length
@@ -1091,10 +1091,10 @@
       var searchValue=doc.getElementById('shortDramaSearch').value,stageValue=activeProjectView,shown=filterProjects(projects,searchValue,stageValue);
       grid.innerHTML=shown.map(function(project){return cardHtml(project,searchValue);}).join('');empty.hidden=shown.length>0;
       var clearSearch=doc.getElementById('shortDramaSearchClear'),searchCount=doc.getElementById('shortDramaSearchCount');clearSearch.hidden=!text(searchValue).trim();searchCount.textContent=(text(searchValue).trim()?'找到 ':'显示 ')+shown.length+' 个项目';
-      var totals=metrics(projects);['All','Active','Blocked','Done','Draft'].forEach(function(k){var node=doc.getElementById('shortDramaMetric'+k),value=totals[k.toLowerCase()],metric=node.closest('[data-project-view]');node.textContent=value;if(previousMetricValues[k]!==undefined&&previousMetricValues[k]!==value){metric.classList.remove('metric-count-pop');void metric.offsetWidth;metric.classList.add('metric-count-pop');}previousMetricValues[k]=value;});
-      var activeView=stageValue==='creation_draft'?'creation_draft':stageValue==='completed'?'completed':(stageValue==='blocked_projects'||stageValue==='setup')?'blocked_projects':(stageValue==='active_projects'||(STAGES.indexOf(stageValue)>=0&&stageValue!=='setup'&&stageValue!=='completed'))?'active_projects':'all_projects';
+      var totals=metrics(projects);['All','Active','Done','Draft'].forEach(function(k){var node=doc.getElementById('shortDramaMetric'+k),value=totals[k.toLowerCase()],metric=node.closest('[data-project-view]');node.textContent=value;if(previousMetricValues[k]!==undefined&&previousMetricValues[k]!==value){metric.classList.remove('metric-count-pop');void metric.offsetWidth;metric.classList.add('metric-count-pop');}previousMetricValues[k]=value;});
+      var activeView=stageValue==='creation_draft'?'creation_draft':stageValue==='completed'?'completed':(stageValue==='active_projects'||stageValue==='blocked_projects'||stageValue==='setup'||(STAGES.indexOf(stageValue)>=0&&stageValue!=='completed'))?'active_projects':'all_projects';
       doc.querySelectorAll('[data-project-view]').forEach(function(metric){var selected=metric.getAttribute('data-project-view')===activeView;metric.classList.toggle('active',selected);metric.setAttribute('aria-pressed',selected?'true':'false');});
-      if(!shown.length){var emptyCopy={all_projects:['还没有短剧项目','正式项目和未完成草稿都会显示在这里。'],active_projects:['暂无制作中的短剧','创建并继续推进的短剧会显示在这里。'],blocked_projects:['暂无待处理短剧','等待继续设置或确认的短剧会显示在这里。'],completed:['暂无已交付短剧','完成全部制作并交付的短剧会显示在这里。'],creation_draft:['草稿箱是空的','未完成的创作会保存在这里。']}[activeView],hasSearch=!!text(searchValue).trim();empty.querySelector('h2').textContent=hasSearch?'没有找到匹配的项目':emptyCopy[0];empty.querySelector('p').textContent=hasSearch?'可以清空搜索，继续查看当前状态下的项目。':emptyCopy[1];doc.getElementById('shortDramaEmptyAction').textContent=hasSearch?'清空搜索':'创建短剧';}
+      if(!shown.length){var emptyCopy={all_projects:['还没有短剧项目','正式项目和未完成草稿都会显示在这里。'],active_projects:['暂无制作中的短剧','等待继续设置和正在推进的短剧都会显示在这里。'],completed:['暂无已交付短剧','完成全部制作并交付的短剧会显示在这里。'],creation_draft:['草稿箱是空的','未完成的创作会保存在这里。']}[activeView],hasSearch=!!text(searchValue).trim();empty.querySelector('h2').textContent=hasSearch?'没有找到匹配的项目':emptyCopy[0];empty.querySelector('p').textContent=hasSearch?'可以清空搜索，继续查看当前状态下的项目。':emptyCopy[1];doc.getElementById('shortDramaEmptyAction').textContent=hasSearch?'清空搜索':'创建短剧';}
       grid.classList.remove('is-refreshing');void grid.offsetWidth;grid.classList.add('is-refreshing');clearTimeout(renderAnimationTimer);renderAnimationTimer=setTimeout(function(){grid.classList.remove('is-refreshing');},240);
     }
     function showProject(id){

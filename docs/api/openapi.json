@@ -15583,6 +15583,62 @@
         "x-hq-runtime-status": "active"
       }
     },
+    "/api/gen/short-drama/refinement/candidates/adopt": {
+      "post": {
+        "tags": ["短剧策划"],
+        "summary": "【生产未上线】采用单个问题镜头候选，但暂不重新合成整片",
+        "description": "【会写数据】采用已生成的单镜头候选，保留当前整片预览，等待所有问题镜头处理完后统一重新合成。代码已注册，待内容服务部署后验证。",
+        "x-hq-test-safety": "state-write",
+        "x-hq-runtime-status": "pending-deployment",
+        "parameters": [
+          { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object",
+            "required": ["project_id", "shot_key", "source_version_id", "replacement_provider_version_id"],
+            "properties": {
+              "project_id": { "type": "string" },
+              "shot_key": { "type": "string" },
+              "source_version_id": { "type": "string" },
+              "replacement_provider_version_id": { "type": "string", "minLength": 1 }
+            }
+          } } }
+        },
+        "responses": {
+          "200": { "description": "候选采用任务已创建或幂等重放；整片重新合成仍保持延迟" },
+          "409": { "description": "来源版本过期、已有活动任务或幂等冲突" }
+        }
+      }
+    },
+    "/api/gen/short-drama/refinement/candidates/reassemble": {
+      "post": {
+        "tags": ["短剧策划"],
+        "summary": "【生产未上线】全部问题镜头处理完成后统一重新合成整片",
+        "description": "【会写数据】所有问题镜头采用完成后，复用现有镜头统一重新合成完整预览；不会再次调用视频模型。代码已注册，待内容服务部署后验证。",
+        "x-hq-test-safety": "state-write",
+        "x-hq-runtime-status": "pending-deployment",
+        "parameters": [
+          { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object",
+            "required": ["project_id", "version_id"],
+            "properties": {
+              "project_id": { "type": "string" },
+              "version_id": { "type": "string" }
+            }
+          } } }
+        },
+        "responses": {
+          "200": { "description": "完整预览已创建或幂等重放" },
+          "409": { "description": "仍有问题镜头、来源版本过期、已有活动任务或幂等冲突" }
+        }
+      }
+    },
     "/api/gen/short-drama/refinement/jobs": {
       "post": {
         "tags": [
@@ -23668,16 +23724,16 @@
   },
   "x-hq-document-audit": {
     "verified_at": "2026-08-14",
-    "total_paths": 283,
-    "total_operations": 297,
+    "total_paths": 285,
+    "total_operations": 299,
     "active_operations": 285,
-    "production_route_probe_operations": 297,
-    "newly_documented_operations_vs_v2": 121,
+    "production_route_probe_operations": 299,
+    "newly_documented_operations_vs_v2": 123,
     "registry_http_operations": 77,
     "registry_documented_operations": 77,
-    "short_drama_registered_operations": 126,
-    "short_drama_documented_operations": 126,
-    "production_pending_operations": 9,
+    "short_drama_registered_operations": 128,
+    "short_drama_documented_operations": 128,
+    "production_pending_operations": 11,
     "production_routing_unavailable_operations": 2,
     "deprecated_operations": 1,
     "customer_frontend_calls_audited": true,

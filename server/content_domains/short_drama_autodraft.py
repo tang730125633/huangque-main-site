@@ -818,6 +818,24 @@ def _render_provider_preview(project_id, job_id, assembly, cancel_event=None):
     }
 
 
+def _locked_character_reference_ready(row, provider_name):
+    if not row or not row["reference_locked"]:
+        return False
+    reference_file = str(row["reference_file"] or "").strip()
+    if provider_name == "minimax_h3":
+        # MiniMax references are converted from project-owned local bytes.
+        # A historical public URL is display-only and cannot be submitted.
+        return bool(reference_file)
+    reference_url = str(row["reference_url"] or "").strip()
+    return bool(
+        provider_name == "grok"
+        and (
+            reference_file
+            or reference_url.startswith(("http://", "https://"))
+        )
+    )
+
+
 def _provider_poc_inputs(
     plan, owner_username, avatar_list=None, conn=None, project_id="",
 ):
@@ -845,11 +863,14 @@ def _provider_poc_inputs(
         for avatar in candidates or []:
             if not isinstance(avatar, dict):
                 continue
-            provider_ready = bool(
-                str(avatar.get("image_url") or "").strip()
-                if provider_name in {"grok", "minimax_h3"}
-                else str(avatar.get("provider_avatar_id") or "").strip()
-            )
+            if provider_name == "grok":
+                provider_ready = bool(str(avatar.get("image_url") or "").strip())
+            elif provider_name == "minimax_h3":
+                provider_ready = False
+            else:
+                provider_ready = bool(
+                    str(avatar.get("provider_avatar_id") or "").strip()
+                )
             if (
                 str(avatar.get("status") or "") != "ready"
                 or not provider_ready
@@ -888,22 +909,20 @@ def _provider_poc_inputs(
             (project_id,),
         ).fetchall():
             avatar = avatar_by_id.get(str(row["avatar_id"] or ""))
-            character_reference_ready = bool(
-                row["reference_locked"]
-                and (
-                    str(row["reference_file"] or "").strip()
-                    or str(row["reference_url"] or "").strip().startswith(
-                        ("http://", "https://")
-                    )
+            character_reference_ready = _locked_character_reference_ready(
+                row, provider_name,
+            )
+            if provider_name == "minimax_h3":
+                generation_identity_id = (
+                    "character:" + str(row["character_key"])
+                    if character_reference_ready else ""
                 )
-            )
-            generation_identity_id = (
-                str(avatar["id"])
-                if avatar
-                else "character:" + str(row["character_key"])
-                if provider_name in {"grok", "minimax_h3"} and character_reference_ready
-                else ""
-            )
+            elif avatar:
+                generation_identity_id = str(avatar["id"])
+            elif provider_name == "grok" and character_reference_ready:
+                generation_identity_id = "character:" + str(row["character_key"])
+            else:
+                generation_identity_id = ""
             item = {
                 "character_key": str(row["character_key"]),
                 "name": str(row["name"]),
@@ -1072,22 +1091,20 @@ def _character_binding_blockers(conn, project_id, plan, provider_name=""):
     ).fetchall()
     if not rows:
         return []
-    bound = {
-        str(row["character_key"]): bool(
-            row["avatar_id"]
-            or (
-                provider_name in {"grok", "minimax_h3"}
-                and row["reference_locked"]
-                and (
-                    str(row["reference_file"] or "").strip()
-                    or str(row["reference_url"] or "").strip().startswith(
-                        ("http://", "https://")
-                    )
-                )
+    bound = {}
+    for row in rows:
+        character_key = str(row["character_key"])
+        if provider_name == "minimax_h3":
+            bound[character_key] = _locked_character_reference_ready(
+                row, provider_name,
             )
-        )
-        for row in rows
-    }
+        elif provider_name == "grok":
+            bound[character_key] = bool(
+                row["avatar_id"]
+                or _locked_character_reference_ready(row, provider_name)
+            )
+        else:
+            bound[character_key] = bool(row["avatar_id"])
     names = {
         str(row["character_key"]): str(row["name"])
         for row in rows
@@ -1376,6 +1393,17 @@ def preview_provider_request(
             previous_reference = None
         if execution and execution.get("include_scene_reference") is False:
             scene_reference = None
+        # Historical optional references can be URL-only. MiniMax now accepts
+        # only project-owned local bytes, so omit those optional hints instead
+        # of advertising a request that its Provider must reject.
+        if previous_reference and not str(
+            previous_reference.get("file") or ""
+        ).strip():
+            previous_reference = None
+        if scene_reference and not str(
+            scene_reference.get("file") or ""
+        ).strip():
+            scene_reference = None
         extra_reference_count = int(bool(
             previous_reference
             and (previous_reference.get("file") or previous_reference.get("url"))
@@ -1401,10 +1429,7 @@ def preview_provider_request(
         by_key = {str(row["character_key"]): row for row in rows}
         for key in required_character_keys:
             row = by_key.get(key)
-            if not row or not row["reference_locked"] or not (
-                str(row["reference_file"] or "").strip()
-                or str(row["reference_url"] or "").strip()
-            ):
+            if not _locked_character_reference_ready(row, provider.name):
                 raise AutodraftError(
                     "provider_avatar_not_ready",
                     "请先为镜头中的全部角色确认并锁定标准图",
@@ -1567,7 +1592,7 @@ def preview_provider_request(
         "prompt": prompt,
         "ratio": str(project.get("ratio") or "16:9"),
         "resolution": (
-            "768p" if provider.name == "minimax_h3" else str(
+            "2k" if provider.name == "minimax_h3" else str(
                 (plan["plan"].get("estimate") or {}).get("resolution") or "720p"
             ).lower()
         ),
@@ -1696,7 +1721,7 @@ def _provider_shot_cost(provider_request):
         return points_domain.cost_of("xiaole_video", {
             "channel": "minimax",
             "model": "MiniMax-H3",
-            "resolution": "768p",
+            "resolution": "2k",
             "duration": duration,
         })
     if provider_name != "grok":
@@ -2345,6 +2370,23 @@ def reconcile_unknown_provider_submission(
             raise AutodraftError(
                 "provider_reconciliation_not_allowed",
                 "Provider 对账尝试不存在", 409,
+            )
+        provider = load_by_name(row["provider"])
+        if provider is None:
+            raise AutodraftError(
+                "provider_reconciliation_not_allowed",
+                "任务的 Provider 不受支持，无法安全绑定上游任务",
+                409,
+            )
+        try:
+            provider_job_id = provider.bind_reconciled_job_id(
+                provider_job_id, _json(row["request_json"], {}),
+            )
+        except VisualProviderError as error:
+            raise AutodraftError(error.code, str(error), 422) from error
+        if not provider_job_id or len(provider_job_id) > 200:
+            raise AutodraftError(
+                "provider_job_id_invalid", "上游 Provider 任务 ID 无效", 422,
             )
         existing_provider_job_id = str(row["provider_job_id"] or "").strip()
         if row["status"] == "running" and existing_provider_job_id == provider_job_id:

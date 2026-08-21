@@ -1,0 +1,20 @@
+[Unit]
+Description=Douyin leadgen worker #%i
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ubuntu/worker_%i
+Environment=WORKER_ID=%i
+Environment=LEADGEN_SERVER=http://127.0.0.1:8090
+Environment=HF_ENDPOINT=https://hf-mirror.com
+EnvironmentFile=/home/ubuntu/.config/leadgen-worker.env
+EnvironmentFile=-/home/ubuntu/worker_%i/worker.env
+ExecStart=/home/ubuntu/MediaCrawler/.venv/bin/python /home/ubuntu/worker_%i/server_worker.py
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/ubuntu/logs/worker_%i.log
+StandardError=append:/home/ubuntu/logs/worker_%i.log
+
+[Install]
+WantedBy=default.target

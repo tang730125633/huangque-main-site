@@ -49,6 +49,10 @@ class ShotVisualProvider(ABC):
             submitted=True,
         )
 
+    def bind_reconciled_job_id(self, provider_job_id, request):
+        """Normalize an operator-confirmed upstream ID before persistence."""
+        return str(provider_job_id or "").strip()
+
     @abstractmethod
     def fetch_result(self, provider_job_id, result_url):
         raise NotImplementedError

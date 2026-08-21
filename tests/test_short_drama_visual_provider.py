@@ -1,3 +1,5 @@
+import base64
+import json
 import os
 import io
 import socket
@@ -25,6 +27,37 @@ from PIL import Image
 
 
 class ShortDramaVisualProviderTests(unittest.TestCase):
+    def test_minimax_reconciled_task_binds_key_and_metaso_origin(self):
+        provider = MiniMaxH3ShotProvider()
+        encoded = provider.bind_reconciled_job_id(
+            "task-from-submit-unknown", {"_provider_key_id": "minimax-key-7",
+                                         "_minimax_origin": "metaso"}
+        )
+        self.assertEqual(
+            ("minimax-key-7", "task-from-submit-unknown", "metaso"),
+            provider._decode_job_id(encoded),
+        )
+
+        with self.assertRaises(VisualProviderError) as raised:
+            provider.bind_reconciled_job_id("task-without-key", {})
+        self.assertEqual("provider_key_binding_missing", raised.exception.code)
+
+    def test_minimax_prepare_job_persists_origin_before_paid_submission(self):
+        provider = MiniMaxH3ShotProvider()
+        candidate = {
+            "id": "minimax-key-7", "secret": "test-only-secret",
+        }
+        with mock.patch.object(
+            provider, "_claim_key", return_value=candidate,
+        ), mock.patch.object(
+            video_minimax_h3, "check_credentials",
+        ), mock.patch.object(
+            video_minimax_h3, "new_task_origin", return_value="metaso",
+        ):
+            prepared = provider.prepare_job({"provider": "minimax_h3"})
+        self.assertEqual("minimax-key-7", prepared["_provider_key_id"])
+        self.assertEqual("metaso", prepared["_minimax_origin"])
+
     def test_minimax_h3_is_the_default_short_drama_provider(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             snapshot = capability_snapshot()
@@ -120,7 +153,7 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
             result = provider.validate_request({
                 "prompt": "两个孩子在长椅上分享糖果",
                 "ratio": "16:9",
-                "resolution": "768p",
+                "resolution": "2k",
                 "duration_seconds": 5,
                 "reference_images": [
                     {"character_key": "boy", "file": "image/boy.png"},
@@ -130,7 +163,7 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
         self.assertEqual("minimax_h3", result["provider"])
         self.assertEqual("MiniMax-H3", result["model"])
         self.assertEqual(5, result["duration_seconds"])
-        self.assertEqual("768p", result["resolution"])
+        self.assertEqual("2k", result["resolution"])
         self.assertEqual(2, len(result["reference_images"]))
 
     def test_minimax_h3_encodes_local_png_without_public_storage(self):
@@ -139,8 +172,38 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
             image_path = Path(directory) / "role.png"
             Image.new("RGB", (256, 256), (30, 80, 120)).save(image_path, "PNG")
             with mock.patch("content_domains.core._out_path", return_value=image_path):
-                value = provider._reference_value({"file": "image/role.png"})
+                value = provider._reference_value({
+                    "file": "image/role.png",
+                    "url": "http://169.254.169.254/latest/meta-data",
+                })
         self.assertTrue(value.startswith("data:image/png;base64,"))
+
+    def test_minimax_h3_rejects_metadata_reference_before_provider_submission(self):
+        provider = MiniMaxH3ShotProvider()
+        candidate = {"id": "minimax-key-2", "secret": "test-only-secret"}
+        request = {
+            "prompt": "人物走进电梯",
+            "ratio": "16:9",
+            "duration_seconds": 5,
+            "reference_images": [{
+                "url": "http://169.254.169.254/latest/meta-data",
+            }],
+            "_provider_key_id": candidate["id"],
+            "_minimax_origin": "metaso",
+        }
+        with mock.patch.object(
+            provider_keys, "has_candidate", return_value=True,
+        ), mock.patch.object(
+            provider, "_bound_key", return_value=candidate,
+        ), mock.patch.object(
+            video_minimax_h3, "_request_json",
+            side_effect=AssertionError("unsafe reference reached provider submission"),
+        ) as submit:
+            with self.assertRaises(VisualProviderError) as raised:
+                provider.create_job(request)
+        self.assertEqual("visual_reference_invalid", raised.exception.code)
+        self.assertFalse(raised.exception.submitted)
+        submit.assert_not_called()
 
     def test_minimax_h3_preflight_rejects_corrupt_local_reference(self):
         provider = MiniMaxH3ShotProvider()
@@ -207,14 +270,16 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
 
     def test_minimax_h3_create_poll_and_fetch_preserve_key_affinity(self):
         provider = MiniMaxH3ShotProvider()
+        output = io.BytesIO()
+        Image.new("RGB", (256, 256), (30, 80, 120)).save(output, "PNG")
+        reference = "data:image/png;base64," + base64.b64encode(
+            output.getvalue()
+        ).decode("ascii")
         request = {
             "prompt": "两个孩子在长椅上分享糖果",
             "ratio": "16:9",
             "duration_seconds": 5,
-            "reference_images": [
-                {"url": "https://cdn.example/boy.png"},
-                {"url": "https://cdn.example/girl.png"},
-            ],
+            "reference_images": [reference, reference],
         }
         candidate = {"id": "minimax-key-2", "secret": "test-only-secret"}
         with mock.patch.object(provider_keys, "has_candidate", return_value=True), \
@@ -225,26 +290,90 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
                  {"task": {"status": "succeeded", "content": {"url": "https://cdn.example/result.mp4"}}},
              ]) as request_json, \
              mock.patch("content_domains.video._download_video_file_direct", return_value="video/minimax-result.mp4") as download:
-            created = provider.create_job(request)
+            created = provider.create_job(dict(request, _minimax_origin="metaso"))
             state = provider.get_job(created["provider_job_id"])
             result = provider.fetch_result(created["provider_job_id"], state["result_url"])
         self.assertEqual("succeeded", state["status"])
         self.assertEqual("video/minimax-result.mp4", result["file"])
         submitted = request_json.call_args_list[0].args[3]
         self.assertEqual("MiniMax-H3", submitted["model"])
-        self.assertTrue(submitted["content"][1]["image_url"]["url"].startswith("https://"))
+        self.assertEqual("2K", submitted["resolution"])
+        self.assertTrue(
+            submitted["content"][1]["image_url"]["url"].startswith(
+                "data:image/png;base64,"
+            )
+        )
         self.assertEqual("/v2/video_generation", request_json.call_args_list[0].args[2])
         self.assertEqual("/v2/query/video_generation/task-8", request_json.call_args_list[1].args[2])
         self.assertEqual("test-only-secret", request_json.call_args_list[0].kwargs["api_key"])
         self.assertEqual("test-only-secret", request_json.call_args_list[1].kwargs["api_key"])
         self.assertEqual(
-            set(minimax_h3.MINIMAX_RESULT_HOSTS),
+            video_minimax_h3.API_BASE,
+            request_json.call_args_list[0].kwargs["api_base"],
+        )
+        self.assertEqual(
+            video_minimax_h3.API_BASE,
+            request_json.call_args_list[1].kwargs["api_base"],
+        )
+        self.assertEqual(
+            set(video_minimax_h3.RESULT_HOSTS),
             set(download.call_args.kwargs["allowed_hosts"]),
         )
         self.assertEqual(
-            minimax_h3.MINIMAX_RESULT_MAX_BYTES,
+            video_minimax_h3.RESULT_MAX_BYTES,
             download.call_args.kwargs["max_bytes"],
         )
+
+    def test_minimax_h3_old_encoded_and_raw_job_ids_poll_legacy_origin(self):
+        provider = MiniMaxH3ShotProvider()
+        candidate = {"id": "minimax-key-2", "secret": "test-only-secret"}
+        old_payload = json.dumps(
+            {"key_id": candidate["id"], "task_id": "old-task"},
+            separators=(",", ":"),
+        ).encode("utf-8")
+        old_job_id = base64.urlsafe_b64encode(old_payload).decode("ascii").rstrip("=")
+        with mock.patch.dict(os.environ, {}, clear=True), \
+             mock.patch.object(provider, "_bound_key", return_value=candidate), \
+             mock.patch("content_domains.video_minimax_h3.query_task", return_value={
+                 "task": {"status": "running"},
+             }) as query_task:
+            provider.get_job(old_job_id)
+            provider.get_job("raw-legacy-task")
+        self.assertEqual(
+            [video_minimax_h3.LEGACY_API_BASE, video_minimax_h3.LEGACY_API_BASE],
+            [call.kwargs["api_base"] for call in query_task.call_args_list],
+        )
+
+    def test_minimax_h3_unmarked_custom_origin_fails_closed(self):
+        provider = MiniMaxH3ShotProvider()
+        old_payload = json.dumps(
+            {"key_id": "minimax-key-2", "task_id": "old-task"},
+            separators=(",", ":"),
+        ).encode("utf-8")
+        old_job_id = base64.urlsafe_b64encode(old_payload).decode("ascii").rstrip("=")
+        with mock.patch.dict(os.environ, {
+            "MINIMAX_API_BASE": video_minimax_h3.METASO_API_BASE,
+        }, clear=True):
+            self.assertEqual("metaso", provider._decode_job_id(old_job_id)[2])
+            self.assertEqual("metaso", provider._decode_job_id("raw-old-task")[2])
+        with mock.patch.dict(os.environ, {
+            "MINIMAX_API_BASE": "https://custom.example/minimax",
+        }, clear=True):
+            for value in (old_job_id, "raw-old-task"):
+                with self.subTest(value=value), self.assertRaises(VisualProviderError) as raised:
+                    provider._decode_job_id(value)
+                self.assertEqual("provider_job_origin_unknown", raised.exception.code)
+
+    def test_minimax_h3_rejects_tampered_task_origin(self):
+        provider = MiniMaxH3ShotProvider()
+        payload = json.dumps(
+            {"key_id": "minimax-key-2", "task_id": "task-8", "origin": "other"},
+            separators=(",", ":"),
+        ).encode("utf-8")
+        provider_job_id = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+        with self.assertRaises(VisualProviderError) as raised:
+            provider.get_job(provider_job_id)
+        self.assertEqual("provider_job_origin_invalid", raised.exception.code)
 
     def test_minimax_h3_failed_job_exposes_safe_provider_reason(self):
         provider = MiniMaxH3ShotProvider()

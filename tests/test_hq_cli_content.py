@@ -2,6 +2,7 @@ import base64
 import hashlib
 import io
 import json
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -16,7 +17,10 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "server"))
 
-from content_domains import audio, cli_gateway, cli_uploads, core, upstream_guard, video, video_openai
+from content_domains import (
+    audio, cli_gateway, cli_uploads, core, submission_idempotency, upstream_guard, video,
+    video_minimax_h3, video_openai,
+)
 
 
 class _Points:
@@ -128,7 +132,6 @@ class HQCLIContentTests(unittest.TestCase):
             audio.validate_audio_payload({"text": "hello", "pitch": 99})
         clean = audio.validate_audio_payload({"text": " hello ", "speed": 1.2, "pitch": 0, "volume": 0})
         self.assertEqual(("hello", 1.2), (clean["text"], clean["speed"]))
-
         original = audio.resolve_audio_provider_voice
         audio.resolve_audio_provider_voice = lambda username, voice_key: voice_key
         try:
@@ -144,6 +147,114 @@ class HQCLIContentTests(unittest.TestCase):
             audio.resolve_audio_provider_voice = original
         self.assertEqual((public["voice_scope"], public["provider"]), ("public", "cosyvoice"))
         self.assertEqual((personal["voice_scope"], personal["provider"]), ("personal", "cosyvoice"))
+
+    def test_video_lipsync_uses_owned_assets_and_real_duration_pricing(self):
+        with mock.patch.object(video, "get_video_asset", return_value={
+                "id": 21, "video_file": "video/source.mp4",
+                "ratio": "9:16", "resolution": "768p", "status": "done",
+        }), mock.patch.object(video, "get_audio_asset", return_value={
+                "id": 34, "file": "audio/speech.mp3",
+        }), mock.patch.object(video, "_resolve_out_file", side_effect=lambda value: Path("/") / value), \
+                mock.patch.object(video, "_user_owns_output_file", return_value=True), \
+                mock.patch.object(video, "_normalize_audio_file_ref", return_value="audio/speech.mp3"), \
+                mock.patch.object(video, "_probe_video_duration", return_value=15.1), \
+                mock.patch.object(video.pricing, "get_price", side_effect=lambda key: {
+                    "video.lipsync.speed": 3, "video.lipsync.precision": 6,
+                }[key]):
+            clean = video.validate_video_payload({
+                "mode": "lipsync", "video_asset_id": 21,
+                "audio_asset_id": 34, "lipsync_mode": "speed",
+                "dynamic_duration": False,
+            }, "alice")
+            self.assertEqual(("video/source.mp4", "audio/speech.mp3"), (
+                clean["reference_video_file"], clean["audio_file"]))
+            self.assertEqual(46, video.video_cost(clean))
+
+    def test_video_lipsync_quote_does_not_require_a_photo_avatar(self):
+        clean = {
+            "mode": "lipsync", "video_asset_id": 21,
+            "audio_asset_id": 34, "reference_video_file": "video/source.mp4",
+            "audio_file": "audio/speech.mp3", "_lipsync_duration": 15.0,
+            "lipsync_mode": "speed", "dynamic_duration": False,
+        }
+        with mock.patch.object(
+                core, "_domains", return_value=(audio, self.points, video)), \
+                mock.patch.object(
+                    video, "validate_video_payload", return_value=clean) as validate:
+            status, result = self._post("/api/gen/cli/quote", {
+                "kind": "video", "payload": {
+                    "mode": "lipsync", "video_asset_id": 21,
+                    "audio_asset_id": 34, "lipsync_mode": "speed",
+                    "dynamic_duration": False,
+                },
+            })
+        self.assertEqual((200, 24), (status, result["cost"]))
+        validate.assert_called_once()
+
+    def test_heygen_lipsync_preserves_source_and_uses_idempotency(self):
+        captured = {}
+
+        def request(method, path, body=None, headers=None, **_kwargs):
+            if method == "POST":
+                captured.update(
+                    path=path, body=json.loads(body), headers=dict(headers or {}))
+                return {"data": {"lipsync_id": "ls_123"}}
+            self.assertEqual(("GET", "/lipsyncs/ls_123"), (method, path))
+            return {"data": {
+                "status": "completed", "duration": 15,
+                "video_url": "https://files.heygen.ai/result.mp4",
+            }}
+
+        with mock.patch.object(video, "_resolve_out_file", side_effect=lambda value: Path("/") / value), \
+                mock.patch.object(video, "_heygen_mcp_enabled", return_value=False), \
+                mock.patch.object(video, "_heygen_upload_asset", side_effect=["vid_asset", "aud_asset"]), \
+                mock.patch.object(video, "_heygen_request_json", side_effect=request), \
+                mock.patch.object(video, "_download_video_file_direct", return_value="video/lipsync.mp4"), \
+                mock.patch.object(video, "_extract_first_frame_cover", return_value="video/lipsync.jpg"), \
+                mock.patch.object(video, "update_video_asset_phase"):
+            result = video.generate_heygen_lipsync(
+                "video/source.mp4", "audio/speech.mp3", "speed", False,
+                job_id=77,
+            )
+        self.assertEqual("/lipsyncs", captured["path"])
+        self.assertEqual("huangque-lipsync-job-77", captured["headers"]["Idempotency-Key"])
+        self.assertEqual({"type": "asset_id", "asset_id": "vid_asset"}, captured["body"]["video"])
+        self.assertFalse(captured["body"]["enable_dynamic_duration"])
+        self.assertTrue(captured["body"]["keep_the_same_format"])
+        self.assertEqual(("ls_123", "video/lipsync.mp4"), (
+            result["video_id"], result["video_file"]))
+
+    def test_heygen_lipsync_prefers_configured_mcp_subscription(self):
+        calls = []
+
+        def mcp(tool, arguments, **_kwargs):
+            calls.append((tool, arguments))
+            if tool == "create_lipsync":
+                return {"lipsync_id": "ls_mcp"}
+            return {
+                "status": "completed", "duration": 15,
+                "video_url": "https://files.heygen.ai/mcp-result.mp4",
+            }
+
+        with mock.patch.object(video, "_resolve_out_file", side_effect=lambda value: Path("/") / value), \
+                mock.patch.object(video, "_heygen_mcp_enabled", return_value=True), \
+                mock.patch.object(video, "_mux_seedance_upscale_audio", return_value="video/detection.mp4"), \
+                mock.patch.object(video, "public_url", side_effect=lambda value, *_args, **_kwargs: "https://media.test/" + value), \
+                mock.patch.object(video, "_heygen_mcp_call", side_effect=mcp), \
+                mock.patch.object(video, "_heygen_upload_asset", side_effect=AssertionError("MCP must use signed URLs")), \
+                mock.patch.object(video, "_download_video_file_direct", return_value="video/lipsync-mcp.mp4"), \
+                mock.patch.object(video, "_extract_first_frame_cover", return_value="video/lipsync-mcp.jpg"), \
+                mock.patch.object(video, "update_video_asset_phase"):
+            result = video.generate_heygen_lipsync(
+                "video/source.mp4", "audio/speech.mp3", "speed", False,
+                job_id=78,
+            )
+        self.assertEqual(["create_lipsync", "get_lipsync"], [item[0] for item in calls])
+        create = calls[0][1]
+        self.assertEqual("https://media.test/video/detection.mp4", create["video"]["url"])
+        self.assertEqual("https://media.test/audio/speech.mp3", create["audio"]["url"])
+        self.assertFalse(create["enableDynamicDuration"])
+        self.assertEqual("video/lipsync-mcp.mp4", result["video_file"])
 
     def test_sora_submit_expands_cli_reference_before_validation_and_queue(self):
         raw = base64.b64decode(
@@ -183,6 +294,358 @@ class HQCLIContentTests(unittest.TestCase):
         self.assertNotIn("reference_upload_ids", captured)
         self.assertEqual(1, len(captured["reference_images"]))
         self.assertTrue(captured["reference_images"][0].startswith("data:image/png;base64,"))
+
+    def test_minimax_quote_expands_private_reference_as_typed_data_uri(self):
+        from PIL import Image
+
+        image = io.BytesIO()
+        Image.new("RGB", (256, 256), (40, 80, 120)).save(image, "PNG")
+        raw = image.getvalue()
+        captured = {}
+        original_validate = video.validate_xiaole_video_payload
+
+        def validate(payload, username=None):
+            cleaned = original_validate(payload, username)
+            captured.update(cleaned)
+            return cleaned
+
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.object(cli_uploads, "UPLOAD_ROOT", Path(folder)), \
+                mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+                mock.patch.object(core.feature_flags, "is_enabled", return_value=True), \
+                mock.patch.object(video_minimax_h3, "available", return_value=True), \
+                mock.patch.object(video, "validate_xiaole_video_payload", side_effect=validate):
+            uploaded = cli_uploads.store_image(
+                io.BytesIO(raw), len(raw), "alice", "image/png",
+                hashlib.sha256(raw).hexdigest(),
+            )
+            status, result = self._post("/api/gen/cli/quote", {
+                "kind": "xiaole_video", "payload": {
+                    "prompt": "让 @图片1 向镜头挥手", "channel": "minimax",
+                    "duration": 4, "ratio": "9:16", "resolution": "2k",
+                    "reference_upload_ids": [uploaded["upload_id"]],
+                },
+            })
+
+        self.assertEqual(200, status, result)
+        self.assertEqual((24, 100), (result["cost"], result["points"]))
+        self.assertNotIn("reference_upload_ids", captured)
+        self.assertEqual(1, len(captured["reference_images"]))
+        self.assertTrue(captured["reference_images"][0].startswith("data:image/png;base64,"))
+
+    def test_minimax_quote_accepts_verified_text_only_2k_contract(self):
+        with mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+                mock.patch.object(core.feature_flags, "is_enabled", return_value=True), \
+                mock.patch.object(video_minimax_h3, "available", return_value=True):
+            status, result = self._post("/api/gen/cli/quote", {
+                "kind": "xiaole_video", "payload": {
+                    "prompt": "史诗级太空歌剧院线预告", "channel": "minimax",
+                    "duration": 5, "ratio": "16:9", "resolution": "2k",
+                },
+            })
+
+        self.assertEqual(200, status, result)
+        self.assertEqual((24, 100), (result["cost"], result["points"]))
+
+    def test_minimax_legacy_768p_same_key_replays_before_new_task_validation(self):
+        legacy = {
+            "prompt": "legacy paid request", "channel": "minimax",
+            "model": "MiniMax-H3", "duration": 5,
+            "ratio": "9:16", "resolution": "768p",
+        }
+        with mock.patch.object(
+            core, "_domains", return_value=(audio, self.points, video),
+        ), mock.patch.object(
+            core, "HANDLERS", {"xiaole_video": lambda payload: payload},
+        ), mock.patch.object(
+            core.submission_idempotency, "replay_existing",
+            return_value=("replay", {"job_id": 73, "cost": 24}),
+        ), mock.patch.object(
+            video, "validate_xiaole_video_payload",
+            side_effect=AssertionError("replay must precede new-task validation"),
+        ):
+            status, result = self._post(
+                "/api/gen/xiaole_video", legacy,
+                expected=24, idempotency_key="minimax-legacy-replay-001",
+            )
+        self.assertEqual((200, 73), (status, result["job_id"]))
+
+        with mock.patch.object(
+            core, "_domains", return_value=(audio, self.points, video),
+        ), mock.patch.object(
+            core, "HANDLERS", {"xiaole_video": lambda payload: payload},
+        ), mock.patch.object(
+            core.submission_idempotency, "replay_existing",
+            return_value=("missing", None),
+        ), mock.patch.object(
+            video_minimax_h3, "available", return_value=True,
+        ), mock.patch("content_domains.feature_flags.is_enabled", return_value=True):
+            status, result = self._post(
+                "/api/gen/xiaole_video", legacy,
+                expected=24, idempotency_key="minimax-new-768-rejected-001",
+            )
+        self.assertEqual(400, status, result)
+        self.assertIn("仅支持 2K", result["detail"])
+        self.assertEqual([], self.points.deductions)
+
+    def test_minimax_historical_upload_hash_conflict_fails_closed(self):
+        request = {
+            "prompt": "让 @图片1 挥手", "channel": "minimax",
+            "duration": 5, "ratio": "9:16",
+            "reference_upload_ids": ["img_" + "a" * 32],
+        }
+        expanded = dict(request)
+        expanded.pop("reference_upload_ids")
+        expanded["reference_images"] = ["https://example.com/reference.png"]
+        with mock.patch.object(
+            core, "_domains", return_value=(audio, self.points, video),
+        ), mock.patch.object(
+            core, "HANDLERS", {"xiaole_video": lambda payload: payload},
+        ), mock.patch.object(
+            core.submission_idempotency, "replay_existing",
+            return_value=("replay", {"job_id": 91, "cost": 24}),
+        ), mock.patch.object(
+            video, "minimax_idempotency_claim_body",
+            side_effect=AssertionError("historical replay must precede strict claim validation"),
+        ):
+            status, result = self._post(
+                "/api/gen/xiaole_video", expanded, expected=24,
+                idempotency_key="minimax-legacy-url-replay-001",
+            )
+        self.assertEqual((200, 91), (status, result["job_id"]))
+
+        with self.assertRaisesRegex(ValueError, "参考图"):
+            video.minimax_idempotency_claim_body(expanded)
+        old_body = video.minimax_idempotency_replay_bodies(expanded)[0]
+        self.assertEqual(expanded["reference_images"], old_body["reference_images"])
+
+        with tempfile.TemporaryDirectory() as folder:
+            database = Path(folder) / "jobs.db"
+
+            def database_factory():
+                connection = sqlite3.connect(database)
+                connection.row_factory = sqlite3.Row
+                return connection
+
+            connection = database_factory()
+            connection.execute(
+                "CREATE TABLE jobs(id INTEGER PRIMARY KEY, kind TEXT, username TEXT, payload TEXT)"
+            )
+            submission_idempotency.ensure_table(connection)
+            connection.execute(
+                "INSERT INTO jobs(id,kind,username,payload) VALUES(?,?,?,?)",
+                (91, "xiaole_video", "alice", json.dumps(old_body)),
+            )
+            connection.commit()
+            connection.close()
+            state, _ = submission_idempotency.begin(
+                database_factory, "alice", "/api/gen/xiaole_video",
+                "minimax-expired-replay-001", old_body,
+            )
+            self.assertEqual("new", state)
+            submission_idempotency.complete(
+                database_factory, "alice", "/api/gen/xiaole_video",
+                "minimax-expired-replay-001", {"job_id": 91, "cost": 24},
+            )
+            state, _ = submission_idempotency.replay_existing(
+                database_factory, "alice", "/api/gen/xiaole_video",
+                "minimax-expired-replay-001",
+                video.minimax_idempotency_replay_bodies(request),
+            )
+            self.assertEqual("conflict", state)
+
+            with mock.patch.object(
+                core, "_domains", return_value=(audio, self.points, video),
+            ), mock.patch.object(
+                core, "HANDLERS", {"xiaole_video": lambda payload: payload},
+            ), mock.patch.object(
+                core, "jdb", side_effect=database_factory,
+            ), mock.patch.object(
+                cli_uploads, "expand_image_payload",
+                side_effect=AssertionError("hash conflicts must precede upload lookup"),
+            ) as expand:
+                status, result = self._post(
+                    "/api/gen/xiaole_video", request,
+                    expected=24, idempotency_key="minimax-expired-replay-001",
+                )
+                different_image = dict(
+                    request, reference_upload_ids=["img_" + "b" * 32],
+                )
+                image_status, image_result = self._post(
+                    "/api/gen/xiaole_video", different_image,
+                    expected=24, idempotency_key="minimax-expired-replay-001",
+                )
+                mismatched = dict(request, prompt="让 @图片1 跳舞")
+                mismatch_status, mismatch_result = self._post(
+                    "/api/gen/xiaole_video", mismatched,
+                    expected=24, idempotency_key="minimax-expired-replay-001",
+                )
+
+        self.assertEqual((409, "idempotency_conflict"), (status, result["code"]))
+        self.assertEqual(
+            (409, "idempotency_conflict"), (image_status, image_result["code"]),
+        )
+        self.assertEqual(
+            (409, "idempotency_conflict"),
+            (mismatch_status, mismatch_result["code"]),
+        )
+        expand.assert_not_called()
+        self.assertEqual([], self.points.deductions)
+
+    def test_minimax_submit_expands_private_reference_before_charge_and_queue(self):
+        from PIL import Image
+
+        image = io.BytesIO()
+        Image.new("RGB", (256, 256), (40, 80, 120)).save(image, "PNG")
+        raw = image.getvalue()
+        captured = {}
+        idempotency_bodies = []
+
+        def create_job(*args, **_kwargs):
+            captured.update(args[6])
+            return 42, 76
+
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.object(cli_uploads, "UPLOAD_ROOT", Path(folder)), \
+                mock.patch.object(cli_uploads, "expand_image_payload", wraps=cli_uploads.expand_image_payload) as expand, \
+                mock.patch.object(core, "HANDLERS", {"xiaole_video": lambda payload: payload}), \
+                mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+                mock.patch.object(core.feature_flags, "is_enabled", return_value=True), \
+                mock.patch.object(video_minimax_h3, "available", return_value=True), \
+                mock.patch.object(
+                    core, "_idempotency_begin",
+                    side_effect=lambda _username, _endpoint, _key, body: (
+                        idempotency_bodies.append(dict(body)) or ("new", None)
+                    ),
+                ), \
+                mock.patch.object(core, "_idempotency_complete"), \
+                mock.patch.object(core, "_user_video_submit_limit", return_value=None), \
+                mock.patch.object(core, "_user_active_job_count", return_value=0), \
+                mock.patch.object(core.jobs_store, "create_paid_job", side_effect=create_job), \
+                mock.patch.object(video, "record_video_pending_asset"), \
+                mock.patch.object(core, "enqueue_job", return_value=True):
+            uploaded = cli_uploads.store_image(
+                io.BytesIO(raw), len(raw), "alice", "image/png",
+                hashlib.sha256(raw).hexdigest(),
+            )
+            status, result = self._post(
+                "/api/gen/xiaole_video", {
+                    "prompt": "让 @图片1 向镜头挥手", "channel": "minimax",
+                    "duration": 4, "ratio": "9:16", "resolution": "2k",
+                    "reference_upload_ids": [uploaded["upload_id"]],
+                }, expected=24, idempotency_key="minimax-ref-test-001",
+            )
+
+        self.assertEqual((200, 42), (status, result["job_id"]))
+        self.assertNotIn("reference_upload_ids", captured)
+        self.assertEqual(1, len(captured["reference_images"]))
+        self.assertTrue(captured["reference_images"][0].startswith("data:image/png;base64,"))
+        self.assertEqual(
+            video_minimax_h3.ORIGIN_METASO, captured["_minimax_origin"]
+        )
+        self.assertNotIn("_minimax_api_base", captured)
+        self.assertEqual(1, len(idempotency_bodies))
+        self.assertNotIn("_minimax_origin", idempotency_bodies[0])
+        self.assertNotIn("_minimax_api_base", idempotency_bodies[0])
+        self.assertEqual([uploaded["upload_id"]], idempotency_bodies[0]["reference_upload_ids"])
+        self.assertEqual([], idempotency_bodies[0]["reference_images"])
+        expand.assert_called_once()
+
+    def test_minimax_submit_rejects_foreign_and_expired_references_before_charge(self):
+        from PIL import Image
+
+        image = io.BytesIO()
+        Image.new("RGB", (256, 256), (120, 80, 40)).save(image, "PNG")
+        raw = image.getvalue()
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.object(cli_uploads, "UPLOAD_ROOT", Path(folder)), \
+                mock.patch.object(core, "HANDLERS", {"xiaole_video": lambda payload: payload}), \
+                mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+                mock.patch.object(core.feature_flags, "is_enabled", return_value=True), \
+                mock.patch.object(video_minimax_h3, "available", return_value=True):
+            foreign = cli_uploads.store_image(
+                io.BytesIO(raw), len(raw), "bob", "image/png",
+                hashlib.sha256(raw).hexdigest(), now=100,
+            )
+            own = cli_uploads.store_image(
+                io.BytesIO(raw), len(raw), "alice", "image/png",
+                hashlib.sha256(raw).hexdigest(), now=100,
+            )
+            base_payload = {
+                "prompt": "a person waves to camera", "channel": "minimax",
+                "duration": 4, "ratio": "9:16", "resolution": "2k",
+            }
+            with mock.patch.object(cli_uploads.time, "time", return_value=100):
+                foreign_status, _ = self._post(
+                    "/api/gen/xiaole_video",
+                    dict(base_payload, reference_upload_ids=[foreign["upload_id"]]),
+                    expected=24, idempotency_key="foreign-ref-test-001",
+                )
+            with mock.patch.object(cli_uploads.time, "time", return_value=100 + cli_uploads.TTL + 1):
+                expired_status, _ = self._post(
+                    "/api/gen/xiaole_video",
+                    dict(base_payload, reference_upload_ids=[own["upload_id"]]),
+                    expected=24, idempotency_key="expired-ref-test-001",
+                )
+
+        self.assertEqual((400, 400), (foreign_status, expired_status))
+        self.assertEqual([], self.points.deductions)
+
+    def test_minimax_quote_rejects_foreign_private_reference(self):
+        from PIL import Image
+
+        image = io.BytesIO()
+        Image.new("RGB", (256, 256), (120, 80, 40)).save(image, "PNG")
+        raw = image.getvalue()
+
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.object(cli_uploads, "UPLOAD_ROOT", Path(folder)), \
+                mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+                mock.patch.object(core.feature_flags, "is_enabled", return_value=True), \
+                mock.patch.object(video_minimax_h3, "available", return_value=True):
+            uploaded = cli_uploads.store_image(
+                io.BytesIO(raw), len(raw), "bob", "image/png",
+                hashlib.sha256(raw).hexdigest(),
+            )
+            status, result = self._post("/api/gen/cli/quote", {
+                "kind": "xiaole_video", "payload": {
+                    "prompt": "人物向镜头挥手", "channel": "minimax",
+                    "duration": 4, "ratio": "9:16", "resolution": "2k",
+                    "reference_upload_ids": [uploaded["upload_id"]],
+                },
+            })
+
+        self.assertEqual(400, status, result)
+        self.assertIn("不存在或已失效", result["detail"])
+
+    def test_minimax_quote_rejects_expired_private_reference(self):
+        from PIL import Image
+
+        image = io.BytesIO()
+        Image.new("RGB", (256, 256), (80, 120, 40)).save(image, "PNG")
+        raw = image.getvalue()
+        expired_at = 100 + cli_uploads.TTL + 1
+
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.object(cli_uploads, "UPLOAD_ROOT", Path(folder)), \
+                mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+                mock.patch.object(cli_uploads.time, "time", return_value=expired_at), \
+                mock.patch.object(core.feature_flags, "is_enabled", return_value=True), \
+                mock.patch.object(video_minimax_h3, "available", return_value=True):
+            uploaded = cli_uploads.store_image(
+                io.BytesIO(raw), len(raw), "alice", "image/png",
+                hashlib.sha256(raw).hexdigest(), now=100,
+            )
+            status, result = self._post("/api/gen/cli/quote", {
+                "kind": "xiaole_video", "payload": {
+                    "prompt": "人物向镜头挥手", "channel": "minimax",
+                    "duration": 4, "ratio": "9:16", "resolution": "2k",
+                    "reference_upload_ids": [uploaded["upload_id"]],
+                },
+            })
+
+        self.assertEqual(400, status, result)
+        self.assertIn("已过期", result["detail"])
 
     def test_banana_quote_checks_the_banana_flag_not_the_image_flag(self):
         checked = []

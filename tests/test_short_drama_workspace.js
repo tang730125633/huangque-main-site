@@ -1128,6 +1128,7 @@ test('PR-5 客户端提供精修预览、镜头任务、确认、报价与正式
   await client.refinement('project a');
   await client.previewRefinement({project_id:'project a',shot_key:'shot_02'});
   await client.refineShot({project_id:'project a',shot_key:'shot_02'});
+  await client.reassembleRefinementCandidates({project_id:'project a',version_id:'rv2'});
   await client.refinementJob('project a','job/2');
   await client.confirmRefinement({project_id:'project a',version_id:'rv2'});
   await client.restoreRefinement({project_id:'project a',version_id:'rv1'});
@@ -1135,8 +1136,9 @@ test('PR-5 客户端提供精修预览、镜头任务、确认、报价与正式
   await client.startDelivery({project_id:'project a',quote_token:'quote1'});
   await client.deliveryJob('project a','delivery/1');
   assert.equal(calls[0].url, '/api/gen/short-drama/refinement?project_id=project%20a');
-  assert.equal(calls[3].url, '/api/gen/short-drama/refinement/jobs/job%2F2?project_id=project%20a');
-  assert.equal(calls[8].url, '/api/gen/short-drama/delivery/jobs/delivery%2F1?project_id=project%20a');
+  assert.equal(calls[3].url, '/api/gen/short-drama/refinement/candidates/reassemble');
+  assert.equal(calls[4].url, '/api/gen/short-drama/refinement/jobs/job%2F2?project_id=project%20a');
+  assert.equal(calls[9].url, '/api/gen/short-drama/delivery/jobs/delivery%2F1?project_id=project%20a');
   for (const call of calls.filter(call => call.options.method === 'POST')) {
     assert.ok(call.options.headers['Idempotency-Key']);
   }
@@ -1155,14 +1157,374 @@ test('PR-5 精修工作区展示问题镜头、单镜重做和确认门禁', () 
     refinement_versions:[{id:'r2'},{id:'r1'}],
   });
   assert.match(output, /PR-5 · 智能精修/);
-  assert.match(output, /data-action="refine-shot"/);
+  assert.match(output, /data-action="enter-refinement-redo"/);
   assert.match(output, /data-shot-key="shot_02"/);
   assert.match(output, /1 个待处理/);
+  assert.doesNotMatch(output, /data-action="refine-shot"/);
 
   const blocked = workspace.refinementActionsHtml({
     current_refinement:{id:'r2',status:'draft',issues:[{shot_key:'shot_02'}]},
   }, true);
   assert.match(blocked, /data-action="confirm-refinement" disabled/);
+});
+
+test('problem shots expose isolated candidate selection before one final reassembly', () => {
+  const refinement = {
+    current_refinement:{
+      id:'refinement-v3',version:3,status:'draft',url:'/api/gen/file/full-preview.mp4',
+      assembly_status:{reassembly_required:false},
+      shots:[
+        {shot_key:'shot_01',sort_order:1,status:'ready',provider_version:2},
+        {
+          shot_key:'shot_02',sort_order:2,status:'degraded',provider_version:2,
+          issue:{message:'人物形象跳变',provider_version_floor:2}
+        },
+        {shot_key:'shot_03',sort_order:3,status:'ready',provider_version:1},
+      ],
+      issues:[{shot_key:'shot_02'}],
+    },
+  };
+  const autodraft = {
+    provider_poc:{
+      characters:[{character_key:'character_1',name:'小男孩',binding_ready:true}],
+      shots:[{
+        shot_key:'shot_02',sort_order:2,scene:'长椅',binding_ready:true,
+        sequence_ready:true,previous_shot_key:'shot_01',character_keys:['character_1']
+      }]
+    },
+    provider_preview:{
+      ready:true,message:'参数检查通过',shot:{shot_key:'shot_02'},
+      request:{prompt:'重新生成的小男孩镜头'}
+    },
+    provider_quote:{cost:40,shot:{shot_key:'shot_02'}},
+    provider_versions:[
+      {id:'shot-02-v2',shot_key:'shot_02',version:2,url:'/api/gen/file/shot-02-v2.mp4'},
+      {id:'shot-02-v3',shot_key:'shot_02',version:3,url:'/api/gen/file/shot-02-v3.mp4',selected:true},
+    ],
+  };
+  const preview = workspace.refinementHtml(refinement,autodraft);
+  assert.match(preview, /进入镜头重做/);
+  assert.doesNotMatch(preview, /候选镜头版本/);
+
+  const output = workspace.refinementRedoHtml(refinement,autodraft,'shot_02',true);
+  assert.match(output, /data-refinement-redo-workspace/);
+  assert.match(output, /sd-refinement-redo-layout/);
+  assert.match(output, /sd-refinement-candidate-rail/);
+  assert.match(output, /sd-refinement-redo-sticky/);
+  assert.match(output, /class="selected"/);
+  assert.match(output, /当前采用版本 v2/);
+  assert.match(output, /只处理已标记的问题镜头/);
+  assert.match(output, /data-refinement-redo-generation/);
+  assert.match(output, /data-action="edit-shot-execution" data-shot-key="shot_02"/);
+  assert.match(output, /data-action="provider-preflight" data-shot-key="shot_02"/);
+  assert.match(output, /data-action="provider-quote" data-shot-key="shot_02"/);
+  assert.match(output, /data-action="provider-start" data-shot-key="shot_02"/);
+  assert.ok(output.indexOf('修改提示词') < output.indexOf('免费检查参数'));
+  assert.ok(output.indexOf('免费检查参数') < output.indexOf('获取报价'));
+  assert.ok(output.indexOf('获取报价') < output.indexOf('确认重新生成'));
+  assert.match(output, /40 点/);
+  assert.match(output, /src="\/api\/gen\/file\/shot-02-v2\.mp4"/);
+  assert.match(output, /src="\/api\/gen\/file\/shot-02-v3\.mp4"/);
+  assert.match(output, /候选 v3<\/b><span>当前选择/);
+  assert.match(output, /data-action="refine-shot" data-shot-key="shot_02"/);
+  assert.match(output, /整片需要最后统一重新合成/);
+  assert.match(workspaceSource, /暂无可采用的候选版本/);
+  assert.match(workspaceSource, /重新生成完成后，请先选择满意版本再采用/);
+  assert.doesNotMatch(output, /shot_03/);
+  assert.match(workspaceSource, /refinement\/candidates\/adopt/);
+  assert.match(workspaceSource, /client\.adoptRefinementCandidate/);
+  assert.match(workspaceSource, /refinement\/candidates\/reassemble/);
+  assert.match(workspaceSource, /client\.reassembleRefinementCandidates/);
+  assert.match(workspaceSource, /classList\.toggle\('refinement-redo-active',refinementRedoMode\)/);
+  assert.match(workspaceStyle, /\.sd-workspace-grid\.refinement-redo-active\{grid-template-columns:minmax\(0,1fr\)!important\}/);
+  assert.match(workspaceStyle, /\.sd-workspace-grid\.refinement-redo-active>\.sd-inspector\{display:none!important\}/);
+});
+
+test('adopting a non-latest candidate binds preview and adoption to that exact version', () => {
+  const output = workspace.refinementShotCandidateHtml({
+    shot_key:'shot_02',provider_version:1,
+    issue:{provider_version_floor:1},
+  }, {
+    provider_versions:[
+      {id:'shot-02-v2',shot_key:'shot_02',version:2,url:'/v2.mp4',selected:true},
+      {id:'shot-02-v3',shot_key:'shot_02',version:3,url:'/v3.mp4'},
+    ],
+  });
+  assert.match(output, /候选 v2 已选中/);
+  assert.match(output, /data-action="refine-shot" data-shot-key="shot_02" data-version-id="shot-02-v2"/);
+
+  const first = workspace.refinementCandidateRequest('project-1','shot_02','shot-02-v2');
+  assert.deepEqual(first.preview, {
+    project_id:'project-1',shot_key:'shot_02',replacement_provider_version_id:'shot-02-v2',
+  });
+  const bound = workspace.refinementCandidateRequest('project-1','shot_02','shot-02-v2', {
+    source_version_id:'refinement-v4',replacement_provider_version_id:'shot-02-v2',
+  });
+  assert.equal(bound.adoption.replacement_provider_version_id, 'shot-02-v2');
+  assert.throws(
+    () => workspace.refinementCandidateRequest('project-1','shot_02','shot-02-v2', {
+      source_version_id:'refinement-v4',replacement_provider_version_id:'shot-02-v3',
+    }),
+    /候选版本已变化/,
+  );
+});
+
+test('refinement redo sidebar is a read-only progress summary', () => {
+  const output = workspace.refinementRedoSummaryHtml({
+    current_refinement:{
+      shots:[{shot_key:'shot_02',sort_order:2,status:'degraded',issue:{message:'人物形象跳变'}}],
+      issues:[{shot_key:'shot_02'}]
+    }
+  }, {
+    provider_versions:[{id:'shot-02-v3',shot_key:'shot_02',version:3}]
+  }, 'shot_02');
+  assert.match(output, /处理进度/);
+  assert.match(output, /当前镜头/);
+  assert.match(output, /#2 · shot_02/);
+  assert.match(output, /候选版本/);
+  assert.doesNotMatch(output, /id="sdProviderShot"/);
+  assert.doesNotMatch(output, /data-action="provider-preflight"/);
+  assert.doesNotMatch(output, /data-action="provider-quote"/);
+  assert.doesNotMatch(output, /data-action="provider-start"/);
+});
+
+test('full-film reassembly is offered only after every problem shot is accepted', () => {
+  const ready = workspace.refinementHtml({
+    current_refinement:{
+      id:'refinement-v4',version:4,status:'draft',url:'/api/gen/file/full-preview.mp4',
+      shots:[{shot_key:'shot_01',sort_order:1,status:'ready'}],issues:[],
+      assembly_status:{reassembly_required:true,staged_count:1},
+    },
+  });
+  assert.match(ready, /1 个候选镜头已采用/);
+  assert.match(ready, /data-action="reassemble-refinement"/);
+  assert.match(ready, /重新合成完整视频/);
+
+  const pending = workspace.refinementHtml({
+    current_refinement:{
+      id:'refinement-v4',version:4,status:'draft',url:'/api/gen/file/full-preview.mp4',
+      shots:[{shot_key:'shot_02',sort_order:2,status:'degraded',issue:{message:'仍需调整'}}],
+      issues:[{shot_key:'shot_02'}],
+      assembly_status:{reassembly_required:true,staged_count:1},
+    },
+  });
+  assert.match(pending, /请继续处理剩余 1 个问题镜头/);
+  assert.doesNotMatch(pending, /data-action="reassemble-refinement"/);
+});
+
+test('refinement shot timeline follows rendered order and actual durations', () => {
+  const timeline = workspace.refinementShotTimeline([
+    {shot_key:'shot_03',sort_order:3,media_validation:{duration_ms:7000}},
+    {
+      shot_key:'shot_01',sort_order:1,start_ms:1000,end_ms:5000,
+      media_validation:{duration_ms:9000}
+    },
+    {shot_key:'shot_02',sort_order:2},
+  ], {
+    source_duration_ms:17000,
+    shot_durations:[
+      {shot_key:'shot_01',duration_ms:9999},
+      {shot_key:'shot_02',duration_ms:6000},
+      {shot_key:'shot_03',duration_ms:9999},
+    ],
+  });
+  assert.equal(timeline.total_ms,25998);
+  assert.deepEqual(timeline.entries.map(item => [
+    item.shot_key,item.sort_order,item.start_ms,item.end_ms,item.duration_ms,
+  ]), [
+    ['shot_01',1,0,9999,9999],
+    ['shot_02',2,9999,15999,6000],
+    ['shot_03',3,15999,25998,9999],
+  ]);
+});
+
+test('refinement player exposes shot locator, seeking and current-shot marking', () => {
+  const output = workspace.refinementHtml({
+    current_refinement:{
+      version:4,status:'draft',url:'/api/gen/file/refinement.mp4',
+      assembly_status:{source_duration_ms:9000,shot_durations:[
+        {shot_key:'shot_01',duration_ms:4000},
+        {shot_key:'shot_02',duration_ms:5000},
+      ]},
+      shots:[
+        {shot_key:'shot_01',sort_order:1,status:'ready'},
+        {shot_key:'shot_02',sort_order:2,status:'degraded',issue:{message:'背景跳变'}},
+      ],
+      issues:[{shot_key:'shot_02'}],
+    },
+  });
+  assert.match(output, /data-refinement-player/);
+  assert.match(output, /data-refinement-shot-locator/);
+  assert.match(output, /data-total-ms="9000"/);
+  assert.match(output, /data-action="seek-refinement-shot"[^>]*data-shot-key="shot_01"[^>]*data-start-ms="0"[^>]*data-end-ms="4000"/);
+  assert.match(output, /data-shot-key="shot_02"[^>]*data-start-ms="4000"[^>]*data-end-ms="9000"/);
+  assert.match(output, /sd-refinement-locator-shot ready current/);
+  assert.match(output, /sd-refinement-locator-shot flagged/);
+  assert.match(output, /data-action="mark-current-refinement-shot" data-shot-key="shot_01"/);
+  assert.match(output, /有问题/);
+  assert.match(workspaceSource, /\['loadedmetadata','durationchange','timeupdate','seeking','seeked'\]\.forEach/);
+  assert.match(workspaceSource, /currentMs=currentMs\*timelineTotal\/videoDurationMs/);
+  assert.match(workspaceSource, /refinementTargetMs=refinementTargetMs\*refinementVideoDurationMs\/refinementTimelineTotal/);
+  assert.match(workspaceSource, /refinementVideo\.currentTime=refinementTargetMs\/1000/);
+  assert.doesNotMatch(workspaceSource, /refinementVideo\.focus\(\)/);
+  assert.match(workspaceStyle, /\.sd-refinement-locator-scroll\{overflow-x:auto/);
+  assert.match(workspaceStyle, /\.sd-refinement-locator-shot\.current/);
+  assert.match(workspaceStyle, /\.sd-refinement-locator-shot\{flex:0 0 var\(--shot-share\)\}/);
+});
+
+test('staged candidate pauses locator until the old full preview is reassembled', () => {
+  const output = workspace.refinementHtml({
+    current_refinement:{
+      version:5,status:'draft',url:'/api/gen/file/old-refinement.mp4',
+      assembly_status:{
+        available:true,reassembly_required:true,staged_count:1,
+        preview_duration_ms:9000,source_duration_ms:10000,
+        shot_durations:[
+          {shot_key:'shot_01',duration_ms:5000},
+          {shot_key:'shot_02',duration_ms:5000},
+        ],
+      },
+      shots:[
+        {shot_key:'shot_01',sort_order:1,status:'ready'},
+        {shot_key:'shot_02',sort_order:2,status:'ready'},
+      ],
+      issues:[],
+    },
+  });
+  assert.match(output, /data-refinement-player/);
+  assert.match(output, /data-refinement-shot-locator-paused/);
+  assert.match(output, /当前完整预览与逐镜素材暂不一致/);
+  assert.doesNotMatch(output, /data-action="seek-refinement-shot"/);
+  assert.doesNotMatch(output, /data-action="mark-current-refinement-shot"/);
+});
+
+test('read-only permissions are reapplied to controls replaced by a render', () => {
+  function control(action, insideSection) {
+    const attributes = {};
+    return {
+      disabled:false,
+      getAttribute(name){return name==='data-action'?action:(attributes[name]??null);},
+      hasAttribute(name){return Object.hasOwn(attributes,name);},
+      setAttribute(name,value){attributes[name]=String(value);},
+      removeAttribute(name){delete attributes[name];},
+      closest(){return insideSection?{}:null;},
+    };
+  }
+  const seek = control('seek-refinement-shot', true);
+  const history = control('toggle-history', true);
+  const mark = control('mark-current-refinement-shot', true);
+  const input = control('', true);
+  let controls = [seek, history, mark, input];
+  const root = {
+    classList:{toggle(){}},
+    querySelectorAll(){return controls;},
+  };
+
+  workspace.setWorkspaceBusyState(root, false, false);
+  assert.equal(seek.disabled, false);
+  assert.equal(history.disabled, false);
+  assert.equal(mark.disabled, true);
+  assert.equal(input.disabled, true);
+
+  const rerenderedSeek = control('seek-refinement-shot', true);
+  const rerenderedHistory = control('toggle-history', true);
+  const rerenderedMark = control('mark-current-refinement-shot', true);
+  const rerenderedInput = control('', true);
+  controls = [rerenderedSeek, rerenderedHistory, rerenderedMark, rerenderedInput];
+  workspace.setWorkspaceBusyState(root, false, false);
+  assert.equal(rerenderedSeek.disabled, false);
+  assert.equal(rerenderedHistory.disabled, false);
+  assert.equal(rerenderedMark.disabled, true);
+  assert.equal(rerenderedInput.disabled, true);
+  assert.match(
+    workspaceSource,
+    /setWorkspaceBusyState\(root,workspaceBusy,state\.permissions\.can_edit\);\s*\n\s*}/,
+  );
+});
+
+test('busy round trips preserve business-disabled controls for editable users', () => {
+  function control(action, disabled) {
+    const attributes = {};
+    return {
+      disabled:!!disabled,
+      getAttribute(name){return name==='data-action'?action:(attributes[name]??null);},
+      hasAttribute(name){return Object.hasOwn(attributes,name);},
+      setAttribute(name,value){attributes[name]=String(value);},
+      removeAttribute(name){delete attributes[name];},
+      closest(){return {};},
+    };
+  }
+  const gated = control('refine-shot', true);
+  const ready = control('toggle-history', false);
+  const root = {classList:{toggle(){}},querySelectorAll(){return [gated,ready];}};
+
+  workspace.setWorkspaceBusyState(root, false, true);
+  assert.equal(gated.disabled, true);
+  assert.equal(ready.disabled, false);
+  workspace.setWorkspaceBusyState(root, true, true);
+  assert.equal(gated.disabled, true);
+  assert.equal(ready.disabled, true);
+  workspace.setWorkspaceBusyState(root, false, true);
+  assert.equal(gated.disabled, true);
+  assert.equal(ready.disabled, false);
+  workspace.setWorkspaceBusyState(root, false, true);
+  assert.equal(gated.disabled, true);
+  assert.equal(ready.disabled, false);
+});
+
+test('restoring edit permission keeps the current rendered control state', () => {
+  const attributes = {};
+  const input = {
+    disabled:true,
+    getAttribute(name){return name==='data-action'?'':(attributes[name]??null);},
+    hasAttribute(name){return Object.hasOwn(attributes,name);},
+    setAttribute(name,value){attributes[name]=String(value);},
+    removeAttribute(name){delete attributes[name];},
+    closest(){return {};},
+  };
+  const root = {classList:{toggle(){}},querySelectorAll(){return [input];}};
+
+  workspace.setWorkspaceBusyState(root, false, false);
+  assert.equal(input.disabled, true);
+  assert.equal(input.getAttribute('data-workspace-disabled-before-readonly'), 'true');
+
+  input.disabled = false;
+  workspace.setWorkspaceBusyState(root, false, true);
+  assert.equal(input.disabled, false);
+  assert.equal(input.hasAttribute('data-workspace-disabled-before-readonly'), false);
+});
+
+test('restoring edit permission revives persistent controls unless render recomputed their gate', () => {
+  function control(disabled) {
+    const attributes = {};
+    return {
+      disabled:!!disabled,
+      getAttribute(name){return name==='data-action'?'':(attributes[name]??null);},
+      hasAttribute(name){return Object.hasOwn(attributes,name);},
+      setAttribute(name,value){attributes[name]=String(value);},
+      removeAttribute(name){delete attributes[name];},
+      closest(){return {};},
+    };
+  }
+  const persistent = control(false);
+  const recomputed = control(false);
+  const recomputedReady = control(false);
+  const root = {classList:{toggle(){}},querySelectorAll(){return [persistent,recomputed,recomputedReady];}};
+
+  workspace.setWorkspaceBusyState(root, false, false);
+  assert.equal(persistent.disabled, true);
+  assert.equal(recomputed.disabled, true);
+  assert.equal(recomputedReady.disabled, true);
+
+  workspace.setWorkspaceControlDisabled(recomputed, true);
+  workspace.setWorkspaceControlDisabled(recomputedReady, false);
+  workspace.setWorkspaceBusyState(root, true, true);
+  workspace.setWorkspaceBusyState(root, false, true);
+  assert.equal(persistent.disabled, false);
+  assert.equal(recomputed.disabled, true);
+  assert.equal(recomputedReady.disabled, false);
+  assert.equal(persistent.hasAttribute('data-workspace-disabled-before-readonly'), false);
+  assert.equal(recomputed.hasAttribute('data-workspace-disabled-recomputed'), false);
 });
 
 test('镜头问题标记使用页面内弹窗并提供明确的问题类型', () => {
@@ -1656,7 +2018,7 @@ test('refinement requires explicit full-film acceptance before locking', () => {
   assert.match(workspaceSource, /source_hashes:requirements\.source_hashes/);
   assert.match(workspaceSource, /\/api\/gen\/short-drama\/refinement\/issues/);
   assert.match(workspaceSource, /preview\.replacement_ready!==true/);
-  assert.match(workspaceSource, /replacement_provider_version_id:preview\.replacement_provider_version_id/);
+  assert.match(workspaceSource, /replacement_provider_version_id:replacementVersionId/);
 });
 
 test('incomplete or unverifiable assembly disables full-film acceptance', () => {

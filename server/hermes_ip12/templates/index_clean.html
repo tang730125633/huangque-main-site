@@ -439,8 +439,8 @@ function stateActions(){
   ];
   }
   const pending=coachState.pending;if(pending?.status==='awaiting_confirmation')return[
-    {type:'confirm_checkpoint',target_id:pending.id,label:'确认这一步',primary:true},
-    {type:'edit_checkpoint',target_id:pending.id,label:'需要修改',primary:false}
+    {type:'confirm_checkpoint',target_id:pending.id,label:'保留并继续',primary:true},
+    {type:'edit_checkpoint',target_id:pending.id,label:'修改当前内容',primary:false}
   ];
   const foundation=coachState.foundation_report||{};if(foundation.status==='awaiting_confirmation'){
     if(foundation.review_status==='dirty')return[
@@ -531,7 +531,7 @@ function beginFoundationRevision(){
 
 async function confirmFoundationReport(){
   if(!currentConvoId||streaming)return;
-  try{const foundation=coachState.foundation_report||{};const res=await fetch('/api/foundation-report/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:currentConvoId,expected_revision:coachState.revision,report_id:foundation.report_id||''})});const data=await res.json();if(!res.ok||!data.ok)throw new Error(data.error||'确认失败');coachState=data.state;renderModules();toast(`✅ IP 定位初稿已确认，继续模块 ${coachState.current_module}`);if(!(coachState.completed_modules||[]).includes(coachState.current_module))sendJumpMessage(coachState.current_module);}
+  try{const foundation=coachState.foundation_report||{};const res=await fetch('/api/foundation-report/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:currentConvoId,expected_revision:coachState.revision,report_id:foundation.report_id||''})});const data=await res.json();if(!res.ok||!data.ok)throw new Error(data.error||'确认失败');coachState=data.state;foundationEditing=false;closeFoundationReviewer();document.getElementById('userInput').placeholder='输入消息...';renderModules();toast(`✅ IP 定位初稿已确认，继续模块 ${coachState.current_module}`);if(!(coachState.completed_modules||[]).includes(coachState.current_module))sendJumpMessage(coachState.current_module);}
   catch(e){toast(`❌ ${e.message}`);}
 }
 

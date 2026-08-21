@@ -18,6 +18,7 @@ except ImportError:  # Windows does not provide POSIX fcntl.
 
     fcntl = _WindowsFcntlCompat()
 import hashlib
+import http.client
 import importlib.util
 import io
 import ipaddress
@@ -35,7 +36,7 @@ from .core import (
 
 import random   # 429 退避重试的抖动：不加抖动，同一批 worker 退避后又会撞在一起
 
-from .audio import gen_audio
+from .audio import gen_audio, get_audio_asset
 from .image_mentions import resolve_image_mentions, validate_image_mentions
 from . import (
     pricing,
@@ -45,7 +46,7 @@ from . import (
     submission_idempotency,
 )
 
-VALID_VIDEO_MODES = {"text", "audio"}
+VALID_VIDEO_MODES = {"text", "audio", "lipsync"}
 VALID_VIDEO_RATIOS = {"9:16", "16:9", "1:1", "4:5", "5:4"}
 VALID_VIDEO_RESOLUTIONS = {"720p", "1080p"}
 VALID_VIDEO_MOTIONS = {"low", "medium", "high"}
@@ -1273,6 +1274,83 @@ def _xiaole_ref_to_url(data_url):
         print("[video] 参考图转存COS失败，回退原始数据: %s" % e, flush=True)
         return s
 
+def _minimax_idempotency_body(
+    payload, resolution=None, *, validate_references=True,
+):
+    """Normalize a MiniMax body for stable claims and historical replay hashes."""
+    if not isinstance(payload, dict):
+        raise ValueError("请求体不是合法 JSON")
+    cleaned = {
+        key: value for key, value in payload.items()
+        if not str(key).startswith("_")
+    }
+    if str(cleaned.get("channel") or "").strip().lower() != "minimax":
+        return []
+    from . import video_minimax_h3
+    prompt = str(cleaned.get("prompt") or "").strip()
+    refs = cleaned.get("reference_images") or []
+    if not isinstance(refs, list):
+        raise ValueError("reference_images 必须是数组")
+    refs = [str(item or "").strip() for item in refs if str(item or "").strip()]
+    upload_refs = cleaned.get("reference_upload_ids") or []
+    if not isinstance(upload_refs, list):
+        raise ValueError("reference_upload_ids 必须是数组")
+    upload_ref_count = sum(bool(str(item or "").strip()) for item in upload_refs)
+    validate_image_mentions(prompt, len(refs) + upload_ref_count)
+    model = str(cleaned.get("model") or video_minimax_h3.MODEL).strip()
+    if model != video_minimax_h3.MODEL:
+        raise ValueError("麦克视频模型不支持：%s" % model)
+    ratio = str(cleaned.get("ratio") or "9:16").strip()
+    duration = cleaned.get("duration", 5)
+    # Historical replay candidates are hash-only and can contain legacy remote
+    # references.  Never let them authorize a new submission, but preserve the
+    # old body shape so an existing idempotency record can still be reconciled.
+    provider_refs = refs if validate_references else []
+    provider_request = video_minimax_h3.build_request(
+        prompt, provider_refs, ratio, duration,
+        str(resolution or cleaned.get("resolution") or "2k").strip(),
+        allow_legacy_resolution=True,
+    )
+    cleaned.update({
+        "channel": "minimax", "prompt": prompt, "operation": "generate",
+        "model": model, "ratio": ratio, "duration": int(duration),
+        "resolution": provider_request["resolution"].lower(),
+        "reference_images": refs,
+    })
+    return cleaned
+
+
+def minimax_idempotency_claim_body(payload):
+    """Return the stable current-contract body used for a new claim."""
+    if not isinstance(payload, dict):
+        raise ValueError("请求体不是合法 JSON")
+    if str(payload.get("channel") or "").strip().lower() != "minimax":
+        return dict(payload)
+    return _minimax_idempotency_body(payload, "2k")
+
+
+def minimax_idempotency_replay_bodies(payload):
+    """Build historical hash candidates without authorizing a new job."""
+    if not isinstance(payload, dict):
+        raise ValueError("请求体不是合法 JSON")
+    if str(payload.get("channel") or "").strip().lower() != "minimax":
+        return []
+    from . import video_minimax_h3
+    requested = str(payload.get("resolution") or "").strip()
+    resolutions = [requested] if requested else ["2k", "768p"]
+    candidates = []
+    for resolution in resolutions:
+        cleaned = _minimax_idempotency_body(
+            payload, resolution, validate_references=False,
+        )
+        candidates.append(dict(cleaned))
+        for base in video_minimax_h3.ORIGIN_API_BASES.values():
+            candidates.append(dict(cleaned, _minimax_api_base=base))
+        for origin in video_minimax_h3.ORIGIN_API_BASES:
+            candidates.append(dict(cleaned, _minimax_origin=origin))
+    return candidates
+
+
 def validate_xiaole_video_payload(payload, username=None):
     """校验共用任务入口；micro / omni 只允许各自官方适配器。"""
     if not isinstance(payload, dict):
@@ -1321,12 +1399,18 @@ def validate_xiaole_video_payload(payload, username=None):
                 raise ValueError("麦克视频模型不支持：%s" % model)
             ratio = str(cleaned.get("ratio") or "9:16").strip()
             duration = cleaned.get("duration", 5)
-            resolution = str(cleaned.get("resolution") or "768p").strip()
-            video_minimax_h3.build_request(prompt, refs, ratio, duration, resolution)
+            resolution = str(cleaned.get("resolution") or "2k").strip()
+            provider_request = video_minimax_h3.build_request(
+                prompt, refs, ratio, duration, resolution
+            )
             cleaned.update({
                 "operation": "generate", "model": model, "ratio": ratio,
-                "duration": int(duration), "resolution": "768p",
+                "duration": int(duration),
+                "resolution": provider_request["resolution"].lower(),
                 "reference_images": refs,
+                # Persist the server-selected origin before provider submission.
+                # Client-supplied internal fields were stripped above.
+                "_minimax_origin": video_minimax_h3.new_task_origin(),
             })
             return cleaned
 
@@ -1760,7 +1844,57 @@ def validate_video_payload(payload, username=None):
         raise ValueError("请求体不是合法 JSON")
     mode = str(payload.get("mode") or "text").strip().lower()
     if mode not in VALID_VIDEO_MODES:
-        raise ValueError("mode 仅支持 text/audio")
+        raise ValueError("mode 仅支持 text/audio/lipsync")
+
+    if mode == "lipsync":
+        unknown = sorted(set(payload) - {
+            "mode", "video_asset_id", "audio_asset_id", "lipsync_mode",
+            "dynamic_duration",
+        })
+        if unknown:
+            raise ValueError("口型同步不支持参数：" + unknown[0])
+        if not username:
+            raise ValueError("口型同步必须绑定当前账号")
+        try:
+            video_asset_id = int(payload.get("video_asset_id"))
+            audio_asset_id = int(payload.get("audio_asset_id"))
+        except (TypeError, ValueError):
+            raise ValueError("video_asset_id 和 audio_asset_id 必须是整数")
+        if video_asset_id <= 0 or audio_asset_id <= 0:
+            raise ValueError("video_asset_id 和 audio_asset_id 必须大于 0")
+        video_asset = get_video_asset(username, video_asset_id)
+        audio_asset = get_audio_asset(username, audio_asset_id)
+        if not video_asset or not video_asset.get("video_file"):
+            raise ValueError("原视频不存在、未完成或不属于当前账号")
+        if not audio_asset or not audio_asset.get("file"):
+            raise ValueError("口播音频不存在或不属于当前账号")
+        video_file = str(video_asset["video_file"]).strip().replace("\\", "/")
+        video_path = _resolve_out_file(video_file)
+        if (not video_path or video_path.suffix.lower() not in {".mp4", ".webm"}
+                or not _user_owns_output_file(username, video_file)):
+            raise ValueError("原视频文件不可用")
+        audio_file = _normalize_audio_file_ref(audio_asset["file"], username=username)
+        duration = _probe_video_duration(video_file)
+        if not duration or duration < 1 or duration > 300:
+            raise ValueError("口型同步原视频时长必须是 1-300 秒")
+        lipsync_mode = str(payload.get("lipsync_mode") or "speed").strip().lower()
+        if lipsync_mode not in {"speed", "precision"}:
+            raise ValueError("lipsync_mode 仅支持 speed 或 precision")
+        dynamic_duration = payload.get("dynamic_duration", False)
+        if not isinstance(dynamic_duration, bool):
+            raise ValueError("dynamic_duration 必须是布尔值")
+        return {
+            "mode": "lipsync",
+            "video_asset_id": video_asset_id,
+            "audio_asset_id": audio_asset_id,
+            "reference_video_file": video_file,
+            "audio_file": audio_file,
+            "lipsync_mode": lipsync_mode,
+            "dynamic_duration": dynamic_duration,
+            "_lipsync_duration": float(duration),
+            "ratio": video_asset.get("ratio") or "9:16",
+            "resolution": video_asset.get("resolution") or "",
+        }
 
     image_data = str(payload.get("image_data") or "").strip()
     avatar_id = str(payload.get("avatar_id") or "").strip()
@@ -2051,6 +2185,48 @@ def _persist_seedance_upscale_prediction(job_id, prediction_id):
         c.commit()
     return prediction_id
 
+
+def _persist_minimax_origin(job_id, origin):
+    """Backfill a pre-marker running job once, before its next provider GET."""
+    from . import video_minimax_h3
+    origin = str(origin or "").strip().lower()
+    video_minimax_h3.api_base_for_origin(origin)
+    if not job_id:
+        raise video_minimax_h3.MiniMaxOriginUnknown(
+            "旧麦克视频任务缺少本地任务编号，无法安全回填来源"
+        )
+    now = int(time.time())
+    with closing(jdb()) as c:
+        c.execute("BEGIN IMMEDIATE")
+        row = c.execute(
+            "SELECT payload,status FROM jobs WHERE id=?", (job_id,)
+        ).fetchone()
+        if not row or row["status"] != "running":
+            raise RuntimeError("旧麦克视频任务已不在运行状态")
+        try:
+            stored = json.loads(row["payload"] or "{}")
+        except Exception as exc:
+            raise video_minimax_h3.MiniMaxOriginUnknown(
+                "旧麦克视频任务参数损坏，无法安全回填来源"
+            ) from exc
+        if not isinstance(stored, dict):
+            raise video_minimax_h3.MiniMaxOriginUnknown(
+                "旧麦克视频任务参数无效，无法安全回填来源"
+            )
+        existing = str(stored.get("_minimax_origin") or "").strip().lower()
+        if existing and existing != origin:
+            raise RuntimeError("麦克视频任务来源回填冲突，已停止自动恢复")
+        stored["_minimax_origin"] = origin
+        stored.pop("_minimax_api_base", None)
+        changed = c.execute(
+            "UPDATE jobs SET payload=?,updated_at=? WHERE id=? AND status='running'",
+            (json.dumps(stored, ensure_ascii=False), now, job_id),
+        )
+        if changed.rowcount != 1:
+            raise RuntimeError("麦克视频任务来源未能持久化")
+        c.commit()
+    return origin
+
 def get_resumable_xai_request(job_id):
     if not job_id:
         return None
@@ -2219,7 +2395,11 @@ def recover_official_video_paid_job(job_id, error, requeue=None):
 
 
 def recovery_hold_expired(job_id, kind, age, grace):
-    getter = get_resumable_sora_request if kind == "sora_video" else get_resumable_grok_request
+    getter = (
+        get_resumable_sora_request if kind == "sora_video"
+        else get_resumable_lipsync_request if kind == "video"
+        else get_resumable_grok_request
+    )
     recovery = getter(job_id)
     return bool(
         recovery
@@ -2227,6 +2407,24 @@ def recovery_hold_expired(job_id, kind, age, grace):
         and str(recovery.get("phase") or "").endswith("_recovery_required")
         and age >= grace
     )
+
+
+def get_resumable_lipsync_request(job_id):
+    if not job_id:
+        return None
+    with closing(adb()) as connection:
+        row = connection.execute(
+            "SELECT provider_video_id,phase,status FROM video_assets WHERE job_id=?",
+            (job_id,),
+        ).fetchone()
+    if not row or not str(row["phase"] or "").startswith("heygen_lipsync_"):
+        return None
+    return {
+        "request_id": str(row["provider_video_id"] or "") or None,
+        "submission_unknown": not bool(row["provider_video_id"]),
+        "phase": str(row["phase"] or ""),
+        "status": str(row["status"] or ""),
+    }
 
 
 def get_resumable_sora_request(job_id):
@@ -2294,6 +2492,29 @@ def recover_sora_paid_job(job_id, error, requeue=None):
 def recover_paid_video_error(job_id, kind, payload, error, requeue=None,
                              force_requeue=False):
     """Classify paid video failures here so core only owns lifecycle wiring."""
+    if kind == "video" and str((payload or {}).get("mode") or "") == "lipsync":
+        recovery = get_resumable_lipsync_request(job_id)
+        if not recovery or isinstance(error, HeyGenLipsyncProviderFailed):
+            return False
+        if any(marker in str(error) for marker in (
+                "HTTP 400", "HTTP 401", "HTTP 403", "HTTP 404", "HTTP 422")):
+            return False
+        if recovery.get("submission_unknown") and "_mcp_" in recovery.get("phase", ""):
+            update_video_asset_phase(
+                job_id, "heygen_lipsync_mcp_recovery_required",
+                error=str(error)[:300],
+            )
+            return True
+        if requeue and requeue(job_id):
+            update_video_asset_phase(
+                job_id, "heygen_lipsync_retrying", error=str(error)[:300],
+            )
+        else:
+            update_video_asset_phase(
+                job_id, "heygen_lipsync_recovery_required",
+                error=str(error)[:300],
+            )
+        return True
     if kind == "sora_video":
         from . import video_openai
         if isinstance(error, (
@@ -2389,12 +2610,28 @@ def record_video_pending_asset(job_id, username, payload):
         "resolution": resolution,
         "ratio": payload.get("ratio") or "9:16",
         "motion": (payload.get("motion") or "medium") if is_talking else payload.get("motion"),
-        "reference_video_file": payload.get("person_video_file") or None,
+        "audio_file": payload.get("audio_file") or None,
+        "reference_video_file": payload.get("reference_video_file") or payload.get("person_video_file") or None,
         "background_file": payload.get("background_file") or None,
         "model": payload.get("model") or None,
         "phase": "queued",
         "status": "running",
     })
+
+def get_video_asset(username, asset_id):
+    try:
+        asset_id = int(asset_id)
+    except (TypeError, ValueError):
+        return None
+    with closing(adb()) as connection:
+        row = connection.execute(
+            "SELECT id,job_id,username,video_file,video_url,resolution,ratio,status "
+            "FROM video_assets WHERE id=? AND username=? "
+            "AND status IN ('done','completed')",
+            (asset_id, username),
+        ).fetchone()
+    return dict(row) if row else None
+
 
 def list_video_assets(username, limit=120, offset=0):
     limit = max(1, min(120, int(limit or 120)))
@@ -3572,6 +3809,10 @@ class HeyGenNetworkError(RuntimeError):
     """
 
 
+class HeyGenLipsyncProviderFailed(RuntimeError):
+    """HeyGen returned a definitive failed terminal state for one lipsync."""
+
+
 # 轮询/下载成片的网络韧性：幂等 GET，瞬时抖动退避重试。不计费、可安全重试，和提交(POST)本质不同。
 HEYGEN_NET_RETRIES = int(os.environ.get("HEYGEN_NET_RETRIES", "4") or 4)
 
@@ -3606,6 +3847,7 @@ def _heygen_retry_net(fn, what=""):
 
 
 def _read_download_limited(response, max_bytes):
+    declared_size = None
     declared = response.headers.get("Content-Length")
     if declared:
         try:
@@ -3623,6 +3865,8 @@ def _read_download_limited(response, max_bytes):
         total += len(chunk)
         if total > max_bytes:
             raise ValueError("下载文件超过大小限制")
+    if declared_size is not None and total != declared_size:
+        raise http.client.IncompleteRead(b"", declared_size - total)
     return b"".join(chunks)
 
 
@@ -3645,7 +3889,7 @@ def _heygen_read_retry(open_fn, what, max_bytes=None):
             if data:
                 return data
             last = RuntimeError("下载内容为空")
-        except OSError as e:
+        except (OSError, http.client.IncompleteRead) as e:
             last = e
             print("[heygen] %s 网络抖动，重试(%d/%d): %s"
                   % (what, i + 1, HEYGEN_NET_RETRIES, str(getattr(e, "reason", e))[:120]), flush=True)
@@ -3661,6 +3905,7 @@ def _stream_download_retry(open_fn, destination, what, max_bytes):
         completed = False
         try:
             total = 0
+            declared_size = None
             with open_fn() as response:
                 declared = response.headers.get("Content-Length")
                 if declared:
@@ -3681,11 +3926,13 @@ def _stream_download_retry(open_fn, destination, what, max_bytes):
                             raise ValueError("下载文件超过大小限制")
                     output.flush()
                     os.fsync(output.fileno())
+            if declared_size is not None and total != declared_size:
+                raise http.client.IncompleteRead(b"", declared_size - total)
             if total:
                 completed = True
                 return total
             last = RuntimeError("下载内容为空")
-        except OSError as error:
+        except (OSError, http.client.IncompleteRead) as error:
             last = error
             print("[heygen] %s 网络抖动，重试(%d/%d): %s" % (
                 what, attempt + 1, HEYGEN_NET_RETRIES,
@@ -3869,6 +4116,152 @@ def _heygen_poll_video(video_id, direct=False, deadline_s=None, mcp=False):
             raise RuntimeError("HeyGen视频生成失败: %s" % (provider_error[:160] or "上游未返回失败原因"))
         time.sleep(HEYGEN_POLL_INTERVAL)
     raise TimeoutError("HeyGen视频生成超时")
+
+
+def _heygen_poll_lipsync(lipsync_id, deadline_s=None, mcp=False):
+    deadline = time.time() + (deadline_s or VIDEO_GEN_DEADLINE)
+    while time.time() < deadline:
+        try:
+            if mcp:
+                try:
+                    data = _heygen_mcp_call(
+                        "get_lipsync", {"lipsyncId": lipsync_id}, timeout=90)
+                except RuntimeError:
+                    data = _heygen_request_json(
+                        "GET", "/lipsyncs/" + urllib.parse.quote(lipsync_id),
+                        timeout=90, direct=True,
+                    )
+            else:
+                data = _heygen_request_json(
+                    "GET", "/lipsyncs/" + urllib.parse.quote(lipsync_id),
+                    timeout=90, direct=True,
+                )
+        except HeyGenNetworkError:
+            time.sleep(HEYGEN_POLL_INTERVAL)
+            continue
+        info = (data.get("data") or data) if isinstance(data, dict) else {}
+        status = str(info.get("status") or "").lower()
+        if status == "completed":
+            if not info.get("video_url"):
+                raise RuntimeError("HeyGen口型同步完成但未返回video_url")
+            return info
+        if status == "failed":
+            detail = str(info.get("failure_message") or "上游未返回失败原因")[:220]
+            raise HeyGenLipsyncProviderFailed("HeyGen口型同步失败: " + detail)
+        time.sleep(HEYGEN_POLL_INTERVAL)
+    raise TimeoutError("HeyGen口型同步超时")
+
+
+def generate_heygen_lipsync(source_video_file, audio_file, quality="speed",
+                             dynamic_duration=False, job_id=None):
+    quality = str(quality or "speed").strip().lower()
+    if quality not in {"speed", "precision"}:
+        raise ValueError("口型同步质量仅支持 speed 或 precision")
+    if not isinstance(dynamic_duration, bool):
+        raise ValueError("dynamic_duration 必须是布尔值")
+    source_path = _resolve_out_file(source_video_file)
+    audio_path = _resolve_out_file(audio_file)
+    if not source_path or not audio_path:
+        raise ValueError("口型同步输入素材不存在")
+    request_id = str(job_id or hashlib.sha256(
+        (str(source_video_file) + "\0" + str(audio_file) + "\0" + str(quality)).encode()
+    ).hexdigest()[:32])
+    mcp = _heygen_mcp_enabled()
+    video_asset_id = audio_asset_id = None
+    if mcp:
+        detection_video_file = _mux_seedance_upscale_audio(
+            source_video_file, audio_file)
+        if detection_video_file == source_video_file:
+            raise ValueError("无声原视频暂时无法封装口播音轨")
+        payload = {
+            "video": {"type": "url", "url": public_url(
+                detection_video_file, "video/mp4", private=True)},
+            "audio": {"type": "url", "url": public_url(
+                audio_file, "audio/mpeg", private=True)},
+            "mode": quality,
+            "title": "huangque-video-lipsync-%s" % request_id,
+            "enableDynamicDuration": bool(dynamic_duration),
+            "disableMusicTrack": True,
+            "keepTheSameFormat": True,
+            "fpsMode": "passthrough",
+        }
+        update_video_asset_phase(
+            job_id, "heygen_lipsync_mcp_submitting",
+            reference_video_file=source_video_file, audio_file=audio_file,
+        )
+        try:
+            data = _heygen_retry_429(
+                lambda: _heygen_mcp_call("create_lipsync", payload, timeout=120),
+                "口型同步提交",
+            )
+        except RuntimeError as error:
+            if any(marker in str(error).lower() for marker in (
+                    "insufficient credit", "invalid", "required", "not found")):
+                raise HeyGenLipsyncProviderFailed(str(error)) from error
+            raise
+    else:
+        update_video_asset_phase(
+            job_id, "heygen_lipsync_uploading",
+            reference_video_file=source_video_file, audio_file=audio_file,
+        )
+        video_asset_id = _heygen_retry_net(
+            lambda: _heygen_upload_asset(source_path, direct=True), "口型原视频上传")
+        audio_asset_id = _heygen_retry_net(
+            lambda: _heygen_upload_asset(audio_path, direct=True), "口型音频上传")
+        payload = {
+            "video": {"type": "asset_id", "asset_id": video_asset_id},
+            "audio": {"type": "asset_id", "asset_id": audio_asset_id},
+            "mode": quality,
+            "title": "huangque-video-lipsync-%s" % request_id,
+            "enable_dynamic_duration": bool(dynamic_duration),
+            "disable_music_track": True,
+            "keep_the_same_format": True,
+            "fps_mode": "passthrough",
+        }
+        update_video_asset_phase(
+            job_id, "heygen_lipsync_submitting",
+            reference_asset_id=video_asset_id, audio_asset_id=audio_asset_id,
+        )
+        headers = {
+            "Content-Type": "application/json",
+            "Idempotency-Key": "huangque-lipsync-job-%s" % request_id,
+        }
+        data = _heygen_retry_429(
+            lambda: _heygen_request_json(
+                "POST", "/lipsyncs",
+                json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers, timeout=120, direct=True,
+            ),
+            "口型同步提交",
+        )
+    node = (data.get("data") or data) if isinstance(data, dict) else {}
+    lipsync_id = str(node.get("lipsync_id") or node.get("id") or "").strip()
+    if not lipsync_id:
+        raise RuntimeError(
+            "HeyGen口型同步未返回lipsync_id: "
+            + json.dumps(data, ensure_ascii=False)[:300]
+        )
+    update_video_asset_phase(
+        job_id, "heygen_lipsync_mcp_polling" if mcp else "heygen_lipsync_polling",
+        provider_video_id=lipsync_id,
+    )
+    info = _heygen_poll_lipsync(lipsync_id, mcp=mcp)
+    update_video_asset_phase(job_id, "heygen_lipsync_downloading")
+    output_file = _download_video_file_direct(
+        info["video_url"], "heygen_lipsync",
+    )
+    cover = _extract_first_frame_cover(output_file)
+    return {
+        "video_id": lipsync_id,
+        "video_file": output_file,
+        "video_url": _file_url(output_file),
+        "image_file": cover,
+        "image_url": _file_url(cover) if cover else None,
+        "duration": info.get("duration") or _probe_video_duration(output_file),
+        "source_video_url": info.get("video_url"),
+        "video_asset_id": video_asset_id,
+        "audio_asset_id": audio_asset_id,
+    }
 
 def _download_video_file(url, prefix="vid"):
     headers = {"User-Agent": "huangque-content/1.0"}
@@ -4375,11 +4768,41 @@ def burn_subtitle(video_file, known_text=None, style_key="white", job_id=None, p
 def gen_video(payload):
     job_id = payload.get("_job_id")
     mode = (payload.get("mode") or "text").strip()
-    if mode not in {"text", "audio"}:
+    if mode not in {"text", "audio", "lipsync"}:
         raise ValueError("生成方式不正确")
     # 口播(text/audio)走 HeyGen。
     if not HEYGEN_API_KEY:
         raise ValueError("视频生成服务未配置")
+    if mode == "lipsync":
+        reference_video_file = payload.get("reference_video_file")
+        audio_file = payload.get("audio_file")
+        result = generate_heygen_lipsync(
+            reference_video_file,
+            audio_file,
+            payload.get("lipsync_mode") or "speed",
+            payload.get("dynamic_duration", False),
+            job_id=job_id,
+        )
+        return {
+            "type": "video", "status": "done", "mode": "lipsync",
+            "image_file": result.get("image_file"),
+            "image_url": result.get("image_url"),
+            "audio_file": audio_file, "audio_url": _file_url(audio_file),
+            "reference_video_file": reference_video_file,
+            "reference_video_url": _file_url(reference_video_file),
+            "video_file": result.get("video_file"),
+            "video_url": public_url(result.get("video_file"), "video/mp4", private=True),
+            "provider_video_id": result.get("video_id"),
+            "reference_asset_id": result.get("video_asset_id"),
+            "audio_asset_id": result.get("audio_asset_id"),
+            "source_video_url": result.get("source_video_url"),
+            "duration": result.get("duration"),
+            "resolution": payload.get("resolution"),
+            "ratio": payload.get("ratio"),
+            "model": "HeyGen Lipsync " + str(payload.get("lipsync_mode") or "speed"),
+            "phase": "done",
+            "message": "原视频口型同步完成",
+        }
     avatar = None
     avatar_id = payload.get("avatar_id")
     if avatar_id:
@@ -5581,6 +6004,18 @@ def gen_xiaole_video(payload):
 
         duration = int(payload.get("duration") or 5)
         if existing:
+            try:
+                origin = video_minimax_h3.origin_from_payload(payload)
+            except video_minimax_h3.MiniMaxOriginUnknown:
+                origin = video_minimax_h3.historical_origin_from_environment()
+            if not payload.get("_minimax_origin"):
+                _persist_minimax_origin(job_id, origin)
+                payload["_minimax_origin"] = origin
+                payload.pop("_minimax_api_base", None)
+        else:
+            origin = video_minimax_h3.new_task_origin()
+        api_base = video_minimax_h3.api_base_for_origin(origin)
+        if existing:
             candidate = _bound_provider_key(
                 "minimax", existing.get("provider_key_id")
             )
@@ -5588,6 +6023,8 @@ def gen_xiaole_video(payload):
                 existing["request_id"], duration, ratio,
                 job_id=job_id, heartbeat=minimax_heartbeat,
                 api_key=candidate["secret"], provider_key_id=candidate["id"],
+                resolution=payload.get("resolution") or "2K",
+                api_base=api_base,
             )
         else:
             rendered, candidate = _create_with_provider_key(
@@ -5595,9 +6032,10 @@ def gen_xiaole_video(payload):
                 video_minimax_h3.MiniMaxCredentialRejected,
                 lambda selected: video_minimax_h3.generate(
                     prompt, ref_images, ratio=ratio, duration=duration,
-                    resolution="768P", job_id=job_id,
+                    resolution=payload.get("resolution") or "2K", job_id=job_id,
                     heartbeat=minimax_heartbeat, api_key=selected["secret"],
                     provider_key_id=selected["id"],
+                    api_base=api_base,
                 ),
             )
         source_url = rendered["source_video_url"]
@@ -5608,7 +6046,14 @@ def gen_xiaole_video(payload):
                 provider_key_id=candidate["id"], model=video_minimax_h3.MODEL,
             )
         try:
-            video_file = _download_xiaole_video(source_url, "minimax_h3")
+            video_file = _download_video_file_direct(
+                source_url,
+                prefix="minimax_h3",
+                allowed_hosts=video_minimax_h3.RESULT_HOSTS,
+                max_bytes=video_minimax_h3.RESULT_MAX_BYTES,
+            )
+        except HeyGenNetworkError as exc:
+            raise video_minimax_h3.TransientMiniMaxError(str(exc)) from exc
         except RuntimeError as exc:
             if str(exc).startswith("视频下载失败"):
                 raise video_minimax_h3.TransientMiniMaxError(str(exc)) from exc
@@ -5855,6 +6300,14 @@ def _talking_estimate_seconds(body):
 
 def video_cost(body):
     """口播预扣：每 30 秒 30 点。text 模式按文本偏保守估算，跑完按成片结算。"""
+    if str(body.get("mode") or "").lower() == "lipsync":
+        duration = float(body.get("_lipsync_duration") or 0)
+        quality = str(body.get("lipsync_mode") or "speed").lower()
+        rate = pricing.get_price(
+            "video.lipsync.precision" if quality == "precision"
+            else "video.lipsync.speed"
+        )
+        return max(rate, int(math.ceil(duration * rate)))
     secs = _talking_estimate_seconds(body)
     block_points = pricing.get_price("video.talking.block")
     body["_talking_block_points"] = block_points

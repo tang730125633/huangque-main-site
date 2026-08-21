@@ -2,18 +2,13 @@
 
 import base64
 import json
-import urllib.parse
 
 from .base import ShotVisualCapability, ShotVisualProvider, VisualProviderError
 
 
-MINIMAX_RESULT_HOSTS = {
-    "cdn.hailuoai.com",
-    "cdn.minimax.chat",
-    "file.cdn.minimax.io",
-    "filecdn.minimax.chat",
-}
-MINIMAX_RESULT_MAX_BYTES = 250 * 1024 * 1024
+MINIMAX_ORIGIN_METASO = "metaso"
+MINIMAX_ORIGIN_LEGACY = "legacy"
+MINIMAX_ORIGINS = {MINIMAX_ORIGIN_METASO, MINIMAX_ORIGIN_LEGACY}
 
 
 class MiniMaxH3ShotProvider(ShotVisualProvider):
@@ -41,12 +36,31 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
             return False
 
     @staticmethod
-    def _encode_job_id(key_id, task_id):
+    def _encode_job_id(key_id, task_id, origin=MINIMAX_ORIGIN_METASO):
+        origin = str(origin or "").strip().lower()
+        if origin not in MINIMAX_ORIGINS:
+            raise ValueError("unsupported MiniMax task origin")
         raw = json.dumps(
-            {"key_id": str(key_id or "env"), "task_id": str(task_id)},
+            {
+                "key_id": str(key_id or "env"),
+                "task_id": str(task_id),
+                "origin": origin,
+            },
             separators=(",", ":"),
         ).encode("utf-8")
         return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    @staticmethod
+    def _historical_origin():
+        from content_domains import video_minimax_h3
+
+        try:
+            return video_minimax_h3.historical_origin_from_environment()
+        except video_minimax_h3.MiniMaxOriginUnknown as error:
+            raise VisualProviderError(
+                "provider_job_origin_unknown",
+                str(error), submitted=True,
+            ) from error
 
     @staticmethod
     def _decode_job_id(provider_job_id):
@@ -56,10 +70,23 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
             payload = json.loads(raw.decode("utf-8"))
             task_id = str(payload.get("task_id") or "").strip()
             if task_id:
-                return str(payload.get("key_id") or "env"), task_id
+                origin = str(
+                    payload.get("origin") or MiniMaxH3ShotProvider._historical_origin()
+                ).strip().lower()
+                if origin not in MINIMAX_ORIGINS:
+                    raise VisualProviderError(
+                        "provider_job_origin_invalid",
+                        "MiniMax 任务来源无效，已停止自动恢复",
+                        submitted=True,
+                    )
+                return str(payload.get("key_id") or "env"), task_id, origin
+        except VisualProviderError:
+            raise
         except Exception:
             pass
-        return "env", value
+        return (
+            "env", value, MiniMaxH3ShotProvider._historical_origin()
+        )
 
     @staticmethod
     def _claim_key():
@@ -87,12 +114,20 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
         else:
             value = str((item or {}).get("url") or "").strip()
             relative = str((item or {}).get("file") or "").strip()
-        if value.startswith(("http://", "https://", "data:image/")):
-            return value
         if not relative:
-            raise VisualProviderError(
-                "visual_reference_required", "麦克视频缺少可用的人物参考图"
-            )
+            if not value:
+                raise VisualProviderError(
+                    "visual_reference_required", "麦克视频缺少可用的人物参考图"
+                )
+            try:
+                from content_domains import video_minimax_h3
+
+                return video_minimax_h3.validate_reference_input(value)
+            except ValueError as error:
+                raise VisualProviderError(
+                    "visual_reference_invalid",
+                    "麦克视频参考图必须是已上传并归属当前项目的本地图片",
+                ) from error
         from content_domains.core import _out_path
 
         try:
@@ -123,9 +158,9 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
             mime, base64.b64encode(raw).decode("ascii")
         )
         try:
-            from content_domains.video_minimax_h3 import _image_item
+            from content_domains.video_minimax_h3 import validate_reference_input
 
-            return _image_item(value)["image_url"]["url"]
+            return validate_reference_input(value)
         except ValueError as error:
             raise VisualProviderError(
                 "visual_reference_invalid",
@@ -175,7 +210,7 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
             "provider": self.name,
             "prompt": prompt,
             "ratio": ratio,
-            "resolution": "768p",
+            "resolution": "2k",
             "duration_seconds": duration,
             "requested_duration_seconds": duration,
             "model": self.default_model,
@@ -197,6 +232,7 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
             raise VisualProviderError("provider_not_configured", str(error)) from error
         prepared = dict(request or {})
         prepared["_provider_key_id"] = str(candidate["id"])
+        prepared["_minimax_origin"] = video_minimax_h3.new_task_origin()
         return prepared
 
     def create_job(self, request):
@@ -212,14 +248,16 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
         from content_domains import video_minimax_h3
 
         try:
+            task_origin = video_minimax_h3.origin_from_payload(request)
             refs = [self._reference_value(item) for item in payload["reference_images"]]
             body = video_minimax_h3.build_request(
                 payload["prompt"], refs, payload["ratio"],
-                payload["duration_seconds"], "768P",
+                payload["duration_seconds"], payload["resolution"],
             )
             created = video_minimax_h3._request_json(
                 video_minimax_h3._opener(), "POST", "/v2/video_generation",
                 body, timeout=120, api_key=candidate["secret"],
+                api_base=video_minimax_h3.api_base_for_origin(task_origin),
             )
         except video_minimax_h3.MiniMaxCredentialRejected as error:
             raise VisualProviderError("provider_not_configured", str(error)) from error
@@ -233,19 +271,51 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
                 "provider_job_id_missing", "MiniMax 已接受请求但未返回任务 ID", submitted=True
             )
         return {
-            "provider_job_id": self._encode_job_id(candidate["id"], task_id),
-            "raw": {"task_id": task_id, "provider_key_id": candidate["id"]},
+            "provider_job_id": self._encode_job_id(
+                candidate["id"], task_id, task_origin,
+            ),
+            "raw": {
+                "task_id": task_id,
+                "provider_key_id": candidate["id"],
+                "task_origin": task_origin,
+            },
         }
 
+    def bind_reconciled_job_id(self, provider_job_id, request):
+        from content_domains import video_minimax_h3
+
+        task_id = str(provider_job_id or "").strip()
+        if not task_id:
+            raise VisualProviderError(
+                "provider_job_id_invalid", "MiniMax 上游任务 ID 无效", submitted=True,
+            )
+        key_id = str((request or {}).get("_provider_key_id") or "").strip()
+        if not key_id:
+            raise VisualProviderError(
+                "provider_key_binding_missing",
+                "MiniMax 提交记录缺少已绑定的 API Key，无法安全恢复",
+                submitted=True,
+            )
+        try:
+            origin = video_minimax_h3.origin_from_payload(request)
+        except video_minimax_h3.MiniMaxOriginUnknown:
+            origin = self._historical_origin()
+        return self._encode_job_id(
+            key_id, task_id, origin,
+        )
+
     def get_job(self, provider_job_id):
-        key_id, task_id = self._decode_job_id(provider_job_id)
+        key_id, task_id, origin = self._decode_job_id(provider_job_id)
         candidate = self._bound_key(key_id)
         if not candidate or not candidate.get("secret"):
             raise VisualProviderError("provider_key_unavailable", "MiniMax 任务绑定的 API Key 不可用", submitted=True)
         from content_domains import video_minimax_h3
 
         try:
-            data = video_minimax_h3.query_task(task_id, candidate["secret"])
+            data = video_minimax_h3.query_task(
+                task_id, candidate["secret"],
+                api_base=video_minimax_h3.api_base_for_origin(origin),
+            )
         except Exception as error:
             raise VisualProviderError("provider_poll_failed", "查询 MiniMax 任务失败", submitted=True) from error
         task = (data or {}).get("task") or {}
@@ -295,14 +365,14 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
     def fetch_result(self, provider_job_id, result_url):
         if not str(result_url or "").strip():
             raise VisualProviderError("provider_result_missing", "MiniMax 尚未返回成片地址", submitted=True)
-        from content_domains import video
+        from content_domains import video, video_minimax_h3
 
         try:
             relative = video._download_video_file_direct(
                 result_url,
                 prefix="short_drama_minimax_h3",
-                allowed_hosts=MINIMAX_RESULT_HOSTS,
-                max_bytes=MINIMAX_RESULT_MAX_BYTES,
+                allowed_hosts=video_minimax_h3.RESULT_HOSTS,
+                max_bytes=video_minimax_h3.RESULT_MAX_BYTES,
             )
         except Exception as error:
             raise VisualProviderError(
