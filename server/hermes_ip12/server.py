@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Hermes IP 孵化教练 — 前 6 个模块开放，后续能力开发中。"""
-import hashlib, html, json, os, pathlib, re, shutil, subprocess, tempfile, threading, time, uuid
+import base64, binascii, hashlib, html, json, os, pathlib, re, shutil, subprocess, tempfile, threading, time, uuid
 from datetime import datetime, timedelta
 from flask import (
     Flask,
@@ -104,6 +104,11 @@ MODULES = [
 ]
 AVAILABLE_MODULE_COUNT = 6
 MAX_PROJECTS_PER_ACCOUNT = 2
+PROJECT_BACKUP_SCHEMA = "huangque.ip12.project-backup/v1"
+PROJECT_BACKUP_MAX_BYTES = 24 * 1024 * 1024
+PROJECT_BACKUP_MAX_PDF_BYTES = 8 * 1024 * 1024
+PROJECT_BACKUP_MAX_MESSAGES = 5000
+PROJECT_BACKUP_MAX_MESSAGE_CHARS = 200000
 COMING_SOON_MESSAGE = "尚未开发，敬请期待"
 COMING_SOON_API_PATHS = {"/api/module7-images", "/api/module8-video", "/api/m9-funnel", "/api/m11-sales", "/api/m12-calendar"}
 
@@ -315,6 +320,141 @@ def save_conversation(convo_id, data):
         finally:
             pathlib.Path(temp_path).unlink(missing_ok=True)
     return True
+
+
+def _json_clone(value):
+    return json.loads(json.dumps(value, ensure_ascii=False))
+
+
+def _backup_messages(messages):
+    if not isinstance(messages, list) or len(messages) > PROJECT_BACKUP_MAX_MESSAGES:
+        raise ValueError("备份中的对话数量不合法")
+    cleaned = []
+    for item in messages:
+        if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"}:
+            raise ValueError("备份中的对话格式不合法")
+        content = item.get("content")
+        if not isinstance(content, str) or len(content) > PROJECT_BACKUP_MAX_MESSAGE_CHARS or "\x00" in content:
+            raise ValueError("备份中的对话内容不合法")
+        message = {"role": item["role"], "content": content}
+        for key in ("message_id", "choice_target_id"):
+            value = item.get(key)
+            if isinstance(value, str) and 0 < len(value) <= 160:
+                message[key] = value
+        if isinstance(item.get("agent_trace"), dict):
+            message["agent_trace"] = _json_clone(item["agent_trace"])
+        cleaned.append(message)
+    return cleaned
+
+
+def _project_backup_payload(convo_id, convo):
+    state = normalize_coach_state(convo.get("coach_state"))
+    project = {
+        "title": str(convo.get("title") or "新诊断")[:120],
+        "messages": _backup_messages(convo.get("messages") or []),
+        "coach_state": _json_clone(state),
+        "reports": _json_clone(convo.get("reports") if isinstance(convo.get("reports"), dict) else {}),
+        "deliverables": _json_clone(convo.get("deliverables") if isinstance(convo.get("deliverables"), dict) else {}),
+        "artifact_notice_sent": bool(convo.get("artifact_notice_sent")),
+        "artifact_notice_module": int(convo.get("artifact_notice_module") or 0),
+    }
+    pdf_record = None
+    pdf_path = FOUNDATION_REPORTS_DIR / (convo_id + ".pdf")
+    if pdf_path.is_file():
+        if pdf_path.stat().st_size > PROJECT_BACKUP_MAX_PDF_BYTES:
+            raise RuntimeError("Project PDF 超过备份上限")
+        _validate_foundation_pdf(pdf_path)
+        pdf_record = {
+            "encoding": "base64",
+            "data": base64.b64encode(pdf_path.read_bytes()).decode("ascii"),
+        }
+    return {
+        "schema": PROJECT_BACKUP_SCHEMA,
+        "exported_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "source_project_id": convo_id,
+        "agent_release": coach_harness.AGENT_RELEASE_MANIFEST["agent_release"],
+        "state_schema": coach_harness.SCHEMA_VERSION,
+        "project": project,
+        "foundation_pdf": pdf_record,
+    }
+
+
+def _restored_project_title(value):
+    title = str(value or "恢复的诊断").strip() or "恢复的诊断"
+    suffix = "（恢复）"
+    return title[:120 - len(suffix)] + suffix
+
+
+def _parse_project_backup(raw):
+    try:
+        payload = json.loads(raw.decode("utf-8-sig"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ValueError("请选择 IP12 导出的 JSON 备份文件") from exc
+    if not isinstance(payload, dict) or payload.get("schema") != PROJECT_BACKUP_SCHEMA:
+        raise ValueError("备份版本不受支持")
+    project = payload.get("project")
+    allowed = {
+        "title", "messages", "coach_state", "reports", "deliverables",
+        "artifact_notice_sent", "artifact_notice_module",
+    }
+    if not isinstance(project, dict) or set(project) - allowed:
+        raise ValueError("备份中的 Project 格式不合法")
+    title = project.get("title")
+    if not isinstance(title, str) or not title.strip() or len(title.strip()) > 120:
+        raise ValueError("备份中的 Project 标题不合法")
+    try:
+        state = normalize_coach_state(_json_clone(project.get("coach_state")))
+    except (TypeError, ValueError, coach_harness.HarnessError) as exc:
+        raise ValueError("备份中的诊断状态不合法") from exc
+    reports = project.get("reports")
+    deliverables = project.get("deliverables")
+    if not isinstance(reports, dict) or not isinstance(deliverables, dict):
+        raise ValueError("备份中的交付物格式不合法")
+    pdf_bytes = b""
+    pdf_record = payload.get("foundation_pdf")
+    if pdf_record is not None:
+        if not isinstance(pdf_record, dict) or pdf_record.get("encoding") != "base64" or not isinstance(pdf_record.get("data"), str):
+            raise ValueError("备份中的 PDF 格式不合法")
+        try:
+            pdf_bytes = base64.b64decode(pdf_record["data"], validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise ValueError("备份中的 PDF 无法读取") from exc
+        if not pdf_bytes.startswith(b"%PDF-") or len(pdf_bytes) > PROJECT_BACKUP_MAX_PDF_BYTES:
+            raise ValueError("备份中的 PDF 不合法或过大")
+    elif isinstance(state.get("foundation_report"), dict) and state["foundation_report"].get("status") in {"awaiting_confirmation", "confirmed"}:
+        report = dict(state["foundation_report"])
+        report.update(status="failed", review_status="dirty", error="备份中不含 PDF，请重新生成")
+        report.pop("confirmed_at", None)
+        state["foundation_report"] = report
+    return {
+        "source_project_id": str(payload.get("source_project_id") or "")[:64],
+        "title": _restored_project_title(title),
+        "messages": _backup_messages(project.get("messages") or []),
+        "coach_state": state,
+        "reports": _json_clone(reports),
+        "deliverables": _json_clone(deliverables),
+        "artifact_notice_sent": bool(project.get("artifact_notice_sent")),
+        "artifact_notice_module": int(project.get("artifact_notice_module") or 0),
+        "pdf_bytes": pdf_bytes,
+    }
+
+
+def _stage_backup_pdf(pdf_bytes):
+    if not pdf_bytes:
+        return None
+    FOUNDATION_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(prefix=".ip12-import-", suffix=".pdf", dir=FOUNDATION_REPORTS_DIR)
+    path = pathlib.Path(temp_path)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(pdf_bytes)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _validate_foundation_pdf(path)
+        return path
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
 
 
 def _migration_notice_id(state):
@@ -1955,6 +2095,86 @@ def api_create_convo():
                 "updated": datetime.now().strftime("%Y-%m-%d %H:%M")}
         save_conversation(cid, data)
     return jsonify({"id": cid, "title": data["title"]})
+
+
+@app.route("/api/conversations/<cid>/export", methods=["GET"])
+def api_export_convo(cid):
+    try:
+        convo = _migrate_owned_conversation(cid)
+        if convo is None:
+            return jsonify({"ok": False, "error": "诊断不存在"}), 404
+        raw = json.dumps(
+            _project_backup_payload(cid, convo), ensure_ascii=False, separators=(",", ":")
+        ).encode("utf-8")
+    except (OSError, RuntimeError, ValueError) as exc:
+        app.logger.warning("IP12 Project export failed: %s", exc)
+        return jsonify({"ok": False, "error": "Project 备份暂时无法生成，请稍后重试"}), 409
+    if len(raw) > PROJECT_BACKUP_MAX_BYTES:
+        return jsonify({"ok": False, "error": "Project 备份超过 24 MB，暂时无法导出"}), 413
+    return Response(
+        raw,
+        content_type="application/json; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="ip12-project-{cid}.json"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@app.route("/api/conversations/import", methods=["POST"])
+def api_import_convo():
+    uploaded = request.files.get("backup")
+    if uploaded is None or not uploaded.filename:
+        return jsonify({"ok": False, "error": "请选择 Project 备份文件"}), 400
+    raw = uploaded.stream.read(PROJECT_BACKUP_MAX_BYTES + 1)
+    if len(raw) > PROJECT_BACKUP_MAX_BYTES:
+        return jsonify({"ok": False, "error": "Project 备份不能超过 24 MB"}), 413
+    try:
+        restored = _parse_project_backup(raw)
+        staged_pdf = _stage_backup_pdf(restored.pop("pdf_bytes"))
+    except (OSError, RuntimeError, ValueError) as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    owner_account_id = current_account_id()
+    cid = ""
+    try:
+        with CONVERSATION_STATE_LOCK:
+            if len(list_convos(owner_account_id)) >= MAX_PROJECTS_PER_ACCOUNT:
+                return jsonify({
+                    "ok": False,
+                    "code": "ip12_project_limit",
+                    "error": "最多允许创建两个 Project，请先导出并删除一个旧 Project",
+                }), 409
+            cid = uuid.uuid4().hex[:12]
+            DELETED_CONVERSATION_IDS.discard(cid)
+            data = {
+                "id": cid,
+                "title": restored["title"],
+                "messages": restored["messages"],
+                "coach_state": restored["coach_state"],
+                "reports": restored["reports"],
+                "deliverables": restored["deliverables"],
+                "artifact_notice_sent": restored["artifact_notice_sent"],
+                "artifact_notice_module": restored["artifact_notice_module"],
+                "owner_account_id": owner_account_id,
+                "productions": {},
+                "restored_from_project_id": restored["source_project_id"],
+            }
+            if not save_conversation(cid, data):
+                raise RuntimeError("Project 备份恢复失败")
+            if staged_pdf is not None:
+                os.replace(staged_pdf, FOUNDATION_REPORTS_DIR / (cid + ".pdf"))
+                staged_pdf = None
+    except (OSError, RuntimeError) as exc:
+        if cid:
+            conversation_path(cid).unlink(missing_ok=True)
+            (FOUNDATION_REPORTS_DIR / (cid + ".pdf")).unlink(missing_ok=True)
+        app.logger.warning("IP12 Project import failed: %s", exc)
+        return jsonify({"ok": False, "error": "Project 备份恢复失败，请稍后重试"}), 500
+    finally:
+        if staged_pdf is not None:
+            staged_pdf.unlink(missing_ok=True)
+    return jsonify({"ok": True, "id": cid, "title": restored["title"]})
+
 
 @app.route("/api/conversations/<cid>", methods=["GET"])
 def api_get_convo(cid):

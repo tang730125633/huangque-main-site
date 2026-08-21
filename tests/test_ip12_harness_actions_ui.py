@@ -184,8 +184,15 @@ class IP12HarnessActionsUITests(unittest.TestCase):
         self.assertIn("/2", manager)
         self.assertIn("最多允许创建两个 Project", source)
         self.assertIn("永久删除", source)
-        self.assertIn("o.style.display='flex'", manager)
-        self.assertLess(manager.index("o.style.display='flex'"), manager.index("await loadConvos()"))
+        self.assertIn('id="projectImportInput"', source)
+        self.assertIn("导入备份", manager)
+        self.assertIn("导出备份", manager)
+        self.assertIn("/api/conversations/import", manager)
+        self.assertIn("/export", manager)
+        self.assertIn("不含制作任务", manager)
+        toggle = manager[manager.index("async function toggleProjects"):]
+        self.assertIn("o.style.display='flex'", toggle)
+        self.assertLess(toggle.index("o.style.display='flex'"), toggle.index("await loadConvos()"))
 
 
 if __name__ == "__main__":
