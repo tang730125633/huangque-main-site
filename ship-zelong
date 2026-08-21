@@ -19,6 +19,7 @@ usage() {
   ./ship-zelong --commit <40位SHA> [--source main|dev/zelong] --file <白名单文件> [--file ...]
   ./ship-zelong --commit <实时origin/main的40位SHA> --adspower-baseline
   ./ship-zelong --commit <实时origin/main的40位SHA> --ip12-preview
+  ./ship-zelong --commit <远端预览分支的40位SHA> --ip12-preview --preview-branch codex/ip12-preview-<名称>
 
   # 2. 参数完全相同，并携带 PLAN_ID 才会真正部署
   ./ship-zelong --commit <40位SHA> [--source main|dev/zelong] --file <文件> [--file ...] --apply --plan <PLAN_ID>
@@ -158,13 +159,23 @@ validate_source_ref() {
   case "$1" in main|dev/zelong) return 0;; *) return 1;; esac
 }
 
+validate_preview_ref() {
+  [[ "$1" =~ ^codex/ip12-preview-[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
+}
+
 validate_remote_source() {
   local requested source_ref remote_commit
   requested="$(printf '%s' "$1" | tr 'A-F' 'a-f')"
   source_ref="$2"
-  validate_source_ref "$source_ref" || return 1
   remote_commit="$(git ls-remote --exit-code origin "refs/heads/$source_ref" 2>/dev/null | awk 'NR == 1 {print $1}')"
   test -n "$remote_commit" && test "$requested" = "$remote_commit"
+}
+
+validate_preview_content() {
+  local main_commit="$1" requested="$2"
+  shift 2
+  validate_unchanged_paths "$main_commit" "$requested" "$@" || return 1
+  test -z "$(git diff --diff-filter=D --name-only "$main_commit" "$requested" -- server/hermes_ip12)"
 }
 
 validate_unchanged_paths() {
@@ -473,12 +484,13 @@ REMOTE
 }
 
 main() {
-  local commit="" source_ref="main" source_set=0 apply=0 plan="" rollback="" baseline=0 ip12_preview=0 tmp identity plan_id payload
+  local commit="" source_ref="main" source_set=0 preview_branch="" apply=0 plan="" rollback="" baseline=0 ip12_preview=0 tmp identity plan_id payload main_commit
   local -a files=()
   while test $# -gt 0; do
     case "$1" in
       --commit) test $# -ge 2 || die "--commit 缺少值"; commit="$2"; shift 2;;
       --source) test $# -ge 2 || die "--source 缺少值"; source_ref="$2"; source_set=1; shift 2;;
+      --preview-branch) test $# -ge 2 || die "--preview-branch 缺少值"; preview_branch="$2"; source_ref="$2"; source_set=1; shift 2;;
       --file) test $# -ge 2 || die "--file 缺少值"; files+=("$2"); shift 2;;
       --adspower-baseline) baseline=1; shift;;
       --ip12-preview) ip12_preview=1; shift;;
@@ -510,7 +522,12 @@ main() {
   fi
 
   validate_commit "$commit" || die "--commit 必须是本机已存在的完整 40 位 commit SHA"
-  validate_source_ref "$source_ref" || die "--source 只允许 main 或 dev/zelong"
+  if test -n "$preview_branch"; then
+    validate_preview_ref "$preview_branch" || die "预览分支只允许 codex/ip12-preview-<名称>"
+    test "$ip12_preview" = 1 || die "--preview-branch 只能与 --ip12-preview 一起使用"
+  else
+    validate_source_ref "$source_ref" || die "--source 只允许 main 或 dev/zelong"
+  fi
   validate_remote_source "$commit" "$source_ref" || die "--commit 必须等于实时 origin/$source_ref；拒绝 stale ref 或未 push 的 commit"
   if test "$baseline" = 1; then
     test "$source_ref" = "main" || die "--adspower-baseline 只允许 origin/main"
@@ -519,7 +536,18 @@ main() {
     validate_adspower_baseline_content "$commit" "${files[@]}" || die "AdsPower 的 11 个文件已相对审核来源 $ADSPOWER_BASELINE_SOURCE_COMMIT 发生变化，必须重新审核"
   fi
   if test "$ip12_preview" = 1; then
-    test "$source_ref" = "main" || die "--ip12-preview 只允许 origin/main"
+    if test -n "$preview_branch"; then
+      main_commit="$(git ls-remote --exit-code origin refs/heads/main | awk 'NR == 1 {print $1}')"
+      git cat-file -e "$main_commit^{commit}" 2>/dev/null || die "本机缺少实时 origin/main，请先 fetch"
+      validate_preview_content "$main_commit" "$commit" \
+        deploy/zelong/hermes-ip12-preview.service \
+        deploy/zelong/hermes-ip12-preview-requirements.txt \
+        deploy/zelong/nginx-hermes-ip12-preview.conf \
+        deploy/zelong/run-hermes-ip12-preview.sh \
+        || die "预览分支不得修改部署脚手架或删除 Agent 文件"
+    else
+      test "$source_ref" = "main" || die "--ip12-preview 只允许 origin/main 或受限预览分支"
+    fi
     test "$baseline" = 0 || die "--ip12-preview 禁止与 --adspower-baseline 混用"
     test "${#files[@]}" = 0 || die "--ip12-preview 禁止与 --file 混用"
     load_ip12_preview "$commit"
