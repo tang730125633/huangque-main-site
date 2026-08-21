@@ -2081,6 +2081,34 @@ with patch.object(server, "MODEL", "deepseek-v4-flash"), patch.object(server.req
     assert deepseek_payload["messages"][-2] == {"role": "assistant", "content": '{"decision":'}
     assert "上一次输出不是完整 JSON" in deepseek_payload["messages"][-1]["content"]
 
+with patch.object(server, "MODEL", "gemini-3.5-flash"), patch.object(server.requests, "post") as request_model:
+    wrong_shape = Mock(status_code=200)
+    wrong_shape.json.return_value = {"choices": [{"message": {"content": '{"question":"请介绍自己"}'}}]}
+    valid_json = Mock(status_code=200)
+    valid_json.json.return_value = {"choices": [{"message": {"content": '{"decision":"answer_only"}'}}]}
+    request_model.side_effect = [wrong_shape, valid_json]
+    response = server.call_ai(
+        [{"role": "system", "content": "只输出 JSON"}],
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {"decision": {"type": "string"}},
+                    "required": ["decision"],
+                }
+            },
+        },
+    )
+    assert response is valid_json
+    assert request_model.call_count == 2
+    gemini_payload = request_model.call_args.kwargs["json"]
+    assert gemini_payload["response_format"]["type"] == "json_schema"
+    assert '"required":["decision"]' in gemini_payload["messages"][0]["content"]
+    assert gemini_payload["messages"][-2] == {"role": "assistant", "content": '{"question":"请介绍自己"}'}
+    assert "不符合 JSON Schema" in gemini_payload["messages"][-1]["content"]
+
 with patch.object(server, "MODEL", "gpt-5.6-luna"), patch.object(server.requests, "post") as request_model:
     completed = Mock(status_code=200)
     request_model.return_value = completed
