@@ -3195,9 +3195,7 @@ def _coach_model_decision(
         state["current_module"], state["module_step"] + 1
     ):
         decision["choices"] = []
-    evidence = "\n".join(
-        item["content"] for item in history if item["role"] == "user"
-    ) + "\n" + clean_message
+    evidence = _conversation_user_evidence(convo, clean_message)
     for bucket_name in ("facts", "preferences"):
         bucket = (state.get("ip_profile") or {}).get(bucket_name) or {}
         evidence += "\n" + "\n".join(
@@ -3493,6 +3491,19 @@ def _model_snapshot_without_user(convo, message_id):
             if item.get("message_id") != message_id
         ]
     return snapshot
+
+
+def _conversation_user_evidence(convo, current_message=""):
+    """Validate long sessions against user text, independent of model context trimming."""
+    messages = [
+        _redact_mobile_numbers(str(item.get("content") or ""))[:4000]
+        for item in (convo.get("messages") or [])
+        if item.get("role") == "user" and str(item.get("content") or "").strip()
+    ][-128:]
+    current = _redact_mobile_numbers(str(current_message or ""))[:4000]
+    if current:
+        messages.append(current)
+    return "\n".join(messages)
 
 
 def _process_model_turn(
