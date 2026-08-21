@@ -1289,6 +1289,33 @@ except RuntimeError as exc:
 finally:
     server.call_ai = original_call_ai
 
+drifted_choice = {
+    "decision": "answer_only", "checkpoint": 0,
+    "reply": "请选择最适合你的方向。", "draft": "模型错误附带的 Markdown 草稿",
+    "self_review": "候选基于已确认资料。",
+    "profile_updates": [{"field": "should_be_ignored", "value": "错误更新", "kind": "ai_option", "evidence_quote": ""}],
+    "choices": [
+        {"title": "实践拆解型", "summary": "把真实问题拆成步骤", "reason": "行动明确", "caution": "避免工具堆砌", "recommended": True},
+        {"title": "企业陪跑型", "summary": "陪小企业完成落地", "reason": "对象清晰", "caution": "避免结果承诺", "recommended": False},
+        {"title": "成长记录型", "summary": "记录长期实践变化", "reason": "连接真实", "caution": "注意隐私", "recommended": False},
+    ],
+    "confidence": 0.9,
+}
+class DriftedChoiceResponse:
+    def json(self):
+        return {"choices": [{"message": {"content": server.json.dumps(drifted_choice, ensure_ascii=False)}}]}
+server.call_ai = lambda *args, **kwargs: DriftedChoiceResponse()
+normalized_choice, normalized_evidence = server._coach_model_decision(server.load_conversation(cid), "继续")
+assert normalized_choice["decision"] == "propose_checkpoint"
+assert normalized_choice["checkpoint"] == 2
+assert normalized_choice["draft"] == "" and normalized_choice["profile_updates"] == []
+normalized_state, normalized_decision, _ = server.coach_harness.apply_model_decision(
+    loaded["coach_state"], normalized_choice, normalized_evidence, pending_id="normalized-choice-target",
+)
+assert len(normalized_decision["choices"]) == 3
+assert normalized_state["pending"]["id"] == "normalized-choice-target"
+server.call_ai = original_call_ai
+
 model_calls = []
 def model_decision(snapshot, _message, repair_error="", timeout_seconds=180):
     state = server.normalize_coach_state(snapshot["coach_state"])
