@@ -971,10 +971,70 @@ class PixelleVideoTests(unittest.TestCase):
             ["第一段讲清问题。", "第二段给出方案。", "第三段总结价值。"],
         )
 
-    def test_fixed_copy_uses_upstream_paragraph_count_not_character_estimate(self):
+    def test_fixed_copy_semantically_splits_long_paragraph_near_six_seconds(self):
         long_paragraph = "这是一段很长但没有空行的完整文案。" * 20
         prepared = self.pixelle.prepare_payload({"text": long_paragraph, "mode": "fixed"})
-        self.assertEqual(prepared["n_scenes"], 1)
+        lines = [scene["line"] for scene in prepared["scenes"]]
+
+        self.assertGreater(len(lines), 1)
+        self.assertEqual(long_paragraph, "".join(lines))
+        self.assertTrue(all(
+            self.pixelle._estimated_scene_duration(line, 1.0) <= 9.0
+            for line in lines
+        ))
+
+    def test_fifty_four_second_copy_becomes_nine_scenes_and_three_recommendations(self):
+        text = "中" * 216
+        prepared = self.pixelle.prepare_payload({
+            "text": text,
+            "mode": "fixed",
+            "speech_rate": 1.0,
+        })
+        self.assertEqual(9, prepared["n_scenes"])
+        self.assertEqual(text, "".join(scene["line"] for scene in prepared["scenes"]))
+        self.assertEqual(
+            [6.0] * 9,
+            [self.pixelle._estimated_scene_duration(scene["line"], 1.0)
+             for scene in prepared["scenes"]],
+        )
+
+        with mock.patch.object(
+            self.pixelle.pixelle_talking_assets,
+            "create_plan",
+            side_effect=lambda _owner, _source, scenes: {
+                "plan_id": "talking_plan_" + "a" * 32,
+                "source_hash": "b" * 64,
+                "scenes": scenes,
+            },
+        ), mock.patch.object(
+            self.pixelle,
+            "public_voices",
+            return_value=[{
+                "id": "public:" + self.pixelle.DEFAULT_PUBLIC_VOICE,
+                "scope": "public",
+            }],
+        ):
+            plan = self.pixelle.plan_talking_scenes({
+                "text": text,
+                "mode": "fixed",
+                "ratio": 0.3,
+            }, "alice")
+        self.assertEqual(9, len(plan["scenes"]))
+        self.assertEqual(3, sum(
+            scene["talking_recommended"] for scene in plan["scenes"]
+        ))
+
+    def test_fixed_copy_segmentation_tracks_speech_rate_without_rewriting(self):
+        text = "人工智能正在改变工作方式，我们需要理解工具边界。" * 8
+        slow = self.pixelle.prepare_payload({
+            "text": text, "mode": "fixed", "speech_rate": 0.8,
+        })
+        fast = self.pixelle.prepare_payload({
+            "text": text, "mode": "fixed", "speech_rate": 1.6,
+        })
+        self.assertGreater(slow["n_scenes"], fast["n_scenes"])
+        self.assertEqual(text, "".join(item["line"] for item in slow["scenes"]))
+        self.assertEqual(text, "".join(item["line"] for item in fast["scenes"]))
 
     def test_fixed_copy_rejects_more_than_twenty_upstream_paragraphs(self):
         text = "\n\n".join("第%d段" % index for index in range(21))

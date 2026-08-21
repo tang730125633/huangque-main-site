@@ -66,6 +66,9 @@ DEFAULT_TALKING_RATIO = 0.3
 MIN_TALKING_RATIO = 0.1
 MAX_TALKING_RATIO = 0.5
 _BASE_NARRATION_CHARS_PER_SECOND = 4.0
+_TARGET_SCENE_SECONDS = 6.0
+_MIN_SCENE_SECONDS = 3.0
+_MAX_SCENE_SECONDS = 9.0
 _PLAN_RATE_WINDOW_SECONDS = 60.0
 _PLAN_RATE_MAX_REQUESTS = 6
 _PLAN_RATE_REQUESTS = {}
@@ -329,9 +332,105 @@ def public_voices(username):
     return items
 
 
-def _fixed_segments(text):
+def _narration_units(text):
+    return len(re.findall(r"[\u3400-\u9fffA-Za-z0-9]", str(text or "")))
+
+
+def _split_after_boundaries(text, boundaries):
+    parts = []
+    start = 0
+    for index, char in enumerate(text):
+        if char in boundaries:
+            parts.append(text[start:index + 1])
+            start = index + 1
+    if start < len(text):
+        parts.append(text[start:])
+    return [part for part in parts if part]
+
+
+def _hard_split_scene(text, target_units):
+    parts = []
+    current = []
+    units = 0
+    for char in text:
+        char_units = 1 if re.match(r"[\u3400-\u9fffA-Za-z0-9]", char) else 0
+        if current and char_units and units >= target_units:
+            parts.append("".join(current))
+            current = []
+            units = 0
+        current.append(char)
+        units += char_units
+    if current:
+        parts.append("".join(current))
+    return parts
+
+
+def _paragraph_scene_fragments(text, target_units, max_units):
+    sentence_boundaries = frozenset("。！？!?；;：:\n")
+    clause_boundaries = frozenset("，,、")
+    fragments = []
+    for sentence in _split_after_boundaries(text, sentence_boundaries):
+        if _narration_units(sentence) <= max_units:
+            fragments.append(sentence)
+            continue
+        for clause in _split_after_boundaries(sentence, clause_boundaries):
+            if _narration_units(clause) <= max_units:
+                fragments.append(clause)
+            else:
+                fragments.extend(_hard_split_scene(clause, target_units))
+    return fragments
+
+
+def _pack_scene_fragments(fragments, target_units, min_units, max_units):
+    packed = []
+    current = ""
+    for fragment in fragments:
+        if not current:
+            current = fragment
+            continue
+        current_units = _narration_units(current)
+        combined = current + fragment
+        combined_units = _narration_units(combined)
+        if combined_units > max_units or (
+            current_units >= min_units
+            and abs(current_units - target_units) <= abs(combined_units - target_units)
+        ):
+            packed.append(current)
+            current = fragment
+        else:
+            current = combined
+    if current:
+        if (packed and _narration_units(current) < min_units
+                and _narration_units(packed[-1] + current) <= max_units):
+            packed[-1] += current
+        else:
+            packed.append(current)
+    return packed
+
+
+def _fixed_segments(text, speech_rate=1.0):
     normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
-    return [part.strip() for part in re.split(r"\n\s*\n", normalized) if part.strip()]
+    target_units = max(1, round(
+        _BASE_NARRATION_CHARS_PER_SECOND * speech_rate * _TARGET_SCENE_SECONDS
+    ))
+    min_units = max(1, round(
+        _BASE_NARRATION_CHARS_PER_SECOND * speech_rate * _MIN_SCENE_SECONDS
+    ))
+    max_units = max(target_units, round(
+        _BASE_NARRATION_CHARS_PER_SECOND * speech_rate * _MAX_SCENE_SECONDS
+    ))
+    segments = []
+    for paragraph in re.split(r"\n\s*\n", normalized):
+        paragraph = paragraph.strip()
+        if not paragraph:
+            continue
+        fragments = _paragraph_scene_fragments(
+            paragraph, target_units, max_units
+        )
+        segments.extend(_pack_scene_fragments(
+            fragments, target_units, min_units, max_units
+        ))
+    return segments
 
 
 def _style_key(payload):
@@ -380,8 +479,9 @@ def prepare_payload(payload, username=""):
     mode = str(body.get("mode") or "generate").strip()
     if mode not in {"generate", "fixed"}:
         raise ValueError("请选择主题创作或完整文案")
+    speech_rate = _speech_rate(body)
     if mode == "fixed":
-        segments = _fixed_segments(raw_text)
+        segments = _fixed_segments(raw_text, speech_rate)
         text = "\n\n".join(segments)
     else:
         text = re.sub(r"\s+", " ", raw_text).strip()
@@ -405,7 +505,7 @@ def prepare_payload(payload, username=""):
         "mode": mode,
         "template": template,
         "style": style,
-        "speech_rate": _speech_rate(body),
+        "speech_rate": speech_rate,
         "n_scenes": scene_count,
         "scenes": [{"line": line} for line in segments],
     }
@@ -604,7 +704,7 @@ def _recommended_scene_ids(scenes, ratio):
 
 
 def _estimated_scene_duration(text, speech_rate):
-    units = len(re.findall(r"[\u3400-\u9fffA-Za-z0-9]", str(text or "")))
+    units = _narration_units(text)
     seconds = max(0.5, units / (_BASE_NARRATION_CHARS_PER_SECOND * speech_rate))
     return float(Decimal(str(seconds)).quantize(
         Decimal("0.1"), rounding=ROUND_HALF_UP))
@@ -615,7 +715,7 @@ def plan_talking_scenes(payload, username):
     ratio = _talking_ratio(payload)
     prepared = prepare_payload(payload, username)
     if prepared["mode"] == "fixed":
-        lines = _fixed_segments(prepared["text"])
+        lines = _fixed_segments(prepared["text"], prepared["speech_rate"])
     else:
         lines = _personal_narrations(prepared)
     if not lines:
