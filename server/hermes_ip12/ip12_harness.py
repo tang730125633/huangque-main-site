@@ -1295,7 +1295,7 @@ def validate_model_decision(
                     decision == "propose_checkpoint"
                     and (
                         state.get("pending")
-                        or state["intake"]["status"] in {"awaiting_confirmation", "editing"}
+                        or state["intake"]["status"] in {"collecting", "awaiting_confirmation", "editing"}
                     )
                 )
             ):

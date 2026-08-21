@@ -4270,6 +4270,14 @@ def process_chat_request(body):
                             _expanded_production_intent(user_message)
                             or coach_harness.production_intent(user_message)
                         )
+                    if (
+                        production_intent is not None
+                        and production_intent.get("recommended_action") not in _SOURCE_FREE_ACTIONS
+                        and not production_intent.get("help_only")
+                        and _intake_pending(state)
+                        and content_target is None
+                    ):
+                        production_intent = None
                     if production_intent is None and content_target is None:
                         content_target = _content_revision_target_from_message(convo, user_message)
                     source_optional = production_intent and production_intent.get("recommended_action") in _SOURCE_FREE_ACTIONS
