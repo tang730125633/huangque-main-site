@@ -47,12 +47,6 @@ jobs:
       - name: 安装 content 服务 Python 依赖
         run: python -m pip install -r deploy/requirements-content.txt
 
-      - name: 安装 IP12 浏览器回归依赖
-        timeout-minutes: 10
-        run: |
-          python -m pip install "Flask>=3.1,<4" "requests>=2.32,<3" "pypdf>=6,<7"
-          python -m playwright install --with-deps chromium
-
       - name: 检查敏感文件与静态资源
         run: python scripts/ci_validate.py
 

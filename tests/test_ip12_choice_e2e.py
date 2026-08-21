@@ -14,6 +14,7 @@ class IP12ChoiceE2ETests(unittest.TestCase):
     def test_real_page_choice_keyboard_refresh_security_and_viewports(self):
         script = r'''
 import threading
+import shutil
 from pathlib import Path
 
 import requests
@@ -113,8 +114,13 @@ try:
     assert health["release_sha"] == "e2e-release-sha"
     with sync_playwright() as playwright:
         executable = Path(playwright.chromium.executable_path)
-        assert executable.exists(), "Playwright Chromium missing; run: python -m playwright install chromium"
-        browser = playwright.chromium.launch(headless=True)
+        browser_executable = str(executable) if executable.exists() else next((
+            shutil.which(name) for name in (
+                "google-chrome", "google-chrome-stable", "chromium", "chromium-browser"
+            ) if shutil.which(name)
+        ), None)
+        assert browser_executable, "Chromium missing; run: python -m playwright install chromium"
+        browser = playwright.chromium.launch(headless=True, executable_path=browser_executable)
         context = browser.new_context(
             viewport={"width": 390, "height": 844}, reduced_motion="reduce",
             extra_http_headers={"Authorization": "Bearer test-token"},
