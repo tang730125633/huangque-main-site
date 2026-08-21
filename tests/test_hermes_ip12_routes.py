@@ -1693,6 +1693,14 @@ assert "模块4最终已确认：长期故事主线" in foundation_payload
 assert "13800138000" not in foundation_payload
 assert "三套人设方案" not in foundation_payload and "三套价值主张方案" not in foundation_payload
 assert "拆解真实问题" not in foundation_payload and "记录长期成长" not in foundation_payload
+grounded_report = server._ground_foundation_story_section(
+    "## 模块一｜定位诊断\n安全内容\n\n## 模块四｜故事资产挖掘\n朋友面对堆积如山的行李，我砸掉铁饭碗。\n\n## 优化建议汇总\n建议内容",
+    {"4-4": {"content": "事实原话：我帮朋友搬家整理时发现自己挺擅长。"}},
+)
+assert "堆积如山" not in grounded_report and "砸掉铁饭碗" not in grounded_report
+assert "事实原话：我帮朋友搬家整理时发现自己挺擅长。" in grounded_report
+assert grounded_report.count("## 模块四｜故事资产挖掘") == 1
+assert "## 优化建议汇总\n建议内容" in grounded_report
 server.call_ai = capture_coach
 
 editing_state = server.coach_harness.initial_state()

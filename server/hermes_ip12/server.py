@@ -1703,7 +1703,7 @@ def generate_foundation_report(convo_id):
     content = call_ai(messages, stream=False, temperature=0.4, max_tokens=16000).json()["choices"][0]["message"]["content"]
     if not isinstance(content, str) or not content.strip():
         raise RuntimeError("AI report is empty")
-    content = content.strip()
+    content = _ground_foundation_story_section(content.strip(), foundation_outputs)
     FOUNDATION_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     playwright_browser = ""
     try:
@@ -1757,6 +1757,22 @@ def generate_foundation_report(convo_id):
         state["revision"] += 1
         save_conversation(convo_id, convo)
     return record
+
+
+def _ground_foundation_story_section(content, foundation_outputs):
+    """Reuse the confirmed story asset instead of letting the report rewrite history."""
+    confirmed = str(((foundation_outputs or {}).get("4-4") or {}).get("content") or "").strip()
+    if not confirmed:
+        return content
+    section = "## 模块四｜故事资产挖掘\n\n### 已确认故事资产\n\n" + confirmed
+    start = re.search(r"(?m)^##\s*模块四[｜|]\s*故事资产挖掘\s*$", content)
+    if not start:
+        return content.rstrip() + "\n\n" + section
+    end = re.search(r"(?m)^##\s*优化建议汇总\s*$", content[start.end():])
+    if not end:
+        return content[:start.start()].rstrip() + "\n\n" + section
+    end_at = start.end() + end.start()
+    return content[:start.start()].rstrip() + "\n\n" + section + "\n\n" + content[end_at:].lstrip()
 
 def call_ai(messages, stream=False, temperature=0.7, max_tokens=None, response_format=None,
             timeout_seconds=AI_DEFAULT_TIMEOUT_SECONDS, reasoning_effort=None):
