@@ -78,7 +78,7 @@ class HqCliTests(unittest.TestCase):
             "account", "channels", "ip12-projects", "ip12-project", "ip12-create", "ip12-report", "ip12-message",
             "prompt-optimize", "canvas-list", "canvas-get", "canvas-create", "canvas-agent-plan", "canvas-ops", "tasks", "task",
             "assets", "voices", "image-upload", "video-upload", "asset-favorite", "asset-tags",
-            "image-generate", "video-generate", "audio-generate",
+            "image-generate", "video-generate", "video-lipsync", "audio-generate",
             "digital-ip-text-generate", "digital-ip-audio-generate", "digital-ip-batch-generate",
             "cinematic-open-generate", "cinematic-motion-generate",
             "tryon-fast-generate", "tryon-classic-generate",
@@ -120,6 +120,14 @@ class HqCliTests(unittest.TestCase):
         self.assertIn("sora-2-pro", by_id["video-generate"]["input_schema"]["properties"]["model"]["enum"])
         self.assertEqual([4, 8, 12], by_id["video-generate"]["input_schema"]["properties"]["seconds"]["enum"])
         self.assertEqual("server_quote", by_id["digital-ip-text-generate"]["cost"]["kind"])
+        self.assertEqual(
+            ["video_asset_id", "audio_asset_id"],
+            by_id["video-lipsync"]["input_schema"]["required"],
+        )
+        self.assertEqual(
+            ["speed", "precision"],
+            by_id["video-lipsync"]["input_schema"]["properties"]["quality"]["enum"],
+        )
         self.assertEqual(
             ["avatar_id", "audio_file"],
             by_id["digital-ip-audio-generate"]["input_schema"]["required"],

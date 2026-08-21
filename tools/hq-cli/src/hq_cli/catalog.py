@@ -585,6 +585,18 @@ TALKING_VIDEO_FIELDS = {
     "subtitle_style": {"type": "string", "enum": ["white", "variety", "bar"]},
     "subtitle_position": {"type": "string", "enum": ["top", "upper", "center", "lower", "bottom"]},
 }
+VIDEO_LIPSYNC_FIELDS = {
+    "video_asset_id": {
+        "type": "integer", "minimum": 1, "maximum": 9223372036854775807,
+        "description": "当前账号已完成的原视频资产 ID",
+    },
+    "audio_asset_id": {
+        "type": "integer", "minimum": 1, "maximum": 9223372036854775807,
+        "description": "当前账号已有的口播音频资产 ID",
+    },
+    "quality": {"type": "string", "enum": ["speed", "precision"]},
+    "dynamic_duration": {"type": "boolean"},
+}
 DIGITAL_IP_TEXT_FIELDS = {
     "avatar_id": AVATAR_ID,
     "text": {"type": "string", "minLength": 1, "maxLength": 1000},
@@ -651,6 +663,8 @@ TRYON_CLASSIC_FIELDS = {
 for identifier, name, fields, required in (
     ("image-generate", "图片生成", IMAGE_FIELDS, ["prompt"]),
     ("video-generate", "视频生成", VIDEO_FIELDS, ["prompt"]),
+    ("video-lipsync", "原视频口型同步", VIDEO_LIPSYNC_FIELDS,
+     ["video_asset_id", "audio_asset_id"]),
     ("audio-generate", "音频生成", AUDIO_FIELDS, ["text"]),
     ("digital-ip-text-generate", "数字IP单条文案生成", DIGITAL_IP_TEXT_FIELDS,
      ["avatar_id", "text", "voice"]),
@@ -729,6 +743,12 @@ CAPABILITIES["video-generate"]["constraints"] = [
     "channel=sora does not accept duration or generate_audio; seconds is only for sora",
     "@图片N references the Nth item in reference_upload_ids",
 ]
+CAPABILITIES["video-lipsync"]["constraints"] = [
+    "video_asset_id and audio_asset_id must be completed assets owned by the current account",
+    "quality defaults to speed; precision costs twice as many points",
+    "dynamic_duration defaults to false to preserve the source performance timing",
+    "the source video must be 1-300 seconds",
+]
 CAPABILITIES["digital-ip-text-generate"]["constraints"] = [
     "avatar_id must identify a ready avatar owned by the current account",
     "this capability submits exactly one avatar and one script; batch input is not accepted",
@@ -775,6 +795,7 @@ for identifier, website_modes in {
     "image-generate": ["banana", "openai", "seedream", "xiaole"],
     "video": ["one_click", "digital_ip", "cinematic", "tryon", "grok", "sora", "minimax", "omni", "seedance"],
     "video-generate": ["grok", "sora", "minimax", "omni", "seedance"],
+    "video-lipsync": ["digital_ip"],
     "digital-ip-text-generate": ["digital_ip"],
     "digital-ip-audio-generate": ["digital_ip"],
     "digital-ip-batch-generate": ["digital_ip"],
