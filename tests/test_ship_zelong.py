@@ -326,7 +326,7 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
         self.assertIn("预览分支不得修改部署脚手架或删除 Agent 文件", SRC)
         preview_runner = (ROOT / "deploy/zelong/run-hermes-ip12-preview.sh").read_text()
         self.assertIn("HERMES_ENABLE_INTERNAL_TOOLS=0", preview_runner)
-        self.assertIn('HERMES_PREVIEW_MODEL:-gpt-5.4', preview_runner)
+        self.assertIn('HERMES_PREVIEW_MODEL:-gemini-3.5-flash', preview_runner)
         self.assertIn("models_url", preview_runner)
         self.assertIn("configured Hermes preview model is unavailable", preview_runner)
         self.assertIn("--target /home/ubuntu/hermes-preview-deps", SRC)
