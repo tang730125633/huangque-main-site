@@ -39,6 +39,8 @@ def decision(state, *, kind="propose_checkpoint", reply="这是当前结果", dr
             "kind": "ai_option",
             "evidence_quote": "用户原话",
         } for index, title in enumerate(titles, 1)]
+    if kind == "propose_checkpoint" and state["current_module"] == 4 and draft == "可确认草稿":
+        draft = "### 真实故事节点\n事实原话：用户原话"
     return {
         "decision": kind,
         "checkpoint": state["module_step"] + 1 if kind == "propose_checkpoint" else 0,
@@ -474,17 +476,20 @@ class IP12HarnessTests(unittest.TestCase):
             "我希望服务工作很忙、家里东西多、又不想因为家里乱被指责的女性。"
         )
         bad_drafts = (
-            "因为帮朋友搬家整理，你展现出了过人的天赋。",
-            "在服务客户的过程中，你遇到很多自我怀疑、害怕被迫丢弃物品的女性。",
-            "帮朋友整理让你体验到了强烈的成就感。",
+            "故事内容：因为帮朋友搬家整理，你展现出了过人的天赋。",
+            "故事内容：在服务客户的过程中，你遇到很多自我怀疑、害怕被迫丢弃物品的女性。",
+            "事实原话：帮朋友整理让你体验到了强烈的成就感。",
         )
         for draft in bad_drafts:
             with self.subTest(draft=draft), self.assertRaisesRegex(harness.HarnessError, "模块 4"):
                 harness.apply_model_decision(state, decision(state, draft=draft), evidence)
 
         grounded = (
-            "节点 1：帮朋友搬家整理时，你发现自己挺擅长整理。\n"
-            "节点 2：未来希望服务工作很忙、家里东西多，又不想因为家里乱被指责的女性。"
+            "### 节点 1：转行契机（包装建议）\n"
+            "事实原话：我帮朋友搬家整理时发现自己挺擅长。\n"
+            "传播场景：未来可用于介绍转行起点。\n\n"
+            "### 节点 2：服务方向（包装建议）\n"
+            "未来方向原话：我希望服务工作很忙、家里东西多、又不想因为家里乱被指责的女性。"
         )
         next_state, _, _ = harness.apply_model_decision(
             state, decision(state, draft=grounded), evidence, pending_id="grounded-story"
@@ -492,6 +497,7 @@ class IP12HarnessTests(unittest.TestCase):
         self.assertEqual(next_state["pending"]["draft"], grounded)
         prompt = harness.system_prompt(state)
         self.assertIn("未来想服务的人群", prompt)
+        self.assertIn("事实原话", prompt)
         self.assertIn("不能为了凑数量编故事", prompt)
 
     def test_module_five_topics_require_direct_user_evidence(self):
@@ -1020,7 +1026,13 @@ class IP12HarnessTests(unittest.TestCase):
 
                 state, _, _ = harness.apply_model_decision(
                     state,
-                    decision(state, draft="第一版草稿"),
+                    decision(
+                        state,
+                        draft=(
+                            "### 第一版故事\n事实原话：用户补齐了信息"
+                            if module == 4 else "第一版草稿"
+                        ),
+                    ),
                     "用户补齐了信息",
                     pending_id=f"m{module}-draft",
                 )
@@ -1029,20 +1041,37 @@ class IP12HarnessTests(unittest.TestCase):
                     decision(state, kind="answer_only", reply="解释当前草稿，不推进。"),
                     "为什么这样整理？",
                 )
-                self.assertEqual(state["pending"]["draft"], "第一版草稿")
+                expected_draft = (
+                    "### 第一版故事\n事实原话：用户补齐了信息"
+                    if module == 4 else "第一版草稿"
+                )
+                self.assertEqual(state["pending"]["draft"], expected_draft)
 
                 edit = next(action for action in harness.available_actions(state) if action["type"] == "edit_checkpoint")
                 state, _ = harness.apply_action(state, edit, state["revision"])
                 state, _, _ = harness.apply_model_decision(
                     state,
-                    decision(state, draft="按用户意见修改后的草稿"),
+                    decision(
+                        state,
+                        draft=(
+                            "### 修改后的故事\n事实原话：请换一种表达"
+                            if module == 4 else "按用户意见修改后的草稿"
+                        ),
+                    ),
                     "请换一种表达",
                     pending_id=f"m{module}-revised",
                 )
                 confirm = next(action for action in harness.available_actions(state) if action["type"] == "confirm_checkpoint")
                 state, _ = harness.apply_action(state, confirm, state["revision"])
                 self.assertEqual(state["module_step"], 1)
-                self.assertEqual(state["ip_profile"]["confirmed_outputs"][f"{module}-1"]["content"], "按用户意见修改后的草稿")
+                expected_confirmed = (
+                    "### 修改后的故事\n事实原话：请换一种表达"
+                    if module == 4 else "按用户意见修改后的草稿"
+                )
+                self.assertEqual(
+                    state["ip_profile"]["confirmed_outputs"][f"{module}-1"]["content"],
+                    expected_confirmed,
+                )
 
     def test_module_follow_up_keeps_unconfirmed_facts_until_checkpoint_confirmation(self):
         state = self.complete_intake()

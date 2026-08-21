@@ -250,6 +250,9 @@ MODULE_FOUR_PAST_CLIENT_EVIDENCE_RE = re.compile(
     r"(?:自我怀疑|害怕|恐惧|内疚|羞耻|焦虑|指责|被迫.{0,8}丢弃)"
 )
 MODULE_FOUR_INNER_STATE_TERMS = ("自我怀疑", "害怕", "恐惧", "内疚", "羞耻", "成就感")
+MODULE_FOUR_QUOTE_RE = re.compile(
+    r"(?:事实原话|未来方向原话)\s*[：:]\s*([^\n]+)"
+)
 
 DECISION_SCHEMA = {
     "type": "object",
@@ -1087,20 +1090,36 @@ def _validate_confirmable_claims(draft, evidence):
 
 
 def _validate_module_four_story_claims(draft, evidence):
-    exaggeration = MODULE_FOUR_EXAGGERATION_RE.search(str(draft or ""))
-    if exaggeration and exaggeration.group(0) not in str(evidence or ""):
+    draft_text = str(draft or "")
+    evidence_text = str(evidence or "")
+    if "故事内容" in draft_text:
+        raise HarnessError(
+            "模块 4 不再允许模型自由扩写过去式故事内容；每个节点必须改用逐字的事实原话或未来方向原话"
+        )
+    quotes = []
+    for match in MODULE_FOUR_QUOTE_RE.finditer(draft_text):
+        quote = re.sub(r"[*_`]+", "", match.group(1)).strip().strip("“”\"'")
+        if quote:
+            quotes.append(quote)
+    if not quotes or len(quotes) > 5:
+        raise HarnessError("模块 4 必须提供 1–5 条逐字的事实原话或未来方向原话")
+    for quote in quotes:
+        if quote not in evidence_text:
+            raise HarnessError("模块 4 的故事节点缺少可回查原话：“%s”" % quote[:120])
+    exaggeration = MODULE_FOUR_EXAGGERATION_RE.search(draft_text)
+    if exaggeration and exaggeration.group(0) not in evidence_text:
         raise HarnessError(
             "模块 4 把用户原话夸大成“%s”；请改回用户实际表达" % exaggeration.group(0)
         )
     if (
-        MODULE_FOUR_PAST_CLIENT_RE.search(str(draft or ""))
-        and not MODULE_FOUR_PAST_CLIENT_EVIDENCE_RE.search(str(evidence or ""))
+        MODULE_FOUR_PAST_CLIENT_RE.search(draft_text)
+        and not MODULE_FOUR_PAST_CLIENT_EVIDENCE_RE.search(evidence_text)
     ):
         raise HarnessError(
             "模块 4 把目标人群或内容偏好编造成过去的客户经历；请改写为未来想服务的人群或待验证方向"
         )
     for term in MODULE_FOUR_INNER_STATE_TERMS:
-        if term in str(draft or "") and term not in str(evidence or ""):
+        if term in draft_text and term not in evidence_text:
             raise HarnessError(
                 "模块 4 编写了用户没有说过的内心感受“%s”；请删除或改为未来假设" % term
             )
@@ -1790,6 +1809,8 @@ def system_prompt(value):
         story_rules = """
 - 模块 4 的过去经历只能来自用户明确说过的真实事件；不得补写客户数量、客户反馈、他人心理状态、个人感受或天赋评价。
 - 目标人群、希望帮助的人和内容偏好只能写成未来想服务的人群、未来内容方向或待验证假设，绝不能改写成已经服务过的客户经历。
+- 每个节点必须单独包含“事实原话：”或“未来方向原话：”，后面逐字引用对话或已确认资料；不得使用“故事内容：”自由改写过去经历。
+- 标题、故事类型、情绪点和传播场景可以是 AI 建议，但必须明确作为包装建议，不能夹带新的过去事实。
 - 不使用“过人的天赋”“自我怀疑”“害怕”“成就感”等用户没有亲口说过的评价或内心感受。证据不足时少写节点，不能为了凑数量编故事。"""
     return f"""你是黄雀 IP12 的中立 IP 咨询教练，适用于任何职业和行业。
 
