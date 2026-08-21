@@ -1314,6 +1314,27 @@ normalized_state, normalized_decision, _ = server.coach_harness.apply_model_deci
 )
 assert len(normalized_decision["choices"]) == 3
 assert normalized_state["pending"]["id"] == "normalized-choice-target"
+
+non_choice_state = server.coach_harness.initial_state()
+non_choice_state["intake"] = {"status": "complete", "round": 3, "answers": {}}
+drifted_non_choice = {
+    **drifted_choice,
+    "decision": "propose_checkpoint", "checkpoint": 1,
+    "reply": "请核对关键词。", "draft": "关键词：真实、清晰、行动",
+    "profile_updates": [],
+}
+class DriftedNonChoiceResponse:
+    def json(self):
+        return {"choices": [{"message": {"content": server.json.dumps(drifted_non_choice, ensure_ascii=False)}}]}
+server.call_ai = lambda *args, **kwargs: DriftedNonChoiceResponse()
+normalized_non_choice, non_choice_evidence = server._coach_model_decision(
+    {"coach_state": non_choice_state, "messages": [], "deliverables": {}}, "整理关键词",
+)
+assert normalized_non_choice["choices"] == []
+non_choice_next, non_choice_decision, _ = server.coach_harness.apply_model_decision(
+    non_choice_state, normalized_non_choice, non_choice_evidence, pending_id="normalized-non-choice",
+)
+assert non_choice_decision["checkpoint"] == 1 and non_choice_next["pending"]["draft"]
 server.call_ai = original_call_ai
 
 model_calls = []

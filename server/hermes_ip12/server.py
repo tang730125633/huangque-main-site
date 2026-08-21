@@ -2869,6 +2869,8 @@ def _coach_model_decision(
             draft="",
             profile_updates=[],
         )
+    else:
+        decision["choices"] = []
     evidence = "\n".join(
         item["content"] for item in history if item["role"] == "user"
     ) + "\n" + clean_message
