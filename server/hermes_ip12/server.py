@@ -1768,21 +1768,22 @@ def call_ai(messages, stream=False, temperature=0.7, max_tokens=None, response_f
     if max_tokens:
         token_field = "max_completion_tokens" if modern_model else "max_tokens"
         payload[token_field] = max_tokens
-    deepseek_json = MODEL.lower().startswith("deepseek") and bool(response_format) and not stream
+    structured_json = bool(response_format) and not stream
+    schema = ((response_format.get("json_schema") or {}).get("schema") or {}) if response_format else {}
+    deepseek_json = MODEL.lower().startswith("deepseek") and structured_json
     if deepseek_json:
         payload["response_format"] = {"type": "json_object"}
         payload["thinking"] = {"type": "disabled"}
-        schema = ((response_format.get("json_schema") or {}).get("schema") or {})
-        if schema and payload_messages:
-            payload_messages[0]["content"] = (
-                str(payload_messages[0].get("content") or "")
-                + "\n\n只输出一个完整 JSON 对象，不要 Markdown。所有 required 字段必须出现，"
-                  "并严格匹配这个 JSON Schema：\n"
-                + json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
-            )
     elif response_format:
         payload["response_format"] = response_format
-    validate_json = deepseek_json
+    if schema and payload_messages:
+        payload_messages[0]["content"] = (
+            str(payload_messages[0].get("content") or "")
+            + "\n\n只输出一个完整 JSON 对象，不要 Markdown。所有 required 字段必须出现，"
+              "并严格匹配这个 JSON Schema：\n"
+            + json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
+        )
+    validate_json = structured_json
     request_deadline = time.monotonic() + max(1, float(timeout_seconds))
     for attempt in range(2 if validate_json else 1):
         remaining = request_deadline - time.monotonic()
@@ -1795,23 +1796,31 @@ def call_ai(messages, stream=False, temperature=0.7, max_tokens=None, response_f
         if resp.status_code != 200:
             raise Exception(f"API {resp.status_code}: {resp.text[:300]}")
         if validate_json:
+            content = ""
             try:
                 content = (((resp.json().get("choices") or [{}])[0].get("message") or {}).get("content"))
                 if isinstance(content, list):
                     content = "".join(
                         str(item.get("text") or "") for item in content if isinstance(item, dict)
                     )
-                json.loads(str(content or ""))
+                parsed = json.loads(str(content or ""))
+                if schema.get("type") == "object":
+                    if not isinstance(parsed, dict):
+                        raise ValueError("structured response is not an object")
+                    missing = set(schema.get("required") or []) - set(parsed)
+                    unknown = set(parsed) - set(schema.get("properties") or {})
+                    if missing or (schema.get("additionalProperties") is False and unknown):
+                        raise ValueError("structured response does not match top-level schema")
             except Exception:
                 if attempt == 0:
                     if content:
                         payload_messages.append({"role": "assistant", "content": str(content)[:4000]})
                     payload_messages.append({
                         "role": "user",
-                        "content": "上一次输出不是完整 JSON。只重发一个完整 JSON 对象，不要解释或使用 Markdown。",
+                        "content": "上一次输出不是完整 JSON 或不符合 JSON Schema。只重发一个完整 JSON 对象，不要解释或使用 Markdown。",
                     })
                     continue
-                raise Exception("API 200 但没有返回完整 JSON")
+                raise Exception("API 200 但没有返回符合 Schema 的完整 JSON")
         return resp
 
 def generate_module_report(convo_id, module_id):
