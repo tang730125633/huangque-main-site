@@ -256,6 +256,22 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
                     capture_output=True,
                 )
                 self.assertEqual(expected, result.returncode)
+        for source_ref, expected in (
+            ("codex/ip12-preview-choice-copy", 0),
+            ("codex/ip12-preview-a.b_1", 0),
+            ("codex/other-preview", 1),
+            ("feature/ip12-preview-test", 1),
+            ("codex/ip12-preview-../bad", 1),
+        ):
+            with self.subTest(preview_ref=source_ref):
+                result = subprocess.run(
+                    ["bash", "-c", 'source "$1"; validate_preview_ref "$2"', "_", str(SHIP), source_ref],
+                    cwd=ROOT,
+                    env={**os.environ, "SHIP_ZELONG_LIB_ONLY": "1"},
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertEqual(expected, result.returncode)
         self.assertIn("--adspower-baseline 只允许 origin/main", SRC)
         self.assertIn('test "$source_set" = 0 || die "--rollback 禁止与 --source 混用"', SRC)
         self.assertIn("拒绝 stale ref 或未 push", SRC)
@@ -306,6 +322,8 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
         self.assertIn("deploy/zelong/run-hermes-ip12-preview.sh", files)
         self.assertTrue(all(not path.endswith((".env", ".db")) for path in files))
         self.assertIn("--ip12-preview 只允许 origin/main", SRC)
+        self.assertIn("--preview-branch 只能与 --ip12-preview 一起使用", SRC)
+        self.assertIn("预览分支不得修改部署脚手架或删除 Agent 文件", SRC)
         self.assertIn("HERMES_ENABLE_INTERNAL_TOOLS=0", (ROOT / "deploy/zelong/run-hermes-ip12-preview.sh").read_text())
         self.assertIn("--target /home/ubuntu/hermes-preview-deps", SRC)
         self.assertIn("chown ubuntu:ubuntu /home/ubuntu/hermes-preview/.ip12-release-sha", SRC)
