@@ -19,11 +19,12 @@ export HERMES_DATA_QUOTA_MB=512
 export HERMES_AUTH_BASE=http://127.0.0.1:8095
 export HQ_AUTH_BASE=http://127.0.0.1:8095
 export HERMES_ENABLE_INTERNAL_TOOLS=0
+export PYTHONPATH="/home/ubuntu/hermes-preview-deps${PYTHONPATH:+:$PYTHONPATH}"
 
 cd "$HERMES_HOME"
 
 if test "${1:-}" = --check; then
-  exec /home/ubuntu/hermes-preview-venv/bin/python -c '
+  exec /usr/bin/python3 -c '
 from server import app
 
 routes = {rule.rule for rule in app.url_map.iter_rules() if rule.endpoint != "static"}
@@ -41,5 +42,5 @@ if missing:
 '
 fi
 
-exec /home/ubuntu/hermes-preview-venv/bin/python -c \
+exec /usr/bin/python3 -c \
   "import server; server.app.run(host='127.0.0.1', port=3102, debug=False)"

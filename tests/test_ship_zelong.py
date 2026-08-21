@@ -305,6 +305,8 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
         self.assertTrue(all(not path.endswith((".env", ".db")) for path in files))
         self.assertIn("--ip12-preview 只允许 origin/main", SRC)
         self.assertIn("HERMES_ENABLE_INTERNAL_TOOLS=0", (ROOT / "deploy/zelong/run-hermes-ip12-preview.sh").read_text())
+        self.assertIn("--target /home/ubuntu/hermes-preview-deps", SRC)
+        self.assertNotIn(" -m venv ", SRC)
         self.assertGreaterEqual(SRC.count('get("release_sha", "")'), 2)
 
 
