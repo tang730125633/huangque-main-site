@@ -206,6 +206,7 @@ class HQCLIContentTests(unittest.TestCase):
             }}
 
         with mock.patch.object(video, "_resolve_out_file", side_effect=lambda value: Path("/") / value), \
+                mock.patch.object(video, "_heygen_mcp_enabled", return_value=False), \
                 mock.patch.object(video, "_heygen_upload_asset", side_effect=["vid_asset", "aud_asset"]), \
                 mock.patch.object(video, "_heygen_request_json", side_effect=request), \
                 mock.patch.object(video, "_download_video_file_direct", return_value="video/lipsync.mp4"), \
@@ -222,6 +223,37 @@ class HQCLIContentTests(unittest.TestCase):
         self.assertTrue(captured["body"]["keep_the_same_format"])
         self.assertEqual(("ls_123", "video/lipsync.mp4"), (
             result["video_id"], result["video_file"]))
+
+    def test_heygen_lipsync_prefers_configured_mcp_subscription(self):
+        calls = []
+
+        def mcp(tool, arguments, **_kwargs):
+            calls.append((tool, arguments))
+            if tool == "create_lipsync":
+                return {"lipsync_id": "ls_mcp"}
+            return {
+                "status": "completed", "duration": 15,
+                "video_url": "https://files.heygen.ai/mcp-result.mp4",
+            }
+
+        with mock.patch.object(video, "_resolve_out_file", side_effect=lambda value: Path("/") / value), \
+                mock.patch.object(video, "_heygen_mcp_enabled", return_value=True), \
+                mock.patch.object(video, "public_url", side_effect=lambda value, *_args, **_kwargs: "https://media.test/" + value), \
+                mock.patch.object(video, "_heygen_mcp_call", side_effect=mcp), \
+                mock.patch.object(video, "_heygen_upload_asset", side_effect=AssertionError("MCP must use signed URLs")), \
+                mock.patch.object(video, "_download_video_file_direct", return_value="video/lipsync-mcp.mp4"), \
+                mock.patch.object(video, "_extract_first_frame_cover", return_value="video/lipsync-mcp.jpg"), \
+                mock.patch.object(video, "update_video_asset_phase"):
+            result = video.generate_heygen_lipsync(
+                "video/source.mp4", "audio/speech.mp3", "speed", False,
+                job_id=78,
+            )
+        self.assertEqual(["create_lipsync", "get_lipsync"], [item[0] for item in calls])
+        create = calls[0][1]
+        self.assertEqual("https://media.test/video/source.mp4", create["video"]["url"])
+        self.assertEqual("https://media.test/audio/speech.mp3", create["audio"]["url"])
+        self.assertFalse(create["enableDynamicDuration"])
+        self.assertEqual("video/lipsync-mcp.mp4", result["video_file"])
 
     def test_sora_submit_expands_cli_reference_before_validation_and_queue(self):
         raw = base64.b64decode(

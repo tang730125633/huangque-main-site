@@ -70,6 +70,13 @@ def reclaim_orphaned_running(
                 try:
                     resumable = getter(row["id"])
                     if resumable:
+                        if (resumable.get("submission_unknown")
+                                and "_mcp_" in str(resumable.get("phase") or "")):
+                            logger(
+                                "[startup] HeyGen MCP 口型提交结果未知，保留 running job=%s"
+                                % row["id"], flush=True,
+                            )
+                            continue
                         provider = "HeyGen Lipsync"
                         request_id = (
                             resumable.get("request_id")
