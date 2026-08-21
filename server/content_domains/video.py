@@ -4156,9 +4156,13 @@ def generate_heygen_lipsync(source_video_file, audio_file, quality="speed",
     mcp = _heygen_mcp_enabled()
     video_asset_id = audio_asset_id = None
     if mcp:
+        detection_video_file = _mux_seedance_upscale_audio(
+            source_video_file, audio_file)
+        if detection_video_file == source_video_file:
+            raise ValueError("无声原视频暂时无法封装口播音轨")
         payload = {
             "video": {"type": "url", "url": public_url(
-                source_video_file, "video/mp4", private=True)},
+                detection_video_file, "video/mp4", private=True)},
             "audio": {"type": "url", "url": public_url(
                 audio_file, "audio/mpeg", private=True)},
             "mode": quality,

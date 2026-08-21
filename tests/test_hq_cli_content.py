@@ -238,6 +238,7 @@ class HQCLIContentTests(unittest.TestCase):
 
         with mock.patch.object(video, "_resolve_out_file", side_effect=lambda value: Path("/") / value), \
                 mock.patch.object(video, "_heygen_mcp_enabled", return_value=True), \
+                mock.patch.object(video, "_mux_seedance_upscale_audio", return_value="video/detection.mp4"), \
                 mock.patch.object(video, "public_url", side_effect=lambda value, *_args, **_kwargs: "https://media.test/" + value), \
                 mock.patch.object(video, "_heygen_mcp_call", side_effect=mcp), \
                 mock.patch.object(video, "_heygen_upload_asset", side_effect=AssertionError("MCP must use signed URLs")), \
@@ -250,7 +251,7 @@ class HQCLIContentTests(unittest.TestCase):
             )
         self.assertEqual(["create_lipsync", "get_lipsync"], [item[0] for item in calls])
         create = calls[0][1]
-        self.assertEqual("https://media.test/video/source.mp4", create["video"]["url"])
+        self.assertEqual("https://media.test/video/detection.mp4", create["video"]["url"])
         self.assertEqual("https://media.test/audio/speech.mp3", create["audio"]["url"])
         self.assertFalse(create["enableDynamicDuration"])
         self.assertEqual("video/lipsync-mcp.mp4", result["video_file"])
