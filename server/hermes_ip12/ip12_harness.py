@@ -11,6 +11,30 @@ import re
 import uuid
 
 
+AVAILABLE_MODULE_COUNT = 6
+SCHEMA_VERSION = 2
+CHOICE_COUNT = 3
+CHOICE_FIELD_LIMITS = {"title": 16, "summary": 36, "reason": 16, "caution": 16}
+CHOICE_REQUIRED_FIELD_ORDER = (*CHOICE_FIELD_LIMITS, "recommended")
+CHOICE_REQUIRED_FIELDS = frozenset(CHOICE_REQUIRED_FIELD_ORDER)
+CHOICE_MATERIALIZED_FIELDS = CHOICE_REQUIRED_FIELDS | {"choice_id", "display_index"}
+AGENT_RELEASE_MANIFEST = {
+    "agent_release": "ip12-a0.1",
+    "state_schema": SCHEMA_VERSION,
+    "skills": {
+        "intake": {"contract_version": "1.0.0", "prompt_version": "intake-v1"},
+        "module_checkpoint": {"contract_version": "1.0.0", "prompt_version": "module-checkpoint-v1"},
+        "diagnostic_choice": {"contract_version": "1.0.0", "prompt_version": "diagnostic-choice-v1"},
+        "migration": {"contract_version": "1.0.0", "prompt_version": None},
+        "harness_action": {"contract_version": "1.0.0", "prompt_version": None},
+        "safety_fallback": {"contract_version": "1.0.0", "prompt_version": None},
+        "foundation_review": {"contract_version": "1.0.0", "prompt_version": "foundation-review-v1"},
+        "content_revision": {"contract_version": "1.0.0", "prompt_version": "content-revision-v1"},
+        "production_bridge": {"contract_version": "1.0.0", "prompt_version": None},
+    },
+}
+
+
 # Production remains a suggestion until the server has checked the selected
 # action against the first-party capability bridge.  Keeping this small map in
 # the pure harness lets the conversation layer make a deterministic, testable
@@ -113,18 +137,13 @@ def production_intent(message):
     return None
 
 
-AVAILABLE_MODULE_COUNT = 6
-SCHEMA_VERSION = 1
-
 MODULE_WORKFLOWS = {
     1: {
         "name": "定位诊断",
         "required": "关键经历、至少两项核心技能、长期兴趣、目标人群，以及明确表达的价值观或帮助目标",
         "checkpoints": (
             "提炼 3–5 个核心关键词",
-            "生成三套差异化定位方案",
-            "比较每套方案的市场机缘与潜在风险",
-            "推荐首选定位并说明理由",
+            "从三项差异化定位方向中选择一个",
         ),
     },
     2: {
@@ -132,9 +151,7 @@ MODULE_WORKFLOWS = {
         "required": "从模块 1 已确认的经历、行为、价值观和目标中提炼人格候选，允许用户修正",
         "checkpoints": (
             "提炼人格关键词与核心价值观",
-            "生成三套差异化人设画像",
-            "比较每套人设的传播优势与潜在风险",
-            "推荐首选人设并说明理由",
+            "从三项差异化人设方向中选择一个",
         ),
     },
     3: {
@@ -142,9 +159,7 @@ MODULE_WORKFLOWS = {
         "required": "复用已确认的定位、人设、核心优势、价值观、目标人群、所在领域和未来目标",
         "checkpoints": (
             "提炼 3–5 个价值关键词",
-            "生成三条差异化价值主张",
-            "横向比较三条主张的优势与局限",
-            "推荐首选价值主张并说明理由",
+            "从三项差异化价值主张中选择一个",
         ),
     },
     4: {
@@ -183,7 +198,7 @@ CONFIRM_TEXTS = frozenset({
 })
 EDIT_TEXTS = frozenset({
     "需要修改", "我要修改", "修改", "有问题", "不对", "重新填写", "改一下",
-    "继续修改", "修改当前内容",
+    "继续修改", "修改当前内容", "都不合适", "都不合适我要修改",
 })
 CONTINUE_TEXTS = frozenset({
     "继续", "下一步", "进入下一步", "继续下一步", "请继续", "开始下一步",
@@ -234,6 +249,23 @@ DECISION_SCHEMA = {
         "reply": {"type": "string", "maxLength": 4000},
         "draft": {"type": "string", "maxLength": 12000},
         "self_review": {"type": "string", "maxLength": 500},
+        "choices": {
+            "type": "array",
+            "minItems": CHOICE_COUNT,
+            "maxItems": CHOICE_COUNT,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "title": {"type": "string", "maxLength": CHOICE_FIELD_LIMITS["title"]},
+                    "summary": {"type": "string", "maxLength": CHOICE_FIELD_LIMITS["summary"]},
+                    "reason": {"type": "string", "maxLength": CHOICE_FIELD_LIMITS["reason"]},
+                    "caution": {"type": "string", "maxLength": CHOICE_FIELD_LIMITS["caution"]},
+                    "recommended": {"type": "boolean"},
+                },
+                "required": ["title", "summary", "reason", "caution", "recommended"],
+            },
+        },
         "profile_updates": {
             "type": "array",
             "maxItems": 40,
@@ -260,6 +292,7 @@ DECISION_SCHEMA = {
         "reply",
         "draft",
         "self_review",
+        "choices",
         "profile_updates",
         "confidence",
     ],
@@ -315,6 +348,240 @@ class HarnessConflict(HarnessError):
     pass
 
 
+class ChoiceValidationError(HarnessError):
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = str(code)
+
+
+def source_schema_version(value):
+    if not isinstance(value, dict) or "schema_version" not in value:
+        return 1
+    version = value.get("schema_version")
+    if isinstance(version, bool) or not isinstance(version, int) or version not in {1, SCHEMA_VERSION}:
+        raise HarnessError("Project schema 版本无效或高于当前服务")
+    return version
+
+
+def _validate_source_containers(state):
+    expected = {
+        "completed_modules": list,
+        "ip_profile": dict,
+        "intake": dict,
+        "migration_archive": dict,
+    }
+    for field, field_type in expected.items():
+        if field in state and state[field] is not None and not isinstance(state[field], field_type):
+            raise HarnessError("Project %s 数据结构损坏，已停止迁移" % field)
+    if "pending" in state and state["pending"] is not None and not isinstance(state["pending"], dict):
+        raise HarnessError("Project pending 数据结构损坏，已停止迁移")
+    profile = state.get("ip_profile") or {}
+    for field in ("facts", "preferences", "ai_selections", "confirmed_outputs"):
+        if field in profile and not isinstance(profile[field], dict):
+            raise HarnessError("Project ip_profile.%s 数据结构损坏，已停止迁移" % field)
+    for field in ("revision", "current_module", "module_step"):
+        if field not in state:
+            continue
+        if isinstance(state[field], bool):
+            raise HarnessError("Project %s 数值损坏，已停止迁移" % field)
+        try:
+            int(state[field])
+        except (TypeError, ValueError) as exc:
+            raise HarnessError("Project %s 数值损坏，已停止迁移" % field) from exc
+
+
+def agent_trace(skills, *, prompt_version=None, model=None, release_sha=None):
+    skill_ids = [skills] if isinstance(skills, str) else list(skills or [])
+    traced = []
+    for skill_id in skill_ids:
+        skill_id = str(skill_id)
+        spec = AGENT_RELEASE_MANIFEST["skills"].get(skill_id)
+        if spec is None:
+            raise HarnessError("未知 Agent Skill：%s" % skill_id)
+        traced.append({"id": skill_id, "version": spec["contract_version"]})
+    if not traced:
+        raise HarnessError("assistant message 缺少 Agent Skill 来源")
+    if prompt_version is None and len(skill_ids) == 1:
+        prompt_version = AGENT_RELEASE_MANIFEST["skills"][skill_ids[0]].get("prompt_version")
+    return {
+        "agent_release": AGENT_RELEASE_MANIFEST["agent_release"],
+        "skills": traced,
+        "state_schema": AGENT_RELEASE_MANIFEST["state_schema"],
+        "prompt_version": prompt_version or None,
+        "model": str(model) if model else None,
+        "release_sha": str(release_sha) if release_sha else None,
+    }
+
+
+def profile_for_model(value):
+    """Return confirmed facts without historical, unselected choice alternatives."""
+    profile = deepcopy(normalize_state(value)["ip_profile"])
+    for output in (profile.get("confirmed_outputs") or {}).values():
+        if isinstance(output, dict):
+            output.pop("choice_snapshot", None)
+    return profile
+
+
+def is_choice_checkpoint(module, step):
+    try:
+        return int(module) in {1, 2, 3} and int(step) == 2
+    except (TypeError, ValueError):
+        return False
+
+
+def _choice_title_key(value):
+    return re.sub(r"[\W_]+", "", str(value or "")).lower()
+
+
+def validate_choices(value, *, materialized=False):
+    if not isinstance(value, list) or len(value) != CHOICE_COUNT:
+        raise ChoiceValidationError("choice_count", "候选方案必须恰好为 %s 项" % CHOICE_COUNT)
+    clean = []
+    for item in value:
+        expected_fields = CHOICE_MATERIALIZED_FIELDS if materialized else CHOICE_REQUIRED_FIELDS
+        if not isinstance(item, dict) or set(item) != expected_fields:
+            raise ChoiceValidationError("choice_shape", "候选方案结构无效")
+        if materialized and (
+            not isinstance(item.get("choice_id"), str)
+            or isinstance(item.get("display_index"), bool)
+            or not isinstance(item.get("display_index"), int)
+        ):
+            raise ChoiceValidationError("choice_shape", "候选方案标识结构无效")
+        labels = {"title": "标题", "summary": "摘要", "reason": "适合原因", "caution": "注意事项"}
+        choice = {}
+        for field, limit in CHOICE_FIELD_LIMITS.items():
+            if not isinstance(item.get(field), str):
+                raise ChoiceValidationError("choice_shape", "%s必须是文本" % labels[field])
+            text = item[field].strip()
+            if not text or len(text) > limit:
+                raise ChoiceValidationError(
+                    "choice_content_length", "%s必须为 1–%s 个 Unicode 字符" % (labels[field], limit)
+                )
+            choice[field] = text
+        if not isinstance(item.get("recommended"), bool):
+            raise ChoiceValidationError("choice_shape", "推荐标记必须是布尔值")
+        choice["recommended"] = item["recommended"]
+        clean.append(choice)
+    keys = [_choice_title_key(item["title"]) for item in clean]
+    if any(not key for key in keys) or len(set(keys)) != 3:
+        raise ChoiceValidationError("choice_duplicate", "%s 个候选标题不能重复" % CHOICE_COUNT)
+    if sum(bool(item["recommended"]) for item in clean) > 1:
+        raise ChoiceValidationError("choice_recommendation_count", "最多只能推荐一个候选")
+    return clean
+
+
+def compile_choice_content(choice):
+    return (
+        "### {title}\n\n{summary}\n\n"
+        "- 适合你的原因：{reason}\n"
+        "- 需要注意：{caution}"
+    ).format(**choice)
+
+
+def _materialize_choices(choices):
+    return [
+        {**item, "choice_id": "choice-%s" % index, "display_index": index}
+        for index, item in enumerate(choices, 1)
+    ]
+
+
+def migrate_state_v1_to_v2(value):
+    state = deepcopy(value) if isinstance(value, dict) else initial_state()
+    version = source_schema_version(state)
+    _validate_source_containers(state)
+    if version == SCHEMA_VERSION:
+        return state
+
+    try:
+        module = int(state.get("current_module", 1))
+    except (TypeError, ValueError):
+        module = 1
+    completed = set()
+    completed_items = state.get("completed_modules")
+    if not isinstance(completed_items, (list, tuple, set)):
+        completed_items = []
+    for item in completed_items:
+        try:
+            completed.add(int(item))
+        except (TypeError, ValueError):
+            pass
+    try:
+        old_step = max(0, int(state.get("module_step", 0)))
+    except (TypeError, ValueError):
+        old_step = 0
+    pending = state.get("pending") if isinstance(state.get("pending"), dict) else None
+    pending_step = 0
+    if pending:
+        try:
+            pending_step = int(pending.get("step", 0))
+        except (TypeError, ValueError):
+            pending_step = 0
+
+    needs_choice = module in {1, 2, 3} and module not in completed and max(old_step, pending_step - 1) >= 1
+    profile = state.get("ip_profile") if isinstance(state.get("ip_profile"), dict) else {}
+    outputs = profile.get("confirmed_outputs", {})
+    if isinstance(outputs, dict):
+        migration_archive = state.get("migration_archive")
+        if not isinstance(migration_archive, dict):
+            migration_archive = {}
+            state["migration_archive"] = migration_archive
+        archived = migration_archive.get("v1_confirmed_outputs")
+        if not isinstance(archived, dict):
+            archived = {}
+            migration_archive["v1_confirmed_outputs"] = archived
+        archived_text = []
+        for legacy_module in (1, 2, 3):
+            final_key = "%s-4" % legacy_module
+            legacy_final = deepcopy(outputs.get(final_key) or archived.get(final_key))
+            for key in list(outputs):
+                match = re.fullmatch(r"([123])-(\d+)", str(key))
+                if not match or int(match.group(1)) != legacy_module or int(match.group(2)) < 2:
+                    continue
+                old_output = outputs.pop(key)
+                archived.setdefault(key, old_output)
+                archived_text.append(str((old_output or {}).get("content") or "") if isinstance(old_output, dict) else str(old_output or ""))
+            if legacy_module in completed and isinstance(legacy_final, dict) and str(legacy_final.get("content") or "").strip():
+                legacy_final.update(
+                    module=legacy_module,
+                    step=2,
+                    title=MODULE_WORKFLOWS[legacy_module]["checkpoints"][1],
+                )
+                legacy_final.pop("choice_snapshot", None)
+                outputs["%s-2" % legacy_module] = legacy_final
+        selections = profile.get("ai_selections")
+        if isinstance(selections, dict) and any(archived_text):
+            archived_selections = migration_archive.get("v1_ai_selections")
+            if not isinstance(archived_selections, dict):
+                archived_selections = {}
+                migration_archive["v1_ai_selections"] = archived_selections
+            for field, item in list(selections.items()):
+                value_text = str(item.get("value") or "") if isinstance(item, dict) else str(item or "")
+                if value_text and any(value_text in text for text in archived_text):
+                    archived_selections.setdefault(field, selections.pop(field))
+    if module in {1, 2, 3} and module not in completed:
+        state["module_step"] = 1 if needs_choice else min(old_step, 1)
+        if pending_step >= 2:
+            state["pending"] = None
+
+    state["revision"] = max(1, int(state.get("revision", 1))) + 1
+    state["schema_version"] = SCHEMA_VERSION
+    state["migration"] = {
+        "from": version,
+        "to": SCHEMA_VERSION,
+        "notice_id": "ip12-schema-v2-migration",
+        "needs_choice_generation": bool(needs_choice),
+        "module": module if needs_choice else None,
+        "step": 2 if needs_choice else None,
+    }
+    if needs_choice:
+        state["choice_generation"] = {
+            "target_id": "choicegen-%s-2" % module,
+            "module": module,
+            "step": 2,
+        }
+    return state
+
+
 def initial_state():
     return {
         "schema_version": SCHEMA_VERSION,
@@ -329,7 +596,7 @@ def initial_state():
 
 
 def normalize_state(value):
-    state = deepcopy(value) if isinstance(value, dict) else initial_state()
+    state = migrate_state_v1_to_v2(value)
     state["schema_version"] = SCHEMA_VERSION
     try:
         state["revision"] = max(1, int(state.get("revision", 1)))
@@ -341,7 +608,10 @@ def normalize_state(value):
         module = 1
     state["current_module"] = min(AVAILABLE_MODULE_COUNT, max(1, module))
     completed = []
-    for item in state.get("completed_modules") or []:
+    completed_items = state.get("completed_modules")
+    if not isinstance(completed_items, (list, tuple, set)):
+        completed_items = []
+    for item in completed_items:
         try:
             item = int(item)
         except (TypeError, ValueError):
@@ -410,8 +680,41 @@ def normalize_state(value):
                 and pending.get("status") in {"collecting", "awaiting_confirmation", "editing"}
                 and isinstance(pending.get("id"), str)
             )
+            if valid and is_choice_checkpoint(pending_module, pending_step):
+                if pending.get("choices") is None:
+                    valid = pending.get("status") in {"collecting", "editing"}
+                else:
+                    try:
+                        clean_choices = validate_choices(pending.get("choices"), materialized=True)
+                    except ChoiceValidationError:
+                        valid = False
+                    else:
+                        pending["choices"] = _materialize_choices(clean_choices)
+            elif valid:
+                pending.pop("choices", None)
             if not valid:
                 state["pending"] = None
+    migration = state.get("migration")
+    try:
+        migration_version = int((migration or {}).get("to") or 0)
+    except (AttributeError, TypeError, ValueError):
+        migration_version = 0
+    if not isinstance(migration, dict) or migration_version != SCHEMA_VERSION:
+        state.pop("migration", None)
+    generation = state.get("choice_generation")
+    try:
+        generation_module = int((generation or {}).get("module") or 0)
+        generation_step = int((generation or {}).get("step") or 0)
+    except (AttributeError, TypeError, ValueError):
+        generation_module = generation_step = 0
+    if not (
+        isinstance(generation, dict)
+        and str(generation.get("target_id") or "")
+        and generation_module == state["current_module"]
+        and generation_step == state["module_step"] + 1
+        and is_choice_checkpoint(generation_module, generation_step)
+    ):
+        state.pop("choice_generation", None)
     return state
 
 
@@ -432,12 +735,58 @@ def available_actions(value):
         ]
     pending = state.get("pending")
     if isinstance(pending, dict) and pending.get("status") == "awaiting_confirmation":
+        if pending.get("choices"):
+            actions = [
+                {
+                    "type": "select_checkpoint_choice",
+                    "target_id": pending["id"],
+                    "choice_id": item["choice_id"],
+                    "display_index": item["display_index"],
+                    "title": item["title"],
+                    "summary": item["summary"],
+                    "reason": item["reason"],
+                    "caution": item["caution"],
+                    "recommended": item["recommended"],
+                    "label": "%s. %s" % (item["display_index"], item["title"]),
+                    "primary": False,
+                }
+                for item in pending["choices"]
+            ]
+            actions.append({
+                "type": "edit_checkpoint", "target_id": pending["id"],
+                "label": "都不合适，我要修改", "primary": False,
+            })
+            return actions
         final_step = int(pending.get("step") or 0) == len(MODULE_WORKFLOWS[state["current_module"]]["checkpoints"])
         return [
             {"type": "confirm_checkpoint", "target_id": pending["id"], "label": "确认本模块" if final_step else "保留并继续", "primary": True},
             {"type": "edit_checkpoint", "target_id": pending["id"], "label": "修改当前内容", "primary": False},
         ]
+    generation = state.get("choice_generation") or {}
+    if generation and not pending:
+        return [{
+            "type": "resume_choice_generation",
+            "target_id": generation.get("target_id"),
+            "label": "生成新的三个方案",
+            "primary": True,
+        }]
     return []
+
+
+def _choice_index(message):
+    normalized = re.sub(r"[\s，,。.!！?？]+", "", str(message or "")).lower()
+    direct = {"1": 1, "一": 1, "2": 2, "二": 2, "3": 3, "三": 3}
+    if normalized in direct:
+        return direct[normalized]
+    match = (
+        re.fullmatch(
+            r"(?:我)?(?:要|想)?(?:选|选择)?(?:第)?([123一二三])(?:个|项|个方案|项方案|方案)?",
+            normalized,
+        )
+        or re.fullmatch(r"(?:方案|选项)([123一二三])", normalized)
+        or re.fullmatch(r"(?:我)?(?:要|想)?(?:选|选择)(?:方案|选项)([123一二三])", normalized)
+    )
+    return direct.get(match.group(1)) if match else None
 
 
 def shortcut_action(value, message):
@@ -447,12 +796,35 @@ def shortcut_action(value, message):
     if not actions:
         return None
     by_type = {item["type"]: item for item in actions}
+    choices = [item for item in actions if item["type"] == "select_checkpoint_choice"]
+    if choices:
+        index = _choice_index(message)
+        if index:
+            item = next((item for item in choices if item["display_index"] == index), None)
+            if item:
+                return {
+                    "type": item["type"], "target_id": item["target_id"],
+                    "choice_id": item["choice_id"],
+                }
+        if normalized in EDIT_TEXTS:
+            item = by_type["edit_checkpoint"]
+            return {"type": item["type"], "target_id": item["target_id"]}
+        return None
+    if "resume_choice_generation" in by_type:
+        if normalized in {
+            "生成新的三个方案", "继续生成方案", "生成三个方案",
+        } | CONFIRM_TEXTS | CONTINUE_TEXTS:
+            item = by_type["resume_choice_generation"]
+            return {"type": item["type"], "target_id": item["target_id"]}
+        return None
     if normalized in CONFIRM_TEXTS or normalized in CONTINUE_TEXTS:
         key = "confirm_intake" if "confirm_intake" in by_type else "confirm_checkpoint"
-        return {"type": key, "target_id": by_type[key]["target_id"]}
+        item = by_type.get(key)
+        return {"type": key, "target_id": item["target_id"]} if item else None
     if normalized in EDIT_TEXTS:
         key = "edit_intake" if "edit_intake" in by_type else "edit_checkpoint"
-        return {"type": key, "target_id": by_type[key]["target_id"]}
+        item = by_type.get(key)
+        return {"type": key, "target_id": item["target_id"]} if item else None
     return None
 
 
@@ -517,14 +889,34 @@ def duration_conflict_decision(value, message):
     return None
 
 
-def apply_action(value, action, expected_revision):
+def apply_action(value, action, expected_revision, *, request_id="", selected_at=""):
     state = normalize_state(value)
     _require_revision(state, expected_revision)
     if not isinstance(action, dict):
         raise HarnessError("action 必须是对象")
     action_type = str(action.get("type") or "")
     target_id = str(action.get("target_id") or "")
-    event = {"assistant_prefix": "", "new_completed": [], "continue_model": False}
+    event = {
+        "assistant_prefix": "", "new_completed": [], "continue_model": False,
+        "user_label": "", "continuation_message": "",
+    }
+
+    if action_type == "resume_choice_generation":
+        generation = state.get("choice_generation") or {}
+        if (
+            not generation
+            or state.get("pending")
+            or target_id != str(generation.get("target_id") or "")
+            or not is_choice_checkpoint(state["current_module"], state["module_step"] + 1)
+        ):
+            raise HarnessConflict("候选生成状态已经更新，请查看最新页面")
+        event.update(
+            continue_model=True,
+            user_label="生成新的三个方案",
+            continuation_message="请基于已确认内容生成当前断点的三个新方案。",
+        )
+        _bump(state)
+        return state, event
 
     if action_type in {"confirm_intake", "edit_intake"}:
         intake = state["intake"]
@@ -561,7 +953,7 @@ def apply_action(value, action, expected_revision):
         _bump(state)
         return state, event
 
-    if action_type not in {"confirm_checkpoint", "edit_checkpoint"}:
+    if action_type not in {"confirm_checkpoint", "edit_checkpoint", "select_checkpoint_choice"}:
         raise HarnessError("不支持的 action")
     pending = state.get("pending")
     if not isinstance(pending, dict) or pending.get("status") != "awaiting_confirmation" or pending.get("id") != target_id:
@@ -575,19 +967,56 @@ def apply_action(value, action, expected_revision):
         _bump(state)
         return state, event
 
+    has_choices = bool(pending.get("choices"))
+    if has_choices and action_type != "select_checkpoint_choice":
+        raise HarnessConflict("当前断点必须选择一个候选，不能直接确认")
+    if not has_choices and action_type == "select_checkpoint_choice":
+        raise HarnessConflict("当前确认项没有可选择的候选")
+
     module = state["current_module"]
     step = int(pending["step"])
     key = "%s-%s" % (module, step)
+    choice = None
+    if action_type == "select_checkpoint_choice":
+        choice_id = str(action.get("choice_id") or "")
+        choice = next(
+            (item for item in pending.get("choices") or [] if item.get("choice_id") == choice_id),
+            None,
+        )
+        if choice is None:
+            raise HarnessConflict("这个候选已经更新，请查看最新版本")
+        content = compile_choice_content(choice)
+    else:
+        content = pending["draft"]
     state["ip_profile"]["confirmed_outputs"][key] = {
         "module": module,
         "step": step,
         "title": MODULE_WORKFLOWS[module]["checkpoints"][step - 1],
-        "content": pending["draft"],
+        "content": content,
         "self_review": pending.get("self_review", ""),
     }
-    _apply_profile_updates(state["ip_profile"], pending.get("profile_updates") or [])
+    if choice is not None:
+        state["ip_profile"]["confirmed_outputs"][key]["choice_snapshot"] = {
+            "target_id": pending["id"],
+            "module": module,
+            "step": step,
+            "choices": deepcopy(pending["choices"]),
+            "selected_choice_id": choice["choice_id"],
+            "selected_at": str(selected_at or ""),
+            "request_id": str(request_id or ""),
+            "confirmed_revision": state["revision"] + 1,
+        }
+        event["user_label"] = "我选择 %s：%s" % (choice["display_index"], choice["title"])
+    else:
+        _apply_profile_updates(state["ip_profile"], pending.get("profile_updates") or [])
     state["pending"] = None
     state["module_step"] = step
+    if is_choice_checkpoint(module, step + 1):
+        state["choice_generation"] = {
+            "target_id": "choicegen-%s-%s" % (module, step + 1),
+            "module": module,
+            "step": step + 1,
+        }
     event["assistant_prefix"] = ""
     event["continue_model"] = True
 
@@ -687,10 +1116,25 @@ def validate_model_decision(
     reply = _strip_unsupported_acronym_expansions(raw.get("reply"), evidence).strip()[:4000]
     draft = _strip_unsupported_acronym_expansions(raw.get("draft"), evidence).strip()[:12000]
     self_review = str(raw.get("self_review") or "").strip()[:500]
+    expected_checkpoint = expected_checkpoint or state["module_step"] + 1
+    choice_checkpoint = decision == "propose_checkpoint" and is_choice_checkpoint(
+        state["current_module"], checkpoint
+    )
+    raw_choices = raw.get("choices") or []
+    if choice_checkpoint:
+        if draft:
+            raise ChoiceValidationError("choice_draft_present", "选择断点不能同时返回 Markdown draft")
+        if raw.get("profile_updates"):
+            raise ChoiceValidationError("choice_profile_updates", "选择断点不能携带 profile_updates")
+        choices = validate_choices(raw_choices)
+    else:
+        if raw_choices:
+            raise ChoiceValidationError("choice_unexpected", "当前断点不接受候选卡")
+        choices = []
     if decision == "propose_checkpoint":
-        if not draft and len(re.sub(r"\s+", "", reply)) >= 120:
+        if not choice_checkpoint and not draft and len(re.sub(r"\s+", "", reply)) >= 120:
             draft = reply
-        if draft and not self_review:
+        if (draft or choices) and not self_review:
             self_review = "已按当前断点和现有证据整理，仍需用户本人确认。"
     if not reply:
         raise HarnessError("模型回复为空")
@@ -733,11 +1177,10 @@ def validate_model_decision(
             )
         ):
             raise HarnessError("模块 4 已有确认的真实经历和职业转折，必须直接提炼候选故事节点")
-    expected_checkpoint = expected_checkpoint or state["module_step"] + 1
     if decision == "propose_checkpoint":
         if checkpoint != expected_checkpoint or checkpoint > len(MODULE_WORKFLOWS[state["current_module"]]["checkpoints"]):
             raise HarnessError("模型试图跨越当前断点")
-        if not draft or not self_review:
+        if (not choice_checkpoint and not draft) or not self_review:
             raise HarnessError("模型没有返回可确认内容或自评")
     elif decision == "revise_intake":
         if state["intake"]["status"] != "complete":
@@ -776,7 +1219,15 @@ def validate_model_decision(
                 continue
             raise HarnessError("模型档案更新缺少可回查的用户原话")
         clean_updates.append({"field": field, "value": value_text, "kind": kind, "evidence_quote": quote})
-    if decision in {"propose_checkpoint", "revise_intake"}:
+    if choice_checkpoint:
+        choice_text = "\n".join(
+            "%s\n%s\n%s\n%s" % (
+                item["title"], item["summary"], item["reason"], item["caution"]
+            )
+            for item in choices
+        )
+        _validate_confirmable_claims(choice_text, evidence)
+    elif decision in {"propose_checkpoint", "revise_intake"}:
         _validate_confirmable_claims(draft, evidence)
     if decision == "propose_checkpoint" and state["current_module"] == 5 and checkpoint == 2:
         _validate_module_five_topics(clean_updates, draft, evidence)
@@ -796,6 +1247,7 @@ def validate_model_decision(
         "reply": reply,
         "draft": draft,
         "self_review": self_review,
+        "choices": choices,
         "profile_updates": clean_updates,
         "confidence": confidence,
     }
@@ -1062,6 +1514,8 @@ def _render_confirmable_reply(reply, draft, suffix):
 def render_model_reply(decision):
     reply = decision["reply"]
     if decision["decision"] == "propose_checkpoint":
+        if decision.get("choices"):
+            return reply
         reply = _render_confirmable_reply(
             reply, decision["draft"],
             "内容不准确时直接告诉我；保留后我会继续，不需要你重复说明。",
@@ -1163,12 +1617,19 @@ def apply_model_decision(value, raw, evidence_text, pending_id=None, discard_pen
         for item in prior_updates
         if isinstance(item, dict)
     )
-    decision = validate_model_decision(
-        candidate,
-        state,
-        str(evidence_text or "") + "\n" + prior_quotes,
-        allow_partial_profile_updates=True,
-    )
+    try:
+        decision = validate_model_decision(
+            candidate,
+            state,
+            str(evidence_text or "") + "\n" + prior_quotes,
+            allow_partial_profile_updates=True,
+        )
+    except ChoiceValidationError:
+        raise
+    except HarnessError as exc:
+        if is_choice_checkpoint(state["current_module"], state["module_step"] + 1):
+            raise ChoiceValidationError("choice_invalid", str(exc)) from exc
+        raise
     if decision["decision"] == "revise_intake":
         state["intake"].update(
             status="awaiting_confirmation",
@@ -1180,8 +1641,10 @@ def apply_model_decision(value, raw, evidence_text, pending_id=None, discard_pen
         # Any unconfirmed module draft used the old profile and must be rebuilt.
         state["pending"] = None
     elif decision["decision"] == "propose_checkpoint":
+        target_id = pending_id or uuid.uuid4().hex
+        choices = _materialize_choices(decision.get("choices") or [])
         state["pending"] = {
-            "id": pending_id or uuid.uuid4().hex,
+            "id": target_id,
             "kind": "checkpoint",
             "status": "awaiting_confirmation",
             "module": state["current_module"],
@@ -1191,6 +1654,12 @@ def apply_model_decision(value, raw, evidence_text, pending_id=None, discard_pen
             "profile_updates": decision["profile_updates"],
             "confidence": decision["confidence"],
         }
+        if choices:
+            state["pending"]["choices"] = choices
+            state.pop("choice_generation", None)
+            migration = state.get("migration")
+            if isinstance(migration, dict):
+                migration["needs_choice_generation"] = False
     elif decision["decision"] == "ask_follow_up":
         merged_updates = {}
         for item in prior_updates + decision["profile_updates"]:
@@ -1212,6 +1681,8 @@ def apply_model_decision(value, raw, evidence_text, pending_id=None, discard_pen
                 "profile_updates": list(merged_updates.values()),
                 "confidence": decision["confidence"],
             }
+            if pending and pending.get("choices"):
+                state["pending"]["choices"] = deepcopy(pending["choices"])
         else:
             state["pending"] = None
     _bump(state)
@@ -1236,6 +1707,7 @@ def intake_system_prompt(value):
 - 用户补充、纠正或反悔时，以最新原话为准，重新生成完整核对稿；“确认/可以”等字样与补充或纠正同时出现时，内容变更优先，绝不能宣布已确认。
 - profile_updates 必须覆盖 draft 中全部结构化用户事实与偏好，使用英文 snake_case 字段，并逐字引用对话中的 evidence_quote；不得把 AI 推断写成用户事实。
 - 不编造姓名、经历、收入或其他事实，不宣布基础资料已确认，不进入模块 1。
+- 基础访谈不使用候选卡，所有回复 choices=[]。
 - 最终只返回一个 JSON 对象；其中面向用户的 reply 和 draft 不提及 JSON、状态机、字段、数据库或系统规则。使用简体中文，具体、自然。"""
 
 
@@ -1253,13 +1725,23 @@ def system_prompt(value):
 - 只回答用户对已确认内容的复盘或解释，decision=answer_only，checkpoint=0，draft 和 profile_updates 为空。
 - 不重启模块，不宣布新的完成状态，不进入尚未开放的模块。
 - 不预设行业，不编造事实、案例、趋势或效果承诺。
+- 当前没有候选卡，choices=[]。
 - 最终只返回一个 JSON 对象；其中面向用户的 reply 和 draft 不提及 JSON、状态机、字段、数据库或系统规则。
 - 使用简体中文，具体、自然。"""
     checkpoint = workflow["checkpoints"][next_step - 1]
     editing = state.get("pending") if isinstance(state.get("pending"), dict) else None
     editing_note = ""
     if editing and editing.get("status") == "editing":
-        editing_note = "\n用户正在修改的旧稿：\n" + str(editing.get("draft") or "")[:4000]
+        if editing.get("choices"):
+            editing_note = "\n用户正在修改上一组三个候选；候选正文会作为不可信资料单独提供。"
+        else:
+            editing_note = "\n用户正在修改的旧稿：\n" + str(editing.get("draft") or "")[:4000]
+    choice_rules = ""
+    if is_choice_checkpoint(module, next_step):
+        choice_rules = f"""
+- 当前是固定三选一断点。信息足够时 decision=propose_checkpoint、checkpoint=2，choices 必须恰好 {CHOICE_COUNT} 项，draft 和 profile_updates 必须为空。
+- 每项 choices 只含 title、summary、reason、caution、recommended；长度分别不超过 {CHOICE_FIELD_LIMITS['title']}、{CHOICE_FIELD_LIMITS['summary']}、{CHOICE_FIELD_LIMITS['reason']}、{CHOICE_FIELD_LIMITS['caution']} 个 Unicode 字符，标题不得重复，最多一项 recommended=true。
+- reply 只用一句话说明现在要选择什么，不在 reply 中重复三项内容，不替用户选择。"""
     return f"""你是黄雀 IP12 的中立 IP 咨询教练，适用于任何职业和行业。
 
 当前模块：{module}. {workflow['name']}
@@ -1274,7 +1756,8 @@ def system_prompt(value):
 - 信息不足时 decision=ask_follow_up，只问一个最有价值、容易回答且尚未回答的问题。
 - decision=ask_follow_up 时 checkpoint=0、draft 和 self_review 为空；把本轮已明确说出的用户事实或偏好放入 profile_updates，等待最终核对。
 - 用户只是在提问或跑题时 decision=answer_only，checkpoint=0，draft、self_review 和 profile_updates 都为空。
-- 信息足够时 decision=propose_checkpoint，draft 只包含当前断点的完整可确认内容，profile_updates 必须是当前断点的完整最新快照。
+- 非固定三选一断点信息足够时 decision=propose_checkpoint，draft 只包含当前断点的完整可确认内容，profile_updates 必须是当前断点的完整最新快照。
+{choice_rules}
 - 用户只是询问、讨论现有草稿或暂时跑题时 decision=answer_only，不改变断点；用户补充、纠正或反悔时，重做当前断点的完整草稿。
 - 用户指出重复、理解错误、遗漏或体验问题时，先用一句话明确说明刚才错在哪里，再给出已经采取的修正；能从上下文判断时立即修改，不能把定位和操作责任推回用户。
 - 不复述已经确认的完整内容。只说明本轮新增、删除或改变的部分；需要核对完整稿时再展示当前完整稿一次。
@@ -1287,5 +1770,6 @@ def system_prompt(value):
 - 模块 5 断点 2 必须严格输出 3 个种类、每类 10 个具体选题，并在 profile_updates 中按种类使用 topic_1_01 到 topic_1_10、topic_2_01 到 topic_2_10、topic_3_01 到 topic_3_10：kind=ai_option、value 与 draft 题目完全一致、evidence_quote 逐字引用直接支撑该题目的用户原话。泛泛的“垂直行业”不能支撑医疗、金融等具体行业，也不能支撑客户案例或成功结果；证据不足时只围绕用户真实过程、边界、反思和待验证计划出题。
 - 知识资料只学方法和结构，不能抄写示例人物内容。
 - self_review 只供内部校验，不得在 reply 或 draft 中显示“自评”字样。
+- 所有回复都必须返回 choices 字段；非三选一断点 choices=[]。
 - 最终只返回一个 JSON 对象；其中面向用户的 reply 和 draft 不提及 JSON、状态机、字段、数据库、内部步骤编号或系统规则。
 - 使用简体中文，具体、自然，不喊口号。"""
