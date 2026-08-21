@@ -79,7 +79,7 @@ class IP12AgentProductionUITests(unittest.TestCase):
     def test_prepare_and_quote_submit_typed_options(self):
         prepare = self.html[self.html.index("async function prepareProduction"):self.html.index("async function requestProductionQuote")]
         self.assertIn("options=typedProductionOptions(item||{},item&&item.options||{})", prepare)
-        self.assertIn("preferred_action:item&&item.preferred_action,options:options", prepare)
+        self.assertIn("preferred_action:item&&item.preferred_action,allow_system_media:item&&item.allow_system_media===true,options:options", prepare)
         quote = self.html[self.html.index("async function requestProductionQuote"):self.html.index("async function confirmProduction")]
         self.assertIn("var collected=collectProductionOptions(record)", quote)
         self.assertIn("if(collected.missing.length)", quote)
@@ -344,6 +344,22 @@ console.log(JSON.stringify({
             self.html.index("async function requestProductionQuote")
         ]
         self.assertIn("appendProductionMessage(data.material_request_message)", prepare)
+
+    def test_user_media_choices_render_preview_and_audition_cards(self):
+        controls = self.html[
+            self.html.index("function productionFieldSpec"):
+            self.html.index("function productionOptionsHtml")
+        ]
+        self.assertIn("preview_url", controls)
+        self.assertIn("preview_kind", controls)
+        self.assertIn("productionChoiceCards", controls)
+        self.assertIn('role="radiogroup"', controls)
+        self.assertIn("<img", controls)
+        self.assertIn("<audio controls", controls)
+        self.assertIn("我的素材", controls)
+        self.assertIn("公共素材", controls)
+        self.assertIn("x-hq-upload-route", self.html)
+        self.assertIn("rememberProductionChoice(event)", self.html)
 
 
 if __name__ == "__main__":

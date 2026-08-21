@@ -143,7 +143,8 @@ class IP12HarnessActionsUITests(unittest.TestCase):
             source.index("function productionOptionsHtml")
         ]
 
-        self.assertIn("if(!missing.length)required.forEach", field_specs)
+        self.assertIn("required.forEach", field_specs)
+        self.assertIn("spec.choiceCards||!missing.length", field_specs)
         self.assertIn("descriptor.oneOf", field_spec)
         self.assertIn("choice.const", field_spec)
         self.assertIn("!fields.some", options_html)
