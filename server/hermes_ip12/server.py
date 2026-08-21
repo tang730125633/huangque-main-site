@@ -620,6 +620,57 @@ def _production_target_from_message(convo, message):
     raise coach_harness.HarnessError("请先打开模块 6 中要制作的具体文案，或在消息里写明完整标题")
 
 
+def _post_module_six_production_action(convo):
+    state = normalize_coach_state(convo.get("coach_state"))
+    if 6 not in state.get("completed_modules", []) or convo.get("productions"):
+        return None
+    pack = (convo.get("deliverables") or {}).get("6") or {}
+    for category in pack.get("categories") or []:
+        for topic in category.get("topics") or []:
+            target = {
+                "category_id": str(category.get("id") or ""),
+                "topic_id": str(topic.get("id") or ""),
+            }
+            try:
+                _production_source(convo, target)
+            except coach_harness.HarnessError:
+                continue
+            return {
+                "type": "prepare_production",
+                "label": "开始制作口播视频",
+                "primary": True,
+                "content_target": target,
+                "requested_result": "video",
+                "preferred_action": "digital-ip-text-generate",
+                "candidate_actions": ["digital-ip-text-generate"],
+                "options": {},
+                "script_title": str(topic.get("title") or "第一篇口播文案"),
+            }
+    return None
+
+
+def _post_module_six_capability_question(state, message):
+    if 6 not in state.get("completed_modules", []):
+        return False
+    text = re.sub(r"\s+", "", str(message or ""))
+    return bool(re.search(
+        r"(?:具备|拥有|支持|有).{0,8}(?:哪些|什么)?(?:能力|功能)"
+        r"|(?:可以|能).{0,10}(?:做|制作|完成).{0,8}(?:什么|哪些|事情|内容)"
+        r"|接下来.{0,6}(?:做什么|怎么做)",
+        text,
+    ))
+
+
+def _post_module_six_handoff_reply(action):
+    return (
+        "六步已经完成，我可以继续调用黄雀的图片、音频和视频制作能力。"
+        "根据当前成果，我建议先把《%s》制作成数字人口播视频。"
+        "文案会自动复用；接下来只需要选择数字人形象和声音。"
+        "我会先显示实时报价，未经你确认不会提交或扣点。"
+        % action.get("script_title", "第一篇口播文案")
+    )
+
+
 def _production_public(record):
     """Never return a bridge quote token through a project read endpoint."""
     result = json.loads(json.dumps(record, ensure_ascii=False))
@@ -2199,6 +2250,9 @@ def api_get_convo(cid):
         if message.get("role") == "assistant" and not isinstance(message.get("agent_trace"), dict):
             message["agent_trace"] = {"status": "legacy_unknown"}
     public_convo["harness_actions"] = coach_harness.available_actions(public_convo["coach_state"])
+    handoff = _post_module_six_production_action(convo)
+    if handoff and not public_convo["harness_actions"]:
+        public_convo["harness_actions"] = [handoff]
     public_convo["productions"] = _productions_summary(convo)
     return jsonify(public_convo)
 
@@ -3912,7 +3966,7 @@ def _process_production_intent_turn(
         )
     elif selected_action == "cinematic-open-generate":
         options["prompt"] = instruction
-    assistant = (
+    assistant = _post_module_six_handoff_reply(intent) if intent.get("post_module_six_handoff") else (
         (
             "画布 Agent 规划需要读取当前画布节点和连线。我会直接带你进入 Canvas 并保留当前 Project；"
             "在那里确认规划后可以返回继续对话。"
@@ -4055,14 +4109,21 @@ def _process_action_turn(cid, action, expected_revision, user_message="", reques
 
     auto_deliverables, foundation_report = _run_completion_effects(cid, new_completed)
     auto_deliverables = {**continued_deliverables, **auto_deliverables}
-    latest_state = normalize_coach_state(load_conversation(cid).get("coach_state"))
-    return _chat_result(
+    latest_convo = load_conversation(cid)
+    latest_state = normalize_coach_state(latest_convo.get("coach_state"))
+    result = _chat_result(
         assistant,
         latest_state,
         new_completed=new_completed,
         auto_deliverables=auto_deliverables,
         foundation_report=foundation_report,
-    ), 200
+    )
+    if 6 in new_completed:
+        handoff = _post_module_six_production_action(latest_convo)
+        if handoff:
+            result["assistant"] += "\n\n" + _post_module_six_handoff_reply(handoff)
+            result["actions"] = [handoff]
+    return result, 200
 
 
 def process_chat_request(body):
@@ -4145,10 +4206,25 @@ def process_chat_request(body):
                 else:
                     action_revision = body.get("expected_revision")
                 if action is None:
-                    production_intent = (
-                        _expanded_production_intent(user_message)
-                        or coach_harness.production_intent(user_message)
+                    handoff = (
+                        _post_module_six_production_action(convo)
+                        if _post_module_six_capability_question(state, user_message)
+                        else None
                     )
+                    if handoff:
+                        production_intent = {
+                            "capability_family": "video",
+                            "recommended_action": "digital-ip-text-generate",
+                            "candidate_actions": ["digital-ip-text-generate"],
+                            "post_module_six_handoff": True,
+                            "script_title": handoff["script_title"],
+                        }
+                        content_target = handoff["content_target"]
+                    else:
+                        production_intent = (
+                            _expanded_production_intent(user_message)
+                            or coach_harness.production_intent(user_message)
+                        )
                     source_optional = production_intent and production_intent.get("recommended_action") in _SOURCE_FREE_ACTIONS
                     source_optional = source_optional or bool(
                         production_intent and production_intent.get("help_only")

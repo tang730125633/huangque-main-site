@@ -408,6 +408,41 @@ def _pack_scene_fragments(fragments, target_units, min_units, max_units):
     return packed
 
 
+def _rebalance_short_edges(segments, min_units, max_units):
+    balanced = list(segments)
+    if len(balanced) < 2:
+        return balanced
+
+    if _narration_units(balanced[0]) < min_units:
+        combined = balanced[0] + balanced[1]
+        combined_units = _narration_units(combined)
+        if combined_units <= max_units:
+            balanced[:2] = [combined]
+        else:
+            target = max(min_units, math.ceil(combined_units / 2))
+            balanced[:2] = _hard_split_scene(combined, target)
+
+    if len(balanced) > 1 and _narration_units(balanced[-1]) < min_units:
+        combined = balanced[-2] + balanced[-1]
+        combined_units = _narration_units(combined)
+        if combined_units <= max_units:
+            balanced[-2:] = [combined]
+        else:
+            target = max(min_units, math.ceil(combined_units / 2))
+            balanced[-2:] = _hard_split_scene(combined, target)
+    return balanced
+
+
+def _limit_auto_scene_count(segments, maximum=20):
+    if len(segments) <= maximum:
+        return segments
+    text = "".join(segments)
+    units = _narration_units(text)
+    if units <= 0:
+        return [text]
+    return _hard_split_scene(text, math.ceil(units / maximum))
+
+
 def _fixed_segments(text, speech_rate=1.0):
     normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
     target_units = max(1, round(
@@ -427,10 +462,13 @@ def _fixed_segments(text, speech_rate=1.0):
         fragments = _paragraph_scene_fragments(
             paragraph, target_units, max_units
         )
-        segments.extend(_pack_scene_fragments(
+        packed = _pack_scene_fragments(
             fragments, target_units, min_units, max_units
+        )
+        segments.extend(_rebalance_short_edges(
+            packed, min_units, max_units
         ))
-    return segments
+    return _limit_auto_scene_count(segments)
 
 
 def _style_key(payload):
@@ -481,17 +519,27 @@ def prepare_payload(payload, username=""):
         raise ValueError("请选择主题创作或完整文案")
     speech_rate = _speech_rate(body)
     if mode == "fixed":
-        segments = _fixed_segments(raw_text, speech_rate)
+        normalized = raw_text.replace("\r\n", "\n").replace("\r", "\n")
+        paragraphs = [
+            part.strip() for part in re.split(r"\n\s*\n", normalized)
+            if part.strip()
+        ]
+        source_text = "\n\n".join(paragraphs)
+        if len(source_text) < 2:
+            raise ValueError("请输入至少 2 个字的主题或文案")
+        if len(source_text) > 1000:
+            raise ValueError("文案不能超过 1000 个字")
+        if len(paragraphs) > 20:
+            raise ValueError("完整文案最多支持 20 个段落，请合并后再提交")
+        segments = _fixed_segments(source_text, speech_rate)
         text = "\n\n".join(segments)
     else:
         text = re.sub(r"\s+", " ", raw_text).strip()
         segments = [text] if text else []
-    if len(text) < 2:
-        raise ValueError("请输入至少 2 个字的主题或文案")
-    if len(text) > 1000:
-        raise ValueError("文案不能超过 1000 个字")
-    if mode == "fixed" and len(segments) > 20:
-        raise ValueError("完整文案最多支持 20 个段落，请合并后再提交")
+        if len(text) < 2:
+            raise ValueError("请输入至少 2 个字的主题或文案")
+        if len(text) > 1000:
+            raise ValueError("文案不能超过 1000 个字")
     template = str(body.get("template") or "1080x1920/image_default.html").strip()
     if template not in TEMPLATE_KEYS:
         raise ValueError("请选择有效的视频模板")

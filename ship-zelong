@@ -18,6 +18,8 @@ usage() {
   # 1. 必须先 dry-run（会输出 PLAN_ID）
   ./ship-zelong --commit <40位SHA> [--source main|dev/zelong] --file <白名单文件> [--file ...]
   ./ship-zelong --commit <实时origin/main的40位SHA> --adspower-baseline
+  ./ship-zelong --commit <实时origin/main的40位SHA> --ip12-preview
+  ./ship-zelong --commit <远端预览分支的40位SHA> --ip12-preview --preview-branch codex/ip12-preview-<名称>
 
   # 2. 参数完全相同，并携带 PLAN_ID 才会真正部署
   ./ship-zelong --commit <40位SHA> [--source main|dev/zelong] --file <文件> [--file ...] --apply --plan <PLAN_ID>
@@ -44,6 +46,22 @@ load_adspower_baseline() {
     server/wechat_virtual_pay.py
     server/content_domains/miniprogram_security.py
     deploy/systemd/huangque-content.service.d/hardening.conf
+  )
+}
+
+load_ip12_preview() {
+  local commit="$1" path
+  while IFS= read -r path; do
+    case "$path" in
+      server/hermes_ip12/*.py|server/hermes_ip12/README.md|server/hermes_ip12/prompt.md|server/hermes_ip12/requirements.txt|server/hermes_ip12/templates/*.html)
+        files+=("$path") ;;
+    esac
+  done < <(git ls-tree -r --name-only "$commit" -- server/hermes_ip12)
+  files+=(
+    deploy/zelong/hermes-ip12-preview.service
+    deploy/zelong/hermes-ip12-preview-requirements.txt
+    deploy/zelong/nginx-hermes-ip12-preview.conf
+    deploy/zelong/run-hermes-ip12-preview.sh
   )
 }
 
@@ -98,6 +116,20 @@ map_path() {
       printf '20|/home/ubuntu/content-api/%s|content|0\n' "$rest" ;;
     server/content_api.py)
       printf '30|/home/ubuntu/content-api/content_api.py|content|0\n' ;;
+    server/hermes_ip12/*.py|server/hermes_ip12/README.md|server/hermes_ip12/prompt.md|server/hermes_ip12/requirements.txt)
+      rest="${path#server/hermes_ip12/}"
+      printf '20|/home/ubuntu/hermes-preview/%s|hermes|0\n' "$rest" ;;
+    server/hermes_ip12/templates/*.html)
+      rest="${path#server/hermes_ip12/}"
+      printf '20|/home/ubuntu/hermes-preview/%s|hermes|0\n' "$rest" ;;
+    deploy/zelong/run-hermes-ip12-preview.sh)
+      printf '25|/home/ubuntu/hermes-preview/run-preview.sh|hermes|0\n' ;;
+    deploy/zelong/hermes-ip12-preview-requirements.txt)
+      printf '25|/home/ubuntu/hermes-preview/preview-requirements.txt|hermes|0\n' ;;
+    deploy/zelong/nginx-hermes-ip12-preview.conf)
+      printf '35|/etc/nginx/snippets/hermes-ip12-preview.conf|hermes|0\n' ;;
+    deploy/zelong/hermes-ip12-preview.service)
+      printf '35|/etc/systemd/system/hermes-ip12-preview.service|hermes|1\n' ;;
     deploy/systemd/huangque-auth.service)
       printf '35|/etc/systemd/system/huangque-auth.service|auth|1\n' ;;
     deploy/systemd/huangque-content.service)
@@ -127,13 +159,23 @@ validate_source_ref() {
   case "$1" in main|dev/zelong) return 0;; *) return 1;; esac
 }
 
+validate_preview_ref() {
+  [[ "$1" =~ ^codex/ip12-preview-[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
+}
+
 validate_remote_source() {
   local requested source_ref remote_commit
   requested="$(printf '%s' "$1" | tr 'A-F' 'a-f')"
   source_ref="$2"
-  validate_source_ref "$source_ref" || return 1
   remote_commit="$(git ls-remote --exit-code origin "refs/heads/$source_ref" 2>/dev/null | awk 'NR == 1 {print $1}')"
   test -n "$remote_commit" && test "$requested" = "$remote_commit"
+}
+
+validate_preview_content() {
+  local main_commit="$1" requested="$2"
+  shift 2
+  validate_unchanged_paths "$main_commit" "$requested" "$@" || return 1
+  test -z "$(git diff --diff-filter=D --name-only "$main_commit" "$requested" -- server/hermes_ip12)"
 }
 
 validate_unchanged_paths() {
@@ -239,10 +281,10 @@ sudo install -d -o root -g root -m 700 "$backup/files" "$backup/sqlite"
 sudo cp "$manifest" "$backup/manifest.tsv"
 sudo chmod 0644 "$backup/manifest.tsv"
 sudo sh -c "printf 'commit=%s\nplan=%s\nrun=%s\ndomain=%s\n' '$commit' '$plan' '$run' '$domain' >'$backup/metadata'"
-need_auth=0; need_content=0; need_imggen=0; need_leadgen=0; need_reload=0
+need_auth=0; need_content=0; need_imggen=0; need_leadgen=0; need_hermes=0; need_reload=0
 while IFS="$(printf '\t')" read -r rank path target expected service reload; do
   case "$target" in
-    /home/ubuntu/auth-service/*|/home/ubuntu/content-api/*|/etc/systemd/system/huangque-auth.service|/etc/systemd/system/huangque-auth.service.d/*|/etc/systemd/system/huangque-content.service|/etc/systemd/system/huangque-content.service.d/*|/var/www/huangquechuanmei/*) ;;
+    /home/ubuntu/auth-service/*|/home/ubuntu/content-api/*|/home/ubuntu/hermes-preview/*|/etc/nginx/snippets/hermes-ip12-preview.conf|/etc/systemd/system/hermes-ip12-preview.service|/etc/systemd/system/huangque-auth.service|/etc/systemd/system/huangque-auth.service.d/*|/etc/systemd/system/huangque-content.service|/etc/systemd/system/huangque-content.service.d/*|/var/www/huangquechuanmei/*) ;;
     *) echo "unsafe target: $target" >&2; exit 2;;
   esac
   test "$(sha256sum "$upload/$path" | awk '{print $1}')" = "$expected"
@@ -257,8 +299,21 @@ while IFS="$(printf '\t')" read -r rank path target expected service reload; do
   test "$service" = content && need_content=1
   test "$service" = imggen && need_imggen=1
   test "$service" = leadgen && need_leadgen=1
+  test "$service" = hermes && need_hermes=1
   test "$reload" = 1 && need_reload=1
 done <"$manifest"
+
+if test "$need_hermes" = 1; then
+  for target in /etc/nginx/sites-available/huangquechuanmei /home/ubuntu/hermes-preview/.ip12-release-sha; do
+    if sudo test -e "$target"; then
+      old="$(sudo sha256sum "$target" | awk '{print $1}')"
+      sudo cp -a --parents "$target" "$backup/files"
+      sudo sh -c "printf 'PRESENT\t%s\t%s\n' '$target' '$old' >>'$backup/restore.tsv'"
+    else
+      sudo sh -c "printf 'MISSING\t%s\t-\n' '$target' >>'$backup/restore.tsv'"
+    fi
+  done
+fi
 
 # SQLite CLI 的 .backup 使用 online backup API，不拷贝正在写入的 db/wal 文件。
 backup_db() { db="$1"; name="$2"; sudo test ! -f "$db" || sudo sqlite3 "$db" ".backup '$backup/sqlite/$name'"; }
@@ -273,7 +328,7 @@ fi
 while IFS="$(printf '\t')" read -r rank path target expected service reload; do
   dir="$(dirname "$target")"
   case "$target" in
-    /etc/systemd/*) owner=root; group=root;;
+    /etc/systemd/*|/etc/nginx/*) owner=root; group=root;;
     /var/www/*) owner=www-data; group=www-data;;
     *) owner=ubuntu; group=ubuntu;;
   esac
@@ -295,11 +350,39 @@ fi
 if test "$need_leadgen" = 1; then
   sudo -u ubuntu bash -c 'cd /home/ubuntu/content-api && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -c "import leadgen_api"'
 fi
+if test "$need_hermes" = 1; then
+  sudo install -d -o ubuntu -g ubuntu -m 0700 /home/ubuntu/hermes-preview-data
+  sudo install -d -o ubuntu -g ubuntu -m 0755 /home/ubuntu/hermes-preview-deps
+  sudo -u ubuntu /usr/bin/python3 -m pip install --disable-pip-version-check --upgrade --target /home/ubuntu/hermes-preview-deps -r /home/ubuntu/hermes-preview/preview-requirements.txt
+  sudo sh -c "printf '%s\n' '$commit' > /home/ubuntu/hermes-preview/.ip12-release-sha"
+  sudo chown ubuntu:ubuntu /home/ubuntu/hermes-preview/.ip12-release-sha
+  sudo /usr/bin/python3 - /etc/nginx/sites-available/huangquechuanmei <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+line = "    include /etc/nginx/snippets/hermes-ip12-preview.conf;\n"
+if line not in text:
+    marker = "    charset utf-8;\n"
+    if text.count(marker) != 1:
+        raise SystemExit("cannot place Hermes preview nginx include")
+    path.write_text(text.replace(marker, marker + line, 1), encoding="utf-8")
+PY
+  sudo -u ubuntu /bin/bash /home/ubuntu/hermes-preview/run-preview.sh --check
+fi
 test "$need_reload" = 0 || sudo systemctl daemon-reload
 if test "$need_auth" = 1; then sudo systemctl restart huangque-auth; systemctl is-active --quiet huangque-auth; fi
 if test "$need_imggen" = 1; then sudo systemctl restart huangque-imggen-api; systemctl is-active --quiet huangque-imggen-api; fi
 if test "$need_leadgen" = 1; then sudo systemctl restart huangque-leadgen-api; systemctl is-active --quiet huangque-leadgen-api; fi
 if test "$need_content" = 1; then sudo systemctl restart huangque-content; systemctl is-active --quiet huangque-content; fi
+if test "$need_hermes" = 1; then
+  sudo nginx -t
+  sudo systemctl enable hermes-ip12-preview
+  sudo systemctl restart hermes-ip12-preview
+  systemctl is-active --quiet hermes-ip12-preview
+  sudo systemctl reload nginx
+fi
 
 while IFS="$(printf '\t')" read -r rank path target expected service reload; do
   test "$(sudo sha256sum "$target" | awk '{print $1}')" = "$expected"
@@ -308,6 +391,7 @@ curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --m
 curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/gen/health" >/dev/null
 test "$need_imggen" = 0 || curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/gen/banana/health" >/dev/null
 test "$need_leadgen" = 0 || curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "http://127.0.0.1:8100/api/gen/leadgen/health" >/dev/null
+test "$need_hermes" = 0 || test "$(curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/workbench/ip12/healthz" | python3 -c 'import json, sys; print(json.load(sys.stdin).get("release_sha", ""))')" = "$commit"
 sudo install -d -o root -g root -m 755 "$state_root"
 manifest_sha="$(sha256sum "$manifest" | awk '{print $1}')"
 sudo sh -c "printf 'commit=%s\nplan=%s\nrun=%s\nmanifest_sha256=%s\n' '$commit' '$plan' '$run' '$manifest_sha' >'$state_root/current'"
@@ -320,6 +404,7 @@ REMOTE
   fi
   curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "$BASE_URL/api/auth/health" >/dev/null
   curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "$BASE_URL/api/gen/health" >/dev/null
+  test "$(awk -F '\t' '$5 == "hermes" { found=1 } END { print found+0 }' "$manifest")" = 0 || test "$(curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "$BASE_URL/workbench/ip12/healthz" | python3 -c 'import json, sys; print(json.load(sys.stdin).get("release_sha", ""))')" = "$commit"
 }
 
 rollback_payload() {
@@ -341,17 +426,19 @@ test "$pending_refunds" = 0 || {
   echo "refuse rollback: $pending_refunds refunds are still pending confirmation" >&2
   exit 1
 }
-need_auth=0; need_content=0; need_imggen=0; need_leadgen=0; need_reload=0
+need_auth=0; need_content=0; need_imggen=0; need_leadgen=0; need_hermes=0; need_reload=0
 while IFS="$(printf '\t')" read -r rank path target expected service reload; do
   test "$service" = auth && need_auth=1
   test "$service" = content && need_content=1
   test "$service" = imggen && need_imggen=1
   test "$service" = leadgen && need_leadgen=1
+  test "$service" = hermes && need_hermes=1
   test "$reload" = 1 && need_reload=1
 done <"$backup/manifest.tsv"
+test "$need_hermes" = 0 || sudo systemctl stop hermes-ip12-preview 2>/dev/null || true
 while IFS="$(printf '\t')" read -r status target expected; do
   case "$target" in
-    /home/ubuntu/auth-service/*|/home/ubuntu/content-api/*|/etc/systemd/system/huangque-auth.service|/etc/systemd/system/huangque-auth.service.d/*|/etc/systemd/system/huangque-content.service|/etc/systemd/system/huangque-content.service.d/*|/var/www/huangquechuanmei/*) ;;
+    /home/ubuntu/auth-service/*|/home/ubuntu/content-api/*|/home/ubuntu/hermes-preview/*|/etc/nginx/snippets/hermes-ip12-preview.conf|/etc/nginx/sites-available/huangquechuanmei|/etc/systemd/system/hermes-ip12-preview.service|/etc/systemd/system/huangque-auth.service|/etc/systemd/system/huangque-auth.service.d/*|/etc/systemd/system/huangque-content.service|/etc/systemd/system/huangque-content.service.d/*|/var/www/huangquechuanmei/*) ;;
     *) exit 2;;
   esac
   if test "$status" = PRESENT; then
@@ -373,24 +460,40 @@ if test "$need_auth" = 1; then sudo systemctl restart huangque-auth; systemctl i
 if test "$need_imggen" = 1; then sudo systemctl restart huangque-imggen-api; systemctl is-active --quiet huangque-imggen-api; fi
 if test "$need_leadgen" = 1; then sudo systemctl restart huangque-leadgen-api; systemctl is-active --quiet huangque-leadgen-api; fi
 if test "$need_content" = 1; then sudo systemctl restart huangque-content; systemctl is-active --quiet huangque-content; fi
+if test "$need_hermes" = 1; then
+  sudo nginx -t
+  sudo systemctl reload nginx
+  if sudo test -f /etc/systemd/system/hermes-ip12-preview.service; then
+    sudo -u ubuntu /bin/bash /home/ubuntu/hermes-preview/run-preview.sh --check
+    sudo systemctl restart hermes-ip12-preview
+    systemctl is-active --quiet hermes-ip12-preview
+  else
+    sudo systemctl disable hermes-ip12-preview 2>/dev/null || true
+  fi
+fi
 curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/auth/health" >/dev/null
 curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/gen/health" >/dev/null
 test "$need_imggen" = 0 || curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/gen/banana/health" >/dev/null
 test "$need_leadgen" = 0 || curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "http://127.0.0.1:8100/api/gen/leadgen/health" >/dev/null
+if test "$need_hermes" = 1 && sudo test -f /etc/systemd/system/hermes-ip12-preview.service; then
+  curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/workbench/ip12/healthz" >/dev/null
+fi
 printf '✅ 已回滚部署文件 | RUN_ID=%s\n' "$run"
 printf 'ℹ SQLite online backup 保留在 %s/sqlite，未自动覆盖数据库。\n' "$backup"
 REMOTE
 }
 
 main() {
-  local commit="" source_ref="main" source_set=0 apply=0 plan="" rollback="" baseline=0 tmp identity plan_id payload
+  local commit="" source_ref="main" source_set=0 preview_branch="" apply=0 plan="" rollback="" baseline=0 ip12_preview=0 tmp identity plan_id payload main_commit
   local -a files=()
   while test $# -gt 0; do
     case "$1" in
       --commit) test $# -ge 2 || die "--commit 缺少值"; commit="$2"; shift 2;;
       --source) test $# -ge 2 || die "--source 缺少值"; source_ref="$2"; source_set=1; shift 2;;
+      --preview-branch) test $# -ge 2 || die "--preview-branch 缺少值"; preview_branch="$2"; source_ref="$2"; source_set=1; shift 2;;
       --file) test $# -ge 2 || die "--file 缺少值"; files+=("$2"); shift 2;;
       --adspower-baseline) baseline=1; shift;;
+      --ip12-preview) ip12_preview=1; shift;;
       --apply) apply=1; shift;;
       --plan) test $# -ge 2 || die "--plan 缺少值"; plan="$2"; shift 2;;
       --rollback) test $# -ge 2 || die "--rollback 缺少值"; rollback="$2"; shift 2;;
@@ -419,13 +522,35 @@ main() {
   fi
 
   validate_commit "$commit" || die "--commit 必须是本机已存在的完整 40 位 commit SHA"
-  validate_source_ref "$source_ref" || die "--source 只允许 main 或 dev/zelong"
+  if test -n "$preview_branch"; then
+    validate_preview_ref "$preview_branch" || die "预览分支只允许 codex/ip12-preview-<名称>"
+    test "$ip12_preview" = 1 || die "--preview-branch 只能与 --ip12-preview 一起使用"
+  else
+    validate_source_ref "$source_ref" || die "--source 只允许 main 或 dev/zelong"
+  fi
   validate_remote_source "$commit" "$source_ref" || die "--commit 必须等于实时 origin/$source_ref；拒绝 stale ref 或未 push 的 commit"
   if test "$baseline" = 1; then
     test "$source_ref" = "main" || die "--adspower-baseline 只允许 origin/main"
     test "${#files[@]}" = 0 || die "--adspower-baseline 禁止与 --file 混用"
     load_adspower_baseline
     validate_adspower_baseline_content "$commit" "${files[@]}" || die "AdsPower 的 11 个文件已相对审核来源 $ADSPOWER_BASELINE_SOURCE_COMMIT 发生变化，必须重新审核"
+  fi
+  if test "$ip12_preview" = 1; then
+    if test -n "$preview_branch"; then
+      main_commit="$(git ls-remote --exit-code origin refs/heads/main | awk 'NR == 1 {print $1}')"
+      git cat-file -e "$main_commit^{commit}" 2>/dev/null || die "本机缺少实时 origin/main，请先 fetch"
+      validate_preview_content "$main_commit" "$commit" \
+        deploy/zelong/hermes-ip12-preview.service \
+        deploy/zelong/hermes-ip12-preview-requirements.txt \
+        deploy/zelong/nginx-hermes-ip12-preview.conf \
+        deploy/zelong/run-hermes-ip12-preview.sh \
+        || die "预览分支不得修改部署脚手架或删除 Agent 文件"
+    else
+      test "$source_ref" = "main" || die "--ip12-preview 只允许 origin/main 或受限预览分支"
+    fi
+    test "$baseline" = 0 || die "--ip12-preview 禁止与 --adspower-baseline 混用"
+    test "${#files[@]}" = 0 || die "--ip12-preview 禁止与 --file 混用"
+    load_ip12_preview "$commit"
   fi
   test "${#files[@]}" -gt 0 || die "至少传入一个 --file"
   mkdir -p "$tmp/stage"

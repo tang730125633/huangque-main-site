@@ -1036,6 +1036,38 @@ class PixelleVideoTests(unittest.TestCase):
         self.assertEqual(text, "".join(item["line"] for item in slow["scenes"]))
         self.assertEqual(text, "".join(item["line"] for item in fast["scenes"]))
 
+    def test_fixed_copy_preserves_500_and_1000_character_input_contract(self):
+        for size in (500, 1000):
+            text = "中" * size
+            for speech_rate in (0.8, 1.0, 1.6):
+                prepared = self.pixelle.prepare_payload({
+                    "text": text,
+                    "mode": "fixed",
+                    "speech_rate": speech_rate,
+                })
+                self.assertLessEqual(prepared["n_scenes"], 20)
+                self.assertEqual(
+                    text,
+                    "".join(scene["line"] for scene in prepared["scenes"]),
+                )
+
+        with self.assertRaisesRegex(ValueError, "1000"):
+            self.pixelle.prepare_payload({"text": "中" * 1001, "mode": "fixed"})
+
+    def test_fixed_copy_rebalances_avoidable_short_edge_scenes(self):
+        cases = (
+            "中" * 36 + "。好。",
+            "好。" + "中" * 36 + "。",
+            "好。" + "中" * 36 + "。好。",
+        )
+        for text in cases:
+            segments = self.pixelle._fixed_segments(text, 1.0)
+            self.assertEqual(text, "".join(segments))
+            self.assertTrue(all(
+                self.pixelle._estimated_scene_duration(segment, 1.0) >= 3.0
+                for segment in segments
+            ), (text, segments))
+
     def test_fixed_copy_rejects_more_than_twenty_upstream_paragraphs(self):
         text = "\n\n".join("第%d段" % index for index in range(21))
         with self.assertRaisesRegex(ValueError, "最多支持 20 个段落"):

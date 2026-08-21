@@ -1240,6 +1240,95 @@ print("IP12_PROJECT_BACKUP_OK")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("IP12_PROJECT_BACKUP_OK", result.stdout)
 
+    def test_module_six_completion_hands_off_to_talking_head_production(self):
+        script = r'''
+from unittest.mock import patch
+import server
+import security
+
+server.current_account_id = lambda: "acct_handoff"
+security._validate_token = lambda token: {"account_id": "acct_handoff", "username": "handoff", "role": "member"}
+security.RATE_REQUESTS = 100
+client = server.app.test_client()
+client.environ_base["HTTP_AUTHORIZATION"] = "Bearer test-token"
+
+pack = {"kind": "content_pack_v1", "format": "featured_3_v1", "categories": [
+    {"id": f"category_{index}", "name": f"方向{index}", "topics": [{
+        "id": f"topic_{index}", "title": "把模糊需求变成活动方案" if index == 1 else f"精选选题{index}",
+        "status": "ready", "versions": [{"version": 1, "content": f"第{index}篇完整口播正文"}],
+    }]}
+    for index in (1, 2, 3)
+]}
+
+completed_id = client.post("/api/conversations", json={"title": "已完成六步"}).get_json()["id"]
+completed = server.load_conversation(completed_id)
+completed_state = server.coach_harness.initial_state()
+completed_state.update(current_module=6, module_step=3, completed_modules=[1, 2, 3, 4, 5, 6])
+completed_state["intake"]["status"] = "complete"
+completed["coach_state"] = completed_state
+completed["deliverables"] = {"6": pack}
+server.save_conversation(completed_id, completed)
+
+detail = client.get(f"/api/conversations/{completed_id}").get_json()
+assert detail["harness_actions"][0]["type"] == "prepare_production", detail
+assert detail["harness_actions"][0]["preferred_action"] == "digital-ip-text-generate", detail
+assert detail["harness_actions"][0]["content_target"] == {"category_id": "category_1", "topic_id": "topic_1"}, detail
+
+with patch.object(server, "call_ai") as model:
+    capability = client.post("/api/chat-complete", json={
+        "conversation_id": completed_id,
+        "message": "OK的，然后你现在具备哪些能力啊，可以做些什么事情",
+        "expected_revision": completed_state["revision"],
+        "request_id": "post-module-six-capabilities",
+    })
+    model.assert_not_called()
+assert capability.status_code == 200, capability.get_data(as_text=True)
+capability_body = capability.get_json()
+assert capability_body["actions"][0]["type"] == "prepare_production", capability_body
+assert capability_body["actions"][0]["preferred_action"] == "digital-ip-text-generate", capability_body
+assert "制作成数字人口播视频" in capability_body["assistant"], capability_body
+assert "实时报价" in capability_body["assistant"], capability_body
+saved = server.load_conversation(completed_id)
+assert not saved.get("productions"), saved.get("productions")
+assert saved["messages"][-1]["agent_trace"]["skills"][0]["id"] == "production_bridge"
+
+final_id = client.post("/api/conversations", json={"title": "确认模块六"}).get_json()["id"]
+final_convo = server.load_conversation(final_id)
+final_state = server.coach_harness.initial_state()
+final_state.update(current_module=6, module_step=2, completed_modules=[1, 2, 3, 4, 5])
+final_state["intake"]["status"] = "complete"
+final_state["pending"] = {
+    "id": "module-six-final", "kind": "checkpoint", "module": 6, "step": 3,
+    "status": "awaiting_confirmation", "draft": "三篇完整口播文案已确认",
+    "profile_updates": [], "self_review": "已核对", "confidence": 0.98,
+}
+final_convo["coach_state"] = final_state
+final_convo["deliverables"] = {"6": pack}
+server.save_conversation(final_id, final_convo)
+finished = client.post("/api/chat-complete", json={
+    "conversation_id": final_id,
+    "action": {"type": "confirm_checkpoint", "target_id": "module-six-final"},
+    "expected_revision": final_state["revision"],
+    "request_id": "finish-module-six",
+})
+assert finished.status_code == 200, finished.get_data(as_text=True)
+finished_body = finished.get_json()
+assert finished_body["new_completed"] == [6], finished_body
+assert finished_body["actions"][0]["type"] == "prepare_production", finished_body
+assert "制作成数字人口播视频" in finished_body["assistant"], finished_body
+assert not server.load_conversation(final_id).get("productions")
+print("IP12_POST_MODULE_SIX_HANDOFF_OK")
+'''
+        with tempfile.TemporaryDirectory() as data_dir:
+            env = os.environ.copy()
+            env.update(OPENAI_API_KEY="dummy", HERMES_HOME=data_dir, HERMES_DATA_DIR=data_dir)
+            result = subprocess.run(
+                [sys.executable, "-c", script], cwd=HERMES, env=env,
+                capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("IP12_POST_MODULE_SIX_HANDOFF_OK", result.stdout)
+
     def test_choice_routes_migrate_select_trace_and_replay_after_receipt_eviction(self):
         script = r'''
 from concurrent.futures import ThreadPoolExecutor
