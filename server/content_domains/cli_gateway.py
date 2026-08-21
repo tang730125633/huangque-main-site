@@ -212,16 +212,19 @@ def handle_quote(handler, path, verify, must_change_password, is_shutting_down,
         elif kind == "video":
             if not isinstance(payload, dict):
                 raise ValueError("请求体不是合法 JSON")
-            if payload.get("image_data") or not payload.get("avatar_id"):
-                raise ValueError("CLI 数字人口播第一阶段仅支持本人形象 avatar_id")
-            if payload.get("audio_data") or payload.get("bgm_data"):
-                raise ValueError("CLI 数字人口播第一阶段仅支持本人资产音频且不支持 BGM")
-            payload = video.validate_video_payload(payload, user["username"])
-            _require_ready_avatar(video, user["username"], payload["avatar_id"])
-            if payload["mode"] == "text":
-                audio.resolve_audio_provider_voice(user["username"], payload["voice"])
-            elif not payload.get("audio_file"):
-                raise ValueError("CLI 现成音频生成仅支持本人资产 audio_file")
+            if str(payload.get("mode") or "") == "lipsync":
+                payload = video.validate_video_payload(payload, user["username"])
+            else:
+                if payload.get("image_data") or not payload.get("avatar_id"):
+                    raise ValueError("CLI 数字人口播仅支持本人形象 avatar_id")
+                if payload.get("audio_data") or payload.get("bgm_data"):
+                    raise ValueError("CLI 数字人口播仅支持本人资产音频且不支持 BGM")
+                payload = video.validate_video_payload(payload, user["username"])
+                _require_ready_avatar(video, user["username"], payload["avatar_id"])
+                if payload["mode"] == "text":
+                    audio.resolve_audio_provider_voice(user["username"], payload["voice"])
+                elif not payload.get("audio_file"):
+                    raise ValueError("CLI 现成音频生成仅支持本人资产 audio_file")
         elif kind == "video_batch":
             payloads = video.validate_video_batch_payload(payload, user["username"])
             for item in payloads:

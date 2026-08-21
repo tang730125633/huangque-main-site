@@ -148,6 +148,7 @@ _ACTION_INPUTS = {
     "digital-presenter-update": ("board_id", "project_id", "revision", "title", "script_text", "ratio", "resolution", "voice_key", "target_duration"),
     "image-generate": ("prompt", "provider", "ratio", "quality", "count", "variant", "model", "image_upload_id", "mask_upload_id", "reference_upload_ids"),
     "video-generate": ("prompt", "channel", "ratio", "duration", "seconds", "resolution", "model", "generate_audio", "reference_upload_ids"),
+    "video-lipsync": ("video_asset_id", "audio_asset_id", "quality", "dynamic_duration"),
     "audio-generate": ("text", "voice", "speed", "pitch", "volume"),
     "digital-ip-text-generate": ("avatar_id", "text", "voice", "ratio", "motion", "subtitle", "subtitle_style", "subtitle_position"),
     "digital-ip-batch-generate": ("avatars", "text", "voice", "ratio", "motion", "subtitle", "subtitle_style", "subtitle_position"),
@@ -163,7 +164,8 @@ _ACTION_PURPOSES = {
     "ip12-projects": "读取本人 IP12 项目", "ip12-project": "读取本人 IP12 项目详情",
     "ip12-report": "读取本人 IP12 报告", "canvas-list": "读取本人画布", "canvas-get": "读取本人画布详情",
     "tasks": "读取本人任务记录", "task": "读取本人任务详情", "assets": "读取本人资产", "voices": "读取可用音色",
-    "image-generate": "生成图片", "video-generate": "生成视频", "audio-generate": "生成音频",
+    "image-generate": "生成图片", "video-generate": "生成视频", "video-lipsync": "让本人原视频匹配新口播音频",
+    "audio-generate": "生成音频",
     "canvas-agent-plan": "为画布生成可确认的操作方案", "canvas-ops": "写入本人画布操作",
 }
 
@@ -351,6 +353,21 @@ _MEDIA_SCHEMAS = {
             "generate_audio is only a boolean for micro",
         ],
     },
+    "video-lipsync": {
+        "required": ["video_asset_id", "audio_asset_id"],
+        "properties": {
+            "video_asset_id": _INT_ID_SCHEMA,
+            "audio_asset_id": _INT_ID_SCHEMA,
+            "quality": {"type": "string", "enum": ["speed", "precision"]},
+            "dynamic_duration": {"type": "boolean"},
+        },
+        "constraints": [
+            "video_asset_id and audio_asset_id must be completed assets owned by this account",
+            "quality defaults to speed; precision costs twice as many points",
+            "dynamic_duration defaults to false to preserve the source performance timing",
+            "the source video must be 1-300 seconds",
+        ],
+    },
     "audio-generate": {
         "required": ["text"], "properties": {
             "text": {"type": "string", "minLength": 1, "maxLength": 1000},
@@ -488,7 +505,7 @@ _MEDIA_SCHEMAS.update({
 
 _FAMILIES = {
     "image-upload": "image", "image-generate": "image", "audio-slots": "audio", "voices": "audio", "audio-generate": "audio",
-    "video-upload": "video", "video-avatars": "video", "video-generate": "video", "digital-ip-text-generate": "video",
+    "video-upload": "video", "video-avatars": "video", "video-generate": "video", "video-lipsync": "video", "digital-ip-text-generate": "video",
     "digital-ip-batch-generate": "video", "digital-ip-audio-generate": "video", "cinematic-open-generate": "video",
     "cinematic-motion-generate": "video", "tryon-fast-generate": "video", "tryon-classic-generate": "video",
     "video-compose-projects": "video", "video-compose-project": "video", "video-compose-create": "video",
@@ -500,7 +517,7 @@ _FAMILIES = {
 }
 _ACTION_FEATURE_GATES = {
     "audio-generate": ("audio",), "canvas-agent-plan": ("canvas_agent",),
-    "digital-ip-text-generate": ("video",), "digital-ip-batch-generate": ("video",),
+    "video-lipsync": ("video",), "digital-ip-text-generate": ("video",), "digital-ip-batch-generate": ("video",),
     "digital-ip-audio-generate": ("video",), "cinematic-open-generate": ("cinematic",),
     "cinematic-motion-generate": ("cinematic",), "tryon-fast-generate": ("tryon",),
     "tryon-classic-generate": ("tryon",), "digital-presenter-capability": ("digital_presenter",),
@@ -516,7 +533,7 @@ CATALOG_FEATURE_FLAGS = tuple(sorted({flag for flags in (*_ACTION_FEATURE_GATES.
 
 _GENERATION_ACTIONS = frozenset({
     "collect-content", "collect-video", "collect-transcript", "collect-search", "leads-generate",
-    "canvas-agent-plan", "image-generate", "video-generate", "audio-generate",
+    "canvas-agent-plan", "image-generate", "video-generate", "video-lipsync", "audio-generate",
     "digital-ip-text-generate", "digital-ip-batch-generate", "digital-ip-audio-generate",
     "cinematic-open-generate", "cinematic-motion-generate", "tryon-fast-generate", "tryon-classic-generate",
 })
@@ -1752,6 +1769,7 @@ def action_plan(action, value):
                      path=path, method=method, body=body, headers=headers)
     if action in {
             "image-generate", "video-generate", "audio-generate",
+            "video-lipsync",
             "digital-ip-text-generate", "digital-ip-batch-generate", "digital-ip-audio-generate",
             "cinematic-open-generate", "cinematic-motion-generate",
             "tryon-fast-generate", "tryon-classic-generate"}:
@@ -1762,6 +1780,25 @@ def action_plan(action, value):
 
 
 def _generation_payload(action, value):
+    if action == "video-lipsync":
+        _strict_object(
+            value,
+            {"video_asset_id", "audio_asset_id", "quality", "dynamic_duration"},
+            ("video_asset_id", "audio_asset_id"),
+        )
+        dynamic_duration = value.get("dynamic_duration", False)
+        if not isinstance(dynamic_duration, bool):
+            raise CLIAPIError(400, "dynamic_duration 必须是布尔值")
+        return {
+            "mode": "lipsync",
+            "video_asset_id": _integer(
+                value["video_asset_id"], "video_asset_id", 1, 2**63 - 1),
+            "audio_asset_id": _integer(
+                value["audio_asset_id"], "audio_asset_id", 1, 2**63 - 1),
+            "lipsync_mode": _enum(
+                value.get("quality", "speed"), "quality", ("speed", "precision")),
+            "dynamic_duration": dynamic_duration,
+        }, "video", "/api/gen/video"
     if action in {"digital-ip-text-generate", "digital-ip-audio-generate"}:
         mode = "text" if action == "digital-ip-text-generate" else "audio"
         required = ("avatar_id", "text", "voice") if mode == "text" else ("avatar_id", "audio_file")
