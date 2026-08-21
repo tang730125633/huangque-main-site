@@ -431,11 +431,14 @@ test('仅展示个人独立项目并正确计算概览', () => {
   ];
   assert.deepEqual(center.filterProjects(projects, '雨', '').map(p => p.id), ['b']);
   assert.deepEqual(center.filterProjects(projects, '', 'all_projects').map(p => p.id), ['a','b','c','e']);
-  assert.deepEqual(center.filterProjects(projects, '', 'active_projects').map(p => p.id), ['b']);
+  assert.deepEqual(center.filterProjects(projects, '', 'active_projects').map(p => p.id), ['a','b']);
   assert.deepEqual(center.filterProjects(projects, '', 'blocked_projects').map(p => p.id), ['a']);
   assert.deepEqual(center.filterProjects(projects, '', 'completed').map(p => p.id), ['c']);
   assert.deepEqual(center.filterProjects(projects, '', 'creation_draft').map(p => p.id), ['e']);
-  assert.deepEqual(center.metrics(projects), {all:4, active:1, blocked:1, done:1, draft:1});
+  assert.deepEqual(center.metrics(projects), {all:4, active:2, blocked:1, done:1, draft:1});
+  assert.doesNotMatch(html, /id="shortDramaMetricBlocked"/);
+  assert.match(html, /id="shortDramaMetricActive">0<\/strong><small>包含等待继续设置的短剧<\/small>/);
+  assert.match(centerStyle, /\.short-drama-metrics\{display:grid;grid-template-columns:repeat\(4,minmax\(0,1fr\)\)/);
   assert.match(html, /data-project-view="all_projects"/);
   assert.match(centerScript, /activeProjectView=view\|\|'all_projects'/);
   assert.match(centerScript, /selectProjectView\(metric\.getAttribute\('data-project-view'\)\)/);

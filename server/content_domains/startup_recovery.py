@@ -64,7 +64,29 @@ def reclaim_orphaned_running(
             continue
         request_id = None
         provider = None
-        if row["kind"] == "xiaole_video":
+        if row["kind"] == "video":
+            getter = getattr(domains()[2], "get_resumable_lipsync_request", None)
+            if getter:
+                try:
+                    resumable = getter(row["id"])
+                    if resumable:
+                        if (resumable.get("submission_unknown")
+                                and "_mcp_" in str(resumable.get("phase") or "")):
+                            logger(
+                                "[startup] HeyGen MCP 口型提交结果未知，保留 running job=%s"
+                                % row["id"], flush=True,
+                            )
+                            continue
+                        provider = "HeyGen Lipsync"
+                        request_id = (
+                            resumable.get("request_id")
+                            or "idempotent-job-%s" % row["id"]
+                        )
+                except Exception as exc:
+                    logger("[startup] 查询口型同步恢复信息失败，保留 running job=%s: %s" %
+                           (row["id"], str(exc)[:200]), flush=True)
+                    continue
+        elif row["kind"] == "xiaole_video":
             provider = "Grok"
             try:
                 video_domain = domains()[2]

@@ -1,0 +1,8 @@
+repos:
+  - repo: local
+    hooks:
+      - id: huangque-security-gate
+        name: 黄雀敏感信息门禁
+        entry: python3 scripts/ci_validate.py
+        language: system
+        pass_filenames: false

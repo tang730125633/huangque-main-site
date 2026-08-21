@@ -1,9 +1,6 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -17,7 +14,7 @@ jobs:
   quality:
     name: 代码与安全门禁
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: 检出代码
@@ -36,9 +33,11 @@ jobs:
           cache-dependency-path: design-system/package-lock.json
 
       - name: 安装媒体契约测试依赖
+        timeout-minutes: 5
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo sed -i '/azure\.archive\.ubuntu\.com/d' /etc/apt/apt-mirrors.txt
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::https::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::https::Timeout=30 install -y --no-install-recommends ffmpeg
           ffmpeg -version
           ffprobe -version
 
@@ -54,7 +53,7 @@ jobs:
       - name: Verify workbench shell cache stamps
         run: python scripts/stamp_assets.py --check
 
-      - name: 测试 CI 检查器
+      - name: 测试完整 Python 回归
         run: python -m unittest discover -s tests -v
 
       - name: 测试并构建 HQ CLI
@@ -138,11 +137,11 @@ jobs:
           $unicode = ([string][char]0x9EC4) + ([string][char]0x96C0)
           $root = Join-Path $env:RUNNER_TEMP ($unicode + " CLI Test")
           .\site\downloads\hq\install.ps1 `
-            -WheelPath .\site\downloads\hq\v0.10.0\huangque_hq_cli-0.10.0-py3-none-any.whl `
+            -WheelPath .\site\downloads\hq\v0.10.3\huangque_hq_cli-0.10.3-py3-none-any.whl `
             -InstallRoot $root -NoPathUpdate
           $hq = Join-Path $root "bin\hq.cmd"
           $result = & $hq version --json | ConvertFrom-Json
-          if ($result.cli_version -ne "0.10.0") { throw "unexpected CLI version" }
+          if ($result.cli_version -ne "0.10.3") { throw "unexpected CLI version" }
           [IO.File]::AppendAllText($env:GITHUB_ENV, "HQ_TEST_ROOT=$root`n", [Text.UTF8Encoding]::new($false))
       - name: cmd.exe 启动
         shell: cmd

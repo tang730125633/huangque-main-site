@@ -19,12 +19,13 @@ import hashlib
 import sqlite3
 import datetime
 import subprocess
+import secrets
 import httpx
 import urllib.parse
 import urllib.request
 from contextlib import closing
 from urllib.parse import urlparse, unquote
-from fastapi import FastAPI, Form, HTTPException, Query
+from fastapi import FastAPI, Form, Header, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse
 
 # 只允许抖音系域名（防 SSRF：禁止内网/localhost/任意URL）
@@ -45,9 +46,16 @@ def is_safe_video_url(u):
     except Exception:
         return False
 
+def _required_env(name):
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise RuntimeError(f"缺少必填环境变量 {name}")
+    return value
+
+
 DB = os.path.join(os.path.dirname(__file__), "jobs.db")
-PASSWORD = os.environ.get("LEADGEN_PASSWORD", "")
-WORKER_TOKEN = os.environ.get("LEADGEN_WORKER_TOKEN", "")
+PASSWORD = _required_env("LEADGEN_PASSWORD")
+WORKER_TOKEN = _required_env("LEADGEN_WORKER_TOKEN")
 BASE = os.path.dirname(os.path.abspath(__file__))
 INDEX_HTML = os.path.join(BASE, "index.html")
 DISCOVERED = os.path.join(BASE, "discovered.json")
@@ -478,9 +486,10 @@ STALE_RUNNING = 2400  # running 超 40 分钟无更新视为僵尸(worker崩)，
 
 
 @app.get("/api/claim")
-def claim(token: str = Query(...), modes: str = Query("")):
+def claim(x_worker_token: str = Header("", alias="X-Worker-Token"),
+          modes: str = Query("")):
     """多 worker 安全领单。modes 非空时只领这些 mode 的任务(快慢分道)。"""
-    if token != WORKER_TOKEN:
+    if not secrets.compare_digest(x_worker_token, WORKER_TOKEN):
         raise HTTPException(403, "token 错误")
     now = int(time.time())
     allow = tuple(m.strip() for m in modes.split(",") if m.strip())
@@ -540,7 +549,7 @@ def fail(token: str = Form(...), job_id: int = Form(...), error: str = Form(""))
 
 
 # ============================ 号池管理后台 (admin) ============================
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "").strip()
 NUMBER_POOL = os.environ.get("NUMBER_POOL", "/home/ubuntu/number_pool")
 USER_HOME = os.environ.get("LEADGEN_USER_HOME", "/home/ubuntu")
 MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "6"))
@@ -552,11 +561,15 @@ _SYS_ENV = {**os.environ, "XDG_RUNTIME_DIR": "/run/user/%d" % os.getuid()}
 
 
 def _admin_token():
+    if not ADMIN_PASSWORD:
+        return ""
     return hashlib.sha256(("leadgen-admin|" + ADMIN_PASSWORD).encode()).hexdigest()
 
 
 def _need_admin(token):
-    if not token or token != _admin_token():
+    if not ADMIN_PASSWORD:
+        raise HTTPException(503, "号池后台未配置 ADMIN_PASSWORD")
+    if not token or not secrets.compare_digest(token, _admin_token()):
         raise HTTPException(403, "未登录或登录已失效，请重新登录")
 
 
@@ -641,7 +654,9 @@ def admin_page():
 
 @app.post("/api/admin/login")
 def admin_login(password: str = Form(...)):
-    if password != ADMIN_PASSWORD:
+    if not ADMIN_PASSWORD:
+        raise HTTPException(503, "号池后台未配置 ADMIN_PASSWORD")
+    if not secrets.compare_digest(password, ADMIN_PASSWORD):
         raise HTTPException(403, "管理员密码错误")
     return {"token": _admin_token()}
 

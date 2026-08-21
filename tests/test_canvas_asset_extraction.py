@@ -60,6 +60,14 @@ class CanvasAssetExtractionTests(unittest.TestCase):
         self.assertIn(".nc-canvas-shell.agent-open .nc-empty", css)
         self.assertIn("openSidePanel('agent',true)", app)
 
+    def test_fullscreen_exit_returns_to_the_same_origin_caller(self):
+        app = APP_PATH.read_text(encoding="utf-8")
+        self.assertIn("searchParams.get('return_to')", app)
+        self.assertIn("if(url.origin===location.origin)", app)
+        self.assertIn("location.assign(url.pathname+url.search+url.hash)", app)
+        self.assertIn("bindButton(fsExit,exitCanvas)", app)
+        self.assertIn("backHomeBtn.onclick=function(){ showBoardHome(); }", app)
+
     def test_storyboard_is_a_derived_view_of_the_existing_workflow(self):
         html = HTML_PATH.read_text(encoding="utf-8")
         css = CSS_PATH.read_text(encoding="utf-8")

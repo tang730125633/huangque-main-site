@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import subprocess
 import sys
@@ -23,6 +24,33 @@ FORBIDDEN_PARTS = {"browser_data", "data"}
 FORBIDDEN_SUFFIXES = {".db", ".sqlite", ".sqlite3", ".key", ".pem"}
 FORBIDDEN_NAMES = {".env", "jobs.db"}
 FORBIDDEN_PREFIXES = ("secrets",)
+
+PROTECTED_SECRET_NAMES = (
+    "TIKHUB_KEY",
+    "QG_KEY",
+    "LEADGEN_WORKER_TOKEN",
+    "LEADGEN_PASSWORD",
+    "ADMIN_PASSWORD",
+    "STATIC_PROXY",
+)
+_SECRET_NAMES_RE = "|".join(map(re.escape, PROTECTED_SECRET_NAMES))
+_SECRET_DEFAULT_RE = re.compile(
+    rf'(?:os\.environ\.get|os\.getenv)\(\s*["\'](?P<name>{_SECRET_NAMES_RE})["\']'
+    rf'\s*,\s*["\'](?P<value>[^"\']+)["\']'
+)
+_DIRECT_SECRET_RE = re.compile(
+    rf'(?<![A-Za-z0-9_"\'])(?:Environment=)?(?P<name>{_SECRET_NAMES_RE})\s*=\s*'
+    rf'["\']?(?P<value>[^\s"\'`#\\]+)'
+)
+_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9@._+-]{5,}")
+_CLAIM_TOKEN_QUERY = "/api/claim?" + "token="
+_KNOWN_LEAK_FINGERPRINTS = {
+    "a915d507ea1612f479f8623bbb775cd3d3cc5f49f61174b8a7df2f0631de74df",
+    "4e875365af8ca18f432a4fcd0cdd39ab3274263d9785b9beecea330c9e4e0b5e",
+    "240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9",
+    "485f56bc8817beb71a54ea7d222f15f63df8276851be1853c90ccab7bba6ce6a",
+    "82343ea8a3d168139f788919bd35b45d7887d76410dd73a18f97c7fcb171bd2a",
+}
 
 CHECKED_ATTRIBUTES = {"href", "src", "poster"}
 IGNORED_SCHEMES = {"data", "http", "https", "mailto", "tel", "blob", "javascript"}
@@ -90,6 +118,55 @@ def check_redlines(files: list[PurePosixPath]) -> list[str]:
         elif name.startswith(FORBIDDEN_PREFIXES):
             errors.append(f"安全红线：禁止跟踪密钥文件 {path}")
     errors.extend(check_systemd_secrets(files))
+    errors.extend(check_secret_literals(files))
+    return errors
+
+
+def _allowed_secret_value(value: str) -> bool:
+    normalized = value.strip().strip('"\'').lower()
+    return (
+        not normalized
+        or normalized in {"change-me", "changeme", "replace-me", "placeholder"}
+        or normalized.startswith("replace-")
+        or normalized.startswith(("$", "<", "os.", "required_env(", "_required_env("))
+    )
+
+
+def check_secret_literals(files: list[PurePosixPath]) -> list[str]:
+    """拦截已泄露值及五类生产凭证的硬编码默认值，不输出秘密正文。"""
+    errors: list[str] = []
+    for path in files:
+        target = ROOT / path
+        try:
+            if target.stat().st_size > 1_000_000:
+                continue
+            text = target.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if path.parts and path.parts[0] in {"server", "worker", "scripts"} \
+                    and _CLAIM_TOKEN_QUERY in line:
+                errors.append(
+                    f"安全红线：worker 令牌禁止放入 URL {path}:{lineno}"
+                    "（改用 X-Worker-Token 请求头）"
+                )
+                continue
+            if any(
+                hashlib.sha256(token.encode()).hexdigest() in _KNOWN_LEAK_FINGERPRINTS
+                for token in _TOKEN_RE.findall(line)
+            ):
+                errors.append(f"安全红线：发现已泄露凭证 {path}:{lineno}（正文已隐藏）")
+                continue
+
+            matches = [*_SECRET_DEFAULT_RE.finditer(line), *_DIRECT_SECRET_RE.finditer(line)]
+            for match in matches:
+                if not _allowed_secret_value(match.group("value")):
+                    errors.append(
+                        f"安全红线：禁止硬编码 {match.group('name')} {path}:{lineno}"
+                        "（只允许空值、占位符或环境变量读取）"
+                    )
+                    break
     return errors
 
 

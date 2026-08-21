@@ -405,17 +405,144 @@ IMAGE_FIELDS = {
     "reference_upload_ids": {"type": "array", "maxItems": 16,
                              "items": {"type": "string", "minLength": 36, "maxLength": 36}},
 }
+VIDEO_CHANNEL_RULES = {
+    "grok": {
+        "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"],
+        "duration": [1, 15], "seconds": [],
+        "resolutions": ["480p", "720p"],
+        "models": ["grok-imagine-video", "grok-imagine-video-1.5"],
+        "reference_max": 7, "generate_audio": False,
+        "default_ratio": "16:9", "default_duration": 10,
+        "default_resolution": "720p", "default_model": "grok-imagine-video",
+        "reference_resolutions": ["720p"],
+        "reference_required_models": ["grok-imagine-video-1.5"],
+    },
+    "micro": {
+        "ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive"],
+        "duration": [4, 15], "seconds": [],
+        "resolutions": ["480p", "720p", "1080p"], "models": [],
+        "reference_max": 9, "generate_audio": True,
+        "default_ratio": "9:16", "default_duration": 5,
+        "default_resolution": "720p", "default_model": "",
+    },
+    "omni": {
+        "ratios": ["9:16", "16:9"], "duration": [3, 10], "seconds": [],
+        "resolutions": ["720p"], "models": [],
+        "reference_max": 6, "generate_audio": False,
+        "default_ratio": "16:9", "default_duration": 5,
+        "default_resolution": "720p", "default_model": "",
+    },
+    "minimax": {
+        "ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive"],
+        "duration": [4, 15], "seconds": [],
+        "resolutions": ["2k"], "models": [],
+        "reference_max": 5, "generate_audio": False,
+        "default_ratio": "9:16", "default_duration": 5,
+        "default_resolution": "2k", "default_model": "",
+    },
+    "sora": {
+        "ratios": ["9:16", "16:9"], "duration": [], "seconds": [4, 8, 12],
+        "resolutions": ["720p", "1024p", "1080p"],
+        "models": ["sora-2", "sora-2-pro"],
+        "reference_max": 1, "generate_audio": False,
+        "default_ratio": "9:16", "default_seconds": 4,
+        "default_resolution": "720p", "default_model": "sora-2",
+        "model_resolutions": {
+            "sora-2": ["720p"],
+            "sora-2-pro": ["720p", "1024p", "1080p"],
+        },
+    },
+}
+
+
+def _video_channel_then(rule):
+    properties = {
+        "ratio": {"enum": list(rule["ratios"])},
+        "resolution": {"enum": list(rule["resolutions"])},
+        "reference_upload_ids": {
+            "type": "array", "minItems": 1,
+            "maxItems": int(rule["reference_max"]),
+        },
+    }
+    forbidden = []
+    if rule["duration"]:
+        properties["duration"] = {
+            "type": "integer", "minimum": rule["duration"][0],
+            "maximum": rule["duration"][1],
+        }
+        forbidden.append("seconds")
+    else:
+        properties["seconds"] = {"type": "integer", "enum": list(rule["seconds"])}
+        forbidden.append("duration")
+    if rule["models"]:
+        properties["model"] = {"type": "string", "enum": list(rule["models"])}
+    else:
+        forbidden.append("model")
+    if not rule["generate_audio"]:
+        forbidden.append("generate_audio")
+    result = {"properties": properties}
+    if forbidden:
+        result["not"] = {"anyOf": [{"required": [field]} for field in forbidden]}
+    return result
+
+
+def _video_channel_schema():
+    clauses = []
+    for channel, rule in VIDEO_CHANNEL_RULES.items():
+        clauses.append({
+            "if": {"properties": {"channel": {"const": channel}}, "required": ["channel"]},
+            "then": _video_channel_then(rule),
+        })
+    clauses.append({
+        "if": {"not": {"required": ["channel"]}},
+        "then": _video_channel_then(VIDEO_CHANNEL_RULES["grok"]),
+    })
+    grok_selector = {"anyOf": [
+        {"not": {"required": ["channel"]}},
+        {"properties": {"channel": {"const": "grok"}}, "required": ["channel"]},
+    ]}
+    clauses.append({
+        "if": {"allOf": [grok_selector, {"required": ["reference_upload_ids"]}]},
+        "then": {"properties": {"resolution": {"enum": ["720p"]}}},
+    })
+    clauses.append({
+        "if": {"allOf": [grok_selector, {
+            "properties": {"model": {"const": "grok-imagine-video-1.5"}},
+            "required": ["model"],
+        }]},
+        "then": {
+            "required": ["reference_upload_ids"],
+            "properties": {"resolution": {"enum": ["720p"]}},
+        },
+    })
+    sora_selector = {
+        "properties": {"channel": {"const": "sora"}}, "required": ["channel"],
+    }
+    for model, resolutions in VIDEO_CHANNEL_RULES["sora"]["model_resolutions"].items():
+        clauses.append({
+            "if": {"allOf": [sora_selector, {
+                "properties": {"model": {"const": model}}, "required": ["model"],
+            }]},
+            "then": {"properties": {"resolution": {"enum": list(resolutions)}}},
+        })
+    clauses.append({
+        "if": {"allOf": [sora_selector, {"not": {"required": ["model"]}}]},
+        "then": {"properties": {"resolution": {"enum": ["720p"]}}},
+    })
+    return clauses
+
+
 VIDEO_FIELDS = {
     "prompt": {"type": "string", "minLength": 1, "maxLength": 2000,
                "description": "可用 @图片1、@图片2 按 reference_upload_ids 顺序引用"},
     "channel": {"type": "string", "enum": ["grok", "micro", "omni", "minimax", "sora"]},
-    "ratio": {"type": "string", "enum": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"]},
+    "ratio": {"type": "string", "enum": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9", "adaptive"]},
     "duration": {"type": "integer", "minimum": 1, "maximum": 15},
     "seconds": {"type": "integer", "enum": [4, 8, 12]},
-    "resolution": {"type": "string", "enum": ["480p", "720p", "768p", "1024p", "1080p"]},
+    "resolution": {"type": "string", "enum": ["480p", "720p", "1024p", "1080p", "2k"]},
     "model": {"type": "string", "enum": ["grok-imagine-video", "grok-imagine-video-1.5", "sora-2", "sora-2-pro"]},
     "generate_audio": {"type": "boolean"},
-    "reference_upload_ids": {"type": "array", "maxItems": 9,
+    "reference_upload_ids": {"type": "array", "minItems": 1, "maxItems": 9,
                              "items": {"type": "string", "minLength": 36, "maxLength": 36}},
 }
 AUDIO_FIELDS = {
@@ -457,6 +584,18 @@ TALKING_VIDEO_FIELDS = {
     "subtitle": {"type": "boolean"},
     "subtitle_style": {"type": "string", "enum": ["white", "variety", "bar"]},
     "subtitle_position": {"type": "string", "enum": ["top", "upper", "center", "lower", "bottom"]},
+}
+VIDEO_LIPSYNC_FIELDS = {
+    "video_asset_id": {
+        "type": "integer", "minimum": 1, "maximum": 9223372036854775807,
+        "description": "当前账号已完成的原视频资产 ID",
+    },
+    "audio_asset_id": {
+        "type": "integer", "minimum": 1, "maximum": 9223372036854775807,
+        "description": "当前账号已有的口播音频资产 ID",
+    },
+    "quality": {"type": "string", "enum": ["speed", "precision"]},
+    "dynamic_duration": {"type": "boolean"},
 }
 DIGITAL_IP_TEXT_FIELDS = {
     "avatar_id": AVATAR_ID,
@@ -524,6 +663,8 @@ TRYON_CLASSIC_FIELDS = {
 for identifier, name, fields, required in (
     ("image-generate", "图片生成", IMAGE_FIELDS, ["prompt"]),
     ("video-generate", "视频生成", VIDEO_FIELDS, ["prompt"]),
+    ("video-lipsync", "原视频口型同步", VIDEO_LIPSYNC_FIELDS,
+     ["video_asset_id", "audio_asset_id"]),
     ("audio-generate", "音频生成", AUDIO_FIELDS, ["text"]),
     ("digital-ip-text-generate", "数字IP单条文案生成", DIGITAL_IP_TEXT_FIELDS,
      ["avatar_id", "text", "voice"]),
@@ -590,11 +731,23 @@ CAPABILITIES["image-generate"]["constraints"] = [
     "model is only for provider=banana; variant is only for provider=seedream",
     "mask_upload_id requires image_upload_id, provider=openai, PNG mask, and count=1",
 ]
+CAPABILITIES["video-generate"]["input_schema"]["allOf"] = _video_channel_schema()
+CAPABILITIES["video-generate"]["input_schema"]["x-hq-channel-rules"] = VIDEO_CHANNEL_RULES
+
 CAPABILITIES["video-generate"]["constraints"] = [
     "reference_upload_ids limits: grok=7, micro=9, omni=6, minimax=5",
+    "channel=minimax accepts only resolution=2k for new tasks",
+    "resolution=2k is only valid when channel=minimax",
+    "channel-specific ratio, duration/seconds, resolution, model, and reference rules are machine-readable in input_schema.allOf",
     "channel=sora uses model=sora-2|sora-2-pro, seconds=4|8|12, ratio=9:16|16:9, resolution=720p|1024p|1080p, and at most one reference image",
     "channel=sora does not accept duration or generate_audio; seconds is only for sora",
     "@图片N references the Nth item in reference_upload_ids",
+]
+CAPABILITIES["video-lipsync"]["constraints"] = [
+    "video_asset_id and audio_asset_id must be completed assets owned by the current account",
+    "quality defaults to speed; precision costs twice as many points",
+    "dynamic_duration defaults to false to preserve the source performance timing",
+    "the source video must be 1-300 seconds",
 ]
 CAPABILITIES["digital-ip-text-generate"]["constraints"] = [
     "avatar_id must identify a ready avatar owned by the current account",
@@ -642,6 +795,7 @@ for identifier, website_modes in {
     "image-generate": ["banana", "openai", "seedream", "xiaole"],
     "video": ["one_click", "digital_ip", "cinematic", "tryon", "grok", "sora", "minimax", "omni", "seedance"],
     "video-generate": ["grok", "sora", "minimax", "omni", "seedance"],
+    "video-lipsync": ["digital_ip"],
     "digital-ip-text-generate": ["digital_ip"],
     "digital-ip-audio-generate": ["digital_ip"],
     "digital-ip-batch-generate": ["digital_ip"],

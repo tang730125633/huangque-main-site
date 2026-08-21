@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -29,6 +30,36 @@ def extract_js_function(source, name):
 
 
 class HermesIP12SourceTests(unittest.TestCase):
+    def test_persistent_assistant_messages_use_one_versioned_append_helper(self):
+        source = (HERMES / "server.py").read_text(encoding="utf-8")
+        self.assertIn("def _append_assistant_message", source)
+        self.assertIn("AGENT_RELEASE_MANIFEST", (HERMES / "ip12_harness.py").read_text(encoding="utf-8"))
+        self.assertNotIn(
+            'convo.setdefault("messages", []).append({"role": "assistant"', source
+        )
+        self.assertNotIn('"messages": [{"role": "assistant"', source)
+        self.assertIn("legacy_unknown", source)
+        self.assertIn(".ip12-release-sha", source)
+
+    def test_health_uses_the_deployed_release_marker_without_an_env_override(self):
+        script = """
+import server
+payload = server.app.test_client().get('/healthz').get_json()
+assert payload['release_sha'] == 'file-release-sha', payload
+assert payload['agent_release'] == 'ip12-a0.1', payload
+assert payload['state_schema'] == 2, payload
+"""
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, ".ip12-release-sha").write_text("file-release-sha\n", encoding="utf-8")
+            env = os.environ.copy()
+            env.pop("IP12_RELEASE_SHA", None)
+            env.update(OPENAI_API_KEY="dummy", HERMES_HOME=root, HERMES_DATA_DIR=root)
+            result = subprocess.run(
+                [sys.executable, "-c", script], cwd=HERMES, env=env,
+                capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_coach_prompt_finishes_ready_outputs_in_the_same_reply(self):
         prompt = (HERMES / "prompt.md").read_text(encoding="utf-8")
         self.assertIn("同一条回复", prompt)
@@ -57,7 +88,7 @@ class HermesIP12SourceTests(unittest.TestCase):
         for path in HERMES.glob("*.py"):
             routes.update(pattern.findall(path.read_text(encoding="utf-8")))
 
-        self.assertEqual(len(routes), 76)
+        self.assertEqual(len(routes), 81)
         self.assertTrue(
             {
                 "/api/chat",
@@ -71,6 +102,10 @@ class HermesIP12SourceTests(unittest.TestCase):
                 "/api/replica",
                 "/api/agnes/video",
                 "/api/team-workbench/submit",
+                "/api/ip12/productions/prepare",
+                "/api/ip12/productions/quote",
+                "/api/ip12/productions/confirm",
+                "/api/ip12/productions/<production_id>",
                 "/classic",
                 "/skills",
                 "/analytics",
@@ -78,6 +113,29 @@ class HermesIP12SourceTests(unittest.TestCase):
                 "/team-workbench",
             }.issubset(routes)
         )
+
+    def test_production_routes_keep_quote_tokens_server_side(self):
+        source = (HERMES / "server.py").read_text(encoding="utf-8")
+        for path in (
+            "/api/ip12/productions/prepare",
+            "/api/ip12/productions/quote",
+            "/api/ip12/productions/confirm",
+            "/api/ip12/productions/<production_id>",
+        ):
+            self.assertIn(path, source)
+        self.assertIn('quote.pop("token", None)', source)
+        self.assertIn('"idempotency_key": "ip12-" + production_id', source)
+        self.assertIn('record.update(status="submitting"', source)
+        self.assertIn('"/api/auth/internal/ip12/agent/action"', source)
+        for field in ("account_id", "action", "input", "confirm", "quote_token", "idempotency_key"):
+            self.assertIn(f'"{field}"', source)
+
+    def test_main_view_exposes_three_featured_full_scripts(self):
+        page = (HERMES / "templates/index.html").read_text(encoding="utf-8")
+        self.assertIn("featured_3_v1", page)
+        self.assertIn("3 篇精选口播文案", page)
+        self.assertIn("latest.content", extract_js_function(page, "renderContentPack"))
+        self.assertIn("isContentReviewMessage(turn.message)", extract_js_function(page, "sendTurn"))
 
     @unittest.skipUnless(shutil.which("node"), "node is required")
     def test_inline_javascript_parses(self):
@@ -172,6 +230,11 @@ class HermesIP12SourceTests(unittest.TestCase):
             self.assertIn("function submitFoundationAnnotations()", source)
             self.assertIn("定位原文（可选）", source)
             self.assertIn("把批注交给 Agent", source)
+            self.assertIn(
+                "foundationEditing=false;closeFoundationReviewer();"
+                "document.getElementById('userInput').placeholder='输入消息...'",
+                source,
+            )
             self.assertIn("@media", source)
 
     def test_service_security_boundary_is_registered(self):
@@ -360,6 +423,1401 @@ if (!rendered.includes("&lt;img") || !rendered.includes("<br>")) process.exit(5)
         result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_invalid_evidence_retry_discards_the_bad_draft_and_recovers_in_the_same_turn(self):
+        import json
+        import threading
+        from types import SimpleNamespace
+
+        source = (HERMES / "server.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        process_turn = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "_process_model_turn"
+        )
+        module = ast.fix_missing_locations(ast.Module(body=[process_turn], type_ignores=[]))
+
+        class HarnessError(Exception):
+            pass
+
+        class HarnessConflict(Exception):
+            pass
+
+        class ChoiceValidationError(HarnessError):
+            pass
+
+        message = "我想先在一个垂直行业做出结果，再复制到其他行业"
+        state = {
+            "revision": 0,
+            "completed_modules": [],
+            "foundation_report": {},
+            "pending": {"status": "editing", "draft": "不合格旧稿"},
+        }
+        model_calls = []
+        persist_calls = []
+        validation_error = ""
+        persist_failures = 2
+
+        def coach_model(snapshot, _message, repair_error=None, timeout_seconds=180):
+            model_calls.append((repair_error, bool(snapshot["coach_state"].get("pending"))))
+            return {
+                "decision": "propose_checkpoint",
+                "reply": "这是按已确认资料重新整理的结果。",
+            }, message
+
+        def persist_turn(
+            _cid, user_message, _revision, raw, evidence, prefix="", discard_pending=False,
+            message_id="", trace_skills=None,
+        ):
+            persist_calls.append((user_message, raw, evidence, prefix, discard_pending))
+            if len(persist_calls) <= persist_failures:
+                raise HarnessError(validation_error)
+            return (prefix + "\n\n" if prefix else "") + raw["reply"], {"revision": 1}
+
+        namespace = {
+            "CONVERSATION_STATE_LOCK": threading.RLock(),
+            "owned_conversation": lambda _cid: {"coach_state": state},
+            "normalize_coach_state": lambda value: value,
+            "_intake_pending": lambda value: (value.get("intake") or {}).get("status") != "complete",
+            "_assert_expected_revision": lambda _state, _revision: None,
+            "_persist_user_message": lambda _cid, _message, _revision, _request_id="": "test-message-id",
+            "_model_snapshot_without_user": lambda convo, _message_id: convo,
+            "coach_harness": SimpleNamespace(
+                HarnessError=HarnessError,
+                HarnessConflict=HarnessConflict,
+                ChoiceValidationError=ChoiceValidationError,
+                is_choice_checkpoint=lambda module, step: int(module or 0) in {1, 2, 3} and int(step or 0) == 2,
+                duration_conflict_decision=lambda _state, _message: None,
+            ),
+            "_coach_model_decision": coach_model,
+            "_persist_model_turn": persist_turn,
+            "_chat_result": lambda assistant, next_state: {
+                "assistant": assistant,
+                "state": next_state,
+            },
+            "app": SimpleNamespace(logger=SimpleNamespace(warning=lambda *_args: None)),
+            "requests": SimpleNamespace(RequestException=RuntimeError),
+            "json": json,
+            "time": time,
+            "AI_DEFAULT_TIMEOUT_SECONDS": 180,
+            "CHOICE_TOTAL_TIMEOUT_SECONDS": 120,
+            "CHOICE_FIRST_TIMEOUT_SECONDS": 75,
+            "CHOICE_REPAIR_TIMEOUT_SECONDS": 45,
+        }
+        exec(compile(module, str(HERMES / "server.py"), "exec"), namespace)
+        cases = (
+            "模型档案更新缺少可回查的用户原话",
+            "确认稿包含未经证实的身份、经历或结果用语“专家”",
+            "选题中的“医疗”没有出现在它绑定的用户原话里",
+        )
+        for validation_error in cases:
+            with self.subTest(validation_error=validation_error):
+                model_calls.clear()
+                persist_calls.clear()
+                result, status = namespace["_process_model_turn"]("cid", message)
+
+                self.assertEqual(status, 200)
+                self.assertEqual([item[1] for item in model_calls], [True, True, False])
+                self.assertIsNone(model_calls[0][0])
+                self.assertEqual(model_calls[1][0], validation_error)
+                self.assertIn(validation_error, model_calls[2][0])
+                self.assertEqual(len(persist_calls), 3)
+                user_message, recovered, evidence, recovery_prefix, discard_pending = persist_calls[-1]
+                self.assertEqual(user_message, message)
+                self.assertEqual(evidence, message)
+                self.assertEqual(recovered["decision"], "propose_checkpoint")
+                self.assertTrue(discard_pending)
+                self.assertIn("错在", recovery_prefix)
+                self.assertIn("重新整理的结果", result["assistant"])
+                self.assertNotIn("请回复“", result["assistant"])
+
+        validation_error = "选题中的“成功”没有出现在它绑定的用户原话里"
+        persist_failures = 3
+        model_calls.clear()
+        persist_calls.clear()
+        result, status = namespace["_process_model_turn"]("cid", message)
+
+        self.assertEqual(status, 200)
+        self.assertEqual(len(model_calls), 3)
+        self.assertEqual(len(persist_calls), 4)
+        self.assertEqual(persist_calls[-1][1]["decision"], "answer_only")
+        self.assertTrue(persist_calls[-1][-1])
+        self.assertIn("未确认草稿已清除", result["assistant"])
+        self.assertNotIn("请回复“", result["assistant"])
+
+    def test_module_five_step_two_uses_the_specialized_topic_compiler(self):
+        source = (HERMES / "server.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        coach_turn = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "_coach_model_decision"
+        )
+        module = ast.fix_missing_locations(ast.Module(body=[coach_turn], type_ignores=[]))
+        state = {
+            "current_module": 5,
+            "module_step": 1,
+            "completed_modules": [1, 2, 3, 4],
+            "ip_profile": {},
+        }
+        calls = []
+
+        def module_five(convo, message, repair_error=""):
+            calls.append((convo, message, repair_error))
+            return {"decision": "propose_checkpoint"}, "evidence"
+
+        namespace = {
+            "normalize_coach_state": lambda value: value,
+            "_intake_pending": lambda _state: False,
+            "_coach_module_five_topics": module_five,
+            "AI_DEFAULT_TIMEOUT_SECONDS": 180,
+        }
+        exec(compile(module, str(HERMES / "server.py"), "exec"), namespace)
+        convo = {"coach_state": state}
+        result = namespace["_coach_model_decision"](
+            convo,
+            "继续",
+            repair_error="选题中的‘成功’没有依据",
+        )
+
+        self.assertEqual(result, ({"decision": "propose_checkpoint"}, "evidence"))
+        self.assertEqual(calls, [(convo, "继续", "选题中的‘成功’没有依据")])
+
+
+@unittest.skipUnless(
+    importlib.util.find_spec("flask") and importlib.util.find_spec("requests"),
+    "Hermes route dependencies are not installed",
+)
+class HermesIP12ProductionRuntimeTests(unittest.TestCase):
+    def test_typed_production_state_quote_confirm_and_canvas_recovery(self):
+        script = r'''
+import json
+import sys
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+import server
+import security
+
+sys.path.insert(0, str(Path(server.__file__).resolve().parents[1]))
+import hq_cli_api
+
+server.current_account_id = lambda: "acct_a"
+security._validate_token = lambda token: {
+    "admin-token": {"account_id": "acct_a", "username": "admin", "role": "admin"},
+}.get(token)
+security.RATE_REQUESTS = 1000
+client = server.app.test_client()
+client.environ_base["HTTP_AUTHORIZATION"] = "Bearer admin-token"
+
+cid = "typedproduction01"
+state = server.initial_coach_state()
+server.save_conversation(cid, {
+    "id": cid,
+    "title": "typed production",
+    "messages": [{"role": "user", "content": "请把这篇正文做成多媒体成品，保留我的原话。"}],
+    "coach_state": state,
+    "reports": {},
+    "owner_account_id": "acct_a",
+    "deliverables": {"6": {"kind": "content_pack_v1", "categories": [{
+        "id": "category_1",
+        "name": "内容种类",
+        "topics": [{
+            "id": "topic_1",
+            "title": "精选选题",
+            "status": "ready",
+            "versions": [{"version": 1, "content": "这是用户确认过、可直接进入生产的完整口播正文。"}],
+        }],
+    }]}},
+})
+revision = state["revision"]
+target = {"category_id": "category_1", "topic_id": "topic_1"}
+intent_response = client.post("/api/chat-complete", json={
+    "conversation_id": cid,
+    "message": "用 Grok 把这篇做成 9:16 竖屏视频",
+    "content_target": target,
+    "expected_revision": revision,
+    "request_id": "prepare-video-from-chat",
+})
+assert intent_response.status_code == 200, intent_response.get_data(as_text=True)
+intent_body = intent_response.get_json()
+assert intent_body["actions"][0]["type"] == "prepare_production", intent_body
+assert intent_body["actions"][0]["requested_result"] == "video", intent_body
+assert intent_body["actions"][0]["preferred_action"] == "video-generate", intent_body
+assert intent_body["actions"][0]["options"]["ratio"] == "9:16", intent_body
+assert "Grok" in intent_body["actions"][0]["options"]["prompt"], intent_body
+assert "完整口播正文" in intent_body["actions"][0]["options"]["prompt"], intent_body
+assert not server.load_conversation(cid).get("productions"), intent_body
+revision = intent_body["state"]["revision"]
+original_messages = json.loads(json.dumps(server.load_conversation(cid)["messages"], ensure_ascii=False))
+
+def resource_bridge(account_id, action, input_body, **kwargs):
+    assert account_id == "acct_a", account_id
+    if action == "video-avatars":
+        return {"items": [
+            {"id": avatar_id, "name": "我的形象 %s" % avatar_id, "status": "ready"}
+            for avatar_id in (7, 8, 9)
+        ]}
+    if action == "voices":
+        return {"items": [{"voice_key": "voice-demo", "display_name": "我的声音"}]}
+    if action == "canvas-list":
+        return {"boards": [
+            {"id": "board_canvas_1", "name": "IP12 内容画布", "version": 3, "role": "owner"},
+            {"id": "board_canvas_2", "name": "IP12 恢复画布", "version": 1, "role": "editor"},
+        ]}
+    raise AssertionError(action)
+
+def prepare(family, options_marker=None, preferred_action=None):
+    body = {
+        "conversation_id": cid,
+        "content_target": target,
+        "expected_revision": revision,
+        "requested_result": family,
+    }
+    if options_marker is not None:
+        body["options"] = options_marker
+    if preferred_action is not None:
+        body["preferred_action"] = preferred_action
+    with patch.object(server, "_bridge_action", side_effect=resource_bridge):
+        response = client.post("/api/ip12/productions/prepare", json=body)
+    assert response.status_code == 200, response.get_data(as_text=True)
+    return response.get_json()
+
+# Missing and typed fields are returned before any execution call.  Filling the
+# same production later is allowed and changes its input digest.
+missing_image = prepare("image")
+assert missing_image["status"] == "blocked_prerequisite", missing_image
+assert missing_image["missing"] == ["prompt"], missing_image
+assert missing_image["schema"]["properties"]["prompt"]["type"] == "string"
+image_id = missing_image["production_id"]
+empty_digest = server.load_conversation(cid)["productions"][image_id]["input_digest"]
+
+bad_image = prepare("image", {"prompt": 7})
+assert bad_image["status"] == "blocked_prerequisite", bad_image
+assert bad_image["missing"] == [], bad_image
+assert "类型" in bad_image["validation_error"], bad_image
+
+audio = prepare("audio")
+video = prepare("video", {"avatar_id": 7, "voice": "voice-demo"})
+missing_canvas = prepare("canvas")
+canvas = prepare("canvas", {"board_id": "board_canvas_1"})
+generic_video = prepare("video", {"prompt": "把正文改编成海边日出短片。"}, "video-generate")
+for prepared in (audio, video, canvas):
+    assert prepared["status"] == "draft", prepared
+assert audio["schema"]["required"] == [], audio
+assert video["schema"]["required"] == ["avatar_id", "voice"], video
+assert video["schema"]["properties"]["avatar_id"]["oneOf"] == [
+    {"const": 7, "title": "我的形象 7"},
+    {"const": 8, "title": "我的形象 8"},
+    {"const": 9, "title": "我的形象 9"},
+], video
+assert missing_canvas["missing"] == ["board_id"], missing_canvas
+assert canvas["schema"]["required"] == ["board_id"], canvas
+assert canvas["recommended_action"] == "canvas-ops", canvas
+assert generic_video["recommended_action"] == "video-generate", generic_video
+assert generic_video["status"] == "draft" and "prompt" in generic_video["schema"]["required"]
+audio_record = server.load_conversation(cid)["productions"][audio["production_id"]]
+assert server._production_input(audio_record, {"text": "第一段。\n\n第二段。\t继续。"})["text"] == "第一段。 第二段。 继续。"
+assert server._production_input(audio_record, {})["text"] == "这是用户确认过、可直接进入生产的完整口播正文。"
+canvas_record = server.load_conversation(cid)["productions"][canvas["production_id"]]
+canvas_input = server._production_input(canvas_record, {"board_id": "board_canvas_1"})
+assert canvas_input["base_version"] == 3, canvas_input
+assert canvas_input["ops"][0]["node"]["params"]["text"] == "这是用户确认过、可直接进入生产的完整口播正文。"
+canvas_record["source_text"] = "第一段。\n\n第二段。\t继续。"
+multiline_canvas_input = server._production_input(canvas_record, {"board_id": "board_canvas_1"})
+assert multiline_canvas_input["ops"][0]["node"]["params"]["text"] == "第一段。 第二段。 继续。"
+assert hq_cli_api.action_plan("canvas-ops", multiline_canvas_input)["kind"] == "canvas-ops"
+video_record = dict(server.load_conversation(cid)["productions"][video["production_id"]])
+video_record["source_text"] = "第一段。\n\n第二段。\t继续。"
+assert server._production_input(video_record, {"avatar_id": 7, "voice": "voice-demo"})["text"] == "第一段。 第二段。 继续。"
+
+# The HTTP helper uses the unified internal action contract and never places
+# account_id inside the action input.
+bridge_response = Mock(status_code=200)
+bridge_response.json.return_value = {"job_id": 1, "status": "queued"}
+with patch.object(server, "INTERNAL_ACTION_TOKEN", "internal-test-token"), \
+     patch.object(server.requests, "post", return_value=bridge_response) as bridge_post:
+    server._bridge_action(
+        "acct_a", "image-generate", {"prompt": "海边日出"}, confirm=True,
+        quote_token="signed-quote", idempotency_key="ip12-confirm-0001",
+    )
+sent = bridge_post.call_args
+assert sent.args[0] == server.AUTH_BASE + "/api/auth/internal/ip12/agent/action", sent
+assert sent.kwargs["headers"] == {"X-HQ-Internal-Token": "internal-test-token"}
+assert sent.kwargs["json"] == {
+    "account_id": "acct_a",
+    "action": "image-generate",
+    "input": {"prompt": "海边日出"},
+    "confirm": True,
+    "quote_token": "signed-quote",
+    "idempotency_key": "ip12-confirm-0001",
+}
+
+quote_calls = []
+def image_bridge(account_id, action, input_body, **kwargs):
+    quote_calls.append((account_id, action, input_body, kwargs))
+    if kwargs.get("confirm"):
+        return {"job_id": "101", "status": "queued"}
+    if action == "task":
+        return {"id": 101, "kind": "image", "status": "done", "result": {
+            "type": "image", "file": "generated.png", "url": "https://cdn.example/generated.png",
+            "files": ["generated.png"], "urls": ["https://cdn.example/generated.png"],
+        }}
+    return {"quote_token": "private-image-quote", "cost": 4, "points": 4, "expires_in": 300}
+
+with patch.object(server, "_bridge_action", side_effect=image_bridge):
+    quoted = client.post("/api/ip12/productions/quote", json={
+        "conversation_id": cid,
+        "production_id": image_id,
+        "expected_revision": revision,
+        "options": {"prompt": "第一版海报"},
+    })
+assert quoted.status_code == 200, quoted.get_data(as_text=True)
+quoted_body = quoted.get_json()
+assert quoted_body["billing"] == "paid" and quoted_body["cost"] == 4, quoted_body
+assert quoted_body["production"]["quote"]["expires_at"] > 0, quoted_body
+assert "token" not in quoted_body["production"]["quote"], quoted_body
+filled = server.load_conversation(cid)["productions"][image_id]
+assert filled["options"] == {"prompt": "第一版海报"}
+assert filled["input_digest"] != empty_digest
+assert quote_calls[0][3]["idempotency_key"] == filled["idempotency_key"]
+
+# Options supplied at confirm are part of the quoted digest.  A changed option
+# invalidates the old quote without submitting anything.
+with patch.object(server, "_bridge_action", side_effect=image_bridge):
+    changed = client.post("/api/ip12/productions/confirm", json={
+        "conversation_id": cid,
+        "production_id": image_id,
+        "expected_revision": revision,
+        "confirmation_id": "confirm-image-001",
+        "options": {"prompt": "第二版海报"},
+    })
+assert changed.status_code == 409, changed.get_data(as_text=True)
+assert changed.get_json()["code"] == "input_changed"
+assert not [call for call in quote_calls if call[3].get("confirm")]
+
+# Requote the changed input, submit once, and make a double-click replay read
+# the existing job instead of opening another paid task.
+with patch.object(server, "_bridge_action", side_effect=image_bridge):
+    requoted = client.post("/api/ip12/productions/quote", json={
+        "conversation_id": cid,
+        "production_id": image_id,
+        "expected_revision": revision,
+    })
+    assert requoted.status_code == 200, requoted.get_data(as_text=True)
+    confirmed = client.post("/api/ip12/productions/confirm", json={
+        "conversation_id": cid,
+        "production_id": image_id,
+        "expected_revision": revision,
+        "confirmation_id": "confirm-image-001",
+    })
+    replayed = client.post("/api/ip12/productions/confirm", json={
+        "conversation_id": cid,
+        "production_id": image_id,
+        "expected_revision": revision,
+        "confirmation_id": "confirm-image-001",
+    })
+    restored = client.get(f"/api/ip12/productions/{image_id}?conversation_id={cid}")
+assert confirmed.status_code == 200 and confirmed.get_json()["production"]["job_id"] == "101"
+assert replayed.status_code == 200 and replayed.get_json()["replayed"] is True
+assert restored.get_json()["production"]["status"] == "done"
+assert restored.get_json()["production"]["asset_refs"][0]["url"] == "https://cdn.example/generated.png"
+assert restored.get_json()["production"]["last_error_code"] == ""
+assert len([call for call in quote_calls if call[3].get("confirm")]) == 1, quote_calls
+assert all(call[3]["idempotency_key"] == filled["idempotency_key"] for call in quote_calls), quote_calls
+
+for action, kind, url_field, file_field in (
+    ("audio-generate", "audio", "audio_url", "audio_file"),
+    ("video-generate", "video", "video_url", "video_file"),
+):
+    nested_record = {"action": action, "capability_family": kind, "asset_refs": [], "last_error_code": "result_link_pending"}
+    server._set_production_result(nested_record, {
+        "status": "done", "kind": kind,
+        "result": {url_field: "https://cdn.example/output", file_field: "output.bin"},
+    })
+    assert nested_record["asset_refs"] == [{
+        "kind": kind, "url": "https://cdn.example/output", "name": "output.bin", "file": "output.bin",
+    }]
+    assert nested_record["last_error_code"] == ""
+mixed_video = {"action": "video-generate", "capability_family": "video", "asset_refs": []}
+server._set_production_result(mixed_video, {
+    "status": "done", "kind": "xiaole_video", "result": {
+        "type": "video", "image_url": "https://cdn.example/cover.jpg", "image_file": "cover.jpg",
+        "video_url": "https://cdn.example/output.mp4", "video_file": "output.mp4",
+    },
+})
+assert mixed_video["asset_refs"] == [{
+    "kind": "video", "url": "https://cdn.example/output.mp4",
+    "name": "output.mp4", "file": "output.mp4",
+}]
+finished_change = client.post("/api/ip12/productions/confirm", json={
+    "conversation_id": cid,
+    "production_id": image_id,
+    "expected_revision": revision,
+    "confirmation_id": "confirm-image-001",
+    "options": {"prompt": "不能覆盖已完成记录的第三版海报"},
+})
+assert finished_change.status_code == 409
+assert finished_change.get_json()["code"] == "production_already_submitted"
+assert server.load_conversation(cid)["productions"][image_id]["options"] == {"prompt": "第二版海报"}
+
+# Failed work and a completed refund remain visible after refresh.
+audio_id = audio["production_id"]
+def audio_bridge(account_id, action, input_body, **kwargs):
+    if action == "task":
+        return {"job_id": "202", "status": "error", "code": "provider_failed", "cost": 2, "refunded": True}
+    if kwargs.get("confirm"):
+        return {"job_id": "202", "status": "queued"}
+    return {"quote_token": "private-audio-quote", "cost": 2, "points": 2, "expires_in": 300}
+with patch.object(server, "_bridge_action", side_effect=audio_bridge):
+    assert client.post("/api/ip12/productions/quote", json={
+        "conversation_id": cid, "production_id": audio_id, "expected_revision": revision,
+    }).status_code == 200
+    assert client.post("/api/ip12/productions/confirm", json={
+        "conversation_id": cid, "production_id": audio_id, "expected_revision": revision,
+        "confirmation_id": "confirm-audio-001",
+    }).status_code == 200
+    failed = client.get(f"/api/ip12/productions/{audio_id}?conversation_id={cid}")
+failed_record = failed.get_json()["production"]
+assert failed_record["status"] == "failed" and failed_record["refund_status"] == "refunded", failed_record
+assert failed_record["last_error_code"] == "provider_failed"
+
+pending_refund = {"action": "audio-generate", "capability_family": "audio", "asset_refs": []}
+server._set_production_result(pending_refund, {
+    "job_id": "203", "status": "error", "code": "provider_failed", "cost": 2, "refunded": False,
+})
+assert pending_refund["status"] == "failed" and pending_refund["refund_status"] == "pending", pending_refund
+
+# A successful submit response without a durable result reference stays in
+# submitting and is recovered with the same idempotency key.
+video_id = video["production_id"]
+video_calls = []
+def video_bridge(account_id, action, input_body, **kwargs):
+    if action == "task":
+        video_calls.append((action, input_body, kwargs["idempotency_key"]))
+        return {"job_id": "303", "status": "done", "asset_refs": [{"id": "asset-video-1", "kind": "video"}]}
+    if not kwargs.get("confirm"):
+        return {"quote_token": "private-video-quote", "cost": 8, "points": 8, "expires_in": 300}
+    video_calls.append((action, input_body, kwargs["idempotency_key"]))
+    return {"job_id": "303", "status": "done"}
+with patch.object(server, "_bridge_action", side_effect=video_bridge):
+    assert client.post("/api/ip12/productions/quote", json={
+        "conversation_id": cid, "production_id": video_id, "expected_revision": revision,
+    }).status_code == 200
+    unlinked = client.post("/api/ip12/productions/confirm", json={
+        "conversation_id": cid, "production_id": video_id, "expected_revision": revision,
+        "confirmation_id": "confirm-video-001",
+    })
+    recovered_video = client.get(f"/api/ip12/productions/{video_id}?conversation_id={cid}")
+assert unlinked.status_code == 200, unlinked.get_data(as_text=True)
+assert unlinked.get_json()["production"]["last_error_code"] == "result_link_pending"
+assert recovered_video.get_json()["production"]["job_id"] == "303"
+assert recovered_video.get_json()["production"]["status"] == "done"
+assert recovered_video.get_json()["production"]["asset_refs"][0]["id"] == "asset-video-1"
+assert [call[0] for call in video_calls] == ["digital-ip-text-generate", "task"], video_calls
+assert video_calls[0][2] == video_calls[1][2], video_calls
+
+# Canvas quote is free, while confirm uses the real canvas-ops input shape.
+canvas_id = canvas["production_id"]
+canvas_record = server.load_conversation(cid)["productions"][canvas_id]
+canvas_input = server._production_input(canvas_record, canvas_record["options"])
+canvas_plan = hq_cli_api.action_plan("canvas-ops", canvas_input)
+assert canvas_plan["kind"] == "canvas-ops"
+assert canvas_plan["board_id"] == "board_canvas_1"
+assert canvas_plan["payload"]["op_id"].startswith("hqcli-")
+canvas_calls = []
+def canvas_bridge(account_id, action, input_body, **kwargs):
+    canvas_calls.append((account_id, action, input_body, kwargs))
+    assert kwargs.get("confirm") is True
+    return {"version": 2, "batch": {"op_id": input_body["op_id"]}, "board": {"id": input_body["board_id"]}}
+with patch.object(server, "_bridge_action", side_effect=canvas_bridge):
+    canvas_quote = client.post("/api/ip12/productions/quote", json={
+        "conversation_id": cid, "production_id": canvas_id, "expected_revision": revision,
+    })
+    assert canvas_calls == [], canvas_calls
+    canvas_done = client.post("/api/ip12/productions/confirm", json={
+        "conversation_id": cid, "production_id": canvas_id, "expected_revision": revision,
+        "confirmation_id": "confirm-canvas-001",
+    })
+    canvas_replay = client.post("/api/ip12/productions/confirm", json={
+        "conversation_id": cid, "production_id": canvas_id, "expected_revision": revision,
+        "confirmation_id": "confirm-canvas-001",
+    })
+assert canvas_quote.get_json()["billing"] == "free" and canvas_quote.get_json()["cost"] == 0
+assert canvas_quote.get_json()["points"] is None
+assert canvas_done.get_json()["production"]["status"] == "done"
+assert canvas_done.get_json()["production"]["canvas_ref"] == {"board_id": "board_canvas_1", "version": 2}
+assert canvas_replay.get_json()["replayed"] is True
+assert len(canvas_calls) == 1, canvas_calls
+assert canvas_calls[0][1] == "canvas-ops"
+assert canvas_calls[0][3]["quote_token"] == ""
+
+# A lost Canvas response is retried by GET with the exact same op_id and
+# production idempotency key, so auth_server can return its saved canvas batch.
+recovery = prepare("canvas", {"board_id": "board_canvas_2", "base_version": 1, "prompt": "写入恢复节点。"})
+recovery_id = recovery["production_id"]
+recovery_calls = []
+def recovery_bridge(account_id, action, input_body, **kwargs):
+    recovery_calls.append((json.loads(json.dumps(input_body)), kwargs["idempotency_key"]))
+    if len(recovery_calls) == 1:
+        raise RuntimeError("response lost")
+    return {"version": 2, "batch": {"op_id": input_body["op_id"]}, "board": {"id": input_body["board_id"]}}
+with patch.object(server, "_bridge_action", side_effect=recovery_bridge):
+    recovery_quote = client.post("/api/ip12/productions/quote", json={
+        "conversation_id": cid, "production_id": recovery_id, "expected_revision": revision,
+    })
+    pending = client.post("/api/ip12/productions/confirm", json={
+        "conversation_id": cid, "production_id": recovery_id, "expected_revision": revision,
+        "confirmation_id": "confirm-canvas-002",
+    })
+    recovered_canvas = client.get(f"/api/ip12/productions/{recovery_id}?conversation_id={cid}")
+assert recovery_quote.status_code == 200 and pending.status_code == 202
+assert recovered_canvas.get_json()["production"]["status"] == "done"
+assert len(recovery_calls) == 2 and recovery_calls[0] == recovery_calls[1], recovery_calls
+assert hq_cli_api.action_plan("canvas-ops", recovery_calls[0][0])["kind"] == "canvas-ops"
+
+# A quoted production is tied to the selected script version, even if the next
+# version happens to reuse similar wording.
+stale = prepare("video", {"avatar_id": 9, "voice": "voice-demo"})
+stale_id = stale["production_id"]
+with patch.object(server, "_bridge_action", return_value={
+    "quote_token": "private-stale-quote", "cost": 8, "points": 8, "expires_in": 300,
+}):
+    assert client.post("/api/ip12/productions/quote", json={
+        "conversation_id": cid, "production_id": stale_id, "expected_revision": revision,
+    }).status_code == 200
+project = server.load_conversation(cid)
+project["deliverables"]["6"]["categories"][0]["topics"][0]["versions"].append({
+    "version": 2, "content": "这是用户确认过、可直接进入生产的第二版完整口播正文。",
+})
+server.save_conversation(cid, project)
+stale_response = client.get(f"/api/ip12/productions/{stale_id}?conversation_id={cid}")
+assert stale_response.get_json()["production"]["status"] == "stale"
+assert stale_response.get_json()["production"]["last_error_code"] == "source_changed"
+
+# All four families survive a project refresh, private quote tokens stay on the
+# server, completed productions are delivered exactly once, and accounts stay isolated.
+public_project = client.get(f"/api/conversations/{cid}").get_json()
+families = {item["capability_family"] for item in public_project["productions"]}
+assert {"image", "audio", "video", "canvas"}.issubset(families), families
+assert "private-" not in json.dumps(public_project, ensure_ascii=False)
+messages = server.load_conversation(cid)["messages"]
+assert messages[:len(original_messages)] == original_messages
+deliveries = [item for item in messages if item.get("production_id")]
+assert {item["production_id"] for item in deliveries} == {
+    image_id, video_id, canvas_id, recovery_id,
+}, deliveries
+assert len(deliveries) == 4, deliveries
+server.current_account_id = lambda: "acct_b"
+assert client.get(f"/api/conversations/{cid}").status_code == 404
+assert client.get(f"/api/ip12/productions/{image_id}?conversation_id={cid}").status_code == 404
+print("IP12_PRODUCTION_RUNTIME_OK")
+'''
+        with tempfile.TemporaryDirectory() as data_dir:
+            env = os.environ.copy()
+            env.update(
+                OPENAI_API_KEY="dummy",
+                HERMES_HOME=data_dir,
+                HERMES_DATA_DIR=data_dir,
+                HQ_INTERNAL_TOKEN="internal-test-token",
+            )
+            result = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=HERMES,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("IP12_PRODUCTION_RUNTIME_OK", result.stdout)
+
+
+@unittest.skipUnless(
+    importlib.util.find_spec("flask") and importlib.util.find_spec("requests"),
+    "Hermes runtime dependencies are not installed",
+)
+class HermesIP12ProjectRuntimeTests(unittest.TestCase):
+    def test_project_limit_receipt_recovery_and_first_artifact_notice(self):
+        script = r'''
+import server
+import security
+import threading
+
+server.current_account_id = lambda: "acct_limit"
+server.MAX_PROJECTS_PER_ACCOUNT = 2
+security._validate_token = lambda token: {"account_id": "acct_limit", "username": "limit", "role": "member"}
+security.RATE_REQUESTS = 100
+client = server.app.test_client()
+client.environ_base["HTTP_AUTHORIZATION"] = "Bearer test-token"
+
+one = client.post("/api/conversations", json={"title": "Project 1"})
+two = client.post("/api/conversations", json={"title": "Project 2"})
+assert one.status_code == 200 and two.status_code == 200
+three = client.post("/api/conversations", json={"title": "Project 3"})
+assert three.status_code == 409
+assert three.get_json() == {
+    "ok": False, "code": "ip12_project_limit", "error": "最多允许创建两个 Project",
+}
+assert client.delete(f"/api/conversations/{two.get_json()['id']}").status_code == 200
+replacement = client.post("/api/conversations", json={"title": "Replacement"})
+assert replacement.status_code == 200
+replacement_id = replacement.get_json()["id"]
+stale_replacement = server.load_conversation(replacement_id)
+assert client.delete(f"/api/conversations/{replacement_id}").status_code == 200
+assert server.save_conversation(replacement_id, stale_replacement) is False
+assert not server.conversation_path(replacement_id).exists()
+assert client.post("/api/conversations", json={"title": "Replacement 2"}).status_code == 200
+
+cid = one.get_json()["id"]
+convo = server.load_conversation(cid)
+convo["turn_receipts"] = [{
+    "request_id": "recover_turn_1",
+    "result": {"ok": True, "assistant": "已恢复", "state": convo["coach_state"]},
+}]
+server.save_conversation(cid, convo)
+pending = client.get(f"/api/conversations/{cid}?receipt=still_processing")
+assert pending.status_code == 202
+assert pending.get_json() == {"ok": True, "status": "processing"}
+recovered = client.get(f"/api/conversations/{cid}?receipt=recover_turn_1")
+assert recovered.status_code == 200
+assert recovered.get_json()["replayed"] is True
+assert recovered.get_json()["assistant"] == "已恢复"
+assert client.get(f"/api/conversations/{cid}?receipt=bad%20receipt").status_code == 400
+
+calls = []
+entered = threading.Event()
+release = threading.Event()
+original_model_turn = server._process_model_turn
+def slow_model_turn(*args, **kwargs):
+    calls.append(args[1])
+    entered.set()
+    assert release.wait(2)
+    state = server.load_conversation(cid)["coach_state"]
+    return server._chat_result("并发完成", state), 200
+server._process_model_turn = slow_model_turn
+body = {
+    "conversation_id": cid,
+    "message": "只处理一次",
+    "expected_revision": server.load_conversation(cid)["coach_state"]["revision"],
+    "request_id": "concurrent_turn_1",
+}
+first_result = []
+worker = threading.Thread(target=lambda: first_result.append(server.process_chat_request(body)))
+worker.start()
+assert entered.wait(2)
+duplicate = server.process_chat_request(body)
+assert duplicate[1] == 202 and duplicate[0]["status"] == "processing"
+blocked_delete = client.delete(f"/api/conversations/{cid}")
+assert blocked_delete.status_code == 409
+assert blocked_delete.get_json()["error"] == "请等待当前回复完成后再删除 Project"
+release.set()
+worker.join(2)
+assert not worker.is_alive()
+assert len(calls) == 1 and first_result[0][1] == 200
+assert server.process_chat_request(body)[0]["replayed"] is True
+server._process_model_turn = original_model_turn
+
+server.generate_module_report = lambda convo_id, module_id: "报告正文"
+first_report = client.post("/api/generate-report", json={"conversation_id": cid, "module": 1})
+second_report = client.post("/api/generate-report", json={"conversation_id": cid, "module": 1})
+assert first_report.status_code == 200 and second_report.status_code == 200
+assert first_report.get_json()["artifact_notice"] == server.FIRST_ARTIFACT_NOTICE
+assert second_report.get_json()["artifact_notice"] == ""
+saved = server.load_conversation(cid)
+assert saved["artifact_notice_sent"] is True
+assert saved["artifact_notice_module"] == 1
+assert [item["content"] for item in saved["messages"]].count(server.FIRST_ARTIFACT_NOTICE) == 1
+assert b"IP Project" in client.get("/classic").data
+print("IP12_PROJECT_RUNTIME_OK")
+'''
+        with tempfile.TemporaryDirectory() as data_dir:
+            env = os.environ.copy()
+            env.update(OPENAI_API_KEY="dummy", HERMES_HOME=data_dir, HERMES_DATA_DIR=data_dir)
+            result = subprocess.run(
+                [sys.executable, "-c", script], cwd=HERMES, env=env,
+                capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("IP12_PROJECT_RUNTIME_OK", result.stdout)
+
+    def test_choice_routes_migrate_select_trace_and_replay_after_receipt_eviction(self):
+        script = r'''
+from concurrent.futures import ThreadPoolExecutor
+import threading
+
+import server
+import security
+
+server.current_account_id = lambda: "acct_choice"
+security._validate_token = lambda token: {"account_id": "acct_choice", "username": "choice", "role": "member"}
+security.RATE_REQUESTS = 100
+client = server.app.test_client()
+client.environ_base["HTTP_AUTHORIZATION"] = "Bearer test-token"
+
+created = client.post("/api/conversations", json={"title": "Choice Project"})
+assert created.status_code == 200
+cid = created.get_json()["id"]
+convo = server.load_conversation(cid)
+convo["coach_state"] = {
+    "schema_version": 1,
+    "revision": 5,
+    "current_module": 1,
+    "completed_modules": [],
+    "module_step": 1,
+    "pending": None,
+    "intake": {"status": "complete", "round": 3, "answers": {}},
+    "ip_profile": {
+        "facts": {}, "preferences": {}, "ai_selections": {},
+        "confirmed_outputs": {"1-1": {"content": "关键词：真实、行动、AI"}},
+    },
+}
+server.save_conversation(cid, convo)
+
+first = client.get(f"/api/conversations/{cid}")
+assert first.status_code == 200
+loaded = first.get_json()
+assert loaded["coach_state"]["schema_version"] == 2
+assert loaded["coach_state"]["revision"] == 6
+assert loaded["harness_actions"][0]["type"] == "resume_choice_generation"
+assert [m.get("message_id") for m in loaded["messages"]].count("ip12-schema-v2-migration") == 1
+assert loaded["messages"][-1]["agent_trace"]["skills"][0]["id"] == "migration"
+again = client.get(f"/api/conversations/{cid}").get_json()
+assert [m.get("message_id") for m in again["messages"]].count("ip12-schema-v2-migration") == 1
+notice_repair = server.load_conversation(cid)
+notice_repair["id"] = "notice-repair"
+notice_repair["messages"] = [m for m in notice_repair["messages"] if m.get("message_id") != "ip12-schema-v2-migration"]
+notice_repair["coach_state"] = server.normalize_coach_state({
+    **convo["coach_state"],
+    "schema_version": 1,
+})
+server.save_conversation("notice-repair", notice_repair)
+repaired = client.get("/api/conversations/notice-repair").get_json()
+assert [m.get("message_id") for m in repaired["messages"]].count("ip12-schema-v2-migration") == 1
+failed_migration = server.json.loads(server.json.dumps(convo, ensure_ascii=False))
+failed_migration["id"] = "migration-write-failure"
+failed_migration["messages"] = []
+server.save_conversation("migration-write-failure", failed_migration)
+original_save = server.save_conversation
+def fail_migration_save(*_args, **_kwargs):
+    raise OSError("disk full")
+server.save_conversation = fail_migration_save
+try:
+    failed_get = client.get("/api/conversations/migration-write-failure")
+    assert failed_get.status_code == 503
+    failed_chat = client.post("/api/chat-complete", json={
+        "conversation_id": "migration-write-failure", "message": "继续",
+        "expected_revision": 5, "request_id": "migration-write-failure-request",
+    })
+    assert failed_chat.status_code == 503
+finally:
+    server.save_conversation = original_save
+unchanged = server.load_conversation("migration-write-failure")
+assert unchanged["coach_state"]["schema_version"] == 1
+assert not any(m.get("message_id") == "ip12-schema-v2-migration" for m in unchanged["messages"])
+
+migration_race = server.json.loads(server.json.dumps(convo, ensure_ascii=False))
+migration_race["id"] = "migration-race"
+migration_race["messages"] = []
+server.save_conversation("migration-race", migration_race)
+original_save = server.save_conversation
+save_count = []
+save_count_lock = threading.Lock()
+def counted_save(project_id, data):
+    if project_id == "migration-race":
+        with save_count_lock:
+            save_count.append(1)
+    return original_save(project_id, data)
+server.save_conversation = counted_save
+start = threading.Barrier(2)
+def race_get():
+    start.wait()
+    return server._migrate_owned_conversation("migration-race")
+def race_chat():
+    start.wait()
+    return server.process_chat_request({
+        "conversation_id": "migration-race", "message": "继续",
+        "expected_revision": 5, "request_id": "migration-race-chat",
+    })
+with ThreadPoolExecutor(max_workers=2) as pool:
+    get_future = pool.submit(race_get)
+    chat_future = pool.submit(race_chat)
+    get_future.result(timeout=5)
+    race_chat_result, race_chat_status = chat_future.result(timeout=5)
+server.save_conversation = original_save
+assert race_chat_status == 409
+assert len(save_count) == 1
+race_saved = server.load_conversation("migration-race")
+assert race_saved["coach_state"]["revision"] == 6
+assert [m.get("message_id") for m in race_saved["messages"]].count("ip12-schema-v2-migration") == 1
+stored = server.load_conversation(cid)
+stored["messages"].append({"role": "assistant", "content": "旧版本回答", "message_id": "legacy-answer"})
+server.save_conversation(cid, stored)
+public = client.get(f"/api/conversations/{cid}").get_json()
+legacy_public = next(item for item in public["messages"] if item.get("message_id") == "legacy-answer")
+assert legacy_public["agent_trace"] == {"status": "legacy_unknown"}
+legacy_stored = next(item for item in server.load_conversation(cid)["messages"] if item.get("message_id") == "legacy-answer")
+assert "agent_trace" not in legacy_stored
+
+original_call_ai = server.call_ai
+empty_call = {}
+class EmptyChoiceResponse:
+    def json(self):
+        return {"choices": [{"message": {"content": ""}}]}
+def empty_choice_response(*_args, **kwargs):
+    empty_call.update(kwargs)
+    return EmptyChoiceResponse()
+server.call_ai = empty_choice_response
+try:
+    server._coach_model_decision(server.load_conversation(cid), "继续")
+    raise AssertionError("empty choice response was accepted")
+except server.coach_harness.ChoiceValidationError as exc:
+    assert exc.code == "choice_response_shape"
+    assert empty_call["reasoning_effort"] == "low"
+
+spoofed = {
+    "decision": "answer_only", "checkpoint": 0, "reply": "伪造来源",
+    "draft": "", "self_review": "", "profile_updates": [], "choices": [],
+    "confidence": 0.9, "_model_used": False, "_trace_skill": "safety_fallback",
+}
+class SpoofedResponse:
+    def json(self):
+        return {"choices": [{"message": {"content": server.json.dumps(spoofed, ensure_ascii=False)}}]}
+server.call_ai = lambda *args, **kwargs: SpoofedResponse()
+try:
+    server._coach_model_decision(server.load_conversation(cid), "继续")
+    raise AssertionError("model provenance spoof was accepted")
+except RuntimeError as exc:
+    assert "不支持" in str(exc)
+finally:
+    server.call_ai = original_call_ai
+
+drifted_choice = {
+    "decision": "answer_only", "checkpoint": 0,
+    "reply": "请选择最适合你的方向。", "draft": "模型错误附带的 Markdown 草稿",
+    "self_review": "候选基于已确认资料。",
+    "profile_updates": [{"field": "should_be_ignored", "value": "错误更新", "kind": "ai_option", "evidence_quote": ""}],
+    "choices": [
+        {"title": "实践拆解型", "summary": "把真实问题拆成步骤", "reason": "行动明确", "caution": "避免工具堆砌", "recommended": True},
+        {"title": "企业陪跑型", "summary": "陪小企业完成落地", "reason": "对象清晰", "caution": "避免结果承诺", "recommended": False},
+        {"title": "成长记录型", "summary": "记录长期实践变化", "reason": "连接真实", "caution": "注意隐私", "recommended": False},
+    ],
+    "confidence": 0.9,
+}
+class DriftedChoiceResponse:
+    def json(self):
+        return {"choices": [{"message": {"content": server.json.dumps(drifted_choice, ensure_ascii=False)}}]}
+server.call_ai = lambda *args, **kwargs: DriftedChoiceResponse()
+normalized_choice, normalized_evidence = server._coach_model_decision(server.load_conversation(cid), "继续")
+assert normalized_choice["decision"] == "propose_checkpoint"
+assert normalized_choice["checkpoint"] == 2
+assert normalized_choice["draft"] == "" and normalized_choice["profile_updates"] == []
+normalized_state, normalized_decision, _ = server.coach_harness.apply_model_decision(
+    loaded["coach_state"], normalized_choice, normalized_evidence, pending_id="normalized-choice-target",
+)
+assert len(normalized_decision["choices"]) == 3
+assert normalized_state["pending"]["id"] == "normalized-choice-target"
+
+choice_follow_up = {
+    "decision": "ask_follow_up", "checkpoint": 0,
+    "reply": "还缺一个关键事实：你最想帮助哪类人？", "draft": "",
+    "self_review": "", "profile_updates": [], "choices": [], "confidence": 0.7,
+}
+class ChoiceFollowUpResponse:
+    def json(self):
+        return {"choices": [{"message": {"content": server.json.dumps(choice_follow_up, ensure_ascii=False)}}]}
+server.call_ai = lambda *args, **kwargs: ChoiceFollowUpResponse()
+preserved_follow_up, follow_up_evidence = server._coach_model_decision(server.load_conversation(cid), "继续")
+assert preserved_follow_up["decision"] == "ask_follow_up" and preserved_follow_up["checkpoint"] == 0
+follow_up_state, follow_up_decision, _ = server.coach_harness.apply_model_decision(
+    loaded["coach_state"], preserved_follow_up, follow_up_evidence, pending_id="choice-follow-up",
+)
+assert follow_up_decision["choices"] == [] and follow_up_state["pending"] is None
+
+non_choice_state = server.coach_harness.initial_state()
+non_choice_state["intake"] = {"status": "complete", "round": 3, "answers": {}}
+drifted_non_choice = {
+    **drifted_choice,
+    "decision": "propose_checkpoint", "checkpoint": 1,
+    "reply": "请核对关键词。", "draft": "关键词：真实、清晰、行动",
+    "profile_updates": [],
+}
+class DriftedNonChoiceResponse:
+    def json(self):
+        return {"choices": [{"message": {"content": server.json.dumps(drifted_non_choice, ensure_ascii=False)}}]}
+server.call_ai = lambda *args, **kwargs: DriftedNonChoiceResponse()
+normalized_non_choice, non_choice_evidence = server._coach_model_decision(
+    {"coach_state": non_choice_state, "messages": [], "deliverables": {}}, "整理关键词",
+)
+assert normalized_non_choice["choices"] == []
+non_choice_next, non_choice_decision, _ = server.coach_harness.apply_model_decision(
+    non_choice_state, normalized_non_choice, non_choice_evidence, pending_id="normalized-non-choice",
+)
+assert non_choice_decision["checkpoint"] == 1 and non_choice_next["pending"]["draft"]
+server.call_ai = original_call_ai
+
+model_calls = []
+def model_decision(snapshot, _message, repair_error="", timeout_seconds=180):
+    state = server.normalize_coach_state(snapshot["coach_state"])
+    checkpoint = state["module_step"] + 1
+    if server.coach_harness.is_choice_checkpoint(state["current_module"], checkpoint):
+        model_calls.append((repair_error, timeout_seconds))
+        invalid_choices = not repair_error
+        return {
+            "decision": "propose_checkpoint", "checkpoint": checkpoint,
+            "reply": "请选择最适合你的方向。", "draft": "",
+            "self_review": "三项内容均基于已确认资料。", "profile_updates": [],
+            "choices": [
+                {"title": "方向一", "summary": "拆解真实问题", "reason": "行动明确", "caution": "记忆点较弱", "recommended": False},
+                {"title": "方向二", "summary": "结合经验和工具", "reason": "识别度集中", "caution": "避免硬推销", "recommended": True},
+                {"title": "方向三", "summary": "记录长期成长", "reason": "连接感更强", "caution": "注意隐私", "recommended": False},
+            ][:2] if invalid_choices else [
+                {"title": "方向一", "summary": "拆解真实问题", "reason": "行动明确", "caution": "记忆点较弱", "recommended": False},
+                {"title": "方向二", "summary": "结合经验和工具", "reason": "识别度集中", "caution": "避免硬推销", "recommended": True},
+                {"title": "方向三", "summary": "记录长期成长", "reason": "连接感更强", "caution": "注意隐私", "recommended": False},
+            ],
+            "confidence": 0.9,
+        }, "用户原话"
+    return {
+        "decision": "propose_checkpoint", "checkpoint": checkpoint,
+        "reply": "这是下一模块关键词。", "draft": "关键词：可靠、清晰、真实",
+        "self_review": "只使用已确认资料。", "profile_updates": [], "choices": [],
+        "confidence": 0.9,
+    }, "用户原话"
+
+original_coach_model = server._coach_model_decision
+server._coach_model_decision = model_decision
+resume = loaded["harness_actions"][0]
+stale_migration, stale_migration_status = server.process_chat_request({
+    "conversation_id": cid,
+    "action": {"type": resume["type"], "target_id": resume["target_id"]},
+    "expected_revision": 5,
+    "request_id": "stale-before-migration",
+})
+assert stale_migration_status == 409
+resume_result, status = server.process_chat_request({
+    "conversation_id": cid,
+    "action": {"type": resume["type"], "target_id": resume["target_id"]},
+    "expected_revision": loaded["coach_state"]["revision"],
+    "request_id": "resume-choice-1",
+})
+assert status == 200
+assert len(model_calls) == 2
+assert not model_calls[0][0] and model_calls[0][1] <= server.CHOICE_FIRST_TIMEOUT_SECONDS
+assert model_calls[1][0] and model_calls[1][1] <= server.CHOICE_REPAIR_TIMEOUT_SECONDS
+choice_actions = [item for item in resume_result["actions"] if item["type"] == "select_checkpoint_choice"]
+assert len(choice_actions) == 3
+bypassed, bypass_status = server.process_chat_request({
+    "conversation_id": cid,
+    "action": {"type": "confirm_checkpoint", "target_id": choice_actions[0]["target_id"]},
+    "expected_revision": resume_result["state"]["revision"],
+    "request_id": "choice-bypass",
+})
+assert bypass_status == 409 and "必须选择" in bypassed["error"]
+assert "1-2" not in server.load_conversation(cid)["coach_state"]["ip_profile"]["confirmed_outputs"]
+saved = server.load_conversation(cid)
+choice_message = next(item for item in reversed(saved["messages"]) if item.get("choice_target_id"))
+assert choice_message["agent_trace"]["skills"][-1]["id"] == "diagnostic_choice"
+assert choice_message["agent_trace"]["prompt_version"] == "diagnostic-choice-v1"
+assert choice_message["agent_trace"]["model"] == server.MODEL
+deterministic = server._deterministic_decision({"decision": "answer_only"})
+assert deterministic["_model_used"] is False and deterministic["_trace_skill"] == "module_checkpoint"
+deterministic_message = server._assistant_message("确定性回复", "module_checkpoint", prompt_version="", model=None)
+assert deterministic_message["agent_trace"]["model"] is None
+assert deterministic_message["agent_trace"]["prompt_version"] is None
+
+selected = choice_actions[1]
+select_body = {
+    "conversation_id": cid,
+    "action": {"type": selected["type"], "target_id": selected["target_id"], "choice_id": selected["choice_id"]},
+    "expected_revision": resume_result["state"]["revision"],
+    "request_id": "select-choice-2",
+}
+selected_result, status = server.process_chat_request(select_body)
+assert status == 200
+snapshot = selected_result["state"]["ip_profile"]["confirmed_outputs"]["1-2"]["choice_snapshot"]
+assert snapshot["selected_choice_id"] == "choice-2"
+assert snapshot["request_id"] == "select-choice-2"
+assert selected_result["state"]["ip_profile"]["ai_selections"] == {}
+saved = server.load_conversation(cid)
+assert any(item.get("content") == "我选择 2：方向二" for item in saved["messages"] if item.get("role") == "user")
+assert all("agent_trace" in item for item in saved["messages"] if item.get("role") == "assistant" and item.get("message_id") != "legacy-answer")
+
+captured_messages = []
+class CapturedResponse:
+    def json(self):
+        raw = {"decision": "answer_only", "checkpoint": 0, "reply": "说明", "draft": "", "self_review": "", "profile_updates": [], "choices": [], "confidence": 0.9}
+        return {"choices": [{"message": {"content": server.json.dumps(raw, ensure_ascii=False)}}]}
+original_call_ai = server.call_ai
+def capture_coach(messages, **_kwargs):
+    captured_messages.extend(messages)
+    return CapturedResponse()
+server.call_ai = capture_coach
+server._coach_model_decision = original_coach_model
+server._coach_model_decision(saved, "请解释一下")
+coach_payload = "\n".join(item["content"] for item in captured_messages)
+assert "我选择 2：方向二" in coach_payload
+assert "结合经验和工具" in coach_payload
+assert "识别度集中" in coach_payload and "避免硬推销" in coach_payload
+assert "拆解真实问题" not in coach_payload and "记录长期成长" not in coach_payload
+
+foundation_cid = "foundation-choice-context"
+foundation_state = server.json.loads(server.json.dumps(selected_result["state"], ensure_ascii=False))
+foundation_state.update(current_module=4, completed_modules=[1, 2, 3, 4], module_step=4, pending=None)
+foundation_state["foundation_report"] = {"status": "failed"}
+foundation_state["ip_profile"]["confirmed_outputs"]["2-2"] = {
+    "module": 2, "step": 2, "title": "已选人设", "content": "已确认人设：耐心的工具陪跑者；13800138000",
+}
+foundation_state["ip_profile"]["confirmed_outputs"]["3-2"] = {
+    "module": 3, "step": 2, "title": "已选价值", "content": "已确认价值：陪用户把复杂事情做成",
+}
+for module in range(1, 5):
+    for step in range(1, 5):
+        key = f"{module}-{step}"
+        foundation_state["ip_profile"]["confirmed_outputs"].setdefault(key, {
+            "module": module, "step": step, "title": f"已确认 {key}",
+            "content": f"已确认 {key} 内容：" + ("事实" * 1600),
+        })
+foundation_state["ip_profile"]["confirmed_outputs"]["4-4"] = {
+    "module": 4, "step": 4, "title": "故事最终汇总",
+    "content": "模块4最终已确认：长期故事主线" + ("故事" * 1600),
+}
+server.save_conversation(foundation_cid, {
+    "id": foundation_cid, "title": "foundation context", "owner_account_id": "acct_choice",
+    "messages": saved["messages"], "coach_state": foundation_state,
+    "reports": {}, "deliverables": {},
+})
+foundation_messages = []
+def capture_foundation(messages, **_kwargs):
+    foundation_messages.extend(messages)
+    raise RuntimeError("foundation payload captured")
+server.call_ai = capture_foundation
+try:
+    server.generate_foundation_report(foundation_cid)
+    raise AssertionError("foundation payload capture did not stop")
+except RuntimeError as exc:
+    assert "foundation payload captured" in str(exc)
+foundation_payload = "\n".join(item["content"] for item in foundation_messages)
+assert "结合经验和工具" in foundation_payload
+assert "已确认人设：耐心的工具陪跑者" in foundation_payload
+assert "已确认价值：陪用户把复杂事情做成" in foundation_payload
+assert "模块4最终已确认：长期故事主线" in foundation_payload
+assert "13800138000" not in foundation_payload
+assert "三套人设方案" not in foundation_payload and "三套价值主张方案" not in foundation_payload
+assert "拆解真实问题" not in foundation_payload and "记录长期成长" not in foundation_payload
+server.call_ai = capture_coach
+
+editing_state = server.coach_harness.initial_state()
+editing_state["intake"] = {"status": "complete", "round": 3, "answers": {}}
+editing_state["module_step"] = 1
+editing_raw, editing_evidence = model_decision(
+    {"coach_state": editing_state}, "修改候选", repair_error="return valid choices"
+)
+editing_state, _, _ = server.coach_harness.apply_model_decision(
+    editing_state, editing_raw, editing_evidence, pending_id="prompt-separation-target"
+)
+editing_action = next(x for x in server.coach_harness.available_actions(editing_state) if x["type"] == "edit_checkpoint")
+editing_state, _ = server.coach_harness.apply_action(
+    editing_state, editing_action, editing_state["revision"]
+)
+captured_messages.clear()
+server._coach_model_decision(
+    {"coach_state": editing_state, "messages": [], "deliverables": {}}, "语气更温和"
+)
+assert "方向一" not in captured_messages[0]["content"]
+assert any("方向一" in item["content"] for item in captured_messages[1:] if item["role"] == "user")
+
+pack_state = server.json.loads(server.json.dumps(selected_result["state"], ensure_ascii=False))
+pack_state.update(current_module=5, completed_modules=[1, 2, 3, 4], module_step=2, pending=None)
+pack_state["foundation_report"] = {"status": "confirmed"}
+topic_lines = []
+for category in range(1, 4):
+    topic_lines.append("### 种类%s" % category)
+    topic_lines.extend("%s. 种类%s选题%02d" % (index, category, index) for index in range(1, 11))
+pack_state["ip_profile"]["confirmed_outputs"]["5-2"] = {"content": "\n".join(topic_lines)}
+content_messages = []
+def capture_content(messages, **_kwargs):
+    content_messages.extend(messages)
+    raise RuntimeError("capture complete")
+server.call_ai = capture_content
+try:
+    server._generate_content_pack({"coach_state": pack_state})
+    raise AssertionError("content payload capture did not stop")
+except RuntimeError as exc:
+    assert "capture complete" in str(exc)
+content_payload = "\n".join(item["content"] for item in content_messages)
+assert "结合经验和工具" in content_payload
+assert "拆解真实问题" not in content_payload and "记录长期成长" not in content_payload
+server.call_ai = original_call_ai
+
+saved["turn_receipts"] = [
+    {"request_id": f"other-{index}", "result": {"ok": True, "assistant": "other", "state": saved["coach_state"]}}
+    for index in range(12)
+]
+server.save_conversation(cid, saved)
+message_count = len(saved["messages"])
+replayed, status = server.process_chat_request(select_body)
+assert status == 200 and replayed["replayed"] is True and replayed["selection_replayed"] is True
+assert replayed["state"]["revision"] == server.load_conversation(cid)["coach_state"]["revision"]
+assert len(server.load_conversation(cid)["messages"]) == message_count
+print("IP12_CHOICE_ROUTE_OK")
+'''
+        with tempfile.TemporaryDirectory() as data_dir:
+            env = os.environ.copy()
+            env.update(OPENAI_API_KEY="dummy", HERMES_HOME=data_dir, HERMES_DATA_DIR=data_dir)
+            result = subprocess.run(
+                [sys.executable, "-c", script], cwd=HERMES, env=env,
+                capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("IP12_CHOICE_ROUTE_OK", result.stdout)
+
+    def test_choice_deadline_and_cross_tab_generation_are_bounded(self):
+        script = r'''
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
+import server
+
+server.current_account_id = lambda: "acct_choice_bounds"
+
+def create_ready(cid):
+    state = server.coach_harness.initial_state()
+    state.update(revision=5, module_step=1)
+    state["intake"] = {"status": "complete", "round": 3, "answers": {}}
+    state["ip_profile"]["confirmed_outputs"]["1-1"] = {"content": "关键词：真实、行动、AI"}
+    state["choice_generation"] = {"target_id": cid + "-generation", "module": 1, "step": 2}
+    server.save_conversation(cid, {
+        "id": cid, "title": cid, "owner_account_id": "acct_choice_bounds",
+        "messages": [], "coach_state": state, "reports": {}, "deliverables": {},
+    })
+    return server.coach_harness.available_actions(state)[0], state["revision"]
+
+def choice_decision(valid):
+    choices = [
+        {"title": "方向一", "summary": "拆解真实问题", "reason": "行动明确", "caution": "记忆点较弱", "recommended": False},
+        {"title": "方向二", "summary": "结合经验和工具", "reason": "识别度集中", "caution": "避免硬推销", "recommended": True},
+        {"title": "方向三", "summary": "记录长期成长", "reason": "连接感更强", "caution": "注意隐私", "recommended": False},
+    ]
+    return {
+        "decision": "propose_checkpoint", "checkpoint": 2,
+        "reply": "请选择最适合你的方向。", "draft": "",
+        "self_review": "三项内容均基于已确认资料。", "profile_updates": [],
+        "choices": choices if valid else choices[:2], "confidence": 0.9,
+    }, "用户原话"
+
+real_monotonic = server.time.monotonic
+shape_action, shape_revision = create_ready("choice-shape-retry")
+shape_calls = []
+def shape_retry_model(*_args, **_kwargs):
+    shape_calls.append(1)
+    if len(shape_calls) == 1:
+        raise server.coach_harness.ChoiceValidationError(
+            "choice_response_shape", "empty response"
+        )
+    return choice_decision(True)
+server._coach_model_decision = shape_retry_model
+shape_result, shape_status = server.process_chat_request({
+    "conversation_id": "choice-shape-retry",
+    "action": {"type": shape_action["type"], "target_id": shape_action["target_id"]},
+    "expected_revision": shape_revision,
+    "request_id": "choice-shape-retry-request",
+})
+assert shape_status == 200 and len(shape_calls) == 2
+assert len([x for x in shape_result["actions"] if x["type"] == "select_checkpoint_choice"]) == 3
+
+ordinary = server.coach_harness.initial_state()
+ordinary["intake"] = {"status": "complete", "round": 3, "answers": {}}
+server.save_conversation("non-choice-repair", {
+    "id": "non-choice-repair", "title": "non-choice-repair",
+    "owner_account_id": "acct_choice_bounds", "messages": [],
+    "coach_state": ordinary, "reports": {}, "deliverables": {},
+})
+non_choice_calls = []
+def non_choice_model(_snapshot, _message, repair_error="", timeout_seconds=180):
+    non_choice_calls.append(bool(repair_error))
+    raw = {
+        "decision": "answer_only", "checkpoint": 0, "reply": "普通回答",
+        "draft": "", "self_review": "", "profile_updates": [],
+        "choices": choice_decision(True)[0]["choices"] if not repair_error else [],
+        "confidence": 0.9,
+    }
+    return raw, "用户原话"
+server._coach_model_decision = non_choice_model
+non_choice_result, non_choice_status = server._process_model_turn(
+    "non-choice-repair", "普通问题", expected_revision=ordinary["revision"],
+    request_id="non-choice-repair-request",
+)
+assert non_choice_status == 200 and non_choice_calls == [False, True]
+assert non_choice_result["assistant"] == "普通回答"
+
+editing = server.coach_harness.initial_state()
+editing["intake"] = {"status": "complete", "round": 3, "answers": {}}
+editing["module_step"] = 1
+editing, _, _ = server.coach_harness.apply_model_decision(
+    editing, choice_decision(True)[0], "用户原话", pending_id="editing-choice-target"
+)
+edit_action = next(x for x in server.coach_harness.available_actions(editing) if x["type"] == "edit_checkpoint")
+editing, _ = server.coach_harness.apply_action(editing, edit_action, editing["revision"])
+original_editing_choices = server.json.dumps(editing["pending"]["choices"], ensure_ascii=False, sort_keys=True)
+server.save_conversation("choice-edit-failure", {
+    "id": "choice-edit-failure", "title": "choice-edit-failure",
+    "owner_account_id": "acct_choice_bounds", "messages": [],
+    "coach_state": editing, "reports": {}, "deliverables": {},
+})
+edit_fail_calls = []
+def edit_fail_model(*_args, **_kwargs):
+    edit_fail_calls.append(1)
+    raise RuntimeError("network timeout")
+server._coach_model_decision = edit_fail_model
+edit_failure, edit_failure_status = server._process_model_turn(
+    "choice-edit-failure", "语气更温和", expected_revision=editing["revision"],
+    request_id="choice-edit-failure-request",
+)
+assert edit_failure_status == 200 and len(edit_fail_calls) == 1
+assert edit_failure["state"]["pending"]["status"] == "awaiting_confirmation"
+assert server.json.dumps(edit_failure["state"]["pending"]["choices"], ensure_ascii=False, sort_keys=True) == original_editing_choices
+assert len([x for x in edit_failure["actions"] if x["type"] == "select_checkpoint_choice"]) == 3
+stored_edit_messages = server.load_conversation("choice-edit-failure")["messages"]
+assert [m.get("content") for m in stored_edit_messages].count("语气更温和") == 1
+
+for elapsed in (74, 75, 76):
+    cid = "deadline-" + str(elapsed)
+    action, revision = create_ready(cid)
+    clock = {"now": 0.0}
+    calls = []
+    server.time.monotonic = lambda: clock["now"]
+    def deadline_model(_snapshot, _message, repair_error="", timeout_seconds=180):
+        calls.append((bool(repair_error), timeout_seconds))
+        if not repair_error:
+            clock["now"] += elapsed
+            return choice_decision(False)
+        return choice_decision(True)
+    server._coach_model_decision = deadline_model
+    result, status = server.process_chat_request({
+        "conversation_id": cid,
+        "action": {"type": action["type"], "target_id": action["target_id"]},
+        "expected_revision": revision,
+        "request_id": "deadline-request-" + str(elapsed),
+    })
+    assert status == 200 and len([x for x in result["actions"] if x["type"] == "select_checkpoint_choice"]) == 3
+    assert len(calls) == 2 and calls[0][1] <= server.CHOICE_FIRST_TIMEOUT_SECONDS
+    assert calls[1][1] <= min(
+        server.CHOICE_REPAIR_TIMEOUT_SECONDS,
+        server.CHOICE_TOTAL_TIMEOUT_SECONDS - elapsed,
+    )
+
+late_action, late_revision = create_ready("deadline-late")
+late_clock = {"now": 0.0}
+server.time.monotonic = lambda: late_clock["now"]
+def late_model(*_args, **_kwargs):
+    late_clock["now"] = 121
+    return choice_decision(True)
+server._coach_model_decision = late_model
+late_result, late_status = server.process_chat_request({
+    "conversation_id": "deadline-late",
+    "action": {"type": late_action["type"], "target_id": late_action["target_id"]},
+    "expected_revision": late_revision,
+    "request_id": "deadline-late-request",
+})
+assert late_status == 200
+assert not [x for x in late_result["actions"] if x["type"] == "select_checkpoint_choice"]
+assert late_result["actions"][0]["type"] == "resume_choice_generation"
+
+network_action, network_revision = create_ready("deadline-network")
+network_calls = []
+server.time.monotonic = real_monotonic
+def network_model(*_args, **_kwargs):
+    network_calls.append(1)
+    raise RuntimeError("network timeout")
+server._coach_model_decision = network_model
+network_result, network_status = server.process_chat_request({
+    "conversation_id": "deadline-network",
+    "action": {"type": network_action["type"], "target_id": network_action["target_id"]},
+    "expected_revision": network_revision,
+    "request_id": "deadline-network-request",
+})
+assert network_status == 200 and len(network_calls) == 1
+assert network_result["actions"][0]["type"] == "resume_choice_generation"
+
+concurrent_action, concurrent_revision = create_ready("choice-concurrent")
+entered = threading.Event()
+release = threading.Event()
+model_calls = []
+def slow_model(*_args, **_kwargs):
+    model_calls.append(1)
+    entered.set()
+    assert release.wait(3)
+    return choice_decision(True)
+server._coach_model_decision = slow_model
+first_body = {
+    "conversation_id": "choice-concurrent",
+    "action": {"type": concurrent_action["type"], "target_id": concurrent_action["target_id"]},
+    "expected_revision": concurrent_revision,
+    "request_id": "choice-concurrent-a",
+}
+with ThreadPoolExecutor(max_workers=2) as pool:
+    first = pool.submit(server.process_chat_request, first_body)
+    assert entered.wait(2)
+    latest_revision = server.load_conversation("choice-concurrent")["coach_state"]["revision"]
+    second, second_status = server.process_chat_request({
+        **first_body,
+        "expected_revision": latest_revision,
+        "request_id": "choice-concurrent-b",
+    })
+    assert second_status == 409 and "正在处理另一条回复" in second["error"]
+    release.set()
+    first_result, first_status = first.result(timeout=5)
+assert first_status == 200 and len(model_calls) == 1
+assert len([x for x in first_result["actions"] if x["type"] == "select_checkpoint_choice"]) == 3
+
+ordinary_concurrent = server.coach_harness.initial_state()
+ordinary_concurrent["intake"] = {"status": "complete", "round": 3, "answers": {}}
+server.save_conversation("ordinary-concurrent", {
+    "id": "ordinary-concurrent", "title": "ordinary-concurrent",
+    "owner_account_id": "acct_choice_bounds", "messages": [],
+    "coach_state": ordinary_concurrent, "reports": {}, "deliverables": {},
+})
+ordinary_entered = threading.Event()
+ordinary_release = threading.Event()
+ordinary_calls = []
+def slow_ordinary(*_args, **_kwargs):
+    ordinary_calls.append(1)
+    ordinary_entered.set()
+    assert ordinary_release.wait(3)
+    return {
+        "decision": "answer_only", "checkpoint": 0, "reply": "第一条完成",
+        "draft": "", "self_review": "", "profile_updates": [], "choices": [],
+        "confidence": 0.9,
+    }, "第一条消息"
+server._coach_model_decision = slow_ordinary
+ordinary_first = {
+    "conversation_id": "ordinary-concurrent", "message": "第一条消息",
+    "expected_revision": ordinary_concurrent["revision"], "request_id": "ordinary-a",
+}
+with ThreadPoolExecutor(max_workers=2) as pool:
+    first = pool.submit(server.process_chat_request, ordinary_first)
+    assert ordinary_entered.wait(2)
+    second, second_status = server.process_chat_request({
+        **ordinary_first, "message": "第二条消息", "request_id": "ordinary-b",
+    })
+    assert second_status == 409 and "正在处理另一条回复" in second["error"]
+    ordinary_release.set()
+    ordinary_first_result, ordinary_first_status = first.result(timeout=5)
+assert ordinary_first_status == 200 and len(ordinary_calls) == 1
+ordinary_messages = server.load_conversation("ordinary-concurrent")["messages"]
+assert [m.get("content") for m in ordinary_messages].count("第一条消息") == 1
+assert not any(m.get("content") == "第二条消息" for m in ordinary_messages)
+server.time.monotonic = real_monotonic
+print("IP12_CHOICE_BOUNDS_OK")
+'''
+        with tempfile.TemporaryDirectory() as data_dir:
+            env = os.environ.copy()
+            env.update(OPENAI_API_KEY="dummy", HERMES_HOME=data_dir, HERMES_DATA_DIR=data_dir)
+            result = subprocess.run(
+                [sys.executable, "-c", script], cwd=HERMES, env=env,
+                capture_output=True, text=True, timeout=30,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("IP12_CHOICE_BOUNDS_OK", result.stdout)
+
 
 @unittest.skipUnless(
     importlib.util.find_spec("flask") and importlib.util.find_spec("requests") and importlib.util.find_spec("pypdf"),
@@ -395,6 +1853,7 @@ import video_replica
 import video_vision
 
 server.current_account_id = lambda: "acct_a"
+server.MAX_PROJECTS_PER_ACCOUNT = 1000
 security._validate_token = lambda token: {
     "admin-token": {"account_id": "acct_a", "username": "admin", "role": "admin"},
     "member-a-token": {"account_id": "acct_a", "username": "member-a", "role": "member"},
@@ -402,13 +1861,44 @@ security._validate_token = lambda token: {
 }.get(token)
 security.RATE_REQUESTS = 1000
 routes = {rule.rule for rule in app.url_map.iter_rules() if rule.endpoint != "static"}
-assert len(routes) == 76, len(routes)
+assert len(routes) == 80, len(routes)
 assert all(
     security._is_metered(method)
     for rule in app.url_map.iter_rules()
     for method in rule.methods
     if method in {"POST", "PUT", "PATCH", "DELETE"}
 )
+with patch.object(server, "MODEL", "deepseek-v4-flash"), patch.object(server.requests, "post") as request_model:
+    invalid_json = Mock(status_code=200)
+    invalid_json.json.return_value = {"choices": [{"message": {"content": '{"decision":'}}]}
+    valid_json = Mock(status_code=200)
+    valid_json.json.return_value = {"choices": [{"message": {"content": '{"decision":"answer_only"}'}}]}
+    request_model.side_effect = [invalid_json, valid_json]
+    response = server.call_ai(
+        [{"role": "system", "content": "只输出 JSON"}],
+        response_format={
+            "type": "json_schema",
+            "json_schema": {"schema": {"type": "object", "required": ["decision"]}},
+        },
+    )
+    assert response is valid_json
+    assert request_model.call_count == 2
+    deepseek_payload = request_model.call_args.kwargs["json"]
+    assert deepseek_payload["response_format"] == {"type": "json_object"}
+    assert deepseek_payload["thinking"] == {"type": "disabled"}
+    assert '"required":["decision"]' in deepseek_payload["messages"][0]["content"]
+    assert deepseek_payload["messages"][-2] == {"role": "assistant", "content": '{"decision":'}
+    assert "上一次输出不是完整 JSON" in deepseek_payload["messages"][-1]["content"]
+
+with patch.object(server, "MODEL", "gpt-5.6-luna"), patch.object(server.requests, "post") as request_model:
+    completed = Mock(status_code=200)
+    request_model.return_value = completed
+    response = server.call_ai([{"role": "user", "content": "你好"}], max_tokens=1200)
+    assert response is completed
+    luna_payload = request_model.call_args.kwargs["json"]
+    assert luna_payload["max_completion_tokens"] == 1200
+    assert "max_tokens" not in luna_payload
+    assert "temperature" not in luna_payload
 
 transitioned = parse_coach_state_updates(
     "好，我们进入模块2：人设塑造。",
@@ -539,6 +2029,8 @@ with patch.object(server.subprocess, "run", side_effect=fake_render):
     fitted_pdf = _render_foundation_pdf("## 模块一", ["/fake/chromium"], render_root)
 assert _validate_foundation_pdf(fitted_pdf) == 8
 assert render_calls == ["/fake/chromium", "/fake/chromium"]
+assert 0.45 in _foundation_zoom_candidates(20)
+assert 2.25 in _foundation_zoom_candidates(4)
 
 fallback_root = Path(os.environ["HERMES_DATA_DIR"]) / "foundation-fallback"
 fallback_root.mkdir()
@@ -593,6 +2085,135 @@ assert client.get("/api/conversations").get_json() == []
 server.current_account_id = lambda: "acct_a"
 assert client.delete(f"/api/conversations/{cid}").get_json()["ok"] is True
 
+# Production records stay in the existing conversation JSON.  The bridge is
+# mocked here: this route layer must preserve its quote token, source version,
+# and one idempotency key without recreating Auth/CLI billing behavior.
+production_cid = "production001"
+production_state = server.initial_coach_state()
+server.save_conversation(production_cid, {
+    "id": production_cid, "title": "生产项目", "messages": [],
+    "coach_state": production_state, "reports": {}, "owner_account_id": "acct_a",
+    "deliverables": {"6": {"kind": "content_pack_v1", "categories": [{
+        "id": "category_1", "name": "内容种类", "topics": [{
+            "id": "topic_1", "title": "精选选题", "status": "ready",
+            "versions": [{"version": 1, "content": "这是可制作的完整口播正文。"}],
+        }],
+    }]}},
+})
+revision = production_state["revision"]
+natural_intent_response = client.post("/api/chat-complete", json={
+    "conversation_id": production_cid,
+    "message": "把模块 6 第一篇《精选选题》的当前完整口播放进 Canvas。请直接调用黄雀 Canvas 能力，不要生成图片、音频或视频。",
+    "expected_revision": revision,
+    "request_id": "prepare-canvas-from-natural-target",
+})
+assert natural_intent_response.status_code == 200, natural_intent_response.get_data(as_text=True)
+natural_intent_body = natural_intent_response.get_json()
+assert natural_intent_body["actions"][0]["requested_result"] == "canvas", natural_intent_body
+assert natural_intent_body["actions"][0]["preferred_action"] == "canvas-ops", natural_intent_body
+assert natural_intent_body["actions"][0]["content_target"] == {
+    "category_id": "category_1", "topic_id": "topic_1",
+}, natural_intent_body
+revision = natural_intent_body["state"]["revision"]
+intent_response = client.post("/api/chat-complete", json={
+    "conversation_id": production_cid,
+    "message": "用 Grok 把这篇做成视频",
+    "content_target": {"category_id": "category_1", "topic_id": "topic_1"},
+    "expected_revision": revision,
+    "request_id": "prepare-video-from-chat",
+})
+assert intent_response.status_code == 200, intent_response.get_data(as_text=True)
+intent_body = intent_response.get_json()
+assert intent_body["actions"][0]["type"] == "prepare_production", intent_body
+assert intent_body["actions"][0]["requested_result"] == "video", intent_body
+assert intent_body["actions"][0]["preferred_action"] == "video-generate", intent_body
+assert not server.load_conversation(production_cid).get("productions"), intent_body
+revision = intent_body["state"]["revision"]
+prepared = client.post("/api/ip12/productions/prepare", json={
+    "conversation_id": production_cid,
+    "content_target": {"category_id": "category_1", "topic_id": "topic_1"},
+    "expected_revision": revision, "requested_result": "video",
+})
+assert prepared.status_code == 200, prepared.get_data(as_text=True)
+prepared_body = prepared.get_json()
+production_id = prepared_body["production_id"]
+assert prepared_body["status"] == "blocked_prerequisite"
+bridge_calls = []
+def fake_production_bridge(account_id, action, input_body, **kwargs):
+    bridge_calls.append((account_id, action, input_body, kwargs))
+    if kwargs.get("confirm"):
+        return {"job_id": "456", "status": "queued"}
+    if action == "task":
+        return {"job_id": "456", "status": "done", "asset_refs": [{"id": "asset-1", "kind": "video"}]}
+    return {"quote_token": "private-quote-token", "cost": 12, "points": 12, "expires_in": 300}
+with patch.object(server, "_bridge_action", side_effect=fake_production_bridge):
+    quoted = client.post("/api/ip12/productions/quote", json={
+        "conversation_id": production_cid, "production_id": production_id,
+        "expected_revision": revision, "options": {"avatar_id": 1, "voice": "voice-demo"},
+    })
+    assert quoted.status_code == 200, quoted.get_data(as_text=True)
+    assert quoted.get_json()["cost"] == 12
+    confirmed = client.post("/api/ip12/productions/confirm", json={
+        "conversation_id": production_cid, "production_id": production_id,
+        "expected_revision": revision, "confirmation_id": "confirm-production-001",
+    })
+    assert confirmed.status_code == 200, confirmed.get_data(as_text=True)
+    assert confirmed.get_json()["production"]["job_id"] == "456"
+    restored = client.get(f"/api/ip12/productions/{production_id}?conversation_id={production_cid}")
+    assert restored.status_code == 200, restored.get_data(as_text=True)
+    assert restored.get_json()["production"]["status"] == "done"
+    assert restored.get_json()["production"]["asset_refs"][0]["id"] == "asset-1"
+assert len([call for call in bridge_calls if call[3].get("confirm")]) == 1
+stored_production = server.load_conversation(production_cid)["productions"][production_id]
+assert stored_production["quote"]["token"] == "private-quote-token"
+public_project = client.get(f"/api/conversations/{production_cid}").get_json()
+assert "private-quote-token" not in json.dumps(public_project, ensure_ascii=False)
+assert public_project["productions"][0]["job_id"] == "456"
+
+# A lost confirm response leaves the project in submitting.  Status recovery
+# must reuse the same quote and idempotency key, not open another production.
+recovery_prepare = client.post("/api/ip12/productions/prepare", json={
+    "conversation_id": production_cid,
+    "content_target": {"category_id": "category_1", "topic_id": "topic_1"},
+    "expected_revision": revision, "requested_result": "video",
+}).get_json()
+recovery_id = recovery_prepare["production_id"]
+recovery_confirm_calls = []
+def recovery_bridge(account_id, action, input_body, **kwargs):
+    if not kwargs.get("confirm"):
+        return {"quote_token": "recovery-quote", "cost": 12, "points": 12, "expires_in": 300}
+    recovery_confirm_calls.append(kwargs["idempotency_key"])
+    if len(recovery_confirm_calls) == 1:
+        raise RuntimeError("response lost")
+    return {"job_id": "789", "status": "queued"}
+with patch.object(server, "_bridge_action", side_effect=recovery_bridge):
+    assert client.post("/api/ip12/productions/quote", json={
+        "conversation_id": production_cid, "production_id": recovery_id,
+        "expected_revision": revision, "options": {"avatar_id": 2, "voice": "voice-demo"},
+    }).status_code == 200
+    pending = client.post("/api/ip12/productions/confirm", json={
+        "conversation_id": production_cid, "production_id": recovery_id,
+        "expected_revision": revision, "confirmation_id": "confirm-production-002",
+    })
+    assert pending.status_code == 202
+    recovered = client.get(f"/api/ip12/productions/{recovery_id}?conversation_id={production_cid}")
+    assert recovered.status_code == 200
+    assert recovered.get_json()["production"]["job_id"] == "789"
+assert len(recovery_confirm_calls) == 2 and len(set(recovery_confirm_calls)) == 1
+server.current_account_id = lambda: "acct_b"
+assert client.get(f"/api/ip12/productions/{production_id}?conversation_id={production_cid}").status_code == 404
+server.current_account_id = lambda: "acct_a"
+stale_project = server.load_conversation(production_cid)
+stale_project["deliverables"]["6"]["categories"][0]["topics"][0]["versions"].append(
+    {"version": 2, "content": "这是一版新的完整口播正文。"}
+)
+server.save_conversation(production_cid, stale_project)
+stale = client.get(f"/api/ip12/productions/{production_id}?conversation_id={production_cid}")
+assert stale.status_code == 200
+# A completed result remains attached to the version it actually produced;
+# only an unconsumed quote is invalidated by a later script version.
+assert stale.get_json()["production"]["status"] == "done"
+
 older_cid = "ffffffffffff"
 newer_cid = "000000000000"
 for ordered_cid, title in ((older_cid, "较早诊断"), (newer_cid, "最近诊断")):
@@ -614,33 +2235,298 @@ assert client.delete(f"/api/conversations/{newer_cid}").status_code == 200
 
 raw_pack = {"categories": [{
     "name": f"种类{category}",
-    "description": f"种类{category}说明",
+    "description": f"这是种类{category}中最值得优先发布的选题。",
     "topics": [{
-        "title": f"种类{category}选题{topic}",
-        "hook": f"钩子{topic}",
+        "title": f"种类{category}选题01",
+        "hook": "开头钩子",
         "objective": "建立信任",
-        "script": f"这是种类{category}的第{topic}篇口播文案。",
-    } for topic in range(1, 11)],
+        "script": (f"这是种类{category}精选选题的完整口播文案，包含自然开头、清晰观点、具体解释和克制的行动引导。") * 6,
+    }],
 } for category in range(1, 4)]}
+
+advance_source = "\n\n".join(
+    "### %s\n%s" % (
+        name,
+        "\n".join("%d. %s选题%02d" % (index, name, index) for index in range(1, 11)),
+    )
+    for name in ("转行经验分享", "智能体应用实践", "垂直行业真实验证")
+)
+
+advance_action_cid = client.post("/api/conversations").get_json()["id"]
+advance_action_convo = server.load_conversation(advance_action_cid)
+advance_action_state = server.coach_harness.initial_state()
+advance_action_state.update(
+    current_module=5,
+    module_step=1,
+    completed_modules=[1, 2, 3, 4],
+    foundation_report={"status": "confirmed"},
+    pending={
+        "id": "topics-ready",
+        "kind": "checkpoint",
+        "status": "awaiting_confirmation",
+        "module": 5,
+        "step": 2,
+        "draft": advance_source,
+        "self_review": "完整 3×10。",
+        "profile_updates": [],
+        "confidence": 1,
+    },
+)
+advance_action_state["intake"]["status"] = "complete"
+advance_action_convo["coach_state"] = advance_action_state
+server.save_conversation(advance_action_cid, advance_action_convo)
+with patch.object(server, "call_ai") as advance_model:
+    advance_action = client.post("/api/chat-complete", json={
+        "conversation_id": advance_action_cid,
+        "action": {"type": "confirm_checkpoint", "target_id": "topics-ready"},
+        "expected_revision": advance_action_state["revision"],
+    })
+    assert advance_action.status_code == 200, advance_action.get_data(as_text=True)
+    advance_model.assert_not_called()
+advance_action_json = advance_action.get_json()
+assert advance_action_json["state"]["module_step"] == 2
+assert advance_action_json["state"]["pending"]["step"] == 3
+assert "首批 6 条发布顺序" in advance_action_json["assistant"]
+
+advance_retry_cid = client.post("/api/conversations").get_json()["id"]
+advance_retry_convo = server.load_conversation(advance_retry_cid)
+advance_retry_state = server.coach_harness.initial_state()
+advance_retry_state.update(
+    current_module=5,
+    module_step=2,
+    completed_modules=[1, 2, 3, 4],
+    foundation_report={"status": "confirmed"},
+)
+advance_retry_state["intake"]["status"] = "complete"
+advance_retry_state["ip_profile"]["confirmed_outputs"]["5-2"] = {"content": advance_source}
+advance_retry_convo["coach_state"] = advance_retry_state
+server.save_conversation(advance_retry_cid, advance_retry_convo)
+with patch.object(server, "call_ai") as retry_model:
+    advance_retry = client.post("/api/chat-complete", json={
+        "conversation_id": advance_retry_cid,
+        "message": "下一步",
+        "expected_revision": advance_retry_state["revision"],
+    })
+    assert advance_retry.status_code == 200, advance_retry.get_data(as_text=True)
+    retry_model.assert_not_called()
+assert advance_retry.get_json()["state"]["pending"]["step"] == 3
+
+module_six_convo = server.load_conversation(advance_retry_cid)
+module_six_state = module_six_convo["coach_state"]
+module_six_state.update(current_module=6, module_step=0, completed_modules=[1, 2, 3, 4, 5])
+module_six_convo["coach_state"] = module_six_state
+server.save_conversation(advance_retry_cid, module_six_convo)
+with patch.object(server, "call_ai") as module_six_entry_model:
+    module_six_entry_response = client.post("/api/chat-complete", json={
+        "conversation_id": advance_retry_cid,
+        "message": "下一步",
+        "expected_revision": module_six_state["revision"],
+    })
+    module_six_entry_model.assert_not_called()
+assert module_six_entry_response.status_code == 200, module_six_entry_response.get_data(as_text=True)
+module_six_entry = module_six_entry_response.get_json()
+assert module_six_entry["state"]["current_module"] == 6
+assert module_six_entry["state"]["module_step"] == 0
+assert "表达风格" in module_six_entry["assistant"]
+assert "每篇大约多长" in module_six_entry["assistant"]
+module_six_exact_convo = server.load_conversation(advance_retry_cid)
+module_six_exact_state = module_six_exact_convo["coach_state"]
+module_six_exact_convo.setdefault("messages", []).extend([
+    {"role": "user", "content": "1min"},
+    {"role": "assistant", "content": "你希望口播偏口语化还是正式？最后希望观众关注、评论、私信，还是去试 AI 工具？"},
+])
+server.save_conversation(advance_retry_cid, module_six_exact_convo)
+exact_preference = "我希望口播是偏口语化的，就像和好友在聊天，我希望观众可以点赞、评论我"
+with patch.object(server, "call_ai") as exact_preference_model:
+    exact_preference_response = client.post("/api/chat-complete", json={
+        "conversation_id": advance_retry_cid,
+        "message": exact_preference,
+        "expected_revision": module_six_exact_state["revision"],
+    })
+    exact_preference_model.assert_not_called()
+assert exact_preference_response.status_code == 200, exact_preference_response.get_data(as_text=True)
+exact_preference_json = exact_preference_response.get_json()
+assert exact_preference_json["state"]["pending"]["step"] == 1
+assert "点赞、评论" in exact_preference_json["state"]["pending"]["draft"]
+
+fallback_cid = client.post("/api/conversations").get_json()["id"]
+fallback_convo = server.load_conversation(fallback_cid)
+fallback_state = server.coach_harness.initial_state()
+fallback_state["intake"]["status"] = "complete"
+fallback_convo["coach_state"] = fallback_state
+server.save_conversation(fallback_cid, fallback_convo)
+fallback_words = "这是模型暂时无法整理、但必须先保存的用户原话"
+seen_before_model = []
+def fail_before_model(snapshot, user_message, repair_error=""):
+    saved = server.load_conversation(fallback_cid).get("messages", [])
+    seen_before_model.append(any(
+        item.get("role") == "user" and item.get("content") == fallback_words
+        for item in saved
+    ))
+    raise RuntimeError("temporary model failure")
+
+with patch.object(server, "_coach_model_decision", side_effect=fail_before_model):
+    fallback_response = client.post("/api/chat-complete", json={
+        "conversation_id": fallback_cid,
+        "message": fallback_words,
+        "expected_revision": fallback_state["revision"],
+        "request_id": "fallback-persists-once",
+    })
+assert fallback_response.status_code == 200, fallback_response.get_data(as_text=True)
+assert seen_before_model == [True], seen_before_model
+fallback_json = fallback_response.get_json()
+assert fallback_json["ok"] is True
+assert "已经记下你刚才的原话" in fallback_json["assistant"]
+saved_fallback = server.load_conversation(fallback_cid)
+assert sum(
+    item.get("role") == "user" and item.get("content") == fallback_words
+    for item in saved_fallback["messages"]
+) == 1
+assert sum(
+    item.get("role") == "user" and item.get("message_id")
+    for item in saved_fallback["messages"]
+) == 1
+assert saved_fallback["messages"][-2]["content"] == fallback_words
+assert saved_fallback["messages"][-1]["content"] == fallback_json["assistant"]
+assert saved_fallback["coach_state"]["revision"] == fallback_state["revision"] + 1
+replayed_fallback = client.post("/api/chat-complete", json={
+    "conversation_id": fallback_cid,
+    "message": fallback_words,
+    "expected_revision": fallback_state["revision"],
+    "request_id": "fallback-persists-once",
+})
+assert replayed_fallback.status_code == 200
+assert len(server.load_conversation(fallback_cid)["messages"]) == len(saved_fallback["messages"])
+captured_module_six = {}
+def capture_module_six(messages, **kwargs):
+    captured_module_six["messages"] = messages
+    response = Mock()
+    response.json.return_value = {"choices": [{"message": {"content": json.dumps({
+        "decision": "ask_follow_up", "checkpoint": 0, "reply": "请补充风格。",
+        "draft": "", "self_review": "", "profile_updates": [], "confidence": 0.8,
+    }, ensure_ascii=False)}}]}
+    return response
+with patch.object(server, "call_ai", side_effect=capture_module_six):
+    server._coach_model_decision(module_six_convo, "模块 6 会怎么使用模块 5 的选题？")
+module_six_context = "\n".join(item["content"] for item in captured_module_six["messages"])
+assert "confirmed_module_five_plan" in module_six_context
+assert "转行经验分享选题01" in module_six_context
+
 content_pack = server._normalize_content_pack(raw_pack)
 assert content_pack["kind"] == "content_pack_v1"
+assert content_pack["format"] == "featured_3_v1"
 assert len(content_pack["categories"]) == 3
-assert all(len(category["topics"]) == 10 for category in content_pack["categories"])
-assert sum(len(category["topics"]) for category in content_pack["categories"]) == 30
+assert all(len(category["topics"]) == 1 for category in content_pack["categories"])
+assert sum(len(category["topics"]) for category in content_pack["categories"]) == 3
 try:
     server._normalize_content_pack({"categories": raw_pack["categories"][:2]})
     raise AssertionError("two-category pack was accepted")
 except ValueError:
     pass
+short_pack = json.loads(json.dumps(raw_pack, ensure_ascii=False))
+short_pack["categories"][0]["topics"][0]["script"] = "只有标题，没有完整正文。"
+try:
+    server._normalize_content_pack(short_pack)
+    raise AssertionError("title-only content was accepted as a complete script")
+except ValueError:
+    pass
+
+module_six_convo["deliverables"] = {"6": content_pack}
+module_six_state["module_step"] = 1
+module_six_convo["coach_state"] = module_six_state
+with patch.object(server, "call_ai") as module_six_model:
+    module_six_review, _ = server._coach_model_decision(module_six_convo, "下一步")
+    module_six_model.assert_not_called()
+assert module_six_review["checkpoint"] == 2
+module_six_state["module_step"] = 2
+with patch.object(server, "call_ai") as module_six_model:
+    module_six_confirm, _ = server._coach_model_decision(module_six_convo, "下一步")
+    module_six_model.assert_not_called()
+assert module_six_confirm["checkpoint"] == 3
 
 generated_cid = client.post("/api/conversations").get_json()["id"]
+generated_convo = server.load_conversation(generated_cid)
+generated_state = server.coach_harness.initial_state()
+generated_state.update(
+    current_module=6,
+    module_step=0,
+    completed_modules=[1, 2, 3, 4, 5],
+    foundation_report={"status": "confirmed"},
+)
+generated_state["intake"]["status"] = "complete"
+generated_state["ip_profile"]["confirmed_outputs"]["5-2"] = {
+    "content": "\n\n".join(
+        "### %s\n%s" % (
+            category["name"],
+            "\n".join(
+                "%d. %s选题%02d" % (index, category["name"], index)
+                for index in range(1, 11)
+            ),
+        )
+        for category in raw_pack["categories"]
+    )
+}
+generated_convo["coach_state"] = generated_state
+server.save_conversation(generated_cid, generated_convo)
 pack_response = Mock()
 pack_response.json.return_value = {"choices": [{"message": {"content": json.dumps(raw_pack, ensure_ascii=False)}}]}
 with patch.object(server, "call_ai", return_value=pack_response) as pack_model:
     generated_pack = server.generate_deliverable(generated_cid, 6)
 assert len(generated_pack["categories"]) == 3
+assert sum(len(category["topics"]) for category in generated_pack["categories"]) == 3
 assert server.load_conversation(generated_cid)["deliverables"]["6"]["kind"] == "content_pack_v1"
 assert pack_model.call_args.kwargs["response_format"]["type"] == "json_schema"
+
+drifted_raw_pack = json.loads(json.dumps(raw_pack, ensure_ascii=False))
+for category in drifted_raw_pack["categories"]:
+    category["name"] += "方向"
+    category["topics"][0]["title"] += "完整版"
+drifted_response = Mock()
+drifted_response.json.return_value = {
+    "choices": [{"message": {"content": json.dumps(drifted_raw_pack, ensure_ascii=False)}}]
+}
+with patch.object(server, "call_ai", return_value=drifted_response):
+    repaired_pack = server._generate_content_pack(generated_convo)
+assert [item["name"] for item in repaired_pack["categories"]] == [
+    item["name"] for item in raw_pack["categories"]
+]
+assert [item["topics"][0]["title"] for item in repaired_pack["categories"]] == [
+    item["topics"][0]["title"] for item in raw_pack["categories"]
+]
+
+legacy_cid = client.post("/api/conversations").get_json()["id"]
+legacy_convo = server.load_conversation(legacy_cid)
+legacy_state = json.loads(json.dumps(generated_state, ensure_ascii=False))
+legacy_state["module_step"] = 1
+legacy_state["pending"] = None
+legacy_convo["coach_state"] = legacy_state
+legacy_convo["deliverables"] = {"6": {
+    "kind": "content_pack_v1",
+    "title": "📝 3×10 口播内容库",
+    "categories": [{
+        "id": f"category-{category}",
+        "name": f"种类{category}",
+        "topics": [{
+            "id": f"topic-{category}-{topic:02d}",
+            "title": f"种类{category}选题{topic:02d}",
+            "versions": [{"version": 1, "content": "旧版正文"}],
+        } for topic in range(1, 11)],
+    } for category in range(1, 4)],
+}}
+server.save_conversation(legacy_cid, legacy_convo)
+with patch.object(server, "call_ai", return_value=pack_response) as legacy_pack_model:
+    legacy_review = client.post("/api/chat-complete", json={
+        "conversation_id": legacy_cid,
+        "message": "口播文案我先看看",
+        "content_target": {"category_id": "category-1", "topic_id": "topic-1-01"},
+        "expected_revision": legacy_state["revision"],
+    })
+assert legacy_review.status_code == 200, legacy_review.get_data(as_text=True)
+legacy_review_json = legacy_review.get_json()
+assert "3 篇完整口播文案" in legacy_review_json["assistant"]
+assert "这是种类1精选选题的完整口播文案" in legacy_review_json["assistant"]
+assert legacy_pack_model.call_count == 1
+assert server.load_conversation(legacy_cid)["deliverables"]["6"]["format"] == "featured_3_v1"
 
 content_cid = client.post("/api/conversations").get_json()["id"]
 content_convo = server.load_conversation(content_cid)
@@ -667,7 +2553,7 @@ updated_pack = server.load_conversation(content_cid)["deliverables"]["6"]
 updated_topic = updated_pack["categories"][0]["topics"][0]
 assert [item["version"] for item in updated_topic["versions"]] == [1, 2]
 assert updated_topic["versions"][-1]["content"].startswith("先说结论")
-assert len(updated_pack["categories"][0]["topics"][1]["versions"]) == 1
+assert len(updated_pack["categories"][1]["topics"][0]["versions"]) == 1
 assert content_revision.get_json()["auto_deliverables"]["6"]["categories"][0]["topics"][0]["status"] == "revised"
 assert client.post("/api/chat-complete", json={
     "conversation_id": content_cid,
@@ -687,8 +2573,11 @@ gated["coach_state"] = {"current_module": 4, "completed_modules": [1, 2, 3, 4],
 server.save_conversation(foundation_cid, gated)
 with patch.object(server, "call_ai") as gated_model:
     gated_reply = client.post("/api/chat-complete", json={"conversation_id": foundation_cid, "message": "继续"})
-    assert gated_reply.status_code == 409, gated_reply.get_data(as_text=True)
+    assert gated_reply.status_code == 200, gated_reply.get_data(as_text=True)
+    assert "已经保存" in gated_reply.get_json()["assistant"]
     gated_model.assert_not_called()
+gated = server.load_conversation(foundation_cid)
+assert sum(item["role"] == "user" and item["content"] == "继续" for item in gated["messages"]) == 1
 assert client.post("/api/generate-report", json={"conversation_id": foundation_cid, "module": 5}).status_code == 409
 assert client.post("/api/generate-deliverable", json={"conversation_id": foundation_cid, "module": 5}).status_code == 409
 assert client.post("/api/jump-module", json={"conversation_id": foundation_cid, "module": 7}).status_code == 409
@@ -931,9 +2820,24 @@ assert new_state["foundation_report"]["report_id"] != "report-old"
 assert new_state["foundation_report"]["review_status"] == "clean"
 assert new_state["foundation_report"]["review_notes"] == []
 report_messages = regenerate_model.call_args.args[0]
+assert regenerate_model.call_args.kwargs["max_tokens"] == 16000
 assert any("第一次创业失败后重新开始" in item.get("content", "") for item in report_messages)
 assert "不创建‘待补充’故事凑数" in report_messages[0]["content"]
 assert "不强制凑数量" in report_messages[0]["content"]
+
+empty_report_cid = client.post("/api/conversations").get_json()["id"]
+empty_report = server.load_conversation(empty_report_cid)
+empty_report["coach_state"] = {"current_module": 4, "completed_modules": [1, 2, 3, 4],
+                               "module_step": 4, "foundation_report": {"status": "failed"}}
+server.save_conversation(empty_report_cid, empty_report)
+empty_response = Mock()
+empty_response.json.return_value = {"choices": [{"message": {"content": ""}}]}
+with patch.object(server, "call_ai", return_value=empty_response), \
+        patch.object(server, "_render_foundation_pdf") as empty_renderer:
+    empty_generation = client.post("/api/foundation-report/generate", json={"conversation_id": empty_report_cid})
+assert empty_generation.status_code == 502
+empty_renderer.assert_not_called()
+assert server.load_conversation(empty_report_cid)["coach_state"]["foundation_report"]["error"] == "AI report is empty"
 
 stale_confirm = client.post("/api/foundation-report/confirm", json={
     "conversation_id": review_cid,
@@ -1187,6 +3091,25 @@ with patch.object(server, "_coach_model_decision", return_value=(valid_repair_de
     except server.coach_harness.HarnessConflict:
         pass
 assert conflict_model.call_count == 1
+
+continuation_cid = client.post("/api/conversations").get_json()["id"]
+continuation_convo = server.load_conversation(continuation_cid)
+continuation_state = server.normalize_coach_state(continuation_convo["coach_state"])
+continuation_state["intake"]["status"] = "complete"
+continuation_convo["coach_state"] = continuation_state
+server.save_conversation(continuation_cid, continuation_convo)
+continuation_raw = {"profile_updates": [{
+    "field": "invented_fact", "value": "不应写入", "kind": "user_fact", "evidence_quote": "没有用户原话",
+}]}
+with patch.object(server.coach_harness, "apply_model_decision", return_value=(
+    continuation_state, continuation_raw, "下一断点已生成。",
+)) as continuation_apply:
+    continuation_reply, _ = server._persist_model_turn(
+        continuation_cid, "", continuation_state["revision"], continuation_raw, ""
+    )
+assert continuation_reply == "下一断点已生成。"
+assert continuation_apply.call_args.args[1]["profile_updates"] == []
+assert not any(item["role"] == "user" for item in server.load_conversation(continuation_cid)["messages"])
 
 mini_cid = client.post("/api/conversations").get_json()["id"]
 mini_convo = client.get(f"/api/conversations/{mini_cid}").get_json()
@@ -1846,7 +3769,5 @@ print("HERMES_RUNTIME_OK")
             )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("HERMES_RUNTIME_OK", result.stdout)
-
-
 if __name__ == "__main__":
     unittest.main()

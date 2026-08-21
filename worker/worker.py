@@ -23,8 +23,16 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from scripts.leads_filter import is_spam, is_high, load_jsonl  # 复用过滤核心
 import re as _re
 
+
+def required_env(name):
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise RuntimeError(f"缺少必填环境变量 {name}")
+    return value
+
+
 SERVER = os.environ.get("LEADGEN_SERVER", "http://129.204.166.13:8090")
-TOKEN = os.environ.get("LEADGEN_WORKER_TOKEN", "")
+TOKEN = required_env("LEADGEN_WORKER_TOKEN")
 MC_DIR = os.path.expanduser(os.environ.get("MEDIACRAWLER_DIR", "~/code/MediaCrawler"))
 HEADLESS = True   # Mac 住宅 IP；若搜索返回空改 False(有头)
 POLL = 10         # 轮询间隔(秒)
@@ -33,8 +41,9 @@ import urllib.request
 import urllib.parse
 
 
-def http_get(path):
-    with urllib.request.urlopen(SERVER + path, timeout=20) as r:
+def http_get(path, headers=None):
+    req = urllib.request.Request(SERVER + path, headers=headers or {})
+    with urllib.request.urlopen(req, timeout=20) as r:
         return json.loads(r.read())
 
 
@@ -363,7 +372,7 @@ def main():
     print(f"worker 启动，连接 {SERVER}，MediaCrawler={MC_DIR}")
     while True:
         try:
-            res = http_get(f"/api/claim?token={TOKEN}")
+            res = http_get("/api/claim", {"X-Worker-Token": TOKEN})
             job = res.get("job")
             if job:
                 handle(job)

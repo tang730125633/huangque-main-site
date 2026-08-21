@@ -56,6 +56,8 @@ CATALOG = [
     _rule("audio.tts", "音频与数字人", "配音 / 短剧配音", "每条提交", 10, "点/条"),
     _rule("audio.voice_slot", "音频与数字人", "个人音色槽位", "每个槽位", 50, "点/个"),
     _rule("video.talking.block", "音频与数字人", "数字人口播", "每 30 秒，不足 30 秒按 30 秒", 30, "点/30秒"),
+    _rule("video.lipsync.speed", "音频与数字人", "原视频口型同步", "Speed", 3, "点/秒"),
+    _rule("video.lipsync.precision", "音频与数字人", "原视频口型同步", "Precision", 6, "点/秒"),
     _rule("avatar.create", "音频与数字人", "创建数字人形象", "每个形象", 2, "点/次"),
     _rule("video.cinematic.motion", "视频生成", "电影化身 · 动作模仿", "按成片时长", 10, "点/秒"),
     _rule("video.cinematic.duo", "视频生成", "电影化身 · 双人互动", "按成片时长", 30, "点/秒"),
@@ -69,7 +71,8 @@ CATALOG = [
     _rule("video.grok.v1_5.1080p", "视频生成", "果肉视频 Grok 1.5", "1080p", 44, "点/秒"),
     _rule("video.seedance", "视频生成", "Seedance 视频", "按成片时长", 30, "点/秒"),
     _rule("video.omni", "视频生成", "Gemini Omni 视频", "按成片时长", 30, "点/秒"),
-    _rule("video.minimax_h3.768p", "视频生成", "麦克视频", "768P", 6, "点/秒", "人物参考剧情视频"),
+    # Keep the historical key so deployed custom prices continue to apply.
+    _rule("video.minimax_h3.768p", "视频生成", "麦克视频", "2K", 6, "点/秒", "文本或人物参考剧情视频"),
     _rule("video.sora.standard.720p", "视频生成", "Sora 2", "720p", 30, "点/秒"),
     _rule("video.sora.pro.720p", "视频生成", "Sora 2 Pro", "720p", 90, "点/秒"),
     _rule("video.sora.pro.1024p", "视频生成", "Sora 2 Pro", "1024p", 150, "点/秒"),

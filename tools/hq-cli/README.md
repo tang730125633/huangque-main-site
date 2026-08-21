@@ -28,7 +28,7 @@ $ hq capabilities --json
 Windows 10/11（PowerShell 5.1 或 7）：
 
 ```powershell
-irm https://raw.githubusercontent.com/tang730125633/huangque-cli/v0.10.0/install.ps1 | iex
+irm https://huangquechuanmei.com/downloads/hq/install.ps1 | iex
 ```
 
 安装后重新打开 PowerShell，运行 `hq version --json`。程序安装到 `%LOCALAPPDATA%\Huangque\hq-cli`，安装器会幂等更新当前用户 PATH。卸载时下载同版本 `uninstall.ps1` 后运行；默认保留登录凭据，加 `-PurgeCredentials` 才会删除。
@@ -36,7 +36,7 @@ irm https://raw.githubusercontent.com/tang730125633/huangque-cli/v0.10.0/install
 macOS / Linux：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/tang730125633/huangque-cli/v0.10.0/install.sh | sh
+curl -fsSL https://huangquechuanmei.com/downloads/hq/install.sh | sh
 ```
 
 安装脚本会校验版本化 wheel 的 SHA-256，将程序放到 `~/.local/share/hq-cli/`，并创建 `~/.local/bin/hq`。
@@ -91,6 +91,7 @@ hq run image-generate --input @image.json --confirm --quote-token '<quote_token>
 
 | 客户说法 | CLI 能力 | 必填输入 | 素材边界 |
 |---|---|---|---|
+| “保留原视频动作，只替换声音并让嘴型同步” | `video-lipsync` | `video_asset_id`、`audio_asset_id` | 两项都必须来自本人已完成资产；`speed` 便宜快速，`precision` 精度更高；默认保持原视频时长 |
 | “用我的数字人形象和这段文案做一条口播视频” | `digital-ip-text-generate` | `avatar_id`、`text`、`voice` | 单个本人已就绪形象；不接收人物图片上传 |
 | “用我的数字人形象和资产库这条音频做口播视频” | `digital-ip-audio-generate` | `avatar_id`、`audio_file` | `audio_file` 最长 500 字符且必须原样取自本人资产结果；不接收 URL、本机路径或音频上传 |
 | “让 2–5 个我的数字人分别讲同一段文案” | `digital-ip-batch-generate` | `avatars`、`text`、`voice` | `avatars` 每项是本人已就绪的 `avatar_id`，可带 `label`；共用文案、音色和字幕设置 |

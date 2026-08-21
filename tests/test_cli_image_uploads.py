@@ -3,11 +3,13 @@ import hashlib
 import io
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
+from types import SimpleNamespace
 
-from server.content_domains import cli_uploads
+from server.content_domains import cli_gateway, cli_uploads
 
 
 PNG = base64.b64decode(
@@ -65,6 +67,7 @@ class CLIImageUploadTests(unittest.TestCase):
             "provider": "banana", "reference_upload_ids": upload_ids,
         }, "alice", now=101)
         self.assertEqual(5, len(minimax["reference_images"]))
+        self.assertTrue(minimax["reference_images"][0].startswith("data:image/png;base64,"))
         self.assertEqual(14, len(banana["images"]))
         self.assertEqual("image/png", banana["images"][0]["mime_type"])
 
@@ -75,6 +78,43 @@ class CLIImageUploadTests(unittest.TestCase):
         }, "alice", now=101)
         self.assertEqual(1, len(body["reference_images"]))
         self.assertTrue(body["reference_images"][0].startswith("data:image/png;base64,"))
+
+    def test_cli_quote_expands_minimax_reference_upload(self):
+        uploaded = self.upload(now=int(time.time()))
+
+        class Handler:
+            headers = {"X-HQ-Internal-Token": "secret"}
+
+            def _token(self):
+                return "token"
+
+            def _json_body_strict(self):
+                return {"kind": "xiaole_video", "payload": {
+                    "channel": "minimax", "reference_upload_ids": [uploaded["upload_id"]],
+                }}
+
+            def _send(self, status, body):
+                self.result = (status, body)
+
+        handler = Handler()
+        seen = {}
+
+        def validate(payload, username):
+            seen.update(payload)
+            seen["username"] = username
+            return payload
+
+        cli_gateway.handle_quote(
+            handler, "/api/gen/cli/quote", lambda token: {"username": "alice"},
+            lambda user: False, lambda: False,
+            SimpleNamespace(require_enabled=lambda feature: None, FeatureDisabled=RuntimeError),
+            SimpleNamespace(cost_of=lambda kind, payload: 90, get_points=lambda username: 100),
+            SimpleNamespace(), SimpleNamespace(validate_xiaole_video_payload=validate), "secret",
+        )
+        self.assertEqual(200, handler.result[0], handler.result[1])
+        self.assertEqual(1, len(seen["reference_images"]))
+        self.assertNotIn("reference_upload_ids", seen)
+        self.assertEqual("alice", seen["username"])
 
     def test_digest_mime_expiry_and_combinations_fail_closed(self):
         with self.assertRaisesRegex(ValueError, "发生变化"):

@@ -22,12 +22,56 @@ PYTHON="${HERMES_PYTHON:-python3}"
 SUDO="${HERMES_SUDO-sudo}"
 LOCAL_HEALTH_URL="${HERMES_LOCAL_HEALTH_URL:-http://127.0.0.1:3102/healthz}"
 PUBLIC_HEALTH_URLS="${HERMES_PUBLIC_HEALTH_URLS:-https://huangquechuanmei.com/workbench/ip12/healthz http://129.204.166.13:3101/healthz}"
+HEALTH_ATTEMPTS="${HERMES_HEALTH_ATTEMPTS:-30}"
+HEALTH_RETRY_DELAY_SECONDS="${HERMES_HEALTH_RETRY_DELAY_SECONDS:-1}"
 MIGRATION_SCRIPT="$HERMES_RELEASE_DIR/scripts/migrate_hermes_artifacts.py"
 MIGRATION_MANIFEST="$DATA_DIR/.migrations/hermes-owner-artifacts-v1.json"
 backup="$BACKUP_ROOT/hermes-${HERMES_SHA}-$(date +%Y%m%d%H%M%S)"
 release_committed=0
 rollback_running=0
 ROLLBACK_FAILURE_EXIT=125
+
+case "$HEALTH_ATTEMPTS" in
+  ''|*[!0-9]*|0) echo "HERMES_HEALTH_ATTEMPTS must be a positive integer" >&2; exit 2 ;;
+esac
+case "$HEALTH_RETRY_DELAY_SECONDS" in
+  ''|*[!0-9]*) echo "HERMES_HEALTH_RETRY_DELAY_SECONDS must be a non-negative integer" >&2; exit 2 ;;
+esac
+
+health_probe() {
+  local url="$1"
+  local attempt=1
+  while test "$attempt" -le "$HEALTH_ATTEMPTS"; do
+    if curl -fsS "$url" >/dev/null 2>&1; then
+      return 0
+    fi
+    test "$attempt" -lt "$HEALTH_ATTEMPTS" || return 1
+    sleep "$HEALTH_RETRY_DELAY_SECONDS"
+    attempt=$((attempt + 1))
+  done
+}
+
+release_probe() {
+  local url="$1"
+  local attempt=1
+  local body=""
+  while test "$attempt" -le "$HEALTH_ATTEMPTS"; do
+    body="$(curl -fsS -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "$url" 2>/dev/null || true)"
+    if printf '%s' "$body" | HERMES_EXPECTED_SHA="$HERMES_SHA" "$PYTHON" -c '
+import json, os, sys
+payload = json.load(sys.stdin)
+assert payload.get("ok") is True
+assert payload.get("release_sha") == os.environ["HERMES_EXPECTED_SHA"]
+assert payload.get("agent_release")
+assert payload.get("state_schema") == 2
+' >/dev/null 2>&1; then
+      return 0
+    fi
+    test "$attempt" -lt "$HEALTH_ATTEMPTS" || return 1
+    sleep "$HEALTH_RETRY_DELAY_SECONDS"
+    attempt=$((attempt + 1))
+  done
+}
 
 privileged() {
   if test -n "$SUDO"; then
@@ -150,7 +194,7 @@ rollback_release() {
     rollback_step "verify restored service state" \
       privileged systemctl is-active --quiet "$SERVICE"
     rollback_step "verify restored service health" \
-      curl -fsS "$LOCAL_HEALTH_URL" >/dev/null
+      health_probe "$LOCAL_HEALTH_URL"
   else
     rollback_step "restore inactive service state" privileged systemctl stop "$SERVICE"
   fi
@@ -225,6 +269,7 @@ rsync -a --delete \
   --exclude '*.bak*' --exclude '*_backup.py' \
   --exclude __pycache__/ --exclude '*.pyc' \
   "$HERMES_RELEASE_DIR/server/hermes_ip12/" "$APP_DIR/"
+printf '%s\n' "$HERMES_SHA" > "$APP_DIR/.ip12-release-sha"
 install -d -m 0755 "$APP_DIR/scripts"
 install -m 0755 "$MIGRATION_SCRIPT" "$APP_DIR/scripts/migrate_hermes_artifacts.py"
 fail_if_requested rsync
@@ -251,18 +296,18 @@ privileged systemctl daemon-reload
 privileged systemd-analyze verify "$SYSTEMD_TARGET"
 test "$(
   cd "$APP_DIR"
-  "$PYTHON" -c \
+  HERMES_ENABLE_INTERNAL_TOOLS=1 "$PYTHON" -c \
     'from server import app; print(len({r.rule for r in app.url_map.iter_rules() if r.endpoint != "static"}))' \
     | tail -1
-)" = 76
+)" = 81
 privileged nginx -t
 privileged systemctl enable "$SERVICE"
 privileged systemctl restart "$SERVICE"
 privileged systemctl is-active --quiet "$SERVICE"
-curl -fsS "$LOCAL_HEALTH_URL" >/dev/null
+release_probe "$LOCAL_HEALTH_URL"
 privileged systemctl reload nginx
 for url in $PUBLIC_HEALTH_URLS; do
-  curl -fsS "$url" >/dev/null
+  release_probe "$url"
 done
 fail_if_requested health
 

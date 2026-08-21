@@ -43,6 +43,14 @@ if [ "$1" = "ls-files" ] && [ "$2" = "server/providers" ]; then
   printf '%s\n' "${FAKE_PROVIDER_FILES:-server/providers/lipsync/base.py}"
   exit 0
 fi
+if [ "$1" = "ls-files" ] && [ "$2" = "site/assets/home" ]; then
+  if [ "$FAKE_HOME_ASSET_LIST_FAIL" = "1" ]; then exit 1; fi
+  if [ "$FAKE_HOME_ASSET_LIST_EMPTY" = "1" ]; then exit 0; fi
+  printf '%s\n' "${FAKE_HOME_ASSET_FILES:-site/assets/home/orbit-gallery.js
+site/assets/home/orbit-gallery/gallery.json
+site/assets/home/orbit-gallery/desktop-video-02.webp}"
+  exit 0
+fi
 exit 0
 """,
         )
@@ -55,6 +63,12 @@ if [ -n "$FAKE_SSH_LOG" ]; then printf '%s\n' "$*" >> "$FAKE_SSH_LOG"; fi
 #   smoke_import         → bash -s -- <svc> <python 路径>
 #   check_restart_effective → bash -s -- <svc> <时间戳>
 case "$*" in
+  *"sudo mkdir -p '/var/www/huangquechuanmei/assets/home'"*)
+    if [ "$FAKE_HOME_ASSET_MKDIR_FAIL" = "1" ]; then exit 1; fi
+    ;;
+  *"--verify-deploy"*)
+    if [ "$FAKE_VERIFY_DEPLOY_FAIL" = "1" ]; then exit 1; fi
+    ;;
   *"test -f '/home/ubuntu/content-api/content_domains/"*)
     if [ "$FAKE_REMOTE_FILE_MISSING" = "1" ]; then exit 1; fi
     ;;
@@ -104,6 +118,7 @@ printf %s "${FAKE_CURL_CODE:-200}"
             "rsync",
             """#!/bin/sh
 if [ -n "$FAKE_RSYNC_LOG" ]; then printf '%s\n' "$*" >> "$FAKE_RSYNC_LOG"; fi
+if [ "$FAKE_RSYNC_FAIL" = "1" ]; then exit 1; fi
 exit 0
 """,
         )
@@ -145,6 +160,74 @@ exit 0
         self.assertIn("发布源已锁定", result.stdout)
         self.assertIn("健康检查: HTTP 200", result.stdout)
         self.assertIn("上线完成", result.stdout)
+
+    def test_homepage_deploy_syncs_and_verifies_home_asset_closure(self):
+        home_assets = [
+            "site/assets/home/orbit-gallery.js",
+            "site/assets/home/orbit-gallery/gallery.json",
+            "site/assets/home/orbit-gallery/desktop-video-02.webp",
+        ]
+        rsync_log = Path(self.tmp.name) / "rsync.log"
+        ssh_log = Path(self.tmp.name) / "ssh.log"
+        result = self._run_ship(
+            FAKE_CURL_CODE="200",
+            FAKE_HOME_ASSET_FILES="\n".join(home_assets),
+            FAKE_RSYNC_LOG=str(rsync_log),
+            FAKE_SSH_LOG=str(ssh_log),
+        )
+        self.assertEqual(0, result.returncode, result.stdout)
+        rsync_lines = rsync_log.read_text(encoding="utf-8").splitlines()
+        self.assertIn(
+            "site/assets/home/ fake-server:/var/www/huangquechuanmei/assets/home/",
+            rsync_lines[0],
+        )
+        self.assertIn("--delete", rsync_lines[0])
+        verify = next(
+            line for line in ssh_log.read_text(encoding="utf-8").splitlines()
+            if "--verify-deploy" in line
+        )
+        for path in home_assets:
+            self.assertIn(path, verify)
+
+    def test_homepage_asset_listing_failure_blocks_deployment(self):
+        result = self._run_ship(FAKE_HOME_ASSET_LIST_FAIL="1")
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("无法读取首页静态资源清单", result.stdout)
+        self.assertNotIn("上线完成", result.stdout)
+
+    def test_empty_homepage_asset_list_blocks_deployment(self):
+        result = self._run_ship(FAKE_HOME_ASSET_LIST_EMPTY="1")
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("首页静态资源清单为空", result.stdout)
+        self.assertNotIn("上线完成", result.stdout)
+
+    def test_homepage_asset_sync_failure_blocks_deployment(self):
+        result = self._run_ship(FAKE_RSYNC_FAIL="1")
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("首页静态资源部署失败", result.stdout)
+        self.assertNotIn("上线完成", result.stdout)
+
+    def test_homepage_asset_directory_failure_blocks_deployment(self):
+        result = self._run_ship(FAKE_HOME_ASSET_MKDIR_FAIL="1")
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("首页静态资源目录创建失败", result.stdout)
+        self.assertNotIn("上线完成", result.stdout)
+
+    def test_homepage_asset_verification_failure_blocks_deployment(self):
+        result = self._run_ship(FAKE_VERIFY_DEPLOY_FAIL="1")
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("部署后漂移校验失败", result.stdout)
+        self.assertNotIn("上线完成", result.stdout)
+
+    def test_direct_home_asset_is_not_uploaded_twice(self):
+        rsync_log = Path(self.tmp.name) / "rsync.log"
+        result = self._run_ship(
+            target="site/assets/home/orbit-gallery.js",
+            FAKE_RSYNC_LOG=str(rsync_log),
+        )
+        self.assertEqual(0, result.returncode, result.stdout)
+        self.assertEqual(1, len(rsync_log.read_text(encoding="utf-8").splitlines()))
+        self.assertIn("已包含在首页依赖闭包中", result.stdout)
 
     def test_feature_branch_is_rejected(self):
         result = self._run_ship(FAKE_GIT_BRANCH="codex/feature")
@@ -339,21 +422,33 @@ exit 0
 
     def test_feature_flags_restarts_all_importers(self):
         ssh_log = Path(self.tmp.name) / "ssh.log"
+        rsync_log = Path(self.tmp.name) / "rsync.log"
         result = self._run_ship(
             target="server/content_domains/feature_flags.py",
             exact_content_domains=True,
             FAKE_CURL_CODE="200",
             FAKE_SSH_LOG=str(ssh_log),
+            FAKE_RSYNC_LOG=str(rsync_log),
         )
         self.assertEqual(0, result.returncode, result.stdout)
+        deployed = rsync_log.read_text(encoding="utf-8")
+        self.assertIn("/home/ubuntu/auth-service/content_domains/", deployed)
+        self.assertIn("/home/ubuntu/content-api/content_domains/", deployed)
         restart = next(
             line for line in ssh_log.read_text(encoding="utf-8").splitlines()
             if "sudo systemctl restart" in line
         )
+        self.assertIn("huangque-auth", restart)
         self.assertIn("huangque-content", restart)
         self.assertIn("huangque-admin", restart)
         self.assertIn("huangque-imggen-api", restart)
         self.assertIn("huangque-leadgen-api", restart)
+
+    def test_auth_uses_the_shared_feature_flag_store(self):
+        drop_in = (ROOT / "deploy/systemd/huangque-auth.service.d/feature-flags.conf").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("FEATURE_FLAGS_DB=/home/ubuntu/content-api/feature_flags.db", drop_in)
 
     def test_egress_restarts_all_importers(self):
         ssh_log = Path(self.tmp.name) / "ssh.log"
