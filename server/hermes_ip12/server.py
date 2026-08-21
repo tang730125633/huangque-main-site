@@ -1720,11 +1720,13 @@ def generate_foundation_report(convo_id):
         shutil.which("chromium-browser"),
         "/snap/bin/chromium",
     ) if item and pathlib.Path(item).is_file()))
-    if not browsers:
-        raise RuntimeError("PDF renderer is unavailable")
     with tempfile.TemporaryDirectory(prefix="hermes-foundation-", dir=str(pathlib.Path.home())) as directory:
         root = pathlib.Path(directory)
-        pdf_path = _render_foundation_pdf(content, browsers, root)
+        if browsers:
+            pdf_path = _render_foundation_pdf(content, browsers, root)
+        else:
+            from pdf_fallback import render_foundation_pdf_fallback
+            pdf_path = render_foundation_pdf_fallback(content, root / "report-fallback.pdf")
         _validate_foundation_pdf(pdf_path)
         staged_target = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
         try:
