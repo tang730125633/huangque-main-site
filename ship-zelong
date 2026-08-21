@@ -343,7 +343,8 @@ if test "$need_hermes" = 1; then
   sudo install -d -o ubuntu -g ubuntu -m 0700 /home/ubuntu/hermes-preview-data
   sudo install -d -o ubuntu -g ubuntu -m 0755 /home/ubuntu/hermes-preview-deps
   sudo -u ubuntu /usr/bin/python3 -m pip install --disable-pip-version-check --upgrade --target /home/ubuntu/hermes-preview-deps -r /home/ubuntu/hermes-preview/preview-requirements.txt
-  sudo -u ubuntu sh -c "printf '%s\n' '$commit' > /home/ubuntu/hermes-preview/.ip12-release-sha"
+  sudo sh -c "printf '%s\n' '$commit' > /home/ubuntu/hermes-preview/.ip12-release-sha"
+  sudo chown ubuntu:ubuntu /home/ubuntu/hermes-preview/.ip12-release-sha
   sudo /usr/bin/python3 - /etc/nginx/sites-available/huangquechuanmei <<'PY'
 from pathlib import Path
 import sys

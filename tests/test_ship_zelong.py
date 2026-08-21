@@ -308,6 +308,7 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
         self.assertIn("--ip12-preview 只允许 origin/main", SRC)
         self.assertIn("HERMES_ENABLE_INTERNAL_TOOLS=0", (ROOT / "deploy/zelong/run-hermes-ip12-preview.sh").read_text())
         self.assertIn("--target /home/ubuntu/hermes-preview-deps", SRC)
+        self.assertIn("chown ubuntu:ubuntu /home/ubuntu/hermes-preview/.ip12-release-sha", SRC)
         preview_requirements = (ROOT / "deploy/zelong/hermes-ip12-preview-requirements.txt").read_text()
         self.assertIn("Flask", preview_requirements)
         self.assertNotIn("playwright", preview_requirements.lower())
