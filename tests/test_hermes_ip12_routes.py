@@ -1726,6 +1726,14 @@ assert "堆积如山" not in grounded_report and "砸掉铁饭碗" not in ground
 assert "事实原话：我帮朋友搬家整理时发现自己挺擅长。" in grounded_report
 assert grounded_report.count("## 模块四｜故事资产挖掘") == 1
 assert "## 优化建议汇总\n建议内容" in grounded_report
+long_evidence = server._conversation_user_evidence({"messages": [
+    {"role": "user", "content": "最早的创业转折原话"},
+    *({"role": "assistant", "content": f"中间回复 {index}"} for index in range(24)),
+    {"role": "user", "content": "最近补充"},
+]}, "继续")
+assert "最早的创业转折原话" in long_evidence
+assert "最近补充" in long_evidence and "继续" in long_evidence
+assert "中间回复" not in long_evidence
 server.call_ai = capture_coach
 
 editing_state = server.coach_harness.initial_state()
