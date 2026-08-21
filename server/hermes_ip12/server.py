@@ -2810,6 +2810,12 @@ def api_get_production(production_id):
             return _production_error("production_not_found", "生产记录不存在", 404)
         if not _production_is_current(convo, record):
             _mark_production_stale(record); save_conversation(cid, convo)
+        if (
+            record.get("status") == "quoted"
+            and int((record.get("quote") or {}).get("expires_at") or 0) <= _utc_timestamp()
+        ):
+            record.update(status="stale", last_error_code="quote_expired")
+            save_conversation(cid, convo)
         restore = None
         if record.get("status") == "submitting" and not record.get("job_id"):
             quote = record.get("quote") or {}

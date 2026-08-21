@@ -782,6 +782,14 @@ assert filled["options"] == {"prompt": "第一版海报"}
 assert filled["input_digest"] != empty_digest
 assert quote_calls[0][3]["idempotency_key"] == filled["idempotency_key"]
 
+expired_convo = server.load_conversation(cid)
+expired_convo["productions"][image_id]["quote"]["expires_at"] = 0
+server.save_conversation(cid, expired_convo)
+expired = client.get(f"/api/ip12/productions/{image_id}?conversation_id={cid}")
+assert expired.status_code == 200, expired.get_data(as_text=True)
+assert expired.get_json()["production"]["status"] == "stale"
+assert expired.get_json()["production"]["last_error_code"] == "quote_expired"
+
 # Options supplied at confirm are part of the quoted digest.  A changed option
 # invalidates the old quote without submitting anything.
 with patch.object(server, "_bridge_action", side_effect=image_bridge):
