@@ -39,6 +39,8 @@ def decision(state, *, kind="propose_checkpoint", reply="这是当前结果", dr
             "kind": "ai_option",
             "evidence_quote": "用户原话",
         } for index, title in enumerate(titles, 1)]
+    if kind == "propose_checkpoint" and state["current_module"] == 4 and draft == "可确认草稿":
+        draft = "### 真实故事节点\n事实原话：用户原话"
     return {
         "decision": kind,
         "checkpoint": state["module_step"] + 1 if kind == "propose_checkpoint" else 0,
@@ -465,6 +467,45 @@ class IP12HarnessTests(unittest.TestCase):
             state, raw, "我目前的职业身份就是 AI 技术专家", pending_id="grounded-expert"
         )
         self.assertEqual(next_state["pending"]["draft"], raw["draft"])
+
+    def test_module_four_rejects_exaggeration_and_target_audience_as_past_clients(self):
+        state = self.complete_intake()
+        state.update(current_module=4, module_step=0, completed_modules=[1, 2, 3])
+        evidence = (
+            "我帮朋友搬家整理时发现自己挺擅长。"
+            "我希望服务工作很忙、家里东西多、又不想因为家里乱被指责的女性。"
+        )
+        bad_drafts = (
+            "故事内容：因为帮朋友搬家整理，你展现出了过人的天赋。",
+            "故事内容：在服务客户的过程中，你遇到很多自我怀疑、害怕被迫丢弃物品的女性。",
+            "事实原话：帮朋友整理让你体验到了强烈的成就感。",
+        )
+        for draft in bad_drafts:
+            with self.subTest(draft=draft), self.assertRaisesRegex(harness.HarnessError, "模块 4"):
+                harness.apply_model_decision(state, decision(state, draft=draft), evidence)
+
+        grounded = (
+            "### 节点 1：转行契机（包装建议）\n"
+            "事实原话：我帮朋友搬家整理时发现自己挺擅长。\n"
+            "传播场景：未来可用于介绍转行起点。\n\n"
+            "### 节点 2：服务方向（包装建议）\n"
+            "未来方向原话：我希望服务工作很忙、家里东西多、又不想因为家里乱被指责的女性。"
+        )
+        next_state, _, _ = harness.apply_model_decision(
+            state, decision(state, draft=grounded), evidence, pending_id="grounded-story"
+        )
+        self.assertEqual(next_state["pending"]["draft"], grounded)
+        markdown_labels = grounded.replace("事实原话：", "**事实原话**：").replace(
+            "未来方向原话：", "**未来方向原话**："
+        )
+        markdown_state, _, _ = harness.apply_model_decision(
+            state, decision(state, draft=markdown_labels), evidence, pending_id="grounded-markdown-story"
+        )
+        self.assertEqual(markdown_state["pending"]["draft"], markdown_labels)
+        prompt = harness.system_prompt(state)
+        self.assertIn("未来想服务的人群", prompt)
+        self.assertIn("事实原话", prompt)
+        self.assertIn("不能为了凑数量编故事", prompt)
 
     def test_module_five_topics_require_direct_user_evidence(self):
         state = self.complete_intake()
@@ -992,7 +1033,13 @@ class IP12HarnessTests(unittest.TestCase):
 
                 state, _, _ = harness.apply_model_decision(
                     state,
-                    decision(state, draft="第一版草稿"),
+                    decision(
+                        state,
+                        draft=(
+                            "### 第一版故事\n事实原话：用户补齐了信息"
+                            if module == 4 else "第一版草稿"
+                        ),
+                    ),
                     "用户补齐了信息",
                     pending_id=f"m{module}-draft",
                 )
@@ -1001,20 +1048,37 @@ class IP12HarnessTests(unittest.TestCase):
                     decision(state, kind="answer_only", reply="解释当前草稿，不推进。"),
                     "为什么这样整理？",
                 )
-                self.assertEqual(state["pending"]["draft"], "第一版草稿")
+                expected_draft = (
+                    "### 第一版故事\n事实原话：用户补齐了信息"
+                    if module == 4 else "第一版草稿"
+                )
+                self.assertEqual(state["pending"]["draft"], expected_draft)
 
                 edit = next(action for action in harness.available_actions(state) if action["type"] == "edit_checkpoint")
                 state, _ = harness.apply_action(state, edit, state["revision"])
                 state, _, _ = harness.apply_model_decision(
                     state,
-                    decision(state, draft="按用户意见修改后的草稿"),
+                    decision(
+                        state,
+                        draft=(
+                            "### 修改后的故事\n事实原话：请换一种表达"
+                            if module == 4 else "按用户意见修改后的草稿"
+                        ),
+                    ),
                     "请换一种表达",
                     pending_id=f"m{module}-revised",
                 )
                 confirm = next(action for action in harness.available_actions(state) if action["type"] == "confirm_checkpoint")
                 state, _ = harness.apply_action(state, confirm, state["revision"])
                 self.assertEqual(state["module_step"], 1)
-                self.assertEqual(state["ip_profile"]["confirmed_outputs"][f"{module}-1"]["content"], "按用户意见修改后的草稿")
+                expected_confirmed = (
+                    "### 修改后的故事\n事实原话：请换一种表达"
+                    if module == 4 else "按用户意见修改后的草稿"
+                )
+                self.assertEqual(
+                    state["ip_profile"]["confirmed_outputs"][f"{module}-1"]["content"],
+                    expected_confirmed,
+                )
 
     def test_module_follow_up_keeps_unconfirmed_facts_until_checkpoint_confirmation(self):
         state = self.complete_intake()
@@ -1368,13 +1432,23 @@ class IP12HarnessTests(unittest.TestCase):
     def test_conflicting_duration_requires_one_clarification(self):
         state = self.complete_intake()
         state["ip_profile"]["facts"]["years_in_current_industry"] = {
-            "value": "2年", "evidence_quote": "我做了2年",
+            "value": "在 AI 和 Agent 领域做了2年",
+            "evidence_quote": "我在 AI 和 Agent 领域做了2年",
         }
         result = harness.duration_conflict_decision(state, "我进入 AI 和 Agent 领域只有三个月")
         self.assertEqual(result["decision"], "ask_follow_up")
         self.assertIn("2年", result["reply"])
         self.assertIn("三个月", result["reply"])
         self.assertIsNone(harness.duration_conflict_decision(state, "整体从业2年，其中 AI 实践三个月"))
+
+        state["ip_profile"]["facts"]["past_experience"] = {
+            "value": "做了快十年行政",
+            "evidence_quote": "之前做了快十年行政",
+        }
+        self.assertIsNone(harness.duration_conflict_decision(
+            state,
+            "删除我没说过的‘两年来逐步完善业务模式’，只保留事实原话。",
+        ))
 
     def test_modules_five_and_six_only_show_pdf_badge_when_pdf_is_ready(self):
         templates = Path(__file__).parents[1] / "server" / "hermes_ip12" / "templates"
