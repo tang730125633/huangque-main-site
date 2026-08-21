@@ -176,6 +176,17 @@ class IP12HarnessActionsUITests(unittest.TestCase):
         self.assertIn("showArtifactNotice(data)", send_turn)
         self.assertIn("第一个交付物已放到对应诊断模块下方", source)
 
+    def test_project_switch_closes_stale_production_panel_and_media_is_compact(self):
+        source = (TEMPLATES / "index.html").read_text(encoding="utf-8")
+        select_convo = source[
+            source.index("async function selectConvo"):
+            source.index("async function jumpModule")
+        ]
+
+        self.assertIn("stopProductionPolls();closePanel();closeFoundationReviewer()", select_convo)
+        self.assertIn(".msg .production-asset img,.msg .production-asset video", source)
+        self.assertIn("max-width:min(100%,280px);max-height:48vh", source)
+
     def test_main_view_exposes_a_two_project_manager(self):
         source = (TEMPLATES / "index.html").read_text(encoding="utf-8")
         start = source.index("function renderProjectPanel")

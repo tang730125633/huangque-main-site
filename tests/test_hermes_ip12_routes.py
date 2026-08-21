@@ -610,6 +610,23 @@ security.RATE_REQUESTS = 1000
 client = server.app.test_client()
 client.environ_base["HTTP_AUTHORIZATION"] = "Bearer admin-token"
 
+intake_cid = client.post("/api/conversations", json={"title": "人物资料采集"}).get_json()["id"]
+intake_state = server.load_conversation(intake_cid)["coach_state"]
+intake_reply = {
+    "decision": "ask_follow_up", "checkpoint": 0,
+    "reply": "已记下男性视觉身份，请继续补充长期兴趣。",
+    "draft": "", "self_review": "", "profile_updates": [], "choices": [], "confidence": 0.9,
+}
+with patch.object(server, "_coach_model_decision", return_value=(intake_reply, "男性形象 14")):
+    intake_response = client.post("/api/chat-complete", json={
+        "conversation_id": intake_cid,
+        "message": "最终数字人口播固定使用男性形象 14，不要生成女性。",
+        "expected_revision": intake_state["revision"],
+    })
+assert intake_response.status_code == 200, intake_response.get_data(as_text=True)
+assert "男性视觉身份" in intake_response.get_json()["assistant"]
+assert not server.load_conversation(intake_cid).get("productions")
+
 cid = "typedproduction01"
 state = server.initial_coach_state()
 server.save_conversation(cid, {
