@@ -408,39 +408,67 @@ def _pack_scene_fragments(fragments, target_units, min_units, max_units):
     return packed
 
 
-def _rebalance_short_edges(segments, min_units, max_units):
+def _rebalance_short_segments(segments, min_units, max_units):
     balanced = list(segments)
-    if len(balanced) < 2:
-        return balanced
-
-    if _narration_units(balanced[0]) < min_units:
-        combined = balanced[0] + balanced[1]
+    index = 0
+    while len(balanced) > 1 and index < len(balanced):
+        if _narration_units(balanced[index]) >= min_units:
+            index += 1
+            continue
+        if index == 0:
+            neighbor = 1
+        elif index == len(balanced) - 1:
+            neighbor = index - 1
+        else:
+            left_units = _narration_units(balanced[index - 1])
+            right_units = _narration_units(balanced[index + 1])
+            neighbor = index - 1 if left_units <= right_units else index + 1
+        start = min(index, neighbor)
+        combined = balanced[start] + balanced[start + 1]
         combined_units = _narration_units(combined)
         if combined_units <= max_units:
-            balanced[:2] = [combined]
+            balanced[start:start + 2] = [combined]
         else:
             target = max(min_units, math.ceil(combined_units / 2))
-            balanced[:2] = _hard_split_scene(combined, target)
-
-    if len(balanced) > 1 and _narration_units(balanced[-1]) < min_units:
-        combined = balanced[-2] + balanced[-1]
-        combined_units = _narration_units(combined)
-        if combined_units <= max_units:
-            balanced[-2:] = [combined]
-        else:
-            target = max(min_units, math.ceil(combined_units / 2))
-            balanced[-2:] = _hard_split_scene(combined, target)
+            balanced[start:start + 2] = _hard_split_scene(combined, target)
+        index = max(0, start - 1)
     return balanced
 
 
-def _limit_auto_scene_count(segments, maximum=20):
-    if len(segments) <= maximum:
-        return segments
-    text = "".join(segments)
-    units = _narration_units(text)
-    if units <= 0:
-        return [text]
-    return _hard_split_scene(text, math.ceil(units / maximum))
+def _allocate_paragraph_scene_slots(paragraph_segments, maximum):
+    slots = [1] * len(paragraph_segments)
+    while sum(slots) < maximum:
+        candidates = [
+            index for index, segments in enumerate(paragraph_segments)
+            if slots[index] < len(segments)
+        ]
+        if not candidates:
+            break
+        selected = max(
+            candidates,
+            key=lambda index: (
+                _narration_units("".join(paragraph_segments[index]))
+                / slots[index],
+                -index,
+            ),
+        )
+        slots[selected] += 1
+    return slots
+
+
+def _limit_auto_scene_count(paragraph_segments, maximum=20):
+    if sum(len(segments) for segments in paragraph_segments) <= maximum:
+        return [segment for segments in paragraph_segments for segment in segments]
+    slots = _allocate_paragraph_scene_slots(paragraph_segments, maximum)
+    limited = []
+    for segments, count in zip(paragraph_segments, slots):
+        text = "".join(segments)
+        units = _narration_units(text)
+        if len(segments) <= count or units <= 0:
+            limited.extend(segments)
+            continue
+        limited.extend(_hard_split_scene(text, math.ceil(units / count)))
+    return limited
 
 
 def _fixed_segments(text, speech_rate=1.0):
@@ -454,7 +482,7 @@ def _fixed_segments(text, speech_rate=1.0):
     max_units = max(target_units, round(
         _BASE_NARRATION_CHARS_PER_SECOND * speech_rate * _MAX_SCENE_SECONDS
     ))
-    segments = []
+    paragraph_segments = []
     for paragraph in re.split(r"\n\s*\n", normalized):
         paragraph = paragraph.strip()
         if not paragraph:
@@ -465,10 +493,10 @@ def _fixed_segments(text, speech_rate=1.0):
         packed = _pack_scene_fragments(
             fragments, target_units, min_units, max_units
         )
-        segments.extend(_rebalance_short_edges(
+        paragraph_segments.append(_rebalance_short_segments(
             packed, min_units, max_units
         ))
-    return _limit_auto_scene_count(segments)
+    return _limit_auto_scene_count(paragraph_segments)
 
 
 def _style_key(payload):

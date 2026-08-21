@@ -1059,6 +1059,8 @@ class PixelleVideoTests(unittest.TestCase):
             "中" * 36 + "。好。",
             "好。" + "中" * 36 + "。",
             "好。" + "中" * 36 + "。好。",
+            "中" * 36 + "。好。" + "中" * 36 + "。",
+            "中" * 36 + "。好。再来。" + "中" * 36 + "。",
         )
         for text in cases:
             segments = self.pixelle._fixed_segments(text, 1.0)
@@ -1067,6 +1069,38 @@ class PixelleVideoTests(unittest.TestCase):
                 self.pixelle._estimated_scene_duration(segment, 1.0) >= 3.0
                 for segment in segments
             ), (text, segments))
+
+    def test_twenty_scene_fallback_never_crosses_user_paragraph_boundaries(self):
+        source = "甲" * 301 + "\n\n" + "乙" * 300
+        prepared = self.pixelle.prepare_payload({
+            "text": source,
+            "mode": "fixed",
+            "speech_rate": 1.0,
+        })
+        lines = [scene["line"] for scene in prepared["scenes"]]
+        self.assertEqual(20, len(lines))
+        self.assertEqual("甲" * 301 + "乙" * 300, "".join(lines))
+        self.assertTrue(all(
+            not ({"甲", "乙"} <= set(line))
+            for line in lines
+        ))
+
+    def test_twenty_scene_fallback_has_documented_balanced_long_duration(self):
+        expectations = ((0.8, 15.7), (1.0, 12.5), (1.6, 7.9))
+        for speech_rate, maximum_seconds in expectations:
+            prepared = self.pixelle.prepare_payload({
+                "text": "中" * 1000,
+                "mode": "fixed",
+                "speech_rate": speech_rate,
+            })
+            durations = [
+                self.pixelle._estimated_scene_duration(
+                    scene["line"], speech_rate
+                )
+                for scene in prepared["scenes"]
+            ]
+            self.assertEqual(20, len(durations))
+            self.assertLessEqual(max(durations), maximum_seconds)
 
     def test_fixed_copy_rejects_more_than_twenty_upstream_paragraphs(self):
         text = "\n\n".join("第%d段" % index for index in range(21))
