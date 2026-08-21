@@ -162,7 +162,7 @@ case " $* " in
     payload="$(cat)"
     [[ "$payload" = *release_sha* && "$payload" = *"${HERMES_EXPECTED_SHA:-}"* ]]
     ;;
-  *" -c "*) printf '81\n' ;;
+  *" -c "*) printf '83\n' ;;
 esac
 """,
         )
