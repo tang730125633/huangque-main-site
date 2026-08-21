@@ -620,6 +620,18 @@ def _production_target_from_message(convo, message):
     raise coach_harness.HarnessError("请先打开模块 6 中要制作的具体文案，或在消息里写明完整标题")
 
 
+def _content_revision_target_from_message(convo, message):
+    """Route an explicit numbered-script edit through the versioned content editor."""
+    if not _content_pack_ready((convo.get("deliverables") or {}).get("6") or {}):
+        return None
+    if not re.search(r"修改|删(?:掉|除)|改成|换成|补到|保持不变|保留.{0,8}不变", str(message or "")):
+        return None
+    try:
+        return _production_target_from_message(convo, message)
+    except coach_harness.HarnessError:
+        return None
+
+
 def _post_module_six_production_action(convo):
     state = normalize_coach_state(convo.get("coach_state"))
     if 6 not in state.get("completed_modules", []) or convo.get("productions"):
@@ -4252,6 +4264,8 @@ def process_chat_request(body):
                             _expanded_production_intent(user_message)
                             or coach_harness.production_intent(user_message)
                         )
+                    if production_intent is None and content_target is None:
+                        content_target = _content_revision_target_from_message(convo, user_message)
                     source_optional = production_intent and production_intent.get("recommended_action") in _SOURCE_FREE_ACTIONS
                     source_optional = source_optional or bool(
                         production_intent and production_intent.get("help_only")

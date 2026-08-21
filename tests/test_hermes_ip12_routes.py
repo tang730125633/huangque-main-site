@@ -2782,6 +2782,24 @@ assert [item["version"] for item in updated_topic["versions"]] == [1, 2]
 assert updated_topic["versions"][-1]["content"].startswith("先说结论")
 assert len(updated_pack["categories"][1]["topics"][0]["versions"]) == 1
 assert content_revision.get_json()["auto_deliverables"]["6"]["categories"][0]["topics"][0]["status"] == "revised"
+auto_revision_response = Mock()
+auto_revision_response.json.return_value = {"choices": [{"message": {"content": json.dumps({
+    "decision": "apply_revision",
+    "reply": "第二篇的效果承诺没有依据，我已经删掉并保留其余内容。",
+    "change_summary": "删除无依据的效果承诺",
+    "revised_script": "这是第二篇更新后的完整口播正文，不再包含无依据的量化效果承诺。" * 5,
+}, ensure_ascii=False)}}]}
+with patch.object(server, "call_ai", return_value=auto_revision_response):
+    auto_revision = client.post("/api/chat-complete", json={
+        "conversation_id": content_cid,
+        "message": "只修改第二篇，删除没有依据的量化效果承诺，第一篇保持不变。",
+        "expected_revision": content_revision.get_json()["state"]["revision"],
+    })
+assert auto_revision.status_code == 200, auto_revision.get_data(as_text=True)
+auto_pack = server.load_conversation(content_cid)["deliverables"]["6"]
+assert len(auto_pack["categories"][0]["topics"][0]["versions"]) == 2
+assert [item["version"] for item in auto_pack["categories"][1]["topics"][0]["versions"]] == [1, 2]
+assert "量化效果承诺" in auto_pack["categories"][1]["topics"][0]["versions"][-1]["content"]
 assert client.post("/api/chat-complete", json={
     "conversation_id": content_cid,
     "message": "修改",
