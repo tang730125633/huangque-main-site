@@ -466,6 +466,34 @@ class IP12HarnessTests(unittest.TestCase):
         )
         self.assertEqual(next_state["pending"]["draft"], raw["draft"])
 
+    def test_module_four_rejects_exaggeration_and_target_audience_as_past_clients(self):
+        state = self.complete_intake()
+        state.update(current_module=4, module_step=0, completed_modules=[1, 2, 3])
+        evidence = (
+            "我帮朋友搬家整理时发现自己挺擅长。"
+            "我希望服务工作很忙、家里东西多、又不想因为家里乱被指责的女性。"
+        )
+        bad_drafts = (
+            "因为帮朋友搬家整理，你展现出了过人的天赋。",
+            "在服务客户的过程中，你遇到很多自我怀疑、害怕被迫丢弃物品的女性。",
+            "帮朋友整理让你体验到了强烈的成就感。",
+        )
+        for draft in bad_drafts:
+            with self.subTest(draft=draft), self.assertRaisesRegex(harness.HarnessError, "模块 4"):
+                harness.apply_model_decision(state, decision(state, draft=draft), evidence)
+
+        grounded = (
+            "节点 1：帮朋友搬家整理时，你发现自己挺擅长整理。\n"
+            "节点 2：未来希望服务工作很忙、家里东西多，又不想因为家里乱被指责的女性。"
+        )
+        next_state, _, _ = harness.apply_model_decision(
+            state, decision(state, draft=grounded), evidence, pending_id="grounded-story"
+        )
+        self.assertEqual(next_state["pending"]["draft"], grounded)
+        prompt = harness.system_prompt(state)
+        self.assertIn("未来想服务的人群", prompt)
+        self.assertIn("不能为了凑数量编故事", prompt)
+
     def test_module_five_topics_require_direct_user_evidence(self):
         state = self.complete_intake()
         state.update(current_module=5, module_step=1, completed_modules=[1, 2, 3, 4])

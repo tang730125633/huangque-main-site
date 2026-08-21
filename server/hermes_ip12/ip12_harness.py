@@ -236,6 +236,20 @@ TOPIC_SAFE_REPLACEMENTS = {
     "转化率": "待验证结果",
     "效率提升": "待验证结果",
 }
+MODULE_FOUR_EXAGGERATION_RE = re.compile(
+    r"过人(?:的)?天赋|天赋异禀|非凡(?:的)?天赋|卓越(?:的)?天赋|远超常人"
+)
+MODULE_FOUR_PAST_CLIENT_RE = re.compile(
+    r"(?:在服务客户的过程中|在服务过程中|你(?:曾经|过去)?遇到(?:过)?(?:很多|许多)?|"
+    r"你(?:曾经|过去)?发现(?:过)?|很多客户|许多客户|客户们|她们).{0,100}"
+    r"(?:自我怀疑|害怕|恐惧|内疚|羞耻|焦虑|承受.{0,12}指责|被迫.{0,8}丢弃)"
+)
+MODULE_FOUR_PAST_CLIENT_EVIDENCE_RE = re.compile(
+    r"(?:我|我的|本人|曾经|过去|之前|工作中|服务时).{0,40}"
+    r"(?:服务过|接触过|遇到过|客户说|客户反馈|有客户).{0,100}"
+    r"(?:自我怀疑|害怕|恐惧|内疚|羞耻|焦虑|指责|被迫.{0,8}丢弃)"
+)
+MODULE_FOUR_INNER_STATE_TERMS = ("自我怀疑", "害怕", "恐惧", "内疚", "羞耻", "成就感")
 
 DECISION_SCHEMA = {
     "type": "object",
@@ -1072,6 +1086,26 @@ def _validate_confirmable_claims(draft, evidence):
             )
 
 
+def _validate_module_four_story_claims(draft, evidence):
+    exaggeration = MODULE_FOUR_EXAGGERATION_RE.search(str(draft or ""))
+    if exaggeration and exaggeration.group(0) not in str(evidence or ""):
+        raise HarnessError(
+            "模块 4 把用户原话夸大成“%s”；请改回用户实际表达" % exaggeration.group(0)
+        )
+    if (
+        MODULE_FOUR_PAST_CLIENT_RE.search(str(draft or ""))
+        and not MODULE_FOUR_PAST_CLIENT_EVIDENCE_RE.search(str(evidence or ""))
+    ):
+        raise HarnessError(
+            "模块 4 把目标人群或内容偏好编造成过去的客户经历；请改写为未来想服务的人群或待验证方向"
+        )
+    for term in MODULE_FOUR_INNER_STATE_TERMS:
+        if term in str(draft or "") and term not in str(evidence or ""):
+            raise HarnessError(
+                "模块 4 编写了用户没有说过的内心感受“%s”；请删除或改为未来假设" % term
+            )
+
+
 def _validate_module_five_topics(updates, draft, evidence):
     topics = [item for item in updates if TOPIC_FIELD_RE.fullmatch(item["field"])]
     expected_fields = {
@@ -1236,6 +1270,8 @@ def validate_model_decision(
         _validate_confirmable_claims(choice_text, evidence)
     elif decision in {"propose_checkpoint", "revise_intake"}:
         _validate_confirmable_claims(draft, evidence)
+    if decision == "propose_checkpoint" and state["current_module"] == 4:
+        _validate_module_four_story_claims(draft, evidence)
     if decision == "propose_checkpoint" and state["current_module"] == 5 and checkpoint == 2:
         _validate_module_five_topics(clean_updates, draft, evidence)
     if (
@@ -1749,6 +1785,12 @@ def system_prompt(value):
 - 当前是固定三选一断点。信息足够时 decision=propose_checkpoint、checkpoint=2，choices 必须恰好 {CHOICE_COUNT} 项，draft 和 profile_updates 必须为空。
 - 每项 choices 只含 title、summary、reason、caution、recommended；长度分别不超过 {CHOICE_FIELD_LIMITS['title']}、{CHOICE_FIELD_LIMITS['summary']}、{CHOICE_FIELD_LIMITS['reason']}、{CHOICE_FIELD_LIMITS['caution']} 个 Unicode 字符，标题不得重复，最多一项 recommended=true。
 - reply 只用一句话说明现在要选择什么，不在 reply 中重复三项内容，不替用户选择。"""
+    story_rules = ""
+    if module == 4:
+        story_rules = """
+- 模块 4 的过去经历只能来自用户明确说过的真实事件；不得补写客户数量、客户反馈、他人心理状态、个人感受或天赋评价。
+- 目标人群、希望帮助的人和内容偏好只能写成未来想服务的人群、未来内容方向或待验证假设，绝不能改写成已经服务过的客户经历。
+- 不使用“过人的天赋”“自我怀疑”“害怕”“成就感”等用户没有亲口说过的评价或内心感受。证据不足时少写节点，不能为了凑数量编故事。"""
     return f"""你是黄雀 IP12 的中立 IP 咨询教练，适用于任何职业和行业。
 
 当前模块：{module}. {workflow['name']}
@@ -1765,6 +1807,7 @@ def system_prompt(value):
 - 用户只是在提问或跑题时 decision=answer_only，checkpoint=0，draft、self_review 和 profile_updates 都为空。
 - 非固定三选一断点信息足够时 decision=propose_checkpoint，draft 只包含当前断点的完整可确认内容，profile_updates 必须是当前断点的完整最新快照。
 {choice_rules}
+{story_rules}
 - 用户只是询问、讨论现有草稿或暂时跑题时 decision=answer_only，不改变断点；用户补充、纠正或反悔时，重做当前断点的完整草稿。
 - 用户指出重复、理解错误、遗漏或体验问题时，先用一句话明确说明刚才错在哪里，再给出已经采取的修正；能从上下文判断时立即修改，不能把定位和操作责任推回用户。
 - 不复述已经确认的完整内容。只说明本轮新增、删除或改变的部分；需要核对完整稿时再展示当前完整稿一次。
