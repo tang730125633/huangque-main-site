@@ -132,7 +132,6 @@ class HQCLIContentTests(unittest.TestCase):
             audio.validate_audio_payload({"text": "hello", "pitch": 99})
         clean = audio.validate_audio_payload({"text": " hello ", "speed": 1.2, "pitch": 0, "volume": 0})
         self.assertEqual(("hello", 1.2), (clean["text"], clean["speed"]))
-
         original = audio.resolve_audio_provider_voice
         audio.resolve_audio_provider_voice = lambda username, voice_key: voice_key
         try:
@@ -148,6 +147,81 @@ class HQCLIContentTests(unittest.TestCase):
             audio.resolve_audio_provider_voice = original
         self.assertEqual((public["voice_scope"], public["provider"]), ("public", "cosyvoice"))
         self.assertEqual((personal["voice_scope"], personal["provider"]), ("personal", "cosyvoice"))
+
+    def test_video_lipsync_uses_owned_assets_and_real_duration_pricing(self):
+        with mock.patch.object(video, "get_video_asset", return_value={
+                "id": 21, "video_file": "video/source.mp4",
+                "ratio": "9:16", "resolution": "768p", "status": "done",
+        }), mock.patch.object(video, "get_audio_asset", return_value={
+                "id": 34, "file": "audio/speech.mp3",
+        }), mock.patch.object(video, "_resolve_out_file", side_effect=lambda value: Path("/") / value), \
+                mock.patch.object(video, "_user_owns_output_file", return_value=True), \
+                mock.patch.object(video, "_normalize_audio_file_ref", return_value="audio/speech.mp3"), \
+                mock.patch.object(video, "_probe_video_duration", return_value=15.1), \
+                mock.patch.object(video.pricing, "get_price", side_effect=lambda key: {
+                    "video.lipsync.speed": 3, "video.lipsync.precision": 6,
+                }[key]):
+            clean = video.validate_video_payload({
+                "mode": "lipsync", "video_asset_id": 21,
+                "audio_asset_id": 34, "lipsync_mode": "speed",
+                "dynamic_duration": False,
+            }, "alice")
+            self.assertEqual(("video/source.mp4", "audio/speech.mp3"), (
+                clean["reference_video_file"], clean["audio_file"]))
+            self.assertEqual(46, video.video_cost(clean))
+
+    def test_video_lipsync_quote_does_not_require_a_photo_avatar(self):
+        clean = {
+            "mode": "lipsync", "video_asset_id": 21,
+            "audio_asset_id": 34, "reference_video_file": "video/source.mp4",
+            "audio_file": "audio/speech.mp3", "_lipsync_duration": 15.0,
+            "lipsync_mode": "speed", "dynamic_duration": False,
+        }
+        with mock.patch.object(
+                core, "_domains", return_value=(audio, self.points, video)), \
+                mock.patch.object(
+                    video, "validate_video_payload", return_value=clean) as validate:
+            status, result = self._post("/api/gen/cli/quote", {
+                "kind": "video", "payload": {
+                    "mode": "lipsync", "video_asset_id": 21,
+                    "audio_asset_id": 34, "lipsync_mode": "speed",
+                    "dynamic_duration": False,
+                },
+            })
+        self.assertEqual((200, 24), (status, result["cost"]))
+        validate.assert_called_once()
+
+    def test_heygen_lipsync_preserves_source_and_uses_idempotency(self):
+        captured = {}
+
+        def request(method, path, body=None, headers=None, **_kwargs):
+            if method == "POST":
+                captured.update(
+                    path=path, body=json.loads(body), headers=dict(headers or {}))
+                return {"data": {"lipsync_id": "ls_123"}}
+            self.assertEqual(("GET", "/lipsyncs/ls_123"), (method, path))
+            return {"data": {
+                "status": "completed", "duration": 15,
+                "video_url": "https://files.heygen.ai/result.mp4",
+            }}
+
+        with mock.patch.object(video, "_resolve_out_file", side_effect=lambda value: Path("/") / value), \
+                mock.patch.object(video, "_heygen_upload_asset", side_effect=["vid_asset", "aud_asset"]), \
+                mock.patch.object(video, "_heygen_request_json", side_effect=request), \
+                mock.patch.object(video, "_download_video_file_direct", return_value="video/lipsync.mp4"), \
+                mock.patch.object(video, "_extract_first_frame_cover", return_value="video/lipsync.jpg"), \
+                mock.patch.object(video, "update_video_asset_phase"):
+            result = video.generate_heygen_lipsync(
+                "video/source.mp4", "audio/speech.mp3", "speed", False,
+                job_id=77,
+            )
+        self.assertEqual("/lipsyncs", captured["path"])
+        self.assertEqual("huangque-lipsync-job-77", captured["headers"]["Idempotency-Key"])
+        self.assertEqual({"type": "asset_id", "asset_id": "vid_asset"}, captured["body"]["video"])
+        self.assertFalse(captured["body"]["enable_dynamic_duration"])
+        self.assertTrue(captured["body"]["keep_the_same_format"])
+        self.assertEqual(("ls_123", "video/lipsync.mp4"), (
+            result["video_id"], result["video_file"]))
 
     def test_sora_submit_expands_cli_reference_before_validation_and_queue(self):
         raw = base64.b64decode(

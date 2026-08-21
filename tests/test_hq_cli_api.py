@@ -1000,6 +1000,17 @@ class HQCLIAPITests(unittest.TestCase):
             })
 
     def test_digital_ip_and_cinematic_generation_plans_are_narrow_and_fixed(self):
+        lipsync = self.auth.hq_cli_api.action_plan("video-lipsync", {
+            "video_asset_id": 21, "audio_asset_id": 34,
+            "quality": "precision", "dynamic_duration": False,
+        })
+        self.assertEqual(("generation:quote", "video", "/api/gen/video"), (
+            lipsync["scope"], lipsync["generation_kind"], lipsync["endpoint"]))
+        self.assertEqual({
+            "mode": "lipsync", "video_asset_id": 21, "audio_asset_id": 34,
+            "lipsync_mode": "precision", "dynamic_duration": False,
+        }, lipsync["payload"])
+
         text = self.auth.hq_cli_api.action_plan("digital-ip-text-generate", {
             "avatar_id": 7, "text": "欢迎来到黄雀", "voice": "S_d21F8OR62",
             "ratio": "16:9", "motion": "high", "subtitle": True,

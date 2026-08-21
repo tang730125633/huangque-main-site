@@ -1380,7 +1380,8 @@ def run_job(job_id):
                 )
         # 口播按成片真实时长结算：预扣(cost)是 hold，跑完多退少不补。只在抢到 done 后调 —— done CAS
         # 互斥 + reaper/reclaim 不碰 done → 每 job 至多结算一次，不重复退。结算失败不影响出片。
-        if kind == "video" or (kind == "script_to_video" and (result or {}).get("pipeline") in {"talking", "talking_with_materials"}):
+        if ((kind == "video" and mode != "lipsync")
+                or (kind == "script_to_video" and (result or {}).get("pipeline") in {"talking", "talking_with_materials"})):
             try:
                 block_points = payload.get("_talking_block_points")
                 actual = _domains()[2].talking_actual_cost(result, block_points)
@@ -1442,7 +1443,8 @@ def run_job(job_id):
         except Exception:
             pass
     except Exception as e:
-        if kind in {"sora_video", "xiaole_video"}:
+        if kind in {"sora_video", "xiaole_video"} or (
+                kind == "video" and mode == "lipsync"):
             try:
                 if _domains()[2].recover_paid_video_error(
                         job_id, kind, payload, e, _requeue_running_job):
@@ -1547,7 +1549,9 @@ def reaper():
                     stuck_payload = json.loads(r["payload"] or "{}")
                 except Exception:
                     stuck_payload = {}
-                if r["kind"] in {"sora_video", "xiaole_video"}:
+                if r["kind"] in {"sora_video", "xiaole_video"} or (
+                        r["kind"] == "video"
+                        and str(stuck_payload.get("mode") or "") == "lipsync"):
                     try:
                         video_domain = _domains()[2]
                         if video_domain.recover_paid_video_error(r["id"], r["kind"], stuck_payload,

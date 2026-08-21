@@ -56,6 +56,8 @@ CATALOG = [
     _rule("audio.tts", "音频与数字人", "配音 / 短剧配音", "每条提交", 10, "点/条"),
     _rule("audio.voice_slot", "音频与数字人", "个人音色槽位", "每个槽位", 50, "点/个"),
     _rule("video.talking.block", "音频与数字人", "数字人口播", "每 30 秒，不足 30 秒按 30 秒", 30, "点/30秒"),
+    _rule("video.lipsync.speed", "音频与数字人", "原视频口型同步", "Speed", 3, "点/秒"),
+    _rule("video.lipsync.precision", "音频与数字人", "原视频口型同步", "Precision", 6, "点/秒"),
     _rule("avatar.create", "音频与数字人", "创建数字人形象", "每个形象", 2, "点/次"),
     _rule("video.cinematic.motion", "视频生成", "电影化身 · 动作模仿", "按成片时长", 10, "点/秒"),
     _rule("video.cinematic.duo", "视频生成", "电影化身 · 双人互动", "按成片时长", 30, "点/秒"),
