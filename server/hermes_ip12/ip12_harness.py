@@ -251,7 +251,7 @@ MODULE_FOUR_PAST_CLIENT_EVIDENCE_RE = re.compile(
 )
 MODULE_FOUR_INNER_STATE_TERMS = ("自我怀疑", "害怕", "恐惧", "内疚", "羞耻", "成就感")
 MODULE_FOUR_QUOTE_RE = re.compile(
-    r"(?:事实原话|未来方向原话)\s*[：:]\s*([^\n]+)"
+    r"(?:事实原话|未来方向原话)[*_`\s]*[：:][*_`\s]*([^\n]+)"
 )
 
 DECISION_SCHEMA = {

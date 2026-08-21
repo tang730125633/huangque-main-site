@@ -495,6 +495,13 @@ class IP12HarnessTests(unittest.TestCase):
             state, decision(state, draft=grounded), evidence, pending_id="grounded-story"
         )
         self.assertEqual(next_state["pending"]["draft"], grounded)
+        markdown_labels = grounded.replace("事实原话：", "**事实原话**：").replace(
+            "未来方向原话：", "**未来方向原话**："
+        )
+        markdown_state, _, _ = harness.apply_model_decision(
+            state, decision(state, draft=markdown_labels), evidence, pending_id="grounded-markdown-story"
+        )
+        self.assertEqual(markdown_state["pending"]["draft"], markdown_labels)
         prompt = harness.system_prompt(state)
         self.assertIn("未来想服务的人群", prompt)
         self.assertIn("事实原话", prompt)
