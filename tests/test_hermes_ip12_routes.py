@@ -689,6 +689,7 @@ assert server._audio_options_from_message("重新生成音频，语速调整为0
 assert server._audio_options_from_message("重新生成音频，语速慢一点") == {}
 assert server._production_source_revision_intent("重新生成一版音频，开头表达更直接") is True
 assert server._production_source_revision_intent("重新生成一版音频，语速调整为0.9") is False
+assert server._production_source_revision_intent("重新生成一版音频，语速调整为0.9，正文保持不变") is False
 with server.app.test_request_context("https://huangquechuanmei.com/workbench/ip12/"):
     assert server._browser_preview_url("/api/gen/file/avatar.jpg") == (
         "https://huangquechuanmei.com/api/gen/file/avatar.jpg"
