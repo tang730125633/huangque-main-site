@@ -30,6 +30,43 @@ def extract_js_function(source, name):
 
 
 class HermesIP12SourceTests(unittest.TestCase):
+    def test_capability_gates_and_confirmed_module_six_sync(self):
+        script = r'''
+import server
+
+state = server.initial_coach_state()
+state["completed_modules"] = [1, 2, 3, 4, 5, 6]
+state["foundation_report"] = {"status": "confirmed"}
+state["ip_profile"].setdefault("confirmed_outputs", {})["6-2"] = {
+    "content": "\n\n".join(
+        "### %d. 分类%d｜标题%d\n**精选理由：** 理由%d\n\n%s" %
+        (index, index, index, index, ("这是用户最终确认的完整口播文案%d。" % index) * 12)
+        for index in (1, 2, 3)
+    )
+}
+pack = {"kind": "content_pack_v1", "format": "featured_3_v1", "categories": [
+    {"id": "category-%d" % index, "name": "分类%d" % index, "description": "旧理由",
+     "topics": [{"id": "topic-%d-01" % index, "title": "标题%d" % index,
+                 "versions": [{"version": 1, "content": ("旧版口播%d。" % index) * 30}], "status": "ready"}]}
+    for index in (1, 2, 3)
+]}
+convo = {"coach_state": state, "deliverables": {"6": pack}}
+assert server._sync_module_six_pack_from_confirmed_output(convo) is True
+assert [len(item["topics"][0]["versions"]) for item in pack["categories"]] == [2, 2, 2]
+assert server._sync_module_six_pack_from_confirmed_output(convo) is False
+assert all(item["status"] == "unlocked" for item in server.capability_gates(state))
+'''
+        env = os.environ.copy()
+        env.update(OPENAI_API_KEY="dummy")
+        result = subprocess.run(
+            [sys.executable, "-c", script], cwd=HERMES, env=env,
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        page = (HERMES / "templates" / "index.html").read_text(encoding="utf-8")
+        self.assertIn("能力解锁", page)
+        self.assertIn("function openCapabilityGates", page)
+
     def test_persistent_assistant_messages_use_one_versioned_append_helper(self):
         source = (HERMES / "server.py").read_text(encoding="utf-8")
         self.assertIn("def _append_assistant_message", source)
@@ -805,14 +842,14 @@ assert audio_public["schema"]["properties"]["voice"]["oneOf"][1] == {
 assert audio_public_selected["options"] == {"voice": "public-demo", "speed": 0.9}, audio_public_selected
 assert video["schema"]["required"] == ["avatar_id", "voice"], video
 assert video["schema"]["properties"]["avatar_id"]["oneOf"] == [
-    {"const": 7, "title": "我的形象 7", "preview_url": "https://media.example/avatar-7.jpg", "preview_kind": "image", "source": "personal"},
+    {"const": 7, "title": "我的形象 7", "preview_url": "https://media.example/avatar-7.jpg", "preview_kind": "image", "source": "personal", "recommended": True},
     {"const": 8, "title": "我的形象 8", "preview_url": "https://media.example/avatar-8.jpg", "preview_kind": "image", "source": "personal"},
     {"const": 9, "title": "我的形象 9", "preview_url": "https://media.example/avatar-9.jpg", "preview_kind": "image", "source": "personal"},
 ], video
 assert video["schema"]["properties"]["voice"]["oneOf"] == [{
     "const": "voice-demo", "title": "我的声音",
     "preview_url": "https://media.example/voice-demo.mp3",
-    "preview_kind": "audio", "source": "personal",
+    "preview_kind": "audio", "source": "personal", "recommended": True,
 }], video
 assert public_blocked["status"] == "blocked_prerequisite", public_blocked
 assert "当前账号的可选范围" in public_blocked["validation_error"], public_blocked
@@ -821,6 +858,12 @@ assert [item["const"] for item in public_allowed["schema"]["properties"]["voice"
 ], public_allowed
 assert public_allowed["status"] == "draft", public_allowed
 legacy = prepare("video")
+assert legacy["status"] == "draft", legacy
+assert legacy["options"] == {"avatar_id": 7, "voice": "voice-demo"}, legacy
+assert legacy["missing"] == [], legacy
+assert legacy["material_request_message"]["production_id"] == legacy["production_id"], legacy
+assert "本条消息下方" in legacy["material_request_message"]["content"], legacy
+assert "右侧生产画布" not in legacy["material_request_message"]["content"], legacy
 legacy_id = legacy["production_id"]
 legacy_convo = server.load_conversation(cid)
 legacy_record = legacy_convo["productions"][legacy_id]
@@ -837,8 +880,8 @@ assert refreshed.status_code == 200, refreshed.get_data(as_text=True)
 refreshed_record = next(
     item for item in refreshed.get_json()["productions"] if item["id"] == legacy_id
 )
-assert refreshed_record["material_context_version"] == 4, refreshed_record
-assert refreshed_record["options"] == {"avatar_id": 7}, refreshed_record
+assert refreshed_record["material_context_version"] == 5, refreshed_record
+assert refreshed_record["options"] == {"avatar_id": 7, "voice": "voice-demo"}, refreshed_record
 assert [item["const"] for item in refreshed_record["parameter_schema"]["properties"]["voice"]["oneOf"]] == [
     "voice-demo",
 ], refreshed_record

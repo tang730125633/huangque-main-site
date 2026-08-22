@@ -112,6 +112,19 @@ PROJECT_BACKUP_MAX_MESSAGE_CHARS = 200000
 COMING_SOON_MESSAGE = "尚未开发，敬请期待"
 COMING_SOON_API_PATHS = {"/api/module7-images", "/api/module8-video", "/api/m9-funnel", "/api/m11-sales", "/api/m12-calendar"}
 
+CAPABILITY_GATE_DEFINITIONS = (
+    {"id": "image-generate", "name": "品牌配图", "modules": (1, 2, 3, 4),
+     "foundation": True, "next_step": "确认用途与视觉方向；参考图可选"},
+    {"id": "audio-generate", "name": "口播音频", "modules": (1, 2, 3, 5, 6),
+     "next_step": "选择音色和语速后获取报价"},
+    {"id": "digital-ip-text-generate", "name": "数字人口播", "modules": (1, 2, 3, 4, 5, 6),
+     "foundation": True, "next_step": "确认形象与声音后获取报价"},
+    {"id": "canvas-ops", "name": "Canvas 编排", "modules": (1, 2, 3, 4),
+     "foundation": True, "next_step": "选择画布并预览写入方案"},
+    {"id": "publish-plan", "name": "发布建议", "modules": (1, 2, 3, 4, 5, 6),
+     "foundation": True, "next_step": "确认平台、时间与最终成品"},
+)
+
 MODULE_REPORT_TYPES = {
     1: "定位诊断报告", 2: "人设画像报告", 3: "价值主张报告",
     4: "故事资产清单", 5: "选题策划方案", 6: "文案模板集",
@@ -173,6 +186,25 @@ def _redact_mobile_numbers(value):
 def _intake_pending(state):
     intake = state.get("intake")
     return isinstance(intake, dict) and intake.get("status") != "complete"
+
+
+def capability_gates(state):
+    state = normalize_coach_state(state)
+    completed = set(state.get("completed_modules") or [])
+    foundation_confirmed = (state.get("foundation_report") or {}).get("status") == "confirmed"
+    gates = []
+    for definition in CAPABILITY_GATE_DEFINITIONS:
+        missing = ["模块 %s" % module for module in definition["modules"] if module not in completed]
+        if definition.get("foundation") and not foundation_confirmed:
+            missing.append("确认模块 1–4 报告")
+        gates.append({
+            "id": definition["id"], "name": definition["name"],
+            "status": "locked" if missing else "unlocked", "missing": missing,
+            "next_step": definition["next_step"] if not missing else "先完成" + "、".join(missing),
+            "confirmation": "生成或扣点前必须再次确认",
+            "writeback": "结果、任务号和反馈写回当前 Project",
+        })
+    return gates
 
 
 def normalize_coach_state(state):
@@ -462,6 +494,74 @@ def _migration_notice_id(state):
     return str(migration.get("notice_id") or "") if isinstance(migration, dict) else ""
 
 
+MODULE_SIX_CONFIRMED_SECTION_RE = re.compile(
+    r"(?ms)^###\s+([123])\.\s+(.+?)｜(.+?)\n"
+    r"\*\*精选理由：\*\*\s*(.*?)\n\n(.*?)(?=^###\s+[123]\.\s+|\Z)"
+)
+
+
+def _module_six_confirmed_sections(convo):
+    state = normalize_coach_state(convo.get("coach_state"))
+    output = ((state.get("ip_profile") or {}).get("confirmed_outputs") or {}).get("6-2") or {}
+    content = str(output.get("content") or "") if isinstance(output, dict) else ""
+    matches = list(MODULE_SIX_CONFIRMED_SECTION_RE.finditer(content))
+    if len(matches) != 3 or [item.group(1) for item in matches] != ["1", "2", "3"]:
+        return []
+    sections = []
+    for item in matches:
+        script = item.group(5).strip()
+        if len(re.sub(r"\s+", "", script)) < 120:
+            return []
+        sections.append({
+            "category": item.group(2).strip(), "title": item.group(3).strip(),
+            "description": item.group(4).strip(), "script": script,
+        })
+    return sections
+
+
+def _module_six_pack_sync_needed(convo):
+    sections = _module_six_confirmed_sections(convo)
+    pack = (convo.get("deliverables") or {}).get("6") or {}
+    categories = pack.get("categories") if isinstance(pack, dict) else None
+    if not sections or not isinstance(categories, list) or len(categories) != 3:
+        return False
+    for section, category in zip(sections, categories):
+        topics = (category or {}).get("topics") or []
+        if (section["category"] != str((category or {}).get("name") or "").strip()
+                or len(topics) != 1
+                or section["title"] != str(topics[0].get("title") or "").strip()):
+            return False
+    return any(
+        section["script"] != str((((category["topics"][0].get("versions") or [{}])[-1]).get("content") or "")).strip()
+        for section, category in zip(sections, categories)
+    )
+
+
+def _sync_module_six_pack_from_confirmed_output(convo):
+    if not _module_six_pack_sync_needed(convo):
+        return False
+    sections = _module_six_confirmed_sections(convo)
+    pack = convo["deliverables"]["6"]
+    for section, category in zip(sections, pack["categories"]):
+        topic = category["topics"][0]
+        versions = list(topic.get("versions") or [])
+        current = str((versions[-1] if versions else {}).get("content") or "").strip()
+        category["description"] = section["description"] or category.get("description", "")
+        if current == section["script"]:
+            continue
+        versions.append({
+            "version": int((versions[-1] if versions else {}).get("version") or 0) + 1,
+            "content": section["script"],
+            "change_summary": "同步用户确认的模块 6 文案",
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        })
+        topic["versions"] = versions[-20:]
+        topic["status"] = "revised"
+    pack["synced_from_confirmed_output"] = True
+    pack["synced_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    return True
+
+
 def _migrate_owned_conversation(convo_id):
     """Persist an old Project exactly once before any route exposes schema v2."""
     convo = owned_conversation(convo_id)
@@ -476,7 +576,8 @@ def _migrate_owned_conversation(convo_id):
     notice_missing = bool(notice_id) and not any(
         item.get("message_id") == notice_id for item in convo.get("messages") or []
     )
-    if source_version == coach_harness.SCHEMA_VERSION and not notice_missing:
+    content_sync_needed = _module_six_pack_sync_needed(convo)
+    if source_version == coach_harness.SCHEMA_VERSION and not notice_missing and not content_sync_needed:
         return convo
     with CONVERSATION_STATE_LOCK:
         convo = owned_conversation(convo_id)
@@ -491,13 +592,15 @@ def _migrate_owned_conversation(convo_id):
         notice_missing = bool(notice_id) and not any(
             item.get("message_id") == notice_id for item in convo.get("messages") or []
         )
-        if source_version == coach_harness.SCHEMA_VERSION and not notice_missing:
+        content_sync_needed = _module_six_pack_sync_needed(convo)
+        if source_version == coach_harness.SCHEMA_VERSION and not notice_missing and not content_sync_needed:
             return convo
         try:
             state = raw_state if source_version == coach_harness.SCHEMA_VERSION else normalize_coach_state(raw_state)
         except coach_harness.HarnessError as exc:
             raise RuntimeError(str(exc)) from exc
         convo["coach_state"] = state
+        _sync_module_six_pack_from_confirmed_output(convo)
         notice_id = _migration_notice_id(state)
         if notice_id and not any(
             item.get("message_id") == notice_id for item in convo.get("messages") or []
@@ -999,6 +1102,25 @@ def _production_record_schema(record):
     return schema if isinstance(schema, dict) else _production_action_schema(record["action"])
 
 
+def _production_recommended_options(schema, options):
+    if not isinstance(options, dict):
+        raise coach_harness.HarnessError("制作参数必须是对象")
+    recommended = json.loads(json.dumps(options or {}, ensure_ascii=False))
+    properties = schema.get("properties") or {}
+    for name in ("avatar_id", "voice", "voice_key"):
+        choices = (properties.get(name) or {}).get("oneOf") or []
+        choice = next(
+            (item for item in choices if isinstance(item, dict) and item.get("source") == "personal"),
+            next((item for item in choices if isinstance(item, dict)), None),
+        )
+        if not choice:
+            continue
+        choice["recommended"] = True
+        if recommended.get(name) in (None, ""):
+            recommended[name] = choice.get("const")
+    return recommended
+
+
 def _production_upload_kind(record, field):
     descriptor = (_production_record_schema(record).get("properties") or {}).get(field) or {}
     if descriptor.get("type") == "array":
@@ -1036,16 +1158,29 @@ def _ensure_production_material_request_message(convo, record, missing):
     needs_account_audio = "audio_file" in missing
     needs_avatar = "avatar_id" in missing
     needs_voice = "voice" in missing or "voice_key" in missing
-    if not fields and not needs_account_audio and not needs_avatar and not needs_voice:
+    properties = _production_record_schema(record).get("properties") or {}
+    has_avatar_choices = bool((properties.get("avatar_id") or {}).get("oneOf"))
+    has_voice_choices = bool(
+        (properties.get("voice") or properties.get("voice_key") or {}).get("oneOf")
+    )
+    has_inline_choices = record.get("action") == "digital-ip-text-generate" and any(
+        (descriptor or {}).get("oneOf")
+        for descriptor in properties.values()
+        if isinstance(descriptor, dict)
+    )
+    if not fields and not needs_account_audio and not needs_avatar and not needs_voice and not has_inline_choices:
         return None
-    message_id = str(record.get("material_request_message_id") or "")
-    if message_id:
-        return next((item for item in convo.get("messages") or []
-                     if item.get("message_id") == message_id), None)
-    parts = [
-        "我已经把这次制作放进右侧生产画布，请在画布里完成素材确认。"
-        "如果关闭了画布，可以点击本条消息中的“打开生产画布”，或页面顶部的“当前制作”重新打开。"
-    ]
+    if has_avatar_choices and has_voice_choices:
+        parts = [
+            "我已经读取当前 Project 的口播文案，并优先用你账号中的个人形象和声音准备了一套方案。"
+            "形象预览和声音试听就在本条消息下方；合适的话直接确认报价，不合适可以换一项，"
+            "不需要打开其他功能页。"
+        ]
+    else:
+        parts = [
+            "我已经把这次制作需要的素材整理到本条消息下方。"
+            "你可以直接预览、试听或上传缺少的素材，不需要打开其他功能页。"
+        ]
     if fields:
         labels = "、".join(_production_field_label(record, name) for name in fields)
         parts.append(
@@ -1054,12 +1189,12 @@ def _ensure_production_material_request_message(convo, record, missing):
         )
     if needs_account_audio:
         parts.append(
-            "这项制作还需要音频素材。你可以在当前生产画布直接上传本地音频；"
+            "这项制作还需要音频素材。你可以直接在当前对话上传本地音频；"
             "上传后会自动绑定到这次制作。"
         )
     if needs_avatar:
         parts.append(
-            "数字人口播需要本人画面。你可以选择一张已有形象，或直接在当前生产画布点击"
+            "数字人口播需要本人画面。你可以直接选择下方已有形象，或点击"
             "“上传人物照片（本次直接使用）”；不需要离开 IP12。"
         )
     if needs_voice:
@@ -1067,6 +1202,14 @@ def _ensure_production_material_request_message(convo, record, missing):
             "声音可以选择有试听样音的个人声音；也可以直接上传一段本人口播音频用于本次视频。"
             "系统公共音色不会自动出现，只有你明确提出使用后才会展示试听卡。"
         )
+    message_id = str(record.get("material_request_message_id") or "")
+    if message_id:
+        existing = next((item for item in convo.get("messages") or []
+                         if item.get("message_id") == message_id), None)
+        if existing:
+            existing["content"] = "\n\n".join(parts)
+            existing["production_id"] = record["id"]
+            return existing
     message = _append_assistant_message(
         convo, "\n\n".join(parts), "production_bridge",
         message_id="matreq_" + uuid.uuid4().hex,
@@ -1244,7 +1387,7 @@ def _production_parameter_context(account_id, action, catalog_entry=None, allow_
             and item.get("role") in {"owner", "editor"}
         }
     if action in {"digital-ip-text-generate", "digital-ip-audio-generate", "digital-ip-batch-generate"} and material_reads_ok:
-        context["material_context_version"] = 4
+        context["material_context_version"] = 5
     return schema, context
 
 
@@ -1258,7 +1401,7 @@ def _refresh_unsubmitted_production_materials(cid, production_id):
             return
         if record.get("status") not in {"draft", "blocked_prerequisite", "stale"}:
             return
-        if int(record.get("material_context_version") or 0) >= 4:
+        if int(record.get("material_context_version") or 0) >= 5:
             return
         family = record.get("capability_family") or "video"
         allow_system_media = bool(record.get("allow_system_media"))
@@ -1269,7 +1412,7 @@ def _refresh_unsubmitted_production_materials(cid, production_id):
         current_account_id(), "digital-ip-text-generate",
         recommendation.get("catalog_entry"), allow_system_media=allow_system_media,
     )
-    if int(context.get("material_context_version") or 0) < 4:
+    if int(context.get("material_context_version") or 0) < 5:
         return
     with CONVERSATION_STATE_LOCK:
         convo = _production_conversation(cid)
@@ -1293,7 +1436,7 @@ def _refresh_unsubmitted_production_materials(cid, production_id):
             options[name] = value
         record["parameter_schema"] = schema
         record.update(context)
-        _production_set_options(record, options)
+        _production_set_options(record, _production_recommended_options(schema, options))
         valid, _, missing = _production_plan_or_error(record, record["options"])
         record.update(
             status="draft" if valid else "blocked_prerequisite",
@@ -2494,7 +2637,7 @@ def api_get_convo(cid):
             isinstance(record, dict)
             and record.get("action") == "digital-ip-text-generate"
             and record.get("status") in {"draft", "blocked_prerequisite", "stale"}
-            and int(record.get("material_context_version") or 0) < 4
+            and int(record.get("material_context_version") or 0) < 5
         ):
             _refresh_unsubmitted_production_materials(cid, production_id)
     convo = _migrate_owned_conversation(cid)
@@ -2512,6 +2655,7 @@ def api_get_convo(cid):
         if message.get("role") == "assistant" and not isinstance(message.get("agent_trace"), dict):
             message["agent_trace"] = {"status": "legacy_unknown"}
     public_convo["harness_actions"] = coach_harness.available_actions(public_convo["coach_state"])
+    public_convo["capability_gates"] = capability_gates(public_convo["coach_state"])
     handoff = _post_module_six_production_action(convo)
     if handoff and not public_convo["harness_actions"]:
         public_convo["harness_actions"] = [handoff]
@@ -2615,7 +2759,10 @@ def api_prepare_production():
                 "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
             }
             record.update(resource_context)
-            _production_set_options(record, body.get("options", {}))
+            options = body.get("options", {})
+            if record["action"] == "digital-ip-text-generate":
+                options = _production_recommended_options(parameter_schema, options)
+            _production_set_options(record, options)
             _, validation_error, missing = _production_plan_or_error(record, record["options"])
             if validation_error:
                 record["status"] = "blocked_prerequisite"
@@ -3568,6 +3715,7 @@ def _chat_result(assistant, state, *, new_completed=None, auto_deliverables=None
         "new_completed": new_completed or [],
         "auto_deliverables": auto_deliverables or {},
         "foundation_report": foundation_report,
+        "capability_gates": capability_gates(state),
         "request_id": request_id,
     }
 
