@@ -111,7 +111,49 @@ hq run task --input @- --json <<'JSON'
 JSON
 ```
 
-`mode=generate` 根据主题创作，`mode=fixed` 原样使用完整文案并自动拆分分镜。首个 CLI 版本不接收口播人物图片和逐分镜口播选择；这些设置继续在文案成片页面完成。
+`mode=generate` 根据主题创作，`mode=fixed` 原样使用完整文案并自动拆分分镜。
+
+需要混入口播视频素材时，先上传并导入一个或多个人物，再生成分镜方案：
+
+```sh
+hq run image-upload --file /absolute/path/avatar.png --confirm --json
+printf '%s\n' '{"image_upload_id":"img_<32位十六进制>"}' > avatar.json
+hq run text-video-avatar-import --input @avatar.json --confirm --json
+
+cat > talking-plan.json <<'JSON'
+{
+  "text": "完整文案",
+  "template": "1080x1920/image_default.html",
+  "mode": "fixed",
+  "style": "realistic_commercial",
+  "voice": "public:zh-CN-YunjianNeural",
+  "speech_rate": 1.0,
+  "ratio": 0.3
+}
+JSON
+hq run text-video-plan --input @talking-plan.json --confirm --json
+```
+
+核对返回的 `scenes` 后，将 `plan_id`、`source_hash`、人物 `asset_id` 和逐镜头选择加入原生成参数：
+
+```json
+{
+  "talking_material": {
+    "enabled": true,
+    "plan_id": "talking_plan_<32位十六进制>",
+    "source_hash": "<64位十六进制>",
+    "ratio": 0.3,
+    "default_avatar_asset_id": "local_avatar_<32位十六进制>",
+    "scenes": [
+      {"scene_id": "scene_01", "enabled": true},
+      {"scene_id": "scene_02", "enabled": false},
+      {"scene_id": "scene_03", "enabled": true, "avatar_asset_id": "local_avatar_<32位十六进制>"}
+    ]
+  }
+}
+```
+
+把 `talking_material` 合并到与规划时完全一致的文案成片 JSON，再执行原有报价和确认命令。人物与方案均为当前账号私有的短期资产；最终提交前仍会校验方案、人物、参数、分镜和价格。
 
 项目同时提供可安装的 Codex Skill：[use-huangque-cli](skills/use-huangque-cli/SKILL.md)。
 

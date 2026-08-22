@@ -56,11 +56,17 @@ class CLIImageUploadTests(unittest.TestCase):
 
     def test_private_upload_expands_for_owner_only(self):
         uploaded = self.upload()
+        avatar_data = cli_uploads.load_image_data_url(
+            uploaded["upload_id"], "alice", now=101)
+        self.assertEqual(PNG, base64.b64decode(avatar_data.split(",", 1)[1]))
         body = cli_uploads.expand_image_payload(
             {"provider": "openai", "image_upload_id": uploaded["upload_id"]}, "alice", now=101,
         )
         self.assertEqual(PNG, base64.b64decode(body["image"]))
         self.assertNotIn("image_upload_id", body)
+        with self.assertRaisesRegex(ValueError, "不存在或已失效"):
+            cli_uploads.load_image_data_url(
+                uploaded["upload_id"], "bob", now=101)
         with self.assertRaisesRegex(ValueError, "不存在或已失效"):
             cli_uploads.expand_image_payload(
                 {"provider": "openai", "image_upload_id": uploaded["upload_id"]}, "bob", now=101,

@@ -1919,7 +1919,7 @@ class TextVideoPlanningApiTests(unittest.TestCase):
         self.core.verify = self.originals["verify"]
         self.core._domains = self.originals["domains"]
 
-    def request(self, method, path, body=None, username="alice"):
+    def request(self, method, path, body=None, username="alice", extra_headers=None):
         headers = {}
         data = None
         if username is not None:
@@ -1927,6 +1927,7 @@ class TextVideoPlanningApiTests(unittest.TestCase):
         if body is not None:
             data = json.dumps(body).encode("utf-8")
             headers["Content-Type"] = "application/json"
+        headers.update(extra_headers or {})
         return urllib.request.urlopen(urllib.request.Request(
             "http://127.0.0.1:%d%s" % (self.server.server_address[1], path),
             data=data, headers=headers, method=method,
@@ -2006,6 +2007,32 @@ class TextVideoPlanningApiTests(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as denied:
                 self.request("GET", path, username="bob")
         self.assertEqual(denied.exception.code, 404)
+
+    def test_cli_avatar_import_requires_internal_auth_and_owner_upload(self):
+        avatar = {"asset_id": "local_avatar_" + "e" * 32,
+                  "mime": "image/png", "data": b"image"}
+        upload_id = "img_" + "a" * 32
+        image_data = "data:image/png;base64,aGVsbG8="
+        with mock.patch.object(self.core, "AUTH_INTERNAL_TOKEN", "internal-secret"), \
+             mock.patch.object(self.pixelle, "require_available"), \
+             mock.patch.object(self.core.cli_uploads, "load_image_data_url",
+                               return_value=image_data) as load, \
+             mock.patch.object(self.core.miniprogram_security, "check_payload") as guard, \
+             mock.patch.object(self.assets, "store_avatar", return_value=avatar) as store:
+            with self.assertRaises(urllib.error.HTTPError) as denied:
+                self.request("POST", "/api/gen/cli/text-video/avatar-import", {
+                    "image_upload_id": upload_id,
+                })
+            self.assertEqual(403, denied.exception.code)
+            with self.request(
+                    "POST", "/api/gen/cli/text-video/avatar-import",
+                    {"image_upload_id": upload_id},
+                    extra_headers={"X-HQ-Internal-Token": "internal-secret"}) as response:
+                result = json.loads(response.read())
+        self.assertEqual(avatar["asset_id"], result["asset_id"])
+        load.assert_called_once_with(upload_id, "alice")
+        guard.assert_called_once_with({"image_data": image_data})
+        store.assert_called_once_with("alice", image_data)
 
     def test_avatar_upload_rejects_invalid_image(self):
         with mock.patch.object(self.pixelle, "require_available"), \

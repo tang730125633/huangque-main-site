@@ -1688,7 +1688,11 @@ class H(BaseHTTPRequestHandler):
                 self, p, verify, _must_change_password, is_shutting_down,
                 feature_flags, points_domain, audio_domain, video_domain,
                 AUTH_INTERNAL_TOKEN): return
-        if p in {"/api/gen/text-video/plan", "/api/gen/text-video/avatar"}:
+        text_video_avatar_import = p == "/api/gen/cli/text-video/avatar-import"
+        if p in {"/api/gen/text-video/plan", "/api/gen/text-video/avatar"} or text_video_avatar_import:
+            if text_video_avatar_import and not cli_gateway._internal_auth(
+                    self, AUTH_INTERNAL_TOKEN):
+                return self._send(403, {"detail": "forbidden"})
             user = verify(self._token())
             if not user:
                 return self._send(401, {"detail": "未登录或登录已过期"})
@@ -1717,14 +1721,21 @@ class H(BaseHTTPRequestHandler):
                     pixelle_video.check_plan_rate_limit(user["username"])
                     return self._send(200, pixelle_video.plan_talking_scenes(
                         body, user["username"]))
-                pixelle_talking_assets.check_avatar_upload_rate_limit(
-                    user["username"])
-                body = self._json_body_strict(max_bytes=17 * 1024 * 1024)
-                if not isinstance(body, dict) or set(body) != {"image_data"}:
-                    raise ValueError("人物图片上传请求字段无效")
-                miniprogram_security.check_payload(body)
+                pixelle_talking_assets.check_avatar_upload_rate_limit(user["username"])
+                if text_video_avatar_import:
+                    body = self._json_body_strict(max_bytes=16 * 1024)
+                    if not isinstance(body, dict) or set(body) != {"image_upload_id"}:
+                        raise ValueError("人物图片导入请求字段无效")
+                    image_data = cli_uploads.load_image_data_url(
+                        body["image_upload_id"], user["username"])
+                else:
+                    body = self._json_body_strict(max_bytes=17 * 1024 * 1024)
+                    if not isinstance(body, dict) or set(body) != {"image_data"}:
+                        raise ValueError("人物图片上传请求字段无效")
+                    image_data = body.get("image_data")
+                miniprogram_security.check_payload({"image_data": image_data})
                 item = pixelle_talking_assets.store_avatar(
-                    user["username"], body.get("image_data"))
+                    user["username"], image_data)
                 return self._send(200, {
                     "asset_id": item["asset_id"],
                     "preview_url": "/api/gen/text-video/avatar/" + item["asset_id"],

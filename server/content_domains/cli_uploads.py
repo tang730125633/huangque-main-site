@@ -535,6 +535,12 @@ def _load_image(upload_id, username, now):
     return base64.b64encode(data).decode("ascii"), meta
 
 
+def load_image_data_url(upload_id, username, now=None):
+    data, meta = _load_image(
+        upload_id, username, int(time.time() if now is None else now))
+    return "data:%s;base64,%s" % (meta["mime"], data)
+
+
 def _load_video(upload_id, username, now):
     upload_id = str(upload_id or "").strip().lower()
     if not VIDEO_UPLOAD_ID_RE.fullmatch(upload_id):

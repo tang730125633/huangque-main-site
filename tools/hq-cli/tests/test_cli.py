@@ -42,7 +42,7 @@ class HqCliTests(unittest.TestCase):
             self.assertEqual(0, code, error)
             self.assertTrue(self.payload(output)["schema"].startswith("hq."))
         code, output, _ = self.invoke(["version"])
-        self.assertEqual("0.10.4", self.payload(output)["cli_version"])
+        self.assertEqual("0.10.5", self.payload(output)["cli_version"])
         self.assertEqual("Huangque main-site CLI", self.payload(output)["product"])
         self.assertEqual("https://huangquechuanmei.com", self.payload(output)["origin"])
 
@@ -84,7 +84,7 @@ class HqCliTests(unittest.TestCase):
             "tryon-fast-generate", "tryon-classic-generate",
             "digital-ip-projects", "digital-ip-project", "digital-ip-report",
             "text-video-capability", "text-video-templates", "text-video-styles", "text-video-voices",
-            "text-video-generate", "pricing",
+            "text-video-avatar-import", "text-video-plan", "text-video-generate", "pricing",
             "inspiration-catalog", "inspiration-likes", "inspiration-like",
             "collect-content", "collect-video", "collect-transcript", "collect-search", "leads-generate",
             "leads-crm", "leads-crm-upsert", "video-avatars", "audio-slots",
@@ -130,6 +130,10 @@ class HqCliTests(unittest.TestCase):
             ["generate", "fixed"],
             by_id["text-video-generate"]["input_schema"]["properties"]["mode"]["enum"],
         )
+        self.assertEqual("assets:upload", by_id["text-video-avatar-import"]["required_scope"])
+        self.assertEqual("generation:quote", by_id["text-video-plan"]["required_scope"])
+        self.assertTrue(by_id["text-video-avatar-import"]["confirmation_required"])
+        self.assertTrue(by_id["text-video-plan"]["confirmation_required"])
         self.assertEqual(
             ["video_asset_id", "audio_asset_id"],
             by_id["video-lipsync"]["input_schema"]["required"],
@@ -226,6 +230,7 @@ class HqCliTests(unittest.TestCase):
             "video-upload": {"cinematic", "tryon"},
             "digital-presenter-capability": {"digitalPresenter"},
             "text-video-capability": {"text_video"}, "text-video-generate": {"text_video"},
+            "text-video-avatar-import": {"text_video"}, "text-video-plan": {"text_video"},
             "digital-ip-projects": {"digital_ip"},
             "pricing": {"pricing.catalog"},
             "inspiration-catalog": {"inspiration.browse"}, "inspiration-like": {"inspiration.like"},
@@ -473,6 +478,8 @@ class HqCliTests(unittest.TestCase):
             "video-compose-review": ('{"project_id":"compose_%s","expected_revision":2,'
                                        '"decisions":{"candidate_%s":"remove"}}' % ("a" * 32, "b" * 16)).encode(),
             "digital-presenter-create": b'{"board_id":"cb_1","request_id":"hqcli-dp-001"}',
+            "text-video-avatar-import": ('{"image_upload_id":"img_%s"}' % ("a" * 32)).encode(),
+            "text-video-plan": b'{"text":"AI training","template":"1080x1920/image_default.html","style":"realistic_commercial","voice":"public:zh-CN-YunjianNeural"}',
         }
         with patch("hq_cli.client.request_json") as request:
             for capability, raw in inputs.items():
@@ -589,6 +596,69 @@ class HqCliTests(unittest.TestCase):
         first, second = request.call_args_list
         self.assertEqual(first.kwargs["body"]["input"], second.kwargs["body"]["input"])
         self.assertEqual("q.text-video", second.kwargs["body"]["quote_token"])
+
+    def test_text_video_full_talking_flow_uses_import_plan_and_scene_selection(self):
+        self.authorize()
+        avatar_id = "local_avatar_" + "c" * 32
+        plan_id = "talking_plan_" + "d" * 32
+        source_hash = "e" * 64
+        base = {
+            "text": "完整文案", "template": "1080x1920/image_default.html",
+            "mode": "fixed", "style": "realistic_commercial",
+            "voice": "public:zh-CN-YunjianNeural", "speech_rate": 1.0,
+        }
+        talking = {
+            "enabled": True, "plan_id": plan_id, "source_hash": source_hash,
+            "ratio": 0.3, "default_avatar_asset_id": avatar_id,
+            "scenes": [
+                {"scene_id": "scene_01", "enabled": True},
+                {"scene_id": "scene_02", "enabled": False},
+            ],
+        }
+        quote = {"quote_token": "q.talking", "cost": 70, "scene_count": 2,
+                 "cost_breakdown": {"scene_count": 2, "total": 70}}
+        with patch("hq_cli.client.request_json", side_effect=[
+                (200, {"asset_id": avatar_id}),
+                (200, {"plan_id": plan_id, "source_hash": source_hash, "scenes": talking["scenes"]}),
+                (200, quote), (200, {"job_id": 93, "cost": 70})]) as request:
+            code, _, error = self.invoke([
+                "run", "text-video-avatar-import", "--input", "@-", "--confirm",
+            ], ('{"image_upload_id":"img_%s"}' % ("a" * 32)).encode())
+            self.assertEqual(0, code, error)
+            code, _, error = self.invoke([
+                "run", "text-video-plan", "--input", "@-", "--confirm",
+            ], json.dumps(dict(base, ratio=0.3), ensure_ascii=False).encode())
+            self.assertEqual(0, code, error)
+            payload = dict(base, talking_material=talking)
+            raw = json.dumps(payload, ensure_ascii=False).encode()
+            code, _, error = self.invoke([
+                "run", "text-video-generate", "--input", "@-"], raw)
+            self.assertEqual(0, code, error)
+            code, output, error = self.invoke([
+                "run", "text-video-generate", "--input", "@-", "--confirm",
+                "--quote-token", "q.talking"], raw)
+        self.assertEqual(0, code, error)
+        self.assertEqual(93, self.payload(output)["result"]["job_id"])
+        calls = request.call_args_list
+        self.assertEqual("text-video-avatar-import", calls[0].kwargs["body"]["action"])
+        self.assertEqual("text-video-plan", calls[1].kwargs["body"]["action"])
+        self.assertEqual(talking, calls[2].kwargs["body"]["input"]["talking_material"])
+        self.assertEqual(calls[2].kwargs["body"]["input"], calls[3].kwargs["body"]["input"])
+
+    def test_text_video_talking_input_is_rejected_locally_when_incomplete(self):
+        self.authorize()
+        payload = {
+            "text": "完整文案", "template": "1080x1920/image_default.html",
+            "style": "realistic_commercial", "voice": "public:zh-CN-YunjianNeural",
+            "talking_material": {"enabled": True},
+        }
+        with patch("hq_cli.client.request_json") as request:
+            code, _, error = self.invoke([
+                "run", "text-video-generate", "--input", "@-"],
+                json.dumps(payload, ensure_ascii=False).encode())
+        self.assertEqual(cli.EXIT_INPUT, code)
+        self.assertEqual("input_error", self.payload(error)["error"])
+        request.assert_not_called()
 
     def test_canvas_agent_plan_uses_paid_flow_without_auto_writing(self):
         self.authorize()
