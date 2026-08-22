@@ -267,7 +267,7 @@ print_manifest() {
 }
 
 apply_deploy() {
-  local commit="$1" plan="$2" stage="$3" manifest="$4" list="$5" run upload requirements_hash="" wheelhouse="" cache_root cache_dir cache_tmp
+  local commit="$1" plan="$2" stage="$3" manifest="$4" list="$5" run upload requirements_hash="" wheelhouse="" chromium_archive="" cache_root cache_dir cache_tmp
   run="$(date -u +%Y%m%dT%H%M%SZ)-${commit:0:12}-${plan:0:12}"
   upload="$UPLOAD_ROOT/$run"
   ssh "$REMOTE" "umask 077; mkdir -p '$upload'"
@@ -301,6 +301,11 @@ apply_deploy() {
       test -d "$wheelhouse" || die "SHIP_ZELONG_WHEELHOUSE 不是目录"
       test -f "$wheelhouse/.complete" || die "泽龙 Hermes wheelhouse 未完成"
       rsync -a "$wheelhouse/" "$REMOTE:$upload/wheelhouse/"
+    fi
+    chromium_archive="${SHIP_ZELONG_CHROMIUM_ARCHIVE:-}"
+    if test -n "$chromium_archive"; then
+      test -f "$chromium_archive" || die "SHIP_ZELONG_CHROMIUM_ARCHIVE 不是文件"
+      rsync -a "$chromium_archive" "$REMOTE:$upload/chromium.zip"
     fi
   fi
   if ! ssh "$REMOTE" bash -s -- "$run" "$commit" "$plan" "$upload" "$DOMAIN" "$BACKUP_ROOT" "$STATE_ROOT" "$requirements_hash" <<'REMOTE'; then
@@ -385,6 +390,7 @@ if test "$need_leadgen" = 1; then
 fi
 if test "$need_hermes" = 1; then
   test -n "$requirements_hash"
+  requirements_changed=0
   sudo install -d -o ubuntu -g ubuntu -m 0700 /home/ubuntu/hermes-preview-data
   sudo install -d -o ubuntu -g ubuntu -m 0755 /home/ubuntu/hermes-preview-deps /home/ubuntu/hermes-preview/bin
   if ! sudo test -f /home/ubuntu/hermes-preview/.requirements-sha \
@@ -398,8 +404,28 @@ if test "$need_hermes" = 1; then
       --no-index --find-links "$wheel_cache" --upgrade \
       --target /home/ubuntu/hermes-preview-deps \
       -r /home/ubuntu/hermes-preview/preview-requirements.txt
-    sudo -u ubuntu env PYTHONPATH=/home/ubuntu/hermes-preview-deps \
-      /usr/bin/python3 -m playwright install chromium
+    requirements_changed=1
+  fi
+  browser_path="$(sudo -u ubuntu env PYTHONPATH=/home/ubuntu/hermes-preview-deps \
+    /usr/bin/python3 -c 'from playwright.sync_api import sync_playwright; p=sync_playwright().start(); print(p.chromium.executable_path); p.stop()' \
+    2>/dev/null | head -1)"
+  if ! sudo test -x "$browser_path"; then
+    if test -f "$upload/chromium.zip"; then
+      browser_root="$(dirname "$(dirname "$browser_path")")"
+      sudo install -d -o ubuntu -g ubuntu -m 0755 "$browser_root"
+      sudo /usr/bin/python3 - "$upload/chromium.zip" "$browser_root" <<'PY'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as archive:
+    archive.extractall(sys.argv[2])
+PY
+      sudo chown -R ubuntu:ubuntu "$browser_root"
+    else
+      sudo -u ubuntu env PYTHONPATH=/home/ubuntu/hermes-preview-deps \
+        /usr/bin/python3 -m playwright install chromium
+    fi
+  fi
+  sudo test -x "$browser_path"
+  if test "$requirements_changed" = 1; then
     sudo sh -c "printf '%s\n' '$requirements_hash' > /home/ubuntu/hermes-preview/.requirements-sha"
     sudo chown ubuntu:ubuntu /home/ubuntu/hermes-preview/.requirements-sha
   fi
