@@ -245,6 +245,12 @@ def handle_quote(handler, path, verify, must_change_password, is_shutting_down,
             if str(payload.get("mode") or "") == "lipsync":
                 payload = video.validate_video_payload(payload, user["username"])
             else:
+                image_upload = bool(payload.get("image_upload_id"))
+                audio_upload = bool(payload.get("audio_upload_id"))
+                if payload.get("image_data") and not image_upload:
+                    raise ValueError("CLI 数字人口播仅支持本人形象或私密上传照片")
+                if payload.get("audio_data") and not audio_upload:
+                    raise ValueError("CLI 数字人口播仅支持本人资产音频或私密上传音频")
                 payload = cli_uploads.expand_talking_media_payload(payload, user["username"])
                 if payload.get("bgm_data"):
                     raise ValueError("CLI 数字人口播不支持 BGM")
