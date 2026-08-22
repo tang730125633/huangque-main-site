@@ -805,14 +805,14 @@ assert audio_public["schema"]["properties"]["voice"]["oneOf"][1] == {
 assert audio_public_selected["options"] == {"voice": "public-demo", "speed": 0.9}, audio_public_selected
 assert video["schema"]["required"] == ["avatar_id", "voice"], video
 assert video["schema"]["properties"]["avatar_id"]["oneOf"] == [
-    {"const": 7, "title": "我的形象 7", "preview_url": "https://media.example/avatar-7.jpg", "preview_kind": "image", "source": "personal"},
+    {"const": 7, "title": "我的形象 7", "preview_url": "https://media.example/avatar-7.jpg", "preview_kind": "image", "source": "personal", "recommended": True},
     {"const": 8, "title": "我的形象 8", "preview_url": "https://media.example/avatar-8.jpg", "preview_kind": "image", "source": "personal"},
     {"const": 9, "title": "我的形象 9", "preview_url": "https://media.example/avatar-9.jpg", "preview_kind": "image", "source": "personal"},
 ], video
 assert video["schema"]["properties"]["voice"]["oneOf"] == [{
     "const": "voice-demo", "title": "我的声音",
     "preview_url": "https://media.example/voice-demo.mp3",
-    "preview_kind": "audio", "source": "personal",
+    "preview_kind": "audio", "source": "personal", "recommended": True,
 }], video
 assert public_blocked["status"] == "blocked_prerequisite", public_blocked
 assert "当前账号的可选范围" in public_blocked["validation_error"], public_blocked
@@ -821,6 +821,12 @@ assert [item["const"] for item in public_allowed["schema"]["properties"]["voice"
 ], public_allowed
 assert public_allowed["status"] == "draft", public_allowed
 legacy = prepare("video")
+assert legacy["status"] == "draft", legacy
+assert legacy["options"] == {"avatar_id": 7, "voice": "voice-demo"}, legacy
+assert legacy["missing"] == [], legacy
+assert legacy["material_request_message"]["production_id"] == legacy["production_id"], legacy
+assert "本条消息下方" in legacy["material_request_message"]["content"], legacy
+assert "右侧生产画布" not in legacy["material_request_message"]["content"], legacy
 legacy_id = legacy["production_id"]
 legacy_convo = server.load_conversation(cid)
 legacy_record = legacy_convo["productions"][legacy_id]
@@ -837,8 +843,8 @@ assert refreshed.status_code == 200, refreshed.get_data(as_text=True)
 refreshed_record = next(
     item for item in refreshed.get_json()["productions"] if item["id"] == legacy_id
 )
-assert refreshed_record["material_context_version"] == 4, refreshed_record
-assert refreshed_record["options"] == {"avatar_id": 7}, refreshed_record
+assert refreshed_record["material_context_version"] == 5, refreshed_record
+assert refreshed_record["options"] == {"avatar_id": 7, "voice": "voice-demo"}, refreshed_record
 assert [item["const"] for item in refreshed_record["parameter_schema"]["properties"]["voice"]["oneOf"]] == [
     "voice-demo",
 ], refreshed_record
