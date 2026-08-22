@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 """Pixelle text-to-video adapter for the authenticated content job pipeline."""
 
+import base64
+import hashlib
+import hmac
 import json
 import math
 import os
@@ -66,10 +69,14 @@ DEFAULT_TALKING_RATIO = 0.3
 MIN_TALKING_RATIO = 0.1
 MAX_TALKING_RATIO = 0.5
 _BASE_NARRATION_CHARS_PER_SECOND = 4.0
+_TARGET_SCENE_SECONDS = 6.0
+_MIN_SCENE_SECONDS = 3.0
+_MAX_SCENE_SECONDS = 9.0
 _PLAN_RATE_WINDOW_SECONDS = 60.0
 _PLAN_RATE_MAX_REQUESTS = 6
 _PLAN_RATE_REQUESTS = {}
 _PLAN_RATE_LOCK = threading.Lock()
+_QUOTE_TTL_SECONDS = 600
 _PUBLIC_VOICE_RE = re.compile(r"^zh-CN(?:-[a-z]+)?-[A-Za-z]+Neural$")
 _PUBLIC_VOICE_NAMES = {
     "zh-CN-XiaoxiaoNeural": "女声-温柔（晓晓）",
@@ -329,9 +336,171 @@ def public_voices(username):
     return items
 
 
-def _fixed_segments(text):
+def _narration_units(text):
+    return len(re.findall(r"[\u3400-\u9fffA-Za-z0-9]", str(text or "")))
+
+
+def _split_after_boundaries(text, boundaries):
+    parts = []
+    start = 0
+    for index, char in enumerate(text):
+        if char in boundaries:
+            parts.append(text[start:index + 1])
+            start = index + 1
+    if start < len(text):
+        parts.append(text[start:])
+    return [part for part in parts if part]
+
+
+def _hard_split_scene(text, target_units):
+    parts = []
+    current = []
+    units = 0
+    for char in text:
+        char_units = 1 if re.match(r"[\u3400-\u9fffA-Za-z0-9]", char) else 0
+        if current and char_units and units >= target_units:
+            parts.append("".join(current))
+            current = []
+            units = 0
+        current.append(char)
+        units += char_units
+    if current:
+        parts.append("".join(current))
+    return parts
+
+
+def _paragraph_scene_fragments(text, target_units, max_units):
+    sentence_boundaries = frozenset("。！？!?；;：:\n")
+    clause_boundaries = frozenset("，,、")
+    fragments = []
+    for sentence in _split_after_boundaries(text, sentence_boundaries):
+        if _narration_units(sentence) <= max_units:
+            fragments.append(sentence)
+            continue
+        for clause in _split_after_boundaries(sentence, clause_boundaries):
+            if _narration_units(clause) <= max_units:
+                fragments.append(clause)
+            else:
+                fragments.extend(_hard_split_scene(clause, target_units))
+    return fragments
+
+
+def _pack_scene_fragments(fragments, target_units, min_units, max_units):
+    packed = []
+    current = ""
+    for fragment in fragments:
+        if not current:
+            current = fragment
+            continue
+        current_units = _narration_units(current)
+        combined = current + fragment
+        combined_units = _narration_units(combined)
+        if combined_units > max_units or (
+            current_units >= min_units
+            and abs(current_units - target_units) <= abs(combined_units - target_units)
+        ):
+            packed.append(current)
+            current = fragment
+        else:
+            current = combined
+    if current:
+        if (packed and _narration_units(current) < min_units
+                and _narration_units(packed[-1] + current) <= max_units):
+            packed[-1] += current
+        else:
+            packed.append(current)
+    return packed
+
+
+def _rebalance_short_segments(segments, min_units, max_units):
+    balanced = list(segments)
+    index = 0
+    while len(balanced) > 1 and index < len(balanced):
+        if _narration_units(balanced[index]) >= min_units:
+            index += 1
+            continue
+        if index == 0:
+            neighbor = 1
+        elif index == len(balanced) - 1:
+            neighbor = index - 1
+        else:
+            left_units = _narration_units(balanced[index - 1])
+            right_units = _narration_units(balanced[index + 1])
+            neighbor = index - 1 if left_units <= right_units else index + 1
+        start = min(index, neighbor)
+        combined = balanced[start] + balanced[start + 1]
+        combined_units = _narration_units(combined)
+        if combined_units <= max_units:
+            balanced[start:start + 2] = [combined]
+        else:
+            target = max(min_units, math.ceil(combined_units / 2))
+            balanced[start:start + 2] = _hard_split_scene(combined, target)
+        index = max(0, start - 1)
+    return balanced
+
+
+def _allocate_paragraph_scene_slots(paragraph_segments, maximum):
+    slots = [1] * len(paragraph_segments)
+    while sum(slots) < maximum:
+        candidates = [
+            index for index, segments in enumerate(paragraph_segments)
+            if slots[index] < len(segments)
+        ]
+        if not candidates:
+            break
+        selected = max(
+            candidates,
+            key=lambda index: (
+                _narration_units("".join(paragraph_segments[index]))
+                / slots[index],
+                -index,
+            ),
+        )
+        slots[selected] += 1
+    return slots
+
+
+def _limit_auto_scene_count(paragraph_segments, maximum=20):
+    if sum(len(segments) for segments in paragraph_segments) <= maximum:
+        return [segment for segments in paragraph_segments for segment in segments]
+    slots = _allocate_paragraph_scene_slots(paragraph_segments, maximum)
+    limited = []
+    for segments, count in zip(paragraph_segments, slots):
+        text = "".join(segments)
+        units = _narration_units(text)
+        if len(segments) <= count or units <= 0:
+            limited.extend(segments)
+            continue
+        limited.extend(_hard_split_scene(text, math.ceil(units / count)))
+    return limited
+
+
+def _fixed_segments(text, speech_rate=1.0):
     normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
-    return [part.strip() for part in re.split(r"\n\s*\n", normalized) if part.strip()]
+    target_units = max(1, round(
+        _BASE_NARRATION_CHARS_PER_SECOND * speech_rate * _TARGET_SCENE_SECONDS
+    ))
+    min_units = max(1, round(
+        _BASE_NARRATION_CHARS_PER_SECOND * speech_rate * _MIN_SCENE_SECONDS
+    ))
+    max_units = max(target_units, round(
+        _BASE_NARRATION_CHARS_PER_SECOND * speech_rate * _MAX_SCENE_SECONDS
+    ))
+    paragraph_segments = []
+    for paragraph in re.split(r"\n\s*\n", normalized):
+        paragraph = paragraph.strip()
+        if not paragraph:
+            continue
+        fragments = _paragraph_scene_fragments(
+            paragraph, target_units, max_units
+        )
+        packed = _pack_scene_fragments(
+            fragments, target_units, min_units, max_units
+        )
+        paragraph_segments.append(_rebalance_short_segments(
+            packed, min_units, max_units
+        ))
+    return _limit_auto_scene_count(paragraph_segments)
 
 
 def _style_key(payload):
@@ -380,18 +549,29 @@ def prepare_payload(payload, username=""):
     mode = str(body.get("mode") or "generate").strip()
     if mode not in {"generate", "fixed"}:
         raise ValueError("请选择主题创作或完整文案")
+    speech_rate = _speech_rate(body)
     if mode == "fixed":
-        segments = _fixed_segments(raw_text)
+        normalized = raw_text.replace("\r\n", "\n").replace("\r", "\n")
+        paragraphs = [
+            part.strip() for part in re.split(r"\n\s*\n", normalized)
+            if part.strip()
+        ]
+        source_text = "\n\n".join(paragraphs)
+        if len(source_text) < 2:
+            raise ValueError("请输入至少 2 个字的主题或文案")
+        if len(source_text) > 1000:
+            raise ValueError("文案不能超过 1000 个字")
+        if len(paragraphs) > 20:
+            raise ValueError("完整文案最多支持 20 个段落，请合并后再提交")
+        segments = _fixed_segments(source_text, speech_rate)
         text = "\n\n".join(segments)
     else:
         text = re.sub(r"\s+", " ", raw_text).strip()
         segments = [text] if text else []
-    if len(text) < 2:
-        raise ValueError("请输入至少 2 个字的主题或文案")
-    if len(text) > 1000:
-        raise ValueError("文案不能超过 1000 个字")
-    if mode == "fixed" and len(segments) > 20:
-        raise ValueError("完整文案最多支持 20 个段落，请合并后再提交")
+        if len(text) < 2:
+            raise ValueError("请输入至少 2 个字的主题或文案")
+        if len(text) > 1000:
+            raise ValueError("文案不能超过 1000 个字")
     template = str(body.get("template") or "1080x1920/image_default.html").strip()
     if template not in TEMPLATE_KEYS:
         raise ValueError("请选择有效的视频模板")
@@ -405,14 +585,71 @@ def prepare_payload(payload, username=""):
         "mode": mode,
         "template": template,
         "style": style,
-        "speech_rate": _speech_rate(body),
+        "speech_rate": speech_rate,
         "n_scenes": scene_count,
         "scenes": [{"line": line} for line in segments],
     }
     prepared.update(_freeze_voice(body, username))
+    quote_token = str(body.get("quote_token") or "").strip()
+    if quote_token:
+        prepared["_quote_token"] = quote_token
     prepared["talking_material"] = _prepare_talking_material(
         body.get("talking_material"), prepared, username)
     return prepared
+
+
+def _quote_fingerprint(payload):
+    safe = {
+        key: value for key, value in dict(payload or {}).items()
+        if key not in {"_quote_token", "_quoted_cost"}
+    }
+    encoded = json.dumps(
+        safe, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def issue_quote(payload, username, cost, secret, now=None):
+    if not secret:
+        raise RuntimeError("文案成片报价服务未配置")
+    issued_at = int(time.time() if now is None else now)
+    claim = {
+        "v": 1,
+        "u": str(username),
+        "c": int(cost),
+        "h": _quote_fingerprint(payload),
+        "exp": issued_at + _QUOTE_TTL_SECONDS,
+    }
+    raw = json.dumps(claim, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    encoded = base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+    signature = hmac.new(
+        str(secret).encode("utf-8"), encoded.encode("ascii"), hashlib.sha256
+    ).hexdigest()
+    return encoded + "." + signature, claim["exp"]
+
+
+def require_confirmed_quote(token, payload, username, cost, secret, now=None):
+    if not token or not secret:
+        raise ValueError("请先获取并确认本次分镜报价")
+    try:
+        encoded, signature = str(token).split(".", 1)
+        expected = hmac.new(
+            str(secret).encode("utf-8"), encoded.encode("ascii"), hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            raise ValueError
+        padded = encoded + "=" * (-len(encoded) % 4)
+        claim = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+    except Exception as exc:
+        raise ValueError("报价凭证无效，请重新报价") from exc
+    current = int(time.time() if now is None else now)
+    if int(claim.get("exp") or 0) < current:
+        raise ValueError("报价已过期，请重新报价")
+    if (claim.get("u") != str(username)
+            or int(claim.get("c") or -1) != int(cost)
+            or claim.get("h") != _quote_fingerprint(payload)):
+        raise ValueError("分镜或价格已变化，请重新报价")
+    return True
 
 
 def _prepare_talking_material(raw, prepared, username):
@@ -604,7 +841,7 @@ def _recommended_scene_ids(scenes, ratio):
 
 
 def _estimated_scene_duration(text, speech_rate):
-    units = len(re.findall(r"[\u3400-\u9fffA-Za-z0-9]", str(text or "")))
+    units = _narration_units(text)
     seconds = max(0.5, units / (_BASE_NARRATION_CHARS_PER_SECOND * speech_rate))
     return float(Decimal(str(seconds)).quantize(
         Decimal("0.1"), rounding=ROUND_HALF_UP))
@@ -615,7 +852,7 @@ def plan_talking_scenes(payload, username):
     ratio = _talking_ratio(payload)
     prepared = prepare_payload(payload, username)
     if prepared["mode"] == "fixed":
-        lines = _fixed_segments(prepared["text"])
+        lines = _fixed_segments(prepared["text"], prepared["speech_rate"])
     else:
         lines = _personal_narrations(prepared)
     if not lines:

@@ -60,6 +60,7 @@ load_ip12_preview() {
   files+=(
     deploy/zelong/hermes-ip12-preview.service
     deploy/zelong/hermes-ip12-preview-requirements.txt
+    deploy/zelong/hermes-preview-cli
     deploy/zelong/nginx-hermes-ip12-preview.conf
     deploy/zelong/run-hermes-ip12-preview.sh
   )
@@ -132,6 +133,8 @@ map_path() {
       printf '25|/home/ubuntu/hermes-preview/run-preview.sh|hermes|0\n' ;;
     deploy/zelong/hermes-ip12-preview-requirements.txt)
       printf '25|/home/ubuntu/hermes-preview/preview-requirements.txt|hermes|0\n' ;;
+    deploy/zelong/hermes-preview-cli)
+      printf '25|/home/ubuntu/hermes-preview/bin/hermes-preview-cli|hermes|0\n' ;;
     deploy/zelong/nginx-hermes-ip12-preview.conf)
       printf '35|/etc/nginx/snippets/hermes-ip12-preview.conf|hermes|0\n' ;;
     deploy/zelong/hermes-ip12-preview.service)
@@ -231,7 +234,7 @@ make_manifest() {
 $mapped
 EOF
     case "$path" in
-      server/content_domains/__init__.py|server/content_domains/cos.py|server/content_domains/miniprogram_security.py|server/content_domains/pricing.py|server/content_domains/error_contract.py)
+      server/content_domains/__init__.py|server/content_domains/cos.py|server/content_domains/miniprogram_security.py|server/content_domains/pricing.py|server/content_domains/error_contract.py|server/content_domains/feature_flags.py)
         rest="${path#server/content_domains/}"
         printf '10\t%s\t/home/ubuntu/auth-service/content_domains/%s\t%s\tauth\t0\n' "$path" "$rest" "$hash" >>"$out" ;;
     esac
@@ -270,16 +273,51 @@ print_manifest() {
 }
 
 apply_deploy() {
-  local commit="$1" plan="$2" stage="$3" manifest="$4" list="$5" run upload
+  local commit="$1" plan="$2" stage="$3" manifest="$4" list="$5" run upload requirements_hash="" wheelhouse="" chromium_archive="" cache_root cache_dir cache_tmp
   run="$(date -u +%Y%m%dT%H%M%SZ)-${commit:0:12}-${plan:0:12}"
   upload="$UPLOAD_ROOT/$run"
   ssh "$REMOTE" "umask 077; mkdir -p '$upload'"
   rsync -a --files-from="$list" "$stage/" "$REMOTE:$upload/"
   rsync -a "$manifest" "$REMOTE:$upload/manifest.tsv"
-  if ! ssh "$REMOTE" bash -s -- "$run" "$commit" "$plan" "$upload" "$DOMAIN" "$BACKUP_ROOT" "$STATE_ROOT" <<'REMOTE'; then
+  if awk -F "$(printf '\t')" '$5 == "hermes" { found=1 } END { exit !found }' "$manifest"; then
+    requirements_hash="$(sha256_file "$stage/server/hermes_ip12/requirements.txt")"
+    if ! ssh "$REMOTE" "sudo test -f /home/ubuntu/hermes-preview/.requirements-sha && test \"\$(sudo cat /home/ubuntu/hermes-preview/.requirements-sha)\" = '$requirements_hash'"; then
+      wheelhouse="${SHIP_ZELONG_WHEELHOUSE:-}"
+      if test -z "$wheelhouse"; then
+        cache_root="${SHIP_ZELONG_CACHE_DIR:-${TMPDIR:-/tmp}/huangque-ship-zelong-cache}"
+        cache_dir="$cache_root/$requirements_hash"
+        if ! test -f "$cache_dir/.complete"; then
+          mkdir -p "$cache_root"
+          cache_tmp="$(mktemp -d "$cache_root/.wheels.XXXXXX")"
+          python3 -m pip download --dest "$cache_tmp" \
+            --platform manylinux_2_28_x86_64 \
+            --platform manylinux2014_x86_64 \
+            --platform manylinux_2_17_x86_64 \
+            --python-version 310 --implementation cp \
+            --abi cp310 --abi abi3 --abi none --only-binary=:all: \
+            -r "$stage/server/hermes_ip12/requirements.txt" \
+            'async-timeout>=4,<6' 'exceptiongroup>=1.0.2'
+          touch "$cache_tmp/.complete"
+          if ! mv "$cache_tmp" "$cache_dir" 2>/dev/null; then
+            test -f "$cache_dir/.complete" || die "无法建立泽龙 Hermes wheel 缓存"
+          fi
+        fi
+        wheelhouse="$cache_dir"
+      fi
+      test -d "$wheelhouse" || die "SHIP_ZELONG_WHEELHOUSE 不是目录"
+      test -f "$wheelhouse/.complete" || die "泽龙 Hermes wheelhouse 未完成"
+      rsync -a "$wheelhouse/" "$REMOTE:$upload/wheelhouse/"
+    fi
+    chromium_archive="${SHIP_ZELONG_CHROMIUM_ARCHIVE:-}"
+    if test -n "$chromium_archive"; then
+      test -f "$chromium_archive" || die "SHIP_ZELONG_CHROMIUM_ARCHIVE 不是文件"
+      rsync -a "$chromium_archive" "$REMOTE:$upload/chromium.zip"
+    fi
+  fi
+  if ! ssh "$REMOTE" bash -s -- "$run" "$commit" "$plan" "$upload" "$DOMAIN" "$BACKUP_ROOT" "$STATE_ROOT" "$requirements_hash" <<'REMOTE'; then
 set -euo pipefail
-run="$1"; commit="$2"; plan="$3"; upload="$4"; domain="$5"; backup_root="$6"; state_root="$7"
-case "$run$commit$plan" in *[!A-Za-z0-9._-]*) exit 2;; esac
+run="$1"; commit="$2"; plan="$3"; upload="$4"; domain="$5"; backup_root="$6"; state_root="$7"; requirements_hash="$8"
+case "$run$commit$plan$requirements_hash" in *[!A-Za-z0-9._-]*) exit 2;; esac
 test "$domain" = "zelong.huangquechuanmei.com"
 manifest="$upload/manifest.tsv"; backup="$backup_root/$run"
 test -f "$manifest"
@@ -361,9 +399,60 @@ if test "$need_admin" = 1; then
   sudo -u ubuntu bash -c 'cd /home/ubuntu/content-api && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -c "import admin_api"'
 fi
 if test "$need_hermes" = 1; then
+  test -n "$requirements_hash"
+  requirements_changed=0
   sudo install -d -o ubuntu -g ubuntu -m 0700 /home/ubuntu/hermes-preview-data
-  sudo install -d -o ubuntu -g ubuntu -m 0755 /home/ubuntu/hermes-preview-deps
-  sudo -u ubuntu /usr/bin/python3 -m pip install --disable-pip-version-check --upgrade --target /home/ubuntu/hermes-preview-deps -r /home/ubuntu/hermes-preview/preview-requirements.txt
+  sudo install -d -o ubuntu -g ubuntu -m 0755 /home/ubuntu/hermes-preview-deps /home/ubuntu/hermes-preview/bin
+  if ! sudo test -f /home/ubuntu/hermes-preview/.requirements-sha \
+      || test "$(sudo cat /home/ubuntu/hermes-preview/.requirements-sha 2>/dev/null || true)" != "$requirements_hash"; then
+    test -d "$upload/wheelhouse"
+    wheel_cache="/home/ubuntu/hermes-preview/wheelhouse/$requirements_hash"
+    sudo install -d -o ubuntu -g ubuntu -m 0755 "$wheel_cache"
+    sudo cp -a "$upload/wheelhouse/." "$wheel_cache/"
+    sudo chown -R ubuntu:ubuntu "$wheel_cache"
+    sudo -u ubuntu /usr/bin/python3 -m pip install --disable-pip-version-check \
+      --no-index --find-links "$wheel_cache" --upgrade \
+      --target /home/ubuntu/hermes-preview-deps \
+      -r /home/ubuntu/hermes-preview/preview-requirements.txt
+    requirements_changed=1
+  fi
+  browser_path="$(sudo -u ubuntu env PYTHONPATH=/home/ubuntu/hermes-preview-deps \
+    /usr/bin/python3 -c 'from playwright.sync_api import sync_playwright; p=sync_playwright().start(); print(p.chromium.executable_path); p.stop()' \
+    2>/dev/null | head -1)"
+  if ! sudo test -x "$browser_path"; then
+    if test -f "$upload/chromium.zip"; then
+      browser_root="$(dirname "$(dirname "$browser_path")")"
+      sudo install -d -o ubuntu -g ubuntu -m 0755 "$browser_root"
+      sudo /usr/bin/python3 - "$upload/chromium.zip" "$browser_root" <<'PY'
+import os, pathlib, sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as archive:
+    root = pathlib.Path(sys.argv[2])
+    for member in archive.infolist():
+        archive.extract(member, root)
+        mode = (member.external_attr >> 16) & 0o777
+        if mode:
+            os.chmod(root / member.filename, mode)
+PY
+      sudo chown -R ubuntu:ubuntu "$browser_root"
+    else
+      sudo -u ubuntu env PYTHONPATH=/home/ubuntu/hermes-preview-deps \
+        /usr/bin/python3 -m playwright install chromium
+    fi
+  fi
+  sudo test -x "$browser_path"
+  if ! sudo test -f /home/ubuntu/hermes-preview/.playwright-system-deps; then
+    sudo env PYTHONPATH=/home/ubuntu/hermes-preview-deps \
+      /usr/bin/python3 -m playwright install-deps chromium
+    sudo sh -c "printf '%s\n' 'chromium' > /home/ubuntu/hermes-preview/.playwright-system-deps"
+    sudo chown ubuntu:ubuntu /home/ubuntu/hermes-preview/.playwright-system-deps
+  fi
+  if test "$requirements_changed" = 1; then
+    sudo sh -c "printf '%s\n' '$requirements_hash' > /home/ubuntu/hermes-preview/.requirements-sha"
+    sudo chown ubuntu:ubuntu /home/ubuntu/hermes-preview/.requirements-sha
+  fi
+  sudo chmod 0755 /home/ubuntu/hermes-preview/bin/hermes-preview-cli
+  sudo ln -sfn hermes-preview-cli /home/ubuntu/hermes-preview/bin/edge-tts
+  sudo ln -sfn hermes-preview-cli /home/ubuntu/hermes-preview/bin/yt-dlp
   sudo sh -c "printf '%s\n' '$commit' > /home/ubuntu/hermes-preview/.ip12-release-sha"
   sudo chown ubuntu:ubuntu /home/ubuntu/hermes-preview/.ip12-release-sha
   sudo /usr/bin/python3 - /etc/nginx/sites-available/huangquechuanmei <<'PY'

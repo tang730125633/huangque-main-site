@@ -959,6 +959,9 @@ class HQCLIContentTests(unittest.TestCase):
             "template": "1080x1920/image_default.html", "n_scenes": 1,
             "scenes": [{"line": "AI 培训"}],
         }
+        quote_token, _ = pixelle_video.issue_quote(
+            prepared, "alice", 24, core.AUTH_INTERNAL_TOKEN)
+        prepared_with_quote = dict(prepared, _quote_token=quote_token)
 
         def create_job(*args, **_kwargs):
             created.append(args[6])
@@ -976,9 +979,12 @@ class HQCLIContentTests(unittest.TestCase):
                 mock.patch.object(pixelle_video, "paid_plan_association", return_value=None), \
                 mock.patch.object(
                     script_to_video, "prepare_script_to_video_payload",
-                    side_effect=[prepared, AssertionError("replay reached mutable plan validation")],
+                    side_effect=[prepared_with_quote, AssertionError("replay reached mutable plan validation")],
                 ) as prepare:
-            request = {"pipeline": "pixelle", "text": "AI 培训"}
+            request = {
+                "pipeline": "pixelle", "text": "AI 培训",
+                "quote_token": quote_token,
+            }
             status, first = self._post(
                 "/api/gen/script_to_video", request, expected=24,
                 idempotency_key="script-video-lost-response-001",
