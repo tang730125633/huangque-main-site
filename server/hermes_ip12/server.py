@@ -1786,6 +1786,17 @@ def _render_foundation_pdf(content, browsers, root):
                 zooms.extend(_foundation_zoom_candidates(page_count))
     raise RuntimeError("PDF renderer failed") from last_error
 
+
+def _render_foundation_pdf_resilient(content, browsers, root):
+    if browsers:
+        try:
+            return _render_foundation_pdf(content, browsers, root)
+        except RuntimeError:
+            pass
+    from pdf_fallback import render_foundation_pdf_fallback
+    return render_foundation_pdf_fallback(content, root / "report-fallback.pdf")
+
+
 def generate_foundation_report(convo_id):
     target = FOUNDATION_REPORTS_DIR / (convo_id + ".pdf")
     with CONVERSATION_STATE_LOCK:
@@ -1854,11 +1865,7 @@ def generate_foundation_report(convo_id):
     ) if item and pathlib.Path(item).is_file()))
     with tempfile.TemporaryDirectory(prefix="hermes-foundation-", dir=str(pathlib.Path.home())) as directory:
         root = pathlib.Path(directory)
-        if browsers:
-            pdf_path = _render_foundation_pdf(content, browsers, root)
-        else:
-            from pdf_fallback import render_foundation_pdf_fallback
-            pdf_path = render_foundation_pdf_fallback(content, root / "report-fallback.pdf")
+        pdf_path = _render_foundation_pdf_resilient(content, browsers, root)
         _validate_foundation_pdf(pdf_path)
         staged_target = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
         try:
