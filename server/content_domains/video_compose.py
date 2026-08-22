@@ -211,7 +211,7 @@ def _default_render_input(project, body):
     headlines = body.get("headlines") if isinstance(body.get("headlines"), list) else []
     brand = body.get("brand") if isinstance(body.get("brand"), dict) else {}
     return {
-        "template_id": renderer.TEMPLATE_ID,
+        "template_id": renderer.normalize_template_id(body.get("template_id")),
         "template_version": renderer.TEMPLATE_VERSION,
         "duration_ms": int(project["edl"]["output_duration_ms"]),
         "cues": cues, "hook": hook, "headlines": headlines, "brand": brand,
@@ -233,7 +233,8 @@ def _record_output_asset(asset_db_factory, username, output_rel, render_input):
                 phase,model,status,error,created_at,updated_at)
                VALUES(NULL,?,'video_compose',?,NULL,?,'1080p','9:16','template',
                       'completed',?,'done',NULL,?,?)""",
-            (str(username), str(output_rel), title[:8000], renderer.TEMPLATE_ID, now, now),
+            (str(username), str(output_rel), title[:8000],
+             render_input.get("template_id") or renderer.TEMPLATE_ID, now, now),
         )
         connection.commit()
         return int(cursor.lastrowid)
@@ -254,7 +255,7 @@ def _run_render(username, project_id, expected_revision, render_input,
         folder = pathlib.Path(out_dir) / "video-compose" / owner_hash
         folder.mkdir(parents=True, exist_ok=True)
         clean_path = folder / (project_id + "-clean.mp4")
-        output_path = folder / (project_id + "-viral-v1.mp4")
+        output_path = folder / (project_id + "-" + render_input["template_id"] + ".mp4")
         media.build_clean_master(source_path, current["edl"], clean_path)
         rendered = renderer.render(clean_path, render_input, output_path)
         quality = {"template_id": rendered["template_id"],
@@ -289,7 +290,7 @@ def _run_render(username, project_id, expected_revision, render_input,
 
 def _render_project(handler, user, project_id, asset_db_factory, source_resolver, out_dir):
     body = _body(handler)
-    _only(body, {"expected_revision", "hook", "headlines", "brand"})
+    _only(body, {"expected_revision", "hook", "headlines", "brand", "template_id"})
     expected_revision = _revision(body.get("expected_revision"))
     current = store.get_project(user["username"], project_id)
     if current["status"] == "completed" and current.get("output_file"):

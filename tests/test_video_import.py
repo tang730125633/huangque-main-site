@@ -19,7 +19,8 @@ class H3VideoImportTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.db = self.root / "assets.db"
-        with sqlite3.connect(self.db) as c:
+        c = sqlite3.connect(self.db)
+        try:
             c.execute("""CREATE TABLE video_assets(
                 id INTEGER PRIMARY KEY, job_id INTEGER UNIQUE, username TEXT NOT NULL, mode TEXT NOT NULL,
                 image_file TEXT, audio_file TEXT, reference_video_file TEXT, video_file TEXT, video_url TEXT,
@@ -28,6 +29,9 @@ class H3VideoImportTests(unittest.TestCase):
                 provider_key_id TEXT, provider_avatar_id TEXT, provider_avatar_group_id TEXT,
                 source_video_url TEXT, background_file TEXT, tryon_mode TEXT, model TEXT,
                 status TEXT NOT NULL, error TEXT, created_at INTEGER, updated_at INTEGER)""")
+            c.commit()
+        finally:
+            c.close()
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -55,6 +59,35 @@ class H3VideoImportTests(unittest.TestCase):
     def test_rejects_non_mp4_before_writing(self):
         with self.assertRaisesRegex(ValueError, "有效的 MP4"):
             video.import_h3_video_asset("qa-user", b"not-a-video", "video/mp4")
+
+    def test_imports_owned_lipsync_source_with_duration_metadata(self):
+        raw = b"\x00\x00\x00\x18ftypmp42" + b"x" * 32
+        probe = subprocess.CompletedProcess([], 0, json.dumps({
+            "streams": [{"width": 1080, "height": 1920, "r_frame_rate": "25/1"}],
+            "format": {"duration": "120.25"},
+        }), "")
+        with patch.object(video, "VIDEO_OUT_DIR", self.root / "video"), \
+             patch.object(video, "adb", side_effect=self.connect_assets), \
+             patch.object(video, "public_url", return_value="/api/gen/file/video/source.mp4"), \
+             patch.object(video.subprocess, "run", return_value=probe):
+            asset = video.import_lipsync_source_video(
+                "qa-user", raw, "video/mp4", "我的真人口播.mp4")
+        self.assertEqual("lipsync_source", asset["mode"])
+        self.assertEqual("done", asset["status"])
+        self.assertEqual(120.25, asset["duration"])
+        self.assertEqual("25/1", asset["fps"])
+        self.assertTrue((self.root / asset["video_file"]).is_file())
+
+    def test_rejects_lipsync_source_over_300_seconds(self):
+        raw = b"\x00\x00\x00\x18ftypmp42" + b"x" * 32
+        probe = subprocess.CompletedProcess([], 0, json.dumps({
+            "streams": [{"width": 1080, "height": 1920, "r_frame_rate": "25/1"}],
+            "format": {"duration": "300.01"},
+        }), "")
+        with patch.object(video, "VIDEO_OUT_DIR", self.root / "video"), \
+             patch.object(video.subprocess, "run", return_value=probe):
+            with self.assertRaisesRegex(ValueError, "1-300 秒"):
+                video.import_lipsync_source_video("qa-user", raw, "video/mp4")
 
 
 if __name__ == "__main__":

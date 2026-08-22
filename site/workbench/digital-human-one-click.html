@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>数字人一键生成 · 文案编导 · 黄雀 AI</title>
+<link rel="icon" href="../assets/cloud/logo-bird.png">
+<link rel="stylesheet" href="../assets/fonts/hq-fonts.css">
+<link rel="stylesheet" href="../assets/cloud.css?v=8">
+<script src="theme-init.js?v=11eb385e"></script>
+<link rel="stylesheet" href="digital-human-one-click.css?v=20260821">
+<link rel="stylesheet" href="theme.css?v=5873a2f4">
+</head>
+<body>
+<div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
+<div class="hq-app"><div class="hq-content" data-active="script">
+  <main class="dh-page">
+    <header class="dh-head">
+      <div>
+        <div class="dh-crumb">文案编导 <span>/</span> 数字人一键生成</div>
+        <h1>真人视频，一键生成新文案成片</h1>
+        <p>保留原视频身体动作，使用 HeyGen Precision 重做完整口型，再自动完成剪辑、字幕与模板包装。</p>
+      </div>
+      <div class="dh-badge"><i></i> HeyGen Precision</div>
+    </header>
+
+    <nav class="dh-tabs" aria-label="文案编导功能">
+      <a href="script.html">✍️ AI 写脚本</a>
+      <a href="script.html?mode=breakdown">🔍 拆解视频</a>
+      <a class="on" href="digital-human-one-click.html" aria-current="page">🎬 数字人一键生成</a>
+    </nav>
+
+    <div class="dh-layout">
+      <section class="dh-builder">
+        <div class="dh-section">
+          <div class="dh-section-head"><span class="dh-num">01</span><div><h2>真人视频</h2><p>上传 1–300 秒 MP4；人物需要正常说话，才能保留自然表情与身体动作。</p></div></div>
+          <label id="dhDrop" class="dh-drop" for="dhVideoFile">
+            <input id="dhVideoFile" type="file" accept="video/mp4,.mp4">
+            <span class="dh-upload-icon">↑</span><span><b>上传真人口播视频</b><small>MP4 · 不超过 100 MB · 仅当前账号可见</small></span>
+          </label>
+          <div id="dhSourceList" class="dh-source-list"><div class="dh-empty">正在读取最近视频…</div></div>
+        </div>
+
+        <div class="dh-section">
+          <div class="dh-section-head"><span class="dh-num">02</span><div><h2>文案与音色</h2><p>文案会先生成完整配音，再驱动原视频做 Precision 口型。</p></div></div>
+          <textarea id="dhScript" class="dh-script" maxlength="1000" placeholder="粘贴要让人物重新讲述的文案…"></textarea>
+          <div class="dh-script-meta"><span id="dhCount">0 / 1000</span><span>建议 20–180 秒，标点完整</span></div>
+          <div class="dh-voice-row">
+            <label><span>已确认音色</span><select id="dhVoice"><option value="">读取音色中…</option></select></label>
+            <button id="dhVoicePreview" class="dh-ghost" type="button" disabled>▶ 试听音色</button>
+          </div>
+        </div>
+
+        <div class="dh-section">
+          <div class="dh-section-head"><span class="dh-num">03</span><div><h2>剪辑模板</h2><p>三种模板均提供 10 秒无声示例，先看效果再选择。</p></div></div>
+          <div id="dhTemplates" class="dh-templates">
+            <button class="dh-template on" type="button" data-template="viral-talking-head-v1">
+              <video muted loop playsinline preload="metadata" src="../assets/one-click/previews/high-frequency-10s.mp4"></video>
+              <span class="dh-template-copy"><b>参考片高频剪辑</b><small>0.6–1.2 秒节奏 · 强钩子 · 重点大字</small></span><em>高</em>
+            </button>
+            <button class="dh-template" type="button" data-template="professional-explainer-v1">
+              <video muted loop playsinline preload="metadata" src="../assets/one-click/previews/professional-explainer-10s.mp4"></video>
+              <span class="dh-template-copy"><b>专业讲解</b><small>稳健转场 · 信息卡 · 重点清晰</small></span><em>稳</em>
+            </button>
+            <button class="dh-template" type="button" data-template="clean-talking-v1">
+              <video muted loop playsinline preload="metadata" src="../assets/one-click/previews/clean-talking-10s.mp4"></video>
+              <span class="dh-template-copy"><b>纯净口播</b><small>全程人物 · 字幕轻包装 · 画面克制</small></span><em>简</em>
+            </button>
+          </div>
+        </div>
+
+        <div class="dh-submit-row">
+          <div><b>预计消耗</b><span>配音点数 + Precision 6 点/秒</span></div>
+          <button id="dhStart" class="dh-primary" type="button">开始生成完整成片 <span>→</span></button>
+        </div>
+      </section>
+
+      <aside class="dh-aside">
+        <section class="dh-preview-panel">
+          <div class="dh-panel-title"><b>成片预览</b><span id="dhPreviewLabel">等待素材</span></div>
+          <div class="dh-video-wrap"><video id="dhPreview" controls playsinline></video><div id="dhPreviewEmpty">上传或选择一条真人视频</div></div>
+          <a id="dhDownload" class="dh-download" download="huangque-digital-human.mp4">下载最终成片</a>
+        </section>
+        <section class="dh-flow-panel">
+          <div class="dh-panel-title"><b>自动生产链路</b><span>7 步闭环</span></div>
+          <ol id="dhFlow" class="dh-flow">
+            <li data-step="source"><i>1</i><span><b>真人视频就绪</b><small>人物、动作与画面作为母版</small></span></li>
+            <li data-step="audio"><i>2</i><span><b>生成完整配音</b><small>使用已确认音色</small></span></li>
+            <li data-step="lipsync"><i>3</i><span><b>Precision 完整口型</b><small>保留动作，重做嘴部</small></span></li>
+            <li data-step="analysis"><i>4</i><span><b>识别与自动粗剪</b><small>静音、气口与疑似口误</small></span></li>
+            <li data-step="template"><i>5</i><span><b>应用剪辑模板</b><small>字幕、重点字与转场</small></span></li>
+            <li data-step="qc"><i>6</i><span><b>基础质检</b><small>画面、音轨与编码</small></span></li>
+            <li data-step="result"><i>7</i><span><b>输出最终成片</b><small>私有 MP4，可下载</small></span></li>
+          </ol>
+          <div id="dhStatus" class="dh-status">准备好素材后即可开始。</div>
+        </section>
+      </aside>
+    </div>
+  </main>
+</div></div>
+<script src="../assets/cloud.js?v=8"></script>
+<script src="cloud-shell.js?v=38059474"></script>
+<script src="digital-human-one-click.js?v=20260821"></script>
+</body>
+</html>

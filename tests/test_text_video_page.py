@@ -378,14 +378,13 @@ process.stdout.write(JSON.stringify({first: first.key, retry: retry.key}));
         self.assertIn("stage.classList.toggle('landscape',isLandscape)", PAGE)
         self.assertIn(".tv-stage.landscape{aspect-ratio:16/9", PAGE)
 
-    def test_feature_is_default_off_and_all_entry_points_use_readiness_gate(self):
+    def test_legacy_feature_remains_gated_but_is_not_a_top_level_workspace(self):
         self.assertIn('"key": "pixelle_text_video"', FLAGS)
         self.assertIn('"default_enabled": False', FLAGS)
         self.assertIn("/api/gen/text-video/capability", CORE)
         self.assertIn("pixelle_video.require_available()", CORE)
-        self.assertIn("feature:'pixelle_text_video'", SHELL)
-        self.assertIn("data-nav-feature", SHELL)
-        self.assertIn("if(data&&data.available){item.hidden=false;item.style.display='flex';}", SHELL)
+        self.assertNotIn("feature:'pixelle_text_video'", SHELL)
+        self.assertNotIn("revealReadyFeatureNav", SHELL)
 
     def test_topic_and_full_copy_are_explicit_modes(self):
         self.assertIn('data-mode="generate"', PAGE)
@@ -393,9 +392,11 @@ process.stdout.write(JSON.stringify({first: first.key, retry: retry.key}));
         self.assertIn("主题创作", PAGE)
         self.assertIn("完整文案", PAGE)
 
-    def test_sidebar_exposes_text_video_workspace(self):
-        self.assertIn("{k:'text-video',l:'文案成片',i:'clapper',feature:'pixelle_text_video'}", SHELL)
+    def test_sidebar_replaces_text_video_with_director_submodule(self):
+        script = (ROOT / "site/workbench/script.html").read_text(encoding="utf-8")
+        self.assertNotIn("{k:'text-video',l:'文案成片'", SHELL)
         self.assertIn("active==='text-video'", SHELL)
+        self.assertIn('href="digital-human-one-click.html"', script)
 
     def test_page_does_not_expose_provider_branding_and_only_uploads_talking_avatars(self):
         self.assertNotIn("Pixelle", PAGE)

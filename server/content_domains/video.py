@@ -55,6 +55,7 @@ VALID_AUDIO_MIMES = {"audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "aud
 VALID_REFERENCE_VIDEO_MIMES = {"video/mp4", "video/quicktime", "video/webm"}
 VIDEO_IMPORT_MAX_BYTES = _env_positive_int("VIDEO_IMPORT_MAX_BYTES", 100 * 1024 * 1024)
 VIDEO_IMPORT_MAX_SECONDS = 15.5  # H3 的 15 秒请求实际会对齐为 362 帧（约 15.083 秒）。
+LIPSYNC_SOURCE_MAX_SECONDS = 300
 VIDEO_BATCH_MAX = 5
 TRYON_MAX_INPUT_SEC = 6   # RunningHub 耗时随输入时长增长，线路一只处理前 6 秒。
 XIAOLE_RATIO_SIZES = {
@@ -2760,6 +2761,88 @@ def import_h3_video_asset(username, raw, content_type="video/mp4", title=""):
         if isinstance(exc, ValueError):
             raise
         raise ValueError("H3 成片导入失败：%s" % str(exc)[:120])
+    finally:
+        if temp_path:
+            try: temp_path.unlink()
+            except OSError: pass
+
+
+def import_lipsync_source_video(username, raw, content_type="video/mp4", title=""):
+    """把用户本人真人口播导入为 Precision 口型同步的私有源资产。"""
+    if not raw or len(raw) > VIDEO_IMPORT_MAX_BYTES:
+        raise ValueError("真人源视频不能为空且不能超过 %dMB" %
+                         (VIDEO_IMPORT_MAX_BYTES // 1024 // 1024))
+    mime = str(content_type or "").split(";", 1)[0].strip().lower()
+    if mime not in {"video/mp4", "application/octet-stream"}:
+        raise ValueError("真人源视频仅支持 MP4")
+    if len(raw) < 12 or raw[4:8] != b"ftyp":
+        raise ValueError("文件不是有效的 MP4")
+
+    VIDEO_OUT_DIR.mkdir(parents=True, exist_ok=True)
+    temp_path = None
+    final_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+                prefix=".lipsync-source-", suffix=".mp4",
+                dir=VIDEO_OUT_DIR, delete=False) as handle:
+            handle.write(raw)
+            temp_path = pathlib.Path(handle.name)
+        probe = subprocess.run([
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=width,height,r_frame_rate:format=duration",
+            "-of", "json", str(temp_path),
+        ], capture_output=True, text=True, timeout=30)
+        if probe.returncode != 0:
+            raise ValueError("视频无法解析，请确认 MP4 文件完整")
+        info = json.loads(probe.stdout or "{}")
+        stream = (info.get("streams") or [{}])[0]
+        duration = float((info.get("format") or {}).get("duration") or 0)
+        width, height = int(stream.get("width") or 0), int(stream.get("height") or 0)
+        if not width or not height or duration < 1:
+            raise ValueError("视频缺少有效画面或时长")
+        if duration > LIPSYNC_SOURCE_MAX_SECONDS:
+            raise ValueError("真人源视频时长必须是 1-300 秒")
+
+        owner = hashlib.sha256(str(username).encode("utf-8")).hexdigest()[:12]
+        name = "lipsync_source_%s_%d_%s.mp4" % (
+            owner, int(time.time()), uuid.uuid4().hex[:10])
+        final_path = VIDEO_OUT_DIR / name
+        os.replace(temp_path, final_path)
+        temp_path = None
+        rel = "video/" + name
+        video_url = public_url(rel, "video/mp4", private=True)
+        clean_title = re.sub(r"\s+", " ", str(title or "")).strip()[:120]
+        clean_title = clean_title or "真人口播源视频"
+        record_video_asset(None, username, {
+            "mode": "lipsync_source", "video_file": rel,
+            "video_url": video_url, "text": clean_title,
+            "resolution": "%dx%d" % (width, height),
+            "ratio": "16:9" if width >= height else "9:16",
+            "model": "Original Talking Video", "phase": "completed",
+            "status": "done",
+        })
+        with closing(adb()) as connection:
+            row = connection.execute(
+                "SELECT * FROM video_assets WHERE username=? AND video_file=? LIMIT 1",
+                (username, rel),
+            ).fetchone()
+        asset = dict(row) if row else {
+            "video_file": rel, "video_url": video_url, "status": "done"}
+        asset.update({
+            "duration": duration,
+            "width": width,
+            "height": height,
+            "fps": stream.get("r_frame_rate") or "",
+        })
+        return asset
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError,
+            TypeError, ValueError) as exc:
+        if final_path:
+            try: final_path.unlink()
+            except OSError: pass
+        if isinstance(exc, ValueError):
+            raise
+        raise ValueError("真人源视频导入失败：%s" % str(exc)[:120])
     finally:
         if temp_path:
             try: temp_path.unlink()

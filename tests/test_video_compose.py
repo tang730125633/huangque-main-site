@@ -212,6 +212,31 @@ class VideoComposeRenderTests(unittest.TestCase):
                 ],
             })
 
+    def test_all_customer_templates_prepare_distinct_visual_variants(self):
+        expected = {
+            "viral-talking-head-v1": ("variant-high", "HIGH CUT · 01"),
+            "professional-explainer-v1": ("variant-professional", "PRO EXPLAIN · 02"),
+            "clean-talking-v1": ("variant-clean", "CLEAN TALK · 03"),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            clean = pathlib.Path(directory) / "clean.mp4"
+            clean.write_bytes(b"fixture")
+            for template_id, markers in expected.items():
+                workspace = pathlib.Path(directory) / template_id
+                data = render.prepare_workspace(clean, {
+                    "template_id": template_id,
+                    "duration_ms": 3000,
+                    "cues": [{"text": "专业表达", "start_ms": 0, "end_ms": 3000}],
+                }, workspace)
+                markup = (workspace / "index.html").read_text(encoding="utf-8")
+                self.assertEqual(template_id, data["template_id"])
+                self.assertIn(markers[0], markup)
+                self.assertIn(markers[1], markup)
+
+    def test_rejects_unknown_customer_template(self):
+        with self.assertRaisesRegex(ValueError, "不支持的剪辑模板"):
+            render.normalize_template_id("mystery-template")
+
 
 class VideoComposeStoreTests(unittest.TestCase):
     def setUp(self):
@@ -402,11 +427,11 @@ class VideoComposeHttpTests(unittest.TestCase):
             return {"duration_ms": 2400, "video_codec": "h264", "audio_codec": "aac", "has_audio": True}
         render_started = threading.Event()
         allow_render = threading.Event()
-        def render_video(_clean, _payload, output):
+        def render_video(_clean, payload, output):
             render_started.set()
             allow_render.wait(2)
             pathlib.Path(output).write_bytes(b"finished-video")
-            return {"template_id": "viral-talking-head-v1", "template_version": "1.0.0",
+            return {"template_id": payload["template_id"], "template_version": "1.0.0",
                     "output": {"duration_ms": 2400, "video_codec": "h264", "audio_codec": "aac", "has_audio": True}}
         with mock.patch.object(video_compose.asr, "transcribe", return_value={
                 "text": "你好 AI", "words": fake_words, "duration_ms": 2500}), \
@@ -429,14 +454,14 @@ class VideoComposeHttpTests(unittest.TestCase):
             confirmed = reviewed["project"]
             status, accepted = self.request(
                 "POST", "/api/gen/video-compose/projects/%s/render" % project["id"],
-                {"expected_revision": confirmed["revision"], "hook": {}, "headlines": [], "brand": {}},
+                {"expected_revision": confirmed["revision"], "template_id": "professional-explainer-v1", "hook": {}, "headlines": [], "brand": {}},
             )
             self.assertEqual(202, status)
             self.assertEqual("rendering", accepted["project"]["status"])
             self.assertTrue(render_started.wait(1))
             replay_status, replayed = self.request(
                 "POST", "/api/gen/video-compose/projects/%s/render" % project["id"],
-                {"expected_revision": confirmed["revision"], "hook": {}, "headlines": [], "brand": {}},
+                {"expected_revision": confirmed["revision"], "template_id": "professional-explainer-v1", "hook": {}, "headlines": [], "brand": {}},
             )
             self.assertEqual(202, replay_status)
             self.assertEqual(accepted["project"]["revision"], replayed["project"]["revision"])
@@ -451,12 +476,13 @@ class VideoComposeHttpTests(unittest.TestCase):
                 time.sleep(.02)
             _, replayed = self.request(
                 "POST", "/api/gen/video-compose/projects/%s/render" % project["id"],
-                {"expected_revision": confirmed["revision"], "hook": {}, "headlines": [], "brand": {}},
+                {"expected_revision": confirmed["revision"], "template_id": "professional-explainer-v1", "hook": {}, "headlines": [], "brand": {}},
             )
         self.assertEqual("completed", rendered["project"]["status"])
         self.assertEqual(rendered["project"]["output_asset_id"],
                          replayed["project"]["output_asset_id"])
         self.assertEqual(1, render_mock.call_count)
+        self.assertEqual("professional-explainer-v1", render_mock.call_args.args[1]["template_id"])
         request = urllib.request.Request(
             self.base + rendered["output_url"], method="GET",
             headers={"Authorization": "Bearer test"},

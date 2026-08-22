@@ -74,43 +74,6 @@ def _validation(prefill=None, manual_requirements=None, supported=True, blocked_
 
 VIDEO_FUNCTIONS = [
     {
-        "key": "one_click",
-        "name": "一键成片",
-        "desc": "从已有视频资产开始，分析、确认粗剪并输出成片",
-        "order": 10,
-        "frontend_selector": 'a[href="one-click-video.html"]',
-        "service": "content",
-        "modes": [{
-            "key": "video.one_click.compose",
-            "name": "已有视频智能成片",
-            "evidence_contract": {
-                "acceptance_id_type": "project_id",
-                "not_applicable": ["provider_task", "billing"],
-            },
-            "entrypoints": [
-                _endpoint("POST", "/api/gen/video-compose/projects"),
-                _endpoint("GET", "/api/gen/video-compose/projects/{project_id}"),
-                _endpoint("POST", "/api/gen/video-compose/projects/{project_id}/analyze-source"),
-                _endpoint("POST", "/api/gen/video-compose/projects/{project_id}/edit-decisions"),
-                _endpoint("POST", "/api/gen/video-compose/projects/{project_id}/render"),
-                _endpoint("GET", "/api/gen/video-compose/projects/{project_id}/output"),
-            ],
-            "evidence_source": "video_compose_projects",
-            "validation": _validation(
-                manual_requirements=["从测试账号的视频资产选择一条短视频"],
-                supported=False,
-                blocked_reason="专用测试账号尚未登记可重复使用的成片资产",
-            ),
-            "dependencies": [{
-                "key": "openai", "role": "源视频语音识别", "requirement": "required",
-                "credential_source": "env", "condition": "分析源视频时调用同步 ASR",
-            }],
-            "evidence_gaps": ["分析失败与用户中途退出尚未形成可区分的阶段证据"],
-            "price_keys": [],
-            "smoke_inputs": ["一条已完成的视频资产", "预设标题与字幕样式"],
-        }],
-    },
-    {
         "key": "digital_ip",
         "name": "数字化 IP",
         "desc": "用人物形象和文案或现成音频生成数字人口播",
@@ -1085,6 +1048,60 @@ SCRIPT_FUNCTIONS = [
             },
         ],
     },
+    {
+        "key": "digital_human_one_click",
+        "name": "数字人一键生成",
+        "desc": "真人视频与新文案自动完成配音、Precision 完整口型、粗剪、模板包装和成片交付",
+        "order": 40,
+        "frontend_selector": "#dhStart",
+        "service": "content",
+        "flag_keys": ["audio", "video"],
+        "dependencies": [
+            {"key": "cosyvoice", "role": "已确认音色与完整配音", "requirement": "required", "credential_source": "env"},
+            {"key": "heygen", "role": "Precision 完整口型", "requirement": "required", "credential_source": "env"},
+            {"key": "openai", "role": "口型母版语音识别与逐字时间轴", "requirement": "required", "credential_source": "env"},
+        ],
+        "shared_steps": [{
+            "key": "script.digital_human.audio",
+            "name": "按新文案生成完整配音",
+            "entrypoints": [
+                _endpoint("GET", "/api/gen/audio/voices"),
+                _endpoint("POST", "/api/gen/audio"),
+                _endpoint("GET", "/api/gen/job/{id}"),
+                _endpoint("GET", "/api/gen/audio/assets"),
+            ],
+            "task_match": {"kind": "audio", "source_page": "script", "provider": "cosyvoice"},
+            "evidence_contract": {"not_applicable": ["provider_task", "balance"]},
+            "price_keys": ["audio.tts"],
+        }, {
+            "key": "script.digital_human.precision",
+            "name": "真人视频 Precision 完整口型",
+            "entrypoints": [
+                _endpoint("POST", "/api/gen/video/lipsync-import"),
+                _endpoint("POST", "/api/gen/video"),
+                _endpoint("GET", "/api/gen/job/{id}"),
+                _endpoint("GET", "/api/gen/video/assets"),
+            ],
+            "task_match": {"kind": "video", "mode": "lipsync", "lipsync_mode": "precision"},
+            "price_keys": ["video.lipsync.precision"],
+        }],
+        "modes": [{
+            "key": "script.digital_human.complete",
+            "name": "现有真人视频 + 新文案 + 完整成片",
+            "entrypoints": [
+                _endpoint("POST", "/api/gen/video-compose/projects"),
+                _endpoint("POST", "/api/gen/video-compose/projects/{id}/analyze-source"),
+                _endpoint("POST", "/api/gen/video-compose/projects/{id}/edit-decisions"),
+                _endpoint("POST", "/api/gen/video-compose/projects/{id}/render"),
+                _endpoint("GET", "/api/gen/video-compose/projects/{id}/output"),
+            ],
+            "evidence_source": "video_compose_projects",
+            "evidence_contract": {"acceptance_id_type": "project_id", "not_applicable": ["provider_task", "billing", "balance"]},
+            "price_keys": ["audio.tts", "video.lipsync.precision"],
+            "smoke_inputs": ["1 段当前账号真人口播 MP4", "已确认音色", "固定合规文案", "三种剪辑模板之一"],
+            "validation": _validation(supported=False, blocked_reason="需在运行时使用当前账号自有真人视频与音色，后台不预置个人生物特征素材"),
+        }],
+    },
 ]
 
 
@@ -1473,7 +1490,6 @@ _PAGE_DEFS = [
     ("video", "视频生成", "/workbench/video.html"),
     ("audio", "音频生成", "/workbench/audio.html"),
     ("script", "文案编导", "/workbench/script.html"),
-    ("text-video", "文案成片", "/workbench/text-video.html"),
     ("short-drama", "短剧创作", "/workbench/short-drama.html"),
     ("canvas", "无限画布", "/workbench/canvas.html"),
     ("assets", "我的资产", "/workbench/assets.html"),
@@ -1497,7 +1513,6 @@ FUNCTION_REGISTRY = [
             else COLLECT_FUNCTIONS if key == "collect"
             else LEADS_FUNCTIONS if key == "leads"
             else SCRIPT_FUNCTIONS if key == "script"
-            else TEXT_VIDEO_FUNCTIONS if key == "text-video"
             else SHORT_DRAMA_FUNCTIONS if key == "short-drama"
             else CANVAS_FUNCTIONS if key == "canvas"
             else ASSET_FUNCTIONS if key == "assets"
@@ -1621,7 +1636,7 @@ def classify_task(kind, metadata=None):
         want = [want]
     if kind != "image" and source_page == "banana":
         return None
-    if kind == "audio" and source_page != "audio":
+    if kind == "audio" and source_page not in {"audio", "script"}:
         return None
     if kind != "audio" and source_page == "audio":
         return None
@@ -1639,6 +1654,7 @@ def classify_task(kind, metadata=None):
     actual = {
         "kind": kind,
         "mode": str(metadata.get("mode") or ("text" if kind == "video" else "")).strip().lower(),
+        "lipsync_mode": str(metadata.get("lipsync_mode") or "").strip().lower(),
         "cine_mode": str(metadata.get("cine_mode") or "").strip().lower(),
         "line": str(metadata.get("line") or "").strip(),
         "channel": channel,

@@ -6085,7 +6085,7 @@ def _compose_operation_stat(since):
     if not rows:
         return None, None
     bucket = {
-        "operation": "video.one_click.compose", "total": 0, "done": 0,
+        "operation": "script.digital_human.complete", "total": 0, "done": 0,
         "error": 0, "running": 0, "other": 0,
     }
     for row in rows:
@@ -6118,7 +6118,7 @@ def _compose_operation_stat(since):
         "balance_state": "not_applicable",
         "asset_status": "done" if latest["output_asset_id"] else None,
         "error": str(latest["error"] or "")[:300],
-        "evidence_note": "一键成片使用本地 project_id，不经过外部供应商任务",
+        "evidence_note": "最终成片使用本地 project_id；配音与 Precision 上游任务按独立子步骤追踪",
     }
     return _finish_stats([bucket])[0], None
 
@@ -6253,6 +6253,7 @@ def job_stats(days=7):
                               date(created_at, 'unixepoch') AS day,
                               CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.channel'),'')) ELSE '' END AS channel,
                               CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.mode'),'')) ELSE '' END AS mode,
+                              CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.lipsync_mode'),'')) ELSE '' END AS lipsync_mode,
                               CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.want[0]'),'comments')) ELSE 'comments' END AS collect_mode,
                               CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.cine_mode'),'')) ELSE '' END AS cine_mode,
                               CASE WHEN json_valid(payload) THEN CAST(COALESCE(json_extract(payload,'$.line'),'') AS TEXT) ELSE '' END AS line,
@@ -6313,6 +6314,7 @@ def job_stats(days=7):
         _count_status(bucket, status)
         metadata = {
             "channel": row["channel"], "mode": row["mode"],
+            "lipsync_mode": row["lipsync_mode"],
             "collect_mode": row["collect_mode"],
             "cine_mode": row["cine_mode"], "line": row["line"],
             "reference_count": row["reference_count"], "batch_id": row["batch_id"],

@@ -2757,6 +2757,29 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"detail": str(e)[:220]})
             except Exception as e:
                 return self._send(500, {"detail": "H3 成片导入失败：%s" % str(e)[:160]})
+        if p == "/api/gen/video/lipsync-import":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录或登录已过期"})
+            if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
+            try:
+                feature_flags.require_enabled("video")
+                length = int(self.headers.get("Content-Length") or 0)
+                if length <= 0 or length > video_domain.VIDEO_IMPORT_MAX_BYTES:
+                    raise ValueError("真人源视频不能为空且不能超过 %dMB" %
+                                     (video_domain.VIDEO_IMPORT_MAX_BYTES // 1024 // 1024))
+                raw = self.rfile.read(length)
+                if len(raw) != length:
+                    raise ValueError("真人源视频上传不完整，请重试")
+                title = urllib.parse.unquote(self.headers.get("X-Video-Title") or "")
+                asset = video_domain.import_lipsync_source_video(
+                    user["username"], raw, self.headers.get("Content-Type"), title)
+                return self._send(200, {"ok": True, "asset": asset})
+            except feature_flags.FeatureDisabled as e:
+                return self._send(503, {"detail": str(e)})
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)[:220]})
+            except Exception as e:
+                return self._send(500, {"detail": "真人源视频导入失败：%s" % str(e)[:160]})
         if p == "/api/gen/leads/crm":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录"})
