@@ -389,8 +389,12 @@ if test "$need_hermes" = 1; then
   if ! sudo test -f /home/ubuntu/hermes-preview/.requirements-sha \
       || test "$(sudo cat /home/ubuntu/hermes-preview/.requirements-sha 2>/dev/null || true)" != "$requirements_hash"; then
     test -d "$upload/wheelhouse"
+    wheel_cache="/home/ubuntu/hermes-preview/wheelhouse/$requirements_hash"
+    sudo install -d -o ubuntu -g ubuntu -m 0755 "$wheel_cache"
+    sudo cp -a "$upload/wheelhouse/." "$wheel_cache/"
+    sudo chown -R ubuntu:ubuntu "$wheel_cache"
     sudo -u ubuntu /usr/bin/python3 -m pip install --disable-pip-version-check \
-      --no-index --find-links "$upload/wheelhouse" --upgrade \
+      --no-index --find-links "$wheel_cache" --upgrade \
       --target /home/ubuntu/hermes-preview-deps \
       -r /home/ubuntu/hermes-preview/preview-requirements.txt
     sudo -u ubuntu env PYTHONPATH=/home/ubuntu/hermes-preview-deps \

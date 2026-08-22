@@ -344,6 +344,8 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
         self.assertIn("SHIP_ZELONG_WHEELHOUSE", SRC)
         self.assertIn("/home/ubuntu/hermes-preview/.requirements-sha", SRC)
         self.assertIn("--no-index --find-links", SRC)
+        self.assertIn("/home/ubuntu/hermes-preview/wheelhouse/", SRC)
+        self.assertIn("chown -R ubuntu:ubuntu", SRC)
         self.assertIn("chown ubuntu:ubuntu /home/ubuntu/hermes-preview/.ip12-release-sha", SRC)
         preview_requirements = (ROOT / "deploy/zelong/hermes-ip12-preview-requirements.txt").read_text()
         self.assertEqual("-r requirements.txt", preview_requirements.strip())
