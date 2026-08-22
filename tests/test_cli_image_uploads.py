@@ -5,6 +5,7 @@ import os
 import tempfile
 import time
 import unittest
+import wave
 from pathlib import Path
 from unittest import mock
 from types import SimpleNamespace
@@ -16,6 +17,19 @@ PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl9l1sAAAAASUVORK5CYII="
 )
 JPEG = b"\xff\xd8\xff\xe0" + b"jpeg-test"
+
+
+def wav_bytes():
+    output = io.BytesIO()
+    with wave.open(output, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(8000)
+        handle.writeframes(b"\0\0" * 800)
+    return output.getvalue()
+
+
+WAV = wav_bytes()
 
 
 class CLIImageUploadTests(unittest.TestCase):
@@ -33,6 +47,13 @@ class CLIImageUploadTests(unittest.TestCase):
             io.BytesIO(raw), len(raw), username, mime, hashlib.sha256(raw).hexdigest(), now=now,
         )
 
+    def upload_audio(self, username="alice", now=100):
+        with mock.patch.object(cli_uploads, "_probe_audio_duration", return_value=0.1):
+            return cli_uploads.store_audio(
+                io.BytesIO(WAV), len(WAV), username, "audio/wav",
+                hashlib.sha256(WAV).hexdigest(), now=now,
+            )
+
     def test_private_upload_expands_for_owner_only(self):
         uploaded = self.upload()
         body = cli_uploads.expand_image_payload(
@@ -43,6 +64,27 @@ class CLIImageUploadTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "不存在或已失效"):
             cli_uploads.expand_image_payload(
                 {"provider": "openai", "image_upload_id": uploaded["upload_id"]}, "bob", now=101,
+            )
+
+    def test_private_portrait_and_audio_expand_for_talking_video_only(self):
+        portrait = self.upload()
+        narration = self.upload_audio()
+        body = cli_uploads.expand_talking_media_payload({
+            "image_upload_id": portrait["upload_id"],
+            "audio_upload_id": narration["upload_id"],
+        }, "alice", now=101)
+        self.assertTrue(body["image_data"].startswith("data:image/png;base64,"))
+        self.assertTrue(body["audio_data"].startswith("data:audio/wav;base64,"))
+        self.assertNotIn("image_upload_id", body)
+        self.assertNotIn("audio_upload_id", body)
+        with self.assertRaisesRegex(ValueError, "不存在或已失效"):
+            cli_uploads.expand_talking_media_payload(
+                {"audio_upload_id": narration["upload_id"]}, "bob", now=101,
+            )
+        with self.assertRaisesRegex(ValueError, "已过期"):
+            cli_uploads.expand_talking_media_payload(
+                {"audio_upload_id": narration["upload_id"]},
+                "alice", now=100 + cli_uploads.TTL + 1,
             )
 
     def test_multi_reference_and_png_mask_contract(self):

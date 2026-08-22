@@ -836,7 +836,7 @@ assert refreshed.status_code == 200, refreshed.get_data(as_text=True)
 refreshed_record = next(
     item for item in refreshed.get_json()["productions"] if item["id"] == legacy_id
 )
-assert refreshed_record["material_context_version"] == 3, refreshed_record
+assert refreshed_record["material_context_version"] == 4, refreshed_record
 assert refreshed_record["options"] == {"avatar_id": 7}, refreshed_record
 assert [item["const"] for item in refreshed_record["parameter_schema"]["properties"]["voice"]["oneOf"]] == [
     "voice-demo",
@@ -1429,7 +1429,8 @@ capability_body = capability.get_json()
 assert capability_body["actions"][0]["type"] == "prepare_production", capability_body
 assert capability_body["actions"][0]["preferred_action"] == "digital-ip-text-generate", capability_body
 assert "制作成数字人口播视频" in capability_body["assistant"], capability_body
-assert "先确认你自己上传的形象和可试听声音" in capability_body["assistant"], capability_body
+assert "当前 IP12 对话里向你收集" in capability_body["assistant"], capability_body
+assert "上传人物照片、参考视频或本人口播音频" in capability_body["assistant"], capability_body
 assert "系统公共素材默认不会展示" in capability_body["assistant"], capability_body
 assert "实时报价" in capability_body["assistant"], capability_body
 saved = server.load_conversation(completed_id)

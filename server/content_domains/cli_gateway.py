@@ -173,6 +173,36 @@ def handle_video_upload(handler, path, verify, must_change_password, secret):
     return True
 
 
+def handle_audio_upload(handler, path, verify, must_change_password, secret):
+    if path != "/api/gen/cli/audio-upload":
+        return False
+    if not _internal_auth(handler, secret):
+        handler._send(403, {"detail": "forbidden"})
+        return True
+    user = verify(handler._token())
+    if not user:
+        handler._send(401, {"detail": "未登录或登录已过期"})
+        return True
+    if must_change_password(user):
+        handler._send(403, {"detail": "请先修改初始密码"})
+        return True
+    try:
+        if handler.headers.get("Transfer-Encoding"):
+            raise ValueError("音频上传必须提供 Content-Length")
+        length = int(handler.headers.get("Content-Length") or 0)
+        content_type = (handler.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        result = cli_uploads.store_audio(
+            handler.rfile, length, user["username"], content_type,
+            handler.headers.get("X-HQ-Audio-SHA256"),
+        )
+        handler._send(200, result)
+    except ValueError as exc:
+        handler._send(400, {"detail": str(exc)[:220], "code": "invalid_audio_upload"})
+    except OSError:
+        handler._send(500, {"detail": "音频暂时无法保存", "code": "audio_upload_failed"})
+    return True
+
+
 def handle_quote(handler, path, verify, must_change_password, is_shutting_down,
                  feature_flags, points, audio, video, secret):
     if path != "/api/gen/cli/quote":
@@ -215,16 +245,22 @@ def handle_quote(handler, path, verify, must_change_password, is_shutting_down,
             if str(payload.get("mode") or "") == "lipsync":
                 payload = video.validate_video_payload(payload, user["username"])
             else:
-                if payload.get("image_data") or not payload.get("avatar_id"):
-                    raise ValueError("CLI 数字人口播仅支持本人形象 avatar_id")
-                if payload.get("audio_data") or payload.get("bgm_data"):
-                    raise ValueError("CLI 数字人口播仅支持本人资产音频且不支持 BGM")
+                image_upload = bool(payload.get("image_upload_id"))
+                audio_upload = bool(payload.get("audio_upload_id"))
+                if payload.get("image_data") and not image_upload:
+                    raise ValueError("CLI 数字人口播仅支持本人形象或私密上传照片")
+                if payload.get("audio_data") and not audio_upload:
+                    raise ValueError("CLI 数字人口播仅支持本人资产音频或私密上传音频")
+                payload = cli_uploads.expand_talking_media_payload(payload, user["username"])
+                if payload.get("bgm_data"):
+                    raise ValueError("CLI 数字人口播不支持 BGM")
                 payload = video.validate_video_payload(payload, user["username"])
-                _require_ready_avatar(video, user["username"], payload["avatar_id"])
+                if payload.get("avatar_id"):
+                    _require_ready_avatar(video, user["username"], payload["avatar_id"])
                 if payload["mode"] == "text":
                     audio.resolve_audio_provider_voice(user["username"], payload["voice"])
-                elif not payload.get("audio_file"):
-                    raise ValueError("CLI 现成音频生成仅支持本人资产 audio_file")
+                elif not payload.get("audio_file") and not payload.get("audio_data"):
+                    raise ValueError("音频驱动数字人缺少本人音频")
         elif kind == "video_batch":
             payloads = video.validate_video_batch_payload(payload, user["username"])
             for item in payloads:
