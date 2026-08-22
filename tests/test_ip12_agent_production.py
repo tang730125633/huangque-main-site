@@ -266,6 +266,123 @@ assert saved_tryon["options"] == {
             )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    @unittest.skipUnless(
+        importlib.util.find_spec("flask") and importlib.util.find_spec("requests"),
+        "Hermes runtime dependencies are not installed",
+    )
+    def test_portrait_and_narration_upload_stay_in_ip12_and_stop_at_quote(self):
+        script = r'''
+import io
+from unittest.mock import patch
+import server
+import security
+
+def action(name, schema):
+    return {
+        "action": name, "family": "video", "purpose": name,
+        "input_schema": {"type": "object", "additionalProperties": False, **schema},
+        "constraints": [], "billing": "quote_then_confirm", "confirmation_required": True,
+        "risk": "production", "result_type": "asset", "ui_route": "/workbench/video",
+        "transport": {"kind": "action"}, "availability": {"status": "available"},
+    }
+
+image = {"type": "string", "pattern": "^img_[0-9a-f]{32}$"}
+audio = {"type": "string", "pattern": "^aud_[0-9a-f]{32}$"}
+catalog = {"version": "inline-media-v1", "actions": [
+    action("digital-ip-text-generate", {"required": ["text", "voice"], "properties": {
+        "avatar_id": {"type": "integer"}, "image_upload_id": image,
+        "text": {"type": "string"}, "voice": {"type": "string"},
+    }}),
+    action("digital-ip-audio-generate", {"required": [], "properties": {
+        "avatar_id": {"type": "integer"}, "image_upload_id": image,
+        "audio_file": {"type": "string"}, "audio_upload_id": audio,
+    }}),
+]}
+
+server.current_account_id = lambda: "acct_inline"
+security._validate_token = lambda token: {"account_id": "acct_inline", "username": "inline", "role": "member"}
+security.RATE_REQUESTS = 100
+client = server.app.test_client()
+client.environ_base["HTTP_AUTHORIZATION"] = "Bearer test-token"
+state = server.initial_coach_state()
+cid = "inlinemedia01"
+server.save_conversation(cid, {
+    "id": cid, "title": "inline media", "messages": [], "coach_state": state,
+    "reports": {}, "owner_account_id": "acct_inline", "productions": {},
+    "deliverables": {"6": {"kind": "content_pack_v1", "categories": [{
+        "id": "category_1", "name": "内容", "topics": [{
+            "id": "topic_1", "title": "第一篇", "status": "ready",
+            "versions": [{"version": 1, "content": "这是已经确认的完整口播文案。"}],
+        }],
+    }]}},
+})
+
+bridge_calls = []
+def bridge(_account, capability, input_body, **kwargs):
+    bridge_calls.append((capability, input_body, kwargs))
+    if capability == "video-avatars":
+        return {"items": []}
+    if capability == "voices":
+        return {"items": []}
+    if capability == "digital-ip-audio-generate":
+        return {"quote_token": "quote-inline", "cost": 30, "points": 100, "expires_in": 300}
+    raise AssertionError(capability)
+
+with patch.object(server, "_bridge_catalog", return_value=catalog), patch.object(server, "_bridge_action", side_effect=bridge):
+    prepared = client.post("/api/ip12/productions/prepare", json={
+        "conversation_id": cid, "content_target": {"category_id": "category_1", "topic_id": "topic_1"},
+        "expected_revision": state["revision"], "requested_result": "video",
+        "preferred_action": "digital-ip-text-generate", "options": {},
+    })
+    assert prepared.status_code == 200, prepared.get_data(as_text=True)
+    body = prepared.get_json()
+    assert set(body["missing"]) == {"image_upload_id", "audio_upload_id"}, body
+    assert "/workbench/digital-ip" not in body["material_request_message"]["content"], body
+    assert "当前" in body["material_request_message"]["content"], body
+    production_id = body["production_id"]
+
+    with patch.object(server, "_bridge_upload", return_value={"upload_id": "img_" + "a" * 32}):
+        portrait = client.post("/api/ip12/productions/upload", data={
+            "conversation_id": cid, "production_id": production_id,
+            "expected_revision": state["revision"], "field": "image_upload_id",
+            "file": (io.BytesIO(b"\x89PNG\r\n\x1a\nportrait"), "portrait.png"),
+        }, content_type="multipart/form-data")
+    assert portrait.status_code == 200 and portrait.get_json()["missing"] == ["audio_upload_id"], portrait.get_data(as_text=True)
+
+    with patch.object(server, "_bridge_upload", return_value={"upload_id": "aud_" + "b" * 32}):
+        narration = client.post("/api/ip12/productions/upload", data={
+            "conversation_id": cid, "production_id": production_id,
+            "expected_revision": state["revision"], "field": "audio_upload_id",
+            "file": (io.BytesIO(b"RIFF\x00\x00\x00\x00WAVEaudio"), "narration.wav"),
+        }, content_type="multipart/form-data")
+    narration_body = narration.get_json()
+    assert narration.status_code == 200 and narration_body["missing"] == [], narration.get_data(as_text=True)
+    assert narration_body["production"]["action"] == "digital-ip-audio-generate", narration_body
+    assert narration_body["production"]["status"] == "draft", narration_body
+    assert not any(call[2].get("confirm") for call in bridge_calls), bridge_calls
+
+    quoted = client.post("/api/ip12/productions/quote", json={
+        "conversation_id": cid, "production_id": production_id,
+        "expected_revision": state["revision"],
+    })
+    assert quoted.status_code == 200 and quoted.get_json()["status"] == "quoted", quoted.get_data(as_text=True)
+    quote_call = bridge_calls[-1]
+    assert quote_call[0] == "digital-ip-audio-generate", quote_call
+    assert quote_call[1] == {
+        "image_upload_id": "img_" + "a" * 32,
+        "audio_upload_id": "aud_" + "b" * 32,
+    }, quote_call
+    assert not quote_call[2].get("confirm"), quote_call
+'''
+        with tempfile.TemporaryDirectory(prefix="ip12-inline-media-test.") as data_dir:
+            env = os.environ.copy()
+            env.update(OPENAI_API_KEY="dummy", HERMES_HOME=data_dir, HERMES_DATA_DIR=data_dir)
+            result = subprocess.run(
+                [sys.executable, "-c", script], cwd=ROOT / "server" / "hermes_ip12",
+                env=env, capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -4693,14 +4693,22 @@ class H(BaseHTTPRequestHandler):
             c.commit(); c.close()
 
     def _account_media_upload(self, kind, row):
-        video = kind == "video"
-        label = "视频" if video else "图片"
-        max_bytes = hq_cli_api.VIDEO_UPLOAD_MAX_BYTES if video else hq_cli_api.IMAGE_UPLOAD_MAX_BYTES
-        content_types = ({"video/mp4", "video/quicktime", "video/webm"} if video
-                         else {"image/jpeg", "image/png", "image/webp"})
-        digest_header = "X-HQ-Video-SHA256" if video else "X-HQ-Image-SHA256"
-        slots = hq_cli_api.VIDEO_UPLOAD_SLOTS if video else hq_cli_api.IMAGE_UPLOAD_SLOTS
-        proxy = hq_cli_api.proxy_video_upload if video else hq_cli_api.proxy_image_upload
+        label = {"image": "图片", "video": "视频", "audio": "音频"}[kind]
+        max_bytes = {
+            "image": hq_cli_api.IMAGE_UPLOAD_MAX_BYTES,
+            "video": hq_cli_api.VIDEO_UPLOAD_MAX_BYTES,
+            "audio": hq_cli_api.AUDIO_UPLOAD_MAX_BYTES,
+        }[kind]
+        content_types = {
+            "image": {"image/jpeg", "image/png", "image/webp"},
+            "video": {"video/mp4", "video/quicktime", "video/webm"},
+            "audio": {"audio/mpeg", "audio/wav", "audio/x-wav", "audio/mp4", "audio/x-m4a", "audio/aac", "audio/ogg"},
+        }[kind]
+        digest_header = {"image": "X-HQ-Image-SHA256", "video": "X-HQ-Video-SHA256", "audio": "X-HQ-Audio-SHA256"}[kind]
+        slots = {"image": hq_cli_api.IMAGE_UPLOAD_SLOTS, "video": hq_cli_api.VIDEO_UPLOAD_SLOTS,
+                 "audio": hq_cli_api.AUDIO_UPLOAD_SLOTS}[kind]
+        proxy = {"image": hq_cli_api.proxy_image_upload, "video": hq_cli_api.proxy_video_upload,
+                 "audio": hq_cli_api.proxy_audio_upload}[kind]
         invalid_code = "invalid_%s_upload" % kind
         if (self.headers.get("X-HQ-Confirm") or "").strip().lower() != "true":
             return self._cli_send(409, {"detail": "上传本地%s需要显式确认" % label, "code": "confirmation_required"})
@@ -4715,7 +4723,8 @@ class H(BaseHTTPRequestHandler):
                 (label, max_bytes // 1024 // 1024), "code": invalid_code})
         content_type = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
         if content_type not in content_types:
-            supported = "MP4 / MOV / WebM" if video else "PNG / JPG / WebP"
+            supported = {"image": "PNG / JPG / WebP", "video": "MP4 / MOV / WebM",
+                         "audio": "MP3 / WAV / M4A / AAC / OGG"}[kind]
             return self._cli_send(400, {"detail": "只支持 " + supported, "code": invalid_code})
         digest = (self.headers.get(digest_header) or "").strip().lower()
         if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
@@ -4753,8 +4762,8 @@ class H(BaseHTTPRequestHandler):
         if not self._ip12_agent_bridge_enabled():
             return self._cli_send(503, {"detail": "IP12 执行桥未启用", "code": "feature_disabled"})
         kind = (self.headers.get("X-HQ-Upload-Kind") or "").strip().lower()
-        if kind not in {"image", "video"}:
-            return self._cli_send(400, {"detail": "上传类型只支持 image 或 video", "code": "invalid_upload_kind"})
+        if kind not in {"image", "video", "audio"}:
+            return self._cli_send(400, {"detail": "上传类型只支持 image、video 或 audio", "code": "invalid_upload_kind"})
         try:
             row = self._ip12_agent_row((self.headers.get("X-HQ-Account-Id") or "").strip())
         except hq_cli_api.CLIAPIError as exc:
