@@ -273,7 +273,7 @@ print_manifest() {
 }
 
 apply_deploy() {
-  local commit="$1" plan="$2" stage="$3" manifest="$4" list="$5" run upload requirements_hash="" wheelhouse="" chromium_archive="" cache_root cache_dir cache_tmp
+  local commit="$1" plan="$2" stage="$3" manifest="$4" list="$5" run upload requirements_hash="-" wheelhouse="" chromium_archive="" cache_root cache_dir cache_tmp
   run="$(date -u +%Y%m%dT%H%M%SZ)-${commit:0:12}-${plan:0:12}"
   upload="$UPLOAD_ROOT/$run"
   ssh "$REMOTE" "umask 077; mkdir -p '$upload'"
