@@ -689,6 +689,10 @@ assert server._audio_options_from_message("重新生成音频，语速调整为0
 assert server._audio_options_from_message("重新生成音频，语速慢一点") == {}
 assert server._production_source_revision_intent("重新生成一版音频，开头表达更直接") is True
 assert server._production_source_revision_intent("重新生成一版音频，语速调整为0.9") is False
+assert server._production_material_revision_intent("不适合，我需要重新录制") == "voice"
+assert server._production_material_revision_intent("这张照片不满意，换张图片") == "image"
+assert server._production_material_revision_intent("声音和形象都不满意，都换掉") == "both"
+assert server._production_material_revision_intent("把文案语气改温和") == ""
 with server.app.test_request_context("https://huangquechuanmei.com/workbench/ip12/"):
     assert server._browser_preview_url("/api/gen/file/avatar.jpg") == (
         "https://huangquechuanmei.com/api/gen/file/avatar.jpg"
@@ -1337,6 +1341,32 @@ assert ready_body["production"]["options"] == {
     "image_upload_id": "img_" + "b" * 32, "voice": "vip_slot_12345678",
 }, ready_body
 assert ready_body["material_message"]["production_id"] == production_id, ready_body
+
+with patch.object(server, "_bridge_upload", side_effect=AssertionError("invalid slot must fail before upload")):
+    invalid_slot = client.post("/api/ip12/productions/clone-voice", data={
+        "conversation_id": cid, "production_id": production_id,
+        "expected_revision": str(revision), "slot_id": "slot_not_owned",
+        "name": "越权声音", "request_id": "clone-request-invalid",
+        "file": (io.BytesIO(b"RIFF0000WAVEaudio"), "sample.wav", "audio/wav"),
+    }, content_type="multipart/form-data")
+assert invalid_slot.status_code == 409, invalid_slot.get_data(as_text=True)
+assert invalid_slot.get_json()["code"] == "voice_slot_required", invalid_slot.get_json()
+
+convo = server.load_conversation(cid)
+convo["productions"][production_id]["voice_clone"] = {
+    "request_id": "clone-request-failed", "slot_id": "slot_12345678",
+    "name": "失败声音", "status": "training",
+}
+server.save_conversation(cid, convo)
+with patch.object(server, "_bridge_action", return_value={
+    "result": {"status": "failed", "clone_error": "样音不清晰"},
+}):
+    failed = client.get(
+        f"/api/ip12/productions/{production_id}/clone-voice?conversation_id={cid}"
+    )
+assert failed.status_code == 200, failed.get_data(as_text=True)
+assert failed.get_json()["status"] == "failed", failed.get_json()
+assert failed.get_json()["production"]["last_error_code"] == "voice_clone_failed", failed.get_json()
 print("IP12_CLONE_RERECORD_OK")
 '''
         with tempfile.TemporaryDirectory() as data_dir:
