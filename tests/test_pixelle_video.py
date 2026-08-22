@@ -1107,6 +1107,71 @@ class PixelleVideoTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "最多支持 20 个段落"):
             self.pixelle.prepare_payload({"text": text, "mode": "fixed"})
 
+    def test_quote_binds_owner_scenes_cost_and_expiry(self):
+        from content_domains import points
+
+        prepared = self.pixelle.prepare_payload({
+            "text": "中" * 216,
+            "mode": "fixed",
+        })
+        prices = {"image.openai.std": 20, "audio.tts": 10}
+        with mock.patch.object(
+            points.pricing, "get_price", side_effect=lambda key: prices[key]
+        ):
+            cost = points.cost_of("script_to_video", prepared)
+        token, expires_at = self.pixelle.issue_quote(
+            prepared, "alice", cost, "quote-secret", now=1000)
+        self.assertEqual(1600, expires_at)
+        self.assertTrue(self.pixelle.require_confirmed_quote(
+            token, prepared, "alice", cost, "quote-secret", now=1200))
+        submitted = self.pixelle.prepare_payload({
+            "text": "中" * 216,
+            "mode": "fixed",
+            "quote_token": token,
+        })
+        submitted_token = submitted.pop("_quote_token")
+        with mock.patch.object(
+            points.pricing, "get_price", side_effect=lambda key: prices[key]
+        ):
+            submitted_cost = points.cost_of("script_to_video", submitted)
+        self.assertEqual(cost, submitted_cost)
+        self.assertEqual(
+            prepared["cost_breakdown"], submitted["cost_breakdown"]
+        )
+        self.assertTrue(self.pixelle.require_confirmed_quote(
+            submitted_token, submitted, "alice", submitted_cost,
+            "quote-secret", now=1200))
+
+        changed = dict(prepared, n_scenes=prepared["n_scenes"] + 1)
+        with self.assertRaisesRegex(ValueError, "变化"):
+            self.pixelle.require_confirmed_quote(
+                token, changed, "alice", cost, "quote-secret", now=1200)
+        with self.assertRaisesRegex(ValueError, "变化"):
+            self.pixelle.require_confirmed_quote(
+                token, prepared, "bob", cost, "quote-secret", now=1200)
+        with self.assertRaisesRegex(ValueError, "过期"):
+            self.pixelle.require_confirmed_quote(
+                token, prepared, "alice", cost, "quote-secret", now=1601)
+        with self.assertRaisesRegex(ValueError, "先获取"):
+            self.pixelle.require_confirmed_quote(
+                "", prepared, "alice", cost, "quote-secret", now=1200)
+
+    def test_text_video_ui_quotes_and_confirms_before_paid_submission(self):
+        root = Path(__file__).resolve().parents[1]
+        page = (root / "site/workbench/text-video.html").read_text(encoding="utf-8")
+        core = (root / "server/content_domains/core.py").read_text(encoding="utf-8")
+
+        self.assertIn("/api/gen/text-video/quote", page)
+        self.assertIn("window.confirm", page)
+        self.assertIn("quote.scene_count", page)
+        self.assertIn("quote.cost", page)
+        self.assertIn("quote_token:quote.quote_token", page)
+        self.assertIn("if(!payload.quote_token)", page)
+        self.assertLess(
+            core.index("require_confirmed_quote("),
+            core.index("jobs_store.create_paid_job("),
+        )
+
     def test_prepare_rejects_invalid_template_before_charge(self):
         with self.assertRaisesRegex(ValueError, "有效的视频模板"):
             self.pixelle.prepare_payload({"text": "测试主题", "template": "../../bad.html"})

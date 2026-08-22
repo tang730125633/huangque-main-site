@@ -75,7 +75,7 @@ async function flush(turns = 8) {
   for (let index = 0; index < turns; index += 1) await new Promise((resolve) => setImmediate(resolve));
 }
 
-function createRuntime() {
+function createRuntime(options = {}) {
   const root = path.resolve(__dirname, '..');
   const page = fs.readFileSync(path.join(root, 'site', 'workbench', 'text-video.html'), 'utf8');
   const scripts = [...page.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)].map((match) => match[1]).filter(Boolean);
@@ -100,7 +100,7 @@ function createRuntime() {
   const orientationLandscape = new Element('button'); orientationLandscape.setAttribute('data-orientation', 'landscape');
   get('orientationTabs').appendChild(orientationPortrait); get('orientationTabs').appendChild(orientationLandscape);
 
-  const requests = {plans: [], avatars: [], paid: [], jobs: []};
+  const requests = {plans: [], avatars: [], quotes: [], paid: [], jobs: []};
   const revoked = [];
   let objectUrlCounter = 0;
   const fetch = (url, options = {}) => {
@@ -115,6 +115,13 @@ function createRuntime() {
     }
     if (url === '/api/gen/text-video/avatar') {
       const item = deferred(); item.url = url; item.options = options; requests.avatars.push(item); return item.promise;
+    }
+    if (url === '/api/gen/text-video/quote') {
+      requests.quotes.push({url, options});
+      return Promise.resolve(response(200, {
+        quote_token: 'quote-token', cost: 30, scene_count: 1,
+        cost_breakdown: {scene_count: 1, total: 30},
+      }));
     }
     if (url === '/api/gen/script_to_video') {
       const item = deferred(); item.url = url; item.options = options; requests.paid.push(item); return item.promise;
@@ -153,6 +160,7 @@ function createRuntime() {
     location: {href: ''},
     crypto: {randomUUID: () => 'runtime-key'},
     AbortController,
+    confirm: () => options.confirm !== false,
     URL: {
       createObjectURL: () => 'blob:avatar-' + (++objectUrlCounter),
       revokeObjectURL: (url) => revoked.push(url),
@@ -263,6 +271,18 @@ async function scenarioDisabledPath() {
   return {payload: JSON.parse(runtime.requests.paid[0].options.body), planRequests: runtime.requests.plans.length};
 }
 
+async function scenarioQuoteCancel() {
+  const runtime = createRuntime({confirm: false});
+  await flush();
+  runtime.get('generateBtn').click();
+  await flush();
+  return {
+    quoteRequests: runtime.requests.quotes.length,
+    paidRequests: runtime.requests.paid.length,
+    status: runtime.get('statusText').textContent,
+  };
+}
+
 async function scenarioPlanMutations() {
   const mutations = {
     text(runtime) { runtime.get('videoText').value = '新文案'; runtime.get('videoText').dispatch('input'); },
@@ -364,7 +384,7 @@ async function scenarioSceneAvatarInvalidation() {
 
 async function main() {
   const scenario = process.argv[2];
-  const handlers = {latePlan: scenarioLatePlan, avatarRace: scenarioAvatarRace, phase: scenarioPhase, disabledPath: scenarioDisabledPath, planMutations: scenarioPlanMutations, sceneAvatarRace: scenarioSceneAvatarRace, sceneAvatarInvalidation: scenarioSceneAvatarInvalidation};
+  const handlers = {latePlan: scenarioLatePlan, avatarRace: scenarioAvatarRace, phase: scenarioPhase, disabledPath: scenarioDisabledPath, quoteCancel: scenarioQuoteCancel, planMutations: scenarioPlanMutations, sceneAvatarRace: scenarioSceneAvatarRace, sceneAvatarInvalidation: scenarioSceneAvatarInvalidation};
   if (!handlers[scenario]) throw new Error('Unknown scenario: ' + scenario);
   process.stdout.write(JSON.stringify(await handlers[scenario]()));
 }

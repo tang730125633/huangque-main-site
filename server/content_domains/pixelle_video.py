@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 """Pixelle text-to-video adapter for the authenticated content job pipeline."""
 
+import base64
+import hashlib
+import hmac
 import json
 import math
 import os
@@ -73,6 +76,7 @@ _PLAN_RATE_WINDOW_SECONDS = 60.0
 _PLAN_RATE_MAX_REQUESTS = 6
 _PLAN_RATE_REQUESTS = {}
 _PLAN_RATE_LOCK = threading.Lock()
+_QUOTE_TTL_SECONDS = 600
 _PUBLIC_VOICE_RE = re.compile(r"^zh-CN(?:-[a-z]+)?-[A-Za-z]+Neural$")
 _PUBLIC_VOICE_NAMES = {
     "zh-CN-XiaoxiaoNeural": "女声-温柔（晓晓）",
@@ -586,9 +590,66 @@ def prepare_payload(payload, username=""):
         "scenes": [{"line": line} for line in segments],
     }
     prepared.update(_freeze_voice(body, username))
+    quote_token = str(body.get("quote_token") or "").strip()
+    if quote_token:
+        prepared["_quote_token"] = quote_token
     prepared["talking_material"] = _prepare_talking_material(
         body.get("talking_material"), prepared, username)
     return prepared
+
+
+def _quote_fingerprint(payload):
+    safe = {
+        key: value for key, value in dict(payload or {}).items()
+        if key not in {"_quote_token", "_quoted_cost"}
+    }
+    encoded = json.dumps(
+        safe, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def issue_quote(payload, username, cost, secret, now=None):
+    if not secret:
+        raise RuntimeError("文案成片报价服务未配置")
+    issued_at = int(time.time() if now is None else now)
+    claim = {
+        "v": 1,
+        "u": str(username),
+        "c": int(cost),
+        "h": _quote_fingerprint(payload),
+        "exp": issued_at + _QUOTE_TTL_SECONDS,
+    }
+    raw = json.dumps(claim, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    encoded = base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+    signature = hmac.new(
+        str(secret).encode("utf-8"), encoded.encode("ascii"), hashlib.sha256
+    ).hexdigest()
+    return encoded + "." + signature, claim["exp"]
+
+
+def require_confirmed_quote(token, payload, username, cost, secret, now=None):
+    if not token or not secret:
+        raise ValueError("请先获取并确认本次分镜报价")
+    try:
+        encoded, signature = str(token).split(".", 1)
+        expected = hmac.new(
+            str(secret).encode("utf-8"), encoded.encode("ascii"), hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            raise ValueError
+        padded = encoded + "=" * (-len(encoded) % 4)
+        claim = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+    except Exception as exc:
+        raise ValueError("报价凭证无效，请重新报价") from exc
+    current = int(time.time() if now is None else now)
+    if int(claim.get("exp") or 0) < current:
+        raise ValueError("报价已过期，请重新报价")
+    if (claim.get("u") != str(username)
+            or int(claim.get("c") or -1) != int(cost)
+            or claim.get("h") != _quote_fingerprint(payload)):
+        raise ValueError("分镜或价格已变化，请重新报价")
+    return True
 
 
 def _prepare_talking_material(raw, prepared, username):

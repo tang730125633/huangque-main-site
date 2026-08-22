@@ -218,6 +218,28 @@ class IP12HarnessTests(unittest.TestCase):
         self.assertEqual(state["intake"]["draft"], "过往经历：修车、洗车。")
         self.assertIn("已加入你补充的洗车经历", reply)
 
+    def test_initial_intake_proposal_drops_one_non_verbatim_update_without_losing_draft(self):
+        proposal = intake_decision(
+            draft="称呼：林晓；男性；广州活动布置工作室。",
+            updates=[
+                {
+                    "field": "preferred_name", "value": "林晓", "kind": "user_fact",
+                    "evidence_quote": "请叫我林晓",
+                },
+                {
+                    "field": "visual_identity", "value": "男性", "kind": "user_fact",
+                    "evidence_quote": "模型改写后并不存在于用户原话里的句子",
+                },
+            ],
+        )
+        state, result, reply = harness.apply_intake_decision(
+            harness.initial_state(), proposal, "请叫我林晓，我是男性，在广州经营活动工作室。"
+        )
+
+        self.assertEqual(state["intake"]["status"], "awaiting_confirmation")
+        self.assertEqual([item["field"] for item in result["profile_updates"]], ["preferred_name"])
+        self.assertIn("称呼：林晓", reply)
+
     def test_intake_rejects_repeated_optional_follow_up(self):
         state = harness.initial_state()
         state, _, _ = harness.apply_intake_decision(

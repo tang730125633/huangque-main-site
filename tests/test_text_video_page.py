@@ -242,6 +242,12 @@ process.stdout.write(JSON.stringify({afterSceneEdit:afterSceneEdit,afterPlanInpu
         self.assertNotIn("talking_material", result["payload"])
         self.assertEqual(result["payload"]["pipeline"], "pixelle")
 
+    def test_declined_quote_never_reaches_paid_submission(self):
+        result = self._run_page_runtime("quoteCancel")
+        self.assertEqual(1, result["quoteRequests"])
+        self.assertEqual(0, result["paidRequests"])
+        self.assertIn("未扣点", result["status"])
+
     def test_talking_planning_and_avatar_routes_are_wired(self):
         self.assertIn('/api/gen/text-video/plan', CORE)
         self.assertIn('/api/gen/text-video/avatar', CORE)

@@ -330,6 +330,7 @@
     return true;
   }
   function submitPaid(payload){
+    if(!payload.quote_token){setBusy(false);setStatus('请先获取并确认本次分镜报价','error');return;}
     if(pendingAvatarUploads>0){var uploading='人物图片仍在上传，请稍候';setFieldError('talkingFinalError',uploading);setStatus(uploading,'error');toast(uploading);return;}
     clearTimeout(pollTimer);setBusy(true,'正在提交任务');startedAt=Date.now();setStatus('正在提交任务','running');setFieldError('talkingFinalError','');renderTalkingWarnings([]);
     var pending=pendingSubmission(payload),headers=authHeaders(true);headers['Idempotency-Key']=pending.key;
@@ -344,6 +345,17 @@
       setStatus((activeMode==='generate'?'正在根据主题创作中文文案':'正在使用完整文案生成视频')+cost,'running');
       setBusy(true,'正在生成视频');poll(response.data.job_id);
     }).catch(function(error){var message=error.message||'视频任务提交失败';setBusy(false);setFieldError('talkingFinalError',message);setStatus(message,'error');toast(message);});
+  }
+  function quoteAndSubmit(payload){
+    setBusy(true,'正在获取报价');setStatus('正在计算分镜和价格','running');
+    fetch('/api/gen/text-video/quote',{method:'POST',headers:authHeaders(true),body:JSON.stringify(payload)}).then(readJson).then(function(response){
+      if(response.status===401){location.href='../login.html?redirect=workbench/text-video';return;}
+      var quote=response.data||{};
+      if(!response.status||response.status>=400||!quote.quote_token||!Number.isFinite(Number(quote.cost))||!Number.isFinite(Number(quote.scene_count)))throw new Error(quote.detail||'报价读取失败');
+      var confirmed=window.confirm('本次将生成 '+Number(quote.scene_count)+' 个分镜，预计扣除 '+Number(quote.cost)+' 点。确认后才会提交并扣点。');
+      if(!confirmed){setBusy(false);setStatus('已取消提交，未扣点');return;}
+      payload=Object.assign({},payload,{quote_token:quote.quote_token});submitPaid(payload);
+    }).catch(function(error){var message=error.message||'报价读取失败';setBusy(false);setFieldError('talkingFinalError',message);setStatus(message,'error');toast(message);});
   }
   function requestTalkingPlan(payload){
     var state=talkingState.snapshot();
@@ -367,12 +379,12 @@
     var payload=basePayload(),state=talkingState.snapshot();
     if(!validateBasePayload(payload))return;
     if(pendingAvatarUploads>0){var uploading='人物图片仍在上传，请稍候';setFieldError('talkingFinalError',uploading);setStatus(uploading,'error');toast(uploading);return;}
-    if(!state.enabled){submitPaid(payload);return;}
+    if(!state.enabled){quoteAndSubmit(payload);return;}
     if(!state.defaultAvatar){setFieldError('talkingUploadError','请先上传默认人物形象图片');toast('请先上传默认人物形象图片');return;}
     if(!state.plan){requestTalkingPlan(payload);return;}
     payload={pipeline:payload.pipeline,text:payload.text,template:payload.template,mode:payload.mode,style:payload.style,voice:payload.voice,speech_rate:payload.speech_rate,source_page:payload.source_page,talking_material:talkingState.buildTalkingMaterial(el('talkingRatio').value)};
     if(!payload.talking_material.scenes.some(function(scene){return scene.enabled;})){setFieldError('talkingFinalError','请至少启用一个口播分镜');toast('请至少启用一个口播分镜');return;}
-    submitPaid(payload);
+    quoteAndSubmit(payload);
   }
   function validateAvatarDataUrl(dataUrl){
     var match=/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(String(dataUrl||''));
