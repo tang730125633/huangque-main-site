@@ -18,7 +18,7 @@ export HERMES_AUTH_BASE=http://127.0.0.1:8095
 export HQ_AUTH_BASE=http://127.0.0.1:8095
 export HERMES_ENABLE_INTERNAL_TOOLS=1
 export PYTHONPATH="/home/ubuntu/hermes-preview-deps${PYTHONPATH:+:$PYTHONPATH}"
-export PATH="/home/ubuntu/hermes-preview-bin:$PATH"
+export PATH="/home/ubuntu/hermes-preview/bin:$PATH"
 PYTHON=/usr/bin/python3
 
 cd "$HERMES_HOME"

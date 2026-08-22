@@ -208,7 +208,7 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
             "server/hermes_ip12/templates/index_clean.html": (20, "/home/ubuntu/hermes-preview/templates/index_clean.html", "hermes", 0),
             "deploy/zelong/run-hermes-ip12-preview.sh": (25, "/home/ubuntu/hermes-preview/run-preview.sh", "hermes", 0),
             "deploy/zelong/hermes-ip12-preview-requirements.txt": (25, "/home/ubuntu/hermes-preview/preview-requirements.txt", "hermes", 0),
-            "deploy/zelong/hermes-preview-cli": (25, "/home/ubuntu/hermes-preview-bin/hermes-preview-cli", "hermes", 0),
+            "deploy/zelong/hermes-preview-cli": (25, "/home/ubuntu/hermes-preview/bin/hermes-preview-cli", "hermes", 0),
             "deploy/zelong/nginx-hermes-ip12-preview.conf": (35, "/etc/nginx/snippets/hermes-ip12-preview.conf", "hermes", 0),
             "deploy/zelong/hermes-ip12-preview.service": (35, "/etc/systemd/system/hermes-ip12-preview.service", "hermes", 1),
             "site/workbench/cloud-shell.js": (40, "/var/www/huangquechuanmei/workbench/cloud-shell.js", "-", 0),
@@ -332,7 +332,7 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
         self.assertIn("models_url", preview_runner)
         self.assertIn("configured Hermes preview model is unavailable", preview_runner)
         self.assertIn("/home/ubuntu/hermes-preview-deps", preview_runner)
-        self.assertIn("/home/ubuntu/hermes-preview-bin", preview_runner)
+        self.assertIn("/home/ubuntu/hermes-preview/bin", preview_runner)
         self.assertIn("missing preview media modules", preview_runner)
         self.assertIn("missing preview media commands", preview_runner)
         self.assertIn("missing preview Chromium", preview_runner)
