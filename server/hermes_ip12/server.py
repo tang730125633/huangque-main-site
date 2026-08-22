@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Hermes IP 孵化教练 — 前 6 个模块开放，后续能力开发中。"""
-import hashlib, html, json, os, pathlib, re, shutil, subprocess, tempfile, threading, time, uuid
+import base64, binascii, hashlib, html, json, os, pathlib, re, shutil, subprocess, tempfile, threading, time, uuid
 from datetime import datetime, timedelta
 from flask import (
     Flask,
@@ -104,6 +104,11 @@ MODULES = [
 ]
 AVAILABLE_MODULE_COUNT = 6
 MAX_PROJECTS_PER_ACCOUNT = 2
+PROJECT_BACKUP_SCHEMA = "huangque.ip12.project-backup/v1"
+PROJECT_BACKUP_MAX_BYTES = 24 * 1024 * 1024
+PROJECT_BACKUP_MAX_PDF_BYTES = 8 * 1024 * 1024
+PROJECT_BACKUP_MAX_MESSAGES = 5000
+PROJECT_BACKUP_MAX_MESSAGE_CHARS = 200000
 COMING_SOON_MESSAGE = "尚未开发，敬请期待"
 COMING_SOON_API_PATHS = {"/api/module7-images", "/api/module8-video", "/api/m9-funnel", "/api/m11-sales", "/api/m12-calendar"}
 
@@ -317,6 +322,141 @@ def save_conversation(convo_id, data):
     return True
 
 
+def _json_clone(value):
+    return json.loads(json.dumps(value, ensure_ascii=False))
+
+
+def _backup_messages(messages):
+    if not isinstance(messages, list) or len(messages) > PROJECT_BACKUP_MAX_MESSAGES:
+        raise ValueError("备份中的对话数量不合法")
+    cleaned = []
+    for item in messages:
+        if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"}:
+            raise ValueError("备份中的对话格式不合法")
+        content = item.get("content")
+        if not isinstance(content, str) or len(content) > PROJECT_BACKUP_MAX_MESSAGE_CHARS or "\x00" in content:
+            raise ValueError("备份中的对话内容不合法")
+        message = {"role": item["role"], "content": content}
+        for key in ("message_id", "choice_target_id"):
+            value = item.get(key)
+            if isinstance(value, str) and 0 < len(value) <= 160:
+                message[key] = value
+        if isinstance(item.get("agent_trace"), dict):
+            message["agent_trace"] = _json_clone(item["agent_trace"])
+        cleaned.append(message)
+    return cleaned
+
+
+def _project_backup_payload(convo_id, convo):
+    state = normalize_coach_state(convo.get("coach_state"))
+    project = {
+        "title": str(convo.get("title") or "新诊断")[:120],
+        "messages": _backup_messages(convo.get("messages") or []),
+        "coach_state": _json_clone(state),
+        "reports": _json_clone(convo.get("reports") if isinstance(convo.get("reports"), dict) else {}),
+        "deliverables": _json_clone(convo.get("deliverables") if isinstance(convo.get("deliverables"), dict) else {}),
+        "artifact_notice_sent": bool(convo.get("artifact_notice_sent")),
+        "artifact_notice_module": int(convo.get("artifact_notice_module") or 0),
+    }
+    pdf_record = None
+    pdf_path = FOUNDATION_REPORTS_DIR / (convo_id + ".pdf")
+    if pdf_path.is_file():
+        if pdf_path.stat().st_size > PROJECT_BACKUP_MAX_PDF_BYTES:
+            raise RuntimeError("Project PDF 超过备份上限")
+        _validate_foundation_pdf(pdf_path)
+        pdf_record = {
+            "encoding": "base64",
+            "data": base64.b64encode(pdf_path.read_bytes()).decode("ascii"),
+        }
+    return {
+        "schema": PROJECT_BACKUP_SCHEMA,
+        "exported_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "source_project_id": convo_id,
+        "agent_release": coach_harness.AGENT_RELEASE_MANIFEST["agent_release"],
+        "state_schema": coach_harness.SCHEMA_VERSION,
+        "project": project,
+        "foundation_pdf": pdf_record,
+    }
+
+
+def _restored_project_title(value):
+    title = str(value or "恢复的诊断").strip() or "恢复的诊断"
+    suffix = "（恢复）"
+    return title[:120 - len(suffix)] + suffix
+
+
+def _parse_project_backup(raw):
+    try:
+        payload = json.loads(raw.decode("utf-8-sig"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ValueError("请选择 IP12 导出的 JSON 备份文件") from exc
+    if not isinstance(payload, dict) or payload.get("schema") != PROJECT_BACKUP_SCHEMA:
+        raise ValueError("备份版本不受支持")
+    project = payload.get("project")
+    allowed = {
+        "title", "messages", "coach_state", "reports", "deliverables",
+        "artifact_notice_sent", "artifact_notice_module",
+    }
+    if not isinstance(project, dict) or set(project) - allowed:
+        raise ValueError("备份中的 Project 格式不合法")
+    title = project.get("title")
+    if not isinstance(title, str) or not title.strip() or len(title.strip()) > 120:
+        raise ValueError("备份中的 Project 标题不合法")
+    try:
+        state = normalize_coach_state(_json_clone(project.get("coach_state")))
+    except (TypeError, ValueError, coach_harness.HarnessError) as exc:
+        raise ValueError("备份中的诊断状态不合法") from exc
+    reports = project.get("reports")
+    deliverables = project.get("deliverables")
+    if not isinstance(reports, dict) or not isinstance(deliverables, dict):
+        raise ValueError("备份中的交付物格式不合法")
+    pdf_bytes = b""
+    pdf_record = payload.get("foundation_pdf")
+    if pdf_record is not None:
+        if not isinstance(pdf_record, dict) or pdf_record.get("encoding") != "base64" or not isinstance(pdf_record.get("data"), str):
+            raise ValueError("备份中的 PDF 格式不合法")
+        try:
+            pdf_bytes = base64.b64decode(pdf_record["data"], validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise ValueError("备份中的 PDF 无法读取") from exc
+        if not pdf_bytes.startswith(b"%PDF-") or len(pdf_bytes) > PROJECT_BACKUP_MAX_PDF_BYTES:
+            raise ValueError("备份中的 PDF 不合法或过大")
+    elif isinstance(state.get("foundation_report"), dict) and state["foundation_report"].get("status") in {"awaiting_confirmation", "confirmed"}:
+        report = dict(state["foundation_report"])
+        report.update(status="failed", review_status="dirty", error="备份中不含 PDF，请重新生成")
+        report.pop("confirmed_at", None)
+        state["foundation_report"] = report
+    return {
+        "source_project_id": str(payload.get("source_project_id") or "")[:64],
+        "title": _restored_project_title(title),
+        "messages": _backup_messages(project.get("messages") or []),
+        "coach_state": state,
+        "reports": _json_clone(reports),
+        "deliverables": _json_clone(deliverables),
+        "artifact_notice_sent": bool(project.get("artifact_notice_sent")),
+        "artifact_notice_module": int(project.get("artifact_notice_module") or 0),
+        "pdf_bytes": pdf_bytes,
+    }
+
+
+def _stage_backup_pdf(pdf_bytes):
+    if not pdf_bytes:
+        return None
+    FOUNDATION_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(prefix=".ip12-import-", suffix=".pdf", dir=FOUNDATION_REPORTS_DIR)
+    path = pathlib.Path(temp_path)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(pdf_bytes)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _validate_foundation_pdf(path)
+        return path
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+
+
 def _migration_notice_id(state):
     migration = state.get("migration") if isinstance(state, dict) else None
     return str(migration.get("notice_id") or "") if isinstance(migration, dict) else ""
@@ -478,6 +618,72 @@ def _production_target_from_message(convo, message):
     if len(candidates) == 1:
         return {key: candidates[0][key] for key in ("category_id", "topic_id")}
     raise coach_harness.HarnessError("请先打开模块 6 中要制作的具体文案，或在消息里写明完整标题")
+
+
+def _content_revision_target_from_message(convo, message):
+    """Route an explicit numbered-script edit through the versioned content editor."""
+    if not _content_pack_ready((convo.get("deliverables") or {}).get("6") or {}):
+        return None
+    if not re.search(r"修改|删(?:掉|除)|改成|换成|补到|保持不变|保留.{0,8}不变", str(message or "")):
+        return None
+    try:
+        return _production_target_from_message(convo, message)
+    except coach_harness.HarnessError:
+        return None
+
+
+def _post_module_six_production_action(convo):
+    state = normalize_coach_state(convo.get("coach_state"))
+    if 6 not in state.get("completed_modules", []) or convo.get("productions"):
+        return None
+    pack = (convo.get("deliverables") or {}).get("6") or {}
+    for category in pack.get("categories") or []:
+        for topic in category.get("topics") or []:
+            target = {
+                "category_id": str(category.get("id") or ""),
+                "topic_id": str(topic.get("id") or ""),
+            }
+            try:
+                _production_source(convo, target)
+            except coach_harness.HarnessError:
+                continue
+            return {
+                "type": "prepare_production",
+                "label": "开始制作口播视频",
+                "primary": True,
+                "content_target": target,
+                "requested_result": "video",
+                "preferred_action": "digital-ip-text-generate",
+                "candidate_actions": ["digital-ip-text-generate"],
+                "allow_system_media": False,
+                "options": {},
+                "script_title": str(topic.get("title") or "第一篇口播文案"),
+            }
+    return None
+
+
+def _post_module_six_capability_question(state, message):
+    if 6 not in state.get("completed_modules", []):
+        return False
+    text = re.sub(r"\s+", "", str(message or ""))
+    return bool(re.search(
+        r"(?:具备|拥有|支持|有).{0,8}(?:哪些|什么)?(?:能力|功能)"
+        r"|(?:可以|能).{0,10}(?:做|制作|完成).{0,8}(?:什么|哪些|事情|内容)"
+        r"|接下来.{0,6}(?:做什么|怎么做)",
+        text,
+    ))
+
+
+def _post_module_six_handoff_reply(action):
+    return (
+        "六步已经完成，我可以继续调用黄雀的图片、音频和视频制作能力。"
+        "根据当前成果，我建议先把《%s》制作成数字人口播视频。"
+        "文案会自动复用；接下来请先确认你自己上传的形象和可试听声音。"
+        "如果还没有素材，可以先上传照片创建形象，或上传音频创建个人声音。"
+        "系统公共素材默认不会展示；只有你明确要求使用时才会提供。"
+        "我会先显示实时报价，未经你确认不会提交或扣点。"
+        % action.get("script_title", "第一篇口播文案")
+    )
 
 
 def _production_public(record):
@@ -785,10 +991,25 @@ def _production_field_label(record, field):
     return str(descriptor.get("title") or _CAPABILITY_FIELD_LABELS.get(field, field))
 
 
+def _browser_preview_url(value):
+    value = str(value or "").strip()
+    return request.host_url.rstrip("/") + value if value.startswith("/") else value
+
+
+def _explicit_system_media_request(message):
+    text = re.sub(r"\s+", "", str(message or ""))
+    media = r"(?:系统|公共|预设|平台|自带|温柔女声|活力女声|沉稳男声|亲和女声)"
+    if re.search(r"(?:不要|不使用|别用|禁止).{0,8}" + media, text):
+        return False
+    return bool(re.search(r"(?:使用|选|选择|就用|采用).{0,12}" + media, text))
+
+
 def _ensure_production_material_request_message(convo, record, missing):
     fields = [name for name in missing if _production_upload_kind(record, name)]
     needs_account_audio = "audio_file" in missing
-    if not fields and not needs_account_audio:
+    needs_avatar = "avatar_id" in missing
+    needs_voice = "voice" in missing or "voice_key" in missing
+    if not fields and not needs_account_audio and not needs_avatar and not needs_voice:
         return None
     message_id = str(record.get("material_request_message_id") or "")
     if message_id:
@@ -805,6 +1026,16 @@ def _ensure_production_material_request_message(convo, record, missing):
         parts.append(
             "这项制作还需要音频素材。当前只能选择你黄雀账号里已有的音频资产；"
             "本地音频暂时不能直接上传到这条生成链路。"
+        )
+    if needs_avatar:
+        parts.append(
+            "数字人口播需要先确认本人形象。请选择一张你以前上传创建的形象；"
+            "如果没有合适的，请点击“上传照片创建我的形象”。选择前必须能看到图片预览。"
+        )
+    if needs_voice:
+        parts.append(
+            "声音默认只展示有试听样音的个人声音；如果还没有，请点击“上传音频创建我的声音”。"
+            "系统公共音色不会自动出现，只有你明确提出使用后才会展示试听卡。"
         )
     message = _append_assistant_message(
         convo, "\n\n".join(parts), "production_bridge",
@@ -828,7 +1059,7 @@ def _production_source_fields(action, properties):
     return tuple(name for name in wanted if name in properties)
 
 
-def _production_parameter_context(account_id, action, catalog_entry=None):
+def _production_parameter_context(account_id, action, catalog_entry=None, allow_system_media=False):
     """Expose account-owned choices while keeping derived source fields out of the UI."""
     # canvas-ops keeps the existing prompt-shaped adapter; the bridge still
     # validates the expanded op batch against the canonical action contract.
@@ -836,6 +1067,7 @@ def _production_parameter_context(account_id, action, catalog_entry=None):
     properties = schema.setdefault("properties", {})
     schema.setdefault("required", [])
     context = {}
+    material_reads_ok = True
     request_key = "ip12-read-" + uuid.uuid4().hex
 
     def read(capability, input_body):
@@ -853,33 +1085,63 @@ def _production_parameter_context(account_id, action, catalog_entry=None):
         schema["required"] = []
     if "avatar_id" in properties:
         avatars = read("video-avatars", {"limit": 120})
+        material_reads_ok = material_reads_ok and avatars is not None
         avatar_items = avatars.get("items", []) if isinstance(avatars, dict) else []
+        avatar_choices = [
+            {
+                "const": item["id"],
+                "title": str(item.get("name") or "未命名形象"),
+                "preview_url": _browser_preview_url(item.get("image_url")),
+                "preview_kind": "image",
+                "source": "personal",
+            }
+            for item in avatar_items
+            if isinstance(item, dict) and isinstance(item.get("id"), int)
+            and item.get("status") == "ready" and str(item.get("image_url") or "").strip()
+        ]
         properties["avatar_id"].update({
             "title": "数字人形象",
-            "oneOf": [
-                {"const": item["id"], "title": str(item.get("name") or "未命名形象")}
-                for item in avatar_items
-                if isinstance(item, dict) and isinstance(item.get("id"), int)
-                and item.get("status") == "ready"
-            ],
+            "oneOf": avatar_choices,
+            "x-hq-upload-route": "/workbench/digital-ip",
+            "x-hq-upload-label": "上传照片创建我的形象",
             "description": (
-                "从当前账号已经准备好的数字人形象中选择。"
+                "只展示当前账号由用户上传照片创建、且可以预览的形象。"
                 if avatars is not None else "暂时无法读取当前账号的数字人形象，请稍后重新打开。"
             ),
         })
     voice_field = "voice" if "voice" in properties else ("voice_key" if "voice_key" in properties else "")
     if voice_field:
         voices = read("voices", {})
+        material_reads_ok = material_reads_ok and voices is not None
         voice_items = voices.get("items", []) if isinstance(voices, dict) else []
+        allowed_voices = [
+            item for item in voice_items
+            if isinstance(item, dict)
+            and str(item.get("voice_key") or "").strip()
+            and str(item.get("preview_url") or "").strip()
+            and (item.get("scope") == "personal" or allow_system_media)
+        ]
         properties[voice_field].update({
             "title": "声音",
             "oneOf": [
-                {"const": item["voice_key"], "title": str(item.get("display_name") or "未命名声音")}
-                for item in voice_items
-                if isinstance(item, dict) and str(item.get("voice_key") or "").strip()
+                {
+                    "const": item["voice_key"],
+                    "title": str(item.get("display_name") or "未命名声音"),
+                    "preview_url": _browser_preview_url(item.get("preview_url")),
+                    "preview_kind": "audio",
+                    "source": str(item.get("scope") or "personal"),
+                }
+                for item in allowed_voices
             ],
+            "x-hq-upload-route": "/workbench/audio",
+            "x-hq-upload-label": "上传音频创建我的声音",
+            "x-hq-system-media-allowed": bool(allow_system_media),
             "description": (
-                "从当前账号可用的公共或个人声音中选择。"
+                (
+                    "你已明确要求使用系统素材；这里只展示有试听样音的个人或公共声音。"
+                    if allow_system_media else
+                    "默认只展示有试听样音的个人声音；如需公共音色，请明确告诉 Agent。"
+                )
                 if voices is not None else "暂时无法读取当前账号的声音，请稍后重新打开。"
             ),
         })
@@ -908,7 +1170,65 @@ def _production_parameter_context(account_id, action, catalog_entry=None):
             and isinstance(item.get("version"), int)
             and item.get("role") in {"owner", "editor"}
         }
+    if action in {"digital-ip-text-generate", "digital-ip-batch-generate"} and material_reads_ok:
+        context["material_context_version"] = 3
     return schema, context
+
+
+def _refresh_unsubmitted_production_materials(cid, production_id):
+    with CONVERSATION_STATE_LOCK:
+        convo = _production_conversation(cid)
+        record = (convo or {}).get("productions", {}).get(production_id)
+        if not isinstance(record, dict):
+            return
+        if record.get("action") != "digital-ip-text-generate":
+            return
+        if record.get("status") not in {"draft", "blocked_prerequisite", "stale"}:
+            return
+        if int(record.get("material_context_version") or 0) >= 3:
+            return
+        family = record.get("capability_family") or "video"
+        allow_system_media = bool(record.get("allow_system_media"))
+    recommendation = _production_recommendation(
+        current_account_id(), family, "digital-ip-text-generate"
+    )
+    schema, context = _production_parameter_context(
+        current_account_id(), "digital-ip-text-generate",
+        recommendation.get("catalog_entry"), allow_system_media=allow_system_media,
+    )
+    if int(context.get("material_context_version") or 0) < 3:
+        return
+    with CONVERSATION_STATE_LOCK:
+        convo = _production_conversation(cid)
+        record = (convo or {}).get("productions", {}).get(production_id)
+        if not isinstance(record, dict):
+            return
+        if record.get("status") not in {"draft", "blocked_prerequisite", "stale"}:
+            return
+        properties = schema.get("properties") or {}
+        options = {}
+        for name, value in (record.get("options") or {}).items():
+            descriptor = properties.get(name)
+            if not isinstance(descriptor, dict):
+                continue
+            choices = descriptor.get("oneOf")
+            if isinstance(choices, list) and not any(
+                isinstance(choice, dict) and choice.get("const") == value
+                for choice in choices
+            ):
+                continue
+            options[name] = value
+        record["parameter_schema"] = schema
+        record.update(context)
+        _production_set_options(record, options)
+        valid, _, missing = _production_plan_or_error(record, record["options"])
+        record.update(
+            status="draft" if valid else "blocked_prerequisite",
+            last_error_code="" if valid else "missing_prerequisite",
+            updated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
+        )
+        _ensure_production_material_request_message(convo, record, missing)
+        save_conversation(cid, convo)
 
 
 def _production_missing_fields(record, options):
@@ -1512,7 +1832,7 @@ def generate_foundation_report(convo_id):
     content = call_ai(messages, stream=False, temperature=0.4, max_tokens=16000).json()["choices"][0]["message"]["content"]
     if not isinstance(content, str) or not content.strip():
         raise RuntimeError("AI report is empty")
-    content = content.strip()
+    content = _ground_foundation_story_section(content.strip(), foundation_outputs)
     FOUNDATION_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     playwright_browser = ""
     try:
@@ -1529,11 +1849,13 @@ def generate_foundation_report(convo_id):
         shutil.which("chromium-browser"),
         "/snap/bin/chromium",
     ) if item and pathlib.Path(item).is_file()))
-    if not browsers:
-        raise RuntimeError("PDF renderer is unavailable")
     with tempfile.TemporaryDirectory(prefix="hermes-foundation-", dir=str(pathlib.Path.home())) as directory:
         root = pathlib.Path(directory)
-        pdf_path = _render_foundation_pdf(content, browsers, root)
+        if browsers:
+            pdf_path = _render_foundation_pdf(content, browsers, root)
+        else:
+            from pdf_fallback import render_foundation_pdf_fallback
+            pdf_path = render_foundation_pdf_fallback(content, root / "report-fallback.pdf")
         _validate_foundation_pdf(pdf_path)
         staged_target = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
         try:
@@ -1565,6 +1887,22 @@ def generate_foundation_report(convo_id):
         save_conversation(convo_id, convo)
     return record
 
+
+def _ground_foundation_story_section(content, foundation_outputs):
+    """Reuse the confirmed story asset instead of letting the report rewrite history."""
+    confirmed = str(((foundation_outputs or {}).get("4-4") or {}).get("content") or "").strip()
+    if not confirmed:
+        return content
+    section = "## 模块四｜故事资产挖掘\n\n### 已确认故事资产\n\n" + confirmed
+    start = re.search(r"(?m)^##\s*模块四[｜|]\s*故事资产挖掘\s*$", content)
+    if not start:
+        return content.rstrip() + "\n\n" + section
+    end = re.search(r"(?m)^##\s*优化建议汇总\s*$", content[start.end():])
+    if not end:
+        return content[:start.start()].rstrip() + "\n\n" + section
+    end_at = start.end() + end.start()
+    return content[:start.start()].rstrip() + "\n\n" + section + "\n\n" + content[end_at:].lstrip()
+
 def call_ai(messages, stream=False, temperature=0.7, max_tokens=None, response_format=None,
             timeout_seconds=AI_DEFAULT_TIMEOUT_SECONDS, reasoning_effort=None):
     payload_messages = [dict(item) for item in messages]
@@ -1577,21 +1915,22 @@ def call_ai(messages, stream=False, temperature=0.7, max_tokens=None, response_f
     if max_tokens:
         token_field = "max_completion_tokens" if modern_model else "max_tokens"
         payload[token_field] = max_tokens
-    deepseek_json = MODEL.lower().startswith("deepseek") and bool(response_format) and not stream
+    structured_json = bool(response_format) and not stream
+    schema = ((response_format.get("json_schema") or {}).get("schema") or {}) if response_format else {}
+    deepseek_json = MODEL.lower().startswith("deepseek") and structured_json
     if deepseek_json:
         payload["response_format"] = {"type": "json_object"}
         payload["thinking"] = {"type": "disabled"}
-        schema = ((response_format.get("json_schema") or {}).get("schema") or {})
-        if schema and payload_messages:
-            payload_messages[0]["content"] = (
-                str(payload_messages[0].get("content") or "")
-                + "\n\n只输出一个完整 JSON 对象，不要 Markdown。所有 required 字段必须出现，"
-                  "并严格匹配这个 JSON Schema：\n"
-                + json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
-            )
     elif response_format:
         payload["response_format"] = response_format
-    validate_json = deepseek_json
+    if schema and payload_messages:
+        payload_messages[0]["content"] = (
+            str(payload_messages[0].get("content") or "")
+            + "\n\n只输出一个完整 JSON 对象，不要 Markdown。所有 required 字段必须出现，"
+              "并严格匹配这个 JSON Schema：\n"
+            + json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
+        )
+    validate_json = structured_json
     request_deadline = time.monotonic() + max(1, float(timeout_seconds))
     for attempt in range(2 if validate_json else 1):
         remaining = request_deadline - time.monotonic()
@@ -1604,23 +1943,31 @@ def call_ai(messages, stream=False, temperature=0.7, max_tokens=None, response_f
         if resp.status_code != 200:
             raise Exception(f"API {resp.status_code}: {resp.text[:300]}")
         if validate_json:
+            content = ""
             try:
                 content = (((resp.json().get("choices") or [{}])[0].get("message") or {}).get("content"))
                 if isinstance(content, list):
                     content = "".join(
                         str(item.get("text") or "") for item in content if isinstance(item, dict)
                     )
-                json.loads(str(content or ""))
+                parsed = json.loads(str(content or ""))
+                if schema.get("type") == "object":
+                    if not isinstance(parsed, dict):
+                        raise ValueError("structured response is not an object")
+                    missing = set(schema.get("required") or []) - set(parsed)
+                    unknown = set(parsed) - set(schema.get("properties") or {})
+                    if missing or (schema.get("additionalProperties") is False and unknown):
+                        raise ValueError("structured response does not match top-level schema")
             except Exception:
                 if attempt == 0:
                     if content:
                         payload_messages.append({"role": "assistant", "content": str(content)[:4000]})
                     payload_messages.append({
                         "role": "user",
-                        "content": "上一次输出不是完整 JSON。只重发一个完整 JSON 对象，不要解释或使用 Markdown。",
+                        "content": "上一次输出不是完整 JSON 或不符合 JSON Schema。只重发一个完整 JSON 对象，不要解释或使用 Markdown。",
                     })
                     continue
-                raise Exception("API 200 但没有返回完整 JSON")
+                raise Exception("API 200 但没有返回符合 Schema 的完整 JSON")
         return resp
 
 def generate_module_report(convo_id, module_id):
@@ -1956,6 +2303,86 @@ def api_create_convo():
         save_conversation(cid, data)
     return jsonify({"id": cid, "title": data["title"]})
 
+
+@app.route("/api/conversations/<cid>/export", methods=["GET"])
+def api_export_convo(cid):
+    try:
+        convo = _migrate_owned_conversation(cid)
+        if convo is None:
+            return jsonify({"ok": False, "error": "诊断不存在"}), 404
+        raw = json.dumps(
+            _project_backup_payload(cid, convo), ensure_ascii=False, separators=(",", ":")
+        ).encode("utf-8")
+    except (OSError, RuntimeError, ValueError) as exc:
+        app.logger.warning("IP12 Project export failed: %s", exc)
+        return jsonify({"ok": False, "error": "Project 备份暂时无法生成，请稍后重试"}), 409
+    if len(raw) > PROJECT_BACKUP_MAX_BYTES:
+        return jsonify({"ok": False, "error": "Project 备份超过 24 MB，暂时无法导出"}), 413
+    return Response(
+        raw,
+        content_type="application/json; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="ip12-project-{cid}.json"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@app.route("/api/conversations/import", methods=["POST"])
+def api_import_convo():
+    uploaded = request.files.get("backup")
+    if uploaded is None or not uploaded.filename:
+        return jsonify({"ok": False, "error": "请选择 Project 备份文件"}), 400
+    raw = uploaded.stream.read(PROJECT_BACKUP_MAX_BYTES + 1)
+    if len(raw) > PROJECT_BACKUP_MAX_BYTES:
+        return jsonify({"ok": False, "error": "Project 备份不能超过 24 MB"}), 413
+    try:
+        restored = _parse_project_backup(raw)
+        staged_pdf = _stage_backup_pdf(restored.pop("pdf_bytes"))
+    except (OSError, RuntimeError, ValueError) as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    owner_account_id = current_account_id()
+    cid = ""
+    try:
+        with CONVERSATION_STATE_LOCK:
+            if len(list_convos(owner_account_id)) >= MAX_PROJECTS_PER_ACCOUNT:
+                return jsonify({
+                    "ok": False,
+                    "code": "ip12_project_limit",
+                    "error": "最多允许创建两个 Project，请先导出并删除一个旧 Project",
+                }), 409
+            cid = uuid.uuid4().hex[:12]
+            DELETED_CONVERSATION_IDS.discard(cid)
+            data = {
+                "id": cid,
+                "title": restored["title"],
+                "messages": restored["messages"],
+                "coach_state": restored["coach_state"],
+                "reports": restored["reports"],
+                "deliverables": restored["deliverables"],
+                "artifact_notice_sent": restored["artifact_notice_sent"],
+                "artifact_notice_module": restored["artifact_notice_module"],
+                "owner_account_id": owner_account_id,
+                "productions": {},
+                "restored_from_project_id": restored["source_project_id"],
+            }
+            if not save_conversation(cid, data):
+                raise RuntimeError("Project 备份恢复失败")
+            if staged_pdf is not None:
+                os.replace(staged_pdf, FOUNDATION_REPORTS_DIR / (cid + ".pdf"))
+                staged_pdf = None
+    except (OSError, RuntimeError) as exc:
+        if cid:
+            conversation_path(cid).unlink(missing_ok=True)
+            (FOUNDATION_REPORTS_DIR / (cid + ".pdf")).unlink(missing_ok=True)
+        app.logger.warning("IP12 Project import failed: %s", exc)
+        return jsonify({"ok": False, "error": "Project 备份恢复失败，请稍后重试"}), 500
+    finally:
+        if staged_pdf is not None:
+            staged_pdf.unlink(missing_ok=True)
+    return jsonify({"ok": True, "id": cid, "title": restored["title"]})
+
+
 @app.route("/api/conversations/<cid>", methods=["GET"])
 def api_get_convo(cid):
     try:
@@ -1965,6 +2392,15 @@ def api_get_convo(cid):
         return jsonify({"ok": False, "error": "Project 升级暂时无法保存，请稍后重试"}), 503
     if convo is None:
         return jsonify({"ok": False, "error": "诊断不存在"}), 404
+    for production_id, record in list((convo.get("productions") or {}).items()):
+        if (
+            isinstance(record, dict)
+            and record.get("action") == "digital-ip-text-generate"
+            and record.get("status") in {"draft", "blocked_prerequisite", "stale"}
+            and int(record.get("material_context_version") or 0) < 3
+        ):
+            _refresh_unsubmitted_production_materials(cid, production_id)
+    convo = _migrate_owned_conversation(cid)
     receipt_id = str(request.args.get("receipt") or "").strip()
     if receipt_id:
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", receipt_id):
@@ -1979,6 +2415,9 @@ def api_get_convo(cid):
         if message.get("role") == "assistant" and not isinstance(message.get("agent_trace"), dict):
             message["agent_trace"] = {"status": "legacy_unknown"}
     public_convo["harness_actions"] = coach_harness.available_actions(public_convo["coach_state"])
+    handoff = _post_module_six_production_action(convo)
+    if handoff and not public_convo["harness_actions"]:
+        public_convo["harness_actions"] = [handoff]
     public_convo["productions"] = _productions_summary(convo)
     return jsonify(public_convo)
 
@@ -2016,8 +2455,10 @@ def _production_conversation(cid):
 def api_prepare_production():
     try:
         body = _production_request_body()
-        if set(body) - {"conversation_id", "content_target", "expected_revision", "requested_result", "preferred_action", "options"}:
+        if set(body) - {"conversation_id", "content_target", "expected_revision", "requested_result", "preferred_action", "options", "allow_system_media"}:
             return _production_error("invalid_request", "包含不支持的参数", 400)
+        if "allow_system_media" in body and not isinstance(body["allow_system_media"], bool):
+            return _production_error("invalid_request", "系统素材授权必须是布尔值", 400)
         cid = str(body.get("conversation_id") or "")
         recommendation = _production_recommendation(
             current_account_id(), body.get("requested_result"), body.get("preferred_action")
@@ -2037,7 +2478,8 @@ def api_prepare_production():
                 convo, body.get("content_target"), unbound=source_unbound
             )
         parameter_schema, resource_context = _production_parameter_context(
-            current_account_id(), recommendation["recommended_action"], catalog_entry
+            current_account_id(), recommendation["recommended_action"], catalog_entry,
+            allow_system_media=bool(body.get("allow_system_media")),
         )
         with CONVERSATION_STATE_LOCK:
             convo = _production_conversation(cid)
@@ -2065,6 +2507,7 @@ def api_prepare_production():
                 "ui_route": str(catalog_entry.get("ui_route") or ""),
                 "transport": catalog_entry.get("transport") or {"kind": "action"},
                 "constraints": list(catalog_entry.get("constraints") or []),
+                "allow_system_media": bool(body.get("allow_system_media")),
                 "brief": {"reason": "基于当前已确认口播制作", "audience": "当前 IP 的目标受众", "goal": "将当前内容转为可交付成品"},
                 "options": {}, "input_digest": "", "status": "draft", "quote": {},
                 "job_id": None, "asset_refs": [], "canvas_ref": None,
@@ -2488,6 +2931,7 @@ def api_confirm_production():
 @app.route("/api/ip12/productions/<production_id>", methods=["GET"])
 def api_get_production(production_id):
     cid = str(request.args.get("conversation_id") or "")
+    _refresh_unsubmitted_production_materials(cid, production_id)
     with CONVERSATION_STATE_LOCK:
         convo = _production_conversation(cid)
         if convo is None:
@@ -2497,6 +2941,12 @@ def api_get_production(production_id):
             return _production_error("production_not_found", "生产记录不存在", 404)
         if not _production_is_current(convo, record):
             _mark_production_stale(record); save_conversation(cid, convo)
+        if (
+            record.get("status") == "quoted"
+            and int((record.get("quote") or {}).get("expires_at") or 0) <= _utc_timestamp()
+        ):
+            record.update(status="stale", last_error_code="quote_expired")
+            save_conversation(cid, convo)
         restore = None
         if record.get("status") == "submitting" and not record.get("job_id"):
             quote = record.get("quote") or {}
@@ -2876,9 +3326,7 @@ def _coach_model_decision(
         state["current_module"], state["module_step"] + 1
     ):
         decision["choices"] = []
-    evidence = "\n".join(
-        item["content"] for item in history if item["role"] == "user"
-    ) + "\n" + clean_message
+    evidence = _conversation_user_evidence(convo, clean_message)
     for bucket_name in ("facts", "preferences"):
         bucket = (state.get("ip_profile") or {}).get(bucket_name) or {}
         evidence += "\n" + "\n".join(
@@ -3174,6 +3622,19 @@ def _model_snapshot_without_user(convo, message_id):
             if item.get("message_id") != message_id
         ]
     return snapshot
+
+
+def _conversation_user_evidence(convo, current_message=""):
+    """Validate long sessions against user text, independent of model context trimming."""
+    messages = [
+        _redact_mobile_numbers(str(item.get("content") or ""))[:4000]
+        for item in (convo.get("messages") or [])
+        if item.get("role") == "user" and str(item.get("content") or "").strip()
+    ][-128:]
+    current = _redact_mobile_numbers(str(current_message or ""))[:4000]
+    if current:
+        messages.append(current)
+    return "\n".join(messages)
 
 
 def _process_model_turn(
@@ -3692,7 +4153,7 @@ def _process_production_intent_turn(
         )
     elif selected_action == "cinematic-open-generate":
         options["prompt"] = instruction
-    assistant = (
+    assistant = _post_module_six_handoff_reply(intent) if intent.get("post_module_six_handoff") else (
         (
             "画布 Agent 规划需要读取当前画布节点和连线。我会直接带你进入 Canvas 并保留当前 Project；"
             "在那里确认规划后可以返回继续对话。"
@@ -3746,6 +4207,7 @@ def _process_production_intent_turn(
         "requested_result": family,
         "preferred_action": selected_action,
         "candidate_actions": intent["candidate_actions"],
+        "allow_system_media": _explicit_system_media_request(user_message),
         "options": options,
     }]
     return result, 200
@@ -3835,14 +4297,21 @@ def _process_action_turn(cid, action, expected_revision, user_message="", reques
 
     auto_deliverables, foundation_report = _run_completion_effects(cid, new_completed)
     auto_deliverables = {**continued_deliverables, **auto_deliverables}
-    latest_state = normalize_coach_state(load_conversation(cid).get("coach_state"))
-    return _chat_result(
+    latest_convo = load_conversation(cid)
+    latest_state = normalize_coach_state(latest_convo.get("coach_state"))
+    result = _chat_result(
         assistant,
         latest_state,
         new_completed=new_completed,
         auto_deliverables=auto_deliverables,
         foundation_report=foundation_report,
-    ), 200
+    )
+    if 6 in new_completed:
+        handoff = _post_module_six_production_action(latest_convo)
+        if handoff:
+            result["assistant"] += "\n\n" + _post_module_six_handoff_reply(handoff)
+            result["actions"] = [handoff]
+    return result, 200
 
 
 def process_chat_request(body):
@@ -3925,10 +4394,35 @@ def process_chat_request(body):
                 else:
                     action_revision = body.get("expected_revision")
                 if action is None:
-                    production_intent = (
-                        _expanded_production_intent(user_message)
-                        or coach_harness.production_intent(user_message)
+                    handoff = (
+                        _post_module_six_production_action(convo)
+                        if _post_module_six_capability_question(state, user_message)
+                        else None
                     )
+                    if handoff:
+                        production_intent = {
+                            "capability_family": "video",
+                            "recommended_action": "digital-ip-text-generate",
+                            "candidate_actions": ["digital-ip-text-generate"],
+                            "post_module_six_handoff": True,
+                            "script_title": handoff["script_title"],
+                        }
+                        content_target = handoff["content_target"]
+                    else:
+                        production_intent = (
+                            _expanded_production_intent(user_message)
+                            or coach_harness.production_intent(user_message)
+                        )
+                    if (
+                        production_intent is not None
+                        and production_intent.get("recommended_action") not in _SOURCE_FREE_ACTIONS
+                        and not production_intent.get("help_only")
+                        and _intake_pending(state)
+                        and content_target is None
+                    ):
+                        production_intent = None
+                    if production_intent is None and content_target is None:
+                        content_target = _content_revision_target_from_message(convo, user_message)
                     source_optional = production_intent and production_intent.get("recommended_action") in _SOURCE_FREE_ACTIONS
                     source_optional = source_optional or bool(
                         production_intent and production_intent.get("help_only")
