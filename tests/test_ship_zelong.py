@@ -241,6 +241,9 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
         )
         self.assertEqual({"auth", "content"}, {row[4] for row in rows})
 
+    def test_public_installer_may_keep_its_executable_git_mode(self):
+        self.assertEqual("site/downloads/hq/install.sh", manifest_rows("site/downloads/hq/install.sh")[0][1])
+
     def test_dry_run_plan_is_required_for_apply(self):
         self.assertIn('test -n "$supplied" || die', SRC)
         self.assertIn('cmp -s "$payload" "$dir/$id.plan"', SRC)

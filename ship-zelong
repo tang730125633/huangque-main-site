@@ -218,7 +218,7 @@ make_manifest() {
     mapped="$(map_path "$path")" || die "文件不在泽龙部署白名单：$path"
     git cat-file -e "$commit:$path" 2>/dev/null || die "提交中不存在文件：$path"
     mode="$(git ls-tree "$commit" -- "$path" | awk '{print $1}')"
-    test "$mode" = "100644" || die "只允许普通文件（拒绝链接/可执行文件）：$path"
+    test "$mode" = "100644" || test "$mode:$path" = "100755:site/downloads/hq/install.sh" || die "只允许普通文件（仅安装脚本可执行）：$path"
     printf '%s\n' "$path" >>"$list"
   done
   LC_ALL=C sort -u "$list" -o "$list"
