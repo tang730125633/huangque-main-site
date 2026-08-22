@@ -957,6 +957,25 @@ def _expanded_production_intent(message):
     return None
 
 
+def _audio_options_from_message(message):
+    text = re.sub(r"\s+", "", str(message or ""))
+    match = re.search(
+        r"(?:语速|速度)(?:调整|调节|设置|设|改|调)?(?:为|到|成)?([0-9]+(?:\.[0-9]+)?)",
+        text,
+    )
+    if not match:
+        return {}
+    speed = float(match.group(1))
+    return {"speed": round(speed, 1)} if 0.5 <= speed <= 2 else {}
+
+
+def _production_source_revision_intent(message):
+    text = re.sub(r"\s+", "", str(message or ""))
+    source = r"(?:文案|正文|脚本|标题|开头|结尾|第一句|最后一句)"
+    change = r"(?:修改|改成|改为|调整|删除|删掉|换成|缩短|直接|口语|自然|简短|清楚)"
+    return bool(re.search(source + r".{0,30}" + change + r"|" + change + r".{0,30}" + source, text))
+
+
 def _production_action_schema(action, catalog_entry=None):
     catalog_schema = (catalog_entry or {}).get("input_schema")
     if isinstance(catalog_schema, dict) and catalog_schema.get("type") == "object":
@@ -1148,6 +1167,8 @@ def _production_parameter_context(account_id, action, catalog_entry=None, allow_
                 if voices is not None else "暂时无法读取当前账号的声音，请稍后重新打开。"
             ),
         })
+        if action == "audio-generate" and allowed_voices and voice_field not in schema["required"]:
+            schema["required"].append(voice_field)
     if "board_id" in properties:
         boards_result = read("canvas-list", {"limit": 100, "offset": 0})
         boards = boards_result.get("boards", []) if isinstance(boards_result, dict) else []
@@ -4142,6 +4163,8 @@ def _process_production_intent_turn(
     )
     options = ({"ratio": re.sub(r"\s+", "", ratio_match.group()).replace("：", ":")}
                if family in {"image", "video"} and ratio_match else {})
+    if selected_action == "audio-generate":
+        options.update(_audio_options_from_message(user_message))
     instruction = re.sub(r"\s+", " ", user_message).strip()[:320]
     script = re.sub(r"\s+", " ", source["script"]).strip()[:1500]
     if selected_action == "image-generate":
@@ -4422,6 +4445,12 @@ def process_chat_request(body):
                         and not production_intent.get("help_only")
                         and _intake_pending(state)
                         and content_target is None
+                    ):
+                        production_intent = None
+                    if (
+                        production_intent is not None
+                        and content_target is not None
+                        and _production_source_revision_intent(user_message)
                     ):
                         production_intent = None
                     if production_intent is None and content_target is None:
