@@ -2851,6 +2851,38 @@ class H(BaseHTTPRequestHandler):
             if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
             from . import breakdown as breakdown_domain
             return breakdown_domain.handle_local_upload(self, user)
+        if p == "/api/gen/text-video/quote":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录或登录已过期"})
+            if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
+            try:
+                feature_flags.require_enabled("script_to_video")
+                request_body = self._json_body_strict()
+                miniprogram_security.check_payload(request_body)
+                from . import script_to_video as script_to_video_domain
+                from . import pixelle_video as pixelle_video_domain
+                prepared = script_to_video_domain.prepare_script_to_video_payload(
+                    request_body, user["username"])
+                if prepared.get("pipeline") != "pixelle":
+                    raise ValueError("当前报价仅支持文案成片")
+                cost = points_domain.cost_of("script_to_video", prepared)
+                token, expires_at = pixelle_video_domain.issue_quote(
+                    prepared, user["username"], cost, AUTH_INTERNAL_TOKEN)
+                return self._send(200, {
+                    "quote_token": token,
+                    "expires_at": expires_at,
+                    "cost": cost,
+                    "scene_count": prepared["n_scenes"],
+                    "cost_breakdown": prepared.get("cost_breakdown") or {},
+                })
+            except feature_flags.FeatureDisabled as e:
+                return self._send(503, {"detail": str(e)})
+            except miniprogram_security.ContentRejected as e:
+                return self._send(400, {"detail": str(e), "code": "content_rejected"})
+            except miniprogram_security.SecurityUnavailable as e:
+                return self._send(503, {"detail": str(e), "code": "content_security_unavailable"})
+            except (ValueError, LookupError, RuntimeError) as e:
+                return self._send(400, {"detail": str(e)[:220]})
         if p == "/api/gen/canvas-agent/quote":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})
@@ -2878,6 +2910,7 @@ class H(BaseHTTPRequestHandler):
             still_attempt = None
             cinematic_idem_reserved = False
             script_to_video_idem_reserved = False
+            script_to_video_quote_token = ""
             still_access = _short_drama_canvas_access(self) if is_still_route else None
             scene_access = None
             minimax_idem_body = None
@@ -3014,6 +3047,8 @@ class H(BaseHTTPRequestHandler):
                 elif kind == "script_to_video":
                     from . import script_to_video as script_to_video_domain
                     body = script_to_video_domain.prepare_script_to_video_payload(body, user["username"])
+                    if body.get("pipeline") == "pixelle":
+                        script_to_video_quote_token = body.pop("_quote_token", "")
                 elif kind == "breakdown":
                     from . import breakdown as breakdown_domain
                     body = breakdown_domain.validate_breakdown_payload(body)
@@ -3079,6 +3114,8 @@ class H(BaseHTTPRequestHandler):
             except (ValueError, LookupError, PermissionError, _short_drama_domain().RevisionConflict) as e:
                 if still_idem_started:
                     _idempotency_abort(user["username"], p, idem_key)
+                if script_to_video_idem_reserved:
+                    _idempotency_abort(user["username"], p, idem_key)
                 _short_drama_domain()._http_error(self, e,
                     operation_terminal=is_still_route and bool(locals().get("idem_key")))
                 return
@@ -3099,6 +3136,18 @@ class H(BaseHTTPRequestHandler):
                 return self._send(503, {"detail": blocked, "code": "upstream_exhausted", "retry_after_ms": 60000})
             is_short_drama = kind == "copy" and isinstance(body, dict) and body.get("format") == "short_drama"
             cost = points_domain.cost_of(kind, body) if not is_short_drama and not is_still_route else None
+            if (kind == "script_to_video" and isinstance(body, dict)
+                    and body.get("pipeline") == "pixelle"):
+                from . import pixelle_video as pixelle_video_domain
+                try:
+                    pixelle_video_domain.require_confirmed_quote(
+                        script_to_video_quote_token, body, user["username"], cost,
+                        AUTH_INTERNAL_TOKEN)
+                except ValueError as e:
+                    if script_to_video_idem_reserved:
+                        _idempotency_abort(user["username"], p, idem_key)
+                    _short_drama_domain()._http_error(self, e)
+                    return
             if kind == "canvas_agent" and body.get("quoted_cost") != cost:
                 return self._send(400, {"detail": "画布 Agent 价格已变化，请重新报价"})
             if cli_gateway.reject_changed_cost(
