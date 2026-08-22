@@ -183,6 +183,8 @@ _INT_ID_SCHEMA = {"type": "integer", "minimum": 1, "maximum": 2**63 - 1}
 _IMAGE_UPLOAD_SCHEMA = {"type": "string", "pattern": "^img_[0-9a-f]{32}$"}
 _VIDEO_UPLOAD_SCHEMA = {"type": "string", "pattern": "^vid_[0-9a-f]{32}$"}
 _AUDIO_UPLOAD_SCHEMA = {"type": "string", "pattern": "^aud_[0-9a-f]{32}$"}
+_VOICE_SLOT_ID_PATTERN = "^[A-Za-z][A-Za-z0-9_-]{1,87}$"
+_VOICE_SLOT_ID_RE = re.compile(_VOICE_SLOT_ID_PATTERN)
 
 # Keep discovery and executable planning on one channel matrix.  The public
 # CLI carries an identical table and the cross-package contract test prevents
@@ -450,7 +452,7 @@ _MEDIA_SCHEMAS.update({
     }, "constraints": []},
     "canvas-get": {"required": ["board_id"], "properties": {"board_id": _ID_SCHEMA}, "constraints": []},
     "voice-clone-create": {"required": ["slot_id", "name", "audio_upload_id"], "properties": {
-        "slot_id": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{1,87}$"},
+        "slot_id": {"type": "string", "pattern": _VOICE_SLOT_ID_PATTERN},
         "name": {"type": "string", "minLength": 1, "maxLength": 40},
         "audio_upload_id": _AUDIO_UPLOAD_SCHEMA,
     }, "constraints": [
@@ -458,7 +460,7 @@ _MEDIA_SCHEMAS.update({
         "reusing a ready slot replaces that personal cloned voice and requires explicit confirmation",
     ]},
     "voice-clone-status": {"required": ["slot_id"], "properties": {
-        "slot_id": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{1,87}$"},
+        "slot_id": {"type": "string", "pattern": _VOICE_SLOT_ID_PATTERN},
     }, "constraints": []},
     "digital-ip-text-generate": {"required": ["text", "voice"], "properties": {
         "avatar_id": _INT_ID_SCHEMA, "image_upload_id": {**_IMAGE_UPLOAD_SCHEMA, "title": "人物照片"},
@@ -1655,7 +1657,7 @@ def action_plan(action, value):
     if action == "voice-clone-status":
         _strict_object(value, {"slot_id"}, ("slot_id",))
         slot_id = _matched_string(
-            value["slot_id"], "slot_id", re.compile(r"^[A-Za-z][A-Za-z0-9_-]{1,87}$"), 88,
+            value["slot_id"], "slot_id", _VOICE_SLOT_ID_RE, 88,
         )
         return _plan(
             "assets:read", "proxy", base=CONTENT_BASE,
@@ -1669,7 +1671,7 @@ def action_plan(action, value):
             path="/api/gen/cli/voice-clone", method="POST", body={
                 "slot_id": _matched_string(
                     value["slot_id"], "slot_id",
-                    re.compile(r"^[A-Za-z][A-Za-z0-9_-]{1,87}$"), 88,
+                    _VOICE_SLOT_ID_RE, 88,
                 ),
                 "name": _string(value["name"], "name", 1, 40),
                 "audio_upload_id": _audio_upload_id(value["audio_upload_id"], "audio_upload_id"),

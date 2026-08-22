@@ -106,6 +106,7 @@ AVAILABLE_MODULE_COUNT = 6
 MAX_PROJECTS_PER_ACCOUNT = 2
 PROJECT_BACKUP_SCHEMA = "huangque.ip12.project-backup/v1"
 PROJECT_BACKUP_MAX_BYTES = 24 * 1024 * 1024
+VOICE_CLONE_MULTIPART_MAX_BYTES = 11 * 1024 * 1024
 PROJECT_BACKUP_MAX_PDF_BYTES = 8 * 1024 * 1024
 PROJECT_BACKUP_MAX_MESSAGES = 5000
 PROJECT_BACKUP_MAX_MESSAGE_CHARS = 200000
@@ -982,9 +983,13 @@ def _production_source_revision_intent(message):
 def _production_material_revision_intent(message):
     text = re.sub(r"\s+", "", str(message or ""))
     voice = bool(re.search(
-        r"重新录制|重新录音|重录|换(?:个|一个)?(?:声音|音色)|(?:声音|音色).{0,8}(?:不适合|不满意|换掉)|克隆(?:声音|音色)",
+        r"重新录制|重新录音|重录|换(?:个|一个)?(?:声音|音色)|(?:声音|音色).{0,8}(?:不适合|不满意|换掉)"
+        r"|(?:我要|需要|想要|帮我|生成|制作|创建|重新).{0,8}克隆(?:声音|音色)"
+        r"|克隆(?:声音|音色).{0,8}(?:重做|重新|换掉)",
         text,
     ))
+    if re.search(r"(?:不要|别|不用).{0,10}(?:重新录制|重新录音|重录|换声音|换音色|克隆声音|克隆音色)", text):
+        voice = False
     image = bool(re.search(
         r"重新上传.{0,6}(?:照片|图片)|换(?:张|个|一个)?(?:照片|图片|形象)|(?:照片|图片|形象).{0,8}(?:不适合|不满意|换掉)",
         text,
@@ -1279,7 +1284,10 @@ def _production_parameter_context(account_id, action, catalog_entry=None, allow_
         }
         if action == "audio-generate" and allowed_voices and voice_field not in schema["required"]:
             schema["required"].append(voice_field)
-        if action == "digital-ip-text-generate" and not allowed_voices and voice_field in schema["required"]:
+        if (
+            action == "digital-ip-text-generate" and not allowed_voices and not clone_slot_id
+            and voice_field in schema["required"]
+        ):
             schema["required"] = [
                 "audio_upload_id" if name == voice_field else name
                 for name in schema["required"]
@@ -2908,6 +2916,8 @@ def api_upload_production_material():
 
 @app.route("/api/ip12/productions/clone-voice", methods=["POST"])
 def api_clone_production_voice():
+    if not request.content_length or request.content_length > VOICE_CLONE_MULTIPART_MAX_BYTES:
+        return _production_error("upload_too_large", "样音不能超过 10MB", 413)
     allowed = {"conversation_id", "production_id", "expected_revision", "slot_id", "name", "request_id"}
     if set(request.form) - allowed:
         return _production_error("invalid_request", "包含不支持的参数", 400)
@@ -2936,6 +2946,17 @@ def api_clone_production_voice():
                 return _production_error("production_not_found", "生产记录不存在", 404)
             if record.get("status") in {"submitting", "queued", "running", "done"}:
                 return _production_error("production_locked", "当前制作已经提交，不能替换声音", 409)
+            active_clone = record.get("voice_clone") or {}
+            if active_clone.get("status") in {"submitting", "training"}:
+                if active_clone.get("request_id") == request_id:
+                    return jsonify({
+                        "ok": True, "replayed": True,
+                        "status": active_clone.get("status"),
+                        "production": _production_public(record),
+                    }), 202
+                return _production_error(
+                    "voice_clone_in_progress", "当前克隆声音仍在处理中，请等待完成", 409,
+                )
             properties = (_production_record_schema(record).get("properties") or {})
             voice_field = "voice" if "voice" in properties else ("voice_key" if "voice_key" in properties else "")
             descriptor = properties.get(voice_field) or {}
@@ -2984,6 +3005,17 @@ def api_clone_production_voice():
                 return _production_error("project_not_found", "项目不存在", 404)
             if record.get("status") in {"submitting", "queued", "running", "done"}:
                 return _production_error("production_locked", "当前制作已经提交，不能替换声音", 409)
+            active_clone = record.get("voice_clone") or {}
+            if active_clone.get("status") in {"submitting", "training"}:
+                if active_clone.get("request_id") == request_id:
+                    return jsonify({
+                        "ok": True, "replayed": True,
+                        "status": active_clone.get("status"),
+                        "production": _production_public(record),
+                    }), 202
+                return _production_error(
+                    "voice_clone_in_progress", "当前克隆声音仍在处理中，请等待完成", 409,
+                )
             record.update(
                 quote={}, status="blocked_prerequisite", last_error_code="voice_clone_training",
                 clone_target_slot_id=slot_id, clone_target_name=name,
@@ -3030,7 +3062,11 @@ def api_clone_production_voice():
             record = (convo or {}).get("productions", {}).get(production_id)
             if isinstance(record, dict):
                 clone = record.setdefault("voice_clone", {})
-                clone.update(status="failed", error=exc.code)
+                if exc.status >= 500 or exc.status == 429:
+                    clone.update(status="submitting", error=exc.code)
+                else:
+                    clone.update(status="failed", error=exc.code)
+                    clone.pop("audio_upload_id", None)
                 record["last_error_code"] = exc.code
                 save_conversation(cid, convo)
         return _production_error(exc.code, exc.detail, exc.status)
@@ -3038,9 +3074,15 @@ def api_clone_production_voice():
         return _production_error("production_bridge_unavailable", "声音服务暂时不可用", 503)
 
 
-@app.route("/api/ip12/productions/<production_id>/clone-voice", methods=["GET"])
+@app.route("/api/ip12/productions/<production_id>/clone-voice", methods=["POST"])
 def api_clone_production_voice_status(production_id):
-    cid = str(request.args.get("conversation_id") or "")
+    try:
+        body = _production_request_body()
+    except coach_harness.HarnessError as exc:
+        return _production_error("invalid_request", str(exc), 400)
+    if set(body) - {"conversation_id"}:
+        return _production_error("invalid_request", "包含不支持的参数", 400)
+    cid = str(body.get("conversation_id") or "")
     with CONVERSATION_STATE_LOCK:
         convo = _production_conversation(cid)
         record = (convo or {}).get("productions", {}).get(production_id)
@@ -3135,7 +3177,11 @@ def api_clone_production_voice_status(production_id):
             record = (convo or {}).get("productions", {}).get(production_id)
             if isinstance(record, dict):
                 clone = record.setdefault("voice_clone", {})
-                clone.update(status="failed", error=exc.code)
+                if exc.status >= 500 or exc.status == 429:
+                    clone["error"] = exc.code
+                else:
+                    clone.update(status="failed", error=exc.code)
+                    clone.pop("audio_upload_id", None)
                 record["last_error_code"] = exc.code
                 save_conversation(cid, convo)
         return _production_error(exc.code, exc.detail, exc.status)

@@ -7,7 +7,7 @@ import re
 import threading
 import urllib.parse
 
-from . import cli_uploads, pricing
+from . import cli_uploads, pricing, submission_idempotency
 
 
 def _internal_auth(handler, secret):
@@ -229,10 +229,27 @@ def handle_voice_clone(handler, path, verify, must_change_password, audio, featu
     if not re.fullmatch(r"[A-Za-z0-9._:-]{8,128}", request_id):
         handler._send(400, {"detail": "声音克隆必须提供有效幂等键", "code": "idempotency_key_required"})
         return True
+    claim_state = ""
     try:
         payload = handler._json_body_strict(max_bytes=16 * 1024)
         if not isinstance(payload, dict):
             raise ValueError("请求体不是合法 JSON")
+        endpoint = "/api/gen/cli/voice-clone"
+        claim_state, claim_response = submission_idempotency.begin(
+            audio.adb, user["username"], endpoint, request_id, payload,
+        )
+        if claim_state == "conflict":
+            handler._send(409, {
+                "detail": "同一个幂等键不能用于不同的声音样音",
+                "code": "idempotency_conflict",
+            })
+            return True
+        if claim_state == "replay":
+            response = dict(claim_response or {})
+            if isinstance(response.get("voice"), dict):
+                response["voice"] = dict(response["voice"], replayed=True)
+            handler._send(200, response)
+            return True
         request_digest = hashlib.sha256(json.dumps(
             payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
         ).encode("utf-8")).hexdigest()
@@ -241,7 +258,11 @@ def handle_voice_clone(handler, path, verify, must_change_password, audio, featu
             request_digest,
         )
         if replay:
-            handler._send(200, {"ok": True, "voice": replay})
+            response = {"ok": True, "voice": replay}
+            submission_idempotency.complete(
+                audio.adb, user["username"], endpoint, request_id, response,
+            )
+            handler._send(200, response)
             return True
         checked = cli_uploads.expand_voice_clone_payload(payload, user["username"])
         checked = audio.validate_clone_vip_payload(user["username"], checked)
@@ -249,18 +270,34 @@ def handle_voice_clone(handler, path, verify, must_change_password, audio, featu
             user["username"], checked["slot_id"], checked.get("name"), request_id,
             request_digest,
         )
-        threading.Thread(
-            target=audio.clone_vip_voice_background,
-            args=(user["username"], checked), daemon=True,
-        ).start()
-        handler._send(200, {"ok": True, "voice": voice})
+        if not voice.get("replayed"):
+            checked["_request_id"] = request_id
+            threading.Thread(
+                target=audio.clone_vip_voice_background,
+                args=(user["username"], checked), daemon=True,
+            ).start()
+        response = {"ok": True, "voice": voice}
+        submission_idempotency.complete(
+            audio.adb, user["username"], endpoint, request_id, response,
+        )
+        handler._send(200, response)
     except audio.CloneVipValidationError as exc:
-        handler._send(exc.status, {"detail": exc.detail, "code": (
-            "idempotency_conflict" if exc.status == 409 else "voice_clone_invalid"
-        )})
+        if claim_state == "new":
+            submission_idempotency.abort(
+                audio.adb, user["username"], "/api/gen/cli/voice-clone", request_id,
+            )
+        handler._send(exc.status, {"detail": exc.detail, "code": exc.code})
     except ValueError as exc:
+        if claim_state == "new":
+            submission_idempotency.abort(
+                audio.adb, user["username"], "/api/gen/cli/voice-clone", request_id,
+            )
         handler._send(400, {"detail": str(exc)[:220], "code": "voice_clone_invalid"})
     except OSError:
+        if claim_state == "new":
+            submission_idempotency.abort(
+                audio.adb, user["username"], "/api/gen/cli/voice-clone", request_id,
+            )
         handler._send(500, {"detail": "声音样音暂时无法读取", "code": "voice_clone_failed"})
     return True
 
