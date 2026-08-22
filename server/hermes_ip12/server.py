@@ -694,6 +694,9 @@ def _production_public(record):
     quote = result.get("quote")
     if isinstance(quote, dict):
         quote.pop("token", None)
+    clone = result.get("voice_clone")
+    if isinstance(clone, dict):
+        clone.pop("audio_upload_id", None)
     return result
 
 
@@ -2990,7 +2993,10 @@ def api_clone_production_voice():
             record.update(
                 quote={}, status="blocked_prerequisite", last_error_code="voice_clone_training",
                 clone_target_slot_id=slot_id, clone_target_name=name,
-                voice_clone={"request_id": request_id, "slot_id": slot_id, "name": name, "status": "submitting"},
+                voice_clone={
+                    "request_id": request_id, "slot_id": slot_id, "name": name,
+                    "audio_upload_id": upload_id, "status": "submitting",
+                },
                 updated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
             )
             record.pop("confirmation_id", None)
@@ -3051,6 +3057,13 @@ def api_clone_production_voice_status(production_id):
         if not slot_id or not clone.get("request_id"):
             return _production_error("voice_clone_not_found", "当前没有正在处理的克隆声音", 404)
     try:
+        if clone.get("status") == "submitting" and clone.get("audio_upload_id"):
+            _bridge_action(
+                current_account_id(), "voice-clone-create", {
+                    "slot_id": slot_id, "name": str(clone.get("name") or "我的克隆声音"),
+                    "audio_upload_id": str(clone["audio_upload_id"]),
+                }, confirm=True, idempotency_key=str(clone["request_id"]),
+            )
         payload = _bridge_action(
             current_account_id(), "voice-clone-status", {"slot_id": slot_id},
             idempotency_key="clone-status-" + production_id[-32:],
@@ -3102,6 +3115,7 @@ def api_clone_production_voice_status(production_id):
                         status="draft" if valid else "blocked_prerequisite", quote={},
                         last_error_code="" if valid else "missing_prerequisite",
                     )
+                    clone.pop("audio_upload_id", None)
                     if not clone.get("ready_message_id"):
                         material_message = _append_assistant_message(
                             convo,
@@ -3113,6 +3127,7 @@ def api_clone_production_voice_status(production_id):
                 else:
                     status = clone["status"] = "training"
             elif status == "failed":
+                clone.pop("audio_upload_id", None)
                 record["last_error_code"] = "voice_clone_failed"
             record["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
             save_conversation(cid, convo)
@@ -3121,6 +3136,14 @@ def api_clone_production_voice_status(production_id):
             "material_message": material_message,
         })
     except ProductionBridgeError as exc:
+        with CONVERSATION_STATE_LOCK:
+            convo = _production_conversation(cid)
+            record = (convo or {}).get("productions", {}).get(production_id)
+            if isinstance(record, dict):
+                clone = record.setdefault("voice_clone", {})
+                clone.update(status="failed", error=exc.code)
+                record["last_error_code"] = exc.code
+                save_conversation(cid, convo)
         return _production_error(exc.code, exc.detail, exc.status)
     except RuntimeError:
         return _production_error("production_bridge_unavailable", "声音服务暂时不可用", 503)

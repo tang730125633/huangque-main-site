@@ -1292,7 +1292,7 @@ assert portrait.get_json()["production"]["options"] == {
 clone_calls = []
 def start_clone(account, action, input_body, **kwargs):
     clone_calls.append((account, action, input_body, kwargs))
-    return {"voice": {"voice_key": "vip_slot_12345678", "status": "training"}}
+    raise RuntimeError("response lost")
 
 with patch.object(server, "_bridge_upload", return_value={"upload_id": "aud_" + "a" * 32}), \
         patch.object(server, "_bridge_action", side_effect=start_clone):
@@ -1302,12 +1302,16 @@ with patch.object(server, "_bridge_upload", return_value={"upload_id": "aud_" + 
         "name": "我的新声音", "request_id": "clone-request-0001",
         "file": (io.BytesIO(b"RIFF0000WAVEaudio"), "sample.wav", "audio/wav"),
     }, content_type="multipart/form-data")
-assert started.status_code == 200, started.get_data(as_text=True)
+assert started.status_code == 503, started.get_data(as_text=True)
 assert clone_calls[0][1] == "voice-clone-create", clone_calls
 assert clone_calls[0][3]["confirm"] is True, clone_calls
 assert clone_calls[0][3]["idempotency_key"] == "clone-request-0001", clone_calls
 
 def ready_resources(_account, action, _input, **_kwargs):
+    if action == "voice-clone-create":
+        assert _kwargs["confirm"] is True, _kwargs
+        assert _kwargs["idempotency_key"] == "clone-request-0001", _kwargs
+        return {"voice": {"voice_key": "vip_slot_12345678", "status": "training"}}
     if action == "voice-clone-status":
         return {"result": {"status": "ready"}}
     if action == "video-avatars":
@@ -1328,6 +1332,7 @@ with patch.object(server, "_bridge_catalog", return_value=catalog), \
 assert ready.status_code == 200, ready.get_data(as_text=True)
 ready_body = ready.get_json()
 assert ready_body["status"] == "ready", ready_body
+assert "audio_upload_id" not in ready_body["production"]["voice_clone"], ready_body
 assert ready_body["production"]["options"] == {
     "image_upload_id": "img_" + "b" * 32, "voice": "vip_slot_12345678",
 }, ready_body
