@@ -289,7 +289,8 @@ apply_deploy() {
             --platform manylinux_2_17_x86_64 \
             --python-version 310 --implementation cp \
             --abi cp310 --abi abi3 --abi none --only-binary=:all: \
-            -r "$stage/server/hermes_ip12/requirements.txt"
+            -r "$stage/server/hermes_ip12/requirements.txt" \
+            'async-timeout>=4,<6' 'exceptiongroup>=1.0.2'
           touch "$cache_tmp/.complete"
           if ! mv "$cache_tmp" "$cache_dir" 2>/dev/null; then
             test -f "$cache_dir/.complete" || die "无法建立泽龙 Hermes wheel 缓存"

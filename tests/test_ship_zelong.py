@@ -341,6 +341,8 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
         self.assertIn("ln -sfn hermes-preview-cli", SRC)
         self.assertIn("python3 -m pip download", SRC)
         self.assertIn("--platform manylinux_2_28_x86_64", SRC)
+        self.assertIn("async-timeout>=4,<6", SRC)
+        self.assertIn("exceptiongroup>=1.0.2", SRC)
         self.assertIn("SHIP_ZELONG_WHEELHOUSE", SRC)
         self.assertIn("/home/ubuntu/hermes-preview/.requirements-sha", SRC)
         self.assertIn("--no-index --find-links", SRC)
