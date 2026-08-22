@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export PYTHONPATH="/home/ubuntu/hermes-preview-deps${PYTHONPATH:+:$PYTHONPATH}"
+case "$(basename "$0")" in
+  edge-tts) module=edge_tts ;;
+  yt-dlp) module=yt_dlp ;;
+  *) echo "unsupported preview command" >&2; exit 2 ;;
+esac
+exec /usr/bin/python3 -m "$module" "$@"
