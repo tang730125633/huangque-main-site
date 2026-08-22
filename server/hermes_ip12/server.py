@@ -1015,7 +1015,10 @@ def _ensure_production_material_request_message(convo, record, missing):
     if message_id:
         return next((item for item in convo.get("messages") or []
                      if item.get("message_id") == message_id), None)
-    parts = []
+    parts = [
+        "我已经把这次制作放进右侧生产画布，请在画布里完成素材确认。"
+        "如果关闭了画布，可以点击本条消息中的“打开生产画布”，或页面顶部的“当前制作”重新打开。"
+    ]
     if fields:
         labels = "、".join(_production_field_label(record, name) for name in fields)
         parts.append(
