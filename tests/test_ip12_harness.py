@@ -1406,7 +1406,7 @@ class IP12HarnessTests(unittest.TestCase):
         with self.assertRaises(harness.HarnessConflict):
             harness.apply_action(state, action, state["revision"] - 1)
 
-    def test_user_fact_requires_a_verbatim_quote(self):
+    def test_grounded_first_draft_drops_unsupported_update_without_losing_draft(self):
         state = self.complete_intake()
         raw = decision(state)
         raw["profile_updates"] = [{
@@ -1415,8 +1415,12 @@ class IP12HarnessTests(unittest.TestCase):
             "kind": "user_fact",
             "evidence_quote": "我是一名 FDE",
         }]
-        with self.assertRaises(harness.HarnessError):
-            harness.apply_model_decision(state, raw, "用户只说了别的内容")
+        state, result, reply = harness.apply_model_decision(
+            state, raw, "用户只说了别的内容", pending_id="grounded-first-draft"
+        )
+        self.assertEqual(result["profile_updates"], [])
+        self.assertEqual(state["pending"]["draft"], "可确认草稿")
+        self.assertIn("可确认草稿", reply)
 
     def test_follow_up_drops_unsupported_update_without_dropping_reply(self):
         state = self.complete_intake()
