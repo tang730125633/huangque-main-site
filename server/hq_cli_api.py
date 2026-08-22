@@ -92,13 +92,6 @@ CHANNEL_CATALOG = (
      "access": "managed", "capabilities": ["tryon-classic-generate"], "selector": {}},
     {"id": "wavespeed", "provider": "WaveSpeed API", "category": "视频处理", "features": ["换装换背景 · 线路二", "Seedance AI 超清"],
      "access": "managed", "capabilities": ["tryon-fast-generate"], "selector": {}},
-    {"id": "pixelle", "provider": "Pixelle-Video", "category": "文案成片",
-     "features": ["主题/文案成片", "自动分镜", "口播人物素材"],
-     "access": "managed", "capabilities": [
-         "text-video-capability", "text-video-templates", "text-video-styles",
-         "text-video-voices", "text-video-avatar-import", "text-video-plan",
-         "text-video-generate",
-     ], "selector": {}},
     {"id": "cosyvoice", "provider": "阿里百炼 API", "category": "音频生成", "features": ["公共音色", "声音克隆"],
      "access": "direct", "capabilities": ["voices", "audio-generate"], "selector": {}},
     {"id": "tikhub", "provider": "TikHub API", "category": "内容采集 / 获客", "features": ["抖音 / 小红书 / 视频号", "评论与线索"],

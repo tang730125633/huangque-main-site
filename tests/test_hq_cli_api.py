@@ -1404,7 +1404,7 @@ class HQCLIAPITests(unittest.TestCase):
             "action": "channels", "input": {}, "confirm": False,
         }, token=token)
         self.assertEqual(200, status)
-        self.assertEqual(17, payload["total"])
+        self.assertEqual(16, payload["total"])
         self.assertEqual("alice", payload["account"])
         channels = {item["id"]: item for item in payload["channels"]}
         self.assertEqual({"channel": "sora"}, channels["openai"]["selectors"][1]["input"])
@@ -1414,9 +1414,6 @@ class HQCLIAPITests(unittest.TestCase):
             "cinematic-open-generate",
         }.issubset(channels["heygen"]["capabilities"]))
         self.assertEqual("mixed", channels["tikhub"]["access"])
-        self.assertTrue({
-            "text-video-avatar-import", "text-video-plan", "text-video-generate",
-        }.issubset(channels["pixelle"]["capabilities"]))
         self.assertTrue({
             "collect-content", "collect-video", "collect-transcript", "collect-search", "leads-generate",
         }.issubset(channels["tikhub"]["capabilities"]))
