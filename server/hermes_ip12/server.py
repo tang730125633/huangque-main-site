@@ -973,6 +973,12 @@ def _production_source_revision_intent(message):
     text = re.sub(r"\s+", "", str(message or ""))
     source = r"(?:文案|正文|脚本|标题|开头|结尾|第一句|最后一句)"
     change = r"(?:修改|改成|改为|调整|删除|删掉|换成|缩短|直接|口语|自然|简短|清楚)"
+    text = re.sub(
+        source + r"(?:保持|维持)?(?:不变|不改|原样|照旧)|"
+        r"(?:不要|无需|不用)(?:修改|调整|改动)" + source,
+        "",
+        text,
+    )
     return bool(re.search(source + r".{0,30}" + change + r"|" + change + r".{0,30}" + source, text))
 
 
