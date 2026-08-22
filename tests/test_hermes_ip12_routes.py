@@ -66,6 +66,9 @@ assert all(item["status"] == "unlocked" for item in server.capability_gates(stat
         page = (HERMES / "templates" / "index.html").read_text(encoding="utf-8")
         self.assertIn("能力解锁", page)
         self.assertIn("function openCapabilityGates", page)
+        assets = (ROOT / "site" / "workbench" / "assets.html").read_text(encoding="utf-8")
+        self.assertIn("cloneVoice", assets)
+        self.assertIn("openCloneVoiceModal(cloneSlot)", assets)
 
     def test_persistent_assistant_messages_use_one_versioned_append_helper(self):
         source = (HERMES / "server.py").read_text(encoding="utf-8")
@@ -719,6 +722,20 @@ assert intent_body["actions"][0]["options"]["ratio"] == "9:16", intent_body
 assert "Grok" in intent_body["actions"][0]["options"]["prompt"], intent_body
 assert "完整口播正文" in intent_body["actions"][0]["options"]["prompt"], intent_body
 assert not server.load_conversation(cid).get("productions"), intent_body
+clone_response = client.post("/api/chat-complete", json={
+    "conversation_id": cid,
+    "message": "不是，我需要你帮我进行声音克隆",
+    "expected_revision": intent_body["state"]["revision"],
+    "request_id": "open-voice-clone",
+})
+assert clone_response.status_code == 200, clone_response.get_data(as_text=True)
+clone_body = clone_response.get_json()
+assert clone_body["actions"] == [{
+    "type": "navigate_to", "label": "打开个人音色复刻", "primary": True,
+    "ui_route": "/workbench/assets?cat=audio&audioTab=personal&cloneVoice=1",
+}], clone_body
+assert "只是绑定到这次视频制作" in clone_body["assistant"], clone_body
+assert not server.load_conversation(cid).get("productions"), clone_body
 assert server._explicit_system_media_request("使用系统自带的公共音色") is True
 assert server._explicit_system_media_request("就用沉稳男声生成") is True
 assert server._explicit_system_media_request("不要使用公共音色") is False
@@ -734,7 +751,7 @@ with server.app.test_request_context("https://huangquechuanmei.com/workbench/ip1
     assert server._browser_preview_url("https://media.example/voice.mp3") == (
         "https://media.example/voice.mp3"
     )
-revision = intent_body["state"]["revision"]
+revision = clone_body["state"]["revision"]
 audio_intent_response = client.post("/api/chat-complete", json={
     "conversation_id": cid,
     "message": "重新生成一版音频，语速调整为0.9，使用系统公共音色，其他不变",
