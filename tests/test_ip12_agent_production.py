@@ -223,6 +223,9 @@ assert tryon_prepared.status_code == 200, tryon_prepared.get_data(as_text=True)
 tryon_body = tryon_prepared.get_json()
 assert set(tryon_body["missing"]) == {"person_image_upload_id", "clothes_upload_id"}, tryon_body
 assert "人物图片、服装图片" in tryon_body["material_request_message"]["content"], tryon_body
+assert "右侧生产画布" in tryon_body["material_request_message"]["content"], tryon_body
+assert "打开生产画布" in tryon_body["material_request_message"]["content"], tryon_body
+assert "当前制作" in tryon_body["material_request_message"]["content"], tryon_body
 tryon_record = server.load_conversation(cid)["productions"][tryon_body["production_id"]]
 assert tryon_record["source_bound"] is False, tryon_record
 assert tryon_record["material_request_message_id"], tryon_record

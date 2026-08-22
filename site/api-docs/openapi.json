@@ -19236,6 +19236,76 @@
         "x-hq-runtime-status": "active"
       }
     },
+    "/api/gen/video/lipsync-import": {
+      "post": {
+        "tags": [
+          "资产"
+        ],
+        "summary": "导入 Precision 口型同步真人源视频",
+        "description": "**测试安全级别：state-write**\n\n会把当前账号自有的真人口播 MP4 写入私有视频资产库，不调用第三方模型、不扣生成点。文件必须为 1–300 秒且不超过 100MB；标题通过 X-Video-Title 传递。",
+        "x-hq-test-safety": "state-write",
+        "x-hq-runtime-status": "active",
+        "responses": {
+          "200": {
+            "description": "真人源视频已导入"
+          },
+          "400": {
+            "description": "文件类型、大小、时长或媒体元数据无效"
+          },
+          "401": {
+            "description": "未登录或登录已过期"
+          },
+          "403": {
+            "description": "权限不足或需先完成账号操作"
+          },
+          "503": {
+            "description": "视频能力当前不可用"
+          },
+          "500": {
+            "description": "服务内部错误"
+          }
+        },
+        "parameters": [
+          {
+            "name": "Content-Length",
+            "in": "header",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 104857600
+            },
+            "required": true
+          },
+          {
+            "name": "X-Video-Title",
+            "in": "header",
+            "schema": {
+              "type": "string",
+              "maxLength": 240
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "video/mp4": {
+              "schema": {
+                "type": "string",
+                "format": "binary",
+                "description": "当前账号自有的真人口播 MP4"
+              }
+            },
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary",
+                "description": "带 MP4 文件头的真人口播视频"
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/gen/video/import": {
       "post": {
         "tags": [
@@ -23724,13 +23794,13 @@
   },
   "x-hq-document-audit": {
     "verified_at": "2026-08-14",
-    "total_paths": 285,
-    "total_operations": 299,
-    "active_operations": 285,
+    "total_paths": 286,
+    "total_operations": 300,
+    "active_operations": 286,
     "production_route_probe_operations": 299,
-    "newly_documented_operations_vs_v2": 123,
-    "registry_http_operations": 77,
-    "registry_documented_operations": 77,
+    "newly_documented_operations_vs_v2": 124,
+    "registry_http_operations": 78,
+    "registry_documented_operations": 78,
     "short_drama_registered_operations": 128,
     "short_drama_documented_operations": 128,
     "production_pending_operations": 11,
