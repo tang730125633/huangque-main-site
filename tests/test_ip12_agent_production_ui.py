@@ -96,6 +96,7 @@ class IP12AgentProductionUITests(unittest.TestCase):
         ]
         self.assertIn("打开生产画布", message)
         self.assertIn("openProductionRecord(this.dataset.productionId)", message)
+        self.assertIn("message.message_id===record.delivery_message_id", message)
         lifecycle = self.html[
             self.html.index("function updateProductionEntry"):
             self.html.index("function productionError")
@@ -231,6 +232,7 @@ function toast(){}
         chat = self.html[self.html.index("function productionMessageHtml"):self.html.index("function isSafeMarkdownUrl")]
         self.assertIn("data-production-message", chat)
         self.assertIn("productionResultHtml(record)", chat)
+        self.assertIn("message.message_id===record.delivery_message_id", chat)
         result = self.html[self.html.index("function productionResultHtml"):self.html.index("function productionFieldControl")]
         self.assertIn("continueProductionRevision(this.dataset.productionId)", result)
 
