@@ -16,14 +16,18 @@ export HERMES_DATA_DIR=/home/ubuntu/hermes-preview-data
 export HERMES_DATA_QUOTA_MB=512
 export HERMES_AUTH_BASE=http://127.0.0.1:8095
 export HQ_AUTH_BASE=http://127.0.0.1:8095
-export HERMES_ENABLE_INTERNAL_TOOLS=0
-export PYTHONPATH="/home/ubuntu/hermes-preview-deps${PYTHONPATH:+:$PYTHONPATH}"
+export HERMES_ENABLE_INTERNAL_TOOLS=1
+export PATH="/home/ubuntu/hermes-preview-venv/bin:$PATH"
+PYTHON=/home/ubuntu/hermes-preview-venv/bin/python
 
 cd "$HERMES_HOME"
 
 if test "${1:-}" = --check; then
-  exec /usr/bin/python3 -c '
+  exec "$PYTHON" -c '
+import importlib.util
 import os
+from pathlib import Path
+import shutil
 import requests
 
 base = os.environ["OPENAI_API_BASE"].rstrip("/")
@@ -52,12 +56,34 @@ required = {
     "/api/conversations",
     "/api/conversations/import",
     "/api/conversations/<cid>/export",
+    "/agnes-lab",
+    "/api/agnes/status",
+    "/team-workbench",
+    "/api/team-workbench/status",
 }
 missing = sorted(required - routes)
 if missing:
     raise SystemExit("missing required preview routes: " + ", ".join(missing))
+
+modules = [
+    "PIL", "playwright", "pypdf", "edge_tts", "faster_whisper",
+    "requests", "yt_dlp",
+]
+missing_modules = [name for name in modules if importlib.util.find_spec(name) is None]
+if missing_modules:
+    raise SystemExit("missing preview media modules: " + ", ".join(missing_modules))
+missing_commands = [
+    name for name in ("ffmpeg", "ffprobe", "edge-tts", "yt-dlp")
+    if shutil.which(name) is None
+]
+if missing_commands:
+    raise SystemExit("missing preview media commands: " + ", ".join(missing_commands))
+from playwright.sync_api import sync_playwright
+with sync_playwright() as playwright:
+    if not Path(playwright.chromium.executable_path).is_file():
+        raise SystemExit("missing preview Chromium")
 '
 fi
 
-exec /usr/bin/python3 -c \
+exec "$PYTHON" -c \
   "import server; server.app.run(host='127.0.0.1', port=3102, debug=False)"
