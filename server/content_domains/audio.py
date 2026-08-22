@@ -396,13 +396,41 @@ def validate_clone_vip_payload(username, payload):
     checked["audio_format"] = audio_format
     return checked
 
-def mark_clone_training(username, slot_id, name):
+def clone_request_replay(username, slot_id, request_id, request_digest=""):
+    if not request_id:
+        return None
+    with closing(adb()) as c:
+        _ensure_column(c, "audio_voice_slots", "clone_upload_response", "TEXT")
+        row = c.execute("""SELECT s.status,s.clone_error,s.clone_upload_response,
+                    v.voice_key,v.display_name,v.preview_url
+                FROM audio_voice_slots s
+                LEFT JOIN audio_voices v ON v.id=s.voice_id
+                WHERE s.username=? AND s.slot_id=?""", (username, slot_id)).fetchone()
+    if not row:
+        return None
+    try:
+        meta = json.loads(row["clone_upload_response"] or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if meta.get("idempotency_key") != request_id:
+        return None
+    if request_digest and meta.get("request_digest") != request_digest:
+        raise CloneVipValidationError(409, "同一个幂等键不能用于不同的声音样音")
+    return {
+        "voice_key": row["voice_key"], "display_name": row["display_name"],
+        "preview_url": row["preview_url"], "status": row["status"],
+        "clone_error": row["clone_error"] or "", "replayed": True,
+    }
+
+
+def mark_clone_training(username, slot_id, name, request_id="", request_digest=""):
     username = (username or "").strip()
     slot_id = (slot_id or "").strip()
     name = (name or "\u6211\u7684VIP\u590d\u523b\u97f3\u8272").strip()[:40]
     now = int(time.time())
     voice_key = "vip_" + re.sub(r"[^a-zA-Z0-9_\\-]", "_", slot_id)
     with closing(adb()) as c:
+        _ensure_column(c, "audio_voice_slots", "clone_upload_response", "TEXT")
         slot = c.execute("""SELECT id, status, voice_id, COALESCE(reclone_count, 0) AS reclone_count, updated_at, clone_upload_at FROM audio_voice_slots
             WHERE username=? AND slot_id=?""",
             (username, slot_id)).fetchone()
@@ -426,8 +454,12 @@ def mark_clone_training(username, slot_id, name):
         r = c.execute("SELECT id FROM audio_voices WHERE username=? AND scope='personal' AND voice_key=?",
                       (username, voice_key)).fetchone()
         voice_id = r["id"] if r else None
-        c.execute("""UPDATE audio_voice_slots SET voice_id=?, status='training', reclone_count=?, clone_started_at=?, clone_upload_at=NULL, clone_error=NULL, updated_at=?
-            WHERE username=? AND slot_id=?""", (voice_id, next_reclone_count, now, now, username, slot_id))
+        clone_request = json.dumps({
+            "idempotency_key": request_id, "request_digest": request_digest,
+        }, separators=(",", ":")) if request_id else None
+        c.execute("""UPDATE audio_voice_slots SET voice_id=?, status='training', reclone_count=?, clone_started_at=?, clone_upload_at=NULL,
+            clone_error=NULL, clone_upload_response=?, updated_at=? WHERE username=? AND slot_id=?""",
+            (voice_id, next_reclone_count, now, clone_request, now, username, slot_id))
         c.commit()
     clear_voice_preview(username, slot_id)
     return {"voice_id": voice_id, "voice_key": voice_key, "display_name": name, "status": "training", "reclone_count": next_reclone_count}

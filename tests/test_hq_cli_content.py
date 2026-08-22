@@ -148,6 +148,41 @@ class HQCLIContentTests(unittest.TestCase):
         self.assertEqual((public["voice_scope"], public["provider"]), ("public", "cosyvoice"))
         self.assertEqual((personal["voice_scope"], personal["provider"]), ("personal", "cosyvoice"))
 
+    def test_voice_clone_expands_private_upload_and_replays_same_request(self):
+        voice = {"voice_key": "vip_slot_12345678", "status": "training"}
+        with mock.patch.object(
+            cli_uploads, "expand_voice_clone_payload",
+            return_value={"slot_id": "slot_12345678", "name": "我的声音",
+                          "audio": "data:audio/wav;base64,AA==", "audio_format": "wav"},
+        ) as expand, mock.patch.object(
+            audio, "validate_clone_vip_payload", side_effect=lambda _user, value: value,
+        ), mock.patch.object(
+            audio, "clone_request_replay", side_effect=[None, dict(voice, replayed=True)],
+        ), mock.patch.object(
+            audio, "mark_clone_training", return_value=voice,
+        ) as mark, mock.patch.object(audio, "clone_vip_voice_background") as background:
+            first = self._post("/api/gen/cli/voice-clone", {
+                "slot_id": "slot_12345678", "name": "我的声音",
+                "audio_upload_id": "aud_" + "a" * 32,
+            }, idempotency_key="clone-request-0001")
+            second = self._post("/api/gen/cli/voice-clone", {
+                "slot_id": "slot_12345678", "name": "我的声音",
+                "audio_upload_id": "aud_" + "a" * 32,
+            }, idempotency_key="clone-request-0001")
+        self.assertEqual((200, 200), (first[0], second[0]))
+        self.assertEqual("training", second[1]["voice"]["status"])
+        expand.assert_called_once()
+        mark_args = mark.call_args.args
+        self.assertEqual(
+            ("alice", "slot_12345678", "我的声音", "clone-request-0001"),
+            mark_args[:4],
+        )
+        self.assertRegex(mark_args[4], r"^[0-9a-f]{64}$")
+        background.assert_called_once_with("alice", {
+            "slot_id": "slot_12345678", "name": "我的声音",
+            "audio": "data:audio/wav;base64,AA==", "audio_format": "wav",
+        })
+
     def test_video_lipsync_uses_owned_assets_and_real_duration_pricing(self):
         with mock.patch.object(video, "get_video_asset", return_value={
                 "id": 21, "video_file": "video/source.mp4",

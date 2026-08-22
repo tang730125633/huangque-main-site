@@ -88,7 +88,7 @@ assert payload['state_schema'] == 2, payload
         for path in HERMES.glob("*.py"):
             routes.update(pattern.findall(path.read_text(encoding="utf-8")))
 
-        self.assertEqual(len(routes), 83)
+        self.assertEqual(len(routes), 85)
         self.assertTrue(
             {
                 "/api/chat",
@@ -724,12 +724,16 @@ def resource_bridge(account_id, action, input_body, **kwargs):
     if action == "voices":
         return {"items": [
             {"voice_key": "voice-demo", "display_name": "我的声音", "scope": "personal",
-             "preview_url": "https://media.example/voice-demo.mp3"},
+             "preview_url": "https://media.example/voice-demo.mp3", "slot_id": "slot_12345678"},
             {"voice_key": "public-demo", "display_name": "公共声音", "scope": "public",
              "preview_url": "https://media.example/public-demo.mp3"},
             {"voice_key": "silent-demo", "display_name": "无试听声音", "scope": "personal",
              "preview_url": ""},
         ]}
+    if action == "audio-slots":
+        return {"items": [{
+            "slot_id": "slot_12345678", "status": "ready", "voice_name": "我的声音",
+        }]}
     if action == "canvas-list":
         return {"boards": [
             {"id": "board_canvas_1", "name": "IP12 内容画布", "version": 3, "role": "owner"},
@@ -799,7 +803,7 @@ assert [item["const"] for item in audio_public["schema"]["properties"]["voice"][
 assert audio_public["schema"]["properties"]["voice"]["oneOf"][1] == {
     "const": "public-demo", "title": "公共声音",
     "preview_url": "https://media.example/public-demo.mp3",
-    "preview_kind": "audio", "source": "public",
+    "preview_kind": "audio", "source": "public", "slot_id": "",
 }, audio_public
 assert audio_public_selected["options"] == {"voice": "public-demo", "speed": 0.9}, audio_public_selected
 assert video["schema"]["required"] == ["avatar_id", "voice"], video
@@ -811,7 +815,7 @@ assert video["schema"]["properties"]["avatar_id"]["oneOf"] == [
 assert video["schema"]["properties"]["voice"]["oneOf"] == [{
     "const": "voice-demo", "title": "我的声音",
     "preview_url": "https://media.example/voice-demo.mp3",
-    "preview_kind": "audio", "source": "personal", "recommended": True,
+    "preview_kind": "audio", "source": "personal", "slot_id": "slot_12345678", "recommended": True,
 }], video
 assert public_blocked["status"] == "blocked_prerequisite", public_blocked
 assert "当前账号的可选范围" in public_blocked["validation_error"], public_blocked
@@ -1177,6 +1181,171 @@ print("IP12_PRODUCTION_RUNTIME_OK")
             )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("IP12_PRODUCTION_RUNTIME_OK", result.stdout)
+
+    def test_rerecord_routes_to_current_production_and_clone_voice_returns_to_chat(self):
+        script = r'''
+import io
+from unittest.mock import patch
+import server
+import security
+
+server.current_account_id = lambda: "acct_clone"
+security._validate_token = lambda token: {
+    "account_id": "acct_clone", "username": "clone", "role": "member",
+}
+security.RATE_REQUESTS = 100
+client = server.app.test_client()
+client.environ_base["HTTP_AUTHORIZATION"] = "Bearer test-token"
+
+schema = {
+    "type": "object", "additionalProperties": False,
+    "required": ["avatar_id", "text", "voice"],
+    "properties": {
+        "avatar_id": {"type": "integer"}, "text": {"type": "string"},
+        "voice": {"type": "string"}, "ratio": {"type": "string"},
+    },
+}
+catalog = {"version": "clone-test-v1", "actions": [{
+    "action": "digital-ip-text-generate", "family": "video",
+    "input_schema": schema, "billing": "quote_then_confirm",
+    "confirmation_required": True, "risk": "production", "result_type": "asset",
+    "ui_route": "", "transport": {"kind": "action"}, "availability": {"status": "available"},
+}]}
+
+def resources(_account, action, _input, **_kwargs):
+    if action == "video-avatars":
+        return {"items": [{"id": 14, "name": "我的形象", "status": "ready",
+                           "image_url": "https://media.example/avatar.jpg"}]}
+    if action == "voices":
+        return {"items": [{"voice_key": "voice-old", "display_name": "我的旧声音",
+                           "scope": "personal", "slot_id": "slot_12345678",
+                           "preview_url": "https://media.example/old.mp3"}]}
+    if action == "audio-slots":
+        return {"items": [{"slot_id": "slot_12345678", "status": "ready",
+                           "voice_name": "我的旧声音"}]}
+    raise AssertionError(action)
+
+state = server.initial_coach_state()
+state.update(current_module=6, completed_modules=[1, 2, 3, 4, 5, 6])
+state["intake"]["status"] = "complete"
+cid = "cloneflow001"
+server.save_conversation(cid, {
+    "id": cid, "title": "clone flow", "messages": [], "coach_state": state,
+    "reports": {}, "owner_account_id": "acct_clone", "productions": {},
+    "deliverables": {"6": {"kind": "content_pack_v1", "categories": [{
+        "id": "category_1", "name": "内容", "topics": [{
+            "id": "topic_1", "title": "第一篇", "status": "ready",
+            "versions": [{"version": 1, "content": "这是已经确认的完整口播文案。"}],
+        }],
+    }]}},
+})
+target = {"category_id": "category_1", "topic_id": "topic_1"}
+with patch.object(server, "_bridge_catalog", return_value=catalog), \
+        patch.object(server, "_bridge_action", side_effect=resources):
+    prepared = client.post("/api/ip12/productions/prepare", json={
+        "conversation_id": cid, "content_target": target,
+        "expected_revision": state["revision"], "requested_result": "video",
+        "preferred_action": "digital-ip-text-generate", "options": {},
+    }).get_json()
+production_id = prepared["production_id"]
+convo = server.load_conversation(cid)
+record = convo["productions"][production_id]
+record["status"] = "quoted"
+record["quote"] = {"token": "old-quote", "cost": 150, "points": 1000,
+                   "expires_at": server._utc_timestamp() + 300,
+                   "input_digest": record["input_digest"], "billing": "paid"}
+server.save_conversation(cid, convo)
+
+with patch.object(server, "_bridge_catalog", return_value=catalog), \
+        patch.object(server, "_bridge_action", side_effect=resources), \
+        patch.object(server, "_coach_model_decision", side_effect=AssertionError("model must not run")):
+    revised = client.post("/api/chat-complete", json={
+        "conversation_id": cid, "message": "不适合，我需要重新录制",
+        "content_target": target, "expected_revision": state["revision"],
+        "request_id": "rerecord-request-001",
+    })
+assert revised.status_code == 200, revised.get_data(as_text=True)
+body = revised.get_json()
+assert "旧报价已经取消" in body["assistant"], body
+assert "克隆声音" in body["assistant"], body
+assert body["production"]["quote"] == {}, body
+assert body["production"]["options"] == {"avatar_id": 14}, body
+assert body["production"]["status"] == "blocked_prerequisite", body
+assert body["material_request_message"]["production_id"] == production_id, body
+saved = server.load_conversation(cid)
+assert saved["messages"][-1]["agent_trace"]["skills"][0] == {
+    "id": "production_bridge", "version": "1.1.0",
+}, saved["messages"][-1]
+revision = body["state"]["revision"]
+
+with patch.object(server, "_bridge_upload", return_value={"upload_id": "img_" + "b" * 32}):
+    portrait = client.post("/api/ip12/productions/upload", data={
+        "conversation_id": cid, "production_id": production_id,
+        "expected_revision": str(revision), "field": "image_upload_id",
+        "file": (io.BytesIO(b"\x89PNG\r\n\x1a\nportrait"), "portrait.png", "image/png"),
+    }, content_type="multipart/form-data")
+assert portrait.status_code == 200, portrait.get_data(as_text=True)
+assert portrait.get_json()["production"]["options"] == {
+    "image_upload_id": "img_" + "b" * 32,
+}, portrait.get_json()
+
+clone_calls = []
+def start_clone(account, action, input_body, **kwargs):
+    clone_calls.append((account, action, input_body, kwargs))
+    return {"voice": {"voice_key": "vip_slot_12345678", "status": "training"}}
+
+with patch.object(server, "_bridge_upload", return_value={"upload_id": "aud_" + "a" * 32}), \
+        patch.object(server, "_bridge_action", side_effect=start_clone):
+    started = client.post("/api/ip12/productions/clone-voice", data={
+        "conversation_id": cid, "production_id": production_id,
+        "expected_revision": str(revision), "slot_id": "slot_12345678",
+        "name": "我的新声音", "request_id": "clone-request-0001",
+        "file": (io.BytesIO(b"RIFF0000WAVEaudio"), "sample.wav", "audio/wav"),
+    }, content_type="multipart/form-data")
+assert started.status_code == 200, started.get_data(as_text=True)
+assert clone_calls[0][1] == "voice-clone-create", clone_calls
+assert clone_calls[0][3]["confirm"] is True, clone_calls
+assert clone_calls[0][3]["idempotency_key"] == "clone-request-0001", clone_calls
+
+def ready_resources(_account, action, _input, **_kwargs):
+    if action == "voice-clone-status":
+        return {"result": {"status": "ready"}}
+    if action == "video-avatars":
+        return resources(_account, action, _input)
+    if action == "audio-slots":
+        return resources(_account, action, _input)
+    if action == "voices":
+        return {"items": [{"voice_key": "vip_slot_12345678", "display_name": "我的新声音",
+                           "scope": "personal", "slot_id": "slot_12345678",
+                           "preview_url": "https://media.example/new.mp3"}]}
+    raise AssertionError(action)
+
+with patch.object(server, "_bridge_catalog", return_value=catalog), \
+        patch.object(server, "_bridge_action", side_effect=ready_resources):
+    ready = client.get(
+        f"/api/ip12/productions/{production_id}/clone-voice?conversation_id={cid}"
+    )
+assert ready.status_code == 200, ready.get_data(as_text=True)
+ready_body = ready.get_json()
+assert ready_body["status"] == "ready", ready_body
+assert ready_body["production"]["options"] == {
+    "image_upload_id": "img_" + "b" * 32, "voice": "vip_slot_12345678",
+}, ready_body
+assert ready_body["material_message"]["production_id"] == production_id, ready_body
+print("IP12_CLONE_RERECORD_OK")
+'''
+        with tempfile.TemporaryDirectory() as data_dir:
+            env = os.environ.copy()
+            env.update(
+                OPENAI_API_KEY="dummy", HERMES_HOME=data_dir,
+                HERMES_DATA_DIR=data_dir, HQ_INTERNAL_TOKEN="internal-test-token",
+            )
+            result = subprocess.run(
+                [sys.executable, "-c", script], cwd=HERMES, env=env,
+                capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("IP12_CLONE_RERECORD_OK", result.stdout)
 
 
 @unittest.skipUnless(

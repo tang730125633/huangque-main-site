@@ -19,14 +19,14 @@ class AudioListTest(unittest.TestCase):
         try:
             conn.executescript("""
                 CREATE TABLE audio_voice_slots(
-                    id INTEGER, username TEXT, user_id INTEGER, slot_id TEXT, status TEXT,
+                    id INTEGER PRIMARY KEY, username TEXT, user_id INTEGER, slot_id TEXT, status TEXT,
                     voice_id INTEGER, reclone_count INTEGER, created_at INTEGER, updated_at INTEGER,
                     clone_started_at INTEGER, clone_upload_at INTEGER, clone_error TEXT,
                     clone_upload_speaker_id TEXT, clone_upload_response TEXT,
                     clone_baseline_version TEXT, clone_baseline_icl_speaker_id TEXT,
                     clone_baseline_demo_audio TEXT);
                 CREATE TABLE audio_voices(
-                    id INTEGER, scope TEXT, username TEXT, voice_key TEXT, display_name TEXT,
+                    id INTEGER PRIMARY KEY, scope TEXT, username TEXT, voice_key TEXT, display_name TEXT,
                     provider_voice TEXT, preview_file TEXT, preview_url TEXT, slot_id TEXT,
                     created_at INTEGER, updated_at INTEGER);
                 INSERT INTO audio_voice_slots VALUES(
@@ -81,6 +81,24 @@ class AudioListTest(unittest.TestCase):
                 "SELECT status FROM audio_voice_slots WHERE id=1"
             ).fetchone()[0]
         self.assertEqual(status, "training")
+
+    def test_voice_clone_request_replays_without_starting_a_second_clone(self):
+        with sqlite3.connect(self.db) as conn:
+            conn.execute("UPDATE audio_voice_slots SET status='ready' WHERE id=1")
+        created = audio.mark_clone_training(
+            "alice", "S_test", "重新录制", "clone-request-0001", "digest-a",
+        )
+        replay = audio.clone_request_replay(
+            "alice", "S_test", "clone-request-0001", "digest-a",
+        )
+        self.assertEqual(created["voice_key"], replay["voice_key"])
+        self.assertEqual("training", replay["status"])
+        self.assertTrue(replay["replayed"])
+        self.assertIsNone(audio.clone_request_replay("alice", "S_test", "other-request"))
+        with self.assertRaisesRegex(audio.CloneVipValidationError, "不同的声音样音"):
+            audio.clone_request_replay(
+                "alice", "S_test", "clone-request-0001", "digest-b",
+            )
 
     def test_clone_status_ignores_retired_or_stale_preview_rows(self):
         with sqlite3.connect(self.db) as conn:

@@ -324,6 +324,8 @@ def bridge(_account, capability, input_body, **kwargs):
         return {"items": []}
     if capability == "voices":
         return {"items": []}
+    if capability == "audio-slots":
+        return {"items": []}
     if capability == "digital-ip-audio-generate":
         return {"quote_token": "quote-inline", "cost": 30, "points": 100, "expires_in": 300}
     raise AssertionError(capability)

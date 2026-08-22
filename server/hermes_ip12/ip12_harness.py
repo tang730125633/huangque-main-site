@@ -30,7 +30,7 @@ AGENT_RELEASE_MANIFEST = {
         "safety_fallback": {"contract_version": "1.0.0", "prompt_version": None},
         "foundation_review": {"contract_version": "1.0.0", "prompt_version": "foundation-review-v1"},
         "content_revision": {"contract_version": "1.0.0", "prompt_version": "content-revision-v1"},
-        "production_bridge": {"contract_version": "1.0.0", "prompt_version": None},
+        "production_bridge": {"contract_version": "1.1.0", "prompt_version": None},
     },
 }
 

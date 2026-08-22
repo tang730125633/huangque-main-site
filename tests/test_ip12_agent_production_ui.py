@@ -440,7 +440,10 @@ console.log(JSON.stringify({
             self.html.index("function productionInlineHtml"):
             self.html.index("function productionUiRoute")
         ]
-        self.assertIn("Object.assign({},spec,{inlineUploadField:''})", inline)
+        self.assertNotIn("Object.assign({},spec,{inlineUploadField:''})", inline)
+        self.assertIn("productionFieldControl(record,spec,false,3)", inline)
+        self.assertIn("录制/上传样音，生成我的克隆声音", self.html)
+        self.assertIn("/api/ip12/productions/clone-voice", self.html)
         self.assertIn(",false,3)", inline)
         self.assertIn("实时报价", inline)
         self.assertIn("确认并提交这次生产", inline)
