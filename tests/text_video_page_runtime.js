@@ -76,6 +76,7 @@ async function flush(turns = 8) {
 }
 
 function createRuntime(options = {}) {
+  const runtimeOptions = options;
   const root = path.resolve(__dirname, '..');
   const page = fs.readFileSync(path.join(root, 'site', 'workbench', 'text-video.html'), 'utf8');
   const scripts = [...page.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)].map((match) => match[1]).filter(Boolean);
@@ -101,6 +102,7 @@ function createRuntime(options = {}) {
   get('orientationTabs').appendChild(orientationPortrait); get('orientationTabs').appendChild(orientationLandscape);
 
   const requests = {plans: [], avatars: [], quotes: [], paid: [], jobs: []};
+  const confirms = [];
   const revoked = [];
   let objectUrlCounter = 0;
   const fetch = (url, options = {}) => {
@@ -117,6 +119,9 @@ function createRuntime(options = {}) {
       const item = deferred(); item.url = url; item.options = options; requests.avatars.push(item); return item.promise;
     }
     if (url === '/api/gen/text-video/quote') {
+      if (runtimeOptions.deferQuotes) {
+        const item = deferred(); item.url = url; item.options = options; requests.quotes.push(item); return item.promise;
+      }
       requests.quotes.push({url, options});
       return Promise.resolve(response(200, {
         quote_token: 'quote-token', cost: 30, scene_count: 1,
@@ -160,7 +165,7 @@ function createRuntime(options = {}) {
     location: {href: ''},
     crypto: {randomUUID: () => 'runtime-key'},
     AbortController,
-    confirm: () => options.confirm !== false,
+    confirm: (message) => { confirms.push(message); return options.confirm !== false; },
     URL: {
       createObjectURL: () => 'blob:avatar-' + (++objectUrlCounter),
       revokeObjectURL: (url) => revoked.push(url),
@@ -180,7 +185,7 @@ function createRuntime(options = {}) {
   context.window = context;
   vm.createContext(context);
   vm.runInContext(source, context, {filename: 'text-video.inline.js'});
-  return {get, requests, response, revoked, modeGenerate, modeFixed, kindIllustration, kindVideo, orientationPortrait, orientationLandscape};
+  return {get, requests, response, revoked, confirms, modeGenerate, modeFixed, kindIllustration, kindVideo, orientationPortrait, orientationLandscape};
 }
 
 async function upload(runtime, file, sceneId = '') {
@@ -280,6 +285,28 @@ async function scenarioQuoteCancel() {
     quoteRequests: runtime.requests.quotes.length,
     paidRequests: runtime.requests.paid.length,
     status: runtime.get('statusText').textContent,
+  };
+}
+
+async function scenarioStaleQuote() {
+  const runtime = createRuntime({deferQuotes: true});
+  await flush();
+  runtime.get('generateBtn').click();
+  await flush();
+  const quote = runtime.requests.quotes[0];
+  runtime.get('videoText').value = '修改后的新文案';
+  runtime.get('videoText').dispatch('input');
+  await flush();
+  quote.resolve(response(200, {
+    quote_token: 'stale-quote-token', cost: 30, scene_count: 1,
+    cost_breakdown: {scene_count: 1, total: 30},
+  }));
+  await flush();
+  return {
+    visibleText: runtime.get('videoText').value,
+    quoteAborted: quote.options.signal.aborted,
+    confirms: runtime.confirms.length,
+    paidRequests: runtime.requests.paid.length,
   };
 }
 
@@ -384,7 +411,7 @@ async function scenarioSceneAvatarInvalidation() {
 
 async function main() {
   const scenario = process.argv[2];
-  const handlers = {latePlan: scenarioLatePlan, avatarRace: scenarioAvatarRace, phase: scenarioPhase, disabledPath: scenarioDisabledPath, quoteCancel: scenarioQuoteCancel, planMutations: scenarioPlanMutations, sceneAvatarRace: scenarioSceneAvatarRace, sceneAvatarInvalidation: scenarioSceneAvatarInvalidation};
+  const handlers = {latePlan: scenarioLatePlan, avatarRace: scenarioAvatarRace, phase: scenarioPhase, disabledPath: scenarioDisabledPath, quoteCancel: scenarioQuoteCancel, staleQuote: scenarioStaleQuote, planMutations: scenarioPlanMutations, sceneAvatarRace: scenarioSceneAvatarRace, sceneAvatarInvalidation: scenarioSceneAvatarInvalidation};
   if (!handlers[scenario]) throw new Error('Unknown scenario: ' + scenario);
   process.stdout.write(JSON.stringify(await handlers[scenario]()));
 }

@@ -86,6 +86,25 @@ class IP12AgentProductionUITests(unittest.TestCase):
         self.assertIn("options:collected.options", quote)
         self.assertIn("detail.code==='missing_prerequisite'", quote)
 
+    def test_agent_messages_and_top_bar_can_reopen_the_current_production(self):
+        self.assertIn('id="productionEntryBtn"', self.html)
+        self.assertIn('onclick="openCurrentProduction()"', self.html)
+        self.assertIn('class="top-action production-entry"', self.html)
+        message = self.html[
+            self.html.index("function productionMessageHtml"):
+            self.html.index("function renderChat")
+        ]
+        self.assertIn("打开生产画布", message)
+        self.assertIn("openProductionRecord(this.dataset.productionId)", message)
+        lifecycle = self.html[
+            self.html.index("function updateProductionEntry"):
+            self.html.index("function productionError")
+        ]
+        self.assertIn("button.hidden=!record", lifecycle)
+        self.assertIn("updateProductionEntry()", lifecycle)
+        self.assertIn("function openProductionRecord", self.html)
+        self.assertIn("function openCurrentProduction", self.html)
+
     def test_four_current_missing_fields_are_typed_without_action_specific_flows(self):
         if not shutil.which("node"):
             self.skipTest("node unavailable")

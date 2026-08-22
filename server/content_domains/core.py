@@ -2910,6 +2910,7 @@ class H(BaseHTTPRequestHandler):
             still_attempt = None
             cinematic_idem_reserved = False
             script_to_video_idem_reserved = False
+            script_to_video_quote_token = ""
             still_access = _short_drama_canvas_access(self) if is_still_route else None
             scene_access = None
             minimax_idem_body = None
@@ -3047,13 +3048,7 @@ class H(BaseHTTPRequestHandler):
                     from . import script_to_video as script_to_video_domain
                     body = script_to_video_domain.prepare_script_to_video_payload(body, user["username"])
                     if body.get("pipeline") == "pixelle":
-                        from . import pixelle_video as pixelle_video_domain
-                        quote_token = body.pop("_quote_token", "")
-                        quoted_cost = points_domain.cost_of(kind, body)
-                        pixelle_video_domain.require_confirmed_quote(
-                            quote_token, body, user["username"], quoted_cost,
-                            AUTH_INTERNAL_TOKEN)
-                        body["_quoted_cost"] = quoted_cost
+                        script_to_video_quote_token = body.pop("_quote_token", "")
                 elif kind == "breakdown":
                     from . import breakdown as breakdown_domain
                     body = breakdown_domain.validate_breakdown_payload(body)
@@ -3143,14 +3138,16 @@ class H(BaseHTTPRequestHandler):
             cost = points_domain.cost_of(kind, body) if not is_short_drama and not is_still_route else None
             if (kind == "script_to_video" and isinstance(body, dict)
                     and body.get("pipeline") == "pixelle"):
-                quoted_cost = body.pop("_quoted_cost", None)
-                if quoted_cost != cost:
+                from . import pixelle_video as pixelle_video_domain
+                try:
+                    pixelle_video_domain.require_confirmed_quote(
+                        script_to_video_quote_token, body, user["username"], cost,
+                        AUTH_INTERNAL_TOKEN)
+                except ValueError as e:
                     if script_to_video_idem_reserved:
                         _idempotency_abort(user["username"], p, idem_key)
-                    return self._send(409, {
-                        "detail": "分镜或价格已变化，请重新报价",
-                        "code": "quote_changed",
-                    })
+                    _short_drama_domain()._http_error(self, e)
+                    return
             if kind == "canvas_agent" and body.get("quoted_cost") != cost:
                 return self._send(400, {"detail": "画布 Agent 价格已变化，请重新报价"})
             if cli_gateway.reject_changed_cost(

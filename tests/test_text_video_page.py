@@ -248,6 +248,13 @@ process.stdout.write(JSON.stringify({afterSceneEdit:afterSceneEdit,afterPlanInpu
         self.assertEqual(0, result["paidRequests"])
         self.assertIn("未扣点", result["status"])
 
+    def test_stale_quote_is_aborted_without_confirmation_or_paid_submission(self):
+        result = self._run_page_runtime("staleQuote")
+        self.assertEqual("修改后的新文案", result["visibleText"])
+        self.assertTrue(result["quoteAborted"])
+        self.assertEqual(0, result["confirms"])
+        self.assertEqual(0, result["paidRequests"])
+
     def test_talking_planning_and_avatar_routes_are_wired(self):
         self.assertIn('/api/gen/text-video/plan', CORE)
         self.assertIn('/api/gen/text-video/avatar', CORE)
