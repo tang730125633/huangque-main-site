@@ -440,7 +440,10 @@ console.log(JSON.stringify({
             self.html.index("function productionInlineHtml"):
             self.html.index("function productionUiRoute")
         ]
-        self.assertIn("Object.assign({},spec,{inlineUploadField:''})", inline)
+        self.assertNotIn("Object.assign({},spec,{inlineUploadField:''})", inline)
+        self.assertIn("productionFieldControl(record,spec,false,3)", inline)
+        self.assertIn("录制/上传样音，生成我的克隆声音", self.html)
+        self.assertIn("/api/ip12/productions/clone-voice", self.html)
         self.assertIn(",false,3)", inline)
         self.assertIn("实时报价", inline)
         self.assertIn("确认并提交这次生产", inline)
@@ -452,12 +455,58 @@ console.log(JSON.stringify({
         self.assertIn("Agent 推荐", cards)
         self.assertIn("<audio controls", cards)
         self.assertIn("limit&&choices.length>limit", cards)
+        clone_poll = self.html[
+            self.html.index("function stopVoiceClonePoll"):
+            self.html.index("async function uploadSelectedMaterial")
+        ]
+        self.assertIn("voiceClonePolls", clone_poll)
+        self.assertIn("poll.inFlight||poll.timer", clone_poll)
+        self.assertIn("error.status!==429&&error.status<500", clone_poll)
+        self.assertIn("stopVoiceClonePoll(productionId)", clone_poll)
+        self.assertIn("'POST',{conversation_id:cid}", clone_poll)
         restore = self.html[
             self.html.index("function restoreProductionPanel(){"):
             self.html.index("function openProductionRecord")
         ]
         self.assertNotIn("renderProductionPanel(record)", restore)
         self.assertIn("requestProductionQuote(record.id,false)", restore)
+
+    def test_voice_clone_poll_deduplicates_retries_and_stops_terminal_states(self):
+        if not shutil.which("node"):
+            self.skipTest("node unavailable")
+        start = self.html.index("function stopVoiceClonePoll")
+        end = self.html.index("async function uploadSelectedMaterial", start)
+        functions = self.html[start:end]
+        script = functions + r"""
+const assert = require('assert');
+var voiceClonePolls={},cid='project-a',productions={p:{id:'p',options:{}}};
+var timers=[],requests=0,quotes=0,mode='ready';
+global.setTimeout=function(fn){timers.push(fn);return timers.length};
+global.clearTimeout=function(){};
+function updateProductionFromPayload(data){productions.p=data.production||productions.p;return productions.p}
+function appendProductionMessage(){}
+function toast(){}
+function productionUnfilledFields(){return []}
+function productionUnmappedMissing(){return []}
+async function requestProductionQuote(){quotes+=1}
+async function productionRequest(){requests+=1;if(mode==='429'){var e=new Error('limited');e.status=429;throw e}if(mode==='400'){var bad=new Error('bad');bad.status=400;throw bad}return{status:mode,production:{id:'p',options:{}}}}
+(async function(){
+  await Promise.all([pollVoiceClone('p'),pollVoiceClone('p')]);
+  assert.equal(requests,1);assert.equal(quotes,1);assert.equal(voiceClonePolls.p,undefined);
+  requests=0;quotes=0;mode='429';await pollVoiceClone('p');
+  assert.equal(requests,1);assert.equal(timers.length,1);assert.ok(voiceClonePolls.p);
+  mode='failed';timers.shift()();await new Promise(setImmediate);
+  assert.equal(requests,2);assert.equal(voiceClonePolls.p,undefined);
+  mode='400';await pollVoiceClone('p');
+  assert.equal(voiceClonePolls.p,undefined);
+  console.log('VOICE_CLONE_POLL_OK');
+})().catch(function(error){console.error(error);process.exit(1)});
+"""
+        result = subprocess.run(
+            ["node", "-e", script], capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("VOICE_CLONE_POLL_OK", result.stdout)
 
 
 if __name__ == "__main__":

@@ -88,7 +88,7 @@ assert payload['state_schema'] == 2, payload
         for path in HERMES.glob("*.py"):
             routes.update(pattern.findall(path.read_text(encoding="utf-8")))
 
-        self.assertEqual(len(routes), 83)
+        self.assertEqual(len(routes), 85)
         self.assertTrue(
             {
                 "/api/chat",
@@ -689,6 +689,13 @@ assert server._audio_options_from_message("重新生成音频，语速调整为0
 assert server._audio_options_from_message("重新生成音频，语速慢一点") == {}
 assert server._production_source_revision_intent("重新生成一版音频，开头表达更直接") is True
 assert server._production_source_revision_intent("重新生成一版音频，语速调整为0.9") is False
+assert server._production_material_revision_intent("不适合，我需要重新录制") == "voice"
+assert server._production_material_revision_intent("这张照片不满意，换张图片") == "image"
+assert server._production_material_revision_intent("声音和形象都不满意，都换掉") == "both"
+assert server._production_material_revision_intent("把文案语气改温和") == ""
+assert server._production_material_revision_intent("克隆声音是什么？") == ""
+assert server._production_material_revision_intent("不要换声音，我只想了解克隆声音") == ""
+assert server._production_material_revision_intent("我需要创建克隆声音") == "voice"
 with server.app.test_request_context("https://huangquechuanmei.com/workbench/ip12/"):
     assert server._browser_preview_url("/api/gen/file/avatar.jpg") == (
         "https://huangquechuanmei.com/api/gen/file/avatar.jpg"
@@ -724,12 +731,16 @@ def resource_bridge(account_id, action, input_body, **kwargs):
     if action == "voices":
         return {"items": [
             {"voice_key": "voice-demo", "display_name": "我的声音", "scope": "personal",
-             "preview_url": "https://media.example/voice-demo.mp3"},
+             "preview_url": "https://media.example/voice-demo.mp3", "slot_id": "slot_12345678"},
             {"voice_key": "public-demo", "display_name": "公共声音", "scope": "public",
              "preview_url": "https://media.example/public-demo.mp3"},
             {"voice_key": "silent-demo", "display_name": "无试听声音", "scope": "personal",
              "preview_url": ""},
         ]}
+    if action == "audio-slots":
+        return {"items": [{
+            "slot_id": "slot_12345678", "status": "ready", "voice_name": "我的声音",
+        }]}
     if action == "canvas-list":
         return {"boards": [
             {"id": "board_canvas_1", "name": "IP12 内容画布", "version": 3, "role": "owner"},
@@ -799,7 +810,7 @@ assert [item["const"] for item in audio_public["schema"]["properties"]["voice"][
 assert audio_public["schema"]["properties"]["voice"]["oneOf"][1] == {
     "const": "public-demo", "title": "公共声音",
     "preview_url": "https://media.example/public-demo.mp3",
-    "preview_kind": "audio", "source": "public",
+    "preview_kind": "audio", "source": "public", "slot_id": "",
 }, audio_public
 assert audio_public_selected["options"] == {"voice": "public-demo", "speed": 0.9}, audio_public_selected
 assert video["schema"]["required"] == ["avatar_id", "voice"], video
@@ -811,7 +822,7 @@ assert video["schema"]["properties"]["avatar_id"]["oneOf"] == [
 assert video["schema"]["properties"]["voice"]["oneOf"] == [{
     "const": "voice-demo", "title": "我的声音",
     "preview_url": "https://media.example/voice-demo.mp3",
-    "preview_kind": "audio", "source": "personal", "recommended": True,
+    "preview_kind": "audio", "source": "personal", "slot_id": "slot_12345678", "recommended": True,
 }], video
 assert public_blocked["status"] == "blocked_prerequisite", public_blocked
 assert "当前账号的可选范围" in public_blocked["validation_error"], public_blocked
@@ -1177,6 +1188,344 @@ print("IP12_PRODUCTION_RUNTIME_OK")
             )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("IP12_PRODUCTION_RUNTIME_OK", result.stdout)
+
+    def test_rerecord_routes_to_current_production_and_clone_voice_returns_to_chat(self):
+        script = r'''
+import concurrent.futures
+import io
+import threading
+from unittest.mock import Mock, patch
+import server
+import security
+
+server.current_account_id = lambda: "acct_clone"
+security._validate_token = lambda token: {
+    "account_id": "acct_clone", "username": "clone", "role": "member",
+}
+security.RATE_REQUESTS = 100
+client = server.app.test_client()
+client.environ_base["HTTP_AUTHORIZATION"] = "Bearer test-token"
+
+schema = {
+    "type": "object", "additionalProperties": False,
+    "required": ["avatar_id", "text", "voice"],
+    "properties": {
+        "avatar_id": {"type": "integer"}, "text": {"type": "string"},
+        "voice": {"type": "string"}, "ratio": {"type": "string"},
+    },
+}
+catalog = {"version": "clone-test-v1", "actions": [{
+    "action": "digital-ip-text-generate", "family": "video",
+    "input_schema": schema, "billing": "quote_then_confirm",
+    "confirmation_required": True, "risk": "production", "result_type": "asset",
+    "ui_route": "", "transport": {"kind": "action"}, "availability": {"status": "available"},
+}]}
+
+def resources(_account, action, _input, **_kwargs):
+    if action == "video-avatars":
+        return {"items": [{"id": 14, "name": "我的形象", "status": "ready",
+                           "image_url": "https://media.example/avatar.jpg"}]}
+    if action == "voices":
+        return {"items": [{"voice_key": "voice-old", "display_name": "我的旧声音",
+                           "scope": "personal", "slot_id": "slot_12345678",
+                           "preview_url": "https://media.example/old.mp3"}]}
+    if action == "audio-slots":
+        return {"items": [{"slot_id": "slot_12345678", "status": "ready",
+                           "voice_name": "我的旧声音"}]}
+    raise AssertionError(action)
+
+def first_clone_resources(_account, action, _input, **_kwargs):
+    if action == "video-avatars":
+        return resources(_account, action, _input)
+    if action == "voices":
+        return {"items": []}
+    if action == "audio-slots":
+        return {"items": [{"slot_id": "member_firstvoice1", "status": "active"}]}
+    raise AssertionError(action)
+with patch.object(server, "_bridge_action", side_effect=first_clone_resources):
+    first_schema, _ = server._production_parameter_context(
+        "acct_clone", "digital-ip-text-generate", catalog["actions"][0],
+    )
+first_voice = first_schema["properties"]["voice"]
+assert first_voice["x-hq-voice-clone-slot-id"] == "member_firstvoice1", first_voice
+assert first_voice["x-hq-voice-clone-name"] == "我的克隆声音", first_voice
+assert first_schema["required"] == ["avatar_id", "voice"], first_schema
+
+state = server.initial_coach_state()
+state.update(current_module=6, completed_modules=[1, 2, 3, 4, 5, 6])
+state["intake"]["status"] = "complete"
+cid = "cloneflow001"
+server.save_conversation(cid, {
+    "id": cid, "title": "clone flow", "messages": [], "coach_state": state,
+    "reports": {}, "owner_account_id": "acct_clone", "productions": {},
+    "deliverables": {"6": {"kind": "content_pack_v1", "categories": [{
+        "id": "category_1", "name": "内容", "topics": [{
+            "id": "topic_1", "title": "第一篇", "status": "ready",
+            "versions": [{"version": 1, "content": "这是已经确认的完整口播文案。"}],
+        }],
+    }]}},
+})
+target = {"category_id": "category_1", "topic_id": "topic_1"}
+with patch.object(server, "_bridge_catalog", return_value=catalog), \
+        patch.object(server, "_bridge_action", side_effect=resources):
+    prepared = client.post("/api/ip12/productions/prepare", json={
+        "conversation_id": cid, "content_target": target,
+        "expected_revision": state["revision"], "requested_result": "video",
+        "preferred_action": "digital-ip-text-generate", "options": {},
+    }).get_json()
+production_id = prepared["production_id"]
+convo = server.load_conversation(cid)
+record = convo["productions"][production_id]
+record["status"] = "quoted"
+record["quote"] = {"token": "old-quote", "cost": 150, "points": 1000,
+                   "expires_at": server._utc_timestamp() + 300,
+                   "input_digest": record["input_digest"], "billing": "paid"}
+server.save_conversation(cid, convo)
+
+answer = Mock()
+answer.json.return_value = {"choices": [{"message": {"content": (
+    '{"decision":"answer_only","reply":"克隆声音会用你的样音生成个人音色。",'
+    '"change_summary":"","revised_script":""}'
+)}}]}
+with patch.object(server, "call_ai", return_value=answer):
+    question = client.post("/api/chat-complete", json={
+        "conversation_id": cid, "message": "克隆声音是什么？",
+        "content_target": target, "expected_revision": state["revision"],
+        "request_id": "clone-question-001",
+    })
+assert question.status_code == 200, question.get_data(as_text=True)
+question_record = server.load_conversation(cid)["productions"][production_id]
+assert question_record["status"] == "quoted" and question_record["quote"]["token"] == "old-quote", question_record
+revision = question.get_json()["state"]["revision"]
+
+with patch.object(server, "_bridge_catalog", return_value=catalog), \
+        patch.object(server, "_bridge_action", side_effect=resources), \
+        patch.object(server, "_coach_model_decision", side_effect=AssertionError("model must not run")):
+    revised = client.post("/api/chat-complete", json={
+        "conversation_id": cid, "message": "不适合，我需要重新录制",
+        "content_target": target, "expected_revision": revision,
+        "request_id": "rerecord-request-001",
+    })
+assert revised.status_code == 200, revised.get_data(as_text=True)
+body = revised.get_json()
+assert "旧报价已经取消" in body["assistant"], body
+assert "克隆声音" in body["assistant"], body
+assert body["production"]["quote"] == {}, body
+assert body["production"]["options"] == {"avatar_id": 14}, body
+assert body["production"]["status"] == "blocked_prerequisite", body
+assert body["material_request_message"]["production_id"] == production_id, body
+saved = server.load_conversation(cid)
+assert saved["messages"][-1]["agent_trace"]["skills"][0] == {
+    "id": "production_bridge", "version": "1.1.0",
+}, saved["messages"][-1]
+revision = body["state"]["revision"]
+quoted_convo = server.load_conversation(cid)
+quoted_record = quoted_convo["productions"][production_id]
+quoted_record["status"] = "quoted"
+quoted_record["quote"] = {"token": "replacement-quote", "cost": 150}
+quoted_record["confirmation_id"] = "old-confirmation"
+server.save_conversation(cid, quoted_convo)
+
+with patch.object(server, "_bridge_upload", return_value={"upload_id": "img_" + "b" * 32}):
+    portrait = client.post("/api/ip12/productions/upload", data={
+        "conversation_id": cid, "production_id": production_id,
+        "expected_revision": str(revision), "field": "image_upload_id",
+        "file": (io.BytesIO(b"\x89PNG\r\n\x1a\nportrait"), "portrait.png", "image/png"),
+    }, content_type="multipart/form-data")
+assert portrait.status_code == 200, portrait.get_data(as_text=True)
+assert portrait.get_json()["production"]["options"] == {
+    "image_upload_id": "img_" + "b" * 32,
+}, portrait.get_json()
+assert portrait.get_json()["production"]["quote"] == {}, portrait.get_json()
+assert "confirmation_id" not in server.load_conversation(cid)["productions"][production_id]
+
+upload_barrier = threading.Barrier(2)
+concurrent_clone_calls = []
+def concurrent_upload(*_args, **_kwargs):
+    upload_barrier.wait(timeout=3)
+    return {"upload_id": "aud_" + "c" * 32}
+def concurrent_start(account, action, input_body, **kwargs):
+    concurrent_clone_calls.append((account, action, input_body, kwargs))
+    return {"voice": {"voice_key": "vip_slot_12345678", "status": "training"}}
+def concurrent_submit(request_id):
+    local = server.app.test_client()
+    local.environ_base["HTTP_AUTHORIZATION"] = "Bearer test-token"
+    return local.post("/api/ip12/productions/clone-voice", data={
+        "conversation_id": cid, "production_id": production_id,
+        "expected_revision": str(revision), "slot_id": "slot_12345678",
+        "name": request_id, "request_id": request_id,
+        "file": (io.BytesIO(b"RIFF0000WAVEaudio"), "sample.wav", "audio/wav"),
+    }, content_type="multipart/form-data").status_code
+with patch.object(server, "_bridge_upload", side_effect=concurrent_upload), \
+        patch.object(server, "_bridge_action", side_effect=concurrent_start), \
+        concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+    concurrent_statuses = sorted(pool.map(
+        concurrent_submit, ("clone-concurrent-0001", "clone-concurrent-0002")
+    ))
+assert concurrent_statuses == [200, 409], concurrent_statuses
+assert len(concurrent_clone_calls) == 1, concurrent_clone_calls
+convo = server.load_conversation(cid)
+record = convo["productions"][production_id]
+record["voice_clone"] = {}
+record["status"] = "blocked_prerequisite"
+record["last_error_code"] = "missing_prerequisite"
+server.save_conversation(cid, convo)
+
+clone_calls = []
+def start_clone(account, action, input_body, **kwargs):
+    clone_calls.append((account, action, input_body, kwargs))
+    raise server.ProductionBridgeError(502, "response_lost", "response lost", {})
+
+with patch.object(server, "_bridge_upload", return_value={"upload_id": "aud_" + "a" * 32}), \
+        patch.object(server, "_bridge_action", side_effect=start_clone):
+    started = client.post("/api/ip12/productions/clone-voice", data={
+        "conversation_id": cid, "production_id": production_id,
+        "expected_revision": str(revision), "slot_id": "slot_12345678",
+        "name": "我的新声音", "request_id": "clone-request-0001",
+        "file": (io.BytesIO(b"RIFF0000WAVEaudio"), "sample.wav", "audio/wav"),
+    }, content_type="multipart/form-data")
+assert started.status_code == 502, started.get_data(as_text=True)
+assert server.load_conversation(cid)["productions"][production_id]["voice_clone"]["status"] == "submitting"
+assert clone_calls[0][1] == "voice-clone-create", clone_calls
+assert clone_calls[0][3]["confirm"] is True, clone_calls
+assert clone_calls[0][3]["idempotency_key"] == "clone-request-0001", clone_calls
+
+with patch.object(server, "_bridge_upload", side_effect=AssertionError("in-flight clone must fail before upload")):
+    replay = client.post("/api/ip12/productions/clone-voice", data={
+        "conversation_id": cid, "production_id": production_id,
+        "expected_revision": str(revision), "slot_id": "slot_12345678",
+        "name": "我的新声音", "request_id": "clone-request-0001",
+        "file": (io.BytesIO(b"RIFF0000WAVEaudio"), "sample.wav", "audio/wav"),
+    }, content_type="multipart/form-data")
+    competing = client.post("/api/ip12/productions/clone-voice", data={
+        "conversation_id": cid, "production_id": production_id,
+        "expected_revision": str(revision), "slot_id": "slot_12345678",
+        "name": "另一个声音", "request_id": "clone-request-0002",
+        "file": (io.BytesIO(b"RIFF0000WAVEother"), "other.wav", "audio/wav"),
+    }, content_type="multipart/form-data")
+assert replay.status_code == 202 and replay.get_json()["replayed"] is True, replay.get_data(as_text=True)
+assert competing.status_code == 409, competing.get_data(as_text=True)
+assert competing.get_json()["code"] == "voice_clone_in_progress", competing.get_json()
+
+def ready_resources(_account, action, _input, **_kwargs):
+    if action == "voice-clone-create":
+        assert _kwargs["confirm"] is True, _kwargs
+        assert _kwargs["idempotency_key"] == "clone-request-0001", _kwargs
+        return {"voice": {"voice_key": "vip_slot_12345678", "status": "training"}}
+    if action == "voice-clone-status":
+        return {"result": {"status": "ready"}}
+    if action == "video-avatars":
+        return resources(_account, action, _input)
+    if action == "audio-slots":
+        return resources(_account, action, _input)
+    if action == "voices":
+        return {"items": [{"voice_key": "vip_slot_12345678", "display_name": "我的新声音",
+                           "scope": "personal", "slot_id": "slot_12345678",
+                           "preview_url": "https://media.example/new.mp3"}]}
+    raise AssertionError(action)
+
+with patch.object(server, "_bridge_catalog", return_value=catalog), \
+        patch.object(server, "_bridge_action", side_effect=ready_resources):
+    ready = client.post(
+        f"/api/ip12/productions/{production_id}/clone-voice", json={"conversation_id": cid}
+    )
+assert ready.status_code == 200, ready.get_data(as_text=True)
+ready_body = ready.get_json()
+assert client.get(
+    f"/api/ip12/productions/{production_id}/clone-voice?conversation_id={cid}"
+).status_code == 405
+assert ready_body["status"] == "ready", ready_body
+assert "audio_upload_id" not in ready_body["production"]["voice_clone"], ready_body
+assert ready_body["production"]["options"] == {
+    "image_upload_id": "img_" + "b" * 32, "voice": "vip_slot_12345678",
+}, ready_body
+assert ready_body["material_message"]["production_id"] == production_id, ready_body
+
+with patch.object(server, "_bridge_upload", side_effect=AssertionError("invalid slot must fail before upload")):
+    invalid_slot = client.post("/api/ip12/productions/clone-voice", data={
+        "conversation_id": cid, "production_id": production_id,
+        "expected_revision": str(revision), "slot_id": "slot_not_owned",
+        "name": "越权声音", "request_id": "clone-request-invalid",
+        "file": (io.BytesIO(b"RIFF0000WAVEaudio"), "sample.wav", "audio/wav"),
+    }, content_type="multipart/form-data")
+assert invalid_slot.status_code == 409, invalid_slot.get_data(as_text=True)
+assert invalid_slot.get_json()["code"] == "voice_slot_required", invalid_slot.get_json()
+with patch.object(server, "_bridge_upload", side_effect=AssertionError("oversized body must fail before upload")):
+    oversized = client.post("/api/ip12/productions/clone-voice", data={
+        "conversation_id": cid, "production_id": production_id,
+        "expected_revision": str(revision), "slot_id": "slot_12345678",
+        "name": "超大样音", "request_id": "clone-request-oversized",
+        "file": (io.BytesIO(b"x" * server.VOICE_CLONE_MULTIPART_MAX_BYTES),
+                 "oversized.wav", "audio/wav"),
+    }, content_type="multipart/form-data")
+assert oversized.status_code == 413, oversized.get_data(as_text=True)
+
+convo = server.load_conversation(cid)
+convo["productions"][production_id]["voice_clone"] = {
+    "request_id": "clone-request-failed", "slot_id": "slot_12345678",
+    "name": "失败声音", "status": "training",
+}
+server.save_conversation(cid, convo)
+with patch.object(server, "_bridge_action", return_value={
+    "result": {"status": "failed", "clone_error": "样音不清晰"},
+}):
+    failed = client.post(
+        f"/api/ip12/productions/{production_id}/clone-voice", json={"conversation_id": cid}
+    )
+assert failed.status_code == 200, failed.get_data(as_text=True)
+assert failed.get_json()["status"] == "failed", failed.get_json()
+assert failed.get_json()["production"]["last_error_code"] == "voice_clone_failed", failed.get_json()
+
+convo = server.load_conversation(cid)
+record = convo["productions"][production_id]
+record["status"] = "quoted"
+record["quote"] = {"token": "image-revision-quote", "cost": 150}
+server.save_conversation(cid, convo)
+with patch.object(server, "_coach_model_decision", side_effect=AssertionError("model must not run")):
+    image_revision = client.post("/api/chat-complete", json={
+        "conversation_id": cid, "message": "这张照片不满意，换张图片",
+        "content_target": target, "expected_revision": revision,
+        "request_id": "image-revision-001",
+    })
+assert image_revision.status_code == 200, image_revision.get_data(as_text=True)
+image_body = image_revision.get_json()
+assert image_body["production"]["options"] == {"voice": "vip_slot_12345678"}, image_body
+assert image_body["production"]["quote"] == {}, image_body
+revision = image_body["state"]["revision"]
+
+convo = server.load_conversation(cid)
+record = convo["productions"][production_id]
+record["options"] = {"avatar_id": 14, "voice": "vip_slot_12345678"}
+record["status"] = "quoted"
+record["quote"] = {"token": "both-revision-quote", "cost": 150}
+server.save_conversation(cid, convo)
+with patch.object(server, "_bridge_catalog", return_value=catalog), \
+        patch.object(server, "_bridge_action", side_effect=resources), \
+        patch.object(server, "_coach_model_decision", side_effect=AssertionError("model must not run")):
+    both_revision = client.post("/api/chat-complete", json={
+        "conversation_id": cid, "message": "声音和形象都不满意，都换掉",
+        "content_target": target, "expected_revision": revision,
+        "request_id": "both-revision-001",
+    })
+assert both_revision.status_code == 200, both_revision.get_data(as_text=True)
+both_body = both_revision.get_json()
+assert both_body["production"]["options"] == {}, both_body
+assert both_body["production"]["quote"] == {}, both_body
+assert "克隆声音" in both_body["assistant"] and "人物照片" in both_body["assistant"], both_body
+print("IP12_CLONE_RERECORD_OK")
+'''
+        with tempfile.TemporaryDirectory() as data_dir:
+            env = os.environ.copy()
+            env.update(
+                OPENAI_API_KEY="dummy", HERMES_HOME=data_dir,
+                HERMES_DATA_DIR=data_dir, HQ_INTERNAL_TOKEN="internal-test-token",
+            )
+            result = subprocess.run(
+                [sys.executable, "-c", script], cwd=HERMES, env=env,
+                capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("IP12_CLONE_RERECORD_OK", result.stdout)
 
 
 @unittest.skipUnless(

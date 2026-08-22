@@ -479,6 +479,32 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertIn("idempotency_key", result["detail"])
         proxy.assert_not_called()
 
+    def test_ip12_voice_clone_requires_confirmation_and_forwards_one_idempotency_key(self):
+        self._enable_ip12_bridge()
+        payload = {
+            "account_id": self._agent_account_id(), "action": "voice-clone-create",
+            "input": {"slot_id": "S_legacy", "name": "我的声音",
+                      "audio_upload_id": "aud_" + "a" * 32},
+            "confirm": True, "idempotency_key": "clone-request-0001",
+        }
+        with mock.patch.object(
+            self.auth.H, "_cli_proxy", return_value=(200, {"voice": {"status": "training"}}),
+        ) as proxy:
+            missing_status, missing = self._request(
+                "/api/auth/internal/ip12/agent/action",
+                {**payload, "confirm": False}, extra_headers=self._agent_headers(),
+            )
+            status, result = self._request(
+                "/api/auth/internal/ip12/agent/action", payload,
+                extra_headers=self._agent_headers(),
+            )
+        self.assertEqual((409, "confirmation_required"), (missing_status, missing["code"]))
+        self.assertEqual((200, "training"), (status, result["voice"]["status"]))
+        plan = proxy.call_args.args[0]
+        self.assertEqual("/api/gen/cli/voice-clone", plan["path"])
+        self.assertEqual("clone-request-0001", plan["headers"]["Idempotency-Key"])
+        self.assertTrue(plan["internal"])
+
     @staticmethod
     def _canvas_snapshot(board_id):
         return {
@@ -1377,6 +1403,20 @@ class HQCLIAPITests(unittest.TestCase):
         for action, expected in cases.items():
             plan = self.auth.hq_cli_api.action_plan(action, {})
             self.assertEqual(expected, (plan["scope"], plan["base"], plan["path"]))
+        clone = self.auth.hq_cli_api.action_plan("voice-clone-create", {
+            "slot_id": "slot_12345678", "name": "我的声音",
+            "audio_upload_id": "aud_" + "a" * 32,
+        })
+        self.assertEqual(("assets:write", "POST", "/api/gen/cli/voice-clone"), (
+            clone["scope"], clone["method"], clone["path"],
+        ))
+        self.assertTrue(clone["internal"])
+        status = self.auth.hq_cli_api.action_plan(
+            "voice-clone-status", {"slot_id": "slot_12345678"},
+        )
+        self.assertEqual(
+            "/api/gen/audio/clone-status?slot_id=slot_12345678", status["path"],
+        )
         lead_id = "a" * 16
         crm = self.auth.hq_cli_api.action_plan("leads-crm", {"lead_ids": [lead_id, lead_id]})
         self.assertEqual("/api/gen/leads/crm?ids=" + lead_id, crm["path"])

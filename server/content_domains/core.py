@@ -1681,6 +1681,9 @@ class H(BaseHTTPRequestHandler):
                 self, p, verify, _must_change_password, AUTH_INTERNAL_TOKEN): return
         if cli_gateway.handle_audio_upload(
                 self, p, verify, _must_change_password, AUTH_INTERNAL_TOKEN): return
+        if cli_gateway.handle_voice_clone(
+                self, p, verify, _must_change_password, audio_domain,
+                feature_flags, AUTH_INTERNAL_TOKEN): return
         if cli_gateway.handle_quote(
                 self, p, verify, _must_change_password, is_shutting_down,
                 feature_flags, points_domain, audio_domain, video_domain,

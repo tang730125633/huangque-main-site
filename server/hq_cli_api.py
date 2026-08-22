@@ -108,7 +108,7 @@ CONFIRMATION_ACTIONS = frozenset({
     "ip12-create", "ip12-message", "prompt-optimize", "canvas-create", "canvas-ops",
     "asset-favorite", "asset-tags", "video-compose-create", "video-compose-analyze",
     "video-compose-review", "video-compose-render", "digital-presenter-create",
-    "digital-presenter-update",
+    "digital-presenter-update", "voice-clone-create",
     "inspiration-like", "leads-crm-upsert",
     "text-video-avatar-import", "text-video-plan",
 })
@@ -130,6 +130,8 @@ _ACTION_INPUTS = {
     "collect-content": ("url",), "collect-video": ("url",), "collect-transcript": ("url",),
     "collect-search": ("platform", "keyword", "page"), "leads-generate": ("url", "platform", "pages", "channels_targets"),
     "video-avatars": ("limit",), "audio-slots": (),
+    "voice-clone-create": ("slot_id", "name", "audio_upload_id"),
+    "voice-clone-status": ("slot_id",),
     "short-drama-projects": ("page", "page_size"),
     "short-drama-project": ("project_id",), "short-drama-conversation": ("project_id",),
     "short-drama-preflight": ("project_id",),
@@ -169,6 +171,8 @@ _ACTION_PURPOSES = {
     "ip12-projects": "读取本人 IP12 项目", "ip12-project": "读取本人 IP12 项目详情",
     "ip12-report": "读取本人 IP12 报告", "canvas-list": "读取本人画布", "canvas-get": "读取本人画布详情",
     "tasks": "读取本人任务记录", "task": "读取本人任务详情", "assets": "读取本人资产", "voices": "读取可用音色",
+    "voice-clone-create": "用本人样音创建或重新录制个人克隆音色",
+    "voice-clone-status": "读取个人克隆音色处理状态",
     "image-generate": "生成图片", "video-generate": "生成视频", "video-lipsync": "让本人原视频匹配新口播音频",
     "audio-generate": "生成音频", "text-video-generate": "根据主题或完整文案生成成片",
     "text-video-avatar-import": "导入文案成片口播人物图片",
@@ -184,6 +188,8 @@ _INT_ID_SCHEMA = {"type": "integer", "minimum": 1, "maximum": 2**63 - 1}
 _IMAGE_UPLOAD_SCHEMA = {"type": "string", "pattern": "^img_[0-9a-f]{32}$"}
 _VIDEO_UPLOAD_SCHEMA = {"type": "string", "pattern": "^vid_[0-9a-f]{32}$"}
 _AUDIO_UPLOAD_SCHEMA = {"type": "string", "pattern": "^aud_[0-9a-f]{32}$"}
+_VOICE_SLOT_ID_PATTERN = "^[A-Za-z][A-Za-z0-9_-]{1,87}$"
+_VOICE_SLOT_ID_RE = re.compile(_VOICE_SLOT_ID_PATTERN)
 
 # Keep discovery and executable planning on one channel matrix.  The public
 # CLI carries an identical table and the cross-package contract test prevents
@@ -468,6 +474,17 @@ _MEDIA_SCHEMAS.update({
         "offset": {"type": "integer", "minimum": 0, "maximum": 100000},
     }, "constraints": []},
     "canvas-get": {"required": ["board_id"], "properties": {"board_id": _ID_SCHEMA}, "constraints": []},
+    "voice-clone-create": {"required": ["slot_id", "name", "audio_upload_id"], "properties": {
+        "slot_id": {"type": "string", "pattern": _VOICE_SLOT_ID_PATTERN},
+        "name": {"type": "string", "minLength": 1, "maxLength": 40},
+        "audio_upload_id": _AUDIO_UPLOAD_SCHEMA,
+    }, "constraints": [
+        "sample audio is private to the current account and should contain 10-60 seconds of clear speech",
+        "reusing a ready slot replaces that personal cloned voice and requires explicit confirmation",
+    ]},
+    "voice-clone-status": {"required": ["slot_id"], "properties": {
+        "slot_id": {"type": "string", "pattern": _VOICE_SLOT_ID_PATTERN},
+    }, "constraints": []},
     "digital-ip-text-generate": {"required": ["text", "voice"], "properties": {
         "avatar_id": _INT_ID_SCHEMA, "image_upload_id": {**_IMAGE_UPLOAD_SCHEMA, "title": "人物照片"},
         "text": {"type": "string", "minLength": 1, "maxLength": 1000},
@@ -550,6 +567,7 @@ _MEDIA_SCHEMAS.update({
 
 _FAMILIES = {
     "image-upload": "image", "image-generate": "image", "audio-slots": "audio", "voices": "audio", "audio-generate": "audio",
+    "voice-clone-create": "audio", "voice-clone-status": "audio",
     "video-upload": "video", "video-avatars": "video", "video-generate": "video", "video-lipsync": "video", "digital-ip-text-generate": "video",
     "digital-ip-batch-generate": "video", "digital-ip-audio-generate": "video", "cinematic-open-generate": "video",
     "cinematic-motion-generate": "video", "tryon-fast-generate": "video", "tryon-classic-generate": "video",
@@ -563,7 +581,8 @@ _FAMILIES = {
     "digital-presenter-create": "canvas", "digital-presenter-update": "canvas",
 }
 _ACTION_FEATURE_GATES = {
-    "audio-generate": ("audio",), "canvas-agent-plan": ("canvas_agent",),
+    "audio-generate": ("audio",), "voice-clone-create": ("audio",), "voice-clone-status": ("audio",),
+    "canvas-agent-plan": ("canvas_agent",),
     "video-lipsync": ("video",), "digital-ip-text-generate": ("video",), "digital-ip-batch-generate": ("video",),
     "digital-ip-audio-generate": ("video",), "cinematic-open-generate": ("cinematic",),
     "cinematic-motion-generate": ("cinematic",), "tryon-fast-generate": ("tryon",),
@@ -678,7 +697,7 @@ for _catalog_item in ACTION_CATALOG:
     if _catalog_item["action"] in _FAMILIES:
         _catalog_item["family"] = _FAMILIES[_catalog_item["action"]]
 ACTION_CATALOG_MAP = {item["action"]: item for item in ACTION_CATALOG if item["transport"]["kind"] == "action"}
-ACTION_CATALOG_VERSION = "hq-action-catalog-v2"
+ACTION_CATALOG_VERSION = "hq-action-catalog-v3"
 
 
 def action_catalog(feature_states=None):
@@ -1733,6 +1752,29 @@ def action_plan(action, value):
         _strict_object(value, set())
         return _plan("assets:read", "proxy", base=CONTENT_BASE,
                      path="/api/gen/audio/slots?include_points=0")
+    if action == "voice-clone-status":
+        _strict_object(value, {"slot_id"}, ("slot_id",))
+        slot_id = _matched_string(
+            value["slot_id"], "slot_id", _VOICE_SLOT_ID_RE, 88,
+        )
+        return _plan(
+            "assets:read", "proxy", base=CONTENT_BASE,
+            path="/api/gen/audio/clone-status?" + urllib.parse.urlencode({"slot_id": slot_id}),
+        )
+    if action == "voice-clone-create":
+        _strict_object(value, {"slot_id", "name", "audio_upload_id"},
+                       ("slot_id", "name", "audio_upload_id"))
+        return _plan(
+            "assets:write", "proxy", base=CONTENT_BASE,
+            path="/api/gen/cli/voice-clone", method="POST", body={
+                "slot_id": _matched_string(
+                    value["slot_id"], "slot_id",
+                    _VOICE_SLOT_ID_RE, 88,
+                ),
+                "name": _string(value["name"], "name", 1, 40),
+                "audio_upload_id": _audio_upload_id(value["audio_upload_id"], "audio_upload_id"),
+            }, timeout=30, internal=True,
+        )
     if action == "short-drama-projects":
         _strict_object(value, {"page", "page_size"})
         query = urllib.parse.urlencode({

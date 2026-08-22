@@ -93,6 +93,22 @@ class CLIImageUploadTests(unittest.TestCase):
                 "alice", now=100 + cli_uploads.TTL + 1,
             )
 
+    def test_private_audio_expands_for_voice_clone_owner_only(self):
+        narration = self.upload_audio()
+        body = cli_uploads.expand_voice_clone_payload({
+            "slot_id": "slot_12345678", "name": "我的新声音",
+            "audio_upload_id": narration["upload_id"],
+        }, "alice", now=101)
+        self.assertEqual(("slot_12345678", "我的新声音", "wav"), (
+            body["slot_id"], body["name"], body["audio_format"],
+        ))
+        self.assertTrue(body["audio"].startswith("data:audio/wav;base64,"))
+        with self.assertRaisesRegex(ValueError, "不存在或已失效"):
+            cli_uploads.expand_voice_clone_payload({
+                "slot_id": "slot_12345678", "name": "我的新声音",
+                "audio_upload_id": narration["upload_id"],
+            }, "bob", now=101)
+
     def test_multi_reference_and_png_mask_contract(self):
         first, second = self.upload(now=100), self.upload(now=100)
         body = cli_uploads.expand_image_payload({

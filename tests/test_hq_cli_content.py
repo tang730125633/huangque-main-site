@@ -148,6 +148,89 @@ class HQCLIContentTests(unittest.TestCase):
         self.assertEqual((public["voice_scope"], public["provider"]), ("public", "cosyvoice"))
         self.assertEqual((personal["voice_scope"], personal["provider"]), ("personal", "cosyvoice"))
 
+    def test_voice_clone_expands_private_upload_and_replays_same_request(self):
+        voice = {"voice_key": "vip_slot_12345678", "status": "training"}
+        replay_response = {"ok": True, "voice": dict(voice, replayed=True)}
+        with mock.patch.object(
+            cli_uploads, "expand_voice_clone_payload",
+            return_value={"slot_id": "slot_12345678", "name": "我的声音",
+                          "audio": "data:audio/wav;base64,AA==", "audio_format": "wav"},
+        ) as expand, mock.patch.object(
+            audio, "validate_clone_vip_payload", side_effect=lambda _user, value: value,
+        ), mock.patch.object(
+            submission_idempotency, "begin",
+            side_effect=[("new", None), ("replay", replay_response), ("conflict", None)],
+        ), mock.patch.object(
+            submission_idempotency, "complete",
+        ) as complete, mock.patch.object(
+            audio, "clone_request_replay", return_value=None,
+        ), mock.patch.object(
+            audio, "mark_clone_training", return_value=voice,
+        ) as mark, mock.patch.object(audio, "clone_vip_voice_background") as background:
+            first = self._post("/api/gen/cli/voice-clone", {
+                "slot_id": "slot_12345678", "name": "我的声音",
+                "audio_upload_id": "aud_" + "a" * 32,
+            }, idempotency_key="clone-request-0001")
+            second = self._post("/api/gen/cli/voice-clone", {
+                "slot_id": "slot_12345678", "name": "我的声音",
+                "audio_upload_id": "aud_" + "a" * 32,
+            }, idempotency_key="clone-request-0001")
+            conflict = self._post("/api/gen/cli/voice-clone", {
+                "slot_id": "slot_87654321", "name": "另一个声音",
+                "audio_upload_id": "aud_" + "b" * 32,
+            }, idempotency_key="clone-request-0001")
+        self.assertEqual((200, 200, 409), (first[0], second[0], conflict[0]))
+        self.assertEqual("idempotency_conflict", conflict[1]["code"])
+        self.assertEqual("training", second[1]["voice"]["status"])
+        complete.assert_called_once()
+        expand.assert_called_once()
+        mark_args = mark.call_args.args
+        self.assertEqual(
+            ("alice", "slot_12345678", "我的声音", "clone-request-0001"),
+            mark_args[:4],
+        )
+        self.assertRegex(mark_args[4], r"^[0-9a-f]{64}$")
+        background.assert_called_once_with("alice", {
+            "slot_id": "slot_12345678", "name": "我的声音",
+            "audio": "data:audio/wav;base64,AA==", "audio_format": "wav",
+            "_request_id": "clone-request-0001",
+        })
+
+    def test_voice_clone_rejects_auth_feature_and_idempotency_guards_before_upload(self):
+        payload = {
+            "slot_id": "slot_12345678", "name": "我的声音",
+            "audio_upload_id": "aud_" + "a" * 32,
+        }
+        self.assertEqual(403, self._post(
+            "/api/gen/cli/voice-clone", payload, internal=False,
+            idempotency_key="clone-request-0001",
+        )[0])
+        self.assertEqual(400, self._post("/api/gen/cli/voice-clone", payload)[0])
+        with mock.patch.object(core, "verify", return_value=None):
+            self.assertEqual(401, self._post(
+                "/api/gen/cli/voice-clone", payload,
+                idempotency_key="clone-request-0001",
+            )[0])
+        with mock.patch.object(
+            core, "verify", return_value={"username": "alice", "must_change": True},
+        ):
+            self.assertEqual(403, self._post(
+                "/api/gen/cli/voice-clone", payload,
+                idempotency_key="clone-request-0001",
+            )[0])
+        with mock.patch.object(
+            core.feature_flags, "require_enabled",
+            side_effect=core.feature_flags.FeatureDisabled("维护中"),
+        ), mock.patch.object(
+            cli_uploads, "expand_voice_clone_payload",
+            side_effect=AssertionError("disabled feature must fail before upload lookup"),
+        ):
+            status, result = self._post(
+                "/api/gen/cli/voice-clone", payload,
+                idempotency_key="clone-request-0001",
+            )
+        self.assertEqual((503, "feature_disabled"), (status, result["code"]))
+
     def test_video_lipsync_uses_owned_assets_and_real_duration_pricing(self):
         with mock.patch.object(video, "get_video_asset", return_value={
                 "id": 21, "video_file": "video/source.mp4",

@@ -608,6 +608,22 @@ def _load_audio(upload_id, username, now):
     return "data:%s;base64,%s" % (meta["mime"], base64.b64encode(data).decode("ascii")), meta
 
 
+def expand_voice_clone_payload(payload, username, now=None):
+    if not isinstance(payload, dict) or set(payload) != {"slot_id", "name", "audio_upload_id"}:
+        raise ValueError("声音克隆只接受 slot_id、name 和 audio_upload_id")
+    now = int(time.time() if now is None else now)
+    audio, meta = _load_audio(payload["audio_upload_id"], username, now)
+    audio_format = str(meta.get("extension") or ".mp3").lower().lstrip(".")
+    if audio_format == "wave":
+        audio_format = "wav"
+    return {
+        "slot_id": str(payload["slot_id"] or "").strip(),
+        "name": str(payload["name"] or "").strip(),
+        "audio": audio,
+        "audio_format": audio_format,
+    }
+
+
 def expand_image_payload(payload, username, now=None):
     if not isinstance(payload, dict):
         raise ValueError("请求体必须是 JSON 对象")
