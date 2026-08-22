@@ -1230,24 +1230,18 @@ def _production_parameter_context(account_id, action, catalog_entry=None, allow_
             and str(item.get("preview_url") or "").strip()
             and (item.get("scope") == "personal" or allow_system_media)
         ]
-        slots = read("audio-slots", {})
-        slot_items = slots.get("items", []) if isinstance(slots, dict) else []
-        clone_slot = next((
-            item for item in slot_items
-            if isinstance(item, dict) and item.get("status") in {"active", "failed"}
-            and str(item.get("slot_id") or "").strip()
-        ), None)
-        if clone_slot is None:
-            personal_slot_ids = {
-                str(item.get("slot_id") or "") for item in allowed_voices
-                if item.get("scope") == "personal" and str(item.get("slot_id") or "")
-            }
+        clone_voice = next((item for item in allowed_voices if item.get("scope") == "personal"), {})
+        clone_slot_id = str(clone_voice.get("slot_id") or "")
+        clone_slot = None
+        if not clone_slot_id:
+            slots = read("audio-slots", {})
+            slot_items = slots.get("items", []) if isinstance(slots, dict) else []
             clone_slot = next((
                 item for item in slot_items
-                if isinstance(item, dict) and str(item.get("slot_id") or "") in personal_slot_ids
+                if isinstance(item, dict) and item.get("status") in {"active", "failed"}
+                and str(item.get("slot_id") or "").strip()
             ), None)
-        clone_voice = next((item for item in allowed_voices if item.get("scope") == "personal"), {})
-        clone_slot_id = str((clone_slot or {}).get("slot_id") or clone_voice.get("slot_id") or "")
+            clone_slot_id = str((clone_slot or {}).get("slot_id") or "")
         properties[voice_field].update({
             "title": "声音",
             "oneOf": [

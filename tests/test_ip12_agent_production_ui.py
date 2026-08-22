@@ -455,6 +455,14 @@ console.log(JSON.stringify({
         self.assertIn("Agent 推荐", cards)
         self.assertIn("<audio controls", cards)
         self.assertIn("limit&&choices.length>limit", cards)
+        clone_poll = self.html[
+            self.html.index("function stopVoiceClonePoll"):
+            self.html.index("async function uploadSelectedMaterial")
+        ]
+        self.assertIn("voiceClonePolls", clone_poll)
+        self.assertIn("poll.inFlight||poll.timer", clone_poll)
+        self.assertIn("error.status!==429&&error.status<500", clone_poll)
+        self.assertIn("stopVoiceClonePoll(productionId)", clone_poll)
         restore = self.html[
             self.html.index("function restoreProductionPanel(){"):
             self.html.index("function openProductionRecord")
