@@ -414,9 +414,14 @@ if test "$need_hermes" = 1; then
       browser_root="$(dirname "$(dirname "$browser_path")")"
       sudo install -d -o ubuntu -g ubuntu -m 0755 "$browser_root"
       sudo /usr/bin/python3 - "$upload/chromium.zip" "$browser_root" <<'PY'
-import sys, zipfile
+import os, pathlib, sys, zipfile
 with zipfile.ZipFile(sys.argv[1]) as archive:
-    archive.extractall(sys.argv[2])
+    root = pathlib.Path(sys.argv[2])
+    for member in archive.infolist():
+        archive.extract(member, root)
+        mode = (member.external_attr >> 16) & 0o777
+        if mode:
+            os.chmod(root / member.filename, mode)
 PY
       sudo chown -R ubuntu:ubuntu "$browser_root"
     else
