@@ -245,6 +245,9 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
     def test_public_installer_may_keep_its_executable_git_mode(self):
         self.assertEqual("site/downloads/hq/install.sh", manifest_rows("site/downloads/hq/install.sh")[0][1])
 
+    def test_non_hermes_deploy_keeps_remote_argument_eight(self):
+        self.assertIn('requirements_hash="-"', SRC)
+
     def test_dry_run_plan_is_required_for_apply(self):
         self.assertIn('test -n "$supplied" || die', SRC)
         self.assertIn('cmp -s "$payload" "$dir/$id.plan"', SRC)
