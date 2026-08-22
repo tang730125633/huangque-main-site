@@ -69,6 +69,7 @@ assert all(item["status"] == "unlocked" for item in server.capability_gates(stat
         assets = (ROOT / "site" / "workbench" / "assets.html").read_text(encoding="utf-8")
         self.assertIn("cloneVoice", assets)
         self.assertIn("openCloneVoiceModal(cloneSlot)", assets)
+        self.assertIn('id="cloneVoiceBasic" disabled', assets)
 
     def test_persistent_assistant_messages_use_one_versioned_append_helper(self):
         source = (HERMES / "server.py").read_text(encoding="utf-8")
