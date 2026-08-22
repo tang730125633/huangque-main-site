@@ -112,6 +112,19 @@ PROJECT_BACKUP_MAX_MESSAGE_CHARS = 200000
 COMING_SOON_MESSAGE = "尚未开发，敬请期待"
 COMING_SOON_API_PATHS = {"/api/module7-images", "/api/module8-video", "/api/m9-funnel", "/api/m11-sales", "/api/m12-calendar"}
 
+CAPABILITY_GATE_DEFINITIONS = (
+    {"id": "image-generate", "name": "品牌配图", "modules": (1, 2, 3, 4),
+     "foundation": True, "next_step": "确认用途与视觉方向；参考图可选"},
+    {"id": "audio-generate", "name": "口播音频", "modules": (1, 2, 3, 5, 6),
+     "next_step": "选择音色和语速后获取报价"},
+    {"id": "digital-ip-text-generate", "name": "数字人口播", "modules": (1, 2, 3, 4, 5, 6),
+     "foundation": True, "next_step": "确认形象与声音后获取报价"},
+    {"id": "canvas-ops", "name": "Canvas 编排", "modules": (1, 2, 3, 4),
+     "foundation": True, "next_step": "选择画布并预览写入方案"},
+    {"id": "publish-plan", "name": "发布建议", "modules": (1, 2, 3, 4, 5, 6),
+     "foundation": True, "next_step": "确认平台、时间与最终成品"},
+)
+
 MODULE_REPORT_TYPES = {
     1: "定位诊断报告", 2: "人设画像报告", 3: "价值主张报告",
     4: "故事资产清单", 5: "选题策划方案", 6: "文案模板集",
@@ -173,6 +186,25 @@ def _redact_mobile_numbers(value):
 def _intake_pending(state):
     intake = state.get("intake")
     return isinstance(intake, dict) and intake.get("status") != "complete"
+
+
+def capability_gates(state):
+    state = normalize_coach_state(state)
+    completed = set(state.get("completed_modules") or [])
+    foundation_confirmed = (state.get("foundation_report") or {}).get("status") == "confirmed"
+    gates = []
+    for definition in CAPABILITY_GATE_DEFINITIONS:
+        missing = ["模块 %s" % module for module in definition["modules"] if module not in completed]
+        if definition.get("foundation") and not foundation_confirmed:
+            missing.append("确认模块 1–4 报告")
+        gates.append({
+            "id": definition["id"], "name": definition["name"],
+            "status": "locked" if missing else "unlocked", "missing": missing,
+            "next_step": definition["next_step"] if not missing else "先完成" + "、".join(missing),
+            "confirmation": "生成或扣点前必须再次确认",
+            "writeback": "结果、任务号和反馈写回当前 Project",
+        })
+    return gates
 
 
 def normalize_coach_state(state):
@@ -462,6 +494,74 @@ def _migration_notice_id(state):
     return str(migration.get("notice_id") or "") if isinstance(migration, dict) else ""
 
 
+MODULE_SIX_CONFIRMED_SECTION_RE = re.compile(
+    r"(?ms)^###\s+([123])\.\s+(.+?)｜(.+?)\n"
+    r"\*\*精选理由：\*\*\s*(.*?)\n\n(.*?)(?=^###\s+[123]\.\s+|\Z)"
+)
+
+
+def _module_six_confirmed_sections(convo):
+    state = normalize_coach_state(convo.get("coach_state"))
+    output = ((state.get("ip_profile") or {}).get("confirmed_outputs") or {}).get("6-2") or {}
+    content = str(output.get("content") or "") if isinstance(output, dict) else ""
+    matches = list(MODULE_SIX_CONFIRMED_SECTION_RE.finditer(content))
+    if len(matches) != 3 or [item.group(1) for item in matches] != ["1", "2", "3"]:
+        return []
+    sections = []
+    for item in matches:
+        script = item.group(5).strip()
+        if len(re.sub(r"\s+", "", script)) < 120:
+            return []
+        sections.append({
+            "category": item.group(2).strip(), "title": item.group(3).strip(),
+            "description": item.group(4).strip(), "script": script,
+        })
+    return sections
+
+
+def _module_six_pack_sync_needed(convo):
+    sections = _module_six_confirmed_sections(convo)
+    pack = (convo.get("deliverables") or {}).get("6") or {}
+    categories = pack.get("categories") if isinstance(pack, dict) else None
+    if not sections or not isinstance(categories, list) or len(categories) != 3:
+        return False
+    for section, category in zip(sections, categories):
+        topics = (category or {}).get("topics") or []
+        if (section["category"] != str((category or {}).get("name") or "").strip()
+                or len(topics) != 1
+                or section["title"] != str(topics[0].get("title") or "").strip()):
+            return False
+    return any(
+        section["script"] != str((((category["topics"][0].get("versions") or [{}])[-1]).get("content") or "")).strip()
+        for section, category in zip(sections, categories)
+    )
+
+
+def _sync_module_six_pack_from_confirmed_output(convo):
+    if not _module_six_pack_sync_needed(convo):
+        return False
+    sections = _module_six_confirmed_sections(convo)
+    pack = convo["deliverables"]["6"]
+    for section, category in zip(sections, pack["categories"]):
+        topic = category["topics"][0]
+        versions = list(topic.get("versions") or [])
+        current = str((versions[-1] if versions else {}).get("content") or "").strip()
+        category["description"] = section["description"] or category.get("description", "")
+        if current == section["script"]:
+            continue
+        versions.append({
+            "version": int((versions[-1] if versions else {}).get("version") or 0) + 1,
+            "content": section["script"],
+            "change_summary": "同步用户确认的模块 6 文案",
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        })
+        topic["versions"] = versions[-20:]
+        topic["status"] = "revised"
+    pack["synced_from_confirmed_output"] = True
+    pack["synced_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    return True
+
+
 def _migrate_owned_conversation(convo_id):
     """Persist an old Project exactly once before any route exposes schema v2."""
     convo = owned_conversation(convo_id)
@@ -476,7 +576,8 @@ def _migrate_owned_conversation(convo_id):
     notice_missing = bool(notice_id) and not any(
         item.get("message_id") == notice_id for item in convo.get("messages") or []
     )
-    if source_version == coach_harness.SCHEMA_VERSION and not notice_missing:
+    content_sync_needed = _module_six_pack_sync_needed(convo)
+    if source_version == coach_harness.SCHEMA_VERSION and not notice_missing and not content_sync_needed:
         return convo
     with CONVERSATION_STATE_LOCK:
         convo = owned_conversation(convo_id)
@@ -491,13 +592,15 @@ def _migrate_owned_conversation(convo_id):
         notice_missing = bool(notice_id) and not any(
             item.get("message_id") == notice_id for item in convo.get("messages") or []
         )
-        if source_version == coach_harness.SCHEMA_VERSION and not notice_missing:
+        content_sync_needed = _module_six_pack_sync_needed(convo)
+        if source_version == coach_harness.SCHEMA_VERSION and not notice_missing and not content_sync_needed:
             return convo
         try:
             state = raw_state if source_version == coach_harness.SCHEMA_VERSION else normalize_coach_state(raw_state)
         except coach_harness.HarnessError as exc:
             raise RuntimeError(str(exc)) from exc
         convo["coach_state"] = state
+        _sync_module_six_pack_from_confirmed_output(convo)
         notice_id = _migration_notice_id(state)
         if notice_id and not any(
             item.get("message_id") == notice_id for item in convo.get("messages") or []
@@ -2552,6 +2655,7 @@ def api_get_convo(cid):
         if message.get("role") == "assistant" and not isinstance(message.get("agent_trace"), dict):
             message["agent_trace"] = {"status": "legacy_unknown"}
     public_convo["harness_actions"] = coach_harness.available_actions(public_convo["coach_state"])
+    public_convo["capability_gates"] = capability_gates(public_convo["coach_state"])
     handoff = _post_module_six_production_action(convo)
     if handoff and not public_convo["harness_actions"]:
         public_convo["harness_actions"] = [handoff]
@@ -3611,6 +3715,7 @@ def _chat_result(assistant, state, *, new_completed=None, auto_deliverables=None
         "new_completed": new_completed or [],
         "auto_deliverables": auto_deliverables or {},
         "foundation_report": foundation_report,
+        "capability_gates": capability_gates(state),
         "request_id": request_id,
     }
 

@@ -30,6 +30,43 @@ def extract_js_function(source, name):
 
 
 class HermesIP12SourceTests(unittest.TestCase):
+    def test_capability_gates_and_confirmed_module_six_sync(self):
+        script = r'''
+import server
+
+state = server.initial_coach_state()
+state["completed_modules"] = [1, 2, 3, 4, 5, 6]
+state["foundation_report"] = {"status": "confirmed"}
+state["ip_profile"].setdefault("confirmed_outputs", {})["6-2"] = {
+    "content": "\n\n".join(
+        "### %d. 分类%d｜标题%d\n**精选理由：** 理由%d\n\n%s" %
+        (index, index, index, index, ("这是用户最终确认的完整口播文案%d。" % index) * 12)
+        for index in (1, 2, 3)
+    )
+}
+pack = {"kind": "content_pack_v1", "format": "featured_3_v1", "categories": [
+    {"id": "category-%d" % index, "name": "分类%d" % index, "description": "旧理由",
+     "topics": [{"id": "topic-%d-01" % index, "title": "标题%d" % index,
+                 "versions": [{"version": 1, "content": ("旧版口播%d。" % index) * 30}], "status": "ready"}]}
+    for index in (1, 2, 3)
+]}
+convo = {"coach_state": state, "deliverables": {"6": pack}}
+assert server._sync_module_six_pack_from_confirmed_output(convo) is True
+assert [len(item["topics"][0]["versions"]) for item in pack["categories"]] == [2, 2, 2]
+assert server._sync_module_six_pack_from_confirmed_output(convo) is False
+assert all(item["status"] == "unlocked" for item in server.capability_gates(state))
+'''
+        env = os.environ.copy()
+        env.update(OPENAI_API_KEY="dummy")
+        result = subprocess.run(
+            [sys.executable, "-c", script], cwd=HERMES, env=env,
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        page = (HERMES / "templates" / "index.html").read_text(encoding="utf-8")
+        self.assertIn("能力解锁", page)
+        self.assertIn("function openCapabilityGates", page)
+
     def test_persistent_assistant_messages_use_one_versioned_append_helper(self):
         source = (HERMES / "server.py").read_text(encoding="utf-8")
         self.assertIn("def _append_assistant_message", source)
