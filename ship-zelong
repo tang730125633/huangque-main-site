@@ -60,6 +60,7 @@ load_ip12_preview() {
   files+=(
     deploy/zelong/hermes-ip12-preview.service
     deploy/zelong/hermes-ip12-preview-requirements.txt
+    deploy/zelong/hermes-preview-cli
     deploy/zelong/nginx-hermes-ip12-preview.conf
     deploy/zelong/run-hermes-ip12-preview.sh
   )
@@ -132,6 +133,8 @@ map_path() {
       printf '25|/home/ubuntu/hermes-preview/run-preview.sh|hermes|0\n' ;;
     deploy/zelong/hermes-ip12-preview-requirements.txt)
       printf '25|/home/ubuntu/hermes-preview/preview-requirements.txt|hermes|0\n' ;;
+    deploy/zelong/hermes-preview-cli)
+      printf '25|/home/ubuntu/hermes-preview/bin/hermes-preview-cli|hermes|0\n' ;;
     deploy/zelong/nginx-hermes-ip12-preview.conf)
       printf '35|/etc/nginx/snippets/hermes-ip12-preview.conf|hermes|0\n' ;;
     deploy/zelong/hermes-ip12-preview.service)
@@ -362,8 +365,12 @@ if test "$need_admin" = 1; then
 fi
 if test "$need_hermes" = 1; then
   sudo install -d -o ubuntu -g ubuntu -m 0700 /home/ubuntu/hermes-preview-data
-  sudo install -d -o ubuntu -g ubuntu -m 0755 /home/ubuntu/hermes-preview-deps
+  sudo install -d -o ubuntu -g ubuntu -m 0755 /home/ubuntu/hermes-preview-deps /home/ubuntu/hermes-preview/bin
   sudo -u ubuntu /usr/bin/python3 -m pip install --disable-pip-version-check --upgrade --target /home/ubuntu/hermes-preview-deps -r /home/ubuntu/hermes-preview/preview-requirements.txt
+  sudo chmod 0755 /home/ubuntu/hermes-preview/bin/hermes-preview-cli
+  sudo ln -sfn hermes-preview-cli /home/ubuntu/hermes-preview/bin/edge-tts
+  sudo ln -sfn hermes-preview-cli /home/ubuntu/hermes-preview/bin/yt-dlp
+  sudo -u ubuntu env PYTHONPATH=/home/ubuntu/hermes-preview-deps /usr/bin/python3 -m playwright install chromium
   sudo sh -c "printf '%s\n' '$commit' > /home/ubuntu/hermes-preview/.ip12-release-sha"
   sudo chown ubuntu:ubuntu /home/ubuntu/hermes-preview/.ip12-release-sha
   sudo /usr/bin/python3 - /etc/nginx/sites-available/huangquechuanmei <<'PY'
