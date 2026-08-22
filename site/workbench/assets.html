@@ -206,6 +206,7 @@
   function normCat(m){ m=m||''; if(m.indexOf('inpaint')>=0) return 'inpaint'; if(m.indexOf('img2img')>=0) return 'img2img'; return 'text2img'; }  // 各引擎mode→标准类(含 nanobanana_*)
   var params=new URLSearchParams(location.search);
   var ALL=[], cat=params.get('cat')||'image', imgSub=params.get('imgSub')||'all';
+  var autoCloneVoice=params.get('cloneVoice')==='1';
   // 兼容旧链接：旧的「全部/文生图/图生图/局部修改」顶层 → 图片资产 + 子筛选
   if(cat==='all'){ cat='image'; }
   else if(cat==='text2img'||cat==='img2img'||cat==='inpaint'){ imgSub=cat; cat='image'; }
@@ -1299,6 +1300,11 @@
         if(slot.slot_id) slotIds[slot.slot_id]=true;
         grid.appendChild(slotAssetCard(slot));
       });
+      if(autoCloneVoice){
+        var cloneSlot=slots.find(function(slot){return !slot.readonly;});
+        autoCloneVoice=false;
+        if(cloneSlot) setTimeout(function(){openCloneVoiceModal(cloneSlot);},0);
+      }
       fetch(freshUrl('/api/gen/audio/voices'),{cache:'no-store',headers:{'Authorization':'Bearer '+tok,'Cache-Control':'no-cache'}})
         .then(function(r){ return r.json(); })
         .then(function(d){

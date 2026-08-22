@@ -1031,6 +1031,17 @@ def _capability_help_reply(account_id, action):
 def _expanded_production_intent(message):
     """Recognize the feature-page actions that the old five-action map missed."""
     text = re.sub(r"\s+", "", str(message or "")).lower()
+    voice_clone = bool(re.search(
+        r"(?:声音|音色).{0,6}(?:克隆|复刻)|(?:克隆|复刻).{0,6}(?:声音|音色)", text
+    ))
+    voice_clone_negated = bool(re.search(
+        r"(?:不要|不需要|无需|不用|取消).{0,6}(?:声音|音色).{0,6}(?:克隆|复刻)", text
+    ))
+    if voice_clone and not voice_clone_negated:
+        return {
+            "capability_family": "audio", "recommended_action": "audio-slots",
+            "candidate_actions": ["audio-slots"], "voice_clone_request": True,
+        }
     explanatory_question = bool(re.search(
         r"(?:是什么|怎么用|如何使用|有哪些功能|是否支持|多少钱|什么格式|有什么区别|为什么)", text
     ))
@@ -4423,6 +4434,24 @@ def _process_production_intent_turn(
         snapshot_revision = state["revision"]
     labels = {"image": "图片", "audio": "音频", "video": "视频", "canvas": "Canvas"}
     label = labels[family]
+    if intent.get("voice_clone_request"):
+        assistant = (
+            "可以进行声音克隆。你刚上传的音频目前只是绑定到这次视频制作，"
+            "还没有保存为长期个人音色。我会带你进入个人音色复刻页；"
+            "在那里选择可用槽位、上传清晰本人样音并确认复刻。"
+            "完成后返回当前 Project，就能选择新音色重新报价。进入页面和上传样音本身不扣点。"
+        )
+        message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
+        assistant, next_state = _persist_unprocessed_turn(
+            cid, user_message, snapshot_revision, message_id=message_id,
+            assistant_override=assistant, skills=["production_bridge"],
+        )
+        result = _chat_result(assistant, next_state)
+        result["actions"] = [{
+            "type": "navigate_to", "label": "打开个人音色复刻", "primary": True,
+            "ui_route": "/workbench/assets?cat=audio&audioTab=personal&cloneVoice=1",
+        }]
+        return result, 200
     if help_only:
         assistant = _capability_help_reply(current_account_id(), selected_action)
         message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
