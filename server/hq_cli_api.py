@@ -14,6 +14,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from decimal import Decimal, ROUND_HALF_UP
 
 
 PUBLIC_ORIGIN = os.environ.get("HQ_CLI_PUBLIC_ORIGIN", "https://huangquechuanmei.com").strip().rstrip("/")
@@ -1470,7 +1471,9 @@ def _text_video_payload(value):
         "mode": _enum(value.get("mode", "generate"), "mode", ("generate", "fixed")),
         "style": _string(value["style"], "style", 1, 80),
         "voice": _string(value["voice"], "voice", 1, 200),
-        "speech_rate": round(_number(value.get("speech_rate", 1.0), "speech_rate", 0.5, 2.0), 1),
+        "speech_rate": float(Decimal(str(
+            _number(value.get("speech_rate", 1.0), "speech_rate", 0.5, 2.0)
+        )).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)),
         "source_page": "text-video",
     }
 

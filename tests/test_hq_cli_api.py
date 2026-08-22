@@ -976,6 +976,11 @@ class HQCLIAPITests(unittest.TestCase):
             plan["payload"]["mode"], plan["payload"]["speech_rate"],
             plan["payload"]["pipeline"], plan["payload"]["source_page"]))
         self.assertEqual("/api/gen/text-video/quote", plan["quote_endpoint"])
+        for raw, expected in ((1.25, 1.3), (1.26, 1.3), (0.55, 0.6)):
+            with self.subTest(speech_rate=raw):
+                normalized = self.auth.hq_cli_api.action_plan(
+                    "text-video-generate", dict(value, speech_rate=raw))
+                self.assertEqual(expected, normalized["payload"]["speech_rate"])
         with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
             self.auth.hq_cli_api.action_plan(
                 "text-video-generate", dict(value, talking_material={"enabled": True}))
