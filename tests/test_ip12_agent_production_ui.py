@@ -94,11 +94,12 @@ class IP12AgentProductionUITests(unittest.TestCase):
         self.assertIn('class="top-action production-entry"', self.html)
         message = self.html[
             self.html.index("function productionMessageHtml"):
-            self.html.index("function renderChat")
+            self.html.index("function isSafeMarkdownUrl")
         ]
-        self.assertIn("打开生产画布", message)
-        self.assertIn("openProductionRecord(this.dataset.productionId)", message)
-        self.assertIn("message.message_id===record.delivery_message_id", message)
+        self.assertIn('class="production-inline"', message)
+        self.assertIn("productionInlineHtml(record,messageId)", message)
+        self.assertIn("refreshProductionMessages", message)
+        self.assertIn("openProductionRecord(this.dataset.productionId)", self.html)
         lifecycle = self.html[
             self.html.index("function updateProductionEntry"):
             self.html.index("function productionError")
@@ -221,6 +222,7 @@ global.fetch=async (url,init)=>{
   return {ok:true,status:200,json:async()=>data};
 };
 function rememberProduction(record){productions[record.id]=record;return record}
+function refreshProductionMessages(){}
 function updateProductionQuoteGate(){}
 function updateProductionFromPayload(data){
   const id=data.id||data.production_id;
@@ -259,7 +261,8 @@ function toast(){}
 
     def test_agent_auto_runs_prepare_quotes_then_polls_one_job_and_delivers_in_chat(self):
         prepare = self.html[self.html.index("async function prepareProduction"):self.html.index("async function requestProductionQuote")]
-        self.assertIn("await requestProductionQuote(record.id)", prepare)
+        self.assertIn("await requestProductionQuote(record.id,false)", prepare)
+        self.assertNotIn("openPanel('生产画布')", prepare)
         send = self.html[self.html.index("async function sendTurn"):self.html.index("async function sendJumpMsg")]
         self.assertIn("item.type==='prepare_production'", send)
         self.assertIn("else if(autoAction)await runStateAction(autoAction)", send)
@@ -269,8 +272,7 @@ function toast(){}
         self.assertNotIn("confirmProduction(record.id)", polling)
         chat = self.html[self.html.index("function productionMessageHtml"):self.html.index("function isSafeMarkdownUrl")]
         self.assertIn("data-production-message", chat)
-        self.assertIn("productionResultHtml(record)", chat)
-        self.assertIn("message.message_id===record.delivery_message_id", chat)
+        self.assertIn("production-inline", chat)
         result = self.html[self.html.index("function productionResultHtml"):self.html.index("function productionFieldControl")]
         self.assertIn("continueProductionRevision(this.dataset.productionId)", result)
 
@@ -430,6 +432,32 @@ console.log(JSON.stringify({
         self.assertIn("公共素材", controls)
         self.assertIn("x-hq-upload-route", self.html)
         self.assertIn("rememberProductionChoice(event)", self.html)
+
+    def test_agent_recommends_media_and_quotes_inside_the_conversation(self):
+        self.assertIn("def _production_recommended_options", self.server)
+        self.assertIn('choice["recommended"] = True', self.server)
+        inline = self.html[
+            self.html.index("function productionInlineHtml"):
+            self.html.index("function productionUiRoute")
+        ]
+        self.assertIn("Object.assign({},spec,{inlineUploadField:''})", inline)
+        self.assertIn(",false,3)", inline)
+        self.assertIn("实时报价", inline)
+        self.assertIn("确认并提交这次生产", inline)
+        self.assertIn("查看全部素材", inline)
+        cards = self.html[
+            self.html.index("function productionChoiceCards"):
+            self.html.index("function productionOptionsHtml")
+        ]
+        self.assertIn("Agent 推荐", cards)
+        self.assertIn("<audio controls", cards)
+        self.assertIn("limit&&choices.length>limit", cards)
+        restore = self.html[
+            self.html.index("function restoreProductionPanel(){"):
+            self.html.index("function openProductionRecord")
+        ]
+        self.assertNotIn("renderProductionPanel(record)", restore)
+        self.assertIn("requestProductionQuote(record.id,false)", restore)
 
 
 if __name__ == "__main__":
