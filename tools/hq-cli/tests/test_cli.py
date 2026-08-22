@@ -42,7 +42,7 @@ class HqCliTests(unittest.TestCase):
             self.assertEqual(0, code, error)
             self.assertTrue(self.payload(output)["schema"].startswith("hq."))
         code, output, _ = self.invoke(["version"])
-        self.assertEqual("0.10.3", self.payload(output)["cli_version"])
+        self.assertEqual("0.10.4", self.payload(output)["cli_version"])
         self.assertEqual("Huangque main-site CLI", self.payload(output)["product"])
         self.assertEqual("https://huangquechuanmei.com", self.payload(output)["origin"])
 
@@ -83,7 +83,8 @@ class HqCliTests(unittest.TestCase):
             "cinematic-open-generate", "cinematic-motion-generate",
             "tryon-fast-generate", "tryon-classic-generate",
             "digital-ip-projects", "digital-ip-project", "digital-ip-report",
-            "text-video-capability", "text-video-templates", "text-video-styles", "text-video-voices", "pricing",
+            "text-video-capability", "text-video-templates", "text-video-styles", "text-video-voices",
+            "text-video-generate", "pricing",
             "inspiration-catalog", "inspiration-likes", "inspiration-like",
             "collect-content", "collect-video", "collect-transcript", "collect-search", "leads-generate",
             "leads-crm", "leads-crm-upsert", "video-avatars", "audio-slots",
@@ -120,6 +121,15 @@ class HqCliTests(unittest.TestCase):
         self.assertIn("sora-2-pro", by_id["video-generate"]["input_schema"]["properties"]["model"]["enum"])
         self.assertEqual([4, 8, 12], by_id["video-generate"]["input_schema"]["properties"]["seconds"]["enum"])
         self.assertEqual("server_quote", by_id["digital-ip-text-generate"]["cost"]["kind"])
+        self.assertEqual("server_quote", by_id["text-video-generate"]["cost"]["kind"])
+        self.assertEqual(
+            ["text", "template", "style", "voice"],
+            by_id["text-video-generate"]["input_schema"]["required"],
+        )
+        self.assertEqual(
+            ["generate", "fixed"],
+            by_id["text-video-generate"]["input_schema"]["properties"]["mode"]["enum"],
+        )
         self.assertEqual(
             ["video_asset_id", "audio_asset_id"],
             by_id["video-lipsync"]["input_schema"]["required"],
@@ -215,7 +225,8 @@ class HqCliTests(unittest.TestCase):
             "tryon-classic-generate": {"tryon"},
             "video-upload": {"cinematic", "tryon"},
             "digital-presenter-capability": {"digitalPresenter"},
-            "text-video-capability": {"text_video"}, "digital-ip-projects": {"digital_ip"},
+            "text-video-capability": {"text_video"}, "text-video-generate": {"text_video"},
+            "digital-ip-projects": {"digital_ip"},
             "pricing": {"pricing.catalog"},
             "inspiration-catalog": {"inspiration.browse"}, "inspiration-like": {"inspiration.like"},
             "collect": {"collect.content.comments", "collect.content.video", "collect.content.transcript", "collect.keyword.search"},
@@ -548,6 +559,36 @@ class HqCliTests(unittest.TestCase):
         self.assertTrue(second.kwargs["body"]["confirm"])
         self.assertEqual("q.abc", second.kwargs["body"]["quote_token"])
         self.assertEqual(first.kwargs["body"]["input"], second.kwargs["body"]["input"])
+
+    def test_text_video_generation_exposes_quote_breakdown_and_confirms_same_input(self):
+        self.authorize()
+        value = {
+            "text": "AI 培训如何提升团队效率",
+            "template": "1080x1920/image_default.html",
+            "mode": "fixed", "style": "realistic_commercial",
+            "voice": "public:zh-CN-YunjianNeural", "speech_rate": 1.0,
+        }
+        raw = json.dumps(value, ensure_ascii=False).encode("utf-8")
+        quote = {
+            "quote_token": "q.text-video", "kind": "script_to_video", "cost": 70,
+            "scene_count": 3, "cost_breakdown": {"scene_count": 3, "total": 70},
+            "expires_in": 300, "confirmation_required": True,
+        }
+        with patch("hq_cli.client.request_json", side_effect=[
+                (200, quote), (200, {"job_id": 91, "cost": 70, "points_left": 30})]) as request:
+            code, output, error = self.invoke(
+                ["run", "text-video-generate", "--input", "@-"], raw)
+            self.assertEqual(0, code, error)
+            self.assertEqual(3, self.payload(output)["result"]["scene_count"])
+            code, output, error = self.invoke([
+                "run", "text-video-generate", "--input", "@-", "--confirm",
+                "--quote-token", "q.text-video",
+            ], raw)
+        self.assertEqual(0, code, error)
+        self.assertEqual(91, self.payload(output)["result"]["job_id"])
+        first, second = request.call_args_list
+        self.assertEqual(first.kwargs["body"]["input"], second.kwargs["body"]["input"])
+        self.assertEqual("q.text-video", second.kwargs["body"]["quote_token"])
 
     def test_canvas_agent_plan_uses_paid_flow_without_auto_writing(self):
         self.authorize()

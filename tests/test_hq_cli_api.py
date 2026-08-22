@@ -897,6 +897,97 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual("24", submitted[0]["headers"]["X-HQ-Expected-Cost"])
         self.assertTrue(all(plan["internal"] for plan in submitted))
 
+    def test_text_video_cli_carries_native_quote_into_confirmed_submit(self):
+        token = self._token(["generation:quote", "generation:submit"])
+        submitted = []
+        native_quotes = []
+
+        def fake_proxy(plan, _web_token, _internal_token):
+            if plan["path"] == "/api/gen/text-video/quote":
+                native_quotes.append(plan)
+                return 200, {
+                    "quote_token": "native-quote-%d" % len(native_quotes),
+                    "cost": 70, "scene_count": 3,
+                    "cost_breakdown": {"scene_count": 3, "total": 70},
+                }
+            submitted.append(plan)
+            return 200, {"job_id": 91, "cost": 70, "points_left": 30}
+
+        input_body = {
+            "text": "AI 培训如何提升团队效率",
+            "template": "1080x1920/image_default.html",
+            "mode": "fixed", "style": "realistic_commercial",
+            "voice": "public:zh-CN-YunjianNeural", "speech_rate": 1.0,
+        }
+        request = {"action": "text-video-generate", "input": input_body, "confirm": False}
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
+            status, quote = self._request("/api/auth/cli/action", request, token=token)
+            self.assertEqual((200, 3, 70), (
+                status, quote["scene_count"], quote["cost_breakdown"]["total"]))
+            status, result = self._request(
+                "/api/auth/cli/action",
+                dict(request, confirm=True, quote_token=quote["quote_token"]),
+                token=token,
+            )
+
+        self.assertEqual((200, 91), (status, result["job_id"]))
+        self.assertEqual(1, len(native_quotes))
+        self.assertEqual("/api/gen/text-video/quote", native_quotes[0]["path"])
+        self.assertEqual("/api/gen/script_to_video", submitted[0]["path"])
+        self.assertEqual("native-quote-1", submitted[0]["body"]["quote_token"])
+        self.assertEqual("70", submitted[0]["headers"]["X-HQ-Expected-Cost"])
+        self.assertTrue(submitted[0]["headers"]["Idempotency-Key"].startswith("hqcli-"))
+
+    def test_text_video_cli_rejects_changed_native_quote_before_submit(self):
+        token = self._token(["generation:quote", "generation:submit"])
+        submitted = []
+
+        def fake_proxy(plan, _web_token, _internal_token):
+            if plan["path"] == "/api/gen/text-video/quote":
+                return 200, {"quote_token": "native", "cost": 70, "scene_count": 3}
+            submitted.append(plan)
+            return 409, {"detail": "分镜或价格已变化，请重新报价", "code": "quote_changed"}
+
+        request = {"action": "text-video-generate", "input": {
+            "text": "完整文案示例", "template": "1080x1920/image_default.html",
+            "mode": "fixed", "style": "realistic_commercial",
+            "voice": "public:zh-CN-YunjianNeural",
+        }, "confirm": False}
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
+            status, quote = self._request("/api/auth/cli/action", request, token=token)
+            self.assertEqual(200, status)
+            status, result = self._request(
+                "/api/auth/cli/action",
+                dict(request, confirm=True, quote_token=quote["quote_token"]), token=token,
+            )
+        self.assertEqual((409, "quote_changed"), (status, result["code"]))
+        self.assertEqual(1, len(submitted))
+        self.assertEqual("native", submitted[0]["body"]["quote_token"])
+
+    def test_text_video_cli_plan_is_strict_and_defaults_mode_and_speed(self):
+        value = {
+            "text": "AI 培训", "template": "1080x1920/image_default.html",
+            "style": "realistic_commercial", "voice": "public:zh-CN-YunjianNeural",
+        }
+        plan = self.auth.hq_cli_api.action_plan("text-video-generate", value)
+        self.assertEqual(("generation:quote", "script_to_video", "/api/gen/script_to_video"), (
+            plan["scope"], plan["generation_kind"], plan["endpoint"]))
+        self.assertEqual(("generate", 1.0, "pixelle", "text-video"), (
+            plan["payload"]["mode"], plan["payload"]["speech_rate"],
+            plan["payload"]["pipeline"], plan["payload"]["source_page"]))
+        self.assertEqual("/api/gen/text-video/quote", plan["quote_endpoint"])
+        for raw, expected in ((1.25, 1.3), (1.26, 1.3), (0.55, 0.6)):
+            with self.subTest(speech_rate=raw):
+                normalized = self.auth.hq_cli_api.action_plan(
+                    "text-video-generate", dict(value, speech_rate=raw))
+                self.assertEqual(expected, normalized["payload"]["speech_rate"])
+        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+            self.auth.hq_cli_api.action_plan(
+                "text-video-generate", dict(value, talking_material={"enabled": True}))
+        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+            self.auth.hq_cli_api.action_plan(
+                "text-video-generate", dict(value, speech_rate=2.1))
+
     def test_collect_and_leads_actions_are_strict_quoted_and_submit_to_leadgen(self):
         douyin = "https://v.douyin.com/abc123/"
         xhs = "https://www.xiaohongshu.com/explore/note-1"

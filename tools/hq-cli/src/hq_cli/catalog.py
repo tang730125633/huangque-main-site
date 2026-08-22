@@ -659,6 +659,14 @@ TRYON_CLASSIC_FIELDS = {
     "background_upload_id": IMAGE_UPLOAD_ID,
     "seconds": {"type": "integer", "minimum": 1, "maximum": 6},
 }
+TEXT_VIDEO_FIELDS = {
+    "text": {"type": "string", "minLength": 2, "maxLength": 1000},
+    "template": {"type": "string", "minLength": 1, "maxLength": 240},
+    "mode": {"type": "string", "enum": ["generate", "fixed"]},
+    "style": {"type": "string", "minLength": 1, "maxLength": 80},
+    "voice": {"type": "string", "minLength": 1, "maxLength": 200},
+    "speech_rate": {"type": "number", "minimum": 0.5, "maximum": 2.0},
+}
 
 for identifier, name, fields, required in (
     ("image-generate", "图片生成", IMAGE_FIELDS, ["prompt"]),
@@ -666,6 +674,8 @@ for identifier, name, fields, required in (
     ("video-lipsync", "原视频口型同步", VIDEO_LIPSYNC_FIELDS,
      ["video_asset_id", "audio_asset_id"]),
     ("audio-generate", "音频生成", AUDIO_FIELDS, ["text"]),
+    ("text-video-generate", "文案成片生成", TEXT_VIDEO_FIELDS,
+     ["text", "template", "style", "voice"]),
     ("digital-ip-text-generate", "数字IP单条文案生成", DIGITAL_IP_TEXT_FIELDS,
      ["avatar_id", "text", "voice"]),
     ("digital-ip-audio-generate", "数字IP本人资产音频生成", DIGITAL_IP_AUDIO_FIELDS,
@@ -722,6 +732,15 @@ CAPABILITIES["cinematic-open-generate"]["input_schema"]["oneOf"] = [
 ]
 CAPABILITIES["tryon-classic-generate"]["input_schema"]["anyOf"] = [
     {"required": ["clothes_upload_id"]}, {"required": ["background_upload_id"]},
+]
+CAPABILITIES["text-video-generate"]["constraints"] = [
+    "template, style, and voice must be selected from text-video-templates, text-video-styles, and text-video-voices",
+    "mode defaults to generate; fixed preserves the supplied copy and automatically splits scenes",
+    "the first call returns scene_count and cost_breakdown without submitting a paid task",
+    "talking-material avatar planning remains available on the website, not this initial CLI action",
+]
+CAPABILITIES["text-video-generate"]["next_actions"] = [
+    "核对 scene_count 和 cost_breakdown 后，用完全相同的输入、quote_token 与 --confirm 提交；拿到 job_id 后仅使用 task 轮询。",
 ]
 
 CAPABILITIES["image-generate"]["constraints"] = [
@@ -816,7 +835,7 @@ for identifier, website_modes in {
     "digital-presenter-update": ["digitalPresenter"],
     "text-video": ["text_video"], "text-video-capability": ["text_video"],
     "text-video-templates": ["text_video"], "text-video-styles": ["text_video"],
-    "text-video-voices": ["text_video"],
+    "text-video-voices": ["text_video"], "text-video-generate": ["text_video"],
     "short-drama": ["live_action"],
     "short-drama-projects": ["live_action"], "short-drama-project": ["live_action"],
     "short-drama-conversation": ["live_action"], "short-drama-preflight": ["live_action"],

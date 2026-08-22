@@ -4875,6 +4875,13 @@ class H(BaseHTTPRequestHandler):
                         INTERNAL_TOKEN, quote_token, row["username"], generation_kind, payload,
                     )
                     submit_body = dict(payload)
+                    if plan.get("native_quote_token_field"):
+                        context = claims.get("x") if isinstance(claims.get("x"), dict) else {}
+                        native_token = str(context.get("native_quote_token") or "")
+                        if not native_token or len(native_token) > 4096:
+                            raise hq_cli_api.CLIAPIError(
+                                502, "文案成片报价凭证缺失", "native_quote_invalid")
+                        submit_body[plan["native_quote_token_field"]] = native_token
                     if plan.get("quoted_cost_field"):
                         submit_body[plan["quoted_cost_field"]] = claims["c"]
                     submit_headers = {"X-HQ-Expected-Cost": str(claims["c"])}
@@ -4899,14 +4906,26 @@ class H(BaseHTTPRequestHandler):
                 status, result = self._cli_proxy(quote_plan, row["username"])
                 if not 200 <= status < 300:
                     return self._cli_send(status, result)
+                quote_context = None
+                if plan.get("native_quote_token_field"):
+                    native_token = str(result.get("quote_token") or "")
+                    if not native_token or len(native_token) > 4096:
+                        raise hq_cli_api.CLIAPIError(
+                            502, "文案成片报价凭证缺失", "native_quote_invalid")
+                    quote_context = {"native_quote_token": native_token}
                 token, claims = hq_cli_api.issue_quote(
-                    INTERNAL_TOKEN, row["username"], generation_kind, payload, result.get("cost"),
+                    INTERNAL_TOKEN, row["username"], generation_kind, payload,
+                    result.get("cost"), context=quote_context,
                 )
-                return self._cli_send(200, {
+                response = {
                     "quote_token": token, "kind": generation_kind, "cost": claims["c"],
                     "points": result.get("points"), "expires_in": hq_cli_api.QUOTE_TTL,
                     "confirmation_required": True,
-                })
+                }
+                for field in plan.get("quote_result_fields", ()):
+                    if field in result:
+                        response[field] = result[field]
+                return self._cli_send(200, response)
             if trusted_internal and confirm and idempotency_key and plan["kind"] == "proxy":
                 plan = dict(plan)
                 headers = dict(plan.get("headers") or {})

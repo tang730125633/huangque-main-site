@@ -14,6 +14,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from decimal import Decimal, ROUND_HALF_UP
 
 
 PUBLIC_ORIGIN = os.environ.get("HQ_CLI_PUBLIC_ORIGIN", "https://huangquechuanmei.com").strip().rstrip("/")
@@ -119,6 +120,7 @@ _ACTION_INPUTS = {
     "account": (), "channels": (), "pricing": (),
     "text-video-capability": (), "text-video-templates": (),
     "text-video-styles": (), "text-video-voices": (),
+    "text-video-generate": ("text", "template", "mode", "style", "voice", "speech_rate"),
     "inspiration-catalog": (), "inspiration-likes": (),
     "inspiration-like": ("id", "favorite"),
     "leads-crm": ("lead_ids",), "leads-crm-upsert": ("lead_id", "intent", "follow_status", "follow_note"),
@@ -165,7 +167,7 @@ _ACTION_PURPOSES = {
     "ip12-report": "读取本人 IP12 报告", "canvas-list": "读取本人画布", "canvas-get": "读取本人画布详情",
     "tasks": "读取本人任务记录", "task": "读取本人任务详情", "assets": "读取本人资产", "voices": "读取可用音色",
     "image-generate": "生成图片", "video-generate": "生成视频", "video-lipsync": "让本人原视频匹配新口播音频",
-    "audio-generate": "生成音频",
+    "audio-generate": "生成音频", "text-video-generate": "根据主题或完整文案生成成片",
     "canvas-agent-plan": "为画布生成可确认的操作方案", "canvas-ops": "写入本人画布操作",
 }
 
@@ -378,6 +380,22 @@ _MEDIA_SCHEMAS = {
             "volume": {"type": "integer", "minimum": -50, "maximum": 100},
         }, "constraints": ["speed is rounded to one decimal place"],
     },
+    "text-video-generate": {
+        "required": ["text", "template", "style", "voice"], "properties": {
+            "text": {"type": "string", "minLength": 2, "maxLength": 1000},
+            "template": {"type": "string", "minLength": 1, "maxLength": 240},
+            "mode": {"type": "string", "enum": ["generate", "fixed"]},
+            "style": {"type": "string", "minLength": 1, "maxLength": 80},
+            "voice": {"type": "string", "minLength": 1, "maxLength": 200},
+            "speech_rate": {"type": "number", "minimum": 0.5, "maximum": 2.0},
+        },
+        "constraints": [
+            "template, style, and voice must come from the matching text-video read capabilities",
+            "mode defaults to generate; fixed preserves the supplied copy and automatically splits scenes",
+            "the signed CLI quote carries the native quote; final submission revalidates it before deduction",
+            "talking-material avatar planning remains available on the website, not this initial CLI action",
+        ],
+    },
     "canvas-create": {
         "required": ["name"], "properties": {
             "name": {"type": "string", "minLength": 1, "maxLength": 48},
@@ -515,6 +533,7 @@ _FAMILIES = {
     "video-compose-projects": "video", "video-compose-project": "video", "video-compose-create": "video",
     "video-compose-analyze": "video", "video-compose-review": "video", "video-compose-render": "video",
     "text-video-capability": "video", "text-video-templates": "video", "text-video-styles": "video", "text-video-voices": "video",
+    "text-video-generate": "video",
     "canvas-list": "canvas", "canvas-get": "canvas", "canvas-create": "canvas", "canvas-agent-plan": "canvas",
     "canvas-ops": "canvas", "digital-presenter-capability": "canvas", "digital-presenter-project": "canvas",
     "digital-presenter-create": "canvas", "digital-presenter-update": "canvas",
@@ -526,7 +545,7 @@ _ACTION_FEATURE_GATES = {
     "cinematic-motion-generate": ("cinematic",), "tryon-fast-generate": ("tryon",),
     "tryon-classic-generate": ("tryon",), "digital-presenter-capability": ("digital_presenter",),
     "digital-presenter-project": ("digital_presenter",), "digital-presenter-create": ("digital_presenter",),
-    "digital-presenter-update": ("digital_presenter",),
+    "digital-presenter-update": ("digital_presenter",), "text-video-generate": ("script_to_video",),
 }
 _OPTION_FEATURE_GATES = {
     ("image-generate", "provider"): {"openai": ("image",), "seedream": ("image",), "xiaole": ("image", "image_xiaole"), "banana": ("image", "banana")},
@@ -540,6 +559,7 @@ _GENERATION_ACTIONS = frozenset({
     "canvas-agent-plan", "image-generate", "video-generate", "video-lipsync", "audio-generate",
     "digital-ip-text-generate", "digital-ip-batch-generate", "digital-ip-audio-generate",
     "cinematic-open-generate", "cinematic-motion-generate", "tryon-fast-generate", "tryon-classic-generate",
+    "text-video-generate",
 })
 
 
@@ -1441,6 +1461,23 @@ def _digital_presenter_fields(value):
     return fields
 
 
+def _text_video_payload(value):
+    allowed = {"text", "template", "mode", "style", "voice", "speech_rate"}
+    _strict_object(value, allowed, ("text", "template", "style", "voice"))
+    return {
+        "pipeline": "pixelle",
+        "text": _string(value["text"], "text", 2, 1000),
+        "template": _string(value["template"], "template", 1, 240),
+        "mode": _enum(value.get("mode", "generate"), "mode", ("generate", "fixed")),
+        "style": _string(value["style"], "style", 1, 80),
+        "voice": _string(value["voice"], "voice", 1, 200),
+        "speech_rate": float(Decimal(str(
+            _number(value.get("speech_rate", 1.0), "speech_rate", 0.5, 2.0)
+        )).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)),
+        "source_page": "text-video",
+    }
+
+
 def _collect_url(value):
     url = _string(value, "url", 1, 2048)
     try:
@@ -1503,6 +1540,18 @@ def action_plan(action, value):
     if action == "pricing":
         _strict_object(value, set())
         return _plan("profile:read", "proxy", base=CONTENT_BASE, path="/api/gen/pricing")
+    if action == "text-video-generate":
+        payload = _text_video_payload(value)
+        return _plan(
+            "generation:quote", "generation",
+            generation_kind="script_to_video",
+            endpoint="/api/gen/script_to_video",
+            payload=payload,
+            quote_endpoint="/api/gen/text-video/quote",
+            quote_body=payload,
+            native_quote_token_field="quote_token",
+            quote_result_fields=("scene_count", "cost_breakdown"),
+        )
     if action in {
             "text-video-capability", "text-video-templates",
             "text-video-styles", "text-video-voices"}:
@@ -2110,7 +2159,7 @@ def _canonical(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
 
 
-def issue_quote(secret, username, generation_kind, payload, cost, now=None):
+def issue_quote(secret, username, generation_kind, payload, cost, now=None, context=None):
     if not secret:
         raise CLIAPIError(503, "CLI 报价签名未配置", "not_configured")
     now = int(time.time() if now is None else now)
@@ -2122,6 +2171,10 @@ def issue_quote(secret, username, generation_kind, payload, cost, now=None):
         "h": hashlib.sha256(_canonical(payload)).hexdigest(),
         "c": cost, "e": now + QUOTE_TTL, "n": secrets.token_hex(16),
     }
+    if context is not None:
+        if not isinstance(context, dict):
+            raise CLIAPIError(500, "CLI 报价上下文无效", "invalid_quote_context")
+        claims["x"] = context
     encoded = base64.urlsafe_b64encode(_canonical(claims)).decode("ascii").rstrip("=")
     signature = hmac.new(secret.encode("utf-8"), encoded.encode("ascii"), hashlib.sha256).hexdigest()
     return encoded + "." + signature, claims

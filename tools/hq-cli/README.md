@@ -83,6 +83,36 @@ hq run image-generate --input @image.json --json
 hq run image-generate --input @image.json --confirm --quote-token '<quote_token>' --json
 ```
 
+## 文案成片
+
+先读取当前可用模板、素材风格和音色，再使用同一份 UTF-8 JSON 完成报价与确认提交：
+
+```sh
+hq run text-video-templates --json
+hq run text-video-styles --json
+hq run text-video-voices --json
+
+cat > text-video.json <<'JSON'
+{
+  "text": "AI 培训如何帮助团队提高工作效率",
+  "template": "1080x1920/image_default.html",
+  "mode": "generate",
+  "style": "realistic_commercial",
+  "voice": "public:zh-CN-YunjianNeural",
+  "speech_rate": 1.0
+}
+JSON
+
+hq run text-video-generate --input @text-video.json --json
+# 核对 scene_count、cost_breakdown 和 cost 后确认：
+hq run text-video-generate --input @text-video.json --confirm --quote-token '<quote_token>' --json
+hq run task --input @- --json <<'JSON'
+{"job_id": 123}
+JSON
+```
+
+`mode=generate` 根据主题创作，`mode=fixed` 原样使用完整文案并自动拆分分镜。首个 CLI 版本不接收口播人物图片和逐分镜口播选择；这些设置继续在文案成片页面完成。
+
 项目同时提供可安装的 Codex Skill：[use-huangque-cli](skills/use-huangque-cli/SKILL.md)。
 
 ## 客户大白话对照
@@ -145,7 +175,7 @@ hq run assets --input @assets.json --json
 
 - 账号、点数、权限和渠道目录读取。
 - Hermes IP12 项目、进度、报告与显式确认对话。
-- 图片、视频、音频生成与提示词优化；`image-generate` 包含最多 14 张参考图的 Banana nb2/pro，`video-generate` 包含 Sora 2/Pro。
+- 图片、视频、音频、文案成片生成与提示词优化；`image-generate` 包含最多 14 张参考图的 Banana nb2/pro，`video-generate` 包含 Sora 2/Pro。
 - 数字 IP 单条文案、本人资产音频与 2–5 个形象批量生成；电影化身开放式和动作模仿生成。
 - 快速图片换装与经典视频换装。
 - 私有图片/视频上传、画布创建、画布 Agent 方案与受限写入。
