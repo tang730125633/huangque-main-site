@@ -2899,7 +2899,12 @@ revision_response.json.return_value = {"choices": [{"message": {"content": json.
     "revised_script": "先说结论：这是修改后的口播文案。",
 }, ensure_ascii=False)}}]}
 target = {"category_id": "category-1", "topic_id": "topic-1-01"}
-with patch.object(server, "call_ai", return_value=revision_response):
+def content_revision_model(messages, **kwargs):
+    system_prompt = messages[0]["content"]
+    assert "本轮只处理明确的文案修改" in system_prompt
+    assert "不要索要旧音频或旧报价" in system_prompt
+    return revision_response
+with patch.object(server, "call_ai", side_effect=content_revision_model):
     content_revision = client.post("/api/chat-complete", json={
         "conversation_id": content_cid,
         "message": "重新生成一版音频，语速调整为0.9，开头太绕了，直接一点。",
