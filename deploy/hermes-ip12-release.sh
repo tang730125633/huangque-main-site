@@ -294,12 +294,13 @@ privileged install -m 0644 \
 privileged ln -sfn "$NGINX_DIRECT_AVAILABLE" "$NGINX_DIRECT_ENABLED"
 privileged systemctl daemon-reload
 privileged systemd-analyze verify "$SYSTEMD_TARGET"
-test "$(
+ROUTE_COUNT="$(
   cd "$APP_DIR"
   HERMES_ENABLE_INTERNAL_TOOLS=1 "$PYTHON" -c \
     'from server import app; print(len({r.rule for r in app.url_map.iter_rules() if r.endpoint != "static"}))' \
     | tail -1
-)" = 83
+)"
+test "$ROUTE_COUNT" -ge 85
 privileged nginx -t
 privileged systemctl enable "$SERVICE"
 privileged systemctl restart "$SERVICE"

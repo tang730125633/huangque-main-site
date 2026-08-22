@@ -162,7 +162,7 @@ case " $* " in
     payload="$(cat)"
     [[ "$payload" = *release_sha* && "$payload" = *"${HERMES_EXPECTED_SHA:-}"* ]]
     ;;
-  *" -c "*) printf '83\n' ;;
+  *" -c "*) printf '85\n' ;;
 esac
 """,
         )
@@ -343,10 +343,12 @@ exit 0
         self.assertEqual(sum("http://public.test/healthz" in line for line in commands.splitlines()), 2)
 
     def test_route_check_matches_the_systemd_internal_tools_environment(self):
+        source = SCRIPT.read_text(encoding="utf-8")
         self.assertIn(
             'HERMES_ENABLE_INTERNAL_TOOLS=1 "$PYTHON" -c',
-            SCRIPT.read_text(encoding="utf-8"),
+            source,
         )
+        self.assertIn('test "$ROUTE_COUNT" -ge 85', source)
 
     def test_reports_manual_recovery_when_rollback_rsync_fails(self):
         commands = self._assert_rollback_failure(
