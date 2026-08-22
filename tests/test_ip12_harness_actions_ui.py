@@ -143,7 +143,8 @@ class IP12HarnessActionsUITests(unittest.TestCase):
             source.index("function productionOptionsHtml")
         ]
 
-        self.assertIn("if(!missing.length)required.forEach", field_specs)
+        self.assertIn("required.forEach", field_specs)
+        self.assertIn("spec.choiceCards||!missing.length", field_specs)
         self.assertIn("descriptor.oneOf", field_spec)
         self.assertIn("choice.const", field_spec)
         self.assertIn("!fields.some", options_html)
@@ -176,6 +177,17 @@ class IP12HarnessActionsUITests(unittest.TestCase):
         self.assertIn("showArtifactNotice(data)", send_turn)
         self.assertIn("第一个交付物已放到对应诊断模块下方", source)
 
+    def test_project_switch_closes_stale_production_panel_and_media_is_compact(self):
+        source = (TEMPLATES / "index.html").read_text(encoding="utf-8")
+        select_convo = source[
+            source.index("async function selectConvo"):
+            source.index("async function jumpModule")
+        ]
+
+        self.assertIn("stopProductionPolls();closePanel();closeFoundationReviewer()", select_convo)
+        self.assertIn(".msg .production-asset img,.msg .production-asset video", source)
+        self.assertIn("max-width:min(100%,280px);max-height:48vh", source)
+
     def test_main_view_exposes_a_two_project_manager(self):
         source = (TEMPLATES / "index.html").read_text(encoding="utf-8")
         start = source.index("function renderProjectPanel")
@@ -184,8 +196,15 @@ class IP12HarnessActionsUITests(unittest.TestCase):
         self.assertIn("/2", manager)
         self.assertIn("最多允许创建两个 Project", source)
         self.assertIn("永久删除", source)
-        self.assertIn("o.style.display='flex'", manager)
-        self.assertLess(manager.index("o.style.display='flex'"), manager.index("await loadConvos()"))
+        self.assertIn('id="projectImportInput"', source)
+        self.assertIn("导入备份", manager)
+        self.assertIn("导出备份", manager)
+        self.assertIn("/api/conversations/import", manager)
+        self.assertIn("/export", manager)
+        self.assertIn("不含制作任务", manager)
+        toggle = manager[manager.index("async function toggleProjects"):]
+        self.assertIn("o.style.display='flex'", toggle)
+        self.assertLess(toggle.index("o.style.display='flex'"), toggle.index("await loadConvos()"))
 
 
 if __name__ == "__main__":

@@ -88,7 +88,7 @@ assert payload['state_schema'] == 2, payload
         for path in HERMES.glob("*.py"):
             routes.update(pattern.findall(path.read_text(encoding="utf-8")))
 
-        self.assertEqual(len(routes), 81)
+        self.assertEqual(len(routes), 83)
         self.assertTrue(
             {
                 "/api/chat",
@@ -106,6 +106,8 @@ assert payload['state_schema'] == 2, payload
                 "/api/ip12/productions/quote",
                 "/api/ip12/productions/confirm",
                 "/api/ip12/productions/<production_id>",
+                "/api/conversations/<cid>/export",
+                "/api/conversations/import",
                 "/classic",
                 "/skills",
                 "/analytics",
@@ -608,6 +610,23 @@ security.RATE_REQUESTS = 1000
 client = server.app.test_client()
 client.environ_base["HTTP_AUTHORIZATION"] = "Bearer admin-token"
 
+intake_cid = client.post("/api/conversations", json={"title": "人物资料采集"}).get_json()["id"]
+intake_state = server.load_conversation(intake_cid)["coach_state"]
+intake_reply = {
+    "decision": "ask_follow_up", "checkpoint": 0,
+    "reply": "已记下男性视觉身份，请继续补充长期兴趣。",
+    "draft": "", "self_review": "", "profile_updates": [], "choices": [], "confidence": 0.9,
+}
+with patch.object(server, "_coach_model_decision", return_value=(intake_reply, "男性形象 14")):
+    intake_response = client.post("/api/chat-complete", json={
+        "conversation_id": intake_cid,
+        "message": "最终数字人口播固定使用男性形象 14，不要生成女性。",
+        "expected_revision": intake_state["revision"],
+    })
+assert intake_response.status_code == 200, intake_response.get_data(as_text=True)
+assert "男性视觉身份" in intake_response.get_json()["assistant"]
+assert not server.load_conversation(intake_cid).get("productions")
+
 cid = "typedproduction01"
 state = server.initial_coach_state()
 server.save_conversation(cid, {
@@ -642,10 +661,21 @@ intent_body = intent_response.get_json()
 assert intent_body["actions"][0]["type"] == "prepare_production", intent_body
 assert intent_body["actions"][0]["requested_result"] == "video", intent_body
 assert intent_body["actions"][0]["preferred_action"] == "video-generate", intent_body
+assert intent_body["actions"][0]["allow_system_media"] is False, intent_body
 assert intent_body["actions"][0]["options"]["ratio"] == "9:16", intent_body
 assert "Grok" in intent_body["actions"][0]["options"]["prompt"], intent_body
 assert "完整口播正文" in intent_body["actions"][0]["options"]["prompt"], intent_body
 assert not server.load_conversation(cid).get("productions"), intent_body
+assert server._explicit_system_media_request("使用系统自带的公共音色") is True
+assert server._explicit_system_media_request("就用沉稳男声生成") is True
+assert server._explicit_system_media_request("不要使用公共音色") is False
+with server.app.test_request_context("https://huangquechuanmei.com/workbench/ip12/"):
+    assert server._browser_preview_url("/api/gen/file/avatar.jpg") == (
+        "https://huangquechuanmei.com/api/gen/file/avatar.jpg"
+    )
+    assert server._browser_preview_url("https://media.example/voice.mp3") == (
+        "https://media.example/voice.mp3"
+    )
 revision = intent_body["state"]["revision"]
 original_messages = json.loads(json.dumps(server.load_conversation(cid)["messages"], ensure_ascii=False))
 
@@ -653,11 +683,19 @@ def resource_bridge(account_id, action, input_body, **kwargs):
     assert account_id == "acct_a", account_id
     if action == "video-avatars":
         return {"items": [
-            {"id": avatar_id, "name": "我的形象 %s" % avatar_id, "status": "ready"}
+            {"id": avatar_id, "name": "我的形象 %s" % avatar_id, "status": "ready",
+             "image_url": "https://media.example/avatar-%s.jpg" % avatar_id}
             for avatar_id in (7, 8, 9)
         ]}
     if action == "voices":
-        return {"items": [{"voice_key": "voice-demo", "display_name": "我的声音"}]}
+        return {"items": [
+            {"voice_key": "voice-demo", "display_name": "我的声音", "scope": "personal",
+             "preview_url": "https://media.example/voice-demo.mp3"},
+            {"voice_key": "public-demo", "display_name": "公共声音", "scope": "public",
+             "preview_url": "https://media.example/public-demo.mp3"},
+            {"voice_key": "silent-demo", "display_name": "无试听声音", "scope": "personal",
+             "preview_url": ""},
+        ]}
     if action == "canvas-list":
         return {"boards": [
             {"id": "board_canvas_1", "name": "IP12 内容画布", "version": 3, "role": "owner"},
@@ -665,7 +703,7 @@ def resource_bridge(account_id, action, input_body, **kwargs):
         ]}
     raise AssertionError(action)
 
-def prepare(family, options_marker=None, preferred_action=None):
+def prepare(family, options_marker=None, preferred_action=None, allow_system_media=False):
     body = {
         "conversation_id": cid,
         "content_target": target,
@@ -676,6 +714,8 @@ def prepare(family, options_marker=None, preferred_action=None):
         body["options"] = options_marker
     if preferred_action is not None:
         body["preferred_action"] = preferred_action
+    if allow_system_media:
+        body["allow_system_media"] = True
     with patch.object(server, "_bridge_action", side_effect=resource_bridge):
         response = client.post("/api/ip12/productions/prepare", json=body)
     assert response.status_code == 200, response.get_data(as_text=True)
@@ -697,6 +737,10 @@ assert "类型" in bad_image["validation_error"], bad_image
 
 audio = prepare("audio")
 video = prepare("video", {"avatar_id": 7, "voice": "voice-demo"})
+public_blocked = prepare("video", {"avatar_id": 7, "voice": "public-demo"})
+public_allowed = prepare(
+    "video", {"avatar_id": 7, "voice": "public-demo"}, allow_system_media=True
+)
 missing_canvas = prepare("canvas")
 canvas = prepare("canvas", {"board_id": "board_canvas_1"})
 generic_video = prepare("video", {"prompt": "把正文改编成海边日出短片。"}, "video-generate")
@@ -705,10 +749,43 @@ for prepared in (audio, video, canvas):
 assert audio["schema"]["required"] == [], audio
 assert video["schema"]["required"] == ["avatar_id", "voice"], video
 assert video["schema"]["properties"]["avatar_id"]["oneOf"] == [
-    {"const": 7, "title": "我的形象 7"},
-    {"const": 8, "title": "我的形象 8"},
-    {"const": 9, "title": "我的形象 9"},
+    {"const": 7, "title": "我的形象 7", "preview_url": "https://media.example/avatar-7.jpg", "preview_kind": "image", "source": "personal"},
+    {"const": 8, "title": "我的形象 8", "preview_url": "https://media.example/avatar-8.jpg", "preview_kind": "image", "source": "personal"},
+    {"const": 9, "title": "我的形象 9", "preview_url": "https://media.example/avatar-9.jpg", "preview_kind": "image", "source": "personal"},
 ], video
+assert video["schema"]["properties"]["voice"]["oneOf"] == [{
+    "const": "voice-demo", "title": "我的声音",
+    "preview_url": "https://media.example/voice-demo.mp3",
+    "preview_kind": "audio", "source": "personal",
+}], video
+assert public_blocked["status"] == "blocked_prerequisite", public_blocked
+assert "当前账号的可选范围" in public_blocked["validation_error"], public_blocked
+assert [item["const"] for item in public_allowed["schema"]["properties"]["voice"]["oneOf"]] == [
+    "voice-demo", "public-demo",
+], public_allowed
+assert public_allowed["status"] == "draft", public_allowed
+legacy = prepare("video")
+legacy_id = legacy["production_id"]
+legacy_convo = server.load_conversation(cid)
+legacy_record = legacy_convo["productions"][legacy_id]
+legacy_record["material_context_version"] = 2
+legacy_record["parameter_schema"]["properties"]["voice"]["oneOf"].append({
+    "const": "public-demo", "title": "旧公共声音",
+})
+legacy_record["options"] = {"avatar_id": 7, "voice": "public-demo"}
+legacy_record["status"] = "blocked_prerequisite"
+server.save_conversation(cid, legacy_convo)
+with patch.object(server, "_bridge_action", side_effect=resource_bridge):
+    refreshed = client.get(f"/api/conversations/{cid}")
+assert refreshed.status_code == 200, refreshed.get_data(as_text=True)
+refreshed_record = next(
+    item for item in refreshed.get_json()["productions"] if item["id"] == legacy_id
+)
+assert refreshed_record["material_context_version"] == 3, refreshed_record
+assert refreshed_record["options"] == {"avatar_id": 7}, refreshed_record
+assert [item["const"] for item in refreshed_record["parameter_schema"]["properties"]["voice"]["oneOf"]] == [
+    "voice-demo",
+], refreshed_record
 assert missing_canvas["missing"] == ["board_id"], missing_canvas
 assert canvas["schema"]["required"] == ["board_id"], canvas
 assert canvas["recommended_action"] == "canvas-ops", canvas
@@ -779,6 +856,14 @@ filled = server.load_conversation(cid)["productions"][image_id]
 assert filled["options"] == {"prompt": "第一版海报"}
 assert filled["input_digest"] != empty_digest
 assert quote_calls[0][3]["idempotency_key"] == filled["idempotency_key"]
+
+expired_convo = server.load_conversation(cid)
+expired_convo["productions"][image_id]["quote"]["expires_at"] = 0
+server.save_conversation(cid, expired_convo)
+expired = client.get(f"/api/ip12/productions/{image_id}?conversation_id={cid}")
+assert expired.status_code == 200, expired.get_data(as_text=True)
+assert expired.get_json()["production"]["status"] == "stale"
+assert expired.get_json()["production"]["last_error_code"] == "quote_expired"
 
 # Options supplied at confirm are part of the quoted digest.  A changed option
 # invalidates the old quote without submitting anything.
@@ -1001,7 +1086,10 @@ assert {"image", "audio", "video", "canvas"}.issubset(families), families
 assert "private-" not in json.dumps(public_project, ensure_ascii=False)
 messages = server.load_conversation(cid)["messages"]
 assert messages[:len(original_messages)] == original_messages
-deliveries = [item for item in messages if item.get("production_id")]
+deliveries = [
+    item for item in messages
+    if str(item.get("message_id") or "").startswith("prodmsg_")
+]
 assert {item["production_id"] for item in deliveries} == {
     image_id, video_id, canvas_id, recovery_id,
 }, deliveries
@@ -1137,6 +1225,198 @@ print("IP12_PROJECT_RUNTIME_OK")
             )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("IP12_PROJECT_RUNTIME_OK", result.stdout)
+
+    def test_project_backup_round_trip_excludes_production_and_billing_state(self):
+        script = r'''
+import base64
+import io
+import json
+import server
+import security
+
+server.current_account_id = lambda: "acct_backup"
+security._validate_token = lambda token: {"account_id": "acct_backup", "username": "backup", "role": "member"}
+security.RATE_REQUESTS = 100
+client = server.app.test_client()
+client.environ_base["HTTP_AUTHORIZATION"] = "Bearer test-token"
+
+created = client.post("/api/conversations", json={"title": "气球人设"})
+assert created.status_code == 200
+cid = created.get_json()["id"]
+convo = server.load_conversation(cid)
+convo["messages"].append({"role": "user", "content": "我在广州做气球派对布置"})
+state = server.normalize_coach_state(convo["coach_state"])
+state.update(current_module=5, completed_modules=[1, 2, 3, 4], module_step=0, revision=7)
+state["ip_profile"]["facts"]["current_identity"] = {
+    "value": "广州气球派对布置师", "evidence_quote": "我在广州做气球派对布置",
+}
+state["foundation_report"] = {"status": "confirmed", "report_id": "report-1"}
+convo["coach_state"] = state
+convo["reports"] = {"1": "定位报告"}
+convo["deliverables"] = {"5": {"title": "30 个选题"}}
+convo["productions"] = {"prod-secret": {"quote_token": "must-not-export", "status": "done"}}
+convo["turn_receipts"] = [{"request_id": "must-not-export"}]
+server.save_conversation(cid, convo)
+
+def validate_pdf(path):
+    assert path.read_bytes().startswith(b"%PDF-")
+server._validate_foundation_pdf = validate_pdf
+server.FOUNDATION_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+pdf_bytes = b"%PDF-1.4\nbackup\n%%EOF\n"
+(server.FOUNDATION_REPORTS_DIR / f"{cid}.pdf").write_bytes(pdf_bytes)
+
+exported = client.get(f"/api/conversations/{cid}/export")
+assert exported.status_code == 200
+assert exported.headers["Content-Disposition"].startswith("attachment;")
+assert exported.headers["Cache-Control"] == "no-store"
+backup = json.loads(exported.data)
+assert backup["schema"] == server.PROJECT_BACKUP_SCHEMA
+assert backup["source_project_id"] == cid
+assert base64.b64decode(backup["foundation_pdf"]["data"]) == pdf_bytes
+assert "owner_account_id" not in backup["project"]
+assert "productions" not in backup["project"]
+assert "turn_receipts" not in backup["project"]
+
+assert client.delete(f"/api/conversations/{cid}").status_code == 200
+assert client.get(f"/api/conversations/{cid}").status_code == 404
+restored_response = client.post(
+    "/api/conversations/import",
+    data={"backup": (io.BytesIO(exported.data), "project.json")},
+    content_type="multipart/form-data",
+)
+assert restored_response.status_code == 200, restored_response.get_json()
+restored_id = restored_response.get_json()["id"]
+assert restored_id != cid
+restored = server.load_conversation(restored_id)
+assert restored["title"] == "气球人设（恢复）"
+assert restored["owner_account_id"] == "acct_backup"
+assert restored["restored_from_project_id"] == cid
+assert restored["messages"][-1]["content"] == "我在广州做气球派对布置"
+assert restored["coach_state"]["ip_profile"]["facts"]["current_identity"]["value"] == "广州气球派对布置师"
+assert restored["reports"] == {"1": "定位报告"}
+assert restored["deliverables"] == {"5": {"title": "30 个选题"}}
+assert restored["productions"] == {}
+assert "turn_receipts" not in restored
+assert (server.FOUNDATION_REPORTS_DIR / f"{restored_id}.pdf").read_bytes() == pdf_bytes
+
+invalid = client.post(
+    "/api/conversations/import",
+    data={"backup": (io.BytesIO(b'{"schema":"other"}'), "bad.json")},
+    content_type="multipart/form-data",
+)
+assert invalid.status_code == 400
+assert invalid.get_json()["error"] == "备份版本不受支持"
+assert client.post("/api/conversations", json={"title": "第二个 Project"}).status_code == 200
+full = client.post(
+    "/api/conversations/import",
+    data={"backup": (io.BytesIO(exported.data), "project.json")},
+    content_type="multipart/form-data",
+)
+assert full.status_code == 409
+assert full.get_json()["code"] == "ip12_project_limit"
+print("IP12_PROJECT_BACKUP_OK")
+'''
+        with tempfile.TemporaryDirectory() as data_dir:
+            env = os.environ.copy()
+            env.update(OPENAI_API_KEY="dummy", HERMES_HOME=data_dir, HERMES_DATA_DIR=data_dir)
+            result = subprocess.run(
+                [sys.executable, "-c", script], cwd=HERMES, env=env,
+                capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("IP12_PROJECT_BACKUP_OK", result.stdout)
+
+    def test_module_six_completion_hands_off_to_talking_head_production(self):
+        script = r'''
+from unittest.mock import patch
+import server
+import security
+
+server.current_account_id = lambda: "acct_handoff"
+security._validate_token = lambda token: {"account_id": "acct_handoff", "username": "handoff", "role": "member"}
+security.RATE_REQUESTS = 100
+client = server.app.test_client()
+client.environ_base["HTTP_AUTHORIZATION"] = "Bearer test-token"
+
+pack = {"kind": "content_pack_v1", "format": "featured_3_v1", "categories": [
+    {"id": f"category_{index}", "name": f"方向{index}", "topics": [{
+        "id": f"topic_{index}", "title": "把模糊需求变成活动方案" if index == 1 else f"精选选题{index}",
+        "status": "ready", "versions": [{"version": 1, "content": f"第{index}篇完整口播正文"}],
+    }]}
+    for index in (1, 2, 3)
+]}
+
+completed_id = client.post("/api/conversations", json={"title": "已完成六步"}).get_json()["id"]
+completed = server.load_conversation(completed_id)
+completed_state = server.coach_harness.initial_state()
+completed_state.update(current_module=6, module_step=3, completed_modules=[1, 2, 3, 4, 5, 6])
+completed_state["intake"]["status"] = "complete"
+completed["coach_state"] = completed_state
+completed["deliverables"] = {"6": pack}
+server.save_conversation(completed_id, completed)
+
+detail = client.get(f"/api/conversations/{completed_id}").get_json()
+assert detail["harness_actions"][0]["type"] == "prepare_production", detail
+assert detail["harness_actions"][0]["preferred_action"] == "digital-ip-text-generate", detail
+assert detail["harness_actions"][0]["content_target"] == {"category_id": "category_1", "topic_id": "topic_1"}, detail
+assert detail["harness_actions"][0]["allow_system_media"] is False, detail
+
+with patch.object(server, "call_ai") as model:
+    capability = client.post("/api/chat-complete", json={
+        "conversation_id": completed_id,
+        "message": "OK的，然后你现在具备哪些能力啊，可以做些什么事情",
+        "expected_revision": completed_state["revision"],
+        "request_id": "post-module-six-capabilities",
+    })
+    model.assert_not_called()
+assert capability.status_code == 200, capability.get_data(as_text=True)
+capability_body = capability.get_json()
+assert capability_body["actions"][0]["type"] == "prepare_production", capability_body
+assert capability_body["actions"][0]["preferred_action"] == "digital-ip-text-generate", capability_body
+assert "制作成数字人口播视频" in capability_body["assistant"], capability_body
+assert "先确认你自己上传的形象和可试听声音" in capability_body["assistant"], capability_body
+assert "系统公共素材默认不会展示" in capability_body["assistant"], capability_body
+assert "实时报价" in capability_body["assistant"], capability_body
+saved = server.load_conversation(completed_id)
+assert not saved.get("productions"), saved.get("productions")
+assert saved["messages"][-1]["agent_trace"]["skills"][0]["id"] == "production_bridge"
+
+final_id = client.post("/api/conversations", json={"title": "确认模块六"}).get_json()["id"]
+final_convo = server.load_conversation(final_id)
+final_state = server.coach_harness.initial_state()
+final_state.update(current_module=6, module_step=2, completed_modules=[1, 2, 3, 4, 5])
+final_state["intake"]["status"] = "complete"
+final_state["pending"] = {
+    "id": "module-six-final", "kind": "checkpoint", "module": 6, "step": 3,
+    "status": "awaiting_confirmation", "draft": "三篇完整口播文案已确认",
+    "profile_updates": [], "self_review": "已核对", "confidence": 0.98,
+}
+final_convo["coach_state"] = final_state
+final_convo["deliverables"] = {"6": pack}
+server.save_conversation(final_id, final_convo)
+finished = client.post("/api/chat-complete", json={
+    "conversation_id": final_id,
+    "action": {"type": "confirm_checkpoint", "target_id": "module-six-final"},
+    "expected_revision": final_state["revision"],
+    "request_id": "finish-module-six",
+})
+assert finished.status_code == 200, finished.get_data(as_text=True)
+finished_body = finished.get_json()
+assert finished_body["new_completed"] == [6], finished_body
+assert finished_body["actions"][0]["type"] == "prepare_production", finished_body
+assert "制作成数字人口播视频" in finished_body["assistant"], finished_body
+assert not server.load_conversation(final_id).get("productions")
+print("IP12_POST_MODULE_SIX_HANDOFF_OK")
+'''
+        with tempfile.TemporaryDirectory() as data_dir:
+            env = os.environ.copy()
+            env.update(OPENAI_API_KEY="dummy", HERMES_HOME=data_dir, HERMES_DATA_DIR=data_dir)
+            result = subprocess.run(
+                [sys.executable, "-c", script], cwd=HERMES, env=env,
+                capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("IP12_POST_MODULE_SIX_HANDOFF_OK", result.stdout)
 
     def test_choice_routes_migrate_select_trace_and_replay_after_receipt_eviction(self):
         script = r'''
@@ -1502,6 +1782,22 @@ assert "模块4最终已确认：长期故事主线" in foundation_payload
 assert "13800138000" not in foundation_payload
 assert "三套人设方案" not in foundation_payload and "三套价值主张方案" not in foundation_payload
 assert "拆解真实问题" not in foundation_payload and "记录长期成长" not in foundation_payload
+grounded_report = server._ground_foundation_story_section(
+    "## 模块一｜定位诊断\n安全内容\n\n## 模块四｜故事资产挖掘\n朋友面对堆积如山的行李，我砸掉铁饭碗。\n\n## 优化建议汇总\n建议内容",
+    {"4-4": {"content": "事实原话：我帮朋友搬家整理时发现自己挺擅长。"}},
+)
+assert "堆积如山" not in grounded_report and "砸掉铁饭碗" not in grounded_report
+assert "事实原话：我帮朋友搬家整理时发现自己挺擅长。" in grounded_report
+assert grounded_report.count("## 模块四｜故事资产挖掘") == 1
+assert "## 优化建议汇总\n建议内容" in grounded_report
+long_evidence = server._conversation_user_evidence({"messages": [
+    {"role": "user", "content": "最早的创业转折原话"},
+    *({"role": "assistant", "content": f"中间回复 {index}"} for index in range(24)),
+    {"role": "user", "content": "最近补充"},
+]}, "继续")
+assert "最早的创业转折原话" in long_evidence
+assert "最近补充" in long_evidence and "继续" in long_evidence
+assert "中间回复" not in long_evidence
 server.call_ai = capture_coach
 
 editing_state = server.coach_harness.initial_state()
@@ -1889,6 +2185,34 @@ with patch.object(server, "MODEL", "deepseek-v4-flash"), patch.object(server.req
     assert '"required":["decision"]' in deepseek_payload["messages"][0]["content"]
     assert deepseek_payload["messages"][-2] == {"role": "assistant", "content": '{"decision":'}
     assert "上一次输出不是完整 JSON" in deepseek_payload["messages"][-1]["content"]
+
+with patch.object(server, "MODEL", "gemini-3.5-flash"), patch.object(server.requests, "post") as request_model:
+    wrong_shape = Mock(status_code=200)
+    wrong_shape.json.return_value = {"choices": [{"message": {"content": '{"question":"请介绍自己"}'}}]}
+    valid_json = Mock(status_code=200)
+    valid_json.json.return_value = {"choices": [{"message": {"content": '{"decision":"answer_only"}'}}]}
+    request_model.side_effect = [wrong_shape, valid_json]
+    response = server.call_ai(
+        [{"role": "system", "content": "只输出 JSON"}],
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {"decision": {"type": "string"}},
+                    "required": ["decision"],
+                }
+            },
+        },
+    )
+    assert response is valid_json
+    assert request_model.call_count == 2
+    gemini_payload = request_model.call_args.kwargs["json"]
+    assert gemini_payload["response_format"]["type"] == "json_schema"
+    assert '"required":["decision"]' in gemini_payload["messages"][0]["content"]
+    assert gemini_payload["messages"][-2] == {"role": "assistant", "content": '{"question":"请介绍自己"}'}
+    assert "不符合 JSON Schema" in gemini_payload["messages"][-1]["content"]
 
 with patch.object(server, "MODEL", "gpt-5.6-luna"), patch.object(server.requests, "post") as request_model:
     completed = Mock(status_code=200)
@@ -2555,6 +2879,24 @@ assert [item["version"] for item in updated_topic["versions"]] == [1, 2]
 assert updated_topic["versions"][-1]["content"].startswith("先说结论")
 assert len(updated_pack["categories"][1]["topics"][0]["versions"]) == 1
 assert content_revision.get_json()["auto_deliverables"]["6"]["categories"][0]["topics"][0]["status"] == "revised"
+auto_revision_response = Mock()
+auto_revision_response.json.return_value = {"choices": [{"message": {"content": json.dumps({
+    "decision": "apply_revision",
+    "reply": "第二篇的效果承诺没有依据，我已经删掉并保留其余内容。",
+    "change_summary": "删除无依据的效果承诺",
+    "revised_script": "这是第二篇更新后的完整口播正文，不再包含无依据的量化效果承诺。" * 5,
+}, ensure_ascii=False)}}]}
+with patch.object(server, "call_ai", return_value=auto_revision_response):
+    auto_revision = client.post("/api/chat-complete", json={
+        "conversation_id": content_cid,
+        "message": "只修改第二篇，删除没有依据的量化效果承诺，第一篇保持不变。",
+        "expected_revision": content_revision.get_json()["state"]["revision"],
+    })
+assert auto_revision.status_code == 200, auto_revision.get_data(as_text=True)
+auto_pack = server.load_conversation(content_cid)["deliverables"]["6"]
+assert len(auto_pack["categories"][0]["topics"][0]["versions"]) == 2
+assert [item["version"] for item in auto_pack["categories"][1]["topics"][0]["versions"]] == [1, 2]
+assert "量化效果承诺" in auto_pack["categories"][1]["topics"][0]["versions"][-1]["content"]
 assert client.post("/api/chat-complete", json={
     "conversation_id": content_cid,
     "message": "修改",

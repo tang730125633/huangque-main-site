@@ -299,7 +299,7 @@ test "$(
   HERMES_ENABLE_INTERNAL_TOOLS=1 "$PYTHON" -c \
     'from server import app; print(len({r.rule for r in app.url_map.iter_rules() if r.endpoint != "static"}))' \
     | tail -1
-)" = 81
+)" = 83
 privileged nginx -t
 privileged systemctl enable "$SERVICE"
 privileged systemctl restart "$SERVICE"
