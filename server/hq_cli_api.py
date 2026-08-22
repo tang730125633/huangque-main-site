@@ -92,6 +92,13 @@ CHANNEL_CATALOG = (
      "access": "managed", "capabilities": ["tryon-classic-generate"], "selector": {}},
     {"id": "wavespeed", "provider": "WaveSpeed API", "category": "视频处理", "features": ["换装换背景 · 线路二", "Seedance AI 超清"],
      "access": "managed", "capabilities": ["tryon-fast-generate"], "selector": {}},
+    {"id": "pixelle", "provider": "Pixelle-Video", "category": "文案成片",
+     "features": ["主题/文案成片", "自动分镜", "口播人物素材"],
+     "access": "managed", "capabilities": [
+         "text-video-capability", "text-video-templates", "text-video-styles",
+         "text-video-voices", "text-video-avatar-import", "text-video-plan",
+         "text-video-generate",
+     ], "selector": {}},
     {"id": "cosyvoice", "provider": "阿里百炼 API", "category": "音频生成", "features": ["公共音色", "声音克隆"],
      "access": "direct", "capabilities": ["voices", "audio-generate"], "selector": {}},
     {"id": "tikhub", "provider": "TikHub API", "category": "内容采集 / 获客", "features": ["抖音 / 小红书 / 视频号", "评论与线索"],
@@ -110,6 +117,7 @@ CONFIRMATION_ACTIONS = frozenset({
     "video-compose-review", "video-compose-render", "digital-presenter-create",
     "digital-presenter-update",
     "inspiration-like", "leads-crm-upsert",
+    "text-video-avatar-import", "text-video-plan",
 })
 
 # This is the public contract shared by the CLI, the first-party HTTP bridge,
@@ -120,7 +128,9 @@ _ACTION_INPUTS = {
     "account": (), "channels": (), "pricing": (),
     "text-video-capability": (), "text-video-templates": (),
     "text-video-styles": (), "text-video-voices": (),
-    "text-video-generate": ("text", "template", "mode", "style", "voice", "speech_rate"),
+    "text-video-generate": ("text", "template", "mode", "style", "voice", "speech_rate", "talking_material"),
+    "text-video-avatar-import": ("image_upload_id",),
+    "text-video-plan": ("text", "template", "mode", "style", "voice", "speech_rate", "ratio"),
     "inspiration-catalog": (), "inspiration-likes": (),
     "inspiration-like": ("id", "favorite"),
     "leads-crm": ("lead_ids",), "leads-crm-upsert": ("lead_id", "intent", "follow_status", "follow_note"),
@@ -168,6 +178,8 @@ _ACTION_PURPOSES = {
     "tasks": "读取本人任务记录", "task": "读取本人任务详情", "assets": "读取本人资产", "voices": "读取可用音色",
     "image-generate": "生成图片", "video-generate": "生成视频", "video-lipsync": "让本人原视频匹配新口播音频",
     "audio-generate": "生成音频", "text-video-generate": "根据主题或完整文案生成成片",
+    "text-video-avatar-import": "导入文案成片口播人物图片",
+    "text-video-plan": "生成可选择的文案成片口播分镜方案",
     "canvas-agent-plan": "为画布生成可确认的操作方案", "canvas-ops": "写入本人画布操作",
 }
 
@@ -388,13 +400,31 @@ _MEDIA_SCHEMAS = {
             "style": {"type": "string", "minLength": 1, "maxLength": 80},
             "voice": {"type": "string", "minLength": 1, "maxLength": 200},
             "speech_rate": {"type": "number", "minimum": 0.5, "maximum": 2.0},
+            "talking_material": {"type": "object"},
         },
         "constraints": [
             "template, style, and voice must come from the matching text-video read capabilities",
             "mode defaults to generate; fixed preserves the supplied copy and automatically splits scenes",
             "the signed CLI quote carries the native quote; final submission revalidates it before deduction",
-            "talking-material avatar planning remains available on the website, not this initial CLI action",
+            "talking_material must reference an active plan and owner-scoped avatar assets",
         ],
+    },
+    "text-video-avatar-import": {
+        "required": ["image_upload_id"],
+        "properties": {"image_upload_id": _IMAGE_UPLOAD_SCHEMA},
+        "constraints": ["image_upload_id must be a current owner-scoped image-upload result"],
+    },
+    "text-video-plan": {
+        "required": ["text", "template", "style", "voice"], "properties": {
+            "text": {"type": "string", "minLength": 2, "maxLength": 1000},
+            "template": {"type": "string", "minLength": 1, "maxLength": 240},
+            "mode": {"type": "string", "enum": ["generate", "fixed"]},
+            "style": {"type": "string", "minLength": 1, "maxLength": 80},
+            "voice": {"type": "string", "minLength": 1, "maxLength": 200},
+            "speech_rate": {"type": "number", "minimum": 0.5, "maximum": 2.0},
+            "ratio": {"type": "number", "minimum": 0.1, "maximum": 0.5},
+        },
+        "constraints": ["creates an expiring owner-scoped plan and requires explicit confirmation"],
     },
     "canvas-create": {
         "required": ["name"], "properties": {
@@ -534,6 +564,7 @@ _FAMILIES = {
     "video-compose-analyze": "video", "video-compose-review": "video", "video-compose-render": "video",
     "text-video-capability": "video", "text-video-templates": "video", "text-video-styles": "video", "text-video-voices": "video",
     "text-video-generate": "video",
+    "text-video-avatar-import": "video", "text-video-plan": "video",
     "canvas-list": "canvas", "canvas-get": "canvas", "canvas-create": "canvas", "canvas-agent-plan": "canvas",
     "canvas-ops": "canvas", "digital-presenter-capability": "canvas", "digital-presenter-project": "canvas",
     "digital-presenter-create": "canvas", "digital-presenter-update": "canvas",
@@ -546,6 +577,7 @@ _ACTION_FEATURE_GATES = {
     "tryon-classic-generate": ("tryon",), "digital-presenter-capability": ("digital_presenter",),
     "digital-presenter-project": ("digital_presenter",), "digital-presenter-create": ("digital_presenter",),
     "digital-presenter-update": ("digital_presenter",), "text-video-generate": ("script_to_video",),
+    "text-video-avatar-import": ("script_to_video",), "text-video-plan": ("script_to_video",),
 }
 _OPTION_FEATURE_GATES = {
     ("image-generate", "provider"): {"openai": ("image",), "seedream": ("image",), "xiaole": ("image", "image_xiaole"), "banana": ("image", "banana")},
@@ -699,6 +731,10 @@ _VIDEO_COMPOSE_PROJECT_RE = re.compile(r"^compose_[0-9a-f]{32}$")
 _VIDEO_COMPOSE_CANDIDATE_RE = re.compile(r"^candidate_[0-9a-f]{16}$")
 _DIGITAL_PRESENTER_PROJECT_RE = re.compile(r"^dp_[0-9a-f]{32}$")
 _LEAD_ID_RE = re.compile(r"^[0-9a-f]{16,40}$")
+_TALKING_PLAN_ID_RE = re.compile(r"^talking_plan_[0-9a-f]{32}$")
+_TALKING_AVATAR_ID_RE = re.compile(r"^local_avatar_[0-9a-f]{32}$")
+_TALKING_SCENE_ID_RE = re.compile(r"^scene_[0-9]{2}$")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 _CANVAS_BASE64_RE = re.compile(r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{512,}={0,2}(?![A-Za-z0-9+/_=-])")
 IMAGE_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
@@ -1461,8 +1497,8 @@ def _digital_presenter_fields(value):
     return fields
 
 
-def _text_video_payload(value):
-    allowed = {"text", "template", "mode", "style", "voice", "speech_rate"}
+def _text_video_base_payload(value, extra_fields=()):
+    allowed = {"text", "template", "mode", "style", "voice", "speech_rate"} | set(extra_fields)
     _strict_object(value, allowed, ("text", "template", "style", "voice"))
     return {
         "pipeline": "pixelle",
@@ -1476,6 +1512,57 @@ def _text_video_payload(value):
         )).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)),
         "source_page": "text-video",
     }
+
+
+def _text_video_talking_material(raw):
+    _strict_object(raw, {
+        "enabled", "plan_id", "source_hash", "ratio",
+        "default_avatar_asset_id", "scenes",
+    }, ("enabled", "plan_id", "source_hash", "ratio", "default_avatar_asset_id", "scenes"))
+    if raw["enabled"] is not True:
+        raise CLIAPIError(400, "talking_material.enabled 必须为 true")
+    scenes = raw["scenes"]
+    if not isinstance(scenes, list) or not 1 <= len(scenes) <= 20:
+        raise CLIAPIError(400, "talking_material.scenes 必须包含 1-20 项")
+    normalized_scenes = []
+    seen = set()
+    for item in scenes:
+        _strict_object(item, {"scene_id", "enabled", "avatar_asset_id"},
+                       ("scene_id", "enabled"))
+        scene_id = _matched_string(
+            item["scene_id"], "scene_id", _TALKING_SCENE_ID_RE, 16)
+        if scene_id in seen:
+            raise CLIAPIError(400, "talking_material.scenes 不能重复")
+        seen.add(scene_id)
+        if not isinstance(item["enabled"], bool):
+            raise CLIAPIError(400, "talking_material.scenes.enabled 必须是布尔值")
+        scene = {"scene_id": scene_id, "enabled": item["enabled"]}
+        if "avatar_asset_id" in item:
+            if not item["enabled"]:
+                raise CLIAPIError(400, "未启用的口播分镜不能指定人物")
+            scene["avatar_asset_id"] = _matched_string(
+                item["avatar_asset_id"], "avatar_asset_id", _TALKING_AVATAR_ID_RE, 64)
+        normalized_scenes.append(scene)
+    if not any(item["enabled"] for item in normalized_scenes):
+        raise CLIAPIError(400, "请至少启用一个口播分镜")
+    return {
+        "enabled": True,
+        "plan_id": _matched_string(raw["plan_id"], "plan_id", _TALKING_PLAN_ID_RE, 64),
+        "source_hash": _matched_string(raw["source_hash"], "source_hash", _SHA256_RE, 64),
+        "ratio": _number(raw["ratio"], "ratio", 0.1, 0.5),
+        "default_avatar_asset_id": _matched_string(
+            raw["default_avatar_asset_id"], "default_avatar_asset_id",
+            _TALKING_AVATAR_ID_RE, 64),
+        "scenes": normalized_scenes,
+    }
+
+
+def _text_video_payload(value):
+    payload = _text_video_base_payload(value, ("talking_material",))
+    if "talking_material" in value:
+        payload["talking_material"] = _text_video_talking_material(
+            value["talking_material"])
+    return payload
 
 
 def _collect_url(value):
@@ -1540,6 +1627,24 @@ def action_plan(action, value):
     if action == "pricing":
         _strict_object(value, set())
         return _plan("profile:read", "proxy", base=CONTENT_BASE, path="/api/gen/pricing")
+    if action == "text-video-avatar-import":
+        _strict_object(value, {"image_upload_id"}, ("image_upload_id",))
+        return _plan(
+            "assets:upload", "proxy", base=CONTENT_BASE,
+            path="/api/gen/cli/text-video/avatar-import", method="POST",
+            body={"image_upload_id": _upload_id(
+                value["image_upload_id"], "image_upload_id")},
+            internal=True,
+        )
+    if action == "text-video-plan":
+        payload = _text_video_base_payload(value, ("ratio",))
+        payload["ratio"] = float(Decimal(str(
+            _number(value.get("ratio", 0.3), "ratio", 0.1, 0.5)
+        )).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP))
+        return _plan(
+            "generation:quote", "proxy", base=CONTENT_BASE,
+            path="/api/gen/text-video/plan", method="POST", body=payload,
+        )
     if action == "text-video-generate":
         payload = _text_video_payload(value)
         return _plan(

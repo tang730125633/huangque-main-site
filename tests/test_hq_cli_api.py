@@ -984,9 +984,70 @@ class HQCLIAPITests(unittest.TestCase):
         with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
             self.auth.hq_cli_api.action_plan(
                 "text-video-generate", dict(value, talking_material={"enabled": True}))
+        talking = {
+            "enabled": True,
+            "plan_id": "talking_plan_" + "a" * 32,
+            "source_hash": "b" * 64,
+            "ratio": 0.3,
+            "default_avatar_asset_id": "local_avatar_" + "c" * 32,
+            "scenes": [
+                {"scene_id": "scene_01", "enabled": True},
+                {"scene_id": "scene_02", "enabled": False},
+                {"scene_id": "scene_03", "enabled": True,
+                 "avatar_asset_id": "local_avatar_" + "d" * 32},
+            ],
+        }
+        talking_plan = self.auth.hq_cli_api.action_plan(
+            "text-video-generate", dict(value, talking_material=talking))
+        self.assertEqual(talking, talking_plan["payload"]["talking_material"])
         with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
             self.auth.hq_cli_api.action_plan(
                 "text-video-generate", dict(value, speech_rate=2.1))
+
+    def test_text_video_cli_avatar_import_and_plan_are_confirmed_fixed_proxies(self):
+        upload_id = "img_" + "a" * 32
+        avatar = self.auth.hq_cli_api.action_plan(
+            "text-video-avatar-import", {"image_upload_id": upload_id})
+        self.assertEqual(("assets:upload", "proxy", True), (
+            avatar["scope"], avatar["kind"], avatar["internal"]))
+        self.assertEqual(
+            ("/api/gen/cli/text-video/avatar-import", {"image_upload_id": upload_id}),
+            (avatar["path"], avatar["body"]),
+        )
+        base = {
+            "text": "AI 培训", "template": "1080x1920/image_default.html",
+            "style": "realistic_commercial", "voice": "public:zh-CN-YunjianNeural",
+            "speech_rate": 1.25, "ratio": 0.3,
+        }
+        plan = self.auth.hq_cli_api.action_plan("text-video-plan", base)
+        self.assertEqual(("generation:quote", "proxy", "/api/gen/text-video/plan"), (
+            plan["scope"], plan["kind"], plan["path"]))
+        self.assertEqual((1.3, 0.3), (
+            plan["body"]["speech_rate"], plan["body"]["ratio"]))
+
+        token = self._token(["assets:upload", "generation:quote"])
+        calls = []
+
+        def fake_proxy(proxy_plan, _web_token, _internal_token):
+            calls.append(proxy_plan)
+            if proxy_plan["path"].endswith("avatar-import"):
+                return 200, {"asset_id": "local_avatar_" + "c" * 32}
+            return 200, {"plan_id": "talking_plan_" + "d" * 32,
+                         "source_hash": "e" * 64, "scenes": []}
+
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
+            for action, input_body in (
+                    ("text-video-avatar-import", {"image_upload_id": upload_id}),
+                    ("text-video-plan", base)):
+                status, denied = self._request("/api/auth/cli/action", {
+                    "action": action, "input": input_body, "confirm": False,
+                }, token=token)
+                self.assertEqual((409, "confirmation_required"), (status, denied["code"]))
+                status, _result = self._request("/api/auth/cli/action", {
+                    "action": action, "input": input_body, "confirm": True,
+                }, token=token)
+                self.assertEqual(200, status)
+        self.assertEqual(2, len(calls))
 
     def test_collect_and_leads_actions_are_strict_quoted_and_submit_to_leadgen(self):
         douyin = "https://v.douyin.com/abc123/"
@@ -1343,7 +1404,7 @@ class HQCLIAPITests(unittest.TestCase):
             "action": "channels", "input": {}, "confirm": False,
         }, token=token)
         self.assertEqual(200, status)
-        self.assertEqual(16, payload["total"])
+        self.assertEqual(17, payload["total"])
         self.assertEqual("alice", payload["account"])
         channels = {item["id"]: item for item in payload["channels"]}
         self.assertEqual({"channel": "sora"}, channels["openai"]["selectors"][1]["input"])
@@ -1353,6 +1414,9 @@ class HQCLIAPITests(unittest.TestCase):
             "cinematic-open-generate",
         }.issubset(channels["heygen"]["capabilities"]))
         self.assertEqual("mixed", channels["tikhub"]["access"])
+        self.assertTrue({
+            "text-video-avatar-import", "text-video-plan", "text-video-generate",
+        }.issubset(channels["pixelle"]["capabilities"]))
         self.assertTrue({
             "collect-content", "collect-video", "collect-transcript", "collect-search", "leads-generate",
         }.issubset(channels["tikhub"]["capabilities"]))
