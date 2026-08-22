@@ -175,7 +175,7 @@ if (!result.info.description.includes('共 1 个操作')) process.exit(1);
             for method in item
             if method.upper() in verbs
         }
-        self.assertEqual(77, len(registered))
+        self.assertEqual(78, len(registered))
         self.assertEqual(set(), registered - documented)
         tree = ast.parse(Path("server/content_domains/short_drama.py").read_text())
         route_table = ast.literal_eval(next(

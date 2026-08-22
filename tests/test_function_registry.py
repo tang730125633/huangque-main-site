@@ -97,7 +97,7 @@ class FunctionRegistryTests(unittest.TestCase):
         self.assertEqual(
             [page["name"] for page in pages],
             ["灵感设计", "平台获客", "内容爬取", "图片生成", "视频生成", "音频生成",
-             "文案编导", "短剧创作", "无限画布", "我的资产", "点数价格", "邀请中心",
+             "文案编导", "文案成片", "短剧创作", "无限画布", "我的资产", "点数价格", "邀请中心",
              "教程视频", "通用设置"],
         )
         self.assertTrue(all(page["inventory_status"] == "verified" for page in pages))
@@ -153,7 +153,7 @@ class FunctionRegistryTests(unittest.TestCase):
         video = next(page for page in pages if page["key"] == "video")
         self.assertEqual(
             [feature["name"] for feature in video["functions"]],
-            ["数字化 IP", "电影化身", "换装换背景", "果肉视频生成",
+            ["一键成片", "数字化 IP", "电影化身", "换装换背景", "果肉视频生成",
              "Sora 2", "麦克视频", "Omni 视频", "Seedance 视频"],
         )
         cinematic = next(item for item in video["functions"] if item["key"] == "cinematic")
@@ -161,10 +161,19 @@ class FunctionRegistryTests(unittest.TestCase):
         self.assertEqual(cinematic["shared_steps"][0]["name"], "创建或选择形象")
         self.assertTrue(cinematic["modes"][1]["validation"]["supported"])
         self.assertNotIn("xiaole_video", [item["key"] for item in video["functions"]])
-        digital_text = video["functions"][0]["modes"][0]
+        one_click = video["functions"][0]["modes"][0]
+        self.assertEqual(one_click["evidence_contract"]["acceptance_id_type"], "project_id")
+        self.assertIn("provider_task", one_click["evidence_contract"]["not_applicable"])
+        self.assertNotIn("balance", one_click["evidence_contract"]["not_applicable"])
+        self.assertIn(
+            {"method": "GET", "path": "/api/gen/video-compose/projects/{project_id}"},
+            one_click["entrypoints"],
+        )
+        self.assertEqual(one_click["dependencies"][0]["credential_source"], "env")
+        digital_text = video["functions"][1]["modes"][0]
         cosyvoice = next(item for item in digital_text["dependencies"] if item["key"] == "cosyvoice")
         self.assertEqual(cosyvoice["requirement"], "required")
-        tryon_fast = video["functions"][2]["modes"][0]
+        tryon_fast = video["functions"][3]["modes"][0]
         self.assertEqual(next(item for item in tryon_fast["dependencies"] if item["key"] == "cos")["requirement"], "required")
         collect = next(page for page in pages if page["key"] == "collect")
         self.assertEqual(
@@ -226,6 +235,15 @@ class FunctionRegistryTests(unittest.TestCase):
         )
         self.assertIn("video.lipsync.precision", digital_human["price_keys"])
         self.assertFalse(digital_human["validation"]["supported"])
+        text_video = next(page for page in pages if page["key"] == "text-video")
+        self.assertEqual(
+            [mode["key"] for mode in text_video["functions"][0]["modes"]],
+            ["text_video.topic", "text_video.fixed"],
+        )
+        self.assertTrue(all(
+            mode["validation"]["supported"]
+            for mode in text_video["functions"][0]["modes"]
+        ))
         assets = next(page for page in pages if page["key"] == "assets")
         self.assertEqual(assets["functions"][0]["modes"][0]["key"], "assets.audio.clone_vip")
         self.assertFalse(assets["functions"][0]["modes"][0]["validation"]["supported"])
@@ -345,12 +363,18 @@ class FunctionRegistryTests(unittest.TestCase):
             ("image", {"source_page": "script", "provider": "openai"}, "script.output.image"),
         ):
             self.assertEqual(classify(kind, metadata), operation)
-        self.assertIsNone(classify("script_to_video", {
-            "source_page": "text-video", "pipeline": "pixelle", "mode": "generate",
-        }))
-        self.assertIsNone(classify("script_to_video", {
-            "source_page": "text-video", "pipeline": "pixelle", "mode": "fixed",
-        }))
+        self.assertEqual(
+            classify("script_to_video", {
+                "source_page": "text-video", "pipeline": "pixelle", "mode": "generate",
+            }),
+            "text_video.topic",
+        )
+        self.assertEqual(
+            classify("script_to_video", {
+                "source_page": "text-video", "pipeline": "pixelle", "mode": "fixed",
+            }),
+            "text_video.fixed",
+        )
         self.assertIsNone(classify("copy", {"source_page": "canvas", "format": "script", "style": "口播"}))
         self.assertIsNone(classify("breakdown", {"source_page": "video", "mode": "scenes"}))
 
@@ -359,7 +383,7 @@ class FunctionRegistryTests(unittest.TestCase):
         prices = self.admin.pricing.CATALOG_MAP
         for feature in (image["functions"] + video["functions"] + audio["functions"]
                         + collect["functions"] + leads["functions"] + script["functions"]
-                        + short_drama["functions"]
+                        + text_video["functions"] + short_drama["functions"]
                         + canvas["functions"] + assets["functions"]):
             self.assertTrue(feature["frontend_selector"])
             self.assertIn(feature["service"], {"content", "imggen", "leadgen"})
@@ -488,7 +512,7 @@ class FunctionRegistryTests(unittest.TestCase):
         visible = [item["key"] for item in video["functions"] if item["runtime_visible"]]
         self.assertEqual(
             visible,
-            ["digital_ip", "cinematic", "tryon", "grok", "sora", "omni", "seedance"],
+            ["one_click", "digital_ip", "cinematic", "tryon", "grok", "sora", "omni", "seedance"],
         )
         sora = next(item for item in video["functions"] if item["key"] == "sora")
         self.assertTrue(sora["runtime_visible"])

@@ -669,6 +669,13 @@ assert not server.load_conversation(cid).get("productions"), intent_body
 assert server._explicit_system_media_request("使用系统自带的公共音色") is True
 assert server._explicit_system_media_request("就用沉稳男声生成") is True
 assert server._explicit_system_media_request("不要使用公共音色") is False
+with server.app.test_request_context("https://huangquechuanmei.com/workbench/ip12/"):
+    assert server._browser_preview_url("/api/gen/file/avatar.jpg") == (
+        "https://huangquechuanmei.com/api/gen/file/avatar.jpg"
+    )
+    assert server._browser_preview_url("https://media.example/voice.mp3") == (
+        "https://media.example/voice.mp3"
+    )
 revision = intent_body["state"]["revision"]
 original_messages = json.loads(json.dumps(server.load_conversation(cid)["messages"], ensure_ascii=False))
 
@@ -761,7 +768,7 @@ legacy = prepare("video")
 legacy_id = legacy["production_id"]
 legacy_convo = server.load_conversation(cid)
 legacy_record = legacy_convo["productions"][legacy_id]
-legacy_record.pop("material_context_version", None)
+legacy_record["material_context_version"] = 2
 legacy_record["parameter_schema"]["properties"]["voice"]["oneOf"].append({
     "const": "public-demo", "title": "旧公共声音",
 })
@@ -774,7 +781,7 @@ assert refreshed.status_code == 200, refreshed.get_data(as_text=True)
 refreshed_record = next(
     item for item in refreshed.get_json()["productions"] if item["id"] == legacy_id
 )
-assert refreshed_record["material_context_version"] == 2, refreshed_record
+assert refreshed_record["material_context_version"] == 3, refreshed_record
 assert refreshed_record["options"] == {"avatar_id": 7}, refreshed_record
 assert [item["const"] for item in refreshed_record["parameter_schema"]["properties"]["voice"]["oneOf"]] == [
     "voice-demo",
