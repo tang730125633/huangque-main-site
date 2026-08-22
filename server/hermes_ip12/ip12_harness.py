@@ -1115,6 +1115,7 @@ def _validate_confirmable_claims(draft, evidence):
 def _validate_module_four_story_claims(draft, evidence):
     draft_text = str(draft or "")
     evidence_text = str(evidence or "")
+    compact_evidence = re.sub(r"\s+", "", evidence_text)
     if "故事内容" in draft_text:
         raise HarnessError(
             "模块 4 不再允许模型自由扩写过去式故事内容；每个节点必须改用逐字的事实原话或未来方向原话"
@@ -1127,7 +1128,7 @@ def _validate_module_four_story_claims(draft, evidence):
     if not quotes or len(quotes) > 5:
         raise HarnessError("模块 4 必须提供 1–5 条逐字的事实原话或未来方向原话")
     for quote in quotes:
-        if quote not in evidence_text:
+        if re.sub(r"\s+", "", quote) not in compact_evidence:
             raise HarnessError("模块 4 的故事节点缺少可回查原话：“%s”" % quote[:120])
     exaggeration = MODULE_FOUR_EXAGGERATION_RE.search(draft_text)
     if exaggeration and exaggeration.group(0) not in evidence_text:

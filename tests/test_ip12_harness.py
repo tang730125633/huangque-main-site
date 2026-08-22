@@ -524,6 +524,22 @@ class IP12HarnessTests(unittest.TestCase):
             state, decision(state, draft=markdown_labels), evidence, pending_id="grounded-markdown-story"
         )
         self.assertEqual(markdown_state["pending"]["draft"], markdown_labels)
+        paragraph_evidence = "开店第一年，我遇到互相矛盾的食谱。\n\n我没有推销产品，而是先梳理日常记录。"
+        compact_quote = (
+            "### 节点 1：开店经历（包装建议）\n"
+            "事实原话：开店第一年，我遇到互相矛盾的食谱。我没有推销产品，而是先梳理日常记录。"
+        )
+        compact_state, _, _ = harness.apply_model_decision(
+            state, decision(state, draft=compact_quote), paragraph_evidence,
+            pending_id="grounded-whitespace-story",
+        )
+        self.assertEqual(compact_state["pending"]["draft"], compact_quote)
+        with self.assertRaisesRegex(harness.HarnessError, "缺少可回查原话"):
+            harness.apply_model_decision(
+                state,
+                decision(state, draft=compact_quote.replace("日常记录", "日常记录并保证效果")),
+                paragraph_evidence,
+            )
         prompt = harness.system_prompt(state)
         self.assertIn("未来想服务的人群", prompt)
         self.assertIn("事实原话", prompt)
