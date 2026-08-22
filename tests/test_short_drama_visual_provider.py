@@ -69,7 +69,7 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
 
     def test_restricted_video_download_rejects_private_destination(self):
         with mock.patch.object(video, "_heygen_direct_opener") as opener:
-            with self.assertRaises(ValueError):
+            with self.assertRaises(video.CompletedVideoDownloadError):
                 video._download_video_file_direct(
                     "https://127.0.0.1/result.mp4",
                     allowed_hosts={"127.0.0.1"}, max_bytes=1024,
@@ -108,7 +108,7 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
                  mock.patch("socket.getaddrinfo", return_value=public_dns), \
                  mock.patch.object(video, "_restricted_download_opener") as opener:
                 opener.return_value.open.return_value = response
-                with self.assertRaises(ValueError):
+                with self.assertRaises(video.CompletedVideoDownloadError):
                     video._download_video_file_direct(
                         "https://filecdn.minimax.chat/result.mp4",
                         allowed_hosts={"filecdn.minimax.chat"}, max_bytes=2048,
@@ -137,7 +137,9 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
                  mock.patch.object(video, "_out_path", return_value=output), \
                  mock.patch.object(video.subprocess, "run", return_value=failed_probe):
                 opener.return_value.open.return_value = Response()
-                with self.assertRaisesRegex(ValueError, "视频流|媒体"):
+                with self.assertRaisesRegex(
+                    video.CompletedVideoDownloadError, "视频流|媒体"
+                ):
                     video._download_video_file_direct(
                         "https://filecdn.minimax.chat/result.mp4",
                         allowed_hosts={"filecdn.minimax.chat"}, max_bytes=2048,
