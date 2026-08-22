@@ -386,6 +386,7 @@ console.log(JSON.stringify({
     def test_chat_material_upload_is_explicit_bound_and_never_confirms_a_paid_job(self):
         self.assertIn('id="materialInput" type="file" hidden', self.html)
         self.assertIn('id="attachBtn"', self.html)
+        self.assertIn('aria-label="上传 Agent 请求的图片、视频或音频素材"', self.html)
         upload = self.html[
             self.html.index("function pendingProductionUpload"):
             self.html.index("async function productionRequest")
