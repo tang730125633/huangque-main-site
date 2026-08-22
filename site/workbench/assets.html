@@ -1417,7 +1417,7 @@
       +'<div id="cloneVoiceNote" style="font-size:12px;color:#5c6b82;line-height:1.6;">\u9ed8\u8ba4\u53c2\u6570\u6548\u679c\u63cf\u8ff0\uff1a\u6837\u97f3\u8d8a\u6e05\u6670\u3001\u80cc\u666f\u58f0\u8d8a\u5c11\uff0c\u540e\u7eed\u590d\u523b\u51fa\u7684\u4e2a\u4eba\u97f3\u8272\u8d8a\u7a33\u5b9a\u3002</div>'
       +'<div id="cloneVoiceVipTip" style="font-size:12px;color:#e7b24c;line-height:1.6;">VIP\u590d\u523b\u4f1a\u91c7\u7528\u66f4\u9ad8\u7cbe\u5ea6\u7684\u97f3\u8272\u5904\u7406\uff0c\u97f3\u8272\u8fd8\u539f\u5ea6\u548c\u53ef\u7528\u7a33\u5b9a\u6027\u66f4\u597d\u3002</div>'
       +'</div>'
-      +'<div style="display:flex;justify-content:flex-end;gap:10px;padding:16px 20px;border-top:1px solid rgba(148,164,187,.12);"><button type="button" data-close-clone style="height:38px;padding:0 15px;border:1px solid rgba(148,164,187,.16);border-radius:10px;background:rgba(148,164,187,.05);color:#94a4bb;cursor:pointer;font-family:inherit;">\u53d6\u6d88</button><button type="button" id="cloneVoiceBasic" style="height:38px;padding:0 18px;border:1px solid rgba(231,178,76,.35);border-radius:10px;background:rgba(231,178,76,.08);color:#e7b24c;font-weight:700;cursor:pointer;font-family:inherit;">\u590d\u523b</button><button type="button" id="cloneVoiceVip" style="height:38px;padding:0 18px;border:none;border-radius:10px;background:linear-gradient(135deg,#f4cd72,#e7b24c);color:#1a1206;font-weight:700;cursor:pointer;font-family:inherit;">VIP\u590d\u523b</button></div>';
+      +'<div style="display:flex;justify-content:flex-end;gap:10px;padding:16px 20px;border-top:1px solid rgba(148,164,187,.12);"><button type="button" data-close-clone style="height:38px;padding:0 15px;border:1px solid rgba(148,164,187,.16);border-radius:10px;background:rgba(148,164,187,.05);color:#94a4bb;cursor:pointer;font-family:inherit;">\u53d6\u6d88</button><button type="button" id="cloneVoiceBasic" disabled title="\u666e\u901a\u590d\u523b\u6682\u672a\u5f00\u653e" style="height:38px;padding:0 18px;border:1px solid rgba(148,164,187,.16);border-radius:10px;background:rgba(148,164,187,.05);color:#94a4bb;font-weight:700;cursor:not-allowed;opacity:.45;font-family:inherit;">\u666e\u901a\u590d\u523b\u6682\u672a\u5f00\u653e</button><button type="button" id="cloneVoiceVip" style="height:38px;padding:0 18px;border:none;border-radius:10px;background:linear-gradient(135deg,#f4cd72,#e7b24c);color:#1a1206;font-weight:700;cursor:pointer;font-family:inherit;">VIP\u590d\u523b</button></div>';
     wrap.appendChild(modal); document.body.appendChild(wrap);
     var cloneSubmitting=false;
     function close(force){ if(cloneSubmitting && force!==true) return; wrap.remove(); }
@@ -1430,13 +1430,13 @@
     function setCloneBusy(on){
       cloneSubmitting=!!on;
       vipBtn.disabled=!!on;
-      basicBtn.disabled=!!on;
+      basicBtn.disabled=true;
       picker.disabled=!!on;
       closeBtns.forEach(function(b){ b.disabled=!!on; b.style.opacity=on?'.45':'1'; b.style.cursor=on?'not-allowed':'pointer'; });
       vipBtn.style.opacity=on?'.72':'1';
       vipBtn.style.cursor=on?'wait':'pointer';
-      basicBtn.style.opacity=on?'.45':'1';
-      basicBtn.style.cursor=on?'not-allowed':'pointer';
+      basicBtn.style.opacity='.45';
+      basicBtn.style.cursor='not-allowed';
       picker.parentNode.style.pointerEvents=on?'none':'auto';
       picker.parentNode.style.opacity=on?'.72':'1';
     }
