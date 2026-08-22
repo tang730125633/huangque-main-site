@@ -503,7 +503,9 @@ async function selectConvo(id){stopProductionPolls();closePanel();closeFoundatio
 async function jumpModule(mid){if(mid>AVAILABLE_MODULE_COUNT){toast('尚未开发，敬请期待');return}if(!cid||streaming)return;var r=await fetch('/api/jump-module',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid,module:mid})});var d=await r.json();if(!r.ok||!d.ok){toast('❌ '+(d.error||'无法切换模块'));return}state=d.state||state;renderMods();sendJumpMsg(mid)}
 
 function pageActions(){
-  var foundation=state.foundation_report||{};if(foundation.status==='awaiting_confirmation'){
+  var foundation=state.foundation_report||{};
+  if(foundation.status==='failed')return[{type:'regenerate_foundation_report',label:'重新生成 PDF',primary:true}];
+  if(foundation.status==='awaiting_confirmation'){
     if(foundation.review_status==='dirty')return[
       {type:'open_foundation_report',label:'查看旧版 PDF 并批注',primary:false},
       {type:'edit_foundation_report',label:'继续补充',primary:false},

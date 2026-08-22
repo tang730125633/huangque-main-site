@@ -442,7 +442,9 @@ function stateActions(){
     {type:'confirm_checkpoint',target_id:pending.id,label:'保留并继续',primary:true},
     {type:'edit_checkpoint',target_id:pending.id,label:'修改当前内容',primary:false}
   ];
-  const foundation=coachState.foundation_report||{};if(foundation.status==='awaiting_confirmation'){
+  const foundation=coachState.foundation_report||{};
+  if(foundation.status==='failed')return[{type:'regenerate_foundation_report',label:'重新生成 PDF',primary:true}];
+  if(foundation.status==='awaiting_confirmation'){
     if(foundation.review_status==='dirty')return[
       {type:'open_foundation_report',label:'查看旧版 PDF 并批注',primary:false},
       {type:'edit_foundation_report',label:'继续补充',primary:false},
