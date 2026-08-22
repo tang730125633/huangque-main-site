@@ -14,8 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "site/downloads/hq/install.sh"
 WINDOWS_INSTALLER = ROOT / "site/downloads/hq/install.ps1"
 WINDOWS_UNINSTALLER = ROOT / "site/downloads/hq/uninstall.ps1"
-VERSION = "0.10.4"
-OLD_VERSION = "0.10.3"
+VERSION = "0.10.5"
+OLD_VERSION = "0.10.4"
 RELEASE = ROOT / ("site/downloads/hq/v" + VERSION)
 WHEEL = RELEASE / ("huangque_hq_cli-%s-py3-none-any.whl" % VERSION)
 OLD_WHEEL = ROOT / ("site/downloads/hq/v%s/huangque_hq_cli-%s-py3-none-any.whl" % (
@@ -72,7 +72,7 @@ class HQCLIDistributionTests(unittest.TestCase):
 
     def test_previous_release_remains_immutable(self):
         self.assertEqual(
-            "02598facf656357261ace5ee534d1b165b77ce63acb495551eb672f8f210559b",
+            "7c140c302e10ea8a68caaf9d801cd28e2127f3701f96c3d13eb223c49c10c59f",
             hashlib.sha256(OLD_WHEEL.read_bytes()).hexdigest(),
         )
 
@@ -123,7 +123,7 @@ class HQCLIDistributionTests(unittest.TestCase):
             subprocess.run([target / "venv/bin/hq", "version", "--json"], check=True)
 
     @unittest.skipIf(os.name == "nt", "POSIX upgrade flow is verified on Linux CI")
-    def test_installer_upgrades_existing_0103_and_exposes_text_video(self):
+    def test_installer_upgrades_existing_0104_and_exposes_full_text_video(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "home"
@@ -163,6 +163,10 @@ class HQCLIDistributionTests(unittest.TestCase):
                 [bin_root / "hq", "capabilities", "--json"], text=True, env=env))
             self.assertEqual(VERSION, after["cli_version"])
             self.assertIn("text-video-generate", {
+                item["id"] for item in capabilities["capabilities"]})
+            self.assertIn("text-video-plan", {
+                item["id"] for item in capabilities["capabilities"]})
+            self.assertIn("text-video-avatar-import", {
                 item["id"] for item in capabilities["capabilities"]})
             self.assertEqual(
                 (data_home / "hq-cli" / VERSION / "venv/bin/hq").resolve(),

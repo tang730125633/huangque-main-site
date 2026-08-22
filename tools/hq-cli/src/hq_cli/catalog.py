@@ -578,6 +578,9 @@ AVATAR_ID = {
 }
 IMAGE_UPLOAD_ID = {"type": "string", "minLength": 36, "maxLength": 36}
 VIDEO_UPLOAD_ID = {"type": "string", "minLength": 36, "maxLength": 36}
+TEXT_VIDEO_AVATAR_ID = {"type": "string", "pattern": "^local_avatar_[0-9a-f]{32}$"}
+TEXT_VIDEO_PLAN_ID = {"type": "string", "pattern": "^talking_plan_[0-9a-f]{32}$"}
+TEXT_VIDEO_SCENE_ID = {"type": "string", "pattern": "^scene_[0-9]{2}$"}
 TALKING_VIDEO_FIELDS = {
     "ratio": {"type": "string", "enum": ["9:16", "16:9", "1:1", "4:5", "5:4"]},
     "motion": {"type": "string", "enum": ["low", "medium", "high"]},
@@ -666,7 +669,22 @@ TEXT_VIDEO_FIELDS = {
     "style": {"type": "string", "minLength": 1, "maxLength": 80},
     "voice": {"type": "string", "minLength": 1, "maxLength": 200},
     "speech_rate": {"type": "number", "minimum": 0.5, "maximum": 2.0},
+    "talking_material": _schema({
+        "enabled": {"type": "boolean", "const": True},
+        "plan_id": TEXT_VIDEO_PLAN_ID,
+        "source_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "ratio": {"type": "number", "minimum": 0.1, "maximum": 0.5},
+        "default_avatar_asset_id": TEXT_VIDEO_AVATAR_ID,
+        "scenes": {"type": "array", "minItems": 1, "maxItems": 20, "items": _schema({
+            "scene_id": TEXT_VIDEO_SCENE_ID, "enabled": {"type": "boolean"},
+            "avatar_asset_id": TEXT_VIDEO_AVATAR_ID,
+        }, ["scene_id", "enabled"])},
+    }, ["enabled", "plan_id", "source_hash", "ratio", "default_avatar_asset_id", "scenes"]),
 }
+TEXT_VIDEO_PLAN_FIELDS = {
+    key: value for key, value in TEXT_VIDEO_FIELDS.items() if key != "talking_material"
+}
+TEXT_VIDEO_PLAN_FIELDS["ratio"] = {"type": "number", "minimum": 0.1, "maximum": 0.5}
 
 for identifier, name, fields, required in (
     ("image-generate", "图片生成", IMAGE_FIELDS, ["prompt"]),
@@ -737,10 +755,28 @@ CAPABILITIES["text-video-generate"]["constraints"] = [
     "template, style, and voice must be selected from text-video-templates, text-video-styles, and text-video-voices",
     "mode defaults to generate; fixed preserves the supplied copy and automatically splits scenes",
     "the first call returns scene_count and cost_breakdown without submitting a paid task",
-    "talking-material avatar planning remains available on the website, not this initial CLI action",
+    "talking_material must come from text-video-plan and owner-scoped text-video-avatar-import results",
 ]
 CAPABILITIES["text-video-generate"]["next_actions"] = [
     "核对 scene_count 和 cost_breakdown 后，用完全相同的输入、quote_token 与 --confirm 提交；拿到 job_id 后仅使用 task 轮询。",
+]
+CAPABILITIES["text-video-avatar-import"] = _api(
+    "text-video-avatar-import", "导入口播人物", "text-video-avatar-import",
+    "把本人 image-upload 的临时图片导入为文案成片人物资产。",
+    {"image_upload_id": IMAGE_UPLOAD_ID}, ["image_upload_id"],
+    "assets:upload", "write", True,
+)
+CAPABILITIES["text-video-avatar-import"]["next_actions"] = [
+    "保存返回的 asset_id；可作为默认人物或某个口播分镜的 avatar_asset_id。",
+]
+CAPABILITIES["text-video-plan"] = _api(
+    "text-video-plan", "规划口播分镜", "text-video-plan",
+    "生成可确认的口播分镜方案。",
+    TEXT_VIDEO_PLAN_FIELDS, ["text", "template", "style", "voice"],
+    "generation:quote", "write", True,
+)
+CAPABILITIES["text-video-plan"]["next_actions"] = [
+    "把 plan_id、source_hash、ratio、人物 asset_id 和逐分镜 enabled 组合为 text-video-generate.talking_material。",
 ]
 
 CAPABILITIES["image-generate"]["constraints"] = [
@@ -836,6 +872,7 @@ for identifier, website_modes in {
     "text-video": ["text_video"], "text-video-capability": ["text_video"],
     "text-video-templates": ["text_video"], "text-video-styles": ["text_video"],
     "text-video-voices": ["text_video"], "text-video-generate": ["text_video"],
+    "text-video-avatar-import": ["text_video"], "text-video-plan": ["text_video"],
     "short-drama": ["live_action"],
     "short-drama-projects": ["live_action"], "short-drama-project": ["live_action"],
     "short-drama-conversation": ["live_action"], "short-drama-preflight": ["live_action"],
