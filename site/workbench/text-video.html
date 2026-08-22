@@ -209,7 +209,7 @@
 <script>
 (function(){
   var token='__cookie__',activeBlob='',startedAt=0,pollTimer=0,activeTemplate='',activeMode='generate',templates=[],activeKind='illustration',activeOrientation='portrait',stylesReady=false,voicesReady=false,isBusy=false,busyLabel='正在生成',pendingSceneAvatarId='';
-  var planRequestVersion=0,planRequestController=null,isPlanning=false,avatarRequestVersion=0,pendingAvatarUploads=0,avatarRequests={},avatarPreviewUrls={};
+  var planRequestVersion=0,planRequestController=null,isPlanning=false,quoteRequestVersion=0,quoteRequestController=null,isQuoting=false,avatarRequestVersion=0,pendingAvatarUploads=0,avatarRequests={},avatarPreviewUrls={};
   var pendingStorageKey='hq-text-video-pending-v1';
   var el=function(id){return document.getElementById(id);};
   /* talking-state:start */
@@ -320,6 +320,14 @@
     }).catch(function(error){clearTimeout(pollTimer);setBusy(false);setStatus(error.message||'任务查询失败','error');toast(error.message||'任务查询失败');});
   }
   function basePayload(){return {pipeline:'pixelle',text:el('videoText').value.trim(),template:activeTemplate,mode:activeMode,style:el('materialStyle').value,voice:el('videoVoice').value,speech_rate:Number(el('speechRate').value),source_page:'text-video'};}
+  function submissionPayload(){
+    var payload=basePayload(),state=talkingState.snapshot();
+    if(state.enabled&&state.plan){
+      payload=Object.assign(payload,{talking_material:talkingState.buildTalkingMaterial(el('talkingRatio').value)});
+    }
+    return payload;
+  }
+  function submissionPayloadSnapshot(){return JSON.stringify(submissionPayload());}
   function validateBasePayload(payload){
     if(payload.text.length<2){toast(activeMode==='generate'?'请输入至少 2 个字的主题':'请输入至少 2 个字的完整文案');return false;}
     if(!activeTemplate){toast('模板库尚未加载完成');return false;}
@@ -330,6 +338,7 @@
     return true;
   }
   function submitPaid(payload){
+    if(!payload.quote_token){setBusy(false);setStatus('请先获取并确认本次分镜报价','error');return;}
     if(pendingAvatarUploads>0){var uploading='人物图片仍在上传，请稍候';setFieldError('talkingFinalError',uploading);setStatus(uploading,'error');toast(uploading);return;}
     clearTimeout(pollTimer);setBusy(true,'正在提交任务');startedAt=Date.now();setStatus('正在提交任务','running');setFieldError('talkingFinalError','');renderTalkingWarnings([]);
     var pending=pendingSubmission(payload),headers=authHeaders(true);headers['Idempotency-Key']=pending.key;
@@ -344,6 +353,27 @@
       setStatus((activeMode==='generate'?'正在根据主题创作中文文案':'正在使用完整文案生成视频')+cost,'running');
       setBusy(true,'正在生成视频');poll(response.data.job_id);
     }).catch(function(error){var message=error.message||'视频任务提交失败';setBusy(false);setFieldError('talkingFinalError',message);setStatus(message,'error');toast(message);});
+  }
+  function quoteAndSubmit(payload){
+    invalidateQuote(false);
+    var version=quoteRequestVersion,snapshot=JSON.stringify(payload),controller=typeof AbortController==='function'?new AbortController():null;
+    quoteRequestController=controller;isQuoting=true;
+    setBusy(true,'正在获取报价');setStatus('正在计算分镜和价格','running');
+    fetch('/api/gen/text-video/quote',{method:'POST',headers:authHeaders(true),body:snapshot,signal:controller?controller.signal:undefined}).then(readJson).then(function(response){
+      if(!isCurrentQuoteRequest(version,snapshot))return;
+      if(response.status===401){location.href='../login.html?redirect=workbench/text-video';return;}
+      var quote=response.data||{};
+      if(!response.status||response.status>=400||!quote.quote_token||!Number.isFinite(Number(quote.cost))||!Number.isFinite(Number(quote.scene_count)))throw new Error(quote.detail||'报价读取失败');
+      if(!isCurrentQuoteRequest(version,snapshot))return;
+      var confirmed=window.confirm('本次将生成 '+Number(quote.scene_count)+' 个分镜，预计扣除 '+Number(quote.cost)+' 点。确认后才会提交并扣点。');
+      if(!isCurrentQuoteRequest(version,snapshot))return;
+      if(!confirmed){setBusy(false);setStatus('已取消提交，未扣点');return;}
+      finishQuoteRequest(version);
+      payload=Object.assign({},payload,{quote_token:quote.quote_token});submitPaid(payload);
+    }).catch(function(error){
+      if(!isCurrentQuoteRequest(version,snapshot)||error&&error.name==='AbortError')return;
+      var message=error.message||'报价读取失败';finishQuoteRequest(version);setFieldError('talkingFinalError',message);setStatus(message,'error');toast(message);
+    });
   }
   function requestTalkingPlan(payload){
     var state=talkingState.snapshot();
@@ -367,12 +397,12 @@
     var payload=basePayload(),state=talkingState.snapshot();
     if(!validateBasePayload(payload))return;
     if(pendingAvatarUploads>0){var uploading='人物图片仍在上传，请稍候';setFieldError('talkingFinalError',uploading);setStatus(uploading,'error');toast(uploading);return;}
-    if(!state.enabled){submitPaid(payload);return;}
+    if(!state.enabled){quoteAndSubmit(payload);return;}
     if(!state.defaultAvatar){setFieldError('talkingUploadError','请先上传默认人物形象图片');toast('请先上传默认人物形象图片');return;}
     if(!state.plan){requestTalkingPlan(payload);return;}
-    payload={pipeline:payload.pipeline,text:payload.text,template:payload.template,mode:payload.mode,style:payload.style,voice:payload.voice,speech_rate:payload.speech_rate,source_page:payload.source_page,talking_material:talkingState.buildTalkingMaterial(el('talkingRatio').value)};
+    payload=submissionPayload();
     if(!payload.talking_material.scenes.some(function(scene){return scene.enabled;})){setFieldError('talkingFinalError','请至少启用一个口播分镜');toast('请至少启用一个口播分镜');return;}
-    submitPaid(payload);
+    quoteAndSubmit(payload);
   }
   function validateAvatarDataUrl(dataUrl){
     var match=/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(String(dataUrl||''));
@@ -393,8 +423,18 @@
   }
   function isCurrentPlanRequest(version,snapshot){return version===planRequestVersion&&snapshot===talkingPlanInputSnapshot()&&talkingState.snapshot().enabled;}
   function finishPlanRequest(version){if(version!==planRequestVersion)return;isPlanning=false;planRequestController=null;setBusy(false);}
+  function isCurrentQuoteRequest(version,snapshot){return version===quoteRequestVersion&&snapshot===submissionPayloadSnapshot();}
+  function finishQuoteRequest(version){if(version!==quoteRequestVersion)return;isQuoting=false;quoteRequestController=null;setBusy(false);}
+  function invalidateQuote(notify){
+    var wasQuoting=isQuoting;
+    quoteRequestVersion+=1;
+    if(quoteRequestController){quoteRequestController.abort();quoteRequestController=null;}
+    isQuoting=false;
+    if(wasQuoting){setBusy(false);if(notify!==false)setStatus('设置已变化，请重新获取报价');}
+  }
   function invalidateTalkingPlan(notify){
     var state=talkingState.snapshot(),hadPlan=!!state.plan,wasPlanning=isPlanning;
+    invalidateQuote(notify);
     planRequestVersion+=1;
     if(planRequestController){planRequestController.abort();planRequestController=null;}
     isPlanning=false;
@@ -419,6 +459,7 @@
     pendingSceneAvatarId='';el('talkingSceneAvatarInput').value='';
   }
   function beginAvatarRequest(slot,file,sceneId){
+    invalidateQuote(false);
     cancelAvatarRequest(slot);revokeAvatarPreview(slot);
     var request={version:++avatarRequestVersion,slot:slot,sceneId:sceneId||'',controller:typeof AbortController==='function'?new AbortController():null,reader:null,planId:''};
     var currentPlan=talkingState.snapshot().plan;request.planId=currentPlan&&currentPlan.plan_id||'';
@@ -454,7 +495,7 @@
         if(response.status===401){location.href='../login.html?redirect=workbench/text-video';return;}
         if(!response.data.asset_id||!response.data.preview_url){var detail=response.data.detail||'上传人物图片失败';if(response.data.hq_code==='HQ-ASSET-001')detail=response.data.detail||'人物图片过大';throw new Error(detail);}
         var avatar={asset_id:response.data.asset_id,preview_url:response.data.preview_url};
-        if(sceneId){talkingState.setSceneAvatar(sceneId,avatar);renderTalkingScenes();}
+        if(sceneId){invalidateQuote(false);talkingState.setSceneAvatar(sceneId,avatar);renderTalkingScenes();}
         else{talkingState.setDefaultAvatar(avatar);renderDefaultAvatar();}
         setFieldError('talkingUploadError','');setStatus(sceneId?'分镜人物已更新':'默认人物形象已上传','done');
       }).catch(function(error){if(!isCurrentAvatarRequest(request)||error&&error.name==='AbortError')return;var message=error.message||'上传人物图片失败';setFieldError('talkingUploadError',message);toast(message);}).finally(function(){
@@ -470,15 +511,16 @@
     state.plan.scenes.forEach(function(scene,index){
       var card=document.createElement('article'),toggle=document.createElement('label'),checkbox=document.createElement('input'),copy=document.createElement('div'),text=document.createElement('p'),meta=document.createElement('div'),duration=document.createElement('span'),recommended=document.createElement('strong'),avatarBox=document.createElement('div'),image=document.createElement('img'),actions=document.createElement('div'),replace=document.createElement('button'),restore=document.createElement('button');
       card.className='tv-scene';card.setAttribute('data-scene-id',scene.scene_id);
-      toggle.className='tv-scene-toggle';toggle.setAttribute('aria-label','启用第 '+(index+1)+' 个口播分镜');checkbox.type='checkbox';checkbox.checked=state.sceneSelections[scene.scene_id]===true;checkbox.onchange=function(){talkingState.setSceneEnabled(scene.scene_id,checkbox.checked);setFieldError('talkingFinalError','');};toggle.appendChild(checkbox);
+      toggle.className='tv-scene-toggle';toggle.setAttribute('aria-label','启用第 '+(index+1)+' 个口播分镜');checkbox.type='checkbox';checkbox.checked=state.sceneSelections[scene.scene_id]===true;checkbox.onchange=function(){invalidateQuote(false);talkingState.setSceneEnabled(scene.scene_id,checkbox.checked);setFieldError('talkingFinalError','');};toggle.appendChild(checkbox);
       copy.className='tv-scene-copy';text.textContent=scene.text;meta.className='tv-scene-meta';duration.textContent='约 '+Number(scene.estimated_duration||0).toFixed(1)+' 秒';recommended.textContent=scene.talking_recommended?'系统推荐':'手动可选';meta.appendChild(duration);meta.appendChild(recommended);copy.appendChild(text);copy.appendChild(meta);
       avatarBox.className='tv-scene-avatar';image.alt='第 '+(index+1)+' 个分镜人物预览';var slot=avatarSlot(scene.scene_id),pendingUrl=avatarPreviewUrls[slot]||'',avatar=state.sceneAvatarOverrides[scene.scene_id]||state.defaultAvatar;if(pendingUrl||avatar)image.src=pendingUrl||(avatar&&avatar.preview_url);avatarBox.appendChild(image);
-      actions.className='tv-scene-actions';replace.type='button';replace.textContent=isAvatarSlotPending(slot)?'上传中':'更换人物';replace.disabled=isAvatarSlotPending(slot)||isBusy;replace.onclick=function(){pendingSceneAvatarId=scene.scene_id;el('talkingSceneAvatarInput').click();};restore.type='button';restore.textContent='恢复默认人物';restore.disabled=(!state.sceneAvatarOverrides[scene.scene_id]&&!pendingUrl)||isAvatarSlotPending(slot)||isBusy;restore.onclick=function(){cancelAvatarRequest(slot);revokeAvatarPreview(slot);talkingState.setSceneAvatar(scene.scene_id,null);renderTalkingScenes();};actions.appendChild(replace);actions.appendChild(restore);
+      actions.className='tv-scene-actions';replace.type='button';replace.textContent=isAvatarSlotPending(slot)?'上传中':'更换人物';replace.disabled=isAvatarSlotPending(slot)||isBusy;replace.onclick=function(){pendingSceneAvatarId=scene.scene_id;el('talkingSceneAvatarInput').click();};restore.type='button';restore.textContent='恢复默认人物';restore.disabled=(!state.sceneAvatarOverrides[scene.scene_id]&&!pendingUrl)||isAvatarSlotPending(slot)||isBusy;restore.onclick=function(){invalidateQuote(false);cancelAvatarRequest(slot);revokeAvatarPreview(slot);talkingState.setSceneAvatar(scene.scene_id,null);renderTalkingScenes();};actions.appendChild(replace);actions.appendChild(restore);
       card.appendChild(toggle);card.appendChild(copy);card.appendChild(avatarBox);card.appendChild(actions);container.appendChild(card);
     });
     syncGenerateButton();
   }
   function setTalkingEnabled(enabled){
+    invalidateQuote(false);
     talkingState.setEnabled(enabled);el('talkingMaterialPanel').hidden=!enabled;
     if(!enabled){invalidateTalkingPlan(false);setFieldError('talkingPlanError','');setFieldError('talkingFinalError','');}
     syncGenerateButton();

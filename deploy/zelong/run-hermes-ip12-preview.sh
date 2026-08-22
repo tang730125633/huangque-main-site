@@ -81,8 +81,11 @@ if missing_commands:
     raise SystemExit("missing preview media commands: " + ", ".join(missing_commands))
 from playwright.sync_api import sync_playwright
 with sync_playwright() as playwright:
-    if not Path(playwright.chromium.executable_path).is_file():
+    executable = Path(playwright.chromium.executable_path)
+    if not executable.is_file():
         raise SystemExit("missing preview Chromium")
+    browser = playwright.chromium.launch(headless=True, executable_path=str(executable))
+    browser.close()
 '
 fi
 
