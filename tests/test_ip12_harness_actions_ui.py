@@ -87,6 +87,7 @@ class IP12HarnessActionsUITests(unittest.TestCase):
                 source = (TEMPLATES / filename).read_text(encoding="utf-8")
                 action_function = "function pageActions" if "function pageActions" in source else "function stateActions"
                 state_actions = source[source.index(action_function):source.index("function renderChat")]
+                self.assertIn("foundation.status==='failed'", state_actions)
                 self.assertIn("foundation.status==='awaiting_confirmation'", state_actions)
                 self.assertIn("open_foundation_report", state_actions)
                 self.assertIn("confirm_foundation_report", state_actions)
