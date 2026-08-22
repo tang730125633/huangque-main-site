@@ -991,6 +991,11 @@ def _production_field_label(record, field):
     return str(descriptor.get("title") or _CAPABILITY_FIELD_LABELS.get(field, field))
 
 
+def _browser_preview_url(value):
+    value = str(value or "").strip()
+    return request.host_url.rstrip("/") + value if value.startswith("/") else value
+
+
 def _explicit_system_media_request(message):
     text = re.sub(r"\s+", "", str(message or ""))
     media = r"(?:系统|公共|预设|平台|自带|温柔女声|活力女声|沉稳男声|亲和女声)"
@@ -1086,7 +1091,7 @@ def _production_parameter_context(account_id, action, catalog_entry=None, allow_
             {
                 "const": item["id"],
                 "title": str(item.get("name") or "未命名形象"),
-                "preview_url": str(item.get("image_url") or ""),
+                "preview_url": _browser_preview_url(item.get("image_url")),
                 "preview_kind": "image",
                 "source": "personal",
             }
@@ -1122,7 +1127,7 @@ def _production_parameter_context(account_id, action, catalog_entry=None, allow_
                 {
                     "const": item["voice_key"],
                     "title": str(item.get("display_name") or "未命名声音"),
-                    "preview_url": str(item.get("preview_url") or ""),
+                    "preview_url": _browser_preview_url(item.get("preview_url")),
                     "preview_kind": "audio",
                     "source": str(item.get("scope") or "personal"),
                 }
@@ -1166,7 +1171,7 @@ def _production_parameter_context(account_id, action, catalog_entry=None, allow_
             and item.get("role") in {"owner", "editor"}
         }
     if action in {"digital-ip-text-generate", "digital-ip-batch-generate"} and material_reads_ok:
-        context["material_context_version"] = 2
+        context["material_context_version"] = 3
     return schema, context
 
 
@@ -1180,7 +1185,7 @@ def _refresh_unsubmitted_production_materials(cid, production_id):
             return
         if record.get("status") not in {"draft", "blocked_prerequisite", "stale"}:
             return
-        if int(record.get("material_context_version") or 0) >= 2:
+        if int(record.get("material_context_version") or 0) >= 3:
             return
         family = record.get("capability_family") or "video"
         allow_system_media = bool(record.get("allow_system_media"))
@@ -1191,7 +1196,7 @@ def _refresh_unsubmitted_production_materials(cid, production_id):
         current_account_id(), "digital-ip-text-generate",
         recommendation.get("catalog_entry"), allow_system_media=allow_system_media,
     )
-    if int(context.get("material_context_version") or 0) < 2:
+    if int(context.get("material_context_version") or 0) < 3:
         return
     with CONVERSATION_STATE_LOCK:
         convo = _production_conversation(cid)
@@ -2392,7 +2397,7 @@ def api_get_convo(cid):
             isinstance(record, dict)
             and record.get("action") == "digital-ip-text-generate"
             and record.get("status") in {"draft", "blocked_prerequisite", "stale"}
-            and int(record.get("material_context_version") or 0) < 2
+            and int(record.get("material_context_version") or 0) < 3
         ):
             _refresh_unsubmitted_production_materials(cid, production_id)
     convo = _migrate_owned_conversation(cid)
