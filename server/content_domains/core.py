@@ -1679,6 +1679,8 @@ class H(BaseHTTPRequestHandler):
                 self, p, verify, _must_change_password, AUTH_INTERNAL_TOKEN): return
         if cli_gateway.handle_video_upload(
                 self, p, verify, _must_change_password, AUTH_INTERNAL_TOKEN): return
+        if cli_gateway.handle_audio_upload(
+                self, p, verify, _must_change_password, AUTH_INTERNAL_TOKEN): return
         if cli_gateway.handle_quote(
                 self, p, verify, _must_change_password, is_shutting_down,
                 feature_flags, points_domain, audio_domain, video_domain,
@@ -2985,7 +2987,10 @@ class H(BaseHTTPRequestHandler):
                         body
                     )
                 # content checks, price binding, idempotency, and deduction.
-                if not is_still_route and kind in {"image", "xiaole_video", "sora_video"}:
+                if kind == "video" and isinstance(body, dict) and (
+                        body.get("image_upload_id") or body.get("audio_upload_id")):
+                    body = cli_uploads.expand_talking_media_payload(body, user["username"])
+                elif not is_still_route and kind in {"image", "xiaole_video", "sora_video"}:
                     body = cli_uploads.expand_image_payload(body, user["username"])
                 elif kind in {"tryon", "cinematic"}:
                     body = cli_uploads.expand_role_media_payload(body, user["username"])

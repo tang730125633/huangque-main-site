@@ -68,8 +68,9 @@ class HQCLIAPITests(unittest.TestCase):
                      extra_headers=None):
         headers = {
             "Content-Type": content_type,
-            ("X-HQ-Video-SHA256" if content_type.startswith("video/")
-             else "X-HQ-Image-SHA256"): hashlib.sha256(raw).hexdigest(),
+            ("X-HQ-Video-SHA256" if content_type.startswith("video/") else
+             "X-HQ-Audio-SHA256" if content_type.startswith("audio/") else
+             "X-HQ-Image-SHA256"): hashlib.sha256(raw).hexdigest(),
         }
         if token:
             headers["Authorization"] = "Bearer " + token
@@ -164,7 +165,8 @@ class HQCLIAPITests(unittest.TestCase):
             "video-generate": ("video", ["prompt"]),
             "canvas-agent-plan": ("canvas", ["prompt", "project_id", "snapshot_digest", "scope", "nodes", "edges", "selected_node_ids"]),
             "canvas-ops": ("canvas", ["board_id", "base_version", "op_id", "ops"]),
-            "digital-ip-text-generate": ("video", ["avatar_id", "text", "voice"]),
+            "digital-ip-text-generate": ("video", ["text", "voice"]),
+            "digital-ip-audio-generate": ("video", []),
             "cinematic-motion-generate": ("video", ["avatar_id", "reference_video_upload_ids"]),
         }
         for action, (family, required) in expected.items():
@@ -174,6 +176,10 @@ class HQCLIAPITests(unittest.TestCase):
                 self.assertEqual(required, item["input_schema"]["required"])
                 self.assertTrue(item["constraints"])
                 self.assertEqual("action", item["transport"]["kind"])
+        text_schema = actions["digital-ip-text-generate"]["input_schema"]["properties"]
+        audio_schema = actions["digital-ip-audio-generate"]["input_schema"]["properties"]
+        self.assertEqual("^img_[0-9a-f]{32}$", text_schema["image_upload_id"]["pattern"])
+        self.assertEqual("^aud_[0-9a-f]{32}$", audio_schema["audio_upload_id"]["pattern"])
         self.assertEqual("人物图片", actions["tryon-fast-generate"]["input_schema"]
                          ["properties"]["person_image_upload_id"]["title"])
         self.assertEqual("服装图片", actions["tryon-fast-generate"]["input_schema"]
@@ -673,6 +679,28 @@ class HQCLIAPITests(unittest.TestCase):
                 "SELECT COUNT(*) FROM tokens WHERE token=?", (captured["web_token"],)
             ).fetchone()[0])
 
+        audio_raw = b"RIFF\x00\x00\x00\x00WAVE" + b"ip12-private-audio"
+        audio_headers = dict(headers, **{
+            "X-HQ-Upload-Kind": "audio",
+            "X-HQ-Audio-SHA256": hashlib.sha256(audio_raw).hexdigest(),
+        })
+        audio_captured = {}
+
+        def fake_audio_upload(stream, length, web_token, internal_token, content_type, digest):
+            audio_captured.update(raw=stream.read(length), content_type=content_type, digest=digest)
+            return 200, {"upload_id": "aud_" + "c" * 32, "sha256": digest, "duration": 1.0}
+
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_audio_upload", side_effect=fake_audio_upload):
+            status, payload = self._raw_request(
+                "/api/auth/internal/ip12/agent/upload", audio_raw,
+                content_type="audio/wav", extra_headers=audio_headers,
+            )
+        self.assertEqual(200, status, payload)
+        self.assertEqual("aud_" + "c" * 32, payload["upload_id"])
+        self.assertEqual(audio_raw, audio_captured["raw"])
+        self.assertEqual("audio/wav", audio_captured["content_type"])
+        self.assertEqual(hashlib.sha256(audio_raw).hexdigest(), audio_captured["digest"])
+
     def test_video_upload_requires_confirmation_and_streams_raw_bytes(self):
         raw = b"\x00\x00\x00\x18ftypisom" + b"private-video"
         token = self._token(["assets:upload"])
@@ -1029,6 +1057,21 @@ class HQCLIAPITests(unittest.TestCase):
             asset_audio["payload"]["mode"], asset_audio["payload"]["audio_file"]))
         self.assertNotIn("audio_data", asset_audio["payload"])
 
+        portrait_id = "img_" + "a" * 32
+        narration_id = "aud_" + "b" * 32
+        uploaded_text = self.auth.hq_cli_api.action_plan("digital-ip-text-generate", {
+            "image_upload_id": portrait_id, "text": "欢迎来到黄雀", "voice": "S_d21F8OR62",
+        })
+        self.assertEqual(portrait_id, uploaded_text["payload"]["image_upload_id"])
+        self.assertNotIn("avatar_id", uploaded_text["payload"])
+        uploaded_audio = self.auth.hq_cli_api.action_plan("digital-ip-audio-generate", {
+            "image_upload_id": portrait_id, "audio_upload_id": narration_id,
+        })
+        self.assertEqual((portrait_id, narration_id), (
+            uploaded_audio["payload"]["image_upload_id"],
+            uploaded_audio["payload"]["audio_upload_id"],
+        ))
+
         cinematic = self.auth.hq_cli_api.action_plan("cinematic-open-generate", {
             "avatar_ids": [7, 8], "prompt": "两人在工作室自然交谈",
             "ratio": "1:1", "duration": 12, "enhance_prompt": True,
@@ -1058,6 +1101,16 @@ class HQCLIAPITests(unittest.TestCase):
             self.auth.hq_cli_api.action_plan("digital-ip-text-generate", {
                 "avatar_id": 7, "text": "越权输入", "voice": "S_d21F8OR62",
                 "image_data": "data:image/png;base64,AAAA",
+            })
+        with self.assertRaisesRegex(self.auth.hq_cli_api.CLIAPIError, "必须且只能提供一个"):
+            self.auth.hq_cli_api.action_plan("digital-ip-text-generate", {
+                "avatar_id": 7, "image_upload_id": portrait_id,
+                "text": "重复形象", "voice": "S_d21F8OR62",
+            })
+        with self.assertRaisesRegex(self.auth.hq_cli_api.CLIAPIError, "必须且只能提供一个"):
+            self.auth.hq_cli_api.action_plan("digital-ip-audio-generate", {
+                "image_upload_id": portrait_id, "audio_file": "audio/owned.wav",
+                "audio_upload_id": narration_id,
             })
         with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
             self.auth.hq_cli_api.action_plan("cinematic-open-generate", {

@@ -6,12 +6,14 @@ from pathlib import Path
 
 
 PAGE = Path(__file__).resolve().parents[1] / "server" / "hermes_ip12" / "templates" / "index.html"
+SERVER = Path(__file__).resolve().parents[1] / "server" / "hermes_ip12" / "server.py"
 
 
 class IP12AgentProductionUITests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.html = PAGE.read_text(encoding="utf-8")
+        cls.server = SERVER.read_text(encoding="utf-8")
 
     def test_resizable_panel_has_desktop_bounds_and_accessible_controls(self):
         self.assertIn("--production-panel-width:440px", self.html)
@@ -384,6 +386,7 @@ console.log(JSON.stringify({
     def test_chat_material_upload_is_explicit_bound_and_never_confirms_a_paid_job(self):
         self.assertIn('id="materialInput" type="file" hidden', self.html)
         self.assertIn('id="attachBtn"', self.html)
+        self.assertIn('aria-label="上传 Agent 请求的图片、视频或音频素材"', self.html)
         upload = self.html[
             self.html.index("function pendingProductionUpload"):
             self.html.index("async function productionRequest")
@@ -401,6 +404,16 @@ console.log(JSON.stringify({
             self.html.index("async function requestProductionQuote")
         ]
         self.assertIn("appendProductionMessage(data.material_request_message)", prepare)
+        self.assertIn("^aud_", self.html)
+        self.assertIn("audio/mpeg,audio/wav", self.html)
+        self.assertIn("当前没有等待上传的图片、视频或音频", self.html)
+
+    def test_digital_human_materials_stay_inside_ip12(self):
+        self.assertIn('"x-hq-inline-upload-field": "image_upload_id"', self.server)
+        self.assertIn('"x-hq-inline-upload-field": "audio_upload_id"', self.server)
+        self.assertIn('"x-hq-switch-action": "digital-ip-audio-generate"', self.server)
+        self.assertNotIn('"x-hq-upload-route": "/workbench/digital-ip"', self.server)
+        self.assertNotIn('"x-hq-upload-route": "/workbench/audio"', self.server)
 
     def test_user_media_choices_render_preview_and_audition_cards(self):
         controls = self.html[

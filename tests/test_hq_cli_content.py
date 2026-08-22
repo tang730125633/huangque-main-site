@@ -759,6 +759,15 @@ class HQCLIContentTests(unittest.TestCase):
         self.assertIn("尚未就绪", result["detail"])
         resolve_voice.assert_not_called()
 
+        injected = dict(request, image_data="data:image/png;base64,AAAA")
+        with mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+                mock.patch.object(video, "validate_video_payload") as validate:
+            status, result = self._post(
+                "/api/gen/cli/quote", {"kind": "video", "payload": injected})
+        self.assertEqual(400, status)
+        self.assertIn("私密上传照片", result["detail"])
+        validate.assert_not_called()
+
     def test_digital_ip_audio_quote_accepts_only_owned_asset_reference(self):
         request = {
             "mode": "audio", "avatar_id": 9, "audio_file": "audio/alice.wav",

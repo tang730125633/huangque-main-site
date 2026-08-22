@@ -678,8 +678,8 @@ def _post_module_six_handoff_reply(action):
     return (
         "六步已经完成，我可以继续调用黄雀的图片、音频和视频制作能力。"
         "根据当前成果，我建议先把《%s》制作成数字人口播视频。"
-        "文案会自动复用；接下来请先确认你自己上传的形象和可试听声音。"
-        "如果还没有素材，可以先上传照片创建形象，或上传音频创建个人声音。"
+        "文案会自动复用；接下来我会在当前 IP12 对话里向你收集这次制作需要的素材。"
+        "你可以直接上传人物照片、参考视频或本人口播音频，不需要跳到其他功能页。"
         "系统公共素材默认不会展示；只有你明确要求使用时才会提供。"
         "我会先显示实时报价，未经你确认不会提交或扣点。"
         % action.get("script_title", "第一篇口播文案")
@@ -1008,6 +1008,8 @@ def _production_upload_kind(record, field):
         return "image"
     if pattern.startswith("^vid_"):
         return "video"
+    if pattern.startswith("^aud_"):
+        return "audio"
     return ""
 
 
@@ -1052,17 +1054,17 @@ def _ensure_production_material_request_message(convo, record, missing):
         )
     if needs_account_audio:
         parts.append(
-            "这项制作还需要音频素材。当前只能选择你黄雀账号里已有的音频资产；"
-            "本地音频暂时不能直接上传到这条生成链路。"
+            "这项制作还需要音频素材。你可以在当前生产画布直接上传本地音频；"
+            "上传后会自动绑定到这次制作。"
         )
     if needs_avatar:
         parts.append(
-            "数字人口播需要先确认本人形象。请选择一张你以前上传创建的形象；"
-            "如果没有合适的，请点击“上传照片创建我的形象”。选择前必须能看到图片预览。"
+            "数字人口播需要本人画面。你可以选择一张已有形象，或直接在当前生产画布点击"
+            "“上传人物照片（本次直接使用）”；不需要离开 IP12。"
         )
     if needs_voice:
         parts.append(
-            "声音默认只展示有试听样音的个人声音；如果还没有，请点击“上传音频创建我的声音”。"
+            "声音可以选择有试听样音的个人声音；也可以直接上传一段本人口播音频用于本次视频。"
             "系统公共音色不会自动出现，只有你明确提出使用后才会展示试听卡。"
         )
     message = _append_assistant_message(
@@ -1130,13 +1132,25 @@ def _production_parameter_context(account_id, action, catalog_entry=None, allow_
         properties["avatar_id"].update({
             "title": "数字人形象",
             "oneOf": avatar_choices,
-            "x-hq-upload-route": "/workbench/digital-ip",
-            "x-hq-upload-label": "上传照片创建我的形象",
+            "x-hq-inline-upload-field": "image_upload_id",
+            "x-hq-upload-label": "上传人物照片（本次直接使用）",
             "description": (
-                "只展示当前账号由用户上传照片创建、且可以预览的形象。"
+                "可以选择已有形象，也可以在当前对话上传人物照片直接用于本次视频。"
                 if avatars is not None else "暂时无法读取当前账号的数字人形象，请稍后重新打开。"
             ),
         })
+        properties["image_upload_id"] = {
+            "type": "string", "pattern": r"^img_[0-9a-f]{32}$", "title": "人物照片",
+            "x-hq-alternative-for": "avatar_id",
+            "description": "JPG / PNG / WebP，最大 10MB；上传本身不扣点。",
+        }
+        if "avatar_id" not in schema["required"] and "image_upload_id" not in schema["required"]:
+            schema["required"].append("avatar_id" if avatar_choices else "image_upload_id")
+        elif not avatar_choices and "avatar_id" in schema["required"]:
+            schema["required"] = [
+                "image_upload_id" if name == "avatar_id" else name
+                for name in schema["required"]
+            ]
     voice_field = "voice" if "voice" in properties else ("voice_key" if "voice_key" in properties else "")
     if voice_field:
         voices = read("voices", {})
@@ -1161,8 +1175,8 @@ def _production_parameter_context(account_id, action, catalog_entry=None, allow_
                 }
                 for item in allowed_voices
             ],
-            "x-hq-upload-route": "/workbench/audio",
-            "x-hq-upload-label": "上传音频创建我的声音",
+            "x-hq-inline-upload-field": "audio_upload_id",
+            "x-hq-upload-label": "上传本人口播音频（本次直接使用）",
             "x-hq-system-media-allowed": bool(allow_system_media),
             "description": (
                 (
@@ -1173,8 +1187,37 @@ def _production_parameter_context(account_id, action, catalog_entry=None, allow_
                 if voices is not None else "暂时无法读取当前账号的声音，请稍后重新打开。"
             ),
         })
+        properties["audio_upload_id"] = {
+            "type": "string", "pattern": r"^aud_[0-9a-f]{32}$", "title": "本人口播音频",
+            "x-hq-alternative-for": voice_field,
+            "x-hq-switch-action": "digital-ip-audio-generate",
+            "description": "MP3 / WAV / M4A / AAC / OGG，最长 5 分钟、最大 10MB；上传本身不扣点。",
+        }
         if action == "audio-generate" and allowed_voices and voice_field not in schema["required"]:
             schema["required"].append(voice_field)
+        if action == "digital-ip-text-generate" and not allowed_voices and voice_field in schema["required"]:
+            schema["required"] = [
+                "audio_upload_id" if name == voice_field else name
+                for name in schema["required"]
+            ]
+    if action == "digital-ip-audio-generate" and "audio_file" in properties:
+        properties["audio_file"].update({
+            "title": "已有口播音频",
+            "x-hq-inline-upload-field": "audio_upload_id",
+            "x-hq-upload-label": "上传本人口播音频",
+        })
+        properties["audio_upload_id"] = {
+            "type": "string", "pattern": r"^aud_[0-9a-f]{32}$", "title": "本人口播音频",
+            "x-hq-alternative-for": "audio_file",
+            "description": "MP3 / WAV / M4A / AAC / OGG，最长 5 分钟、最大 10MB；上传本身不扣点。",
+        }
+        if "audio_file" not in schema["required"] and "audio_upload_id" not in schema["required"]:
+            schema["required"].append("audio_upload_id")
+        elif "audio_file" in schema["required"]:
+            schema["required"] = [
+                "audio_upload_id" if name == "audio_file" else name
+                for name in schema["required"]
+            ]
     if "board_id" in properties:
         boards_result = read("canvas-list", {"limit": 100, "offset": 0})
         boards = boards_result.get("boards", []) if isinstance(boards_result, dict) else []
@@ -1200,8 +1243,8 @@ def _production_parameter_context(account_id, action, catalog_entry=None, allow_
             and isinstance(item.get("version"), int)
             and item.get("role") in {"owner", "editor"}
         }
-    if action in {"digital-ip-text-generate", "digital-ip-batch-generate"} and material_reads_ok:
-        context["material_context_version"] = 3
+    if action in {"digital-ip-text-generate", "digital-ip-audio-generate", "digital-ip-batch-generate"} and material_reads_ok:
+        context["material_context_version"] = 4
     return schema, context
 
 
@@ -1215,7 +1258,7 @@ def _refresh_unsubmitted_production_materials(cid, production_id):
             return
         if record.get("status") not in {"draft", "blocked_prerequisite", "stale"}:
             return
-        if int(record.get("material_context_version") or 0) >= 3:
+        if int(record.get("material_context_version") or 0) >= 4:
             return
         family = record.get("capability_family") or "video"
         allow_system_media = bool(record.get("allow_system_media"))
@@ -1226,7 +1269,7 @@ def _refresh_unsubmitted_production_materials(cid, production_id):
         current_account_id(), "digital-ip-text-generate",
         recommendation.get("catalog_entry"), allow_system_media=allow_system_media,
     )
-    if int(context.get("material_context_version") or 0) < 3:
+    if int(context.get("material_context_version") or 0) < 4:
         return
     with CONVERSATION_STATE_LOCK:
         convo = _production_conversation(cid)
@@ -1348,7 +1391,8 @@ def _bridge_upload(account_id, kind, stream, length, content_type, digest):
     """Stream a confirmed browser upload through the account-bound first-party gateway."""
     if not INTERNAL_ACTION_TOKEN:
         raise RuntimeError("production_bridge_unavailable")
-    digest_header = "X-HQ-Video-SHA256" if kind == "video" else "X-HQ-Image-SHA256"
+    digest_header = {"image": "X-HQ-Image-SHA256", "video": "X-HQ-Video-SHA256",
+                     "audio": "X-HQ-Audio-SHA256"}[kind]
     try:
         response = requests.post(
             AUTH_BASE + INTERNAL_UPLOAD_PATH,
@@ -2450,7 +2494,7 @@ def api_get_convo(cid):
             isinstance(record, dict)
             and record.get("action") == "digital-ip-text-generate"
             and record.get("status") in {"draft", "blocked_prerequisite", "stale"}
-            and int(record.get("material_context_version") or 0) < 3
+            and int(record.get("material_context_version") or 0) < 4
         ):
             _refresh_unsubmitted_production_materials(cid, production_id)
     convo = _migrate_owned_conversation(cid)
@@ -2633,22 +2677,28 @@ def api_upload_production_material():
             if record.get("status") in {"quoted", "submitting", "queued", "running", "done"}:
                 return _production_error("production_locked", "当前生产已经报价或提交，不能再替换素材")
             kind = _production_upload_kind(record, field)
+            descriptor = (_production_record_schema(record).get("properties") or {}).get(field) or {}
+            alternative_for = str(descriptor.get("x-hq-alternative-for") or "")
+            switch_action = str(descriptor.get("x-hq-switch-action") or "")
             missing_before = _production_missing_fields(record, record.get("options") or {})
-            if not kind or field not in missing_before:
+            if not kind or (field not in missing_before and alternative_for not in missing_before):
                 return _production_error("upload_not_requested", "当前制作没有等待这项素材", 409)
         incoming = request.files.get("file")
         if incoming is None:
             return _production_error("file_required", "请选择要上传的素材", 400)
         content_type = str(incoming.mimetype or "").lower()
-        allowed_types = (
-            {"video/mp4", "video/quicktime", "video/webm"}
-            if kind == "video" else {"image/jpeg", "image/png", "image/webp"}
-        )
+        allowed_types = {
+            "image": {"image/jpeg", "image/png", "image/webp"},
+            "video": {"video/mp4", "video/quicktime", "video/webm"},
+            "audio": {"audio/mpeg", "audio/wav", "audio/x-wav", "audio/mp4", "audio/x-m4a", "audio/aac", "audio/ogg"},
+        }[kind]
         maximum = 32 * 1024 * 1024 if kind == "video" else 10 * 1024 * 1024
         if content_type not in allowed_types:
+            supported = {"image": "PNG / JPG / WebP", "video": "MP4 / MOV / WebM",
+                         "audio": "MP3 / WAV / M4A / AAC / OGG"}[kind]
             return _production_error(
                 "invalid_upload_type",
-                "只支持 MP4 / MOV / WebM" if kind == "video" else "只支持 PNG / JPG / WebP",
+                "只支持 " + supported,
                 400,
             )
         stream = incoming.stream
@@ -2676,9 +2726,19 @@ def api_upload_production_material():
         except RuntimeError:
             return _production_error("production_bridge_unavailable", "素材服务暂时不可用", 503)
         upload_id = str(uploaded.get("upload_id") or "")
-        expected_prefix = "vid_" if kind == "video" else "img_"
+        expected_prefix = {"image": "img_", "video": "vid_", "audio": "aud_"}[kind]
         if not re.fullmatch(expected_prefix + r"[0-9a-f]{32}", upload_id):
             return _production_error("invalid_upload_result", "素材服务没有返回有效结果", 502)
+        switch_recommendation = switch_entry = switch_schema = switch_context = None
+        if switch_action:
+            switch_recommendation = _production_recommendation(
+                current_account_id(), "video", switch_action
+            )
+            switch_entry = switch_recommendation.pop("catalog_entry")
+            switch_schema, switch_context = _production_parameter_context(
+                current_account_id(), switch_action, switch_entry,
+                allow_system_media=bool(record.get("allow_system_media")),
+            )
         with CONVERSATION_STATE_LOCK:
             convo = _production_conversation(cid)
             record = (convo or {}).get("productions", {}).get(production_id)
@@ -2688,9 +2748,38 @@ def api_upload_production_material():
                 return _production_error("source_changed", "正文已更新，需要重新准备素材")
             if record.get("status") in {"quoted", "submitting", "queued", "running", "done"}:
                 return _production_error("production_locked", "当前生产已经报价或提交，不能再替换素材")
-            if field not in _production_missing_fields(record, record.get("options") or {}):
+            current_missing = _production_missing_fields(record, record.get("options") or {})
+            if field not in current_missing and alternative_for not in current_missing:
                 return _production_error("upload_not_requested", "当前制作已经收到了这项素材", 409)
             options = dict(record.get("options") or {})
+            if switch_action:
+                record.update(
+                    capability_family=switch_recommendation["capability_family"],
+                    action=switch_recommendation["recommended_action"],
+                    catalog_version=switch_recommendation.get("catalog_version", ""),
+                    billing=str(switch_entry.get("billing") or "free"),
+                    confirmation_required=bool(switch_entry.get("confirmation_required")),
+                    risk=str(switch_entry.get("risk") or "read"),
+                    result_type=str(switch_entry.get("result_type") or "json"),
+                    ui_route=str(switch_entry.get("ui_route") or ""),
+                    transport=switch_entry.get("transport") or {"kind": "action"},
+                    constraints=list(switch_entry.get("constraints") or []),
+                    parameter_schema=switch_schema,
+                )
+                record.update(switch_context or {})
+                if options.get("image_upload_id"):
+                    switch_schema["required"] = [
+                        "image_upload_id" if name == "avatar_id" else name
+                        for name in (switch_schema.get("required") or [])
+                    ]
+                options.pop(alternative_for, None)
+            elif alternative_for:
+                schema = _production_record_schema(record)
+                schema["required"] = [
+                    field if name == alternative_for else name
+                    for name in (schema.get("required") or [])
+                ]
+                options.pop(alternative_for, None)
             descriptor = (_production_record_schema(record).get("properties") or {}).get(field) or {}
             if descriptor.get("type") == "array":
                 values = list(options.get(field) or [])
