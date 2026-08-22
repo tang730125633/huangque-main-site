@@ -275,7 +275,7 @@ apply_deploy() {
   rsync -a "$manifest" "$REMOTE:$upload/manifest.tsv"
   if awk -F "$(printf '\t')" '$5 == "hermes" { found=1 } END { exit !found }' "$manifest"; then
     requirements_hash="$(sha256_file "$stage/server/hermes_ip12/requirements.txt")"
-    if ! ssh "$REMOTE" "test -f /home/ubuntu/hermes-preview/.requirements-sha && test \"\$(cat /home/ubuntu/hermes-preview/.requirements-sha)\" = '$requirements_hash'"; then
+    if ! ssh "$REMOTE" "sudo test -f /home/ubuntu/hermes-preview/.requirements-sha && test \"\$(sudo cat /home/ubuntu/hermes-preview/.requirements-sha)\" = '$requirements_hash'"; then
       wheelhouse="${SHIP_ZELONG_WHEELHOUSE:-}"
       if test -z "$wheelhouse"; then
         cache_root="${SHIP_ZELONG_CACHE_DIR:-${TMPDIR:-/tmp}/huangque-ship-zelong-cache}"

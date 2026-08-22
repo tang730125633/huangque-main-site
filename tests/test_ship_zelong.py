@@ -346,6 +346,7 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
         self.assertIn("SHIP_ZELONG_WHEELHOUSE", SRC)
         self.assertIn("SHIP_ZELONG_CHROMIUM_ARCHIVE", SRC)
         self.assertIn("/home/ubuntu/hermes-preview/.requirements-sha", SRC)
+        self.assertIn("sudo cat /home/ubuntu/hermes-preview/.requirements-sha", SRC)
         self.assertIn("--no-index --find-links", SRC)
         self.assertIn("/home/ubuntu/hermes-preview/wheelhouse/", SRC)
         self.assertIn("chown -R ubuntu:ubuntu", SRC)
