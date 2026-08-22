@@ -223,9 +223,9 @@ assert tryon_prepared.status_code == 200, tryon_prepared.get_data(as_text=True)
 tryon_body = tryon_prepared.get_json()
 assert set(tryon_body["missing"]) == {"person_image_upload_id", "clothes_upload_id"}, tryon_body
 assert "人物图片、服装图片" in tryon_body["material_request_message"]["content"], tryon_body
-assert "右侧生产画布" in tryon_body["material_request_message"]["content"], tryon_body
-assert "打开生产画布" in tryon_body["material_request_message"]["content"], tryon_body
-assert "当前制作" in tryon_body["material_request_message"]["content"], tryon_body
+assert "本条消息下方" in tryon_body["material_request_message"]["content"], tryon_body
+assert "右侧生产画布" not in tryon_body["material_request_message"]["content"], tryon_body
+assert "输入框左侧" in tryon_body["material_request_message"]["content"], tryon_body
 tryon_record = server.load_conversation(cid)["productions"][tryon_body["production_id"]]
 assert tryon_record["source_bound"] is False, tryon_record
 assert tryon_record["material_request_message_id"], tryon_record
@@ -338,7 +338,8 @@ with patch.object(server, "_bridge_catalog", return_value=catalog), patch.object
     body = prepared.get_json()
     assert set(body["missing"]) == {"image_upload_id", "audio_upload_id"}, body
     assert "/workbench/digital-ip" not in body["material_request_message"]["content"], body
-    assert "当前" in body["material_request_message"]["content"], body
+    assert "本条消息下方" in body["material_request_message"]["content"], body
+    assert "其他功能页" in body["material_request_message"]["content"], body
     production_id = body["production_id"]
 
     with patch.object(server, "_bridge_upload", return_value={"upload_id": "img_" + "a" * 32}):

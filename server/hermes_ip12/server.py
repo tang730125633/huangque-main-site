@@ -993,6 +993,25 @@ def _production_record_schema(record):
     return schema if isinstance(schema, dict) else _production_action_schema(record["action"])
 
 
+def _production_recommended_options(schema, options):
+    if not isinstance(options, dict):
+        raise coach_harness.HarnessError("制作参数必须是对象")
+    recommended = json.loads(json.dumps(options or {}, ensure_ascii=False))
+    properties = schema.get("properties") or {}
+    for name in ("avatar_id", "voice", "voice_key"):
+        choices = (properties.get(name) or {}).get("oneOf") or []
+        choice = next(
+            (item for item in choices if isinstance(item, dict) and item.get("source") == "personal"),
+            next((item for item in choices if isinstance(item, dict)), None),
+        )
+        if not choice:
+            continue
+        choice["recommended"] = True
+        if recommended.get(name) in (None, ""):
+            recommended[name] = choice.get("const")
+    return recommended
+
+
 def _production_upload_kind(record, field):
     descriptor = (_production_record_schema(record).get("properties") or {}).get(field) or {}
     if descriptor.get("type") == "array":
@@ -1030,16 +1049,29 @@ def _ensure_production_material_request_message(convo, record, missing):
     needs_account_audio = "audio_file" in missing
     needs_avatar = "avatar_id" in missing
     needs_voice = "voice" in missing or "voice_key" in missing
-    if not fields and not needs_account_audio and not needs_avatar and not needs_voice:
+    properties = _production_record_schema(record).get("properties") or {}
+    has_avatar_choices = bool((properties.get("avatar_id") or {}).get("oneOf"))
+    has_voice_choices = bool(
+        (properties.get("voice") or properties.get("voice_key") or {}).get("oneOf")
+    )
+    has_inline_choices = record.get("action") == "digital-ip-text-generate" and any(
+        (descriptor or {}).get("oneOf")
+        for descriptor in properties.values()
+        if isinstance(descriptor, dict)
+    )
+    if not fields and not needs_account_audio and not needs_avatar and not needs_voice and not has_inline_choices:
         return None
-    message_id = str(record.get("material_request_message_id") or "")
-    if message_id:
-        return next((item for item in convo.get("messages") or []
-                     if item.get("message_id") == message_id), None)
-    parts = [
-        "我已经把这次制作放进右侧生产画布，请在画布里完成素材确认。"
-        "如果关闭了画布，可以点击本条消息中的“打开生产画布”，或页面顶部的“当前制作”重新打开。"
-    ]
+    if has_avatar_choices and has_voice_choices:
+        parts = [
+            "我已经读取当前 Project 的口播文案，并优先用你账号中的个人形象和声音准备了一套方案。"
+            "形象预览和声音试听就在本条消息下方；合适的话直接确认报价，不合适可以换一项，"
+            "不需要打开其他功能页。"
+        ]
+    else:
+        parts = [
+            "我已经把这次制作需要的素材整理到本条消息下方。"
+            "你可以直接预览、试听或上传缺少的素材，不需要打开其他功能页。"
+        ]
     if fields:
         labels = "、".join(_production_field_label(record, name) for name in fields)
         parts.append(
@@ -1048,12 +1080,12 @@ def _ensure_production_material_request_message(convo, record, missing):
         )
     if needs_account_audio:
         parts.append(
-            "这项制作还需要音频素材。你可以在当前生产画布直接上传本地音频；"
+            "这项制作还需要音频素材。你可以直接在当前对话上传本地音频；"
             "上传后会自动绑定到这次制作。"
         )
     if needs_avatar:
         parts.append(
-            "数字人口播需要本人画面。你可以选择一张已有形象，或直接在当前生产画布点击"
+            "数字人口播需要本人画面。你可以直接选择下方已有形象，或点击"
             "“上传人物照片（本次直接使用）”；不需要离开 IP12。"
         )
     if needs_voice:
@@ -1061,6 +1093,14 @@ def _ensure_production_material_request_message(convo, record, missing):
             "声音可以选择有试听样音的个人声音；也可以直接上传一段本人口播音频用于本次视频。"
             "系统公共音色不会自动出现，只有你明确提出使用后才会展示试听卡。"
         )
+    message_id = str(record.get("material_request_message_id") or "")
+    if message_id:
+        existing = next((item for item in convo.get("messages") or []
+                         if item.get("message_id") == message_id), None)
+        if existing:
+            existing["content"] = "\n\n".join(parts)
+            existing["production_id"] = record["id"]
+            return existing
     message = _append_assistant_message(
         convo, "\n\n".join(parts), "production_bridge",
         message_id="matreq_" + uuid.uuid4().hex,
@@ -1238,7 +1278,7 @@ def _production_parameter_context(account_id, action, catalog_entry=None, allow_
             and item.get("role") in {"owner", "editor"}
         }
     if action in {"digital-ip-text-generate", "digital-ip-audio-generate", "digital-ip-batch-generate"} and material_reads_ok:
-        context["material_context_version"] = 4
+        context["material_context_version"] = 5
     return schema, context
 
 
@@ -1252,7 +1292,7 @@ def _refresh_unsubmitted_production_materials(cid, production_id):
             return
         if record.get("status") not in {"draft", "blocked_prerequisite", "stale"}:
             return
-        if int(record.get("material_context_version") or 0) >= 4:
+        if int(record.get("material_context_version") or 0) >= 5:
             return
         family = record.get("capability_family") or "video"
         allow_system_media = bool(record.get("allow_system_media"))
@@ -1263,7 +1303,7 @@ def _refresh_unsubmitted_production_materials(cid, production_id):
         current_account_id(), "digital-ip-text-generate",
         recommendation.get("catalog_entry"), allow_system_media=allow_system_media,
     )
-    if int(context.get("material_context_version") or 0) < 4:
+    if int(context.get("material_context_version") or 0) < 5:
         return
     with CONVERSATION_STATE_LOCK:
         convo = _production_conversation(cid)
@@ -1287,7 +1327,7 @@ def _refresh_unsubmitted_production_materials(cid, production_id):
             options[name] = value
         record["parameter_schema"] = schema
         record.update(context)
-        _production_set_options(record, options)
+        _production_set_options(record, _production_recommended_options(schema, options))
         valid, _, missing = _production_plan_or_error(record, record["options"])
         record.update(
             status="draft" if valid else "blocked_prerequisite",
@@ -2481,7 +2521,7 @@ def api_get_convo(cid):
             isinstance(record, dict)
             and record.get("action") == "digital-ip-text-generate"
             and record.get("status") in {"draft", "blocked_prerequisite", "stale"}
-            and int(record.get("material_context_version") or 0) < 4
+            and int(record.get("material_context_version") or 0) < 5
         ):
             _refresh_unsubmitted_production_materials(cid, production_id)
     convo = _migrate_owned_conversation(cid)
@@ -2602,7 +2642,10 @@ def api_prepare_production():
                 "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
             }
             record.update(resource_context)
-            _production_set_options(record, body.get("options", {}))
+            options = body.get("options", {})
+            if record["action"] == "digital-ip-text-generate":
+                options = _production_recommended_options(parameter_schema, options)
+            _production_set_options(record, options)
             _, validation_error, missing = _production_plan_or_error(record, record["options"])
             if validation_error:
                 record["status"] = "blocked_prerequisite"
