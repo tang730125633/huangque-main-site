@@ -231,7 +231,7 @@ make_manifest() {
 $mapped
 EOF
     case "$path" in
-      server/content_domains/__init__.py|server/content_domains/cos.py|server/content_domains/miniprogram_security.py|server/content_domains/pricing.py|server/content_domains/error_contract.py)
+      server/content_domains/__init__.py|server/content_domains/cos.py|server/content_domains/miniprogram_security.py|server/content_domains/pricing.py|server/content_domains/error_contract.py|server/content_domains/feature_flags.py)
         rest="${path#server/content_domains/}"
         printf '10\t%s\t/home/ubuntu/auth-service/content_domains/%s\t%s\tauth\t0\n' "$path" "$rest" "$hash" >>"$out" ;;
     esac

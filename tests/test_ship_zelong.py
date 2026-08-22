@@ -230,16 +230,16 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
         self.assertIn("systemctl daemon-reload", SRC)
 
     def test_shared_auth_modules_are_deployed_to_both_services(self):
-        rows = manifest_rows("server/content_domains/pricing.py")
-        self.assertEqual(2, len(rows))
-        self.assertEqual(
-            {
-                "/home/ubuntu/auth-service/content_domains/pricing.py",
-                "/home/ubuntu/content-api/content_domains/pricing.py",
-            },
-            {row[2] for row in rows},
-        )
-        self.assertEqual({"auth", "content"}, {row[4] for row in rows})
+        for name in ("pricing.py", "feature_flags.py"):
+            rows = manifest_rows("server/content_domains/" + name)
+            self.assertEqual(
+                {
+                    "/home/ubuntu/auth-service/content_domains/" + name,
+                    "/home/ubuntu/content-api/content_domains/" + name,
+                },
+                {row[2] for row in rows},
+            )
+            self.assertEqual({"auth", "content"}, {row[4] for row in rows})
 
     def test_public_installer_may_keep_its_executable_git_mode(self):
         self.assertEqual("site/downloads/hq/install.sh", manifest_rows("site/downloads/hq/install.sh")[0][1])
