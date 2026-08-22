@@ -532,6 +532,22 @@ if (!rendered.includes("&lt;img") || !rendered.includes("<br>")) process.exit(5)
                 self.assertIn("重新整理的结果", result["assistant"])
                 self.assertNotIn("请回复“", result["assistant"])
 
+        validation_error = "模块 4 的故事节点缺少可回查原话"
+        persist_failures = 2
+        model_calls.clear()
+        persist_calls.clear()
+        result, status = namespace["_process_model_turn"](
+            "cid", "用户已确认上一断点。", persist_user=False
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual([item[1] for item in model_calls], [True, True, False])
+        self.assertEqual(len(persist_calls), 3)
+        self.assertEqual(persist_calls[-1][0], "")
+        self.assertTrue(persist_calls[-1][-1])
+        self.assertIn("事实原话", persist_calls[-1][3])
+        self.assertIn("重新整理的结果", result["assistant"])
+
         validation_error = "选题中的“成功”没有出现在它绑定的用户原话里"
         persist_failures = 3
         model_calls.clear()
@@ -669,6 +685,10 @@ assert not server.load_conversation(cid).get("productions"), intent_body
 assert server._explicit_system_media_request("使用系统自带的公共音色") is True
 assert server._explicit_system_media_request("就用沉稳男声生成") is True
 assert server._explicit_system_media_request("不要使用公共音色") is False
+assert server._audio_options_from_message("重新生成音频，语速调整为0.9") == {"speed": 0.9}
+assert server._audio_options_from_message("重新生成音频，语速慢一点") == {}
+assert server._production_source_revision_intent("重新生成一版音频，开头表达更直接") is True
+assert server._production_source_revision_intent("重新生成一版音频，语速调整为0.9") is False
 with server.app.test_request_context("https://huangquechuanmei.com/workbench/ip12/"):
     assert server._browser_preview_url("/api/gen/file/avatar.jpg") == (
         "https://huangquechuanmei.com/api/gen/file/avatar.jpg"
@@ -677,6 +697,20 @@ with server.app.test_request_context("https://huangquechuanmei.com/workbench/ip1
         "https://media.example/voice.mp3"
     )
 revision = intent_body["state"]["revision"]
+audio_intent_response = client.post("/api/chat-complete", json={
+    "conversation_id": cid,
+    "message": "重新生成一版音频，语速调整为0.9，使用系统公共音色，其他不变",
+    "content_target": target,
+    "expected_revision": revision,
+    "request_id": "prepare-audio-revision-from-chat",
+})
+assert audio_intent_response.status_code == 200, audio_intent_response.get_data(as_text=True)
+audio_intent_body = audio_intent_response.get_json()
+audio_action = audio_intent_body["actions"][0]
+assert audio_action["preferred_action"] == "audio-generate", audio_action
+assert audio_action["allow_system_media"] is True, audio_action
+assert audio_action["options"] == {"speed": 0.9}, audio_action
+revision = audio_intent_body["state"]["revision"]
 original_messages = json.loads(json.dumps(server.load_conversation(cid)["messages"], ensure_ascii=False))
 
 def resource_bridge(account_id, action, input_body, **kwargs):
@@ -736,6 +770,11 @@ assert bad_image["missing"] == [], bad_image
 assert "类型" in bad_image["validation_error"], bad_image
 
 audio = prepare("audio")
+audio_selected = prepare("audio", {"voice": "voice-demo"})
+audio_public = prepare("audio", allow_system_media=True)
+audio_public_selected = prepare(
+    "audio", {"voice": "public-demo", "speed": 0.9}, allow_system_media=True
+)
 video = prepare("video", {"avatar_id": 7, "voice": "voice-demo"})
 public_blocked = prepare("video", {"avatar_id": 7, "voice": "public-demo"})
 public_allowed = prepare(
@@ -744,9 +783,25 @@ public_allowed = prepare(
 missing_canvas = prepare("canvas")
 canvas = prepare("canvas", {"board_id": "board_canvas_1"})
 generic_video = prepare("video", {"prompt": "把正文改编成海边日出短片。"}, "video-generate")
-for prepared in (audio, video, canvas):
+for prepared in (audio_selected, audio_public_selected, video, canvas):
     assert prepared["status"] == "draft", prepared
-assert audio["schema"]["required"] == [], audio
+assert audio["status"] == "blocked_prerequisite", audio
+assert audio["missing"] == ["voice"], audio
+assert audio["schema"]["required"] == ["voice"], audio
+assert [item["const"] for item in audio["schema"]["properties"]["voice"]["oneOf"]] == [
+    "voice-demo",
+], audio
+assert audio_public["status"] == "blocked_prerequisite", audio_public
+assert audio_public["missing"] == ["voice"], audio_public
+assert [item["const"] for item in audio_public["schema"]["properties"]["voice"]["oneOf"]] == [
+    "voice-demo", "public-demo",
+], audio_public
+assert audio_public["schema"]["properties"]["voice"]["oneOf"][1] == {
+    "const": "public-demo", "title": "公共声音",
+    "preview_url": "https://media.example/public-demo.mp3",
+    "preview_kind": "audio", "source": "public",
+}, audio_public
+assert audio_public_selected["options"] == {"voice": "public-demo", "speed": 0.9}, audio_public_selected
 assert video["schema"]["required"] == ["avatar_id", "voice"], video
 assert video["schema"]["properties"]["avatar_id"]["oneOf"] == [
     {"const": 7, "title": "我的形象 7", "preview_url": "https://media.example/avatar-7.jpg", "preview_kind": "image", "source": "personal"},
@@ -945,7 +1000,7 @@ assert finished_change.get_json()["code"] == "production_already_submitted"
 assert server.load_conversation(cid)["productions"][image_id]["options"] == {"prompt": "第二版海报"}
 
 # Failed work and a completed refund remain visible after refresh.
-audio_id = audio["production_id"]
+audio_id = audio_selected["production_id"]
 def audio_bridge(account_id, action, input_body, **kwargs):
     if action == "task":
         return {"job_id": "202", "status": "error", "code": "provider_failed", "cost": 2, "refunded": True}
@@ -2329,6 +2384,9 @@ report_html = _foundation_html("""# 忽略的总标题
 ## 模块一｜定位诊断
 ### 核心关键词
 #### 故事名称：从无到有
+- **边界：** 使用事实原话
+- ** **
+- **动作：** 保持克制
 1. **实战**：有可验证经历。
 | 场景 | 建议口径 |
 | --- | --- |
@@ -2339,6 +2397,10 @@ assert "模块一｜定位诊断" in report_html
 assert "<table>" in report_html and "账号封面" in report_html
 assert "<blockquote>待本人确认</blockquote>" in report_html
 assert "<h4>故事名称：从无到有</h4>" in report_html
+assert "<ul><li><strong>边界：</strong> 使用事实原话</li><li><strong>动作：</strong> 保持克制</li></ul>" in report_html
+assert report_html.count("<li>") == 2
+assert "<li><strong> </strong></li>" not in report_html
+assert "li{break-inside:avoid}" in report_html
 
 render_root = Path(os.environ["HERMES_DATA_DIR"]) / "foundation-render"
 render_root.mkdir()
@@ -2870,14 +2932,20 @@ revision_response.json.return_value = {"choices": [{"message": {"content": json.
     "revised_script": "先说结论：这是修改后的口播文案。",
 }, ensure_ascii=False)}}]}
 target = {"category_id": "category-1", "topic_id": "topic-1-01"}
-with patch.object(server, "call_ai", return_value=revision_response):
+def content_revision_model(messages, **kwargs):
+    system_prompt = messages[0]["content"]
+    assert "本轮只处理明确的文案修改" in system_prompt
+    assert "不要索要旧音频或旧报价" in system_prompt
+    return revision_response
+with patch.object(server, "call_ai", side_effect=content_revision_model):
     content_revision = client.post("/api/chat-complete", json={
         "conversation_id": content_cid,
-        "message": "开头太绕了，直接一点。",
+        "message": "重新生成一版音频，语速调整为0.9，开头太绕了，直接一点。",
         "content_target": target,
         "expected_revision": content_state["revision"],
     })
 assert content_revision.status_code == 200, content_revision.get_data(as_text=True)
+assert not server.load_conversation(content_cid).get("productions")
 updated_pack = server.load_conversation(content_cid)["deliverables"]["6"]
 updated_topic = updated_pack["categories"][0]["topics"][0]
 assert [item["version"] for item in updated_topic["versions"]] == [1, 2]

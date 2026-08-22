@@ -96,6 +96,7 @@ class IP12AgentProductionUITests(unittest.TestCase):
         ]
         self.assertIn("打开生产画布", message)
         self.assertIn("openProductionRecord(this.dataset.productionId)", message)
+        self.assertIn("message.message_id===record.delivery_message_id", message)
         lifecycle = self.html[
             self.html.index("function updateProductionEntry"):
             self.html.index("function productionError")
@@ -144,6 +145,42 @@ console.log(JSON.stringify(result));
         self.assertEqual(got[2]["value"], 42)
         self.assertTrue(all(item["before"] for item in got))
         self.assertTrue(all(item["after"] == [] for item in got))
+
+    def test_voice_name_preview_key_and_quote_value_stay_bound(self):
+        if not shutil.which("node"):
+            self.skipTest("node unavailable")
+        helpers_start = self.html.index("function productionParameterSchema")
+        helpers_end = self.html.index("function productionDraftKey", helpers_start)
+        collect_start = self.html.index("function collectProductionOptions")
+        collect_end = self.html.index("function updateProductionQuoteGate", collect_start)
+        functions = self.html[helpers_start:helpers_end] + self.html[collect_start:collect_end]
+        script = functions + r"""
+const record={
+  options:{}, missing_prerequisites:['voice'],
+  parameter_schema:{type:'object',required:['voice'],properties:{voice:{type:'string',oneOf:[
+    {const:'S_pa0E8OR62',title:'沉稳男声（知识口播）',preview_url:'https://media.example/calm.mp3',preview_kind:'audio',source:'public'},
+    {const:'S_xaUB8OR62',title:'亲和女声（本地生活）',preview_url:'https://media.example/friendly.mp3',preview_kind:'audio',source:'public'}
+  ]}}}
+};
+const calm=productionFieldSpec(record,'voice').choices[0];
+record.options=typedProductionOptions(record,{voice:calm.value});
+global.document={querySelectorAll:()=>[{dataset:{field:'voice'},value:record.options.voice}]};
+console.log(JSON.stringify({
+  selectedKey:record.options.voice,
+  selectedLabel:productionDisplayValue(record,'voice',record.options.voice),
+  selectedPreview:calm.previewUrl,
+  quoteOptions:collectProductionOptions(record).options
+}));
+"""
+        got = json.loads(subprocess.run(
+            ["node", "-e", script], capture_output=True, text=True, check=True,
+        ).stdout)
+        self.assertEqual(got, {
+            "selectedKey": "S_pa0E8OR62",
+            "selectedLabel": "沉稳男声（知识口播）",
+            "selectedPreview": "https://media.example/calm.mp3",
+            "quoteOptions": {"voice": "S_pa0E8OR62"},
+        })
 
     def test_prepare_and_quote_runtime_bodies_keep_typed_options_and_missing_gate(self):
         if not shutil.which("node"):
@@ -231,6 +268,7 @@ function toast(){}
         chat = self.html[self.html.index("function productionMessageHtml"):self.html.index("function isSafeMarkdownUrl")]
         self.assertIn("data-production-message", chat)
         self.assertIn("productionResultHtml(record)", chat)
+        self.assertIn("message.message_id===record.delivery_message_id", chat)
         result = self.html[self.html.index("function productionResultHtml"):self.html.index("function productionFieldControl")]
         self.assertIn("continueProductionRevision(this.dataset.productionId)", result)
 
