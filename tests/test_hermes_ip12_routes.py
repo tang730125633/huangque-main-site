@@ -532,6 +532,22 @@ if (!rendered.includes("&lt;img") || !rendered.includes("<br>")) process.exit(5)
                 self.assertIn("重新整理的结果", result["assistant"])
                 self.assertNotIn("请回复“", result["assistant"])
 
+        validation_error = "模块 4 的故事节点缺少可回查原话"
+        persist_failures = 2
+        model_calls.clear()
+        persist_calls.clear()
+        result, status = namespace["_process_model_turn"](
+            "cid", "用户已确认上一断点。", persist_user=False
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual([item[1] for item in model_calls], [True, True, False])
+        self.assertEqual(len(persist_calls), 3)
+        self.assertEqual(persist_calls[-1][0], "")
+        self.assertTrue(persist_calls[-1][-1])
+        self.assertIn("事实原话", persist_calls[-1][3])
+        self.assertIn("重新整理的结果", result["assistant"])
+
         validation_error = "选题中的“成功”没有出现在它绑定的用户原话里"
         persist_failures = 3
         model_calls.clear()
@@ -780,6 +796,11 @@ assert audio_public["missing"] == ["voice"], audio_public
 assert [item["const"] for item in audio_public["schema"]["properties"]["voice"]["oneOf"]] == [
     "voice-demo", "public-demo",
 ], audio_public
+assert audio_public["schema"]["properties"]["voice"]["oneOf"][1] == {
+    "const": "public-demo", "title": "公共声音",
+    "preview_url": "https://media.example/public-demo.mp3",
+    "preview_kind": "audio", "source": "public",
+}, audio_public
 assert audio_public_selected["options"] == {"voice": "public-demo", "speed": 0.9}, audio_public_selected
 assert video["schema"]["required"] == ["avatar_id", "voice"], video
 assert video["schema"]["properties"]["avatar_id"]["oneOf"] == [
@@ -2363,6 +2384,9 @@ report_html = _foundation_html("""# 忽略的总标题
 ## 模块一｜定位诊断
 ### 核心关键词
 #### 故事名称：从无到有
+- **边界：** 使用事实原话
+- ** **
+- **动作：** 保持克制
 1. **实战**：有可验证经历。
 | 场景 | 建议口径 |
 | --- | --- |
@@ -2373,6 +2397,10 @@ assert "模块一｜定位诊断" in report_html
 assert "<table>" in report_html and "账号封面" in report_html
 assert "<blockquote>待本人确认</blockquote>" in report_html
 assert "<h4>故事名称：从无到有</h4>" in report_html
+assert "<ul><li><strong>边界：</strong> 使用事实原话</li><li><strong>动作：</strong> 保持克制</li></ul>" in report_html
+assert report_html.count("<li>") == 2
+assert "<li><strong> </strong></li>" not in report_html
+assert "li{break-inside:avoid}" in report_html
 
 render_root = Path(os.environ["HERMES_DATA_DIR"]) / "foundation-render"
 render_root.mkdir()
