@@ -67,6 +67,7 @@ assert all(item["status"] == "unlocked" for item in server.capability_gates(stat
         self.assertIn("能力解锁", page)
         self.assertIn("function openCapabilityGates", page)
         self.assertIn("function openInlineVoiceClone", page)
+        self.assertIn("voiceClonePlatformPath('api/gen/audio/slots", page)
         self.assertIn("确认并开始 VIP 复刻", page)
         assets = (ROOT / "site" / "workbench" / "assets.html").read_text(encoding="utf-8")
         self.assertIn('id="cloneVoiceBasic" disabled', assets)
