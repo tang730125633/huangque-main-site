@@ -72,6 +72,9 @@ assert all(item["status"] == "unlocked" for item in server.capability_gates(stat
         self.assertIn("openInlineVoiceClone(actionBubble)", page)
         self.assertIn("在当前对话克隆个人音色", page)
         self.assertNotIn("openPanel('声音克隆')", page)
+        self.assertIn("function keepVoiceCloneJobAtBottom", page)
+        self.assertIn("声音克隆进行中，你可以继续聊天", page)
+        self.assertIn("/voice-clone-ui", page)
         self.assertIn("只需要三步", page)
         self.assertIn("选择本人样音", page)
         self.assertIn("确认并开始 VIP 复刻", page)
@@ -110,6 +113,45 @@ assert payload['state_schema'] == 2, payload
             )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_voice_clone_ui_state_persists_in_project(self):
+        script = r'''
+import security
+import server
+security._validate_token = lambda token: {
+    "account_id": "voice-ui-account", "username": "voice-ui", "role": "member",
+}
+security.RATE_REQUESTS = 1000
+client = server.app.test_client()
+headers = {"Authorization": "Bearer voice-ui-test"}
+created = client.post("/api/conversations", json={"title": "声音克隆状态"}, headers=headers)
+assert created.status_code == 200, created.get_data(as_text=True)
+cid = created.get_json()["id"]
+collecting = client.post("/api/conversations/%s/voice-clone-ui" % cid, json={
+    "status": "collecting", "voice_name": "我的音色",
+}, headers=headers)
+assert collecting.status_code == 200, collecting.get_data(as_text=True)
+project = client.get("/api/conversations/%s" % cid, headers=headers).get_json()
+assert project["voice_clone_ui"]["status"] == "collecting", project
+training = client.post("/api/conversations/%s/voice-clone-ui" % cid, json={
+    "status": "training", "slot_id": "slot_voice_1", "voice_name": "我的音色",
+}, headers=headers)
+assert training.status_code == 200, training.get_data(as_text=True)
+project = client.get("/api/conversations/%s" % cid, headers=headers).get_json()
+assert project["voice_clone_ui"]["slot_id"] == "slot_voice_1", project
+invalid = client.post("/api/conversations/%s/voice-clone-ui" % cid, json={
+    "status": "training", "slot_id": "../bad",
+}, headers=headers)
+assert invalid.status_code == 400, invalid.get_data(as_text=True)
+'''
+        with tempfile.TemporaryDirectory() as root:
+            env = os.environ.copy()
+            env.update(OPENAI_API_KEY="dummy", HERMES_HOME=root, HERMES_DATA_DIR=root)
+            result = subprocess.run(
+                [sys.executable, "-c", script], cwd=HERMES, env=env,
+                capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_coach_prompt_finishes_ready_outputs_in_the_same_reply(self):
         prompt = (HERMES / "prompt.md").read_text(encoding="utf-8")
         self.assertIn("同一条回复", prompt)
@@ -138,7 +180,7 @@ assert payload['state_schema'] == 2, payload
         for path in HERMES.glob("*.py"):
             routes.update(pattern.findall(path.read_text(encoding="utf-8")))
 
-        self.assertEqual(len(routes), 83)
+        self.assertEqual(len(routes), 84)
         self.assertTrue(
             {
                 "/api/chat",
