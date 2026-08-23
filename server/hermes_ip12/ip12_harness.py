@@ -32,6 +32,7 @@ AGENT_RELEASE_MANIFEST = {
         "content_revision": {"contract_version": "1.0.0", "prompt_version": "content-revision-v1"},
         "production_bridge": {"contract_version": "1.0.0", "prompt_version": None},
         "talking_head_video_agent": {"contract_version": "1.0.0", "prompt_version": None},
+        "semantic_master_agent": {"contract_version": "1.0.0", "prompt_version": "semantic-master-v1"},
     },
 }
 

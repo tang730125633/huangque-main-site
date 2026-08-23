@@ -8,6 +8,8 @@ AGENT_NAME = "口播短视频 Agent"
 CONTRACT_VERSION = "1.0.0"
 ORCHESTRATOR_ID = "ip12_master_agent"
 SUPPORTED_ACTIONS = {"digital-ip-text-generate", "digital-ip-audio-generate"}
+DELEGATION_SCHEMA = "ip12.specialist-result/v1"
+READ_TOOLS = ("ip12-project", "video-avatars", "voices", "audio-slots", "assets")
 
 _STAGES = {
     "blocked_prerequisite": "collecting_materials",
@@ -36,6 +38,62 @@ _NEXT_ACTIONS = {
 
 def supports(action):
     return str(action or "") in SUPPORTED_ACTIONS
+
+
+def delegation_result(record, observations):
+    """Turn account-scoped tool observations into one specialist result."""
+    record = record if isinstance(record, dict) else {}
+    observations = observations if isinstance(observations, dict) else {}
+    options = record.get("options") if isinstance(record.get("options"), dict) else {}
+    missing = []
+    if not str(record.get("source_text") or "").strip():
+        missing.append("script")
+
+    avatars = (observations.get("video-avatars") or {}).get("items") or []
+    ready_avatar_ids = {
+        item.get("id") for item in avatars
+        if isinstance(item, dict) and item.get("status") == "ready"
+    }
+    if options.get("avatar_id") not in ready_avatar_ids:
+        missing.append("avatar")
+
+    voices = (observations.get("voices") or {}).get("items") or []
+    voice_ids = {
+        str(value) for item in voices if isinstance(item, dict)
+        for value in (item.get("voice_key"), item.get("provider_voice"), item.get("slot_id"))
+        if value not in (None, "")
+    }
+    if str(options.get("voice") or "") not in voice_ids:
+        missing.append("voice")
+
+    production_status = str(record.get("status") or "draft")
+    status = (
+        "needs_input" if missing else
+        "awaiting_confirmation" if production_status == "quoted" else
+        "running" if production_status in {"submitting", "queued", "running"} else
+        "completed" if production_status == "done" else
+        "failed" if production_status in {"failed", "refund_pending", "refunded"} else
+        "ready_to_quote"
+    )
+    next_action = {
+        "needs_input": "collect:" + ",".join(missing),
+        "ready_to_quote": "prepare_quote",
+        "awaiting_confirmation": "wait_for_explicit_confirmation",
+        "running": "poll_original_job",
+        "completed": "request_feedback",
+        "failed": "explain_failure_without_retry",
+    }[status]
+    return {
+        "schema": DELEGATION_SCHEMA,
+        "agent_id": AGENT_ID,
+        "production_id": str(record.get("id") or ""),
+        "status": status,
+        "missing": missing,
+        "next_action": next_action,
+        "job_id": record.get("job_id"),
+        "asset_refs": list(record.get("asset_refs") or []) if status == "completed" else [],
+        "tool_trace": [{"tool": name, "status": "ok"} for name in READ_TOOLS],
+    }
 
 
 def capability_gate(state, source=None):

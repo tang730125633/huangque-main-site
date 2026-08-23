@@ -219,7 +219,7 @@ let productions={
 };
 let fieldNodes=[{dataset:{field:'avatar_id'},value:'42'}], calls=[];
 global.document={
-  querySelectorAll:()=>fieldNodes,
+  querySelectorAll:(selector)=>selector.includes('.harness-actions')?[]:fieldNodes,
   getElementById:()=>({innerHTML:''})
 };
 global.fetch=async (url,init)=>{

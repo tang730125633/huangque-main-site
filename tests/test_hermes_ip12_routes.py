@@ -780,6 +780,20 @@ sys.path.insert(0, str(Path(server.__file__).resolve().parents[1]))
 import hq_cli_api
 
 server.current_account_id = lambda: "acct_a"
+server._bridge_catalog = lambda _account: {"version": "test", "actions": [
+    {
+        "action": action, "availability": {"status": "available"},
+        "billing": "free" if action == "canvas-ops" else "quote_then_confirm",
+        "confirmation_required": True,
+        "risk": "write" if action == "canvas-ops" else "production",
+        "result_type": "canvas" if action == "canvas-ops" else "asset",
+        "transport": {"kind": "action"},
+    }
+    for action in (
+        "image-generate", "audio-generate", "digital-ip-text-generate",
+        "digital-ip-audio-generate", "video-generate", "canvas-ops",
+    )
+]}
 security._validate_token = lambda token: {
     "admin-token": {"account_id": "acct_a", "username": "admin", "role": "admin"},
 }.get(token)
@@ -806,6 +820,10 @@ assert not server.load_conversation(intake_cid).get("productions")
 
 cid = "typedproduction01"
 state = server.initial_coach_state()
+state.update(
+    completed_modules=[1, 2, 3, 4, 5, 6], current_module=6, module_step=3,
+    foundation_report={"status": "confirmed"},
+)
 server.save_conversation(cid, {
     "id": cid,
     "title": "typed production",
@@ -854,7 +872,8 @@ clone_body = clone_response.get_json()
 assert clone_body["actions"] == [{
     "type": "open_voice_clone", "label": "在当前对话克隆音色", "primary": True,
 }], clone_body
-assert "只是绑定到这次视频制作" in clone_body["assistant"], clone_body
+assert "打开声音克隆卡" in clone_body["assistant"], clone_body
+assert "上传已有录音" in clone_body["assistant"], clone_body
 assert "不需要离开当前对话" in clone_body["assistant"], clone_body
 assert not server.load_conversation(cid).get("productions"), clone_body
 assert server._explicit_system_media_request("使用系统自带的公共音色") is True
@@ -959,16 +978,17 @@ public_allowed = prepare(
 missing_canvas = prepare("canvas")
 canvas = prepare("canvas", {"board_id": "board_canvas_1"})
 generic_video = prepare("video", {"prompt": "把正文改编成海边日出短片。"}, "video-generate")
-for prepared in (audio_selected, audio_public_selected, video, canvas):
+assert server.load_conversation(cid)["active_production_id"] == generic_video["production_id"]
+for prepared in (audio, audio_selected, audio_public, audio_public_selected, video, canvas):
     assert prepared["status"] == "draft", prepared
-assert audio["status"] == "blocked_prerequisite", audio
-assert audio["missing"] == ["voice"], audio
+assert audio["missing"] == [], audio
+assert audio["options"] == {"voice": "voice-demo"}, audio
 assert audio["schema"]["required"] == ["voice"], audio
 assert [item["const"] for item in audio["schema"]["properties"]["voice"]["oneOf"]] == [
     "voice-demo",
 ], audio
-assert audio_public["status"] == "blocked_prerequisite", audio_public
-assert audio_public["missing"] == ["voice"], audio_public
+assert audio_public["missing"] == [], audio_public
+assert audio_public["options"] == {"voice": "voice-demo"}, audio_public
 assert [item["const"] for item in audio_public["schema"]["properties"]["voice"]["oneOf"]] == [
     "voice-demo", "public-demo",
 ], audio_public
@@ -1570,6 +1590,11 @@ import server
 import security
 
 server.current_account_id = lambda: "acct_handoff"
+server._bridge_catalog = lambda _account: {"version": "test", "actions": [{
+    "action": "digital-ip-text-generate", "availability": {"status": "available"},
+    "billing": "quote_then_confirm", "confirmation_required": True,
+    "risk": "production", "result_type": "asset", "transport": {"kind": "action"},
+}]}
 security._validate_token = lambda token: {"account_id": "acct_handoff", "username": "handoff", "role": "member"}
 security.RATE_REQUESTS = 100
 client = server.app.test_client()
