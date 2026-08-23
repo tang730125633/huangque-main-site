@@ -255,7 +255,7 @@ assert replayed.get_json()["replayed"] is True, replayed.get_json()
         for path in HERMES.glob("*.py"):
             routes.update(pattern.findall(path.read_text(encoding="utf-8")))
 
-        self.assertEqual(len(routes), 84)
+        self.assertEqual(len(routes), 86)
         self.assertTrue(
             {
                 "/api/chat",
@@ -1023,7 +1023,8 @@ assert [item["const"] for item in public_allowed["schema"]["properties"]["voice"
 assert public_allowed["status"] == "draft", public_allowed
 legacy = prepare("video")
 assert legacy["status"] == "draft", legacy
-assert legacy["options"] == {"avatar_id": 7, "voice": "voice-demo"}, legacy
+assert legacy["options"]["avatar_id"] == 7 and legacy["options"]["voice"] == "voice-demo", legacy
+assert legacy["options"]["ratio"] == "9:16" and legacy["options"]["subtitle"] is True, legacy
 assert legacy["missing"] == [], legacy
 assert legacy["material_request_message"]["production_id"] == legacy["production_id"], legacy
 assert "本条消息下方" in legacy["material_request_message"]["content"], legacy
@@ -1164,7 +1165,8 @@ with patch.object(server, "_bridge_action", side_effect=image_bridge):
         "confirmation_id": "confirm-image-001",
     })
     restored = client.get(f"/api/ip12/productions/{image_id}?conversation_id={cid}")
-assert confirmed.status_code == 200 and confirmed.get_json()["production"]["job_id"] == "101"
+assert confirmed.status_code == 200 and "job_id" not in confirmed.get_json()["production"]
+assert server.load_conversation(cid)["productions"][image_id]["job_id"] == "101"
 assert replayed.status_code == 200 and replayed.get_json()["replayed"] is True
 assert restored.get_json()["production"]["status"] == "done"
 assert restored.get_json()["production"]["asset_refs"][0]["url"] == "https://cdn.example/generated.png"
@@ -1246,7 +1248,11 @@ def video_bridge(account_id, action, input_body, **kwargs):
         return {"quote_token": "private-video-quote", "cost": 8, "points": 8, "expires_in": 300}
     video_calls.append((action, input_body, kwargs["idempotency_key"]))
     return {"job_id": "303", "status": "done"}
-with patch.object(server, "_bridge_action", side_effect=video_bridge):
+with patch.object(server, "_bridge_action", side_effect=video_bridge), \
+     patch.object(server, "_verify_video_artifacts", return_value={
+         "decision": "pass", "issues": [],
+         "media": {"duration": 8, "codec": "h264", "width": 1080, "height": 1920},
+     }):
     assert client.post("/api/ip12/productions/quote", json={
         "conversation_id": cid, "production_id": video_id, "expected_revision": revision,
     }).status_code == 200
@@ -1257,9 +1263,10 @@ with patch.object(server, "_bridge_action", side_effect=video_bridge):
     recovered_video = client.get(f"/api/ip12/productions/{video_id}?conversation_id={cid}")
 assert unlinked.status_code == 200, unlinked.get_data(as_text=True)
 assert unlinked.get_json()["production"]["last_error_code"] == "result_link_pending"
-assert recovered_video.get_json()["production"]["job_id"] == "303"
-assert recovered_video.get_json()["production"]["status"] == "done"
-assert recovered_video.get_json()["production"]["asset_refs"][0]["id"] == "asset-video-1"
+assert "job_id" not in recovered_video.get_json()["production"]
+assert server.load_conversation(cid)["productions"][video_id]["job_id"] == "303"
+assert recovered_video.get_json()["production"]["status"] == "done", recovered_video.get_json()
+assert recovered_video.get_json()["production"]["asset_refs"][0]["id"] == "asset-video-1", recovered_video.get_json()
 assert [call[0] for call in video_calls] == ["digital-ip-text-generate", "task"], video_calls
 assert video_calls[0][2] == video_calls[1][2], video_calls
 
@@ -1701,7 +1708,11 @@ def specialist_bridge(account_id, action, input_body, **kwargs):
         return {"job_id": "8801", "status": "queued"}
     return {"quote_token": "private-first-work-quote", "cost": 9, "points": 99, "expires_in": 300}
 
-with patch.object(server, "_bridge_action", side_effect=specialist_bridge):
+with patch.object(server, "_bridge_action", side_effect=specialist_bridge), \
+     patch.object(server, "_verify_video_artifacts", return_value={
+         "decision": "pass", "issues": [],
+         "media": {"duration": 8, "codec": "h264", "width": 1080, "height": 1920},
+     }):
     quoted = client.post("/api/ip12/productions/quote", json={
         "conversation_id": completed_id, "production_id": prepared_body["production_id"],
         "expected_revision": capability_body["state"]["revision"],

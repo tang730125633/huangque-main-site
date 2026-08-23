@@ -166,6 +166,23 @@ class AgentRuntimeContractTests(unittest.TestCase):
             self.assertEqual(event["run_id"], "run_1")
             self.assertNotIn("quote_token", str(agent_runtime.public_event(event)))
 
+    def test_running_and_verifying_resume_after_process_state_is_discarded(self):
+        agent_runtime.resume(self.project, "run_1", self.policy, self.tools)
+        running = agent_runtime.resume(
+            self.project, "run_1", self.policy, self.tools,
+            {"type": "confirm", "approval": "current_quote"},
+        )
+        self.assertEqual(running["status"], "running")
+
+        restored_project = copy.deepcopy(self.project)
+        restored = agent_runtime.resume(
+            restored_project, "run_1", agent_runtime.TalkingHeadPolicy(),
+            self.tools, {"type": "tick"},
+        )
+        self.assertEqual(restored["status"], "completed")
+        self.assertEqual(restored["result"]["writeback"]["artifact_id"], "artifact_1")
+        self.assertEqual(self.calls["production.submit"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

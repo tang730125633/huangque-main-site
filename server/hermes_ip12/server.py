@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Hermes IP 孵化教练 — 前 6 个模块开放，后续能力开发中。"""
-import base64, binascii, hashlib, html, ipaddress, json, os, pathlib, re, shutil, socket, subprocess, tempfile, threading, time, urllib.parse, uuid
+import base64, binascii, copy, hashlib, html, ipaddress, json, os, pathlib, re, shutil, socket, subprocess, tempfile, threading, time, urllib.parse, uuid
 from datetime import datetime, timedelta
 from flask import (
     Flask,
@@ -15,6 +15,7 @@ from flask import (
 )
 import requests
 import agent_runtime
+import cognitive_engine
 import ip12_harness as coach_harness
 import master_agent
 import project_memory
@@ -32,6 +33,10 @@ SEMANTIC_ROUTER_MODE = str(os.environ.get("HERMES_SEMANTIC_ROUTER_MODE") or (
     "live" if MASTER_AGENT_MODE == "live" else "off"
 )).strip().lower()
 SEMANTIC_DEBUG = str(os.environ.get("HERMES_SEMANTIC_DEBUG") or "0").strip() == "1"
+COGNITIVE_ENGINE_MODE = str(os.environ.get("HERMES_COGNITIVE_ENGINE") or "custom").strip().lower()
+if COGNITIVE_ENGINE_MODE not in {"custom", "agents_sdk"}:
+    COGNITIVE_ENGINE_MODE = "custom"
+AGENTS_SDK_ENABLED = str(os.environ.get("HERMES_AGENTS_SDK_ENABLED") or "0").strip() == "1"
 AGENT_RUNTIME_WORKER_ENABLED = str(
     os.environ.get("HERMES_AGENT_RUNTIME_WORKER_ENABLED") or "0"
 ).strip() == "1"
@@ -2202,7 +2207,7 @@ def _resume_talking_head_production_once(cid, account_id, production_id, *,
                 action = ("submit", record["action"], _production_input(record, record.get("options") or {}),
                           quote.get("token", ""), record["idempotency_key"])
                 save_conversation(cid, convo)
-            elif status in {"queued", "running", "refund_pending"} and record.get("job_id"):
+            elif status in {"submitting", "queued", "running", "refund_pending"} and record.get("job_id"):
                 _runtime_tool(
                     convo, record, "task.read", "started",
                     input_value={"production_id": record["id"]}, suffix="task",
@@ -3155,6 +3160,8 @@ def healthz():
         "release_sha": IP12_RELEASE_SHA,
         "master_agent_mode": MASTER_AGENT_MODE,
         "semantic_router_mode": SEMANTIC_ROUTER_MODE,
+        "cognitive_engine": COGNITIVE_ENGINE_MODE,
+        "agents_sdk_enabled": AGENTS_SDK_ENABLED,
         "project_memory_schema": project_memory.SCHEMA,
     })
 
@@ -5783,7 +5790,7 @@ def _process_pause_turn(cid, user_message, expected_revision=None, request_id=""
     return result, 200
 
 
-def _semantic_master_decision(memory, user_message):
+def _custom_semantic_master_decision(memory, user_message):
     response = call_ai(
         semantic_router.messages(memory, user_message),
         stream=False, temperature=0, max_tokens=1400,
@@ -5799,6 +5806,19 @@ def _semantic_master_decision(memory, user_message):
             memory_updates=[],
         )
     return decision
+
+
+def _semantic_master_decision(memory, user_message):
+    return cognitive_engine.decide(
+        memory,
+        user_message,
+        _custom_semantic_master_decision,
+        mode=COGNITIVE_ENGINE_MODE,
+        sdk_enabled=AGENTS_SDK_ENABLED,
+        sdk_decider=cognitive_engine.agents_sdk_decider,
+        agent_run=memory.get("active_agent_run") if isinstance(memory, dict) else None,
+        timeout_seconds=50,
+    )
 
 
 def _semantic_debug_allowed():

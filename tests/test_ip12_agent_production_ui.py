@@ -239,6 +239,7 @@ function updateProductionFromPayload(data){
 }
 function openPanel(){}
 function toast(){}
+function newTurnRequestId(){return 'turn-fixture-1'}
 (async()=>{
   await requestProductionQuote();
   const quoteCall=calls[calls.length-1];
@@ -275,7 +276,7 @@ function toast(){}
         self.assertIn("item.type==='prepare_production'", send)
         self.assertIn("else if(autoAction)await runStateAction(autoAction)", send)
         polling = self.html[self.html.index("function stopProductionPoll"):self.html.index("function productionRoute")]
-        self.assertIn("['submitting','queued','running']", polling)
+        self.assertIn("['submitting','queued','running','verifying','refund_pending']", polling)
         self.assertIn("refreshProduction(true,record.id)", polling)
         self.assertNotIn("confirmProduction(record.id)", polling)
         chat = self.html[self.html.index("function productionMessageHtml"):self.html.index("function isSafeMarkdownUrl")]

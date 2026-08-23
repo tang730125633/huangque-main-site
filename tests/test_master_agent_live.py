@@ -58,8 +58,9 @@ assert "尚未提交" in body["assistant"], body
 assert body["agent_status"]["delegate"] == "口播短视频 Agent", body
 assert "run_id" not in body["agent_status"] and "specialist_result" not in body["agent_status"], body
 saved = server.load_conversation(cid)
-run = saved["agent_runs"]["master-delegate-prod_1-live-status-1"]
-assert run["result"]["status"] == "awaiting_confirmation", run
+run_id = saved["productions"]["prod_1"]["agent_run_id"]
+run = saved["agent_runs"][run_id]
+assert run["status"] == "awaiting_confirmation", run
 assert not any(call["tool"] == "production.submit" for call in run["tool_calls"].values()), run
 assert "must-stay-private" not in str(body), body
 revision = saved["coach_state"]["revision"]

@@ -160,6 +160,10 @@ def build(project, state, capability_gates=None):
     productions = _productions(project)
     active_id = _text(project.get("active_production_id"), 100)
     active = next((item for item in productions if item["production_id"] == active_id), None)
+    active_record = (project.get("productions") or {}).get(active_id) if active_id else None
+    active_run = (project.get("agent_runs") or {}).get(
+        str((active_record or {}).get("agent_run_id") or "")
+    ) if isinstance(active_record, dict) else None
     candidates = [item for item in productions if item["status"] in ACTIVE_PRODUCTION_STATUSES]
     return {
         "schema": SCHEMA,
@@ -186,6 +190,10 @@ def build(project, state, capability_gates=None):
         },
         "productions": productions,
         "active_production": copy.deepcopy(active),
+        "active_agent_run": {
+            key: _text((active_run or {}).get(key), 200)
+            for key in ("agent_id", "status", "awaiting", "next_action")
+        } if isinstance(active_run, dict) else None,
         "active_production_candidates": copy.deepcopy(candidates),
         "capability_gates": copy.deepcopy(capability_gates or []),
         "recent_messages": _recent_messages(project),
