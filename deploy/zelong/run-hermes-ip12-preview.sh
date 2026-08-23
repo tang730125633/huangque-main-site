@@ -10,6 +10,7 @@ set +a
 export OPENAI_API_BASE="${HERMES_PREVIEW_BASE:-https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions}"
 export OPENAI_API_KEY="${HERMES_PREVIEW_API_KEY:-$DASHSCOPE_API_KEY}"
 export HERMES_MODEL="${HERMES_PREVIEW_MODEL:-qwen-plus}"
+export HERMES_MASTER_AGENT_MODE="${HERMES_PREVIEW_MASTER_AGENT_MODE:-shadow}"
 export HERMES_HOME=/home/ubuntu/hermes-preview
 export HERMES_DATA_DIR=/home/ubuntu/hermes-preview-data
 export HERMES_DATA_QUOTA_MB=512
