@@ -340,6 +340,8 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
         self.assertIn('HERMES_PREVIEW_MODEL:-gemini-3.5-flash', preview_runner)
         self.assertIn("models_url", preview_runner)
         self.assertIn("configured Hermes preview model is unavailable", preview_runner)
+        self.assertIn('if models:', preview_runner)
+        self.assertIn('"max_tokens": 1', preview_runner)
         self.assertIn("/home/ubuntu/hermes-preview-deps", preview_runner)
         self.assertIn("/home/ubuntu/hermes-preview/bin", preview_runner)
         self.assertIn("missing preview media modules", preview_runner)

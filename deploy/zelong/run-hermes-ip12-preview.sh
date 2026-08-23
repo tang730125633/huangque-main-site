@@ -45,7 +45,21 @@ models = {
     if isinstance(item, dict) and item.get("id")
 }
 if os.environ["HERMES_MODEL"] not in models:
-    raise SystemExit("configured Hermes preview model is unavailable")
+    if models:
+        raise SystemExit("configured Hermes preview model is unavailable")
+    chat_url = base if base.endswith("/chat/completions") else base + "/chat/completions"
+    probe = requests.post(
+        chat_url,
+        headers={"Authorization": "Bearer " + os.environ["OPENAI_API_KEY"]},
+        json={
+            "model": os.environ["HERMES_MODEL"],
+            "messages": [{"role": "user", "content": "reply OK"}],
+            "max_tokens": 1,
+            "temperature": 0,
+        },
+        timeout=30,
+    )
+    probe.raise_for_status()
 
 from server import app
 
