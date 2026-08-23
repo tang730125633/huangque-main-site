@@ -236,7 +236,7 @@ def list_user_audio_voice_slots(username):
         rows = c.execute("""SELECT s.id, s.username, s.user_id, s.slot_id, s.status, s.voice_id, COALESCE(s.reclone_count, 0) AS reclone_count,
                    s.created_at, s.updated_at, s.clone_started_at, s.clone_upload_at, s.clone_error,
                    s.clone_upload_speaker_id, s.clone_upload_response,
-                   v.display_name AS voice_name, v.preview_file, v.preview_url, v.updated_at AS voice_updated_at
+                   v.display_name AS voice_name, v.provider_voice, v.preview_file, v.preview_url, v.updated_at AS voice_updated_at
             FROM audio_voice_slots s
             LEFT JOIN audio_voices v ON v.id = s.voice_id
             WHERE s.username=?
@@ -246,6 +246,9 @@ def list_user_audio_voice_slots(username):
         d = dict(r)
         if d.get("preview_url") and d.get("voice_id") and d.get("status") == "training":
             d["status"] = "ready"
+        elif (d.get("status") == "ready" and d.get("voice_id") and not d.get("preview_url")
+              and str(d.get("provider_voice") or "").startswith(cosyvoice.CLONE_MODEL)):
+            d["status"] = "training"
         items.append(d)
     return items
 
@@ -288,7 +291,7 @@ def check_clone_status(username, slot_id):
                    clone_baseline_version, clone_baseline_icl_speaker_id, clone_baseline_demo_audio
             FROM audio_voice_slots
             WHERE username=? AND slot_id=?""", (username, slot_id)).fetchone()
-        voice = c.execute("""SELECT display_name, provider_voice, preview_url FROM audio_voices
+        voice = c.execute("""SELECT voice_key, display_name, provider_voice, preview_url FROM audio_voices
             WHERE id=? AND username=? AND slot_id=?""",
             (slot["voice_id"] if slot else -1, username, slot_id)).fetchone()
     if not slot:
@@ -333,13 +336,26 @@ def check_clone_status(username, slot_id):
             cv_status, _ = cosyvoice.voice_status(provider_voice)
         except Exception:
             return {"status": slot["status"] or "training"}
-        new_status = "ready" if cv_status == "OK" else ("failed" if cv_status not in ("", "OK") and "ing" not in cv_status.lower() else "training")
+        preview_url = str(voice["preview_url"] or "") if voice else ""
+        if cv_status == "OK" and preview_url:
+            new_status = "ready"
+        elif cv_status not in ("", "OK") and "ing" not in cv_status.lower():
+            new_status = "failed"
+        else:
+            new_status = "training"
         if new_status != slot["status"]:
             with closing(adb()) as c:
                 c.execute("UPDATE audio_voice_slots SET status=?, updated_at=? WHERE username=? AND slot_id=?",
                           (new_status, int(time.time()), username, slot_id))
                 c.commit()
-        return {"status": new_status, "cosy_status": cv_status}
+        if cv_status == "OK" and not preview_url and voice:
+            _cosy_backfill_preview_async(provider_voice, username, voice["voice_key"])
+        result = {"status": new_status, "cosy_status": cv_status}
+        if preview_url:
+            result["preview_url"] = preview_url
+        elif cv_status == "OK":
+            result["preview_pending"] = True
+        return result
     if slot["status"] == "training":
         return {"status": "training"}
     return {"status": "failed", "clone_error": "该音色来自已停用渠道，请重新复刻"}
@@ -507,15 +523,25 @@ def _cosy_clone_preview(voice_id):
     return None, None
 
 
+_COSY_PREVIEW_BACKFILL_ACTIVE = set()
+_COSY_PREVIEW_BACKFILL_LOCK = threading.Lock()
+
+
 def _cosy_backfill_preview_async(voice_id, username, voice_key):
     """复刻返回后【异步】生成试听并回填，不拖慢音色「就绪」。synth 对就绪窗口重试(#602)，
     成功就 UPDATE 该音色行的 preview 并同步槽位 ready。provider_voice 必须仍匹配本次
     复刻，避免旧异步任务覆盖随后发起的新复刻。"""
+    job_key = (str(username), str(voice_key), str(voice_id))
+    with _COSY_PREVIEW_BACKFILL_LOCK:
+        if job_key in _COSY_PREVIEW_BACKFILL_ACTIVE:
+            return False
+        _COSY_PREVIEW_BACKFILL_ACTIVE.add(job_key)
+
     def _run():
-        pf, url = _cosy_clone_preview(voice_id)
-        if not url:
-            return
         try:
+            pf, url = _cosy_clone_preview(voice_id)
+            if not url:
+                return
             with closing(adb()) as c:
                 now = int(time.time())
                 cur = c.execute("""UPDATE audio_voices SET preview_file=?, preview_url=?, updated_at=?
@@ -533,12 +559,16 @@ def _cosy_backfill_preview_async(voice_id, username, voice_key):
                 c.commit()
         except Exception as e:
             print("[cosyvoice] 试听回填落库失败: %s" % str(e)[:120], flush=True)
+        finally:
+            with _COSY_PREVIEW_BACKFILL_LOCK:
+                _COSY_PREVIEW_BACKFILL_ACTIVE.discard(job_key)
     threading.Thread(target=_run, name="cosy-preview-backfill", daemon=True).start()
+    return True
 
 def _clone_via_cosyvoice(username, slot_id, name, audio_b64):
     """CosyVoice 复刻：60s 参考音频(已由 prepare_clone_audio 标准化) → COS 预签名 URL
     → create_voice 拿 voice_id → 落库。voice_id 直接作为 provider_voice，合成时按它选复刻模型。
-    坑位免费，所以不再走豆包那套付费 slot 校验；create_voice 同步返回，可用即 ready。"""
+    坑位免费，所以不再走豆包那套付费 slot 校验；试听生成成功后才标记完整 ready。"""
     if not cos.enabled():
         raise ValueError("声音复刻需要 COS 存参考音频，当前未启用 COS")
     raw = base64.b64decode(audio_b64)
@@ -554,8 +584,8 @@ def _clone_via_cosyvoice(username, slot_id, name, audio_b64):
         except Exception:
             pass
     voice_id = cosyvoice.create_voice(ref_url)
-    status, _ = cosyvoice.voice_status(voice_id)
-    slot_status = "ready" if status == "OK" else "training"
+    cosyvoice.voice_status(voice_id)
+    slot_status = "training"
     now = int(time.time())
     voice_key = "vip_" + re.sub(r"[^a-zA-Z0-9_\-]", "_", slot_id)
     with closing(adb()) as c:
@@ -573,9 +603,8 @@ def _clone_via_cosyvoice(username, slot_id, name, audio_b64):
             clone_error=NULL, clone_upload_speaker_id=?, updated_at=? WHERE username=? AND slot_id=?""",
             (vid_row, slot_status, now, now, voice_id, now, username, slot_id))
         c.commit()
-    # CosyVoice 的 create_voice 不返样音，复刻后自己合成一句试听存 COS——否则前端没 preview_url
-    # 就不显示试听按钮。⚠️试听【异步】生成:音色/坑位已先落 ready(用户立即可用)，试听在后台线程
-    # 对就绪窗口重试后回填(#602)——不再用 slot_status 门控、也不拖慢「就绪」。
+    # CosyVoice 的 create_voice 不返样音，复刻后自己合成一句试听存 COS。槽位保持 training，
+    # 直到试听文件成功回填才标记 ready；避免“显示完成但播放器没有文件”。
     _cosy_backfill_preview_async(voice_id, username, voice_key)
     return {"voice_id": vid_row, "voice_key": voice_key, "display_name": name,
             "provider_voice": voice_id, "status": slot_status}
