@@ -87,6 +87,8 @@ assert all(item["status"] == "unlocked" for item in server.capability_gates(stat
         )
         self.assertNotIn('"messages": [{"role": "assistant"', source)
         self.assertIn("legacy_unknown", source)
+        self.assertIn('assistant_extra={"ui_action": voice_action}', source)
+        self.assertIn('last_assistant.get("ui_action")', source)
         self.assertIn(".ip12-release-sha", source)
 
     def test_health_uses_the_deployed_release_marker_without_an_env_override(self):

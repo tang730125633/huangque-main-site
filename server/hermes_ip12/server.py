@@ -2667,6 +2667,10 @@ def api_get_convo(cid):
             message["agent_trace"] = {"status": "legacy_unknown"}
     public_convo["harness_actions"] = coach_harness.available_actions(public_convo["coach_state"])
     public_convo["capability_gates"] = capability_gates(public_convo["coach_state"])
+    last_assistant = next((message for message in reversed(public_convo.get("messages") or [])
+                           if message.get("role") == "assistant"), {})
+    if not public_convo["harness_actions"] and isinstance(last_assistant.get("ui_action"), dict):
+        public_convo["harness_actions"] = [last_assistant["ui_action"]]
     handoff = _post_module_six_production_action(convo)
     if handoff and not public_convo["harness_actions"]:
         public_convo["harness_actions"] = [handoff]
@@ -3816,7 +3820,7 @@ def _persist_model_turn(
 
 def _persist_unprocessed_turn(
     cid, user_message, snapshot_revision, prefix="", message_id="", assistant_override="",
-    skills=None,
+    skills=None, assistant_extra=None,
 ):
     with CONVERSATION_STATE_LOCK:
         convo = owned_conversation(cid)
@@ -3837,7 +3841,7 @@ def _persist_unprocessed_turn(
         trace_skills = skills or (
             ["harness_action", "safety_fallback"] if prefix else ["safety_fallback"]
         )
-        _append_assistant_message(convo, assistant, trace_skills)
+        _append_assistant_message(convo, assistant, trace_skills, **(assistant_extra or {}))
         state["revision"] += 1
         convo["coach_state"] = state
         if convo.get("title") == "新诊断":
@@ -4435,6 +4439,9 @@ def _process_production_intent_turn(
     labels = {"image": "图片", "audio": "音频", "video": "视频", "canvas": "Canvas"}
     label = labels[family]
     if intent.get("voice_clone_request"):
+        voice_action = {
+            "type": "open_voice_clone", "label": "在当前对话克隆音色", "primary": True,
+        }
         assistant = (
             "可以进行声音克隆。你刚上传的音频目前只是绑定到这次视频制作，"
             "还没有保存为长期个人音色。我已在当前 Project 打开声音克隆卡；"
@@ -4445,11 +4452,10 @@ def _process_production_intent_turn(
         assistant, next_state = _persist_unprocessed_turn(
             cid, user_message, snapshot_revision, message_id=message_id,
             assistant_override=assistant, skills=["production_bridge"],
+            assistant_extra={"ui_action": voice_action},
         )
         result = _chat_result(assistant, next_state)
-        result["actions"] = [{
-            "type": "open_voice_clone", "label": "在当前对话克隆音色", "primary": True,
-        }]
+        result["actions"] = [voice_action]
         return result, 200
     if help_only:
         assistant = _capability_help_reply(current_account_id(), selected_action)
