@@ -13,6 +13,7 @@ sys.path.insert(0, str(HERMES))
 
 import project_memory
 import semantic_router
+import eval_contract
 
 
 def decision(**changes):
@@ -60,37 +61,9 @@ class SemanticDecisionContractTests(unittest.TestCase):
         corpus = json.loads(
             (Path(__file__).parent / "fixtures" / "ip12_semantic_router_cases.json").read_text()
         )
-        memory = {
-            "schema": project_memory.SCHEMA,
-            "project_id": "semantic-eval",
-            "workflow": {
-                "current_module": 6, "module_step": 3,
-                "completed_modules": [1, 2, 3, 4, 5, 6],
-                "foundation_status": "confirmed", "pending": None,
-            },
-            "facts": {"location": {"value": "成都", "evidence": "在成都"}},
-            "preferences": {}, "confirmed_outputs": [],
-            "content_topics": [
-                {"category_id": "category-1", "topic_id": "topic-1-01", "title": "第一篇"},
-                {"category_id": "category-2", "topic_id": "topic-2-01", "title": "第二篇"},
-                {"category_id": "category-3", "topic_id": "topic-3-01", "title": "第三篇"},
-            ],
-            "active_content_target": {"category_id": "", "topic_id": ""},
-            "voice_clone": {"status": "complete", "voice_name": "我的个人音色", "slot_id": "slot-1"},
-            "productions": [], "active_production": None,
-            "active_production_candidates": [], "recent_messages": [],
-            "capability_gates": [],
-            "tool_catalog": [
-                {"tool": "weather.current", "delegate_to": "none", "available": True},
-                {"tool": "project.status", "delegate_to": "none", "available": True},
-                {"tool": "content.revise", "delegate_to": "content_revision_agent", "available": True},
-                {"tool": "voice_clone.open", "delegate_to": "voice_clone_agent", "available": True},
-                {"tool": "audio_preview.prepare", "delegate_to": "audio_preview_agent", "available": True},
-                {"tool": "talking_head.prepare", "delegate_to": "talking_head_video_agent", "available": True},
-            ],
-        }
         for case in corpus:
             with self.subTest(case=case["id"]):
+                memory = eval_contract.memory_for_case(case)
                 routed = server._semantic_master_decision(memory, case["message"])
                 self.assertIn(routed["intent"], case["expected_intents"], routed)
                 expected_tools = {case["tool"]}
@@ -155,6 +128,25 @@ class ProjectMemoryTests(unittest.TestCase):
             {"id": "p", "productions": records, "active_production_id": "prod_a"}, state
         )
         self.assertEqual(explicit["active_production"]["production_id"], "prod_a")
+
+    def test_project_memory_exposes_conservative_asset_readiness(self):
+        state = {"revision": 1, "current_module": 6, "completed_modules": [1, 2, 3, 4, 5, 6]}
+        project = {
+            "id": "p", "active_production_id": "prod_video",
+            "voice_clone_ui": {"status": "complete", "voice_name": "我的音色"},
+            "productions": {"prod_video": {
+                "id": "prod_video", "action": "digital-ip-text-generate",
+                "status": "draft", "options": {"avatar_id": 7},
+            }},
+        }
+        memory = project_memory.build(project, state)
+        self.assertEqual(memory["available_assets"], {
+            "avatar_ready": True, "voice_ready": True,
+        })
+        empty = project_memory.build({"id": "empty"}, state)
+        self.assertEqual(empty["available_assets"], {
+            "avatar_ready": False, "voice_ready": False,
+        })
 
     def test_content_reference_requires_explicit_or_persisted_target(self):
         memory = {

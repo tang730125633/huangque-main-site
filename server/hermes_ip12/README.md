@@ -14,6 +14,37 @@ python3 -c 'import server; server.app.run(host="127.0.0.1", port=3102, debug=Fal
 `/` serves the current Project workbench. `/classic` is a compatibility alias
 for the same page; the former session interface is retired.
 
+## IP12 T1–T4 acceptance gates
+
+The frozen product and safety contract is in
+`docs/IP12-Agent验收合同-T1-T4.md`. The permanent stateful dialogue corpus is
+`tests/fixtures/ip12_semantic_router_cases.json`; every Cognitive Engine and
+Provider must use the same cases and thresholds.
+
+Zero-cost contract and compatibility checks:
+
+```bash
+python3 -m pytest -q \
+  tests/test_ip12_eval_contract.py \
+  tests/test_ip12_provider_compat.py \
+  tests/test_cognitive_engine.py \
+  tests/test_semantic_master_router.py
+```
+
+Hard gates are: Schema and safety 100%, no tool/reference hallucinations, no
+chat-to-production misfire, and at least 90% exact intent/delegate/tool routing.
+An average score never overrides one payment, privacy, idempotency, or business
+state failure.
+
+Provider transcripts are graded by `provider_compat.py`. HTTP 200 without
+behavioral evidence remains `unknown` or `fail`. Current live blockers and the
+official baseline are documented in `docs/IP12-Provider兼容矩阵-T2.md`.
+
+Real Provider Eval is never enabled by the default test command. It requires
+separate protected credentials, an explicit model/cost approval, and zero
+Huangque production tools. Until that evidence passes, keep
+`HERMES_AGENTS_SDK_ENABLED=0` and do not run a Zelong SDK Canary.
+
 ## One-time artifact ownership migration
 
 Before the first deployment that enables owner-isolated artifact storage, map

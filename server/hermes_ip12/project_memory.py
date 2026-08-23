@@ -151,6 +151,15 @@ def _pending(state):
     }
 
 
+def _available_assets(active, voice_ui):
+    fields = set((active or {}).get("selected_fields") or [])
+    return {
+        "avatar_ready": bool(fields.intersection({"avatar_id", "image_upload_id"})),
+        "voice_ready": bool(fields.intersection({"voice", "audio_upload_id"}))
+        or str((voice_ui or {}).get("status") or "") in {"complete", "ready"},
+    }
+
+
 def build(project, state, capability_gates=None):
     """Build a compact snapshot from one already-authorized Project."""
     project = project if isinstance(project, dict) else {}
@@ -188,6 +197,7 @@ def build(project, state, capability_gates=None):
             "voice_name": _text(voice_ui.get("voice_name"), 80),
             "slot_id": _text(voice_ui.get("slot_id"), 120),
         },
+        "available_assets": _available_assets(active, voice_ui),
         "productions": productions,
         "active_production": copy.deepcopy(active),
         "active_agent_run": {

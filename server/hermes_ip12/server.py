@@ -33,10 +33,10 @@ SEMANTIC_ROUTER_MODE = str(os.environ.get("HERMES_SEMANTIC_ROUTER_MODE") or (
     "live" if MASTER_AGENT_MODE == "live" else "off"
 )).strip().lower()
 SEMANTIC_DEBUG = str(os.environ.get("HERMES_SEMANTIC_DEBUG") or "0").strip() == "1"
-COGNITIVE_ENGINE_MODE = str(os.environ.get("HERMES_COGNITIVE_ENGINE") or "custom").strip().lower()
-if COGNITIVE_ENGINE_MODE not in {"custom", "agents_sdk"}:
-    COGNITIVE_ENGINE_MODE = "custom"
-AGENTS_SDK_ENABLED = str(os.environ.get("HERMES_AGENTS_SDK_ENABLED") or "0").strip() == "1"
+COGNITIVE_ENGINE_REQUESTED = str(os.environ.get("HERMES_COGNITIVE_ENGINE") or "custom").strip().lower()
+if COGNITIVE_ENGINE_REQUESTED not in {"custom", "agents_sdk"}:
+    COGNITIVE_ENGINE_REQUESTED = "custom"
+AGENTS_SDK_REQUESTED = str(os.environ.get("HERMES_AGENTS_SDK_ENABLED") or "0").strip() == "1"
 AGENT_RUNTIME_WORKER_ENABLED = str(
     os.environ.get("HERMES_AGENT_RUNTIME_WORKER_ENABLED") or "0"
 ).strip() == "1"
@@ -52,6 +52,14 @@ try:
 except OSError:
     _release_sha_file = ""
 IP12_RELEASE_SHA = os.environ.get("IP12_RELEASE_SHA") or _release_sha_file or None
+AGENTS_SDK_CONFORMANCE = cognitive_engine.conformance_gate(
+    IP12_RELEASE_SHA, requested=AGENTS_SDK_REQUESTED
+)
+AGENTS_SDK_ENABLED = AGENTS_SDK_REQUESTED and AGENTS_SDK_CONFORMANCE["valid"]
+COGNITIVE_ENGINE_MODE = (
+    "agents_sdk" if COGNITIVE_ENGINE_REQUESTED == "agents_sdk" and AGENTS_SDK_ENABLED
+    else "custom"
+)
 PORT = 3000
 PROJECT_DIR = ROOT_DIR
 CONVOS_DIR = DATA_DIR / "conversations"
@@ -3161,7 +3169,10 @@ def healthz():
         "master_agent_mode": MASTER_AGENT_MODE,
         "semantic_router_mode": SEMANTIC_ROUTER_MODE,
         "cognitive_engine": COGNITIVE_ENGINE_MODE,
+        "cognitive_engine_requested": COGNITIVE_ENGINE_REQUESTED,
         "agents_sdk_enabled": AGENTS_SDK_ENABLED,
+        "agents_sdk_conformance": AGENTS_SDK_CONFORMANCE,
+        "cognitive_metrics": cognitive_engine.metrics(),
         "project_memory_schema": project_memory.SCHEMA,
     })
 

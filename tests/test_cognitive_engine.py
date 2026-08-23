@@ -3,6 +3,8 @@ import importlib.util
 import json
 import os
 import sys
+import tempfile
+import time
 import unittest
 from unittest.mock import AsyncMock
 from types import SimpleNamespace
@@ -85,6 +87,22 @@ class CognitiveEngineTests(unittest.TestCase):
         self.assertEqual(context["agent_run"]["status"], "planning")
         self.assertEqual(context["read_tools"], ["project.read", "capability.read", "assets.read"])
 
+    def test_safe_context_preserves_exact_asset_readiness_without_private_ids(self):
+        source = memory()
+        source["available_assets"] = {"avatar_ready": False, "voice_ready": True}
+        context = cognitive_engine.safe_context(source, "制作")
+        self.assertEqual(context["project"]["available_assets"], {
+            "avatar_ready": False, "voice_ready": True,
+        })
+        self.assertEqual(cognitive_engine.asset_readiness(context), {
+            "avatar_ready": False, "voice_ready": True,
+        })
+        source["available_assets"] = {"avatar_ready": True, "voice_ready": False}
+        second = cognitive_engine.safe_context(source, "制作")
+        self.assertEqual(cognitive_engine.asset_readiness(second), {
+            "avatar_ready": True, "voice_ready": False,
+        })
+
     def test_custom_and_sdk_return_the_same_vendor_neutral_contract(self):
         expected = decision(
             intent="delegate", delegate_to="talking_head_video_agent",
@@ -116,12 +134,16 @@ class CognitiveEngineTests(unittest.TestCase):
                 references={"production_id": "unknown", "category_id": "", "topic_id": ""},
             )
 
+        before_metrics = cognitive_engine.metrics()
         got = cognitive_engine.decide(
             source, "制作", lambda *_: copy.deepcopy(fallback), mode="agents_sdk",
             sdk_enabled=True, sdk_decider=invalid,
         )
         self.assertEqual(got["reply"], "安全回退")
         self.assertEqual(source, before)
+        after_metrics = cognitive_engine.metrics()
+        self.assertEqual(after_metrics["sdk_fallbacks"], before_metrics["sdk_fallbacks"] + 1)
+        self.assertNotIn("unknown", str(after_metrics["fallback_reasons"]))
 
         def timeout(*_):
             raise TimeoutError("sdk timeout")
@@ -159,6 +181,65 @@ class CognitiveEngineTests(unittest.TestCase):
         self.assertEqual(got["intent"], "clarify")
         self.assertEqual(got["tool"], "none")
 
+    def test_unknown_provider_and_unproven_dashscope_fail_closed(self):
+        context = cognitive_engine.safe_context(memory(), "你好")
+        with patch.dict(os.environ, {
+            "HERMES_AGENTS_SDK_PROVIDER": "zelong_proxy",
+            "HERMES_AGENTS_SDK_MODEL": "fixture-model",
+        }):
+            with self.assertRaisesRegex(RuntimeError, "provider_unsupported"):
+                cognitive_engine.agents_sdk_decider(context, "你好", 1)
+        with patch.dict(os.environ, {
+            "HERMES_AGENTS_SDK_PROVIDER": "dashscope",
+            "HERMES_AGENTS_SDK_MODEL": "qwen-plus",
+            "DASHSCOPE_API_KEY": "dummy",
+            "HERMES_AGENTS_SDK_DASHSCOPE_CONFORMANT": "0",
+        }):
+            with self.assertRaisesRegex(RuntimeError, "conformance_not_proven"):
+                cognitive_engine.agents_sdk_decider(context, "你好", 1)
+
+    def test_sdk_enablement_requires_pinned_live_conformance_artifact(self):
+        release = "release-fixture"
+        with patch.dict(os.environ, {"HERMES_AGENTS_SDK_ENABLED": "1"}, clear=False):
+            blocked = cognitive_engine.conformance_gate(release)
+        self.assertFalse(blocked["valid"])
+        self.assertEqual(blocked["reason"], "conformance_artifact_not_configured")
+
+        report = {
+            "schema": "ip12.cognitive-conformance/v1", "decision": "PASS",
+            "evidence_source": "live_capture", "release_sha": release,
+            "corpus_sha256": cognitive_engine.CORPUS_SHA256, "provider": "openai",
+            "model": "model-fixture", "expires_at": int(time.time()) + 3600,
+            "eval": {
+                "schema_rate": 1.0, "safety_rate": 1.0, "route_rate": 0.95,
+                "tool_hallucinations": 0, "reference_hallucinations": 0,
+                "chat_tool_misfires": 0,
+            },
+            "provider_compat": {
+                "schema": "ip12.provider-compat-report/v1", "decision": "PASS",
+                "passed": True, "evidence_source": "live_capture",
+                "evidence_correlated": True,
+                "provider": "openai", "model": "model-fixture",
+            },
+        }
+        encoded = json.dumps(report, ensure_ascii=False, sort_keys=True).encode()
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "conformance.json"
+            path.write_bytes(encoded)
+            with patch.dict(os.environ, {
+                "HERMES_AGENTS_SDK_ENABLED": "1",
+                "HERMES_AGENTS_SDK_PROVIDER": "openai",
+                "HERMES_AGENTS_SDK_MODEL": "model-fixture",
+                "HERMES_AGENTS_SDK_CONFORMANCE_PATH": str(path),
+                "HERMES_AGENTS_SDK_CONFORMANCE_SHA256": __import__("hashlib").sha256(encoded).hexdigest(),
+            }, clear=False):
+                allowed = cognitive_engine.conformance_gate(release)
+                self.assertTrue(allowed["valid"], allowed)
+                report["evidence_source"] = "fixture"
+                path.write_text(json.dumps(report, ensure_ascii=False, sort_keys=True))
+                rejected = cognitive_engine.conformance_gate(release)
+                self.assertFalse(rejected["valid"])
+
     def test_custom_keeps_valid_references_outside_the_sdk_safe_window(self):
         source = memory()
         source["content_topics"] = [
@@ -191,6 +272,7 @@ class CognitiveEngineTests(unittest.TestCase):
         self.assertEqual(got, expected)
         self.assertEqual(master.name, "ip12_master_agent")
         self.assertEqual([tool.name for tool in master.tools], ["talking_head_video_agent"])
+        self.assertIs(master.model_settings.store, False)
         self.assertTrue(run.await_args.kwargs["run_config"].tracing_disabled)
         self.assertFalse(run.await_args.kwargs["run_config"].trace_include_sensitive_data)
         self.assertNotIn("session", run.await_args.kwargs)
