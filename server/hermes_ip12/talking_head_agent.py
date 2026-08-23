@@ -19,6 +19,7 @@ _STAGES = {
     "submitting": "submitting_once",
     "queued": "generating",
     "running": "generating",
+    "verifying": "verifying",
     "done": "delivered",
     "failed": "failed",
     "refund_pending": "failed",
@@ -31,6 +32,7 @@ _NEXT_ACTIONS = {
     "awaiting_confirmation": "等待用户确认报价",
     "submitting_once": "恢复同一条确认请求",
     "generating": "查询原任务并等待成品",
+    "verifying": "验证成品可播放后写回 Project",
     "delivered": "请用户试听试看并说明修改意见",
     "failed": "说明失败与退款状态后决定是否重试",
 }
