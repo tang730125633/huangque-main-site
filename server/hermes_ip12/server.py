@@ -4437,9 +4437,9 @@ def _process_production_intent_turn(
     if intent.get("voice_clone_request"):
         assistant = (
             "可以进行声音克隆。你刚上传的音频目前只是绑定到这次视频制作，"
-            "还没有保存为长期个人音色。我会带你进入个人音色复刻页；"
-            "在那里选择可用槽位、上传清晰本人样音并确认复刻。"
-            "完成后返回当前 Project，就能选择新音色重新报价。进入页面和上传样音本身不扣点。"
+            "还没有保存为长期个人音色。我已在当前 Project 打开声音克隆卡；"
+            "你可以直接选择槽位、命名、上传清晰本人样音并确认复刻，不需要离开当前对话。"
+            "复刻完成后即可选择新音色重新报价。上传样音本身不扣点。"
         )
         message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
         assistant, next_state = _persist_unprocessed_turn(
@@ -4448,8 +4448,7 @@ def _process_production_intent_turn(
         )
         result = _chat_result(assistant, next_state)
         result["actions"] = [{
-            "type": "navigate_to", "label": "打开个人音色复刻", "primary": True,
-            "ui_route": "/workbench/assets?cat=audio&audioTab=personal&cloneVoice=1",
+            "type": "open_voice_clone", "label": "在当前对话克隆音色", "primary": True,
         }]
         return result, 200
     if help_only:
