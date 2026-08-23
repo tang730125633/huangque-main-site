@@ -66,9 +66,9 @@ assert all(item["status"] == "unlocked" for item in server.capability_gates(stat
         page = (HERMES / "templates" / "index.html").read_text(encoding="utf-8")
         self.assertIn("能力解锁", page)
         self.assertIn("function openCapabilityGates", page)
+        self.assertIn("function openInlineVoiceClone", page)
+        self.assertIn("确认并开始 VIP 复刻", page)
         assets = (ROOT / "site" / "workbench" / "assets.html").read_text(encoding="utf-8")
-        self.assertIn("cloneVoice", assets)
-        self.assertIn("openCloneVoiceModal(cloneSlot)", assets)
         self.assertIn('id="cloneVoiceBasic" disabled', assets)
 
     def test_persistent_assistant_messages_use_one_versioned_append_helper(self):
@@ -732,10 +732,10 @@ clone_response = client.post("/api/chat-complete", json={
 assert clone_response.status_code == 200, clone_response.get_data(as_text=True)
 clone_body = clone_response.get_json()
 assert clone_body["actions"] == [{
-    "type": "navigate_to", "label": "打开个人音色复刻", "primary": True,
-    "ui_route": "/workbench/assets?cat=audio&audioTab=personal&cloneVoice=1",
+    "type": "open_voice_clone", "label": "在当前对话克隆音色", "primary": True,
 }], clone_body
 assert "只是绑定到这次视频制作" in clone_body["assistant"], clone_body
+assert "不需要离开当前对话" in clone_body["assistant"], clone_body
 assert not server.load_conversation(cid).get("productions"), clone_body
 assert server._explicit_system_media_request("使用系统自带的公共音色") is True
 assert server._explicit_system_media_request("就用沉稳男声生成") is True
