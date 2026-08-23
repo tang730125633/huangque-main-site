@@ -9,6 +9,8 @@
   {"id":"preference-1","message":"以后跟我说话自然一点，回答短一点","expected_intents":["direct_answer"],"tool":"none"},
   {"id":"reclone-1","message":"再帮我重新克隆一版","expected_intents":["delegate"],"tool":"voice_clone.open"},
   {"id":"reclone-2","message":"这个声音不像我，重新录一次","expected_intents":["delegate"],"tool":"voice_clone.open"},
+  {"id":"voice-status-1","message":"我的音频已经在克隆了吗？","expected_intents":["status"],"tool":"voice_clone.status"},
+  {"id":"voice-status-2","message":"我的个人音色还在吗？","expected_intents":["status"],"tool":"voice_clone.status"},
   {"id":"preview-1","message":"用这个音色生成一段试听","expected_intents":["delegate"],"tool":"audio_preview.prepare"},
   {"id":"preview-2","message":"给我做一段个人音色试听音频","expected_intents":["delegate"],"tool":"audio_preview.prepare"},
   {"id":"status-1","message":"现在做到哪里啦？","expected_intents":["status","clarify"],"tool":"project.status"},

@@ -13,7 +13,7 @@ DELEGATES = {
     "talking_head_video_agent", "content_revision_agent",
 }
 TOOLS = {
-    "none", "weather.current", "project.status", "voice_clone.open",
+    "none", "weather.current", "project.status", "voice_clone.status", "voice_clone.open",
     "audio_preview.prepare", "talking_head.prepare", "content.revise",
 }
 AWAITING = {"none", "user_input", "confirmation", "feedback"}
@@ -31,6 +31,7 @@ LEGAL_COMBINATIONS = {
     ("continue_ip12", "none", "none", "none", "none", False, False),
     ("pause", "none", "none", "none", "none", False, False),
     ("status", "none", "project.status", "read_only", "none", False, False),
+    ("status", "none", "voice_clone.status", "read_only", "none", False, False),
     ("clarify", "none", "none", "none", "user_input", False, False),
     ("delegate", "voice_clone_agent", "voice_clone.open", "prepare_only", "user_input", False, True),
     ("delegate", "audio_preview_agent", "audio_preview.prepare", "prepare_only", "confirmation", True, True),
@@ -155,7 +156,7 @@ SYSTEM_PROMPT = """你是黄雀 IP12 的主控 Agent。你必须先理解用户�
 决策规则：
 1. 先接住用户。问候、闲聊、知识问题和对当前内容的解释，使用 direct_answer，reply 用 1–3 句自然回答；不要把每句话强行拉回 IP12，也不要重新介绍职责。
 2. 用户说“先不用、暂时不需要、算了、以后再说”，使用 pause。若只是“不要 A，改用 B”，不是暂停。
-3. “现在到哪、然后呢、任务怎么样、完成了吗、怎么还没好”一律使用 status + project.status，即使 active_production 为空也不能用 direct_answer 自己解释；不得创建新任务。若 active_production 为空且 active_production_candidates 多于一个，必须 clarify，只问用户指试听音频还是口播视频，不能按数组顺序猜。
+3. “现在到哪、然后呢、任务怎么样、完成了吗、怎么还没好”使用 status。询问声音/音色是否正在克隆、复刻是否完成、个人音色是否还在时，固定使用 voice_clone.status；其他制作状态使用 project.status。即使 active_production 为空也不能用 direct_answer 自己解释；不得创建新任务。若 active_production 为空且 active_production_candidates 多于一个，必须 clarify，只问用户指试听音频还是口播视频，不能按数组顺序猜。
 4. 天气等实时问题使用 direct_answer + weather.current；不要编造实时数据。
 5. 创建或重新克隆个人音色，固定使用 delegate + voice_clone_agent + voice_clone.open + prepare_only + awaiting=user_input + payment=false,true。“这个声音不像我、重新录一次、再复刻一版”都属于明确的重新克隆，不得用 clarify，也不得把 awaiting 写成 none。
 6. 用现有音色制作试听音频，使用 delegate + audio_preview_agent + audio_preview.prepare。
@@ -172,13 +173,14 @@ SYSTEM_PROMPT = """你是黄雀 IP12 的主控 Agent。你必须先理解用户�
 17. 只有用户当前原话明确表达长期沟通偏好时才填写 memory_updates，例如“以后说自然点”“回答短一点”；只允许 preference 和给定 key，evidence_quote 必须逐字来自当前消息，confidence 至少 0.85。普通任务要求、一次性选择、事实和 AI 推断都返回空数组。
 18. 用户询问状态或用文字确认报价时，当前对象必须以 active_production.action/status 为准；audio-generate 是试听音频生成，不是声音克隆，digital-ip-text-generate 是数字人口播视频。recent_messages 与 active_production 冲突时，后者优先。
 
-策略字段：普通回答和暂停用 tool_policy=none；天气与状态查询用 read_only；打开克隆卡、准备试听音频、准备口播视频和文案修改用 prepare_only。只有 audio_preview_agent 与 talking_head_video_agent 的 payment_policy 两项均为 true；voice_clone_agent 固定为 false,true；其他情况均为 false,false。memory_evidence 只引用 Project 结构化路径，例如 facts.location、active_production、content_topics.topic-1；不得复制整段私人原文。
+策略字段：普通回答和暂停用 tool_policy=none；天气、制作状态和声音克隆状态查询用 read_only；打开克隆卡、准备试听音频、准备口播视频和文案修改用 prepare_only。只有 audio_preview_agent 与 talking_head_video_agent 的 payment_policy 两项均为 true；voice_clone_agent 固定为 false,true；其他情况均为 false,false。memory_evidence 只引用 Project 结构化路径，例如 facts.location、voice_clone、active_production、content_topics.topic-1；不得复制整段私人原文。
 
 组合字段必须严格使用以下合同：
 - direct_answer：none/none/none/none/false,false；天气例外为 none/weather.current/read_only/none/false,false。
 - continue_ip12：none/none/none/none/false,false。
 - pause：none/none/none/none/false,false。
 - status：none/project.status/read_only/none/false,false。
+- 声音克隆状态：intent=status，none/voice_clone.status/read_only/none/false,false。
 - clarify：none/none/none/user_input/false,false。
 - voice_clone_agent：voice_clone.open/prepare_only/user_input/false,true。
 - audio_preview_agent：audio_preview.prepare/prepare_only/confirmation/true,true。

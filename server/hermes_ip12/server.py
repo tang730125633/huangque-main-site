@@ -5091,6 +5091,7 @@ def _public_chat_result(result):
 
 
 _SEMANTIC_CAPABILITY_MAP = {
+    "voice_clone.status": ("none", "audio-slots", "voice-clone"),
     "voice_clone.open": ("voice_clone_agent", "audio-slots", "voice-clone"),
     "audio_preview.prepare": ("audio_preview_agent", "audio-generate", "audio-generate"),
     "talking_head.prepare": ("talking_head_video_agent", "digital-ip-text-generate", "digital-ip-text-generate"),
@@ -5262,6 +5263,83 @@ def _process_project_status_turn(cid, user_message, decision, expected_revision=
             assistant = "%s没有成功交付，当前状态是%s；我不会自动重试。" % (label, status)
         else:
             assistant = "%s正在准备，当前状态是%s；还没有创建生成任务。" % (label, status or "draft")
+
+    status_decision = dict(decision)
+    status_decision["reply"] = assistant
+    return _process_semantic_reply(
+        cid, user_message, status_decision, expected_revision, request_id,
+    )
+
+
+def _process_voice_clone_status_turn(cid, user_message, decision, expected_revision=None, request_id=""):
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        if convo is None:
+            return None, 404
+        state = normalize_coach_state(convo.get("coach_state"))
+        _assert_expected_revision(state, expected_revision)
+        voice_ui = dict(convo.get("voice_clone_ui") or {})
+        snapshot_revision = state["revision"]
+
+    slot_id = str(voice_ui.get("slot_id") or "")
+    refresh_failed = False
+    slot = None
+    if slot_id:
+        try:
+            payload = _bridge_tool_result(_bridge_action(
+                current_account_id(), "audio-slots", {},
+                idempotency_key="ip12-voice-status-%s-%s" % (cid, slot_id),
+            ))
+            slot = next((
+                item for item in payload.get("items") or []
+                if isinstance(item, dict) and str(item.get("slot_id") or "") == slot_id
+            ), None)
+        except (ProductionBridgeError, RuntimeError, TypeError, ValueError):
+            refresh_failed = True
+        if slot is None:
+            refresh_failed = True
+
+    status = str(voice_ui.get("status") or "")
+    if slot is not None:
+        slot_status = str(slot.get("status") or "")
+        if slot_status == "ready" and slot.get("preview_url"):
+            status = "complete"
+        elif slot_status == "training":
+            status = "training"
+        elif slot_status in {"failed", "error"}:
+            status = "failed"
+        with CONVERSATION_STATE_LOCK:
+            convo = owned_conversation(cid)
+            state = normalize_coach_state(convo.get("coach_state"))
+            if state["revision"] != snapshot_revision:
+                raise coach_harness.HarnessConflict("对话已在另一端更新，请刷新后重试")
+            current = dict(convo.get("voice_clone_ui") or {})
+            current.update(
+                status=status,
+                slot_id=slot_id,
+                voice_name=str(slot.get("voice_name") or current.get("voice_name") or "我的个人音色")[:40],
+                error=str(slot.get("clone_error") or "")[:160] if status == "failed" else "",
+                updated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
+            )
+            convo["voice_clone_ui"] = current
+            save_conversation(cid, convo)
+            voice_ui = current
+
+    voice_name = str(voice_ui.get("voice_name") or "我的个人音色")
+    if refresh_failed:
+        assistant = "%s已保留在当前 Project，但我暂时没能读取平台槽位的实时状态；本次没有重新提交。" % voice_name
+    elif status == "complete":
+        assistant = "%s已经复刻完成并保存在当前 Project，没有丢失；下方常驻状态卡可以随时展开试听。" % voice_name
+    elif status == "training":
+        assistant = "%s仍在后台复刻中；我只查询了原来的音色槽位，没有重复提交，你可以继续聊天。" % voice_name
+    elif status == "failed":
+        assistant = "%s这次没有完成复刻：%s。我不会自动重试。" % (
+            voice_name, voice_ui.get("error") or "平台返回失败",
+        )
+    elif status == "collecting":
+        assistant = "声音克隆卡已经打开，但还没有提交样音，因此目前没有正在执行的复刻任务。"
+    else:
+        assistant = "当前 Project 还没有个人音色复刻记录；如果需要，我可以在当前对话打开录音卡。"
 
     status_decision = dict(decision)
     status_decision["reply"] = assistant
@@ -5660,6 +5738,15 @@ def process_chat_request(body):
             ):
                 result, status = _process_contextual_weather_turn(
                     cid, user_message, body.get("expected_revision"), request_id
+                )
+            elif (
+                semantic_decision
+                and semantic_decision.get("intent") == "status"
+                and semantic_decision.get("tool") == "voice_clone.status"
+            ):
+                result, status = _process_voice_clone_status_turn(
+                    cid, user_message, semantic_decision,
+                    body.get("expected_revision"), request_id,
                 )
             elif semantic_decision and semantic_decision.get("intent") == "status":
                 result, status = _process_project_status_turn(

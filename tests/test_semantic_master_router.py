@@ -234,6 +234,38 @@ catalog = {
 }
 server._bridge_catalog = lambda _account: copy.deepcopy(catalog)
 
+# Voice-clone status is read from the original account slot, never guessed by the model.
+put("voice-status")
+voice_project = server.load_conversation("voice-status")
+voice_project["voice_clone_ui"] = {
+    "status": "training", "slot_id": "slot_voice_ready",
+    "voice_name": "我的个人音色", "error": "",
+}
+server.save_conversation("voice-status", voice_project)
+voice_calls = []
+def voice_bridge(_account, action, payload, **_kwargs):
+    voice_calls.append((action, payload))
+    assert action == "audio-slots", action
+    return {"items": [{
+        "slot_id": "slot_voice_ready", "status": "ready",
+        "voice_name": "我的个人音色", "preview_url": "https://media.example/voice.mp3",
+    }]}
+server._bridge_action = voice_bridge
+server._semantic_master_decision = lambda *_: semantic(
+    "status", "voice_clone.status", "read_only", reply="unsafe model status"
+)
+response = client.post("/api/chat-complete", json={
+    "conversation_id": "voice-status", "message": "我的音频已经在克隆了吗？",
+    "expected_revision": 1, "request_id": "voice-status-1",
+}, headers=headers)
+body = response.get_json()
+assert response.status_code == 200, body
+assert "已经复刻完成" in body["assistant"] and "unsafe model status" not in body["assistant"], body
+assert voice_calls == [("audio-slots", {})], voice_calls
+saved_voice = server.load_conversation("voice-status")
+assert saved_voice["voice_clone_ui"]["status"] == "complete", saved_voice["voice_clone_ui"]
+assert not saved_voice.get("productions"), saved_voice.get("productions")
+
 # Deterministic status refreshes the original job and writes the result back.
 put("status", {
     "prod_old": {"id": "prod_old", "action": "audio-generate", "capability_family": "audio", "status": "quoted", "quote": {"cost": 10}},
