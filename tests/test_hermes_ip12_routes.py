@@ -106,6 +106,7 @@ payload = server.app.test_client().get('/healthz').get_json()
 assert payload['release_sha'] == 'file-release-sha', payload
 assert payload['agent_release'] == 'ip12-a0.1', payload
 assert payload['state_schema'] == 2, payload
+assert payload['master_agent_mode'] == 'off', payload
 """
         with tempfile.TemporaryDirectory() as root:
             Path(root, ".ip12-release-sha").write_text("file-release-sha\n", encoding="utf-8")
@@ -117,6 +118,8 @@ assert payload['state_schema'] == 2, payload
                 capture_output=True, text=True,
             )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        deploy = (ROOT / "deploy" / "zelong" / "run-hermes-ip12-preview.sh").read_text(encoding="utf-8")
+        self.assertIn('HERMES_MASTER_AGENT_MODE="${HERMES_PREVIEW_MASTER_AGENT_MODE:-shadow}"', deploy)
 
     def test_voice_clone_ui_state_persists_in_project(self):
         script = r'''
@@ -151,6 +154,67 @@ assert invalid.status_code == 400, invalid.get_data(as_text=True)
         with tempfile.TemporaryDirectory() as root:
             env = os.environ.copy()
             env.update(OPENAI_API_KEY="dummy", HERMES_HOME=root, HERMES_DATA_DIR=root)
+            result = subprocess.run(
+                [sys.executable, "-c", script], cwd=HERMES, env=env,
+                capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_master_agent_shadow_records_without_taking_over(self):
+        script = r'''
+import security
+import server
+from unittest.mock import patch
+security._validate_token = lambda token: {
+    "account_id": "shadow-account", "username": "shadow", "role": "member",
+}
+security.RATE_REQUESTS = 1000
+client = server.app.test_client()
+headers = {"Authorization": "Bearer shadow-test"}
+created = client.post("/api/conversations", json={"title": "主控影子测试"}, headers=headers)
+cid = created.get_json()["id"]
+convo = server.load_conversation(cid)
+convo["coach_state"]["intake"]["status"] = "complete"
+server.save_conversation(cid, convo)
+revision = server.load_conversation(cid)["coach_state"]["revision"]
+response = client.post("/api/chat-complete", json={
+    "conversation_id": cid,
+    "message": "有哪些可用音色？",
+    "expected_revision": revision,
+    "request_id": "shadow-turn-1",
+}, headers=headers)
+assert response.status_code == 200, response.get_data(as_text=True)
+body = response.get_json()
+assert body["actions"][0]["preferred_action"] == "voices", body
+saved = server.load_conversation(cid)
+shadow = saved["master_agent_shadow"]
+assert shadow["mode"] == "shadow", shadow
+assert shadow["latest"]["decision"] == "delegate", shadow
+assert shadow["latest"]["legacy_route"] == "production_turn", shadow
+assert shadow["latest"]["aligned"] is True, shadow
+assert not saved.get("productions"), saved.get("productions")
+assert "message" not in shadow["latest"], shadow
+
+revision = saved["coach_state"]["revision"]
+failing_request = {
+    "conversation_id": cid,
+    "message": "有哪些可用音色？",
+    "expected_revision": revision,
+    "request_id": "shadow-turn-fail-open",
+}
+with patch.object(server.master_agent, "record_shadow", side_effect=RuntimeError("shadow unavailable")):
+    completed = client.post("/api/chat-complete", json=failing_request, headers=headers)
+assert completed.status_code == 200, completed.get_data(as_text=True)
+replayed = client.post("/api/chat-complete", json=failing_request, headers=headers)
+assert replayed.status_code == 200, replayed.get_data(as_text=True)
+assert replayed.get_json()["replayed"] is True, replayed.get_json()
+'''
+        with tempfile.TemporaryDirectory() as root:
+            env = os.environ.copy()
+            env.update(
+                OPENAI_API_KEY="dummy", HERMES_HOME=root, HERMES_DATA_DIR=root,
+                HERMES_MASTER_AGENT_MODE="shadow",
+            )
             result = subprocess.run(
                 [sys.executable, "-c", script], cwd=HERMES, env=env,
                 capture_output=True, text=True,

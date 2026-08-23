@@ -14,6 +14,7 @@ from flask import (
 )
 import requests
 import ip12_harness as coach_harness
+import master_agent
 import talking_head_agent
 from runtime_paths import DATA_DIR, ROOT_DIR
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -22,6 +23,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 API_BASE = os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1")
 API_KEY = os.environ["OPENAI_API_KEY"]
 MODEL = os.environ.get("HERMES_MODEL", "gpt-4o")
+MASTER_AGENT_MODE = str(os.environ.get("HERMES_MASTER_AGENT_MODE") or "off").strip().lower()
 AI_DEFAULT_TIMEOUT_SECONDS = 180
 CHOICE_TOTAL_TIMEOUT_SECONDS = 120
 CHOICE_FIRST_TIMEOUT_SECONDS = 75
@@ -2532,6 +2534,7 @@ def healthz():
         "agent_release": coach_harness.AGENT_RELEASE_MANIFEST["agent_release"],
         "state_schema": coach_harness.SCHEMA_VERSION,
         "release_sha": IP12_RELEASE_SHA,
+        "master_agent_mode": MASTER_AGENT_MODE,
     })
 
 @app.route("/classic")
@@ -4784,6 +4787,8 @@ def process_chat_request(body):
         return {"ok": False, "error": "empty message"}, 400
 
     claim_key = None
+    shadow_decision = None
+    legacy_route = ""
     try:
         production_intent = None
         try:
@@ -4879,6 +4884,28 @@ def process_chat_request(body):
                     if production_intent is not None and content_target is None and not source_optional:
                         content_target = _production_target_from_message(convo, user_message)
 
+                legacy_route = (
+                    "action_turn" if action is not None
+                    else "production_turn" if production_intent is not None
+                    else "content_revision_turn" if (
+                        content_target is not None
+                        and not coach_harness.is_content_review_message(user_message)
+                    )
+                    else "foundation_revision_turn" if foundation_review == "revision"
+                    else "model_turn"
+                )
+                if MASTER_AGENT_MODE == "shadow":
+                    shadow_decision = master_agent.decide(
+                        convo,
+                        state,
+                        user_message,
+                        {
+                            "legacy_route": legacy_route,
+                            "action_type": str((action or {}).get("type") or "") if isinstance(action, dict) else "",
+                            "production_action": str((production_intent or {}).get("recommended_action") or ""),
+                        },
+                    )
+
             if action is not None:
                 result, status = _process_action_turn(
                     cid, action, action_revision, user_message=user_message, request_id=request_id
@@ -4917,6 +4944,23 @@ def process_chat_request(body):
                     result["artifact_notice"] = notice
                     result["artifact_module"] = artifact_module
             _save_receipt(cid, request_id, result)
+            if MASTER_AGENT_MODE == "shadow" and shadow_decision:
+                try:
+                    with CONVERSATION_STATE_LOCK:
+                        latest = owned_conversation(cid)
+                        if latest is not None:
+                            latest_state = normalize_coach_state(latest.get("coach_state"))
+                            master_agent.record_shadow(
+                                latest,
+                                shadow_decision,
+                                legacy_route,
+                                request_id,
+                                latest_state["revision"],
+                                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            )
+                            save_conversation(cid, latest)
+                except Exception as exc:
+                    app.logger.warning("IP12 master shadow record failed: %s", exc)
         return result, status
     finally:
         if claim_key:
