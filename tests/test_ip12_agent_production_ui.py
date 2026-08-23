@@ -88,6 +88,14 @@ class IP12AgentProductionUITests(unittest.TestCase):
         self.assertIn("options:collected.options", quote)
         self.assertIn("detail.code==='missing_prerequisite'", quote)
 
+    def test_voice_choices_preload_duration_metadata(self):
+        controls = self.html[
+            self.html.index("function productionChoiceCards"):
+            self.html.index("function productionFieldControl")
+        ]
+        self.assertIn('preload="metadata"', controls)
+        self.assertNotIn('preload="none"', controls)
+
     def test_agent_messages_and_top_bar_can_reopen_the_current_production(self):
         self.assertIn('id="productionEntryBtn"', self.html)
         self.assertIn('onclick="openCurrentProduction()"', self.html)
