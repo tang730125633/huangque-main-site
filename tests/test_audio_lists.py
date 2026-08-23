@@ -69,6 +69,29 @@ class AudioListTest(unittest.TestCase):
             ).fetchone()[0]
         self.assertEqual(status, "ready")
 
+    def test_clone_status_waits_for_playable_preview(self):
+        with sqlite3.connect(self.db) as conn:
+            conn.execute("UPDATE audio_voice_slots SET status='ready' WHERE id=1")
+            conn.execute("""UPDATE audio_voices
+                SET provider_voice='cosyvoice-v3.5-plus-bailian-test', preview_url=NULL
+                WHERE id=1""")
+
+        with patch.object(audio.cosyvoice, "enabled", return_value=True), \
+                patch.object(audio.cosyvoice, "voice_status", return_value=("OK", {})), \
+                patch.object(audio, "_cosy_backfill_preview_async", return_value=True) as backfill:
+            result = audio.check_clone_status("alice", "S_test")
+
+        self.assertEqual(result["status"], "training")
+        self.assertTrue(result["preview_pending"])
+        backfill.assert_called_once_with(
+            "cosyvoice-v3.5-plus-bailian-test", "alice", "vip"
+        )
+        with sqlite3.connect(self.db) as conn:
+            status = conn.execute(
+                "SELECT status FROM audio_voice_slots WHERE id=1"
+            ).fetchone()[0]
+        self.assertEqual(status, "training")
+
     def test_clone_status_keeps_training_during_provider_handoff(self):
         with patch.object(audio.cosyvoice, "enabled", return_value=True), \
                 patch.object(audio.cosyvoice, "voice_status",

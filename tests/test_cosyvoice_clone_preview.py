@@ -17,10 +17,11 @@ SRC = AUDIO.read_text(encoding="utf-8")
 
 class ClonePreviewTests(unittest.TestCase):
     def test_clone_backfills_preview_asynchronously(self):
-        """复刻先落 ready、试听【异步】回填(#602)——不用 slot_status 门控、不拖慢就绪。"""
+        """复刻先落 training，试听【异步】回填后才成为完整 ready。"""
         block = SRC[SRC.index("def _clone_via_cosyvoice"):]
         block = block[:block.index("return {")]
         self.assertIn("_cosy_backfill_preview_async(voice_id", block)   # 异步回填
+        self.assertIn('slot_status = "training"', block)
         # 不再在主 UPDATE 里同步写 preview（那会被就绪窗口竞态卡住→无试听）
         self.assertNotIn("preview_file, preview_url = _cosy_clone_preview(voice_id) if slot_status", block)
 
@@ -44,6 +45,13 @@ class ClonePreviewTests(unittest.TestCase):
         self.assertIn("provider_voice=?", helper)
         self.assertIn("UPDATE audio_voice_slots SET status='ready'", helper)
         self.assertIn("threading.Thread", helper)                  # 后台线程，不阻塞复刻
+        self.assertIn("_COSY_PREVIEW_BACKFILL_ACTIVE", helper)     # 轮询不重复启动试听任务
+
+    def test_ready_requires_a_playable_preview(self):
+        helper = SRC[SRC.index("def check_clone_status"):]
+        helper = helper[:helper.index("ALLOWED_CLONE_AUDIO_FORMATS")]
+        self.assertIn('cv_status == "OK" and preview_url', helper)
+        self.assertIn('result["preview_pending"] = True', helper)
 
 
 class AlloyPlaceholderTests(unittest.TestCase):

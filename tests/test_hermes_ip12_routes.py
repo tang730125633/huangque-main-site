@@ -75,6 +75,8 @@ assert all(item["status"] == "unlocked" for item in server.capability_gates(stat
         self.assertIn("function keepVoiceCloneJobAtBottom", page)
         self.assertIn("声音克隆进行中，你可以继续聊天", page)
         self.assertIn("/voice-clone-ui", page)
+        self.assertIn("if(!raw)return false", page)
+        self.assertIn("result.status==='ready'&&isSafeMarkdownUrl(previewUrl", page)
         self.assertIn("只需要三步", page)
         self.assertIn("选择本人样音", page)
         self.assertIn("确认并开始 VIP 复刻", page)
