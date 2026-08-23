@@ -2667,15 +2667,47 @@ def api_get_convo(cid):
             message["agent_trace"] = {"status": "legacy_unknown"}
     public_convo["harness_actions"] = coach_harness.available_actions(public_convo["coach_state"])
     public_convo["capability_gates"] = capability_gates(public_convo["coach_state"])
+    voice_clone_ui = (public_convo.get("voice_clone_ui")
+                      if isinstance(public_convo.get("voice_clone_ui"), dict) else {})
+    if not public_convo["harness_actions"] and voice_clone_ui.get("status") == "collecting":
+        public_convo["harness_actions"] = [{
+            "type": "open_voice_clone", "label": "在当前对话克隆音色", "primary": True,
+        }]
     last_assistant = next((message for message in reversed(public_convo.get("messages") or [])
                            if message.get("role") == "assistant"), {})
-    if not public_convo["harness_actions"] and isinstance(last_assistant.get("ui_action"), dict):
+    if (not public_convo["harness_actions"] and not voice_clone_ui
+            and isinstance(last_assistant.get("ui_action"), dict)):
         public_convo["harness_actions"] = [last_assistant["ui_action"]]
     handoff = _post_module_six_production_action(convo)
     if handoff and not public_convo["harness_actions"]:
         public_convo["harness_actions"] = [handoff]
     public_convo["productions"] = _productions_summary(convo)
     return jsonify(public_convo)
+
+
+@app.route("/api/conversations/<cid>/voice-clone-ui", methods=["POST"])
+def api_update_voice_clone_ui(cid):
+    payload = request.get_json(silent=True) or {}
+    status = str(payload.get("status") or "").strip()
+    if status not in {"collecting", "training", "complete", "failed"}:
+        return jsonify({"ok": False, "error": "声音克隆状态无效"}), 400
+    slot_id = str(payload.get("slot_id") or "").strip()
+    if status in {"training", "complete", "failed"} and not re.fullmatch(r"[A-Za-z0-9_-]{1,120}", slot_id):
+        return jsonify({"ok": False, "error": "音色槽位无效"}), 400
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        if convo is None:
+            return jsonify({"ok": False, "error": "诊断不存在"}), 404
+        convo["voice_clone_ui"] = {
+            "status": status,
+            "slot_id": slot_id,
+            "voice_name": str(payload.get("voice_name") or "我的个人音色").strip()[:40],
+            "error": str(payload.get("error") or "").strip()[:160],
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        }
+        save_conversation(cid, convo)
+    return jsonify({"ok": True, "voice_clone_ui": convo["voice_clone_ui"]})
+
 
 @app.route("/api/conversations/<cid>", methods=["DELETE"])
 def api_delete_convo(cid):
@@ -3820,7 +3852,7 @@ def _persist_model_turn(
 
 def _persist_unprocessed_turn(
     cid, user_message, snapshot_revision, prefix="", message_id="", assistant_override="",
-    skills=None, assistant_extra=None,
+    skills=None, assistant_extra=None, convo_extra=None,
 ):
     with CONVERSATION_STATE_LOCK:
         convo = owned_conversation(cid)
@@ -3844,6 +3876,7 @@ def _persist_unprocessed_turn(
         _append_assistant_message(convo, assistant, trace_skills, **(assistant_extra or {}))
         state["revision"] += 1
         convo["coach_state"] = state
+        convo.update(convo_extra or {})
         if convo.get("title") == "新诊断":
             title = clean_message.replace("\n", " ")[:30]
             convo["title"] = title if len(title) < 30 else title[:27] + "..."
@@ -4453,6 +4486,10 @@ def _process_production_intent_turn(
             cid, user_message, snapshot_revision, message_id=message_id,
             assistant_override=assistant, skills=["production_bridge"],
             assistant_extra={"ui_action": voice_action},
+            convo_extra={"voice_clone_ui": {
+                "status": "collecting", "slot_id": "", "voice_name": "我的个人音色",
+                "error": "", "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            }},
         )
         result = _chat_result(assistant, next_state)
         result["actions"] = [voice_action]
