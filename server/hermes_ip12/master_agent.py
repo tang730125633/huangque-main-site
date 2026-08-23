@@ -8,6 +8,10 @@ MODE = "shadow"
 MASTER_AGENT_ID = "ip12_master_agent"
 HISTORY_LIMIT = 50
 _CONTINUE_RE = re.compile(r"^(?:嗯|哦|好|好的|可以|行|ok|继续|然后呢|下一步|接下来呢|怎么办)[的啊呀吧嘛呢，。!！?？\s]*$", re.I)
+_STATUS_RE = re.compile(
+    r"(?:现在|当前)?(?:做到哪|进行到哪|进度|状态|完成了吗|怎么样了)"
+    r"|(?:能|可以|是否).{0,6}(?:看到|读取|知道).{0,8}(?:音色|声音|形象|素材|作品|任务)"
+)
 
 
 def _latest_production(project):
@@ -53,7 +57,9 @@ def decide(project, state, user_message, signals):
     context = _active_context(project)
     message = re.sub(r"\s+", "", str(user_message or ""))
 
-    if _CONTINUE_RE.fullmatch(message) and context["production_id"]:
+    if context["production_id"] and (
+        _CONTINUE_RE.fullmatch(message) or _STATUS_RE.search(message)
+    ):
         status = context["production_status"]
         if status == "quoted":
             return _decision("await_confirmation", "master_resume", "展示原报价并等待确认或修改",

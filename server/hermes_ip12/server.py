@@ -13,6 +13,7 @@ from flask import (
     send_file,
 )
 import requests
+import agent_runtime
 import ip12_harness as coach_harness
 import master_agent
 import talking_head_agent
@@ -4659,6 +4660,88 @@ def _process_production_intent_turn(
     return result, 200
 
 
+def _latest_talking_head_production(convo):
+    records = [
+        record for record in (convo.get("productions") or {}).values()
+        if isinstance(record, dict)
+        and (record.get("specialist_agent") or {}).get("agent_id") == talking_head_agent.AGENT_ID
+    ]
+    return records[-1] if records else None
+
+
+def _master_runtime_reply(record, run):
+    status = str(record.get("status") or "")
+    if status == "quoted":
+        return (
+            "当前第一件口播视频已经完成主控委派，文案、形象和音色也已从当前 Project 读取；"
+            "制作任务尚未提交，没有扣点。你可以继续聊天；要改文案、形象或声音就直接告诉我，"
+            "在你明确确认前，主控不会调用生成工具。"
+        )
+    if status in {"submitting", "queued", "running"}:
+        return "口播视频正在后台生成；聊天可以照常进行，也不会创建第二个任务。我会继续查询原任务，完成后把可播放成品写回当前 Project。"
+    if status == "done":
+        return "第一件口播视频已经写回当前 Project。你可以直接试听试看，然后告诉我需要修改文案、声音、形象还是画面节奏。"
+    if status in {"failed", "refund_pending", "refunded"}:
+        return "这次口播视频没有成功交付；原任务和退款状态已保留。我不会自动重试，先由你决定修改素材还是重新提交。"
+    if run.get("awaiting") == "material":
+        return "口播短视频 Agent 已接手，但还缺少制作素材：%s。你可以在当前对话直接补充，不需要跳转页面。" % run.get("next_action", "素材")
+    return "口播短视频 Agent 已恢复当前作品，下一步是：%s。" % run.get("next_action", "继续完善素材")
+
+
+def _process_master_runtime_turn(cid, user_message, expected_revision=None, request_id=""):
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        if convo is None:
+            return None, 404
+        state = normalize_coach_state(convo.get("coach_state"))
+        _assert_expected_revision(state, expected_revision)
+        record = _latest_talking_head_production(convo)
+        if record is None:
+            return _process_model_turn(
+                cid, user_message, expected_revision, request_id=request_id
+            )
+
+        run_id = "talking-head-" + str(record.get("id") or "current")
+        policy = agent_runtime.TalkingHeadPolicy()
+        agent_runtime.start(convo, run_id, policy, "继续推进第一件口播视频")
+        tools = agent_runtime.ToolRegistry()
+        options = json.loads(json.dumps(record.get("options") or {}, ensure_ascii=False))
+        quote = json.loads(json.dumps(record.get("quote") or {}, ensure_ascii=False))
+        tools.register("project.read", lambda _payload: {
+            "script": str(record.get("source_text") or ""),
+            "production_status": str(record.get("status") or ""),
+        })
+        tools.register("assets.read", lambda _payload: {
+            "avatar_id": options.get("avatar_id"),
+            "voice": options.get("voice"),
+        })
+        tools.register(
+            "production.quote",
+            lambda _payload: {"cost": quote.get("cost"), "quote_token": quote.get("token")},
+            private_fields=("quote_token",),
+        )
+        run = agent_runtime.resume(convo, run_id, policy, tools)
+        assistant = _master_runtime_reply(record, run)
+        message_id = _turn_message_id(cid, user_message, state["revision"], request_id)
+        _append_or_reuse_user_message(convo, user_message, message_id)
+        _append_assistant_message(
+            convo, assistant,
+            ["talking_head_video_agent", "production_bridge"],
+        )
+        state["revision"] += 1
+        convo["coach_state"] = state
+        save_conversation(cid, convo)
+        result = _chat_result(assistant, state)
+        result["agent_status"] = {
+            "run_id": run_id,
+            "status": run.get("status"),
+            "awaiting": run.get("awaiting"),
+            "next_action": run.get("next_action"),
+            "delegate_to": policy.agent_id,
+        }
+        return result, 200
+
+
 def _continuation_failure_reply(state):
     if state.get("current_module") == 5 and state.get("module_step") == 1:
         return (
@@ -4894,7 +4977,7 @@ def process_chat_request(body):
                     else "foundation_revision_turn" if foundation_review == "revision"
                     else "model_turn"
                 )
-                if MASTER_AGENT_MODE == "shadow":
+                if MASTER_AGENT_MODE in {"shadow", "live"}:
                     shadow_decision = master_agent.decide(
                         convo,
                         state,
@@ -4906,7 +4989,15 @@ def process_chat_request(body):
                         },
                     )
 
-            if action is not None:
+            if (
+                MASTER_AGENT_MODE == "live"
+                and shadow_decision
+                and shadow_decision.get("execution_route") == "master_resume"
+            ):
+                result, status = _process_master_runtime_turn(
+                    cid, user_message, body.get("expected_revision"), request_id
+                )
+            elif action is not None:
                 result, status = _process_action_turn(
                     cid, action, action_revision, user_message=user_message, request_id=request_id
                 )

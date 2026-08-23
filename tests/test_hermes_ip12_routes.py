@@ -119,7 +119,7 @@ assert payload['master_agent_mode'] == 'off', payload
             )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         deploy = (ROOT / "deploy" / "zelong" / "run-hermes-ip12-preview.sh").read_text(encoding="utf-8")
-        self.assertIn('HERMES_MASTER_AGENT_MODE="${HERMES_PREVIEW_MASTER_AGENT_MODE:-shadow}"', deploy)
+        self.assertIn('HERMES_MASTER_AGENT_MODE="${HERMES_PREVIEW_MASTER_AGENT_MODE:-live}"', deploy)
 
     def test_voice_clone_ui_state_persists_in_project(self):
         script = r'''

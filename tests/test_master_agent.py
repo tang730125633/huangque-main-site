@@ -42,6 +42,19 @@ class MasterAgentShadowContractTests(unittest.TestCase):
         self.assertEqual(decision["execution_route"], "master_resume")
         self.assertEqual(decision["awaiting"], "quote_confirmation")
 
+    def test_status_question_resumes_active_specialist(self):
+        project = {"productions": {"prod_1": {
+            "id": "prod_1", "status": "quoted",
+            "specialist_agent": {
+                "delegation_id": "delegate_1", "agent_id": "talking_head_video_agent",
+            },
+        }}}
+        decision = master_agent.decide(
+            project, {"completed_modules": [1, 2, 3, 4, 5, 6]}, "现在做到哪里啦？",
+            {"legacy_route": "model_turn"},
+        )
+        self.assertEqual(decision["execution_route"], "master_resume")
+
     def test_shadow_record_is_redacted_and_tracks_mismatch(self):
         project = {}
         decision = master_agent._decision(
