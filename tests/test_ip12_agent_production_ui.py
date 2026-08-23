@@ -81,7 +81,7 @@ class IP12AgentProductionUITests(unittest.TestCase):
     def test_prepare_and_quote_submit_typed_options(self):
         prepare = self.html[self.html.index("async function prepareProduction"):self.html.index("async function requestProductionQuote")]
         self.assertIn("options=typedProductionOptions(item||{},item&&item.options||{})", prepare)
-        self.assertIn("preferred_action:item&&item.preferred_action,allow_system_media:item&&item.allow_system_media===true,options:options", prepare)
+        self.assertIn("preferred_action:item&&item.preferred_action,specialist_agent:item&&item.specialist_agent,allow_system_media:item&&item.allow_system_media===true,options:options", prepare)
         quote = self.html[self.html.index("async function requestProductionQuote"):self.html.index("async function confirmProduction")]
         self.assertIn("var collected=collectProductionOptions(record)", quote)
         self.assertIn("if(collected.missing.length)", quote)

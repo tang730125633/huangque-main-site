@@ -14,6 +14,7 @@ from flask import (
 )
 import requests
 import ip12_harness as coach_harness
+import talking_head_agent
 from runtime_paths import DATA_DIR, ROOT_DIR
 from werkzeug.middleware.proxy_fix import ProxyFix
 
@@ -339,6 +340,7 @@ def load_conversation(convo_id):
             "reports": {}, "deliverables": {}, "updated": ""}
 
 def save_conversation(convo_id, data):
+    talking_head_agent.sync_project(data)
     data["updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
     path = conversation_path(convo_id)
     with CONVERSATION_STATE_LOCK:
@@ -747,8 +749,13 @@ def _post_module_six_production_action(convo):
                 "topic_id": str(topic.get("id") or ""),
             }
             try:
-                _production_source(convo, target)
+                source = _production_source(convo, target)
             except coach_harness.HarnessError:
+                continue
+            specialist_plan = talking_head_agent.plan(
+                state, source, "digital-ip-text-generate"
+            )
+            if not specialist_plan.get("ok"):
                 continue
             return {
                 "type": "prepare_production",
@@ -758,8 +765,10 @@ def _post_module_six_production_action(convo):
                 "requested_result": "video",
                 "preferred_action": "digital-ip-text-generate",
                 "candidate_actions": ["digital-ip-text-generate"],
+                "specialist_agent": talking_head_agent.AGENT_ID,
+                "parameter_schema": specialist_plan["option_schema"],
                 "allow_system_media": False,
-                "options": {},
+                "options": specialist_plan["recommended_options"],
                 "script_title": str(topic.get("title") or "第一篇口播文案"),
             }
     return None
@@ -779,8 +788,9 @@ def _post_module_six_capability_question(state, message):
 
 def _post_module_six_handoff_reply(action):
     return (
-        "六步已经完成，我可以继续调用黄雀的图片、音频和视频制作能力。"
-        "根据当前成果，我建议先把《%s》制作成数字人口播视频。"
+        "六步已经完成，数字人口播能力已经解锁。"
+        "根据当前成果，我建议先把《%s》制作成第一件数字人口播作品。"
+        "我会把这项工作委派给口播短视频 Agent，并继续作为主控 Agent 向你汇报下一步。"
         "文案会自动复用；接下来我会在当前 IP12 对话里向你收集这次制作需要的素材。"
         "你可以直接上传人物照片、参考视频或本人口播音频，不需要跳到其他功能页。"
         "系统公共素材默认不会展示；只有你明确要求使用时才会提供。"
@@ -1164,6 +1174,13 @@ def _explicit_system_media_request(message):
     return bool(re.search(r"(?:使用|选|选择|就用|采用).{0,12}" + media, text))
 
 
+def _production_agent_skills(record):
+    specialist = record.get("specialist_agent") if isinstance(record, dict) else None
+    if isinstance(specialist, dict) and specialist.get("agent_id") == talking_head_agent.AGENT_ID:
+        return ["talking_head_video_agent", "production_bridge"]
+    return ["production_bridge"]
+
+
 def _ensure_production_material_request_message(convo, record, missing):
     fields = [name for name in missing if _production_upload_kind(record, name)]
     needs_account_audio = "audio_file" in missing
@@ -1222,7 +1239,7 @@ def _ensure_production_material_request_message(convo, record, missing):
             existing["production_id"] = record["id"]
             return existing
     message = _append_assistant_message(
-        convo, "\n\n".join(parts), "production_bridge",
+        convo, "\n\n".join(parts), _production_agent_skills(record),
         message_id="matreq_" + uuid.uuid4().hex,
         production_id=record["id"],
     )
@@ -1704,7 +1721,7 @@ def _ensure_production_delivery_message(convo, record):
         )
     )
     message = _append_assistant_message(
-        convo, content, "production_bridge",
+        convo, content, _production_agent_skills(record),
         message_id="prodmsg_" + uuid.uuid4().hex,
         production_id=record["id"],
     )
@@ -2743,11 +2760,14 @@ def _production_conversation(cid):
 def api_prepare_production():
     try:
         body = _production_request_body()
-        if set(body) - {"conversation_id", "content_target", "expected_revision", "requested_result", "preferred_action", "options", "allow_system_media"}:
+        if set(body) - {"conversation_id", "content_target", "expected_revision", "requested_result", "preferred_action", "options", "allow_system_media", "specialist_agent"}:
             return _production_error("invalid_request", "包含不支持的参数", 400)
         if "allow_system_media" in body and not isinstance(body["allow_system_media"], bool):
             return _production_error("invalid_request", "系统素材授权必须是布尔值", 400)
         cid = str(body.get("conversation_id") or "")
+        specialist_id = str(body.get("specialist_agent") or "").strip()
+        if specialist_id and specialist_id != talking_head_agent.AGENT_ID:
+            return _production_error("invalid_specialist", "专业 Agent 不受支持", 400)
         recommendation = _production_recommendation(
             current_account_id(), body.get("requested_result"), body.get("preferred_action")
         )
@@ -2778,6 +2798,17 @@ def api_prepare_production():
             source = _production_source_or_unbound(
                 convo, body.get("content_target"), unbound=source_unbound
             )
+            specialist_plan = None
+            if specialist_id:
+                specialist_plan = talking_head_agent.plan(
+                    state, source, recommendation["recommended_action"], body.get("options") or {}
+                )
+                if not specialist_plan.get("ok"):
+                    return _production_error(
+                        "specialist_gate_locked",
+                        "请先完成" + "、".join(specialist_plan["gate"]["missing"]),
+                        409,
+                    )
             production_id = "prod_" + uuid.uuid4().hex
             record = {
                 "id": production_id,
@@ -2796,7 +2827,11 @@ def api_prepare_production():
                 "transport": catalog_entry.get("transport") or {"kind": "action"},
                 "constraints": list(catalog_entry.get("constraints") or []),
                 "allow_system_media": bool(body.get("allow_system_media")),
-                "brief": {"reason": "基于当前已确认口播制作", "audience": "当前 IP 的目标受众", "goal": "将当前内容转为可交付成品"},
+                "brief": (specialist_plan["brief"] if specialist_plan else {
+                    "reason": "基于当前已确认口播制作",
+                    "audience": "当前 IP 的目标受众",
+                    "goal": "将当前内容转为可交付成品",
+                }),
                 "options": {}, "input_digest": "", "status": "draft", "quote": {},
                 "job_id": None, "asset_refs": [], "canvas_ref": None,
                 "action_result": None, "refund_status": "none", "last_error_code": "",
@@ -2805,8 +2840,19 @@ def api_prepare_production():
                 "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
             }
+            if specialist_plan:
+                record["specialist_agent"] = talking_head_agent.new_delegation(
+                    production_id, specialist_plan
+                )
             record.update(resource_context)
             options = body.get("options", {})
+            if specialist_plan:
+                properties = parameter_schema.get("properties") or {}
+                defaults = {
+                    key: value for key, value in specialist_plan["recommended_options"].items()
+                    if key in properties
+                }
+                options = {**defaults, **options}
             if record["action"] == "digital-ip-text-generate":
                 options = _production_recommended_options(parameter_schema, options)
             _production_set_options(record, options)
@@ -2834,6 +2880,7 @@ def api_prepare_production():
             "risk": record["risk"], "result_type": record["result_type"],
             "ui_route": record["ui_route"], "transport": record["transport"],
             "constraints": record["constraints"],
+            **({"specialist_agent": record["specialist_agent"]} if specialist_plan else {}),
             "missing": missing,
             "missing_prerequisites": missing or ([validation_error] if validation_error else []),
             "validation_error": validation_error,
@@ -2998,7 +3045,7 @@ def api_upload_production_material():
                 f"✅ 已收到{label}并绑定到这次制作。素材已经齐了，我现在为你获取实时报价；确认前不会扣点。"
             )
             material_message = _append_assistant_message(
-                convo, content, "production_bridge",
+                convo, content, _production_agent_skills(record),
                 message_id="matok_" + uuid.uuid4().hex,
                 production_id=record["id"],
             )
@@ -4471,6 +4518,19 @@ def _process_production_intent_turn(
         snapshot_revision = state["revision"]
     labels = {"image": "图片", "audio": "音频", "video": "视频", "canvas": "Canvas"}
     label = labels[family]
+    specialist_plan = None
+    if selected_action == "digital-ip-text-generate" and not help_only:
+        specialist_plan = talking_head_agent.plan(state, source, selected_action)
+        if not specialist_plan.get("ok"):
+            missing = "、".join(specialist_plan["gate"]["missing"])
+            assistant = "口播短视频 Agent 还不能接手这件作品；请先完成%s。" % missing
+            message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
+            assistant, next_state = _persist_unprocessed_turn(
+                cid, user_message, snapshot_revision, message_id=message_id,
+                assistant_override=assistant,
+                skills=["talking_head_video_agent", "production_bridge"],
+            )
+            return _chat_result(assistant, next_state), 200
     if intent.get("voice_clone_request"):
         voice_action = {
             "type": "open_voice_clone", "label": "在当前对话克隆音色", "primary": True,
@@ -4508,6 +4568,8 @@ def _process_production_intent_turn(
     )
     options = ({"ratio": re.sub(r"\s+", "", ratio_match.group()).replace("：", ":")}
                if family in {"image", "video"} and ratio_match else {})
+    if specialist_plan:
+        options = {**specialist_plan["recommended_options"], **options}
     if selected_action == "audio-generate":
         options.update(_audio_options_from_message(user_message))
     instruction = re.sub(r"\s+", " ", user_message).strip()[:320]
@@ -4540,6 +4602,12 @@ def _process_production_intent_turn(
             if selected_action in _DIRECT_READ_ACTIONS
         else (
             (
+                "主控 Agent 已把当前文案委派给口播短视频 Agent。"
+                "它会先按你已确认的人设和表达风格规划第一件作品，再收集形象与声音；"
+                "素材齐全后获取实时报价，未经你确认不会提交或扣点。"
+            )
+            if specialist_plan else
+            (
                 "我知道你要使用黄雀的%s能力。" % _CAPABILITY_LABELS.get(selected_action, label)
                 if source_unbound else "我知道你要把当前这篇口播做成%s。" % label
             )
@@ -4553,7 +4621,9 @@ def _process_production_intent_turn(
     message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
     assistant, next_state = _persist_unprocessed_turn(
         cid, user_message, snapshot_revision, message_id=message_id,
-        assistant_override=assistant, skills=["production_bridge"],
+        assistant_override=assistant,
+        skills=(["talking_head_video_agent", "production_bridge"]
+                if specialist_plan else ["production_bridge"]),
     )
     result = _chat_result(assistant, next_state)
     if selected_action in _NAVIGATION_ONLY_ACTIONS:
@@ -4578,6 +4648,8 @@ def _process_production_intent_turn(
         "requested_result": family,
         "preferred_action": selected_action,
         "candidate_actions": intent["candidate_actions"],
+        **({"specialist_agent": talking_head_agent.AGENT_ID} if specialist_plan else {}),
+        **({"parameter_schema": specialist_plan["option_schema"]} if specialist_plan else {}),
         "allow_system_media": _explicit_system_media_request(user_message),
         "options": options,
     }]

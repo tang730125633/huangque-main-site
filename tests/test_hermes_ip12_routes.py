@@ -80,6 +80,8 @@ assert all(item["status"] == "unlocked" for item in server.capability_gates(stat
         self.assertIn("只需要三步", page)
         self.assertIn("选择本人样音", page)
         self.assertIn("确认并开始 VIP 复刻", page)
+        self.assertIn("function productionSpecialistHtml", page)
+        self.assertIn("口播短视频 Agent", page)
         assets = (ROOT / "site" / "workbench" / "assets.html").read_text(encoding="utf-8")
         self.assertIn('id="cloneVoiceBasic" disabled', assets)
 
@@ -87,6 +89,7 @@ assert all(item["status"] == "unlocked" for item in server.capability_gates(stat
         source = (HERMES / "server.py").read_text(encoding="utf-8")
         self.assertIn("def _append_assistant_message", source)
         self.assertIn("AGENT_RELEASE_MANIFEST", (HERMES / "ip12_harness.py").read_text(encoding="utf-8"))
+        self.assertIn("talking_head_video_agent", (HERMES / "ip12_harness.py").read_text(encoding="utf-8"))
         self.assertNotIn(
             'convo.setdefault("messages", []).append({"role": "assistant"', source
         )
@@ -1521,6 +1524,7 @@ completed = server.load_conversation(completed_id)
 completed_state = server.coach_harness.initial_state()
 completed_state.update(current_module=6, module_step=3, completed_modules=[1, 2, 3, 4, 5, 6])
 completed_state["intake"]["status"] = "complete"
+completed_state["foundation_report"] = {"status": "confirmed"}
 completed["coach_state"] = completed_state
 completed["deliverables"] = {"6": pack}
 server.save_conversation(completed_id, completed)
@@ -1528,6 +1532,8 @@ server.save_conversation(completed_id, completed)
 detail = client.get(f"/api/conversations/{completed_id}").get_json()
 assert detail["harness_actions"][0]["type"] == "prepare_production", detail
 assert detail["harness_actions"][0]["preferred_action"] == "digital-ip-text-generate", detail
+assert detail["harness_actions"][0]["specialist_agent"] == "talking_head_video_agent", detail
+assert detail["harness_actions"][0]["options"]["ratio"] == "9:16", detail
 assert detail["harness_actions"][0]["content_target"] == {"category_id": "category_1", "topic_id": "topic_1"}, detail
 assert detail["harness_actions"][0]["allow_system_media"] is False, detail
 
@@ -1543,20 +1549,97 @@ assert capability.status_code == 200, capability.get_data(as_text=True)
 capability_body = capability.get_json()
 assert capability_body["actions"][0]["type"] == "prepare_production", capability_body
 assert capability_body["actions"][0]["preferred_action"] == "digital-ip-text-generate", capability_body
-assert "制作成数字人口播视频" in capability_body["assistant"], capability_body
+assert capability_body["actions"][0]["specialist_agent"] == "talking_head_video_agent", capability_body
+assert "第一件数字人口播作品" in capability_body["assistant"], capability_body
+assert "口播短视频 Agent" in capability_body["assistant"], capability_body
 assert "当前 IP12 对话里向你收集" in capability_body["assistant"], capability_body
 assert "上传人物照片、参考视频或本人口播音频" in capability_body["assistant"], capability_body
 assert "系统公共素材默认不会展示" in capability_body["assistant"], capability_body
 assert "实时报价" in capability_body["assistant"], capability_body
 saved = server.load_conversation(completed_id)
 assert not saved.get("productions"), saved.get("productions")
-assert saved["messages"][-1]["agent_trace"]["skills"][0]["id"] == "production_bridge"
+assert [item["id"] for item in saved["messages"][-1]["agent_trace"]["skills"]] == [
+    "talking_head_video_agent", "production_bridge",
+]
+
+specialist_action = capability_body["actions"][0]
+def specialist_resources(account_id, action, input_body, **kwargs):
+    if action == "video-avatars":
+        return {"items": [{
+            "id": 1, "name": "我的第一形象", "status": "ready",
+            "image_url": "https://media.example/avatar-1.jpg",
+        }]}
+    if action == "voices":
+        return {"items": [{
+            "voice_key": "voice-demo", "display_name": "我的声音", "scope": "personal",
+            "preview_url": "https://media.example/voice-demo.mp3",
+        }]}
+    raise AssertionError(action)
+
+with patch.object(server, "_bridge_action", side_effect=specialist_resources):
+    prepared = client.post("/api/ip12/productions/prepare", json={
+        "conversation_id": completed_id,
+        "content_target": specialist_action["content_target"],
+        "expected_revision": capability_body["state"]["revision"],
+        "requested_result": specialist_action["requested_result"],
+        "preferred_action": specialist_action["preferred_action"],
+        "specialist_agent": specialist_action["specialist_agent"],
+        "options": specialist_action["options"],
+    })
+assert prepared.status_code == 200, prepared.get_data(as_text=True)
+prepared_body = prepared.get_json()
+assert prepared_body["specialist_agent"]["agent_id"] == "talking_head_video_agent", prepared_body
+assert prepared_body["options"]["ratio"] == "9:16", prepared_body
+specialist_project = server.load_conversation(completed_id)
+specialist_record = specialist_project["productions"][prepared_body["production_id"]]
+assert specialist_record["specialist_agent"]["stage"] in {"collecting_materials", "awaiting_quote"}
+assert specialist_project["agent_runtime"]["specialist_agent_id"] == "talking_head_video_agent"
+
+specialist_calls = []
+def specialist_bridge(account_id, action, input_body, **kwargs):
+    specialist_calls.append((action, kwargs.get("confirm"), kwargs.get("idempotency_key")))
+    if action == "task":
+        return {"job_id": "8801", "status": "done", "asset_refs": [{
+            "id": "first-work-video", "kind": "video", "url": "https://media.example/first-work.mp4",
+        }]}
+    if kwargs.get("confirm"):
+        return {"job_id": "8801", "status": "queued"}
+    return {"quote_token": "private-first-work-quote", "cost": 9, "points": 99, "expires_in": 300}
+
+with patch.object(server, "_bridge_action", side_effect=specialist_bridge):
+    quoted = client.post("/api/ip12/productions/quote", json={
+        "conversation_id": completed_id, "production_id": prepared_body["production_id"],
+        "expected_revision": capability_body["state"]["revision"],
+        "options": {**prepared_body["options"], "avatar_id": 1, "voice": "voice-demo"},
+    })
+    assert quoted.status_code == 200, quoted.get_data(as_text=True)
+    assert quoted.get_json()["production"]["specialist_agent"]["stage"] == "awaiting_confirmation"
+    confirmed = client.post("/api/ip12/productions/confirm", json={
+        "conversation_id": completed_id, "production_id": prepared_body["production_id"],
+        "expected_revision": capability_body["state"]["revision"],
+        "confirmation_id": "confirm-first-work-001",
+    })
+    assert confirmed.status_code == 200, confirmed.get_data(as_text=True)
+    assert confirmed.get_json()["production"]["specialist_agent"]["stage"] == "generating"
+    delivered = client.get(
+        f"/api/ip12/productions/{prepared_body['production_id']}?conversation_id={completed_id}"
+    )
+    assert delivered.status_code == 200, delivered.get_data(as_text=True)
+    assert delivered.get_json()["production"]["specialist_agent"]["stage"] == "delivered"
+
+finished_specialist = server.load_conversation(completed_id)
+assert finished_specialist["agent_runtime"]["active_delegation_id"] is None
+assert finished_specialist["productions"][prepared_body["production_id"]]["asset_refs"][0]["id"] == "first-work-video"
+confirm_calls = [call for call in specialist_calls if call[1] is True]
+assert len(confirm_calls) == 1, specialist_calls
+assert confirm_calls[0][2].startswith("ip12-prod_"), confirm_calls
 
 final_id = client.post("/api/conversations", json={"title": "确认模块六"}).get_json()["id"]
 final_convo = server.load_conversation(final_id)
 final_state = server.coach_harness.initial_state()
 final_state.update(current_module=6, module_step=2, completed_modules=[1, 2, 3, 4, 5])
 final_state["intake"]["status"] = "complete"
+final_state["foundation_report"] = {"status": "confirmed"}
 final_state["pending"] = {
     "id": "module-six-final", "kind": "checkpoint", "module": 6, "step": 3,
     "status": "awaiting_confirmation", "draft": "三篇完整口播文案已确认",
@@ -1575,7 +1658,8 @@ assert finished.status_code == 200, finished.get_data(as_text=True)
 finished_body = finished.get_json()
 assert finished_body["new_completed"] == [6], finished_body
 assert finished_body["actions"][0]["type"] == "prepare_production", finished_body
-assert "制作成数字人口播视频" in finished_body["assistant"], finished_body
+assert finished_body["actions"][0]["specialist_agent"] == "talking_head_video_agent", finished_body
+assert "第一件数字人口播作品" in finished_body["assistant"], finished_body
 assert not server.load_conversation(final_id).get("productions")
 print("IP12_POST_MODULE_SIX_HANDOFF_OK")
 '''
