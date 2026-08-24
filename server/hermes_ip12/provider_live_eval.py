@@ -271,9 +271,8 @@ class LiveResponsesTransport:
 
     def _observation(self, response, request_fingerprint, payload=None, events=None):
         payload = payload if isinstance(payload, dict) else {}
-        self.budget.add_usage(
-            payload.get("usage") or {}, required=200 <= response.status_code < 300
-        )
+        if 200 <= response.status_code < 300:
+            self.budget.add_usage(payload.get("usage") or {}, required=True)
         error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
         self.capture_summary.append({
             "probe": self._active_probe,

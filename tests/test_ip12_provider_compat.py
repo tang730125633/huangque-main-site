@@ -75,6 +75,14 @@ class IP12ProviderCompatTests(unittest.TestCase):
         self.assertEqual(terra.public()["model"], "gpt-5.6-terra")
         with self.assertRaisesRegex(provider_live_eval.BudgetExceeded, "pricing is unknown"):
             provider_live_eval.Budget(model="unknown-model")
+        error_budget = provider_live_eval.Budget(max_requests=2, max_cny=1)
+        error_transport = provider_live_eval.LiveResponsesTransport(
+            "openai_official", {"base_url": "https://api.example", "key": "fixture"}, error_budget
+        )
+        response = type("Response", (), {"status_code": 400, "headers": {}})()
+        error_transport._observation(response, "fingerprint", {"error": {"code": "invalid"}})
+        error_budget.reserve({"input": "next", "max_output_tokens": 16})
+        self.assertEqual(error_budget.usage_missing, 0)
         self.assertGreater(bounded.worst_case_cny, 0)
         self.assertEqual(bounded.public()["cost_status"], "upper_bound_only")
         with tempfile.TemporaryDirectory() as root:
