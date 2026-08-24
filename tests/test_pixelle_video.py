@@ -1213,15 +1213,28 @@ class PixelleVideoTests(unittest.TestCase):
         self.assertEqual("library", prepared["cost_breakdown"]["material_source"])
 
     def test_material_library_readiness_fails_closed(self):
+        payload = self.pixelle.prepare_payload({
+            "text": "AI 培训", "material_source": "library",
+        })
         with mock.patch.object(
-            self.pixelle, "_json_request", return_value={"ready": True, "records": 193}
+            self.pixelle, "_json_request", return_value={
+                "ready": True, "scene_count": 5, "selected_count": 6,
+            }
+        ) as request:
+            self.assertIsNone(self.pixelle.require_material_library_available(payload))
+        request.assert_called_once_with(
+            "POST", "/api/video/material-library/probe",
+            {"scene_count": 5, "orientation": "portrait"}, timeout=12,
+        )
+        for response in (
+            {"ready": False, "scene_count": 5, "selected_count": 6},
+            {"ready": True, "scene_count": 5, "selected_count": 5},
+            {"ready": True, "scene_count": 4, "selected_count": 5},
         ):
-            self.assertIsNone(self.pixelle.require_material_library_available())
-        for response in ({"ready": False, "records": 193}, {"ready": True, "records": 0}):
             with self.subTest(response=response), mock.patch.object(
                 self.pixelle, "_json_request", return_value=response
             ), self.assertRaisesRegex(Exception, "素材库暂不可用"):
-                self.pixelle.require_material_library_available()
+                self.pixelle.require_material_library_available(payload)
 
     def test_prepare_defaults_normalizes_and_rejects_invalid_speech_rate(self):
         default = self.pixelle.prepare_payload({"text": "AI 培训"})
@@ -1946,6 +1959,7 @@ class TextVideoPlanningApiTests(unittest.TestCase):
         cls.core = importlib.import_module("content_domains.core")
         cls.pixelle = importlib.import_module("content_domains.pixelle_video")
         cls.assets = importlib.import_module("content_domains.pixelle_talking_assets")
+        cls.script_to_video = importlib.import_module("content_domains.script_to_video")
 
     def setUp(self):
         self.originals = {
@@ -2010,6 +2024,34 @@ class TextVideoPlanningApiTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as denied:
             self.request("POST", "/api/gen/text-video/plan", body, username=None)
         self.assertEqual(denied.exception.code, 401)
+
+    def test_library_quote_inventory_shortage_fails_before_cost_or_quote(self):
+        prepared = {
+            "pipeline": "pixelle", "material_source": "library",
+            "n_scenes": 5, "template": "1080x1920/image_default.html",
+        }
+        points = mock.Mock()
+        self.core._domains = lambda: (mock.Mock(), points, mock.Mock())
+        with mock.patch.object(self.core.feature_flags, "require_enabled"), \
+             mock.patch.object(self.core.miniprogram_security, "check_payload"), \
+             mock.patch.object(
+                 self.script_to_video, "prepare_script_to_video_payload",
+                 return_value=prepared,
+             ), \
+             mock.patch.object(
+                 self.pixelle, "require_material_library_available",
+                 side_effect=self.core.feature_flags.FeatureDisabled("素材库暂不可用，请稍后重试"),
+             ) as capacity, \
+             mock.patch.object(self.pixelle, "issue_quote") as issue:
+            with self.assertRaises(urllib.error.HTTPError) as rejected:
+                self.request("POST", "/api/gen/text-video/quote", {
+                    "pipeline": "pixelle", "text": "测试主题",
+                    "material_source": "library",
+                })
+        self.assertEqual(503, rejected.exception.code)
+        capacity.assert_called_once_with(prepared)
+        points.cost_of.assert_not_called()
+        issue.assert_not_called()
 
     def test_plan_route_reuses_existing_active_job_guard(self):
         with mock.patch.object(self.pixelle, "require_available"), \

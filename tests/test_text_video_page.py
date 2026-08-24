@@ -48,6 +48,8 @@ class TextVideoPageTests(unittest.TestCase):
     def test_material_source_is_explicit_and_library_mode_reaches_payload(self):
         self.assertIn('id="materialSourceAi"', PAGE)
         self.assertIn('id="materialSourceLibrary"', PAGE)
+        self.assertIn('>平台素材库</button>', PAGE)
+        self.assertNotIn('>我的素材库</button>', PAGE)
         self.assertIn("activeMaterialSource='ai'", PAGE)
         self.assertIn("material_source:activeMaterialSource", PAGE)
         self.assertIn("不调用 AI 生成素材", PAGE)

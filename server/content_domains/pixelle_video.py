@@ -1137,12 +1137,27 @@ def require_available():
         raise feature_flags.FeatureDisabled("文案成片服务暂不可用，请稍后重试")
 
 
-def require_material_library_available():
+def require_material_library_available(payload):
     try:
+        scene_count = int((payload or {}).get("n_scenes") or 0)
+        template_key = str((payload or {}).get("template") or "")
+        template = TEMPLATES_BY_KEY.get(template_key) or {}
+        orientation = str(template.get("orientation") or "")
+        if not 1 <= scene_count <= 20 or orientation not in {
+            "portrait", "landscape", "square"
+        }:
+            raise RuntimeError("invalid capacity request")
         result = _json_request(
-            "GET", "/api/video/material-library/health", timeout=5
+            "POST", "/api/video/material-library/probe", {
+                "scene_count": scene_count,
+                "orientation": orientation,
+            }, timeout=12
         )
-        if result.get("ready") is not True or int(result.get("records") or 0) < 1:
+        if (
+            result.get("ready") is not True
+            or int(result.get("scene_count") or 0) != scene_count
+            or int(result.get("selected_count") or 0) != scene_count + 1
+        ):
             raise RuntimeError("not ready")
     except Exception as exc:
         raise feature_flags.FeatureDisabled(
