@@ -1185,6 +1185,44 @@ class PixelleVideoTests(unittest.TestCase):
         self.assertEqual(default["style"], "realistic_commercial")
         self.assertEqual(selected["style"], "future_tech")
 
+    def test_prepare_defaults_and_validates_material_source(self):
+        default = self.pixelle.prepare_payload({"text": "AI 培训"})
+        library = self.pixelle.prepare_payload({
+            "text": "AI 培训", "material_source": "library",
+        })
+        self.assertEqual("ai", default["material_source"])
+        self.assertEqual("library", library["material_source"])
+        with self.assertRaisesRegex(ValueError, "有效的素材来源"):
+            self.pixelle.prepare_payload({
+                "text": "AI 培训", "material_source": "external-url",
+            })
+
+    def test_library_mode_quote_has_no_ai_visual_charge(self):
+        from content_domains import points
+
+        prepared = self.pixelle.prepare_payload({
+            "text": "AI 培训", "material_source": "library",
+        })
+        prices = {"image.openai.std": 20, "audio.tts": 10, "text.copy": 3}
+        with mock.patch.object(
+            points.pricing, "get_price", side_effect=lambda key: prices[key]
+        ):
+            cost = points.cost_of("script_to_video", prepared)
+        self.assertEqual(13, cost)
+        self.assertEqual(0, prepared["cost_breakdown"]["visual_scenes"])
+        self.assertEqual("library", prepared["cost_breakdown"]["material_source"])
+
+    def test_material_library_readiness_fails_closed(self):
+        with mock.patch.object(
+            self.pixelle, "_json_request", return_value={"ready": True, "records": 193}
+        ):
+            self.assertIsNone(self.pixelle.require_material_library_available())
+        for response in ({"ready": False, "records": 193}, {"ready": True, "records": 0}):
+            with self.subTest(response=response), mock.patch.object(
+                self.pixelle, "_json_request", return_value=response
+            ), self.assertRaisesRegex(Exception, "素材库暂不可用"):
+                self.pixelle.require_material_library_available()
+
     def test_prepare_defaults_normalizes_and_rejects_invalid_speech_rate(self):
         default = self.pixelle.prepare_payload({"text": "AI 培训"})
         normalized = self.pixelle.prepare_payload({
@@ -1302,6 +1340,16 @@ class PixelleVideoTests(unittest.TestCase):
             self.pixelle.STYLE_PRESETS_BY_KEY["medical_beauty"]["prompt_prefix"],
         )
         self.assertEqual(body["media_workflow"], self.pixelle.PIXELLE_MEDIA_WORKFLOW)
+
+    def test_submit_forwards_strict_library_mode(self):
+        payload = self.pixelle.prepare_payload({
+            "text": "AI 培训", "material_source": "library",
+        })
+        with mock.patch.object(
+            self.pixelle, "_json_request", return_value={"task_id": "task-library"}
+        ) as request:
+            self.assertEqual("task-library", self.pixelle._submit(payload))
+        self.assertEqual("library", request.call_args.args[2]["material_source"])
 
     def test_submit_public_voice_uses_resolved_upstream_voice_id(self):
         payload = self.pixelle.prepare_payload({"text": "AI 培训"})

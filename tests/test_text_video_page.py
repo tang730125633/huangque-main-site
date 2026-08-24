@@ -45,6 +45,13 @@ class TextVideoPageTests(unittest.TestCase):
         self.assertIn('id="talkingMaterialPanel" hidden', PAGE)
         self.assertIn('启用口播视频素材', PAGE)
 
+    def test_material_source_is_explicit_and_library_mode_reaches_payload(self):
+        self.assertIn('id="materialSourceAi"', PAGE)
+        self.assertIn('id="materialSourceLibrary"', PAGE)
+        self.assertIn("activeMaterialSource='ai'", PAGE)
+        self.assertIn("material_source:activeMaterialSource", PAGE)
+        self.assertIn("不调用 AI 生成素材", PAGE)
+
     def test_talking_controls_are_accessible_and_have_stable_defaults(self):
         self.assertIn('id="talkingDefaultAvatar"', PAGE)
         self.assertIn('accept="image/jpeg,image/png,image/webp"', PAGE)
@@ -241,6 +248,11 @@ process.stdout.write(JSON.stringify({afterSceneEdit:afterSceneEdit,afterPlanInpu
         self.assertEqual(result["planRequests"], 0)
         self.assertNotIn("talking_material", result["payload"])
         self.assertEqual(result["payload"]["pipeline"], "pixelle")
+
+    def test_library_source_reaches_quote_and_paid_submission(self):
+        result = self._run_page_runtime("libraryPath")
+        self.assertEqual("library", result["quotePayload"]["material_source"])
+        self.assertEqual("library", result["paidPayload"]["material_source"])
 
     def test_declined_quote_never_reaches_paid_submission(self):
         result = self._run_page_runtime("quoteCancel")

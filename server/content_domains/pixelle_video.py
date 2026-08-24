@@ -510,6 +510,13 @@ def _style_key(payload):
     return style
 
 
+def _material_source(payload):
+    value = str((payload or {}).get("material_source") or "ai").strip()
+    if value not in {"ai", "library"}:
+        raise ValueError("请选择有效的素材来源")
+    return value
+
+
 def _speech_rate(payload):
     raw_value = (payload or {}).get("speech_rate")
     if raw_value is None:
@@ -576,6 +583,7 @@ def prepare_payload(payload, username=""):
     if template not in TEMPLATE_KEYS:
         raise ValueError("请选择有效的视频模板")
     style = _style_key(body)
+    material_source = _material_source(body)
     scene_count = 5 if mode == "generate" else len(segments)
     prepared = {
         "pipeline": "pixelle",
@@ -585,6 +593,7 @@ def prepare_payload(payload, username=""):
         "mode": mode,
         "template": template,
         "style": style,
+        "material_source": material_source,
         "speech_rate": speech_rate,
         "n_scenes": scene_count,
         "scenes": [{"line": line} for line in segments],
@@ -1128,6 +1137,19 @@ def require_available():
         raise feature_flags.FeatureDisabled("文案成片服务暂不可用，请稍后重试")
 
 
+def require_material_library_available():
+    try:
+        result = _json_request(
+            "GET", "/api/video/material-library/health", timeout=5
+        )
+        if result.get("ready") is not True or int(result.get("records") or 0) < 1:
+            raise RuntimeError("not ready")
+    except Exception as exc:
+        raise feature_flags.FeatureDisabled(
+            "素材库暂不可用，请稍后重试"
+        ) from exc
+
+
 def _prepared_text(text, mode):
     if mode == "fixed" and re.search(r"[\u3400-\u9fff]", text):
         return text
@@ -1483,6 +1505,7 @@ def _submit(payload):
     payload["speech_rate"] = speech_rate
     template = TEMPLATES_BY_KEY[payload["template"]]
     style = STYLE_PRESETS_BY_KEY[_style_key(payload)]
+    material_source = _material_source(payload)
     media_workflow = (
         PIXELLE_VIDEO_WORKFLOW
         if template["kind"] == "video"
@@ -1495,6 +1518,7 @@ def _submit(payload):
         "frame_template": payload["template"],
         "prompt_prefix": style["prompt_prefix"],
         "media_workflow": media_workflow,
+        "material_source": material_source,
         "tts_workflow": PIXELLE_TTS_WORKFLOW,
         "tts_speed": speech_rate,
         "video_fps": 30,
@@ -1639,6 +1663,29 @@ def _talking_warnings(result):
     return warnings
 
 
+def _material_manifest(result):
+    values = result.get("material_manifest")
+    if not isinstance(values, list):
+        return []
+    allowed = {
+        "scene_id", "record_id", "sha256", "name", "media_type",
+        "orientation", "duration_seconds", "match_level", "match_score",
+    }
+    manifest = []
+    seen = set()
+    for value in values[:21]:
+        if not isinstance(value, dict):
+            continue
+        sha256 = str(value.get("sha256") or "").lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", sha256) or sha256 in seen:
+            continue
+        item = {key: value.get(key) for key in allowed if key in value}
+        item["sha256"] = sha256
+        manifest.append(item)
+        seen.add(sha256)
+    return manifest
+
+
 def generate(payload):
     style = _style_key(payload)
     task_id = _submit(payload)
@@ -1658,10 +1705,14 @@ def generate(payload):
         "scene_count": int(result.get("scene_count") or payload.get("n_scenes") or 1),
         "template": payload["template"],
         "style": style,
+        "material_source": _material_source(payload),
         "input_mode": payload["mode"],
         "file_size": int(result.get("file_size") or file_size),
     }
     warnings = _talking_warnings(result)
     if warnings:
         response["talking_warnings"] = warnings
+    manifest = _material_manifest(result)
+    if manifest:
+        response["material_manifest"] = manifest
     return response

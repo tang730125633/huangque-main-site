@@ -2881,6 +2881,8 @@ class H(BaseHTTPRequestHandler):
                     request_body, user["username"])
                 if prepared.get("pipeline") != "pixelle":
                     raise ValueError("当前报价仅支持文案成片")
+                if prepared.get("material_source") == "library":
+                    pixelle_video_domain.require_material_library_available()
                 cost = points_domain.cost_of("script_to_video", prepared)
                 token, expires_at = pixelle_video_domain.issue_quote(
                     prepared, user["username"], cost, AUTH_INTERNAL_TOKEN)
@@ -3067,6 +3069,9 @@ class H(BaseHTTPRequestHandler):
                     from . import script_to_video as script_to_video_domain
                     body = script_to_video_domain.prepare_script_to_video_payload(body, user["username"])
                     if body.get("pipeline") == "pixelle":
+                        if body.get("material_source") == "library":
+                            from . import pixelle_video as pixelle_video_domain
+                            pixelle_video_domain.require_material_library_available()
                         script_to_video_quote_token = body.pop("_quote_token", "")
                 elif kind == "breakdown":
                     from . import breakdown as breakdown_domain
