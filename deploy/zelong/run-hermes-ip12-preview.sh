@@ -6,10 +6,13 @@ set -a
 . /home/ubuntu/content-api/content.env
 set +a
 
-: "${DASHSCOPE_API_KEY:?DASHSCOPE_API_KEY is required}"
-export OPENAI_API_BASE="${HERMES_PREVIEW_BASE:-https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions}"
-export OPENAI_API_KEY="${HERMES_PREVIEW_API_KEY:-$DASHSCOPE_API_KEY}"
-export HERMES_MODEL="${HERMES_PREVIEW_MODEL:-qwen-plus}"
+: "${OPENAI_API_KEY:?OPENAI_API_KEY is required}"
+export OPENAI_API_BASE="${HERMES_PREVIEW_BASE:-https://api.openai.com/v1}"
+export OPENAI_API_KEY="${HERMES_PREVIEW_API_KEY:-$OPENAI_API_KEY}"
+export HERMES_MODEL="${HERMES_PREVIEW_MODEL:-gpt-5.6-terra}"
+export HTTP_PROXY="${HERMES_PREVIEW_HTTP_PROXY:-http://127.0.0.1:10810}"
+export HTTPS_PROXY="${HERMES_PREVIEW_HTTPS_PROXY:-http://127.0.0.1:10810}"
+export NO_PROXY="${HERMES_PREVIEW_NO_PROXY:-127.0.0.1,localhost,::1}"
 export HERMES_MASTER_AGENT_MODE="${HERMES_PREVIEW_MASTER_AGENT_MODE:-live}"
 export HERMES_HOME=/home/ubuntu/hermes-preview
 export HERMES_DATA_DIR=/home/ubuntu/hermes-preview-data
