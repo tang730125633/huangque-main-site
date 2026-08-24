@@ -1299,10 +1299,6 @@ def validate_model_decision(
                     and (
                         state.get("pending")
                         or state["intake"]["status"] in {"collecting", "awaiting_confirmation", "editing"}
-                        or (
-                            state["current_module"] in {1, 2, 3, 4}
-                            and not choice_checkpoint
-                        )
                     )
                 )
             ):
