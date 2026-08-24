@@ -41,49 +41,6 @@ def passing_provider_report(model="gpt-5.6-terra"):
 
 
 class CognitiveLiveEvalTests(unittest.TestCase):
-    def test_t3_resume_reruns_only_pinned_failed_cases(self):
-        with tempfile.TemporaryDirectory() as root:
-            base_path = Path(root) / "base.json"
-            provider = passing_provider_report()
-            provider["source_provider"] = provider["provider"]
-            provider["provider"] = "openai"
-            base = {
-                "schema": cognitive_live_eval.SCHEMA,
-                "evidence_source": "live_capture",
-                "release_sha": "release-under-test",
-                "model": "gpt-5.6-terra",
-                "corpus_sha256": cognitive_live_eval.eval_contract.CORPUS_SHA256,
-                "custom_eval": {"passed": True},
-                "provider_compat": provider,
-                "agents_sdk_eval": {
-                    "engine": {"calls": 44}, "failed_case_ids": ["weather-1"],
-                },
-            }
-            encoded = json.dumps(base, ensure_ascii=False, sort_keys=True).encode()
-            base_path.write_bytes(encoded)
-            os.chmod(base_path, 0o600)
-            output = Path(root) / "resumed.json"
-            args = SimpleNamespace(
-                base_artifact=str(base_path),
-                base_artifact_sha256=__import__("hashlib").sha256(encoded).hexdigest(),
-                corpus=str(Path(__file__).parent / "fixtures/ip12_semantic_router_cases.json"),
-                max_requests=10, max_cny=1, budget_ledger=str(Path(root) / "budget.json"),
-                model="gpt-5.6-terra", max_output_tokens=450, timeout=10,
-                release_sha="release-under-test", valid_seconds=3600, output=str(output),
-            )
-            captured = []
-            def run_engine(cases, _decider):
-                captured.extend(case["id"] for case in cases)
-                return passing_engine_report()
-            with patch.object(
-                provider_live_eval, "provider_configs",
-                return_value={"openai_official": {"base_url": "https://api.openai.com/v1", "key": "dummy"}},
-            ), patch.object(cognitive_live_eval.eval_contract, "run_engine", side_effect=run_engine):
-                artifact, _ = cognitive_live_eval.run_t3_resume(args)
-            self.assertEqual(captured, ["weather-1"])
-            self.assertEqual(artifact["decision"], "PASS")
-            self.assertEqual(artifact["agents_sdk_eval"]["failed_case_ids"], [])
-
     def test_eval_summary_lists_only_failed_case_ids_without_raw_output(self):
         report = passing_engine_report()
         report["results"].append({

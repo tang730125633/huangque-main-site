@@ -88,6 +88,7 @@ def conformance_gate(release_sha, requested=None):
     valid = (
         report.get("schema") == "ip12.cognitive-conformance/v1"
         and report.get("decision") == "PASS"
+        and not report.get("resume")
         and report.get("evidence_source") == "live_capture"
         and bool(str(release_sha or ""))
         and str(report.get("release_sha") or "") == str(release_sha or "")
