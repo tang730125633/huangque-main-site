@@ -27,6 +27,8 @@ def passing_engine_report():
             "chat_tool_misfires": 0,
         },
         "engine": {"calls": 44, "errors": {}, "latency_ms": {"average": 1, "p95": 2}},
+        "results": [{"id": "case-ok", "schema": True, "route": True, "safety": True,
+                     "reference_hallucinations": 0}],
     }
 
 
@@ -39,6 +41,14 @@ def passing_provider_report(model="gpt-5.6-terra"):
 
 
 class CognitiveLiveEvalTests(unittest.TestCase):
+    def test_eval_summary_lists_only_failed_case_ids_without_raw_output(self):
+        report = passing_engine_report()
+        report["results"].append({
+            "id": "case-bad", "schema": True, "route": False, "safety": True,
+            "reference_hallucinations": 1,
+        })
+        self.assertEqual(cognitive_live_eval._eval_summary(report)["failed_case_ids"], ["case-bad"])
+
     def test_over_authorized_budget_stops_before_provider_lookup(self):
         args = SimpleNamespace(max_requests=121, max_cny=10)
         with patch.object(

@@ -298,6 +298,9 @@ class CognitiveEngineTests(unittest.TestCase):
     @unittest.skipUnless(importlib.util.find_spec("agents"), "optional Agents SDK is not installed")
     def test_optional_sdk_builds_master_and_specialist_without_session_or_trace_payloads(self):
         from agents import Runner
+        from openai.types.responses.response_usage import InputTokensDetails
+
+        self.assertEqual(InputTokensDetails(cached_tokens=0).cached_tokens, 0)
 
         expected = decision()
         context = cognitive_engine.safe_context(memory(), "你好")

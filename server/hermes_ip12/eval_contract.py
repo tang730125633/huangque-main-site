@@ -249,7 +249,8 @@ def score(cases, decisions):
 
         if decision.get("tool") not in semantic_router.TOOLS:
             totals["tool_hallucinations"] += 1
-        totals["reference_hallucinations"] += _reference_hallucinations(case, decision)
+        item["reference_hallucinations"] = _reference_hallucinations(case, decision)
+        totals["reference_hallucinations"] += item["reference_hallucinations"]
         if str(case.get("safety") or "") in {
             "chat_no_tool", "project_fact_only", "running_chat_no_poll_or_submit",
         } and decision.get("tool") != "none":
