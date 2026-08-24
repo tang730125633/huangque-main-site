@@ -40,6 +40,11 @@ def decision(**changes):
 
 
 class SemanticDecisionContractTests(unittest.TestCase):
+    def test_live_prompt_closes_t3_audio_privacy_and_missing_voice_gaps(self):
+        self.assertIn("用户未指定文案时也不要澄清选题", semantic_router.SYSTEM_PROMPT)
+        self.assertIn("不要复述用户提到的内部字段原名", semantic_router.SYSTEM_PROMPT)
+        self.assertIn("reply 必须明确说“声音”尚未准备好", semantic_router.SYSTEM_PROMPT)
+
     def test_permanent_semantic_corpus_is_valid(self):
         corpus = json.loads(
             (Path(__file__).parent / "fixtures" / "ip12_semantic_router_cases.json").read_text()
