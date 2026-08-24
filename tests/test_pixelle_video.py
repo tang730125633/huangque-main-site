@@ -971,15 +971,206 @@ class PixelleVideoTests(unittest.TestCase):
             ["第一段讲清问题。", "第二段给出方案。", "第三段总结价值。"],
         )
 
-    def test_fixed_copy_uses_upstream_paragraph_count_not_character_estimate(self):
+    def test_fixed_copy_semantically_splits_long_paragraph_near_six_seconds(self):
         long_paragraph = "这是一段很长但没有空行的完整文案。" * 20
         prepared = self.pixelle.prepare_payload({"text": long_paragraph, "mode": "fixed"})
-        self.assertEqual(prepared["n_scenes"], 1)
+        lines = [scene["line"] for scene in prepared["scenes"]]
+
+        self.assertGreater(len(lines), 1)
+        self.assertEqual(long_paragraph, "".join(lines))
+        self.assertTrue(all(
+            self.pixelle._estimated_scene_duration(line, 1.0) <= 9.0
+            for line in lines
+        ))
+
+    def test_fifty_four_second_copy_becomes_nine_scenes_and_three_recommendations(self):
+        text = "中" * 216
+        prepared = self.pixelle.prepare_payload({
+            "text": text,
+            "mode": "fixed",
+            "speech_rate": 1.0,
+        })
+        self.assertEqual(9, prepared["n_scenes"])
+        self.assertEqual(text, "".join(scene["line"] for scene in prepared["scenes"]))
+        self.assertEqual(
+            [6.0] * 9,
+            [self.pixelle._estimated_scene_duration(scene["line"], 1.0)
+             for scene in prepared["scenes"]],
+        )
+
+        with mock.patch.object(
+            self.pixelle.pixelle_talking_assets,
+            "create_plan",
+            side_effect=lambda _owner, _source, scenes: {
+                "plan_id": "talking_plan_" + "a" * 32,
+                "source_hash": "b" * 64,
+                "scenes": scenes,
+            },
+        ), mock.patch.object(
+            self.pixelle,
+            "public_voices",
+            return_value=[{
+                "id": "public:" + self.pixelle.DEFAULT_PUBLIC_VOICE,
+                "scope": "public",
+            }],
+        ):
+            plan = self.pixelle.plan_talking_scenes({
+                "text": text,
+                "mode": "fixed",
+                "ratio": 0.3,
+            }, "alice")
+        self.assertEqual(9, len(plan["scenes"]))
+        self.assertEqual(3, sum(
+            scene["talking_recommended"] for scene in plan["scenes"]
+        ))
+
+    def test_fixed_copy_segmentation_tracks_speech_rate_without_rewriting(self):
+        text = "人工智能正在改变工作方式，我们需要理解工具边界。" * 8
+        slow = self.pixelle.prepare_payload({
+            "text": text, "mode": "fixed", "speech_rate": 0.8,
+        })
+        fast = self.pixelle.prepare_payload({
+            "text": text, "mode": "fixed", "speech_rate": 1.6,
+        })
+        self.assertGreater(slow["n_scenes"], fast["n_scenes"])
+        self.assertEqual(text, "".join(item["line"] for item in slow["scenes"]))
+        self.assertEqual(text, "".join(item["line"] for item in fast["scenes"]))
+
+    def test_fixed_copy_preserves_500_and_1000_character_input_contract(self):
+        for size in (500, 1000):
+            text = "中" * size
+            for speech_rate in (0.8, 1.0, 1.6):
+                prepared = self.pixelle.prepare_payload({
+                    "text": text,
+                    "mode": "fixed",
+                    "speech_rate": speech_rate,
+                })
+                self.assertLessEqual(prepared["n_scenes"], 20)
+                self.assertEqual(
+                    text,
+                    "".join(scene["line"] for scene in prepared["scenes"]),
+                )
+
+        with self.assertRaisesRegex(ValueError, "1000"):
+            self.pixelle.prepare_payload({"text": "中" * 1001, "mode": "fixed"})
+
+    def test_fixed_copy_rebalances_avoidable_short_edge_scenes(self):
+        cases = (
+            "中" * 36 + "。好。",
+            "好。" + "中" * 36 + "。",
+            "好。" + "中" * 36 + "。好。",
+            "中" * 36 + "。好。" + "中" * 36 + "。",
+            "中" * 36 + "。好。再来。" + "中" * 36 + "。",
+        )
+        for text in cases:
+            segments = self.pixelle._fixed_segments(text, 1.0)
+            self.assertEqual(text, "".join(segments))
+            self.assertTrue(all(
+                self.pixelle._estimated_scene_duration(segment, 1.0) >= 3.0
+                for segment in segments
+            ), (text, segments))
+
+    def test_twenty_scene_fallback_never_crosses_user_paragraph_boundaries(self):
+        source = "甲" * 301 + "\n\n" + "乙" * 300
+        prepared = self.pixelle.prepare_payload({
+            "text": source,
+            "mode": "fixed",
+            "speech_rate": 1.0,
+        })
+        lines = [scene["line"] for scene in prepared["scenes"]]
+        self.assertEqual(20, len(lines))
+        self.assertEqual("甲" * 301 + "乙" * 300, "".join(lines))
+        self.assertTrue(all(
+            not ({"甲", "乙"} <= set(line))
+            for line in lines
+        ))
+
+    def test_twenty_scene_fallback_has_documented_balanced_long_duration(self):
+        expectations = ((0.8, 15.7), (1.0, 12.5), (1.6, 7.9))
+        for speech_rate, maximum_seconds in expectations:
+            prepared = self.pixelle.prepare_payload({
+                "text": "中" * 1000,
+                "mode": "fixed",
+                "speech_rate": speech_rate,
+            })
+            durations = [
+                self.pixelle._estimated_scene_duration(
+                    scene["line"], speech_rate
+                )
+                for scene in prepared["scenes"]
+            ]
+            self.assertEqual(20, len(durations))
+            self.assertLessEqual(max(durations), maximum_seconds)
 
     def test_fixed_copy_rejects_more_than_twenty_upstream_paragraphs(self):
         text = "\n\n".join("第%d段" % index for index in range(21))
         with self.assertRaisesRegex(ValueError, "最多支持 20 个段落"):
             self.pixelle.prepare_payload({"text": text, "mode": "fixed"})
+
+    def test_quote_binds_owner_scenes_cost_and_expiry(self):
+        from content_domains import points
+
+        prepared = self.pixelle.prepare_payload({
+            "text": "中" * 216,
+            "mode": "fixed",
+        })
+        prices = {"image.openai.std": 20, "audio.tts": 10}
+        with mock.patch.object(
+            points.pricing, "get_price", side_effect=lambda key: prices[key]
+        ):
+            cost = points.cost_of("script_to_video", prepared)
+        token, expires_at = self.pixelle.issue_quote(
+            prepared, "alice", cost, "quote-secret", now=1000)
+        self.assertEqual(1600, expires_at)
+        self.assertTrue(self.pixelle.require_confirmed_quote(
+            token, prepared, "alice", cost, "quote-secret", now=1200))
+        submitted = self.pixelle.prepare_payload({
+            "text": "中" * 216,
+            "mode": "fixed",
+            "quote_token": token,
+        })
+        submitted_token = submitted.pop("_quote_token")
+        with mock.patch.object(
+            points.pricing, "get_price", side_effect=lambda key: prices[key]
+        ):
+            submitted_cost = points.cost_of("script_to_video", submitted)
+        self.assertEqual(cost, submitted_cost)
+        self.assertEqual(
+            prepared["cost_breakdown"], submitted["cost_breakdown"]
+        )
+        self.assertTrue(self.pixelle.require_confirmed_quote(
+            submitted_token, submitted, "alice", submitted_cost,
+            "quote-secret", now=1200))
+
+        changed = dict(prepared, n_scenes=prepared["n_scenes"] + 1)
+        with self.assertRaisesRegex(ValueError, "变化"):
+            self.pixelle.require_confirmed_quote(
+                token, changed, "alice", cost, "quote-secret", now=1200)
+        with self.assertRaisesRegex(ValueError, "变化"):
+            self.pixelle.require_confirmed_quote(
+                token, prepared, "bob", cost, "quote-secret", now=1200)
+        with self.assertRaisesRegex(ValueError, "过期"):
+            self.pixelle.require_confirmed_quote(
+                token, prepared, "alice", cost, "quote-secret", now=1601)
+        with self.assertRaisesRegex(ValueError, "先获取"):
+            self.pixelle.require_confirmed_quote(
+                "", prepared, "alice", cost, "quote-secret", now=1200)
+
+    def test_text_video_ui_quotes_and_confirms_before_paid_submission(self):
+        root = Path(__file__).resolve().parents[1]
+        page = (root / "site/workbench/text-video.html").read_text(encoding="utf-8")
+        core = (root / "server/content_domains/core.py").read_text(encoding="utf-8")
+
+        self.assertIn("/api/gen/text-video/quote", page)
+        self.assertIn("window.confirm", page)
+        self.assertIn("quote.scene_count", page)
+        self.assertIn("quote.cost", page)
+        self.assertIn("quote_token:quote.quote_token", page)
+        self.assertIn("if(!payload.quote_token)", page)
+        self.assertLess(
+            core.index("require_confirmed_quote("),
+            core.index("jobs_store.create_paid_job("),
+        )
 
     def test_prepare_rejects_invalid_template_before_charge(self):
         with self.assertRaisesRegex(ValueError, "有效的视频模板"):
@@ -1728,7 +1919,7 @@ class TextVideoPlanningApiTests(unittest.TestCase):
         self.core.verify = self.originals["verify"]
         self.core._domains = self.originals["domains"]
 
-    def request(self, method, path, body=None, username="alice"):
+    def request(self, method, path, body=None, username="alice", extra_headers=None):
         headers = {}
         data = None
         if username is not None:
@@ -1736,6 +1927,7 @@ class TextVideoPlanningApiTests(unittest.TestCase):
         if body is not None:
             data = json.dumps(body).encode("utf-8")
             headers["Content-Type"] = "application/json"
+        headers.update(extra_headers or {})
         return urllib.request.urlopen(urllib.request.Request(
             "http://127.0.0.1:%d%s" % (self.server.server_address[1], path),
             data=data, headers=headers, method=method,
@@ -1815,6 +2007,32 @@ class TextVideoPlanningApiTests(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as denied:
                 self.request("GET", path, username="bob")
         self.assertEqual(denied.exception.code, 404)
+
+    def test_cli_avatar_import_requires_internal_auth_and_owner_upload(self):
+        avatar = {"asset_id": "local_avatar_" + "e" * 32,
+                  "mime": "image/png", "data": b"image"}
+        upload_id = "img_" + "a" * 32
+        image_data = "data:image/png;base64,aGVsbG8="
+        with mock.patch.object(self.core, "AUTH_INTERNAL_TOKEN", "internal-secret"), \
+             mock.patch.object(self.pixelle, "require_available"), \
+             mock.patch.object(self.core.cli_uploads, "load_image_data_url",
+                               return_value=image_data) as load, \
+             mock.patch.object(self.core.miniprogram_security, "check_payload") as guard, \
+             mock.patch.object(self.assets, "store_avatar", return_value=avatar) as store:
+            with self.assertRaises(urllib.error.HTTPError) as denied:
+                self.request("POST", "/api/gen/cli/text-video/avatar-import", {
+                    "image_upload_id": upload_id,
+                })
+            self.assertEqual(403, denied.exception.code)
+            with self.request(
+                    "POST", "/api/gen/cli/text-video/avatar-import",
+                    {"image_upload_id": upload_id},
+                    extra_headers={"X-HQ-Internal-Token": "internal-secret"}) as response:
+                result = json.loads(response.read())
+        self.assertEqual(avatar["asset_id"], result["asset_id"])
+        load.assert_called_once_with(upload_id, "alice")
+        guard.assert_called_once_with({"image_data": image_data})
+        store.assert_called_once_with("alice", image_data)
 
     def test_avatar_upload_rejects_invalid_image(self):
         with mock.patch.object(self.pixelle, "require_available"), \

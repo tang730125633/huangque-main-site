@@ -6,12 +6,14 @@ from pathlib import Path
 
 
 PAGE = Path(__file__).resolve().parents[1] / "server" / "hermes_ip12" / "templates" / "index.html"
+SERVER = Path(__file__).resolve().parents[1] / "server" / "hermes_ip12" / "server.py"
 
 
 class IP12AgentProductionUITests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.html = PAGE.read_text(encoding="utf-8")
+        cls.server = SERVER.read_text(encoding="utf-8")
 
     def test_resizable_panel_has_desktop_bounds_and_accessible_controls(self):
         self.assertIn("--production-panel-width:440px", self.html)
@@ -79,12 +81,33 @@ class IP12AgentProductionUITests(unittest.TestCase):
     def test_prepare_and_quote_submit_typed_options(self):
         prepare = self.html[self.html.index("async function prepareProduction"):self.html.index("async function requestProductionQuote")]
         self.assertIn("options=typedProductionOptions(item||{},item&&item.options||{})", prepare)
-        self.assertIn("preferred_action:item&&item.preferred_action,options:options", prepare)
+        self.assertIn("preferred_action:item&&item.preferred_action,allow_system_media:item&&item.allow_system_media===true,options:options", prepare)
         quote = self.html[self.html.index("async function requestProductionQuote"):self.html.index("async function confirmProduction")]
         self.assertIn("var collected=collectProductionOptions(record)", quote)
         self.assertIn("if(collected.missing.length)", quote)
         self.assertIn("options:collected.options", quote)
         self.assertIn("detail.code==='missing_prerequisite'", quote)
+
+    def test_agent_messages_and_top_bar_can_reopen_the_current_production(self):
+        self.assertIn('id="productionEntryBtn"', self.html)
+        self.assertIn('onclick="openCurrentProduction()"', self.html)
+        self.assertIn('class="top-action production-entry"', self.html)
+        message = self.html[
+            self.html.index("function productionMessageHtml"):
+            self.html.index("function isSafeMarkdownUrl")
+        ]
+        self.assertIn('class="production-inline"', message)
+        self.assertIn("productionInlineHtml(record,messageId)", message)
+        self.assertIn("refreshProductionMessages", message)
+        self.assertIn("openProductionRecord(this.dataset.productionId)", self.html)
+        lifecycle = self.html[
+            self.html.index("function updateProductionEntry"):
+            self.html.index("function productionError")
+        ]
+        self.assertIn("button.hidden=!record", lifecycle)
+        self.assertIn("updateProductionEntry()", lifecycle)
+        self.assertIn("function openProductionRecord", self.html)
+        self.assertIn("function openCurrentProduction", self.html)
 
     def test_four_current_missing_fields_are_typed_without_action_specific_flows(self):
         if not shutil.which("node"):
@@ -126,6 +149,42 @@ console.log(JSON.stringify(result));
         self.assertTrue(all(item["before"] for item in got))
         self.assertTrue(all(item["after"] == [] for item in got))
 
+    def test_voice_name_preview_key_and_quote_value_stay_bound(self):
+        if not shutil.which("node"):
+            self.skipTest("node unavailable")
+        helpers_start = self.html.index("function productionParameterSchema")
+        helpers_end = self.html.index("function productionDraftKey", helpers_start)
+        collect_start = self.html.index("function collectProductionOptions")
+        collect_end = self.html.index("function updateProductionQuoteGate", collect_start)
+        functions = self.html[helpers_start:helpers_end] + self.html[collect_start:collect_end]
+        script = functions + r"""
+const record={
+  options:{}, missing_prerequisites:['voice'],
+  parameter_schema:{type:'object',required:['voice'],properties:{voice:{type:'string',oneOf:[
+    {const:'S_pa0E8OR62',title:'沉稳男声（知识口播）',preview_url:'https://media.example/calm.mp3',preview_kind:'audio',source:'public'},
+    {const:'S_xaUB8OR62',title:'亲和女声（本地生活）',preview_url:'https://media.example/friendly.mp3',preview_kind:'audio',source:'public'}
+  ]}}}
+};
+const calm=productionFieldSpec(record,'voice').choices[0];
+record.options=typedProductionOptions(record,{voice:calm.value});
+global.document={querySelectorAll:()=>[{dataset:{field:'voice'},value:record.options.voice}]};
+console.log(JSON.stringify({
+  selectedKey:record.options.voice,
+  selectedLabel:productionDisplayValue(record,'voice',record.options.voice),
+  selectedPreview:calm.previewUrl,
+  quoteOptions:collectProductionOptions(record).options
+}));
+"""
+        got = json.loads(subprocess.run(
+            ["node", "-e", script], capture_output=True, text=True, check=True,
+        ).stdout)
+        self.assertEqual(got, {
+            "selectedKey": "S_pa0E8OR62",
+            "selectedLabel": "沉稳男声（知识口播）",
+            "selectedPreview": "https://media.example/calm.mp3",
+            "quoteOptions": {"voice": "S_pa0E8OR62"},
+        })
+
     def test_prepare_and_quote_runtime_bodies_keep_typed_options_and_missing_gate(self):
         if not shutil.which("node"):
             self.skipTest("node unavailable")
@@ -163,6 +222,7 @@ global.fetch=async (url,init)=>{
   return {ok:true,status:200,json:async()=>data};
 };
 function rememberProduction(record){productions[record.id]=record;return record}
+function refreshProductionMessages(){}
 function updateProductionQuoteGate(){}
 function updateProductionFromPayload(data){
   const id=data.id||data.production_id;
@@ -201,7 +261,8 @@ function toast(){}
 
     def test_agent_auto_runs_prepare_quotes_then_polls_one_job_and_delivers_in_chat(self):
         prepare = self.html[self.html.index("async function prepareProduction"):self.html.index("async function requestProductionQuote")]
-        self.assertIn("await requestProductionQuote(record.id)", prepare)
+        self.assertIn("await requestProductionQuote(record.id,false)", prepare)
+        self.assertNotIn("openPanel('生产画布')", prepare)
         send = self.html[self.html.index("async function sendTurn"):self.html.index("async function sendJumpMsg")]
         self.assertIn("item.type==='prepare_production'", send)
         self.assertIn("else if(autoAction)await runStateAction(autoAction)", send)
@@ -211,7 +272,7 @@ function toast(){}
         self.assertNotIn("confirmProduction(record.id)", polling)
         chat = self.html[self.html.index("function productionMessageHtml"):self.html.index("function isSafeMarkdownUrl")]
         self.assertIn("data-production-message", chat)
-        self.assertIn("productionResultHtml(record)", chat)
+        self.assertIn("production-inline", chat)
         result = self.html[self.html.index("function productionResultHtml"):self.html.index("function productionFieldControl")]
         self.assertIn("continueProductionRevision(this.dataset.productionId)", result)
 
@@ -327,6 +388,7 @@ console.log(JSON.stringify({
     def test_chat_material_upload_is_explicit_bound_and_never_confirms_a_paid_job(self):
         self.assertIn('id="materialInput" type="file" hidden', self.html)
         self.assertIn('id="attachBtn"', self.html)
+        self.assertIn('aria-label="上传 Agent 请求的图片、视频或音频素材"', self.html)
         upload = self.html[
             self.html.index("function pendingProductionUpload"):
             self.html.index("async function productionRequest")
@@ -344,6 +406,107 @@ console.log(JSON.stringify({
             self.html.index("async function requestProductionQuote")
         ]
         self.assertIn("appendProductionMessage(data.material_request_message)", prepare)
+        self.assertIn("^aud_", self.html)
+        self.assertIn("audio/mpeg,audio/wav", self.html)
+        self.assertIn("当前没有等待上传的图片、视频或音频", self.html)
+
+    def test_digital_human_materials_stay_inside_ip12(self):
+        self.assertIn('"x-hq-inline-upload-field": "image_upload_id"', self.server)
+        self.assertIn('"x-hq-inline-upload-field": "audio_upload_id"', self.server)
+        self.assertIn('"x-hq-switch-action": "digital-ip-audio-generate"', self.server)
+        self.assertNotIn('"x-hq-upload-route": "/workbench/digital-ip"', self.server)
+        self.assertNotIn('"x-hq-upload-route": "/workbench/audio"', self.server)
+
+    def test_user_media_choices_render_preview_and_audition_cards(self):
+        controls = self.html[
+            self.html.index("function productionFieldSpec"):
+            self.html.index("function productionOptionsHtml")
+        ]
+        self.assertIn("preview_url", controls)
+        self.assertIn("preview_kind", controls)
+        self.assertIn("productionChoiceCards", controls)
+        self.assertIn('role="radiogroup"', controls)
+        self.assertIn("<img", controls)
+        self.assertIn("<audio controls", controls)
+        self.assertIn("我的素材", controls)
+        self.assertIn("公共素材", controls)
+        self.assertIn("x-hq-upload-route", self.html)
+        self.assertIn("rememberProductionChoice(event)", self.html)
+
+    def test_agent_recommends_media_and_quotes_inside_the_conversation(self):
+        self.assertIn("def _production_recommended_options", self.server)
+        self.assertIn('choice["recommended"] = True', self.server)
+        inline = self.html[
+            self.html.index("function productionInlineHtml"):
+            self.html.index("function productionUiRoute")
+        ]
+        self.assertNotIn("Object.assign({},spec,{inlineUploadField:''})", inline)
+        self.assertIn("productionFieldControl(record,spec,false,3)", inline)
+        self.assertIn("录制/上传样音，生成我的克隆声音", self.html)
+        self.assertIn("/api/ip12/productions/clone-voice", self.html)
+        self.assertIn(",false,3)", inline)
+        self.assertIn("实时报价", inline)
+        self.assertIn("确认并提交这次生产", inline)
+        self.assertIn("查看全部素材", inline)
+        cards = self.html[
+            self.html.index("function productionChoiceCards"):
+            self.html.index("function productionOptionsHtml")
+        ]
+        self.assertIn("Agent 推荐", cards)
+        self.assertIn("<audio controls", cards)
+        self.assertIn("limit&&choices.length>limit", cards)
+        clone_poll = self.html[
+            self.html.index("function stopVoiceClonePoll"):
+            self.html.index("async function uploadSelectedMaterial")
+        ]
+        self.assertIn("voiceClonePolls", clone_poll)
+        self.assertIn("poll.inFlight||poll.timer", clone_poll)
+        self.assertIn("error.status!==429&&error.status<500", clone_poll)
+        self.assertIn("stopVoiceClonePoll(productionId)", clone_poll)
+        self.assertIn("'POST',{conversation_id:cid}", clone_poll)
+        restore = self.html[
+            self.html.index("function restoreProductionPanel(){"):
+            self.html.index("function openProductionRecord")
+        ]
+        self.assertNotIn("renderProductionPanel(record)", restore)
+        self.assertIn("requestProductionQuote(record.id,false)", restore)
+
+    def test_voice_clone_poll_deduplicates_retries_and_stops_terminal_states(self):
+        if not shutil.which("node"):
+            self.skipTest("node unavailable")
+        start = self.html.index("function stopVoiceClonePoll")
+        end = self.html.index("async function uploadSelectedMaterial", start)
+        functions = self.html[start:end]
+        script = functions + r"""
+const assert = require('assert');
+var voiceClonePolls={},cid='project-a',productions={p:{id:'p',options:{}}};
+var timers=[],requests=0,quotes=0,mode='ready';
+global.setTimeout=function(fn){timers.push(fn);return timers.length};
+global.clearTimeout=function(){};
+function updateProductionFromPayload(data){productions.p=data.production||productions.p;return productions.p}
+function appendProductionMessage(){}
+function toast(){}
+function productionUnfilledFields(){return []}
+function productionUnmappedMissing(){return []}
+async function requestProductionQuote(){quotes+=1}
+async function productionRequest(){requests+=1;if(mode==='429'){var e=new Error('limited');e.status=429;throw e}if(mode==='400'){var bad=new Error('bad');bad.status=400;throw bad}return{status:mode,production:{id:'p',options:{}}}}
+(async function(){
+  await Promise.all([pollVoiceClone('p'),pollVoiceClone('p')]);
+  assert.equal(requests,1);assert.equal(quotes,1);assert.equal(voiceClonePolls.p,undefined);
+  requests=0;quotes=0;mode='429';await pollVoiceClone('p');
+  assert.equal(requests,1);assert.equal(timers.length,1);assert.ok(voiceClonePolls.p);
+  mode='failed';timers.shift()();await new Promise(setImmediate);
+  assert.equal(requests,2);assert.equal(voiceClonePolls.p,undefined);
+  mode='400';await pollVoiceClone('p');
+  assert.equal(voiceClonePolls.p,undefined);
+  console.log('VOICE_CLONE_POLL_OK');
+})().catch(function(error){console.error(error);process.exit(1)});
+"""
+        result = subprocess.run(
+            ["node", "-e", script], capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("VOICE_CLONE_POLL_OK", result.stdout)
 
 
 if __name__ == "__main__":

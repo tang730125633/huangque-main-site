@@ -19,7 +19,7 @@ class ClonePreviewTests(unittest.TestCase):
     def test_clone_backfills_preview_asynchronously(self):
         """复刻先落 ready、试听【异步】回填(#602)——不用 slot_status 门控、不拖慢就绪。"""
         block = SRC[SRC.index("def _clone_via_cosyvoice"):]
-        block = block[:block.index("return {")]
+        block = block[:block.index("def clone_vip_voice")]
         self.assertIn("_cosy_backfill_preview_async(voice_id", block)   # 异步回填
         # 不再在主 UPDATE 里同步写 preview（那会被就绪窗口竞态卡住→无试听）
         self.assertNotIn("preview_file, preview_url = _cosy_clone_preview(voice_id) if slot_status", block)

@@ -1380,7 +1380,8 @@ def run_job(job_id):
                 )
         # 口播按成片真实时长结算：预扣(cost)是 hold，跑完多退少不补。只在抢到 done 后调 —— done CAS
         # 互斥 + reaper/reclaim 不碰 done → 每 job 至多结算一次，不重复退。结算失败不影响出片。
-        if kind == "video" or (kind == "script_to_video" and (result or {}).get("pipeline") in {"talking", "talking_with_materials"}):
+        if ((kind == "video" and mode != "lipsync")
+                or (kind == "script_to_video" and (result or {}).get("pipeline") in {"talking", "talking_with_materials"})):
             try:
                 block_points = payload.get("_talking_block_points")
                 actual = _domains()[2].talking_actual_cost(result, block_points)
@@ -1442,7 +1443,8 @@ def run_job(job_id):
         except Exception:
             pass
     except Exception as e:
-        if kind in {"sora_video", "xiaole_video"}:
+        if kind in {"sora_video", "xiaole_video"} or (
+                kind == "video" and mode == "lipsync"):
             try:
                 if _domains()[2].recover_paid_video_error(
                         job_id, kind, payload, e, _requeue_running_job):
@@ -1547,7 +1549,9 @@ def reaper():
                     stuck_payload = json.loads(r["payload"] or "{}")
                 except Exception:
                     stuck_payload = {}
-                if r["kind"] in {"sora_video", "xiaole_video"}:
+                if r["kind"] in {"sora_video", "xiaole_video"} or (
+                        r["kind"] == "video"
+                        and str(stuck_payload.get("mode") or "") == "lipsync"):
                     try:
                         video_domain = _domains()[2]
                         if video_domain.recover_paid_video_error(r["id"], r["kind"], stuck_payload,
@@ -1675,11 +1679,20 @@ class H(BaseHTTPRequestHandler):
                 self, p, verify, _must_change_password, AUTH_INTERNAL_TOKEN): return
         if cli_gateway.handle_video_upload(
                 self, p, verify, _must_change_password, AUTH_INTERNAL_TOKEN): return
+        if cli_gateway.handle_audio_upload(
+                self, p, verify, _must_change_password, AUTH_INTERNAL_TOKEN): return
+        if cli_gateway.handle_voice_clone(
+                self, p, verify, _must_change_password, audio_domain,
+                feature_flags, AUTH_INTERNAL_TOKEN): return
         if cli_gateway.handle_quote(
                 self, p, verify, _must_change_password, is_shutting_down,
                 feature_flags, points_domain, audio_domain, video_domain,
                 AUTH_INTERNAL_TOKEN): return
-        if p in {"/api/gen/text-video/plan", "/api/gen/text-video/avatar"}:
+        text_video_avatar_import = p == "/api/gen/cli/text-video/avatar-import"
+        if p in {"/api/gen/text-video/plan", "/api/gen/text-video/avatar"} or text_video_avatar_import:
+            if text_video_avatar_import and not cli_gateway._internal_auth(
+                    self, AUTH_INTERNAL_TOKEN):
+                return self._send(403, {"detail": "forbidden"})
             user = verify(self._token())
             if not user:
                 return self._send(401, {"detail": "未登录或登录已过期"})
@@ -1708,14 +1721,21 @@ class H(BaseHTTPRequestHandler):
                     pixelle_video.check_plan_rate_limit(user["username"])
                     return self._send(200, pixelle_video.plan_talking_scenes(
                         body, user["username"]))
-                pixelle_talking_assets.check_avatar_upload_rate_limit(
-                    user["username"])
-                body = self._json_body_strict(max_bytes=17 * 1024 * 1024)
-                if not isinstance(body, dict) or set(body) != {"image_data"}:
-                    raise ValueError("人物图片上传请求字段无效")
-                miniprogram_security.check_payload(body)
+                pixelle_talking_assets.check_avatar_upload_rate_limit(user["username"])
+                if text_video_avatar_import:
+                    body = self._json_body_strict(max_bytes=16 * 1024)
+                    if not isinstance(body, dict) or set(body) != {"image_upload_id"}:
+                        raise ValueError("人物图片导入请求字段无效")
+                    image_data = cli_uploads.load_image_data_url(
+                        body["image_upload_id"], user["username"])
+                else:
+                    body = self._json_body_strict(max_bytes=17 * 1024 * 1024)
+                    if not isinstance(body, dict) or set(body) != {"image_data"}:
+                        raise ValueError("人物图片上传请求字段无效")
+                    image_data = body.get("image_data")
+                miniprogram_security.check_payload({"image_data": image_data})
                 item = pixelle_talking_assets.store_avatar(
-                    user["username"], body.get("image_data"))
+                    user["username"], image_data)
                 return self._send(200, {
                     "asset_id": item["asset_id"],
                     "preview_url": "/api/gen/text-video/avatar/" + item["asset_id"],
@@ -2847,6 +2867,38 @@ class H(BaseHTTPRequestHandler):
             if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
             from . import breakdown as breakdown_domain
             return breakdown_domain.handle_local_upload(self, user)
+        if p == "/api/gen/text-video/quote":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录或登录已过期"})
+            if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
+            try:
+                feature_flags.require_enabled("script_to_video")
+                request_body = self._json_body_strict()
+                miniprogram_security.check_payload(request_body)
+                from . import script_to_video as script_to_video_domain
+                from . import pixelle_video as pixelle_video_domain
+                prepared = script_to_video_domain.prepare_script_to_video_payload(
+                    request_body, user["username"])
+                if prepared.get("pipeline") != "pixelle":
+                    raise ValueError("当前报价仅支持文案成片")
+                cost = points_domain.cost_of("script_to_video", prepared)
+                token, expires_at = pixelle_video_domain.issue_quote(
+                    prepared, user["username"], cost, AUTH_INTERNAL_TOKEN)
+                return self._send(200, {
+                    "quote_token": token,
+                    "expires_at": expires_at,
+                    "cost": cost,
+                    "scene_count": prepared["n_scenes"],
+                    "cost_breakdown": prepared.get("cost_breakdown") or {},
+                })
+            except feature_flags.FeatureDisabled as e:
+                return self._send(503, {"detail": str(e)})
+            except miniprogram_security.ContentRejected as e:
+                return self._send(400, {"detail": str(e), "code": "content_rejected"})
+            except miniprogram_security.SecurityUnavailable as e:
+                return self._send(503, {"detail": str(e), "code": "content_security_unavailable"})
+            except (ValueError, LookupError, RuntimeError) as e:
+                return self._send(400, {"detail": str(e)[:220]})
         if p == "/api/gen/canvas-agent/quote":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})
@@ -2874,6 +2926,7 @@ class H(BaseHTTPRequestHandler):
             still_attempt = None
             cinematic_idem_reserved = False
             script_to_video_idem_reserved = False
+            script_to_video_quote_token = ""
             still_access = _short_drama_canvas_access(self) if is_still_route else None
             scene_access = None
             minimax_idem_body = None
@@ -2948,7 +3001,10 @@ class H(BaseHTTPRequestHandler):
                         body
                     )
                 # content checks, price binding, idempotency, and deduction.
-                if not is_still_route and kind in {"image", "xiaole_video", "sora_video"}:
+                if kind == "video" and isinstance(body, dict) and (
+                        body.get("image_upload_id") or body.get("audio_upload_id")):
+                    body = cli_uploads.expand_talking_media_payload(body, user["username"])
+                elif not is_still_route and kind in {"image", "xiaole_video", "sora_video"}:
                     body = cli_uploads.expand_image_payload(body, user["username"])
                 elif kind in {"tryon", "cinematic"}:
                     body = cli_uploads.expand_role_media_payload(body, user["username"])
@@ -3010,6 +3066,8 @@ class H(BaseHTTPRequestHandler):
                 elif kind == "script_to_video":
                     from . import script_to_video as script_to_video_domain
                     body = script_to_video_domain.prepare_script_to_video_payload(body, user["username"])
+                    if body.get("pipeline") == "pixelle":
+                        script_to_video_quote_token = body.pop("_quote_token", "")
                 elif kind == "breakdown":
                     from . import breakdown as breakdown_domain
                     body = breakdown_domain.validate_breakdown_payload(body)
@@ -3075,6 +3133,8 @@ class H(BaseHTTPRequestHandler):
             except (ValueError, LookupError, PermissionError, _short_drama_domain().RevisionConflict) as e:
                 if still_idem_started:
                     _idempotency_abort(user["username"], p, idem_key)
+                if script_to_video_idem_reserved:
+                    _idempotency_abort(user["username"], p, idem_key)
                 _short_drama_domain()._http_error(self, e,
                     operation_terminal=is_still_route and bool(locals().get("idem_key")))
                 return
@@ -3095,6 +3155,18 @@ class H(BaseHTTPRequestHandler):
                 return self._send(503, {"detail": blocked, "code": "upstream_exhausted", "retry_after_ms": 60000})
             is_short_drama = kind == "copy" and isinstance(body, dict) and body.get("format") == "short_drama"
             cost = points_domain.cost_of(kind, body) if not is_short_drama and not is_still_route else None
+            if (kind == "script_to_video" and isinstance(body, dict)
+                    and body.get("pipeline") == "pixelle"):
+                from . import pixelle_video as pixelle_video_domain
+                try:
+                    pixelle_video_domain.require_confirmed_quote(
+                        script_to_video_quote_token, body, user["username"], cost,
+                        AUTH_INTERNAL_TOKEN)
+                except ValueError as e:
+                    if script_to_video_idem_reserved:
+                        _idempotency_abort(user["username"], p, idem_key)
+                    _short_drama_domain()._http_error(self, e)
+                    return
             if kind == "canvas_agent" and body.get("quoted_cost") != cost:
                 return self._send(400, {"detail": "画布 Agent 价格已变化，请重新报价"})
             if cli_gateway.reject_changed_cost(

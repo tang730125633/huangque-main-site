@@ -578,12 +578,27 @@ AVATAR_ID = {
 }
 IMAGE_UPLOAD_ID = {"type": "string", "minLength": 36, "maxLength": 36}
 VIDEO_UPLOAD_ID = {"type": "string", "minLength": 36, "maxLength": 36}
+TEXT_VIDEO_AVATAR_ID = {"type": "string", "pattern": "^local_avatar_[0-9a-f]{32}$"}
+TEXT_VIDEO_PLAN_ID = {"type": "string", "pattern": "^talking_plan_[0-9a-f]{32}$"}
+TEXT_VIDEO_SCENE_ID = {"type": "string", "pattern": "^scene_[0-9]{2}$"}
 TALKING_VIDEO_FIELDS = {
     "ratio": {"type": "string", "enum": ["9:16", "16:9", "1:1", "4:5", "5:4"]},
     "motion": {"type": "string", "enum": ["low", "medium", "high"]},
     "subtitle": {"type": "boolean"},
     "subtitle_style": {"type": "string", "enum": ["white", "variety", "bar"]},
     "subtitle_position": {"type": "string", "enum": ["top", "upper", "center", "lower", "bottom"]},
+}
+VIDEO_LIPSYNC_FIELDS = {
+    "video_asset_id": {
+        "type": "integer", "minimum": 1, "maximum": 9223372036854775807,
+        "description": "当前账号已完成的原视频资产 ID",
+    },
+    "audio_asset_id": {
+        "type": "integer", "minimum": 1, "maximum": 9223372036854775807,
+        "description": "当前账号已有的口播音频资产 ID",
+    },
+    "quality": {"type": "string", "enum": ["speed", "precision"]},
+    "dynamic_duration": {"type": "boolean"},
 }
 DIGITAL_IP_TEXT_FIELDS = {
     "avatar_id": AVATAR_ID,
@@ -647,11 +662,38 @@ TRYON_CLASSIC_FIELDS = {
     "background_upload_id": IMAGE_UPLOAD_ID,
     "seconds": {"type": "integer", "minimum": 1, "maximum": 6},
 }
+TEXT_VIDEO_FIELDS = {
+    "text": {"type": "string", "minLength": 2, "maxLength": 1000},
+    "template": {"type": "string", "minLength": 1, "maxLength": 240},
+    "mode": {"type": "string", "enum": ["generate", "fixed"]},
+    "style": {"type": "string", "minLength": 1, "maxLength": 80},
+    "voice": {"type": "string", "minLength": 1, "maxLength": 200},
+    "speech_rate": {"type": "number", "minimum": 0.5, "maximum": 2.0},
+    "talking_material": _schema({
+        "enabled": {"type": "boolean", "const": True},
+        "plan_id": TEXT_VIDEO_PLAN_ID,
+        "source_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "ratio": {"type": "number", "minimum": 0.1, "maximum": 0.5},
+        "default_avatar_asset_id": TEXT_VIDEO_AVATAR_ID,
+        "scenes": {"type": "array", "minItems": 1, "maxItems": 20, "items": _schema({
+            "scene_id": TEXT_VIDEO_SCENE_ID, "enabled": {"type": "boolean"},
+            "avatar_asset_id": TEXT_VIDEO_AVATAR_ID,
+        }, ["scene_id", "enabled"])},
+    }, ["enabled", "plan_id", "source_hash", "ratio", "default_avatar_asset_id", "scenes"]),
+}
+TEXT_VIDEO_PLAN_FIELDS = {
+    key: value for key, value in TEXT_VIDEO_FIELDS.items() if key != "talking_material"
+}
+TEXT_VIDEO_PLAN_FIELDS["ratio"] = {"type": "number", "minimum": 0.1, "maximum": 0.5}
 
 for identifier, name, fields, required in (
     ("image-generate", "图片生成", IMAGE_FIELDS, ["prompt"]),
     ("video-generate", "视频生成", VIDEO_FIELDS, ["prompt"]),
+    ("video-lipsync", "原视频口型同步", VIDEO_LIPSYNC_FIELDS,
+     ["video_asset_id", "audio_asset_id"]),
     ("audio-generate", "音频生成", AUDIO_FIELDS, ["text"]),
+    ("text-video-generate", "文案成片生成", TEXT_VIDEO_FIELDS,
+     ["text", "template", "style", "voice"]),
     ("digital-ip-text-generate", "数字IP单条文案生成", DIGITAL_IP_TEXT_FIELDS,
      ["avatar_id", "text", "voice"]),
     ("digital-ip-audio-generate", "数字IP本人资产音频生成", DIGITAL_IP_AUDIO_FIELDS,
@@ -709,6 +751,33 @@ CAPABILITIES["cinematic-open-generate"]["input_schema"]["oneOf"] = [
 CAPABILITIES["tryon-classic-generate"]["input_schema"]["anyOf"] = [
     {"required": ["clothes_upload_id"]}, {"required": ["background_upload_id"]},
 ]
+CAPABILITIES["text-video-generate"]["constraints"] = [
+    "template, style, and voice must be selected from text-video-templates, text-video-styles, and text-video-voices",
+    "mode defaults to generate; fixed preserves the supplied copy and automatically splits scenes",
+    "the first call returns scene_count and cost_breakdown without submitting a paid task",
+    "talking_material must come from text-video-plan and owner-scoped text-video-avatar-import results",
+]
+CAPABILITIES["text-video-generate"]["next_actions"] = [
+    "核对 scene_count 和 cost_breakdown 后，用完全相同的输入、quote_token 与 --confirm 提交；拿到 job_id 后仅使用 task 轮询。",
+]
+CAPABILITIES["text-video-avatar-import"] = _api(
+    "text-video-avatar-import", "导入口播人物", "text-video-avatar-import",
+    "把本人 image-upload 的临时图片导入为文案成片人物资产。",
+    {"image_upload_id": IMAGE_UPLOAD_ID}, ["image_upload_id"],
+    "assets:upload", "write", True,
+)
+CAPABILITIES["text-video-avatar-import"]["next_actions"] = [
+    "保存返回的 asset_id；可作为默认人物或某个口播分镜的 avatar_asset_id。",
+]
+CAPABILITIES["text-video-plan"] = _api(
+    "text-video-plan", "规划口播分镜", "text-video-plan",
+    "生成可确认的口播分镜方案。",
+    TEXT_VIDEO_PLAN_FIELDS, ["text", "template", "style", "voice"],
+    "generation:quote", "write", True,
+)
+CAPABILITIES["text-video-plan"]["next_actions"] = [
+    "把 plan_id、source_hash、ratio、人物 asset_id 和逐分镜 enabled 组合为 text-video-generate.talking_material。",
+]
 
 CAPABILITIES["image-generate"]["constraints"] = [
     "image_upload_id and reference_upload_ids are mutually exclusive",
@@ -728,6 +797,12 @@ CAPABILITIES["video-generate"]["constraints"] = [
     "channel=sora uses model=sora-2|sora-2-pro, seconds=4|8|12, ratio=9:16|16:9, resolution=720p|1024p|1080p, and at most one reference image",
     "channel=sora does not accept duration or generate_audio; seconds is only for sora",
     "@图片N references the Nth item in reference_upload_ids",
+]
+CAPABILITIES["video-lipsync"]["constraints"] = [
+    "video_asset_id and audio_asset_id must be completed assets owned by the current account",
+    "quality defaults to speed; precision costs twice as many points",
+    "dynamic_duration defaults to false to preserve the source performance timing",
+    "the source video must be 1-300 seconds",
 ]
 CAPABILITIES["digital-ip-text-generate"]["constraints"] = [
     "avatar_id must identify a ready avatar owned by the current account",
@@ -775,6 +850,7 @@ for identifier, website_modes in {
     "image-generate": ["banana", "openai", "seedream", "xiaole"],
     "video": ["one_click", "digital_ip", "cinematic", "tryon", "grok", "sora", "minimax", "omni", "seedance"],
     "video-generate": ["grok", "sora", "minimax", "omni", "seedance"],
+    "video-lipsync": ["digital_ip"],
     "digital-ip-text-generate": ["digital_ip"],
     "digital-ip-audio-generate": ["digital_ip"],
     "digital-ip-batch-generate": ["digital_ip"],
@@ -795,7 +871,8 @@ for identifier, website_modes in {
     "digital-presenter-update": ["digitalPresenter"],
     "text-video": ["text_video"], "text-video-capability": ["text_video"],
     "text-video-templates": ["text_video"], "text-video-styles": ["text_video"],
-    "text-video-voices": ["text_video"],
+    "text-video-voices": ["text_video"], "text-video-generate": ["text_video"],
+    "text-video-avatar-import": ["text_video"], "text-video-plan": ["text_video"],
     "short-drama": ["live_action"],
     "short-drama-projects": ["live_action"], "short-drama-project": ["live_action"],
     "short-drama-conversation": ["live_action"], "short-drama-preflight": ["live_action"],

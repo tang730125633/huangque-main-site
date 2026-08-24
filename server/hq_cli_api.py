@@ -14,6 +14,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from decimal import Decimal, ROUND_HALF_UP
 
 
 PUBLIC_ORIGIN = os.environ.get("HQ_CLI_PUBLIC_ORIGIN", "https://huangquechuanmei.com").strip().rstrip("/")
@@ -107,8 +108,9 @@ CONFIRMATION_ACTIONS = frozenset({
     "ip12-create", "ip12-message", "prompt-optimize", "canvas-create", "canvas-ops",
     "asset-favorite", "asset-tags", "video-compose-create", "video-compose-analyze",
     "video-compose-review", "video-compose-render", "digital-presenter-create",
-    "digital-presenter-update",
+    "digital-presenter-update", "voice-clone-create",
     "inspiration-like", "leads-crm-upsert",
+    "text-video-avatar-import", "text-video-plan",
 })
 
 # This is the public contract shared by the CLI, the first-party HTTP bridge,
@@ -119,12 +121,17 @@ _ACTION_INPUTS = {
     "account": (), "channels": (), "pricing": (),
     "text-video-capability": (), "text-video-templates": (),
     "text-video-styles": (), "text-video-voices": (),
+    "text-video-generate": ("text", "template", "mode", "style", "voice", "speech_rate", "talking_material"),
+    "text-video-avatar-import": ("image_upload_id",),
+    "text-video-plan": ("text", "template", "mode", "style", "voice", "speech_rate", "ratio"),
     "inspiration-catalog": (), "inspiration-likes": (),
     "inspiration-like": ("id", "favorite"),
     "leads-crm": ("lead_ids",), "leads-crm-upsert": ("lead_id", "intent", "follow_status", "follow_note"),
     "collect-content": ("url",), "collect-video": ("url",), "collect-transcript": ("url",),
     "collect-search": ("platform", "keyword", "page"), "leads-generate": ("url", "platform", "pages", "channels_targets"),
     "video-avatars": ("limit",), "audio-slots": (),
+    "voice-clone-create": ("slot_id", "name", "audio_upload_id"),
+    "voice-clone-status": ("slot_id",),
     "short-drama-projects": ("page", "page_size"),
     "short-drama-project": ("project_id",), "short-drama-conversation": ("project_id",),
     "short-drama-preflight": ("project_id",),
@@ -148,10 +155,11 @@ _ACTION_INPUTS = {
     "digital-presenter-update": ("board_id", "project_id", "revision", "title", "script_text", "ratio", "resolution", "voice_key", "target_duration"),
     "image-generate": ("prompt", "provider", "ratio", "quality", "count", "variant", "model", "image_upload_id", "mask_upload_id", "reference_upload_ids"),
     "video-generate": ("prompt", "channel", "ratio", "duration", "seconds", "resolution", "model", "generate_audio", "reference_upload_ids"),
+    "video-lipsync": ("video_asset_id", "audio_asset_id", "quality", "dynamic_duration"),
     "audio-generate": ("text", "voice", "speed", "pitch", "volume"),
-    "digital-ip-text-generate": ("avatar_id", "text", "voice", "ratio", "motion", "subtitle", "subtitle_style", "subtitle_position"),
+    "digital-ip-text-generate": ("avatar_id", "image_upload_id", "text", "voice", "ratio", "motion", "subtitle", "subtitle_style", "subtitle_position"),
     "digital-ip-batch-generate": ("avatars", "text", "voice", "ratio", "motion", "subtitle", "subtitle_style", "subtitle_position"),
-    "digital-ip-audio-generate": ("avatar_id", "audio_file", "ratio", "motion", "subtitle", "subtitle_style", "subtitle_position"),
+    "digital-ip-audio-generate": ("avatar_id", "image_upload_id", "audio_file", "audio_upload_id", "ratio", "motion", "subtitle", "subtitle_style", "subtitle_position"),
     "cinematic-open-generate": ("avatar_id", "avatar_ids", "prompt", "ratio", "duration", "enhance_prompt", "reference_image_upload_ids", "reference_video_upload_ids"),
     "cinematic-motion-generate": ("avatar_id", "reference_video_upload_ids", "ratio"),
     "tryon-fast-generate": ("person_image_upload_id", "clothes_upload_id", "seconds"),
@@ -163,7 +171,12 @@ _ACTION_PURPOSES = {
     "ip12-projects": "读取本人 IP12 项目", "ip12-project": "读取本人 IP12 项目详情",
     "ip12-report": "读取本人 IP12 报告", "canvas-list": "读取本人画布", "canvas-get": "读取本人画布详情",
     "tasks": "读取本人任务记录", "task": "读取本人任务详情", "assets": "读取本人资产", "voices": "读取可用音色",
-    "image-generate": "生成图片", "video-generate": "生成视频", "audio-generate": "生成音频",
+    "voice-clone-create": "用本人样音创建或重新录制个人克隆音色",
+    "voice-clone-status": "读取个人克隆音色处理状态",
+    "image-generate": "生成图片", "video-generate": "生成视频", "video-lipsync": "让本人原视频匹配新口播音频",
+    "audio-generate": "生成音频", "text-video-generate": "根据主题或完整文案生成成片",
+    "text-video-avatar-import": "导入文案成片口播人物图片",
+    "text-video-plan": "生成可选择的文案成片口播分镜方案",
     "canvas-agent-plan": "为画布生成可确认的操作方案", "canvas-ops": "写入本人画布操作",
 }
 
@@ -174,6 +187,9 @@ _ID_SCHEMA = {"type": "string", "minLength": 1, "maxLength": 160}
 _INT_ID_SCHEMA = {"type": "integer", "minimum": 1, "maximum": 2**63 - 1}
 _IMAGE_UPLOAD_SCHEMA = {"type": "string", "pattern": "^img_[0-9a-f]{32}$"}
 _VIDEO_UPLOAD_SCHEMA = {"type": "string", "pattern": "^vid_[0-9a-f]{32}$"}
+_AUDIO_UPLOAD_SCHEMA = {"type": "string", "pattern": "^aud_[0-9a-f]{32}$"}
+_VOICE_SLOT_ID_PATTERN = "^[A-Za-z][A-Za-z0-9_-]{1,87}$"
+_VOICE_SLOT_ID_RE = re.compile(_VOICE_SLOT_ID_PATTERN)
 
 # Keep discovery and executable planning on one channel matrix.  The public
 # CLI carries an identical table and the cross-package contract test prevents
@@ -351,6 +367,21 @@ _MEDIA_SCHEMAS = {
             "generate_audio is only a boolean for micro",
         ],
     },
+    "video-lipsync": {
+        "required": ["video_asset_id", "audio_asset_id"],
+        "properties": {
+            "video_asset_id": _INT_ID_SCHEMA,
+            "audio_asset_id": _INT_ID_SCHEMA,
+            "quality": {"type": "string", "enum": ["speed", "precision"]},
+            "dynamic_duration": {"type": "boolean"},
+        },
+        "constraints": [
+            "video_asset_id and audio_asset_id must be completed assets owned by this account",
+            "quality defaults to speed; precision costs twice as many points",
+            "dynamic_duration defaults to false to preserve the source performance timing",
+            "the source video must be 1-300 seconds",
+        ],
+    },
     "audio-generate": {
         "required": ["text"], "properties": {
             "text": {"type": "string", "minLength": 1, "maxLength": 1000},
@@ -359,6 +390,40 @@ _MEDIA_SCHEMAS = {
             "pitch": {"type": "integer", "minimum": -12, "maximum": 12},
             "volume": {"type": "integer", "minimum": -50, "maximum": 100},
         }, "constraints": ["speed is rounded to one decimal place"],
+    },
+    "text-video-generate": {
+        "required": ["text", "template", "style", "voice"], "properties": {
+            "text": {"type": "string", "minLength": 2, "maxLength": 1000},
+            "template": {"type": "string", "minLength": 1, "maxLength": 240},
+            "mode": {"type": "string", "enum": ["generate", "fixed"]},
+            "style": {"type": "string", "minLength": 1, "maxLength": 80},
+            "voice": {"type": "string", "minLength": 1, "maxLength": 200},
+            "speech_rate": {"type": "number", "minimum": 0.5, "maximum": 2.0},
+            "talking_material": {"type": "object"},
+        },
+        "constraints": [
+            "template, style, and voice must come from the matching text-video read capabilities",
+            "mode defaults to generate; fixed preserves the supplied copy and automatically splits scenes",
+            "the signed CLI quote carries the native quote; final submission revalidates it before deduction",
+            "talking_material must reference an active plan and owner-scoped avatar assets",
+        ],
+    },
+    "text-video-avatar-import": {
+        "required": ["image_upload_id"],
+        "properties": {"image_upload_id": _IMAGE_UPLOAD_SCHEMA},
+        "constraints": ["image_upload_id must be a current owner-scoped image-upload result"],
+    },
+    "text-video-plan": {
+        "required": ["text", "template", "style", "voice"], "properties": {
+            "text": {"type": "string", "minLength": 2, "maxLength": 1000},
+            "template": {"type": "string", "minLength": 1, "maxLength": 240},
+            "mode": {"type": "string", "enum": ["generate", "fixed"]},
+            "style": {"type": "string", "minLength": 1, "maxLength": 80},
+            "voice": {"type": "string", "minLength": 1, "maxLength": 200},
+            "speech_rate": {"type": "number", "minimum": 0.5, "maximum": 2.0},
+            "ratio": {"type": "number", "minimum": 0.1, "maximum": 0.5},
+        },
+        "constraints": ["creates an expiring owner-scoped plan and requires explicit confirmation"],
     },
     "canvas-create": {
         "required": ["name"], "properties": {
@@ -409,13 +474,27 @@ _MEDIA_SCHEMAS.update({
         "offset": {"type": "integer", "minimum": 0, "maximum": 100000},
     }, "constraints": []},
     "canvas-get": {"required": ["board_id"], "properties": {"board_id": _ID_SCHEMA}, "constraints": []},
-    "digital-ip-text-generate": {"required": ["avatar_id", "text", "voice"], "properties": {
-        "avatar_id": _INT_ID_SCHEMA, "text": {"type": "string", "minLength": 1, "maxLength": 1000},
+    "voice-clone-create": {"required": ["slot_id", "name", "audio_upload_id"], "properties": {
+        "slot_id": {"type": "string", "pattern": _VOICE_SLOT_ID_PATTERN},
+        "name": {"type": "string", "minLength": 1, "maxLength": 40},
+        "audio_upload_id": _AUDIO_UPLOAD_SCHEMA,
+    }, "constraints": [
+        "sample audio is private to the current account and should contain 10-60 seconds of clear speech",
+        "reusing a ready slot replaces that personal cloned voice and requires explicit confirmation",
+    ]},
+    "voice-clone-status": {"required": ["slot_id"], "properties": {
+        "slot_id": {"type": "string", "pattern": _VOICE_SLOT_ID_PATTERN},
+    }, "constraints": []},
+    "digital-ip-text-generate": {"required": ["text", "voice"], "properties": {
+        "avatar_id": _INT_ID_SCHEMA, "image_upload_id": {**_IMAGE_UPLOAD_SCHEMA, "title": "人物照片"},
+        "text": {"type": "string", "minLength": 1, "maxLength": 1000},
         "voice": {"type": "string", "minLength": 1, "maxLength": 128}, **_TALKING_FIELDS},
-        "constraints": ["avatar_id must be a ready avatar owned by this account; output is fixed at 1080p"]},
-    "digital-ip-audio-generate": {"required": ["avatar_id", "audio_file"], "properties": {
-        "avatar_id": _INT_ID_SCHEMA, "audio_file": {"type": "string", "minLength": 1, "maxLength": 500}, **_TALKING_FIELDS},
-        "constraints": ["audio_file comes from this account's assets, not a URL, local path, or upload; output is fixed at 1080p"]},
+        "constraints": ["provide one ready account avatar_id or one private image_upload_id; output is fixed at 1080p"]},
+    "digital-ip-audio-generate": {"required": [], "properties": {
+        "avatar_id": _INT_ID_SCHEMA, "image_upload_id": {**_IMAGE_UPLOAD_SCHEMA, "title": "人物照片"},
+        "audio_file": {"type": "string", "minLength": 1, "maxLength": 500},
+        "audio_upload_id": {**_AUDIO_UPLOAD_SCHEMA, "title": "本人口播音频"}, **_TALKING_FIELDS},
+        "constraints": ["provide one avatar_id or image_upload_id and one owned audio_file or audio_upload_id; output is fixed at 1080p"]},
     "digital-ip-batch-generate": {"required": ["avatars", "text", "voice"], "properties": {
         "avatars": {"type": "array", "minItems": 2, "maxItems": 5, "uniqueItems": True, "items": {
             "type": "object", "additionalProperties": False, "required": ["avatar_id"], "properties": {
@@ -488,24 +567,29 @@ _MEDIA_SCHEMAS.update({
 
 _FAMILIES = {
     "image-upload": "image", "image-generate": "image", "audio-slots": "audio", "voices": "audio", "audio-generate": "audio",
-    "video-upload": "video", "video-avatars": "video", "video-generate": "video", "digital-ip-text-generate": "video",
+    "voice-clone-create": "audio", "voice-clone-status": "audio",
+    "video-upload": "video", "video-avatars": "video", "video-generate": "video", "video-lipsync": "video", "digital-ip-text-generate": "video",
     "digital-ip-batch-generate": "video", "digital-ip-audio-generate": "video", "cinematic-open-generate": "video",
     "cinematic-motion-generate": "video", "tryon-fast-generate": "video", "tryon-classic-generate": "video",
     "video-compose-projects": "video", "video-compose-project": "video", "video-compose-create": "video",
     "video-compose-analyze": "video", "video-compose-review": "video", "video-compose-render": "video",
     "text-video-capability": "video", "text-video-templates": "video", "text-video-styles": "video", "text-video-voices": "video",
+    "text-video-generate": "video",
+    "text-video-avatar-import": "video", "text-video-plan": "video",
     "canvas-list": "canvas", "canvas-get": "canvas", "canvas-create": "canvas", "canvas-agent-plan": "canvas",
     "canvas-ops": "canvas", "digital-presenter-capability": "canvas", "digital-presenter-project": "canvas",
     "digital-presenter-create": "canvas", "digital-presenter-update": "canvas",
 }
 _ACTION_FEATURE_GATES = {
-    "audio-generate": ("audio",), "canvas-agent-plan": ("canvas_agent",),
-    "digital-ip-text-generate": ("video",), "digital-ip-batch-generate": ("video",),
+    "audio-generate": ("audio",), "voice-clone-create": ("audio",), "voice-clone-status": ("audio",),
+    "canvas-agent-plan": ("canvas_agent",),
+    "video-lipsync": ("video",), "digital-ip-text-generate": ("video",), "digital-ip-batch-generate": ("video",),
     "digital-ip-audio-generate": ("video",), "cinematic-open-generate": ("cinematic",),
     "cinematic-motion-generate": ("cinematic",), "tryon-fast-generate": ("tryon",),
     "tryon-classic-generate": ("tryon",), "digital-presenter-capability": ("digital_presenter",),
     "digital-presenter-project": ("digital_presenter",), "digital-presenter-create": ("digital_presenter",),
-    "digital-presenter-update": ("digital_presenter",),
+    "digital-presenter-update": ("digital_presenter",), "text-video-generate": ("script_to_video",),
+    "text-video-avatar-import": ("script_to_video",), "text-video-plan": ("script_to_video",),
 }
 _OPTION_FEATURE_GATES = {
     ("image-generate", "provider"): {"openai": ("image",), "seedream": ("image",), "xiaole": ("image", "image_xiaole"), "banana": ("image", "banana")},
@@ -516,9 +600,10 @@ CATALOG_FEATURE_FLAGS = tuple(sorted({flag for flags in (*_ACTION_FEATURE_GATES.
 
 _GENERATION_ACTIONS = frozenset({
     "collect-content", "collect-video", "collect-transcript", "collect-search", "leads-generate",
-    "canvas-agent-plan", "image-generate", "video-generate", "audio-generate",
+    "canvas-agent-plan", "image-generate", "video-generate", "video-lipsync", "audio-generate",
     "digital-ip-text-generate", "digital-ip-batch-generate", "digital-ip-audio-generate",
     "cinematic-open-generate", "cinematic-motion-generate", "tryon-fast-generate", "tryon-classic-generate",
+    "text-video-generate",
 })
 
 
@@ -588,8 +673,9 @@ def _catalog_entry(action, fields):
 
 
 def _upload_catalog_entry(action, family, max_bytes, mime_types, max_files):
+    label = {"image": "图片", "video": "视频", "audio": "音频"}[family]
     return {
-        "action": action, "family": family, "purpose": "上传本人生成所需的临时参考" + ("图片" if family == "image" else "视频"),
+        "action": action, "family": family, "purpose": "上传本人生成所需的临时参考" + label,
         "input_schema": {"type": "object", "additionalProperties": False, "required": ["file"], "properties": {
             "file": {"type": "file", "path": "absolute", "maxBytes": max_bytes, "mimeTypes": mime_types},
         }},
@@ -611,7 +697,7 @@ for _catalog_item in ACTION_CATALOG:
     if _catalog_item["action"] in _FAMILIES:
         _catalog_item["family"] = _FAMILIES[_catalog_item["action"]]
 ACTION_CATALOG_MAP = {item["action"]: item for item in ACTION_CATALOG if item["transport"]["kind"] == "action"}
-ACTION_CATALOG_VERSION = "hq-action-catalog-v2"
+ACTION_CATALOG_VERSION = "hq-action-catalog-v3"
 
 
 def action_catalog(feature_states=None):
@@ -648,6 +734,7 @@ _START_HITS_LOCK = threading.Lock()
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,160}$")
 _UPLOAD_ID_RE = re.compile(r"^img_[0-9a-f]{32}$")
 _VIDEO_UPLOAD_ID_RE = re.compile(r"^vid_[0-9a-f]{32}$")
+_AUDIO_UPLOAD_ID_RE = re.compile(r"^aud_[0-9a-f]{32}$")
 _CANVAS_NODE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _CANVAS_OP_NODE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _CANVAS_PROJECT_RE = re.compile(r"^(local|collab):[A-Za-z0-9_-]{1,120}$")
@@ -656,12 +743,18 @@ _VIDEO_COMPOSE_PROJECT_RE = re.compile(r"^compose_[0-9a-f]{32}$")
 _VIDEO_COMPOSE_CANDIDATE_RE = re.compile(r"^candidate_[0-9a-f]{16}$")
 _DIGITAL_PRESENTER_PROJECT_RE = re.compile(r"^dp_[0-9a-f]{32}$")
 _LEAD_ID_RE = re.compile(r"^[0-9a-f]{16,40}$")
+_TALKING_PLAN_ID_RE = re.compile(r"^talking_plan_[0-9a-f]{32}$")
+_TALKING_AVATAR_ID_RE = re.compile(r"^local_avatar_[0-9a-f]{32}$")
+_TALKING_SCENE_ID_RE = re.compile(r"^scene_[0-9]{2}$")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 _CANVAS_BASE64_RE = re.compile(r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{512,}={0,2}(?![A-Za-z0-9+/_=-])")
 IMAGE_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
 IMAGE_UPLOAD_SLOTS = threading.BoundedSemaphore(2)
 VIDEO_UPLOAD_MAX_BYTES = 32 * 1024 * 1024
 VIDEO_UPLOAD_SLOTS = threading.BoundedSemaphore(2)
+AUDIO_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
+AUDIO_UPLOAD_SLOTS = threading.BoundedSemaphore(2)
 _TASK_KINDS = {
     "", "image", "audio", "video", "xiaole_video", "copy", "collect", "collect_search", "leads",
     "tryon", "cinematic", "avatar", "breakdown", "script_to_video", "sora_video",
@@ -832,6 +925,13 @@ def _upload_id(value, field):
 def _video_upload_id(value, field):
     value = _string(value, field, 1, 64).lower()
     if not _VIDEO_UPLOAD_ID_RE.fullmatch(value):
+        raise CLIAPIError(400, field + " 格式不合法")
+    return value
+
+
+def _audio_upload_id(value, field):
+    value = _string(value, field, 1, 64).lower()
+    if not _AUDIO_UPLOAD_ID_RE.fullmatch(value):
         raise CLIAPIError(400, field + " 格式不合法")
     return value
 
@@ -1302,7 +1402,7 @@ def proxy_json(plan, web_token, internal_token=""):
 
 def _proxy_media_upload(stream, length, web_token, internal_token, content_type, digest,
                         path, digest_header, label):
-    display = {"image": "图片", "video": "视频"}[label]
+    display = {"image": "图片", "video": "视频", "audio": "音频"}[label]
     if not internal_token:
         raise CLIAPIError(503, "CLI 内部授权未配置", "not_configured")
     target = urllib.parse.urlsplit(CONTENT_BASE)
@@ -1359,6 +1459,13 @@ def proxy_video_upload(stream, length, web_token, internal_token, content_type, 
     )
 
 
+def proxy_audio_upload(stream, length, web_token, internal_token, content_type, digest):
+    return _proxy_media_upload(
+        stream, length, web_token, internal_token, content_type, digest,
+        "/api/gen/cli/audio-upload", "X-HQ-Audio-SHA256", "audio",
+    )
+
+
 def _plan(scope, kind, **values):
     return {"scope": scope, "kind": kind, **values}
 
@@ -1400,6 +1507,74 @@ def _digital_presenter_fields(value):
     if "target_duration" in value:
         fields["target_duration"] = _integer(value["target_duration"], "target_duration", 30, 180)
     return fields
+
+
+def _text_video_base_payload(value, extra_fields=()):
+    allowed = {"text", "template", "mode", "style", "voice", "speech_rate"} | set(extra_fields)
+    _strict_object(value, allowed, ("text", "template", "style", "voice"))
+    return {
+        "pipeline": "pixelle",
+        "text": _string(value["text"], "text", 2, 1000),
+        "template": _string(value["template"], "template", 1, 240),
+        "mode": _enum(value.get("mode", "generate"), "mode", ("generate", "fixed")),
+        "style": _string(value["style"], "style", 1, 80),
+        "voice": _string(value["voice"], "voice", 1, 200),
+        "speech_rate": float(Decimal(str(
+            _number(value.get("speech_rate", 1.0), "speech_rate", 0.5, 2.0)
+        )).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)),
+        "source_page": "text-video",
+    }
+
+
+def _text_video_talking_material(raw):
+    _strict_object(raw, {
+        "enabled", "plan_id", "source_hash", "ratio",
+        "default_avatar_asset_id", "scenes",
+    }, ("enabled", "plan_id", "source_hash", "ratio", "default_avatar_asset_id", "scenes"))
+    if raw["enabled"] is not True:
+        raise CLIAPIError(400, "talking_material.enabled 必须为 true")
+    scenes = raw["scenes"]
+    if not isinstance(scenes, list) or not 1 <= len(scenes) <= 20:
+        raise CLIAPIError(400, "talking_material.scenes 必须包含 1-20 项")
+    normalized_scenes = []
+    seen = set()
+    for item in scenes:
+        _strict_object(item, {"scene_id", "enabled", "avatar_asset_id"},
+                       ("scene_id", "enabled"))
+        scene_id = _matched_string(
+            item["scene_id"], "scene_id", _TALKING_SCENE_ID_RE, 16)
+        if scene_id in seen:
+            raise CLIAPIError(400, "talking_material.scenes 不能重复")
+        seen.add(scene_id)
+        if not isinstance(item["enabled"], bool):
+            raise CLIAPIError(400, "talking_material.scenes.enabled 必须是布尔值")
+        scene = {"scene_id": scene_id, "enabled": item["enabled"]}
+        if "avatar_asset_id" in item:
+            if not item["enabled"]:
+                raise CLIAPIError(400, "未启用的口播分镜不能指定人物")
+            scene["avatar_asset_id"] = _matched_string(
+                item["avatar_asset_id"], "avatar_asset_id", _TALKING_AVATAR_ID_RE, 64)
+        normalized_scenes.append(scene)
+    if not any(item["enabled"] for item in normalized_scenes):
+        raise CLIAPIError(400, "请至少启用一个口播分镜")
+    return {
+        "enabled": True,
+        "plan_id": _matched_string(raw["plan_id"], "plan_id", _TALKING_PLAN_ID_RE, 64),
+        "source_hash": _matched_string(raw["source_hash"], "source_hash", _SHA256_RE, 64),
+        "ratio": _number(raw["ratio"], "ratio", 0.1, 0.5),
+        "default_avatar_asset_id": _matched_string(
+            raw["default_avatar_asset_id"], "default_avatar_asset_id",
+            _TALKING_AVATAR_ID_RE, 64),
+        "scenes": normalized_scenes,
+    }
+
+
+def _text_video_payload(value):
+    payload = _text_video_base_payload(value, ("talking_material",))
+    if "talking_material" in value:
+        payload["talking_material"] = _text_video_talking_material(
+            value["talking_material"])
+    return payload
 
 
 def _collect_url(value):
@@ -1464,6 +1639,36 @@ def action_plan(action, value):
     if action == "pricing":
         _strict_object(value, set())
         return _plan("profile:read", "proxy", base=CONTENT_BASE, path="/api/gen/pricing")
+    if action == "text-video-avatar-import":
+        _strict_object(value, {"image_upload_id"}, ("image_upload_id",))
+        return _plan(
+            "assets:upload", "proxy", base=CONTENT_BASE,
+            path="/api/gen/cli/text-video/avatar-import", method="POST",
+            body={"image_upload_id": _upload_id(
+                value["image_upload_id"], "image_upload_id")},
+            internal=True,
+        )
+    if action == "text-video-plan":
+        payload = _text_video_base_payload(value, ("ratio",))
+        payload["ratio"] = float(Decimal(str(
+            _number(value.get("ratio", 0.3), "ratio", 0.1, 0.5)
+        )).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP))
+        return _plan(
+            "generation:quote", "proxy", base=CONTENT_BASE,
+            path="/api/gen/text-video/plan", method="POST", body=payload,
+        )
+    if action == "text-video-generate":
+        payload = _text_video_payload(value)
+        return _plan(
+            "generation:quote", "generation",
+            generation_kind="script_to_video",
+            endpoint="/api/gen/script_to_video",
+            payload=payload,
+            quote_endpoint="/api/gen/text-video/quote",
+            quote_body=payload,
+            native_quote_token_field="quote_token",
+            quote_result_fields=("scene_count", "cost_breakdown"),
+        )
     if action in {
             "text-video-capability", "text-video-templates",
             "text-video-styles", "text-video-voices"}:
@@ -1547,6 +1752,29 @@ def action_plan(action, value):
         _strict_object(value, set())
         return _plan("assets:read", "proxy", base=CONTENT_BASE,
                      path="/api/gen/audio/slots?include_points=0")
+    if action == "voice-clone-status":
+        _strict_object(value, {"slot_id"}, ("slot_id",))
+        slot_id = _matched_string(
+            value["slot_id"], "slot_id", _VOICE_SLOT_ID_RE, 88,
+        )
+        return _plan(
+            "assets:read", "proxy", base=CONTENT_BASE,
+            path="/api/gen/audio/clone-status?" + urllib.parse.urlencode({"slot_id": slot_id}),
+        )
+    if action == "voice-clone-create":
+        _strict_object(value, {"slot_id", "name", "audio_upload_id"},
+                       ("slot_id", "name", "audio_upload_id"))
+        return _plan(
+            "assets:write", "proxy", base=CONTENT_BASE,
+            path="/api/gen/cli/voice-clone", method="POST", body={
+                "slot_id": _matched_string(
+                    value["slot_id"], "slot_id",
+                    _VOICE_SLOT_ID_RE, 88,
+                ),
+                "name": _string(value["name"], "name", 1, 40),
+                "audio_upload_id": _audio_upload_id(value["audio_upload_id"], "audio_upload_id"),
+            }, timeout=30, internal=True,
+        )
     if action == "short-drama-projects":
         _strict_object(value, {"page", "page_size"})
         query = urllib.parse.urlencode({
@@ -1752,6 +1980,7 @@ def action_plan(action, value):
                      path=path, method=method, body=body, headers=headers)
     if action in {
             "image-generate", "video-generate", "audio-generate",
+            "video-lipsync",
             "digital-ip-text-generate", "digital-ip-batch-generate", "digital-ip-audio-generate",
             "cinematic-open-generate", "cinematic-motion-generate",
             "tryon-fast-generate", "tryon-classic-generate"}:
@@ -1762,19 +1991,41 @@ def action_plan(action, value):
 
 
 def _generation_payload(action, value):
+    if action == "video-lipsync":
+        _strict_object(
+            value,
+            {"video_asset_id", "audio_asset_id", "quality", "dynamic_duration"},
+            ("video_asset_id", "audio_asset_id"),
+        )
+        dynamic_duration = value.get("dynamic_duration", False)
+        if not isinstance(dynamic_duration, bool):
+            raise CLIAPIError(400, "dynamic_duration 必须是布尔值")
+        return {
+            "mode": "lipsync",
+            "video_asset_id": _integer(
+                value["video_asset_id"], "video_asset_id", 1, 2**63 - 1),
+            "audio_asset_id": _integer(
+                value["audio_asset_id"], "audio_asset_id", 1, 2**63 - 1),
+            "lipsync_mode": _enum(
+                value.get("quality", "speed"), "quality", ("speed", "precision")),
+            "dynamic_duration": dynamic_duration,
+        }, "video", "/api/gen/video"
     if action in {"digital-ip-text-generate", "digital-ip-audio-generate"}:
         mode = "text" if action == "digital-ip-text-generate" else "audio"
-        required = ("avatar_id", "text", "voice") if mode == "text" else ("avatar_id", "audio_file")
+        required = ("text", "voice") if mode == "text" else ()
         _strict_object(value, {
-            "avatar_id", "text", "voice", "audio_file", "ratio", "motion",
+            "avatar_id", "image_upload_id", "text", "voice", "audio_file", "audio_upload_id", "ratio", "motion",
             "subtitle", "subtitle_style", "subtitle_position",
         }, required)
+        if bool(value.get("avatar_id")) == bool(value.get("image_upload_id")):
+            raise CLIAPIError(400, "avatar_id 与 image_upload_id 必须且只能提供一个")
+        if mode == "audio" and bool(value.get("audio_file")) == bool(value.get("audio_upload_id")):
+            raise CLIAPIError(400, "audio_file 与 audio_upload_id 必须且只能提供一个")
         subtitle = value.get("subtitle", False)
         if not isinstance(subtitle, bool):
             raise CLIAPIError(400, "subtitle 必须是布尔值")
         body = {
             "mode": mode,
-            "avatar_id": _integer(value["avatar_id"], "avatar_id", 1, 2**63 - 1),
             "resolution": "1080p",
             "ratio": _enum(value.get("ratio", "9:16"), "ratio", ("9:16", "16:9", "1:1", "4:5", "5:4")),
             "motion": _enum(value.get("motion", "medium"), "motion", ("low", "medium", "high")),
@@ -1782,11 +2033,18 @@ def _generation_payload(action, value):
             "subtitle_style": _enum(value.get("subtitle_style", "white"), "subtitle_style", ("white", "variety", "bar")),
             "subtitle_position": _enum(value.get("subtitle_position", "bottom"), "subtitle_position", ("top", "upper", "center", "lower", "bottom")),
         }
+        if value.get("avatar_id") is not None:
+            body["avatar_id"] = _integer(value["avatar_id"], "avatar_id", 1, 2**63 - 1)
+        else:
+            body["image_upload_id"] = _upload_id(value["image_upload_id"], "image_upload_id")
         if mode == "text":
             body["text"] = _string(value["text"], "text", 1, 1000)
             body["voice"] = _string(value["voice"], "voice", 1, 128)
         else:
-            body["audio_file"] = _string(value["audio_file"], "audio_file", 1, 500)
+            if value.get("audio_file") is not None:
+                body["audio_file"] = _string(value["audio_file"], "audio_file", 1, 500)
+            else:
+                body["audio_upload_id"] = _audio_upload_id(value["audio_upload_id"], "audio_upload_id")
         return body, "video", "/api/gen/video"
     if action == "digital-ip-batch-generate":
         _strict_object(value, {
@@ -2041,7 +2299,7 @@ def _canonical(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
 
 
-def issue_quote(secret, username, generation_kind, payload, cost, now=None):
+def issue_quote(secret, username, generation_kind, payload, cost, now=None, context=None):
     if not secret:
         raise CLIAPIError(503, "CLI 报价签名未配置", "not_configured")
     now = int(time.time() if now is None else now)
@@ -2053,6 +2311,10 @@ def issue_quote(secret, username, generation_kind, payload, cost, now=None):
         "h": hashlib.sha256(_canonical(payload)).hexdigest(),
         "c": cost, "e": now + QUOTE_TTL, "n": secrets.token_hex(16),
     }
+    if context is not None:
+        if not isinstance(context, dict):
+            raise CLIAPIError(500, "CLI 报价上下文无效", "invalid_quote_context")
+        claims["x"] = context
     encoded = base64.urlsafe_b64encode(_canonical(claims)).decode("ascii").rstrip("=")
     signature = hmac.new(secret.encode("utf-8"), encoded.encode("ascii"), hashlib.sha256).hexdigest()
     return encoded + "." + signature, claims

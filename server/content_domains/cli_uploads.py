@@ -31,6 +31,16 @@ VIDEO_MAX_USER_FILES = 6
 VIDEO_MAX_SECONDS = 15
 VIDEO_UPLOAD_ID_RE = re.compile(r"^vid_[0-9a-f]{32}$")
 VIDEO_MIME_EXTENSIONS = {"video/mp4": ".mp4", "video/quicktime": ".mov", "video/webm": ".webm"}
+AUDIO_MAX_BYTES = 10 * 1024 * 1024
+AUDIO_MAX_USER_BYTES = 96 * 1024 * 1024
+AUDIO_MAX_USER_FILES = 20
+AUDIO_MAX_SECONDS = 300
+AUDIO_UPLOAD_ID_RE = re.compile(r"^aud_[0-9a-f]{32}$")
+AUDIO_MIME_EXTENSIONS = {
+    "audio/mpeg": ".mp3", "audio/wav": ".wav", "audio/x-wav": ".wav",
+    "audio/mp4": ".m4a", "audio/x-m4a": ".m4a", "audio/aac": ".aac",
+    "audio/ogg": ".ogg",
+}
 _UPLOAD_LOCK = threading.Lock()
 
 
@@ -49,6 +59,20 @@ def detect_video_mime(header):
         return "video/webm"
     if len(header) >= 12 and header[4:8] == b"ftyp":
         return "video/quicktime" if header[8:12] == b"qt  " else "video/mp4"
+    return ""
+
+
+def detect_audio_mime(header):
+    if len(header) >= 2 and header[0] == 0xFF and header[1] & 0xF6 == 0xF0:
+        return "audio/aac"
+    if header.startswith(b"ID3") or (len(header) >= 2 and header[0] == 0xFF and header[1] & 0xE0 == 0xE0):
+        return "audio/mpeg"
+    if len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WAVE":
+        return "audio/wav"
+    if header.startswith(b"OggS"):
+        return "audio/ogg"
+    if len(header) >= 12 and header[4:8] == b"ftyp":
+        return "audio/mp4"
     return ""
 
 
@@ -94,6 +118,16 @@ def _delete_video_upload(upload_id):
             pass
 
 
+def _delete_audio_upload(upload_id):
+    if not AUDIO_UPLOAD_ID_RE.fullmatch(upload_id):
+        return
+    for suffix in tuple(set(AUDIO_MIME_EXTENSIONS.values())) + (".json",):
+        try:
+            (UPLOAD_ROOT / (upload_id + suffix)).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def _cleanup(now):
     # ponytail: 试点量小，上传时扫目录；文件量上千后再换 SQLite 索引。
     try:
@@ -126,6 +160,16 @@ def _cleanup(now):
             expires_at = 0
         if expires_at <= now:
             _delete_video_upload(meta_path.stem)
+    for meta_path in UPLOAD_ROOT.glob("aud_*.json"):
+        try:
+            raw_meta = meta_path.read_bytes()
+            if len(raw_meta) > 4096:
+                raise ValueError("metadata too large")
+            expires_at = int(json.loads(raw_meta).get("expires_at") or 0)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            expires_at = 0
+        if expires_at <= now:
+            _delete_audio_upload(meta_path.stem)
 
 
 def _active_usage(owner_hash, now):
@@ -148,6 +192,23 @@ def _active_usage(owner_hash, now):
 def _active_video_usage(owner_hash, now):
     count = total = 0
     for meta_path in UPLOAD_ROOT.glob("vid_*.json"):
+        try:
+            raw_meta = meta_path.read_bytes()
+            if len(raw_meta) > 4096:
+                continue
+            meta = json.loads(raw_meta)
+            if int(meta.get("expires_at") or 0) > now and hmac.compare_digest(
+                    str(meta.get("owner_hash") or ""), owner_hash):
+                count += 1
+                total += int(meta.get("bytes") or 0)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            continue
+    return count, total
+
+
+def _active_audio_usage(owner_hash, now):
+    count = total = 0
+    for meta_path in UPLOAD_ROOT.glob("aud_*.json"):
         try:
             raw_meta = meta_path.read_bytes()
             if len(raw_meta) > 4096:
@@ -345,6 +406,102 @@ def store_video(stream, length, username, content_type, expected_sha256, now=Non
     }
 
 
+def _probe_audio_duration(path):
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=index,codec_type:format=duration",
+             "-of", "json", str(path)],
+            check=True, timeout=20, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        probe = json.loads(result.stdout)
+        streams = probe.get("streams") or []
+        if not any(stream.get("codec_type") == "audio" for stream in streams):
+            raise ValueError("missing audio stream")
+        duration = float((probe.get("format") or {}).get("duration"))
+    except (FileNotFoundError, subprocess.SubprocessError, TypeError, ValueError,
+            json.JSONDecodeError, AttributeError) as exc:
+        raise ValueError("无法读取音频，请换用完整的 MP3 / WAV / M4A / AAC / OGG") from exc
+    if not 0 < duration <= AUDIO_MAX_SECONDS:
+        raise ValueError("音频时长必须在 0-%d 秒之间" % AUDIO_MAX_SECONDS)
+    return round(duration, 3)
+
+
+def store_audio(stream, length, username, content_type, expected_sha256, now=None):
+    now = int(time.time() if now is None else now)
+    if not username:
+        raise ValueError("缺少上传账号")
+    if content_type not in AUDIO_MIME_EXTENSIONS:
+        raise ValueError("只支持 MP3 / WAV / M4A / AAC / OGG")
+    if not isinstance(length, int) or length <= 0 or length > AUDIO_MAX_BYTES:
+        raise ValueError("音频大小必须在 1B 到 10MB 之间")
+    expected_sha256 = str(expected_sha256 or "").lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+        raise ValueError("缺少有效的音频摘要")
+
+    with _UPLOAD_LOCK:
+        UPLOAD_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(UPLOAD_ROOT, 0o700)
+        _cleanup(now)
+        count, total = _active_audio_usage(_owner_hash(username), now)
+        if count >= AUDIO_MAX_USER_FILES or total + length > AUDIO_MAX_USER_BYTES:
+            raise ValueError("当前账号的临时音频已达上限，请等待过期后重试")
+        if shutil.disk_usage(UPLOAD_ROOT).free - length < MIN_FREE_BYTES:
+            raise OSError("音频临时空间不足")
+
+        upload_id = "aud_" + uuid.uuid4().hex
+        extension = AUDIO_MIME_EXTENSIONS[content_type]
+        data_path, meta_path = _paths(upload_id, extension)
+        temp_data = UPLOAD_ROOT / ("." + upload_id + ".tmp")
+        temp_meta = UPLOAD_ROOT / ("." + upload_id + ".json.tmp")
+        digest = hashlib.sha256()
+        header = b""
+        remaining = length
+        descriptor = os.open(str(temp_data), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                while remaining:
+                    chunk = stream.read(min(64 * 1024, remaining))
+                    if not chunk:
+                        raise ValueError("音频上传不完整")
+                    if len(header) < 32:
+                        header += chunk[:32 - len(header)]
+                    handle.write(chunk)
+                    digest.update(chunk)
+                    remaining -= len(chunk)
+                handle.flush()
+                os.fsync(handle.fileno())
+            actual_sha256 = digest.hexdigest()
+            if not hmac.compare_digest(actual_sha256, expected_sha256):
+                raise ValueError("音频上传过程中发生变化，请重新上传")
+            detected = detect_audio_mime(header)
+            if detected != content_type and not (
+                detected == "audio/wav" and content_type == "audio/x-wav"
+            ) and not (detected == "audio/mp4" and content_type == "audio/x-m4a"):
+                raise ValueError("音频内容与声明格式不一致")
+            duration = _probe_audio_duration(temp_data)
+            meta = {
+                "version": 1, "owner_hash": _owner_hash(username), "mime": content_type,
+                "extension": extension, "bytes": length, "sha256": actual_sha256,
+                "duration": duration, "expires_at": now + TTL,
+            }
+            temp_meta.write_text(json.dumps(meta, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+            os.chmod(temp_meta, 0o600)
+            os.replace(temp_data, data_path)
+            os.replace(temp_meta, meta_path)
+        except Exception:
+            temp_data.unlink(missing_ok=True)
+            temp_meta.unlink(missing_ok=True)
+            data_path.unlink(missing_ok=True)
+            meta_path.unlink(missing_ok=True)
+            raise
+    return {
+        "upload_id": upload_id, "mime": content_type, "bytes": length,
+        "sha256": expected_sha256, "duration": duration,
+        "expires_at": now + TTL, "expires_in": TTL,
+    }
+
+
 def _load_image(upload_id, username, now):
     upload_id = str(upload_id or "").strip().lower()
     if not UPLOAD_ID_RE.fullmatch(upload_id):
@@ -378,6 +535,12 @@ def _load_image(upload_id, username, now):
     return base64.b64encode(data).decode("ascii"), meta
 
 
+def load_image_data_url(upload_id, username, now=None):
+    data, meta = _load_image(
+        upload_id, username, int(time.time() if now is None else now))
+    return "data:%s;base64,%s" % (meta["mime"], data)
+
+
 def _load_video(upload_id, username, now):
     upload_id = str(upload_id or "").strip().lower()
     if not VIDEO_UPLOAD_ID_RE.fullmatch(upload_id):
@@ -408,6 +571,57 @@ def _load_video(upload_id, username, now):
     if not hmac.compare_digest(hashlib.sha256(data).hexdigest(), str(meta.get("sha256") or "")):
         raise ValueError("视频 upload_id 文件校验失败")
     return "data:%s;base64,%s" % (meta["mime"], base64.b64encode(data).decode("ascii")), meta
+
+
+def _load_audio(upload_id, username, now):
+    upload_id = str(upload_id or "").strip().lower()
+    if not AUDIO_UPLOAD_ID_RE.fullmatch(upload_id):
+        raise ValueError("音频 upload_id 格式不合法")
+    _, meta_path = _paths(upload_id, ".mp3")
+    try:
+        raw_meta = meta_path.read_bytes()
+        if len(raw_meta) > 4096:
+            raise ValueError("音频 upload_id 元数据异常")
+        meta = json.loads(raw_meta)
+        extension = str(meta.get("extension") or "")
+        data_path, _ = _paths(upload_id, extension)
+        data = data_path.read_bytes()
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        raise ValueError("音频 upload_id 不存在或已失效")
+    if meta.get("version") != 1 or extension not in AUDIO_MIME_EXTENSIONS.values():
+        raise ValueError("音频 upload_id 元数据异常")
+    if not hmac.compare_digest(str(meta.get("owner_hash") or ""), _owner_hash(username)):
+        raise ValueError("音频 upload_id 不存在或已失效")
+    if int(meta.get("expires_at") or 0) <= now:
+        data_path.unlink(missing_ok=True)
+        meta_path.unlink(missing_ok=True)
+        raise ValueError("音频 upload_id 已过期，请重新上传")
+    if not 0 < len(data) <= AUDIO_MAX_BYTES or len(data) != int(meta.get("bytes") or -1):
+        raise ValueError("音频 upload_id 文件异常")
+    detected = detect_audio_mime(data[:32])
+    if detected != meta.get("mime") and not (
+        detected == "audio/wav" and meta.get("mime") == "audio/x-wav"
+    ) and not (detected == "audio/mp4" and meta.get("mime") == "audio/x-m4a"):
+        raise ValueError("音频 upload_id 文件格式异常")
+    if not hmac.compare_digest(hashlib.sha256(data).hexdigest(), str(meta.get("sha256") or "")):
+        raise ValueError("音频 upload_id 文件校验失败")
+    return "data:%s;base64,%s" % (meta["mime"], base64.b64encode(data).decode("ascii")), meta
+
+
+def expand_voice_clone_payload(payload, username, now=None):
+    if not isinstance(payload, dict) or set(payload) != {"slot_id", "name", "audio_upload_id"}:
+        raise ValueError("声音克隆只接受 slot_id、name 和 audio_upload_id")
+    now = int(time.time() if now is None else now)
+    audio, meta = _load_audio(payload["audio_upload_id"], username, now)
+    audio_format = str(meta.get("extension") or ".mp3").lower().lstrip(".")
+    if audio_format == "wave":
+        audio_format = "wav"
+    return {
+        "slot_id": str(payload["slot_id"] or "").strip(),
+        "name": str(payload["name"] or "").strip(),
+        "audio": audio,
+        "audio_format": audio_format,
+    }
 
 
 def expand_image_payload(payload, username, now=None):
@@ -521,4 +735,24 @@ def expand_role_media_payload(payload, username, now=None):
         if not isinstance(video_ids, list) or not 1 <= len(video_ids) <= 3:
             raise ValueError("reference_video_upload_ids 必须包含 1-3 项")
         body["reference_videos"] = [_load_video(item, username, now)[0] for item in video_ids]
+    return body
+
+
+def expand_talking_media_payload(payload, username, now=None):
+    """Expand one-off IP12 portrait/audio uploads into the existing talking-video payload."""
+    if not isinstance(payload, dict):
+        raise ValueError("请求体必须是 JSON 对象")
+    body = dict(payload)
+    now = int(time.time() if now is None else now)
+    image_id = body.pop("image_upload_id", None)
+    audio_id = body.pop("audio_upload_id", None)
+    if image_id is not None:
+        if body.get("image_data") or body.get("avatar_id"):
+            raise ValueError("上传人物照片不能与已有形象同时使用")
+        data, meta = _load_image(image_id, username, now)
+        body["image_data"] = "data:%s;base64,%s" % (meta["mime"], data)
+    if audio_id is not None:
+        if body.get("audio_data") or body.get("audio_file"):
+            raise ValueError("上传口播音频不能与已有音频同时使用")
+        body["audio_data"] = _load_audio(audio_id, username, now)[0]
     return body

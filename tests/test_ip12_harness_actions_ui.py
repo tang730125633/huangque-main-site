@@ -6,6 +6,53 @@ TEMPLATES = Path(__file__).parents[1] / "server" / "hermes_ip12" / "templates"
 
 
 class IP12HarnessActionsUITests(unittest.TestCase):
+    def test_main_view_consumes_server_choice_actions_without_rebuilding_business_rules(self):
+        source = (TEMPLATES / "index.html").read_text(encoding="utf-8")
+        self.assertIn("c.harness_actions", source)
+        self.assertIn("function currentActions()", source)
+        self.assertIn("function pageActions()", source)
+        self.assertNotIn("function stateActions()", source)
+        self.assertNotIn("p&&p.status==='awaiting_confirmation'", source)
+
+    def test_choice_cards_use_inert_dom_text_and_submit_choice_id(self):
+        source = (TEMPLATES / "index.html").read_text(encoding="utf-8")
+        render = source[source.index("function renderChoiceActions"):source.index("function choiceSnapshots")]
+        self.assertIn("document.createElement", render)
+        self.assertIn("textContent", render)
+        self.assertIn("addEventListener", render)
+        self.assertNotIn("innerHTML", render)
+        send = source[source.index("function sendHarnessAction"):source.index("function sendMessage")]
+        self.assertIn("action.choice_id=item.choice_id", send)
+        self.assertIn("我选择", send)
+
+    def test_choice_receipt_is_read_only_and_accessible(self):
+        source = (TEMPLATES / "index.html").read_text(encoding="utf-8")
+        receipt = source[source.index("function appendChoiceReceipt"):source.index("function renderChoiceReceiptsInDom")]
+        self.assertIn("document.createElement('details')", receipt)
+        self.assertIn("choice_snapshot", source)
+        self.assertNotIn("runStateAction", receipt)
+        self.assertNotIn("createElement('button')", receipt)
+        self.assertIn("aria-live", source)
+        self.assertIn("aria-describedby", source)
+        self.assertIn("aria-label", source)
+        self.assertIn("choiceLine('说明：',item.summary)", receipt)
+        self.assertIn("min-height:44px", source)
+        editing = source[source.index("function appendEditingChoiceContext"):source.index("function attachHarnessActions")]
+        self.assertIn("document.createElement('details')", editing)
+        self.assertIn("pending.choices", editing)
+        self.assertNotIn("createElement('button')", editing)
+
+    def test_failed_choice_restores_server_state_and_keyboard_focus(self):
+        source = (TEMPLATES / "index.html").read_text(encoding="utf-8")
+        send_turn = source[source.index("async function sendTurn"):source.index("async function sendJumpMsg")]
+        self.assertIn("pendingChoiceFocus", source)
+        self.assertIn("await selectConvo(turnCid)", send_turn)
+        self.assertIn("#chatArea .harness-actions button", send_turn)
+        self.assertIn("if(streaming||materialUploading)return", source)
+        self.assertIn("restoreChoice>0?", send_turn)
+        self.assertIn("document.querySelector('.choice-edit')", send_turn)
+        self.assertIn("restoredStatus.setAttribute('role','alert')", send_turn)
+
     def test_only_latest_assistant_reply_keeps_confirmation_actions(self):
         # Regression: ISSUE-001 — old assistant replies repeated the current action buttons.
         # Found by /qa on 2026-08-12.
@@ -38,7 +85,8 @@ class IP12HarnessActionsUITests(unittest.TestCase):
         for filename in ("index.html", "index_clean.html"):
             with self.subTest(filename=filename):
                 source = (TEMPLATES / filename).read_text(encoding="utf-8")
-                state_actions = source[source.index("function stateActions"):source.index("function renderChat")]
+                action_function = "function pageActions" if "function pageActions" in source else "function stateActions"
+                state_actions = source[source.index(action_function):source.index("function renderChat")]
                 self.assertIn("foundation.status==='awaiting_confirmation'", state_actions)
                 self.assertIn("open_foundation_report", state_actions)
                 self.assertIn("confirm_foundation_report", state_actions)
@@ -95,7 +143,8 @@ class IP12HarnessActionsUITests(unittest.TestCase):
             source.index("function productionOptionsHtml")
         ]
 
-        self.assertIn("if(!missing.length)required.forEach", field_specs)
+        self.assertIn("required.forEach", field_specs)
+        self.assertIn("spec.choiceCards||!missing.length", field_specs)
         self.assertIn("descriptor.oneOf", field_spec)
         self.assertIn("choice.const", field_spec)
         self.assertIn("!fields.some", options_html)
@@ -128,6 +177,17 @@ class IP12HarnessActionsUITests(unittest.TestCase):
         self.assertIn("showArtifactNotice(data)", send_turn)
         self.assertIn("第一个交付物已放到对应诊断模块下方", source)
 
+    def test_project_switch_closes_stale_production_panel_and_media_is_compact(self):
+        source = (TEMPLATES / "index.html").read_text(encoding="utf-8")
+        select_convo = source[
+            source.index("async function selectConvo"):
+            source.index("async function jumpModule")
+        ]
+
+        self.assertIn("stopProductionPolls();closePanel();closeFoundationReviewer()", select_convo)
+        self.assertIn(".msg .production-asset img,.msg .production-asset video", source)
+        self.assertIn("max-width:min(100%,280px);max-height:48vh", source)
+
     def test_main_view_exposes_a_two_project_manager(self):
         source = (TEMPLATES / "index.html").read_text(encoding="utf-8")
         start = source.index("function renderProjectPanel")
@@ -136,8 +196,15 @@ class IP12HarnessActionsUITests(unittest.TestCase):
         self.assertIn("/2", manager)
         self.assertIn("最多允许创建两个 Project", source)
         self.assertIn("永久删除", source)
-        self.assertIn("o.style.display='flex'", manager)
-        self.assertLess(manager.index("o.style.display='flex'"), manager.index("await loadConvos()"))
+        self.assertIn('id="projectImportInput"', source)
+        self.assertIn("导入备份", manager)
+        self.assertIn("导出备份", manager)
+        self.assertIn("/api/conversations/import", manager)
+        self.assertIn("/export", manager)
+        self.assertIn("不含制作任务", manager)
+        toggle = manager[manager.index("async function toggleProjects"):]
+        self.assertIn("o.style.display='flex'", toggle)
+        self.assertLess(toggle.index("o.style.display='flex'"), toggle.index("await loadConvos()"))
 
 
 if __name__ == "__main__":

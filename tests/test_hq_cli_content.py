@@ -132,7 +132,6 @@ class HQCLIContentTests(unittest.TestCase):
             audio.validate_audio_payload({"text": "hello", "pitch": 99})
         clean = audio.validate_audio_payload({"text": " hello ", "speed": 1.2, "pitch": 0, "volume": 0})
         self.assertEqual(("hello", 1.2), (clean["text"], clean["speed"]))
-
         original = audio.resolve_audio_provider_voice
         audio.resolve_audio_provider_voice = lambda username, voice_key: voice_key
         try:
@@ -148,6 +147,197 @@ class HQCLIContentTests(unittest.TestCase):
             audio.resolve_audio_provider_voice = original
         self.assertEqual((public["voice_scope"], public["provider"]), ("public", "cosyvoice"))
         self.assertEqual((personal["voice_scope"], personal["provider"]), ("personal", "cosyvoice"))
+
+    def test_voice_clone_expands_private_upload_and_replays_same_request(self):
+        voice = {"voice_key": "vip_slot_12345678", "status": "training"}
+        replay_response = {"ok": True, "voice": dict(voice, replayed=True)}
+        with mock.patch.object(
+            cli_uploads, "expand_voice_clone_payload",
+            return_value={"slot_id": "slot_12345678", "name": "我的声音",
+                          "audio": "data:audio/wav;base64,AA==", "audio_format": "wav"},
+        ) as expand, mock.patch.object(
+            audio, "validate_clone_vip_payload", side_effect=lambda _user, value: value,
+        ), mock.patch.object(
+            submission_idempotency, "begin",
+            side_effect=[("new", None), ("replay", replay_response), ("conflict", None)],
+        ), mock.patch.object(
+            submission_idempotency, "complete",
+        ) as complete, mock.patch.object(
+            audio, "clone_request_replay", return_value=None,
+        ), mock.patch.object(
+            audio, "mark_clone_training", return_value=voice,
+        ) as mark, mock.patch.object(audio, "clone_vip_voice_background") as background:
+            first = self._post("/api/gen/cli/voice-clone", {
+                "slot_id": "slot_12345678", "name": "我的声音",
+                "audio_upload_id": "aud_" + "a" * 32,
+            }, idempotency_key="clone-request-0001")
+            second = self._post("/api/gen/cli/voice-clone", {
+                "slot_id": "slot_12345678", "name": "我的声音",
+                "audio_upload_id": "aud_" + "a" * 32,
+            }, idempotency_key="clone-request-0001")
+            conflict = self._post("/api/gen/cli/voice-clone", {
+                "slot_id": "slot_87654321", "name": "另一个声音",
+                "audio_upload_id": "aud_" + "b" * 32,
+            }, idempotency_key="clone-request-0001")
+        self.assertEqual((200, 200, 409), (first[0], second[0], conflict[0]))
+        self.assertEqual("idempotency_conflict", conflict[1]["code"])
+        self.assertEqual("training", second[1]["voice"]["status"])
+        complete.assert_called_once()
+        expand.assert_called_once()
+        mark_args = mark.call_args.args
+        self.assertEqual(
+            ("alice", "slot_12345678", "我的声音", "clone-request-0001"),
+            mark_args[:4],
+        )
+        self.assertRegex(mark_args[4], r"^[0-9a-f]{64}$")
+        background.assert_called_once_with("alice", {
+            "slot_id": "slot_12345678", "name": "我的声音",
+            "audio": "data:audio/wav;base64,AA==", "audio_format": "wav",
+            "_request_id": "clone-request-0001",
+        })
+
+    def test_voice_clone_rejects_auth_feature_and_idempotency_guards_before_upload(self):
+        payload = {
+            "slot_id": "slot_12345678", "name": "我的声音",
+            "audio_upload_id": "aud_" + "a" * 32,
+        }
+        self.assertEqual(403, self._post(
+            "/api/gen/cli/voice-clone", payload, internal=False,
+            idempotency_key="clone-request-0001",
+        )[0])
+        self.assertEqual(400, self._post("/api/gen/cli/voice-clone", payload)[0])
+        with mock.patch.object(core, "verify", return_value=None):
+            self.assertEqual(401, self._post(
+                "/api/gen/cli/voice-clone", payload,
+                idempotency_key="clone-request-0001",
+            )[0])
+        with mock.patch.object(
+            core, "verify", return_value={"username": "alice", "must_change": True},
+        ):
+            self.assertEqual(403, self._post(
+                "/api/gen/cli/voice-clone", payload,
+                idempotency_key="clone-request-0001",
+            )[0])
+        with mock.patch.object(
+            core.feature_flags, "require_enabled",
+            side_effect=core.feature_flags.FeatureDisabled("维护中"),
+        ), mock.patch.object(
+            cli_uploads, "expand_voice_clone_payload",
+            side_effect=AssertionError("disabled feature must fail before upload lookup"),
+        ):
+            status, result = self._post(
+                "/api/gen/cli/voice-clone", payload,
+                idempotency_key="clone-request-0001",
+            )
+        self.assertEqual((503, "feature_disabled"), (status, result["code"]))
+
+    def test_video_lipsync_uses_owned_assets_and_real_duration_pricing(self):
+        with mock.patch.object(video, "get_video_asset", return_value={
+                "id": 21, "video_file": "video/source.mp4",
+                "ratio": "9:16", "resolution": "768p", "status": "done",
+        }), mock.patch.object(video, "get_audio_asset", return_value={
+                "id": 34, "file": "audio/speech.mp3",
+        }), mock.patch.object(video, "_resolve_out_file", side_effect=lambda value: Path("/") / value), \
+                mock.patch.object(video, "_user_owns_output_file", return_value=True), \
+                mock.patch.object(video, "_normalize_audio_file_ref", return_value="audio/speech.mp3"), \
+                mock.patch.object(video, "_probe_video_duration", return_value=15.1), \
+                mock.patch.object(video.pricing, "get_price", side_effect=lambda key: {
+                    "video.lipsync.speed": 3, "video.lipsync.precision": 6,
+                }[key]):
+            clean = video.validate_video_payload({
+                "mode": "lipsync", "video_asset_id": 21,
+                "audio_asset_id": 34, "lipsync_mode": "speed",
+                "dynamic_duration": False,
+            }, "alice")
+            self.assertEqual(("video/source.mp4", "audio/speech.mp3"), (
+                clean["reference_video_file"], clean["audio_file"]))
+            self.assertEqual(46, video.video_cost(clean))
+
+    def test_video_lipsync_quote_does_not_require_a_photo_avatar(self):
+        clean = {
+            "mode": "lipsync", "video_asset_id": 21,
+            "audio_asset_id": 34, "reference_video_file": "video/source.mp4",
+            "audio_file": "audio/speech.mp3", "_lipsync_duration": 15.0,
+            "lipsync_mode": "speed", "dynamic_duration": False,
+        }
+        with mock.patch.object(
+                core, "_domains", return_value=(audio, self.points, video)), \
+                mock.patch.object(
+                    video, "validate_video_payload", return_value=clean) as validate:
+            status, result = self._post("/api/gen/cli/quote", {
+                "kind": "video", "payload": {
+                    "mode": "lipsync", "video_asset_id": 21,
+                    "audio_asset_id": 34, "lipsync_mode": "speed",
+                    "dynamic_duration": False,
+                },
+            })
+        self.assertEqual((200, 24), (status, result["cost"]))
+        validate.assert_called_once()
+
+    def test_heygen_lipsync_preserves_source_and_uses_idempotency(self):
+        captured = {}
+
+        def request(method, path, body=None, headers=None, **_kwargs):
+            if method == "POST":
+                captured.update(
+                    path=path, body=json.loads(body), headers=dict(headers or {}))
+                return {"data": {"lipsync_id": "ls_123"}}
+            self.assertEqual(("GET", "/lipsyncs/ls_123"), (method, path))
+            return {"data": {
+                "status": "completed", "duration": 15,
+                "video_url": "https://files.heygen.ai/result.mp4",
+            }}
+
+        with mock.patch.object(video, "_resolve_out_file", side_effect=lambda value: Path("/") / value), \
+                mock.patch.object(video, "_heygen_mcp_enabled", return_value=False), \
+                mock.patch.object(video, "_heygen_upload_asset", side_effect=["vid_asset", "aud_asset"]), \
+                mock.patch.object(video, "_heygen_request_json", side_effect=request), \
+                mock.patch.object(video, "_download_video_file_direct", return_value="video/lipsync.mp4"), \
+                mock.patch.object(video, "_extract_first_frame_cover", return_value="video/lipsync.jpg"), \
+                mock.patch.object(video, "update_video_asset_phase"):
+            result = video.generate_heygen_lipsync(
+                "video/source.mp4", "audio/speech.mp3", "speed", False,
+                job_id=77,
+            )
+        self.assertEqual("/lipsyncs", captured["path"])
+        self.assertEqual("huangque-lipsync-job-77", captured["headers"]["Idempotency-Key"])
+        self.assertEqual({"type": "asset_id", "asset_id": "vid_asset"}, captured["body"]["video"])
+        self.assertFalse(captured["body"]["enable_dynamic_duration"])
+        self.assertTrue(captured["body"]["keep_the_same_format"])
+        self.assertEqual(("ls_123", "video/lipsync.mp4"), (
+            result["video_id"], result["video_file"]))
+
+    def test_heygen_lipsync_prefers_configured_mcp_subscription(self):
+        calls = []
+
+        def mcp(tool, arguments, **_kwargs):
+            calls.append((tool, arguments))
+            if tool == "create_lipsync":
+                return {"lipsync_id": "ls_mcp"}
+            return {
+                "status": "completed", "duration": 15,
+                "video_url": "https://files.heygen.ai/mcp-result.mp4",
+            }
+
+        with mock.patch.object(video, "_resolve_out_file", side_effect=lambda value: Path("/") / value), \
+                mock.patch.object(video, "_heygen_mcp_enabled", return_value=True), \
+                mock.patch.object(video, "_mux_seedance_upscale_audio", return_value="video/detection.mp4"), \
+                mock.patch.object(video, "public_url", side_effect=lambda value, *_args, **_kwargs: "https://media.test/" + value), \
+                mock.patch.object(video, "_heygen_mcp_call", side_effect=mcp), \
+                mock.patch.object(video, "_heygen_upload_asset", side_effect=AssertionError("MCP must use signed URLs")), \
+                mock.patch.object(video, "_download_video_file_direct", return_value="video/lipsync-mcp.mp4"), \
+                mock.patch.object(video, "_extract_first_frame_cover", return_value="video/lipsync-mcp.jpg"), \
+                mock.patch.object(video, "update_video_asset_phase"):
+            result = video.generate_heygen_lipsync(
+                "video/source.mp4", "audio/speech.mp3", "speed", False,
+                job_id=78,
+            )
+        self.assertEqual(["create_lipsync", "get_lipsync"], [item[0] for item in calls])
+        create = calls[0][1]
+        self.assertEqual("https://media.test/video/detection.mp4", create["video"]["url"])
+        self.assertEqual("https://media.test/audio/speech.mp3", create["audio"]["url"])
+        self.assertFalse(create["enableDynamicDuration"])
+        self.assertEqual("video/lipsync-mcp.mp4", result["video_file"])
 
     def test_sora_submit_expands_cli_reference_before_validation_and_queue(self):
         raw = base64.b64decode(
@@ -652,6 +842,15 @@ class HQCLIContentTests(unittest.TestCase):
         self.assertIn("尚未就绪", result["detail"])
         resolve_voice.assert_not_called()
 
+        injected = dict(request, image_data="data:image/png;base64,AAAA")
+        with mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+                mock.patch.object(video, "validate_video_payload") as validate:
+            status, result = self._post(
+                "/api/gen/cli/quote", {"kind": "video", "payload": injected})
+        self.assertEqual(400, status)
+        self.assertIn("私密上传照片", result["detail"])
+        validate.assert_not_called()
+
     def test_digital_ip_audio_quote_accepts_only_owned_asset_reference(self):
         request = {
             "mode": "audio", "avatar_id": 9, "audio_file": "audio/alice.wav",
@@ -852,6 +1051,9 @@ class HQCLIContentTests(unittest.TestCase):
             "template": "1080x1920/image_default.html", "n_scenes": 1,
             "scenes": [{"line": "AI 培训"}],
         }
+        quote_token, _ = pixelle_video.issue_quote(
+            prepared, "alice", 24, core.AUTH_INTERNAL_TOKEN)
+        prepared_with_quote = dict(prepared, _quote_token=quote_token)
 
         def create_job(*args, **_kwargs):
             created.append(args[6])
@@ -869,9 +1071,12 @@ class HQCLIContentTests(unittest.TestCase):
                 mock.patch.object(pixelle_video, "paid_plan_association", return_value=None), \
                 mock.patch.object(
                     script_to_video, "prepare_script_to_video_payload",
-                    side_effect=[prepared, AssertionError("replay reached mutable plan validation")],
+                    side_effect=[prepared_with_quote, AssertionError("replay reached mutable plan validation")],
                 ) as prepare:
-            request = {"pipeline": "pixelle", "text": "AI 培训"}
+            request = {
+                "pipeline": "pixelle", "text": "AI 培训",
+                "quote_token": quote_token,
+            }
             status, first = self._post(
                 "/api/gen/script_to_video", request, expected=24,
                 idempotency_key="script-video-lost-response-001",

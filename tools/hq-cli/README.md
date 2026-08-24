@@ -83,6 +83,78 @@ hq run image-generate --input @image.json --json
 hq run image-generate --input @image.json --confirm --quote-token '<quote_token>' --json
 ```
 
+## 文案成片
+
+先读取当前可用模板、素材风格和音色，再使用同一份 UTF-8 JSON 完成报价与确认提交：
+
+```sh
+hq run text-video-templates --json
+hq run text-video-styles --json
+hq run text-video-voices --json
+
+cat > text-video.json <<'JSON'
+{
+  "text": "AI 培训如何帮助团队提高工作效率",
+  "template": "1080x1920/image_default.html",
+  "mode": "generate",
+  "style": "realistic_commercial",
+  "voice": "public:zh-CN-YunjianNeural",
+  "speech_rate": 1.0
+}
+JSON
+
+hq run text-video-generate --input @text-video.json --json
+# 核对 scene_count、cost_breakdown 和 cost 后确认：
+hq run text-video-generate --input @text-video.json --confirm --quote-token '<quote_token>' --json
+hq run task --input @- --json <<'JSON'
+{"job_id": 123}
+JSON
+```
+
+`mode=generate` 根据主题创作，`mode=fixed` 原样使用完整文案并自动拆分分镜。
+
+需要混入口播视频素材时，先上传并导入一个或多个人物，再生成分镜方案：
+
+```sh
+hq run image-upload --file /absolute/path/avatar.png --confirm --json
+printf '%s\n' '{"image_upload_id":"img_<32位十六进制>"}' > avatar.json
+hq run text-video-avatar-import --input @avatar.json --confirm --json
+
+cat > talking-plan.json <<'JSON'
+{
+  "text": "完整文案",
+  "template": "1080x1920/image_default.html",
+  "mode": "fixed",
+  "style": "realistic_commercial",
+  "voice": "public:zh-CN-YunjianNeural",
+  "speech_rate": 1.0,
+  "ratio": 0.3
+}
+JSON
+hq run text-video-plan --input @talking-plan.json --confirm --json
+```
+
+核对返回的 `scenes` 后，将 `plan_id`、`source_hash`、人物 `asset_id` 和逐镜头选择加入原生成参数：
+
+```json
+{
+  "talking_material": {
+    "enabled": true,
+    "plan_id": "talking_plan_<32位十六进制>",
+    "source_hash": "<64位十六进制>",
+    "ratio": 0.3,
+    "default_avatar_asset_id": "local_avatar_<32位十六进制>",
+    "scenes": [
+      {"scene_id": "scene_01", "enabled": true},
+      {"scene_id": "scene_02", "enabled": false},
+      {"scene_id": "scene_03", "enabled": true, "avatar_asset_id": "local_avatar_<32位十六进制>"}
+    ]
+  }
+}
+```
+
+把 `talking_material` 合并到与规划时完全一致的文案成片 JSON，再执行原有报价和确认命令。人物与方案均为当前账号私有的短期资产；最终提交前仍会校验方案、人物、参数、分镜和价格。
+
 项目同时提供可安装的 Codex Skill：[use-huangque-cli](skills/use-huangque-cli/SKILL.md)。
 
 ## 客户大白话对照
@@ -91,6 +163,7 @@ hq run image-generate --input @image.json --confirm --quote-token '<quote_token>
 
 | 客户说法 | CLI 能力 | 必填输入 | 素材边界 |
 |---|---|---|---|
+| “保留原视频动作，只替换声音并让嘴型同步” | `video-lipsync` | `video_asset_id`、`audio_asset_id` | 两项都必须来自本人已完成资产；`speed` 便宜快速，`precision` 精度更高；默认保持原视频时长 |
 | “用我的数字人形象和这段文案做一条口播视频” | `digital-ip-text-generate` | `avatar_id`、`text`、`voice` | 单个本人已就绪形象；不接收人物图片上传 |
 | “用我的数字人形象和资产库这条音频做口播视频” | `digital-ip-audio-generate` | `avatar_id`、`audio_file` | `audio_file` 最长 500 字符且必须原样取自本人资产结果；不接收 URL、本机路径或音频上传 |
 | “让 2–5 个我的数字人分别讲同一段文案” | `digital-ip-batch-generate` | `avatars`、`text`、`voice` | `avatars` 每项是本人已就绪的 `avatar_id`，可带 `label`；共用文案、音色和字幕设置 |
@@ -144,7 +217,7 @@ hq run assets --input @assets.json --json
 
 - 账号、点数、权限和渠道目录读取。
 - Hermes IP12 项目、进度、报告与显式确认对话。
-- 图片、视频、音频生成与提示词优化；`image-generate` 包含最多 14 张参考图的 Banana nb2/pro，`video-generate` 包含 Sora 2/Pro。
+- 图片、视频、音频、文案成片生成与提示词优化；`image-generate` 包含最多 14 张参考图的 Banana nb2/pro，`video-generate` 包含 Sora 2/Pro。
 - 数字 IP 单条文案、本人资产音频与 2–5 个形象批量生成；电影化身开放式和动作模仿生成。
 - 快速图片换装与经典视频换装。
 - 私有图片/视频上传、画布创建、画布 Agent 方案与受限写入。

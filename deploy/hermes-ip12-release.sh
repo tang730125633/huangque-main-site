@@ -51,6 +51,28 @@ health_probe() {
   done
 }
 
+release_probe() {
+  local url="$1"
+  local attempt=1
+  local body=""
+  while test "$attempt" -le "$HEALTH_ATTEMPTS"; do
+    body="$(curl -fsS -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "$url" 2>/dev/null || true)"
+    if printf '%s' "$body" | HERMES_EXPECTED_SHA="$HERMES_SHA" "$PYTHON" -c '
+import json, os, sys
+payload = json.load(sys.stdin)
+assert payload.get("ok") is True
+assert payload.get("release_sha") == os.environ["HERMES_EXPECTED_SHA"]
+assert payload.get("agent_release")
+assert payload.get("state_schema") == 2
+' >/dev/null 2>&1; then
+      return 0
+    fi
+    test "$attempt" -lt "$HEALTH_ATTEMPTS" || return 1
+    sleep "$HEALTH_RETRY_DELAY_SECONDS"
+    attempt=$((attempt + 1))
+  done
+}
+
 privileged() {
   if test -n "$SUDO"; then
     "$SUDO" "$@"
@@ -247,6 +269,7 @@ rsync -a --delete \
   --exclude '*.bak*' --exclude '*_backup.py' \
   --exclude __pycache__/ --exclude '*.pyc' \
   "$HERMES_RELEASE_DIR/server/hermes_ip12/" "$APP_DIR/"
+printf '%s\n' "$HERMES_SHA" > "$APP_DIR/.ip12-release-sha"
 install -d -m 0755 "$APP_DIR/scripts"
 install -m 0755 "$MIGRATION_SCRIPT" "$APP_DIR/scripts/migrate_hermes_artifacts.py"
 fail_if_requested rsync
@@ -271,20 +294,21 @@ privileged install -m 0644 \
 privileged ln -sfn "$NGINX_DIRECT_AVAILABLE" "$NGINX_DIRECT_ENABLED"
 privileged systemctl daemon-reload
 privileged systemd-analyze verify "$SYSTEMD_TARGET"
-test "$(
+ROUTE_COUNT="$(
   cd "$APP_DIR"
   HERMES_ENABLE_INTERNAL_TOOLS=1 "$PYTHON" -c \
     'from server import app; print(len({r.rule for r in app.url_map.iter_rules() if r.endpoint != "static"}))' \
     | tail -1
-)" = 81
+)"
+test "$ROUTE_COUNT" -ge 85
 privileged nginx -t
 privileged systemctl enable "$SERVICE"
 privileged systemctl restart "$SERVICE"
 privileged systemctl is-active --quiet "$SERVICE"
-health_probe "$LOCAL_HEALTH_URL"
+release_probe "$LOCAL_HEALTH_URL"
 privileged systemctl reload nginx
 for url in $PUBLIC_HEALTH_URLS; do
-  health_probe "$url"
+  release_probe "$url"
 done
 fail_if_requested health
 

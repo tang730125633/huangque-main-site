@@ -68,8 +68,9 @@ class HQCLIAPITests(unittest.TestCase):
                      extra_headers=None):
         headers = {
             "Content-Type": content_type,
-            ("X-HQ-Video-SHA256" if content_type.startswith("video/")
-             else "X-HQ-Image-SHA256"): hashlib.sha256(raw).hexdigest(),
+            ("X-HQ-Video-SHA256" if content_type.startswith("video/") else
+             "X-HQ-Audio-SHA256" if content_type.startswith("audio/") else
+             "X-HQ-Image-SHA256"): hashlib.sha256(raw).hexdigest(),
         }
         if token:
             headers["Authorization"] = "Bearer " + token
@@ -164,7 +165,8 @@ class HQCLIAPITests(unittest.TestCase):
             "video-generate": ("video", ["prompt"]),
             "canvas-agent-plan": ("canvas", ["prompt", "project_id", "snapshot_digest", "scope", "nodes", "edges", "selected_node_ids"]),
             "canvas-ops": ("canvas", ["board_id", "base_version", "op_id", "ops"]),
-            "digital-ip-text-generate": ("video", ["avatar_id", "text", "voice"]),
+            "digital-ip-text-generate": ("video", ["text", "voice"]),
+            "digital-ip-audio-generate": ("video", []),
             "cinematic-motion-generate": ("video", ["avatar_id", "reference_video_upload_ids"]),
         }
         for action, (family, required) in expected.items():
@@ -174,6 +176,10 @@ class HQCLIAPITests(unittest.TestCase):
                 self.assertEqual(required, item["input_schema"]["required"])
                 self.assertTrue(item["constraints"])
                 self.assertEqual("action", item["transport"]["kind"])
+        text_schema = actions["digital-ip-text-generate"]["input_schema"]["properties"]
+        audio_schema = actions["digital-ip-audio-generate"]["input_schema"]["properties"]
+        self.assertEqual("^img_[0-9a-f]{32}$", text_schema["image_upload_id"]["pattern"])
+        self.assertEqual("^aud_[0-9a-f]{32}$", audio_schema["audio_upload_id"]["pattern"])
         self.assertEqual("人物图片", actions["tryon-fast-generate"]["input_schema"]
                          ["properties"]["person_image_upload_id"]["title"])
         self.assertEqual("服装图片", actions["tryon-fast-generate"]["input_schema"]
@@ -473,6 +479,32 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertIn("idempotency_key", result["detail"])
         proxy.assert_not_called()
 
+    def test_ip12_voice_clone_requires_confirmation_and_forwards_one_idempotency_key(self):
+        self._enable_ip12_bridge()
+        payload = {
+            "account_id": self._agent_account_id(), "action": "voice-clone-create",
+            "input": {"slot_id": "S_legacy", "name": "我的声音",
+                      "audio_upload_id": "aud_" + "a" * 32},
+            "confirm": True, "idempotency_key": "clone-request-0001",
+        }
+        with mock.patch.object(
+            self.auth.H, "_cli_proxy", return_value=(200, {"voice": {"status": "training"}}),
+        ) as proxy:
+            missing_status, missing = self._request(
+                "/api/auth/internal/ip12/agent/action",
+                {**payload, "confirm": False}, extra_headers=self._agent_headers(),
+            )
+            status, result = self._request(
+                "/api/auth/internal/ip12/agent/action", payload,
+                extra_headers=self._agent_headers(),
+            )
+        self.assertEqual((409, "confirmation_required"), (missing_status, missing["code"]))
+        self.assertEqual((200, "training"), (status, result["voice"]["status"]))
+        plan = proxy.call_args.args[0]
+        self.assertEqual("/api/gen/cli/voice-clone", plan["path"])
+        self.assertEqual("clone-request-0001", plan["headers"]["Idempotency-Key"])
+        self.assertTrue(plan["internal"])
+
     @staticmethod
     def _canvas_snapshot(board_id):
         return {
@@ -673,6 +705,28 @@ class HQCLIAPITests(unittest.TestCase):
                 "SELECT COUNT(*) FROM tokens WHERE token=?", (captured["web_token"],)
             ).fetchone()[0])
 
+        audio_raw = b"RIFF\x00\x00\x00\x00WAVE" + b"ip12-private-audio"
+        audio_headers = dict(headers, **{
+            "X-HQ-Upload-Kind": "audio",
+            "X-HQ-Audio-SHA256": hashlib.sha256(audio_raw).hexdigest(),
+        })
+        audio_captured = {}
+
+        def fake_audio_upload(stream, length, web_token, internal_token, content_type, digest):
+            audio_captured.update(raw=stream.read(length), content_type=content_type, digest=digest)
+            return 200, {"upload_id": "aud_" + "c" * 32, "sha256": digest, "duration": 1.0}
+
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_audio_upload", side_effect=fake_audio_upload):
+            status, payload = self._raw_request(
+                "/api/auth/internal/ip12/agent/upload", audio_raw,
+                content_type="audio/wav", extra_headers=audio_headers,
+            )
+        self.assertEqual(200, status, payload)
+        self.assertEqual("aud_" + "c" * 32, payload["upload_id"])
+        self.assertEqual(audio_raw, audio_captured["raw"])
+        self.assertEqual("audio/wav", audio_captured["content_type"])
+        self.assertEqual(hashlib.sha256(audio_raw).hexdigest(), audio_captured["digest"])
+
     def test_video_upload_requires_confirmation_and_streams_raw_bytes(self):
         raw = b"\x00\x00\x00\x18ftypisom" + b"private-video"
         token = self._token(["assets:upload"])
@@ -869,6 +923,158 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual("24", submitted[0]["headers"]["X-HQ-Expected-Cost"])
         self.assertTrue(all(plan["internal"] for plan in submitted))
 
+    def test_text_video_cli_carries_native_quote_into_confirmed_submit(self):
+        token = self._token(["generation:quote", "generation:submit"])
+        submitted = []
+        native_quotes = []
+
+        def fake_proxy(plan, _web_token, _internal_token):
+            if plan["path"] == "/api/gen/text-video/quote":
+                native_quotes.append(plan)
+                return 200, {
+                    "quote_token": "native-quote-%d" % len(native_quotes),
+                    "cost": 70, "scene_count": 3,
+                    "cost_breakdown": {"scene_count": 3, "total": 70},
+                }
+            submitted.append(plan)
+            return 200, {"job_id": 91, "cost": 70, "points_left": 30}
+
+        input_body = {
+            "text": "AI 培训如何提升团队效率",
+            "template": "1080x1920/image_default.html",
+            "mode": "fixed", "style": "realistic_commercial",
+            "voice": "public:zh-CN-YunjianNeural", "speech_rate": 1.0,
+        }
+        request = {"action": "text-video-generate", "input": input_body, "confirm": False}
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
+            status, quote = self._request("/api/auth/cli/action", request, token=token)
+            self.assertEqual((200, 3, 70), (
+                status, quote["scene_count"], quote["cost_breakdown"]["total"]))
+            status, result = self._request(
+                "/api/auth/cli/action",
+                dict(request, confirm=True, quote_token=quote["quote_token"]),
+                token=token,
+            )
+
+        self.assertEqual((200, 91), (status, result["job_id"]))
+        self.assertEqual(1, len(native_quotes))
+        self.assertEqual("/api/gen/text-video/quote", native_quotes[0]["path"])
+        self.assertEqual("/api/gen/script_to_video", submitted[0]["path"])
+        self.assertEqual("native-quote-1", submitted[0]["body"]["quote_token"])
+        self.assertEqual("70", submitted[0]["headers"]["X-HQ-Expected-Cost"])
+        self.assertTrue(submitted[0]["headers"]["Idempotency-Key"].startswith("hqcli-"))
+
+    def test_text_video_cli_rejects_changed_native_quote_before_submit(self):
+        token = self._token(["generation:quote", "generation:submit"])
+        submitted = []
+
+        def fake_proxy(plan, _web_token, _internal_token):
+            if plan["path"] == "/api/gen/text-video/quote":
+                return 200, {"quote_token": "native", "cost": 70, "scene_count": 3}
+            submitted.append(plan)
+            return 409, {"detail": "分镜或价格已变化，请重新报价", "code": "quote_changed"}
+
+        request = {"action": "text-video-generate", "input": {
+            "text": "完整文案示例", "template": "1080x1920/image_default.html",
+            "mode": "fixed", "style": "realistic_commercial",
+            "voice": "public:zh-CN-YunjianNeural",
+        }, "confirm": False}
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
+            status, quote = self._request("/api/auth/cli/action", request, token=token)
+            self.assertEqual(200, status)
+            status, result = self._request(
+                "/api/auth/cli/action",
+                dict(request, confirm=True, quote_token=quote["quote_token"]), token=token,
+            )
+        self.assertEqual((409, "quote_changed"), (status, result["code"]))
+        self.assertEqual(1, len(submitted))
+        self.assertEqual("native", submitted[0]["body"]["quote_token"])
+
+    def test_text_video_cli_plan_is_strict_and_defaults_mode_and_speed(self):
+        value = {
+            "text": "AI 培训", "template": "1080x1920/image_default.html",
+            "style": "realistic_commercial", "voice": "public:zh-CN-YunjianNeural",
+        }
+        plan = self.auth.hq_cli_api.action_plan("text-video-generate", value)
+        self.assertEqual(("generation:quote", "script_to_video", "/api/gen/script_to_video"), (
+            plan["scope"], plan["generation_kind"], plan["endpoint"]))
+        self.assertEqual(("generate", 1.0, "pixelle", "text-video"), (
+            plan["payload"]["mode"], plan["payload"]["speech_rate"],
+            plan["payload"]["pipeline"], plan["payload"]["source_page"]))
+        self.assertEqual("/api/gen/text-video/quote", plan["quote_endpoint"])
+        for raw, expected in ((1.25, 1.3), (1.26, 1.3), (0.55, 0.6)):
+            with self.subTest(speech_rate=raw):
+                normalized = self.auth.hq_cli_api.action_plan(
+                    "text-video-generate", dict(value, speech_rate=raw))
+                self.assertEqual(expected, normalized["payload"]["speech_rate"])
+        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+            self.auth.hq_cli_api.action_plan(
+                "text-video-generate", dict(value, talking_material={"enabled": True}))
+        talking = {
+            "enabled": True,
+            "plan_id": "talking_plan_" + "a" * 32,
+            "source_hash": "b" * 64,
+            "ratio": 0.3,
+            "default_avatar_asset_id": "local_avatar_" + "c" * 32,
+            "scenes": [
+                {"scene_id": "scene_01", "enabled": True},
+                {"scene_id": "scene_02", "enabled": False},
+                {"scene_id": "scene_03", "enabled": True,
+                 "avatar_asset_id": "local_avatar_" + "d" * 32},
+            ],
+        }
+        talking_plan = self.auth.hq_cli_api.action_plan(
+            "text-video-generate", dict(value, talking_material=talking))
+        self.assertEqual(talking, talking_plan["payload"]["talking_material"])
+        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+            self.auth.hq_cli_api.action_plan(
+                "text-video-generate", dict(value, speech_rate=2.1))
+
+    def test_text_video_cli_avatar_import_and_plan_are_confirmed_fixed_proxies(self):
+        upload_id = "img_" + "a" * 32
+        avatar = self.auth.hq_cli_api.action_plan(
+            "text-video-avatar-import", {"image_upload_id": upload_id})
+        self.assertEqual(("assets:upload", "proxy", True), (
+            avatar["scope"], avatar["kind"], avatar["internal"]))
+        self.assertEqual(
+            ("/api/gen/cli/text-video/avatar-import", {"image_upload_id": upload_id}),
+            (avatar["path"], avatar["body"]),
+        )
+        base = {
+            "text": "AI 培训", "template": "1080x1920/image_default.html",
+            "style": "realistic_commercial", "voice": "public:zh-CN-YunjianNeural",
+            "speech_rate": 1.25, "ratio": 0.3,
+        }
+        plan = self.auth.hq_cli_api.action_plan("text-video-plan", base)
+        self.assertEqual(("generation:quote", "proxy", "/api/gen/text-video/plan"), (
+            plan["scope"], plan["kind"], plan["path"]))
+        self.assertEqual((1.3, 0.3), (
+            plan["body"]["speech_rate"], plan["body"]["ratio"]))
+
+        token = self._token(["assets:upload", "generation:quote"])
+        calls = []
+
+        def fake_proxy(proxy_plan, _web_token, _internal_token):
+            calls.append(proxy_plan)
+            if proxy_plan["path"].endswith("avatar-import"):
+                return 200, {"asset_id": "local_avatar_" + "c" * 32}
+            return 200, {"plan_id": "talking_plan_" + "d" * 32,
+                         "source_hash": "e" * 64, "scenes": []}
+
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
+            for action, input_body in (
+                    ("text-video-avatar-import", {"image_upload_id": upload_id}),
+                    ("text-video-plan", base)):
+                status, denied = self._request("/api/auth/cli/action", {
+                    "action": action, "input": input_body, "confirm": False,
+                }, token=token)
+                self.assertEqual((409, "confirmation_required"), (status, denied["code"]))
+                status, _result = self._request("/api/auth/cli/action", {
+                    "action": action, "input": input_body, "confirm": True,
+                }, token=token)
+                self.assertEqual(200, status)
+        self.assertEqual(2, len(calls))
+
     def test_collect_and_leads_actions_are_strict_quoted_and_submit_to_leadgen(self):
         douyin = "https://v.douyin.com/abc123/"
         xhs = "https://www.xiaohongshu.com/explore/note-1"
@@ -1000,6 +1206,17 @@ class HQCLIAPITests(unittest.TestCase):
             })
 
     def test_digital_ip_and_cinematic_generation_plans_are_narrow_and_fixed(self):
+        lipsync = self.auth.hq_cli_api.action_plan("video-lipsync", {
+            "video_asset_id": 21, "audio_asset_id": 34,
+            "quality": "precision", "dynamic_duration": False,
+        })
+        self.assertEqual(("generation:quote", "video", "/api/gen/video"), (
+            lipsync["scope"], lipsync["generation_kind"], lipsync["endpoint"]))
+        self.assertEqual({
+            "mode": "lipsync", "video_asset_id": 21, "audio_asset_id": 34,
+            "lipsync_mode": "precision", "dynamic_duration": False,
+        }, lipsync["payload"])
+
         text = self.auth.hq_cli_api.action_plan("digital-ip-text-generate", {
             "avatar_id": 7, "text": "欢迎来到黄雀", "voice": "S_d21F8OR62",
             "ratio": "16:9", "motion": "high", "subtitle": True,
@@ -1017,6 +1234,21 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual(("audio", "audio/voice-owned.mp3"), (
             asset_audio["payload"]["mode"], asset_audio["payload"]["audio_file"]))
         self.assertNotIn("audio_data", asset_audio["payload"])
+
+        portrait_id = "img_" + "a" * 32
+        narration_id = "aud_" + "b" * 32
+        uploaded_text = self.auth.hq_cli_api.action_plan("digital-ip-text-generate", {
+            "image_upload_id": portrait_id, "text": "欢迎来到黄雀", "voice": "S_d21F8OR62",
+        })
+        self.assertEqual(portrait_id, uploaded_text["payload"]["image_upload_id"])
+        self.assertNotIn("avatar_id", uploaded_text["payload"])
+        uploaded_audio = self.auth.hq_cli_api.action_plan("digital-ip-audio-generate", {
+            "image_upload_id": portrait_id, "audio_upload_id": narration_id,
+        })
+        self.assertEqual((portrait_id, narration_id), (
+            uploaded_audio["payload"]["image_upload_id"],
+            uploaded_audio["payload"]["audio_upload_id"],
+        ))
 
         cinematic = self.auth.hq_cli_api.action_plan("cinematic-open-generate", {
             "avatar_ids": [7, 8], "prompt": "两人在工作室自然交谈",
@@ -1047,6 +1279,16 @@ class HQCLIAPITests(unittest.TestCase):
             self.auth.hq_cli_api.action_plan("digital-ip-text-generate", {
                 "avatar_id": 7, "text": "越权输入", "voice": "S_d21F8OR62",
                 "image_data": "data:image/png;base64,AAAA",
+            })
+        with self.assertRaisesRegex(self.auth.hq_cli_api.CLIAPIError, "必须且只能提供一个"):
+            self.auth.hq_cli_api.action_plan("digital-ip-text-generate", {
+                "avatar_id": 7, "image_upload_id": portrait_id,
+                "text": "重复形象", "voice": "S_d21F8OR62",
+            })
+        with self.assertRaisesRegex(self.auth.hq_cli_api.CLIAPIError, "必须且只能提供一个"):
+            self.auth.hq_cli_api.action_plan("digital-ip-audio-generate", {
+                "image_upload_id": portrait_id, "audio_file": "audio/owned.wav",
+                "audio_upload_id": narration_id,
             })
         with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
             self.auth.hq_cli_api.action_plan("cinematic-open-generate", {
@@ -1161,6 +1403,20 @@ class HQCLIAPITests(unittest.TestCase):
         for action, expected in cases.items():
             plan = self.auth.hq_cli_api.action_plan(action, {})
             self.assertEqual(expected, (plan["scope"], plan["base"], plan["path"]))
+        clone = self.auth.hq_cli_api.action_plan("voice-clone-create", {
+            "slot_id": "slot_12345678", "name": "我的声音",
+            "audio_upload_id": "aud_" + "a" * 32,
+        })
+        self.assertEqual(("assets:write", "POST", "/api/gen/cli/voice-clone"), (
+            clone["scope"], clone["method"], clone["path"],
+        ))
+        self.assertTrue(clone["internal"])
+        status = self.auth.hq_cli_api.action_plan(
+            "voice-clone-status", {"slot_id": "slot_12345678"},
+        )
+        self.assertEqual(
+            "/api/gen/audio/clone-status?slot_id=slot_12345678", status["path"],
+        )
         lead_id = "a" * 16
         crm = self.auth.hq_cli_api.action_plan("leads-crm", {"lead_ids": [lead_id, lead_id]})
         self.assertEqual("/api/gen/leads/crm?ids=" + lead_id, crm["path"])

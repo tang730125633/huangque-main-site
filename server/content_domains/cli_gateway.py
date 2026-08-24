@@ -1,9 +1,13 @@
 """Internal quote and price-binding checks for the public HQ CLI gateway."""
 
+import hashlib
 import hmac
+import json
+import re
+import threading
 import urllib.parse
 
-from . import cli_uploads, pricing
+from . import cli_uploads, pricing, submission_idempotency
 
 
 def _internal_auth(handler, secret):
@@ -173,6 +177,131 @@ def handle_video_upload(handler, path, verify, must_change_password, secret):
     return True
 
 
+def handle_audio_upload(handler, path, verify, must_change_password, secret):
+    if path != "/api/gen/cli/audio-upload":
+        return False
+    if not _internal_auth(handler, secret):
+        handler._send(403, {"detail": "forbidden"})
+        return True
+    user = verify(handler._token())
+    if not user:
+        handler._send(401, {"detail": "未登录或登录已过期"})
+        return True
+    if must_change_password(user):
+        handler._send(403, {"detail": "请先修改初始密码"})
+        return True
+    try:
+        if handler.headers.get("Transfer-Encoding"):
+            raise ValueError("音频上传必须提供 Content-Length")
+        length = int(handler.headers.get("Content-Length") or 0)
+        content_type = (handler.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        result = cli_uploads.store_audio(
+            handler.rfile, length, user["username"], content_type,
+            handler.headers.get("X-HQ-Audio-SHA256"),
+        )
+        handler._send(200, result)
+    except ValueError as exc:
+        handler._send(400, {"detail": str(exc)[:220], "code": "invalid_audio_upload"})
+    except OSError:
+        handler._send(500, {"detail": "音频暂时无法保存", "code": "audio_upload_failed"})
+    return True
+
+
+def handle_voice_clone(handler, path, verify, must_change_password, audio, feature_flags, secret):
+    if path != "/api/gen/cli/voice-clone":
+        return False
+    if not _internal_auth(handler, secret):
+        handler._send(403, {"detail": "forbidden"})
+        return True
+    user = verify(handler._token())
+    if not user:
+        handler._send(401, {"detail": "未登录或登录已过期"})
+        return True
+    if must_change_password(user):
+        handler._send(403, {"detail": "请先修改初始密码"})
+        return True
+    try:
+        feature_flags.require_enabled("audio")
+    except feature_flags.FeatureDisabled as exc:
+        handler._send(503, {"detail": str(exc), "code": "feature_disabled"})
+        return True
+    request_id = str(handler.headers.get("Idempotency-Key") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9._:-]{8,128}", request_id):
+        handler._send(400, {"detail": "声音克隆必须提供有效幂等键", "code": "idempotency_key_required"})
+        return True
+    claim_state = ""
+    try:
+        payload = handler._json_body_strict(max_bytes=16 * 1024)
+        if not isinstance(payload, dict):
+            raise ValueError("请求体不是合法 JSON")
+        endpoint = "/api/gen/cli/voice-clone"
+        claim_state, claim_response = submission_idempotency.begin(
+            audio.adb, user["username"], endpoint, request_id, payload,
+        )
+        if claim_state == "conflict":
+            handler._send(409, {
+                "detail": "同一个幂等键不能用于不同的声音样音",
+                "code": "idempotency_conflict",
+            })
+            return True
+        if claim_state == "replay":
+            response = dict(claim_response or {})
+            if isinstance(response.get("voice"), dict):
+                response["voice"] = dict(response["voice"], replayed=True)
+            handler._send(200, response)
+            return True
+        request_digest = hashlib.sha256(json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        replay = audio.clone_request_replay(
+            user["username"], str(payload.get("slot_id") or "").strip(), request_id,
+            request_digest,
+        )
+        if replay:
+            response = {"ok": True, "voice": replay}
+            submission_idempotency.complete(
+                audio.adb, user["username"], endpoint, request_id, response,
+            )
+            handler._send(200, response)
+            return True
+        checked = cli_uploads.expand_voice_clone_payload(payload, user["username"])
+        checked = audio.validate_clone_vip_payload(user["username"], checked)
+        voice = audio.mark_clone_training(
+            user["username"], checked["slot_id"], checked.get("name"), request_id,
+            request_digest,
+        )
+        if not voice.get("replayed"):
+            checked["_request_id"] = request_id
+            threading.Thread(
+                target=audio.clone_vip_voice_background,
+                args=(user["username"], checked), daemon=True,
+            ).start()
+        response = {"ok": True, "voice": voice}
+        submission_idempotency.complete(
+            audio.adb, user["username"], endpoint, request_id, response,
+        )
+        handler._send(200, response)
+    except audio.CloneVipValidationError as exc:
+        if claim_state == "new":
+            submission_idempotency.abort(
+                audio.adb, user["username"], "/api/gen/cli/voice-clone", request_id,
+            )
+        handler._send(exc.status, {"detail": exc.detail, "code": exc.code})
+    except ValueError as exc:
+        if claim_state == "new":
+            submission_idempotency.abort(
+                audio.adb, user["username"], "/api/gen/cli/voice-clone", request_id,
+            )
+        handler._send(400, {"detail": str(exc)[:220], "code": "voice_clone_invalid"})
+    except OSError:
+        if claim_state == "new":
+            submission_idempotency.abort(
+                audio.adb, user["username"], "/api/gen/cli/voice-clone", request_id,
+            )
+        handler._send(500, {"detail": "声音样音暂时无法读取", "code": "voice_clone_failed"})
+    return True
+
+
 def handle_quote(handler, path, verify, must_change_password, is_shutting_down,
                  feature_flags, points, audio, video, secret):
     if path != "/api/gen/cli/quote":
@@ -212,16 +341,25 @@ def handle_quote(handler, path, verify, must_change_password, is_shutting_down,
         elif kind == "video":
             if not isinstance(payload, dict):
                 raise ValueError("请求体不是合法 JSON")
-            if payload.get("image_data") or not payload.get("avatar_id"):
-                raise ValueError("CLI 数字人口播第一阶段仅支持本人形象 avatar_id")
-            if payload.get("audio_data") or payload.get("bgm_data"):
-                raise ValueError("CLI 数字人口播第一阶段仅支持本人资产音频且不支持 BGM")
-            payload = video.validate_video_payload(payload, user["username"])
-            _require_ready_avatar(video, user["username"], payload["avatar_id"])
-            if payload["mode"] == "text":
-                audio.resolve_audio_provider_voice(user["username"], payload["voice"])
-            elif not payload.get("audio_file"):
-                raise ValueError("CLI 现成音频生成仅支持本人资产 audio_file")
+            if str(payload.get("mode") or "") == "lipsync":
+                payload = video.validate_video_payload(payload, user["username"])
+            else:
+                image_upload = bool(payload.get("image_upload_id"))
+                audio_upload = bool(payload.get("audio_upload_id"))
+                if payload.get("image_data") and not image_upload:
+                    raise ValueError("CLI 数字人口播仅支持本人形象或私密上传照片")
+                if payload.get("audio_data") and not audio_upload:
+                    raise ValueError("CLI 数字人口播仅支持本人资产音频或私密上传音频")
+                payload = cli_uploads.expand_talking_media_payload(payload, user["username"])
+                if payload.get("bgm_data"):
+                    raise ValueError("CLI 数字人口播不支持 BGM")
+                payload = video.validate_video_payload(payload, user["username"])
+                if payload.get("avatar_id"):
+                    _require_ready_avatar(video, user["username"], payload["avatar_id"])
+                if payload["mode"] == "text":
+                    audio.resolve_audio_provider_voice(user["username"], payload["voice"])
+                elif not payload.get("audio_file") and not payload.get("audio_data"):
+                    raise ValueError("音频驱动数字人缺少本人音频")
         elif kind == "video_batch":
             payloads = video.validate_video_batch_payload(payload, user["username"])
             for item in payloads:
