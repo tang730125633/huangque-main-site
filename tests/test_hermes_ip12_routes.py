@@ -30,6 +30,93 @@ def extract_js_function(source, name):
 
 
 class HermesIP12SourceTests(unittest.TestCase):
+    def test_talking_head_runtime_safety_regressions(self):
+        script = r'''
+import copy
+from unittest.mock import Mock, patch
+
+import security
+import server
+
+server.current_account_id = lambda: "acct_safety"
+security._validate_token = lambda token: {
+    "account_id": "acct_safety", "username": "safety", "role": "member",
+}
+security.RATE_REQUESTS = 100
+client = server.app.test_client()
+client.environ_base["HTTP_AUTHORIZATION"] = "Bearer test-token"
+
+cid = client.post("/api/conversations", json={"title": "归属测试"}).get_json()["id"]
+convo = server.load_conversation(cid)
+convo["productions"] = {
+    "prod_second": {"id": "prod_second", "action": "digital-ip-text-generate", "status": "draft"},
+    "prod_first": {"id": "prod_first", "action": "digital-ip-text-generate", "status": "draft"},
+}
+convo["active_production_id"] = "prod_first"
+server.save_conversation(cid, convo)
+assert server._latest_editable_talking_head_production(convo)["id"] == "prod_first"
+
+convo.pop("active_production_id")
+server.save_conversation(cid, convo)
+before = copy.deepcopy(convo["productions"])
+revision = convo["coach_state"]["revision"]
+with patch.object(server, "_semantic_master_decision", side_effect=AssertionError("model must not run")):
+    ambiguous = client.post("/api/chat-complete", json={
+        "conversation_id": cid, "message": "我需要重新录制声音",
+        "expected_revision": revision, "request_id": "ambiguous-material-revision",
+    })
+assert ambiguous.status_code == 200, ambiguous.get_data(as_text=True)
+assert "多个待修改的口播制作" in ambiguous.get_json()["assistant"]
+assert server.load_conversation(cid)["productions"] == before
+
+voice_cid = client.post("/api/conversations", json={"title": "复刻状态"}).get_json()["id"]
+voice_convo = server.load_conversation(voice_cid)
+voice_convo["active_production_id"] = "prod_voice"
+voice_convo["voice_clone_ui"] = {"status": "collecting", "voice_name": "旧状态"}
+voice_convo["productions"] = {"prod_voice": {
+    "id": "prod_voice", "action": "digital-ip-text-generate", "status": "draft",
+    "voice_clone": {"status": "training", "slot_id": "slot_voice", "name": "我的新声音"},
+}}
+server.save_conversation(voice_cid, voice_convo)
+with patch.object(server, "_bridge_action", return_value={
+    "items": [{"slot_id": "slot_voice", "status": "training", "voice_name": "我的新声音"}],
+}) as bridge:
+    reply, status = server._process_voice_clone_status_turn(
+        voice_cid, "声音复刻好了吗", {"reply": "查询中"},
+        voice_convo["coach_state"]["revision"], "voice-status-once",
+    )
+assert status == 200 and "仍在后台复刻中" in reply["assistant"], reply
+bridge.assert_called_once()
+saved_voice = server.load_conversation(voice_cid)
+assert saved_voice["productions"]["prod_voice"]["voice_clone"]["status"] == "training"
+assert saved_voice["voice_clone_ui"]["status"] == "collecting"
+
+class RedirectResponse:
+    status_code = 302
+    headers = {"Location": "http://127.0.0.1/private.mp4"}
+    def __enter__(self): return self
+    def __exit__(self, *_args): return False
+
+with patch.object(server, "_safe_public_artifact_url", return_value="https://media.example/video.mp4"), \
+     patch.object(server.requests, "get", return_value=RedirectResponse()), \
+     patch.object(server.subprocess, "run", Mock(side_effect=AssertionError("ffprobe must not run"))):
+    verified = server._verify_video_artifacts([
+        {"kind": "video", "url": "https://media.example/video.mp4"},
+    ])
+assert verified["decision"] == "fail", verified
+assert verified["issues"] == [{"code": "video_redirect_rejected"}], verified
+print("IP12_RUNTIME_SAFETY_OK")
+'''
+        with tempfile.TemporaryDirectory() as root:
+            env = os.environ.copy()
+            env.update(OPENAI_API_KEY="dummy", HERMES_HOME=root, HERMES_DATA_DIR=root)
+            result = subprocess.run(
+                [sys.executable, "-c", script], cwd=HERMES, env=env,
+                capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("IP12_RUNTIME_SAFETY_OK", result.stdout)
+
     def test_capability_gates_and_confirmed_module_six_sync(self):
         script = r'''
 import server
@@ -1929,6 +2016,8 @@ print("IP12_PROJECT_BACKUP_OK")
 
     def test_module_six_completion_hands_off_to_talking_head_production(self):
         script = r'''
+from concurrent.futures import ThreadPoolExecutor
+import threading
 from unittest.mock import patch
 import server
 import security
@@ -2031,6 +2120,8 @@ assert specialist_record["specialist_agent"]["stage"] in {"collecting_materials"
 assert specialist_project["agent_runtime"]["specialist_agent_id"] == "talking_head_video_agent"
 
 specialist_calls = []
+confirm_started = threading.Event()
+confirm_release = threading.Event()
 def specialist_bridge(account_id, action, input_body, **kwargs):
     specialist_calls.append((action, kwargs.get("confirm"), kwargs.get("idempotency_key")))
     if action == "task":
@@ -2038,6 +2129,8 @@ def specialist_bridge(account_id, action, input_body, **kwargs):
             "id": "first-work-video", "kind": "video", "url": "https://media.example/first-work.mp4",
         }]}
     if kwargs.get("confirm"):
+        confirm_started.set()
+        assert confirm_release.wait(5), "confirm bridge was not released"
         return {"job_id": "8801", "status": "queued"}
     return {"quote_token": "private-first-work-quote", "cost": 9, "points": 99, "expires_in": 300}
 
@@ -2053,11 +2146,23 @@ with patch.object(server, "_bridge_action", side_effect=specialist_bridge), \
     })
     assert quoted.status_code == 200, quoted.get_data(as_text=True)
     assert quoted.get_json()["production"]["specialist_agent"]["stage"] == "awaiting_confirmation"
-    confirmed = client.post("/api/ip12/productions/confirm", json={
-        "conversation_id": completed_id, "production_id": prepared_body["production_id"],
-        "expected_revision": capability_body["state"]["revision"],
-        "confirmation_id": "confirm-first-work-001",
-    })
+    def post_confirm():
+        confirm_client = server.app.test_client()
+        confirm_client.environ_base["HTTP_AUTHORIZATION"] = "Bearer test-token"
+        return confirm_client.post("/api/ip12/productions/confirm", json={
+            "conversation_id": completed_id, "production_id": prepared_body["production_id"],
+            "expected_revision": capability_body["state"]["revision"],
+            "confirmation_id": "confirm-first-work-001",
+        })
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(post_confirm)
+        assert confirm_started.wait(5), "confirm bridge did not start"
+        assert server._resume_talking_head_production_once(
+            completed_id, "acct_handoff", prepared_body["production_id"],
+            bridge_action=specialist_bridge,
+        ) is False
+        confirm_release.set()
+        confirmed = future.result(timeout=5)
     assert confirmed.status_code == 200, confirmed.get_data(as_text=True)
     assert confirmed.get_json()["production"]["specialist_agent"]["stage"] == "generating"
     delivered = client.get(

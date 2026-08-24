@@ -43,6 +43,9 @@ class IP12AgentProductionUITests(unittest.TestCase):
         self.assertIn("<audio controls", result)
         self.assertIn("打开 Canvas", result)
         self.assertIn("下载", result)
+        self.assertIn("function productionTaskLabel", self.html)
+        self.assertNotIn("record.job_id", panel)
+        self.assertIn("productionProgressHtml(record)+productionResultHtml(record)", panel)
 
     def test_only_the_quote_card_exposes_the_paid_confirmation(self):
         confirm = self.html[self.html.index("async function confirmProduction"):self.html.index("async function refreshProduction")]

@@ -43,6 +43,7 @@ AGENT_RUNTIME_WORKER_ENABLED = str(
 AGENT_RUNTIME_WORKER_INTERVAL = max(
     1.0, float(os.environ.get("HERMES_AGENT_RUNTIME_WORKER_INTERVAL") or 3)
 )
+RUNTIME_SUBMISSION_CLAIM_SECONDS = 45
 AI_DEFAULT_TIMEOUT_SECONDS = 180
 CHOICE_TOTAL_TIMEOUT_SECONDS = 120
 CHOICE_FIRST_TIMEOUT_SECONDS = 75
@@ -833,7 +834,10 @@ def _post_module_six_handoff_reply(action):
 def _production_public(record):
     """Never return a bridge quote token through a project read endpoint."""
     result = json.loads(json.dumps(record, ensure_ascii=False))
-    for key in ("source_text", "idempotency_key", "confirmation_id", "canvas_versions", "job_id"):
+    for key in (
+        "source_text", "idempotency_key", "confirmation_id", "canvas_versions", "job_id",
+        "_submission_claim_until",
+    ):
         result.pop(key, None)
     quote = result.get("quote")
     if isinstance(quote, dict):
@@ -1208,15 +1212,24 @@ def _production_material_revision_intent(message):
     return "both" if voice and image else ("voice" if voice else ("image" if image else ""))
 
 
-def _latest_editable_talking_head_production(convo):
-    for record in reversed(list((convo.get("productions") or {}).values())):
+def _editable_talking_head_productions(convo):
+    return [
+        record for record in (convo.get("productions") or {}).values()
         if (
             isinstance(record, dict)
             and record.get("action") in {"digital-ip-text-generate", "digital-ip-audio-generate"}
             and record.get("status") not in {"submitting", "queued", "running", "done"}
-        ):
-            return record
-    return None
+        )
+    ]
+
+
+def _latest_editable_talking_head_production(convo):
+    candidates = _editable_talking_head_productions(convo)
+    active_id = str(convo.get("active_production_id") or "")
+    active = next((item for item in candidates if str(item.get("id") or "") == active_id), None)
+    if active is not None:
+        return active
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def _production_action_schema(action, catalog_entry=None):
@@ -1837,6 +1850,7 @@ def _set_production_result(record, result):
         record["last_error_code"] = str(result.get("code") or "production_failed")
     elif record["status"] in {"queued", "running", "done"}:
         record["last_error_code"] = ""
+    record.pop("_submission_claim_until", None)
     record["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
@@ -2126,25 +2140,38 @@ def _verify_video_artifacts(asset_refs):
     url = _safe_public_artifact_url((video or {}).get("url"))
     if not url:
         return {"decision": "fail", "issues": [{"code": "video_url_invalid"}], "media": {}}
+    temp_path = ""
     try:
-        response = requests.get(
-            url, headers={"Range": "bytes=0-1048575"}, stream=True,
-            allow_redirects=True, timeout=(6, 18),
-        )
-        final_url = _safe_public_artifact_url(response.url)
-        content_type = str(response.headers.get("Content-Type") or "").split(";", 1)[0].lower()
-        first_chunk = next(response.iter_content(65536), b"")
-        response.close()
-        if response.status_code not in {200, 206} or not final_url or not first_chunk:
-            raise RuntimeError("video_http_unavailable")
-        if content_type and not (
-            content_type.startswith("video/") or content_type == "application/octet-stream"
-        ):
-            raise RuntimeError("video_content_type_invalid")
+        with requests.get(url, stream=True, allow_redirects=False, timeout=(6, 30)) as response:
+            if 300 <= response.status_code < 400:
+                raise RuntimeError("video_redirect_rejected")
+            if response.status_code != 200:
+                raise RuntimeError("video_http_unavailable")
+            content_type = str(response.headers.get("Content-Type") or "").split(";", 1)[0].lower()
+            if content_type and not (
+                content_type.startswith("video/") or content_type == "application/octet-stream"
+            ):
+                raise RuntimeError("video_content_type_invalid")
+            maximum = 256 * 1024 * 1024
+            length = int(response.headers.get("Content-Length") or 0)
+            if length > maximum:
+                raise RuntimeError("video_too_large")
+            total = 0
+            with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as handle:
+                temp_path = handle.name
+                for chunk in response.iter_content(1024 * 1024):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > maximum:
+                        raise RuntimeError("video_too_large")
+                    handle.write(chunk)
+            if total <= 0:
+                raise RuntimeError("video_http_unavailable")
         probe = subprocess.run([
             "ffprobe", "-v", "error", "-select_streams", "v:0",
             "-show_entries", "stream=codec_name,width,height:format=duration,format_name",
-            "-of", "json", final_url,
+            "-of", "json", temp_path,
         ], capture_output=True, text=True, timeout=35, check=False)
         if probe.returncode != 0:
             raise RuntimeError("video_decode_failed")
@@ -2157,18 +2184,24 @@ def _verify_video_artifacts(asset_refs):
         return {
             "decision": "pass", "issues": [],
             "media": {
-                "url": final_url, "duration": round(duration, 3),
+                "url": url, "duration": round(duration, 3),
                 "codec": str(stream.get("codec_name")), "width": width, "height": height,
                 "content_type": content_type,
             },
         }
-    except (json.JSONDecodeError, OSError, requests.RequestException, RuntimeError,
+    except (json.JSONDecodeError, OSError, requests.exceptions.RequestException, RuntimeError,
             subprocess.SubprocessError, TypeError, ValueError) as exc:
         return {
             "decision": "fail",
             "issues": [{"code": str(exc) if str(exc).startswith("video_") else "video_verification_failed"}],
             "media": {},
         }
+    finally:
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
 
 
 def _runtime_writeback(convo, record, verification):
@@ -2263,6 +2296,8 @@ def _resume_talking_head_production_once(cid, account_id, production_id, *,
             _ensure_talking_head_run(convo, record)
             status = str(record.get("status") or "")
             if status == "submitting" and not record.get("job_id"):
+                if int(record.get("_submission_claim_until") or 0) > _utc_timestamp():
+                    return False
                 quote = record.get("quote") or {}
                 if not record.get("confirmation_id") or not (quote.get("billing") == "free" or quote.get("token")):
                     _runtime_fail(convo, record, "submission_recovery_unavailable", tool_id="production.submit")
@@ -4367,14 +4402,31 @@ def api_confirm_production():
             prior_confirmation = record.get("confirmation_id")
             if prior_confirmation and prior_confirmation != confirmation_id:
                 return _production_error("confirmation_conflict", "该生产已在确认中，请勿重复提交")
+            runtime_claim = (str(cid), str(production_id))
+            if (
+                runtime_claim in RUNTIME_RESUME_IN_FLIGHT
+                or int(record.get("_submission_claim_until") or 0) > _utc_timestamp()
+            ):
+                return jsonify({
+                    "ok": True, "status": "processing", "replayed": True,
+                    "production": _production_public(record),
+                }), 202
+            RUNTIME_RESUME_IN_FLIGHT.add(runtime_claim)
             record.update(status="submitting", confirmation_id=confirmation_id,
+                          _submission_claim_until=_utc_timestamp() + RUNTIME_SUBMISSION_CLAIM_SECONDS,
                           updated_at=datetime.now().strftime("%Y-%m-%d %H:%M"))
             _runtime_submit_started(convo, record, confirmation_id)
             save_conversation(cid, convo)
             input_body = _production_input(record, record.get("options") or {})
         try:
-            result = _bridge_action(current_account_id(), record["action"], input_body, confirm=True,
-                                    quote_token=quote.get("token", ""), idempotency_key=record["idempotency_key"])
+            try:
+                result = _bridge_action(
+                    current_account_id(), record["action"], input_body, confirm=True,
+                    quote_token=quote.get("token", ""), idempotency_key=record["idempotency_key"],
+                )
+            finally:
+                with CONVERSATION_STATE_LOCK:
+                    RUNTIME_RESUME_IN_FLIGHT.discard(runtime_claim)
         except ProductionBridgeError as exc:
             with CONVERSATION_STATE_LOCK:
                 convo = _production_conversation(cid)
@@ -4392,6 +4444,7 @@ def api_confirm_production():
                         )
                     elif exc.status < 500 and exc.status != 429:
                         record.update(status="stale", last_error_code=exc.code)
+                        record.pop("_submission_claim_until", None)
                         _runtime_fail(convo, record, exc.code, tool_id="production.submit")
                     else:
                         record["last_error_code"] = exc.code
@@ -6485,6 +6538,14 @@ def _process_project_status_turn(cid, user_message, decision, expected_revision=
     )
 
 
+def _production_voice_clone_candidates(convo):
+    return [
+        record for record in (convo.get("productions") or {}).values()
+        if isinstance(record, dict) and isinstance(record.get("voice_clone"), dict)
+        and str(record["voice_clone"].get("status") or "")
+    ]
+
+
 def _process_voice_clone_status_turn(cid, user_message, decision, expected_revision=None, request_id=""):
     with CONVERSATION_STATE_LOCK:
         convo = owned_conversation(cid)
@@ -6492,8 +6553,33 @@ def _process_voice_clone_status_turn(cid, user_message, decision, expected_revis
             return None, 404
         state = normalize_coach_state(convo.get("coach_state"))
         _assert_expected_revision(state, expected_revision)
-        voice_ui = dict(convo.get("voice_clone_ui") or {})
+        clone_candidates = _production_voice_clone_candidates(convo)
+        active_id = str(convo.get("active_production_id") or "")
+        production_record = next((
+            item for item in clone_candidates if str(item.get("id") or "") == active_id
+        ), None)
+        if production_record is None and len(clone_candidates) == 1:
+            production_record = clone_candidates[0]
+        ambiguous = production_record is None and len(clone_candidates) > 1
+        production_id = str((production_record or {}).get("id") or "")
+        if production_record is not None:
+            clone = dict(production_record.get("voice_clone") or {})
+            voice_ui = {
+                "status": "complete" if clone.get("status") == "ready" else clone.get("status"),
+                "slot_id": clone.get("slot_id"),
+                "voice_name": clone.get("name") or "我的个人音色",
+                "error": clone.get("error") or "",
+            }
+        else:
+            voice_ui = dict(convo.get("voice_clone_ui") or {})
         snapshot_revision = state["revision"]
+
+    if ambiguous:
+        status_decision = dict(decision)
+        status_decision["reply"] = "当前有多个声音复刻记录，请先打开或点名对应的口播制作，再查询复刻状态。"
+        return _process_semantic_reply(
+            cid, user_message, status_decision, expected_revision, request_id,
+        )
 
     slot_id = str(voice_ui.get("slot_id") or "")
     refresh_failed = False
@@ -6527,17 +6613,33 @@ def _process_voice_clone_status_turn(cid, user_message, decision, expected_revis
             state = normalize_coach_state(convo.get("coach_state"))
             if state["revision"] != snapshot_revision:
                 raise coach_harness.HarnessConflict("对话已在另一端更新，请刷新后重试")
-            current = dict(convo.get("voice_clone_ui") or {})
-            current.update(
-                status=status,
-                slot_id=slot_id,
-                voice_name=str(slot.get("voice_name") or current.get("voice_name") or "我的个人音色")[:40],
-                error=str(slot.get("clone_error") or "")[:160] if status == "failed" else "",
-                updated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
-            )
-            convo["voice_clone_ui"] = current
+            if production_id:
+                current_record = (convo.get("productions") or {}).get(production_id)
+                current = dict((current_record or {}).get("voice_clone") or {})
+                current.update(
+                    status="ready" if status == "complete" else status,
+                    slot_id=slot_id,
+                    name=str(slot.get("voice_name") or current.get("name") or "我的个人音色")[:40],
+                    error=str(slot.get("clone_error") or "")[:160] if status == "failed" else "",
+                    updated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                )
+                current_record["voice_clone"] = current
+                voice_ui = {
+                    "status": status, "slot_id": slot_id,
+                    "voice_name": current["name"], "error": current["error"],
+                }
+            else:
+                current = dict(convo.get("voice_clone_ui") or {})
+                current.update(
+                    status=status,
+                    slot_id=slot_id,
+                    voice_name=str(slot.get("voice_name") or current.get("voice_name") or "我的个人音色")[:40],
+                    error=str(slot.get("clone_error") or "")[:160] if status == "failed" else "",
+                    updated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                )
+                convo["voice_clone_ui"] = current
+                voice_ui = current
             save_conversation(cid, convo)
-            voice_ui = current
 
     voice_name = str(voice_ui.get("voice_name") or "我的个人音色")
     if refresh_failed:
@@ -6783,6 +6885,7 @@ def process_chat_request(body):
     semantic_decision = None
     memory_snapshot = None
     legacy_route = ""
+    material_revision_ambiguous = False
     try:
         production_intent = None
         material_revision_kind = ""
@@ -6833,11 +6936,19 @@ def process_chat_request(body):
                 _assert_expected_revision(state, body.get("expected_revision"))
                 if action is None:
                     material_revision_kind = _production_material_revision_intent(user_message)
+                    material_candidates = (
+                        _editable_talking_head_productions(convo)
+                        if material_revision_kind else []
+                    )
                     material_record = (
                         _latest_editable_talking_head_production(convo)
                         if material_revision_kind else None
                     )
                     material_production_id = str((material_record or {}).get("id") or "")
+                    material_revision_ambiguous = bool(
+                        material_revision_kind and not material_production_id
+                        and len(material_candidates) > 1
+                    )
                 if action is None and content_target is None and not material_production_id:
                     action = coach_harness.shortcut_action(state, user_message)
                     if action:
@@ -6929,7 +7040,11 @@ def process_chat_request(body):
                         convo, state, capability_gates(state)
                     )
 
-            if (not material_production_id and memory_snapshot is not None
+            if material_revision_ambiguous:
+                semantic_decision = semantic_router.safe_clarification(
+                    "当前有多个待修改的口播制作，请先打开或点名其中一个，再说明要重录声音还是更换形象。"
+                )
+            if (not material_production_id and semantic_decision is None and memory_snapshot is not None
                     and SEMANTIC_ROUTER_MODE == "live"):
                 memory_snapshot["tool_catalog"] = _semantic_tool_catalog(current_account_id(), state)
                 try:
