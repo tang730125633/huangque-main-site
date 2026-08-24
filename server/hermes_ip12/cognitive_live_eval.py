@@ -240,84 +240,6 @@ def run_t3(args):
     return artifact, artifact_sha
 
 
-def run_t3_resume(args):
-    _validate_authorized_budget(args)
-    base_path = Path(args.base_artifact)
-    base_bytes = base_path.read_bytes()
-    if hashlib.sha256(base_bytes).hexdigest() != str(args.base_artifact_sha256 or ""):
-        raise RuntimeError("base_artifact_hash_mismatch")
-    if base_path.stat().st_mode & 0o077:
-        raise RuntimeError("base_artifact_permissions_invalid")
-    base = json.loads(base_bytes)
-    corpus_path = Path(args.corpus)
-    cases = json.loads(corpus_path.read_text(encoding="utf-8"))
-    if hashlib.sha256(corpus_path.read_bytes()).hexdigest() != eval_contract.CORPUS_SHA256:
-        raise RuntimeError("eval_corpus_hash_mismatch")
-    eval_contract.validate_cases(cases)
-    all_ids = {case["id"] for case in cases}
-    failed_ids = list(((base.get("agents_sdk_eval") or {}).get("failed_case_ids") or []))
-    if not (
-        base.get("schema") == SCHEMA
-        and base.get("evidence_source") == "live_capture"
-        and base.get("release_sha") == args.release_sha
-        and base.get("model") == args.model
-        and base.get("corpus_sha256") == eval_contract.CORPUS_SHA256
-        and (base.get("custom_eval") or {}).get("passed") is True
-        and (base.get("provider_compat") or {}).get("passed") is True
-        and int(((base.get("agents_sdk_eval") or {}).get("engine") or {}).get("calls") or 0) == len(cases)
-        and failed_ids and len(failed_ids) == len(set(failed_ids))
-        and set(failed_ids) <= all_ids
-    ):
-        raise RuntimeError("base_artifact_not_resumable")
-    selected = [case for case in cases if case["id"] in set(failed_ids)]
-    config = provider_live_eval.provider_configs()["openai_official"]
-    if not config.get("key"):
-        raise RuntimeError("openai_credential_blocked")
-    budget = provider_live_eval.Budget(
-        args.max_requests, args.max_cny, args.budget_ledger, args.model,
-    )
-    resumed = eval_contract.run_engine(
-        selected, _sdk_decider(
-            config, args.model, budget, args.max_output_tokens, args.timeout,
-        ),
-    )
-    resumed_summary = _eval_summary(resumed)
-    if resumed_summary["passed"]:
-        sdk_summary = {
-            "passed": True, "schema_rate": 1.0, "safety_rate": 1.0,
-            "route_rate": 1.0, "tool_hallucinations": 0,
-            "reference_hallucinations": 0, "chat_tool_misfires": 0,
-            "failed_case_ids": [],
-            "engine": {
-                "calls": len(cases), "errors": {},
-                "latency_ms": copy.deepcopy((resumed.get("engine") or {}).get("latency_ms") or {}),
-                "resumed_cases": len(selected),
-            },
-        }
-    else:
-        sdk_summary = resumed_summary
-    passed = resumed_summary["passed"] and budget.usage_missing == 0
-    now = int(time.time())
-    artifact = {
-        "schema": SCHEMA, "decision": "PASS" if passed else "HOLD",
-        "evidence_source": "live_capture", "release_sha": args.release_sha,
-        "corpus_sha256": eval_contract.CORPUS_SHA256,
-        "provider": "openai", "model": args.model,
-        "created_at": now, "expires_at": now + args.valid_seconds,
-        "eval": sdk_summary,
-        "custom_eval": copy.deepcopy(base["custom_eval"]),
-        "agents_sdk_eval": sdk_summary,
-        "provider_compat": copy.deepcopy(base["provider_compat"]),
-        "budget": budget.public(),
-        "resume": {
-            "base_artifact_sha256": args.base_artifact_sha256,
-            "rerun_case_ids": failed_ids,
-        },
-    }
-    artifact_sha = _write_json(args.output, artifact)
-    return artifact, artifact_sha
-
-
 def run_canary(args):
     _validate_authorized_budget(args)
     gate = cognitive_engine.conformance_gate(args.release_sha, requested=True)
@@ -362,7 +284,7 @@ def run_canary(args):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=("t3", "t3-resume", "canary"), required=True)
+    parser.add_argument("--mode", choices=("t3", "canary"), required=True)
     parser.add_argument("--model", default="gpt-5.6-terra")
     parser.add_argument("--release-sha", required=True)
     parser.add_argument("--budget-ledger", required=True)
@@ -372,21 +294,14 @@ def main():
     parser.add_argument("--timeout", type=int, default=50)
     parser.add_argument("--corpus", default=str(DEFAULT_CORPUS))
     parser.add_argument("--output")
-    parser.add_argument("--base-artifact")
-    parser.add_argument("--base-artifact-sha256")
     parser.add_argument("--valid-seconds", type=int, default=86400)
     parser.add_argument("--project")
     parser.add_argument("--message", default="请只告诉我当前 Project 做到哪一步，不要创建或修改任何内容。")
     args = parser.parse_args()
-    if args.mode in {"t3", "t3-resume"}:
+    if args.mode == "t3":
         if not args.output:
             parser.error("--output is required for t3")
-        if args.mode == "t3-resume":
-            if not args.base_artifact or not args.base_artifact_sha256:
-                parser.error("--base-artifact and --base-artifact-sha256 are required")
-            result, artifact_sha = run_t3_resume(args)
-        else:
-            result, artifact_sha = run_t3(args)
+        result, artifact_sha = run_t3(args)
         summary = {
             "mode": args.mode, "decision": result["decision"], "artifact_sha256": artifact_sha,
             "custom_eval": result["custom_eval"], "agents_sdk_eval": result["agents_sdk_eval"],

@@ -267,6 +267,9 @@ class CognitiveEngineTests(unittest.TestCase):
 
                 allowed = check(report)
                 self.assertTrue(allowed["valid"], allowed)
+                report["resume"] = {"base_artifact_sha256": "a" * 64}
+                self.assertFalse(check(report)["valid"])
+                report.pop("resume")
                 report["custom_eval"]["passed"] = False
                 self.assertFalse(check(report)["valid"])
                 report["custom_eval"]["passed"] = True
