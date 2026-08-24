@@ -40,6 +40,7 @@ RESULT_HOSTS = {
     "cdn.minimax.chat",
     "file.cdn.minimax.io",
     "filecdn.minimax.chat",
+    "files.metaso.cn",
 }
 RESULT_MAX_BYTES = 250 * 1024 * 1024
 
