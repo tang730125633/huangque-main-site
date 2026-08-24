@@ -86,6 +86,34 @@ class ShortDramaAssetGraphTests(unittest.TestCase):
             revision = result["graph_revision"]
         return revision
 
+    def _set_and_lock_scene_reference(self, workspace, scene_key, prompt):
+        raw = b"\x89PNG\r\n\x1a\n" + prompt.encode("utf-8")
+        data_url = "data:image/png;base64," + base64.b64encode(raw).decode("ascii")
+        output = Path(self.temp.name) / "output"
+        fake_image = types.SimpleNamespace(OUT_DIR=output)
+        fake_uploads = types.SimpleNamespace(
+            MAX_BYTES=10 * 1024 * 1024,
+            MIME_EXTENSIONS={"image/png": ".png"},
+            detect_mime=lambda value: "image/png" if value.startswith(b"\x89PNG") else "",
+        )
+        with mock.patch.dict(sys.modules, {
+            graph.__package__ + ".image": fake_image,
+            graph.__package__ + ".cli_uploads": fake_uploads,
+        }), mock.patch.object(
+            sys.modules[graph.__package__], "image", fake_image, create=True,
+        ), mock.patch.object(
+            sys.modules[graph.__package__], "cli_uploads", fake_uploads, create=True,
+        ):
+            created = graph.set_scene_reference(self.db, "alice", "alice", {
+                "project_id": "p1", "graph_revision": workspace["graph_revision"],
+                "scene_key": scene_key, "source": "upload",
+                "image_data": data_url, "filename": "scene.png", "prompt": prompt,
+            })
+        return graph.lock_scene_reference(self.db, "alice", "alice", {
+            "project_id": "p1", "graph_revision": created["graph_revision"],
+            "scene_key": scene_key,
+        })
+
     def test_sync_is_idempotent_and_snapshot_requires_locked_versions(self):
         first = graph.sync_foundation(self.db, "alice", "alice", "p1")
         self.assertEqual(first["created"], 3)
@@ -254,6 +282,84 @@ class ShortDramaAssetGraphTests(unittest.TestCase):
         self.assertTrue(reference["file"].startswith("short_drama_scene_uploads/scene_"))
         self.assertEqual(reference["scene_key"], selected_reference["scene_key"])
         self.assertIsNone(missing_reference)
+
+    def test_scene_semantic_changes_retire_locked_references_until_reconfirmed(self):
+        graph.sync_foundation(self.db, "alice", "alice", "p1")
+        workspace = graph.scene_workspace(self.db, "alice", "p1")
+        system_scene = workspace["scenes"][0]
+        locked_system = self._set_and_lock_scene_reference(
+            workspace, system_scene["scene_key"], "rainy old street",
+        )
+        self.assertTrue(locked_system["scenes"][0]["locked"])
+
+        with closing(self.db()) as conn:
+            conn.execute(
+                "UPDATE short_drama_shots SET scene_description=? WHERE project_id=? "
+                "AND shot_key=?",
+                ("sunny new rooftop", "p1", "shot_001"),
+            )
+            conn.commit()
+        system_changed = graph.sync_foundation(
+            self.db, "alice", "alice", "p1", locked_system["graph_revision"],
+        )
+        changed_system_scene = graph.scene_workspace(self.db, "alice", "p1")["scenes"][0]
+        self.assertFalse(changed_system_scene["locked"])
+        with closing(self.db()) as conn:
+            self.assertIsNone(graph.locked_scene_reference(conn, "p1", "shot_001"))
+
+        created = graph.create_scene(self.db, "alice", "alice", {
+            "project_id": "p1", "graph_revision": system_changed["graph_revision"],
+            "name": "Old terrace", "description": "quiet evening terrace",
+            "shot_keys": ["shot_001"],
+        })
+        custom = next(item for item in created["scenes"] if item["custom"])
+        locked_custom = self._set_and_lock_scene_reference(
+            created, custom["scene_key"], "quiet evening terrace",
+        )
+        self.assertTrue(next(
+            item for item in locked_custom["scenes"]
+            if item["scene_key"] == custom["scene_key"]
+        )["locked"])
+
+        renamed = graph.update_scene(self.db, "alice", "alice", {
+            "project_id": "p1", "graph_revision": locked_custom["graph_revision"],
+            "scene_key": custom["scene_key"], "name": "New terrace",
+            "description": "quiet evening terrace", "shot_keys": ["shot_001"],
+        })
+        renamed_custom = next(
+            item for item in renamed["scenes"]
+            if item["scene_key"] == custom["scene_key"]
+        )
+        self.assertFalse(renamed_custom["locked"])
+        with closing(self.db()) as conn:
+            self.assertIsNone(graph.locked_scene_reference(
+                conn, "p1", "shot_001", custom["scene_key"],
+            ))
+
+        relocked = self._set_and_lock_scene_reference(
+            renamed, custom["scene_key"], "new terrace confirmed",
+        )
+        relocked_custom = next(
+            item for item in relocked["scenes"]
+            if item["scene_key"] == custom["scene_key"]
+        )
+        self.assertTrue(relocked_custom["locked"])
+        self.assertEqual("new terrace confirmed", relocked_custom["preview"]["prompt"])
+
+        redescribed = graph.update_scene(self.db, "alice", "alice", {
+            "project_id": "p1", "graph_revision": relocked["graph_revision"],
+            "scene_key": custom["scene_key"], "name": "New terrace",
+            "description": "bright noon terrace", "shot_keys": ["shot_001"],
+        })
+        redescribed_custom = next(
+            item for item in redescribed["scenes"]
+            if item["scene_key"] == custom["scene_key"]
+        )
+        self.assertFalse(redescribed_custom["locked"])
+        with closing(self.db()) as conn:
+            self.assertIsNone(graph.locked_scene_reference(
+                conn, "p1", "shot_001", custom["scene_key"],
+            ))
 
     def test_committed_scene_upload_survives_response_assembly_failure(self):
         graph.sync_foundation(self.db, "alice", "alice", "p1")

@@ -1939,6 +1939,42 @@ test('locked scripts keep Provider video generation available while script editi
   assert.doesNotMatch(output, /sd-shot-provider-disabled-reason/);
 });
 
+test('locked adjacent shots disable only structure actions that cross their boundary', () => {
+  const shots = [
+    {shot_key:'shot_01',sort_order:1,duration_seconds:5,visual:'start',dialogue_line_ids:['line_01']},
+    {shot_key:'shot_02',sort_order:2,duration_seconds:5,visual:'locked middle',dialogue_line_ids:['line_02'],locked:true},
+    {shot_key:'shot_03',sort_order:3,duration_seconds:5,visual:'end',dialogue_line_ids:['line_03']}
+  ];
+  assert.deepEqual(workspace.shotStructureCapabilities(shots,0,true), {
+    enabled:true,moveUp:false,moveDown:false,copy:false,insertBefore:true,
+    insertAfter:false,smartInsert:false,deleteShot:false
+  });
+  assert.deepEqual(workspace.shotStructureCapabilities(shots,2,true), {
+    enabled:true,moveUp:false,moveDown:false,copy:true,insertBefore:false,
+    insertAfter:true,smartInsert:true,deleteShot:false
+  });
+  const outerLocked = [
+    {shot_key:'a',locked:true},{shot_key:'b'},{shot_key:'c'},{shot_key:'d',locked:true}
+  ];
+  assert.equal(workspace.shotStructureCapabilities(outerLocked,1,true).moveDown,false);
+  assert.equal(workspace.shotStructureCapabilities(outerLocked,2,true).moveUp,false);
+
+  const output = workspace.scriptHtml({version:1,status:'draft',script:{
+    overview:{title:'Boundary story'},characters:[],shots:shots,
+    dialogue_lines:[
+      {id:'line_01',kind:'silence'},
+      {id:'line_02',kind:'silence'},
+      {id:'line_03',kind:'silence'}
+    ]
+  }}, true, {}, '', false, {}, '', '', {}, {}, 'shot_01');
+  assert.match(output, /data-action="move-shot-down" data-shot-key="shot_01" disabled/);
+  assert.match(output, /data-action="copy-shot" data-shot-key="shot_01" disabled/);
+  assert.match(output, /data-action="add-shot-after" data-shot-key="shot_01" disabled/);
+  assert.match(output, /data-action="smart-insert-shot" data-shot-key="shot_01" disabled/);
+  assert.match(output, /data-action="delete-shot" data-shot-key="shot_01" disabled/);
+  assert.match(output, /data-action="add-shot-before" data-shot-key="shot_01">/);
+});
+
 test('Provider video generation explains why it is disabled before the script is locked', () => {
   const providerState = {
     confirmed_plan:{id:'plan-1'},
@@ -2255,6 +2291,33 @@ test('shot workspace supports flexible structure and duration guidance', () => {
   assert.match(workspaceSource, /data-action="move-shot-up"/);
   assert.match(workspaceSource, /不会强制截断镜头/);
   assert.match(workspaceSource, /shot\/structure/);
+});
+
+test('locked shots do not expose structure mutation controls', () => {
+  const rendered = workspace.scriptHtml({id:'script-1',script:{
+    overview:{}, story_beats:[], characters:[],
+    dialogue_lines:[{id:'line-1',kind:'silence',text:''}],
+    shots:[{
+      shot_key:'shot-1',sort_order:1,duration_seconds:5,locked:true,
+      dialogue_line_ids:['line-1'],purpose:'locked',visual:'locked shot',
+    }],
+  }},true,{},'',true,{},'','',{graph_revision:1,scenes:[]},{},'shot-1',{},'');
+  assert.match(rendered, /data-action="toggle-shot-lock"/);
+  assert.doesNotMatch(rendered, /data-action="(?:move-shot|copy-shot|add-shot|delete-shot)/);
+});
+
+test('shot drafts are isolated by trusted account and legacy unowned keys are discarded', () => {
+  const aliceKey = workspace.shotDraftStorageKey('alice','project-1','shot-1');
+  const bobKey = workspace.shotDraftStorageKey('bob','project-1','shot-1');
+  assert.notEqual(aliceKey,bobKey);
+  assert.match(aliceKey,/^hq-short-drama-shot-draft:/);
+  assert.doesNotMatch(aliceKey,/alice/);
+
+  const storage = new Map();
+  const legacyKey = 'hq-short-drama-shot-draft:project-1:shot-1';
+  storage.set(legacyKey,JSON.stringify({dialogue_text:'private draft'}));
+  workspace.discardLegacyShotDraft({removeItem:key => storage.delete(key)},'project-1','shot-1');
+  assert.equal(storage.has(legacyKey),false);
 });
 
 test('镜头编辑只拦截错误字段并保留其余有效修改', () => {

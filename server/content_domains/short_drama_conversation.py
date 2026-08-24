@@ -2545,10 +2545,32 @@ def _new_structure_key(script, prefix, collection, field):
 
 def _structure_shot(script, shot_key, action, instruction=""):
     shots = script.get("shots") or []
+    neighbor_offsets = {
+        "delete": (-1, 1),
+        "copy": (1,),
+        "insert_before": (-1,),
+        "insert_after": (1,),
+        "smart_insert": (1,),
+        "move_up": (-2, -1, 1),
+        "move_down": (-1, 1, 2),
+    }
+    if action not in neighbor_offsets:
+        raise ConversationError(
+            "shot_structure_action_invalid", "不支持的镜头调整操作", 422,
+        )
     if action == "delete" and len(shots) <= 1:
         raise ConversationError("last_shot_required", "至少保留一个镜头", 422)
     shot, line = _shot_and_line(script, shot_key)
     index = shots.index(shot)
+    affected = [shot]
+    for offset in neighbor_offsets[action]:
+        neighbor_index = index + offset
+        if 0 <= neighbor_index < len(shots):
+            affected.append(shots[neighbor_index])
+    if any(bool(item.get("locked")) for item in affected):
+        raise ConversationError(
+            "shot_locked", "请先解锁受本次结构调整影响的镜头", 409,
+        )
     if action == "delete":
         shots.pop(index)
         line_ids = {str(value) for value in shot.get("dialogue_line_ids") or []}
@@ -2676,6 +2698,52 @@ def _apply_shot_patch(script, shot_key, changes):
     return script
 
 
+def _regenerate_user_shot(script, shot, line, instruction):
+    """Regenerate an inserted shot from its real timeline context."""
+    shots = script.get("shots") or []
+    shot_index = shots.index(shot)
+    previous_shot = shots[shot_index - 1] if shot_index > 0 else None
+    next_shot = shots[shot_index + 1] if shot_index + 1 < len(shots) else None
+
+    def context(item, fallback):
+        if not item:
+            return fallback
+        return str(item.get("visual") or item.get("purpose") or fallback).strip()[:80]
+
+    previous_context = context(previous_shot, "本段开场状态")
+    current_context = context(shot, "当前剧情动作")
+    next_context = context(next_shot, "本段收束状态")
+    request = instruction or "重新组织当前动作和构图"
+    visual = (
+        "承接上一镜头“%s”；保留当前剧情事实“%s”；按要求“%s”重新设计动作与构图；"
+        "并自然过渡到下一镜头“%s”"
+        % (previous_context, current_context, request[:100], next_context)
+    )[:_SHOT_EDIT_FIELDS["visual"]]
+    continuity = (
+        "前接“%s”，后接“%s”；保持人物位置、服装、场景光线和关键道具连续"
+        % (previous_context[:60], next_context[:60])
+    )[:_SHOT_EDIT_FIELDS["continuity"]]
+
+    replacement = _json(_json_text(shot), {})
+    replacement_line = _json(_json_text(line), {})
+    replacement.update({
+        "purpose": (instruction[:160] or str(shot.get("purpose") or "推进相邻镜头间的剧情"))[:160],
+        "visual": visual,
+        "continuity": continuity,
+        "provider_prompt": (
+            "场景：%s。当前镜头：%s。摄影：%s。%s"
+            % (
+                str(shot.get("scene") or "沿用当前场景")[:80],
+                visual,
+                str(shot.get("camera") or "沿用当前机位")[:180],
+                continuity,
+            )
+        )[:_SHOT_EDIT_FIELDS["provider_prompt"]],
+        "locked": False,
+    })
+    return replacement, replacement_line
+
+
 def _insert_edited_version(conn, project, actor, current, source, script, instruction, summary):
     version_number = int(conn.execute(
         "SELECT COALESCE(MAX(version),0)+1 FROM short_drama_script_snapshots "
@@ -2718,38 +2786,6 @@ def _insert_edited_version(conn, project, actor, current, source, script, instru
         (version_id, now, project["id"], int(current["revision"])),
     )
     return version_id
-
-
-def _save_working_draft(conn, project, actor, current, source, script, instruction, summary):
-    """Save ordinary editor changes without growing formal version history."""
-    if current["state"] != "script_review" or source.get("status") != "draft":
-        return _insert_edited_version(
-            conn, project, actor, current, source, script, instruction, summary
-        )
-    now = int(time.time())
-    conn.execute(
-        "UPDATE short_drama_script_snapshots SET script_json=?,readable_text=?,"
-        "input_hash=?,provider=?,model_version=?,instruction=?,change_summary=?,"
-        "created_by=? WHERE project_id=? AND id=? AND status='draft'",
-        (
-            _json_text(script),
-            _readable(script),
-            _hash({"working_draft_id": source["id"], "script": script, "instruction": instruction}),
-            "creative-advisor-local",
-            short_drama_storyboard.MODEL_VERSION,
-            instruction[:2000],
-            summary[:220],
-            actor,
-            project["id"],
-            source["id"],
-        ),
-    )
-    conn.execute(
-        "UPDATE short_drama_conversations SET state='script_review',"
-        "revision=revision+1,updated_at=? WHERE project_id=? AND revision=?",
-        (now, project["id"], int(current["revision"])),
-    )
-    return source["id"]
 
 
 def _mutate_shot(
@@ -2799,13 +2835,31 @@ def _mutate_shot(
             if bool(shot.get("locked")):
                 raise ConversationError("shot_locked", "请先解锁当前镜头再重新生成", 409)
             instruction = str(body.get("instruction") or "").strip()[:500]
-            messages = _messages(conn, project_id)
-            understanding = _json(current.get("understanding_json"), {})
-            generated = _script(project, messages, instruction, understanding)
-            replacement, replacement_line = _shot_and_line(generated, shot_key)
+            shot_index = script["shots"].index(shot)
+            generated = None
+            if shot_key.startswith("shot_user_"):
+                replacement, replacement_line = _regenerate_user_shot(
+                    script, shot, _line, instruction,
+                )
+            else:
+                messages = _messages(conn, project_id)
+                understanding = _json(current.get("understanding_json"), {})
+                generated = _script(project, messages, instruction, understanding)
+                replacement, replacement_line = _shot_and_line(generated, shot_key)
+                replacement = _json(_json_text(replacement), {})
+                replacement_line = _json(_json_text(replacement_line), {})
+            replacement["shot_key"] = shot_key
+            replacement["dialogue_line_ids"] = list(shot.get("dialogue_line_ids") or [])
             replacement["duration_seconds"] = shot["duration_seconds"]
+            replacement["sort_order"] = shot.get("sort_order")
+            replacement["beat_key"] = shot.get("beat_key")
+            replacement["source_type"] = shot.get("source_type") or replacement.get("source_type")
             replacement["locked"] = False
-            if instruction:
+            replacement_line["id"] = _line["id"]
+            replacement_line["source_type"] = (
+                _line.get("source_type") or replacement_line.get("source_type")
+            )
+            if instruction and not shot_key.startswith("shot_user_"):
                 replacement["purpose"] = instruction[:160]
                 replacement["visual"] = "%s；调整要求：%s" % (
                     replacement["visual"],
@@ -2815,7 +2869,6 @@ def _mutate_shot(
                     replacement["provider_prompt"],
                     instruction[:300],
                 )
-            shot_index = script["shots"].index(shot)
             script["shots"][shot_index] = replacement
             target_line = _shot_and_line(script, shot_key)[1]
             line_index = script["dialogue_lines"].index(target_line)
@@ -2828,8 +2881,11 @@ def _mutate_shot(
                 ),
                 None,
             )
-            if beat_index is not None:
+            if beat_index is not None and generated is not None:
                 script["story_beats"][beat_index] = generated["story_beats"][beat_index]
+            elif beat_index is not None:
+                script["story_beats"][beat_index]["purpose"] = replacement.get("purpose")
+                script["story_beats"][beat_index]["action"] = replacement.get("visual")
             _validate_script(script)
             summary = "重新生成 %s" % shot_key
         else:
@@ -2838,7 +2894,7 @@ def _mutate_shot(
             _validate_script(script)
             instruction = "锁定镜头" if shot["locked"] else "解锁镜头"
             summary = "%s %s" % (instruction, shot_key)
-        _save_working_draft(
+        _insert_edited_version(
             conn,
             project,
             actor_username,
@@ -2926,7 +2982,7 @@ def change_shot_structure(db_factory, owner_username, actor_username, body, idem
             raise LookupError("script version does not exist")
         script = _json(_json_text(source["script"]), {})
         _structure_shot(script, shot_key, action, instruction)
-        _save_working_draft(
+        _insert_edited_version(
             conn, project, actor_username, current, source, script,
             "调整镜头结构：%s" % action,
             "镜头结构已调整，旧合成版本需要重新生成",

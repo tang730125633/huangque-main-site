@@ -224,14 +224,58 @@ def invalidate_shot_content(conn, project_id, actor, changed_shot_ids, removed_s
     return revision
 
 
+def _invalidate_scene_reference_versions(conn, entity_id, description, actor, now):
+    latest = conn.execute(
+        "SELECT id,version FROM short_drama_graph_versions WHERE entity_id=? "
+        "ORDER BY version DESC LIMIT 1", (entity_id,),
+    ).fetchone()
+    conn.execute(
+        "UPDATE short_drama_graph_versions SET status='retired' "
+        "WHERE entity_id=? AND status<>'retired'", (entity_id,),
+    )
+    content = {
+        "prompt": description, "negative_prompt": "", "references": [],
+        "attributes": {"seeded": True, "semantic_changed": True},
+        "valid_from": "", "valid_to": "",
+    }
+    conn.execute(
+        "INSERT INTO short_drama_graph_versions"
+        "(id,entity_id,version,parent_id,status,prompt,negative_prompt,references_json,"
+        "attributes_json,valid_from,valid_to,content_hash,created_by,created_at) "
+        "VALUES (?,?,?,?, 'draft',?,?,?,?,?,?,?, ?,?)",
+        (
+            str(uuid.uuid4()), entity_id, int(latest["version"] if latest else 0) + 1,
+            latest["id"] if latest else None, description, "", _canonical([]),
+            _canonical(content["attributes"]), "", "", _hash(content), actor, now,
+        ),
+    )
+    conn.execute(
+        "UPDATE short_drama_graph_entities SET current_version_id=NULL,updated_at=? "
+        "WHERE id=?", (now, entity_id),
+    )
+
+
 def _seed_entity(conn, project_id, key, asset_type, name, description, actor, now):
     row = conn.execute(
-        "SELECT id,status FROM short_drama_graph_entities WHERE project_id=? AND asset_key=?",
+        "SELECT id,status,name,description FROM short_drama_graph_entities "
+        "WHERE project_id=? AND asset_key=?",
         (project_id, key),
     ).fetchone()
     if row:
         entity_id = str(row["id"])
         if row["status"] != "retired":
+            if (
+                asset_type == "scene"
+                and (_text(row["name"]) != _text(name)
+                     or _text(row["description"]) != _text(description))
+            ):
+                conn.execute(
+                    "UPDATE short_drama_graph_entities SET name=?,description=?,updated_at=? "
+                    "WHERE id=?", (name, description, now, entity_id),
+                )
+                _invalidate_scene_reference_versions(
+                    conn, entity_id, description, actor, now,
+                )
             return entity_id, False, False
         latest = conn.execute(
             "SELECT id,version FROM short_drama_graph_versions WHERE entity_id=? "
@@ -779,21 +823,29 @@ def update_scene(db_factory, owner, actor, body):
         if revision != body["graph_revision"]:
             raise AssetGraphError("graph_revision_conflict", "场景已更新，请刷新后重试", 409)
         row = conn.execute(
-            "SELECT id,asset_key FROM short_drama_graph_entities WHERE project_id=? "
+            "SELECT id,asset_key,name,description FROM short_drama_graph_entities WHERE project_id=? "
             "AND asset_key=? AND asset_type='scene' AND status='active'",
             (project_id, scene_key),
         ).fetchone()
         if not row or not _text(row["asset_key"]).startswith("scene-custom:"):
             raise AssetGraphError("scene_not_editable", "系统整理的主场景不可改名，请新增场景", 422)
+        semantic_changed = (
+            _text(row["name"]) != name or _text(row["description"]) != description
+        )
         conn.execute(
             "UPDATE short_drama_graph_entities SET name=?,description=?,updated_at=? WHERE id=?",
             (name, description, now, row["id"]),
         )
+        if semantic_changed:
+            _invalidate_scene_reference_versions(
+                conn, row["id"], description, actor, now,
+            )
         _replace_scene_shot_bindings(conn, project_id, row["id"],
                                      body.get("shot_keys"), actor, now)
         revision = _bump(conn, project_id, revision, now)
         _audit(conn, project_id, actor, "update_scene", row["id"],
-               {"name": name, "shot_keys": body.get("shot_keys")}, now)
+               {"name": name, "shot_keys": body.get("shot_keys"),
+                "reference_invalidated": semantic_changed}, now)
         conn.commit()
     return scene_workspace(db_factory, owner, project_id)
 

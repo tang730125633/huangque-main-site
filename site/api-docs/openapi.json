@@ -9949,7 +9949,7 @@
           "短剧策划"
         ],
         "summary": "【生产未上线】修改自定义场景及镜头关联",
-        "description": "Free / no points. 仅自定义场景可修改名称、描述和关联镜头；系统基础场景保持只读。",
+        "description": "Free / no points. 仅自定义场景可修改名称、描述和关联镜头；系统基础场景保持只读。名称或描述变化会废弃旧锁定参考，必须重新上传或生成并再次锁定。",
         "parameters": [
           {
             "$ref": "#/components/parameters/XCanvasBoardId"
@@ -12330,7 +12330,7 @@
           "短剧策划"
         ],
         "summary": "【生产未上线】复制、插入、移动或删除镜头",
-        "description": "Free / no points. 仅修改当前未锁定剧本草稿；保留历史版本并使旧合成结果失效。copy 会复制真实台词但生成独立镜头与台词 ID。",
+        "description": "Free / no points. 每次操作追加新的可审计版本并使旧合成结果失效。copy 会复制真实台词但生成独立镜头与台词 ID；目标镜头或删除、插入、移动所改变的任一邻接边界涉及锁定镜头时返回 shot_locked。",
         "parameters": [
           {
             "$ref": "#/components/parameters/IdempotencyKeyRequired"
@@ -12373,7 +12373,7 @@
             "description": "项目、版本或镜头不存在"
           },
           "409": {
-            "description": "幂等、会话 revision、当前版本或脚本锁定冲突"
+            "description": "幂等、会话 revision、当前版本、脚本锁定或单镜头 shot_locked 冲突"
           },
           "422": {
             "description": "动作无效、试图删除最后一个镜头或结果未通过质量校验"
