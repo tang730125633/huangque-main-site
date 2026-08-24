@@ -336,7 +336,7 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
         self.assertIn('HERMES_PREVIEW_AGENTS_SDK_ENABLED:-0', preview_runner)
         self.assertIn('HERMES_PREVIEW_AGENTS_SDK_CANARY_PROJECT_ID', preview_runner)
         self.assertIn("tests/fixtures/ip12_semantic_router_cases.json", files)
-        self.assertIn('"agents", "openai", "pydantic", "httpx", "socksio"', preview_runner)
+        self.assertIn('"agents", "mcp", "openai", "pydantic", "httpx", "socksio"', preview_runner)
         self.assertIn("models_url", preview_runner)
         self.assertIn("configured Hermes preview model is unavailable", preview_runner)
         self.assertIn("/home/ubuntu/hermes-preview-deps", preview_runner)
