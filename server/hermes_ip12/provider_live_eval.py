@@ -240,7 +240,7 @@ def preflight(provider, model, config, budget=None):
             headers={"Authorization": "Bearer " + config["key"]}, timeout=20,
         )
         payload = response.json() if response.content else {}
-    except (requests.RequestException, ValueError) as exc:
+    except (requests.exceptions.RequestException, ValueError) as exc:
         return {"provider": provider, "status": "unavailable", "model": model,
                 "error": type(exc).__name__}
     models = {
@@ -306,13 +306,20 @@ class LiveResponsesTransport:
                     self.base_url + "/responses", headers=self._headers(), json=request,
                     timeout=0.001,
                 )
-            except requests.Timeout:
+            except requests.exceptions.RequestException as exc:
+                timed_out = (
+                    isinstance(exc, requests.exceptions.Timeout)
+                    or "timed out" in str(exc).lower()
+                )
                 self.capture_summary.append({"probe": self._active_probe,
-                                             "http_status": 0, "error_code": "timeout",
+                                             "http_status": 0,
+                                             "error_code": "timeout" if timed_out else type(exc).__name__,
                                              "response_type": "", "model": "",
                                              "request_id_present": False, "event_types": []})
                 return {
-                    "terminal": "timeout", "request_fingerprint": request_fingerprint,
+                    "terminal": "timeout" if timed_out else "network_error",
+                    "error_code": "timeout" if timed_out else type(exc).__name__,
+                    "request_fingerprint": request_fingerprint,
                     "captured_at": int(time.time()),
                 }
             try:
@@ -325,10 +332,23 @@ class LiveResponsesTransport:
 
         self.budget.reserve(request)
         stream = name == "stream"
-        response = requests.post(
-            self.base_url + "/responses", headers=self._headers(), json=request,
-            timeout=60, stream=stream,
-        )
+        try:
+            response = requests.post(
+                self.base_url + "/responses", headers=self._headers(), json=request,
+                timeout=60, stream=stream,
+            )
+        except requests.exceptions.RequestException as exc:
+            self.capture_summary.append({
+                "probe": self._active_probe, "http_status": 0,
+                "error_code": type(exc).__name__, "response_type": "", "model": "",
+                "request_id_present": False, "event_types": [],
+            })
+            return {
+                "status_code": 0, "response": {}, "events": [],
+                "terminal": "network_error", "error_code": type(exc).__name__,
+                "provider_request_id": "", "request_fingerprint": request_fingerprint,
+                "captured_at": int(time.time()),
+            }
         if stream:
             events, final = [], {}
             for line in response.iter_lines(decode_unicode=True):
@@ -359,11 +379,15 @@ class LiveResponsesTransport:
             observation["effective"] = payload["reasoning"]
         if name == "store_false" and payload.get("id"):
             self.budget.reserve({"method": "GET", "response_id": str(payload["id"])})
-            fetched = requests.get(
-                self.base_url + "/responses/" + urllib.parse.quote(str(payload["id"]), safe=""),
-                headers=self._headers(), timeout=20,
-            )
-            observation["retrieval_status"] = fetched.status_code
+            try:
+                fetched = requests.get(
+                    self.base_url + "/responses/" + urllib.parse.quote(str(payload["id"]), safe=""),
+                    headers=self._headers(), timeout=20,
+                )
+                observation["retrieval_status"] = fetched.status_code
+            except requests.exceptions.RequestException as exc:
+                observation["retrieval_status"] = 0
+                observation["retrieval_error"] = type(exc).__name__
         return observation
 
 

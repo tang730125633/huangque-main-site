@@ -6,6 +6,7 @@ import time
 import tempfile
 import subprocess
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -83,6 +84,21 @@ class IP12ProviderCompatTests(unittest.TestCase):
         error_transport._observation(response, "fingerprint", {"error": {"code": "invalid"}})
         error_budget.reserve({"input": "next", "max_output_tokens": 16})
         self.assertEqual(error_budget.usage_missing, 0)
+        timeout_budget = provider_live_eval.Budget(max_requests=2, max_cny=1)
+        timeout_transport = provider_live_eval.LiveResponsesTransport(
+            "openai_official", {"base_url": "https://api.example", "key": "fixture"},
+            timeout_budget,
+        )
+        with mock.patch.object(
+            provider_live_eval.requests, "post",
+            side_effect=provider_live_eval.requests.exceptions.ProxyError(
+                "proxy handshake timed out"
+            ),
+        ):
+            timeout = timeout_transport(
+                "timeout_cancel", {"model": "gpt-5.6-terra", "max_output_tokens": 16}
+            )
+        self.assertEqual(timeout["terminal"], "timeout")
         self.assertGreater(bounded.worst_case_cny, 0)
         self.assertEqual(bounded.public()["cost_status"], "upper_bound_only")
         with tempfile.TemporaryDirectory() as root:
