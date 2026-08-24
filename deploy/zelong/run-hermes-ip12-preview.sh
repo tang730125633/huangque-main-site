@@ -81,7 +81,7 @@ if missing:
 
 modules = [
     "PIL", "playwright", "pypdf", "edge_tts", "faster_whisper",
-    "requests", "yt_dlp", "agents", "openai", "pydantic", "httpx", "socksio",
+    "requests", "yt_dlp", "agents", "mcp", "openai", "pydantic", "httpx", "socksio",
 ]
 missing_modules = [name for name in modules if importlib.util.find_spec(name) is None]
 if missing_modules:
