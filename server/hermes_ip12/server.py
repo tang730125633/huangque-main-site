@@ -54,10 +54,16 @@ try:
 except OSError:
     _release_sha_file = ""
 IP12_RELEASE_SHA = os.environ.get("IP12_RELEASE_SHA") or _release_sha_file or None
+AGENTS_SDK_CANARY_PROJECT_ID = str(
+    os.environ.get("HERMES_AGENTS_SDK_CANARY_PROJECT_ID") or ""
+).strip()
 AGENTS_SDK_CONFORMANCE = cognitive_engine.conformance_gate(
     IP12_RELEASE_SHA, requested=AGENTS_SDK_REQUESTED
 )
-AGENTS_SDK_ENABLED = AGENTS_SDK_REQUESTED and AGENTS_SDK_CONFORMANCE["valid"]
+AGENTS_SDK_ENABLED = bool(
+    AGENTS_SDK_REQUESTED and AGENTS_SDK_CONFORMANCE["valid"]
+    and AGENTS_SDK_CANARY_PROJECT_ID
+)
 COGNITIVE_ENGINE_MODE = (
     "agents_sdk" if COGNITIVE_ENGINE_REQUESTED == "agents_sdk" and AGENTS_SDK_ENABLED
     else "custom"
@@ -3268,6 +3274,7 @@ def healthz():
         "cognitive_engine": COGNITIVE_ENGINE_MODE,
         "cognitive_engine_requested": COGNITIVE_ENGINE_REQUESTED,
         "agents_sdk_enabled": AGENTS_SDK_ENABLED,
+        "agents_sdk_canary_restricted": bool(AGENTS_SDK_CANARY_PROJECT_ID),
         "agents_sdk_conformance": AGENTS_SDK_CONFORMANCE,
         "cognitive_metrics": cognitive_engine.metrics(),
         "project_memory_schema": project_memory.SCHEMA,
@@ -6336,11 +6343,14 @@ def _custom_semantic_master_decision(memory, user_message):
 
 
 def _semantic_master_decision(memory, user_message):
+    mode = cognitive_engine.canary_mode(
+        COGNITIVE_ENGINE_MODE, memory, AGENTS_SDK_CANARY_PROJECT_ID,
+    )
     return cognitive_engine.decide(
         memory,
         user_message,
         _custom_semantic_master_decision,
-        mode=COGNITIVE_ENGINE_MODE,
+        mode=mode,
         sdk_enabled=AGENTS_SDK_ENABLED,
         sdk_decider=cognitive_engine.agents_sdk_decider,
         agent_run=memory.get("active_agent_run") if isinstance(memory, dict) else None,

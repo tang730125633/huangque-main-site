@@ -75,6 +75,21 @@ def memory():
 
 
 class CognitiveEngineTests(unittest.TestCase):
+    def test_sdk_canary_is_confined_to_one_project(self):
+        self.assertEqual(
+            cognitive_engine.canary_mode("agents_sdk", {"project_id": "target"}, "target"),
+            "agents_sdk",
+        )
+        self.assertEqual(
+            cognitive_engine.canary_mode("agents_sdk", {"project_id": "other"}, "target"),
+            "custom",
+        )
+        self.assertEqual(
+            cognitive_engine.canary_mode("agents_sdk", {"project_id": "target"}, ""),
+            "custom",
+        )
+        self.assertEqual(cognitive_engine.canary_mode("custom", {}, "target"), "custom")
+
     def test_safe_context_is_minimal_and_private_business_fields_stay_out(self):
         context = cognitive_engine.safe_context(memory(), "制作口播视频")
         rendered = json.dumps(context, ensure_ascii=False)
@@ -185,7 +200,7 @@ class CognitiveEngineTests(unittest.TestCase):
         context = cognitive_engine.safe_context(memory(), "你好")
         with patch.dict(os.environ, {
             "HERMES_AGENTS_SDK_PROVIDER": "zelong_proxy",
-            "HERMES_AGENTS_SDK_MODEL": "fixture-model",
+            "HERMES_AGENTS_SDK_MODEL": "wrong-model",
         }):
             with self.assertRaisesRegex(RuntimeError, "provider_unsupported"):
                 cognitive_engine.agents_sdk_decider(context, "你好", 1)
@@ -215,6 +230,15 @@ class CognitiveEngineTests(unittest.TestCase):
                 "tool_hallucinations": 0, "reference_hallucinations": 0,
                 "chat_tool_misfires": 0,
             },
+            "custom_eval": {
+                "passed": True, "schema_rate": 1.0, "safety_rate": 1.0,
+                "route_rate": 0.95, "tool_hallucinations": 0,
+                "reference_hallucinations": 0, "chat_tool_misfires": 0,
+            },
+            "budget": {
+                "requests": 100, "max_requests": 120, "estimated_cny": 1.0,
+                "worst_case_cny": 9.0, "usage_missing": 0, "max_cny": 10.0,
+            },
             "provider_compat": {
                 "schema": "ip12.provider-compat-report/v1", "decision": "PASS",
                 "passed": True, "evidence_source": "live_capture",
@@ -233,11 +257,27 @@ class CognitiveEngineTests(unittest.TestCase):
                 "HERMES_AGENTS_SDK_CONFORMANCE_PATH": str(path),
                 "HERMES_AGENTS_SDK_CONFORMANCE_SHA256": __import__("hashlib").sha256(encoded).hexdigest(),
             }, clear=False):
-                allowed = cognitive_engine.conformance_gate(release)
+                def check(payload):
+                    current = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()
+                    path.write_bytes(current)
+                    os.environ["HERMES_AGENTS_SDK_CONFORMANCE_SHA256"] = (
+                        __import__("hashlib").sha256(current).hexdigest()
+                    )
+                    return cognitive_engine.conformance_gate(release)
+
+                allowed = check(report)
                 self.assertTrue(allowed["valid"], allowed)
+                report["custom_eval"]["passed"] = False
+                self.assertFalse(check(report)["valid"])
+                report["custom_eval"]["passed"] = True
+                report["budget"]["requests"] = 121
+                self.assertFalse(check(report)["valid"])
+                report["budget"]["requests"] = 100
+                report["budget"]["worst_case_cny"] = 10.01
+                self.assertFalse(check(report)["valid"])
+                report["budget"]["worst_case_cny"] = 9.0
                 report["evidence_source"] = "fixture"
-                path.write_text(json.dumps(report, ensure_ascii=False, sort_keys=True))
-                rejected = cognitive_engine.conformance_gate(release)
+                rejected = check(report)
                 self.assertFalse(rejected["valid"])
 
     def test_custom_keeps_valid_references_outside_the_sdk_safe_window(self):
@@ -263,16 +303,21 @@ class CognitiveEngineTests(unittest.TestCase):
         context = cognitive_engine.safe_context(memory(), "你好")
         with patch.dict(os.environ, {
             "HERMES_AGENTS_SDK_OPENAI_API_KEY": "dummy",
-            "HERMES_AGENTS_SDK_MODEL": "fixture-model",
+            "HERMES_AGENTS_SDK_MODEL": "wrong-model",
         }), patch.object(
             Runner, "run", new=AsyncMock(return_value=SimpleNamespace(final_output=expected))
         ) as run:
-            got = cognitive_engine.agents_sdk_decider(context, "你好", 1)
+            got = cognitive_engine.agents_sdk_decider(
+                context, "你好", 1, max_output_tokens=700,
+                provider_name="openai", model_name="fixture-model",
+            )
         master = run.await_args.args[0]
         self.assertEqual(got, expected)
         self.assertEqual(master.name, "ip12_master_agent")
+        self.assertEqual(master.model.model, "fixture-model")
         self.assertEqual([tool.name for tool in master.tools], ["talking_head_video_agent"])
         self.assertIs(master.model_settings.store, False)
+        self.assertEqual(master.model_settings.max_tokens, 700)
         self.assertTrue(run.await_args.kwargs["run_config"].tracing_disabled)
         self.assertFalse(run.await_args.kwargs["run_config"].trace_include_sensitive_data)
         self.assertNotIn("session", run.await_args.kwargs)

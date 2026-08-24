@@ -46,6 +46,25 @@ Huangque production tools. T2 passing does not authorize T3 or a Zelong SDK
 Canary; keep `HERMES_AGENTS_SDK_ENABLED=0` until those gates are separately
 approved and verified.
 
+After explicit approval, `cognitive_live_eval.py` is the only T3/T4 entrypoint.
+It re-runs the correlated T2 contract and evaluates custom plus Agents SDK on
+the same corpus under one durable request/CNY ledger. A PASS artifact is mode
+`0600`, release/corpus/provider/model-bound, and expires within seven days.
+
+```bash
+python3 cognitive_live_eval.py --mode t3 \
+  --release-sha "$RELEASE_SHA" --model gpt-5.6-terra \
+  --max-requests 120 --max-cny 10 \
+  --budget-ledger /home/ubuntu/hermes-preview-data/terra-t3-budget.json \
+  --output /home/ubuntu/hermes-preview-data/terra-conformance.json
+```
+
+T4 enables the SDK only for the configured canary Project, runs one read-only
+decision without saving the Project, then restores `custom/0`. Any invalid or
+expired artifact, missing usage, budget exhaustion, prepare/write tool, or
+Project byte change is HOLD. Do not use this runner to confirm a quote or poll
+a production Job.
+
 ## One-time artifact ownership migration
 
 Before the first deployment that enables owner-isolated artifact storage, map

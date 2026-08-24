@@ -22,8 +22,14 @@ export HERMES_ENABLE_INTERNAL_TOOLS=1
 export HERMES_MASTER_AGENT_MODE="${HERMES_PREVIEW_MASTER_AGENT_MODE:-live}"
 export HERMES_AGENT_RUNTIME_WORKER_ENABLED=1
 export HERMES_AGENT_RUNTIME_WORKER_INTERVAL=3
-export HERMES_COGNITIVE_ENGINE=custom
-export HERMES_AGENTS_SDK_ENABLED=0
+export HERMES_COGNITIVE_ENGINE="${HERMES_PREVIEW_COGNITIVE_ENGINE:-custom}"
+export HERMES_AGENTS_SDK_ENABLED="${HERMES_PREVIEW_AGENTS_SDK_ENABLED:-0}"
+export HERMES_AGENTS_SDK_PROVIDER="${HERMES_PREVIEW_AGENTS_SDK_PROVIDER:-openai}"
+export HERMES_AGENTS_SDK_MODEL="${HERMES_PREVIEW_AGENTS_SDK_MODEL:-$HERMES_MODEL}"
+export HERMES_AGENTS_SDK_OPENAI_API_KEY="${HERMES_PREVIEW_AGENTS_SDK_OPENAI_API_KEY:-$OPENAI_API_KEY}"
+export HERMES_AGENTS_SDK_CONFORMANCE_PATH="${HERMES_PREVIEW_AGENTS_SDK_CONFORMANCE_PATH:-}"
+export HERMES_AGENTS_SDK_CONFORMANCE_SHA256="${HERMES_PREVIEW_AGENTS_SDK_CONFORMANCE_SHA256:-}"
+export HERMES_AGENTS_SDK_CANARY_PROJECT_ID="${HERMES_PREVIEW_AGENTS_SDK_CANARY_PROJECT_ID:-}"
 export PYTHONPATH="/home/ubuntu/hermes-preview-deps${PYTHONPATH:+:$PYTHONPATH}"
 export PATH="/home/ubuntu/hermes-preview/bin:$PATH"
 PYTHON=/usr/bin/python3
@@ -75,7 +81,7 @@ if missing:
 
 modules = [
     "PIL", "playwright", "pypdf", "edge_tts", "faster_whisper",
-    "requests", "yt_dlp",
+    "requests", "yt_dlp", "agents", "openai", "pydantic", "httpx", "socksio",
 ]
 missing_modules = [name for name in modules if importlib.util.find_spec(name) is None]
 if missing_modules:
