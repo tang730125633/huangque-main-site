@@ -20,7 +20,7 @@ try:
 except ModuleNotFoundError:
     from providers.sound_effects import capability as provider_capability
 
-from . import jobs_store
+from . import jobs_store, short_drama_asset_graph
 
 
 ANALYZER_VERSION = "short-drama-sound-design-rules-v1"
@@ -177,12 +177,7 @@ def _assembly_revision(conn, project_id):
 
 
 def _shot_source(conn, project_id):
-    rows = conn.execute(
-        "SELECT id,shot_key,duration,scene_description,image_prompt,video_prompt,"
-        "camera_description,"
-        "character_keys_json FROM short_drama_shots WHERE project_id=? "
-        "ORDER BY sort_order,id", (project_id,),
-    ).fetchall()
+    rows = short_drama_asset_graph.current_project_shots(conn, project_id)
     return [{
         "id": str(item["id"]),
         "shot_key": str(item["shot_key"]),

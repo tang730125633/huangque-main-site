@@ -1,9 +1,12 @@
+import base64
 import json
 import sqlite3
 import hashlib
 import sys
 import tempfile
+import types
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest import mock
 
@@ -12,7 +15,12 @@ SERVER_DIR = str(Path(__file__).resolve().parents[1] / "server")
 if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
 
-from content_domains import short_drama, short_drama_conversation, short_drama_storyboard
+from content_domains import (
+    short_drama,
+    short_drama_asset_graph,
+    short_drama_conversation,
+    short_drama_storyboard,
+)
 
 
 class Handler:
@@ -540,6 +548,48 @@ class ShortDramaConversationTests(unittest.TestCase):
             },
             key_prefix + "-confirm",
         )
+
+    def set_and_lock_scene_reference(self, workspace, scene_key, prompt):
+        raw = b"\x89PNG\r\n\x1a\n" + prompt.encode("utf-8")
+        data_url = "data:image/png;base64," + base64.b64encode(raw).decode("ascii")
+        output = Path(self.tmp.name) / "output"
+        fake_image = types.SimpleNamespace(OUT_DIR=output)
+        fake_uploads = types.SimpleNamespace(
+            MAX_BYTES=10 * 1024 * 1024,
+            MIME_EXTENSIONS={"image/png": ".png"},
+            detect_mime=lambda value: "image/png" if value.startswith(b"\x89PNG") else "",
+        )
+        package = short_drama_asset_graph.__package__
+        with mock.patch.dict(sys.modules, {
+            package + ".image": fake_image,
+            package + ".cli_uploads": fake_uploads,
+        }), mock.patch.object(
+            sys.modules[package], "image", fake_image, create=True,
+        ), mock.patch.object(
+            sys.modules[package], "cli_uploads", fake_uploads, create=True,
+        ):
+            created = short_drama_asset_graph.set_scene_reference(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"],
+                    "graph_revision": workspace["graph_revision"],
+                    "scene_key": scene_key, "source": "upload",
+                    "image_data": data_url, "filename": "scene.png", "prompt": prompt,
+                },
+            )
+        return short_drama_asset_graph.lock_scene_reference(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "graph_revision": created["graph_revision"],
+                "scene_key": scene_key,
+            },
+        )
+
+    def locked_scene_reference(self, shot_key):
+        with closing(self.db()) as conn:
+            conn.row_factory = sqlite3.Row
+            return short_drama_asset_graph.locked_scene_reference(
+                conn, self.project["id"], shot_key,
+            )
 
     def test_workspace_is_free_and_starts_without_script(self):
         result = short_drama_conversation.workspace(
@@ -2148,6 +2198,165 @@ class ShortDramaConversationTests(unittest.TestCase):
                 regenerated["current_script"]["id"],
             )
             current = regenerated
+
+    def test_regenerate_and_restore_invalidate_locked_scene_reference_atomically(self):
+        confirmed = self.confirm_direction(self.project["id"], 1, "scene-invalidation")
+        generated = short_drama_conversation.generate_script(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "conversation_revision": confirmed["conversation"]["revision"],
+            }, "scene-invalidation-generate",
+        )
+        original = generated["current_script"]
+        shot_key = original["script"]["shots"][0]["shot_key"]
+        edited = short_drama_conversation.update_shot(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "conversation_revision": generated["conversation"]["revision"],
+                "version_id": original["id"], "shot_key": shot_key,
+                "changes": {"scene": "old rainy street"},
+            }, "scene-invalidation-edit",
+        )
+        short_drama_asset_graph.sync_foundation(
+            self.db, "alice", "alice", self.project["id"],
+        )
+        scenes = short_drama_asset_graph.scene_workspace(
+            self.db, "alice", self.project["id"],
+        )
+        old_scene = next(
+            scene for scene in scenes["scenes"]
+            if any(shot["shot_key"] == shot_key for shot in scene["shots"])
+        )
+        self.set_and_lock_scene_reference(scenes, old_scene["scene_key"], "old reference")
+        self.assertIsNotNone(self.locked_scene_reference(shot_key))
+
+        shot_id = next(
+            shot["id"] for scene in scenes["scenes"] for shot in scene["shots"]
+            if shot["shot_key"] == shot_key
+        )
+        with closing(self.db()) as conn:
+            conn.execute(
+                "INSERT INTO short_drama_assets "
+                "(id,project_id,shot_id,type,current_version,locked,created_at,updated_at) "
+                "VALUES ('stale-still',?,?, 'still',1,1,1,1)",
+                (self.project["id"], shot_id),
+            )
+            conn.execute(
+                "INSERT INTO short_drama_asset_versions "
+                "(id,asset_id,version,job_id,url,prompt,ratio,status,created_at) "
+                "VALUES ('stale-still-v1','stale-still',1,9100,"
+                "'https://example.test/stale.png','old still','9:16','done',1)"
+            )
+            conn.commit()
+
+        regenerated = short_drama_conversation.regenerate_shot(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "conversation_revision": edited["conversation"]["revision"],
+                "version_id": edited["current_script"]["id"], "shot_key": shot_key,
+            }, "scene-invalidation-regenerate",
+        )
+        self.assertIsNone(self.locked_scene_reference(shot_key))
+        with closing(self.db()) as conn:
+            self.assertEqual(
+                0,
+                conn.execute(
+                    "SELECT locked FROM short_drama_assets WHERE id='stale-still'"
+                ).fetchone()[0],
+            )
+
+        short_drama_asset_graph.sync_foundation(
+            self.db, "alice", "alice", self.project["id"],
+        )
+        scenes = short_drama_asset_graph.scene_workspace(
+            self.db, "alice", self.project["id"],
+        )
+        regenerated_scene = next(
+            scene for scene in scenes["scenes"]
+            if any(shot["shot_key"] == shot_key for shot in scene["shots"])
+        )
+        self.set_and_lock_scene_reference(
+            scenes, regenerated_scene["scene_key"], "regenerated reference",
+        )
+        self.assertIsNotNone(self.locked_scene_reference(shot_key))
+
+        restored = short_drama_conversation.restore_version(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "conversation_revision": regenerated["conversation"]["revision"],
+                "version_id": edited["current_script"]["id"],
+            }, "scene-invalidation-restore",
+        )
+        self.assertIsNone(self.locked_scene_reference(shot_key))
+        short_drama_asset_graph.sync_foundation(
+            self.db, "alice", "alice", self.project["id"],
+        )
+        scenes = short_drama_asset_graph.scene_workspace(
+            self.db, "alice", self.project["id"],
+        )
+        restored_scene = next(
+            scene for scene in scenes["scenes"]
+            if any(shot["shot_key"] == shot_key for shot in scene["shots"])
+        )
+        self.set_and_lock_scene_reference(
+            scenes, restored_scene["scene_key"], "restored reference",
+        )
+        self.assertIsNotNone(self.locked_scene_reference(shot_key))
+
+        short_drama_conversation.generate_script(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "conversation_revision": restored["conversation"]["revision"],
+                "instruction": "regenerate the complete script with a new scene plan",
+            }, "scene-invalidation-whole-script",
+        )
+        self.assertIsNone(self.locked_scene_reference(shot_key))
+
+    def test_delete_restore_without_intermediate_sync_does_not_revive_scene_reference(self):
+        confirmed = self.confirm_direction(self.project["id"], 1, "delete-restore-scene")
+        generated = short_drama_conversation.generate_script(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "conversation_revision": confirmed["conversation"]["revision"],
+            }, "delete-restore-scene-generate",
+        )
+        original = generated["current_script"]
+        shot_key = original["script"]["shots"][0]["shot_key"]
+        short_drama_asset_graph.sync_foundation(
+            self.db, "alice", "alice", self.project["id"],
+        )
+        scenes = short_drama_asset_graph.scene_workspace(
+            self.db, "alice", self.project["id"],
+        )
+        scene = next(
+            item for item in scenes["scenes"]
+            if any(shot["shot_key"] == shot_key for shot in item["shots"])
+        )
+        self.set_and_lock_scene_reference(scenes, scene["scene_key"], "deleted reference")
+        self.assertIsNotNone(self.locked_scene_reference(shot_key))
+
+        deleted = short_drama_conversation.change_shot_structure(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "conversation_revision": generated["conversation"]["revision"],
+                "version_id": original["id"], "shot_key": shot_key,
+                "action": "delete", "instruction": "remove this shot",
+            }, "delete-restore-scene-delete",
+        )
+        self.assertIsNone(self.locked_scene_reference(shot_key))
+        short_drama_conversation.restore_version(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "conversation_revision": deleted["conversation"]["revision"],
+                "version_id": original["id"],
+            }, "delete-restore-scene-restore",
+        )
+        self.assertIsNone(self.locked_scene_reference(shot_key))
+
+        short_drama_asset_graph.sync_foundation(
+            self.db, "alice", "alice", self.project["id"],
+        )
+        self.assertIsNone(self.locked_scene_reference(shot_key))
 
     def test_idempotency_and_revision_conflicts_are_explicit(self):
         body = {

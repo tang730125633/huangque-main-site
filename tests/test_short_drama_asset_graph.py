@@ -501,6 +501,54 @@ class ShortDramaAssetGraphTests(unittest.TestCase):
         )
         self.assertIn("shot_01", [shot["shot_key"] for shot in selected["shots"]])
 
+    def test_current_user_shot_can_bind_and_build_immutable_snapshot(self):
+        with closing(self.db()) as conn:
+            conn.execute(
+                "INSERT INTO short_drama_conversations(project_id,current_version_id) "
+                "VALUES ('p1','v-user-shot')"
+            )
+            conn.execute(
+                "INSERT INTO short_drama_script_snapshots(id,project_id,script_json) "
+                "VALUES ('v-user-shot','p1',?)",
+                (json.dumps({"shots": [{
+                    "shot_key": "shot_user_copy", "sort_order": 1,
+                    "scene": "custom user scene", "camera": "close-up",
+                    "visual": "a copied user shot", "character_keys": [],
+                    "provider_prompt": "render the copied user shot",
+                }]}),),
+            )
+            conn.commit()
+
+        graph.sync_foundation(self.db, "alice", "alice", "p1")
+        scenes = graph.scene_workspace(self.db, "alice", "p1")
+        user_shot = scenes["scenes"][0]["shots"][0]
+        workspace = graph.workspace(self.db, "alice", "p1")
+        revision = self._lock_seeded(workspace)
+        prop = graph.create_asset(self.db, "alice", "alice", {
+            "project_id": "p1", "graph_revision": revision,
+            "asset_key": "prop:user-note", "asset_type": "prop", "name": "User note",
+        })
+        prop_version = next(
+            entity for entity in graph.workspace(self.db, "alice", "p1")["entities"]
+            if entity["id"] == prop["id"]
+        )["versions"][0]
+        locked = graph.lock_version(self.db, "alice", "alice", {
+            "project_id": "p1", "graph_revision": prop["graph_revision"],
+            "version_id": prop_version["id"],
+        })
+        bound = graph.bind_asset(self.db, "alice", "alice", {
+            "project_id": "p1", "graph_revision": locked["graph_revision"],
+            "shot_id": user_shot["id"], "relation_type": "uses",
+            "entity_id": prop["id"],
+        })
+        snapshot = graph.build_snapshot(self.db, "alice", "alice", {
+            "project_id": "p1", "graph_revision": bound["graph_revision"],
+            "shot_id": user_shot["id"],
+        })
+        self.assertEqual("ready", snapshot["status"])
+        self.assertEqual("shot_user_copy", snapshot["package"]["shot_key"])
+        self.assertEqual("custom user scene", snapshot["package"]["shot"]["scene_description"])
+
     def test_deleted_script_shot_cleans_bindings_and_readds_as_fresh_draft(self):
         original_script = {
             "shots": [
@@ -522,6 +570,10 @@ class ShortDramaAssetGraphTests(unittest.TestCase):
             conn.commit()
         graph.sync_foundation(self.db, "alice", "alice", "p1")
         before = graph.scene_workspace(self.db, "alice", "p1")
+        shot_002_id = next(
+            shot["id"] for scene in before["scenes"] for shot in scene["shots"]
+            if shot["shot_key"] == "shot_002"
+        )
         authoritative_scene = next(
             scene for scene in before["scenes"]
             if any(shot["shot_key"] == "shot_001" for shot in scene["shots"])
@@ -555,6 +607,12 @@ class ShortDramaAssetGraphTests(unittest.TestCase):
         )
         self.assertGreaterEqual(cleaned["removed_relations"], 1)
         self.assertEqual(1, cleaned["retired_entities"])
+        with self.assertRaises(graph.AssetGraphError) as deleted:
+            graph.build_snapshot(self.db, "alice", "alice", {
+                "project_id": "p1", "graph_revision": cleaned["graph_revision"],
+                "shot_id": shot_002_id,
+            })
+        self.assertEqual("shot_not_found", deleted.exception.code)
         reloaded = graph.scene_workspace(self.db, "alice", "p1")
         self.assertFalse(any(
             shot["shot_key"] == "shot_002"
@@ -572,7 +630,7 @@ class ShortDramaAssetGraphTests(unittest.TestCase):
         ))
         retired = next(
             entity for entity in raw["entities"]
-            if entity["asset_key"] == "scene:script:shot_002"
+            if entity["asset_key"] == "scene:" + shot_002_id
         )
         self.assertEqual("retired", retired["status"])
         self.assertTrue(all(version["status"] == "retired" for version in retired["versions"]))
@@ -605,14 +663,54 @@ class ShortDramaAssetGraphTests(unittest.TestCase):
         raw_restored = graph.workspace(self.db, "alice", "p1")
         reactivated = next(
             entity for entity in raw_restored["entities"]
-            if entity["asset_key"] == "scene:script:shot_002"
+            if entity["asset_key"] == "scene:" + shot_002_id
         )
+        restored_shot_002_id = next(
+            shot["id"] for scene in restored_workspace["scenes"] for shot in scene["shots"]
+            if shot["shot_key"] == "shot_002"
+        )
+        self.assertEqual(shot_002_id, restored_shot_002_id)
         self.assertEqual("active", reactivated["status"])
         self.assertEqual("draft", reactivated["versions"][0]["status"])
         self.assertTrue(reactivated["versions"][0]["attributes"]["reactivated"])
         self.assertTrue(all(
             version["status"] == "retired" for version in reactivated["versions"][1:]
         ))
+
+    def test_script_deletion_unbinds_but_does_not_retire_a_custom_scene(self):
+        graph.sync_foundation(self.db, "alice", "alice", "p1")
+        scenes = graph.scene_workspace(self.db, "alice", "p1")
+        created = graph.create_scene(self.db, "alice", "alice", {
+            "project_id": "p1", "graph_revision": scenes["graph_revision"],
+            "name": "Saved custom scene", "description": "A reusable custom location",
+            "shot_keys": ["shot_001"],
+        })
+        custom = next(item for item in created["scenes"] if item["custom"])
+        locked = self._set_and_lock_scene_reference(
+            created, custom["scene_key"], "confirmed custom reference",
+        )
+        locked_custom = next(
+            item for item in locked["scenes"]
+            if item["scene_key"] == custom["scene_key"]
+        )
+
+        with closing(self.db()) as conn:
+            conn.row_factory = sqlite3.Row
+            graph.invalidate_script_mutation(
+                conn, "p1", "alice",
+                {"shots": [{"shot_key": "shot_001", "scene": "street"}]},
+                {"shots": []},
+            )
+            conn.commit()
+
+        remaining = graph.scene_workspace(self.db, "alice", "p1")
+        retained = next(
+            item for item in remaining["scenes"]
+            if item["scene_key"] == custom["scene_key"]
+        )
+        self.assertEqual([], retained["shots"])
+        self.assertTrue(retained["locked"])
+        self.assertEqual(locked_custom["preview"]["file"], retained["preview"]["file"])
 
     def test_custom_scene_can_be_created_rebound_updated_and_deleted(self):
         graph.sync_foundation(self.db, "alice", "alice", "p1")

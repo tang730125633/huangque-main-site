@@ -13,7 +13,7 @@ import time
 import uuid
 from contextlib import closing
 
-from . import short_drama_storyboard, short_drama_duration
+from . import short_drama_asset_graph, short_drama_storyboard, short_drama_duration
 
 
 STATES = {
@@ -2363,6 +2363,10 @@ def _create_version(
         "revision=revision+1,updated_at=? WHERE project_id=? AND revision=?",
         (version_id, now, project["id"], int(current["revision"])),
     )
+    parent = _snapshot_by_id(conn, project["id"], parent_id) if parent_id else None
+    short_drama_asset_graph.invalidate_script_mutation(
+        conn, project["id"], actor, parent["script"] if parent else {}, script,
+    )
     return version_id
 
 
@@ -2785,6 +2789,9 @@ def _insert_edited_version(conn, project, actor, current, source, script, instru
         "revision=revision+1,updated_at=? WHERE project_id=? AND revision=?",
         (version_id, now, project["id"], int(current["revision"])),
     )
+    short_drama_asset_graph.invalidate_script_mutation(
+        conn, project["id"], actor, source["script"], script,
+    )
     return version_id
 
 
@@ -3056,6 +3063,14 @@ def restore_version(db_factory, owner_username, actor_username, body, idempotenc
             "UPDATE short_drama_conversations SET state='script_review',current_version_id=?,"
             "revision=revision+1,updated_at=? WHERE project_id=? AND revision=?",
             (version_id, now, project_id, revision),
+        )
+        current_source = _snapshot_by_id(conn, project_id, current["current_version_id"])
+        short_drama_asset_graph.invalidate_script_mutation(
+            conn,
+            project_id,
+            actor_username,
+            current_source["script"] if current_source else {},
+            source["script"],
         )
         response = _workspace(conn, project, actor_username)
         response["replayed"] = False

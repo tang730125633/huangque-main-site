@@ -8,6 +8,8 @@ import time
 import uuid
 from contextlib import closing
 
+from . import short_drama_asset_graph
+
 
 VOICE_STAGES = {
     "voice_review", "video_review", "assembly_review", "completed",
@@ -982,11 +984,15 @@ def ensure_voice_workspace(conn, project_id, allowed_stages=None):
     ).fetchone()
     if existing:
         return
-    script = conn.execute(
+    current_dialogue = short_drama_asset_graph.current_project_dialogue_lines(
+        conn, project_id,
+    )
+    script = ({"dialogue_lines_json": json.dumps(current_dialogue)}
+              if current_dialogue is not None else conn.execute(
         "SELECT dialogue_lines_json FROM short_drama_scripts "
         "WHERE project_id=? ORDER BY version DESC LIMIT 1",
         (project_id,),
-    ).fetchone()
+    ).fetchone())
     if not script:
         raise ValueError("短剧项目缺少已确认剧本")
     dialogue_items = _json_value(script["dialogue_lines_json"], [])
@@ -1000,11 +1006,9 @@ def ensure_voice_workspace(conn, project_id, allowed_stages=None):
             (project_id,),
         )
     }
-    shots = conn.execute(
-        "SELECT * FROM short_drama_shots WHERE project_id=? "
-        "ORDER BY sort_order,id",
-        (project_id,),
-    ).fetchall()
+    shots = short_drama_asset_graph.current_project_shots(
+        conn, project_id, materialize=True,
+    )
     if not shots:
         raise ValueError("短剧项目缺少已确认分镜")
     now = int(time.time())
@@ -1638,12 +1642,8 @@ def build_voice_snapshot(conn, project):
         if line and line["job"] is None:
             line["job"] = dict(row)
     shots = []
-    for shot in conn.execute(
-        "SELECT id,shot_key,sort_order,duration,character_keys_json "
-        "FROM short_drama_shots "
-        "WHERE project_id=? ORDER BY sort_order,id",
-        (project["id"],),
-    ):
+    for shot in short_drama_asset_graph.current_project_shots(
+            conn, project["id"]):
         shot_lines = lines.get(shot["id"], [])
         state = voice_shots[shot["id"]]
         line_statuses = [

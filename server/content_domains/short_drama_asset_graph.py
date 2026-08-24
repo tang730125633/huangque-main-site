@@ -224,6 +224,167 @@ def invalidate_shot_content(conn, project_id, actor, changed_shot_ids, removed_s
     return revision
 
 
+def _script_shot_map(script):
+    result = {}
+    for index, item in enumerate((script or {}).get("shots") or []):
+        if not isinstance(item, dict):
+            continue
+        shot_key = _text(item.get("shot_key"), 160) or "shot_%02d" % (index + 1)
+        result[shot_key] = {
+            "scene": _text(
+                item.get("scene_description") or item.get("scene") or item.get("visual"),
+                4000,
+            ),
+            "provider": {
+                "sort_order": int(item.get("sort_order") or index + 1),
+                "duration": int(item.get("duration_seconds") or item.get("duration") or 5),
+                "camera": _text(item.get("camera_description") or item.get("camera"), 4000),
+                "visual": _text(item.get("visual"), 4000),
+                "image_prompt": _text(item.get("image_prompt"), 8000),
+                "video_prompt": _text(item.get("video_prompt"), 8000),
+                "provider_prompt": _text(item.get("provider_prompt"), 8000),
+                "character_keys": item.get("character_keys") or [],
+                "dialogue_line_ids": item.get("dialogue_line_ids") or [],
+            },
+        }
+    return result
+
+
+def invalidate_script_mutation(conn, project_id, actor, before_script, after_script):
+    """Atomically retire stale scene references and snapshots after script edits."""
+    conn.row_factory = sqlite3.Row
+    tables = {
+        row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    before = _script_shot_map(before_script)
+    after = _script_shot_map(after_script)
+    changed = {
+        key for key in before.keys() & after.keys()
+        if before[key] != after[key]
+    }
+    removed = set(before) - set(after)
+    added = set(after) - set(before)
+    if not (changed or removed or added):
+        if "short_drama_graph_state" not in tables:
+            return None
+        state = conn.execute(
+            "SELECT revision FROM short_drama_graph_state WHERE project_id=?", (project_id,),
+        ).fetchone()
+        return int(state[0]) if state else None
+    now = int(time.time())
+    invalidated_still_shot_ids = []
+    if "short_drama_assets" in tables:
+        legacy_by_key = _legacy_shots_by_key(conn, project_id)
+        invalidated_still_shot_ids = sorted({
+            str(legacy_by_key[key]["id"])
+            for key in changed | removed if key in legacy_by_key
+        })
+        if invalidated_still_shot_ids:
+            placeholders = ",".join("?" for _ in invalidated_still_shot_ids)
+            conn.execute(
+                "UPDATE short_drama_assets SET locked=0,updated_at=? "
+                "WHERE project_id=? AND shot_id IN (%s)" % placeholders,
+                (now, project_id, *invalidated_still_shot_ids),
+            )
+    if "short_drama_graph_state" not in tables:
+        return None
+    state = conn.execute(
+        "SELECT revision FROM short_drama_graph_state WHERE project_id=?", (project_id,),
+    ).fetchone()
+    if not state:
+        return None
+    rows = conn.execute(
+        "SELECT relation.id,relation.source_id,relation.entity_id,relation.relation_type,"
+        "relation.metadata_json,shot.shot_key,entity.asset_key,entity.description "
+        "FROM short_drama_graph_relations relation "
+        "JOIN short_drama_graph_entities entity ON entity.id=relation.entity_id "
+        "LEFT JOIN short_drama_shots shot ON shot.id=relation.source_id "
+        "AND shot.project_id=relation.project_id WHERE relation.project_id=? "
+        "AND relation.source_scope='shot'", (project_id,),
+    ).fetchall()
+    relations_by_key = {}
+    for row in rows:
+        metadata = _json(row["metadata_json"], {})
+        shot_key = _text(metadata.get("shot_key"), 160) or _text(row["shot_key"], 160)
+        if shot_key:
+            relations_by_key.setdefault(shot_key, []).append(row)
+    invalidated_entities = set()
+    for shot_key in sorted(changed):
+        if before[shot_key]["scene"] == after[shot_key]["scene"]:
+            continue
+        for relation in relations_by_key.get(shot_key, []):
+            if relation["relation_type"] != "located_in":
+                continue
+            entity_id = str(relation["entity_id"])
+            if entity_id in invalidated_entities:
+                continue
+            custom = _text(relation["asset_key"], 240).startswith("scene-custom:")
+            description = (
+                _text(relation["description"], 4000)
+                if custom else after[shot_key]["scene"]
+            )
+            if not custom:
+                conn.execute(
+                    "UPDATE short_drama_graph_entities SET description=?,updated_at=? "
+                    "WHERE id=?", (description, now, entity_id),
+                )
+            _invalidate_scene_reference_versions(conn, entity_id, description, actor, now)
+            invalidated_entities.add(entity_id)
+    removed_scene_entities = {
+        str(row["entity_id"])
+        for key in removed for row in relations_by_key.get(key, [])
+        if (
+            row["relation_type"] == "located_in"
+            and not _text(row["asset_key"], 240).startswith("scene-custom:")
+        )
+    }
+    removed_relation_ids = [
+        str(row["id"]) for key in removed for row in relations_by_key.get(key, [])
+    ]
+    if removed_relation_ids:
+        conn.executemany(
+            "DELETE FROM short_drama_graph_relations WHERE id=?",
+            [(relation_id,) for relation_id in removed_relation_ids],
+        )
+    retired_entities = set()
+    for entity_id in sorted(removed_scene_entities):
+        if conn.execute(
+            "SELECT 1 FROM short_drama_graph_relations WHERE project_id=? "
+            "AND entity_id=? AND source_scope='shot' AND relation_type='located_in' LIMIT 1",
+            (project_id, entity_id),
+        ).fetchone():
+            continue
+        conn.execute(
+            "UPDATE short_drama_graph_versions SET status='retired' "
+            "WHERE entity_id=? AND status<>'retired'", (entity_id,),
+        )
+        conn.execute(
+            "UPDATE short_drama_graph_entities SET status='retired',"
+            "current_version_id=NULL,updated_at=? WHERE id=?",
+            (now, entity_id),
+        )
+        retired_entities.add(entity_id)
+
+    revision = int(state[0]) + 1
+    conn.execute(
+        "UPDATE short_drama_graph_state SET revision=?,updated_at=? WHERE project_id=?",
+        (revision, now, project_id),
+    )
+    _audit(conn, project_id, actor, "conversation_script_changed", project_id, {
+        "changed_shot_keys": sorted(changed),
+        "removed_shot_keys": sorted(removed),
+        "added_shot_keys": sorted(added),
+        "invalidated_scene_entity_ids": sorted(invalidated_entities),
+        "retired_scene_entity_ids": sorted(retired_entities),
+        "invalidated_still_shot_ids": invalidated_still_shot_ids,
+        "removed_relation_ids": sorted(removed_relation_ids),
+        "graph_revision": revision,
+    }, now)
+    return revision
+
+
 def _invalidate_scene_reference_versions(conn, entity_id, description, actor, now):
     latest = conn.execute(
         "SELECT id,version FROM short_drama_graph_versions WHERE entity_id=? "
@@ -326,8 +487,8 @@ def _seed_entity(conn, project_id, key, asset_type, name, description, actor, no
     return entity_id, True, False
 
 
-def _current_script_shots(conn, project_id):
-    """Read the editable script shots without depending on the legacy shot table."""
+def _current_script(conn, project_id):
+    """Read the editable conversation script without legacy production tables."""
     tables = {row[0] for row in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"
     )}
@@ -341,7 +502,25 @@ def _current_script_shots(conn, project_id):
     ).fetchone()
     if not snapshot:
         return None
-    script = _json(snapshot[0], {})
+    return _json(snapshot[0], {})
+
+
+def current_project_dialogue_lines(conn, project_id):
+    """Return current conversation dialogue, or None for a legacy-only project."""
+    script = _current_script(conn, project_id)
+    if script is None:
+        return None
+    return [
+        dict(item) for item in script.get("dialogue_lines") or []
+        if isinstance(item, dict)
+    ]
+
+
+def _current_script_shots(conn, project_id):
+    """Read the editable script shots without depending on the legacy shot table."""
+    script = _current_script(conn, project_id)
+    if script is None:
+        return None
     shots = []
     for index, item in enumerate(script.get("shots") or []):
         if not isinstance(item, dict):
@@ -351,13 +530,145 @@ def _current_script_shots(conn, project_id):
             "id": "script:" + shot_key,
             "shot_key": shot_key,
             "sort_order": int(item.get("sort_order") or index + 1),
+            "duration": int(item.get("duration_seconds") or item.get("duration") or 5),
             "scene_description": _text(
                 item.get("scene_description") or item.get("scene") or item.get("visual"),
                 4000,
             ),
+            "camera_description": _text(
+                item.get("camera_description") or item.get("camera"), 4000,
+            ),
+            "image_prompt": _text(
+                item.get("image_prompt") or item.get("provider_prompt")
+                or item.get("visual"), 8000,
+            ),
+            "video_prompt": _text(
+                item.get("video_prompt") or item.get("provider_prompt")
+                or item.get("visual"), 8000,
+            ),
             "character_keys_json": _canonical(item.get("character_keys") or []),
+            "dialogue_line_ids_json": _canonical(item.get("dialogue_line_ids") or []),
         })
     return shots
+
+
+def _compatibility_shot_id(project_id, shot_key):
+    digest = hashlib.sha256(
+        (str(project_id) + "\0" + str(shot_key)).encode("utf-8")
+    ).hexdigest()[:32]
+    return "conversation-shot:" + digest
+
+
+def _legacy_shots_by_key(conn, project_id):
+    columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(short_drama_shots)")
+    }
+    order = "script_version DESC,rowid DESC" if "script_version" in columns else "rowid DESC"
+    result = {}
+    for row in conn.execute(
+        "SELECT * FROM short_drama_shots WHERE project_id=? ORDER BY " + order,
+        (project_id,),
+    ):
+        result.setdefault(str(row["shot_key"]), dict(row))
+    return result
+
+
+def _materialize_script_shots(conn, project_id, script_shots):
+    """Create stable FK anchors while keeping the conversation snapshot authoritative."""
+    if script_shots is None:
+        return None
+    columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(short_drama_shots)")
+    }
+    project_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(short_drama_projects)")
+    }
+    script_version = 1
+    if "script_version" in project_columns:
+        row = conn.execute(
+            "SELECT script_version FROM short_drama_projects WHERE id=?", (project_id,),
+        ).fetchone()
+        script_version = int(row[0] or 1) if row else 1
+    projected = []
+    legacy_by_key = _legacy_shots_by_key(conn, project_id)
+    for item in script_shots:
+        shot = dict(item)
+        existing = legacy_by_key.get(shot["shot_key"])
+        shot_id = str(existing["id"]) if existing else _compatibility_shot_id(
+            project_id, shot["shot_key"],
+        )
+        values = {
+            "id": shot_id,
+            "project_id": project_id,
+            "script_version": script_version,
+            "shot_key": shot["shot_key"],
+            "sort_order": int(shot.get("sort_order") or 0),
+            "duration": 5 if int(shot.get("duration") or 5) <= 7 else 10,
+            "scene_description": _text(shot.get("scene_description"), 4000),
+            "camera_description": _text(shot.get("camera_description"), 4000),
+            "character_keys_json": shot.get("character_keys_json") or "[]",
+            "dialogue_line_ids_json": shot.get("dialogue_line_ids_json") or "[]",
+            "image_prompt": _text(shot.get("image_prompt"), 8000),
+            "video_prompt": _text(shot.get("video_prompt"), 8000),
+        }
+        writable = [name for name in values if name in columns]
+        if existing and shot_id.startswith("conversation-shot:"):
+            mutable = [
+                name for name in writable
+                if name not in {"id", "project_id", "script_version"}
+            ]
+            conn.execute(
+                "UPDATE short_drama_shots SET %s WHERE id=? AND project_id=?" %
+                ",".join("%s=?" % name for name in mutable),
+                tuple(values[name] for name in mutable) + (shot_id, project_id),
+            )
+        elif not existing:
+            conn.execute(
+                "INSERT INTO short_drama_shots(%s) VALUES (%s)" % (
+                    ",".join(writable), ",".join("?" for _ in writable),
+                ),
+                tuple(values[name] for name in writable),
+            )
+        shot["id"] = shot_id
+        projected.append(shot)
+    return projected
+
+
+def current_project_shots(conn, project_id, *, materialize=False):
+    """Return only current shots, overlaying authoritative conversation fields."""
+    conn.row_factory = sqlite3.Row
+    current = _current_script_shots(conn, project_id)
+    if current is None:
+        return [dict(row) for row in conn.execute(
+            "SELECT * FROM short_drama_shots WHERE project_id=? ORDER BY sort_order,id",
+            (project_id,),
+        )]
+    projected = _materialize_script_shots(conn, project_id, current) if materialize else current
+    legacy_by_key = _legacy_shots_by_key(conn, project_id)
+    result = []
+    for item in projected:
+        legacy = legacy_by_key.get(item["shot_key"])
+        stable_id = str(item["id"] if materialize else (
+            legacy["id"] if legacy else _compatibility_shot_id(project_id, item["shot_key"])
+        ))
+        resolved = dict(legacy or {})
+        resolved.update(item)
+        resolved["id"] = stable_id
+        result.append(resolved)
+    return sorted(
+        result,
+        key=lambda row: (int(row.get("sort_order") or 0), str(row.get("id") or "")),
+    )
+
+
+def resolve_current_shot(conn, project_id, shot_id, *, materialize=False):
+    """Resolve a production shot against the current conversation snapshot."""
+    requested = str(shot_id)
+    for item in current_project_shots(conn, project_id, materialize=materialize):
+        if requested not in {str(item["id"]), "script:" + item["shot_key"], item["shot_key"]}:
+            continue
+        return item
+    return None
 
 
 _CURRENT_SCRIPT_UNSET = object()
@@ -379,7 +690,7 @@ def _foundation_shots(conn, project_id, current_script_shots=_CURRENT_SCRIPT_UNS
     for script_shot in current_script_shots:
         merged = dict(script_shot)
         existing = legacy_by_key.get(script_shot["shot_key"])
-        if existing:
+        if existing and str(script_shot.get("id") or "").startswith("script:"):
             merged["id"] = existing["id"]
         shots.append(merged)
     return sorted(shots, key=lambda row: (int(row.get("sort_order") or 0), row["shot_key"]))
@@ -453,7 +764,9 @@ def sync_foundation(db_factory, owner, actor, project_id, expected_revision=None
         created = []
         reactivated = []
         relation_changed = False
-        current_script_shots = _current_script_shots(conn, project_id)
+        current_script_shots = _materialize_script_shots(
+            conn, project_id, _current_script_shots(conn, project_id),
+        )
         foundation_shots = _foundation_shots(conn, project_id, current_script_shots)
         cleanup = {
             "removed_shots": [], "removed_relation_ids": [], "retired_entity_ids": [],
@@ -1327,10 +1640,10 @@ def bind_asset(db_factory, owner, actor, body):
     with closing(_connection(db_factory)) as conn:
         conn.execute("BEGIN IMMEDIATE")
         _project(conn, owner, body["project_id"])
-        if not conn.execute(
-            "SELECT 1 FROM short_drama_shots WHERE id=? AND project_id=?",
-            (body["shot_id"], body["project_id"]),
-        ).fetchone():
+        shot = resolve_current_shot(
+            conn, body["project_id"], body["shot_id"], materialize=True,
+        )
+        if not shot:
             raise AssetGraphError("shot_not_found", "镜头不存在", 404)
         entity = conn.execute(
             "SELECT current_version_id FROM short_drama_graph_entities "
@@ -1346,25 +1659,22 @@ def bind_asset(db_factory, owner, actor, body):
         ).fetchone():
             raise AssetGraphError("asset_version_not_found", "资产版本不属于该资产", 422)
         _upsert_relation(
-            conn, body["project_id"], "shot", body["shot_id"],
+            conn, body["project_id"], "shot", shot["id"],
             body["relation_type"], body["entity_id"], version_id,
             body.get("metadata") or {}, actor, now,
         )
         revision = _bump(conn, body["project_id"], body["graph_revision"], now)
         _audit(conn, body["project_id"], actor, "bind_asset", body["entity_id"],
-               {"shot_id": body["shot_id"], "relation_type": body["relation_type"]}, now)
+               {"shot_id": shot["id"], "relation_type": body["relation_type"]}, now)
         conn.commit()
         return {"ok": True, "graph_revision": revision}
 
 
 def _package(conn, project_id, shot_id):
-    shot = conn.execute(
-        "SELECT id,shot_key,scene_description,camera_description,image_prompt,"
-        "video_prompt,character_keys_json FROM short_drama_shots "
-        "WHERE id=? AND project_id=?", (shot_id, project_id),
-    ).fetchone()
+    shot = resolve_current_shot(conn, project_id, shot_id, materialize=True)
     if not shot:
         raise AssetGraphError("shot_not_found", "镜头不存在", 404)
+    shot_id = shot["id"]
     assets, blockers = [], []
     relations = conn.execute(
         "SELECT relation.*,entity.asset_key,entity.asset_type,entity.name,"
@@ -1429,9 +1739,10 @@ def build_snapshot(db_factory, owner, actor, body):
         if revision != body["graph_revision"]:
             raise AssetGraphError("graph_revision_conflict", "资产图谱已更新，请刷新后重试", 409)
         package, blockers = _package(conn, body["project_id"], body["shot_id"])
+        resolved_shot_id = package["shot_id"]
         number = int(conn.execute(
             "SELECT COALESCE(MAX(version),0)+1 FROM short_drama_graph_shot_snapshots "
-            "WHERE project_id=? AND shot_id=?", (body["project_id"], body["shot_id"]),
+            "WHERE project_id=? AND shot_id=?", (body["project_id"], resolved_shot_id),
         ).fetchone()[0])
         snapshot_id = str(uuid.uuid4())
         status = "blocked" if blockers else "ready"
@@ -1439,7 +1750,7 @@ def build_snapshot(db_factory, owner, actor, body):
             "INSERT INTO short_drama_graph_shot_snapshots"
             "(id,project_id,shot_id,version,graph_revision,status,package_json,package_hash,"
             "blockers_json,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            (snapshot_id, body["project_id"], body["shot_id"], number, revision,
+            (snapshot_id, body["project_id"], resolved_shot_id, number, revision,
              status, _canonical(package), package["package_hash"], _canonical(blockers),
              actor, now),
         )
@@ -1453,6 +1764,10 @@ def build_snapshot(db_factory, owner, actor, body):
 def current_package(db_factory, owner, project_id, shot_id):
     with closing(_connection(db_factory)) as conn:
         _project(conn, owner, project_id)
+        shot = resolve_current_shot(conn, project_id, shot_id)
+        if not shot:
+            raise AssetGraphError("shot_not_found", "镜头不存在", 404)
+        shot_id = shot["id"]
         row = conn.execute(
             "SELECT * FROM short_drama_graph_shot_snapshots WHERE project_id=? "
             "AND shot_id=? ORDER BY version DESC LIMIT 1", (project_id, shot_id),
@@ -1468,6 +1783,10 @@ def current_package(db_factory, owner, project_id, shot_id):
 def generation_contract(conn, project_id, shot_id):
     """Return the current immutable snapshot contract for a graph project."""
     conn.row_factory = sqlite3.Row
+    shot = resolve_current_shot(conn, project_id, shot_id)
+    if not shot:
+        raise AssetGraphError("shot_not_found", "镜头不存在", 404)
+    shot_id = shot["id"]
     current_revision = conn.execute(
         "SELECT revision FROM short_drama_graph_state WHERE project_id=?",
         (project_id,),
@@ -1509,6 +1828,10 @@ def quoted_generation_contract(
         *, require_current=True):
     """Load and validate the exact immutable snapshot bound to a quote."""
     conn.row_factory = sqlite3.Row
+    shot = resolve_current_shot(conn, project_id, shot_id)
+    if not shot:
+        raise AssetGraphError("shot_not_found", "镜头不存在", 404)
+    shot_id = shot["id"]
     values = (snapshot_id, package_hash, graph_revision)
     if all(value is None for value in values):
         if conn.execute(

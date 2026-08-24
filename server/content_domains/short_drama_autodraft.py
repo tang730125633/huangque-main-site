@@ -525,18 +525,23 @@ def _locked_media_contract(conn, project):
     }
     if any(not _table_exists(conn, name) for name in required):
         return empty
-    shot_rows = conn.execute(
-        "SELECT shot.id,shot.shot_key,shot.sort_order,shot.duration,"
-        "voice.locked,voice.timeline_revision FROM short_drama_shots shot "
-        "LEFT JOIN short_drama_voice_shots voice ON voice.shot_id=shot.id "
-        "WHERE shot.project_id=? ORDER BY shot.sort_order,shot.id",
-        (project["id"],),
-    ).fetchall()
-    if not shot_rows or any(not row["locked"] for row in shot_rows):
+    shot_rows = short_drama_asset_graph.current_project_shots(
+        conn, project["id"],
+    )
+    voice_rows = {
+        row["shot_id"]: row for row in conn.execute(
+            "SELECT shot_id,locked,timeline_revision FROM short_drama_voice_shots "
+            "WHERE project_id=?", (project["id"],),
+        )
+    }
+    if not shot_rows or any(
+            not voice_rows.get(row["id"])
+            or not voice_rows[row["id"]]["locked"] for row in shot_rows):
         return empty
     cursor = 0
     tracks, subtitles, timeline = [], [], []
     for shot in shot_rows:
+        voice = voice_rows[shot["id"]]
         shot_start = cursor
         cursor += int(shot["duration"]) * 1000
         lines = conn.execute(
@@ -573,7 +578,7 @@ def _locked_media_contract(conn, project):
                 })
         timeline.append({
             "shot_id": shot["id"], "shot_key": shot["shot_key"],
-            "timeline_revision": int(shot["timeline_revision"]),
+            "timeline_revision": int(voice["timeline_revision"]),
             "start_ms": shot_start, "end_ms": cursor,
         })
     if not tracks:
