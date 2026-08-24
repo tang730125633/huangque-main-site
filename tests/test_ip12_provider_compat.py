@@ -68,6 +68,13 @@ class IP12ProviderCompatTests(unittest.TestCase):
         bounded = provider_live_eval.Budget(max_requests=10, max_cny=1)
         bounded.reserve({"input": "fixture", "max_output_tokens": 512})
         bounded.add_usage({})
+
+        terra = provider_live_eval.Budget(max_requests=15, max_cny=1, model="gpt-5.6-terra")
+        terra.reserve({"input": "fixture", "max_output_tokens": 512})
+        self.assertLess(terra.worst_case_cny, 0.05)
+        self.assertEqual(terra.public()["model"], "gpt-5.6-terra")
+        with self.assertRaisesRegex(provider_live_eval.BudgetExceeded, "pricing is unknown"):
+            provider_live_eval.Budget(model="unknown-model")
         self.assertGreater(bounded.worst_case_cny, 0)
         self.assertEqual(bounded.public()["cost_status"], "upper_bound_only")
         with tempfile.TemporaryDirectory() as root:

@@ -21,8 +21,10 @@ except ImportError:  # pragma: no cover - Windows fallback
     import msvcrt
 
 
-SOL_INPUT_USD_PER_MTOK = 4.0
-SOL_OUTPUT_USD_PER_MTOK = 20.0
+MODEL_PRICING_USD_PER_MTOK = {
+    "gpt-5.6-sol": (4.0, 20.0),
+    "gpt-5.6-terra": (2.0, 12.0),
+}
 CNY_PER_USD_BUDGET = 7.5
 AUTHORIZED_MAX_REQUESTS = 1000
 AUTHORIZED_MAX_CNY = 100.0
@@ -62,7 +64,15 @@ class BudgetExceeded(RuntimeError):
 
 
 class Budget:
-    def __init__(self, max_requests=1000, max_cny=100.0, ledger_path=""):
+    def __init__(self, max_requests=1000, max_cny=100.0, ledger_path="",
+                 model="gpt-5.6-sol"):
+        try:
+            self.input_usd_per_mtok, self.output_usd_per_mtok = (
+                MODEL_PRICING_USD_PER_MTOK[str(model)]
+            )
+        except KeyError:
+            raise BudgetExceeded("provider model pricing is unknown")
+        self.model = str(model)
         self.max_requests = min(int(max_requests), AUTHORIZED_MAX_REQUESTS)
         self.max_cny = min(float(max_cny), AUTHORIZED_MAX_CNY)
         self.ledger_path = pathlib.Path(ledger_path) if ledger_path else None
@@ -142,16 +152,16 @@ class Budget:
     @property
     def estimated_cny(self):
         usd = (
-            self.input_tokens * SOL_INPUT_USD_PER_MTOK
-            + self.output_tokens * SOL_OUTPUT_USD_PER_MTOK
+            self.input_tokens * self.input_usd_per_mtok
+            + self.output_tokens * self.output_usd_per_mtok
         ) / 1_000_000
         return round(usd * CNY_PER_USD_BUDGET, 6)
 
     @property
     def worst_case_cny(self):
         usd = (
-            self.reserved_input_tokens * SOL_INPUT_USD_PER_MTOK
-            + self.reserved_output_tokens * SOL_OUTPUT_USD_PER_MTOK
+            self.reserved_input_tokens * self.input_usd_per_mtok
+            + self.reserved_output_tokens * self.output_usd_per_mtok
         ) / 1_000_000
         return round(usd * CNY_PER_USD_BUDGET, 6)
 
@@ -163,8 +173,8 @@ class Budget:
             input_estimate = max(1, len(json.dumps(request, ensure_ascii=False)) // 2)
             output_limit = int(request.get("max_output_tokens") or 512)
             next_usd = (
-                (self.reserved_input_tokens + input_estimate) * SOL_INPUT_USD_PER_MTOK
-                + (self.reserved_output_tokens + output_limit) * SOL_OUTPUT_USD_PER_MTOK
+                (self.reserved_input_tokens + input_estimate) * self.input_usd_per_mtok
+                + (self.reserved_output_tokens + output_limit) * self.output_usd_per_mtok
             ) / 1_000_000
             if (self.requests >= self.max_requests
                     or next_usd * CNY_PER_USD_BUDGET > self.max_cny):
@@ -206,6 +216,7 @@ class Budget:
 
     def public(self):
         return {
+            "model": self.model,
             "requests": self.requests, "max_requests": self.max_requests,
             "input_tokens": self.input_tokens, "output_tokens": self.output_tokens,
             "reserved_input_tokens": self.reserved_input_tokens,
@@ -386,7 +397,7 @@ def main():
     args = parser.parse_args()
     configs = provider_configs()
     providers = list(configs) if args.provider == "all" else [args.provider]
-    budget = Budget(args.max_requests, args.max_cny, args.budget_ledger)
+    budget = Budget(args.max_requests, args.max_cny, args.budget_ledger, args.model)
     if args.mode == "seed":
         budget.seed_existing(
             requests_count=args.seed_existing_requests,
