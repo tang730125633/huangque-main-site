@@ -16,6 +16,7 @@ ASSET_TYPES = {
 RELATION_TYPES = {
     "appears_in", "located_in", "wears", "uses", "drives", "reveals", "related",
 }
+_SCENE_BINDING_DISABLED_RELATION = "scene_binding_disabled"
 
 
 class AssetGraphError(ValueError):
@@ -462,15 +463,22 @@ def sync_foundation(db_factory, owner, actor, project_id, expected_revision=None
                 "AND relation_type='located_in' LIMIT 1",
                 (project_id, shot["id"]),
             ).fetchone()
-            relation_changed = _upsert_relation(
-                conn, project_id, "shot", shot["id"], "located_in",
-                str(existing_scene["entity_id"]) if existing_scene else scene_id,
-                existing_scene["version_id"] if existing_scene else None, {
-                    "shot_key": shot["shot_key"],
-                    "sort_order": int(shot.get("sort_order") or 0),
-                    "scene_description": _text(shot["scene_description"]),
-                }, actor, now,
-            ) or relation_changed
+            binding_disabled = conn.execute(
+                "SELECT 1 FROM short_drama_graph_relations "
+                "WHERE project_id=? AND source_scope='shot' AND source_id=? "
+                "AND relation_type=? LIMIT 1",
+                (project_id, shot["id"], _SCENE_BINDING_DISABLED_RELATION),
+            ).fetchone()
+            if existing_scene or not binding_disabled:
+                relation_changed = _upsert_relation(
+                    conn, project_id, "shot", shot["id"], "located_in",
+                    str(existing_scene["entity_id"]) if existing_scene else scene_id,
+                    existing_scene["version_id"] if existing_scene else None, {
+                        "shot_key": shot["shot_key"],
+                        "sort_order": int(shot.get("sort_order") or 0),
+                        "scene_description": _text(shot["scene_description"]),
+                    }, actor, now,
+                ) or relation_changed
             for character_key in _json(shot["character_keys_json"], []):
                 entity_id = character_ids.get(str(character_key))
                 if entity_id:
@@ -551,7 +559,8 @@ def workspace(db_factory, owner, project_id):
             {**dict(row), "metadata": _json(row["metadata_json"], {})}
             for row in conn.execute(
                 "SELECT * FROM short_drama_graph_relations WHERE project_id=? "
-                "ORDER BY source_scope,source_id,relation_type", (project_id,),
+                "AND relation_type<>? ORDER BY source_scope,source_id,relation_type",
+                (project_id, _SCENE_BINDING_DISABLED_RELATION),
             )
         ]
         return {"project_id": project_id, "graph_revision": revision,
@@ -703,6 +712,11 @@ def _replace_scene_shot_bindings(conn, project_id, entity_id, shot_keys, actor, 
         shot = by_key[key]
         conn.execute(
             "DELETE FROM short_drama_graph_relations WHERE project_id=? "
+            "AND source_scope='shot' AND source_id=? AND relation_type=?",
+            (project_id, shot["id"], _SCENE_BINDING_DISABLED_RELATION),
+        )
+        conn.execute(
+            "DELETE FROM short_drama_graph_relations WHERE project_id=? "
             "AND source_scope='shot' AND source_id=? AND relation_type='located_in' "
             "AND entity_id<>?", (project_id, shot["id"], entity_id),
         )
@@ -818,8 +832,9 @@ def bind_scene_to_shot(db_factory, owner, actor, body):
                 raise AssetGraphError("scene_not_found", "所选场景不存在，请刷新后重试", 404)
         conn.execute(
             "DELETE FROM short_drama_graph_relations WHERE project_id=? "
-            "AND source_scope='shot' AND source_id=? AND relation_type='located_in'",
-            (project_id, shot["id"]),
+            "AND source_scope='shot' AND source_id=? "
+            "AND relation_type IN ('located_in',?)",
+            (project_id, shot["id"], _SCENE_BINDING_DISABLED_RELATION),
         )
         if scene_key:
             _upsert_relation(
@@ -828,6 +843,21 @@ def bind_scene_to_shot(db_factory, owner, actor, body):
                        "sort_order": int(shot["sort_order"] or 0),
                        "scene_description": _text(shot["scene_description"], 4000)},
                 actor, now,
+            )
+        else:
+            foundation = conn.execute(
+                "SELECT id FROM short_drama_graph_entities WHERE project_id=? "
+                "AND asset_key=? AND asset_type='scene' AND status='active'",
+                (project_id, "scene:" + str(shot["id"])),
+            ).fetchone()
+            if not foundation:
+                raise AssetGraphError(
+                    "scene_foundation_missing", "镜头基础场景尚未同步，请刷新后重试", 409,
+                )
+            _upsert_relation(
+                conn, project_id, "shot", shot["id"],
+                _SCENE_BINDING_DISABLED_RELATION, str(foundation["id"]), None,
+                {"shot_key": shot_key}, actor, now,
             )
         revision = _bump(conn, project_id, revision, now)
         _audit(conn, project_id, actor, "bind_scene_to_shot", shot["id"],
@@ -1289,9 +1319,10 @@ def _package(conn, project_id, shot_id):
         "entity.current_version_id FROM short_drama_graph_relations relation "
         "JOIN short_drama_graph_entities entity ON entity.id=relation.entity_id "
         "WHERE relation.project_id=? AND relation.source_scope='shot' "
-        "AND relation.source_id=? AND entity.status='active' "
+        "AND relation.source_id=? AND relation.relation_type<>? "
+        "AND entity.status='active' "
         "ORDER BY relation.relation_type,entity.asset_type,entity.name",
-        (project_id, shot_id),
+        (project_id, shot_id, _SCENE_BINDING_DISABLED_RELATION),
     ).fetchall()
     for relation in relations:
         version_id = relation["version_id"] or relation["current_version_id"]

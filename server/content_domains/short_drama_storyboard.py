@@ -717,7 +717,10 @@ def validate_script(script):
     normalized_lines = [
         _NORMALIZE_RE.sub("", str(item.get("text") or "")).lower()
         for item in lines
-        if str(item.get("text") or "").strip()
+        if (
+            str(item.get("text") or "").strip()
+            and item.get("source_type") != "user_copy"
+        )
     ]
     if (
         len(normalized_lines) > 1

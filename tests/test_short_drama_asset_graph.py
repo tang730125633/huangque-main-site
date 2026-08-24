@@ -567,6 +567,15 @@ class ShortDramaAssetGraphTests(unittest.TestCase):
             item["shot_key"] == "shot_001"
             for scene_item in unbound["scenes"] for item in scene_item["shots"]
         ))
+        synced = graph.sync_foundation(
+            self.db, "alice", "alice", "p1", unbound["graph_revision"],
+        )
+        reloaded = graph.scene_workspace(self.db, "alice", "p1")
+        self.assertEqual(synced["graph_revision"], reloaded["graph_revision"])
+        self.assertFalse(any(
+            item["shot_key"] == "shot_001"
+            for scene_item in reloaded["scenes"] for item in scene_item["shots"]
+        ))
 
 
 if __name__ == "__main__":

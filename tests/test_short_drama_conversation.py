@@ -1914,6 +1914,67 @@ class ShortDramaConversationTests(unittest.TestCase):
                 "generate-after-lock",
             )
 
+    def test_dialogue_shot_can_be_copied_through_public_structure_boundary(self):
+        confirmed = self.confirm_direction(self.project["id"], 1, "copy-dialogue")
+        generated = short_drama_conversation.generate_script(
+            self.db,
+            "alice",
+            "alice",
+            {
+                "project_id": self.project["id"],
+                "conversation_revision": confirmed["conversation"]["revision"],
+            },
+            "copy-dialogue-generate",
+        )
+        original = generated["current_script"]
+        original_lines = {
+            item["id"]: item for item in original["script"]["dialogue_lines"]
+        }
+        source_index, source_shot = next(
+            (index, shot)
+            for index, shot in enumerate(original["script"]["shots"])
+            if any(
+                original_lines[line_id].get("text")
+                for line_id in shot.get("dialogue_line_ids") or []
+            )
+        )
+        source_line = original_lines[source_shot["dialogue_line_ids"][0]]
+
+        copied = short_drama_conversation.change_shot_structure(
+            self.db,
+            "alice",
+            "alice",
+            {
+                "project_id": self.project["id"],
+                "conversation_revision": generated["conversation"]["revision"],
+                "version_id": original["id"],
+                "shot_key": source_shot["shot_key"],
+                "action": "copy",
+            },
+            "copy-dialogue-structure",
+        )
+
+        current = copied["current_script"]
+        self.assertEqual(original["id"], current["id"])
+        self.assertEqual(original["version"], current["version"])
+        self.assertEqual(
+            generated["conversation"]["revision"] + 1,
+            copied["conversation"]["revision"],
+        )
+        self.assertEqual(
+            len(original["script"]["shots"]) + 1,
+            len(current["script"]["shots"]),
+        )
+        copied_shot = current["script"]["shots"][source_index + 1]
+        self.assertNotEqual(source_shot["shot_key"], copied_shot["shot_key"])
+        copied_lines = {
+            item["id"]: item for item in current["script"]["dialogue_lines"]
+        }
+        copied_line = copied_lines[copied_shot["dialogue_line_ids"][0]]
+        self.assertNotEqual(source_line["id"], copied_line["id"])
+        self.assertEqual(source_line["text"], copied_line["text"])
+        self.assertNotEqual("blocked", current["script"]["quality_gate"]["status"])
+
     def test_idempotency_and_revision_conflicts_are_explicit(self):
         body = {
             "project_id": self.project["id"],

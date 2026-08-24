@@ -2565,6 +2565,8 @@ def _structure_shot(script, shot_key, action, instruction=""):
         clone["locked"] = False
         insert_at = index if action == "insert_before" else index + 1
         if action == "copy":
+            clone["source_type"] = "user_copy"
+            clone_line["source_type"] = "user_copy"
             clone["purpose"] = "延续并补充：%s" % str(shot.get("purpose") or "剧情推进")[:140]
             clone["visual"] = "延续上一镜头后的新动作：%s" % str(shot.get("visual") or "人物继续行动")[:300]
             clone["continuity"] = "紧接上一镜头，保持人物、场景、服装和关键道具一致"
