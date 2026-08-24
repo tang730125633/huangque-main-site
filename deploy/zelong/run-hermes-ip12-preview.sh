@@ -86,6 +86,8 @@ modules = [
 missing_modules = [name for name in modules if importlib.util.find_spec(name) is None]
 if missing_modules:
     raise SystemExit("missing preview media modules: " + ", ".join(missing_modules))
+from openai.types.responses.response_usage import InputTokensDetails
+InputTokensDetails(cached_tokens=0)
 missing_commands = [
     name for name in ("ffmpeg", "ffprobe", "edge-tts", "yt-dlp")
     if shutil.which(name) is None

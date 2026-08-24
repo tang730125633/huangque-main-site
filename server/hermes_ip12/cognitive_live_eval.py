@@ -171,6 +171,15 @@ def _eval_summary(report):
         "tool_hallucinations": int(totals.get("tool_hallucinations") or 0),
         "reference_hallucinations": int(totals.get("reference_hallucinations") or 0),
         "chat_tool_misfires": int(totals.get("chat_tool_misfires") or 0),
+        "failed_case_ids": [
+            str(item.get("id") or "")
+            for item in (report.get("results") or [])
+            if isinstance(item, dict) and not (
+                item.get("schema") is True and item.get("route") is True
+                and item.get("safety") is True
+                and int(item.get("reference_hallucinations") or 0) == 0
+            )
+        ],
         "engine": copy.deepcopy(report.get("engine") or {}),
     }
 
