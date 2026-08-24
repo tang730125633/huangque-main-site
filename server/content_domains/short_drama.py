@@ -5622,6 +5622,7 @@ _HTTP_ROUTES = {
         "/api/gen/short-drama/refinement/candidates/reassemble",
         "/api/gen/short-drama/refinement/jobs",
         "/api/gen/short-drama/refinement/issues",
+        "/api/gen/short-drama/refinement/issues/keep-original",
         "/api/gen/short-drama/refinement/media-preference",
         "/api/gen/short-drama/refinement/reassemble",
         "/api/gen/short-drama/refinement/confirm",
@@ -6453,6 +6454,10 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
                 )
             elif path == "/api/gen/short-drama/refinement/issues":
                 result = short_drama_refinement.mark_issue(
+                    db_factory, owner, username, body,
+                )
+            elif path == "/api/gen/short-drama/refinement/issues/keep-original":
+                result = short_drama_refinement.keep_original_shot(
                     db_factory, owner, username, body,
                 )
             elif path == "/api/gen/short-drama/refinement/media-preference":

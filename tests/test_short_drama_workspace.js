@@ -1482,6 +1482,9 @@ test('problem shots expose isolated candidate selection before one final reassem
   assert.match(output, /src="\/api\/gen\/file\/shot-02-v3\.mp4"/);
   assert.match(output, /候选 v3<\/b><span>当前选择/);
   assert.match(output, /data-action="refine-shot" data-shot-key="shot_02"/);
+  assert.match(output, /data-action="keep-original-refinement-shot"/);
+  assert.match(output, /保留原视频并取消重做/);
+  assert.match(output, /接受当前已知问题/);
   assert.match(output, /整片需要最后统一重新合成/);
   assert.match(workspaceSource, /暂无可采用的候选版本/);
   assert.match(workspaceSource, /重新生成完成后，请先选择满意版本再采用/);
@@ -1490,6 +1493,7 @@ test('problem shots expose isolated candidate selection before one final reassem
   assert.match(workspaceSource, /client\.adoptRefinementCandidate/);
   assert.match(workspaceSource, /refinement\/candidates\/reassemble/);
   assert.match(workspaceSource, /client\.reassembleRefinementCandidates/);
+  assert.match(workspaceSource, /client\.keepOriginalRefinementShot/);
   assert.match(workspaceSource, /classList\.toggle\('refinement-redo-active',refinementRedoMode\)/);
   assert.match(workspaceStyle, /\.sd-workspace-grid\.refinement-redo-active\{grid-template-columns:minmax\(0,1fr\)!important\}/);
   assert.match(workspaceStyle, /\.sd-workspace-grid\.refinement-redo-active>\.sd-inspector\{display:none!important\}/);
@@ -1522,6 +1526,45 @@ test('adopting a non-latest candidate binds preview and adoption to that exact v
     }),
     /候选版本已变化/,
   );
+});
+
+test('keeping the original shot is disabled while paid redo work is active', () => {
+  const refinement = {
+    current_refinement:{
+      id:'refinement-v3',version:3,status:'draft',url:'/api/gen/file/full-preview.mp4',
+      shots:[{shot_key:'shot_02',sort_order:2,status:'degraded',provider_version:2,issue:{message:'人物形象跳变'}}],
+      issues:[{shot_key:'shot_02'}],
+    },
+    current_refinement_job:{shot_key:'shot_02',status:'queued'},
+  };
+  const autodraft = {
+    provider_poc:{shots:[{shot_key:'shot_02',binding_ready:true,sequence_ready:true,character_keys:[]}],characters:[]},
+    provider_job:{shot_key:'shot_02',status:'running'},
+    provider_versions:[{id:'shot-02-v2',shot_key:'shot_02',version:2,url:'/api/gen/file/shot-02-v2.mp4'}],
+  };
+  const output = workspace.refinementRedoHtml(refinement,autodraft,'shot_02',true);
+  assert.match(output, /data-action="keep-original-refinement-shot"[^>]* disabled/);
+  assert.match(output, /当前重做任务执行中，不能取消/);
+});
+
+test('accepted original shots remain auditable instead of appearing fixed', () => {
+  const output = workspace.refinementHtml({
+    current_refinement:{
+      version:4,status:'draft',url:'/api/gen/file/full-preview.mp4',issues:[],
+      assembly_status:{reassembly_required:false},
+      shots:[{
+        shot_key:'shot_17',sort_order:17,status:'ready',issue:null,
+        refinement_resolution:{
+          decision:'keep_original',issue_code:'identity_mismatch',
+          issue_message:'人物不一致，需要重新检查并生成该镜头'
+        }
+      }]
+    }
+  });
+  assert.match(output, /已保留原片/);
+  assert.match(output, /已人工接受原片的已知问题/);
+  assert.match(output, /人物不一致，需要重新检查并生成该镜头/);
+  assert.doesNotMatch(output, /该镜头已通过精修检查/);
 });
 
 test('redo steps keep async results inside stable cards and preserve the viewport once', () => {
@@ -2015,6 +2058,28 @@ test('generated Provider video renders only when its matching shot is selected',
   assert.match(output, /采用此版本/);
 });
 
+test('历史视频版本可按需展开和收起完整生成提示词', () => {
+  const prompt='开场固定中近景，人物缓慢转身。\n随后镜头向右平移，完整展示纪念墙上的照片与姓名，结尾停留在顾承川的表情上。<不得截断>';
+  const version={
+    version:2,status:'locked',script:{overview:{title:'测试剧本'},characters:[],acts:[],dialogue_lines:[],shots:[
+      {shot_key:'shot_01',sort_order:1,duration_seconds:7,beat:'发现',visual:'查看纪念墙'}
+    ]}
+  };
+  const output=workspace.scriptHtml(version,false,{
+    provider_versions:[{
+      id:'v1',shot_key:'shot_01',version:1,provider:'minimax_h3',
+      url:'/api/files/video/shot-01-v1.mp4',selected:true,
+      request_snapshot:{duration_seconds:7,resolution:'2k',prompt}
+    }]
+  },'',true,{},'','',{}, {},'shot_01');
+
+  assert.match(output, /class="sd-shot-history-prompt"/);
+  assert.match(output, /展开完整提示词/);
+  assert.match(output, /收起提示词/);
+  assert.match(output, /结尾停留在顾承川的表情上。&lt;不得截断&gt;/);
+  assert.match(workspaceStyle, /\.sd-shot-history-prompt\[open\]/);
+});
+
 test('shot generation overview shows completed active failed and pending shots', () => {
   const shots=[
     {shot_key:'shot_01',sort_order:1},
@@ -2318,6 +2383,30 @@ test('historical 768p MiniMax shots must be regenerated before sharp assembly', 
   assert.match(output, /shot_01/);
   assert.match(output, /768p/);
   assert.match(output, /原生 2K/);
+  assert.doesNotMatch(output, /data-action="start-draft"/);
+});
+
+test('legacy reported 2K shots missing evidence are not mislabeled as 768p', () => {
+  const output = workspace.autodraftActionsHtml({
+    confirmed_plan:{id:'plan-1'},
+    billing:{cost:0,mode:'provider_assets_already_charged'},
+    provider_poc:{provider:'minimax_h3',shots:[],characters:[]},
+    production:{
+      ready:false,
+      mode:'provider_poc',
+      message:'历史 2K 镜头缺少媒体校验记录。',
+      provider:{selected:'minimax_h3',configured:true},
+      assembly:{
+        required_count:2,ready_count:2,assets_ready:true,quality_ready:false,
+        low_resolution_shot_keys:[],
+        media_verification_missing_shot_keys:['shot_01'],all_ready:false
+      }
+    }
+  }, true);
+  assert.match(output, /shot_01/);
+  assert.match(output, /历史 2K/);
+  assert.match(output, /缺少媒体校验记录/);
+  assert.doesNotMatch(output, /历史 768p/);
   assert.doesNotMatch(output, /data-action="start-draft"/);
 });
 

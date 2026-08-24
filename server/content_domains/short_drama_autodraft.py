@@ -417,13 +417,25 @@ def _provider_assembly_snapshot(conn, project_id, plan, provider_name=""):
     shots = [latest[key] for key in required if key in latest]
     assets_ready = bool(required) and len(shots) == len(required)
     low_resolution_shot_keys = []
+    media_verification_missing_shot_keys = []
     if provider_name == "minimax_h3":
-        low_resolution_shot_keys = [
-            str(item["shot_key"])
-            for item in shots
-            if not item.get("native_media")
-        ]
-    quality_ready = not low_resolution_shot_keys
+        for item in shots:
+            if item.get("native_media"):
+                continue
+            reported_resolution = str(
+                (item.get("result_snapshot") or {}).get("resolution")
+                or (item.get("request_snapshot") or {}).get("resolution")
+                or ""
+            ).strip().lower()
+            target = (
+                media_verification_missing_shot_keys
+                if reported_resolution == "2k"
+                else low_resolution_shot_keys
+            )
+            target.append(str(item["shot_key"]))
+    quality_ready = not (
+        low_resolution_shot_keys or media_verification_missing_shot_keys
+    )
     continuity_ready = []
     continuity_missing = []
     if len(required) > 1:
@@ -453,6 +465,9 @@ def _provider_assembly_snapshot(conn, project_id, plan, provider_name=""):
         "assets_ready": assets_ready,
         "quality_ready": quality_ready,
         "low_resolution_shot_keys": low_resolution_shot_keys,
+        "media_verification_missing_shot_keys": (
+            media_verification_missing_shot_keys
+        ),
         "all_ready": assets_ready and quality_ready,
         "continuity_required_count": max(0, len(required) - 1),
         "continuity_ready_count": len(continuity_ready),
@@ -2393,6 +2408,9 @@ def _provider_version(row):
         }
     if "result_json" in item:
         result = _json(item.pop("result_json"), {})
+        item["result_snapshot"] = {
+            "resolution": str(result.get("resolution") or ""),
+        }
         item["native_media"] = _sanitized_native_media(
             result.get("native_media")
         )
@@ -2406,6 +2424,198 @@ def _provider_version(row):
         )
     item["selected"] = bool(item.pop("selected", 0))
     return item
+
+
+def recover_legacy_native_media(
+    db_factory, owner_username, body, inspect_media=None,
+    create_derivative=None, hash_file=None,
+):
+    """Verify legacy reported-2K files and attach immutable local evidence.
+
+    This explicit maintenance operation never calls a Provider or charges
+    points. Files that fail the native 2K/audio checks remain blocked.
+    """
+    from . import video as video_domain
+
+    inspect_media = inspect_media or short_drama_native_audio.inspect_native_media
+    create_derivative = create_derivative or video_domain._faststart_video_derivative
+    hash_file = hash_file or short_drama_native_audio.sha256_file
+    project_id = str((body or {}).get("project_id") or "").strip()
+    recovered = []
+    skipped = []
+    failed = []
+
+    conn = _connection(db_factory)
+    try:
+        _project(conn, owner_username, project_id)
+        plan_row = conn.execute(
+            "SELECT plan_json FROM short_drama_production_plans "
+            "WHERE project_id=? AND status='confirmed' "
+            "ORDER BY version DESC LIMIT 1",
+            (project_id,),
+        ).fetchone()
+        if not plan_row:
+            raise AutodraftError(
+                "confirmed_plan_required", "请先确认短剧制作计划", 409,
+            )
+        plan = _json(plan_row["plan_json"], {})
+        assembly = _provider_assembly_snapshot(
+            conn, project_id, plan, "minimax_h3"
+        )
+        missing = set(
+            assembly.get("media_verification_missing_shot_keys") or []
+        )
+        candidates = {
+            str(item["shot_key"]): item
+            for item in assembly.get("shots") or []
+            if str(item["shot_key"]) in missing
+        }
+    finally:
+        conn.close()
+
+    for shot_key, item in candidates.items():
+        derived_relative = ""
+        try:
+            source_relative = str(item.get("file") or "").replace("\\", "/")
+            source = _controlled_provider_file(source_relative)
+            inspected = inspect_media(source, "2K")
+            resolution = inspected.get("resolution") or {}
+            width = int(resolution.get("width") or 0)
+            height = int(resolution.get("height") or 0)
+            native_audio = _sanitized_native_audio(inspected.get("audio"))
+            if max(width, height) < 2500 or min(width, height) < 1400:
+                raise short_drama_native_audio.NativeAudioError(
+                    "provider_resolution_below_2k",
+                    "历史镜头文件没有达到原生 2K，不能恢复为 2K 版本",
+                )
+            if native_audio.get("audible") is not True:
+                raise short_drama_native_audio.NativeAudioError(
+                    "provider_audio_missing",
+                    "历史镜头文件没有可听声音，不能恢复为可合成版本",
+                )
+            raw_sha256 = str(inspected.get("sha256") or "").strip().lower()
+            raw_size = int(inspected.get("size_bytes") or 0)
+            if not re.fullmatch(r"[0-9a-f]{64}", raw_sha256) or raw_size <= 0:
+                raise AutodraftError(
+                    "provider_native_media_invalid",
+                    "历史镜头文件校验信息不完整，不能安全恢复",
+                    409,
+                )
+
+            derived_relative = str(
+                create_derivative(source_relative) or ""
+            ).strip().replace("\\", "/")
+            derived = _controlled_provider_file(derived_relative)
+            derived_sha256, derived_size = hash_file(derived)
+            native_media = _sanitized_native_media({
+                "raw": {
+                    "file": source_relative,
+                    "sha256": raw_sha256,
+                    "size_bytes": raw_size,
+                },
+                "derived": {
+                    "file": derived_relative,
+                    "sha256": str(derived_sha256 or "").strip().lower(),
+                    "size_bytes": int(derived_size or 0),
+                    "derived_from_sha256": raw_sha256,
+                },
+                "resolution": {"width": width, "height": height},
+                "audio": native_audio,
+                "inspected_at": int(inspected.get("inspected_at") or time.time()),
+            })
+            if not native_media:
+                raise AutodraftError(
+                    "provider_native_media_invalid",
+                    "历史镜头文件未通过可信媒体证据校验",
+                    409,
+                )
+
+            conn = _connection(db_factory)
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                _project(conn, owner_username, project_id)
+                current = conn.execute(
+                    "SELECT v.file,j.result_json FROM "
+                    "short_drama_provider_shot_versions v JOIN "
+                    "short_drama_provider_shot_jobs j ON j.id=v.job_id "
+                    "WHERE v.id=? AND v.project_id=? AND v.job_id=? "
+                    "AND v.shot_key=? AND v.status='ready'",
+                    (item["id"], project_id, item["job_id"], shot_key),
+                ).fetchone()
+                current_result = _json(
+                    current["result_json"], {}
+                ) if current else {}
+                if (
+                    not current
+                    or str(current["file"] or "").replace("\\", "/")
+                    != source_relative
+                    or _sanitized_native_media(current_result.get("native_media"))
+                ):
+                    conn.rollback()
+                    skipped.append(shot_key)
+                    continue
+
+                merged_result = dict(current_result)
+                merged_result.update({
+                    "resolution": "2k",
+                    "native_resolution": {"width": width, "height": height},
+                    "native_audio": native_audio,
+                    "native_media": native_media,
+                    "raw_video_file": source_relative,
+                    "video_file": derived_relative,
+                    "video_url": "/api/gen/file/" + derived_relative,
+                    "generate_audio": True,
+                })
+                result_text = _json_text(merged_result)
+                conn.execute(
+                    "UPDATE short_drama_provider_shot_jobs SET result_json=?,"
+                    "updated_at=? WHERE id=? AND project_id=?",
+                    (result_text, int(time.time()), item["job_id"], project_id),
+                )
+                conn.execute(
+                    "UPDATE short_drama_provider_shot_versions SET file=?,url=? "
+                    "WHERE id=? AND project_id=? AND file=?",
+                    (
+                        derived_relative, "/api/gen/file/" + derived_relative,
+                        item["id"], project_id, source_relative,
+                    ),
+                )
+                projected = conn.execute(
+                    "SELECT * FROM short_drama_provider_shot_jobs WHERE id=?",
+                    (item["job_id"],),
+                ).fetchone()
+                shared = _matching_shared_xiaole_job(conn, projected)
+                if shared and shared["status"] == "done":
+                    shared_result = _json(shared["result"], {})
+                    shared_result.update(merged_result)
+                    conn.execute(
+                        "UPDATE jobs SET result=? WHERE id=? AND status='done'",
+                        (_json_text(shared_result), shared["id"]),
+                    )
+                conn.commit()
+                recovered.append(shot_key)
+                derived_relative = ""
+            finally:
+                conn.close()
+        except Exception as error:
+            code = str(
+                getattr(error, "code", "") or "legacy_media_recovery_failed"
+            )
+            failed.append({
+                "shot_key": shot_key,
+                "code": code,
+                "detail": str(error)[:500],
+            })
+        finally:
+            if derived_relative:
+                video_domain._cleanup_owned_video_files([derived_relative])
+
+    return {
+        "project_id": project_id,
+        "recovered_shot_keys": recovered,
+        "failed_shots": failed,
+        "skipped_shot_keys": skipped,
+    }
 
 
 def select_provider_version(db_factory, owner_username, body):
@@ -4811,6 +5021,7 @@ def workspace(
                 "required_count": 0, "ready_count": 0,
                 "missing_shot_keys": [], "assets_ready": False,
                 "quality_ready": True, "low_resolution_shot_keys": [],
+                "media_verification_missing_shot_keys": [],
                 "all_ready": False, "shots": [],
                 "continuity_required_count": 0,
                 "continuity_ready_count": 0,
@@ -4830,6 +5041,13 @@ def workspace(
                 capability["message"] = (
                     "历史 768p 镜头不会冒充原生 2K；请重新生成："
                     + "、".join(assembly["low_resolution_shot_keys"])
+                )
+            elif assembly.get("media_verification_missing_shot_keys"):
+                capability["message"] = (
+                    "历史 2K 镜头缺少媒体校验记录；请先完成本地验证恢复："
+                    + "、".join(
+                        assembly["media_verification_missing_shot_keys"]
+                    )
                 )
             else:
                 capability["message"] = (
@@ -4926,6 +5144,15 @@ def start_job(
                 detail = (
                     "以下镜头是历史 768p 版本，请重新生成原生 2K 后再合成："
                     + "、".join(assembly["low_resolution_shot_keys"])
+                )
+            elif capability["mode"] == "provider_poc" and assembly.get(
+                "media_verification_missing_shot_keys"
+            ):
+                detail = (
+                    "以下历史 2K 镜头缺少媒体校验记录，请先完成本地验证恢复："
+                    + "、".join(
+                        assembly["media_verification_missing_shot_keys"]
+                    )
                 )
             else:
                 detail = (

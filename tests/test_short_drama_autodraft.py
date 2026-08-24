@@ -1591,8 +1591,231 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             self.assertFalse(snapshot["quality_ready"])
             self.assertFalse(snapshot["all_ready"])
             self.assertEqual([shot_keys[0]], snapshot["low_resolution_shot_keys"])
+            self.assertEqual(
+                [], snapshot["media_verification_missing_shot_keys"]
+            )
         finally:
             conn.close()
+
+    def test_reported_2k_without_native_evidence_is_not_called_768p(self):
+        conn = self.db()
+        conn.row_factory = sqlite3.Row
+        try:
+            plan = json.loads(conn.execute(
+                "SELECT plan_json FROM short_drama_production_plans WHERE id=?",
+                (self.plan_id,),
+            ).fetchone()[0])
+            shot_key = plan["material_plan"][0]["shot_key"]
+            now = 1700000000
+            conn.execute(
+                "INSERT INTO short_drama_provider_shot_jobs "
+                "(id,project_id,owner_username,actor_username,plan_id,shot_key,"
+                "character_key,avatar_id,provider,provider_job_id,status,progress,"
+                "poll_count,input_hash,request_json,result_json,error_json,cost,"
+                "created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,100,1,?,?,?,?,0,?,?)",
+                (
+                    "legacy-2k-job", self.project["id"], "alice", "alice",
+                    self.plan_id, shot_key, "character_1", "avatar_1",
+                    "minimax_h3", "provider-legacy-2k", "succeeded",
+                    "hash-legacy-2k", json.dumps({
+                        "resolution": "2k", "duration_seconds": 5,
+                    }), json.dumps({"resolution": "2k"}), None, now, now,
+                ),
+            )
+            conn.execute(
+                "INSERT INTO short_drama_provider_shot_versions "
+                "(id,project_id,job_id,shot_key,version,provider,provider_job_id,"
+                "status,file,url,input_hash,created_at) "
+                "VALUES (?,?,?,?,1,'minimax_h3',?,'ready',?,?,?,?)",
+                (
+                    "legacy-2k-version", self.project["id"], "legacy-2k-job",
+                    shot_key, "provider-legacy-2k", "video/legacy-2k.mp4",
+                    "/api/gen/file/video/legacy-2k.mp4", "hash-legacy-2k", now,
+                ),
+            )
+            snapshot = short_drama_autodraft._provider_assembly_snapshot(
+                conn, self.project["id"], plan, "minimax_h3",
+            )
+        finally:
+            conn.close()
+
+        self.assertEqual([], snapshot["low_resolution_shot_keys"])
+        self.assertEqual(
+            [shot_key], snapshot["media_verification_missing_shot_keys"]
+        )
+        self.assertFalse(snapshot["quality_ready"])
+        self.assertFalse(snapshot["all_ready"])
+
+    def test_recover_legacy_2k_media_is_verified_and_idempotent(self):
+        source_relative = "video/legacy-2k.mp4"
+        derived_relative = "video/legacy-2k-derived.mp4"
+        source = Path(self.tmp.name) / source_relative
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(b"legacy-2k-source")
+        conn = self.db()
+        try:
+            plan = json.loads(conn.execute(
+                "SELECT plan_json FROM short_drama_production_plans WHERE id=?",
+                (self.plan_id,),
+            ).fetchone()[0])
+            shot_key = plan["material_plan"][0]["shot_key"]
+            now = 1700000000
+            conn.execute(
+                "INSERT INTO short_drama_provider_shot_jobs "
+                "(id,project_id,owner_username,actor_username,plan_id,shot_key,"
+                "character_key,avatar_id,provider,provider_job_id,status,progress,"
+                "poll_count,input_hash,request_json,result_json,error_json,cost,"
+                "created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,100,1,?,?,?,?,0,?,?)",
+                (
+                    "recover-2k-job", self.project["id"], "alice", "alice",
+                    self.plan_id, shot_key, "character_1", "avatar_1",
+                    "minimax_h3", "provider-recover-2k", "succeeded",
+                    "hash-recover-2k", json.dumps({"resolution": "2k"}),
+                    json.dumps({
+                        "resolution": "2k", "video_file": source_relative,
+                        "video_url": "/api/gen/file/" + source_relative,
+                    }), None, now, now,
+                ),
+            )
+            conn.execute(
+                "INSERT INTO short_drama_provider_shot_versions "
+                "(id,project_id,job_id,shot_key,version,provider,provider_job_id,"
+                "status,file,url,input_hash,created_at) "
+                "VALUES (?,?,?,?,1,'minimax_h3',?,'ready',?,?,?,?)",
+                (
+                    "recover-2k-version", self.project["id"], "recover-2k-job",
+                    shot_key, "provider-recover-2k", source_relative,
+                    "/api/gen/file/" + source_relative, "hash-recover-2k", now,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        inspected = {
+            "sha256": "a" * 64,
+            "size_bytes": len(b"legacy-2k-source"),
+            "resolution": {"width": 2560, "height": 1440},
+            "audio": {
+                "audible": True, "codec": "aac", "sample_rate": 32000,
+                "channels": 2, "mean_volume_dbfs": -30.0,
+                "max_volume_dbfs": -10.0,
+            },
+            "inspected_at": 1700000001,
+        }
+
+        def create_derivative(relative):
+            self.assertEqual(source_relative, relative)
+            target = Path(self.tmp.name) / derived_relative
+            target.write_bytes(b"legacy-2k-derived")
+            return derived_relative
+
+        result = short_drama_autodraft.recover_legacy_native_media(
+            self.db, "alice", {"project_id": self.project["id"]},
+            inspect_media=lambda *_args: inspected,
+            create_derivative=create_derivative,
+            hash_file=lambda _path: ("b" * 64, len(b"legacy-2k-derived")),
+        )
+        replay = short_drama_autodraft.recover_legacy_native_media(
+            self.db, "alice", {"project_id": self.project["id"]},
+            inspect_media=lambda *_args: inspected,
+            create_derivative=create_derivative,
+            hash_file=lambda _path: ("b" * 64, len(b"legacy-2k-derived")),
+        )
+
+        self.assertEqual([shot_key], result["recovered_shot_keys"])
+        self.assertEqual([], result["failed_shots"])
+        self.assertEqual([], replay["recovered_shot_keys"])
+        conn = self.db()
+        try:
+            row = conn.execute(
+                "SELECT v.file,j.result_json FROM short_drama_provider_shot_versions v "
+                "JOIN short_drama_provider_shot_jobs j ON j.id=v.job_id "
+                "WHERE v.id='recover-2k-version'"
+            ).fetchone()
+        finally:
+            conn.close()
+        payload = json.loads(row[1])
+        self.assertEqual(derived_relative, row[0])
+        self.assertEqual(source_relative, payload["raw_video_file"])
+        self.assertEqual(derived_relative, payload["video_file"])
+        self.assertTrue(payload["native_audio"]["audible"])
+        self.assertEqual(
+            "a" * 64,
+            payload["native_media"]["derived"]["derived_from_sha256"],
+        )
+
+    def test_recover_legacy_2k_media_rejects_failed_probe_without_mutation(self):
+        source_relative = "video/legacy-below-2k.mp4"
+        source = Path(self.tmp.name) / source_relative
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(b"legacy-below-2k-source")
+        conn = self.db()
+        try:
+            plan = json.loads(conn.execute(
+                "SELECT plan_json FROM short_drama_production_plans WHERE id=?",
+                (self.plan_id,),
+            ).fetchone()[0])
+            shot_key = plan["material_plan"][0]["shot_key"]
+            now = 1700000000
+            conn.execute(
+                "INSERT INTO short_drama_provider_shot_jobs "
+                "(id,project_id,owner_username,actor_username,plan_id,shot_key,"
+                "character_key,avatar_id,provider,provider_job_id,status,progress,"
+                "poll_count,input_hash,request_json,result_json,error_json,cost,"
+                "created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,100,1,?,?,?,?,0,?,?)",
+                (
+                    "reject-2k-job", self.project["id"], "alice", "alice",
+                    self.plan_id, shot_key, "character_1", "avatar_1",
+                    "minimax_h3", "provider-reject-2k", "succeeded",
+                    "hash-reject-2k", json.dumps({"resolution": "2k"}),
+                    json.dumps({
+                        "resolution": "2k", "video_file": source_relative,
+                    }), None, now, now,
+                ),
+            )
+            conn.execute(
+                "INSERT INTO short_drama_provider_shot_versions "
+                "(id,project_id,job_id,shot_key,version,provider,provider_job_id,"
+                "status,file,url,input_hash,created_at) "
+                "VALUES (?,?,?,?,1,'minimax_h3',?,'ready',?,?,?,?)",
+                (
+                    "reject-2k-version", self.project["id"], "reject-2k-job",
+                    shot_key, "provider-reject-2k", source_relative,
+                    "/api/gen/file/" + source_relative, "hash-reject-2k", now,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        derivative_called = []
+
+        def failed_probe(*_args):
+            raise short_drama_native_audio.NativeAudioError(
+                "provider_resolution_below_2k", "视频没有达到原生 2K"
+            )
+
+        result = short_drama_autodraft.recover_legacy_native_media(
+            self.db, "alice", {"project_id": self.project["id"]},
+            inspect_media=failed_probe,
+            create_derivative=lambda _relative: derivative_called.append(True),
+        )
+
+        self.assertEqual([], result["recovered_shot_keys"])
+        self.assertEqual("provider_resolution_below_2k", result["failed_shots"][0]["code"])
+        self.assertEqual([], derivative_called)
+        conn = self.db()
+        try:
+            row = conn.execute(
+                "SELECT v.file,j.result_json FROM short_drama_provider_shot_versions v "
+                "JOIN short_drama_provider_shot_jobs j ON j.id=v.job_id "
+                "WHERE v.id='reject-2k-version'"
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(source_relative, row[0])
+        self.assertNotIn("native_media", json.loads(row[1]))
 
     def test_provider_preview_rejects_changed_selected_native_file_before_ffmpeg(self):
         root = Path(self.tmp.name) / "native-changed"
