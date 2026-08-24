@@ -188,7 +188,10 @@ class IP12ProviderCompatTests(unittest.TestCase):
         def transport(name, request):
             captured.append((name, copy.deepcopy(request)))
             if name == "continuation_first":
-                return {"status_code": 200, "response": {"id": "resp-first"}}
+                return {"status_code": 200, "response": {"output": [{
+                    "type": "message", "role": "assistant",
+                    "content": [{"type": "output_text", "text": "IP12-CONTINUITY-731"}],
+                }]}}
             if name == "continuation_second":
                 return fixtures["continuation"]
             return fixtures[name]
@@ -198,7 +201,9 @@ class IP12ProviderCompatTests(unittest.TestCase):
         self.assertTrue(report["offline_passed"], report)
         self.assertEqual(report["evidence_source"], "fixture")
         chained = next(request for name, request in captured if name == "continuation_second")
-        self.assertEqual(chained["previous_response_id"], "resp-first")
+        self.assertNotIn("previous_response_id", chained)
+        self.assertEqual(chained["input"][0]["type"], "message")
+        self.assertEqual(chained["input"][-1]["role"], "user")
         self.assertEqual(len(captured), 11)
         self.assertTrue(all(request.get("store") is False for _, request in captured))
 
@@ -216,18 +221,22 @@ class IP12ProviderCompatTests(unittest.TestCase):
 
             def __call__(self, name, request):
                 if name == "continuation_first":
-                    observation = {"status_code": 200, "response": {"id": "resp-first"}}
+                    observation = {"status_code": 200, "response": {"output": [{
+                        "type": "message", "role": "assistant",
+                        "content": [{"type": "output_text", "text": "IP12-CONTINUITY-731"}],
+                    }]}}
                 elif name == "continuation_second":
                     observation = copy.deepcopy(fixtures["continuation"])
                 else:
                     observation = copy.deepcopy(fixtures[name])
                 observation.update(
-                    provider_request_id="request-" + name,
                     captured_at=int(time.time()),
                     request_fingerprint=hashlib.sha256(json.dumps(
                         request, ensure_ascii=False, sort_keys=True, separators=(",", ":")
                     ).encode()).hexdigest(),
                 )
+                if name != "timeout_cancel":
+                    observation["provider_request_id"] = "request-" + name
                 return observation
 
         report = provider_compat.run_suite("openai_official", MODEL, LiveTransport())

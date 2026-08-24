@@ -103,7 +103,7 @@ Master Agent → Specialist Agent as Tool → read_only / plan_only tools
 - Structured Output / JSON Schema；
 - `tool_choice` 与函数调用参数；
 - SSE `delta / done / error`；
-- `previous_response_id` 或等价连续状态；
+- `previous_response_id`，或在 `store=false` 下原样回传上一轮 `response.output` 的等价连续状态；
 - reasoning 参数；
 - `store=false`；
 - usage、模型身份、错误、超时和取消。

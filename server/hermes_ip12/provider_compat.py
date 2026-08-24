@@ -52,11 +52,10 @@ def build_requests(model):
         },
         "stream": {**copy.deepcopy(common), "stream": True},
         "continuation_first": {
-            **copy.deepcopy(common), "input": "Remember marker IP12-CONTINUITY-731."
+            **copy.deepcopy(common), "input": "Return exactly IP12-CONTINUITY-731."
         },
         "continuation_second": {
-            **copy.deepcopy(common), "input": "Return the marker from the previous response.",
-            "previous_response_id": "$FIRST_RESPONSE_ID",
+            **copy.deepcopy(common), "input": "Return the marker from the previous assistant output.",
         },
         "reasoning": {**copy.deepcopy(common), "reasoning": {"effort": "low"}},
         "store_false": copy.deepcopy(common),
@@ -238,7 +237,8 @@ def run_suite(provider, model, transport):
         observation = transport(name, copy.deepcopy(request))
         observation = observation if isinstance(observation, dict) else {}
         if getattr(transport, "evidence_source", "fixture") == "live_capture":
-            correlated = correlated and bool(observation.get("provider_request_id"))
+            if name != "timeout_cancel":
+                correlated = correlated and bool(observation.get("provider_request_id"))
             correlated = correlated and observation.get("request_fingerprint") == fingerprint
             correlated = correlated and bool(observation.get("captured_at"))
         return observation
@@ -249,9 +249,11 @@ def run_suite(provider, model, transport):
     ):
         observations[name] = send(name, copy.deepcopy(requests[name]))
     first = send("continuation_first", copy.deepcopy(requests["continuation_first"]))
-    response_id = str((first.get("response") or {}).get("id") or "") if isinstance(first, dict) else ""
+    first_output = copy.deepcopy((first.get("response") or {}).get("output") or [])
     second_request = copy.deepcopy(requests["continuation_second"])
-    second_request["previous_response_id"] = response_id
+    second_request["input"] = first_output + [{
+        "role": "user", "content": "Return the marker from the previous assistant output.",
+    }]
     observations["continuation"] = send("continuation_second", second_request)
     observations["timeout_cancel"] = send("timeout_cancel", {
         "model": model, "input": "Hold until the client cancels.", "store": False,

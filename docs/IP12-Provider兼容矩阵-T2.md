@@ -15,7 +15,7 @@
 1. Strict Structured Output / JSON Schema；
 2. 强制 `tool_choice` 与严格函数参数；
 3. SSE delta 与 terminal event；
-4. `previous_response_id` 连续状态；
+4. 连续状态：有存储时使用 `previous_response_id`，`store=false` 时原样回传上一轮 `response.output`；
 5. reasoning effort 的有效证据；
 6. `store=false` 后结果不可检索；
 7. usage；
