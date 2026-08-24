@@ -144,6 +144,26 @@ class MiniMaxH3VideoTests(unittest.TestCase):
         )
         self.assertEqual(body, json.loads(captured["request"].data.decode("utf-8")))
 
+    def test_metaso_result_host_is_allowed_without_trusting_suffix_spoofs(self):
+        public_dns = [(
+            socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "",
+            ("8.8.8.8", 443),
+        )]
+        with patch("socket.getaddrinfo", return_value=public_dns):
+            url = "https://files.metaso.cn/result/video.mp4"
+            self.assertEqual(
+                url,
+                video._validate_restricted_download_url(
+                    url, video_minimax_h3.RESULT_HOSTS,
+                ),
+            )
+
+        with self.assertRaisesRegex(ValueError, "允许的 HTTPS CDN"):
+            video._validate_restricted_download_url(
+                "https://files.metaso.cn.attacker.example/video.mp4",
+                video_minimax_h3.RESULT_HOSTS,
+            )
+
     def test_new_payload_persists_metaso_origin_before_submission(self):
         with patch.object(video_minimax_h3, "available", return_value=True), \
                 patch("content_domains.feature_flags.is_enabled", return_value=True):
