@@ -22,6 +22,7 @@ def build_requests(model):
         "model": model,
         "input": "Return only the requested fixture result.",
         "store": False,
+        "max_output_tokens": 512,
         "metadata": {"suite": "ip12-provider-compat-v1"},
     }
     strict_schema = {
@@ -254,6 +255,7 @@ def run_suite(provider, model, transport):
     observations["continuation"] = send("continuation_second", second_request)
     observations["timeout_cancel"] = send("timeout_cancel", {
         "model": model, "input": "Hold until the client cancels.", "store": False,
+        "max_output_tokens": 512,
         "metadata": {"suite": "ip12-provider-compat-v1"},
     })
     source = str(getattr(transport, "evidence_source", "fixture") or "fixture")

@@ -1,7 +1,8 @@
 # IP12 Provider 兼容矩阵（T2）
 
-状态：`provider_live_blocked`
-本轮真实 Provider 请求：0
+状态：`HOLD`
+授权模型：`gpt-5.6-sol`
+调用上限：1000 次 / 100 元
 黄雀报价、任务、生成、扣点：0
 
 ## 统一探针
@@ -29,9 +30,25 @@
 | 路径 | 协议/适配 | 当前证据 | 结论 |
 |---|---|---|---|
 | `custom` | OpenAI-compatible Chat Completions | 发送 `model/messages/stream=false/JSON Schema/timeout`；现有代码不保存实际响应 model、usage，也不使用 API tools、续轮状态或 `store` | 可作为当前回滚路径；不满足 T2 完整 Provider 证据 |
-| OpenAI 官方 | Agents SDK + Responses | 代码有 `OpenAIResponsesModel`；官方 Responses 合同包含 Structured Output、tools/tool_choice、`store`、stream、`previous_response_id`、usage 和错误，但本轮未获真实调用费用授权 | `blocked` |
-| DashScope | Agents SDK + Chat Completions | 当前 adapter 会使用 Pydantic Structured Output；严格 JSON Schema、Responses 续轮、reasoning 与 usage 尚未通过同一探针 | `blocked`；必须先完成 conformance，代码默认 fail closed |
-| 泽龙中转 | 尚无独立 SDK adapter | 没有受控 `base_url`、协议、模型身份、参数改写、SSE、usage、reasoning、store 或续轮证据 | `blocked`；未知 provider 默认 fail closed |
+| OpenAI 官方 | Agents SDK + Responses | Tang 已授权 Sol 与费用，但泽龙测试机无法连接官方 API；未迁移 Key 或绕过出口 | `network_blocked` |
+| DashScope | Agents SDK + Chat Completions | 模型目录不含 `gpt-5.6-sol`；按用户指定模型不做替换调用 | `model_unavailable` |
+| 泽龙中转 | 尚无独立 SDK adapter | Sol 在目录中，但真实 Responses 探针除 timeout 外全部 FAIL/UNKNOWN，且无 usage | `HOLD` |
+
+## 2026-08-24 Sol 真实预检与兼容结果
+
+Tang 明确授权三端使用 `gpt-5.6-sol`，最多 1000 次、100 元；通过后仍不允许开启 Canary。
+
+| Provider | 免费模型目录 | 真实兼容探针 | 结果 |
+|---|---|---|---|
+| OpenAI 官方 | 凭证存在，但泽龙服务器访问 `api.openai.com:443` 超时 | 未进入模型调用 | `network_blocked` |
+| DashScope | 目录 HTTP 200、241 个模型，但没有 `gpt-5.6-sol` | 按“不换模型”规则不发调用 | `model_unavailable` |
+| 泽龙中转 | 目录 HTTP 200、5 个模型，包含 `gpt-5.6-sol` | 两轮共 22 个 Responses 兼容请求；HTTP 均为 200（timeout 探针除外），但无 Responses model/usage/typed output；stream 只返回 error | `HOLD` |
+
+泽龙中转关键能力结果：Structured Output FAIL、强制工具 FAIL、SSE FAIL、continuation FAIL、model identity FAIL、usage FAIL、reasoning UNKNOWN、store FALSE UNKNOWN、结构化错误合同 FAIL，仅 timeout terminal PASS。它证明“返回 200”同时仍可删除、改写或不实现 Responses 语义。
+
+中转没有返回 usage，因此不能报告实际 Token 费用为 0。按所有 22 个请求均消耗 `gpt-5.6-sol` 最大 512 输出 Token 的本地预算模型估算约 1.78 元；该数不是中转真实账务上界。Runner 已改为跨进程 0600 耐久账本，命令行不能把授权提高到 1000 次/100 元以上，并在任何 2xx 缺 usage 时立即停止后续模型调用。
+
+由于三个 Provider 没有一个通过 T2，T3 不运行真实语义语料，避免在不兼容链路继续产生费用；T4 继续禁止。
 
 ## 官方基准
 
@@ -54,9 +71,9 @@
 
 需要 Tang 明确批准：
 
-1. 可使用的官方 OpenAI、DashScope 与泽龙中转测试凭证；
-2. 每个 Provider 的模型和最大文本调用费用；
-3. 是否允许在泽龙仅启用只读 SDK Canary；
+1. 为泽龙测试机提供可访问 OpenAI 官方 API 的受控出口，或在不迁移 Key 的前提下指定另一台可用执行机；
+2. 如果仍要求 DashScope，改用其真实存在的模型需重新获得 Tang 明确授权，不能替换 Sol；
+3. 泽龙中转需提供独立 Responses/SDK 合同并先通过当前探针；
 4. 真实 Eval 期间不得触发黄雀报价、生成、任务或点数。
 
 授权后按同一请求集执行，不为单个 Provider 改语料或降低门槛。
