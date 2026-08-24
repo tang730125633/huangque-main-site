@@ -5764,10 +5764,9 @@ def _download_xiaole_video(
         )
     finally:
         if not completed:
-            try:
-                temporary.unlink(missing_ok=True)
-            except OSError:
-                pass
+            _remove_completed_video_partial(
+                temporary, "视频下载临时文件无法安全清理"
+            )
 
 def _xiaole_size_for_ratio(ratio):
     return XIAOLE_RATIO_SIZES.get(str(ratio or "").strip(), XIAOLE_RATIO_SIZES["9:16"])

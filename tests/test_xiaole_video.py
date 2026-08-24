@@ -1461,6 +1461,50 @@ class XiaoleVideoTests(unittest.TestCase):
             retries=1,
         )
 
+    def test_completed_video_download_reports_final_cleanup_failure_as_local_io(self):
+        payload = b"oversized"
+        requested = []
+        original_unlink = Path.unlink
+
+        def open_response(request, timeout=None):
+            self.assertEqual(timeout, 300)
+            requested.append((request.full_url, request.get_method()))
+            return _DownloadResponse(payload, {"Content-Type": "video/mp4"})
+
+        def fail_partial_unlink(path, *args, **kwargs):
+            if ".part-" in path.name:
+                raise OSError("final partial cleanup failed")
+            return original_unlink(path, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_root = Path(temp_dir)
+            (output_root / "video").mkdir()
+            validate = Mock()
+            publish = Mock()
+            with patch.object(self.video, "_xiaole_download_candidates", return_value=[
+                    ("https://relay.example/video.mp4", {}, None),
+                    ("https://cdn.example/video.mp4", {}, None),
+                 ]), \
+                 patch.object(self.video.urllib.request, "urlopen", side_effect=open_response), \
+                 patch.object(self.video, "_out_path", side_effect=lambda rel: output_root / rel), \
+                 patch.object(self.video, "XIAOLE_VIDEO_DOWNLOAD_MAX_BYTES", 8), \
+                 patch.object(Path, "unlink", autospec=True, side_effect=fail_partial_unlink), \
+                 patch.object(self.video, "_validate_downloaded_video_file", validate), \
+                 patch.object(Path, "replace", autospec=True, side_effect=publish), \
+                 patch.object(self.video.time, "sleep"):
+                with self.assertRaises(self.video._CompletedVideoLocalIOError):
+                    self.video._download_xiaole_video(
+                        "https://cdn.example/video.mp4", "minimax_h3",
+                    )
+
+            self.assertEqual(requested, [
+                ("https://relay.example/video.mp4", "GET"),
+            ])
+            validate.assert_not_called()
+            publish.assert_not_called()
+            self.assertEqual([], list((output_root / "video").glob("*.mp4")))
+            self.assertEqual(1, len(list((output_root / "video").glob("*.part-*"))))
+
     def test_authenticated_download_header_is_not_forwarded_to_relay(self):
         import os as _os
         url = "https://openrouter.ai/api/v1/videos/job/content?index=0"
