@@ -43,6 +43,9 @@ class IP12AgentProductionUITests(unittest.TestCase):
         self.assertIn("<audio controls", result)
         self.assertIn("打开 Canvas", result)
         self.assertIn("下载", result)
+        self.assertIn("function productionTaskLabel", self.html)
+        self.assertNotIn("record.job_id", panel)
+        self.assertIn("productionProgressHtml(record)+productionResultHtml(record)", panel)
 
     def test_only_the_quote_card_exposes_the_paid_confirmation(self):
         confirm = self.html[self.html.index("async function confirmProduction"):self.html.index("async function refreshProduction")]
@@ -81,12 +84,20 @@ class IP12AgentProductionUITests(unittest.TestCase):
     def test_prepare_and_quote_submit_typed_options(self):
         prepare = self.html[self.html.index("async function prepareProduction"):self.html.index("async function requestProductionQuote")]
         self.assertIn("options=typedProductionOptions(item||{},item&&item.options||{})", prepare)
-        self.assertIn("preferred_action:item&&item.preferred_action,allow_system_media:item&&item.allow_system_media===true,options:options", prepare)
+        self.assertIn("preferred_action:item&&item.preferred_action,specialist_agent:item&&item.specialist_agent,allow_system_media:item&&item.allow_system_media===true,options:options", prepare)
         quote = self.html[self.html.index("async function requestProductionQuote"):self.html.index("async function confirmProduction")]
         self.assertIn("var collected=collectProductionOptions(record)", quote)
         self.assertIn("if(collected.missing.length)", quote)
         self.assertIn("options:collected.options", quote)
         self.assertIn("detail.code==='missing_prerequisite'", quote)
+
+    def test_voice_choices_preload_duration_metadata(self):
+        controls = self.html[
+            self.html.index("function productionChoiceCards"):
+            self.html.index("function productionFieldControl")
+        ]
+        self.assertIn('preload="metadata"', controls)
+        self.assertNotIn('preload="none"', controls)
 
     def test_agent_messages_and_top_bar_can_reopen_the_current_production(self):
         self.assertIn('id="productionEntryBtn"', self.html)
@@ -211,7 +222,7 @@ let productions={
 };
 let fieldNodes=[{dataset:{field:'avatar_id'},value:'42'}], calls=[];
 global.document={
-  querySelectorAll:()=>fieldNodes,
+  querySelectorAll:(selector)=>selector.includes('.harness-actions')?[]:fieldNodes,
   getElementById:()=>({innerHTML:''})
 };
 global.fetch=async (url,init)=>{
@@ -231,6 +242,7 @@ function updateProductionFromPayload(data){
 }
 function openPanel(){}
 function toast(){}
+function newTurnRequestId(){return 'turn-fixture-1'}
 (async()=>{
   await requestProductionQuote();
   const quoteCall=calls[calls.length-1];
@@ -267,7 +279,7 @@ function toast(){}
         self.assertIn("item.type==='prepare_production'", send)
         self.assertIn("else if(autoAction)await runStateAction(autoAction)", send)
         polling = self.html[self.html.index("function stopProductionPoll"):self.html.index("function productionRoute")]
-        self.assertIn("['submitting','queued','running']", polling)
+        self.assertIn("['submitting','queued','running','verifying','refund_pending']", polling)
         self.assertIn("refreshProduction(true,record.id)", polling)
         self.assertNotIn("confirmProduction(record.id)", polling)
         chat = self.html[self.html.index("function productionMessageHtml"):self.html.index("function isSafeMarkdownUrl")]

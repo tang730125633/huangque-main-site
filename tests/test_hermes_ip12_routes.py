@@ -30,15 +30,154 @@ def extract_js_function(source, name):
 
 
 class HermesIP12SourceTests(unittest.TestCase):
+    def test_talking_head_runtime_safety_regressions(self):
+        script = r'''
+import copy
+from unittest.mock import Mock, patch
+
+import security
+import server
+
+server.current_account_id = lambda: "acct_safety"
+security._validate_token = lambda token: {
+    "account_id": "acct_safety", "username": "safety", "role": "member",
+}
+security.RATE_REQUESTS = 100
+client = server.app.test_client()
+client.environ_base["HTTP_AUTHORIZATION"] = "Bearer test-token"
+
+cid = client.post("/api/conversations", json={"title": "归属测试"}).get_json()["id"]
+convo = server.load_conversation(cid)
+convo["productions"] = {
+    "prod_second": {"id": "prod_second", "action": "digital-ip-text-generate", "status": "draft"},
+    "prod_first": {"id": "prod_first", "action": "digital-ip-text-generate", "status": "draft"},
+}
+convo["active_production_id"] = "prod_first"
+server.save_conversation(cid, convo)
+assert server._latest_editable_talking_head_production(convo)["id"] == "prod_first"
+
+convo.pop("active_production_id")
+server.save_conversation(cid, convo)
+before = copy.deepcopy(convo["productions"])
+revision = convo["coach_state"]["revision"]
+with patch.object(server, "_semantic_master_decision", side_effect=AssertionError("model must not run")):
+    ambiguous = client.post("/api/chat-complete", json={
+        "conversation_id": cid, "message": "我需要重新录制声音",
+        "expected_revision": revision, "request_id": "ambiguous-material-revision",
+    })
+assert ambiguous.status_code == 200, ambiguous.get_data(as_text=True)
+assert "多个待修改的口播制作" in ambiguous.get_json()["assistant"]
+assert server.load_conversation(cid)["productions"] == before
+
+voice_cid = client.post("/api/conversations", json={"title": "复刻状态"}).get_json()["id"]
+voice_convo = server.load_conversation(voice_cid)
+voice_convo["active_production_id"] = "prod_voice"
+voice_convo["voice_clone_ui"] = {"status": "collecting", "voice_name": "旧状态"}
+voice_convo["productions"] = {"prod_voice": {
+    "id": "prod_voice", "action": "digital-ip-text-generate", "status": "draft",
+    "voice_clone": {"status": "training", "slot_id": "slot_voice", "name": "我的新声音"},
+}}
+server.save_conversation(voice_cid, voice_convo)
+with patch.object(server, "_bridge_action", return_value={
+    "items": [{"slot_id": "slot_voice", "status": "training", "voice_name": "我的新声音"}],
+}) as bridge:
+    reply, status = server._process_voice_clone_status_turn(
+        voice_cid, "声音复刻好了吗", {"reply": "查询中"},
+        voice_convo["coach_state"]["revision"], "voice-status-once",
+    )
+assert status == 200 and "仍在后台复刻中" in reply["assistant"], reply
+bridge.assert_called_once()
+saved_voice = server.load_conversation(voice_cid)
+assert saved_voice["productions"]["prod_voice"]["voice_clone"]["status"] == "training"
+assert saved_voice["voice_clone_ui"]["status"] == "collecting"
+
+class RedirectResponse:
+    status_code = 302
+    headers = {"Location": "http://127.0.0.1/private.mp4"}
+    def __enter__(self): return self
+    def __exit__(self, *_args): return False
+
+with patch.object(server.socket, "getaddrinfo", return_value=[
+         (server.socket.AF_INET, server.socket.SOCK_STREAM, 6, "", ("8.8.8.8", 443)),
+     ]), patch.object(server.requests, "get", return_value=RedirectResponse()), \
+     patch.object(server.subprocess, "run", Mock(side_effect=AssertionError("ffprobe must not run"))):
+    verified = server._verify_video_artifacts([
+        {"kind": "video", "url": "https://video.huangquechuanmei.com/video.mp4"},
+    ])
+assert verified["decision"] == "fail", verified
+assert verified["issues"] == [{"code": "video_redirect_rejected"}], verified
+with patch.object(server.requests, "get", side_effect=AssertionError("untrusted host must not connect")):
+    rejected = server._verify_video_artifacts([
+        {"kind": "video", "url": "https://attacker.example/video.mp4"},
+    ])
+assert rejected["issues"] == [{"code": "video_url_invalid"}], rejected
+print("IP12_RUNTIME_SAFETY_OK")
+'''
+        with tempfile.TemporaryDirectory() as root:
+            env = os.environ.copy()
+            env.update(OPENAI_API_KEY="dummy", HERMES_HOME=root, HERMES_DATA_DIR=root)
+            result = subprocess.run(
+                [sys.executable, "-c", script], cwd=HERMES, env=env,
+                capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("IP12_RUNTIME_SAFETY_OK", result.stdout)
+
+    def test_capability_gates_and_confirmed_module_six_sync(self):
+        script = r'''
+import server
+
+state = server.initial_coach_state()
+state["completed_modules"] = [1, 2, 3, 4, 5, 6]
+state["foundation_report"] = {"status": "confirmed"}
+state["ip_profile"].setdefault("confirmed_outputs", {})["6-2"] = {
+    "content": "\n\n".join(
+        "### %d. 分类%d｜标题%d\n**精选理由：** 理由%d\n\n%s" %
+        (index, index, index, index, ("这是用户最终确认的完整口播文案%d。" % index) * 12)
+        for index in (1, 2, 3)
+    )
+}
+pack = {"kind": "content_pack_v1", "format": "featured_3_v1", "categories": [
+    {"id": "category-%d" % index, "name": "分类%d" % index, "description": "旧理由",
+     "topics": [{"id": "topic-%d-01" % index, "title": "标题%d" % index,
+                 "versions": [{"version": 1, "content": ("旧版口播%d。" % index) * 30}], "status": "ready"}]}
+    for index in (1, 2, 3)
+]}
+convo = {"coach_state": state, "deliverables": {"6": pack}}
+assert server._sync_module_six_pack_from_confirmed_output(convo) is True
+assert [len(item["topics"][0]["versions"]) for item in pack["categories"]] == [2, 2, 2]
+assert server._sync_module_six_pack_from_confirmed_output(convo) is False
+assert all(item["status"] == "unlocked" for item in server.capability_gates(state))
+'''
+        env = os.environ.copy()
+        env.update(OPENAI_API_KEY="dummy")
+        result = subprocess.run(
+            [sys.executable, "-c", script], cwd=HERMES, env=env,
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        page = (HERMES / "templates" / "index.html").read_text(encoding="utf-8")
+        self.assertIn("能力解锁", page)
+        self.assertIn("function openCapabilityGates", page)
+        self.assertIn("function openVoiceClone", page)
+        self.assertIn("function pollVoiceClone", page)
+        self.assertIn("voiceClonePolls", page)
+        self.assertIn("/api/ip12/productions/clone-voice", page)
+        self.assertIn("function productionSpecialistHtml", page)
+        self.assertIn("口播短视频 Agent", page)
+
     def test_persistent_assistant_messages_use_one_versioned_append_helper(self):
         source = (HERMES / "server.py").read_text(encoding="utf-8")
         self.assertIn("def _append_assistant_message", source)
         self.assertIn("AGENT_RELEASE_MANIFEST", (HERMES / "ip12_harness.py").read_text(encoding="utf-8"))
+        self.assertIn("talking_head_video_agent", (HERMES / "ip12_harness.py").read_text(encoding="utf-8"))
         self.assertNotIn(
             'convo.setdefault("messages", []).append({"role": "assistant"', source
         )
         self.assertNotIn('"messages": [{"role": "assistant"', source)
         self.assertIn("legacy_unknown", source)
+        self.assertIn('assistant_extra={"ui_action": voice_action}', source)
+        self.assertIn('last_assistant.get("ui_action")', source)
         self.assertIn(".ip12-release-sha", source)
 
     def test_health_uses_the_deployed_release_marker_without_an_env_override(self):
@@ -48,12 +187,115 @@ payload = server.app.test_client().get('/healthz').get_json()
 assert payload['release_sha'] == 'file-release-sha', payload
 assert payload['agent_release'] == 'ip12-a0.1', payload
 assert payload['state_schema'] == 2, payload
+assert payload['master_agent_mode'] == 'off', payload
 """
         with tempfile.TemporaryDirectory() as root:
             Path(root, ".ip12-release-sha").write_text("file-release-sha\n", encoding="utf-8")
             env = os.environ.copy()
             env.pop("IP12_RELEASE_SHA", None)
             env.update(OPENAI_API_KEY="dummy", HERMES_HOME=root, HERMES_DATA_DIR=root)
+            result = subprocess.run(
+                [sys.executable, "-c", script], cwd=HERMES, env=env,
+                capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        deploy = (ROOT / "deploy" / "zelong" / "run-hermes-ip12-preview.sh").read_text(encoding="utf-8")
+        self.assertIn('HERMES_MASTER_AGENT_MODE="${HERMES_PREVIEW_MASTER_AGENT_MODE:-live}"', deploy)
+
+    def test_voice_clone_ui_state_persists_in_project(self):
+        script = r'''
+import security
+import server
+security._validate_token = lambda token: {
+    "account_id": "voice-ui-account", "username": "voice-ui", "role": "member",
+}
+security.RATE_REQUESTS = 1000
+client = server.app.test_client()
+headers = {"Authorization": "Bearer voice-ui-test"}
+created = client.post("/api/conversations", json={"title": "声音克隆状态"}, headers=headers)
+assert created.status_code == 200, created.get_data(as_text=True)
+cid = created.get_json()["id"]
+collecting = client.post("/api/conversations/%s/voice-clone-ui" % cid, json={
+    "status": "collecting", "voice_name": "我的音色",
+}, headers=headers)
+assert collecting.status_code == 200, collecting.get_data(as_text=True)
+project = client.get("/api/conversations/%s" % cid, headers=headers).get_json()
+assert project["voice_clone_ui"]["status"] == "collecting", project
+training = client.post("/api/conversations/%s/voice-clone-ui" % cid, json={
+    "status": "training", "slot_id": "slot_voice_1", "voice_name": "我的音色",
+}, headers=headers)
+assert training.status_code == 200, training.get_data(as_text=True)
+project = client.get("/api/conversations/%s" % cid, headers=headers).get_json()
+assert project["voice_clone_ui"]["slot_id"] == "slot_voice_1", project
+invalid = client.post("/api/conversations/%s/voice-clone-ui" % cid, json={
+    "status": "training", "slot_id": "../bad",
+}, headers=headers)
+assert invalid.status_code == 400, invalid.get_data(as_text=True)
+'''
+        with tempfile.TemporaryDirectory() as root:
+            env = os.environ.copy()
+            env.update(OPENAI_API_KEY="dummy", HERMES_HOME=root, HERMES_DATA_DIR=root)
+            result = subprocess.run(
+                [sys.executable, "-c", script], cwd=HERMES, env=env,
+                capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_master_agent_shadow_records_without_taking_over(self):
+        script = r'''
+import security
+import server
+from unittest.mock import patch
+security._validate_token = lambda token: {
+    "account_id": "shadow-account", "username": "shadow", "role": "member",
+}
+security.RATE_REQUESTS = 1000
+client = server.app.test_client()
+headers = {"Authorization": "Bearer shadow-test"}
+created = client.post("/api/conversations", json={"title": "主控影子测试"}, headers=headers)
+cid = created.get_json()["id"]
+convo = server.load_conversation(cid)
+convo["coach_state"]["intake"]["status"] = "complete"
+server.save_conversation(cid, convo)
+revision = server.load_conversation(cid)["coach_state"]["revision"]
+response = client.post("/api/chat-complete", json={
+    "conversation_id": cid,
+    "message": "有哪些可用音色？",
+    "expected_revision": revision,
+    "request_id": "shadow-turn-1",
+}, headers=headers)
+assert response.status_code == 200, response.get_data(as_text=True)
+body = response.get_json()
+assert body["actions"][0]["preferred_action"] == "voices", body
+saved = server.load_conversation(cid)
+shadow = saved["master_agent_shadow"]
+assert shadow["mode"] == "shadow", shadow
+assert shadow["latest"]["decision"] == "delegate", shadow
+assert shadow["latest"]["legacy_route"] == "production_turn", shadow
+assert shadow["latest"]["aligned"] is True, shadow
+assert not saved.get("productions"), saved.get("productions")
+assert "message" not in shadow["latest"], shadow
+
+revision = saved["coach_state"]["revision"]
+failing_request = {
+    "conversation_id": cid,
+    "message": "有哪些可用音色？",
+    "expected_revision": revision,
+    "request_id": "shadow-turn-fail-open",
+}
+with patch.object(server.master_agent, "record_shadow", side_effect=RuntimeError("shadow unavailable")):
+    completed = client.post("/api/chat-complete", json=failing_request, headers=headers)
+assert completed.status_code == 200, completed.get_data(as_text=True)
+replayed = client.post("/api/chat-complete", json=failing_request, headers=headers)
+assert replayed.status_code == 200, replayed.get_data(as_text=True)
+assert replayed.get_json()["replayed"] is True, replayed.get_json()
+'''
+        with tempfile.TemporaryDirectory() as root:
+            env = os.environ.copy()
+            env.update(
+                OPENAI_API_KEY="dummy", HERMES_HOME=root, HERMES_DATA_DIR=root,
+                HERMES_MASTER_AGENT_MODE="shadow",
+            )
             result = subprocess.run(
                 [sys.executable, "-c", script], cwd=HERMES, env=env,
                 capture_output=True, text=True,
@@ -88,7 +330,7 @@ assert payload['state_schema'] == 2, payload
         for path in HERMES.glob("*.py"):
             routes.update(pattern.findall(path.read_text(encoding="utf-8")))
 
-        self.assertEqual(len(routes), 85)
+        self.assertEqual(len(routes), 88)
         self.assertTrue(
             {
                 "/api/chat",
@@ -619,6 +861,20 @@ sys.path.insert(0, str(Path(server.__file__).resolve().parents[1]))
 import hq_cli_api
 
 server.current_account_id = lambda: "acct_a"
+server._bridge_catalog = lambda _account: {"version": "test", "actions": [
+    {
+        "action": action, "availability": {"status": "available"},
+        "billing": "free" if action == "canvas-ops" else "quote_then_confirm",
+        "confirmation_required": True,
+        "risk": "write" if action == "canvas-ops" else "production",
+        "result_type": "canvas" if action == "canvas-ops" else "asset",
+        "transport": {"kind": "action"},
+    }
+    for action in (
+        "image-generate", "audio-generate", "digital-ip-text-generate",
+        "digital-ip-audio-generate", "video-generate", "canvas-ops",
+    )
+]}
 security._validate_token = lambda token: {
     "admin-token": {"account_id": "acct_a", "username": "admin", "role": "admin"},
 }.get(token)
@@ -645,6 +901,10 @@ assert not server.load_conversation(intake_cid).get("productions")
 
 cid = "typedproduction01"
 state = server.initial_coach_state()
+state.update(
+    completed_modules=[1, 2, 3, 4, 5, 6], current_module=6, module_step=3,
+    foundation_report={"status": "confirmed"},
+)
 server.save_conversation(cid, {
     "id": cid,
     "title": "typed production",
@@ -682,6 +942,21 @@ assert intent_body["actions"][0]["options"]["ratio"] == "9:16", intent_body
 assert "Grok" in intent_body["actions"][0]["options"]["prompt"], intent_body
 assert "完整口播正文" in intent_body["actions"][0]["options"]["prompt"], intent_body
 assert not server.load_conversation(cid).get("productions"), intent_body
+clone_response = client.post("/api/chat-complete", json={
+    "conversation_id": cid,
+    "message": "不是，我需要你帮我进行声音克隆",
+    "expected_revision": intent_body["state"]["revision"],
+    "request_id": "open-voice-clone",
+})
+assert clone_response.status_code == 200, clone_response.get_data(as_text=True)
+clone_body = clone_response.get_json()
+assert clone_body["actions"] == [{
+    "type": "open_voice_clone", "label": "在当前对话克隆音色", "primary": True,
+}], clone_body
+assert "打开声音克隆卡" in clone_body["assistant"], clone_body
+assert "上传已有录音" in clone_body["assistant"], clone_body
+assert "不需要离开当前对话" in clone_body["assistant"], clone_body
+assert not server.load_conversation(cid).get("productions"), clone_body
 assert server._explicit_system_media_request("使用系统自带的公共音色") is True
 assert server._explicit_system_media_request("就用沉稳男声生成") is True
 assert server._explicit_system_media_request("不要使用公共音色") is False
@@ -696,6 +971,7 @@ assert server._production_material_revision_intent("把文案语气改温和") =
 assert server._production_material_revision_intent("克隆声音是什么？") == ""
 assert server._production_material_revision_intent("不要换声音，我只想了解克隆声音") == ""
 assert server._production_material_revision_intent("我需要创建克隆声音") == "voice"
+assert server._production_source_revision_intent("重新生成一版音频，语速调整为0.9，正文保持不变") is False
 with server.app.test_request_context("https://huangquechuanmei.com/workbench/ip12/"):
     assert server._browser_preview_url("/api/gen/file/avatar.jpg") == (
         "https://huangquechuanmei.com/api/gen/file/avatar.jpg"
@@ -703,7 +979,7 @@ with server.app.test_request_context("https://huangquechuanmei.com/workbench/ip1
     assert server._browser_preview_url("https://media.example/voice.mp3") == (
         "https://media.example/voice.mp3"
     )
-revision = intent_body["state"]["revision"]
+revision = clone_body["state"]["revision"]
 audio_intent_response = client.post("/api/chat-complete", json={
     "conversation_id": cid,
     "message": "重新生成一版音频，语速调整为0.9，使用系统公共音色，其他不变",
@@ -794,16 +1070,17 @@ public_allowed = prepare(
 missing_canvas = prepare("canvas")
 canvas = prepare("canvas", {"board_id": "board_canvas_1"})
 generic_video = prepare("video", {"prompt": "把正文改编成海边日出短片。"}, "video-generate")
-for prepared in (audio_selected, audio_public_selected, video, canvas):
+assert server.load_conversation(cid)["active_production_id"] == generic_video["production_id"]
+for prepared in (audio, audio_selected, audio_public, audio_public_selected, video, canvas):
     assert prepared["status"] == "draft", prepared
-assert audio["status"] == "blocked_prerequisite", audio
-assert audio["missing"] == ["voice"], audio
+assert audio["missing"] == [], audio
+assert audio["options"] == {"voice": "voice-demo"}, audio
 assert audio["schema"]["required"] == ["voice"], audio
 assert [item["const"] for item in audio["schema"]["properties"]["voice"]["oneOf"]] == [
     "voice-demo",
 ], audio
-assert audio_public["status"] == "blocked_prerequisite", audio_public
-assert audio_public["missing"] == ["voice"], audio_public
+assert audio_public["missing"] == [], audio_public
+assert audio_public["options"] == {"voice": "voice-demo"}, audio_public
 assert [item["const"] for item in audio_public["schema"]["properties"]["voice"]["oneOf"]] == [
     "voice-demo", "public-demo",
 ], audio_public
@@ -973,7 +1250,8 @@ with patch.object(server, "_bridge_action", side_effect=image_bridge):
         "confirmation_id": "confirm-image-001",
     })
     restored = client.get(f"/api/ip12/productions/{image_id}?conversation_id={cid}")
-assert confirmed.status_code == 200 and confirmed.get_json()["production"]["job_id"] == "101"
+assert confirmed.status_code == 200 and "job_id" not in confirmed.get_json()["production"]
+assert server.load_conversation(cid)["productions"][image_id]["job_id"] == "101"
 assert replayed.status_code == 200 and replayed.get_json()["replayed"] is True
 assert restored.get_json()["production"]["status"] == "done"
 assert restored.get_json()["production"]["asset_refs"][0]["url"] == "https://cdn.example/generated.png"
@@ -1055,7 +1333,11 @@ def video_bridge(account_id, action, input_body, **kwargs):
         return {"quote_token": "private-video-quote", "cost": 8, "points": 8, "expires_in": 300}
     video_calls.append((action, input_body, kwargs["idempotency_key"]))
     return {"job_id": "303", "status": "done"}
-with patch.object(server, "_bridge_action", side_effect=video_bridge):
+with patch.object(server, "_bridge_action", side_effect=video_bridge), \
+     patch.object(server, "_verify_video_artifacts", return_value={
+         "decision": "pass", "issues": [],
+         "media": {"duration": 8, "codec": "h264", "width": 1080, "height": 1920},
+     }):
     assert client.post("/api/ip12/productions/quote", json={
         "conversation_id": cid, "production_id": video_id, "expected_revision": revision,
     }).status_code == 200
@@ -1066,9 +1348,10 @@ with patch.object(server, "_bridge_action", side_effect=video_bridge):
     recovered_video = client.get(f"/api/ip12/productions/{video_id}?conversation_id={cid}")
 assert unlinked.status_code == 200, unlinked.get_data(as_text=True)
 assert unlinked.get_json()["production"]["last_error_code"] == "result_link_pending"
-assert recovered_video.get_json()["production"]["job_id"] == "303"
-assert recovered_video.get_json()["production"]["status"] == "done"
-assert recovered_video.get_json()["production"]["asset_refs"][0]["id"] == "asset-video-1"
+assert "job_id" not in recovered_video.get_json()["production"]
+assert server.load_conversation(cid)["productions"][video_id]["job_id"] == "303"
+assert recovered_video.get_json()["production"]["status"] == "done", recovered_video.get_json()
+assert recovered_video.get_json()["production"]["asset_refs"][0]["id"] == "asset-video-1", recovered_video.get_json()
 assert [call[0] for call in video_calls] == ["digital-ip-text-generate", "task"], video_calls
 assert video_calls[0][2] == video_calls[1][2], video_calls
 
@@ -1231,7 +1514,8 @@ def resources(_account, action, _input, **_kwargs):
                            "preview_url": "https://media.example/old.mp3"}]}
     if action == "audio-slots":
         return {"items": [{"slot_id": "slot_12345678", "status": "ready",
-                           "voice_name": "我的旧声音"}]}
+                           "voice_name": "我的旧声音",
+                           "preview_url": "https://media.example/old.mp3"}]}
     raise AssertionError(action)
 
 def first_clone_resources(_account, action, _input, **_kwargs):
@@ -1254,6 +1538,7 @@ assert first_schema["required"] == ["avatar_id", "voice"], first_schema
 state = server.initial_coach_state()
 state.update(current_module=6, completed_modules=[1, 2, 3, 4, 5, 6])
 state["intake"]["status"] = "complete"
+state["foundation_report"] = {"status": "confirmed"}
 cid = "cloneflow001"
 server.save_conversation(cid, {
     "id": cid, "title": "clone flow", "messages": [], "coach_state": state,
@@ -1440,6 +1725,30 @@ assert ready_body["production"]["options"] == {
     "image_upload_id": "img_" + "b" * 32, "voice": "vip_slot_12345678",
 }, ready_body
 assert ready_body["material_message"]["production_id"] == production_id, ready_body
+
+chat_ready_convo = server.load_conversation(cid)
+chat_ready_record = chat_ready_convo["productions"][production_id]
+chat_ready_record.update(status="blocked_prerequisite", quote={}, last_error_code="voice_clone_training")
+chat_ready_record["options"] = {"image_upload_id": "img_" + "b" * 32}
+chat_ready_record["voice_clone"] = {
+    "request_id": "clone-request-0001", "slot_id": "slot_12345678",
+    "name": "我的新声音", "status": "training",
+}
+server.save_conversation(cid, chat_ready_convo)
+chat_revision = chat_ready_convo["coach_state"]["revision"]
+with patch.object(server, "_bridge_catalog", return_value=catalog), \
+        patch.object(server, "_bridge_action", side_effect=ready_resources):
+    chat_ready, chat_ready_status = server._process_voice_clone_status_turn(
+        cid, "声音复刻好了吗", {"reply": "查询中"}, chat_revision, "clone-chat-ready-001",
+    )
+assert chat_ready_status == 200, chat_ready
+assert "已经复刻完成" in chat_ready["assistant"], chat_ready
+chat_ready_saved = server.load_conversation(cid)["productions"][production_id]
+assert chat_ready_saved["options"] == {
+    "image_upload_id": "img_" + "b" * 32, "voice": "vip_slot_12345678",
+}, chat_ready_saved
+assert chat_ready_saved["status"] == "draft", chat_ready_saved
+revision = chat_ready["state"]["revision"]
 
 with patch.object(server, "_bridge_upload", side_effect=AssertionError("invalid slot must fail before upload")):
     invalid_slot = client.post("/api/ip12/productions/clone-voice", data={
@@ -1738,11 +2047,18 @@ print("IP12_PROJECT_BACKUP_OK")
 
     def test_module_six_completion_hands_off_to_talking_head_production(self):
         script = r'''
+from concurrent.futures import ThreadPoolExecutor
+import threading
 from unittest.mock import patch
 import server
 import security
 
 server.current_account_id = lambda: "acct_handoff"
+server._bridge_catalog = lambda _account: {"version": "test", "actions": [{
+    "action": "digital-ip-text-generate", "availability": {"status": "available"},
+    "billing": "quote_then_confirm", "confirmation_required": True,
+    "risk": "production", "result_type": "asset", "transport": {"kind": "action"},
+}]}
 security._validate_token = lambda token: {"account_id": "acct_handoff", "username": "handoff", "role": "member"}
 security.RATE_REQUESTS = 100
 client = server.app.test_client()
@@ -1761,6 +2077,7 @@ completed = server.load_conversation(completed_id)
 completed_state = server.coach_harness.initial_state()
 completed_state.update(current_module=6, module_step=3, completed_modules=[1, 2, 3, 4, 5, 6])
 completed_state["intake"]["status"] = "complete"
+completed_state["foundation_report"] = {"status": "confirmed"}
 completed["coach_state"] = completed_state
 completed["deliverables"] = {"6": pack}
 server.save_conversation(completed_id, completed)
@@ -1768,6 +2085,8 @@ server.save_conversation(completed_id, completed)
 detail = client.get(f"/api/conversations/{completed_id}").get_json()
 assert detail["harness_actions"][0]["type"] == "prepare_production", detail
 assert detail["harness_actions"][0]["preferred_action"] == "digital-ip-text-generate", detail
+assert detail["harness_actions"][0]["specialist_agent"] == "talking_head_video_agent", detail
+assert detail["harness_actions"][0]["options"]["ratio"] == "9:16", detail
 assert detail["harness_actions"][0]["content_target"] == {"category_id": "category_1", "topic_id": "topic_1"}, detail
 assert detail["harness_actions"][0]["allow_system_media"] is False, detail
 
@@ -1783,20 +2102,119 @@ assert capability.status_code == 200, capability.get_data(as_text=True)
 capability_body = capability.get_json()
 assert capability_body["actions"][0]["type"] == "prepare_production", capability_body
 assert capability_body["actions"][0]["preferred_action"] == "digital-ip-text-generate", capability_body
-assert "制作成数字人口播视频" in capability_body["assistant"], capability_body
+assert capability_body["actions"][0]["specialist_agent"] == "talking_head_video_agent", capability_body
+assert "第一件数字人口播作品" in capability_body["assistant"], capability_body
+assert "口播短视频 Agent" in capability_body["assistant"], capability_body
 assert "当前 IP12 对话里向你收集" in capability_body["assistant"], capability_body
 assert "上传人物照片、参考视频或本人口播音频" in capability_body["assistant"], capability_body
 assert "系统公共素材默认不会展示" in capability_body["assistant"], capability_body
 assert "实时报价" in capability_body["assistant"], capability_body
 saved = server.load_conversation(completed_id)
 assert not saved.get("productions"), saved.get("productions")
-assert saved["messages"][-1]["agent_trace"]["skills"][0]["id"] == "production_bridge"
+assert [item["id"] for item in saved["messages"][-1]["agent_trace"]["skills"]] == [
+    "talking_head_video_agent", "production_bridge",
+]
+
+specialist_action = capability_body["actions"][0]
+def specialist_resources(account_id, action, input_body, **kwargs):
+    if action == "video-avatars":
+        return {"items": [{
+            "id": 1, "name": "我的第一形象", "status": "ready",
+            "image_url": "https://media.example/avatar-1.jpg",
+        }]}
+    if action == "voices":
+        return {"items": [{
+            "voice_key": "voice-demo", "display_name": "我的声音", "scope": "personal",
+            "slot_id": "slot_voice_demo", "preview_url": "https://media.example/voice-demo.mp3",
+        }]}
+    if action == "audio-slots":
+        return {"items": [{"slot_id": "slot_voice_demo", "status": "ready"}]}
+    raise AssertionError(action)
+
+with patch.object(server, "_bridge_action", side_effect=specialist_resources):
+    prepared = client.post("/api/ip12/productions/prepare", json={
+        "conversation_id": completed_id,
+        "content_target": specialist_action["content_target"],
+        "expected_revision": capability_body["state"]["revision"],
+        "requested_result": specialist_action["requested_result"],
+        "preferred_action": specialist_action["preferred_action"],
+        "specialist_agent": specialist_action["specialist_agent"],
+        "options": specialist_action["options"],
+    })
+assert prepared.status_code == 200, prepared.get_data(as_text=True)
+prepared_body = prepared.get_json()
+assert prepared_body["specialist_agent"]["agent_id"] == "talking_head_video_agent", prepared_body
+assert prepared_body["options"]["ratio"] == "9:16", prepared_body
+specialist_project = server.load_conversation(completed_id)
+specialist_record = specialist_project["productions"][prepared_body["production_id"]]
+assert specialist_record["specialist_agent"]["stage"] in {"collecting_materials", "awaiting_quote"}
+assert specialist_project["agent_runtime"]["specialist_agent_id"] == "talking_head_video_agent"
+
+specialist_calls = []
+confirm_started = threading.Event()
+confirm_release = threading.Event()
+def specialist_bridge(account_id, action, input_body, **kwargs):
+    specialist_calls.append((action, kwargs.get("confirm"), kwargs.get("idempotency_key")))
+    if action == "task":
+        return {"job_id": "8801", "status": "done", "asset_refs": [{
+            "id": "first-work-video", "kind": "video", "url": "https://media.example/first-work.mp4",
+        }]}
+    if kwargs.get("confirm"):
+        confirm_started.set()
+        assert confirm_release.wait(5), "confirm bridge was not released"
+        return {"job_id": "8801", "status": "queued"}
+    return {"quote_token": "private-first-work-quote", "cost": 9, "points": 99, "expires_in": 300}
+
+with patch.object(server, "_bridge_action", side_effect=specialist_bridge), \
+     patch.object(server, "_verify_video_artifacts", return_value={
+         "decision": "pass", "issues": [],
+         "media": {"duration": 8, "codec": "h264", "width": 1080, "height": 1920},
+     }):
+    quoted = client.post("/api/ip12/productions/quote", json={
+        "conversation_id": completed_id, "production_id": prepared_body["production_id"],
+        "expected_revision": capability_body["state"]["revision"],
+        "options": {**prepared_body["options"], "avatar_id": 1, "voice": "voice-demo"},
+    })
+    assert quoted.status_code == 200, quoted.get_data(as_text=True)
+    assert quoted.get_json()["production"]["specialist_agent"]["stage"] == "awaiting_confirmation"
+    def post_confirm():
+        confirm_client = server.app.test_client()
+        confirm_client.environ_base["HTTP_AUTHORIZATION"] = "Bearer test-token"
+        return confirm_client.post("/api/ip12/productions/confirm", json={
+            "conversation_id": completed_id, "production_id": prepared_body["production_id"],
+            "expected_revision": capability_body["state"]["revision"],
+            "confirmation_id": "confirm-first-work-001",
+        })
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(post_confirm)
+        assert confirm_started.wait(5), "confirm bridge did not start"
+        assert server._resume_talking_head_production_once(
+            completed_id, "acct_handoff", prepared_body["production_id"],
+            bridge_action=specialist_bridge,
+        ) is False
+        confirm_release.set()
+        confirmed = future.result(timeout=5)
+    assert confirmed.status_code == 200, confirmed.get_data(as_text=True)
+    assert confirmed.get_json()["production"]["specialist_agent"]["stage"] == "generating"
+    delivered = client.get(
+        f"/api/ip12/productions/{prepared_body['production_id']}?conversation_id={completed_id}"
+    )
+    assert delivered.status_code == 200, delivered.get_data(as_text=True)
+    assert delivered.get_json()["production"]["specialist_agent"]["stage"] == "delivered"
+
+finished_specialist = server.load_conversation(completed_id)
+assert finished_specialist["agent_runtime"]["active_delegation_id"] is None
+assert finished_specialist["productions"][prepared_body["production_id"]]["asset_refs"][0]["id"] == "first-work-video"
+confirm_calls = [call for call in specialist_calls if call[1] is True]
+assert len(confirm_calls) == 1, specialist_calls
+assert confirm_calls[0][2].startswith("ip12-prod_"), confirm_calls
 
 final_id = client.post("/api/conversations", json={"title": "确认模块六"}).get_json()["id"]
 final_convo = server.load_conversation(final_id)
 final_state = server.coach_harness.initial_state()
 final_state.update(current_module=6, module_step=2, completed_modules=[1, 2, 3, 4, 5])
 final_state["intake"]["status"] = "complete"
+final_state["foundation_report"] = {"status": "confirmed"}
 final_state["pending"] = {
     "id": "module-six-final", "kind": "checkpoint", "module": 6, "step": 3,
     "status": "awaiting_confirmation", "draft": "三篇完整口播文案已确认",
@@ -1815,7 +2233,8 @@ assert finished.status_code == 200, finished.get_data(as_text=True)
 finished_body = finished.get_json()
 assert finished_body["new_completed"] == [6], finished_body
 assert finished_body["actions"][0]["type"] == "prepare_production", finished_body
-assert "制作成数字人口播视频" in finished_body["assistant"], finished_body
+assert finished_body["actions"][0]["specialist_agent"] == "talking_head_video_agent", finished_body
+assert "第一件数字人口播作品" in finished_body["assistant"], finished_body
 assert not server.load_conversation(final_id).get("productions")
 print("IP12_POST_MODULE_SIX_HANDOFF_OK")
 '''
@@ -2788,6 +3207,11 @@ with patch.object(server.subprocess, "run", side_effect=fake_fallback):
     fallback_pdf = _render_foundation_pdf("## 模块一", ["/fake/playwright", "/fake/chromium"], fallback_root)
 assert _validate_foundation_pdf(fallback_pdf) == 8
 assert fallback_calls == ["/fake/playwright", "/fake/chromium"]
+
+with patch.object(server, "_render_foundation_pdf", side_effect=RuntimeError("browser failed")), \
+        patch("pdf_fallback.render_foundation_pdf_fallback", return_value=fallback_pdf) as browser_free:
+    assert server._render_foundation_pdf_resilient("## 模块一", ["/fake/chromium"], fallback_root) == fallback_pdf
+browser_free.assert_called_once_with("## 模块一", fallback_root / "report-fallback.pdf")
 
 anonymous = app.test_client()
 assert anonymous.get("/healthz").status_code == 200
