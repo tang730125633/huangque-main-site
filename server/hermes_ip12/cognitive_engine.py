@@ -110,7 +110,7 @@ def conformance_gate(release_sha, requested=None):
         and int(custom_result.get("reference_hallucinations") or 0) == 0
         and int(custom_result.get("chat_tool_misfires") or 0) == 0
         and 0 <= int(budget.get("requests") or 0) <= int(budget.get("max_requests") or 0) <= 120
-        and 0 < float(budget.get("max_cny") or 0) <= 10.0
+        and 0 < float(budget.get("max_cny") or 0) <= 12.0
         and 0 <= float(budget.get("estimated_cny") or 0) <= float(budget.get("max_cny") or 0)
         and 0 <= float(budget.get("worst_case_cny") or 0) <= float(budget.get("max_cny") or 0)
         and int(budget.get("usage_missing") or 0) == 0

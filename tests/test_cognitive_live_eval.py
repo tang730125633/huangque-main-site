@@ -58,7 +58,7 @@ class CognitiveLiveEvalTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "request_budget"):
                 cognitive_live_eval.run_t3(args)
         args.max_requests = 120
-        args.max_cny = 10.01
+        args.max_cny = 12.01
         with self.assertRaisesRegex(RuntimeError, "cost_budget"):
             cognitive_live_eval.run_canary(args)
 
@@ -67,7 +67,7 @@ class CognitiveLiveEvalTests(unittest.TestCase):
             output = Path(root) / "conformance.json"
             args = SimpleNamespace(
                 corpus=str(Path(__file__).parent / "fixtures/ip12_semantic_router_cases.json"),
-                max_requests=120, max_cny=10, budget_ledger=str(Path(root) / "budget.json"),
+                max_requests=120, max_cny=12, budget_ledger=str(Path(root) / "budget.json"),
                 model="gpt-5.6-terra", max_output_tokens=700, timeout=10,
                 release_sha="release-under-test", valid_seconds=3600, output=str(output),
             )
