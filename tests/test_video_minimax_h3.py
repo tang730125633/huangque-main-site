@@ -4,12 +4,13 @@ import io
 import json
 import os
 import socket
+import ssl
 import sqlite3
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +21,28 @@ if str(SERVER) not in sys.path:
 from content_domains import (  # noqa: E402
     points, submission_idempotency, video, video_minimax_h3,
 )
+
+
+class _DownloadResponse:
+    def __init__(self, body, headers, *, status=200):
+        self.body = body
+        self.headers = headers
+        self.status = status
+        self.offset = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def read(self, size=-1):
+        end = len(self.body) if size < 0 else min(
+            len(self.body), self.offset + size
+        )
+        chunk = self.body[self.offset:end]
+        self.offset = end
+        return chunk
 
 
 class MiniMaxH3VideoTests(unittest.TestCase):
@@ -425,6 +448,393 @@ class MiniMaxH3VideoTests(unittest.TestCase):
         self.assertEqual(result["provider_video_id"], "h3-task-1")
         self.assertEqual(result["provider"], "minimax_h3_cn")
 
+    def test_shared_video_download_exhaustion_is_not_wrapped_as_transient(self):
+        rendered = {
+            "request_id": "h3-task-1", "source_video_url": "https://cdn.example/h3.mp4",
+            "model": "MiniMax-H3", "duration": 5, "ratio": "9:16",
+            "resolution": "2k", "provider": "minimax_h3_cn",
+        }
+        exhausted = video.CompletedVideoDownloadError("bounded download exhausted")
+        with patch.object(video, "get_resumable_grok_request", return_value=None), \
+                patch.object(video.provider_keys, "claim_candidate", return_value={"id": "mm-key", "secret": "secret"}), \
+                patch.object(video.provider_keys, "set_health"), \
+                patch.object(video, "update_video_asset_phase"), \
+                patch.object(video_minimax_h3, "generate", return_value=rendered), \
+                patch.object(video, "_download_video_file_direct", side_effect=exhausted):
+            with self.assertRaises(video.CompletedVideoDownloadError) as caught:
+                video.gen_xiaole_video({
+                    "_job_id": 9000999, "channel": "minimax", "prompt": "actor opens door",
+                    "model": "MiniMax-H3", "duration": 5, "ratio": "9:16",
+                    "resolution": "2k", "reference_images": [],
+                    "_minimax_origin": video_minimax_h3.ORIGIN_METASO,
+                })
+        self.assertIs(caught.exception, exhausted)
+
+    def test_restricted_minimax_retries_temporary_dns_without_provider_resubmit(self):
+        body = b"\x00\x00\x00\x18ftypisom" + b"valid-video-payload"
+        rendered = {
+            "request_id": "h3-paid-dns",
+            "source_video_url": "https://filecdn.minimax.chat/h3.mp4",
+            "model": "MiniMax-H3", "duration": 5, "ratio": "9:16",
+            "resolution": "2k", "provider": "minimax_h3_cn",
+        }
+        existing = {
+            "request_id": "h3-paid-dns", "provider_key_id": "mm-key",
+            "provider": "minimax", "resolution": "2k", "ratio": "9:16",
+            "phase": "minimax_downloading",
+        }
+        payload = {
+            "_job_id": 23, "channel": "minimax", "prompt": "paid dns retry",
+            "model": "MiniMax-H3", "duration": 5, "ratio": "9:16",
+            "resolution": "2k", "reference_images": [],
+            "_minimax_origin": video_minimax_h3.ORIGIN_METASO,
+        }
+        response_headers = {
+            "Content-Length": str(len(body)), "Content-Type": "video/mp4",
+            "ETag": '"dns-retry-version"',
+        }
+        requests = []
+
+        class Opener:
+            def open(self, request, timeout=None):
+                self_outer.assertEqual(300, timeout)
+                requests.append(request)
+                return _DownloadResponse(body, response_headers)
+
+        self_outer = self
+        generate = Mock(side_effect=AssertionError("paid task must not be submitted again"))
+        resume = Mock(return_value=rendered)
+        public_dns = [(
+            socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "",
+            ("8.8.8.8", 443),
+        )]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_root = Path(temp_dir)
+            (output_root / "video").mkdir()
+            with patch.object(video, "get_resumable_grok_request", return_value=existing), \
+                    patch.object(video, "_bound_provider_key", return_value={"id": "mm-key", "secret": "secret"}), \
+                    patch.object(video, "update_video_asset_phase"), \
+                    patch.object(video_minimax_h3, "generate", generate), \
+                    patch.object(video_minimax_h3, "resume", resume), \
+                    patch.object(socket, "getaddrinfo", side_effect=[
+                        socket.gaierror(socket.EAI_AGAIN, "temporary DNS failure"),
+                        public_dns,
+                    ]) as resolve, \
+                    patch.object(video, "_restricted_download_opener", return_value=Opener()), \
+                    patch.object(video, "_out_path", side_effect=lambda rel: output_root / rel), \
+                    patch.object(video, "_validate_downloaded_video_file"), \
+                    patch.object(video, "_extract_first_frame_cover", return_value=None), \
+                    patch.object(video, "public_url", return_value="https://cos.example/h3.mp4"), \
+                    patch.object(video.time, "sleep") as sleep:
+                result = video.gen_xiaole_video(dict(payload))
+
+            self.assertTrue((output_root / result["video_file"]).is_file())
+        self.assertEqual(2, resolve.call_count)
+        self.assertEqual(1, len(requests))
+        generate.assert_not_called()
+        resume.assert_called_once()
+        self.assertEqual(3, sleep.call_args_list[0].args[0])
+
+    def test_restricted_minimax_fake_mp4_is_terminal_without_provider_resubmit(self):
+        body = b"not-an-mp4"
+        rendered = {
+            "request_id": "h3-paid-invalid", "source_video_url": "https://cdn.example/h3.mp4",
+            "model": "MiniMax-H3", "duration": 5, "ratio": "9:16",
+            "resolution": "2k", "provider": "minimax_h3_cn",
+        }
+        existing = {
+            "request_id": "h3-paid-invalid", "provider_key_id": "mm-key",
+            "provider": "minimax", "resolution": "2k", "ratio": "9:16",
+            "phase": "minimax_downloading",
+        }
+        payload = {
+            "_job_id": 19, "channel": "minimax", "prompt": "paid invalid result",
+            "model": "MiniMax-H3", "duration": 5, "ratio": "9:16",
+            "resolution": "2k", "reference_images": [],
+            "_minimax_origin": video_minimax_h3.ORIGIN_METASO,
+        }
+        requests = []
+        response_headers = {
+            "Content-Length": str(len(body)),
+            "Content-Type": "video/mp4",
+            "ETag": '"invalid-version"',
+        }
+
+        class Opener:
+            def open(self, request, timeout=None):
+                self_outer.assertEqual(300, timeout)
+                requests.append(request)
+                return _DownloadResponse(body, response_headers)
+
+        self_outer = self
+        generate = Mock(side_effect=AssertionError("paid task must not be submitted again"))
+        resume = Mock(return_value=rendered)
+        requeue = Mock(return_value=True)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_root = Path(temp_dir)
+            (output_root / "video").mkdir()
+            with patch.object(video, "get_resumable_grok_request", return_value=existing), \
+                    patch.object(video, "_bound_provider_key", return_value={"id": "mm-key", "secret": "secret"}), \
+                    patch.object(video, "update_video_asset_phase"), \
+                    patch.object(video_minimax_h3, "generate", generate), \
+                    patch.object(video_minimax_h3, "resume", resume), \
+                    patch.object(video, "_validate_restricted_download_url"), \
+                    patch.object(video, "_restricted_download_opener", return_value=Opener()), \
+                    patch.object(video, "_out_path", side_effect=lambda rel: output_root / rel), \
+                    patch.object(video, "recover_official_video_paid_job") as hold, \
+                    patch.object(video.time, "sleep"):
+                with self.assertRaises(video.CompletedVideoDownloadError) as raised:
+                    video.gen_xiaole_video(dict(payload))
+                held = video.recover_paid_video_error(
+                    19, "xiaole_video", payload, raised.exception, requeue=requeue,
+                )
+
+            self.assertEqual([], list((output_root / "video").iterdir()))
+        self.assertFalse(held)
+        self.assertNotIsInstance(raised.exception, video._CompletedVideoLocalIOError)
+        self.assertEqual(1, len(requests))
+        generate.assert_not_called()
+        resume.assert_called_once()
+        requeue.assert_not_called()
+        hold.assert_not_called()
+
+        from content_domains import core
+
+        class Connection:
+            def execute(self, *_args):
+                return self
+
+            def fetchone(self):
+                return {
+                    "id": 19, "kind": "xiaole_video", "username": "u",
+                    "cost": 30, "payload": json.dumps(payload), "status": "pending",
+                }
+
+            def close(self):
+                pass
+
+        handler = Mock(side_effect=raised.exception)
+        claim_running = Mock(side_effect=[True, False])
+        set_terminal = Mock(return_value=True)
+        refund = Mock(return_value=True)
+        failed_asset = Mock()
+        with patch.object(core, "jdb", return_value=Connection()), \
+                patch.object(core.jobs_store, "claim_running", claim_running), \
+                patch.object(core, "_start_job_heartbeat", return_value=Mock()), \
+                patch.object(core, "HANDLERS", {"xiaole_video": handler}), \
+                patch.object(core, "_domains", return_value=(None, None, video)), \
+                patch.object(core, "_set_terminal", set_terminal), \
+                patch.object(core, "_refund_once", refund), \
+                patch.object(core, "_mark_video_asset_failed", failed_asset):
+            core.run_job(19)
+            core.run_job(19)
+
+        handler.assert_called_once()
+        set_terminal.assert_called_once()
+        refund.assert_called_once_with(19, "u", 30)
+        failed_asset.assert_called_once()
+
+    def test_restricted_minimax_ffprobe_content_failures_are_terminal(self):
+        body = b"\x00\x00\x00\x18ftypisominvalid-media"
+        response_headers = {
+            "Content-Length": str(len(body)),
+            "Content-Type": "video/mp4",
+            "ETag": '"invalid-media-version"',
+        }
+
+        class Opener:
+            def open(self, _request, timeout=None):
+                self_outer.assertEqual(300, timeout)
+                return _DownloadResponse(body, response_headers)
+
+        self_outer = self
+        for label, probe_stdout in (
+            ("no-video-stream", '{"streams": []}'),
+            ("invalid-probe-json", "not-json"),
+        ):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temp_dir:
+                output_root = Path(temp_dir)
+                (output_root / "video").mkdir()
+                requeue = Mock(return_value=True)
+                probe = Mock(returncode=0, stdout=probe_stdout, stderr="")
+                with patch.object(video, "_validate_restricted_download_url"), \
+                        patch.object(video, "_restricted_download_opener", return_value=Opener()), \
+                        patch.object(video, "_out_path", side_effect=lambda rel: output_root / rel), \
+                        patch.object(video.subprocess, "run", return_value=probe), \
+                        patch.object(video, "recover_official_video_paid_job") as hold, \
+                        patch.object(Path, "replace", autospec=True) as publish, \
+                        patch.object(video.time, "sleep"):
+                    with self.assertRaises(video.CompletedVideoDownloadError) as raised:
+                        video._download_video_file_direct(
+                            "https://cdn.example/minimax.mp4", "minimax_h3",
+                            allowed_hosts={"cdn.example"}, max_bytes=1024,
+                        )
+                    held = video.recover_paid_video_error(
+                        20, "xiaole_video", {"channel": "minimax"},
+                        raised.exception, requeue=requeue,
+                    )
+
+                self.assertFalse(held)
+                self.assertNotIsInstance(
+                    raised.exception, video._CompletedVideoLocalIOError
+                )
+                requeue.assert_not_called()
+                hold.assert_not_called()
+                publish.assert_not_called()
+                self.assertEqual([], list((output_root / "video").iterdir()))
+
+    def test_restricted_minimax_invalid_http_metadata_is_terminal(self):
+        body = b"{}"
+
+        class Opener:
+            def __init__(self, headers):
+                self.headers = headers
+
+            def open(self, _request, timeout=None):
+                self_outer.assertEqual(300, timeout)
+                return _DownloadResponse(body, self.headers)
+
+        self_outer = self
+        for label, headers in (
+            ("non-video-content", {
+                "Content-Length": str(len(body)), "Content-Type": "application/json",
+            }),
+            ("invalid-content-length", {
+                "Content-Length": "not-a-number", "Content-Type": "video/mp4",
+            }),
+        ):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temp_dir:
+                output_root = Path(temp_dir)
+                (output_root / "video").mkdir()
+                requeue = Mock(return_value=True)
+                with patch.object(video, "_validate_restricted_download_url"), \
+                        patch.object(video, "_restricted_download_opener", return_value=Opener(headers)), \
+                        patch.object(video, "_out_path", side_effect=lambda rel: output_root / rel), \
+                        patch.object(video, "recover_official_video_paid_job") as hold, \
+                        patch.object(Path, "replace", autospec=True) as publish, \
+                        patch.object(video.time, "sleep"):
+                    with self.assertRaises(video.CompletedVideoDownloadError) as raised:
+                        video._download_video_file_direct(
+                            "https://cdn.example/minimax.mp4", "minimax_h3",
+                            allowed_hosts={"cdn.example"}, max_bytes=1024,
+                        )
+                    held = video.recover_paid_video_error(
+                        21, "xiaole_video", {"channel": "minimax"},
+                        raised.exception, requeue=requeue,
+                    )
+
+                self.assertFalse(held)
+                self.assertNotIsInstance(
+                    raised.exception, video._CompletedVideoLocalIOError
+                )
+                requeue.assert_not_called()
+                hold.assert_not_called()
+                publish.assert_not_called()
+                self.assertEqual([], list((output_root / "video").iterdir()))
+
+    def test_restricted_minimax_disallowed_result_url_is_terminal(self):
+        requeue = Mock(return_value=True)
+        with patch.object(
+                video, "_validate_restricted_download_url",
+                side_effect=ValueError("下载地址不在允许的 HTTPS CDN 范围内"),
+        ), patch.object(video, "_restricted_download_opener") as opener, \
+                patch.object(video, "_out_path") as out_path, \
+                patch.object(video, "recover_official_video_paid_job") as hold:
+            with self.assertRaises(video.CompletedVideoDownloadError) as raised:
+                video._download_video_file_direct(
+                    "https://untrusted.example/minimax.mp4", "minimax_h3",
+                    allowed_hosts={"cdn.example"}, max_bytes=1024,
+                )
+            held = video.recover_paid_video_error(
+                22, "xiaole_video", {"channel": "minimax"},
+                raised.exception, requeue=requeue,
+            )
+
+        self.assertFalse(held)
+        self.assertNotIsInstance(raised.exception, video._CompletedVideoLocalIOError)
+        opener.assert_not_called()
+        out_path.assert_not_called()
+        requeue.assert_not_called()
+        hold.assert_not_called()
+
+    def test_restricted_minimax_cleanup_failure_stays_local_io_terminal(self):
+        body = b"not-an-mp4"
+        response_headers = {
+            "Content-Length": str(len(body)), "Content-Type": "video/mp4",
+            "ETag": '"cleanup-failure-version"',
+        }
+
+        class Opener:
+            def open(self, _request, timeout=None):
+                self_outer.assertEqual(300, timeout)
+                return _DownloadResponse(body, response_headers)
+
+        self_outer = self
+        real_unlink = Path.unlink
+
+        def fail_partial_cleanup(path, *args, **kwargs):
+            if ".part-" in path.name:
+                raise OSError("restricted partial cleanup failed")
+            return real_unlink(path, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_root = Path(temp_dir)
+            (output_root / "video").mkdir()
+            with patch.object(video, "_validate_restricted_download_url"), \
+                    patch.object(video, "_restricted_download_opener", return_value=Opener()), \
+                    patch.object(video, "_out_path", side_effect=lambda rel: output_root / rel), \
+                    patch.object(Path, "unlink", autospec=True, side_effect=fail_partial_cleanup), \
+                    patch.object(Path, "replace", autospec=True) as publish, \
+                    patch.object(video.time, "sleep"):
+                with self.assertRaises(video._CompletedVideoLocalIOError):
+                    video._download_video_file_direct(
+                        "https://cdn.example/minimax.mp4", "minimax_h3",
+                        allowed_hosts={"cdn.example"}, max_bytes=1024,
+                    )
+
+            publish.assert_not_called()
+            self.assertEqual([], list((output_root / "video").glob("*.mp4")))
+
+    def test_restricted_minimax_success_does_not_cleanup_after_publish(self):
+        body = b"\x00\x00\x00\x18ftypisom" + b"valid-video-payload"
+        response_headers = {
+            "Content-Length": str(len(body)), "Content-Type": "video/mp4",
+            "ETag": '"published-version"',
+        }
+
+        class Opener:
+            def open(self, _request, timeout=None):
+                self_outer.assertEqual(300, timeout)
+                return _DownloadResponse(body, response_headers)
+
+        self_outer = self
+        real_unlink = Path.unlink
+
+        def fail_redundant_partial_cleanup(path, *args, **kwargs):
+            if ".part-" in path.name:
+                raise OSError("published partial must not be cleaned again")
+            return real_unlink(path, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_root = Path(temp_dir)
+            (output_root / "video").mkdir()
+            with patch.object(video, "_validate_restricted_download_url"), \
+                    patch.object(video, "_restricted_download_opener", return_value=Opener()), \
+                    patch.object(video, "_out_path", side_effect=lambda rel: output_root / rel), \
+                    patch.object(video, "_validate_downloaded_video_file"), \
+                    patch.object(Path, "unlink", autospec=True,
+                                 side_effect=fail_redundant_partial_cleanup), \
+                    patch.object(video.time, "sleep"):
+                relative = video._download_video_file_direct(
+                    "https://cdn.example/minimax.mp4", "minimax_h3",
+                    allowed_hosts={"cdn.example"}, max_bytes=1024,
+                )
+
+            target = output_root / relative
+            self.assertTrue(target.is_file())
+            self.assertEqual(body, target.read_bytes())
+            self.assertEqual([], list((output_root / "video").glob("*.part-*")))
+
     def test_shared_new_job_submission_uses_persisted_metaso_origin(self):
         rendered = {
             "request_id": "h3-task-new", "source_video_url": "https://cdn.example/new.mp4",
@@ -488,6 +898,157 @@ class MiniMaxH3VideoTests(unittest.TestCase):
         generate.assert_not_called()
         self.assertEqual(2, download.call_count)
         self.assertEqual("h3-paid-task", result["provider_video_id"])
+
+    def test_restricted_minimax_download_resumes_without_new_provider_submission(self):
+        payload = b"\x00\x00\x00\x18ftypisomminimax-resume"
+        split = 9
+        requests = []
+
+        class Response:
+            def __init__(self, body, status, headers, fail_after=None):
+                self.body = body
+                self.status = status
+                self.headers = headers
+                self.fail_after = fail_after
+                self.offset = 0
+
+            def __enter__(self): return self
+            def __exit__(self, *_args): return False
+
+            def read(self, size=-1):
+                if self.fail_after is not None and self.offset >= self.fail_after:
+                    raise ssl.SSLError("early eof")
+                end = len(self.body) if size < 0 else min(len(self.body), self.offset + size)
+                if self.fail_after is not None:
+                    end = min(end, self.fail_after)
+                chunk = self.body[self.offset:end]
+                self.offset = end
+                return chunk
+
+        class Opener:
+            def open(self, request, timeout=None):
+                requests.append(request)
+                if len(requests) == 1:
+                    self_outer.assertIsNone(request.get_header("Range"))
+                    return Response(payload, 200, {
+                        "Content-Length": str(len(payload)),
+                        "Content-Type": "video/mp4",
+                        "ETag": '"version-1"',
+                    }, fail_after=split)
+                self_outer.assertEqual(request.get_header("Range"), "bytes=%d-" % split)
+                return Response(payload[split:], 206, {
+                    "Content-Length": str(len(payload) - split),
+                    "Content-Range": "bytes %d-%d/%d" % (
+                        split, len(payload) - 1, len(payload),
+                    ),
+                    "Content-Type": "video/mp4",
+                    "ETag": '"version-1"',
+                })
+
+        self_outer = self
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_root = Path(temp_dir)
+            (output_root / "video").mkdir()
+            with patch.object(video, "_validate_restricted_download_url"), \
+                    patch.object(video, "_restricted_download_opener", return_value=Opener()), \
+                    patch.object(video, "_out_path", side_effect=lambda rel: output_root / rel), \
+                    patch.object(video, "_validate_downloaded_video_file"), \
+                    patch.object(video, "_faststart_video_file", side_effect=lambda rel: rel), \
+                    patch.object(video.time, "sleep"):
+                result = video._download_video_file_direct(
+                    "https://cdn.example/minimax.mp4", "minimax_h3",
+                    allowed_hosts={"cdn.example"}, max_bytes=1024,
+                )
+            self.assertEqual(payload, (output_root / result).read_bytes())
+        self.assertEqual(2, len(requests))
+
+    def test_restricted_minimax_download_wraps_local_validation_failures(self):
+        payload = b"\x00\x00\x00\x18ftypisomminimax-local-close"
+        requests = []
+
+        class Response:
+            status = 200
+            headers = {
+                "Content-Length": str(len(payload)),
+                "Content-Type": "video/mp4",
+                "ETag": '"version-1"',
+            }
+
+            def __init__(self): self.offset = 0
+            def __enter__(self): return self
+            def __exit__(self, *_args): return False
+
+            def read(self, size=-1):
+                end = len(payload) if size < 0 else min(len(payload), self.offset + size)
+                chunk = payload[self.offset:end]
+                self.offset = end
+                return chunk
+
+        class Opener:
+            def open(self, _request, timeout=None):
+                self_outer.assertEqual(300, timeout)
+                requests.append(True)
+                return Response()
+
+        class ReadCloseFailingFile:
+            def __init__(self, raw): self.raw = raw
+            def __enter__(self): return self
+
+            def __exit__(self, *_args):
+                self.raw.close()
+                raise OSError("validation close failed")
+
+            def read(self, size=-1): return self.raw.read(size)
+
+        self_outer = self
+        real_open = Path.open
+
+        def open_with_validation_close_failure(path, *args, **kwargs):
+            raw = real_open(path, *args, **kwargs)
+            mode = args[0] if args else kwargs.get("mode", "r")
+            if mode == "rb":
+                return ReadCloseFailingFile(raw)
+            return raw
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_root = Path(temp_dir)
+            (output_root / "video").mkdir()
+            with patch.object(video, "_validate_restricted_download_url"), \
+                    patch.object(video, "_restricted_download_opener", return_value=Opener()), \
+                    patch.object(video, "_out_path", side_effect=lambda rel: output_root / rel), \
+                    patch.object(Path, "open", autospec=True,
+                                 side_effect=open_with_validation_close_failure), \
+                    patch.object(video, "_validate_downloaded_video_file") as validate, \
+                    patch.object(Path, "replace", autospec=True) as publish, \
+                    patch.object(video.time, "sleep"):
+                with self.assertRaises(video._CompletedVideoLocalIOError):
+                    video._download_video_file_direct(
+                        "https://cdn.example/minimax.mp4", "minimax_h3",
+                        allowed_hosts={"cdn.example"}, max_bytes=1024,
+                    )
+            self.assertEqual([True], requests)
+            validate.assert_not_called()
+            publish.assert_not_called()
+            self.assertEqual(list((output_root / "video").iterdir()), [])
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_root = Path(temp_dir)
+            (output_root / "video").mkdir()
+            with patch.object(video, "_validate_restricted_download_url"), \
+                    patch.object(video, "_restricted_download_opener", return_value=Opener()), \
+                    patch.object(video, "_out_path", side_effect=lambda rel: output_root / rel), \
+                    patch.object(video.subprocess, "run", side_effect=
+                                 video.subprocess.TimeoutExpired("ffprobe", 60)), \
+                    patch.object(Path, "replace", autospec=True) as publish, \
+                    patch.object(video.time, "sleep"):
+                with self.assertRaises(video._CompletedVideoLocalIOError):
+                    video._download_video_file_direct(
+                        "https://cdn.example/minimax.mp4", "minimax_h3",
+                        allowed_hosts={"cdn.example"}, max_bytes=1024,
+                    )
+            self.assertEqual([True, True], requests)
+            publish.assert_not_called()
+            self.assertEqual(list((output_root / "video").iterdir()), [])
 
     def test_shared_resume_routes_legacy_and_new_tasks_to_their_origin(self):
         rendered = {
