@@ -96,6 +96,20 @@ test('认证服务不可用时不把项目误显示为零并使用中文故障�
     center.projectLoadErrorMessage({status:504,message:'test backend timeout'}),
     '认证服务响应超时，项目数据没有丢失，请稍后重试。'
   );
+  assert.equal(
+    center.projectLoadErrorMessage(new TypeError('Failed to fetch')),
+    '认证服务暂时不可用，项目数据没有丢失，请稍后重试。'
+  );
+  assert.equal(
+    center.projectLoadErrorMessage(new Error('NetworkError when attempting to fetch resource.')),
+    '认证服务暂时不可用，项目数据没有丢失，请稍后重试。'
+  );
+  const aborted = new Error('The operation was aborted.');
+  aborted.name = 'AbortError';
+  assert.equal(
+    center.projectLoadErrorMessage(aborted),
+    '认证服务响应超时，项目数据没有丢失，请稍后重试。'
+  );
   assert.equal(center.projectLoadErrorMessage(new Error('其他错误')), '项目加载失败：其他错误');
 });
 

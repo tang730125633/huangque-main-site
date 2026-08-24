@@ -68,9 +68,9 @@
     return error&&error.message?error.message:'短剧删除失败，请稍后重试。';
   }
   function projectLoadErrorMessage(error){
-    var message=text(error&&error.message).trim(),status=Number(error&&error.status)||0;
-    if(status===504||/backend timeout|响应超时|timed?\s*out/i.test(message))return '认证服务响应超时，项目数据没有丢失，请稍后重试。';
-    if(status===502||/backend unavailable|接口未连接|连接失败/i.test(message))return '认证服务暂时不可用，项目数据没有丢失，请稍后重试。';
+    var message=text(error&&error.message).trim(),status=Number(error&&error.status)||0,name=text(error&&error.name).trim();
+    if(status===504||name==='AbortError'||/backend timeout|响应超时|timed?\s*out|operation was aborted|request aborted/i.test(message))return '认证服务响应超时，项目数据没有丢失，请稍后重试。';
+    if(status===502||/backend unavailable|接口未连接|连接失败|failed to fetch|networkerror|network request failed|load failed/i.test(message))return '认证服务暂时不可用，项目数据没有丢失，请稍后重试。';
     return '项目加载失败'+(message?'：'+message:'，请稍后重试。');
   }
   function createPayload(form){

@@ -754,6 +754,64 @@ def _verify_native_assembly_sources(assembly):
     return sources
 
 
+def _stable_legacy_media_snapshot(relative, copy_file=None):
+    """Copy one controlled legacy file to a stable owned raw snapshot."""
+    copy_file = copy_file or shutil.copyfileobj
+    source = _controlled_provider_file(relative)
+    suffix = source.suffix.lower()
+    if suffix not in {".mp4", ".mov", ".webm"}:
+        raise AutodraftError(
+            "provider_asset_format_invalid",
+            "历史镜头文件格式不受支持，不能安全恢复", 409,
+        )
+    snapshot_relative = "video/legacy_recovery_raw_%s%s" % (
+        uuid.uuid4().hex, suffix,
+    )
+    snapshot = _content_root() / snapshot_relative
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        before = source.stat()
+        with source.open("rb") as reader, snapshot.open("xb") as writer:
+            copy_file(reader, writer, 1024 * 1024)
+            writer.flush()
+            os.fsync(writer.fileno())
+        after = source.stat()
+        copied = snapshot.stat()
+        identity_before = (
+            before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns,
+        )
+        identity_after = (
+            after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns,
+        )
+        if identity_before != identity_after or copied.st_size != before.st_size:
+            raise AutodraftError(
+                "provider_media_changed",
+                "历史镜头文件在建立稳定快照时发生变化，请重新检查", 409,
+            )
+        return snapshot_relative
+    except Exception:
+        try:
+            snapshot.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def _cleanup_legacy_recovery_files(relative_paths):
+    root = _content_root()
+    for relative in relative_paths:
+        raw = str(relative or "").strip().replace("\\", "/")
+        parts = Path(raw).parts
+        if len(parts) != 2 or parts[0] != "video":
+            continue
+        target = (root / raw).resolve()
+        try:
+            target.relative_to(root)
+            target.unlink(missing_ok=True)
+        except (OSError, ValueError):
+            pass
+
+
 def _verified_native_assembly_sources(
         assembly, snapshot_dir, *, require_locked_native_media=False):
     snapshot_root = Path(snapshot_dir)
@@ -2428,7 +2486,7 @@ def _provider_version(row):
 
 def recover_legacy_native_media(
     db_factory, owner_username, body, inspect_media=None,
-    create_derivative=None, hash_file=None,
+    create_derivative=None, hash_file=None, snapshot_file=None,
 ):
     """Verify legacy reported-2K files and attach immutable local evidence.
 
@@ -2440,6 +2498,7 @@ def recover_legacy_native_media(
     inspect_media = inspect_media or short_drama_native_audio.inspect_native_media
     create_derivative = create_derivative or video_domain._faststart_video_derivative
     hash_file = hash_file or short_drama_native_audio.sha256_file
+    snapshot_file = snapshot_file or _stable_legacy_media_snapshot
     project_id = str((body or {}).get("project_id") or "").strip()
     recovered = []
     skipped = []
@@ -2474,11 +2533,16 @@ def recover_legacy_native_media(
         conn.close()
 
     for shot_key, item in candidates.items():
-        derived_relative = ""
+        owned_relatives = []
         try:
             source_relative = str(item.get("file") or "").replace("\\", "/")
-            source = _controlled_provider_file(source_relative)
-            inspected = inspect_media(source, "2K")
+            _controlled_provider_file(source_relative)
+            raw_relative = str(snapshot_file(source_relative) or "").strip().replace(
+                "\\", "/"
+            )
+            owned_relatives.append(raw_relative)
+            raw_snapshot = _controlled_provider_file(raw_relative)
+            inspected = inspect_media(raw_snapshot, "2K")
             resolution = inspected.get("resolution") or {}
             width = int(resolution.get("width") or 0)
             height = int(resolution.get("height") or 0)
@@ -2503,13 +2567,14 @@ def recover_legacy_native_media(
                 )
 
             derived_relative = str(
-                create_derivative(source_relative) or ""
+                create_derivative(raw_relative) or ""
             ).strip().replace("\\", "/")
+            owned_relatives.append(derived_relative)
             derived = _controlled_provider_file(derived_relative)
             derived_sha256, derived_size = hash_file(derived)
             native_media = _sanitized_native_media({
                 "raw": {
-                    "file": source_relative,
+                    "file": raw_relative,
                     "sha256": raw_sha256,
                     "size_bytes": raw_size,
                 },
@@ -2534,6 +2599,31 @@ def recover_legacy_native_media(
             try:
                 conn.execute("BEGIN IMMEDIATE")
                 _project(conn, owner_username, project_id)
+                current_plan_row = conn.execute(
+                    "SELECT plan_json FROM short_drama_production_plans "
+                    "WHERE project_id=? AND status='confirmed' "
+                    "ORDER BY version DESC LIMIT 1", (project_id,),
+                ).fetchone()
+                current_assembly = _provider_assembly_snapshot(
+                    conn, project_id,
+                    _json(current_plan_row["plan_json"], {})
+                    if current_plan_row else {},
+                    "minimax_h3",
+                )
+                effective = next((
+                    current_item for current_item in current_assembly.get("shots") or []
+                    if str(current_item.get("shot_key") or "") == shot_key
+                ), None)
+                if (
+                    not effective
+                    or str(effective.get("id") or "") != str(item["id"])
+                    or str(effective.get("job_id") or "") != str(item["job_id"])
+                    or str(effective.get("file") or "").replace("\\", "/")
+                    != source_relative
+                ):
+                    conn.rollback()
+                    skipped.append(shot_key)
+                    continue
                 current = conn.execute(
                     "SELECT v.file,j.result_json FROM "
                     "short_drama_provider_shot_versions v JOIN "
@@ -2561,7 +2651,7 @@ def recover_legacy_native_media(
                     "native_resolution": {"width": width, "height": height},
                     "native_audio": native_audio,
                     "native_media": native_media,
-                    "raw_video_file": source_relative,
+                    "raw_video_file": raw_relative,
                     "video_file": derived_relative,
                     "video_url": "/api/gen/file/" + derived_relative,
                     "generate_audio": True,
@@ -2572,7 +2662,7 @@ def recover_legacy_native_media(
                     "updated_at=? WHERE id=? AND project_id=?",
                     (result_text, int(time.time()), item["job_id"], project_id),
                 )
-                conn.execute(
+                updated = conn.execute(
                     "UPDATE short_drama_provider_shot_versions SET file=?,url=? "
                     "WHERE id=? AND project_id=? AND file=?",
                     (
@@ -2580,6 +2670,11 @@ def recover_legacy_native_media(
                         item["id"], project_id, source_relative,
                     ),
                 )
+                if updated.rowcount != 1:
+                    raise AutodraftError(
+                        "provider_version_stale",
+                        "镜头采用版本已变化，请刷新后重新验证", 409,
+                    )
                 projected = conn.execute(
                     "SELECT * FROM short_drama_provider_shot_jobs WHERE id=?",
                     (item["job_id"],),
@@ -2594,7 +2689,7 @@ def recover_legacy_native_media(
                     )
                 conn.commit()
                 recovered.append(shot_key)
-                derived_relative = ""
+                owned_relatives = []
             finally:
                 conn.close()
         except Exception as error:
@@ -2607,8 +2702,8 @@ def recover_legacy_native_media(
                 "detail": str(error)[:500],
             })
         finally:
-            if derived_relative:
-                video_domain._cleanup_owned_video_files([derived_relative])
+            if owned_relatives:
+                _cleanup_legacy_recovery_files(owned_relatives)
 
     return {
         "project_id": project_id,

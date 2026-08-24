@@ -1535,16 +1535,17 @@ test('keeping the original shot is disabled while paid redo work is active', () 
       shots:[{shot_key:'shot_02',sort_order:2,status:'degraded',provider_version:2,issue:{message:'人物形象跳变'}}],
       issues:[{shot_key:'shot_02'}],
     },
-    current_refinement_job:{shot_key:'shot_02',status:'queued'},
   };
-  const autodraft = {
-    provider_poc:{shots:[{shot_key:'shot_02',binding_ready:true,sequence_ready:true,character_keys:[]}],characters:[]},
-    provider_job:{shot_key:'shot_02',status:'running'},
-    provider_versions:[{id:'shot-02-v2',shot_key:'shot_02',version:2,url:'/api/gen/file/shot-02-v2.mp4'}],
-  };
-  const output = workspace.refinementRedoHtml(refinement,autodraft,'shot_02',true);
-  assert.match(output, /data-action="keep-original-refinement-shot"[^>]* disabled/);
-  assert.match(output, /当前重做任务执行中，不能取消/);
+  ['running','submit_unknown'].forEach((status) => {
+    const autodraft = {
+      provider_poc:{shots:[{shot_key:'shot_02',binding_ready:true,sequence_ready:true,character_keys:[]}],characters:[]},
+      provider_job:{shot_key:'shot_02',status},
+      provider_versions:[{id:'shot-02-v2',shot_key:'shot_02',version:2,url:'/api/gen/file/shot-02-v2.mp4'}],
+    };
+    const output = workspace.refinementRedoHtml(refinement,autodraft,'shot_02',true);
+    assert.match(output, /data-action="keep-original-refinement-shot"[^>]* disabled/);
+    assert.match(output, /当前重做任务执行中，不能取消/);
+  });
 });
 
 test('accepted original shots remain auditable instead of appearing fixed', () => {

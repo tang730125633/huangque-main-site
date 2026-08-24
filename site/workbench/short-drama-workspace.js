@@ -1007,7 +1007,7 @@
     var media=shotMediaIndex(autodraft||{})[text(selected.shot_key)]||{},versions=media.versions||[];
     var currentMedia=versions.filter(function(item){return Number(item.version||0)===Number(selected.provider_version||0);})[0]||versions.filter(function(item){return item.selected;})[0]||null;
     var providerJob=autodraft&&autodraft.provider_job,refinementJob=refinement.current_refinement_job;
-    var providerActive=providerJob&&text(providerJob.shot_key)===text(selected.shot_key)&&['billing','queued','submitting','running'].indexOf(providerJob.status)>=0;
+    var providerActive=providerJob&&text(providerJob.shot_key)===text(selected.shot_key)&&['billing','queued','submitting','running','submit_unknown'].indexOf(providerJob.status)>=0;
     var refinementActive=refinementJob&&text(refinementJob.shot_key)===text(selected.shot_key)&&['queued','running'].indexOf(refinementJob.status)>=0;
     var keepOriginalBlocked=providerActive||refinementActive;
     var keepOriginalHint=keepOriginalBlocked?'当前重做任务执行中，不能取消':'接受当前已知问题，继续采用原视频；不会生成新视频或扣点。';

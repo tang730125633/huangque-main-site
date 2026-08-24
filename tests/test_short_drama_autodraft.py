@@ -1705,7 +1705,7 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         }
 
         def create_derivative(relative):
-            self.assertEqual(source_relative, relative)
+            self.assertRegex(relative, r"^video/legacy_recovery_raw_[0-9a-f]+\.mp4$")
             target = Path(self.tmp.name) / derived_relative
             target.write_bytes(b"legacy-2k-derived")
             return derived_relative
@@ -1737,7 +1737,11 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             conn.close()
         payload = json.loads(row[1])
         self.assertEqual(derived_relative, row[0])
-        self.assertEqual(source_relative, payload["raw_video_file"])
+        self.assertRegex(
+            payload["raw_video_file"],
+            r"^video/legacy_recovery_raw_[0-9a-f]+\.mp4$",
+        )
+        self.assertTrue((Path(self.tmp.name) / payload["raw_video_file"]).is_file())
         self.assertEqual(derived_relative, payload["video_file"])
         self.assertTrue(payload["native_audio"]["audible"])
         self.assertEqual(
@@ -1816,6 +1820,138 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             conn.close()
         self.assertEqual(source_relative, row[0])
         self.assertNotIn("native_media", json.loads(row[1]))
+
+    def test_legacy_media_snapshot_rejects_source_replacement_during_copy(self):
+        source_relative = "video/legacy-changing.mp4"
+        source = Path(self.tmp.name) / source_relative
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(b"original-legacy-media")
+
+        def copy_then_replace(reader, writer, length):
+            shutil.copyfileobj(reader, writer, length=length)
+            source.write_bytes(b"replacement-media-with-different-identity")
+
+        with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+            short_drama_autodraft._stable_legacy_media_snapshot(
+                source_relative, copy_file=copy_then_replace,
+            )
+
+        self.assertEqual("provider_media_changed", raised.exception.code)
+        self.assertEqual(
+            [], list((Path(self.tmp.name) / "video").glob("legacy_recovery_raw_*")),
+        )
+
+    def test_recover_legacy_media_rejects_selection_change_during_probe(self):
+        source_one = "video/legacy-selected-v1.mp4"
+        source_two = "video/legacy-selected-v2.mp4"
+        for relative, payload in (
+            (source_one, b"legacy-selected-one"),
+            (source_two, b"legacy-selected-two"),
+        ):
+            target = Path(self.tmp.name) / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(payload)
+        conn = self.db()
+        try:
+            plan = json.loads(conn.execute(
+                "SELECT plan_json FROM short_drama_production_plans WHERE id=?",
+                (self.plan_id,),
+            ).fetchone()[0])
+            shot_key = plan["material_plan"][0]["shot_key"]
+            now = 1700000000
+            for number, relative in ((1, source_one), (2, source_two)):
+                job_id = "selection-race-job-%d" % number
+                version_id = "selection-race-version-%d" % number
+                conn.execute(
+                    "INSERT INTO short_drama_provider_shot_jobs "
+                    "(id,project_id,owner_username,actor_username,plan_id,shot_key,"
+                    "character_key,avatar_id,provider,provider_job_id,status,progress,"
+                    "poll_count,input_hash,request_json,result_json,error_json,cost,"
+                    "created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,100,1,?,?,?,?,0,?,?)",
+                    (
+                        job_id, self.project["id"], "alice", "alice", self.plan_id,
+                        shot_key, "character_1", "avatar_1", "minimax_h3",
+                        "provider-selection-race-%d" % number, "succeeded",
+                        "selection-race-hash-%d" % number,
+                        json.dumps({"resolution": "2k"}),
+                        json.dumps({"resolution": "2k", "video_file": relative}),
+                        None, now + number, now + number,
+                    ),
+                )
+                conn.execute(
+                    "INSERT INTO short_drama_provider_shot_versions "
+                    "(id,project_id,job_id,shot_key,version,provider,provider_job_id,"
+                    "status,file,url,input_hash,created_at) "
+                    "VALUES (?,?,?,?,?,'minimax_h3',?,'ready',?,?,?,?)",
+                    (
+                        version_id, self.project["id"], job_id, shot_key, number,
+                        "provider-selection-race-%d" % number, relative,
+                        "/api/gen/file/" + relative,
+                        "selection-race-hash-%d" % number, now + number,
+                    ),
+                )
+            conn.execute(
+                "INSERT INTO short_drama_provider_shot_selections "
+                "(project_id,shot_key,version_id,updated_at) VALUES (?,?,?,?)",
+                (self.project["id"], shot_key, "selection-race-version-1", now),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        inspected = {
+            "sha256": "a" * 64,
+            "size_bytes": len(b"legacy-selected-one"),
+            "resolution": {"width": 2560, "height": 1440},
+            "audio": {
+                "audible": True, "codec": "aac", "sample_rate": 32000,
+                "channels": 2, "mean_volume_dbfs": -30.0,
+                "max_volume_dbfs": -10.0,
+            },
+            "inspected_at": 1700000001,
+        }
+
+        def switch_selection_and_derive(_snapshot_relative):
+            short_drama_autodraft.select_provider_version(
+                self.db, "alice", {
+                    "project_id": self.project["id"], "shot_key": shot_key,
+                    "version_id": "selection-race-version-2",
+                },
+            )
+            derived_relative = "video/minimax_h3_derived_selection_race.mp4"
+            (Path(self.tmp.name) / derived_relative).write_bytes(b"derived")
+            return derived_relative
+
+        result = short_drama_autodraft.recover_legacy_native_media(
+            self.db, "alice", {"project_id": self.project["id"]},
+            inspect_media=lambda *_args: inspected,
+            create_derivative=switch_selection_and_derive,
+            hash_file=lambda _path: ("b" * 64, len(b"derived")),
+        )
+
+        self.assertEqual([], result["recovered_shot_keys"])
+        self.assertEqual([shot_key], result["skipped_shot_keys"])
+        conn = self.db()
+        try:
+            selected = conn.execute(
+                "SELECT version_id FROM short_drama_provider_shot_selections "
+                "WHERE project_id=? AND shot_key=?",
+                (self.project["id"], shot_key),
+            ).fetchone()[0]
+            old_result = json.loads(conn.execute(
+                "SELECT result_json FROM short_drama_provider_shot_jobs "
+                "WHERE id='selection-race-job-1'"
+            ).fetchone()[0])
+        finally:
+            conn.close()
+        self.assertEqual("selection-race-version-2", selected)
+        self.assertNotIn("native_media", old_result)
+        self.assertFalse(
+            (Path(self.tmp.name) / "video/minimax_h3_derived_selection_race.mp4").exists()
+        )
+        self.assertEqual(
+            [], list((Path(self.tmp.name) / "video").glob("legacy_recovery_raw_*")),
+        )
 
     def test_provider_preview_rejects_changed_selected_native_file_before_ffmpeg(self):
         root = Path(self.tmp.name) / "native-changed"

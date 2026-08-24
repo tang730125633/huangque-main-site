@@ -5,6 +5,7 @@ local FFmpeg executor is enabled, it creates a paid 2K delivery from the
 accepted full-film draft while preserving immutable evidence.
 """
 
+import copy
 import hashlib
 import json
 import os
@@ -3374,7 +3375,8 @@ def keep_original_shot(db_factory, owner_username, actor_username, body):
         active_provider = conn.execute(
             "SELECT 1 FROM short_drama_provider_shot_jobs "
             "WHERE project_id=? AND shot_key=? "
-            "AND status IN ('billing','queued','submitting','running') LIMIT 1",
+            "AND status IN "
+            "('billing','queued','submitting','running','submit_unknown') LIMIT 1",
             (project_id, shot_key),
         ).fetchone()
         active_refinement = conn.execute(
@@ -3402,6 +3404,18 @@ def keep_original_shot(db_factory, owner_username, actor_username, body):
             "source_provider_version_id": str(
                 shot.get("provider_version_id") or ""
             ),
+            "original_issue": copy.deepcopy(issue),
+            "source": {
+                "refinement_version_id": current["id"],
+                "provider_version_id": copy.deepcopy(
+                    shot.get("provider_version_id")
+                ),
+                "provider_version": copy.deepcopy(shot.get("provider_version")),
+                "provider_job_id": copy.deepcopy(shot.get("provider_job_id")),
+                "provider_file_hash": copy.deepcopy(shot.get("file_hash")),
+                "provider_file": copy.deepcopy(shot.get("file")),
+                "provider_url": copy.deepcopy(shot.get("url")),
+            },
         }
         issues = [
             dict(item) for item in current["issues"]

@@ -4213,6 +4213,24 @@ class ShortDramaRefinementTests(unittest.TestCase):
             current["issues"][0]["message"],
             kept_shot["refinement_resolution"]["issue_message"],
         )
+        self.assertEqual(
+            current["issues"][0],
+            kept_shot["refinement_resolution"]["original_issue"],
+        )
+        self.assertEqual(
+            current["id"],
+            kept_shot["refinement_resolution"]["source"][
+                "refinement_version_id"
+            ],
+        )
+        self.assertEqual(
+            source_shot.get("provider_job_id"),
+            kept_shot["refinement_resolution"]["source"]["provider_job_id"],
+        )
+        self.assertEqual(
+            source_shot.get("file_hash"),
+            kept_shot["refinement_resolution"]["source"]["provider_file_hash"],
+        )
         refreshed = short_drama_refinement.workspace(
             self.db, "alice", "alice", self.project["id"]
         )["current_refinement"]
@@ -4224,23 +4242,29 @@ class ShortDramaRefinementTests(unittest.TestCase):
         current = short_drama_refinement.workspace(
             self.db, "alice", "alice", self.project["id"]
         )["current_refinement"]
-        conn = self.db()
-        try:
-            conn.execute(
-                "UPDATE short_drama_provider_shot_jobs SET status='running' "
-                "WHERE id='provider-job-shot_02'"
-            )
-            conn.commit()
-        finally:
-            conn.close()
-        with self.assertRaises(short_drama_refinement.RefinementError) as active_video:
-            short_drama_refinement.keep_original_shot(
-                self.db, "alice", "alice", {
-                    "project_id": self.project["id"],
-                    "version_id": current["id"], "shot_key": "shot_02",
-                },
-            )
-        self.assertEqual("refinement_redo_active", active_video.exception.code)
+        for status in ("running", "submit_unknown"):
+            conn = self.db()
+            try:
+                conn.execute(
+                    "UPDATE short_drama_provider_shot_jobs SET status=? "
+                    "WHERE id='provider-job-shot_02'", (status,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            with self.subTest(provider_status=status):
+                with self.assertRaises(
+                    short_drama_refinement.RefinementError
+                ) as active_video:
+                    short_drama_refinement.keep_original_shot(
+                        self.db, "alice", "alice", {
+                            "project_id": self.project["id"],
+                            "version_id": current["id"], "shot_key": "shot_02",
+                        },
+                    )
+                self.assertEqual(
+                    "refinement_redo_active", active_video.exception.code
+                )
 
         conn = self.db()
         try:
