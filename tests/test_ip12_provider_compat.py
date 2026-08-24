@@ -105,6 +105,8 @@ class IP12ProviderCompatTests(unittest.TestCase):
             restored = provider_live_eval.Budget(1000, 100, seeded_ledger)
             self.assertEqual(restored.requests, 25)
             self.assertEqual(restored.usage_missing, 20)
+            self.assertEqual(restored.reserved_input_tokens, 100000)
+            self.assertEqual(restored.reserved_output_tokens, 12800)
             with self.assertRaisesRegex(provider_live_eval.BudgetExceeded, "already initialized"):
                 restored.seed_existing(
                     requests_count=1, usage_missing=0,

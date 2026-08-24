@@ -208,6 +208,8 @@ class Budget:
         return {
             "requests": self.requests, "max_requests": self.max_requests,
             "input_tokens": self.input_tokens, "output_tokens": self.output_tokens,
+            "reserved_input_tokens": self.reserved_input_tokens,
+            "reserved_output_tokens": self.reserved_output_tokens,
             "estimated_cny": self.estimated_cny,
             "worst_case_cny": self.worst_case_cny,
             "usage_reports": self.usage_reports, "usage_missing": self.usage_missing,
