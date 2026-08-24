@@ -303,7 +303,7 @@ def main():
             parser.error("--output is required for t3")
         result, artifact_sha = run_t3(args)
         summary = {
-            "mode": "t3", "decision": result["decision"], "artifact_sha256": artifact_sha,
+            "mode": args.mode, "decision": result["decision"], "artifact_sha256": artifact_sha,
             "custom_eval": result["custom_eval"], "agents_sdk_eval": result["agents_sdk_eval"],
             "budget": result["budget"],
         }

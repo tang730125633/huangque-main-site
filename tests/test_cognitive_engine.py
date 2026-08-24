@@ -267,6 +267,9 @@ class CognitiveEngineTests(unittest.TestCase):
 
                 allowed = check(report)
                 self.assertTrue(allowed["valid"], allowed)
+                report["resume"] = {"base_artifact_sha256": "a" * 64}
+                self.assertFalse(check(report)["valid"])
+                report.pop("resume")
                 report["custom_eval"]["passed"] = False
                 self.assertFalse(check(report)["valid"])
                 report["custom_eval"]["passed"] = True
@@ -297,7 +300,7 @@ class CognitiveEngineTests(unittest.TestCase):
 
     @unittest.skipUnless(importlib.util.find_spec("agents"), "optional Agents SDK is not installed")
     def test_optional_sdk_builds_master_and_specialist_without_session_or_trace_payloads(self):
-        from agents import Runner
+        from agents import ModelBehaviorError, Runner
         from openai.types.responses.response_usage import InputTokensDetails
 
         self.assertEqual(InputTokensDetails(cached_tokens=0).cached_tokens, 0)
@@ -308,13 +311,19 @@ class CognitiveEngineTests(unittest.TestCase):
             "HERMES_AGENTS_SDK_OPENAI_API_KEY": "dummy",
             "HERMES_AGENTS_SDK_MODEL": "wrong-model",
         }), patch.object(
-            Runner, "run", new=AsyncMock(return_value=SimpleNamespace(final_output=expected))
+            Runner, "run", new=AsyncMock(side_effect=[
+                ModelBehaviorError("invalid structured output"),
+                SimpleNamespace(final_output=expected),
+            ])
         ) as run:
             got = cognitive_engine.agents_sdk_decider(
                 context, "你好", 1, max_output_tokens=700,
                 provider_name="openai", model_name="fixture-model",
             )
         master = run.await_args.args[0]
+        self.assertEqual(run.await_count, 2)
+        self.assertIn("当前 Project 安全上下文", run.await_args_list[0].args[1])
+        self.assertIn("上一次输出未通过固定 Schema", run.await_args_list[1].args[1])
         self.assertEqual(got, expected)
         self.assertEqual(master.name, "ip12_master_agent")
         self.assertEqual(master.model.model, "fixture-model")

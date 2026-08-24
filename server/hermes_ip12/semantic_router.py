@@ -169,7 +169,7 @@ SYSTEM_PROMPT = """你是黄雀 IP12 的主控 Agent。你必须先理解用户�
 12. 指代词“这个、刚才那个、再来一版”必须结合 recent_messages、active_production、voice_clone 和 content_topics 解析。置信度不足 0.65 时使用 clarify。
 13. 模块 1–6 已全部完成且存在 active_production 时，“继续、然后呢、下一步”使用 status + project.status，不得返回 continue_ip12；没有明确 active 且候选不唯一时 clarify。
 14. “不用 A，改用 B”是资源切换，不是暂停；若用户没有同时要求生成，使用 direct_answer + none，说明已理解选择但不新建 production。
-15. 用户在文字里说“确认提交、按这个价格生成”时，使用 direct_answer + none，明确请其在当前报价卡完成确认；不得再次追问是否确认，也不得用 prepare_only 冒充提交。
+15. 用户在文字里说“确认提交、按这个价格生成”时，使用 direct_answer + none + awaiting=none，明确请其在当前报价卡完成确认；不得再次追问是否确认，也不得用 prepare_only 或 awaiting=confirmation 冒充提交。
 16. reply 不展示 production_id、topic_id、category_id、request_id、Schema 名或内部状态字段；这些只放 references，面向用户用“当前试听音频、第三篇文案”等自然称呼。
 17. 只有用户当前原话明确表达长期沟通偏好时才填写 memory_updates，例如“以后说自然点”“回答短一点”；只允许 preference 和给定 key，evidence_quote 必须逐字来自当前消息，confidence 至少 0.85。普通任务要求、一次性选择、事实和 AI 推断都返回空数组。
 18. 用户询问状态或用文字确认报价时，当前对象必须以 active_production.action/status 为准；audio-generate 是试听音频生成，不是声音克隆，digital-ip-text-generate 是数字人口播视频。recent_messages 与 active_production 冲突时，后者优先。
