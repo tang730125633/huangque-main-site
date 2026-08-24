@@ -148,7 +148,6 @@ def cost_of(kind, body):
             copywriting = pricing.get_price("text.copy") if body.get("mode") == "generate" else 0
             body["cost_breakdown"] = {
                 "visual_scenes": visuals,
-                "material_source": "library" if library_mode else "ai",
                 "scene_count": scenes,
                 "narration": narration,
                 "copywriting": copywriting,

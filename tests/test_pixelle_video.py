@@ -1210,7 +1210,8 @@ class PixelleVideoTests(unittest.TestCase):
             cost = points.cost_of("script_to_video", prepared)
         self.assertEqual(13, cost)
         self.assertEqual(0, prepared["cost_breakdown"]["visual_scenes"])
-        self.assertEqual("library", prepared["cost_breakdown"]["material_source"])
+        self.assertEqual("library", prepared["material_source"])
+        self.assertNotIn("material_source", prepared["cost_breakdown"])
 
     def test_material_library_readiness_fails_closed(self):
         payload = self.pixelle.prepare_payload({
