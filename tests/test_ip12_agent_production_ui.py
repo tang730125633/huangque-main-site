@@ -55,7 +55,10 @@ class IP12AgentProductionUITests(unittest.TestCase):
         self.assertIn('data-production-quote-card="true"', quote_card)
         self.assertIn('data-production-confirm="true"', quote_card)
         self.assertIn("确认并提交这次生产", quote_card)
-        self.assertEqual(self.html.count('onclick="confirmProduction()"'), 1)
+        self.assertNotIn('onclick="confirmProduction()"', self.html)
+        self.assertEqual(
+            self.html.count('onclick="confirmProduction(this.dataset.productionId)"'), 2,
+        )
         quote_guard = self.html[self.html.index("function productionHasValidQuote"):self.html.index("function renderProductionPanel")]
         self.assertIn("record.status!=='quoted'", quote_guard)
         self.assertIn("productionUnfilledFields", quote_guard)
@@ -67,6 +70,27 @@ class IP12AgentProductionUITests(unittest.TestCase):
         self.assertNotIn("confirmProduction", message)
         continuation = self.html[self.html.index("async function sendJumpMsg"):self.html.index("function renderProjectPanel")]
         self.assertNotIn("confirmProduction", continuation)
+
+    def test_terminal_inline_status_never_reports_failure_as_completed(self):
+        if not shutil.which("node"):
+            self.skipTest("node unavailable")
+        start = self.html.index("function productionTerminalNoteHtml")
+        end = self.html.index("function productionSpecialist", start)
+        script = self.html[start:end] + r"""
+const statuses=['done','failed','refund_pending','refunded','unknown'];
+console.log(JSON.stringify(Object.fromEntries(
+  statuses.map(status=>[status,productionTerminalNoteHtml({status})])
+)));
+"""
+        got = json.loads(subprocess.run(
+            ["node", "-e", script], capture_output=True, text=True, check=True,
+        ).stdout)
+        self.assertIn("制作已完成", got["done"])
+        self.assertIn("制作失败", got["failed"])
+        self.assertNotIn("制作已完成", got["failed"])
+        self.assertIn("退款正在处理中", got["refund_pending"])
+        self.assertIn("点数已退回", got["refunded"])
+        self.assertEqual(got["unknown"], "")
 
     def test_missing_and_schema_render_typed_controls_and_gate_quote(self):
         controls = self.html[self.html.index("function productionParameterSchema"):self.html.index("function productionQuote")]
