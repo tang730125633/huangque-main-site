@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Hermes IP 孵化教练 — 前 6 个模块开放，后续能力开发中。"""
-import base64, binascii, hashlib, html, json, os, pathlib, re, shutil, subprocess, tempfile, threading, time, uuid
+import base64, binascii, copy, hashlib, html, ipaddress, json, os, pathlib, re, shutil, socket, subprocess, tempfile, threading, time, urllib.parse, uuid
 from datetime import datetime, timedelta
 from flask import (
     Flask,
     Response,
     g,
+    has_request_context,
     jsonify,
     redirect,
     render_template,
@@ -13,7 +14,13 @@ from flask import (
     send_file,
 )
 import requests
+import agent_runtime
+import cognitive_engine
 import ip12_harness as coach_harness
+import master_agent
+import project_memory
+import semantic_router
+import talking_head_agent
 from runtime_paths import DATA_DIR, ROOT_DIR
 from werkzeug.middleware.proxy_fix import ProxyFix
 
@@ -21,6 +28,23 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 API_BASE = os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1")
 API_KEY = os.environ["OPENAI_API_KEY"]
 MODEL = os.environ.get("HERMES_MODEL", "gpt-4o")
+MASTER_AGENT_MODE = str(os.environ.get("HERMES_MASTER_AGENT_MODE") or "off").strip().lower()
+SEMANTIC_ROUTER_MODE = str(os.environ.get("HERMES_SEMANTIC_ROUTER_MODE") or (
+    "live" if MASTER_AGENT_MODE == "live" else "off"
+)).strip().lower()
+SEMANTIC_DEBUG = str(os.environ.get("HERMES_SEMANTIC_DEBUG") or "0").strip() == "1"
+COGNITIVE_ENGINE_REQUESTED = str(os.environ.get("HERMES_COGNITIVE_ENGINE") or "custom").strip().lower()
+if COGNITIVE_ENGINE_REQUESTED not in {"custom", "agents_sdk"}:
+    COGNITIVE_ENGINE_REQUESTED = "custom"
+AGENTS_SDK_REQUESTED = str(os.environ.get("HERMES_AGENTS_SDK_ENABLED") or "0").strip() == "1"
+AGENT_RUNTIME_WORKER_ENABLED = str(
+    os.environ.get("HERMES_AGENT_RUNTIME_WORKER_ENABLED") or "0"
+).strip() == "1"
+AGENT_RUNTIME_WORKER_INTERVAL = max(
+    1.0, float(os.environ.get("HERMES_AGENT_RUNTIME_WORKER_INTERVAL") or 3)
+)
+RUNTIME_SUBMISSION_CLAIM_SECONDS = 45
+VERIFIED_VIDEO_HOSTS = {"video.huangquechuanmei.com"}
 AI_DEFAULT_TIMEOUT_SECONDS = 180
 CHOICE_TOTAL_TIMEOUT_SECONDS = 120
 CHOICE_FIRST_TIMEOUT_SECONDS = 75
@@ -30,6 +54,14 @@ try:
 except OSError:
     _release_sha_file = ""
 IP12_RELEASE_SHA = os.environ.get("IP12_RELEASE_SHA") or _release_sha_file or None
+AGENTS_SDK_CONFORMANCE = cognitive_engine.conformance_gate(
+    IP12_RELEASE_SHA, requested=AGENTS_SDK_REQUESTED
+)
+AGENTS_SDK_ENABLED = AGENTS_SDK_REQUESTED and AGENTS_SDK_CONFORMANCE["valid"]
+COGNITIVE_ENGINE_MODE = (
+    "agents_sdk" if COGNITIVE_ENGINE_REQUESTED == "agents_sdk" and AGENTS_SDK_ENABLED
+    else "custom"
+)
 PORT = 3000
 PROJECT_DIR = ROOT_DIR
 CONVOS_DIR = DATA_DIR / "conversations"
@@ -53,6 +85,7 @@ INTERNAL_ACTION_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN") or os.environ.get(
 # ponytail: one process-wide lock is enough for this single-process Flask service.
 CONVERSATION_STATE_LOCK = threading.RLock()
 TURN_REQUESTS_IN_FLIGHT = set()
+RUNTIME_RESUME_IN_FLIGHT = set()
 # ponytail: process-local tombstones only outlive in-flight work; a restart has no surviving writers.
 DELETED_CONVERSATION_IDS = set()
 PROCESS_RUN_ID = uuid.uuid4().hex
@@ -112,6 +145,19 @@ PROJECT_BACKUP_MAX_MESSAGES = 5000
 PROJECT_BACKUP_MAX_MESSAGE_CHARS = 200000
 COMING_SOON_MESSAGE = "尚未开发，敬请期待"
 COMING_SOON_API_PATHS = {"/api/module7-images", "/api/module8-video", "/api/m9-funnel", "/api/m11-sales", "/api/m12-calendar"}
+
+CAPABILITY_GATE_DEFINITIONS = (
+    {"id": "image-generate", "name": "品牌配图", "modules": (1, 2, 3, 4),
+     "foundation": True, "next_step": "确认用途与视觉方向；参考图可选"},
+    {"id": "audio-generate", "name": "口播音频", "modules": (1, 2, 3, 5, 6),
+     "next_step": "选择音色和语速后获取报价"},
+    {"id": "digital-ip-text-generate", "name": "数字人口播", "modules": (1, 2, 3, 4, 5, 6),
+     "foundation": True, "next_step": "确认形象与声音后获取报价"},
+    {"id": "canvas-ops", "name": "Canvas 编排", "modules": (1, 2, 3, 4),
+     "foundation": True, "next_step": "选择画布并预览写入方案"},
+    {"id": "publish-plan", "name": "发布建议", "modules": (1, 2, 3, 4, 5, 6),
+     "foundation": True, "next_step": "确认平台、时间与最终成品"},
+)
 
 MODULE_REPORT_TYPES = {
     1: "定位诊断报告", 2: "人设画像报告", 3: "价值主张报告",
@@ -174,6 +220,25 @@ def _redact_mobile_numbers(value):
 def _intake_pending(state):
     intake = state.get("intake")
     return isinstance(intake, dict) and intake.get("status") != "complete"
+
+
+def capability_gates(state):
+    state = normalize_coach_state(state)
+    completed = set(state.get("completed_modules") or [])
+    foundation_confirmed = (state.get("foundation_report") or {}).get("status") == "confirmed"
+    gates = []
+    for definition in CAPABILITY_GATE_DEFINITIONS:
+        missing = ["模块 %s" % module for module in definition["modules"] if module not in completed]
+        if definition.get("foundation") and not foundation_confirmed:
+            missing.append("确认模块 1–4 报告")
+        gates.append({
+            "id": definition["id"], "name": definition["name"],
+            "status": "locked" if missing else "unlocked", "missing": missing,
+            "next_step": definition["next_step"] if not missing else "先完成" + "、".join(missing),
+            "confirmation": "生成或扣点前必须再次确认",
+            "writeback": "结果、任务号和反馈写回当前 Project",
+        })
+    return gates
 
 
 def normalize_coach_state(state):
@@ -308,6 +373,7 @@ def load_conversation(convo_id):
             "reports": {}, "deliverables": {}, "updated": ""}
 
 def save_conversation(convo_id, data):
+    talking_head_agent.sync_project(data)
     data["updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
     path = conversation_path(convo_id)
     with CONVERSATION_STATE_LOCK:
@@ -463,6 +529,74 @@ def _migration_notice_id(state):
     return str(migration.get("notice_id") or "") if isinstance(migration, dict) else ""
 
 
+MODULE_SIX_CONFIRMED_SECTION_RE = re.compile(
+    r"(?ms)^###\s+([123])\.\s+(.+?)｜(.+?)\n"
+    r"\*\*精选理由：\*\*\s*(.*?)\n\n(.*?)(?=^###\s+[123]\.\s+|\Z)"
+)
+
+
+def _module_six_confirmed_sections(convo):
+    state = normalize_coach_state(convo.get("coach_state"))
+    output = ((state.get("ip_profile") or {}).get("confirmed_outputs") or {}).get("6-2") or {}
+    content = str(output.get("content") or "") if isinstance(output, dict) else ""
+    matches = list(MODULE_SIX_CONFIRMED_SECTION_RE.finditer(content))
+    if len(matches) != 3 or [item.group(1) for item in matches] != ["1", "2", "3"]:
+        return []
+    sections = []
+    for item in matches:
+        script = item.group(5).strip()
+        if len(re.sub(r"\s+", "", script)) < 120:
+            return []
+        sections.append({
+            "category": item.group(2).strip(), "title": item.group(3).strip(),
+            "description": item.group(4).strip(), "script": script,
+        })
+    return sections
+
+
+def _module_six_pack_sync_needed(convo):
+    sections = _module_six_confirmed_sections(convo)
+    pack = (convo.get("deliverables") or {}).get("6") or {}
+    categories = pack.get("categories") if isinstance(pack, dict) else None
+    if not sections or not isinstance(categories, list) or len(categories) != 3:
+        return False
+    for section, category in zip(sections, categories):
+        topics = (category or {}).get("topics") or []
+        if (section["category"] != str((category or {}).get("name") or "").strip()
+                or len(topics) != 1
+                or section["title"] != str(topics[0].get("title") or "").strip()):
+            return False
+    return any(
+        section["script"] != str((((category["topics"][0].get("versions") or [{}])[-1]).get("content") or "")).strip()
+        for section, category in zip(sections, categories)
+    )
+
+
+def _sync_module_six_pack_from_confirmed_output(convo):
+    if not _module_six_pack_sync_needed(convo):
+        return False
+    sections = _module_six_confirmed_sections(convo)
+    pack = convo["deliverables"]["6"]
+    for section, category in zip(sections, pack["categories"]):
+        topic = category["topics"][0]
+        versions = list(topic.get("versions") or [])
+        current = str((versions[-1] if versions else {}).get("content") or "").strip()
+        category["description"] = section["description"] or category.get("description", "")
+        if current == section["script"]:
+            continue
+        versions.append({
+            "version": int((versions[-1] if versions else {}).get("version") or 0) + 1,
+            "content": section["script"],
+            "change_summary": "同步用户确认的模块 6 文案",
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        })
+        topic["versions"] = versions[-20:]
+        topic["status"] = "revised"
+    pack["synced_from_confirmed_output"] = True
+    pack["synced_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    return True
+
+
 def _migrate_owned_conversation(convo_id):
     """Persist an old Project exactly once before any route exposes schema v2."""
     convo = owned_conversation(convo_id)
@@ -477,7 +611,8 @@ def _migrate_owned_conversation(convo_id):
     notice_missing = bool(notice_id) and not any(
         item.get("message_id") == notice_id for item in convo.get("messages") or []
     )
-    if source_version == coach_harness.SCHEMA_VERSION and not notice_missing:
+    content_sync_needed = _module_six_pack_sync_needed(convo)
+    if source_version == coach_harness.SCHEMA_VERSION and not notice_missing and not content_sync_needed:
         return convo
     with CONVERSATION_STATE_LOCK:
         convo = owned_conversation(convo_id)
@@ -492,13 +627,15 @@ def _migrate_owned_conversation(convo_id):
         notice_missing = bool(notice_id) and not any(
             item.get("message_id") == notice_id for item in convo.get("messages") or []
         )
-        if source_version == coach_harness.SCHEMA_VERSION and not notice_missing:
+        content_sync_needed = _module_six_pack_sync_needed(convo)
+        if source_version == coach_harness.SCHEMA_VERSION and not notice_missing and not content_sync_needed:
             return convo
         try:
             state = raw_state if source_version == coach_harness.SCHEMA_VERSION else normalize_coach_state(raw_state)
         except coach_harness.HarnessError as exc:
             raise RuntimeError(str(exc)) from exc
         convo["coach_state"] = state
+        _sync_module_six_pack_from_confirmed_output(convo)
         notice_id = _migration_notice_id(state)
         if notice_id and not any(
             item.get("message_id") == notice_id for item in convo.get("messages") or []
@@ -645,8 +782,13 @@ def _post_module_six_production_action(convo):
                 "topic_id": str(topic.get("id") or ""),
             }
             try:
-                _production_source(convo, target)
+                source = _production_source(convo, target)
             except coach_harness.HarnessError:
+                continue
+            specialist_plan = talking_head_agent.plan(
+                state, source, "digital-ip-text-generate"
+            )
+            if not specialist_plan.get("ok"):
                 continue
             return {
                 "type": "prepare_production",
@@ -656,8 +798,10 @@ def _post_module_six_production_action(convo):
                 "requested_result": "video",
                 "preferred_action": "digital-ip-text-generate",
                 "candidate_actions": ["digital-ip-text-generate"],
+                "specialist_agent": talking_head_agent.AGENT_ID,
+                "parameter_schema": specialist_plan["option_schema"],
                 "allow_system_media": False,
-                "options": {},
+                "options": specialist_plan["recommended_options"],
                 "script_title": str(topic.get("title") or "第一篇口播文案"),
             }
     return None
@@ -677,8 +821,9 @@ def _post_module_six_capability_question(state, message):
 
 def _post_module_six_handoff_reply(action):
     return (
-        "六步已经完成，我可以继续调用黄雀的图片、音频和视频制作能力。"
-        "根据当前成果，我建议先把《%s》制作成数字人口播视频。"
+        "六步已经完成，数字人口播能力已经解锁。"
+        "根据当前成果，我建议先把《%s》制作成第一件数字人口播作品。"
+        "我会把这项工作委派给口播短视频 Agent，并继续作为主控 Agent 向你汇报下一步。"
         "文案会自动复用；接下来我会在当前 IP12 对话里向你收集这次制作需要的素材。"
         "你可以直接上传人物照片、参考视频或本人口播音频，不需要跳到其他功能页。"
         "系统公共素材默认不会展示；只有你明确要求使用时才会提供。"
@@ -690,7 +835,10 @@ def _post_module_six_handoff_reply(action):
 def _production_public(record):
     """Never return a bridge quote token through a project read endpoint."""
     result = json.loads(json.dumps(record, ensure_ascii=False))
-    for key in ("source_text", "idempotency_key", "confirmation_id", "canvas_versions"):
+    for key in (
+        "source_text", "idempotency_key", "confirmation_id", "canvas_versions", "job_id",
+        "_submission_claim_until",
+    ):
         result.pop(key, None)
     quote = result.get("quote")
     if isinstance(quote, dict):
@@ -698,6 +846,14 @@ def _production_public(record):
     clone = result.get("voice_clone")
     if isinstance(clone, dict):
         clone.pop("audio_upload_id", None)
+    return result
+
+
+def _artifact_public(artifact):
+    result = json.loads(json.dumps(artifact if isinstance(artifact, dict) else {}, ensure_ascii=False))
+    result.pop("_private", None)
+    result.pop("agent_run_id", None)
+    result.pop("production_id", None)
     return result
 
 
@@ -785,44 +941,64 @@ def _production_recommendation(account_id, requested_result, preferred_action=No
         raise coach_harness.HarnessError("暂不支持该制作类型")
     try:
         catalog = _bridge_catalog(account_id)
-        entries = {
-            str(item.get("action") or ""): item
-            for item in catalog["actions"]
-            if isinstance(item, dict)
-            and _catalog_action_family(item) == family
-            and str((item.get("availability") or {}).get("status") or "available") == "available"
-        }
-        preferred = str(preferred_action or "").strip()
-        if preferred:
-            if preferred not in entries:
-                raise coach_harness.HarnessError("所选能力与制作类型不匹配或当前不可用")
-            action = preferred
-        else:
-            base = coach_harness.production_recommendation(family)
-            action = next((name for name in base["candidate_actions"] if name in entries), "")
-            if not action:
-                raise coach_harness.HarnessError("当前账号暂时没有可用的%s能力" % family)
-        return {
-            "capability_family": family,
-            "recommended_action": action,
-            "candidate_actions": list(entries),
-            "catalog_version": str(catalog.get("version") or ""),
-            "catalog_entry": entries[action],
-        }
-    except RuntimeError:
-        fallback = coach_harness.production_recommendation(family, preferred_action)
-        fallback["catalog_version"] = "fallback-v1"
-        fallback["catalog_entry"] = {
-            "action": fallback["recommended_action"],
-            "family": family,
-            "input_schema": _production_action_schema(fallback["recommended_action"]),
-            "billing": "free" if fallback["recommended_action"] == "canvas-ops" else "quote_then_confirm",
-            "confirmation_required": True,
-            "risk": "write" if fallback["recommended_action"] == "canvas-ops" else "production",
-            "result_type": "canvas" if family == "canvas" else "asset",
-            "ui_route": "",
-        }
-        return fallback
+    except RuntimeError as exc:
+        raise coach_harness.HarnessError("实时能力目录暂时不可用，请稍后再试") from exc
+    entries = {
+        str(item.get("action") or ""): item
+        for item in catalog["actions"]
+        if isinstance(item, dict)
+        and _catalog_action_family(item) == family
+        and str((item.get("availability") or {}).get("status") or "unknown") == "available"
+    }
+    preferred = str(preferred_action or "").strip()
+    if preferred:
+        if preferred not in entries:
+            raise coach_harness.HarnessError("所选能力与制作类型不匹配或当前不可用")
+        action = preferred
+    else:
+        base = coach_harness.production_recommendation(family)
+        action = next((name for name in base["candidate_actions"] if name in entries), "")
+        if not action:
+            raise coach_harness.HarnessError("当前账号暂时没有可用的%s能力" % family)
+    return {
+        "capability_family": family,
+        "recommended_action": action,
+        "candidate_actions": list(entries),
+        "catalog_version": str(catalog.get("version") or ""),
+        "catalog_entry": entries[action],
+    }
+
+
+_PRODUCTION_ACTION_GATES = {
+    "image-generate": "image-generate",
+    "audio-generate": "audio-generate",
+    "digital-ip-text-generate": "digital-ip-text-generate",
+    "canvas-ops": "canvas-ops",
+}
+
+
+def _validate_production_action(account_id, state, action):
+    try:
+        catalog = _bridge_catalog(account_id)
+    except RuntimeError as exc:
+        raise coach_harness.HarnessError("实时能力目录暂时不可用，请稍后再试") from exc
+    entry = next((
+        item for item in catalog.get("actions") or []
+        if isinstance(item, dict) and str(item.get("action") or "") == action
+    ), None)
+    if not entry or str((entry.get("availability") or {}).get("status") or "unknown") != "available":
+        raise coach_harness.HarnessError("当前账号暂时不能使用这项能力")
+    gate_id = _PRODUCTION_ACTION_GATES.get(action)
+    if not gate_id and action not in (_DIRECT_READ_ACTIONS | _NAVIGATION_ONLY_ACTIONS):
+        gate_id = {
+            "image": "image-generate", "audio": "audio-generate",
+            "video": "digital-ip-text-generate", "canvas": "canvas-ops",
+        }.get(_catalog_action_family(entry))
+    if gate_id:
+        gate = next(item for item in capability_gates(state) if item["id"] == gate_id)
+        if gate["status"] != "unlocked":
+            raise coach_harness.HarnessError(gate["next_step"])
+    return entry
 
 
 _SPECIAL_PRODUCTION_INTENTS = (
@@ -932,6 +1108,28 @@ def _capability_help_reply(account_id, action):
 def _expanded_production_intent(message):
     """Recognize the feature-page actions that the old five-action map missed."""
     text = re.sub(r"\s+", "", str(message or "")).lower()
+    audio_preview = bool(re.search(
+        r"(?:生成|做|制作).{0,20}(?:音色|声音).{0,12}(?:试听|音频|文案)"
+        r"|(?:用|使用).{0,12}(?:已有|个人|克隆|复刻|这个|该).{0,8}(?:音色|声音).{0,16}(?:生成|做|制作|试听)"
+        r"|(?:生成|做|制作).{0,12}(?:一段)?试听(?:文案|音频)",
+        text,
+    ))
+    if audio_preview:
+        return {
+            "capability_family": "audio", "recommended_action": "audio-generate",
+            "candidate_actions": ["audio-generate"], "audio_preview_request": True,
+        }
+    voice_clone = bool(re.search(
+        r"(?:声音|音色).{0,6}(?:克隆|复刻)|(?:克隆|复刻).{0,6}(?:声音|音色)", text
+    )) or bool(re.search(r"(?:重新|再|继续).{0,6}(?:克隆|复刻)(?:一版)?", text))
+    voice_clone_negated = bool(re.search(
+        r"(?:不要|不需要|无需|不用|取消).{0,6}(?:声音|音色).{0,6}(?:克隆|复刻)", text
+    ))
+    if voice_clone and not voice_clone_negated:
+        return {
+            "capability_family": "audio", "recommended_action": "audio-slots",
+            "candidate_actions": ["audio-slots"], "voice_clone_request": True,
+        }
     explanatory_question = bool(re.search(
         r"(?:是什么|怎么用|如何使用|有哪些功能|是否支持|多少钱|什么格式|有什么区别|为什么)", text
     ))
@@ -973,10 +1171,28 @@ def _audio_options_from_message(message):
     return {"speed": round(speed, 1)} if 0.5 <= speed <= 2 else {}
 
 
+def _audio_preview_excerpt(convo):
+    pack = (convo.get("deliverables") or {}).get("6") or {}
+    topics = [
+        topic for category in pack.get("categories") or []
+        for topic in category.get("topics") or []
+    ]
+    versions = (topics[-1].get("versions") or []) if topics else []
+    script = re.sub(r"\s+", " ", str((versions[-1] if versions else {}).get("content") or "")).strip()
+    sentences = re.findall(r"[^。！？]+[。！？]", script)
+    return ("".join(sentences[:2]) or script)[:180]
+
+
 def _production_source_revision_intent(message):
     text = re.sub(r"\s+", "", str(message or ""))
     source = r"(?:文案|正文|脚本|标题|开头|结尾|第一句|最后一句)"
     change = r"(?:修改|改成|改为|调整|删除|删掉|换成|缩短|直接|口语|自然|简短|清楚)"
+    text = re.sub(
+        source + r"(?:保持|维持)?(?:不变|不改|原样|照旧)|"
+        r"(?:不要|无需|不用)(?:修改|调整|改动)" + source,
+        "",
+        text,
+    )
     return bool(re.search(source + r".{0,30}" + change + r"|" + change + r".{0,30}" + source, text))
 
 
@@ -997,15 +1213,24 @@ def _production_material_revision_intent(message):
     return "both" if voice and image else ("voice" if voice else ("image" if image else ""))
 
 
-def _latest_editable_talking_head_production(convo):
-    for record in reversed(list((convo.get("productions") or {}).values())):
+def _editable_talking_head_productions(convo):
+    return [
+        record for record in (convo.get("productions") or {}).values()
         if (
             isinstance(record, dict)
             and record.get("action") in {"digital-ip-text-generate", "digital-ip-audio-generate"}
             and record.get("status") not in {"submitting", "queued", "running", "done"}
-        ):
-            return record
-    return None
+        )
+    ]
+
+
+def _latest_editable_talking_head_production(convo):
+    candidates = _editable_talking_head_productions(convo)
+    active_id = str(convo.get("active_production_id") or "")
+    active = next((item for item in candidates if str(item.get("id") or "") == active_id), None)
+    if active is not None:
+        return active
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def _production_action_schema(action, catalog_entry=None):
@@ -1076,6 +1301,13 @@ def _explicit_system_media_request(message):
     return bool(re.search(r"(?:使用|选|选择|就用|采用).{0,12}" + media, text))
 
 
+def _production_agent_skills(record):
+    specialist = record.get("specialist_agent") if isinstance(record, dict) else None
+    if isinstance(specialist, dict) and specialist.get("agent_id") == talking_head_agent.AGENT_ID:
+        return ["talking_head_video_agent", "production_bridge"]
+    return ["production_bridge"]
+
+
 def _ensure_production_material_request_message(convo, record, missing):
     fields = [name for name in missing if _production_upload_kind(record, name)]
     needs_account_audio = "audio_file" in missing
@@ -1093,7 +1325,8 @@ def _ensure_production_material_request_message(convo, record, missing):
         for descriptor in properties.values()
         if isinstance(descriptor, dict)
     )
-    if not fields and not needs_account_audio and not needs_avatar and not needs_voice and not has_inline_choices:
+    if (not fields and not needs_account_audio and not needs_avatar and not needs_voice
+            and not has_inline_choices and record.get("billing") != "quote_then_confirm"):
         return None
     if has_avatar_choices and has_voice_choices:
         parts = [
@@ -1140,7 +1373,7 @@ def _ensure_production_material_request_message(convo, record, missing):
             existing["production_id"] = record["id"]
             return existing
     message = _append_assistant_message(
-        convo, "\n\n".join(parts), "production_bridge",
+        convo, "\n\n".join(parts), _production_agent_skills(record),
         message_id="matreq_" + uuid.uuid4().hex,
         production_id=record["id"],
     )
@@ -1618,6 +1851,7 @@ def _set_production_result(record, result):
         record["last_error_code"] = str(result.get("code") or "production_failed")
     elif record["status"] in {"queued", "running", "done"}:
         record["last_error_code"] = ""
+    record.pop("_submission_claim_until", None)
     record["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
@@ -1642,12 +1876,587 @@ def _ensure_production_delivery_message(convo, record):
         )
     )
     message = _append_assistant_message(
-        convo, content, "production_bridge",
+        convo, content, _production_agent_skills(record),
         message_id="prodmsg_" + uuid.uuid4().hex,
         production_id=record["id"],
     )
     record["delivery_message_id"] = message["message_id"]
     return message
+
+
+def _is_talking_head_record(record):
+    specialist = record.get("specialist_agent") if isinstance(record, dict) else None
+    return (
+        isinstance(specialist, dict)
+        and specialist.get("agent_id") == talking_head_agent.AGENT_ID
+        and record.get("action") in talking_head_agent.SUPPORTED_ACTIONS
+    )
+
+
+def _runtime_request_id(record, stage):
+    digest = str(record.get("input_digest") or record.get("script_digest") or "")[-12:]
+    return "runtime-%s-%s-%s" % (
+        str(record.get("id") or "").removeprefix("prod_"), stage, digest or "initial",
+    )
+
+
+def _ensure_talking_head_run(convo, record):
+    if not _is_talking_head_record(record):
+        return None
+    run_id = str(record.get("agent_run_id") or "run_" + str(record.get("id") or "").removeprefix("prod_"))
+    record["agent_run_id"] = run_id
+    run = agent_runtime.start(
+        convo, run_id, agent_runtime.TalkingHeadPolicy(),
+        "把当前已确认文案制作成一条可播放、可继续修改的数字人口播视频",
+        project_id=str(convo.get("id") or ""), production_id=str(record.get("id") or ""),
+        inputs={
+            "avatar_id": (record.get("options") or {}).get("avatar_id"),
+            "voice": (record.get("options") or {}).get("voice"),
+            "input_digest": str(record.get("input_digest") or ""),
+        },
+        selected_source={
+            "category_id": str(record.get("category_id") or ""),
+            "topic_id": str(record.get("topic_id") or ""),
+            "script_version": int(record.get("script_version") or 0),
+            "script_digest": str(record.get("script_digest") or ""),
+        },
+    )
+    run["inputs"].update({
+        "avatar_id": (record.get("options") or {}).get("avatar_id"),
+        "voice": (record.get("options") or {}).get("voice"),
+        "input_digest": str(record.get("input_digest") or ""),
+    })
+    return run
+
+
+def _runtime_move(run, target, *, awaiting=None, next_action=None, error=None,
+                  refund_status=None, request_id=""):
+    if run is None or run.get("status") == target:
+        return run
+    if run.get("status") in agent_runtime.TERMINAL:
+        return run
+    queue = [(run["status"], [])]
+    seen = {run["status"]}
+    path = None
+    while queue:
+        current, steps = queue.pop(0)
+        for candidate in agent_runtime.TRANSITIONS[current]:
+            if candidate in seen:
+                continue
+            next_steps = steps + [candidate]
+            if candidate == target:
+                path = next_steps
+                queue = []
+                break
+            seen.add(candidate)
+            queue.append((candidate, next_steps))
+    if not path:
+        raise agent_runtime.AgentRuntimeError(
+            "no agent transition path: %s -> %s" % (run.get("status"), target)
+        )
+    for index, status in enumerate(path):
+        final = index == len(path) - 1
+        agent_runtime.transition(
+            run, status,
+            awaiting=awaiting if final else None,
+            next_action=next_action if final else status,
+            error=error if final else None,
+            refund_status=refund_status if final else None,
+            request_id=request_id,
+        )
+    return run
+
+
+def _runtime_tool(convo, record, tool_id, phase, *, input_value=None, output=None,
+                  error=None, suffix="", request_id=""):
+    run = _ensure_talking_head_run(convo, record)
+    if run is None:
+        return None
+    call_id = "%s:%s:%s" % (
+        run["run_id"], tool_id, suffix or str(record.get("input_digest") or "current")[-16:],
+    )
+    agent_runtime.record_tool(
+        run, tool_id, phase=phase, input_value=input_value, output=output,
+        error=error, call_id=call_id,
+        idempotency_key=str(record.get("idempotency_key") or ""),
+        request_id=request_id or _runtime_request_id(record, tool_id),
+    )
+    return run
+
+
+def _runtime_prepare_talking_head(convo, record, missing):
+    run = _ensure_talking_head_run(convo, record)
+    if run is None:
+        return None
+    request_id = _runtime_request_id(record, "prepare")
+    source = {
+        "category_id": str(record.get("category_id") or ""),
+        "topic_id": str(record.get("topic_id") or ""),
+        "script_version": int(record.get("script_version") or 0),
+        "script_digest": str(record.get("script_digest") or ""),
+    }
+    if not run["tool_calls"]:
+        for tool_id, input_value, output in (
+            ("project.read", {}, {"source": source, "script_title": str(record.get("script_title") or "已确认口播文案")}),
+            ("capability.read", {"action": record["action"]}, {"available": True, "gate_status": "unlocked"}),
+            ("assets.read", {}, {
+                "avatar_ready": bool((record.get("options") or {}).get("avatar_id")),
+                "voice_ready": bool((record.get("options") or {}).get("voice")),
+                "missing": list(missing or []),
+            }),
+        ):
+            suffix = "initial"
+            _runtime_tool(convo, record, tool_id, "started", input_value=input_value,
+                          suffix=suffix, request_id=request_id)
+            _runtime_tool(convo, record, tool_id, "completed", output=output,
+                          suffix=suffix, request_id=request_id)
+    if missing:
+        _runtime_move(
+            run, "needs_input", awaiting=str(missing[0]),
+            next_action="provide:" + str(missing[0]), request_id=request_id,
+        )
+    elif run.get("status") == "needs_input":
+        _runtime_move(run, "planning", next_action="prepare_quote", request_id=request_id)
+    return run
+
+
+def _runtime_quote_started(convo, record, request_id=""):
+    run = _ensure_talking_head_run(convo, record)
+    if run and run.get("status") == "needs_input":
+        _runtime_move(run, "planning", next_action="prepare_quote",
+                      request_id=request_id or _runtime_request_id(record, "quote"))
+    return _runtime_tool(
+        convo, record, "production.quote", "started",
+        input_value={"production_id": record["id"], "input_digest": record["input_digest"]},
+        suffix=str(record.get("input_digest") or "")[-16:],
+        request_id=request_id or _runtime_request_id(record, "quote"),
+    )
+
+
+def _runtime_quote_completed(convo, record, request_id=""):
+    quote = record.get("quote") or {}
+    run = _runtime_tool(
+        convo, record, "production.quote", "completed",
+        output={
+            "cost": quote.get("cost"), "points": quote.get("points"),
+            "expires_at": quote.get("expires_at"), "quote_token": quote.get("token"),
+        },
+        suffix=str(record.get("input_digest") or "")[-16:],
+        request_id=request_id or _runtime_request_id(record, "quote"),
+    )
+    if run:
+        _runtime_move(run, "quote_ready", next_action="show_quote",
+                      request_id=request_id or _runtime_request_id(record, "quote"))
+        _runtime_move(run, "awaiting_confirmation", awaiting="confirmation",
+                      next_action="wait_for_quote_button",
+                      request_id=request_id or _runtime_request_id(record, "confirmation"))
+    return run
+
+
+def _runtime_submit_started(convo, record, confirmation_id):
+    run = _ensure_talking_head_run(convo, record)
+    if run and run.get("status") not in {"awaiting_confirmation", "submitting", "running"}:
+        _runtime_move(run, "awaiting_confirmation", awaiting="confirmation",
+                      next_action="wait_for_quote_button",
+                      request_id=_runtime_request_id(record, "confirmation"))
+    if run and run.get("status") == "awaiting_confirmation":
+        _runtime_move(run, "submitting", next_action="submit_once",
+                      request_id=str(confirmation_id or _runtime_request_id(record, "submit")))
+    return _runtime_tool(
+        convo, record, "production.submit", "started",
+        input_value={"production_id": record["id"], "input_digest": record["input_digest"]},
+        suffix="submit", request_id=str(confirmation_id or _runtime_request_id(record, "submit")),
+    )
+
+
+def _runtime_submit_completed(convo, record, result):
+    run = _runtime_tool(
+        convo, record, "production.submit", "completed",
+        output={"status": str(result.get("status") or record.get("status") or "submitting"),
+                "job_id": result.get("job_id") or record.get("job_id")},
+        suffix="submit", request_id=str(record.get("confirmation_id") or _runtime_request_id(record, "submit")),
+    )
+    if run and record.get("job_id"):
+        _runtime_move(run, "running", awaiting="external", next_action="poll_original_job",
+                      request_id=_runtime_request_id(record, "job"))
+    return run
+
+
+def _runtime_fail(convo, record, code, *, refund_status=None, tool_id=None):
+    run = _ensure_talking_head_run(convo, record)
+    if run and tool_id:
+        _runtime_tool(
+            convo, record, tool_id, "failed", error={"code": str(code or "tool_failed")},
+            suffix="submit" if tool_id == "production.submit" else "current",
+            request_id=_runtime_request_id(record, "error"),
+        )
+    if run:
+        run["refund_status"] = str(refund_status or record.get("refund_status") or "none")
+        run["error"] = {"code": str(code or "agent_failed")}
+        run["updated_at"] = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+        if run.get("status") in agent_runtime.TERMINAL:
+            agent_runtime.append_event(
+                run, "error", {
+                    "status": run.get("status"), "error": run["error"],
+                    "refund_status": run["refund_status"],
+                }, request_id=_runtime_request_id(record, "error"),
+            )
+            return run
+        _runtime_move(
+            run, "failed", error={"code": str(code or "agent_failed")},
+            refund_status=run["refund_status"],
+            next_action="explain_failure_without_retry",
+            request_id=_runtime_request_id(record, "error"),
+        )
+    return run
+
+
+def _safe_public_artifact_url(value):
+    try:
+        parsed = urllib.parse.urlparse(str(value or ""))
+        if (
+            parsed.scheme != "https" or parsed.hostname not in VERIFIED_VIDEO_HOSTS
+            or parsed.username or parsed.password
+        ):
+            return ""
+        addresses = {
+            item[4][0] for item in socket.getaddrinfo(parsed.hostname, parsed.port or 443, type=socket.SOCK_STREAM)
+        }
+        if not addresses or any(
+            ipaddress.ip_address(address).is_private
+            or ipaddress.ip_address(address).is_loopback
+            or ipaddress.ip_address(address).is_link_local
+            or ipaddress.ip_address(address).is_reserved
+            or ipaddress.ip_address(address).is_multicast
+            for address in addresses
+        ):
+            return ""
+        return parsed.geturl()
+    except (OSError, TypeError, ValueError):
+        return ""
+
+
+def _verify_video_artifacts(asset_refs):
+    video = next((
+        item for item in (asset_refs or [])
+        if isinstance(item, dict) and str(item.get("kind") or "") == "video"
+    ), None)
+    url = _safe_public_artifact_url((video or {}).get("url"))
+    if not url:
+        return {"decision": "fail", "issues": [{"code": "video_url_invalid"}], "media": {}}
+    temp_path = ""
+    try:
+        with requests.get(url, stream=True, allow_redirects=False, timeout=(6, 30)) as response:
+            if 300 <= response.status_code < 400:
+                raise RuntimeError("video_redirect_rejected")
+            if response.status_code != 200:
+                raise RuntimeError("video_http_unavailable")
+            content_type = str(response.headers.get("Content-Type") or "").split(";", 1)[0].lower()
+            if content_type and not (
+                content_type.startswith("video/") or content_type == "application/octet-stream"
+            ):
+                raise RuntimeError("video_content_type_invalid")
+            maximum = 256 * 1024 * 1024
+            length = int(response.headers.get("Content-Length") or 0)
+            if length > maximum:
+                raise RuntimeError("video_too_large")
+            total = 0
+            with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as handle:
+                temp_path = handle.name
+                for chunk in response.iter_content(1024 * 1024):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > maximum:
+                        raise RuntimeError("video_too_large")
+                    handle.write(chunk)
+            if total <= 0:
+                raise RuntimeError("video_http_unavailable")
+        probe = subprocess.run([
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=codec_name,width,height:format=duration,format_name",
+            "-of", "json", temp_path,
+        ], capture_output=True, text=True, timeout=35, check=False)
+        if probe.returncode != 0:
+            raise RuntimeError("video_decode_failed")
+        payload = json.loads(probe.stdout or "{}")
+        stream = (payload.get("streams") or [{}])[0]
+        duration = float((payload.get("format") or {}).get("duration") or 0)
+        width, height = int(stream.get("width") or 0), int(stream.get("height") or 0)
+        if duration <= 0 or width <= 0 or height <= 0 or not stream.get("codec_name"):
+            raise RuntimeError("video_metadata_invalid")
+        return {
+            "decision": "pass", "issues": [],
+            "media": {
+                "url": url, "duration": round(duration, 3),
+                "codec": str(stream.get("codec_name")), "width": width, "height": height,
+                "content_type": content_type,
+            },
+        }
+    except (json.JSONDecodeError, OSError, requests.exceptions.RequestException, RuntimeError,
+            subprocess.SubprocessError, TypeError, ValueError) as exc:
+        return {
+            "decision": "fail",
+            "issues": [{"code": str(exc) if str(exc).startswith("video_") else "video_verification_failed"}],
+            "media": {},
+        }
+    finally:
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+
+
+def _runtime_writeback(convo, record, verification):
+    run = _ensure_talking_head_run(convo, record)
+    if run is None:
+        return None
+    artifact_digest = _production_digest(record.get("asset_refs") or [])
+    request_id = _runtime_request_id(record, "writeback")
+    _runtime_tool(
+        convo, record, "project.writeback", "started",
+        input_value={"production_id": record["id"], "artifact_digest": artifact_digest},
+        suffix=artifact_digest[-16:], request_id=request_id,
+    )
+    artifact_id = "artifact_" + str(record.get("id") or "").removeprefix("prod_")
+    artifacts = convo.setdefault("artifacts", {})
+    artifact = artifacts.get(artifact_id)
+    if not isinstance(artifact, dict):
+        parent_artifact_id = ""
+        parent_production_id = str(record.get("parent_production_id") or "")
+        if parent_production_id:
+            parent = next((
+                item for item in artifacts.values()
+                if isinstance(item, dict) and item.get("production_id") == parent_production_id
+            ), None)
+            parent_artifact_id = str((parent or {}).get("id") or "")
+        artifact = {
+            "id": artifact_id,
+            "kind": "video",
+            "version": int(record.get("output_version") or 1),
+            "status": "ready",
+            "production_id": record["id"],
+            "agent_run_id": run["run_id"],
+            "source": {
+                "category_id": str(record.get("category_id") or ""),
+                "topic_id": str(record.get("topic_id") or ""),
+                "script_version": int(record.get("script_version") or 0),
+                "script_digest": str(record.get("script_digest") or ""),
+            },
+            "selected_assets": {
+                "avatar_id": (record.get("options") or {}).get("avatar_id"),
+                "voice": (record.get("options") or {}).get("voice"),
+            },
+            "asset_refs": copy.deepcopy(record.get("asset_refs") or []),
+            "verification": copy.deepcopy(verification),
+            "parent_artifact_id": parent_artifact_id,
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "_private": {"job_id": str(record.get("job_id") or ""), "agent_run_id": run["run_id"]},
+        }
+        artifacts[artifact_id] = artifact
+    _runtime_tool(
+        convo, record, "project.writeback", "completed",
+        output={"artifact_id": artifact_id, "version": artifact["version"]},
+        suffix=artifact_digest[-16:], request_id=request_id,
+    )
+    record["status"] = "done"
+    record["verified_artifact_id"] = artifact_id
+    record["verification"] = copy.deepcopy(verification)
+    record["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    run["artifacts"] = [{
+        "artifact_id": artifact_id, "kind": "video", "version": artifact["version"],
+        "asset_refs": copy.deepcopy(record.get("asset_refs") or []),
+    }]
+    run["result"] = {
+        "artifact_id": artifact_id, "version": artifact["version"],
+        "verification": copy.deepcopy(verification),
+    }
+    _runtime_move(
+        run, "completed", next_action="request_feedback",
+        request_id=_runtime_request_id(record, "completed"),
+    )
+    _ensure_production_delivery_message(convo, record)
+    return artifact
+
+
+def _resume_talking_head_production_once(cid, account_id, production_id, *,
+                                         bridge_action=None, verifier=None):
+    bridge_action = bridge_action or _bridge_action
+    verifier = verifier or _verify_video_artifacts
+    claim = (str(cid), str(production_id))
+    with CONVERSATION_STATE_LOCK:
+        if claim in RUNTIME_RESUME_IN_FLIGHT:
+            return False
+        RUNTIME_RESUME_IN_FLIGHT.add(claim)
+    try:
+        with CONVERSATION_STATE_LOCK:
+            convo = load_conversation(cid)
+            if convo.get("owner_account_id") != account_id:
+                return False
+            record = (convo.get("productions") or {}).get(production_id)
+            if not _is_talking_head_record(record):
+                return False
+            _ensure_talking_head_run(convo, record)
+            status = str(record.get("status") or "")
+            if status == "submitting" and not record.get("job_id"):
+                if int(record.get("_submission_claim_until") or 0) > _utc_timestamp():
+                    return False
+                quote = record.get("quote") or {}
+                if not record.get("confirmation_id") or not (quote.get("billing") == "free" or quote.get("token")):
+                    _runtime_fail(convo, record, "submission_recovery_unavailable", tool_id="production.submit")
+                    record.update(status="failed", last_error_code="submission_recovery_unavailable")
+                    save_conversation(cid, convo)
+                    return True
+                _runtime_submit_started(convo, record, record.get("confirmation_id"))
+                action = ("submit", record["action"], _production_input(record, record.get("options") or {}),
+                          quote.get("token", ""), record["idempotency_key"])
+                save_conversation(cid, convo)
+            elif status in {"submitting", "queued", "running", "refund_pending"} and record.get("job_id"):
+                _runtime_tool(
+                    convo, record, "task.read", "started",
+                    input_value={"production_id": record["id"]}, suffix="task",
+                    request_id=_runtime_request_id(record, "task"),
+                )
+                action = ("task", "task", {"job_id": int(record["job_id"])}, "", record["idempotency_key"])
+                save_conversation(cid, convo)
+            elif status == "verifying":
+                asset_digest = _production_digest(record.get("asset_refs") or [])
+                _runtime_tool(
+                    convo, record, "artifact.verify", "started",
+                    input_value={"production_id": record["id"], "asset_digest": asset_digest},
+                    suffix=asset_digest[-16:], request_id=_runtime_request_id(record, "verify"),
+                )
+                action = ("verify", "", copy.deepcopy(record.get("asset_refs") or []), "", "")
+                save_conversation(cid, convo)
+            else:
+                return False
+
+        if action[0] == "submit":
+            result = bridge_action(
+                account_id, action[1], action[2], confirm=True,
+                quote_token=action[3], idempotency_key=action[4],
+            )
+        elif action[0] == "task":
+            result = bridge_action(account_id, action[1], action[2], idempotency_key=action[4])
+        else:
+            result = verifier(action[2])
+
+        with CONVERSATION_STATE_LOCK:
+            convo = load_conversation(cid)
+            record = (convo.get("productions") or {}).get(production_id)
+            if not _is_talking_head_record(record):
+                return False
+            run = _ensure_talking_head_run(convo, record)
+            if action[0] == "submit":
+                _set_production_result(record, result)
+                _runtime_submit_completed(convo, record, result)
+            elif action[0] == "task":
+                _set_production_result(record, result)
+                _runtime_tool(
+                    convo, record, "task.read", "completed",
+                    output={
+                        "status": str(record.get("status") or ""),
+                        "refund_status": str(record.get("refund_status") or "none"),
+                        "job_id": record.get("job_id"),
+                    }, suffix="task", request_id=_runtime_request_id(record, "task"),
+                )
+                if record.get("status") == "done":
+                    record["provider_status"] = "done"
+                    record["status"] = "verifying"
+                    _runtime_move(run, "verifying", next_action="verify_artifact",
+                                  request_id=_runtime_request_id(record, "verify"))
+                elif record.get("status") in {"queued", "running"}:
+                    _runtime_move(run, "running", awaiting="external", next_action="poll_original_job",
+                                  request_id=_runtime_request_id(record, "task"))
+                elif record.get("status") in {"failed", "refund_pending", "refunded"}:
+                    _runtime_fail(
+                        convo, record, record.get("last_error_code") or record.get("status"),
+                        refund_status=record.get("refund_status"),
+                    )
+            else:
+                asset_digest = _production_digest(record.get("asset_refs") or [])
+                _runtime_tool(
+                    convo, record, "artifact.verify", "completed",
+                    output=result, suffix=asset_digest[-16:],
+                    request_id=_runtime_request_id(record, "verify"),
+                )
+                if result.get("decision") != "pass":
+                    record.update(status="failed", last_error_code="artifact_verification_failed")
+                    _runtime_fail(convo, record, "artifact_verification_failed")
+                else:
+                    agent_runtime.append_event(
+                        run, "artifact_ready", {"status": "verified"},
+                        request_id=_runtime_request_id(record, "artifact"),
+                    )
+                    _runtime_writeback(convo, record, result)
+            save_conversation(cid, convo)
+
+        return True
+    except ProductionBridgeError as exc:
+        with CONVERSATION_STATE_LOCK:
+            convo = load_conversation(cid)
+            record = (convo.get("productions") or {}).get(production_id)
+            if _is_talking_head_record(record):
+                terminal = str(exc.payload.get("status") or "") in {"failed", "refund_pending", "refunded"}
+                if terminal:
+                    _set_production_result(record, exc.payload)
+                    _runtime_fail(
+                        convo, record, exc.code, refund_status=record.get("refund_status"),
+                        tool_id="production.submit" if action[0] == "submit" else "task.read",
+                    )
+                else:
+                    record["last_error_code"] = exc.code
+                save_conversation(cid, convo)
+        return True
+    except (RuntimeError, OSError, TypeError, ValueError):
+        return False
+    finally:
+        with CONVERSATION_STATE_LOCK:
+            RUNTIME_RESUME_IN_FLIGHT.discard(claim)
+
+
+def _resume_all_talking_head_runs_once(bridge_action=None, verifier=None):
+    candidates = []
+    with CONVERSATION_STATE_LOCK:
+        for path in CONVOS_DIR.glob("*.json"):
+            try:
+                convo = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            account_id = str(convo.get("owner_account_id") or "")
+            if not account_id:
+                continue
+            for production_id, record in (convo.get("productions") or {}).items():
+                if _is_talking_head_record(record) and record.get("status") in {
+                    "submitting", "queued", "running", "verifying", "refund_pending",
+                }:
+                    candidates.append((str(convo.get("id") or path.stem), account_id, str(production_id)))
+    for cid, account_id, production_id in candidates:
+        _resume_talking_head_production_once(
+            cid, account_id, production_id,
+            bridge_action=bridge_action, verifier=verifier,
+        )
+    return len(candidates)
+
+
+def _agent_runtime_worker_loop():
+    while True:
+        try:
+            _resume_all_talking_head_runs_once()
+        except Exception as exc:
+            app.logger.warning("IP12 Agent Runtime worker failed: %s", exc)
+        time.sleep(AGENT_RUNTIME_WORKER_INTERVAL)
+
+
+def _start_agent_runtime_worker():
+    if not AGENT_RUNTIME_WORKER_ENABLED:
+        return None
+    worker = threading.Thread(
+        target=_agent_runtime_worker_loop, name="ip12-agent-runtime", daemon=True,
+    )
+    worker.start()
+    return worker
 
 
 def _production_plan_or_error(record, options):
@@ -1965,6 +2774,17 @@ def _render_foundation_pdf(content, browsers, root):
                 zooms.extend(_foundation_zoom_candidates(page_count))
     raise RuntimeError("PDF renderer failed") from last_error
 
+
+def _render_foundation_pdf_resilient(content, browsers, root):
+    if browsers:
+        try:
+            return _render_foundation_pdf(content, browsers, root)
+        except RuntimeError:
+            pass
+    from pdf_fallback import render_foundation_pdf_fallback
+    return render_foundation_pdf_fallback(content, root / "report-fallback.pdf")
+
+
 def generate_foundation_report(convo_id):
     target = FOUNDATION_REPORTS_DIR / (convo_id + ".pdf")
     with CONVERSATION_STATE_LOCK:
@@ -2033,11 +2853,7 @@ def generate_foundation_report(convo_id):
     ) if item and pathlib.Path(item).is_file()))
     with tempfile.TemporaryDirectory(prefix="hermes-foundation-", dir=str(pathlib.Path.home())) as directory:
         root = pathlib.Path(directory)
-        if browsers:
-            pdf_path = _render_foundation_pdf(content, browsers, root)
-        else:
-            from pdf_fallback import render_foundation_pdf_fallback
-            pdf_path = render_foundation_pdf_fallback(content, root / "report-fallback.pdf")
+        pdf_path = _render_foundation_pdf_resilient(content, browsers, root)
         _validate_foundation_pdf(pdf_path)
         staged_target = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
         try:
@@ -2118,7 +2934,8 @@ def call_ai(messages, stream=False, temperature=0.7, max_tokens=None, response_f
         remaining = request_deadline - time.monotonic()
         if remaining <= 0:
             raise requests.Timeout("AI request deadline exceeded")
-        resp = requests.post(f"{API_BASE}/chat/completions",
+        chat_url = API_BASE if API_BASE.endswith("/chat/completions") else API_BASE + "/chat/completions"
+        resp = requests.post(chat_url,
             headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
             json=payload,
             timeout=max(0.001, remaining), stream=stream)
@@ -2446,6 +3263,14 @@ def healthz():
         "agent_release": coach_harness.AGENT_RELEASE_MANIFEST["agent_release"],
         "state_schema": coach_harness.SCHEMA_VERSION,
         "release_sha": IP12_RELEASE_SHA,
+        "master_agent_mode": MASTER_AGENT_MODE,
+        "semantic_router_mode": SEMANTIC_ROUTER_MODE,
+        "cognitive_engine": COGNITIVE_ENGINE_MODE,
+        "cognitive_engine_requested": COGNITIVE_ENGINE_REQUESTED,
+        "agents_sdk_enabled": AGENTS_SDK_ENABLED,
+        "agents_sdk_conformance": AGENTS_SDK_CONFORMANCE,
+        "cognitive_metrics": cognitive_engine.metrics(),
+        "project_memory_schema": project_memory.SCHEMA,
     })
 
 @app.route("/classic")
@@ -2590,18 +3415,76 @@ def api_get_convo(cid):
         receipt = _receipt(convo, receipt_id)
         if receipt is None:
             return jsonify({"ok": True, "status": "processing"}), 202
-        return jsonify(receipt)
+        return jsonify(_public_chat_result(receipt))
     convo["coach_state"] = normalize_coach_state(convo.get("coach_state"))
     public_convo = json.loads(json.dumps(convo, ensure_ascii=False))
+    for private_key in (
+        "owner_account_id", "turn_receipts", "agent_runs",
+        "master_agent_shadow", "semantic_master",
+    ):
+        public_convo.pop(private_key, None)
     for message in public_convo.get("messages") or []:
         if message.get("role") == "assistant" and not isinstance(message.get("agent_trace"), dict):
             message["agent_trace"] = {"status": "legacy_unknown"}
     public_convo["harness_actions"] = coach_harness.available_actions(public_convo["coach_state"])
+    public_convo["capability_gates"] = capability_gates(public_convo["coach_state"])
+    voice_clone_ui = (public_convo.get("voice_clone_ui")
+                      if isinstance(public_convo.get("voice_clone_ui"), dict) else {})
+    if not public_convo["harness_actions"] and voice_clone_ui.get("status") == "collecting":
+        public_convo["harness_actions"] = [{
+            "type": "open_voice_clone", "label": "在当前对话克隆音色", "primary": True,
+        }]
+    last_assistant = next((message for message in reversed(public_convo.get("messages") or [])
+                           if message.get("role") == "assistant"), {})
+    if (not public_convo["harness_actions"] and not voice_clone_ui
+            and isinstance(last_assistant.get("ui_action"), dict)):
+        public_convo["harness_actions"] = [last_assistant["ui_action"]]
     handoff = _post_module_six_production_action(convo)
     if handoff and not public_convo["harness_actions"]:
         public_convo["harness_actions"] = [handoff]
     public_convo["productions"] = _productions_summary(convo)
+    public_convo["artifacts"] = [
+        _artifact_public(item) for item in (convo.get("artifacts") or {}).values()
+        if isinstance(item, dict)
+    ]
+    public_convo["agent_run_summaries"] = [
+        {
+            key: public.get(key) for key in (
+                "run_id", "production_id", "agent_id", "status", "awaiting",
+                "next_action", "revision", "updated_at", "event_sequence", "artifacts",
+            )
+        }
+        for public in (
+            agent_runtime.public_run(item) for item in (convo.get("agent_runs") or {}).values()
+            if isinstance(item, dict) and item.get("schema") == agent_runtime.RUN_SCHEMA
+        )
+    ]
     return jsonify(public_convo)
+
+
+@app.route("/api/conversations/<cid>/voice-clone-ui", methods=["POST"])
+def api_update_voice_clone_ui(cid):
+    payload = request.get_json(silent=True) or {}
+    status = str(payload.get("status") or "").strip()
+    if status not in {"collecting", "training", "complete", "failed"}:
+        return jsonify({"ok": False, "error": "声音克隆状态无效"}), 400
+    slot_id = str(payload.get("slot_id") or "").strip()
+    if status in {"training", "complete", "failed"} and not re.fullmatch(r"[A-Za-z0-9_-]{1,120}", slot_id):
+        return jsonify({"ok": False, "error": "音色槽位无效"}), 400
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        if convo is None:
+            return jsonify({"ok": False, "error": "诊断不存在"}), 404
+        convo["voice_clone_ui"] = {
+            "status": status,
+            "slot_id": slot_id,
+            "voice_name": str(payload.get("voice_name") or "我的个人音色").strip()[:40],
+            "error": str(payload.get("error") or "").strip()[:160],
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        }
+        save_conversation(cid, convo)
+    return jsonify({"ok": True, "voice_clone_ui": convo["voice_clone_ui"]})
+
 
 @app.route("/api/conversations/<cid>", methods=["DELETE"])
 def api_delete_convo(cid):
@@ -2633,20 +3516,37 @@ def _production_conversation(cid):
     return convo
 
 
+def _set_active_production(convo, production_id):
+    production_id = str(production_id or "")
+    if isinstance(convo, dict) and production_id in (convo.get("productions") or {}):
+        convo["active_production_id"] = production_id
+        return True
+    return False
+
+
 @app.route("/api/ip12/productions/prepare", methods=["POST"])
 def api_prepare_production():
     try:
         body = _production_request_body()
-        if set(body) - {"conversation_id", "content_target", "expected_revision", "requested_result", "preferred_action", "options", "allow_system_media"}:
+        if set(body) - {"conversation_id", "content_target", "expected_revision", "requested_result", "preferred_action", "options", "allow_system_media", "specialist_agent"}:
             return _production_error("invalid_request", "包含不支持的参数", 400)
         if "allow_system_media" in body and not isinstance(body["allow_system_media"], bool):
             return _production_error("invalid_request", "系统素材授权必须是布尔值", 400)
         cid = str(body.get("conversation_id") or "")
+        specialist_id = str(body.get("specialist_agent") or "").strip()
+        if specialist_id and specialist_id != talking_head_agent.AGENT_ID:
+            return _production_error("invalid_specialist", "专业 Agent 不受支持", 400)
         recommendation = _production_recommendation(
             current_account_id(), body.get("requested_result"), body.get("preferred_action")
         )
         catalog_entry = recommendation.pop("catalog_entry")
-        source_unbound = recommendation["recommended_action"] in _SOURCE_FREE_ACTIONS or (
+        preview_text_provided = (
+            recommendation["recommended_action"] == "audio-generate"
+            and not body.get("content_target")
+            and isinstance(body.get("options"), dict)
+            and bool(str(body["options"].get("text") or "").strip())
+        )
+        source_unbound = preview_text_provided or recommendation["recommended_action"] in _SOURCE_FREE_ACTIONS or (
             str(catalog_entry.get("risk") or "") == "read"
             or (catalog_entry.get("transport") or {}).get("kind") == "dedicated_upload"
         )
@@ -2659,6 +3559,9 @@ def api_prepare_production():
             source = _production_source_or_unbound(
                 convo, body.get("content_target"), unbound=source_unbound
             )
+        _validate_production_action(
+            current_account_id(), state, recommendation["recommended_action"]
+        )
         parameter_schema, resource_context = _production_parameter_context(
             current_account_id(), recommendation["recommended_action"], catalog_entry,
             allow_system_media=bool(body.get("allow_system_media")),
@@ -2672,6 +3575,17 @@ def api_prepare_production():
             source = _production_source_or_unbound(
                 convo, body.get("content_target"), unbound=source_unbound
             )
+            specialist_plan = None
+            if specialist_id:
+                specialist_plan = talking_head_agent.plan(
+                    state, source, recommendation["recommended_action"], body.get("options") or {}
+                )
+                if not specialist_plan.get("ok"):
+                    return _production_error(
+                        "specialist_gate_locked",
+                        "请先完成" + "、".join(specialist_plan["gate"]["missing"]),
+                        409,
+                    )
             production_id = "prod_" + uuid.uuid4().hex
             record = {
                 "id": production_id,
@@ -2690,7 +3604,11 @@ def api_prepare_production():
                 "transport": catalog_entry.get("transport") or {"kind": "action"},
                 "constraints": list(catalog_entry.get("constraints") or []),
                 "allow_system_media": bool(body.get("allow_system_media")),
-                "brief": {"reason": "基于当前已确认口播制作", "audience": "当前 IP 的目标受众", "goal": "将当前内容转为可交付成品"},
+                "brief": (specialist_plan["brief"] if specialist_plan else {
+                    "reason": "基于当前已确认口播制作",
+                    "audience": "当前 IP 的目标受众",
+                    "goal": "将当前内容转为可交付成品",
+                }),
                 "options": {}, "input_digest": "", "status": "draft", "quote": {},
                 "job_id": None, "asset_refs": [], "canvas_ref": None,
                 "action_result": None, "refund_status": "none", "last_error_code": "",
@@ -2699,9 +3617,29 @@ def api_prepare_production():
                 "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
             }
+            if specialist_plan:
+                record["specialist_agent"] = talking_head_agent.new_delegation(
+                    production_id, specialist_plan
+                )
+                previous = [
+                    item for item in convo["productions"].values()
+                    if _is_talking_head_record(item)
+                    and item.get("category_id") == record.get("category_id")
+                    and item.get("topic_id") == record.get("topic_id")
+                    and item.get("status") == "done"
+                ]
+                record["parent_production_id"] = str((previous[-1] if previous else {}).get("id") or "")
+                record["output_version"] = int((previous[-1] if previous else {}).get("output_version") or 0) + 1
             record.update(resource_context)
             options = body.get("options", {})
-            if record["action"] == "digital-ip-text-generate":
+            if specialist_plan:
+                properties = parameter_schema.get("properties") or {}
+                defaults = {
+                    key: value for key, value in specialist_plan["recommended_options"].items()
+                    if key in properties
+                }
+                options = {**defaults, **options}
+            if record["action"] in {"audio-generate", "digital-ip-text-generate"}:
                 options = _production_recommended_options(parameter_schema, options)
             _production_set_options(record, options)
             _, validation_error, missing = _production_plan_or_error(record, record["options"])
@@ -2709,9 +3647,15 @@ def api_prepare_production():
                 record["status"] = "blocked_prerequisite"
                 record["last_error_code"] = "missing_prerequisite"
             convo["productions"][production_id] = record
+            _set_active_production(convo, production_id)
+            if source.get("category_id") and source.get("topic_id"):
+                convo["active_content_target"] = {
+                    "category_id": source["category_id"], "topic_id": source["topic_id"],
+                }
             material_request_message = _ensure_production_material_request_message(
                 convo, record, missing
             )
+            _runtime_prepare_talking_head(convo, record, missing)
             save_conversation(cid, convo)
         return jsonify({
             "ok": True, "production_id": production_id, "status": record["status"],
@@ -2728,6 +3672,7 @@ def api_prepare_production():
             "risk": record["risk"], "result_type": record["result_type"],
             "ui_route": record["ui_route"], "transport": record["transport"],
             "constraints": record["constraints"],
+            **({"specialist_agent": record["specialist_agent"]} if specialist_plan else {}),
             "missing": missing,
             "missing_prerequisites": missing or ([validation_error] if validation_error else []),
             "validation_error": validation_error,
@@ -2759,6 +3704,7 @@ def api_upload_production_material():
             record = convo["productions"].get(production_id)
             if not isinstance(record, dict):
                 return _production_error("production_not_found", "生产记录不存在", 404)
+            _set_active_production(convo, production_id)
             if not _production_is_current(convo, record):
                 _mark_production_stale(record); save_conversation(cid, convo)
                 return _production_error("source_changed", "正文已更新，需要重新准备素材")
@@ -2891,17 +3837,18 @@ def api_upload_production_material():
                 updated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
             )
             label = _production_field_label(record, field)
-            remaining = "、".join(_production_field_label(record, name) for name in missing)
+            remaining = _production_field_label(record, missing[0]) if missing else ""
             content = (
                 f"✅ 已收到{label}并绑定到这次制作。还需要：{remaining}。"
                 if remaining else
                 f"✅ 已收到{label}并绑定到这次制作。素材已经齐了，我现在为你获取实时报价；确认前不会扣点。"
             )
             material_message = _append_assistant_message(
-                convo, content, "production_bridge",
+                convo, content, _production_agent_skills(record),
                 message_id="matok_" + uuid.uuid4().hex,
                 production_id=record["id"],
             )
+            _runtime_prepare_talking_head(convo, record, missing)
             save_conversation(cid, convo)
         return jsonify({
             "ok": True, "production": _production_public(record),
@@ -3074,6 +4021,47 @@ def api_clone_production_voice():
         return _production_error("production_bridge_unavailable", "声音服务暂时不可用", 503)
 
 
+def _apply_ready_voice_clone(convo, record, slot_id, schema, context, *, announce=False):
+    properties = schema.get("properties") or {}
+    choice = next((
+        item for item in (properties.get("voice") or {}).get("oneOf") or []
+        if isinstance(item, dict) and str(item.get("slot_id") or "") == slot_id
+    ), None)
+    if not choice:
+        return None, False
+    options = {
+        name: value for name, value in (record.get("options") or {}).items()
+        if name in properties
+    }
+    options["voice"] = choice["const"]
+    options.pop("audio_upload_id", None)
+    if options.get("image_upload_id"):
+        schema["required"] = [
+            "image_upload_id" if name == "avatar_id" else name
+            for name in (schema.get("required") or [])
+        ]
+    record["parameter_schema"] = schema
+    record.update(context or {})
+    _production_set_options(record, options)
+    valid, _, _ = _production_plan_or_error(record, record["options"])
+    record.update(
+        status="draft" if valid else "blocked_prerequisite", quote={},
+        last_error_code="" if valid else "missing_prerequisite",
+    )
+    clone = record.setdefault("voice_clone", {})
+    clone.pop("audio_upload_id", None)
+    if announce and not clone.get("ready_message_id"):
+        message = _append_assistant_message(
+            convo,
+            "✅ 你的克隆声音已经生成，并已选入本次视频。你可以先试听；其他素材齐全后，我会继续给出实时报价。",
+            "production_bridge", message_id="cloneok_" + uuid.uuid4().hex,
+            production_id=record["id"],
+        )
+        clone["ready_message_id"] = message["message_id"]
+        return message, True
+    return None, True
+
+
 @app.route("/api/ip12/productions/<production_id>/clone-voice", methods=["POST"])
 def api_clone_production_voice_status(production_id):
     try:
@@ -3126,41 +4114,10 @@ def api_clone_production_voice_status(production_id):
             if result.get("clone_error"):
                 clone["error"] = str(result["clone_error"])[:220]
             if status == "ready" and schema is not None:
-                properties = schema.get("properties") or {}
-                choice = next((
-                    item for item in (properties.get("voice") or {}).get("oneOf") or []
-                    if isinstance(item, dict) and str(item.get("slot_id") or "") == slot_id
-                ), None)
-                if choice:
-                    options = {
-                        name: value for name, value in (record.get("options") or {}).items()
-                        if name in properties
-                    }
-                    options["voice"] = choice["const"]
-                    options.pop("audio_upload_id", None)
-                    if options.get("image_upload_id"):
-                        schema["required"] = [
-                            "image_upload_id" if name == "avatar_id" else name
-                            for name in (schema.get("required") or [])
-                        ]
-                    record["parameter_schema"] = schema
-                    record.update(context or {})
-                    _production_set_options(record, options)
-                    valid, _, _ = _production_plan_or_error(record, record["options"])
-                    record.update(
-                        status="draft" if valid else "blocked_prerequisite", quote={},
-                        last_error_code="" if valid else "missing_prerequisite",
-                    )
-                    clone.pop("audio_upload_id", None)
-                    if not clone.get("ready_message_id"):
-                        material_message = _append_assistant_message(
-                            convo,
-                            "✅ 你的克隆声音已经生成，并已选入本次视频。你可以先试听；其他素材齐全后，我会继续给出实时报价。",
-                            "production_bridge", message_id="cloneok_" + uuid.uuid4().hex,
-                            production_id=production_id,
-                        )
-                        clone["ready_message_id"] = material_message["message_id"]
-                else:
+                material_message, applied = _apply_ready_voice_clone(
+                    convo, record, slot_id, schema, context, announce=True,
+                )
+                if not applied:
                     status = clone["status"] = "training"
             elif status == "failed":
                 clone.pop("audio_upload_id", None)
@@ -3193,10 +4150,24 @@ def api_clone_production_voice_status(production_id):
 def api_quote_production():
     try:
         body = _production_request_body()
-        if set(body) - {"conversation_id", "production_id", "expected_revision", "options"}:
+        if set(body) - {"conversation_id", "production_id", "expected_revision", "options", "request_id"}:
             return _production_error("invalid_request", "包含不支持的参数", 400)
         cid = str(body.get("conversation_id") or "")
         production_id = str(body.get("production_id") or "")
+        request_id = str(body.get("request_id") or "")
+        if request_id and not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", request_id):
+            return _production_error("invalid_request", "request_id 无效", 400)
+        with CONVERSATION_STATE_LOCK:
+            preflight_convo = _production_conversation(cid)
+            if preflight_convo is None:
+                return _production_error("project_not_found", "项目不存在", 404)
+            preflight_state = normalize_coach_state(preflight_convo.get("coach_state"))
+            _assert_expected_revision(preflight_state, body.get("expected_revision"))
+            preflight_record = preflight_convo["productions"].get(production_id)
+            if not isinstance(preflight_record, dict):
+                return _production_error("production_not_found", "生产记录不存在", 404)
+            preflight_action = str(preflight_record.get("action") or "")
+        _validate_production_action(current_account_id(), preflight_state, preflight_action)
         with CONVERSATION_STATE_LOCK:
             convo = _production_conversation(cid)
             if convo is None:
@@ -3206,10 +4177,14 @@ def api_quote_production():
             record = convo["productions"].get(production_id)
             if not isinstance(record, dict):
                 return _production_error("production_not_found", "生产记录不存在", 404)
+            _set_active_production(convo, production_id)
             if not _production_is_current(convo, record):
                 _mark_production_stale(record); save_conversation(cid, convo)
                 return _production_error("source_changed", "正文已更新，需要重新准备并报价")
-            if record.get("status") in {"submitting", "queued", "running", "done"}:
+            if record.get("status") in {
+                "submitting", "queued", "running", "verifying", "done",
+                "failed", "refund_pending", "refunded",
+            }:
                 return _production_error("production_already_submitted", "该生产已经提交，请读取现有状态")
             options = body["options"] if "options" in body else record.get("options") or {}
             changed = _production_set_options(record, options)
@@ -3228,7 +4203,27 @@ def api_quote_production():
                 }, 409
             input_body = _production_input(record, record["options"])
             request_digest = record["input_digest"]
+            existing_quote = record.get("quote") or {}
+            if (
+                record.get("status") == "quoted"
+                and existing_quote.get("input_digest") == request_digest
+                and int(existing_quote.get("expires_at") or 0) > _utc_timestamp()
+            ):
+                _runtime_quote_completed(convo, record, request_id)
+                save_conversation(cid, convo)
+                return jsonify({
+                    "ok": True, "replayed": True, "production_id": production_id,
+                    "status": "quoted", "cost": existing_quote.get("cost"),
+                    "points": existing_quote.get("points"),
+                    "expires_in": int(existing_quote["expires_at"]) - _utc_timestamp(),
+                    "confirmation_required": bool(record.get("confirmation_required")),
+                    "script_version": record["script_version"],
+                    "input_digest": request_digest,
+                    "billing": existing_quote.get("billing") or "paid",
+                    "production": _production_public(record),
+                })
             record.update(status="draft", last_error_code="")
+            _runtime_quote_started(convo, record, request_id)
             save_conversation(cid, convo)
         if (record.get("transport") or {}).get("kind") != "action":
             return {
@@ -3276,6 +4271,12 @@ def api_quote_production():
                             status="blocked_prerequisite" if exc.status < 500 else "draft",
                             last_error_code=exc.code,
                         )
+                        _runtime_tool(
+                            latest_convo, latest, "production.quote", "failed",
+                            error={"code": exc.code},
+                            suffix=str(latest.get("input_digest") or "")[-16:],
+                            request_id=_runtime_request_id(latest, "quote"),
+                        )
                         save_conversation(cid, latest_convo)
                         record = latest
                 return {
@@ -3287,6 +4288,17 @@ def api_quote_production():
                     "validation_error": exc.detail,
                 }, exc.status
             except RuntimeError:
+                with CONVERSATION_STATE_LOCK:
+                    latest_convo = _production_conversation(cid)
+                    latest = (latest_convo or {}).get("productions", {}).get(production_id)
+                    if _is_talking_head_record(latest):
+                        _runtime_tool(
+                            latest_convo, latest, "production.quote", "failed",
+                            error={"code": "production_bridge_unavailable"},
+                            suffix=str(latest.get("input_digest") or "")[-16:],
+                            request_id=_runtime_request_id(latest, "quote"),
+                        )
+                        save_conversation(cid, latest_convo)
                 return {
                     "ok": False, "error": "生产执行桥暂不可用，请稍后重试",
                     "code": "production_bridge_unavailable", "production_id": production_id,
@@ -3318,6 +4330,7 @@ def api_quote_production():
                                "source_revision": record["script_version"],
                                "input_digest": request_digest, "billing": billing}
             record.update(status="quoted", last_error_code="", updated_at=datetime.now().strftime("%Y-%m-%d %H:%M"))
+            _runtime_quote_completed(convo, record, request_id)
             save_conversation(cid, convo)
         return jsonify({"ok": True, "production_id": production_id, "status": "quoted",
                         "cost": quote.get("cost"), "points": quote.get("points"),
@@ -3343,6 +4356,19 @@ def api_confirm_production():
         if not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", confirmation_id):
             return _production_error("invalid_confirmation", "确认标识无效", 400)
         with CONVERSATION_STATE_LOCK:
+            preflight_convo = _production_conversation(cid)
+            if preflight_convo is None:
+                return _production_error("project_not_found", "项目不存在", 404)
+            preflight_state = normalize_coach_state(preflight_convo.get("coach_state"))
+            _assert_expected_revision(preflight_state, body.get("expected_revision"))
+            preflight_record = preflight_convo["productions"].get(production_id)
+            if not isinstance(preflight_record, dict):
+                return _production_error("production_not_found", "生产记录不存在", 404)
+            preflight_action = str(preflight_record.get("action") or "")
+            preflight_status = str(preflight_record.get("status") or "")
+        if preflight_status not in {"queued", "running", "verifying", "done"}:
+            _validate_production_action(current_account_id(), preflight_state, preflight_action)
+        with CONVERSATION_STATE_LOCK:
             convo = _production_conversation(cid)
             if convo is None:
                 return _production_error("project_not_found", "项目不存在", 404)
@@ -3351,10 +4377,11 @@ def api_confirm_production():
             record = convo["productions"].get(production_id)
             if not isinstance(record, dict):
                 return _production_error("production_not_found", "生产记录不存在", 404)
+            _set_active_production(convo, production_id)
             if not _production_is_current(convo, record):
                 _mark_production_stale(record); save_conversation(cid, convo)
                 return _production_error("source_changed", "正文已更新，需要重新报价")
-            already_submitted = record.get("status") in {"submitting", "queued", "running", "done"}
+            already_submitted = record.get("status") in {"submitting", "queued", "running", "verifying", "done"}
             if "options" in body and already_submitted:
                 if not isinstance(body["options"], dict):
                     raise coach_harness.HarnessError("制作参数必须是对象")
@@ -3368,7 +4395,7 @@ def api_confirm_production():
                 return jsonify({"ok": True, "replayed": True,
                                 "production": _production_public(record),
                                 "delivery_message": delivery_message})
-            if record.get("status") in {"queued", "running"} and record.get("job_id"):
+            if record.get("status") in {"queued", "running", "verifying"} and record.get("job_id"):
                 return jsonify({"ok": True, "replayed": True, "production": _production_public(record)})
             if "options" in body and _production_set_options(record, body["options"]):
                 record.update(status="stale", last_error_code="input_changed")
@@ -3389,13 +4416,31 @@ def api_confirm_production():
             prior_confirmation = record.get("confirmation_id")
             if prior_confirmation and prior_confirmation != confirmation_id:
                 return _production_error("confirmation_conflict", "该生产已在确认中，请勿重复提交")
+            runtime_claim = (str(cid), str(production_id))
+            if (
+                runtime_claim in RUNTIME_RESUME_IN_FLIGHT
+                or int(record.get("_submission_claim_until") or 0) > _utc_timestamp()
+            ):
+                return jsonify({
+                    "ok": True, "status": "processing", "replayed": True,
+                    "production": _production_public(record),
+                }), 202
+            RUNTIME_RESUME_IN_FLIGHT.add(runtime_claim)
             record.update(status="submitting", confirmation_id=confirmation_id,
+                          _submission_claim_until=_utc_timestamp() + RUNTIME_SUBMISSION_CLAIM_SECONDS,
                           updated_at=datetime.now().strftime("%Y-%m-%d %H:%M"))
+            _runtime_submit_started(convo, record, confirmation_id)
             save_conversation(cid, convo)
             input_body = _production_input(record, record.get("options") or {})
         try:
-            result = _bridge_action(current_account_id(), record["action"], input_body, confirm=True,
-                                    quote_token=quote.get("token", ""), idempotency_key=record["idempotency_key"])
+            try:
+                result = _bridge_action(
+                    current_account_id(), record["action"], input_body, confirm=True,
+                    quote_token=quote.get("token", ""), idempotency_key=record["idempotency_key"],
+                )
+            finally:
+                with CONVERSATION_STATE_LOCK:
+                    RUNTIME_RESUME_IN_FLIGHT.discard(runtime_claim)
         except ProductionBridgeError as exc:
             with CONVERSATION_STATE_LOCK:
                 convo = _production_conversation(cid)
@@ -3406,8 +4451,15 @@ def api_confirm_production():
                     }
                     if terminal:
                         _set_production_result(record, exc.payload)
+                        _runtime_fail(
+                            convo, record, exc.code,
+                            refund_status=record.get("refund_status"),
+                            tool_id="production.submit",
+                        )
                     elif exc.status < 500 and exc.status != 429:
                         record.update(status="stale", last_error_code=exc.code)
+                        record.pop("_submission_claim_until", None)
+                        _runtime_fail(convo, record, exc.code, tool_id="production.submit")
                     else:
                         record["last_error_code"] = exc.code
                     save_conversation(cid, convo)
@@ -3428,7 +4480,16 @@ def api_confirm_production():
                 _set_production_result(record, result)
             except RuntimeError:
                 record.update(status="submitting", last_error_code="result_link_pending")
-            delivery_message = _ensure_production_delivery_message(convo, record)
+            _runtime_submit_completed(convo, record, result)
+            if _is_talking_head_record(record) and record.get("status") == "done":
+                record["provider_status"] = "done"
+                record["status"] = "verifying"
+                _runtime_move(
+                    _ensure_talking_head_run(convo, record), "verifying",
+                    next_action="verify_artifact",
+                    request_id=_runtime_request_id(record, "verify"),
+                )
+            delivery_message = None if record.get("status") == "verifying" else _ensure_production_delivery_message(convo, record)
             save_conversation(cid, convo)
         return jsonify({"ok": True, "replayed": bool(result.get("replayed")),
                         "production": _production_public(record),
@@ -3458,14 +4519,36 @@ def api_get_production(production_id):
         ):
             record.update(status="stale", last_error_code="quote_expired")
             save_conversation(cid, convo)
+        runtime_record = _is_talking_head_record(record)
+        if runtime_record:
+            _ensure_talking_head_run(convo, record)
+            save_conversation(cid, convo)
         restore = None
-        if record.get("status") == "submitting" and not record.get("job_id"):
+        if not runtime_record and record.get("status") == "submitting" and not record.get("job_id"):
             quote = record.get("quote") or {}
             if quote.get("billing") == "free" or quote.get("token"):
                 restore = (record["action"], _production_input(record, record.get("options") or {}),
                            quote.get("token", ""), record["idempotency_key"])
-        job_id = record.get("job_id") if record.get("status") in {"queued", "running", "submitting"} else None
+        job_id = record.get("job_id") if not runtime_record and record.get("status") in {"queued", "running", "submitting"} else None
         status_idempotency_key = record.get("idempotency_key") if job_id else ""
+    if runtime_record:
+        account_id = current_account_id()
+        for _ in range(2):
+            if not _resume_talking_head_production_once(cid, account_id, production_id):
+                break
+        with CONVERSATION_STATE_LOCK:
+            convo = _production_conversation(cid)
+            record = (convo or {}).get("productions", {}).get(production_id)
+            if convo is None or not isinstance(record, dict):
+                return _production_error("project_not_found", "项目不存在", 404)
+            delivery_message = _ensure_production_delivery_message(convo, record)
+            if delivery_message:
+                save_conversation(cid, convo)
+            return jsonify({
+                "ok": True, "production": _production_public(record),
+                "agent_run": agent_runtime.public_run(_ensure_talking_head_run(convo, record)),
+                "delivery_message": delivery_message,
+            })
     result = None
     try:
         if restore:
@@ -3498,6 +4581,55 @@ def api_get_production(production_id):
             save_conversation(cid, convo)
         return jsonify({"ok": True, "production": _production_public(record),
                         "delivery_message": delivery_message})
+
+
+@app.route("/api/ip12/agent-runs/<run_id>", methods=["GET"])
+def api_get_agent_run(run_id):
+    cid = str(request.args.get("conversation_id") or "")
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        run = (convo or {}).get("agent_runs", {}).get(run_id)
+        if convo is None or not isinstance(run, dict) or run.get("schema") != agent_runtime.RUN_SCHEMA:
+            return jsonify({"ok": False, "error": "AgentRun 不存在"}), 404
+        production = (convo.get("productions") or {}).get(run.get("production_id"))
+        return jsonify({
+            "ok": True, "agent_run": agent_runtime.public_run(run),
+            "production": _production_public(production) if isinstance(production, dict) else None,
+        })
+
+
+@app.route("/api/ip12/agent-runs/<run_id>/events", methods=["GET"])
+def api_get_agent_run_events(run_id):
+    cid = str(request.args.get("conversation_id") or "")
+    raw_after = request.args.get("after") or request.headers.get("Last-Event-ID") or "0"
+    try:
+        after = max(0, int(raw_after))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "事件序号无效"}), 400
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        run = (convo or {}).get("agent_runs", {}).get(run_id)
+        if convo is None or not isinstance(run, dict) or run.get("schema") != agent_runtime.RUN_SCHEMA:
+            return jsonify({"ok": False, "error": "AgentRun 不存在"}), 404
+        events = [
+            agent_runtime.public_event(item) for item in run.get("events") or []
+            if int(item.get("sequence") or 0) > after
+        ]
+
+    def stream():
+        if not events:
+            yield ": keep-alive\n\n"
+            return
+        for event in events:
+            yield "id: %s\nevent: %s\ndata: %s\n\n" % (
+                event["sequence"], event["type"],
+                json.dumps(event, ensure_ascii=False, separators=(",", ":")),
+            )
+
+    return Response(
+        stream(), mimetype="text/event-stream",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache, no-store"},
+    )
 
 
 def _coach_module_five_topics(convo, user_message, repair_error=""):
@@ -3937,6 +5069,7 @@ def _chat_result(assistant, state, *, new_completed=None, auto_deliverables=None
         "new_completed": new_completed or [],
         "auto_deliverables": auto_deliverables or {},
         "foundation_report": foundation_report,
+        "capability_gates": capability_gates(state),
         "request_id": request_id,
     }
 
@@ -4026,7 +5159,7 @@ def _persist_model_turn(
 
 def _persist_unprocessed_turn(
     cid, user_message, snapshot_revision, prefix="", message_id="", assistant_override="",
-    skills=None,
+    skills=None, assistant_extra=None, convo_extra=None, memory_updates=None,
 ):
     with CONVERSATION_STATE_LOCK:
         convo = owned_conversation(cid)
@@ -4047,9 +5180,11 @@ def _persist_unprocessed_turn(
         trace_skills = skills or (
             ["harness_action", "safety_fallback"] if prefix else ["safety_fallback"]
         )
-        _append_assistant_message(convo, assistant, trace_skills)
+        _append_assistant_message(convo, assistant, trace_skills, **(assistant_extra or {}))
+        project_memory.apply_preference_updates(state, memory_updates or [])
         state["revision"] += 1
         convo["coach_state"] = state
+        convo.update(convo_extra or {})
         if convo.get("title") == "新诊断":
             title = clean_message.replace("\n", " ")[:30]
             convo["title"] = title if len(title) < 30 else title[:27] + "..."
@@ -4529,7 +5664,9 @@ def _content_topic(pack, target):
     raise coach_harness.HarnessError("这篇文案已经更新或不存在，请重新选择")
 
 
-def _process_content_revision_turn(cid, user_message, target, expected_revision=None, request_id=""):
+def _process_content_revision_turn(
+    cid, user_message, target, expected_revision=None, request_id="", semantic_master=False
+):
     clean_message = _redact_mobile_numbers(str(user_message or "").strip())[:4000]
     with CONVERSATION_STATE_LOCK:
         convo = owned_conversation(cid)
@@ -4610,10 +5747,15 @@ def _process_content_revision_turn(cid, user_message, target, expected_revision=
         state["revision"] += 1
         _append_or_reuse_user_message(convo, clean_message, message_id)
         _append_assistant_message(
-            convo, assistant, "content_revision",
+            convo, assistant,
+            (["semantic_master_agent", "content_revision"] if semantic_master else "content_revision"),
             prompt_version="content-revision-v1", model=MODEL,
         )
         convo["coach_state"] = state
+        convo["active_content_target"] = {
+            "category_id": str(target.get("category_id") or ""),
+            "topic_id": str(target.get("topic_id") or ""),
+        }
         save_conversation(cid, convo)
     return _chat_result(assistant, state, auto_deliverables={"6": pack}), 200
 
@@ -4740,12 +5882,17 @@ def _process_production_material_revision_turn(
 
 
 def _process_production_intent_turn(
-    cid, user_message, target, intent, expected_revision=None, request_id=""
+    cid, user_message, target, intent, expected_revision=None, request_id="",
+    semantic_master=False,
 ):
     family = intent["capability_family"]
     selected_action = intent["recommended_action"]
     help_only = bool(intent.get("help_only"))
-    source_unbound = help_only or selected_action in _SOURCE_FREE_ACTIONS
+    semantic_skills = ["semantic_master_agent"] if semantic_master else []
+    source_unbound = (
+        help_only or selected_action in _SOURCE_FREE_ACTIONS
+        or (selected_action == "audio-generate" and bool(intent.get("audio_preview_request")))
+    )
     with CONVERSATION_STATE_LOCK:
         convo = owned_conversation(cid)
         if convo is None:
@@ -4753,15 +5900,55 @@ def _process_production_intent_turn(
         state = normalize_coach_state(convo.get("coach_state"))
         _assert_expected_revision(state, expected_revision)
         source = _production_source_or_unbound(convo, target, unbound=source_unbound)
+        voice_clone_state = (convo.get("voice_clone_ui")
+                             if isinstance(convo.get("voice_clone_ui"), dict) else {})
+        preview_text = _audio_preview_excerpt(convo) if intent.get("audio_preview_request") else ""
         snapshot_revision = state["revision"]
     labels = {"image": "图片", "audio": "音频", "video": "视频", "canvas": "Canvas"}
     label = labels[family]
+    specialist_plan = None
+    if selected_action == "digital-ip-text-generate" and not help_only:
+        specialist_plan = talking_head_agent.plan(state, source, selected_action)
+        if not specialist_plan.get("ok"):
+            missing = "、".join(specialist_plan["gate"]["missing"])
+            assistant = "口播短视频 Agent 还不能接手这件作品；请先完成%s。" % missing
+            message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
+            assistant, next_state = _persist_unprocessed_turn(
+                cid, user_message, snapshot_revision, message_id=message_id,
+                assistant_override=assistant,
+                skills=semantic_skills + ["talking_head_video_agent", "production_bridge"],
+            )
+            return _chat_result(assistant, next_state), 200
+    if intent.get("voice_clone_request"):
+        voice_action = {
+            "type": "open_voice_clone", "label": "在当前对话克隆音色", "primary": True,
+        }
+        assistant = (
+            "可以，我们重新录一版。我已经在当前对话打开录音卡：你可以上传已有录音，"
+            "也可以选一篇已确认文案现场朗读 10–60 秒。录完先试听，确认后再提交复刻。"
+            if voice_clone_state.get("status") == "complete" else
+            "可以。我已经在当前对话打开声音克隆卡；你可以上传已有录音，"
+            "也可以选一篇已确认文案现场朗读 10–60 秒，不需要离开当前对话。"
+        )
+        message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
+        assistant, next_state = _persist_unprocessed_turn(
+            cid, user_message, snapshot_revision, message_id=message_id,
+            assistant_override=assistant, skills=semantic_skills + ["production_bridge"],
+            assistant_extra={"ui_action": voice_action},
+            convo_extra={"voice_clone_ui": {
+                "status": "collecting", "slot_id": "", "voice_name": "我的个人音色",
+                "error": "", "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            }},
+        )
+        result = _chat_result(assistant, next_state)
+        result["actions"] = [voice_action]
+        return result, 200
     if help_only:
         assistant = _capability_help_reply(current_account_id(), selected_action)
         message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
         assistant, next_state = _persist_unprocessed_turn(
             cid, user_message, snapshot_revision, message_id=message_id,
-            assistant_override=assistant, skills=["production_bridge"],
+            assistant_override=assistant, skills=semantic_skills + ["production_bridge"],
         )
         return _chat_result(assistant, next_state), 200
     ratio_match = re.search(
@@ -4770,8 +5957,12 @@ def _process_production_intent_turn(
     )
     options = ({"ratio": re.sub(r"\s+", "", ratio_match.group()).replace("：", ":")}
                if family in {"image", "video"} and ratio_match else {})
+    if specialist_plan:
+        options = {**specialist_plan["recommended_options"], **options}
     if selected_action == "audio-generate":
         options.update(_audio_options_from_message(user_message))
+        if preview_text:
+            options["text"] = preview_text
     instruction = re.sub(r"\s+", " ", user_message).strip()[:320]
     script = re.sub(r"\s+", " ", source["script"]).strip()[:1500]
     if selected_action == "image-generate":
@@ -4802,6 +5993,12 @@ def _process_production_intent_turn(
             if selected_action in _DIRECT_READ_ACTIONS
         else (
             (
+                "主控 Agent 已把当前文案委派给口播短视频 Agent。"
+                "它会先按你已确认的人设和表达风格规划第一件作品，再收集形象与声音；"
+                "素材齐全后获取实时报价，未经你确认不会提交或扣点。"
+            )
+            if specialist_plan else
+            (
                 "我知道你要使用黄雀的%s能力。" % _CAPABILITY_LABELS.get(selected_action, label)
                 if source_unbound else "我知道你要把当前这篇口播做成%s。" % label
             )
@@ -4812,10 +6009,23 @@ def _process_production_intent_turn(
         )
         )
     )
+    if intent.get("audio_preview_request"):
+        assistant = (
+            "我已把这次试听整理好：\n\n"
+            "- **试听文案**：使用已确认的故事口播开头\n"
+            "- **音色**：优先选择当前 Project 中可用的个人克隆音色\n"
+            "- **当前状态**：尚未开始生成，也没有扣点\n\n"
+            "下方会显示真实报价；只有你明确确认后才会提交。提交成功后，"
+            "状态卡会持续显示后台进度，你可以继续和我聊天。"
+        )
     message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
     assistant, next_state = _persist_unprocessed_turn(
         cid, user_message, snapshot_revision, message_id=message_id,
-        assistant_override=assistant, skills=["production_bridge"],
+        assistant_override=assistant,
+        skills=semantic_skills + (
+            ["talking_head_video_agent", "production_bridge"]
+            if specialist_plan else ["production_bridge"]
+        ),
     )
     result = _chat_result(assistant, next_state)
     if selected_action in _NAVIGATION_ONLY_ACTIONS:
@@ -4840,10 +6050,740 @@ def _process_production_intent_turn(
         "requested_result": family,
         "preferred_action": selected_action,
         "candidate_actions": intent["candidate_actions"],
+        **({"specialist_agent": talking_head_agent.AGENT_ID} if specialist_plan else {}),
+        **({"parameter_schema": specialist_plan["option_schema"]} if specialist_plan else {}),
         "allow_system_media": _explicit_system_media_request(user_message),
         "options": options,
     }]
     return result, 200
+
+
+def _latest_talking_head_production(convo):
+    records = [
+        record for record in (convo.get("productions") or {}).values()
+        if isinstance(record, dict)
+        and (record.get("specialist_agent") or {}).get("agent_id") == talking_head_agent.AGENT_ID
+    ]
+    return records[-1] if records else None
+
+
+def _bridge_tool_result(result):
+    nested = result.get("result") if isinstance(result, dict) else None
+    return nested if isinstance(nested, dict) else (result if isinstance(result, dict) else {})
+
+
+def _run_talking_head_specialist(account_id, cid, record):
+    catalog = _bridge_catalog(account_id)
+    available = {
+        str(item.get("action") or "") for item in catalog.get("actions") or []
+        if isinstance(item, dict)
+    }
+    missing_tools = sorted(set(talking_head_agent.READ_TOOLS) - available)
+    if missing_tools:
+        raise RuntimeError("specialist_tools_unavailable:" + ",".join(missing_tools))
+    payloads = {
+        "ip12-project": {"project_id": cid},
+        "video-avatars": {"limit": 120},
+        "voices": {},
+        "audio-slots": {},
+        "assets": {"kind": "audio", "limit": 120, "offset": 0},
+    }
+    observations = {}
+    for name in talking_head_agent.READ_TOOLS:
+        observations[name] = _bridge_tool_result(_bridge_action(
+            account_id, name, payloads[name],
+            idempotency_key="agent-%s-read-%s" % (record.get("id"), name),
+        ))
+    return talking_head_agent.delegation_result(record, observations)
+
+
+class _MasterDelegationPolicy:
+    agent_id = "ip12_master_agent"
+
+    def next_action(self, run):
+        observations = run.get("observations") or []
+        if not observations:
+            return {"type": "tool", "tool": "specialist.talking_head", "input": {}}
+        result = observations[-1].get("result") or {}
+        return {"type": "complete", "result": result, "next_action": result.get("next_action")}
+
+
+def _master_runtime_reply(record, run):
+    status = str(record.get("status") or "")
+    if status == "quoted":
+        return (
+            "当前第一件口播视频已经完成主控委派，文案、形象和音色也已从当前 Project 读取；"
+            "制作任务尚未提交，没有扣点。你可以继续聊天；要改文案、形象或声音就直接告诉我，"
+            "在你明确确认前，主控不会调用生成工具。"
+        )
+    if status in {"submitting", "queued", "running"}:
+        return "口播视频正在后台生成；聊天可以照常进行，也不会创建第二个任务。我会继续查询原任务，完成后把可播放成品写回当前 Project。"
+    if status == "done":
+        return "第一件口播视频已经写回当前 Project。你可以直接试听试看，然后告诉我需要修改文案、声音、形象还是画面节奏。"
+    if status in {"failed", "refund_pending", "refunded"}:
+        return "这次口播视频没有成功交付；原任务和退款状态已保留。我不会自动重试，先由你决定修改素材还是重新提交。"
+    if run.get("awaiting") == "material":
+        return "口播短视频 Agent 已接手，但还缺少制作素材：%s。你可以在当前对话直接补充，不需要跳转页面。" % run.get("next_action", "素材")
+    return "口播短视频 Agent 已恢复当前作品，下一步是：%s。" % run.get("next_action", "继续完善素材")
+
+
+def _process_master_runtime_turn(cid, user_message, expected_revision=None, request_id=""):
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        if convo is None:
+            return None, 404
+        state = normalize_coach_state(convo.get("coach_state"))
+        _assert_expected_revision(state, expected_revision)
+        record = _latest_talking_head_production(convo)
+        if record is None:
+            return _process_model_turn(
+                cid, user_message, expected_revision, request_id=request_id
+            )
+        missing = _production_missing_fields(record, record.get("options") or {})
+        run = _runtime_prepare_talking_head(convo, record, missing)
+        if record.get("status") == "quoted":
+            _runtime_quote_completed(convo, record)
+        elif record.get("status") == "submitting":
+            _runtime_submit_started(convo, record, record.get("confirmation_id"))
+        elif record.get("status") in {"queued", "running"}:
+            _runtime_move(
+                run, "running", awaiting="external", next_action="poll_original_job",
+                request_id=_runtime_request_id(record, "status"),
+            )
+        elif record.get("status") == "verifying":
+            _runtime_move(
+                run, "verifying", next_action="verify_artifact",
+                request_id=_runtime_request_id(record, "status"),
+            )
+        elif record.get("status") in {"failed", "refund_pending", "refunded"}:
+            _runtime_fail(
+                convo, record, record.get("last_error_code") or record.get("status"),
+                refund_status=record.get("refund_status"),
+            )
+        assistant = _master_runtime_reply(record, run)
+        message_id = _turn_message_id(cid, user_message, state["revision"], request_id)
+        _append_or_reuse_user_message(convo, user_message, message_id)
+        _append_assistant_message(
+            convo, assistant,
+            ["talking_head_video_agent", "production_bridge"],
+        )
+        state["revision"] += 1
+        convo["coach_state"] = state
+        save_conversation(cid, convo)
+        result = _chat_result(assistant, state)
+        result["agent_status"] = {
+            "run_id": run["run_id"],
+            "status": run.get("status"),
+            "awaiting": run.get("awaiting"),
+            "next_action": run.get("next_action"),
+            "delegate_to": talking_head_agent.AGENT_ID,
+            "specialist_result": run.get("result"),
+        }
+        return result, 200
+
+
+_WEATHER_RE = re.compile(r"天气|气温|温度|下雨|降雨|冷不冷|热不热")
+_PAUSE_RE = re.compile(r"(?:暂时|现在|先).{0,4}(?:不需要|不用|不做)|算了|以后再说|晚点再说")
+_WEATHER_CODES = {
+    0: "晴", 1: "大致晴朗", 2: "多云", 3: "阴",
+    45: "有雾", 48: "雾凇", 51: "小毛毛雨", 53: "毛毛雨", 55: "较强毛毛雨",
+    61: "小雨", 63: "中雨", 65: "大雨", 71: "小雪", 73: "中雪", 75: "大雪",
+    80: "阵雨", 81: "较强阵雨", 82: "强阵雨", 95: "雷雨", 96: "雷雨伴冰雹", 99: "强雷雨伴冰雹",
+}
+
+
+def _project_fact(state, name):
+    fact = (((state or {}).get("ip_profile") or {}).get("facts") or {}).get(name) or {}
+    return str(fact.get("value") or "").strip()
+
+
+def _is_pause_message(message):
+    compact = re.sub(r"\s+", "", str(message or ""))
+    switches_choice = re.search(r"(?:改用|换用|换成|使用|用).{0,6}(?:个人|已有|其他|这个|该)", compact)
+    return len(compact) <= 24 and not switches_choice and bool(_PAUSE_RE.search(compact))
+
+
+def _weather_current(location):
+    geocode = requests.get(
+        "https://geocoding-api.open-meteo.com/v1/search",
+        params={"name": location, "count": 1, "language": "zh", "format": "json", "countryCode": "CN"},
+        timeout=10,
+    )
+    geocode.raise_for_status()
+    place = (geocode.json().get("results") or [None])[0]
+    if not isinstance(place, dict):
+        raise RuntimeError("weather_location_not_found")
+    forecast = requests.get(
+        "https://api.open-meteo.com/v1/forecast",
+        params={
+            "latitude": place["latitude"], "longitude": place["longitude"],
+            "current": "temperature_2m,apparent_temperature,weather_code,wind_speed_10m",
+            "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max",
+            "timezone": "auto", "forecast_days": 1,
+        },
+        timeout=10,
+    )
+    forecast.raise_for_status()
+    payload = forecast.json()
+    current, daily = payload.get("current") or {}, payload.get("daily") or {}
+    return {
+        "location": str(place.get("name") or location),
+        "condition": _WEATHER_CODES.get(current.get("weather_code"), "天气状况待确认"),
+        "temperature": current.get("temperature_2m"),
+        "apparent_temperature": current.get("apparent_temperature"),
+        "wind_speed": current.get("wind_speed_10m"),
+        "minimum": (daily.get("temperature_2m_min") or [None])[0],
+        "maximum": (daily.get("temperature_2m_max") or [None])[0],
+        "rain_probability": (daily.get("precipitation_probability_max") or [None])[0],
+        "observed_at": current.get("time"),
+    }
+
+
+def _process_contextual_weather_turn(cid, user_message, expected_revision=None, request_id=""):
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        if convo is None:
+            return None, 404
+        state = normalize_coach_state(convo.get("coach_state"))
+        _assert_expected_revision(state, expected_revision)
+        location = _project_fact(state, "location")
+        snapshot_revision = state["revision"]
+    if not location:
+        assistant = "当然可以帮你查天气。你现在在哪个城市？告诉我一次，我会记在当前 Project 里供后续使用。"
+        weather = None
+    else:
+        try:
+            weather = _weather_current(location)
+            assistant = (
+                "%s，你之前说自己在%s。现在%s，%.1f°C，体感 %.1f°C；"
+                "今天约 %.1f–%.1f°C，最高降雨概率 %s%%。如果今晚还要在工作室忙或带宠物外出，建议带伞并注意闷热。"
+                % (
+                    _project_fact(state, "preferred_name") or "你好", weather["location"],
+                    weather["condition"], weather["temperature"], weather["apparent_temperature"],
+                    weather["minimum"], weather["maximum"], weather["rain_probability"],
+                )
+            )
+        except (requests.RequestException, RuntimeError, TypeError, ValueError) as exc:
+            app.logger.warning("IP12 weather tool failed: %s", exc)
+            weather = None
+            assistant = "%s，我记得你在%s；实时天气暂时没有查到，但当前 IP12 进度不会受影响，你可以稍后再问我。" % (
+                _project_fact(state, "preferred_name") or "你好", location,
+            )
+    message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
+    assistant, next_state = _persist_unprocessed_turn(
+        cid, user_message, snapshot_revision, message_id=message_id,
+        assistant_override=assistant, skills=["semantic_master_agent"],
+    )
+    result = _chat_result(assistant, next_state)
+    result["agent_status"] = {
+        "status": "completed" if weather else "needs_input",
+        "next_action": "continue_current_project",
+        "tool": "weather.current" if weather else None,
+        "context_source": "project.ip_profile.facts.location" if location else None,
+    }
+    return result, 200
+
+
+def _process_pause_turn(cid, user_message, expected_revision=None, request_id=""):
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        if convo is None:
+            return None, 404
+        state = normalize_coach_state(convo.get("coach_state"))
+        _assert_expected_revision(state, expected_revision)
+        voice_ui = convo.get("voice_clone_ui") if isinstance(convo.get("voice_clone_ui"), dict) else {}
+        active_production = any(
+            isinstance(record, dict) and record.get("status") in {"submitting", "queued", "running"}
+            for record in (convo.get("productions") or {}).values()
+        )
+        snapshot_revision = state["revision"]
+    if voice_ui.get("status") == "training" or active_production:
+        assistant = "好，我们先不继续操作。已经提交的后台任务不会重复创建，完成后我只把结果保留在当前 Project。"
+    else:
+        assistant = "好，那我们先放一放。我不会继续提交或扣点，已经确认的内容和素材都会保留；想聊别的直接说就行。"
+    convo_extra = None
+    if voice_ui.get("status") == "collecting":
+        dismissed = dict(voice_ui)
+        dismissed.update(status="dismissed", updated_at=datetime.now().strftime("%Y-%m-%d %H:%M"))
+        convo_extra = {"voice_clone_ui": dismissed}
+    message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
+    assistant, next_state = _persist_unprocessed_turn(
+        cid, user_message, snapshot_revision, message_id=message_id,
+        assistant_override=assistant, skills=["semantic_master_agent"],
+        convo_extra=convo_extra,
+    )
+    result = _chat_result(assistant, next_state)
+    result["agent_status"] = {"status": "paused", "next_action": "await_user"}
+    return result, 200
+
+
+def _custom_semantic_master_decision(memory, user_message):
+    response = call_ai(
+        semantic_router.messages(memory, user_message),
+        stream=False, temperature=0, max_tokens=1400,
+        response_format=semantic_router.response_format(), timeout_seconds=50,
+    )
+    decision = semantic_router.parse(_parse_ai_json(response))
+    if decision["confidence"] < 0.65 and decision["intent"] in {"delegate", "revise_content"}:
+        decision.update(
+            intent="clarify", delegate_to="none", tool="none", tool_policy="none",
+            awaiting="user_input",
+            reply=decision.get("reply") or "我还不能安全确定你指的是哪一个对象，可以再具体说一点吗？",
+            payment_policy={"quote_required": False, "explicit_confirmation_required": False},
+            memory_updates=[],
+        )
+    return decision
+
+
+def _semantic_master_decision(memory, user_message):
+    return cognitive_engine.decide(
+        memory,
+        user_message,
+        _custom_semantic_master_decision,
+        mode=COGNITIVE_ENGINE_MODE,
+        sdk_enabled=AGENTS_SDK_ENABLED,
+        sdk_decider=cognitive_engine.agents_sdk_decider,
+        agent_run=memory.get("active_agent_run") if isinstance(memory, dict) else None,
+        timeout_seconds=50,
+    )
+
+
+def _semantic_debug_allowed():
+    if not has_request_context():
+        return False
+    identity = getattr(g, "hermes_user", None) or {}
+    return SEMANTIC_DEBUG and str(identity.get("role") or "") == "admin"
+
+
+def _public_chat_result(result):
+    public = dict(result or {})
+    if not _semantic_debug_allowed():
+        public.pop("master_decision", None)
+        agent_status = public.get("agent_status")
+        if isinstance(agent_status, dict):
+            public["agent_status"] = {
+                key: agent_status.get(key)
+                for key in ("status", "awaiting", "next_action")
+                if agent_status.get(key) not in (None, "")
+            }
+            if agent_status.get("delegate_to"):
+                public["agent_status"]["delegate"] = "口播短视频 Agent"
+    return public
+
+
+_SEMANTIC_CAPABILITY_MAP = {
+    "voice_clone.status": ("none", "audio-slots", "voice-clone"),
+    "voice_clone.open": ("voice_clone_agent", "audio-slots", "voice-clone"),
+    "audio_preview.prepare": ("audio_preview_agent", "audio-generate", "audio-generate"),
+    "talking_head.prepare": ("talking_head_video_agent", "digital-ip-text-generate", "digital-ip-text-generate"),
+}
+
+
+def _semantic_tool_catalog(account_id, state):
+    gate_map = {item.get("id"): item.get("status") for item in capability_gates(state)}
+    completed = set(state.get("completed_modules") or [])
+    foundation_ready = (state.get("foundation_report") or {}).get("status") == "confirmed"
+    try:
+        catalog = _bridge_catalog(account_id)
+        account_actions = {
+            str(item.get("action") or ""): item
+            for item in (catalog.get("actions") or []) if isinstance(item, dict)
+        }
+    except RuntimeError:
+        account_actions = {}
+
+    result = [
+        {"tool": "weather.current", "delegate_to": "none", "capability_id": "local.weather", "available": True, "gate_status": "unlocked"},
+        {"tool": "project.status", "delegate_to": "none", "capability_id": "local.project-status", "available": True, "gate_status": "unlocked"},
+        {"tool": "content.revise", "delegate_to": "content_revision_agent", "capability_id": "local.content-revision", "available": 6 in completed, "gate_status": "unlocked" if 6 in completed else "locked"},
+    ]
+    for tool, (delegate, action, gate_id) in _SEMANTIC_CAPABILITY_MAP.items():
+        entry = account_actions.get(action) or {}
+        availability = str((entry.get("availability") or {}).get("status") or "unknown")
+        gate_status = (
+            "unlocked" if gate_id == "voice-clone" and foundation_ready and {1, 2, 3}.issubset(completed)
+            else "locked" if gate_id == "voice-clone"
+            else str(gate_map.get(gate_id) or "locked")
+        )
+        result.append({
+            "tool": tool,
+            "delegate_to": delegate,
+            "capability_id": action,
+            "available": bool(entry) and availability == "available" and gate_status == "unlocked",
+            "gate_status": gate_status,
+        })
+    return result
+
+
+def _semantic_decision_allowed(decision, memory):
+    if decision.get("tool") == "none":
+        return True
+    return any(
+        item.get("tool") == decision.get("tool")
+        and item.get("delegate_to") == decision.get("delegate_to")
+        and item.get("available") is True
+        for item in (memory.get("tool_catalog") or []) if isinstance(item, dict)
+    )
+
+
+def _semantic_status_label(record):
+    action = str((record or {}).get("action") or "")
+    return _CAPABILITY_LABELS.get(action, {
+        "audio": "试听音频", "video": "口播视频", "image": "图片",
+    }.get(str((record or {}).get("capability_family") or ""), "当前制作"))
+
+
+def _select_status_production(convo, user_message):
+    records = convo.get("productions") if isinstance(convo.get("productions"), dict) else {}
+    candidates = [
+        record for record in records.values()
+        if isinstance(record, dict)
+        and record.get("status") in project_memory.ACTIVE_PRODUCTION_STATUSES
+    ]
+    message = "".join(str(user_message or "").lower().split())
+    explicit = [
+        record for record in candidates
+        if str(record.get("id") or "") in message
+        or _semantic_status_label(record).lower() in message
+        or (
+            str(record.get("capability_family") or "") == "audio"
+            and any(word in message for word in ("试听", "音频", "配音", "声音"))
+        )
+        or (
+            str(record.get("capability_family") or "") == "video"
+            and any(word in message for word in ("视频", "数字人"))
+        )
+    ]
+    if len(explicit) == 1:
+        return explicit[0], candidates
+    if len(explicit) > 1:
+        return None, explicit
+    active_id = str(convo.get("active_production_id") or "")
+    if active_id in records:
+        return records[active_id], candidates
+    if len(candidates) == 1:
+        return candidates[0], candidates
+    return None, candidates
+
+
+def _process_project_status_turn(cid, user_message, decision, expected_revision=None, request_id=""):
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        if convo is None:
+            return None, 404
+        state = normalize_coach_state(convo.get("coach_state"))
+        _assert_expected_revision(state, expected_revision)
+        record, candidates = _select_status_production(convo, user_message)
+        snapshot_revision = state["revision"]
+        if record is not None:
+            production_id = str(record.get("id") or "")
+            _set_active_production(convo, production_id)
+            quote = record.get("quote") if isinstance(record.get("quote"), dict) else {}
+            if record.get("status") == "quoted" and quote.get("expires_at") and float(quote["expires_at"]) <= _utc_timestamp():
+                record.update(
+                    status="stale", last_error_code="quote_expired",
+                    updated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                )
+            job_id = str(record.get("job_id") or "")
+            should_poll = record.get("status") in {"queued", "running"} and job_id.isdigit()
+            save_conversation(cid, convo)
+        else:
+            production_id, job_id, should_poll = "", "", False
+
+    refresh_failed = False
+    if should_poll:
+        try:
+            task_result = _bridge_action(
+                current_account_id(), "task", {"job_id": int(job_id)},
+                idempotency_key="ip12-status-%s-%s" % (production_id, job_id),
+            )
+            with CONVERSATION_STATE_LOCK:
+                convo = owned_conversation(cid)
+                latest = (convo or {}).get("productions", {}).get(production_id)
+                if isinstance(latest, dict) and str(latest.get("job_id") or "") == job_id:
+                    _set_production_result(latest, task_result)
+                    _ensure_production_delivery_message(convo, latest)
+                    save_conversation(cid, convo)
+        except (ProductionBridgeError, RuntimeError, ValueError, TypeError):
+            refresh_failed = True
+
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        state = normalize_coach_state(convo.get("coach_state"))
+        if state["revision"] != snapshot_revision:
+            raise coach_harness.HarnessConflict("对话已在另一端更新，请刷新后重试")
+        record = (convo.get("productions") or {}).get(production_id) if production_id else None
+
+    if record is None:
+        if len(candidates) > 1:
+            labels = "、".join(_semantic_status_label(item) for item in candidates[:4])
+            assistant = "我看到有多个待处理项目：%s。你想看哪一个？" % labels
+        else:
+            completed = len(set(state.get("completed_modules") or []).intersection(range(1, 7)))
+            assistant = "当前已完成 IP12 的 %s/6 个模块，还没有正在执行的制作任务。" % completed
+    else:
+        label, status = _semantic_status_label(record), str(record.get("status") or "")
+        quote = record.get("quote") if isinstance(record.get("quote"), dict) else {}
+        if status == "quoted":
+            assistant = "%s已经准备好报价%s，尚未提交也没有扣点；请在报价卡确认后再生成。" % (
+                label, "（%s 点）" % quote.get("cost") if quote.get("cost") is not None else "",
+            )
+        elif status == "stale":
+            assistant = "%s的原报价已经过期或内容有变化，需要重新报价；目前没有生成任务，也没有扣点。" % label
+        elif status == "submitting":
+            assistant = "%s正在确认原提交请求，系统不会重复创建任务。" % label
+        elif status == "queued":
+            assistant = "%s已经进入队列，正在等待处理；我只会继续查询原任务。" % label
+        elif status == "running":
+            assistant = "%s正在生成%s；你可以继续聊天，我会保留并查询原任务。" % (
+                label, "，但这次状态查询暂时失败" if refresh_failed else "",
+            )
+        elif status == "done":
+            assistant = "%s已经完成并写回当前 Project，你可以直接试听试看，然后告诉我哪里需要修改。" % label
+        elif status in {"failed", "refund_pending", "refunded"}:
+            assistant = "%s没有成功交付，当前状态是%s；我不会自动重试。" % (label, status)
+        else:
+            assistant = "%s正在准备，当前状态是%s；还没有创建生成任务。" % (label, status or "draft")
+
+    status_decision = dict(decision)
+    status_decision["reply"] = assistant
+    return _process_semantic_reply(
+        cid, user_message, status_decision, expected_revision, request_id,
+    )
+
+
+def _production_voice_clone_candidates(convo):
+    return [
+        record for record in (convo.get("productions") or {}).values()
+        if isinstance(record, dict) and isinstance(record.get("voice_clone"), dict)
+        and str(record["voice_clone"].get("status") or "")
+    ]
+
+
+def _process_voice_clone_status_turn(cid, user_message, decision, expected_revision=None, request_id=""):
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        if convo is None:
+            return None, 404
+        state = normalize_coach_state(convo.get("coach_state"))
+        _assert_expected_revision(state, expected_revision)
+        clone_candidates = _production_voice_clone_candidates(convo)
+        active_id = str(convo.get("active_production_id") or "")
+        production_record = next((
+            item for item in clone_candidates if str(item.get("id") or "") == active_id
+        ), None)
+        if production_record is None and len(clone_candidates) == 1:
+            production_record = clone_candidates[0]
+        ambiguous = production_record is None and len(clone_candidates) > 1
+        production_id = str((production_record or {}).get("id") or "")
+        if production_record is not None:
+            clone = dict(production_record.get("voice_clone") or {})
+            voice_ui = {
+                "status": "complete" if clone.get("status") == "ready" else clone.get("status"),
+                "slot_id": clone.get("slot_id"),
+                "voice_name": clone.get("name") or "我的个人音色",
+                "error": clone.get("error") or "",
+            }
+        else:
+            voice_ui = dict(convo.get("voice_clone_ui") or {})
+        snapshot_revision = state["revision"]
+
+    if ambiguous:
+        status_decision = dict(decision)
+        status_decision["reply"] = "当前有多个声音复刻记录，请先打开或点名对应的口播制作，再查询复刻状态。"
+        return _process_semantic_reply(
+            cid, user_message, status_decision, expected_revision, request_id,
+        )
+
+    slot_id = str(voice_ui.get("slot_id") or "")
+    refresh_failed = False
+    slot = None
+    if slot_id:
+        try:
+            payload = _bridge_tool_result(_bridge_action(
+                current_account_id(), "audio-slots", {},
+                idempotency_key="ip12-voice-status-%s-%s" % (cid, slot_id),
+            ))
+            slot = next((
+                item for item in payload.get("items") or []
+                if isinstance(item, dict) and str(item.get("slot_id") or "") == slot_id
+            ), None)
+        except (ProductionBridgeError, RuntimeError, TypeError, ValueError):
+            refresh_failed = True
+        if slot is None:
+            refresh_failed = True
+
+    status = str(voice_ui.get("status") or "")
+    schema = context = None
+    if slot is not None:
+        slot_status = str(slot.get("status") or "")
+        if slot_status == "ready" and slot.get("preview_url"):
+            status = "complete"
+        elif slot_status == "training":
+            status = "training"
+        elif slot_status in {"failed", "error"}:
+            status = "failed"
+        if status == "complete" and production_id:
+            try:
+                recommendation = _production_recommendation(
+                    current_account_id(), "video", "digital-ip-text-generate"
+                )
+                entry = recommendation.pop("catalog_entry")
+                schema, context = _production_parameter_context(
+                    current_account_id(), "digital-ip-text-generate", entry,
+                )
+            except (ProductionBridgeError, RuntimeError, TypeError, ValueError):
+                status = "training"
+                refresh_failed = True
+        with CONVERSATION_STATE_LOCK:
+            convo = owned_conversation(cid)
+            state = normalize_coach_state(convo.get("coach_state"))
+            if state["revision"] != snapshot_revision:
+                raise coach_harness.HarnessConflict("对话已在另一端更新，请刷新后重试")
+            if production_id:
+                current_record = (convo.get("productions") or {}).get(production_id)
+                current = dict((current_record or {}).get("voice_clone") or {})
+                current.update(
+                    status="ready" if status == "complete" else status,
+                    slot_id=slot_id,
+                    name=str(slot.get("voice_name") or current.get("name") or "我的个人音色")[:40],
+                    error=str(slot.get("clone_error") or "")[:160] if status == "failed" else "",
+                    updated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                )
+                current_record["voice_clone"] = current
+                if status == "complete" and schema is not None:
+                    _, applied = _apply_ready_voice_clone(
+                        convo, current_record, slot_id, schema, context,
+                    )
+                    if not applied:
+                        status = current["status"] = "training"
+                voice_ui = {
+                    "status": status, "slot_id": slot_id,
+                    "voice_name": current["name"], "error": current["error"],
+                }
+            else:
+                current = dict(convo.get("voice_clone_ui") or {})
+                current.update(
+                    status=status,
+                    slot_id=slot_id,
+                    voice_name=str(slot.get("voice_name") or current.get("voice_name") or "我的个人音色")[:40],
+                    error=str(slot.get("clone_error") or "")[:160] if status == "failed" else "",
+                    updated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                )
+                convo["voice_clone_ui"] = current
+                voice_ui = current
+            save_conversation(cid, convo)
+
+    voice_name = str(voice_ui.get("voice_name") or "我的个人音色")
+    if refresh_failed:
+        assistant = "%s已保留在当前 Project，但我暂时没能读取平台槽位的实时状态；本次没有重新提交。" % voice_name
+    elif status == "complete":
+        assistant = "%s已经复刻完成并保存在当前 Project，没有丢失；下方常驻状态卡可以随时展开试听。" % voice_name
+    elif status == "training":
+        assistant = "%s仍在后台复刻中；我只查询了原来的音色槽位，没有重复提交，你可以继续聊天。" % voice_name
+    elif status == "failed":
+        assistant = "%s这次没有完成复刻：%s。我不会自动重试。" % (
+            voice_name, voice_ui.get("error") or "平台返回失败",
+        )
+    elif status == "collecting":
+        assistant = "声音克隆卡已经打开，但还没有提交样音，因此目前没有正在执行的复刻任务。"
+    else:
+        assistant = "当前 Project 还没有个人音色复刻记录；如果需要，我可以在当前对话打开录音卡。"
+
+    status_decision = dict(decision)
+    status_decision["reply"] = assistant
+    return _process_semantic_reply(
+        cid, user_message, status_decision, expected_revision, request_id,
+    )
+
+
+def _semantic_customer_reply(convo, reply):
+    replacements = {
+        str(convo.get("id") or ""): "当前 Project",
+        project_memory.SCHEMA: "Project 记忆",
+        semantic_router.SCHEMA: "主控决策",
+    }
+    always_replace = set()
+    for record in (convo.get("productions") or {}).values():
+        if not isinstance(record, dict):
+            continue
+        label = _semantic_status_label(record)
+        for internal_id in (record.get("id"), record.get("job_id")):
+            internal_id = str(internal_id or "")
+            if internal_id:
+                replacements[internal_id] = label
+                always_replace.add(internal_id)
+    pack = ((convo.get("deliverables") or {}).get("6") or {})
+    for category in pack.get("categories") or []:
+        category_label = str(category.get("name") or "当前选题分类")
+        replacements[str(category.get("id") or "")] = category_label
+        for topic in category.get("topics") or []:
+            replacements[str(topic.get("id") or "")] = str(topic.get("title") or "当前文案")
+    customer_reply = str(reply or "你可以再具体说一点吗？")
+    for internal_id, label in sorted(replacements.items(), key=lambda item: len(item[0]), reverse=True):
+        if internal_id in always_replace or len(internal_id) >= 6:
+            customer_reply = customer_reply.replace(internal_id, label)
+    return customer_reply
+
+
+def _process_semantic_reply(cid, user_message, decision, expected_revision=None, request_id=""):
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        if convo is None:
+            return None, 404
+        state = normalize_coach_state(convo.get("coach_state"))
+        _assert_expected_revision(state, expected_revision)
+        snapshot_revision = state["revision"]
+        assistant = _semantic_customer_reply(convo, decision.get("reply"))
+    message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
+    assistant, next_state = _persist_unprocessed_turn(
+        cid, user_message, snapshot_revision, message_id=message_id,
+        assistant_override=assistant,
+        skills=["semantic_master_agent"],
+        memory_updates=project_memory.validated_preference_updates(decision, user_message),
+    )
+    result = _chat_result(assistant, next_state)
+    return result, 200
+
+
+def _semantic_content_target(decision, memory, user_message):
+    references = decision.get("references") if isinstance(decision.get("references"), dict) else {}
+    category_id, topic_id = str(references.get("category_id") or ""), str(references.get("topic_id") or "")
+    resolved = project_memory.resolve_content_reference(memory, user_message)
+    if not resolved:
+        return None
+    if category_id and topic_id and (
+        resolved["category_id"] != category_id or resolved["topic_id"] != topic_id
+    ):
+        return None
+    return resolved
+
+
+def _semantic_production_intent(decision):
+    delegate = str(decision.get("delegate_to") or "")
+    expected = {
+        "voice_clone_agent": "voice_clone.open",
+        "audio_preview_agent": "audio_preview.prepare",
+        "talking_head_video_agent": "talking_head.prepare",
+    }.get(delegate)
+    if not expected or decision.get("tool") != expected or decision.get("tool_policy") != "prepare_only":
+        return None
+    if delegate == "voice_clone_agent":
+        return {
+            "capability_family": "audio", "recommended_action": "audio-slots",
+            "candidate_actions": ["audio-slots"], "voice_clone_request": True,
+        }
+    if delegate == "audio_preview_agent":
+        return {
+            "capability_family": "audio", "recommended_action": "audio-generate",
+            "candidate_actions": ["audio-generate"], "audio_preview_request": True,
+        }
+    if delegate == "talking_head_video_agent":
+        return {
+            "capability_family": "video", "recommended_action": "digital-ip-text-generate",
+            "candidate_actions": ["digital-ip-text-generate"],
+        }
+    return None
 
 
 def _continuation_failure_reply(state):
@@ -4974,10 +6914,17 @@ def process_chat_request(body):
         return {"ok": False, "error": "empty message"}, 400
 
     claim_key = None
+    shadow_decision = None
+    semantic_decision = None
+    memory_snapshot = None
+    legacy_route = ""
+    material_revision_ambiguous = False
     try:
         production_intent = None
         material_revision_kind = ""
         material_production_id = ""
+        weather_turn = False
+        pause_turn = False
         try:
             with CONVERSATION_STATE_LOCK:
                 try:
@@ -4989,7 +6936,7 @@ def process_chat_request(body):
                     return {"ok": False, "error": "诊断不存在"}, 404
                 replay = _receipt(convo, request_id)
                 if replay:
-                    return replay, 200
+                    return _public_chat_result(replay), 200
                 choice_replay = _choice_snapshot_for_request(convo, request_id)
                 if choice_replay:
                     selected_id = choice_replay.get("selected_choice_id")
@@ -5007,7 +6954,7 @@ def process_chat_request(body):
                         request_id=request_id,
                     )
                     replay.update(replayed=True, selection_replayed=True)
-                    return replay, 200
+                    return _public_chat_result(replay), 200
                 turn_key = (cid, request_id or "anonymous-" + uuid.uuid4().hex)
                 if request_id and turn_key in TURN_REQUESTS_IN_FLIGHT:
                     return {"ok": True, "status": "processing", "request_id": request_id}, 202
@@ -5022,11 +6969,19 @@ def process_chat_request(body):
                 _assert_expected_revision(state, body.get("expected_revision"))
                 if action is None:
                     material_revision_kind = _production_material_revision_intent(user_message)
+                    material_candidates = (
+                        _editable_talking_head_productions(convo)
+                        if material_revision_kind else []
+                    )
                     material_record = (
                         _latest_editable_talking_head_production(convo)
                         if material_revision_kind else None
                     )
                     material_production_id = str((material_record or {}).get("id") or "")
+                    material_revision_ambiguous = bool(
+                        material_revision_kind and not material_production_id
+                        and len(material_candidates) > 1
+                    )
                 if action is None and content_target is None and not material_production_id:
                     action = coach_harness.shortcut_action(state, user_message)
                     if action:
@@ -5076,12 +7031,175 @@ def process_chat_request(body):
                         production_intent and production_intent.get("help_only")
                     )
                     if production_intent is not None and content_target is None and not source_optional:
-                        content_target = _production_target_from_message(convo, user_message)
+                        try:
+                            content_target = _production_target_from_message(convo, user_message)
+                        except coach_harness.HarnessError:
+                            production_intent = None
+
+                pause_turn = bool(
+                    action is None and production_intent is None and content_target is None
+                    and foundation_review != "revision" and _is_pause_message(user_message)
+                )
+                weather_turn = bool(
+                    action is None and production_intent is None and content_target is None
+                    and not pause_turn and foundation_review != "revision" and _WEATHER_RE.search(user_message)
+                )
+                legacy_route = (
+                    "pause_turn" if pause_turn
+                    else "general_tool_turn" if weather_turn
+                    else "action_turn" if action is not None
+                    else "production_turn" if production_intent is not None
+                    else "content_revision_turn" if (
+                        content_target is not None
+                        and not coach_harness.is_content_review_message(user_message)
+                    )
+                    else "foundation_revision_turn" if foundation_review == "revision"
+                    else "model_turn"
+                )
+                if MASTER_AGENT_MODE in {"shadow", "live"}:
+                    shadow_decision = master_agent.decide(
+                        convo,
+                        state,
+                        user_message,
+                        {
+                            "legacy_route": legacy_route,
+                            "action_type": str((action or {}).get("type") or "") if isinstance(action, dict) else "",
+                            "production_action": str((production_intent or {}).get("recommended_action") or ""),
+                        },
+                    )
+
+                if action is None and body.get("content_target") is None and foundation_review != "revision":
+                    memory_snapshot = project_memory.build(
+                        convo, state, capability_gates(state)
+                    )
+
+            if material_revision_ambiguous:
+                semantic_decision = semantic_router.safe_clarification(
+                    "当前有多个待修改的口播制作，请先打开或点名其中一个，再说明要重录声音还是更换形象。"
+                )
+            if (not material_production_id and semantic_decision is None and memory_snapshot is not None
+                    and SEMANTIC_ROUTER_MODE == "live"):
+                memory_snapshot["tool_catalog"] = _semantic_tool_catalog(current_account_id(), state)
+                try:
+                    semantic_decision = _semantic_master_decision(memory_snapshot, user_message)
+                except semantic_router.DecisionCombinationError as exc:
+                    app.logger.warning("IP12 semantic router rejected unsafe combination: %s", exc)
+                    semantic_decision = semantic_router.safe_clarification()
+                except Exception as exc:
+                    app.logger.warning("IP12 semantic router failed open to legacy route: %s", exc)
+
+            if semantic_decision:
+                try:
+                    semantic_router.validate_combination(semantic_decision)
+                except semantic_router.DecisionCombinationError as exc:
+                    app.logger.warning("IP12 semantic execution rejected unsafe combination: %s", exc)
+                    semantic_decision = semantic_router.safe_clarification()
+                if not _semantic_decision_allowed(semantic_decision, memory_snapshot or {}):
+                    semantic_decision = semantic_router.safe_clarification(
+                        "这项能力当前没有解锁或暂时不可用。你可以换一个目标，或者稍后再试。"
+                    )
 
             if material_production_id:
                 result, status = _process_production_material_revision_turn(
                     cid, user_message, material_production_id, material_revision_kind,
                     body.get("expected_revision"), request_id,
+                )
+            elif semantic_decision and semantic_decision.get("intent") == "pause":
+                result, status = _process_pause_turn(
+                    cid, user_message, body.get("expected_revision"), request_id
+                )
+            elif (
+                semantic_decision
+                and semantic_decision.get("tool") == "weather.current"
+                and semantic_decision.get("tool_policy") == "read_only"
+            ):
+                result, status = _process_contextual_weather_turn(
+                    cid, user_message, body.get("expected_revision"), request_id
+                )
+            elif (
+                semantic_decision
+                and semantic_decision.get("intent") == "status"
+                and semantic_decision.get("tool") == "voice_clone.status"
+            ):
+                result, status = _process_voice_clone_status_turn(
+                    cid, user_message, semantic_decision,
+                    body.get("expected_revision"), request_id,
+                )
+            elif semantic_decision and semantic_decision.get("intent") == "status":
+                result, status = _process_project_status_turn(
+                    cid, user_message, semantic_decision,
+                    body.get("expected_revision"), request_id,
+                )
+            elif semantic_decision and semantic_decision.get("intent") in {"direct_answer", "clarify"}:
+                result, status = _process_semantic_reply(
+                    cid, user_message, semantic_decision,
+                    body.get("expected_revision"), request_id,
+                )
+            elif semantic_decision and semantic_decision.get("intent") == "delegate":
+                semantic_intent = _semantic_production_intent(semantic_decision)
+                semantic_target = _semantic_content_target(
+                    semantic_decision, memory_snapshot or {}, user_message
+                )
+                needs_target = semantic_decision.get("delegate_to") == "talking_head_video_agent"
+                if semantic_intent is None or (needs_target and semantic_target is None):
+                    safe_decision = dict(semantic_decision)
+                    safe_decision.update(
+                        intent="clarify", delegate_to="none", tool="none", tool_policy="none",
+                        awaiting="user_input",
+                        reply=(
+                            "我理解你想继续制作，但还不能安全确定具体对象。"
+                            "请告诉我是声音克隆、试听音频，还是用哪一篇文案制作口播视频？"
+                        ),
+                        payment_policy={"quote_required": False, "explicit_confirmation_required": False},
+                        memory_updates=[],
+                    )
+                    result, status = _process_semantic_reply(
+                        cid, user_message, safe_decision,
+                        body.get("expected_revision"), request_id,
+                    )
+                else:
+                    result, status = _process_production_intent_turn(
+                        cid, user_message, semantic_target, semantic_intent,
+                        body.get("expected_revision"), request_id,
+                        semantic_master=True,
+                    )
+            elif semantic_decision and semantic_decision.get("intent") == "revise_content":
+                semantic_target = _semantic_content_target(
+                    semantic_decision, memory_snapshot or {}, user_message
+                )
+                if semantic_target is None or semantic_decision.get("tool") != "content.revise":
+                    safe_decision = dict(semantic_decision)
+                    safe_decision.update(
+                        intent="clarify", delegate_to="none", tool="none", tool_policy="none",
+                        awaiting="user_input", reply="你想修改哪一篇口播文案？可以说第一篇、第二篇、第三篇，或直接说标题。",
+                        payment_policy={"quote_required": False, "explicit_confirmation_required": False},
+                        memory_updates=[],
+                    )
+                    result, status = _process_semantic_reply(
+                        cid, user_message, safe_decision,
+                        body.get("expected_revision"), request_id,
+                    )
+                else:
+                    result, status = _process_content_revision_turn(
+                        cid, user_message, semantic_target,
+                        body.get("expected_revision"), request_id,
+                        semantic_master=True,
+                    )
+            elif pause_turn:
+                result, status = _process_pause_turn(
+                    cid, user_message, body.get("expected_revision"), request_id
+                )
+            elif weather_turn:
+                result, status = _process_contextual_weather_turn(
+                    cid, user_message, body.get("expected_revision"), request_id
+                )
+            elif (
+                MASTER_AGENT_MODE == "live"
+                and shadow_decision
+                and shadow_decision.get("execution_route") == "master_resume"
+            ):
+                result, status = _process_master_runtime_turn(
+                    cid, user_message, body.get("expected_revision"), request_id
                 )
             elif action is not None:
                 result, status = _process_action_turn(
@@ -5111,6 +7229,10 @@ def process_chat_request(body):
 
         if status == 200:
             result["request_id"] = request_id
+            if semantic_decision and _semantic_debug_allowed():
+                result["master_decision"] = project_memory.public_decision(semantic_decision)
+            else:
+                result.pop("master_decision", None)
             artifact_module = 4 if result.get("foundation_report") else next((
                 int(module_id) for module_id in (result.get("auto_deliverables") or {})
                 if str(module_id).isdigit()
@@ -5121,7 +7243,37 @@ def process_chat_request(body):
                     result["artifact_notice"] = notice
                     result["artifact_module"] = artifact_module
             _save_receipt(cid, request_id, result)
-        return result, status
+            if semantic_decision:
+                try:
+                    with CONVERSATION_STATE_LOCK:
+                        latest = owned_conversation(cid)
+                        if latest is not None:
+                            latest_state = normalize_coach_state(latest.get("coach_state"))
+                            project_memory.record_decision(
+                                latest, semantic_decision, request_id,
+                                latest_state["revision"], datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            )
+                            save_conversation(cid, latest)
+                except Exception as exc:
+                    app.logger.warning("IP12 semantic telemetry failed open: %s", exc)
+            if MASTER_AGENT_MODE == "shadow" and shadow_decision:
+                try:
+                    with CONVERSATION_STATE_LOCK:
+                        latest = owned_conversation(cid)
+                        if latest is not None:
+                            latest_state = normalize_coach_state(latest.get("coach_state"))
+                            master_agent.record_shadow(
+                                latest,
+                                shadow_decision,
+                                legacy_route,
+                                request_id,
+                                latest_state["revision"],
+                                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            )
+                            save_conversation(cid, latest)
+                except Exception as exc:
+                    app.logger.warning("IP12 master shadow record failed: %s", exc)
+        return _public_chat_result(result), status
     finally:
         if claim_key:
             with CONVERSATION_STATE_LOCK:
@@ -5135,6 +7287,8 @@ def api_chat():
         return jsonify(result), status
     done = dict(result)
     done.pop("assistant", None)
+    if not _semantic_debug_allowed():
+        done.pop("master_decision", None)
     done["done"] = True
     events = [
         f"data: {json.dumps({'content': result['assistant']}, ensure_ascii=False)}\n\n",
@@ -5448,6 +7602,9 @@ def analytics():
         total=t_convos, messages=t_msgs, reports=t_reports,
         module_stats=sorted(mod_counts.items()),
         persons=persons, modules=MODULES, module_names=[m["name"] for m in MODULES])
+
+_AGENT_RUNTIME_WORKER = _start_agent_runtime_worker()
+
 
 if __name__ == "__main__":
     has_prompt = "✅" if COACH_PROMPT_BASE else "❌ 未找到"

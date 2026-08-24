@@ -155,6 +155,10 @@ client = server.app.test_client()
 client.environ_base["HTTP_AUTHORIZATION"] = "Bearer test-token"
 cid = "catalogread01"
 state = server.initial_coach_state()
+state.update(
+    completed_modules=[1, 2, 3, 4, 5, 6], current_module=6, module_step=3,
+    foundation_report={"status": "confirmed"},
+)
 server.save_conversation(cid, {
     "id": cid, "title": "catalog read", "messages": [], "coach_state": state,
     "reports": {}, "deliverables": {}, "owner_account_id": "acct_a",
@@ -305,6 +309,10 @@ security.RATE_REQUESTS = 100
 client = server.app.test_client()
 client.environ_base["HTTP_AUTHORIZATION"] = "Bearer test-token"
 state = server.initial_coach_state()
+state.update(
+    completed_modules=[1, 2, 3, 4, 5, 6], current_module=6, module_step=3,
+    foundation_report={"status": "confirmed"},
+)
 cid = "inlinemedia01"
 server.save_conversation(cid, {
     "id": cid, "title": "inline media", "messages": [], "coach_state": state,

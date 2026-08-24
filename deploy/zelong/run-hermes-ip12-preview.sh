@@ -6,17 +6,24 @@ set -a
 . /home/ubuntu/content-api/content.env
 set +a
 
-: "${COPY_BASE:?COPY_BASE is required}"
-: "${COPY_API_KEY:?COPY_API_KEY is required}"
-export OPENAI_API_BASE="$COPY_BASE"
-export OPENAI_API_KEY="$COPY_API_KEY"
-export HERMES_MODEL="${HERMES_PREVIEW_MODEL:-gemini-3.5-flash}"
+: "${OPENAI_API_KEY:?OPENAI_API_KEY is required}"
+export OPENAI_API_BASE="${HERMES_PREVIEW_BASE:-https://api.openai.com/v1}"
+export OPENAI_API_KEY="${HERMES_PREVIEW_API_KEY:-$OPENAI_API_KEY}"
+export HERMES_MODEL="${HERMES_PREVIEW_MODEL:-gpt-5.6-terra}"
+export HTTP_PROXY="${HERMES_PREVIEW_HTTP_PROXY:-http://127.0.0.1:10810}"
+export HTTPS_PROXY="${HERMES_PREVIEW_HTTPS_PROXY:-http://127.0.0.1:10810}"
+export NO_PROXY="${HERMES_PREVIEW_NO_PROXY:-127.0.0.1,localhost,::1}"
 export HERMES_HOME=/home/ubuntu/hermes-preview
 export HERMES_DATA_DIR=/home/ubuntu/hermes-preview-data
 export HERMES_DATA_QUOTA_MB=512
 export HERMES_AUTH_BASE=http://127.0.0.1:8095
 export HQ_AUTH_BASE=http://127.0.0.1:8095
 export HERMES_ENABLE_INTERNAL_TOOLS=1
+export HERMES_MASTER_AGENT_MODE="${HERMES_PREVIEW_MASTER_AGENT_MODE:-live}"
+export HERMES_AGENT_RUNTIME_WORKER_ENABLED=1
+export HERMES_AGENT_RUNTIME_WORKER_INTERVAL=3
+export HERMES_COGNITIVE_ENGINE=custom
+export HERMES_AGENTS_SDK_ENABLED=0
 export PYTHONPATH="/home/ubuntu/hermes-preview-deps${PYTHONPATH:+:$PYTHONPATH}"
 export PATH="/home/ubuntu/hermes-preview/bin:$PATH"
 PYTHON=/usr/bin/python3
