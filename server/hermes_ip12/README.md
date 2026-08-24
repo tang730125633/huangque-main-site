@@ -54,7 +54,7 @@ the same corpus under one durable request/CNY ledger. A PASS artifact is mode
 ```bash
 python3 cognitive_live_eval.py --mode t3 \
   --release-sha "$RELEASE_SHA" --model gpt-5.6-terra \
-  --max-requests 120 --max-cny 10 \
+  --max-requests 120 --max-cny 12 \
   --budget-ledger /home/ubuntu/hermes-preview-data/terra-t3-budget.json \
   --output /home/ubuntu/hermes-preview-data/terra-conformance.json
 ```

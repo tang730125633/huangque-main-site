@@ -21,7 +21,7 @@ import semantic_router
 
 SCHEMA = "ip12.cognitive-conformance/v1"
 AUTHORIZED_MAX_REQUESTS = 120
-AUTHORIZED_MAX_CNY = 10.0
+AUTHORIZED_MAX_CNY = 12.0
 _DEPLOYED_CORPUS = Path(__file__).with_name("eval_corpus.json")
 _SOURCE_CORPUS = Path(__file__).resolve().parents[2] / "tests/fixtures/ip12_semantic_router_cases.json"
 DEFAULT_CORPUS = _DEPLOYED_CORPUS if _DEPLOYED_CORPUS.is_file() else _SOURCE_CORPUS
@@ -289,7 +289,7 @@ def main():
     parser.add_argument("--release-sha", required=True)
     parser.add_argument("--budget-ledger", required=True)
     parser.add_argument("--max-requests", type=int, default=120)
-    parser.add_argument("--max-cny", type=float, default=10.0)
+    parser.add_argument("--max-cny", type=float, default=12.0)
     parser.add_argument("--max-output-tokens", type=int, default=700)
     parser.add_argument("--timeout", type=int, default=50)
     parser.add_argument("--corpus", default=str(DEFAULT_CORPUS))
@@ -303,7 +303,7 @@ def main():
             parser.error("--output is required for t3")
         result, artifact_sha = run_t3(args)
         summary = {
-            "mode": "t3", "decision": result["decision"], "artifact_sha256": artifact_sha,
+            "mode": args.mode, "decision": result["decision"], "artifact_sha256": artifact_sha,
             "custom_eval": result["custom_eval"], "agents_sdk_eval": result["agents_sdk_eval"],
             "budget": result["budget"],
         }
