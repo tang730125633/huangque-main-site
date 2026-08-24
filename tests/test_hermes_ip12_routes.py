@@ -97,14 +97,20 @@ class RedirectResponse:
     def __enter__(self): return self
     def __exit__(self, *_args): return False
 
-with patch.object(server, "_safe_public_artifact_url", return_value="https://media.example/video.mp4"), \
-     patch.object(server.requests, "get", return_value=RedirectResponse()), \
+with patch.object(server.socket, "getaddrinfo", return_value=[
+         (server.socket.AF_INET, server.socket.SOCK_STREAM, 6, "", ("8.8.8.8", 443)),
+     ]), patch.object(server.requests, "get", return_value=RedirectResponse()), \
      patch.object(server.subprocess, "run", Mock(side_effect=AssertionError("ffprobe must not run"))):
     verified = server._verify_video_artifacts([
-        {"kind": "video", "url": "https://media.example/video.mp4"},
+        {"kind": "video", "url": "https://video.huangquechuanmei.com/video.mp4"},
     ])
 assert verified["decision"] == "fail", verified
 assert verified["issues"] == [{"code": "video_redirect_rejected"}], verified
+with patch.object(server.requests, "get", side_effect=AssertionError("untrusted host must not connect")):
+    rejected = server._verify_video_artifacts([
+        {"kind": "video", "url": "https://attacker.example/video.mp4"},
+    ])
+assert rejected["issues"] == [{"code": "video_url_invalid"}], rejected
 print("IP12_RUNTIME_SAFETY_OK")
 '''
         with tempfile.TemporaryDirectory() as root:
@@ -1508,7 +1514,8 @@ def resources(_account, action, _input, **_kwargs):
                            "preview_url": "https://media.example/old.mp3"}]}
     if action == "audio-slots":
         return {"items": [{"slot_id": "slot_12345678", "status": "ready",
-                           "voice_name": "我的旧声音"}]}
+                           "voice_name": "我的旧声音",
+                           "preview_url": "https://media.example/old.mp3"}]}
     raise AssertionError(action)
 
 def first_clone_resources(_account, action, _input, **_kwargs):
@@ -1718,6 +1725,30 @@ assert ready_body["production"]["options"] == {
     "image_upload_id": "img_" + "b" * 32, "voice": "vip_slot_12345678",
 }, ready_body
 assert ready_body["material_message"]["production_id"] == production_id, ready_body
+
+chat_ready_convo = server.load_conversation(cid)
+chat_ready_record = chat_ready_convo["productions"][production_id]
+chat_ready_record.update(status="blocked_prerequisite", quote={}, last_error_code="voice_clone_training")
+chat_ready_record["options"] = {"image_upload_id": "img_" + "b" * 32}
+chat_ready_record["voice_clone"] = {
+    "request_id": "clone-request-0001", "slot_id": "slot_12345678",
+    "name": "我的新声音", "status": "training",
+}
+server.save_conversation(cid, chat_ready_convo)
+chat_revision = chat_ready_convo["coach_state"]["revision"]
+with patch.object(server, "_bridge_catalog", return_value=catalog), \
+        patch.object(server, "_bridge_action", side_effect=ready_resources):
+    chat_ready, chat_ready_status = server._process_voice_clone_status_turn(
+        cid, "声音复刻好了吗", {"reply": "查询中"}, chat_revision, "clone-chat-ready-001",
+    )
+assert chat_ready_status == 200, chat_ready
+assert "已经复刻完成" in chat_ready["assistant"], chat_ready
+chat_ready_saved = server.load_conversation(cid)["productions"][production_id]
+assert chat_ready_saved["options"] == {
+    "image_upload_id": "img_" + "b" * 32, "voice": "vip_slot_12345678",
+}, chat_ready_saved
+assert chat_ready_saved["status"] == "draft", chat_ready_saved
+revision = chat_ready["state"]["revision"]
 
 with patch.object(server, "_bridge_upload", side_effect=AssertionError("invalid slot must fail before upload")):
     invalid_slot = client.post("/api/ip12/productions/clone-voice", data={

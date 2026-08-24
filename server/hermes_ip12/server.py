@@ -44,6 +44,7 @@ AGENT_RUNTIME_WORKER_INTERVAL = max(
     1.0, float(os.environ.get("HERMES_AGENT_RUNTIME_WORKER_INTERVAL") or 3)
 )
 RUNTIME_SUBMISSION_CLAIM_SECONDS = 45
+VERIFIED_VIDEO_HOSTS = {"video.huangquechuanmei.com"}
 AI_DEFAULT_TIMEOUT_SECONDS = 180
 CHOICE_TOTAL_TIMEOUT_SECONDS = 120
 CHOICE_FIRST_TIMEOUT_SECONDS = 75
@@ -2113,7 +2114,10 @@ def _runtime_fail(convo, record, code, *, refund_status=None, tool_id=None):
 def _safe_public_artifact_url(value):
     try:
         parsed = urllib.parse.urlparse(str(value or ""))
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+        if (
+            parsed.scheme != "https" or parsed.hostname not in VERIFIED_VIDEO_HOSTS
+            or parsed.username or parsed.password
+        ):
             return ""
         addresses = {
             item[4][0] for item in socket.getaddrinfo(parsed.hostname, parsed.port or 443, type=socket.SOCK_STREAM)
@@ -4017,6 +4021,47 @@ def api_clone_production_voice():
         return _production_error("production_bridge_unavailable", "声音服务暂时不可用", 503)
 
 
+def _apply_ready_voice_clone(convo, record, slot_id, schema, context, *, announce=False):
+    properties = schema.get("properties") or {}
+    choice = next((
+        item for item in (properties.get("voice") or {}).get("oneOf") or []
+        if isinstance(item, dict) and str(item.get("slot_id") or "") == slot_id
+    ), None)
+    if not choice:
+        return None, False
+    options = {
+        name: value for name, value in (record.get("options") or {}).items()
+        if name in properties
+    }
+    options["voice"] = choice["const"]
+    options.pop("audio_upload_id", None)
+    if options.get("image_upload_id"):
+        schema["required"] = [
+            "image_upload_id" if name == "avatar_id" else name
+            for name in (schema.get("required") or [])
+        ]
+    record["parameter_schema"] = schema
+    record.update(context or {})
+    _production_set_options(record, options)
+    valid, _, _ = _production_plan_or_error(record, record["options"])
+    record.update(
+        status="draft" if valid else "blocked_prerequisite", quote={},
+        last_error_code="" if valid else "missing_prerequisite",
+    )
+    clone = record.setdefault("voice_clone", {})
+    clone.pop("audio_upload_id", None)
+    if announce and not clone.get("ready_message_id"):
+        message = _append_assistant_message(
+            convo,
+            "✅ 你的克隆声音已经生成，并已选入本次视频。你可以先试听；其他素材齐全后，我会继续给出实时报价。",
+            "production_bridge", message_id="cloneok_" + uuid.uuid4().hex,
+            production_id=record["id"],
+        )
+        clone["ready_message_id"] = message["message_id"]
+        return message, True
+    return None, True
+
+
 @app.route("/api/ip12/productions/<production_id>/clone-voice", methods=["POST"])
 def api_clone_production_voice_status(production_id):
     try:
@@ -4069,41 +4114,10 @@ def api_clone_production_voice_status(production_id):
             if result.get("clone_error"):
                 clone["error"] = str(result["clone_error"])[:220]
             if status == "ready" and schema is not None:
-                properties = schema.get("properties") or {}
-                choice = next((
-                    item for item in (properties.get("voice") or {}).get("oneOf") or []
-                    if isinstance(item, dict) and str(item.get("slot_id") or "") == slot_id
-                ), None)
-                if choice:
-                    options = {
-                        name: value for name, value in (record.get("options") or {}).items()
-                        if name in properties
-                    }
-                    options["voice"] = choice["const"]
-                    options.pop("audio_upload_id", None)
-                    if options.get("image_upload_id"):
-                        schema["required"] = [
-                            "image_upload_id" if name == "avatar_id" else name
-                            for name in (schema.get("required") or [])
-                        ]
-                    record["parameter_schema"] = schema
-                    record.update(context or {})
-                    _production_set_options(record, options)
-                    valid, _, _ = _production_plan_or_error(record, record["options"])
-                    record.update(
-                        status="draft" if valid else "blocked_prerequisite", quote={},
-                        last_error_code="" if valid else "missing_prerequisite",
-                    )
-                    clone.pop("audio_upload_id", None)
-                    if not clone.get("ready_message_id"):
-                        material_message = _append_assistant_message(
-                            convo,
-                            "✅ 你的克隆声音已经生成，并已选入本次视频。你可以先试听；其他素材齐全后，我会继续给出实时报价。",
-                            "production_bridge", message_id="cloneok_" + uuid.uuid4().hex,
-                            production_id=production_id,
-                        )
-                        clone["ready_message_id"] = material_message["message_id"]
-                else:
+                material_message, applied = _apply_ready_voice_clone(
+                    convo, record, slot_id, schema, context, announce=True,
+                )
+                if not applied:
                     status = clone["status"] = "training"
             elif status == "failed":
                 clone.pop("audio_upload_id", None)
@@ -6600,6 +6614,7 @@ def _process_voice_clone_status_turn(cid, user_message, decision, expected_revis
             refresh_failed = True
 
     status = str(voice_ui.get("status") or "")
+    schema = context = None
     if slot is not None:
         slot_status = str(slot.get("status") or "")
         if slot_status == "ready" and slot.get("preview_url"):
@@ -6608,6 +6623,18 @@ def _process_voice_clone_status_turn(cid, user_message, decision, expected_revis
             status = "training"
         elif slot_status in {"failed", "error"}:
             status = "failed"
+        if status == "complete" and production_id:
+            try:
+                recommendation = _production_recommendation(
+                    current_account_id(), "video", "digital-ip-text-generate"
+                )
+                entry = recommendation.pop("catalog_entry")
+                schema, context = _production_parameter_context(
+                    current_account_id(), "digital-ip-text-generate", entry,
+                )
+            except (ProductionBridgeError, RuntimeError, TypeError, ValueError):
+                status = "training"
+                refresh_failed = True
         with CONVERSATION_STATE_LOCK:
             convo = owned_conversation(cid)
             state = normalize_coach_state(convo.get("coach_state"))
@@ -6624,6 +6651,12 @@ def _process_voice_clone_status_turn(cid, user_message, decision, expected_revis
                     updated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
                 )
                 current_record["voice_clone"] = current
+                if status == "complete" and schema is not None:
+                    _, applied = _apply_ready_voice_clone(
+                        convo, current_record, slot_id, schema, context,
+                    )
+                    if not applied:
+                        status = current["status"] = "training"
                 voice_ui = {
                     "status": status, "slot_id": slot_id,
                     "voice_name": current["name"], "error": current["error"],
