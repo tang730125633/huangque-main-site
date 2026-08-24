@@ -276,8 +276,9 @@ class CognitiveEngineTests(unittest.TestCase):
                 report["budget"]["requests"] = 121
                 self.assertFalse(check(report)["valid"])
                 report["budget"]["requests"] = 100
-                report["budget"]["worst_case_cny"] = 10.01
+                report["budget"]["max_cny"] = 12.01
                 self.assertFalse(check(report)["valid"])
+                report["budget"]["max_cny"] = 10.0
                 report["budget"]["worst_case_cny"] = 9.0
                 report["evidence_source"] = "fixture"
                 rejected = check(report)
