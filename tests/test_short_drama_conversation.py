@@ -172,30 +172,46 @@ class ShortDramaDialogueTimingTests(unittest.TestCase):
         self.assertEqual(30, sum(provider_durations))
         self.assertTrue(all(4 <= value <= 15 for value in provider_durations))
 
-    def test_public_duration_edit_preserves_five_ten_second_contract(self):
-        script = {
-            "overview": {"duration_seconds": 35},
-            "shots": [
-                {"shot_key": "s1", "sort_order": 1, "duration_seconds": 5},
-                {"shot_key": "s2", "sort_order": 2, "duration_seconds": 5},
-                {"shot_key": "s3", "sort_order": 3, "duration_seconds": 5},
-                {"shot_key": "s4", "sort_order": 4, "duration_seconds": 5},
-                {"shot_key": "s5", "sort_order": 5, "duration_seconds": 5},
-                {"shot_key": "s6", "sort_order": 6, "duration_seconds": 10},
-            ],
-        }
-        short_drama_conversation._rebalance_duration(
-            script, script["shots"][0], 10,
+    def test_structure_actions_keep_user_selected_shot_count_and_duration(self):
+        script = short_drama_conversation.short_drama_storyboard.compile_storyboard(
+            payload(shot_count=3, target_duration=15),
+            ["相遇", "产生误会", "和解"],
+            [{
+                "character_key": "lead", "name": "林夏", "role_type": "main",
+                "identity": "主角", "personality": "坚定",
+            }],
+        )
+        original_keys = [item["shot_key"] for item in script["shots"]]
+        short_drama_conversation._structure_shot(
+            script, original_keys[0], "smart_insert", "补一个自然过渡镜头",
+        )
+        self.assertEqual(4, len(script["shots"]))
+        self.assertEqual(4, script["shot_planning"]["shot_count"])
+        self.assertEqual(
+            sum(item["duration_seconds"] for item in script["shots"]),
+            script["overview"]["duration_seconds"],
+        )
+        inserted_key = script["shots"][1]["shot_key"]
+        self.assertTrue(inserted_key.startswith("shot_user_"))
+        short_drama_conversation._structure_shot(script, inserted_key, "delete")
+        self.assertEqual(original_keys, [item["shot_key"] for item in script["shots"]])
+
+    def test_duration_edit_changes_total_instead_of_truncating_other_shots(self):
+        script = short_drama_conversation.short_drama_storyboard.compile_storyboard(
+            payload(shot_count=3, target_duration=15),
+            ["相遇", "冲突", "和解"],
+            [{
+                "character_key": "lead", "name": "林夏", "role_type": "main",
+                "identity": "主角", "personality": "坚定",
+            }],
         )
         durations = [item["duration_seconds"] for item in script["shots"]]
-        self.assertEqual(35, sum(durations))
-        self.assertEqual([10, 5, 5, 5, 5, 5], durations)
-
-        with self.assertRaises(short_drama_conversation.ConversationError) as raised:
-            short_drama_conversation._rebalance_duration(
-                script, script["shots"][0], 6,
-            )
-        self.assertEqual("shot_duration_invalid", raised.exception.code)
+        requested = min(15, durations[0] + 2)
+        short_drama_conversation._rebalance_duration(
+            script, script["shots"][0], requested,
+        )
+        self.assertEqual(durations[1:], [item["duration_seconds"] for item in script["shots"]][1:])
+        self.assertEqual(sum(durations) + requested - durations[0], script["overview"]["duration_seconds"])
 
 
 class ShortDramaStoryboardQualityTests(unittest.TestCase):
@@ -1837,6 +1853,55 @@ class ShortDramaConversationTests(unittest.TestCase):
         )
         self.assertEqual("script_locked", locked["conversation"]["state"])
         self.assertEqual("locked", locked["current_script"]["status"])
+        conn = self.db()
+        try:
+            version_count = conn.execute(
+                "SELECT COUNT(*) FROM short_drama_script_snapshots WHERE project_id=?",
+                (self.project["id"],),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        with self.assertRaises(short_drama_conversation.ConversationError) as raised:
+            short_drama_conversation.change_shot_structure(
+                self.db,
+                "alice",
+                "alice",
+                {
+                    "project_id": self.project["id"],
+                    "conversation_revision": locked["conversation"]["revision"],
+                    "version_id": locked["current_script"]["id"],
+                    "shot_key": locked["current_script"]["script"]["shots"][0]["shot_key"],
+                    "action": "copy",
+                },
+                "structure-after-lock",
+            )
+        self.assertEqual("script_locked", raised.exception.code)
+        self.assertEqual(409, raised.exception.status)
+        after_rejection = short_drama_conversation.workspace(
+            self.db, "alice", "alice", self.project["id"]
+        )
+        self.assertEqual(
+            locked["conversation"]["revision"],
+            after_rejection["conversation"]["revision"],
+        )
+        self.assertEqual(
+            locked["current_script"]["id"], after_rejection["current_script"]["id"],
+        )
+        self.assertEqual(
+            locked["conversation"]["locked_version_id"],
+            after_rejection["conversation"]["locked_version_id"],
+        )
+        conn = self.db()
+        try:
+            self.assertEqual(
+                version_count,
+                conn.execute(
+                    "SELECT COUNT(*) FROM short_drama_script_snapshots WHERE project_id=?",
+                    (self.project["id"],),
+                ).fetchone()[0],
+            )
+        finally:
+            conn.close()
         with self.assertRaises(short_drama_conversation.ConversationError):
             short_drama_conversation.generate_script(
                 self.db,
@@ -2109,7 +2174,7 @@ class ShortDramaConversationTests(unittest.TestCase):
         self.assertNotIn("查清真相", rendered)
         self.assertNotIn("不该出现的线索", rendered)
 
-    def test_single_shot_edit_lock_and_regenerate_create_auditable_versions(self):
+    def test_single_shot_edits_reuse_the_current_working_draft(self):
         confirmed = self.confirm_direction(
             self.project["id"], 1, "generate-editable"
         )
@@ -2146,13 +2211,15 @@ class ShortDramaConversationTests(unittest.TestCase):
                         "kind": "dialogue",
                         "character_key": character["character_key"],
                         "text": "我看到了。",
+                        "speech_rate": 2.0,
                     },
                     "provider_prompt": "电影感写实，清晨卧室，角色盯着成绩页面。",
                 },
             },
             "edit-shot-1",
         )
-        self.assertEqual(2, edited["current_script"]["version"])
+        self.assertEqual(first["id"], edited["current_script"]["id"])
+        self.assertEqual(1, edited["current_script"]["version"])
         edited_script = edited["current_script"]["script"]
         self.assertEqual(
             original_total,
@@ -2162,6 +2229,25 @@ class ShortDramaConversationTests(unittest.TestCase):
             "用成绩页面建立核心冲突",
             edited_script["shots"][0]["purpose"],
         )
+        self.assertEqual(2.0, edited_script["dialogue_lines"][0]["speech_rate"])
+        self.assertEqual(
+            short_drama_storyboard._reading_seconds(
+                edited_script["dialogue_lines"][0]
+            ),
+            edited_script["dialogue_lines"][0]["estimated_reading_seconds"],
+        )
+
+        conn = self.db()
+        try:
+            self.assertEqual(
+                1,
+                conn.execute(
+                    "SELECT COUNT(*) FROM short_drama_script_snapshots WHERE project_id=?",
+                    (self.project["id"],),
+                ).fetchone()[0],
+            )
+        finally:
+            conn.close()
 
         locked = short_drama_conversation.set_shot_lock(
             self.db,

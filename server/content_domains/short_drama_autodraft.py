@@ -1197,6 +1197,7 @@ def _clean_execution(value):
     result["include_scene_reference"] = (
         value.get("include_scene_reference") is not False
     )
+    result["scene_key"] = str(value.get("scene_key") or "").strip()[:160]
     if "character_keys" in value:
         raw_character_keys = value.get("character_keys")
         if not isinstance(raw_character_keys, list):
@@ -1383,6 +1384,7 @@ def preview_provider_request(
         try:
             scene_reference = short_drama_asset_graph.locked_scene_reference(
                 conn, project_id, shot_key,
+                execution.get("scene_key") if execution else None,
             )
             previous_reference = _previous_shot_reference(
                 conn, project_id, shots, shot_key,
@@ -1565,6 +1567,17 @@ def preview_provider_request(
         else timeline_duration_seconds
     )
     prompt = _visual_prompt(shot)
+    speech_rates = [
+        float(item.get("speech_rate") or 1.0)
+        for item in shot.get("dialogue") or []
+        if isinstance(item, dict) and str(item.get("text") or "").strip()
+    ]
+    if speech_rates:
+        speech_rate = max(speech_rates)
+        prompt += (
+            " 台词语速要求：%.2g倍语速，保持吐字清楚、情绪自然并尽量匹配口型。"
+            % speech_rate
+        )
     prompt += (
         " 全片统一视觉基线：画面比例%s，视觉风格%s；保持人物脸部、发型、年龄、"
         "服装，道具外观，主光方向、色温和场景空间布局跨镜头一致。"

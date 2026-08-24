@@ -225,11 +225,40 @@ def invalidate_shot_content(conn, project_id, actor, changed_shot_ids, removed_s
 
 def _seed_entity(conn, project_id, key, asset_type, name, description, actor, now):
     row = conn.execute(
-        "SELECT id FROM short_drama_graph_entities WHERE project_id=? AND asset_key=?",
+        "SELECT id,status FROM short_drama_graph_entities WHERE project_id=? AND asset_key=?",
         (project_id, key),
     ).fetchone()
     if row:
-        return str(row[0]), False
+        entity_id = str(row["id"])
+        if row["status"] != "retired":
+            return entity_id, False, False
+        latest = conn.execute(
+            "SELECT id,version FROM short_drama_graph_versions WHERE entity_id=? "
+            "ORDER BY version DESC LIMIT 1", (entity_id,),
+        ).fetchone()
+        conn.execute(
+            "UPDATE short_drama_graph_versions SET status='retired' "
+            "WHERE entity_id=? AND status<>'retired'", (entity_id,),
+        )
+        conn.execute(
+            "UPDATE short_drama_graph_entities SET asset_type=?,name=?,description=?,"
+            "status='active',current_version_id=NULL,updated_at=? WHERE id=?",
+            (asset_type, name, description, now, entity_id),
+        )
+        content = {"prompt": description, "negative_prompt": "", "references": [],
+                   "attributes": {"seeded": True, "reactivated": True},
+                   "valid_from": "", "valid_to": ""}
+        conn.execute(
+            "INSERT INTO short_drama_graph_versions"
+            "(id,entity_id,version,parent_id,status,prompt,negative_prompt,references_json,"
+            "attributes_json,valid_from,valid_to,content_hash,created_by,created_at) "
+            "VALUES (?,?,?,?, 'draft',?,?,?,?,?,?,?, ?,?)",
+            (str(uuid.uuid4()), entity_id, int(latest["version"] if latest else 0) + 1,
+             latest["id"] if latest else None, content["prompt"], content["negative_prompt"],
+             _canonical(content["references"]), _canonical(content["attributes"]),
+             "", "", _hash(content), actor, now),
+        )
+        return entity_id, False, True
     entity_id = str(uuid.uuid4())
     conn.execute(
         "INSERT INTO short_drama_graph_entities"
@@ -249,7 +278,122 @@ def _seed_entity(conn, project_id, key, asset_type, name, description, actor, no
          _canonical(content["references"]), _canonical(content["attributes"]),
          "", "", _hash(content), actor, now),
     )
-    return entity_id, True
+    return entity_id, True, False
+
+
+def _current_script_shots(conn, project_id):
+    """Read the editable script shots without depending on the legacy shot table."""
+    tables = {row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+    )}
+    if not {"short_drama_conversations", "short_drama_script_snapshots"}.issubset(tables):
+        return None
+    snapshot = conn.execute(
+        "SELECT snapshot.script_json FROM short_drama_conversations conversation "
+        "JOIN short_drama_script_snapshots snapshot "
+        "ON snapshot.id=conversation.current_version_id "
+        "WHERE conversation.project_id=?", (project_id,),
+    ).fetchone()
+    if not snapshot:
+        return None
+    script = _json(snapshot[0], {})
+    shots = []
+    for index, item in enumerate(script.get("shots") or []):
+        if not isinstance(item, dict):
+            continue
+        shot_key = _text(item.get("shot_key"), 160) or "shot_%02d" % (index + 1)
+        shots.append({
+            "id": "script:" + shot_key,
+            "shot_key": shot_key,
+            "sort_order": int(item.get("sort_order") or index + 1),
+            "scene_description": _text(
+                item.get("scene_description") or item.get("scene") or item.get("visual"),
+                4000,
+            ),
+            "character_keys_json": _canonical(item.get("character_keys") or []),
+        })
+    return shots
+
+
+_CURRENT_SCRIPT_UNSET = object()
+
+
+def _foundation_shots(conn, project_id, current_script_shots=_CURRENT_SCRIPT_UNSET):
+    """Use the current script as authoritative, with legacy rows only as an ID bridge."""
+    legacy_shots = [dict(row) for row in conn.execute(
+        "SELECT id,shot_key,sort_order,scene_description,character_keys_json "
+        "FROM short_drama_shots WHERE project_id=? ORDER BY sort_order,id",
+        (project_id,),
+    )]
+    if current_script_shots is _CURRENT_SCRIPT_UNSET:
+        current_script_shots = _current_script_shots(conn, project_id)
+    if current_script_shots is None:
+        return legacy_shots
+    legacy_by_key = {row["shot_key"]: row for row in legacy_shots}
+    shots = []
+    for script_shot in current_script_shots:
+        merged = dict(script_shot)
+        existing = legacy_by_key.get(script_shot["shot_key"])
+        if existing:
+            merged["id"] = existing["id"]
+        shots.append(merged)
+    return sorted(shots, key=lambda row: (int(row.get("sort_order") or 0), row["shot_key"]))
+
+
+def _cleanup_removed_shot_graph(conn, project_id, foundation_shots, now):
+    """Remove stale shot bindings and retire their generated foundation scenes."""
+    active_ids = {str(row["id"]) for row in foundation_shots}
+    active_by_key = {str(row["shot_key"]): str(row["id"]) for row in foundation_shots}
+    stale_relation_ids = []
+    removed_shots = set()
+    for row in conn.execute(
+        "SELECT id,source_id,metadata_json FROM short_drama_graph_relations "
+        "WHERE project_id=? AND source_scope='shot'", (project_id,),
+    ).fetchall():
+        metadata = _json(row["metadata_json"], {})
+        shot_key = _text(metadata.get("shot_key"), 160)
+        source_id = str(row["source_id"])
+        expected_id = active_by_key.get(shot_key) if shot_key else None
+        if source_id in active_ids and (not expected_id or source_id == expected_id):
+            continue
+        stale_relation_ids.append(str(row["id"]))
+        removed_shots.add(shot_key or source_id)
+    if stale_relation_ids:
+        conn.executemany(
+            "DELETE FROM short_drama_graph_relations WHERE id=?",
+            [(relation_id,) for relation_id in stale_relation_ids],
+        )
+
+    retired_entities = []
+    for row in conn.execute(
+        "SELECT id,asset_key FROM short_drama_graph_entities WHERE project_id=? "
+        "AND asset_type='scene' AND status='active'", (project_id,),
+    ).fetchall():
+        asset_key = _text(row["asset_key"], 240)
+        if not asset_key.startswith("scene:") or asset_key.startswith("scene-custom:"):
+            continue
+        if asset_key[len("scene:"):] in active_ids:
+            continue
+        entity_id = str(row["id"])
+        conn.execute(
+            "DELETE FROM short_drama_graph_relations WHERE project_id=? AND entity_id=?",
+            (project_id, entity_id),
+        )
+        conn.execute(
+            "UPDATE short_drama_graph_versions SET status='retired' "
+            "WHERE entity_id=? AND status<>'retired'", (entity_id,),
+        )
+        conn.execute(
+            "UPDATE short_drama_graph_entities SET status='retired',"
+            "current_version_id=NULL,updated_at=? WHERE id=?",
+            (now, entity_id),
+        )
+        retired_entities.append(entity_id)
+    return {
+        "removed_shots": sorted(removed_shots),
+        "removed_relation_ids": sorted(stale_relation_ids),
+        "retired_entity_ids": sorted(retired_entities),
+    }
 
 
 def sync_foundation(db_factory, owner, actor, project_id, expected_revision=None):
@@ -262,7 +406,15 @@ def sync_foundation(db_factory, owner, actor, project_id, expected_revision=None
         if expected_revision is not None and expected_revision != revision:
             raise AssetGraphError("graph_revision_conflict", "资产图谱已更新，请刷新后重试", 409)
         created = []
+        reactivated = []
         relation_changed = False
+        current_script_shots = _current_script_shots(conn, project_id)
+        foundation_shots = _foundation_shots(conn, project_id, current_script_shots)
+        cleanup = {
+            "removed_shots": [], "removed_relation_ids": [], "retired_entity_ids": [],
+        }
+        if current_script_shots is not None:
+            cleanup = _cleanup_removed_shot_graph(conn, project_id, foundation_shots, now)
         character_ids = {}
         for row in conn.execute(
             "SELECT character_key,name,identity_text,appearance_prompt,wardrobe_prompt "
@@ -272,66 +424,48 @@ def sync_foundation(db_factory, owner, actor, project_id, expected_revision=None
             description = "；".join(filter(None, [
                 _text(row["identity_text"]), _text(row["appearance_prompt"]),
             ]))
-            entity_id, added = _seed_entity(
+            entity_id, added, was_reactivated = _seed_entity(
                 conn, project_id, "character:" + row["character_key"], "character",
                 row["name"], description, actor, now,
             )
             character_ids[row["character_key"]] = entity_id
             if added:
                 created.append(entity_id)
+            if was_reactivated:
+                reactivated.append(entity_id)
             wardrobe = _text(row["wardrobe_prompt"])
             if wardrobe:
-                costume_id, costume_added = _seed_entity(
+                costume_id, costume_added, costume_reactivated = _seed_entity(
                     conn, project_id, "costume:%s:base" % row["character_key"],
                     "costume", "%s·基础服装" % row["name"], wardrobe, actor, now,
                 )
                 if costume_added:
                     created.append(costume_id)
+                if costume_reactivated:
+                    reactivated.append(costume_id)
                 relation_changed = _upsert_relation(
                     conn, project_id, "asset", entity_id, "wears",
                     costume_id, None, {}, actor, now,
                 ) or relation_changed
-        foundation_shots = [dict(row) for row in conn.execute(
-            "SELECT id,shot_key,scene_description,character_keys_json "
-            "FROM short_drama_shots WHERE project_id=? ORDER BY sort_order,id",
-            (project_id,),
-        )]
-        if not foundation_shots:
-            tables = {row[0] for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            )}
-            if {"short_drama_conversations", "short_drama_script_snapshots"}.issubset(tables):
-                snapshot = conn.execute(
-                    "SELECT snapshot.script_json FROM short_drama_conversations conversation "
-                    "JOIN short_drama_script_snapshots snapshot "
-                    "ON snapshot.id=conversation.current_version_id "
-                    "WHERE conversation.project_id=?", (project_id,),
-                ).fetchone()
-                script = _json(snapshot[0], {}) if snapshot else {}
-                for index, item in enumerate(script.get("shots") or []):
-                    if not isinstance(item, dict):
-                        continue
-                    shot_key = _text(item.get("shot_key"), 160) or "shot_%02d" % (index + 1)
-                    foundation_shots.append({
-                        "id": "script:" + shot_key,
-                        "shot_key": shot_key,
-                        "sort_order": int(item.get("sort_order") or index + 1),
-                        "scene_description": _text(
-                            item.get("scene_description") or item.get("scene") or item.get("visual"),
-                            4000,
-                        ),
-                        "character_keys_json": _canonical(item.get("character_keys") or []),
-                    })
         for shot in foundation_shots:
-            scene_id, added = _seed_entity(
+            scene_id, added, was_reactivated = _seed_entity(
                 conn, project_id, "scene:" + shot["id"], "scene",
                 "%s·场景" % shot["shot_key"], _text(shot["scene_description"]), actor, now,
             )
             if added:
                 created.append(scene_id)
+            if was_reactivated:
+                reactivated.append(scene_id)
+            existing_scene = conn.execute(
+                "SELECT entity_id,version_id FROM short_drama_graph_relations "
+                "WHERE project_id=? AND source_scope='shot' AND source_id=? "
+                "AND relation_type='located_in' LIMIT 1",
+                (project_id, shot["id"]),
+            ).fetchone()
             relation_changed = _upsert_relation(
                 conn, project_id, "shot", shot["id"], "located_in",
-                scene_id, None, {
+                str(existing_scene["entity_id"]) if existing_scene else scene_id,
+                existing_scene["version_id"] if existing_scene else None, {
                     "shot_key": shot["shot_key"],
                     "sort_order": int(shot.get("sort_order") or 0),
                     "scene_description": _text(shot["scene_description"]),
@@ -344,11 +478,25 @@ def sync_foundation(db_factory, owner, actor, project_id, expected_revision=None
                         conn, project_id, "shot", shot["id"], "appears_in",
                         entity_id, None, {}, actor, now,
                     ) or relation_changed
-        if created or relation_changed:
+        cleanup_changed = bool(
+            cleanup["removed_relation_ids"] or cleanup["retired_entity_ids"]
+        )
+        if created or reactivated or relation_changed or cleanup_changed:
             revision = _bump(conn, project_id, revision, now)
-            _audit(conn, project_id, actor, "sync_foundation", "", {"created": created}, now)
+            _audit(conn, project_id, actor, "sync_foundation", "", {
+                "created": created,
+                "reactivated": reactivated,
+                **cleanup,
+            }, now)
         conn.commit()
-        return {"ok": True, "graph_revision": revision, "created": len(created)}
+        return {
+            "ok": True,
+            "graph_revision": revision,
+            "created": len(created),
+            "reactivated": len(reactivated),
+            "removed_relations": len(cleanup["removed_relation_ids"]),
+            "retired_entities": len(cleanup["retired_entity_ids"]),
+        }
 
 
 def _upsert_relation(conn, project_id, scope, source_id, relation_type, entity_id,
@@ -416,17 +564,25 @@ def _scene_group_key(value):
     return "scene-group:" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:20]
 
 
+def _scene_key(row):
+    asset_key = _text(row.get("asset_key"), 80)
+    if asset_key.startswith("scene-custom:"):
+        return asset_key
+    return _scene_group_key(row.get("scene_description"))
+
+
 def _scene_rows(conn, project_id):
     rows = conn.execute(
         "SELECT entity.*,relation.source_id AS relation_source_id,relation.metadata_json,"
         "shot.id AS shot_id,shot.shot_key,shot.sort_order,shot.scene_description "
         "FROM short_drama_graph_entities entity "
-        "JOIN short_drama_graph_relations relation ON relation.entity_id=entity.id "
+        "LEFT JOIN short_drama_graph_relations relation ON relation.entity_id=entity.id "
         "AND relation.project_id=entity.project_id AND relation.source_scope='shot' "
         "AND relation.relation_type='located_in' "
         "LEFT JOIN short_drama_shots shot ON shot.id=relation.source_id "
         "AND shot.project_id=entity.project_id WHERE entity.project_id=? "
         "AND entity.asset_type='scene' AND entity.status='active' "
+        "AND (relation.id IS NOT NULL OR entity.asset_key LIKE 'scene-custom:%') "
         "ORDER BY COALESCE(shot.sort_order,999999),relation.source_id",
         (project_id,),
     ).fetchall()
@@ -435,11 +591,14 @@ def _scene_rows(conn, project_id):
         item = dict(row)
         metadata = _json(item.pop("metadata_json", "{}"), {})
         item["shot_id"] = item.get("shot_id") or item.get("relation_source_id")
-        item["shot_key"] = item.get("shot_key") or _text(metadata.get("shot_key"), 160)
-        item["sort_order"] = item.get("sort_order") or int(metadata.get("sort_order") or 0)
+        item["shot_key"] = _text(metadata.get("shot_key"), 160) or item.get("shot_key")
+        item["sort_order"] = int(metadata.get("sort_order") or item.get("sort_order") or 0)
+        custom_scene = _text(item.get("asset_key"), 80).startswith("scene-custom:")
+        item["custom_scene"] = custom_scene
         item["scene_description"] = (
-            item.get("scene_description") or _text(metadata.get("scene_description"), 4000)
-            or item.get("description") or item.get("name")
+            (item.get("description") or item.get("name")) if custom_scene else
+            (_text(metadata.get("scene_description"), 4000) or item.get("scene_description")
+             or item.get("description") or item.get("name"))
         )
         result.append(item)
     return result
@@ -462,18 +621,23 @@ def scene_workspace(db_factory, owner, project_id):
         ).fetchone()
         groups = {}
         for row in _scene_rows(conn, project_id):
-            group_key = _scene_group_key(row["scene_description"])
+            group_key = _scene_key(row)
             group = groups.setdefault(group_key, {
                 "scene_key": group_key,
                 "name": _text(row["scene_description"], 200) or "未命名场景",
                 "description": _text(row["scene_description"]),
                 "shots": [], "entity_ids": [], "locked": True,
-                "preview": None,
+                "preview": None, "custom": bool(row.get("custom_scene")),
             })
-            group["shots"].append({
-                "id": row["shot_id"], "shot_key": row["shot_key"],
-                "sort_order": int(row["sort_order"] or 0),
-            })
+            if row.get("custom_scene"):
+                group["name"] = _text(row.get("name"), 200) or "未命名场景"
+            if row.get("shot_id") or row.get("shot_key"):
+                group["shots"].append({
+                    "id": row["shot_id"], "shot_key": row["shot_key"],
+                    "sort_order": int(row["sort_order"] or 0),
+                })
+            if row["id"] in group["entity_ids"]:
+                continue
             group["entity_ids"].append(row["id"])
             version = _scene_version(conn, row["id"])
             if not version:
@@ -498,11 +662,247 @@ def scene_workspace(db_factory, owner, project_id):
             item["locked"] = bool(item["locked"] and item["preview"])
             if item["preview"] and item["preview"]["status"] != "locked":
                 item["locked"] = False
+        deleted_scenes = [dict(row) for row in conn.execute(
+            "SELECT asset_key AS scene_key,name,description,updated_at AS deleted_at "
+            "FROM short_drama_graph_entities WHERE project_id=? AND asset_type='scene' "
+            "AND status='retired' AND asset_key LIKE 'scene-custom:%' "
+            "ORDER BY updated_at DESC,id DESC LIMIT 20",
+            (project_id,),
+        ).fetchall()]
         return {
             "project_id": project_id,
             "graph_revision": int(state[0]) if state else 1,
             "scenes": items,
+            "deleted_scenes": deleted_scenes,
         }
+
+
+def _replace_scene_shot_bindings(conn, project_id, entity_id, shot_keys, actor, now):
+    requested = []
+    for value in shot_keys or []:
+        key = _text(value, 160)
+        if key and key not in requested:
+            requested.append(key)
+    shots = _foundation_shots(conn, project_id)
+    by_key = {row["shot_key"]: row for row in shots}
+    if any(key not in by_key for key in requested):
+        raise AssetGraphError("scene_shots_invalid", "部分镜头不存在，请刷新后重试", 422)
+    requested_ids = {by_key[key]["id"] for key in requested}
+    for row in conn.execute(
+        "SELECT source_id FROM short_drama_graph_relations WHERE project_id=? "
+        "AND source_scope='shot' AND relation_type='located_in' AND entity_id=?",
+        (project_id, entity_id),
+    ).fetchall():
+        if row[0] not in requested_ids:
+            conn.execute(
+                "DELETE FROM short_drama_graph_relations WHERE project_id=? "
+                "AND source_scope='shot' AND source_id=? AND relation_type='located_in' "
+                "AND entity_id=?", (project_id, row[0], entity_id),
+            )
+    for key in requested:
+        shot = by_key[key]
+        conn.execute(
+            "DELETE FROM short_drama_graph_relations WHERE project_id=? "
+            "AND source_scope='shot' AND source_id=? AND relation_type='located_in' "
+            "AND entity_id<>?", (project_id, shot["id"], entity_id),
+        )
+        _upsert_relation(
+            conn, project_id, "shot", shot["id"], "located_in", entity_id, None,
+            {"shot_key": key, "sort_order": int(shot["sort_order"] or 0),
+             "scene_description": _text(shot["scene_description"], 4000)},
+            actor, now,
+        )
+
+
+def create_scene(db_factory, owner, actor, body):
+    required = {"project_id", "graph_revision", "name", "description", "shot_keys"}
+    if (not isinstance(body, dict) or not required.issubset(body)
+            or type(body.get("graph_revision")) is not int
+            or not isinstance(body.get("shot_keys"), list)):
+        raise AssetGraphError("scene_create_invalid", "新增场景参数不完整", 422)
+    project_id = _text(body["project_id"], 160)
+    name = _text(body["name"], 120).strip()
+    description = _text(body["description"], 4000).strip()
+    if not name or len(description) < 2:
+        raise AssetGraphError("scene_create_invalid", "请填写场景名称和具体描述", 422)
+    now = int(time.time())
+    with closing(_connection(db_factory)) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        _project(conn, owner, project_id)
+        revision = int(_ensure_state(conn, project_id, now))
+        if revision != body["graph_revision"]:
+            raise AssetGraphError("graph_revision_conflict", "场景已更新，请刷新后重试", 409)
+        entity_id, _, _ = _seed_entity(
+            conn, project_id, "scene-custom:" + uuid.uuid4().hex,
+            "scene", name, description, actor, now,
+        )
+        _replace_scene_shot_bindings(conn, project_id, entity_id,
+                                     body.get("shot_keys"), actor, now)
+        revision = _bump(conn, project_id, revision, now)
+        _audit(conn, project_id, actor, "create_scene", entity_id,
+               {"name": name, "shot_keys": body.get("shot_keys")}, now)
+        conn.commit()
+    return scene_workspace(db_factory, owner, project_id)
+
+
+def update_scene(db_factory, owner, actor, body):
+    required = {"project_id", "graph_revision", "scene_key", "name", "description", "shot_keys"}
+    if (not isinstance(body, dict) or not required.issubset(body)
+            or type(body.get("graph_revision")) is not int
+            or not isinstance(body.get("shot_keys"), list)):
+        raise AssetGraphError("scene_update_invalid", "场景修改参数不完整", 422)
+    project_id = _text(body["project_id"], 160)
+    scene_key = _text(body["scene_key"], 80)
+    name = _text(body["name"], 120).strip()
+    description = _text(body["description"], 4000).strip()
+    if not name or len(description) < 2:
+        raise AssetGraphError("scene_update_invalid", "请填写场景名称和具体描述", 422)
+    now = int(time.time())
+    with closing(_connection(db_factory)) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        _project(conn, owner, project_id)
+        revision = int(_ensure_state(conn, project_id, now))
+        if revision != body["graph_revision"]:
+            raise AssetGraphError("graph_revision_conflict", "场景已更新，请刷新后重试", 409)
+        row = conn.execute(
+            "SELECT id,asset_key FROM short_drama_graph_entities WHERE project_id=? "
+            "AND asset_key=? AND asset_type='scene' AND status='active'",
+            (project_id, scene_key),
+        ).fetchone()
+        if not row or not _text(row["asset_key"]).startswith("scene-custom:"):
+            raise AssetGraphError("scene_not_editable", "系统整理的主场景不可改名，请新增场景", 422)
+        conn.execute(
+            "UPDATE short_drama_graph_entities SET name=?,description=?,updated_at=? WHERE id=?",
+            (name, description, now, row["id"]),
+        )
+        _replace_scene_shot_bindings(conn, project_id, row["id"],
+                                     body.get("shot_keys"), actor, now)
+        revision = _bump(conn, project_id, revision, now)
+        _audit(conn, project_id, actor, "update_scene", row["id"],
+               {"name": name, "shot_keys": body.get("shot_keys")}, now)
+        conn.commit()
+    return scene_workspace(db_factory, owner, project_id)
+
+
+def bind_scene_to_shot(db_factory, owner, actor, body):
+    """Bind one storyboard shot to an existing scene, or explicitly unbind it."""
+    required = {"project_id", "graph_revision", "shot_key", "scene_key"}
+    if (not isinstance(body, dict) or set(body) != required
+            or type(body.get("graph_revision")) is not int):
+        raise AssetGraphError("scene_binding_invalid", "镜头场景绑定参数不完整", 422)
+    project_id = _text(body["project_id"], 160)
+    shot_key = _text(body["shot_key"], 160)
+    scene_key = _text(body["scene_key"], 160)
+    now = int(time.time())
+    with closing(_connection(db_factory)) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        _project(conn, owner, project_id)
+        revision = int(_ensure_state(conn, project_id, now))
+        if revision != body["graph_revision"]:
+            raise AssetGraphError("graph_revision_conflict", "场景已更新，请刷新后重试", 409)
+        shot = next(
+            (item for item in _foundation_shots(conn, project_id)
+             if item["shot_key"] == shot_key),
+            None,
+        )
+        if not shot:
+            raise AssetGraphError("shot_not_found", "镜头不存在，请刷新后重试", 404)
+        scene = None
+        if scene_key:
+            scene = next(
+                (row for row in _scene_rows(conn, project_id)
+                 if _scene_key(row) == scene_key),
+                None,
+            )
+            if not scene:
+                raise AssetGraphError("scene_not_found", "所选场景不存在，请刷新后重试", 404)
+        conn.execute(
+            "DELETE FROM short_drama_graph_relations WHERE project_id=? "
+            "AND source_scope='shot' AND source_id=? AND relation_type='located_in'",
+            (project_id, shot["id"]),
+        )
+        if scene_key:
+            _upsert_relation(
+                conn, project_id, "shot", shot["id"], "located_in", scene["id"],
+                None, {"shot_key": shot_key,
+                       "sort_order": int(shot["sort_order"] or 0),
+                       "scene_description": _text(shot["scene_description"], 4000)},
+                actor, now,
+            )
+        revision = _bump(conn, project_id, revision, now)
+        _audit(conn, project_id, actor, "bind_scene_to_shot", shot["id"],
+               {"shot_key": shot_key, "scene_key": scene_key}, now)
+        conn.commit()
+    return scene_workspace(db_factory, owner, project_id)
+
+
+def delete_scene(db_factory, owner, actor, body):
+    required = {"project_id", "graph_revision", "scene_key"}
+    if (not isinstance(body, dict) or set(body) != required
+            or type(body.get("graph_revision")) is not int):
+        raise AssetGraphError("scene_delete_invalid", "删除场景参数不完整", 422)
+    project_id = _text(body["project_id"], 160)
+    scene_key = _text(body["scene_key"], 80)
+    now = int(time.time())
+    with closing(_connection(db_factory)) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        _project(conn, owner, project_id)
+        revision = int(_ensure_state(conn, project_id, now))
+        if revision != body["graph_revision"]:
+            raise AssetGraphError("graph_revision_conflict", "场景已更新，请刷新后重试", 409)
+        row = conn.execute(
+            "SELECT id,asset_key FROM short_drama_graph_entities WHERE project_id=? "
+            "AND asset_key=? AND asset_type='scene' AND status='active'",
+            (project_id, scene_key),
+        ).fetchone()
+        if not row or not _text(row["asset_key"]).startswith("scene-custom:"):
+            raise AssetGraphError("scene_not_deletable", "系统整理的主场景不能删除", 422)
+        shot_count = int(conn.execute(
+            "SELECT COUNT(*) FROM short_drama_graph_relations WHERE project_id=? "
+            "AND entity_id=? AND source_scope='shot' AND relation_type='located_in'",
+            (project_id, row["id"]),
+        ).fetchone()[0])
+        if shot_count:
+            raise AssetGraphError("scene_in_use", "该场景仍绑定镜头，请先取消镜头关联", 409)
+        conn.execute(
+            "UPDATE short_drama_graph_entities SET status='retired',updated_at=? WHERE id=?",
+            (now, row["id"]),
+        )
+        revision = _bump(conn, project_id, revision, now)
+        _audit(conn, project_id, actor, "delete_scene", row["id"], {}, now)
+        conn.commit()
+    return scene_workspace(db_factory, owner, project_id)
+
+
+def restore_scene(db_factory, owner, actor, body):
+    required = {"project_id", "graph_revision", "scene_key"}
+    if (not isinstance(body, dict) or set(body) != required
+            or type(body.get("graph_revision")) is not int):
+        raise AssetGraphError("scene_restore_invalid", "恢复场景参数不完整", 422)
+    project_id = _text(body["project_id"], 160)
+    scene_key = _text(body["scene_key"], 80)
+    now = int(time.time())
+    with closing(_connection(db_factory)) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        _project(conn, owner, project_id)
+        revision = int(_ensure_state(conn, project_id, now))
+        if revision != body["graph_revision"]:
+            raise AssetGraphError("graph_revision_conflict", "场景已更新，请刷新后重试", 409)
+        row = conn.execute(
+            "SELECT id,asset_key FROM short_drama_graph_entities WHERE project_id=? "
+            "AND asset_key=? AND asset_type='scene' AND status='retired'",
+            (project_id, scene_key),
+        ).fetchone()
+        if not row or not _text(row["asset_key"]).startswith("scene-custom:"):
+            raise AssetGraphError("scene_not_restorable", "没有找到可恢复的场景", 404)
+        conn.execute(
+            "UPDATE short_drama_graph_entities SET status='active',updated_at=? WHERE id=?",
+            (now, row["id"]),
+        )
+        revision = _bump(conn, project_id, revision, now)
+        _audit(conn, project_id, actor, "restore_scene", row["id"], {}, now)
+        conn.commit()
+    return scene_workspace(db_factory, owner, project_id)
 
 
 def _resolve_scene_reference(conn, actor, body):
@@ -597,13 +997,14 @@ def set_scene_reference(db_factory, owner, actor, body):
             if revision != body["graph_revision"]:
                 raise AssetGraphError("graph_revision_conflict", "场景已在其他页面更新，请刷新后重试", 409)
             rows = [row for row in _scene_rows(conn, project_id)
-                    if _scene_group_key(row["scene_description"]) == scene_key]
+                    if _scene_key(row) == scene_key]
             if not rows:
                 raise AssetGraphError("scene_not_found", "场景不存在", 404)
             operation_id = str(uuid.uuid4())
             source = _text(body.get("reference_source") or body.get("source"), 40)
             prompt = _text(body.get("prompt") or rows[0]["scene_description"], 8000)
-            for row in rows:
+            entity_rows = {row["id"]: row for row in rows}.values()
+            for row in entity_rows:
                 number = int(conn.execute(
                     "SELECT COALESCE(MAX(version),0)+1 FROM short_drama_graph_versions WHERE entity_id=?",
                     (row["id"],),
@@ -654,11 +1055,12 @@ def lock_scene_reference(db_factory, owner, actor, body):
         if revision != body["graph_revision"]:
             raise AssetGraphError("graph_revision_conflict", "场景已在其他页面更新，请刷新后重试", 409)
         rows = [row for row in _scene_rows(conn, project_id)
-                if _scene_group_key(row["scene_description"]) == scene_key]
+                if _scene_key(row) == scene_key]
         if not rows:
             raise AssetGraphError("scene_not_found", "场景不存在", 404)
         locked_ids = []
-        for row in rows:
+        entity_rows = {row["id"]: row for row in rows}.values()
+        for row in entity_rows:
             version = conn.execute(
                 "SELECT * FROM short_drama_graph_versions WHERE entity_id=? AND status='draft' "
                 "ORDER BY version DESC LIMIT 1", (row["id"],),
@@ -686,11 +1088,15 @@ def lock_scene_reference(db_factory, owner, actor, body):
     return scene_workspace(db_factory, owner, project_id)
 
 
-def locked_scene_reference(conn, project_id, shot_key):
+def locked_scene_reference(conn, project_id, shot_key, scene_key=None):
     """Return the locked scene image bound to a storyboard shot, if configured."""
     conn.row_factory = sqlite3.Row
-    scene = next((row for row in _scene_rows(conn, project_id)
-                  if row.get("shot_key") == shot_key), None)
+    rows = _scene_rows(conn, project_id)
+    requested_scene_key = _text(scene_key, 160)
+    if requested_scene_key:
+        scene = next((row for row in rows if _scene_key(row) == requested_scene_key), None)
+    else:
+        scene = next((row for row in rows if row.get("shot_key") == shot_key), None)
     if not scene or not scene.get("current_version_id"):
         return None
     version = conn.execute(
@@ -704,7 +1110,7 @@ def locked_scene_reference(conn, project_id, shot_key):
     if not (_text(reference.get("file"), 1000) or _text(reference.get("url"), 2000)):
         return None
     return {
-        "scene_key": _scene_group_key(scene["scene_description"]),
+        "scene_key": _scene_key(scene),
         "name": _text(scene["scene_description"], 200) or "锁定场景",
         "prompt": _text(version["prompt"], 8000),
         "file": _text(reference.get("file"), 1000),
@@ -727,7 +1133,7 @@ def create_asset(db_factory, owner, actor, body):
         conn.execute("BEGIN IMMEDIATE")
         _project(conn, owner, project_id)
         revision = int(_ensure_state(conn, project_id, now))
-        entity_id, added = _seed_entity(
+        entity_id, added, _ = _seed_entity(
             conn, project_id, key, asset_type, name,
             _text(body.get("description"), 4000), actor, now,
         )

@@ -244,8 +244,16 @@ class ShortDramaAssetGraphTests(unittest.TestCase):
         self.assertTrue(locked["scenes"][0]["locked"])
         with closing(self.db()) as conn:
             reference = graph.locked_scene_reference(conn, "p1", "shot_001")
+            selected_reference = graph.locked_scene_reference(
+                conn, "p1", "shot_001", scene["scene_key"],
+            )
+            missing_reference = graph.locked_scene_reference(
+                conn, "p1", "shot_001", "scene-group:missing",
+            )
         self.assertEqual("雨夜街道", reference["name"])
         self.assertTrue(reference["file"].startswith("short_drama_scene_uploads/scene_"))
+        self.assertEqual(reference["scene_key"], selected_reference["scene_key"])
+        self.assertIsNone(missing_reference)
 
     def test_committed_scene_upload_survives_response_assembly_failure(self):
         graph.sync_foundation(self.db, "alice", "alice", "p1")
@@ -352,6 +360,213 @@ class ShortDramaAssetGraphTests(unittest.TestCase):
         self.assertEqual(["shot_01", "shot_02"], [
             shot["shot_key"] for shot in scenes["scenes"][0]["shots"]
         ])
+
+    def test_current_script_shots_merge_with_stale_legacy_rows_and_can_bind(self):
+        with closing(self.db()) as conn:
+            conn.execute(
+                "INSERT INTO short_drama_conversations(project_id,current_version_id) "
+                "VALUES ('p1','v-current')"
+            )
+            conn.execute(
+                "INSERT INTO short_drama_script_snapshots(id,project_id,script_json) "
+                "VALUES ('v-current','p1',?)",
+                ('{"shots":[{"shot_key":"shot_01","sort_order":1,'
+                 '"scene":"演播厅","character_keys":["hero"]}]}',),
+            )
+            conn.commit()
+        graph.sync_foundation(self.db, "alice", "alice", "p1")
+        workspace = graph.scene_workspace(self.db, "alice", "p1")
+        current_scene = next(
+            scene for scene in workspace["scenes"]
+            if "shot_01" in [shot["shot_key"] for shot in scene["shots"]]
+        )
+        self.assertEqual("演播厅", current_scene["description"])
+        self.assertFalse(any(
+            shot["shot_key"] == "shot_001"
+            for scene in workspace["scenes"] for shot in scene["shots"]
+        ))
+        bound = graph.bind_scene_to_shot(self.db, "alice", "alice", {
+            "project_id": "p1", "graph_revision": workspace["graph_revision"],
+            "shot_key": "shot_01", "scene_key": current_scene["scene_key"],
+        })
+        selected = next(
+            scene for scene in bound["scenes"]
+            if scene["scene_key"] == current_scene["scene_key"]
+        )
+        self.assertIn("shot_01", [shot["shot_key"] for shot in selected["shots"]])
+
+    def test_deleted_script_shot_cleans_bindings_and_readds_as_fresh_draft(self):
+        original_script = {
+            "shots": [
+                {"shot_key": "shot_001", "sort_order": 1,
+                 "scene": "当前剧本雨夜街道", "character_keys": ["hero"]},
+                {"shot_key": "shot_002", "sort_order": 2,
+                 "scene": "车站月台", "character_keys": ["hero"]},
+            ],
+        }
+        with closing(self.db()) as conn:
+            conn.execute(
+                "INSERT INTO short_drama_conversations(project_id,current_version_id) "
+                "VALUES ('p1','v-current')"
+            )
+            conn.execute(
+                "INSERT INTO short_drama_script_snapshots(id,project_id,script_json) "
+                "VALUES ('v-current','p1',?)", (json.dumps(original_script),),
+            )
+            conn.commit()
+        graph.sync_foundation(self.db, "alice", "alice", "p1")
+        before = graph.scene_workspace(self.db, "alice", "p1")
+        authoritative_scene = next(
+            scene for scene in before["scenes"]
+            if any(shot["shot_key"] == "shot_001" for shot in scene["shots"])
+        )
+        self.assertEqual("当前剧本雨夜街道", authoritative_scene["description"])
+        custom_result = graph.create_scene(self.db, "alice", "alice", {
+            "project_id": "p1", "graph_revision": before["graph_revision"],
+            "name": "自定义月台", "description": "夜间月台与冷色顶灯",
+            "shot_keys": ["shot_002"],
+        })
+        custom = next(item for item in custom_result["scenes"] if item["custom"])
+        graph_before_delete = graph.workspace(self.db, "alice", "p1")
+
+        reduced_script = {"shots": [original_script["shots"][0]]}
+        with closing(self.db()) as conn:
+            conn.execute(
+                "UPDATE short_drama_script_snapshots SET script_json=? WHERE id='v-current'",
+                (json.dumps(reduced_script),),
+            )
+            conn.commit()
+        with self.assertRaises(graph.AssetGraphError) as stale:
+            graph.sync_foundation(
+                self.db, "alice", "alice", "p1",
+                graph_before_delete["graph_revision"] - 1,
+            )
+        self.assertEqual("graph_revision_conflict", stale.exception.code)
+        self.assertEqual(graph_before_delete, graph.workspace(self.db, "alice", "p1"))
+
+        cleaned = graph.sync_foundation(
+            self.db, "alice", "alice", "p1", graph_before_delete["graph_revision"],
+        )
+        self.assertGreaterEqual(cleaned["removed_relations"], 1)
+        self.assertEqual(1, cleaned["retired_entities"])
+        reloaded = graph.scene_workspace(self.db, "alice", "p1")
+        self.assertFalse(any(
+            shot["shot_key"] == "shot_002"
+            for scene in reloaded["scenes"] for shot in scene["shots"]
+        ))
+        retained_custom = next(
+            item for item in reloaded["scenes"] if item["scene_key"] == custom["scene_key"]
+        )
+        self.assertEqual([], retained_custom["shots"])
+        raw = graph.workspace(self.db, "alice", "p1")
+        self.assertFalse(any(
+            relation["source_id"] == "script:shot_002"
+            or relation["metadata"].get("shot_key") == "shot_002"
+            for relation in raw["relations"]
+        ))
+        retired = next(
+            entity for entity in raw["entities"]
+            if entity["asset_key"] == "scene:script:shot_002"
+        )
+        self.assertEqual("retired", retired["status"])
+        self.assertTrue(all(version["status"] == "retired" for version in retired["versions"]))
+        with closing(self.db()) as conn:
+            audit = conn.execute(
+                "SELECT details_json FROM short_drama_graph_audit "
+                "WHERE project_id='p1' AND action='sync_foundation' "
+                "ORDER BY created_at DESC,rowid DESC LIMIT 1"
+            ).fetchone()
+        audit_details = json.loads(audit[0])
+        self.assertIn("shot_002", audit_details["removed_shots"])
+        self.assertIn(retired["id"], audit_details["retired_entity_ids"])
+
+        with closing(self.db()) as conn:
+            conn.execute(
+                "UPDATE short_drama_script_snapshots SET script_json=? WHERE id='v-current'",
+                (json.dumps(original_script),),
+            )
+            conn.commit()
+        restored = graph.sync_foundation(
+            self.db, "alice", "alice", "p1", cleaned["graph_revision"],
+        )
+        self.assertEqual(1, restored["reactivated"])
+        restored_workspace = graph.scene_workspace(self.db, "alice", "p1")
+        restored_custom = next(
+            item for item in restored_workspace["scenes"]
+            if item["scene_key"] == custom["scene_key"]
+        )
+        self.assertEqual([], restored_custom["shots"])
+        raw_restored = graph.workspace(self.db, "alice", "p1")
+        reactivated = next(
+            entity for entity in raw_restored["entities"]
+            if entity["asset_key"] == "scene:script:shot_002"
+        )
+        self.assertEqual("active", reactivated["status"])
+        self.assertEqual("draft", reactivated["versions"][0]["status"])
+        self.assertTrue(reactivated["versions"][0]["attributes"]["reactivated"])
+        self.assertTrue(all(
+            version["status"] == "retired" for version in reactivated["versions"][1:]
+        ))
+
+    def test_custom_scene_can_be_created_rebound_updated_and_deleted(self):
+        graph.sync_foundation(self.db, "alice", "alice", "p1")
+        workspace = graph.scene_workspace(self.db, "alice", "p1")
+        created = graph.create_scene(self.db, "alice", "alice", {
+            "project_id": "p1", "graph_revision": workspace["graph_revision"],
+            "name": "学校天台", "description": "傍晚的学校天台，暖色夕阳",
+            "shot_keys": ["shot_001"],
+        })
+        custom = next(item for item in created["scenes"] if item["custom"])
+        self.assertEqual("学校天台", custom["name"])
+        self.assertEqual(["shot_001"], [item["shot_key"] for item in custom["shots"]])
+        self.assertTrue(custom["scene_key"].startswith("scene-custom:"))
+
+        graph.sync_foundation(self.db, "alice", "alice", "p1")
+        resynced = graph.scene_workspace(self.db, "alice", "p1")
+        rebound = next(item for item in resynced["scenes"] if item["custom"])
+        self.assertEqual(["shot_001"], [item["shot_key"] for item in rebound["shots"]])
+
+        updated = graph.update_scene(self.db, "alice", "alice", {
+            "project_id": "p1", "graph_revision": resynced["graph_revision"],
+            "scene_key": custom["scene_key"], "name": "教学楼天台",
+            "description": "夜晚的教学楼天台，城市灯光",
+            "shot_keys": [],
+        })
+        custom = next(item for item in updated["scenes"] if item["custom"])
+        self.assertEqual("教学楼天台", custom["name"])
+        self.assertEqual([], custom["shots"])
+        deleted = graph.delete_scene(self.db, "alice", "alice", {
+            "project_id": "p1", "graph_revision": updated["graph_revision"],
+            "scene_key": custom["scene_key"],
+        })
+        self.assertFalse(any(item["custom"] for item in deleted["scenes"]))
+        self.assertEqual(custom["scene_key"], deleted["deleted_scenes"][0]["scene_key"])
+        restored = graph.restore_scene(self.db, "alice", "alice", {
+            "project_id": "p1", "graph_revision": deleted["graph_revision"],
+            "scene_key": custom["scene_key"],
+        })
+        self.assertTrue(any(item["scene_key"] == custom["scene_key"]
+                            for item in restored["scenes"]))
+        self.assertEqual([], restored["deleted_scenes"])
+
+    def test_shot_can_bind_and_unbind_existing_scene(self):
+        graph.sync_foundation(self.db, "alice", "alice", "p1")
+        workspace = graph.scene_workspace(self.db, "alice", "p1")
+        scene = workspace["scenes"][0]
+        bound = graph.bind_scene_to_shot(self.db, "alice", "alice", {
+            "project_id": "p1", "graph_revision": workspace["graph_revision"],
+            "shot_key": "shot_001", "scene_key": scene["scene_key"],
+        })
+        selected = next(item for item in bound["scenes"] if item["scene_key"] == scene["scene_key"])
+        self.assertIn("shot_001", [item["shot_key"] for item in selected["shots"]])
+        unbound = graph.bind_scene_to_shot(self.db, "alice", "alice", {
+            "project_id": "p1", "graph_revision": bound["graph_revision"],
+            "shot_key": "shot_001", "scene_key": "",
+        })
+        self.assertFalse(any(
+            item["shot_key"] == "shot_001"
+            for scene_item in unbound["scenes"] for item in scene_item["shots"]
+        ))
 
 
 if __name__ == "__main__":

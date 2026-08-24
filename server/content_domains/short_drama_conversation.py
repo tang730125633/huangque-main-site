@@ -2474,6 +2474,7 @@ _SHOT_EDIT_FIELDS = {
     "negative_prompt": 500,
 }
 _DIALOGUE_KINDS = {"dialogue", "voiceover", "on_screen_text", "silence"}
+_SPEECH_RATES = {1.0, 1.15, 1.3, 1.5, 2.0}
 
 
 def _current_editable_version(conn, project_id, current, version_id):
@@ -2510,84 +2511,86 @@ def _shot_and_line(script, shot_key):
 
 
 def _rebalance_duration(script, edited_shot, requested_seconds):
-    shots = script.get("shots") or []
     requested_seconds = int(requested_seconds)
-    public_contract = all(
-        int(item.get("duration_seconds") or 0)
-        in short_drama_duration.SHOT_DURATION_SECONDS
-        for item in shots
-    )
-    if public_contract and requested_seconds not in short_drama_duration.SHOT_DURATION_SECONDS:
-        raise ConversationError("shot_duration_invalid", "镜头时长必须为 5 或 10 秒", 422)
-    if not public_contract and (requested_seconds < 4 or requested_seconds > 15):
+    if requested_seconds < 4 or requested_seconds > 15:
         raise ConversationError("shot_duration_invalid", "镜头时长必须为 4 至 15 秒", 422)
-    target = int((script.get("overview") or {}).get("duration_seconds") or 0)
-    others = [
-        item
-        for item in shots
-        if item is not edited_shot and not bool(item.get("locked"))
-    ]
-    minimum_per_shot = 5 if public_contract else 4
-    minimum_others = minimum_per_shot * len(others) + sum(
-        int(item.get("duration_seconds") or 0)
-        for item in shots
-        if item is not edited_shot and bool(item.get("locked"))
-    )
-    if requested_seconds + minimum_others > target:
-        raise ConversationError(
-            "shot_duration_exceeds_timeline",
-            "该时长会挤占已锁定镜头或破坏 5/10 秒镜头契约",
-            422,
-        )
-    delta = requested_seconds - int(edited_shot.get("duration_seconds") or 0)
     edited_shot["duration_seconds"] = requested_seconds
-    if not delta:
-        return
-    if not others:
-        raise ConversationError(
-            "timeline_rebalance_unavailable",
-            "没有可用于平衡总时长的未锁定镜头",
-            422,
-        )
-    remaining = delta
-    ordered = sorted(
-        others,
-        key=lambda item: int(item.get("sort_order") or 0),
-        reverse=(delta > 0),
+    (script.setdefault("overview", {}))["duration_seconds"] = sum(
+        int(item.get("duration_seconds") or 0)
+        for item in script.get("shots") or []
     )
-    if public_contract and delta > 0:
-        for item in ordered:
-            if int(item.get("duration_seconds") or 0) == 10 and remaining >= 5:
-                item["duration_seconds"] = 5
-                remaining -= 5
-                if not remaining:
-                    break
-    elif public_contract:
-        for item in ordered:
-            if int(item.get("duration_seconds") or 0) == 5 and remaining <= -5:
-                item["duration_seconds"] = 10
-                remaining += 5
-                if not remaining:
-                    break
-    elif delta > 0:
-        for item in ordered:
-            available = max(
-                0, int(item.get("duration_seconds") or 0) - minimum_per_shot
+
+
+def _refresh_shot_structure(script):
+    shots = list(script.get("shots") or [])
+    for index, shot in enumerate(shots, 1):
+        shot["sort_order"] = index
+    (script.setdefault("overview", {}))["duration_seconds"] = sum(
+        int(item.get("duration_seconds") or 0) for item in shots
+    )
+    script["shot_planning"] = {
+        "mode": "user_adjustable",
+        "shot_count": len(shots),
+        "duration_seconds": script["overview"]["duration_seconds"],
+    }
+
+
+def _new_structure_key(script, prefix, collection, field):
+    existing = {str(item.get(field) or "") for item in script.get(collection) or []}
+    while True:
+        value = "%s_%s" % (prefix, uuid.uuid4().hex[:10])
+        if value not in existing:
+            return value
+
+
+def _structure_shot(script, shot_key, action, instruction=""):
+    shots = script.get("shots") or []
+    if action == "delete" and len(shots) <= 1:
+        raise ConversationError("last_shot_required", "至少保留一个镜头", 422)
+    shot, line = _shot_and_line(script, shot_key)
+    index = shots.index(shot)
+    if action == "delete":
+        shots.pop(index)
+        line_ids = {str(value) for value in shot.get("dialogue_line_ids") or []}
+        script["dialogue_lines"] = [
+            item for item in script.get("dialogue_lines") or []
+            if str(item.get("id")) not in line_ids
+        ]
+    elif action in {"copy", "insert_before", "insert_after", "smart_insert"}:
+        clone = _json(_json_text(shot), {})
+        clone_line = _json(_json_text(line), {})
+        clone["shot_key"] = _new_structure_key(script, "shot_user", "shots", "shot_key")
+        clone_line["id"] = _new_structure_key(script, "line_user", "dialogue_lines", "id")
+        clone["dialogue_line_ids"] = [clone_line["id"]]
+        clone["locked"] = False
+        insert_at = index if action == "insert_before" else index + 1
+        if action == "copy":
+            clone["purpose"] = "延续并补充：%s" % str(shot.get("purpose") or "剧情推进")[:140]
+            clone["visual"] = "延续上一镜头后的新动作：%s" % str(shot.get("visual") or "人物继续行动")[:300]
+            clone["continuity"] = "紧接上一镜头，保持人物、场景、服装和关键道具一致"
+            clone["provider_prompt"] = "%s。作为新的连续镜头，不重复上一镜头构图。" % clone["visual"]
+        else:
+            neighbor_index = index - 1 if action == "insert_before" else index + 1
+            neighbor = shots[neighbor_index] if 0 <= neighbor_index < len(shots) else shot
+            clone["purpose"] = instruction[:160] or "承接相邻镜头的过渡与剧情推进"
+            clone["visual"] = instruction[:360] or "承接%s，并自然过渡到%s" % (
+                str(shot.get("visual") or "当前动作")[:120],
+                str(neighbor.get("visual") or "下一段剧情")[:120],
             )
-            take = min(available, remaining)
-            item["duration_seconds"] -= take
-            remaining -= take
-            if not remaining:
-                break
+            clone["continuity"] = "继承相邻镜头的时间、场景、人物位置、服装和关键道具"
+            clone["provider_prompt"] = "%s。保持前后镜头人物、场景、光线和动作连续。" % clone["visual"]
+            clone_line.update({"kind": "silence", "character_key": "", "speaker": "", "text": "", "estimated_reading_seconds": 0.0})
+        shots.insert(insert_at, clone)
+        script.setdefault("dialogue_lines", []).append(clone_line)
+    elif action in {"move_up", "move_down"}:
+        target = index - 1 if action == "move_up" else index + 1
+        if 0 <= target < len(shots):
+            shots[index], shots[target] = shots[target], shots[index]
     else:
-        ordered[0]["duration_seconds"] += -remaining
-        remaining = 0
-    if remaining:
-        raise ConversationError(
-            "timeline_rebalance_unavailable",
-            "无法在保持总时长的前提下调整当前镜头",
-            422,
-        )
+        raise ConversationError("shot_structure_action_invalid", "不支持的镜头调整操作", 422)
+    _refresh_shot_structure(script)
+    _validate_script(script)
+    return script
 
 
 def _apply_shot_patch(script, shot_key, changes):
@@ -2619,6 +2622,14 @@ def _apply_shot_patch(script, shot_key, changes):
             raise ConversationError("dialogue_too_long", "单镜头台词不能超过 120 字", 422)
         character_key = str(dialogue.get("character_key") or "").strip()
         speaker = str(dialogue.get("speaker") or "").strip()
+        try:
+            speech_rate = float(
+                dialogue.get("speech_rate") or line.get("speech_rate") or 1.0
+            )
+        except (TypeError, ValueError):
+            speech_rate = 1.0
+        if speech_rate not in _SPEECH_RATES:
+            raise ConversationError("speech_rate_invalid", "请选择有效的语速", 422)
         if kind in {"dialogue", "voiceover"}:
             character = next(
                 (
@@ -2643,16 +2654,11 @@ def _apply_shot_patch(script, shot_key, changes):
             "character_key": character_key,
             "speaker": speaker,
             "text": value,
+            "speech_rate": (
+                speech_rate if kind in {"dialogue", "voiceover"} else 1.0
+            ),
         })
-        line["estimated_reading_seconds"] = (
-            0.0
-            if kind == "silence"
-            else round(
-                0.45
-                + len(re.sub(r"[\s，。！？、；：“”\"…]+", "", value)) / 3.5,
-                2,
-            )
-        )
+        line["estimated_reading_seconds"] = short_drama_storyboard._reading_seconds(line)
     beat = next(
         (
             item
@@ -2710,6 +2716,38 @@ def _insert_edited_version(conn, project, actor, current, source, script, instru
         (version_id, now, project["id"], int(current["revision"])),
     )
     return version_id
+
+
+def _save_working_draft(conn, project, actor, current, source, script, instruction, summary):
+    """Save ordinary editor changes without growing formal version history."""
+    if current["state"] != "script_review" or source.get("status") != "draft":
+        return _insert_edited_version(
+            conn, project, actor, current, source, script, instruction, summary
+        )
+    now = int(time.time())
+    conn.execute(
+        "UPDATE short_drama_script_snapshots SET script_json=?,readable_text=?,"
+        "input_hash=?,provider=?,model_version=?,instruction=?,change_summary=?,"
+        "created_by=? WHERE project_id=? AND id=? AND status='draft'",
+        (
+            _json_text(script),
+            _readable(script),
+            _hash({"working_draft_id": source["id"], "script": script, "instruction": instruction}),
+            "creative-advisor-local",
+            short_drama_storyboard.MODEL_VERSION,
+            instruction[:2000],
+            summary[:220],
+            actor,
+            project["id"],
+            source["id"],
+        ),
+    )
+    conn.execute(
+        "UPDATE short_drama_conversations SET state='script_review',"
+        "revision=revision+1,updated_at=? WHERE project_id=? AND revision=?",
+        (now, project["id"], int(current["revision"])),
+    )
+    return source["id"]
 
 
 def _mutate_shot(
@@ -2798,7 +2836,7 @@ def _mutate_shot(
             _validate_script(script)
             instruction = "锁定镜头" if shot["locked"] else "解锁镜头"
             summary = "%s %s" % (instruction, shot_key)
-        _insert_edited_version(
+        _save_working_draft(
             conn,
             project,
             actor_username,
@@ -2853,6 +2891,55 @@ def set_shot_lock(db_factory, owner_username, actor_username, body, idempotency_
         idempotency_key,
         "shot_lock",
     )
+
+
+def change_shot_structure(db_factory, owner_username, actor_username, body, idempotency_key):
+    project_id = str(body.get("project_id") or "").strip()
+    revision = _request_revision(body)
+    version_id = str(body.get("version_id") or "").strip()
+    shot_key = str(body.get("shot_key") or "").strip()
+    action = str(body.get("action") or "").strip()
+    instruction = str(body.get("instruction") or "").strip()
+    key = _idempotency_key(idempotency_key)
+    request_hash = _hash(body)
+    conn = _connection(db_factory)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        project = _project(conn, owner_username, project_id)
+        _ensure_conversation(conn, project_id)
+        replay = _existing_request(conn, actor_username, project_id, "shot_structure", key, request_hash)
+        if replay is not None:
+            conn.rollback()
+            replay["replayed"] = True
+            return replay
+        current = _conversation(conn, project_id)
+        if int(current["revision"]) != revision:
+            raise ConversationError("conversation_revision_conflict", "剧本已更新，请刷新后重试", 409)
+        if current["state"] == "script_locked":
+            raise ConversationError("script_locked", "剧本已经锁定，不能调整镜头结构", 409)
+        if current["current_version_id"] != version_id:
+            raise ConversationError("stale_script_version", "只能调整当前剧本版本", 409)
+        source = _snapshot_by_id(conn, project_id, version_id)
+        if not source:
+            raise LookupError("script version does not exist")
+        script = _json(_json_text(source["script"]), {})
+        _structure_shot(script, shot_key, action, instruction)
+        _save_working_draft(
+            conn, project, actor_username, current, source, script,
+            "调整镜头结构：%s" % action,
+            "镜头结构已调整，旧合成版本需要重新生成",
+        )
+        response = _workspace(conn, project, actor_username)
+        response["replayed"] = False
+        response["assembly_invalidated"] = True
+        _store_request(conn, actor_username, project_id, "shot_structure", key, request_hash, response)
+        conn.commit()
+        return response
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def restore_version(db_factory, owner_username, actor_username, body, idempotency_key):
