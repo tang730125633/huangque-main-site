@@ -163,10 +163,23 @@ def _expected_tools(case):
 
 def _known_references(case):
     refs = case.get("known_references") if isinstance(case.get("known_references"), dict) else {}
+    memory = memory_for_case(case)
     return {
-        "production_id": set(refs.get("production_ids") or []),
-        "category_id": set(refs.get("category_ids") or ["category-1", "category-2", "category-3"]),
-        "topic_id": set(refs.get("topic_ids") or ["topic-1-01", "topic-2-01", "topic-3-01"]),
+        "production_id": set(refs.get("production_ids") or []).union(
+            str(item.get("production_id") or "")
+            for item in memory.get("productions") or []
+            if item.get("production_id")
+        ),
+        "category_id": set(refs.get("category_ids") or []).union(
+            str(item.get("category_id") or "")
+            for item in memory.get("content_topics") or []
+            if item.get("category_id")
+        ),
+        "topic_id": set(refs.get("topic_ids") or []).union(
+            str(item.get("topic_id") or "")
+            for item in memory.get("content_topics") or []
+            if item.get("topic_id")
+        ),
     }
 
 

@@ -318,6 +318,10 @@ class CognitiveEngineTests(unittest.TestCase):
         self.assertEqual(got, expected)
         self.assertEqual(master.name, "ip12_master_agent")
         self.assertEqual(master.model.model, "fixture-model")
+        self.assertEqual(
+            set(master.output_type.model_json_schema()["properties"]["intent"]["enum"]),
+            cognitive_engine.semantic_router.INTENTS,
+        )
         self.assertEqual([tool.name for tool in master.tools], ["talking_head_video_agent"])
         self.assertIs(master.model_settings.store, False)
         self.assertEqual(master.model_settings.max_tokens, 700)

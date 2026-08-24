@@ -141,6 +141,17 @@ class IP12EvalContractTests(unittest.TestCase):
         self.assertTrue(running["active_production"]["job_present"])
         self.assertNotIn("job_id", str(running))
 
+    def test_context_production_ids_are_known_references(self):
+        case = {"id": "status", "message": "到哪了", "context": "running_video"}
+        self.assertEqual(
+            eval_contract._reference_hallucinations(
+                case, {"references": {
+                    "production_id": "prod-video", "category_id": "", "topic_id": "",
+                }},
+            ),
+            0,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
