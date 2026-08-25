@@ -8,18 +8,24 @@
 或重写既有字段；旧应用可以忽略该列，因此应用回滚时保留增量 Schema，不在线执行
 破坏性逆向 DDL。
 
-当前状态：**等待 LU-003 阶段一 Owner 审批；本文不是合并或部署指令。**
+当前状态：**LU-003 阶段一 Owner 审批已确认，等待最终 HEAD 的阶段二批准；本文不是合并或部署指令。**
 
 ## 固定审批证据
 
 - PR：`tang730125633/huangque-main-site#1263`。
-- 固定业务与 Schema 提交：`PENDING_BUSINESS_SHA`。
-- 阶段一批准评论：`PENDING_LU003_APPROVAL_URL`。
-- GitHub 评论作者及关联：`LU-003`，需由 GitHub API 证明作者身份和时间。
+- 固定业务与 Schema 提交：`c34e60ea86f72a55335f0a1dd679c1626b21631d`。
+- 阶段一批准评论（两条连续评论共同构成完整审批）：
+  - [固定对象与批准的 Schema 变更](https://github.com/tang730125633/huangque-main-site/pull/1263#issuecomment-5406146887)：
+    评论 ID `5406146887`，Node ID `IC_kwDOS66oj88AAAABQjtBRw`，创建及更新时间
+    `2026-08-25T05:51:53Z`。
+  - [执行责任、验证、回滚与审批边界](https://github.com/tang730125633/huangque-main-site/pull/1263#issuecomment-5406158375)：
+    评论 ID `5406158375`，Node ID `IC_kwDOS66oj88AAAABQjtuJw`，创建及更新时间
+    `2026-08-25T05:53:31Z`。
+- GitHub API 证明上述两条评论作者均为 `LU-003`，关联均为 `COLLABORATOR`。
 - 生产服务器：`dapeng-server`。
 - 生产数据库绝对路径：`/home/ubuntu/content-api/content_jobs.db`。
 - 当前稳定应用提交：`629851345851f84b603e9d94bfd4e9f7a4aec372`。
-- 维护窗口：`PENDING_APPROVED_WINDOW`，时区必须为 `Asia/Shanghai`。
+- 维护窗口：`2026-08-28 02:00–03:00 Asia/Shanghai`。
 - 执行、备份、验证、失败恢复负责人：均为 `@LU-003`。
 
 业务与 Schema 提交冻结后，只允许追加本节的批准评论 URL、评论 ID/作者/时间和最终
