@@ -659,13 +659,10 @@ def _shot_dependencies(conn, project, shot_id, prompt=None, avatar_lookup=None):
     if not prompt or len(prompt) > 2000:
         _append_blocker(blockers, "invalid_video_prompt", shot_id)
     target_duration = int(shot["duration"])
-    anchor = conn.execute(
-        "SELECT duration FROM short_drama_shots WHERE id=? AND project_id=?",
-        (shot_id, project["id"]),
-    ).fetchone()
-    duration = int(anchor["duration"] if anchor else (
-        5 if target_duration <= 7 else 10
-    ))
+    # The current conversation shot is authoritative.  The matching row in
+    # short_drama_shots is only a stable foreign-key anchor and may retain
+    # legacy planning fields.
+    duration = 5 if target_duration <= 7 else 10
     ratio = str(project["ratio"])
     if duration not in {5, 10} or ratio not in {"9:16", "16:9"}:
         _append_blocker(blockers, "invalid_duration_or_ratio", shot_id)

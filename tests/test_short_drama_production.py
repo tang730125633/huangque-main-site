@@ -389,6 +389,42 @@ class ShortDramaProductionTests(unittest.TestCase):
         self.assertEqual([4, 15], [item["duration"] for item in assembly_sources])
         self.assertFalse(handoff["blocked"], handoff["blockers"])
 
+    def test_existing_legacy_shot_uses_current_duration_in_downstream_snapshots(self):
+        with closing(self.db()) as conn:
+            legacy_id, legacy_key = conn.execute(
+                "SELECT id,shot_key FROM short_drama_shots "
+                "WHERE project_id=? ORDER BY sort_order LIMIT 1",
+                (self.project["id"],),
+            ).fetchone()
+        current = self._conversation_shot(legacy_key, 10, 1)
+        current["provider_prompt"] = "current ten second provider prompt"
+        self._set_current_conversation_shots([current])
+
+        production = short_drama_production.get_production(
+            self.db, "alice", self.project["id"],
+        )
+        self.assertEqual(1, len(production["shots"]))
+        self.assertEqual(legacy_id, production["shots"][0]["id"])
+        self.assertEqual(10, production["shots"][0]["duration"])
+
+        with closing(self.db()) as conn:
+            conn.row_factory = sqlite3.Row
+            project = conn.execute(
+                "SELECT * FROM short_drama_projects WHERE id=?",
+                (self.project["id"],),
+            ).fetchone()
+            timeline_source = short_drama_timeline._legacy_source(conn, project)
+            assembly_sources = short_drama_assembly._collect_sources(
+                conn, self.project["id"],
+            )
+        self.assertEqual(10000, timeline_source["duration_ms"])
+        self.assertEqual([10000], [
+            item["end_ms"] for item in timeline_source["shot_bounds"]
+        ])
+        self.assertEqual([10], [
+            item["duration"] for item in assembly_sources
+        ])
+
     def test_current_user_shots_and_dialogue_cross_voice_and_video_handoffs(self):
         snapshot_id, script = self._set_current_conversation_shots([
             self._conversation_shot("voice-user", 8, 1),
