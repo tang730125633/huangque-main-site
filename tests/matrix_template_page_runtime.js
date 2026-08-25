@@ -49,7 +49,7 @@ async function scenarioPostLoss(){
     poll:()=>Promise.resolve(response(200,{status:'done',result:{video_url:'/video',duration:8}})),
   },storage);
   await fillAndSubmit(runtime);await runtime.runTimer();await flush();
-  return {keys:runtime.requests.post.map(x=>x.options.headers['Idempotency-Key']),posts:runtime.requests.post.length,cleared:storage.size===0};
+  return {keys:runtime.requests.post.map(x=>x.options.headers['Idempotency-Key']),bodies:runtime.requests.post.map(x=>JSON.parse(x.options.body)),posts:runtime.requests.post.length,cleared:storage.size===0};
 }
 async function scenarioInProgress(){
   const storage=new Map();

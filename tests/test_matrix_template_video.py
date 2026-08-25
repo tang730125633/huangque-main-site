@@ -172,7 +172,7 @@ class MatrixTemplatePageTests(unittest.TestCase):
     def runtime(self, scenario):
         result = subprocess.run(
             ["node", str(ROOT / "tests/matrix_template_page_runtime.js"), scenario],
-            check=True, capture_output=True, text=True,
+            check=True, capture_output=True, text=True, encoding="utf-8",
         )
         return json.loads(result.stdout)
 
@@ -183,7 +183,10 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertIn("/api/gen/matrix-template/templates", page)
         self.assertIn("/api/gen/matrix-template'", page)
         self.assertIn("Idempotency-Key", page)
-        self.assertIn("平台素材库", page)
+        self.assertNotIn('id="duration"', page)
+        self.assertNotIn('id="bgm"', page)
+        self.assertNotIn("素材来源", page)
+        self.assertIn("template_id:activeTemplate,bgm:true", page)
         self.assertLess(shell.index("k:'text-video'"), shell.index("k:'matrix-template'"))
         self.assertIn("/api/gen/matrix-template/capability", shell)
 
@@ -201,6 +204,8 @@ class MatrixTemplatePageTests(unittest.TestCase):
         result = self.runtime("postLoss")
         self.assertEqual(2, result["posts"])
         self.assertEqual(1, len(set(result["keys"])))
+        self.assertTrue(all(body["bgm"] is True for body in result["bodies"]))
+        self.assertTrue(all("duration" not in body for body in result["bodies"]))
         self.assertTrue(result["cleared"])
 
     def test_idempotency_in_progress_retries_the_same_claim(self):
