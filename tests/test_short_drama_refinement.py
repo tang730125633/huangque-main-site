@@ -19,8 +19,10 @@ if SERVER_DIR not in sys.path:
 
 from content_domains import (
     core,
+    pricing,
     short_drama,
     short_drama_formal_renderer,
+    short_drama_native_audio,
     short_drama_refinement,
     video,
 )
@@ -359,6 +361,20 @@ class ShortDramaRefinementTests(unittest.TestCase):
             conn.close()
         return raw_paths
 
+    def valid_native_inspection(self, path, expected_resolution="2K"):
+        target = Path(path)
+        return {
+            "sha256": short_drama_refinement._file_hash(target),
+            "size_bytes": target.stat().st_size,
+            "resolution": {"width": 2560, "height": 1440},
+            "audio": {
+                "audible": True, "codec": "aac", "sample_rate": 48000,
+                "channels": 2, "mean_volume_dbfs": -21.0,
+                "max_volume_dbfs": -3.0,
+            },
+            "inspected_at": int(time.time()),
+        }
+
     def create_stale_delivery_attempt(self, key, *, cost=80, state="accepted"):
         version = self.confirmed_version("repair-for-" + key)
         production = {
@@ -458,17 +474,80 @@ class ShortDramaRefinementTests(unittest.TestCase):
         self.assertEqual("local_2k_renderer", capability["reason"])
 
     def test_formal_2k_cost_uses_duration_tiers(self):
+        prices = {
+            "short_drama.delivery.2k.upto_60": 11,
+            "short_drama.delivery.2k.upto_90": 16,
+            "short_drama.delivery.2k.upto_120": 21,
+        }
         cases = (
-            (30, 10), (60, 10),
-            (61, 15), (90, 15),
-            (91, 20), (120, 20),
+            (30, 11), (60, 11),
+            (61, 16), (90, 16),
+            (91, 21), (120, 21),
         )
-        for duration, expected in cases:
-            with self.subTest(duration=duration):
-                self.assertEqual(
-                    expected,
-                    short_drama_refinement._formal_2k_cost(duration),
-                )
+        with mock.patch.object(
+            pricing, "get_price", side_effect=lambda key: prices[key],
+        ) as get_price:
+            for duration, expected in cases:
+                with self.subTest(duration=duration):
+                    self.assertEqual(
+                        expected,
+                        short_drama_refinement._formal_2k_cost(duration),
+                    )
+        self.assertEqual(6, get_price.call_count)
+        for key in prices:
+            self.assertIn(key, pricing.CATALOG_MAP)
+
+    def test_local_ffmpeg_rejects_quote_after_live_price_change(self):
+        self.install_mock_native_evidence()
+        version = self.confirmed_version("delivery-price-change")
+        capability = {
+            "delivery_enabled": True,
+            "deliverable": True,
+            "mode": "local_ffmpeg",
+            "adapter": "local_ffmpeg",
+            "formal_cost": 0,
+            "reason": "local_2k_renderer",
+        }
+        deduct = mock.Mock()
+        with mock.patch.object(
+            short_drama_refinement,
+            "_delivery_capability",
+            return_value=capability,
+        ), mock.patch(
+            "content_domains.short_drama_native_audio.inspect_native_media",
+            side_effect=self.valid_native_inspection,
+        ), mock.patch.object(pricing, "get_price", return_value=10):
+            quote = short_drama_refinement.create_delivery_quote(
+                self.db,
+                "alice",
+                {
+                    "project_id": self.project["id"],
+                    "version_id": version["id"],
+                },
+            )
+        with mock.patch.object(
+            short_drama_refinement,
+            "_delivery_capability",
+            return_value=capability,
+        ), mock.patch(
+            "content_domains.short_drama_native_audio.inspect_native_media",
+            side_effect=self.valid_native_inspection,
+        ), mock.patch.object(
+            pricing, "get_price", return_value=12,
+        ), self.assertRaises(short_drama_refinement.RefinementError) as raised:
+            short_drama_refinement.start_delivery_job(
+                self.db,
+                "alice",
+                "alice",
+                {
+                    "project_id": self.project["id"],
+                    "quote_token": quote["quote_token"],
+                },
+                "stale-live-price",
+                deduct_points=deduct,
+            )
+        self.assertEqual("delivery_quote_stale", raised.exception.code)
+        deduct.assert_not_called()
 
     def test_local_ffmpeg_quote_is_paid_2k_for_project_duration(self):
         self.install_mock_native_evidence()
@@ -485,6 +564,9 @@ class ShortDramaRefinementTests(unittest.TestCase):
             short_drama_refinement,
             "_delivery_capability",
             return_value=capability,
+        ), mock.patch(
+            "content_domains.short_drama_native_audio.inspect_native_media",
+            side_effect=self.valid_native_inspection,
         ):
             quote = short_drama_refinement.create_delivery_quote(
                 self.db,
@@ -496,6 +578,428 @@ class ShortDramaRefinementTests(unittest.TestCase):
             )
         self.assertEqual("2k", quote["resolution"])
         self.assertEqual(10, quote["cost"])
+
+    def test_local_ffmpeg_quote_revalidates_raw_file_before_issuing_quote(self):
+        raw_paths = self.install_mock_native_evidence()
+        version = self.confirmed_version("quote-raw-revalidation")
+        capability = {
+            "delivery_enabled": True,
+            "deliverable": True,
+            "mode": "local_ffmpeg",
+            "adapter": "local_ffmpeg",
+            "formal_cost": 0,
+            "reason": "local_2k_renderer",
+        }
+        raw_paths[0].write_bytes(b"tampered-after-acceptance")
+        with mock.patch.object(
+            short_drama_refinement,
+            "_delivery_capability",
+            return_value=capability,
+        ), mock.patch(
+            "content_domains.short_drama_native_audio.inspect_native_media",
+            side_effect=self.valid_native_inspection,
+        ), self.assertRaises(short_drama_refinement.RefinementError) as raised:
+            short_drama_refinement.create_delivery_quote(
+                self.db,
+                "alice",
+                {
+                    "project_id": self.project["id"],
+                    "version_id": version["id"],
+                },
+            )
+        self.assertEqual("provider_native_media_changed", raised.exception.code)
+        conn = self.db()
+        try:
+            self.assertEqual(
+                0,
+                conn.execute(
+                    "SELECT COUNT(*) FROM short_drama_delivery_quotes"
+                ).fetchone()[0],
+            )
+        finally:
+            conn.close()
+
+    def test_local_ffmpeg_quote_rejects_missing_downres_or_muted_raw_media(self):
+        raw_paths = self.install_mock_native_evidence()
+        version = self.confirmed_version("quote-raw-probe")
+        capability = {
+            "delivery_enabled": True,
+            "deliverable": True,
+            "mode": "local_ffmpeg",
+            "adapter": "local_ffmpeg",
+            "formal_cost": 0,
+            "reason": "local_2k_renderer",
+        }
+        cases = (
+            ("provider_resolution_below_2k", "provider_native_media_invalid"),
+            ("provider_audio_silent", "provider_native_audio_invalid"),
+        )
+        for native_code, expected_code in cases:
+            with self.subTest(native_code=native_code), mock.patch.object(
+                short_drama_refinement,
+                "_delivery_capability",
+                return_value=capability,
+            ), mock.patch(
+                "content_domains.short_drama_native_audio.inspect_native_media",
+                side_effect=short_drama_native_audio.NativeAudioError(
+                    native_code, "invalid raw media",
+                ),
+            ), self.assertRaises(short_drama_refinement.RefinementError) as raised:
+                short_drama_refinement.create_delivery_quote(
+                    self.db,
+                    "alice",
+                    {
+                        "project_id": self.project["id"],
+                        "version_id": version["id"],
+                    },
+                )
+            self.assertEqual(expected_code, raised.exception.code)
+
+        raw_paths[0].unlink()
+        with mock.patch.object(
+            short_drama_refinement,
+            "_delivery_capability",
+            return_value=capability,
+        ), self.assertRaises(short_drama_refinement.RefinementError) as missing:
+            short_drama_refinement.create_delivery_quote(
+                self.db,
+                "alice",
+                {
+                    "project_id": self.project["id"],
+                    "version_id": version["id"],
+                },
+            )
+        self.assertEqual("provider_asset_missing", missing.exception.code)
+
+    def test_local_ffmpeg_start_revalidates_raw_media_before_charge(self):
+        raw_paths = self.install_mock_native_evidence()
+        version = self.confirmed_version("charge-raw-revalidation")
+        capability = {
+            "delivery_enabled": True,
+            "deliverable": True,
+            "mode": "local_ffmpeg",
+            "adapter": "local_ffmpeg",
+            "formal_cost": 0,
+            "reason": "local_2k_renderer",
+        }
+        with mock.patch.object(
+            short_drama_refinement,
+            "_delivery_capability",
+            return_value=capability,
+        ), mock.patch(
+            "content_domains.short_drama_native_audio.inspect_native_media",
+            side_effect=self.valid_native_inspection,
+        ):
+            quote = short_drama_refinement.create_delivery_quote(
+                self.db,
+                "alice",
+                {
+                    "project_id": self.project["id"],
+                    "version_id": version["id"],
+                },
+            )
+            raw_paths[1].write_bytes(b"changed-after-quote")
+            deduct = mock.Mock()
+            with self.assertRaises(short_drama_refinement.RefinementError) as raised:
+                short_drama_refinement.start_delivery_job(
+                    self.db,
+                    "alice",
+                    "alice",
+                    {
+                        "project_id": self.project["id"],
+                        "quote_token": quote["quote_token"],
+                    },
+                    "raw-changed-before-charge",
+                    deduct_points=deduct,
+                )
+        self.assertEqual("provider_native_media_changed", raised.exception.code)
+        deduct.assert_not_called()
+        conn = self.db()
+        try:
+            self.assertEqual(
+                (0, 0),
+                (
+                    conn.execute(
+                        "SELECT COUNT(*) FROM short_drama_delivery_attempts"
+                    ).fetchone()[0],
+                    conn.execute(
+                        "SELECT COUNT(*) FROM short_drama_delivery_jobs"
+                    ).fetchone()[0],
+                ),
+            )
+        finally:
+            conn.close()
+
+    def test_delivery_raw_validation_does_not_hold_jobs_database_write_lock(self):
+        self.install_mock_native_evidence()
+        version = self.confirmed_version("raw-validation-write-lock")
+        capability = {
+            "delivery_enabled": True,
+            "deliverable": True,
+            "mode": "local_ffmpeg",
+            "adapter": "local_ffmpeg",
+            "formal_cost": 0,
+            "reason": "local_2k_renderer",
+        }
+
+        def validate_while_another_request_writes(_source, _capability):
+            concurrent = sqlite3.connect(self.database, timeout=0.1)
+            try:
+                concurrent.execute(
+                    "UPDATE short_drama_projects SET title=title WHERE id=?",
+                    (self.project["id"],),
+                )
+                concurrent.commit()
+            finally:
+                concurrent.close()
+
+        with mock.patch.object(
+            short_drama_refinement,
+            "_delivery_capability",
+            return_value=capability,
+        ), mock.patch.object(
+            short_drama_refinement,
+            "_revalidate_delivery_native_sources",
+            side_effect=validate_while_another_request_writes,
+        ):
+            quote = short_drama_refinement.create_delivery_quote(
+                self.db,
+                "alice",
+                {
+                    "project_id": self.project["id"],
+                    "version_id": version["id"],
+                },
+            )
+            result = short_drama_refinement.start_delivery_job(
+                self.db,
+                "alice",
+                "alice",
+                {
+                    "project_id": self.project["id"],
+                    "quote_token": quote["quote_token"],
+                },
+                "raw-validation-write-lock",
+                deduct_points=mock.Mock(),
+            )
+        self.assertEqual("queued", result["status"])
+
+    def test_quote_snapshot_survives_raw_replacement_before_quote_insert(self):
+        raw_paths = self.install_mock_native_evidence()
+        version = self.confirmed_version("quote-snapshot-toctou")
+        expected_hash = short_drama_refinement._file_hash(raw_paths[0])
+        capability = {
+            "delivery_enabled": True, "deliverable": True,
+            "mode": "local_ffmpeg", "adapter": "local_ffmpeg",
+            "formal_cost": 0, "reason": "local_2k_renderer",
+        }
+        real_copy = short_drama_refinement._copy_delivery_input_snapshot
+
+        def copy_then_replace_raw(assembly, project_id, scope, key):
+            snapshot = real_copy(assembly, project_id, scope, key)
+            if scope == "quotes":
+                raw_paths[0].write_bytes(b"replaced-after-validated-snapshot")
+            return snapshot
+
+        with mock.patch.object(
+            short_drama_refinement, "_delivery_capability", return_value=capability,
+        ), mock.patch(
+            "content_domains.short_drama_native_audio.inspect_native_media",
+            side_effect=self.valid_native_inspection,
+        ), mock.patch.object(
+            short_drama_refinement, "_copy_delivery_input_snapshot",
+            side_effect=copy_then_replace_raw,
+        ):
+            quote = short_drama_refinement.create_delivery_quote(
+                self.db, "alice", {
+                    "project_id": self.project["id"], "version_id": version["id"],
+                },
+            )
+        snapshot = (
+            short_drama_refinement._delivery_input_snapshot_dir(
+                self.project["id"], "quotes", quote["input_hash"],
+            ) / "source-001.mp4"
+        )
+        self.assertEqual(expected_hash, short_drama_refinement._file_hash(snapshot))
+        self.assertNotEqual(expected_hash, short_drama_refinement._file_hash(raw_paths[0]))
+
+    def test_repeated_quotes_share_one_content_addressed_native_snapshot(self):
+        self.install_mock_native_evidence()
+        version = self.confirmed_version("quote-snapshot-deduplication")
+        capability = {
+            "delivery_enabled": True, "deliverable": True,
+            "mode": "local_ffmpeg", "adapter": "local_ffmpeg",
+            "formal_cost": 0, "reason": "local_2k_renderer",
+        }
+        with mock.patch.object(
+            short_drama_refinement, "_delivery_capability", return_value=capability,
+        ), mock.patch(
+            "content_domains.short_drama_native_audio.inspect_native_media",
+            side_effect=self.valid_native_inspection,
+        ):
+            first = short_drama_refinement.create_delivery_quote(
+                self.db, "alice", {
+                    "project_id": self.project["id"], "version_id": version["id"],
+                },
+            )
+            second = short_drama_refinement.create_delivery_quote(
+                self.db, "alice", {
+                    "project_id": self.project["id"], "version_id": version["id"],
+                },
+            )
+
+        self.assertNotEqual(first["quote_token"], second["quote_token"])
+        self.assertEqual(first["input_hash"], second["input_hash"])
+        quote_root = (
+            Path(self.tmp.name) / "short_drama_delivery_inputs" /
+            self.project["id"] / "quotes"
+        )
+        self.assertEqual([first["input_hash"]], sorted(
+            item.name for item in quote_root.iterdir() if item.is_dir()
+        ))
+
+    def test_quote_creation_lock_blocks_reaper_before_database_reference(self):
+        self.install_mock_native_evidence()
+        version = self.confirmed_version("quote-snapshot-reaper-race")
+        capability = {
+            "delivery_enabled": True, "deliverable": True,
+            "mode": "local_ffmpeg", "adapter": "local_ffmpeg",
+            "formal_cost": 0, "reason": "local_2k_renderer",
+        }
+        real_copy = short_drama_refinement._copy_delivery_input_snapshot
+        observed = {}
+
+        def copy_then_reap(assembly, project_id, scope, key):
+            snapshot = real_copy(assembly, project_id, scope, key)
+            target = short_drama_refinement._delivery_input_snapshot_dir(
+                project_id, scope, key,
+            )
+            old = int(time.time()) - 3600
+            os.utime(target, (old, old))
+            observed["reap"] = short_drama_refinement.reap_delivery_orphans(
+                self.db, now=int(time.time()), grace_seconds=60,
+            )
+            observed["survived"] = target.is_dir()
+            return snapshot
+
+        with mock.patch.object(
+            short_drama_refinement, "_delivery_capability", return_value=capability,
+        ), mock.patch(
+            "content_domains.short_drama_native_audio.inspect_native_media",
+            side_effect=self.valid_native_inspection,
+        ), mock.patch.object(
+            short_drama_refinement, "_copy_delivery_input_snapshot",
+            side_effect=copy_then_reap,
+        ):
+            quote = short_drama_refinement.create_delivery_quote(
+                self.db, "alice", {
+                    "project_id": self.project["id"], "version_id": version["id"],
+                },
+            )
+
+        target = short_drama_refinement._delivery_input_snapshot_dir(
+            self.project["id"], "quotes", quote["input_hash"],
+        )
+        self.assertTrue(observed["survived"])
+        self.assertTrue(target.is_dir())
+        self.assertGreaterEqual(observed["reap"]["retained"], 1)
+
+    def test_delivery_input_lock_is_advisory_and_old_release_cannot_unlock_new_owner(self):
+        project_id = self.project["id"]
+        key = "advisory-lock-contract"
+        first = short_drama_refinement._acquire_delivery_input_lock(
+            project_id, "quotes", key,
+        )
+        self.assertIsNotNone(first)
+        lock_path = short_drama_refinement._delivery_input_lock_dir(
+            project_id, "quotes", key,
+        )
+        self.assertTrue(lock_path.is_file())
+        self.assertIsNone(short_drama_refinement._acquire_delivery_input_lock(
+            project_id, "quotes", key,
+        ))
+
+        short_drama_refinement._release_delivery_input_lock(first)
+        second = short_drama_refinement._acquire_delivery_input_lock(
+            project_id, "quotes", key,
+        )
+        self.assertIsNotNone(second)
+        short_drama_refinement._release_delivery_input_lock(first)
+        self.assertIsNone(short_drama_refinement._acquire_delivery_input_lock(
+            project_id, "quotes", key,
+        ))
+        short_drama_refinement._release_delivery_input_lock(second)
+
+    def test_delivery_input_advisory_lock_files_are_bounded_by_shards(self):
+        project_id = self.project["id"]
+        lock_paths = set()
+        for index in range(100):
+            key = "attempt-%03d" % index
+            handle = short_drama_refinement._acquire_delivery_input_lock(
+                project_id, "attempts", key,
+            )
+            self.assertIsNotNone(handle)
+            short_drama_refinement._release_delivery_input_lock(handle)
+            lock_paths.add(short_drama_refinement._delivery_input_lock_dir(
+                project_id, "attempts", key,
+            ))
+        self.assertLessEqual(len(lock_paths), 64)
+        self.assertTrue(all(path.is_file() for path in lock_paths))
+
+    def test_charge_uses_snapshot_when_raw_changes_after_validation(self):
+        raw_paths = self.install_mock_native_evidence()
+        version = self.confirmed_version("charge-snapshot-toctou")
+        expected_hash = short_drama_refinement._file_hash(raw_paths[0])
+        capability = {
+            "delivery_enabled": True, "deliverable": True,
+            "mode": "local_ffmpeg", "adapter": "local_ffmpeg",
+            "formal_cost": 0, "reason": "local_2k_renderer",
+        }
+        with mock.patch.object(
+            short_drama_refinement, "_delivery_capability", return_value=capability,
+        ), mock.patch(
+            "content_domains.short_drama_native_audio.inspect_native_media",
+            side_effect=self.valid_native_inspection,
+        ):
+            quote = short_drama_refinement.create_delivery_quote(
+                self.db, "alice", {
+                    "project_id": self.project["id"], "version_id": version["id"],
+                },
+            )
+            real_copy = short_drama_refinement._copy_delivery_input_snapshot
+
+            def copy_then_replace_raw(assembly, project_id, scope, key):
+                snapshot = real_copy(assembly, project_id, scope, key)
+                if scope == "attempts":
+                    raw_paths[0].write_bytes(b"replaced-after-charge-validation")
+                return snapshot
+
+            deduct = mock.Mock()
+            with mock.patch.object(
+                short_drama_refinement, "_copy_delivery_input_snapshot",
+                side_effect=copy_then_replace_raw,
+            ):
+                job = short_drama_refinement.start_delivery_job(
+                    self.db, "alice", "alice", {
+                        "project_id": self.project["id"],
+                        "quote_token": quote["quote_token"],
+                    }, "charge-snapshot-toctou", deduct_points=deduct,
+                )
+        deduct.assert_called_once()
+        conn = self.db()
+        try:
+            attempt_id = conn.execute(
+                "SELECT id FROM short_drama_delivery_attempts "
+                "WHERE job_id=?", (job["id"],),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        snapshot = (
+            short_drama_refinement._delivery_input_snapshot_dir(
+                self.project["id"], "attempts", attempt_id,
+            ) / "source-001.mp4"
+        )
+        self.assertEqual(expected_hash, short_drama_refinement._file_hash(snapshot))
+        self.assertNotEqual(expected_hash, short_drama_refinement._file_hash(raw_paths[0]))
 
     def test_formal_2k_dimensions_follow_project_ratio(self):
         self.assertEqual(
@@ -590,11 +1094,14 @@ class ShortDramaRefinementTests(unittest.TestCase):
 
         def verify(assembly, snapshot_dir):
             captured["assembly"] = assembly
+            snapshot_paths = [
+                Path(self.tmp.name) / item["file"] for item in assembly["shots"]
+            ]
             self.assertEqual(
-                [path.relative_to(self.tmp.name).as_posix() for path in raw_paths],
-                [item["file"] for item in assembly["shots"]],
+                [short_drama_refinement._file_hash(path) for path in raw_paths],
+                [short_drama_refinement._file_hash(path) for path in snapshot_paths],
             )
-            return raw_paths
+            return snapshot_paths
 
         def render(sources, ratio, duration_ms, media_contract, output, **kwargs):
             captured["sources"] = list(sources)
@@ -630,6 +1137,9 @@ class ShortDramaRefinementTests(unittest.TestCase):
                 "delivery_eligible": True, "subtitle_required": False,
             }}},
         ), mock.patch(
+            "content_domains.short_drama_native_audio.inspect_native_media",
+            side_effect=self.valid_native_inspection,
+        ), mock.patch(
             "content_domains.short_drama_autodraft._verified_native_assembly_sources",
             side_effect=verify,
         ), mock.patch(
@@ -657,7 +1167,10 @@ class ShortDramaRefinementTests(unittest.TestCase):
                     self.db, "alice", self.project["id"], job["id"]
                 )
         self.assertEqual("succeeded", job["status"], job.get("error"))
-        self.assertEqual(raw_paths, captured["sources"])
+        self.assertEqual(
+            [short_drama_refinement._file_hash(path) for path in raw_paths],
+            [short_drama_refinement._file_hash(path) for path in captured["sources"]],
+        )
         self.assertNotIn("preview-1080p", json.dumps(captured["assembly"]))
         self.assertEqual([True], published_without_db_lock)
 
@@ -733,6 +1246,9 @@ class ShortDramaRefinementTests(unittest.TestCase):
 
         with mock.patch.object(
             short_drama_refinement, "_delivery_capability", return_value=capability,
+        ), mock.patch(
+            "content_domains.short_drama_native_audio.inspect_native_media",
+            side_effect=self.valid_native_inspection,
         ), mock.patch(
             "content_domains.short_drama_autodraft._verified_native_assembly_sources",
             return_value=raw_paths,
@@ -983,6 +1499,212 @@ class ShortDramaRefinementTests(unittest.TestCase):
         self.assertTrue(new_temp.is_dir())
         self.assertEqual(b"successor", (target / "final-2k.mp4").read_bytes())
 
+    def test_real_delivery_worker_uses_owner_scoped_temp_and_publish_marker(self):
+        self.install_mock_native_evidence()
+        version = self.confirmed_version("worker-owner-scoped-path")
+        capability = {
+            "delivery_enabled": True, "deliverable": True,
+            "mode": "local_ffmpeg", "adapter": "local_ffmpeg",
+            "formal_cost": 0, "reason": "local_2k_renderer",
+        }
+        rendered_parents = []
+
+        def render(_sources, _ratio, duration_ms, _contract, output, **_kwargs):
+            rendered_parents.append(output.parent.name)
+            output.write_bytes(b"owner-scoped-formal-output")
+            return {
+                "probe": {
+                    "video": {"width": 2560, "height": 1440},
+                    "audio": {"codec": "aac"}, "duration_ms": duration_ms,
+                },
+                "subtitle_streams": 0, "native_audio": {"audible": True},
+                "sha256": short_drama_refinement._file_hash(output),
+            }
+
+        with mock.patch.object(
+            short_drama_refinement, "_delivery_capability", return_value=capability,
+        ), mock.patch(
+            "content_domains.short_drama_native_audio.inspect_native_media",
+            side_effect=self.valid_native_inspection,
+        ), mock.patch(
+            "content_domains.short_drama_formal_renderer.render_native_2k",
+            side_effect=render,
+        ):
+            quote = short_drama_refinement.create_delivery_quote(
+                self.db, "alice", {
+                    "project_id": self.project["id"], "version_id": version["id"],
+                },
+            )
+            job = short_drama_refinement.start_delivery_job(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"],
+                    "quote_token": quote["quote_token"],
+                }, "worker-owner-scoped-path", deduct_points=lambda *_args: None,
+            )
+            for _ in range(4):
+                job = short_drama_refinement.get_delivery_job(
+                    self.db, "alice", self.project["id"], job["id"]
+                )
+
+        self.assertEqual("succeeded", job["status"], job.get("error"))
+        self.assertEqual(1, len(rendered_parents))
+        self.assertRegex(
+            rendered_parents[0], r"^\.%s\.[0-9a-f]+\.tmp$" % job["id"],
+        )
+        owner = rendered_parents[0][len(".%s." % job["id"]):-4]
+        target = (
+            Path(self.tmp.name) / "short_drama_delivery" /
+            self.project["id"] / job["id"]
+        )
+        self.assertEqual(
+            owner, (target / ".render-owner").read_text(encoding="utf-8")
+        )
+
+    def test_real_delivery_worker_cleans_owned_publish_after_post_publish_lease_loss(self):
+        self.install_mock_native_evidence()
+        version = self.confirmed_version("post-publish-lease-loss")
+        capability = {
+            "delivery_enabled": True, "deliverable": True,
+            "mode": "local_ffmpeg", "adapter": "local_ffmpeg",
+            "formal_cost": 0, "reason": "local_2k_renderer",
+        }
+        cancel_event = {}
+        real_publish = short_drama_formal_renderer.publish_validated_output
+
+        def render(_sources, _ratio, duration_ms, _contract, output, **kwargs):
+            cancel_event["value"] = kwargs["cancel_event"]
+            output.write_bytes(b"lease-loss-formal-output")
+            return {
+                "probe": {
+                    "video": {"width": 2560, "height": 1440},
+                    "audio": {"codec": "aac"}, "duration_ms": duration_ms,
+                },
+                "subtitle_streams": 0, "native_audio": {"audible": True},
+                "sha256": short_drama_refinement._file_hash(output),
+            }
+
+        def publish(*args, **kwargs):
+            result = real_publish(*args, **kwargs)
+            cancel_event["value"].set()
+            return result
+
+        with mock.patch.object(
+            short_drama_refinement, "_delivery_capability", return_value=capability,
+        ), mock.patch(
+            "content_domains.short_drama_native_audio.inspect_native_media",
+            side_effect=self.valid_native_inspection,
+        ), mock.patch(
+            "content_domains.short_drama_formal_renderer.render_native_2k",
+            side_effect=render,
+        ), mock.patch(
+            "content_domains.short_drama_formal_renderer.publish_validated_output",
+            side_effect=publish,
+        ):
+            quote = short_drama_refinement.create_delivery_quote(
+                self.db, "alice", {
+                    "project_id": self.project["id"], "version_id": version["id"],
+                },
+            )
+            job = short_drama_refinement.start_delivery_job(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"],
+                    "quote_token": quote["quote_token"],
+                }, "post-publish-lease-loss", deduct_points=lambda *_args: None,
+            )
+            for _ in range(4):
+                job = short_drama_refinement.get_delivery_job(
+                    self.db, "alice", self.project["id"], job["id"]
+                )
+
+        target = (
+            Path(self.tmp.name) / "short_drama_delivery" /
+            self.project["id"] / job["id"]
+        )
+        self.assertEqual("failed", job["status"])
+        self.assertEqual("delivery_render_lease_lost", job["error"]["code"])
+        self.assertFalse(target.exists())
+
+    def test_real_delivery_takeover_keeps_successor_publish_and_cleans_old_temp(self):
+        self.install_mock_native_evidence()
+        version = self.confirmed_version("render-takeover-files")
+        capability = {
+            "delivery_enabled": True, "deliverable": True,
+            "mode": "local_ffmpeg", "adapter": "local_ffmpeg",
+            "formal_cost": 0, "reason": "local_2k_renderer",
+        }
+        captured = {}
+
+        def render(_sources, _ratio, duration_ms, _contract, output, **kwargs):
+            captured["old_temp"] = output.parent
+            owner_conn = self.db()
+            try:
+                owner_conn.execute(
+                    "UPDATE short_drama_delivery_jobs SET phase=?,updated_at=? "
+                    "WHERE id=?",
+                    ("rendering:successor", int(time.time()), captured["job_id"]),
+                )
+                owner_conn.commit()
+            finally:
+                owner_conn.close()
+            target = (
+                Path(self.tmp.name) / "short_drama_delivery" /
+                self.project["id"] / captured["job_id"]
+            )
+            target.mkdir(parents=True)
+            (target / ".render-owner").write_text("successor", encoding="utf-8")
+            (target / "final-2k.mp4").write_bytes(b"successor-output")
+            self.assertTrue(kwargs["cancel_event"].wait(timeout=1))
+            output.write_bytes(b"old-owner-output")
+            return {
+                "probe": {
+                    "video": {"width": 2560, "height": 1440},
+                    "audio": {"codec": "aac"}, "duration_ms": duration_ms,
+                },
+                "subtitle_streams": 0, "native_audio": {"audible": True},
+                "sha256": short_drama_refinement._file_hash(output),
+            }
+
+        with mock.patch.object(
+            short_drama_refinement, "_delivery_capability", return_value=capability,
+        ), mock.patch.object(
+            short_drama_refinement, "_DELIVERY_RENDER_HEARTBEAT_SECONDS", 0.01,
+        ), mock.patch(
+            "content_domains.short_drama_native_audio.inspect_native_media",
+            side_effect=self.valid_native_inspection,
+        ), mock.patch(
+            "content_domains.short_drama_formal_renderer.render_native_2k",
+            side_effect=render,
+        ):
+            quote = short_drama_refinement.create_delivery_quote(
+                self.db, "alice", {
+                    "project_id": self.project["id"], "version_id": version["id"],
+                },
+            )
+            job = short_drama_refinement.start_delivery_job(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"],
+                    "quote_token": quote["quote_token"],
+                }, "render-takeover-files", deduct_points=lambda *_args: None,
+            )
+            captured["job_id"] = job["id"]
+            for _ in range(4):
+                job = short_drama_refinement.get_delivery_job(
+                    self.db, "alice", self.project["id"], job["id"]
+                )
+
+        target = (
+            Path(self.tmp.name) / "short_drama_delivery" /
+            self.project["id"] / job["id"]
+        )
+        self.assertEqual("rendering:successor", job["phase"])
+        self.assertFalse(captured["old_temp"].exists())
+        self.assertEqual(
+            b"successor-output", (target / "final-2k.mp4").read_bytes()
+        )
+        self.assertEqual(
+            "successor", (target / ".render-owner").read_text(encoding="utf-8")
+        )
+
     def test_reaper_retains_owner_scoped_temp_for_live_render(self):
         version = self.confirmed_version("live-owner-temp-reaper")
         quote = short_drama_refinement.create_delivery_quote(
@@ -1069,14 +1791,113 @@ class ShortDramaRefinementTests(unittest.TestCase):
         self.assertEqual(3, result["removed"])
         self.assertEqual([], result["errors"])
 
+    def test_delivery_input_reaper_retains_active_and_removes_terminal_snapshots(self):
+        now = int(time.time())
+        old = now - 3600
+        root = (
+            Path(self.tmp.name) / "short_drama_delivery_inputs" /
+            self.project["id"]
+        )
+        paths = {
+            "active_quote": root / "quotes" / "active-quote",
+            "expired_quote": root / "quotes" / "expired-quote",
+            "consumed_quote": root / "quotes" / "consumed-quote",
+            "accepted_attempt": root / "attempts" / "accepted-attempt",
+            "refund_attempt": root / "attempts" / "refund-attempt",
+            "running_attempt": root / "attempts" / "running-attempt",
+            "refunded_attempt": root / "attempts" / "refunded-attempt",
+            "completed_attempt": root / "attempts" / "completed-attempt",
+            "orphan_attempt": root / "attempts" / "orphan-attempt",
+            "crashed_temp": root / "quotes" / ".crashed.copy.tmp",
+        }
+        for directory in paths.values():
+            directory.mkdir(parents=True)
+            (directory / "source-001.mp4").write_bytes(directory.name.encode())
+            os.utime(directory, (old, old))
+
+        conn = self.db()
+        try:
+            for token, expires_at, consumed_job_id in (
+                ("active-quote", now + 300, None),
+                ("expired-quote", now - 1, None),
+                ("consumed-quote", now + 300, "completed-job"),
+            ):
+                conn.execute(
+                    "INSERT INTO short_drama_delivery_quotes "
+                    "(token,project_id,refinement_version_id,input_hash,cost,"
+                    "expires_at,consumed_job_id,created_at) VALUES (?,?,?,?,?,?,?,?)",
+                    (
+                        token, self.project["id"], "refinement-version", token,
+                        10, expires_at, consumed_job_id, old,
+                    ),
+                )
+            for job_id, status in (
+                ("running-job", "running"), ("completed-job", "succeeded"),
+            ):
+                conn.execute(
+                    "INSERT INTO short_drama_delivery_jobs "
+                    "(id,project_id,refinement_version_id,actor_username,status,"
+                    "phase,progress,poll_count,input_hash,cost,created_at,updated_at) "
+                    "VALUES (?,?,?,?,?,'queued',0,0,'hash',10,?,?)",
+                    (
+                        job_id, self.project["id"], "refinement-version", "alice",
+                        status, old, old,
+                    ),
+                )
+            for attempt_id, state, job_id in (
+                ("accepted-attempt", "accepted", None),
+                ("refund-attempt", "refund_pending", None),
+                ("running-attempt", "linked", "running-job"),
+                ("refunded-attempt", "refunded", None),
+                ("completed-attempt", "linked", "completed-job"),
+            ):
+                conn.execute(
+                    "INSERT INTO short_drama_delivery_attempts "
+                    "(id,actor_username,project_id,idempotency_key,request_hash,"
+                    "quote_token,cost,state,job_id,created_at,updated_at) "
+                    "VALUES (?,'alice',?,?,?,?,10,?,?,?,?)",
+                    (
+                        attempt_id, self.project["id"], "idem-" + attempt_id,
+                        "request-" + attempt_id, "active-quote", state, job_id,
+                        old, old,
+                    ),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = short_drama_refinement.reap_delivery_orphans(
+            self.db, now=now, grace_seconds=60,
+        )
+
+        for name in (
+            "active_quote", "accepted_attempt", "refund_attempt",
+            "running_attempt",
+        ):
+            self.assertTrue(paths[name].is_dir(), name)
+        for name in (
+            "expired_quote", "consumed_quote", "refunded_attempt",
+            "completed_attempt", "orphan_attempt", "crashed_temp",
+        ):
+            self.assertFalse(paths[name].exists(), name)
+        self.assertEqual(4, result["retained"])
+        self.assertEqual(6, result["removed"])
+        self.assertEqual([], result["errors"])
+
     def test_delivery_orphan_reaper_fails_closed_on_database_error(self):
         orphan = (
             Path(self.tmp.name) / "short_drama_delivery" /
             self.project["id"] / "must-not-delete"
         )
         orphan.mkdir(parents=True)
+        input_orphan = (
+            Path(self.tmp.name) / "short_drama_delivery_inputs" /
+            self.project["id"] / "quotes" / "must-not-delete"
+        )
+        input_orphan.mkdir(parents=True)
         old = int(time.time()) - 3600
         os.utime(orphan, (old, old))
+        os.utime(input_orphan, (old, old))
 
         def unavailable():
             raise sqlite3.OperationalError("database unavailable")
@@ -1085,6 +1906,7 @@ class ShortDramaRefinementTests(unittest.TestCase):
             unavailable, now=int(time.time()), grace_seconds=60,
         )
         self.assertTrue(orphan.is_dir())
+        self.assertTrue(input_orphan.is_dir())
         self.assertEqual(0, result["removed"])
         self.assertTrue(result["errors"])
 
@@ -1106,6 +1928,32 @@ class ShortDramaRefinementTests(unittest.TestCase):
         self.assertIn("_run_short_drama_recovery", scanner)
         recovery = inspect.getsource(core._run_short_drama_recovery)
         self.assertIn("retry_delivery_attempt_recovery", recovery)
+
+    def test_worker_startup_delivery_recovery_removes_stale_owner_artifacts(self):
+        project_dir = (
+            Path(self.tmp.name) / "short_drama_delivery" / self.project["id"]
+        )
+        stale_temp = project_dir / ".crashed-job.crashed-owner.tmp"
+        stale_target = project_dir / "crashed-job"
+        for directory in (stale_temp, stale_target):
+            directory.mkdir(parents=True)
+            (directory / ".render-owner").write_text(
+                "crashed-owner", encoding="utf-8"
+            )
+            (directory / "final-2k.mp4").write_bytes(b"stale")
+            old = int(time.time()) - (
+                short_drama_refinement._DELIVERY_RENDER_LEASE_SECONDS + 60
+            )
+            os.utime(directory, (old, old))
+        domain = mock.Mock()
+        domain.short_drama_refinement = short_drama_refinement
+        with mock.patch.dict(os.environ, {"CONTENT_OUT": self.tmp.name}), \
+                mock.patch.object(core, "_short_drama_domain", return_value=domain), \
+                mock.patch.object(core, "jdb", self.db):
+            result = core._reap_short_drama_delivery_media()
+        self.assertEqual(2, result["removed"])
+        self.assertFalse(stale_temp.exists())
+        self.assertFalse(stale_target.exists())
 
     def test_native_orphan_startup_failure_is_logged_and_nonfatal(self):
         with mock.patch.object(
@@ -3168,17 +4016,13 @@ class ShortDramaRefinementTests(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_delivery_quote_serializes_with_acceptance_invalidation(self):
+    def test_delivery_quote_rechecks_acceptance_after_concurrent_invalidation(self):
         version = self.repaired_version("quote-acceptance-race")
         self.confirm_version(version)
-        writer_started = threading.Event()
-        writer_done = threading.Event()
-        writer_errors = []
 
-        def invalidate_acceptance():
+        def invalidate_during_media_validation(_source, _capability):
             conn = self.db()
             try:
-                writer_started.set()
                 conn.execute(
                     "UPDATE short_drama_refinement_acceptances "
                     "SET invalidated_at=?,invalidation_reason='concurrent change' "
@@ -3186,35 +4030,26 @@ class ShortDramaRefinementTests(unittest.TestCase):
                     (int(time.time()), version["id"]),
                 )
                 conn.commit()
-            except Exception as error:
-                writer_errors.append(error)
             finally:
                 conn.close()
-                writer_done.set()
-
-        original = short_drama_refinement._refinement_assembly_status
-        worker = None
-        def status_during_race(conn, project, source):
-            nonlocal worker
-            worker = threading.Thread(target=invalidate_acceptance)
-            worker.start()
-            self.assertTrue(writer_started.wait(2))
-            self.assertFalse(writer_done.wait(0.2))
-            return original(conn, project, source)
 
         with mock.patch.object(
-            short_drama_refinement, "_refinement_assembly_status",
-            side_effect=status_during_race,
-        ):
-            quote = short_drama_refinement.create_delivery_quote(
+            short_drama_refinement, "_revalidate_delivery_native_sources",
+            side_effect=invalidate_during_media_validation,
+        ), self.assertRaises(short_drama_refinement.RefinementError) as raised:
+            short_drama_refinement.create_delivery_quote(
                 self.db, "alice", {
                     "project_id": self.project["id"], "version_id": version["id"],
                 },
             )
-        worker.join(5)
-        self.assertTrue(writer_done.is_set())
-        self.assertEqual([], writer_errors)
-        self.assertTrue(quote["quote_token"])
+        self.assertEqual("refinement_acceptance_required", raised.exception.code)
+        conn = self.db()
+        try:
+            self.assertEqual(0, conn.execute(
+                "SELECT COUNT(*) FROM short_drama_delivery_quotes"
+            ).fetchone()[0])
+        finally:
+            conn.close()
 
     def test_incomplete_assembly_blocks_start_before_charge_or_job(self):
         version = self.repaired_version("incomplete-assembly-start")
@@ -3504,6 +4339,9 @@ class ShortDramaRefinementTests(unittest.TestCase):
             short_drama_refinement,
             "_delivery_capability",
             return_value=capability,
+        ), mock.patch(
+            "content_domains.short_drama_native_audio.inspect_native_media",
+            side_effect=self.valid_native_inspection,
         ):
             quote = short_drama_refinement.create_delivery_quote(
                 self.db, "alice", {
@@ -4301,6 +5139,81 @@ class ShortDramaRefinementTests(unittest.TestCase):
         self.assertTrue(attempt["job_id"])
         self.assertEqual(1, jobs)
         points.refund_points.assert_not_called()
+
+    def test_local_ffmpeg_recovery_revalidates_input_snapshot_before_linking_job(self):
+        self.install_mock_native_evidence()
+        version = self.confirmed_version("recovery-raw-revalidation")
+        capability = {
+            "delivery_enabled": True,
+            "deliverable": True,
+            "mode": "local_ffmpeg",
+            "adapter": "local_ffmpeg",
+            "formal_cost": 0,
+            "reason": "local_2k_renderer",
+        }
+        lookup_unavailable = mock.Mock(side_effect=TimeoutError("ledger timeout"))
+        with mock.patch.object(
+            short_drama_refinement, "_delivery_capability", return_value=capability,
+        ), mock.patch(
+            "content_domains.short_drama_native_audio.inspect_native_media",
+            side_effect=self.valid_native_inspection,
+        ):
+            quote = short_drama_refinement.create_delivery_quote(
+                self.db, "alice", {
+                    "project_id": self.project["id"], "version_id": version["id"],
+                },
+            )
+            with self.assertRaises(short_drama_refinement.RefinementError):
+                short_drama_refinement.start_delivery_job(
+                    self.db, "alice", "alice", {
+                        "project_id": self.project["id"],
+                        "quote_token": quote["quote_token"],
+                    }, "recovery-raw-revalidation",
+                    deduct_points=mock.Mock(side_effect=TimeoutError("debit timeout")),
+                    charge_lookup=lookup_unavailable,
+                )
+            conn = self.db()
+            try:
+                attempt_id = conn.execute(
+                    "SELECT id FROM short_drama_delivery_attempts "
+                    "WHERE idempotency_key='recovery-raw-revalidation'"
+                ).fetchone()[0]
+                conn.execute(
+                    "UPDATE short_drama_delivery_attempts SET updated_at=? "
+                    "WHERE idempotency_key='recovery-raw-revalidation'",
+                    (int(time.time()) - 600,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            snapshot = (
+                short_drama_refinement._delivery_input_snapshot_dir(
+                    self.project["id"], "attempts", attempt_id,
+                ) / "source-001.mp4"
+            )
+            snapshot.chmod(0o644)
+            snapshot.write_bytes(b"changed-after-debit")
+            recovered = short_drama_refinement.retry_delivery_attempt_recovery(
+                self.db, mock.Mock(),
+                mock.Mock(return_value={"username": "alice", "delta": -10}),
+                stale_after=300,
+            )
+        self.assertEqual(1, recovered["refund_pending"])
+        conn = self.db()
+        try:
+            state, job_id = conn.execute(
+                "SELECT state,job_id FROM short_drama_delivery_attempts "
+                "WHERE idempotency_key='recovery-raw-revalidation'"
+            ).fetchone()
+            jobs = conn.execute(
+                "SELECT COUNT(*) FROM short_drama_delivery_jobs WHERE project_id=?",
+                (self.project["id"],),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual("refund_pending", state)
+        self.assertIsNone(job_id)
+        self.assertEqual(0, jobs)
 
     def test_delivery_recovery_fails_without_matching_charge(self):
         production, attempt_id, _quote = self.create_stale_delivery_attempt(

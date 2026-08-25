@@ -342,6 +342,8 @@ def _sensitive_output_file(rel):
             rel.startswith("short_drama_preview/") or
             rel.startswith("short_drama_final/") or
             rel.startswith("short_drama_playback/") or
+            rel.startswith("short_drama_delivery/") or
+            rel.startswith("short_drama_delivery_inputs/") or
             rel.startswith("lipsync/") or
             rel.startswith("audio/voice_preview_") or
             rel.startswith("audio/clone_") or
@@ -384,13 +386,26 @@ def _user_owns_output_file(username, rel, access=None):
     try:
         access = access if isinstance(access, dict) else {}
         with closing(jdb()) as c:
-            row = c.execute(
-                "SELECT p.username,p.board_id FROM "
-                "short_drama_composition_versions v "
-                "JOIN short_drama_projects p ON p.id=v.project_id "
-                "WHERE p.deleted=0 AND ? IN (v.file,v.cover_file) LIMIT 1",
-                (rel,),
-            ).fetchone()
+            try:
+                row = c.execute(
+                    "SELECT p.username,p.board_id FROM "
+                    "short_drama_delivery_versions v "
+                    "JOIN short_drama_projects p ON p.id=v.project_id "
+                    "WHERE p.deleted=0 AND v.url IN (?,?) LIMIT 1",
+                    (rel, "/api/gen/file/" + rel),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                # Formal delivery tables are additive and may not exist in a
+                # database created by an older deployment yet.
+                row = None
+            if not row:
+                row = c.execute(
+                    "SELECT p.username,p.board_id FROM "
+                    "short_drama_composition_versions v "
+                    "JOIN short_drama_projects p ON p.id=v.project_id "
+                    "WHERE p.deleted=0 AND ? IN (v.file,v.cover_file) LIMIT 1",
+                    (rel,),
+                ).fetchone()
             if not row:
                 row = c.execute(
                     "SELECT p.username,p.board_id FROM "

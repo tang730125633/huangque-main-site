@@ -18,6 +18,7 @@ import uuid
 from pathlib import Path
 
 from . import (
+    pricing,
     short_drama_assembly_plan as media_plan,
     short_drama_duration,
     submission_idempotency,
@@ -43,6 +44,12 @@ _DELIVERY_REFUND_LEASE_SECONDS = 60
 _MEDIA_PREFERENCE_MIGRATION = "refinement_media_preferences_provider_audio_v1"
 _DELIVERY_RENDER_LEASE_SECONDS = 35 * 60
 _DELIVERY_RENDER_HEARTBEAT_SECONDS = 60
+_DELIVERY_INPUT_LOCK_SHARDS = 64
+_FORMAL_2K_PRICING_TIERS = (
+    (30, 60, "short_drama.delivery.2k.upto_60"),
+    (61, 90, "short_drama.delivery.2k.upto_90"),
+    (91, 120, "short_drama.delivery.2k.upto_120"),
+)
 
 
 class RefinementError(ValueError):
@@ -1206,12 +1213,9 @@ def _require_delivery_available():
 
 def _formal_2k_cost(duration_seconds):
     duration = max(0, int(duration_seconds or 0))
-    if duration <= 60:
-        return 10
-    if duration <= 90:
-        return 15
-    if duration <= 120:
-        return 20
+    for _minimum, maximum, pricing_key in _FORMAL_2K_PRICING_TIERS:
+        if duration <= maximum:
+            return pricing.get_price(pricing_key)
     raise RefinementError(
         "delivery_duration_unsupported",
         "2K 正式导出仅支持 120 秒以内的短剧",
@@ -1875,6 +1879,206 @@ def _formal_native_assembly(source):
     return {"shots": shots}
 
 
+def _revalidate_delivery_native_sources(source, capability):
+    """Verify immutable raw media at every billable delivery boundary."""
+    if capability.get("mode") != "local_ffmpeg":
+        return []
+    from . import short_drama_autodraft
+
+    assembly = _formal_native_assembly(source)
+    try:
+        return short_drama_autodraft._verify_native_assembly_sources(assembly)
+    except short_drama_autodraft.AutodraftError as error:
+        raise RefinementError(error.code, str(error), error.status) from error
+
+
+def _delivery_input_snapshot_dir(project_id, scope, key):
+    values = (str(project_id or ""), str(scope or ""), str(key or ""))
+    if any(
+        not value or any(not (char.isalnum() or char in "-_") for char in value)
+        for value in values
+    ):
+        raise RefinementError(
+            "delivery_snapshot_identity_invalid", "正式导出媒体快照标识无效", 409,
+        )
+    server_dir = Path(__file__).resolve().parents[1]
+    root = Path(os.environ.get(
+        "CONTENT_OUT", str(server_dir / "content_out")
+    )).resolve()
+    return root / "short_drama_delivery_inputs" / values[0] / values[1] / values[2]
+
+
+def _delivery_input_lock_dir(project_id, scope, key):
+    snapshot = _delivery_input_snapshot_dir(project_id, scope, key)
+    shard = int.from_bytes(
+        hashlib.sha256(snapshot.name.encode("utf-8")).digest()[:2], "big",
+    ) % _DELIVERY_INPUT_LOCK_SHARDS
+    return (
+        snapshot.parents[2] / ".locks" / snapshot.parents[1].name /
+        snapshot.parent.name / ("%02x.lock" % shard)
+    )
+
+
+def _acquire_delivery_input_lock(project_id, scope, key):
+    lock = _delivery_input_lock_dir(project_id, scope, key)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    stream = lock.open("a+b")
+    try:
+        stream.seek(0, os.SEEK_END)
+        if stream.tell() == 0:
+            stream.write(b"\0")
+            stream.flush()
+        stream.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        stream.close()
+        return None
+    return stream
+
+
+def _release_delivery_input_lock(handle):
+    if handle is None or handle.closed:
+        return
+    try:
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
+    finally:
+        handle.close()
+
+
+def _snapshot_assembly_paths(assembly, project_id, scope, key):
+    root = Path(os.environ.get(
+        "CONTENT_OUT", str(Path(__file__).resolve().parents[1] / "content_out")
+    )).resolve()
+    target = _delivery_input_snapshot_dir(project_id, scope, key)
+    result = {"shots": []}
+    for index, value in enumerate(assembly.get("shots") or []):
+        item = dict(value)
+        native_media = dict(item.get("native_media") or {})
+        raw = dict(native_media.get("raw") or {})
+        suffix = Path(str(item.get("file") or "")).suffix.lower() or ".mp4"
+        snapshot = target / ("source-%03d%s" % (index + 1, suffix))
+        relative = snapshot.relative_to(root).as_posix()
+        raw["file"] = relative
+        native_media["raw"] = raw
+        item["file"] = relative
+        item["provider"] = "delivery_snapshot"
+        item["native_media"] = native_media
+        result["shots"].append(item)
+    return result
+
+
+def _verify_delivery_input_snapshot(assembly):
+    from . import short_drama_autodraft
+
+    try:
+        for index, item in enumerate(assembly.get("shots") or []):
+            shot_key = str(item.get("shot_key") or "shot_%02d" % (index + 1))
+            source = short_drama_autodraft._controlled_provider_file(item.get("file"))
+            expected = (item.get("native_media") or {}).get("raw") or {}
+            if (
+                _file_hash(source) != str(expected.get("sha256") or "")
+                or source.stat().st_size != int(expected.get("size_bytes") or 0)
+            ):
+                raise RefinementError(
+                    "provider_native_media_changed",
+                    "%s 的正式导出媒体快照已发生变化" % shot_key,
+                    409,
+                )
+    except RefinementError:
+        raise
+    except (OSError, TypeError, ValueError) as error:
+        raise RefinementError(
+            "provider_native_media_unavailable", "正式导出媒体快照不可用", 409,
+        ) from error
+    return assembly
+
+
+def _copy_delivery_input_snapshot(assembly, project_id, scope, key):
+    from . import short_drama_autodraft
+
+    target = _delivery_input_snapshot_dir(project_id, scope, key)
+    temp = target.with_name(".%s.%s.tmp" % (target.name, uuid.uuid4().hex))
+    rewritten = _snapshot_assembly_paths(assembly, project_id, scope, key)
+    if target.exists():
+        return _verify_delivery_input_snapshot(rewritten)
+    temp.mkdir(parents=True, exist_ok=False)
+    try:
+        for index, (source_item, snapshot_item) in enumerate(zip(
+            assembly.get("shots") or [], rewritten.get("shots") or [],
+        )):
+            source = short_drama_autodraft._controlled_provider_file(
+                source_item.get("file")
+            )
+            suffix = Path(snapshot_item["file"]).suffix
+            destination = temp / ("source-%03d%s" % (index + 1, suffix))
+            with source.open("rb") as reader, destination.open("xb") as writer:
+                shutil.copyfileobj(reader, writer, length=1024 * 1024)
+            expected = (source_item.get("native_media") or {}).get("raw") or {}
+            if (
+                _file_hash(destination) != str(expected.get("sha256") or "")
+                or destination.stat().st_size != int(expected.get("size_bytes") or 0)
+            ):
+                raise RefinementError(
+                    "provider_native_media_changed",
+                    "%s 在建立正式导出快照时发生变化"
+                    % str(source_item.get("shot_key") or "镜头"),
+                    409,
+                )
+            destination.chmod(0o444)
+        try:
+            temp.replace(target)
+        except OSError:
+            # Concurrent quotes for the same immutable contract share one
+            # content-addressed target.  Keep the winner only after verifying
+            # that its bytes match the same evidence.
+            if not target.is_dir():
+                raise
+            _remove_delivery_input_tree(temp)
+            return _verify_delivery_input_snapshot(rewritten)
+    except Exception:
+        _remove_delivery_input_tree(temp)
+        raise
+    return _verify_delivery_input_snapshot(rewritten)
+
+
+def _load_delivery_input_snapshot(source, project_id, scope, key):
+    return _verify_delivery_input_snapshot(_snapshot_assembly_paths(
+        _formal_native_assembly(source), project_id, scope, key,
+    ))
+
+
+def _remove_delivery_input_tree(target):
+    path = Path(target)
+    if not path.exists():
+        return
+    for item in path.rglob("*"):
+        if item.is_file():
+            try:
+                item.chmod(0o600)
+            except OSError:
+                pass
+    shutil.rmtree(path)
+
+
+def _cleanup_delivery_input_snapshot(project_id, scope, key):
+    _remove_delivery_input_tree(_delivery_input_snapshot_dir(
+        project_id, scope, key,
+    ))
+
+
 def _delivery_contract_binding(project_id, source, capability, acceptance):
     """Bind a quote to the exact accepted media and immutable native inputs."""
     media = acceptance["snapshot"].get("media_contract") or {}
@@ -1999,6 +2203,20 @@ def _complete_delivery(conn, row, cancel_event=None):
             "delivery_source_changed", "正式导出来源已变化", 409,
         )
     deliverable = capability["mode"] == "local_ffmpeg"
+    delivery_input = None
+    if deliverable:
+        attempt_row = conn.execute(
+            "SELECT id FROM short_drama_delivery_attempts WHERE job_id=? "
+            "AND state='linked'",
+            (job["id"],),
+        ).fetchone()
+        if not attempt_row:
+            raise RefinementError(
+                "delivery_snapshot_missing", "正式导出缺少已扣点媒体快照", 409,
+            )
+        delivery_input = _load_delivery_input_snapshot(
+            source, job["project_id"], "attempts", str(attempt_row["id"]),
+        )
     output_url = source_url
     output_file = ""
     output_hash = ""
@@ -2010,14 +2228,14 @@ def _complete_delivery(conn, row, cancel_event=None):
         root = Path(os.environ.get(
             "CONTENT_OUT", str(server_dir / "content_out")
         )).resolve()
-        target = root / "short_drama_delivery" / job["project_id"] / job["id"]
-        temp = target.with_name(".%s.tmp" % target.name)
+        render_owner = _delivery_render_owner(job["phase"])
+        temp, target = _delivery_render_paths(root, job, job["phase"])
         if temp.exists():
             shutil.rmtree(temp)
         temp.mkdir(parents=True, exist_ok=True)
         rendered = temp / "final-2k.mp4"
         try:
-            assembly = _formal_native_assembly(source)
+            assembly = delivery_input
             native_inputs = [
                 {
                     "shot_key": item["shot_key"],
@@ -2042,13 +2260,13 @@ def _complete_delivery(conn, row, cancel_event=None):
                 ],
             )
         except short_drama_autodraft.AutodraftError as error:
-            shutil.rmtree(temp, ignore_errors=True)
+            _cleanup_delivery_render_files(root, job, job["phase"])
             raise RefinementError(error.code, str(error), error.status) from error
         except short_drama_formal_renderer.FormalRenderError as error:
-            shutil.rmtree(temp, ignore_errors=True)
+            _cleanup_delivery_render_files(root, job, job["phase"])
             raise RefinementError(error.code, str(error), error.status) from error
         except RefinementError:
-            shutil.rmtree(temp, ignore_errors=True)
+            _cleanup_delivery_render_files(root, job, job["phase"])
             raise
         shutil.rmtree(temp / ".sources", ignore_errors=True)
         subtitle_temp = temp / "locked-subtitles.srt"
@@ -2077,7 +2295,23 @@ def _complete_delivery(conn, row, cancel_event=None):
                 "delivery_render_lease_lost", "2K 正式导出执行权已失效", 409,
             )
         conn.commit()
+        (temp / ".render-owner").write_text(render_owner, encoding="utf-8")
         if target.exists():
+            marker = target / ".render-owner"
+            try:
+                target_owner = marker.read_text(encoding="utf-8").strip()
+            except OSError as error:
+                raise RefinementError(
+                    "delivery_output_publish_conflict",
+                    "正式成片发布目标已存在且归属无法确认",
+                    409,
+                ) from error
+            if target_owner != render_owner:
+                raise RefinementError(
+                    "delivery_render_lease_lost",
+                    "2K 正式导出执行权已失效",
+                    409,
+                )
             shutil.rmtree(target)
         short_drama_formal_renderer.publish_validated_output(
             temp, target, "final-2k.mp4", output_hash,
@@ -2252,10 +2486,38 @@ def _advance_delivery(conn, row, db_factory=None):
     ).fetchone())
 
 
+def _delivery_input_reference_active(
+    db_factory, project_id, scope, key, current_time,
+):
+    conn = _connection(db_factory)
+    try:
+        if scope == "quotes":
+            return conn.execute(
+                "SELECT 1 FROM short_drama_delivery_quotes "
+                "WHERE project_id=? AND input_hash=? "
+                "AND consumed_job_id IS NULL AND expires_at>=? LIMIT 1",
+                (project_id, key, current_time),
+            ).fetchone() is not None
+        if scope == "attempts":
+            row = conn.execute(
+                "SELECT a.state,j.status FROM short_drama_delivery_attempts a "
+                "LEFT JOIN short_drama_delivery_jobs j ON j.id=a.job_id "
+                "WHERE a.project_id=? AND a.id=?",
+                (project_id, key),
+            ).fetchone()
+            return bool(row) and (
+                str(row[0]) in {"accepted", "charged", "refund_pending"}
+                or (str(row[0]) == "linked" and str(row[1]) in ACTIVE)
+            )
+        return False
+    finally:
+        conn.close()
+
+
 def reap_delivery_orphans(
     db_factory, *, now=None, grace_seconds=_DELIVERY_RENDER_LEASE_SECONDS,
 ):
-    """Remove stale publish/temp directories only after a complete DB scan."""
+    """Remove stale delivery outputs/inputs only after a complete DB scan."""
     result = {"scanned": 0, "removed": 0, "retained": 0, "errors": []}
     current_time = int(time.time()) if now is None else int(now)
     conn = None
@@ -2281,6 +2543,25 @@ def reap_delivery_orphans(
                 live_temps.add((
                     project_id, ".%s.%s.tmp" % (job_id, owner),
                 ))
+        active_quote_inputs = {
+            (str(row[0]), str(row[1]))
+            for row in conn.execute(
+                "SELECT project_id,input_hash FROM short_drama_delivery_quotes "
+                "WHERE consumed_job_id IS NULL AND expires_at>=?",
+                (current_time,),
+            ).fetchall()
+        }
+        active_attempt_inputs = set()
+        for row in conn.execute(
+            "SELECT a.project_id,a.id,a.state,j.status "
+            "FROM short_drama_delivery_attempts a "
+            "LEFT JOIN short_drama_delivery_jobs j ON j.id=a.job_id"
+        ).fetchall():
+            project_id, attempt_id, state, job_status = row
+            if str(state) in {"accepted", "charged", "refund_pending"} or (
+                str(state) == "linked" and str(job_status) in ACTIVE
+            ):
+                active_attempt_inputs.add((str(project_id), str(attempt_id)))
     except Exception as error:
         result["errors"].append("delivery reference scan failed: %s" % error)
         return result
@@ -2292,38 +2573,98 @@ def reap_delivery_orphans(
         "CONTENT_OUT",
         str(Path(__file__).resolve().parents[1] / "content_out"),
     )).resolve() / "short_drama_delivery"
-    if not root.is_dir():
-        return result
-    for project_dir in root.iterdir():
-        if not project_dir.is_dir() or project_dir.is_symlink():
-            continue
-        project_id = project_dir.name
-        for candidate in project_dir.iterdir():
-            if not candidate.is_dir() or candidate.is_symlink():
+    if root.is_dir():
+        for project_dir in root.iterdir():
+            if not project_dir.is_dir() or project_dir.is_symlink():
                 continue
-            name = candidate.name
-            job_id = name
-            is_temp = name.startswith(".") and name.endswith(".tmp")
-            if is_temp:
-                job_id = name[1:-4].split(".", 1)[0]
-            result["scanned"] += 1
-            key = (project_id, job_id)
-            try:
-                age = current_time - int(candidate.stat().st_mtime)
-                protected = (
-                    (project_id, name) in live_temps
-                    if is_temp else key in referenced or key in live
-                )
-                if protected or age < int(grace_seconds):
-                    result["retained"] += 1
+            project_id = project_dir.name
+            for candidate in project_dir.iterdir():
+                if not candidate.is_dir() or candidate.is_symlink():
                     continue
-                shutil.rmtree(candidate)
-                result["removed"] += 1
-            except OSError as error:
-                result["errors"].append(
-                    "delivery orphan cleanup failed for %s: %s"
-                    % (candidate, error)
-                )
+                name = candidate.name
+                job_id = name
+                is_temp = name.startswith(".") and name.endswith(".tmp")
+                if is_temp:
+                    job_id = name[1:-4].split(".", 1)[0]
+                result["scanned"] += 1
+                key = (project_id, job_id)
+                try:
+                    age = current_time - int(candidate.stat().st_mtime)
+                    protected = (
+                        (project_id, name) in live_temps
+                        if is_temp else key in referenced or key in live
+                    )
+                    if protected or age < int(grace_seconds):
+                        result["retained"] += 1
+                        continue
+                    shutil.rmtree(candidate)
+                    result["removed"] += 1
+                except OSError as error:
+                    result["errors"].append(
+                        "delivery orphan cleanup failed for %s: %s"
+                        % (candidate, error)
+                    )
+
+    input_root = root.parent / "short_drama_delivery_inputs"
+    if input_root.is_dir():
+        protected_by_scope = {
+            "quotes": active_quote_inputs,
+            "attempts": active_attempt_inputs,
+        }
+        for project_dir in input_root.iterdir():
+            if not project_dir.is_dir() or project_dir.is_symlink():
+                continue
+            project_id = project_dir.name
+            for scope, protected_keys in protected_by_scope.items():
+                scope_dir = project_dir / scope
+                if not scope_dir.is_dir() or scope_dir.is_symlink():
+                    continue
+                for candidate in scope_dir.iterdir():
+                    if not candidate.is_dir() or candidate.is_symlink():
+                        continue
+                    result["scanned"] += 1
+                    try:
+                        age = current_time - int(candidate.stat().st_mtime)
+                        is_temp = (
+                            candidate.name.startswith(".")
+                            and candidate.name.endswith(".tmp")
+                        )
+                        protected = (
+                            not is_temp
+                            and (project_id, candidate.name) in protected_keys
+                        )
+                        if protected or age < int(grace_seconds):
+                            result["retained"] += 1
+                            continue
+                        lock_key = candidate.name
+                        if is_temp:
+                            lock_key = candidate.name[1:-4].split(".", 1)[0]
+                        lock = _acquire_delivery_input_lock(
+                            project_id, scope, lock_key,
+                        )
+                        if lock is None:
+                            result["retained"] += 1
+                            continue
+                        try:
+                            # The initial scan is deliberately fail-closed but
+                            # not a filesystem transaction.  Recheck after the
+                            # per-key lock so a quote/attempt committed after
+                            # that scan cannot lose the snapshot it references.
+                            if not is_temp and _delivery_input_reference_active(
+                                db_factory, project_id, scope, candidate.name,
+                                current_time,
+                            ):
+                                result["retained"] += 1
+                                continue
+                            _remove_delivery_input_tree(candidate)
+                            result["removed"] += 1
+                        finally:
+                            _release_delivery_input_lock(lock)
+                    except Exception as error:
+                        result["errors"].append(
+                            "delivery input cleanup failed for %s: %s"
+                            % (candidate, error)
+                        )
     return result
 
 
@@ -2383,9 +2724,14 @@ def workspace(db_factory, owner_username, actor_username, project_id, can_edit=T
         )
         if capability.get("mode") == "local_ffmpeg":
             billing["pricing_tiers"] = [
-                {"min_seconds": 30, "max_seconds": 60, "cost": 10},
-                {"min_seconds": 61, "max_seconds": 90, "cost": 15},
-                {"min_seconds": 91, "max_seconds": 120, "cost": 20},
+                {
+                    "min_seconds": minimum,
+                    "max_seconds": maximum,
+                    "cost": pricing.get_price(pricing_key),
+                    "pricing_key": pricing_key,
+                }
+                for minimum, maximum, pricing_key
+                in _FORMAL_2K_PRICING_TIERS
             ]
         conn.commit()
         return {
@@ -3294,34 +3640,89 @@ def restore_refinement(db_factory, owner_username, actor_username, body):
         conn.close()
 
 
+def _delivery_quote_snapshot(
+    conn, owner_username, project_id, version_id, capability,
+):
+    project = _project(conn, owner_username, project_id)
+    source = _refinement(conn.execute(
+            "SELECT * FROM short_drama_refinement_versions WHERE id=? "
+            "AND project_id=? AND status='confirmed'", (version_id, project_id),
+    ).fetchone())
+    if not source:
+        raise RefinementError("confirmed_refinement_required", "请先确认精修版本", 409)
+    latest = _latest_refinement(conn, project_id)
+    if not latest or latest["id"] != source["id"]:
+        raise RefinementError(
+            "refinement_version_stale", "只能导出当前已验收的精修版本", 409
+        )
+    acceptance = _valid_acceptance(conn, project, source, require=True)
+    _require_complete_assembly(conn, project, source)
+    _require_deliverable_media_contract(acceptance["snapshot"])
+    return {
+        "project": project,
+        "source": source,
+        "acceptance": acceptance,
+        "cost": _formal_cost(capability, project.get("target_duration")),
+        "input_hash": _hash(_delivery_contract_binding(
+            project_id, source, capability, acceptance,
+        )),
+    }
+
+
 def create_delivery_quote(db_factory, owner_username, body):
     project_id = str(body.get("project_id") or "").strip()
     version_id = str(body.get("version_id") or "").strip()
     capability = _require_delivery_available()
-    conn = _connection(db_factory)
+    token = uuid.uuid4().hex
+    preflight_conn = _connection(db_factory)
+    try:
+        preflight = _delivery_quote_snapshot(
+            preflight_conn, owner_username, project_id, version_id, capability,
+        )
+    finally:
+        preflight_conn.close()
+
+    # FFprobe, volume inspection and SHA-256 may take tens of seconds per shot.
+    # Keep that filesystem work outside the shared jobs database write lock.
+    _revalidate_delivery_native_sources(preflight["source"], capability)
+    quote_lock = None
+    if capability.get("mode") == "local_ffmpeg":
+        quote_lock = _acquire_delivery_input_lock(
+            project_id, "quotes", preflight["input_hash"],
+        )
+        if quote_lock is None:
+            raise RefinementError(
+                "delivery_snapshot_busy", "正式导出媒体快照正在建立，请稍后重试", 409,
+            )
+        try:
+            _copy_delivery_input_snapshot(
+                _formal_native_assembly(preflight["source"]), project_id,
+                "quotes", preflight["input_hash"],
+            )
+        except Exception:
+            _release_delivery_input_lock(quote_lock)
+            raise
+
+    try:
+        conn = _connection(db_factory)
+    except Exception:
+        _release_delivery_input_lock(quote_lock)
+        raise
     try:
         conn.execute("BEGIN IMMEDIATE")
-        project = _project(conn, owner_username, project_id)
-        source = _refinement(conn.execute(
-            "SELECT * FROM short_drama_refinement_versions WHERE id=? "
-            "AND project_id=? AND status='confirmed'", (version_id, project_id),
-        ).fetchone())
-        if not source:
-            raise RefinementError("confirmed_refinement_required", "请先确认精修版本", 409)
-        latest = _latest_refinement(conn, project_id)
-        if not latest or latest["id"] != source["id"]:
+        final = _delivery_quote_snapshot(
+            conn, owner_username, project_id, version_id, capability,
+        )
+        if (
+            final["input_hash"] != preflight["input_hash"]
+            or final["cost"] != preflight["cost"]
+        ):
             raise RefinementError(
-                "refinement_version_stale", "只能导出当前已验收的精修版本", 409
+                "delivery_source_changed", "正式导出来源已变化，请重新询价", 409,
             )
-        acceptance = _valid_acceptance(conn, project, source, require=True)
-        _require_complete_assembly(conn, project, source)
-        _require_deliverable_media_contract(acceptance["snapshot"])
         now = int(time.time())
-        token = uuid.uuid4().hex
-        cost = _formal_cost(capability, project.get("target_duration"))
-        input_hash = _hash(_delivery_contract_binding(
-            project_id, source, capability, acceptance,
-        ))
+        cost = final["cost"]
+        input_hash = final["input_hash"]
         conn.execute(
             "INSERT INTO short_drama_delivery_quotes "
             "(token,project_id,refinement_version_id,input_hash,cost,expires_at,"
@@ -3347,6 +3748,135 @@ def create_delivery_quote(db_factory, owner_username, body):
         raise
     finally:
         conn.close()
+        _release_delivery_input_lock(quote_lock)
+
+
+def _delivery_request_identity(
+    conn, owner_username, actor_username, project_id, quote_token, key,
+):
+    project = _project(conn, owner_username, project_id)
+    quote = conn.execute(
+        "SELECT * FROM short_drama_delivery_quotes WHERE token=? "
+        "AND project_id=?", (quote_token, project_id),
+    ).fetchone()
+    if not quote:
+        raise RefinementError("delivery_quote_missing", "正式导出报价不存在", 404)
+    request_hash = _hash({
+        "project_id": project_id, "quote_token": quote_token,
+        "input_hash": quote["input_hash"],
+    })
+    existing = conn.execute(
+        "SELECT * FROM short_drama_delivery_attempts WHERE actor_username=? "
+        "AND idempotency_key=?", (actor_username, key),
+    ).fetchone()
+    if existing and existing["request_hash"] != request_hash:
+        raise RefinementError("idempotency_conflict", "幂等键已用于其他正式导出", 409)
+    replay = None
+    if existing:
+        replay = {"attempt_id": existing["id"], "job": None}
+        if existing["job_id"]:
+            replay["job"] = _job(conn.execute(
+                "SELECT * FROM short_drama_delivery_jobs WHERE id=?",
+                (existing["job_id"],),
+            ).fetchone())
+    return project, quote, request_hash, replay
+
+
+def _delivery_start_snapshot(
+    conn, project, quote, project_id, capability, now, project_usage,
+):
+    if int(quote["expires_at"]) < now:
+        raise RefinementError("delivery_quote_expired", "正式导出报价已过期", 409)
+    if quote["consumed_job_id"]:
+        raise RefinementError("delivery_quote_consumed", "正式导出报价已使用", 409)
+    if conn.execute(
+        "SELECT 1 FROM short_drama_delivery_jobs WHERE project_id=? "
+        "AND status IN ('queued','running')", (project_id,),
+    ).fetchone():
+        raise RefinementError("active_delivery_job", "已有正式导出任务处理中", 409)
+    source = _refinement(conn.execute(
+        "SELECT * FROM short_drama_refinement_versions WHERE id=? "
+        "AND project_id=? AND status='confirmed'",
+        (quote["refinement_version_id"], project_id),
+    ).fetchone())
+    latest = _latest_refinement(conn, project_id)
+    if not source or not latest or latest["id"] != source["id"]:
+        raise RefinementError(
+            "delivery_source_changed", "精修版本已变化，请重新询价", 409
+        )
+    acceptance = _valid_acceptance(conn, project, source, require=True)
+    _require_complete_assembly(conn, project, source)
+    _require_deliverable_media_contract(acceptance["snapshot"])
+    media = acceptance["snapshot"].get("media_contract") or {}
+    if capability.get("deliverable") and media.get("delivery_eligible") is not True:
+        raise RefinementError(
+            "delivery_media_incomplete", "正式交付缺少已锁定音轨或字幕时间线", 409
+        )
+    expected = _hash(_delivery_contract_binding(
+        project_id, source, capability, acceptance,
+    ))
+    if expected != quote["input_hash"]:
+        raise RefinementError("delivery_source_changed", "精修版本已变化，请重新询价", 409)
+    cost = int(quote["cost"])
+    if capability["mode"] == "development_free" and cost != 0:
+        raise RefinementError(
+            "demo_delivery_must_be_free",
+            "本地演示预览费用必须为 0，本次不会扣点",
+            409,
+        )
+    if (
+        capability["mode"] == "local_ffmpeg"
+        and cost != _formal_cost(capability, project.get("target_duration"))
+    ):
+        raise RefinementError(
+            "delivery_quote_stale",
+            "项目时长或 2K 导出价格已变化，请重新获取报价",
+            409,
+        )
+    if callable(project_usage):
+        usage = project_usage(conn, project_id)
+    else:
+        usage = {
+            "spent_points": int(project.get("spent_points") or 0),
+            "reserved_points": sum(
+                max(0, int(row[0] or 0))
+                for row in conn.execute(
+                    "SELECT cost FROM short_drama_delivery_attempts "
+                    "WHERE project_id=? AND state='accepted'",
+                    (project_id,),
+                ).fetchall()
+            ),
+        }
+    budget = int(project.get("point_budget") or 0)
+    if (
+        budget
+        and int(usage.get("spent_points") or 0)
+        + int(usage.get("reserved_points") or 0)
+        + cost
+        > budget
+    ):
+        raise RefinementError(
+            "point_budget_exceeded",
+            "项目点数预算不足：已用 %d 点，预留 %d 点，本次 %d 点，预算 %d 点"
+            % (
+                int(usage.get("spent_points") or 0),
+                int(usage.get("reserved_points") or 0),
+                cost,
+                budget,
+            ),
+            409,
+        )
+    return {"source": source, "input_hash": expected, "cost": cost}
+
+
+def _finish_delivery_replay(db_factory, replay, charge_lookup, refund_points):
+    if replay["job"]:
+        result = replay["job"]
+        result["replayed"] = True
+        return result
+    return _replay_delivery_attempt(
+        db_factory, replay["attempt_id"], charge_lookup, refund_points,
+    )
 
 
 def _ledger_matches(actor_username, cost, ledger):
@@ -3387,137 +3917,98 @@ def start_delivery_job(
     quote_token = str(body.get("quote_token") or "").strip()
     key = _key(idempotency_key)
     now = int(time.time())
-    conn = _connection(db_factory)
+    preflight_conn = _connection(db_factory)
+    try:
+        project, quote, request_hash, replay = _delivery_request_identity(
+            preflight_conn, owner_username, actor_username, project_id,
+            quote_token, key,
+        )
+        preflight = None if replay else _delivery_start_snapshot(
+            preflight_conn, project, quote, project_id, capability, now,
+            project_usage,
+        )
+    finally:
+        preflight_conn.close()
+    if replay:
+        return _finish_delivery_replay(
+            db_factory, replay, charge_lookup, refund_points,
+        )
+
+    # Do not hold BEGIN IMMEDIATE while FFprobe/FFmpeg and file hashing run.
+    _revalidate_delivery_native_sources(preflight["source"], capability)
+    attempt_id = uuid.uuid4().hex
+    attempt_lock = None
+    if capability.get("mode") == "local_ffmpeg":
+        attempt_lock = _acquire_delivery_input_lock(
+            project_id, "attempts", attempt_id,
+        )
+        if attempt_lock is None:
+            raise RefinementError(
+                "delivery_snapshot_busy", "正式导出媒体快照正在建立，请稍后重试", 409,
+            )
+        try:
+            quote_assembly = _load_delivery_input_snapshot(
+                preflight["source"], project_id, "quotes", preflight["input_hash"],
+            )
+            _copy_delivery_input_snapshot(
+                quote_assembly, project_id, "attempts", attempt_id,
+            )
+        except Exception:
+            _release_delivery_input_lock(attempt_lock)
+            raise
+
+    try:
+        conn = _connection(db_factory)
+    except Exception:
+        _release_delivery_input_lock(attempt_lock)
+        raise
+    replay = None
     try:
         conn.execute("BEGIN IMMEDIATE")
-        project = _project(conn, owner_username, project_id)
-        quote = conn.execute(
-            "SELECT * FROM short_drama_delivery_quotes WHERE token=? "
-            "AND project_id=?", (quote_token, project_id),
-        ).fetchone()
-        if not quote:
-            raise RefinementError("delivery_quote_missing", "正式导出报价不存在", 404)
-        request_hash = _hash({
-            "project_id": project_id, "quote_token": quote_token,
-            "input_hash": quote["input_hash"],
-        })
-        existing = conn.execute(
-            "SELECT * FROM short_drama_delivery_attempts WHERE actor_username=? "
-            "AND idempotency_key=?", (actor_username, key),
-        ).fetchone()
-        if existing:
-            if existing["request_hash"] != request_hash:
-                raise RefinementError("idempotency_conflict", "幂等键已用于其他正式导出", 409)
-            if existing["job_id"]:
-                result = _job(conn.execute(
-                    "SELECT * FROM short_drama_delivery_jobs WHERE id=?",
-                    (existing["job_id"],),
-                ).fetchone())
-                conn.commit()
-                result["replayed"] = True
-                return result
-            conn.commit()
-            return _replay_delivery_attempt(
-                db_factory, existing["id"], charge_lookup, refund_points,
-            )
-        if int(quote["expires_at"]) < now:
-            raise RefinementError("delivery_quote_expired", "正式导出报价已过期", 409)
-        if quote["consumed_job_id"]:
-            raise RefinementError("delivery_quote_consumed", "正式导出报价已使用", 409)
-        if conn.execute(
-            "SELECT 1 FROM short_drama_delivery_jobs WHERE project_id=? "
-            "AND status IN ('queued','running')", (project_id,),
-        ).fetchone():
-            raise RefinementError("active_delivery_job", "已有正式导出任务处理中", 409)
-        source = _refinement(conn.execute(
-            "SELECT * FROM short_drama_refinement_versions WHERE id=? "
-            "AND project_id=? AND status='confirmed'",
-            (quote["refinement_version_id"], project_id),
-        ).fetchone())
-        latest = _latest_refinement(conn, project_id)
-        if not source or not latest or latest["id"] != source["id"]:
-            raise RefinementError(
-                "delivery_source_changed", "精修版本已变化，请重新询价", 409
-            )
-        acceptance = _valid_acceptance(conn, project, source, require=True)
-        _require_complete_assembly(conn, project, source)
-        _require_deliverable_media_contract(acceptance["snapshot"])
-        media = acceptance["snapshot"].get("media_contract") or {}
-        if capability.get("deliverable") and media.get("delivery_eligible") is not True:
-            raise RefinementError(
-                "delivery_media_incomplete", "正式交付缺少已锁定音轨或字幕时间线", 409
-            )
-        expected = _hash(_delivery_contract_binding(
-            project_id, source, capability, acceptance,
-        ))
-        if not source or expected != quote["input_hash"]:
-            raise RefinementError("delivery_source_changed", "精修版本已变化，请重新询价", 409)
-        cost = int(quote["cost"])
-        if capability["mode"] == "development_free" and cost != 0:
-            raise RefinementError(
-                "demo_delivery_must_be_free",
-                "本地演示预览费用必须为 0，本次不会扣点",
-                409,
-            )
-        if (
-            capability["mode"] == "local_ffmpeg"
-            and cost != _formal_cost(capability, project.get("target_duration"))
-        ):
-            raise RefinementError(
-                "delivery_quote_stale",
-                "项目时长或 2K 导出价格已变化，请重新获取报价",
-                409,
-            )
-        if callable(project_usage):
-            usage = project_usage(conn, project_id)
-        else:
-            usage = {
-                "spent_points": int(project.get("spent_points") or 0),
-                "reserved_points": sum(
-                    max(0, int(row[0] or 0))
-                    for row in conn.execute(
-                        "SELECT cost FROM short_drama_delivery_attempts "
-                        "WHERE project_id=? AND state='accepted'",
-                        (project_id,),
-                    ).fetchall()
-                ),
-            }
-        budget = int(project.get("point_budget") or 0)
-        if (
-            budget
-            and int(usage.get("spent_points") or 0)
-            + int(usage.get("reserved_points") or 0)
-            + cost
-            > budget
-        ):
-            raise RefinementError(
-                "point_budget_exceeded",
-                "项目点数预算不足：已用 %d 点，预留 %d 点，本次 %d 点，预算 %d 点"
-                % (
-                    int(usage.get("spent_points") or 0),
-                    int(usage.get("reserved_points") or 0),
-                    cost,
-                    budget,
-                ),
-                409,
-            )
-        attempt_id = uuid.uuid4().hex
-        conn.execute(
-            "INSERT INTO short_drama_delivery_attempts "
-            "(id,actor_username,project_id,idempotency_key,request_hash,"
-            "quote_token,cost,state,created_at,updated_at) "
-            "VALUES (?,?,?,?,?,?,?,'accepted',?,?)",
-            (
-                attempt_id, actor_username, project_id, key, request_hash,
-                quote_token, cost, now, now,
-            ),
+        project, quote, request_hash, replay = _delivery_request_identity(
+            conn, owner_username, actor_username, project_id, quote_token, key,
         )
-        conn.commit()
+        if replay:
+            conn.commit()
+        else:
+            final = _delivery_start_snapshot(
+                conn, project, quote, project_id, capability, int(time.time()),
+                project_usage,
+            )
+            if (
+                final["input_hash"] != preflight["input_hash"]
+                or final["cost"] != preflight["cost"]
+            ):
+                raise RefinementError(
+                    "delivery_source_changed", "正式导出来源已变化，请重新询价", 409,
+                )
+            cost = final["cost"]
+            conn.execute(
+                "INSERT INTO short_drama_delivery_attempts "
+                "(id,actor_username,project_id,idempotency_key,request_hash,"
+                "quote_token,cost,state,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,'accepted',?,?)",
+                (
+                    attempt_id, actor_username, project_id, key, request_hash,
+                    quote_token, cost, now, now,
+                ),
+            )
+            conn.commit()
     except Exception:
-        conn.rollback()
+        if conn.in_transaction:
+            conn.rollback()
+        if capability.get("mode") == "local_ffmpeg":
+            _cleanup_delivery_input_snapshot(project_id, "attempts", attempt_id)
         raise
     finally:
         conn.close()
+        _release_delivery_input_lock(attempt_lock)
+    if replay:
+        if capability.get("mode") == "local_ffmpeg":
+            _cleanup_delivery_input_snapshot(project_id, "attempts", attempt_id)
+        return _finish_delivery_replay(
+            db_factory, replay, charge_lookup, refund_points,
+        )
 
     charged = False
     job_conn = None
@@ -3864,79 +4355,114 @@ def _mark_delivery_recovery_terminal(
         conn.close()
 
 
-def _link_claimed_delivery_attempt(db_factory, attempt_id, claimed_at):
-    capability = _require_delivery_available()
-    conn = _connection(db_factory)
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        attempt_row = conn.execute(
+def _delivery_recovery_snapshot(conn, attempt_id, claimed_at, capability):
+    attempt_row = conn.execute(
             "SELECT * FROM short_drama_delivery_attempts WHERE id=? "
             "AND state='charged' AND job_id IS NULL AND updated_at=?",
             (attempt_id, int(claimed_at)),
-        ).fetchone()
-        if not attempt_row:
-            raise RefinementError(
-                "delivery_recovery_claim_lost", "正式导出恢复权已失效", 409,
-            )
-        attempt = dict(attempt_row)
-        quote = conn.execute(
-            "SELECT * FROM short_drama_delivery_quotes WHERE token=? "
-            "AND project_id=?",
-            (attempt["quote_token"], attempt["project_id"]),
-        ).fetchone()
-        if not quote or quote["consumed_job_id"]:
-            raise RefinementError(
-                "delivery_quote_consumed", "正式导出报价已使用", 409,
-            )
-        project_row = conn.execute(
-            "SELECT id,title,ratio,target_duration,shot_count,point_budget,spent_points "
-            "FROM short_drama_projects WHERE id=? AND deleted=0",
-            (attempt["project_id"],),
-        ).fetchone()
-        if not project_row:
-            raise RefinementError(
-                "delivery_project_missing", "短剧项目不存在", 404,
-            )
-        project = dict(project_row)
-        source = _refinement(conn.execute(
-            "SELECT * FROM short_drama_refinement_versions WHERE id=? "
-            "AND project_id=? AND status='confirmed'",
-            (quote["refinement_version_id"], attempt["project_id"]),
-        ).fetchone())
-        latest = _latest_refinement(conn, attempt["project_id"])
-        if not source or not latest or latest["id"] != source["id"]:
-            raise RefinementError(
-                "delivery_source_changed", "精修版本已变化，不能继续已扣点导出", 409,
-            )
-        acceptance = _valid_acceptance(conn, project, source, require=True)
-        media = acceptance["snapshot"].get("media_contract") or {}
-        if capability.get("deliverable") and media.get("delivery_eligible") is not True:
-            raise RefinementError(
-                "delivery_media_incomplete", "正式交付缺少已锁定音轨或字幕时间线", 409,
-            )
-        expected = _hash(_delivery_contract_binding(
-            attempt["project_id"], source, capability, acceptance,
-        ))
-        expected_request = _hash({
-            "project_id": attempt["project_id"],
-            "quote_token": attempt["quote_token"],
-            "input_hash": quote["input_hash"],
-        })
-        if expected != quote["input_hash"] or expected_request != attempt["request_hash"]:
+    ).fetchone()
+    if not attempt_row:
+        raise RefinementError(
+            "delivery_recovery_claim_lost", "正式导出恢复权已失效", 409,
+        )
+    attempt = dict(attempt_row)
+    quote_row = conn.execute(
+        "SELECT * FROM short_drama_delivery_quotes WHERE token=? "
+        "AND project_id=?",
+        (attempt["quote_token"], attempt["project_id"]),
+    ).fetchone()
+    if not quote_row or quote_row["consumed_job_id"]:
+        raise RefinementError(
+            "delivery_quote_consumed", "正式导出报价已使用", 409,
+        )
+    quote = dict(quote_row)
+    project_row = conn.execute(
+        "SELECT id,title,ratio,target_duration,shot_count,point_budget,spent_points "
+        "FROM short_drama_projects WHERE id=? AND deleted=0",
+        (attempt["project_id"],),
+    ).fetchone()
+    if not project_row:
+        raise RefinementError(
+            "delivery_project_missing", "短剧项目不存在", 404,
+        )
+    project = dict(project_row)
+    source = _refinement(conn.execute(
+        "SELECT * FROM short_drama_refinement_versions WHERE id=? "
+        "AND project_id=? AND status='confirmed'",
+        (quote["refinement_version_id"], attempt["project_id"]),
+    ).fetchone())
+    latest = _latest_refinement(conn, attempt["project_id"])
+    if not source or not latest or latest["id"] != source["id"]:
+        raise RefinementError(
+            "delivery_source_changed", "精修版本已变化，不能继续已扣点导出", 409,
+        )
+    acceptance = _valid_acceptance(conn, project, source, require=True)
+    _require_complete_assembly(conn, project, source)
+    _require_deliverable_media_contract(acceptance["snapshot"])
+    media = acceptance["snapshot"].get("media_contract") or {}
+    if capability.get("deliverable") and media.get("delivery_eligible") is not True:
+        raise RefinementError(
+            "delivery_media_incomplete", "正式交付缺少已锁定音轨或字幕时间线", 409,
+        )
+    expected = _hash(_delivery_contract_binding(
+        attempt["project_id"], source, capability, acceptance,
+    ))
+    expected_request = _hash({
+        "project_id": attempt["project_id"],
+        "quote_token": attempt["quote_token"],
+        "input_hash": quote["input_hash"],
+    })
+    if expected != quote["input_hash"] or expected_request != attempt["request_hash"]:
+        raise RefinementError(
+            "delivery_source_changed", "正式导出来源已变化", 409,
+        )
+    if int(attempt["cost"] or 0) != int(quote["cost"] or 0):
+        raise RefinementError(
+            "delivery_cost_invalid", "正式导出扣点与报价不一致", 409,
+        )
+    if conn.execute(
+        "SELECT 1 FROM short_drama_delivery_jobs WHERE project_id=? "
+        "AND status IN ('queued','running')", (attempt["project_id"],),
+    ).fetchone():
+        raise RefinementError(
+            "active_delivery_job", "已有正式导出任务处理中", 409,
+        )
+    return {
+        "attempt": attempt, "quote": quote, "source": source,
+        "input_hash": expected,
+    }
+
+
+def _link_claimed_delivery_attempt(db_factory, attempt_id, claimed_at):
+    capability = _require_delivery_available()
+    preflight_conn = _connection(db_factory)
+    try:
+        preflight = _delivery_recovery_snapshot(
+            preflight_conn, attempt_id, claimed_at, capability,
+        )
+    finally:
+        preflight_conn.close()
+
+    # Recovery binds only the immutable attempt snapshot created before debit;
+    # later replacement of the provider's mutable source path cannot change it.
+    if capability.get("mode") == "local_ffmpeg":
+        _load_delivery_input_snapshot(
+            preflight["source"], preflight["attempt"]["project_id"],
+            "attempts", attempt_id,
+        )
+
+    conn = _connection(db_factory)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        final = _delivery_recovery_snapshot(
+            conn, attempt_id, claimed_at, capability,
+        )
+        if final["input_hash"] != preflight["input_hash"]:
             raise RefinementError(
                 "delivery_source_changed", "正式导出来源已变化", 409,
             )
-        if int(attempt["cost"] or 0) != int(quote["cost"] or 0):
-            raise RefinementError(
-                "delivery_cost_invalid", "正式导出扣点与报价不一致", 409,
-            )
-        if conn.execute(
-            "SELECT 1 FROM short_drama_delivery_jobs WHERE project_id=? "
-            "AND status IN ('queued','running')", (attempt["project_id"],),
-        ).fetchone():
-            raise RefinementError(
-                "active_delivery_job", "已有正式导出任务处理中", 409,
-            )
+        attempt = final["attempt"]
+        quote = final["quote"]
         now = int(time.time())
         job_id = uuid.uuid4().hex
         conn.execute(

@@ -174,6 +174,85 @@ class PrivateAssetsTest(unittest.TestCase):
         ):
             self.assertIn(requirement, runbook)
 
+    def test_production_contract_covers_native_2k_formal_delivery(self):
+        root = Path(__file__).resolve().parents[1]
+        runbook = (root / "deploy" / "生产环境清单与还原手册.md").read_text(
+            encoding="utf-8"
+        )
+        drop_in = (
+            root / "deploy" / "systemd" / "huangque-content.service.d" /
+            "formal-delivery.conf"
+        ).read_text(encoding="utf-8")
+        for module in (
+            "content_domains/",
+            "providers/",
+            "short_drama_asset_graph.py",
+            "short_drama_autodraft.py",
+            "short_drama_formal_renderer.py",
+            "short_drama_native_audio.py",
+            "short_drama_refinement.py",
+            "video_minimax_h3.py",
+            "providers/__init__.py",
+            "providers/short_drama_visual/__init__.py",
+            "providers/short_drama_visual/minimax_h3.py",
+            "providers/short_drama_visual/runtime.py",
+            "server/admin_api.py",
+            "server/func_names.py",
+            "server/inspiration_cases.py",
+            "server/tikhub.py",
+            "site/workbench/short-drama-workspace.js",
+            "site/workbench/short-drama-workspace.css",
+            "site/workbench/short-drama.html",
+        ):
+            self.assertIn(module, runbook)
+        for requirement in (
+            "HQ_RELEASE_COMMIT",
+            "HQ_RELEASE_STAGE",
+            "release-staging/formal-delivery-",
+            "python3 -m compileall -q",
+            "short_drama_refinement",
+            "short_drama_formal_renderer",
+            "import admin_api",
+            "--delete-excluded",
+            "git rev-parse HEAD",
+            "ffmpeg -version",
+            "ffprobe -version",
+            "libx264",
+            "aac",
+            "CONTENT_OUT",
+            "systemctl restart huangque-content",
+            "systemctl restart huangque-content huangque-admin",
+            "/api/gen/health",
+            "short_drama_delivery",
+            "mkdir -p",
+            "2560x1440",
+            "release-backup",
+            "set -euo pipefail",
+            "formal-delivery.conf.state",
+            "printf '%s\\n' absent",
+            "short-drama-workspace.js -o",
+            "HQ_EXPECT_JS_SHA",
+            "HQ_EXPECT_CSS_SHA",
+            "HQ_EXPECT_HTML_SHA",
+            "stamp_assets.py --check",
+            "回滚",
+        ):
+            self.assertIn(requirement, runbook)
+        self.assertNotIn(
+            "dapeng-server:/home/ubuntu/content-api/content_domains/", runbook,
+        )
+        staged_import = runbook.index(
+            'cd "$HQ_RELEASE_STAGE/content-api"'
+        )
+        rollback_armed = runbook.index("HQ_ACTIVATED=1")
+        first_live_sync = runbook.index(
+            "sudo rsync -a --delete --delete-excluded"
+        )
+        self.assertLess(staged_import, rollback_armed)
+        self.assertLess(rollback_armed, first_live_sync)
+        self.assertIn("原生 2K", drop_in)
+        self.assertNotIn("1080p", drop_in)
+
     def test_signed_provider_file_route_is_public_only_for_valid_current_signature(self):
         with tempfile.TemporaryDirectory() as tmp, \
                 patch.object(core, "OUT_DIR", Path(tmp)), \
@@ -418,6 +497,198 @@ class PrivateAssetsTest(unittest.TestCase):
                     "bob", "lipsync/shared/shot-1/job-1.mp4",
                     {"board_id": "board-1", "role": "viewer"},
                 ))
+
+    def test_formal_delivery_requires_project_or_board_access(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio_db = str(Path(tmp) / "assets.db")
+            job_db = str(Path(tmp) / "jobs.db")
+            with closing(sqlite3.connect(audio_db)) as conn:
+                conn.execute("CREATE TABLE video_assets(username TEXT,status TEXT,image_file TEXT,audio_file TEXT,reference_video_file TEXT,video_file TEXT)")
+                conn.execute("CREATE TABLE avatars(username TEXT,status TEXT,image_file TEXT)")
+                conn.execute("CREATE TABLE audio_voices(username TEXT,scope TEXT,preview_file TEXT)")
+                conn.commit()
+            with closing(sqlite3.connect(job_db)) as conn:
+                conn.execute(
+                    "CREATE TABLE short_drama_projects("
+                    "id TEXT PRIMARY KEY,username TEXT,board_id TEXT,deleted INTEGER)"
+                )
+                conn.execute(
+                    "CREATE TABLE short_drama_delivery_versions("
+                    "project_id TEXT,url TEXT)"
+                )
+                conn.executemany(
+                    "INSERT INTO short_drama_projects VALUES(?,?,?,0)",
+                    (("personal", "alice", None), ("shared", "alice", "board-1")),
+                )
+                conn.executemany(
+                    "INSERT INTO short_drama_delivery_versions VALUES(?,?)",
+                    (
+                        (
+                            "personal",
+                            "/api/gen/file/short_drama_delivery/personal/job-1/final-2k.mp4",
+                        ),
+                        (
+                            "shared",
+                            "/api/gen/file/short_drama_delivery/shared/job-2/final-2k.mp4",
+                        ),
+                    ),
+                )
+                conn.commit()
+            personal = "short_drama_delivery/personal/job-1/final-2k.mp4"
+            shared = "short_drama_delivery/shared/job-2/final-2k.mp4"
+            with patch.object(core, "AUDIO_DB", audio_db), \
+                    patch.object(core, "JOB_DB", job_db):
+                self.assertTrue(core._sensitive_output_file(personal))
+                self.assertTrue(core._user_owns_output_file("alice", personal))
+                self.assertFalse(core._user_owns_output_file("bob", personal))
+                self.assertFalse(core._user_owns_output_file("bob", shared))
+                self.assertTrue(core._user_owns_output_file(
+                    "bob", shared, {"board_id": "board-1", "role": "viewer"},
+                ))
+
+    def test_formal_delivery_http_route_enforces_auth_and_private_ranges(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            audio_db = str(root / "assets.db")
+            job_db = str(root / "jobs.db")
+            relative = "short_drama_delivery/personal/job-1/final-2k.mp4"
+            media = root / relative
+            media.parent.mkdir(parents=True)
+            media.write_bytes(b"0123456789")
+            with closing(sqlite3.connect(audio_db)) as conn:
+                conn.execute("CREATE TABLE video_assets(username TEXT,status TEXT,image_file TEXT,audio_file TEXT,reference_video_file TEXT,video_file TEXT)")
+                conn.execute("CREATE TABLE avatars(username TEXT,status TEXT,image_file TEXT)")
+                conn.execute("CREATE TABLE audio_voices(username TEXT,scope TEXT,preview_file TEXT)")
+                conn.commit()
+            with closing(sqlite3.connect(job_db)) as conn:
+                conn.execute(
+                    "CREATE TABLE short_drama_projects("
+                    "id TEXT PRIMARY KEY,username TEXT,board_id TEXT,deleted INTEGER)"
+                )
+                conn.execute(
+                    "CREATE TABLE short_drama_delivery_versions("
+                    "project_id TEXT,url TEXT)"
+                )
+                conn.execute(
+                    "INSERT INTO short_drama_projects VALUES('personal','alice',NULL,0)"
+                )
+                conn.execute(
+                    "INSERT INTO short_drama_delivery_versions VALUES(?,?)",
+                    ("personal", "/api/gen/file/" + relative),
+                )
+                conn.commit()
+
+            server = core.ThreadingHTTPServer(("127.0.0.1", 0), core.H)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            url = "http://127.0.0.1:%d/api/gen/file/%s" % (
+                server.server_port, relative,
+            )
+            try:
+                with patch.object(core, "OUT_DIR", root), \
+                        patch.object(core, "AUDIO_DB", audio_db), \
+                        patch.object(core, "JOB_DB", job_db), \
+                        patch.object(core, "verify", return_value=None), \
+                        self.assertRaises(urllib.error.HTTPError) as anonymous:
+                    opener.open(url, timeout=2)
+                self.assertEqual(401, anonymous.exception.code)
+
+                with patch.object(core, "OUT_DIR", root), \
+                        patch.object(core, "AUDIO_DB", audio_db), \
+                        patch.object(core, "JOB_DB", job_db), \
+                        patch.object(core, "verify", return_value={"username": "bob"}), \
+                        self.assertRaises(urllib.error.HTTPError) as other_user:
+                    opener.open(url, timeout=2)
+                self.assertEqual(404, other_user.exception.code)
+
+                request = urllib.request.Request(url, headers={"Range": "bytes=2-5"})
+                with patch.object(core, "OUT_DIR", root), \
+                        patch.object(core, "AUDIO_DB", audio_db), \
+                        patch.object(core, "JOB_DB", job_db), \
+                        patch.object(core, "verify", return_value={"username": "alice"}):
+                    with opener.open(request, timeout=2) as response:
+                        self.assertEqual(206, response.status)
+                        self.assertEqual(b"2345", response.read())
+                        self.assertEqual("bytes 2-5/10", response.headers["Content-Range"])
+                        self.assertIn("no-store", response.headers["Cache-Control"])
+            finally:
+                server.shutdown()
+                thread.join(timeout=2)
+                server.server_close()
+
+    def test_formal_delivery_http_route_enforces_canvas_board_access(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            audio_db = str(root / "assets.db")
+            job_db = str(root / "jobs.db")
+            relative = "short_drama_delivery/shared/job-1/final-2k.mp4"
+            media = root / relative
+            media.parent.mkdir(parents=True)
+            media.write_bytes(b"shared-delivery")
+            with closing(sqlite3.connect(audio_db)) as conn:
+                conn.execute("CREATE TABLE video_assets(username TEXT,status TEXT,image_file TEXT,audio_file TEXT,reference_video_file TEXT,video_file TEXT)")
+                conn.execute("CREATE TABLE avatars(username TEXT,status TEXT,image_file TEXT)")
+                conn.execute("CREATE TABLE audio_voices(username TEXT,scope TEXT,preview_file TEXT)")
+                conn.commit()
+            with closing(sqlite3.connect(job_db)) as conn:
+                conn.execute(
+                    "CREATE TABLE short_drama_projects("
+                    "id TEXT PRIMARY KEY,username TEXT,board_id TEXT,deleted INTEGER)"
+                )
+                conn.execute(
+                    "CREATE TABLE short_drama_delivery_versions(project_id TEXT,url TEXT)"
+                )
+                conn.execute(
+                    "INSERT INTO short_drama_projects VALUES('shared','alice','board-1',0)"
+                )
+                conn.execute(
+                    "INSERT INTO short_drama_delivery_versions VALUES(?,?)",
+                    ("shared", "/api/gen/file/" + relative),
+                )
+                conn.commit()
+
+            server = core.ThreadingHTTPServer(("127.0.0.1", 0), core.H)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            url = "http://127.0.0.1:%d/api/gen/file/%s" % (
+                server.server_port, relative,
+            )
+
+            def access(handler):
+                board_id = handler.headers.get("X-Canvas-Board-Id")
+                role = handler.headers.get("X-Test-Board-Role") or "viewer"
+                return {"board_id": board_id, "role": role} if board_id else None
+
+            try:
+                with patch.object(core, "OUT_DIR", root), \
+                        patch.object(core, "AUDIO_DB", audio_db), \
+                        patch.object(core, "JOB_DB", job_db), \
+                        patch.object(core, "verify", return_value={"username": "bob"}), \
+                        patch.object(core, "_short_drama_canvas_access", side_effect=access):
+                    wrong_board = urllib.request.Request(url, headers={
+                        "Authorization": "Bearer test",
+                        "X-Canvas-Board-Id": "board-2",
+                    })
+                    with self.assertRaises(urllib.error.HTTPError) as denied:
+                        opener.open(wrong_board, timeout=2)
+                    self.assertEqual(404, denied.exception.code)
+
+                    for role in ("viewer", "editor"):
+                        allowed = urllib.request.Request(url, headers={
+                            "Authorization": "Bearer test",
+                            "X-Canvas-Board-Id": "board-1",
+                            "X-Test-Board-Role": role,
+                        })
+                        with opener.open(allowed, timeout=2) as response:
+                            self.assertEqual(200, response.status)
+                            self.assertEqual(b"shared-delivery", response.read())
+                            self.assertIn("no-store", response.headers["Cache-Control"])
+            finally:
+                server.shutdown()
+                thread.join(timeout=2)
+                server.server_close()
 
     def test_download_proxy_token_verification_fails_closed(self):
         response = Mock()

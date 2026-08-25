@@ -651,6 +651,65 @@ def _controlled_provider_file(relative):
     return target
 
 
+def _verify_native_assembly_source(item, source, shot_key):
+    if str(item.get("provider") or "") != "minimax_h3":
+        return
+    locked = _sanitized_native_media(item.get("native_media"))
+    if not locked:
+        raise AutodraftError(
+            "provider_native_media_invalid",
+            "%s 缺少可信的原生媒体证据，请重新生成该镜头" % shot_key,
+            409,
+        )
+    selected_file = str(item.get("file") or "").replace("\\", "/")
+    expected = next(
+        (
+            locked[key] for key in ("raw", "derived")
+            if locked[key]["file"] == selected_file
+        ),
+        None,
+    )
+    if not expected:
+        raise AutodraftError(
+            "provider_native_media_changed",
+            "%s 的采用文件与锁定媒体证据不一致" % shot_key,
+            409,
+        )
+    try:
+        current = short_drama_native_audio.inspect_native_media(
+            source, expected_resolution="2K"
+        )
+    except short_drama_native_audio.NativeAudioError as error:
+        code = (
+            "provider_native_audio_invalid"
+            if "audio" in error.code
+            else "provider_native_media_invalid"
+        )
+        raise AutodraftError(
+            code, "%s：%s" % (shot_key, str(error)), 409,
+        ) from error
+    if (
+        current["sha256"] != expected["sha256"]
+        or int(current["size_bytes"]) != int(expected["size_bytes"])
+    ):
+        raise AutodraftError(
+            "provider_native_media_changed",
+            "%s 的采用文件已发生变化，请重新生成或重新采用版本" % shot_key,
+            409,
+        )
+
+
+def _verify_native_assembly_sources(assembly):
+    """Revalidate the current raw files without creating render artifacts."""
+    sources = []
+    for index, item in enumerate(assembly.get("shots") or []):
+        shot_key = str(item.get("shot_key") or "shot_%02d" % (index + 1))
+        source = _controlled_provider_file(item.get("file"))
+        _verify_native_assembly_source(item, source, shot_key)
+        sources.append(source)
+    return sources
+
+
 def _verified_native_assembly_sources(assembly, snapshot_dir):
     snapshot_root = Path(snapshot_dir)
     snapshot_root.mkdir(parents=True, exist_ok=True)
@@ -668,50 +727,7 @@ def _verified_native_assembly_sources(assembly, snapshot_dir):
                 "%s 的采用版本无法建立稳定媒体快照" % shot_key,
                 409,
             ) from error
-        if str(item.get("provider") or "") == "minimax_h3":
-            locked = _sanitized_native_media(item.get("native_media"))
-            if not locked:
-                raise AutodraftError(
-                    "provider_native_media_invalid",
-                    "%s 缺少可信的原生媒体证据，请重新生成该镜头" % shot_key,
-                    409,
-                )
-            selected_file = str(item.get("file") or "").replace("\\", "/")
-            expected = next(
-                (
-                    locked[key] for key in ("raw", "derived")
-                    if locked[key]["file"] == selected_file
-                ),
-                None,
-            )
-            if not expected:
-                raise AutodraftError(
-                    "provider_native_media_changed",
-                    "%s 的采用文件与锁定媒体证据不一致" % shot_key,
-                    409,
-                )
-            try:
-                current = short_drama_native_audio.inspect_native_media(
-                    snapshot, expected_resolution="2K"
-                )
-            except short_drama_native_audio.NativeAudioError as error:
-                code = (
-                    "provider_native_audio_invalid"
-                    if "audio" in error.code
-                    else "provider_native_media_invalid"
-                )
-                raise AutodraftError(
-                    code, "%s：%s" % (shot_key, str(error)), 409,
-                ) from error
-            if (
-                current["sha256"] != expected["sha256"]
-                or int(current["size_bytes"]) != int(expected["size_bytes"])
-            ):
-                raise AutodraftError(
-                    "provider_native_media_changed",
-                    "%s 的采用文件已发生变化，请重新生成或重新采用版本" % shot_key,
-                    409,
-                )
+        _verify_native_assembly_source(item, snapshot, shot_key)
         sources.append(snapshot)
     return sources
 
