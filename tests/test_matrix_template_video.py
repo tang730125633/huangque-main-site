@@ -225,6 +225,14 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual(2, result["polls"])
         self.assertTrue(result["cleared"])
 
+    def test_live_preview_tracks_copy_and_selected_template(self):
+        result = self.runtime("livePreview")
+        self.assertEqual("实时标题", result["top"])
+        self.assertEqual("实时行动文案", result["bottom"])
+        self.assertEqual("minimal-headline", result["template"])
+        self.assertIn("--live-bg:#f5f5f2", result["style"])
+        self.assertEqual("none", result["videoDisplay"])
+
 
 if __name__ == "__main__":
     unittest.main()
