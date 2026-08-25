@@ -8,7 +8,11 @@ import time
 import uuid
 from contextlib import closing
 
-from . import short_drama_assembly_lipsync, short_drama_duration
+from . import (
+    short_drama_assembly_lipsync,
+    short_drama_asset_graph,
+    short_drama_duration,
+)
 
 CONFIRM_ENDPOINT = "/api/gen/short-drama/completion/confirm"
 ACTIVE_JOB_STATES = {
@@ -246,17 +250,20 @@ def assert_project_writable(conn, project_id, owner_username=None):
 
 
 def _lock_summary(conn, project_id):
-    shot_count = int(conn.execute(
-        "SELECT COUNT(*) FROM short_drama_shots WHERE project_id=?",
-        (project_id,),
-    ).fetchone()[0])
+    shot_ids = [
+        str(shot["id"])
+        for shot in short_drama_asset_graph.current_project_shots(conn, project_id)
+    ]
+    shot_count = len(shot_ids)
 
     def count(table, where):
-        if not _table_exists(conn, table):
+        if not shot_ids or not _table_exists(conn, table):
             return 0
+        placeholders = ",".join("?" for _ in shot_ids)
         return int(conn.execute(
-            "SELECT COUNT(*) FROM %s WHERE project_id=? AND %s" % (table, where),
-            (project_id,),
+            "SELECT COUNT(*) FROM %s WHERE project_id=? AND shot_id IN (%s) AND %s"
+            % (table, placeholders, where),
+            (project_id, *shot_ids),
         ).fetchone()[0])
 
     return {

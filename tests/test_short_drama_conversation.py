@@ -1,9 +1,12 @@
+import base64
 import json
 import sqlite3
 import hashlib
 import sys
 import tempfile
+import types
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest import mock
 
@@ -12,7 +15,12 @@ SERVER_DIR = str(Path(__file__).resolve().parents[1] / "server")
 if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
 
-from content_domains import short_drama, short_drama_conversation, short_drama_storyboard
+from content_domains import (
+    short_drama,
+    short_drama_asset_graph,
+    short_drama_conversation,
+    short_drama_storyboard,
+)
 
 
 class Handler:
@@ -172,30 +180,125 @@ class ShortDramaDialogueTimingTests(unittest.TestCase):
         self.assertEqual(30, sum(provider_durations))
         self.assertTrue(all(4 <= value <= 15 for value in provider_durations))
 
-    def test_public_duration_edit_preserves_five_ten_second_contract(self):
-        script = {
-            "overview": {"duration_seconds": 35},
-            "shots": [
-                {"shot_key": "s1", "sort_order": 1, "duration_seconds": 5},
-                {"shot_key": "s2", "sort_order": 2, "duration_seconds": 5},
-                {"shot_key": "s3", "sort_order": 3, "duration_seconds": 5},
-                {"shot_key": "s4", "sort_order": 4, "duration_seconds": 5},
-                {"shot_key": "s5", "sort_order": 5, "duration_seconds": 5},
-                {"shot_key": "s6", "sort_order": 6, "duration_seconds": 10},
-            ],
-        }
-        short_drama_conversation._rebalance_duration(
-            script, script["shots"][0], 10,
+    def test_structure_actions_keep_user_selected_shot_count_and_duration(self):
+        script = short_drama_conversation.short_drama_storyboard.compile_storyboard(
+            payload(shot_count=3, target_duration=15),
+            ["相遇", "产生误会", "和解"],
+            [{
+                "character_key": "lead", "name": "林夏", "role_type": "main",
+                "identity": "主角", "personality": "坚定",
+            }],
+        )
+        original_keys = [item["shot_key"] for item in script["shots"]]
+        short_drama_conversation._structure_shot(
+            script, original_keys[0], "smart_insert", "补一个自然过渡镜头",
+        )
+        self.assertEqual(4, len(script["shots"]))
+        self.assertEqual(4, script["shot_planning"]["shot_count"])
+        self.assertEqual(
+            sum(item["duration_seconds"] for item in script["shots"]),
+            script["overview"]["duration_seconds"],
+        )
+        inserted_key = script["shots"][1]["shot_key"]
+        self.assertTrue(inserted_key.startswith("shot_user_"))
+        short_drama_conversation._structure_shot(script, inserted_key, "delete")
+        self.assertEqual(original_keys, [item["shot_key"] for item in script["shots"]])
+
+    def test_locked_shots_and_locked_adjacency_block_structure_actions(self):
+        script = short_drama_conversation.short_drama_storyboard.compile_storyboard(
+            payload(shot_count=3, target_duration=15),
+            ["start", "middle", "end"],
+            [{
+                "character_key": "lead", "name": "Lead", "role_type": "main",
+                "identity": "lead", "personality": "steady",
+            }],
+        )
+        keys = [item["shot_key"] for item in script["shots"]]
+        script["shots"][1]["locked"] = True
+
+        for action in (
+            "delete", "copy", "move_up", "move_down",
+            "insert_before", "insert_after", "smart_insert",
+        ):
+            with self.subTest(action=action):
+                try:
+                    short_drama_conversation._structure_shot(
+                        json.loads(json.dumps(script)), keys[1], action, "bridge",
+                    )
+                except short_drama_conversation.ConversationError as error:
+                    self.assertEqual("shot_locked", error.code)
+                    self.assertEqual(409, error.status)
+                else:
+                    self.fail("locked shot accepted %s" % action)
+
+        adjacent_cases = (
+            (keys[2], "move_up"),
+            (keys[0], "move_down"),
+            (keys[2], "insert_before"),
+            (keys[0], "insert_after"),
+            (keys[0], "smart_insert"),
+            (keys[0], "copy"),
+            (keys[0], "delete"),
+            (keys[2], "delete"),
+        )
+        for shot_key, action in adjacent_cases:
+            with self.subTest(shot_key=shot_key, action=action):
+                try:
+                    short_drama_conversation._structure_shot(
+                        json.loads(json.dumps(script)), shot_key, action, "bridge",
+                    )
+                except short_drama_conversation.ConversationError as error:
+                    self.assertEqual("shot_locked", error.code)
+                    self.assertEqual(409, error.status)
+                else:
+                    self.fail("locked adjacency accepted %s" % action)
+
+        move_script = short_drama_conversation.short_drama_storyboard.compile_storyboard(
+            payload(shot_count=4, target_duration=30),
+            ["one", "two", "three", "four"],
+            [{
+                "character_key": "lead", "name": "Lead", "role_type": "main",
+                "identity": "lead", "personality": "steady",
+            }],
+        )
+        move_keys = [item["shot_key"] for item in move_script["shots"]]
+        outer_cases = (
+            (0, move_keys[1], "move_down"),
+            (0, move_keys[2], "move_up"),
+            (3, move_keys[1], "move_down"),
+            (3, move_keys[2], "move_up"),
+        )
+        for locked_index, shot_key, action in outer_cases:
+            candidate = json.loads(json.dumps(move_script))
+            candidate["shots"][locked_index]["locked"] = True
+            with self.subTest(
+                locked_index=locked_index, shot_key=shot_key, action=action,
+            ):
+                with self.assertRaises(
+                    short_drama_conversation.ConversationError,
+                ) as blocked:
+                    short_drama_conversation._structure_shot(
+                        candidate, shot_key, action, "bridge",
+                    )
+                self.assertEqual("shot_locked", blocked.exception.code)
+                self.assertEqual(409, blocked.exception.status)
+
+    def test_duration_edit_changes_total_instead_of_truncating_other_shots(self):
+        script = short_drama_conversation.short_drama_storyboard.compile_storyboard(
+            payload(shot_count=3, target_duration=15),
+            ["相遇", "冲突", "和解"],
+            [{
+                "character_key": "lead", "name": "林夏", "role_type": "main",
+                "identity": "主角", "personality": "坚定",
+            }],
         )
         durations = [item["duration_seconds"] for item in script["shots"]]
-        self.assertEqual(35, sum(durations))
-        self.assertEqual([10, 5, 5, 5, 5, 5], durations)
-
-        with self.assertRaises(short_drama_conversation.ConversationError) as raised:
-            short_drama_conversation._rebalance_duration(
-                script, script["shots"][0], 6,
-            )
-        self.assertEqual("shot_duration_invalid", raised.exception.code)
+        requested = min(15, durations[0] + 2)
+        short_drama_conversation._rebalance_duration(
+            script, script["shots"][0], requested,
+        )
+        self.assertEqual(durations[1:], [item["duration_seconds"] for item in script["shots"]][1:])
+        self.assertEqual(sum(durations) + requested - durations[0], script["overview"]["duration_seconds"])
 
 
 class ShortDramaStoryboardQualityTests(unittest.TestCase):
@@ -445,6 +548,48 @@ class ShortDramaConversationTests(unittest.TestCase):
             },
             key_prefix + "-confirm",
         )
+
+    def set_and_lock_scene_reference(self, workspace, scene_key, prompt):
+        raw = b"\x89PNG\r\n\x1a\n" + prompt.encode("utf-8")
+        data_url = "data:image/png;base64," + base64.b64encode(raw).decode("ascii")
+        output = Path(self.tmp.name) / "output"
+        fake_image = types.SimpleNamespace(OUT_DIR=output)
+        fake_uploads = types.SimpleNamespace(
+            MAX_BYTES=10 * 1024 * 1024,
+            MIME_EXTENSIONS={"image/png": ".png"},
+            detect_mime=lambda value: "image/png" if value.startswith(b"\x89PNG") else "",
+        )
+        package = short_drama_asset_graph.__package__
+        with mock.patch.dict(sys.modules, {
+            package + ".image": fake_image,
+            package + ".cli_uploads": fake_uploads,
+        }), mock.patch.object(
+            sys.modules[package], "image", fake_image, create=True,
+        ), mock.patch.object(
+            sys.modules[package], "cli_uploads", fake_uploads, create=True,
+        ):
+            created = short_drama_asset_graph.set_scene_reference(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"],
+                    "graph_revision": workspace["graph_revision"],
+                    "scene_key": scene_key, "source": "upload",
+                    "image_data": data_url, "filename": "scene.png", "prompt": prompt,
+                },
+            )
+        return short_drama_asset_graph.lock_scene_reference(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "graph_revision": created["graph_revision"],
+                "scene_key": scene_key,
+            },
+        )
+
+    def locked_scene_reference(self, shot_key):
+        with closing(self.db()) as conn:
+            conn.row_factory = sqlite3.Row
+            return short_drama_asset_graph.locked_scene_reference(
+                conn, self.project["id"], shot_key,
+            )
 
     def test_workspace_is_free_and_starts_without_script(self):
         result = short_drama_conversation.workspace(
@@ -1837,6 +1982,55 @@ class ShortDramaConversationTests(unittest.TestCase):
         )
         self.assertEqual("script_locked", locked["conversation"]["state"])
         self.assertEqual("locked", locked["current_script"]["status"])
+        conn = self.db()
+        try:
+            version_count = conn.execute(
+                "SELECT COUNT(*) FROM short_drama_script_snapshots WHERE project_id=?",
+                (self.project["id"],),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        with self.assertRaises(short_drama_conversation.ConversationError) as raised:
+            short_drama_conversation.change_shot_structure(
+                self.db,
+                "alice",
+                "alice",
+                {
+                    "project_id": self.project["id"],
+                    "conversation_revision": locked["conversation"]["revision"],
+                    "version_id": locked["current_script"]["id"],
+                    "shot_key": locked["current_script"]["script"]["shots"][0]["shot_key"],
+                    "action": "copy",
+                },
+                "structure-after-lock",
+            )
+        self.assertEqual("script_locked", raised.exception.code)
+        self.assertEqual(409, raised.exception.status)
+        after_rejection = short_drama_conversation.workspace(
+            self.db, "alice", "alice", self.project["id"]
+        )
+        self.assertEqual(
+            locked["conversation"]["revision"],
+            after_rejection["conversation"]["revision"],
+        )
+        self.assertEqual(
+            locked["current_script"]["id"], after_rejection["current_script"]["id"],
+        )
+        self.assertEqual(
+            locked["conversation"]["locked_version_id"],
+            after_rejection["conversation"]["locked_version_id"],
+        )
+        conn = self.db()
+        try:
+            self.assertEqual(
+                version_count,
+                conn.execute(
+                    "SELECT COUNT(*) FROM short_drama_script_snapshots WHERE project_id=?",
+                    (self.project["id"],),
+                ).fetchone()[0],
+            )
+        finally:
+            conn.close()
         with self.assertRaises(short_drama_conversation.ConversationError):
             short_drama_conversation.generate_script(
                 self.db,
@@ -1848,6 +2042,321 @@ class ShortDramaConversationTests(unittest.TestCase):
                 },
                 "generate-after-lock",
             )
+
+    def test_dialogue_shot_can_be_copied_through_public_structure_boundary(self):
+        confirmed = self.confirm_direction(self.project["id"], 1, "copy-dialogue")
+        generated = short_drama_conversation.generate_script(
+            self.db,
+            "alice",
+            "alice",
+            {
+                "project_id": self.project["id"],
+                "conversation_revision": confirmed["conversation"]["revision"],
+            },
+            "copy-dialogue-generate",
+        )
+        original = generated["current_script"]
+        original_lines = {
+            item["id"]: item for item in original["script"]["dialogue_lines"]
+        }
+        source_index, source_shot = next(
+            (index, shot)
+            for index, shot in enumerate(original["script"]["shots"])
+            if any(
+                original_lines[line_id].get("text")
+                for line_id in shot.get("dialogue_line_ids") or []
+            )
+        )
+        source_line = original_lines[source_shot["dialogue_line_ids"][0]]
+
+        copied = short_drama_conversation.change_shot_structure(
+            self.db,
+            "alice",
+            "alice",
+            {
+                "project_id": self.project["id"],
+                "conversation_revision": generated["conversation"]["revision"],
+                "version_id": original["id"],
+                "shot_key": source_shot["shot_key"],
+                "action": "copy",
+            },
+            "copy-dialogue-structure",
+        )
+
+        current = copied["current_script"]
+        self.assertNotEqual(original["id"], current["id"])
+        self.assertEqual(original["version"] + 1, current["version"])
+        self.assertEqual(
+            generated["conversation"]["revision"] + 1,
+            copied["conversation"]["revision"],
+        )
+        self.assertEqual(
+            len(original["script"]["shots"]) + 1,
+            len(current["script"]["shots"]),
+        )
+        copied_shot = current["script"]["shots"][source_index + 1]
+        self.assertNotEqual(source_shot["shot_key"], copied_shot["shot_key"])
+        copied_lines = {
+            item["id"]: item for item in current["script"]["dialogue_lines"]
+        }
+        copied_line = copied_lines[copied_shot["dialogue_line_ids"][0]]
+        self.assertNotEqual(source_line["id"], copied_line["id"])
+        self.assertEqual(source_line["text"], copied_line["text"])
+        self.assertNotEqual("blocked", current["script"]["quality_gate"]["status"])
+
+        conn = self.db()
+        try:
+            stored_original = json.loads(conn.execute(
+                "SELECT script_json FROM short_drama_script_snapshots WHERE id=?",
+                (original["id"],),
+            ).fetchone()[0])
+        finally:
+            conn.close()
+        self.assertEqual(original["script"], stored_original)
+
+        restored = short_drama_conversation.restore_version(
+            self.db,
+            "alice",
+            "alice",
+            {
+                "project_id": self.project["id"],
+                "conversation_revision": copied["conversation"]["revision"],
+                "version_id": original["id"],
+            },
+            "copy-dialogue-restore",
+        )
+        self.assertEqual(original["script"], restored["current_script"]["script"])
+
+    def test_user_created_shots_can_be_regenerated_without_changing_identity(self):
+        confirmed = self.confirm_direction(self.project["id"], 1, "user-shot-regen")
+        current = short_drama_conversation.generate_script(
+            self.db,
+            "alice",
+            "alice",
+            {
+                "project_id": self.project["id"],
+                "conversation_revision": confirmed["conversation"]["revision"],
+            },
+            "user-shot-regen-generate",
+        )
+
+        for index, action in enumerate(("copy", "insert_after", "smart_insert"), 1):
+            before = current["current_script"]
+            before_keys = {item["shot_key"] for item in before["script"]["shots"]}
+            target_key = before["script"]["shots"][0]["shot_key"]
+            structured = short_drama_conversation.change_shot_structure(
+                self.db,
+                "alice",
+                "alice",
+                {
+                    "project_id": self.project["id"],
+                    "conversation_revision": current["conversation"]["revision"],
+                    "version_id": before["id"],
+                    "shot_key": target_key,
+                    "action": action,
+                    "instruction": "bridge action %d" % index,
+                },
+                "user-shot-structure-%d" % index,
+            )
+            structured_script = structured["current_script"]["script"]
+            user_shot = next(
+                item for item in structured_script["shots"]
+                if item["shot_key"] not in before_keys
+            )
+            shot_index = structured_script["shots"].index(user_shot)
+            previous_visual = structured_script["shots"][shot_index - 1]["visual"]
+            next_visual = structured_script["shots"][shot_index + 1]["visual"]
+            line_id = user_shot["dialogue_line_ids"][0]
+            duration = user_shot["duration_seconds"]
+
+            with mock.patch.object(
+                short_drama_conversation,
+                "_script",
+                side_effect=AssertionError("user-shot regeneration rebuilt the full script"),
+            ):
+                regenerated = short_drama_conversation.regenerate_shot(
+                    self.db,
+                    "alice",
+                    "alice",
+                    {
+                        "project_id": self.project["id"],
+                        "conversation_revision": structured["conversation"]["revision"],
+                        "version_id": structured["current_script"]["id"],
+                        "shot_key": user_shot["shot_key"],
+                        "instruction": "regenerate user shot %d" % index,
+                    },
+                    "user-shot-regenerate-%d" % index,
+                )
+            regenerated_shot = regenerated["current_script"]["script"]["shots"][shot_index]
+            self.assertEqual(user_shot["shot_key"], regenerated_shot["shot_key"])
+            self.assertEqual([line_id], regenerated_shot["dialogue_line_ids"])
+            self.assertEqual(duration, regenerated_shot["duration_seconds"])
+            self.assertIn(previous_visual[:40], regenerated_shot["visual"])
+            self.assertIn(next_visual[:40], regenerated_shot["visual"])
+            self.assertNotEqual(
+                structured["current_script"]["id"],
+                regenerated["current_script"]["id"],
+            )
+            current = regenerated
+
+    def test_regenerate_and_restore_invalidate_locked_scene_reference_atomically(self):
+        confirmed = self.confirm_direction(self.project["id"], 1, "scene-invalidation")
+        generated = short_drama_conversation.generate_script(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "conversation_revision": confirmed["conversation"]["revision"],
+            }, "scene-invalidation-generate",
+        )
+        original = generated["current_script"]
+        shot_key = original["script"]["shots"][0]["shot_key"]
+        edited = short_drama_conversation.update_shot(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "conversation_revision": generated["conversation"]["revision"],
+                "version_id": original["id"], "shot_key": shot_key,
+                "changes": {"scene": "old rainy street"},
+            }, "scene-invalidation-edit",
+        )
+        short_drama_asset_graph.sync_foundation(
+            self.db, "alice", "alice", self.project["id"],
+        )
+        scenes = short_drama_asset_graph.scene_workspace(
+            self.db, "alice", self.project["id"],
+        )
+        old_scene = next(
+            scene for scene in scenes["scenes"]
+            if any(shot["shot_key"] == shot_key for shot in scene["shots"])
+        )
+        self.set_and_lock_scene_reference(scenes, old_scene["scene_key"], "old reference")
+        self.assertIsNotNone(self.locked_scene_reference(shot_key))
+
+        shot_id = next(
+            shot["id"] for scene in scenes["scenes"] for shot in scene["shots"]
+            if shot["shot_key"] == shot_key
+        )
+        with closing(self.db()) as conn:
+            conn.execute(
+                "INSERT INTO short_drama_assets "
+                "(id,project_id,shot_id,type,current_version,locked,created_at,updated_at) "
+                "VALUES ('stale-still',?,?, 'still',1,1,1,1)",
+                (self.project["id"], shot_id),
+            )
+            conn.execute(
+                "INSERT INTO short_drama_asset_versions "
+                "(id,asset_id,version,job_id,url,prompt,ratio,status,created_at) "
+                "VALUES ('stale-still-v1','stale-still',1,9100,"
+                "'https://example.test/stale.png','old still','9:16','done',1)"
+            )
+            conn.commit()
+
+        regenerated = short_drama_conversation.regenerate_shot(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "conversation_revision": edited["conversation"]["revision"],
+                "version_id": edited["current_script"]["id"], "shot_key": shot_key,
+            }, "scene-invalidation-regenerate",
+        )
+        self.assertIsNone(self.locked_scene_reference(shot_key))
+        with closing(self.db()) as conn:
+            self.assertEqual(
+                0,
+                conn.execute(
+                    "SELECT locked FROM short_drama_assets WHERE id='stale-still'"
+                ).fetchone()[0],
+            )
+
+        short_drama_asset_graph.sync_foundation(
+            self.db, "alice", "alice", self.project["id"],
+        )
+        scenes = short_drama_asset_graph.scene_workspace(
+            self.db, "alice", self.project["id"],
+        )
+        regenerated_scene = next(
+            scene for scene in scenes["scenes"]
+            if any(shot["shot_key"] == shot_key for shot in scene["shots"])
+        )
+        self.set_and_lock_scene_reference(
+            scenes, regenerated_scene["scene_key"], "regenerated reference",
+        )
+        self.assertIsNotNone(self.locked_scene_reference(shot_key))
+
+        restored = short_drama_conversation.restore_version(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "conversation_revision": regenerated["conversation"]["revision"],
+                "version_id": edited["current_script"]["id"],
+            }, "scene-invalidation-restore",
+        )
+        self.assertIsNone(self.locked_scene_reference(shot_key))
+        short_drama_asset_graph.sync_foundation(
+            self.db, "alice", "alice", self.project["id"],
+        )
+        scenes = short_drama_asset_graph.scene_workspace(
+            self.db, "alice", self.project["id"],
+        )
+        restored_scene = next(
+            scene for scene in scenes["scenes"]
+            if any(shot["shot_key"] == shot_key for shot in scene["shots"])
+        )
+        self.set_and_lock_scene_reference(
+            scenes, restored_scene["scene_key"], "restored reference",
+        )
+        self.assertIsNotNone(self.locked_scene_reference(shot_key))
+
+        short_drama_conversation.generate_script(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "conversation_revision": restored["conversation"]["revision"],
+                "instruction": "regenerate the complete script with a new scene plan",
+            }, "scene-invalidation-whole-script",
+        )
+        self.assertIsNone(self.locked_scene_reference(shot_key))
+
+    def test_delete_restore_without_intermediate_sync_does_not_revive_scene_reference(self):
+        confirmed = self.confirm_direction(self.project["id"], 1, "delete-restore-scene")
+        generated = short_drama_conversation.generate_script(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "conversation_revision": confirmed["conversation"]["revision"],
+            }, "delete-restore-scene-generate",
+        )
+        original = generated["current_script"]
+        shot_key = original["script"]["shots"][0]["shot_key"]
+        short_drama_asset_graph.sync_foundation(
+            self.db, "alice", "alice", self.project["id"],
+        )
+        scenes = short_drama_asset_graph.scene_workspace(
+            self.db, "alice", self.project["id"],
+        )
+        scene = next(
+            item for item in scenes["scenes"]
+            if any(shot["shot_key"] == shot_key for shot in item["shots"])
+        )
+        self.set_and_lock_scene_reference(scenes, scene["scene_key"], "deleted reference")
+        self.assertIsNotNone(self.locked_scene_reference(shot_key))
+
+        deleted = short_drama_conversation.change_shot_structure(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "conversation_revision": generated["conversation"]["revision"],
+                "version_id": original["id"], "shot_key": shot_key,
+                "action": "delete", "instruction": "remove this shot",
+            }, "delete-restore-scene-delete",
+        )
+        self.assertIsNone(self.locked_scene_reference(shot_key))
+        short_drama_conversation.restore_version(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "conversation_revision": deleted["conversation"]["revision"],
+                "version_id": original["id"],
+            }, "delete-restore-scene-restore",
+        )
+        self.assertIsNone(self.locked_scene_reference(shot_key))
+
+        short_drama_asset_graph.sync_foundation(
+            self.db, "alice", "alice", self.project["id"],
+        )
+        self.assertIsNone(self.locked_scene_reference(shot_key))
 
     def test_idempotency_and_revision_conflicts_are_explicit(self):
         body = {
@@ -2109,7 +2618,7 @@ class ShortDramaConversationTests(unittest.TestCase):
         self.assertNotIn("查清真相", rendered)
         self.assertNotIn("不该出现的线索", rendered)
 
-    def test_single_shot_edit_lock_and_regenerate_create_auditable_versions(self):
+    def test_single_shot_edits_append_auditable_versions(self):
         confirmed = self.confirm_direction(
             self.project["id"], 1, "generate-editable"
         )
@@ -2146,13 +2655,15 @@ class ShortDramaConversationTests(unittest.TestCase):
                         "kind": "dialogue",
                         "character_key": character["character_key"],
                         "text": "我看到了。",
+                        "speech_rate": 2.0,
                     },
                     "provider_prompt": "电影感写实，清晨卧室，角色盯着成绩页面。",
                 },
             },
             "edit-shot-1",
         )
-        self.assertEqual(2, edited["current_script"]["version"])
+        self.assertNotEqual(first["id"], edited["current_script"]["id"])
+        self.assertEqual(first["version"] + 1, edited["current_script"]["version"])
         edited_script = edited["current_script"]["script"]
         self.assertEqual(
             original_total,
@@ -2162,6 +2673,30 @@ class ShortDramaConversationTests(unittest.TestCase):
             "用成绩页面建立核心冲突",
             edited_script["shots"][0]["purpose"],
         )
+        self.assertEqual(2.0, edited_script["dialogue_lines"][0]["speech_rate"])
+        self.assertEqual(
+            short_drama_storyboard._reading_seconds(
+                edited_script["dialogue_lines"][0]
+            ),
+            edited_script["dialogue_lines"][0]["estimated_reading_seconds"],
+        )
+
+        conn = self.db()
+        try:
+            self.assertEqual(
+                2,
+                conn.execute(
+                    "SELECT COUNT(*) FROM short_drama_script_snapshots WHERE project_id=?",
+                    (self.project["id"],),
+                ).fetchone()[0],
+            )
+            stored_first = json.loads(conn.execute(
+                "SELECT script_json FROM short_drama_script_snapshots WHERE id=?",
+                (first["id"],),
+            ).fetchone()[0])
+        finally:
+            conn.close()
+        self.assertEqual(first_script, stored_first)
 
         locked = short_drama_conversation.set_shot_lock(
             self.db,
@@ -2176,6 +2711,8 @@ class ShortDramaConversationTests(unittest.TestCase):
             },
             "lock-shot-1",
         )
+        self.assertNotEqual(edited["current_script"]["id"], locked["current_script"]["id"])
+        self.assertEqual(edited["current_script"]["version"] + 1, locked["current_script"]["version"])
         self.assertTrue(locked["current_script"]["script"]["shots"][0]["locked"])
         with self.assertRaises(short_drama_conversation.ConversationError) as blocked:
             short_drama_conversation.regenerate_shot(

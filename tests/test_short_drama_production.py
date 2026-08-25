@@ -18,7 +18,7 @@ SERVER_DIR = str(Path(__file__).resolve().parents[1] / "server")
 if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
 
-from content_domains import core, image, jobs_store, short_drama, short_drama_asset_graph, short_drama_completion, short_drama_production, short_drama_voice, submission_idempotency, upstream_guard, video
+from content_domains import core, image, jobs_store, short_drama, short_drama_assembly, short_drama_asset_graph, short_drama_completion, short_drama_conversation, short_drama_production, short_drama_timeline, short_drama_video, short_drama_voice, submission_idempotency, upstream_guard, video
 
 
 def _project_payload():
@@ -109,6 +109,47 @@ class ShortDramaProductionTests(unittest.TestCase):
         body.update(changes)
         return body
 
+    def _set_current_conversation_shots(self, shots):
+        workspace = short_drama_conversation.workspace(
+            self.db, "alice", "alice", self.project["id"],
+        )
+        script = {
+            "title": "Authoritative conversation script",
+            "characters": [], "dialogue_lines": [],
+            "overview": {"duration_seconds": sum(
+                int(item["duration_seconds"]) for item in shots
+            )},
+            "shots": shots,
+        }
+        snapshot_id = "production-current-script"
+        with closing(self.db()) as conn:
+            conn.execute(
+                "INSERT INTO short_drama_script_snapshots "
+                "(id,project_id,version,status,script_json,readable_text,input_hash,"
+                "provider,model_version,created_by,created_at) "
+                "VALUES (?,?,1,'draft',?,'script','hash','test','test','alice',1)",
+                (snapshot_id, self.project["id"], json.dumps(script)),
+            )
+            conn.execute(
+                "UPDATE short_drama_conversations SET current_version_id=?,"
+                "state='script_review' WHERE project_id=?",
+                (snapshot_id, self.project["id"]),
+            )
+            conn.commit()
+        self.assertIsNone(workspace["current_script"])
+        return snapshot_id, script
+
+    @staticmethod
+    def _conversation_shot(shot_key, duration, sort_order):
+        return {
+            "shot_key": shot_key, "sort_order": sort_order,
+            "duration_seconds": duration,
+            "scene": "Scene " + shot_key, "camera": "Medium shot",
+            "visual": "Visual " + shot_key,
+            "provider_prompt": "Provider " + shot_key,
+            "character_keys": [], "dialogue_line_ids": [],
+        }
+
     def _ready_asset_snapshot(self):
         short_drama_asset_graph.sync_foundation(
             self.db, "alice", "alice", self.project["id"],
@@ -137,6 +178,356 @@ class ShortDramaProductionTests(unittest.TestCase):
         )
         self.assertEqual("ready", snapshot["status"])
         return workspace, snapshot
+
+    def test_copy_insert_and_smart_insert_shots_reach_provider_request(self):
+        conversation = short_drama_conversation.workspace(
+            self.db, "alice", "alice", self.project["id"],
+        )
+        selected = short_drama_conversation.send_message(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "conversation_revision": conversation["conversation"]["revision"],
+                "message": "方案一 / production bridge",
+            }, "production-user-shot-select",
+        )
+        confirmed = short_drama_conversation.send_message(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "conversation_revision": selected["conversation"]["revision"],
+                "message": "确认这个方向",
+            }, "production-user-shot-confirm",
+        )
+        current = short_drama_conversation.generate_script(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "conversation_revision": confirmed["conversation"]["revision"],
+            }, "production-user-shot-generate",
+        )
+        script = current["current_script"]["script"]
+        for shot in script["shots"]:
+            shot["character_keys"] = []
+        with closing(self.db()) as conn:
+            conn.execute(
+                "UPDATE short_drama_script_snapshots SET script_json=? WHERE id=?",
+                (json.dumps(script, ensure_ascii=False), current["current_script"]["id"]),
+            )
+            conn.commit()
+        current = short_drama_conversation.workspace(
+            self.db, "alice", "alice", self.project["id"],
+        )
+
+        for index, action in enumerate(("copy", "insert_after", "smart_insert"), 1):
+            before_keys = {
+                shot["shot_key"] for shot in current["current_script"]["script"]["shots"]
+            }
+            source_key = current["current_script"]["script"]["shots"][0]["shot_key"]
+            current = short_drama_conversation.change_shot_structure(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"],
+                    "conversation_revision": current["conversation"]["revision"],
+                    "version_id": current["current_script"]["id"],
+                    "shot_key": source_key, "action": action,
+                    "instruction": "production user shot %d" % index,
+                }, "production-user-shot-%d" % index,
+            )
+            user_shot = next(
+                shot for shot in current["current_script"]["script"]["shots"]
+                if shot["shot_key"] not in before_keys
+            )
+            short_drama_asset_graph.sync_foundation(
+                self.db, "alice", "alice", self.project["id"],
+            )
+            graph_workspace = short_drama_asset_graph.workspace(
+                self.db, "alice", self.project["id"],
+            )
+            revision = graph_workspace["graph_revision"]
+            for entity in graph_workspace["entities"]:
+                version = entity["versions"][0]
+                if entity["asset_type"] != "scene" or version["status"] == "locked":
+                    continue
+                locked = short_drama_asset_graph.lock_version(
+                    self.db, "alice", "alice", {
+                        "project_id": self.project["id"],
+                        "graph_revision": revision, "version_id": version["id"],
+                    },
+                )
+                revision = locked["graph_revision"]
+            scenes = short_drama_asset_graph.scene_workspace(
+                self.db, "alice", self.project["id"],
+            )
+            shot_id = next(
+                shot["id"] for scene in scenes["scenes"] for shot in scene["shots"]
+                if shot["shot_key"] == user_shot["shot_key"]
+            )
+            snapshot = short_drama_asset_graph.build_snapshot(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"],
+                    "graph_revision": revision, "shot_id": shot_id,
+                },
+            )
+            self.assertEqual("ready", snapshot["status"])
+            request = {
+                "project_id": self.project["id"],
+                "revision": self.project["revision"], "shot_id": shot_id,
+                "prompt": "provider direction %d" % index,
+                "mode": "single", "count": 2,
+            }
+            quote = short_drama_production.prepare_still_quote(
+                self.db, "alice", request, lambda _kind, _payload: 12,
+            )
+            prepared = short_drama_production.prepare_still_submission(
+                self.db, "alice", dict(request, quote_token=quote["quote_token"]),
+                require_quote=True, idempotency_key="production-user-shot-%d" % index,
+            )
+            self.assertEqual(snapshot["id"], prepared["asset_contract"]["snapshot_id"])
+            self.assertEqual(user_shot["shot_key"], prepared["shot"]["shot_key"])
+            self.assertIn(user_shot["provider_prompt"], prepared["image_payload"]["prompt"])
+            self.assertEqual("banana", prepared["image_payload"]["provider"])
+
+    def test_first_quote_materializes_a_current_shot_anchor_with_foreign_keys_enabled(self):
+        self._set_current_conversation_shots([
+            self._conversation_shot("user-new", 8, 1),
+        ])
+
+        def foreign_key_db():
+            conn = sqlite3.connect(self.path)
+            conn.execute("PRAGMA foreign_keys=ON")
+            return conn
+
+        quote = short_drama_production.prepare_still_quote(
+            foreign_key_db, "alice", {
+                "project_id": self.project["id"],
+                "revision": self.project["revision"],
+                "shot_id": "script:user-new", "prompt": "new shot",
+                "mode": "single", "count": 2,
+            }, lambda _kind, _payload: 12,
+        )
+
+        self.assertTrue(quote["shot_id"].startswith("conversation-shot:"))
+        with closing(foreign_key_db()) as conn:
+            self.assertEqual(
+                ("user-new",),
+                conn.execute(
+                    "SELECT shot_key FROM short_drama_shots WHERE id=?",
+                    (quote["shot_id"],),
+                ).fetchone(),
+            )
+
+    def test_current_script_durations_and_membership_drive_snapshot_and_handoff(self):
+        snapshot_id, script = self._set_current_conversation_shots([
+            self._conversation_shot("duration-4", 4, 1),
+            self._conversation_shot("duration-8", 8, 2),
+            self._conversation_shot("duration-15", 15, 3),
+        ])
+        state = short_drama_production.get_production(
+            self.db, "alice", self.project["id"],
+        )
+        self.assertEqual([4, 8, 15], [shot["duration"] for shot in state["shots"]])
+        removed_id = state["shots"][1]["id"]
+        with closing(self.db()) as conn:
+            conn.row_factory = sqlite3.Row
+            project = conn.execute(
+                "SELECT * FROM short_drama_projects WHERE id=?",
+                (self.project["id"],),
+            ).fetchone()
+            timeline_source = short_drama_timeline._legacy_source(conn, project)
+            assembly_sources = short_drama_assembly._collect_sources(
+                conn, self.project["id"],
+            )
+        self.assertEqual(27000, timeline_source["duration_ms"])
+        self.assertEqual(
+            [4000, 12000, 27000],
+            [item["end_ms"] for item in timeline_source["shot_bounds"]],
+        )
+        self.assertEqual([4, 8, 15], [item["duration"] for item in assembly_sources])
+
+        with closing(self.db()) as conn:
+            for index, shot in enumerate(state["shots"], 1):
+                asset_id = shot["still"]["asset_id"]
+                conn.execute(
+                    "INSERT INTO short_drama_asset_versions "
+                    "(id,asset_id,version,job_id,url,prompt,ratio,status,created_at) "
+                    "VALUES (?,?,1,?,?,?,'9:16','done',1)",
+                    ("duration-version-%d" % index, asset_id, 9000 + index,
+                     "https://example.test/%d.png" % index, "prompt"),
+                )
+                conn.execute(
+                    "UPDATE short_drama_assets SET current_version=1,locked=1 WHERE id=?",
+                    (asset_id,),
+                )
+            script["shots"].pop(1)
+            script["overview"]["duration_seconds"] = 19
+            conn.execute(
+                "UPDATE short_drama_script_snapshots SET script_json=? WHERE id=?",
+                (json.dumps(script), snapshot_id),
+            )
+            conn.commit()
+
+        state = short_drama_production.get_production(
+            self.db, "alice", self.project["id"],
+        )
+        self.assertEqual([4, 15], [shot["duration"] for shot in state["shots"]])
+        self.assertNotIn(removed_id, [shot["id"] for shot in state["shots"]])
+        with closing(self.db()) as conn:
+            conn.row_factory = sqlite3.Row
+            project = conn.execute(
+                "SELECT * FROM short_drama_projects WHERE id=?",
+                (self.project["id"],),
+            ).fetchone()
+            timeline_source = short_drama_timeline._legacy_source(conn, project)
+            assembly_sources = short_drama_assembly._collect_sources(
+                conn, self.project["id"],
+            )
+            handoff = short_drama_production.build_phase_two_handoff(
+                conn, self.project["id"], "9:16",
+            )
+        self.assertEqual(19000, timeline_source["duration_ms"])
+        self.assertNotIn(
+            removed_id,
+            [item["shot_id"] for item in timeline_source["shot_bounds"]],
+        )
+        self.assertEqual([4, 15], [item["duration"] for item in assembly_sources])
+        self.assertFalse(handoff["blocked"], handoff["blockers"])
+
+    def test_existing_legacy_shot_uses_current_duration_in_downstream_snapshots(self):
+        with closing(self.db()) as conn:
+            legacy_id, legacy_key = conn.execute(
+                "SELECT id,shot_key FROM short_drama_shots "
+                "WHERE project_id=? ORDER BY sort_order LIMIT 1",
+                (self.project["id"],),
+            ).fetchone()
+        current = self._conversation_shot(legacy_key, 10, 1)
+        current["provider_prompt"] = "current ten second provider prompt"
+        self._set_current_conversation_shots([current])
+
+        production = short_drama_production.get_production(
+            self.db, "alice", self.project["id"],
+        )
+        self.assertEqual(1, len(production["shots"]))
+        self.assertEqual(legacy_id, production["shots"][0]["id"])
+        self.assertEqual(10, production["shots"][0]["duration"])
+
+        with closing(self.db()) as conn:
+            conn.row_factory = sqlite3.Row
+            project = conn.execute(
+                "SELECT * FROM short_drama_projects WHERE id=?",
+                (self.project["id"],),
+            ).fetchone()
+            timeline_source = short_drama_timeline._legacy_source(conn, project)
+            assembly_sources = short_drama_assembly._collect_sources(
+                conn, self.project["id"],
+            )
+        self.assertEqual(10000, timeline_source["duration_ms"])
+        self.assertEqual([10000], [
+            item["end_ms"] for item in timeline_source["shot_bounds"]
+        ])
+        self.assertEqual([10], [
+            item["duration"] for item in assembly_sources
+        ])
+
+    def test_current_user_shots_and_dialogue_cross_voice_and_video_handoffs(self):
+        snapshot_id, script = self._set_current_conversation_shots([
+            self._conversation_shot("voice-user", 8, 1),
+            self._conversation_shot("silent-user", 4, 2),
+        ])
+        script["dialogue_lines"] = [{
+            "id": "dialogue-user", "character_key": "speaker",
+            "text": "Current conversation dialogue",
+        }]
+        script["shots"][0]["character_keys"] = ["speaker"]
+        script["shots"][0]["dialogue_line_ids"] = ["dialogue-user"]
+        with closing(self.db()) as conn:
+            conn.execute(
+                "UPDATE short_drama_script_snapshots SET script_json=? WHERE id=?",
+                (json.dumps(script), snapshot_id),
+            )
+            conn.execute(
+                "INSERT INTO short_drama_characters "
+                "(id,project_id,character_key,name,source_type,sort_order) "
+                "VALUES ('speaker-character',?,'speaker','Speaker','ai_character',1)",
+                (self.project["id"],),
+            )
+            conn.commit()
+
+        production = short_drama_production.get_production(
+            self.db, "alice", self.project["id"],
+        )
+        with closing(self.db()) as conn:
+            for index, shot in enumerate(production["shots"], 1):
+                asset_id = shot["still"]["asset_id"]
+                conn.execute(
+                    "INSERT INTO short_drama_asset_versions "
+                    "(id,asset_id,version,job_id,url,file,prompt,ratio,status,created_at) "
+                    "VALUES (?,?,1,?,?,?,?, '9:16','done',1)",
+                    ("handoff-still-%d" % index, asset_id, 9200 + index,
+                     "https://example.test/handoff-%d.png" % index,
+                     "stills/handoff-%d.png" % index, "prompt"),
+                )
+                conn.execute(
+                    "UPDATE short_drama_assets SET current_version=1,locked=1 WHERE id=?",
+                    (asset_id,),
+                )
+            conn.commit()
+
+        production = short_drama_production.confirm_stage(
+            self.db, "alice", {
+                "project_id": self.project["id"],
+                "revision": production["revision"], "stage": "stills_review",
+            },
+        )
+        self.assertEqual("voice_review", production["stage"])
+        voice_workspace = short_drama_voice.get_voice_workspace(
+            self.db, "alice", self.project["id"],
+        )
+        self.assertEqual(
+            ["voice-user", "silent-user"],
+            [shot["shot_key"] for shot in voice_workspace["shots"]],
+        )
+        self.assertEqual([8, 4], [shot["duration"] for shot in voice_workspace["shots"]])
+        self.assertEqual(
+            "dialogue-user",
+            voice_workspace["shots"][0]["lines"][0]["dialogue_line_id"],
+        )
+
+        line = voice_workspace["shots"][0]["lines"][0]
+        with closing(self.db()) as conn:
+            conn.execute(
+                "INSERT INTO short_drama_voice_jobs "
+                "(id,username,project_id,shot_id,voice_line_id,job_id,idempotency_key,"
+                "quoted_cost,status,created_at,updated_at) "
+                "VALUES ('handoff-voice-job','alice',?,?,?,?, 'handoff-voice',0,'done',1,1)",
+                (self.project["id"], voice_workspace["shots"][0]["id"], line["id"], 9301),
+            )
+            conn.execute(
+                "INSERT INTO short_drama_voice_versions "
+                "(id,voice_line_id,version,job_id,audio_file,audio_url,duration_ms,"
+                "speech_text,voice_key,settings_json,input_hash,status,created_at) "
+                "VALUES ('handoff-voice-v1',?,1,9301,'audio/handoff.mp3','',1000,"
+                "?,?,'{}',?,'done',1)",
+                (line["id"], line["speech_text"], line["voice_key"], line["input_hash"]),
+            )
+            conn.execute(
+                "UPDATE short_drama_voice_lines SET current_version=1,start_ms=0,end_ms=1000 "
+                "WHERE id=?", (line["id"],),
+            )
+            conn.execute(
+                "UPDATE short_drama_voice_shots SET locked=1 WHERE project_id=?",
+                (self.project["id"],),
+            )
+            conn.commit()
+        video_stage = short_drama.confirm_stage(
+            self.db, "alice", self.project["id"],
+            voice_workspace["revision"], "voice_review",
+        )
+        self.assertEqual("video_review", video_stage["stage"])
+        video_workspace = short_drama_video.get_video_workspace(
+            self.db, "alice", self.project["id"],
+        )
+        self.assertEqual(
+            ["voice-user", "silent-user"],
+            [shot["shot_key"] for shot in video_workspace["shots"]],
+        )
+        self.assertEqual([8, 4], [shot["duration"] for shot in video_workspace["shots"]])
 
     def _real_auth(self):
         import auth_server
