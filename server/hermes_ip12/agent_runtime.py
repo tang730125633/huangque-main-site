@@ -109,6 +109,45 @@ def _redact(value):
     return copy.deepcopy(value)
 
 
+def _default_binding(policy):
+    tool_ids = sorted(set(getattr(policy, "allowed_tools", TOOL_CONTRACTS)))
+    return {
+        "schema": "huangque.outcome-binding/v1",
+        "registry_version": "legacy",
+        "outcome_id": getattr(policy, "agent_id", ""),
+        "outcome_version": "legacy",
+        "specialist_id": getattr(policy, "agent_id", ""),
+        "runtime_tool_ids": tool_ids,
+        "model_tool_ids": [],
+        "capability_versions": {},
+        "binding_digest": "legacy",
+    }
+
+
+def _validated_binding(policy, value):
+    binding = copy.deepcopy(value or _default_binding(policy))
+    if binding.get("schema") != "huangque.outcome-binding/v1" or not binding.get("registry_version"):
+        raise AgentRuntimeError("invalid capability binding")
+    specialist_id = str(binding.get("specialist_id") or "")
+    if specialist_id != policy.agent_id:
+        raise AgentRuntimeError("capability binding specialist mismatch")
+    tool_ids = binding.get("runtime_tool_ids")
+    if not isinstance(tool_ids, list) or len(tool_ids) != len(set(tool_ids)):
+        raise AgentRuntimeError("invalid capability binding tools")
+    digest = str(binding.get("binding_digest") or "")
+    if digest == "legacy":
+        if binding.get("registry_version") != "legacy" or binding.get("outcome_version") != "legacy":
+            raise AgentRuntimeError("legacy capability binding mismatch")
+        if not set(tool_ids).issubset(set(getattr(policy, "allowed_tools", TOOL_CONTRACTS))):
+            raise AgentRuntimeError("legacy capability binding tools mismatch")
+    else:
+        unsigned = copy.deepcopy(binding)
+        unsigned.pop("binding_digest", None)
+        if digest != _digest(unsigned):
+            raise AgentRuntimeError("capability binding digest mismatch")
+    return binding
+
+
 def tool_contract(tool_id):
     contract = TOOL_CONTRACTS.get(str(tool_id or ""))
     if not contract:
@@ -172,7 +211,7 @@ def append_event(run, event_type, data=None, *, request_id=""):
 
 
 def start(project, run_id, policy, goal, *, project_id="", production_id="",
-          inputs=None, selected_source=None):
+          inputs=None, selected_source=None, capability_binding=None):
     if not isinstance(project, dict) or not run_id or not getattr(policy, "agent_id", ""):
         raise AgentRuntimeError("invalid agent run")
     runs = project.setdefault("agent_runs", {})
@@ -180,7 +219,17 @@ def start(project, run_id, policy, goal, *, project_id="", production_id="",
         run = runs[run_id]
         if run.get("agent_id") != policy.agent_id or run.get("schema") != RUN_SCHEMA:
             raise AgentRuntimeError("agent run contract mismatch")
+        if "capability_binding" not in run:
+            binding = _validated_binding(policy, None)
+            run["capability_binding"] = binding
+            run["registry_version"] = binding["registry_version"]
+            run["capability_versions"] = copy.deepcopy(binding["capability_versions"])
+        else:
+            _validated_binding(policy, run.get("capability_binding"))
+            if capability_binding is not None and run.get("capability_binding") != capability_binding:
+                raise AgentRuntimeError("agent run capability binding mismatch")
         return run
+    binding = _validated_binding(policy, capability_binding)
     timestamp = _now()
     run = {
         "schema": RUN_SCHEMA,
@@ -195,6 +244,9 @@ def start(project, run_id, policy, goal, *, project_id="", production_id="",
         "next_action": "plan",
         "inputs": copy.deepcopy(inputs or {}),
         "selected_source": copy.deepcopy(selected_source or {}),
+        "capability_binding": binding,
+        "registry_version": str(binding["registry_version"]),
+        "capability_versions": copy.deepcopy(binding.get("capability_versions") or {}),
         "tool_calls": {},
         "artifacts": [],
         "result": None,
@@ -339,6 +391,7 @@ def resume(project, run_id, policy, tools, event=None, max_steps=16):
     run = (project.get("agent_runs") or {}).get(run_id) if isinstance(project, dict) else None
     if not isinstance(run, dict) or run.get("agent_id") != policy.agent_id:
         raise AgentRuntimeError("agent run not found")
+    _validated_binding(policy, run.get("capability_binding"))
     if run.get("status") in TERMINAL:
         return run
     _apply_event(run, event)
@@ -371,6 +424,9 @@ def resume(project, run_id, policy, tools, event=None, max_steps=16):
         if kind != "tool":
             raise AgentRuntimeError("unsupported agent instruction")
         tool_id = str(instruction.get("tool") or "")
+        allowed_tools = (run.get("capability_binding") or {}).get("runtime_tool_ids") or []
+        if tool_id not in set(allowed_tools):
+            raise AgentRuntimeError("tool is not allowed by capability binding: %s" % tool_id)
         call_id = "%s:%s:%s" % (run_id, run["step"], tool_id)
         call = run["tool_calls"].get(call_id)
         if call is None:
@@ -467,4 +523,12 @@ def public_run(run):
     result.pop("_private", None)
     result.pop("observations", None)
     result.pop("inputs", None)
+    binding = result.get("capability_binding")
+    if isinstance(binding, dict):
+        result["capability_binding"] = {
+            key: binding.get(key) for key in (
+                "registry_version", "outcome_id", "outcome_version", "status"
+            ) if binding.get(key) not in (None, "")
+        }
+    result.pop("capability_versions", None)
     return result
