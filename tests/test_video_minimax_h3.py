@@ -10,7 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -653,6 +653,74 @@ class MiniMaxH3VideoTests(unittest.TestCase):
         set_terminal.assert_called_once()
         refund.assert_called_once_with(19, "u", 30)
         failed_asset.assert_called_once()
+
+    def test_short_drama_worker_recovery_does_not_reopen_local_references(self):
+        from content_domains import core
+
+        payload = {
+            "channel": "minimax",
+            "prompt": "resume paid task",
+            "model": "MiniMax-H3",
+            "duration": 5,
+            "ratio": "9:16",
+            "resolution": "2k",
+            "reference_images": [],
+            "_short_drama_provider_binding": {
+                "project_id": "project-1",
+                "plan_id": "plan-1",
+                "shot_key": "shot-1",
+                "request_hash": "request-hash-1",
+            },
+        }
+
+        class Connection:
+            def execute(self, *_args):
+                return self
+
+            def fetchone(self):
+                return {
+                    "id": 41,
+                    "kind": "xiaole_video",
+                    "username": "alice",
+                    "cost": 30,
+                    "payload": json.dumps(payload),
+                    "status": "pending",
+                }
+
+            def close(self):
+                pass
+
+        resolver = Mock(side_effect=AssertionError(
+            "a resumable paid task must not reopen private reference files"
+        ))
+        reconcile = Mock()
+        short_domain = Mock()
+        short_domain.short_drama_autodraft.resolve_shared_xiaole_payload = resolver
+        short_domain.short_drama_autodraft.reconcile_shared_xiaole_job = reconcile
+        video_domain = Mock()
+        video_domain.get_resumable_grok_request.return_value = {
+            "request_id": "minimax-task-41",
+            "provider": "minimax",
+            "phase": "minimax_running",
+        }
+        handler = Mock(return_value={
+            "video_file": "video/recovered.mp4",
+            "video_url": "/api/gen/file/video/recovered.mp4",
+        })
+
+        with patch.object(core, "jdb", return_value=Connection()), \
+                patch.object(core.jobs_store, "claim_running", return_value=True), \
+                patch.object(core, "_start_job_heartbeat", return_value=Mock()), \
+                patch.object(core, "HANDLERS", {"xiaole_video": handler}), \
+                patch.object(core, "_domains", return_value=(None, None, video_domain)), \
+                patch.object(core, "_short_drama_domain", return_value=short_domain), \
+                patch.object(core, "_set_terminal", return_value=True), \
+                patch.object(core.assets_store, "record_asset"):
+            core.run_job(41)
+
+        resolver.assert_not_called()
+        handler.assert_called_once()
+        reconcile.assert_called_once_with(ANY, 41)
 
     def test_restricted_minimax_ffprobe_content_failures_are_terminal(self):
         body = b"\x00\x00\x00\x18ftypisominvalid-media"

@@ -12,7 +12,7 @@
 
 P1：图片(gpt-image-2)。P2 文案 / P3 视频按同样的 register_capability 往里加。
 """
-import os, re, sqlite3, json, time, threading, queue, base64, pathlib, urllib.request, urllib.error, urllib.parse, subprocess, uuid, sys, inspect
+import os, re, sqlite3, json, time, threading, queue, base64, pathlib, urllib.request, urllib.error, urllib.parse, subprocess, uuid, sys, inspect, hashlib, hmac
 from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -28,6 +28,30 @@ except ImportError:  # Running core.py directly during local checks.
 PORT       = int(os.environ.get("CONTENT_API_PORT", "8096"))
 AUTH_BASE  = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095")
 AUTH_INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")
+
+
+def _local_file_signing_secret(environment):
+    """Load the dedicated public-file signing key without crossing trust domains."""
+    return str(environment.get("HQ_LOCAL_FILE_SIGNING_SECRET", "") or "").strip()
+
+
+def _local_file_url_ttl(environment):
+    """Load the documented TTL, accepting the pre-release key as a compatibility alias."""
+    raw = environment.get(
+        "HQ_LOCAL_FILE_URL_TTL_SECONDS",
+        environment.get("HQ_LOCAL_FILE_URL_TTL", "3600"),
+    )
+    try:
+        return max(60, min(86400, int(raw or 3600)))
+    except (TypeError, ValueError):
+        return 3600
+
+
+LOCAL_FILE_PUBLIC_BASE_URL = os.environ.get(
+    "HQ_CONTENT_PUBLIC_BASE_URL", ""
+).strip().rstrip("/")
+LOCAL_FILE_SIGNING_SECRET = _local_file_signing_secret(os.environ)
+LOCAL_FILE_URL_TTL = _local_file_url_ttl(os.environ)
 try:
     VERIFY_CACHE_TTL = max(0.0, float(os.environ.get("VERIFY_CACHE_TTL", "8") or 8)); VERIFY_CACHE_MAX = max(1, int(os.environ.get("VERIFY_CACHE_MAX", "2048") or 2048))
 except Exception:
@@ -65,6 +89,101 @@ def _out_path(rel):
 
 def _file_url(rel):
     return "/api/gen/file/" + str(rel or "").replace("\\", "/").lstrip("/")
+
+
+_PROVIDER_REFERENCE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+_PROVIDER_REFERENCE_FORMATS = {
+    ".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG", ".webp": "WEBP",
+}
+
+
+def _valid_local_provider_image(fp):
+    """Fully decode a reference image and require its content to match its suffix."""
+    expected = _PROVIDER_REFERENCE_FORMATS.get(fp.suffix.lower())
+    if not expected:
+        return False
+    try:
+        from PIL import Image
+        with Image.open(fp) as image:
+            detected = str(image.format or "").upper()
+            image.verify()
+        with Image.open(fp) as image:
+            image.load()
+    except Exception:
+        return False
+    return detected == expected
+
+
+def _public_https_origin(value):
+    parsed = urllib.parse.urlparse(str(value or ""))
+    if (
+        parsed.scheme != "https" or not parsed.hostname
+        or parsed.username or parsed.password
+        or parsed.path not in {"", "/"}
+        or parsed.params or parsed.query or parsed.fragment
+    ):
+        return None
+    host = parsed.hostname.rstrip(".").lower()
+    if host == "localhost":
+        return None
+    try:
+        import ipaddress
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    if address is not None and not address.is_global:
+        return None
+    return str(value).strip().rstrip("/")
+
+
+def _local_provider_file_signature(rel, expires):
+    message = "provider-reference\n%s\n%d" % (rel, int(expires))
+    return hmac.new(
+        LOCAL_FILE_SIGNING_SECRET.encode("utf-8"),
+        message.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def local_provider_reference_url(rel, now=None):
+    """Return a short-lived public HTTPS URL for one local reference image."""
+    public_origin = _public_https_origin(LOCAL_FILE_PUBLIC_BASE_URL)
+    if not public_origin:
+        raise RuntimeError("HQ_CONTENT_PUBLIC_BASE_URL must be an HTTPS origin")
+    if len(LOCAL_FILE_SIGNING_SECRET) < 32:
+        raise RuntimeError("HQ_LOCAL_FILE_SIGNING_SECRET must contain at least 32 characters")
+    fp = _resolve_out_file(rel)
+    if not fp:
+        raise FileNotFoundError("local reference image does not exist")
+    try:
+        canonical_rel = fp.resolve().relative_to(OUT_DIR.resolve()).as_posix()
+    except (OSError, ValueError):
+        raise FileNotFoundError("local reference image is outside CONTENT_OUT")
+    if not _valid_local_provider_image(fp):
+        raise ValueError("local provider reference must be a valid JPG, PNG, or WebP image")
+    expires = int(now if now is not None else time.time()) + LOCAL_FILE_URL_TTL
+    signature = _local_provider_file_signature(canonical_rel, expires)
+    encoded_rel = urllib.parse.quote(canonical_rel, safe="/")
+    query = urllib.parse.urlencode({"hq_exp": expires, "hq_sig": signature})
+    return public_origin + _file_url(encoded_rel) + "?" + query
+
+
+def _valid_local_provider_file_signature(rel, query, now=None):
+    """Validate a provider-only signed image URL without using a user session."""
+    if len(LOCAL_FILE_SIGNING_SECRET) < 32:
+        return False
+    if pathlib.PurePosixPath(str(rel or "")).suffix.lower() not in _PROVIDER_REFERENCE_EXTENSIONS:
+        return False
+    try:
+        expires = int((query.get("hq_exp") or [""])[0])
+        supplied = str((query.get("hq_sig") or [""])[0])
+    except (TypeError, ValueError):
+        return False
+    current = int(now if now is not None else time.time())
+    if expires < current or expires > current + LOCAL_FILE_URL_TTL:
+        return False
+    expected = _local_provider_file_signature(str(rel), expires)
+    return bool(supplied and hmac.compare_digest(supplied, expected))
 
 _cos_disabled_warned = False
 def _warn_cos_disabled_once():
@@ -1066,6 +1185,51 @@ def _user_video_submit_limit(kind, body, username, cost):
                     "retry_after_ms": 4000, "need": cost}
     return None
 
+
+def _short_drama_xiaole_submission_limit(
+        connection, username, pending_job_included=False):
+    """Apply the shared xiaole and total active-job caps in one DB snapshot.
+
+    The paid-job callback runs after inserting its pending row, so that path
+    allows exactly the configured limit and rejects only counts above it.
+    """
+    username = str(username or "").strip()
+    comparator = (
+        (lambda count, limit: count > limit)
+        if pending_job_included
+        else (lambda count, limit: count >= limit)
+    )
+    active_xiaole = int(connection.execute(
+        "SELECT COUNT(*) FROM jobs WHERE username=? AND kind='xiaole_video' "
+        "AND status IN ('pending','running') AND COALESCE(deleted,0)=0",
+        (username,),
+    ).fetchone()[0])
+    if comparator(active_xiaole, MAX_USER_ACTIVE_XIAOLE_VIDEO):
+        return {
+            "detail": (
+                "当前果肉/Seedance/Omni 视频最多同时排队或生成 %d 个任务，"
+                "请等待部分完成后再继续" % MAX_USER_ACTIVE_XIAOLE_VIDEO
+            ),
+            "code": "xiaole_active_cap",
+            "active_jobs": active_xiaole,
+            "max_active_jobs": MAX_USER_ACTIVE_XIAOLE_VIDEO,
+            "retry_after_ms": 4000,
+        }
+    active_total = int(connection.execute(
+        "SELECT COUNT(*) FROM jobs WHERE username=? "
+        "AND status IN ('pending','running') AND COALESCE(deleted,0)=0",
+        (username,),
+    ).fetchone()[0])
+    if comparator(active_total, MAX_USER_ACTIVE_JOBS):
+        return {
+            "detail": "您有 %d 个任务正在排队/生成，完成后再提交" % active_total,
+            "code": "active_job_cap",
+            "active_jobs": active_total,
+            "max_active_jobs": MAX_USER_ACTIVE_JOBS,
+            "retry_after_ms": 4000,
+        }
+    return None
+
 def _user_running_talking_count(username):
     """该用户「运行中」的口播条数(kind=video，即 text/audio 口播)。"""
     if not username:
@@ -1347,6 +1511,20 @@ def run_job(job_id):
         # 抢到 running 才开心跳（前面几个 return 都还没认领，不该有心跳）。
         # 有了它，reaper 的「没心跳」才真的等于「worker 死了」—— 而不是「正在轮询/烧字幕」。
         stop_heartbeat = _start_job_heartbeat(job_id)
+        if kind == "xiaole_video" and payload.get(
+            "_short_drama_provider_binding"
+        ):
+            # A paid official task with a durable provider ID resumes by GET
+            # only. Its private source images are no longer needed and may have
+            # been rotated away between worker restarts, so do not reopen them.
+            recovery = _domains()[2].get_resumable_grok_request(job_id)
+            if not recovery:
+                payload = (
+                    _short_drama_domain().short_drama_autodraft
+                    .resolve_shared_xiaole_payload(
+                        jdb, job_id, username, payload
+                    )
+                )
         if kind in {"audio", "short_drama_sound_effect", "video", "tryon", "xiaole_video", "sora_video", "leads", "cinematic", "avatar", "breakdown", "short_drama_preview", "short_drama_final", "script_to_video"}:
             payload["_username"] = username   # 少一个 kind，handler 就拿不到用户名/job_id：
             payload["_job_id"] = job_id       # gen_avatar 记不了形象归属，gen_cinematic 查不到用户的形象
@@ -1421,6 +1599,19 @@ def run_job(job_id):
                 )
             if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic", "script_to_video"}:
                 video_domain.record_video_asset(job_id, username, result)
+            if kind == "xiaole_video" and payload.get(
+                "_short_drama_provider_binding"
+            ):
+                try:
+                    _short_drama_domain().short_drama_autodraft.reconcile_shared_xiaole_job(
+                        jdb, job_id
+                    )
+                except Exception as binding_error:
+                    print(
+                        "[short-drama-xiaole-binding] job#%s will retry on workspace read: %s"
+                        % (job_id, str(binding_error)[:160]),
+                        flush=True,
+                    )
             if kind == "short_drama_preview":
                 _short_drama_domain().short_drama_assembly.reconcile_preview_job(
                     jdb, job_id
@@ -1478,6 +1669,19 @@ def run_job(job_id):
                 "error_message": str(e)[:300],
             }, ensure_ascii=False), flush=True)
             _mark_video_asset_failed(job_id, kind, e)
+            if kind == "xiaole_video" and payload.get(
+                "_short_drama_provider_binding"
+            ):
+                try:
+                    _short_drama_domain().short_drama_autodraft.reconcile_shared_xiaole_job(
+                        jdb, job_id
+                    )
+                except Exception as binding_error:
+                    print(
+                        "[short-drama-xiaole-binding] failed job#%s will retry on workspace read: %s"
+                        % (job_id, str(binding_error)[:160]),
+                        flush=True,
+                    )
             if kind == "short_drama_sound_effect":
                 try:
                     _short_drama_domain().short_drama_sound_design.fail_job(
@@ -2135,6 +2339,9 @@ class H(BaseHTTPRequestHandler):
                     audio_domain, "record_audio_asset", None
                 ),
                 enqueue_job=enqueue_job,
+                shared_video_submission_limit=(
+                    _short_drama_xiaole_submission_limit
+                ),
                 deduct_points=getattr(points_domain, "deduct_points", None),
                 refund_points=getattr(points_domain, "refund_points", None),
                 charge_lookup=getattr(
@@ -3659,7 +3866,15 @@ class H(BaseHTTPRequestHandler):
             except Exception:
                 return self._send(404, {"detail": "no file"})
             sensitive = _sensitive_output_file(canonical_rel)
-            if sensitive:
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            signed_provider_access = _valid_local_provider_file_signature(
+                canonical_rel, query
+            )
+            if signed_provider_access and not _valid_local_provider_image(fp):
+                return self._send(404, {"detail": "no file"})
+            if ("hq_exp" in query or "hq_sig" in query) and not signed_provider_access:
+                return self._send(404, {"detail": "no file"})
+            if sensitive and not signed_provider_access:
                 user = verify(self._token())
                 if not user: return self._send(401, {"detail": "未登录"})
                 if not _user_owns_output_file(
@@ -3667,7 +3882,9 @@ class H(BaseHTTPRequestHandler):
                     _short_drama_canvas_access(self),
                 ):
                     return self._send(404, {"detail": "no file"})
-            _send_out_file(self, fp, sensitive=sensitive)
+            _send_out_file(
+                self, fp, sensitive=(sensitive or signed_provider_access)
+            )
             return
         if p == "/api/gen/audio/voices":
             user = verify(self._token())

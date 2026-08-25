@@ -213,10 +213,7 @@ def _duration_plan(script, target_band):
             dialogue.get(str(line_id), {})
             for line_id in shot.get("dialogue_line_ids", [])
         ]
-        speech_seconds = sum(
-            short_drama_storyboard._reading_seconds(line)
-            for line in lines if isinstance(line, dict)
-        )
+        speech_seconds = short_drama_storyboard._dialogue_timeline_seconds(lines)
         speech_ms = int(math.ceil(speech_seconds * 1000)) if speech_seconds else 0
         speech_total_ms += speech_ms
         visual_ms = max(1800, int(float(shot.get("duration_seconds") or 3) * 1000))
@@ -328,6 +325,7 @@ def _material_plan(script, duration):
                 ),
                 "text": str(line.get("text") or "").strip(),
                 "speech_rate": float(line.get("speech_rate") or 1.0),
+                "timing_mode": str(line.get("timing_mode") or "sequential"),
             })
         character_keys = [
             str(value) for value in shot.get("character_keys", []) if str(value)
@@ -346,6 +344,7 @@ def _material_plan(script, duration):
             ).strip(),
             "negative_prompt": str(shot.get("negative_prompt") or "").strip(),
             "camera": str(shot.get("camera") or "").strip(),
+            "sound_design": str(shot.get("sound_design") or "").strip(),
             "character_keys": character_keys,
             "character_names": [
                 characters.get(key) or key for key in character_keys

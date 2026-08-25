@@ -143,6 +143,50 @@ def valid_editable_plan():
 
 
 class ShortDramaProjectTests(unittest.TestCase):
+    def test_genre_schema_upgrade_preserves_legacy_projects_and_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "legacy-content.db")
+            legacy_db = lambda: sqlite3.connect(path)
+            with closing(legacy_db()) as conn:
+                conn.execute("""CREATE TABLE short_drama_projects (
+                    id TEXT PRIMARY KEY, username TEXT NOT NULL, board_id TEXT,
+                    title TEXT NOT NULL, synopsis TEXT NOT NULL,
+                    ratio TEXT NOT NULL, target_duration INTEGER NOT NULL,
+                    shot_count INTEGER NOT NULL,
+                    visual_style TEXT NOT NULL DEFAULT '电影写实',
+                    target_platform TEXT NOT NULL DEFAULT '抖音',
+                    point_budget INTEGER NOT NULL DEFAULT 0,
+                    spent_points INTEGER NOT NULL DEFAULT 0,
+                    creation_status TEXT NOT NULL DEFAULT 'formal',
+                    stage TEXT NOT NULL DEFAULT 'draft',
+                    revision INTEGER NOT NULL DEFAULT 1,
+                    deleted INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+                )""")
+                conn.execute(
+                    "INSERT INTO short_drama_projects VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        "legacy", "alice", None, "旧项目", "旧库中的故事", "9:16",
+                        30, 6, "电影写实", "抖音", 1400, 17, "formal", "draft",
+                        3, 0, 1000, 1001,
+                    ),
+                )
+                conn.commit()
+
+            short_drama.init_db(legacy_db)
+            short_drama.init_db(legacy_db)
+            with closing(legacy_db()) as conn:
+                columns = [row[1] for row in conn.execute(
+                    "PRAGMA table_info(short_drama_projects)"
+                )]
+                row = conn.execute(
+                    "SELECT genre,spent_points,revision FROM short_drama_projects WHERE id='legacy'"
+                ).fetchone()
+                count = conn.execute("SELECT COUNT(*) FROM short_drama_projects").fetchone()[0]
+            self.assertEqual(1, columns.count("genre"))
+            self.assertEqual(("", 17, 3), row)
+            self.assertEqual(1, count)
+
     def test_role_type_controls_character_reference_requirement(self):
         contract = [{
             "character_key": "lead", "name": "男孩", "role_type": "main",
@@ -559,6 +603,38 @@ class ShortDramaProjectTests(unittest.TestCase):
         )
         self.assertEqual(result["total_pages"], 2)
         self.assertEqual(len(result["items"]), 3)
+
+    def test_genre_persists_and_legacy_projects_default_to_empty(self):
+        legacy = short_drama.create_project(
+            self.db, "alice", valid_project(title="Legacy project")
+        )
+        self.assertEqual("", legacy["genre"])
+        self.assertEqual(
+            "", short_drama.get_project(self.db, "alice", legacy["id"])["genre"]
+        )
+
+        created = short_drama.create_project(
+            self.db,
+            "alice",
+            valid_project(title="Mystery project", genre="悬疑推理"),
+        )
+        self.assertEqual("悬疑推理", created["genre"])
+        self.assertEqual(
+            "悬疑推理",
+            short_drama.get_project(self.db, "alice", created["id"])["genre"],
+        )
+        items = short_drama.list_projects(self.db, "alice")["items"]
+        listed = next(item for item in items if item["id"] == created["id"])
+        self.assertEqual("悬疑推理", listed["genre"])
+
+        updated = short_drama.update_project(
+            self.db,
+            "alice",
+            created["id"],
+            created["revision"],
+            {"genre": "轻喜剧"},
+        )
+        self.assertEqual("轻喜剧", updated["genre"])
 
     def test_list_projects_returns_summaries_and_aggregates_charged_points(self):
         project = short_drama.create_project(self.db, "alice", valid_project())
@@ -1125,6 +1201,37 @@ class ShortDramaProjectTests(unittest.TestCase):
         )
         self.assertEqual("formal", finalized["creation_status"])
         self.assertEqual(confirmed["revision"] + 1, finalized["revision"])
+
+    def test_complete_story_import_rejects_short_idea_but_accepts_full_story(self):
+        payload = {
+            **{key: value for key, value in valid_project().items()
+               if key != "point_budget"},
+            "source_text": "男孩在雨夜回家，发现门口放着一封没有署名的信。",
+            "filename": "complete-story.txt",
+            "import_mode": "faithful",
+            "content_type": "live_action",
+            "character_contract": [],
+            "source_requirement": "complete_story",
+        }
+        with self.assertRaises(short_drama.ScriptImportError) as raised:
+            short_drama.import_script_project(
+                self.db, "alice", payload, "complete-story-too-short"
+            )
+        self.assertEqual("complete_story_too_short", raised.exception.code)
+        self.assertIn("至少需要 100 个字", str(raised.exception))
+
+        payload["source_text"] = (
+            "雨夜里，林夏收到一封没有署名的信，信中要求她在午夜前回到废弃车站。"
+            "她原本决定报警，却发现信封里夹着失踪姐姐的旧照片，于是独自赴约。"
+            "车站里，周野承认当年隐瞒了事故真相，并拿出能够证明姐姐仍活着的录音。"
+            "追踪而来的幕后人切断电源，逼迫两人交出证据；林夏选择公开录音并拖住对方。"
+            "警方及时赶到，姐姐也通过电话报平安。天亮时，林夏与周野决定一起寻找姐姐，"
+            "而那封信最终成为他们揭开整件往事的第一条证据。"
+        )
+        created = short_drama.import_script_project(
+            self.db, "alice", payload, "complete-story-valid"
+        )
+        self.assertEqual("draft", created["creation_status"])
 
     def test_live_action_story_is_confirmed_before_role_profiles(self):
         contract = [{
