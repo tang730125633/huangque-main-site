@@ -8936,6 +8936,62 @@
         }
       }
     },
+    "/api/gen/matrix-template": {
+      "post": {
+        "tags": ["视频"],
+        "summary": "使用平台素材库生成模板视频",
+        "description": "**测试安全级别：may-charge**\n\n创建模板成片任务并扣点。模板模式只使用平台素材库，不调用 AI 生图或视频生成。",
+        "x-hq-test-safety": "may-charge",
+        "x-hq-runtime-status": "active",
+        "parameters": [{"$ref": "#/components/parameters/IdempotencyKeyRequired"}],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["top_text", "bottom_text", "template_id", "bgm"],
+            "properties": {
+              "top_text": {"type": "string", "minLength": 2, "maxLength": 60},
+              "bottom_text": {"type": "string", "minLength": 2, "maxLength": 80},
+              "template_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+              "bgm": {"type": "boolean", "default": true},
+              "duration": {"type": "number", "minimum": 8, "maximum": 15}
+            }
+          }}}
+        },
+        "responses": {
+          "200": {"description": "任务已受理", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/JobAccepted"}}}},
+          "400": {"description": "请求参数无效"},
+          "401": {"description": "未登录或登录已过期"},
+          "402": {"description": "点数不足"},
+          "409": {"description": "幂等键或当前状态冲突"},
+          "429": {"description": "并发已达上限"},
+          "503": {"description": "功能关闭或依赖暂不可用"}
+        }
+      }
+    },
+    "/api/gen/matrix-template/templates": {
+      "get": {
+        "tags": ["视频"],
+        "summary": "读取模板成片视觉模板目录",
+        "description": "**测试安全级别：safe-read**\n\n读取 13 套模板和当前单条价格，不创建任务或扣点。",
+        "x-hq-test-safety": "safe-read",
+        "x-hq-runtime-status": "active",
+        "responses": {
+          "200": {"description": "模板目录", "content": {"application/json": {"schema": {
+            "type": "object",
+            "required": ["templates", "default_template", "cost"],
+            "properties": {
+              "templates": {"type": "array", "minItems": 13, "maxItems": 13, "items": {"type": "object", "additionalProperties": true}},
+              "default_template": {"type": "string"},
+              "cost": {"type": "integer", "minimum": 1}
+            }
+          }}}},
+          "401": {"description": "未登录或登录已过期"},
+          "503": {"description": "功能关闭或依赖暂不可用"}
+        }
+      }
+    },
     "/api/gen/script_to_video": {
       "post": {
         "tags": [
@@ -24280,14 +24336,14 @@
     }
   },
   "x-hq-document-audit": {
-    "verified_at": "2026-08-24",
-    "total_paths": 290,
-    "total_operations": 305,
-    "active_operations": 285,
-    "production_route_probe_operations": 305,
-    "newly_documented_operations_vs_v2": 129,
-    "registry_http_operations": 77,
-    "registry_documented_operations": 77,
+    "verified_at": "2026-08-25",
+    "total_paths": 292,
+    "total_operations": 307,
+    "active_operations": 287,
+    "production_route_probe_operations": 307,
+    "newly_documented_operations_vs_v2": 131,
+    "registry_http_operations": 79,
+    "registry_documented_operations": 79,
     "short_drama_registered_operations": 134,
     "short_drama_documented_operations": 134,
     "production_pending_operations": 17,

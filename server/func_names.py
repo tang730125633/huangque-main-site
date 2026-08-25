@@ -59,6 +59,7 @@ _SIMPLE = {
     "leads": "获客",
     "leadgen": "获客",
     "dl": "无水印下载",
+    "matrix_template_video": "模板成片",
 }
 
 
@@ -157,6 +158,7 @@ PATH_FUNCS = [
     ("/api/gen/video/avatars", "数字人形象 · 读列表"),
     ("/api/gen/video/avatar-", "数字人形象 · 改名/删除"),
     ("/api/gen/video/batch", "数字化 IP · 批量提交"),
+    ("/api/gen/matrix-template", "模板成片"),
     ("/api/gen/sora_video", "Sora 2 限时测试 · 提交"),
     ("/api/gen/xiaole_video", "果肉/Seedance/Omni 视频 · 提交"),
     ("/api/gen/cinematic", "电影化身 · 提交"),

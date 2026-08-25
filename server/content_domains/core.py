@@ -508,14 +508,16 @@ KIND_GRACE = {"tryon": 2400, "xiaole_video": 1200, "sora_video": 1500, "image": 
               "short_drama_sound_effect": 900,
               "short_drama_preview": 1800, "short_drama_final": 3600,
               "short_drama_remux": 600,
-              "script_to_video": 1200, "canvas_agent": 300}
+              "script_to_video": 1200, "matrix_template_video": 1500,
+              "canvas_agent": 300}
 # ⚠️ tryon 【不】跟着 15 分钟走：线上实测线路一中位 909s、**p90 1612s(27 分钟)**。
 #    砍到 15 分钟会把超过一成的换装任务判成失败。要改它得先把那条链路本身提速。
 AVATAR_COST = _env_positive_int("AVATAR_COST", 2)   # 建形象：象征性收费防刷，失败自动退点
 # ⚠️ cost_of() 回落到 COST.get(kind, 0) —— 新增 kind 忘了在这里登记，就是【免费】。
 COST = {"image": 12, "copy": 3, "audio": 10, "video": VIDEO_COST, "tryon": 40,
         "cinematic": VIDEO_COST, "avatar": AVATAR_COST, "breakdown": 8,
-        "script_to_video": VIDEO_COST, "canvas_agent": 3}  # collect/leads/cinematic 走 cost_of() 动态算
+        "script_to_video": VIDEO_COST, "matrix_template_video": 5,
+        "canvas_agent": 3}  # collect/leads/cinematic 走 cost_of() 动态算
 # cinematic 的这条已经不生效了 —— 电影化身按成片秒数计费（video.cinematic_cost），
 # cost_of() 里有它自己的分支、必定先 return。留在这里只当保险：万一哪天分支被绕过，
 # 也是按 VIDEO_COST 收费，而不是回落到 0（=免费送 $7 一条的视频）。
@@ -872,7 +874,7 @@ def delete_failed_job(username, job_id):
             raise LookupError("任务不存在或不属于当前账号")
         if str(row["status"] or "").lower() not in {"error", "failed"}:
             raise ValueError("只能删除已失败的生成记录")
-        if row["kind"] in {"video", "tryon", "xiaole_video", "sora_video", "cinematic", "script_to_video"}:
+        if row["kind"] in {"video", "tryon", "xiaole_video", "sora_video", "cinematic", "script_to_video", "matrix_template_video"}:
             with closing(adb()) as assets:
                 assets.execute(
                 "UPDATE video_assets SET status='deleted',updated_at=? WHERE job_id=? AND username=? AND status!='deleted'",
@@ -1119,6 +1121,8 @@ def _pick_job_queue(kind, mode=None):
         return _job_queue               # 下载+ffmpeg+ASR+多模态，走慢池别堵快任务
     if kind == "short_drama_preview":
         return _job_queue               # 本地 FFmpeg 重任务，复用慢队列
+    if kind == "matrix_template_video":
+        return _job_queue               # 生成服务器 FFmpeg 模板渲染，走慢队列
     if kind == "cinematic":
         return _cinematic_job_queue     # HeyGen 剧情视频，约 8 分钟/条，10 个 worker
     if kind == "avatar":
@@ -1499,7 +1503,7 @@ def install_signal_handlers():
 
 def _mark_video_asset_failed(job_id, kind, error):
     """判失败时同步 video_asset 到失败终态(否则前端历史卡片读 video_assets 一直「生成中」)。⚠️用 update_video_asset_phase(UPDATE)非 record_video_asset(INSERT):mode 有 NOT NULL，cinematic/xiaole 失败路径无 mode→IntegrityError 被吞→卡 running。"""
-    if kind not in {"video", "tryon", "xiaole_video", "sora_video", "cinematic", "script_to_video"}:
+    if kind not in {"video", "tryon", "xiaole_video", "sora_video", "cinematic", "script_to_video", "matrix_template_video"}:
         return
     try:
         _, _, video_domain = _domains()
@@ -1586,7 +1590,7 @@ def run_job(job_id):
                         jdb, job_id, username, payload
                     )
                 )
-        if kind in {"audio", "short_drama_sound_effect", "video", "tryon", "xiaole_video", "sora_video", "leads", "cinematic", "avatar", "breakdown", "short_drama_preview", "short_drama_final", "script_to_video"}:
+        if kind in {"audio", "short_drama_sound_effect", "video", "tryon", "xiaole_video", "sora_video", "leads", "cinematic", "avatar", "breakdown", "short_drama_preview", "short_drama_final", "script_to_video", "matrix_template_video"}:
             payload["_username"] = username   # 少一个 kind，handler 就拿不到用户名/job_id：
             payload["_job_id"] = job_id       # gen_avatar 记不了形象归属，gen_cinematic 查不到用户的形象
         result = HANDLERS[kind](payload)
@@ -1658,7 +1662,7 @@ def run_job(job_id):
                 _short_drama_domain().reconcile_character_reference_job(
                     jdb, job_id, username, result
                 )
-            if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic", "script_to_video"}:
+            if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic", "script_to_video", "matrix_template_video"}:
                 video_domain.record_video_asset(job_id, username, result)
             if kind == "xiaole_video" and payload.get(
                 "_short_drama_provider_binding"
@@ -3177,6 +3181,8 @@ class H(BaseHTTPRequestHandler):
             return canvas_agent_domain.handle_quote(self, user)
         is_still_route = p == "/api/gen/short-drama/generate-stills"
         kind = "image" if is_still_route else None
+        if p == "/api/gen/matrix-template":
+            kind = "matrix_template_video"
         if p.startswith("/api/gen/") and p[9:] in HANDLERS:
             kind = p[9:]
         if kind is not None:
@@ -3201,7 +3207,7 @@ class H(BaseHTTPRequestHandler):
             scene_access = None
             minimax_idem_body = None
             try:
-                body = self._json_body_strict() if is_still_route or kind in {"video", "tryon", "sora_video", "cinematic", "avatar", "script_to_video", "copy", "canvas_agent"} else self._json_body()
+                body = self._json_body_strict() if is_still_route or kind in {"video", "tryon", "sora_video", "cinematic", "avatar", "script_to_video", "matrix_template_video", "copy", "canvas_agent"} else self._json_body()
                 if kind in {"cinematic", "script_to_video"}:
                     request_body = dict(body) if isinstance(body, dict) else body
                     idem_key = _idempotency_key(self.headers.get("Idempotency-Key"))
@@ -3341,6 +3347,11 @@ class H(BaseHTTPRequestHandler):
                             from . import pixelle_video as pixelle_video_domain
                             pixelle_video_domain.require_material_library_available(body)
                         script_to_video_quote_token = body.pop("_quote_token", "")
+                elif kind == "matrix_template_video":
+                    from . import matrix_template_video as matrix_template_domain
+                    body = matrix_template_domain.validate_payload(
+                        body, user["username"]
+                    )
                 elif kind == "breakdown":
                     from . import breakdown as breakdown_domain
                     body = breakdown_domain.validate_breakdown_payload(body)
@@ -3382,9 +3393,11 @@ class H(BaseHTTPRequestHandler):
                         if minimax_idem_body is not None:
                             request_body = minimax_idem_body
                 # cinematic 也纳入：它提交即扣 $7，是最该防重复提交的一档（同一单任务路径，无额外风险）
-                if not is_still_route: idem_key = idem_key if kind in {"cinematic", "script_to_video"} else (_idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "audio", "video", "tryon", "xiaole_video", "sora_video", "avatar", "canvas_agent", "script_to_video", "breakdown", "copy"} else "")
+                if not is_still_route: idem_key = idem_key if kind in {"cinematic", "script_to_video"} else (_idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "audio", "video", "tryon", "xiaole_video", "sora_video", "avatar", "canvas_agent", "script_to_video", "matrix_template_video", "breakdown", "copy"} else "")
                 if kind == "canvas_agent" and not idem_key:
                     raise ValueError("画布 Agent 提交必须提供 Idempotency-Key")
+                if kind == "matrix_template_video" and not idem_key:
+                    raise ValueError("模板成片提交必须提供 Idempotency-Key")
                 if kind == "avatar" and body.get("short_drama_binding") and not idem_key:
                     raise ValueError("电影化身提交必须提供 Idempotency-Key")
                 if kind == "sora_video" and not idem_key: raise ValueError("Sora 视频提交必须提供 Idempotency-Key")
@@ -3775,6 +3788,27 @@ class H(BaseHTTPRequestHandler):
                 "styles": pixelle_video.public_styles(),
                 "default_style": pixelle_video.DEFAULT_STYLE,
             })
+        if p in {
+            "/api/gen/matrix-template/capability",
+            "/api/gen/matrix-template/templates",
+        }:
+            user = verify(self._token())
+            if not user:
+                return self._send(401, {"detail": "未登录或登录已过期"})
+            from . import matrix_template_video as matrix_template_domain
+            if p.endswith("/capability"):
+                return self._send(200, matrix_template_domain.availability())
+            try:
+                matrix_template_domain.require_available()
+                return self._send(200, {
+                    "templates": matrix_template_domain.public_templates(),
+                    "default_template": "native-bold",
+                    "cost": pricing.get_price("video.matrix_template"),
+                })
+            except feature_flags.FeatureDisabled as error:
+                return self._send(503, {"detail": str(error)})
+            except Exception:
+                return self._send(503, {"detail": "模板目录暂不可用"})
         if _dispatch_short_drama(
                 self, "GET", jdb, verify,
                 getattr(points_domain, "cost_of", None),
