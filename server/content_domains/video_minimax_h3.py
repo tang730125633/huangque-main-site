@@ -12,7 +12,10 @@ import urllib.parse
 import urllib.request
 
 from . import provider_keys
-from providers.short_drama_visual.base import MINIMAX_PROMPT_MAX_CHARACTERS
+try:
+    from providers.short_drama_visual.base import MINIMAX_PROMPT_MAX_CHARACTERS
+except ModuleNotFoundError:  # Imported through the `server` package in tests/tools.
+    from server.providers.short_drama_visual.base import MINIMAX_PROMPT_MAX_CHARACTERS
 
 
 MODEL = "MiniMax-H3"

@@ -3124,6 +3124,7 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             "provider": "minimax_h3_cn",
             "provider_video_id": "h3-upstream-task-1",
             "video_file": "video/minimax_h3_result.mp4",
+            "raw_video_file": "video/minimax_h3_raw_result.mp4",
             "video_url": "/api/gen/file/video/minimax_h3_result.mp4",
             "generate_audio": True,
             "native_audio": {
@@ -3131,6 +3132,8 @@ class ShortDramaAutodraftTests(unittest.TestCase):
                 "channels": 2, "mean_volume_dbfs": -24.3,
                 "max_volume_dbfs": -3.1,
             },
+            "native_resolution": {"width": 2560, "height": 1440},
+            "native_media": self._native_media_evidence(),
             "phase": "done",
         }
         conn = self.db()
@@ -3191,6 +3194,13 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         )
         self.assertEqual(
             shared_result["native_audio"], projected_version["native_audio"]
+        )
+        self.assertEqual(
+            "a" * 64, projected_version["native_media"]["raw"]["sha256"]
+        )
+        self.assertEqual(
+            projected_version["native_media"]["raw"]["sha256"],
+            projected_version["native_media"]["derived"]["derived_from_sha256"],
         )
         self.assertEqual("done", attempt["state"])
         self.assertEqual([], refunded)
@@ -3939,7 +3949,13 @@ class ShortDramaAutodraftTests(unittest.TestCase):
                         shot_key, "lead", "character:lead", "minimax_h3",
                         "upstream-%d" % index, "input-%d" % index,
                         json.dumps({"duration_seconds": 5}),
-                        json.dumps({"native_audio": audio}), now, now,
+                        json.dumps({
+                            "native_audio": audio,
+                            "native_media": self._native_media_evidence(
+                                raw_file="video/native-raw-%d.mp4" % index,
+                                derived_file="video/native-%d.mp4" % index,
+                            ),
+                        }), now, now,
                     ),
                 )
                 conn.execute(
@@ -3981,7 +3997,13 @@ class ShortDramaAutodraftTests(unittest.TestCase):
 
             conn.execute(
                 "UPDATE short_drama_provider_shot_jobs SET result_json=? WHERE id=?",
-                (json.dumps({"native_audio": audio}), "native-contract-job-1"),
+                (json.dumps({
+                    "native_audio": audio,
+                    "native_media": self._native_media_evidence(
+                        raw_file="video/native-raw-1.mp4",
+                        derived_file="video/native-1.mp4",
+                    ),
+                }), "native-contract-job-1"),
             )
             conn.execute(
                 "UPDATE short_drama_provider_shot_versions SET shot_key=? WHERE id=?",
@@ -4093,9 +4115,21 @@ class ShortDramaAutodraftTests(unittest.TestCase):
 
 
     def _preview_second_minimax_shot_with_scene_references(
-        self, current_scene, previous_scene,
+        self, current_scene, previous_scene, recorded_previous_identity=True,
     ):
+        from PIL import Image
+
         self._lock_project_character_references()
+        for relative in [
+            (current_scene or {}).get("file"),
+            (previous_scene or {}).get("file"),
+            "short_drama_refs/previous-tail.png",
+        ]:
+            if not relative:
+                continue
+            path = Path(self.tmp.name) / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            Image.new("RGB", (256, 256), (40, 80, 120)).save(path, "PNG")
         conn = self.db()
         try:
             plan = json.loads(conn.execute(
@@ -4128,11 +4162,18 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             short_drama_autodraft, "_previous_shot_reference",
             return_value={
                 "shot_key": previous_shot["shot_key"],
-                "file": "",
+                "file": "short_drama_refs/previous-tail.png",
                 "url": "https://cdn.example/previous-tail.jpg",
-                "scene_key": previous_scene.get("scene_key") if previous_scene else "",
+                "scene_key": (
+                    previous_scene.get("scene_key")
+                    if previous_scene and recorded_previous_identity else ""
+                ),
                 "scene_version_id": (
                     previous_scene.get("version_id") if previous_scene else ""
+                ),
+                "scene_reference_identity": (
+                    previous_scene.get("reference_identity")
+                    if previous_scene and recorded_previous_identity else ""
                 ),
             },
         ):
@@ -4148,13 +4189,14 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         scene = {
             "scene_key": "scene:memorial-square",
             "version_id": "scene-version-1",
+            "reference_identity": "scene-operation-1",
             "name": "阵亡者纪念广场",
             "prompt": "雨中的纪念墙",
             "file": "short_drama_scenes/memorial-square.png",
             "url": "https://cdn.example/memorial-square.png",
         }
         result = self._preview_second_minimax_shot_with_scene_references(
-            scene, dict(scene),
+            scene, dict(scene, version_id="per-shot-version-2"),
         )
 
         reference_types = [
@@ -4168,6 +4210,7 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         current_scene = {
             "scene_key": "scene:memorial-square",
             "version_id": "memorial-version-1",
+            "reference_identity": "memorial-operation-1",
             "name": "阵亡者纪念广场",
             "prompt": "雨中的纪念墙",
             "file": "short_drama_scenes/memorial-square.png",
@@ -4176,6 +4219,7 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         previous_scene = {
             "scene_key": "scene:ruined-street",
             "version_id": "ruined-street-version-1",
+            "reference_identity": "ruined-street-operation-1",
             "name": "旧城区废墟街道",
             "prompt": "坍塌的街道",
             "file": "short_drama_scenes/ruined-street.png",
@@ -4226,6 +4270,7 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         scene = {
             "scene_key": "scene:memorial-square",
             "version_id": "scene-version-1",
+            "reference_identity": "scene-operation-1",
             "name": "阵亡者纪念广场",
             "prompt": "雨中的纪念墙",
             "file": "short_drama_scenes/memorial-square.png",
@@ -4243,12 +4288,17 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         current_scene = {
             "scene_key": "scene:memorial-square",
             "version_id": "scene-version-2",
+            "reference_identity": "scene-operation-2",
             "name": "阵亡者纪念广场",
             "prompt": "更新后的雨中纪念墙",
             "file": "short_drama_scenes/memorial-square-v2.png",
             "url": "https://cdn.example/memorial-square-v2.png",
         }
-        previous_scene = dict(current_scene, version_id="scene-version-1")
+        previous_scene = dict(
+            current_scene,
+            version_id="scene-version-1",
+            reference_identity="scene-operation-1",
+        )
         result = self._preview_second_minimax_shot_with_scene_references(
             current_scene, previous_scene,
         )
@@ -4450,10 +4500,16 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         self.assertEqual("provider_scene_reference_required", raised.exception.code)
 
     def test_minimax_without_scene_accepts_five_character_references(self):
+        from PIL import Image
+
         character_keys = ["ensemble_%d" % index for index in range(1, 6)]
         conn = self.db()
         try:
             for index, key in enumerate(character_keys, 1):
+                relative = "short_drama_refs/ensemble-%d.png" % index
+                path = Path(self.tmp.name) / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                Image.new("RGB", (256, 256), (40, 80, 120)).save(path, "PNG")
                 conn.execute(
                     "INSERT INTO short_drama_characters "
                     "(id,project_id,character_key,name,source_type,reference_file,"
@@ -4462,7 +4518,7 @@ class ShortDramaAutodraftTests(unittest.TestCase):
                     (
                         "ensemble-character-%d" % index, self.project["id"], key,
                         "Ensemble %d" % index, "ai_character",
-                        "short_drama_refs/ensemble-%d.png" % index,
+                        relative,
                         "https://cdn.example/ensemble-%d.png" % index, 1, index,
                     ),
                 )

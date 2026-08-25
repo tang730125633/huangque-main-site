@@ -37,7 +37,10 @@ from .core import (
 
 import random   # 429 退避重试的抖动：不加抖动，同一批 worker 退避后又会撞在一起
 
-from providers.short_drama_visual.base import HEYGEN_PROMPT_MAX_CHARACTERS
+try:
+    from providers.short_drama_visual.base import HEYGEN_PROMPT_MAX_CHARACTERS
+except ModuleNotFoundError:  # Imported through the `server` package in tests/tools.
+    from server.providers.short_drama_visual.base import HEYGEN_PROMPT_MAX_CHARACTERS
 
 from .audio import gen_audio, get_audio_asset
 from .image_mentions import resolve_image_mentions, validate_image_mentions

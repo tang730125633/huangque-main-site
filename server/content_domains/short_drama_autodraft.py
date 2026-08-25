@@ -23,7 +23,10 @@ from providers.short_drama_visual.heygen_cinematic import (
     HeyGenCinematicShotProvider,
 )
 from providers.short_drama_visual.runtime import load_by_name, load_from_environment
-from providers.short_drama_visual.base import VisualProviderError
+try:
+    from providers.short_drama_visual.base import VisualProviderError
+except ModuleNotFoundError:  # Imported through the `server` package in tests/tools.
+    from server.providers.short_drama_visual.base import VisualProviderError
 
 from . import jobs_store, points as points_domain
 from . import short_drama_assembly_plan as media_plan

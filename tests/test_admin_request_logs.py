@@ -150,6 +150,16 @@ class RequestLogUserTests(unittest.TestCase):
             "INSERT INTO jobs VALUES(1226,'tang','xiaole_video',13,'done','{}',?,?)",
             (now - 100, now - 40),
         )
+        c.execute(
+            "CREATE TABLE short_drama_provider_shot_jobs("
+            "id TEXT PRIMARY KEY, owner_username TEXT, provider TEXT, status TEXT,"
+            "cost INTEGER, created_at INTEGER, updated_at INTEGER, shot_key TEXT)"
+        )
+        c.execute(
+            "INSERT INTO short_drama_provider_shot_jobs VALUES("
+            "'shot-job-1','tang','minimax_h3','failed',42,?,?, 'shot_09')",
+            (now - 50, now - 35),
+        )
         c.commit()
         c.close()
 
@@ -193,8 +203,10 @@ class RequestLogUserTests(unittest.TestCase):
         # 任务行：带用户/功能/点数；时间线按时间倒序
         job_rows = [x for x in items if x["source"] == "job"]
         self.assertEqual(job_rows[0]["user"], "tang")
-        self.assertEqual(job_rows[0]["cost"], 13)
-        self.assertEqual(job_rows[0]["cat"], "ok")
+        self.assertEqual(job_rows[0]["func"], "短剧 · 麦克视频 · shot_09")
+        self.assertEqual(job_rows[0]["cost"], 42)
+        self.assertEqual(job_rows[0]["cat"], "fail")
+        self.assertEqual(job_rows[0]["path"], "短剧任务 #shot-job-1")
         times = [x["time"] for x in items]
         self.assertEqual(times, sorted(times, reverse=True))
         ip12 = next(x for x in items if x["source"] == "ip12")

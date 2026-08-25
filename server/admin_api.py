@@ -2941,7 +2941,7 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
                         "status_text": j["status"],
                         "duration_sec": j["duration_sec"],
                         "cost": j["cost"],
-                        "path": "任务 #%s" % j["id"],
+                        "path": j.get("path_label") or "任务 #%s" % j["id"],
                         "method": "",
                         "ip": "",
                         "ua": "",
@@ -6430,6 +6430,66 @@ def _job_payload(raw):
 # 动作模仿被贴上早已删除的「线路一(HeyGen)」（它现在只走 WaveSpeed），Seedream/果肉生图分不出
 # 引擎，果肉/豆姐/欧米三个渠道混成一个「视频 · 小乐」，cinematic/avatar 直接原样吐英文 kind。
 call_func_name = func_names.func_name
+
+
+_SHORT_DRAMA_PROVIDER_NAMES = {
+    "minimax_h3": "短剧 · 麦克视频",
+    "grok": "短剧 · 果肉视频",
+    "micro": "短剧 · Seedance 视频",
+    "omni": "短剧 · Omni 视频",
+}
+
+
+def _short_drama_provider_call_logs(conn, since, limit):
+    """读取不经过通用 jobs 表的短剧供应商镜头任务。"""
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' "
+        "AND name='short_drama_provider_shot_jobs'"
+    ).fetchone()
+    if not exists:
+        return []
+    rows = conn.execute(
+        """SELECT id,owner_username,provider,status,cost,created_at,updated_at,
+                  shot_key
+             FROM short_drama_provider_shot_jobs
+            WHERE created_at >= ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?""",
+        (since, limit),
+    ).fetchall()
+    items = []
+    for row in rows:
+        raw_status = str(row["status"] or "unknown").lower()
+        status = (
+            "done" if raw_status in {"done", "ready", "succeeded", "completed"}
+            else "error" if raw_status in {"error", "failed", "refunded"}
+            else "running" if raw_status in {
+                "pending", "queued", "running", "processing", "submitted"
+            }
+            else raw_status
+        )
+        created_at = int(row["created_at"] or 0)
+        updated_at = int(row["updated_at"] or 0)
+        provider = str(row["provider"] or "unknown").lower()
+        items.append({
+            "id": row["id"],
+            "username": row["owner_username"] or "-",
+            "kind": "short_drama_provider_video",
+            "func": _SHORT_DRAMA_PROVIDER_NAMES.get(
+                provider, "短剧 · %s 视频" % provider
+            ),
+            "operation": str(row["shot_key"] or ""),
+            "cost": int(row["cost"] or 0),
+            "status": status,
+            "created_at": created_at,
+            "updated_at": updated_at,
+            "duration_sec": (
+                updated_at - created_at
+                if created_at and updated_at >= created_at else None
+            ),
+            "path_label": "短剧任务 #%s" % row["id"],
+        })
+    return items
 
 
 def call_logs(days=7, limit=200):

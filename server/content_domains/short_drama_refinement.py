@@ -1119,6 +1119,7 @@ def _delivery_capability():
             try:
                 result = subprocess.run(
                     command, capture_output=True, text=True, timeout=10,
+                    encoding="utf-8", errors="replace",
                 )
                 checks[name] = result.returncode == 0
             except (OSError, subprocess.TimeoutExpired):
@@ -1129,6 +1130,7 @@ def _delivery_capability():
                 result = subprocess.run(
                     [ffmpeg, "-hide_banner", "-encoders"],
                     capture_output=True, text=True, timeout=15,
+                    encoding="utf-8", errors="replace",
                 )
                 encoders = (result.stdout or "") if result.returncode == 0 else ""
             except (OSError, subprocess.TimeoutExpired):
@@ -1912,6 +1914,42 @@ def _delivery_contract_binding(project_id, source, capability, acceptance):
     }
 
 
+def _delivery_render_owner(phase):
+    prefix, separator, value = str(phase or "").partition(":")
+    if (
+        prefix != "rendering" or not separator or not value
+        or len(value) > 80
+        or any(not (char.isalnum() or char in "_-") for char in value)
+    ):
+        raise RefinementError(
+            "delivery_render_lease_invalid", "2K 正式导出执行权无效", 409,
+        )
+    return value
+
+
+def _delivery_render_paths(root, job, phase):
+    owner = _delivery_render_owner(phase)
+    parent = Path(root) / "short_drama_delivery" / job["project_id"]
+    target = parent / job["id"]
+    return parent / (".%s.%s.tmp" % (job["id"], owner)), target
+
+
+def _cleanup_delivery_render_files(root, job, phase, *, include_target=False):
+    owner = _delivery_render_owner(phase)
+    temp, target = _delivery_render_paths(root, job, phase)
+    if temp.exists():
+        shutil.rmtree(temp, ignore_errors=True)
+    if not include_target or not target.is_dir():
+        return
+    marker = target / ".render-owner"
+    try:
+        target_owner = marker.read_text(encoding="utf-8").strip()
+    except OSError:
+        return
+    if target_owner == owner:
+        shutil.rmtree(target, ignore_errors=True)
+
+
 def _complete_delivery(conn, row, cancel_event=None):
     job = _job(row)
     capability = _require_delivery_available()
@@ -2173,10 +2211,9 @@ def _advance_delivery(conn, row, db_factory=None):
                 "CONTENT_OUT",
                 str(Path(__file__).resolve().parents[1] / "content_out"),
             )).resolve()
-            parent = root / "short_drama_delivery" / job["project_id"]
-            for path in (parent / (".%s.tmp" % job["id"]), parent / job["id"]):
-                if path.exists():
-                    shutil.rmtree(path, ignore_errors=True)
+            _cleanup_delivery_render_files(
+                root, job, render_phase, include_target=True,
+            )
             code = getattr(error, "code", "formal_render_failed")
             retryable = code in {
                 "formal_renderer_unavailable", "formal_delivery_unavailable",
@@ -3647,7 +3684,7 @@ def reconcile_delivery_refund(
         claimed = conn.execute(
             "UPDATE short_drama_delivery_attempts SET refund_token=?,"
             "refund_lease_at=?,updated_at=? WHERE id=? AND state='refund_pending' "
-            "AND job_id IS NULL AND (refund_token IS NULL OR refund_lease_at<?)",
+            "AND (refund_token IS NULL OR refund_lease_at<?)",
             (token, now, now, attempt["id"], now - _DELIVERY_REFUND_LEASE_SECONDS),
         ).rowcount
         current = conn.execute(
@@ -3689,7 +3726,7 @@ def reconcile_delivery_refund(
         conn.execute(
             "UPDATE short_drama_delivery_attempts SET state='refunded',"
             "refund_token=NULL,refund_lease_at=0,updated_at=? "
-            "WHERE id=? AND state='refund_pending' AND job_id IS NULL "
+            "WHERE id=? AND state='refund_pending' "
             "AND refund_token=?", (int(time.time()), current["id"], token),
         )
         conn.commit()

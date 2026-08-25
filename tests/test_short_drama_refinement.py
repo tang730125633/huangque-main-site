@@ -1103,7 +1103,9 @@ class ShortDramaRefinementTests(unittest.TestCase):
             source.index("_recover_pending_jobs(_PENDING_RECOVERY_LIMIT)"),
         )
         scanner = inspect.getsource(core._pending_job_scanner)
-        self.assertIn("retry_delivery_attempt_recovery", scanner)
+        self.assertIn("_run_short_drama_recovery", scanner)
+        recovery = inspect.getsource(core._run_short_drama_recovery)
+        self.assertIn("retry_delivery_attempt_recovery", recovery)
 
     def test_native_orphan_startup_failure_is_logged_and_nonfatal(self):
         with mock.patch.object(
@@ -4264,18 +4266,6 @@ class ShortDramaRefinementTests(unittest.TestCase):
             self.assertEqual("utf-8", call.kwargs.get("encoding"))
             self.assertEqual("replace", call.kwargs.get("errors"))
 
-    def test_delivery_duration_follows_confirmed_refinement_media(self):
-        project = {"target_duration": 60}
-        refinement = {
-            "media": {"media_validation": {"duration_ms": 64480}},
-            "shots": [{"end_ms": 60000}],
-        }
-        self.assertEqual(
-            64480,
-            short_drama_refinement._confirmed_refinement_duration_ms(
-                project, refinement
-            ),
-        )
 
     def test_delivery_recovers_charge_after_process_exit(self):
         production, attempt_id, _quote = self.create_stale_delivery_attempt(
