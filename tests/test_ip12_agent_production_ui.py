@@ -154,7 +154,8 @@ global.document={
     def test_prepare_and_quote_submit_typed_options(self):
         prepare = self.html[self.html.index("async function prepareProduction"):self.html.index("async function requestProductionQuote")]
         self.assertIn("options=typedProductionOptions(item||{},item&&item.options||{})", prepare)
-        self.assertIn("preferred_action:item&&item.preferred_action,specialist_agent:item&&item.specialist_agent,allow_system_media:item&&item.allow_system_media===true,options:options", prepare)
+        self.assertIn("preferred_action:item&&item.preferred_action,specialist_agent:item&&item.specialist_agent,allow_system_media:item&&item.allow_system_media===true", prepare)
+        self.assertIn("options:options", prepare)
         quote = self.html[self.html.index("async function requestProductionQuote"):self.html.index("async function confirmProduction")]
         self.assertIn("var collected=collectProductionOptions(record)", quote)
         self.assertIn("if(collected.missing.length)", quote)
@@ -357,6 +358,30 @@ function newTurnRequestId(){return 'turn-fixture-1'}
         self.assertIn("production-inline", chat)
         result = self.html[self.html.index("function productionResultHtml"):self.html.index("function productionFieldControl")]
         self.assertIn("continueProductionRevision(this.dataset.productionId)", result)
+
+    def test_prepare_and_quote_update_the_same_chat_reply(self):
+        chat = self.html[
+            self.html.index("function appendProductionMessage"):
+            self.html.index("function isSafeMarkdownUrl")
+        ]
+        self.assertIn(".find(function(node)", chat)
+        self.assertIn("existing.innerHTML", chat)
+        payload = self.html[
+            self.html.index("function updateProductionFromPayload"):
+            self.html.index("function collectProductionOptions")
+        ]
+        self.assertIn("payload.material_request_message", payload)
+        prepare = self.html[
+            self.html.index("async function prepareProduction"):
+            self.html.index("async function requestProductionQuote")
+        ]
+        self.assertIn("reply_message_id:item&&item.reply_message_id", prepare)
+        self.assertIn("requested_avatar_name:item&&item.requested_avatar_name", prepare)
+        send = self.html[
+            self.html.index("async function sendTurn"):
+            self.html.index("async function sendJumpMsg")
+        ]
+        self.assertIn("data.assistant_message_id", send)
 
     def test_restore_and_direct_navigation_keep_conversation_context(self):
         select = self.html[self.html.index("async function selectConvo"):self.html.index("async function jumpModule")]

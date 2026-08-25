@@ -758,6 +758,7 @@ def _production_source(convo, target):
     return {
         "category_id": str(category.get("id") or ""),
         "topic_id": str(topic.get("id") or ""),
+        "script_title": str(topic.get("title") or "已确认口播文案").strip(),
         "script_version": version,
         "script_digest": _production_digest(script),
         "script": script,
@@ -1314,6 +1315,46 @@ def _production_recommended_options(schema, options):
     return recommended
 
 
+def _canonical_avatar_display_name(value):
+    match = re.fullmatch(r"\s*形象\s*([0-9]{1,3})\s*", str(value or ""))
+    return "形象 %s" % match.group(1) if match else ""
+
+
+def _requested_avatar_display_name(message):
+    matches = re.findall(r"形象\s*([0-9]{1,3})(?![0-9])", str(message or ""))
+    return "形象 %s" % matches[-1] if matches else ""
+
+
+def _production_choice(record_or_schema, field, *, value=None, title=""):
+    schema = (
+        record_or_schema
+        if isinstance(record_or_schema, dict) and record_or_schema.get("type") == "object"
+        else _production_record_schema(record_or_schema)
+    )
+    choices = ((schema.get("properties") or {}).get(field) or {}).get("oneOf") or []
+    compact_title = re.sub(r"\s+", "", str(title or ""))
+    return next((
+        item for item in choices
+        if isinstance(item, dict) and (
+            value is not None and str(item.get("const")) == str(value)
+            or compact_title and re.sub(r"\s+", "", str(item.get("title") or "")) == compact_title
+        )
+    ), None)
+
+
+def _production_choice_titles(record_or_schema, field):
+    schema = (
+        record_or_schema
+        if isinstance(record_or_schema, dict) and record_or_schema.get("type") == "object"
+        else _production_record_schema(record_or_schema)
+    )
+    return [
+        str(item.get("title") or "").strip()
+        for item in (((schema.get("properties") or {}).get(field) or {}).get("oneOf") or [])
+        if isinstance(item, dict) and str(item.get("title") or "").strip()
+    ]
+
+
 def _production_upload_kind(record, field):
     descriptor = (_production_record_schema(record).get("properties") or {}).get(field) or {}
     if descriptor.get("type") == "array":
@@ -1384,6 +1425,8 @@ def _ensure_production_material_request_message(convo, record, missing):
             "我已经把这次制作需要的素材整理到本条消息下方。"
             "你可以直接预览、试听或上传缺少的素材，不需要打开其他功能页。"
         ]
+    if record.get("avatar_selection_notice"):
+        parts.insert(0, str(record["avatar_selection_notice"]))
     if fields:
         labels = "、".join(_production_field_label(record, name) for name in fields)
         parts.append(
@@ -1419,6 +1462,48 @@ def _ensure_production_material_request_message(convo, record, missing):
             return existing
     message = _append_assistant_message(
         convo, "\n\n".join(parts), _production_agent_skills(record),
+        message_id="matreq_" + uuid.uuid4().hex,
+        production_id=record["id"],
+    )
+    record["material_request_message_id"] = message["message_id"]
+    return message
+
+
+def _ensure_production_quote_message(convo, record):
+    quote = record.get("quote") if isinstance(record.get("quote"), dict) else {}
+    options = record.get("options") if isinstance(record.get("options"), dict) else {}
+    avatar = _production_choice(record, "avatar_id", value=options.get("avatar_id"))
+    voice_field = "voice" if "voice" in options else ("voice_key" if "voice_key" in options else "")
+    voice = _production_choice(record, voice_field, value=options.get(voice_field)) if voice_field else None
+    avatar_label = str((avatar or {}).get("title") or (
+        "本次上传人物照片" if options.get("image_upload_id") else "待选择"
+    ))
+    voice_label = str((voice or {}).get("title") or (
+        "本次上传口播音频" if options.get("audio_upload_id") else "个人音色"
+    ))
+    parts = []
+    if record.get("avatar_selection_notice"):
+        parts.append(str(record["avatar_selection_notice"]))
+    parts.extend([
+        "口播短视频 Agent 已按当前 Project 更新本次方案和实时报价：",
+        "- 文案：《%s》" % str(record.get("script_title") or "已确认口播文案"),
+        "- 形象：%s" % avatar_label,
+        "- 声音：%s" % voice_label,
+        "- 本次报价：%s 点" % str(quote.get("cost") if quote.get("cost") is not None else "—"),
+        "- 当前余额：%s 点" % str(quote.get("points") if quote.get("points") is not None else "—"),
+        "当前未扣点、任务也没有提交；现在等待你确认。你也可以先修改文案、形象或声音。",
+    ])
+    content = "\n\n".join(parts)
+    message_id = str(record.get("material_request_message_id") or "")
+    existing = next((
+        item for item in convo.get("messages") or []
+        if message_id and item.get("role") == "assistant" and item.get("message_id") == message_id
+    ), None)
+    if existing:
+        existing.update(content=content, production_id=record["id"])
+        return existing
+    message = _append_assistant_message(
+        convo, content, _production_agent_skills(record),
         message_id="matreq_" + uuid.uuid4().hex,
         production_id=record["id"],
     )
@@ -3579,12 +3664,22 @@ def _set_active_production(convo, production_id):
 def api_prepare_production():
     try:
         body = _production_request_body()
-        if set(body) - {"conversation_id", "content_target", "expected_revision", "requested_result", "preferred_action", "options", "allow_system_media", "specialist_agent"}:
+        if set(body) - {
+            "conversation_id", "content_target", "expected_revision", "requested_result",
+            "preferred_action", "options", "allow_system_media", "specialist_agent",
+            "reply_message_id", "requested_avatar_name",
+        }:
             return _production_error("invalid_request", "包含不支持的参数", 400)
         if "allow_system_media" in body and not isinstance(body["allow_system_media"], bool):
             return _production_error("invalid_request", "系统素材授权必须是布尔值", 400)
         cid = str(body.get("conversation_id") or "")
         specialist_id = str(body.get("specialist_agent") or "").strip()
+        reply_message_id = str(body.get("reply_message_id") or "").strip()
+        if reply_message_id and not re.fullmatch(r"ip12-assistant-[0-9a-f]{64}", reply_message_id):
+            return _production_error("invalid_request", "回复标识无效", 400)
+        requested_avatar_name = _canonical_avatar_display_name(body.get("requested_avatar_name"))
+        if body.get("requested_avatar_name") and not requested_avatar_name:
+            return _production_error("invalid_request", "形象显示名称无效", 400)
         if specialist_id and specialist_id != talking_head_agent.AGENT_ID:
             return _production_error("invalid_specialist", "专业 Agent 不受支持", 400)
         recommendation = _production_recommendation(
@@ -3610,6 +3705,11 @@ def api_prepare_production():
             source = _production_source_or_unbound(
                 convo, body.get("content_target"), unbound=source_unbound
             )
+            previous = _latest_talking_head_production(convo)
+            previous_avatar_id = (
+                (previous.get("options") or {}).get("avatar_id")
+                if isinstance(previous, dict) else None
+            )
         _validate_production_action(
             current_account_id(), state, recommendation["recommended_action"]
         )
@@ -3626,6 +3726,13 @@ def api_prepare_production():
             source = _production_source_or_unbound(
                 convo, body.get("content_target"), unbound=source_unbound
             )
+            if reply_message_id:
+                latest_assistant = next((
+                    item for item in reversed(convo.get("messages") or [])
+                    if item.get("role") == "assistant"
+                ), None)
+                if not latest_assistant or latest_assistant.get("message_id") != reply_message_id:
+                    return _production_error("invalid_reply_message", "当前回复已经变化，请刷新后重试", 409)
             specialist_plan = None
             if specialist_id:
                 specialist_plan = talking_head_agent.plan(
@@ -3641,6 +3748,7 @@ def api_prepare_production():
             record = {
                 "id": production_id,
                 "category_id": source["category_id"], "topic_id": source["topic_id"],
+                "script_title": source.get("script_title") or "已确认口播文案",
                 "script_version": source["script_version"], "script_digest": source["script_digest"],
                 "source_text": source["script"],
                 "source_bound": source.get("source_bound", True),
@@ -3668,6 +3776,10 @@ def api_prepare_production():
                 "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
             }
+            if reply_message_id:
+                record["material_request_message_id"] = reply_message_id
+            if requested_avatar_name:
+                record["requested_avatar_name"] = requested_avatar_name
             if specialist_plan:
                 record["specialist_agent"] = talking_head_agent.new_delegation(
                     production_id, specialist_plan
@@ -3692,6 +3804,36 @@ def api_prepare_production():
                 options = {**defaults, **options}
             if record["action"] in {"audio-generate", "digital-ip-text-generate"}:
                 options = _production_recommended_options(parameter_schema, options)
+            if requested_avatar_name and record["action"] == "digital-ip-text-generate":
+                requested_choice = _production_choice(
+                    parameter_schema, "avatar_id", title=requested_avatar_name
+                )
+                previous_choice = _production_choice(
+                    parameter_schema, "avatar_id", value=previous_avatar_id
+                )
+                if requested_choice:
+                    options["avatar_id"] = requested_choice.get("const")
+                elif previous_choice:
+                    options["avatar_id"] = previous_choice.get("const")
+                    record["avatar_selection_notice"] = (
+                        "当前素材目录没有“%s”；我已保留原先选择的“%s”。"
+                        "当前可用显示名称为：%s。系统内部编号不会作为形象名称。"
+                        % (
+                            requested_avatar_name,
+                            previous_choice.get("title") or "原已选形象",
+                            "、".join(_production_choice_titles(parameter_schema, "avatar_id")) or "暂无",
+                        )
+                    )
+                else:
+                    options.pop("avatar_id", None)
+                    record["avatar_selection_notice"] = (
+                        "当前素材目录没有“%s”，我没有替你静默更换。"
+                        "请选择以下可用显示名称：%s。系统内部编号不会作为形象名称。"
+                        % (
+                            requested_avatar_name,
+                            "、".join(_production_choice_titles(parameter_schema, "avatar_id")) or "暂无",
+                        )
+                    )
             _production_set_options(record, options)
             _, validation_error, missing = _production_plan_or_error(record, record["options"])
             if validation_error:
@@ -4261,6 +4403,7 @@ def api_quote_production():
                 and int(existing_quote.get("expires_at") or 0) > _utc_timestamp()
             ):
                 _runtime_quote_completed(convo, record, request_id)
+                quote_message = _ensure_production_quote_message(convo, record)
                 save_conversation(cid, convo)
                 return jsonify({
                     "ok": True, "replayed": True, "production_id": production_id,
@@ -4272,6 +4415,7 @@ def api_quote_production():
                     "input_digest": request_digest,
                     "billing": existing_quote.get("billing") or "paid",
                     "production": _production_public(record),
+                    "material_request_message": quote_message,
                 })
             record.update(status="draft", last_error_code="")
             _runtime_quote_started(convo, record, request_id)
@@ -4382,6 +4526,7 @@ def api_quote_production():
                                "input_digest": request_digest, "billing": billing}
             record.update(status="quoted", last_error_code="", updated_at=datetime.now().strftime("%Y-%m-%d %H:%M"))
             _runtime_quote_completed(convo, record, request_id)
+            quote_message = _ensure_production_quote_message(convo, record)
             save_conversation(cid, convo)
         return jsonify({"ok": True, "production_id": production_id, "status": "quoted",
                         "cost": quote.get("cost"), "points": quote.get("points"),
@@ -4389,7 +4534,8 @@ def api_quote_production():
                         "confirmation_required": bool(record.get("confirmation_required")),
                         "script_version": record["script_version"],
                         "input_digest": request_digest, "billing": billing,
-                        "production": _production_public(record)})
+                        "production": _production_public(record),
+                        "material_request_message": quote_message})
     except coach_harness.HarnessConflict as exc:
         return _production_error("revision_conflict", str(exc))
     except coach_harness.HarnessError as exc:
@@ -5287,6 +5433,11 @@ def _turn_message_id(cid, user_message, snapshot_revision, request_id=""):
     return "ip12-user-" + digest
 
 
+def _assistant_turn_message_id(user_message_id):
+    digest = str(user_message_id or "").removeprefix("ip12-user-")
+    return "ip12-assistant-" + digest if re.fullmatch(r"[0-9a-f]{64}", digest) else ""
+
+
 def _append_or_reuse_user_message(convo, user_message, message_id=""):
     clean_message = _redact_mobile_numbers(str(user_message or ""))
     messages = convo.setdefault("messages", [])
@@ -6077,6 +6228,7 @@ def _process_production_intent_turn(
             "状态卡会持续显示后台进度，你可以继续和我聊天。"
         )
     message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
+    assistant_message_id = _assistant_turn_message_id(message_id)
     assistant, next_state = _persist_unprocessed_turn(
         cid, user_message, snapshot_revision, message_id=message_id,
         assistant_override=assistant,
@@ -6084,8 +6236,10 @@ def _process_production_intent_turn(
             ["talking_head_video_agent", "production_bridge"]
             if specialist_plan else ["production_bridge"]
         ),
+        assistant_extra={"message_id": assistant_message_id},
     )
     result = _chat_result(assistant, next_state)
+    result["assistant_message_id"] = assistant_message_id
     if selected_action in _NAVIGATION_ONLY_ACTIONS:
         result["actions"] = [{
             "type": "navigate_to",
@@ -6111,6 +6265,9 @@ def _process_production_intent_turn(
         **({"specialist_agent": talking_head_agent.AGENT_ID} if specialist_plan else {}),
         **({"parameter_schema": specialist_plan["option_schema"]} if specialist_plan else {}),
         "allow_system_media": _explicit_system_media_request(user_message),
+        "reply_message_id": assistant_message_id,
+        **({"requested_avatar_name": _requested_avatar_display_name(user_message)}
+           if specialist_plan and _requested_avatar_display_name(user_message) else {}),
         "options": options,
     }]
     return result, 200

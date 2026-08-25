@@ -394,6 +394,173 @@ with patch.object(server, "_bridge_catalog", return_value=catalog), patch.object
             )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    @unittest.skipUnless(
+        importlib.util.find_spec("flask") and importlib.util.find_spec("requests"),
+        "Hermes runtime dependencies are not installed",
+    )
+    def test_quote_reuses_one_reply_and_maps_avatar_display_name(self):
+        script = r'''
+from unittest.mock import patch
+import server
+import security
+
+def action(name, schema):
+    return {
+        "action": name, "family": "video", "purpose": name,
+        "input_schema": {"type": "object", "additionalProperties": False, **schema},
+        "constraints": [], "billing": "quote_then_confirm", "confirmation_required": True,
+        "risk": "production", "result_type": "asset", "ui_route": "/workbench/video",
+        "transport": {"kind": "action"}, "availability": {"status": "available"},
+    }
+
+catalog = {"version": "quote-reply-v1", "actions": [
+    action("digital-ip-text-generate", {
+        "required": ["avatar_id", "text", "voice"],
+        "properties": {
+            "avatar_id": {"type": "integer"}, "text": {"type": "string"},
+            "voice": {"type": "string"}, "ratio": {"type": "string"},
+            "motion": {"type": "string"}, "subtitle": {"type": "boolean"},
+            "subtitle_style": {"type": "string"},
+            "subtitle_position": {"type": "string"},
+        },
+    }),
+]}
+
+server.current_account_id = lambda: "acct_quote_reply"
+security._validate_token = lambda token: {
+    "account_id": "acct_quote_reply", "username": "quote", "role": "member",
+}
+security.RATE_REQUESTS = 100
+client = server.app.test_client()
+client.environ_base["HTTP_AUTHORIZATION"] = "Bearer test-token"
+state = server.initial_coach_state()
+state.update(
+    completed_modules=[1, 2, 3, 4, 5, 6], current_module=6, module_step=3,
+    foundation_report={"status": "confirmed"},
+)
+cid = "quotereply01"
+previous = {
+    "id": "prod_previous", "action": "digital-ip-text-generate", "status": "quoted",
+    "options": {"avatar_id": 7, "voice": "voice-me"},
+    "specialist_agent": {
+        "agent_id": server.talking_head_agent.AGENT_ID,
+        "delegation_id": "delegate_previous",
+    },
+    "quote": {"cost": 120, "points": 94509},
+}
+server.save_conversation(cid, {
+    "id": cid, "title": "quote reply", "coach_state": state,
+    "messages": [],
+    "reports": {}, "owner_account_id": "acct_quote_reply",
+    "active_production_id": previous["id"],
+    "productions": {previous["id"]: previous},
+    "deliverables": {"6": {"kind": "content_pack_v1", "categories": [{
+        "id": "category_1", "name": "内容", "topics": [{
+            "id": "topic_1", "title": "新手第一次接触 Agent，先弄懂什么",
+            "status": "ready", "versions": [{
+                "version": 1, "content": "这是已经确认的完整口播文案。",
+            }],
+        }],
+    }]}},
+})
+
+user_message = (
+    "用第一篇《新手第一次接触 Agent，先弄懂什么》制作数字人口播视频，"
+    "继续使用当前已经选好的形象 7 和我的个人音色。请只刷新实时报价，不要提交生成。"
+)
+turn, status = server._process_production_intent_turn(
+    cid, user_message, {"category_id": "category_1", "topic_id": "topic_1"},
+    {
+        "capability_family": "video", "recommended_action": "digital-ip-text-generate",
+        "candidate_actions": ["digital-ip-text-generate"],
+    },
+    expected_revision=state["revision"], request_id="quote-reply-turn",
+)
+assert status == 200, turn
+action_payload = turn["actions"][0]
+reply_id = turn["assistant_message_id"]
+assert action_payload["reply_message_id"] == reply_id, action_payload
+assert action_payload["requested_avatar_name"] == "形象 7", action_payload
+revision = turn["state"]["revision"]
+
+bridge_calls = []
+def bridge(_account, capability, input_body, **kwargs):
+    bridge_calls.append((capability, input_body, kwargs))
+    if capability == "video-avatars":
+        return {"items": [
+            {"id": 9, "name": "形象 6", "status": "ready", "image_url": "/avatar-6.jpg"},
+            {"id": 7, "name": "形象 4", "status": "ready", "image_url": "/avatar-4.jpg"},
+        ]}
+    if capability == "voices":
+        return {"items": [{
+            "voice_key": "voice-me", "display_name": "岳磊个人音色",
+            "preview_url": "/voice.mp3", "scope": "personal", "slot_id": "slot-me",
+        }]}
+    if capability == "digital-ip-text-generate":
+        return {"quote_token": "quote-refresh", "cost": 150, "points": 94359, "expires_in": 300}
+    raise AssertionError(capability)
+
+with patch.object(server, "_bridge_catalog", return_value=catalog), patch.object(
+    server, "_bridge_action", side_effect=bridge
+):
+    prepared = client.post("/api/ip12/productions/prepare", json={
+        "conversation_id": cid,
+        "content_target": action_payload["content_target"],
+        "expected_revision": revision, "requested_result": action_payload["requested_result"],
+        "preferred_action": action_payload["preferred_action"],
+        "specialist_agent": action_payload["specialist_agent"],
+        "reply_message_id": action_payload["reply_message_id"],
+        "requested_avatar_name": action_payload["requested_avatar_name"],
+        "options": action_payload["options"],
+    })
+    assert prepared.status_code == 200, prepared.get_data(as_text=True)
+    prepared_body = prepared.get_json()
+    production_id = prepared_body["production_id"]
+    assert prepared_body["options"]["avatar_id"] == 7, prepared_body
+    assert prepared_body["material_request_message"]["message_id"] == reply_id, prepared_body
+    assert "没有“形象 7”" in prepared_body["material_request_message"]["content"], prepared_body
+    assert "保留原先选择的“形象 4”" in prepared_body["material_request_message"]["content"], prepared_body
+    assert "形象 6、形象 4" in prepared_body["material_request_message"]["content"], prepared_body
+    assert server._production_choice(
+        prepared_body["parameter_schema"], "avatar_id", title="形象 7"
+    ) is None
+    assert server._production_choice(
+        prepared_body["parameter_schema"], "avatar_id", value=7
+    )["title"] == "形象 4"
+
+    quoted = client.post("/api/ip12/productions/quote", json={
+        "conversation_id": cid, "production_id": production_id,
+        "expected_revision": revision,
+    })
+    assert quoted.status_code == 200, quoted.get_data(as_text=True)
+    quote_body = quoted.get_json()
+
+message = quote_body["material_request_message"]
+assert message["message_id"] == reply_id, message
+for expected in (
+    "新手第一次接触 Agent，先弄懂什么", "形象 4", "岳磊个人音色",
+    "本次报价：150 点", "当前余额：94359 点", "当前未扣点", "等待你确认",
+):
+    assert expected in message["content"], (expected, message)
+saved = server.load_conversation(cid)
+assistant_messages = [item for item in saved["messages"] if item.get("role") == "assistant"]
+assert len(assistant_messages) == 1, assistant_messages
+assert assistant_messages[0]["message_id"] == reply_id, assistant_messages
+assert assistant_messages[0]["production_id"] == production_id, assistant_messages
+assert saved["productions"][production_id]["options"]["avatar_id"] == 7, saved["productions"][production_id]
+assert not saved["productions"][production_id].get("job_id"), saved["productions"][production_id]
+assert sum(1 for item in saved["messages"] if item.get("role") == "user") == 1, saved["messages"]
+assert not any(call[2].get("confirm") for call in bridge_calls), bridge_calls
+'''
+        with tempfile.TemporaryDirectory(prefix="ip12-quote-reply-test.") as data_dir:
+            env = os.environ.copy()
+            env.update(OPENAI_API_KEY="dummy", HERMES_HOME=data_dir, HERMES_DATA_DIR=data_dir)
+            result = subprocess.run(
+                [sys.executable, "-c", script], cwd=ROOT / "server" / "hermes_ip12",
+                env=env, capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
