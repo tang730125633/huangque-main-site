@@ -189,12 +189,16 @@ def generate(payload):
             video_file, file_size = _download(result.get("file_url"), local_job)
             return {
                 "type": "matrix_template_video",
+                "mode": "matrix_template",
                 "provider": "matrix-template",
                 "provider_task_id": remote_id,
                 "status": "done",
                 "video_file": video_file,
                 "video_url": public_url(video_file, "video/mp4", private=True),
                 "duration": float(result.get("duration") or 0),
+                "phase": "done",
+                "resolution": "1080p",
+                "ratio": "9:16",
                 "width": int(result.get("width") or 1080),
                 "height": int(result.get("height") or 1920),
                 "template_id": result.get("template_id") or payload["template_id"],

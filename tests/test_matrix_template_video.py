@@ -3,10 +3,12 @@ from __future__ import annotations
 import importlib
 import json
 import re
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest import mock
 
@@ -101,9 +103,53 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         self.assertEqual("a" * 32, result["provider_task_id"])
         self.assertEqual("matrix-template-77", request.call_args_list[0].kwargs["request_id"])
         download.assert_called_once_with("/v1/files/%s.mp4" % ("a" * 32), "77")
+        self.assertEqual("matrix_template", result["mode"])
+        self.assertEqual(("done", "1080p", "9:16"), (
+            result["phase"], result["resolution"], result["ratio"]
+        ))
+
+    def test_completed_result_archives_in_real_video_assets_schema(self):
+        from content_domains import core, video
+
+        with tempfile.TemporaryDirectory() as temp:
+            old = core.AUDIO_DB
+            core.AUDIO_DB = Path(temp) / "assets.db"
+            try:
+                with closing(sqlite3.connect(core.AUDIO_DB)) as db:
+                    db.execute("""CREATE TABLE video_assets(
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,job_id INTEGER UNIQUE,
+                        username TEXT NOT NULL,mode TEXT NOT NULL,image_file TEXT,
+                        audio_file TEXT,reference_video_file TEXT,video_file TEXT,
+                        video_url TEXT,text TEXT,voice_key TEXT,resolution TEXT,
+                        ratio TEXT,motion TEXT,phase TEXT,image_asset_id TEXT,
+                        audio_asset_id TEXT,reference_asset_id TEXT,provider_video_id TEXT,
+                        provider_key_id TEXT,provider_avatar_id TEXT,
+                        provider_avatar_group_id TEXT,source_video_url TEXT,
+                        background_file TEXT,tryon_mode TEXT,model TEXT,
+                        status TEXT NOT NULL DEFAULT 'pending',error TEXT,
+                        created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL)""")
+                    db.commit()
+                result = {
+                    "mode": "matrix_template", "video_file": "video/final.mp4",
+                    "video_url": "/api/gen/file/token", "resolution": "1080p",
+                    "ratio": "9:16", "phase": "done", "status": "done",
+                    "provider_task_id": "remote-1",
+                }
+                video.record_video_asset(77, "alice", result)
+                with closing(sqlite3.connect(core.AUDIO_DB)) as db:
+                    row = db.execute(
+                        "SELECT mode,video_file,resolution,ratio,phase,status "
+                        "FROM video_assets WHERE job_id=77"
+                    ).fetchone()
+                self.assertEqual(
+                    ("matrix_template", "video/final.mp4", "1080p", "9:16", "done", "done"),
+                    row,
+                )
+            finally:
+                core.AUDIO_DB = old
 
     def test_pricing_and_feature_are_registered(self):
-        from content_domains import feature_flags, points, pricing, registry
+        from content_domains import feature_flags, points, pricing
 
         self.assertIn("matrix_template_video", feature_flags.CATALOG_MAP)
         self.assertIn("video.matrix_template", pricing.CATALOG_MAP)
@@ -111,10 +157,25 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             pricing.get_price("video.matrix_template"),
             points.cost_of("matrix_template_video", {}),
         )
-        self.assertIn("matrix_template_video", registry.HANDLERS)
+        registry_source = (ROOT / "server/content_domains/registry.py").read_text(encoding="utf-8")
+        self.assertIn("matrix_template_video", registry_source)
+
+    def test_unified_function_names_cover_history_and_request_path(self):
+        from server import func_names
+
+        self.assertEqual("模板成片", func_names.func_name("matrix_template_video", {}))
+        self.assertEqual("模板成片", func_names.path_func("/api/gen/matrix-template"))
+        self.assertEqual("模板成片", func_names.path_func("/api/gen/matrix-template/templates"))
 
 
 class MatrixTemplatePageTests(unittest.TestCase):
+    def runtime(self, scenario):
+        result = subprocess.run(
+            ["node", str(ROOT / "tests/matrix_template_page_runtime.js"), scenario],
+            check=True, capture_output=True, text=True,
+        )
+        return json.loads(result.stdout)
+
     def test_page_and_sidebar_expose_feature_after_text_video(self):
         page = (ROOT / "site/workbench/matrix-template.html").read_text(encoding="utf-8")
         shell = (ROOT / "site/workbench/cloud-shell.js").read_text(encoding="utf-8")
@@ -135,6 +196,29 @@ class MatrixTemplatePageTests(unittest.TestCase):
             capture_output=True, text=True,
         )
         self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_post_response_loss_reuses_the_same_idempotency_key(self):
+        result = self.runtime("postLoss")
+        self.assertEqual(2, result["posts"])
+        self.assertEqual(1, len(set(result["keys"])))
+        self.assertTrue(result["cleared"])
+
+    def test_idempotency_in_progress_retries_the_same_claim(self):
+        result = self.runtime("inProgress")
+        self.assertEqual(1, len(set(result["keys"])))
+        self.assertTrue(result["cleared"])
+
+    def test_refresh_recovers_polling_without_new_submission(self):
+        result = self.runtime("refresh")
+        self.assertEqual(0, result["secondPosts"])
+        self.assertGreaterEqual(result["secondPolls"], 1)
+        self.assertTrue(result["cleared"])
+
+    def test_single_poll_failure_keeps_busy_and_recovers(self):
+        result = self.runtime("pollFailure")
+        self.assertTrue(result["busyAfterFailure"])
+        self.assertEqual(2, result["polls"])
+        self.assertTrue(result["cleared"])
 
 
 if __name__ == "__main__":
