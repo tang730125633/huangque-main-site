@@ -11,7 +11,7 @@ from . import short_drama_assembly_artifacts as assembly_artifacts
 from . import short_drama_assembly_lipsync as lipsync_assembly
 from . import short_drama_master_audio as master_audio
 from . import short_drama_alignment as subtitle_alignment
-from . import short_drama_duration
+from . import short_drama_asset_graph, short_drama_duration
 
 
 ASSEMBLY_STAGES = {"assembly_review", "completed"}
@@ -475,13 +475,9 @@ def _row_dict(row):
 def _collect_sources(conn, project_id):
     """Capture all immutable inputs used by the planner for a later CAS check."""
     result = []
-    shots = conn.execute(
-        "SELECT id,shot_key,sort_order,duration "
-        "FROM short_drama_shots WHERE project_id=? ORDER BY sort_order,id",
-        (project_id,),
-    )
-    for shot_row in shots:
-        shot = _row_dict(shot_row)
+    for current_shot in short_drama_asset_graph.current_project_shots(
+            conn, project_id):
+        shot = dict(current_shot)
         voice_slot = _row_dict(conn.execute(
             "SELECT shot_id,locked,timeline_revision FROM short_drama_voice_shots "
             "WHERE project_id=? AND shot_id=?",
@@ -1344,10 +1340,9 @@ def save_assembly_config(
             conn.rollback()
             raise ActiveCompositionJob("项目已有合成任务处理中")
         shot_durations = {
-            str(row["id"]): int(row["duration"]) * 1000
-            for row in conn.execute(
-                "SELECT id,duration FROM short_drama_shots WHERE project_id=?",
-                (project_id,),
+            str(shot["id"]): int(shot["duration"]) * 1000
+            for shot in short_drama_asset_graph.current_project_shots(
+                conn, project_id,
             )
         }
         config = _normalize_editable_config(body["config"], shot_durations)

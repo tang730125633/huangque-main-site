@@ -5,7 +5,7 @@ import sqlite3
 import time
 import uuid
 
-from . import short_drama_alignment, short_drama_voice
+from . import short_drama_alignment, short_drama_asset_graph, short_drama_voice
 from .short_drama_timeline_hashes import (
     CONTRACT_VERSION,
     canonical_hash,
@@ -138,13 +138,11 @@ def _legacy_source(conn, project):
     legacy_speaker_hash, speaker_hash = _speaker_hashes(characters, cast, [])
     shot_bounds = []
     cursor = 0
-    for row in conn.execute(
-            "SELECT id,shot_key,duration FROM short_drama_shots "
-            "WHERE project_id=? ORDER BY sort_order,id",
-            (project["id"],)):
-        end = cursor + int(row[2] or 0) * 1000
+    for shot in short_drama_asset_graph.current_project_shots(
+            conn, project["id"]):
+        end = cursor + int(shot.get("duration") or 0) * 1000
         shot_bounds.append({
-            "shot_id": row[0], "shot_key": row[1],
+            "shot_id": shot["id"], "shot_key": shot["shot_key"],
             "start_ms": cursor, "end_ms": end,
         })
         cursor = end

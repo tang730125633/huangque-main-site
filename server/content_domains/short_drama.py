@@ -5565,6 +5565,7 @@ _HTTP_ROUTES = {
         "/api/gen/short-drama/conversation/script/shot/update",
         "/api/gen/short-drama/conversation/script/shot/regenerate",
         "/api/gen/short-drama/conversation/script/shot/lock",
+        "/api/gen/short-drama/conversation/script/shot/structure",
         "/api/gen/short-drama/conversation/script/restore",
         "/api/gen/short-drama/conversation/script/lock",
         "/api/gen/short-drama/character-studio/profile",
@@ -5577,6 +5578,11 @@ _HTTP_ROUTES = {
         "/api/gen/short-drama/asset-graph/snapshots",
         "/api/gen/short-drama/asset-graph/scenes/reference",
         "/api/gen/short-drama/asset-graph/scenes/lock",
+        "/api/gen/short-drama/asset-graph/scenes",
+        "/api/gen/short-drama/asset-graph/scenes/update",
+        "/api/gen/short-drama/asset-graph/scenes/bind-shot",
+        "/api/gen/short-drama/asset-graph/scenes/delete",
+        "/api/gen/short-drama/asset-graph/scenes/restore",
         "/api/gen/short-drama/preflight/generate",
         "/api/gen/short-drama/preflight/confirm",
         "/api/gen/short-drama/autodraft/provider-preflight",
@@ -6075,6 +6081,31 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
                         db_factory, owner, username, body,
                     )
                 ),
+                "/api/gen/short-drama/asset-graph/scenes": lambda: (
+                    short_drama_asset_graph.create_scene(
+                        db_factory, owner, username, body,
+                    )
+                ),
+                "/api/gen/short-drama/asset-graph/scenes/update": lambda: (
+                    short_drama_asset_graph.update_scene(
+                        db_factory, owner, username, body,
+                    )
+                ),
+                "/api/gen/short-drama/asset-graph/scenes/bind-shot": lambda: (
+                    short_drama_asset_graph.bind_scene_to_shot(
+                        db_factory, owner, username, body,
+                    )
+                ),
+                "/api/gen/short-drama/asset-graph/scenes/delete": lambda: (
+                    short_drama_asset_graph.delete_scene(
+                        db_factory, owner, username, body,
+                    )
+                ),
+                "/api/gen/short-drama/asset-graph/scenes/restore": lambda: (
+                    short_drama_asset_graph.restore_scene(
+                        db_factory, owner, username, body,
+                    )
+                ),
             }
             handler._send(200, actions[path]())
         elif method == "POST" and path == "/api/gen/short-drama/advisor":
@@ -6213,6 +6244,8 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
                     short_drama_conversation.regenerate_shot,
                 "/api/gen/short-drama/conversation/script/shot/lock":
                     short_drama_conversation.set_shot_lock,
+                "/api/gen/short-drama/conversation/script/shot/structure":
+                    short_drama_conversation.change_shot_structure,
                 "/api/gen/short-drama/conversation/script/restore":
                     short_drama_conversation.restore_version,
                 "/api/gen/short-drama/conversation/script/lock":

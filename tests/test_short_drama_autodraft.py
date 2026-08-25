@@ -860,9 +860,11 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             "provider_prompt": "校园教室里，学生收拾书包",
             "include_continuity_reference": False,
             "include_scene_reference": True,
+            "scene_key": "scene-group:locked-classroom",
         })
         self.assertFalse(execution["include_continuity_reference"])
         self.assertTrue(execution["include_scene_reference"])
+        self.assertEqual("scene-group:locked-classroom", execution["scene_key"])
         error = short_drama_autodraft._provider_failure_error({
             "failure": {
                 "code": "1026",

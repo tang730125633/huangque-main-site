@@ -4408,6 +4408,51 @@
           }
         }
       },
+      "ShortDramaShotStructureMutation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "project_id",
+          "conversation_revision",
+          "version_id",
+          "shot_key",
+          "action"
+        ],
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "conversation_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "version_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "shot_key": {
+            "type": "string",
+            "minLength": 1
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "copy",
+              "delete",
+              "insert_before",
+              "insert_after",
+              "smart_insert",
+              "move_up",
+              "move_down"
+            ]
+          },
+          "instruction": {
+            "type": "string",
+            "maxLength": 1000
+          }
+        }
+      },
       "ShortDramaCharacterStudioWorkspace": {
         "type": "object",
         "required": [
@@ -4747,6 +4792,142 @@
               "type": "object",
               "additionalProperties": true
             }
+          }
+        }
+      },
+      "ShortDramaSceneCreateRequest": {
+        "type": "object",
+        "required": [
+          "project_id",
+          "graph_revision",
+          "name",
+          "description",
+          "shot_keys"
+        ],
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "graph_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "description": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 4000
+          },
+          "shot_keys": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      },
+      "ShortDramaSceneUpdateRequest": {
+        "type": "object",
+        "required": [
+          "project_id",
+          "graph_revision",
+          "scene_key",
+          "name",
+          "description",
+          "shot_keys"
+        ],
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "graph_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "scene_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "description": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 4000
+          },
+          "shot_keys": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      },
+      "ShortDramaSceneBindingRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "project_id",
+          "graph_revision",
+          "shot_key",
+          "scene_key"
+        ],
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "graph_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "shot_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          },
+          "scene_key": {
+            "type": "string",
+            "maxLength": 160,
+            "description": "传空字符串可显式取消该镜头的场景绑定"
+          }
+        }
+      },
+      "ShortDramaSceneIdentityRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "project_id",
+          "graph_revision",
+          "scene_key"
+        ],
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "graph_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "scene_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
           }
         }
       },
@@ -9706,6 +9887,284 @@
         "x-hq-test-safety": "safe-read",
         "x-hq-runtime-status": "pending-deployment",
         "description": "**生产状态：未上线。2026-08-14 无登录路由探测仍返回统一 `not_found`，测试人员暂勿执行。**"
+      },
+      "post": {
+        "tags": [
+          "短剧策划"
+        ],
+        "summary": "【生产未上线】新增自定义场景并关联镜头",
+        "description": "Free / no points. 仅 owner/editor 可写；使用 graph_revision 防止覆盖其他协作者的场景修改。",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XCanvasBoardId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShortDramaSceneCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "新增后的场景工作区",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShortDramaSceneWorkspace"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求体不是合法 JSON"
+          },
+          "401": {
+            "description": "未登录"
+          },
+          "403": {
+            "description": "必须修改初始密码或没有项目写权限"
+          },
+          "404": {
+            "description": "项目不存在或当前用户无权发现"
+          },
+          "409": {
+            "description": "graph_revision 已过期"
+          },
+          "422": {
+            "description": "名称、描述或镜头关联无效"
+          }
+        },
+        "x-hq-test-safety": "may-charge",
+        "x-hq-runtime-status": "pending-deployment"
+      }
+    },
+    "/api/gen/short-drama/asset-graph/scenes/update": {
+      "post": {
+        "tags": [
+          "短剧策划"
+        ],
+        "summary": "【生产未上线】修改自定义场景及镜头关联",
+        "description": "Free / no points. 仅自定义场景可修改名称、描述和关联镜头；系统基础场景保持只读。名称或描述变化会废弃旧锁定参考，必须重新上传或生成并再次锁定。",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XCanvasBoardId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShortDramaSceneUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "修改后的场景工作区",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShortDramaSceneWorkspace"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求体不是合法 JSON"
+          },
+          "401": {
+            "description": "未登录"
+          },
+          "403": {
+            "description": "必须修改初始密码或没有项目写权限"
+          },
+          "404": {
+            "description": "项目不存在或当前用户无权发现"
+          },
+          "409": {
+            "description": "graph_revision 已过期"
+          },
+          "422": {
+            "description": "目标不是可编辑场景，或名称、描述、镜头关联无效"
+          }
+        },
+        "x-hq-test-safety": "may-charge",
+        "x-hq-runtime-status": "pending-deployment"
+      }
+    },
+    "/api/gen/short-drama/asset-graph/scenes/bind-shot": {
+      "post": {
+        "tags": [
+          "短剧策划"
+        ],
+        "summary": "【生产未上线】绑定或取消镜头的场景",
+        "description": "Free / no points. scene_key 传空字符串表示显式取消绑定；取消状态在基础图谱同步后仍会保留。",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XCanvasBoardId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShortDramaSceneBindingRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "更新后的场景工作区",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShortDramaSceneWorkspace"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求体不是合法 JSON"
+          },
+          "401": {
+            "description": "未登录"
+          },
+          "403": {
+            "description": "必须修改初始密码或没有项目写权限"
+          },
+          "404": {
+            "description": "项目、镜头或场景不存在"
+          },
+          "409": {
+            "description": "graph_revision 已过期或基础场景尚未同步"
+          },
+          "422": {
+            "description": "绑定参数无效"
+          }
+        },
+        "x-hq-test-safety": "may-charge",
+        "x-hq-runtime-status": "pending-deployment"
+      }
+    },
+    "/api/gen/short-drama/asset-graph/scenes/delete": {
+      "post": {
+        "tags": [
+          "短剧策划"
+        ],
+        "summary": "【生产未上线】删除未使用的自定义场景",
+        "description": "Free / no points. 系统基础场景不可删除；仍绑定镜头的自定义场景必须先解除关联。",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XCanvasBoardId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShortDramaSceneIdentityRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "删除后的场景工作区",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShortDramaSceneWorkspace"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求体不是合法 JSON"
+          },
+          "401": {
+            "description": "未登录"
+          },
+          "403": {
+            "description": "必须修改初始密码或没有项目写权限"
+          },
+          "404": {
+            "description": "项目不存在或当前用户无权发现"
+          },
+          "409": {
+            "description": "graph_revision 已过期或场景仍绑定镜头"
+          },
+          "422": {
+            "description": "目标不是可删除的自定义场景"
+          }
+        },
+        "x-hq-test-safety": "may-charge",
+        "x-hq-runtime-status": "pending-deployment"
+      }
+    },
+    "/api/gen/short-drama/asset-graph/scenes/restore": {
+      "post": {
+        "tags": [
+          "短剧策划"
+        ],
+        "summary": "【生产未上线】恢复已删除的自定义场景",
+        "description": "Free / no points. 仅恢复同一项目内已退役的自定义场景，不自动恢复旧镜头关联。",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XCanvasBoardId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShortDramaSceneIdentityRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "恢复后的场景工作区",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShortDramaSceneWorkspace"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求体不是合法 JSON"
+          },
+          "401": {
+            "description": "未登录"
+          },
+          "403": {
+            "description": "必须修改初始密码或没有项目写权限"
+          },
+          "404": {
+            "description": "没有找到可恢复的场景"
+          },
+          "409": {
+            "description": "graph_revision 已过期"
+          },
+          "422": {
+            "description": "恢复参数无效"
+          }
+        },
+        "x-hq-test-safety": "may-charge",
+        "x-hq-runtime-status": "pending-deployment"
       }
     },
     "/api/gen/short-drama/asset-graph/scenes/lock": {
@@ -11863,6 +12322,65 @@
         },
         "x-hq-test-safety": "may-charge",
         "x-hq-runtime-status": "active"
+      }
+    },
+    "/api/gen/short-drama/conversation/script/shot/structure": {
+      "post": {
+        "tags": [
+          "短剧策划"
+        ],
+        "summary": "【生产未上线】复制、插入、移动或删除镜头",
+        "description": "Free / no points. 每次操作追加新的可审计版本并使旧合成结果失效。copy 会复制真实台词但生成独立镜头与台词 ID；目标镜头或删除、插入、移动所改变的任一邻接边界涉及锁定镜头时返回 shot_locked。",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKeyRequired"
+          },
+          {
+            "$ref": "#/components/parameters/XCanvasBoardId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShortDramaShotStructureMutation"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "结构调整后的工作区；assembly_invalidated 为 true",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShortDramaConversationWorkspace"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求体不是合法 JSON"
+          },
+          "401": {
+            "description": "未登录"
+          },
+          "403": {
+            "description": "必须修改初始密码或没有项目写权限"
+          },
+          "404": {
+            "description": "项目、版本或镜头不存在"
+          },
+          "409": {
+            "description": "幂等、会话 revision、当前版本、脚本锁定或单镜头 shot_locked 冲突"
+          },
+          "422": {
+            "description": "动作无效、试图删除最后一个镜头或结果未通过质量校验"
+          }
+        },
+        "x-hq-test-safety": "may-charge",
+        "x-hq-runtime-status": "pending-deployment"
       }
     },
     "/api/gen/short-drama/conversation/script/shot/update": {
@@ -23723,17 +24241,17 @@
     }
   },
   "x-hq-document-audit": {
-    "verified_at": "2026-08-14",
-    "total_paths": 285,
-    "total_operations": 299,
+    "verified_at": "2026-08-24",
+    "total_paths": 290,
+    "total_operations": 305,
     "active_operations": 285,
-    "production_route_probe_operations": 299,
-    "newly_documented_operations_vs_v2": 123,
+    "production_route_probe_operations": 305,
+    "newly_documented_operations_vs_v2": 129,
     "registry_http_operations": 77,
     "registry_documented_operations": 77,
-    "short_drama_registered_operations": 128,
-    "short_drama_documented_operations": 128,
-    "production_pending_operations": 11,
+    "short_drama_registered_operations": 134,
+    "short_drama_documented_operations": 134,
+    "production_pending_operations": 17,
     "production_routing_unavailable_operations": 2,
     "deprecated_operations": 1,
     "customer_frontend_calls_audited": true,

@@ -10,6 +10,7 @@ from providers.lipsync import catalog_snapshot
 
 from . import (
     short_drama_alignment,
+    short_drama_asset_graph,
     short_drama_lipsync_versions,
     short_drama_timeline,
 )
@@ -149,12 +150,9 @@ def _voice_versions(conn, segments):
 def _shot_offsets(conn, project_id):
     result = {}
     offset_ms = 0
-    for row in conn.execute(
-        "SELECT id,duration FROM short_drama_shots WHERE project_id=? "
-        "ORDER BY sort_order,id", (project_id,),
-    ):
-        result[str(row["id"])] = offset_ms
-        offset_ms += max(0, int(row["duration"] or 0)) * 1000
+    for shot in short_drama_asset_graph.current_project_shots(conn, project_id):
+        result[str(shot["id"])] = offset_ms
+        offset_ms += max(0, int(shot["duration"] or 0)) * 1000
     return result
 
 

@@ -273,7 +273,10 @@ def _reading_seconds(line):
     if line.get("kind") == "silence":
         return 0.0
     characters = len(re.sub(r"[\s，。！？、；：“”\"…]+", "", line.get("text") or ""))
-    return round(0.45 + characters / 3.5, 2)
+    speech_rate = float(line.get("speech_rate") or 1.0)
+    if speech_rate not in {1.0, 1.15, 1.3, 1.5, 2.0}:
+        speech_rate = 1.0
+    return round((0.45 + characters / 3.5) / speech_rate, 2)
 
 
 def _fit_dialogue_to_duration(line, duration_seconds):
@@ -714,7 +717,10 @@ def validate_script(script):
     normalized_lines = [
         _NORMALIZE_RE.sub("", str(item.get("text") or "")).lower()
         for item in lines
-        if str(item.get("text") or "").strip()
+        if (
+            str(item.get("text") or "").strip()
+            and item.get("source_type") != "user_copy"
+        )
     ]
     if (
         len(normalized_lines) > 1

@@ -13,7 +13,7 @@ import time
 import unicodedata
 import uuid
 
-from . import short_drama_prompt_compiler
+from . import short_drama_asset_graph, short_drama_prompt_compiler
 from .core import _file_url
 
 
@@ -469,10 +469,8 @@ def ensure_video_workspace(conn, project_id, allowed_stages=None):
     if allowed_stages is not None and project["stage"] not in set(allowed_stages):
         raise ValueError("short drama project is not in the video stage")
     now = int(time.time())
-    for shot in conn.execute(
-        "SELECT id FROM short_drama_shots WHERE project_id=? ORDER BY sort_order,id",
-        (project_id,),
-    ):
+    for shot in short_drama_asset_graph.current_project_shots(
+            conn, project_id, materialize=True):
         conn.execute(
             "INSERT OR IGNORE INTO short_drama_video_shots "
             "(id,project_id,shot_id,current_version,locked,video_revision,created_at,updated_at) "
@@ -576,11 +574,7 @@ def _project_cast_rows(conn, project_id):
 
 def _required_cast_characters(conn, project_id):
     referenced = {}
-    for shot in conn.execute(
-        "SELECT id,character_keys_json FROM short_drama_shots "
-        "WHERE project_id=? ORDER BY sort_order,id",
-        (project_id,),
-    ):
+    for shot in short_drama_asset_graph.current_project_shots(conn, project_id):
         for character_key in _shot_character_keys(shot):
             referenced.setdefault(character_key, []).append(shot["id"])
     if not referenced:
@@ -655,17 +649,20 @@ def _cast_character_items(conn, project, avatar_lookup=None):
 
 def _shot_dependencies(conn, project, shot_id, prompt=None, avatar_lookup=None):
     conn.row_factory = sqlite3.Row
-    shot = conn.execute(
-        "SELECT * FROM short_drama_shots WHERE id=? AND project_id=?",
-        (shot_id, project["id"]),
-    ).fetchone()
+    shot = short_drama_asset_graph.resolve_current_shot(
+        conn, project["id"], shot_id,
+    )
     if not shot:
         raise LookupError("short drama shot does not exist")
     prompt = str(prompt if prompt is not None else shot["video_prompt"] or "").strip()
     blockers = []
     if not prompt or len(prompt) > 2000:
         _append_blocker(blockers, "invalid_video_prompt", shot_id)
-    duration = int(shot["duration"])
+    target_duration = int(shot["duration"])
+    # The current conversation shot is authoritative.  The matching row in
+    # short_drama_shots is only a stable foreign-key anchor and may retain
+    # legacy planning fields.
+    duration = 5 if target_duration <= 7 else 10
     ratio = str(project["ratio"])
     if duration not in {5, 10} or ratio not in {"9:16", "16:9"}:
         _append_blocker(blockers, "invalid_duration_or_ratio", shot_id)
@@ -797,18 +794,26 @@ def _shot_dependencies(conn, project, shot_id, prompt=None, avatar_lookup=None):
                 "duration_ms": int(line["duration_ms"] or 0),
             })
 
-    previous = conn.execute(
-        "SELECT previous.shot_key FROM short_drama_shots current "
-        "JOIN short_drama_shots previous ON previous.project_id=current.project_id "
-        "AND previous.sort_order<current.sort_order "
-        "JOIN short_drama_assets asset ON asset.project_id=previous.project_id "
-        "AND asset.shot_id=previous.id AND asset.type='still' AND asset.locked=1 "
-        "JOIN short_drama_asset_versions version ON version.asset_id=asset.id "
-        "AND version.version=asset.current_version AND version.status='done' "
-        "WHERE current.id=? AND current.project_id=? "
-        "ORDER BY previous.sort_order DESC,previous.id DESC LIMIT 1",
-        (shot_id, project["id"]),
-    ).fetchone()
+    previous = None
+    current_shots = short_drama_asset_graph.current_project_shots(
+        conn, project["id"],
+    )
+    current_index = next(
+        (index for index, item in enumerate(current_shots) if item["id"] == shot_id),
+        -1,
+    )
+    prior_shots = current_shots[:current_index] if current_index >= 0 else []
+    for candidate in reversed(prior_shots):
+        if conn.execute(
+            "SELECT 1 FROM short_drama_assets asset "
+            "JOIN short_drama_asset_versions version ON version.asset_id=asset.id "
+            "AND version.version=asset.current_version AND version.status='done' "
+            "WHERE asset.project_id=? AND asset.shot_id=? AND asset.type='still' "
+            "AND asset.locked=1 LIMIT 1",
+            (project["id"], candidate["id"]),
+        ).fetchone():
+            previous = candidate
+            break
     visual_spec = {
         "project_id": project["id"],
         "shot_id": shot_id,
@@ -853,7 +858,8 @@ def _shot_dependencies(conn, project, shot_id, prompt=None, avatar_lookup=None):
         _append_blocker(blockers, error.code, shot_id)
     descriptor = {
         "project_id": project["id"], "shot_id": shot_id,
-        "ratio": ratio, "duration": duration, "prompt": prompt,
+        "ratio": ratio, "duration": duration,
+        "target_duration": target_duration, "prompt": prompt,
         "prompt_template_version": (
             compiled["template_version"] if compiled else
             short_drama_prompt_compiler.PROMPT_TEMPLATE_VERSION
@@ -1774,10 +1780,8 @@ def save_video_cast(db_factory, owner_username, body, avatar_lookup=None):
             return snapshot
 
         affected_shots = [
-            shot for shot in conn.execute(
-                "SELECT id,character_keys_json FROM short_drama_shots "
-                "WHERE project_id=?",
-                (project["id"],),
+            shot for shot in short_drama_asset_graph.current_project_shots(
+                conn, project["id"],
             )
             if _shot_character_keys(shot) & changed_keys
         ]
@@ -1874,10 +1878,8 @@ def build_video_snapshot(conn, project, avatar_lookup=None):
         jobs.setdefault(row["shot_id"], dict(row))
 
     shots = []
-    for shot in conn.execute(
-        "SELECT * FROM short_drama_shots WHERE project_id=? ORDER BY sort_order,id",
-        (project["id"],),
-    ):
+    for shot in short_drama_asset_graph.current_project_shots(
+            conn, project["id"]):
         slot = slots[shot["id"]]
         shot_versions = versions.get(slot["id"], [])
         current = next(
@@ -1922,7 +1924,7 @@ def build_video_snapshot(conn, project, avatar_lookup=None):
             semantic_blocker = _semantic_blocker_code(current)
             if semantic_blocker:
                 _append_blocker(blockers, semantic_blocker, shot["id"])
-            expected_ms = int(shot["duration"]) * 1000
+            expected_ms = int(dependencies["duration"]) * 1000
             if abs(int(current["duration_ms"]) - expected_ms) > VIDEO_DURATION_TOLERANCE_MS:
                 _append_blocker(blockers, "duration_mismatch", shot["id"])
             if current["ratio"] != project["ratio"] or not (current["file"] or current["url"]):

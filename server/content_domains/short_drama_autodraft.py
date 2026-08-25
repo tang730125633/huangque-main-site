@@ -525,18 +525,23 @@ def _locked_media_contract(conn, project):
     }
     if any(not _table_exists(conn, name) for name in required):
         return empty
-    shot_rows = conn.execute(
-        "SELECT shot.id,shot.shot_key,shot.sort_order,shot.duration,"
-        "voice.locked,voice.timeline_revision FROM short_drama_shots shot "
-        "LEFT JOIN short_drama_voice_shots voice ON voice.shot_id=shot.id "
-        "WHERE shot.project_id=? ORDER BY shot.sort_order,shot.id",
-        (project["id"],),
-    ).fetchall()
-    if not shot_rows or any(not row["locked"] for row in shot_rows):
+    shot_rows = short_drama_asset_graph.current_project_shots(
+        conn, project["id"],
+    )
+    voice_rows = {
+        row["shot_id"]: row for row in conn.execute(
+            "SELECT shot_id,locked,timeline_revision FROM short_drama_voice_shots "
+            "WHERE project_id=?", (project["id"],),
+        )
+    }
+    if not shot_rows or any(
+            not voice_rows.get(row["id"])
+            or not voice_rows[row["id"]]["locked"] for row in shot_rows):
         return empty
     cursor = 0
     tracks, subtitles, timeline = [], [], []
     for shot in shot_rows:
+        voice = voice_rows[shot["id"]]
         shot_start = cursor
         cursor += int(shot["duration"]) * 1000
         lines = conn.execute(
@@ -573,7 +578,7 @@ def _locked_media_contract(conn, project):
                 })
         timeline.append({
             "shot_id": shot["id"], "shot_key": shot["shot_key"],
-            "timeline_revision": int(shot["timeline_revision"]),
+            "timeline_revision": int(voice["timeline_revision"]),
             "start_ms": shot_start, "end_ms": cursor,
         })
     if not tracks:
@@ -1197,6 +1202,7 @@ def _clean_execution(value):
     result["include_scene_reference"] = (
         value.get("include_scene_reference") is not False
     )
+    result["scene_key"] = str(value.get("scene_key") or "").strip()[:160]
     if "character_keys" in value:
         raw_character_keys = value.get("character_keys")
         if not isinstance(raw_character_keys, list):
@@ -1383,6 +1389,7 @@ def preview_provider_request(
         try:
             scene_reference = short_drama_asset_graph.locked_scene_reference(
                 conn, project_id, shot_key,
+                execution.get("scene_key") if execution else None,
             )
             previous_reference = _previous_shot_reference(
                 conn, project_id, shots, shot_key,
@@ -1565,6 +1572,17 @@ def preview_provider_request(
         else timeline_duration_seconds
     )
     prompt = _visual_prompt(shot)
+    speech_rates = [
+        float(item.get("speech_rate") or 1.0)
+        for item in shot.get("dialogue") or []
+        if isinstance(item, dict) and str(item.get("text") or "").strip()
+    ]
+    if speech_rates:
+        speech_rate = max(speech_rates)
+        prompt += (
+            " 台词语速要求：%.2g倍语速，保持吐字清楚、情绪自然并尽量匹配口型。"
+            % speech_rate
+        )
     prompt += (
         " 全片统一视觉基线：画面比例%s，视觉风格%s；保持人物脸部、发型、年龄、"
         "服装，道具外观，主光方向、色温和场景空间布局跨镜头一致。"

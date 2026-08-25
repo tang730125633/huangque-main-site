@@ -190,7 +190,7 @@ if (!result.info.description.includes('共 1 个操作')) process.exit(1);
             for method, route_paths in route_table.items()
             for path in route_paths
         }
-        self.assertEqual(128, len(short_drama_registered))
+        self.assertEqual(134, len(short_drama_registered))
         self.assertEqual(set(), short_drama_registered - documented)
 
     def test_openapi_validates_live_action_import_and_role_saves(self) -> None:

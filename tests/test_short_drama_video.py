@@ -1,10 +1,13 @@
+import json
 import sqlite3
 import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
 
-from server.content_domains import short_drama, short_drama_video
+from server.content_domains import (
+    short_drama, short_drama_conversation, short_drama_video,
+)
 from tests.test_short_drama_voice import GetHandler, voice_plan
 
 
@@ -274,6 +277,96 @@ class ShortDramaVideoTests(unittest.TestCase):
         )
         self.assertEqual(
             "video", captured["_short_drama_video"]["visual_spec"]["action"]
+        )
+
+    def test_legacy_shot_duration_edit_drives_quote_and_submission_payload(self):
+        short_drama_conversation.workspace(
+            self.db, "alice", "alice", self.project["id"],
+        )
+        current_prompt = "current ten second provider prompt"
+        with closing(self.db()) as conn:
+            legacy = conn.execute(
+                "SELECT shot_key FROM short_drama_shots WHERE id=?",
+                (self.shot_id,),
+            ).fetchone()
+            script = {
+                "title": "Current ten second script",
+                "characters": [],
+                "dialogue_lines": [],
+                "overview": {"duration_seconds": 10},
+                "shots": [{
+                    "shot_key": legacy["shot_key"],
+                    "sort_order": 1,
+                    "duration_seconds": 10,
+                    "scene": "current rooftop scene",
+                    "camera": "current tracking camera",
+                    "visual": current_prompt,
+                    "provider_prompt": current_prompt,
+                    "character_keys": ["detective"],
+                    "dialogue_line_ids": [],
+                }],
+            }
+            conn.execute(
+                "INSERT INTO short_drama_script_snapshots "
+                "(id,project_id,version,status,script_json,readable_text,input_hash,"
+                "provider,model_version,created_by,created_at) "
+                "VALUES ('video-current-script',?,1,'draft',?,'script','hash',"
+                "'test','test','alice',1)",
+                (self.project["id"], json.dumps(script)),
+            )
+            conn.execute(
+                "UPDATE short_drama_conversations SET current_version_id=?,"
+                "state='script_review' WHERE project_id=?",
+                ("video-current-script", self.project["id"]),
+            )
+            conn.commit()
+
+        workspace = short_drama_video.get_video_workspace(
+            self.db, "alice", self.project["id"], self.avatar_lookup,
+        )
+        shot = workspace["shots"][0]
+        self.assertEqual(self.shot_id, shot["id"])
+        self.assertEqual(10, shot["duration"])
+        self.assertEqual(current_prompt, shot["video_prompt"])
+        captured = {}
+        quote = short_drama_video.prepare_video_quote(
+            self.db, "alice", "alice", {
+                "project_id": workspace["project_id"],
+                "revision": workspace["revision"],
+                "shot_id": shot["id"],
+                "video_revision": shot["video_revision"],
+                "prompt": shot["video_prompt"],
+                "enhance_prompt": False,
+            },
+            lambda kind, payload: captured.update(payload) or 40,
+            self.avatar_lookup,
+        )
+        self.assertEqual(10, quote["duration"])
+        self.assertEqual(10, captured["duration"])
+        self.assertEqual(
+            10, captured["_short_drama_video"]["visual_spec"]["duration"],
+        )
+        self.assertEqual(
+            current_prompt,
+            captured["_short_drama_video"]["visual_spec"]["action"],
+        )
+
+        attempt, replay = short_drama_video.prepare_video_submission(
+            self.db, "alice", "alice", {
+                "project_id": workspace["project_id"],
+                "revision": workspace["revision"],
+                "shot_id": shot["id"],
+                "video_revision": shot["video_revision"],
+                "quote_token": quote["quote_token"],
+            },
+            "legacy-duration-5-to-10",
+            self.avatar_lookup,
+        )
+        self.assertFalse(replay)
+        self.assertEqual(10, attempt["video_payload"]["duration"])
+        self.assertEqual(
+            current_prompt,
+            attempt["video_payload"]["_short_drama_video"]["user_prompt"],
         )
 
     def test_edited_prompt_replaces_unsafe_planning_prompt_everywhere(self):
