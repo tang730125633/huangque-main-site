@@ -90,6 +90,8 @@ function createRuntime(options = {}) {
   get('talkingRatio').value = '30';
   get('materialStyle').value = '';
   get('videoVoice').value = '';
+  get('materialSourceAi').setAttribute('data-material-source', 'ai');
+  get('materialSourceLibrary').setAttribute('data-material-source', 'library');
 
   const modeGenerate = new Element('button'); modeGenerate.setAttribute('data-mode', 'generate');
   const modeFixed = new Element('button'); modeFixed.setAttribute('data-mode', 'fixed');
@@ -276,6 +278,19 @@ async function scenarioDisabledPath() {
   return {payload: JSON.parse(runtime.requests.paid[0].options.body), planRequests: runtime.requests.plans.length};
 }
 
+async function scenarioLibraryPath() {
+  const runtime = createRuntime();
+  await flush();
+  runtime.get('materialSourceLibrary').click();
+  runtime.get('generateBtn').click();
+  await flush();
+  return {
+    quotePayload: JSON.parse(runtime.requests.quotes[0].options.body),
+    paidPayload: JSON.parse(runtime.requests.paid[0].options.body),
+    status: runtime.get('statusText').textContent,
+  };
+}
+
 async function scenarioQuoteCancel() {
   const runtime = createRuntime({confirm: false});
   await flush();
@@ -411,7 +426,7 @@ async function scenarioSceneAvatarInvalidation() {
 
 async function main() {
   const scenario = process.argv[2];
-  const handlers = {latePlan: scenarioLatePlan, avatarRace: scenarioAvatarRace, phase: scenarioPhase, disabledPath: scenarioDisabledPath, quoteCancel: scenarioQuoteCancel, staleQuote: scenarioStaleQuote, planMutations: scenarioPlanMutations, sceneAvatarRace: scenarioSceneAvatarRace, sceneAvatarInvalidation: scenarioSceneAvatarInvalidation};
+  const handlers = {latePlan: scenarioLatePlan, avatarRace: scenarioAvatarRace, phase: scenarioPhase, disabledPath: scenarioDisabledPath, libraryPath: scenarioLibraryPath, quoteCancel: scenarioQuoteCancel, staleQuote: scenarioStaleQuote, planMutations: scenarioPlanMutations, sceneAvatarRace: scenarioSceneAvatarRace, sceneAvatarInvalidation: scenarioSceneAvatarInvalidation};
   if (!handlers[scenario]) throw new Error('Unknown scenario: ' + scenario);
   process.stdout.write(JSON.stringify(await handlers[scenario]()));
 }
