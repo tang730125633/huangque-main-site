@@ -187,6 +187,11 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertNotIn('id="bgm"', page)
         self.assertNotIn("素材来源", page)
         self.assertIn("template_id:activeTemplate,bgm:true", page)
+        self.assertIn('hq-content[data-active="matrix-template"]{height:auto!important', page)
+        self.assertIn("function fitLiveText(node,max,min)", page)
+        self.assertIn("node.scrollHeight>node.clientHeight", page)
+        self.assertIn("fitLiveText(el('liveTop'),topSizes[activeTemplate]||34,12)", page)
+        self.assertIn("fitLiveText(el('liveBottom'),20,12)", page)
         self.assertLess(shell.index("k:'text-video'"), shell.index("k:'matrix-template'"))
         self.assertIn("/api/gen/matrix-template/capability", shell)
 
