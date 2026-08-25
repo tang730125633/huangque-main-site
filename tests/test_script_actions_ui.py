@@ -265,7 +265,10 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("'Idempotency-Key':breakdownPending.key", self.html)
         self.assertIn("'Idempotency-Key':imagePending.key", self.html)
         self.assertIn("requestHeaders['Idempotency-Key']=videoPending.key", self.html)
-        self.assertIn('"script_to_video", "breakdown", "copy"}', self.core)
+        self.assertIn(
+            '"script_to_video", "matrix_template_video", "breakdown", "copy"}',
+            self.core,
+        )
         self.assertIn("sessionStorage.setItem(storageKey", self.html)
         self.assertIn("saved&&saved.body===body&&saved.key", self.html)
         self.assertIn("code==='idempotency_in_progress'", self.html)
