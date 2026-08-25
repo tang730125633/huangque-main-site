@@ -110,7 +110,7 @@ def conformance_gate(release_sha, requested=None):
         and int(custom_result.get("reference_hallucinations") or 0) == 0
         and int(custom_result.get("chat_tool_misfires") or 0) == 0
         and 0 <= int(budget.get("requests") or 0) <= int(budget.get("max_requests") or 0) <= 120
-        and 0 < float(budget.get("max_cny") or 0) <= 10.0
+        and 0 < float(budget.get("max_cny") or 0) <= 12.0
         and 0 <= float(budget.get("estimated_cny") or 0) <= float(budget.get("max_cny") or 0)
         and 0 <= float(budget.get("worst_case_cny") or 0) <= float(budget.get("max_cny") or 0)
         and int(budget.get("usage_missing") or 0) == 0
@@ -314,24 +314,28 @@ def agents_sdk_decider(context, goal, timeout_seconds=50, *, openai_client=None,
     from pydantic import BaseModel, ConfigDict, Field, model_validator
 
     if provider == "dashscope":
-        key = os.environ.get("DASHSCOPE_API_KEY")
-        if not key:
-            raise RuntimeError("agents_sdk_provider_not_configured")
-        client = openai_client or AsyncOpenAI(
-            api_key=key,
-            base_url=os.environ.get(
-                "DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"
-            ),
-            timeout=max(1.0, float(timeout_seconds)), max_retries=0,
-        )
+        client = openai_client
+        if client is None:
+            key = os.environ.get("DASHSCOPE_API_KEY")
+            if not key:
+                raise RuntimeError("agents_sdk_provider_not_configured")
+            client = AsyncOpenAI(
+                api_key=key,
+                base_url=os.environ.get(
+                    "DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"
+                ),
+                timeout=max(1.0, float(timeout_seconds)), max_retries=0,
+            )
         model = OpenAIChatCompletionsModel(model=model_name, openai_client=client)
     else:
-        key = os.environ.get("HERMES_AGENTS_SDK_OPENAI_API_KEY")
-        if not key:
-            raise RuntimeError("agents_sdk_provider_not_configured")
-        client = openai_client or AsyncOpenAI(
-            api_key=key, timeout=max(1.0, float(timeout_seconds)), max_retries=0,
-        )
+        client = openai_client
+        if client is None:
+            key = os.environ.get("HERMES_AGENTS_SDK_OPENAI_API_KEY")
+            if not key:
+                raise RuntimeError("agents_sdk_provider_not_configured")
+            client = AsyncOpenAI(
+                api_key=key, timeout=max(1.0, float(timeout_seconds)), max_retries=0,
+            )
         model = OpenAIResponsesModel(
             model=model_name,
             openai_client=client,

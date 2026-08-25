@@ -55,7 +55,10 @@ class IP12AgentProductionUITests(unittest.TestCase):
         self.assertIn('data-production-quote-card="true"', quote_card)
         self.assertIn('data-production-confirm="true"', quote_card)
         self.assertIn("确认并提交这次生产", quote_card)
-        self.assertEqual(self.html.count('onclick="confirmProduction()"'), 1)
+        self.assertNotIn('onclick="confirmProduction()"', self.html)
+        self.assertEqual(
+            self.html.count('onclick="confirmProduction(this.dataset.productionId)"'), 2,
+        )
         quote_guard = self.html[self.html.index("function productionHasValidQuote"):self.html.index("function renderProductionPanel")]
         self.assertIn("record.status!=='quoted'", quote_guard)
         self.assertIn("productionUnfilledFields", quote_guard)
@@ -67,6 +70,73 @@ class IP12AgentProductionUITests(unittest.TestCase):
         self.assertNotIn("confirmProduction", message)
         continuation = self.html[self.html.index("async function sendJumpMsg"):self.html.index("function renderProjectPanel")]
         self.assertNotIn("confirmProduction", continuation)
+
+    def test_terminal_inline_status_never_reports_failure_as_completed(self):
+        if not shutil.which("node"):
+            self.skipTest("node unavailable")
+        start = self.html.index("function productionTerminalNoteHtml")
+        end = self.html.index("function productionSpecialist", start)
+        script = self.html[start:end] + r"""
+const statuses=['done','failed','refund_pending','refunded','unknown'];
+console.log(JSON.stringify(Object.fromEntries(
+  statuses.map(status=>[status,productionTerminalNoteHtml({status})])
+)));
+"""
+        got = json.loads(subprocess.run(
+            ["node", "-e", script], capture_output=True, text=True, check=True,
+        ).stdout)
+        self.assertIn("制作已完成", got["done"])
+        self.assertIn("制作失败", got["failed"])
+        self.assertNotIn("制作已完成", got["failed"])
+        self.assertIn("退款正在处理中", got["refund_pending"])
+        self.assertIn("点数已退回", got["refunded"])
+        self.assertEqual(got["unknown"], "")
+
+    def test_expired_quote_becomes_stale_without_a_submit_request(self):
+        if not shutil.which("node"):
+            self.skipTest("node unavailable")
+        quote_start = self.html.index("function productionQuote")
+        quote_end = self.html.index("function renderProductionPanel", quote_start)
+        confirm_start = self.html.index("async function confirmProduction")
+        confirm_end = self.html.index("async function refreshProduction", confirm_start)
+        script = self.html[quote_start:quote_end] + self.html[confirm_start:confirm_end] + r"""
+let cid='project-1',state={revision:7},activeProductionId='production-1';
+let productions={'production-1':{
+  id:'production-1',status:'quoted',options:{},
+  quote:{cost:90,points:94359,expires_at:1}
+}};
+let requests=0,messages=0,renders=0,toasts=[];
+function productionUnfilledFields(){return []}
+function rememberProduction(record){productions[record.id]=record;return record}
+function refreshProductionMessages(){messages+=1}
+function renderProductionPanel(){renders+=1}
+function toast(message){toasts.push(message)}
+function newTurnRequestId(){return 'confirm-1'}
+async function productionRequest(){requests+=1;return{}}
+function updateProductionFromPayload(){}
+async function refreshProduction(){}
+global.document={
+  querySelectorAll:()=>[],
+  getElementById:()=>({classList:{contains:()=>true}})
+};
+(async()=>{
+  await confirmProduction('production-1');
+  console.log(JSON.stringify({
+    status:productions['production-1'].status,
+    quote:productions['production-1'].quote,
+    requests,messages,renders,toasts
+  }));
+})();
+"""
+        got = json.loads(subprocess.run(
+            ["node", "-e", script], capture_output=True, text=True, check=True,
+        ).stdout)
+        self.assertEqual(got["status"], "stale")
+        self.assertEqual(got["quote"], {})
+        self.assertEqual(got["requests"], 0)
+        self.assertEqual(got["messages"], 1)
+        self.assertEqual(got["renders"], 1)
+        self.assertEqual(got["toasts"], ["报价已失效，请重新获取后再确认。"])
 
     def test_missing_and_schema_render_typed_controls_and_gate_quote(self):
         controls = self.html[self.html.index("function productionParameterSchema"):self.html.index("function productionQuote")]

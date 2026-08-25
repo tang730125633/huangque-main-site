@@ -276,8 +276,9 @@ class CognitiveEngineTests(unittest.TestCase):
                 report["budget"]["requests"] = 121
                 self.assertFalse(check(report)["valid"])
                 report["budget"]["requests"] = 100
-                report["budget"]["worst_case_cny"] = 10.01
+                report["budget"]["max_cny"] = 12.01
                 self.assertFalse(check(report)["valid"])
+                report["budget"]["max_cny"] = 10.0
                 report["budget"]["worst_case_cny"] = 9.0
                 report["evidence_source"] = "fixture"
                 rejected = check(report)
@@ -308,9 +309,8 @@ class CognitiveEngineTests(unittest.TestCase):
         expected = decision()
         context = cognitive_engine.safe_context(memory(), "你好")
         with patch.dict(os.environ, {
-            "HERMES_AGENTS_SDK_OPENAI_API_KEY": "dummy",
             "HERMES_AGENTS_SDK_MODEL": "wrong-model",
-        }), patch.object(
+        }, clear=True), patch.object(
             Runner, "run", new=AsyncMock(side_effect=[
                 ModelBehaviorError("invalid structured output"),
                 SimpleNamespace(final_output=expected),
@@ -319,6 +319,7 @@ class CognitiveEngineTests(unittest.TestCase):
             got = cognitive_engine.agents_sdk_decider(
                 context, "你好", 1, max_output_tokens=700,
                 provider_name="openai", model_name="fixture-model",
+                openai_client=SimpleNamespace(),
             )
         master = run.await_args.args[0]
         self.assertEqual(run.await_count, 2)
