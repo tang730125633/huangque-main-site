@@ -2007,7 +2007,7 @@ def _minimax_xiaole_payload(provider_request, quote, actor_username):
         "model": "MiniMax-H3",
         "prompt": str(request.get("prompt") or "").strip(),
         "ratio": str(request.get("ratio") or "9:16").strip(),
-        "resolution": "768p",
+        "resolution": "2k",
         "duration": int(request.get("duration_seconds") or 0),
         "reference_images": references,
     }
@@ -2971,28 +2971,6 @@ def _recover_project_provider_refunds(
             db_factory, job_id, refund_points=refund_points,
             now=max(int(time.time()), retry_at),
         )
-
-
-def retry_provider_refunds(db_factory, points_domain, limit=100):
-    """Retry legacy refunds and observe shared-job refunds without owning them."""
-    refund_points = getattr(points_domain, "refund_points", None)
-    if not callable(refund_points):
-        return 0
-    conn = _connection(db_factory)
-    try:
-        rows = conn.execute(
-            "SELECT job_id FROM short_drama_provider_shot_attempts "
-            "WHERE state='refund_pending' AND job_id IS NOT NULL "
-            "ORDER BY created_at ASC LIMIT ?",
-            (max(1, min(int(limit or 100), 1000)),),
-        ).fetchall()
-    finally:
-        conn.close()
-    for row in rows:
-        _recover_provider_refund(
-            db_factory, row["job_id"], refund_points=refund_points,
-        )
-    return len(rows)
 
 
 def _provider_job_timeout_reason(row, now=None, next_poll=False):

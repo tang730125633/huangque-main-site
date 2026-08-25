@@ -17,6 +17,7 @@ if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
 
 from content_domains import (
+    feature_flags,
     provider_keys,
     short_drama,
     short_drama_autodraft,
@@ -57,6 +58,11 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             }
         )
         self.free.start()
+        self.content_out_path = mock.patch(
+            "content_domains.core._out_path",
+            side_effect=lambda relative: Path(self.tmp.name) / relative,
+        )
+        self.content_out_path.start()
         short_drama.init_db(self.db)
 
         self.project = short_drama.create_project(
@@ -146,6 +152,7 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         self.assertEqual("720p", request["resolution"])
 
     def tearDown(self):
+        self.content_out_path.stop()
         self.free.stop()
         self.tmp.cleanup()
 
@@ -2349,7 +2356,7 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         payload = json.loads(shared["payload"])
         self.assertEqual("minimax", payload["channel"])
         self.assertEqual("MiniMax-H3", payload["model"])
-        self.assertEqual("768p", payload["resolution"])
+        self.assertEqual("2k", payload["resolution"])
         self.assertEqual(str(shared["id"]), projected["id"])
         self.assertEqual("minimax_h3", projected["provider"])
         self.assertEqual("queued", projected["status"])

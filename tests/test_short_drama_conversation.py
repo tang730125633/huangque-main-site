@@ -2900,7 +2900,10 @@ class ShortDramaConversationTests(unittest.TestCase):
             "lock-shot-1",
         )
         self.assertNotEqual(edited["current_script"]["id"], locked["current_script"]["id"])
-        self.assertEqual(edited["current_script"]["version"] + 1, locked["current_script"]["version"])
+        self.assertEqual(
+            regenerated["current_script"]["version"] + 1,
+            locked["current_script"]["version"],
+        )
         self.assertTrue(locked["current_script"]["script"]["shots"][0]["locked"])
         with self.assertRaises(short_drama_conversation.ConversationError) as blocked:
             short_drama_conversation.regenerate_shot(

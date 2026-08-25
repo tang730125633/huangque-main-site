@@ -768,7 +768,7 @@ def validate_script(script):
         for item in lines
         if (
             str(item.get("text") or "").strip()
-            and item.get("source_type") != "user_copy"
+            and not str(item.get("source_type") or "").startswith("user_")
         )
     ]
     if (

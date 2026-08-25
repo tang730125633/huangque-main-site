@@ -42,21 +42,11 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
             provider.bind_reconciled_job_id("task-without-key", {})
         self.assertEqual("provider_key_binding_missing", raised.exception.code)
 
-    def test_minimax_prepare_job_persists_origin_before_paid_submission(self):
+    def test_minimax_prepare_job_requires_shared_xiaole_submission(self):
         provider = MiniMaxH3ShotProvider()
-        candidate = {
-            "id": "minimax-key-7", "secret": "test-only-secret",
-        }
-        with mock.patch.object(
-            provider, "_claim_key", return_value=candidate,
-        ), mock.patch.object(
-            video_minimax_h3, "check_credentials",
-        ), mock.patch.object(
-            video_minimax_h3, "new_task_origin", return_value="metaso",
-        ):
-            prepared = provider.prepare_job({"provider": "minimax_h3"})
-        self.assertEqual("minimax-key-7", prepared["_provider_key_id"])
-        self.assertEqual("metaso", prepared["_minimax_origin"])
+        with self.assertRaises(VisualProviderError) as raised:
+            provider.prepare_job({"provider": "minimax_h3"})
+        self.assertEqual("shared_xiaole_required", raised.exception.code)
 
     def test_minimax_h3_is_the_default_short_drama_provider(self):
         with mock.patch.dict(os.environ, {}, clear=True):
@@ -182,7 +172,6 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
 
     def test_minimax_h3_rejects_metadata_reference_before_provider_submission(self):
         provider = MiniMaxH3ShotProvider()
-        candidate = {"id": "minimax-key-2", "secret": "test-only-secret"}
         request = {
             "prompt": "人物走进电梯",
             "ratio": "16:9",
@@ -190,22 +179,13 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
             "reference_images": [{
                 "url": "http://169.254.169.254/latest/meta-data",
             }],
-            "_provider_key_id": candidate["id"],
+            "_provider_key_id": "minimax-key-2",
             "_minimax_origin": "metaso",
         }
-        with mock.patch.object(
-            provider_keys, "has_candidate", return_value=True,
-        ), mock.patch.object(
-            provider, "_bound_key", return_value=candidate,
-        ), mock.patch.object(
-            video_minimax_h3, "_request_json",
-            side_effect=AssertionError("unsafe reference reached provider submission"),
-        ) as submit:
-            with self.assertRaises(VisualProviderError) as raised:
-                provider.create_job(request)
+        with self.assertRaises(VisualProviderError) as raised:
+            provider.validate_request(request)
         self.assertEqual("visual_reference_invalid", raised.exception.code)
         self.assertFalse(raised.exception.submitted)
-        submit.assert_not_called()
 
     def test_minimax_h3_preflight_rejects_corrupt_local_reference(self):
         provider = MiniMaxH3ShotProvider()

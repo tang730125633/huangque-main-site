@@ -1089,6 +1089,7 @@
     var projectActionDialog=doc.getElementById('shortDramaProjectActionDialog'),projectActionForm=doc.getElementById('shortDramaProjectActionForm'),pendingProjectAction=null,projectActionBusy=false;
     var startOptions=doc.getElementById('shortDramaStartOptions'),inspiration=doc.getElementById('shortDramaInspiration');
     var liveAction=doc.getElementById('shortDramaLiveAction'),liveActionForm=doc.getElementById('shortDramaLiveActionForm');
+    var recommendedShots=doc.getElementById('shortDramaRecommendedShots'),recommendedShotsHint=doc.getElementById('shortDramaRecommendedShotsHint'),shotPreferenceHint=doc.getElementById('shortDramaShotPreferenceHint');
     var roleConfirm=doc.getElementById('shortDramaRoleConfirm'),roleList=doc.getElementById('shortDramaRoleList'),roleTabs=doc.getElementById('shortDramaRoleTabs');
     var coreStorySection=doc.getElementById('shortDramaCoreStory'),coreStoryForm=doc.getElementById('shortDramaCoreStoryForm'),coreStoryReview=doc.getElementById('shortDramaCoreStoryReview');
     var importSection=doc.getElementById('shortDramaImport'),importEditor=doc.getElementById('shortDramaImportEditor'),importForm=doc.getElementById('shortDramaImportForm');

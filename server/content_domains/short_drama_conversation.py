@@ -2600,20 +2600,20 @@ def _structure_shot(script, shot_key, action, instruction=""):
         clone = _json(_json_text(shot), {})
         clone["shot_key"] = _new_structure_key(script, "shot_user", "shots", "shot_key")
         cloned_lines = []
-        if action == "copy":
-            for source_line in shot_lines:
-                cloned_line = _json(_json_text(source_line), {})
-                cloned_line["id"] = _new_structure_key(
-                    script, "line_user", "dialogue_lines", "id"
-                )
-                cloned_lines.append(cloned_line)
-                script.setdefault("dialogue_lines", []).append(cloned_line)
+        clone_source = "user_copy" if action == "copy" else "user_insert"
+        for source_line in shot_lines:
+            cloned_line = _json(_json_text(source_line), {})
+            cloned_line["id"] = _new_structure_key(
+                script, "line_user", "dialogue_lines", "id"
+            )
+            cloned_line["source_type"] = clone_source
+            cloned_lines.append(cloned_line)
+            script.setdefault("dialogue_lines", []).append(cloned_line)
         clone["dialogue_line_ids"] = [line["id"] for line in cloned_lines]
+        clone["source_type"] = clone_source
         clone["locked"] = False
         insert_at = index if action == "insert_before" else index + 1
         if action == "copy":
-            clone["source_type"] = "user_copy"
-            clone_line["source_type"] = "user_copy"
             clone["purpose"] = "延续并补充：%s" % str(shot.get("purpose") or "剧情推进")[:140]
             clone["visual"] = "延续上一镜头后的新动作：%s" % str(shot.get("visual") or "人物继续行动")[:300]
             clone["continuity"] = "紧接上一镜头，保持人物、场景、服装和关键道具一致"
@@ -2726,6 +2726,7 @@ def _replace_shot_dialogues(script, shot, current_lines, dialogues):
             "text": value,
             "speech_rate": speech_rate,
             "timing_mode": timing_mode,
+            "source_type": "user_edit",
         }
         line["estimated_reading_seconds"] = (
             short_drama_storyboard._reading_seconds(line)

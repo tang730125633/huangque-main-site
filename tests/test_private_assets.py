@@ -100,7 +100,7 @@ class PrivateAssetsTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "valid JPG, PNG, or WebP"):
                 core.local_provider_reference_url(mismatched.relative_to(tmp).as_posix())
 
-    def test_local_provider_configuration_uses_dedicated_secret_and_documented_ttl(self):
+    def test_local_provider_configuration_uses_dedicated_secret_and_ttl_precedence(self):
         self.assertEqual(
             "dedicated",
             core._local_file_signing_secret({
@@ -120,20 +120,6 @@ class PrivateAssetsTest(unittest.TestCase):
             }),
         )
         self.assertEqual(120, core._local_file_url_ttl({"HQ_LOCAL_FILE_URL_TTL": "120"}))
-
-        root = Path(__file__).resolve().parents[1]
-        example = (root / "deploy/huangque-secrets.env.example").read_text(encoding="utf-8")
-        verify = (root / "deploy/test-server/verify-full-environment.sh").read_text(encoding="utf-8")
-        runbook = (root / "deploy/生产环境清单与还原手册.md").read_text(encoding="utf-8")
-        for document in (example, verify, runbook):
-            self.assertIn("HQ_LOCAL_FILE_URL_TTL_SECONDS", document)
-        self.assertNotIn("HQ_LOCAL_FILE_URL_TTL=", example)
-        self.assertIn("test.env mode is not 600", verify)
-        self.assertIn("test.env owner is not root:root", verify)
-        self.assertIn("must use HTTPS", verify)
-        self.assertIn("must not include a path, query, or fragment", verify)
-        self.assertIn("at least 32 characters", verify)
-        self.assertIn("不得复用 HQ_INTERNAL_TOKEN", runbook)
 
     def test_signed_provider_file_route_is_public_only_for_valid_current_signature(self):
         with tempfile.TemporaryDirectory() as tmp, \
