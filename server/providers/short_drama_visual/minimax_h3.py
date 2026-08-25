@@ -172,6 +172,10 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
                 "角色标准图损坏、格式不符或尺寸不在 256～5760 像素范围内",
             ) from error
 
+    def resolve_reference_values(self, reference_images):
+        """Resolve compact project references for an immediate provider call."""
+        return [self._reference_value(item) for item in reference_images or []]
+
     def validate_request(self, request):
         if not isinstance(request, dict):
             raise VisualProviderError("visual_request_invalid", "镜头请求格式不正确")

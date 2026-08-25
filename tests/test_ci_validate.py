@@ -216,11 +216,26 @@ if (!result.info.description.includes('共 1 个操作')) process.exit(1);
             255,
             schemas["ShortDramaImportRequest"]["properties"]["filename"]["maxLength"],
         )
+        self.assertEqual(
+            40,
+            schemas["ShortDramaImportRequest"]["properties"]["genre"]["maxLength"],
+        )
+        self.assertEqual(
+            ["", "complete_story"],
+            schemas["ShortDramaImportRequest"]["properties"]["source_requirement"]["enum"],
+        )
+        for project_schema in ("ShortDramaProject", "ShortDramaProjectSummary"):
+            self.assertIn("genre", schemas[project_schema]["required"])
+            self.assertEqual(
+                40, schemas[project_schema]["properties"]["genre"]["maxLength"]
+            )
         self.assertIn("413", import_path["responses"])
         self._assert_openapi_sample(spec, import_schema, {
             "title": "Live action", "synopsis": "A complete live action story",
             "ratio": "16:9", "target_duration": 30, "shot_count": 6,
-            "visual_style": "cinematic", "source_text": "Lin Xia: hello",
+            "genre": "urban mystery", "visual_style": "cinematic",
+            "source_requirement": "complete_story",
+            "source_text": "Lin Xia: hello " * 10,
             "filename": "story.txt", "import_mode": "faithful",
             "content_type": "live_action", "character_contract": contract,
         })

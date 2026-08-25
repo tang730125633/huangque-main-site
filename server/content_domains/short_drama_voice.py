@@ -967,6 +967,25 @@ def bind_voice_job(db_factory, actor_username, idempotency_key, connection, job_
     )
 
 
+def _project_dialogue_items(conn, project_id):
+    current = short_drama_asset_graph.current_project_dialogue_lines(
+        conn, project_id,
+    )
+    if current is not None:
+        return [item for item in current if isinstance(item, dict)]
+    script = conn.execute(
+        "SELECT dialogue_lines_json FROM short_drama_scripts "
+        "WHERE project_id=? ORDER BY version DESC LIMIT 1",
+        (project_id,),
+    ).fetchone()
+    if not script:
+        return None
+    return [
+        item for item in _json_value(script["dialogue_lines_json"], [])
+        if isinstance(item, dict)
+    ]
+
+
 def ensure_voice_workspace(conn, project_id, allowed_stages=None):
     conn.row_factory = sqlite3.Row
     project = conn.execute(
@@ -984,18 +1003,9 @@ def ensure_voice_workspace(conn, project_id, allowed_stages=None):
     ).fetchone()
     if existing:
         return
-    current_dialogue = short_drama_asset_graph.current_project_dialogue_lines(
-        conn, project_id,
-    )
-    script = ({"dialogue_lines_json": json.dumps(current_dialogue)}
-              if current_dialogue is not None else conn.execute(
-        "SELECT dialogue_lines_json FROM short_drama_scripts "
-        "WHERE project_id=? ORDER BY version DESC LIMIT 1",
-        (project_id,),
-    ).fetchone())
-    if not script:
+    dialogue_items = _project_dialogue_items(conn, project_id)
+    if dialogue_items is None:
         raise ValueError("短剧项目缺少已确认剧本")
-    dialogue_items = _json_value(script["dialogue_lines_json"], [])
     dialogue = {
         item.get("id"): item for item in dialogue_items
         if isinstance(item, dict) and isinstance(item.get("id"), str)
@@ -1653,16 +1663,7 @@ def build_voice_snapshot(conn, project):
             (project["id"],),
         )
     }
-    script = conn.execute(
-        "SELECT dialogue_lines_json FROM short_drama_scripts "
-        "WHERE project_id=? ORDER BY version DESC LIMIT 1",
-        (project["id"],),
-    ).fetchone()
-    dialogue_items = [
-        item for item in _json_value(
-            script["dialogue_lines_json"] if script else None, []
-        ) if isinstance(item, dict)
-    ]
+    dialogue_items = _project_dialogue_items(conn, project["id"]) or []
     dialogue_by_id = {
         str(item.get("id") or ""): item for item in dialogue_items
     }
@@ -1675,9 +1676,8 @@ def build_voice_snapshot(conn, project):
         for line_id, item in dialogue_by_id.items()
     }
     resolved_parallel_groups = {}
-    for source_shot in conn.execute(
-            "SELECT id,dialogue_line_ids_json FROM short_drama_shots "
-            "WHERE project_id=?", (project["id"],)):
+    for source_shot in short_drama_asset_graph.current_project_shots(
+            conn, project["id"]):
         current_group = -1
         for index, line_id in enumerate(_json_value(
                 source_shot["dialogue_line_ids_json"], [])):

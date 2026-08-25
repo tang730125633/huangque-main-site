@@ -27,6 +27,7 @@ class ShortDramaPr94SchemaMigrationTests(unittest.TestCase):
     @staticmethod
     def _legacy_schema():
         removed = {
+            "genre TEXT NOT NULL DEFAULT ''",
             "creation_status TEXT NOT NULL DEFAULT 'formal' CHECK (creation_status IN ('draft','formal'))",
             "character_contract_migration_json TEXT NOT NULL DEFAULT '{}'",
             "core_story_json TEXT NOT NULL DEFAULT '{}'",
@@ -246,6 +247,8 @@ class ShortDramaPr94SchemaMigrationTests(unittest.TestCase):
                 )
             }
             self.assertIn("creation_status", project_columns)
+            self.assertIn("genre", project_columns)
+            self.assertEqual("", second["genre"])
             self.assertTrue({
                 "core_story_json", "core_story_confirmed_at",
                 "character_contract_migration_json",

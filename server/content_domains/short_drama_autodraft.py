@@ -1998,9 +1998,9 @@ def _mark_provider_attempt_failure(
 def _minimax_xiaole_payload(provider_request, quote, actor_username):
     request = dict(provider_request or {})
     provider = load_by_name("minimax_h3")
-    references = []
-    for item in request.get("reference_images") or []:
-        references.append(provider._reference_value(item))
+    references = provider.resolve_reference_values(
+        request.get("reference_images") or []
+    )
     public_payload = {
         "channel": "minimax",
         "operation": "generate",
@@ -2016,6 +2016,11 @@ def _minimax_xiaole_payload(provider_request, quote, actor_username):
     validated = video.validate_xiaole_video_payload(
         public_payload, actor_username
     )
+    # The provider-ready Data URIs are validation-only. Persisting them in the
+    # shared jobs table would copy private project images into a generic queue
+    # and every database backup. The worker resolves the project-owned compact
+    # references from short_drama_provider_shot_jobs immediately before submit.
+    validated["reference_images"] = []
     validated["_short_drama_provider_binding"] = {
         "project_id": str(quote["project_id"]),
         "plan_id": str(quote["plan_id"]),
@@ -2023,6 +2028,59 @@ def _minimax_xiaole_payload(provider_request, quote, actor_username):
         "request_hash": str(quote["request_hash"]),
     }
     return validated
+
+
+def resolve_shared_xiaole_payload(
+    db_factory, shared_job_id, actor_username, payload,
+):
+    """Resolve project-owned MiniMax references for one worker invocation only."""
+    resolved = dict(payload or {})
+    binding = resolved.get("_short_drama_provider_binding")
+    if not isinstance(binding, dict):
+        return resolved
+    conn = _connection(db_factory)
+    try:
+        row = conn.execute(
+            "SELECT project_id,actor_username,plan_id,shot_key,provider,input_hash,"
+            "request_json FROM short_drama_provider_shot_jobs WHERE id=?",
+            (str(shared_job_id),),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row or str(row["provider"] or "") != "minimax_h3":
+        raise AutodraftError(
+            "provider_binding_invalid",
+            "麦克视频任务缺少有效的短剧资产绑定",
+            409,
+        )
+    expected = {
+        "project_id": str(row["project_id"] or ""),
+        "plan_id": str(row["plan_id"] or ""),
+        "shot_key": str(row["shot_key"] or ""),
+        "request_hash": str(row["input_hash"] or ""),
+    }
+    if (
+        str(row["actor_username"] or "") != str(actor_username or "")
+        or any(str(binding.get(key) or "") != value for key, value in expected.items())
+    ):
+        raise AutodraftError(
+            "provider_binding_invalid",
+            "麦克视频任务与短剧项目绑定不一致",
+            409,
+        )
+    request = _json(row["request_json"], {})
+    provider = load_by_name("minimax_h3")
+    references = provider.resolve_reference_values(
+        request.get("reference_images") or []
+    )
+    if not references:
+        raise AutodraftError(
+            "provider_reference_required",
+            "麦克视频任务缺少可用的项目参考图",
+            422,
+        )
+    resolved["reference_images"] = references
+    return resolved
 
 
 def _enforce_shared_video_submission_limit(

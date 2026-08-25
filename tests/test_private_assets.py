@@ -121,6 +121,31 @@ class PrivateAssetsTest(unittest.TestCase):
         )
         self.assertEqual(120, core._local_file_url_ttl({"HQ_LOCAL_FILE_URL_TTL": "120"}))
 
+    def test_production_contract_documents_local_reference_signing(self):
+        root = Path(__file__).resolve().parents[1]
+        example = (root / "deploy" / "huangque-secrets.env.example").read_text(
+            encoding="utf-8"
+        )
+        runbook = (root / "deploy" / "生产环境清单与还原手册.md").read_text(
+            encoding="utf-8"
+        )
+        for name in (
+            "HQ_CONTENT_PUBLIC_BASE_URL",
+            "HQ_LOCAL_FILE_SIGNING_SECRET",
+            "HQ_LOCAL_FILE_URL_TTL_SECONDS",
+        ):
+            self.assertIn(name, example)
+            self.assertIn(name, runbook)
+        for requirement in (
+            "openssl rand",
+            "chmod 600",
+            "huangque-content",
+            "篡改",
+            "过期",
+            "回滚",
+        ):
+            self.assertIn(requirement, runbook)
+
     def test_signed_provider_file_route_is_public_only_for_valid_current_signature(self):
         with tempfile.TemporaryDirectory() as tmp, \
                 patch.object(core, "OUT_DIR", Path(tmp)), \

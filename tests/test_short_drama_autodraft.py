@@ -2543,7 +2543,7 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         self.assertEqual("active_job_cap", raised.exception.code)
         self.assertEqual([], charged)
 
-    def test_minimax_shared_job_encodes_local_reference_with_authenticated_url(self):
+    def test_minimax_shared_job_resolves_local_reference_only_in_worker_memory(self):
         import io
         from PIL import Image
 
@@ -2596,11 +2596,26 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             ).fetchone()[0])
         finally:
             conn.close()
-        self.assertTrue(payload["reference_images"])
+        self.assertEqual([], payload["reference_images"])
+        self.assertNotIn("data:image", json.dumps(payload))
+        with mock.patch(
+            "content_domains.core._out_path", return_value=image_path,
+        ):
+            resolved = short_drama_autodraft.resolve_shared_xiaole_payload(
+                self.db, int(job["id"]), "alice", payload,
+            )
         self.assertTrue(all(
             value.startswith("data:image/png;base64,")
-            for value in payload["reference_images"]
+            for value in resolved["reference_images"]
         ))
+        conn = self.db()
+        try:
+            persisted = conn.execute(
+                "SELECT payload FROM jobs WHERE id=?", (int(job["id"]),)
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertNotIn("data:image", persisted)
 
     def test_minimax_existing_short_drama_http_route_enqueues_shared_job(self):
         self._lock_project_character_references()

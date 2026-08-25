@@ -20,6 +20,7 @@ from content_domains import (
     short_drama_asset_graph,
     short_drama_conversation,
     short_drama_storyboard,
+    short_drama_voice,
 )
 
 
@@ -2291,6 +2292,299 @@ class ShortDramaConversationTests(unittest.TestCase):
         )
         self.assertEqual(original["script"], restored["current_script"]["script"])
 
+    def test_insert_operations_create_silent_shots_and_regenerate_without_dialogue(self):
+        confirmed = self.confirm_direction(self.project["id"], 1, "silent-insert")
+        current = short_drama_conversation.generate_script(
+            self.db,
+            "alice",
+            "alice",
+            {
+                "project_id": self.project["id"],
+                "conversation_revision": confirmed["conversation"]["revision"],
+            },
+            "silent-insert-generate",
+        )
+        source_key = next(
+            shot["shot_key"]
+            for shot in current["current_script"]["script"]["shots"]
+            if shot.get("dialogue_line_ids")
+        )
+
+        for index, action in enumerate(
+            ("insert_before", "insert_after", "smart_insert"), 1
+        ):
+            before = current["current_script"]
+            before_keys = {
+                shot["shot_key"] for shot in before["script"]["shots"]
+            }
+            before_line_ids = {
+                line["id"] for line in before["script"]["dialogue_lines"]
+            }
+            structured = short_drama_conversation.change_shot_structure(
+                self.db,
+                "alice",
+                "alice",
+                {
+                    "project_id": self.project["id"],
+                    "conversation_revision": current["conversation"]["revision"],
+                    "version_id": before["id"],
+                    "shot_key": source_key,
+                    "action": action,
+                    "instruction": "silent bridge %d" % index,
+                },
+                "silent-insert-structure-%d" % index,
+            )
+            inserted = next(
+                shot
+                for shot in structured["current_script"]["script"]["shots"]
+                if shot["shot_key"] not in before_keys
+            )
+            self.assertEqual([], inserted["dialogue_line_ids"], action)
+            self.assertEqual(
+                before_line_ids,
+                {
+                    line["id"]
+                    for line in structured["current_script"]["script"]["dialogue_lines"]
+                },
+                action,
+            )
+
+            regenerated = short_drama_conversation.regenerate_shot(
+                self.db,
+                "alice",
+                "alice",
+                {
+                    "project_id": self.project["id"],
+                    "conversation_revision": structured["conversation"]["revision"],
+                    "version_id": structured["current_script"]["id"],
+                    "shot_key": inserted["shot_key"],
+                    "instruction": "refresh silent bridge %d" % index,
+                },
+                "silent-insert-regenerate-%d" % index,
+            )
+            regenerated_shot = next(
+                shot
+                for shot in regenerated["current_script"]["script"]["shots"]
+                if shot["shot_key"] == inserted["shot_key"]
+            )
+            self.assertEqual([], regenerated_shot["dialogue_line_ids"], action)
+            current = regenerated
+
+    def test_copied_multiline_shot_regeneration_preserves_complete_dialogue_group(self):
+        confirmed = self.confirm_direction(self.project["id"], 1, "copy-multiline")
+        generated = short_drama_conversation.generate_script(
+            self.db,
+            "alice",
+            "alice",
+            {
+                "project_id": self.project["id"],
+                "conversation_revision": confirmed["conversation"]["revision"],
+            },
+            "copy-multiline-generate",
+        )
+        source = next(
+            shot
+            for shot in generated["current_script"]["script"]["shots"]
+            if shot.get("dialogue_line_ids")
+        )
+        source_lines = {
+            line["id"]: line
+            for line in generated["current_script"]["script"]["dialogue_lines"]
+        }
+        character_key = source_lines[source["dialogue_line_ids"][0]]["character_key"]
+        edited = short_drama_conversation.update_shot(
+            self.db,
+            "alice",
+            "alice",
+            {
+                "project_id": self.project["id"],
+                "conversation_revision": generated["conversation"]["revision"],
+                "version_id": generated["current_script"]["id"],
+                "shot_key": source["shot_key"],
+                "changes": {
+                    "dialogues": [
+                        {
+                            "kind": "dialogue",
+                            "character_key": character_key,
+                            "text": "第一句。",
+                            "speech_rate": 1.0,
+                            "timing_mode": "sequential",
+                        },
+                        {
+                            "kind": "dialogue",
+                            "character_key": character_key,
+                            "text": "第二句。",
+                            "speech_rate": 1.0,
+                            "timing_mode": "simultaneous",
+                        },
+                    ]
+                },
+            },
+            "copy-multiline-edit",
+        )
+        before_copy = edited["current_script"]
+        copied = short_drama_conversation.change_shot_structure(
+            self.db,
+            "alice",
+            "alice",
+            {
+                "project_id": self.project["id"],
+                "conversation_revision": edited["conversation"]["revision"],
+                "version_id": before_copy["id"],
+                "shot_key": source["shot_key"],
+                "action": "copy",
+            },
+            "copy-multiline-structure",
+        )
+        copied_script = copied["current_script"]["script"]
+        copied_shot = next(
+            shot
+            for shot in copied_script["shots"]
+            if shot.get("source_type") == "user_copy"
+        )
+        copied_by_id = {
+            line["id"]: line for line in copied_script["dialogue_lines"]
+        }
+        copied_lines = [
+            copied_by_id[line_id] for line_id in copied_shot["dialogue_line_ids"]
+        ]
+        self.assertEqual(["第一句。", "第二句。"], [line["text"] for line in copied_lines])
+        self.assertEqual(
+            ["sequential", "simultaneous"],
+            [line["timing_mode"] for line in copied_lines],
+        )
+        copied_ids = [line["id"] for line in copied_lines]
+
+        regenerated = short_drama_conversation.regenerate_shot(
+            self.db,
+            "alice",
+            "alice",
+            {
+                "project_id": self.project["id"],
+                "conversation_revision": copied["conversation"]["revision"],
+                "version_id": copied["current_script"]["id"],
+                "shot_key": copied_shot["shot_key"],
+                "instruction": "只调整画面构图",
+            },
+            "copy-multiline-regenerate",
+        )
+        regenerated_script = regenerated["current_script"]["script"]
+        regenerated_shot = next(
+            shot
+            for shot in regenerated_script["shots"]
+            if shot["shot_key"] == copied_shot["shot_key"]
+        )
+        regenerated_by_id = {
+            line["id"]: line for line in regenerated_script["dialogue_lines"]
+        }
+        regenerated_lines = [
+            regenerated_by_id[line_id]
+            for line_id in regenerated_shot["dialogue_line_ids"]
+        ]
+        self.assertEqual(copied_ids, regenerated_shot["dialogue_line_ids"])
+        self.assertEqual(
+            [(line["id"], line["text"], line["timing_mode"]) for line in copied_lines],
+            [(line["id"], line["text"], line["timing_mode"]) for line in regenerated_lines],
+        )
+
+    def test_voice_workspace_uses_current_conversation_timing_modes(self):
+        confirmed = self.confirm_direction(self.project["id"], 1, "voice-current")
+        generated = short_drama_conversation.generate_script(
+            self.db,
+            "alice",
+            "alice",
+            {
+                "project_id": self.project["id"],
+                "conversation_revision": confirmed["conversation"]["revision"],
+            },
+            "voice-current-generate",
+        )
+        source = next(
+            shot
+            for shot in generated["current_script"]["script"]["shots"]
+            if shot.get("dialogue_line_ids")
+        )
+        source_by_id = {
+            line["id"]: line
+            for line in generated["current_script"]["script"]["dialogue_lines"]
+        }
+        character_key = source_by_id[source["dialogue_line_ids"][0]]["character_key"]
+        edited = short_drama_conversation.update_shot(
+            self.db,
+            "alice",
+            "alice",
+            {
+                "project_id": self.project["id"],
+                "conversation_revision": generated["conversation"]["revision"],
+                "version_id": generated["current_script"]["id"],
+                "shot_key": source["shot_key"],
+                "changes": {
+                    "dialogues": [
+                        {
+                            "kind": "dialogue",
+                            "character_key": character_key,
+                            "text": "同时说的第一句。",
+                            "speech_rate": 1.0,
+                            "timing_mode": "sequential",
+                        },
+                        {
+                            "kind": "dialogue",
+                            "character_key": character_key,
+                            "text": "同时说的第二句。",
+                            "speech_rate": 1.0,
+                            "timing_mode": "simultaneous",
+                        },
+                    ]
+                },
+            },
+            "voice-current-edit",
+        )
+        locked = short_drama_conversation.lock_script(
+            self.db,
+            "alice",
+            "alice",
+            {
+                "project_id": self.project["id"],
+                "conversation_revision": edited["conversation"]["revision"],
+                "version_id": edited["current_script"]["id"],
+            },
+            "voice-current-lock",
+        )
+        with closing(self.db()) as conn:
+            for index, character in enumerate(
+                edited["current_script"]["script"]["characters"]
+            ):
+                conn.execute(
+                    "INSERT INTO short_drama_characters "
+                    "(id,project_id,character_key,name,source_type,sort_order) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (
+                        "voice-current-character-%d" % index,
+                        self.project["id"],
+                        character["character_key"],
+                        character["name"],
+                        "ai_character",
+                        index,
+                    ),
+                )
+            conn.execute(
+                "UPDATE short_drama_projects SET stage='voice_review' WHERE id=?",
+                (self.project["id"],),
+            )
+            conn.commit()
+
+        voice = short_drama_voice.get_voice_workspace(
+            self.db, "alice", self.project["id"]
+        )
+        voice_shot = next(
+            shot for shot in voice["shots"] if len(shot["lines"]) == 2
+        )
+        self.assertEqual("script_locked", locked["conversation"]["state"])
+        self.assertEqual(
+            ["sequential", "simultaneous"],
+            [line["timing_mode"] for line in voice_shot["lines"]],
+        )
+
     def test_user_created_shots_can_be_regenerated_without_changing_identity(self):
         confirmed = self.confirm_direction(self.project["id"], 1, "user-shot-regen")
         current = short_drama_conversation.generate_script(
@@ -2330,7 +2624,7 @@ class ShortDramaConversationTests(unittest.TestCase):
             shot_index = structured_script["shots"].index(user_shot)
             previous_visual = structured_script["shots"][shot_index - 1]["visual"]
             next_visual = structured_script["shots"][shot_index + 1]["visual"]
-            line_id = user_shot["dialogue_line_ids"][0]
+            line_ids = list(user_shot["dialogue_line_ids"])
             duration = user_shot["duration_seconds"]
 
             with mock.patch.object(
@@ -2353,7 +2647,7 @@ class ShortDramaConversationTests(unittest.TestCase):
                 )
             regenerated_shot = regenerated["current_script"]["script"]["shots"][shot_index]
             self.assertEqual(user_shot["shot_key"], regenerated_shot["shot_key"])
-            self.assertEqual([line_id], regenerated_shot["dialogue_line_ids"])
+            self.assertEqual(line_ids, regenerated_shot["dialogue_line_ids"])
             self.assertEqual(duration, regenerated_shot["duration_seconds"])
             self.assertIn(previous_visual[:40], regenerated_shot["visual"])
             self.assertIn(next_visual[:40], regenerated_shot["visual"])

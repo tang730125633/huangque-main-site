@@ -2601,14 +2601,15 @@ def _structure_shot(script, shot_key, action, instruction=""):
         clone["shot_key"] = _new_structure_key(script, "shot_user", "shots", "shot_key")
         cloned_lines = []
         clone_source = "user_copy" if action == "copy" else "user_insert"
-        for source_line in shot_lines:
-            cloned_line = _json(_json_text(source_line), {})
-            cloned_line["id"] = _new_structure_key(
-                script, "line_user", "dialogue_lines", "id"
-            )
-            cloned_line["source_type"] = clone_source
-            cloned_lines.append(cloned_line)
-            script.setdefault("dialogue_lines", []).append(cloned_line)
+        if action == "copy":
+            for source_line in shot_lines:
+                cloned_line = _json(_json_text(source_line), {})
+                cloned_line["id"] = _new_structure_key(
+                    script, "line_user", "dialogue_lines", "id"
+                )
+                cloned_line["source_type"] = clone_source
+                cloned_lines.append(cloned_line)
+                script.setdefault("dialogue_lines", []).append(cloned_line)
         clone["dialogue_line_ids"] = [line["id"] for line in cloned_lines]
         clone["source_type"] = clone_source
         clone["locked"] = False
@@ -2813,7 +2814,7 @@ def _apply_shot_patch(script, shot_key, changes):
     return script
 
 
-def _regenerate_user_shot(script, shot, line, instruction):
+def _regenerate_user_shot(script, shot, instruction):
     """Regenerate an inserted shot from its real timeline context."""
     shots = script.get("shots") or []
     shot_index = shots.index(shot)
@@ -2840,7 +2841,6 @@ def _regenerate_user_shot(script, shot, line, instruction):
     )[:_SHOT_EDIT_FIELDS["continuity"]]
 
     replacement = _json(_json_text(shot), {})
-    replacement_line = _json(_json_text(line), {})
     replacement.update({
         "purpose": (instruction[:160] or str(shot.get("purpose") or "推进相邻镜头间的剧情"))[:160],
         "visual": visual,
@@ -2856,7 +2856,7 @@ def _regenerate_user_shot(script, shot, line, instruction):
         )[:_SHOT_EDIT_FIELDS["provider_prompt"]],
         "locked": False,
     })
-    return replacement, replacement_line
+    return replacement
 
 
 def _insert_edited_version(conn, project, actor, current, source, script, instruction, summary):
@@ -2955,11 +2955,12 @@ def _mutate_shot(
             instruction = str(body.get("instruction") or "").strip()[:500]
             shot_index = script["shots"].index(shot)
             generated = None
-            if shot_key.startswith("shot_user_"):
-                replacement, replacement_line = _regenerate_user_shot(
-                    script, shot, original_lines[0], instruction,
+            user_shot_regeneration = shot_key.startswith("shot_user_")
+            if user_shot_regeneration:
+                replacement = _regenerate_user_shot(
+                    script, shot, instruction,
                 )
-                replacement_lines = [replacement_line]
+                replacement_lines = original_lines
             else:
                 messages = _messages(conn, project_id)
                 understanding = _json(current.get("understanding_json"), {})
@@ -2967,7 +2968,7 @@ def _mutate_shot(
                 replacement, replacement_lines = _shot_and_lines(generated, shot_key)
                 replacement = _json(_json_text(replacement), {})
                 replacement_lines = _json(_json_text(replacement_lines), [])
-            _preserve_dialogue_timing_modes(original_lines, replacement_lines)
+                _preserve_dialogue_timing_modes(original_lines, replacement_lines)
             replacement["shot_key"] = shot_key
             replacement["dialogue_line_ids"] = list(shot.get("dialogue_line_ids") or [])
             replacement["duration_seconds"] = shot["duration_seconds"]
@@ -2987,9 +2988,10 @@ def _mutate_shot(
                     instruction[:300],
                 )
             script["shots"][shot_index] = replacement
-            _replace_shot_dialogues(
-                script, replacement, original_lines, replacement_lines
-            )
+            if not user_shot_regeneration:
+                _replace_shot_dialogues(
+                    script, replacement, original_lines, replacement_lines
+                )
             beat_index = next(
                 (
                     index

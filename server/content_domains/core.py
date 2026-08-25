@@ -1511,6 +1511,20 @@ def run_job(job_id):
         # 抢到 running 才开心跳（前面几个 return 都还没认领，不该有心跳）。
         # 有了它，reaper 的「没心跳」才真的等于「worker 死了」—— 而不是「正在轮询/烧字幕」。
         stop_heartbeat = _start_job_heartbeat(job_id)
+        if kind == "xiaole_video" and payload.get(
+            "_short_drama_provider_binding"
+        ):
+            # A paid official task with a durable provider ID resumes by GET
+            # only. Its private source images are no longer needed and may have
+            # been rotated away between worker restarts, so do not reopen them.
+            recovery = _domains()[2].get_resumable_grok_request(job_id)
+            if not recovery:
+                payload = (
+                    _short_drama_domain().short_drama_autodraft
+                    .resolve_shared_xiaole_payload(
+                        jdb, job_id, username, payload
+                    )
+                )
         if kind in {"audio", "short_drama_sound_effect", "video", "tryon", "xiaole_video", "sora_video", "leads", "cinematic", "avatar", "breakdown", "short_drama_preview", "short_drama_final", "script_to_video"}:
             payload["_username"] = username   # 少一个 kind，handler 就拿不到用户名/job_id：
             payload["_job_id"] = job_id       # gen_avatar 记不了形象归属，gen_cinematic 查不到用户的形象
