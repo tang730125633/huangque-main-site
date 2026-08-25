@@ -15,6 +15,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from decimal import Decimal, ROUND_HALF_UP
+from pathlib import Path
 
 
 PUBLIC_ORIGIN = os.environ.get("HQ_CLI_PUBLIC_ORIGIN", "https://huangquechuanmei.com").strip().rstrip("/")
@@ -687,17 +688,36 @@ def _upload_catalog_entry(action, family, max_bytes, mime_types, max_files):
     }
 
 
-ACTION_CATALOG = tuple(_catalog_entry(action, fields) for action, fields in _ACTION_INPUTS.items()) + (
-    _upload_catalog_entry("image-upload", "image", 10 * 1024 * 1024,
-                          ["image/jpeg", "image/png", "image/webp"], 20),
-    _upload_catalog_entry("video-upload", "video", 32 * 1024 * 1024,
-                          ["video/mp4", "video/quicktime", "video/webm"], 6),
-)
-for _catalog_item in ACTION_CATALOG:
-    if _catalog_item["action"] in _FAMILIES:
-        _catalog_item["family"] = _FAMILIES[_catalog_item["action"]]
+def bootstrap_action_catalog():
+    """Return the pre-inversion action catalog for one-time migration only."""
+    catalog = tuple(_catalog_entry(action, fields) for action, fields in _ACTION_INPUTS.items()) + (
+        _upload_catalog_entry("image-upload", "image", 10 * 1024 * 1024,
+                              ["image/jpeg", "image/png", "image/webp"], 20),
+        _upload_catalog_entry("video-upload", "video", 32 * 1024 * 1024,
+                              ["video/mp4", "video/quicktime", "video/webm"], 6),
+    )
+    for item in catalog:
+        if item["action"] in _FAMILIES:
+            item["family"] = _FAMILIES[item["action"]]
+    return catalog
+
+
+def _load_action_catalog_projection():
+    path = Path(__file__).with_name("action_catalog.generated.json")
+    if not path.is_file():
+        return bootstrap_action_catalog(), "hq-action-catalog-v3"
+    with path.open(encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if payload.get("schema") != "huangque.action-catalog-projection/v1":
+        raise RuntimeError("invalid generated ACTION_CATALOG projection")
+    actions = payload.get("actions")
+    if not isinstance(actions, list) or len(actions) != 71:
+        raise RuntimeError("generated ACTION_CATALOG projection must contain 71 items")
+    return tuple(actions), str(payload.get("version") or "")
+
+
+ACTION_CATALOG, ACTION_CATALOG_VERSION = _load_action_catalog_projection()
 ACTION_CATALOG_MAP = {item["action"]: item for item in ACTION_CATALOG if item["transport"]["kind"] == "action"}
-ACTION_CATALOG_VERSION = "hq-action-catalog-v3"
 
 
 def action_catalog(feature_states=None):

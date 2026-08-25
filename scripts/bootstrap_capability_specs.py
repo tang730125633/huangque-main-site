@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mechanically migrate the 0.10.5 CLI and server actions into CapabilitySpec v1."""
+"""One-time legacy bootstrap for CapabilitySpec v1; not a build/check input."""
 
 import argparse
 import copy
@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT / "server"))
 sys.path.insert(0, str(ROOT / "tools" / "hq-cli" / "src"))
 
 import hq_cli  # noqa: E402
-from hq_cli.catalog import capability_list  # noqa: E402
+from hq_cli.catalog import bootstrap_capability_list  # noqa: E402
 import hq_cli_api  # noqa: E402
 
 
@@ -178,8 +178,8 @@ def _matrix_outcome():
 
 
 def build_registry():
-    cli = {item["id"]: item for item in capability_list()}
-    actions = {item["action"]: item for item in hq_cli_api.ACTION_CATALOG}
+    cli = {item["id"]: item for item in bootstrap_capability_list()}
+    actions = {item["action"]: item for item in hq_cli_api.bootstrap_action_catalog()}
     specs = [_tool_spec(cli[tool_id], actions.get(tool_id)) for tool_id in sorted(cli)]
     specs.extend(_internal_tool_spec(actions[action_id]) for action_id in sorted(set(actions) - set(cli)))
     specs.append(_matrix_outcome())
@@ -193,7 +193,7 @@ def build_registry():
             "action_catalog_version": hq_cli_api.ACTION_CATALOG_VERSION,
             "action_tool_count": len(actions),
         },
-        "manual_edits": "forbidden; run scripts/migrate_capability_specs.py",
+        "manual_edits": "canonical source; normal build uses compile_capability_specs.py",
         "capabilities": sorted(specs, key=lambda item: (item["kind"], item["id"])),
     }
 
@@ -206,14 +206,11 @@ def serialized():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--check", action="store_true")
+    parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
-    expected = serialized()
-    if args.check:
-        if not OUTPUT.is_file() or OUTPUT.read_text(encoding="utf-8") != expected:
-            raise SystemExit("CapabilitySpec registry is stale; run scripts/migrate_capability_specs.py")
-        return
-    OUTPUT.write_text(expected, encoding="utf-8")
+    if OUTPUT.exists() and not args.force:
+        raise SystemExit("canonical CapabilitySpec already exists; pass --force only for one-time bootstrap")
+    OUTPUT.write_text(serialized(), encoding="utf-8")
 
 
 if __name__ == "__main__":

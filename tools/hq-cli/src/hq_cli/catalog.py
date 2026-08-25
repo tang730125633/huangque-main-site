@@ -1,5 +1,8 @@
-"""Machine-readable Huangque main-site capability contract."""
+"""Machine-readable Huangque main-site capability projection."""
 
+import copy
+import json
+from pathlib import Path
 from urllib.parse import urlencode
 
 
@@ -895,8 +898,36 @@ for identifier, website_modes in {
     CAPABILITIES[identifier]["website_modes"] = website_modes
 
 
+_BOOTSTRAP_CAPABILITIES = tuple(copy.deepcopy(list(CAPABILITIES.values())))
+
+
+def bootstrap_capability_list():
+    """Return the pre-inversion catalog for one-time migration only."""
+    return copy.deepcopy(list(_BOOTSTRAP_CAPABILITIES))
+
+
+def _load_capability_projection():
+    path = Path(__file__).with_name("capabilities.generated.json")
+    if not path.is_file():
+        return None
+    with path.open(encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if payload.get("schema") != "hq.capabilities/v1" or payload.get("cli_version") != "0.10.5":
+        raise RuntimeError("invalid generated HQ CLI capability projection")
+    capabilities = payload.get("capabilities")
+    if not isinstance(capabilities, list) or len(capabilities) != 88:
+        raise RuntimeError("generated HQ CLI capability projection must contain 88 items")
+    return payload
+
+
+_GENERATED = _load_capability_projection()
+if _GENERATED is not None:
+    CAPABILITIES = {item["id"]: item for item in _GENERATED["capabilities"]}
+    VIDEO_CHANNEL_RULES = _GENERATED["video_channel_rules"]
+
+
 def capability_list():
-    return list(CAPABILITIES.values())
+    return copy.deepcopy(list(CAPABILITIES.values()))
 
 
 def resolve_url(capability, environment, payload):
