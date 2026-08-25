@@ -736,15 +736,19 @@ def agents_sdk_talking_head_run(*, execute_action, capabilities, user_message,
         if call.get("status") == "completed"
     ]
     expected = [spec["action"] for spec in specs]
-    if sorted(completed) != sorted(expected):
+    direct = decision.get("intent") == "direct_answer" and decision.get("tool") == "none"
+    status = decision.get("intent") == "status" and decision.get("tool") == "project.status"
+    if direct and completed:
+        raise RuntimeError("agents_sdk_talking_head_unexpected_reads")
+    if status and sorted(completed) != sorted(expected):
         raise RuntimeError("agents_sdk_talking_head_reads_incomplete")
-    if decision.get("intent") != "status" or decision.get("tool") != "project.status":
+    if not (direct or status):
         raise RuntimeError("agents_sdk_talking_head_final_decision_invalid")
     model_rounds = len(run.get("model_responses") or []) - before_responses
     if not 1 <= model_rounds <= 2:
         raise RuntimeError("agents_sdk_talking_head_model_round_limit")
     return {
         "final_text": str(decision.get("reply") or "").strip(),
-        "tool_calls": expected,
+        "tool_calls": expected if status else [],
         "model_rounds": model_rounds,
     }

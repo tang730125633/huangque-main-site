@@ -6449,15 +6449,14 @@ def _agents_sdk_account_turn_allowed(cid, legacy_route):
     )
 
 
-def _agents_sdk_talking_head_turn_allowed(cid, legacy_route, shadow_decision):
+def _agents_sdk_talking_head_turn_allowed(cid, legacy_route, convo):
     return bool(
         AGENTS_SDK_TALKING_HEAD_ENABLED
         and cid == AGENTS_SDK_TALKING_HEAD_PROJECT_ID
         and legacy_route == "model_turn"
         and COGNITIVE_ENGINE_MODE == "custom"
         and not AGENTS_SDK_ENABLED
-        and isinstance(shadow_decision, dict)
-        and shadow_decision.get("execution_route") == "master_resume"
+        and _latest_talking_head_production(convo) is not None
     )
 
 
@@ -7339,7 +7338,12 @@ def process_chat_request(body):
                 agents_sdk_account_turn = _agents_sdk_account_turn_allowed(
                     cid, legacy_route
                 )
-                if MASTER_AGENT_MODE in {"shadow", "live"}:
+                agents_sdk_talking_head_turn = _agents_sdk_talking_head_turn_allowed(
+                    cid, legacy_route, convo
+                )
+                if (MASTER_AGENT_MODE in {"shadow", "live"}
+                        and not agents_sdk_account_turn
+                        and not agents_sdk_talking_head_turn):
                     shadow_decision = master_agent.decide(
                         convo,
                         state,
@@ -7349,9 +7353,6 @@ def process_chat_request(body):
                             "action_type": str((action or {}).get("type") or "") if isinstance(action, dict) else "",
                             "production_action": str((production_intent or {}).get("recommended_action") or ""),
                         },
-                    )
-                    agents_sdk_talking_head_turn = _agents_sdk_talking_head_turn_allowed(
-                        cid, legacy_route, shadow_decision
                     )
 
                 if action is None and body.get("content_target") is None and foundation_review != "revision":

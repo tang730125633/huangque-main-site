@@ -287,6 +287,39 @@ class AgentsSDKTalkingHeadRunnerTests(unittest.TestCase):
         async def stream_response(self, *args, **kwargs):
             raise NotImplementedError
 
+    class DirectAnswerModel(BaseModelInterface):
+        def __init__(self):
+            self.calls = 0
+
+        async def get_response(
+            self, system_instructions, input, model_settings, tools,
+            output_schema, handoffs, tracing, *, previous_response_id,
+            conversation_id, prompt,
+        ):
+            self.calls += 1
+            if [tool.name for tool in tools] != ["talking_head_video_agent"]:
+                raise AssertionError("Master tool surface changed")
+            return ModelResponse(
+                output=[_text_message(json.dumps({
+                    "schema": "ip12.semantic-master-decision/v1",
+                    "intent": "direct_answer", "delegate_to": "none", "tool": "none",
+                    "reply": "下午好，周岚。", "awaiting": "none", "confidence": 0.99,
+                    "reason_codes": ["friendly_reply"],
+                    "memory_evidence": [], "memory_updates": [], "tool_policy": "none",
+                    "payment_policy": {
+                        "quote_required": False, "explicit_confirmation_required": False,
+                    },
+                    "references": {
+                        "production_id": "", "category_id": "", "topic_id": "",
+                    },
+                }, ensure_ascii=False))],
+                usage=Usage(requests=1, input_tokens=20, output_tokens=5, total_tokens=25),
+                response_id="talking_direct_1",
+            )
+
+        async def stream_response(self, *args, **kwargs):
+            raise NotImplementedError
+
     def test_runner_uses_specialist_as_tool_and_five_real_read_executors(self):
         model = self.TalkingHeadModel()
         project = {"id": "project_talking_head"}
@@ -345,6 +378,24 @@ class AgentsSDKTalkingHeadRunnerTests(unittest.TestCase):
                 user_message="查状态", runtime_facts={}, run=run,
                 model=self.TalkingHeadModel(),
             )
+
+    def test_non_talking_message_stays_with_master_without_specialist(self):
+        model = self.DirectAnswerModel()
+        run = agent_runtime.start(
+            {"id": "direct"}, "run_direct", Policy(), "下午好",
+            project_id="direct",
+        )
+        result = cognitive_engine.agents_sdk_talking_head_run(
+            execute_action=lambda *_args: (_ for _ in ()).throw(
+                AssertionError("non-talking message must not call HQ tools")
+            ),
+            capabilities=TALKING_HEAD_CAPABILITIES,
+            user_message="下午好", runtime_facts={"production_status": "failed"},
+            run=run, model=model,
+        )
+        self.assertEqual(result["final_text"], "下午好，周岚。")
+        self.assertEqual(result["tool_calls"], [])
+        self.assertEqual(model.calls, 1)
 
 
 class AgentsSDKAccountServerWiringTests(unittest.TestCase):
@@ -477,7 +528,6 @@ server.save_conversation(cid, convo)
 server.AGENTS_SDK_TALKING_HEAD_REQUESTED = True
 server.AGENTS_SDK_TALKING_HEAD_PROJECT_ID = cid
 server.AGENTS_SDK_TALKING_HEAD_ENABLED = True
-server.master_agent.decide = lambda *_args, **_kwargs: {"execution_route": "master_resume"}
 server._bridge_catalog = lambda _account: {"actions": copy.deepcopy({talking_capabilities})}
 bridge_calls = []
 
