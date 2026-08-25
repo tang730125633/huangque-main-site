@@ -135,6 +135,7 @@ class AgentRuntimeContractTests(unittest.TestCase):
         self.assertNotIn("inputs", public)
         self.assertEqual(set(agent_runtime.TOOL_CONTRACTS), {
             "account",
+            "ip12-project", "video-avatars", "voices", "audio-slots", "assets",
             "project.read", "capability.read", "assets.read", "production.quote",
             "production.submit", "task.read", "artifact.verify", "project.writeback",
         })

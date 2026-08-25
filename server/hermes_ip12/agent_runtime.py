@@ -83,6 +83,11 @@ TOOL_CONTRACTS = {
     ),
 }
 
+for _tool_id in ("ip12-project", "video-avatars", "voices", "audio-slots", "assets"):
+    TOOL_CONTRACTS[_tool_id] = _tool(
+        (), ("status",), risk="read", public=("status",),
+    )
+
 
 class AgentRuntimeError(RuntimeError):
     pass

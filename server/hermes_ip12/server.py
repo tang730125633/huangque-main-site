@@ -55,6 +55,18 @@ AGENTS_SDK_ACCOUNT_ENABLED = bool(
     and os.environ.get("HERMES_AGENTS_SDK_MODEL")
     and os.environ.get("HERMES_AGENTS_SDK_OPENAI_API_KEY")
 )
+AGENTS_SDK_TALKING_HEAD_REQUESTED = str(
+    os.environ.get("HERMES_AGENTS_SDK_TALKING_HEAD_ENABLED") or "0"
+).strip() == "1"
+AGENTS_SDK_TALKING_HEAD_PROJECT_ID = str(
+    os.environ.get("HERMES_AGENTS_SDK_TALKING_HEAD_PROJECT_ID") or ""
+).strip()
+AGENTS_SDK_TALKING_HEAD_ENABLED = bool(
+    AGENTS_SDK_TALKING_HEAD_REQUESTED
+    and AGENTS_SDK_TALKING_HEAD_PROJECT_ID
+    and os.environ.get("HERMES_AGENTS_SDK_MODEL")
+    and os.environ.get("HERMES_AGENTS_SDK_OPENAI_API_KEY")
+)
 RUNTIME_SUBMISSION_CLAIM_SECONDS = 45
 VERIFIED_VIDEO_HOSTS = {"video.huangquechuanmei.com"}
 AI_DEFAULT_TIMEOUT_SECONDS = 180
@@ -3293,6 +3305,8 @@ def healthz():
         "project_memory_schema": project_memory.SCHEMA,
         "agents_sdk_account_requested": AGENTS_SDK_ACCOUNT_REQUESTED,
         "agents_sdk_account_enabled": AGENTS_SDK_ACCOUNT_ENABLED,
+        "agents_sdk_talking_head_requested": AGENTS_SDK_TALKING_HEAD_REQUESTED,
+        "agents_sdk_talking_head_enabled": AGENTS_SDK_TALKING_HEAD_ENABLED,
     })
 
 @app.route("/classic")
@@ -6094,6 +6108,50 @@ def _bridge_tool_result(result):
     return nested if isinstance(nested, dict) else (result if isinstance(result, dict) else {})
 
 
+_TALKING_HEAD_RESOURCE_FIELDS = {
+    "video-avatars": ("id", "name", "label", "status"),
+    "voices": ("voice_key", "provider_voice", "slot_id", "name", "status"),
+    "audio-slots": ("slot_id", "voice_key", "name", "status", "ready"),
+    "assets": ("id", "asset_id", "kind", "name", "title", "status"),
+}
+
+
+def _talking_head_read_result(action, raw):
+    """Bound real HQ reads before model exposure; never return full Project history."""
+    value = _bridge_tool_result(raw)
+    if action == "ip12-project":
+        records = value.get("productions") or {}
+        records = list(records.values()) if isinstance(records, dict) else list(records)
+        active_id = str(value.get("active_production_id") or "")
+        safe_records = [{
+            "production_id": str(item.get("id") or item.get("production_id") or ""),
+            "action": str(item.get("action") or ""),
+            "status": str(item.get("status") or ""),
+            "error_code": str(item.get("last_error_code") or ""),
+            "refund_status": str(item.get("refund_status") or ""),
+            "job_present": bool(item.get("job_id")),
+            "next_action": str((item.get("specialist_agent") or {}).get("next_action") or ""),
+        } for item in records if isinstance(item, dict)]
+        active = next((item for item in safe_records if item["production_id"] == active_id), None)
+        return {
+            "project_id": str(value.get("id") or ""),
+            "active_production": active,
+            "productions": safe_records[-8:],
+        }
+    fields = _TALKING_HEAD_RESOURCE_FIELDS.get(action)
+    if fields is None:
+        raise RuntimeError("talking_head_read_action_not_allowed")
+    items = value.get("items")
+    if not isinstance(items, list):
+        items = value.get("slots") if isinstance(value.get("slots"), list) else []
+    return {
+        "items": [
+            {key: copy.deepcopy(item.get(key)) for key in fields if key in item}
+            for item in items[:120] if isinstance(item, dict)
+        ],
+    }
+
+
 def _run_talking_head_specialist(account_id, cid, record):
     catalog = _bridge_catalog(account_id)
     available = {
@@ -6377,6 +6435,10 @@ class _AgentsSDKAccountPolicy:
     agent_id = "ip12_master_agent"
 
 
+class _AgentsSDKTalkingHeadPolicy:
+    agent_id = "ip12_master_agent"
+
+
 def _agents_sdk_account_turn_allowed(cid, legacy_route):
     return bool(
         AGENTS_SDK_ACCOUNT_ENABLED
@@ -6384,6 +6446,18 @@ def _agents_sdk_account_turn_allowed(cid, legacy_route):
         and legacy_route == "model_turn"
         and COGNITIVE_ENGINE_MODE == "custom"
         and not AGENTS_SDK_ENABLED
+    )
+
+
+def _agents_sdk_talking_head_turn_allowed(cid, legacy_route, shadow_decision):
+    return bool(
+        AGENTS_SDK_TALKING_HEAD_ENABLED
+        and cid == AGENTS_SDK_TALKING_HEAD_PROJECT_ID
+        and legacy_route == "model_turn"
+        and COGNITIVE_ENGINE_MODE == "custom"
+        and not AGENTS_SDK_ENABLED
+        and isinstance(shadow_decision, dict)
+        and shadow_decision.get("execution_route") == "master_resume"
     )
 
 
@@ -6460,6 +6534,95 @@ def _process_agents_sdk_account_turn(cid, user_message, expected_revision=None,
     )
     result = _chat_result(assistant, next_state)
     result["agent_status"] = {"status": status, "next_action": "await_user"}
+    return result, 200
+
+
+def _process_agents_sdk_talking_head_turn(cid, user_message, expected_revision=None,
+                                          request_id=""):
+    account_id = current_account_id()
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        if convo is None:
+            return None, 404
+        state = normalize_coach_state(convo.get("coach_state"))
+        _assert_expected_revision(state, expected_revision)
+        snapshot_revision = state["revision"]
+        record = _latest_talking_head_production(convo)
+        if record is None:
+            return {"ok": False, "error": "当前没有可读取的口播制作"}, 409
+        catalog = _bridge_catalog(account_id)
+        required = set(talking_head_agent.READ_TOOLS)
+        capabilities = [
+            copy.deepcopy(item) for item in catalog.get("actions") or []
+            if isinstance(item, dict) and item.get("action") in required
+        ]
+        if {item.get("action") for item in capabilities} != required:
+            return {"ok": False, "error": "口播只读能力当前不完整"}, 503
+        stable = request_id or "%s\n%s\n%s" % (cid, snapshot_revision, user_message)
+        run_id = "run_talking_read_" + hashlib.sha256(stable.encode("utf-8")).hexdigest()[:24]
+        run = agent_runtime.start(
+            convo, run_id, _AgentsSDKTalkingHeadPolicy(), user_message,
+            project_id=cid, production_id=str(record.get("id") or ""),
+        )
+        runtime_facts = {
+            "production_status": str(record.get("status") or ""),
+            "error_code": str(record.get("last_error_code") or ""),
+            "refund_status": str(record.get("refund_status") or ""),
+            "job_present": bool(record.get("job_id")),
+            "next_actions": [str((record.get("specialist_agent") or {}).get(
+                "next_action") or "explain_status_without_retry")],
+        }
+        save_conversation(cid, convo)
+
+    def execute_read(action, arguments):
+        raw = _bridge_action(
+            account_id, action, arguments,
+            idempotency_key="agents-sdk-%s-%s" % (run_id, action),
+        )
+        return _talking_head_read_result(action, raw)
+
+    try:
+        loop_result = cognitive_engine.agents_sdk_talking_head_run(
+            execute_action=execute_read, capabilities=capabilities,
+            user_message=user_message, runtime_facts=runtime_facts,
+            run=run, request_id=request_id,
+        )
+        run["result"] = {
+            "tool_calls": list(loop_result.get("tool_calls") or []),
+            "model_rounds": int(loop_result.get("model_rounds") or 0),
+        }
+        agent_runtime.transition(
+            run, "completed", next_action="await_user", request_id=request_id,
+        )
+        assistant = loop_result["final_text"]
+        status = "completed"
+    except Exception as exc:
+        if run.get("status") not in agent_runtime.TERMINAL:
+            agent_runtime.transition(
+                run, "failed", next_action="explain_read_failure",
+                error={"code": type(exc).__name__}, request_id=request_id,
+            )
+        assistant = "我暂时无法安全读取当前口播状态，请稍后再试。"
+        status = "failed"
+
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        if convo is None:
+            return None, 404
+        convo.setdefault("agent_runs", {})[run_id] = run
+        save_conversation(cid, convo)
+    message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
+    assistant, next_state = _persist_unprocessed_turn(
+        cid, user_message, snapshot_revision, message_id=message_id,
+        assistant_override=assistant,
+        skills=["semantic_master_agent", "talking_head_video_agent"],
+        assistant_extra={"model": MODEL},
+    )
+    result = _chat_result(assistant, next_state)
+    result["agent_status"] = {
+        "run_id": run_id, "status": status, "next_action": "await_user",
+        "delegate_to": talking_head_agent.AGENT_ID,
+    }
     return result, 200
 
 
@@ -7035,6 +7198,7 @@ def process_chat_request(body):
     legacy_route = ""
     material_revision_ambiguous = False
     agents_sdk_account_turn = False
+    agents_sdk_talking_head_turn = False
     try:
         production_intent = None
         material_revision_kind = ""
@@ -7186,6 +7350,9 @@ def process_chat_request(body):
                             "production_action": str((production_intent or {}).get("recommended_action") or ""),
                         },
                     )
+                    agents_sdk_talking_head_turn = _agents_sdk_talking_head_turn_allowed(
+                        cid, legacy_route, shadow_decision
+                    )
 
                 if action is None and body.get("content_target") is None and foundation_review != "revision":
                     memory_snapshot = project_memory.build(
@@ -7196,7 +7363,8 @@ def process_chat_request(body):
                 semantic_decision = semantic_router.safe_clarification(
                     "当前有多个待修改的口播制作，请先打开或点名其中一个，再说明要重录声音还是更换形象。"
                 )
-            if (not agents_sdk_account_turn and not material_production_id
+            if (not agents_sdk_account_turn and not agents_sdk_talking_head_turn
+                    and not material_production_id
                     and semantic_decision is None and memory_snapshot is not None
                     and SEMANTIC_ROUTER_MODE == "live"):
                 memory_snapshot["tool_catalog"] = _semantic_tool_catalog(current_account_id(), state)
@@ -7221,6 +7389,10 @@ def process_chat_request(body):
 
             if agents_sdk_account_turn:
                 result, status = _process_agents_sdk_account_turn(
+                    cid, user_message, body.get("expected_revision"), request_id
+                )
+            elif agents_sdk_talking_head_turn:
+                result, status = _process_agents_sdk_talking_head_turn(
                     cid, user_message, body.get("expected_revision"), request_id
                 )
             elif material_production_id:
