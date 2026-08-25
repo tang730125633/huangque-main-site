@@ -154,7 +154,7 @@ global.document={
     def test_prepare_and_quote_submit_typed_options(self):
         prepare = self.html[self.html.index("async function prepareProduction"):self.html.index("async function requestProductionQuote")]
         self.assertIn("options=typedProductionOptions(item||{},item&&item.options||{})", prepare)
-        self.assertIn("preferred_action:item&&item.preferred_action,specialist_agent:item&&item.specialist_agent,allow_system_media:item&&item.allow_system_media===true", prepare)
+        self.assertIn("preferred_action:item&&item.preferred_action,specialist_agent:item&&item.specialist_agent,reuse_production_id:item&&item.reuse_production_id,allow_system_media:item&&item.allow_system_media===true", prepare)
         self.assertIn("options:options", prepare)
         quote = self.html[self.html.index("async function requestProductionQuote"):self.html.index("async function confirmProduction")]
         self.assertIn("var collected=collectProductionOptions(record)", quote)

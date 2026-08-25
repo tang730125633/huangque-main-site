@@ -441,7 +441,12 @@ state.update(
 cid = "quotereply01"
 previous = {
     "id": "prod_previous", "action": "digital-ip-text-generate", "status": "quoted",
+    "category_id": "category_1", "topic_id": "topic_1", "script_version": 1,
+    "script_digest": server._production_digest("这是已经确认的完整口播文案。"),
+    "script_title": "新手第一次接触 Agent，先弄懂什么",
+    "source_text": "这是已经确认的完整口播文案。",
     "options": {"avatar_id": 7, "voice": "voice-me"},
+    "idempotency_key": "stable-current-production-key", "job_id": None,
     "specialist_agent": {
         "agent_id": server.talking_head_agent.AGENT_ID,
         "delegation_id": "delegate_previous",
@@ -466,21 +471,20 @@ server.save_conversation(cid, {
 
 user_message = (
     "用第一篇《新手第一次接触 Agent，先弄懂什么》制作数字人口播视频，"
-    "继续使用当前已经选好的形象 7 和我的个人音色。请只刷新实时报价，不要提交生成。"
+    "继续使用当前已经选好的形象 7 和我的个人音色。"
+    "请刷新当前报价；只刷新实时报价，不要提交生成。"
 )
-turn, status = server._process_production_intent_turn(
-    cid, user_message, {"category_id": "category_1", "topic_id": "topic_1"},
-    {
-        "capability_family": "video", "recommended_action": "digital-ip-text-generate",
-        "candidate_actions": ["digital-ip-text-generate"],
-    },
-    expected_revision=state["revision"], request_id="quote-reply-turn",
-)
-assert status == 200, turn
+response = client.post("/api/chat-complete", json={
+    "conversation_id": cid, "message": user_message,
+    "expected_revision": state["revision"], "request_id": "quote-reply-turn",
+})
+assert response.status_code == 200, response.get_data(as_text=True)
+turn = response.get_json()
 action_payload = turn["actions"][0]
 reply_id = turn["assistant_message_id"]
 assert action_payload["reply_message_id"] == reply_id, action_payload
 assert action_payload["requested_avatar_name"] == "形象 7", action_payload
+assert action_payload["reuse_production_id"] == previous["id"], action_payload
 revision = turn["state"]["revision"]
 
 bridge_calls = []
@@ -510,12 +514,14 @@ with patch.object(server, "_bridge_catalog", return_value=catalog), patch.object
         "preferred_action": action_payload["preferred_action"],
         "specialist_agent": action_payload["specialist_agent"],
         "reply_message_id": action_payload["reply_message_id"],
+        "reuse_production_id": action_payload["reuse_production_id"],
         "requested_avatar_name": action_payload["requested_avatar_name"],
         "options": action_payload["options"],
     })
     assert prepared.status_code == 200, prepared.get_data(as_text=True)
     prepared_body = prepared.get_json()
     production_id = prepared_body["production_id"]
+    assert production_id == previous["id"], prepared_body
     assert prepared_body["options"]["avatar_id"] == 7, prepared_body
     assert prepared_body["material_request_message"]["message_id"] == reply_id, prepared_body
     assert "没有“形象 7”" in prepared_body["material_request_message"]["content"], prepared_body
@@ -535,6 +541,35 @@ with patch.object(server, "_bridge_catalog", return_value=catalog), patch.object
     assert quoted.status_code == 200, quoted.get_data(as_text=True)
     quote_body = quoted.get_json()
 
+    bare = client.post("/api/chat-complete", json={
+        "conversation_id": cid, "message": "刷新当前报价",
+        "expected_revision": revision, "request_id": "bare-quote-refresh-turn",
+    })
+    assert bare.status_code == 200, bare.get_data(as_text=True)
+    bare_turn = bare.get_json()
+    bare_action = bare_turn["actions"][0]
+    assert bare_action["reuse_production_id"] == production_id, bare_action
+    reply_id = bare_turn["assistant_message_id"]
+    revision = bare_turn["state"]["revision"]
+    prepared = client.post("/api/ip12/productions/prepare", json={
+        "conversation_id": cid,
+        "content_target": bare_action["content_target"],
+        "expected_revision": revision, "requested_result": bare_action["requested_result"],
+        "preferred_action": bare_action["preferred_action"],
+        "specialist_agent": bare_action["specialist_agent"],
+        "reply_message_id": bare_action["reply_message_id"],
+        "reuse_production_id": bare_action["reuse_production_id"],
+        "options": bare_action["options"],
+    })
+    assert prepared.status_code == 200, prepared.get_data(as_text=True)
+    assert prepared.get_json()["production_id"] == production_id, prepared.get_json()
+    quoted = client.post("/api/ip12/productions/quote", json={
+        "conversation_id": cid, "production_id": production_id,
+        "expected_revision": revision,
+    })
+    assert quoted.status_code == 200, quoted.get_data(as_text=True)
+    quote_body = quoted.get_json()
+
 message = quote_body["material_request_message"]
 assert message["message_id"] == reply_id, message
 for expected in (
@@ -543,14 +578,19 @@ for expected in (
 ):
     assert expected in message["content"], (expected, message)
 saved = server.load_conversation(cid)
+assert list(saved["productions"]) == [previous["id"]], saved["productions"]
 assistant_messages = [item for item in saved["messages"] if item.get("role") == "assistant"]
-assert len(assistant_messages) == 1, assistant_messages
-assert assistant_messages[0]["message_id"] == reply_id, assistant_messages
-assert assistant_messages[0]["production_id"] == production_id, assistant_messages
+assert len(assistant_messages) == 2, assistant_messages
+assert assistant_messages[-1]["message_id"] == reply_id, assistant_messages
+assert all(item["production_id"] == production_id for item in assistant_messages), assistant_messages
 assert saved["productions"][production_id]["options"]["avatar_id"] == 7, saved["productions"][production_id]
+assert saved["productions"][production_id]["options"]["voice"] == "voice-me", saved["productions"][production_id]
+assert saved["productions"][production_id]["source_text"] == previous["source_text"], saved["productions"][production_id]
+assert saved["productions"][production_id]["idempotency_key"] == "stable-current-production-key", saved["productions"][production_id]
 assert not saved["productions"][production_id].get("job_id"), saved["productions"][production_id]
-assert sum(1 for item in saved["messages"] if item.get("role") == "user") == 1, saved["messages"]
+assert sum(1 for item in saved["messages"] if item.get("role") == "user") == 2, saved["messages"]
 assert not any(call[2].get("confirm") for call in bridge_calls), bridge_calls
+assert not any(call[0] == "task" for call in bridge_calls), bridge_calls
 '''
         with tempfile.TemporaryDirectory(prefix="ip12-quote-reply-test.") as data_dir:
             env = os.environ.copy()

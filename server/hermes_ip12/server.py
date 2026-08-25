@@ -1259,6 +1259,11 @@ def _production_material_revision_intent(message):
     return "both" if voice and image else ("voice" if voice else ("image" if image else ""))
 
 
+def _production_quote_refresh_intent(message):
+    text = re.sub(r"\s+", "", str(message or ""))
+    return bool(re.search(r"(?:刷新|更新|重新获取).{0,8}(?:当前|实时)?报价", text))
+
+
 def _editable_talking_head_productions(convo):
     return [
         record for record in (convo.get("productions") or {}).values()
@@ -3667,13 +3672,16 @@ def api_prepare_production():
         if set(body) - {
             "conversation_id", "content_target", "expected_revision", "requested_result",
             "preferred_action", "options", "allow_system_media", "specialist_agent",
-            "reply_message_id", "requested_avatar_name",
+            "reply_message_id", "requested_avatar_name", "reuse_production_id",
         }:
             return _production_error("invalid_request", "包含不支持的参数", 400)
         if "allow_system_media" in body and not isinstance(body["allow_system_media"], bool):
             return _production_error("invalid_request", "系统素材授权必须是布尔值", 400)
         cid = str(body.get("conversation_id") or "")
         specialist_id = str(body.get("specialist_agent") or "").strip()
+        reuse_production_id = str(body.get("reuse_production_id") or "").strip()
+        if reuse_production_id and not re.fullmatch(r"prod_[A-Za-z0-9_-]{1,80}", reuse_production_id):
+            return _production_error("invalid_request", "当前制作标识无效", 400)
         reply_message_id = str(body.get("reply_message_id") or "").strip()
         if reply_message_id and not re.fullmatch(r"ip12-assistant-[0-9a-f]{64}", reply_message_id):
             return _production_error("invalid_request", "回复标识无效", 400)
@@ -3744,8 +3752,22 @@ def api_prepare_production():
                         "请先完成" + "、".join(specialist_plan["gate"]["missing"]),
                         409,
                     )
-            production_id = "prod_" + uuid.uuid4().hex
-            record = {
+            reusable = convo["productions"].get(reuse_production_id) if reuse_production_id else None
+            if reuse_production_id and (
+                reusable is not _latest_editable_talking_head_production(convo)
+                or not _is_talking_head_record(reusable)
+                or reusable.get("status") not in {"draft", "blocked_prerequisite", "stale", "quoted"}
+                or reusable.get("job_id")
+                or reusable.get("action") != recommendation["recommended_action"]
+                or reusable.get("category_id") != source.get("category_id")
+                or reusable.get("topic_id") != source.get("topic_id")
+                or reusable.get("script_digest") != source.get("script_digest")
+            ):
+                return _production_error(
+                    "production_reuse_conflict", "当前制作已经变化，请重新说明要制作的内容", 409
+                )
+            production_id = reuse_production_id or "prod_" + uuid.uuid4().hex
+            record = reusable or {
                 "id": production_id,
                 "category_id": source["category_id"], "topic_id": source["topic_id"],
                 "script_title": source.get("script_title") or "已确认口播文案",
@@ -3776,11 +3798,26 @@ def api_prepare_production():
                 "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
             }
+            if reusable:
+                record.update(
+                    capability_family=recommendation["capability_family"],
+                    catalog_version=recommendation.get("catalog_version", ""),
+                    billing=str(catalog_entry.get("billing") or "free"),
+                    confirmation_required=bool(catalog_entry.get("confirmation_required")),
+                    risk=str(catalog_entry.get("risk") or "read"),
+                    result_type=str(catalog_entry.get("result_type") or "json"),
+                    ui_route=str(catalog_entry.get("ui_route") or ""),
+                    transport=catalog_entry.get("transport") or {"kind": "action"},
+                    constraints=list(catalog_entry.get("constraints") or []),
+                    parameter_schema=parameter_schema,
+                    quote={}, status="draft", last_error_code="",
+                    updated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                )
             if reply_message_id:
                 record["material_request_message_id"] = reply_message_id
             if requested_avatar_name:
                 record["requested_avatar_name"] = requested_avatar_name
-            if specialist_plan:
+            if specialist_plan and not reusable:
                 record["specialist_agent"] = talking_head_agent.new_delegation(
                     production_id, specialist_plan
                 )
@@ -3794,7 +3831,7 @@ def api_prepare_production():
                 record["parent_production_id"] = str((previous[-1] if previous else {}).get("id") or "")
                 record["output_version"] = int((previous[-1] if previous else {}).get("output_version") or 0) + 1
             record.update(resource_context)
-            options = body.get("options", {})
+            options = {**(record.get("options") or {}), **(body.get("options") or {})}
             if specialist_plan:
                 properties = parameter_schema.get("properties") or {}
                 defaults = {
@@ -6112,6 +6149,17 @@ def _process_production_intent_turn(
         voice_clone_state = (convo.get("voice_clone_ui")
                              if isinstance(convo.get("voice_clone_ui"), dict) else {})
         preview_text = _audio_preview_excerpt(convo) if intent.get("audio_preview_request") else ""
+        reusable = _latest_editable_talking_head_production(convo)
+        reuse_production_id = str((reusable or {}).get("id") or "") if (
+            _production_quote_refresh_intent(user_message)
+            and isinstance(reusable, dict)
+            and reusable.get("status") in {"draft", "blocked_prerequisite", "stale", "quoted"}
+            and not reusable.get("job_id")
+            and reusable.get("action") == selected_action
+            and reusable.get("category_id") == source.get("category_id")
+            and reusable.get("topic_id") == source.get("topic_id")
+            and reusable.get("script_digest") == source.get("script_digest")
+        ) else ""
         snapshot_revision = state["revision"]
     labels = {"image": "图片", "audio": "音频", "video": "视频", "canvas": "Canvas"}
     label = labels[family]
@@ -6266,6 +6314,7 @@ def _process_production_intent_turn(
         **({"parameter_schema": specialist_plan["option_schema"]} if specialist_plan else {}),
         "allow_system_media": _explicit_system_media_request(user_message),
         "reply_message_id": assistant_message_id,
+        **({"reuse_production_id": reuse_production_id} if reuse_production_id else {}),
         **({"requested_avatar_name": _requested_avatar_display_name(user_message)}
            if specialist_plan and _requested_avatar_display_name(user_message) else {}),
         "options": options,
@@ -7393,6 +7442,7 @@ def process_chat_request(body):
         production_intent = None
         material_revision_kind = ""
         material_production_id = ""
+        quote_refresh_production_id = ""
         weather_turn = False
         pause_turn = False
         try:
@@ -7453,6 +7503,26 @@ def process_chat_request(body):
                         material_revision_kind and not material_production_id
                         and len(material_candidates) > 1
                     )
+                    quote_record = (
+                        _latest_editable_talking_head_production(convo)
+                        if _production_quote_refresh_intent(user_message) else None
+                    )
+                    if (
+                        isinstance(quote_record, dict)
+                        and quote_record.get("status") in {"draft", "blocked_prerequisite", "stale", "quoted"}
+                        and not quote_record.get("job_id")
+                        and quote_record.get("action") in talking_head_agent.SUPPORTED_ACTIONS
+                    ):
+                        quote_refresh_production_id = str(quote_record.get("id") or "")
+                        production_intent = {
+                            "capability_family": quote_record.get("capability_family") or "video",
+                            "recommended_action": quote_record["action"],
+                            "candidate_actions": [quote_record["action"]],
+                        }
+                        content_target = {
+                            "category_id": str(quote_record.get("category_id") or ""),
+                            "topic_id": str(quote_record.get("topic_id") or ""),
+                        }
                 if (action is None and not harness_state_turn
                         and content_target is None and not material_production_id):
                     action = coach_harness.shortcut_action(state, user_message)
@@ -7462,7 +7532,8 @@ def process_chat_request(body):
                         action_revision = None
                 else:
                     action_revision = body.get("expected_revision")
-                if action is None and not harness_state_turn and not material_production_id:
+                if (action is None and not harness_state_turn and not material_production_id
+                        and production_intent is None):
                     handoff = (
                         _post_module_six_production_action(convo)
                         if _post_module_six_capability_question(state, user_message)
@@ -7534,9 +7605,10 @@ def process_chat_request(body):
                 )
                 agents_sdk_talking_head_turn = _agents_sdk_talking_head_turn_allowed(
                     cid, legacy_route, convo
-                )
+                ) and not quote_refresh_production_id
                 if (MASTER_AGENT_MODE in {"shadow", "live"}
                         and not harness_state_turn
+                        and not quote_refresh_production_id
                         and not agents_sdk_account_turn
                         and not agents_sdk_talking_head_turn):
                     shadow_decision = master_agent.decide(
@@ -7562,6 +7634,7 @@ def process_chat_request(body):
             if (not harness_state_turn
                     and not agents_sdk_account_turn and not agents_sdk_talking_head_turn
                     and not material_production_id
+                    and not quote_refresh_production_id
                     and semantic_decision is None and memory_snapshot is not None
                     and SEMANTIC_ROUTER_MODE == "live"):
                 memory_snapshot["tool_catalog"] = _semantic_tool_catalog(current_account_id(), state)
