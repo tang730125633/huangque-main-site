@@ -199,10 +199,11 @@ class AgentsSDKAccountRunnerTests(unittest.TestCase):
 @unittest.skipIf(Model is None, "optional Agents SDK is not installed")
 class AgentsSDKTalkingHeadRunnerTests(unittest.TestCase):
     class TalkingHeadModel(BaseModelInterface):
-        def __init__(self):
+        def __init__(self, ready=False):
             self.calls = []
             self.master_rounds = 0
             self.specialist_rounds = 0
+            self.ready = ready
 
         async def get_response(
             self, system_instructions, input, model_settings, tools,
@@ -226,7 +227,13 @@ class AgentsSDKTalkingHeadRunnerTests(unittest.TestCase):
                         "schema": "ip12.semantic-master-decision/v1",
                         "intent": "status", "delegate_to": "none",
                         "tool": "project.status",
-                        "reply": "这次口播任务已经失败并完成退款；形象和声音仍可用。建议先检查失败原因，再决定是否重新报价，不会自动重试。",
+                        "reply": (
+                            "你刚克隆成功的个人音色、已有形象和已确认文案都已经选好，当前也已有报价等待确认，"
+                            "不需要重复上传图片或音频。你可以直接确认当前报价，或者先修改文案、形象或声音；"
+                            "未经确认不会提交或扣点。"
+                            if self.ready else
+                            "这次口播任务已经失败并完成退款；形象和声音仍可用。建议先检查失败原因，再决定是否重新报价，不会自动重试。"
+                        ),
                         "awaiting": "none", "confidence": 0.98,
                         "reason_codes": ["specialist_read_completed"],
                         "memory_evidence": [], "memory_updates": [],
@@ -261,12 +268,15 @@ class AgentsSDKTalkingHeadRunnerTests(unittest.TestCase):
                     }:
                         raise AssertionError("HQ read outputs were not returned to Specialist")
                     output = [_text_message(json.dumps({
-                        "status": "failed", "missing": [],
-                        "ready_to_quote": False,
-                        "next_action": "explain_failure_without_retry",
-                        "production_status": "failed",
-                        "refund_status": "refunded",
-                        "error_code": "provider_failed",
+                        "status": "awaiting_confirmation" if self.ready else "failed",
+                        "missing": [], "ready_to_quote": False,
+                        "next_action": (
+                            "wait_for_explicit_confirmation" if self.ready
+                            else "explain_failure_without_retry"
+                        ),
+                        "production_status": "quoted" if self.ready else "failed",
+                        "refund_status": "none" if self.ready else "refunded",
+                        "error_code": "" if self.ready else "provider_failed",
                     }, ensure_ascii=False))]
             index = len(self.calls)
             return ModelResponse(
@@ -281,7 +291,8 @@ class AgentsSDKTalkingHeadRunnerTests(unittest.TestCase):
                 and item.get("type") == "function_call_output"
                 and item.get("call_id") == "call_specialist_1"
             ]
-            if len(outputs) != 1 or "provider_failed" not in str(outputs[0].get("output")):
+            expected = "awaiting_confirmation" if self.ready else "provider_failed"
+            if len(outputs) != 1 or expected not in str(outputs[0].get("output")):
                 raise AssertionError("specialist result was not returned to Master")
 
         async def stream_response(self, *args, **kwargs):
@@ -396,6 +407,56 @@ class AgentsSDKTalkingHeadRunnerTests(unittest.TestCase):
         self.assertEqual(result["final_text"], "下午好，周岚。")
         self.assertEqual(result["tool_calls"], [])
         self.assertEqual(model.calls, 1)
+
+    def test_original_voice_to_talking_head_questions_use_ready_quoted_state(self):
+        messages = (
+            "我可以用这段音频制作我的数字人视频吗？",
+            "对呀，就是我刚刚克隆成功的这个个人音色，然后我现在需要制作数字人口播视频，我应该如何做呢？我需要向你提供些什么？",
+        )
+        expected_reply_parts = (
+            "个人音色", "已有形象", "已确认文案", "已有报价等待确认",
+            "不需要重复上传", "确认当前报价", "修改文案、形象或声音", "不会提交或扣点",
+        )
+        for index, message in enumerate(messages, 1):
+            with self.subTest(message=message):
+                model = self.TalkingHeadModel(ready=True)
+                run = agent_runtime.start(
+                    {"id": "feedback_%s" % index}, "run_feedback_%s" % index,
+                    Policy(), message, project_id="feedback_%s" % index,
+                )
+                executed = []
+
+                def execute(action, payload):
+                    executed.append(action)
+                    if action == "ip12-project":
+                        return {"active_production": {
+                            "status": "quoted", "quote_present": True,
+                            "selected_fields": ["avatar_id", "voice", "text"],
+                            "next_action": "wait_for_explicit_confirmation",
+                        }}
+                    if action == "video-avatars":
+                        return {"items": [{"id": 6, "status": "ready"}]}
+                    if action == "voices":
+                        return {"items": [{"voice_key": "my_voice", "status": "ready"}]}
+                    if action == "audio-slots":
+                        return {"items": [{"slot_id": "slot_1", "status": "ready"}]}
+                    return {"items": []}
+
+                result = cognitive_engine.agents_sdk_talking_head_run(
+                    execute_action=execute,
+                    capabilities=TALKING_HEAD_CAPABILITIES,
+                    user_message=message,
+                    runtime_facts={
+                        "production_status": "quoted", "voice_clone_status": "complete",
+                        "script_ready": True, "avatar_ready": True, "voice_ready": True,
+                        "quote_present": True,
+                        "next_actions": ["wait_for_explicit_confirmation"],
+                    },
+                    run=run, model=model,
+                )
+                self.assertEqual(executed, list(TALKING_HEAD_ACTIONS))
+                for part in expected_reply_parts:
+                    self.assertIn(part, result["final_text"])
 
 
 class AgentsSDKAccountServerWiringTests(unittest.TestCase):
@@ -592,6 +653,149 @@ assert not saved.get("artifacts")
 runs = [run for run in saved["agent_runs"].values() if run["run_id"].startswith("run_talking_read_")]
 assert len(runs) == 1 and runs[0]["status"] == "completed", runs
 assert set(call["tool"] for call in runs[0]["tool_calls"].values()) == set({talking_actions})
+'''.replace("{talking_capabilities}", repr(TALKING_HEAD_CAPABILITIES)).replace(
+    "{talking_actions}", repr(TALKING_HEAD_ACTIONS)
+)
+        with tempfile.TemporaryDirectory() as root:
+            env = os.environ.copy()
+            env.update(
+                OPENAI_API_KEY="dummy", HERMES_HOME=root, HERMES_DATA_DIR=root,
+                HERMES_MASTER_AGENT_MODE="live", HERMES_SEMANTIC_ROUTER_MODE="off",
+            )
+            result = subprocess.run(
+                [self._flask_python(), "-c", script], cwd=HERMES, env=env,
+                capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_original_feedback_uses_runtime_delegation_and_never_asks_object_again(self):
+        script = r'''
+import copy
+import security
+import server
+
+security._validate_token = lambda _token: {
+    "account_id": "acct-1", "username": "tester", "role": "member",
+}
+security.RATE_REQUESTS = 100
+client = server.app.test_client()
+headers = {"Authorization": "Bearer test"}
+cid = client.post("/api/conversations", json={"title": "林安反馈回归"}, headers=headers).get_json()["id"]
+record = {
+    "id": "prod_quoted", "action": "digital-ip-text-generate",
+    "capability_family": "video", "status": "quoted",
+    "source_text": "已确认口播文案",
+    "options": {"avatar_id": 6, "voice": "my_voice", "text": "已确认口播文案"},
+    "quote": {"cost": 90, "expires_at": 9999999999},
+    "specialist_agent": {
+        "delegation_id": "delegate_quoted",
+        "agent_id": "talking_head_video_agent",
+        "stage": "awaiting_confirmation", "status": "waiting_user",
+        "next_action": "等待用户确认报价",
+    },
+}
+convo = server.load_conversation(cid)
+convo["active_production_id"] = None
+convo["voice_clone_ui"] = {"status": "complete", "voice_name": "我的个人音色"}
+convo["productions"] = {
+    "prod_stale_audio": {
+        "id": "prod_stale_audio", "action": "audio-generate", "status": "stale",
+    },
+    record["id"]: copy.deepcopy(record),
+}
+convo["agent_runtime"] = {
+    "orchestrator_id": "ip12_master_agent",
+    "active_delegation_id": "delegate_quoted",
+    "last_delegation_id": "delegate_quoted",
+    "specialist_agent_id": "talking_head_video_agent",
+    "phase": "awaiting_confirmation",
+    "next_action": "等待用户确认报价",
+}
+server.save_conversation(cid, convo)
+server.AGENTS_SDK_TALKING_HEAD_REQUESTED = True
+server.AGENTS_SDK_TALKING_HEAD_PROJECT_ID = cid
+server.AGENTS_SDK_TALKING_HEAD_ENABLED = True
+server._bridge_catalog = lambda _account: {"actions": copy.deepcopy({talking_capabilities})}
+bridge_calls = []
+
+def bridge(_account, action, payload, **_kwargs):
+    bridge_calls.append(action)
+    if action == "ip12-project":
+        return copy.deepcopy(server.load_conversation(cid))
+    if action == "video-avatars":
+        return {"items": [{"id": 6, "status": "ready"}]}
+    if action == "voices":
+        return {"items": [{"voice_key": "my_voice", "status": "ready"}]}
+    if action == "audio-slots":
+        return {"items": [{"slot_id": "slot_1", "status": "ready"}]}
+    return {"items": []}
+
+server._bridge_action = bridge
+for name in (
+    "_run_talking_head_specialist", "_master_runtime_reply",
+    "_process_production_intent_turn", "_process_semantic_reply",
+):
+    setattr(server, name, lambda *_args, _name=name, **_kwargs: (_ for _ in ()).throw(
+        AssertionError(_name + " must be bypassed")
+    ))
+
+reply = (
+    "你刚克隆成功的个人音色、已有形象和已确认文案都已经选好，当前也已有报价等待确认，"
+    "不需要重复上传图片或音频。你可以直接确认当前报价，或者先修改文案、形象或声音；"
+    "未经确认不会提交或扣点。"
+)
+
+def fake_sdk(**kwargs):
+    run = kwargs["run"]
+    for action in {talking_actions}:
+        payload = {
+            "ip12-project": {"project_id": cid},
+            "video-avatars": {"limit": 120}, "voices": {}, "audio-slots": {},
+            "assets": {"kind": "audio", "limit": 120, "offset": 0},
+        }[action]
+        result = kwargs["execute_action"](action, payload)
+        if action == "ip12-project":
+            active = result["active_production"]
+            assert active["status"] == "quoted" and active["quote_present"], result
+            assert set(active["selected_fields"]) >= {"avatar_id", "voice", "text"}, result
+        server.agent_runtime.record_tool(
+            run, action, phase="started", input_value=payload,
+            call_id="call_" + action, request_id=kwargs["request_id"],
+        )
+        server.agent_runtime.record_tool(
+            run, action, phase="completed", output={"status": "ok"},
+            call_id="call_" + action, request_id=kwargs["request_id"],
+        )
+    return {"final_text": reply, "tool_calls": list({talking_actions}), "model_rounds": 2}
+
+server.cognitive_engine.agents_sdk_talking_head_run = fake_sdk
+messages = (
+    "我可以用这段音频制作我的数字人视频吗？",
+    "对呀，就是我刚刚克隆成功的这个个人音色，然后我现在需要制作数字人口播视频，我应该如何做呢？我需要向你提供些什么？",
+)
+before_productions = copy.deepcopy(server.load_conversation(cid)["productions"])
+for index, message in enumerate(messages, 1):
+    revision = server.load_conversation(cid)["coach_state"]["revision"]
+    response = client.post("/api/chat-complete", json={
+        "conversation_id": cid, "message": message,
+        "expected_revision": revision, "request_id": "feedback-original-%s" % index,
+    }, headers=headers)
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assistant = response.get_json()["assistant"]
+    assert assistant == reply, assistant
+    assert "不能安全确定" not in assistant and "哪个对象" not in assistant
+
+saved = server.load_conversation(cid)
+assert saved["productions"] == before_productions
+assert not saved.get("artifacts")
+assert bridge_calls == list({talking_actions}) * 2, bridge_calls
+runs = [x for x in saved["agent_runs"].values() if x["run_id"].startswith("run_talking_read_")]
+assert len(runs) == 2 and all(x["status"] == "completed" for x in runs), runs
+
+new_cid = client.post("/api/conversations", json={"title": "岳磊新客访谈"}, headers=headers).get_json()["id"]
+server.AGENTS_SDK_TALKING_HEAD_PROJECT_ID = new_cid
+new_convo = server.load_conversation(new_cid)
+assert server._agents_sdk_talking_head_turn_allowed(new_cid, "model_turn", new_convo) is False
 '''.replace("{talking_capabilities}", repr(TALKING_HEAD_CAPABILITIES)).replace(
     "{talking_actions}", repr(TALKING_HEAD_ACTIONS)
 )

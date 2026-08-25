@@ -42,6 +42,41 @@ def supports(action):
     return str(action or "") in SUPPORTED_ACTIONS
 
 
+def resolve_current_production(project):
+    """Resolve one talking-head Production from durable IDs, never dict order."""
+    project = project if isinstance(project, dict) else {}
+    records = [
+        item for item in (project.get("productions") or {}).values()
+        if isinstance(item, dict) and (
+            supports(item.get("action"))
+            or (item.get("specialist_agent") or {}).get("agent_id") == AGENT_ID
+        )
+    ]
+    active_id = str(project.get("active_production_id") or "")
+    active = [item for item in records if str(item.get("id") or "") == active_id]
+    if len(active) == 1:
+        return active[0]
+    runtime = project.get("agent_runtime") if isinstance(project.get("agent_runtime"), dict) else {}
+    for key in ("active_delegation_id", "last_delegation_id"):
+        delegation_id = str(runtime.get(key) or "")
+        if not delegation_id:
+            continue
+        matches = [
+            item for item in records
+            if str((item.get("specialist_agent") or {}).get("delegation_id") or "")
+            == delegation_id
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            return None
+    all_records = [
+        item for item in (project.get("productions") or {}).values()
+        if isinstance(item, dict)
+    ]
+    return records[0] if len(records) == 1 and len(all_records) == 1 else None
+
+
 def delegation_result(record, observations):
     """Turn account-scoped tool observations into one specialist result."""
     record = record if isinstance(record, dict) else {}
@@ -223,9 +258,12 @@ def sync_project(conversation):
     ]
     if not records:
         return False
+    changed = False
     for record in records:
-        sync_production(record)
-    latest = records[-1]
+        changed = sync_production(record) or changed
+    latest = resolve_current_production(conversation)
+    if latest is None:
+        return changed
     specialist = latest["specialist_agent"]
     terminal = specialist["status"] in {"completed", "failed"}
     runtime = {
@@ -236,6 +274,6 @@ def sync_project(conversation):
         "phase": specialist["stage"],
         "next_action": specialist["next_action"],
     }
-    changed = conversation.get("agent_runtime") != runtime
+    changed = (conversation.get("agent_runtime") != runtime) or changed
     conversation["agent_runtime"] = runtime
     return changed

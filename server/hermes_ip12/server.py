@@ -6095,12 +6095,7 @@ def _process_production_intent_turn(
 
 
 def _latest_talking_head_production(convo):
-    records = [
-        record for record in (convo.get("productions") or {}).values()
-        if isinstance(record, dict)
-        and (record.get("specialist_agent") or {}).get("agent_id") == talking_head_agent.AGENT_ID
-    ]
-    return records[-1] if records else None
+    return talking_head_agent.resolve_current_production(convo)
 
 
 def _bridge_tool_result(result):
@@ -6122,7 +6117,8 @@ def _talking_head_read_result(action, raw):
     if action == "ip12-project":
         records = value.get("productions") or {}
         records = list(records.values()) if isinstance(records, dict) else list(records)
-        active_id = str(value.get("active_production_id") or "")
+        resolved = talking_head_agent.resolve_current_production(value)
+        active_id = str((resolved or {}).get("id") or value.get("active_production_id") or "")
         safe_records = [{
             "production_id": str(item.get("id") or item.get("production_id") or ""),
             "action": str(item.get("action") or ""),
@@ -6131,6 +6127,11 @@ def _talking_head_read_result(action, raw):
             "refund_status": str(item.get("refund_status") or ""),
             "job_present": bool(item.get("job_id")),
             "next_action": str((item.get("specialist_agent") or {}).get("next_action") or ""),
+            "selected_fields": sorted(
+                str(key) for key, selected in (item.get("options") or {}).items()
+                if selected not in (None, "", [], {})
+            ),
+            "quote_present": bool(item.get("quote")),
         } for item in records if isinstance(item, dict)]
         active = next((item for item in safe_records if item["production_id"] == active_id), None)
         return {
@@ -6453,7 +6454,7 @@ def _agents_sdk_talking_head_turn_allowed(cid, legacy_route, convo):
     return bool(
         AGENTS_SDK_TALKING_HEAD_ENABLED
         and cid == AGENTS_SDK_TALKING_HEAD_PROJECT_ID
-        and legacy_route == "model_turn"
+        and legacy_route in {"model_turn", "production_turn"}
         and COGNITIVE_ENGINE_MODE == "custom"
         and not AGENTS_SDK_ENABLED
         and _latest_talking_head_production(convo) is not None
@@ -6568,6 +6569,13 @@ def _process_agents_sdk_talking_head_turn(cid, user_message, expected_revision=N
             "error_code": str(record.get("last_error_code") or ""),
             "refund_status": str(record.get("refund_status") or ""),
             "job_present": bool(record.get("job_id")),
+            "voice_clone_status": str((convo.get("voice_clone_ui") or {}).get("status") or ""),
+            "script_ready": bool(str(record.get("source_text") or "").strip()),
+            "avatar_ready": bool((record.get("options") or {}).get("avatar_id")
+                                 or (record.get("options") or {}).get("image_upload_id")),
+            "voice_ready": bool((record.get("options") or {}).get("voice")
+                                or (record.get("options") or {}).get("audio_upload_id")),
+            "quote_present": bool(record.get("quote")),
             "next_actions": [str((record.get("specialist_agent") or {}).get(
                 "next_action") or "explain_status_without_retry")],
         }
@@ -6738,6 +6746,9 @@ def _select_status_production(convo, user_message):
     active_id = str(convo.get("active_production_id") or "")
     if active_id in records:
         return records[active_id], candidates
+    resolved = talking_head_agent.resolve_current_production(convo)
+    if resolved in candidates:
+        return resolved, candidates
     if len(candidates) == 1:
         return candidates[0], candidates
     return None, candidates

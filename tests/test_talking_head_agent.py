@@ -57,6 +57,28 @@ class TalkingHeadAgentContractTests(unittest.TestCase):
         self.assertEqual(production["specialist_agent"]["stage"], "delivered")
         self.assertIsNone(project["agent_runtime"]["active_delegation_id"])
 
+    def test_runtime_delegation_resolves_quoted_production_without_active_id(self):
+        quoted = {
+            "id": "prod_quoted", "action": "digital-ip-text-generate",
+            "status": "quoted", "specialist_agent": {
+                "agent_id": agent.AGENT_ID, "delegation_id": "delegate_quoted",
+            },
+        }
+        project = {
+            "active_production_id": None,
+            "agent_runtime": {
+                "active_delegation_id": "delegate_quoted",
+                "last_delegation_id": "delegate_quoted",
+            },
+            "productions": {
+                "prod_audio": {
+                    "id": "prod_audio", "action": "audio-generate", "status": "stale",
+                },
+                quoted["id"]: quoted,
+            },
+        }
+        self.assertIs(agent.resolve_current_production(project), quoted)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,6 +3,8 @@
 import copy
 import re
 
+import talking_head_agent
+
 
 SCHEMA = "ip12.project-memory/v1"
 HISTORY_LIMIT = 50
@@ -170,6 +172,10 @@ def build(project, state, capability_gates=None):
     active_id = _text(project.get("active_production_id"), 100)
     active = next((item for item in productions if item["production_id"] == active_id), None)
     active_record = (project.get("productions") or {}).get(active_id) if active_id else None
+    if active is None:
+        active_record = talking_head_agent.resolve_current_production(project)
+        resolved_id = _text((active_record or {}).get("id"), 100)
+        active = next((item for item in productions if item["production_id"] == resolved_id), None)
     active_run = (project.get("agent_runs") or {}).get(
         str((active_record or {}).get("agent_run_id") or "")
     ) if isinstance(active_record, dict) else None

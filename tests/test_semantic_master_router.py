@@ -134,6 +134,40 @@ class ProjectMemoryTests(unittest.TestCase):
         )
         self.assertEqual(explicit["active_production"]["production_id"], "prod_a")
 
+    def test_runtime_delegation_resolves_active_talking_head_without_active_id(self):
+        state = {"completed_modules": [1, 2, 3, 4, 5, 6]}
+        project = {
+            "id": "p", "active_production_id": None,
+            "agent_runtime": {
+                "active_delegation_id": "delegate_video",
+                "last_delegation_id": "delegate_video",
+            },
+            "productions": {
+                "prod_audio": {
+                    "id": "prod_audio", "action": "audio-generate", "status": "stale",
+                },
+                "prod_video": {
+                    "id": "prod_video", "action": "digital-ip-text-generate",
+                    "status": "quoted", "source_text": "已确认文案",
+                    "options": {"avatar_id": 6, "voice": "my_voice"},
+                    "quote": {"cost": 90},
+                    "specialist_agent": {
+                        "agent_id": "talking_head_video_agent",
+                        "delegation_id": "delegate_video",
+                        "stage": "awaiting_confirmation",
+                        "next_action": "等待用户确认报价",
+                    },
+                },
+            },
+            "voice_clone_ui": {"status": "complete", "voice_name": "我的个人音色"},
+        }
+        memory = project_memory.build(project, state)
+        self.assertEqual(memory["active_production"]["production_id"], "prod_video")
+        self.assertEqual(memory["active_production"]["status"], "quoted")
+        self.assertEqual(memory["available_assets"], {
+            "avatar_ready": True, "voice_ready": True,
+        })
+
     def test_project_memory_exposes_conservative_asset_readiness(self):
         state = {"revision": 1, "current_module": 6, "completed_modules": [1, 2, 3, 4, 5, 6]}
         project = {
