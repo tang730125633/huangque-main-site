@@ -128,7 +128,7 @@ class MiniMaxH3VideoTests(unittest.TestCase):
                     patch.object(video.provider_keys, "set_health"), \
                     patch.object(video, "update_video_asset_phase"), \
                     patch.object(video_minimax_h3, "generate", return_value=self._minimax_result()) as generate, \
-                    patch.object(video, "_download_xiaole_video", side_effect=download), \
+                    patch.object(video, "_download_video_file_direct", side_effect=download), \
                     patch.object(video, "_faststart_video_derivative", create=True, side_effect=derive), \
                     patch.object(video, "_resolve_out_file", side_effect=lambda rel: root / rel), \
                     patch.object(video, "_extract_first_frame_cover", return_value=None), \
@@ -179,7 +179,7 @@ class MiniMaxH3VideoTests(unittest.TestCase):
                     patch.object(video.provider_keys, "set_health"), \
                     patch.object(video, "update_video_asset_phase"), \
                     patch.object(video_minimax_h3, "generate", return_value=self._minimax_result()) as generate, \
-                    patch.object(video, "_download_xiaole_video", side_effect=download), \
+                    patch.object(video, "_download_video_file_direct", side_effect=download), \
                     patch.object(video, "_resolve_out_file", side_effect=lambda rel: root / rel), \
                     patch.object(short_drama_native_audio, "inspect_native_media", create=True, side_effect=error), \
                     patch.object(short_drama_native_audio, "inspect_native_resolution", side_effect=error):
