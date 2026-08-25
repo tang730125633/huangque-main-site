@@ -60,6 +60,34 @@ class IntakeGuidanceRegressionTests(unittest.TestCase):
         self.assertIn("城市、收入、性别和手机号都只是可选背景", prompt)
         self.assertIn("同一条回复必须 decision=propose_checkpoint", prompt)
 
+    def test_question_shaped_answer_fills_current_help_goal_and_advances(self):
+        state, _, _ = harness.apply_intake_decision(
+            harness.initial_state(),
+            decision("ask_follow_up", "你最希望帮他们解决的一个核心问题是什么？"),
+            "；".join(item["evidence_quote"] for item in CORE_UPDATES),
+        )
+        self.assertEqual(state["intake"]["asked_field"], "help_goal")
+        message = "如何使用agent去独自完成一个项目"
+        raw = harness.compile_asked_intake_answer(state, message)
+        self.assertEqual(raw["decision"], "propose_checkpoint")
+        evidence = EVIDENCE + "；" + message
+        next_state, decision_result, reply = harness.apply_intake_decision(
+            state, raw, evidence,
+        )
+        self.assertEqual(next_state["intake"]["status"], "awaiting_confirmation")
+        help_goal = next(
+            item for item in decision_result["profile_updates"]
+            if item["field"] == "help_goal"
+        )
+        self.assertEqual(help_goal["value"], message)
+        self.assertEqual(help_goal["evidence_quote"], message)
+        self.assertIn("基础定位核对稿", reply)
+        self.assertIn("请确认资料", reply)
+
+    def test_independent_question_without_asked_field_is_not_consumed_as_intake(self):
+        state = harness.initial_state()
+        self.assertIsNone(harness.compile_asked_intake_answer(state, "Agent 是什么？"))
+
 
 if __name__ == "__main__":
     unittest.main()

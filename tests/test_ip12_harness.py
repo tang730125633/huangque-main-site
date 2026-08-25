@@ -40,7 +40,13 @@ def decision(state, *, kind="propose_checkpoint", reply="这是当前结果", dr
             "evidence_quote": "用户原话",
         } for index, title in enumerate(titles, 1)]
     if kind == "propose_checkpoint" and state["current_module"] == 4 and draft == "可确认草稿":
-        draft = "### 真实故事节点\n事实原话：用户原话"
+        step = state["module_step"] + 1
+        draft = {
+            1: "### 真实故事节点\n事实原话：用户原话",
+            2: "### 新增分类\n节点 1「用户原话」→ 成长型",
+            3: "### 新增包装\n节点 1「用户原话」：名称、梗概、情绪点和传播场景",
+            4: "### 故事资产清单\n事实原话：用户原话\n推荐长期核心故事：节点 1",
+        }[step]
     return {
         "decision": kind,
         "checkpoint": state["module_step"] + 1 if kind == "propose_checkpoint" else 0,
@@ -1495,6 +1501,61 @@ class IP12HarnessTests(unittest.TestCase):
         self.assertEqual(len(checkpoints), 4)
         self.assertIn("故事资产清单", checkpoints[-1])
         self.assertIn("推荐长期核心故事", checkpoints[-1])
+
+    def test_module_four_middle_steps_are_incremental_and_final_step_summarizes_once(self):
+        evidence = "我第一次发现 Agent 能帮我把反推提示词做成很多人可使用的功能。"
+        state = self.complete_intake()
+        state.update(current_module=4, module_step=1, completed_modules=[1, 2, 3])
+        state["ip_profile"]["confirmed_outputs"]["4-1"] = {
+            "module": 4, "step": 1, "title": "关键故事节点",
+            "content": "节点 1：第一次发现 Agent\n事实原话：" + evidence,
+        }
+        classification = (
+            "### 新增分类\n- 节点 1「第一次发现 Agent」→ 成长型\n"
+            "- 分类理由：重点是从个人探索走向可复用实践。"
+        )
+        next_state, _, _ = harness.apply_model_decision(
+            state, decision(state, draft=classification), evidence,
+            pending_id="module4-classification",
+        )
+        self.assertEqual(next_state["pending"]["draft"], classification)
+        repeated = classification + "\n事实原话：" + evidence
+        with self.assertRaisesRegex(harness.HarnessError, "不能重复展开事实原话"):
+            harness.apply_model_decision(
+                state, decision(state, draft=repeated), evidence,
+                pending_id="module4-repeated",
+            )
+
+        packaging_state = self.complete_intake()
+        packaging_state.update(current_module=4, module_step=2, completed_modules=[1, 2, 3])
+        packaging = (
+            "### 新增包装\n- 节点 1「第一次发现 Agent」\n"
+            "  - 名称：从个人尝试到可复用功能\n"
+            "  - 一句梗概：一次 Agent 实践带来的产品化转折。\n"
+            "  - 情绪点：发现与推进\n  - 传播场景：个人介绍"
+        )
+        packaged, _, _ = harness.apply_model_decision(
+            packaging_state, decision(packaging_state, draft=packaging), evidence,
+            pending_id="module4-packaging",
+        )
+        self.assertEqual(packaged["pending"]["draft"], packaging)
+
+        final_state = self.complete_intake()
+        final_state.update(current_module=4, module_step=3, completed_modules=[1, 2, 3])
+        final_draft = (
+            "### 故事资产清单\n- 节点 1：第一次发现 Agent（成长型）\n"
+            "事实原话：" + evidence + "\n"
+            "- 长期核心故事推荐：节点 1；理由是它连接了真实经历与未来内容方向。"
+        )
+        finalized, _, _ = harness.apply_model_decision(
+            final_state, decision(final_state, draft=final_draft), evidence,
+            pending_id="module4-final",
+        )
+        self.assertEqual(finalized["pending"]["draft"], final_draft)
+
+        self.assertIn("增量分类", harness.system_prompt(state))
+        self.assertIn("增量包装", harness.system_prompt(packaging_state))
+        self.assertIn("最终资产清单", harness.system_prompt(final_state))
 
     def test_module_six_is_the_open_flow_terminal(self):
         state = self.complete_intake()

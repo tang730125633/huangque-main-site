@@ -56,7 +56,17 @@ INTAKE_FOLLOW_UP_PATTERNS = (
     ("prior_roles", r"(?:做过|从事过).{0,12}(?:行业|岗位|工作)"),
     ("income", r"(?:收入来源|收入区间|收入范围|大致收入|主要收入)"),
     ("current_role", r"(?:目前|现在|当前).{0,12}(?:从事什么|做什么|职业.{0,4}是什么|身份.{0,4}是什么|主要工作)"),
+    ("help_goal", r"(?:最希望|希望).{0,18}(?:帮助|帮).{0,20}(?:解决|核心问题|什么问题)"),
 )
+
+INTAKE_FIELD_LABELS = {
+    "preferred_name": "称呼", "name": "称呼",
+    "current_role": "当前角色", "current_identity": "当前身份",
+    "project_experience": "代表经历", "work_experience": "真实经历",
+    "core_skill_1": "核心技能一", "core_skill_2": "核心技能二",
+    "long_term_interest": "长期兴趣", "target_audience": "目标人群",
+    "help_goal": "希望帮助解决的问题",
+}
 
 
 def intake_follow_up_topic(reply):
@@ -679,6 +689,12 @@ def normalize_state(value):
             item for item in intake.get("asked_follow_ups", [])
             if isinstance(item, str) and item in {topic for topic, _ in INTAKE_FOLLOW_UP_PATTERNS}
         ],
+        asked_field=(
+            str(intake.get("asked_field") or "")
+            if str(intake.get("asked_field") or "")
+            in {topic for topic, _ in INTAKE_FOLLOW_UP_PATTERNS}
+            else ""
+        ),
     )
     state["intake"] = intake
 
@@ -1114,7 +1130,7 @@ def _validate_confirmable_claims(draft, evidence):
             )
 
 
-def _validate_module_four_story_claims(draft, evidence):
+def _validate_module_four_story_claims(draft, evidence, checkpoint):
     draft_text = str(draft or "")
     evidence_text = str(evidence or "")
     compact_evidence = re.sub(r"\s+", "", evidence_text)
@@ -1127,7 +1143,9 @@ def _validate_module_four_story_claims(draft, evidence):
         quote = re.sub(r"[*_`]+", "", match.group(1)).strip().strip("“”\"'")
         if quote:
             quotes.append(quote)
-    if not quotes or len(quotes) > 5:
+    if checkpoint in {2, 3} and quotes:
+        raise HarnessError("模块 4 当前步骤必须引用节点编号或短标题，不能重复展开事实原话")
+    if checkpoint in {1, 4} and (not quotes or len(quotes) > 5):
         raise HarnessError("模块 4 必须提供 1–5 条逐字的事实原话或未来方向原话")
     for quote in quotes:
         if re.sub(r"\s+", "", quote) not in compact_evidence:
@@ -1316,7 +1334,7 @@ def validate_model_decision(
     elif decision in {"propose_checkpoint", "revise_intake"}:
         _validate_confirmable_claims(draft, evidence)
     if decision == "propose_checkpoint" and state["current_module"] == 4:
-        _validate_module_four_story_claims(draft, evidence)
+        _validate_module_four_story_claims(draft, evidence, checkpoint)
     if decision == "propose_checkpoint" and state["current_module"] == 5 and checkpoint == 2:
         _validate_module_five_topics(clean_updates, draft, evidence)
     if (
@@ -1657,6 +1675,7 @@ def apply_intake_decision(value, raw, evidence_text):
             round=3,
             draft=decision["draft"],
             profile_updates=decision["profile_updates"],
+            asked_field="",
         )
     elif decision["decision"] == "ask_follow_up":
         follow_up_topic = intake_follow_up_topic(decision["reply"])
@@ -1667,6 +1686,7 @@ def apply_intake_decision(value, raw, evidence_text):
             )
         if follow_up_topic:
             asked_follow_ups.append(follow_up_topic)
+            intake["asked_field"] = follow_up_topic
         merged_updates = {}
         for item in (intake.get("profile_updates") or []) + decision["profile_updates"]:
             merged_updates.pop(item["field"], None)
@@ -1685,6 +1705,45 @@ def apply_intake_decision(value, raw, evidence_text):
             "请确认资料，或者直接补充、纠正；我会说明理解错在哪里并立即重整。",
         )
     return state, decision, reply
+
+
+def compile_asked_intake_answer(value, user_message):
+    """Consume one answer using the persisted asked field, not message punctuation."""
+    state = normalize_state(value)
+    intake = state["intake"]
+    asked_field = str(intake.get("asked_field") or "")
+    answer = str(user_message or "").strip()
+    if (
+        intake.get("status") not in {"collecting", "editing"}
+        or asked_field != "help_goal" or not answer
+    ):
+        return None
+    update = {
+        "field": asked_field, "value": answer,
+        "kind": "user_fact", "evidence_quote": answer,
+    }
+    merged = {}
+    for item in [*(intake.get("profile_updates") or []), update]:
+        if isinstance(item, dict) and item.get("field"):
+            merged[str(item["field"])] = deepcopy(item)
+    updates = list(merged.values())
+    if not _intake_has_core_profile(state, updates, answer):
+        return None
+    draft = "【基础定位核对稿】\n\n" + "\n".join(
+        "- %s：%s" % (
+            INTAKE_FIELD_LABELS.get(str(item.get("field") or ""), str(item.get("field") or "")),
+            str(item.get("value") or "").strip(),
+        )
+        for item in updates if str(item.get("value") or "").strip()
+    )
+    return {
+        "decision": "propose_checkpoint", "checkpoint": 1,
+        "reply": "你的基础信息已经足够，我把刚才的回答作为帮助目标整理进核对稿。",
+        "draft": draft,
+        "self_review": "全部字段来自当前访谈原话，等待用户确认。",
+        "choices": [], "profile_updates": updates, "confidence": 1.0,
+        "_trace_skill": "intake", "_model_used": False,
+    }
 
 
 def apply_model_decision(value, raw, evidence_text, pending_id=None, discard_pending=False):
@@ -1838,6 +1897,15 @@ def system_prompt(value):
 - 每个节点必须单独包含“事实原话：”或“未来方向原话：”，后面逐字引用对话或已确认资料；不得使用“故事内容：”自由改写过去经历。
 - 标题、故事类型、情绪点和传播场景可以是 AI 建议，但必须明确作为包装建议，不能夹带新的过去事实。
 - 不使用“过人的天赋”“自我怀疑”“害怕”“成就感”等用户没有亲口说过的评价或内心感受。证据不足时少写节点，不能为了凑数量编故事。"""
+        if next_step == 2:
+            story_rules += """
+- 本轮是增量分类：只用“节点编号/短标题 → 挫折型、成长型或愿景型”并说明新增的分类理由或取舍；不得重复事实原话、完整经历或上一轮节点正文。"""
+        elif next_step == 3:
+            story_rules += """
+- 本轮是增量包装：按节点编号/短标题只新增故事名称、一句梗概、情绪点和传播场景；不得再次粘贴事实原话或完整经历。"""
+        elif next_step == 4:
+            story_rules += """
+- 本轮是最终资产清单，允许且只在这里再次汇总一次事实原话、分类和包装结果，并明确推荐长期核心故事及取舍理由。"""
     return f"""你是黄雀 IP12 的中立 IP 咨询教练，适用于任何职业和行业。
 
 当前模块：{module}. {workflow['name']}

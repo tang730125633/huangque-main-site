@@ -252,6 +252,21 @@ def _intake_pending(state):
     return isinstance(intake, dict) and intake.get("status") != "complete"
 
 
+def _harness_state_turn(state):
+    """Keep an open intake question or draft edit inside the stateful Harness."""
+    state = state if isinstance(state, dict) else {}
+    intake = state.get("intake") if isinstance(state.get("intake"), dict) else {}
+    pending = state.get("pending") if isinstance(state.get("pending"), dict) else {}
+    return bool(
+        intake.get("status") == "editing"
+        or (
+            intake.get("status") in {"collecting", "editing"}
+            and intake.get("asked_field")
+        )
+        or pending.get("status") == "editing"
+    )
+
+
 def capability_gates(state):
     state = normalize_coach_state(state)
     completed = set(state.get("completed_modules") or [])
@@ -4772,6 +4787,12 @@ def _coach_model_decision(
 ):
     state = normalize_coach_state(convo.get("coach_state"))
     intake_pending = _intake_pending(state)
+    if intake_pending:
+        asked_answer = coach_harness.compile_asked_intake_answer(state, user_message)
+        if asked_answer:
+            return _deterministic_decision(asked_answer, "intake"), _conversation_user_evidence(
+                convo, user_message
+            )
     if not intake_pending and state["current_module"] == 5 and state["module_step"] == 1:
         return _coach_module_five_topics(convo, user_message, repair_error)
     if (
@@ -4891,6 +4912,7 @@ def _coach_model_decision(
         profile_data["pending_intake_draft"] = (state.get("intake") or {}).get("draft") or ""
         profile_data["pending_intake_updates"] = (state.get("intake") or {}).get("profile_updates") or []
         profile_data["asked_intake_questions"] = (state.get("intake") or {}).get("asked_follow_ups") or []
+        profile_data["current_intake_asked_field"] = (state.get("intake") or {}).get("asked_field") or ""
     elif module_pending:
         profile_data["pending_module_draft"] = module_pending.get("draft") or ""
         profile_data["pending_module_updates"] = module_pending.get("profile_updates") or []
@@ -7207,6 +7229,7 @@ def process_chat_request(body):
     memory_snapshot = None
     legacy_route = ""
     material_revision_ambiguous = False
+    harness_state_turn = False
     agents_sdk_account_turn = False
     agents_sdk_talking_head_turn = False
     try:
@@ -7257,7 +7280,8 @@ def process_chat_request(body):
                 claim_key = turn_key
                 state = normalize_coach_state(convo.get("coach_state"))
                 _assert_expected_revision(state, body.get("expected_revision"))
-                if action is None:
+                harness_state_turn = action is None and _harness_state_turn(state)
+                if action is None and not harness_state_turn:
                     material_revision_kind = _production_material_revision_intent(user_message)
                     material_candidates = (
                         _editable_talking_head_productions(convo)
@@ -7272,7 +7296,8 @@ def process_chat_request(body):
                         material_revision_kind and not material_production_id
                         and len(material_candidates) > 1
                     )
-                if action is None and content_target is None and not material_production_id:
+                if (action is None and not harness_state_turn
+                        and content_target is None and not material_production_id):
                     action = coach_harness.shortcut_action(state, user_message)
                     if action:
                         action_revision = state["revision"]
@@ -7280,7 +7305,7 @@ def process_chat_request(body):
                         action_revision = None
                 else:
                     action_revision = body.get("expected_revision")
-                if action is None and not material_production_id:
+                if action is None and not harness_state_turn and not material_production_id:
                     handoff = (
                         _post_module_six_production_action(convo)
                         if _post_module_six_capability_question(state, user_message)
@@ -7335,7 +7360,8 @@ def process_chat_request(body):
                     and not pause_turn and foundation_review != "revision" and _WEATHER_RE.search(user_message)
                 )
                 legacy_route = (
-                    "pause_turn" if pause_turn
+                    "harness_state_turn" if harness_state_turn
+                    else "pause_turn" if pause_turn
                     else "general_tool_turn" if weather_turn
                     else "action_turn" if action is not None
                     else "production_turn" if production_intent is not None
@@ -7353,6 +7379,7 @@ def process_chat_request(body):
                     cid, legacy_route, convo
                 )
                 if (MASTER_AGENT_MODE in {"shadow", "live"}
+                        and not harness_state_turn
                         and not agents_sdk_account_turn
                         and not agents_sdk_talking_head_turn):
                     shadow_decision = master_agent.decide(
@@ -7375,7 +7402,8 @@ def process_chat_request(body):
                 semantic_decision = semantic_router.safe_clarification(
                     "当前有多个待修改的口播制作，请先打开或点名其中一个，再说明要重录声音还是更换形象。"
                 )
-            if (not agents_sdk_account_turn and not agents_sdk_talking_head_turn
+            if (not harness_state_turn
+                    and not agents_sdk_account_turn and not agents_sdk_talking_head_turn
                     and not material_production_id
                     and semantic_decision is None and memory_snapshot is not None
                     and SEMANTIC_ROUTER_MODE == "live"):
@@ -7399,7 +7427,11 @@ def process_chat_request(body):
                         "这项能力当前没有解锁或暂时不可用。你可以换一个目标，或者稍后再试。"
                     )
 
-            if agents_sdk_account_turn:
+            if harness_state_turn:
+                result, status = _process_model_turn(
+                    cid, user_message, body.get("expected_revision"), request_id=request_id
+                )
+            elif agents_sdk_account_turn:
                 result, status = _process_agents_sdk_account_turn(
                     cid, user_message, body.get("expected_revision"), request_id
                 )
