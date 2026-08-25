@@ -112,7 +112,7 @@
   var NAV=[
     {k:'dashboard',l:'今日',i:'home', admin:true}, {k:'inspiration',l:'灵感设计',i:'sparkles'},
     {k:'leads',l:'平台获客',i:'search'}, {k:'collect',l:'内容爬取',i:'link'}, {k:'banana',l:'图片生成',i:'image'},
-    {k:'video',l:'视频生成',i:'video'}, {k:'text-video',l:'文案成片',i:'clapper',feature:'pixelle_text_video'}, {k:'audio',l:'音频生成',i:'mic'}, {k:'script',l:'文案编导',i:'edit'},
+    {k:'video',l:'视频生成',i:'video'}, {k:'text-video',l:'文案成片',i:'clapper',feature:'pixelle_text_video'}, {k:'matrix-template',l:'模板成片',i:'layers',feature:'matrix_template_video'}, {k:'audio',l:'音频生成',i:'mic'}, {k:'script',l:'文案编导',i:'edit'},
     {k:'short-drama',l:'短剧创作',i:'clapper'}, {k:'canvas',l:'无限画布',i:'layers'}, {k:'assets',l:'我的资产',i:'folder'}, {k:'pricing',l:'点数价格',i:'coins'}, {k:'invite',l:'邀请中心',i:'users'},
     {k:'cost',l:'成本',i:'coins', admin:true}, {k:'tutorials',l:'教程视频',i:'play'}, {k:'settings',l:'通用设置',i:'gear'}
   ];
@@ -143,12 +143,17 @@
   }
 
   function revealReadyFeatureNav(aside){
-    var item=aside.querySelector('[data-nav-feature="pixelle_text_video"]');
-    if(!item) return;
-    fetch('/api/gen/text-video/capability',{credentials:'same-origin',cache:'no-store'})
-      .then(function(response){if(!response.ok)return null;return response.json();})
-      .then(function(data){if(data&&data.available){item.hidden=false;item.style.display='flex';}})
-      .catch(function(){});
+    [
+      ['pixelle_text_video','/api/gen/text-video/capability'],
+      ['matrix_template_video','/api/gen/matrix-template/capability']
+    ].forEach(function(entry){
+      var item=aside.querySelector('[data-nav-feature="'+entry[0]+'"]');
+      if(!item)return;
+      fetch(entry[1],{credentials:'same-origin',cache:'no-store'})
+        .then(function(response){if(!response.ok)return null;return response.json();})
+        .then(function(data){if(data&&data.available){item.hidden=false;item.style.display='flex';}})
+        .catch(function(){});
+    });
   }
 
   function ensureNavStyles(){
@@ -215,7 +220,7 @@
   }
 
   function usesFlushWorkspace(active){
-    return active==='banana' || active==='video' || active==='text-video' || active==='audio';
+    return active==='banana' || active==='video' || active==='text-video' || active==='matrix-template' || active==='audio';
   }
 
   function bindNavTooltips(aside){

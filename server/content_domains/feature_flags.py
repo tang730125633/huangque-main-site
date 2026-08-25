@@ -79,6 +79,14 @@ CATALOG = [
         "service": "content",
         "default_enabled": False,
     },
+    {
+        "key": "matrix_template_video",
+        "name": "模板成片",
+        "desc": "上方标题、中部素材、下方行动文案的素材库模板视频",
+        "page": "模板成片",
+        "service": "content",
+        "default_enabled": False,
+    },
 ]
 CATALOG_MAP = {item["key"]: item for item in CATALOG}
 

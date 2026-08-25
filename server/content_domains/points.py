@@ -183,6 +183,8 @@ def cost_of(kind, body):
             "total": talking + images,
         }
         return talking + images
+    if kind == "matrix_template_video":
+        return pricing.get_price("video.matrix_template")
     if kind == "breakdown":
         urls = body.get("urls")
         if isinstance(urls, list):
