@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>模板成片 · 黄雀 AI 工作台</title>
+<link rel="icon" href="../assets/cloud/logo-bird.png">
+<link rel="stylesheet" href="../assets/fonts/hq-fonts.css">
+<link rel="stylesheet" href="../assets/cloud.css?v=8">
+<script src="theme-init.js?v=11eb385e"></script>
+<style>
+body{overflow:hidden}.hq-content[data-active="matrix-template"]{height:100%;min-height:0}.mt-layout{display:grid;grid-template-columns:minmax(440px,1fr) minmax(340px,.72fr);height:100%;border-top:1px solid rgba(148,164,187,.1)}.mt-editor{padding:28px 30px;overflow:auto;border-right:1px solid rgba(148,164,187,.12)}.mt-preview{display:flex;align-items:center;justify-content:center;padding:24px;background:#090e18}.mt-title{margin:0 0 24px;color:#edf3fa;font-size:23px;line-height:1.25}.mt-label{display:flex;justify-content:space-between;gap:12px;margin:18px 0 9px;color:#dbe5f1;font-size:12px;font-weight:700}.mt-input{width:100%;min-height:72px;padding:12px 13px;resize:vertical;border:1px solid rgba(148,164,187,.22);border-radius:7px;background:#0b111d;color:#eef4fb;font:14px/1.65 inherit;outline:0}.mt-input:focus,.mt-number:focus{border-color:#e7b24c;box-shadow:0 0 0 2px rgba(231,178,76,.13)}.mt-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:9px;max-height:380px;overflow:auto}.mt-template{min-width:0;padding:0;border:1px solid rgba(148,164,187,.18);border-radius:7px;background:#0b111d;color:#d7e1ee;text-align:left;overflow:hidden;cursor:pointer}.mt-template.active{border-color:#e7b24c;box-shadow:0 0 0 1px #e7b24c}.mt-template-visual{display:grid;grid-template-rows:28% 1fr 25%;height:150px;padding:11px;background:var(--bg,#111827);color:var(--fg,#fff)}.mt-template-top,.mt-template-bottom{display:flex;align-items:center;font-weight:800;line-height:1.15}.mt-template-top{font-size:15px}.mt-template-media{margin:7px 0;background:linear-gradient(135deg,var(--accent,#e7b24c),rgba(255,255,255,.16));border:1px solid rgba(255,255,255,.28)}.mt-template-bottom{font-size:10px;opacity:.9}.mt-template-copy{display:block;padding:9px}.mt-template-copy strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.mt-template-copy small{display:block;margin-top:4px;color:#728299;font-size:10px}.mt-controls{display:grid;grid-template-columns:120px 1fr;gap:12px;align-items:end;margin-top:14px}.mt-number{width:100%;height:40px;padding:0 10px;border:1px solid rgba(148,164,187,.22);border-radius:7px;background:#0b111d;color:#edf3fa}.mt-toggle{display:flex;align-items:center;gap:9px;height:40px;color:#dbe5f1;font-size:13px}.mt-toggle input{width:17px;height:17px;accent-color:#e7b24c}.mt-action{width:100%;height:50px;margin-top:18px;border:0;border-radius:8px;background:#e7b24c;color:#171006;font:800 15px inherit;cursor:pointer}.mt-action:disabled{opacity:.55;cursor:wait}.mt-status{min-height:48px;margin-top:13px;padding:12px 14px;border-left:3px solid #344258;background:#0b111d;color:#94a4bb;font-size:12.5px;line-height:1.7}.mt-status.running{border-color:#e7b24c;color:#dce6f2}.mt-status.done{border-color:#2dd4bf;color:#d8fff8}.mt-status.error{border-color:#f87171;color:#ffdede}.mt-stage{position:relative;width:min(100%,390px);aspect-ratio:9/16;background:#05070b;border:1px solid rgba(148,164,187,.16);box-shadow:0 20px 55px rgba(0,0,0,.34);overflow:hidden}.mt-stage video{display:none;width:100%;height:100%;object-fit:contain}.mt-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#65748a}.mt-meta{display:none;position:absolute;left:12px;top:12px;color:#fff;font:11px "JetBrains Mono",monospace;text-shadow:0 1px 4px #000}.mt-download{display:none;position:absolute;right:12px;top:12px;width:38px;height:38px;border:1px solid rgba(255,255,255,.2);border-radius:50%;background:rgba(5,7,11,.78);color:#fff;align-items:center;justify-content:center;text-decoration:none}.toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(10px);opacity:0;transition:.18s;background:#111827;border:1px solid rgba(148,164,187,.2);border-radius:8px;padding:10px 15px;color:#eaf1fa;z-index:90}.toast.show{opacity:1;transform:translateX(-50%)}@media(max-width:900px){body{overflow:auto}.mt-layout{grid-template-columns:1fr;height:auto}.mt-editor{border-right:0}.mt-preview{min-height:680px}}
+</style>
+<link rel="stylesheet" href="theme.css?v=5873a2f4">
+</head>
+<body>
+<div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
+<div class="hq-app"><div class="hq-content" data-active="matrix-template"><main class="mt-layout">
+<section class="mt-editor">
+  <h1 class="mt-title">模板成片</h1>
+  <div class="mt-label"><label for="topText">顶部标题</label><span id="topCount">0 / 60</span></div>
+  <textarea id="topText" class="mt-input" maxlength="60" placeholder="例如：真正拉开差距的，不是工具"></textarea>
+  <div class="mt-label"><label for="bottomText">底部行动文案</label><span id="bottomCount">0 / 80</span></div>
+  <textarea id="bottomText" class="mt-input" maxlength="80" placeholder="例如：评论区留下关键词，领取完整方案"></textarea>
+  <div class="mt-label"><span>视觉模板</span><span id="templateName">正在加载</span></div>
+  <div id="templateGrid" class="mt-grid" role="listbox" aria-label="视觉模板"></div>
+  <div class="mt-controls">
+    <label><span class="mt-label">时长</span><input id="duration" class="mt-number" type="number" min="8" max="15" step="0.5" placeholder="自动"></label>
+    <label class="mt-toggle"><input id="bgm" type="checkbox" checked>背景音乐</label>
+  </div>
+  <div class="mt-label"><span>素材来源</span><span>平台素材库</span></div>
+  <button id="generateBtn" class="mt-action" type="button" disabled>生成视频</button>
+  <div id="status" class="mt-status">填写文案并选择模板</div>
+</section>
+<section class="mt-preview"><div class="mt-stage">
+  <div id="empty" class="mt-empty">成片将在这里预览</div>
+  <video id="video" controls playsinline></video>
+  <div id="meta" class="mt-meta"></div>
+  <a id="download" class="mt-download" download title="下载视频">↓</a>
+</div></section>
+</main></div></div>
+<div id="toast" class="toast"></div>
+<script src="../assets/cloud.js?v=8"></script>
+<script src="cloud-shell.js?v=1d7ca7b7"></script>
+<script>
+(function(){
+var templates=[],activeTemplate='',cost=0,busy=false,timer=0,started=0;
+var el=function(id){return document.getElementById(id)};
+var palettes={
+'native-bold':['#111827','#ffffff','#f4c84b'],'video-diary':['#eef3f2','#1d2935','#6ba89c'],'minimal-headline':['#f5f5f2','#111111','#df3f36'],'airy-blush':['#fff4f6','#5d424b','#e7a8b5'],'yellow-blue-pop':['#f8d53a','#102a63','#2671ff'],'business-black':['#0c1017','#f3f6fa','#4fa3ff'],'black-gold-premium':['#14110e','#e9d8a7','#cda65a'],'data-compare':['#f2f6ff','#17284a','#2563eb'],'chinese-title':['#f3ead7','#33251c','#b7352c'],'torn-magazine':['#e9e4da','#191815','#f04438'],'vlog-journal':['#fffceb','#29445a','#ff9c5a'],'bilingual-split':['#eef2f5','#17212b','#1c6db2'],'portrait-quote':['#1e2630','#f4f0e5','#d9b56e']};
+function toast(message){var t=el('toast');t.textContent=message;t.classList.add('show');setTimeout(function(){t.classList.remove('show')},2200)}
+function esc(value){return String(value==null?'':value).replace(/[&<>"']/g,function(ch){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]})}
+function headers(json){var h={'Authorization':'Bearer __cookie__'};if(json)h['Content-Type']='application/json';return h}
+function read(response){return response.text().then(function(text){var data={};try{data=JSON.parse(text||'{}')}catch(e){}return {status:response.status,data:data}})}
+function status(message,state){el('status').textContent=message;el('status').className='mt-status '+(state||'')}
+function sync(){el('topCount').textContent=el('topText').value.length+' / 60';el('bottomCount').textContent=el('bottomText').value.length+' / 80';el('generateBtn').disabled=busy||!activeTemplate||el('topText').value.trim().length<2||el('bottomText').value.trim().length<2}
+function select(button,item){activeTemplate=item.id;Array.prototype.forEach.call(el('templateGrid').children,function(node){node.classList.toggle('active',node===button);node.setAttribute('aria-selected',node===button?'true':'false')});el('templateName').textContent=item.name;sync()}
+function renderTemplates(){var grid=el('templateGrid');grid.textContent='';templates.forEach(function(item){var p=palettes[item.id]||['#111827','#fff','#e7b24c'];var b=document.createElement('button');b.className='mt-template';b.type='button';b.setAttribute('aria-selected','false');b.innerHTML='<span class="mt-template-visual" style="--bg:'+p[0]+';--fg:'+p[1]+';--accent:'+p[2]+'"><span class="mt-template-top">观点标题</span><span class="mt-template-media"></span><span class="mt-template-bottom">行动文案</span></span><span class="mt-template-copy"><strong>'+esc(item.name)+'</strong><small>'+esc((item.tags||[]).slice(0,3).join(' · '))+'</small></span>';b.onclick=function(){select(b,item)};grid.appendChild(b)});if(templates.length){var preferred=templates.find(function(x){return x.id==='native-bold'})||templates[0];select(grid.children[templates.indexOf(preferred)],preferred)}}
+function load(){fetch('/api/gen/matrix-template/templates',{headers:headers(false),cache:'no-store'}).then(read).then(function(r){if(r.status===401){location.href='../login.html?redirect=workbench/matrix-template';return}if(r.status>=400)throw new Error(r.data.detail||'模板目录不可用');templates=r.data.templates||[];cost=Number(r.data.cost||0);renderTemplates();el('generateBtn').textContent='生成视频 · '+cost+' 点'}).catch(function(e){status(e.message,'error')})}
+function requestKey(){return 'matrix-template-'+(crypto&&crypto.randomUUID?crypto.randomUUID():Date.now()+'-'+Math.random().toString(16).slice(2))}
+function poll(jobId){fetch('/api/gen/job/'+jobId,{headers:headers(false),cache:'no-store'}).then(read).then(function(r){if(r.status>=400)throw new Error(r.data.detail||'任务查询失败');var d=r.data;if(d.status==='done'){busy=false;clearTimeout(timer);var result=d.result||{};el('empty').style.display='none';el('video').src=result.video_url;el('video').style.display='block';el('meta').textContent=Number(result.duration||0).toFixed(1)+'s · 1080×1920';el('meta').style.display='block';el('download').href=result.video_url;el('download').style.display='flex';status('生成完成','done');sync();return}if(d.status==='error'||d.status==='failed'){busy=false;throw new Error(d.error||'生成失败')}status('正在生成 · '+Math.max(0,Math.round((Date.now()-started)/1000))+' 秒','running');timer=setTimeout(function(){poll(jobId)},2500)}).catch(function(e){busy=false;clearTimeout(timer);status(e.message,'error');toast(e.message);sync()})}
+function generate(){var duration=el('duration').value.trim();var body={top_text:el('topText').value.trim(),bottom_text:el('bottomText').value.trim(),template_id:activeTemplate,bgm:el('bgm').checked};if(duration)body.duration=Number(duration);if(!confirm('本次预计扣除 '+cost+' 点，确认生成？'))return;busy=true;started=Date.now();sync();status('正在提交任务','running');fetch('/api/gen/matrix-template',{method:'POST',headers:Object.assign(headers(true),{'Idempotency-Key':requestKey()}),body:JSON.stringify(body)}).then(read).then(function(r){if(r.status===401){location.href='../login.html?redirect=workbench/matrix-template';return}if(r.status>=400)throw new Error(r.data.detail||'提交失败');poll(r.data.job_id)}).catch(function(e){busy=false;status(e.message,'error');toast(e.message);sync()})}
+el('topText').addEventListener('input',sync);el('bottomText').addEventListener('input',sync);el('generateBtn').onclick=generate;sync();load();
+})();
+</script>
+</body>
+</html>
