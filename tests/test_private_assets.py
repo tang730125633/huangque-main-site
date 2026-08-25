@@ -146,6 +146,34 @@ class PrivateAssetsTest(unittest.TestCase):
         ):
             self.assertIn(requirement, runbook)
 
+    def test_production_contract_documents_grok_provider_selection(self):
+        root = Path(__file__).resolve().parents[1]
+        example = (root / "deploy" / "huangque-secrets.env.example").read_text(
+            encoding="utf-8"
+        )
+        runbook = (root / "deploy" / "生产环境清单与还原手册.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER=grok", example)
+        self.assertIn("HQ_SHORT_DRAMA_GROK_MODEL=", example)
+        for name in (
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER",
+            "HQ_SHORT_DRAMA_GROK_MODEL",
+        ):
+            self.assertIn(name, runbook)
+        for requirement in (
+            "grok_xai",
+            "minimax_h3",
+            "XAI_API_KEY",
+            "/home/ubuntu/content-api/content.env",
+            "huangque-content",
+            "逐镜",
+            "预览",
+            "冒烟",
+            "回滚",
+        ):
+            self.assertIn(requirement, runbook)
+
     def test_signed_provider_file_route_is_public_only_for_valid_current_signature(self):
         with tempfile.TemporaryDirectory() as tmp, \
                 patch.object(core, "OUT_DIR", Path(tmp)), \
