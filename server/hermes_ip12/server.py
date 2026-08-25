@@ -6412,12 +6412,16 @@ def _process_agents_sdk_account_turn(cid, user_message, expected_revision=None,
         )
         save_conversation(cid, convo)
 
+    def execute_account(action, arguments):
+        result = _bridge_tool_result(_bridge_action(
+            account_id, action, arguments,
+            idempotency_key="agents-sdk-%s-%s" % (run_id, action),
+        ))
+        return result["user"] if isinstance(result.get("user"), dict) else result
+
     try:
         loop_result = cognitive_engine.agents_sdk_account_run(
-            execute_action=lambda action, arguments: _bridge_tool_result(_bridge_action(
-                account_id, action, arguments,
-                idempotency_key="agents-sdk-%s-%s" % (run_id, action),
-            )),
+            execute_action=execute_account,
             account_capability=account_capability,
             user_message=user_message,
             run=run,

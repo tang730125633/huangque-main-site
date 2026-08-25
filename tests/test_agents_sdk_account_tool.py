@@ -224,7 +224,7 @@ server._bridge_catalog = lambda _account: {"actions": [copy.deepcopy({account_ca
 bridge_calls = []
 server._bridge_action = lambda account, action, payload, **kwargs: (
     bridge_calls.append((account, action, payload)),
-    {"result": {"points": 321}},
+    {"user": {"points": 321}, "scopes": ["profile:read"]},
 )[1]
 server._master_runtime_reply = lambda *_args, **_kwargs: (_ for _ in ()).throw(
     AssertionError("fixed runtime reply must be bypassed")
