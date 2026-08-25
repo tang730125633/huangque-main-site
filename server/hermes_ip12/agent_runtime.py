@@ -14,7 +14,7 @@ STATUSES = {
 }
 TERMINAL = {"completed", "failed"}
 TRANSITIONS = {
-    "planning": {"needs_input", "quote_ready", "failed"},
+    "planning": {"needs_input", "quote_ready", "completed", "failed"},
     "needs_input": {"planning", "quote_ready", "failed"},
     "quote_ready": {"awaiting_confirmation", "needs_input", "failed"},
     "awaiting_confirmation": {"submitting", "needs_input", "quote_ready", "failed"},
@@ -50,6 +50,10 @@ def _tool(required, output, *, risk, billing="free", confirmation=False,
 
 
 TOOL_CONTRACTS = {
+    "account": _tool(
+        (), ("points",), risk="read", public=("points",),
+        private=("username", "account_id", "scopes", "membership"),
+    ),
     "project.read": _tool((), ("source",), risk="read", public=("source", "script_title"), private=("script",)),
     "capability.read": _tool(("action",), ("available",), risk="read", public=("available", "gate_status")),
     "assets.read": _tool((), (), risk="read", public=("avatar_ready", "voice_ready", "missing"), private=("avatar_id", "voice")),
@@ -169,6 +173,31 @@ def append_event(run, event_type, data=None, *, request_id=""):
     run.setdefault("events", []).append(event)
     run["events"] = run["events"][-200:]
     return event
+
+
+def record_model_response(run, response, round_index):
+    """Persist only correlation and usage, never raw Responses content."""
+    if isinstance(response, dict):
+        response_id = response.get("id") or response.get("response_id")
+        usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
+        value = lambda key: usage.get(key)
+    else:
+        response_id = getattr(response, "response_id", "")
+        usage = getattr(response, "usage", None)
+        value = lambda key: getattr(usage, key, 0)
+    safe_usage = {key: int(value(key) or 0) for key in (
+        "requests", "input_tokens", "output_tokens", "total_tokens"
+    )}
+    entry = {
+        "response_id": str(response_id or "")[:160],
+        "round": int(round_index),
+        "usage": safe_usage,
+    }
+    run.setdefault("model_responses", []).append(entry)
+    run["model_responses"] = run["model_responses"][-4:]
+    run["revision"] = int(run.get("revision") or 0) + 1
+    run["updated_at"] = _now()
+    return entry
 
 
 def start(project, run_id, policy, goal, *, project_id="", production_id="",
@@ -467,4 +496,5 @@ def public_run(run):
     result.pop("_private", None)
     result.pop("observations", None)
     result.pop("inputs", None)
+    result.pop("model_responses", None)
     return result

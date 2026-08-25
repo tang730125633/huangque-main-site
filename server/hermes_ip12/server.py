@@ -43,6 +43,18 @@ AGENT_RUNTIME_WORKER_ENABLED = str(
 AGENT_RUNTIME_WORKER_INTERVAL = max(
     1.0, float(os.environ.get("HERMES_AGENT_RUNTIME_WORKER_INTERVAL") or 3)
 )
+AGENTS_SDK_ACCOUNT_REQUESTED = str(
+    os.environ.get("HERMES_AGENTS_SDK_ACCOUNT_ENABLED") or "0"
+).strip() == "1"
+AGENTS_SDK_ACCOUNT_PROJECT_ID = str(
+    os.environ.get("HERMES_AGENTS_SDK_ACCOUNT_PROJECT_ID") or ""
+).strip()
+AGENTS_SDK_ACCOUNT_ENABLED = bool(
+    AGENTS_SDK_ACCOUNT_REQUESTED
+    and AGENTS_SDK_ACCOUNT_PROJECT_ID
+    and os.environ.get("HERMES_AGENTS_SDK_MODEL")
+    and os.environ.get("HERMES_AGENTS_SDK_OPENAI_API_KEY")
+)
 RUNTIME_SUBMISSION_CLAIM_SECONDS = 45
 VERIFIED_VIDEO_HOSTS = {"video.huangquechuanmei.com"}
 AI_DEFAULT_TIMEOUT_SECONDS = 180
@@ -2975,6 +2987,7 @@ def call_ai(messages, stream=False, temperature=0.7, max_tokens=None, response_f
                 raise Exception("API 200 但没有返回符合 Schema 的完整 JSON")
         return resp
 
+
 def generate_module_report(convo_id, module_id):
     convo = load_conversation(convo_id)
     mod = MODULES[module_id - 1]
@@ -3278,6 +3291,8 @@ def healthz():
         "agents_sdk_conformance": AGENTS_SDK_CONFORMANCE,
         "cognitive_metrics": cognitive_engine.metrics(),
         "project_memory_schema": project_memory.SCHEMA,
+        "agents_sdk_account_requested": AGENTS_SDK_ACCOUNT_REQUESTED,
+        "agents_sdk_account_enabled": AGENTS_SDK_ACCOUNT_ENABLED,
     })
 
 @app.route("/classic")
@@ -6358,6 +6373,92 @@ def _semantic_master_decision(memory, user_message):
     )
 
 
+class _AgentsSDKAccountPolicy:
+    agent_id = "ip12_master_agent"
+
+
+def _agents_sdk_account_turn_allowed(cid, legacy_route):
+    return bool(
+        AGENTS_SDK_ACCOUNT_ENABLED
+        and cid == AGENTS_SDK_ACCOUNT_PROJECT_ID
+        and legacy_route == "model_turn"
+        and COGNITIVE_ENGINE_MODE == "custom"
+        and not AGENTS_SDK_ENABLED
+    )
+
+
+def _process_agents_sdk_account_turn(cid, user_message, expected_revision=None,
+                                     request_id=""):
+    account_id = current_account_id()
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        if convo is None:
+            return None, 404
+        state = normalize_coach_state(convo.get("coach_state"))
+        _assert_expected_revision(state, expected_revision)
+        snapshot_revision = state["revision"]
+        catalog = _bridge_catalog(account_id)
+        account_capability = next((
+            item for item in catalog.get("actions") or []
+            if isinstance(item, dict) and item.get("action") == "account"
+        ), None)
+        if account_capability is None:
+            return {"ok": False, "error": "账户读取能力当前不可用"}, 503
+        stable = request_id or "%s\n%s\n%s" % (cid, snapshot_revision, user_message)
+        run_id = "run_account_" + hashlib.sha256(stable.encode("utf-8")).hexdigest()[:24]
+        run = agent_runtime.start(
+            convo, run_id, _AgentsSDKAccountPolicy(), user_message,
+            project_id=cid,
+        )
+        save_conversation(cid, convo)
+
+    try:
+        loop_result = cognitive_engine.agents_sdk_account_run(
+            execute_action=lambda action, arguments: _bridge_tool_result(_bridge_action(
+                account_id, action, arguments,
+                idempotency_key="agents-sdk-%s-%s" % (run_id, action),
+            )),
+            account_capability=account_capability,
+            user_message=user_message,
+            run=run,
+            request_id=request_id,
+        )
+        run["result"] = {
+            "tool_called": bool(loop_result.get("tool_called")),
+            "model_rounds": int(loop_result.get("model_rounds") or 0),
+        }
+        agent_runtime.transition(
+            run, "completed", next_action="await_user", request_id=request_id,
+        )
+        assistant = loop_result["final_text"]
+        status = "completed"
+    except Exception as exc:
+        if run.get("status") not in agent_runtime.TERMINAL:
+            agent_runtime.transition(
+                run, "failed", next_action="explain_tool_failure",
+                error={"code": type(exc).__name__}, request_id=request_id,
+            )
+        assistant = "我暂时无法安全读取当前账户点数，请稍后再试。"
+        status = "failed"
+
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        if convo is None:
+            return None, 404
+        convo.setdefault("agent_runs", {})[run_id] = run
+        save_conversation(cid, convo)
+    message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
+    assistant, next_state = _persist_unprocessed_turn(
+        cid, user_message, snapshot_revision, message_id=message_id,
+        assistant_override=assistant,
+        skills=["semantic_master_agent"],
+        assistant_extra={"model": MODEL},
+    )
+    result = _chat_result(assistant, next_state)
+    result["agent_status"] = {"status": status, "next_action": "await_user"}
+    return result, 200
+
+
 def _semantic_debug_allowed():
     if not has_request_context():
         return False
@@ -6929,6 +7030,7 @@ def process_chat_request(body):
     memory_snapshot = None
     legacy_route = ""
     material_revision_ambiguous = False
+    agents_sdk_account_turn = False
     try:
         production_intent = None
         material_revision_kind = ""
@@ -7066,6 +7168,9 @@ def process_chat_request(body):
                     else "foundation_revision_turn" if foundation_review == "revision"
                     else "model_turn"
                 )
+                agents_sdk_account_turn = _agents_sdk_account_turn_allowed(
+                    cid, legacy_route
+                )
                 if MASTER_AGENT_MODE in {"shadow", "live"}:
                     shadow_decision = master_agent.decide(
                         convo,
@@ -7087,7 +7192,8 @@ def process_chat_request(body):
                 semantic_decision = semantic_router.safe_clarification(
                     "当前有多个待修改的口播制作，请先打开或点名其中一个，再说明要重录声音还是更换形象。"
                 )
-            if (not material_production_id and semantic_decision is None and memory_snapshot is not None
+            if (not agents_sdk_account_turn and not material_production_id
+                    and semantic_decision is None and memory_snapshot is not None
                     and SEMANTIC_ROUTER_MODE == "live"):
                 memory_snapshot["tool_catalog"] = _semantic_tool_catalog(current_account_id(), state)
                 try:
@@ -7109,7 +7215,11 @@ def process_chat_request(body):
                         "这项能力当前没有解锁或暂时不可用。你可以换一个目标，或者稍后再试。"
                     )
 
-            if material_production_id:
+            if agents_sdk_account_turn:
+                result, status = _process_agents_sdk_account_turn(
+                    cid, user_message, body.get("expected_revision"), request_id
+                )
+            elif material_production_id:
                 result, status = _process_production_material_revision_turn(
                     cid, user_message, material_production_id, material_revision_kind,
                     body.get("expected_revision"), request_id,

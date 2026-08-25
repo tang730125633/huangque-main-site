@@ -134,6 +134,7 @@ class AgentRuntimeContractTests(unittest.TestCase):
         self.assertNotIn("job_id", rendered)
         self.assertNotIn("inputs", public)
         self.assertEqual(set(agent_runtime.TOOL_CONTRACTS), {
+            "account",
             "project.read", "capability.read", "assets.read", "production.quote",
             "production.submit", "task.read", "artifact.verify", "project.writeback",
         })
@@ -141,7 +142,7 @@ class AgentRuntimeContractTests(unittest.TestCase):
     def test_illegal_transition_and_verification_failure_fail_closed(self):
         run = self.project["agent_runs"]["run_1"]
         with self.assertRaisesRegex(agent_runtime.AgentRuntimeError, "invalid agent transition"):
-            agent_runtime.transition(run, "completed")
+            agent_runtime.transition(run, "running")
         self.tools._tools["artifact.verify"]["handler"] = lambda _payload: {
             "decision": "fail", "issues": [{"code": "video_unplayable"}], "media": {},
         }
