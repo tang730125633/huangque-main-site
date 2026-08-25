@@ -191,6 +191,8 @@ class AgentsSDKAccountServerWiringTests(unittest.TestCase):
             sys.executable,
         ]
         for candidate in dict.fromkeys(item for item in candidates if item):
+            if not Path(candidate).is_file():
+                continue
             probe = subprocess.run(
                 [candidate, "-c", "import flask"],
                 capture_output=True, text=True,
