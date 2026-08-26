@@ -26,6 +26,14 @@ _CACHE = {"at": 0.0, "templates": []}
 _NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
+class MatrixTemplateValidationError(ValueError):
+    def __init__(self, field, detail, suggestion=""):
+        self.field = str(field or "text")
+        self.code = "text_overflow"
+        self.suggestion = str(suggestion or "")
+        super().__init__(str(detail or "文案在当前模板中无法完整显示，请缩短或拆分文案"))
+
+
 def _validated_base():
     parsed = urllib.parse.urlsplit(API_URL)
     loopback = parsed.hostname in {"127.0.0.1", "localhost", "::1"}
@@ -57,7 +65,12 @@ def _request(method, path, body=None, *, request_id="", timeout=30):
             value = json.loads(exc.read())
             detail = value.get("detail") or value.get("error")
         except Exception:
+            value = {}
             detail = None
+        if exc.code == 422 and value.get("code") == "text_overflow":
+            raise MatrixTemplateValidationError(
+                value.get("field"), detail, value.get("suggestion")
+            ) from exc
         raise RuntimeError(str(detail or "模板成片生成服务请求失败")) from exc
     except (urllib.error.URLError, TimeoutError) as exc:
         raise RuntimeError("模板成片生成服务连接失败") from exc
@@ -104,7 +117,7 @@ def public_templates(force=False):
     return [dict(item) for item in _CACHE["templates"]]
 
 
-def validate_payload(raw, username=""):
+def _normalize_payload(raw):
     require_available()
     body = dict(raw or {})
     top = " ".join(str(body.get("top_text") or "").split())
@@ -133,6 +146,23 @@ def validate_payload(raw, username=""):
         "top_text": top, "bottom_text": bottom,
         "template_id": template_id, "bgm": bgm, "duration": duration,
     }
+
+
+def validate_payload(raw, username=""):
+    payload = _normalize_payload(raw)
+    _request("POST", "/v1/preflight", payload, timeout=15)
+    return payload
+
+
+def _public_generation_error(value):
+    text = str(value or "")
+    if "top_text cannot fit" in text:
+        return "顶部标题在当前模板中无法完整显示，请缩短或拆分文案"
+    if "bottom_text cannot fit" in text:
+        return "底部行动文案在当前模板中无法完整显示，请缩短或拆分文案"
+    if "layout text cannot fit" in text:
+        return "文案在当前模板中无法完整显示，请缩短或拆分文案"
+    return text[:500] or "模板成片生成失败"
 
 
 def _safe_file_url(value):
@@ -174,7 +204,7 @@ def _download(value, job_id):
 def generate(payload):
     raw = dict(payload or {})
     local_job = str(raw.get("_job_id") or uuid.uuid4().hex)
-    payload = validate_payload(raw, str(raw.get("_username") or ""))
+    payload = _normalize_payload(raw)
     request_id = "matrix-template-" + re.sub(r"[^A-Za-z0-9_.:-]", "-", local_job)[:80]
     remote = _request("POST", "/v1/jobs", payload, request_id=request_id, timeout=20)
     remote_id = str(remote.get("job_id") or "")
@@ -206,7 +236,7 @@ def generate(payload):
                 "material_manifest": result.get("material_manifest") or [],
             }
         if status == "failed":
-            raise RuntimeError(str(current.get("error") or "模板成片生成失败")[:500])
+            raise RuntimeError(_public_generation_error(current.get("error")))
         time.sleep(POLL_INTERVAL)
     raise RuntimeError("模板成片生成超时")
 

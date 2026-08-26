@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import io
 import json
 import re
 import sqlite3
@@ -8,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.error
 from contextlib import closing
 from pathlib import Path
 from unittest import mock
@@ -45,7 +47,8 @@ class MatrixTemplateVideoTests(unittest.TestCase):
 
     def test_validate_payload_is_library_only_and_catalog_bound(self):
         with mock.patch.object(self.module, "require_available"), \
-             mock.patch.object(self.module, "public_templates", return_value=self.templates()):
+             mock.patch.object(self.module, "public_templates", return_value=self.templates()), \
+             mock.patch.object(self.module, "_request", return_value={"ok": True}) as request:
             payload = self.module.validate_payload({
                 "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
                 "template_id": "native-bold", "bgm": True,
@@ -56,8 +59,26 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                     "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
                     "template_id": "unknown",
                 }, "alice")
+        request.assert_called_once_with("POST", "/v1/preflight", payload, timeout=15)
         self.assertNotIn("provider", payload)
         self.assertNotIn("prompt", payload)
+
+    def test_preflight_overflow_remains_a_validation_error_with_field(self):
+        response = json.dumps({
+            "ok": False, "code": "text_overflow", "field": "bottom_text",
+            "detail": "底部行动文案在当前模板中无法完整显示，请缩短或拆分文案",
+            "suggestion": "缩短文案、加入换行，或改用其他模板",
+        }, ensure_ascii=False).encode("utf-8")
+        failure = urllib.error.HTTPError(
+            "http://127.0.0.1:8112/v1/preflight", 422, "unprocessable", {}, io.BytesIO(response)
+        )
+        with mock.patch.object(self.module, "API_TOKEN", "token"), \
+             mock.patch.object(self.module._NO_PROXY, "open", side_effect=failure), \
+             self.assertRaises(self.module.MatrixTemplateValidationError) as caught:
+            self.module._request("POST", "/v1/preflight", {})
+        self.assertIsInstance(caught.exception, ValueError)
+        self.assertEqual("bottom_text", caught.exception.field)
+        self.assertIn("底部行动文案", str(caught.exception))
 
     def test_generation_url_allows_https_or_loopback_only(self):
         for value in (
@@ -90,7 +111,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                 "template_id": "native-bold", "material_manifest": [{"record_id": "v1"}],
             }},
         ]
-        with mock.patch.object(self.module, "validate_payload", return_value={
+        with mock.patch.object(self.module, "_normalize_payload", return_value={
             "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
             "template_id": "native-bold", "bgm": True, "duration": None,
         }), mock.patch.object(self.module, "_request", side_effect=responses) as request, \
@@ -107,6 +128,17 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         self.assertEqual(("done", "1080p", "9:16"), (
             result["phase"], result["resolution"], result["ratio"]
         ))
+
+    def test_legacy_async_overflow_is_not_exposed_as_raw_renderer_error(self):
+        raw = {"top_text": "AI 工作流", "bottom_text": "评论区留下关键词"}
+        with mock.patch.object(self.module, "_normalize_payload", return_value={
+            **raw, "template_id": "native-bold", "bgm": True, "duration": None,
+        }), mock.patch.object(self.module, "_request", side_effect=[
+            {"job_id": "a" * 32},
+            {"job_id": "a" * 32, "status": "failed", "error":
+             "layout text cannot fit at the minimum font size; shorten or split it"},
+        ]), self.assertRaisesRegex(RuntimeError, "文案在当前模板中无法完整显示"):
+            self.module.generate(raw)
 
     def test_completed_result_archives_in_real_video_assets_schema(self):
         from content_domains import core, video
