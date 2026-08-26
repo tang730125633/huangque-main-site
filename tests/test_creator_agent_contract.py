@@ -75,10 +75,19 @@ class CreatorAgentContractTests(unittest.TestCase):
     def test_paid_confirmation_is_idempotent_and_tokens_are_private(self):
         service = (ROOT / "server/creator_agent/service.py").read_text(encoding="utf-8")
         store = (ROOT / "server/creator_agent/store.py").read_text(encoding="utf-8")
-        self.assertIn("if batch.get(\"confirmation_id\")", service)
-        self.assertIn("idempotency_key=job[\"idempotency_key\"]", service)
+        self.assertIn("claim_confirmation", service)
+        self.assertIn("idempotency_key=idempotency_key", service)
+        self.assertIn("submit_idempotency_key TEXT NOT NULL", store)
         self.assertIn('_PRIVATE_KEYS = {"quote_token", "job_id", "idempotency_key", "confirmation_id"}', service)
         self.assertIn("quote_token TEXT NOT NULL", store)
+
+    def test_browser_persists_and_recovers_pending_requests(self):
+        self.assertIn("hq-creator-agent-pending-v2", self.page)
+        self.assertIn("savePending(pending);executePending(pending)", self.page)
+        self.assertIn("project_id:currentProject().id", self.page)
+        self.assertIn("payload.expected_revision=batch.revision", self.page)
+        self.assertIn("pending.body.intent==='confirm_payment'", self.page)
+        self.assertIn("'/refresh'", self.page)
 
     def test_service_is_loopback_and_release_is_atomic(self):
         self.assertIn("--host 127.0.0.1 --port 8114", self.unit)

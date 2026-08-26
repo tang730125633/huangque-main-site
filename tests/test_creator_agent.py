@@ -18,7 +18,7 @@ sys.path.insert(0, str(SERVER))
 
 from creator_agent.planner import CreatorPlanner, GuidedPlanner, remember_preference
 from creator_agent.service import APIError, CreatorAgentHandler, CreatorAgentService, build_service
-from creator_agent.store import CreatorAgentStore
+from creator_agent.store import CreatorAgentStore, StateConflict
 import hq_cli_api
 
 
@@ -294,7 +294,9 @@ class CreatorAgentTests(unittest.TestCase):
             "platform-1001",
         )["latest_batch"]
         picker = self.message(
-            "调整平台", "adjust_video_platforms", {"batch_id": first["id"]},
+            "调整平台", "adjust_video_platforms", {
+                "batch_id": first["id"], "expected_revision": first["revision"],
+            },
             "platform-1002",
         )
         self.assertEqual(picker["message_public"]["selected"], ["douyin", "xiaohongshu"])
@@ -318,7 +320,7 @@ class CreatorAgentTests(unittest.TestCase):
         )["latest_batch"]
         self.assertEqual(edited["id"], draft["id"])
         self.assertEqual(edited["status"], "ready")
-        self.service.quote_batch(USER, draft["id"])
+        self.service.quote_batch(USER, draft["id"], edited["revision"])
         edited_again = self.message(
             "小红书标题改成：企业获客先梳理流程",
             suffix="edit-0003",
@@ -368,6 +370,10 @@ class CreatorAgentTests(unittest.TestCase):
         self.store.add_message(
             USER["username"], PROJECT_ID, "user", "制作视频",
             request_id="creator-turn-stuck-0001",
+            request_hash=self.service._message_request_hash(
+                PROJECT_ID, "制作视频", "start_video",
+                {"topic": "测试", "platforms": ["douyin"]},
+            ),
         )
         with self.assertRaises(APIError) as raised:
             self.service.message(USER, self.headers, {
@@ -376,6 +382,22 @@ class CreatorAgentTests(unittest.TestCase):
             })
         self.assertEqual(raised.exception.code, "idempotency_in_progress")
         self.assertEqual(self.store.batches(USER["username"], PROJECT_ID), [])
+
+    def test_same_request_id_replays_and_changed_payload_conflicts(self):
+        body = {
+            "message": "制作视频", "request_id": "creator-turn-hash-0001",
+            "intent": "start_video",
+            "payload": {"topic": "企业获客", "platforms": ["douyin"]},
+        }
+        first = self.service.message(USER, self.headers, body)
+        second = self.service.message(USER, self.headers, copy.deepcopy(body))
+        self.assertEqual(first, second)
+        self.assertEqual(len(self.store.batches(USER["username"], PROJECT_ID)), 1)
+        changed = copy.deepcopy(body)
+        changed["payload"]["topic"] = "另一个主题"
+        with self.assertRaises(APIError) as raised:
+            self.service.message(USER, self.headers, changed)
+        self.assertEqual(raised.exception.code, "idempotency_conflict")
 
     def test_ip12_production_handoff_is_not_exposed(self):
         actions = self.service._safe_ip12_actions([
@@ -399,7 +421,7 @@ class CreatorAgentTests(unittest.TestCase):
 
     def test_unified_quote_keeps_private_tokens_server_side(self):
         draft = self._draft_batch()
-        quoted = self.service.quote_batch(USER, draft["id"])
+        quoted = self.service.quote_batch(USER, draft["id"], draft["revision"])
         self.assertEqual(quoted["status"], "quoted")
         self.assertEqual(quoted["quote"]["total_cost"], 10)
         raw = json.dumps(quoted, ensure_ascii=False)
@@ -410,16 +432,161 @@ class CreatorAgentTests(unittest.TestCase):
 
     def test_one_confirmation_submits_each_platform_once(self):
         draft = self._draft_batch()
-        self.service.quote_batch(USER, draft["id"])
-        first = self.service.confirm_batch(USER, draft["id"], "creator-confirm-0001")
-        second = self.service.confirm_batch(USER, draft["id"], "creator-confirm-0001")
+        quoted = self.service.quote_batch(USER, draft["id"], draft["revision"])
+        first = self.service.confirm_batch(
+            USER, draft["id"], "creator-confirm-0001", quoted["revision"],
+        )
+        second = self.service.confirm_batch(
+            USER, draft["id"], "creator-confirm-0001", quoted["revision"],
+        )
         self.assertEqual(first, second)
         self.assertEqual(self.bridge.confirm_count, 2)
         self.assertNotIn("job_id", json.dumps(first, ensure_ascii=False))
 
+    def test_edit_vs_confirm_uses_frozen_submission_snapshot(self):
+        draft = self._draft_batch()
+        quoted = self.service.quote_batch(USER, draft["id"], draft["revision"])
+        original = self.bridge.action
+        entered, release = threading.Event(), threading.Event()
+        submitted_inputs, errors = [], []
+
+        def slow(account_id, action, tool_input, **options):
+            if action == "matrix-template-generate" and options.get("confirm"):
+                submitted_inputs.append(copy.deepcopy(tool_input))
+                entered.set(); release.wait(5)
+            return original(account_id, action, tool_input, **options)
+
+        self.bridge.action = slow
+        thread = threading.Thread(target=lambda: self._capture_error(
+            errors, lambda: self.service.confirm_batch(
+                USER, draft["id"], "creator-confirm-race-edit", quoted["revision"],
+            ),
+        ))
+        thread.start(); self.assertTrue(entered.wait(3))
+        current = self.store.batch(USER["username"], draft["id"], include_private=True)
+        with self.assertRaises(StateConflict):
+            self.service._revise_video_plan(
+                USER, self.store.workspace(USER["username"], PROJECT_ID), current,
+                "抖音标题改成：不应提交的新标题",
+            )
+        release.set(); thread.join(5)
+        self.assertFalse(errors)
+        final = self.store.batch(USER["username"], draft["id"], include_private=True)
+        self.assertEqual(len(submitted_inputs), 2)
+        self.assertTrue(all(job["input"] == job["submit_input"] for job in final["jobs"]))
+        self.assertNotIn("不应提交", json.dumps(submitted_inputs, ensure_ascii=False))
+
+    def test_double_confirm_claims_each_provider_job_once(self):
+        draft = self._draft_batch()
+        quoted = self.service.quote_batch(USER, draft["id"], draft["revision"])
+        original = self.bridge.action
+        entered, release = threading.Event(), threading.Event()
+        errors = []
+
+        def slow(account_id, action, tool_input, **options):
+            if action == "matrix-template-generate" and options.get("confirm"):
+                entered.set(); release.wait(5)
+            return original(account_id, action, tool_input, **options)
+
+        self.bridge.action = slow
+        call = lambda: self.service.confirm_batch(
+            USER, draft["id"], "creator-confirm-race-double", quoted["revision"],
+        )
+        first = threading.Thread(target=lambda: self._capture_error(errors, call))
+        first.start(); self.assertTrue(entered.wait(3))
+        second = threading.Thread(target=lambda: self._capture_error(errors, call))
+        second.start(); second.join(3); release.set(); first.join(5)
+        self.assertFalse(errors)
+        self.assertEqual(self.bridge.confirm_count, 2)
+
+    def test_quote_vs_edit_is_serialized_by_batch_claim(self):
+        draft = self._draft_batch()
+        original = self.bridge.action
+        entered, release = threading.Event(), threading.Event()
+        errors = []
+
+        def slow(account_id, action, tool_input, **options):
+            if action == "matrix-template-generate" and not options.get("confirm"):
+                entered.set(); release.wait(5)
+            return original(account_id, action, tool_input, **options)
+
+        self.bridge.action = slow
+        thread = threading.Thread(target=lambda: self._capture_error(
+            errors, lambda: self.service.quote_batch(USER, draft["id"], draft["revision"]),
+        ))
+        thread.start(); self.assertTrue(entered.wait(3))
+        current = self.store.batch(USER["username"], draft["id"], include_private=True)
+        with self.assertRaises(StateConflict):
+            self.service._revise_video_plan(
+                USER, self.store.workspace(USER["username"], PROJECT_ID), current,
+                "抖音标题改成：报价期间不允许编辑",
+            )
+        release.set(); thread.join(5)
+        self.assertFalse(errors)
+        self.assertEqual(self.store.batch(USER["username"], draft["id"])["status"], "quoted")
+
+    def test_refresh_vs_confirm_never_resubmits_claimed_jobs(self):
+        draft = self._draft_batch()
+        quoted = self.service.quote_batch(USER, draft["id"], draft["revision"])
+        original = self.bridge.action
+        entered, release = threading.Event(), threading.Event()
+        errors = []
+
+        def slow(account_id, action, tool_input, **options):
+            if action == "matrix-template-generate" and options.get("confirm"):
+                entered.set(); release.wait(5)
+            return original(account_id, action, tool_input, **options)
+
+        self.bridge.action = slow
+        thread = threading.Thread(target=lambda: self._capture_error(
+            errors, lambda: self.service.confirm_batch(
+                USER, draft["id"], "creator-confirm-race-refresh", quoted["revision"],
+            ),
+        ))
+        thread.start(); self.assertTrue(entered.wait(3))
+        during = self.service.refresh_batch(USER, draft["id"])
+        self.assertEqual(during["status"], "running")
+        release.set(); thread.join(5)
+        self.assertFalse(errors)
+        self.assertEqual(self.bridge.confirm_count, 2)
+
+    def test_stale_quote_claim_can_resume_after_restart(self):
+        draft = self._draft_batch()
+        self.store.claim_quote(USER["username"], draft["id"], draft["revision"])
+        with closing(self.store.db()) as connection:
+            connection.execute(
+                "UPDATE creator_batches SET updated_at=0 WHERE id=?", (draft["id"],),
+            )
+            connection.commit()
+        quoted = self.service.quote_batch(USER, draft["id"], draft["revision"])
+        self.assertEqual(quoted["status"], "quoted")
+
+    def test_stale_submit_claim_recovers_frozen_jobs_after_restart(self):
+        draft = self._draft_batch()
+        quoted = self.service.quote_batch(USER, draft["id"], draft["revision"])
+        self.store.claim_confirmation(
+            USER["username"], draft["id"], "creator-confirm-stale",
+            quoted["revision"],
+        )
+        with closing(self.store.db()) as connection:
+            connection.execute(
+                "UPDATE creator_jobs SET updated_at=0 WHERE batch_id=?", (draft["id"],),
+            )
+            connection.commit()
+        recovered = self.service.refresh_batch(USER, draft["id"])
+        self.assertEqual(recovered["status"], "running")
+        self.assertEqual(self.bridge.confirm_count, 2)
+
+    @staticmethod
+    def _capture_error(errors, function):
+        try:
+            function()
+        except Exception as exc:
+            errors.append(exc)
+
     def test_uncertain_submission_reuses_original_child_idempotency_key(self):
         draft = self._draft_batch()
-        self.service.quote_batch(USER, draft["id"])
+        quoted = self.service.quote_batch(USER, draft["id"], draft["revision"])
         original = self.bridge.action
         failed_once = {"value": False}
 
@@ -430,7 +597,9 @@ class CreatorAgentTests(unittest.TestCase):
             return original(account_id, action, tool_input, **options)
 
         self.bridge.action = flaky
-        first = self.service.confirm_batch(USER, draft["id"], "creator-confirm-uncertain")
+        first = self.service.confirm_batch(
+            USER, draft["id"], "creator-confirm-uncertain", quoted["revision"],
+        )
         unknown = next(item for item in first["jobs"] if item["status"] == "submission_unknown")
         private_before = self.store.batch(USER["username"], draft["id"], include_private=True)
         original_key = next(item for item in private_before["jobs"] if item["id"] == unknown["id"])["idempotency_key"]
@@ -444,8 +613,10 @@ class CreatorAgentTests(unittest.TestCase):
 
     def test_one_failed_platform_does_not_erase_other_success(self):
         draft = self._draft_batch()
-        self.service.quote_batch(USER, draft["id"])
-        self.service.confirm_batch(USER, draft["id"], "creator-confirm-0002")
+        quoted = self.service.quote_batch(USER, draft["id"], draft["revision"])
+        self.service.confirm_batch(
+            USER, draft["id"], "creator-confirm-0002", quoted["revision"],
+        )
         self.bridge.task_results = {
             "7001": {"status": "done", "result": {"video_url": "/media/one.mp4"}},
             "7002": {"status": "failed", "error": "render failed", "refund_status": "refunded"},
@@ -463,8 +634,10 @@ class CreatorAgentTests(unittest.TestCase):
             {"topic": "企业内容获客", "platforms": ["douyin", "xiaohongshu"]},
             "version-0001",
         )["latest_batch"]
-        self.service.quote_batch(USER, draft["id"])
-        self.service.confirm_batch(USER, draft["id"], "creator-confirm-version")
+        quoted = self.service.quote_batch(USER, draft["id"], draft["revision"])
+        self.service.confirm_batch(
+            USER, draft["id"], "creator-confirm-version", quoted["revision"],
+        )
         self.bridge.task_results = {
             "7001": {"status": "done", "result": {"video_url": "/media/douyin.mp4"}},
             "7002": {"status": "done", "result": {"video_url": "/media/xhs.mp4"}},
@@ -580,6 +753,41 @@ class CreatorAgentTests(unittest.TestCase):
             self.assertNotIn("quote_token", json.dumps(value, ensure_ascii=False))
             health = json.load(urllib.request.urlopen(base + "/health", timeout=3))
             self.assertTrue(health["ready"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+
+    def test_http_batch_routes_use_revisioned_state_machine(self):
+        draft = self._draft_batch()
+        CreatorAgentHandler.service = self.service
+        server = ThreadingHTTPServer(("127.0.0.1", 0), CreatorAgentHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base = "http://127.0.0.1:%d" % server.server_address[1]
+
+            def post(path, body):
+                request = urllib.request.Request(
+                    base + path,
+                    data=json.dumps(body).encode("utf-8"),
+                    headers={"Content-Type": "application/json"}, method="POST",
+                )
+                return json.load(urllib.request.urlopen(request, timeout=3))
+
+            quoted = post(
+                "/batches/%s/quote" % draft["id"],
+                {"expected_revision": draft["revision"]},
+            )["batch"]
+            submitted = post(
+                "/batches/%s/confirm" % draft["id"],
+                {"expected_revision": quoted["revision"],
+                 "confirmation_id": "creator-http-confirm-0001"},
+            )["batch"]
+            refreshed = post("/batches/%s/refresh" % draft["id"], {})["batch"]
+            self.assertEqual(submitted["status"], "running")
+            self.assertEqual(refreshed["status"], "running")
+            self.assertEqual(self.bridge.confirm_count, 2)
         finally:
             server.shutdown()
             server.server_close()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import closing
+import hashlib
 import json
 import pathlib
 import sqlite3
@@ -14,8 +15,23 @@ class StoreError(RuntimeError):
     pass
 
 
+class StateConflict(StoreError):
+    pass
+
+
+class IdempotencyConflict(StoreError):
+    pass
+
+
+STALE_CLAIM_SECONDS = 120
+
+
 def _json(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def _digest(value):
+    return hashlib.sha256(_json(value).encode("utf-8")).hexdigest()
 
 
 def _loads(value, fallback):
@@ -90,6 +106,7 @@ class CreatorAgentStore:
                     content TEXT NOT NULL,
                     source_key TEXT,
                     request_id TEXT,
+                    request_hash TEXT NOT NULL DEFAULT '',
                     public_json TEXT NOT NULL DEFAULT '{}',
                     created_at INTEGER NOT NULL,
                     FOREIGN KEY(username, project_id)
@@ -109,6 +126,10 @@ class CreatorAgentStore:
                     plan_json TEXT NOT NULL,
                     quote_json TEXT NOT NULL DEFAULT '{}',
                     confirmation_id TEXT NOT NULL DEFAULT '',
+                    revision INTEGER NOT NULL DEFAULT 1,
+                    plan_hash TEXT NOT NULL DEFAULT '',
+                    quoted_revision INTEGER NOT NULL DEFAULT 0,
+                    claim_id TEXT NOT NULL DEFAULT '',
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
                     FOREIGN KEY(username, project_id)
@@ -125,9 +146,14 @@ class CreatorAgentStore:
                     version INTEGER NOT NULL,
                     status TEXT NOT NULL,
                     input_json TEXT NOT NULL,
+                    input_hash TEXT NOT NULL DEFAULT '',
                     quote_token TEXT NOT NULL DEFAULT '',
                     quote_json TEXT NOT NULL DEFAULT '{}',
                     idempotency_key TEXT NOT NULL,
+                    revision INTEGER NOT NULL DEFAULT 1,
+                    submit_input_json TEXT NOT NULL DEFAULT '{}',
+                    submit_quote_token TEXT NOT NULL DEFAULT '',
+                    submit_idempotency_key TEXT NOT NULL DEFAULT '',
                     confirmation_id TEXT NOT NULL DEFAULT '',
                     job_id TEXT NOT NULL DEFAULT '',
                     result_json TEXT NOT NULL DEFAULT '{}',
@@ -148,6 +174,47 @@ class CreatorAgentStore:
             if "profile_overrides_json" not in columns:
                 connection.execute(
                     "ALTER TABLE creator_workspaces ADD COLUMN profile_overrides_json TEXT NOT NULL DEFAULT '{}'"
+                )
+            migrations = {
+                "creator_messages": {
+                    "request_hash": "TEXT NOT NULL DEFAULT ''",
+                },
+                "creator_batches": {
+                    "revision": "INTEGER NOT NULL DEFAULT 1",
+                    "plan_hash": "TEXT NOT NULL DEFAULT ''",
+                    "quoted_revision": "INTEGER NOT NULL DEFAULT 0",
+                    "claim_id": "TEXT NOT NULL DEFAULT ''",
+                },
+                "creator_jobs": {
+                    "input_hash": "TEXT NOT NULL DEFAULT ''",
+                    "revision": "INTEGER NOT NULL DEFAULT 1",
+                    "submit_input_json": "TEXT NOT NULL DEFAULT '{}'",
+                    "submit_quote_token": "TEXT NOT NULL DEFAULT ''",
+                    "submit_idempotency_key": "TEXT NOT NULL DEFAULT ''",
+                },
+            }
+            for table, definitions in migrations.items():
+                existing = {
+                    row[1] for row in connection.execute("PRAGMA table_info(%s)" % table)
+                }
+                for column, definition in definitions.items():
+                    if column not in existing:
+                        connection.execute(
+                            "ALTER TABLE %s ADD COLUMN %s %s" % (table, column, definition)
+                        )
+            for row in connection.execute(
+                "SELECT id,input_json FROM creator_jobs WHERE input_hash=''"
+            ).fetchall():
+                connection.execute(
+                    "UPDATE creator_jobs SET input_hash=? WHERE id=?",
+                    (_digest(_loads(row["input_json"], {})), row["id"]),
+                )
+            for row in connection.execute(
+                "SELECT id,plan_json FROM creator_batches WHERE plan_hash=''"
+            ).fetchall():
+                connection.execute(
+                    "UPDATE creator_batches SET plan_hash=? WHERE id=?",
+                    (_digest(_loads(row["plan_json"], [])), row["id"]),
                 )
             connection.commit()
 
@@ -267,7 +334,7 @@ class CreatorAgentStore:
         }
 
     def add_message(self, username, project_id, role, content, *, source_key=None,
-                    request_id=None, public=None, created_at=None):
+                    request_id=None, request_hash="", public=None, created_at=None):
         now = int(created_at or time.time())
         with closing(self.db()) as connection:
             if not connection.execute(
@@ -278,10 +345,11 @@ class CreatorAgentStore:
             try:
                 cursor = connection.execute(
                     """INSERT INTO creator_messages
-                       (username,project_id,role,content,source_key,request_id,public_json,created_at)
-                       VALUES(?,?,?,?,?,?,?,?)""",
+                       (username,project_id,role,content,source_key,request_id,request_hash,
+                        public_json,created_at)
+                       VALUES(?,?,?,?,?,?,?,?,?)""",
                     (username, project_id, role, content, source_key, request_id,
-                     _json(public or {}), now),
+                     str(request_hash or ""), _json(public or {}), now),
                 )
             except sqlite3.IntegrityError:
                 if request_id:
@@ -298,6 +366,8 @@ class CreatorAgentStore:
                     ).fetchone()
                 else:
                     raise
+                if request_id and str(row["request_hash"] or "") != str(request_hash or ""):
+                    raise IdempotencyConflict("request_id is bound to different input")
                 return self._message(row), False
             connection.execute(
                 "UPDATE creator_workspaces SET updated_at=? WHERE username=? AND project_id=?",
@@ -368,6 +438,7 @@ class CreatorAgentStore:
         value = {
             "id": row["id"], "batch_id": row["batch_id"],
             "platform": row["platform"], "version": row["version"],
+            "revision": int(row["revision"]),
             "status": row["status"], "input": _loads(row["input_json"], {}),
             "quote": _loads(row["quote_json"], {}),
             "result": _loads(row["result_json"], {}), "error": row["error"],
@@ -380,6 +451,10 @@ class CreatorAgentStore:
                 "idempotency_key": row["idempotency_key"],
                 "confirmation_id": row["confirmation_id"],
                 "job_id": row["job_id"],
+                "input_hash": row["input_hash"],
+                "submit_input": _loads(row["submit_input_json"], {}),
+                "submit_quote_token": row["submit_quote_token"],
+                "submit_idempotency_key": row["submit_idempotency_key"],
             })
         return value
 
@@ -388,13 +463,15 @@ class CreatorAgentStore:
             raise StoreError("platform plans are required")
         now = int(time.time())
         batch_id = "creator_batch_" + uuid.uuid4().hex
+        plan_hash = _digest(platform_plans)
         with closing(self.db()) as connection:
             connection.execute(
                 """INSERT INTO creator_batches
-                   (id,username,project_id,topic,goal,status,plan_json,created_at,updated_at)
-                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                   (id,username,project_id,topic,goal,status,plan_json,plan_hash,
+                    revision,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
                 (batch_id, username, project_id, topic, goal, "draft",
-                 _json(platform_plans), now, now),
+                 _json(platform_plans), plan_hash, 1, now, now),
             )
             for plan in platform_plans:
                 platform = str(plan.get("platform") or "")
@@ -407,11 +484,12 @@ class CreatorAgentStore:
                 connection.execute(
                     """INSERT INTO creator_jobs
                        (id,batch_id,username,project_id,platform,version,status,input_json,
-                        idempotency_key,created_at,updated_at)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                        input_hash,idempotency_key,revision,created_at,updated_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     ("creator_job_" + uuid.uuid4().hex, batch_id, username, project_id,
                      platform, int(previous) + 1, "draft", _json(plan.get("input") or {}),
-                     "creator-agent-" + uuid.uuid4().hex, now, now),
+                     _digest(plan.get("input") or {}), "creator-agent-" + uuid.uuid4().hex,
+                     1, now, now),
                 )
             connection.commit()
         return self.batch(username, batch_id, include_private=True)
@@ -423,6 +501,7 @@ class CreatorAgentStore:
         return {
             "id": row["id"], "project_id": row["project_id"],
             "topic": row["topic"], "goal": row["goal"], "status": row["status"],
+            "revision": int(row["revision"]),
             "plans": _loads(row["plan_json"], []), "quote": _loads(row["quote_json"], {}),
             "confirmation_id": row["confirmation_id"],
             "created_at": row["created_at"], "updated_at": row["updated_at"],
@@ -443,6 +522,12 @@ class CreatorAgentStore:
             value["jobs"] = [self._job(item, include_private) for item in jobs]
             if not include_private:
                 value.pop("confirmation_id", None)
+            else:
+                value.update({
+                    "plan_hash": row["plan_hash"],
+                    "quoted_revision": int(row["quoted_revision"]),
+                    "claim_id": row["claim_id"],
+                })
         return value
 
     def batches(self, username, project_id, limit=30):
@@ -462,6 +547,316 @@ class CreatorAgentStore:
                 (username, project_id),
             ).fetchone()
         return self.batch(username, row["id"], include_private) if row else None
+
+    @staticmethod
+    def _locked_batch(connection, username, batch_id):
+        row = connection.execute(
+            "SELECT * FROM creator_batches WHERE id=? AND username=?",
+            (batch_id, username),
+        ).fetchone()
+        jobs = connection.execute(
+            "SELECT * FROM creator_jobs WHERE batch_id=? AND username=? ORDER BY platform",
+            (batch_id, username),
+        ).fetchall() if row else []
+        return row, jobs
+
+    @staticmethod
+    def _derived_batch_status(job_rows, current_status):
+        statuses = [str(row["status"] or "") for row in job_rows]
+        failed = {"error", "failed", "refunded", "failed_submission"}
+        done = {"done", "completed", "success"}
+        active = {
+            "submit_claimed", "submission_unknown", "submitted", "queued",
+            "running", "verifying", "processing",
+        }
+        if statuses and all(status in done for status in statuses):
+            return "done"
+        if statuses and all(status in failed for status in statuses):
+            return "failed"
+        if any(status in active for status in statuses):
+            return "running"
+        if any(status in done for status in statuses) and any(status in failed for status in statuses):
+            return "partial"
+        if current_status in {"draft", "ready", "quoting", "quoted"}:
+            return current_status
+        return "submitted"
+
+    def claim_quote(self, username, batch_id, expected_revision):
+        claim_id = "quote_" + uuid.uuid4().hex
+        now = int(time.time())
+        with closing(self.db()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row, jobs = self._locked_batch(connection, username, batch_id)
+            if not row:
+                connection.rollback()
+                raise StoreError("batch not found")
+            if (
+                row["status"] == "quoting" and row["claim_id"]
+                and int(row["updated_at"] or 0) <= now - STALE_CLAIM_SECONDS
+            ):
+                connection.execute(
+                    """UPDATE creator_batches SET status='ready',claim_id='',updated_at=?
+                       WHERE id=? AND username=? AND status='quoting' AND claim_id=?""",
+                    (now, batch_id, username, row["claim_id"]),
+                )
+                row, jobs = self._locked_batch(connection, username, batch_id)
+            if int(row["revision"]) != int(expected_revision):
+                connection.rollback()
+                raise StateConflict("batch revision changed")
+            if row["status"] not in {"draft", "ready"} or row["claim_id"]:
+                connection.rollback()
+                raise StateConflict("batch is not quoteable")
+            plans = _loads(row["plan_json"], [])
+            if row["plan_hash"] != _digest(plans):
+                connection.rollback()
+                raise StateConflict("batch plan hash changed")
+            if not jobs or any(
+                row_job["input_hash"] != _digest(_loads(row_job["input_json"], {}))
+                or row_job["status"] not in {"draft", "ready"}
+                for row_job in jobs
+            ):
+                connection.rollback()
+                raise StateConflict("batch jobs are not quoteable")
+            changed = connection.execute(
+                """UPDATE creator_batches SET status='quoting',claim_id=?,updated_at=?
+                   WHERE id=? AND username=? AND revision=? AND status IN ('draft','ready')
+                     AND claim_id=''""",
+                (claim_id, now, batch_id, username, int(expected_revision)),
+            )
+            if changed.rowcount != 1:
+                connection.rollback()
+                raise StateConflict("batch quote claim lost")
+            connection.commit()
+        value = self.batch(username, batch_id, include_private=True)
+        value["claim_id"] = claim_id
+        return value
+
+    def finish_quote(self, username, batch_id, claim_id, job_quotes, quote):
+        now = int(time.time())
+        with closing(self.db()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row, jobs = self._locked_batch(connection, username, batch_id)
+            if not row or row["status"] != "quoting" or row["claim_id"] != claim_id:
+                connection.rollback()
+                raise StateConflict("quote claim is stale")
+            quotes = {str(item.get("id") or ""): item for item in job_quotes or []}
+            if set(quotes) != {job["id"] for job in jobs}:
+                connection.rollback()
+                raise StateConflict("quote set is incomplete")
+            for job in jobs:
+                item = quotes[job["id"]]
+                if not item.get("quote_token") or item.get("input_hash") != job["input_hash"]:
+                    connection.rollback()
+                    raise StateConflict("quote does not match current input")
+                changed = connection.execute(
+                    """UPDATE creator_jobs SET status='quoted',quote_token=?,quote_json=?,
+                       error='',revision=revision+1,updated_at=?
+                       WHERE id=? AND username=? AND revision=? AND status IN ('draft','ready')
+                         AND input_hash=?""",
+                    (item["quote_token"], _json(item.get("quote") or {}), now,
+                     job["id"], username, int(job["revision"]), job["input_hash"]),
+                )
+                if changed.rowcount != 1:
+                    connection.rollback()
+                    raise StateConflict("job quote finalize lost")
+            changed = connection.execute(
+                """UPDATE creator_batches SET status='quoted',quote_json=?,
+                   quoted_revision=revision,claim_id='',updated_at=?
+                   WHERE id=? AND username=? AND status='quoting' AND claim_id=?""",
+                (_json(quote or {}), now, batch_id, username, claim_id),
+            )
+            if changed.rowcount != 1:
+                connection.rollback()
+                raise StateConflict("batch quote finalize lost")
+            connection.commit()
+        return self.batch(username, batch_id)
+
+    def abort_quote(self, username, batch_id, claim_id):
+        with closing(self.db()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """UPDATE creator_batches SET status='ready',claim_id='',updated_at=?
+                   WHERE id=? AND username=? AND status='quoting' AND claim_id=?""",
+                (int(time.time()), batch_id, username, claim_id),
+            )
+            connection.commit()
+
+    def claim_confirmation(self, username, batch_id, confirmation_id, expected_revision):
+        now = int(time.time())
+        claimed_ids = []
+        with closing(self.db()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row, jobs = self._locked_batch(connection, username, batch_id)
+            if not row:
+                connection.rollback()
+                raise StoreError("batch not found")
+            if int(row["revision"]) != int(expected_revision):
+                connection.rollback()
+                raise StateConflict("batch revision changed")
+            existing_confirmation = str(row["confirmation_id"] or "")
+            if existing_confirmation:
+                if existing_confirmation != confirmation_id:
+                    connection.rollback()
+                    raise IdempotencyConflict("confirmation_id conflict")
+                for job in jobs:
+                    if job["status"] != "submission_unknown":
+                        continue
+                    changed = connection.execute(
+                        """UPDATE creator_jobs SET status='submit_claimed',revision=revision+1,
+                           updated_at=? WHERE id=? AND username=? AND revision=?
+                           AND status='submission_unknown'""",
+                        (now, job["id"], username, int(job["revision"])),
+                    )
+                    if changed.rowcount == 1:
+                        claimed_ids.append(job["id"])
+            else:
+                if (
+                    row["status"] != "quoted"
+                    or int(row["quoted_revision"]) != int(row["revision"])
+                    or row["plan_hash"] != _digest(_loads(row["plan_json"], []))
+                    or not jobs
+                ):
+                    connection.rollback()
+                    raise StateConflict("batch quote is stale")
+                if any(
+                    job["status"] != "quoted"
+                    or not job["quote_token"]
+                    or job["input_hash"] != _digest(_loads(job["input_json"], {}))
+                    for job in jobs
+                ):
+                    connection.rollback()
+                    raise StateConflict("job quote is incomplete")
+                changed = connection.execute(
+                    """UPDATE creator_batches SET status='submitting',confirmation_id=?,
+                       claim_id='',updated_at=? WHERE id=? AND username=? AND revision=?
+                       AND status='quoted' AND quoted_revision=revision""",
+                    (confirmation_id, now, batch_id, username, int(expected_revision)),
+                )
+                if changed.rowcount != 1:
+                    connection.rollback()
+                    raise StateConflict("confirmation claim lost")
+                for job in jobs:
+                    changed = connection.execute(
+                        """UPDATE creator_jobs SET status='submit_claimed',
+                           confirmation_id=?,submit_input_json=input_json,
+                           submit_quote_token=quote_token,
+                           submit_idempotency_key=idempotency_key,
+                           revision=revision+1,updated_at=?
+                           WHERE id=? AND username=? AND revision=? AND status='quoted'
+                             AND input_hash=?""",
+                        (confirmation_id + ":" + job["platform"], now, job["id"], username,
+                         int(job["revision"]), job["input_hash"]),
+                    )
+                    if changed.rowcount != 1:
+                        connection.rollback()
+                        raise StateConflict("job confirmation claim lost")
+                    claimed_ids.append(job["id"])
+            connection.commit()
+        batch = self.batch(username, batch_id, include_private=True)
+        batch["claimed_jobs"] = [
+            job for job in batch["jobs"] if job["id"] in set(claimed_ids)
+        ]
+        return batch
+
+    def claim_recovery(self, username, batch_id):
+        now = int(time.time())
+        claimed_ids = []
+        with closing(self.db()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row, jobs = self._locked_batch(connection, username, batch_id)
+            if not row or not row["confirmation_id"]:
+                connection.rollback()
+                return []
+            for job in jobs:
+                recoverable = job["status"] == "submission_unknown" or (
+                    job["status"] == "submit_claimed"
+                    and int(job["updated_at"] or 0) <= now - STALE_CLAIM_SECONDS
+                )
+                if not recoverable:
+                    continue
+                changed = connection.execute(
+                    """UPDATE creator_jobs SET status='submit_claimed',revision=revision+1,
+                       updated_at=? WHERE id=? AND username=? AND revision=?
+                       AND status IN ('submission_unknown','submit_claimed')""",
+                    (now, job["id"], username, int(job["revision"])),
+                )
+                if changed.rowcount == 1:
+                    claimed_ids.append(job["id"])
+            connection.commit()
+        batch = self.batch(username, batch_id, include_private=True)
+        return [job for job in batch["jobs"] if job["id"] in set(claimed_ids)]
+
+    def finish_submit_claim(self, username, record_id, expected_revision, *, status,
+                            job_id="", result=None, error="", refund_status=""):
+        now = int(time.time())
+        with closing(self.db()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM creator_jobs WHERE id=? AND username=?",
+                (record_id, username),
+            ).fetchone()
+            if not row or row["status"] != "submit_claimed" or int(row["revision"]) != int(expected_revision):
+                connection.rollback()
+                return False
+            connection.execute(
+                """UPDATE creator_jobs SET status=?,job_id=?,result_json=?,error=?,
+                   refund_status=?,revision=revision+1,updated_at=?
+                   WHERE id=? AND username=? AND revision=? AND status='submit_claimed'""",
+                (status, str(job_id or ""), _json(result or {}), str(error or "")[:500],
+                 str(refund_status or ""), now, record_id, username, int(expected_revision)),
+            )
+            batch_row, jobs = self._locked_batch(connection, username, row["batch_id"])
+            derived = self._derived_batch_status(jobs, batch_row["status"])
+            connection.execute(
+                "UPDATE creator_batches SET status=?,updated_at=? WHERE id=? AND username=?",
+                (derived, now, row["batch_id"], username),
+            )
+            connection.commit()
+        return True
+
+    def finish_task_poll(self, username, record_id, expected_revision, *, status,
+                         result=None, error="", refund_status=""):
+        now = int(time.time())
+        with closing(self.db()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM creator_jobs WHERE id=? AND username=?",
+                (record_id, username),
+            ).fetchone()
+            allowed = {"submitted", "queued", "running", "verifying", "processing"}
+            if not row or row["status"] not in allowed or int(row["revision"]) != int(expected_revision):
+                connection.rollback()
+                return False
+            connection.execute(
+                """UPDATE creator_jobs SET status=?,result_json=?,error=?,refund_status=?,
+                   revision=revision+1,updated_at=? WHERE id=? AND username=?
+                   AND revision=? AND status IN ('submitted','queued','running','verifying','processing')""",
+                (status, _json(result or {}), str(error or "")[:500], str(refund_status or ""),
+                 now, record_id, username, int(expected_revision)),
+            )
+            batch_row, jobs = self._locked_batch(connection, username, row["batch_id"])
+            derived = self._derived_batch_status(jobs, batch_row["status"])
+            connection.execute(
+                "UPDATE creator_batches SET status=?,updated_at=? WHERE id=? AND username=?",
+                (derived, now, row["batch_id"], username),
+            )
+            connection.commit()
+        return True
+
+    def recompute_batch(self, username, batch_id):
+        with closing(self.db()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row, jobs = self._locked_batch(connection, username, batch_id)
+            if not row:
+                connection.rollback()
+                raise StoreError("batch not found")
+            derived = self._derived_batch_status(jobs, row["status"])
+            connection.execute(
+                "UPDATE creator_batches SET status=?,updated_at=? WHERE id=? AND username=?",
+                (derived, int(time.time()), batch_id, username),
+            )
+            connection.commit()
+        return self.batch(username, batch_id)
 
     def update_batch(self, username, batch_id, **changes):
         mapping = {"status": "status", "plans": "plan_json", "quote": "quote_json",
@@ -510,19 +905,50 @@ class CreatorAgentStore:
             ).fetchone()
         return self._job(row, include_private=True)
 
-    def replace_batch_plans(self, username, batch_id, platform_plans):
-        batch = self.batch(username, batch_id, include_private=True)
-        if not batch:
-            raise StoreError("batch not found")
-        if batch["status"] not in {"draft", "ready", "quoted"}:
-            raise StoreError("batch is not editable")
+    def replace_batch_plans(self, username, batch_id, platform_plans, expected_revision):
+        now = int(time.time())
         incoming = {str(item.get("platform") or ""): item for item in platform_plans}
-        if set(incoming) != {job["platform"] for job in batch["jobs"]}:
-            raise StoreError("platform set cannot change during revision")
-        for job in batch["jobs"]:
-            self.update_job(
-                username, job["id"], status="draft",
-                input=incoming[job["platform"]].get("input") or {},
-                quote_token="", quote={}, error="",
+        with closing(self.db()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row, jobs = self._locked_batch(connection, username, batch_id)
+            if not row:
+                connection.rollback()
+                raise StoreError("batch not found")
+            if int(row["revision"]) != int(expected_revision):
+                connection.rollback()
+                raise StateConflict("batch revision changed")
+            if row["status"] not in {"draft", "ready", "quoted"} or row["claim_id"]:
+                connection.rollback()
+                raise StateConflict("batch is not editable")
+            if set(incoming) != {job["platform"] for job in jobs}:
+                connection.rollback()
+                raise StateConflict("platform set cannot change during revision")
+            next_revision = int(row["revision"]) + 1
+            for job in jobs:
+                tool_input = incoming[job["platform"]].get("input") or {}
+                changed = connection.execute(
+                    """UPDATE creator_jobs SET status='draft',input_json=?,input_hash=?,
+                       quote_token='',quote_json='{}',confirmation_id='',job_id='',
+                       result_json='{}',error='',refund_status='',submit_input_json='{}',
+                       submit_quote_token='',submit_idempotency_key='',revision=revision+1,
+                       updated_at=? WHERE id=? AND username=? AND revision=?
+                       AND status IN ('draft','ready','quoted')""",
+                    (_json(tool_input), _digest(tool_input), now, job["id"], username,
+                     int(job["revision"])),
+                )
+                if changed.rowcount != 1:
+                    connection.rollback()
+                    raise StateConflict("job edit claim lost")
+            changed = connection.execute(
+                """UPDATE creator_batches SET status='ready',plan_json=?,plan_hash=?,
+                   quote_json='{}',confirmation_id='',quoted_revision=0,claim_id='',
+                   revision=?,updated_at=? WHERE id=? AND username=? AND revision=?
+                   AND status IN ('draft','ready','quoted') AND claim_id=''""",
+                (_json(platform_plans), _digest(platform_plans), next_revision, now,
+                 batch_id, username, int(expected_revision)),
             )
-        return self.update_batch(username, batch_id, status="ready", plans=platform_plans, quote={})
+            if changed.rowcount != 1:
+                connection.rollback()
+                raise StateConflict("batch edit claim lost")
+            connection.commit()
+        return self.batch(username, batch_id, include_private=True)

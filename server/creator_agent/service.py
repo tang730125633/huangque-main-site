@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import hashlib
 import json
 import os
 import re
@@ -22,7 +23,9 @@ from .planner import (
     sanitize_platforms,
     sanitize_preferences,
 )
-from .store import CreatorAgentStore, StoreError
+from .store import (
+    CreatorAgentStore, IdempotencyConflict, StateConflict, StoreError,
+)
 
 
 _PROJECT_RE = re.compile(r"^[0-9a-f]{12}$")
@@ -576,6 +579,15 @@ class CreatorAgentService:
         return ""
 
     @staticmethod
+    def _message_request_hash(project_id, message, intent, payload):
+        return hashlib.sha256(json.dumps({
+            "project_id": str(project_id or ""),
+            "message": str(message or ""),
+            "intent": str(intent or ""),
+            "payload": payload if isinstance(payload, dict) else {},
+        }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+    @staticmethod
     def _platforms_from_text(message):
         text = str(message or "")
         return [key for key in ALLOWED_PLATFORMS if PLATFORM_LABELS[key] in text]
@@ -685,6 +697,7 @@ class CreatorAgentService:
         )
         updated = self.store.replace_batch_plans(
             user["username"], batch["id"], revised["platform_plans"],
+            batch["revision"],
         )
         return "已按你的要求更新方案，请继续修改或确认方案。", {
             "kind": "video_plan", "batch": _public(updated),
@@ -721,19 +734,41 @@ class CreatorAgentService:
             ],
         }
 
-    def quote_batch(self, user, batch_id):
+    @staticmethod
+    def _expected_revision(value):
+        if isinstance(value, bool):
+            raise APIError(400, "方案版本无效", "invalid_revision")
+        try:
+            revision = int(value)
+        except (TypeError, ValueError) as exc:
+            raise APIError(400, "请刷新后重试", "revision_required") from exc
+        if revision < 1:
+            raise APIError(400, "方案版本无效", "invalid_revision")
+        return revision
+
+    @staticmethod
+    def _raise_store_conflict(error):
+        code = "idempotency_conflict" if isinstance(error, IdempotencyConflict) else "state_conflict"
+        raise APIError(409, "方案状态已经变化，请刷新后重试", code) from error
+
+    def quote_batch(self, user, batch_id, expected_revision):
         batch_id = str(batch_id or "")
         if not _BATCH_RE.fullmatch(batch_id):
             raise APIError(400, "视频方案编号无效", "invalid_batch")
-        batch = self.store.batch(user["username"], batch_id, include_private=True)
-        if not batch:
+        revision = self._expected_revision(expected_revision)
+        current = self.store.batch(user["username"], batch_id, include_private=True)
+        if not current:
             raise APIError(404, "视频方案不存在", "not_found")
-        if batch["status"] not in {"draft", "ready", "quoted"}:
-            raise APIError(409, "当前方案不能重新报价", "invalid_state")
-        if batch["status"] == "quoted" and all(job.get("quote_token") for job in batch["jobs"]):
+        if current["revision"] != revision:
+            raise APIError(409, "方案版本已经变化，请刷新后重试", "state_conflict")
+        if current["status"] == "quoted" and all(job.get("quote_token") for job in current["jobs"]):
             return self.store.batch(user["username"], batch_id)
-        items, total, points, expires = [], 0, None, None
-        quoted_jobs = []
+        try:
+            batch = self.store.claim_quote(user["username"], batch_id, revision)
+        except (StateConflict, StoreError) as exc:
+            self._raise_store_conflict(exc)
+        claim_id = batch["claim_id"]
+        items, total, points, expires, job_quotes = [], 0, None, None, []
         try:
             for job in batch["jobs"]:
                 result = self.bridge.action(
@@ -743,11 +778,6 @@ class CreatorAgentService:
                 if not token:
                     raise APIError(502, "模板视频没有返回有效报价", "quote_invalid")
                 public_quote = _public(result)
-                updated = self.store.update_job(
-                    user["username"], job["id"], status="quoted",
-                    quote_token=token, quote=public_quote, error="",
-                )
-                quoted_jobs.append(updated)
                 cost = int(public_quote.get("cost") or 0)
                 if cost <= 0:
                     raise APIError(502, "模板视频报价无效", "quote_invalid")
@@ -768,31 +798,20 @@ class CreatorAgentService:
                     "platform": job["platform"], "label": PLATFORM_LABELS[job["platform"]],
                     "cost": cost,
                 })
-        except APIError:
-            for job in quoted_jobs:
-                self.store.update_job(
-                    user["username"], job["id"], status="draft", quote_token="", quote={},
-                )
+                job_quotes.append({
+                    "id": job["id"], "input_hash": job["input_hash"],
+                    "quote_token": token, "quote": public_quote,
+                })
+            quote = {
+                "items": items, "total_cost": total, "points": points,
+                "expires_in": expires, "confirmation_required": True,
+            }
+            return self.store.finish_quote(
+                user["username"], batch_id, claim_id, job_quotes, quote,
+            )
+        except (APIError, StateConflict, StoreError):
+            self.store.abort_quote(user["username"], batch_id, claim_id)
             raise
-        quote = {
-            "items": items, "total_cost": total, "points": points,
-            "expires_in": expires, "confirmation_required": True,
-        }
-        self.store.update_batch(user["username"], batch_id, status="quoted", quote=quote)
-        return self.store.batch(user["username"], batch_id)
-
-    @staticmethod
-    def _batch_status(jobs):
-        statuses = [job.get("status") for job in jobs]
-        if statuses and all(status in _DONE for status in statuses):
-            return "done"
-        if statuses and all(status in _FAILED for status in statuses):
-            return "failed"
-        if any(status in _RUNNING for status in statuses):
-            return "running"
-        if any(status in _DONE for status in statuses) and any(status in _FAILED for status in statuses):
-            return "partial"
-        return "submitted"
 
     @staticmethod
     def _submission_uncertain(error):
@@ -801,11 +820,16 @@ class CreatorAgentService:
             "result_unknown", "submit_result_unknown", "cli_internal_error",
         }
 
-    def _submit_matrix_job(self, user, job, confirmation_id):
+    def _submit_matrix_job(self, user, job):
+        tool_input = job.get("submit_input") or {}
+        quote_token = str(job.get("submit_quote_token") or "")
+        idempotency_key = str(job.get("submit_idempotency_key") or "")
+        if not tool_input or not quote_token or not idempotency_key:
+            raise APIError(409, "冻结提交快照不完整", "submit_snapshot_invalid")
         result = self.bridge.action(
-            user["account_id"], "matrix-template-generate", job["input"],
-            confirm=True, quote_token=job["quote_token"],
-            idempotency_key=job["idempotency_key"],
+            user["account_id"], "matrix-template-generate", tool_input,
+            confirm=True, quote_token=quote_token,
+            idempotency_key=idempotency_key,
         )
         provider_job = str(result.get("job_id") or "")
         status = str(result.get("status") or ("running" if provider_job else "submitted"))
@@ -817,53 +841,40 @@ class CreatorAgentService:
             status = "failed"
         elif provider_job:
             status = "running"
-        return self.store.update_job(
-            user["username"], job["id"], status=status,
-            confirmation_id=confirmation_id + ":" + job["platform"],
-            job_id=provider_job, result=_public(result), error="",
-        )
+        return {
+            "status": status, "job_id": provider_job,
+            "result": _public(result), "error": str(result.get("error") or "")[:500],
+            "refund_status": str(result.get("refund_status") or ""),
+        }
 
-    def confirm_batch(self, user, batch_id, confirmation_id):
+    def confirm_batch(self, user, batch_id, confirmation_id, expected_revision):
         if not _BATCH_RE.fullmatch(str(batch_id or "")):
             raise APIError(400, "视频方案编号无效", "invalid_batch")
         if not _REQUEST_RE.fullmatch(str(confirmation_id or "")):
             raise APIError(400, "确认编号无效", "invalid_confirmation")
-        batch = self.store.batch(user["username"], batch_id, include_private=True)
-        if not batch:
-            raise APIError(404, "视频方案不存在", "not_found")
-        if batch.get("confirmation_id"):
-            if batch["confirmation_id"] != confirmation_id:
-                raise APIError(409, "该方案已绑定另一笔确认", "confirmation_conflict")
-            if not any(
-                job.get("status") in {"quoted", "submission_unknown"}
-                for job in batch["jobs"]
-            ):
-                return self.store.batch(user["username"], batch_id)
-        elif batch["status"] != "quoted" or not all(job.get("quote_token") for job in batch["jobs"]):
-            raise APIError(409, "请先取得完整报价", "quote_required")
-        if not batch.get("confirmation_id"):
-            self.store.update_batch(
-                user["username"], batch_id, status="submitting", confirmation_id=confirmation_id,
+        revision = self._expected_revision(expected_revision)
+        try:
+            batch = self.store.claim_confirmation(
+                user["username"], batch_id, confirmation_id, revision,
             )
-        for job in batch["jobs"]:
-            if job.get("status") not in {"quoted", "submission_unknown"}:
-                continue
+        except (StateConflict, IdempotencyConflict, StoreError) as exc:
+            self._raise_store_conflict(exc)
+        for job in batch.get("claimed_jobs") or []:
             try:
-                self._submit_matrix_job(user, job, confirmation_id)
-            except APIError as exc:
-                self.store.update_job(
-                    user["username"], job["id"],
-                    status="submission_unknown" if self._submission_uncertain(exc) else "failed_submission",
-                    confirmation_id=confirmation_id + ":" + job["platform"], error=exc.detail,
+                result = self._submit_matrix_job(user, job)
+                self.store.finish_submit_claim(
+                    user["username"], job["id"], job["revision"], **result,
                 )
-        current = self.store.batch(user["username"], batch_id, include_private=True)
-        self.store.update_batch(
-            user["username"], batch_id, status=self._batch_status(current["jobs"]),
-        )
+            except APIError as exc:
+                self.store.finish_submit_claim(
+                    user["username"], job["id"], job["revision"],
+                    status="submission_unknown" if self._submission_uncertain(exc) else "failed_submission",
+                    error=exc.detail,
+                )
         self.store.update_workspace(
             user["username"], batch["project_id"], flow={"mode": "idle"},
         )
-        return self.store.batch(user["username"], batch_id)
+        return self.store.recompute_batch(user["username"], batch_id)
 
     def refresh_batch(self, user, batch_id):
         if not _BATCH_RE.fullmatch(str(batch_id or "")):
@@ -871,19 +882,20 @@ class CreatorAgentService:
         batch = self.store.batch(user["username"], batch_id, include_private=True)
         if not batch:
             raise APIError(404, "视频方案不存在", "not_found")
+        for job in self.store.claim_recovery(user["username"], batch_id):
+            try:
+                result = self._submit_matrix_job(user, job)
+                self.store.finish_submit_claim(
+                    user["username"], job["id"], job["revision"], **result,
+                )
+            except APIError as exc:
+                self.store.finish_submit_claim(
+                    user["username"], job["id"], job["revision"],
+                    status="submission_unknown" if self._submission_uncertain(exc) else "failed_submission",
+                    error=exc.detail,
+                )
+        batch = self.store.batch(user["username"], batch_id, include_private=True)
         for job in batch["jobs"]:
-            if job.get("status") == "submission_unknown" and not job.get("job_id"):
-                try:
-                    self._submit_matrix_job(
-                        user, job, batch.get("confirmation_id") or "creator-recovery",
-                    )
-                except APIError as exc:
-                    if not self._submission_uncertain(exc):
-                        self.store.update_job(
-                            user["username"], job["id"], status="failed_submission",
-                            error=exc.detail,
-                        )
-                continue
             if not job.get("job_id") or job.get("status") not in _RUNNING:
                 continue
             try:
@@ -897,21 +909,19 @@ class CreatorAgentService:
                     status = "failed"
                 else:
                     status = "running"
-                self.store.update_job(
-                    user["username"], job["id"], status=status,
+                self.store.finish_task_poll(
+                    user["username"], job["id"], job["revision"], status=status,
                     result=_public(result), error=str(result.get("error") or "")[:500],
                     refund_status=str(result.get("refund_status") or ""),
                 )
             except APIError:
                 continue
-        current = self.store.batch(user["username"], batch_id, include_private=True)
-        self.store.update_batch(
-            user["username"], batch_id, status=self._batch_status(current["jobs"]),
-        )
-        return self.store.batch(user["username"], batch_id)
+        return self.store.recompute_batch(user["username"], batch_id)
 
     def message(self, user, headers, body):
-        if not isinstance(body, dict) or set(body) - {"message", "request_id", "intent", "payload"}:
+        if not isinstance(body, dict) or set(body) - {
+            "message", "request_id", "intent", "payload", "project_id",
+        }:
             raise APIError(400, "消息字段不合法", "invalid_request")
         message = str(body.get("message") or "").strip()
         request_id = str(body.get("request_id") or "")
@@ -922,13 +932,26 @@ class CreatorAgentService:
         self._gate(user)
         projects, project, workspace = self._ensure_project(user, headers)
         project_id = project["id"]
+        requested_project = str(body.get("project_id") or "")
+        if requested_project and requested_project != project_id:
+            raise APIError(409, "当前画像项目已经切换，请刷新后重试", "project_conflict")
+        request_hash = self._message_request_hash(
+            project_id, message, intent, payload,
+        )
         with self._lock(user["username"], project_id):
-            user_message, created = self.store.add_message(
-                user["username"], project_id, "user", message, request_id=request_id,
-            )
+            try:
+                user_message, created = self.store.add_message(
+                    user["username"], project_id, "user", message,
+                    request_id=request_id, request_hash=request_hash,
+                )
+            except IdempotencyConflict as exc:
+                raise APIError(
+                    409, "request_id 已绑定其他消息内容",
+                    "idempotency_conflict",
+                ) from exc
             if not created and user_message.get("public", {}).get("response"):
                 return user_message["public"]["response"]
-            if not created:
+            if not created and intent not in {"confirm_plan", "confirm_payment"}:
                 raise APIError(
                     409, "该请求正在处理或结果待确认，请刷新后重试",
                     "idempotency_in_progress",
@@ -1095,6 +1118,8 @@ class CreatorAgentService:
                 batch = self.store.batch(user["username"], batch_id, include_private=True)
                 if not batch or batch["status"] not in {"draft", "ready", "quoted"}:
                     raise APIError(409, "当前方案不能调整平台", "invalid_state")
+                if batch["revision"] != self._expected_revision(payload.get("expected_revision")):
+                    raise APIError(409, "方案版本已经变化，请刷新后重试", "state_conflict")
                 selected = [item.get("platform") for item in batch.get("plans") or []]
                 self.store.update_workspace(
                     user["username"], project_id,
@@ -1126,7 +1151,7 @@ class CreatorAgentService:
                     )
             elif intent == "confirm_plan":
                 batch_id = str(payload.get("batch_id") or flow.get("batch_id") or "")
-                batch = self.quote_batch(user, batch_id)
+                batch = self.quote_batch(user, batch_id, payload.get("expected_revision"))
                 reply = "报价已生成。请核对各平台明细和总价，确认后才会扣点并分别创建任务。"
                 public = {
                     "kind": "video_quote", "batch": batch,
@@ -1138,7 +1163,9 @@ class CreatorAgentService:
             elif intent == "confirm_payment":
                 batch_id = str(payload.get("batch_id") or flow.get("batch_id") or "")
                 confirmation_id = str(payload.get("confirmation_id") or "")
-                batch = self.confirm_batch(user, batch_id, confirmation_id)
+                batch = self.confirm_batch(
+                    user, batch_id, confirmation_id, payload.get("expected_revision"),
+                )
                 reply = "已按平台分别提交任务。你可以在右侧查看每个任务的进度和结果。"
                 public = {"kind": "video_submitted", "batch": batch}
                 self.store.update_workspace(user["username"], project_id, flow={"mode": "idle"})
@@ -1267,11 +1294,15 @@ class CreatorAgentHandler(BaseHTTPRequestHandler):
         match = re.fullmatch(r"/batches/(creator_batch_[0-9a-f]{32})/(quote|confirm|refresh)", path)
         if method == "POST" and match:
             batch_id, action = match.groups()
+            body = self._body()
             if action == "quote":
-                return self._send(200, {"batch": self.service.quote_batch(user, batch_id)})
+                return self._send(200, {"batch": self.service.quote_batch(
+                    user, batch_id, body.get("expected_revision"),
+                )})
             if action == "confirm":
                 return self._send(200, {"batch": self.service.confirm_batch(
-                    user, batch_id, str(self._body().get("confirmation_id") or ""),
+                    user, batch_id, str(body.get("confirmation_id") or ""),
+                    body.get("expected_revision"),
                 )})
             return self._send(200, {"batch": self.service.refresh_batch(user, batch_id)})
         raise APIError(404, "not found", "not_found")
