@@ -1892,6 +1892,52 @@ class H(BaseHTTPRequestHandler):
     def _do_POST(self):
         p = self.path.split("?")[0]
         audio_domain, points_domain, video_domain = _domains()
+        if p == "/api/gen/internal/submission-reconcile/health":
+            if not cli_gateway._internal_auth(self, AUTH_INTERNAL_TOKEN):
+                return self._send(403, {"detail": "forbidden", "code": "forbidden"})
+            return self._send(200, {"ok": True, "ready": True})
+        if p == "/api/gen/internal/submission-reconcile":
+            if not cli_gateway._internal_auth(self, AUTH_INTERNAL_TOKEN):
+                return self._send(403, {"detail": "forbidden", "code": "forbidden"})
+            user = verify(self._token())
+            if not user:
+                return self._send(401, {"detail": "未登录或登录已过期", "code": "unauthorized"})
+            if _must_change_password(user):
+                return self._send(403, {"detail": "请先修改初始密码", "code": "password_change_required"})
+            try:
+                reconcile = self._json_body_strict(max_bytes=128 * 1024)
+                if not isinstance(reconcile, dict) or set(reconcile) != {
+                        "endpoint", "idempotency_key", "input"}:
+                    raise ValueError("恢复请求字段不合法")
+                endpoint = str(reconcile.get("endpoint") or "")
+                if endpoint != "/api/gen/matrix-template":
+                    raise ValueError("该提交类型不支持恢复")
+                idem_key = _idempotency_key(reconcile.get("idempotency_key"))
+                request_body = reconcile.get("input")
+                if not idem_key or not isinstance(request_body, dict):
+                    raise ValueError("恢复请求缺少幂等键或原始输入")
+                idem_state, idem_response = submission_idempotency.replay_existing(
+                    jdb, user["username"], endpoint, idem_key, [request_body],
+                )
+            except ValueError as exc:
+                return self._send(400, {"detail": str(exc)[:220], "code": "invalid_request"})
+            if idem_state == "replay":
+                replay = dict(idem_response or {})
+                status = int(replay.pop("_http_status", 200))
+                replay["reconciled"] = True
+                return self._send(status, replay)
+            if idem_state == "processing":
+                return self._send(409, {
+                    "detail": "原提交仍在受理中，请稍后查询",
+                    "code": "idempotency_in_progress", "retry_after_ms": 1000,
+                })
+            if idem_state == "conflict":
+                return self._send(409, {
+                    "detail": "幂等键已绑定其他输入", "code": "idempotency_conflict",
+                })
+            return self._send(404, {
+                "detail": "未找到已受理的原提交", "code": "idempotency_not_found",
+            })
         if cli_gateway.handle_image_upload(
                 self, p, verify, _must_change_password, AUTH_INTERNAL_TOKEN): return
         if cli_gateway.handle_video_upload(
@@ -3563,6 +3609,16 @@ class H(BaseHTTPRequestHandler):
                         from . import pixelle_video as pixelle_video_domain
                         paid_association = pixelle_video_domain.paid_plan_association(
                             body, user["username"])
+                    if kind == "matrix_template_video":
+                        paid_association = lambda connection, job_id: (
+                            submission_idempotency.accept_in_transaction(
+                                connection, user["username"], p, idem_key,
+                                request_body, {
+                                    "job_id": int(job_id), "cost": int(cost),
+                                    "accepted": True,
+                                },
+                            )
+                        )
                     if is_still_route:
                         if is_shutting_down(): return self._send(503, {"detail": "服务正在更新，请稍等几秒后重试", "code": "shutting_down", "retry_after_ms": 5000})
                         if still_attempt["state"] == "accepted":

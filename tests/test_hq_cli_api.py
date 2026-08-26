@@ -126,6 +126,10 @@ class HQCLIAPITests(unittest.TestCase):
     def _agent_headers(self):
         return {"X-HQ-Internal-Token": self.auth.INTERNAL_TOKEN}
 
+    def _enable_creator_bridge(self):
+        self.auth.feature_flags.init_db()
+        return self.auth.feature_flags.set_enabled("creator_agent_v1", True, "test")
+
     def test_ip12_agent_catalog_enumerates_every_registered_action_with_safe_schema(self):
         self._enable_ip12_bridge()
         status, payload = self._request(
@@ -481,6 +485,38 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual(400, status)
         self.assertIn("idempotency_key", result["detail"])
         proxy.assert_not_called()
+
+    def test_creator_reconcile_is_internal_and_never_requires_expired_quote(self):
+        self._enable_creator_bridge()
+        account_id = self._agent_account_id()
+        plans = []
+
+        def fake_proxy(plan, _web_token, _internal_token):
+            plans.append(plan)
+            return 200, {"job_id": 52, "cost": 5, "reconciled": True}
+
+        body = {
+            "account_id": account_id,
+            "input": {
+                "top_text": "有效标题", "bottom_text": "关注查看更多",
+                "template_id": "native-bold",
+            },
+            "idempotency_key": "creator-reconcile-http-0001",
+        }
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
+            denied_status, _ = self._request(
+                "/api/auth/internal/creator-agent/reconcile", body,
+            )
+            status, result = self._request(
+                "/api/auth/internal/creator-agent/reconcile", body,
+                extra_headers=self._agent_headers(),
+            )
+        self.assertEqual(denied_status, 403)
+        self.assertEqual((status, result["job_id"]), (200, 52))
+        self.assertEqual(len(plans), 1)
+        self.assertEqual(plans[0]["path"], "/api/gen/internal/submission-reconcile")
+        self.assertEqual(plans[0]["body"]["idempotency_key"], body["idempotency_key"])
+        self.assertNotIn("quote_token", plans[0]["body"])
 
     def test_ip12_voice_clone_requires_confirmation_and_forwards_one_idempotency_key(self):
         self._enable_ip12_bridge()

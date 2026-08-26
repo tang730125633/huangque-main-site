@@ -143,6 +143,8 @@ class FakeBridge:
         self.confirm_count = 0
         self.quote_count = 0
         self.quote_expirations = {}
+        self.accepted_submissions = {}
+        self.reconcile_count = 0
         self.confirm_advance_seconds = 0
         self.task_results = {}
         self.templates = [
@@ -156,7 +158,7 @@ class FakeBridge:
             "ok": True, "ready": True,
             "actions": [
                 "matrix-template-capability", "matrix-template-templates",
-                "matrix-template-generate",
+                "matrix-template-generate", "matrix-template-reconcile",
             ],
         }
 
@@ -182,7 +184,9 @@ class FakeBridge:
             self.confirm_count += 1
             if self.confirm_advance_seconds:
                 self.clock.advance(self.confirm_advance_seconds)
-            return {"status": "running", "job_id": str(7000 + self.confirm_count), "points": 990}
+            result = {"status": "running", "job_id": str(7000 + self.confirm_count), "points": 990}
+            self.accepted_submissions[str(options.get("idempotency_key") or "")] = copy.deepcopy(result)
+            return result
         if action == "matrix-template-generate":
             self.quote_count += 1
             token = "private-quote-%d" % self.quote_count
@@ -194,6 +198,14 @@ class FakeBridge:
                 "expires_at": expires_at,
             }
         raise AssertionError(action)
+
+    def reconcile(self, account_id, tool_input, idempotency_key):
+        self.calls.append(("reconcile", copy.deepcopy(tool_input), idempotency_key))
+        self.reconcile_count += 1
+        result = self.accepted_submissions.get(str(idempotency_key or ""))
+        if result is None:
+            raise APIError(404, "未找到已受理的原提交", "idempotency_not_found")
+        return {**copy.deepcopy(result), "reconciled": True}
 
 
 class CreatorAgentTests(unittest.TestCase):
@@ -764,6 +776,66 @@ class CreatorAgentTests(unittest.TestCase):
         self.assertEqual(self.bridge.confirm_count, 2)
         self.assertEqual(recovered["status"], "running")
 
+    def test_accepted_lost_response_recovers_same_job_after_quote_ttl(self):
+        draft = self._draft_batch()
+        quoted = self.service.quote_batch(USER, draft["id"], draft["revision"])
+        original = self.bridge.action
+        lost_once = {"value": False}
+
+        def accepted_then_lost(account_id, action, tool_input, **options):
+            if (
+                action == "matrix-template-generate"
+                and options.get("confirm")
+                and not lost_once["value"]
+            ):
+                lost_once["value"] = True
+                original(account_id, action, tool_input, **options)
+                raise APIError(503, "response lost after acceptance", "bridge_unavailable")
+            return original(account_id, action, tool_input, **options)
+
+        self.bridge.action = accepted_then_lost
+        first = self.service.confirm_batch(
+            USER, draft["id"], "creator-confirm-accepted-loss",
+            quoted["revision"], quoted["quote_expires_at"],
+        )
+        unknown = next(job for job in first["jobs"] if job["status"] == "submission_unknown")
+        private = self.store.batch(USER["username"], draft["id"], include_private=True)
+        frozen = next(job for job in private["jobs"] if job["id"] == unknown["id"])
+        accepted_job_id = self.bridge.accepted_submissions[
+            frozen["submit_idempotency_key"]
+        ]["job_id"]
+        self.clock.advance(301)
+        recovered = self.service.refresh_batch(USER, draft["id"])
+        recovered_job = next(job for job in recovered["jobs"] if job["id"] == unknown["id"])
+        recovered_private = self.store.batch(
+            USER["username"], draft["id"], include_private=True,
+        )
+        recovered_private_job = next(
+            job for job in recovered_private["jobs"] if job["id"] == unknown["id"]
+        )
+        self.assertEqual(recovered_job["status"], "running")
+        self.assertEqual(recovered_private_job["job_id"], accepted_job_id)
+        self.assertEqual(self.bridge.confirm_count, 2)
+        self.assertEqual(self.bridge.reconcile_count, 1)
+        self.assertNotIn("failed_submission", {job["status"] for job in recovered["jobs"]})
+
+    def test_expired_missing_reconcile_never_becomes_a_first_submission(self):
+        draft = self._draft_batch()
+        quoted = self.service.quote_batch(USER, draft["id"], draft["revision"])
+        self.store.claim_confirmation(
+            USER["username"], draft["id"], "creator-confirm-never-accepted",
+            quoted["revision"], quoted["quote_expires_at"],
+            now=int(self.clock()),
+        )
+        self.clock.advance(301)
+        recovered = self.service.refresh_batch(USER, draft["id"])
+        self.assertEqual(recovered["status"], "failed")
+        self.assertTrue(all(
+            job["status"] == "failed_submission" for job in recovered["jobs"]
+        ))
+        self.assertEqual(self.bridge.confirm_count, 0)
+        self.assertEqual(self.bridge.reconcile_count, 2)
+
     def test_one_failed_platform_does_not_erase_other_success(self):
         draft = self._draft_batch()
         quoted = self.service.quote_batch(USER, draft["id"], draft["revision"])
@@ -871,7 +943,11 @@ class CreatorAgentTests(unittest.TestCase):
             "username": USER["username"], "account_id": account_id,
         }
         handler._execute_cli_action = mock.Mock(return_value=(200, {"ok": True}))
-        with mock.patch.object(auth_server.feature_flags, "is_enabled", return_value=True):
+        with mock.patch.object(auth_server.feature_flags, "is_enabled", return_value=True), \
+             mock.patch.object(
+                 auth_server.hq_cli_api, "proxy_json",
+                 return_value=(200, {"ok": True, "ready": True}),
+             ):
             status, catalog = handler._internal_creator_agent_catalog({"account_id": USER["account_id"]})
             self.assertEqual(status, 200)
             self.assertEqual(
@@ -893,7 +969,58 @@ class CreatorAgentTests(unittest.TestCase):
         self.assertEqual(health_status, 200)
         self.assertTrue(health["ready"])
         self.assertIn("matrix-template-generate", health["actions"])
+        self.assertIn("matrix-template-reconcile", health["actions"])
         self.assertTrue(handler._execute_cli_action.call_args.kwargs["trusted_internal"])
+
+    def test_auth_creator_reconcile_is_internal_read_only_and_quote_independent(self):
+        import auth_server
+
+        handler = auth_server.H.__new__(auth_server.H)
+        handler._cli_send = lambda status, value: (status, value)
+        handler._creator_agent_row = lambda account_id: {
+            "username": USER["username"], "account_id": account_id,
+        }
+        handler._cli_proxy = mock.Mock(return_value=(200, {
+            "job_id": 8123, "cost": 5, "reconciled": True,
+        }))
+        body = {
+            "account_id": USER["account_id"],
+            "input": {
+                "top_text": "标题内容", "bottom_text": "关注查看更多",
+                "template_id": "native-bold",
+            },
+            "idempotency_key": "creator-reconcile-0001",
+        }
+        with mock.patch.object(auth_server.feature_flags, "is_enabled", return_value=True):
+            status, result = handler._internal_creator_agent_reconcile(body)
+        self.assertEqual((status, result["job_id"]), (200, 8123))
+        plan = handler._cli_proxy.call_args.args[0]
+        self.assertEqual(plan["path"], "/api/gen/internal/submission-reconcile")
+        self.assertEqual(plan["body"]["endpoint"], "/api/gen/matrix-template")
+        self.assertEqual(plan["body"]["idempotency_key"], "creator-reconcile-0001")
+        self.assertNotIn("quote_token", plan["body"])
+        handler._cli_proxy.return_value = (404, {"detail": "not found"})
+        with mock.patch.object(auth_server.feature_flags, "is_enabled", return_value=True):
+            unavailable_status, unavailable = handler._internal_creator_agent_reconcile(body)
+        self.assertEqual((unavailable_status, unavailable["code"]), (
+            503, "reconcile_unavailable",
+        ))
+
+    def test_auth_creator_health_fails_closed_without_content_reconcile(self):
+        import auth_server
+
+        handler = auth_server.H.__new__(auth_server.H)
+        handler._cli_send = lambda status, value: (status, value)
+        with mock.patch.object(auth_server.feature_flags, "is_enabled", return_value=True), \
+             mock.patch.object(
+                 auth_server.hq_cli_api, "proxy_json",
+                 return_value=(404, {"detail": "not found"}),
+             ):
+            status, health = handler._internal_creator_agent_health()
+        self.assertEqual(status, 200)
+        self.assertFalse(health["ready"])
+        self.assertFalse(health["checks"]["submission_reconcile"])
+        self.assertNotIn("matrix-template-reconcile", health["actions"])
 
     def test_http_bootstrap_returns_single_project_workspace(self):
         CreatorAgentHandler.service = self.service

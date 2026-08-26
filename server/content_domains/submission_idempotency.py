@@ -75,6 +75,31 @@ def complete(db_factory, username, endpoint, key, response):
                 (json.dumps(response, ensure_ascii=False), int(time.time()), username, endpoint, key))
             connection.commit()
 
+
+def accept_in_transaction(connection, username, endpoint, key, body, response):
+    """Link an accepted job to its claim in the same transaction as job insert."""
+    if not key:
+        raise ValueError("missing idempotency key")
+    digest = _request_hash(body)
+    encoded = json.dumps(response, ensure_ascii=False)
+    updated = connection.execute(
+        "UPDATE submission_idempotency SET response_json=?,updated_at=? "
+        "WHERE username=? AND endpoint=? AND idem_key=? AND request_hash=? "
+        "AND response_json IS NULL",
+        (encoded, int(time.time()), username, endpoint, key, digest),
+    )
+    if updated.rowcount == 1:
+        return
+    row = connection.execute(
+        "SELECT request_hash,response_json FROM submission_idempotency "
+        "WHERE username=? AND endpoint=? AND idem_key=?",
+        (username, endpoint, key),
+    ).fetchone()
+    if not row or row["request_hash"] != digest:
+        raise RuntimeError("idempotency acceptance claim mismatch")
+    if row["response_json"] != encoded:
+        raise RuntimeError("idempotency acceptance response changed")
+
 def abort(db_factory, username, endpoint, key):
     if key:
         with closing(db_factory()) as connection:

@@ -242,6 +242,13 @@ class BridgeClient:
             body["idempotency_key"] = idempotency_key
         return self._post("/api/auth/internal/creator-agent/action", body)
 
+    def reconcile(self, account_id, tool_input, idempotency_key):
+        return self._post("/api/auth/internal/creator-agent/reconcile", {
+            "account_id": account_id,
+            "input": tool_input,
+            "idempotency_key": idempotency_key,
+        }, timeout=10)
+
 
 class CreatorAgentService:
     def __init__(self, store, planner, auth, bridge, ip12, clock=None):
@@ -276,7 +283,10 @@ class CreatorAgentService:
                 actions = set(bridge.get("actions") or []) if isinstance(bridge, dict) else set()
                 checks["bridge_catalog"] = bool(
                     bridge.get("ready") is True
-                    and {"matrix-template-templates", "matrix-template-generate"}.issubset(actions)
+                    and {
+                        "matrix-template-templates", "matrix-template-generate",
+                        "matrix-template-reconcile",
+                    }.issubset(actions)
                 )
             except APIError as exc:
                 bridge_detail = exc.code
@@ -883,6 +893,24 @@ class CreatorAgentService:
             "result_unknown", "submit_result_unknown", "cli_internal_error",
         }
 
+    @staticmethod
+    def _submission_result(result):
+        provider_job = str(result.get("job_id") or "")
+        status = str(result.get("status") or ("running" if provider_job else "submitted"))
+        if not provider_job and status not in _DONE and status not in _FAILED:
+            raise APIError(502, "任务提交结果待确认", "submit_result_unknown")
+        if status in _DONE:
+            status = "done"
+        elif status in _FAILED:
+            status = "failed"
+        elif provider_job:
+            status = "running"
+        return {
+            "status": status, "job_id": provider_job,
+            "result": _public(result), "error": str(result.get("error") or "")[:500],
+            "refund_status": str(result.get("refund_status") or ""),
+        }
+
     def _submit_matrix_job(self, user, job):
         tool_input = job.get("submit_input") or {}
         input_hash = str(job.get("submit_input_hash") or "")
@@ -902,21 +930,28 @@ class CreatorAgentService:
             confirm=True, quote_token=quote_token,
             idempotency_key=idempotency_key,
         )
-        provider_job = str(result.get("job_id") or "")
-        status = str(result.get("status") or ("running" if provider_job else "submitted"))
-        if not provider_job and status not in _DONE and status not in _FAILED:
-            raise APIError(502, "任务提交结果待确认", "submit_result_unknown")
-        if status in _DONE:
-            status = "done"
-        elif status in _FAILED:
-            status = "failed"
-        elif provider_job:
-            status = "running"
-        return {
-            "status": status, "job_id": provider_job,
-            "result": _public(result), "error": str(result.get("error") or "")[:500],
-            "refund_status": str(result.get("refund_status") or ""),
-        }
+        return self._submission_result(result)
+
+    def _recover_matrix_job(self, user, job):
+        tool_input = job.get("submit_input") or {}
+        idempotency_key = str(job.get("submit_idempotency_key") or "")
+        if not tool_input or not idempotency_key:
+            raise APIError(409, "冻结恢复快照不完整", "submit_snapshot_invalid")
+        try:
+            result = self.bridge.reconcile(
+                user["account_id"], tool_input, idempotency_key,
+            )
+        except APIError as exc:
+            if exc.code != "idempotency_not_found":
+                raise
+            if int(job.get("submit_quote_expires_at") or 0) <= int(self.clock()):
+                raise APIError(
+                    409,
+                    "原提交未被内容服务受理，且报价已经过期，请重新报价后生成",
+                    "submission_not_accepted",
+                ) from exc
+            return self._submit_matrix_job(user, job)
+        return self._submission_result(result)
 
     def confirm_batch(self, user, batch_id, confirmation_id, expected_revision,
                       expected_quote_expires_at):
@@ -964,7 +999,7 @@ class CreatorAgentService:
             user["username"], batch_id, now=int(self.clock()),
         ):
             try:
-                result = self._submit_matrix_job(user, job)
+                result = self._recover_matrix_job(user, job)
                 self.store.finish_submit_claim(
                     user["username"], job["id"], job["revision"], **result,
                 )

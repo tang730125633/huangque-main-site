@@ -83,6 +83,10 @@ class CreatorAgentContractTests(unittest.TestCase):
 
     def test_quote_expiry_is_absolute_atomic_and_visible(self):
         store = (ROOT / "server/creator_agent/store.py").read_text(encoding="utf-8")
+        content = (ROOT / "server/content_domains/core.py").read_text(encoding="utf-8")
+        idempotency = (
+            ROOT / "server/content_domains/submission_idempotency.py"
+        ).read_text(encoding="utf-8")
         self.assertIn('"expires_at": claims["e"]', self.auth)
         self.assertIn("quote_expires_at INTEGER NOT NULL", store)
         self.assertIn("submit_quote_expires_at INTEGER NOT NULL", store)
@@ -90,6 +94,10 @@ class CreatorAgentContractTests(unittest.TestCase):
         self.assertIn("ca-quote-expiry", self.page)
         self.assertIn("报价已过期，请重新报价", self.page)
         self.assertIn("expected_quote_expires_at", self.page)
+        self.assertIn("/api/auth/internal/creator-agent/reconcile", self.auth)
+        self.assertIn("/api/gen/internal/submission-reconcile", content)
+        self.assertIn("accept_in_transaction", idempotency)
+        self.assertIn("self.bridge.reconcile", self.service)
 
     def test_browser_persists_and_recovers_pending_requests(self):
         self.assertIn("hq-creator-agent-pending-v2", self.page)

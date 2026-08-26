@@ -5122,11 +5122,30 @@ class H(BaseHTTPRequestHandler):
             and (item.get("availability") or {}).get("status") == "available"
             for item in actions
         )
+        reconcile_ready = False
+        if enabled:
+            try:
+                status, payload = hq_cli_api.proxy_json({
+                    "base": hq_cli_api.CONTENT_BASE,
+                    "path": "/api/gen/internal/submission-reconcile/health",
+                    "method": "POST", "body": {}, "timeout": 3,
+                    "internal": True,
+                }, "", INTERNAL_TOKEN)
+                reconcile_ready = bool(
+                    status == 200 and isinstance(payload, dict)
+                    and payload.get("ready") is True
+                )
+            except hq_cli_api.CLIAPIError:
+                reconcile_ready = False
         return self._cli_send(200, {
             "ok": True,
-            "ready": bool(enabled and matrix_ready),
+            "ready": bool(enabled and matrix_ready and reconcile_ready),
             "feature_enabled": bool(enabled),
-            "actions": action_names,
+            "actions": action_names + (["matrix-template-reconcile"] if reconcile_ready else []),
+            "checks": {
+                "matrix_template": bool(matrix_ready),
+                "submission_reconcile": bool(reconcile_ready),
+            },
             "catalog_version": catalog.get("version"),
         })
 
@@ -5179,6 +5198,52 @@ class H(BaseHTTPRequestHandler):
             )
         except hq_cli_api.CLIAPIError as exc:
             return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
+
+    def _internal_creator_agent_reconcile(self, body):
+        if not self._creator_agent_bridge_enabled():
+            return self._cli_send(503, {
+                "detail": "Creator Agent 执行桥未启用", "code": "feature_disabled",
+            })
+        if not isinstance(body, dict) or set(body) != {
+                "account_id", "input", "idempotency_key"}:
+            return self._cli_send(400, {
+                "detail": "恢复请求字段不合法", "code": "invalid_request",
+            })
+        try:
+            if not isinstance(body["input"], dict):
+                raise hq_cli_api.CLIAPIError(400, "input 必须是 JSON 对象")
+            idempotency_key = hq_cli_api.validate_idempotency_key(
+                body["idempotency_key"])
+            row = self._creator_agent_row(body["account_id"])
+            if not row:
+                raise hq_cli_api.CLIAPIError(404, "账号不存在", "account_not_found")
+            plan = hq_cli_api.action_plan(
+                "matrix-template-generate", body["input"],
+            )
+            status, result = self._cli_proxy({
+                "base": hq_cli_api.CONTENT_BASE,
+                "path": "/api/gen/internal/submission-reconcile",
+                "method": "POST", "timeout": 10, "internal": True,
+                "body": {
+                    "endpoint": plan["endpoint"],
+                    "idempotency_key": idempotency_key,
+                    "input": plan["payload"],
+                },
+            }, row["username"])
+            if (
+                status == 404
+                and (not isinstance(result, dict)
+                     or result.get("code") != "idempotency_not_found")
+            ):
+                return self._cli_send(503, {
+                    "detail": "提交恢复通道暂不可用",
+                    "code": "reconcile_unavailable",
+                })
+            return self._cli_send(status, result)
+        except hq_cli_api.CLIAPIError as exc:
+            return self._cli_send(exc.status, {
+                "detail": exc.detail, "code": exc.code,
+            })
 
     def _internal_auth(self):
         if not INTERNAL_TOKEN:
@@ -5342,6 +5407,15 @@ class H(BaseHTTPRequestHandler):
             if self._bad_json():
                 return self._cli_send(400, {"detail": "请求体不是合法 JSON", "code": "invalid_request"})
             return self._internal_creator_agent_action(d)
+        if p == "/api/auth/internal/creator-agent/reconcile":
+            if not self._require_internal():
+                return
+            if self._content_length_exceeds(128 * 1024):
+                return self._cli_send(413, {"detail": "请求过大", "code": "request_too_large"})
+            d = self._body()
+            if self._bad_json():
+                return self._cli_send(400, {"detail": "请求体不是合法 JSON", "code": "invalid_request"})
+            return self._internal_creator_agent_reconcile(d)
         if p == "/api/auth/internal/canvas/access":
             if not self._require_internal():
                 return

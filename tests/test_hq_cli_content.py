@@ -161,6 +161,64 @@ class HQCLIContentTests(unittest.TestCase):
         self.assertEqual((409, "idempotency_conflict"), (
             changed_status, changed["code"]))
 
+    def test_internal_submission_reconcile_is_read_only_and_fail_closed(self):
+        body = {
+            "top_text": "有效标题", "bottom_text": "关注查看更多",
+            "template_id": "native-bold", "bgm": True,
+        }
+        key = "matrix-reconcile-read-only-001"
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder, \
+             mock.patch.object(core, "JOB_DB", str(Path(folder) / "jobs.db")):
+            submission_idempotency.begin(
+                core.jdb, "alice", "/api/gen/matrix-template", key, body,
+            )
+            submission_idempotency.complete(
+                core.jdb, "alice", "/api/gen/matrix-template", key,
+                {"job_id": 93, "cost": 5, "accepted": True},
+            )
+            replay_status, replay = self._post(
+                "/api/gen/internal/submission-reconcile", {
+                    "endpoint": "/api/gen/matrix-template",
+                    "idempotency_key": key, "input": body,
+                },
+            )
+            missing_status, missing = self._post(
+                "/api/gen/internal/submission-reconcile", {
+                    "endpoint": "/api/gen/matrix-template",
+                    "idempotency_key": "matrix-reconcile-missing-001",
+                    "input": body,
+                },
+            )
+            conflict_status, conflict = self._post(
+                "/api/gen/internal/submission-reconcile", {
+                    "endpoint": "/api/gen/matrix-template",
+                    "idempotency_key": key,
+                    "input": dict(body, bottom_text="不同文案"),
+                },
+            )
+            denied_status, _ = self._post(
+                "/api/gen/internal/submission-reconcile", {
+                    "endpoint": "/api/gen/matrix-template",
+                    "idempotency_key": key, "input": body,
+                }, internal=False,
+            )
+        self.assertEqual((replay_status, replay["job_id"]), (200, 93))
+        self.assertTrue(replay["reconciled"])
+        self.assertEqual((missing_status, missing["code"]), (404, "idempotency_not_found"))
+        self.assertEqual((conflict_status, conflict["code"]), (409, "idempotency_conflict"))
+        self.assertEqual(denied_status, 403)
+        self.assertEqual(self.points.deductions, [])
+
+    def test_submission_reconcile_health_requires_internal_token(self):
+        self.assertEqual(
+            self._post("/api/gen/internal/submission-reconcile/health", {})[0], 200,
+        )
+        self.assertEqual(
+            self._post(
+                "/api/gen/internal/submission-reconcile/health", {}, internal=False,
+            )[0], 403,
+        )
+
     def test_matrix_new_request_preflight_unavailable_is_structured_and_free(self):
         body = {
             "top_text": "有效标题", "bottom_text": "有效行动文案",

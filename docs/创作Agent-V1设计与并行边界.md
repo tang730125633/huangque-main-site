@@ -92,6 +92,9 @@ IP12 是基础画像正本。定位 PDF 确认后的修改作为版本化「画�
   不调用 Provider，并在对话中重新展示报价。浏览器持续显示报价倒计时。
 - 确认请求绑定用户实际看到的绝对到期时间；自动重报后，旧确认不能用于新报价。
 - 网络结果不确定时只能查询原任务，禁止换幂等键重复提交。
+- 内容服务在任务写入事务内把 child idempotency key 关联到已受理 `job_id`；响应丢失后由
+  Creator Agent 走只读 reconcile 通道查询。该通道没有新建能力，不校验或复用过期报价；
+  未找到已受理记录时，只有原报价仍有效才允许回到普通提交路径。
 - 批次编辑、报价、确认和刷新使用 SQLite `BEGIN IMMEDIATE`、plan revision/hash 与条件更新；
   确认后 Provider 只能读取已冻结的提交快照。
 - 浏览器在请求前持久化完整 body、request ID 和 confirmation ID；网络错误或 5xx 后使用原请求恢复，
@@ -109,3 +112,7 @@ IP12 是基础画像正本。定位 PDF 确认后的修改作为版本化「画�
 ## 发布边界
 
 本分支只开发和本地验证。未经单独授权，不推送 PR、不合并、不部署生产。
+
+正式发布必须先通过主站 ship 同步 `auth_server.py`、完整 `content_domains` 依赖与前端，
+再执行 Creator Agent 版本化 release。Creator `/health.ready` 会要求 Auth 已实际探测到
+Content 的只读 reconcile 端点；依赖未同步时 release 必须失败并回滚。
