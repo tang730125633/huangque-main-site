@@ -956,7 +956,11 @@ def _project_db():
                     id TEXT PRIMARY KEY, username TEXT NOT NULL, title TEXT NOT NULL,
                     state_json TEXT NOT NULL DEFAULT '{}', last_analysis_json TEXT NOT NULL DEFAULT '{}',
                     confirmed_json TEXT NOT NULL DEFAULT '{}', revision INTEGER NOT NULL DEFAULT 1,
+                    deleted INTEGER NOT NULL DEFAULT 0,
                     created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)""")
+                existing = {r["name"] for r in conn.execute("PRAGMA table_info(digital_ip_projects)").fetchall()}
+                if "deleted" not in existing:
+                    conn.execute("ALTER TABLE digital_ip_projects ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_digital_ip_projects_owner_updated ON digital_ip_projects(username, updated_at DESC)")
                 conn.commit()
                 _project_db_initialized.add(db_path)
@@ -1122,10 +1126,38 @@ def _merge_attachment_evidence(existing, current, current_step_key=""):
 
 def _owned_project(username, project_id):
     with closing(_project_db()) as conn:
-        row = conn.execute("SELECT * FROM digital_ip_projects WHERE id=? AND username=?", (project_id, username)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM digital_ip_projects WHERE id=? AND username=? AND deleted=0",
+            (project_id, username),
+        ).fetchone()
     if not row:
         raise DigitalIPNotFound("项目不存在")
     return row
+
+
+def delete_project(username, project_id, payload):
+    if not isinstance(payload, dict):
+        raise DigitalIPValidationError("请求体必须是 JSON 对象")
+    revision = _revision(payload.get("revision"))
+    now = int(time.time())
+    with closing(_project_db()) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT revision,deleted FROM digital_ip_projects WHERE id=? AND username=?",
+            (project_id, username),
+        ).fetchone()
+        if not row or row["deleted"]:
+            conn.rollback()
+            raise DigitalIPNotFound("项目不存在")
+        if int(row["revision"]) != revision:
+            conn.rollback()
+            raise DigitalIPRevisionConflict("项目已更新，请读取最新版本后重试")
+        conn.execute(
+            "UPDATE digital_ip_projects SET deleted=1,revision=?,updated_at=? WHERE id=? AND username=? AND deleted=0",
+            (revision + 1, now, project_id, username),
+        )
+        conn.commit()
+    return {"id": project_id, "deleted": True}
 
 
 def _clean_project_title(value):
@@ -1206,7 +1238,10 @@ def create_project(username, payload):
 
 def list_projects(username):
     with closing(_project_db()) as conn:
-        rows = conn.execute("SELECT * FROM digital_ip_projects WHERE username=? ORDER BY updated_at DESC, id DESC", (username,)).fetchall()
+        rows = conn.execute(
+            "SELECT * FROM digital_ip_projects WHERE username=? AND deleted=0 ORDER BY updated_at DESC, id DESC",
+            (username,),
+        ).fetchall()
     return [_project_public(row) for row in rows]
 
 
@@ -1955,6 +1990,13 @@ def dispatch_http(handler, method, verify_token, must_change_password):
         if method == "PATCH":
             project_id = path[len(root) + 1:]
             handler._send(404, {"detail": "not found"}) if not project_id or "/" in project_id else handler._send(200, {"project": patch_project(user["username"], project_id, body)})
+            return True
+        if method == "DELETE":
+            project_id = path[len(root) + 1:]
+            if not project_id or "/" in project_id:
+                handler._send(404, {"detail": "not found"})
+            else:
+                handler._send(200, {"project": delete_project(user["username"], project_id, body)})
             return True
         if method == "POST" and path == root:
             handler._send(200, {"project": create_project(user["username"], body)})
