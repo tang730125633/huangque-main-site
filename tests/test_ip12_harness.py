@@ -1148,7 +1148,7 @@ class IP12HarnessTests(unittest.TestCase):
             model="test-model",
             release_sha="abc123",
         )
-        self.assertEqual(trace["agent_release"], "ip12-a0.1")
+        self.assertEqual(trace["agent_release"], "ip12-a0.2")
         self.assertEqual(trace["state_schema"], 2)
         self.assertEqual(
             trace["skills"],
@@ -1162,6 +1162,32 @@ class IP12HarnessTests(unittest.TestCase):
         self.assertEqual(trace["release_sha"], "abc123")
         with self.assertRaises(harness.HarnessError):
             harness.agent_trace("unknown-skill")
+
+    def test_each_open_module_loads_one_versioned_skill_contract(self):
+        manifest = harness.module_skill_manifest()
+        self.assertEqual(set(manifest), {"1", "2", "3", "4", "5", "6"})
+        for module in range(1, 7):
+            with self.subTest(module=module):
+                state = harness.initial_state()
+                state["intake"]["status"] = "complete"
+                state["completed_modules"] = list(range(1, module))
+                state["current_module"] = module
+                state["module_step"] = 0
+                if module >= 5:
+                    state["foundation_report"] = {"status": "confirmed"}
+                skill = harness.load_module_skill(module)
+                self.assertEqual(skill["id"], manifest[str(module)]["id"])
+                self.assertEqual(
+                    skill["checkpoint_count"],
+                    len(harness.MODULE_WORKFLOWS[module]["checkpoints"]),
+                )
+                prompt = harness.system_prompt(state)
+                self.assertIn(skill["id"], prompt)
+                self.assertIn(skill["prompt_version"], prompt)
+                self.assertIn(skill["instructions"], prompt)
+                for other in range(1, 7):
+                    if other != module:
+                        self.assertNotIn(manifest[str(other)]["id"], prompt)
 
     def test_schema_v1_migrates_before_normalization_and_is_idempotent(self):
         legacy = {

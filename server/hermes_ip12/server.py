@@ -3409,6 +3409,7 @@ def healthz():
     return jsonify({
         "ok": True,
         "agent_release": coach_harness.AGENT_RELEASE_MANIFEST["agent_release"],
+        "module_skills": coach_harness.module_skill_manifest(),
         "state_schema": coach_harness.SCHEMA_VERSION,
         "release_sha": IP12_RELEASE_SHA,
         "master_agent_mode": MASTER_AGENT_MODE,
@@ -5386,6 +5387,9 @@ def _persist_model_turn(
         if user_message:
             _append_or_reuse_user_message(convo, user_message, message_id)
         message_skills = list(trace_skills or [])
+        module_skill = (
+            "" if was_intake else coach_harness.module_skill_id(state["current_module"])
+        )
         if prefix and "harness_action" not in message_skills:
             message_skills.append("harness_action")
         primary_skill = decision_trace_skill or (
@@ -5393,7 +5397,10 @@ def _persist_model_turn(
             "diagnostic_choice" if decision.get("choices") else
             "module_checkpoint"
         )
-        message_skills.append(primary_skill)
+        for skill_id in (module_skill, primary_skill):
+            if skill_id and skill_id not in message_skills:
+                message_skills.append(skill_id)
+        prompt_skill = module_skill or primary_skill
         choice_target_id = str(
             ((next_state.get("pending") or {}).get("id")
              if (next_state.get("pending") or {}).get("choices") else "") or ""
@@ -5404,7 +5411,7 @@ def _persist_model_turn(
             message_skills,
             prompt_version="" if not model_used else coach_harness.AGENT_RELEASE_MANIFEST[
                 "skills"
-            ][primary_skill].get("prompt_version"),
+            ][prompt_skill].get("prompt_version"),
             model=MODEL if model_used else None,
             **({"choice_target_id": choice_target_id} if choice_target_id else {}),
         )

@@ -7,6 +7,8 @@ without a model call or Flask runtime.
 
 from copy import deepcopy
 from difflib import SequenceMatcher
+from functools import lru_cache
+from pathlib import Path
 import re
 import uuid
 
@@ -18,8 +20,17 @@ CHOICE_FIELD_LIMITS = {"title": 16, "summary": 36, "reason": 16, "caution": 16}
 CHOICE_REQUIRED_FIELD_ORDER = (*CHOICE_FIELD_LIMITS, "recommended")
 CHOICE_REQUIRED_FIELDS = frozenset(CHOICE_REQUIRED_FIELD_ORDER)
 CHOICE_MATERIALIZED_FIELDS = CHOICE_REQUIRED_FIELDS | {"choice_id", "display_index"}
+MODULE_SKILL_SPECS = {
+    1: {"id": "ip12-positioning-diagnosis", "folder": "module-01-positioning", "contract_version": "1.0.0", "prompt_version": "module-01-positioning-v1", "checkpoint_count": 2},
+    2: {"id": "ip12-persona-design", "folder": "module-02-persona", "contract_version": "1.0.0", "prompt_version": "module-02-persona-v1", "checkpoint_count": 2},
+    3: {"id": "ip12-value-proposition", "folder": "module-03-value-proposition", "contract_version": "1.0.0", "prompt_version": "module-03-value-v1", "checkpoint_count": 2},
+    4: {"id": "ip12-story-assets", "folder": "module-04-story-assets", "contract_version": "1.0.0", "prompt_version": "module-04-story-v1", "checkpoint_count": 4},
+    5: {"id": "ip12-content-topics", "folder": "module-05-content-topics", "contract_version": "1.0.0", "prompt_version": "module-05-topics-v1", "checkpoint_count": 3},
+    6: {"id": "ip12-talking-copy", "folder": "module-06-talking-copy", "contract_version": "1.0.0", "prompt_version": "module-06-talking-copy-v1", "checkpoint_count": 3},
+}
+MODULE_SKILLS_DIR = Path(__file__).resolve().parent / "skills"
 AGENT_RELEASE_MANIFEST = {
-    "agent_release": "ip12-a0.1",
+    "agent_release": "ip12-a0.2",
     "state_schema": SCHEMA_VERSION,
     "skills": {
         "intake": {"contract_version": "1.0.0", "prompt_version": "intake-v1"},
@@ -33,6 +44,13 @@ AGENT_RELEASE_MANIFEST = {
         "production_bridge": {"contract_version": "1.1.0", "prompt_version": None},
         "talking_head_video_agent": {"contract_version": "1.0.0", "prompt_version": None},
         "semantic_master_agent": {"contract_version": "1.0.0", "prompt_version": "semantic-master-v1"},
+        **{
+            spec["id"]: {
+                "contract_version": spec["contract_version"],
+                "prompt_version": spec["prompt_version"],
+            }
+            for spec in MODULE_SKILL_SPECS.values()
+        },
     },
 }
 
@@ -203,6 +221,63 @@ MODULE_WORKFLOWS = {
         ),
     },
 }
+
+
+def module_skill_id(module):
+    spec = MODULE_SKILL_SPECS.get(int(module))
+    if not spec:
+        raise HarnessError("模块 Skill 尚未开放")
+    return spec["id"]
+
+
+def module_skill_manifest():
+    return {
+        str(module): {
+            "id": spec["id"],
+            "contract_version": spec["contract_version"],
+            "prompt_version": spec["prompt_version"],
+            "checkpoint_count": spec["checkpoint_count"],
+        }
+        for module, spec in MODULE_SKILL_SPECS.items()
+    }
+
+
+@lru_cache(maxsize=AVAILABLE_MODULE_COUNT)
+def load_module_skill(module):
+    module = int(module)
+    spec = MODULE_SKILL_SPECS.get(module)
+    if not spec or module not in MODULE_WORKFLOWS:
+        raise HarnessError("模块 Skill 尚未开放")
+    if spec["checkpoint_count"] != len(MODULE_WORKFLOWS[module]["checkpoints"]):
+        raise HarnessError("模块 Skill checkpoint 与 Harness 不一致：%s" % spec["id"])
+    path = MODULE_SKILLS_DIR / spec["folder"] / "SKILL.md"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise HarnessError("模块 Skill 文件不可用：%s" % spec["id"]) from exc
+    match = re.match(r"^---\n(.*?)\n---\n?(.*)$", text, re.S)
+    if not match:
+        raise HarnessError("模块 Skill frontmatter 无效：%s" % spec["id"])
+    frontmatter, instructions = match.groups()
+    checks = (
+        re.search(r"^name:\s*%s\s*$" % re.escape(spec["id"]), frontmatter, re.M),
+        re.search(r"^\s+module:\s*[\"']?%s[\"']?\s*$" % module, frontmatter, re.M),
+        re.search(
+            r"^\s+contract_version:\s*[\"']?%s[\"']?\s*$"
+            % re.escape(spec["contract_version"]), frontmatter, re.M,
+        ),
+        re.search(
+            r"^\s+prompt_version:\s*[\"']?%s[\"']?\s*$"
+            % re.escape(spec["prompt_version"]), frontmatter, re.M,
+        ),
+        re.search(
+            r"^\s+checkpoint_count:\s*[\"']?%s[\"']?\s*$"
+            % spec["checkpoint_count"], frontmatter, re.M,
+        ),
+    )
+    if not all(checks) or not instructions.strip():
+        raise HarnessError("模块 Skill 合同不匹配：%s" % spec["id"])
+    return {**spec, "instructions": instructions.strip()}
 
 CONFIRM_TEXTS = frozenset({
     "确认", "确认无误", "确认资料", "确认补充", "确认这一步", "确认本模块",
@@ -1862,6 +1937,7 @@ def system_prompt(value):
     state = normalize_state(value)
     module = state["current_module"]
     workflow = MODULE_WORKFLOWS[module]
+    skill = load_module_skill(module)
     next_step = state["module_step"] + 1
     if next_step > len(workflow["checkpoints"]):
         return f"""你是黄雀 IP12 的中立 IP 咨询教练，适用于任何职业和行业。
@@ -1912,6 +1988,10 @@ def system_prompt(value):
 当前唯一允许处理的断点：{next_step}. {checkpoint}
 本模块所需资料：{workflow['required']}
 {editing_note}
+
+当前模块 Skill：{skill['id']}（合同 {skill['contract_version']}，Prompt {skill['prompt_version']}）
+以下 Skill 只定义当前模块的方法，由 Harness 决定状态、确认和推进：
+{skill['instructions']}
 
 工作规则：
 - 每轮只处理当前断点，禁止输出后续断点、宣布模块完成或切换模块。

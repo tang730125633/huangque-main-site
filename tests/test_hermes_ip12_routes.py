@@ -185,7 +185,8 @@ assert all(item["status"] == "unlocked" for item in server.capability_gates(stat
 import server
 payload = server.app.test_client().get('/healthz').get_json()
 assert payload['release_sha'] == 'file-release-sha', payload
-assert payload['agent_release'] == 'ip12-a0.1', payload
+assert payload['agent_release'] == 'ip12-a0.2', payload
+assert set(payload['module_skills']) == {'1', '2', '3', '4', '5', '6'}, payload
 assert payload['state_schema'] == 2, payload
 assert payload['master_agent_mode'] == 'off', payload
 """
@@ -2525,7 +2526,10 @@ assert "1-2" not in server.load_conversation(cid)["coach_state"]["ip_profile"]["
 saved = server.load_conversation(cid)
 choice_message = next(item for item in reversed(saved["messages"]) if item.get("choice_target_id"))
 assert choice_message["agent_trace"]["skills"][-1]["id"] == "diagnostic_choice"
-assert choice_message["agent_trace"]["prompt_version"] == "diagnostic-choice-v1"
+assert "ip12-positioning-diagnosis" in [
+    item["id"] for item in choice_message["agent_trace"]["skills"]
+]
+assert choice_message["agent_trace"]["prompt_version"] == "module-01-positioning-v1"
 assert choice_message["agent_trace"]["model"] == server.MODEL
 deterministic = server._deterministic_decision({"decision": "answer_only"})
 assert deterministic["_model_used"] is False and deterministic["_trace_skill"] == "module_checkpoint"
