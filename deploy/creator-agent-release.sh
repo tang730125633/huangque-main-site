@@ -52,6 +52,7 @@ systemctl is-active --quiet "$SERVICE" && WAS_ACTIVE=1 || true
 
 install -d -o root -g root -m 0755 "$RUNTIME" "$RELEASES"
 NEW_RELEASE="$(mktemp -d "$RELEASES/${SHA}.XXXXXX")"
+chmod 0755 "$NEW_RELEASE"
 install -d -o root -g root -m 0755 "$NEW_RELEASE/creator_agent"
 install -o root -g root -m 0644 "$ROOT/server/creator_agent_api.py" "$NEW_RELEASE/creator_agent_api.py"
 install -o root -g root -m 0644 "$ROOT/server/creator_agent/"*.py "$NEW_RELEASE/creator_agent/"
