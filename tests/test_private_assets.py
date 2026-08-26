@@ -249,6 +249,7 @@ class PrivateAssetsTest(unittest.TestCase):
             self.assertIn(module, runbook)
         for requirement in (
             "HQ_RELEASE_COMMIT",
+            'git merge-base --is-ancestor "$HQ_RELEASE_COMMIT" origin/main',
             "HQ_RELEASE_STAGE",
             "HQ_RELEASE_MANIFEST",
             "release-staging/formal-delivery-",
@@ -300,6 +301,38 @@ class PrivateAssetsTest(unittest.TestCase):
         )
         self.assertLess(staged_import, rollback_armed)
         self.assertLess(rollback_armed, first_live_install)
+        automatic_rollback = runbook[
+            runbook.index("finish_release() {"):runbook.index("trap finish_release EXIT")
+        ]
+        automatic_stop = automatic_rollback.index(
+            "sudo systemctl stop huangque-content huangque-admin"
+        )
+        automatic_restore = automatic_rollback.index(
+            "if restore_release_manifest; then"
+        )
+        automatic_restart = automatic_rollback.index(
+            "sudo systemctl restart huangque-content huangque-admin"
+        )
+        self.assertLess(automatic_stop, automatic_restore)
+        self.assertLess(automatic_restore, automatic_restart)
+        self.assertIn(
+            "formal-delivery manifest rollback failed; services remain stopped",
+            automatic_rollback,
+        )
+        manual_rollback = runbook[
+            runbook.index("<<'REMOTE_ROLLBACK'"):runbook.index("REMOTE_ROLLBACK\n")
+        ]
+        manual_stop = manual_rollback.index(
+            "sudo systemctl stop huangque-content huangque-admin"
+        )
+        manual_restore = manual_rollback.index(
+            "while IFS=$'\\t' read -r HQ_SOURCE HQ_TARGET HQ_STATE; do"
+        )
+        manual_restart = manual_rollback.index(
+            "sudo systemctl restart huangque-content huangque-admin"
+        )
+        self.assertLess(manual_stop, manual_restore)
+        self.assertLess(manual_restore, manual_restart)
         self.assertIn("原生 2K", drop_in)
         self.assertNotIn("1080p", drop_in)
 
