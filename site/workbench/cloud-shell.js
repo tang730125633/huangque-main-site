@@ -144,6 +144,7 @@
 
   function revealReadyFeatureNav(aside){
     [
+      ['creator_agent_v1','/api/creator-agent/capability'],
       ['pixelle_text_video','/api/gen/text-video/capability'],
       ['matrix_template_video','/api/gen/matrix-template/capability']
     ].forEach(function(entry){
@@ -192,6 +193,7 @@
       '.hq-aside-compact .hq-side-points{display:none!important}'+
       '.hq-aside-compact .hq-side-bots{width:44px;height:42px;justify-content:center;padding:0!important;box-sizing:border-box}'+
       '.hq-aside-compact .hq-side-bots-label,.hq-aside-compact .hq-side-bots-arrow{display:none!important}'+
+      '.hq-side-ai-entry.is-active{border-color:rgba(231,178,76,.48)!important;background:rgba(231,178,76,.12)!important;box-shadow:inset 3px 0 0 #e7b24c}'+
       '.hq-aside-compact #hqUserCard{width:44px}'+
       '.hq-aside-compact .hq-user-row,.hq-aside-compact .hq-login-row{justify-content:center!important;padding:5px!important}'+
       '.hq-aside-compact .hq-user-copy,.hq-aside-compact .hq-user-logout{display:none!important}'+
@@ -294,10 +296,10 @@
           '<div style="font-size:12px; color:#94a4bb;">剩余点数</div>'+
           '<div id="hqPointsSide" class="mono" style="font-size:30px; font-weight:700; color:#e7b24c; line-height:1.1; margin:3px 0 9px;">—</div>'+
           '<div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;"><a href="recharge.html" style="display:inline-flex; align-items:center; gap:5px; font-size:12.5px; color:#e7b24c; cursor:pointer; font-weight:600;">去充值 <span style="display:flex; width:13px;">'+icon('arrowMini')+'</span></a><button type="button" data-points-detail="1" style="border:0;background:transparent;color:#94a4bb;cursor:pointer;font:700 12.5px inherit;padding:0;">明细</button></div></div>'+
-        '<a href="bots.html" class="hq-side-bots" aria-label="Bot 在线" title="Bot 在线" style="display:flex; align-items:center; gap:8px; padding:10px 14px; border:1px solid rgba(45,212,191,.2); border-radius:12px; background:rgba(45,212,191,.05);">'+
-          '<span style="width:7px; height:7px; border-radius:50%; background:#2dd4bf; box-shadow:0 0 8px #2dd4bf; animation:hq-pulse 2s infinite;"></span>'+
-          '<span class="hq-side-bots-label" style="font-size:13px; color:#94a4bb; flex:1; white-space:nowrap;"><span class="mono" style="color:#2dd4bf; font-weight:600;">34</span> 个 Bot 在线</span>'+
-          '<span class="hq-side-bots-arrow" style="display:flex; width:13px; color:#2dd4bf;">'+icon('arrowMini')+'</span></a>'+
+        '<a href="creator-agent.html" class="hq-side-bots hq-side-ai-entry'+(active==='creator-agent'?' is-active':'')+'" data-nav-feature="creator_agent_v1" hidden aria-label="AI 创作助手" title="AI 创作助手" style="display:none; align-items:center; gap:8px; padding:10px 14px; border:1px solid rgba(231,178,76,.26); border-radius:12px; background:rgba(231,178,76,.07); text-decoration:none;">'+
+          '<span style="display:flex; width:18px; color:#e7b24c;">'+iconDuo('sparkles','18px','#e7b24c')+'</span>'+
+          '<span class="hq-side-bots-label" style="font-size:13px; color:#e8eef6; font-weight:700; flex:1; white-space:nowrap;">AI 创作助手</span>'+
+          '<span class="hq-side-bots-arrow" style="display:flex; width:13px; color:#e7b24c;">'+icon('arrowMini')+'</span></a>'+
         '<div id="hqUserCard"></div>'+
       '</div>';
 
