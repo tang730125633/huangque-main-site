@@ -12,7 +12,7 @@
   视频号 无全网关键词搜（盯号型）；下载地址加密(decode_key)→口播 v1 先跳过；评论带评论者 finder username + ip_region。
 
 环境变量：TIKHUB_KEY（必填）、TIKHUB_BASE（默认 api.tikhub.io；大陆服务器改 api.tikhub.dev）、
-         OPENAI_API_KEY / OPENAI_BASE（口播 ASR 用，与 content_api 同源）。
+         OPENAI_API_KEY / OPENAI_TRANSCRIBE_BASE（口播 ASR 专用，不跟随其他 OpenAI 中转）。
 """
 import os, re, json, time, threading, sqlite3, subprocess, tempfile, urllib.request, urllib.parse, urllib.error
 from contextlib import closing
@@ -22,6 +22,9 @@ BASE = os.environ.get("TIKHUB_BASE", "https://api.tikhub.io").rstrip("/")
 UA   = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 OPENAI_KEY  = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com")
+OPENAI_TRANSCRIBE_BASE = os.environ.get(
+    "OPENAI_TRANSCRIBE_BASE", "https://api.openai.com"
+).strip()
 # 口播转写模型：默认 gpt-4o-mini-transcribe（中文口播更准、更便宜），可 env 回退 whisper-1
 TRANSCRIBE_MODEL = os.environ.get("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe")
 # 采集口播转写并发限制：多任务同时挤 OpenAI ASR 通道 + 抢下载带宽会互相拖垮(单次11s→并发几分钟甚至超时)。
@@ -866,7 +869,7 @@ def _log_asr_step(step, start, **extra):
 
 
 def _openai_url(path):
-    base = str(OPENAI_BASE or "https://api.openai.com").strip().rstrip("/")
+    base = str(OPENAI_TRANSCRIBE_BASE or "https://api.openai.com").strip().rstrip("/")
     if not base.endswith("/v1"):
         base += "/v1"
     return base + "/" + str(path or "").lstrip("/")
