@@ -1918,6 +1918,8 @@ class H(BaseHTTPRequestHandler):
         self._cinematic_charge_started = False
         self._script_to_video_early_idempotency = None
         self._script_to_video_charge_started = False
+        self._matrix_template_early_idempotency = None
+        self._matrix_template_charge_started = False
         try:
             return H._do_POST(self)
         finally:
@@ -1939,6 +1941,13 @@ class H(BaseHTTPRequestHandler):
                     _idempotency_abort(*self._script_to_video_early_idempotency)
                 except Exception as exc:
                     print("[script_to_video] ALARM idempotency abort failed: %s" %
+                          type(exc).__name__, flush=True)
+            if (self._matrix_template_early_idempotency
+                    and not self._matrix_template_charge_started):
+                try:
+                    _idempotency_abort(*self._matrix_template_early_idempotency)
+                except Exception as exc:
+                    print("[matrix_template] ALARM idempotency abort failed: %s" %
                           type(exc).__name__, flush=True)
 
     def _do_POST(self):
@@ -3190,7 +3199,7 @@ class H(BaseHTTPRequestHandler):
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})
             if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
             try:
-                if kind != "image":
+                if kind not in {"image", "matrix_template_video"}:
                     feature_flags.require_enabled(kind)
             except feature_flags.FeatureDisabled as e: return self._send(503, {"detail": str(e)})
             if kind == "canvas_agent" and is_shutting_down():
@@ -3202,13 +3211,14 @@ class H(BaseHTTPRequestHandler):
             still_attempt = None
             cinematic_idem_reserved = False
             script_to_video_idem_reserved = False
+            matrix_template_idem_reserved = False
             script_to_video_quote_token = ""
             still_access = _short_drama_canvas_access(self) if is_still_route else None
             scene_access = None
             minimax_idem_body = None
             try:
                 body = self._json_body_strict() if is_still_route or kind in {"video", "tryon", "sora_video", "cinematic", "avatar", "script_to_video", "matrix_template_video", "copy", "canvas_agent"} else self._json_body()
-                if kind in {"cinematic", "script_to_video"}:
+                if kind in {"cinematic", "script_to_video", "matrix_template_video"}:
                     request_body = dict(body) if isinstance(body, dict) else body
                     idem_key = _idempotency_key(self.headers.get("Idempotency-Key"))
                     if idem_key:
@@ -3232,10 +3242,15 @@ class H(BaseHTTPRequestHandler):
                             if cinematic_idem_reserved:
                                 self._cinematic_early_idempotency = (
                                     user["username"], p, idem_key)
-                        else:
+                        elif kind == "script_to_video":
                             script_to_video_idem_reserved = idem_state == "new"
                             if script_to_video_idem_reserved:
                                 self._script_to_video_early_idempotency = (
+                                    user["username"], p, idem_key)
+                        else:
+                            matrix_template_idem_reserved = idem_state == "new"
+                            if matrix_template_idem_reserved:
+                                self._matrix_template_early_idempotency = (
                                     user["username"], p, idem_key)
                 if is_still_route:
                     request_body, still_idem_body = _short_drama_domain().short_drama_production.normalize_still_request(body, require_quote=True); idem_key = _idempotency_key(self.headers.get("Idempotency-Key"))
@@ -3381,7 +3396,8 @@ class H(BaseHTTPRequestHandler):
                     body = audio_domain.validate_audio_payload(
                         body, user["username"]
                     )
-                if not is_still_route and kind not in {"cinematic", "script_to_video"}:
+                if not is_still_route and kind not in {
+                        "cinematic", "script_to_video", "matrix_template_video"}:
                     request_body = dict(body) if isinstance(body, dict) else body
                     if (
                         kind == "xiaole_video"
@@ -3393,7 +3409,7 @@ class H(BaseHTTPRequestHandler):
                         if minimax_idem_body is not None:
                             request_body = minimax_idem_body
                 # cinematic 也纳入：它提交即扣 $7，是最该防重复提交的一档（同一单任务路径，无额外风险）
-                if not is_still_route: idem_key = idem_key if kind in {"cinematic", "script_to_video"} else (_idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "audio", "video", "tryon", "xiaole_video", "sora_video", "avatar", "canvas_agent", "script_to_video", "matrix_template_video", "breakdown", "copy"} else "")
+                if not is_still_route: idem_key = idem_key if kind in {"cinematic", "script_to_video", "matrix_template_video"} else (_idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "audio", "video", "tryon", "xiaole_video", "sora_video", "avatar", "canvas_agent", "script_to_video", "matrix_template_video", "breakdown", "copy"} else "")
                 if kind == "canvas_agent" and not idem_key:
                     raise ValueError("画布 Agent 提交必须提供 Idempotency-Key")
                 if kind == "matrix_template_video" and not idem_key:
@@ -3405,9 +3421,17 @@ class H(BaseHTTPRequestHandler):
             except feature_flags.FeatureDisabled as e:
                 if still_idem_started:
                     _idempotency_abort(user["username"], p, idem_key)
+                if matrix_template_idem_reserved:
+                    _idempotency_abort(user["username"], p, idem_key)
+                    self._matrix_template_early_idempotency = None
+                    matrix_template_idem_reserved = False
                 disabled = {"detail": str(e)}
                 if kind == "script_to_video" and isinstance(body, dict) and body.get("pipeline") == "pixelle":
                     disabled["operation_terminal"] = True
+                if kind == "matrix_template_video":
+                    disabled.update({
+                        "code": "feature_disabled", "retry_after_ms": 5000,
+                    })
                 return self._send(503, disabled)
             except miniprogram_security.ContentRejected as e:
                 terminal = is_still_route and bool(locals().get("idem_key"))
@@ -3420,6 +3444,8 @@ class H(BaseHTTPRequestHandler):
                 if still_idem_started:
                     _idempotency_abort(user["username"], p, idem_key)
                 if script_to_video_idem_reserved:
+                    _idempotency_abort(user["username"], p, idem_key)
+                if matrix_template_idem_reserved:
                     _idempotency_abort(user["username"], p, idem_key)
                 _short_drama_domain()._http_error(self, e,
                     operation_terminal=is_still_route and bool(locals().get("idem_key")))
@@ -3513,7 +3539,7 @@ class H(BaseHTTPRequestHandler):
                         recovered["points_left"] = points_domain.get_points(user["username"])
                         _idempotency_complete(user["username"], p, idem_key, recovered)
                         return self._send(200, recovered)
-                if not is_still_route: idem_state, idem_response = ("new", None) if seedance_idem_reserved or cinematic_idem_reserved or script_to_video_idem_reserved else _idempotency_begin(user["username"], p, idem_key, request_body)
+                if not is_still_route: idem_state, idem_response = ("new", None) if seedance_idem_reserved or cinematic_idem_reserved or script_to_video_idem_reserved or matrix_template_idem_reserved else _idempotency_begin(user["username"], p, idem_key, request_body)
                 if idem_state == "replay": replay = dict(idem_response or {}); return self._send(int(replay.pop("_http_status", 200)), replay)
                 if idem_state == "conflict": return self._send(409, {"detail": "同一个 Idempotency-Key 不能用于不同请求", "code": "idempotency_conflict"})
                 if idem_state == "processing" and not is_still_route: return self._send(409, {"detail": "相同请求正在受理，请稍后查询", "code": "idempotency_in_progress", "retry_after_ms": 1000})
@@ -3626,6 +3652,8 @@ class H(BaseHTTPRequestHandler):
                             self._cinematic_charge_started = True
                         if kind == "script_to_video":
                             self._script_to_video_charge_started = True
+                        if kind == "matrix_template_video":
+                            self._matrix_template_charge_started = True
                         jid, points_left = jobs_store.create_paid_job(
                             jdb, points_domain.deduct_points, points_domain.refund_points,
                             kind, user["username"], cost, body, SERVICE_OWNER,
