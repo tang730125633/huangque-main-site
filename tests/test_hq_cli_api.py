@@ -1473,18 +1473,29 @@ class HQCLIAPITests(unittest.TestCase):
 
     def test_server_requires_confirmation_for_external_ai_and_writes(self):
         token = self._token(["prompt:optimize", "ip12:write", "ip12:chat", "canvas:write", "assets:write",
-                             "video-compose:write", "digital-presenter:write", "inspiration:write", "leads:write"])
+                             "video-compose:write", "digital-presenter:write", "inspiration:write", "leads:write",
+                             "short-drama:write"])
         cases = [
             ("prompt-optimize", {"prompt": "portrait", "kind": "image"}),
             ("ip12-create", {"title": "my project"}),
             ("ip12-message", {"project_id": "ip_1", "message": "我的客户是餐饮老板", "request_id": "turn-001"}),
             ("ip12-delete", {"project_id": "ip_1"}),
             ("canvas-create", {"name": "my board"}),
+            ("canvas-delete", {"board_id": "cb_1"}),
             ("asset-tags", {"kind": "image", "key": "asset-1", "tags": ["客户案例"]}),
             ("asset-delete", {"kind": "image", "id": 7}),
             ("asset-delete", {"kind": "video", "keys": ["12", "34"]}),
             ("video-compose-create", {"source_asset_id": 7}),
+            ("video-compose-delete", {"project_id": "compose_" + "a" * 32, "expected_revision": 2}),
             ("digital-presenter-create", {"board_id": "cb_1", "request_id": "hqcli-dp-001"}),
+            ("digital-presenter-delete", {"board_id": "cb_1", "project_id": "dp_" + "b" * 32, "revision": 3}),
+            ("short-drama-create", {"title": "新剧", "synopsis": "一个八集短剧的故事", "ratio": "9:16",
+             "target_duration": "15-30", "shot_count": 6, "request_id": "hqcli-sd-001"}),
+            ("short-drama-delete", {"project_id": "p_1", "revision": 1}),
+            ("leads-delete", {"lead_ids": ["a" * 16]}),
+            ("digital-ip-create", {"title": "新 IP"}),
+            ("digital-ip-update", {"project_id": "p_1", "revision": 2, "title": "改名"}),
+            ("digital-ip-delete", {"project_id": "p_1", "revision": 2}),
             ("inspiration-like", {"id": 7, "favorite": True}),
             ("leads-crm-upsert", {"lead_id": "a" * 16, "follow_status": "跟进中"}),
         ]
@@ -1615,6 +1626,57 @@ class HQCLIAPITests(unittest.TestCase):
             plan = self.auth.hq_cli_api.action_plan("assets", {"kind": kind, "limit": 10, "offset": 20})
             self.assertIn("limit=10", plan["path"])
             self.assertIn("offset=20", plan["path"])
+
+    def test_crud_deletes_and_creates_map_to_owner_scoped_routes(self):
+        canvas = self.auth.hq_cli_api.action_plan("canvas-delete", {"board_id": "cb_1"})
+        self.assertEqual(("canvas:write", "canvas-delete", "cb_1"),
+                         (canvas["scope"], canvas["kind"], canvas["board_id"]))
+        compose = self.auth.hq_cli_api.action_plan(
+            "video-compose-delete", {"project_id": "compose_" + "a" * 32, "expected_revision": 2})
+        self.assertEqual(("video-compose:write", "DELETE"), (compose["scope"], compose["method"]))
+        self.assertTrue(compose["path"].startswith("/api/gen/video-compose/projects/compose_"))
+        self.assertEqual({"expected_revision": 2}, compose["body"])
+        presenter = self.auth.hq_cli_api.action_plan(
+            "digital-presenter-delete", {"board_id": "cb_1", "project_id": "dp_" + "b" * 32, "revision": 3})
+        self.assertEqual(("digital-presenter:write", "DELETE"), (presenter["scope"], presenter["method"]))
+        self.assertIn("revision=3", presenter["path"])
+        self.assertEqual("cb_1", presenter["headers"]["X-Canvas-Board-Id"])
+        drama = self.auth.hq_cli_api.action_plan("short-drama-create", {
+            "title": "新剧", "synopsis": "一个八集短剧的故事", "ratio": "9:16",
+            "target_duration": "15-30", "shot_count": 6, "request_id": "hqcli-sd-001",
+        })
+        self.assertEqual(("short-drama:write", "POST"), (drama["scope"], drama["method"]))
+        self.assertEqual("/api/gen/short-drama/projects", drama["path"])
+        self.assertEqual("hqcli-sd-001", drama["headers"]["Idempotency-Key"])
+        drama_delete = self.auth.hq_cli_api.action_plan(
+            "short-drama-delete", {"project_id": "p_1", "revision": 1})
+        self.assertEqual("/api/gen/short-drama/project/delete", drama_delete["path"])
+        leads = self.auth.hq_cli_api.action_plan("leads-delete", {"lead_ids": ["a" * 16, "a" * 16]})
+        self.assertEqual(("leads:write", "DELETE", ["a" * 16]), (leads["scope"], leads["method"], leads["body"]["lead_ids"]))
+        dip_create = self.auth.hq_cli_api.action_plan("digital-ip-create", {"title": "新 IP"})
+        self.assertEqual(("ip12:write", "POST", "/api/gen/digital-ip/projects"),
+                         (dip_create["scope"], dip_create["method"], dip_create["path"]))
+        dip_update = self.auth.hq_cli_api.action_plan(
+            "digital-ip-update", {"project_id": "p_1", "revision": 2, "title": "改名"})
+        self.assertEqual(("PATCH", {"revision": 2, "title": "改名"}), (dip_update["method"], dip_update["body"]))
+        self.assertTrue(dip_update["path"].endswith("/digital-ip/projects/p_1"))
+        dip_delete = self.auth.hq_cli_api.action_plan(
+            "digital-ip-delete", {"project_id": "p_1", "revision": 2})
+        self.assertEqual(("DELETE", {"revision": 2}), (dip_delete["method"], dip_delete["body"]))
+        for bad in (
+            ("short-drama-create", {"title": "新剧", "synopsis": "太短", "ratio": "9:16",
+             "target_duration": "15-30", "shot_count": 6, "request_id": "hqcli-sd-001"}),
+            ("short-drama-create", {"title": "新剧", "synopsis": "一个八集短剧的故事", "ratio": "1:1",
+             "target_duration": "15-30", "shot_count": 6, "request_id": "hqcli-sd-001"}),
+            ("short-drama-delete", {"project_id": "p_1"}),
+            ("leads-delete", {"lead_ids": []}),
+            ("digital-ip-update", {"project_id": "p_1", "revision": 2}),
+            ("digital-ip-delete", {"project_id": "p_1"}),
+            ("video-compose-delete", {"project_id": "compose_" + "a" * 32}),
+        ):
+            with self.assertRaises(self.auth.hq_cli_api.CLIAPIError) as raised:
+                self.auth.hq_cli_api.action_plan(bad[0], bad[1])
+            self.assertEqual(400, raised.exception.status)
 
     def test_asset_delete_maps_to_batch_delete_and_rejects_bad_input(self):
         single = self.auth.hq_cli_api.action_plan("asset-delete", {"kind": "image", "id": 7})

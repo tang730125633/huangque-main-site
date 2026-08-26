@@ -57,6 +57,31 @@ def list_crm(username, lead_ids=None):
             rows = c.execute("SELECT * FROM lead_crm WHERE username=? ORDER BY updated_at DESC LIMIT 500", (username,)).fetchall()
     return {r["lead_id"]: _row_dict(r) for r in rows}
 
+def delete_crm(username, lead_ids):
+    ids = []
+    for lead_id in (lead_ids or []):
+        try:
+            ids.append(_clean_lead_id(lead_id))
+        except ValueError:
+            continue
+    ids = list(dict.fromkeys(ids))
+    if not ids:
+        raise ValueError("请选择要删除的线索")
+    with closing(crm_db()) as c:
+        c.execute("BEGIN IMMEDIATE")
+        deleted = []
+        for lead_id in ids:
+            cur = c.execute(
+                "DELETE FROM lead_crm WHERE username=? AND lead_id=?",
+                (username, lead_id),
+            )
+            if cur.rowcount > 0:
+                deleted.append(lead_id)
+        c.commit()
+    if not deleted:
+        raise ValueError("所选线索不存在或不属于当前账号")
+    return {"deleted": len(deleted)}
+
 def upsert_crm(username, payload):
     lead_id = _clean_lead_id((payload or {}).get("lead_id"))
     with closing(crm_db()) as c:

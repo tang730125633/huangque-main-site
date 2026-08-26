@@ -171,14 +171,44 @@ def create_project(username, source_asset_id, source_revision, source_snapshot):
 
 
 def get_project(username, project_id):
+    row = _get_row(username, project_id)
+    if not row:
+        raise ProjectNotFound("一键成片项目不存在")
+    if row["status"] == "deleted":
+        raise LookupError("项目不存在或不属于当前账号")
+    return _public(row)
+
+
+def delete_project(username, project_id, expected_revision):
+    now = int(time.time())
     with closing(db()) as connection:
         row = connection.execute(
+            "SELECT status,revision FROM video_compose_projects WHERE id=? AND username=?",
+            (project_id, str(username)),
+        ).fetchone()
+        if row is None or row["status"] == "deleted":
+            raise LookupError("项目不存在或不属于当前账号")
+        if int(row["revision"]) != int(expected_revision):
+            raise RevisionConflict("项目已更新，请读取最新版本后重试")
+        connection.execute(
+            """UPDATE video_compose_projects SET status='deleted',revision=?,updated_at=?
+               WHERE id=? AND username=? AND status!='deleted'""",
+            (int(expected_revision) + 1, now, project_id, str(username)),
+        )
+        connection.commit()
+        row = connection.execute(
+            "SELECT * FROM video_compose_projects WHERE id=? AND username=?",
+            (project_id, str(username)),
+        ).fetchone()
+    return _public(row)
+
+
+def _get_row(username, project_id):
+    with closing(db()) as connection:
+        return connection.execute(
             "SELECT * FROM video_compose_projects WHERE id=? AND username=?",
             (str(project_id), str(username)),
         ).fetchone()
-    if not row:
-        raise ProjectNotFound("一键成片项目不存在")
-    return _public(row)
 
 
 def list_projects(username, limit=30):
@@ -186,6 +216,7 @@ def list_projects(username, limit=30):
     with closing(db()) as connection:
         rows = connection.execute(
             """SELECT * FROM video_compose_projects WHERE username=?
+               AND status!='deleted'
                ORDER BY updated_at DESC LIMIT ?""",
             (str(username), limit),
         ).fetchall()
