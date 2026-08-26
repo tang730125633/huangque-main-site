@@ -15,6 +15,9 @@ import uuid
 
 
 OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com").rstrip("/")
+OPENAI_TRANSCRIBE_BASE = os.environ.get(
+    "OPENAI_TRANSCRIBE_BASE", "https://api.openai.com"
+).strip().rstrip("/")
 OPENAI_KEY = os.environ.get("OPENAI_API_KEY", "")
 ASR_MODEL = os.environ.get("VIDEO_COMPOSE_ASR_MODEL", "whisper-1").strip() or "whisper-1"
 MAX_SOURCE_SECONDS = max(10, min(600, int(os.environ.get("VIDEO_COMPOSE_MAX_SECONDS", "180") or 180)))
@@ -142,7 +145,7 @@ def transcribe(source_path, opener=None, api_key=None, base_url=None):
     if not key:
         raise AsrError("一键成片 ASR 未配置")
     opener = opener or urllib.request.build_opener()
-    base_url = str(base_url or OPENAI_BASE).rstrip("/")
+    base_url = str(base_url or OPENAI_TRANSCRIBE_BASE).rstrip("/")
     with tempfile.TemporaryDirectory(prefix="hq-compose-asr-") as directory:
         audio = pathlib.Path(directory) / "audio.mp3"
         duration = extract_audio(source_path, audio)

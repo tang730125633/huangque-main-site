@@ -9,12 +9,20 @@ import tikhub
 
 class TikhubAsrTests(unittest.TestCase):
     def test_openai_url_does_not_duplicate_v1(self):
-        with patch.object(tikhub, "OPENAI_BASE", "https://relay.example/openai/v1/"):
+        with patch.object(tikhub, "OPENAI_TRANSCRIBE_BASE", "https://relay.example/openai/v1/"):
             self.assertEqual(
                 tikhub._openai_url("audio/transcriptions"),
                 "https://relay.example/openai/v1/audio/transcriptions",
             )
-        with patch.object(tikhub, "OPENAI_BASE", "https://api.openai.com"):
+        with patch.object(tikhub, "OPENAI_TRANSCRIBE_BASE", "https://api.openai.com"):
+            self.assertEqual(
+                tikhub._openai_url("audio/transcriptions"),
+                "https://api.openai.com/v1/audio/transcriptions",
+            )
+
+    def test_transcribe_base_is_isolated_from_shared_openai_relay(self):
+        with patch.object(tikhub, "OPENAI_BASE", "https://dead-relay.example/openai/v1"), \
+             patch.object(tikhub, "OPENAI_TRANSCRIBE_BASE", "https://api.openai.com/v1"):
             self.assertEqual(
                 tikhub._openai_url("audio/transcriptions"),
                 "https://api.openai.com/v1/audio/transcriptions",
