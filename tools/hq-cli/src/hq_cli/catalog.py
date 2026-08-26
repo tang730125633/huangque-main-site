@@ -263,7 +263,7 @@ CAPABILITIES["short-drama-create"] = _api(
     {"title": {"type": "string", "minLength": 1, "maxLength": 80},
      "synopsis": {"type": "string", "minLength": 8, "maxLength": 4000},
      "ratio": {"type": "string", "enum": ["9:16", "16:9"]},
-     "target_duration": {"type": "string", "enum": ["15-30", "30-60", "60-90"]},
+     "target_duration": {"type": "integer", "enum": [30, 45, 60]},
      "shot_count": {"type": "integer", "minimum": 6, "maximum": 10},
      "genre": {"type": "string", "maxLength": 40},
      "visual_style": {"type": "string", "maxLength": 80},
@@ -781,6 +781,7 @@ TEXT_VIDEO_PLAN_FIELDS = {
     key: value for key, value in TEXT_VIDEO_FIELDS.items() if key != "talking_material"
 }
 TEXT_VIDEO_PLAN_FIELDS["ratio"] = {"type": "number", "minimum": 0.1, "maximum": 0.5}
+
 MATRIX_TEMPLATE_FIELDS = {
     "top_text": {"type": "string", "minLength": 2, "maxLength": 60},
     "bottom_text": {"type": "string", "minLength": 2, "maxLength": 80},
