@@ -231,6 +231,8 @@ def _validate(capability, payload):
             raise CliError(EXIT_INPUT, "input_error", "input field %s is too short" % key)
         if "maxLength" in definition and len(value) > definition["maxLength"]:
             raise CliError(EXIT_INPUT, "input_error", "input field %s is too long" % key)
+        if "pattern" in definition and not re.fullmatch(definition["pattern"], value):
+            raise CliError(EXIT_INPUT, "input_error", "input field %s has an invalid format" % key)
         if "minimum" in definition and value < definition["minimum"]:
             raise CliError(EXIT_INPUT, "input_error", "input field %s is below minimum" % key)
         if "maximum" in definition and value > definition["maximum"]:

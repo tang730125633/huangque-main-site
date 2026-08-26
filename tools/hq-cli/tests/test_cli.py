@@ -42,7 +42,7 @@ class HqCliTests(unittest.TestCase):
             self.assertEqual(0, code, error)
             self.assertTrue(self.payload(output)["schema"].startswith("hq."))
         code, output, _ = self.invoke(["version"])
-        self.assertEqual("0.11.1", self.payload(output)["cli_version"])
+        self.assertEqual("0.11.2", self.payload(output)["cli_version"])
         self.assertEqual("Huangque main-site CLI", self.payload(output)["product"])
         self.assertEqual("https://huangquechuanmei.com", self.payload(output)["origin"])
 
@@ -85,6 +85,7 @@ class HqCliTests(unittest.TestCase):
             "digital-ip-projects", "digital-ip-project", "digital-ip-report",
             "text-video-capability", "text-video-templates", "text-video-styles", "text-video-voices",
             "text-video-avatar-import", "text-video-plan", "text-video-generate", "pricing",
+            "matrix-template-capability", "matrix-template-templates", "matrix-template-generate",
             "inspiration-catalog", "inspiration-likes", "inspiration-like",
             "collect-content", "collect-video", "collect-transcript", "collect-search", "leads-generate",
             "leads-crm", "leads-crm-upsert", "video-avatars", "audio-slots",
@@ -159,6 +160,11 @@ class HqCliTests(unittest.TestCase):
         self.assertEqual([4, 8, 12], by_id["video-generate"]["input_schema"]["properties"]["seconds"]["enum"])
         self.assertEqual("server_quote", by_id["digital-ip-text-generate"]["cost"]["kind"])
         self.assertEqual("server_quote", by_id["text-video-generate"]["cost"]["kind"])
+        self.assertEqual("server_quote", by_id["matrix-template-generate"]["cost"]["kind"])
+        self.assertEqual(
+            ["top_text", "bottom_text", "template_id"],
+            by_id["matrix-template-generate"]["input_schema"]["required"],
+        )
         self.assertEqual(
             ["text", "template", "style", "voice"],
             by_id["text-video-generate"]["input_schema"]["required"],
@@ -231,6 +237,7 @@ class HqCliTests(unittest.TestCase):
         by_id = {item["id"]: item for item in self.payload(output)["capabilities"]}
         navigation = {
             "text-video": "/workbench/text-video", "short-drama": "/workbench/short-drama",
+            "matrix-template": "/workbench/matrix-template.html",
             "pricing-page": "/workbench/pricing", "invite": "/workbench/invite",
             "recharge": "/workbench/recharge", "bots": "/workbench/bots",
         }
@@ -245,6 +252,8 @@ class HqCliTests(unittest.TestCase):
             "digital-ip-report": "ip12:read", "text-video-capability": "assets:read",
             "text-video-templates": "assets:read", "text-video-styles": "assets:read",
             "text-video-voices": "assets:read", "pricing": "profile:read",
+            "matrix-template-capability": "assets:read",
+            "matrix-template-templates": "assets:read",
             "inspiration-catalog": "inspiration:read", "inspiration-likes": "inspiration:read",
             "leads-crm": "leads:read", "video-avatars": "assets:read", "audio-slots": "assets:read",
             "short-drama-projects": "short-drama:read", "short-drama-project": "short-drama:read",
@@ -270,6 +279,9 @@ class HqCliTests(unittest.TestCase):
             "digital-presenter-capability": {"digitalPresenter"},
             "text-video-capability": {"text_video"}, "text-video-generate": {"text_video"},
             "text-video-avatar-import": {"text_video"}, "text-video-plan": {"text_video"},
+            "matrix-template-capability": {"matrix_template.single"},
+            "matrix-template-templates": {"matrix_template.single"},
+            "matrix-template-generate": {"matrix_template.single"},
             "digital-ip-projects": {"digital_ip"},
             "pricing": {"pricing.catalog"},
             "inspiration-catalog": {"inspiration.browse"}, "inspiration-like": {"inspiration.like"},
@@ -355,6 +367,7 @@ class HqCliTests(unittest.TestCase):
             "digital-ip-report": {"project_id": "project_1"},
             "text-video-capability": {}, "text-video-templates": {},
             "text-video-styles": {}, "text-video-voices": {}, "pricing": {},
+            "matrix-template-capability": {}, "matrix-template-templates": {},
             "inspiration-catalog": {}, "inspiration-likes": {},
             "leads-crm": {"lead_ids": ["a" * 16]}, "video-avatars": {"limit": 20}, "audio-slots": {},
             "short-drama-projects": {"page": 1, "page_size": 20},
@@ -639,6 +652,55 @@ class HqCliTests(unittest.TestCase):
         first, second = request.call_args_list
         self.assertEqual(first.kwargs["body"]["input"], second.kwargs["body"]["input"])
         self.assertEqual("q.text-video", second.kwargs["body"]["quote_token"])
+
+    def test_matrix_template_quotes_confirms_and_reuses_exact_input(self):
+        self.authorize()
+        value = {
+            "top_text": "真正拉开差距的不是工具",
+            "bottom_text": "评论区留下关键词领取方案",
+            "template_id": "native-bold",
+        }
+        raw = json.dumps(value, ensure_ascii=False).encode("utf-8")
+        quote = {
+            "quote_token": "q.matrix", "kind": "matrix_template_video",
+            "cost": 5, "points": 100, "expires_in": 300,
+            "confirmation_required": True,
+        }
+        with patch("hq_cli.client.request_json", side_effect=[
+                (200, quote), (200, {"job_id": 92, "cost": 5, "points_left": 95})]) as request:
+            code, output, error = self.invoke(
+                ["run", "matrix-template-generate", "--input", "@-"], raw)
+            self.assertEqual(0, code, error)
+            self.assertEqual(5, self.payload(output)["result"]["cost"])
+            code, output, error = self.invoke([
+                "run", "matrix-template-generate", "--input", "@-", "--confirm",
+                "--quote-token", "q.matrix",
+            ], raw)
+        self.assertEqual(0, code, error)
+        self.assertEqual(92, self.payload(output)["result"]["job_id"])
+        first, second = request.call_args_list
+        self.assertEqual(first.kwargs["body"]["input"], second.kwargs["body"]["input"])
+        self.assertEqual("q.matrix", second.kwargs["body"]["quote_token"])
+
+    def test_matrix_template_rejects_unknown_fields_and_invalid_template_id(self):
+        self.authorize()
+        base = {
+            "top_text": "有效标题", "bottom_text": "有效行动文案",
+            "template_id": "native-bold",
+        }
+        for payload in (
+            dict(base, duration=8),
+            dict(base, bgm=False),
+            dict(base, template_id="../bad"),
+        ):
+            with self.subTest(payload=payload), patch("hq_cli.client.request_json") as request:
+                code, _, error = self.invoke(
+                    ["run", "matrix-template-generate", "--input", "@-"],
+                    json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                )
+                self.assertEqual(cli.EXIT_INPUT, code)
+                self.assertEqual("input_error", self.payload(error)["error"])
+                request.assert_not_called()
 
     def test_text_video_full_talking_flow_uses_import_plan_and_scene_selection(self):
         self.authorize()
