@@ -899,7 +899,7 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual(2, current["version"])
 
     def test_paid_quote_binds_user_payload_cost_expiry_and_idempotency(self):
-        token = self._token(["generation:quote", "generation:submit"])
+        token = self._token(["generation:quote", "generation:submit", "tasks:read"])
         submitted = []
 
         def fake_proxy(plan, web_token, internal_token):
@@ -965,7 +965,7 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertTrue(submitted[0]["headers"]["Idempotency-Key"].startswith("hqcli-"))
 
     def test_matrix_template_cli_quotes_and_confirms_normalized_payload(self):
-        token = self._token(["generation:quote", "generation:submit"])
+        token = self._token(["generation:quote", "generation:submit", "tasks:read"])
         submitted = []
 
         def fake_proxy(plan, _web_token, _internal_token):
@@ -978,8 +978,15 @@ class HQCLIAPITests(unittest.TestCase):
                     },
                 }, plan["body"])
                 return 200, {"kind": "matrix_template_video", "cost": 5, "points": 100}
-            submitted.append(plan)
-            return 200, {"job_id": 92, "cost": 5, "points_left": 95}
+            if plan["path"] == "/api/gen/matrix-template":
+                submitted.append(plan)
+                return 200, {"job_id": 92, "cost": 5, "points_left": 95}
+            if plan["path"] == "/api/gen/job/92":
+                return 200, {"job_id": 92, "kind": "matrix_template_video", "status": "pending"}
+            if plan["path"].startswith("/api/gen/points/history?"):
+                self.assertIn("kind=matrix_template_video", plan["path"])
+                return 200, {"items": [{"job_id": 92, "kind": "matrix_template_video"}]}
+            self.fail("unexpected proxy path: " + plan["path"])
 
         input_body = {
             "top_text": "  有效标题  ", "bottom_text": " 有效行动文案 ",
@@ -1002,6 +1009,22 @@ class HQCLIAPITests(unittest.TestCase):
         }, submitted[0]["body"])
         self.assertEqual("5", submitted[0]["headers"]["X-HQ-Expected-Cost"])
         self.assertTrue(submitted[0]["headers"]["Idempotency-Key"].startswith("hqcli-"))
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
+            status, task = self._request(
+                "/api/auth/cli/action",
+                {"action": "task", "input": {"job_id": 92}, "confirm": False},
+                token=token,
+            )
+            self.assertEqual((200, "matrix_template_video"), (status, task["kind"]))
+            status, tasks = self._request(
+                "/api/auth/cli/action", {
+                    "action": "tasks",
+                    "input": {"kind": "matrix_template_video", "days": 30, "page": 1, "page_size": 20},
+                    "confirm": False,
+                }, token=token,
+            )
+        self.assertEqual((200, "matrix_template_video"), (
+            status, tasks["items"][0]["kind"]))
 
     def test_matrix_template_cli_plan_and_reads_are_strict(self):
         value = {
@@ -1021,6 +1044,9 @@ class HQCLIAPITests(unittest.TestCase):
             read = self.auth.hq_cli_api.action_plan(action, {})
             self.assertEqual(("assets:read", "proxy", path), (
                 read["scope"], read["kind"], read["path"]))
+        history = self.auth.hq_cli_api.action_plan(
+            "tasks", {"kind": "matrix_template_video"})
+        self.assertIn("kind=matrix_template_video", history["path"])
         for invalid in (
             dict(value, duration=8), dict(value, bgm=False),
             dict(value, template_id="../bad"), dict(value, top_text="A"),

@@ -26,6 +26,12 @@ _CACHE = {"at": 0.0, "templates": []}
 _NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
+class MatrixTemplateHTTPError(RuntimeError):
+    def __init__(self, status, detail):
+        super().__init__(detail)
+        self.status = int(status)
+
+
 def _validated_base():
     parsed = urllib.parse.urlsplit(API_URL)
     loopback = parsed.hostname in {"127.0.0.1", "localhost", "::1"}
@@ -58,7 +64,9 @@ def _request(method, path, body=None, *, request_id="", timeout=30):
             detail = value.get("detail") or value.get("error")
         except Exception:
             detail = None
-        raise RuntimeError(str(detail or "模板成片生成服务请求失败")) from exc
+        raise MatrixTemplateHTTPError(
+            exc.code, str(detail or "模板成片生成服务请求失败")
+        ) from exc
     except (urllib.error.URLError, TimeoutError) as exc:
         raise RuntimeError("模板成片生成服务连接失败") from exc
 
@@ -129,10 +137,28 @@ def validate_payload(raw, username=""):
             raise ValueError("视频时长需要 8-15 秒")
     else:
         duration = None
-    return {
+    candidate = {
         "top_text": top, "bottom_text": bottom,
         "template_id": template_id, "bgm": bgm, "duration": duration,
     }
+    try:
+        response = _request("POST", "/v1/preflight", candidate, timeout=10)
+    except MatrixTemplateHTTPError as exc:
+        if exc.status == 400:
+            raise ValueError(str(exc)) from exc
+        raise
+    payload = response.get("payload") if isinstance(response, dict) else None
+    if not isinstance(payload, dict) or set(payload) != set(candidate):
+        raise RuntimeError("模板成片预检结果无效")
+    if any(payload.get(key) != candidate[key] for key in (
+            "top_text", "bottom_text", "template_id", "bgm")):
+        raise RuntimeError("模板成片预检参数不一致")
+    authoritative_duration = payload.get("duration")
+    if (isinstance(authoritative_duration, bool)
+            or not isinstance(authoritative_duration, (int, float))
+            or not 8 <= float(authoritative_duration) <= 15):
+        raise RuntimeError("模板成片预检时长无效")
+    return dict(payload, duration=float(authoritative_duration))
 
 
 def _safe_file_url(value):

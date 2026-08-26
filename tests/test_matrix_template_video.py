@@ -46,7 +46,11 @@ class MatrixTemplateVideoTests(unittest.TestCase):
 
     def test_validate_payload_is_library_only_and_catalog_bound(self):
         with mock.patch.object(self.module, "require_available"), \
-             mock.patch.object(self.module, "public_templates", return_value=self.templates()):
+             mock.patch.object(self.module, "public_templates", return_value=self.templates()), \
+             mock.patch.object(self.module, "_request", return_value={"payload": {
+                 "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
+                 "template_id": "native-bold", "bgm": True, "duration": 8.0,
+             }}) as request:
             payload = self.module.validate_payload({
                 "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
                 "template_id": "native-bold", "bgm": True,
@@ -57,8 +61,40 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                     "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
                     "template_id": "unknown",
                 }, "alice")
+            request.assert_called_once_with(
+                "POST", "/v1/preflight", {
+                    "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
+                    "template_id": "native-bold", "bgm": True, "duration": None,
+                }, timeout=10,
+            )
         self.assertNotIn("provider", payload)
         self.assertNotIn("prompt", payload)
+
+    def test_validate_payload_uses_authoritative_67_68_visible_character_boundary(self):
+        accepted = {
+            "top_text": "中" * 60, "bottom_text": "A" * 7 + "，。！？",
+            "template_id": "native-bold", "bgm": True, "duration": 14.9,
+        }
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(self.module, "public_templates", return_value=self.templates()), \
+             mock.patch.object(self.module, "_request", return_value={"payload": accepted}):
+            result = self.module.validate_payload({
+                "top_text": "中" * 60,
+                "bottom_text": "A" * 7 + "，。！？",
+                "template_id": "native-bold",
+            }, "alice")
+        self.assertEqual(14.9, result["duration"])
+
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(self.module, "public_templates", return_value=self.templates()), \
+             mock.patch.object(
+                 self.module, "_request",
+                 side_effect=self.module.MatrixTemplateHTTPError(400, "文案过长，请缩短标题或行动文案"),
+             ), self.assertRaisesRegex(ValueError, "文案过长"):
+            self.module.validate_payload({
+                "top_text": "中" * 60, "bottom_text": "A" * 8,
+                "template_id": "native-bold",
+            }, "alice")
 
     def test_generation_url_allows_https_or_loopback_only(self):
         for value in (
@@ -206,6 +242,36 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         ))
         validate.assert_called_once()
         points.cost_of.assert_called_once_with("matrix_template_video", normalized)
+
+    def test_cli_quote_rejects_failed_preflight_without_returning_cost(self):
+        from content_domains import cli_gateway
+
+        class Handler:
+            headers = {"X-HQ-Internal-Token": "secret"}
+            def _token(self): return "account-token"
+            def _json_body_strict(self):
+                return {"kind": "matrix_template_video", "payload": {
+                    "top_text": "中" * 60, "bottom_text": "A" * 8,
+                    "template_id": "native-bold", "bgm": True,
+                }}
+            def _send(self, status, body): self.result = (status, body)
+
+        handler = Handler()
+        points = SimpleNamespace(
+            cost_of=mock.Mock(return_value=5), get_points=mock.Mock(return_value=100),
+        )
+        with mock.patch.object(
+            self.module, "validate_payload", side_effect=ValueError("文案过长")
+        ):
+            cli_gateway.handle_quote(
+                handler, "/api/gen/cli/quote", lambda _token: {"username": "alice"},
+                lambda _user: False, lambda: False,
+                SimpleNamespace(require_enabled=mock.Mock(), FeatureDisabled=RuntimeError),
+                points, SimpleNamespace(), SimpleNamespace(), "secret",
+            )
+        self.assertEqual(400, handler.result[0])
+        self.assertIn("文案过长", handler.result[1]["detail"])
+        points.cost_of.assert_not_called()
 
 
 class MatrixTemplatePageTests(unittest.TestCase):

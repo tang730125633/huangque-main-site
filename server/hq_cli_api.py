@@ -857,6 +857,7 @@ AUDIO_UPLOAD_SLOTS = threading.BoundedSemaphore(2)
 _TASK_KINDS = {
     "", "image", "audio", "video", "xiaole_video", "copy", "collect", "collect_search", "leads",
     "tryon", "cinematic", "avatar", "breakdown", "script_to_video", "sora_video",
+    "matrix_template_video",
 }
 
 
