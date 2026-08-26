@@ -557,8 +557,6 @@ with patch.object(server, "_bridge_catalog", return_value=catalog), patch.object
         "expected_revision": revision, "requested_result": bare_action["requested_result"],
         "preferred_action": bare_action["preferred_action"],
         "specialist_agent": bare_action["specialist_agent"],
-        "reply_message_id": bare_action["reply_message_id"],
-        "reuse_production_id": bare_action["reuse_production_id"],
         "options": bare_action["options"],
     })
     assert prepared.status_code == 200, prepared.get_data(as_text=True)

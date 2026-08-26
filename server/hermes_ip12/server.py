@@ -3718,6 +3718,19 @@ def api_prepare_production():
                 (previous.get("options") or {}).get("avatar_id")
                 if isinstance(previous, dict) else None
             )
+            messages = convo.get("messages") or []
+            latest_assistant = next((
+                item for item in reversed(messages) if item.get("role") == "assistant"
+            ), None)
+            latest_user = next((
+                item for item in reversed(messages) if item.get("role") == "user"
+            ), None)
+            if _production_quote_refresh_intent((latest_user or {}).get("content")):
+                inferred_reply_id = str((latest_assistant or {}).get("message_id") or "")
+                if not reply_message_id and re.fullmatch(r"ip12-assistant-[0-9a-f]{64}", inferred_reply_id):
+                    reply_message_id = inferred_reply_id
+                if not reuse_production_id and isinstance(previous, dict):
+                    reuse_production_id = str(previous.get("id") or "")
         _validate_production_action(
             current_account_id(), state, recommendation["recommended_action"]
         )
