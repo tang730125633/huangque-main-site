@@ -228,5 +228,46 @@ class HeyGenMcpOAuthTests(unittest.TestCase):
         api_get.assert_called_once_with("GET", "/videos/mcp-video", timeout=90, direct=True)
 
 
+    def test_upload_asset_uses_oauth_when_mcp_enabled(self):
+        with tempfile.NamedTemporaryFile(suffix=".jpg") as f:
+            f.write(b"fake-image")
+            f.flush()
+            with patch.object(video, "_heygen_mcp_enabled", return_value=True), \
+                 patch.object(video, "_heygen_upload_asset_oauth",
+                              return_value={"data": {"id": "asset-oauth"}}) as oauth, \
+                 patch.object(video, "_heygen_direct_req") as direct:
+                asset_id = video._heygen_upload_asset(f.name, direct=True)
+        self.assertEqual(asset_id, "asset-oauth")
+        oauth.assert_called_once()
+        direct.assert_not_called()
+
+    def test_upload_asset_oauth_uses_bearer_token(self):
+        requests = []
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return json.dumps({"data": {"id": "asset-1"}}).encode()
+
+        class Opener:
+            def open(self, request, **_kwargs):
+                requests.append(request)
+                return Response()
+
+        with tempfile.NamedTemporaryFile(suffix=".jpg") as f:
+            f.write(b"fake-image")
+            f.flush()
+            with patch.object(video, "_heygen_mcp_access_token", return_value="oauth-token"), \
+                 patch.object(video, "_heygen_direct_opener", return_value=Opener()):
+                video._heygen_upload_asset_oauth(f.name, "image/jpeg")
+        self.assertEqual(requests[0].get_header("Authorization"), "Bearer oauth-token")
+        self.assertIsNone(requests[0].get_header("X-api-key"))
+
+
 if __name__ == "__main__":
     unittest.main()
