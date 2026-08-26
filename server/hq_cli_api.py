@@ -105,8 +105,8 @@ CHANNEL_CATALOG = (
      "access": "managed", "capabilities": ["image-upload", "assets"], "selector": {}},
 )
 CONFIRMATION_ACTIONS = frozenset({
-    "ip12-create", "ip12-message", "prompt-optimize", "canvas-create", "canvas-ops",
-    "asset-favorite", "asset-tags", "video-compose-create", "video-compose-analyze",
+    "ip12-create", "ip12-message", "ip12-delete", "prompt-optimize", "canvas-create", "canvas-ops",
+    "asset-favorite", "asset-tags", "asset-delete", "video-compose-create", "video-compose-analyze",
     "video-compose-review", "video-compose-render", "digital-presenter-create",
     "digital-presenter-update", "voice-clone-create",
     "inspiration-like", "leads-crm-upsert",
@@ -138,6 +138,7 @@ _ACTION_INPUTS = {
     "digital-ip-projects": (), "digital-ip-project": ("project_id",), "digital-ip-report": ("project_id",),
     "ip12-projects": (), "ip12-project": ("project_id",), "ip12-report": ("project_id",),
     "ip12-create": ("title",), "ip12-message": ("project_id", "message", "request_id"),
+    "ip12-delete": ("project_id",),
     "prompt-optimize": ("prompt", "kind"),
     "canvas-list": ("limit", "offset"), "canvas-get": ("board_id",),
     "canvas-create": ("name", "prompt"), "canvas-agent-plan": ("prompt", "project_id", "snapshot_digest", "scope", "nodes", "edges", "selected_node_ids", "history"),
@@ -145,6 +146,7 @@ _ACTION_INPUTS = {
     "tasks": ("days", "kind", "page", "page_size"), "task": ("job_id",),
     "assets": ("kind", "limit", "offset"), "voices": (),
     "asset-favorite": ("kind", "key", "favorite"), "asset-tags": ("kind", "key", "tags"),
+    "asset-delete": ("kind", "id"),
     "video-compose-projects": (), "video-compose-project": ("project_id",),
     "video-compose-create": ("source_asset_id",),
     "video-compose-analyze": ("project_id", "expected_revision"),
@@ -169,8 +171,10 @@ _ACTION_INPUTS = {
 _ACTION_PURPOSES = {
     "account": "读取当前黄雀账号与点数", "channels": "读取可用渠道", "pricing": "读取实时价格",
     "ip12-projects": "读取本人 IP12 项目", "ip12-project": "读取本人 IP12 项目详情",
-    "ip12-report": "读取本人 IP12 报告", "canvas-list": "读取本人画布", "canvas-get": "读取本人画布详情",
-    "tasks": "读取本人任务记录", "task": "读取本人任务详情", "assets": "读取本人资产", "voices": "读取可用音色",
+    "ip12-report": "读取本人 IP12 报告", "ip12-delete": "删除本人 IP12 项目",
+    "canvas-list": "读取本人画布", "canvas-get": "读取本人画布详情",
+    "tasks": "读取本人任务记录", "task": "读取本人任务详情", "assets": "读取本人资产",
+    "asset-delete": "删除本人资产", "voices": "读取可用音色",
     "voice-clone-create": "用本人样音创建或重新录制个人克隆音色",
     "voice-clone-status": "读取个人克隆音色处理状态",
     "image-generate": "生成图片", "video-generate": "生成视频", "video-lipsync": "让本人原视频匹配新口播音频",
@@ -563,6 +567,10 @@ _MEDIA_SCHEMAS.update({
         "ratio": {"type": "string", "enum": ["9:16", "16:9"]}, "resolution": {"type": "string", "enum": ["1080p"]},
         "voice_key": {"type": "string", "maxLength": 200}, "target_duration": {"type": "integer", "minimum": 30, "maximum": 180},
     }, "constraints": ["provide at least one editable field and the current revision"]},
+    "asset-delete": {"required": ["kind", "id"], "properties": {
+        "kind": {"type": "string", "enum": ["image", "audio", "video", "copy", "collect", "leads"]},
+        "id": _INT_ID_SCHEMA,
+    }, "constraints": ["deletion is owner-scoped and soft; read the asset before confirming"]},
 })
 
 _FAMILIES = {
@@ -1817,6 +1825,12 @@ def action_plan(action, value):
         title = _string(value["title"], "title", 1, 120)
         return _plan("ip12:write", "proxy", base=HERMES_BASE, path="/api/conversations",
                      method="POST", body={"title": title})
+    if action == "ip12-delete":
+        _strict_object(value, {"project_id"}, ("project_id",))
+        project_id = _identifier(value["project_id"], "project_id")
+        return _plan("ip12:write", "proxy", base=HERMES_BASE,
+                     path="/api/conversations/" + urllib.parse.quote(project_id, safe=""),
+                     method="DELETE")
     if action == "ip12-message":
         _strict_object(value, {"project_id", "message", "request_id"}, ("project_id", "message", "request_id"))
         project_id = _identifier(value["project_id"], "project_id")
@@ -1919,6 +1933,14 @@ def action_plan(action, value):
         }
         return _plan("assets:write", "proxy", base=CONTENT_BASE, path="/api/gen/asset/tags",
                      method="POST", body=body)
+    if action == "asset-delete":
+        _strict_object(value, {"kind", "id"}, ("kind", "id"))
+        body = {
+            "kind": _enum(value["kind"], "kind", ("image", "audio", "video", "copy", "collect", "leads")),
+            "id": _integer(value["id"], "id", 1, 2**63 - 1),
+        }
+        return _plan("assets:write", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/asset/delete", method="POST", body=body)
     if action in {"video-compose-projects", "video-compose-project"}:
         allowed = {"project_id"} if action.endswith("project") else set()
         _strict_object(value, allowed, allowed)

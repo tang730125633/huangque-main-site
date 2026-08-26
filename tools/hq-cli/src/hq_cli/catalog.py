@@ -140,6 +140,8 @@ for item in (
      {"prompt": {"type": "string", "minLength": 1, "maxLength": 2000}}, "account_for_actions"),
     ("text-video", "文案成片", "/workbench/text-video", "进入文案成片页；页面入口不会直接提交生成。",
      None, "account_for_actions"),
+    ("matrix-template", "模板成片", "/workbench/matrix-template.html", "进入模板成片页；页面入口不会直接提交生成。",
+     None, "account_for_actions"),
     ("short-drama", "短剧创作", "/workbench/short-drama", "进入短剧创作页；页面入口不会直接创建项目或生成素材。",
      None, "account_for_actions"),
     ("one-click-video", "一键成片", "/workbench/one-click-video", "用一个已完成的视频资产进入一键成片工作台。",
@@ -205,6 +207,12 @@ CAPABILITIES["leads-crm-upsert"] = _api(
      "follow_status": {"type": "string", "enum": ["待跟进", "跟进中", "已加微", "已成交", "无效"]},
      "follow_note": {"type": "string", "maxLength": 300}},
     ["lead_id"], "leads:write", "write", True)
+CAPABILITIES["asset-delete"] = _api(
+    "asset-delete", "删除本人资产", "asset-delete",
+    "软删除当前账号的一条图片、音频、视频、文案、采集或线索资产；删除前应先读取并核对 ID。",
+    {"kind": {"type": "string", "enum": ["image", "audio", "video", "copy", "collect", "leads"]},
+     "id": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807}},
+    ["kind", "id"], "assets:write", "write", True)
 CAPABILITIES["video-avatars"] = _api(
     "video-avatars", "数字人形象", "video-avatars", "读取当前账号可用的数字人形象。",
     {"limit": LIMIT}, scope="assets:read")
@@ -233,6 +241,10 @@ CAPABILITIES["ip12-project"] = _api(
 CAPABILITIES["ip12-create"] = _api(
     "ip12-create", "创建 IP12 项目", "ip12-create", "在当前账号创建一个新的 IP12 项目。",
     {"title": {"type": "string", "minLength": 1, "maxLength": 120}}, ["title"], "ip12:write", "write", True)
+CAPABILITIES["ip12-delete"] = _api(
+    "ip12-delete", "删除 IP12 项目", "ip12-delete",
+    "删除当前账号的一个 IP12 项目；删除前应先读取并核对目标。",
+    {"project_id": STRING_ID}, ["project_id"], "ip12:write", "write", True)
 CAPABILITIES["ip12-report"] = _api(
     "ip12-report", "读取 IP12 报告", "ip12-report", "读取一个本人 Hermes IP12 项目已经保存的模块报告；不会重新生成报告。",
     {"project_id": STRING_ID}, ["project_id"], "ip12:read")
@@ -578,6 +590,7 @@ AVATAR_ID = {
 }
 IMAGE_UPLOAD_ID = {"type": "string", "minLength": 36, "maxLength": 36}
 VIDEO_UPLOAD_ID = {"type": "string", "minLength": 36, "maxLength": 36}
+AUDIO_UPLOAD_ID = {"type": "string", "minLength": 36, "maxLength": 36}
 TEXT_VIDEO_AVATAR_ID = {"type": "string", "pattern": "^local_avatar_[0-9a-f]{32}$"}
 TEXT_VIDEO_PLAN_ID = {"type": "string", "pattern": "^talking_plan_[0-9a-f]{32}$"}
 TEXT_VIDEO_SCENE_ID = {"type": "string", "pattern": "^scene_[0-9]{2}$"}
@@ -602,16 +615,19 @@ VIDEO_LIPSYNC_FIELDS = {
 }
 DIGITAL_IP_TEXT_FIELDS = {
     "avatar_id": AVATAR_ID,
+    "image_upload_id": IMAGE_UPLOAD_ID,
     "text": {"type": "string", "minLength": 1, "maxLength": 1000},
     "voice": {"type": "string", "minLength": 1, "maxLength": 128},
     **TALKING_VIDEO_FIELDS,
 }
 DIGITAL_IP_AUDIO_FIELDS = {
     "avatar_id": AVATAR_ID,
+    "image_upload_id": IMAGE_UPLOAD_ID,
     "audio_file": {
         "type": "string", "minLength": 1, "maxLength": 500,
         "description": "从当前账号资产结果取得的 audio_file；不是 URL 或本机路径",
     },
+    "audio_upload_id": AUDIO_UPLOAD_ID,
     **TALKING_VIDEO_FIELDS,
 }
 DIGITAL_IP_BATCH_FIELDS = {
@@ -695,9 +711,9 @@ for identifier, name, fields, required in (
     ("text-video-generate", "文案成片生成", TEXT_VIDEO_FIELDS,
      ["text", "template", "style", "voice"]),
     ("digital-ip-text-generate", "数字IP单条文案生成", DIGITAL_IP_TEXT_FIELDS,
-     ["avatar_id", "text", "voice"]),
+     ["text", "voice"]),
     ("digital-ip-audio-generate", "数字IP本人资产音频生成", DIGITAL_IP_AUDIO_FIELDS,
-     ["avatar_id", "audio_file"]),
+     []),
     ("digital-ip-batch-generate", "数字IP批量文案生成", DIGITAL_IP_BATCH_FIELDS,
      ["avatars", "text", "voice"]),
     ("cinematic-open-generate", "电影化身开放式生成", CINEMATIC_OPEN_FIELDS,
@@ -747,6 +763,13 @@ CAPABILITIES["leads-generate"]["constraints"] = [
 
 CAPABILITIES["cinematic-open-generate"]["input_schema"]["oneOf"] = [
     {"required": ["avatar_id"]}, {"required": ["avatar_ids"]},
+]
+CAPABILITIES["digital-ip-text-generate"]["input_schema"]["oneOf"] = [
+    {"required": ["avatar_id"]}, {"required": ["image_upload_id"]},
+]
+CAPABILITIES["digital-ip-audio-generate"]["input_schema"]["allOf"] = [
+    {"oneOf": [{"required": ["avatar_id"]}, {"required": ["image_upload_id"]}]},
+    {"oneOf": [{"required": ["audio_file"]}, {"required": ["audio_upload_id"]}]},
 ]
 CAPABILITIES["tryon-classic-generate"]["input_schema"]["anyOf"] = [
     {"required": ["clothes_upload_id"]}, {"required": ["background_upload_id"]},
@@ -805,14 +828,14 @@ CAPABILITIES["video-lipsync"]["constraints"] = [
     "the source video must be 1-300 seconds",
 ]
 CAPABILITIES["digital-ip-text-generate"]["constraints"] = [
-    "avatar_id must identify a ready avatar owned by the current account",
+    "provide exactly one ready account avatar_id or one private image_upload_id",
     "this capability submits exactly one avatar and one script; batch input is not accepted",
     "output resolution is fixed by the main site at 1080p",
 ]
 CAPABILITIES["digital-ip-audio-generate"]["constraints"] = [
-    "avatar_id must identify a ready avatar owned by the current account",
-    "audio_file must be copied from the current account's assets result and must be mp3|wav|m4a",
-    "URLs, local paths, audio uploads, and base64 audio are not accepted",
+    "provide exactly one ready account avatar_id or one private image_upload_id",
+    "provide exactly one owned audio_file or private audio_upload_id",
+    "audio_file must be copied from the current account's assets result and must be mp3|wav|m4a; URLs, local paths, and base64 are not accepted",
     "output resolution is fixed by the main site at 1080p",
 ]
 CAPABILITIES["digital-ip-batch-generate"]["constraints"] = [
@@ -893,6 +916,185 @@ for identifier, website_modes in {
     "recharge": ["recharge"], "bots": ["bots"],
 }.items():
     CAPABILITIES[identifier]["website_modes"] = website_modes
+
+
+_SITE_OPERATIONS = {
+    "inspiration": ["inspiration.browse", "inspiration.like", "inspiration.handoff"],
+    "leads": ["leads.keyword.search", "leads.crm.update"],
+    "collect": ["collect.content.comments", "collect.content.video", "collect.content.transcript", "collect.keyword.search"],
+    "banana": [
+        "image.banana.nb2.text", "image.banana.nb2.reference", "image.banana.pro.text", "image.banana.pro.reference",
+        "image.openai.text", "image.openai.reference", "image.openai.inpaint",
+        "image.seedream.std.text", "image.seedream.std.reference", "image.seedream.pro.text", "image.seedream.pro.reference",
+        "image.xiaole.text", "image.xiaole.reference", "image.prompt.optimize", "image.prompt.reverse",
+    ],
+    "video": [
+        "video.one_click.compose", "video.digital_ip.text.single", "video.digital_ip.text.batch", "video.digital_ip.audio",
+        "video.cinematic.motion", "video.cinematic.open", "video.tryon.fast", "video.tryon.classic",
+        "video.grok.text", "video.grok.image", "video.sora.text", "video.sora.image", "video.minimax.image",
+        "video.omni.text", "video.omni.image", "video.seedance.text", "video.seedance.image", "video.asset.import_h3",
+    ],
+    "audio": ["audio.tts.public", "audio.tts.personal"],
+    "script": [
+        "script.write.spoken", "script.write.story", "script.write.recommend",
+        "script.breakdown.scenes", "script.breakdown.reverse", "script.breakdown.local_image", "script.breakdown.local_video",
+        "script.output.video.story", "script.output.video.spoken", "script.output.video.recommend",
+        "script.output.remake.cinematic", "script.output.remake.grok", "script.output.remake.micro",
+        "script.output.image", "script.output.handoff",
+    ],
+    "text-video": ["text_video.topic", "text_video.fixed"],
+    "matrix-template": ["matrix_template.single"],
+    "short-drama": [
+        "short_drama.live_action.script_planning", "short_drama.live_action.character_reference",
+        "short_drama.live_action.shot_video", "short_drama.live_action.preview",
+        "short_drama.live_action.delivery", "short_drama.autodraft.review",
+    ],
+    "canvas": [
+        "canvas.agent.plan", "canvas.image.banana.nb2", "canvas.image.banana.pro", "canvas.image.openai",
+        "canvas.image.zelong", "canvas.video.grok", "canvas.video.micro", "canvas.short_drama.node",
+        "canvas.prompt.reverse", "canvas.local.edit",
+    ],
+    "assets": ["assets.audio.clone_vip", "assets.library.read", "assets.library.manage", "assets.voice.slot"],
+    "pricing": ["pricing.catalog"], "invite": ["invite.dashboard", "invite.poster"],
+    "tutorials": ["tutorials.playback"],
+    "settings": ["settings.profile", "settings.preferences", "settings.friends", "settings.points", "settings.security"],
+}
+_SITE_NAVIGATION = {
+    "inspiration": "inspiration", "leads": "leads", "collect": "collect", "banana": "image",
+    "video": "video", "audio": "audio", "script": "script", "text-video": "text-video",
+    "matrix-template": "matrix-template", "short-drama": "short-drama", "canvas": "canvas",
+    "assets": "assets-page", "pricing": "pricing-page", "invite": "invite",
+    "tutorials": "tutorials", "settings": "settings",
+}
+for _site_page, _site_operations in _SITE_OPERATIONS.items():
+    CAPABILITIES[_SITE_NAVIGATION[_site_page]]["website_operations"] = list(_site_operations)
+
+
+_AGENT_RESOURCES = {
+    "ip12-": "ip12_project", "digital-ip-project": "digital_ip_project",
+    "short-drama-": "short_drama_project", "video-compose-": "video_compose_project",
+    "digital-presenter-": "digital_presenter", "canvas-": "canvas",
+    "image-upload": "asset", "video-upload": "asset", "asset": "asset", "assets": "asset",
+    "task": "task", "voices": "voice",
+    "audio-slots": "voice", "voice-clone-": "voice", "leads-crm": "lead",
+    "inspiration-": "inspiration", "text-video-": "text_video",
+}
+_AGENT_OPERATIONS = {
+    "ip12-projects": "list", "ip12-project": "get", "ip12-report": "get",
+    "ip12-create": "create", "ip12-message": "update", "ip12-delete": "delete",
+    "digital-ip-projects": "list", "digital-ip-project": "get", "digital-ip-report": "get",
+    "short-drama-projects": "list", "short-drama-project": "get",
+    "short-drama-conversation": "get", "short-drama-preflight": "get",
+    "canvas-list": "list", "canvas-get": "get", "canvas-create": "create", "canvas-ops": "update",
+    "tasks": "list", "task": "get", "assets": "list", "voices": "list",
+    "asset-delete": "delete",
+    "video-avatars": "list", "audio-slots": "list", "leads-crm": "list",
+    "leads-crm-upsert": "update", "inspiration-catalog": "list",
+    "inspiration-likes": "list", "inspiration-like": "update",
+}
+_STANDARD_CRUD = ("list", "get", "create", "update", "delete")
+
+
+def _agent_resource(identifier):
+    for prefix, resource in _AGENT_RESOURCES.items():
+        if identifier == prefix or identifier.startswith(prefix):
+            return resource
+    return identifier.split("-", 1)[0].replace("_", "-")
+
+
+def _agent_operation(capability):
+    identifier = capability["id"]
+    if identifier in _AGENT_OPERATIONS:
+        return _AGENT_OPERATIONS[identifier]
+    if capability["kind"] == "navigation":
+        return "navigate"
+    if capability["kind"] == "upload":
+        return "create"
+    if capability["side_effect"] == "paid":
+        return "execute"
+    if capability["side_effect"] == "read":
+        return "list" if identifier.endswith(("s", "-catalog", "-templates", "-styles")) else "get"
+    if identifier.endswith(("-delete", "-remove")):
+        return "delete"
+    if identifier.endswith(("-create", "-import", "-plan")):
+        return "create"
+    if identifier.endswith(("-render", "-generate")):
+        return "execute"
+    return "update"
+
+
+def _agent_input_source(name):
+    if name == "job_id":
+        return "从异步创建能力的 result.job_id 复制；之后只调用 task，不重新提交创建。"
+    if name in {"project_id", "board_id", "source_asset_id", "video_asset_id", "audio_asset_id"}:
+        return "先调用同资源的 list/get 能力，从本人可访问结果复制 ID。"
+    if name.endswith("upload_id") or name.endswith("upload_ids"):
+        family = "video" if "video" in name else "image" if "image" in name else "audio"
+        return "先调用 %s-upload，使用其本人私有 upload_id。" % family
+    if name in {"avatar_id", "avatar_ids", "avatars"}:
+        return "先调用 video-avatars，从 ready 形象复制 avatar_id。"
+    if name in {"voice", "voice_key"}:
+        return "先调用 voices，从可试听且 ready 的声音复制 voice_key。"
+    if name in {"revision", "expected_revision", "expected_version"}:
+        return "写入前重新读取目标，使用最新 revision/version；冲突后不得覆盖。"
+    if name == "request_id":
+        return "为新操作生成唯一 ID；响应不确定时必须复用同一 ID。"
+    return "由用户明确提供，并按 input_schema 校验。"
+
+
+def _attach_agent_guidance():
+    resource_operations = {}
+    for capability in CAPABILITIES.values():
+        resource = _agent_resource(capability["id"])
+        operation = _agent_operation(capability)
+        resource_operations.setdefault(resource, {}).setdefault(operation, []).append(capability["id"])
+        capability["agent"] = {"resource": resource, "operation": operation}
+    for capability in CAPABILITIES.values():
+        agent = capability["agent"]
+        operation = agent["operation"]
+        required = capability["input_schema"].get("required") or []
+        preconditions = []
+        if capability["requires_auth"]:
+            preconditions.append("先运行 hq status；未授权时运行 hq login。")
+        if capability.get("required_scope"):
+            preconditions.append("授权必须包含 %s。" % capability["required_scope"])
+        if capability["confirmation_required"]:
+            preconditions.append("执行外部写入前必须显式传 --confirm。")
+        if capability["side_effect"] == "paid":
+            workflow = [
+                "先用相同输入且不带 --confirm 获取服务器报价。",
+                "向用户展示 cost、points 与具体扣点，得到明确同意。",
+                "仅一次复用完全相同输入并传 --confirm --quote-token。",
+                "拿到 job_id 后只调用 task 直到终态，并验证可用成品与账务。",
+            ]
+        else:
+            workflow = ["运行 hq describe %s --json。" % capability["id"]]
+            workflow.append("按 input_schema 运行一次；不要添加未声明字段。")
+            if capability["confirmation_required"]:
+                workflow.append("在执行写入前向用户说明影响并传 --confirm。")
+        recovery = ["失败后先读取目标的最新状态，不盲目重复写入。"]
+        if capability["side_effect"] == "paid":
+            recovery = ["响应不确定时只查询原 job_id/request_id；禁止重新提交付费创建。"]
+        elif operation in {"update", "delete"}:
+            recovery.append("冲突或超时后重新 list/get；确认状态未变化前不要重试。")
+        agent.update({
+            "when_to_use": capability["description"],
+            "preconditions": preconditions,
+            "required_inputs": {name: _agent_input_source(name) for name in required},
+            "workflow": workflow,
+            "success_evidence": [
+                "退出码为 0，且 JSON schema、capability 与目标一致。",
+                "结果包含可复查的资源 ID、revision、job_id 或最终成品。",
+            ],
+            "recovery": recovery,
+            "website_access": "navigate" if capability["kind"] == "navigation" else "direct",
+            "website_operations": list(capability.get("website_operations") or []),
+            "resource_operations": resource_operations[agent["resource"]],
+            "missing_crud": [name for name in _STANDARD_CRUD if name not in resource_operations[agent["resource"]]],
+        })
+
+
+_attach_agent_guidance()
 
 
 def capability_list():

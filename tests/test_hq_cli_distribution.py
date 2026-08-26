@@ -14,8 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "site/downloads/hq/install.sh"
 WINDOWS_INSTALLER = ROOT / "site/downloads/hq/install.ps1"
 WINDOWS_UNINSTALLER = ROOT / "site/downloads/hq/uninstall.ps1"
-VERSION = "0.10.5"
-OLD_VERSION = "0.10.4"
+VERSION = "0.11.0"
+OLD_VERSION = "0.10.5"
 RELEASE = ROOT / ("site/downloads/hq/v" + VERSION)
 WHEEL = RELEASE / ("huangque_hq_cli-%s-py3-none-any.whl" % VERSION)
 OLD_WHEEL = ROOT / ("site/downloads/hq/v%s/huangque_hq_cli-%s-py3-none-any.whl" % (
@@ -72,7 +72,7 @@ class HQCLIDistributionTests(unittest.TestCase):
 
     def test_previous_release_remains_immutable(self):
         self.assertEqual(
-            "7c140c302e10ea8a68caaf9d801cd28e2127f3701f96c3d13eb223c49c10c59f",
+            "e161eecfbe24d6d8db7925243d94dc00d202799ed679e9c165e4881186948f5f",
             hashlib.sha256(OLD_WHEEL.read_bytes()).hexdigest(),
         )
 
@@ -123,7 +123,7 @@ class HQCLIDistributionTests(unittest.TestCase):
             subprocess.run([target / "venv/bin/hq", "version", "--json"], check=True)
 
     @unittest.skipIf(os.name == "nt", "POSIX upgrade flow is verified on Linux CI")
-    def test_installer_upgrades_existing_0104_and_exposes_full_text_video(self):
+    def test_installer_upgrades_existing_0105_and_exposes_agent_guidance(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "home"
@@ -168,6 +168,9 @@ class HQCLIDistributionTests(unittest.TestCase):
                 item["id"] for item in capabilities["capabilities"]})
             self.assertIn("text-video-avatar-import", {
                 item["id"] for item in capabilities["capabilities"]})
+            self.assertIn("agent", next(
+                item for item in capabilities["capabilities"] if item["id"] == "ip12-project"
+            ))
             self.assertEqual(
                 (data_home / "hq-cli" / VERSION / "venv/bin/hq").resolve(),
                 (bin_root / "hq").resolve(),
