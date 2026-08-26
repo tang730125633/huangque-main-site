@@ -147,8 +147,9 @@ global.document={
         self.assertIn("rememberProductionOption(event)", controls)
         panel_start = self.html.index("function renderProductionPanel")
         panel = self.html[panel_start:self.html.index("function restoreProductionPanel()", panel_start)]
-        self.assertIn('data-production-quote="true"', panel)
-        self.assertIn("unfilled.length?' disabled'", panel)
+        self.assertIn("autoQuote=productionCanAutoQuote(record)", panel)
+        self.assertIn("正在自动获取实时报价", panel)
+        self.assertNotIn('data-production-quote="true"', panel)
         self.assertNotIn("missing.map", panel)
 
     def test_prepare_and_quote_submit_typed_options(self):
@@ -278,6 +279,7 @@ console.log(JSON.stringify({
         request_end = self.html.index("async function confirmProduction", request_start)
         functions = "\n".join((
             self.html[helpers_start:helpers_end],
+            self.html[self.html.index("function productionCanAutoQuote"):self.html.index("function renderProductionPanel")],
             self.html[collect_start:collect_end],
             self.html[request_start:request_end],
         ))
@@ -300,7 +302,7 @@ global.fetch=async (url,init)=>{
   calls.push({url,body:init.body?JSON.parse(init.body):null});
   const data=url.endsWith('/quote')
     ? {ok:true,production_id:'production-1',status:'quoted',cost:1,points:1}
-    : {ok:true,production_id:'production-2',status:'blocked_prerequisite',options:{avatar_id:7}};
+    : {ok:true,production_id:'production-2',status:'blocked_prerequisite',options:{},missing_prerequisites:['avatar_id'],parameter_schema:{type:'object',properties:{avatar_id:{type:'integer'}},required:['avatar_id']}};
   return {ok:true,status:200,json:async()=>data};
 };
 function rememberProduction(record){productions[record.id]=record;return record}
@@ -322,7 +324,7 @@ function newTurnRequestId(){return 'turn-fixture-1'}
     options:{avatar_id:'7'},
     parameter_schema:{type:'object',properties:{avatar_id:{type:'integer'}},required:['avatar_id']}
   });
-  const prepareCall=calls[calls.length-1];
+  const prepareCall=calls.find(call=>call.url.endsWith('/prepare'));
   activeProductionId='production-1';
   const beforeBlocked=calls.length;
   productions['production-1'].options={};
@@ -344,7 +346,7 @@ function newTurnRequestId(){return 'turn-fixture-1'}
 
     def test_agent_auto_runs_prepare_quotes_then_polls_one_job_and_delivers_in_chat(self):
         prepare = self.html[self.html.index("async function prepareProduction"):self.html.index("async function requestProductionQuote")]
-        self.assertIn("await requestProductionQuote(record.id,false)", prepare)
+        self.assertIn("if(productionCanAutoQuote(record))await requestProductionQuote(record.id,false)", prepare)
         self.assertNotIn("openPanel('生产画布')", prepare)
         send = self.html[self.html.index("async function sendTurn"):self.html.index("async function sendJumpMsg")]
         self.assertIn("item.type==='prepare_production'", send)
@@ -605,7 +607,26 @@ console.log(JSON.stringify({
             self.html.index("function openProductionRecord")
         ]
         self.assertNotIn("renderProductionPanel(record)", restore)
+        self.assertIn("if(productionCanAutoQuote(record))", restore)
         self.assertIn("requestProductionQuote(record.id,false)", restore)
+
+    def test_completed_materials_auto_quote_after_a_page_restore(self):
+        if not shutil.which("node"):
+            self.skipTest("node unavailable")
+        start = self.html.index("function productionCanAutoQuote")
+        end = self.html.index("function openProductionRecord", start)
+        script = self.html[start:end] + r"""
+const assert=require('assert');
+var activeProductionId='p',productions={p:{id:'p',status:'blocked_prerequisite',options:{voice:'mine',image_upload_id:'img'}}},quotes=0,refreshes=0;
+function productionUnfilledFields(){return []}
+function productionUnmappedMissing(){return []}
+async function requestProductionQuote(id){quotes+=1;assert.equal(id,'p')}
+async function refreshProduction(){refreshes+=1}
+(async function(){await restoreProductionPanel();assert.equal(quotes,1);assert.equal(refreshes,0);console.log('AUTO_QUOTE_OK')})().catch(function(error){console.error(error);process.exit(1)});
+"""
+        result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("AUTO_QUOTE_OK", result.stdout)
 
     def test_voice_clone_poll_deduplicates_retries_and_stops_terminal_states(self):
         if not shutil.which("node"):
