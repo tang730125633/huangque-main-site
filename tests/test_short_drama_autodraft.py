@@ -4425,6 +4425,79 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             [item["type"] for item in result["request"]["reference_inputs"]],
         )
 
+    def test_minimax_legacy_execution_override_keeps_bound_scene_reference(self):
+        from PIL import Image
+
+        self._lock_project_character_references()
+        scene = {
+            "scene_key": "scene:memorial-square",
+            "version_id": "scene-version-legacy",
+            "reference_identity": "scene-operation-legacy",
+            "name": "阵亡者纪念广场",
+            "prompt": "雨中的纪念墙",
+            "file": "short_drama_scenes/memorial-square-legacy.png",
+            "url": "https://cdn.example/memorial-square-legacy.png",
+        }
+        scene_path = Path(self.tmp.name) / scene["file"]
+        scene_path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (256, 256), (40, 80, 120)).save(scene_path, "PNG")
+        conn = self.db()
+        try:
+            plan = json.loads(conn.execute(
+                "SELECT plan_json FROM short_drama_production_plans WHERE id=?",
+                (self.plan_id,),
+            ).fetchone()[0])
+            shot = plan["material_plan"][0]
+            conn.execute(
+                "INSERT INTO short_drama_provider_shot_execution_overrides "
+                "(project_id,shot_key,execution_json,updated_at) VALUES (?,?,?,?)",
+                (
+                    self.project["id"],
+                    shot["shot_key"],
+                    json.dumps({
+                        "provider_prompt": "人物站在纪念墙前",
+                        "include_scene_reference": False,
+                        "include_continuity_reference": False,
+                    }, ensure_ascii=False),
+                    1,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+            "MINIMAX_API_KEY": "configured-for-preflight-only",
+        }), mock.patch.object(
+            short_drama_autodraft.short_drama_asset_graph,
+            "locked_scene_reference", return_value=scene,
+        ), mock.patch.object(
+            short_drama_autodraft.short_drama_asset_graph,
+            "bound_scene_key", return_value=scene["scene_key"],
+        ):
+            result = short_drama_autodraft.preview_provider_request(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"],
+                    "plan_id": self.plan_id,
+                    "shot_key": shot["shot_key"],
+                }, include_private=True,
+            )
+
+        self.assertTrue(result["scene_reference"]["locked"])
+        self.assertIn(
+            "scene",
+            [item["type"] for item in result["request"]["reference_inputs"]],
+        )
+        self.assertTrue(result["execution"]["include_scene_reference"])
+        self.assertTrue(result["execution"]["include_continuity_reference"])
+        workspace = short_drama_autodraft.workspace(
+            self.db, "alice", "alice", self.project["id"],
+        )
+        persisted = workspace["provider_execution_overrides"][shot["shot_key"]]
+        self.assertTrue(persisted["include_scene_reference"])
+        self.assertTrue(persisted["include_continuity_reference"])
+
     def test_minimax_bound_scene_cannot_disable_locked_reference_requirement(self):
         self._lock_project_character_references()
         conn = self.db()

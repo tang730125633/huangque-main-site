@@ -1,6 +1,10 @@
 import base64
+import hashlib
 import json
+import os
+import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import threading
@@ -179,6 +183,10 @@ class PrivateAssetsTest(unittest.TestCase):
         runbook = (root / "deploy" / "生产环境清单与还原手册.md").read_text(
             encoding="utf-8"
         )
+        transition_path = root / "deploy" / "formal-delivery-live-transition.sh"
+        self.assertTrue(transition_path.is_file())
+        transition = transition_path.read_text(encoding="utf-8")
+        production_contract = runbook + "\n" + transition
         manifest_path = root / "deploy" / "formal-delivery-release-manifest.tsv"
         self.assertTrue(manifest_path.is_file())
         manifest_rows = [
@@ -273,14 +281,15 @@ class PrivateAssetsTest(unittest.TestCase):
             "set -euo pipefail",
             "states.tsv",
             "printf '%s\\t%s\\t%s\\n'",
-            "short-drama-workspace.js -o",
+            "short-drama-workspace.js",
+            '-o "$HQ_HTTPS_DIR/workspace.js"',
             "HQ_EXPECT_JS_SHA",
             "HQ_EXPECT_CSS_SHA",
             "HQ_EXPECT_HTML_SHA",
             "stamp_assets.py --check",
             "回滚",
         ):
-            self.assertIn(requirement, runbook)
+            self.assertIn(requirement, production_contract)
         self.assertNotIn(
             "dapeng-server:/home/ubuntu/content-api/content_domains/", runbook,
         )
@@ -291,18 +300,22 @@ class PrivateAssetsTest(unittest.TestCase):
             "server/content_domains/ \\",
             "server/providers/ \\",
         ):
-            self.assertNotIn(forbidden, runbook)
+            self.assertNotIn(forbidden, production_contract)
         staged_import = runbook.index(
             'cd "$HQ_PREFLIGHT/content-api"'
         )
-        rollback_armed = runbook.index("HQ_ACTIVATED=1")
-        first_live_install = runbook.index(
+        transition_call = runbook.index(
+            'bash "$HQ_RELEASE_STAGE/live-transition.sh"'
+        )
+        rollback_armed = transition.index("HQ_ACTIVATED=1")
+        first_live_install = transition.index(
             'sudo install -D -m 0644 "$HQ_RELEASE_STAGE/files/$HQ_SOURCE"'
         )
-        self.assertLess(staged_import, rollback_armed)
+        self.assertLess(staged_import, transition_call)
         self.assertLess(rollback_armed, first_live_install)
-        automatic_rollback = runbook[
-            runbook.index("finish_release() {"):runbook.index("trap finish_release EXIT")
+        automatic_rollback = transition[
+            transition.index("finish_release() {"):
+            transition.index("trap finish_release EXIT")
         ]
         automatic_stop = automatic_rollback.index(
             "sudo systemctl stop huangque-content huangque-admin"
@@ -345,6 +358,248 @@ class PrivateAssetsTest(unittest.TestCase):
         self.assertLess(manual_restore, manual_restart)
         self.assertIn("原生 2K", drop_in)
         self.assertNotIn("1080p", drop_in)
+
+    def _run_formal_delivery_transition(self, public_mode="success", rollback_fail=False):
+        root = Path(__file__).resolve().parents[1]
+        script = root / "deploy" / "formal-delivery-live-transition.sh"
+        bash = os.environ.get("HQ_TEST_BASH") or shutil.which("bash")
+        if not bash:
+            self.skipTest("bash is required for the deployment transition contract")
+        with tempfile.TemporaryDirectory() as tmp:
+            native_root = Path(tmp)
+            if os.name == "nt":
+                converted = subprocess.run(
+                    [
+                        bash, "-lc",
+                        'cygpath -u "$HQ_NATIVE_TMP"; cygpath -u "$HQ_NATIVE_SCRIPT"',
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    env=dict(
+                        os.environ,
+                        HQ_NATIVE_TMP=str(native_root),
+                        HQ_NATIVE_SCRIPT=str(script),
+                    ),
+                )
+                shell_root, shell_script = converted.stdout.splitlines()
+            else:
+                shell_root = native_root.as_posix()
+                shell_script = script.as_posix()
+            stage = native_root / "stage"
+            backup = native_root / "backup"
+            web = native_root / "web"
+            fake_bin = native_root / "fake-bin"
+            stage.mkdir()
+            backup.mkdir()
+            web.mkdir()
+            fake_bin.mkdir()
+            event_log = native_root / "events.log"
+            curl_log = native_root / "curl.log"
+            shell_stage = shell_root + "/stage"
+            shell_backup = shell_root + "/backup"
+            shell_web = shell_root + "/web"
+            sources = {
+                "site/workbench/short-drama-workspace.js": "new-js\n",
+                "site/workbench/short-drama-workspace.css": "new-css\n",
+                "site/workbench/short-drama.html": "new-html\n",
+            }
+            targets = {}
+            for source, content in sources.items():
+                name = source.rsplit("/", 1)[1]
+                source_path = stage / "files" / Path(*source.split("/"))
+                source_path.parent.mkdir(parents=True, exist_ok=True)
+                source_path.write_text(content, encoding="utf-8", newline="\n")
+                target = shell_web + "/" + name
+                targets[source] = target
+                (web / name).write_text("old-" + name + "\n", encoding="utf-8", newline="\n")
+            manifest_lines = [
+                source + "\t" + targets[source] for source in sources
+            ]
+            (stage / "release-manifest.tsv").write_text(
+                "\n".join(manifest_lines) + "\n", encoding="utf-8", newline="\n"
+            )
+            states = []
+            for source, target in targets.items():
+                relative_target = target.lstrip("/")
+                backup_file = backup / "files" / Path(*relative_target.split("/"))
+                backup_file.parent.mkdir(parents=True, exist_ok=True)
+                backup_file.write_bytes((web / source.rsplit("/", 1)[1]).read_bytes())
+                states.append(source + "\t" + target + "\tpresent")
+            (backup / "states.tsv").write_text(
+                "\n".join(states) + "\n", encoding="utf-8", newline="\n"
+            )
+            fake_commands = {
+                "sudo": """#!/usr/bin/env bash
+if test "${HQ_TEST_ROLLBACK_FAIL:-0}" = 1 && test "$1" = cp && [[ "$*" == *"$HQ_RELEASE_BACKUP/files/"* ]]; then
+  exit 73
+fi
+exec "$@"
+""",
+                "systemctl": """#!/usr/bin/env bash
+printf 'systemctl %s\\n' "$*" >>"$HQ_TEST_EVENT_LOG"
+exit 0
+""",
+                "curl": """#!/usr/bin/env bash
+printf '%s\\n' "$*" >>"$HQ_TEST_CURL_LOG"
+printf 'curl %s\\n' "$*" >>"$HQ_TEST_EVENT_LOG"
+case " $* " in *' --connect-timeout '*) ;; *) exit 90 ;; esac
+case " $* " in *' --max-time '*) ;; *) exit 91 ;; esac
+url=''
+output=''
+while test "$#" -gt 0; do
+  case "$1" in
+    -o) output="$2"; shift 2 ;;
+    http://*|https://*) url="$1"; shift ;;
+    *) shift ;;
+  esac
+done
+case "$url" in
+  "$HQ_PUBLIC_BASE_URL"/*)
+    if test "$HQ_TEST_PUBLIC_MODE" = fail; then exit 22; fi
+    cp "$HQ_WEB_ROOT/${url##*/}" "$output"
+    ;;
+  *) printf 'ok\\n' ;;
+esac
+""",
+            }
+            for name, content in fake_commands.items():
+                command = fake_bin / name
+                command.write_text(content, encoding="utf-8", newline="\n")
+                command.chmod(0o755)
+            expected = {
+                source: hashlib.sha256(content.encode("utf-8")).hexdigest()
+                for source, content in sources.items()
+            }
+            env = dict(os.environ)
+            env.update({
+                "PATH": str(fake_bin) + os.pathsep + env.get("PATH", ""),
+                "HQ_RELEASE_STAGE": shell_stage,
+                "HQ_RELEASE_BACKUP": shell_backup,
+                "HQ_WEB_ROOT": shell_web,
+                "HQ_CONTENT_ROOT": shell_root + "/content",
+                "HQ_SYSTEMD_TARGET": shell_root + "/formal-delivery.conf",
+                "HQ_PUBLIC_BASE_URL": "https://public.example/workbench",
+                "HQ_CONTENT_HEALTH_URL": "http://127.0.0.1:18096/health",
+                "HQ_ADMIN_HEALTH_URL": "http://127.0.0.1:18098/health",
+                "HQ_EXPECT_JS_SHA": expected["site/workbench/short-drama-workspace.js"],
+                "HQ_EXPECT_CSS_SHA": expected["site/workbench/short-drama-workspace.css"],
+                "HQ_EXPECT_HTML_SHA": expected["site/workbench/short-drama.html"],
+                "HQ_TEST_EVENT_LOG": shell_root + "/events.log",
+                "HQ_TEST_CURL_LOG": shell_root + "/curl.log",
+                "HQ_TEST_PUBLIC_MODE": public_mode,
+                "HQ_TEST_ROLLBACK_FAIL": "1" if rollback_fail else "0",
+                "HQ_TEST_FAKE_BIN": shell_root + "/fake-bin",
+            })
+            boundary_probe = subprocess.run(
+                [
+                    bash, "-c",
+                    'PATH="$HQ_TEST_FAKE_BIN:$PATH"; export PATH; command -v curl',
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
+                env=env,
+            )
+            if "/fake-bin/curl" not in boundary_probe.stdout.replace("\\", "/"):
+                self.fail(
+                    "fake curl boundary was not selected: "
+                    + boundary_probe.stdout + boundary_probe.stderr
+                )
+            result = subprocess.run(
+                [
+                    bash, "-c",
+                    'PATH="$HQ_TEST_FAKE_BIN:$PATH"; export PATH; exec bash "$1"',
+                    "formal-delivery-transition", shell_script,
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
+                env=env,
+            )
+            events = (
+                event_log.read_text(encoding="utf-8").splitlines()
+                if event_log.exists() else []
+            )
+            curls = (
+                curl_log.read_text(encoding="utf-8").splitlines()
+                if curl_log.exists() else []
+            )
+            live = {path.name: path.read_bytes() for path in web.iterdir()}
+            return result, events, curls, live
+
+    def test_formal_delivery_network_checks_are_bounded_after_service_restart(self):
+        result, events, curls, _live = self._run_formal_delivery_transition()
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        restart = events.index(
+            "systemctl restart huangque-content huangque-admin"
+        )
+        first_public = next(
+            index for index, event in enumerate(events)
+            if "https://public.example/" in event
+        )
+        active_checks = [
+            events.index("systemctl is-active --quiet huangque-content"),
+            events.index("systemctl is-active --quiet huangque-admin"),
+        ]
+        local_health_checks = [
+            next(
+                index for index, event in enumerate(events)
+                if "http://127.0.0.1:18096/health" in event
+            ),
+            next(
+                index for index, event in enumerate(events)
+                if "http://127.0.0.1:18098/health" in event
+            ),
+        ]
+        self.assertLess(restart, min(active_checks))
+        self.assertLess(max(active_checks), min(local_health_checks))
+        self.assertLess(max(local_health_checks), first_public)
+        self.assertTrue(curls)
+        for command in curls:
+            self.assertIn("--connect-timeout 5", command)
+            self.assertIn("--max-time 20", command)
+
+    def test_formal_delivery_public_failure_rolls_back_and_restarts_old_release(self):
+        result, events, _curls, live = self._run_formal_delivery_transition(
+            public_mode="fail"
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual(
+            2,
+            events.count("systemctl stop huangque-content huangque-admin"),
+        )
+        self.assertEqual(
+            2,
+            events.count("systemctl restart huangque-content huangque-admin"),
+        )
+        self.assertEqual(b"old-short-drama-workspace.js\n", live["short-drama-workspace.js"])
+        self.assertEqual(b"old-short-drama-workspace.css\n", live["short-drama-workspace.css"])
+        self.assertEqual(b"old-short-drama.html\n", live["short-drama.html"])
+
+    def test_formal_delivery_rollback_failure_keeps_services_stopped(self):
+        result, events, _curls, _live = self._run_formal_delivery_transition(
+            public_mode="fail", rollback_fail=True,
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual(
+            2,
+            events.count("systemctl stop huangque-content huangque-admin"),
+        )
+        self.assertEqual(
+            1,
+            events.count("systemctl restart huangque-content huangque-admin"),
+        )
+        self.assertIn("services remain stopped", result.stderr)
 
     def test_signed_provider_file_route_is_public_only_for_valid_current_signature(self):
         with tempfile.TemporaryDirectory() as tmp, \

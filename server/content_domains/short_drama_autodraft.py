@@ -1542,6 +1542,12 @@ def _normalize_execution_prompt_semantics(execution):
     return execution
 
 
+def _normalize_execution_reference_semantics(execution):
+    execution["include_continuity_reference"] = True
+    execution["include_scene_reference"] = True
+    return execution
+
+
 def _execution_visual_prompt(execution):
     execution = _normalize_execution_prompt_semantics(dict(execution))
     supplement = str(execution.get("provider_prompt") or "").strip()
@@ -1618,8 +1624,7 @@ def _clean_execution(value):
     # Character and bound-scene references are mandatory identity inputs. The
     # continuity tail is derived from immutable scene identities below rather
     # than trusted from a client toggle.
-    result["include_continuity_reference"] = True
-    result["include_scene_reference"] = True
+    _normalize_execution_reference_semantics(result)
     result["scene_key"] = str(value.get("scene_key") or "").strip()[:160]
     if "character_keys" in value:
         raw_character_keys = value.get("character_keys")
@@ -1658,9 +1663,14 @@ def _execution_override(conn, project_id, shot_key):
     ).fetchone()
     if not row:
         return None
-    result = _json(row["execution_json"], {})
+    return _loaded_execution_override(row["execution_json"], row["updated_at"])
+
+
+def _loaded_execution_override(execution_json, updated_at):
+    result = _json(execution_json, {})
     _normalize_execution_prompt_semantics(result)
-    result["updated_at"] = int(row["updated_at"])
+    _normalize_execution_reference_semantics(result)
+    result["updated_at"] = int(updated_at)
     return result
 
 
@@ -4672,9 +4682,8 @@ def workspace(
             ).fetchall()
         ]
         provider_execution_overrides = {
-            str(row["shot_key"]): dict(
-                _json(row["execution_json"], {}),
-                updated_at=int(row["updated_at"]),
+            str(row["shot_key"]): _loaded_execution_override(
+                row["execution_json"], row["updated_at"],
             )
             for row in conn.execute(
                 "SELECT shot_key,execution_json,updated_at "
