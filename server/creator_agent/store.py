@@ -626,13 +626,17 @@ class CreatorAgentStore:
     def _clear_quote_locked(connection, username, batch_id, now):
         connection.execute(
             """UPDATE creator_jobs SET status='ready',quote_token='',quote_json='{}',
-               quote_cost=0,quote_expires_at=0,error='',revision=revision+1,updated_at=?
+               quote_cost=0,quote_expires_at=0,confirmation_id='',job_id='',
+               result_json='{}',error='',refund_status='',submit_input_json='{}',
+               submit_input_hash='',submit_quote_token='',submit_quote_cost=0,
+               submit_quote_expires_at=0,submit_idempotency_key='',
+               revision=revision+1,updated_at=?
                WHERE batch_id=? AND username=? AND status='quoted'""",
             (now, batch_id, username),
         )
         connection.execute(
             """UPDATE creator_batches SET status='ready',quote_json='{}',
-               quote_expires_at=0,quoted_revision=0,claim_id='',updated_at=?
+               quote_expires_at=0,confirmation_id='',quoted_revision=0,claim_id='',updated_at=?
                WHERE id=? AND username=? AND status='quoted'""",
             (now, batch_id, username),
         )
@@ -850,8 +854,8 @@ class CreatorAgentStore:
         ]
         return batch
 
-    def claim_recovery(self, username, batch_id):
-        now = int(time.time())
+    def claim_recovery(self, username, batch_id, now=None):
+        now = int(time.time() if now is None else now)
         claimed_ids = []
         with closing(self.db()) as connection:
             connection.execute("BEGIN IMMEDIATE")

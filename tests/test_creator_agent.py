@@ -19,7 +19,9 @@ sys.path.insert(0, str(SERVER))
 
 from creator_agent.planner import CreatorPlanner, GuidedPlanner, remember_preference
 from creator_agent.service import APIError, CreatorAgentHandler, CreatorAgentService, build_service
-from creator_agent.store import CreatorAgentStore, StateConflict
+from creator_agent.store import (
+    CreatorAgentStore, StateConflict, STALE_CLAIM_SECONDS,
+)
 import hq_cli_api
 
 
@@ -533,6 +535,29 @@ class CreatorAgentTests(unittest.TestCase):
         )
         self.assertEqual(self.bridge.confirm_count, 3)
         self.assertEqual(submitted["status"], "running")
+        self.assertLess(int(self.clock()), quoted["quote_expires_at"])
+
+    def test_three_platform_stale_claim_recovery_stays_inside_quote_window(self):
+        result = self.message(
+            "制作视频", "start_video", {
+                "topic": "企业内容获客",
+                "platforms": ["douyin", "xiaohongshu", "wechat_channels"],
+            }, "three-platform-recovery",
+        )
+        draft = result["latest_batch"]
+        quoted = self.service.quote_batch(USER, draft["id"], draft["revision"])
+        margin = self.service._quote_safety_margin(3)
+        self.clock.advance(300 - margin - 1)
+        self.store.claim_confirmation(
+            USER["username"], draft["id"], "creator-confirm-three-recovery",
+            quoted["revision"], quoted["quote_expires_at"],
+            now=int(self.clock()), safety_margin_seconds=margin,
+        )
+        self.clock.advance(STALE_CLAIM_SECONDS)
+        self.bridge.confirm_advance_seconds = 35
+        recovered = self.service.refresh_batch(USER, draft["id"])
+        self.assertEqual(self.bridge.confirm_count, 3)
+        self.assertEqual(recovered["status"], "running")
         self.assertLess(int(self.clock()), quoted["quote_expires_at"])
 
     def test_expired_message_confirmation_requotes_instead_of_failing_generation(self):

@@ -24,7 +24,8 @@ from .planner import (
     sanitize_preferences,
 )
 from .store import (
-    CreatorAgentStore, IdempotencyConflict, QuoteExpired, StateConflict, StoreError,
+    CreatorAgentStore, IdempotencyConflict, QuoteExpired,
+    StateConflict, StoreError, STALE_CLAIM_SECONDS,
 )
 
 
@@ -780,7 +781,8 @@ class CreatorAgentService:
     @staticmethod
     def _quote_safety_margin(job_count):
         return (
-            _QUOTE_SUBMIT_BASE_MARGIN_SECONDS
+            STALE_CLAIM_SECONDS
+            + _QUOTE_SUBMIT_BASE_MARGIN_SECONDS
             + max(1, int(job_count)) * _QUOTE_SUBMIT_PER_JOB_SECONDS
         )
 
@@ -958,7 +960,9 @@ class CreatorAgentService:
         batch = self.store.batch(user["username"], batch_id, include_private=True)
         if not batch:
             raise APIError(404, "视频方案不存在", "not_found")
-        for job in self.store.claim_recovery(user["username"], batch_id):
+        for job in self.store.claim_recovery(
+            user["username"], batch_id, now=int(self.clock()),
+        ):
             try:
                 result = self._submit_matrix_job(user, job)
                 self.store.finish_submit_claim(
