@@ -56,7 +56,7 @@ hq describe ip12-projects --json
 
 ## 页面入口不等于直接执行
 
-`text-video`、`short-drama`、`pricing-page`、`invite`、`recharge` 和 `bots` 是页面入口：运行后只返回固定黄雀主站链接，除非再加 `--open-browser`，否则连浏览器都不会打开，更不会生成内容、创建订单或付款。设备授权页只由 `hq login` 的登录流程使用，不作为普通页面入口。
+`text-video`、`matrix-template`、`short-drama`、`pricing-page`、`invite`、`recharge` 和 `bots` 是页面入口：运行后只返回固定黄雀主站链接，除非再加 `--open-browser`，否则连浏览器都不会打开，更不会生成内容、创建订单或付款。设备授权页只由 `hq login` 的登录流程使用，不作为普通页面入口。
 
 这批新增的直接 API 以安全读取为主：
 
@@ -122,6 +122,36 @@ JSON
 ```
 
 `mode=generate` 根据主题创作，`mode=fixed` 原样使用完整文案并自动拆分分镜。
+
+## 模板成片
+
+模板成片使用固定的“顶部标题 + 平台素材 + 底部行动文案”结构，不调用 AI 生图或视频模型。先读取服务状态和模板目录：
+
+```sh
+hq run matrix-template-capability --json
+hq run matrix-template-templates --json
+```
+
+从目录选择一个 `template_id`，准备 UTF-8 JSON：
+
+```sh
+cat > matrix-template.json <<'JSON'
+{
+  "top_text": "真正拉开差距的，不是工具",
+  "bottom_text": "评论区留下关键词，领取完整方案",
+  "template_id": "native-bold"
+}
+JSON
+
+hq run matrix-template-generate --input @matrix-template.json --json
+# 核对固定点数报价后，用完全相同的输入确认提交：
+hq run matrix-template-generate --input @matrix-template.json --confirm --quote-token '<quote_token>' --json
+hq run task --input @- --json <<'JSON'
+{"job_id": 123}
+JSON
+```
+
+时长由文案自动计算，背景音乐默认开启，素材固定来自平台已审核素材库。拿到 `job_id` 后只轮询 `task`，不要再次提交生成命令。
 
 需要混入口播视频素材时，先上传并导入一个或多个人物，再生成分镜方案：
 
@@ -227,7 +257,7 @@ hq run assets --input @assets.json --json
 
 - 账号、点数、权限和渠道目录读取。
 - Hermes IP12 项目、进度、报告与显式确认对话。
-- 图片、视频、音频、文案成片生成与提示词优化；`image-generate` 包含最多 14 张参考图的 Banana nb2/pro，`video-generate` 包含 Sora 2/Pro。
+- 图片、视频、音频、文案成片和平台素材库模板成片生成与提示词优化；`image-generate` 包含最多 14 张参考图的 Banana nb2/pro，`video-generate` 包含 Sora 2/Pro。
 - 数字 IP 单条文案、本人资产音频与 2–5 个形象批量生成；电影化身开放式和动作模仿生成。
 - 快速图片换装与经典视频换装。
 - 私有图片/视频上传、画布创建、画布 Agent 方案与受限写入。

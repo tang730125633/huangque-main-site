@@ -383,6 +383,10 @@ def handle_quote(handler, path, verify, must_change_password, is_shutting_down,
             payload = _collect_search_payload(payload)
         elif kind == "leads":
             payload = _leads_payload(payload)
+        elif kind == "matrix_template_video":
+            from . import matrix_template_video
+            payload = matrix_template_video.validate_payload(
+                payload, user["username"])
         else:
             raise ValueError("CLI 报价不支持该生成类型")
         feature_flags.require_enabled(
@@ -396,7 +400,10 @@ def handle_quote(handler, path, verify, must_change_password, is_shutting_down,
         handler._send(200, {"kind": kind, "cost": cost,
                             "points": points.get_points(user["username"])})
     except feature_flags.FeatureDisabled as exc:
-        handler._send(503, {"detail": str(exc)})
+        handler._send(503, {
+            "detail": str(exc), "code": "feature_disabled",
+            "retry_after_ms": 5000,
+        })
     except (TypeError, ValueError) as exc:
         handler._send(400, {"detail": str(exc)[:220]})
     finally:

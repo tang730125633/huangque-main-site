@@ -18,7 +18,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "server"))
 
 from content_domains import (
-    audio, cli_gateway, cli_uploads, core, submission_idempotency, upstream_guard, video,
+    audio, cli_gateway, cli_uploads, core, matrix_template_video,
+    submission_idempotency, upstream_guard, video,
     video_minimax_h3, video_openai,
 )
 
@@ -126,6 +127,67 @@ class HQCLIContentTests(unittest.TestCase):
         self.assertEqual(409, status)
         self.assertEqual("quote_cost_changed", result["code"])
         self.assertEqual([], self.points.deductions)
+
+    def test_matrix_replay_and_conflict_precede_remote_preflight(self):
+        body = {
+            "top_text": "有效标题", "bottom_text": "有效行动文案",
+            "template_id": "native-bold", "bgm": True,
+        }
+        key = "matrix-response-loss-001"
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder, \
+             mock.patch.object(core, "JOB_DB", str(Path(folder) / "jobs.db")), \
+             mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+             mock.patch.object(core, "HANDLERS", {"matrix_template_video": lambda payload: payload}), \
+             mock.patch.object(
+                 matrix_template_video, "validate_payload",
+                 side_effect=AssertionError("replay must precede preflight"),
+             ):
+            state, _ = submission_idempotency.begin(
+                core.jdb, "alice", "/api/gen/matrix-template", key, body)
+            self.assertEqual("new", state)
+            submission_idempotency.complete(
+                core.jdb, "alice", "/api/gen/matrix-template", key,
+                {"job_id": 92, "cost": 5, "points_left": 95},
+            )
+            replay_status, replay = self._post(
+                "/api/gen/matrix-template", body, expected=5,
+                idempotency_key=key,
+            )
+            changed_status, changed = self._post(
+                "/api/gen/matrix-template", dict(body, bottom_text="不同文案"),
+                expected=5, idempotency_key=key,
+            )
+        self.assertEqual((200, 92), (replay_status, replay["job_id"]))
+        self.assertEqual((409, "idempotency_conflict"), (
+            changed_status, changed["code"]))
+
+    def test_matrix_new_request_preflight_unavailable_is_structured_and_free(self):
+        body = {
+            "top_text": "有效标题", "bottom_text": "有效行动文案",
+            "template_id": "native-bold", "bgm": True,
+        }
+        key = "matrix-preflight-down-001"
+        cost = mock.Mock(return_value=5)
+        self.points.cost_of = cost
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder, \
+             mock.patch.object(core, "JOB_DB", str(Path(folder) / "jobs.db")), \
+             mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+             mock.patch.object(core, "HANDLERS", {"matrix_template_video": lambda payload: payload}), \
+             mock.patch.object(
+                 matrix_template_video, "validate_payload",
+                 side_effect=core.feature_flags.FeatureDisabled("模板成片服务暂不可用"),
+             ), mock.patch.object(core.jobs_store, "create_paid_job") as create:
+            status, result = self._post(
+                "/api/gen/matrix-template", body, expected=5,
+                idempotency_key=key,
+            )
+            state, _ = submission_idempotency.begin(
+                core.jdb, "alice", "/api/gen/matrix-template", key, body)
+        self.assertEqual((503, "feature_disabled"), (status, result["code"]))
+        self.assertEqual("new", state)
+        self.assertEqual([], self.points.deductions)
+        cost.assert_not_called()
+        create.assert_not_called()
 
     def test_audio_validation_rejects_bad_knobs_before_generation(self):
         with self.assertRaisesRegex(ValueError, "pitch"):
