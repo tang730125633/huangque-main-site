@@ -146,7 +146,13 @@ def validate_payload(raw, username=""):
     except MatrixTemplateHTTPError as exc:
         if exc.status == 400:
             raise ValueError(str(exc)) from exc
-        raise
+        raise feature_flags.FeatureDisabled(
+            "模板成片服务暂不可用，请稍后重试"
+        ) from exc
+    except RuntimeError as exc:
+        raise feature_flags.FeatureDisabled(
+            "模板成片服务暂不可用，请稍后重试"
+        ) from exc
     payload = response.get("payload") if isinstance(response, dict) else None
     if not isinstance(payload, dict) or set(payload) != set(candidate):
         raise RuntimeError("模板成片预检结果无效")

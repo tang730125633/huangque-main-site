@@ -400,7 +400,10 @@ def handle_quote(handler, path, verify, must_change_password, is_shutting_down,
         handler._send(200, {"kind": kind, "cost": cost,
                             "points": points.get_points(user["username"])})
     except feature_flags.FeatureDisabled as exc:
-        handler._send(503, {"detail": str(exc)})
+        handler._send(503, {
+            "detail": str(exc), "code": "feature_disabled",
+            "retry_after_ms": 5000,
+        })
     except (TypeError, ValueError) as exc:
         handler._send(400, {"detail": str(exc)[:220]})
     finally:

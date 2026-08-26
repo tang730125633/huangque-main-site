@@ -96,6 +96,25 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                 "template_id": "native-bold",
             }, "alice")
 
+    def test_preflight_unavailable_maps_404_5xx_and_network_to_feature_disabled(self):
+        from content_domains import feature_flags
+
+        body = {
+            "top_text": "有效标题", "bottom_text": "有效行动文案",
+            "template_id": "native-bold",
+        }
+        for error in (
+            self.module.MatrixTemplateHTTPError(404, "not found"),
+            self.module.MatrixTemplateHTTPError(503, "maintenance"),
+            RuntimeError("network unavailable"),
+        ):
+            with self.subTest(error=error), \
+                 mock.patch.object(self.module, "require_available"), \
+                 mock.patch.object(self.module, "public_templates", return_value=self.templates()), \
+                 mock.patch.object(self.module, "_request", side_effect=error), \
+                 self.assertRaises(feature_flags.FeatureDisabled):
+                self.module.validate_payload(body, "alice")
+
     def test_generation_url_allows_https_or_loopback_only(self):
         for value in (
             "https://generation.example.com/internal/matrix-template",
@@ -271,6 +290,41 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             )
         self.assertEqual(400, handler.result[0])
         self.assertIn("文案过长", handler.result[1]["detail"])
+        points.cost_of.assert_not_called()
+
+    def test_cli_quote_preflight_unavailable_returns_structured_503(self):
+        from content_domains import cli_gateway, feature_flags
+
+        class Handler:
+            headers = {"X-HQ-Internal-Token": "secret"}
+            def _token(self): return "account-token"
+            def _json_body_strict(self):
+                return {"kind": "matrix_template_video", "payload": {
+                    "top_text": "有效标题", "bottom_text": "有效行动文案",
+                    "template_id": "native-bold", "bgm": True,
+                }}
+            def _send(self, status, body): self.result = (status, body)
+
+        handler = Handler()
+        points = SimpleNamespace(
+            cost_of=mock.Mock(return_value=5), get_points=mock.Mock(return_value=100),
+        )
+        flags = SimpleNamespace(
+            require_enabled=mock.Mock(), FeatureDisabled=feature_flags.FeatureDisabled,
+        )
+        with mock.patch.object(
+            self.module, "validate_payload",
+            side_effect=feature_flags.FeatureDisabled("模板成片服务暂不可用"),
+        ):
+            cli_gateway.handle_quote(
+                handler, "/api/gen/cli/quote", lambda _token: {"username": "alice"},
+                lambda _user: False, lambda: False, flags, points,
+                SimpleNamespace(), SimpleNamespace(), "secret",
+            )
+        self.assertEqual((503, "feature_disabled", 5000), (
+            handler.result[0], handler.result[1]["code"],
+            handler.result[1]["retry_after_ms"],
+        ))
         points.cost_of.assert_not_called()
 
 
