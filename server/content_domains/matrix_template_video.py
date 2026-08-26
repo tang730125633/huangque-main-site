@@ -124,7 +124,7 @@ def validate_payload(raw, username=""):
     template_id = str(body.get("template_id") or "native-bold")
     if template_id not in {item["id"] for item in public_templates()}:
         raise ValueError("请选择有效模板")
-    bgm = body.get("bgm", True)
+    bgm = body.get("bgm", False)
     if not isinstance(bgm, bool):
         raise ValueError("背景音乐设置无效")
     duration = body.get("duration")

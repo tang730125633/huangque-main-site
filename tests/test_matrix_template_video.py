@@ -49,13 +49,14 @@ class MatrixTemplateVideoTests(unittest.TestCase):
              mock.patch.object(self.module, "public_templates", return_value=self.templates()), \
              mock.patch.object(self.module, "_request", return_value={"payload": {
                  "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
-                 "template_id": "native-bold", "bgm": True, "duration": 8.0,
+                 "template_id": "native-bold", "bgm": False, "duration": 8.0,
              }}) as request:
             payload = self.module.validate_payload({
                 "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
-                "template_id": "native-bold", "bgm": True,
+                "template_id": "native-bold",
             }, "alice")
             self.assertEqual("native-bold", payload["template_id"])
+            self.assertFalse(payload["bgm"])
             with self.assertRaises(ValueError):
                 self.module.validate_payload({
                     "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
@@ -64,7 +65,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             request.assert_called_once_with(
                 "POST", "/v1/preflight", {
                     "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
-                    "template_id": "native-bold", "bgm": True, "duration": None,
+                    "template_id": "native-bold", "bgm": False, "duration": None,
                 }, timeout=10,
             )
         self.assertNotIn("provider", payload)
@@ -73,7 +74,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
     def test_validate_payload_uses_authoritative_67_68_visible_character_boundary(self):
         accepted = {
             "top_text": "中" * 60, "bottom_text": "A" * 7 + "，。！？",
-            "template_id": "native-bold", "bgm": True, "duration": 14.9,
+            "template_id": "native-bold", "bgm": False, "duration": 14.9,
         }
         with mock.patch.object(self.module, "require_available"), \
              mock.patch.object(self.module, "public_templates", return_value=self.templates()), \
@@ -233,14 +234,14 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             def _json_body_strict(self):
                 return {"kind": "matrix_template_video", "payload": {
                     "top_text": "有效标题", "bottom_text": "有效行动文案",
-                    "template_id": "native-bold", "bgm": True,
+                    "template_id": "native-bold", "bgm": False,
                 }}
             def _send(self, status, body): self.result = (status, body)
 
         handler = Handler()
         normalized = {
             "top_text": "有效标题", "bottom_text": "有效行动文案",
-            "template_id": "native-bold", "bgm": True, "duration": None,
+            "template_id": "native-bold", "bgm": False, "duration": None,
         }
         feature_flags = SimpleNamespace(
             require_enabled=mock.Mock(), FeatureDisabled=RuntimeError,
@@ -271,7 +272,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             def _json_body_strict(self):
                 return {"kind": "matrix_template_video", "payload": {
                     "top_text": "中" * 60, "bottom_text": "A" * 8,
-                    "template_id": "native-bold", "bgm": True,
+                    "template_id": "native-bold", "bgm": False,
                 }}
             def _send(self, status, body): self.result = (status, body)
 
@@ -301,7 +302,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             def _json_body_strict(self):
                 return {"kind": "matrix_template_video", "payload": {
                     "top_text": "有效标题", "bottom_text": "有效行动文案",
-                    "template_id": "native-bold", "bgm": True,
+                    "template_id": "native-bold", "bgm": False,
                 }}
             def _send(self, status, body): self.result = (status, body)
 
@@ -346,7 +347,7 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertNotIn('id="duration"', page)
         self.assertNotIn('id="bgm"', page)
         self.assertNotIn("素材来源", page)
-        self.assertIn("template_id:activeTemplate,bgm:true", page)
+        self.assertIn("template_id:activeTemplate,bgm:false", page)
         self.assertIn('hq-content[data-active="matrix-template"]{height:auto!important', page)
         self.assertIn("function fitLiveText(node,max,min)", page)
         self.assertIn("node.scrollHeight>node.clientHeight", page)
@@ -369,7 +370,7 @@ class MatrixTemplatePageTests(unittest.TestCase):
         result = self.runtime("postLoss")
         self.assertEqual(2, result["posts"])
         self.assertEqual(1, len(set(result["keys"])))
-        self.assertTrue(all(body["bgm"] is True for body in result["bodies"]))
+        self.assertTrue(all(body["bgm"] is False for body in result["bodies"]))
         self.assertTrue(all("duration" not in body for body in result["bodies"]))
         self.assertTrue(result["cleared"])
 

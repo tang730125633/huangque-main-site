@@ -1689,7 +1689,7 @@ def _matrix_template_payload(value):
         "top_text": _string(value["top_text"], "top_text", 2, 60),
         "bottom_text": _string(value["bottom_text"], "bottom_text", 2, 80),
         "template_id": template_id,
-        "bgm": True,
+        "bgm": False,
     }
 
 

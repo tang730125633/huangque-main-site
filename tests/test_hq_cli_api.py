@@ -974,7 +974,7 @@ class HQCLIAPITests(unittest.TestCase):
                     "kind": "matrix_template_video",
                     "payload": {
                         "top_text": "有效标题", "bottom_text": "有效行动文案",
-                        "template_id": "native-bold", "bgm": True,
+                        "template_id": "native-bold", "bgm": False,
                     },
                 }, plan["body"])
                 return 200, {"kind": "matrix_template_video", "cost": 5, "points": 100}
@@ -1005,7 +1005,7 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual("/api/gen/matrix-template", submitted[0]["path"])
         self.assertEqual({
             "top_text": "有效标题", "bottom_text": "有效行动文案",
-            "template_id": "native-bold", "bgm": True,
+            "template_id": "native-bold", "bgm": False,
         }, submitted[0]["body"])
         self.assertEqual("5", submitted[0]["headers"]["X-HQ-Expected-Cost"])
         self.assertTrue(submitted[0]["headers"]["Idempotency-Key"].startswith("hqcli-"))
@@ -1036,7 +1036,7 @@ class HQCLIAPITests(unittest.TestCase):
             ("generation:quote", "matrix_template_video", "/api/gen/matrix-template"),
             (plan["scope"], plan["generation_kind"], plan["endpoint"]),
         )
-        self.assertEqual(dict(value, bgm=True), plan["payload"])
+        self.assertEqual(dict(value, bgm=False), plan["payload"])
         for action, path in (
             ("matrix-template-capability", "/api/gen/matrix-template/capability"),
             ("matrix-template-templates", "/api/gen/matrix-template/templates"),
