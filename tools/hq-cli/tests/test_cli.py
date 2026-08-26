@@ -42,7 +42,7 @@ class HqCliTests(unittest.TestCase):
             self.assertEqual(0, code, error)
             self.assertTrue(self.payload(output)["schema"].startswith("hq."))
         code, output, _ = self.invoke(["version"])
-        self.assertEqual("0.11.1", self.payload(output)["cli_version"])
+        self.assertEqual("0.11.2", self.payload(output)["cli_version"])
         self.assertEqual("Huangque main-site CLI", self.payload(output)["product"])
         self.assertEqual("https://huangquechuanmei.com", self.payload(output)["origin"])
 
@@ -237,7 +237,7 @@ class HqCliTests(unittest.TestCase):
         by_id = {item["id"]: item for item in self.payload(output)["capabilities"]}
         navigation = {
             "text-video": "/workbench/text-video", "short-drama": "/workbench/short-drama",
-            "matrix-template": "/workbench/matrix-template",
+            "matrix-template": "/workbench/matrix-template.html",
             "pricing-page": "/workbench/pricing", "invite": "/workbench/invite",
             "recharge": "/workbench/recharge", "bots": "/workbench/bots",
         }
