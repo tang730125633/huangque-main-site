@@ -7,6 +7,7 @@ import sqlite3
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 import urllib.request
@@ -62,6 +63,17 @@ class FakeAuth:
 
     def verify(self, headers):
         return dict(USER)
+
+
+class MutableClock:
+    def __init__(self, value=2_000_000_000):
+        self.value = int(value)
+
+    def __call__(self):
+        return self.value
+
+    def advance(self, seconds):
+        self.value += int(seconds)
 
 
 class FakeIP12:
@@ -122,10 +134,14 @@ class FakeIP12:
 
 
 class FakeBridge:
-    def __init__(self):
+    def __init__(self, clock=None):
         self.internal_token = "test-shared-token"
+        self.clock = clock or time.time
         self.calls = []
         self.confirm_count = 0
+        self.quote_count = 0
+        self.quote_expirations = {}
+        self.confirm_advance_seconds = 0
         self.task_results = {}
         self.templates = [
             {"id": "native-bold", "name": "原生大字", "tags": ["醒目"]},
@@ -158,12 +174,22 @@ class FakeBridge:
                 "status": "running",
             }))
         if action == "matrix-template-generate" and options.get("confirm"):
+            token = str(options.get("quote_token") or "")
+            if int(self.quote_expirations.get(token) or 0) <= int(self.clock()):
+                raise APIError(409, "报价已过期，请重新报价", "quote_expired")
             self.confirm_count += 1
+            if self.confirm_advance_seconds:
+                self.clock.advance(self.confirm_advance_seconds)
             return {"status": "running", "job_id": str(7000 + self.confirm_count), "points": 990}
         if action == "matrix-template-generate":
+            self.quote_count += 1
+            token = "private-quote-%d" % self.quote_count
+            expires_at = int(self.clock()) + 300
+            self.quote_expirations[token] = expires_at
             return {
-                "quote_token": "private-quote-%d" % len(self.calls),
+                "quote_token": token,
                 "cost": 5, "points": 1000, "expires_in": 300,
+                "expires_at": expires_at,
             }
         raise AssertionError(action)
 
@@ -173,10 +199,11 @@ class CreatorAgentTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.store = CreatorAgentStore(pathlib.Path(self.temp.name) / "creator.db")
         self.ip12 = FakeIP12(ready_project())
-        self.bridge = FakeBridge()
+        self.clock = MutableClock()
+        self.bridge = FakeBridge(self.clock)
         self.service = CreatorAgentService(
             self.store, CreatorPlanner(provider=None, fallback=GuidedPlanner()),
-            FakeAuth(), self.bridge, self.ip12,
+            FakeAuth(), self.bridge, self.ip12, clock=self.clock,
         )
         self.headers = {}
 
@@ -429,15 +456,112 @@ class CreatorAgentTests(unittest.TestCase):
         self.assertNotIn("quote_token", raw)
         private = self.store.batch(USER["username"], draft["id"], include_private=True)
         self.assertTrue(all(item["quote_token"] for item in private["jobs"]))
+        self.assertEqual(quoted["quote_expires_at"], quoted["quote"]["expires_at"])
+        self.assertTrue(all(item["quote_expires_at"] == quoted["quote_expires_at"] for item in private["jobs"]))
+        self.assertTrue(all(item["quote_cost"] == 5 for item in private["jobs"]))
+
+    def test_unexpired_quote_is_reused_idempotently(self):
+        draft = self._draft_batch()
+        first = self.service.quote_batch(USER, draft["id"], draft["revision"])
+        quote_calls = self.bridge.quote_count
+        self.clock.advance(60)
+        second = self.service.quote_batch(USER, draft["id"], draft["revision"])
+        self.assertEqual(second, first)
+        self.assertEqual(self.bridge.quote_count, quote_calls)
+
+    def test_expired_quote_is_atomically_requoted(self):
+        draft = self._draft_batch()
+        first = self.service.quote_batch(USER, draft["id"], draft["revision"])
+        first_expiry = first["quote_expires_at"]
+        self.clock.advance(301)
+        second = self.service.quote_batch(USER, draft["id"], draft["revision"])
+        self.assertEqual(second["status"], "quoted")
+        self.assertGreater(second["quote_expires_at"], first_expiry)
+        self.assertEqual(self.bridge.quote_count, 4)
+        private = self.store.batch(USER["username"], draft["id"], include_private=True)
+        self.assertTrue(all(job["quote_expires_at"] == second["quote_expires_at"] for job in private["jobs"]))
+
+    def test_confirmation_for_old_quote_cannot_submit_a_requoted_batch(self):
+        draft = self._draft_batch()
+        first = self.service.quote_batch(USER, draft["id"], draft["revision"])
+        self.clock.advance(301)
+        second = self.service.quote_batch(USER, draft["id"], draft["revision"])
+        before = self.store.batch(USER["username"], draft["id"], include_private=True)
+        with self.assertRaises(APIError) as raised:
+            self.service.confirm_batch(
+                USER, draft["id"], "creator-confirm-old-quote",
+                second["revision"], first["quote_expires_at"],
+            )
+        self.assertEqual(raised.exception.code, "quote_expired")
+        self.assertEqual(
+            self.store.batch(USER["username"], draft["id"], include_private=True),
+            before,
+        )
+        self.assertEqual(self.bridge.confirm_count, 0)
+
+    def test_near_expiry_confirmation_is_rejected_without_state_change_or_provider_call(self):
+        draft = self._draft_batch()
+        quoted = self.service.quote_batch(USER, draft["id"], draft["revision"])
+        margin = self.service._quote_safety_margin(len(quoted["jobs"]))
+        self.clock.advance(300 - margin + 1)
+        before = self.store.batch(USER["username"], draft["id"], include_private=True)
+        with self.assertRaises(APIError) as raised:
+            self.service.confirm_batch(
+                USER, draft["id"], "creator-confirm-near-expiry", quoted["revision"],
+                quoted["quote_expires_at"],
+            )
+        self.assertEqual(raised.exception.code, "quote_expired")
+        after = self.store.batch(USER["username"], draft["id"], include_private=True)
+        self.assertEqual(after, before)
+        self.assertEqual(self.bridge.confirm_count, 0)
+
+    def test_three_platform_sequential_submit_stays_inside_quote_window(self):
+        result = self.message(
+            "制作视频", "start_video", {
+                "topic": "企业内容获客",
+                "platforms": ["douyin", "xiaohongshu", "wechat_channels"],
+            }, "three-platform-quote",
+        )
+        draft = result["latest_batch"]
+        quoted = self.service.quote_batch(USER, draft["id"], draft["revision"])
+        margin = self.service._quote_safety_margin(3)
+        self.clock.advance(300 - margin - 1)
+        self.bridge.confirm_advance_seconds = 35
+        submitted = self.service.confirm_batch(
+            USER, draft["id"], "creator-confirm-three-platform", quoted["revision"],
+            quoted["quote_expires_at"],
+        )
+        self.assertEqual(self.bridge.confirm_count, 3)
+        self.assertEqual(submitted["status"], "running")
+        self.assertLess(int(self.clock()), quoted["quote_expires_at"])
+
+    def test_expired_message_confirmation_requotes_instead_of_failing_generation(self):
+        draft = self._draft_batch()
+        quoted = self.service.quote_batch(USER, draft["id"], draft["revision"])
+        self.clock.advance(301)
+        result = self.message(
+            "确认扣点并开始生成", "confirm_payment", {
+                "batch_id": draft["id"],
+                "expected_revision": quoted["revision"],
+                "expected_quote_expires_at": quoted["quote_expires_at"],
+                "confirmation_id": "creator-confirm-expired-message",
+            }, "expired-message-confirm",
+        )
+        self.assertEqual(result["message_public"]["kind"], "video_quote")
+        self.assertIn("自动重新报价", result["reply"])
+        self.assertEqual(self.bridge.confirm_count, 0)
+        self.assertEqual(self.bridge.quote_count, 4)
 
     def test_one_confirmation_submits_each_platform_once(self):
         draft = self._draft_batch()
         quoted = self.service.quote_batch(USER, draft["id"], draft["revision"])
         first = self.service.confirm_batch(
             USER, draft["id"], "creator-confirm-0001", quoted["revision"],
+            quoted["quote_expires_at"],
         )
         second = self.service.confirm_batch(
             USER, draft["id"], "creator-confirm-0001", quoted["revision"],
+            quoted["quote_expires_at"],
         )
         self.assertEqual(first, second)
         self.assertEqual(self.bridge.confirm_count, 2)
@@ -460,6 +584,7 @@ class CreatorAgentTests(unittest.TestCase):
         thread = threading.Thread(target=lambda: self._capture_error(
             errors, lambda: self.service.confirm_batch(
                 USER, draft["id"], "creator-confirm-race-edit", quoted["revision"],
+                quoted["quote_expires_at"],
             ),
         ))
         thread.start(); self.assertTrue(entered.wait(3))
@@ -491,6 +616,7 @@ class CreatorAgentTests(unittest.TestCase):
         self.bridge.action = slow
         call = lambda: self.service.confirm_batch(
             USER, draft["id"], "creator-confirm-race-double", quoted["revision"],
+            quoted["quote_expires_at"],
         )
         first = threading.Thread(target=lambda: self._capture_error(errors, call))
         first.start(); self.assertTrue(entered.wait(3))
@@ -541,6 +667,7 @@ class CreatorAgentTests(unittest.TestCase):
         thread = threading.Thread(target=lambda: self._capture_error(
             errors, lambda: self.service.confirm_batch(
                 USER, draft["id"], "creator-confirm-race-refresh", quoted["revision"],
+                quoted["quote_expires_at"],
             ),
         ))
         thread.start(); self.assertTrue(entered.wait(3))
@@ -566,7 +693,7 @@ class CreatorAgentTests(unittest.TestCase):
         quoted = self.service.quote_batch(USER, draft["id"], draft["revision"])
         self.store.claim_confirmation(
             USER["username"], draft["id"], "creator-confirm-stale",
-            quoted["revision"],
+            quoted["revision"], quoted["quote_expires_at"],
         )
         with closing(self.store.db()) as connection:
             connection.execute(
@@ -599,6 +726,7 @@ class CreatorAgentTests(unittest.TestCase):
         self.bridge.action = flaky
         first = self.service.confirm_batch(
             USER, draft["id"], "creator-confirm-uncertain", quoted["revision"],
+            quoted["quote_expires_at"],
         )
         unknown = next(item for item in first["jobs"] if item["status"] == "submission_unknown")
         private_before = self.store.batch(USER["username"], draft["id"], include_private=True)
@@ -616,6 +744,7 @@ class CreatorAgentTests(unittest.TestCase):
         quoted = self.service.quote_batch(USER, draft["id"], draft["revision"])
         self.service.confirm_batch(
             USER, draft["id"], "creator-confirm-0002", quoted["revision"],
+            quoted["quote_expires_at"],
         )
         self.bridge.task_results = {
             "7001": {"status": "done", "result": {"video_url": "/media/one.mp4"}},
@@ -637,6 +766,7 @@ class CreatorAgentTests(unittest.TestCase):
         quoted = self.service.quote_batch(USER, draft["id"], draft["revision"])
         self.service.confirm_batch(
             USER, draft["id"], "creator-confirm-version", quoted["revision"],
+            quoted["quote_expires_at"],
         )
         self.bridge.task_results = {
             "7001": {"status": "done", "result": {"video_url": "/media/douyin.mp4"}},
@@ -782,6 +912,7 @@ class CreatorAgentTests(unittest.TestCase):
             submitted = post(
                 "/batches/%s/confirm" % draft["id"],
                 {"expected_revision": quoted["revision"],
+                 "expected_quote_expires_at": quoted["quote_expires_at"],
                  "confirmation_id": "creator-http-confirm-0001"},
             )["batch"]
             refreshed = post("/batches/%s/refresh" % draft["id"], {})["batch"]

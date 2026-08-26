@@ -81,6 +81,16 @@ class CreatorAgentContractTests(unittest.TestCase):
         self.assertIn('_PRIVATE_KEYS = {"quote_token", "job_id", "idempotency_key", "confirmation_id"}', service)
         self.assertIn("quote_token TEXT NOT NULL", store)
 
+    def test_quote_expiry_is_absolute_atomic_and_visible(self):
+        store = (ROOT / "server/creator_agent/store.py").read_text(encoding="utf-8")
+        self.assertIn('"expires_at": claims["e"]', self.auth)
+        self.assertIn("quote_expires_at INTEGER NOT NULL", store)
+        self.assertIn("submit_quote_expires_at INTEGER NOT NULL", store)
+        self.assertIn("raise QuoteExpired", store)
+        self.assertIn("ca-quote-expiry", self.page)
+        self.assertIn("报价已过期，请重新报价", self.page)
+        self.assertIn("expected_quote_expires_at", self.page)
+
     def test_browser_persists_and_recovers_pending_requests(self):
         self.assertIn("hq-creator-agent-pending-v2", self.page)
         self.assertIn("savePending(pending);executePending(pending)", self.page)

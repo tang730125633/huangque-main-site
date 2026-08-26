@@ -1,4 +1,5 @@
 import http.cookiejar
+import gc
 import hashlib
 import importlib
 import json
@@ -7,6 +8,7 @@ import sqlite3
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -45,6 +47,7 @@ class HQCLIAPITests(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=3)
+        gc.collect()
         self.tmp.cleanup()
 
     def _request(self, path, payload=None, token="", browser=None, origin=None, method=None, extra_headers=None):
@@ -996,6 +999,8 @@ class HQCLIAPITests(unittest.TestCase):
         with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
             status, quote = self._request("/api/auth/cli/action", request, token=token)
             self.assertEqual((200, 5), (status, quote["cost"]))
+            self.assertIsInstance(quote["expires_at"], int)
+            self.assertGreater(quote["expires_at"], int(time.time()))
             status, result = self._request(
                 "/api/auth/cli/action",
                 dict(request, confirm=True, quote_token=quote["quote_token"]),

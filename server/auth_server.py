@@ -4927,6 +4927,7 @@ class H(BaseHTTPRequestHandler):
                 response = {
                     "quote_token": token, "kind": generation_kind, "cost": claims["c"],
                     "points": result.get("points"), "expires_in": hq_cli_api.QUOTE_TTL,
+                    "expires_at": claims["e"],
                     "confirmation_required": True,
                 }
                 for field in plan.get("quote_result_fields", ()):

@@ -11,7 +11,8 @@ const batch = {
     { platform: 'douyin', platform_label: '抖音', top_text: '企业别急着做 Agent', bottom_text: '关注获取完整流程', template_id: 'native-bold', template_reason: '直接结论更适合快速停留', material_pack: { name: '抖音平台素材库' } },
     { platform: 'xiaohongshu', platform_label: '小红书', top_text: '做 Agent 前先看这份清单', bottom_text: '先收藏，下次直接照着做', template_id: 'minimal-headline', template_reason: '经验型表达更适合收藏', material_pack: { name: '小红书平台素材库' } },
   ],
-  quote: { items: [{ platform: 'douyin', label: '抖音', cost: 5 }, { platform: 'xiaohongshu', label: '小红书', cost: 5 }], total_cost: 10, points: 1000, expires_in: 300 },
+  quote: { items: [{ platform: 'douyin', label: '抖音', cost: 5 }, { platform: 'xiaohongshu', label: '小红书', cost: 5 }], total_cost: 10, points: 1000, expires_in: 300, expires_at: Math.floor(Date.now() / 1000) + 300 },
+  quote_expires_at: Math.floor(Date.now() / 1000) + 300,
   jobs: [
     { id: 'creator_job_1', platform: 'douyin', version: 1, status: 'quoted', result: {} },
     { id: 'creator_job_2', platform: 'xiaohongshu', version: 1, status: 'quoted', result: {} },
@@ -123,6 +124,7 @@ function serve(request, response) {
         messages: document.querySelectorAll('.ca-message').length,
         plans: document.querySelectorAll('.ca-plan-card').length,
         total: document.querySelector('.ca-quote-total b').textContent,
+        quoteCountdown: document.querySelector('.ca-quote-expiry')?.textContent || '',
         confirm: !!document.querySelector('[data-intent="confirm_payment"]'),
         tabs: document.querySelectorAll('.ca-tab').length,
         aiEntry: document.querySelector('.hq-side-ai-entry')?.getAttribute('href') || '',
@@ -150,12 +152,18 @@ function serve(request, response) {
         metrics.confirmRequests = messageBodies.length;
         metrics.refreshRequests = refreshRequests;
         metrics.confirmRevision = messageBodies[0]?.payload?.expected_revision;
+        metrics.confirmQuoteExpiresAt = messageBodies[0]?.payload?.expected_quote_expires_at;
         metrics.confirmIntent = messageBodies[0]?.intent;
         metrics.confirmBatchId = messageBodies[0]?.payload?.batch_id;
         metrics.pathsAfterConfirm = requestPaths.slice(-8);
       } else {
         metrics.messageReplayStable = true;
         metrics.confirmRecovered = true;
+        await page.evaluate(() => {
+          document.querySelector('.ca-quote-expiry').dataset.quoteExpires = '1';
+        });
+        await page.waitForFunction(() => document.querySelector('[data-original-intent="confirm_payment"]')?.dataset.intent === 'confirm_plan');
+        metrics.expiredQuoteRequotes = await page.evaluate(() => document.querySelector('[data-original-intent="confirm_payment"]')?.textContent === '重新报价');
       }
       report[name] = metrics;
       if (process.env.CREATOR_AGENT_QA_OUTPUT) {
@@ -168,5 +176,5 @@ function serve(request, response) {
     await browser.close(); server.close();
   }
   console.log(JSON.stringify(report));
-  if (Object.values(report).some((item) => item.width > item.viewport || item.messages < 2 || item.plans < 2 || !item.confirm || item.total !== '10 点' || item.tabs !== 3 || item.aiEntry !== 'creator-agent.html' || item.aiLabel !== 'AI 创作助手' || !item.messageReplayStable || !item.confirmRecovered)) process.exitCode = 1;
+  if (Object.values(report).some((item) => item.width > item.viewport || item.messages < 2 || item.plans < 2 || !item.confirm || item.total !== '10 点' || !item.quoteCountdown.startsWith('报价剩余') || item.tabs !== 3 || item.aiEntry !== 'creator-agent.html' || item.aiLabel !== 'AI 创作助手' || !item.messageReplayStable || !item.confirmRecovered || (item.confirmQuoteExpiresAt !== undefined && item.confirmQuoteExpiresAt !== batch.quote_expires_at) || (item.expiredQuoteRequotes === false))) process.exitCode = 1;
 })().catch((error) => { console.error(error); process.exitCode = 1; });

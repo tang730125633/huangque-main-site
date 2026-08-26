@@ -23,6 +23,10 @@ class IdempotencyConflict(StoreError):
     pass
 
 
+class QuoteExpired(StoreError):
+    pass
+
+
 STALE_CLAIM_SECONDS = 120
 
 
@@ -129,6 +133,7 @@ class CreatorAgentStore:
                     revision INTEGER NOT NULL DEFAULT 1,
                     plan_hash TEXT NOT NULL DEFAULT '',
                     quoted_revision INTEGER NOT NULL DEFAULT 0,
+                    quote_expires_at INTEGER NOT NULL DEFAULT 0,
                     claim_id TEXT NOT NULL DEFAULT '',
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
@@ -149,10 +154,15 @@ class CreatorAgentStore:
                     input_hash TEXT NOT NULL DEFAULT '',
                     quote_token TEXT NOT NULL DEFAULT '',
                     quote_json TEXT NOT NULL DEFAULT '{}',
+                    quote_cost INTEGER NOT NULL DEFAULT 0,
+                    quote_expires_at INTEGER NOT NULL DEFAULT 0,
                     idempotency_key TEXT NOT NULL,
                     revision INTEGER NOT NULL DEFAULT 1,
                     submit_input_json TEXT NOT NULL DEFAULT '{}',
+                    submit_input_hash TEXT NOT NULL DEFAULT '',
                     submit_quote_token TEXT NOT NULL DEFAULT '',
+                    submit_quote_cost INTEGER NOT NULL DEFAULT 0,
+                    submit_quote_expires_at INTEGER NOT NULL DEFAULT 0,
                     submit_idempotency_key TEXT NOT NULL DEFAULT '',
                     confirmation_id TEXT NOT NULL DEFAULT '',
                     job_id TEXT NOT NULL DEFAULT '',
@@ -183,13 +193,19 @@ class CreatorAgentStore:
                     "revision": "INTEGER NOT NULL DEFAULT 1",
                     "plan_hash": "TEXT NOT NULL DEFAULT ''",
                     "quoted_revision": "INTEGER NOT NULL DEFAULT 0",
+                    "quote_expires_at": "INTEGER NOT NULL DEFAULT 0",
                     "claim_id": "TEXT NOT NULL DEFAULT ''",
                 },
                 "creator_jobs": {
                     "input_hash": "TEXT NOT NULL DEFAULT ''",
                     "revision": "INTEGER NOT NULL DEFAULT 1",
                     "submit_input_json": "TEXT NOT NULL DEFAULT '{}'",
+                    "submit_input_hash": "TEXT NOT NULL DEFAULT ''",
                     "submit_quote_token": "TEXT NOT NULL DEFAULT ''",
+                    "quote_cost": "INTEGER NOT NULL DEFAULT 0",
+                    "quote_expires_at": "INTEGER NOT NULL DEFAULT 0",
+                    "submit_quote_cost": "INTEGER NOT NULL DEFAULT 0",
+                    "submit_quote_expires_at": "INTEGER NOT NULL DEFAULT 0",
                     "submit_idempotency_key": "TEXT NOT NULL DEFAULT ''",
                 },
             }
@@ -441,6 +457,7 @@ class CreatorAgentStore:
             "revision": int(row["revision"]),
             "status": row["status"], "input": _loads(row["input_json"], {}),
             "quote": _loads(row["quote_json"], {}),
+            "quote_expires_at": int(row["quote_expires_at"] or 0),
             "result": _loads(row["result_json"], {}), "error": row["error"],
             "refund_status": row["refund_status"],
             "created_at": row["created_at"], "updated_at": row["updated_at"],
@@ -452,8 +469,12 @@ class CreatorAgentStore:
                 "confirmation_id": row["confirmation_id"],
                 "job_id": row["job_id"],
                 "input_hash": row["input_hash"],
+                "quote_cost": int(row["quote_cost"] or 0),
                 "submit_input": _loads(row["submit_input_json"], {}),
+                "submit_input_hash": row["submit_input_hash"],
                 "submit_quote_token": row["submit_quote_token"],
+                "submit_quote_cost": int(row["submit_quote_cost"] or 0),
+                "submit_quote_expires_at": int(row["submit_quote_expires_at"] or 0),
                 "submit_idempotency_key": row["submit_idempotency_key"],
             })
         return value
@@ -503,6 +524,7 @@ class CreatorAgentStore:
             "topic": row["topic"], "goal": row["goal"], "status": row["status"],
             "revision": int(row["revision"]),
             "plans": _loads(row["plan_json"], []), "quote": _loads(row["quote_json"], {}),
+            "quote_expires_at": int(row["quote_expires_at"] or 0),
             "confirmation_id": row["confirmation_id"],
             "created_at": row["created_at"], "updated_at": row["updated_at"],
         }
@@ -581,9 +603,44 @@ class CreatorAgentStore:
             return current_status
         return "submitted"
 
-    def claim_quote(self, username, batch_id, expected_revision):
+    @staticmethod
+    def _quote_valid(row, jobs, now, minimum_validity):
+        threshold = int(now) + max(0, int(minimum_validity))
+        return bool(
+            row["status"] == "quoted"
+            and int(row["quoted_revision"]) == int(row["revision"])
+            and row["plan_hash"] == _digest(_loads(row["plan_json"], []))
+            and int(row["quote_expires_at"] or 0) > threshold
+            and jobs
+            and all(
+                job["status"] == "quoted"
+                and bool(job["quote_token"])
+                and int(job["quote_cost"] or 0) > 0
+                and int(job["quote_expires_at"] or 0) > threshold
+                and job["input_hash"] == _digest(_loads(job["input_json"], {}))
+                for job in jobs
+            )
+        )
+
+    @staticmethod
+    def _clear_quote_locked(connection, username, batch_id, now):
+        connection.execute(
+            """UPDATE creator_jobs SET status='ready',quote_token='',quote_json='{}',
+               quote_cost=0,quote_expires_at=0,error='',revision=revision+1,updated_at=?
+               WHERE batch_id=? AND username=? AND status='quoted'""",
+            (now, batch_id, username),
+        )
+        connection.execute(
+            """UPDATE creator_batches SET status='ready',quote_json='{}',
+               quote_expires_at=0,quoted_revision=0,claim_id='',updated_at=?
+               WHERE id=? AND username=? AND status='quoted'""",
+            (now, batch_id, username),
+        )
+
+    def claim_quote(self, username, batch_id, expected_revision, now=None,
+                    minimum_validity=0):
         claim_id = "quote_" + uuid.uuid4().hex
-        now = int(time.time())
+        now = int(time.time() if now is None else now)
         with closing(self.db()) as connection:
             connection.execute("BEGIN IMMEDIATE")
             row, jobs = self._locked_batch(connection, username, batch_id)
@@ -603,6 +660,14 @@ class CreatorAgentStore:
             if int(row["revision"]) != int(expected_revision):
                 connection.rollback()
                 raise StateConflict("batch revision changed")
+            if row["status"] == "quoted":
+                if self._quote_valid(row, jobs, now, minimum_validity):
+                    connection.commit()
+                    value = self.batch(username, batch_id, include_private=True)
+                    value["quote_reused"] = True
+                    return value
+                self._clear_quote_locked(connection, username, batch_id, now)
+                row, jobs = self._locked_batch(connection, username, batch_id)
             if row["status"] not in {"draft", "ready"} or row["claim_id"]:
                 connection.rollback()
                 raise StateConflict("batch is not quoteable")
@@ -629,10 +694,11 @@ class CreatorAgentStore:
             connection.commit()
         value = self.batch(username, batch_id, include_private=True)
         value["claim_id"] = claim_id
+        value["quote_reused"] = False
         return value
 
-    def finish_quote(self, username, batch_id, claim_id, job_quotes, quote):
-        now = int(time.time())
+    def finish_quote(self, username, batch_id, claim_id, job_quotes, quote, now=None):
+        now = int(time.time() if now is None else now)
         with closing(self.db()) as connection:
             connection.execute("BEGIN IMMEDIATE")
             row, jobs = self._locked_batch(connection, username, batch_id)
@@ -643,27 +709,42 @@ class CreatorAgentStore:
             if set(quotes) != {job["id"] for job in jobs}:
                 connection.rollback()
                 raise StateConflict("quote set is incomplete")
+            expirations = []
             for job in jobs:
                 item = quotes[job["id"]]
-                if not item.get("quote_token") or item.get("input_hash") != job["input_hash"]:
+                try:
+                    cost = int(item.get("cost") or 0)
+                    expires_at = int(item.get("expires_at") or 0)
+                except (TypeError, ValueError):
+                    cost, expires_at = 0, 0
+                if (
+                    not item.get("quote_token")
+                    or item.get("input_hash") != job["input_hash"]
+                    or cost <= 0 or expires_at <= now
+                ):
                     connection.rollback()
                     raise StateConflict("quote does not match current input")
+                expirations.append(expires_at)
                 changed = connection.execute(
                     """UPDATE creator_jobs SET status='quoted',quote_token=?,quote_json=?,
-                       error='',revision=revision+1,updated_at=?
+                       quote_cost=?,quote_expires_at=?,error='',revision=revision+1,updated_at=?
                        WHERE id=? AND username=? AND revision=? AND status IN ('draft','ready')
-                         AND input_hash=?""",
-                    (item["quote_token"], _json(item.get("quote") or {}), now,
+                          AND input_hash=?""",
+                    (item["quote_token"], _json(item.get("quote") or {}), cost, expires_at, now,
                      job["id"], username, int(job["revision"]), job["input_hash"]),
                 )
                 if changed.rowcount != 1:
                     connection.rollback()
                     raise StateConflict("job quote finalize lost")
+            earliest_expiry = min(expirations)
+            frozen_quote = dict(quote or {})
+            frozen_quote["expires_at"] = earliest_expiry
+            frozen_quote["expires_in"] = max(0, earliest_expiry - now)
             changed = connection.execute(
                 """UPDATE creator_batches SET status='quoted',quote_json=?,
-                   quoted_revision=revision,claim_id='',updated_at=?
-                   WHERE id=? AND username=? AND status='quoting' AND claim_id=?""",
-                (_json(quote or {}), now, batch_id, username, claim_id),
+                    quote_expires_at=?,quoted_revision=revision,claim_id='',updated_at=?
+                    WHERE id=? AND username=? AND status='quoting' AND claim_id=?""",
+                (_json(frozen_quote), earliest_expiry, now, batch_id, username, claim_id),
             )
             if changed.rowcount != 1:
                 connection.rollback()
@@ -681,8 +762,9 @@ class CreatorAgentStore:
             )
             connection.commit()
 
-    def claim_confirmation(self, username, batch_id, confirmation_id, expected_revision):
-        now = int(time.time())
+    def claim_confirmation(self, username, batch_id, confirmation_id, expected_revision,
+                           expected_quote_expires_at, now=None, safety_margin_seconds=0):
+        now = int(time.time() if now is None else now)
         claimed_ids = []
         with closing(self.db()) as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -693,6 +775,9 @@ class CreatorAgentStore:
             if int(row["revision"]) != int(expected_revision):
                 connection.rollback()
                 raise StateConflict("batch revision changed")
+            if int(row["quote_expires_at"] or 0) != int(expected_quote_expires_at):
+                connection.rollback()
+                raise QuoteExpired("batch quote changed")
             existing_confirmation = str(row["confirmation_id"] or "")
             if existing_confirmation:
                 if existing_confirmation != confirmation_id:
@@ -721,11 +806,15 @@ class CreatorAgentStore:
                 if any(
                     job["status"] != "quoted"
                     or not job["quote_token"]
+                    or int(job["quote_cost"] or 0) <= 0
                     or job["input_hash"] != _digest(_loads(job["input_json"], {}))
                     for job in jobs
                 ):
                     connection.rollback()
                     raise StateConflict("job quote is incomplete")
+                if not self._quote_valid(row, jobs, now, safety_margin_seconds):
+                    connection.rollback()
+                    raise QuoteExpired("batch quote has insufficient validity")
                 changed = connection.execute(
                     """UPDATE creator_batches SET status='submitting',confirmation_id=?,
                        claim_id='',updated_at=? WHERE id=? AND username=? AND revision=?
@@ -739,7 +828,10 @@ class CreatorAgentStore:
                     changed = connection.execute(
                         """UPDATE creator_jobs SET status='submit_claimed',
                            confirmation_id=?,submit_input_json=input_json,
+                           submit_input_hash=input_hash,
                            submit_quote_token=quote_token,
+                           submit_quote_cost=quote_cost,
+                           submit_quote_expires_at=quote_expires_at,
                            submit_idempotency_key=idempotency_key,
                            revision=revision+1,updated_at=?
                            WHERE id=? AND username=? AND revision=? AND status='quoted'
@@ -928,9 +1020,11 @@ class CreatorAgentStore:
                 tool_input = incoming[job["platform"]].get("input") or {}
                 changed = connection.execute(
                     """UPDATE creator_jobs SET status='draft',input_json=?,input_hash=?,
-                       quote_token='',quote_json='{}',confirmation_id='',job_id='',
+                       quote_token='',quote_json='{}',quote_cost=0,quote_expires_at=0,
+                       confirmation_id='',job_id='',
                        result_json='{}',error='',refund_status='',submit_input_json='{}',
-                       submit_quote_token='',submit_idempotency_key='',revision=revision+1,
+                       submit_input_hash='',submit_quote_token='',submit_quote_cost=0,
+                       submit_quote_expires_at=0,submit_idempotency_key='',revision=revision+1,
                        updated_at=? WHERE id=? AND username=? AND revision=?
                        AND status IN ('draft','ready','quoted')""",
                     (_json(tool_input), _digest(tool_input), now, job["id"], username,
@@ -941,7 +1035,7 @@ class CreatorAgentStore:
                     raise StateConflict("job edit claim lost")
             changed = connection.execute(
                 """UPDATE creator_batches SET status='ready',plan_json=?,plan_hash=?,
-                   quote_json='{}',confirmation_id='',quoted_revision=0,claim_id='',
+                   quote_json='{}',quote_expires_at=0,confirmation_id='',quoted_revision=0,claim_id='',
                    revision=?,updated_at=? WHERE id=? AND username=? AND revision=?
                    AND status IN ('draft','ready','quoted') AND claim_id=''""",
                 (_json(platform_plans), _digest(platform_plans), next_revision, now,

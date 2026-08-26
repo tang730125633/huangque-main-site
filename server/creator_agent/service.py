@@ -24,7 +24,7 @@ from .planner import (
     sanitize_preferences,
 )
 from .store import (
-    CreatorAgentStore, IdempotencyConflict, StateConflict, StoreError,
+    CreatorAgentStore, IdempotencyConflict, QuoteExpired, StateConflict, StoreError,
 )
 
 
@@ -35,6 +35,8 @@ _PRIVATE_KEYS = {"quote_token", "job_id", "idempotency_key", "confirmation_id"}
 _RUNNING = {"submitted", "queued", "running", "verifying", "processing", "submission_unknown"}
 _FAILED = {"error", "failed", "refunded", "failed_submission"}
 _DONE = {"done", "completed", "success"}
+_QUOTE_SUBMIT_BASE_MARGIN_SECONDS = 15
+_QUOTE_SUBMIT_PER_JOB_SECONDS = 35
 
 
 class APIError(RuntimeError):
@@ -241,12 +243,13 @@ class BridgeClient:
 
 
 class CreatorAgentService:
-    def __init__(self, store, planner, auth, bridge, ip12):
+    def __init__(self, store, planner, auth, bridge, ip12, clock=None):
         self.store = store
         self.planner = planner
         self.auth = auth
         self.bridge = bridge
         self.ip12 = ip12
+        self.clock = clock or time.time
         self._locks = {}
         self._locks_guard = threading.Lock()
 
@@ -588,6 +591,12 @@ class CreatorAgentService:
         }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
     @staticmethod
+    def _value_hash(value):
+        return hashlib.sha256(json.dumps(
+            value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+
+    @staticmethod
     def _platforms_from_text(message):
         text = str(message or "")
         return [key for key in ALLOWED_PLATFORMS if PLATFORM_LABELS[key] in text]
@@ -747,9 +756,33 @@ class CreatorAgentService:
         return revision
 
     @staticmethod
+    def _expected_quote_expiry(value):
+        if isinstance(value, bool):
+            raise APIError(400, "报价版本无效", "invalid_quote_expiry")
+        try:
+            expires_at = int(value)
+        except (TypeError, ValueError) as exc:
+            raise APIError(400, "请重新获取报价", "quote_expiry_required") from exc
+        if expires_at <= 0:
+            raise APIError(400, "报价版本无效", "invalid_quote_expiry")
+        return expires_at
+
+    @staticmethod
     def _raise_store_conflict(error):
+        if isinstance(error, QuoteExpired):
+            raise APIError(
+                409, "报价已过期或剩余时间不足，请重新报价",
+                "quote_expired",
+            ) from error
         code = "idempotency_conflict" if isinstance(error, IdempotencyConflict) else "state_conflict"
         raise APIError(409, "方案状态已经变化，请刷新后重试", code) from error
+
+    @staticmethod
+    def _quote_safety_margin(job_count):
+        return (
+            _QUOTE_SUBMIT_BASE_MARGIN_SECONDS
+            + max(1, int(job_count)) * _QUOTE_SUBMIT_PER_JOB_SECONDS
+        )
 
     def quote_batch(self, user, batch_id, expected_revision):
         batch_id = str(batch_id or "")
@@ -761,14 +794,19 @@ class CreatorAgentService:
             raise APIError(404, "视频方案不存在", "not_found")
         if current["revision"] != revision:
             raise APIError(409, "方案版本已经变化，请刷新后重试", "state_conflict")
-        if current["status"] == "quoted" and all(job.get("quote_token") for job in current["jobs"]):
-            return self.store.batch(user["username"], batch_id)
+        now = int(self.clock())
+        safety_margin = self._quote_safety_margin(len(current.get("jobs") or []))
         try:
-            batch = self.store.claim_quote(user["username"], batch_id, revision)
+            batch = self.store.claim_quote(
+                user["username"], batch_id, revision,
+                now=now, minimum_validity=safety_margin,
+            )
         except (StateConflict, StoreError) as exc:
             self._raise_store_conflict(exc)
+        if batch.get("quote_reused"):
+            return self.store.batch(user["username"], batch_id)
         claim_id = batch["claim_id"]
-        items, total, points, expires, job_quotes = [], 0, None, None, []
+        items, total, points, expirations, job_quotes = [], 0, None, [], []
         try:
             for job in batch["jobs"]:
                 result = self.bridge.action(
@@ -778,7 +816,10 @@ class CreatorAgentService:
                 if not token:
                     raise APIError(502, "模板视频没有返回有效报价", "quote_invalid")
                 public_quote = _public(result)
-                cost = int(public_quote.get("cost") or 0)
+                try:
+                    cost = int(public_quote.get("cost") or 0)
+                except (TypeError, ValueError):
+                    cost = 0
                 if cost <= 0:
                     raise APIError(502, "模板视频报价无效", "quote_invalid")
                 total += cost
@@ -786,14 +827,23 @@ class CreatorAgentService:
                     current_points = int(public_quote.get("points"))
                 except (TypeError, ValueError):
                     current_points = None
+                quote_now = int(self.clock())
                 try:
-                    current_expires = int(public_quote.get("expires_in"))
+                    expires_at = int(public_quote.get("expires_at"))
                 except (TypeError, ValueError):
-                    current_expires = None
+                    expires_at = 0
+                if expires_at <= 0:
+                    try:
+                        expires_at = quote_now + int(public_quote.get("expires_in"))
+                    except (TypeError, ValueError):
+                        expires_at = 0
+                if expires_at <= quote_now:
+                    raise APIError(502, "模板视频报价已失效", "quote_invalid")
+                public_quote["expires_at"] = expires_at
+                public_quote["expires_in"] = max(0, expires_at - quote_now)
                 if current_points is not None:
                     points = current_points if points is None else min(points, current_points)
-                if current_expires is not None:
-                    expires = current_expires if expires is None else min(expires, current_expires)
+                expirations.append(expires_at)
                 items.append({
                     "platform": job["platform"], "label": PLATFORM_LABELS[job["platform"]],
                     "cost": cost,
@@ -801,15 +851,26 @@ class CreatorAgentService:
                 job_quotes.append({
                     "id": job["id"], "input_hash": job["input_hash"],
                     "quote_token": token, "quote": public_quote,
+                    "cost": cost, "expires_at": expires_at,
                 })
+            finished_at = int(self.clock())
+            earliest_expiry = min(expirations)
+            if earliest_expiry <= finished_at + safety_margin:
+                raise APIError(
+                    409, "报价剩余时间不足，请重新报价",
+                    "quote_expired",
+                )
             quote = {
                 "items": items, "total_cost": total, "points": points,
-                "expires_in": expires, "confirmation_required": True,
+                "expires_at": earliest_expiry,
+                "expires_in": max(0, earliest_expiry - finished_at),
+                "confirmation_required": True,
             }
             return self.store.finish_quote(
                 user["username"], batch_id, claim_id, job_quotes, quote,
+                now=finished_at,
             )
-        except (APIError, StateConflict, StoreError):
+        except Exception:
             self.store.abort_quote(user["username"], batch_id, claim_id)
             raise
 
@@ -822,9 +883,17 @@ class CreatorAgentService:
 
     def _submit_matrix_job(self, user, job):
         tool_input = job.get("submit_input") or {}
+        input_hash = str(job.get("submit_input_hash") or "")
         quote_token = str(job.get("submit_quote_token") or "")
+        quote_cost = int(job.get("submit_quote_cost") or 0)
+        quote_expires_at = int(job.get("submit_quote_expires_at") or 0)
         idempotency_key = str(job.get("submit_idempotency_key") or "")
-        if not tool_input or not quote_token or not idempotency_key:
+        if (
+            not tool_input or not input_hash
+            or input_hash != self._value_hash(tool_input)
+            or not quote_token or quote_cost <= 0 or quote_expires_at <= 0
+            or not idempotency_key
+        ):
             raise APIError(409, "冻结提交快照不完整", "submit_snapshot_invalid")
         result = self.bridge.action(
             user["account_id"], "matrix-template-generate", tool_input,
@@ -847,17 +916,24 @@ class CreatorAgentService:
             "refund_status": str(result.get("refund_status") or ""),
         }
 
-    def confirm_batch(self, user, batch_id, confirmation_id, expected_revision):
+    def confirm_batch(self, user, batch_id, confirmation_id, expected_revision,
+                      expected_quote_expires_at):
         if not _BATCH_RE.fullmatch(str(batch_id or "")):
             raise APIError(400, "视频方案编号无效", "invalid_batch")
         if not _REQUEST_RE.fullmatch(str(confirmation_id or "")):
             raise APIError(400, "确认编号无效", "invalid_confirmation")
         revision = self._expected_revision(expected_revision)
+        quote_expires_at = self._expected_quote_expiry(expected_quote_expires_at)
+        current = self.store.batch(user["username"], batch_id, include_private=True)
+        job_count = len(current.get("jobs") or []) if current else 0
         try:
             batch = self.store.claim_confirmation(
                 user["username"], batch_id, confirmation_id, revision,
+                quote_expires_at,
+                now=int(self.clock()),
+                safety_margin_seconds=self._quote_safety_margin(job_count),
             )
-        except (StateConflict, IdempotencyConflict, StoreError) as exc:
+        except (QuoteExpired, StateConflict, IdempotencyConflict, StoreError) as exc:
             self._raise_store_conflict(exc)
         for job in batch.get("claimed_jobs") or []:
             try:
@@ -1163,12 +1239,29 @@ class CreatorAgentService:
             elif intent == "confirm_payment":
                 batch_id = str(payload.get("batch_id") or flow.get("batch_id") or "")
                 confirmation_id = str(payload.get("confirmation_id") or "")
-                batch = self.confirm_batch(
-                    user, batch_id, confirmation_id, payload.get("expected_revision"),
-                )
-                reply = "已按平台分别提交任务。你可以在右侧查看每个任务的进度和结果。"
-                public = {"kind": "video_submitted", "batch": batch}
-                self.store.update_workspace(user["username"], project_id, flow={"mode": "idle"})
+                try:
+                    batch = self.confirm_batch(
+                        user, batch_id, confirmation_id, payload.get("expected_revision"),
+                        payload.get("expected_quote_expires_at"),
+                    )
+                except APIError as exc:
+                    if exc.code != "quote_expired":
+                        raise
+                    batch = self.quote_batch(
+                        user, batch_id, payload.get("expected_revision"),
+                    )
+                    reply = "原报价已过期或剩余时间不足，已自动重新报价。请再次核对后确认扣点。"
+                    public = {
+                        "kind": "video_quote", "batch": batch,
+                        "actions": [
+                            {"intent": "adjust_video_platforms", "label": "调整平台"},
+                            {"intent": "confirm_payment", "label": "确认扣点并开始生成", "primary": True},
+                        ],
+                    }
+                else:
+                    reply = "已按平台分别提交任务。你可以在右侧查看每个任务的进度和结果。"
+                    public = {"kind": "video_submitted", "batch": batch}
+                    self.store.update_workspace(user["username"], project_id, flow={"mode": "idle"})
             elif flow.get("mode") == "template_collect":
                 topic = str(flow.get("topic") or self._topic_from_text(message)).strip()[:400]
                 platforms = sanitize_platforms(flow.get("platforms") or workspace.get("platforms"))
@@ -1302,7 +1395,7 @@ class CreatorAgentHandler(BaseHTTPRequestHandler):
             if action == "confirm":
                 return self._send(200, {"batch": self.service.confirm_batch(
                     user, batch_id, str(body.get("confirmation_id") or ""),
-                    body.get("expected_revision"),
+                    body.get("expected_revision"), body.get("expected_quote_expires_at"),
                 )})
             return self._send(200, {"batch": self.service.refresh_batch(user, batch_id)})
         raise APIError(404, "not found", "not_found")
