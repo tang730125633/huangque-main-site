@@ -35,7 +35,7 @@ LOGIN_SCOPES = [
     "canvas:write", "canvas:agent", "canvas:edit", "tasks:read", "assets:read", "assets:write", "assets:upload",
     "generation:quote", "generation:submit",
     "video-compose:read", "video-compose:write", "digital-presenter:read", "digital-presenter:write",
-    "inspiration:read", "inspiration:write", "leads:read", "leads:write", "short-drama:read",
+    "inspiration:read", "inspiration:write", "leads:read", "leads:write", "short-drama:read", "short-drama:write",
 ]
 
 
@@ -166,47 +166,6 @@ def _validate_video_channel(payload):
             raise CliError(EXIT_INPUT, "input_error", "grok reference video resolution must be 720p")
 
 
-def _validate_text_video_talking(payload):
-    talking = payload.get("talking_material")
-    if talking is None:
-        return
-    required = {"enabled", "plan_id", "source_hash", "ratio", "default_avatar_asset_id", "scenes"}
-    if set(talking) != required or talking.get("enabled") is not True:
-        raise CliError(EXIT_INPUT, "input_error", "talking_material has invalid fields")
-    if not re.fullmatch(r"talking_plan_[0-9a-f]{32}", str(talking.get("plan_id") or "")):
-        raise CliError(EXIT_INPUT, "input_error", "talking_material plan_id is invalid")
-    if not re.fullmatch(r"[0-9a-f]{64}", str(talking.get("source_hash") or "")):
-        raise CliError(EXIT_INPUT, "input_error", "talking_material source_hash is invalid")
-    if (isinstance(talking.get("ratio"), bool)
-            or not isinstance(talking.get("ratio"), (int, float))
-            or not 0.1 <= float(talking["ratio"]) <= 0.5):
-        raise CliError(EXIT_INPUT, "input_error", "talking_material ratio is invalid")
-    avatar_pattern = r"local_avatar_[0-9a-f]{32}"
-    if not re.fullmatch(avatar_pattern, str(talking.get("default_avatar_asset_id") or "")):
-        raise CliError(EXIT_INPUT, "input_error", "talking_material default avatar is invalid")
-    scenes = talking.get("scenes")
-    if not isinstance(scenes, list) or not 1 <= len(scenes) <= 20:
-        raise CliError(EXIT_INPUT, "input_error", "talking_material scenes must contain 1-20 items")
-    seen = set()
-    enabled = False
-    for scene in scenes:
-        if not isinstance(scene, dict) or not {"scene_id", "enabled"} <= set(scene) or set(scene) - {
-                "scene_id", "enabled", "avatar_asset_id"}:
-            raise CliError(EXIT_INPUT, "input_error", "talking_material scene is invalid")
-        scene_id = str(scene.get("scene_id") or "")
-        if not re.fullmatch(r"scene_[0-9]{2}", scene_id) or scene_id in seen:
-            raise CliError(EXIT_INPUT, "input_error", "talking_material scene_id is invalid or duplicated")
-        seen.add(scene_id)
-        if not isinstance(scene.get("enabled"), bool):
-            raise CliError(EXIT_INPUT, "input_error", "talking_material scene enabled must be boolean")
-        enabled = enabled or scene["enabled"]
-        override = scene.get("avatar_asset_id")
-        if override is not None and (not scene["enabled"] or not re.fullmatch(avatar_pattern, str(override))):
-            raise CliError(EXIT_INPUT, "input_error", "talking_material scene avatar is invalid")
-    if not enabled:
-        raise CliError(EXIT_INPUT, "input_error", "talking_material must enable at least one scene")
-
-
 def _validate(capability, payload):
     schema = capability["input_schema"]
     properties = schema["properties"]
@@ -286,6 +245,47 @@ def _validate(capability, payload):
             raise CliError(EXIT_INPUT, "input_error", "douyin or xhs leads require keyword")
         if "channels" in platforms and not payload.get("channels_targets"):
             raise CliError(EXIT_INPUT, "input_error", "channels leads require channels_targets")
+
+
+def _validate_text_video_talking(payload):
+    talking = payload.get("talking_material")
+    if talking is None:
+        return
+    required = {"enabled", "plan_id", "source_hash", "ratio", "default_avatar_asset_id", "scenes"}
+    if set(talking) != required or talking.get("enabled") is not True:
+        raise CliError(EXIT_INPUT, "input_error", "talking_material has invalid fields")
+    if not re.fullmatch(r"talking_plan_[0-9a-f]{32}", str(talking.get("plan_id") or "")):
+        raise CliError(EXIT_INPUT, "input_error", "talking_material plan_id is invalid")
+    if not re.fullmatch(r"[0-9a-f]{64}", str(talking.get("source_hash") or "")):
+        raise CliError(EXIT_INPUT, "input_error", "talking_material source_hash is invalid")
+    if (isinstance(talking.get("ratio"), bool)
+            or not isinstance(talking.get("ratio"), (int, float))
+            or not 0.1 <= float(talking["ratio"]) <= 0.5):
+        raise CliError(EXIT_INPUT, "input_error", "talking_material ratio is invalid")
+    avatar_pattern = r"local_avatar_[0-9a-f]{32}"
+    if not re.fullmatch(avatar_pattern, str(talking.get("default_avatar_asset_id") or "")):
+        raise CliError(EXIT_INPUT, "input_error", "talking_material default avatar is invalid")
+    scenes = talking.get("scenes")
+    if not isinstance(scenes, list) or not 1 <= len(scenes) <= 20:
+        raise CliError(EXIT_INPUT, "input_error", "talking_material scenes must contain 1-20 items")
+    seen = set()
+    enabled = False
+    for scene in scenes:
+        if not isinstance(scene, dict) or not {"scene_id", "enabled"} <= set(scene) or set(scene) - {
+                "scene_id", "enabled", "avatar_asset_id"}:
+            raise CliError(EXIT_INPUT, "input_error", "talking_material scene is invalid")
+        scene_id = str(scene.get("scene_id") or "")
+        if not re.fullmatch(r"scene_[0-9]{2}", scene_id) or scene_id in seen:
+            raise CliError(EXIT_INPUT, "input_error", "talking_material scene_id is invalid or duplicated")
+        seen.add(scene_id)
+        if not isinstance(scene.get("enabled"), bool):
+            raise CliError(EXIT_INPUT, "input_error", "talking_material scene enabled must be boolean")
+        enabled = enabled or scene["enabled"]
+        override = scene.get("avatar_asset_id")
+        if override is not None and (not scene["enabled"] or not re.fullmatch(avatar_pattern, str(override))):
+            raise CliError(EXIT_INPUT, "input_error", "talking_material scene avatar is invalid")
+    if not enabled:
+        raise CliError(EXIT_INPUT, "input_error", "talking_material must enable at least one scene")
 
 
 def _doctor(environment):

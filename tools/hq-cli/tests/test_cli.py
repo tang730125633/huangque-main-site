@@ -42,7 +42,7 @@ class HqCliTests(unittest.TestCase):
             self.assertEqual(0, code, error)
             self.assertTrue(self.payload(output)["schema"].startswith("hq."))
         code, output, _ = self.invoke(["version"])
-        self.assertEqual("0.11.0", self.payload(output)["cli_version"])
+        self.assertEqual("0.11.1", self.payload(output)["cli_version"])
         self.assertEqual("Huangque main-site CLI", self.payload(output)["product"])
         self.assertEqual("https://huangquechuanmei.com", self.payload(output)["origin"])
 
@@ -180,7 +180,7 @@ class HqCliTests(unittest.TestCase):
             by_id["video-lipsync"]["input_schema"]["properties"]["quality"]["enum"],
         )
         self.assertEqual([], by_id["digital-ip-audio-generate"]["input_schema"]["required"])
-        self.assertEqual(2, len(by_id["digital-ip-audio-generate"]["input_schema"]["allOf"]))
+        self.assertEqual(4, len(by_id["digital-ip-audio-generate"]["input_schema"]["oneOf"]))
         self.assertEqual(
             [{"required": ["avatar_id"]}, {"required": ["image_upload_id"]}],
             by_id["digital-ip-text-generate"]["input_schema"]["oneOf"],
