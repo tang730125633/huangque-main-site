@@ -201,9 +201,20 @@ def post_json(official_base, heygen_base, path, data, headers, log=None):
                         (path, label))
                 continue
             if not _pre_delivery_failure(e):
+                detail = ""
+                if isinstance(e, urllib.error.HTTPError):
+                    try:
+                        detail = e.read().decode("utf-8", "replace")[:240]
+                    except Exception:
+                        pass
                 if log:
                     log("[egress] %s via %s 失败，且请求可能已送达上游（换通道会重复计费），"
-                        "直接失败退点: %s" % (path, label, str(e)[:120]))
+                        "直接失败退点: %s%s" % (path, label, str(e)[:120],
+                        (" | 上游响应: " + detail if detail else "")))
+                if isinstance(e, urllib.error.HTTPError) and detail:
+                    raise urllib.error.HTTPError(
+                        e.filename, e.code, str(e.reason) + ": " + detail,
+                        e.headers, None) from e
                 raise
             if label != "heygen" and log:
                 log("[egress] %s via %s 连接阶段失败(未送达)，降级下一档: %s" % (path, label, str(e)[:120]))
