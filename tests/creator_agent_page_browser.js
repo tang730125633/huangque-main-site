@@ -29,6 +29,7 @@ const data = {
   },
   workspace: { project_id: 'a1b2c3d4e5f6', alias: '我的个人画像', platforms: ['douyin', 'xiaohongshu'], template_video_preferences: { global: [], platforms: {} }, flow: { mode: 'template_review', batch_id: batch.id } },
   messages: [
+    { id: 0, role: 'assistant', content: '先介绍一下你现在的身份、工作或正在做的事情。', public: { kind: 'profile_question', module: 1, module_name: '定位诊断', template: '我是___，目前主要在做___。', actions: [] }, created_at: 0 },
     { id: 1, role: 'assistant', content: '画像已完成，可以开始创作。', public: {}, created_at: 1 },
     { id: 2, role: 'assistant', content: '请核对各平台明细和总价。', public: { kind: 'video_quote', batch, actions: [{ intent: 'confirm_payment', label: '确认扣点并开始生成', primary: true }] }, created_at: 2 },
   ],
@@ -125,6 +126,7 @@ function serve(request, response) {
         plans: document.querySelectorAll('.ca-plan-card').length,
         total: document.querySelector('.ca-quote-total b').textContent,
         quoteCountdown: document.querySelector('.ca-quote-expiry')?.textContent || '',
+        profileTemplate: document.querySelector('.ca-foundation')?.textContent || '',
         confirm: !!document.querySelector('[data-intent="confirm_payment"]'),
         tabs: document.querySelectorAll('.ca-tab').length,
         aiEntry: document.querySelector('.hq-side-ai-entry')?.getAttribute('href') || '',
@@ -176,5 +178,5 @@ function serve(request, response) {
     await browser.close(); server.close();
   }
   console.log(JSON.stringify(report));
-  if (Object.values(report).some((item) => item.width > item.viewport || item.messages < 2 || item.plans < 2 || !item.confirm || item.total !== '10 点' || !item.quoteCountdown.startsWith('报价剩余') || item.tabs !== 3 || item.aiEntry !== 'creator-agent.html' || item.aiLabel !== 'AI 创作助手' || !item.messageReplayStable || !item.confirmRecovered || (item.confirmQuoteExpiresAt !== undefined && item.confirmQuoteExpiresAt !== batch.quote_expires_at) || (item.expiredQuoteRequotes === false))) process.exitCode = 1;
+  if (Object.values(report).some((item) => item.width > item.viewport || item.messages < 3 || item.plans < 2 || !item.confirm || item.total !== '10 点' || !item.quoteCountdown.startsWith('报价剩余') || !item.profileTemplate.includes('回答参考') || item.tabs !== 3 || item.aiEntry !== 'creator-agent.html' || item.aiLabel !== 'AI 创作助手' || !item.messageReplayStable || !item.confirmRecovered || (item.confirmQuoteExpiresAt !== undefined && item.confirmQuoteExpiresAt !== batch.quote_expires_at) || (item.expiredQuoteRequotes === false))) process.exitCode = 1;
 })().catch((error) => { console.error(error); process.exitCode = 1; });

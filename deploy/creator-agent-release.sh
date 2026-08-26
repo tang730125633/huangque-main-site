@@ -44,6 +44,14 @@ done
 [[ -f /etc/huangque/creator-agent.env ]] || { echo "/etc/huangque/creator-agent.env is missing" >&2; exit 2; }
 [[ "$(stat -c '%U' /etc/huangque/creator-agent.env)" = root ]] || { echo "creator-agent.env must be owned by root" >&2; exit 2; }
 case "$(stat -c '%a' /etc/huangque/creator-agent.env)" in 600|640) ;; *) echo "creator-agent.env must be mode 600 or 640" >&2; exit 2;; esac
+grep -Eq '^CREATOR_AGENT_BASE_URL=https://api\.deepseek\.com/?$' /etc/huangque/creator-agent.env \
+  || { echo "creator agent must use the official DeepSeek API base" >&2; exit 2; }
+grep -Eq '^CREATOR_AGENT_MODEL=deepseek-v4-flash$' /etc/huangque/creator-agent.env \
+  || { echo "creator agent model must be deepseek-v4-flash" >&2; exit 2; }
+grep -Eq '^CREATOR_AGENT_API_KEY=.{16,}$' /etc/huangque/creator-agent.env \
+  || { echo "creator agent API key is missing" >&2; exit 2; }
+! grep -Eq '^CREATOR_AGENT_API_KEY=(replace-|change-me|placeholder)' /etc/huangque/creator-agent.env \
+  || { echo "creator agent API key is still a placeholder" >&2; exit 2; }
 
 systemctl is-active --quiet "$SERVICE" && WAS_ACTIVE=1 || true
 [[ -L "$CURRENT" ]] && OLD_CURRENT="$(readlink -f "$CURRENT")"

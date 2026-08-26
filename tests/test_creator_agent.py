@@ -18,6 +18,7 @@ SERVER = ROOT / "server"
 sys.path.insert(0, str(SERVER))
 
 from creator_agent.planner import CreatorPlanner, GuidedPlanner, remember_preference
+from creator_agent.profile_agent import DeepSeekProfileAgent, initial_state
 from creator_agent.service import APIError, CreatorAgentHandler, CreatorAgentService, build_service
 from creator_agent.store import (
     CreatorAgentStore, StateConflict, STALE_CLAIM_SECONDS,
@@ -30,34 +31,6 @@ USER = {
     "name": "Creator QA", "points": 1000,
 }
 PROJECT_ID = "a1b2c3d4e5f6"
-
-
-def ready_project():
-    return {
-        "id": PROJECT_ID,
-        "title": "我的个人画像",
-        "updated": "2026-08-26 12:00",
-        "messages": [{"role": "assistant", "content": "画像已准备好。", "message_id": "welcome"}],
-        "coach_state": {
-            "revision": 9,
-            "current_module": 5,
-            "module_step": 0,
-            "completed_modules": [1, 2, 3, 4],
-            "foundation_report": {"status": "confirmed", "report_id": "report-1"},
-            "ip_profile": {
-                "confirmed_outputs": {
-                    "module_1": {"content": "AI 企业服务，目标客户是互联网企业"},
-                    "module_2": {"content": "轻松专业"},
-                    "module_3": {"content": "用 AI 降低企业复杂工作成本"},
-                    "module_4": {"content": "真实项目实践"},
-                },
-            },
-        },
-        "harness_actions": [],
-        "reports": {},
-        "deliverables": {},
-        "artifacts": [],
-    }
 
 
 class FakeAuth:
@@ -78,61 +51,48 @@ class MutableClock:
         self.value += int(seconds)
 
 
-class FakeIP12:
-    def __init__(self, project=None):
-        self.base_url = "http://127.0.0.1:3102"
-        self.value = copy.deepcopy(project) if project else None
+class FakeProfileAgent:
+    configured = True
+
+    def __init__(self):
         self.calls = []
 
     def health(self):
-        return {"ok": True}
+        return True
 
-    def projects(self, headers):
-        return [] if self.value is None else [{
-            "id": self.value["id"], "title": self.value["title"],
-            "updated": self.value.get("updated", ""),
-        }]
+    def capture_answer(self, state, message):
+        self.calls.append(("capture", copy.deepcopy(state), message))
+        return {"accepted": True, "value": message, "ack": "已记录。", "clarification": "请补充。"}
 
-    def create(self, headers, title="我的个人画像"):
-        self.calls.append(("create", title))
-        self.value = {
-            "id": PROJECT_ID, "title": title, "updated": "2026-08-26 12:00",
-            "messages": [{"role": "assistant", "content": "先告诉我希望怎么称呼你。", "message_id": "first"}],
-            "coach_state": {
-                "revision": 1, "current_module": 1, "module_step": 0,
-                "completed_modules": [], "foundation_report": {"status": "missing"},
-                "ip_profile": {},
-            },
-            "harness_actions": [], "reports": {}, "deliverables": {}, "artifacts": [],
+    def build_module_review(self, state, module):
+        self.calls.append(("review", module))
+        return {
+            "module": module, "module_name": "模块%d" % module,
+            "summary": "模块%d总结" % module,
+            "options": [
+                {"title": "方案%d" % index, "one_liner": "定位%d" % index,
+                 "strengths": ["真实"], "risks": ["待验证"]}
+                for index in range(1, 4)
+            ],
         }
-        return {"id": PROJECT_ID, "title": title}
 
-    def project(self, headers, project_id):
-        assert project_id == PROJECT_ID
-        return copy.deepcopy(self.value)
+    def revise_module_review(self, state, module, instruction):
+        result = self.build_module_review(state, module)
+        result["summary"] = "已修改：" + instruction
+        return result
 
-    def turn(self, headers, project_id, **kwargs):
-        self.calls.append(("turn", kwargs))
-        message = kwargs.get("message") or (kwargs.get("action") or {}).get("type") or "继续"
-        self.value["messages"].append({"role": "user", "content": message, "message_id": "u-%d" % len(self.value["messages"])})
-        assistant = "已记录，我会继续完成当前 IP12 步骤。"
-        self.value["messages"].append({"role": "assistant", "content": assistant, "message_id": "a-%d" % len(self.value["messages"])})
-        self.value["coach_state"]["revision"] += 1
-        return {"assistant": assistant, "actions": [], "new_completed": []}
-
-    def generate_foundation(self, headers, project_id):
-        self.calls.append(("generate_foundation", project_id))
-        self.value["coach_state"]["foundation_report"] = {
-            "status": "awaiting_confirmation", "report_id": "report-2",
+    def topic_plan(self, profile, platforms, request):
+        self.calls.append(("topic_plan", copy.deepcopy(profile), list(platforms), request))
+        return {
+            "reply": "已生成选题与文案。",
+            "topics": [{"title": "选题%d" % index} for index in range(1, 16)],
+            "recommended": ["选题1", "选题2", "选题3"],
+            "scripts": [{"platform": platforms[0] if platforms else "douyin", "content": "完整文案"}],
         }
-        self.value["coach_state"]["revision"] += 1
-        return {"ok": True}
 
-    def confirm_foundation(self, headers, project_id, revision, report_id):
-        self.calls.append(("confirm_foundation", project_id, revision, report_id))
-        self.value["coach_state"]["foundation_report"]["status"] = "confirmed"
-        self.value["coach_state"]["revision"] += 1
-        return {"ok": True}
+    def reply(self, profile, message):
+        self.calls.append(("reply", copy.deepcopy(profile), message))
+        return "已结合你的独立画像回答。"
 
 
 class FakeBridge:
@@ -212,12 +172,28 @@ class CreatorAgentTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.store = CreatorAgentStore(pathlib.Path(self.temp.name) / "creator.db")
-        self.ip12 = FakeIP12(ready_project())
         self.clock = MutableClock()
         self.bridge = FakeBridge(self.clock)
+        self.profile_agent = FakeProfileAgent()
+        state = initial_state()
+        state.update({
+            "current_module": 4, "question_index": 1, "phase": "ready",
+            "completed_modules": [1, 2, 3, 4], "profile_ready": True,
+            "selected_profiles": {str(index): {"title": "模块%d方案" % index} for index in range(1, 5)},
+        })
+        self.store.ensure_workspace(USER["username"], PROJECT_ID, "我的个人画像")
+        self.store.update_workspace(
+            USER["username"], PROJECT_ID, profile_state=state,
+            profile={"modules": state["selected_profiles"], "answers": {}},
+            flow={"mode": "idle"},
+        )
+        self.store.add_message(
+            USER["username"], PROJECT_ID, "assistant", "独立画像已准备好。",
+        )
+        self.store.set_active_project(USER["username"], PROJECT_ID)
         self.service = CreatorAgentService(
             self.store, CreatorPlanner(provider=None, fallback=GuidedPlanner()),
-            FakeAuth(), self.bridge, self.ip12, clock=self.clock,
+            FakeAuth(), self.bridge, self.profile_agent, clock=self.clock,
         )
         self.headers = {}
 
@@ -235,19 +211,19 @@ class CreatorAgentTests(unittest.TestCase):
             body["payload"] = payload
         return self.service.message(USER, self.headers, body)
 
-    def test_bootstrap_creates_missing_profile_and_starts_ip12(self):
-        ip12 = FakeIP12()
+    def test_bootstrap_creates_independent_profile_and_first_question(self):
+        store = CreatorAgentStore(pathlib.Path(self.temp.name) / "fresh-creator.db")
         service = CreatorAgentService(
-            self.store, CreatorPlanner(provider=None, fallback=GuidedPlanner()),
-            FakeAuth(), self.bridge, ip12,
+            store, CreatorPlanner(provider=None, fallback=GuidedPlanner()),
+            FakeAuth(), self.bridge, self.profile_agent,
         )
         result = service.bootstrap(USER, self.headers)
-        self.assertEqual(ip12.calls[0], ("create", "我的个人画像"))
-        self.assertEqual(result["project"]["id"], PROJECT_ID)
+        self.assertRegex(result["project"]["id"], r"^[0-9a-f]{12}$")
         self.assertFalse(result["project"]["progress"]["profile_complete"])
-        self.assertIn("先告诉我", result["messages"][0]["content"])
+        self.assertIn("现在的身份", result["messages"][0]["content"])
+        self.assertEqual(result["messages"][0]["public"]["kind"], "profile_question")
 
-    def test_health_requires_real_bridge_ip12_and_writable_database(self):
+    def test_health_requires_bridge_model_and_writable_database(self):
         health = self.service.health()
         self.assertTrue(health["ok"])
         self.assertTrue(health["ready"])
@@ -263,10 +239,14 @@ class CreatorAgentTests(unittest.TestCase):
         service = build_service({
             "CREATOR_AGENT_DB": str(path),
             "CREATOR_AGENT_AUTH_URL": "http://127.0.0.1:8095",
-            "CREATOR_AGENT_IP12_URL": "http://127.0.0.1:3102",
+            "CREATOR_AGENT_BASE_URL": "https://api.deepseek.com",
+            "CREATOR_AGENT_API_KEY": "test-deepseek-key",
+            "CREATOR_AGENT_MODEL": "deepseek-v4-flash",
             "HQ_INTERNAL_TOKEN": "production-shared-token",
         })
         self.assertEqual(service.bridge.internal_token, "production-shared-token")
+        self.assertTrue(service.profile_agent.configured)
+        self.assertEqual(service.profile_agent.model, "deepseek-v4-flash")
 
     def test_each_project_has_one_continuous_conversation(self):
         first = self.bootstrap()
@@ -295,15 +275,100 @@ class CreatorAgentTests(unittest.TestCase):
         self.assertIn("project_id", columns)
         self.assertEqual(archived, "keep me")
 
-    def test_incomplete_profile_routes_message_to_ip12_without_paid_action(self):
-        self.ip12 = FakeIP12()
-        self.ip12.create({}, "我的个人画像")
-        self.service.ip12 = self.ip12
-        result = self.message("大家叫我小黄", suffix="1001")
-        self.assertIn("继续完成", result["reply"])
-        self.assertEqual(len([call for call in self.ip12.calls if call[0] == "turn"]), 1)
+    def test_incomplete_profile_uses_own_question_engine_without_paid_action(self):
+        self.store.update_workspace(
+            USER["username"], PROJECT_ID, profile_state=initial_state(),
+            profile={}, flow={"mode": "profile_interview"},
+        )
+        result = self.message("我是企业AI顾问", suffix="1001")
+        self.assertIn("重要转折", result["reply"])
+        self.assertEqual(len([call for call in self.profile_agent.calls if call[0] == "capture"]), 1)
         paid = [call for call in self.bridge.calls if call[0] == "action" and call[1] == "matrix-template-generate"]
         self.assertEqual(paid, [])
+
+    def test_profile_answer_fails_closed_without_deepseek_configuration(self):
+        self.store.update_workspace(
+            USER["username"], PROJECT_ID, profile_state=initial_state(),
+            profile={}, flow={"mode": "profile_interview"},
+        )
+        self.service.profile_agent = DeepSeekProfileAgent("")
+        with self.assertRaises(APIError) as raised:
+            self.message("我是企业AI顾问", suffix="no-model-0001")
+        self.assertEqual(raised.exception.code, "creator_model_unavailable")
+        self.assertFalse(any(
+            message["role"] == "user" and "企业AI顾问" in message["content"]
+            for message in self.store.messages(USER["username"], PROJECT_ID)
+        ))
+        self.service.profile_agent = self.profile_agent
+        retried = self.message("我是企业AI顾问", suffix="no-model-0001")
+        self.assertEqual(retried["message_public"]["kind"], "profile_question")
+
+    def test_full_independent_profile_journey_persists_four_modules(self):
+        self.store.update_workspace(
+            USER["username"], PROJECT_ID, profile_state=initial_state(),
+            profile={}, deliverables={}, flow={"mode": "profile_interview"},
+        )
+        turn = 0
+        while True:
+            workspace = self.store.workspace(USER["username"], PROJECT_ID)
+            state = workspace["profile_state"]
+            if state.get("profile_ready"):
+                break
+            turn += 1
+            if state.get("phase") == "review":
+                self.message(
+                    "选择第一个方案", "profile_choice", {
+                        "choice_index": 0, "profile_revision": state["revision"],
+                    },
+                    "profile-flow-%04d" % turn,
+                )
+            else:
+                self.message(
+                    "这是第%d个真实回答，包含具体经历和结果" % turn,
+                    "profile_answer", {"profile_revision": state["revision"]},
+                    "profile-flow-%04d" % turn,
+                )
+        workspace = self.store.workspace(USER["username"], PROJECT_ID)
+        self.assertTrue(workspace["profile_state"]["profile_ready"])
+        self.assertEqual(workspace["profile_state"]["completed_modules"], [1, 2, 3, 4])
+        self.assertEqual(set(workspace["profile"]["modules"]), {"1", "2", "3", "4"})
+        self.assertIn("personal_profile", workspace["deliverables"])
+        self.assertFalse(any(
+            message.get("public", {}).get("source") == "ip12"
+            for message in self.store.messages(USER["username"], PROJECT_ID)
+        ))
+
+    def test_stale_profile_action_cannot_overwrite_current_step(self):
+        self.store.update_workspace(
+            USER["username"], PROJECT_ID, profile_state=initial_state(),
+            profile={}, flow={"mode": "profile_interview"},
+        )
+        with self.assertRaises(APIError) as raised:
+            self.message(
+                "专业可靠", "profile_answer",
+                {"answer": "专业可靠", "profile_revision": 0},
+                "stale-profile-0001",
+            )
+        self.assertEqual(raised.exception.code, "profile_state_conflict")
+        self.assertFalse([call for call in self.profile_agent.calls if call[0] == "capture"])
+
+    def test_profile_state_compare_and_swap_rejects_second_writer(self):
+        state = initial_state()
+        self.store.update_workspace(
+            USER["username"], PROJECT_ID, profile_state=state,
+            profile={}, flow={"mode": "profile_interview"},
+        )
+        first = copy.deepcopy(state)
+        first.update({"revision": 2, "question_index": 1})
+        self.store.update_profile_state(
+            USER["username"], PROJECT_ID, first, 1,
+        )
+        second = copy.deepcopy(state)
+        second.update({"revision": 2, "question_index": 1})
+        with self.assertRaises(StateConflict):
+            self.store.update_profile_state(
+                USER["username"], PROJECT_ID, second, 1,
+            )
 
     def test_video_plan_is_per_platform_and_does_not_quote_automatically(self):
         result = self.message(
@@ -381,28 +446,27 @@ class CreatorAgentTests(unittest.TestCase):
         self.assertEqual({item["platform"] for item in batch["plans"]}, {"douyin", "wechat_channels"})
         self.assertIn("企业先梳理流程", batch["topic"])
 
-    def test_topic_plan_requires_platforms_then_stays_in_ip12_modules(self):
+    def test_topic_plan_requires_platforms_then_uses_independent_profile_agent(self):
         first = self.message("生成选题计划", "topic_plan", {}, "topic-0001")
         self.assertEqual(first["message_public"]["kind"], "platform_picker")
-        self.assertEqual(len([call for call in self.ip12.calls if call[0] == "turn"]), 0)
+        self.assertFalse([call for call in self.profile_agent.calls if call[0] == "topic_plan"])
         second = self.message(
             "已选择：抖音、小红书", "set_platforms",
             {"platforms": ["douyin", "xiaohongshu"]}, "topic-0002",
         )
-        self.assertEqual(second["workspace"]["flow"]["mode"], "topic_plan")
+        self.assertEqual(second["workspace"]["flow"]["mode"], "idle")
         self.assertEqual(second["message_public"]["kind"], "topic_plan")
-        self.assertEqual(len([call for call in self.ip12.calls if call[0] == "turn"]), 1)
+        self.assertEqual(len([call for call in self.profile_agent.calls if call[0] == "topic_plan"]), 1)
         paid = [call for call in self.bridge.calls if call[0] == "action" and call[1] == "matrix-template-generate"]
         self.assertEqual(paid, [])
 
-    def test_copy_revision_returns_to_ip12_without_video_quote(self):
-        self.ip12.value["coach_state"]["completed_modules"] = [1, 2, 3, 4, 5, 6]
+    def test_copy_revision_uses_independent_agent_without_video_quote(self):
         result = self.message(
             "修改第一篇文案的开头，让它更直接",
             suffix="copy-revise-0001",
         )
         self.assertEqual(result["message_public"]["kind"], "topic_plan")
-        self.assertEqual(len([call for call in self.ip12.calls if call[0] == "turn"]), 1)
+        self.assertEqual(len([call for call in self.profile_agent.calls if call[0] == "topic_plan"]), 1)
         paid = [call for call in self.bridge.calls if call[0] == "action" and call[1] == "matrix-template-generate"]
         self.assertEqual(paid, [])
 
@@ -440,17 +504,8 @@ class CreatorAgentTests(unittest.TestCase):
             self.service.message(USER, self.headers, changed)
         self.assertEqual(raised.exception.code, "idempotency_conflict")
 
-    def test_ip12_production_handoff_is_not_exposed(self):
-        actions = self.service._safe_ip12_actions([
-            {"type": "prepare_production", "label": "开始制作口播视频"},
-            {"type": "confirm_checkpoint", "target_id": "checkpoint-1", "label": "确认本模块"},
-        ])
-        self.assertEqual([item["type"] for item in actions], ["confirm_checkpoint"])
-        cleaned = self.service._clean_ip12_action({
-            "type": "confirm_checkpoint", "target_id": "checkpoint-1",
-            "label": "确认本模块", "primary": True,
-        })
-        self.assertEqual(cleaned, {"type": "confirm_checkpoint", "target_id": "checkpoint-1"})
+    def test_creator_service_has_no_ip12_runtime_client(self):
+        self.assertFalse(hasattr(self.service, "ip12"))
 
     def _draft_batch(self):
         result = self.message(
@@ -914,21 +969,19 @@ class CreatorAgentTests(unittest.TestCase):
         self.assertIn("抖音和视频号以后都使用直接标题", value["platforms"]["douyin"])
         self.assertIn("抖音和视频号以后都使用直接标题", value["platforms"]["wechat_channels"])
 
-    def test_confirmed_profile_modification_is_versioned_without_rewriting_ip12(self):
+    def test_confirmed_profile_modification_is_saved_in_own_profile(self):
         self.message("修改我的画像", "modify_profile", {}, "profile-0001")
-        before_turns = len([call for call in self.ip12.calls if call[0] == "turn"])
         result = self.message(
             "目标客户改为准备数字化转型的制造企业",
             suffix="profile-0002",
         )
         overrides = result["workspace"]["profile_overrides"]
-        self.assertIn("目标客户改为", overrides["module_1"][-1]["content"])
-        self.assertEqual(len([call for call in self.ip12.calls if call[0] == "turn"]), before_turns)
-        self.assertIn("原定位 PDF", result["reply"])
+        self.assertIn("目标客户改为", overrides["general"][-1]["content"])
+        self.assertIn("画像修改已保存", result["reply"])
+        self.assertIn("overrides", result["workspace"]["profile"])
 
-    def test_dirty_foundation_report_is_not_treated_as_ready(self):
-        project = ready_project()
-        project["coach_state"]["foundation_report"]["review_status"] = "dirty"
+    def test_collecting_profile_is_not_treated_as_ready(self):
+        project = {"profile_state": initial_state()}
         self.assertFalse(self.service._foundation_ready(project))
 
     def test_matrix_creator_contract_quotes_registered_generation(self):
