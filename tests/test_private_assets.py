@@ -315,13 +315,22 @@ class PrivateAssetsTest(unittest.TestCase):
         )
         self.assertLess(automatic_stop, automatic_restore)
         self.assertLess(automatic_restore, automatic_restart)
-        self.assertIn(
-            "formal-delivery manifest rollback failed; services remain stopped",
-            automatic_rollback,
+        rollback_failure = automatic_rollback.index(
+            "    else\n"
+            "      echo 'CRITICAL: formal-delivery manifest rollback failed; "
+            "services remain stopped' >&2"
         )
+        rollback_finished = automatic_rollback.index("    fi\n", rollback_failure)
+        self.assertIn(
+            "sudo systemctl restart huangque-content huangque-admin",
+            automatic_rollback[automatic_restore:rollback_failure],
+        )
+        self.assertNotIn("systemctl restart", automatic_rollback[rollback_failure:])
+        self.assertIn("exit 1", automatic_rollback[rollback_failure:rollback_finished])
         manual_rollback = runbook[
             runbook.index("<<'REMOTE_ROLLBACK'"):runbook.index("REMOTE_ROLLBACK\n")
         ]
+        manual_fail_fast = manual_rollback.index("set -euo pipefail")
         manual_stop = manual_rollback.index(
             "sudo systemctl stop huangque-content huangque-admin"
         )
@@ -331,6 +340,7 @@ class PrivateAssetsTest(unittest.TestCase):
         manual_restart = manual_rollback.index(
             "sudo systemctl restart huangque-content huangque-admin"
         )
+        self.assertLess(manual_fail_fast, manual_stop)
         self.assertLess(manual_stop, manual_restore)
         self.assertLess(manual_restore, manual_restart)
         self.assertIn("原生 2K", drop_in)
