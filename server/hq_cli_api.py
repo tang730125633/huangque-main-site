@@ -614,7 +614,7 @@ _MEDIA_SCHEMAS.update({
         "title": {"type": "string", "minLength": 1, "maxLength": 80},
         "synopsis": {"type": "string", "minLength": 8, "maxLength": 4000},
         "ratio": {"type": "string", "enum": ["9:16", "16:9"]},
-        "target_duration": {"type": "string", "enum": ["15-30", "30-60", "60-90"]},
+        "target_duration": {"type": "integer", "enum": [30, 45, 60]},
         "shot_count": {"type": "integer", "minimum": 6, "maximum": 10},
         "genre": {"type": "string", "maxLength": 40},
         "visual_style": {"type": "string", "maxLength": 80},
@@ -1885,11 +1885,14 @@ def action_plan(action, value):
         _strict_object(value, {
             "title", "synopsis", "ratio", "target_duration", "shot_count", "genre", "visual_style", "request_id",
         }, ("title", "synopsis", "ratio", "target_duration", "shot_count", "request_id"))
+        target_duration = _integer(value["target_duration"], "target_duration", 1, 10**6)
+        if target_duration not in (30, 45, 60):
+            raise CLIAPIError(400, "短剧时长仅支持 30、45、60 秒")
         body = {
             "title": _string(value["title"], "title", 1, 80),
             "synopsis": _string(value["synopsis"], "synopsis", 8, 4000),
             "ratio": _enum(value["ratio"], "ratio", ("9:16", "16:9")),
-            "target_duration": _enum(value["target_duration"], "target_duration", ("15-30", "30-60", "60-90")),
+            "target_duration": target_duration,
             "shot_count": _integer(value["shot_count"], "shot_count", 6, 10),
         }
         if "genre" in value:

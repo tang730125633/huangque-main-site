@@ -1490,7 +1490,7 @@ class HQCLIAPITests(unittest.TestCase):
             ("digital-presenter-create", {"board_id": "cb_1", "request_id": "hqcli-dp-001"}),
             ("digital-presenter-delete", {"board_id": "cb_1", "project_id": "dp_" + "b" * 32, "revision": 3}),
             ("short-drama-create", {"title": "新剧", "synopsis": "一个八集短剧的故事", "ratio": "9:16",
-             "target_duration": "15-30", "shot_count": 6, "request_id": "hqcli-sd-001"}),
+             "target_duration": 30, "shot_count": 6, "request_id": "hqcli-sd-001"}),
             ("short-drama-delete", {"project_id": "p_1", "revision": 1}),
             ("leads-delete", {"lead_ids": ["a" * 16]}),
             ("digital-ip-create", {"title": "新 IP"}),
@@ -1643,7 +1643,7 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual("cb_1", presenter["headers"]["X-Canvas-Board-Id"])
         drama = self.auth.hq_cli_api.action_plan("short-drama-create", {
             "title": "新剧", "synopsis": "一个八集短剧的故事", "ratio": "9:16",
-            "target_duration": "15-30", "shot_count": 6, "request_id": "hqcli-sd-001",
+            "target_duration": 30, "shot_count": 6, "request_id": "hqcli-sd-001",
         })
         self.assertEqual(("short-drama:write", "POST"), (drama["scope"], drama["method"]))
         self.assertEqual("/api/gen/short-drama/projects", drama["path"])
@@ -1665,9 +1665,9 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual(("DELETE", {"revision": 2}), (dip_delete["method"], dip_delete["body"]))
         for bad in (
             ("short-drama-create", {"title": "新剧", "synopsis": "太短", "ratio": "9:16",
-             "target_duration": "15-30", "shot_count": 6, "request_id": "hqcli-sd-001"}),
+             "target_duration": 30, "shot_count": 6, "request_id": "hqcli-sd-001"}),
             ("short-drama-create", {"title": "新剧", "synopsis": "一个八集短剧的故事", "ratio": "1:1",
-             "target_duration": "15-30", "shot_count": 6, "request_id": "hqcli-sd-001"}),
+             "target_duration": 30, "shot_count": 6, "request_id": "hqcli-sd-001"}),
             ("short-drama-delete", {"project_id": "p_1"}),
             ("leads-delete", {"lead_ids": []}),
             ("digital-ip-update", {"project_id": "p_1", "revision": 2}),
