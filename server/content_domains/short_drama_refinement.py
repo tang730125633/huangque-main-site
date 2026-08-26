@@ -2249,7 +2249,7 @@ def _complete_delivery(conn, row, cancel_event=None):
                 for item in assembly["shots"]
             ]
             sources = short_drama_autodraft._verified_native_assembly_sources(
-                assembly, temp / ".sources",
+                assembly, temp / ".sources", require_locked_native_media=True,
             )
             validation = short_drama_formal_renderer.render_native_2k(
                 sources, project["ratio"],

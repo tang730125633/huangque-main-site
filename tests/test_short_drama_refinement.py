@@ -21,6 +21,7 @@ from content_domains import (
     core,
     pricing,
     short_drama,
+    short_drama_autodraft,
     short_drama_formal_renderer,
     short_drama_native_audio,
     short_drama_refinement,
@@ -1092,7 +1093,9 @@ class ShortDramaRefinementTests(unittest.TestCase):
         published_without_db_lock = []
         real_publish = short_drama_formal_renderer.publish_validated_output
 
-        def verify(assembly, snapshot_dir):
+        def verify(
+                assembly, snapshot_dir, *, require_locked_native_media=False):
+            self.assertTrue(require_locked_native_media)
             captured["assembly"] = assembly
             snapshot_paths = [
                 Path(self.tmp.name) / item["file"] for item in assembly["shots"]
@@ -4384,6 +4387,95 @@ class ShortDramaRefinementTests(unittest.TestCase):
         finally:
             conn.close()
         self.assertEqual("refunded", state)
+
+    def test_real_delivery_revalidates_copied_attempt_snapshot_before_render(self):
+        self.install_mock_native_evidence()
+        version = self.confirmed_version("attempt-snapshot-render-toctou")
+        capability = {
+            "delivery_enabled": True,
+            "deliverable": True,
+            "mode": "local_ffmpeg",
+            "adapter": "local_ffmpeg",
+            "formal_cost": 0,
+            "reason": "local_2k_renderer",
+        }
+        real_copy = short_drama_autodraft.shutil.copyfileobj
+        deduct = mock.Mock()
+        refund = mock.Mock()
+        render = mock.Mock()
+        tampered = {}
+
+        def render_tampered(_sources, _ratio, duration_ms, _contract, output, **_kwargs):
+            output.write_bytes(b"rendered-from-tampered-attempt-snapshot")
+            return {
+                "probe": {
+                    "video": {"width": 2560, "height": 1440},
+                    "audio": {"codec": "aac"}, "duration_ms": duration_ms,
+                },
+                "subtitle_streams": 0,
+                "native_audio": {"audible": True},
+                "sha256": short_drama_refinement._file_hash(output),
+            }
+
+        render.side_effect = render_tampered
+
+        def copy_then_replace(reader, writer, length):
+            real_copy(reader, writer, length=length)
+            destination = Path(writer.name)
+            if destination.parent.name != ".sources":
+                return
+            writer.seek(0)
+            writer.truncate()
+            writer.write(b"tampered-during-delivery-render-copy")
+            writer.flush()
+            tampered["destination"] = destination
+
+        with mock.patch.object(
+            short_drama_refinement,
+            "_delivery_capability",
+            return_value=capability,
+        ), mock.patch(
+            "content_domains.short_drama_autodraft.shutil.copyfileobj",
+            side_effect=copy_then_replace,
+        ), mock.patch(
+            "content_domains.short_drama_native_audio.inspect_native_media",
+            side_effect=self.valid_native_inspection,
+        ), mock.patch(
+            "content_domains.short_drama_formal_renderer.render_native_2k",
+            render,
+        ):
+            quote = short_drama_refinement.create_delivery_quote(
+                self.db, "alice", {
+                    "project_id": self.project["id"],
+                    "version_id": version["id"],
+                },
+            )
+            job = short_drama_refinement.start_delivery_job(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"],
+                    "quote_token": quote["quote_token"],
+                }, "attempt-snapshot-render-toctou",
+                deduct_points=deduct,
+                refund_points=refund,
+            )
+            for _ in range(4):
+                job = short_drama_refinement.get_delivery_job(
+                    self.db, "alice", self.project["id"], job["id"],
+                    refund_points=refund,
+                )
+
+        self.assertIn("destination", tampered)
+        self.assertEqual("failed", job["status"])
+        self.assertEqual("provider_native_media_changed", job["error"]["code"])
+        self.assertEqual("refunded", job.get("refund_state"))
+        deduct.assert_called_once()
+        refund.assert_called_once()
+        render.assert_not_called()
+        target = (
+            Path(self.tmp.name) / "short_drama_delivery" /
+            self.project["id"] / job["id"]
+        )
+        self.assertFalse(target.exists())
 
     def test_local_ffmpeg_capability_reports_missing_tools(self):
         with mock.patch.dict(os.environ, {

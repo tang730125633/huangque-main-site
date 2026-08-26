@@ -651,24 +651,53 @@ def _controlled_provider_file(relative):
     return target
 
 
-def _verify_native_assembly_source(item, source, shot_key):
-    if str(item.get("provider") or "") != "minimax_h3":
+def _verify_native_assembly_source(
+        item, source, shot_key, *, require_locked_native_media=False):
+    provider = str(item.get("provider") or "")
+    if (
+        not require_locked_native_media
+        and provider != "minimax_h3"
+    ):
         return
-    locked = _sanitized_native_media(item.get("native_media"))
-    if not locked:
-        raise AutodraftError(
-            "provider_native_media_invalid",
-            "%s 缺少可信的原生媒体证据，请重新生成该镜头" % shot_key,
-            409,
-        )
     selected_file = str(item.get("file") or "").replace("\\", "/")
-    expected = next(
-        (
-            locked[key] for key in ("raw", "derived")
-            if locked[key]["file"] == selected_file
-        ),
-        None,
-    )
+    if require_locked_native_media and provider == "delivery_snapshot":
+        raw = (
+            (item.get("native_media") or {}).get("raw")
+            if isinstance(item.get("native_media"), dict) else None
+        )
+        raw = raw if isinstance(raw, dict) else {}
+        expected_file = str(raw.get("file") or "").replace("\\", "/")
+        expected_hash = str(raw.get("sha256") or "").strip()
+        try:
+            expected_size = int(raw.get("size_bytes") or 0)
+        except (TypeError, ValueError):
+            expected_size = 0
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_hash) or expected_size <= 0:
+            raise AutodraftError(
+                "provider_native_media_invalid",
+                "%s 缺少可信的正式导出媒体证据" % shot_key,
+                409,
+            )
+        expected = {
+            "file": expected_file,
+            "sha256": expected_hash,
+            "size_bytes": expected_size,
+        } if expected_file == selected_file else None
+    else:
+        locked = _sanitized_native_media(item.get("native_media"))
+        if not locked:
+            raise AutodraftError(
+                "provider_native_media_invalid",
+                "%s 缺少可信的原生媒体证据，请重新生成该镜头" % shot_key,
+                409,
+            )
+        expected = next(
+            (
+                locked[key] for key in ("raw", "derived")
+                if locked[key]["file"] == selected_file
+            ),
+            None,
+        )
     if not expected:
         raise AutodraftError(
             "provider_native_media_changed",
@@ -710,7 +739,8 @@ def _verify_native_assembly_sources(assembly):
     return sources
 
 
-def _verified_native_assembly_sources(assembly, snapshot_dir):
+def _verified_native_assembly_sources(
+        assembly, snapshot_dir, *, require_locked_native_media=False):
     snapshot_root = Path(snapshot_dir)
     snapshot_root.mkdir(parents=True, exist_ok=True)
     sources = []
@@ -727,7 +757,10 @@ def _verified_native_assembly_sources(assembly, snapshot_dir):
                 "%s 的采用版本无法建立稳定媒体快照" % shot_key,
                 409,
             ) from error
-        _verify_native_assembly_source(item, snapshot, shot_key)
+        _verify_native_assembly_source(
+            item, snapshot, shot_key,
+            require_locked_native_media=require_locked_native_media,
+        )
         sources.append(snapshot)
     return sources
 

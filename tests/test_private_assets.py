@@ -179,41 +179,83 @@ class PrivateAssetsTest(unittest.TestCase):
         runbook = (root / "deploy" / "生产环境清单与还原手册.md").read_text(
             encoding="utf-8"
         )
+        manifest_path = root / "deploy" / "formal-delivery-release-manifest.tsv"
+        self.assertTrue(manifest_path.is_file())
+        manifest_rows = [
+            tuple(line.split("\t"))
+            for line in manifest_path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.startswith("#")
+        ]
+        self.assertTrue(all(len(row) == 2 for row in manifest_rows))
+        manifest = dict(manifest_rows)
+        expected_sources = {
+            "deploy/systemd/huangque-content.service.d/formal-delivery.conf",
+            "server/admin_api.py",
+            "server/content_domains/core.py",
+            "server/content_domains/pricing.py",
+            "server/content_domains/short_drama.py",
+            "server/content_domains/short_drama_asset_graph.py",
+            "server/content_domains/short_drama_autodraft.py",
+            "server/content_domains/short_drama_formal_renderer.py",
+            "server/content_domains/short_drama_native_audio.py",
+            "server/content_domains/short_drama_refinement.py",
+            "server/content_domains/video.py",
+            "server/content_domains/video_minimax_h3.py",
+            "server/providers/short_drama_visual/base.py",
+            "server/providers/short_drama_visual/grok_xai.py",
+            "server/providers/short_drama_visual/heygen_cinematic.py",
+            "server/providers/short_drama_visual/minimax_h3.py",
+            "site/workbench/short-drama-workspace.css",
+            "site/workbench/short-drama-workspace.js",
+            "site/workbench/short-drama.html",
+        }
+        self.assertEqual(set(manifest), expected_sources)
+        self.assertEqual(len(manifest_rows), len(expected_sources))
+        self.assertEqual(
+            len({target for _source, target in manifest_rows}),
+            len(manifest_rows),
+        )
+        for source, target in manifest_rows:
+            self.assertTrue((root / source).is_file(), source)
+            self.assertFalse(source.endswith("/"), source)
+            self.assertTrue(target.startswith("/"), target)
+            self.assertFalse(target.endswith("/"), target)
+            self.assertNotIn("..", source.split("/"), source)
+            self.assertNotIn("..", target.split("/"), target)
+            if source.startswith("server/"):
+                expected_target = "/home/ubuntu/content-api/" + source[7:]
+            elif source.startswith("site/workbench/"):
+                expected_target = (
+                    "/var/www/huangquechuanmei/workbench/" + source.rsplit("/", 1)[1]
+                )
+            else:
+                expected_target = (
+                    "/etc/systemd/system/huangque-content.service.d/"
+                    "formal-delivery.conf"
+                )
+            self.assertEqual(expected_target, target, source)
         drop_in = (
             root / "deploy" / "systemd" / "huangque-content.service.d" /
             "formal-delivery.conf"
         ).read_text(encoding="utf-8")
         for module in (
-            "content_domains/",
-            "providers/",
-            "short_drama_asset_graph.py",
-            "short_drama_autodraft.py",
-            "short_drama_formal_renderer.py",
-            "short_drama_native_audio.py",
-            "short_drama_refinement.py",
-            "video_minimax_h3.py",
             "providers/__init__.py",
             "providers/short_drama_visual/__init__.py",
-            "providers/short_drama_visual/minimax_h3.py",
             "providers/short_drama_visual/runtime.py",
-            "server/admin_api.py",
             "server/func_names.py",
             "server/inspiration_cases.py",
             "server/tikhub.py",
-            "site/workbench/short-drama-workspace.js",
-            "site/workbench/short-drama-workspace.css",
-            "site/workbench/short-drama.html",
         ):
             self.assertIn(module, runbook)
         for requirement in (
             "HQ_RELEASE_COMMIT",
             "HQ_RELEASE_STAGE",
+            "HQ_RELEASE_MANIFEST",
             "release-staging/formal-delivery-",
             "python3 -m compileall -q",
             "short_drama_refinement",
             "short_drama_formal_renderer",
             "import admin_api",
-            "--delete-excluded",
             "git rev-parse HEAD",
             "ffmpeg -version",
             "ffprobe -version",
@@ -228,8 +270,8 @@ class PrivateAssetsTest(unittest.TestCase):
             "2560x1440",
             "release-backup",
             "set -euo pipefail",
-            "formal-delivery.conf.state",
-            "printf '%s\\n' absent",
+            "states.tsv",
+            "printf '%s\\t%s\\t%s\\n'",
             "short-drama-workspace.js -o",
             "HQ_EXPECT_JS_SHA",
             "HQ_EXPECT_CSS_SHA",
@@ -241,15 +283,23 @@ class PrivateAssetsTest(unittest.TestCase):
         self.assertNotIn(
             "dapeng-server:/home/ubuntu/content-api/content_domains/", runbook,
         )
+        for forbidden in (
+            "--delete-excluded",
+            "sudo rsync -a --delete",
+            "sudo rm -rf /home/ubuntu/content-api/content_domains",
+            "server/content_domains/ \\",
+            "server/providers/ \\",
+        ):
+            self.assertNotIn(forbidden, runbook)
         staged_import = runbook.index(
-            'cd "$HQ_RELEASE_STAGE/content-api"'
+            'cd "$HQ_PREFLIGHT/content-api"'
         )
         rollback_armed = runbook.index("HQ_ACTIVATED=1")
-        first_live_sync = runbook.index(
-            "sudo rsync -a --delete --delete-excluded"
+        first_live_install = runbook.index(
+            'sudo install -D -m 0644 "$HQ_RELEASE_STAGE/files/$HQ_SOURCE"'
         )
         self.assertLess(staged_import, rollback_armed)
-        self.assertLess(rollback_armed, first_live_sync)
+        self.assertLess(rollback_armed, first_live_install)
         self.assertIn("原生 2K", drop_in)
         self.assertNotIn("1080p", drop_in)
 
