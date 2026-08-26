@@ -4072,6 +4072,7 @@ class H(BaseHTTPRequestHandler):
         self._send(404, {"detail": "not found"})
     def do_DELETE(self):
         p = self.path.split("?")[0]
+        if _digital_ip_domain().dispatch_http(self, "DELETE", verify, _must_change_password): return
         if p == "/api/gen/leads/crm":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录"})
