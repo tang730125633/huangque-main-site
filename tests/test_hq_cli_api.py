@@ -1478,8 +1478,10 @@ class HQCLIAPITests(unittest.TestCase):
             ("prompt-optimize", {"prompt": "portrait", "kind": "image"}),
             ("ip12-create", {"title": "my project"}),
             ("ip12-message", {"project_id": "ip_1", "message": "我的客户是餐饮老板", "request_id": "turn-001"}),
+            ("ip12-delete", {"project_id": "ip_1"}),
             ("canvas-create", {"name": "my board"}),
             ("asset-tags", {"kind": "image", "key": "asset-1", "tags": ["客户案例"]}),
+            ("asset-delete", {"kind": "image", "id": 7}),
             ("video-compose-create", {"source_asset_id": 7}),
             ("digital-presenter-create", {"board_id": "cb_1", "request_id": "hqcli-dp-001"}),
             ("inspiration-like", {"id": 7, "favorite": True}),
@@ -1493,6 +1495,18 @@ class HQCLIAPITests(unittest.TestCase):
                 self.assertEqual(409, status)
                 self.assertEqual("confirmation_required", payload["code"])
         proxy.assert_not_called()
+
+    def test_ip12_delete_requires_write_scope_and_uses_exact_delete_route(self):
+        plan = self.auth.hq_cli_api.action_plan("ip12-delete", {"project_id": "ip_1"})
+        self.assertEqual("ip12:write", plan["scope"])
+        self.assertEqual("DELETE", plan["method"])
+        self.assertEqual("/api/conversations/ip_1", plan["path"])
+        self.assertIsNone(plan.get("body"))
+
+        asset = self.auth.hq_cli_api.action_plan("asset-delete", {"kind": "video", "id": 9})
+        self.assertEqual(("assets:write", "POST"), (asset["scope"], asset["method"]))
+        self.assertEqual("/api/gen/asset/delete", asset["path"])
+        self.assertEqual({"kind": "video", "id": 9}, asset["body"])
 
     def test_new_project_actions_use_fixed_routes_headers_and_strict_inputs(self):
         compose = self.auth.hq_cli_api.action_plan("video-compose-review", {
