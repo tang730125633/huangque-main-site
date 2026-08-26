@@ -11,12 +11,26 @@ sys.path.insert(0, str(ROOT / "server"))
 from content_domains import banana_provider, image, points
 
 
-PNG_1X1 = base64.b64encode(
-    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
-    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDAT\x08\xd7c\xf8"
-    b"\xcf\xc0\xf0\x1f\x00\x05\x00\x01\xff\x89\x99=\x1d\x00\x00\x00\x00IEND"
-    b"\xaeB`\x82"
-).decode("ascii")
+PNG_2X2 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEklEQVR4nGMU0bBhYGBg"
+    "YgADAAWiAHylyrQdAAAAAElFTkSuQmCC"
+)
+JPEG_2X2 = (
+    "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8U"
+    "HRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgN"
+    "DRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIy"
+    "MjIyMjL/wAARCAACAAIDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQF"
+    "BgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEI"
+    "I0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNk"
+    "ZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLD"
+    "xMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEB"
+    "AQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJB"
+    "UQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZH"
+    "SElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaan"
+    "qKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oA"
+    "DAMBAAIRAxEAPwDyOiiiuw5D/9k="
+)
+WEBP_2X2 = "UklGRh4AAABXRUJQVlA4TBEAAAAvAUAAAAdQlFKUp/+BiOh/AAA="
 
 
 class BananaProviderTests(unittest.TestCase):
@@ -27,7 +41,7 @@ class BananaProviderTests(unittest.TestCase):
             "quality": "hd",
             "ratio": "9:16",
             "count": 2,
-            "images": [PNG_1X1] * 14,
+            "images": [PNG_2X2] * 14,
         })
         body = banana_provider.build_request_body(
             payload["prompt"], payload["ratio"], payload["images"], "2K"
@@ -40,7 +54,27 @@ class BananaProviderTests(unittest.TestCase):
     def test_rejects_more_than_fourteen_references(self):
         with self.assertRaisesRegex(ValueError, "at most 14"):
             banana_provider.validate_payload({
-                "prompt": "x", "images": [PNG_1X1] * 15,
+                "prompt": "x", "images": [PNG_2X2] * 15,
+            })
+
+    def test_infers_real_mime_and_rejects_invalid_or_mismatched_images(self):
+        payload = banana_provider.validate_payload({
+            "prompt": "preserve identity",
+            "images": [PNG_2X2, JPEG_2X2, WEBP_2X2],
+        })
+        self.assertEqual(
+            ["image/png", "image/jpeg", "image/webp"],
+            [item["mime_type"] for item in payload["images"]],
+        )
+        with self.assertRaisesRegex(ValueError, "cannot be decoded"):
+            banana_provider.validate_payload({
+                "prompt": "x",
+                "images": [base64.b64encode(b"not-an-image").decode("ascii")],
+            })
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            banana_provider.validate_payload({
+                "prompt": "x",
+                "images": [{"data": JPEG_2X2, "mime_type": "image/png"}],
             })
 
     def test_short_drama_hd_batch_cost_is_seventy_points(self):
@@ -61,24 +95,24 @@ class BananaProviderTests(unittest.TestCase):
         image.gen_image({
             "provider": "banana", "model": "nb2", "quality": "std",
             "prompt": "preserve identity", "ratio": "1:1", "count": 1,
-            "images": [PNG_1X1],
+            "images": [PNG_2X2],
         })
         sent = generate.call_args.args[0]
         self.assertEqual(1, len(sent["images"]))
-        self.assertEqual(PNG_1X1, sent["images"][0]["data"])
+        self.assertEqual(PNG_2X2, sent["images"][0]["data"])
 
     @mock.patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}, clear=False)
     @mock.patch("content_domains.egress.post_json")
     def test_generation_returns_provider_model_and_reference_metadata(self, post_json):
         post_json.return_value = {
             "candidates": [{"content": {"parts": [
-                {"inlineData": {"mimeType": "image/png", "data": PNG_1X1}}
+                {"inlineData": {"mimeType": "image/png", "data": PNG_2X2}}
             ]}}]
         }
         with tempfile.TemporaryDirectory() as folder:
             result = banana_provider.generate({
                 "prompt": "cinematic frame", "model": "nb2", "quality": "std",
-                "ratio": "1:1", "count": 1, "images": [PNG_1X1],
+                "ratio": "1:1", "count": 1, "images": [PNG_2X2],
             }, Path(folder), lambda name, _mime: "/file/" + name)
         self.assertEqual("banana", result["provider"])
         self.assertEqual("gemini-3.1-flash-image", result["model"])

@@ -24,6 +24,7 @@ import importlib.util
 import io
 import ipaddress
 import math
+import shutil
 import sqlite3
 import socket
 import tempfile
@@ -4575,10 +4576,21 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion, job
 # 仅 text/audio 口播模式生效；motion 动作模仿不做字幕（多无语音，价值低）。
 # whisper 吃 CPU，用信号量把同时转写数限到 WHISPER_MAX_CONCURRENCY（默认 1），避免打满核。
 WHISPER_MODEL_NAME = os.environ.get("WHISPER_MODEL", "base")
+WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "cpu").strip() or "cpu"
+WHISPER_COMPUTE_TYPE = (
+    os.environ.get("WHISPER_COMPUTE_TYPE", "int8").strip() or "int8"
+)
+WHISPER_CACHE_DIR = os.environ.get(
+    "WHISPER_CACHE_DIR", "/var/cache/huangque/faster-whisper",
+).strip()
 _whisper_sem = threading.BoundedSemaphore(max(1, int(os.environ.get("WHISPER_MAX_CONCURRENCY", "1") or "1")))
 _whisper_model = None
 _whisper_model_lock = threading.Lock()
-SUBTITLE_FONT = os.environ.get("SUBTITLE_FONT", "Noto Sans SC")  # 服务器已装，libass 可用
+_subtitle_runtime_ready = False
+_subtitle_runtime_lock = threading.Lock()
+DEFAULT_SUBTITLE_FONT = "Noto Sans SC"
+SUBTITLE_FONT = os.environ.get("SUBTITLE_FONT", DEFAULT_SUBTITLE_FONT)
+SUBTITLE_REQUIRED_CJK_GLYPHS = "黄雀字幕测试"
 # 三个预设样式；数值是相对视频高度的比例。ASS 颜色为 &HAABBGGRR。
 _SUB_STYLES = {
     "white":   {"fs": 0.052, "primary": "&H00FFFFFF", "outline": "&H00000000", "back": "&H00000000", "border": 1, "ow": 3.0, "shadow": 1, "mv": 0.060},
@@ -4594,6 +4606,134 @@ _SUB_POSITIONS = {
     "upper":  (8, 0.20),   # 偏上
     "top":    (8, 0.06),   # 顶部
 }
+
+
+class SubtitleRuntimePreflightError(RuntimeError):
+    """The local subtitle runtime is unavailable before any paid video job."""
+
+    code = "subtitle_runtime_unavailable"
+    status = 503
+
+
+def _subtitle_tool_output(command):
+    try:
+        completed = subprocess.run(
+            command, check=True, timeout=30,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError,
+            subprocess.TimeoutExpired) as exc:
+        raise SubtitleRuntimePreflightError(
+            "字幕运行环境检查失败，本次未调用付费视频渠道（未扣点）"
+        ) from exc
+    return ((completed.stdout or b"") + (completed.stderr or b"")).decode(
+        "utf-8", "replace",
+    )
+
+
+def _subtitle_charset_contains(charset, codepoint):
+    for token in str(charset or "").split():
+        try:
+            if "-" in token:
+                start, end = token.split("-", 1)
+                if int(start, 16) <= codepoint <= int(end, 16):
+                    return True
+            elif int(token, 16) == codepoint:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _subtitle_font_preflight():
+    if not shutil.which("fc-match") or not shutil.which("fc-query"):
+        raise SubtitleRuntimePreflightError(
+            "服务器缺少中文字幕字体检查工具，本次未调用付费视频渠道（未扣点）"
+        )
+    match = _subtitle_tool_output([
+        "fc-match", "--format=%{family}\n%{file}", SUBTITLE_FONT,
+    ])
+    lines = str(match or "").splitlines()
+    family = lines[0].strip() if lines else ""
+    raw_file = lines[1].strip() if len(lines) > 1 else ""
+    requested_tokens = set(re.findall(r"\w+", SUBTITLE_FONT.casefold()))
+    matched_tokens = set(re.findall(r"\w+", family.casefold()))
+    try:
+        matched_file = pathlib.Path(raw_file).resolve()
+    except (OSError, RuntimeError, ValueError):
+        matched_file = None
+    if (
+        not requested_tokens
+        or not requested_tokens.issubset(matched_tokens)
+        or not matched_file
+        or not matched_file.is_file()
+    ):
+        raise SubtitleRuntimePreflightError(
+            "服务器未匹配到指定的中文字幕字体，本次未调用付费视频渠道（未扣点）"
+        )
+    charset = _subtitle_tool_output([
+        "fc-query", "--format=%{charset}", str(matched_file),
+    ])
+    if not all(
+            _subtitle_charset_contains(charset, ord(character))
+            for character in SUBTITLE_REQUIRED_CJK_GLYPHS):
+        raise SubtitleRuntimePreflightError(
+            "服务器字幕字体缺少中文字符，本次未调用付费视频渠道（未扣点）"
+        )
+    return {"family": family[:200], "file": str(matched_file)}
+
+
+def subtitle_runtime_preflight():
+    """Load every local subtitle dependency before a paid HeyGen submission."""
+    global _subtitle_runtime_ready
+    if _subtitle_runtime_ready:
+        return {
+            "ok": True, "model": WHISPER_MODEL_NAME,
+            "device": WHISPER_DEVICE, "compute_type": WHISPER_COMPUTE_TYPE,
+            "no_charge": True,
+        }
+    with _subtitle_runtime_lock:
+        if _subtitle_runtime_ready:
+            return {
+                "ok": True, "model": WHISPER_MODEL_NAME,
+                "device": WHISPER_DEVICE,
+                "compute_type": WHISPER_COMPUTE_TYPE, "no_charge": True,
+            }
+        if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+            raise SubtitleRuntimePreflightError(
+                "服务器缺少 FFmpeg/ffprobe，无法制作字幕，本次未调用付费视频渠道（未扣点）"
+            )
+        encoders = _subtitle_tool_output(["ffmpeg", "-hide_banner", "-encoders"])
+        if "libx264" not in encoders or not re.search(
+                r"(?m)^\s*A\S*\s+aac\s", encoders):
+            raise SubtitleRuntimePreflightError(
+                "FFmpeg 缺少 H.264/AAC 编码器，本次未调用付费视频渠道（未扣点）"
+            )
+        filters = _subtitle_tool_output(["ffmpeg", "-hide_banner", "-filters"])
+        if "drawtext" not in filters or "subtitles" not in filters:
+            raise SubtitleRuntimePreflightError(
+                "FFmpeg 缺少字幕滤镜，本次未调用付费视频渠道（未扣点）"
+            )
+        _subtitle_font_preflight()
+        if not VIDEO_OUT_DIR.is_dir() or not os.access(VIDEO_OUT_DIR, os.W_OK):
+            raise SubtitleRuntimePreflightError(
+                "字幕输出目录不可写，本次未调用付费视频渠道（未扣点）"
+            )
+        try:
+            _get_whisper_model()
+        except Exception as exc:
+            detail = "faster-whisper 未安装" if isinstance(
+                exc, ModuleNotFoundError,
+            ) else "Whisper 模型未预热或无法加载"
+            raise SubtitleRuntimePreflightError(
+                "%s，本次未调用付费视频渠道（未扣点）" % detail
+            ) from exc
+        _subtitle_runtime_ready = True
+    return {
+        "ok": True, "model": WHISPER_MODEL_NAME,
+        "device": WHISPER_DEVICE, "compute_type": WHISPER_COMPUTE_TYPE,
+        "no_charge": True,
+    }
 
 def _sub_ffmpeg(cmd, timeout, cwd=None):
     try:
@@ -4620,7 +4760,13 @@ def _get_whisper_model():
                 os.environ.setdefault("HF_HUB_OFFLINE", "1")
                 try:
                     from faster_whisper import WhisperModel  # 服务器已装；本地/CI 不触发 import
-                    _whisper_model = WhisperModel(WHISPER_MODEL_NAME, device="cpu", compute_type="int8")
+                    _whisper_model = WhisperModel(
+                        WHISPER_MODEL_NAME,
+                        device=WHISPER_DEVICE,
+                        compute_type=WHISPER_COMPUTE_TYPE,
+                        download_root=WHISPER_CACHE_DIR or None,
+                        local_files_only=True,
+                    )
                 finally:
                     os.environ.update(_saved)
     return _whisper_model

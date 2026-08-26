@@ -675,6 +675,9 @@ def init_audio_db():
         _ensure_column(c, "audio_voice_slots", "previous_preview_url", "TEXT")
         _ensure_column(c, "audio_voice_slots", "clone_upload_at", "INTEGER")
         _ensure_column(c, "audio_voice_slots", "clone_error", "TEXT")
+        _ensure_column(c, "audio_voice_slots", "clone_attempt_id", "TEXT")
+        _ensure_column(c, "audio_voice_slots", "clone_attempt_phase", "TEXT")
+        _ensure_column(c, "audio_voice_slots", "clone_attempt_updated_at", "INTEGER")
         _ensure_column(c, "audio_voice_slots", "clone_upload_speaker_id", "TEXT")
         _ensure_column(c, "audio_voice_slots", "clone_upload_response", "TEXT")
         _ensure_column(c, "audio_voice_slots", "clone_baseline_version", "TEXT")
@@ -1279,6 +1282,34 @@ def _reject_pending_job(job_id, username, cost, reason):
     return _fail_job_and_schedule_refund(
         job_id, reason, from_states=("pending",), username=username, cost=cost,
     )
+
+
+def _compensation_tracking_response(job_id, cost, detail, *, points_left=None,
+                                    submission_ref=""):
+    """Return a queryable refund tracker after a charged child-job failure."""
+    job_id = int(job_id)
+    with closing(jdb()) as connection:
+        row = connection.execute(
+            "SELECT status,refunded FROM jobs WHERE id=?", (job_id,),
+        ).fetchone()
+    if not row:
+        raise RuntimeError("compensation tracking job disappeared")
+    refund_value = int(row["refunded"] or 0)
+    if int(cost or 0) > 0 and (
+            str(row["status"] or "") != "error" or refund_value not in {1, 2}):
+        raise RuntimeError("charged compensation job has no durable refund intent")
+    refund_state = {1: "refunded", 2: "pending"}.get(refund_value, "none")
+    response = {
+        "job_id": job_id,
+        "cost": int(cost or 0),
+        "detail": str(detail or "任务创建失败，退款正在自动确认"),
+        "refund_state": refund_state,
+    }
+    if points_left is not None:
+        response["points_left"] = int(points_left)
+    if submission_ref:
+        response["submission_ref"] = str(submission_ref)
+    return response
 
 def _job_worker_loop(q):
     global _inflight
@@ -3111,18 +3142,156 @@ class H(BaseHTTPRequestHandler):
                 feature_flags.require_enabled("audio")
             except feature_flags.FeatureDisabled as e:
                 return self._send(503, {"detail": str(e)})
+            from . import digital_human_oneclick, digital_human_v2
+            idem_key = ""
+            idem_started = False
+            provider_started = False
+            response = None
             try:
                 body = self._json_body_strict()
-                body = audio_domain.validate_clone_vip_payload(user["username"], body)
-                voice = audio_domain.mark_clone_training(user["username"], body.get("slot_id"), body.get("name"))
-                threading.Thread(target=audio_domain.clone_vip_voice_background, args=(user["username"], body), daemon=True).start()
-                return self._send(200, {"ok": True, "voice": voice})
+                pipeline = (
+                    str(body.get("digital_human_pipeline") or "").strip().lower()
+                    if isinstance(body, dict) else ""
+                )
+                digital_human_submission = pipeline in {
+                    digital_human_oneclick.CONSENT_PURPOSE,
+                    digital_human_v2.CONSENT_PURPOSE,
+                    digital_human_oneclick.UNIFIED_VIDEO_CONSENT_PURPOSE,
+                }
+                idem_key = _idempotency_key(self.headers.get("Idempotency-Key"))
+                if digital_human_submission and not idem_key:
+                    raise ValueError("数字人一键生成声音复刻必须提供 Idempotency-Key")
+                attempt_id = _idempotency_key(body.get("clone_attempt_id"))
+                if digital_human_submission and attempt_id != idem_key:
+                    raise ValueError("数字人一键生成声音复刻操作标识必须与 Idempotency-Key 一致")
+                if not attempt_id:
+                    attempt_id = idem_key or ("legacy-" + uuid.uuid4().hex)
+                body = digital_human_oneclick.verify_clone_submission(
+                    body, user["username"],
+                )
+                with _submission_lock:
+                    idem_state, idem_response = _idempotency_begin(
+                        user["username"], p, idem_key, body,
+                    )
+                    if idem_state == "replay":
+                        response = dict(idem_response or {})
+                    elif idem_state == "conflict":
+                        return self._send(409, {
+                            "detail": "同一个 Idempotency-Key 不能用于不同请求",
+                            "code": "idempotency_conflict",
+                        })
+                    elif idem_state == "processing":
+                        if not digital_human_submission:
+                            return self._send(409, {
+                                "detail": "相同声音复刻请求正在受理，请稍后查询",
+                                "code": "idempotency_in_progress", "retry_after_ms": 1000,
+                            })
+                        snapshot = audio_domain.clone_attempt_snapshot(
+                            user["username"], body.get("slot_id"), attempt_id,
+                        )
+                        if snapshot["action"] == "ready":
+                            voice = audio_domain.check_clone_status(
+                                user["username"], body.get("slot_id"), attempt_id,
+                            )
+                            response = {"ok": True, "voice": voice,
+                                        "attempt_id": attempt_id, "recovered": True}
+                            _idempotency_complete(user["username"], p, idem_key, response)
+                        elif snapshot["action"] == "provider_training":
+                            voice = audio_domain.check_clone_status(
+                                user["username"], body.get("slot_id"), attempt_id,
+                            )
+                            if voice.get("status") == "ready":
+                                response = {"ok": True, "voice": voice,
+                                            "attempt_id": attempt_id, "recovered": True}
+                                _idempotency_complete(user["username"], p, idem_key, response)
+                            elif voice.get("status") == "failed":
+                                _idempotency_abort(user["username"], p, idem_key)
+                                return self._send(409, {"detail": voice.get("clone_error") or "声音复刻失败，请重试",
+                                    "code": "clone_attempt_failed", "retryable": True})
+                            else:
+                                return self._send(409, {
+                                    "detail": "声音供应商仍在训练本次音色，请稍后查询",
+                                    "code": "idempotency_in_progress", "retry_after_ms": 3000,
+                                })
+                        elif snapshot["action"] == "stale":
+                            audio_domain.fail_clone_attempt(
+                                user["username"], body.get("slot_id"), attempt_id,
+                                "声音复刻任务租约已失效，请重试",
+                            )
+                            _idempotency_abort(user["username"], p, idem_key)
+                            return self._send(503, {"detail": "声音复刻后台任务已中断，请重试",
+                                "code": "clone_attempt_lease_expired", "retryable": True})
+                        elif snapshot["action"] == "failed":
+                            _idempotency_abort(user["username"], p, idem_key)
+                            return self._send(409, {"detail": snapshot.get("clone_error") or "声音复刻失败，请重试",
+                                "code": "clone_attempt_failed", "retryable": True})
+                        elif snapshot["action"] == "mismatch":
+                            return self._send(409, {"detail": "声音复刻操作标识与当前任务不匹配",
+                                "code": "clone_attempt_mismatch"})
+                        else:
+                            return self._send(409, {
+                                "detail": "相同声音复刻请求正在受理，请稍后查询",
+                                "code": "idempotency_in_progress",
+                                "retry_after_ms": 1000,
+                            })
+                    else:
+                        idem_started = idem_state == "new"
+                        try:
+                            body["clone_attempt_id"] = attempt_id
+                            body = audio_domain.validate_clone_vip_payload(
+                                user["username"], body,
+                            )
+                            voice = audio_domain.mark_clone_training(
+                                user["username"], body.get("slot_id"), body.get("name"),
+                                attempt_id,
+                                expected_preimage=(
+                                    body.get("_unified_video_slot_preimage")
+                                    if pipeline == digital_human_oneclick.UNIFIED_VIDEO_CONSENT_PURPOSE
+                                    else None
+                                ),
+                            )
+                            worker = threading.Thread(
+                                target=audio_domain.clone_vip_voice_background,
+                                args=(user["username"], body), daemon=True,
+                            )
+                            if not audio_domain.mark_clone_attempt_running(
+                                    user["username"], body.get("slot_id"), attempt_id):
+                                raise RuntimeError("声音复刻任务已被新的操作替代")
+                            try:
+                                worker.start()
+                            except Exception:
+                                audio_domain.fail_clone_attempt(
+                                    user["username"], body.get("slot_id"), attempt_id,
+                                    "声音复刻后台任务启动失败",
+                                )
+                                raise
+                            provider_started = True
+                            response = {"ok": True, "voice": voice, "attempt_id": attempt_id}
+                            _idempotency_complete(
+                                user["username"], p, idem_key, response,
+                            )
+                        except Exception:
+                            if idem_started and not provider_started:
+                                _idempotency_abort(user["username"], p, idem_key)
+                            raise
+            except digital_human_oneclick.DigitalHumanRequestError as e:
+                return self._send(e.status, {
+                    "detail": str(e)[:220], "code": e.code,
+                })
             except audio_domain.CloneVipValidationError as e:
-                return self._send(e.status, {"detail": e.detail})
+                return self._send(e.status, {
+                    "detail": e.detail,
+                    **({"code": "voice_clone_in_progress"}
+                       if digital_human_submission and e.status == 409
+                       and "正在复刻" in str(e.detail or "") else {}),
+                })
+            except audio_domain.CloneAttemptError as e:
+                return self._send(e.status, {"detail": e.detail, "code": e.code})
             except ValueError as e:
                 return self._send(400, {"detail": str(e)[:220]})
             except Exception as e:
                 return self._send(400, {"detail": str(e)[:220]})
+            return self._send(200, response)
         if p == "/api/gen/video/avatar-name":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})
@@ -3323,6 +3492,7 @@ class H(BaseHTTPRequestHandler):
             still_access = _short_drama_canvas_access(self) if is_still_route else None
             scene_access = None
             minimax_idem_body = None
+            from . import digital_human_oneclick
             try:
                 body = self._json_body_strict() if is_still_route or kind in {"video", "tryon", "sora_video", "cinematic", "avatar", "script_to_video", "matrix_template_video", "copy", "canvas_agent"} else self._json_body()
                 if kind in {"cinematic", "script_to_video", "matrix_template_video"}:
@@ -3438,6 +3608,11 @@ class H(BaseHTTPRequestHandler):
                         jdb, user["username"], body.get("short_drama_binding"),
                         require_revision=False,
                     )
+                body, digital_human_consent_record = (
+                    digital_human_oneclick.verify_child_submission_with_record(
+                        body, user["username"], kind,
+                    )
+                )
                 # 微信内容安全必须在校验、扣点和入队前完成；服务异常时不收单。
                 miniprogram_security.check_payload(body)
                 if is_still_route:
@@ -3466,7 +3641,10 @@ class H(BaseHTTPRequestHandler):
                 elif kind == "sora_video": body = video_domain.validate_sora_video_payload(body)
                 elif kind == "script_to_video":
                     from . import script_to_video as script_to_video_domain
-                    body = script_to_video_domain.prepare_script_to_video_payload(body, user["username"])
+                    body = script_to_video_domain.prepare_script_to_video_payload(
+                        body, user["username"],
+                        digital_human_consent=digital_human_consent_record,
+                    )
                     if body.get("pipeline") == "pixelle":
                         if body.get("material_source") == "library":
                             from . import pixelle_video as pixelle_video_domain
@@ -3543,12 +3721,20 @@ class H(BaseHTTPRequestHandler):
                         "code": "feature_disabled", "retry_after_ms": 5000,
                     })
                 return self._send(503, disabled)
+            except digital_human_oneclick.DigitalHumanRequestError as e:
+                return self._send(int(e.status or 400), {
+                    "detail": str(e)[:220], "code": e.code,
+                })
             except miniprogram_security.ContentRejected as e:
                 terminal = is_still_route and bool(locals().get("idem_key"))
                 return self._send(400, {"detail": str(e), "code": "content_rejected",
                                         **({"operation_terminal": True} if terminal else {})})
             except miniprogram_security.SecurityUnavailable as e:
-                return self._send(503, {"detail": str(e), "code": "content_security_unavailable", "retry_after_ms": 5000})
+                return self._send(503, {
+                    "detail": str(e),
+                    "code": str(getattr(e, "code", "content_security_unavailable")),
+                    "retry_after_ms": 5000,
+                })
             except (video_domain.SeedanceReferenceUnavailable if isinstance(video_domain.SeedanceReferenceUnavailable, type) and issubclass(video_domain.SeedanceReferenceUnavailable, BaseException) else ()) as e: return self._send(e.status, {"detail": str(e)[:220], "code": e.code, "retry_after_ms": 60000})
             except (ValueError, LookupError, PermissionError, _short_drama_domain().RevisionConflict) as e:
                 if still_idem_started:
@@ -3873,6 +4059,24 @@ class H(BaseHTTPRequestHandler):
                             self._cinematic_reference_files)
                         self._cinematic_reference_files = []
                     queue_response = {"detail": "任务队列已满，请稍后再试", "code": "queue_full", "retry_after_ms": 4000, "need": cost}
+                    digital_human_paid_child = bool(
+                        digital_human_consent_record
+                        and kind in {"image", "video"}
+                    )
+                    if digital_human_paid_child:
+                        tracking_response = _compensation_tracking_response(
+                            jid, cost, queue_response["detail"],
+                            points_left=points_left,
+                        )
+                        if tracking_response["refund_state"] != "refunded":
+                            _idempotency_complete(
+                                user["username"], p, idem_key,
+                                dict(tracking_response, _http_status=202),
+                            )
+                            return self._send(202, tracking_response)
+                        queue_response["operation_terminal"] = True
+                        queue_response["job_id"] = jid
+                        queue_response["refund_state"] = "refunded"
                     if is_still_route:
                         queue_response["operation_terminal"] = True
                         still_attempt = _short_drama_domain().short_drama_production.mark_linked_attempt_failed(

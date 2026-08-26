@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 """一键成片：现有数字人口播 + 用户图片资产/按需生图 + FFmpeg 自动穿插。"""
 import json
+import os
 import random
 import re
 import subprocess
 import time
+import urllib.parse
 
 from .core import OUT_DIR, adb, closing, jdb
 
@@ -12,6 +14,10 @@ MAX_MATERIAL_SCENES = 8
 PHOTO_MOTIONS = ("zoom_in", "zoom_out", "pan_left", "pan_right", "pan_up", "pan_down")
 MATERIAL_IMAGE_RETRY_CODES = {520}
 MATERIAL_IMAGE_RETRY_DELAY = 2
+DIGITAL_HUMAN_MATERIAL_UPLOAD_PATH = "/api/gen/script_to_video/material-upload"
+DIGITAL_HUMAN_MATERIAL_UPLOAD_PURPOSE = "smart_montage"
+DIGITAL_HUMAN_MATERIAL_UPLOAD_LEASE_SECONDS = 4 * 60 * 60
+_UPLOAD_ID_RE = re.compile(r"^img_[0-9a-f]{32}$")
 
 
 def _scene_prompt(scene):
@@ -72,9 +78,20 @@ def _match_image_asset(username, prompt):
     return best[1] if best else None
 
 
-def prepare_script_to_video_payload(payload, username):
+def prepare_script_to_video_payload(
+        payload, username, digital_human_consent=None):
     """提交扣点前冻结素材计划，保证能一次算清总价且不发生生成到一半欠费。"""
     body = dict(payload or {})
+    from . import digital_human_oneclick, digital_human_v2
+    pipeline = str(body.get("pipeline") or "").strip().lower()
+    if pipeline == digital_human_oneclick.PIPELINE:
+        return digital_human_oneclick.prepare_compose_payload(
+            body, username, consent_record=digital_human_consent,
+        )
+    if pipeline == digital_human_v2.PIPELINE:
+        return digital_human_v2.prepare_compose_payload(
+            body, username, consent_record=digital_human_consent,
+        )
     if str(body.get("pipeline") or "").strip() == "pixelle":
         from . import pixelle_video
         pixelle_video.require_available()
@@ -111,11 +128,238 @@ def gen_script_to_video(payload):
         from . import pixelle_video
         return pixelle_video.generate(payload)
     username = (payload.get("_username") or "").strip()
+    from . import digital_human_oneclick, digital_human_v2
+    pipeline = str(payload.get("pipeline") or "").strip().lower()
+    if pipeline == digital_human_oneclick.PIPELINE:
+        return digital_human_oneclick.compose(payload)
+    if pipeline == digital_human_v2.PIPELINE:
+        return digital_human_v2.compose(payload)
     scenes = payload.get("scenes") or []
     style = (payload.get("style") or "口播").strip()
     if style == "剧情":
         return _gen_drama(username, scenes, payload)
     return _gen_talking(username, scenes, payload)
+
+
+def dispatch_http(handler, method, verify_token, must_change_password):
+    """Serve authenticated digital-human planning and recovery endpoints."""
+    from . import digital_human_oneclick, digital_human_v2
+
+    path = handler.path.split("?", 1)[0]
+    routes = {
+        digital_human_oneclick.PLAN_PATH,
+        digital_human_oneclick.CONSENT_PATH,
+        digital_human_oneclick.GESTURE_RECOVERY_PATH,
+        digital_human_oneclick.MATERIAL_RECOVERY_PATH,
+        digital_human_oneclick.VIDEO_RECOVERY_PATH,
+        digital_human_oneclick.HEYGEN_PREFLIGHT_PATH,
+        digital_human_v2.PLAN_PATH,
+        digital_human_v2.CONSENT_PATH,
+        digital_human_v2.AUDIO_UPLOAD_PATH,
+        digital_human_v2.MATERIAL_RESOLVE_PATH,
+        digital_human_v2.HISTORY_PATH,
+        DIGITAL_HUMAN_MATERIAL_UPLOAD_PATH,
+    }
+    if path not in routes:
+        return False
+
+    user = verify_token(handler._token())
+    if not user:
+        handler._send(401, {"detail": "未登录或登录已过期"})
+        return True
+    if must_change_password(user):
+        handler._send(403, {"detail": "请先修改初始密码"})
+        return True
+
+    if path == DIGITAL_HUMAN_MATERIAL_UPLOAD_PATH:
+        from . import cli_uploads, miniprogram_security
+
+        if method == "DELETE":
+            try:
+                body = handler._json_body_strict()
+                if (not isinstance(body, dict) or set(body) != {"upload_id"}
+                        or not _UPLOAD_ID_RE.fullmatch(
+                            str(body.get("upload_id") or "").strip().lower())):
+                    raise ValueError("请求必须提供有效的 upload_id")
+                cli_uploads.discard_image(body["upload_id"], user["username"])
+                handler._send(200, {"ok": True})
+            except ValueError as exc:
+                handler._send(400, {
+                    "detail": str(exc)[:220], "code": "invalid_image_discard",
+                })
+            return True
+        if method != "POST":
+            handler._method_not_allowed()
+            return True
+
+        uploaded = None
+        try:
+            if handler.headers.get("Transfer-Encoding"):
+                raise ValueError("图片上传必须提供 Content-Length")
+            length = int(handler.headers.get("Content-Length") or 0)
+            content_type = (
+                handler.headers.get("Content-Type") or ""
+            ).split(";", 1)[0].strip().lower()
+            uploaded = cli_uploads.store_image(
+                handler.rfile, length, user["username"], content_type,
+                handler.headers.get("X-HQ-Image-SHA256"),
+            )
+            data, meta = cli_uploads.read_image_bytes(
+                uploaded["upload_id"], user["username"],
+            )
+            if miniprogram_security.configured():
+                miniprogram_security.check_image(
+                    data, "digital-human-material%s" % meta["extension"],
+                    meta["mime"],
+                )
+            approved = cli_uploads.approve_image(
+                uploaded["upload_id"], user["username"],
+                DIGITAL_HUMAN_MATERIAL_UPLOAD_PURPOSE,
+                lease_seconds=DIGITAL_HUMAN_MATERIAL_UPLOAD_LEASE_SECONDS,
+            )
+            handler._send(200, {
+                **uploaded,
+                "expires_at": int(approved.get("expires_at") or 0),
+                "expires_in": max(
+                    0, int(approved.get("expires_at") or 0) - int(time.time()),
+                ),
+                "width": int(approved.get("width") or 0),
+                "height": int(approved.get("height") or 0),
+            })
+        except miniprogram_security.ContentRejected as exc:
+            if uploaded:
+                cli_uploads.discard_image(uploaded.get("upload_id"), user["username"])
+            handler._send(400, {
+                "detail": str(exc)[:220], "code": "content_rejected",
+            })
+        except miniprogram_security.SecurityUnavailable as exc:
+            if uploaded:
+                cli_uploads.discard_image(uploaded.get("upload_id"), user["username"])
+            handler._send(503, {
+                "detail": str(exc)[:220], "code": exc.code,
+                "retry_after_ms": 5000,
+            })
+        except (TypeError, ValueError) as exc:
+            if uploaded:
+                cli_uploads.discard_image(uploaded.get("upload_id"), user["username"])
+            handler._send(400, {
+                "detail": str(exc)[:220], "code": "invalid_image_upload",
+            })
+        except OSError:
+            if uploaded:
+                cli_uploads.discard_image(uploaded.get("upload_id"), user["username"])
+            handler._send(500, {
+                "detail": "图片暂时无法保存", "code": "image_upload_failed",
+            })
+        return True
+
+    if path == digital_human_v2.HISTORY_PATH:
+        if method != "GET":
+            handler._method_not_allowed()
+            return True
+        try:
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(handler.path).query)
+            handler._send(200, digital_human_v2.history_response(
+                user["username"],
+                (query.get("limit") or [20])[0],
+                (query.get("offset") or [0])[0],
+            ))
+        except digital_human_oneclick.DigitalHumanRequestError as exc:
+            handler._send(exc.status, {
+                "detail": str(exc)[:220], "code": exc.code,
+            })
+        except ValueError as exc:
+            handler._send(400, {"detail": str(exc)[:220]})
+        return True
+
+    if method != "POST":
+        handler._method_not_allowed()
+        return True
+
+    try:
+        if path == digital_human_oneclick.PLAN_PATH:
+            response = digital_human_oneclick.plan_response(
+                handler._json_body_strict(),
+            )
+        elif path == digital_human_v2.PLAN_PATH:
+            response = digital_human_v2.plan_response(
+                handler._json_body_strict(), user["username"],
+            )
+        elif path == digital_human_v2.AUDIO_UPLOAD_PATH:
+            if handler.headers.get("Transfer-Encoding"):
+                raise digital_human_oneclick.DigitalHumanRequestError(
+                    "录音上传必须提供 Content-Length",
+                    "audio_upload_length_required",
+                )
+            try:
+                length = int(handler.headers.get("Content-Length") or 0)
+            except (TypeError, ValueError) as exc:
+                raise digital_human_oneclick.DigitalHumanRequestError(
+                    "录音上传长度无效", "audio_upload_length_required",
+                ) from exc
+            response = digital_human_v2.audio_upload_response(
+                handler.rfile, length, user["username"],
+                handler.headers.get("X-HQ-Run-ID"),
+                handler.headers.get("Content-Type"),
+                handler.headers.get("X-HQ-Audio-SHA256"),
+            )
+        elif path == digital_human_v2.MATERIAL_RESOLVE_PATH:
+            response = digital_human_v2.resolve_material_response(
+                handler._json_body_strict(), user["username"],
+            )
+        elif path in {
+                digital_human_oneclick.CONSENT_PATH,
+                digital_human_v2.CONSENT_PATH}:
+            body = handler._json_body_strict()
+            if str(body.get("voice_mode") or "").strip().lower() == "existing":
+                from . import audio as audio_domain
+                audio_domain.resolve_audio_provider_voice(
+                    user["username"], str(body.get("voice_ref") or "").strip(),
+                )
+            if path == digital_human_oneclick.CONSENT_PATH:
+                response = digital_human_oneclick.consent_response(
+                    body, user["username"], os.environ.get("HQ_INTERNAL_TOKEN", ""),
+                )
+            else:
+                response = digital_human_v2.consent_response(
+                    body, user["username"], os.environ.get("HQ_INTERNAL_TOKEN", ""),
+                )
+        elif path == digital_human_oneclick.GESTURE_RECOVERY_PATH:
+            response = digital_human_oneclick.validate_gesture_recovery(
+                handler._json_body_strict(), user["username"],
+            )
+        elif path == digital_human_oneclick.MATERIAL_RECOVERY_PATH:
+            response = digital_human_oneclick.validate_material_recovery(
+                handler._json_body_strict(), user["username"],
+            )
+        elif path == digital_human_oneclick.VIDEO_RECOVERY_PATH:
+            response = digital_human_oneclick.validate_video_recovery(
+                handler._json_body_strict(), user["username"],
+            )
+        else:
+            from . import video as video_domain
+            subtitle = video_domain.subtitle_runtime_preflight()
+            response = dict(video_domain.heygen_upload_preflight())
+            response["subtitle"] = subtitle
+        handler._send(200, response)
+    except digital_human_oneclick.DigitalHumanRequestError as exc:
+        payload = {"detail": str(exc)[:220], "code": exc.code}
+        if exc.invalid_job_ids:
+            payload["invalid_job_ids"] = exc.invalid_job_ids
+        if exc.status == 503:
+            payload["retry_after_ms"] = 5000
+        handler._send(exc.status, payload)
+    except ValueError as exc:
+        handler._send(400, {"detail": str(exc)[:220]})
+    except Exception as exc:
+        if path != digital_human_oneclick.HEYGEN_PREFLIGHT_PATH:
+            raise
+        handler._send(int(getattr(exc, "status", 503) or 503), {
+            "detail": str(exc)[:220],
+            "code": str(getattr(exc, "code", "heygen_upload_unavailable")),
+            "no_charge": True,
+        })
+    return True
 
 
 def _material_images(plan):

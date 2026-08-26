@@ -7,6 +7,7 @@ import json
 import os
 import time
 import uuid
+import warnings
 
 try:
     from PIL import Image
@@ -20,26 +21,64 @@ RATIOS = {"1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_REFERENCE_IMAGES = 14
 MAX_TOTAL_REFERENCE_BYTES = 48 * 1024 * 1024
+MAX_IMAGE_PIXELS = 40_000_000
+IMAGE_MIMES = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp"}
 
 
 def clean_b64(value):
     raw = str(value or "").strip()
-    mime = "image/png"
+    mime = ""
     if raw.startswith("data:") and "," in raw:
         meta, raw = raw.split(",", 1)
         mime = meta[5:].split(";", 1)[0].strip().lower() or mime
     return "".join(raw.split()), mime
 
 
+def _decoded_image_mime(decoded, index):
+    """Fully decode a static reference and return its real MIME type."""
+    if Image is None:
+        raise ValueError("reference image validation is temporarily unavailable")
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(io.BytesIO(decoded)) as image:
+                width, height = image.size
+                image_format = str(image.format or "").upper()
+                if image_format not in IMAGE_MIMES:
+                    raise ValueError(
+                        "reference image %d has an unsupported format" % (index + 1)
+                    )
+                if int(getattr(image, "n_frames", 1) or 1) != 1:
+                    raise ValueError(
+                        "reference image %d must be a static image" % (index + 1)
+                    )
+                if width <= 0 or height <= 0 or width * height > MAX_IMAGE_PIXELS:
+                    raise ValueError(
+                        "reference image %d has unsupported dimensions" % (index + 1)
+                    )
+                image.verify()
+            with Image.open(io.BytesIO(decoded)) as image:
+                image.load()
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(
+            "reference image %d cannot be decoded" % (index + 1)
+        ) from exc
+    return IMAGE_MIMES[image_format]
+
+
 def _validated_reference(value, index):
     if isinstance(value, str):
-        data, mime = clean_b64(value)
+        data, declared_mime = clean_b64(value)
     elif isinstance(value, dict):
         data, detected_mime = clean_b64(value.get("data"))
-        mime = str(value.get("mime_type") or detected_mime or "image/png").strip().lower()
+        declared_mime = str(
+            value.get("mime_type") or detected_mime or ""
+        ).strip().lower()
     else:
         raise ValueError("reference image %d is invalid" % (index + 1))
-    if mime not in {"image/png", "image/jpeg", "image/webp"}:
+    if declared_mime and declared_mime not in set(IMAGE_MIMES.values()):
         raise ValueError("reference image %d has an unsupported format" % (index + 1))
     try:
         decoded = base64.b64decode(data, validate=True)
@@ -49,7 +88,12 @@ def _validated_reference(value, index):
         raise ValueError("reference image %d is empty" % (index + 1))
     if len(decoded) > MAX_IMAGE_BYTES:
         raise ValueError("each reference image must be no larger than 10MB")
-    return {"data": data, "mime_type": mime, "bytes": len(decoded)}
+    actual_mime = _decoded_image_mime(decoded, index)
+    if declared_mime and declared_mime != actual_mime:
+        raise ValueError(
+            "reference image %d content does not match its MIME type" % (index + 1)
+        )
+    return {"data": data, "mime_type": actual_mime, "bytes": len(decoded)}
 
 
 def validate_payload(payload):
