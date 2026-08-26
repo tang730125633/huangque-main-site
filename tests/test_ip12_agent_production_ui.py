@@ -351,6 +351,8 @@ function newTurnRequestId(){return 'turn-fixture-1'}
         self.assertIn("else if(autoAction)await runStateAction(autoAction)", send)
         polling = self.html[self.html.index("function stopProductionPoll"):self.html.index("function productionRoute")]
         self.assertIn("['submitting','queued','running','verifying','refund_pending']", polling)
+        self.assertIn("if(!runId||!ongoing.includes(status))", polling)
+        self.assertIn("latest&&ongoing.includes(String(latest.status||''))", polling)
         self.assertIn("refreshProduction(true,record.id)", polling)
         self.assertNotIn("confirmProduction(record.id)", polling)
         chat = self.html[self.html.index("function productionMessageHtml"):self.html.index("function isSafeMarkdownUrl")]
