@@ -533,6 +533,16 @@ with patch.object(server, "_bridge_catalog", return_value=catalog), patch.object
     assert server._production_choice(
         prepared_body["parameter_schema"], "avatar_id", value=7
     )["title"] == "形象 4"
+    record = server.load_conversation(cid)["productions"][production_id]
+    uploaded_portrait = "img_" + "a" * 32
+    record["parameter_schema"]["properties"]["image_upload_id"] = {
+        "type": "string", "x-hq-alternative-for": "avatar_id",
+    }
+    server._production_set_options(record, {
+        **record["options"], "avatar_id": 7, "image_upload_id": uploaded_portrait,
+    })
+    assert record["options"].get("avatar_id") is None, record["options"]
+    assert server._production_input(record, record["options"])["image_upload_id"] == uploaded_portrait
 
     quoted = client.post("/api/ip12/productions/quote", json={
         "conversation_id": cid, "production_id": production_id,

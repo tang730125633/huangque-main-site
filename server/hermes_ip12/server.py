@@ -731,11 +731,21 @@ def _production_digest(value):
     return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _production_effective_options(record, options):
+    effective = dict(options or {})
+    properties = (_production_record_schema(record).get("properties") or {})
+    for name, descriptor in properties.items():
+        alternative = str((descriptor or {}).get("x-hq-alternative-for") or "")
+        if alternative and effective.get(name) not in (None, "", []):
+            effective.pop(alternative, None)
+    return effective
+
+
 def _production_input_digest(record, options):
     return _production_digest({
         "action": record["action"],
         "script_digest": record["script_digest"],
-        "options": options,
+        "options": _production_effective_options(record, options),
     })
 
 
@@ -1780,7 +1790,7 @@ def _production_missing_fields(record, options):
 def _production_input(record, options):
     if not isinstance(options, dict):
         raise coach_harness.HarnessError("制作参数必须是对象")
-    payload = dict(options)
+    payload = _production_effective_options(record, options)
     # A selected IP12 script is an explicit source.  The user need not paste it
     # into the production panel again, and the original script is not returned.
     properties = (_production_record_schema(record).get("properties") or {})
@@ -2666,7 +2676,9 @@ def _production_set_options(record, options):
     if not isinstance(options, dict):
         raise coach_harness.HarnessError("制作参数必须是对象")
     old_digest = str(record.get("input_digest") or "")
-    record["options"] = json.loads(json.dumps(options, ensure_ascii=False))
+    record["options"] = json.loads(json.dumps(
+        _production_effective_options(record, options), ensure_ascii=False,
+    ))
     record["input_digest"] = _production_input_digest(record, record["options"])
     return bool(old_digest and old_digest != record["input_digest"])
 
