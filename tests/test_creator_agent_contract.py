@@ -62,8 +62,19 @@ class CreatorAgentContractTests(unittest.TestCase):
         self.assertIn("/api/auth/internal/creator-agent/catalog", self.auth)
         self.assertIn("/api/auth/internal/creator-agent/action", self.auth)
         self.assertIn("不修改同事的 `server/hermes_ip12/**`", self.design)
-        self.assertIn("CREATOR_AGENT_IP12_URL", (
-            ROOT / "deploy/huangque-secrets.env.example"
+        example = (ROOT / "deploy/huangque-secrets.env.example").read_text(encoding="utf-8")
+        profile_agent = (ROOT / "server/creator_agent/profile_agent.py").read_text(encoding="utf-8")
+        planner = (ROOT / "server/creator_agent/planner.py").read_text(encoding="utf-8")
+        self.assertNotIn("CREATOR_AGENT_IP12_URL", example)
+        self.assertNotIn("IP12Client", self.service)
+        self.assertNotIn("/workbench/ip12", self.service)
+        self.assertIn("CREATOR_AGENT_BASE_URL=https://api.deepseek.com", example)
+        self.assertIn("CREATOR_AGENT_MODEL=deepseek-v4-flash", example)
+        self.assertIn("DeepSeekProfileAgent", profile_agent)
+        self.assertIn("return cls(provider=provider, strict=True)", planner)
+        self.assertIn('"model_reachable": False', self.service)
+        self.assertIn("matrix_template_submission_attempts", (
+            ROOT / "server/content_domains/matrix_template_submission.py"
         ).read_text(encoding="utf-8"))
 
     def test_registry_and_shell_expose_agent_as_real_page(self):
@@ -80,6 +91,9 @@ class CreatorAgentContractTests(unittest.TestCase):
         self.assertIn("submit_idempotency_key TEXT NOT NULL", store)
         self.assertIn('_PRIVATE_KEYS = {"quote_token", "job_id", "idempotency_key", "confirmation_id"}', service)
         self.assertIn("quote_token TEXT NOT NULL", store)
+        self.assertIn("profile_state_json TEXT NOT NULL", store)
+        self.assertIn("profile_json TEXT NOT NULL", store)
+        self.assertIn("deliverables_json TEXT NOT NULL", store)
 
     def test_quote_expiry_is_absolute_atomic_and_visible(self):
         store = (ROOT / "server/creator_agent/store.py").read_text(encoding="utf-8")
@@ -130,6 +144,8 @@ class CreatorAgentContractTests(unittest.TestCase):
         self.assertIn('mv -Tf "$CURRENT.next" "$CURRENT"', self.release)
         self.assertIn("nginx -t", self.release)
         self.assertIn('d.get("ready") is True', self.release)
+        self.assertIn("CREATOR_AGENT_MODEL=deepseek-v4-flash", self.release)
+        self.assertIn("official DeepSeek API base", self.release)
 
     def test_deploy_contract_does_not_duplicate_shared_internal_token(self):
         example = (ROOT / "deploy/huangque-secrets.env.example").read_text(encoding="utf-8")
