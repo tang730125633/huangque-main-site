@@ -4864,6 +4864,13 @@ class H(BaseHTTPRequestHandler):
                 if err:
                     raise hq_cli_api.CLIAPIError(400, "画布写入失败：" + err, err)
                 return self._cli_send(200, result)
+            if plan["kind"] == "canvas-delete":
+                deleted, err = delete_canvas_board(row["username"], plan["board_id"])
+                if err == "not_found":
+                    raise hq_cli_api.CLIAPIError(404, "画布不存在", "not_found")
+                if err == "forbidden":
+                    raise hq_cli_api.CLIAPIError(403, "只有画布所有者可以删除画布", "forbidden")
+                return self._cli_send(200, {"board_id": plan["board_id"], "deleted": bool(deleted)})
             if plan["kind"] == "generation":
                 generation_kind, payload = plan["generation_kind"], plan["payload"]
                 if confirm:

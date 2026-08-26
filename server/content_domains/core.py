@@ -4104,7 +4104,16 @@ class H(BaseHTTPRequestHandler):
         if self.path.split("?")[0] == "/api/gen/audio/clone-vip": return self._method_not_allowed()
         self._send(404, {"detail": "not found"})
     def do_DELETE(self):
-        if self.path.split("?")[0] == "/api/gen/audio/clone-vip": return self._method_not_allowed()
+        p = self.path.split("?")[0]
+        if p == "/api/gen/leads/crm":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录"})
+            try:
+                result = _leads_domain().delete_crm(user["username"], self._json_body().get("lead_ids") or [])
+                return self._send(200, {"ok": True, **result})
+            except Exception as e:
+                return self._send(400, {"detail": str(e)[:160]})
+        if p == "/api/gen/audio/clone-vip": return self._method_not_allowed()
         self._send(404, {"detail": "not found"})
 if __name__ == "__main__":
     init_db(); reclaim_orphaned_running()  # 回收上次重启遗留的 running 孤儿→秒退点

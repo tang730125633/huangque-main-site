@@ -42,7 +42,7 @@ class HqCliTests(unittest.TestCase):
             self.assertEqual(0, code, error)
             self.assertTrue(self.payload(output)["schema"].startswith("hq."))
         code, output, _ = self.invoke(["version"])
-        self.assertEqual("0.10.5", self.payload(output)["cli_version"])
+        self.assertEqual("0.11.1", self.payload(output)["cli_version"])
         self.assertEqual("Huangque main-site CLI", self.payload(output)["product"])
         self.assertEqual("https://huangquechuanmei.com", self.payload(output)["origin"])
 
@@ -75,9 +75,9 @@ class HqCliTests(unittest.TestCase):
         _, output, _ = self.invoke(["capabilities"])
         by_id = {item["id"]: item for item in self.payload(output)["capabilities"]}
         expected = {
-            "account", "channels", "ip12-projects", "ip12-project", "ip12-create", "ip12-report", "ip12-message",
+            "account", "channels", "ip12-projects", "ip12-project", "ip12-create", "ip12-report", "ip12-message", "ip12-delete",
             "prompt-optimize", "canvas-list", "canvas-get", "canvas-create", "canvas-agent-plan", "canvas-ops", "tasks", "task",
-            "assets", "voices", "image-upload", "video-upload", "asset-favorite", "asset-tags",
+            "assets", "voices", "image-upload", "video-upload", "asset-favorite", "asset-tags", "asset-delete",
             "image-generate", "video-generate", "video-lipsync", "audio-generate",
             "digital-ip-text-generate", "digital-ip-audio-generate", "digital-ip-batch-generate",
             "cinematic-open-generate", "cinematic-motion-generate",
@@ -93,6 +93,43 @@ class HqCliTests(unittest.TestCase):
         self.assertTrue(expected <= set(by_id))
         self.assertTrue(all(by_id[item]["availability"] == "available" for item in expected))
         self.assertTrue(all(by_id[item]["runnable"] for item in expected))
+
+    def test_every_capability_teaches_an_agent_how_to_use_and_recover_it(self):
+        _, output, _ = self.invoke(["capabilities"])
+        items = self.payload(output)["capabilities"]
+        self.assertGreater(len(items), 80)
+        for capability in items:
+            agent = capability["agent"]
+            self.assertIn(agent["operation"], {
+                "navigate", "list", "get", "create", "update", "delete", "execute",
+            })
+            self.assertTrue(agent["resource"])
+            self.assertEqual(capability["description"], agent["when_to_use"])
+            self.assertTrue(agent["workflow"])
+            self.assertTrue(agent["success_evidence"])
+            self.assertTrue(agent["recovery"])
+            self.assertEqual(
+                set(capability["input_schema"].get("required") or []),
+                set(agent["required_inputs"]),
+            )
+
+    def test_ip12_resource_has_complete_crud_guidance(self):
+        _, output, _ = self.invoke(["capabilities"])
+        by_id = {item["id"]: item for item in self.payload(output)["capabilities"]}
+        operations = by_id["ip12-project"]["agent"]["resource_operations"]
+        self.assertEqual({
+            "list": ["ip12-projects"], "get": ["ip12-project", "ip12-report"],
+            "create": ["ip12-create"], "update": ["ip12-message"],
+            "delete": ["ip12-delete"],
+        }, operations)
+        self.assertEqual([], by_id["ip12-delete"]["agent"]["missing_crud"])
+        self.assertTrue(by_id["ip12-delete"]["confirmation_required"])
+
+        asset = by_id["asset-delete"]["agent"]
+        self.assertEqual("delete", asset["operation"])
+        self.assertEqual("asset", asset["resource"])
+        self.assertIn("asset-delete", asset["resource_operations"]["delete"])
+        self.assertTrue(by_id["asset-delete"]["confirmation_required"])
         self.assertEqual("server_quote", by_id["image-generate"]["cost"]["kind"])
         self.assertEqual("hq_device_authorization", by_id["ip12-projects"]["target_auth"])
         self.assertEqual("assets:upload", by_id["image-upload"]["required_scope"])
@@ -142,9 +179,11 @@ class HqCliTests(unittest.TestCase):
             ["speed", "precision"],
             by_id["video-lipsync"]["input_schema"]["properties"]["quality"]["enum"],
         )
+        self.assertEqual([], by_id["digital-ip-audio-generate"]["input_schema"]["required"])
+        self.assertEqual(4, len(by_id["digital-ip-audio-generate"]["input_schema"]["oneOf"]))
         self.assertEqual(
-            ["avatar_id", "audio_file"],
-            by_id["digital-ip-audio-generate"]["input_schema"]["required"],
+            [{"required": ["avatar_id"]}, {"required": ["image_upload_id"]}],
+            by_id["digital-ip-text-generate"]["input_schema"]["oneOf"],
         )
         self.assertEqual(
             500,
@@ -372,6 +411,10 @@ class HqCliTests(unittest.TestCase):
             },
             "digital-ip-audio-generate": {
                 "avatar_id": 17, "audio_file": "audio/mine.mp3", "ratio": "9:16",
+            },
+            "digital-ip-text-generate": {
+                "image_upload_id": "img_" + "d" * 32, "text": "临时人物照片口播",
+                "voice": "S_public", "ratio": "9:16",
             },
             "digital-ip-batch-generate": {
                 "avatars": [{"avatar_id": 17, "label": "主讲人"}, {"avatar_id": 18}],

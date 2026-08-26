@@ -76,6 +76,16 @@ hq describe ip12-projects --json
 3. 准备 UTF-8 JSON，先执行只读或报价阶段。
 4. 只有用户确认后，才执行带 `--confirm` 的写入；付费任务还必须复用同一输入与服务器返回的 `quote_token`。
 
+从 0.11.0 起，每个 capability 都包含 `agent` 字段：
+
+- `resource`、`operation`：告诉 Agent 当前是 list/get/create/update/delete/execute 还是页面导航。
+- `required_inputs`：说明每个必填 ID 应从哪个读取或上传能力取得。
+- `resource_operations`、`missing_crud`：列出同一资源已有和缺失的 CRUD。
+- `website_operations`、`website_access`：覆盖网站 91 个登记操作；没有直接 API 时明确返回导航入口。
+- `workflow`、`success_evidence`、`recovery`：约束报价、确认、幂等、轮询和失败恢复。
+
+例如 `ip12-project` 会同时告诉 Agent：先用 `ip12-projects` 取 ID，可用 `ip12-create` 创建、`ip12-message` 更新、`ip12-delete` 删除。删除必须先读取目标并显式确认。
+
 ```sh
 printf '%s\n' '{"prompt":"一只金色黄雀","provider":"openai","ratio":"1:1","quality":"hd","count":1}' > image.json
 hq run image-generate --input @image.json --json
@@ -164,8 +174,8 @@ hq run text-video-plan --input @talking-plan.json --confirm --json
 | 客户说法 | CLI 能力 | 必填输入 | 素材边界 |
 |---|---|---|---|
 | “保留原视频动作，只替换声音并让嘴型同步” | `video-lipsync` | `video_asset_id`、`audio_asset_id` | 两项都必须来自本人已完成资产；`speed` 便宜快速，`precision` 精度更高；默认保持原视频时长 |
-| “用我的数字人形象和这段文案做一条口播视频” | `digital-ip-text-generate` | `avatar_id`、`text`、`voice` | 单个本人已就绪形象；不接收人物图片上传 |
-| “用我的数字人形象和资产库这条音频做口播视频” | `digital-ip-audio-generate` | `avatar_id`、`audio_file` | `audio_file` 最长 500 字符且必须原样取自本人资产结果；不接收 URL、本机路径或音频上传 |
+| “用我的数字人形象或临时人物照片和这段文案做口播视频” | `digital-ip-text-generate` | `avatar_id` 或 `image_upload_id`、`text`、`voice` | 二选一；临时照片先通过 `image-upload` 上传 |
+| “用我的形象和已有/临时音频做口播视频” | `digital-ip-audio-generate` | `avatar_id` 或 `image_upload_id`；`audio_file` 或 `audio_upload_id` | 两组分别二选一；临时素材先上传，不接收 URL、本机路径或 base64 |
 | “让 2–5 个我的数字人分别讲同一段文案” | `digital-ip-batch-generate` | `avatars`、`text`、`voice` | `avatars` 每项是本人已就绪的 `avatar_id`，可带 `label`；共用文案、音色和字幕设置 |
 | “让 1–3 个电影化身按描述生成，也可以参考我的图或视频” | `cinematic-open-generate` | `avatar_id` 或 `avatar_ids`、`prompt` | 形象和参考图共用 9 张额度：1/2/3 个形象最多再传 8/7/6 个图片 `upload_id`；另可传 3 个视频 `upload_id`；时长 4–15 秒 |
 | “让我的电影化身模仿这段视频的动作” | `cinematic-motion-generate` | `avatar_id`、`reference_video_upload_ids` | 必须且只能放 1 个本人短期私有视频 `upload_id` |

@@ -19,11 +19,10 @@ function createRuntime(plan, storage){
   const elements=new Map();
   for(const m of page.matchAll(/<([a-z0-9-]+)[^>]*\sid="([^"]+)"[^>]*>/gi))elements.set(m[2],new Element(m[1],m[2]));
   const get=id=>elements.get(id)||(elements.set(id,new Element('div',id)),elements.get(id));
-  get('bgm').checked=true;
   const timers=[];const requests={post:[],poll:[]};let uuidCount=0;
   const sessionStorage={getItem:k=>storage.has(k)?storage.get(k):null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)};
   const fetch=(url,options={})=>{
-    if(url==='/api/gen/matrix-template/templates')return Promise.resolve(response(200,{templates:[{id:'native-bold',name:'默认原生大字',tags:['默认']}],default_template:'native-bold',cost:5}));
+    if(url==='/api/gen/matrix-template/templates')return Promise.resolve(response(200,{templates:[{id:'native-bold',name:'默认原生大字',tags:['默认']},{id:'minimal-headline',name:'极简标题',tags:['极简']}],default_template:'native-bold',cost:5}));
     if(url==='/api/gen/matrix-template'){
       const index=requests.post.length;requests.post.push({url,options});return plan.post(index,options);
     }
@@ -49,7 +48,7 @@ async function scenarioPostLoss(){
     poll:()=>Promise.resolve(response(200,{status:'done',result:{video_url:'/video',duration:8}})),
   },storage);
   await fillAndSubmit(runtime);await runtime.runTimer();await flush();
-  return {keys:runtime.requests.post.map(x=>x.options.headers['Idempotency-Key']),posts:runtime.requests.post.length,cleared:storage.size===0};
+  return {keys:runtime.requests.post.map(x=>x.options.headers['Idempotency-Key']),bodies:runtime.requests.post.map(x=>JSON.parse(x.options.body)),posts:runtime.requests.post.length,cleared:storage.size===0};
 }
 async function scenarioInProgress(){
   const storage=new Map();
@@ -75,5 +74,11 @@ async function scenarioPollFailure(){
   return {polls:runtime.requests.poll.length,busyAfterFailure,cleared:storage.size===0};
 }
 
-async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}
+async function scenarioLivePreview(){
+  const runtime=createRuntime({post:()=>Promise.reject(new Error('unused')),poll:()=>Promise.reject(new Error('unused'))},new Map());
+  await flush();runtime.get('topText').value='实时标题';runtime.get('bottomText').value='实时行动文案';runtime.get('topText').listeners.input[0]();runtime.get('bottomText').listeners.input[0]();runtime.get('templateGrid').children[1].onclick();
+  return {top:runtime.get('liveTop').textContent,bottom:runtime.get('liveBottom').textContent,template:runtime.get('livePreview').attributes['data-template'],style:runtime.get('livePreview').attributes.style,videoDisplay:runtime.get('video').style.display};
+}
+
+async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure,livePreview:scenarioLivePreview};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}
 main().catch(e=>{console.error(e.stack||e);process.exitCode=1});

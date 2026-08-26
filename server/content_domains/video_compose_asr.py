@@ -8,6 +8,7 @@ import pathlib
 import subprocess
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -157,9 +158,21 @@ def transcribe(source_path, opener=None, api_key=None, base_url=None):
             headers={"Authorization": "Bearer " + key, "Content-Type": content_type},
         )
         try:
-            with _ASR_LOCK:
-                with opener.open(request, timeout=max(120, int(duration * 5))) as response:
-                    payload = json.loads(response.read().decode("utf-8", "replace"))
+            payload = None
+            for attempt in range(2):
+                try:
+                    with _ASR_LOCK:
+                        with opener.open(request, timeout=max(120, int(duration * 5))) as response:
+                            payload = json.loads(response.read().decode("utf-8", "replace"))
+                    break
+                except urllib.error.HTTPError:
+                    raise
+                except Exception as retryable:
+                    if attempt + 1 >= 2:
+                        raise AsrError("语音识别服务暂时不可用（已重试）") from retryable
+                    time.sleep(2 ** attempt)
+            if payload is None:
+                raise AsrError("语音识别服务暂时不可用")
         except urllib.error.HTTPError as error:
             try:
                 detail = json.loads(error.read().decode("utf-8", "replace"))
@@ -167,6 +180,8 @@ def transcribe(source_path, opener=None, api_key=None, base_url=None):
             except Exception:
                 message = ""
             raise AsrError("语音识别服务失败" + ("：" + message[:160] if message else "")) from error
+        except AsrError:
+            raise
         except Exception as error:
             raise AsrError("语音识别服务暂时不可用") from error
     result = parse_verbose_response(payload)

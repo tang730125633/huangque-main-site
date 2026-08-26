@@ -5,6 +5,9 @@ import hashlib
 import json
 import os
 import re
+import ssl
+import time
+import urllib.error
 
 from .core import _post
 
@@ -94,8 +97,22 @@ def _responses_chat(context):
             ("canvas:" + str(context.get("project_id") or "unknown")).encode()
         ).hexdigest()[:32],
     }
-    response = _post("/v1/responses", json.dumps(request, ensure_ascii=False).encode(),
-                     "application/json", base=API_BASE, key=API_KEY, timeout=120)
+    response = None
+    last_err = None
+    for attempt in range(2):
+        try:
+            response = _post("/v1/responses", json.dumps(request, ensure_ascii=False).encode(),
+                             "application/json", base=API_BASE, key=API_KEY, timeout=120)
+            break
+        except (urllib.error.URLError, TimeoutError, ConnectionError,
+                ssl.SSLError, OSError) as e:
+            last_err = e
+            if attempt == 0:
+                time.sleep(2)
+                continue
+            raise
+    if response is None:
+        raise last_err if last_err else RuntimeError("canvas agent: no response")
     status = response.get("status")
     if status not in (None, "completed"):
         raise ValueError("Agent 思考未完成，请重试")

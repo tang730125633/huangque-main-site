@@ -51,6 +51,7 @@ SCOPES = {
     "leads:read": "读取本人线索跟进记录",
     "leads:write": "经确认后更新本人线索跟进记录",
     "short-drama:read": "读取本人短剧项目与生产准备状态",
+    "short-drama:write": "经确认后创建或删除本人短剧项目",
     "generation:quote": "查询生成、采集或获客任务所需点数",
     "generation:submit": "经二次确认后提交付费任务并扣点",
     "video-compose:read": "读取本人一键成片项目",
@@ -105,11 +106,13 @@ CHANNEL_CATALOG = (
      "access": "managed", "capabilities": ["image-upload", "assets"], "selector": {}},
 )
 CONFIRMATION_ACTIONS = frozenset({
-    "ip12-create", "ip12-message", "prompt-optimize", "canvas-create", "canvas-ops",
-    "asset-favorite", "asset-tags", "video-compose-create", "video-compose-analyze",
-    "video-compose-review", "video-compose-render", "digital-presenter-create",
-    "digital-presenter-update", "voice-clone-create",
-    "inspiration-like", "leads-crm-upsert",
+    "ip12-create", "ip12-message", "ip12-delete", "prompt-optimize", "canvas-create", "canvas-ops",
+    "canvas-delete", "asset-favorite", "asset-tags", "asset-delete", "video-compose-create", "video-compose-analyze",
+    "video-compose-review", "video-compose-render", "video-compose-delete", "digital-presenter-create",
+    "digital-presenter-update", "digital-presenter-delete", "voice-clone-create",
+    "inspiration-like", "leads-crm-upsert", "leads-delete",
+    "short-drama-create", "short-drama-delete",
+    "digital-ip-create", "digital-ip-update", "digital-ip-delete",
     "text-video-avatar-import", "text-video-plan",
 })
 
@@ -138,6 +141,7 @@ _ACTION_INPUTS = {
     "digital-ip-projects": (), "digital-ip-project": ("project_id",), "digital-ip-report": ("project_id",),
     "ip12-projects": (), "ip12-project": ("project_id",), "ip12-report": ("project_id",),
     "ip12-create": ("title",), "ip12-message": ("project_id", "message", "request_id"),
+    "ip12-delete": ("project_id",),
     "prompt-optimize": ("prompt", "kind"),
     "canvas-list": ("limit", "offset"), "canvas-get": ("board_id",),
     "canvas-create": ("name", "prompt"), "canvas-agent-plan": ("prompt", "project_id", "snapshot_digest", "scope", "nodes", "edges", "selected_node_ids", "history"),
@@ -145,6 +149,16 @@ _ACTION_INPUTS = {
     "tasks": ("days", "kind", "page", "page_size"), "task": ("job_id",),
     "assets": ("kind", "limit", "offset"), "voices": (),
     "asset-favorite": ("kind", "key", "favorite"), "asset-tags": ("kind", "key", "tags"),
+    "asset-delete": ("kind", "id", "keys"),
+    "canvas-delete": ("board_id",),
+    "video-compose-delete": ("project_id", "expected_revision"),
+    "digital-presenter-delete": ("board_id", "project_id", "revision"),
+    "short-drama-create": ("title", "synopsis", "ratio", "target_duration", "shot_count", "genre", "visual_style", "request_id"),
+    "short-drama-delete": ("project_id", "revision"),
+    "leads-delete": ("lead_ids",),
+    "digital-ip-create": ("title",),
+    "digital-ip-update": ("project_id", "revision", "title"),
+    "digital-ip-delete": ("project_id", "revision"),
     "video-compose-projects": (), "video-compose-project": ("project_id",),
     "video-compose-create": ("source_asset_id",),
     "video-compose-analyze": ("project_id", "expected_revision"),
@@ -169,8 +183,19 @@ _ACTION_INPUTS = {
 _ACTION_PURPOSES = {
     "account": "读取当前黄雀账号与点数", "channels": "读取可用渠道", "pricing": "读取实时价格",
     "ip12-projects": "读取本人 IP12 项目", "ip12-project": "读取本人 IP12 项目详情",
-    "ip12-report": "读取本人 IP12 报告", "canvas-list": "读取本人画布", "canvas-get": "读取本人画布详情",
+    "ip12-report": "读取本人 IP12 报告", "ip12-delete": "删除本人 IP12 项目",
+    "canvas-list": "读取本人画布", "canvas-get": "读取本人画布详情",
+    "canvas-delete": "删除本人创建的画布",
     "tasks": "读取本人任务记录", "task": "读取本人任务详情", "assets": "读取本人资产", "voices": "读取可用音色",
+    "asset-delete": "删除本人自产资产（单条或批量）",
+    "video-compose-delete": "删除本人一键成片项目",
+    "digital-presenter-delete": "删除本人画布中的数字人口播项目",
+    "short-drama-create": "创建本人短剧项目",
+    "short-drama-delete": "删除本人短剧项目",
+    "leads-delete": "删除本人线索跟进记录",
+    "digital-ip-create": "创建本人数字 IP 项目",
+    "digital-ip-update": "更新本人数字 IP 项目",
+    "digital-ip-delete": "删除本人数字 IP 项目",
     "voice-clone-create": "用本人样音创建或重新录制个人克隆音色",
     "voice-clone-status": "读取个人克隆音色处理状态",
     "image-generate": "生成图片", "video-generate": "生成视频", "video-lipsync": "让本人原视频匹配新口播音频",
@@ -563,6 +588,58 @@ _MEDIA_SCHEMAS.update({
         "ratio": {"type": "string", "enum": ["9:16", "16:9"]}, "resolution": {"type": "string", "enum": ["1080p"]},
         "voice_key": {"type": "string", "maxLength": 200}, "target_duration": {"type": "integer", "minimum": 30, "maximum": 180},
     }, "constraints": ["provide at least one editable field and the current revision"]},
+    "asset-delete": {"required": ["kind"], "properties": {
+        "kind": {"type": "string", "enum": ["image", "audio", "video", "copy", "collect", "leads", "breakdown"]},
+        "id": _INT_ID_SCHEMA,
+        "keys": {"type": "array", "minItems": 1, "maxItems": 200, "uniqueItems": True,
+                 "items": {"type": "string", "minLength": 1, "maxLength": 500}},
+    }, "anyOf": [{"required": ["id"]}, {"required": ["keys"]}], "constraints": [
+        "deletion is owner-scoped and soft; read the asset before confirming",
+        "provide exactly one of id (single delete) or keys (batch 1-200)",
+        "avatar kind is not deletable through this action",
+    ]},
+    "canvas-delete": {"required": ["board_id"], "properties": {
+        "board_id": _ID_SCHEMA,
+    }, "constraints": ["only the board owner can delete", "deletion is irreversible and always requires confirm=true"]},
+    "video-compose-delete": {"required": ["project_id", "expected_revision"], "properties": {
+        "project_id": {"type": "string", "pattern": "^compose_[0-9a-f]{32}$"},
+        "expected_revision": _INT_ID_SCHEMA,
+    }, "constraints": ["soft delete guarded by the current revision"]},
+    "digital-presenter-delete": {"required": ["board_id", "project_id", "revision"], "properties": {
+        "board_id": _ID_SCHEMA,
+        "project_id": {"type": "string", "pattern": "^dp_[0-9a-f]{32}$"},
+        "revision": _INT_ID_SCHEMA,
+    }, "constraints": ["board_id must be a canvas the account can edit"]},
+    "short-drama-create": {"required": ["title", "synopsis", "ratio", "target_duration", "shot_count", "request_id"], "properties": {
+        "title": {"type": "string", "minLength": 1, "maxLength": 80},
+        "synopsis": {"type": "string", "minLength": 8, "maxLength": 4000},
+        "ratio": {"type": "string", "enum": ["9:16", "16:9"]},
+        "target_duration": {"type": "string", "enum": ["15-30", "30-60", "60-90"]},
+        "shot_count": {"type": "integer", "minimum": 6, "maximum": 10},
+        "genre": {"type": "string", "maxLength": 40},
+        "visual_style": {"type": "string", "maxLength": 80},
+        "request_id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{8,128}$"},
+    }, "constraints": ["request_id is the idempotency key; retry with the same request_id"]},
+    "short-drama-delete": {"required": ["project_id", "revision"], "properties": {
+        "project_id": _ID_SCHEMA,
+        "revision": _INT_ID_SCHEMA,
+    }, "constraints": ["soft delete guarded by the current revision"]},
+    "leads-delete": {"required": ["lead_ids"], "properties": {
+        "lead_ids": {"type": "array", "minItems": 1, "maxItems": 100,
+                     "items": {"type": "string", "pattern": "^[0-9a-f]{16,40}$"}},
+    }, "constraints": ["only CRM rows owned by the current account are deleted"]},
+    "digital-ip-create": {"required": ["title"], "properties": {
+        "title": {"type": "string", "minLength": 1, "maxLength": 80},
+    }, "constraints": ["subject to the account's project count limit"]},
+    "digital-ip-update": {"required": ["project_id", "revision"], "properties": {
+        "project_id": _ID_SCHEMA,
+        "revision": _INT_ID_SCHEMA,
+        "title": {"type": "string", "minLength": 1, "maxLength": 80},
+    }, "constraints": ["revision must match the latest project revision"]},
+    "digital-ip-delete": {"required": ["project_id", "revision"], "properties": {
+        "project_id": _ID_SCHEMA,
+        "revision": _INT_ID_SCHEMA,
+    }, "constraints": ["soft delete guarded by the current revision"]},
 })
 
 _FAMILIES = {
@@ -1714,6 +1791,18 @@ def action_plan(action, value):
             body["follow_note"] = _string(value["follow_note"], "follow_note", 0, 300)
         return _plan("leads:write", "proxy", base=CONTENT_BASE,
                      path="/api/gen/leads/crm", method="POST", body=body)
+    if action == "leads-delete":
+        _strict_object(value, {"lead_ids"}, ("lead_ids",))
+        lead_ids = value["lead_ids"]
+        if not isinstance(lead_ids, list) or not 1 <= len(lead_ids) <= 100:
+            raise CLIAPIError(400, "lead_ids 必须是 1-100 个线索标识")
+        ids = []
+        for lead_id in lead_ids:
+            lead_id = _matched_string(lead_id, "lead_ids", _LEAD_ID_RE, 40)
+            if lead_id not in ids:
+                ids.append(lead_id)
+        return _plan("leads:write", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/leads/crm", method="DELETE", body={"lead_ids": ids})
     if action in {"collect-content", "collect-video", "collect-transcript"}:
         _strict_object(value, {"url"}, ("url",))
         want = {
@@ -1792,6 +1881,33 @@ def action_plan(action, value):
         else:
             path = "/api/gen/short-drama/%s?project_id=%s" % (suffix, project_id)
         return _plan("short-drama:read", "proxy", base=CONTENT_BASE, path=path)
+    if action == "short-drama-create":
+        _strict_object(value, {
+            "title", "synopsis", "ratio", "target_duration", "shot_count", "genre", "visual_style", "request_id",
+        }, ("title", "synopsis", "ratio", "target_duration", "shot_count", "request_id"))
+        body = {
+            "title": _string(value["title"], "title", 1, 80),
+            "synopsis": _string(value["synopsis"], "synopsis", 8, 4000),
+            "ratio": _enum(value["ratio"], "ratio", ("9:16", "16:9")),
+            "target_duration": _enum(value["target_duration"], "target_duration", ("15-30", "30-60", "60-90")),
+            "shot_count": _integer(value["shot_count"], "shot_count", 6, 10),
+        }
+        if "genre" in value:
+            body["genre"] = _string(value["genre"], "genre", 0, 40)
+        if "visual_style" in value:
+            body["visual_style"] = _string(value["visual_style"], "visual_style", 1, 80)
+        return _plan("short-drama:write", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/short-drama/projects", method="POST", body=body,
+                     headers={"Idempotency-Key": _matched_string(
+                         value["request_id"], "request_id", _IDEMPOTENCY_KEY_RE, 128)})
+    if action == "short-drama-delete":
+        _strict_object(value, {"project_id", "revision"}, ("project_id", "revision"))
+        body = {
+            "project_id": _identifier(value["project_id"], "project_id"),
+            "revision": _integer(value["revision"], "revision", 1, 2**63 - 1),
+        }
+        return _plan("short-drama:write", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/short-drama/project/delete", method="POST", body=body)
     if action == "digital-ip-projects":
         _strict_object(value, set())
         return _plan("ip12:read", "proxy", base=CONTENT_BASE,
@@ -1803,6 +1919,28 @@ def action_plan(action, value):
         return _plan("ip12:read", "proxy", base=CONTENT_BASE,
                      path="/api/gen/digital-ip/projects/"
                      + urllib.parse.quote(project_id, safe="") + suffix)
+    if action == "digital-ip-create":
+        _strict_object(value, {"title"}, ("title",))
+        return _plan("ip12:write", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/digital-ip/projects", method="POST",
+                     body={"title": _string(value["title"], "title", 1, 80)})
+    if action == "digital-ip-update":
+        _strict_object(value, {"project_id", "revision", "title"}, ("project_id", "revision", "title"))
+        project_id = _identifier(value["project_id"], "project_id")
+        body = {"revision": _integer(value["revision"], "revision", 1, 2**63 - 1),
+                "title": _string(value["title"], "title", 1, 80)}
+        return _plan("ip12:write", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/digital-ip/projects/"
+                     + urllib.parse.quote(project_id, safe=""),
+                     method="PATCH", body=body)
+    if action == "digital-ip-delete":
+        _strict_object(value, {"project_id", "revision"}, ("project_id", "revision"))
+        project_id = _identifier(value["project_id"], "project_id")
+        body = {"revision": _integer(value["revision"], "revision", 1, 2**63 - 1)}
+        return _plan("ip12:write", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/digital-ip/projects/"
+                     + urllib.parse.quote(project_id, safe=""),
+                     method="DELETE", body=body)
     if action == "ip12-projects":
         _strict_object(value, set())
         return _plan("ip12:read", "proxy", base=HERMES_BASE, path="/api/conversations")
@@ -1817,6 +1955,12 @@ def action_plan(action, value):
         title = _string(value["title"], "title", 1, 120)
         return _plan("ip12:write", "proxy", base=HERMES_BASE, path="/api/conversations",
                      method="POST", body={"title": title})
+    if action == "ip12-delete":
+        _strict_object(value, {"project_id"}, ("project_id",))
+        project_id = _identifier(value["project_id"], "project_id")
+        return _plan("ip12:write", "proxy", base=HERMES_BASE,
+                     path="/api/conversations/" + urllib.parse.quote(project_id, safe=""),
+                     method="DELETE")
     if action == "ip12-message":
         _strict_object(value, {"project_id", "message", "request_id"}, ("project_id", "message", "request_id"))
         project_id = _identifier(value["project_id"], "project_id")
@@ -1872,6 +2016,10 @@ def action_plan(action, value):
     if action == "canvas-ops":
         payload = _canvas_ops_payload(value)
         return _plan("canvas:edit", "canvas-ops", board_id=payload.pop("board_id"), payload=payload)
+    if action == "canvas-delete":
+        _strict_object(value, {"board_id"}, ("board_id",))
+        return _plan("canvas:write", "canvas-delete",
+                     board_id=_identifier(value["board_id"], "board_id"))
     if action == "tasks":
         _strict_object(value, {"days", "kind", "page", "page_size"})
         days = _integer(value.get("days", 30), "days", 1, 365)
@@ -1919,6 +2067,27 @@ def action_plan(action, value):
         }
         return _plan("assets:write", "proxy", base=CONTENT_BASE, path="/api/gen/asset/tags",
                      method="POST", body=body)
+    if action == "asset-delete":
+        _strict_object(value, {"kind", "id", "keys"}, ("kind",))
+        kind = _enum(value["kind"], "kind", ("image", "audio", "video", "copy", "collect", "leads", "breakdown"))
+        has_id = "id" in value
+        has_keys = "keys" in value
+        if has_id == has_keys:
+            raise CLIAPIError(400, "asset-delete 必须且只能提供 id 或 keys 之一")
+        if has_id:
+            body = {"kind": kind, "id": _integer(value["id"], "id", 1, 2**63 - 1)}
+            return _plan("assets:write", "proxy", base=CONTENT_BASE,
+                         path="/api/gen/asset/delete", method="POST", body=body)
+        keys = value["keys"]
+        if not isinstance(keys, list) or not 1 <= len(keys) <= 200:
+            raise CLIAPIError(400, "keys 必须是 1-200 个资产标识")
+        ids = []
+        for key in keys:
+            key = _string(key, "keys", 1, 500)
+            if key not in ids:
+                ids.append(key)
+        return _plan("assets:write", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/asset/batch-delete", method="POST", body={"kind": kind, "ids": ids})
     if action in {"video-compose-projects", "video-compose-project"}:
         allowed = {"project_id"} if action.endswith("project") else set()
         _strict_object(value, allowed, allowed)
@@ -1946,6 +2115,13 @@ def action_plan(action, value):
         return _plan("video-compose:write", "proxy", base=CONTENT_BASE,
                      path="/api/gen/video-compose/projects/%s/%s" % (project_id, suffix),
                      method="POST", body=body, timeout=300 if action != "video-compose-review" else 30)
+    if action == "video-compose-delete":
+        _strict_object(value, {"project_id", "expected_revision"}, ("project_id", "expected_revision"))
+        project_id = _matched_string(value["project_id"], "project_id", _VIDEO_COMPOSE_PROJECT_RE)
+        body = {"expected_revision": _integer(value["expected_revision"], "expected_revision", 1, 2**63 - 1)}
+        return _plan("video-compose:write", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/video-compose/projects/%s" % project_id,
+                     method="DELETE", body=body)
     if action == "digital-presenter-capability":
         _strict_object(value, set())
         return _plan("digital-presenter:read", "proxy", base=CONTENT_BASE,
@@ -1978,6 +2154,15 @@ def action_plan(action, value):
             path, method = "/api/gen/digital-presenter/project", "PUT"
         return _plan("digital-presenter:write", "proxy", base=CONTENT_BASE,
                      path=path, method=method, body=body, headers=headers)
+    if action == "digital-presenter-delete":
+        _strict_object(value, {"board_id", "project_id", "revision"}, ("board_id", "project_id", "revision"))
+        board_id = _identifier(value["board_id"], "board_id")
+        project_id = _matched_string(value["project_id"], "project_id", _DIGITAL_PRESENTER_PROJECT_RE)
+        revision = _integer(value["revision"], "revision", 1, 2**63 - 1)
+        path = "/api/gen/digital-presenter/project?" + urllib.parse.urlencode(
+            {"id": project_id, "revision": revision})
+        return _plan("digital-presenter:write", "proxy", base=CONTENT_BASE,
+                     path=path, method="DELETE", headers={"X-Canvas-Board-Id": board_id})
     if action in {
             "image-generate", "video-generate", "audio-generate",
             "video-lipsync",
