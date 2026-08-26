@@ -5239,6 +5239,20 @@ class H(BaseHTTPRequestHandler):
                     "detail": "提交恢复通道暂不可用",
                     "code": "reconcile_unavailable",
                 })
+            if (
+                not 200 <= int(status) < 300
+                and isinstance(result, dict)
+                and result.get("operation_terminal") is True
+            ):
+                return self._cli_send(200, {
+                    "status": "failed",
+                    "error": str(result.get("detail") or "提交未完成")[:500],
+                    "refund_status": (
+                        "refunded" if result.get("code") == "job_create_failed" else ""
+                    ),
+                    "reconciled": True,
+                    "original_http_status": int(status),
+                })
             return self._cli_send(status, result)
         except hq_cli_api.CLIAPIError as exc:
             return self._cli_send(exc.status, {

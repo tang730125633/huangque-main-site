@@ -23,26 +23,38 @@ def _request_hash(body):
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def replay_existing(db_factory, username, endpoint, key, accepted_bodies):
-    """Inspect an existing claim without creating one or relaxing key conflicts."""
+def inspect_existing(db_factory, username, endpoint, key, accepted_bodies):
+    """Inspect one claim and include timestamps for stale-processing recovery."""
     if not key:
-        return "disabled", None
+        return "disabled", None, {}
     accepted = {_request_hash(body) for body in accepted_bodies}
     with closing(db_factory()) as connection:
         ensure_table(connection)
         row = connection.execute(
-            "SELECT request_hash,response_json FROM submission_idempotency "
+            "SELECT request_hash,response_json,created_at,updated_at "
+            "FROM submission_idempotency "
             "WHERE username=? AND endpoint=? AND idem_key=?",
             (username, endpoint, key),
         ).fetchone()
         if not row:
-            return "missing", None
+            return "missing", None, {}
         if row["request_hash"] not in accepted:
-            return "conflict", None
-        return (
-            ("replay", json.loads(row["response_json"]))
-            if row["response_json"] else ("processing", None)
-        )
+            return "conflict", None, {}
+        metadata = {
+            "created_at": int(row["created_at"] or 0),
+            "updated_at": int(row["updated_at"] or 0),
+        }
+        if row["response_json"]:
+            return "replay", json.loads(row["response_json"]), metadata
+        return "processing", None, metadata
+
+
+def replay_existing(db_factory, username, endpoint, key, accepted_bodies):
+    """Inspect an existing claim without creating one or relaxing key conflicts."""
+    state, response, _metadata = inspect_existing(
+        db_factory, username, endpoint, key, accepted_bodies,
+    )
+    return state, response
 
 def begin(db_factory, username, endpoint, key, body):
     if not key:

@@ -87,6 +87,9 @@ class CreatorAgentContractTests(unittest.TestCase):
         idempotency = (
             ROOT / "server/content_domains/submission_idempotency.py"
         ).read_text(encoding="utf-8")
+        attempt = (
+            ROOT / "server/content_domains/matrix_template_submission.py"
+        ).read_text(encoding="utf-8")
         self.assertIn('"expires_at": claims["e"]', self.auth)
         self.assertIn("quote_expires_at INTEGER NOT NULL", store)
         self.assertIn("submit_quote_expires_at INTEGER NOT NULL", store)
@@ -98,6 +101,12 @@ class CreatorAgentContractTests(unittest.TestCase):
         self.assertIn("/api/gen/internal/submission-reconcile", content)
         self.assertIn("accept_in_transaction", idempotency)
         self.assertIn("self.bridge.reconcile", self.service)
+        self.assertIn("matrix_template_submission_attempts", attempt)
+        self.assertIn("charge_key TEXT NOT NULL UNIQUE", attempt)
+        self.assertIn("refund_key TEXT NOT NULL UNIQUE", attempt)
+        self.assertIn("'prepared','charging','charged','refund_pending'", attempt)
+        self.assertIn("_retry_matrix_template_submissions", content)
+        self.assertIn("matrix_template_submission.recoverable", content)
 
     def test_browser_persists_and_recovers_pending_requests(self):
         self.assertIn("hq-creator-agent-pending-v2", self.page)

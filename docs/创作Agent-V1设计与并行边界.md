@@ -92,9 +92,13 @@ IP12 是基础画像正本。定位 PDF 确认后的修改作为版本化「画�
   不调用 Provider，并在对话中重新展示报价。浏览器持续显示报价倒计时。
 - 确认请求绑定用户实际看到的绝对到期时间；自动重报后，旧确认不能用于新报价。
 - 网络结果不确定时只能查询原任务，禁止换幂等键重复提交。
-- 内容服务在任务写入事务内把 child idempotency key 关联到已受理 `job_id`；响应丢失后由
-  Creator Agent 走只读 reconcile 通道查询。该通道没有新建能力，不校验或复用过期报价；
-  未找到已受理记录时，只有原报价仍有效才允许回到普通提交路径。
+- 内容服务在扣点前持久化不可变 submission attempt，冻结账号、endpoint、child idempotency key、
+  输入摘要、规范化输入、价格以及 charge/refund transaction key。状态按
+  `prepared → charging → charged → linked` 推进，建任务失败则进入
+  `refund_pending → refunded`；启动恢复与 30 秒扫描器会接管 stale lease，且只能复用原
+  transaction key。每次接管先查询 Auth 点数流水，再决定是否扣点、建 job 或确认退款。
+- 任务写入、attempt `linked` 和可回放 `job_id` 在同一 SQLite 事务提交。响应丢失后由
+  Creator Agent 走受控 reconcile 通道查询或恢复既有 attempt；缺少 attempt 时不能扣点或建任务。
 - 批次编辑、报价、确认和刷新使用 SQLite `BEGIN IMMEDIATE`、plan revision/hash 与条件更新；
   确认后 Provider 只能读取已冻结的提交快照。
 - 浏览器在请求前持久化完整 body、request ID 和 confirmation ID；网络错误或 5xx 后使用原请求恢复，

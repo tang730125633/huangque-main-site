@@ -9,6 +9,7 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
+from contextlib import closing
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
@@ -176,6 +177,17 @@ class HQCLIContentTests(unittest.TestCase):
                 core.jdb, "alice", "/api/gen/matrix-template", key,
                 {"job_id": 93, "cost": 5, "accepted": True},
             )
+            with closing(core.jdb()) as connection:
+                connection.execute("""CREATE TABLE IF NOT EXISTS jobs(
+                    id INTEGER PRIMARY KEY,kind TEXT,username TEXT,cost INTEGER,
+                    status TEXT,payload TEXT,created_at INTEGER,updated_at INTEGER,
+                    owner TEXT,refunded INTEGER DEFAULT 0
+                )""")
+                connection.execute(
+                    "INSERT INTO jobs(id,kind,username,cost,status,payload,created_at,updated_at,owner) "
+                    "VALUES(93,'matrix_template_video','alice',5,'running','{}',1,1,'content')"
+                )
+                connection.commit()
             replay_status, replay = self._post(
                 "/api/gen/internal/submission-reconcile", {
                     "endpoint": "/api/gen/matrix-template",
@@ -210,14 +222,48 @@ class HQCLIContentTests(unittest.TestCase):
         self.assertEqual(self.points.deductions, [])
 
     def test_submission_reconcile_health_requires_internal_token(self):
-        self.assertEqual(
-            self._post("/api/gen/internal/submission-reconcile/health", {})[0], 200,
-        )
-        self.assertEqual(
-            self._post(
-                "/api/gen/internal/submission-reconcile/health", {}, internal=False,
-            )[0], 403,
-        )
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder, \
+             mock.patch.object(core, "JOB_DB", str(Path(folder) / "jobs.db")):
+            self.assertEqual(
+                self._post("/api/gen/internal/submission-reconcile/health", {})[0], 200,
+            )
+            self.assertEqual(
+                self._post(
+                    "/api/gen/internal/submission-reconcile/health", {}, internal=False,
+                )[0], 403,
+            )
+
+    def test_stale_processing_without_attempt_is_confirmed_uncharged(self):
+        body = {
+            "top_text": "有效标题", "bottom_text": "关注查看更多",
+            "template_id": "native-bold", "bgm": True,
+        }
+        key = "matrix-before-deduct-crash-001"
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder, \
+             mock.patch.object(core, "JOB_DB", str(Path(folder) / "jobs.db")):
+            submission_idempotency.begin(
+                core.jdb, "alice", "/api/gen/matrix-template", key, body,
+            )
+            with closing(core.jdb()) as connection:
+                connection.execute(
+                    "UPDATE submission_idempotency SET created_at=0,updated_at=0 "
+                    "WHERE username='alice' AND endpoint='/api/gen/matrix-template' "
+                    "AND idem_key=?",
+                    (key,),
+                )
+                connection.commit()
+            status, result = self._post(
+                "/api/gen/internal/submission-reconcile", {
+                    "endpoint": "/api/gen/matrix-template",
+                    "idempotency_key": key, "input": body,
+                },
+            )
+            state, _ = submission_idempotency.replay_existing(
+                core.jdb, "alice", "/api/gen/matrix-template", key, [body],
+            )
+        self.assertEqual((status, result["code"]), (404, "idempotency_not_found"))
+        self.assertEqual(state, "missing")
+        self.assertEqual(self.points.deductions, [])
 
     def test_matrix_new_request_preflight_unavailable_is_structured_and_free(self):
         body = {
@@ -246,6 +292,49 @@ class HQCLIContentTests(unittest.TestCase):
         self.assertEqual([], self.points.deductions)
         cost.assert_not_called()
         create.assert_not_called()
+
+    def test_matrix_normal_submit_uses_durable_attempt_and_replays_once(self):
+        body = {
+            "top_text": "有效标题", "bottom_text": "关注查看更多",
+            "template_id": "native-bold", "bgm": True,
+        }
+        key = "matrix-durable-normal-001"
+        self.points.cost_of = mock.Mock(return_value=5)
+        self.points.get_points_transaction = mock.Mock(return_value=None)
+        self.points.deduct_points = mock.Mock(return_value=95)
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder, \
+             mock.patch.object(core, "JOB_DB", str(Path(folder) / "jobs.db")), \
+             mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+             mock.patch.object(core, "HANDLERS", {"matrix_template_video": lambda payload: payload}), \
+             mock.patch.object(matrix_template_video, "validate_payload", return_value=body), \
+             mock.patch.object(core, "enqueue_job", return_value=True):
+            with closing(core.jdb()) as connection:
+                connection.execute("""CREATE TABLE jobs(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT,username TEXT,cost INTEGER,
+                    status TEXT DEFAULT 'pending',payload TEXT,result TEXT,error TEXT,
+                    created_at INTEGER,updated_at INTEGER,owner TEXT,refunded INTEGER DEFAULT 0
+                    ,deleted INTEGER DEFAULT 0
+                )""")
+                submission_idempotency.ensure_table(connection)
+                core.matrix_template_submission.ensure_table(connection)
+                connection.commit()
+            first_status, first = self._post(
+                "/api/gen/matrix-template", body, expected=5, idempotency_key=key,
+            )
+            second_status, second = self._post(
+                "/api/gen/matrix-template", body, expected=5, idempotency_key=key,
+            )
+            attempt = core.matrix_template_submission.get(
+                core.jdb, "alice", "/api/gen/matrix-template", key,
+            )
+            with closing(core.jdb()) as connection:
+                job_count = connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+        self.assertEqual((first_status, second_status), (200, 200))
+        self.assertEqual(first["job_id"], second["job_id"])
+        self.assertEqual(attempt["state"], "linked")
+        self.assertEqual(attempt["job_id"], first["job_id"])
+        self.assertEqual(job_count, 1)
+        self.points.deduct_points.assert_called_once()
 
     def test_audio_validation_rejects_bad_knobs_before_generation(self):
         with self.assertRaisesRegex(ValueError, "pitch"):

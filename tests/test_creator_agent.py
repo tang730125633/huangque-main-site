@@ -836,6 +836,15 @@ class CreatorAgentTests(unittest.TestCase):
         self.assertEqual(self.bridge.confirm_count, 0)
         self.assertEqual(self.bridge.reconcile_count, 2)
 
+    def test_reconciled_refund_is_a_terminal_failed_job(self):
+        result = self.service._submission_result({
+            "status": "failed", "error": "任务创建失败，点数已退回",
+            "refund_status": "refunded", "reconciled": True,
+        })
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["refund_status"], "refunded")
+        self.assertTrue(result["result"]["reconciled"])
+
     def test_one_failed_platform_does_not_erase_other_success(self):
         draft = self._draft_batch()
         quoted = self.service.quote_batch(USER, draft["id"], draft["revision"])
@@ -1004,6 +1013,16 @@ class CreatorAgentTests(unittest.TestCase):
             unavailable_status, unavailable = handler._internal_creator_agent_reconcile(body)
         self.assertEqual((unavailable_status, unavailable["code"]), (
             503, "reconcile_unavailable",
+        ))
+        handler._cli_proxy.return_value = (500, {
+            "detail": "任务创建失败，点数已退回",
+            "code": "job_create_failed", "operation_terminal": True,
+        })
+        with mock.patch.object(auth_server.feature_flags, "is_enabled", return_value=True):
+            terminal_status, terminal = handler._internal_creator_agent_reconcile(body)
+        self.assertEqual(terminal_status, 200)
+        self.assertEqual((terminal["status"], terminal["refund_status"]), (
+            "failed", "refunded",
         ))
 
     def test_auth_creator_health_fails_closed_without_content_reconcile(self):
