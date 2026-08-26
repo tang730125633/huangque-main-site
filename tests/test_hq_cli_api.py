@@ -1482,6 +1482,7 @@ class HQCLIAPITests(unittest.TestCase):
             ("canvas-create", {"name": "my board"}),
             ("asset-tags", {"kind": "image", "key": "asset-1", "tags": ["客户案例"]}),
             ("asset-delete", {"kind": "image", "id": 7}),
+            ("asset-delete", {"kind": "video", "keys": ["12", "34"]}),
             ("video-compose-create", {"source_asset_id": 7}),
             ("digital-presenter-create", {"board_id": "cb_1", "request_id": "hqcli-dp-001"}),
             ("inspiration-like", {"id": 7, "favorite": True}),
@@ -1614,6 +1615,28 @@ class HQCLIAPITests(unittest.TestCase):
             plan = self.auth.hq_cli_api.action_plan("assets", {"kind": kind, "limit": 10, "offset": 20})
             self.assertIn("limit=10", plan["path"])
             self.assertIn("offset=20", plan["path"])
+
+    def test_asset_delete_maps_to_batch_delete_and_rejects_bad_input(self):
+        single = self.auth.hq_cli_api.action_plan("asset-delete", {"kind": "image", "id": 7})
+        self.assertEqual(("assets:write", "POST"), (single["scope"], single["method"]))
+        self.assertEqual("/api/gen/asset/delete", single["path"])
+        self.assertEqual({"kind": "image", "id": 7}, single["body"])
+        plan = self.auth.hq_cli_api.action_plan("asset-delete", {"kind": "video", "keys": ["12", "12", "34"]})
+        self.assertEqual(("assets:write", "POST"), (plan["scope"], plan["method"]))
+        self.assertEqual("/api/gen/asset/batch-delete", plan["path"])
+        self.assertEqual({"kind": "video", "ids": ["12", "34"]}, plan["body"])
+        for bad in (
+            {"kind": "avatar", "keys": ["1"]},
+            {"kind": "video", "keys": []},
+            {"kind": "video", "keys": "12"},
+            {"kind": "video", "keys": [1]},
+            {"kind": "video", "keys": [""]},
+            {"kind": "video"},
+            {"kind": "video", "id": 9, "keys": ["12"]},
+        ):
+            with self.assertRaises(self.auth.hq_cli_api.CLIAPIError) as raised:
+                self.auth.hq_cli_api.action_plan("asset-delete", bad)
+            self.assertEqual(400, raised.exception.status)
 
 
 if __name__ == "__main__":

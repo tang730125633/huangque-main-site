@@ -146,7 +146,7 @@ _ACTION_INPUTS = {
     "tasks": ("days", "kind", "page", "page_size"), "task": ("job_id",),
     "assets": ("kind", "limit", "offset"), "voices": (),
     "asset-favorite": ("kind", "key", "favorite"), "asset-tags": ("kind", "key", "tags"),
-    "asset-delete": ("kind", "id"),
+    "asset-delete": ("kind", "id", "keys"),
     "video-compose-projects": (), "video-compose-project": ("project_id",),
     "video-compose-create": ("source_asset_id",),
     "video-compose-analyze": ("project_id", "expected_revision"),
@@ -173,8 +173,8 @@ _ACTION_PURPOSES = {
     "ip12-projects": "读取本人 IP12 项目", "ip12-project": "读取本人 IP12 项目详情",
     "ip12-report": "读取本人 IP12 报告", "ip12-delete": "删除本人 IP12 项目",
     "canvas-list": "读取本人画布", "canvas-get": "读取本人画布详情",
-    "tasks": "读取本人任务记录", "task": "读取本人任务详情", "assets": "读取本人资产",
-    "asset-delete": "删除本人资产", "voices": "读取可用音色",
+    "tasks": "读取本人任务记录", "task": "读取本人任务详情", "assets": "读取本人资产", "voices": "读取可用音色",
+    "asset-delete": "删除本人自产资产（单条或批量）",
     "voice-clone-create": "用本人样音创建或重新录制个人克隆音色",
     "voice-clone-status": "读取个人克隆音色处理状态",
     "image-generate": "生成图片", "video-generate": "生成视频", "video-lipsync": "让本人原视频匹配新口播音频",
@@ -567,10 +567,16 @@ _MEDIA_SCHEMAS.update({
         "ratio": {"type": "string", "enum": ["9:16", "16:9"]}, "resolution": {"type": "string", "enum": ["1080p"]},
         "voice_key": {"type": "string", "maxLength": 200}, "target_duration": {"type": "integer", "minimum": 30, "maximum": 180},
     }, "constraints": ["provide at least one editable field and the current revision"]},
-    "asset-delete": {"required": ["kind", "id"], "properties": {
-        "kind": {"type": "string", "enum": ["image", "audio", "video", "copy", "collect", "leads"]},
+    "asset-delete": {"required": ["kind"], "properties": {
+        "kind": {"type": "string", "enum": ["image", "audio", "video", "copy", "collect", "leads", "breakdown"]},
         "id": _INT_ID_SCHEMA,
-    }, "constraints": ["deletion is owner-scoped and soft; read the asset before confirming"]},
+        "keys": {"type": "array", "minItems": 1, "maxItems": 200, "uniqueItems": True,
+                 "items": {"type": "string", "minLength": 1, "maxLength": 500}},
+    }, "anyOf": [{"required": ["id"]}, {"required": ["keys"]}], "constraints": [
+        "deletion is owner-scoped and soft; read the asset before confirming",
+        "provide exactly one of id (single delete) or keys (batch 1-200)",
+        "avatar kind is not deletable through this action",
+    ]},
 })
 
 _FAMILIES = {
@@ -1934,13 +1940,26 @@ def action_plan(action, value):
         return _plan("assets:write", "proxy", base=CONTENT_BASE, path="/api/gen/asset/tags",
                      method="POST", body=body)
     if action == "asset-delete":
-        _strict_object(value, {"kind", "id"}, ("kind", "id"))
-        body = {
-            "kind": _enum(value["kind"], "kind", ("image", "audio", "video", "copy", "collect", "leads")),
-            "id": _integer(value["id"], "id", 1, 2**63 - 1),
-        }
+        _strict_object(value, {"kind", "id", "keys"}, ("kind",))
+        kind = _enum(value["kind"], "kind", ("image", "audio", "video", "copy", "collect", "leads", "breakdown"))
+        has_id = "id" in value
+        has_keys = "keys" in value
+        if has_id == has_keys:
+            raise CLIAPIError(400, "asset-delete 必须且只能提供 id 或 keys 之一")
+        if has_id:
+            body = {"kind": kind, "id": _integer(value["id"], "id", 1, 2**63 - 1)}
+            return _plan("assets:write", "proxy", base=CONTENT_BASE,
+                         path="/api/gen/asset/delete", method="POST", body=body)
+        keys = value["keys"]
+        if not isinstance(keys, list) or not 1 <= len(keys) <= 200:
+            raise CLIAPIError(400, "keys 必须是 1-200 个资产标识")
+        ids = []
+        for key in keys:
+            key = _string(key, "keys", 1, 500)
+            if key not in ids:
+                ids.append(key)
         return _plan("assets:write", "proxy", base=CONTENT_BASE,
-                     path="/api/gen/asset/delete", method="POST", body=body)
+                     path="/api/gen/asset/batch-delete", method="POST", body={"kind": kind, "ids": ids})
     if action in {"video-compose-projects", "video-compose-project"}:
         allowed = {"project_id"} if action.endswith("project") else set()
         _strict_object(value, allowed, allowed)
