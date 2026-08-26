@@ -964,6 +964,70 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual("70", submitted[0]["headers"]["X-HQ-Expected-Cost"])
         self.assertTrue(submitted[0]["headers"]["Idempotency-Key"].startswith("hqcli-"))
 
+    def test_matrix_template_cli_quotes_and_confirms_normalized_payload(self):
+        token = self._token(["generation:quote", "generation:submit"])
+        submitted = []
+
+        def fake_proxy(plan, _web_token, _internal_token):
+            if plan["path"] == "/api/gen/cli/quote":
+                self.assertEqual({
+                    "kind": "matrix_template_video",
+                    "payload": {
+                        "top_text": "有效标题", "bottom_text": "有效行动文案",
+                        "template_id": "native-bold", "bgm": True,
+                    },
+                }, plan["body"])
+                return 200, {"kind": "matrix_template_video", "cost": 5, "points": 100}
+            submitted.append(plan)
+            return 200, {"job_id": 92, "cost": 5, "points_left": 95}
+
+        input_body = {
+            "top_text": "  有效标题  ", "bottom_text": " 有效行动文案 ",
+            "template_id": "native-bold",
+        }
+        request = {"action": "matrix-template-generate", "input": input_body, "confirm": False}
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
+            status, quote = self._request("/api/auth/cli/action", request, token=token)
+            self.assertEqual((200, 5), (status, quote["cost"]))
+            status, result = self._request(
+                "/api/auth/cli/action",
+                dict(request, confirm=True, quote_token=quote["quote_token"]),
+                token=token,
+            )
+        self.assertEqual((200, 92), (status, result["job_id"]))
+        self.assertEqual("/api/gen/matrix-template", submitted[0]["path"])
+        self.assertEqual({
+            "top_text": "有效标题", "bottom_text": "有效行动文案",
+            "template_id": "native-bold", "bgm": True,
+        }, submitted[0]["body"])
+        self.assertEqual("5", submitted[0]["headers"]["X-HQ-Expected-Cost"])
+        self.assertTrue(submitted[0]["headers"]["Idempotency-Key"].startswith("hqcli-"))
+
+    def test_matrix_template_cli_plan_and_reads_are_strict(self):
+        value = {
+            "top_text": "有效标题", "bottom_text": "有效行动文案",
+            "template_id": "native-bold",
+        }
+        plan = self.auth.hq_cli_api.action_plan("matrix-template-generate", value)
+        self.assertEqual(
+            ("generation:quote", "matrix_template_video", "/api/gen/matrix-template"),
+            (plan["scope"], plan["generation_kind"], plan["endpoint"]),
+        )
+        self.assertEqual(dict(value, bgm=True), plan["payload"])
+        for action, path in (
+            ("matrix-template-capability", "/api/gen/matrix-template/capability"),
+            ("matrix-template-templates", "/api/gen/matrix-template/templates"),
+        ):
+            read = self.auth.hq_cli_api.action_plan(action, {})
+            self.assertEqual(("assets:read", "proxy", path), (
+                read["scope"], read["kind"], read["path"]))
+        for invalid in (
+            dict(value, duration=8), dict(value, bgm=False),
+            dict(value, template_id="../bad"), dict(value, top_text="A"),
+        ):
+            with self.subTest(invalid=invalid), self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+                self.auth.hq_cli_api.action_plan("matrix-template-generate", invalid)
+
     def test_text_video_cli_rejects_changed_native_quote_before_submit(self):
         token = self._token(["generation:quote", "generation:submit"])
         submitted = []

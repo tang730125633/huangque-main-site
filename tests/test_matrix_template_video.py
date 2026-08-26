@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -166,6 +167,45 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         self.assertEqual("模板成片", func_names.func_name("matrix_template_video", {}))
         self.assertEqual("模板成片", func_names.path_func("/api/gen/matrix-template"))
         self.assertEqual("模板成片", func_names.path_func("/api/gen/matrix-template/templates"))
+
+    def test_cli_quote_validates_matrix_payload_before_returning_cost(self):
+        from content_domains import cli_gateway
+
+        class Handler:
+            headers = {"X-HQ-Internal-Token": "secret"}
+
+            def _token(self): return "account-token"
+            def _json_body_strict(self):
+                return {"kind": "matrix_template_video", "payload": {
+                    "top_text": "有效标题", "bottom_text": "有效行动文案",
+                    "template_id": "native-bold", "bgm": True,
+                }}
+            def _send(self, status, body): self.result = (status, body)
+
+        handler = Handler()
+        normalized = {
+            "top_text": "有效标题", "bottom_text": "有效行动文案",
+            "template_id": "native-bold", "bgm": True, "duration": None,
+        }
+        feature_flags = SimpleNamespace(
+            require_enabled=mock.Mock(), FeatureDisabled=RuntimeError,
+        )
+        points = SimpleNamespace(
+            cost_of=mock.Mock(return_value=5), get_points=mock.Mock(return_value=100),
+        )
+        with mock.patch.object(self.module, "validate_payload", return_value=normalized) as validate:
+            handled = cli_gateway.handle_quote(
+                handler, "/api/gen/cli/quote", lambda _token: {"username": "alice"},
+                lambda _user: False, lambda: False, feature_flags, points,
+                SimpleNamespace(), SimpleNamespace(), "secret",
+            )
+        self.assertTrue(handled)
+        self.assertEqual((200, "matrix_template_video", 5, 100), (
+            handler.result[0], handler.result[1]["kind"],
+            handler.result[1]["cost"], handler.result[1]["points"],
+        ))
+        validate.assert_called_once()
+        points.cost_of.assert_called_once_with("matrix_template_video", normalized)
 
 
 class MatrixTemplatePageTests(unittest.TestCase):

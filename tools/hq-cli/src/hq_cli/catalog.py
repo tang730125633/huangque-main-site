@@ -195,6 +195,8 @@ for identifier, name, description in (
     ("text-video-templates", "文案成片模板", "读取文案成片可用模板。"),
     ("text-video-styles", "文案成片样式", "读取文案成片可用样式。"),
     ("text-video-voices", "文案成片音色", "读取文案成片可用音色。"),
+    ("matrix-template-capability", "模板成片可用状态", "读取模板成片功能开关和生成服务状态。"),
+    ("matrix-template-templates", "模板成片模板", "读取模板成片可用视觉模板。"),
 ):
     CAPABILITIES[identifier] = _api(identifier, name, identifier, description, scope="assets:read")
 CAPABILITIES["pricing"] = _api(
@@ -779,6 +781,12 @@ TEXT_VIDEO_PLAN_FIELDS = {
     key: value for key, value in TEXT_VIDEO_FIELDS.items() if key != "talking_material"
 }
 TEXT_VIDEO_PLAN_FIELDS["ratio"] = {"type": "number", "minimum": 0.1, "maximum": 0.5}
+MATRIX_TEMPLATE_FIELDS = {
+    "top_text": {"type": "string", "minLength": 2, "maxLength": 60},
+    "bottom_text": {"type": "string", "minLength": 2, "maxLength": 80},
+    "template_id": {"type": "string", "minLength": 1, "maxLength": 64,
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+}
 
 for identifier, name, fields, required in (
     ("image-generate", "图片生成", IMAGE_FIELDS, ["prompt"]),
@@ -788,6 +796,8 @@ for identifier, name, fields, required in (
     ("audio-generate", "音频生成", AUDIO_FIELDS, ["text"]),
     ("text-video-generate", "文案成片生成", TEXT_VIDEO_FIELDS,
      ["text", "template", "style", "voice"]),
+    ("matrix-template-generate", "模板成片生成", MATRIX_TEMPLATE_FIELDS,
+     ["top_text", "bottom_text", "template_id"]),
     ("digital-ip-text-generate", "数字IP单条文案生成", DIGITAL_IP_TEXT_FIELDS,
      ["text", "voice"]),
     ("digital-ip-audio-generate", "数字IP本人资产音频生成", DIGITAL_IP_AUDIO_FIELDS,
@@ -860,6 +870,14 @@ CAPABILITIES["text-video-generate"]["constraints"] = [
 ]
 CAPABILITIES["text-video-generate"]["next_actions"] = [
     "核对 scene_count 和 cost_breakdown 后，用完全相同的输入、quote_token 与 --confirm 提交；拿到 job_id 后仅使用 task 轮询。",
+]
+CAPABILITIES["matrix-template-generate"]["constraints"] = [
+    "template_id must be selected from matrix-template-templates",
+    "duration is calculated automatically and BGM is enabled by default",
+    "the first call only quotes the fixed template-video cost",
+]
+CAPABILITIES["matrix-template-generate"]["next_actions"] = [
+    "核对报价后，用完全相同的输入、quote_token 与 --confirm 提交；拿到 job_id 后仅使用 task 轮询。",
 ]
 CAPABILITIES["text-video-avatar-import"] = _api(
     "text-video-avatar-import", "导入口播人物", "text-video-avatar-import",
@@ -978,6 +996,10 @@ for identifier, website_modes in {
     "text-video-plan": ["text_video"],
     "text-video-templates": ["text_video"], "text-video-styles": ["text_video"],
     "text-video-voices": ["text_video"],
+    "matrix-template-capability": ["matrix_template.single"],
+    "matrix-template": ["matrix_template.single"],
+    "matrix-template-templates": ["matrix_template.single"],
+    "matrix-template-generate": ["matrix_template.single"],
     "short-drama": ["live_action"],
     "short-drama-create": ["live_action"], "short-drama-delete": ["live_action"],
     "short-drama-projects": ["live_action"], "short-drama-project": ["live_action"],

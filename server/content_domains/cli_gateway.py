@@ -383,6 +383,10 @@ def handle_quote(handler, path, verify, must_change_password, is_shutting_down,
             payload = _collect_search_payload(payload)
         elif kind == "leads":
             payload = _leads_payload(payload)
+        elif kind == "matrix_template_video":
+            from . import matrix_template_video
+            payload = matrix_template_video.validate_payload(
+                payload, user["username"])
         else:
             raise ValueError("CLI 报价不支持该生成类型")
         feature_flags.require_enabled(

@@ -171,6 +171,8 @@ class HQCLIDistributionTests(unittest.TestCase):
             self.assertIn("agent", next(
                 item for item in capabilities["capabilities"] if item["id"] == "ip12-project"
             ))
+            self.assertIn("matrix-template-generate", {
+                item["id"] for item in capabilities["capabilities"]})
             self.assertEqual(
                 (data_home / "hq-cli" / VERSION / "venv/bin/hq").resolve(),
                 (bin_root / "hq").resolve(),

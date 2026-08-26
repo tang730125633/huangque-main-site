@@ -125,6 +125,8 @@ _ACTION_INPUTS = {
     "text-video-capability": (), "text-video-templates": (),
     "text-video-styles": (), "text-video-voices": (),
     "text-video-generate": ("text", "template", "mode", "style", "voice", "speech_rate", "talking_material"),
+    "matrix-template-capability": (), "matrix-template-templates": (),
+    "matrix-template-generate": ("top_text", "bottom_text", "template_id"),
     "text-video-avatar-import": ("image_upload_id",),
     "text-video-plan": ("text", "template", "mode", "style", "voice", "speech_rate", "ratio"),
     "inspiration-catalog": (), "inspiration-likes": (),
@@ -200,6 +202,9 @@ _ACTION_PURPOSES = {
     "voice-clone-status": "读取个人克隆音色处理状态",
     "image-generate": "生成图片", "video-generate": "生成视频", "video-lipsync": "让本人原视频匹配新口播音频",
     "audio-generate": "生成音频", "text-video-generate": "根据主题或完整文案生成成片",
+    "matrix-template-capability": "读取模板成片服务状态",
+    "matrix-template-templates": "读取模板成片视觉模板",
+    "matrix-template-generate": "使用平台素材库创建模板成片",
     "text-video-avatar-import": "导入文案成片口播人物图片",
     "text-video-plan": "生成可选择的文案成片口播分镜方案",
     "canvas-agent-plan": "为画布生成可确认的操作方案", "canvas-ops": "写入本人画布操作",
@@ -433,6 +438,17 @@ _MEDIA_SCHEMAS = {
             "talking_material must reference an active plan and owner-scoped avatar assets",
         ],
     },
+    "matrix-template-generate": {
+        "required": ["top_text", "bottom_text", "template_id"], "properties": {
+            "top_text": {"type": "string", "minLength": 2, "maxLength": 60},
+            "bottom_text": {"type": "string", "minLength": 2, "maxLength": 80},
+            "template_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+        },
+        "constraints": [
+            "template_id must come from matrix-template-templates",
+            "duration is automatic, BGM is enabled, and only approved platform-library media is used",
+        ],
+    },
     "text-video-avatar-import": {
         "required": ["image_upload_id"],
         "properties": {"image_upload_id": _IMAGE_UPLOAD_SCHEMA},
@@ -652,6 +668,8 @@ _FAMILIES = {
     "video-compose-analyze": "video", "video-compose-review": "video", "video-compose-render": "video",
     "text-video-capability": "video", "text-video-templates": "video", "text-video-styles": "video", "text-video-voices": "video",
     "text-video-generate": "video",
+    "matrix-template-capability": "video", "matrix-template-templates": "video",
+    "matrix-template-generate": "video",
     "text-video-avatar-import": "video", "text-video-plan": "video",
     "canvas-list": "canvas", "canvas-get": "canvas", "canvas-create": "canvas", "canvas-agent-plan": "canvas",
     "canvas-ops": "canvas", "digital-presenter-capability": "canvas", "digital-presenter-project": "canvas",
@@ -666,6 +684,7 @@ _ACTION_FEATURE_GATES = {
     "tryon-classic-generate": ("tryon",), "digital-presenter-capability": ("digital_presenter",),
     "digital-presenter-project": ("digital_presenter",), "digital-presenter-create": ("digital_presenter",),
     "digital-presenter-update": ("digital_presenter",), "text-video-generate": ("script_to_video",),
+    "matrix-template-generate": ("matrix_template_video",),
     "text-video-avatar-import": ("script_to_video",), "text-video-plan": ("script_to_video",),
 }
 _OPTION_FEATURE_GATES = {
@@ -681,6 +700,7 @@ _GENERATION_ACTIONS = frozenset({
     "digital-ip-text-generate", "digital-ip-batch-generate", "digital-ip-audio-generate",
     "cinematic-open-generate", "cinematic-motion-generate", "tryon-fast-generate", "tryon-classic-generate",
     "text-video-generate",
+    "matrix-template-generate",
 })
 
 
@@ -707,6 +727,8 @@ def _catalog_route(action):
         return "/workbench/audio"
     if action.startswith("text-video-"):
         return "/workbench/text-video"
+    if action.startswith("matrix-template-"):
+        return "/workbench/matrix-template"
     if action.startswith("video-compose-"):
         return "/workbench/one-click-video"
     if action.startswith("digital-ip-"):
@@ -774,7 +796,7 @@ for _catalog_item in ACTION_CATALOG:
     if _catalog_item["action"] in _FAMILIES:
         _catalog_item["family"] = _FAMILIES[_catalog_item["action"]]
 ACTION_CATALOG_MAP = {item["action"]: item for item in ACTION_CATALOG if item["transport"]["kind"] == "action"}
-ACTION_CATALOG_VERSION = "hq-action-catalog-v3"
+ACTION_CATALOG_VERSION = "hq-action-catalog-v4"
 
 
 def action_catalog(feature_states=None):
@@ -1654,6 +1676,22 @@ def _text_video_payload(value):
     return payload
 
 
+def _matrix_template_payload(value):
+    _strict_object(
+        value, {"top_text", "bottom_text", "template_id"},
+        ("top_text", "bottom_text", "template_id"),
+    )
+    template_id = _string(value["template_id"], "template_id", 1, 64)
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", template_id):
+        raise CLIAPIError(400, "template_id 格式不合法")
+    return {
+        "top_text": _string(value["top_text"], "top_text", 2, 60),
+        "bottom_text": _string(value["bottom_text"], "bottom_text", 2, 80),
+        "template_id": template_id,
+        "bgm": True,
+    }
+
+
 def _collect_url(value):
     url = _string(value, "url", 1, 2048)
     try:
@@ -1745,6 +1783,20 @@ def action_plan(action, value):
             quote_body=payload,
             native_quote_token_field="quote_token",
             quote_result_fields=("scene_count", "cost_breakdown"),
+        )
+    if action == "matrix-template-generate":
+        payload = _matrix_template_payload(value)
+        return _plan(
+            "generation:quote", "generation",
+            generation_kind="matrix_template_video",
+            endpoint="/api/gen/matrix-template", payload=payload,
+        )
+    if action in {"matrix-template-capability", "matrix-template-templates"}:
+        _strict_object(value, set())
+        suffix = action.removeprefix("matrix-template-")
+        return _plan(
+            "assets:read", "proxy", base=CONTENT_BASE,
+            path="/api/gen/matrix-template/" + suffix,
         )
     if action in {
             "text-video-capability", "text-video-templates",
