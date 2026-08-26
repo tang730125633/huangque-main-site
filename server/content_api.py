@@ -11,9 +11,9 @@ import threading
 from http.server import ThreadingHTTPServer
 
 try:
-    from .content_domains import core, digital_presenter, registry, video_compose
+    from .content_domains import core, digital_human_oneclick, digital_presenter, registry, script_to_video, video_compose
 except ImportError:  # Running as /home/ubuntu/content-api/content_api.py
-    from content_domains import core, digital_presenter, registry, video_compose
+    from content_domains import core, digital_human_oneclick, digital_presenter, registry, script_to_video, video_compose
 
 
 PORT = core.PORT
@@ -26,6 +26,11 @@ DigitalPresenterH = digital_presenter.make_handler(core.H, core)
 
 
 class H(DigitalPresenterH):
+    def _dispatch_script_to_video(self, method):
+        return script_to_video.dispatch_http(
+            self, method, core.verify, core._must_change_password,
+        )
+
     def _dispatch_video_compose(self, method):
         return video_compose.dispatch_http(
             self, method, core.verify, core._must_change_password, core.adb,
@@ -33,19 +38,29 @@ class H(DigitalPresenterH):
         )
 
     def do_POST(self):
+        if self._dispatch_script_to_video("POST"):
+            return
         if self._dispatch_video_compose("POST"):
             return
         return super().do_POST()
 
     def do_GET(self):
+        if self._dispatch_script_to_video("GET"):
+            return
         if self._dispatch_video_compose("GET"):
             return
         return super().do_GET()
+
+    def do_DELETE(self):
+        if self._dispatch_script_to_video("DELETE"):
+            return
+        return super().do_DELETE()
 
 
 def main():
     core.init_db()
     digital_presenter.init_db(core.jdb)
+    digital_human_oneclick.init_db()
     video_compose.recover_interrupted_renders()
     # 回收上次遗留的 running 孤儿 → 秒退点。
     # 优雅停机（drain）之后这里应该【一条都收不到】—— 收到就说明上次是崩溃/被 SIGKILL 了，

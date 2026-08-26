@@ -8,6 +8,7 @@
 <link rel="stylesheet" href="../assets/fonts/hq-fonts.css">
 <link rel="stylesheet" href="../assets/cloud.css?v=8">
 <script src="theme-init.js?v=11eb385e"></script>
+<script>if(new URLSearchParams(location.search).get('mode')==='script_to_video'){location.replace('digital-human-oneclick.html');}</script>
 <style>
   body{ overflow:hidden; }
   .gScript{ display:grid; grid-template-columns:0.92fr 1.12fr; gap:18px; align-items:start; }
@@ -48,7 +49,7 @@
   .sc-history-meta{margin-top:8px;color:#94a4bb;font-size:11.5px;line-height:1.6}
   .sc-history-time{margin-top:10px;color:#5c6b82;font-size:11px}
   @media (max-width:760px){.sc-history-grid{grid-template-columns:1fr}}
-  .sc-mode-tab{padding:9px 18px;font-size:14px;font-weight:600;border:1px solid rgba(148,164,187,.16);border-radius:12px;background:rgba(148,164,187,.04);color:#94a4bb;cursor:pointer;font-family:inherit;transition:.16s}
+  .sc-mode-tab{padding:9px 18px;font-size:14px;font-weight:600;border:1px solid rgba(148,164,187,.16);border-radius:12px;background:rgba(148,164,187,.04);color:#94a4bb;cursor:pointer;font-family:inherit;text-decoration:none;transition:.16s}
   .sc-mode-tab:hover{border-color:rgba(231,178,76,.34);color:#eaf1fa}
   .sc-mode-tab.on{color:#e7b24c;background:rgba(231,178,76,.1);border-color:rgba(231,178,76,.32)}
   .bd-progress{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:14px}
@@ -91,6 +92,7 @@
   <div id="scModeTabs" style="display:flex; gap:6px; margin-bottom:18px;">
     <button class="sc-mode-tab on" data-mode="write" type="button">✍️ AI写脚本</button>
     <button class="sc-mode-tab" data-mode="breakdown" type="button">🔍 拆解视频</button>
+    <a class="sc-mode-tab" href="digital-human-oneclick.html">🎬 数字人一键生成</a>
   </div>
 
   <div class="gScript">
@@ -690,7 +692,7 @@
     var breakdownScenes=breakdownSceneList();
     var hasBreakdownScenes=breakdownScenes.length>0;
     var hasReversePrompt=!!reversePromptText();
-    document.querySelectorAll('.sc-mode-tab').forEach(function(tab){ tab.classList.toggle('on', tab.getAttribute('data-mode')===currentMode); });
+    document.querySelectorAll('button.sc-mode-tab').forEach(function(tab){ tab.classList.toggle('on', tab.getAttribute('data-mode')===currentMode); });
     document.querySelectorAll('[data-bd-tool]').forEach(function(tab){
       var on=tab.getAttribute('data-bd-tool')===currentBreakdownTool;
       tab.classList.toggle('on', on);
@@ -1179,7 +1181,7 @@
     });
     if(scRefClear) scRefClear.onclick=function(){ refImages=[]; scRefImage.value=''; syncRefImages(); };
   }
-  document.querySelectorAll('.sc-mode-tab').forEach(function(tab){ tab.onclick=function(){ switchMode(this.getAttribute('data-mode')); }; });
+  document.querySelectorAll('button.sc-mode-tab').forEach(function(tab){ tab.onclick=function(){ switchMode(this.getAttribute('data-mode')); }; });
   document.querySelectorAll('[data-bd-tool]').forEach(function(tab){ tab.onclick=function(){ switchBreakdownTool(this.getAttribute('data-bd-tool')); }; });
   document.querySelectorAll('[data-theme-option]').forEach(function(btn){ btn.onclick=function(){ if(!window.HQTheme) return; var theme=btn.getAttribute('data-theme-option'); window.HQTheme.set(theme); renderThemeToggle(theme); }; });
   renderThemeToggle(currentTheme());
