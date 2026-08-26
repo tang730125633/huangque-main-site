@@ -21,6 +21,14 @@ _TTL = 5
 
 CATALOG = [
     {
+        "key": "creator_agent_v1",
+        "name": "创作 Agent",
+        "desc": "独立对话式创作助手与站内能力调用",
+        "page": "AI 创作助手",
+        "service": "creator-agent",
+        "default_enabled": True,
+    },
+    {
         "key": "ip12_agent_production_v1",
         "name": "IP12 Agent 生产闭环",
         "desc": "仅允许 IP12 后端经内部凭据发现、读取或询价黄雀能力；不允许代替用户确认付费或写入操作",

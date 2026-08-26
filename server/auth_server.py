@@ -5084,6 +5084,79 @@ class H(BaseHTTPRequestHandler):
         except hq_cli_api.CLIAPIError as exc:
             return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
 
+    def _creator_agent_row(self, account_id):
+        if not isinstance(account_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,160}", account_id):
+            raise hq_cli_api.CLIAPIError(400, "account_id 不合法", "invalid_account_id")
+        c = db()
+        try:
+            return c.execute(
+                "SELECT * FROM users WHERE account_id=? AND COALESCE(account_status,'active')='active'",
+                (account_id,),
+            ).fetchone()
+        finally:
+            c.close()
+
+    def _creator_agent_bridge_enabled(self):
+        return feature_flags.is_enabled("creator_agent_v1")
+
+    def _internal_creator_agent_catalog(self, body):
+        if not self._creator_agent_bridge_enabled():
+            return self._cli_send(503, {"detail": "Creator Agent 执行桥未启用", "code": "feature_disabled"})
+        if not isinstance(body, dict) or set(body) != {"account_id"}:
+            return self._cli_send(400, {"detail": "只接受 account_id", "code": "invalid_request"})
+        try:
+            row = self._creator_agent_row(body["account_id"])
+        except hq_cli_api.CLIAPIError as exc:
+            return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
+        if not row:
+            return self._cli_send(404, {"detail": "账号不存在", "code": "account_not_found"})
+        states = {flag: feature_flags.is_enabled(flag) for flag in hq_cli_api.CATALOG_FEATURE_FLAGS}
+        catalog = hq_cli_api.action_catalog(states)
+        allowed = {
+            "matrix-template-capability", "matrix-template-templates",
+            "matrix-template-generate",
+        }
+        catalog["actions"] = [
+            item for item in catalog.get("actions") or [] if item.get("action") in allowed
+        ]
+        return self._cli_send(200, {"account_id": row["account_id"], **catalog})
+
+    def _internal_creator_agent_action(self, body):
+        if not self._creator_agent_bridge_enabled():
+            return self._cli_send(503, {"detail": "Creator Agent 执行桥未启用", "code": "feature_disabled"})
+        if not isinstance(body, dict):
+            return self._cli_send(400, {"detail": "请求体必须是 JSON 对象", "code": "invalid_request"})
+        allowed = {"account_id", "input", "action", "confirm", "quote_token", "idempotency_key"}
+        if set(body) - allowed or set(body) < {"account_id", "input", "action"}:
+            return self._cli_send(400, {"detail": "内部动作字段不合法", "code": "invalid_request"})
+        try:
+            action = body.get("action")
+            allowed_actions = {
+                "matrix-template-capability", "matrix-template-templates",
+                "matrix-template-generate", "task",
+            }
+            if not isinstance(action, str) or action not in allowed_actions:
+                raise hq_cli_api.CLIAPIError(404, "未知 Creator Agent 能力", "unknown_action")
+            if not isinstance(body["input"], dict):
+                raise hq_cli_api.CLIAPIError(400, "input 必须是 JSON 对象")
+            row = self._creator_agent_row(body["account_id"])
+            if not row:
+                raise hq_cli_api.CLIAPIError(404, "账号不存在", "account_not_found")
+            action_body = {
+                "action": action,
+                "input": body["input"],
+                "confirm": body.get("confirm", False),
+                "quote_token": body.get("quote_token", ""),
+            }
+            if "idempotency_key" in body:
+                action_body["idempotency_key"] = body["idempotency_key"]
+            return self._execute_cli_action(
+                row, frozenset(hq_cli_api.DEFAULT_SCOPES), action_body,
+                trusted_internal=True,
+            )
+        except hq_cli_api.CLIAPIError as exc:
+            return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
+
     def _internal_auth(self):
         if not INTERNAL_TOKEN:
             return False
@@ -5219,6 +5292,24 @@ class H(BaseHTTPRequestHandler):
             if not self._require_internal():
                 return
             return self._internal_ip12_agent_upload()
+        if p == "/api/auth/internal/creator-agent/catalog":
+            if not self._require_internal():
+                return
+            if self._content_length_exceeds(16 * 1024):
+                return self._cli_send(413, {"detail": "请求过大", "code": "request_too_large"})
+            d = self._body()
+            if self._bad_json():
+                return self._cli_send(400, {"detail": "请求体不是合法 JSON", "code": "invalid_request"})
+            return self._internal_creator_agent_catalog(d)
+        if p == "/api/auth/internal/creator-agent/action":
+            if not self._require_internal():
+                return
+            if self._content_length_exceeds(128 * 1024):
+                return self._cli_send(413, {"detail": "请求过大", "code": "request_too_large"})
+            d = self._body()
+            if self._bad_json():
+                return self._cli_send(400, {"detail": "请求体不是合法 JSON", "code": "invalid_request"})
+            return self._internal_creator_agent_action(d)
         if p == "/api/auth/internal/canvas/access":
             if not self._require_internal():
                 return

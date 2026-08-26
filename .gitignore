@@ -91,3 +91,6 @@ server/hermes_ip12/backups/
 server/hermes_ip12/*.bak*
 server/hermes_ip12/*_backup.py
 server/hermes_ip12/nohup.out
+
+# Local browser screenshot acceptance artifacts
+.qa/
