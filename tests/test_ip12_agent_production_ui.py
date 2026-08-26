@@ -551,12 +551,39 @@ console.log(JSON.stringify({
         ]
         self.assertNotIn("Object.assign({},spec,{inlineUploadField:''})", inline)
         self.assertIn("productionFieldControl(record,spec,false,3)", inline)
-        self.assertIn("录制/上传样音，生成我的克隆声音", self.html)
+        self.assertIn("录一段现在的声音", self.html)
+        self.assertIn("上传已有样音", self.html)
+        self.assertIn("navigator.mediaDevices.getUserMedia", self.html)
+        self.assertIn("encodeVoiceCloneWav", self.html)
+        self.assertIn("使用这段录音生成克隆声音", self.html)
         self.assertIn("/api/ip12/productions/clone-voice", self.html)
         self.assertIn(",false,3)", inline)
         self.assertIn("实时报价", inline)
         self.assertIn("确认并提交这次生产", inline)
         self.assertIn("查看全部素材", inline)
+
+    def test_voice_recorder_encodes_mono_pcm_as_wav(self):
+        if not shutil.which("node"):
+            self.skipTest("node unavailable")
+        start = self.html.index("function writeVoiceCloneWavString")
+        end = self.html.index("function releaseVoiceRecorderCapture", start)
+        script = self.html[start:end] + r"""
+(async function(){
+  const assert=require('assert');
+  const blob=encodeVoiceCloneWav([new Float32Array([-1,0,1])],16000);
+  const data=Buffer.from(await blob.arrayBuffer());
+  assert.equal(blob.type,'audio/wav');
+  assert.equal(data.subarray(0,4).toString(),'RIFF');
+  assert.equal(data.subarray(8,12).toString(),'WAVE');
+  assert.equal(data.readUInt16LE(22),1);
+  assert.equal(data.readUInt32LE(24),16000);
+  assert.equal(data.length,50);
+  console.log('VOICE_WAV_OK');
+})().catch(function(error){console.error(error);process.exit(1)});
+"""
+        result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("VOICE_WAV_OK", result.stdout)
         cards = self.html[
             self.html.index("function productionChoiceCards"):
             self.html.index("function productionOptionsHtml")

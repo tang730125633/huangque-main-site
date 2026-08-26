@@ -1452,7 +1452,7 @@ def _ensure_production_material_request_message(convo, record, missing):
         parts.append(
             "声音可以选择有试听样音的个人声音；也可以直接上传一段本人口播音频用于本次视频。"
             + (
-                "如果需要自己的新声音，可以点击“录制/上传样音，生成我的克隆声音”。"
+                "如果需要自己的新声音，可以点击“录一段现在的声音”；也可以上传已有样音。"
                 if has_voice_clone_slot else "当前账号暂时没有可用的个人声音克隆名额。"
             )
             + "系统公共音色不会自动出现，只有你明确提出使用后才会展示试听卡。"
@@ -6194,10 +6194,12 @@ def _process_production_intent_turn(
             "type": "open_voice_clone", "label": "在当前对话克隆音色", "primary": True,
         }
         assistant = (
-            "可以，我们重新录一版。我已经在当前对话打开录音卡：你可以上传已有录音，"
+            "可以，我们重新录一版。我已经在当前对话打开录音卡：你可以直接录一段现在的声音，"
+            "也可以上传已有录音，"
             "也可以选一篇已确认文案现场朗读 10–60 秒。录完先试听，确认后再提交复刻。"
             if voice_clone_state.get("status") == "complete" else
-            "可以。我已经在当前对话打开声音克隆卡；你可以上传已有录音，"
+            "可以。我已经在当前对话打开声音克隆卡；你可以直接录一段现在的声音，"
+            "也可以上传已有录音，"
             "也可以选一篇已确认文案现场朗读 10–60 秒，不需要离开当前对话。"
         )
         message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
