@@ -67,8 +67,8 @@ nginx -t
 systemctl enable "$SERVICE"
 systemctl restart "$SERVICE"
 for _ in $(seq 1 30); do
-  if curl -fsS --max-time 2 http://127.0.0.1:8114/health \
-      | python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True else 1)'; then
+  if curl -fsS --max-time 5 http://127.0.0.1:8114/health \
+      | python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("ok") is True and d.get("ready") is True else 1)'; then
     systemctl reload nginx
     systemctl is-active --quiet nginx
     SUCCEEDED=1

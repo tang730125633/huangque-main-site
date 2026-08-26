@@ -17,7 +17,7 @@ SERVER = ROOT / "server"
 sys.path.insert(0, str(SERVER))
 
 from creator_agent.planner import CreatorPlanner, GuidedPlanner, remember_preference
-from creator_agent.service import APIError, CreatorAgentHandler, CreatorAgentService
+from creator_agent.service import APIError, CreatorAgentHandler, CreatorAgentService, build_service
 from creator_agent.store import CreatorAgentStore
 import hq_cli_api
 
@@ -58,14 +58,20 @@ def ready_project():
 
 
 class FakeAuth:
+    base_url = "http://127.0.0.1:8095"
+
     def verify(self, headers):
         return dict(USER)
 
 
 class FakeIP12:
     def __init__(self, project=None):
+        self.base_url = "http://127.0.0.1:3102"
         self.value = copy.deepcopy(project) if project else None
         self.calls = []
+
+    def health(self):
+        return {"ok": True}
 
     def projects(self, headers):
         return [] if self.value is None else [{
@@ -117,6 +123,7 @@ class FakeIP12:
 
 class FakeBridge:
     def __init__(self):
+        self.internal_token = "test-shared-token"
         self.calls = []
         self.confirm_count = 0
         self.task_results = {}
@@ -125,6 +132,15 @@ class FakeBridge:
             {"id": "minimal-headline", "name": "极简标题", "tags": ["极简"]},
             {"id": "editorial-clean", "name": "稳健叙事", "tags": ["稳健"]},
         ]
+
+    def health(self):
+        return {
+            "ok": True, "ready": True,
+            "actions": [
+                "matrix-template-capability", "matrix-template-templates",
+                "matrix-template-generate",
+            ],
+        }
 
     def catalog(self, account_id):
         self.calls.append(("catalog", account_id))
@@ -189,6 +205,27 @@ class CreatorAgentTests(unittest.TestCase):
         self.assertEqual(result["project"]["id"], PROJECT_ID)
         self.assertFalse(result["project"]["progress"]["profile_complete"])
         self.assertIn("先告诉我", result["messages"][0]["content"])
+
+    def test_health_requires_real_bridge_ip12_and_writable_database(self):
+        health = self.service.health()
+        self.assertTrue(health["ok"])
+        self.assertTrue(health["ready"])
+        self.assertTrue(all(health["checks"].values()))
+        self.bridge.internal_token = ""
+        health = self.service.health()
+        self.assertTrue(health["ok"])
+        self.assertFalse(health["ready"])
+        self.assertFalse(health["checks"]["bridge_token"])
+
+    def test_build_service_reads_shared_hq_internal_token(self):
+        path = pathlib.Path(self.temp.name) / "build-service.db"
+        service = build_service({
+            "CREATOR_AGENT_DB": str(path),
+            "CREATOR_AGENT_AUTH_URL": "http://127.0.0.1:8095",
+            "CREATOR_AGENT_IP12_URL": "http://127.0.0.1:3102",
+            "HQ_INTERNAL_TOKEN": "production-shared-token",
+        })
+        self.assertEqual(service.bridge.internal_token, "production-shared-token")
 
     def test_each_project_has_one_continuous_conversation(self):
         first = self.bootstrap()
@@ -522,8 +559,12 @@ class CreatorAgentTests(unittest.TestCase):
                 "account_id": USER["account_id"], "action": "image-generate",
                 "input": {"prompt": "not allowed"}, "confirm": False,
             })
+            health_status, health = handler._internal_creator_agent_health()
         self.assertEqual(result, (200, {"ok": True}))
         self.assertEqual(rejected[0], 404)
+        self.assertEqual(health_status, 200)
+        self.assertTrue(health["ready"])
+        self.assertIn("matrix-template-generate", health["actions"])
         self.assertTrue(handler._execute_cli_action.call_args.kwargs["trusted_internal"])
 
     def test_http_bootstrap_returns_single_project_workspace(self):
@@ -537,6 +578,8 @@ class CreatorAgentTests(unittest.TestCase):
             self.assertEqual(value["project"]["id"], PROJECT_ID)
             self.assertEqual(len(value["projects"]), 1)
             self.assertNotIn("quote_token", json.dumps(value, ensure_ascii=False))
+            health = json.load(urllib.request.urlopen(base + "/health", timeout=3))
+            self.assertTrue(health["ready"])
         finally:
             server.shutdown()
             server.server_close()

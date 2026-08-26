@@ -151,6 +151,25 @@ class CreatorAgentStore:
                 )
             connection.commit()
 
+    def health(self):
+        """Verify integrity and a rollback-only write without persisting a sentinel."""
+        try:
+            with closing(self.db()) as connection:
+                check = connection.execute("PRAGMA quick_check").fetchone()
+                if not check or str(check[0]).lower() != "ok":
+                    return False
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute(
+                    """INSERT INTO creator_account_state(username,active_project_id,updated_at)
+                       VALUES(?,?,?) ON CONFLICT(username) DO UPDATE SET
+                       updated_at=excluded.updated_at""",
+                    ("__creator_health__", "", int(time.time())),
+                )
+                connection.rollback()
+            return True
+        except (OSError, sqlite3.Error):
+            return False
+
     def set_active_project(self, username, project_id):
         now = int(time.time())
         with closing(self.db()) as connection:

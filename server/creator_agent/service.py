@@ -54,6 +54,16 @@ def _url(base, path):
     return str(base or "").rstrip("/") + "/" + str(path or "").lstrip("/")
 
 
+def _valid_loopback_base(value):
+    parsed = urllib.parse.urlsplit(str(value or ""))
+    return bool(
+        parsed.scheme == "http"
+        and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+        and not parsed.username and not parsed.password
+        and not parsed.query and not parsed.fragment
+    )
+
+
 def _auth_headers(headers):
     result = {}
     for name in ("Authorization", "Cookie"):
@@ -124,6 +134,10 @@ class JSONClient:
 
 
 class IP12Client(JSONClient):
+    def health(self):
+        value, _ = self.request("GET", "/healthz", {}, timeout=3)
+        return value
+
     def projects(self, headers):
         value, _ = self.request("GET", "/api/conversations", headers)
         return value if isinstance(value, list) else value.get("items") or []
@@ -176,7 +190,7 @@ class BridgeClient:
         self.timeout = int(timeout)
         self.opener = opener or urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
-    def _post(self, path, body):
+    def _post(self, path, body, timeout=None):
         if not self.internal_token:
             raise APIError(503, "AI 创作助手执行桥未配置", "bridge_not_configured")
         request = urllib.request.Request(
@@ -189,7 +203,7 @@ class BridgeClient:
             method="POST",
         )
         try:
-            with self.opener.open(request, timeout=self.timeout) as response:
+            with self.opener.open(request, timeout=timeout or self.timeout) as response:
                 return json.load(response)
         except urllib.error.HTTPError as exc:
             try:
@@ -205,6 +219,9 @@ class BridgeClient:
 
     def catalog(self, account_id):
         return self._post("/api/auth/internal/creator-agent/catalog", {"account_id": account_id})
+
+    def health(self):
+        return self._post("/api/auth/internal/creator-agent/health", {}, timeout=3)
 
     def action(self, account_id, action, tool_input, *, confirm=False,
                quote_token="", idempotency_key=""):
@@ -234,6 +251,47 @@ class CreatorAgentService:
         key = username + ":" + project_id
         with self._locks_guard:
             return self._locks.setdefault(key, threading.Lock())
+
+    def health(self):
+        checks = {
+            "bridge_token": bool(getattr(self.bridge, "internal_token", "")),
+            "auth_url": _valid_loopback_base(getattr(self.auth, "base_url", "")),
+            "ip12_url": _valid_loopback_base(getattr(self.ip12, "base_url", "")),
+            "database_writable": bool(self.store.health()),
+            "bridge_catalog": False,
+            "ip12_reachable": False,
+        }
+        bridge_detail = ""
+        ip12_detail = ""
+        if checks["bridge_token"] and checks["auth_url"]:
+            try:
+                bridge = self.bridge.health()
+                actions = set(bridge.get("actions") or []) if isinstance(bridge, dict) else set()
+                checks["bridge_catalog"] = bool(
+                    bridge.get("ready") is True
+                    and {"matrix-template-templates", "matrix-template-generate"}.issubset(actions)
+                )
+            except APIError as exc:
+                bridge_detail = exc.code
+        if checks["ip12_url"]:
+            try:
+                checks["ip12_reachable"] = self.ip12.health().get("ok") is True
+            except APIError as exc:
+                ip12_detail = exc.code
+        ready = all(checks.values())
+        return {
+            "ok": True,
+            "ready": ready,
+            "service": "huangque-creator-agent",
+            "version": 2,
+            "checks": checks,
+            "details": {
+                key: value for key, value in {
+                    "bridge_catalog": bridge_detail,
+                    "ip12_reachable": ip12_detail,
+                }.items() if value
+            },
+        }
 
     def capability(self, user):
         catalog = self.bridge.catalog(user["account_id"])
@@ -1190,7 +1248,7 @@ class CreatorAgentHandler(BaseHTTPRequestHandler):
     def _handle(self, method):
         path = self._route()
         if method == "GET" and path == "/health":
-            return self._send(200, {"ok": True, "service": "huangque-creator-agent", "version": 2})
+            return self._send(200, self.service.health())
         user = self._user()
         if method == "GET" and path == "/capability":
             return self._send(200, self.service.capability(user))
@@ -1250,6 +1308,7 @@ def build_service(environment=None):
     bridge = BridgeClient(
         auth_url,
         environment.get("CREATOR_AGENT_INTERNAL_TOKEN")
+        or environment.get("HQ_INTERNAL_TOKEN")
         or environment.get("AUTH_INTERNAL_TOKEN")
         or environment.get("INTERNAL_TOKEN")
         or "",

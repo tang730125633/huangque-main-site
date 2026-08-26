@@ -12,6 +12,7 @@ class CreatorAgentContractTests(unittest.TestCase):
     def setUpClass(cls):
         cls.page = (ROOT / "site/workbench/creator-agent.html").read_text(encoding="utf-8")
         cls.auth = (ROOT / "server/auth_server.py").read_text(encoding="utf-8")
+        cls.service = (ROOT / "server/creator_agent/service.py").read_text(encoding="utf-8")
         cls.flags = (ROOT / "server/content_domains/feature_flags.py").read_text(encoding="utf-8")
         cls.registry = (ROOT / "server/content_domains/function_registry.py").read_text(encoding="utf-8")
         cls.shell = (ROOT / "site/workbench/cloud-shell.js").read_text(encoding="utf-8")
@@ -83,10 +84,20 @@ class CreatorAgentContractTests(unittest.TestCase):
         self.assertIn("--host 127.0.0.1 --port 8114", self.unit)
         self.assertIn("NoNewPrivileges=true", self.unit)
         self.assertIn("ReadWritePaths=/var/lib/huangque-creator-agent", self.unit)
+        self.assertIn("EnvironmentFile=-/home/ubuntu/auth-service/auth.env", self.unit)
+        self.assertIn('environment.get("HQ_INTERNAL_TOKEN")', self.service)
         self.assertIn("proxy_pass http://127.0.0.1:8114/", self.nginx)
         self.assertIn('CURRENT="$RUNTIME/current"', self.release)
         self.assertIn('mv -Tf "$CURRENT.next" "$CURRENT"', self.release)
         self.assertIn("nginx -t", self.release)
+        self.assertIn('d.get("ready") is True', self.release)
+
+    def test_deploy_contract_does_not_duplicate_shared_internal_token(self):
+        example = (ROOT / "deploy/huangque-secrets.env.example").read_text(encoding="utf-8")
+        self.assertIn("HQ_INTERNAL_TOKEN=", example)
+        creator_block = example[example.index("### /etc/huangque/creator-agent.env"):]
+        self.assertNotIn("CREATOR_AGENT_INTERNAL_TOKEN=", creator_block)
+        self.assertIn("/api/auth/internal/creator-agent/health", self.auth)
 
     def test_inline_javascript_parses(self):
         scripts = re.findall(r"<script(?:\s[^>]*)?>([\s\S]*?)</script>", self.page)

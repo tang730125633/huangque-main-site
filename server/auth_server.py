@@ -5099,6 +5099,36 @@ class H(BaseHTTPRequestHandler):
     def _creator_agent_bridge_enabled(self):
         return feature_flags.is_enabled("creator_agent_v1")
 
+    def _creator_agent_catalog_payload(self):
+        states = {flag: feature_flags.is_enabled(flag) for flag in hq_cli_api.CATALOG_FEATURE_FLAGS}
+        catalog = hq_cli_api.action_catalog(states)
+        allowed = {
+            "matrix-template-capability", "matrix-template-templates",
+            "matrix-template-generate",
+        }
+        catalog["actions"] = [
+            item for item in catalog.get("actions") or [] if item.get("action") in allowed
+        ]
+        return catalog
+
+    def _internal_creator_agent_health(self):
+        enabled = self._creator_agent_bridge_enabled()
+        catalog = self._creator_agent_catalog_payload()
+        actions = catalog.get("actions") or []
+        action_names = [str(item.get("action") or "") for item in actions]
+        matrix_ready = any(
+            item.get("action") == "matrix-template-generate"
+            and (item.get("availability") or {}).get("status") == "available"
+            for item in actions
+        )
+        return self._cli_send(200, {
+            "ok": True,
+            "ready": bool(enabled and matrix_ready),
+            "feature_enabled": bool(enabled),
+            "actions": action_names,
+            "catalog_version": catalog.get("version"),
+        })
+
     def _internal_creator_agent_catalog(self, body):
         if not self._creator_agent_bridge_enabled():
             return self._cli_send(503, {"detail": "Creator Agent 执行桥未启用", "code": "feature_disabled"})
@@ -5110,15 +5140,7 @@ class H(BaseHTTPRequestHandler):
             return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
         if not row:
             return self._cli_send(404, {"detail": "账号不存在", "code": "account_not_found"})
-        states = {flag: feature_flags.is_enabled(flag) for flag in hq_cli_api.CATALOG_FEATURE_FLAGS}
-        catalog = hq_cli_api.action_catalog(states)
-        allowed = {
-            "matrix-template-capability", "matrix-template-templates",
-            "matrix-template-generate",
-        }
-        catalog["actions"] = [
-            item for item in catalog.get("actions") or [] if item.get("action") in allowed
-        ]
+        catalog = self._creator_agent_catalog_payload()
         return self._cli_send(200, {"account_id": row["account_id"], **catalog})
 
     def _internal_creator_agent_action(self, body):
@@ -5301,6 +5323,15 @@ class H(BaseHTTPRequestHandler):
             if self._bad_json():
                 return self._cli_send(400, {"detail": "请求体不是合法 JSON", "code": "invalid_request"})
             return self._internal_creator_agent_catalog(d)
+        if p == "/api/auth/internal/creator-agent/health":
+            if not self._require_internal():
+                return
+            if self._content_length_exceeds(1024):
+                return self._cli_send(413, {"detail": "请求过大", "code": "request_too_large"})
+            d = self._body()
+            if self._bad_json() or not isinstance(d, dict) or d:
+                return self._cli_send(400, {"detail": "健康检查请求必须为空对象", "code": "invalid_request"})
+            return self._internal_creator_agent_health()
         if p == "/api/auth/internal/creator-agent/action":
             if not self._require_internal():
                 return
