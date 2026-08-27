@@ -196,9 +196,14 @@ class CreatorAgentService:
 
     @staticmethod
     def _client_ip(headers):
-        forwarded = str((headers or {}).get("X-Forwarded-For") or "").split(",", 1)[0].strip()
-        value = forwarded or str((headers or {}).get("X-Real-IP") or "").strip() or "unknown"
-        return value[:80] if re.fullmatch(r"[0-9A-Fa-f:.]{2,80}", value) else "unknown"
+        values = headers or {}
+        real_ip = str(values.get("X-Real-IP") or "").strip()
+        forwarded = str(values.get("X-Forwarded-For") or "").split(",")
+        candidates = [real_ip, forwarded[-1].strip() if forwarded else ""]
+        for value in candidates:
+            if re.fullmatch(r"[0-9A-Fa-f:.]{2,80}", value):
+                return value[:80]
+        return "unknown"
 
     def _model_call(self, user, kind, payload, callback, max_output_tokens=2400):
         serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)

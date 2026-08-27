@@ -113,7 +113,8 @@ Creator SQLite 是本功能的画像正本。画像修改作为版本化补充�
   业务输入按 UTF-8 字节数作为 token 上界，并额外预留 8192 token 覆盖固定系统提示和请求封装；
   该预留也只能调高。价格基线以 [DeepSeek 官方价格页](https://api-docs.deepseek.com/quick_start/pricing/) 为准。
 - nginx 对 `/api/creator-agent/messages` 另设 IP 请求与连接上限；任一闸门拒绝均返回 429，
-  且不得调用 DeepSeek。
+  且不得调用 DeepSeek。Creator 路由由 nginx 覆盖 `X-Real-IP`/`X-Forwarded-For` 为连接源地址，
+  服务优先使用 `X-Real-IP`，客户端伪造的转发链不能切换持久 IP 计数桶。
 - 画像状态、assistant 消息和 user request 的可回放 turn 在同一 SQLite 事务提交；模型返回后在
   任一写入断点退出，重试同 request ID 都只能推进零次或一次，不会无限 `idempotency_in_progress`。
 
