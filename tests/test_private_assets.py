@@ -1038,6 +1038,148 @@ esac
                 thread.join(timeout=2)
                 server.server_close()
 
+    def test_scene_upload_http_route_enforces_graph_project_access(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            audio_db = str(root / "assets.db")
+            job_db = str(root / "jobs.db")
+            personal = (
+                "short_drama_scene_uploads/ownerhash/personalhash/scene_private.png"
+            )
+            shared = (
+                "short_drama_scene_uploads/ownerhash/sharedhash/scene_shared.png"
+            )
+            for relative, content in (
+                (personal, self.PNG_1X1),
+                (shared, self.PNG_1X1),
+            ):
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(content)
+
+            with closing(sqlite3.connect(audio_db)) as conn:
+                conn.execute("CREATE TABLE video_assets(username TEXT,status TEXT,image_file TEXT,audio_file TEXT,reference_video_file TEXT,video_file TEXT)")
+                conn.execute("CREATE TABLE avatars(username TEXT,status TEXT,image_file TEXT)")
+                conn.execute("CREATE TABLE audio_voices(username TEXT,scope TEXT,preview_file TEXT)")
+                conn.commit()
+            with closing(sqlite3.connect(job_db)) as conn:
+                conn.executescript("""
+                    CREATE TABLE short_drama_projects(
+                      id TEXT PRIMARY KEY,username TEXT,board_id TEXT,deleted INTEGER
+                    );
+                    CREATE TABLE short_drama_graph_entities(
+                      id TEXT PRIMARY KEY,project_id TEXT,asset_type TEXT
+                    );
+                    CREATE TABLE short_drama_graph_versions(
+                      entity_id TEXT,references_json TEXT,attributes_json TEXT
+                    );
+                """)
+                conn.executemany(
+                    "INSERT INTO short_drama_projects VALUES(?,?,?,0)",
+                    (("personal", "alice", None), ("shared", "alice", "board-1")),
+                )
+                conn.executemany(
+                    "INSERT INTO short_drama_graph_entities VALUES(?,?,'scene')",
+                    (("scene-personal", "personal"), ("scene-shared", "shared")),
+                )
+                conn.executemany(
+                    "INSERT INTO short_drama_graph_versions VALUES(?,?,?)",
+                    (
+                        (
+                            "scene-personal",
+                            json.dumps([{"file": personal, "url": "/api/gen/file/" + personal}]),
+                            json.dumps({
+                                "source": "upload",
+                                "scene_reference_owner": "alice",
+                                "scene_reference_project_id": "personal",
+                            }),
+                        ),
+                        (
+                            "scene-shared",
+                            json.dumps([{"file": shared, "url": "/api/gen/file/" + shared}]),
+                            json.dumps({
+                                "source": "upload",
+                                "scene_reference_owner": "alice",
+                                "scene_reference_project_id": "shared",
+                            }),
+                        ),
+                    ),
+                )
+                conn.commit()
+
+            server = core.ThreadingHTTPServer(("127.0.0.1", 0), core.H)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            base = "http://127.0.0.1:%d/api/gen/file/" % server.server_port
+
+            def access(handler):
+                board_id = handler.headers.get("X-Canvas-Board-Id")
+                return {"board_id": board_id, "role": "viewer"} if board_id else None
+
+            try:
+                common = (
+                    patch.object(core, "OUT_DIR", root),
+                    patch.object(core, "AUDIO_DB", audio_db),
+                    patch.object(core, "JOB_DB", job_db),
+                )
+                with common[0], common[1], common[2], \
+                        patch.object(core, "verify", return_value=None), \
+                        self.assertRaises(urllib.error.HTTPError) as anonymous:
+                    opener.open(base + personal, timeout=2)
+                self.assertEqual(401, anonymous.exception.code)
+
+                with patch.object(core, "OUT_DIR", root), \
+                        patch.object(core, "AUDIO_DB", audio_db), \
+                        patch.object(core, "JOB_DB", job_db), \
+                        patch.object(core, "verify", return_value={"username": "bob"}), \
+                        self.assertRaises(urllib.error.HTTPError) as other_user:
+                    opener.open(base + personal, timeout=2)
+                self.assertEqual(404, other_user.exception.code)
+
+                with patch.object(core, "OUT_DIR", root), \
+                        patch.object(core, "AUDIO_DB", audio_db), \
+                        patch.object(core, "JOB_DB", job_db), \
+                        patch.object(core, "verify", return_value={"username": "alice"}):
+                    with opener.open(base + personal, timeout=2) as response:
+                        self.assertEqual(200, response.status)
+                        self.assertEqual(self.PNG_1X1, response.read())
+
+                board_request = urllib.request.Request(
+                    base + shared,
+                    headers={"X-Canvas-Board-Id": "board-1"},
+                )
+                with patch.object(core, "OUT_DIR", root), \
+                        patch.object(core, "AUDIO_DB", audio_db), \
+                        patch.object(core, "JOB_DB", job_db), \
+                        patch.object(core, "verify", return_value={"username": "bob"}), \
+                        patch.object(core, "_short_drama_canvas_access", side_effect=access):
+                    with opener.open(board_request, timeout=2) as response:
+                        self.assertEqual(200, response.status)
+                        self.assertEqual(self.PNG_1X1, response.read())
+
+                with patch.object(core, "OUT_DIR", root), \
+                        patch.object(core, "AUDIO_DB", audio_db), \
+                        patch.object(core, "JOB_DB", job_db), \
+                        patch.object(core, "LOCAL_FILE_PUBLIC_BASE_URL", "https://media.example"), \
+                        patch.object(core, "LOCAL_FILE_SIGNING_SECRET", "s" * 32), \
+                        patch.object(core.time, "time", return_value=1000), \
+                        patch.object(core, "verify", return_value=None):
+                    signed = urllib.parse.urlparse(
+                        core.local_provider_reference_url(personal, now=1000)
+                    )
+                    signed_url = (
+                        "http://127.0.0.1:%d%s?%s"
+                        % (server.server_port, signed.path, signed.query)
+                    )
+                    with opener.open(signed_url, timeout=2) as response:
+                        self.assertEqual(200, response.status)
+                        self.assertEqual(self.PNG_1X1, response.read())
+            finally:
+                server.shutdown()
+                thread.join(timeout=2)
+                server.server_close()
+
     def test_download_proxy_token_verification_fails_closed(self):
         response = Mock()
         response.read.return_value = json.dumps({"user": {"username": "alice"}}).encode()

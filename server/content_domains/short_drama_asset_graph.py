@@ -6,6 +6,7 @@ import json
 import re
 import sqlite3
 import time
+import urllib.parse
 import uuid
 from contextlib import closing
 
@@ -994,6 +995,33 @@ def _scene_upload_prefix(owner, project_id):
     return "short_drama_scene_uploads/%s/%s/" % (owner_key, project_key)
 
 
+def _scene_result_file(value):
+    parsed = urllib.parse.urlsplit(_text(value, 1000))
+    if (
+        parsed.scheme or parsed.netloc or parsed.query or parsed.fragment
+        or parsed.path.startswith("/")
+    ):
+        return ""
+    relative = urllib.parse.unquote(parsed.path)
+    if (
+        not relative or "\\" in relative
+        or any(part in {"", ".", ".."} for part in relative.split("/"))
+    ):
+        return ""
+    return relative
+
+
+def _scene_result_url_file(value):
+    parsed = urllib.parse.urlsplit(_text(value, 2000))
+    prefix = "/api/gen/file/"
+    if (
+        parsed.scheme or parsed.netloc or parsed.query or parsed.fragment
+        or not parsed.path.startswith(prefix)
+    ):
+        return ""
+    return _scene_result_file(urllib.parse.unquote(parsed.path[len(prefix):]))
+
+
 def _scene_asset_job_matches(conn, actor, reference):
     try:
         job_id = int(reference.get("asset_job_id"))
@@ -1015,11 +1043,23 @@ def _scene_asset_job_matches(conn, actor, reference):
         files = [result.get("file")]
     requested_file = _text(reference.get("file"), 1000)
     requested_url = _text(reference.get("url"), 2000)
-    if requested_url not in [_text(value, 2000) for value in urls]:
+    normalized_urls = [_text(value, 2000) for value in urls]
+    if normalized_urls.count(requested_url) != 1:
         return False
-    if requested_file in [_text(value, 1000) for value in files]:
-        return True
-    return requested_url == "/api/gen/file/" + requested_file
+    index = normalized_urls.index(requested_url)
+    if files:
+        indexed_file = _scene_result_file(files[index]) if index < len(files) else ""
+        requested_file = _scene_result_file(requested_file)
+        local_url_file = _scene_result_url_file(requested_url)
+        return (
+            bool(indexed_file)
+            and requested_file == indexed_file
+            and (
+                not requested_url.startswith("/api/gen/file/")
+                or local_url_file == indexed_file
+            )
+        )
+    return _scene_result_url_file(requested_url) == _scene_result_file(requested_file)
 
 
 def _trusted_scene_reference(conn, owner, project_id, scene_key, version, reference):
@@ -1443,6 +1483,13 @@ def _resolve_scene_reference(conn, owner, actor, project_id, body):
             urls = [result.get("url")]
         if not files and result.get("file"):
             files = [result.get("file")]
+        urls = [_text(value, 2000) for value in urls]
+        if not urls or any(not value for value in urls) or len(set(urls)) != len(urls):
+            raise AssetGraphError(
+                "scene_asset_invalid",
+                "场景图片资产结果无法唯一匹配",
+                422,
+            )
         requested_url = _text(body.get("asset_url"), 2000)
         if requested_url:
             if requested_url not in urls:
@@ -1455,11 +1502,30 @@ def _resolve_scene_reference(conn, owner, actor, project_id, body):
         else:
             index = 0
         url = _text(urls[index] if index < len(urls) else "", 2000)
-        file_value = files[index] if index < len(files) else (files[0] if files else "")
-        file_name = (
-            image_domain._trusted_short_drama_file(file_value)
-            or image_domain._trusted_short_drama_file(url, file_url=True)
-        )
+        if files and index >= len(files):
+            raise AssetGraphError(
+                "scene_asset_invalid",
+                "选择的图片缺少同一结果位置的本地文件",
+                422,
+            )
+        file_value = files[index] if files else ""
+        normalized_file = _scene_result_file(file_value)
+        local_url_file = _scene_result_url_file(url)
+        if files and (
+            not normalized_file
+            or (
+                url.startswith("/api/gen/file/")
+                and local_url_file != normalized_file
+            )
+        ):
+            raise AssetGraphError(
+                "scene_asset_invalid",
+                "选择的图片 URL 与本地文件不属于同一结果",
+                422,
+            )
+        file_name = image_domain._trusted_short_drama_file(normalized_file)
+        if not files:
+            file_name = image_domain._trusted_short_drama_file(url, file_url=True)
         if not file_name or not url:
             raise AssetGraphError("scene_asset_invalid", "该图片资产无法用作场景图", 422)
         return ({"file": file_name, "url": url,
