@@ -18,7 +18,9 @@ class HermesPdfFallbackTests(unittest.TestCase):
     def test_browser_free_renderer_produces_a_parseable_editorial_report(self):
         import sys
         sys.path.insert(0, str(HERMES))
-        from pdf_fallback import _styled_lines, _wrap, render_foundation_pdf_fallback
+        from pdf_fallback import (
+            _styled_lines, _wrap, render_foundation_consulting_pdf, render_foundation_pdf_fallback,
+        )
         from pypdf import PdfReader
 
         content = "# 周岚 IP 定位初稿\n" + "\n".join(
@@ -48,6 +50,12 @@ class HermesPdfFallbackTests(unittest.TestCase):
                     return len(text) * 10
 
             self.assertEqual(_wrap("一二。", "font", 10, 20, FixedWidth()), ["一二。"])
+
+            consulting = render_foundation_consulting_pdf(
+                "## 首页｜IP结论总览\n#### 定位\n内容顾问\n## 模块一｜定位诊断\n### 最终结论\n真实日常变内容",
+                Path(tmp) / "consulting.pdf",
+            )
+            self.assertEqual(len(PdfReader(consulting, strict=True).pages), 2)
 
             renderer = shutil.which("pdftoppm")
             if renderer and importlib.util.find_spec("PIL"):

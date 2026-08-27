@@ -5,7 +5,171 @@ from __future__ import annotations
 import math
 import os
 import re
+from html import escape
 from pathlib import Path
+
+
+def _register_cjk_font(pdfmetrics, TTFont):
+    font_name = "HermesFoundationCJK"
+    for font_path in (
+        os.getenv("HERMES_PDF_FONT_PATH", ""),
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    ):
+        if not font_path or not Path(font_path).is_file():
+            continue
+        try:
+            pdfmetrics.registerFont(TTFont(font_name, font_path))
+            return font_name
+        except Exception:
+            continue
+    raise RuntimeError("PDF fallback requires an embeddable CJK font")
+
+
+def render_foundation_consulting_pdf(markdown, target, title="IP 人设定位｜模块 1-4 初稿"):
+    """A restrained consulting-report layout for the customer-facing PDF."""
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_LEFT
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import mm
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.platypus import (
+        KeepTogether, ListFlowable, ListItem, PageBreak, Paragraph, SimpleDocTemplate,
+        Spacer, Table, TableStyle,
+    )
+
+    target = Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    font_name = _register_cjk_font(pdfmetrics, TTFont)
+    width, height = A4
+    navy, ink, muted, line, pale = (
+        colors.HexColor("#102f62"), colors.HexColor("#24272d"), colors.HexColor("#68717d"),
+        colors.HexColor("#d9dde3"), colors.HexColor("#edf3ff"),
+    )
+    styles = getSampleStyleSheet()
+    body = ParagraphStyle("consulting-body", parent=styles["BodyText"], fontName=font_name,
+                          fontSize=10.0, leading=16, textColor=ink, spaceAfter=6, wordWrap="CJK")
+    module = ParagraphStyle("consulting-module", parent=body, fontSize=17, leading=23,
+                            spaceBefore=0, spaceAfter=20, textColor=ink, fontName=font_name)
+    section = ParagraphStyle("consulting-section", parent=body, fontSize=12.5, leading=18,
+                             spaceBefore=13, spaceAfter=9, textColor=ink, fontName=font_name)
+    card = ParagraphStyle("consulting-card", parent=body, fontSize=11.2, leading=16,
+                          spaceBefore=9, spaceAfter=6, textColor=ink, fontName=font_name)
+    small = ParagraphStyle("consulting-small", parent=body, fontSize=9.4, leading=14,
+                           spaceAfter=0, textColor=muted, fontName=font_name)
+    cover_title = ParagraphStyle("consulting-cover-title", parent=body, fontSize=23, leading=30,
+                                 spaceAfter=18, textColor=ink, fontName=font_name)
+    table_text = ParagraphStyle("consulting-table", parent=body, fontSize=9.2, leading=14,
+                                textColor=ink, fontName=font_name, spaceAfter=0)
+    list_text = ParagraphStyle("consulting-list", parent=body, fontSize=9.8, leading=15,
+                               textColor=ink, fontName=font_name, spaceAfter=2)
+
+    def plain(value):
+        value = escape(str(value or ""))
+        value = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", value)
+        return value.replace("&lt;br/&gt;", "<br/>")
+
+    def paragraph(value, style=body):
+        return Paragraph(plain(value), style)
+
+    def footer(canvas, doc):
+        canvas.saveState()
+        canvas.setStrokeColor(navy)
+        canvas.setLineWidth(1.4)
+        canvas.line(22 * mm, 16 * mm, width - 22 * mm, 16 * mm)
+        canvas.setFillColor(muted)
+        canvas.setFont(font_name, 8)
+        canvas.drawRightString(width - 22 * mm, 10 * mm, "第 %d 页" % doc.page)
+        canvas.restoreState()
+
+    def consulting_table(raw_rows):
+        cells = [[cell.strip() for cell in row.strip().strip("|").split("|")] for row in raw_rows]
+        header, *rows = cells
+        if rows and all(re.fullmatch(r":?-{3,}:?", cell.replace(" ", "")) for cell in rows[0]):
+            rows = rows[1:]
+        data = [[paragraph(cell, table_text) for cell in header]]
+        data += [[paragraph(cell, table_text) for cell in row] for row in rows]
+        table = Table(data, colWidths=[(width - 44 * mm) / max(1, len(header))] * len(header), repeatRows=1)
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), pale), ("TEXTCOLOR", (0, 0), (-1, 0), ink),
+            ("FONTNAME", (0, 0), (-1, -1), font_name), ("GRID", (0, 0), (-1, -1), 0.45, colors.HexColor("#cfdbef")),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 9),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 9), ("TOPPADDING", (0, 0), (-1, -1), 8),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ]))
+        return table
+
+    lines = str(markdown or "").splitlines()
+    story, index = [], 0
+    if lines and lines[0].strip().startswith("## 首页"):
+        index = 1
+        cards, label, values = [], "", []
+        while index < len(lines) and not lines[index].strip().startswith("## "):
+            value = lines[index].strip()
+            if value.startswith("#### "):
+                if label:
+                    cards.append([paragraph(label, table_text), paragraph("<br/>".join(values), table_text)])
+                label, values = value[5:], []
+            elif value:
+                values.append(value)
+            index += 1
+        if label:
+            cards.append([paragraph(label, table_text), paragraph("<br/>".join(values), table_text)])
+        story += [Spacer(1, 20 * mm), paragraph(title.replace("｜", " | "), cover_title)]
+        story += [paragraph("整理日期：基于本次对话", small), paragraph("报告框架：IP 十二模块｜模块 1-4", small), Spacer(1, 11 * mm)]
+        cover = Table(cards, colWidths=[38 * mm, width - 82 * mm], repeatRows=0)
+        cover.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (0, -1), pale), ("GRID", (0, 0), (-1, -1), 0.45, colors.HexColor("#cfdbef")),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 10),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 10), ("TOPPADDING", (0, 0), (-1, -1), 11),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 11),
+        ]))
+        story += [cover, Spacer(1, 12 * mm), paragraph("本报告将本人确认事实与传播建议分开呈现；传播建议不代表已发生结果。", small), PageBreak()]
+
+    table_rows, bullet_rows = [], []
+    def flush_table():
+        nonlocal table_rows
+        if table_rows:
+            story.extend([consulting_table(table_rows), Spacer(1, 9)])
+            table_rows = []
+    def flush_bullets():
+        nonlocal bullet_rows
+        if bullet_rows:
+            story.append(ListFlowable([ListItem(paragraph(item, list_text), leftIndent=0) for item in bullet_rows], bulletType="bullet", leftIndent=14))
+            story.append(Spacer(1, 3))
+            bullet_rows = []
+
+    while index < len(lines):
+        raw = lines[index].strip()
+        if raw.startswith("|") and raw.endswith("|"):
+            flush_bullets(); table_rows.append(raw); index += 1; continue
+        flush_table()
+        if raw.startswith(("- ", "* ")):
+            bullet_rows.append(raw[2:].strip()); index += 1; continue
+        flush_bullets()
+        if not raw:
+            index += 1; continue
+        if raw.startswith("## "):
+            if story and not isinstance(story[-1], PageBreak): story.append(PageBreak())
+            story.append(paragraph(raw[3:], module))
+        elif raw.startswith("### "):
+            story.append(KeepTogether([paragraph(raw[4:], section), Spacer(1, 1)]))
+        elif raw.startswith("#### "):
+            story.append(KeepTogether([paragraph(raw[5:], card), Spacer(1, 1)]))
+        elif raw.startswith("> "):
+            story.append(Paragraph("<font color='#68717d'>%s</font>" % plain(raw[2:]), body))
+        else:
+            story.append(paragraph(raw))
+        index += 1
+    flush_table(); flush_bullets()
+    doc = SimpleDocTemplate(str(target), pagesize=A4, leftMargin=22 * mm, rightMargin=22 * mm,
+                            topMargin=22 * mm, bottomMargin=24 * mm, title=title)
+    doc.build(story, onFirstPage=footer, onLaterPages=footer)
+    return target
 
 
 def _styled_lines(markdown):
