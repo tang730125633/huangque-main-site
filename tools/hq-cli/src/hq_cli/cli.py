@@ -494,8 +494,12 @@ def main(argv=None):
                 if not args.file:
                     raise CliError(EXIT_USAGE, "usage_error", "%s requires --file /absolute/path" % args.id)
                 credentials = _credentials()
-                upload_kind = "video" if args.id == "video-upload" else "image"
-                uploader = client.upload_video if upload_kind == "video" else client.upload_image
+                if args.id == "video-upload":
+                    upload_kind, uploader = "video", client.upload_video
+                elif args.id == "audio-upload":
+                    upload_kind, uploader = "audio", client.upload_audio
+                else:
+                    upload_kind, uploader = "image", client.upload_image
                 try:
                     status, upload = uploader(args.file, credentials["access_token"])
                 except ValueError as exc:
