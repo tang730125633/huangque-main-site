@@ -1493,6 +1493,7 @@ BROWSER_JOURNEYS = {
 
 
 _PAGE_DEFS = [
+    ("creator-agent", "AI 创作助手", "/workbench/creator-agent.html"),
     ("inspiration", "灵感设计", "/workbench/inspiration.html"),
     ("leads", "平台获客", "/workbench/leads.html"),
     ("collect", "内容爬取", "/workbench/collect.html"),

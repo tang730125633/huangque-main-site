@@ -216,6 +216,66 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         registry_source = (ROOT / "server/content_domains/registry.py").read_text(encoding="utf-8")
         self.assertIn("matrix_template_video", registry_source)
 
+    def test_accepted_job_is_durably_reconciled_without_second_charge(self):
+        from content_domains import jobs_store, submission_idempotency
+
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "jobs.db"
+
+            def database():
+                connection = sqlite3.connect(path)
+                connection.row_factory = sqlite3.Row
+                return connection
+
+            with closing(database()) as connection:
+                connection.execute("""CREATE TABLE jobs(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    kind TEXT NOT NULL,username TEXT NOT NULL,cost INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',payload TEXT NOT NULL,
+                    result TEXT,error TEXT,refunded INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,owner TEXT
+                )""")
+                submission_idempotency.ensure_table(connection)
+                connection.commit()
+
+            body = {
+                "top_text": "有效标题", "bottom_text": "关注查看更多",
+                "template_id": "native-bold", "bgm": True,
+            }
+            key = "creator-accepted-reconcile"
+            state, _ = submission_idempotency.begin(
+                database, "alice", "/api/gen/matrix-template", key, body,
+            )
+            self.assertEqual(state, "new")
+            deductions = []
+
+            def deduct(username, amount, reason, transaction_key):
+                deductions.append((username, amount, transaction_key))
+                return 95
+
+            job_id, _ = jobs_store.create_paid_job(
+                database, deduct, lambda *_args, **_kwargs: True,
+                "matrix_template_video", "alice", 5, body, "content",
+                charge_transaction_key="job-charge:alice:/api/gen/matrix-template:" + key,
+                before_commit=lambda connection, accepted_job_id: (
+                    submission_idempotency.accept_in_transaction(
+                        connection, "alice", "/api/gen/matrix-template", key, body,
+                        {"job_id": accepted_job_id, "cost": 5, "accepted": True},
+                    )
+                ),
+            )
+            replay_state, response = submission_idempotency.replay_existing(
+                database, "alice", "/api/gen/matrix-template", key, [body],
+            )
+            self.assertEqual(replay_state, "replay")
+            self.assertEqual(response["job_id"], job_id)
+            self.assertTrue(response["accepted"])
+            with closing(database()) as connection:
+                self.assertEqual(
+                    connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 1,
+                )
+            self.assertEqual(len(deductions), 1)
+
     def test_unified_function_names_cover_history_and_request_path(self):
         from server import func_names
 

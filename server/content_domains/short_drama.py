@@ -158,7 +158,7 @@ def validate_project_payload(payload, partial=False):
         raise ValueError("缺少短剧目标时长")
     if "target_duration" in cleaned:
         if type(cleaned["target_duration"]) is not int or cleaned["target_duration"] not in DURATIONS:
-            raise ValueError("短剧时长仅支持 15-30、30-60、60-90 秒")
+            raise ValueError("短剧时长仅支持 30、45、60 秒")
     if not partial and "shot_count" not in cleaned:
         raise ValueError("缺少短剧分镜数量")
     if "shot_count" in cleaned:

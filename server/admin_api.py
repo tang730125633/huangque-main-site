@@ -139,9 +139,17 @@ ENV_FILES = [
     pathlib.Path("/home/ubuntu/content-api/whisper.env"),
     pathlib.Path("/home/ubuntu/auth-service/auth.env"),
     pathlib.Path("/etc/leadgen-secrets.env"),
+    pathlib.Path("/etc/huangque/creator-agent.env"),
 ]
 
 SERVICES = [
+    {
+        "key": "creator-agent",
+        "name": "创作 Agent 服务",
+        "port": 8114,
+        "service_file": "deploy/systemd/huangque-creator-agent.service",
+        "health_url": "http://127.0.0.1:8114/health",
+    },
     {
         "key": "auth",
         "name": "认证服务",

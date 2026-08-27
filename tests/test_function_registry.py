@@ -96,7 +96,7 @@ class FunctionRegistryTests(unittest.TestCase):
         pages = self.admin.function_registry.list_pages()
         self.assertEqual(
             [page["name"] for page in pages],
-            ["灵感设计", "平台获客", "内容爬取", "图片生成", "视频生成", "音频生成",
+            ["AI 创作助手", "灵感设计", "平台获客", "内容爬取", "图片生成", "视频生成", "音频生成",
              "文案编导", "文案成片", "模板成片", "短剧创作", "无限画布", "我的资产", "点数价格", "邀请中心",
              "教程视频", "通用设置"],
         )

@@ -266,6 +266,86 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def _persist_bound_locked_scene_reference(self, *, file_value, url_value):
+        self._lock_project_character_references()
+        short_drama_autodraft.short_drama_asset_graph.sync_foundation(
+            self.db, "alice", "alice", self.project["id"],
+        )
+        conn = self.db()
+        try:
+            plan = json.loads(conn.execute(
+                "SELECT plan_json FROM short_drama_production_plans WHERE id=?",
+                (self.plan_id,),
+            ).fetchone()[0])
+            shot = next(
+                item for item in plan["material_plan"]
+                if item.get("character_keys")
+            )
+            scene = conn.execute(
+                "SELECT entity.id,entity.current_version_id "
+                "FROM short_drama_graph_entities entity "
+                "JOIN short_drama_graph_relations relation "
+                "ON relation.entity_id=entity.id "
+                "JOIN short_drama_shots shot ON shot.id=relation.source_id "
+                "WHERE entity.project_id=? AND entity.asset_type='scene' "
+                "AND entity.status='active' AND relation.source_scope='shot' "
+                "AND relation.relation_type='located_in' AND shot.shot_key=? "
+                "LIMIT 1",
+                (self.project["id"], shot["shot_key"]),
+            ).fetchone()
+            self.assertIsNotNone(scene)
+            version_id = "legacy-scene-reference-" + shot["shot_key"]
+            version = int(conn.execute(
+                "SELECT COALESCE(MAX(version),0)+1 "
+                "FROM short_drama_graph_versions WHERE entity_id=?",
+                (scene[0],),
+            ).fetchone()[0])
+            conn.execute(
+                "UPDATE short_drama_graph_versions SET status='retired' "
+                "WHERE entity_id=? AND status='locked'",
+                (scene[0],),
+            )
+            conn.execute(
+                "INSERT INTO short_drama_graph_versions "
+                "(id,entity_id,version,parent_id,status,prompt,negative_prompt,"
+                "references_json,attributes_json,valid_from,valid_to,content_hash,"
+                "created_by,created_at,locked_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    version_id,
+                    scene[0],
+                    version,
+                    scene[1],
+                    "locked",
+                    "雨中的纪念广场",
+                    "",
+                    json.dumps([{
+                        "file": file_value,
+                        "url": url_value,
+                        "name": "历史锁定场景图",
+                    }], ensure_ascii=False),
+                    json.dumps({
+                        "source": "legacy",
+                        "scene_operation_id": version_id,
+                    }, ensure_ascii=False),
+                    "",
+                    "",
+                    "legacy-scene-reference-content-hash",
+                    "alice",
+                    1,
+                    1,
+                ),
+            )
+            conn.execute(
+                "UPDATE short_drama_graph_entities "
+                "SET current_version_id=?,updated_at=? WHERE id=?",
+                (version_id, 1, scene[0]),
+            )
+            conn.commit()
+            return shot
+        finally:
+            conn.close()
+
     def _provider_quote(self):
         workspace = short_drama_autodraft.workspace(
             self.db, "alice", "alice", self.project["id"]
@@ -4308,6 +4388,58 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         ]
         self.assertIn("scene", reference_types)
         self.assertNotIn("continuity", reference_types)
+
+    def test_minimax_bound_url_only_locked_scene_is_rejected_during_preflight(self):
+        shot = self._persist_bound_locked_scene_reference(
+            file_value="",
+            url_value="https://cdn.example/legacy-locked-scene.png",
+        )
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+            "MINIMAX_API_KEY": "configured-for-preflight-only",
+        }):
+            with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+                short_drama_autodraft.preview_provider_request(
+                    self.db,
+                    "alice",
+                    "alice",
+                    {
+                        "project_id": self.project["id"],
+                        "plan_id": self.plan_id,
+                        "shot_key": shot["shot_key"],
+                    },
+                    include_private=True,
+                )
+
+        self.assertEqual(422, raised.exception.status)
+        self.assertEqual("provider_scene_reference_required", raised.exception.code)
+
+    def test_minimax_bound_missing_locked_scene_file_is_rejected_during_preflight(self):
+        shot = self._persist_bound_locked_scene_reference(
+            file_value="short_drama_scenes/missing-locked-scene.png",
+            url_value="/api/gen/file/short_drama_scenes/missing-locked-scene.png",
+        )
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+            "MINIMAX_API_KEY": "configured-for-preflight-only",
+        }):
+            with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+                short_drama_autodraft.preview_provider_request(
+                    self.db,
+                    "alice",
+                    "alice",
+                    {
+                        "project_id": self.project["id"],
+                        "plan_id": self.plan_id,
+                        "shot_key": shot["shot_key"],
+                    },
+                    include_private=True,
+                )
+
+        self.assertEqual(422, raised.exception.status)
+        self.assertEqual("provider_scene_reference_required", raised.exception.code)
 
     def test_minimax_bound_scene_without_locked_reference_is_rejected(self):
         self._lock_project_character_references()

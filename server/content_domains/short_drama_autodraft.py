@@ -1873,7 +1873,22 @@ def preview_provider_request(
         if scene_reference and not str(
             scene_reference.get("file") or ""
         ).strip():
+            if requested_scene_key or bound_scene_key:
+                raise AutodraftError(
+                    "provider_scene_reference_required",
+                    "当前镜头绑定的场景参考图尚未锁定或不可用",
+                    422,
+                )
             scene_reference = None
+        if scene_reference and (requested_scene_key or bound_scene_key):
+            try:
+                provider.resolve_reference_values([scene_reference])
+            except Exception as exc:
+                raise AutodraftError(
+                    "provider_scene_reference_required",
+                    "当前镜头绑定的场景参考图尚未锁定或不可用",
+                    422,
+                ) from exc
         tail_required = bool(same_scene_reference and previous_reference)
         extra_reference_count = int(bool(scene_reference)) + int(tail_required)
         maximum_characters = 5 - extra_reference_count
