@@ -1,5 +1,6 @@
 const test=require('node:test');
 const assert=require('node:assert/strict');
+const crypto=require('node:crypto');
 const fs=require('node:fs');
 const modalApi=require('../site/workbench/digital-human-error-modal.js');
 
@@ -104,7 +105,9 @@ test('repeated failures update the same modal instead of stacking',()=>{
 
 test('page wires modal controller and no longer writes bottom error text',()=>{
   const page=fs.readFileSync(require.resolve('../site/workbench/digital-human-oneclick.html'),'utf8');
-  assert.match(page,/digital-human-error-modal\.js\?v=1/);
+  const modalSource=fs.readFileSync(require.resolve('../site/workbench/digital-human-error-modal.js'),'utf8').replace(/\r\n/g,'\n');
+  const modalStamp=crypto.createHash('md5').update(modalSource).digest('hex').slice(0,8);
+  assert.match(page,new RegExp(`digital-human-error-modal\\.js\\?v=${modalStamp}`));
   assert.match(page,/data-error-close/);
   assert.match(page,/data-error-backdrop/);
   assert.match(page,/errorModal\.show\(message\)/);
