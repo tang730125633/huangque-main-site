@@ -246,7 +246,7 @@ class CreatorPlanner:
     def from_environment(cls, environment=None):
         environment = environment or os.environ
         base = environment.get("CREATOR_AGENT_BASE_URL", "https://api.deepseek.com")
-        key = environment.get("CREATOR_AGENT_API_KEY") or environment.get("DEEPSEEK_API_KEY") or ""
+        key = environment.get("CREATOR_AGENT_API_KEY") or ""
         model = environment.get("CREATOR_AGENT_MODEL", "deepseek-v4-flash")
         provider = OpenAICompatiblePlanner(base, key, model) if base and key and model else None
         return cls(provider=provider, strict=True)

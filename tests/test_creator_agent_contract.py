@@ -69,6 +69,8 @@ class CreatorAgentContractTests(unittest.TestCase):
         self.assertNotIn("CREATOR_AGENT_IP12_URL", example)
         self.assertNotIn("IP12Client", self.service)
         self.assertNotIn("/workbench/ip12", self.service)
+        self.assertNotIn("DEEPSEEK_API_KEY", self.service)
+        self.assertNotIn("DEEPSEEK_API_KEY", planner)
         self.assertIn("CREATOR_AGENT_BASE_URL=https://api.deepseek.com", example)
         self.assertIn("CREATOR_AGENT_MODEL=deepseek-v4-flash", example)
         self.assertIn("DeepSeekProfileAgent", profile_agent)
