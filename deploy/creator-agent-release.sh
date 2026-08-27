@@ -42,6 +42,7 @@ trap cleanup EXIT
 for file in "$ROOT/server/creator_agent_api.py" "$ROOT/server/creator_agent/__init__.py" \
             "$ROOT/server/creator_agent/store.py" "$ROOT/server/creator_agent/planner.py" \
             "$ROOT/server/creator_agent/profile_agent.py" \
+            "$ROOT/server/creator_agent/profile_pdf.py" \
             "$ROOT/server/creator_agent/model_usage.py" \
             "$ROOT/server/creator_agent/service.py" "$UNIT_SOURCE" "$NGINX_SOURCE"; do
   [[ -f "$file" && ! -L "$file" ]] || { echo "missing release file: $file" >&2; exit 2; }
@@ -62,6 +63,8 @@ grep -Eq '^CREATOR_AGENT_API_KEY=.{16,}$' /etc/huangque/creator-agent.env \
   || { echo "creator agent API key is missing" >&2; exit 2; }
 ! grep -Eq '^CREATOR_AGENT_API_KEY=(replace-|change-me|placeholder)' /etc/huangque/creator-agent.env \
   || { echo "creator agent API key is still a placeholder" >&2; exit 2; }
+/usr/bin/python3 -c 'import reportlab' \
+  || { echo "creator agent PDF dependency reportlab is missing" >&2; exit 2; }
 
 systemctl is-active --quiet "$SERVICE" && WAS_ACTIVE=1 || true
 [[ -L "$CURRENT" ]] && OLD_CURRENT="$(readlink -f "$CURRENT")"

@@ -8,3 +8,5 @@ Flask>=3.1,<4
 # Seedance reference images are fully decoded before private staging.
 Pillow==12.2.0
 playwright==1.45.0
+# Creator Agent confirmed-profile PDF export.
+reportlab>=4.4,<6

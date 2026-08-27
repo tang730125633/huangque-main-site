@@ -192,7 +192,13 @@ class CreatorAgentContractTests(unittest.TestCase):
         self.assertIn("CREATOR_AGENT_MODEL=deepseek-v4-flash", self.release)
         self.assertIn("official DeepSeek API base", self.release)
         self.assertIn("profile_agent.py", self.release)
+        self.assertIn("profile_pdf.py", self.release)
         self.assertIn("model_usage.py", self.release)
+        requirements = (
+            ROOT / "deploy/requirements-content.txt"
+        ).read_text(encoding="utf-8")
+        self.assertIn("reportlab", requirements)
+        self.assertIn("import reportlab", self.release)
         store = (ROOT / "server/creator_agent/store.py").read_text(encoding="utf-8")
         self.assertIn("commit_message_turn", store)
         self.assertIn("source_message_id", store)

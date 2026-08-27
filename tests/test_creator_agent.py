@@ -310,7 +310,7 @@ class CreatorAgentTests(unittest.TestCase):
         result = service.bootstrap(USER, self.headers)
         self.assertRegex(result["project"]["id"], r"^[0-9a-f]{12}$")
         self.assertFalse(result["project"]["progress"]["profile_complete"])
-        self.assertIn("现在的身份", result["messages"][0]["content"])
+        self.assertIn("昵称", result["messages"][0]["content"])
         self.assertEqual(result["messages"][0]["public"]["kind"], "profile_question")
         self.assertTrue(any(call[0] == "ask_question" for call in self.profile_agent.calls))
 
@@ -392,7 +392,7 @@ class CreatorAgentTests(unittest.TestCase):
             profile={}, flow={"mode": "profile_interview"},
         )
         result = self.message("我是企业AI顾问", suffix="1001")
-        self.assertIn("重要转折", result["reply"])
+        self.assertIn("当前职业", result["reply"])
         self.assertEqual(len([call for call in self.profile_agent.calls if call[0] == "capture"]), 1)
         paid = [call for call in self.bridge.calls if call[0] == "action" and call[1] == "matrix-template-generate"]
         self.assertEqual(paid, [])
@@ -409,13 +409,13 @@ class CreatorAgentTests(unittest.TestCase):
         first = self.service.message(USER, self.headers, body)
         state = first["workspace"]["profile_state"]
         self.assertEqual((state["question_index"], state["revision"]), (1, 2))
-        self.assertEqual(first["message_public"]["field"], "turning_points")
+        self.assertEqual(first["message_public"]["field"], "career_identity")
         self.assertIn("DeepSeek", first["reply"])
         self.assertEqual(
             len([call for call in self.profile_agent.calls if call[0] == "capture"]),
             1,
         )
-        self.assertIn("1:identity", state["skipped_questions"])
+        self.assertIn("1:basic_context", state["skipped_questions"])
         self.assertEqual(self.service.message(USER, self.headers, body), first)
         self.assertEqual(
             len([call for call in self.profile_agent.calls if call[0] == "capture"]),
@@ -428,7 +428,7 @@ class CreatorAgentTests(unittest.TestCase):
         })
         state = second["workspace"]["profile_state"]
         self.assertEqual((state["question_index"], state["revision"]), (2, 3))
-        self.assertEqual(second["message_public"]["field"], "skills")
+        self.assertEqual(second["message_public"]["field"], "career_history")
         self.assertIn("DeepSeek提问", second["reply"])
         self.assertEqual(
             len([call for call in self.profile_agent.calls if call[0] == "capture"]),
@@ -451,7 +451,7 @@ class CreatorAgentTests(unittest.TestCase):
         self.assertEqual(current["phase"], "review")
         self.assertEqual(current["revision"], 2)
         self.assertEqual(result["message_public"]["kind"], "profile_review")
-        self.assertIn("1:audience_problem", current["skipped_questions"])
+        self.assertIn("1:existing_accounts", current["skipped_questions"])
         self.assertEqual(
             len([call for call in self.profile_agent.calls if call[0] == "capture"]),
             1,
@@ -525,6 +525,16 @@ class CreatorAgentTests(unittest.TestCase):
         self.assertEqual(workspace["profile_state"]["completed_modules"], [1, 2, 3, 4])
         self.assertEqual(set(workspace["profile"]["modules"]), {"1", "2", "3", "4"})
         self.assertIn("personal_profile", workspace["deliverables"])
+        self.assertIn("background_profile_pdf", workspace["deliverables"])
+        pdf_path = self.service._profile_pdf_path(USER["username"], PROJECT_ID)
+        self.assertTrue(pdf_path.is_file())
+        self.assertGreater(pdf_path.stat().st_size, 1024)
+        self.assertEqual(pdf_path.read_bytes()[:5], b"%PDF-")
+        snapshot = self.bootstrap()
+        self.assertEqual(
+            snapshot["project"]["foundation_pdf_url"],
+            "/api/creator-agent/projects/%s/background.pdf" % PROJECT_ID,
+        )
         self.assertFalse(any(
             message.get("public", {}).get("source") == "ip12"
             for message in self.store.messages(USER["username"], PROJECT_ID)
@@ -608,7 +618,7 @@ class CreatorAgentTests(unittest.TestCase):
                 replay = self.service.message(USER, {}, body)
                 current = self.store.workspace(USER["username"], PROJECT_ID)["profile_state"]
                 self.assertEqual((current["revision"], current["question_index"]), (2, 1))
-                self.assertIn("重要转折", replay["reply"])
+                self.assertIn("当前职业", replay["reply"])
                 with closing(self.store.db()) as connection:
                     user_row = connection.execute(
                         "SELECT id,public_json FROM creator_messages "
@@ -1627,6 +1637,27 @@ class CreatorAgentTests(unittest.TestCase):
                 item["content"] == "制作视频"
                 for item in self.store.messages(USER["username"], PROJECT_ID)
             ))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+
+    def test_http_background_pdf_is_private_and_rendered(self):
+        CreatorAgentHandler.service = self.service
+        server = ThreadingHTTPServer(("127.0.0.1", 0), CreatorAgentHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = (
+                "http://127.0.0.1:%d/projects/%s/background.pdf" %
+                (server.server_address[1], PROJECT_ID)
+            )
+            with urllib.request.urlopen(url, timeout=5) as response:
+                payload = response.read()
+                self.assertEqual(response.headers.get_content_type(), "application/pdf")
+                self.assertEqual(response.headers.get("Cache-Control"), "private, no-store")
+            self.assertEqual(payload[:5], b"%PDF-")
+            self.assertGreater(len(payload), 1024)
         finally:
             server.shutdown()
             server.server_close()

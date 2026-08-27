@@ -6,6 +6,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hashlib
 import json
 import os
+import pathlib
 import re
 import sys
 import threading
@@ -29,6 +30,7 @@ from .profile_agent import (
     DeepSeekProfileAgent, MODULES, ProfileAgentError,
     current_question, initial_state,
 )
+from .profile_pdf import ProfilePDFError, profile_pdf_path, render_profile_pdf
 from .model_usage import (
     ModelUsageError, ModelUsageGuard, NullModelUsageGuard,
 )
@@ -177,7 +179,7 @@ class BridgeClient:
 
 class CreatorAgentService:
     def __init__(self, store, planner, auth, bridge, profile_agent,
-                 usage_guard=None, clock=None):
+                 usage_guard=None, clock=None, profile_pdf_root=None):
         self.store = store
         self.planner = planner
         self.auth = auth
@@ -185,6 +187,9 @@ class CreatorAgentService:
         self.profile_agent = profile_agent
         self.usage_guard = usage_guard or NullModelUsageGuard()
         self.clock = clock or time.time
+        self.profile_pdf_root = pathlib.Path(
+            profile_pdf_root or (self.store.path.parent / "profile-pdfs")
+        )
         self._locks = {}
         self._locks_guard = threading.Lock()
         self._request_context = threading.local()
@@ -443,6 +448,8 @@ class CreatorAgentService:
     @classmethod
     def _public_project(cls, project, workspace):
         progress = cls._progress(project)
+        deliverables = project.get("deliverables") or {}
+        background_pdf = deliverables.get("background_profile_pdf") or {}
         return {
             "id": project.get("id"),
             "title": project.get("title") or "我的个人画像",
@@ -452,10 +459,10 @@ class CreatorAgentService:
             "progress": progress,
             "harness_actions": [],
             "reports": _public(project.get("reports") or {}),
-            "deliverables": _public(project.get("deliverables") or {}),
+            "deliverables": _public(deliverables),
             "artifacts": _public(project.get("artifacts") or []),
             "profile": _public(project.get("profile") or {}),
-            "foundation_pdf_url": "",
+            "foundation_pdf_url": str(background_pdf.get("url") or ""),
         }
 
     @staticmethod
@@ -574,6 +581,44 @@ class CreatorAgentService:
         if not alias:
             raise APIError(400, "画像名称不能为空", "invalid_title")
         return self.store.update_workspace(user["username"], project_id, alias=alias)
+
+    def _profile_pdf_path(self, username, project_id):
+        return profile_pdf_path(self.profile_pdf_root, username, project_id)
+
+    def _render_background_pdf(self, user, workspace, profile, state):
+        path = self._profile_pdf_path(user["username"], workspace["project_id"])
+        try:
+            metadata = render_profile_pdf(
+                path,
+                workspace.get("alias") or user.get("name") or user["username"],
+                profile,
+                state,
+            )
+        except ProfilePDFError as exc:
+            raise APIError(
+                500, "个人画像已生成，但背景档案 PDF 生成失败，请重试",
+                "profile_pdf_failed",
+            ) from exc
+        return {
+            "title": "IP人设定位背景档案",
+            "url": "/api/creator-agent/projects/%s/background.pdf" % workspace["project_id"],
+            "size": metadata["size"],
+            "generated_at": metadata["generated_at"],
+        }
+
+    def background_pdf(self, user, project_id):
+        self._gate(user)
+        project_id = self._project_id(project_id)
+        workspace = self.store.workspace(user["username"], project_id)
+        if not workspace or not (workspace.get("profile_state") or {}).get("profile_ready"):
+            raise APIError(404, "背景档案尚未生成", "profile_pdf_not_found")
+        path = self._profile_pdf_path(user["username"], project_id)
+        if not path.is_file():
+            self._render_background_pdf(
+                user, workspace, workspace.get("profile") or {},
+                workspace.get("profile_state") or {},
+            )
+        return path
 
     def _response(self, user, headers, project_id, reply, public=None):
         projects = self.store.workspaces(user["username"])
@@ -803,6 +848,9 @@ class CreatorAgentService:
                     "title": "个人画像",
                     "content": profile,
                 }
+                deliverables["background_profile_pdf"] = self._render_background_pdf(
+                    user, workspace, profile, state,
+                )
                 try:
                     completion_reply = self._model_call(
                         user, "profile_completion", {"profile": profile},
@@ -1536,9 +1584,14 @@ class CreatorAgentService:
                 state = dict(workspace.get("profile_state") or initial_state())
                 expected_revision = int(state.get("revision") or 1)
                 state["revision"] = expected_revision + 1
+                deliverables = dict(workspace.get("deliverables") or {})
+                deliverables["background_profile_pdf"] = self._render_background_pdf(
+                    user, workspace, profile, state,
+                )
                 workspace = self._save_profile_state(
                     user, workspace, state, expected_revision,
                     profile=profile, profile_overrides=overrides,
+                    deliverables=deliverables,
                     flow={"mode": "idle"},
                 )
                 reply = acknowledgement
@@ -1860,6 +1913,25 @@ class CreatorAgentHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def _send_pdf(self, path):
+        size = path.stat().st_size
+        self.send_response(200)
+        self.send_header("Content-Type", "application/pdf")
+        self.send_header("Cache-Control", "private, no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header(
+            "Content-Disposition",
+            'inline; filename="huangque-profile-%s.pdf"' % path.stem[-12:],
+        )
+        self.send_header("Content-Length", str(size))
+        self.end_headers()
+        with path.open("rb") as stream:
+            while True:
+                chunk = stream.read(64 * 1024)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+
     def _body(self, maximum=128 * 1024):
         try:
             length = int(self.headers.get("Content-Length") or 0)
@@ -1892,6 +1964,9 @@ class CreatorAgentHandler(BaseHTTPRequestHandler):
             return self._send(200, self.service.bootstrap(user, self.headers))
         if method == "POST" and path == "/messages":
             return self._send(200, self.service.message(user, self.headers, self._body()))
+        match = re.fullmatch(r"/projects/([0-9a-f]{12})/background\.pdf", path)
+        if method == "GET" and match:
+            return self._send_pdf(self.service.background_pdf(user, match.group(1)))
         match = re.fullmatch(r"/projects/([0-9a-f]{12})/(select|rename)", path)
         if method == "POST" and match:
             project_id, action = match.groups()

@@ -41,8 +41,11 @@ class CreatorProfileAgentTests(unittest.TestCase):
     def test_question_map_is_independent_and_reuses_compact_intake(self):
         state = initial_state()
         first = current_question(state)
-        self.assertEqual((first["module"], first["key"]), (1, "identity"))
-        self.assertEqual([len(MODULES[index]["questions"]) for index in range(1, 5)], [5, 2, 2, 2])
+        self.assertEqual((first["module"], first["key"]), (1, "basic_context"))
+        self.assertEqual(
+            [len(MODULES[index]["questions"]) for index in range(1, 5)],
+            [14, 4, 8, 5],
+        )
         self.assertNotIn("ip12", json.dumps(MODULES, ensure_ascii=False).lower())
 
     def test_deepseek_v4_flash_chat_contract_and_json_capture(self):
@@ -109,7 +112,7 @@ class CreatorProfileAgentTests(unittest.TestCase):
         agent = DeepSeekProfileAgent("secret", opener=opener)
         result = agent.capture_answer(initial_state(), "不知道怎么说")
         self.assertEqual(result["action"], "clarify")
-        self.assertEqual(result["next_question"]["key"], "identity")
+        self.assertEqual(result["next_question"]["key"], "basic_context")
 
     def test_deepseek_generates_the_displayed_profile_question(self):
         opener = Opener({

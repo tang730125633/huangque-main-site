@@ -25,7 +25,7 @@ const data = {
     id: 'a1b2c3d4e5f6', title: '我的个人画像', display_name: '我的个人画像', revision: 9,
     progress: { current_module: 5, module_step: 0, completed_modules: [1, 2, 3, 4], foundation_status: 'confirmed', foundation_ready: true, profile_complete: true },
     harness_actions: [], reports: {}, deliverables: {}, artifacts: [],
-    foundation_pdf_url: '/workbench/ip12/api/foundation-report/a1b2c3d4e5f6.pdf?preview=1',
+    foundation_pdf_url: '/api/creator-agent/projects/a1b2c3d4e5f6/background.pdf',
   },
   workspace: { project_id: 'a1b2c3d4e5f6', alias: '我的个人画像', platforms: ['douyin', 'xiaohongshu'], template_video_preferences: { global: [], platforms: {} }, flow: { mode: 'template_review', batch_id: batch.id } },
   messages: [
@@ -74,6 +74,11 @@ function serve(request, response) {
   if (/^\/api\/creator-agent\/batches\/[^/]+\/refresh$/.test(pathname)) {
     refreshRequests += 1;
     return json(response, 200, { batch });
+  }
+  if (/^\/api\/creator-agent\/projects\/[^/]+\/background\.pdf$/.test(pathname)) {
+    const pdf = Buffer.from('%PDF-1.4\n%%EOF\n');
+    response.writeHead(200, { 'Content-Type': 'application/pdf', 'Content-Length': pdf.length });
+    response.end(pdf); return;
   }
   if (pathname.startsWith('/api/creator-agent/')) return json(response, 200, data);
   if (pathname.startsWith('/api/gen/') || pathname.startsWith('/api/auth/')) return json(response, 200, { available: true, user: data.user });
@@ -131,6 +136,8 @@ function serve(request, response) {
         tabs: document.querySelectorAll('.ca-tab').length,
         aiEntry: document.querySelector('.hq-side-ai-entry')?.getAttribute('href') || '',
         aiLabel: document.querySelector('.hq-side-ai-entry')?.textContent.trim() || '',
+        pdfLinks: document.querySelectorAll('a[href*="background.pdf"]').length,
+        pdfFrame: document.querySelector('.ca-pdf')?.getAttribute('src') || '',
       }));
       if (name === 'desktop') {
         dropMessageResponses = 1;
@@ -178,5 +185,5 @@ function serve(request, response) {
     await browser.close(); server.close();
   }
   console.log(JSON.stringify(report));
-  if (Object.values(report).some((item) => item.width > item.viewport || item.messages < 3 || item.plans < 2 || !item.confirm || item.total !== '10 点' || !item.quoteCountdown.startsWith('报价剩余') || !item.profileTemplate.includes('回答参考') || item.tabs !== 3 || item.aiEntry !== 'creator-agent.html' || item.aiLabel !== 'AI 创作助手' || !item.messageReplayStable || !item.confirmRecovered || (item.confirmQuoteExpiresAt !== undefined && item.confirmQuoteExpiresAt !== batch.quote_expires_at) || (item.expiredQuoteRequotes === false))) process.exitCode = 1;
+  if (Object.values(report).some((item) => item.width > item.viewport || item.messages < 3 || item.plans < 2 || !item.confirm || item.total !== '10 点' || !item.quoteCountdown.startsWith('报价剩余') || !item.profileTemplate.includes('回答参考') || item.tabs !== 3 || item.aiEntry !== 'creator-agent.html' || item.aiLabel !== 'AI 创作助手' || item.pdfLinks !== 2 || !item.pdfFrame.includes('/background.pdf') || !item.messageReplayStable || !item.confirmRecovered || (item.confirmQuoteExpiresAt !== undefined && item.confirmQuoteExpiresAt !== batch.quote_expires_at) || (item.expiredQuoteRequotes === false))) process.exitCode = 1;
 })().catch((error) => { console.error(error); process.exitCode = 1; });
