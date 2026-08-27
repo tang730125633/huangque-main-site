@@ -795,7 +795,7 @@ def cleanup_expired_assets(db_factory=None, jobs_db_factory=None, now=None,
     with closing(_audio_db(db_factory)) as connection:
         connection.execute(
             "DELETE FROM digital_human_audio_admissions "
-            "WHERE state IN ('committed','committed_reaped') AND created_at<? "
+            "WHERE state='committed_reaped' AND created_at<? "
             "AND NOT EXISTS (SELECT 1 FROM digital_human_audio_uploads AS upload "
             "WHERE upload.asset_id='dha_' || substr(admission_id,6))",
             (now - 2 * 86400,),

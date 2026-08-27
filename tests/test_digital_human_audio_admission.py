@@ -167,7 +167,7 @@ class DigitalHumanAudioAdmissionTests(unittest.TestCase):
         self.assertTrue((directory / "unexpected.txt").exists())
         self.assertTrue((directory / "source.mp3").exists())
 
-    def test_committed_orphans_with_consent_or_job_references_are_retained(self):
+    def test_committed_orphans_remain_recoverable_across_audit_retention(self):
         now, consent_admission, consent_asset, consent_directory = \
             self._expired_admission_with_directory("alice")
         with closing(self.db()) as connection:
@@ -195,8 +195,9 @@ class DigitalHumanAudioAdmissionTests(unittest.TestCase):
             )
             connection.commit()
 
+        cleanup_now = max(now, job_now) + 2 * 86400 + 1
         self.assertEqual(0, digital_human_v2.cleanup_expired_assets(
-            self.db, self.jobs, now=max(now, job_now) + 1000, limit=10,
+            self.db, self.jobs, now=cleanup_now, limit=10,
         ))
         self.assertTrue(consent_directory.exists())
         self.assertTrue(job_directory.exists())
@@ -208,6 +209,42 @@ class DigitalHumanAudioAdmissionTests(unittest.TestCase):
             }
         self.assertEqual("committed", states[consent_admission])
         self.assertEqual("committed", states[job_admission])
+
+        with closing(self.db()) as connection:
+            connection.execute(
+                "DELETE FROM digital_human_consents WHERE voice_ref=?", (consent_asset,),
+            )
+            connection.commit()
+        with closing(self.jobs()) as connection:
+            connection.execute(
+                "DELETE FROM jobs WHERE payload LIKE ? OR result LIKE ?",
+                ("%" + job_asset + "%", "%" + job_asset + "%"),
+            )
+            connection.commit()
+
+        self.assertEqual(2, digital_human_v2._reap_expired_audio_admissions(
+            self.db, self.jobs, now=cleanup_now + 1, limit=10,
+        ))
+        self.assertFalse(consent_directory.exists())
+        self.assertFalse(job_directory.exists())
+        with closing(self.db()) as connection:
+            states = {
+                row["admission_id"]: row["state"] for row in connection.execute(
+                    "SELECT admission_id,state FROM digital_human_audio_admissions"
+                ).fetchall()
+            }
+        self.assertEqual("committed_reaped", states[consent_admission])
+        self.assertEqual("committed_reaped", states[job_admission])
+
+        self.assertEqual(0, digital_human_v2.cleanup_expired_assets(
+            self.db, self.jobs, now=cleanup_now + 2, limit=10,
+        ))
+        with closing(self.db()) as connection:
+            remaining = connection.execute(
+                "SELECT admission_id FROM digital_human_audio_admissions WHERE admission_id IN (?,?)",
+                (consent_admission, job_admission),
+            ).fetchall()
+        self.assertEqual([], remaining)
 
     def test_orphan_recovery_retains_valid_asset_record(self):
         now, admission_id, asset_id, directory = self._expired_admission_with_directory()
