@@ -1,4 +1,9 @@
-"""Durable charge/job handoff for matrix-template submissions."""
+"""Durable charge/job handoff for idempotent paid submissions.
+
+The table name is retained for backwards compatibility with the first caller,
+matrix-template video.  New callers freeze their job kind in the same attempt
+record before contacting Auth.
+"""
 
 from __future__ import annotations
 
@@ -54,6 +59,7 @@ def ensure_table(connection):
         idem_key TEXT NOT NULL,
         request_hash TEXT NOT NULL,
         input_json TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'matrix_template_video',
         cost INTEGER NOT NULL,
         charge_key TEXT NOT NULL UNIQUE,
         refund_key TEXT NOT NULL UNIQUE,
@@ -68,6 +74,16 @@ def ensure_table(connection):
         updated_at INTEGER NOT NULL,
         PRIMARY KEY(username,endpoint,idem_key)
     )""")
+    columns = {
+        row["name"] for row in connection.execute(
+            "PRAGMA table_info(matrix_template_submission_attempts)"
+        ).fetchall()
+    }
+    if "kind" not in columns:
+        connection.execute(
+            "ALTER TABLE matrix_template_submission_attempts "
+            "ADD COLUMN kind TEXT NOT NULL DEFAULT 'matrix_template_video'"
+        )
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_matrix_template_attempt_recovery "
         "ON matrix_template_submission_attempts(state,lease_until,updated_at)"
@@ -106,11 +122,15 @@ def recoverable(db_factory, limit=100, now=None):
     return [dict(row) for row in rows]
 
 
-def prepare(db_factory, username, endpoint, idem_key, body, cost, now=None):
+def prepare(db_factory, username, endpoint, idem_key, body, cost, now=None,
+            kind="matrix_template_video"):
     now = int(time.time() if now is None else now)
     cost = int(cost or 0)
+    kind = str(kind or "").strip()
     if cost <= 0:
         raise ValueError("invalid frozen cost")
+    if not kind:
+        raise ValueError("invalid frozen job kind")
     digest = _hash(body)
     encoded = _json(body)
     charge_key, refund_key = transaction_keys(username, endpoint, idem_key)
@@ -127,10 +147,10 @@ def prepare(db_factory, username, endpoint, idem_key, body, cost, now=None):
             raise AttemptConflict("submission idempotency claim is missing or changed")
         connection.execute(
             """INSERT OR IGNORE INTO matrix_template_submission_attempts(
-               username,endpoint,idem_key,request_hash,input_json,cost,
+               username,endpoint,idem_key,request_hash,input_json,kind,cost,
                charge_key,refund_key,state,created_at,updated_at)
-               VALUES(?,?,?,?,?,?,?,?,'prepared',?,?)""",
-            (username, endpoint, idem_key, digest, encoded, cost,
+               VALUES(?,?,?,?,?,?,?,?,?,'prepared',?,?)""",
+            (username, endpoint, idem_key, digest, encoded, kind, cost,
              charge_key, refund_key, now, now),
         )
         row = connection.execute(
@@ -141,6 +161,7 @@ def prepare(db_factory, username, endpoint, idem_key, body, cost, now=None):
         if (
             not row or row["request_hash"] != digest
             or row["input_json"] != encoded or int(row["cost"]) != cost
+            or row["kind"] != kind
             or row["charge_key"] != charge_key or row["refund_key"] != refund_key
         ):
             connection.rollback()
@@ -276,9 +297,9 @@ def _link_in_transaction(connection, attempt, job_id, response):
 
 
 def recover(db_factory, points, username, endpoint, idem_key, body=None, cost=None,
-            owner="content", now=None):
+            owner="content", now=None, kind="matrix_template_video"):
     if body is not None:
-        prepare(db_factory, username, endpoint, idem_key, body, cost, now)
+        prepare(db_factory, username, endpoint, idem_key, body, cost, now, kind)
     attempt = _claim(db_factory, username, endpoint, idem_key, now)
     if not attempt:
         return None
@@ -295,7 +316,7 @@ def recover(db_factory, points, username, endpoint, idem_key, body=None, cost=No
             )
             if points_left is None:
                 points_left = points.deduct_points(
-                    username, attempt["cost"], "job:matrix_template_video",
+                    username, attempt["cost"], "job:%s" % attempt["kind"],
                     transaction_key=attempt["charge_key"],
                 )
             attempt = _mark_charged(db_factory, attempt, points_left, now)
@@ -325,7 +346,7 @@ def recover(db_factory, points, username, endpoint, idem_key, body=None, cost=No
         }
         try:
             job_id = jobs_store.create_job_after_charge(
-                db_factory, "matrix_template_video", username, attempt["cost"],
+                db_factory, attempt["kind"], username, attempt["cost"],
                 attempt["input"], owner,
                 before_commit=lambda connection, linked_job_id: (
                     accepted.update(job_id=int(linked_job_id)),
@@ -347,7 +368,7 @@ def recover(db_factory, points, username, endpoint, idem_key, body=None, cost=No
             )
             if points_left is None:
                 points_left = points.refund_points(
-                    username, attempt["cost"], "matrix template job create failed",
+                    username, attempt["cost"], "%s job create failed" % attempt["kind"],
                     transaction_key=attempt["refund_key"],
                 )
             response = {

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """一键成片：现有数字人口播 + 用户图片资产/按需生图 + FFmpeg 自动穿插。"""
 import json
+import ipaddress
 import os
 import random
 import re
@@ -18,6 +19,18 @@ DIGITAL_HUMAN_MATERIAL_UPLOAD_PATH = "/api/gen/script_to_video/material-upload"
 DIGITAL_HUMAN_MATERIAL_UPLOAD_PURPOSE = "smart_montage"
 DIGITAL_HUMAN_MATERIAL_UPLOAD_LEASE_SECONDS = 4 * 60 * 60
 _UPLOAD_ID_RE = re.compile(r"^img_[0-9a-f]{32}$")
+
+
+def _trusted_client_ip(handler):
+    peer = (handler.client_address[0]
+            if getattr(handler, "client_address", None) else "")
+    forwarded = str(handler.headers.get("X-Real-IP") or "").strip()
+    try:
+        if ipaddress.ip_address(peer).is_loopback and forwarded:
+            return str(ipaddress.ip_address(forwarded))
+        return str(ipaddress.ip_address(peer))
+    except ValueError:
+        return "unknown"
 
 
 def _scene_prompt(scene):
@@ -302,6 +315,7 @@ def dispatch_http(handler, method, verify_token, must_change_password):
                 handler.headers.get("X-HQ-Run-ID"),
                 handler.headers.get("Content-Type"),
                 handler.headers.get("X-HQ-Audio-SHA256"),
+                client_ip=_trusted_client_ip(handler),
             )
         elif path == digital_human_v2.MATERIAL_RESOLVE_PATH:
             response = digital_human_v2.resolve_material_response(

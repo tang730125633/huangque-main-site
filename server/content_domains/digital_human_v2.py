@@ -17,6 +17,7 @@ import secrets
 import sqlite3
 import stat
 import subprocess
+import threading
 import time
 import urllib.parse
 
@@ -50,6 +51,14 @@ _AUDIO_MIMES = {
 }
 _MAX_AUDIO_UPLOAD_BYTES = 30 * 1024 * 1024
 _AUDIO_UPLOAD_TTL_SECONDS = 24 * 60 * 60
+_AUDIO_ADMISSION_LEASE_SECONDS = 10 * 60
+_AUDIO_USER_ACTIVE_LIMIT = 1
+_AUDIO_GLOBAL_ACTIVE_LIMIT = 2
+_AUDIO_USER_DAILY_COUNT = 8
+_AUDIO_IP_DAILY_COUNT = 24
+_AUDIO_USER_DAILY_BYTES = 180 * 1024 * 1024
+_AUDIO_MANAGED_DISK_BYTES = 2 * 1024 * 1024 * 1024
+_AUDIO_TRANSCRIBE_SEM = threading.BoundedSemaphore(_AUDIO_GLOBAL_ACTIVE_LIMIT)
 _MATERIAL_ASSET_ID_RE = re.compile(r"^dhm_[0-9a-f]{32}$")
 _MAX_MATERIAL_BYTES = 20 * 1024 * 1024
 _MATERIAL_TTL_SECONDS = 24 * 60 * 60
@@ -123,6 +132,21 @@ def _ensure_audio_table(connection):
         "CREATE INDEX IF NOT EXISTS idx_digital_human_material_owner "
         "ON digital_human_material_assets(username, run_id, item_index)"
     )
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS digital_human_audio_admissions(
+            admission_id TEXT PRIMARY KEY,
+            username TEXT NOT NULL,
+            client_ip_hash TEXT NOT NULL,
+            requested_bytes INTEGER NOT NULL,
+            state TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            lease_until INTEGER NOT NULL
+        )"""
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_digital_human_audio_admission_limits "
+        "ON digital_human_audio_admissions(state,username,client_ip_hash,created_at)"
+    )
 
 
 def _audio_db(db_factory=None):
@@ -131,6 +155,102 @@ def _audio_db(db_factory=None):
     _ensure_audio_table(connection)
     connection.commit()
     return connection
+
+
+def _managed_asset_disk_bytes():
+    total = 0
+    for name in ("digital_human_audio", "digital_human_materials"):
+        root = OUT_DIR / name
+        if not root.exists():
+            continue
+        for directory, subdirs, files in os.walk(str(root), followlinks=False):
+            safe_subdirs = []
+            for child in subdirs:
+                path = pathlib.Path(directory) / child
+                if not stat.S_ISLNK(os.lstat(path).st_mode):
+                    safe_subdirs.append(child)
+            subdirs[:] = safe_subdirs
+            for child in files:
+                info = os.lstat(pathlib.Path(directory) / child)
+                if stat.S_ISREG(info.st_mode):
+                    total += int(info.st_size)
+    return total
+
+
+def _begin_audio_admission(username, client_ip, requested_bytes,
+                           db_factory=None, now=None):
+    now = int(time.time() if now is None else now)
+    username = str(username or "").strip()
+    ip_hash = hashlib.sha256(str(client_ip or "unknown").encode("utf-8")).hexdigest()
+    admission_id = "dhaa_" + secrets.token_hex(16)
+    day_start = now - (now % 86400)
+    with closing(_audio_db(db_factory)) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            "DELETE FROM digital_human_audio_admissions "
+            "WHERE state='active' AND lease_until<=?", (now,),
+        )
+        active_user = connection.execute(
+            "SELECT COUNT(*) FROM digital_human_audio_admissions "
+            "WHERE state='active' AND username=?", (username,),
+        ).fetchone()[0]
+        active_global = connection.execute(
+            "SELECT COUNT(*) FROM digital_human_audio_admissions WHERE state='active'"
+        ).fetchone()[0]
+        reserved_global = connection.execute(
+            "SELECT COALESCE(SUM(requested_bytes),0) "
+            "FROM digital_human_audio_admissions WHERE state='active'"
+        ).fetchone()[0]
+        daily = connection.execute(
+            "SELECT COUNT(*),COALESCE(SUM(requested_bytes),0) "
+            "FROM digital_human_audio_admissions WHERE username=? AND created_at>=?",
+            (username, day_start),
+        ).fetchone()
+        ip_daily = connection.execute(
+            "SELECT COUNT(*) FROM digital_human_audio_admissions "
+            "WHERE client_ip_hash=? AND created_at>=?", (ip_hash, day_start),
+        ).fetchone()[0]
+        if (int(active_user) >= _AUDIO_USER_ACTIVE_LIMIT
+                or int(active_global) >= _AUDIO_GLOBAL_ACTIVE_LIMIT):
+            connection.rollback()
+            raise DigitalHumanRequestError(
+                "录音转写任务繁忙，请稍后再试", "audio_upload_concurrency_limit", 429,
+            )
+        if (int(daily[0]) >= _AUDIO_USER_DAILY_COUNT
+                or int(daily[1]) + requested_bytes > _AUDIO_USER_DAILY_BYTES
+                or int(ip_daily) >= _AUDIO_IP_DAILY_COUNT):
+            connection.rollback()
+            raise DigitalHumanRequestError(
+                "今日录音上传额度已用完", "audio_upload_daily_limit", 429,
+            )
+        if (_managed_asset_disk_bytes() + int(reserved_global) + requested_bytes
+                > _AUDIO_MANAGED_DISK_BYTES):
+            connection.rollback()
+            raise DigitalHumanRequestError(
+                "录音临时空间不足，请稍后再试", "audio_upload_disk_limit", 429,
+            )
+        connection.execute(
+            "INSERT INTO digital_human_audio_admissions VALUES(?,?,?,?,?,?,?)",
+            (admission_id, username, ip_hash, int(requested_bytes), "active", now,
+             now + _AUDIO_ADMISSION_LEASE_SECONDS),
+        )
+        connection.commit()
+    return admission_id
+
+
+def _finish_audio_admission(admission_id, committed, db_factory=None):
+    with closing(_audio_db(db_factory)) as connection:
+        if committed:
+            connection.execute(
+                "UPDATE digital_human_audio_admissions SET state='committed',lease_until=0 "
+                "WHERE admission_id=? AND state='active'", (admission_id,),
+            )
+        else:
+            connection.execute(
+                "DELETE FROM digital_human_audio_admissions "
+                "WHERE admission_id=? AND state='active'", (admission_id,),
+            )
+        connection.commit()
 
 
 def _safe_audio_upload_id(value):
@@ -257,7 +377,7 @@ def _slice_text(transcript_segments, start, end):
 
 
 def store_audio_upload(stream, length, username, run_id, content_type,
-                       claimed_sha256, db_factory=None):
+                       claimed_sha256, db_factory=None, client_ip=""):
     run_id = str(run_id or "").strip()
     if not legacy._RUN_ID_RE.fullmatch(run_id):
         raise DigitalHumanRequestError("本次制作流程编号无效，请重新开始")
@@ -290,14 +410,23 @@ def store_audio_upload(stream, length, username, run_id, content_type,
                 "audio_upload_binding_conflict", 409,
             )
         return _load_audio_asset(existing["asset_id"], username, db_factory=db_factory)
+    admission_id = _begin_audio_admission(
+        username, client_ip, length, db_factory=db_factory,
+    )
+    if not _AUDIO_TRANSCRIBE_SEM.acquire(blocking=False):
+        _finish_audio_admission(admission_id, False, db_factory)
+        raise DigitalHumanRequestError(
+            "录音转写任务繁忙，请稍后再试", "audio_upload_concurrency_limit", 429,
+        )
     asset_id = "dha_" + secrets.token_hex(16)
     owner = hashlib.sha256(username.encode("utf-8")).hexdigest()[:20]
     directory = OUT_DIR / "digital_human_audio" / owner / asset_id
-    directory.mkdir(parents=True, exist_ok=False)
     source = directory / ("source" + extension)
     digest = hashlib.sha256()
     remaining = length
+    asset_committed = False
     try:
+        directory.mkdir(parents=True, exist_ok=False)
         with source.open("wb") as output:
             while remaining:
                 chunk = stream.read(min(1024 * 1024, remaining))
@@ -359,6 +488,7 @@ def store_audio_upload(stream, length, username, run_id, content_type,
                 connection.commit()
             if expired is not None:
                 _remove_audio_asset_files(expired["source_file"])
+            asset_committed = True
         except sqlite3.IntegrityError:
             # A browser retry can race the first upload. Reuse the committed,
             # owner-bound asset instead of returning a transient server error.
@@ -371,25 +501,36 @@ def store_audio_upload(stream, length, username, run_id, content_type,
             if winner and hmac.compare_digest(str(winner["source_sha256"]), claimed):
                 import shutil
                 shutil.rmtree(str(directory), ignore_errors=True)
-                return _load_audio_asset(winner["asset_id"], username, db_factory=db_factory)
+                result = _load_audio_asset(
+                    winner["asset_id"], username, db_factory=db_factory,
+                )
+                asset_committed = True
+                _finish_audio_admission(admission_id, True, db_factory)
+                return result
             raise DigitalHumanRequestError(
                 "同一制作流程不能更换完整录音，请重新开始",
                 "audio_upload_binding_conflict", 409,
             )
-        return _load_audio_asset(asset_id, username, db_factory=db_factory)
+        result = _load_audio_asset(asset_id, username, db_factory=db_factory)
+        _finish_audio_admission(admission_id, True, db_factory)
+        return result
     except Exception:
         # Leave only committed, owner-bound uploads.  Uncommitted provider input
         # is safe to remove because the browser still owns the source file.
-        import shutil
-        shutil.rmtree(str(directory), ignore_errors=True)
+        if not asset_committed:
+            import shutil
+            shutil.rmtree(str(directory), ignore_errors=True)
+            _finish_audio_admission(admission_id, False, db_factory)
         raise
+    finally:
+        _AUDIO_TRANSCRIBE_SEM.release()
 
 
 def audio_upload_response(stream, length, username, run_id, content_type,
-                          claimed_sha256, db_factory=None):
+                          claimed_sha256, db_factory=None, client_ip=""):
     asset = store_audio_upload(
         stream, length, username, run_id, content_type, claimed_sha256,
-        db_factory=db_factory,
+        db_factory=db_factory, client_ip=client_ip,
     )
     return {
         "ok": True, "audio_upload_id": asset["asset_id"],
@@ -397,6 +538,81 @@ def audio_upload_response(stream, length, username, run_id, content_type,
         "transcript": asset["transcript"], "slice_count": len(asset["slices"]),
         "expires_at": int(asset["expires_at"]), "source_sha256": asset["source_sha256"],
     }
+
+
+def _safe_managed_file(relative, managed_root):
+    try:
+        root = (OUT_DIR / managed_root).resolve(strict=True)
+        candidate = OUT_DIR / str(relative or "")
+        current = OUT_DIR.resolve(strict=True)
+        for component in candidate.relative_to(OUT_DIR).parts:
+            current = current / component
+            info = os.lstat(current)
+            if stat.S_ISLNK(info.st_mode):
+                return None
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(root)
+        if not stat.S_ISREG(os.lstat(resolved).st_mode):
+            return None
+        return resolved
+    except (OSError, ValueError):
+        return None
+
+
+def cleanup_expired_assets(db_factory=None, jobs_db_factory=None, now=None,
+                           limit=50):
+    """Delete only expired, unreferenced managed assets in a bounded pass."""
+    now = int(time.time() if now is None else now)
+    limit = max(1, min(200, int(limit or 50)))
+    jobs_db_factory = jobs_db_factory or jdb
+    removed = 0
+    with closing(_audio_db(db_factory)) as connection:
+        connection.execute(
+            "DELETE FROM digital_human_audio_admissions "
+            "WHERE state='committed' AND created_at<?", (now - 2 * 86400,),
+        )
+        candidates = []
+        for table, column, root in (
+            ("digital_human_audio_uploads", "source_file", "digital_human_audio"),
+            ("digital_human_material_assets", "file", "digital_human_materials"),
+        ):
+            rows = connection.execute(
+                "SELECT * FROM %s WHERE expires_at<=? ORDER BY expires_at LIMIT ?" % table,
+                (now, limit - len(candidates)),
+            ).fetchall()
+            candidates.extend((table, column, root, dict(row)) for row in rows)
+            if len(candidates) >= limit:
+                break
+        connection.commit()
+    for table, column, root, row in candidates:
+        with closing(_audio_db(db_factory)) as connection:
+            if _audio_run_has_consent(connection, row["username"], row["run_id"]):
+                continue
+        asset_id = row["asset_id"]
+        with closing(jobs_db_factory()) as connection:
+            referenced = connection.execute(
+                "SELECT 1 FROM jobs WHERE username=? AND (payload LIKE ? OR result LIKE ?) LIMIT 1",
+                (row["username"], "%" + asset_id + "%", "%" + asset_id + "%"),
+            ).fetchone()
+        if referenced:
+            continue
+        path = _safe_managed_file(row[column], root)
+        if path is None:
+            continue
+        try:
+            path.unlink()
+            path.parent.rmdir()
+        except OSError:
+            if path.exists():
+                continue
+        with closing(_audio_db(db_factory)) as connection:
+            deleted = connection.execute(
+                "DELETE FROM %s WHERE asset_id=? AND expires_at<=?" % table,
+                (asset_id, now),
+            )
+            connection.commit()
+        removed += int(deleted.rowcount == 1)
+    return removed
 
 
 def _keywords(text):

@@ -1382,7 +1382,7 @@ def _retry_matrix_template_submissions(limit=None):
                     (int(attempt["job_id"]), item["username"]),
                 ).fetchone()
             if job and job["status"] == "pending":
-                enqueue_job(int(attempt["job_id"]), "matrix_template_video", None)
+                enqueue_job(int(attempt["job_id"]), attempt["kind"], None)
         recovered += int(bool(attempt))
     return recovered
 
@@ -1422,6 +1422,13 @@ def _pending_job_scanner():
         except Exception:
             pass
         _run_short_drama_recovery(JOB_QUEUE_MAX)
+        try:
+            from . import digital_human_v2
+            digital_human_v2.cleanup_expired_assets(
+                jobs_db_factory=jdb, limit=50,
+            )
+        except Exception:
+            pass
         time.sleep(30)
 
 _ALL_JOB_QUEUES = (_job_queue, _fast_job_queue, _talking_job_queue,
@@ -3613,6 +3620,17 @@ class H(BaseHTTPRequestHandler):
                         body, user["username"], kind,
                     )
                 )
+                digital_human_paid_child = bool(
+                    digital_human_consent_record and kind in {"image", "video"}
+                )
+                if digital_human_paid_child:
+                    idem_key = _idempotency_key(
+                        self.headers.get("Idempotency-Key")
+                    )
+                    if not idem_key:
+                        raise ValueError(
+                            "数字人付费子任务必须提供 Idempotency-Key"
+                        )
                 # 微信内容安全必须在校验、扣点和入队前完成；服务异常时不收单。
                 miniprogram_security.check_payload(body)
                 if is_still_route:
@@ -3920,14 +3938,15 @@ class H(BaseHTTPRequestHandler):
                         from . import pixelle_video as pixelle_video_domain
                         paid_association = pixelle_video_domain.paid_plan_association(
                             body, user["username"])
-                    if kind == "matrix_template_video":
+                    if kind == "matrix_template_video" or digital_human_paid_child:
                         matrix_template_submission.prepare(
                             jdb, user["username"], p, idem_key, request_body, cost,
+                            kind=kind,
                         )
                         self._matrix_template_charge_started = True
                         matrix_attempt = matrix_template_submission.recover(
                             jdb, points_domain, user["username"], p, idem_key,
-                            owner=SERVICE_OWNER,
+                            owner=SERVICE_OWNER, kind=kind,
                         )
                         if matrix_attempt["state"] in {"failed", "refunded"}:
                             terminal = dict(matrix_attempt.get("response") or {})
@@ -3935,7 +3954,7 @@ class H(BaseHTTPRequestHandler):
                             return self._send(terminal_status, terminal)
                         if matrix_attempt["state"] != "linked" or not matrix_attempt.get("job_id"):
                             raise matrix_template_submission.AttemptRecoveryPending(
-                                "模板成片提交仍在恢复中")
+                                "付费任务提交仍在恢复中")
                         jid = int(matrix_attempt["job_id"])
                         points_left = int(matrix_attempt["points_left"])
                         cost = int(matrix_attempt["cost"])
