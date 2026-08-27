@@ -547,6 +547,24 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual(1, result["polls"])
         self.assertTrue(result["cleared"])
 
+    def test_failed_batch_item_is_visible_and_never_reposted_after_reload(self):
+        result = self.runtime("mixedFailureReload")
+        self.assertEqual(5, result["beforePosts"])
+        self.assertEqual(0, result["afterPosts"])
+        self.assertEqual(0, result["afterPolls"])
+        self.assertEqual((5, 5), (result["beforeCards"], result["afterCards"]))
+        self.assertEqual(4, result["videos"])
+        self.assertEqual("任务队列已满", result["error"])
+        self.assertEqual("未受理/未扣点", result["refund"])
+        self.assertEqual(1, result["failedKeyAttempts"])
+        self.assertTrue(result["pendingCleared"])
+
+    def test_failed_remote_job_shows_confirmed_refund(self):
+        result = self.runtime("jobFailureRefund")
+        self.assertEqual(1, result["cards"])
+        self.assertEqual("渲染失败", result["error"])
+        self.assertEqual("已退款", result["refund"])
+
 
 if __name__ == "__main__":
     unittest.main()
