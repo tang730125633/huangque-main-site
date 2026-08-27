@@ -44,6 +44,7 @@ _STAGE_KINDS = {
     "compose": "script_to_video",
 }
 _AUDIO_UPLOAD_ID_RE = re.compile(r"^dha_[0-9a-f]{32}$")
+_AUDIO_ADMISSION_ID_RE = re.compile(r"^dhaa_[0-9a-f]{32}$")
 _AUDIO_MIMES = {
     "audio/mpeg": ".mp3", "audio/mp3": ".mp3", "audio/wav": ".wav",
     "audio/x-wav": ".wav", "audio/mp4": ".m4a", "audio/aac": ".m4a",
@@ -177,19 +178,161 @@ def _managed_asset_disk_bytes():
     return total
 
 
+def _audio_asset_id_for_admission(admission_id):
+    admission_id = str(admission_id or "").strip().lower()
+    if not _AUDIO_ADMISSION_ID_RE.fullmatch(admission_id):
+        raise DigitalHumanRequestError(
+            "录音上传租约无效，请重新上传", "audio_upload_admission_invalid", 409,
+        )
+    return "dha_" + admission_id[5:]
+
+
+def _audio_asset_directory(username, asset_id):
+    owner = hashlib.sha256(str(username or "").encode("utf-8")).hexdigest()[:20]
+    return OUT_DIR / "digital_human_audio" / owner / _safe_audio_upload_id(asset_id)
+
+
+def _remove_orphan_audio_directory(directory):
+    """Remove one exact managed orphan without following any link.
+
+    The caller has already proved that the derived asset id has no database,
+    consent, or job reference.  Any link, special file, identity change, or
+    unexpected filename fails closed and leaves the directory for diagnosis.
+    """
+    directory = pathlib.Path(directory)
+    audio_root = OUT_DIR / "digital_human_audio"
+    try:
+        directory.relative_to(audio_root)
+        if not os.path.lexists(directory):
+            return True
+        for parent in (OUT_DIR, audio_root, directory.parent, directory):
+            info = os.lstat(parent)
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+                return False
+        directories = []
+        files = []
+        for current, subdirs, names in os.walk(str(directory), followlinks=False):
+            current_path = pathlib.Path(current)
+            current_info = os.lstat(current_path)
+            if stat.S_ISLNK(current_info.st_mode) or not stat.S_ISDIR(current_info.st_mode):
+                return False
+            directories.append((current_path, current_info.st_dev, current_info.st_ino))
+            for name in subdirs:
+                child = current_path / name
+                info = os.lstat(child)
+                if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+                    return False
+            for name in names:
+                child = current_path / name
+                info = os.lstat(child)
+                if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+                    return False
+                if not (name.startswith("source.") or re.fullmatch(r"slice_[0-9]{2}\.m4a", name)):
+                    return False
+                files.append((child, info.st_dev, info.st_ino))
+        for path, device, inode in files:
+            info = os.lstat(path)
+            if (stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode)
+                    or (info.st_dev, info.st_ino) != (device, inode)):
+                return False
+        for path, _device, _inode in files:
+            path.unlink()
+        for path, device, inode in reversed(directories):
+            info = os.lstat(path)
+            if (stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode)
+                    or (info.st_dev, info.st_ino) != (device, inode)):
+                return False
+            path.rmdir()
+        try:
+            directory.parent.rmdir()
+        except OSError:
+            pass
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _audio_asset_is_referenced(asset_id, db_factory=None, jobs_db_factory=None):
+    jobs_db_factory = jobs_db_factory or jdb
+    with closing(_audio_db(db_factory)) as connection:
+        if connection.execute(
+            "SELECT 1 FROM digital_human_audio_uploads WHERE asset_id=? LIMIT 1",
+            (asset_id,),
+        ).fetchone():
+            return True
+        consent_table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='digital_human_consents'",
+        ).fetchone()
+        consent_columns = ({row[1] for row in connection.execute(
+            "PRAGMA table_info(digital_human_consents)",
+        ).fetchall()} if consent_table else set())
+        if "voice_ref" in consent_columns and connection.execute(
+            "SELECT 1 FROM digital_human_consents WHERE voice_ref=? LIMIT 1",
+            (asset_id,),
+        ).fetchone():
+            return True
+    with closing(jobs_db_factory()) as connection:
+        return bool(connection.execute(
+            "SELECT 1 FROM jobs WHERE payload LIKE ? OR result LIKE ? LIMIT 1",
+            ("%" + asset_id + "%", "%" + asset_id + "%"),
+        ).fetchone())
+
+
+def _reap_expired_audio_admissions(db_factory=None, jobs_db_factory=None,
+                                   now=None, limit=20):
+    """Claim and recover expired upload directories in a bounded pass."""
+    now = int(time.time() if now is None else now)
+    limit = max(1, min(100, int(limit or 20)))
+    with closing(_audio_db(db_factory)) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            "UPDATE digital_human_audio_admissions SET state='reaping' "
+            "WHERE state='active' AND lease_until<=?", (now,),
+        )
+        rows = connection.execute(
+            "SELECT admission_id,username FROM digital_human_audio_admissions "
+            "WHERE state='reaping' ORDER BY created_at LIMIT ?", (limit,),
+        ).fetchall()
+        connection.commit()
+    removed = 0
+    for row in rows:
+        asset_id = _audio_asset_id_for_admission(row["admission_id"])
+        directory = _audio_asset_directory(row["username"], asset_id)
+        if (os.path.lexists(directory)
+                and _audio_asset_is_referenced(asset_id, db_factory, jobs_db_factory)):
+            with closing(_audio_db(db_factory)) as connection:
+                connection.execute(
+                    "UPDATE digital_human_audio_admissions "
+                    "SET state='committed',lease_until=0 "
+                    "WHERE admission_id=? AND state='reaping'", (row["admission_id"],),
+                )
+                connection.commit()
+            continue
+        if not _remove_orphan_audio_directory(directory):
+            continue
+        with closing(_audio_db(db_factory)) as connection:
+            deleted = connection.execute(
+                "DELETE FROM digital_human_audio_admissions "
+                "WHERE admission_id=? AND state='reaping'", (row["admission_id"],),
+            )
+            connection.commit()
+        removed += int(deleted.rowcount == 1)
+    return removed
+
+
 def _begin_audio_admission(username, client_ip, requested_bytes,
-                           db_factory=None, now=None):
+                           db_factory=None, now=None, jobs_db_factory=None):
     now = int(time.time() if now is None else now)
     username = str(username or "").strip()
     ip_hash = hashlib.sha256(str(client_ip or "unknown").encode("utf-8")).hexdigest()
     admission_id = "dhaa_" + secrets.token_hex(16)
     day_start = now - (now % 86400)
+    _reap_expired_audio_admissions(
+        db_factory, jobs_db_factory, now=now, limit=_AUDIO_GLOBAL_ACTIVE_LIMIT,
+    )
     with closing(_audio_db(db_factory)) as connection:
         connection.execute("BEGIN IMMEDIATE")
-        connection.execute(
-            "DELETE FROM digital_human_audio_admissions "
-            "WHERE state='active' AND lease_until<=?", (now,),
-        )
         active_user = connection.execute(
             "SELECT COUNT(*) FROM digital_human_audio_admissions "
             "WHERE state='active' AND username=?", (username,),
@@ -236,6 +379,51 @@ def _begin_audio_admission(username, client_ip, requested_bytes,
         )
         connection.commit()
     return admission_id
+
+
+def _renew_audio_admission(admission_id, db_factory=None, now=None):
+    now = int(time.time() if now is None else now)
+    with closing(_audio_db(db_factory)) as connection:
+        renewed = connection.execute(
+            "UPDATE digital_human_audio_admissions SET lease_until=? "
+            "WHERE admission_id=? AND state='active'",
+            (now + _AUDIO_ADMISSION_LEASE_SECONDS, admission_id),
+        )
+        connection.commit()
+    if renewed.rowcount != 1:
+        raise DigitalHumanRequestError(
+            "录音上传租约已失效，请重新上传", "audio_upload_admission_expired", 409,
+        )
+
+
+class _AudioAdmissionHeartbeat:
+    def __init__(self, admission_id, db_factory=None, interval=None):
+        self.admission_id = admission_id
+        self.db_factory = db_factory
+        self.interval = float(interval or max(1, _AUDIO_ADMISSION_LEASE_SECONDS // 3))
+        self.stop_event = threading.Event()
+        self.error = None
+        self.thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self):
+        self.thread.start()
+        return self
+
+    def _run(self):
+        while not self.stop_event.wait(self.interval):
+            try:
+                _renew_audio_admission(self.admission_id, self.db_factory)
+            except Exception as error:
+                self.error = error
+                return
+
+    def check(self):
+        if self.error is not None:
+            raise self.error
+
+    def close(self):
+        self.stop_event.set()
+        self.thread.join(timeout=max(1.0, self.interval + 1.0))
 
 
 def _finish_audio_admission(admission_id, committed, db_factory=None):
@@ -377,7 +565,8 @@ def _slice_text(transcript_segments, start, end):
 
 
 def store_audio_upload(stream, length, username, run_id, content_type,
-                       claimed_sha256, db_factory=None, client_ip=""):
+                       claimed_sha256, db_factory=None, client_ip="",
+                       jobs_db_factory=None):
     run_id = str(run_id or "").strip()
     if not legacy._RUN_ID_RE.fullmatch(run_id):
         raise DigitalHumanRequestError("本次制作流程编号无效，请重新开始")
@@ -412,33 +601,38 @@ def store_audio_upload(stream, length, username, run_id, content_type,
         return _load_audio_asset(existing["asset_id"], username, db_factory=db_factory)
     admission_id = _begin_audio_admission(
         username, client_ip, length, db_factory=db_factory,
+        jobs_db_factory=jobs_db_factory,
     )
     if not _AUDIO_TRANSCRIBE_SEM.acquire(blocking=False):
         _finish_audio_admission(admission_id, False, db_factory)
         raise DigitalHumanRequestError(
             "录音转写任务繁忙，请稍后再试", "audio_upload_concurrency_limit", 429,
         )
-    asset_id = "dha_" + secrets.token_hex(16)
-    owner = hashlib.sha256(username.encode("utf-8")).hexdigest()[:20]
-    directory = OUT_DIR / "digital_human_audio" / owner / asset_id
+    asset_id = _audio_asset_id_for_admission(admission_id)
+    directory = _audio_asset_directory(username, asset_id)
     source = directory / ("source" + extension)
     digest = hashlib.sha256()
     remaining = length
     asset_committed = False
+    heartbeat = _AudioAdmissionHeartbeat(admission_id, db_factory).start()
     try:
         directory.mkdir(parents=True, exist_ok=False)
         with source.open("wb") as output:
             while remaining:
+                heartbeat.check()
                 chunk = stream.read(min(1024 * 1024, remaining))
                 if not chunk:
                     raise DigitalHumanRequestError("录音上传不完整，请重新上传", "audio_upload_incomplete")
                 output.write(chunk)
                 digest.update(chunk)
                 remaining -= len(chunk)
+        heartbeat.check()
         if not hmac.compare_digest(digest.hexdigest(), claimed):
             raise DigitalHumanRequestError("录音校验失败，请重新上传", "audio_upload_digest_mismatch")
         duration = _probe_audio_duration(source)
+        heartbeat.check()
         transcript_segments = _transcribe_audio(source)
+        heartbeat.check()
         slices = []
         for index, (start, end) in enumerate(_slice_intervals(transcript_segments, duration)):
             target = directory / ("slice_%02d.m4a" % index)
@@ -447,6 +641,7 @@ def store_audio_upload(stream, length, username, run_id, content_type,
                 "-i", str(source), "-vn", "-c:a", "aac", "-b:a", "192k",
                 "-ar", "48000", "-ac", "2", str(target),
             ], timeout=180)
+            heartbeat.check()
             raw = target.read_bytes()
             slices.append({
                 "index": index, "start": start, "end": end,
@@ -461,6 +656,17 @@ def store_audio_upload(stream, length, username, run_id, content_type,
         now = int(time.time())
         try:
             with closing(_audio_db(db_factory)) as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                renewed = connection.execute(
+                    "UPDATE digital_human_audio_admissions SET lease_until=? "
+                    "WHERE admission_id=? AND state='active'",
+                    (int(time.time()) + _AUDIO_ADMISSION_LEASE_SECONDS, admission_id),
+                )
+                if renewed.rowcount != 1:
+                    raise DigitalHumanRequestError(
+                        "录音上传租约已失效，请重新上传",
+                        "audio_upload_admission_expired", 409,
+                    )
                 values = (
                     asset_id, claimed,
                     source.resolve().relative_to(OUT_DIR.resolve()).as_posix(), duration,
@@ -512,6 +718,7 @@ def store_audio_upload(stream, length, username, run_id, content_type,
                 "audio_upload_binding_conflict", 409,
             )
         result = _load_audio_asset(asset_id, username, db_factory=db_factory)
+        heartbeat.close()
         _finish_audio_admission(admission_id, True, db_factory)
         return result
     except Exception:
@@ -523,6 +730,7 @@ def store_audio_upload(stream, length, username, run_id, content_type,
             _finish_audio_admission(admission_id, False, db_factory)
         raise
     finally:
+        heartbeat.close()
         _AUDIO_TRANSCRIBE_SEM.release()
 
 
@@ -565,7 +773,9 @@ def cleanup_expired_assets(db_factory=None, jobs_db_factory=None, now=None,
     now = int(time.time() if now is None else now)
     limit = max(1, min(200, int(limit or 50)))
     jobs_db_factory = jobs_db_factory or jdb
-    removed = 0
+    removed = _reap_expired_audio_admissions(
+        db_factory, jobs_db_factory, now=now, limit=limit,
+    )
     with closing(_audio_db(db_factory)) as connection:
         connection.execute(
             "DELETE FROM digital_human_audio_admissions "

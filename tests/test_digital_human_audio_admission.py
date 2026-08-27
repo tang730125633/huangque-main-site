@@ -5,6 +5,7 @@ import pathlib
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -89,6 +90,124 @@ class DigitalHumanAudioAdmissionTests(unittest.TestCase):
             now=2_000_000_000 + digital_human_v2._AUDIO_ADMISSION_LEASE_SECONDS + 1,
         )
         self.assertTrue(replacement.startswith("dhaa_"))
+
+    def _expired_admission_with_directory(self, username="alice"):
+        now = 2_000_000_000
+        admission_id = digital_human_v2._begin_audio_admission(
+            username, "192.0.2.1", 10, self.db, now=now,
+            jobs_db_factory=self.jobs,
+        )
+        asset_id = digital_human_v2._audio_asset_id_for_admission(admission_id)
+        directory = digital_human_v2._audio_asset_directory(username, asset_id)
+        directory.mkdir(parents=True)
+        (directory / "source.mp3").write_bytes(b"orphan-source")
+        (directory / "slice_00.m4a").write_bytes(b"orphan-slice")
+        return now, admission_id, asset_id, directory
+
+    def test_expired_admission_recovers_hard_exit_orphan(self):
+        now, admission_id, _asset_id, directory = self._expired_admission_with_directory()
+
+        removed = digital_human_v2.cleanup_expired_assets(
+            self.db, self.jobs,
+            now=now + digital_human_v2._AUDIO_ADMISSION_LEASE_SECONDS + 1,
+            limit=10,
+        )
+
+        self.assertEqual(1, removed)
+        self.assertFalse(directory.exists())
+        with closing(self.db()) as connection:
+            self.assertIsNone(connection.execute(
+                "SELECT 1 FROM digital_human_audio_admissions WHERE admission_id=?",
+                (admission_id,),
+            ).fetchone())
+
+    @unittest.skipUnless(os.name == "posix", "symlink path safety requires POSIX")
+    def test_orphan_recovery_leaves_symlink_and_external_file_untouched(self):
+        now, admission_id, _asset_id, directory = self._expired_admission_with_directory()
+        outside = self.root / "outside.mp3"
+        outside.write_bytes(b"external-unique")
+        linked = directory / "linked.mp3"
+        linked.symlink_to(outside)
+
+        removed = digital_human_v2.cleanup_expired_assets(
+            self.db, self.jobs,
+            now=now + digital_human_v2._AUDIO_ADMISSION_LEASE_SECONDS + 1,
+            limit=10,
+        )
+
+        self.assertEqual(0, removed)
+        self.assertTrue(linked.is_symlink())
+        self.assertEqual(b"external-unique", outside.read_bytes())
+        with closing(self.db()) as connection:
+            state = connection.execute(
+                "SELECT state FROM digital_human_audio_admissions WHERE admission_id=?",
+                (admission_id,),
+            ).fetchone()["state"]
+        self.assertEqual("reaping", state)
+
+    def test_orphan_recovery_retains_valid_asset_record(self):
+        now, admission_id, asset_id, directory = self._expired_admission_with_directory()
+        source = directory / "source.mp3"
+        with closing(self.db()) as connection:
+            connection.execute(
+                """INSERT INTO digital_human_audio_uploads VALUES(
+                ?,?,?,?, ?,1.0,'text','[]',?,?)""",
+                (asset_id, "alice", "audio-run-valid", "0" * 64,
+                 source.relative_to(digital_human_v2.OUT_DIR).as_posix(), now, now + 9999),
+            )
+            connection.commit()
+
+        self.assertEqual(0, digital_human_v2.cleanup_expired_assets(
+            self.db, self.jobs,
+            now=now + digital_human_v2._AUDIO_ADMISSION_LEASE_SECONDS + 1,
+            limit=10,
+        ))
+        self.assertTrue(source.exists())
+        with closing(self.db()) as connection:
+            self.assertEqual("committed", connection.execute(
+                "SELECT state FROM digital_human_audio_admissions WHERE admission_id=?",
+                (admission_id,),
+            ).fetchone()["state"])
+
+    def test_expired_orphan_is_reclaimed_before_disk_quota_check(self):
+        now, _admission_id, _asset_id, directory = self._expired_admission_with_directory()
+        orphan_bytes = sum(path.stat().st_size for path in directory.iterdir())
+        with mock.patch.object(
+            digital_human_v2, "_AUDIO_MANAGED_DISK_BYTES", orphan_bytes,
+        ):
+            replacement = digital_human_v2._begin_audio_admission(
+                "bob", "192.0.2.2", orphan_bytes, self.db,
+                now=now + digital_human_v2._AUDIO_ADMISSION_LEASE_SECONDS + 1,
+                jobs_db_factory=self.jobs,
+            )
+        self.assertTrue(replacement.startswith("dhaa_"))
+        self.assertFalse(directory.exists())
+        digital_human_v2._finish_audio_admission(replacement, False, self.db)
+
+    def test_long_processing_renews_active_admission_lease(self):
+        admission_id = digital_human_v2._begin_audio_admission(
+            "alice", "192.0.2.1", 10, self.db,
+            jobs_db_factory=self.jobs,
+        )
+        with mock.patch.object(
+            digital_human_v2, "_renew_audio_admission",
+            wraps=digital_human_v2._renew_audio_admission,
+        ) as renew:
+            heartbeat = digital_human_v2._AudioAdmissionHeartbeat(
+                admission_id, self.db, interval=0.01,
+            ).start()
+            time.sleep(0.05)
+            heartbeat.close()
+            heartbeat.check()
+        self.assertGreaterEqual(renew.call_count, 2)
+        with closing(self.db()) as connection:
+            row = connection.execute(
+                "SELECT state,lease_until FROM digital_human_audio_admissions "
+                "WHERE admission_id=?", (admission_id,),
+            ).fetchone()
+        self.assertEqual("active", row["state"])
+        self.assertGreater(row["lease_until"], int(time.time()))
+        digital_human_v2._finish_audio_admission(admission_id, False, self.db)
 
     def test_admission_rejection_does_not_read_or_create_upload(self):
         stream = mock.Mock(spec=io.BytesIO)

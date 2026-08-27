@@ -107,6 +107,18 @@ jobs:
       - name: 检查 JavaScript 语法
         run: find site -type f -name '*.js' -print0 | xargs -0 -n1 node --check
 
+      - name: 测试数字人工作台状态机
+        shell: bash
+        run: |
+          mapfile -t tests < <(find tests -maxdepth 1 -type f -name 'test_digital_human_*.js' -print | sort)
+          if [ "${#tests[@]}" -eq 0 ]; then
+            echo "No digital-human JavaScript tests discovered."
+            exit 1
+          fi
+          printf 'Running %d digital-human JavaScript test files:\n' "${#tests[@]}"
+          printf '  %s\n' "${tests[@]}"
+          node --test "${tests[@]}"
+
       - name: 测试工作台侧栏
         run: node tests/test_cloud_shell_sidebar.js
 
