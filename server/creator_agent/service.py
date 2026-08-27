@@ -201,11 +201,12 @@ class CreatorAgentService:
         return value[:80] if re.fullmatch(r"[0-9A-Fa-f:.]{2,80}", value) else "unknown"
 
     def _model_call(self, user, kind, payload, callback, max_output_tokens=2400):
-        input_chars = len(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        input_token_upper_bound = len(serialized.encode("utf-8"))
         try:
             lease = self.usage_guard.acquire(
                 user["username"], getattr(self._request_context, "client_ip", "unknown"),
-                kind, input_chars, max_output_tokens,
+                kind, input_token_upper_bound, max_output_tokens,
             )
         except ModelUsageError as exc:
             self._discard_current_message()
@@ -820,14 +821,15 @@ class CreatorAgentService:
     def _create_video_plan(self, user, project, workspace, topic, platforms):
         templates = self._templates(user)
         context = self._profile_context(project, workspace)
+        preferences = workspace.get("template_video_preferences")
         try:
             planned = self._model_call(
                 user, "template_video_plan",
                 {"profile": context, "topic": topic, "platforms": platforms,
-                 "templates": templates},
+                 "templates": templates, "preferences": preferences},
                 lambda: self.planner.video_plan(
                     context, topic, platforms, templates,
-                    workspace.get("template_video_preferences"),
+                    preferences,
                 ),
             )
         except PlannerError as exc:
@@ -851,14 +853,15 @@ class CreatorAgentService:
 
     def _revise_video_plan(self, user, workspace, batch, instruction):
         templates = self._templates(user)
+        preferences = workspace.get("template_video_preferences")
         try:
             revised = self._model_call(
                 user, "template_video_revision",
                 {"plans": batch.get("plans") or [], "instruction": instruction,
-                 "templates": templates},
+                 "templates": templates, "preferences": preferences},
                 lambda: self.planner.revise_video_plan(
                     batch.get("plans") or [], instruction, templates,
-                    workspace.get("template_video_preferences"),
+                    preferences,
                 ),
             )
         except PlannerError as exc:
@@ -877,6 +880,7 @@ class CreatorAgentService:
 
     def _new_video_version(self, user, project, workspace, batch, instruction):
         templates = self._templates(user)
+        preferences = workspace.get("template_video_preferences")
         mentioned = self._platforms_from_text(instruction)
         source_plans = [
             item for item in batch.get("plans") or []
@@ -886,10 +890,10 @@ class CreatorAgentService:
             revised = self._model_call(
                 user, "template_video_regeneration",
                 {"plans": source_plans, "instruction": instruction,
-                 "templates": templates},
+                 "templates": templates, "preferences": preferences},
                 lambda: self.planner.revise_video_plan(
                     source_plans, instruction, templates,
-                    workspace.get("template_video_preferences"),
+                    preferences,
                 ),
             )
         except PlannerError as exc:
@@ -1702,6 +1706,19 @@ def build_service(environment=None):
         global_daily_tokens=int(environment.get("CREATOR_AGENT_MODEL_GLOBAL_DAILY_TOKENS", "40000000")),
         user_daily_cost_micro_usd=int(environment.get("CREATOR_AGENT_MODEL_USER_DAILY_MICROUSD", "1000000")),
         global_daily_cost_micro_usd=int(environment.get("CREATOR_AGENT_MODEL_GLOBAL_DAILY_MICROUSD", "20000000")),
+        price_version=environment.get(
+            "CREATOR_AGENT_MODEL_PRICE_VERSION",
+            "deepseek-v4-flash-0731-peak-usd-v1",
+        ),
+        input_price_micro_usd_per_million=int(environment.get(
+            "CREATOR_AGENT_MODEL_INPUT_PRICE_MICROUSD_PER_MILLION", "440000",
+        )),
+        output_price_micro_usd_per_million=int(environment.get(
+            "CREATOR_AGENT_MODEL_OUTPUT_PRICE_MICROUSD_PER_MILLION", "1320000",
+        )),
+        input_token_overhead=int(environment.get(
+            "CREATOR_AGENT_MODEL_INPUT_TOKEN_OVERHEAD", "8192",
+        )),
     )
     return CreatorAgentService(
         store, planner, auth, bridge, profile_agent, usage_guard=usage_guard,

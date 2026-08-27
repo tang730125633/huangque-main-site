@@ -107,6 +107,11 @@ Creator SQLite 是本功能的画像正本。画像修改作为版本化补充�
 - 所有 DeepSeek 调用在 Provider 前经过 SQLite 持久资源闸：账号 20 次/分钟、IP 30 次/分钟、
   单用户并发 2、全局并发 8；用户/全站每日请求、预估 token 与微美元预算分别持久累计，
   服务重启或切换画像项目不能清零。连续 Provider 失败会打开 60 秒熔断。
+- 金额预算按 `deepseek-v4-flash` 峰值 cache-miss 价格保守预留：输入 $0.44/百万 token、
+  输出 $1.32/百万 token。价格版本和每百万 token 的微美元整数值写入环境配置及调用记录；
+  运行时配置只能提高默认峰值，不能通过调低价格绕过金额上限。历史无版本记录按较高的输出价重估。
+  业务输入按 UTF-8 字节数作为 token 上界，并额外预留 8192 token 覆盖固定系统提示和请求封装；
+  该预留也只能调高。价格基线以 [DeepSeek 官方价格页](https://api-docs.deepseek.com/quick_start/pricing/) 为准。
 - nginx 对 `/api/creator-agent/messages` 另设 IP 请求与连接上限；任一闸门拒绝均返回 429，
   且不得调用 DeepSeek。
 - 画像状态、assistant 消息和 user request 的可回放 turn 在同一 SQLite 事务提交；模型返回后在
