@@ -177,9 +177,10 @@ def _ws_frames(sock, leftover):
         yield opcode, payload
 
 
-def synth(voice, text, fmt="mp3", sample_rate=22050, rate=1.0, pitch=1.0, volume=50, timeout=60):
+def synth(voice, text, fmt="mp3", sample_rate=22050, rate=1.0, pitch=1.0, volume=50, timeout=60, instruction=""):
     """合成一段语音，返回音频字节。model 按音色自动选(预置/复刻)。
-    rate 语速(0.5~2)、pitch 音调(0.5~2)、volume 音量(0~100)——与抓包看到的参数名一致。"""
+    rate 语速(0.5~2)、pitch 音调(0.5~2)、volume 音量(0~100)——与抓包看到的参数名一致。
+    instruction 复刻音色(v3.5-plus)的 free-form 发音风格指令，<=100 字符(中文按 2 计)，预置音色不要传。"""
     if not DASHSCOPE_API_KEY:
         raise ValueError("CosyVoice 未配置（DASHSCOPE_API_KEY）")
     text = (text or "").strip()
@@ -190,6 +191,8 @@ def synth(voice, text, fmt="mp3", sample_rate=22050, rate=1.0, pitch=1.0, volume
               "rate": max(0.5, min(2.0, float(rate))),
               "pitch": max(0.5, min(2.0, float(pitch))),
               "volume": max(0, min(100, int(volume)))}
+    if instruction:
+        params["instruction"] = instruction
     sock, leftover = _ws_connect(DASHSCOPE_API_KEY, timeout)
     try:
         task_id = os.urandom(16).hex()
