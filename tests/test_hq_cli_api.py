@@ -187,6 +187,10 @@ class HQCLIAPITests(unittest.TestCase):
         audio_schema = actions["digital-ip-audio-generate"]["input_schema"]["properties"]
         self.assertEqual("^img_[0-9a-f]{32}$", text_schema["image_upload_id"]["pattern"])
         self.assertEqual("^aud_[0-9a-f]{32}$", audio_schema["audio_upload_id"]["pattern"])
+        clone_contract = " ".join(actions["voice-clone-create"]["constraints"])
+        self.assertIn("30-60 seconds", clone_contract)
+        self.assertIn("file duration alone", clone_contract)
+        self.assertIn("voice-clone-status", clone_contract)
         self.assertEqual("人物图片", actions["tryon-fast-generate"]["input_schema"]
                          ["properties"]["person_image_upload_id"]["title"])
         self.assertEqual("服装图片", actions["tryon-fast-generate"]["input_schema"]
@@ -543,9 +547,32 @@ class HQCLIAPITests(unittest.TestCase):
         plan = proxy.call_args.args[0]
         self.assertEqual("/api/gen/cli/voice-clone", plan["path"])
         expected_key = "hqcli-" + hashlib.sha256(
-            ("S_legacy\x00" + "aud_" + "a" * 32).encode("utf-8")
+            ("S_legacy\x00" + "aud_" + "a" * 32 + "\x00我的声音").encode("utf-8")
         ).hexdigest()[:24]
         self.assertEqual(expected_key, plan["headers"]["Idempotency-Key"])
+        renamed = self.auth.hq_cli_api.action_plan("voice-clone-create", {
+            "slot_id": "S_legacy", "name": "新的声音",
+            "audio_upload_id": "aud_" + "a" * 32,
+        })
+        moved = self.auth.hq_cli_api.action_plan("voice-clone-create", {
+            "slot_id": "S_other", "name": "我的声音",
+            "audio_upload_id": "aud_" + "a" * 32,
+        })
+        replaced_audio = self.auth.hq_cli_api.action_plan("voice-clone-create", {
+            "slot_id": "S_legacy", "name": "我的声音",
+            "audio_upload_id": "aud_" + "b" * 32,
+        })
+        original_key = plan["headers"]["Idempotency-Key"]
+        self.assertEqual(3, len({
+            renamed["headers"]["Idempotency-Key"],
+            moved["headers"]["Idempotency-Key"],
+            replaced_audio["headers"]["Idempotency-Key"],
+        }))
+        self.assertNotIn(original_key, {
+            renamed["headers"]["Idempotency-Key"],
+            moved["headers"]["Idempotency-Key"],
+            replaced_audio["headers"]["Idempotency-Key"],
+        })
         self.assertTrue(plan["internal"])
 
     @staticmethod

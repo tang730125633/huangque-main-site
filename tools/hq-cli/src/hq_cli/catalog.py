@@ -244,6 +244,12 @@ CAPABILITIES["voice-clone-create"]["constraints"] = [
     "slot_id must come from audio-slots and belong to the current account",
     "audio_upload_id must come from audio-upload and belong to the current account",
     "the server normalizes up to 60 seconds of clear speech before creating or replacing the cloned voice",
+    "for reliable cloning, use 30-60 seconds of continuous, clear, single-speaker speech; file duration alone does not guarantee enough effective speech",
+    "long silence, music, and noise do not count as effective speech",
+]
+CAPABILITIES["voice-clone-create"]["next_actions"] = [
+    "提交后只用 voice-clone-status 轮询原 slot_id，直到 ready 或 failed。",
+    "若返回有效语音太短，重新上传30至60秒连续、清晰、单人说话的样音，再用新的 audio_upload_id 提交。",
 ]
 CAPABILITIES["voice-clone-status"] = _api(
     "voice-clone-status", "声音克隆状态", "voice-clone-status", "读取一个本人声音克隆槽位的处理状态。",
@@ -1234,6 +1240,13 @@ def _attach_agent_guidance():
 
 
 _attach_agent_guidance()
+
+CAPABILITIES["voice-clone-create"]["agent"]["workflow"].append(
+    "提交成功后只调用 voice-clone-status 查询原 slot_id；不要重复创建。"
+)
+CAPABILITIES["voice-clone-create"]["agent"]["recovery"].append(
+    "若状态为 failed 且提示有效语音太短，上传新的30至60秒连续清晰单人语音，再用新的 audio_upload_id 发起新操作。"
+)
 
 
 

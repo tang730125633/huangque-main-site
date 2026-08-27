@@ -42,7 +42,7 @@ class HqCliTests(unittest.TestCase):
             self.assertEqual(0, code, error)
             self.assertTrue(self.payload(output)["schema"].startswith("hq."))
         code, output, _ = self.invoke(["version"])
-        self.assertEqual("0.11.3", self.payload(output)["cli_version"])
+        self.assertEqual("0.11.4", self.payload(output)["cli_version"])
         self.assertEqual("Huangque main-site CLI", self.payload(output)["product"])
         self.assertEqual("https://huangquechuanmei.com", self.payload(output)["origin"])
 
@@ -149,6 +149,22 @@ class HqCliTests(unittest.TestCase):
         )
         self.assertIn("audio-upload", by_id["voice-clone-create"]["agent"]["required_inputs"]["audio_upload_id"])
         self.assertIn("audio-slots", by_id["voice-clone-create"]["agent"]["required_inputs"]["slot_id"])
+        self.assertTrue(any(
+            "30-60 seconds" in item
+            for item in by_id["voice-clone-create"]["constraints"]
+        ))
+        self.assertTrue(any(
+            "silence" in item
+            for item in by_id["voice-clone-create"]["constraints"]
+        ))
+        self.assertTrue(any(
+            "voice-clone-status" in item
+            for item in by_id["voice-clone-create"]["agent"]["workflow"]
+        ))
+        self.assertTrue(any(
+            "有效语音太短" in item
+            for item in by_id["voice-clone-create"]["agent"]["recovery"]
+        ))
         self.assertEqual("server_quote", by_id["canvas-agent-plan"]["cost"]["kind"])
         self.assertEqual("canvas:edit", by_id["canvas-ops"]["required_scope"])
         self.assertEqual(12, by_id["canvas-ops"]["input_schema"]["properties"]["ops"]["maxItems"])

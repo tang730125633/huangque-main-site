@@ -522,7 +522,9 @@ _MEDIA_SCHEMAS.update({
         "name": {"type": "string", "minLength": 1, "maxLength": 40},
         "audio_upload_id": _AUDIO_UPLOAD_SCHEMA,
     }, "constraints": [
-        "sample audio is private to the current account and should contain 10-60 seconds of clear speech",
+        "sample audio is private to the current account and should contain 30-60 seconds of continuous, clear, single-speaker speech",
+        "long silence, music, and noise do not count as effective speech; file duration alone is not sufficient",
+        "after submission, poll voice-clone-status for the same slot_id until ready or failed and inspect clone_error before any new operation",
         "reusing a ready slot replaces that personal cloned voice and requires explicit confirmation",
     ]},
     "voice-clone-status": {"required": ["slot_id"], "properties": {
@@ -1919,14 +1921,15 @@ def action_plan(action, value):
             value["slot_id"], "slot_id", _VOICE_SLOT_ID_RE, 88,
         )
         audio_id = _audio_upload_id(value["audio_upload_id"], "audio_upload_id")
-        # 幂等键由 slot_id+样音决定，同一槽位同一份样音重复提交会命中重放，不会重复克隆。
+        name = _string(value["name"], "name", 1, 40)
+        # 名称会写入最终音色，也属于操作输入；相同三元组重放，不同名称可作为新操作恢复失败槽位。
         idempotency_key = "hqcli-" + hashlib.sha256(
-            (slot_id + "\x00" + audio_id).encode("utf-8")).hexdigest()[:24]
+            (slot_id + "\x00" + audio_id + "\x00" + name).encode("utf-8")).hexdigest()[:24]
         return _plan(
             "assets:write", "proxy", base=CONTENT_BASE,
             path="/api/gen/cli/voice-clone", method="POST", body={
                 "slot_id": slot_id,
-                "name": _string(value["name"], "name", 1, 40),
+                "name": name,
                 "audio_upload_id": audio_id,
             }, timeout=30, internal=True,
             headers={"Idempotency-Key": idempotency_key},

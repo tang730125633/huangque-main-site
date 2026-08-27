@@ -4941,8 +4941,8 @@ class H(BaseHTTPRequestHandler):
                 plan = dict(plan)
                 headers = dict(plan.get("headers") or {})
                 existing_key = headers.get("Idempotency-Key")
-                # 声音克隆按 slot_id+audio_upload_id 生成效果幂等键；它比上层调用键更稳定，
-                # 同一槽位同一样音即使由不同 Agent request_id 触发，也不能重复复刻。
+                # 声音克隆按 slot_id+audio_upload_id+name 生成效果幂等键；它比上层调用键更稳定，
+                # 同一完整输入即使由不同 Agent request_id 触发，也不能重复复刻。
                 if existing_key and action != "voice-clone-create" and existing_key != idempotency_key:
                     raise hq_cli_api.CLIAPIError(
                         409, "idempotency_key 与 action 输入不一致", "idempotency_conflict",

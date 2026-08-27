@@ -252,7 +252,7 @@ hq run voice-clone-status --input @- --json <<'JSON'
 JSON
 ```
 
-状态为 `ready` 后调用 `voices` 取得 `voice_key`，再用于 `audio-generate`。音频上传支持 MP3、WAV、M4A、AAC、OGG，最大 10 MiB、最长 300 秒；声音克隆会在服务端规范化最多 60 秒清晰语音。上传本身不扣点，使用已有音色生成语音仍须先报价再确认。
+状态为 `ready` 后调用 `voices` 取得 `voice_key`，再用于 `audio-generate`。音频上传支持 MP3、WAV、M4A、AAC、OGG，最大 10 MiB、最长 300 秒；声音克隆会在服务端规范化最多 60 秒清晰语音。为避免供应商判断“有效语音太短”，克隆样音应包含 30–60 秒连续、清晰、单人说话，文件总时长不能代替有效语音时长。若状态为 `failed`，先读取原槽位错误；有效语音不足时上传新的合格样音，并使用新的 `audio_upload_id` 发起新操作。上传和克隆本身不扣点，使用已有音色生成语音仍须先报价再确认。
 
 ## 内容采集与获客
 
