@@ -3004,6 +3004,23 @@ def _heygen_request_json(method, path, body=None, headers=None, timeout=180, dir
     except Exception:
         raise RuntimeError("HeyGen返回解析失败: %s" % raw[:300].decode("utf-8", "replace"))
 
+def _heygen_upload_asset_oauth(file_path, mime, timeout=240):
+    """用 MCP OAuth token 上传素材（asset 落在 subscription 钱包）。
+
+    PR #893 把 photo avatar 创建切到 MCP（subscription 钱包），但 asset 上传仍走
+    X-Api-Key（API 钱包）。两钱包 asset 隔离 → MCP create_photo_avatar 报
+    "Asset not found"。此函数用 OAuth token 上传，asset 与 MCP 同钱包。
+    """
+    token = _heygen_mcp_access_token()
+    req = urllib.request.Request(_HEYGEN_DIRECT_UPLOAD + "/v1/asset",
+                                data=pathlib.Path(file_path).read_bytes(),
+                                headers={"Authorization": "Bearer " + token,
+                                         "Content-Type": mime},
+                                method="POST")
+    with _heygen_direct_opener().open(req, timeout=timeout) as r:
+        return json.loads(r.read())
+
+
 def _heygen_upload_asset(file_path, direct=False):
     path = pathlib.Path(file_path)
     if not path.is_file():
@@ -3014,8 +3031,12 @@ def _heygen_upload_asset(file_path, direct=False):
     if direct:
         # HeyGen 素材上传端点收「raw 文件字节 + 文件 mime」(同口播直连 #405 的 /v1/asset)；
         # 发 multipart/form-data 会被 HeyGen 判 "Content type not supported application/octet-stream" 400。
-        d = _heygen_direct_req(
-            "POST", _HEYGEN_DIRECT_UPLOAD + "/v1/asset", raw, mime, timeout=240)
+        # MCP 启用时用 OAuth token 上传，确保 asset 与 MCP create_photo_avatar 同钱包（否则 Asset not found）。
+        if _heygen_mcp_enabled():
+            d = _heygen_upload_asset_oauth(file_path, mime)
+        else:
+            d = _heygen_direct_req(
+                "POST", _HEYGEN_DIRECT_UPLOAD + "/v1/asset", raw, mime, timeout=240)
         node = d.get("data") or {}
         asset_id = str(node.get("asset_id") or node.get("id") or "").strip()
         if not asset_id:

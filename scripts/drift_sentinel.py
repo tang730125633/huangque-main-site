@@ -64,6 +64,8 @@ BACKEND_RUNTIME = {
     'server/func_names.py': '/home/ubuntu/content-api/func_names.py',
     'server/dl_service.py': '/home/ubuntu/dl-service/dl_service.py',
     'server/admin_api.py': '/home/ubuntu/content-api/admin_api.py',
+    'server/creator_agent_api.py': '/opt/huangque/creator-agent/current/creator_agent_api.py',
+    'deploy/nginx-huangquechuanmei.conf': '/etc/nginx/sites-available/huangquechuanmei',
     'scripts/hq_bitable_sync_server.py': '/home/ubuntu/hq_bitable_sync_server.py',
     'scripts/process_invite_reward_claims.py': '/home/ubuntu/auth-service/process_invite_reward_claims.py',
     'scripts/drift_sentinel.py': '/home/ubuntu/hq-drift/drift_sentinel.py',
@@ -71,6 +73,7 @@ BACKEND_RUNTIME = {
 
 CONTENT_DOMAINS_RUNTIME = os.environ.get('HQ_CONTENT_DOMAINS_RUNTIME', '/home/ubuntu/content-api/content_domains')
 PROVIDERS_RUNTIME = os.environ.get('HQ_PROVIDERS_RUNTIME', '/home/ubuntu/content-api/providers')
+CREATOR_AGENT_RUNTIME = os.environ.get('HQ_CREATOR_AGENT_RUNTIME', '/opt/huangque/creator-agent/current/creator_agent')
 QA_FIXTURES_RUNTIME = os.environ.get('HQ_QA_FIXTURES_RUNTIME', '/home/ubuntu/content-api/qa_fixtures')
 AUTH_SHARED_RUNTIME = {
     'server/content_domains/__init__.py': '/home/ubuntu/auth-service/content_domains/__init__.py',
@@ -149,6 +152,8 @@ def git_path_to_runtime(git_path):
         return os.path.join(CONTENT_DOMAINS_RUNTIME, os.path.basename(git_path))
     if git_path.startswith('server/providers/') and git_path.endswith('.py'):
         return os.path.join(PROVIDERS_RUNTIME, git_path[len('server/providers/'):])
+    if git_path.startswith('server/creator_agent/') and git_path.endswith('.py'):
+        return os.path.join(CREATOR_AGENT_RUNTIME, os.path.basename(git_path))
     if git_path.startswith('server/qa_fixtures/'):
         return os.path.join(QA_FIXTURES_RUNTIME, os.path.basename(git_path))
     if git_path.startswith('deploy/systemd/'):
@@ -191,6 +196,9 @@ def runtime_to_git_path(path):
     providers_dir = os.path.normpath(PROVIDERS_RUNTIME)
     if path.startswith(providers_dir + os.sep) and path.endswith('.py') and '__pycache__' not in path:
         return 'server/providers/' + os.path.relpath(path, providers_dir).replace(os.sep, '/')
+    creator_dir = os.path.normpath(CREATOR_AGENT_RUNTIME)
+    if path.startswith(creator_dir + os.sep) and path.endswith('.py') and '__pycache__' not in path:
+        return 'server/creator_agent/' + os.path.basename(path)
     fixtures_dir = os.path.normpath(QA_FIXTURES_RUNTIME)
     if path.startswith(fixtures_dir + os.sep):
         return 'server/qa_fixtures/' + os.path.basename(path)
@@ -215,6 +223,9 @@ def expected_git_paths():
     for p in git_ls_tree('server/providers'):
         if p.endswith('.py') and '__pycache__' not in p:
             paths.append(p)
+    for p in git_ls_tree('server/creator_agent'):
+        if p.endswith('.py') and '__pycache__' not in p:
+            paths.append(p)
     paths.extend(git_ls_tree('server/qa_fixtures'))
     return sorted(set(paths))
 
@@ -234,6 +245,9 @@ def runtime_files():
         if os.path.isfile(p) and runtime_to_git_path(p):
             files.append(p)
     for p in glob.glob(os.path.join(PROVIDERS_RUNTIME, '**', '*.py'), recursive=True):
+        if os.path.isfile(p) and runtime_to_git_path(p):
+            files.append(p)
+    for p in glob.glob(os.path.join(CREATOR_AGENT_RUNTIME, '*.py')):
         if os.path.isfile(p) and runtime_to_git_path(p):
             files.append(p)
     for p in glob.glob(os.path.join(QA_FIXTURES_RUNTIME, '*')):

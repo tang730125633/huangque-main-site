@@ -54,6 +54,8 @@ class H(DigitalPresenterH):
     def do_DELETE(self):
         if self._dispatch_script_to_video("DELETE"):
             return
+        if self._dispatch_video_compose("DELETE"):
+            return
         return super().do_DELETE()
 
 

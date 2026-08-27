@@ -17,7 +17,7 @@ from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
-import mimetypes; from . import assets_store, jobs_store, startup_recovery, submission_idempotency, miniprogram_security, inspiration_likes, history, notifications, cli_gateway, cli_uploads, error_contract, pixelle_talking_assets  # 领域存储模块均无反向依赖
+import mimetypes; from . import assets_store, jobs_store, startup_recovery, submission_idempotency, matrix_template_submission, miniprogram_security, inspiration_likes, history, notifications, cli_gateway, cli_uploads, error_contract, pixelle_talking_assets  # 领域存储模块均无反向依赖
 try:
     from . import asset_batch, feature_flags, pricing
 except ImportError:  # Running core.py directly during local checks.
@@ -547,6 +547,7 @@ def init_db():
         _ensure_column(c, "jobs", "refunded", "INTEGER DEFAULT 0")  # 退点幂等键(#187)
         _ensure_column(c, "jobs", "owner", "TEXT")                  # 归属服务(#511)，见 SERVICE_OWNER
         submission_idempotency.ensure_table(c)
+        matrix_template_submission.ensure_table(c)
         c.commit()
     feature_flags.init_db()
     pricing.init_db()
@@ -1358,11 +1359,40 @@ def _retry_short_drama_provider_refunds(limit=None):
     )
 
 
+def _retry_matrix_template_submissions(limit=None):
+    points = _domains()[1]
+    recovered = 0
+    for item in matrix_template_submission.recoverable(
+            jdb, int(limit or JOB_QUEUE_MAX)):
+        try:
+            attempt = matrix_template_submission.recover(
+                jdb, points, item["username"], item["endpoint"],
+                item["idem_key"], owner=SERVICE_OWNER,
+            )
+        except (
+            matrix_template_submission.AttemptInProgress,
+            matrix_template_submission.AttemptRecoveryPending,
+            matrix_template_submission.AttemptConflict,
+        ):
+            continue
+        if attempt and attempt["state"] == "linked" and attempt.get("job_id"):
+            with closing(jdb()) as connection:
+                job = connection.execute(
+                    "SELECT status FROM jobs WHERE id=? AND username=?",
+                    (int(attempt["job_id"]), item["username"]),
+                ).fetchone()
+            if job and job["status"] == "pending":
+                enqueue_job(int(attempt["job_id"]), "matrix_template_video", None)
+        recovered += int(bool(attempt))
+    return recovered
+
+
 def _run_short_drama_recovery(limit=None):
     limit = int(limit or JOB_QUEUE_MAX)
     domain = _short_drama_domain()
     points = _domains()[1]
     recoveries = (
+        lambda: _retry_matrix_template_submissions(limit),
         lambda: domain.short_drama_production.retry_attempt_refunds(
             jdb, points, limit),
         lambda: domain.retry_character_reference_refunds(jdb, points, limit),
@@ -1915,7 +1945,11 @@ class H(BaseHTTPRequestHandler):
             if (self._matrix_template_early_idempotency
                     and not self._matrix_template_charge_started):
                 try:
-                    _idempotency_abort(*self._matrix_template_early_idempotency)
+                    attempt = matrix_template_submission.get(
+                        jdb, *self._matrix_template_early_idempotency,
+                    )
+                    if not attempt:
+                        _idempotency_abort(*self._matrix_template_early_idempotency)
                 except Exception as exc:
                     print("[matrix_template] ALARM idempotency abort failed: %s" %
                           type(exc).__name__, flush=True)
@@ -1923,6 +1957,139 @@ class H(BaseHTTPRequestHandler):
     def _do_POST(self):
         p = self.path.split("?")[0]
         audio_domain, points_domain, video_domain = _domains()
+        if p == "/api/gen/internal/submission-reconcile/health":
+            if not cli_gateway._internal_auth(self, AUTH_INTERNAL_TOKEN):
+                return self._send(403, {"detail": "forbidden", "code": "forbidden"})
+            try:
+                with closing(jdb()) as connection:
+                    submission_idempotency.ensure_table(connection)
+                    matrix_template_submission.ensure_table(connection)
+                    connection.execute(
+                        "SELECT 1 FROM matrix_template_submission_attempts LIMIT 1"
+                    ).fetchone()
+                    connection.commit()
+            except Exception:
+                return self._send(503, {
+                    "ok": True, "ready": False,
+                    "detail": "submission reconcile database is unavailable",
+                    "code": "reconcile_database_unavailable",
+                })
+            return self._send(200, {"ok": True, "ready": True})
+        if p == "/api/gen/internal/submission-reconcile":
+            if not cli_gateway._internal_auth(self, AUTH_INTERNAL_TOKEN):
+                return self._send(403, {"detail": "forbidden", "code": "forbidden"})
+            user = verify(self._token())
+            if not user:
+                return self._send(401, {"detail": "未登录或登录已过期", "code": "unauthorized"})
+            if _must_change_password(user):
+                return self._send(403, {"detail": "请先修改初始密码", "code": "password_change_required"})
+            try:
+                reconcile = self._json_body_strict(max_bytes=128 * 1024)
+                if not isinstance(reconcile, dict) or set(reconcile) != {
+                        "endpoint", "idempotency_key", "input"}:
+                    raise ValueError("恢复请求字段不合法")
+                endpoint = str(reconcile.get("endpoint") or "")
+                if endpoint != "/api/gen/matrix-template":
+                    raise ValueError("该提交类型不支持恢复")
+                idem_key = _idempotency_key(reconcile.get("idempotency_key"))
+                request_body = reconcile.get("input")
+                if not idem_key or not isinstance(request_body, dict):
+                    raise ValueError("恢复请求缺少幂等键或原始输入")
+                idem_state, idem_response, idem_meta = submission_idempotency.inspect_existing(
+                    jdb, user["username"], endpoint, idem_key, [request_body],
+                )
+            except ValueError as exc:
+                return self._send(400, {"detail": str(exc)[:220], "code": "invalid_request"})
+            if idem_state == "replay":
+                replay = dict(idem_response or {})
+                status = int(replay.pop("_http_status", 200))
+                replay_job_id = int(replay.get("job_id") or 0)
+                if status == 200 and replay_job_id:
+                    with closing(jdb()) as connection:
+                        replay_job = connection.execute(
+                            "SELECT status FROM jobs WHERE id=? AND username=?",
+                            (replay_job_id, user["username"]),
+                        ).fetchone()
+                    if not replay_job:
+                        return self._send(503, {
+                            "detail": "已受理任务记录暂不可用",
+                            "code": "reconcile_pending", "retry_after_ms": 3000,
+                        })
+                    if replay_job["status"] == "pending" and not enqueue_job(
+                            replay_job_id, "matrix_template_video", None):
+                        return self._send(503, {
+                            "detail": "任务正在等待队列恢复",
+                            "code": "reconcile_pending", "retry_after_ms": 3000,
+                        })
+                replay["reconciled"] = True
+                return self._send(status, replay)
+            if idem_state == "processing":
+                attempt = matrix_template_submission.get(
+                    jdb, user["username"], endpoint, idem_key,
+                )
+                if attempt:
+                    try:
+                        attempt = matrix_template_submission.recover(
+                            jdb, points_domain, user["username"], endpoint,
+                            idem_key, owner=SERVICE_OWNER,
+                        )
+                    except matrix_template_submission.AttemptInProgress:
+                        return self._send(409, {
+                            "detail": "原提交仍在受理中，请稍后查询",
+                            "code": "idempotency_in_progress", "retry_after_ms": 1000,
+                        })
+                    except matrix_template_submission.AttemptRecoveryPending:
+                        return self._send(503, {
+                            "detail": "原提交扣点或退款结果待确认，请稍后查询",
+                            "code": "reconcile_pending", "retry_after_ms": 3000,
+                        })
+                    except matrix_template_submission.AttemptConflict as exc:
+                        return self._send(409, {
+                            "detail": str(exc)[:220], "code": "idempotency_conflict",
+                        })
+                    if attempt and attempt["state"] in {"linked", "failed", "refunded"}:
+                        replay = dict(attempt.get("response") or {})
+                        status = int(replay.pop("_http_status", 200))
+                        if attempt["state"] == "linked":
+                            with closing(jdb()) as connection:
+                                job = connection.execute(
+                                    "SELECT status FROM jobs WHERE id=? AND username=?",
+                                    (int(attempt["job_id"]), user["username"]),
+                                ).fetchone()
+                            if not job:
+                                return self._send(503, {
+                                    "detail": "已受理任务记录暂不可用",
+                                    "code": "reconcile_pending", "retry_after_ms": 3000,
+                                })
+                            if job["status"] == "pending" and not enqueue_job(
+                                    int(attempt["job_id"]), "matrix_template_video", None):
+                                return self._send(503, {
+                                    "detail": "任务正在等待队列恢复",
+                                    "code": "reconcile_pending", "retry_after_ms": 3000,
+                                })
+                        replay["reconciled"] = True
+                        return self._send(status, replay)
+                if (
+                    int(idem_meta.get("updated_at") or 0)
+                    <= int(time.time()) - matrix_template_submission.LEASE_SECONDS
+                ):
+                    submission_idempotency.abort(
+                        jdb, user["username"], endpoint, idem_key,
+                    )
+                    return self._send(404, {
+                        "detail": "原提交未进入扣点阶段", "code": "idempotency_not_found",
+                    })
+                return self._send(409, {
+                    "detail": "原提交仍在受理中，请稍后查询",
+                    "code": "idempotency_in_progress", "retry_after_ms": 1000,
+                })
+            if idem_state == "conflict":
+                return self._send(409, {
+                    "detail": "幂等键已绑定其他输入", "code": "idempotency_conflict",
+                })
+            return self._send(404, {
+                "detail": "未找到已受理的原提交", "code": "idempotency_not_found",
+            })
         if cli_gateway.handle_image_upload(
                 self, p, verify, _must_change_password, AUTH_INTERNAL_TOKEN): return
         if cli_gateway.handle_video_upload(
@@ -3320,6 +3487,7 @@ class H(BaseHTTPRequestHandler):
             cinematic_idem_reserved = False
             script_to_video_idem_reserved = False
             matrix_template_idem_reserved = False
+            matrix_template_idem_existing = False
             script_to_video_quote_token = ""
             still_access = _short_drama_canvas_access(self) if is_still_route else None
             scene_access = None
@@ -3342,10 +3510,13 @@ class H(BaseHTTPRequestHandler):
                                 "code": "idempotency_conflict",
                             })
                         if idem_state == "processing":
-                            return self._send(409, {
-                                "detail": "相同请求正在受理，请稍后查询",
-                                "code": "idempotency_in_progress", "retry_after_ms": 1000,
-                            })
+                            if kind == "matrix_template_video":
+                                matrix_template_idem_existing = True
+                            else:
+                                return self._send(409, {
+                                    "detail": "相同请求正在受理，请稍后查询",
+                                    "code": "idempotency_in_progress", "retry_after_ms": 1000,
+                                })
                         if kind == "cinematic":
                             cinematic_idem_reserved = idem_state == "new"
                             if cinematic_idem_reserved:
@@ -3664,7 +3835,7 @@ class H(BaseHTTPRequestHandler):
                         recovered["points_left"] = points_domain.get_points(user["username"])
                         _idempotency_complete(user["username"], p, idem_key, recovered)
                         return self._send(200, recovered)
-                if not is_still_route: idem_state, idem_response = ("new", None) if seedance_idem_reserved or cinematic_idem_reserved or script_to_video_idem_reserved or matrix_template_idem_reserved else _idempotency_begin(user["username"], p, idem_key, request_body)
+                if not is_still_route: idem_state, idem_response = ("new", None) if seedance_idem_reserved or cinematic_idem_reserved or script_to_video_idem_reserved or matrix_template_idem_reserved or matrix_template_idem_existing else _idempotency_begin(user["username"], p, idem_key, request_body)
                 if idem_state == "replay": replay = dict(idem_response or {}); return self._send(int(replay.pop("_http_status", 200)), replay)
                 if idem_state == "conflict": return self._send(409, {"detail": "同一个 Idempotency-Key 不能用于不同请求", "code": "idempotency_conflict"})
                 if idem_state == "processing" and not is_still_route: return self._send(409, {"detail": "相同请求正在受理，请稍后查询", "code": "idempotency_in_progress", "retry_after_ms": 1000})
@@ -3749,7 +3920,27 @@ class H(BaseHTTPRequestHandler):
                         from . import pixelle_video as pixelle_video_domain
                         paid_association = pixelle_video_domain.paid_plan_association(
                             body, user["username"])
-                    if is_still_route:
+                    if kind == "matrix_template_video":
+                        matrix_template_submission.prepare(
+                            jdb, user["username"], p, idem_key, request_body, cost,
+                        )
+                        self._matrix_template_charge_started = True
+                        matrix_attempt = matrix_template_submission.recover(
+                            jdb, points_domain, user["username"], p, idem_key,
+                            owner=SERVICE_OWNER,
+                        )
+                        if matrix_attempt["state"] in {"failed", "refunded"}:
+                            terminal = dict(matrix_attempt.get("response") or {})
+                            terminal_status = int(terminal.pop("_http_status", 500))
+                            return self._send(terminal_status, terminal)
+                        if matrix_attempt["state"] != "linked" or not matrix_attempt.get("job_id"):
+                            raise matrix_template_submission.AttemptRecoveryPending(
+                                "模板成片提交仍在恢复中")
+                        jid = int(matrix_attempt["job_id"])
+                        points_left = int(matrix_attempt["points_left"])
+                        cost = int(matrix_attempt["cost"])
+                        body = matrix_attempt["input"]
+                    elif is_still_route:
                         if is_shutting_down(): return self._send(503, {"detail": "服务正在更新，请稍等几秒后重试", "code": "shutting_down", "retry_after_ms": 5000})
                         if still_attempt["state"] == "accepted":
                             points_left = points_domain.deduct_points(
@@ -3777,14 +3968,26 @@ class H(BaseHTTPRequestHandler):
                             self._cinematic_charge_started = True
                         if kind == "script_to_video":
                             self._script_to_video_charge_started = True
-                        if kind == "matrix_template_video":
-                            self._matrix_template_charge_started = True
                         jid, points_left = jobs_store.create_paid_job(
                             jdb, points_domain.deduct_points, points_domain.refund_points,
                             kind, user["username"], cost, body, SERVICE_OWNER,
                             before_commit=(lambda connection, job_id: video_domain.link_staged_seedance_references(connection, staged_ref_keys, job_id, user["username"], p, idem_key)) if staged_ref_keys else paid_association,
                             charge_transaction_key=("job-charge:%s:%s:%s" % (user["username"], p, idem_key)) if idem_key else "",
                             before_charge=(lambda: video_domain.mark_seedance_reference_charging(user["username"], p, idem_key, kind, cost, body, SERVICE_OWNER, "job-charge:%s:%s:%s" % (user["username"], p, idem_key))) if staged_ref_keys else None)
+                except matrix_template_submission.AttemptInProgress:
+                    return self._send(409, {
+                        "detail": "相同模板成片请求正在恢复，请稍后查询",
+                        "code": "idempotency_in_progress", "retry_after_ms": 1000,
+                    })
+                except matrix_template_submission.AttemptRecoveryPending:
+                    return self._send(503, {
+                        "detail": "模板成片扣点、任务或退款结果待确认",
+                        "code": "reconcile_pending", "retry_after_ms": 3000,
+                    })
+                except matrix_template_submission.AttemptConflict as e:
+                    return self._send(409, {
+                        "detail": str(e)[:220], "code": "idempotency_conflict",
+                    })
                 except (video_domain.SeedanceReferenceUnavailable if isinstance(video_domain.SeedanceReferenceUnavailable, type) and issubclass(video_domain.SeedanceReferenceUnavailable, BaseException) else ()) as e: video_domain.abort_xiaole_reference_submission(staged_ref_keys, user["username"], p, idem_key, lambda: _idempotency_abort(user["username"], p, idem_key)); return self._send(e.status, {"detail": str(e)[:220], "code": e.code, "retry_after_ms": 60000})
                 except points_domain.AuthPointsError as e:
                     if staged_ref_keys and e.status in (402, 403): video_domain.cleanup_staged_seedance_references(staged_ref_keys); video_domain.release_seedance_staging_attempt(user["username"], p, idem_key)
@@ -4276,6 +4479,7 @@ class H(BaseHTTPRequestHandler):
         self._send(404, {"detail": "not found"})
     def do_DELETE(self):
         p = self.path.split("?")[0]
+        if _digital_ip_domain().dispatch_http(self, "DELETE", verify, _must_change_password): return
         if p == "/api/gen/leads/crm":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录"})
