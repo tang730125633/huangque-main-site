@@ -456,9 +456,11 @@ TALKING_JOB_WORKERS = _env_positive_int("CONTENT_TALKING_JOB_WORKERS", 20)  # �
 CINEMATIC_JOB_WORKERS = _env_positive_int("CONTENT_CINEMATIC_JOB_WORKERS", 10)  # AI剧情视频池(HeyGen)。20路并发实测(10口播+10剧情同时生成)：20/20全成、零降速(口播114s vs 单条基线104s)——HeyGen 的渲染容量远大于20，文档说的「Max Concurrent Video Jobs=10」不是硬限制。唯一的真限制是【提交突发】，由 _heygen_retry_429 兜住
 AVATAR_JOB_WORKERS = _env_positive_int("CONTENT_AVATAR_JOB_WORKERS", 5)        # 建形象池。5 路是实测的干净档位(2026-07-12)：5并发 5/5成功、0×429、零降速(就绪中位19.7s vs 单条基线19.8s)；10并发 HeyGen 侧照样零429不降速，但【我们的出境隧道】开始丢包(1条TLS握手超时、1条提交花了57s)。所以瓶颈是隧道不是HeyGen，隧道扩容后可再往上调。串行(1)的吞吐只有144个/小时——500人集中建形象要排3.5小时，而建形象是电影化身的【入口】，堵在这里等于整个功能没法用；5路→约900个/小时，排队压到35分钟
 IMAGE_JOB_WORKERS = _env_positive_int("CONTENT_IMAGE_JOB_WORKERS", 10)       # 生图专用池(生图慢90~450s，从快池拆出别拖死秒级任务)。10=500用户高峰约150张/时所需6.3个+60%余量；1worker≈24张/时(实测中位149s)
+MATRIX_JOB_WORKERS = _env_positive_int("CONTENT_MATRIX_JOB_WORKERS", 5)      # 模板成片独立池，与生成服务器5路渲染容量一致
 JOB_QUEUE_MAX = _env_positive_int("CONTENT_JOB_QUEUE_MAX", 64)  # 32→64：50 齐点压测 3 条「队列已满」当场拒；64+worker 收得下整批
+MATRIX_JOB_QUEUE_MAX = _env_positive_int("CONTENT_MATRIX_JOB_QUEUE_MAX", 64)
 TALKING_JOB_QUEUE_MAX = _env_positive_int("CONTENT_TALKING_JOB_QUEUE_MAX", 192)  # 口播独立积压上限，不放大其他任务队列
-_PENDING_RECOVERY_LIMIT = max(JOB_QUEUE_MAX, TALKING_JOB_QUEUE_MAX)
+_PENDING_RECOVERY_LIMIT = max(JOB_QUEUE_MAX, TALKING_JOB_QUEUE_MAX, MATRIX_JOB_QUEUE_MAX)
 MAX_USER_ACTIVE_JOBS = _env_positive_int("MAX_USER_ACTIVE_JOBS", 5)                  # 单用户可同时提交(pending+running)的任务上限，超了提交即 429
 MAX_USER_ACTIVE_XIAOLE_VIDEO = _env_positive_int("MAX_USER_ACTIVE_XIAOLE_VIDEO", 2)  # 单用户果肉/豆姐/欧米视频共享 active 上限：别让单一渠道吃满全部任务位
 MAX_USER_ACTIVE_SORA_VIDEO = _env_positive_int("MAX_USER_ACTIVE_SORA_VIDEO", 1)      # Sora 高价限时 Beta：每用户默认只允许 1 条在飞
@@ -1032,6 +1034,7 @@ _talking_job_queue = queue.Queue(maxsize=TALKING_JOB_QUEUE_MAX)  # 口播队列(
 _image_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)    # 生图队列(kind=image，从快池拆出防拖死快任务)
 _cinematic_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)  # AI剧情视频队列(kind=cinematic，HeyGen，约8分钟/条)
 _avatar_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)     # 建形象队列(kind=avatar，串行池)
+_matrix_job_queue = queue.Queue(maxsize=MATRIX_JOB_QUEUE_MAX)  # 模板成片独立队列
 _queued_job_ids = set()
 _job_queue_lock = threading.Lock()
 _run_gate_lock = threading.Lock()  # 单用户口播运行闸：count+抢running 在此锁内原子，防多worker同时超发
@@ -1111,7 +1114,7 @@ def _pick_job_queue(kind, mode=None):
     if kind == "short_drama_preview":
         return _job_queue               # 本地 FFmpeg 重任务，复用慢队列
     if kind == "matrix_template_video":
-        return _job_queue               # 生成服务器 FFmpeg 模板渲染，走慢队列
+        return _matrix_job_queue        # 独立5路池，对齐生成服务器渲染容量
     if kind == "cinematic":
         return _cinematic_job_queue     # HeyGen 剧情视频，约 8 分钟/条，10 个 worker
     if kind == "avatar":
@@ -1432,7 +1435,8 @@ def _pending_job_scanner():
         time.sleep(30)
 
 _ALL_JOB_QUEUES = (_job_queue, _fast_job_queue, _talking_job_queue,
-                   _image_job_queue, _cinematic_job_queue, _avatar_job_queue)
+                   _image_job_queue, _cinematic_job_queue, _avatar_job_queue,
+                   _matrix_job_queue)
 
 
 def start_job_workers():
@@ -1445,7 +1449,8 @@ def start_job_workers():
                              (TALKING_JOB_WORKERS, _talking_job_queue, "content-talking-worker"),
                              (IMAGE_JOB_WORKERS, _image_job_queue, "content-image-worker"),
                              (CINEMATIC_JOB_WORKERS, _cinematic_job_queue, "content-cinematic-worker"),
-                             (AVATAR_JOB_WORKERS, _avatar_job_queue, "content-avatar-worker")):
+                             (AVATAR_JOB_WORKERS, _avatar_job_queue, "content-avatar-worker"),
+                             (MATRIX_JOB_WORKERS, _matrix_job_queue, "content-matrix-worker")):
         for i in range(count):
             threading.Thread(target=_job_worker_loop, args=(q,), name="%s-%d" % (prefix, i + 1), daemon=True).start()
     from . import gemini_reverse
@@ -4078,6 +4083,16 @@ class H(BaseHTTPRequestHandler):
                             self._cinematic_reference_files)
                         self._cinematic_reference_files = []
                     queue_response = {"detail": "任务队列已满，请稍后再试", "code": "queue_full", "retry_after_ms": 4000, "need": cost}
+                    if kind == "matrix_template_video":
+                        tracking_response = _compensation_tracking_response(
+                            jid, cost, queue_response["detail"],
+                            points_left=points_left,
+                        )
+                        _idempotency_complete(
+                            user["username"], p, idem_key,
+                            dict(tracking_response, _http_status=202),
+                        )
+                        return self._send(202, tracking_response)
                     digital_human_paid_child = bool(
                         digital_human_consent_record
                         and kind in {"image", "video"}
@@ -4477,7 +4492,7 @@ class H(BaseHTTPRequestHandler):
                       "stats": {"like": it.get("like"), "comment": it.get("comment")}} for it in (r.get("items") or [])]
             return self._send(200, {"items": items, "cost": search_cost, "points_left": points_left})
         if p == "/api/gen/health":
-            return self._send(200, {"ok": True, "service": "huangque-content", "caps": list(HANDLERS), "job_workers": JOB_WORKERS, "fast_job_workers": FAST_JOB_WORKERS, "talking_job_workers": TALKING_JOB_WORKERS, "image_job_workers": IMAGE_JOB_WORKERS, "job_queue_max": JOB_QUEUE_MAX, "talking_job_queue_max": TALKING_JOB_QUEUE_MAX,
+            return self._send(200, {"ok": True, "service": "huangque-content", "caps": list(HANDLERS), "job_workers": JOB_WORKERS, "fast_job_workers": FAST_JOB_WORKERS, "talking_job_workers": TALKING_JOB_WORKERS, "image_job_workers": IMAGE_JOB_WORKERS, "matrix_job_workers": MATRIX_JOB_WORKERS, "job_queue_max": JOB_QUEUE_MAX, "talking_job_queue_max": TALKING_JOB_QUEUE_MAX, "matrix_job_queue_max": MATRIX_JOB_QUEUE_MAX,
                                     "max_user_active_jobs": MAX_USER_ACTIVE_JOBS, "max_user_active_xiaole_video": MAX_USER_ACTIVE_XIAOLE_VIDEO, "max_user_active_sora_video": MAX_USER_ACTIVE_SORA_VIDEO, "max_user_active_tryon": MAX_USER_ACTIVE_TRYON, "max_user_active_cinematic": MAX_USER_ACTIVE_CINEMATIC,
                                     "sora_video_enabled": video_domain.sora_video_health_enabled(feature_flags),
                                     "image_xiaole_enabled": feature_flags.is_enabled("image_xiaole"),
