@@ -567,6 +567,73 @@ class DigitalHumanV2Tests(unittest.TestCase):
         self.assertEqual(replaced["audio_upload_id"], rows[0]["asset_id"])
         self.assertEqual(hashlib.sha256(raw).hexdigest(), rows[0]["source_sha256"])
 
+    def test_replacement_commit_hard_exit_recovers_old_directory_and_keeps_winner(self):
+        raw = b"replacement-hard-exit-must-leave-durable-cleanup-intent"
+        first = self._store_audio(raw, now=1000)
+        with closing(self._consent_connection()) as connection:
+            old_source = connection.execute(
+                "SELECT source_file FROM digital_human_audio_uploads WHERE asset_id=?",
+                (first["audio_upload_id"],),
+            ).fetchone()["source_file"]
+        old_directory = (self.root / old_source).parent
+        new_now = 1000 + self.domain._AUDIO_UPLOAD_TTL_SECONDS + 1
+        transcript = [{
+            "start": 0.0, "end": 12.0,
+            "text": "这是用于验证替换提交后硬退出恢复的完整口播。",
+        }]
+
+        def create_slice(command, **_kwargs):
+            Path(command[-1]).write_bytes(b"replacement-winner-slice")
+
+        class SimulatedHardExit(BaseException):
+            pass
+
+        with mock.patch.object(self.domain.time, "time", return_value=new_now), \
+                mock.patch.object(self.domain, "_probe_audio_duration", return_value=12.0), \
+                mock.patch.object(self.domain, "_transcribe_audio", return_value=transcript), \
+                mock.patch.object(self.legacy, "_run", side_effect=create_slice), \
+                mock.patch.object(
+                    self.domain, "_remove_audio_asset_files",
+                    side_effect=SimulatedHardExit("after replacement commit"),
+                ), self.assertRaises(SimulatedHardExit):
+            self.domain.audio_upload_response(
+                io.BytesIO(raw), len(raw), "yuelei",
+                "dh-v2-run-audio-reupload-001", "audio/mpeg",
+                hashlib.sha256(raw).hexdigest(),
+            )
+
+        with closing(self._consent_connection()) as connection:
+            winner = connection.execute(
+                "SELECT asset_id,source_file FROM digital_human_audio_uploads"
+            ).fetchone()
+        self.assertNotEqual(first["audio_upload_id"], winner["asset_id"])
+        winner_directory = (self.root / winner["source_file"]).parent
+        self.assertTrue(old_directory.exists())
+        self.assertTrue(winner_directory.exists())
+
+        recovery_now = new_now + self.domain._AUDIO_ADMISSION_LEASE_SECONDS + 1
+        removed = self.domain.cleanup_expired_assets(
+            self._consent_connection, self._jobs_connection,
+            now=recovery_now, limit=20,
+        )
+
+        self.assertGreaterEqual(removed, 1)
+        self.assertFalse(old_directory.exists())
+        self.assertTrue(winner_directory.exists())
+        with mock.patch.object(self.domain.time, "time", return_value=recovery_now):
+            loaded = self.domain._load_audio_asset(
+                winner["asset_id"], "yuelei", db_factory=self._consent_connection,
+            )
+        self.assertEqual(winner["asset_id"], loaded["asset_id"])
+        with closing(self._consent_connection()) as connection:
+            states = {
+                row["admission_id"]: row["state"] for row in connection.execute(
+                    "SELECT admission_id,state FROM digital_human_audio_admissions"
+                ).fetchall()
+            }
+        self.assertIn("committed_reaped", states.values())
+        self.assertIn("committed", states.values())
+
     def test_expired_authorized_audio_requires_explicit_new_run(self):
         raw = b"expired-authorized-audio-cannot-be-rebound"
         first = self._store_audio(raw, now=2000)

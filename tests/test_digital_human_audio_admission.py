@@ -25,7 +25,7 @@ class DigitalHumanAudioAdmissionTests(unittest.TestCase):
         with closing(self.db()) as connection:
             digital_human_v2._ensure_audio_table(connection)
             connection.execute("""CREATE TABLE digital_human_consents(
-                username TEXT NOT NULL,run_id TEXT NOT NULL
+                username TEXT NOT NULL,run_id TEXT NOT NULL,voice_ref TEXT NOT NULL DEFAULT ''
             )""")
             connection.commit()
         with closing(self.jobs()) as connection:
@@ -124,6 +124,12 @@ class DigitalHumanAudioAdmissionTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "posix", "symlink path safety requires POSIX")
     def test_orphan_recovery_leaves_symlink_and_external_file_untouched(self):
         now, admission_id, _asset_id, directory = self._expired_admission_with_directory()
+        with closing(self.db()) as connection:
+            connection.execute(
+                "UPDATE digital_human_audio_admissions SET state='committed',lease_until=0 "
+                "WHERE admission_id=?", (admission_id,),
+            )
+            connection.commit()
         outside = self.root / "outside.mp3"
         outside.write_bytes(b"external-unique")
         linked = directory / "linked.mp3"
@@ -143,7 +149,65 @@ class DigitalHumanAudioAdmissionTests(unittest.TestCase):
                 "SELECT state FROM digital_human_audio_admissions WHERE admission_id=?",
                 (admission_id,),
             ).fetchone()["state"]
-        self.assertEqual("reaping", state)
+        self.assertEqual("reaping_committed", state)
+
+    def test_committed_orphan_with_unexpected_file_fails_closed(self):
+        now, admission_id, _asset_id, directory = self._expired_admission_with_directory()
+        (directory / "unexpected.txt").write_text("operator evidence", encoding="utf-8")
+        with closing(self.db()) as connection:
+            connection.execute(
+                "UPDATE digital_human_audio_admissions SET state='committed',lease_until=0 "
+                "WHERE admission_id=?", (admission_id,),
+            )
+            connection.commit()
+
+        self.assertEqual(0, digital_human_v2.cleanup_expired_assets(
+            self.db, self.jobs, now=now + 1000, limit=10,
+        ))
+        self.assertTrue((directory / "unexpected.txt").exists())
+        self.assertTrue((directory / "source.mp3").exists())
+
+    def test_committed_orphans_with_consent_or_job_references_are_retained(self):
+        now, consent_admission, consent_asset, consent_directory = \
+            self._expired_admission_with_directory("alice")
+        with closing(self.db()) as connection:
+            connection.execute(
+                "UPDATE digital_human_audio_admissions SET state='committed',lease_until=0 "
+                "WHERE admission_id=?", (consent_admission,),
+            )
+            connection.execute(
+                "INSERT INTO digital_human_consents(username,run_id,voice_ref) VALUES(?,?,?)",
+                ("alice", "audio-run-consent", consent_asset),
+            )
+            connection.commit()
+        job_now, job_admission, job_asset, job_directory = \
+            self._expired_admission_with_directory("bob")
+        with closing(self.db()) as connection:
+            connection.execute(
+                "UPDATE digital_human_audio_admissions SET state='committed',lease_until=0 "
+                "WHERE admission_id=?", (job_admission,),
+            )
+            connection.commit()
+        with closing(self.jobs()) as connection:
+            connection.execute(
+                "INSERT INTO jobs(username,payload,result) VALUES(?,?,?)",
+                ("bob", '{"audio_upload_id":"%s"}' % job_asset, "{}"),
+            )
+            connection.commit()
+
+        self.assertEqual(0, digital_human_v2.cleanup_expired_assets(
+            self.db, self.jobs, now=max(now, job_now) + 1000, limit=10,
+        ))
+        self.assertTrue(consent_directory.exists())
+        self.assertTrue(job_directory.exists())
+        with closing(self.db()) as connection:
+            states = {
+                row["admission_id"]: row["state"] for row in connection.execute(
+                    "SELECT admission_id,state FROM digital_human_audio_admissions"
+                ).fetchall()
+            }
+        self.assertEqual("committed", states[consent_admission])
+        self.assertEqual("committed", states[job_admission])
 
     def test_orphan_recovery_retains_valid_asset_record(self):
         now, admission_id, asset_id, directory = self._expired_admission_with_directory()
@@ -246,7 +310,7 @@ class DigitalHumanAudioAdmissionTests(unittest.TestCase):
                      path.relative_to(digital_human_v2.OUT_DIR).as_posix()),
                 )
             connection.execute(
-                "INSERT INTO digital_human_consents VALUES(?,?)",
+                "INSERT INTO digital_human_consents(username,run_id) VALUES(?,?)",
                 ("alice", "audio-run-retained"),
             )
             connection.commit()

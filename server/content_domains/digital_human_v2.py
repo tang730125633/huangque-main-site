@@ -290,9 +290,16 @@ def _reap_expired_audio_admissions(db_factory=None, jobs_db_factory=None,
             "UPDATE digital_human_audio_admissions SET state='reaping' "
             "WHERE state='active' AND lease_until<=?", (now,),
         )
+        connection.execute(
+            "UPDATE digital_human_audio_admissions SET state='reaping_committed' "
+            "WHERE state='committed' AND NOT EXISTS ("
+            "SELECT 1 FROM digital_human_audio_uploads AS upload "
+            "WHERE upload.asset_id='dha_' || substr(admission_id,6))",
+        )
         rows = connection.execute(
-            "SELECT admission_id,username FROM digital_human_audio_admissions "
-            "WHERE state='reaping' ORDER BY created_at LIMIT ?", (limit,),
+            "SELECT admission_id,username,state FROM digital_human_audio_admissions "
+            "WHERE state IN ('reaping','reaping_committed') "
+            "ORDER BY created_at LIMIT ?", (limit,),
         ).fetchall()
         connection.commit()
     removed = 0
@@ -305,19 +312,28 @@ def _reap_expired_audio_admissions(db_factory=None, jobs_db_factory=None,
                 connection.execute(
                     "UPDATE digital_human_audio_admissions "
                     "SET state='committed',lease_until=0 "
-                    "WHERE admission_id=? AND state='reaping'", (row["admission_id"],),
+                    "WHERE admission_id=? AND state IN ('reaping','reaping_committed')",
+                    (row["admission_id"],),
                 )
                 connection.commit()
             continue
         if not _remove_orphan_audio_directory(directory):
             continue
         with closing(_audio_db(db_factory)) as connection:
-            deleted = connection.execute(
-                "DELETE FROM digital_human_audio_admissions "
-                "WHERE admission_id=? AND state='reaping'", (row["admission_id"],),
-            )
+            if row["state"] == "reaping_committed":
+                completed = connection.execute(
+                    "UPDATE digital_human_audio_admissions "
+                    "SET state='committed_reaped',lease_until=0 "
+                    "WHERE admission_id=? AND state='reaping_committed'",
+                    (row["admission_id"],),
+                )
+            else:
+                completed = connection.execute(
+                    "DELETE FROM digital_human_audio_admissions "
+                    "WHERE admission_id=? AND state='reaping'", (row["admission_id"],),
+                )
             connection.commit()
-        removed += int(deleted.rowcount == 1)
+        removed += int(completed.rowcount == 1)
     return removed
 
 
@@ -779,7 +795,10 @@ def cleanup_expired_assets(db_factory=None, jobs_db_factory=None, now=None,
     with closing(_audio_db(db_factory)) as connection:
         connection.execute(
             "DELETE FROM digital_human_audio_admissions "
-            "WHERE state='committed' AND created_at<?", (now - 2 * 86400,),
+            "WHERE state IN ('committed','committed_reaped') AND created_at<? "
+            "AND NOT EXISTS (SELECT 1 FROM digital_human_audio_uploads AS upload "
+            "WHERE upload.asset_id='dha_' || substr(admission_id,6))",
+            (now - 2 * 86400,),
         )
         candidates = []
         for table, column, root in (
