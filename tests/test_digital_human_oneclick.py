@@ -42,7 +42,12 @@ class DigitalHumanOneClickTests(unittest.TestCase):
         connection = sqlite3.connect(self.db)
         connection.execute("""CREATE TABLE jobs(
             id INTEGER PRIMARY KEY, username TEXT, kind TEXT,
-            status TEXT, payload TEXT, result TEXT, deleted INTEGER DEFAULT 0
+            cost INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'pending', payload TEXT NOT NULL,
+            result TEXT, error TEXT, refunded INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL DEFAULT 0, owner TEXT,
+            deleted INTEGER DEFAULT 0
         )""")
         for job_id in range(1, 4):
             rel = "videos/%d.mp4" % job_id

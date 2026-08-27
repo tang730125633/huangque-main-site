@@ -3021,6 +3021,23 @@ def _heygen_upload_asset_oauth(file_path, mime, timeout=240):
         return json.loads(r.read())
 
 
+def heygen_upload_preflight():
+    """Confirm the configured upload credential path without creating an asset."""
+    if _heygen_mcp_enabled():
+        token = str(_heygen_mcp_access_token() or "").strip()
+        if not token:
+            raise RuntimeError("HeyGen OAuth upload credential is unavailable")
+        mode = "oauth"
+    else:
+        if not str(HEYGEN_API_KEY or "").strip():
+            raise RuntimeError("HeyGen upload credential is unavailable")
+        # Constructing the dedicated opener validates the locked proxy/TLS
+        # configuration.  Do not create a disposable asset during preflight.
+        _heygen_direct_opener()
+        mode = "api_key"
+    return {"ok": True, "no_charge": True, "upload_auth": mode}
+
+
 def _heygen_upload_asset(file_path, direct=False):
     path = pathlib.Path(file_path)
     if not path.is_file():
