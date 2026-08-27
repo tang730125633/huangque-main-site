@@ -367,6 +367,46 @@ class CreatorAgentStore:
             connection.commit()
         return self.workspace(username, project_id)
 
+    def commit_profile_opening(self, username, project_id, state, reply, public,
+                               source_key, flow=None):
+        now = int(time.time())
+        with closing(self.db()) as connection:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                existing = connection.execute(
+                    "SELECT id FROM creator_messages "
+                    "WHERE username=? AND project_id=? AND source_key=?",
+                    (username, project_id, source_key),
+                ).fetchone()
+                if existing:
+                    connection.commit()
+                    return self.workspace(username, project_id)
+                assignments = ["profile_state_json=?", "updated_at=?"]
+                values = [_json(state), now]
+                if flow is not None:
+                    assignments.append("flow_json=?")
+                    values.append(_json(flow))
+                changed = connection.execute(
+                    "UPDATE creator_workspaces SET %s "
+                    "WHERE username=? AND project_id=?" % ",".join(assignments),
+                    tuple(values) + (username, project_id),
+                )
+                if changed.rowcount != 1:
+                    raise StoreError("workspace not found")
+                connection.execute(
+                    """INSERT INTO creator_messages(
+                       username,project_id,role,content,source_key,request_id,
+                       request_hash,public_json,created_at)
+                       VALUES(?,?, 'assistant', ?, ?, NULL, '', ?, ?)""",
+                    (username, project_id, str(reply or "")[:8000], source_key,
+                     _json(public or {}), now),
+                )
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        return self.workspace(username, project_id)
+
     def workspaces(self, username):
         with closing(self.db()) as connection:
             rows = connection.execute(

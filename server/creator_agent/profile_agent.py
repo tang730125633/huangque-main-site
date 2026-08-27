@@ -113,7 +113,55 @@ def current_question(state):
     module = max(1, min(4, int(state.get("current_module") or 1)))
     questions = MODULES[module]["questions"]
     index = max(0, min(len(questions) - 1, int(state.get("question_index") or 0)))
+    base = {"module": module, "module_name": MODULES[module]["name"], **questions[index]}
+    active = state.get("active_question")
+    if (
+        isinstance(active, dict)
+        and int(active.get("module") or 0) == module
+        and str(active.get("key") or "") == base["key"]
+        and isinstance(active.get("question"), str)
+        and active["question"].strip()
+    ):
+        return {
+            **base,
+            "question": active["question"].strip()[:500],
+            "template": str(active.get("template") or "").strip()[:500],
+            "options": list(active.get("options") or [])[:6],
+        }
+    return base
+
+
+def next_question_goal(state):
+    module = max(1, min(4, int(state.get("current_module") or 1)))
+    index = int(state.get("question_index") or 0) + 1
+    questions = MODULES[module]["questions"]
+    if index >= len(questions):
+        return None
     return {"module": module, "module_name": MODULES[module]["name"], **questions[index]}
+
+
+def _dynamic_question(value, target):
+    if not isinstance(value, dict) or not isinstance(target, dict):
+        raise ProfileAgentError("DeepSeek next question is missing")
+    raw_options = value.get("options")
+    if not isinstance(raw_options, list) or len(raw_options) > 6:
+        raise ProfileAgentError("DeepSeek question options must be a list")
+    options = []
+    for index, item in enumerate(raw_options):
+        text = _required_text(item, "question.options[%d]" % index, 80)
+        if text in options:
+            raise ProfileAgentError("DeepSeek question options contain duplicates")
+        options.append(text)
+    return {
+        "module": int(target["module"]),
+        "module_name": str(target["module_name"]),
+        "key": str(target["key"]),
+        "question": _required_content(value.get("question"), "question.question", 500, 4),
+        "template": _required_content(
+            value.get("template"), "question.template", 500, 0,
+        ),
+        "options": options,
+    }
 
 
 class DeepSeekProfileAgent:
@@ -192,37 +240,84 @@ class DeepSeekProfileAgent:
             raise ProfileAgentError("DeepSeek returned invalid JSON")
         return value
 
+    def ask_question(self, state, transition="开始画像访谈"):
+        target = {
+            key: value for key, value in current_question({
+                **state, "active_question": None,
+            }).items()
+            if key in {"module", "module_name", "key", "question", "template", "options"}
+        }
+        value = self._call(
+            "你是黄雀独立个人画像 Agent，负责通过自然对话逐步了解用户。"
+            "根据字段目标、已知回答和已确认模块，提出一个贴合用户上下文的问题。"
+            "不要照抄字段目标，不要一次问多个问题，不得编造用户信息。"
+            "返回 JSON：reply(string)、question(object)。reply 是你本轮对用户说的完整内容；"
+            "question 包含 question(string)、template(string)、options(array)。",
+            {
+                "transition": str(transition or "")[:500],
+                "question_goal": target,
+                "known_answers": state.get("answers") or {},
+                "confirmed_modules": state.get("selected_profiles") or {},
+                "skipped_questions": state.get("skipped_questions") or [],
+            },
+        )
+        return {
+            "reply": _required_content(value.get("reply"), "reply", 1600, 4),
+            "question": _dynamic_question(value.get("question"), target),
+        }
+
     def capture_answer(self, state, message):
         question = current_question(state)
+        current_goal = current_question({**state, "active_question": None})
+        next_goal = next_question_goal(state)
         value = self._call(
-            "你是黄雀独立个人画像 Agent。只理解用户对当前问题的回答，不编造事实。"
-            "返回 JSON：accepted(bool)、value(string)、ack(string)、clarification(string)。"
-            "回答含有效事实时 accepted=true；过于空泛才追问。value 是忠实、简洁的事实记录。",
+            "你是黄雀独立个人画像 Agent。理解用户对当前问题的真实意图，不编造事实。"
+            "返回 JSON：action(string)、accepted(bool)、value(string)、reply(string)、"
+            "next_question(object|null)。action 只能是 answer、skip、clarify。"
+            "有效事实用 action=answer、accepted=true，value 忠实提炼用户事实；"
+            "明确跳过、下一题、暂时或不想回答时用 action=skip；含义不清才用 action=clarify。"
+            "reply 必须是你直接回复用户的完整自然语言。若 action 为 answer/skip 且存在"
+            "next_question_goal，next_question 必须按目标生成 question、template、options；"
+            "不得照抄目标问题。clarify 时 next_question 必须围绕 current_question_goal"
+            "重新组织本轮追问，不推进字段。",
             {
                 "current_question": question,
+                "current_question_goal": current_goal,
+                "next_question_goal": next_goal,
                 "known_answers": state.get("answers") or {},
+                "confirmed_modules": state.get("selected_profiles") or {},
                 "user_answer": str(message or "")[:4000],
             },
         )
         if not isinstance(value.get("accepted"), bool):
             raise ProfileAgentError("DeepSeek accepted must be boolean")
+        action = _required_text(value.get("action"), "action", 16)
+        if action not in {"answer", "skip", "clarify"}:
+            raise ProfileAgentError("DeepSeek action is invalid")
         accepted = value["accepted"]
-        captured = _required_text(
+        captured = _required_content(
             value.get("value"), "value", 1600,
-            minimum=1 if accepted else 0,
+            minimum=1 if action == "answer" else 0,
         )
-        if accepted and not captured:
-            accepted = False
-        ack = _required_text(value.get("ack"), "ack", 300)
-        clarification = _required_text(
-            value.get("clarification"), "clarification", 300,
-            minimum=0 if accepted else 1,
-        )
+        if accepted is not (action == "answer"):
+            raise ProfileAgentError("DeepSeek action and accepted disagree")
+        if action != "answer" and captured:
+            raise ProfileAgentError("DeepSeek non-answer action contains a value")
+        raw_next = value.get("next_question")
+        if action == "clarify":
+            next_question = _dynamic_question(raw_next, current_goal)
+        elif action in {"answer", "skip"} and next_goal:
+            next_question = _dynamic_question(raw_next, next_goal)
+        else:
+            if raw_next is not None:
+                raise ProfileAgentError("DeepSeek returned an unexpected next question")
+            next_question = None
         return {
+            "action": action,
             "accepted": accepted,
             "value": captured,
-            "ack": ack,
-            "clarification": clarification,
+            "reply": _required_content(value.get("reply"), "reply", 1600, 2),
+            "next_question": next_question,
         }
 
     def build_module_review(self, state, module):
@@ -254,7 +349,8 @@ class DeepSeekProfileAgent:
         current = (state.get("module_reviews") or {}).get(str(module)) or {}
         value = self._call(
             "根据用户修改要求更新当前画像模块。只能修改用户指出的内容，不得编造新事实。"
-            "返回与 current_review 相同结构的 JSON：summary、options；每项必须保留非空"
+            "返回 JSON：reply、summary、options。reply 是直接回复用户的完整自然语言；"
+            "summary、options 与 current_review 结构相同，每项必须保留非空"
             "title、one_liner 以及 strengths、risks 字符串数组。",
             {
                 "module": module,
@@ -274,6 +370,7 @@ class DeepSeekProfileAgent:
         return {
             "module": module,
             "module_name": MODULES[module]["name"],
+            "reply": _required_content(value.get("reply"), "reply", 1600, 2),
             "summary": _required_text(value.get("summary"), "summary", 6000, minimum=2),
             "options": options,
         }
@@ -356,3 +453,79 @@ class DeepSeekProfileAgent:
             {"profile": profile, "message": str(message or "")[:4000]},
         )
         return _required_text(value.get("reply"), "reply", 1600, 2)
+
+    def complete_profile(self, profile):
+        value = self._call(
+            "你是黄雀独立个人画像 Agent。用户已完成画像模块选择。"
+            "基于提供的真实画像，生成一段简洁、有完成感的回复，说明画像已保存，并自然引导"
+            "用户继续生成选题计划或制作模板视频。不得编造成果。返回 JSON：reply(string)。",
+            {"profile": profile},
+        )
+        return _required_content(value.get("reply"), "reply", 1600, 4)
+
+    def interpret_intent(self, profile, flow, message):
+        allowed = [
+            "chat", "topic_plan", "revise_copy", "view_preferences",
+            "clear_preferences", "start_video", "regenerate_video",
+            "modify_profile", "confirm_plan",
+        ]
+        value = self._call(
+            "你是黄雀独立创作 Agent 的意图路由器。根据用户画像、当前流程和本轮原话理解意图。"
+            "只返回 JSON：intent(string)、payload(object)。intent 必须来自 allowed_intents。"
+            "payload 只可包含 topic(string)、platforms(array)、platform(string)，并忠实提取用户原话；"
+            "flow.mode=template_collect 时，用户提供主题应返回 start_video 并提取 topic；"
+            "flow.mode=template_review 时，用户提出修改应返回 regenerate_video。"
+            "不要把普通聊天误判为执行动作；涉及扣点的 confirm_payment 不能由自由文本触发。",
+            {
+                "profile": profile,
+                "flow": flow if isinstance(flow, dict) else {},
+                "message": str(message or "")[:4000],
+                "allowed_intents": allowed,
+            },
+        )
+        intent = _required_text(value.get("intent"), "intent", 40)
+        if intent not in allowed:
+            raise ProfileAgentError("DeepSeek intent is invalid")
+        raw_payload = value.get("payload")
+        if not isinstance(raw_payload, dict) or set(raw_payload) - {
+            "topic", "platforms", "platform",
+        }:
+            raise ProfileAgentError("DeepSeek intent payload is invalid")
+        payload = {}
+        if "topic" in raw_payload:
+            payload["topic"] = _required_content(
+                raw_payload.get("topic"), "payload.topic", 400, 0,
+            )
+        allowed_platforms = {"douyin", "xiaohongshu", "wechat_channels"}
+        if "platforms" in raw_payload:
+            values = raw_payload.get("platforms")
+            if not isinstance(values, list):
+                raise ProfileAgentError("DeepSeek platforms must be a list")
+            platforms = []
+            for item in values:
+                platform = _required_text(item, "payload.platforms", 40)
+                if platform not in allowed_platforms:
+                    raise ProfileAgentError("DeepSeek platform is invalid")
+                if platform not in platforms:
+                    platforms.append(platform)
+            payload["platforms"] = platforms
+        if "platform" in raw_payload:
+            platform = _required_text(raw_payload.get("platform"), "payload.platform", 40)
+            if platform not in allowed_platforms:
+                raise ProfileAgentError("DeepSeek platform is invalid")
+            payload["platform"] = platform
+        return {"intent": "" if intent == "chat" else intent, "payload": payload}
+
+    def compose_reply(self, profile, message, event, draft_reply):
+        value = self._call(
+            "你是黄雀独立创作 Agent。根据用户原话、个人画像和后端已完成的事件，生成本轮最终回复。"
+            "必须忠实于 event 和 draft_reply，不得声称未发生的扣点、生成或发布；"
+            "一次最多提出一个必要问题，语言自然简洁。返回 JSON：reply(string)。",
+            {
+                "profile": profile,
+                "user_message": str(message or "")[:4000],
+                "event": event if isinstance(event, dict) else {},
+                "draft_reply": str(draft_reply or "")[:2000],
+            },
+        )
+        return _required_content(value.get("reply"), "reply", 2000, 2)

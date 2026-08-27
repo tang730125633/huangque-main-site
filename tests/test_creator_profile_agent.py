@@ -47,8 +47,12 @@ class CreatorProfileAgentTests(unittest.TestCase):
 
     def test_deepseek_v4_flash_chat_contract_and_json_capture(self):
         opener = Opener({
-            "accepted": True, "value": "企业AI顾问",
-            "ack": "已记录", "clarification": "",
+            "action": "answer", "accepted": True, "value": "企业AI顾问",
+            "reply": "我了解了。接下来聊聊影响你最深的一次转折。",
+            "next_question": {
+                "question": "哪一次真实转折最影响现在的你？",
+                "template": "当时___，后来___。", "options": [],
+            },
         })
         agent = DeepSeekProfileAgent(
             "secret", base_url="https://api.deepseek.com",
@@ -63,7 +67,85 @@ class CreatorProfileAgentTests(unittest.TestCase):
         self.assertEqual(body["model"], "deepseek-v4-flash")
         self.assertEqual(body["thinking"], {"type": "disabled"})
         self.assertEqual(body["response_format"], {"type": "json_object"})
+        self.assertIn("action", body["messages"][0]["content"])
+        self.assertIn("skip", body["messages"][0]["content"])
         self.assertGreaterEqual(timeout, 10)
+
+    def test_deepseek_can_interpret_navigation_as_skip(self):
+        opener = Opener({
+            "action": "skip", "accepted": False, "value": "",
+            "reply": "可以，我们换到下一题。",
+            "next_question": {
+                "question": "哪一次真实转折最影响现在的你？",
+                "template": "当时___，后来___。", "options": [],
+            },
+        })
+        agent = DeepSeekProfileAgent("secret", opener=opener)
+        result = agent.capture_answer(initial_state(), "下一个问题")
+        self.assertEqual(result["action"], "skip")
+        self.assertFalse(result["accepted"])
+
+    def test_capture_rejects_inconsistent_model_action(self):
+        opener = Opener({
+            "action": "skip", "accepted": True, "value": "虚构答案",
+            "reply": "已处理", "next_question": {
+                "question": "哪一次真实转折最影响现在的你？",
+                "template": "当时___，后来___。", "options": [],
+            },
+        })
+        agent = DeepSeekProfileAgent("secret", opener=opener)
+        with self.assertRaises(ProfileAgentError):
+            agent.capture_answer(initial_state(), "下一个问题")
+
+    def test_clarification_is_a_deepseek_generated_question_without_advancing(self):
+        opener = Opener({
+            "action": "clarify", "accepted": False, "value": "",
+            "reply": "你可以先说说最近投入最多精力的一件事。",
+            "next_question": {
+                "question": "最近哪件工作最能代表你现在的状态？",
+                "template": "我最近主要在___。", "options": [],
+            },
+        })
+        agent = DeepSeekProfileAgent("secret", opener=opener)
+        result = agent.capture_answer(initial_state(), "不知道怎么说")
+        self.assertEqual(result["action"], "clarify")
+        self.assertEqual(result["next_question"]["key"], "identity")
+
+    def test_deepseek_generates_the_displayed_profile_question(self):
+        opener = Opener({
+            "reply": "我们先从你现在正在做的事情聊起。",
+            "question": {
+                "question": "你最近主要把时间投入在哪件事情上？",
+                "template": "我目前主要在做___。", "options": [],
+            },
+        })
+        agent = DeepSeekProfileAgent("secret", opener=opener)
+        generated = agent.ask_question(initial_state(), "首次进入")
+        self.assertEqual(
+            generated["question"]["question"],
+            "你最近主要把时间投入在哪件事情上？",
+        )
+        request = json.loads(opener.requests[0][0].data)
+        self.assertIn("不要照抄字段目标", request["messages"][0]["content"])
+
+    def test_deepseek_interprets_free_text_and_composes_final_reply(self):
+        intent_agent = DeepSeekProfileAgent("secret", opener=Opener({
+            "intent": "start_video",
+            "payload": {"topic": "企业先梳理流程", "platforms": ["douyin"]},
+        }))
+        interpreted = intent_agent.interpret_intent(
+            {}, {"mode": "idle"}, "做一个抖音视频：企业先梳理流程",
+        )
+        self.assertEqual(interpreted["intent"], "start_video")
+        self.assertEqual(interpreted["payload"]["platforms"], ["douyin"])
+
+        reply_agent = DeepSeekProfileAgent("secret", opener=Opener({
+            "reply": "方案已经准备好，你可以继续修改或确认。",
+        }))
+        reply = reply_agent.compose_reply(
+            {}, "生成视频", {"kind": "video_plan"}, "方案已经生成",
+        )
+        self.assertIn("继续修改或确认", reply)
 
     def test_only_exact_deepseek_v4_flash_configuration_is_ready(self):
         self.assertTrue(DeepSeekProfileAgent("key", model="deepseek-v4-flash").configured)

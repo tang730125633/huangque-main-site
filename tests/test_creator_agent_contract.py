@@ -36,6 +36,16 @@ class CreatorAgentContractTests(unittest.TestCase):
         self.assertNotIn("newConversation", self.page)
         self.assertIn("画像项目", self.page)
 
+    def test_deepseek_owns_questions_intent_and_replies(self):
+        profile_agent = (
+            ROOT / "server/creator_agent/profile_agent.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("def ask_question", profile_agent)
+        self.assertIn("def interpret_intent", profile_agent)
+        self.assertIn("def compose_reply", profile_agent)
+        self.assertIn('"label": "跳过"', self.service)
+        self.assertNotIn("def _intent_from_message", self.service)
+
     def test_only_three_platforms_and_no_official_account_or_bilibili(self):
         planner = (ROOT / "server/creator_agent/planner.py").read_text(encoding="utf-8")
         constant = planner[planner.index("ALLOWED_PLATFORMS"):planner.index("PLATFORM_LABELS")]

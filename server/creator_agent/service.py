@@ -302,6 +302,33 @@ class CreatorAgentService:
             raise APIError(400, "画像项目编号无效", "invalid_project")
         return project_id
 
+    def _generate_profile_question(self, user, headers, state, transition):
+        previous = (
+            getattr(self._request_context, "username", ""),
+            getattr(self._request_context, "message_id", 0),
+            getattr(self._request_context, "client_ip", ""),
+        )
+        self._request_context.username = ""
+        self._request_context.message_id = 0
+        self._request_context.client_ip = self._client_ip(headers)
+        try:
+            return self._model_call(
+                user, "profile_question",
+                {"state": state, "transition": transition},
+                lambda: self.profile_agent.ask_question(state, transition),
+            )
+        except ProfileAgentError as exc:
+            raise APIError(
+                503, "DeepSeek V4 Flash 暂不可用，请稍后重试",
+                "creator_model_unavailable",
+            ) from exc
+        finally:
+            (
+                self._request_context.username,
+                self._request_context.message_id,
+                self._request_context.client_ip,
+            ) = previous
+
     def _ensure_project(self, user, headers):
         workspaces = self.store.workspaces(user["username"])
         if not workspaces:
@@ -309,15 +336,15 @@ class CreatorAgentService:
             workspace = self.store.ensure_workspace(
                 user["username"], project_id, "我的个人画像",
             )
-            workspace = self.store.update_workspace(
-                user["username"], project_id,
-                profile_state=initial_state(), flow={"mode": "profile_interview"},
+            state = initial_state()
+            generated = self._generate_profile_question(
+                user, headers, state, "首次进入画像访谈",
             )
-            question = current_question(workspace["profile_state"])
-            self.store.add_message(
-                user["username"], project_id, "assistant",
-                "我们先建立你的个人画像。" + question["question"],
-                public=self._question_public(workspace["profile_state"]),
+            state["active_question"] = generated["question"]
+            workspace = self.store.commit_profile_opening(
+                user["username"], project_id, state, generated["reply"],
+                self._question_public(state), "profile-question:1:1:0",
+                flow={"mode": "profile_interview"},
             )
             workspaces = [workspace]
         owned = {item["project_id"]: item for item in workspaces}
@@ -327,16 +354,36 @@ class CreatorAgentService:
             self.store.set_active_project(user["username"], selected)
         workspace = owned[selected]
         if not workspace.get("profile_state"):
-            workspace = self.store.update_workspace(
-                user["username"], selected,
-                profile_state=initial_state(), flow={"mode": "profile_interview"},
+            state = initial_state()
+            generated = self._generate_profile_question(
+                user, headers, state, "启用独立画像访谈",
             )
-            question = current_question(workspace["profile_state"])
-            self.store.add_message(
-                user["username"], selected, "assistant",
-                "独立画像流程已启用。" + question["question"],
-                public=self._question_public(workspace["profile_state"]),
+            state["active_question"] = generated["question"]
+            workspace = self.store.commit_profile_opening(
+                user["username"], selected, state, generated["reply"],
+                self._question_public(state), "profile-question:1:1:0",
+                flow={"mode": "profile_interview"},
             )
+        state = workspace.get("profile_state") or {}
+        if not state.get("profile_ready") and not state.get("active_question"):
+            state = dict(state)
+            generated = self._generate_profile_question(
+                user, headers, state, "恢复未完成的画像访谈",
+            )
+            state["active_question"] = generated["question"]
+            workspace = self.store.commit_profile_opening(
+                user["username"], selected, state, generated["reply"],
+                self._question_public(state),
+                "profile-question:%d:%d:%d" % (
+                    int(state.get("revision") or 1),
+                    int(state.get("current_module") or 1),
+                    int(state.get("question_index") or 0),
+                ),
+            )
+        workspaces = [
+            workspace if item["project_id"] == selected else item
+            for item in workspaces
+        ]
         project = self._local_project(workspace)
         return workspaces, project, workspace
 
@@ -421,6 +468,16 @@ class CreatorAgentService:
             }}
             for option in question.get("options") or []
         ]
+        actions.append({
+            "intent": "profile_answer",
+            "label": "跳过",
+            "payload": {
+                "answer": "跳过",
+                "profile_revision": int(state.get("revision") or 1),
+                "module": question["module"],
+                "field": question["key"],
+            },
+        })
         return {
             "kind": "profile_question", "module": question["module"],
             "module_name": question["module_name"], "field": question["key"],
@@ -630,6 +687,25 @@ class CreatorAgentService:
         self._request_context.client_ip = ""
         return response
 
+    def _compose_agent_reply(self, user, workspace, message, public, draft_reply):
+        profile = workspace.get("profile") or {}
+        event = _public(public or {})
+        try:
+            return self._model_call(
+                user, "assistant_reply",
+                {
+                    "profile": profile,
+                    "message": message,
+                    "event": event,
+                    "draft_reply": draft_reply,
+                },
+                lambda: self.profile_agent.compose_reply(
+                    profile, message, event, draft_reply,
+                ),
+            )
+        except ProfileAgentError as exc:
+            self._profile_model_error(exc)
+
     def _save_profile_state(self, user, workspace, state, expected_revision,
                             *, profile=None, profile_overrides=None,
                             deliverables=None, flow=None):
@@ -697,17 +773,25 @@ class CreatorAgentService:
                         "current_module": module + 1, "question_index": 0,
                         "phase": "collecting",
                     })
+                    try:
+                        generated = self._model_call(
+                            user, "profile_question",
+                            {
+                                "state": state,
+                                "transition": "用户确认了%s方案" % MODULES[module]["name"],
+                            },
+                            lambda: self.profile_agent.ask_question(
+                                state, "用户确认了%s方案" % MODULES[module]["name"],
+                            ),
+                        )
+                    except ProfileAgentError as exc:
+                        self._profile_model_error(exc)
+                    state["active_question"] = generated["question"]
                     workspace = self._save_profile_state(
                         user, workspace, state, expected_revision,
                         flow={"mode": "profile_interview"},
                     )
-                    question = current_question(state)
-                    return workspace, (
-                        "已确认%s。接下来进入%s。%s" % (
-                            MODULES[module]["name"], MODULES[module + 1]["name"],
-                            question["question"],
-                        )
-                    ), self._question_public(state)
+                    return workspace, generated["reply"], self._question_public(state)
                 state.update({"profile_ready": True, "phase": "ready"})
                 profile = {
                     "answers": state.get("answers") or {},
@@ -719,13 +803,20 @@ class CreatorAgentService:
                     "title": "个人画像",
                     "content": profile,
                 }
+                try:
+                    completion_reply = self._model_call(
+                        user, "profile_completion", {"profile": profile},
+                        lambda: self.profile_agent.complete_profile(profile),
+                    )
+                except ProfileAgentError as exc:
+                    self._profile_model_error(exc)
                 workspace = self._save_profile_state(
                     user, workspace, state, expected_revision,
                     profile=profile, deliverables=deliverables, flow={"mode": "idle"},
                 )
-                return workspace, (
-                    "个人画像已完成并保存。现在可以生成选题计划，或直接制作模板视频。"
-                ), {"kind": "profile_completed", "profile": _public(profile)}
+                return workspace, completion_reply, {
+                    "kind": "profile_completed", "profile": _public(profile),
+                }
             try:
                 revised = self._model_call(
                     user, "profile_review_revision",
@@ -742,7 +833,7 @@ class CreatorAgentService:
             workspace = self._save_profile_state(
                 user, workspace, state, expected_revision,
             )
-            return workspace, "已按你的要求更新本模块，请重新选择。", self._review_public(revised, state)
+            return workspace, revised["reply"], self._review_public(revised, state)
 
         answer = str(payload.get("answer") or message).strip()
         try:
@@ -752,12 +843,46 @@ class CreatorAgentService:
             )
         except ProfileAgentError as exc:
             self._profile_model_error(exc)
-        if not captured["accepted"]:
+        if captured["action"] == "skip":
+            question = current_question(state)
+            skipped = list(state.get("skipped_questions") or [])
+            skipped_key = "%d:%s" % (module, question["key"])
+            if skipped_key not in skipped:
+                skipped.append(skipped_key)
+            state["skipped_questions"] = skipped
+            next_index = int(state.get("question_index") or 0) + 1
+            questions = MODULES[module]["questions"]
             state["revision"] = int(state.get("revision") or 1) + 1
+            if next_index < len(questions):
+                state["question_index"] = next_index
+                state["active_question"] = captured["next_question"]
+                workspace = self._save_profile_state(
+                    user, workspace, state, expected_revision,
+                )
+                return workspace, captured["reply"], self._question_public(state)
+            try:
+                review = self._model_call(
+                    user, "profile_module_review", {"state": state, "module": module},
+                    lambda: self.profile_agent.build_module_review(state, module),
+                )
+            except ProfileAgentError as exc:
+                self._profile_model_error(exc)
+            reviews = dict(state.get("module_reviews") or {})
+            reviews[str(module)] = review
+            state.update({"module_reviews": reviews, "phase": "review"})
             workspace = self._save_profile_state(
                 user, workspace, state, expected_revision,
             )
-            return workspace, captured["clarification"], self._question_public(state)
+            return workspace, (
+                captured["reply"] + "\n\n" + review["summary"]
+            ), self._review_public(review, state)
+        if not captured["accepted"]:
+            state["revision"] = int(state.get("revision") or 1) + 1
+            state["active_question"] = captured["next_question"]
+            workspace = self._save_profile_state(
+                user, workspace, state, expected_revision,
+            )
+            return workspace, captured["reply"], self._question_public(state)
         question = current_question(state)
         answers = dict(state.get("answers") or {})
         module_answers = dict(answers.get(str(module)) or {})
@@ -769,11 +894,11 @@ class CreatorAgentService:
         state["revision"] = int(state.get("revision") or 1) + 1
         if next_index < len(questions):
             state["question_index"] = next_index
+            state["active_question"] = captured["next_question"]
             workspace = self._save_profile_state(
                 user, workspace, state, expected_revision,
             )
-            next_question = current_question(state)
-            return workspace, captured["ack"] + "\n\n" + next_question["question"], self._question_public(state)
+            return workspace, captured["reply"], self._question_public(state)
         try:
             review = self._model_call(
                 user, "profile_module_review", {"state": state, "module": module},
@@ -787,7 +912,7 @@ class CreatorAgentService:
         workspace = self._save_profile_state(
             user, workspace, state, expected_revision,
         )
-        return workspace, captured["ack"] + "\n\n" + review["summary"], self._review_public(review, state)
+        return workspace, captured["reply"] + "\n\n" + review["summary"], self._review_public(review, state)
 
     def _generate_topic_plan(self, user, workspace, platforms, request):
         profile = workspace.get("profile") or {}
@@ -821,30 +946,6 @@ class CreatorAgentService:
         return workspace, str(result.get("reply") or "选题与文案已经生成并保存。"), {
             "kind": "topic_plan", "result": _public(result),
         }
-
-    @staticmethod
-    def _intent_from_message(message):
-        text = re.sub(r"\s+", "", str(message or ""))
-        if re.fullmatch(r"(?:确认|确定|采用|就按)(?:当前)?方案", text):
-            return "confirm_plan"
-        if re.search(r"(?:查看|显示).*(?:偏好|习惯)", text):
-            return "view_preferences"
-        if re.search(r"(?:清空|删除|重置).*(?:偏好|习惯)", text):
-            return "clear_preferences"
-        if re.search(r"(?:修改|改成|删掉|删除|重写).*(?:第[一二三123]篇|文案|口播稿)|(?:第[一二三123]篇|文案|口播稿).*(?:修改|改成|删掉|删除|重写)", text):
-            return "revise_copy"
-        if re.search(r"(?:选题计划|选题库|生成选题|写文案|口播文案)", text):
-            return "topic_plan"
-        if (
-            re.match(r"^(?:我想|请)?(?:(?:再|重新)(?:生成|做)(?:一条|一个|一版)?(?:视频)?|重做(?:视频)?)", text)
-            or re.search(r"修改.*(?:标题|底部|行动文案|视频)|(?:标题|底部|行动文案).*(?:改成|换成|修改)", text)
-        ):
-            return "regenerate_video"
-        if re.search(r"(?:制作|生成|做).*(?:模板)?视频|模板成片", text):
-            return "start_video"
-        if re.search(r"修改.*画像|调整.*画像|更新.*画像", text):
-            return "modify_profile"
-        return ""
 
     @staticmethod
     def _message_request_hash(project_id, message, intent, payload):
@@ -1335,8 +1436,6 @@ class CreatorAgentService:
             self._request_context.message_id = user_message["id"]
             self._request_context.client_ip = self._client_ip(headers)
             self._request_context.profile_mutation = None
-            if not intent:
-                intent = self._intent_from_message(message)
             if not created and user_message.get("public", {}).get("response"):
                 self._request_context.username = ""
                 self._request_context.message_id = 0
@@ -1359,6 +1458,32 @@ class CreatorAgentService:
                 self._request_context.message_id = 0
                 self._request_context.client_ip = ""
                 return response
+            current_flow = (
+                workspace.get("flow") if isinstance(workspace.get("flow"), dict) else {}
+            )
+            intent_interpreted = False
+            if (
+                not intent
+                and self._progress(project)["foundation_ready"]
+                and current_flow.get("mode") != "profile_revision"
+            ):
+                try:
+                    interpreted = self._model_call(
+                        user, "assistant_intent",
+                        {
+                            "profile": workspace.get("profile") or {},
+                            "flow": current_flow,
+                            "message": message,
+                        },
+                        lambda: self.profile_agent.interpret_intent(
+                            workspace.get("profile") or {}, current_flow, message,
+                        ),
+                    )
+                except ProfileAgentError as exc:
+                    self._profile_model_error(exc)
+                intent = interpreted["intent"]
+                payload = {**interpreted.get("payload", {}), **payload}
+                intent_interpreted = True
             profile_retry = (
                 not self._progress(project)["foundation_ready"]
                 or intent in {"profile_answer", "profile_choice"}
@@ -1366,21 +1491,27 @@ class CreatorAgentService:
                 or (workspace.get("flow") or {}).get("mode") == "profile_revision"
             )
             if not created and not profile_retry:
+                recovery_workspace = self.store.workspace(
+                    user["username"], project_id,
+                )
                 recovered = self._recover_nonprofile_side_effect(
-                    user, project_id, self.store.workspace(
-                        user["username"], project_id,
-                    ),
+                    user, project_id, recovery_workspace,
                 )
                 if recovered:
+                    recovered_reply = self._compose_agent_reply(
+                        user, recovery_workspace, message,
+                        recovered[1], recovered[0],
+                    )
                     return self._finish_message_turn(
                         user, headers, project_id, user_message,
-                        recovered[0], recovered[1],
+                        recovered_reply, recovered[1],
                     )
             flow = workspace.get("flow") if isinstance(workspace.get("flow"), dict) else {}
             if intent == "regenerate_video" and flow.get("mode") == "template_review":
                 intent = ""
             progress = self._progress(project)
             public = {}
+            reply_from_model = False
 
             if not progress["foundation_ready"] or intent in {"profile_answer", "profile_choice"}:
                 workspace, reply, public = self._profile_turn(
@@ -1410,23 +1541,40 @@ class CreatorAgentService:
                     profile=profile, profile_overrides=overrides,
                     flow={"mode": "idle"},
                 )
-                reply = "画像修改已保存。" + acknowledgement
+                reply = acknowledgement
                 public = {"kind": "profile_override_saved", "profile": _public(profile)}
             elif intent == "modify_profile":
                 state = dict(workspace.get("profile_state") or initial_state())
                 expected_revision = int(state.get("revision") or 1)
                 state["revision"] = expected_revision + 1
-                workspace = self._save_profile_state(
-                    user, workspace, state, expected_revision,
-                    flow={"mode": "profile_revision"},
-                )
-                reply = "请直接告诉我需要修改的画像内容。修改会生成新版本，不影响历史作品。"
                 public = {
                     "kind": "profile_modules",
                     "options": ["定位诊断", "人设塑造", "价值主张", "故事资产"],
                 }
+                draft = "请用户说明想修改的画像内容；修改生成新版本且不影响历史作品。"
+                try:
+                    reply = self._model_call(
+                        user, "assistant_reply",
+                        {
+                            "profile": workspace.get("profile") or {},
+                            "message": message,
+                            "event": public,
+                            "draft_reply": draft,
+                        },
+                        lambda: self.profile_agent.compose_reply(
+                            workspace.get("profile") or {}, message, public, draft,
+                        ),
+                    )
+                except ProfileAgentError as exc:
+                    self._profile_model_error(exc)
+                workspace = self._save_profile_state(
+                    user, workspace, state, expected_revision,
+                    flow={"mode": "profile_revision"},
+                )
             elif intent == "topic_plan":
-                platforms = sanitize_platforms(payload.get("platforms")) or self._platforms_from_text(message)
+                platforms = sanitize_platforms(payload.get("platforms"))
+                if not platforms and not intent_interpreted:
+                    platforms = self._platforms_from_text(message)
                 if not platforms:
                     selected = sanitize_platforms(workspace.get("platforms"))
                     self.store.update_workspace(
@@ -1446,17 +1594,19 @@ class CreatorAgentService:
                     workspace, reply, public = self._generate_topic_plan(
                         user, workspace, platforms, message,
                     )
+                    reply_from_model = True
             elif intent == "revise_copy":
                 platforms = sanitize_platforms(workspace.get("platforms")) or ["douyin"]
                 workspace, reply, public = self._generate_topic_plan(
                     user, workspace, platforms, "修改现有内容：" + message,
                 )
+                reply_from_model = True
             elif intent == "view_preferences":
                 reply = self._preferences_reply(workspace)
                 public = {"kind": "preferences"}
             elif intent == "clear_preferences":
                 platform = str(payload.get("platform") or "")
-                if platform not in ALLOWED_PLATFORMS:
+                if platform not in ALLOWED_PLATFORMS and not intent_interpreted:
                     mentioned = self._platforms_from_text(message)
                     platform = mentioned[0] if len(mentioned) == 1 else ""
                 preferences = clear_preferences(workspace.get("template_video_preferences"), platform)
@@ -1480,6 +1630,7 @@ class CreatorAgentService:
                         user, workspace, platforms,
                         "请根据我的画像生成完整选题计划和可发布文案",
                     )
+                    reply_from_model = True
                 elif flow.get("mode") == "template_platforms":
                     workspace = self.store.update_workspace(
                         user["username"], project_id, platforms=platforms,
@@ -1505,7 +1656,10 @@ class CreatorAgentService:
                     reply = "已选择%s。请告诉我这次视频的主题或核心观点。" % "、".join(PLATFORM_LABELS[key] for key in platforms)
                     public = {"kind": "topic_prompt"}
             elif intent == "start_video":
-                reply, public = self._start_video(user, project, workspace, message, payload)
+                reply, public = self._start_video(
+                    user, project, workspace,
+                    "" if intent_interpreted else message, payload,
+                )
             elif intent == "adjust_video_platforms":
                 batch_id = str(payload.get("batch_id") or flow.get("batch_id") or "")
                 batch = self.store.batch(user["username"], batch_id, include_private=True)
@@ -1635,6 +1789,7 @@ class CreatorAgentService:
                     )
                 except ProfileAgentError as exc:
                     self._profile_model_error(exc)
+                reply_from_model = True
                 public = {
                     "kind": "assistant_reply",
                     "actions": [
@@ -1645,6 +1800,10 @@ class CreatorAgentService:
                 }
 
             mutation = getattr(self._request_context, "profile_mutation", None)
+            if not mutation and not reply_from_model:
+                reply = self._compose_agent_reply(
+                    user, workspace, message, public, reply,
+                )
             if mutation:
                 if self._before_profile_commit_hook:
                     self._before_profile_commit_hook()
