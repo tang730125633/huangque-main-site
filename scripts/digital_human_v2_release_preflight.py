@@ -10,8 +10,12 @@ import sys
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-SERVER_ROOT = ROOT / "server"
-sys.path.insert(0, str(SERVER_ROOT if SERVER_ROOT.is_dir() else ROOT))
+def _module_root(root):
+    server_root = root / "server"
+    return server_root if (server_root / "content_domains").is_dir() else root
+
+
+sys.path.insert(0, str(_module_root(ROOT)))
 
 
 EXPECTED_LIBRARY_ROOT = "/home/ubuntu/material-libraries/huangque-media"

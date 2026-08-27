@@ -18,6 +18,15 @@ spec.loader.exec_module(preflight)
 
 
 class DigitalHumanReleasePreflightTests(unittest.TestCase):
+    def test_module_root_ignores_partial_server_directory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            (root / "server/providers").mkdir(parents=True)
+            (root / "content_domains").mkdir()
+            self.assertEqual(root, preflight._module_root(root))
+            (root / "server/content_domains").mkdir()
+            self.assertEqual(root / "server", preflight._module_root(root))
+
     def test_systemd_repeats_versioned_gate_as_service_user(self):
         dropin = (ROOT / (
             "deploy/systemd/huangque-content.service.d/"
