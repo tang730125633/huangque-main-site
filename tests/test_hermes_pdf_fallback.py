@@ -1,4 +1,6 @@
 import importlib.util
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -29,6 +31,18 @@ class HermesPdfFallbackTests(unittest.TestCase):
             reader = PdfReader(path, strict=True)
             self.assertEqual(len(reader.pages), 8)
             self.assertIn("周岚", "".join(page.extract_text() or "" for page in reader.pages))
+
+            renderer = shutil.which("pdftoppm")
+            if renderer and importlib.util.find_spec("PIL"):
+                from PIL import Image
+                preview = Path(tmp) / "preview"
+                subprocess.run(
+                    [renderer, "-f", "1", "-singlefile", "-png", str(path), str(preview)],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                self.assertLess(Image.open(preview.with_suffix(".png")).convert("L").getextrema()[0], 240)
 
 
 if __name__ == "__main__":

@@ -88,17 +88,24 @@ class IP12HarnessTests(unittest.TestCase):
 
     def complete_intake(self):
         state = harness.initial_state()
-        evidence = "我叫泽龙，22岁，在广州做 FDE，主要提供技术服务。"
+        evidence = (
+            "我叫泽龙，22岁，在广州做 FDE，主要提供技术服务。"
+            "我想通过内容获客，提供 AI Agent 咨询，主要做视频号，希望用户私信咨询。"
+        )
         state, _, _ = harness.apply_intake_decision(
             state,
             intake_decision(
-                draft="称呼：泽龙；年龄：22岁；城市：广州；职业：FDE；收入来源：技术服务。",
-                updates=[{
-                    "field": "preferred_name",
-                    "value": "泽龙",
-                    "kind": "user_fact",
-                    "evidence_quote": "我叫泽龙",
-                }],
+                draft=(
+                    "称呼：泽龙；年龄：22岁；城市：广州；职业：FDE；收入来源：技术服务；"
+                    "商业目标：通过内容获客；服务：AI Agent 咨询；平台：视频号；行动目标：私信咨询。"
+                ),
+                updates=[
+                    {"field": "preferred_name", "value": "泽龙", "kind": "user_fact", "evidence_quote": "我叫泽龙"},
+                    {"field": "business_goal", "value": "通过内容获客", "kind": "user_preference", "evidence_quote": "通过内容获客"},
+                    {"field": "offer", "value": "AI Agent 咨询", "kind": "user_fact", "evidence_quote": "AI Agent 咨询"},
+                    {"field": "primary_platform", "value": "视频号", "kind": "user_preference", "evidence_quote": "主要做视频号"},
+                    {"field": "desired_action", "value": "私信咨询", "kind": "user_preference", "evidence_quote": "希望用户私信咨询"},
+                ],
             ),
             evidence,
         )
@@ -744,6 +751,13 @@ class IP12HarnessTests(unittest.TestCase):
         self.assertEqual(decision["profile_updates"][0]["evidence_quote"], evidence)
         self.assertIsNone(harness.compile_module_six_style(state, "我还没有想好风格"))
 
+        defaulted = harness.compile_module_six_style(
+            state, "我希望像朋友一样口语化复盘，结尾引导观众私信咨询。"
+        )
+        self.assertIn("60–90 秒", defaulted["draft"])
+        self.assertIn("250–350 字", defaulted["draft"])
+        self.assertEqual(defaulted["profile_updates"][0]["kind"], "ai_option")
+
         exact_words = (
             "1min。"
             "我希望口播是偏口语化的，就像和好友在聊天，"
@@ -1158,12 +1172,12 @@ class IP12HarnessTests(unittest.TestCase):
             model="test-model",
             release_sha="abc123",
         )
-        self.assertEqual(trace["agent_release"], "ip12-a0.1")
+        self.assertEqual(trace["agent_release"], "ip12-a1-persona")
         self.assertEqual(trace["state_schema"], 2)
         self.assertEqual(
             trace["skills"],
             [
-                {"id": "module_checkpoint", "version": "1.0.0"},
+                {"id": "module_checkpoint", "version": "1.1.0"},
                 {"id": "diagnostic_choice", "version": "1.0.0"},
             ],
         )

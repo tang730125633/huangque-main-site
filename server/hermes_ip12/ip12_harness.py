@@ -19,16 +19,16 @@ CHOICE_REQUIRED_FIELD_ORDER = (*CHOICE_FIELD_LIMITS, "recommended")
 CHOICE_REQUIRED_FIELDS = frozenset(CHOICE_REQUIRED_FIELD_ORDER)
 CHOICE_MATERIALIZED_FIELDS = CHOICE_REQUIRED_FIELDS | {"choice_id", "display_index"}
 AGENT_RELEASE_MANIFEST = {
-    "agent_release": "ip12-a0.1",
+    "agent_release": "ip12-a1-persona",
     "state_schema": SCHEMA_VERSION,
     "skills": {
-        "intake": {"contract_version": "1.0.0", "prompt_version": "intake-v1"},
-        "module_checkpoint": {"contract_version": "1.0.0", "prompt_version": "module-checkpoint-v1"},
+        "intake": {"contract_version": "1.1.0", "prompt_version": "intake-v2"},
+        "module_checkpoint": {"contract_version": "1.1.0", "prompt_version": "module-checkpoint-v2"},
         "diagnostic_choice": {"contract_version": "1.0.0", "prompt_version": "diagnostic-choice-v1"},
         "migration": {"contract_version": "1.0.0", "prompt_version": None},
         "harness_action": {"contract_version": "1.0.0", "prompt_version": None},
         "safety_fallback": {"contract_version": "1.0.0", "prompt_version": None},
-        "foundation_review": {"contract_version": "1.0.0", "prompt_version": "foundation-review-v1"},
+        "foundation_review": {"contract_version": "1.1.0", "prompt_version": "foundation-review-v2"},
         "content_revision": {"contract_version": "1.0.0", "prompt_version": "content-revision-v1"},
         "production_bridge": {"contract_version": "1.1.0", "prompt_version": None},
         "talking_head_video_agent": {"contract_version": "1.0.0", "prompt_version": None},
@@ -56,7 +56,158 @@ INTAKE_FOLLOW_UP_PATTERNS = (
     ("prior_roles", r"(?:做过|从事过).{0,12}(?:行业|岗位|工作)"),
     ("income", r"(?:收入来源|收入区间|收入范围|大致收入|主要收入)"),
     ("current_role", r"(?:目前|现在|当前).{0,12}(?:从事什么|做什么|职业.{0,4}是什么|身份.{0,4}是什么|主要工作)"),
+    ("content_account", r"(?:内容账号|自媒体账号|抖音|小红书|视频号).{0,12}(?:有吗|做过|粉丝|运营)"),
+    ("offer", r"(?:产品|服务|课程|项目).{0,12}(?:可以卖|在卖|提供|是什么|有哪些)"),
+    ("business_goal", r"(?:商业目标|做IP的目的|做IP.{0,8}为了什么|引流|获客|品牌)"),
+    ("primary_platform", r"(?:主要平台|准备在哪|打算在哪).{0,8}(?:发布|做内容)"),
+    ("desired_action", r"(?:希望用户|希望观众|希望客户).{0,12}(?:做什么|采取|私信|咨询|购买|关注)"),
+    ("time_budget", r"(?:投入多少时间|每周.{0,6}时间|每天.{0,6}时间)"),
+    ("three_month_goal", r"(?:三个月|3个月).{0,12}(?:目标|做到|希望)"),
+    ("tone_preference", r"(?:表达风格|说话风格|内容风格).{0,12}(?:喜欢|偏好|希望)"),
+    ("disliked_style", r"(?:讨厌|不喜欢|反感).{0,12}(?:博主|表达|风格|内容)"),
 )
+
+INTAKE_FIELDS = (
+    "preferred_name", "current_identity", "previous_work_experience",
+    "core_skill_1", "core_skill_2", "long_term_interest", "target_audience",
+    "help_goal", "content_account", "offer", "business_goal", "primary_platform",
+    "desired_action", "time_budget", "three_month_goal", "tone_preference",
+    "disliked_style", "team_project_experience", "age", "city", "income", "gender",
+    "mobile",
+)
+INTAKE_FIELD_SET = frozenset(INTAKE_FIELDS)
+INTAKE_TOPIC_TO_FIELD = {
+    "current_role": "current_identity",
+    "experience_years": "previous_work_experience",
+    "prior_roles": "previous_work_experience",
+}
+DECLINE_RE = re.compile(r"不想|不方便|拒绝|跳过|不回答|不提供|先不|不知道|不清楚|暂时没有")
+DECLINE_FIELD_PATTERNS = {
+    "age": r"年龄|多大|几岁",
+    "city": r"城市|哪里人|在哪",
+    "income": r"收入",
+    "gender": r"性别",
+    "mobile": r"手机号|电话|联系方式",
+    "content_account": r"内容账号|自媒体账号|抖音|小红书|视频号",
+    "offer": r"产品|服务|课程",
+    "business_goal": r"商业目标|做IP的目的",
+    "primary_platform": r"平台",
+    "desired_action": r"用户做什么|观众做什么|行动目标",
+    "time_budget": r"投入时间|每周时间|每天时间",
+    "three_month_goal": r"三个月|3个月",
+    "tone_preference": r"表达风格|说话风格",
+    "disliked_style": r"讨厌|不喜欢|反感",
+}
+COMMERCIAL_FIELD_ALIASES = {
+    "business_goal": ("business_goal", "commercial_goal", "ip_goal"),
+    "offer": ("offer", "product", "service", "current_offer"),
+    "primary_platform": ("primary_platform", "content_platform", "platform"),
+    "desired_action": ("desired_action", "conversion_goal", "cta"),
+}
+
+
+def _declined_intake_fields(message, last_topic=""):
+    text = str(message or "")
+    refusal_segments = [
+        segment for segment in re.split(r"[。！？!?；;\n]+", text)
+        if DECLINE_RE.search(segment)
+    ]
+    if not refusal_segments:
+        return []
+    matches = [
+        field for field, pattern in DECLINE_FIELD_PATTERNS.items()
+        if any(re.search(pattern, segment) for segment in refusal_segments)
+    ]
+    fallback = INTAKE_TOPIC_TO_FIELD.get(last_topic, last_topic)
+    if not matches and fallback in INTAKE_FIELD_SET and len(text.strip()) <= 24:
+        matches.append(fallback)
+    return matches
+
+
+def intake_field_statuses(value):
+    state = normalize_state(value)
+    intake = state["intake"]
+    candidate_fields = {
+        str(item.get("field") or "")
+        for item in intake.get("profile_updates") or [] if isinstance(item, dict)
+    }
+    confirmed_fields = set()
+    for bucket in ("facts", "preferences"):
+        confirmed_fields.update((state["ip_profile"].get(bucket) or {}).keys())
+    declined_fields = set(intake.get("declined_fields") or [])
+    return {
+        field: (
+            "confirmed" if field in confirmed_fields else
+            "declined" if field in declined_fields else
+            "candidate" if field in candidate_fields else
+            "unknown"
+        )
+        for field in INTAKE_FIELDS
+    }
+
+
+def commercial_goal_gaps(value, updates=()):
+    state = normalize_state(value)
+    fields = set()
+    for bucket in ("facts", "preferences"):
+        fields.update((state["ip_profile"].get(bucket) or {}).keys())
+    fields.update(
+        str(item.get("field") or "") for item in updates or [] if isinstance(item, dict)
+    )
+    return [
+        canonical for canonical, aliases in COMMERCIAL_FIELD_ALIASES.items()
+        if not any(alias in fields for alias in aliases)
+    ]
+
+
+def persona_contract(value):
+    profile = profile_for_model(value)
+    outputs = profile.get("confirmed_outputs") or {}
+    return {
+        "identity_facts": deepcopy(profile.get("facts") or {}),
+        "preferences": deepcopy(profile.get("preferences") or {}),
+        "positioning": deepcopy(outputs.get("1-2") or {}),
+        "persona": deepcopy(outputs.get("2-2") or {}),
+        "value_proposition": deepcopy(outputs.get("3-2") or {}),
+        "story_assets": deepcopy(outputs.get("4-4") or {}),
+        "commercial_goal_gaps": commercial_goal_gaps(value),
+    }
+
+
+def grounded_story_node_decision(value):
+    state = normalize_state(value)
+    facts = state["ip_profile"].get("facts") or {}
+    preferred = (
+        "previous_work_experience", "team_project_experience", "key_experience",
+        "career_transition", "turning_point", "project_experience",
+    )
+    items = []
+    for field in preferred:
+        item = facts.get(field)
+        quote = str((item or {}).get("evidence_quote") or "").strip() if isinstance(item, dict) else ""
+        if quote and quote not in items:
+            items.append(quote)
+    if not items:
+        for field, item in facts.items():
+            if not any(token in str(field) for token in ("experience", "career", "story", "project", "turning")):
+                continue
+            quote = str((item or {}).get("evidence_quote") or "").strip() if isinstance(item, dict) else ""
+            if quote and quote not in items:
+                items.append(quote)
+    items = items[:5]
+    if not items:
+        raise HarnessError("模块 4 还缺少一段可回查的真实经历")
+    draft = "\n\n".join(
+        "### 节点 %d：真实经历节点（包装建议）\n事实原话：%s\n包装建议：围绕这段真实经历提炼起点、行动、结果和反思。"
+        % (index, quote)
+        for index, quote in enumerate(items, 1)
+    )
+    return {
+        "decision": "propose_checkpoint", "checkpoint": 1,
+        "reply": "我已从确认资料中整理出可回查的真实故事节点，请先核对。",
+        "draft": draft, "self_review": "所有节点逐字引用已确认原话。",
+        "choices": [], "profile_updates": [], "confidence": 1.0,
+    }
 
 
 def intake_follow_up_topic(reply):
@@ -150,7 +301,7 @@ MODULE_WORKFLOWS = {
     },
     2: {
         "name": "人设塑造",
-        "required": "从模块 1 已确认的经历、行为、价值观和目标中提炼人格候选，允许用户修正",
+        "required": "从模块 1 已确认的经历、行为、价值观和目标中提炼人格候选，并确认表达偏好、反感风格与内容边界",
         "checkpoints": (
             "提炼人格关键词与核心价值观",
             "从三项差异化人设方向中选择一个",
@@ -158,7 +309,7 @@ MODULE_WORKFLOWS = {
     },
     3: {
         "name": "价值主张",
-        "required": "复用已确认的定位、人设、核心优势、价值观、目标人群、所在领域和未来目标",
+        "required": "复用已确认的定位、人设、核心优势、价值观、目标人群，并了解已有或计划提供的产品/服务与商业目的",
         "checkpoints": (
             "提炼 3–5 个价值关键词",
             "从三项差异化价值主张中选择一个",
@@ -166,7 +317,7 @@ MODULE_WORKFLOWS = {
     },
     4: {
         "name": "故事资产",
-        "required": "复用已确认的真实经历、职业转折、共鸣点、核心价值观和未来目标",
+        "required": "复用已确认的真实经历、职业转折、团队或项目经历、共鸣点、核心价值观和未来目标",
         "checkpoints": (
             "提炼 3–5 个关键故事节点",
             "将故事分为挫折型、成长型和愿景型",
@@ -176,7 +327,7 @@ MODULE_WORKFLOWS = {
     },
     5: {
         "name": "内容选题",
-        "required": "目标人群、核心领域、已确认优势、长期标签和近期内容目标",
+        "required": "目标人群、核心领域、已确认优势、商业目的、已有或计划产品/服务、主要平台和希望用户采取的动作；投入时间与三个月目标可选",
         "checkpoints": (
             "确定 3 个长期选题种类并说明各自边界",
             "为每个种类设计 10 个具体选题，共 30 个",
@@ -610,7 +761,7 @@ def initial_state():
         "completed_modules": [],
         "module_step": 0,
         "pending": None,
-        "intake": {"status": "collecting", "round": 1, "answers": {}, "asked_follow_ups": []},
+        "intake": {"status": "collecting", "round": 1, "answers": {}, "asked_follow_ups": [], "declined_fields": []},
     }
 
 
@@ -679,7 +830,22 @@ def normalize_state(value):
             item for item in intake.get("asked_follow_ups", [])
             if isinstance(item, str) and item in {topic for topic, _ in INTAKE_FOLLOW_UP_PATTERNS}
         ],
+        declined_fields=[
+            item for item in intake.get("declined_fields", [])
+            if isinstance(item, str) and item in INTAKE_FIELD_SET
+        ],
     )
+    intake["field_statuses"] = {
+        field: (
+            "confirmed" if field in set(profile.get("facts") or {}) | set(profile.get("preferences") or {}) else
+            "declined" if field in set(intake.get("declined_fields") or []) else
+            "candidate" if field in {
+                str(item.get("field") or "") for item in intake.get("profile_updates") or [] if isinstance(item, dict)
+            } else
+            "unknown"
+        )
+        for field in INTAKE_FIELDS
+    }
     state["intake"] = intake
 
     pending = state.get("pending")
@@ -981,6 +1147,7 @@ def apply_action(value, action, expected_revision, *, request_id="", selected_at
                 )
             state["ip_profile"]["intake"] = {"summary": draft}
             _apply_profile_updates(state["ip_profile"], intake.get("profile_updates") or [])
+            intake["field_statuses"] = intake_field_statuses(state)
             if revising:
                 module = state["current_module"]
                 event["assistant_prefix"] = (
@@ -988,10 +1155,16 @@ def apply_action(value, action, expected_revision, *, request_id="", selected_at
                     % (module, MODULE_WORKFLOWS[module]["name"])
                 )
             else:
-                event["assistant_prefix"] = (
-                    "✅ 基础信息已确认。现在正式进入模块 1：定位诊断。\n\n"
-                    "先讲一段对你影响最大的关键经历或转折：发生了什么，它后来怎样影响了你？"
-                )
+                event["assistant_prefix"] = "✅ 基础信息已确认。现在正式进入模块 1：定位诊断。"
+                if _intake_has_core_profile(state, [], draft):
+                    event.update(
+                        continue_model=True,
+                        continuation_message="基础资料已经完整，请直接提炼模块 1 的核心关键词，不要重复追问。",
+                    )
+                else:
+                    event["assistant_prefix"] += (
+                        "\n\n先讲一段对你影响最大的关键经历或转折：发生了什么，它后来怎样影响了你？"
+                    )
         _bump(state)
         return state, event
 
@@ -1073,7 +1246,10 @@ def apply_action(value, action, expected_revision, *, request_id="", selected_at
             event["assistant_prefix"] += "正在生成模块 1–4 的 IP 定位初稿，请查看后再确认进入模块 5。"
             event["continue_model"] = False
         elif module == AVAILABLE_MODULE_COUNT:
-            event["assistant_prefix"] += "当前开放的 6 个模块已经全部完成。"
+            event["assistant_prefix"] += (
+                "人设定位、模块 1–4 PDF、30 个选题和 3 篇口播文案已经交付。"
+                "当前版本到这里停止，不会自动进入素材、报价或制作。"
+            )
             event["continue_model"] = False
         else:
             state["current_module"] = module + 1
@@ -1124,7 +1300,8 @@ def _validate_module_four_story_claims(draft, evidence):
         )
     quotes = []
     for match in MODULE_FOUR_QUOTE_RE.finditer(draft_text):
-        quote = re.sub(r"[*_`]+", "", match.group(1)).strip().strip("“”\"'")
+        quote = re.sub(r"[*_`]+", "", match.group(1)).strip()
+        quote = quote.strip("。！？!?；;，,").strip().strip("“”\"'")
         if quote:
             quotes.append(quote)
     if not quotes or len(quotes) > 5:
@@ -1321,6 +1498,9 @@ def validate_model_decision(
         _validate_confirmable_claims(draft, evidence)
     if decision == "propose_checkpoint" and state["current_module"] == 4:
         _validate_module_four_story_claims(draft, evidence)
+    if decision == "propose_checkpoint" and state["current_module"] == 5 and checkpoint == 1:
+        if commercial_goal_gaps(state, clean_updates):
+            raise HarnessError("生成选题前还需确认商业目的、产品或服务、主要平台和希望用户采取的动作")
     if decision == "propose_checkpoint" and state["current_module"] == 5 and checkpoint == 2:
         _validate_module_five_topics(clean_updates, draft, evidence)
     if (
@@ -1488,12 +1668,16 @@ def compile_module_six_checkpoint(value, pack):
         or any(len((item or {}).get("topics") or []) != 1 for item in categories)
     ):
         raise HarnessError("模块 6 尚未形成 3 个精选选题及对应完整文案")
+    length_contract = (pack or {}).get("script_length") or {}
+    minimum_chars = int(length_contract.get("min") or 120)
+    maximum_chars = int(length_contract.get("max") or 1600)
     featured = []
     for category in categories:
         topic = category["topics"][0]
         versions = topic.get("versions") or []
         script = str((versions[-1] if versions else {}).get("content") or "").strip()
-        if len(re.sub(r"\s+", "", script)) < 120:
+        script_chars = len(re.sub(r"\s+", "", script))
+        if not minimum_chars <= script_chars <= maximum_chars:
             raise HarnessError("模块 6 的精选选题缺少完整文案")
         featured.append((category, topic, script))
     evidence = "\n".join(
@@ -1549,34 +1733,44 @@ def compile_module_six_style(value, evidence_text):
     requirements = "；".join(
         dict.fromkeys(item.rstrip("。！？!?；;").strip() for item in relevant)
     )[:800]
+    has_duration = bool(re.search(
+        r"(?:\d+\s*(?:到|至|-)?\s*\d*|[一二两三四五六七八九十半]+)\s*"
+        r"(?:秒|分钟|minute(?:s)?|mins?|m)(?![A-Za-z])",
+        requirements,
+        re.I,
+    ))
     if not (
         re.search(r"大白话|口语|分享|教学|讲解|语气|风格", requirements)
-        and re.search(
-            r"(?:\d+\s*(?:到|至|-)?\s*\d*|[一二两三四五六七八九十半]+)\s*"
-            r"(?:秒|分钟|minute(?:s)?|mins?|m)(?![A-Za-z])",
-            requirements,
-            re.I,
-        )
         and re.search(r"点赞|评论|收藏|留言|关注|私信|咨询", requirements)
     ):
         return None
+    defaulted_duration = not has_duration
+    if defaulted_duration:
+        requirements = (requirements + "；默认单篇 60–90 秒、250–350 字").strip("；")
     starts = [evidence.find(item) for item in relevant]
     quote_start = min((item for item in starts if item >= 0), default=-1)
     quote_end = max((evidence.find(item) + len(item) for item in relevant if item in evidence), default=-1)
     quote = evidence[quote_start:quote_end] if 0 <= quote_start < quote_end else ""
-    if not quote or len(quote) > 300:
+    if not defaulted_duration and (not quote or len(quote) > 300):
         return None
     return validate_model_decision({
         "decision": "propose_checkpoint",
         "checkpoint": 1,
-        "reply": "我已按你说过的表达方式、时长和行动引导整理统一口播标准，不再重复追问。",
+        "reply": (
+            "我已沿用你说过的表达方式和行动引导，并采用默认单篇 60–90 秒、250–350 字。"
+            if defaulted_duration else
+            "我已按你说过的表达方式、时长和行动引导整理统一口播标准，不再重复追问。"
+        ),
         "draft": "### 3 篇精选口播统一标准\n- %s" % requirements,
-        "self_review": "只引用用户已提供的口播偏好，不补写新的要求。",
+        "self_review": (
+            "沿用用户已提供的表达和行动偏好；仅在用户未指定时长时应用产品默认值。"
+            if defaulted_duration else "只引用用户已提供的口播偏好，不补写新的要求。"
+        ),
         "profile_updates": [{
             "field": "module_6_delivery_preferences",
             "value": requirements,
-            "kind": "user_preference",
-            "evidence_quote": quote,
+            "kind": "ai_option" if defaulted_duration else "user_preference",
+            "evidence_quote": "" if defaulted_duration else quote,
         }],
         "confidence": 1.0,
     }, state, evidence)
@@ -1620,11 +1814,17 @@ def render_model_reply(decision):
     return reply
 
 
-def apply_intake_decision(value, raw, evidence_text):
+def apply_intake_decision(value, raw, evidence_text, current_message=""):
     state = normalize_state(value)
     intake = state["intake"]
     if intake["status"] == "complete":
         raise HarnessError("基础资料已经确认")
+    declined = list(intake.get("declined_fields") or [])
+    last_topic = (intake.get("asked_follow_ups") or [""])[-1]
+    for field in _declined_intake_fields(current_message, last_topic):
+        if field not in declined:
+            declined.append(field)
+    intake["declined_fields"] = declined
     candidate = deepcopy(raw) if isinstance(raw, dict) else raw
     if isinstance(candidate, dict):
         candidate_kind = str(candidate.get("decision") or "")
@@ -1665,6 +1865,8 @@ def apply_intake_decision(value, raw, evidence_text):
     elif decision["decision"] == "ask_follow_up":
         follow_up_topic = intake_follow_up_topic(decision["reply"])
         asked_follow_ups = intake.setdefault("asked_follow_ups", [])
+        if follow_up_topic in intake.get("declined_fields", []):
+            raise HarnessError("基础访谈追问了用户已经拒答的信息；请改问核心缺口或直接整理现有资料")
         if follow_up_topic in asked_follow_ups:
             raise HarnessError(
                 "基础访谈重复追问了已经问过的可选信息；请改问其他未回答项，或直接整理现有资料"
@@ -1681,6 +1883,7 @@ def apply_intake_decision(value, raw, evidence_text):
             intake["profile_updates"] = list(merged_updates.values())
         if intake["status"] == "awaiting_confirmation":
             intake["status"] = "editing"
+    intake["field_statuses"] = intake_field_statuses(state)
     _bump(state)
     reply = decision["reply"]
     if decision["decision"] == "propose_checkpoint":
@@ -1782,9 +1985,14 @@ def apply_model_decision(value, raw, evidence_text, pending_id=None, discard_pen
 
 
 def intake_system_prompt(value):
+    state = normalize_state(value)
+    declined = "、".join(state["intake"].get("declined_fields") or []) or "无"
     return """你是黄雀 IP12 的中立访谈教练，正在自然地了解用户基础情况。
 
 整理定位所需的核心信息是：希望的称呼或当前身份、真实经历、至少两项核心技能、长期兴趣、目标人群，以及希望帮助对方解决什么问题。年龄、城市、收入、性别和手机号都只是可选背景；没有直接用途时不要主动追问，不得强迫，拒答或跳过也绝不能阻塞核对稿。
+
+基础资料统一字段名：preferred_name、current_identity、previous_work_experience、core_skill_1、core_skill_2、long_term_interest、target_audience、help_goal。用户主动提及时还可记录 content_account、offer、business_goal、primary_platform、desired_action、time_budget、three_month_goal、tone_preference、disliked_style、team_project_experience。
+已经明确拒答或跳过的字段：%s。
 
 对话规则：
 - 接受任意顺序和自然表达；用户可一次说一项或多项，不要求固定格式，不把访谈做成选择题。
@@ -1800,7 +2008,7 @@ def intake_system_prompt(value):
 - profile_updates 必须覆盖 draft 中全部结构化用户事实与偏好，使用英文 snake_case 字段，并逐字引用对话中的 evidence_quote；不得把 AI 推断写成用户事实。
 - 不编造姓名、经历、收入或其他事实，不宣布基础资料已确认，不进入模块 1。
 - 基础访谈不使用候选卡，所有回复 choices=[]。
-- 最终只返回一个 JSON 对象；其中面向用户的 reply 和 draft 不提及 JSON、状态机、字段、数据库或系统规则。使用简体中文，具体、自然。"""
+- 最终只返回一个 JSON 对象；其中面向用户的 reply 和 draft 不提及 JSON、状态机、字段、数据库或系统规则。使用简体中文，具体、自然。""" % declined
 
 
 def system_prompt(value):
@@ -1842,6 +2050,17 @@ def system_prompt(value):
 - 每个节点必须单独包含“事实原话：”或“未来方向原话：”，后面逐字引用对话或已确认资料；不得使用“故事内容：”自由改写过去经历。
 - 标题、故事类型、情绪点和传播场景可以是 AI 建议，但必须明确作为包装建议，不能夹带新的过去事实。
 - 不使用“过人的天赋”“自我怀疑”“害怕”“成就感”等用户没有亲口说过的评价或内心感受。证据不足时少写节点，不能为了凑数量编故事。"""
+    commercial_rules = ""
+    if module == 5 and next_step == 1:
+        commercial_rules = """
+- 生成内容种类前必须确认 business_goal、offer、primary_platform、desired_action；缺一项就只追问一个最重要缺口。
+- time_budget 和 three_month_goal 是推荐信息，用户跳过时不阻塞选题。
+- 本断点的完整核对稿必须同时写清商业目标、产品或服务、主要平台、希望用户采取的动作和 3 个内容种类。"""
+    script_rules = ""
+    if module == 6 and next_step == 1:
+        script_rules = """
+- 本断点只确认 3 篇口播共用的表达风格、单篇时长和行动目标，不提前写口播正文。
+- 用户没有明确指定其他时长时，默认单篇 60–90 秒、250–350 字；只有用户明确选择其他时长才覆盖默认值。"""
     return f"""你是黄雀 IP12 的中立 IP 咨询教练，适用于任何职业和行业。
 
 当前模块：{module}. {workflow['name']}
@@ -1859,6 +2078,8 @@ def system_prompt(value):
 - 非固定三选一断点信息足够时 decision=propose_checkpoint，draft 只包含当前断点的完整可确认内容，profile_updates 必须是当前断点的完整最新快照。
 {choice_rules}
 {story_rules}
+{commercial_rules}
+{script_rules}
 - 用户只是询问、讨论现有草稿或暂时跑题时 decision=answer_only，不改变断点；用户补充、纠正或反悔时，重做当前断点的完整草稿。
 - 用户指出重复、理解错误、遗漏或体验问题时，先用一句话明确说明刚才错在哪里，再给出已经采取的修正；能从上下文判断时立即修改，不能把定位和操作责任推回用户。
 - 不复述已经确认的完整内容。只说明本轮新增、删除或改变的部分；需要核对完整稿时再展示当前完整稿一次。
