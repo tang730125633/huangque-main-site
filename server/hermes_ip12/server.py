@@ -82,6 +82,7 @@ CONVOS_DIR = DATA_DIR / "conversations"
 REPORTS_DIR = DATA_DIR / "reports"
 DELIVERABLES_DIR = DATA_DIR / "deliverables"
 FOUNDATION_REPORTS_DIR = DATA_DIR / "foundation_reports"
+FOUNDATION_REPORT_TEMPLATE_VERSION = "expression-v2"
 CONVERSATION_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
 AUTH_BASE = os.environ.get("HERMES_AUTH_BASE", "http://127.0.0.1:8095").rstrip("/")
 INTERNAL_ACTION_PATH = os.environ.get(
@@ -2769,7 +2770,8 @@ def _foundation_html(markdown, zoom=1.0):
         if line.startswith("#### "):
             rows.append("<h4>%s</h4>" % line[5:])
         elif line.startswith("### "):
-            rows.append("<h3>%s</h3>" % line[4:])
+            advice = " class='advice'" if "AI包装建议" in line or "执行优先级" in line else ""
+            rows.append("<h3%s>%s</h3>" % (advice, line[4:]))
         elif line.startswith("## "):
             rows.append("<h2>%s</h2>" % line[3:])
         elif line.startswith("# "):
@@ -2783,7 +2785,7 @@ def _foundation_html(markdown, zoom=1.0):
     body = "\n".join(rows) or "<p>暂无已确认内容。</p>"
     zoom_css = "" if zoom == 1.0 else "body{zoom:%g}" % zoom
     return """<!doctype html><html lang='zh-CN'><meta charset='utf-8'><style>
-@page{size:A4;margin:16mm 18mm 18mm;@bottom-right{content:counter(page) '/' counter(pages);color:#69727d;font-size:8pt}}body{font-family:'Noto Sans SC','WenQuanYi Zen Hei','Microsoft YaHei',sans-serif;color:#29313b;line-height:1.75;font-size:10.2pt}.cover{border-bottom:2px solid #173d78;padding-bottom:5mm;margin-bottom:7mm}.cover h1{font-size:19pt;margin:0 0 3mm;color:#1d2632;border:0;padding:0}.meta{color:#69727d;font-size:9pt;line-height:1.7}.notice{margin:5mm 0 8mm;padding:3mm 4mm;background:#f5f7fa;border-left:3px solid #dce3ea;color:#566270}h1{font-size:18pt;margin:0 0 5mm;color:#1d2632;border-bottom:1px solid #dce3ea;padding-bottom:4mm}h2{font-size:15pt;margin:9mm 0 4mm;color:#1d2632;border-top:2px solid #dce3ea;padding-top:5mm}h3{font-size:11.5pt;margin:5mm 0 2mm;color:#1d2632}h4{font-size:10.5pt;margin:4mm 0 2mm;color:#29313b}p,li{margin:1.7mm 0}ul{margin:1.7mm 0;padding-left:6mm}li{break-inside:avoid}strong{color:#1d2632}blockquote{margin:4mm 0;padding:3mm 4mm;border-left:3px solid #dce3ea;color:#687483;background:#fafbfd}hr{border:0;border-top:2px solid #dce3ea;margin:7mm 0}table{width:100%%;border-collapse:collapse;margin:4mm 0 7mm;font-size:9.3pt;page-break-inside:avoid}th{background:#edf3ff;color:#29313b;font-weight:700}th,td{border:1px solid #d8e2f4;padding:2.5mm 3mm;text-align:left;vertical-align:top}tr:nth-child(even){background:#fafcff}%s</style><body><div class='cover'><h1>IP 人设定位｜模块 1-4 初稿</h1><div class='meta'>黄雀 IP 孵化教练 · 基于本次对话整理 · 生成后请本人确认</div></div><div class='notice'>本报告用于确认 IP 底座。确认后开启模块 5-6；模块 7 及后续能力尚未开发，敬请期待。</div>%s</body></html>""" % (zoom_css, body)
+@page{size:A4;margin:16mm 18mm 18mm;@bottom-right{content:counter(page) '/' counter(pages);color:#69727d;font-size:8pt}}body{font-family:'Noto Sans SC','WenQuanYi Zen Hei','Microsoft YaHei',sans-serif;color:#29313b;line-height:1.75;font-size:10.2pt}.cover{border-bottom:2px solid #173d78;padding-bottom:5mm;margin-bottom:7mm}.cover h1{font-size:19pt;margin:0 0 3mm;color:#1d2632;border:0;padding:0}.meta{color:#69727d;font-size:9pt;line-height:1.7}.notice{margin:5mm 0 8mm;padding:3mm 4mm;background:#f5f7fa;border-left:3px solid #dce3ea;color:#566270}h1{font-size:18pt;margin:0 0 5mm;color:#1d2632;border-bottom:1px solid #dce3ea;padding-bottom:4mm}h2{font-size:15pt;margin:9mm 0 4mm;color:#1d2632;border-top:2px solid #dce3ea;padding-top:5mm}h3{font-size:11.5pt;margin:5mm 0 2mm;color:#1d2632}h3.advice{background:#fff3d3;color:#805808;padding:2.5mm 3mm;border-radius:2mm}h4{font-size:10.5pt;margin:5mm 0 2mm;padding:2.5mm 3mm;background:#eaf1fb;border-left:3px solid #173d78;color:#29313b;break-after:avoid}p,li{margin:1.7mm 0}ul{margin:1.7mm 0;padding-left:6mm}li{break-inside:avoid}strong{color:#1d2632}blockquote{margin:4mm 0;padding:3mm 4mm;border-left:3px solid #dce3ea;color:#687483;background:#fafbfd}hr{border:0;border-top:2px solid #dce3ea;margin:7mm 0}table{width:100%%;border-collapse:collapse;margin:4mm 0 7mm;font-size:9.3pt;page-break-inside:avoid}th{background:#edf3ff;color:#29313b;font-weight:700}th,td{border:1px solid #d8e2f4;padding:2.5mm 3mm;text-align:left;vertical-align:top}tr:nth-child(even){background:#fafcff}%s</style><body><div class='cover'><h1>IP 人设定位｜模块 1-4 初稿</h1><div class='meta'>黄雀 IP 孵化教练 · 基于本次对话整理 · 生成后请本人确认</div></div><div class='notice'>本报告先呈现确认事实，再呈现明确标注的“AI包装建议”；后者用于传播与内容创作，不等同于已发生结果。</div>%s</body></html>""" % (zoom_css, body)
 
 
 def _foundation_zoom_candidates(page_count):
@@ -2846,11 +2848,19 @@ def generate_foundation_report(convo_id):
         state = normalize_coach_state(convo.get("coach_state"))
         convo["coach_state"] = state
         report = state.get("foundation_report") or {}
-        reusable_content = str(report.get("content") or "").strip() if report.get("review_status") != "dirty" else ""
+        reusable_content = (
+            str(report.get("content") or "").strip()
+            if report.get("review_status") != "dirty"
+            and report.get("template_version") == FOUNDATION_REPORT_TEMPLATE_VERSION else ""
+        )
         artifact_version = int(((report.get("artifact") or {}).get("version") or 0)) + 1
         review_notes = list(report.get("review_notes") or [])[-20:]
         review_dirty = report.get("review_status") == "dirty"
-        if report.get("status") in {"awaiting_confirmation", "confirmed"} and not review_dirty:
+        if (
+            report.get("status") in {"awaiting_confirmation", "confirmed"}
+            and report.get("template_version") == FOUNDATION_REPORT_TEMPLATE_VERSION
+            and not review_dirty
+        ):
             try:
                 _validate_foundation_artifact(report, target)
                 return report
@@ -2867,7 +2877,7 @@ def generate_foundation_report(convo_id):
         }
         state["revision"] += 1
         save_conversation(convo_id, convo)
-    messages = [{"role": "system", "content": """你是IP定位报告编辑。只基于对话中已经出现的信息和服务端列出的已确认结果，写一份可直接交给客户确认的中文Markdown《模块1-4定位初稿》。模块1-3的方向已经由用户选择，必须沿用，不得重新生成替代方案、改选或再次推荐。目标是与成熟咨询交付一致的8-10页策略报告，而不是对话摘要；通过深入拆解已确认方向实现信息密度，绝不为凑页数编造。未知、未确认数字或事实必须写‘待本人确认’。\n\n严格按以下结构输出，不写开场客套，也不要输出总标题：\n## 模块一｜定位诊断\n### 核心关键词（7个）：每个用编号、关键词和一句解释。\n### 已确认定位：名称、一句话定位语、三合一策略；逐字保留已确认方向的核心含义。\n### 市场机会：5点，必须写目标人群共鸣、成交痛点、差异化、可验证资产和传播机会。\n### 潜在风险与控制建议：5组，每组写风险和一条控制建议。\n## 模块二｜人设塑造\n### 已确认人设方向：名称、核心特质、故事基调、传播标签、人设公式、优势、风险与适用场景。\n### 选择依据与执行边界：5条具体匹配理由、不能夸大的边界和核心人设要素表；不得再提供其他人设方案。\n### 对外口径：账号封面/置顶、引流钩子、成交主张、真实故事、个人口头禅五条口径，必须用Markdown表格，列为“场景｜建议口径”。\n## 模块三｜价值主张提炼\n### 价值主张诊断表：把现有表达或当前问题逐条写成“原始口径｜问题｜优化方向”表格；没有原始口径时明确写“待本人确认”。\n### 已确认价值主张：主张核心、一句话金句、优势、潜在局限；不得再提供其他价值主张方案。\n### 价值主张展开：服务对象、解决问题、可交付结果、证明方式与最终一句话金句。\n### 金句备选：至少3条，并为每条写适用场景；只能改写表达，不能改变已确认主张。\n### 差异化证明与变现路径：用一张“经历/能力/结果/价值观｜可证明点｜转化用途”表和一张“路径｜具体措施”表。\n## 模块四｜故事资产挖掘\n### 故事库：只写有事实依据的故事，不创建‘待补充’故事凑数；每个故事单独用四级标题，并写一句话、起点、冲突、转折、结果、情绪曲线、适用场景、开头钩子、传播价值。\n### 推荐核心故事主线：选择最多2个有事实依据的故事组合，写推荐理由和可延展的内容系列。\n### 内容资产使用表：只写有事实依据的内容资产，列为“内容类型｜主题｜适用场景｜目标受众｜传播渠道｜预期效果”。\n## 优化建议汇总\n给“金句升级、内容边界、证明材料、风险控制”各一条可执行建议。\n## 确认页\n只列真正影响定位结论且尚未确认的项目，不强制凑数量；没有待补充项目时写‘无待补充项’。最后固定写：‘文档状态：模块1-4初稿完成，待本人确认后进入模块5-6执行。’\n\n不要编造未在对话中出现的金额、人数、经历、客户结果或账号名称。"""}]
+    messages = [{"role": "system", "content": """你是IP定位报告编辑。只基于对话中已经出现的信息和服务端列出的已确认结果，写一份可直接交给客户确认的中文Markdown《模块1-4定位初稿》。模块1-3的方向已经由用户选择，必须沿用，不得重新生成替代方案、改选或再次推荐。目标是与成熟咨询交付一致的8-10页策略报告，而不是对话摘要；通过深入拆解已确认方向实现信息密度，绝不为凑页数编造。未知、未确认数字或事实必须写‘待本人确认’。\n\n报告必须分两层：确认事实层只能复述服务端确认信息和用户原话；传播表达层只能使用“AI包装建议”标题，允许给金句、钩子、情绪曲线、传播价值和执行优先级，但不得把建议写成既有结果、客户案例或事实。\n\n严格按以下结构输出，不写开场客套，也不要输出总标题：\n## 模块一｜定位诊断\n### 核心关键词（7个）：每个用编号、关键词和一句解释。\n### 已确认定位：名称、一句话定位语、三合一策略；逐字保留已确认方向的核心含义。\n### 市场机会：5点，必须写目标人群共鸣、成交痛点、差异化、可验证资产和传播机会。\n### 潜在风险与控制建议：5组，每组写风险和一条控制建议。\n### 传播表达建议（AI包装建议）：给3条可传播的一句话定位或内容开场，标明适用场景，不得承诺结果。\n## 模块二｜人设塑造\n### 已确认人设方向：名称、核心特质、故事基调、传播标签、人设公式、优势、风险与适用场景。\n### 选择依据与执行边界：5条具体匹配理由、不能夸大的边界和核心人设要素表；不得再提供其他人设方案。\n### 对外口径：账号封面/置顶、引流钩子、成交主张、真实故事、个人口头禅五条口径，必须用Markdown表格，列为“场景｜建议口径”。\n### 人设传播卡（AI包装建议）：用四级标题写1张卡，包含一句传播标签、3个内容支柱、一个开场钩子和使用边界。\n## 模块三｜价值主张提炼\n### 价值主张诊断表：把现有表达或当前问题逐条写成“原始口径｜问题｜优化方向”表格；没有原始口径时明确写“待本人确认”。\n### 已确认价值主张：主张核心、一句话金句、优势、潜在局限；不得再提供其他价值主张方案。\n### 价值主张展开：服务对象、解决问题、可交付结果、证明方式与最终一句话金句。\n### 金句备选：至少3条，并为每条写适用场景；只能改写表达，不能改变已确认主张。\n### 差异化证明与变现路径：用一张“经历/能力/结果/价值观｜可证明点｜转化用途”表和一张“路径｜具体措施”表。\n### 金句传播卡（AI包装建议）：用四级标题写3张卡，每张含金句、适用场景、表达边界，不能承诺收入、成交或流量。\n## 模块四｜故事资产挖掘\n### 故事库：只写有事实依据的故事，不创建‘待补充’故事凑数；每个故事单独用四级标题，并写一句话、事实原话、适用场景。\n### 故事传播卡（AI包装建议）：每个已有故事各用四级标题补充情绪曲线、开头钩子、传播价值和可拆内容形式；全部标注为建议，不能补写事实过程或结果。\n### 推荐核心故事主线：选择最多2个有事实依据的故事组合，写推荐理由和可延展的内容系列。\n### 内容资产使用表：只写有事实依据的内容资产，列为“内容类型｜主题｜适用场景｜目标受众｜传播渠道｜预期效果”。\n## 优化建议汇总\n给“金句升级、内容边界、证明材料、风险控制”各一条可执行建议。\n### 执行优先级（AI包装建议）：用P0、P1、P2列出3项最先做的内容或验证动作，不能写成已完成或保证效果。\n## 确认页\n只列真正影响定位结论且尚未确认的项目，不强制凑数量；没有待补充项目时写‘无待补充项’。最后固定写：‘文档状态：模块1-4初稿完成，待本人确认后进入模块5-6执行。’\n\n不要编造未在对话中出现的金额、人数、经历、客户结果或账号名称。"""}]
     messages[0]["content"] += "\n\n隐私要求：不得在报告中输出手机号、联系方式或‘手机号已隐藏’占位符。"
     messages[0]["content"] += (
         "\n\n候选保留要求：模块 1、2、3 的服务端结果会提供 candidates 和 selected_choice_id。"
@@ -2936,6 +2946,7 @@ def generate_foundation_report(convo_id):
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "review_status": "clean",
         "review_notes": [],
+        "template_version": FOUNDATION_REPORT_TEMPLATE_VERSION,
         "artifact": _foundation_artifact(target, report_id, artifact_version),
     }
     with CONVERSATION_STATE_LOCK:
@@ -7517,7 +7528,11 @@ def api_generate_foundation_report():
     if 4 not in convo.get("coach_state", {}).get("completed_modules", []):
         return jsonify({"ok": False, "error": "请先完成模块 1-4"}), 409
     report = (convo.get("coach_state") or {}).get("foundation_report") or {}
-    if report.get("status") in {"awaiting_confirmation", "confirmed"} and report.get("review_status") != "dirty":
+    if (
+        report.get("status") in {"awaiting_confirmation", "confirmed"}
+        and report.get("template_version") == FOUNDATION_REPORT_TEMPLATE_VERSION
+        and report.get("review_status") != "dirty"
+    ):
         try:
             _validate_foundation_artifact(report, FOUNDATION_REPORTS_DIR / (cid + ".pdf"))
             return jsonify({"ok": False, "error": "PDF 已生成，无需重复生成"}), 409

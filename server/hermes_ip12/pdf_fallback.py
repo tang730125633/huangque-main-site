@@ -17,8 +17,12 @@ def _styled_lines(markdown):
         kind = "body"
         if text.startswith("## "):
             kind, text = "section", text[3:]
-        elif text.startswith(("### ", "#### ")):
-            kind, text = "subsection", re.sub(r"^#{3,4}\s*", "", text)
+        elif text.startswith("#### "):
+            kind, text = "card_title", text[5:]
+        elif text.startswith("### "):
+            kind, text = "subsection", text[4:]
+            if "AI包装建议" in text or "执行优先级" in text:
+                kind = "advice"
         elif text.startswith("> "):
             kind, text = "quote", text[2:]
         elif text.startswith("|") and text.endswith("|"):
@@ -31,6 +35,8 @@ def _styled_lines(markdown):
             text = re.sub(r"^#{1,4}\s*", "", text)
         text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
         text = re.sub(r"`([^`]+)`", r"\1", text)
+        if re.match(r"(?:🥇|🥈|🥉|P[012]\b)", text):
+            kind = "priority"
         lines.append((kind, text))
     return lines or [("body", "暂无已确认内容。")]
 
@@ -83,15 +89,20 @@ def render_foundation_pdf_fallback(markdown, target):
     font_size, line_height = 9.0, 13.5
     wrapped = []
     for kind, line in _styled_lines(markdown):
-        line_size = 10.2 if kind == "section" else 9.5 if kind == "subsection" else 8.7 if kind == "table" else font_size
+        line_size = (
+            10.2 if kind == "section" else
+            10.0 if kind in {"card_title", "advice"} else
+            9.5 if kind == "subsection" else
+            8.7 if kind == "table" else font_size
+        )
         for segment in _wrap(line, font_name, line_size, width - margin_x * 2 - (10 if kind in {"quote", "list"} else 0), pdfmetrics):
             wrapped.append((kind, segment))
 
-    page_count = 8
-    lines_per_page = max(1, math.ceil(len(wrapped) / page_count))
     maximum_lines = max(1, int((height - margin_top - margin_bottom - 24) / line_height))
-    if lines_per_page > maximum_lines:
+    page_count = max(8, math.ceil(len(wrapped) / maximum_lines))
+    if page_count > 10:
         raise RuntimeError("PDF fallback content is too long")
+    lines_per_page = max(1, math.ceil(len(wrapped) / page_count))
 
     document = canvas.Canvas(str(target), pagesize=A4, pageCompression=1)
     document.setTitle("IP 人设定位｜模块 1-4 初稿")
@@ -116,6 +127,16 @@ def render_foundation_pdf_fallback(markdown, target):
                 document.roundRect(margin_x - 5, y - 3, width - margin_x * 2 + 10, line_height, 3, stroke=0, fill=1)
                 document.setFillColorRGB(0.09, 0.24, 0.47)
                 document.setFont(font_name, 10.2)
+            elif kind == "card_title":
+                document.setFillColorRGB(0.14, 0.31, 0.56)
+                document.roundRect(margin_x - 5, y - 3, width - margin_x * 2 + 10, line_height, 3, stroke=0, fill=1)
+                document.setFillColorRGB(1, 1, 1)
+                document.setFont(font_name, 10.0)
+            elif kind == "advice":
+                document.setFillColorRGB(0.99, 0.95, 0.82)
+                document.roundRect(margin_x - 5, y - 3, width - margin_x * 2 + 10, line_height, 3, stroke=0, fill=1)
+                document.setFillColorRGB(0.51, 0.35, 0.05)
+                document.setFont(font_name, 10.0)
             elif kind == "subsection":
                 document.setFillColorRGB(0.16, 0.29, 0.46)
                 document.setFont(font_name, 9.5)
@@ -126,6 +147,9 @@ def render_foundation_pdf_fallback(markdown, target):
                 document.setFont(font_name, 8.7)
             elif kind == "quote":
                 document.setFillColorRGB(0.33, 0.4, 0.49)
+                document.setFont(font_name, font_size)
+            elif kind == "priority":
+                document.setFillColorRGB(0.51, 0.35, 0.05)
                 document.setFont(font_name, font_size)
             else:
                 document.setFillColorRGB(0.15, 0.19, 0.24)

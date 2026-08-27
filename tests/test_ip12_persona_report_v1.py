@@ -54,6 +54,13 @@ class IP12PersonaReportV1Tests(unittest.TestCase):
         self.assertIn("候选保留要求", source)
         self.assertIn("selected_choice_id", source)
         self.assertIn("reusable_content or call_ai", source)
+        self.assertIn("传播表达建议（AI包装建议）", source)
+        self.assertIn("执行优先级（AI包装建议）", source)
+        self.assertIn("template_version", source)
+        self.assertIn(
+            "FOUNDATION_REPORT_TEMPLATE_VERSION",
+            inspect.getsource(server.api_generate_foundation_report),
+        )
 
     def test_module_six_action_turn_no_longer_auto_prepares_production(self):
         source = inspect.getsource(server._process_action_turn)
