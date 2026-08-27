@@ -401,6 +401,11 @@ def check_clone_status(username, slot_id, attempt_id=None):
         if current and current["clone_error"]:
             result["clone_error"] = current["clone_error"]
         return result
+    if slot["status"] == "failed":
+        return response(
+            "failed",
+            clone_error=slot["clone_error"] or "声音复刻失败，请重新上传清晰样音",
+        )
     if not cosyvoice.enabled():
         return response("failed", clone_error="声音复刻服务暂不可用")
     # Until the provider voice id replaces the slot placeholder, this attempt
@@ -829,6 +834,9 @@ def _upload_clone_reference(local_path, key):
 
 
 def _clone_error_message(error):
+    message = str(error or "")
+    if "Audio.AudioShortError" in message or "valid audio too short" in message.lower():
+        return "样音中的有效语音太短，请上传30至60秒连续、清晰、单人说话的样音"
     if _is_transient_clone_upload_error(error):
         return "样音上传网络异常，系统重试后仍未成功，请稍后重试"
     return "声音复刻失败，请检查样音后重试"
