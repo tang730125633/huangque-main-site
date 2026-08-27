@@ -111,6 +111,27 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                 "template_id": "native-bold",
             })
 
+    def test_missing_template_defaults_to_first_approved_layout(self):
+        approved = [
+            {"id": "full-overlay-bold", "name": "沉浸强标题"},
+            {"id": "poster-split", "name": "海报切分"},
+        ]
+        expected = {
+            "top_text": "AI 工作流",
+            "bottom_text": "评论区留下关键词",
+            "template_id": "full-overlay-bold",
+            "bgm": True,
+            "duration": 8.0,
+        }
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(self.module, "public_templates", return_value=approved), \
+             mock.patch.object(self.module, "_request", return_value={"payload": expected}):
+            result = self.module.validate_payload({
+                "top_text": "AI 工作流",
+                "bottom_text": "评论区留下关键词",
+            })
+        self.assertEqual("full-overlay-bold", result["template_id"])
+
     def test_matrix_jobs_use_dedicated_five_worker_queue(self):
         from content_domains import core
         self.assertIs(

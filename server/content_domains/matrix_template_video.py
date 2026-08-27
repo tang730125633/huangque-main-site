@@ -162,7 +162,7 @@ def validate_payload(raw, username=""):
         raise ValueError("顶部标题需要 2-60 个字符")
     if not 2 <= len(bottom) <= 80:
         raise ValueError("底部行动文案需要 2-80 个字符")
-    template_id = str(body.get("template_id") or "native-bold")
+    template_id = str(body.get("template_id") or APPROVED_TEMPLATE_IDS[0])
     if template_id not in {item["id"] for item in public_templates()}:
         raise ValueError("请选择有效模板")
     font_family = str(body.get("font_family") or "").strip()
