@@ -71,7 +71,9 @@ class InviteRewardDeploymentTests(unittest.TestCase):
         self.assertIn("/home/ubuntu/auth-service/process_invite_reward_claims.py", service)
         self.assertIn("--database /home/ubuntu/auth-service/users.db", service)
         self.assertIn("--limit 100", service)
+        self.assertIn("OnActiveSec=1min", timer)
         self.assertIn("OnUnitActiveSec=1min", timer)
+        self.assertNotIn("OnBootSec=", timer)
         self.assertIn("Persistent=true", timer)
         self.assertIn("WantedBy=timers.target", timer)
 
