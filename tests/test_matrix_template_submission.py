@@ -110,6 +110,26 @@ class MatrixTemplateSubmissionTests(unittest.TestCase):
             cost=5 if body_marker else None, owner="content", now=self.now(),
         )
 
+    def begin_paid_child(self, kind, suffix):
+        endpoint = "/api/gen/%s" % kind
+        key = "digital-human-%s-%s" % (kind, suffix)
+        body = {
+            "prompt": "locked child", "digital_human_run_id": "dh-run-0001",
+            "digital_human_stage": "material" if kind == "image" else "talking",
+        }
+        state, _ = submission_idempotency.begin(
+            self.db, "alice", endpoint, key, body,
+        )
+        self.assertEqual("new", state)
+        return endpoint, key, body
+
+    def recover_paid_child(self, kind, endpoint, key, body=None):
+        return matrix_template_submission.recover(
+            self.db, self.points, "alice", endpoint, key, body=body,
+            cost=7 if body is not None else None, owner="content",
+            now=self.now(), kind=kind,
+        )
+
     def test_hard_exit_after_deduction_recovers_one_job_without_second_charge(self):
         self.points.crash_after_deduct = True
         with mock.patch.object(matrix_template_submission.time, "time", side_effect=self.now), \
@@ -246,6 +266,72 @@ class MatrixTemplateSubmissionTests(unittest.TestCase):
         self.assertEqual(len(self.points.deductions), 1)
         self.assertEqual(len(self.points.refunds), 1)
 
+    def test_digital_human_image_and_video_recover_hard_exit_after_deduction(self):
+        for kind in ("image", "video"):
+            with self.subTest(kind=kind):
+                endpoint, key, body = self.begin_paid_child(kind, "deduct")
+                charges_before = len(self.points.deductions)
+                self.points.crash_after_deduct = True
+                with mock.patch.object(matrix_template_submission.time, "time", side_effect=self.now), \
+                     self.assertRaises(SystemExit):
+                    self.recover_paid_child(kind, endpoint, key, body)
+                self.clock["now"] += matrix_template_submission.LEASE_SECONDS + 1
+                recovered = self.recover_paid_child(kind, endpoint, key)
+                self.assertEqual("linked", recovered["state"])
+                self.assertEqual(kind, recovered["kind"])
+                self.assertEqual(charges_before + 1, len(self.points.deductions))
+                self.assertEqual(1, self.job_count())
+                with closing(self.db()) as connection:
+                    connection.execute("DELETE FROM jobs")
+                    connection.commit()
+
+    def test_digital_human_image_and_video_replay_hard_exit_after_job_commit(self):
+        real_create = matrix_template_submission.jobs_store.create_job_after_charge
+        for kind in ("image", "video"):
+            with self.subTest(kind=kind):
+                endpoint, key, body = self.begin_paid_child(kind, "commit")
+                charges_before = len(self.points.deductions)
+
+                def create_then_exit(*args, **kwargs):
+                    real_create(*args, **kwargs)
+                    raise SystemExit("hard exit after job commit")
+
+                with mock.patch.object(
+                    matrix_template_submission.jobs_store, "create_job_after_charge",
+                    side_effect=create_then_exit,
+                ), self.assertRaises(SystemExit):
+                    self.recover_paid_child(kind, endpoint, key, body)
+                linked = self.recover_paid_child(kind, endpoint, key)
+                self.assertEqual("linked", linked["state"])
+                self.assertEqual(kind, linked["kind"])
+                self.assertEqual(charges_before + 1, len(self.points.deductions))
+                with closing(self.db()) as connection:
+                    self.assertEqual(1, connection.execute(
+                        "SELECT COUNT(*) FROM jobs WHERE kind=?", (kind,),
+                    ).fetchone()[0])
+
+    def test_digital_human_image_and_video_recover_hard_exit_after_refund(self):
+        for kind in ("image", "video"):
+            with self.subTest(kind=kind):
+                endpoint, key, body = self.begin_paid_child(kind, "refund")
+                charges_before = len(self.points.deductions)
+                refunds_before = len(self.points.refunds)
+                self.points.crash_after_refund = True
+                with mock.patch.object(
+                    matrix_template_submission.jobs_store, "create_job_after_charge",
+                    side_effect=RuntimeError("disk full"),
+                ), self.assertRaises(SystemExit):
+                    self.recover_paid_child(kind, endpoint, key, body)
+                self.clock["now"] += matrix_template_submission.LEASE_SECONDS + 1
+                recovered = self.recover_paid_child(kind, endpoint, key)
+                self.assertEqual("refunded", recovered["state"])
+                self.assertEqual(kind, recovered["kind"])
+                self.assertEqual(charges_before + 1, len(self.points.deductions))
+                self.assertEqual(refunds_before + 1, len(self.points.refunds))
+                with closing(self.db()) as connection:
+                    self.assertEqual(0, connection.execute(
+                        "SELECT COUNT(*) FROM jobs WHERE kind=?", (kind,),
+                    ).fetchone()[0])
 
 if __name__ == "__main__":
     unittest.main()
