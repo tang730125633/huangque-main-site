@@ -216,7 +216,31 @@ hq run text-video-plan --input @talking-plan.json --confirm --json
 
 把 `talking_material` 合并到与规划时完全一致的文案成片 JSON，再执行原有报价和确认命令。人物与方案均为当前账号私有的短期资产；最终提交前仍会校验方案、人物、参数、分镜和价格。
 
-项目同时提供可安装的 Codex Skill：[use-huangque-cli](skills/use-huangque-cli/SKILL.md)。
+## Agent Skill 与 MCP
+
+Agent 使用方法由独立公开仓库 [`huangque-agent-skill`](https://github.com/tang730125633/huangque-agent-skill) 维护，避免在 CLI 仓库复制第二份 Skill。CLI 0.12.0 起可安装同一份版本化 Skill：
+
+```sh
+hq skill install deepseek
+hq skill install codex
+hq skill install openclaw
+hq skill install pi
+```
+
+标准 MCP 服务由当前 CLI 直接提供：
+
+```json
+{
+  "mcpServers": {
+    "huangque": {
+      "command": "hq",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+`hq skill install mcp` 返回同一配置。MCP 根据当前版本的固定能力目录生成带参数约束的工具，不提供任意命令执行；写入、上传与付费确认规则和 CLI 完全相同。
 
 ## 客户大白话对照
 

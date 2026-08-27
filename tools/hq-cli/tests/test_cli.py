@@ -42,7 +42,7 @@ class HqCliTests(unittest.TestCase):
             self.assertEqual(0, code, error)
             self.assertTrue(self.payload(output)["schema"].startswith("hq."))
         code, output, _ = self.invoke(["version"])
-        self.assertEqual("0.11.5", self.payload(output)["cli_version"])
+        self.assertEqual("0.12.0", self.payload(output)["cli_version"])
         self.assertEqual("Huangque main-site CLI", self.payload(output)["product"])
         self.assertEqual("https://huangquechuanmei.com", self.payload(output)["origin"])
 
@@ -110,9 +110,9 @@ class HqCliTests(unittest.TestCase):
             self.assertTrue(agent["workflow"])
             self.assertTrue(agent["success_evidence"])
             self.assertTrue(agent["recovery"])
-            self.assertEqual(
-                set(capability["input_schema"].get("required") or []),
-                set(agent["required_inputs"]),
+            self.assertTrue(
+                set(capability["input_schema"].get("required") or [])
+                <= set(agent["required_inputs"]),
             )
 
     def test_ip12_resource_has_complete_crud_guidance(self):
@@ -132,6 +132,29 @@ class HqCliTests(unittest.TestCase):
         self.assertEqual("asset", asset["resource"])
         self.assertIn("asset-delete", asset["resource_operations"]["delete"])
         self.assertTrue(by_id["asset-delete"]["confirmation_required"])
+
+        digital_ip = by_id["digital-ip-project"]["agent"]["resource_operations"]
+        self.assertEqual({
+            "list": ["digital-ip-projects"],
+            "get": ["digital-ip-project", "digital-ip-report"],
+            "create": ["digital-ip-create"],
+            "update": ["digital-ip-update"],
+            "delete": ["digital-ip-delete"],
+        }, digital_ip)
+        self.assertEqual([], by_id["digital-ip-project"]["agent"]["missing_crud"])
+
+        leads = by_id["leads-delete"]["agent"]
+        self.assertEqual("lead", leads["resource"])
+        self.assertIn("leads-crm", leads["resource_operations"]["list"])
+        self.assertIn("leads-delete", leads["resource_operations"]["delete"])
+        self.assertTrue(any("先调用 leads-crm" in item for item in leads["workflow"]))
+
+        tryon_inputs = by_id["tryon-classic-generate"]["agent"]["required_inputs"]
+        clothes = tryon_inputs["clothes_upload_id"]
+        self.assertIn("image-upload", clothes)
+        self.assertNotIn("audio-upload", clothes)
+        self.assertIn("image-upload", tryon_inputs["background_upload_id"])
+        self.assertIn("video-upload", tryon_inputs["person_video_upload_id"])
         self.assertEqual("server_quote", by_id["image-generate"]["cost"]["kind"])
         self.assertEqual("hq_device_authorization", by_id["ip12-projects"]["target_auth"])
         self.assertEqual("assets:upload", by_id["image-upload"]["required_scope"])
@@ -202,6 +225,14 @@ class HqCliTests(unittest.TestCase):
                  ["properties"]["count"]["minimum"],
             by_id["matrix-template-batch-generate"]["input_schema"]
                  ["properties"]["count"]["maximum"],
+        ))
+        self.assertTrue(any(
+            "全部 job_ids" in item
+            for item in by_id["matrix-template-batch-generate"]["agent"]["workflow"]
+        ))
+        self.assertTrue(any(
+            "原 quote_token" in item
+            for item in by_id["matrix-template-batch-generate"]["agent"]["recovery"]
         ))
         self.assertEqual(
             ["text", "template", "style", "voice"],
@@ -1169,7 +1200,8 @@ class HqCliTests(unittest.TestCase):
             self.assertEqual(0, code, error)
             self.assertEqual("https://huangquechuanmei.com/workbench/banana?prompt=A+%26+B", self.payload(output)["result"]["url"])
             for identifier, path in {
-                "text-video": "/workbench/text-video", "short-drama": "/workbench/short-drama",
+                "text-video": "/workbench/text-video", "matrix-template": "/workbench/matrix-template.html",
+                "short-drama": "/workbench/short-drama",
                 "pricing-page": "/workbench/pricing", "invite": "/workbench/invite",
                 "recharge": "/workbench/recharge", "bots": "/workbench/bots",
             }.items():
@@ -1188,6 +1220,12 @@ class HqCliTests(unittest.TestCase):
             (["run", "video-generate", "--input", "@-"], b'{"prompt":"x","channel":"minimax","resolution":"768p"}'),
             (["run", "video-generate", "--input", "@-"], b'{"prompt":"x","channel":"sora","seconds":5}'),
             (["run", "asset-tags", "--input", "@-"], b'{"kind":"image","key":"x","tags":"not-array"}'),
+            (["run", "asset-delete", "--input", "@-"], b'{"kind":"avatar","keys":["a_1"]}'),
+            (["run", "asset-delete", "--input", "@-"], b'{"kind":"video","keys":[]}'),
+            (["run", "asset-delete", "--input", "@-"], b'{"kind":"video","keys":"v_1"}'),
+            (["run", "asset-delete", "--input", "@-"], b'{"kind":"video","keys":["v_1","v_1"]}'),
+            (["run", "asset-delete", "--input", "@-"], b'{"kind":"video"}'),
+            (["run", "asset-delete", "--input", "@-"], b'{"kind":"video","id":9,"keys":["v_1"]}'),
             (["run", "leads-generate", "--input", "@-"], b'{"keyword":"x","platforms":["twitter"]}'),
             (["run", "leads-generate", "--input", "@-"], b'{"platforms":["douyin"],"channels_targets":["target"]}'),
             (["run", "leads-generate", "--input", "@-"], b'{"keyword":"x","platforms":["channels"]}'),
