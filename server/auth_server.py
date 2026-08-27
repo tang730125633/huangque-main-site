@@ -4778,6 +4778,9 @@ class H(BaseHTTPRequestHandler):
     def _cli_video_upload(self):
         return self._cli_media_upload("video")
 
+    def _cli_audio_upload(self):
+        return self._cli_media_upload("audio")
+
     def _cli_action(self, body):
         auth = self._cli_user()
         if not auth:
@@ -5513,6 +5516,8 @@ class H(BaseHTTPRequestHandler):
             return self._cli_image_upload()
         if p == "/api/auth/cli/video-upload":
             return self._cli_video_upload()
+        if p == "/api/auth/cli/audio-upload":
+            return self._cli_audio_upload()
         if p == "/api/auth/cli/action":
             if self._content_length_exceeds(128 * 1024):
                 return self._cli_send(413, {"detail": "CLI 输入不能超过 128 KiB"})
