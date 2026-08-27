@@ -1089,7 +1089,7 @@ esac
                       id TEXT PRIMARY KEY,username TEXT,board_id TEXT,deleted INTEGER
                     );
                     CREATE TABLE short_drama_graph_entities(
-                      id TEXT PRIMARY KEY,project_id TEXT,asset_type TEXT
+                      id TEXT PRIMARY KEY,project_id TEXT,asset_type TEXT,status TEXT
                     );
                     CREATE TABLE short_drama_graph_versions(
                       entity_id TEXT,references_json TEXT,attributes_json TEXT
@@ -1109,7 +1109,7 @@ esac
                     ),
                 )
                 conn.executemany(
-                    "INSERT INTO short_drama_graph_entities VALUES(?,?,'scene')",
+                    "INSERT INTO short_drama_graph_entities VALUES(?,?,'scene','active')",
                     (
                         ("scene-personal", "personal"),
                         ("scene-shared", "shared"),
@@ -1273,6 +1273,34 @@ esac
                     opener.open(base + personal, timeout=2)
                 self.assertEqual(404, other_user.exception.code)
 
+                with patch.object(core, "OUT_DIR", root), \
+                        patch.object(core, "AUDIO_DB", audio_db), \
+                        patch.object(core, "JOB_DB", job_db), \
+                        patch.object(core, "verify", return_value={"username": "alice"}):
+                    with opener.open(base + personal, timeout=2) as response:
+                        self.assertEqual(200, response.status)
+                        self.assertEqual(self.PNG_1X1, response.read())
+
+                with closing(sqlite3.connect(job_db)) as conn:
+                    conn.execute(
+                        "UPDATE short_drama_graph_entities SET status='retired' WHERE id=?",
+                        ("scene-personal",),
+                    )
+                    conn.commit()
+                with patch.object(core, "OUT_DIR", root), \
+                        patch.object(core, "AUDIO_DB", audio_db), \
+                        patch.object(core, "JOB_DB", job_db), \
+                        patch.object(core, "verify", return_value={"username": "alice"}), \
+                        self.assertRaises(urllib.error.HTTPError) as retired:
+                    opener.open(base + personal, timeout=2)
+                self.assertEqual(404, retired.exception.code)
+
+                with closing(sqlite3.connect(job_db)) as conn:
+                    conn.execute(
+                        "UPDATE short_drama_graph_entities SET status='active' WHERE id=?",
+                        ("scene-personal",),
+                    )
+                    conn.commit()
                 with patch.object(core, "OUT_DIR", root), \
                         patch.object(core, "AUDIO_DB", audio_db), \
                         patch.object(core, "JOB_DB", job_db), \

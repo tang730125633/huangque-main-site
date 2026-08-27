@@ -996,7 +996,10 @@ def _scene_upload_prefix(owner, project_id):
 
 
 def _scene_result_file(value):
-    parsed = urllib.parse.urlsplit(_text(value, 1000))
+    try:
+        parsed = urllib.parse.urlsplit(_text(value, 1000))
+    except ValueError:
+        return ""
     if (
         parsed.scheme or parsed.netloc or parsed.query or parsed.fragment
         or parsed.path.startswith("/")
@@ -1012,14 +1015,44 @@ def _scene_result_file(value):
 
 
 def _scene_result_url_file(value):
-    parsed = urllib.parse.urlsplit(_text(value, 2000))
+    try:
+        parsed = urllib.parse.urlsplit(_text(value, 2000))
+    except ValueError:
+        return ""
     prefix = "/api/gen/file/"
     if (
         parsed.scheme or parsed.netloc or parsed.query or parsed.fragment
         or not parsed.path.startswith(prefix)
     ):
         return ""
-    return _scene_result_file(urllib.parse.unquote(parsed.path[len(prefix):]))
+    return _scene_result_file(parsed.path[len(prefix):])
+
+
+def _scene_result_url_identity(value):
+    """Return one canonical, validation-safe identity for a result URL."""
+    value = _text(value, 2000)
+    local_file = _scene_result_url_file(value)
+    if local_file:
+        return "local:" + local_file
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        hostname = parsed.hostname
+    except ValueError:
+        return ""
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.netloc or not hostname
+        or parsed.username is not None or parsed.password is not None
+        or parsed.fragment
+    ):
+        return ""
+    return "remote:" + urllib.parse.urlunsplit((
+        parsed.scheme.lower(),
+        parsed.netloc.lower(),
+        urllib.parse.unquote(parsed.path),
+        parsed.query,
+        "",
+    ))
 
 
 def _scene_asset_job_matches(conn, actor, reference):
@@ -1044,7 +1077,12 @@ def _scene_asset_job_matches(conn, actor, reference):
     requested_file = _text(reference.get("file"), 1000)
     requested_url = _text(reference.get("url"), 2000)
     normalized_urls = [_text(value, 2000) for value in urls]
-    if normalized_urls.count(requested_url) != 1:
+    url_identities = [_scene_result_url_identity(value) for value in normalized_urls]
+    if (
+        any(not value for value in url_identities)
+        or len(set(url_identities)) != len(url_identities)
+        or normalized_urls.count(requested_url) != 1
+    ):
         return False
     index = normalized_urls.index(requested_url)
     if files:
@@ -1059,7 +1097,8 @@ def _scene_asset_job_matches(conn, actor, reference):
                 or local_url_file == indexed_file
             )
         )
-    return _scene_result_url_file(requested_url) == _scene_result_file(requested_file)
+    local_url_file = _scene_result_url_file(requested_url)
+    return bool(local_url_file) and local_url_file == _scene_result_file(requested_file)
 
 
 def _trusted_scene_reference(conn, owner, project_id, scene_key, version, reference):
@@ -1120,7 +1159,7 @@ def scene_upload_file_access(conn, username, relative, access=None):
         "FROM short_drama_graph_versions version "
         "JOIN short_drama_graph_entities entity ON entity.id=version.entity_id "
         "JOIN short_drama_projects project ON project.id=entity.project_id "
-        "WHERE project.deleted=0 AND entity.asset_type='scene' "
+        "WHERE project.deleted=0 AND entity.asset_type='scene' AND entity.status='active' "
         "AND version.references_json LIKE ?",
         ("%" + relative + "%",),
     ).fetchall()
@@ -1539,7 +1578,12 @@ def _resolve_scene_reference(conn, owner, actor, project_id, body):
         if not files and result.get("file"):
             files = [result.get("file")]
         urls = [_text(value, 2000) for value in urls]
-        if not urls or any(not value for value in urls) or len(set(urls)) != len(urls):
+        url_identities = [_scene_result_url_identity(value) for value in urls]
+        if (
+            not urls
+            or any(not value for value in url_identities)
+            or len(set(url_identities)) != len(url_identities)
+        ):
             raise AssetGraphError(
                 "scene_asset_invalid",
                 "场景图片资产结果无法唯一匹配",
