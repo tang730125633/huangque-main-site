@@ -37,7 +37,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         templates[-1]["id"] = "poster-split"
         return templates
 
-    def test_public_catalog_is_sanitized_and_requires_fifteen_templates(self):
+    def test_public_catalog_accepts_transition_counts_but_exposes_only_approved_templates(self):
         response = {"templates": self.templates(), "fonts": [
             {"value": "", "label": "自动搭配", "source": "automatic"},
             {"value": "Noto Sans SC", "label": "思源黑体", "source": "bundled"},
@@ -46,13 +46,17 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         ]}
         with mock.patch.object(self.module, "_request", return_value=response):
             values = self.module.public_templates(force=True)
-        self.assertEqual(15, len(values))
-        self.assertEqual("native-bold", values[0]["id"])
+        self.assertEqual(
+            ["full-overlay-bold", "poster-split"],
+            [item["id"] for item in values],
+        )
         self.assertEqual(
             ["", "Noto Sans SC", "AaHouDiHei"],
             [item["value"] for item in self.module.public_fonts()],
         )
-        with mock.patch.object(self.module, "_request", return_value={"templates": values[:-1]}), \
+        with mock.patch.object(
+            self.module, "_request", return_value={"templates": self.templates()[:-2]}
+        ), \
              self.assertRaisesRegex(RuntimeError, "不完整"):
             self.module.public_templates(force=True)
         missing_required = self.templates()
@@ -65,20 +69,47 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         ), self.assertRaisesRegex(RuntimeError, "不完整"):
             self.module.public_templates(force=True)
 
-    def test_availability_requires_fifteen_healthy_templates(self):
-        with mock.patch.object(self.module.feature_flags, "is_enabled", return_value=True), \
-             mock.patch.object(
-                 self.module, "_request",
-                 return_value={"ok": True, "templates": 15},
-             ):
-            self.assertEqual({
-                "enabled": True, "ready": True, "available": True,
-            }, self.module.availability(force=True))
-        for health in ({"ok": True, "templates": 13}, {"ok": False, "templates": 15}):
+        with mock.patch.object(self.module, "_request", return_value={
+            "templates": [
+                {"id": "full-overlay-bold", "name": "沉浸强标题"},
+                {"id": "poster-split", "name": "海报切分"},
+            ],
+        }):
+            restricted = self.module.public_templates(force=True)
+        self.assertEqual(
+            ["full-overlay-bold", "poster-split"],
+            [item["id"] for item in restricted],
+        )
+
+    def test_availability_accepts_two_or_fifteen_healthy_templates(self):
+        for count in (2, 15):
+            with self.subTest(count=count), \
+                 mock.patch.object(self.module.feature_flags, "is_enabled", return_value=True), \
+                 mock.patch.object(
+                     self.module, "_request",
+                     return_value={"ok": True, "templates": count},
+                 ):
+                self.assertEqual({
+                    "enabled": True, "ready": True, "available": True,
+                }, self.module.availability(force=True))
+        for health in ({"ok": True, "templates": 13}, {"ok": False, "templates": 2}):
             with self.subTest(health=health), \
                  mock.patch.object(self.module.feature_flags, "is_enabled", return_value=True), \
                  mock.patch.object(self.module, "_request", return_value=health):
                 self.assertFalse(self.module.availability(force=True)["ready"])
+
+    def test_transition_catalog_rejects_unapproved_template_submission(self):
+        with mock.patch.object(
+            self.module, "_request", return_value={"templates": self.templates()}
+        ):
+            self.module.public_templates(force=True)
+        with mock.patch.object(self.module, "require_available"), \
+             self.assertRaisesRegex(ValueError, "请选择有效模板"):
+            self.module.validate_payload({
+                "top_text": "AI 工作流",
+                "bottom_text": "评论区留下关键词",
+                "template_id": "native-bold",
+            })
 
     def test_validate_payload_is_library_only_and_catalog_bound(self):
         with mock.patch.object(self.module, "require_available"), \
