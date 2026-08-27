@@ -8,7 +8,7 @@ const templateIds = [
   'native-bold', 'video-diary', 'minimal-headline', 'airy-blush',
   'yellow-blue-pop', 'business-black', 'black-gold-premium', 'data-compare',
   'chinese-title', 'torn-magazine', 'vlog-journal', 'bilingual-split',
-  'portrait-quote',
+  'portrait-quote', 'full-overlay-bold', 'poster-split',
 ];
 
 function serve(request, response) {
@@ -63,6 +63,22 @@ function hasOverflow(box) {
         }));
         if (boxes.some(hasOverflow)) overflow.push(templateIds[index]);
       }
+      const conversion = {};
+      await page.fill('#topText', '我在深圳有5000人高净值女性圈');
+      await page.fill('#bottomText', '评论区扣“1”我拉你');
+      for (const id of ['full-overlay-bold', 'poster-split']) {
+        const index = templateIds.indexOf(id);
+        await page.locator('.mt-template').nth(index).click();
+        conversion[id] = await page.evaluate(() => ({
+          active: document.getElementById('livePreview').getAttribute('data-template'),
+          topOverflow: document.getElementById('liveTop').scrollHeight > document.getElementById('liveTop').clientHeight || document.getElementById('liveTop').scrollWidth > document.getElementById('liveTop').clientWidth,
+          bottomOverflow: document.getElementById('liveBottom').scrollHeight > document.getElementById('liveBottom').clientHeight || document.getElementById('liveBottom').scrollWidth > document.getElementById('liveBottom').clientWidth,
+        }));
+        if (process.env.MATRIX_QA_OUTPUT) {
+          fs.mkdirSync(process.env.MATRIX_QA_OUTPUT, {recursive: true});
+          await page.screenshot({path: path.join(process.env.MATRIX_QA_OUTPUT, `matrix-${name}-${id}.png`), fullPage: true});
+        }
+      }
       const scroll = await page.evaluate(() => {
         const scroller = document.querySelector('.hq-main-scroll');
         const preview = document.getElementById('livePreview');
@@ -74,7 +90,7 @@ function hasOverflow(box) {
         fs.mkdirSync(process.env.MATRIX_QA_OUTPUT, {recursive: true});
         await page.screenshot({path: path.join(process.env.MATRIX_QA_OUTPUT, `matrix-${name}.png`), fullPage: true});
       }
-      report[name] = {overflow, scroll};
+      report[name] = {overflow, conversion, scroll};
       await page.close();
     }
   } finally {
@@ -82,6 +98,10 @@ function hasOverflow(box) {
     server.close();
   }
   if (report.desktop.overflow.length || report.mobile.overflow.length) throw new Error(`preview overflow: ${JSON.stringify(report)}`);
+  for (const viewport of ['desktop', 'mobile']) for (const id of ['full-overlay-bold', 'poster-split']) {
+    const value = report[viewport].conversion[id];
+    if (value.active !== id || value.topOverflow || value.bottomOverflow) throw new Error(`conversion preview mismatch: ${JSON.stringify(report)}`);
+  }
   const mobile = report.mobile.scroll;
   if (mobile.scrollHeight <= mobile.clientHeight || mobile.scrollTop <= 0 || mobile.top >= mobile.viewport || mobile.bottom <= 0) throw new Error(`mobile preview is unreachable: ${JSON.stringify(mobile)}`);
   process.stdout.write(JSON.stringify(report));

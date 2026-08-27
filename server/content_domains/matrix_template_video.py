@@ -22,6 +22,8 @@ API_TOKEN = os.environ.get("MATRIX_TEMPLATE_API_TOKEN", "").strip()
 JOB_TIMEOUT = max(60, min(1800, int(os.environ.get("MATRIX_TEMPLATE_JOB_TIMEOUT", "1200"))))
 POLL_INTERVAL = max(1, min(10, int(os.environ.get("MATRIX_TEMPLATE_POLL_INTERVAL", "3"))))
 MAX_VIDEO_BYTES = 512 * 1024 * 1024
+EXPECTED_TEMPLATE_COUNT = 15
+REQUIRED_CONVERSION_TEMPLATES = {"full-overlay-bold", "poster-split"}
 _CACHE = {"at": 0.0, "templates": []}
 _NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -77,7 +79,10 @@ def availability(force=False):
         return {"enabled": False, "ready": False, "available": False}
     try:
         health = _request("GET", "/health", timeout=5)
-        ready = health.get("ok") is True and int(health.get("templates") or 0) == 13
+        ready = (
+            health.get("ok") is True
+            and int(health.get("templates") or 0) == EXPECTED_TEMPLATE_COUNT
+        )
     except Exception:
         ready = False
     return {"enabled": True, "ready": ready, "available": ready}
@@ -106,7 +111,12 @@ def public_templates(force=False):
                 "description": str(raw.get("description") or "")[:160],
                 "tags": [str(item)[:20] for item in (raw.get("tags") or [])[:8]],
             })
-        if len(templates) != 13 or len({item["id"] for item in templates}) != 13:
+        template_ids = {item["id"] for item in templates}
+        if (
+            len(templates) != EXPECTED_TEMPLATE_COUNT
+            or len(template_ids) != EXPECTED_TEMPLATE_COUNT
+            or not REQUIRED_CONVERSION_TEMPLATES.issubset(template_ids)
+        ):
             raise RuntimeError("模板目录不完整")
         _CACHE.update({"at": now, "templates": templates})
     return [dict(item) for item in _CACHE["templates"]]
