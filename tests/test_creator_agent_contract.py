@@ -65,6 +65,7 @@ class CreatorAgentContractTests(unittest.TestCase):
         example = (ROOT / "deploy/huangque-secrets.env.example").read_text(encoding="utf-8")
         profile_agent = (ROOT / "server/creator_agent/profile_agent.py").read_text(encoding="utf-8")
         planner = (ROOT / "server/creator_agent/planner.py").read_text(encoding="utf-8")
+        model_usage = (ROOT / "server/creator_agent/model_usage.py").read_text(encoding="utf-8")
         self.assertNotIn("CREATOR_AGENT_IP12_URL", example)
         self.assertNotIn("IP12Client", self.service)
         self.assertNotIn("/workbench/ip12", self.service)
@@ -73,6 +74,9 @@ class CreatorAgentContractTests(unittest.TestCase):
         self.assertIn("DeepSeekProfileAgent", profile_agent)
         self.assertIn("return cls(provider=provider, strict=True)", planner)
         self.assertIn('"model_reachable": False', self.service)
+        self.assertIn("creator_model_calls", model_usage)
+        self.assertIn("model_global_concurrency", model_usage)
+        self.assertIn("model_user_daily_budget", model_usage)
         self.assertIn("matrix_template_submission_attempts", (
             ROOT / "server/content_domains/matrix_template_submission.py"
         ).read_text(encoding="utf-8"))
@@ -137,6 +141,10 @@ class CreatorAgentContractTests(unittest.TestCase):
         self.assertIn("EnvironmentFile=-/home/ubuntu/auth-service/auth.env", self.unit)
         self.assertIn('environment.get("HQ_INTERNAL_TOKEN")', self.service)
         self.assertIn("proxy_pass http://127.0.0.1:8114/", self.nginx)
+        self.assertIn("zone=hq_creator_model_rate", self.nginx)
+        self.assertIn("limit_conn hq_creator_model_conn 4", self.nginx)
+        self.assertIn("limit_conn hq_creator_global_conn 32", self.nginx)
+        self.assertIn("location = /api/creator-agent/messages", self.nginx)
         self.assertIn('CURRENT="$RUNTIME/current"', self.release)
         release_mode = self.release.index('chmod 0755 "$NEW_RELEASE"')
         current_switch = self.release.index('mv -Tf "$CURRENT.next" "$CURRENT"')
@@ -146,6 +154,8 @@ class CreatorAgentContractTests(unittest.TestCase):
         self.assertIn('d.get("ready") is True', self.release)
         self.assertIn("CREATOR_AGENT_MODEL=deepseek-v4-flash", self.release)
         self.assertIn("official DeepSeek API base", self.release)
+        self.assertIn("profile_agent.py", self.release)
+        self.assertIn("model_usage.py", self.release)
 
     def test_deploy_contract_does_not_duplicate_shared_internal_token(self):
         example = (ROOT / "deploy/huangque-secrets.env.example").read_text(encoding="utf-8")

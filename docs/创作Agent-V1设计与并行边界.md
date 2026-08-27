@@ -104,7 +104,13 @@ Creator SQLite 是本功能的画像正本。画像修改作为版本化补充�
   确认后 Provider 只能读取已冻结的提交快照。
 - 浏览器在请求前持久化完整 body、request ID 和 confirmation ID；网络错误或 5xx 后使用原请求恢复，
   明确 4xx 或终态后才清理 pending。
-- 第一版不增加 Agent 专用消息频率或每日次数限制，保留网站现有基础安全防护。
+- 所有 DeepSeek 调用在 Provider 前经过 SQLite 持久资源闸：账号 20 次/分钟、IP 30 次/分钟、
+  单用户并发 2、全局并发 8；用户/全站每日请求、预估 token 与微美元预算分别持久累计，
+  服务重启或切换画像项目不能清零。连续 Provider 失败会打开 60 秒熔断。
+- nginx 对 `/api/creator-agent/messages` 另设 IP 请求与连接上限；任一闸门拒绝均返回 429，
+  且不得调用 DeepSeek。
+- 画像状态、assistant 消息和 user request 的可回放 turn 在同一 SQLite 事务提交；模型返回后在
+  任一写入断点退出，重试同 request ID 都只能推进零次或一次，不会无限 `idempotency_in_progress`。
 
 ## 并行开发边界
 

@@ -19,6 +19,7 @@ sys.path.insert(0, str(SERVER))
 
 from creator_agent.planner import CreatorPlanner, GuidedPlanner, remember_preference
 from creator_agent.profile_agent import DeepSeekProfileAgent, initial_state
+from creator_agent.model_usage import ModelUsageGuard
 from creator_agent.service import APIError, CreatorAgentHandler, CreatorAgentService, build_service
 from creator_agent.store import (
     CreatorAgentStore, StateConflict, STALE_CLAIM_SECONDS,
@@ -369,6 +370,101 @@ class CreatorAgentTests(unittest.TestCase):
             self.store.update_profile_state(
                 USER["username"], PROJECT_ID, second, 1,
             )
+
+    def test_profile_turn_crash_boundaries_replay_once(self):
+        for index, boundary in enumerate((
+            "before_state", "after_state", "after_assistant", "before_commit", "after_commit",
+        ), 1):
+            with self.subTest(boundary=boundary):
+                state = initial_state()
+                self.store.update_workspace(
+                    USER["username"], PROJECT_ID, profile_state=state,
+                    profile={}, flow={"mode": "profile_interview"},
+                )
+                request_id = "profile-crash-%02d" % index
+                body = {
+                    "message": "我是企业AI顾问%d" % index,
+                    "request_id": request_id, "project_id": PROJECT_ID,
+                }
+                fired = {"value": False}
+
+                def transaction_fault(stage):
+                    if boundary == stage and not fired["value"]:
+                        fired["value"] = True
+                        raise SystemExit(stage)
+
+                def after_commit_fault():
+                    if boundary == "after_commit" and not fired["value"]:
+                        fired["value"] = True
+                        raise SystemExit("after_commit")
+
+                def before_commit_fault():
+                    if boundary == "before_state" and not fired["value"]:
+                        fired["value"] = True
+                        raise SystemExit("before_state")
+
+                self.service._before_profile_commit_hook = before_commit_fault
+                self.service._profile_turn_fault_hook = transaction_fault
+                self.service._after_profile_commit_hook = after_commit_fault
+                calls_before = len([
+                    call for call in self.profile_agent.calls if call[0] == "capture"
+                ])
+                with self.assertRaises(SystemExit):
+                    self.service.message(USER, {}, body)
+                self.service._before_profile_commit_hook = None
+                self.service._profile_turn_fault_hook = None
+                self.service._after_profile_commit_hook = None
+                replay = self.service.message(USER, {}, body)
+                current = self.store.workspace(USER["username"], PROJECT_ID)["profile_state"]
+                self.assertEqual((current["revision"], current["question_index"]), (2, 1))
+                self.assertIn("重要转折", replay["reply"])
+                with closing(self.store.db()) as connection:
+                    user_row = connection.execute(
+                        "SELECT id,public_json FROM creator_messages "
+                        "WHERE username=? AND project_id=? AND request_id=?",
+                        (USER["username"], PROJECT_ID, request_id),
+                    ).fetchone()
+                    user_public = json.loads(user_row["public_json"])
+                    assistants = connection.execute(
+                        "SELECT COUNT(*) FROM creator_messages WHERE username=? "
+                        "AND project_id=? AND source_key=?",
+                        (USER["username"], PROJECT_ID,
+                         "profile-turn:%d" % int(user_row["id"])),
+                    ).fetchone()[0]
+                self.assertIn("turn", user_public)
+                self.assertIn("response", user_public)
+                self.assertEqual(assistants, 1)
+                calls_after = len([
+                    call for call in self.profile_agent.calls if call[0] == "capture"
+                ])
+                self.assertEqual(
+                    calls_after - calls_before,
+                    1 if boundary == "after_commit" else 2,
+                )
+
+    def test_model_rate_limit_rejects_before_second_deepseek_call(self):
+        self.store.update_workspace(
+            USER["username"], PROJECT_ID, profile_state=initial_state(),
+            profile={}, flow={"mode": "profile_interview"},
+        )
+        self.service.usage_guard = ModelUsageGuard(
+            self.store.db, user_window_requests=1, ip_window_requests=10,
+            user_concurrency=1, global_concurrency=2, clock=self.clock,
+        )
+        headers = {"X-Forwarded-For": "1.2.3.4"}
+        first = {
+            "message": "我是企业AI顾问", "request_id": "model-limit-0001",
+            "project_id": PROJECT_ID,
+        }
+        self.service.message(USER, headers, first)
+        with self.assertRaises(APIError) as raised:
+            self.service.message(USER, headers, {
+                "message": "我经历过一次创业转型", "request_id": "model-limit-0002",
+                "project_id": PROJECT_ID,
+            })
+        self.assertEqual(raised.exception.status, 429)
+        self.assertEqual(raised.exception.code, "model_user_rate_limited")
+        self.assertEqual(len([call for call in self.profile_agent.calls if call[0] == "capture"]), 1)
 
     def test_video_plan_is_per_platform_and_does_not_quote_automatically(self):
         result = self.message(
