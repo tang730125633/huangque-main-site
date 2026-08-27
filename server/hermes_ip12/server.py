@@ -7051,25 +7051,30 @@ def _process_action_turn(cid, action, expected_revision, user_message="", reques
     assistant = event["assistant_prefix"]
     continued_deliverables = {}
     if event["continue_model"]:
-        try:
-            continuation_message = event.get("continuation_message") or (
-                "下一步"
-                if (
-                    (next_state["current_module"] == 5 and next_state["module_step"] == 2)
-                    or (next_state["current_module"] == 6 and next_state["module_step"] in {1, 2})
+        continuation_message = event.get("continuation_message") or (
+            "下一步"
+            if (
+                (next_state["current_module"] == 5 and next_state["module_step"] == 2)
+                or (next_state["current_module"] == 6 and next_state["module_step"] in {1, 2})
+            )
+            else "用户已确认上一断点。请直接处理当前唯一允许的断点。"
+        )
+        continued, status = None, 502
+        attempts = 2 if next_state.get("module_step") == 0 else 1
+        for _ in range(attempts):
+            try:
+                continued, status = _process_model_turn(
+                    cid,
+                    continuation_message,
+                    expected_revision=next_state["revision"],
+                    prefix=assistant,
+                    persist_user=False,
+                    trace_skills=["harness_action"],
                 )
-                else "用户已确认上一断点。请直接处理当前唯一允许的断点。"
-            )
-            continued, status = _process_model_turn(
-                cid,
-                continuation_message,
-                expected_revision=next_state["revision"],
-                prefix=assistant,
-                persist_user=False,
-                trace_skills=["harness_action"],
-            )
-        except coach_harness.HarnessConflict:
-            continued, status = None, 409
+            except coach_harness.HarnessConflict:
+                continued, status = None, 409
+            if status == 200 or status == 409:
+                break
         if status == 200:
             assistant = continued["assistant"]
             next_state = continued["state"]

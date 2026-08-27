@@ -99,6 +99,7 @@ class IP12PersonaReportV1Tests(unittest.TestCase):
 
     def test_module_six_action_turn_no_longer_auto_prepares_production(self):
         source = inspect.getsource(server._process_action_turn)
+        self.assertIn('attempts = 2 if next_state.get("module_step") == 0 else 1', source)
         self.assertNotIn("_post_module_six_production_action", source)
         self.assertNotIn(
             "_post_module_six_production_action",
