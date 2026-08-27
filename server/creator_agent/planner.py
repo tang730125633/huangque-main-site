@@ -105,7 +105,7 @@ def _choose_template(templates, platform):
 
 
 class GuidedPlanner:
-    def video_plan(self, ip12_context, topic, platforms, templates, preferences):
+    def video_plan(self, profile_context, topic, platforms, templates, preferences):
         topic = _clean_text(topic, 120) or "本次主题"
         plans = []
         for platform in sanitize_platforms(platforms):
@@ -157,7 +157,7 @@ class GuidedPlanner:
             plans.append(item)
         return {"goal": "按用户反馈调整", "platform_plans": plans}
 
-    def reply(self, ip12_context, message):
+    def reply(self, profile_context, message):
         return "我已读取当前画像。你可以开始制作视频、生成选题计划，或告诉我需要修改哪部分画像。"
 
 
@@ -177,8 +177,10 @@ class OpenAICompatiblePlanner:
                 {"role": "system", "content": system},
                 {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
             ],
+            "thinking": {"type": "disabled"},
             "temperature": 0.35,
             "response_format": {"type": "json_object"},
+            "max_tokens": 2400,
         }
         request = urllib.request.Request(
             self.base_url + "/chat/completions",
@@ -193,9 +195,9 @@ class OpenAICompatiblePlanner:
         except (KeyError, IndexError, TypeError, ValueError, urllib.error.URLError) as exc:
             raise PlannerError("creator agent model request failed") from exc
 
-    def video_plan(self, ip12_context, topic, platforms, templates, preferences):
+    def video_plan(self, profile_context, topic, platforms, templates, preferences):
         system = (
-            "你是黄雀 AI 创作助手的模板视频策划器。根据已确认 IP12 画像和用户选题，"
+            "你是黄雀 AI 创作助手的模板视频策划器。根据独立 Agent 已确认的个人画像和用户选题，"
             "为每个平台分别生成可直接进入模板成片的方案。只返回 JSON：goal 和 platform_plans。"
             "platform_plans 每项必须包含 platform、top_text、bottom_text、template_id、"
             "template_reason、content_goal。禁止增加平台，禁止编造画像事实。"
@@ -203,7 +205,7 @@ class OpenAICompatiblePlanner:
             "抖音、小红书、视频号必须采用各自适合的表达，平台偏好优先于全局偏好。"
         )
         return self._call(system, {
-            "ip12_profile": ip12_context,
+            "profile": profile_context,
             "topic": _clean_text(topic, 400),
             "platforms": sanitize_platforms(platforms),
             "templates": templates,
@@ -222,41 +224,44 @@ class OpenAICompatiblePlanner:
             "preferences": sanitize_preferences(preferences),
         })
 
-    def reply(self, ip12_context, message):
+    def reply(self, profile_context, message):
         system = (
-            "你是黄雀 AI 创作助手。只围绕当前 IP12 画像、选题文案和模板视频回答。"
+            "你是黄雀 AI 创作助手。只围绕当前独立个人画像、选题文案和模板视频回答。"
             "回复简短、具体，每次最多提出一个问题；不得声称已生成、已扣点或已完成任务。"
             "返回 JSON：reply。"
         )
         return self._call(system, {
-            "ip12_profile": ip12_context,
+            "profile": profile_context,
             "message": _clean_text(message, 4000),
         })
 
 
 class CreatorPlanner:
-    def __init__(self, provider=None, fallback=None):
+    def __init__(self, provider=None, fallback=None, strict=False):
         self.provider = provider
         self.fallback = fallback or GuidedPlanner()
+        self.strict = bool(strict)
 
     @classmethod
     def from_environment(cls, environment=None):
         environment = environment or os.environ
-        base = environment.get("CREATOR_AGENT_BASE_URL", "")
-        key = environment.get("CREATOR_AGENT_API_KEY", "")
-        model = environment.get("CREATOR_AGENT_MODEL", "")
+        base = environment.get("CREATOR_AGENT_BASE_URL", "https://api.deepseek.com")
+        key = environment.get("CREATOR_AGENT_API_KEY") or ""
+        model = environment.get("CREATOR_AGENT_MODEL", "deepseek-v4-flash")
         provider = OpenAICompatiblePlanner(base, key, model) if base and key and model else None
-        return cls(provider=provider)
+        return cls(provider=provider, strict=True)
 
-    def video_plan(self, ip12_context, topic, platforms, templates, preferences):
+    def video_plan(self, profile_context, topic, platforms, templates, preferences):
         value = None
         if self.provider:
             try:
-                value = self.provider.video_plan(ip12_context, topic, platforms, templates, preferences)
+                value = self.provider.video_plan(profile_context, topic, platforms, templates, preferences)
             except PlannerError:
                 value = None
         if value is None:
-            value = self.fallback.video_plan(ip12_context, topic, platforms, templates, preferences)
+            if self.strict:
+                raise PlannerError("creator agent model is unavailable")
+            value = self.fallback.video_plan(profile_context, topic, platforms, templates, preferences)
         return self._validate_video_plan(value, platforms, templates)
 
     def revise_video_plan(self, current, instruction, templates, preferences):
@@ -267,19 +272,23 @@ class CreatorPlanner:
             except PlannerError:
                 value = None
         if value is None:
+            if self.strict:
+                raise PlannerError("creator agent model is unavailable")
             value = self.fallback.revise_video_plan(current, instruction, templates, preferences)
         return self._validate_video_plan(value, [item.get("platform") for item in current], templates)
 
-    def reply(self, ip12_context, message):
+    def reply(self, profile_context, message):
         if self.provider:
             try:
-                value = self.provider.reply(ip12_context, message)
+                value = self.provider.reply(profile_context, message)
                 reply = _clean_text((value or {}).get("reply"), 1200)
                 if reply:
                     return reply
             except PlannerError:
                 pass
-        return self.fallback.reply(ip12_context, message)
+        if self.strict:
+            raise PlannerError("creator agent model is unavailable")
+        return self.fallback.reply(profile_context, message)
 
     @staticmethod
     def _validate_video_plan(value, platforms, templates):

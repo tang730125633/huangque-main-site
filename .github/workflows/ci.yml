@@ -23,6 +23,22 @@ jobs:
     steps:
       - name: 检出代码
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: 检查提交空白
+        shell: bash
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ -n "$PR_BASE_SHA" ] && [ -n "$PR_HEAD_SHA" ]; then
+            git diff --check "$PR_BASE_SHA...$PR_HEAD_SHA"
+          elif git rev-parse HEAD^ >/dev/null 2>&1; then
+            git diff --check HEAD^ HEAD
+          else
+            git show --check --format= HEAD
+          fi
 
       - name: 配置 Python
         uses: actions/setup-python@v6

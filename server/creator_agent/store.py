@@ -47,7 +47,7 @@ def _loads(value, fallback):
 
 
 class CreatorAgentStore:
-    """Project-scoped state; IP12 itself remains the profile source of truth."""
+    """Project-scoped state for the independent Creator profile and productions."""
 
     def __init__(self, path):
         self.path = pathlib.Path(path)
@@ -95,6 +95,9 @@ class CreatorAgentStore:
                     platforms_json TEXT NOT NULL DEFAULT '[]',
                     preferences_json TEXT NOT NULL DEFAULT '{}',
                     profile_overrides_json TEXT NOT NULL DEFAULT '{}',
+                    profile_json TEXT NOT NULL DEFAULT '{}',
+                    profile_state_json TEXT NOT NULL DEFAULT '{}',
+                    deliverables_json TEXT NOT NULL DEFAULT '{}',
                     flow_json TEXT NOT NULL DEFAULT '{}',
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
@@ -124,6 +127,8 @@ class CreatorAgentStore:
                     id TEXT PRIMARY KEY,
                     username TEXT NOT NULL,
                     project_id TEXT NOT NULL,
+                    source_message_id INTEGER NOT NULL DEFAULT 0,
+                    last_mutation_message_id INTEGER NOT NULL DEFAULT 0,
                     topic TEXT NOT NULL,
                     goal TEXT NOT NULL DEFAULT '',
                     status TEXT NOT NULL,
@@ -185,6 +190,11 @@ class CreatorAgentStore:
                 connection.execute(
                     "ALTER TABLE creator_workspaces ADD COLUMN profile_overrides_json TEXT NOT NULL DEFAULT '{}'"
                 )
+            for column in ("profile_json", "profile_state_json", "deliverables_json"):
+                if column not in columns:
+                    connection.execute(
+                        "ALTER TABLE creator_workspaces ADD COLUMN %s TEXT NOT NULL DEFAULT '{}'" % column
+                    )
             migrations = {
                 "creator_messages": {
                     "request_hash": "TEXT NOT NULL DEFAULT ''",
@@ -195,6 +205,8 @@ class CreatorAgentStore:
                     "quoted_revision": "INTEGER NOT NULL DEFAULT 0",
                     "quote_expires_at": "INTEGER NOT NULL DEFAULT 0",
                     "claim_id": "TEXT NOT NULL DEFAULT ''",
+                    "source_message_id": "INTEGER NOT NULL DEFAULT 0",
+                    "last_mutation_message_id": "INTEGER NOT NULL DEFAULT 0",
                 },
                 "creator_jobs": {
                     "input_hash": "TEXT NOT NULL DEFAULT ''",
@@ -218,6 +230,15 @@ class CreatorAgentStore:
                         connection.execute(
                             "ALTER TABLE %s ADD COLUMN %s %s" % (table, column, definition)
                         )
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_creator_batches_source_message "
+                "ON creator_batches(username,project_id,source_message_id) "
+                "WHERE source_message_id>0"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_creator_batches_mutation_message "
+                "ON creator_batches(username,project_id,last_mutation_message_id)"
+            )
             for row in connection.execute(
                 "SELECT id,input_json FROM creator_jobs WHERE input_hash=''"
             ).fetchall():
@@ -302,6 +323,9 @@ class CreatorAgentStore:
             "platforms": _loads(row["platforms_json"], []),
             "template_video_preferences": preferences,
             "profile_overrides": overrides,
+            "profile": _loads(row["profile_json"], {}),
+            "profile_state": _loads(row["profile_state_json"], {}),
+            "deliverables": _loads(row["deliverables_json"], {}),
             "flow": _loads(row["flow_json"], {}),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
@@ -321,6 +345,9 @@ class CreatorAgentStore:
             "platforms": "platforms_json",
             "template_video_preferences": "preferences_json",
             "profile_overrides": "profile_overrides_json",
+            "profile": "profile_json",
+            "profile_state": "profile_state_json",
+            "deliverables": "deliverables_json",
             "flow": "flow_json",
         }
         if not changes or set(changes) - set(mapping):
@@ -339,6 +366,181 @@ class CreatorAgentStore:
                 raise StoreError("workspace not found")
             connection.commit()
         return self.workspace(username, project_id)
+
+    def workspaces(self, username):
+        with closing(self.db()) as connection:
+            rows = connection.execute(
+                "SELECT * FROM creator_workspaces WHERE username=? "
+                "ORDER BY updated_at DESC,created_at ASC",
+                (username,),
+            ).fetchall()
+        return [self._workspace(row) for row in rows]
+
+    def update_profile_state(self, username, project_id, state, expected_revision,
+                             *, profile=None, profile_overrides=None,
+                             deliverables=None, flow=None):
+        now = int(time.time())
+        with closing(self.db()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT profile_state_json FROM creator_workspaces "
+                "WHERE username=? AND project_id=?",
+                (username, project_id),
+            ).fetchone()
+            if not row:
+                connection.rollback()
+                raise StoreError("workspace not found")
+            current = _loads(row["profile_state_json"], {})
+            if int(current.get("revision") or 1) != int(expected_revision):
+                connection.rollback()
+                raise StateConflict("profile revision changed")
+            if int(state.get("revision") or 0) != int(expected_revision) + 1:
+                connection.rollback()
+                raise StateConflict("profile revision did not advance exactly once")
+            assignments = ["profile_state_json=?", "updated_at=?"]
+            values = [_json(state), now]
+            for column, value in (
+                ("profile_json", profile),
+                ("profile_overrides_json", profile_overrides),
+                ("deliverables_json", deliverables),
+                ("flow_json", flow),
+            ):
+                if value is not None:
+                    assignments.append(column + "=?")
+                    values.append(_json(value))
+            changed = connection.execute(
+                "UPDATE creator_workspaces SET %s WHERE username=? AND project_id=?" %
+                ",".join(assignments),
+                tuple(values) + (username, project_id),
+            )
+            if changed.rowcount != 1:
+                connection.rollback()
+                raise StateConflict("profile update lost")
+            connection.commit()
+        return self.workspace(username, project_id)
+
+    def commit_profile_turn(self, username, project_id, user_message_id,
+                            state, expected_revision, reply, public,
+                            *, profile=None, profile_overrides=None,
+                            deliverables=None, flow=None,
+                            fault_hook=None):
+        now = int(time.time())
+        with closing(self.db()) as connection:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute(
+                    "SELECT profile_state_json FROM creator_workspaces "
+                    "WHERE username=? AND project_id=?",
+                    (username, project_id),
+                ).fetchone()
+                if not row:
+                    raise StoreError("workspace not found")
+                current = _loads(row["profile_state_json"], {})
+                if int(current.get("revision") or 1) != int(expected_revision):
+                    raise StateConflict("profile revision changed")
+                if int(state.get("revision") or 0) != int(expected_revision) + 1:
+                    raise StateConflict("profile revision did not advance exactly once")
+                assignments = ["profile_state_json=?", "updated_at=?"]
+                values = [_json(state), now]
+                for column, value in (
+                    ("profile_json", profile),
+                    ("profile_overrides_json", profile_overrides),
+                    ("deliverables_json", deliverables),
+                    ("flow_json", flow),
+                ):
+                    if value is not None:
+                        assignments.append(column + "=?")
+                        values.append(_json(value))
+                connection.execute(
+                    "UPDATE creator_workspaces SET %s WHERE username=? AND project_id=?" %
+                    ",".join(assignments),
+                    tuple(values) + (username, project_id),
+                )
+                if fault_hook:
+                    fault_hook("after_state")
+                assistant = connection.execute(
+                    """INSERT INTO creator_messages(
+                       username,project_id,role,content,source_key,request_id,request_hash,
+                       public_json,created_at) VALUES(?,?, 'assistant', ?, ?, NULL, '', ?, ?)""",
+                    (username, project_id, str(reply or "")[:8000],
+                     "profile-turn:%d" % int(user_message_id), _json(public or {}), now),
+                )
+                if fault_hook:
+                    fault_hook("after_assistant")
+                turn = {
+                    "reply": str(reply or "")[:8000],
+                    "message_public": public or {},
+                    "assistant_message_id": int(assistant.lastrowid),
+                }
+                changed = connection.execute(
+                    "UPDATE creator_messages SET public_json=? "
+                    "WHERE id=? AND username=? AND project_id=? AND role='user'",
+                    (_json({"turn": turn}), int(user_message_id), username, project_id),
+                )
+                if changed.rowcount != 1:
+                    raise StateConflict("profile user request claim disappeared")
+                if fault_hook:
+                    fault_hook("before_commit")
+                connection.commit()
+                return turn
+            except BaseException:
+                connection.rollback()
+                raise
+
+    def commit_message_turn(self, username, project_id, user_message_id,
+                            reply, public, fault_hook=None):
+        now = int(time.time())
+        source_key = "message-turn:%d" % int(user_message_id)
+        with closing(self.db()) as connection:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                user_row = connection.execute(
+                    "SELECT role FROM creator_messages "
+                    "WHERE id=? AND username=? AND project_id=?",
+                    (int(user_message_id), username, project_id),
+                ).fetchone()
+                if not user_row or user_row["role"] != "user":
+                    raise StateConflict("user request claim disappeared")
+                assistant = connection.execute(
+                    "SELECT * FROM creator_messages "
+                    "WHERE username=? AND project_id=? AND source_key=?",
+                    (username, project_id, source_key),
+                ).fetchone()
+                if not assistant:
+                    cursor = connection.execute(
+                        """INSERT INTO creator_messages(
+                           username,project_id,role,content,source_key,request_id,
+                           request_hash,public_json,created_at)
+                           VALUES(?,?, 'assistant', ?, ?, NULL, '', ?, ?)""",
+                        (username, project_id, str(reply or "")[:8000], source_key,
+                         _json(public or {}), now),
+                    )
+                    assistant = connection.execute(
+                        "SELECT * FROM creator_messages WHERE id=?",
+                        (int(cursor.lastrowid),),
+                    ).fetchone()
+                if fault_hook:
+                    fault_hook("after_assistant")
+                assistant_public = _loads(assistant["public_json"], {})
+                turn = {
+                    "reply": str(assistant["content"] or "")[:8000],
+                    "message_public": assistant_public,
+                    "assistant_message_id": int(assistant["id"]),
+                }
+                changed = connection.execute(
+                    "UPDATE creator_messages SET public_json=? "
+                    "WHERE id=? AND username=? AND project_id=? AND role='user'",
+                    (_json({"turn": turn}), int(user_message_id), username, project_id),
+                )
+                if changed.rowcount != 1:
+                    raise StateConflict("user request turn commit lost")
+                if fault_hook:
+                    fault_hook("before_commit")
+                connection.commit()
+                return turn
+            except BaseException:
+                connection.rollback()
+                raise
 
     @staticmethod
     def _message(row):
@@ -414,38 +616,27 @@ class CreatorAgentStore:
                 raise StoreError("message not found")
             connection.commit()
 
-    def sync_ip12_messages(self, username, project_id, messages):
+    def delete_message_if_unanswered(self, username, message_id):
         with closing(self.db()) as connection:
-            existing_rows = connection.execute(
-                """SELECT role,content,COUNT(*) AS count FROM creator_messages
-                   WHERE username=? AND project_id=? GROUP BY role,content""",
-                (username, project_id),
-            ).fetchall()
-        existing = {(row["role"], row["content"]): int(row["count"]) for row in existing_rows}
-        consumed = {}
-        added = 0
-        for index, item in enumerate(messages or []):
-            if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"}:
-                continue
-            content = str(item.get("content") or "").strip()
-            if not content:
-                continue
-            pair = (item["role"], content)
-            used = consumed.get(pair, 0)
-            if used < existing.get(pair, 0):
-                consumed[pair] = used + 1
-                continue
-            stable = str(item.get("message_id") or "%s-%s" % (index, uuid.uuid5(
-                uuid.NAMESPACE_URL, item["role"] + "\n" + content,
-            ).hex))
-            _, created = self.add_message(
-                username, project_id, item["role"], content,
-                source_key="ip12:" + stable[:180],
-                public={"source": "ip12", "agent_trace": item.get("agent_trace") or {}},
-            )
-            added += int(created)
-            consumed[pair] = used + 1
-        return added
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT role,public_json FROM creator_messages WHERE id=? AND username=?",
+                (int(message_id), username),
+            ).fetchone()
+            public = _loads(row["public_json"], {}) if row else {}
+            if (
+                row and row["role"] == "user"
+                and not (public or {}).get("response")
+                and not (public or {}).get("turn")
+            ):
+                connection.execute(
+                    "DELETE FROM creator_messages WHERE id=? AND username=?",
+                    (int(message_id), username),
+                )
+                connection.commit()
+                return True
+            connection.rollback()
+        return False
 
     @staticmethod
     def _job(row, include_private=False):
@@ -479,20 +670,34 @@ class CreatorAgentStore:
             })
         return value
 
-    def create_batch(self, username, project_id, topic, goal, platform_plans):
+    def create_batch(self, username, project_id, topic, goal, platform_plans,
+                     source_message_id=0):
         if not platform_plans:
             raise StoreError("platform plans are required")
         now = int(time.time())
         batch_id = "creator_batch_" + uuid.uuid4().hex
         plan_hash = _digest(platform_plans)
+        source_message_id = max(0, int(source_message_id or 0))
         with closing(self.db()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if source_message_id:
+                existing = connection.execute(
+                    "SELECT id FROM creator_batches "
+                    "WHERE username=? AND project_id=? AND source_message_id=?",
+                    (username, project_id, source_message_id),
+                ).fetchone()
+                if existing:
+                    connection.commit()
+                    return self.batch(
+                        username, existing["id"], include_private=True,
+                    )
             connection.execute(
                 """INSERT INTO creator_batches
-                   (id,username,project_id,topic,goal,status,plan_json,plan_hash,
-                    revision,created_at,updated_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-                (batch_id, username, project_id, topic, goal, "draft",
-                 _json(platform_plans), plan_hash, 1, now, now),
+                   (id,username,project_id,source_message_id,topic,goal,status,
+                    plan_json,plan_hash,revision,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (batch_id, username, project_id, source_message_id, topic, goal,
+                 "draft", _json(platform_plans), plan_hash, 1, now, now),
             )
             for plan in platform_plans:
                 platform = str(plan.get("platform") or "")
@@ -514,6 +719,28 @@ class CreatorAgentStore:
                 )
             connection.commit()
         return self.batch(username, batch_id, include_private=True)
+
+    def batch_for_source_message(self, username, project_id, message_id):
+        if int(message_id or 0) <= 0:
+            return None
+        with closing(self.db()) as connection:
+            row = connection.execute(
+                "SELECT id FROM creator_batches "
+                "WHERE username=? AND project_id=? AND source_message_id=?",
+                (username, project_id, int(message_id)),
+            ).fetchone()
+        return self.batch(username, row["id"], include_private=True) if row else None
+
+    def batch_for_mutation_message(self, username, project_id, message_id):
+        if int(message_id or 0) <= 0:
+            return None
+        with closing(self.db()) as connection:
+            row = connection.execute(
+                "SELECT id FROM creator_batches "
+                "WHERE username=? AND project_id=? AND last_mutation_message_id=?",
+                (username, project_id, int(message_id)),
+            ).fetchone()
+        return self.batch(username, row["id"], include_private=True) if row else None
 
     @staticmethod
     def _batch_row(row):
@@ -549,6 +776,10 @@ class CreatorAgentStore:
                     "plan_hash": row["plan_hash"],
                     "quoted_revision": int(row["quoted_revision"]),
                     "claim_id": row["claim_id"],
+                    "source_message_id": int(row["source_message_id"] or 0),
+                    "last_mutation_message_id": int(
+                        row["last_mutation_message_id"] or 0
+                    ),
                 })
         return value
 
@@ -1001,15 +1232,23 @@ class CreatorAgentStore:
             ).fetchone()
         return self._job(row, include_private=True)
 
-    def replace_batch_plans(self, username, batch_id, platform_plans, expected_revision):
+    def replace_batch_plans(self, username, batch_id, platform_plans,
+                            expected_revision, mutation_message_id=0):
         now = int(time.time())
         incoming = {str(item.get("platform") or ""): item for item in platform_plans}
+        mutation_message_id = max(0, int(mutation_message_id or 0))
         with closing(self.db()) as connection:
             connection.execute("BEGIN IMMEDIATE")
             row, jobs = self._locked_batch(connection, username, batch_id)
             if not row:
                 connection.rollback()
                 raise StoreError("batch not found")
+            if (
+                mutation_message_id
+                and int(row["last_mutation_message_id"] or 0) == mutation_message_id
+            ):
+                connection.commit()
+                return self.batch(username, batch_id, include_private=True)
             if int(row["revision"]) != int(expected_revision):
                 connection.rollback()
                 raise StateConflict("batch revision changed")
@@ -1040,10 +1279,11 @@ class CreatorAgentStore:
             changed = connection.execute(
                 """UPDATE creator_batches SET status='ready',plan_json=?,plan_hash=?,
                    quote_json='{}',quote_expires_at=0,confirmation_id='',quoted_revision=0,claim_id='',
-                   revision=?,updated_at=? WHERE id=? AND username=? AND revision=?
+                   revision=?,last_mutation_message_id=?,updated_at=?
+                   WHERE id=? AND username=? AND revision=?
                    AND status IN ('draft','ready','quoted') AND claim_id=''""",
-                (_json(platform_plans), _digest(platform_plans), next_revision, now,
-                 batch_id, username, int(expected_revision)),
+                (_json(platform_plans), _digest(platform_plans), next_revision,
+                 mutation_message_id, now, batch_id, username, int(expected_revision)),
             )
             if changed.rowcount != 1:
                 connection.rollback()

@@ -11,7 +11,7 @@ UNIT_SOURCE="$ROOT/deploy/systemd/$SERVICE"
 UNIT_TARGET="/etc/systemd/system/$SERVICE"
 NGINX_SOURCE="$ROOT/deploy/nginx-huangquechuanmei.conf"
 NGINX_TARGET=/etc/nginx/sites-available/huangquechuanmei
-BACKUP="$(mktemp -d /var/tmp/creator-agent-release.XXXXXX)"
+BACKUP="${CREATOR_AGENT_BACKUP_DIR:-$(mktemp -d /var/tmp/creator-agent-release.XXXXXX)}"
 NEW_RELEASE=""
 OLD_CURRENT=""
 WAS_ACTIVE=0
@@ -20,6 +20,10 @@ SUCCEEDED=0
 cleanup(){
   status=$?
   set +e
+  if [[ "${CREATOR_AGENT_VALIDATE_ONLY:-0}" == "1" ]]; then
+    rm -rf "$BACKUP"
+    return "$status"
+  fi
   if [[ "$SUCCEEDED" -ne 1 ]]; then
     if [[ -n "$OLD_CURRENT" && -d "$OLD_CURRENT" ]]; then ln -sfn "$OLD_CURRENT" "$CURRENT"; else rm -f "$CURRENT"; fi
     [[ -f "$BACKUP/unit" ]] && install -o root -g root -m 0644 "$BACKUP/unit" "$UNIT_TARGET" || rm -f "$UNIT_TARGET"
@@ -35,15 +39,29 @@ cleanup(){
 }
 trap cleanup EXIT
 
-[[ "$(id -u)" -eq 0 ]] || { echo "run as root" >&2; exit 2; }
 for file in "$ROOT/server/creator_agent_api.py" "$ROOT/server/creator_agent/__init__.py" \
             "$ROOT/server/creator_agent/store.py" "$ROOT/server/creator_agent/planner.py" \
+            "$ROOT/server/creator_agent/profile_agent.py" \
+            "$ROOT/server/creator_agent/model_usage.py" \
             "$ROOT/server/creator_agent/service.py" "$UNIT_SOURCE" "$NGINX_SOURCE"; do
   [[ -f "$file" && ! -L "$file" ]] || { echo "missing release file: $file" >&2; exit 2; }
 done
+if [[ "${CREATOR_AGENT_VALIDATE_ONLY:-0}" == "1" ]]; then
+  SUCCEEDED=1
+  exit 0
+fi
+[[ "$(id -u)" -eq 0 ]] || { echo "run as root" >&2; exit 2; }
 [[ -f /etc/huangque/creator-agent.env ]] || { echo "/etc/huangque/creator-agent.env is missing" >&2; exit 2; }
 [[ "$(stat -c '%U' /etc/huangque/creator-agent.env)" = root ]] || { echo "creator-agent.env must be owned by root" >&2; exit 2; }
 case "$(stat -c '%a' /etc/huangque/creator-agent.env)" in 600|640) ;; *) echo "creator-agent.env must be mode 600 or 640" >&2; exit 2;; esac
+grep -Eq '^CREATOR_AGENT_BASE_URL=https://api\.deepseek\.com/?$' /etc/huangque/creator-agent.env \
+  || { echo "creator agent must use the official DeepSeek API base" >&2; exit 2; }
+grep -Eq '^CREATOR_AGENT_MODEL=deepseek-v4-flash$' /etc/huangque/creator-agent.env \
+  || { echo "creator agent model must be deepseek-v4-flash" >&2; exit 2; }
+grep -Eq '^CREATOR_AGENT_API_KEY=.{16,}$' /etc/huangque/creator-agent.env \
+  || { echo "creator agent API key is missing" >&2; exit 2; }
+! grep -Eq '^CREATOR_AGENT_API_KEY=(replace-|change-me|placeholder)' /etc/huangque/creator-agent.env \
+  || { echo "creator agent API key is still a placeholder" >&2; exit 2; }
 
 systemctl is-active --quiet "$SERVICE" && WAS_ACTIVE=1 || true
 [[ -L "$CURRENT" ]] && OLD_CURRENT="$(readlink -f "$CURRENT")"
