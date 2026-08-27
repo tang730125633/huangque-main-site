@@ -22,7 +22,7 @@ function createRuntime(plan, storage){
   const timers=[];const requests={post:[],poll:[]};let uuidCount=0;
   const sessionStorage={getItem:k=>storage.has(k)?storage.get(k):null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)};
   const fetch=(url,options={})=>{
-    if(url==='/api/gen/matrix-template/templates')return Promise.resolve(response(200,{templates:[{id:'native-bold',name:'默认原生大字',tags:['默认']},{id:'minimal-headline',name:'极简标题',tags:['极简']}],default_template:'native-bold',cost:5}));
+    if(url==='/api/gen/matrix-template/templates')return Promise.resolve(response(200,{templates:[{id:'native-bold',name:'默认原生大字',tags:['默认']},{id:'minimal-headline',name:'极简标题',tags:['极简']},{id:'full-overlay-bold',name:'沉浸强标题',tags:['私域']},{id:'poster-split',name:'三段式活动海报',tags:['活动']}],default_template:'native-bold',cost:5}));
     if(url==='/api/gen/matrix-template'){
       const index=requests.post.length;requests.post.push({url,options});return plan.post(index,options);
     }
@@ -80,5 +80,15 @@ async function scenarioLivePreview(){
   return {top:runtime.get('liveTop').textContent,bottom:runtime.get('liveBottom').textContent,template:runtime.get('livePreview').attributes['data-template'],style:runtime.get('livePreview').attributes.style,videoDisplay:runtime.get('video').style.display};
 }
 
-async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure,livePreview:scenarioLivePreview};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}
+async function scenarioConversionLayouts(){
+  const results=[];
+  for(const index of [2,3]){
+    const runtime=createRuntime({post:()=>Promise.resolve(response(200,{job_id:20+index})),poll:()=>Promise.resolve(response(200,{status:'done',result:{video_url:'/video',duration:10}}))},new Map());
+    await flush();runtime.get('topText').value='城市女性成长圈';runtime.get('bottomText').value='评论区留下关键词';runtime.get('topText').listeners.input[0]();runtime.get('bottomText').listeners.input[0]();runtime.get('templateGrid').children[index].onclick();runtime.get('generateBtn').onclick();await flush();
+    results.push({template:runtime.get('livePreview').attributes['data-template'],cardTemplate:runtime.get('templateGrid').children[index].innerHTML.match(/data-template="([^"]+)"/)[1],submitted:JSON.parse(runtime.requests.post[0].options.body).template_id});
+  }
+  return results;
+}
+
+async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure,livePreview:scenarioLivePreview,conversionLayouts:scenarioConversionLayouts};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}
 main().catch(e=>{console.error(e.stack||e);process.exitCode=1});

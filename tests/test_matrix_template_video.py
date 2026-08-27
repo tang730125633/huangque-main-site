@@ -29,20 +29,40 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         self.module._CACHE.update({"at": 0.0, "templates": []})
 
     def templates(self):
+        special = {0: "native-bold", 13: "full-overlay-bold", 14: "poster-split"}
         return [{
-            "id": "native-bold" if index == 0 else f"template-{index:02d}",
+            "id": special.get(index, f"template-{index:02d}"),
             "name": f"模板 {index}", "description": "说明", "tags": ["标签"],
-        } for index in range(13)]
+        } for index in range(15)]
 
-    def test_public_catalog_is_sanitized_and_requires_thirteen_templates(self):
+    def test_public_catalog_is_sanitized_and_requires_fifteen_templates(self):
         response = {"templates": self.templates()}
         with mock.patch.object(self.module, "_request", return_value=response):
             values = self.module.public_templates(force=True)
-        self.assertEqual(13, len(values))
+        self.assertEqual(15, len(values))
         self.assertEqual("native-bold", values[0]["id"])
+        self.assertEqual(
+            {"full-overlay-bold", "poster-split"},
+            {item["id"] for item in values[-2:]},
+        )
         with mock.patch.object(self.module, "_request", return_value={"templates": values[:-1]}), \
              self.assertRaisesRegex(RuntimeError, "不完整"):
             self.module.public_templates(force=True)
+
+    def test_public_catalog_rejects_missing_conversion_template(self):
+        values = self.templates()
+        values[-1] = {**values[-1], "id": "replacement-template"}
+        with mock.patch.object(self.module, "_request", return_value={"templates": values}), \
+             self.assertRaisesRegex(RuntimeError, "不完整"):
+            self.module.public_templates(force=True)
+
+    def test_availability_requires_fifteen_template_runtime(self):
+        with mock.patch.object(self.module.feature_flags, "is_enabled", return_value=True), \
+             mock.patch.object(self.module, "_request", return_value={"ok": True, "templates": 15}):
+            self.assertTrue(self.module.availability()["ready"])
+        with mock.patch.object(self.module.feature_flags, "is_enabled", return_value=True), \
+             mock.patch.object(self.module, "_request", return_value={"ok": True, "templates": 13}):
+            self.assertFalse(self.module.availability()["ready"])
 
     def test_validate_payload_is_library_only_and_catalog_bound(self):
         with mock.patch.object(self.module, "require_available"), \
@@ -411,7 +431,12 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertIn("function fitLiveText(node,max,min)", page)
         self.assertIn("node.scrollHeight>node.clientHeight", page)
         self.assertIn("fitLiveText(el('liveTop'),topSizes[activeTemplate]||34,12)", page)
-        self.assertIn("fitLiveText(el('liveBottom'),20,12)", page)
+        self.assertIn("fitLiveText(el('liveBottom'),bottomSizes[activeTemplate]||20,12)", page)
+        self.assertIn("'full-overlay-bold':['#11151c'", page)
+        self.assertIn("'poster-split':['#70577c'", page)
+        self.assertIn('data-template="\'+esc(item.id)+\'"', page)
+        self.assertIn('.mt-live[data-template="full-overlay-bold"]', page)
+        self.assertIn('.mt-live[data-template="poster-split"]', page)
         self.assertLess(shell.index("k:'text-video'"), shell.index("k:'matrix-template'"))
         self.assertIn("/api/gen/matrix-template/capability", shell)
 
@@ -457,6 +482,16 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual("minimal-headline", result["template"])
         self.assertIn("--live-bg:#f5f5f2", result["style"])
         self.assertEqual("none", result["videoDisplay"])
+
+    def test_conversion_layout_selection_reaches_generation_payload(self):
+        result = self.runtime("conversionLayouts")
+        self.assertEqual(
+            ["full-overlay-bold", "poster-split"],
+            [item["template"] for item in result],
+        )
+        for item in result:
+            self.assertEqual(item["template"], item["cardTemplate"])
+            self.assertEqual(item["template"], item["submitted"])
 
 
 if __name__ == "__main__":

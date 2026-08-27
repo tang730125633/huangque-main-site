@@ -8974,7 +8974,7 @@
       "get": {
         "tags": ["视频"],
         "summary": "读取模板成片视觉模板目录",
-        "description": "**测试安全级别：safe-read**\n\n读取 13 套模板和当前单条价格，不创建任务或扣点。",
+        "description": "**测试安全级别：safe-read**\n\n读取 15 套模板和当前单条价格，不创建任务或扣点。",
         "x-hq-test-safety": "safe-read",
         "x-hq-runtime-status": "active",
         "responses": {
@@ -8982,7 +8982,7 @@
             "type": "object",
             "required": ["templates", "default_template", "cost"],
             "properties": {
-              "templates": {"type": "array", "minItems": 13, "maxItems": 13, "items": {"type": "object", "additionalProperties": true}},
+              "templates": {"type": "array", "minItems": 15, "maxItems": 15, "items": {"type": "object", "additionalProperties": true}},
               "default_template": {"type": "string"},
               "cost": {"type": "integer", "minimum": 1}
             }
