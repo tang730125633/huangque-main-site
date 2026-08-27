@@ -1,9 +1,0 @@
-[Unit]
-Description=Renew Huangque TLS certificate with ACME TLS-ALPN-01
-Wants=network-online.target
-After=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/sbin/huangque-acme.sh --cron --home /root/.acme.sh
-ExecStopPost=/usr/bin/systemctl start nginx
