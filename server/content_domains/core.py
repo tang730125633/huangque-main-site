@@ -4083,6 +4083,16 @@ class H(BaseHTTPRequestHandler):
                             self._cinematic_reference_files)
                         self._cinematic_reference_files = []
                     queue_response = {"detail": "任务队列已满，请稍后再试", "code": "queue_full", "retry_after_ms": 4000, "need": cost}
+                    if kind == "matrix_template_video":
+                        tracking_response = _compensation_tracking_response(
+                            jid, cost, queue_response["detail"],
+                            points_left=points_left,
+                        )
+                        _idempotency_complete(
+                            user["username"], p, idem_key,
+                            dict(tracking_response, _http_status=202),
+                        )
+                        return self._send(202, tracking_response)
                     digital_human_paid_child = bool(
                         digital_human_consent_record
                         and kind in {"image", "video"}

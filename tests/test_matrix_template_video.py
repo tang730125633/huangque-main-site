@@ -565,6 +565,15 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual("渲染失败", result["error"])
         self.assertEqual("已退款", result["refund"])
 
+    def test_refund_pending_keeps_polling_until_confirmed(self):
+        result = self.runtime("refundPendingThenConfirmed")
+        self.assertEqual(2, result["polls"])
+        self.assertEqual("退款处理中", result["before"])
+        self.assertEqual("已退款", result["after"])
+        self.assertEqual("第 1 条生成失败", result["title"])
+        self.assertEqual(1, result["cards"])
+        self.assertTrue(result["cleared"])
+
 
 if __name__ == "__main__":
     unittest.main()

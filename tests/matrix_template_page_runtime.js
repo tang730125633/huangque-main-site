@@ -8,6 +8,7 @@ class Element {
   get textContent(){return this._text} set textContent(v){this._text=String(v);if(v==='')this.children=[]}
   set innerHTML(v){this._html=String(v)} get innerHTML(){return this._html||''}
   appendChild(x){this.children.push(x);return x} setAttribute(k,v){this.attributes[k]=String(v)}
+  getAttribute(k){return this.attributes[k]}
   addEventListener(k,fn){(this.listeners[k]||=[]).push(fn)}
 }
 function response(status,data){return {status,text:()=>Promise.resolve(JSON.stringify(data||{}))}}
@@ -116,6 +117,11 @@ async function scenarioJobFailureRefund(){
   const runtime=createRuntime({post:()=>Promise.resolve(response(200,{job_id:300})),poll:()=>Promise.resolve(response(200,{status:'failed',error:'渲染失败',refunded:true}))},new Map());
   await fillAndSubmit(runtime);await flush(20);const card=runtime.get('batchResults').children[0];return {cards:runtime.get('batchResults').children.length,error:card.children[1].textContent,refund:card.children[2].textContent};
 }
+async function scenarioRefundPendingThenConfirmed(){
+  const storage=new Map();
+  const runtime=createRuntime({post:()=>Promise.resolve(response(202,{job_id:301,refund_state:'pending'})),poll:i=>Promise.resolve(response(200,{status:'failed',error:'任务队列已满',refunded:i>0}))},storage);
+  await fillAndSubmit(runtime);await flush(20);var card=runtime.get('batchResults').children[0],before=card.children[2].textContent;await runtime.runTimer();await flush(20);card=runtime.get('batchResults').children[0];return {polls:runtime.requests.poll.length,before,after:card.children[2].textContent,title:card.children[0].textContent,cards:runtime.get('batchResults').children.length,cleared:pendingCleared(storage)};
+}
 
-async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure,livePreview:scenarioLivePreview,fontSelect:scenarioFontSelect,batchFive:scenarioBatchFive,legacyPending:scenarioLegacyPending,mixedFailureReload:scenarioMixedFailureReload,jobFailureRefund:scenarioJobFailureRefund};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}
+async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure,livePreview:scenarioLivePreview,fontSelect:scenarioFontSelect,batchFive:scenarioBatchFive,legacyPending:scenarioLegacyPending,mixedFailureReload:scenarioMixedFailureReload,jobFailureRefund:scenarioJobFailureRefund,refundPendingThenConfirmed:scenarioRefundPendingThenConfirmed};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}
 main().catch(e=>{console.error(e.stack||e);process.exitCode=1});
