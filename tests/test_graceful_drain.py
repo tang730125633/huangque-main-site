@@ -130,13 +130,14 @@ class WorkersDrainInsteadOfBlockingTests(unittest.TestCase):
         self.assertIn("qsize()", drain)
 
     def test_every_queue_is_drained(self):
-        """漏掉一个队列，那个队列里的任务就会被丢掉 —— 而它是 6 个池之一。"""
+        """漏掉一个队列，那个队列里的任务就会被丢掉 —— 当前共7个池。"""
         names = ast.literal_eval(
             "(" + CORE_SRC.split("_ALL_JOB_QUEUES = (")[1].split(")")[0].replace(",\n", ",") + ",)"
         ) if False else None  # 直接数：源码里那个元组必须包含全部 6 个队列
         block = CORE_SRC.split("_ALL_JOB_QUEUES = (")[1].split(")")[0]
         for q in ("_job_queue", "_fast_job_queue", "_talking_job_queue",
-                  "_image_job_queue", "_cinematic_job_queue", "_avatar_job_queue"):
+                  "_image_job_queue", "_cinematic_job_queue", "_avatar_job_queue",
+                  "_matrix_job_queue"):
             self.assertIn(q, block, "_ALL_JOB_QUEUES 漏了 %s —— 那个池的任务会被丢掉" % q)
 
 

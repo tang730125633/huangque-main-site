@@ -84,6 +84,20 @@ async function scenarioFontSelect(){
   await flush();runtime.get('topText').value='指定字体标题';runtime.get('bottomText').value='指定字体行动文案';runtime.get('fontFamily').value='AaHouDiHei';runtime.get('fontFamily').listeners.change[0].call(runtime.get('fontFamily'));runtime.get('generateBtn').onclick();await flush();
   return {body:JSON.parse(runtime.requests.post[0].options.body),source:runtime.get('fontSource').textContent,options:runtime.get('fontFamily').children.map(x=>x.value)};
 }
+async function scenarioBatchFive(){
+  const storage=new Map();
+  const runtime=createRuntime({
+    post:(i)=>Promise.resolve(response(200,{job_id:100+i})),
+    poll:(i)=>Promise.resolve(response(200,{status:'done',result:{video_url:'/video-'+i,duration:8+i/10}})),
+  },storage);
+  await flush();runtime.get('batchCount').value='5';await fillAndSubmit(runtime);await flush(30);
+  return {posts:runtime.requests.post.length,polls:runtime.requests.poll.length,keys:runtime.requests.post.map(x=>x.options.headers['Idempotency-Key']),bodies:runtime.requests.post.map(x=>JSON.parse(x.options.body)),cards:runtime.get('batchResults').children.length,cleared:storage.size===0};
+}
+async function scenarioLegacyPending(){
+  const storage=new Map([['hq-matrix-template-pending-v1',JSON.stringify({key:'legacy-key',body:{top_text:'旧标题',bottom_text:'旧行动文案',template_id:'native-bold',bgm:true},job_id:88,started_at:1})]]);
+  const runtime=createRuntime({post:()=>Promise.reject(new Error('should not post')),poll:()=>Promise.resolve(response(200,{status:'done',result:{video_url:'/legacy-video',duration:8}}))},storage);
+  await flush(30);return {posts:runtime.requests.post.length,polls:runtime.requests.poll.length,cleared:storage.size===0};
+}
 
-async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure,livePreview:scenarioLivePreview,fontSelect:scenarioFontSelect};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}
+async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure,livePreview:scenarioLivePreview,fontSelect:scenarioFontSelect,batchFive:scenarioBatchFive,legacyPending:scenarioLegacyPending};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}
 main().catch(e=>{console.error(e.stack||e);process.exitCode=1});

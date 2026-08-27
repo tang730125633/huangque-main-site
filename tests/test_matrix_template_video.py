@@ -80,6 +80,15 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                  mock.patch.object(self.module, "_request", return_value=health):
                 self.assertFalse(self.module.availability(force=True)["ready"])
 
+    def test_matrix_jobs_use_dedicated_five_worker_queue(self):
+        from content_domains import core
+        self.assertIs(
+            core._pick_job_queue("matrix_template_video"),
+            core._matrix_job_queue,
+        )
+        self.assertEqual(5, core.MATRIX_JOB_WORKERS)
+        self.assertGreaterEqual(core.MAX_USER_ACTIVE_JOBS, 5)
+
     def test_validate_payload_is_library_only_and_catalog_bound(self):
         with mock.patch.object(self.module, "require_available"), \
              mock.patch.object(self.module, "public_templates", return_value=self.templates()), \
@@ -461,6 +470,8 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertNotIn('id="duration"', page)
         self.assertNotIn('id="bgm"', page)
         self.assertIn('id="fontFamily"', page)
+        self.assertIn('id="batchCount"', page)
+        self.assertIn("Math.min(5", page)
         self.assertIn("body.font_family=selectedFont", page)
         self.assertNotIn("素材来源", page)
         self.assertIn("template_id:activeTemplate,bgm:true", page)
@@ -520,6 +531,21 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual("AaHouDiHei", result["body"]["font_family"])
         self.assertEqual("私有字体", result["source"])
         self.assertEqual(["", "Noto Sans SC", "AaHouDiHei"], result["options"])
+
+    def test_batch_five_submits_distinct_jobs_and_renders_all_results(self):
+        result = self.runtime("batchFive")
+        self.assertEqual(5, result["posts"])
+        self.assertEqual(5, result["polls"])
+        self.assertEqual(5, len(set(result["keys"])))
+        self.assertTrue(all(body["bgm"] is True for body in result["bodies"]))
+        self.assertEqual(5, result["cards"])
+        self.assertTrue(result["cleared"])
+
+    def test_legacy_single_pending_state_is_recovered_after_upgrade(self):
+        result = self.runtime("legacyPending")
+        self.assertEqual(0, result["posts"])
+        self.assertEqual(1, result["polls"])
+        self.assertTrue(result["cleared"])
 
 
 if __name__ == "__main__":
