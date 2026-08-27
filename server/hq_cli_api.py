@@ -443,9 +443,11 @@ _MEDIA_SCHEMAS = {
             "top_text": {"type": "string", "minLength": 2, "maxLength": 60},
             "bottom_text": {"type": "string", "minLength": 2, "maxLength": 80},
             "template_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+            "font_family": {"type": "string", "maxLength": 80},
         },
         "constraints": [
             "template_id must come from matrix-template-templates",
+            "font_family is optional and must come from matrix-template-templates fonts",
             "duration is automatic, BGM is enabled, and only approved platform-library media is used",
         ],
     },
@@ -1679,18 +1681,23 @@ def _text_video_payload(value):
 
 def _matrix_template_payload(value):
     _strict_object(
-        value, {"top_text", "bottom_text", "template_id"},
+        value, {"top_text", "bottom_text", "template_id", "font_family"},
         ("top_text", "bottom_text", "template_id"),
     )
     template_id = _string(value["template_id"], "template_id", 1, 64)
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", template_id):
         raise CLIAPIError(400, "template_id 格式不合法")
-    return {
+    result = {
         "top_text": _string(value["top_text"], "top_text", 2, 60),
         "bottom_text": _string(value["bottom_text"], "bottom_text", 2, 80),
         "template_id": template_id,
         "bgm": True,
     }
+    if "font_family" in value:
+        font_family = _string(value["font_family"], "font_family", 0, 80)
+        if font_family:
+            result["font_family"] = font_family
+    return result
 
 
 def _collect_url(value):

@@ -22,7 +22,7 @@ API_TOKEN = os.environ.get("MATRIX_TEMPLATE_API_TOKEN", "").strip()
 JOB_TIMEOUT = max(60, min(1800, int(os.environ.get("MATRIX_TEMPLATE_JOB_TIMEOUT", "1200"))))
 POLL_INTERVAL = max(1, min(10, int(os.environ.get("MATRIX_TEMPLATE_POLL_INTERVAL", "3"))))
 MAX_VIDEO_BYTES = 512 * 1024 * 1024
-_CACHE = {"at": 0.0, "templates": []}
+_CACHE = {"at": 0.0, "templates": [], "fonts": []}
 _NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
@@ -89,7 +89,7 @@ def require_available():
         raise feature_flags.FeatureDisabled("模板成片服务暂不可用，请稍后重试")
 
 
-def public_templates(force=False):
+def _refresh_catalog(force=False):
     now = time.monotonic()
     if force or now - _CACHE["at"] > 30:
         response = _request("GET", "/v1/templates", timeout=10)
@@ -108,8 +108,36 @@ def public_templates(force=False):
             })
         if len(templates) != 13 or len({item["id"] for item in templates}) != 13:
             raise RuntimeError("模板目录不完整")
-        _CACHE.update({"at": now, "templates": templates})
+        fonts = [{"value": "", "label": "自动搭配", "source": "automatic"}]
+        seen = {""}
+        for raw in response.get("fonts") or []:
+            if not isinstance(raw, dict):
+                continue
+            value = str(raw.get("value") or "").strip()
+            if not value or value in seen or not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9 ._+-]{0,79}", value
+            ):
+                continue
+            source = str(raw.get("source") or "")
+            if source not in {"bundled", "private"}:
+                continue
+            fonts.append({
+                "value": value,
+                "label": str(raw.get("label") or value)[:40],
+                "source": source,
+            })
+            seen.add(value)
+        _CACHE.update({"at": now, "templates": templates, "fonts": fonts})
+
+
+def public_templates(force=False):
+    _refresh_catalog(force)
     return [dict(item) for item in _CACHE["templates"]]
+
+
+def public_fonts(force=False):
+    _refresh_catalog(force)
+    return [dict(item) for item in _CACHE["fonts"]]
 
 
 def validate_payload(raw, username=""):
@@ -124,6 +152,9 @@ def validate_payload(raw, username=""):
     template_id = str(body.get("template_id") or "native-bold")
     if template_id not in {item["id"] for item in public_templates()}:
         raise ValueError("请选择有效模板")
+    font_family = str(body.get("font_family") or "").strip()
+    if font_family and font_family not in {item["value"] for item in public_fonts()}:
+        raise ValueError("请选择当前可用字体")
     bgm = body.get("bgm", True)
     if not isinstance(bgm, bool):
         raise ValueError("背景音乐设置无效")
@@ -141,6 +172,8 @@ def validate_payload(raw, username=""):
         "top_text": top, "bottom_text": bottom,
         "template_id": template_id, "bgm": bgm, "duration": duration,
     }
+    if font_family:
+        candidate["font_family"] = font_family
     try:
         response = _request("POST", "/v1/preflight", candidate, timeout=10)
     except MatrixTemplateHTTPError as exc:
@@ -156,8 +189,8 @@ def validate_payload(raw, username=""):
     payload = response.get("payload") if isinstance(response, dict) else None
     if not isinstance(payload, dict) or set(payload) != set(candidate):
         raise RuntimeError("模板成片预检结果无效")
-    if any(payload.get(key) != candidate[key] for key in (
-            "top_text", "bottom_text", "template_id", "bgm")):
+    if any(payload.get(key) != value for key, value in candidate.items()
+           if key != "duration"):
         raise RuntimeError("模板成片预检参数不一致")
     authoritative_duration = payload.get("duration")
     if (isinstance(authoritative_duration, bool)
@@ -234,6 +267,8 @@ def generate(payload):
                 "width": int(result.get("width") or 1080),
                 "height": int(result.get("height") or 1920),
                 "template_id": result.get("template_id") or payload["template_id"],
+                "font_selection": result.get("font_selection") or {},
+                "font_files": result.get("font_files") or [],
                 "file_size": file_size,
                 "material_manifest": result.get("material_manifest") or [],
             }

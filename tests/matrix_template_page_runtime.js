@@ -22,7 +22,7 @@ function createRuntime(plan, storage){
   const timers=[];const requests={post:[],poll:[]};let uuidCount=0;
   const sessionStorage={getItem:k=>storage.has(k)?storage.get(k):null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)};
   const fetch=(url,options={})=>{
-    if(url==='/api/gen/matrix-template/templates')return Promise.resolve(response(200,{templates:[{id:'native-bold',name:'默认原生大字',tags:['默认']},{id:'minimal-headline',name:'极简标题',tags:['极简']}],default_template:'native-bold',cost:5}));
+    if(url==='/api/gen/matrix-template/templates')return Promise.resolve(response(200,{templates:[{id:'native-bold',name:'默认原生大字',tags:['默认']},{id:'minimal-headline',name:'极简标题',tags:['极简']}],fonts:[{value:'',label:'自动搭配',source:'automatic'},{value:'Noto Sans SC',label:'思源黑体',source:'bundled'},{value:'AaHouDiHei',label:'Aa厚底黑',source:'private'}],default_template:'native-bold',default_font:'',cost:5}));
     if(url==='/api/gen/matrix-template'){
       const index=requests.post.length;requests.post.push({url,options});return plan.post(index,options);
     }
@@ -79,6 +79,11 @@ async function scenarioLivePreview(){
   await flush();runtime.get('topText').value='实时标题';runtime.get('bottomText').value='实时行动文案';runtime.get('topText').listeners.input[0]();runtime.get('bottomText').listeners.input[0]();runtime.get('templateGrid').children[1].onclick();
   return {top:runtime.get('liveTop').textContent,bottom:runtime.get('liveBottom').textContent,template:runtime.get('livePreview').attributes['data-template'],style:runtime.get('livePreview').attributes.style,videoDisplay:runtime.get('video').style.display};
 }
+async function scenarioFontSelect(){
+  const runtime=createRuntime({post:()=>Promise.resolve(response(200,{job_id:11})),poll:()=>Promise.resolve(response(200,{status:'pending'}))},new Map());
+  await flush();runtime.get('topText').value='指定字体标题';runtime.get('bottomText').value='指定字体行动文案';runtime.get('fontFamily').value='AaHouDiHei';runtime.get('fontFamily').listeners.change[0].call(runtime.get('fontFamily'));runtime.get('generateBtn').onclick();await flush();
+  return {body:JSON.parse(runtime.requests.post[0].options.body),source:runtime.get('fontSource').textContent,options:runtime.get('fontFamily').children.map(x=>x.value)};
+}
 
-async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure,livePreview:scenarioLivePreview};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}
+async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure,livePreview:scenarioLivePreview,fontSelect:scenarioFontSelect};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}
 main().catch(e=>{console.error(e.stack||e);process.exitCode=1});
