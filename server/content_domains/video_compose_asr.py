@@ -8,12 +8,16 @@ import pathlib
 import subprocess
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.request
 import uuid
 
 
 OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com").rstrip("/")
+OPENAI_TRANSCRIBE_BASE = os.environ.get(
+    "OPENAI_TRANSCRIBE_BASE", "https://api.openai.com"
+).strip().rstrip("/")
 OPENAI_KEY = os.environ.get("OPENAI_API_KEY", "")
 ASR_MODEL = os.environ.get("VIDEO_COMPOSE_ASR_MODEL", "whisper-1").strip() or "whisper-1"
 MAX_SOURCE_SECONDS = max(10, min(600, int(os.environ.get("VIDEO_COMPOSE_MAX_SECONDS", "180") or 180)))
@@ -141,7 +145,7 @@ def transcribe(source_path, opener=None, api_key=None, base_url=None):
     if not key:
         raise AsrError("一键成片 ASR 未配置")
     opener = opener or urllib.request.build_opener()
-    base_url = str(base_url or OPENAI_BASE).rstrip("/")
+    base_url = str(base_url or OPENAI_TRANSCRIBE_BASE).rstrip("/")
     with tempfile.TemporaryDirectory(prefix="hq-compose-asr-") as directory:
         audio = pathlib.Path(directory) / "audio.mp3"
         duration = extract_audio(source_path, audio)
@@ -157,9 +161,21 @@ def transcribe(source_path, opener=None, api_key=None, base_url=None):
             headers={"Authorization": "Bearer " + key, "Content-Type": content_type},
         )
         try:
-            with _ASR_LOCK:
-                with opener.open(request, timeout=max(120, int(duration * 5))) as response:
-                    payload = json.loads(response.read().decode("utf-8", "replace"))
+            payload = None
+            for attempt in range(2):
+                try:
+                    with _ASR_LOCK:
+                        with opener.open(request, timeout=max(120, int(duration * 5))) as response:
+                            payload = json.loads(response.read().decode("utf-8", "replace"))
+                    break
+                except urllib.error.HTTPError:
+                    raise
+                except Exception as retryable:
+                    if attempt + 1 >= 2:
+                        raise AsrError("语音识别服务暂时不可用（已重试）") from retryable
+                    time.sleep(2 ** attempt)
+            if payload is None:
+                raise AsrError("语音识别服务暂时不可用")
         except urllib.error.HTTPError as error:
             try:
                 detail = json.loads(error.read().decode("utf-8", "replace"))
@@ -167,6 +183,8 @@ def transcribe(source_path, opener=None, api_key=None, base_url=None):
             except Exception:
                 message = ""
             raise AsrError("语音识别服务失败" + ("：" + message[:160] if message else "")) from error
+        except AsrError:
+            raise
         except Exception as error:
             raise AsrError("语音识别服务暂时不可用") from error
     result = parse_verbose_response(payload)

@@ -58,6 +58,7 @@ load_ip12_preview() {
     esac
   done < <(git ls-tree -r --name-only "$commit" -- server/hermes_ip12)
   files+=(
+    tests/fixtures/ip12_semantic_router_cases.json
     deploy/zelong/hermes-ip12-preview.service
     deploy/zelong/hermes-ip12-preview-requirements.txt
     deploy/zelong/hermes-preview-cli
@@ -129,6 +130,8 @@ map_path() {
     server/hermes_ip12/templates/*.html)
       rest="${path#server/hermes_ip12/}"
       printf '20|/home/ubuntu/hermes-preview/%s|hermes|0\n' "$rest" ;;
+    tests/fixtures/ip12_semantic_router_cases.json)
+      printf '20|/home/ubuntu/hermes-preview/eval_corpus.json|hermes|0\n' ;;
     deploy/zelong/run-hermes-ip12-preview.sh)
       printf '25|/home/ubuntu/hermes-preview/run-preview.sh|hermes|0\n' ;;
     deploy/zelong/hermes-ip12-preview-requirements.txt)

@@ -4864,6 +4864,13 @@ class H(BaseHTTPRequestHandler):
                 if err:
                     raise hq_cli_api.CLIAPIError(400, "画布写入失败：" + err, err)
                 return self._cli_send(200, result)
+            if plan["kind"] == "canvas-delete":
+                deleted, err = delete_canvas_board(row["username"], plan["board_id"])
+                if err == "not_found":
+                    raise hq_cli_api.CLIAPIError(404, "画布不存在", "not_found")
+                if err == "forbidden":
+                    raise hq_cli_api.CLIAPIError(403, "只有画布所有者可以删除画布", "forbidden")
+                return self._cli_send(200, {"board_id": plan["board_id"], "deleted": bool(deleted)})
             if plan["kind"] == "generation":
                 generation_kind, payload = plan["generation_kind"], plan["payload"]
                 if confirm:
@@ -4875,6 +4882,13 @@ class H(BaseHTTPRequestHandler):
                         INTERNAL_TOKEN, quote_token, row["username"], generation_kind, payload,
                     )
                     submit_body = dict(payload)
+                    if plan.get("native_quote_token_field"):
+                        context = claims.get("x") if isinstance(claims.get("x"), dict) else {}
+                        native_token = str(context.get("native_quote_token") or "")
+                        if not native_token or len(native_token) > 4096:
+                            raise hq_cli_api.CLIAPIError(
+                                502, "文案成片报价凭证缺失", "native_quote_invalid")
+                        submit_body[plan["native_quote_token_field"]] = native_token
                     if plan.get("quoted_cost_field"):
                         submit_body[plan["quoted_cost_field"]] = claims["c"]
                     submit_headers = {"X-HQ-Expected-Cost": str(claims["c"])}
@@ -4899,14 +4913,27 @@ class H(BaseHTTPRequestHandler):
                 status, result = self._cli_proxy(quote_plan, row["username"])
                 if not 200 <= status < 300:
                     return self._cli_send(status, result)
+                quote_context = None
+                if plan.get("native_quote_token_field"):
+                    native_token = str(result.get("quote_token") or "")
+                    if not native_token or len(native_token) > 4096:
+                        raise hq_cli_api.CLIAPIError(
+                            502, "文案成片报价凭证缺失", "native_quote_invalid")
+                    quote_context = {"native_quote_token": native_token}
                 token, claims = hq_cli_api.issue_quote(
-                    INTERNAL_TOKEN, row["username"], generation_kind, payload, result.get("cost"),
+                    INTERNAL_TOKEN, row["username"], generation_kind, payload,
+                    result.get("cost"), context=quote_context,
                 )
-                return self._cli_send(200, {
+                response = {
                     "quote_token": token, "kind": generation_kind, "cost": claims["c"],
                     "points": result.get("points"), "expires_in": hq_cli_api.QUOTE_TTL,
+                    "expires_at": claims["e"],
                     "confirmation_required": True,
-                })
+                }
+                for field in plan.get("quote_result_fields", ()):
+                    if field in result:
+                        response[field] = result[field]
+                return self._cli_send(200, response)
             if trusted_internal and confirm and idempotency_key and plan["kind"] == "proxy":
                 plan = dict(plan)
                 headers = dict(plan.get("headers") or {})
@@ -5058,6 +5085,180 @@ class H(BaseHTTPRequestHandler):
         except hq_cli_api.CLIAPIError as exc:
             return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
 
+    def _creator_agent_row(self, account_id):
+        if not isinstance(account_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,160}", account_id):
+            raise hq_cli_api.CLIAPIError(400, "account_id 不合法", "invalid_account_id")
+        c = db()
+        try:
+            return c.execute(
+                "SELECT * FROM users WHERE account_id=? AND COALESCE(account_status,'active')='active'",
+                (account_id,),
+            ).fetchone()
+        finally:
+            c.close()
+
+    def _creator_agent_bridge_enabled(self):
+        return feature_flags.is_enabled("creator_agent_v1")
+
+    def _creator_agent_catalog_payload(self):
+        states = {flag: feature_flags.is_enabled(flag) for flag in hq_cli_api.CATALOG_FEATURE_FLAGS}
+        catalog = hq_cli_api.action_catalog(states)
+        allowed = {
+            "matrix-template-capability", "matrix-template-templates",
+            "matrix-template-generate",
+        }
+        catalog["actions"] = [
+            item for item in catalog.get("actions") or [] if item.get("action") in allowed
+        ]
+        return catalog
+
+    def _internal_creator_agent_health(self):
+        enabled = self._creator_agent_bridge_enabled()
+        catalog = self._creator_agent_catalog_payload()
+        actions = catalog.get("actions") or []
+        action_names = [str(item.get("action") or "") for item in actions]
+        matrix_ready = any(
+            item.get("action") == "matrix-template-generate"
+            and (item.get("availability") or {}).get("status") == "available"
+            for item in actions
+        )
+        reconcile_ready = False
+        if enabled:
+            try:
+                status, payload = hq_cli_api.proxy_json({
+                    "base": hq_cli_api.CONTENT_BASE,
+                    "path": "/api/gen/internal/submission-reconcile/health",
+                    "method": "POST", "body": {}, "timeout": 3,
+                    "internal": True,
+                }, "", INTERNAL_TOKEN)
+                reconcile_ready = bool(
+                    status == 200 and isinstance(payload, dict)
+                    and payload.get("ready") is True
+                )
+            except hq_cli_api.CLIAPIError:
+                reconcile_ready = False
+        return self._cli_send(200, {
+            "ok": True,
+            "ready": bool(enabled and matrix_ready and reconcile_ready),
+            "feature_enabled": bool(enabled),
+            "actions": action_names + (["matrix-template-reconcile"] if reconcile_ready else []),
+            "checks": {
+                "matrix_template": bool(matrix_ready),
+                "submission_reconcile": bool(reconcile_ready),
+            },
+            "catalog_version": catalog.get("version"),
+        })
+
+    def _internal_creator_agent_catalog(self, body):
+        if not self._creator_agent_bridge_enabled():
+            return self._cli_send(503, {"detail": "Creator Agent 执行桥未启用", "code": "feature_disabled"})
+        if not isinstance(body, dict) or set(body) != {"account_id"}:
+            return self._cli_send(400, {"detail": "只接受 account_id", "code": "invalid_request"})
+        try:
+            row = self._creator_agent_row(body["account_id"])
+        except hq_cli_api.CLIAPIError as exc:
+            return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
+        if not row:
+            return self._cli_send(404, {"detail": "账号不存在", "code": "account_not_found"})
+        catalog = self._creator_agent_catalog_payload()
+        return self._cli_send(200, {"account_id": row["account_id"], **catalog})
+
+    def _internal_creator_agent_action(self, body):
+        if not self._creator_agent_bridge_enabled():
+            return self._cli_send(503, {"detail": "Creator Agent 执行桥未启用", "code": "feature_disabled"})
+        if not isinstance(body, dict):
+            return self._cli_send(400, {"detail": "请求体必须是 JSON 对象", "code": "invalid_request"})
+        allowed = {"account_id", "input", "action", "confirm", "quote_token", "idempotency_key"}
+        if set(body) - allowed or set(body) < {"account_id", "input", "action"}:
+            return self._cli_send(400, {"detail": "内部动作字段不合法", "code": "invalid_request"})
+        try:
+            action = body.get("action")
+            allowed_actions = {
+                "matrix-template-capability", "matrix-template-templates",
+                "matrix-template-generate", "task",
+            }
+            if not isinstance(action, str) or action not in allowed_actions:
+                raise hq_cli_api.CLIAPIError(404, "未知 Creator Agent 能力", "unknown_action")
+            if not isinstance(body["input"], dict):
+                raise hq_cli_api.CLIAPIError(400, "input 必须是 JSON 对象")
+            row = self._creator_agent_row(body["account_id"])
+            if not row:
+                raise hq_cli_api.CLIAPIError(404, "账号不存在", "account_not_found")
+            action_body = {
+                "action": action,
+                "input": body["input"],
+                "confirm": body.get("confirm", False),
+                "quote_token": body.get("quote_token", ""),
+            }
+            if "idempotency_key" in body:
+                action_body["idempotency_key"] = body["idempotency_key"]
+            return self._execute_cli_action(
+                row, frozenset(hq_cli_api.DEFAULT_SCOPES), action_body,
+                trusted_internal=True,
+            )
+        except hq_cli_api.CLIAPIError as exc:
+            return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
+
+    def _internal_creator_agent_reconcile(self, body):
+        if not self._creator_agent_bridge_enabled():
+            return self._cli_send(503, {
+                "detail": "Creator Agent 执行桥未启用", "code": "feature_disabled",
+            })
+        if not isinstance(body, dict) or set(body) != {
+                "account_id", "input", "idempotency_key"}:
+            return self._cli_send(400, {
+                "detail": "恢复请求字段不合法", "code": "invalid_request",
+            })
+        try:
+            if not isinstance(body["input"], dict):
+                raise hq_cli_api.CLIAPIError(400, "input 必须是 JSON 对象")
+            idempotency_key = hq_cli_api.validate_idempotency_key(
+                body["idempotency_key"])
+            row = self._creator_agent_row(body["account_id"])
+            if not row:
+                raise hq_cli_api.CLIAPIError(404, "账号不存在", "account_not_found")
+            plan = hq_cli_api.action_plan(
+                "matrix-template-generate", body["input"],
+            )
+            status, result = self._cli_proxy({
+                "base": hq_cli_api.CONTENT_BASE,
+                "path": "/api/gen/internal/submission-reconcile",
+                "method": "POST", "timeout": 10, "internal": True,
+                "body": {
+                    "endpoint": plan["endpoint"],
+                    "idempotency_key": idempotency_key,
+                    "input": plan["payload"],
+                },
+            }, row["username"])
+            if (
+                status == 404
+                and (not isinstance(result, dict)
+                     or result.get("code") != "idempotency_not_found")
+            ):
+                return self._cli_send(503, {
+                    "detail": "提交恢复通道暂不可用",
+                    "code": "reconcile_unavailable",
+                })
+            if (
+                not 200 <= int(status) < 300
+                and isinstance(result, dict)
+                and result.get("operation_terminal") is True
+            ):
+                return self._cli_send(200, {
+                    "status": "failed",
+                    "error": str(result.get("detail") or "提交未完成")[:500],
+                    "refund_status": (
+                        "refunded" if result.get("code") == "job_create_failed" else ""
+                    ),
+                    "reconciled": True,
+                    "original_http_status": int(status),
+                })
+            return self._cli_send(status, result)
+        except hq_cli_api.CLIAPIError as exc:
+            return self._cli_send(exc.status, {
+                "detail": exc.detail, "code": exc.code,
+            })
+
     def _internal_auth(self):
         if not INTERNAL_TOKEN:
             return False
@@ -5193,6 +5394,42 @@ class H(BaseHTTPRequestHandler):
             if not self._require_internal():
                 return
             return self._internal_ip12_agent_upload()
+        if p == "/api/auth/internal/creator-agent/catalog":
+            if not self._require_internal():
+                return
+            if self._content_length_exceeds(16 * 1024):
+                return self._cli_send(413, {"detail": "请求过大", "code": "request_too_large"})
+            d = self._body()
+            if self._bad_json():
+                return self._cli_send(400, {"detail": "请求体不是合法 JSON", "code": "invalid_request"})
+            return self._internal_creator_agent_catalog(d)
+        if p == "/api/auth/internal/creator-agent/health":
+            if not self._require_internal():
+                return
+            if self._content_length_exceeds(1024):
+                return self._cli_send(413, {"detail": "请求过大", "code": "request_too_large"})
+            d = self._body()
+            if self._bad_json() or not isinstance(d, dict) or d:
+                return self._cli_send(400, {"detail": "健康检查请求必须为空对象", "code": "invalid_request"})
+            return self._internal_creator_agent_health()
+        if p == "/api/auth/internal/creator-agent/action":
+            if not self._require_internal():
+                return
+            if self._content_length_exceeds(128 * 1024):
+                return self._cli_send(413, {"detail": "请求过大", "code": "request_too_large"})
+            d = self._body()
+            if self._bad_json():
+                return self._cli_send(400, {"detail": "请求体不是合法 JSON", "code": "invalid_request"})
+            return self._internal_creator_agent_action(d)
+        if p == "/api/auth/internal/creator-agent/reconcile":
+            if not self._require_internal():
+                return
+            if self._content_length_exceeds(128 * 1024):
+                return self._cli_send(413, {"detail": "请求过大", "code": "request_too_large"})
+            d = self._body()
+            if self._bad_json():
+                return self._cli_send(400, {"detail": "请求体不是合法 JSON", "code": "invalid_request"})
+            return self._internal_creator_agent_reconcile(d)
         if p == "/api/auth/internal/canvas/access":
             if not self._require_internal():
                 return

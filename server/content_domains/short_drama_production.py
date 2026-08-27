@@ -787,17 +787,27 @@ def _project_references(conn, project, shot, *, include_internal=False):
                 except (LookupError, ValueError):
                     pass
             references.append(reference)
-    previous = conn.execute(
-        "SELECT v.id, v.url, v.file, v.ratio, s.shot_key FROM short_drama_shots current "
-        "JOIN short_drama_shots s ON s.project_id=current.project_id "
-        "AND s.sort_order<current.sort_order "
-        "JOIN short_drama_assets a ON a.project_id=s.project_id AND a.shot_id=s.id "
-        "AND a.type='still' AND a.locked=1 "
-        "JOIN short_drama_asset_versions v ON v.asset_id=a.id AND v.version=a.current_version "
-        "WHERE current.id=? AND current.project_id=? AND v.status='done' "
-        "ORDER BY s.sort_order DESC, s.id DESC LIMIT 1",
-        (shot["id"], project["id"]),
-    ).fetchone()
+    previous = None
+    current_shots = short_drama_asset_graph.current_project_shots(
+        conn, project["id"],
+    )
+    current_index = next(
+        (index for index, item in enumerate(current_shots)
+         if item["id"] == shot["id"]),
+        -1,
+    )
+    prior_shots = current_shots[:current_index] if current_index >= 0 else []
+    for candidate in reversed(prior_shots):
+        previous = conn.execute(
+            "SELECT v.id,v.url,v.file,v.ratio,? AS shot_key "
+            "FROM short_drama_assets a JOIN short_drama_asset_versions v "
+            "ON v.asset_id=a.id AND v.version=a.current_version "
+            "WHERE a.project_id=? AND a.shot_id=? AND a.type='still' "
+            "AND a.locked=1 AND v.status='done' LIMIT 1",
+            (candidate["shot_key"], project["id"], candidate["id"]),
+        ).fetchone()
+        if previous:
+            break
     if previous:
         if previous["ratio"] != project["ratio"]:
             raise ValueError("上一镜头连续性参考比例与项目不一致")
@@ -868,6 +878,8 @@ def prepare_still_submission(db_factory, username, body, *, require_quote=False,
     conn = db_factory()
     conn.row_factory = sqlite3.Row
     try:
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("BEGIN IMMEDIATE")
         project = _authorized_project(
             conn, username, body["project_id"], access, write=True
         )
@@ -876,17 +888,20 @@ def prepare_still_submission(db_factory, username, body, *, require_quote=False,
             raise RevisionConflict("项目已在其他页面更新，请刷新后重试")
         if project["stage"] != "stills_review":
             raise ValueError("当前短剧阶段不能生成关键帧")
-        shot = conn.execute(
-            "SELECT s.*, COALESCE(a.locked, 0) AS still_locked "
-            "FROM short_drama_shots s "
-            "LEFT JOIN short_drama_assets a "
-            "ON a.project_id=s.project_id AND a.shot_id=s.id AND a.type='still' "
-            "WHERE s.id=? AND s.project_id=?",
-            (body["shot_id"], project["id"]),
-        ).fetchone()
+        shot = short_drama_asset_graph.resolve_current_shot(
+            conn, project["id"], body["shot_id"], materialize=True,
+        )
         if not shot:
             raise ValueError("关键帧分镜不属于当前项目")
         shot = dict(shot)
+        body["shot_id"] = shot["id"]
+        descriptor["shot_id"] = shot["id"]
+        locked = conn.execute(
+            "SELECT COALESCE(MAX(locked),0) FROM short_drama_assets "
+            "WHERE project_id=? AND shot_id=? AND type='still'",
+            (project["id"], shot["id"]),
+        ).fetchone()
+        shot["still_locked"] = int(locked[0] or 0) if locked else 0
         if body["mode"] == "batch" and bool(shot.pop("still_locked")):
             raise ValueError("批量生成已跳过锁定的关键帧")
         shot.pop("still_locked", None)
@@ -934,6 +949,11 @@ def prepare_still_submission(db_factory, username, body, *, require_quote=False,
                 conn, project["id"], shot["id"],
             )
         asset_package = asset_contract["package"] if asset_contract else None
+        conn.commit()
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
     finally:
         conn.close()
 
@@ -1016,6 +1036,7 @@ def prepare_still_quote(db_factory, username, body, cost_of, access=None):
     contract = prepared.get("asset_contract") or {}
     conn = db_factory()
     try:
+        conn.execute("PRAGMA foreign_keys=ON")
         conn.execute(
             "INSERT INTO short_drama_still_quotes "
             "(token,username,project_id,shot_id,request_hash,snapshot_id,package_hash,"
@@ -1060,11 +1081,12 @@ def record_submitted_job(db_factory, *, username, project_id, shot_id, job_id,
         project = _authorized_project(conn, username, project_id, access, write=True)
         if project["stage"] != "stills_review":
             raise ValueError("当前短剧阶段不能生成关键帧")
-        if not conn.execute(
-            "SELECT 1 FROM short_drama_shots WHERE id=? AND project_id=?",
-            (shot_id, project_id),
-        ).fetchone():
+        resolved_shot = short_drama_asset_graph.resolve_current_shot(
+            conn, project_id, shot_id,
+        )
+        if not resolved_shot:
             raise ValueError("关键帧分镜不属于当前项目")
+        shot_id = resolved_shot["id"]
         job = conn.execute(
             "SELECT username, kind, cost, status FROM jobs WHERE id=?", (job_id,)
         ).fetchone()
@@ -1160,15 +1182,14 @@ def consume_failed_quote(db_factory, username, quote_token, idempotency_key):
 
 def ensure_asset_slots(conn, project_id):
     now = int(time.time())
-    shot_ids = conn.execute(
-        "SELECT id FROM short_drama_shots WHERE project_id=? ORDER BY sort_order, id",
-        (project_id,),
-    ).fetchall()
-    for (shot_id,) in shot_ids:
+    shots = short_drama_asset_graph.current_project_shots(
+        conn, project_id, materialize=True,
+    )
+    for shot in shots:
         conn.execute(
             "INSERT OR IGNORE INTO short_drama_assets "
             "(id, project_id, shot_id, type, created_at, updated_at) VALUES (?, ?, ?, 'still', ?, ?)",
-            (str(uuid.uuid4()), project_id, shot_id, now, now),
+            (str(uuid.uuid4()), project_id, shot["id"], now, now),
         )
 
 
@@ -1353,21 +1374,23 @@ def _blocker(code, shot_id=None):
 
 def build_phase_two_handoff(conn, project_id, ratio):
     blockers = []
-    shot_rows = conn.execute(
-        "SELECT s.id FROM short_drama_shots s WHERE s.project_id=? "
-        "AND NOT EXISTS (SELECT 1 FROM short_drama_assets a "
-        "JOIN short_drama_asset_versions v "
-        "ON v.asset_id=a.id AND v.version=a.current_version "
-        "WHERE a.project_id=s.project_id AND a.shot_id=s.id AND a.type='still' "
-        "AND a.locked=1 AND v.status='done' AND v.ratio=?) "
-        "ORDER BY s.sort_order,s.id",
-        (project_id, ratio),
-    ).fetchall()
-    if not conn.execute(
-        "SELECT 1 FROM short_drama_shots WHERE project_id=? LIMIT 1", (project_id,),
-    ).fetchone():
+    shots = short_drama_asset_graph.current_project_shots(
+        conn, project_id, materialize=True,
+    )
+    missing_shot_ids = []
+    for shot in shots:
+        if not conn.execute(
+            "SELECT 1 FROM short_drama_assets a "
+            "JOIN short_drama_asset_versions v "
+            "ON v.asset_id=a.id AND v.version=a.current_version "
+            "WHERE a.project_id=? AND a.shot_id=? AND a.type='still' "
+            "AND a.locked=1 AND v.status='done' AND v.ratio=? LIMIT 1",
+            (project_id, shot["id"], ratio),
+        ).fetchone():
+            missing_shot_ids.append(shot["id"])
+    if not shots:
         blockers.append(_blocker("missing_locked_still"))
-    blockers.extend(_blocker("missing_locked_still", row[0]) for row in shot_rows)
+    blockers.extend(_blocker("missing_locked_still", shot_id) for shot_id in missing_shot_ids)
 
     for row in conn.execute(
         "SELECT shot_id,status,refunded FROM short_drama_production_jobs "
@@ -1409,11 +1432,8 @@ def _query_dicts(conn, query, params=()):
 
 def build_production_snapshot(conn, project, username):
     project_id = project["id"]
-    shots = _query_dicts(
-        conn,
-        "SELECT id, shot_key, sort_order, duration, image_prompt, character_keys_json "
-        "FROM short_drama_shots WHERE project_id=? ORDER BY sort_order, id",
-        (project_id,),
+    shots = short_drama_asset_graph.current_project_shots(
+        conn, project_id, materialize=True,
     )
     assets = {
         item["shot_id"]: item for item in _query_dicts(
@@ -1523,7 +1543,7 @@ def select_asset(db_factory, username, body, access=None):
         conn.execute("BEGIN IMMEDIATE")
         project = _authorized_project(conn, username, project_id, access, write=True)
         row = conn.execute(
-            "SELECT p.revision, p.stage "
+            "SELECT p.revision, p.stage, a.shot_id "
             "FROM short_drama_assets a "
             "JOIN short_drama_projects p ON p.id=a.project_id "
             "JOIN short_drama_shots s ON s.id=a.shot_id AND s.project_id=a.project_id "
@@ -1534,6 +1554,9 @@ def select_asset(db_factory, username, body, access=None):
             (body["version"], asset_id, project_id),
         ).fetchone()
         if not row:
+            raise LookupError("asset version does not exist")
+        if not short_drama_asset_graph.resolve_current_shot(
+                conn, project_id, row["shot_id"]):
             raise LookupError("asset version does not exist")
         if int(row[0]) != body["revision"]:
             from .short_drama import RevisionConflict

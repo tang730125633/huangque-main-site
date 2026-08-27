@@ -273,7 +273,30 @@ def _reading_seconds(line):
     if line.get("kind") == "silence":
         return 0.0
     characters = len(re.sub(r"[\s，。！？、；：“”\"…]+", "", line.get("text") or ""))
-    return round(0.45 + characters / 3.5, 2)
+    speech_rate = float(line.get("speech_rate") or 1.0)
+    if speech_rate not in {1.0, 1.15, 1.3, 1.5, 2.0}:
+        speech_rate = 1.0
+    return round((0.45 + characters / 3.5) / speech_rate, 2)
+
+
+def _dialogue_timeline_seconds(lines):
+    """Measure ordered dialogue while treating consecutive simultaneous lines as one group."""
+    total = 0.0
+    parallel_group = 0.0
+    for index, line in enumerate(lines or []):
+        if not isinstance(line, dict):
+            continue
+        line_seconds = (
+            _reading_seconds(line)
+            if str(line.get("kind") or "dialogue") in {"dialogue", "voiceover"}
+            else 0.0
+        )
+        if index > 0 and str(line.get("timing_mode") or "") == "simultaneous":
+            parallel_group = max(parallel_group, line_seconds)
+        else:
+            total += parallel_group
+            parallel_group = line_seconds
+    return round(total + parallel_group, 2)
 
 
 def _fit_dialogue_to_duration(line, duration_seconds):
@@ -505,6 +528,7 @@ def analyze_quality(script):
         for item in script.get("characters") or []
     }
     for shot in shots:
+        shot_lines = []
         if not str(shot.get("provider_prompt") or "").strip():
             blockers.append({
                 "code": "provider_prompt_missing",
@@ -520,20 +544,21 @@ def analyze_quality(script):
                     "message": "镜头引用的台词不存在",
                 })
                 continue
+            shot_lines.append(line)
             if line.get("character_key") and line["character_key"] not in known_characters:
                 blockers.append({
                     "code": "speaker_unknown",
                     "shot_key": shot.get("shot_key"),
                     "message": "台词说话人不在角色表中",
                 })
-            reading = _reading_seconds(line)
-            if reading > float(shot.get("duration_seconds") or 0):
-                blockers.append({
-                    "code": "dialogue_too_long",
-                    "shot_key": shot.get("shot_key"),
-                    "message": "台词超过镜头可用时长",
-                    "reading_seconds": reading,
-                })
+        reading = _dialogue_timeline_seconds(shot_lines)
+        if reading > float(shot.get("duration_seconds") or 0):
+            blockers.append({
+                "code": "dialogue_too_long",
+                "shot_key": shot.get("shot_key"),
+                "message": "全部台词超过镜头可用时长",
+                "reading_seconds": reading,
+            })
         if len(str(shot.get("visual") or "")) > 180:
             warnings.append({
                 "code": "visual_too_dense",
@@ -604,6 +629,7 @@ def compile_storyboard(project, clauses, characters, instruction="", ending="", 
         line = _fit_dialogue_to_duration(
             _dialogue(source, phase_key, speaker), durations[index]
         )
+        line["timing_mode"] = "sequential"
         normalized_line = _NORMALIZE_RE.sub("", str(line.get("text") or "")).lower()
         if normalized_line and normalized_line in used_dialogue:
             line = {
@@ -651,6 +677,7 @@ def compile_storyboard(project, clauses, characters, instruction="", ending="", 
                 "承接上一镜头的时间、服装、角色位置和关键道具"
                 if index else "建立本场时间、空间、服装和关键道具基准"
             ),
+            "sound_design": "",
             "character_keys": [item["character_key"] for item in visible],
             "dialogue_line_ids": [line_id],
             "provider_prompt": _provider_prompt(
@@ -704,7 +731,32 @@ def compile_storyboard(project, clauses, characters, instruction="", ending="", 
 def validate_script(script):
     shots = script.get("shots") or []
     lines = script.get("dialogue_lines") or []
-    if not shots or len(shots) != len(lines):
+    line_ids = [str(item.get("id") or "") for item in lines if isinstance(item, dict)]
+    referenced_line_ids = []
+    structure_invalid = (
+        not shots
+        or len(line_ids) != len(lines)
+        or not all(line_ids)
+        or len(set(line_ids)) != len(line_ids)
+    )
+    if not structure_invalid:
+        known_line_ids = set(line_ids)
+        for shot in shots:
+            shot_line_ids = [str(value or "") for value in shot.get("dialogue_line_ids") or []]
+            if (
+                len(shot_line_ids) > 6
+                or len(set(shot_line_ids)) != len(shot_line_ids)
+                or any(line_id not in known_line_ids for line_id in shot_line_ids)
+            ):
+                structure_invalid = True
+                break
+            referenced_line_ids.extend(shot_line_ids)
+        if (
+            len(set(referenced_line_ids)) != len(referenced_line_ids)
+            or set(referenced_line_ids) != known_line_ids
+        ):
+            structure_invalid = True
+    if structure_invalid:
         return {
             "status": "blocked",
             "blockers": [{"code": "script_structure_invalid", "message": "镜头与台词结构不完整"}],
@@ -714,7 +766,10 @@ def validate_script(script):
     normalized_lines = [
         _NORMALIZE_RE.sub("", str(item.get("text") or "")).lower()
         for item in lines
-        if str(item.get("text") or "").strip()
+        if (
+            str(item.get("text") or "").strip()
+            and not str(item.get("source_type") or "").startswith("user_")
+        )
     ]
     if (
         len(normalized_lines) > 1

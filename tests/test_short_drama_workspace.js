@@ -10,6 +10,7 @@ const workspaceSource = fs.readFileSync(
 );
 const html = fs.readFileSync(path.join(ROOT, 'site/workbench/short-drama.html'), 'utf8');
 const stamp = fs.readFileSync(path.join(ROOT, 'scripts/stamp_assets.py'), 'utf8');
+
 const workspaceStyle = fs.readFileSync(
   path.join(ROOT, 'site/workbench/short-drama-workspace.css'), 'utf8'
 );
@@ -20,6 +21,18 @@ test('独立页面加载三栏对话工作区资源', () => {
   assert.match(html, /short-drama-workspace\.js\?v=/);
   assert.match(stamp, /Asset\("short-drama-workspace\.js"/);
   assert.match(stamp, /Asset\("short-drama-workspace\.css"/);
+});
+
+test('镜头编辑允许填写更完整的运镜和连续性要求', () => {
+  assert.match(workspaceSource, /机位与运镜<textarea name="camera" maxlength="300"/);
+  assert.match(workspaceSource, /连续性要求<textarea name="continuity" maxlength="360"/);
+});
+
+test('镜头编辑提供单一声音设计区域并独立保存', () => {
+  assert.match(workspaceSource, /声音设计<textarea name="sound_design" maxlength="600"/);
+  assert.match(workspaceSource, /环境声、动作音效、音乐、声音转场/);
+  assert.match(workspaceSource, /sound_design:values\.sound_design/);
+  assert.match(workspaceSource, /sound_design:text\(fields\.sound_design/);
 });
 
 test('剧本确认后正式项目切换为两栏并将聊天收进只读创作记录', () => {
@@ -736,6 +749,33 @@ test('镜头角色更换会同步提示词且不改动未替换角色', () => {
   assert.equal(workspace.syncShotBindingPrompt('林默走进教室。',['林默'],[]),'林默走进教室。');
 });
 
+test('镜头执行编辑器可显式绑定锁定场景并保留场景补充', () => {
+  assert.match(workspaceSource,/本镜头场景绑定/);
+  assert.match(workspaceSource,/name="scene_key"/);
+  assert.match(workspaceSource,/补充当前镜头的场景细节/);
+  assert.match(workspaceSource,/execution\.scene_key=/);
+  assert.match(workspaceStyle,/\.sd-shot-scene-binding/);
+});
+
+test('剧本镜头编辑器使用已有故事场景选择器并支持不绑定', () => {
+  assert.match(workspaceSource,/绑定故事场景/);
+  assert.match(workspaceSource,/不绑定故事场景/);
+  assert.match(workspaceSource,/name="scene_key"/);
+  assert.match(workspaceSource,/client\.bindSceneToShot/);
+  assert.match(workspaceSource,/scenes\/bind-shot/);
+  assert.doesNotMatch(workspaceSource,/<label>场景<input name="scene"/);
+});
+
+test('镜头细节默认折叠并提供快捷选择、系统连续性和保护规则', () => {
+  assert.match(workspaceSource,/镜头细节（可选）/);
+  assert.match(workspaceSource,/data-action="set-shot-detail"/);
+  assert.match(workspaceSource,/连续性（系统自动继承）/);
+  assert.match(workspaceSource,/data-action="edit-shot-continuity"/);
+  assert.match(workspaceSource,/系统保护规则/);
+  assert.match(workspaceSource,/本镜头实际生成要求/);
+  assert.match(workspaceStyle,/\.sd-shot-detail-chips/);
+});
+
 test('剧本审阅阶段继承项目中已锁定的角色标准图', () => {
   assert.match(workspaceSource, /project:function\(id\).*short-drama\/project/);
   assert.match(workspaceSource, /persistedCharacter/);
@@ -1267,6 +1307,32 @@ test('adopting a non-latest candidate binds preview and adoption to that exact v
     }),
     /候选版本已变化/,
   );
+});
+
+test('redo steps keep async results inside stable cards and preserve the viewport once', () => {
+  const output = workspace.refinementRedoGenerationHtml({
+    shot_key:'shot_02',sort_order:2
+  }, {
+    provider_poc:{
+      shots:[{shot_key:'shot_02',sort_order:2,binding_ready:true,sequence_ready:true,character_keys:['hero']}],
+      characters:[{character_key:'hero',name:'主角',binding_ready:true}]
+    },
+    provider_preview:{shot:{shot_key:'shot_02'},ready:true,message:'参数检查通过',request:{prompt:'稳定镜头提示词'}},
+    provider_quote:{shot:{shot_key:'shot_02'},cost:30},
+    provider_job:{shot_key:'shot_02',status:'succeeded',progress:100}
+  }, true);
+  assert.match(output, /data-provider-step="2"[\s\S]*sd-refinement-step-status[\s\S]*参数检查通过[\s\S]*<\/article>/);
+  assert.match(output, /data-provider-step="3"[\s\S]*sd-refinement-step-status[\s\S]*30 点[\s\S]*<\/article>/);
+  assert.match(output, /data-provider-step="4"[\s\S]*sd-refinement-step-status[\s\S]*镜头任务[\s\S]*<\/article>/);
+  assert.match(output, /<details class="sd-refinement-step-details">/);
+  assert.doesNotMatch(output, /sd-refinement-redo-steps">[\s\S]*<\/article><div class="sd-check/);
+
+  const handlerSource = workspaceSource.slice(
+    workspaceSource.indexOf("==='provider-preflight'"),
+    workspaceSource.indexOf("==='jump-to-shot'")
+  );
+  assert.equal((handlerSource.match(/renderPreservingViewport\(\)/g)||[]).length, 3);
+  assert.doesNotMatch(handlerSource, /\.finally\(function\(\)\{busy\(false\);render\(\);\}\)/);
 });
 
 test('refinement redo sidebar is a read-only progress summary', () => {
@@ -1901,7 +1967,50 @@ test('locked scripts keep Provider video generation available while script editi
   const output = workspace.scriptHtml(version, false, providerState, 'shot_01', true);
   assert.match(output, /data-action="provider-preflight" data-shot-key="shot_01" type="button">/);
   assert.doesNotMatch(output, /data-action="edit-shot"/);
+  assert.doesNotMatch(output, /data-action="move-shot-up"/);
+  assert.doesNotMatch(output, /data-action="move-shot-down"/);
+  assert.doesNotMatch(output, /data-action="copy-shot"/);
+  assert.doesNotMatch(output, /data-action="add-shot-before"/);
+  assert.doesNotMatch(output, /data-action="add-shot-after"/);
+  assert.doesNotMatch(output, /data-action="smart-insert-shot"/);
+  assert.doesNotMatch(output, /data-action="delete-shot"/);
   assert.doesNotMatch(output, /sd-shot-provider-disabled-reason/);
+});
+
+test('locked adjacent shots disable only structure actions that cross their boundary', () => {
+  const shots = [
+    {shot_key:'shot_01',sort_order:1,duration_seconds:5,visual:'start',dialogue_line_ids:['line_01']},
+    {shot_key:'shot_02',sort_order:2,duration_seconds:5,visual:'locked middle',dialogue_line_ids:['line_02'],locked:true},
+    {shot_key:'shot_03',sort_order:3,duration_seconds:5,visual:'end',dialogue_line_ids:['line_03']}
+  ];
+  assert.deepEqual(workspace.shotStructureCapabilities(shots,0,true), {
+    enabled:true,moveUp:false,moveDown:false,copy:false,insertBefore:true,
+    insertAfter:false,smartInsert:false,deleteShot:false
+  });
+  assert.deepEqual(workspace.shotStructureCapabilities(shots,2,true), {
+    enabled:true,moveUp:false,moveDown:false,copy:true,insertBefore:false,
+    insertAfter:true,smartInsert:true,deleteShot:false
+  });
+  const outerLocked = [
+    {shot_key:'a',locked:true},{shot_key:'b'},{shot_key:'c'},{shot_key:'d',locked:true}
+  ];
+  assert.equal(workspace.shotStructureCapabilities(outerLocked,1,true).moveDown,false);
+  assert.equal(workspace.shotStructureCapabilities(outerLocked,2,true).moveUp,false);
+
+  const output = workspace.scriptHtml({version:1,status:'draft',script:{
+    overview:{title:'Boundary story'},characters:[],shots:shots,
+    dialogue_lines:[
+      {id:'line_01',kind:'silence'},
+      {id:'line_02',kind:'silence'},
+      {id:'line_03',kind:'silence'}
+    ]
+  }}, true, {}, '', false, {}, '', '', {}, {}, 'shot_01');
+  assert.match(output, /data-action="move-shot-down" data-shot-key="shot_01" disabled/);
+  assert.match(output, /data-action="copy-shot" data-shot-key="shot_01" disabled/);
+  assert.match(output, /data-action="add-shot-after" data-shot-key="shot_01" disabled/);
+  assert.match(output, /data-action="smart-insert-shot" data-shot-key="shot_01" disabled/);
+  assert.match(output, /data-action="delete-shot" data-shot-key="shot_01" disabled/);
+  assert.match(output, /data-action="add-shot-before" data-shot-key="shot_01">/);
 });
 
 test('Provider video generation explains why it is disabled before the script is locked', () => {
@@ -2155,11 +2264,11 @@ test('scene locking offers upload, prompt generation, preview and explicit confi
   const output = workspace.sceneLockingHtml({
     graph_revision:3,
     scenes:[{
-      scene_key:'scene-group-1',name:'小区长椅',description:'傍晚的小区长椅',locked:false,
+      scene_key:'scene-group-1',name:'小区长椅',description:'傍晚的小区长椅',locked:false,custom:true,
       shots:[{shot_key:'shot_01',sort_order:1},{shot_key:'shot_02',sort_order:2}],
       preview:{url:'/api/gen/file/scene.png',prompt:'暖色夕阳下的小区长椅',status:'draft'}
     }]
-  }, true);
+  }, true, {}, 'scene-group-1');
   assert.match(output, /场景锁定/);
   assert.match(output, /已锁定 0 \/ 1/);
   assert.match(output, /aria-label="场景锁定进度"/);
@@ -2168,10 +2277,211 @@ test('scene locking offers upload, prompt generation, preview and explicit confi
   assert.match(output, />#2</);
   assert.match(output, /sd-scene-prompt-editor/);
   assert.match(output, /编辑场景描述/);
+  assert.match(output, /data-action="add-scene"/);
+  assert.match(workspaceSource, /sceneLockingHtml\(sceneWorkspace,\(canEdit\|\|canGenerate\),sceneImageOperations,pendingSceneDeleteKey\)/);
+  assert.match(output, /data-action="choose-scene-asset"/);
   assert.match(output, /data-scene-upload/);
   assert.match(output, /data-action="generate-scene-image"/);
   assert.match(output, /data-action="lock-scene-reference"/);
   assert.match(output, /data-action="preview-character-image"/);
   assert.match(workspaceSource, /asset-graph\/scenes\/reference/);
   assert.match(workspaceSource, /reference_source:'ai_generation'/);
+  assert.match(workspaceSource, /client\.createScene/);
+  assert.match(workspaceSource, /client\.updateScene/);
+  assert.match(workspaceSource, /client\.deleteScene/);
+  assert.match(workspaceSource, /client\.restoreScene/);
+  assert.match(output, /确认移入回收站/);
+  assert.match(output, /退出项目不会删除/);
+  assert.match(workspaceSource, /关联镜头/);
+});
+
+test('scene image generation shows per-scene progress and survives refresh', () => {
+  assert.match(workspaceSource, /recoverSceneImageOperations/);
+  assert.match(workspaceSource, /正在提交任务/);
+  assert.match(workspaceSource, /背景图生成中/);
+  assert.match(workspaceSource, /正在保存背景图/);
+  assert.match(workspaceSource, /可以继续处理其他场景或镜头/);
+  assert.match(workspaceSource, /该场景的背景图正在生成，请勿重复提交/);
+  assert.match(workspaceStyle, /\.sd-scene-generation-overlay/);
+  assert.match(workspaceStyle, /@keyframes sd-scene-spin/);
+});
+
+test('scene workspace reloads for editable script review as well as locked scripts', () => {
+  assert.equal(workspace.sceneWorkspaceRequired({
+    conversation:{state:'script_review'},
+    current_script:{id:'script-1',script:{shots:[{shot_key:'shot_01'}]}}
+  }), true);
+  assert.equal(workspace.sceneWorkspaceRequired({
+    conversation:{state:'script_locked'},
+    current_script:{id:'script-1',script:{shots:[]}}
+  }), true);
+  assert.equal(workspace.sceneWorkspaceRequired({
+    conversation:{state:'direction_review'},current_script:null
+  }), false);
+  assert.match(workspaceSource, /if\(sceneWorkspaceRequired\(state\)\)\{\s*tasks\.push\(loadSceneWorkspace\(\)\)/);
+});
+
+test('shot workspace supports flexible structure and duration guidance', () => {
+  assert.match(workspaceSource, /data-action="add-shot-after"/);
+  assert.match(workspaceSource, /data-action="smart-insert-shot"/);
+  assert.match(workspaceSource, /data-action="delete-shot"/);
+  assert.match(workspaceSource, /data-action="copy-shot"/);
+  assert.match(workspaceSource, /data-action="move-shot-up"/);
+  assert.match(workspaceSource, /不会强制截断镜头/);
+  assert.match(workspaceSource, /shot\/structure/);
+});
+
+test('locked shots do not expose structure mutation controls', () => {
+  const rendered = workspace.scriptHtml({id:'script-1',script:{
+    overview:{}, story_beats:[], characters:[],
+    dialogue_lines:[{id:'line-1',kind:'silence',text:''}],
+    shots:[{
+      shot_key:'shot-1',sort_order:1,duration_seconds:5,locked:true,
+      dialogue_line_ids:['line-1'],purpose:'locked',visual:'locked shot',
+    }],
+  }},true,{},'',true,{},'','',{graph_revision:1,scenes:[]},{},'shot-1',{},'');
+  assert.match(rendered, /data-action="toggle-shot-lock"/);
+  assert.doesNotMatch(rendered, /data-action="(?:move-shot|copy-shot|add-shot|delete-shot)/);
+});
+
+test('shot drafts are isolated by trusted account and legacy unowned keys are discarded', () => {
+  const aliceKey = workspace.shotDraftStorageKey('alice','project-1','shot-1');
+  const bobKey = workspace.shotDraftStorageKey('bob','project-1','shot-1');
+  assert.notEqual(aliceKey,bobKey);
+  assert.match(aliceKey,/^hq-short-drama-shot-draft:/);
+  assert.doesNotMatch(aliceKey,/alice/);
+
+  const storage = new Map();
+  const legacyKey = 'hq-short-drama-shot-draft:project-1:shot-1';
+  storage.set(legacyKey,JSON.stringify({dialogue_text:'private draft'}));
+  workspace.discardLegacyShotDraft({removeItem:key => storage.delete(key)},'project-1','shot-1');
+  assert.equal(storage.has(legacyKey),false);
+});
+
+test('镜头编辑只拦截错误字段并保留其余有效修改', () => {
+  assert.equal(workspace.shotTimingIssue({
+    duration_seconds:5, dialogue_kind:'dialogue', character_key:'character_1', dialogue_text:'你好'
+  }), null);
+  const longDialogue = workspace.shotTimingIssue({
+    duration_seconds:4,
+    dialogue_kind:'dialogue',
+    character_key:'character_1',
+    dialogue_text:'这是一段明显无法在四秒钟以内自然说完的镜头台词内容'
+  });
+  assert.equal(longDialogue.field, 'dialogue_text');
+  assert.equal(longDialogue.relatedField, 'duration_seconds');
+  assert.match(longDialogue.message, /请选择更快语速、精简台词、延长镜头或拆分到下一镜头/);
+  assert.ok(workspace.dialogueReadingSeconds('这是一段需要加快语速的测试台词',1.5)<workspace.dialogueReadingSeconds('这是一段需要加快语速的测试台词',1));
+  assert.equal(workspace.shotTimingIssue({
+    duration_seconds:5, dialogue_kind:'dialogue', character_key:'character_1',
+    dialogue_text:'这是一段需要加快语速才能说完的测试台词', speech_rate:1.5
+  }), null);
+  const fastStatus = workspace.shotTimingStatus({
+    duration_seconds:10,
+    dialogue_kind:'dialogue',
+    character_key:'character_1',
+    dialogue_text:'欢迎来到谁是大赢家辩论赛现场！今日辩题：面对对手的无理指责，究竟是该“大度容忍”还是“当场硬刚”？正反双方，开撕！',
+    speech_rate:1.5
+  });
+  assert.equal(fastStatus.issue, null);
+  assert.ok(fastStatus.reading_seconds < 10);
+  assert.ok(fastStatus.remaining_seconds > 0);
+  const extremeDialogue = '这是一段需要极快语速才能在短镜头内说完的测试台词';
+  const extremeStatus = workspace.shotTimingStatus({
+    duration_seconds:5,
+    dialogue_kind:'dialogue',
+    character_key:'character_1',
+    dialogue_text:extremeDialogue,
+    speech_rate:2
+  });
+  assert.equal(extremeStatus.issue, null);
+  assert.ok(extremeStatus.reading_seconds < workspace.dialogueReadingSeconds(extremeDialogue, 1.5));
+  assert.equal(workspace.shotTimingIssue({
+    duration_seconds:3, dialogue_kind:'silence', dialogue_text:''
+  }).field, 'duration_seconds');
+  assert.match(workspaceSource, /hq-short-drama-shot-draft:/);
+  assert.match(workspaceSource, /name="speech_rate"/);
+  assert.match(workspaceSource, /极快 · 2\.0×/);
+  assert.match(workspaceSource, /只影响当前镜头/);
+  assert.match(workspaceSource, /data-shot-timing-hint/);
+  assert.match(workspaceSource, /speech_rate:values\.speech_rate/);
+  assert.match(workspaceSource, /保存未完成，请修改标红内容/);
+  assert.match(workspaceSource, /if\(!issue\)\{\s*changes\.duration_seconds/);
+  assert.match(workspaceSource, /function refreshShotTimingValidation\(form,shotKey\)/);
+  assert.match(workspaceSource, /clearShotIssuePresentation\(form,shotKey\)/);
+  assert.match(workspaceStyle, /\.sd-shot-editor label\.has-error textarea/);
+  assert.match(workspaceStyle, /\.sd-shot-field-error/);
+  assert.match(workspaceStyle, /\.sd-shot-timing-hint\.ready/);
+});
+
+test('单镜头支持多角色有序台词并按总朗读时间校验', () => {
+  const dialogues = [
+    {kind:'dialogue', character_key:'character_1', text:'你终于来了。', speech_rate:1},
+    {kind:'dialogue', character_key:'character_2', text:'路上耽搁了一会儿。', speech_rate:1.15},
+  ];
+  assert.equal(workspace.shotTimingIssue({duration_seconds:6, dialogues}), null);
+  const status = workspace.shotTimingStatus({duration_seconds:6, dialogues});
+  assert.equal(status.dialogue_count, 2);
+  assert.ok(status.reading_seconds > 0);
+  assert.equal(
+    status.reading_seconds,
+    Math.round((
+      workspace.dialogueReadingSeconds(dialogues[0].text, 1) +
+      workspace.dialogueReadingSeconds(dialogues[1].text, 1.15)
+    ) * 100) / 100,
+  );
+  const tooMany = workspace.shotTimingIssue({
+    duration_seconds:15,
+    dialogues:Array.from({length:7}, (_, index) => ({
+      kind:'dialogue', character_key:'character_1', text:'第'+index+'句', speech_rate:2,
+    })),
+  });
+  assert.equal(tooMany.code, 'dialogue_count_invalid');
+  const missingSpeaker = workspace.shotTimingIssue({
+    duration_seconds:6,
+    dialogues:[{kind:'dialogue', character_key:'', text:'没有角色', speech_rate:1}],
+  });
+  assert.equal(missingSpeaker.dialogueIndex, 0);
+  assert.match(workspaceSource, /data-dialogue-row/);
+  assert.match(workspaceSource, /data-action="add-shot-dialogue"/);
+  assert.match(workspaceSource, /data-action="remove-shot-dialogue"/);
+  assert.match(workspaceSource, /data-action="move-shot-dialogue-up"/);
+  assert.match(workspaceSource, /data-action="move-shot-dialogue-down"/);
+  assert.match(workspaceSource, /changes\.dialogues=values\.dialogues/);
+});
+
+test('重复台词可保存且同时说话按并行组最长时长计算', () => {
+  const repeated = '这块饼干是我的呀';
+  const dialogues = [
+    {kind:'dialogue', character_key:'character_1', text:repeated, speech_rate:1, timing_mode:'sequential'},
+    {kind:'dialogue', character_key:'character_2', text:repeated, speech_rate:1, timing_mode:'simultaneous'},
+  ];
+  const status = workspace.shotTimingStatus({duration_seconds:4, dialogues});
+  assert.equal(status.issue, null);
+  assert.equal(status.reading_seconds, workspace.dialogueReadingSeconds(repeated, 1));
+  assert.ok(status.reading_seconds < workspace.dialogueReadingSeconds(repeated, 1) * 2);
+  assert.match(workspaceSource, /data-dialogue-field="timing_mode"/);
+  assert.match(workspaceSource, /与上一条同时说/);
+  assert.match(workspaceSource, /timing_mode:text\(field\('timing_mode'\)/);
+});
+
+test('重新打开镜头编辑器会保留服务端保存的同时说话顺序', () => {
+  const restored = workspace.editableShotDialogues([
+    {id:'line-1', kind:'dialogue', character_key:'character_1', text:'一起走。', speech_rate:1, timing_mode:'sequential'},
+    {id:'line-2', kind:'dialogue', character_key:'character_2', text:'一起走。', speech_rate:1, timing_mode:'simultaneous'},
+  ]);
+  assert.deepEqual(restored.map(item => item.timing_mode), ['sequential', 'simultaneous']);
+  assert.equal(workspace.shotTimingStatus({duration_seconds:4, dialogues:restored}).dialogue_count, 2);
+});
+
+test('镜头保存错误在当前编辑器内提示而不是外层通知', () => {
+  assert.match(workspaceSource, /function presentShotIssue\(form,shotKey,issue\)/);
+  assert.match(workspaceSource, /issue&&issue\.partial\?'镜头内容已保存，场景绑定需要重试'/);
+  assert.match(workspaceSource, /镜头文字和其他有效信息已经保存；故事场景暂未绑定/);
+  assert.match(workspaceSource, /function bindShotScene\(shotKey,sceneKey\)/);
+  assert.match(workspaceSource, /保存未完成，请修改标红内容/);
+  assert.match(workspaceSource, /relatedField:'duration_seconds'/);
+  assert.match(workspaceSource, /presentShotIssue\(form,shot\.shot_key,backendShotIssue\(error,values\)\)/);
+  assert.doesNotMatch(workspaceSource, /show\('其他可用内容已保存；请修改标红的内容后再次保存。',true\)/);
+  assert.match(workspaceStyle, /\.sd-shot-save-summary\{position:sticky/);
 });

@@ -13,6 +13,7 @@ import sqlite3
 import subprocess
 import time
 import uuid
+from contextlib import closing, nullcontext
 from pathlib import Path
 
 from providers.short_drama_visual import capability_snapshot
@@ -22,7 +23,7 @@ from providers.short_drama_visual.heygen_cinematic import (
 from providers.short_drama_visual.runtime import load_by_name, load_from_environment
 from providers.short_drama_visual.base import VisualProviderError
 
-from . import points as points_domain
+from . import jobs_store, points as points_domain
 from . import short_drama_assembly_plan as media_plan
 from . import short_drama_asset_graph, short_drama_duration
 
@@ -226,6 +227,12 @@ def _connection(db_factory):
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
+
+
+def _read_connection(db_factory, connection=None):
+    if connection is not None:
+        return nullcontext(connection)
+    return closing(_connection(db_factory))
 
 
 def init_db(db_factory):
@@ -525,18 +532,23 @@ def _locked_media_contract(conn, project):
     }
     if any(not _table_exists(conn, name) for name in required):
         return empty
-    shot_rows = conn.execute(
-        "SELECT shot.id,shot.shot_key,shot.sort_order,shot.duration,"
-        "voice.locked,voice.timeline_revision FROM short_drama_shots shot "
-        "LEFT JOIN short_drama_voice_shots voice ON voice.shot_id=shot.id "
-        "WHERE shot.project_id=? ORDER BY shot.sort_order,shot.id",
-        (project["id"],),
-    ).fetchall()
-    if not shot_rows or any(not row["locked"] for row in shot_rows):
+    shot_rows = short_drama_asset_graph.current_project_shots(
+        conn, project["id"],
+    )
+    voice_rows = {
+        row["shot_id"]: row for row in conn.execute(
+            "SELECT shot_id,locked,timeline_revision FROM short_drama_voice_shots "
+            "WHERE project_id=?", (project["id"],),
+        )
+    }
+    if not shot_rows or any(
+            not voice_rows.get(row["id"])
+            or not voice_rows[row["id"]]["locked"] for row in shot_rows):
         return empty
     cursor = 0
     tracks, subtitles, timeline = [], [], []
     for shot in shot_rows:
+        voice = voice_rows[shot["id"]]
         shot_start = cursor
         cursor += int(shot["duration"]) * 1000
         lines = conn.execute(
@@ -573,7 +585,7 @@ def _locked_media_contract(conn, project):
                 })
         timeline.append({
             "shot_id": shot["id"], "shot_key": shot["shot_key"],
-            "timeline_revision": int(shot["timeline_revision"]),
+            "timeline_revision": int(voice["timeline_revision"]),
             "start_ms": shot_start, "end_ms": cursor,
         })
     if not tracks:
@@ -1197,6 +1209,7 @@ def _clean_execution(value):
     result["include_scene_reference"] = (
         value.get("include_scene_reference") is not False
     )
+    result["scene_key"] = str(value.get("scene_key") or "").strip()[:160]
     if "character_keys" in value:
         raw_character_keys = value.get("character_keys")
         if not isinstance(raw_character_keys, list):
@@ -1257,7 +1270,7 @@ def _save_execution_override(conn, project_id, shot_key, execution):
 
 def preview_provider_request(
     db_factory, owner_username, actor_username, body, avatar_lookup=None,
-    include_private=False,
+    include_private=False, connection=None,
 ):
     """Compile one exact visual-provider request without billing or I/O."""
     project_id = str(body.get("project_id") or "").strip()
@@ -1266,8 +1279,7 @@ def preview_provider_request(
     avatar_id = str(body.get("avatar_id") or "").strip()
     character_key = str(body.get("character_key") or "").strip()
     provider = load_from_environment() or HeyGenCinematicShotProvider()
-    conn = _connection(db_factory)
-    try:
+    with _read_connection(db_factory, connection) as conn:
         project = _project(conn, owner_username, project_id)
         plan = _confirmed_plan(conn, project_id, plan_id)
         source_row = conn.execute(
@@ -1276,8 +1288,6 @@ def preview_provider_request(
             (plan["source_script_version_id"], project_id),
         ).fetchone()
         source_script = _json(source_row["script_json"], {}) if source_row else {}
-    finally:
-        conn.close()
     shots = [
         item for item in plan["plan"].get("material_plan") or []
         if isinstance(item, dict)
@@ -1291,19 +1301,17 @@ def preview_provider_request(
             "provider_shot_not_found", "请选择制作计划中的有效镜头", 422
         )
     execution = None
-    conn = _connection(db_factory)
-    try:
+    with _read_connection(db_factory, connection) as conn:
         _project(conn, owner_username, project_id)
         if "execution" in body:
             execution = _clean_execution(body.get("execution"))
             execution = _save_execution_override(
                 conn, project_id, shot_key, execution,
             )
-            conn.commit()
+            if connection is None:
+                conn.commit()
         else:
             execution = _execution_override(conn, project_id, shot_key)
-    finally:
-        conn.close()
     if execution:
         shot = dict(shot)
         for key in (
@@ -1379,16 +1387,14 @@ def preview_provider_request(
             raise AutodraftError(
                 "provider_character_required", "当前镜头没有可用于生成的出镜角色", 422
             )
-        conn = _connection(db_factory)
-        try:
+        with _read_connection(db_factory, connection) as conn:
             scene_reference = short_drama_asset_graph.locked_scene_reference(
                 conn, project_id, shot_key,
+                execution.get("scene_key") if execution else None,
             )
             previous_reference = _previous_shot_reference(
                 conn, project_id, shots, shot_key,
             )
-        finally:
-            conn.close()
         if execution and execution.get("include_continuity_reference") is False:
             previous_reference = None
         if execution and execution.get("include_scene_reference") is False:
@@ -1415,17 +1421,15 @@ def preview_provider_request(
                 "当前镜头的角色与场景参考图总数超过视频服务上限",
                 422,
             )
-        conn = _connection(db_factory)
-        try:
+        with _read_connection(db_factory, connection) as conn:
             placeholders = ",".join("?" for _ in required_character_keys)
             rows = conn.execute(
-                "SELECT character_key,name,reference_file,reference_url,reference_locked "
+                "SELECT character_key,name,reference_file,reference_url,"
+                "reference_version,reference_locked "
                 "FROM short_drama_characters WHERE project_id=? AND character_key IN ("
                 + placeholders + ")",
                 tuple([project_id] + required_character_keys),
             ).fetchall()
-        finally:
-            conn.close()
         by_key = {str(row["character_key"]): row for row in rows}
         for key in required_character_keys:
             row = by_key.get(key)
@@ -1440,6 +1444,7 @@ def preview_provider_request(
                 "name": str(row["name"] or key),
                 "file": str(row["reference_file"] or "").strip(),
                 "url": str(row["reference_url"] or "").strip(),
+                "reference_version": int(row["reference_version"] or 0),
             })
         if previous_reference and (
             previous_reference.get("file") or previous_reference.get("url")
@@ -1471,8 +1476,7 @@ def preview_provider_request(
             "image_url": str(primary["reference_url"] or ""),
         }
     if avatar is None and not avatar_id and character_key:
-        conn = _connection(db_factory)
-        try:
+        with _read_connection(db_factory, connection) as conn:
             row = conn.execute(
                 "SELECT avatar_id,reference_file,reference_url,reference_locked "
                 "FROM short_drama_characters "
@@ -1493,23 +1497,18 @@ def preview_provider_request(
                 )
             ):
                 avatar_id = "character:" + character_key
-        finally:
-            conn.close()
     if avatar is None and not avatar_id:
         raise AutodraftError(
             "provider_avatar_required", "请先为当前角色锁定一张标准形象图", 422
         )
     if avatar is None and provider.name == "grok" and avatar_id == "character:" + character_key:
-        conn = _connection(db_factory)
-        try:
+        with _read_connection(db_factory, connection) as conn:
             reference = conn.execute(
                 "SELECT name,reference_file,reference_url,reference_locked "
                 "FROM short_drama_characters "
                 "WHERE project_id=? AND character_key=?",
                 (project_id, character_key),
             ).fetchone()
-        finally:
-            conn.close()
         if not reference:
             raise AutodraftError(
                 "provider_avatar_not_found", "当前角色的标准形象图不存在", 422
@@ -1565,6 +1564,17 @@ def preview_provider_request(
         else timeline_duration_seconds
     )
     prompt = _visual_prompt(shot)
+    speech_rates = [
+        float(item.get("speech_rate") or 1.0)
+        for item in shot.get("dialogue") or []
+        if isinstance(item, dict) and str(item.get("text") or "").strip()
+    ]
+    if speech_rates:
+        speech_rate = max(speech_rates)
+        prompt += (
+            " 台词语速要求：%.2g倍语速，保持吐字清楚、情绪自然并尽量匹配口型。"
+            % speech_rate
+        )
     prompt += (
         " 全片统一视觉基线：画面比例%s，视觉风格%s；保持人物脸部、发型、年龄、"
         "服装，道具外观，主光方向、色温和场景空间布局跨镜头一致。"
@@ -1985,10 +1995,398 @@ def _mark_provider_attempt_failure(
         conn.close()
 
 
+def _minimax_xiaole_payload(provider_request, quote, actor_username):
+    request = dict(provider_request or {})
+    provider = load_by_name("minimax_h3")
+    references = provider.resolve_reference_values(
+        request.get("reference_images") or []
+    )
+    public_payload = {
+        "channel": "minimax",
+        "operation": "generate",
+        "model": "MiniMax-H3",
+        "prompt": str(request.get("prompt") or "").strip(),
+        "ratio": str(request.get("ratio") or "9:16").strip(),
+        "resolution": "2k",
+        "duration": int(request.get("duration_seconds") or 0),
+        "reference_images": references,
+    }
+    from . import video
+
+    validated = video.validate_xiaole_video_payload(
+        public_payload, actor_username
+    )
+    # The provider-ready Data URIs are validation-only. Persisting them in the
+    # shared jobs table would copy private project images into a generic queue
+    # and every database backup. The worker resolves the project-owned compact
+    # references from short_drama_provider_shot_jobs immediately before submit.
+    validated["reference_images"] = []
+    validated["_short_drama_provider_binding"] = {
+        "project_id": str(quote["project_id"]),
+        "plan_id": str(quote["plan_id"]),
+        "shot_key": str(quote["shot_key"]),
+        "request_hash": str(quote["request_hash"]),
+    }
+    return validated
+
+
+def resolve_shared_xiaole_payload(
+    db_factory, shared_job_id, actor_username, payload,
+):
+    """Resolve project-owned MiniMax references for one worker invocation only."""
+    resolved = dict(payload or {})
+    binding = resolved.get("_short_drama_provider_binding")
+    if not isinstance(binding, dict):
+        return resolved
+    conn = _connection(db_factory)
+    try:
+        row = conn.execute(
+            "SELECT project_id,actor_username,plan_id,shot_key,provider,input_hash,"
+            "request_json FROM short_drama_provider_shot_jobs WHERE id=?",
+            (str(shared_job_id),),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row or str(row["provider"] or "") != "minimax_h3":
+        raise AutodraftError(
+            "provider_binding_invalid",
+            "麦克视频任务缺少有效的短剧资产绑定",
+            409,
+        )
+    expected = {
+        "project_id": str(row["project_id"] or ""),
+        "plan_id": str(row["plan_id"] or ""),
+        "shot_key": str(row["shot_key"] or ""),
+        "request_hash": str(row["input_hash"] or ""),
+    }
+    if (
+        str(row["actor_username"] or "") != str(actor_username or "")
+        or any(str(binding.get(key) or "") != value for key, value in expected.items())
+    ):
+        raise AutodraftError(
+            "provider_binding_invalid",
+            "麦克视频任务与短剧项目绑定不一致",
+            409,
+        )
+    request = _json(row["request_json"], {})
+    provider = load_by_name("minimax_h3")
+    references = provider.resolve_reference_values(
+        request.get("reference_images") or []
+    )
+    if not references:
+        raise AutodraftError(
+            "provider_reference_required",
+            "麦克视频任务缺少可用的项目参考图",
+            422,
+        )
+    resolved["reference_images"] = references
+    return resolved
+
+
+def _enforce_shared_video_submission_limit(
+    checker, connection, actor_username, pending_job_included=False,
+):
+    if not callable(checker):
+        return
+    limit = checker(
+        connection,
+        actor_username,
+        pending_job_included=pending_job_included,
+    )
+    if not limit:
+        return
+    raise AutodraftError(
+        str(limit.get("code") or "active_job_cap"),
+        str(limit.get("detail") or "当前任务过多，请等待部分完成后重试"),
+        429,
+    )
+
+
+def _start_minimax_xiaole_job(
+    db_factory, owner_username, actor_username, quote, idempotency_key,
+    deduct_points, refund_points, enqueue_job, project_usage,
+    shared_video_submission_limit,
+):
+    if not callable(deduct_points) or not callable(refund_points):
+        raise AutodraftError(
+            "billing_unavailable", "单镜头扣点服务暂不可用", 503
+        )
+    if not callable(enqueue_job):
+        raise AutodraftError(
+            "provider_queue_unavailable", "视频任务队列暂不可用", 503
+        )
+    now = int(time.time())
+    key = _key(idempotency_key)
+    conn = _connection(db_factory)
+    try:
+        existing = conn.execute(
+            "SELECT * FROM short_drama_provider_shot_attempts "
+            "WHERE actor_username=? AND idempotency_key=?",
+            (actor_username, key),
+        ).fetchone()
+        if existing:
+            if existing["request_hash"] != quote["request_hash"]:
+                raise AutodraftError(
+                    "idempotency_conflict", "该幂等键已用于另一单镜头任务", 409
+                )
+            result = _provider_job(conn.execute(
+                "SELECT * FROM short_drama_provider_shot_jobs WHERE id=?",
+                (existing["job_id"],),
+            ).fetchone())
+            if not result:
+                raise AutodraftError(
+                    "provider_charge_recovery_pending",
+                    "扣点状态正在恢复，请稍后重试",
+                    409,
+                )
+            result["replayed"] = True
+            return result
+        if int(quote["expires_at"]) < now:
+            raise AutodraftError("provider_quote_expired", "单镜头报价已过期", 409)
+        if quote["consumed_job_id"]:
+            raise AutodraftError("provider_quote_consumed", "单镜头报价已被使用", 409)
+        _project(conn, owner_username, quote["project_id"])
+        _confirmed_plan(conn, quote["project_id"], quote["plan_id"])
+        _enforce_shared_video_submission_limit(
+            shared_video_submission_limit,
+            conn,
+            actor_username,
+        )
+        if conn.execute(
+            "SELECT 1 FROM short_drama_provider_shot_jobs "
+            "WHERE project_id=? AND shot_key=? AND status IN "
+            "('billing','queued','submitting','running','submit_unknown')",
+            (quote["project_id"], quote["shot_key"]),
+        ).fetchone():
+            raise AutodraftError(
+                "active_provider_shot_job", "当前镜头已有生成任务处理中", 409
+            )
+        project = _project(conn, owner_username, quote["project_id"])
+        usage = (
+            project_usage(conn, quote["project_id"])
+            if callable(project_usage)
+            else {
+                "spent_points": int(project.get("spent_points") or 0),
+                "reserved_points": 0,
+            }
+        )
+        budget = int(project.get("point_budget") or 0)
+        cost = int(quote["cost"])
+        if (
+            budget
+            and int(usage.get("spent_points") or 0)
+            + int(usage.get("reserved_points") or 0)
+            + cost > budget
+        ):
+            raise AutodraftError(
+                "point_budget_exceeded", "项目点数预算不足，无法生成当前镜头", 409
+            )
+    finally:
+        conn.close()
+
+    attempt_id = uuid.uuid4().hex
+    charge_key = "short-drama-provider-shot-charge:" + attempt_id
+    provider_request = _json(quote["request_json"], {})
+    payload = _minimax_xiaole_payload(
+        provider_request, quote, actor_username
+    )
+
+    def associate(connection, shared_job_id):
+        connection.row_factory = sqlite3.Row
+        current = connection.execute(
+            "SELECT token,project_id,plan_id,shot_key,character_key,avatar_id,"
+            "request_hash,request_json,cost,consumed_job_id,expires_at "
+            "FROM short_drama_provider_shot_quotes WHERE token=? "
+            "AND actor_username=? AND owner_username=?",
+            (quote["token"], actor_username, owner_username),
+        ).fetchone()
+        if not current or current["consumed_job_id"]:
+            raise AutodraftError(
+                "provider_quote_consumed", "单镜头报价已被使用", 409
+            )
+        immutable_fields = (
+            "project_id", "plan_id", "shot_key", "character_key", "avatar_id",
+            "request_hash", "request_json", "cost",
+        )
+        if any(current[field] != quote[field] for field in immutable_fields):
+            raise AutodraftError(
+                "provider_quote_changed",
+                "单镜头报价在提交期间发生变化，本次任务已安全终止",
+                409,
+            )
+        commit_now = int(time.time())
+        if int(current["expires_at"] or 0) < commit_now:
+            raise AutodraftError(
+                "provider_quote_expired", "单镜头报价已过期", 409
+            )
+        _enforce_shared_video_submission_limit(
+            shared_video_submission_limit,
+            connection,
+            actor_username,
+            pending_job_included=True,
+        )
+        refreshed = preview_provider_request(
+            db_factory,
+            owner_username,
+            actor_username,
+            {
+                "project_id": current["project_id"],
+                "plan_id": current["plan_id"],
+                "shot_key": current["shot_key"],
+                "character_key": current["character_key"],
+                "avatar_id": current["avatar_id"],
+            },
+            include_private=True,
+            connection=connection,
+        )
+        if refreshed["request_hash"] != current["request_hash"]:
+            raise AutodraftError(
+                "provider_quote_stale",
+                "镜头或锁定角色参考图在扣点期间发生变化，本次任务已安全终止",
+                409,
+            )
+        project = _project(connection, owner_username, current["project_id"])
+        _confirmed_plan(connection, current["project_id"], current["plan_id"])
+        if connection.execute(
+            "SELECT 1 FROM short_drama_provider_shot_jobs "
+            "WHERE project_id=? AND shot_key=? AND status IN "
+            "('billing','queued','submitting','running','submit_unknown')",
+            (current["project_id"], current["shot_key"]),
+        ).fetchone():
+            raise AutodraftError(
+                "active_provider_shot_job",
+                "当前镜头已有生成任务处理中",
+                409,
+            )
+        usage = (
+            project_usage(connection, current["project_id"])
+            if callable(project_usage)
+            else {
+                "spent_points": int(project.get("spent_points") or 0),
+                "reserved_points": 0,
+            }
+        )
+        budget = int(project.get("point_budget") or 0)
+        if (
+            budget
+            and int(usage.get("spent_points") or 0)
+            + int(usage.get("reserved_points") or 0)
+            + int(current["cost"]) > budget
+        ):
+            raise AutodraftError(
+                "point_budget_exceeded",
+                "项目点数预算不足，无法生成当前镜头",
+                409,
+            )
+        shared_id = str(shared_job_id)
+        connection.execute(
+            "INSERT INTO short_drama_provider_shot_jobs "
+            "(id,project_id,owner_username,actor_username,plan_id,shot_key,"
+            "character_key,avatar_id,provider,status,progress,poll_count,input_hash,"
+            "request_json,cost,created_at,updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,'queued',5,0,?,?,?,?,?)",
+            (
+                shared_id, current["project_id"], owner_username, actor_username,
+                current["plan_id"], current["shot_key"], current["character_key"],
+                current["avatar_id"], "minimax_h3", current["request_hash"],
+                current["request_json"], int(current["cost"]), commit_now, commit_now,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO short_drama_provider_shot_attempts "
+            "(id,actor_username,owner_username,project_id,idempotency_key,"
+            "request_hash,quote_token,cost,charge_key,refund_key,state,job_id,"
+            "created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?, 'linked',?,?,?)",
+            (
+                attempt_id, actor_username, owner_username, current["project_id"],
+                key, current["request_hash"], current["token"], int(current["cost"]),
+                charge_key,
+                jobs_store.refund_transaction_key(shared_job_id, actor_username),
+                shared_id, commit_now, commit_now,
+            ),
+        )
+        changed = connection.execute(
+            "UPDATE short_drama_provider_shot_quotes SET consumed_job_id=? "
+            "WHERE token=? AND consumed_job_id IS NULL",
+            (shared_id, current["token"]),
+        ).rowcount
+        if changed != 1:
+            raise AutodraftError(
+                "provider_quote_consumed", "单镜头报价已被使用", 409
+            )
+
+    try:
+        shared_job_id, _points_left = jobs_store.create_paid_job(
+            db_factory,
+            deduct_points,
+            refund_points,
+            "xiaole_video",
+            actor_username,
+            int(quote["cost"]),
+            payload,
+            "content",
+            before_commit=associate,
+            charge_transaction_key=charge_key,
+        )
+    except jobs_store.PaidJobInsertError as error:
+        if isinstance(error.__cause__, AutodraftError):
+            raise error.__cause__
+        raise
+    try:
+        queued = bool(enqueue_job(shared_job_id, "xiaole_video", None))
+    except Exception:
+        queued = False
+    if not queued:
+        reason = "麦克视频任务队列已满，请稍后重试"
+        claimed = jobs_store.set_terminal(
+            db_factory,
+            shared_job_id,
+            "error",
+            error=reason,
+            from_states=("pending",),
+        )
+        if claimed:
+            refund_key = jobs_store.refund_transaction_key(
+                shared_job_id, actor_username
+            )
+
+            def refund_shared(username, cost):
+                refund_points(
+                    username,
+                    cost,
+                    reason,
+                    transaction_key=refund_key,
+                )
+                return True
+
+            jobs_store.refund_once(
+                db_factory,
+                shared_job_id,
+                actor_username,
+                int(quote["cost"]),
+                refund_shared,
+            )
+        reconcile_shared_xiaole_job(db_factory, shared_job_id)
+        raise AutodraftError(
+            "provider_queue_full", "视频任务队列已满，请稍后重试", 429
+        )
+    conn = _connection(db_factory)
+    try:
+        result = _provider_job(conn.execute(
+            "SELECT * FROM short_drama_provider_shot_jobs WHERE id=?",
+            (str(shared_job_id),),
+        ).fetchone())
+    finally:
+        conn.close()
+    result["replayed"] = False
+    return result
+
+
 def start_provider_job(
     db_factory, owner_username, actor_username, body, idempotency_key,
     avatar_lookup=None, deduct_points=None, refund_points=None,
-    charge_lookup=None, project_usage=None,
+    charge_lookup=None, project_usage=None, enqueue_job=None,
+    shared_video_submission_limit=None,
 ):
     token = str(body.get("quote_token") or "").strip()
     key = _key(idempotency_key)
@@ -2046,6 +2444,19 @@ def start_provider_job(
     prepared_provider_name = str(
         _json(prepared_request_json, {}).get("provider") or "heygen_cinematic"
     ).strip()
+    if prepared_provider_name == "minimax_h3":
+        return _start_minimax_xiaole_job(
+            db_factory,
+            owner_username,
+            actor_username,
+            inspect_quote,
+            key,
+            deduct_points,
+            refund_points,
+            enqueue_job,
+            project_usage,
+            shared_video_submission_limit,
+        )
     if not inspect_existing:
         provider = load_by_name(prepared_provider_name)
         if provider is None or not provider.configured:
@@ -2426,6 +2837,50 @@ def _provider_attempt_for_job(conn, job_id):
     ).fetchone()
 
 
+def _matching_shared_xiaole_job(conn, row):
+    """Return the shared paid job only when its private binding proves ownership."""
+    if not row or row["provider"] != "minimax_h3":
+        return None
+    raw_job_id = str(row["id"] or "").strip()
+    try:
+        shared_job_id = int(raw_job_id)
+    except (TypeError, ValueError):
+        return None
+    if str(shared_job_id) != raw_job_id:
+        return None
+    try:
+        shared = conn.execute(
+            "SELECT * FROM jobs WHERE id=?", (shared_job_id,)
+        ).fetchone()
+        if not shared:
+            return None
+        payload = _json(shared["payload"], {})
+        if not isinstance(payload, dict):
+            return None
+        binding = payload.get("_short_drama_provider_binding") or {}
+        if not isinstance(binding, dict):
+            return None
+        expected_binding = {
+            "project_id": row["project_id"],
+            "plan_id": row["plan_id"],
+            "shot_key": row["shot_key"],
+            "request_hash": row["input_hash"],
+        }
+        if (
+            shared["kind"] != "xiaole_video"
+            or shared["username"] != row["actor_username"]
+            or payload.get("channel") != "minimax"
+            or any(
+                binding.get(key) != value
+                for key, value in expected_binding.items()
+            )
+        ):
+            return None
+        return shared
+    except (IndexError, KeyError, sqlite3.OperationalError, TypeError, ValueError):
+        return None
+
+
 def _refund_provider_job(db_factory, job_id, error, refund_points=None):
     conn = _connection(db_factory)
     try:
@@ -2459,6 +2914,23 @@ def _recover_provider_refund(
                 and not force
             )
         ):
+            conn.commit()
+            return False
+        projected = conn.execute(
+            "SELECT * FROM short_drama_provider_shot_jobs WHERE id=?",
+            (job_id,),
+        ).fetchone()
+        shared = _matching_shared_xiaole_job(conn, projected)
+        if shared is not None:
+            if int(shared["refunded"] or 0) == 1:
+                conn.execute(
+                    "UPDATE short_drama_provider_shot_attempts SET state='refunded',"
+                    "refund_retry_at=0,updated_at=? WHERE id=? "
+                    "AND state='refund_pending'",
+                    (now, attempt["id"]),
+                )
+                conn.commit()
+                return True
             conn.commit()
             return False
         claimed = conn.execute(
@@ -2786,6 +3258,186 @@ def _finish_provider_job(db_factory, row, provider, provider_state):
             conn.close()
 
 
+def _reconcile_minimax_xiaole_job(db_factory, row):
+    """Project one existing HuangQue xiaole job into the short-drama view."""
+    conn = _connection(db_factory)
+    try:
+        shared = conn.execute(
+            "SELECT * FROM jobs WHERE id=?",
+            (int(row["id"]),),
+        ).fetchone()
+        if not shared:
+            raise AutodraftError(
+                "shared_video_job_missing",
+                "麦克视频任务记录不存在，请联系管理员核对",
+                409,
+            )
+        payload = _json(shared["payload"], {})
+        binding = payload.get("_short_drama_provider_binding") or {}
+        expected_binding = {
+            "project_id": row["project_id"],
+            "plan_id": row["plan_id"],
+            "shot_key": row["shot_key"],
+            "request_hash": row["input_hash"],
+        }
+        if (
+            shared["kind"] != "xiaole_video"
+            or shared["username"] != row["actor_username"]
+            or payload.get("channel") != "minimax"
+            or any(binding.get(key) != value for key, value in expected_binding.items())
+        ):
+            raise AutodraftError(
+                "shared_video_job_mismatch",
+                "麦克视频任务与当前短剧镜头不匹配，已停止自动关联",
+                409,
+            )
+        shared_status = str(shared["status"] or "pending").lower()
+        shared_result = _json(shared["result"], {})
+        shared_error = str(shared["error"] or "").strip()
+        shared_refunded = int(shared["refunded"] or 0)
+    finally:
+        conn.close()
+
+    now = int(time.time())
+    if shared_status == "done":
+        video_file = str(shared_result.get("video_file") or "").strip()
+        video_url = str(shared_result.get("video_url") or "").strip()
+        provider_job_id = str(
+            shared_result.get("provider_video_id") or ""
+        ).strip()
+        if not video_file or not video_url or not provider_job_id:
+            raise AutodraftError(
+                "shared_video_result_incomplete",
+                "麦克视频已完成但产物记录不完整，请联系管理员核对",
+                409,
+            )
+        conn = _connection(db_factory)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            current = conn.execute(
+                "SELECT * FROM short_drama_provider_shot_jobs WHERE id=?",
+                (row["id"],),
+            ).fetchone()
+            version_row = conn.execute(
+                "SELECT * FROM short_drama_provider_shot_versions WHERE job_id=?",
+                (row["id"],),
+            ).fetchone()
+            if not version_row:
+                version = int(conn.execute(
+                    "SELECT COALESCE(MAX(version),0)+1 "
+                    "FROM short_drama_provider_shot_versions "
+                    "WHERE project_id=? AND shot_key=?",
+                    (row["project_id"], row["shot_key"]),
+                ).fetchone()[0])
+                version_id = uuid.uuid4().hex
+                conn.execute(
+                    "INSERT INTO short_drama_provider_shot_versions "
+                    "(id,project_id,job_id,shot_key,version,provider,provider_job_id,"
+                    "status,file,url,input_hash,created_at) "
+                    "VALUES (?,?,?,?,?,?,?,'ready',?,?,?,?)",
+                    (
+                        version_id, row["project_id"], row["id"], row["shot_key"],
+                        version, "minimax_h3", provider_job_id, video_file,
+                        video_url, row["input_hash"], now,
+                    ),
+                )
+            else:
+                version = int(version_row["version"])
+                version_id = version_row["id"]
+            final_result = dict(
+                shared_result, version_id=version_id, version=version,
+            )
+            if current and current["status"] != "succeeded":
+                conn.execute(
+                    "UPDATE short_drama_provider_shot_jobs "
+                    "SET status='succeeded',progress=100,provider_job_id=?,"
+                    "result_json=?,error_json=NULL,updated_at=? WHERE id=?",
+                    (
+                        provider_job_id, _json_text(final_result), now, row["id"],
+                    ),
+                )
+            conn.execute(
+                "UPDATE short_drama_provider_shot_attempts SET state='done',"
+                "updated_at=? WHERE job_id=? AND state IN ('accepted','charged','linked')",
+                (now, row["id"]),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    elif shared_status in {"error", "failed", "canceled", "cancelled"}:
+        error_payload = {
+            "code": "shared_video_generation_failed",
+            "detail": shared_error or "麦克视频生成失败",
+            "retryable": False,
+        }
+        attempt_state = "refunded" if shared_refunded == 1 else "refund_pending"
+        conn = _connection(db_factory)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "UPDATE short_drama_provider_shot_jobs "
+                "SET status='failed',error_json=?,updated_at=? "
+                "WHERE id=? AND status NOT IN ('succeeded','failed','canceled')",
+                (_json_text(error_payload), now, row["id"]),
+            )
+            conn.execute(
+                "UPDATE short_drama_provider_shot_attempts "
+                "SET state=?,error_json=?,updated_at=? "
+                "WHERE job_id=? AND state NOT IN ('done','refunded')",
+                (
+                    attempt_state, _json_text(error_payload), now, row["id"],
+                ),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    else:
+        projected_status = "running" if shared_status == "running" else "queued"
+        projected_progress = 35 if projected_status == "running" else 5
+        conn = _connection(db_factory)
+        try:
+            conn.execute(
+                "UPDATE short_drama_provider_shot_jobs SET status=?,progress=?,"
+                "error_json=NULL,updated_at=? WHERE id=? "
+                "AND status NOT IN ('succeeded','failed','canceled')",
+                (projected_status, projected_progress, now, row["id"]),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    conn = _connection(db_factory)
+    try:
+        return _attach_provider_attempt_state(conn, _provider_job(conn.execute(
+            "SELECT * FROM short_drama_provider_shot_jobs WHERE id=?",
+            (row["id"],),
+        ).fetchone()))
+    finally:
+        conn.close()
+
+
+def reconcile_shared_xiaole_job(db_factory, job_id):
+    """Reconcile a worker-owned xiaole terminal without any provider call."""
+    conn = _connection(db_factory)
+    try:
+        row = conn.execute(
+            "SELECT * FROM short_drama_provider_shot_jobs "
+            "WHERE id=? AND provider='minimax_h3'",
+            (str(job_id),),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    return _reconcile_minimax_xiaole_job(db_factory, row)
+
+
 def reconcile_provider_job(
     db_factory, owner_username, project_id, job_id,
     refund_points=None, charge_lookup=None,
@@ -2801,8 +3453,11 @@ def reconcile_provider_job(
         if not row:
             raise LookupError("single-shot provider job does not exist")
         current = _provider_job(row)
+        shared_owned = _matching_shared_xiaole_job(conn, row) is not None
     finally:
         conn.close()
+    if shared_owned:
+        return _reconcile_minimax_xiaole_job(db_factory, row)
     if current["status"] == "billing":
         conn = _connection(db_factory)
         try:

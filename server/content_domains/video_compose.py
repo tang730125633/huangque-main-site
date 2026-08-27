@@ -387,6 +387,12 @@ def dispatch_http(handler, method, verify_token, must_change_password, asset_db_
             if project["status"] == "completed" and project.get("output_file"):
                 payload["output_url"] = BASE_PATH + "/" + match.group(1) + "/output"
             return handler._send(200, payload) or True
+        match = PROJECT_RE.match(path)
+        if method == "DELETE" and match:
+            body = _body(handler)
+            revision = _revision(body.get("expected_revision"))
+            deleted = store.delete_project(user["username"], match.group(1), revision)
+            return handler._send(200, {"project": deleted}) or True
         handler._send(404, {"detail": "not found"})
         return True
     except (ValueError, LookupError, store.RevisionConflict) as error:

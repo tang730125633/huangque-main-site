@@ -14,6 +14,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from decimal import Decimal, ROUND_HALF_UP
 
 
 PUBLIC_ORIGIN = os.environ.get("HQ_CLI_PUBLIC_ORIGIN", "https://huangquechuanmei.com").strip().rstrip("/")
@@ -50,6 +51,7 @@ SCOPES = {
     "leads:read": "读取本人线索跟进记录",
     "leads:write": "经确认后更新本人线索跟进记录",
     "short-drama:read": "读取本人短剧项目与生产准备状态",
+    "short-drama:write": "经确认后创建或删除本人短剧项目",
     "generation:quote": "查询生成、采集或获客任务所需点数",
     "generation:submit": "经二次确认后提交付费任务并扣点",
     "video-compose:read": "读取本人一键成片项目",
@@ -104,11 +106,14 @@ CHANNEL_CATALOG = (
      "access": "managed", "capabilities": ["image-upload", "assets"], "selector": {}},
 )
 CONFIRMATION_ACTIONS = frozenset({
-    "ip12-create", "ip12-message", "prompt-optimize", "canvas-create", "canvas-ops",
-    "asset-favorite", "asset-tags", "video-compose-create", "video-compose-analyze",
-    "video-compose-review", "video-compose-render", "digital-presenter-create",
-    "digital-presenter-update",
-    "inspiration-like", "leads-crm-upsert",
+    "ip12-create", "ip12-message", "ip12-delete", "prompt-optimize", "canvas-create", "canvas-ops",
+    "canvas-delete", "asset-favorite", "asset-tags", "asset-delete", "video-compose-create", "video-compose-analyze",
+    "video-compose-review", "video-compose-render", "video-compose-delete", "digital-presenter-create",
+    "digital-presenter-update", "digital-presenter-delete", "voice-clone-create",
+    "inspiration-like", "leads-crm-upsert", "leads-delete",
+    "short-drama-create", "short-drama-delete",
+    "digital-ip-create", "digital-ip-update", "digital-ip-delete",
+    "text-video-avatar-import", "text-video-plan",
 })
 
 # This is the public contract shared by the CLI, the first-party HTTP bridge,
@@ -119,18 +124,26 @@ _ACTION_INPUTS = {
     "account": (), "channels": (), "pricing": (),
     "text-video-capability": (), "text-video-templates": (),
     "text-video-styles": (), "text-video-voices": (),
+    "text-video-generate": ("text", "template", "mode", "style", "voice", "speech_rate", "talking_material"),
+    "matrix-template-capability": (), "matrix-template-templates": (),
+    "matrix-template-generate": ("top_text", "bottom_text", "template_id"),
+    "text-video-avatar-import": ("image_upload_id",),
+    "text-video-plan": ("text", "template", "mode", "style", "voice", "speech_rate", "ratio"),
     "inspiration-catalog": (), "inspiration-likes": (),
     "inspiration-like": ("id", "favorite"),
     "leads-crm": ("lead_ids",), "leads-crm-upsert": ("lead_id", "intent", "follow_status", "follow_note"),
     "collect-content": ("url",), "collect-video": ("url",), "collect-transcript": ("url",),
     "collect-search": ("platform", "keyword", "page"), "leads-generate": ("url", "platform", "pages", "channels_targets"),
     "video-avatars": ("limit",), "audio-slots": (),
+    "voice-clone-create": ("slot_id", "name", "audio_upload_id"),
+    "voice-clone-status": ("slot_id",),
     "short-drama-projects": ("page", "page_size"),
     "short-drama-project": ("project_id",), "short-drama-conversation": ("project_id",),
     "short-drama-preflight": ("project_id",),
     "digital-ip-projects": (), "digital-ip-project": ("project_id",), "digital-ip-report": ("project_id",),
     "ip12-projects": (), "ip12-project": ("project_id",), "ip12-report": ("project_id",),
     "ip12-create": ("title",), "ip12-message": ("project_id", "message", "request_id"),
+    "ip12-delete": ("project_id",),
     "prompt-optimize": ("prompt", "kind"),
     "canvas-list": ("limit", "offset"), "canvas-get": ("board_id",),
     "canvas-create": ("name", "prompt"), "canvas-agent-plan": ("prompt", "project_id", "snapshot_digest", "scope", "nodes", "edges", "selected_node_ids", "history"),
@@ -138,6 +151,16 @@ _ACTION_INPUTS = {
     "tasks": ("days", "kind", "page", "page_size"), "task": ("job_id",),
     "assets": ("kind", "limit", "offset"), "voices": (),
     "asset-favorite": ("kind", "key", "favorite"), "asset-tags": ("kind", "key", "tags"),
+    "asset-delete": ("kind", "id", "keys"),
+    "canvas-delete": ("board_id",),
+    "video-compose-delete": ("project_id", "expected_revision"),
+    "digital-presenter-delete": ("board_id", "project_id", "revision"),
+    "short-drama-create": ("title", "synopsis", "ratio", "target_duration", "shot_count", "genre", "visual_style", "request_id"),
+    "short-drama-delete": ("project_id", "revision"),
+    "leads-delete": ("lead_ids",),
+    "digital-ip-create": ("title",),
+    "digital-ip-update": ("project_id", "revision", "title"),
+    "digital-ip-delete": ("project_id", "revision"),
     "video-compose-projects": (), "video-compose-project": ("project_id",),
     "video-compose-create": ("source_asset_id",),
     "video-compose-analyze": ("project_id", "expected_revision"),
@@ -162,10 +185,28 @@ _ACTION_INPUTS = {
 _ACTION_PURPOSES = {
     "account": "读取当前黄雀账号与点数", "channels": "读取可用渠道", "pricing": "读取实时价格",
     "ip12-projects": "读取本人 IP12 项目", "ip12-project": "读取本人 IP12 项目详情",
-    "ip12-report": "读取本人 IP12 报告", "canvas-list": "读取本人画布", "canvas-get": "读取本人画布详情",
+    "ip12-report": "读取本人 IP12 报告", "ip12-delete": "删除本人 IP12 项目",
+    "canvas-list": "读取本人画布", "canvas-get": "读取本人画布详情",
+    "canvas-delete": "删除本人创建的画布",
     "tasks": "读取本人任务记录", "task": "读取本人任务详情", "assets": "读取本人资产", "voices": "读取可用音色",
+    "asset-delete": "删除本人自产资产（单条或批量）",
+    "video-compose-delete": "删除本人一键成片项目",
+    "digital-presenter-delete": "删除本人画布中的数字人口播项目",
+    "short-drama-create": "创建本人短剧项目",
+    "short-drama-delete": "删除本人短剧项目",
+    "leads-delete": "删除本人线索跟进记录",
+    "digital-ip-create": "创建本人数字 IP 项目",
+    "digital-ip-update": "更新本人数字 IP 项目",
+    "digital-ip-delete": "删除本人数字 IP 项目",
+    "voice-clone-create": "用本人样音创建或重新录制个人克隆音色",
+    "voice-clone-status": "读取个人克隆音色处理状态",
     "image-generate": "生成图片", "video-generate": "生成视频", "video-lipsync": "让本人原视频匹配新口播音频",
-    "audio-generate": "生成音频",
+    "audio-generate": "生成音频", "text-video-generate": "根据主题或完整文案生成成片",
+    "matrix-template-capability": "读取模板成片服务状态",
+    "matrix-template-templates": "读取模板成片视觉模板",
+    "matrix-template-generate": "使用平台素材库创建模板成片",
+    "text-video-avatar-import": "导入文案成片口播人物图片",
+    "text-video-plan": "生成可选择的文案成片口播分镜方案",
     "canvas-agent-plan": "为画布生成可确认的操作方案", "canvas-ops": "写入本人画布操作",
 }
 
@@ -177,6 +218,8 @@ _INT_ID_SCHEMA = {"type": "integer", "minimum": 1, "maximum": 2**63 - 1}
 _IMAGE_UPLOAD_SCHEMA = {"type": "string", "pattern": "^img_[0-9a-f]{32}$"}
 _VIDEO_UPLOAD_SCHEMA = {"type": "string", "pattern": "^vid_[0-9a-f]{32}$"}
 _AUDIO_UPLOAD_SCHEMA = {"type": "string", "pattern": "^aud_[0-9a-f]{32}$"}
+_VOICE_SLOT_ID_PATTERN = "^[A-Za-z][A-Za-z0-9_-]{1,87}$"
+_VOICE_SLOT_ID_RE = re.compile(_VOICE_SLOT_ID_PATTERN)
 
 # Keep discovery and executable planning on one channel matrix.  The public
 # CLI carries an identical table and the cross-package contract test prevents
@@ -378,6 +421,51 @@ _MEDIA_SCHEMAS = {
             "volume": {"type": "integer", "minimum": -50, "maximum": 100},
         }, "constraints": ["speed is rounded to one decimal place"],
     },
+    "text-video-generate": {
+        "required": ["text", "template", "style", "voice"], "properties": {
+            "text": {"type": "string", "minLength": 2, "maxLength": 1000},
+            "template": {"type": "string", "minLength": 1, "maxLength": 240},
+            "mode": {"type": "string", "enum": ["generate", "fixed"]},
+            "style": {"type": "string", "minLength": 1, "maxLength": 80},
+            "voice": {"type": "string", "minLength": 1, "maxLength": 200},
+            "speech_rate": {"type": "number", "minimum": 0.5, "maximum": 2.0},
+            "talking_material": {"type": "object"},
+        },
+        "constraints": [
+            "template, style, and voice must come from the matching text-video read capabilities",
+            "mode defaults to generate; fixed preserves the supplied copy and automatically splits scenes",
+            "the signed CLI quote carries the native quote; final submission revalidates it before deduction",
+            "talking_material must reference an active plan and owner-scoped avatar assets",
+        ],
+    },
+    "matrix-template-generate": {
+        "required": ["top_text", "bottom_text", "template_id"], "properties": {
+            "top_text": {"type": "string", "minLength": 2, "maxLength": 60},
+            "bottom_text": {"type": "string", "minLength": 2, "maxLength": 80},
+            "template_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+        },
+        "constraints": [
+            "template_id must come from matrix-template-templates",
+            "duration is automatic, BGM is enabled, and only approved platform-library media is used",
+        ],
+    },
+    "text-video-avatar-import": {
+        "required": ["image_upload_id"],
+        "properties": {"image_upload_id": _IMAGE_UPLOAD_SCHEMA},
+        "constraints": ["image_upload_id must be a current owner-scoped image-upload result"],
+    },
+    "text-video-plan": {
+        "required": ["text", "template", "style", "voice"], "properties": {
+            "text": {"type": "string", "minLength": 2, "maxLength": 1000},
+            "template": {"type": "string", "minLength": 1, "maxLength": 240},
+            "mode": {"type": "string", "enum": ["generate", "fixed"]},
+            "style": {"type": "string", "minLength": 1, "maxLength": 80},
+            "voice": {"type": "string", "minLength": 1, "maxLength": 200},
+            "speech_rate": {"type": "number", "minimum": 0.5, "maximum": 2.0},
+            "ratio": {"type": "number", "minimum": 0.1, "maximum": 0.5},
+        },
+        "constraints": ["creates an expiring owner-scoped plan and requires explicit confirmation"],
+    },
     "canvas-create": {
         "required": ["name"], "properties": {
             "name": {"type": "string", "minLength": 1, "maxLength": 48},
@@ -427,6 +515,17 @@ _MEDIA_SCHEMAS.update({
         "offset": {"type": "integer", "minimum": 0, "maximum": 100000},
     }, "constraints": []},
     "canvas-get": {"required": ["board_id"], "properties": {"board_id": _ID_SCHEMA}, "constraints": []},
+    "voice-clone-create": {"required": ["slot_id", "name", "audio_upload_id"], "properties": {
+        "slot_id": {"type": "string", "pattern": _VOICE_SLOT_ID_PATTERN},
+        "name": {"type": "string", "minLength": 1, "maxLength": 40},
+        "audio_upload_id": _AUDIO_UPLOAD_SCHEMA,
+    }, "constraints": [
+        "sample audio is private to the current account and should contain 10-60 seconds of clear speech",
+        "reusing a ready slot replaces that personal cloned voice and requires explicit confirmation",
+    ]},
+    "voice-clone-status": {"required": ["slot_id"], "properties": {
+        "slot_id": {"type": "string", "pattern": _VOICE_SLOT_ID_PATTERN},
+    }, "constraints": []},
     "digital-ip-text-generate": {"required": ["text", "voice"], "properties": {
         "avatar_id": _INT_ID_SCHEMA, "image_upload_id": {**_IMAGE_UPLOAD_SCHEMA, "title": "人物照片"},
         "text": {"type": "string", "minLength": 1, "maxLength": 1000},
@@ -505,28 +604,88 @@ _MEDIA_SCHEMAS.update({
         "ratio": {"type": "string", "enum": ["9:16", "16:9"]}, "resolution": {"type": "string", "enum": ["1080p"]},
         "voice_key": {"type": "string", "maxLength": 200}, "target_duration": {"type": "integer", "minimum": 30, "maximum": 180},
     }, "constraints": ["provide at least one editable field and the current revision"]},
+    "asset-delete": {"required": ["kind"], "properties": {
+        "kind": {"type": "string", "enum": ["image", "audio", "video", "copy", "collect", "leads", "breakdown"]},
+        "id": _INT_ID_SCHEMA,
+        "keys": {"type": "array", "minItems": 1, "maxItems": 200, "uniqueItems": True,
+                 "items": {"type": "string", "minLength": 1, "maxLength": 500}},
+    }, "anyOf": [{"required": ["id"]}, {"required": ["keys"]}], "constraints": [
+        "deletion is owner-scoped and soft; read the asset before confirming",
+        "provide exactly one of id (single delete) or keys (batch 1-200)",
+        "avatar kind is not deletable through this action",
+    ]},
+    "canvas-delete": {"required": ["board_id"], "properties": {
+        "board_id": _ID_SCHEMA,
+    }, "constraints": ["only the board owner can delete", "deletion is irreversible and always requires confirm=true"]},
+    "video-compose-delete": {"required": ["project_id", "expected_revision"], "properties": {
+        "project_id": {"type": "string", "pattern": "^compose_[0-9a-f]{32}$"},
+        "expected_revision": _INT_ID_SCHEMA,
+    }, "constraints": ["soft delete guarded by the current revision"]},
+    "digital-presenter-delete": {"required": ["board_id", "project_id", "revision"], "properties": {
+        "board_id": _ID_SCHEMA,
+        "project_id": {"type": "string", "pattern": "^dp_[0-9a-f]{32}$"},
+        "revision": _INT_ID_SCHEMA,
+    }, "constraints": ["board_id must be a canvas the account can edit"]},
+    "short-drama-create": {"required": ["title", "synopsis", "ratio", "target_duration", "shot_count", "request_id"], "properties": {
+        "title": {"type": "string", "minLength": 1, "maxLength": 80},
+        "synopsis": {"type": "string", "minLength": 8, "maxLength": 4000},
+        "ratio": {"type": "string", "enum": ["9:16", "16:9"]},
+        "target_duration": {"type": "integer", "enum": [30, 45, 60]},
+        "shot_count": {"type": "integer", "minimum": 6, "maximum": 10},
+        "genre": {"type": "string", "maxLength": 40},
+        "visual_style": {"type": "string", "maxLength": 80},
+        "request_id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{8,128}$"},
+    }, "constraints": ["request_id is the idempotency key; retry with the same request_id"]},
+    "short-drama-delete": {"required": ["project_id", "revision"], "properties": {
+        "project_id": _ID_SCHEMA,
+        "revision": _INT_ID_SCHEMA,
+    }, "constraints": ["soft delete guarded by the current revision"]},
+    "leads-delete": {"required": ["lead_ids"], "properties": {
+        "lead_ids": {"type": "array", "minItems": 1, "maxItems": 100,
+                     "items": {"type": "string", "pattern": "^[0-9a-f]{16,40}$"}},
+    }, "constraints": ["only CRM rows owned by the current account are deleted"]},
+    "digital-ip-create": {"required": ["title"], "properties": {
+        "title": {"type": "string", "minLength": 1, "maxLength": 80},
+    }, "constraints": ["subject to the account's project count limit"]},
+    "digital-ip-update": {"required": ["project_id", "revision"], "properties": {
+        "project_id": _ID_SCHEMA,
+        "revision": _INT_ID_SCHEMA,
+        "title": {"type": "string", "minLength": 1, "maxLength": 80},
+    }, "constraints": ["revision must match the latest project revision"]},
+    "digital-ip-delete": {"required": ["project_id", "revision"], "properties": {
+        "project_id": _ID_SCHEMA,
+        "revision": _INT_ID_SCHEMA,
+    }, "constraints": ["soft delete guarded by the current revision"]},
 })
 
 _FAMILIES = {
     "image-upload": "image", "image-generate": "image", "audio-slots": "audio", "voices": "audio", "audio-generate": "audio",
+    "voice-clone-create": "audio", "voice-clone-status": "audio",
     "video-upload": "video", "video-avatars": "video", "video-generate": "video", "video-lipsync": "video", "digital-ip-text-generate": "video",
     "digital-ip-batch-generate": "video", "digital-ip-audio-generate": "video", "cinematic-open-generate": "video",
     "cinematic-motion-generate": "video", "tryon-fast-generate": "video", "tryon-classic-generate": "video",
     "video-compose-projects": "video", "video-compose-project": "video", "video-compose-create": "video",
     "video-compose-analyze": "video", "video-compose-review": "video", "video-compose-render": "video",
     "text-video-capability": "video", "text-video-templates": "video", "text-video-styles": "video", "text-video-voices": "video",
+    "text-video-generate": "video",
+    "matrix-template-capability": "video", "matrix-template-templates": "video",
+    "matrix-template-generate": "video",
+    "text-video-avatar-import": "video", "text-video-plan": "video",
     "canvas-list": "canvas", "canvas-get": "canvas", "canvas-create": "canvas", "canvas-agent-plan": "canvas",
     "canvas-ops": "canvas", "digital-presenter-capability": "canvas", "digital-presenter-project": "canvas",
     "digital-presenter-create": "canvas", "digital-presenter-update": "canvas",
 }
 _ACTION_FEATURE_GATES = {
-    "audio-generate": ("audio",), "canvas-agent-plan": ("canvas_agent",),
+    "audio-generate": ("audio",), "voice-clone-create": ("audio",), "voice-clone-status": ("audio",),
+    "canvas-agent-plan": ("canvas_agent",),
     "video-lipsync": ("video",), "digital-ip-text-generate": ("video",), "digital-ip-batch-generate": ("video",),
     "digital-ip-audio-generate": ("video",), "cinematic-open-generate": ("cinematic",),
     "cinematic-motion-generate": ("cinematic",), "tryon-fast-generate": ("tryon",),
     "tryon-classic-generate": ("tryon",), "digital-presenter-capability": ("digital_presenter",),
     "digital-presenter-project": ("digital_presenter",), "digital-presenter-create": ("digital_presenter",),
-    "digital-presenter-update": ("digital_presenter",),
+    "digital-presenter-update": ("digital_presenter",), "text-video-generate": ("script_to_video",),
+    "matrix-template-generate": ("matrix_template_video",),
+    "text-video-avatar-import": ("script_to_video",), "text-video-plan": ("script_to_video",),
 }
 _OPTION_FEATURE_GATES = {
     ("image-generate", "provider"): {"openai": ("image",), "seedream": ("image",), "xiaole": ("image", "image_xiaole"), "banana": ("image", "banana")},
@@ -540,6 +699,8 @@ _GENERATION_ACTIONS = frozenset({
     "canvas-agent-plan", "image-generate", "video-generate", "video-lipsync", "audio-generate",
     "digital-ip-text-generate", "digital-ip-batch-generate", "digital-ip-audio-generate",
     "cinematic-open-generate", "cinematic-motion-generate", "tryon-fast-generate", "tryon-classic-generate",
+    "text-video-generate",
+    "matrix-template-generate",
 })
 
 
@@ -566,6 +727,8 @@ def _catalog_route(action):
         return "/workbench/audio"
     if action.startswith("text-video-"):
         return "/workbench/text-video"
+    if action.startswith("matrix-template-"):
+        return "/workbench/matrix-template"
     if action.startswith("video-compose-"):
         return "/workbench/one-click-video"
     if action.startswith("digital-ip-"):
@@ -633,7 +796,7 @@ for _catalog_item in ACTION_CATALOG:
     if _catalog_item["action"] in _FAMILIES:
         _catalog_item["family"] = _FAMILIES[_catalog_item["action"]]
 ACTION_CATALOG_MAP = {item["action"]: item for item in ACTION_CATALOG if item["transport"]["kind"] == "action"}
-ACTION_CATALOG_VERSION = "hq-action-catalog-v2"
+ACTION_CATALOG_VERSION = "hq-action-catalog-v4"
 
 
 def action_catalog(feature_states=None):
@@ -679,6 +842,10 @@ _VIDEO_COMPOSE_PROJECT_RE = re.compile(r"^compose_[0-9a-f]{32}$")
 _VIDEO_COMPOSE_CANDIDATE_RE = re.compile(r"^candidate_[0-9a-f]{16}$")
 _DIGITAL_PRESENTER_PROJECT_RE = re.compile(r"^dp_[0-9a-f]{32}$")
 _LEAD_ID_RE = re.compile(r"^[0-9a-f]{16,40}$")
+_TALKING_PLAN_ID_RE = re.compile(r"^talking_plan_[0-9a-f]{32}$")
+_TALKING_AVATAR_ID_RE = re.compile(r"^local_avatar_[0-9a-f]{32}$")
+_TALKING_SCENE_ID_RE = re.compile(r"^scene_[0-9]{2}$")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 _CANVAS_BASE64_RE = re.compile(r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{512,}={0,2}(?![A-Za-z0-9+/_=-])")
 IMAGE_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
@@ -690,6 +857,7 @@ AUDIO_UPLOAD_SLOTS = threading.BoundedSemaphore(2)
 _TASK_KINDS = {
     "", "image", "audio", "video", "xiaole_video", "copy", "collect", "collect_search", "leads",
     "tryon", "cinematic", "avatar", "breakdown", "script_to_video", "sora_video",
+    "matrix_template_video",
 }
 
 
@@ -1441,6 +1609,90 @@ def _digital_presenter_fields(value):
     return fields
 
 
+def _text_video_base_payload(value, extra_fields=()):
+    allowed = {"text", "template", "mode", "style", "voice", "speech_rate"} | set(extra_fields)
+    _strict_object(value, allowed, ("text", "template", "style", "voice"))
+    return {
+        "pipeline": "pixelle",
+        "text": _string(value["text"], "text", 2, 1000),
+        "template": _string(value["template"], "template", 1, 240),
+        "mode": _enum(value.get("mode", "generate"), "mode", ("generate", "fixed")),
+        "style": _string(value["style"], "style", 1, 80),
+        "voice": _string(value["voice"], "voice", 1, 200),
+        "speech_rate": float(Decimal(str(
+            _number(value.get("speech_rate", 1.0), "speech_rate", 0.5, 2.0)
+        )).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)),
+        "source_page": "text-video",
+    }
+
+
+def _text_video_talking_material(raw):
+    _strict_object(raw, {
+        "enabled", "plan_id", "source_hash", "ratio",
+        "default_avatar_asset_id", "scenes",
+    }, ("enabled", "plan_id", "source_hash", "ratio", "default_avatar_asset_id", "scenes"))
+    if raw["enabled"] is not True:
+        raise CLIAPIError(400, "talking_material.enabled 必须为 true")
+    scenes = raw["scenes"]
+    if not isinstance(scenes, list) or not 1 <= len(scenes) <= 20:
+        raise CLIAPIError(400, "talking_material.scenes 必须包含 1-20 项")
+    normalized_scenes = []
+    seen = set()
+    for item in scenes:
+        _strict_object(item, {"scene_id", "enabled", "avatar_asset_id"},
+                       ("scene_id", "enabled"))
+        scene_id = _matched_string(
+            item["scene_id"], "scene_id", _TALKING_SCENE_ID_RE, 16)
+        if scene_id in seen:
+            raise CLIAPIError(400, "talking_material.scenes 不能重复")
+        seen.add(scene_id)
+        if not isinstance(item["enabled"], bool):
+            raise CLIAPIError(400, "talking_material.scenes.enabled 必须是布尔值")
+        scene = {"scene_id": scene_id, "enabled": item["enabled"]}
+        if "avatar_asset_id" in item:
+            if not item["enabled"]:
+                raise CLIAPIError(400, "未启用的口播分镜不能指定人物")
+            scene["avatar_asset_id"] = _matched_string(
+                item["avatar_asset_id"], "avatar_asset_id", _TALKING_AVATAR_ID_RE, 64)
+        normalized_scenes.append(scene)
+    if not any(item["enabled"] for item in normalized_scenes):
+        raise CLIAPIError(400, "请至少启用一个口播分镜")
+    return {
+        "enabled": True,
+        "plan_id": _matched_string(raw["plan_id"], "plan_id", _TALKING_PLAN_ID_RE, 64),
+        "source_hash": _matched_string(raw["source_hash"], "source_hash", _SHA256_RE, 64),
+        "ratio": _number(raw["ratio"], "ratio", 0.1, 0.5),
+        "default_avatar_asset_id": _matched_string(
+            raw["default_avatar_asset_id"], "default_avatar_asset_id",
+            _TALKING_AVATAR_ID_RE, 64),
+        "scenes": normalized_scenes,
+    }
+
+
+def _text_video_payload(value):
+    payload = _text_video_base_payload(value, ("talking_material",))
+    if "talking_material" in value:
+        payload["talking_material"] = _text_video_talking_material(
+            value["talking_material"])
+    return payload
+
+
+def _matrix_template_payload(value):
+    _strict_object(
+        value, {"top_text", "bottom_text", "template_id"},
+        ("top_text", "bottom_text", "template_id"),
+    )
+    template_id = _string(value["template_id"], "template_id", 1, 64)
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", template_id):
+        raise CLIAPIError(400, "template_id 格式不合法")
+    return {
+        "top_text": _string(value["top_text"], "top_text", 2, 60),
+        "bottom_text": _string(value["bottom_text"], "bottom_text", 2, 80),
+        "template_id": template_id,
+        "bgm": True,
+    }
+
+
 def _collect_url(value):
     url = _string(value, "url", 1, 2048)
     try:
@@ -1503,6 +1755,50 @@ def action_plan(action, value):
     if action == "pricing":
         _strict_object(value, set())
         return _plan("profile:read", "proxy", base=CONTENT_BASE, path="/api/gen/pricing")
+    if action == "text-video-avatar-import":
+        _strict_object(value, {"image_upload_id"}, ("image_upload_id",))
+        return _plan(
+            "assets:upload", "proxy", base=CONTENT_BASE,
+            path="/api/gen/cli/text-video/avatar-import", method="POST",
+            body={"image_upload_id": _upload_id(
+                value["image_upload_id"], "image_upload_id")},
+            internal=True,
+        )
+    if action == "text-video-plan":
+        payload = _text_video_base_payload(value, ("ratio",))
+        payload["ratio"] = float(Decimal(str(
+            _number(value.get("ratio", 0.3), "ratio", 0.1, 0.5)
+        )).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP))
+        return _plan(
+            "generation:quote", "proxy", base=CONTENT_BASE,
+            path="/api/gen/text-video/plan", method="POST", body=payload,
+        )
+    if action == "text-video-generate":
+        payload = _text_video_payload(value)
+        return _plan(
+            "generation:quote", "generation",
+            generation_kind="script_to_video",
+            endpoint="/api/gen/script_to_video",
+            payload=payload,
+            quote_endpoint="/api/gen/text-video/quote",
+            quote_body=payload,
+            native_quote_token_field="quote_token",
+            quote_result_fields=("scene_count", "cost_breakdown"),
+        )
+    if action == "matrix-template-generate":
+        payload = _matrix_template_payload(value)
+        return _plan(
+            "generation:quote", "generation",
+            generation_kind="matrix_template_video",
+            endpoint="/api/gen/matrix-template", payload=payload,
+        )
+    if action in {"matrix-template-capability", "matrix-template-templates"}:
+        _strict_object(value, set())
+        suffix = action.removeprefix("matrix-template-")
+        return _plan(
+            "assets:read", "proxy", base=CONTENT_BASE,
+            path="/api/gen/matrix-template/" + suffix,
+        )
     if action in {
             "text-video-capability", "text-video-templates",
             "text-video-styles", "text-video-voices"}:
@@ -1548,6 +1844,18 @@ def action_plan(action, value):
             body["follow_note"] = _string(value["follow_note"], "follow_note", 0, 300)
         return _plan("leads:write", "proxy", base=CONTENT_BASE,
                      path="/api/gen/leads/crm", method="POST", body=body)
+    if action == "leads-delete":
+        _strict_object(value, {"lead_ids"}, ("lead_ids",))
+        lead_ids = value["lead_ids"]
+        if not isinstance(lead_ids, list) or not 1 <= len(lead_ids) <= 100:
+            raise CLIAPIError(400, "lead_ids 必须是 1-100 个线索标识")
+        ids = []
+        for lead_id in lead_ids:
+            lead_id = _matched_string(lead_id, "lead_ids", _LEAD_ID_RE, 40)
+            if lead_id not in ids:
+                ids.append(lead_id)
+        return _plan("leads:write", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/leads/crm", method="DELETE", body={"lead_ids": ids})
     if action in {"collect-content", "collect-video", "collect-transcript"}:
         _strict_object(value, {"url"}, ("url",))
         want = {
@@ -1586,6 +1894,29 @@ def action_plan(action, value):
         _strict_object(value, set())
         return _plan("assets:read", "proxy", base=CONTENT_BASE,
                      path="/api/gen/audio/slots?include_points=0")
+    if action == "voice-clone-status":
+        _strict_object(value, {"slot_id"}, ("slot_id",))
+        slot_id = _matched_string(
+            value["slot_id"], "slot_id", _VOICE_SLOT_ID_RE, 88,
+        )
+        return _plan(
+            "assets:read", "proxy", base=CONTENT_BASE,
+            path="/api/gen/audio/clone-status?" + urllib.parse.urlencode({"slot_id": slot_id}),
+        )
+    if action == "voice-clone-create":
+        _strict_object(value, {"slot_id", "name", "audio_upload_id"},
+                       ("slot_id", "name", "audio_upload_id"))
+        return _plan(
+            "assets:write", "proxy", base=CONTENT_BASE,
+            path="/api/gen/cli/voice-clone", method="POST", body={
+                "slot_id": _matched_string(
+                    value["slot_id"], "slot_id",
+                    _VOICE_SLOT_ID_RE, 88,
+                ),
+                "name": _string(value["name"], "name", 1, 40),
+                "audio_upload_id": _audio_upload_id(value["audio_upload_id"], "audio_upload_id"),
+            }, timeout=30, internal=True,
+        )
     if action == "short-drama-projects":
         _strict_object(value, {"page", "page_size"})
         query = urllib.parse.urlencode({
@@ -1603,6 +1934,36 @@ def action_plan(action, value):
         else:
             path = "/api/gen/short-drama/%s?project_id=%s" % (suffix, project_id)
         return _plan("short-drama:read", "proxy", base=CONTENT_BASE, path=path)
+    if action == "short-drama-create":
+        _strict_object(value, {
+            "title", "synopsis", "ratio", "target_duration", "shot_count", "genre", "visual_style", "request_id",
+        }, ("title", "synopsis", "ratio", "target_duration", "shot_count", "request_id"))
+        target_duration = _integer(value["target_duration"], "target_duration", 1, 10**6)
+        if target_duration not in (30, 45, 60):
+            raise CLIAPIError(400, "短剧时长仅支持 30、45、60 秒")
+        body = {
+            "title": _string(value["title"], "title", 1, 80),
+            "synopsis": _string(value["synopsis"], "synopsis", 8, 4000),
+            "ratio": _enum(value["ratio"], "ratio", ("9:16", "16:9")),
+            "target_duration": target_duration,
+            "shot_count": _integer(value["shot_count"], "shot_count", 6, 10),
+        }
+        if "genre" in value:
+            body["genre"] = _string(value["genre"], "genre", 0, 40)
+        if "visual_style" in value:
+            body["visual_style"] = _string(value["visual_style"], "visual_style", 1, 80)
+        return _plan("short-drama:write", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/short-drama/projects", method="POST", body=body,
+                     headers={"Idempotency-Key": _matched_string(
+                         value["request_id"], "request_id", _IDEMPOTENCY_KEY_RE, 128)})
+    if action == "short-drama-delete":
+        _strict_object(value, {"project_id", "revision"}, ("project_id", "revision"))
+        body = {
+            "project_id": _identifier(value["project_id"], "project_id"),
+            "revision": _integer(value["revision"], "revision", 1, 2**63 - 1),
+        }
+        return _plan("short-drama:write", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/short-drama/project/delete", method="POST", body=body)
     if action == "digital-ip-projects":
         _strict_object(value, set())
         return _plan("ip12:read", "proxy", base=CONTENT_BASE,
@@ -1614,6 +1975,28 @@ def action_plan(action, value):
         return _plan("ip12:read", "proxy", base=CONTENT_BASE,
                      path="/api/gen/digital-ip/projects/"
                      + urllib.parse.quote(project_id, safe="") + suffix)
+    if action == "digital-ip-create":
+        _strict_object(value, {"title"}, ("title",))
+        return _plan("ip12:write", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/digital-ip/projects", method="POST",
+                     body={"title": _string(value["title"], "title", 1, 80)})
+    if action == "digital-ip-update":
+        _strict_object(value, {"project_id", "revision", "title"}, ("project_id", "revision", "title"))
+        project_id = _identifier(value["project_id"], "project_id")
+        body = {"revision": _integer(value["revision"], "revision", 1, 2**63 - 1),
+                "title": _string(value["title"], "title", 1, 80)}
+        return _plan("ip12:write", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/digital-ip/projects/"
+                     + urllib.parse.quote(project_id, safe=""),
+                     method="PATCH", body=body)
+    if action == "digital-ip-delete":
+        _strict_object(value, {"project_id", "revision"}, ("project_id", "revision"))
+        project_id = _identifier(value["project_id"], "project_id")
+        body = {"revision": _integer(value["revision"], "revision", 1, 2**63 - 1)}
+        return _plan("ip12:write", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/digital-ip/projects/"
+                     + urllib.parse.quote(project_id, safe=""),
+                     method="DELETE", body=body)
     if action == "ip12-projects":
         _strict_object(value, set())
         return _plan("ip12:read", "proxy", base=HERMES_BASE, path="/api/conversations")
@@ -1628,6 +2011,12 @@ def action_plan(action, value):
         title = _string(value["title"], "title", 1, 120)
         return _plan("ip12:write", "proxy", base=HERMES_BASE, path="/api/conversations",
                      method="POST", body={"title": title})
+    if action == "ip12-delete":
+        _strict_object(value, {"project_id"}, ("project_id",))
+        project_id = _identifier(value["project_id"], "project_id")
+        return _plan("ip12:write", "proxy", base=HERMES_BASE,
+                     path="/api/conversations/" + urllib.parse.quote(project_id, safe=""),
+                     method="DELETE")
     if action == "ip12-message":
         _strict_object(value, {"project_id", "message", "request_id"}, ("project_id", "message", "request_id"))
         project_id = _identifier(value["project_id"], "project_id")
@@ -1683,6 +2072,10 @@ def action_plan(action, value):
     if action == "canvas-ops":
         payload = _canvas_ops_payload(value)
         return _plan("canvas:edit", "canvas-ops", board_id=payload.pop("board_id"), payload=payload)
+    if action == "canvas-delete":
+        _strict_object(value, {"board_id"}, ("board_id",))
+        return _plan("canvas:write", "canvas-delete",
+                     board_id=_identifier(value["board_id"], "board_id"))
     if action == "tasks":
         _strict_object(value, {"days", "kind", "page", "page_size"})
         days = _integer(value.get("days", 30), "days", 1, 365)
@@ -1730,6 +2123,27 @@ def action_plan(action, value):
         }
         return _plan("assets:write", "proxy", base=CONTENT_BASE, path="/api/gen/asset/tags",
                      method="POST", body=body)
+    if action == "asset-delete":
+        _strict_object(value, {"kind", "id", "keys"}, ("kind",))
+        kind = _enum(value["kind"], "kind", ("image", "audio", "video", "copy", "collect", "leads", "breakdown"))
+        has_id = "id" in value
+        has_keys = "keys" in value
+        if has_id == has_keys:
+            raise CLIAPIError(400, "asset-delete 必须且只能提供 id 或 keys 之一")
+        if has_id:
+            body = {"kind": kind, "id": _integer(value["id"], "id", 1, 2**63 - 1)}
+            return _plan("assets:write", "proxy", base=CONTENT_BASE,
+                         path="/api/gen/asset/delete", method="POST", body=body)
+        keys = value["keys"]
+        if not isinstance(keys, list) or not 1 <= len(keys) <= 200:
+            raise CLIAPIError(400, "keys 必须是 1-200 个资产标识")
+        ids = []
+        for key in keys:
+            key = _string(key, "keys", 1, 500)
+            if key not in ids:
+                ids.append(key)
+        return _plan("assets:write", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/asset/batch-delete", method="POST", body={"kind": kind, "ids": ids})
     if action in {"video-compose-projects", "video-compose-project"}:
         allowed = {"project_id"} if action.endswith("project") else set()
         _strict_object(value, allowed, allowed)
@@ -1757,6 +2171,13 @@ def action_plan(action, value):
         return _plan("video-compose:write", "proxy", base=CONTENT_BASE,
                      path="/api/gen/video-compose/projects/%s/%s" % (project_id, suffix),
                      method="POST", body=body, timeout=300 if action != "video-compose-review" else 30)
+    if action == "video-compose-delete":
+        _strict_object(value, {"project_id", "expected_revision"}, ("project_id", "expected_revision"))
+        project_id = _matched_string(value["project_id"], "project_id", _VIDEO_COMPOSE_PROJECT_RE)
+        body = {"expected_revision": _integer(value["expected_revision"], "expected_revision", 1, 2**63 - 1)}
+        return _plan("video-compose:write", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/video-compose/projects/%s" % project_id,
+                     method="DELETE", body=body)
     if action == "digital-presenter-capability":
         _strict_object(value, set())
         return _plan("digital-presenter:read", "proxy", base=CONTENT_BASE,
@@ -1789,6 +2210,15 @@ def action_plan(action, value):
             path, method = "/api/gen/digital-presenter/project", "PUT"
         return _plan("digital-presenter:write", "proxy", base=CONTENT_BASE,
                      path=path, method=method, body=body, headers=headers)
+    if action == "digital-presenter-delete":
+        _strict_object(value, {"board_id", "project_id", "revision"}, ("board_id", "project_id", "revision"))
+        board_id = _identifier(value["board_id"], "board_id")
+        project_id = _matched_string(value["project_id"], "project_id", _DIGITAL_PRESENTER_PROJECT_RE)
+        revision = _integer(value["revision"], "revision", 1, 2**63 - 1)
+        path = "/api/gen/digital-presenter/project?" + urllib.parse.urlencode(
+            {"id": project_id, "revision": revision})
+        return _plan("digital-presenter:write", "proxy", base=CONTENT_BASE,
+                     path=path, method="DELETE", headers={"X-Canvas-Board-Id": board_id})
     if action in {
             "image-generate", "video-generate", "audio-generate",
             "video-lipsync",
@@ -2110,7 +2540,7 @@ def _canonical(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
 
 
-def issue_quote(secret, username, generation_kind, payload, cost, now=None):
+def issue_quote(secret, username, generation_kind, payload, cost, now=None, context=None):
     if not secret:
         raise CLIAPIError(503, "CLI 报价签名未配置", "not_configured")
     now = int(time.time() if now is None else now)
@@ -2122,6 +2552,10 @@ def issue_quote(secret, username, generation_kind, payload, cost, now=None):
         "h": hashlib.sha256(_canonical(payload)).hexdigest(),
         "c": cost, "e": now + QUOTE_TTL, "n": secrets.token_hex(16),
     }
+    if context is not None:
+        if not isinstance(context, dict):
+            raise CLIAPIError(500, "CLI 报价上下文无效", "invalid_quote_context")
+        claims["x"] = context
     encoded = base64.urlsafe_b64encode(_canonical(claims)).decode("ascii").rstrip("=")
     signature = hmac.new(secret.encode("utf-8"), encoded.encode("ascii"), hashlib.sha256).hexdigest()
     return encoded + "." + signature, claims

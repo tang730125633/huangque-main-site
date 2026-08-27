@@ -9,6 +9,7 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
+from contextlib import closing
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
@@ -18,7 +19,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "server"))
 
 from content_domains import (
-    audio, cli_gateway, cli_uploads, core, submission_idempotency, upstream_guard, video,
+    audio, cli_gateway, cli_uploads, core, matrix_template_video,
+    submission_idempotency, upstream_guard, video,
     video_minimax_h3, video_openai,
 )
 
@@ -127,6 +129,213 @@ class HQCLIContentTests(unittest.TestCase):
         self.assertEqual("quote_cost_changed", result["code"])
         self.assertEqual([], self.points.deductions)
 
+    def test_matrix_replay_and_conflict_precede_remote_preflight(self):
+        body = {
+            "top_text": "有效标题", "bottom_text": "有效行动文案",
+            "template_id": "native-bold", "bgm": True,
+        }
+        key = "matrix-response-loss-001"
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder, \
+             mock.patch.object(core, "JOB_DB", str(Path(folder) / "jobs.db")), \
+             mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+             mock.patch.object(core, "HANDLERS", {"matrix_template_video": lambda payload: payload}), \
+             mock.patch.object(
+                 matrix_template_video, "validate_payload",
+                 side_effect=AssertionError("replay must precede preflight"),
+             ):
+            state, _ = submission_idempotency.begin(
+                core.jdb, "alice", "/api/gen/matrix-template", key, body)
+            self.assertEqual("new", state)
+            submission_idempotency.complete(
+                core.jdb, "alice", "/api/gen/matrix-template", key,
+                {"job_id": 92, "cost": 5, "points_left": 95},
+            )
+            replay_status, replay = self._post(
+                "/api/gen/matrix-template", body, expected=5,
+                idempotency_key=key,
+            )
+            changed_status, changed = self._post(
+                "/api/gen/matrix-template", dict(body, bottom_text="不同文案"),
+                expected=5, idempotency_key=key,
+            )
+        self.assertEqual((200, 92), (replay_status, replay["job_id"]))
+        self.assertEqual((409, "idempotency_conflict"), (
+            changed_status, changed["code"]))
+
+    def test_internal_submission_reconcile_is_read_only_and_fail_closed(self):
+        body = {
+            "top_text": "有效标题", "bottom_text": "关注查看更多",
+            "template_id": "native-bold", "bgm": True,
+        }
+        key = "matrix-reconcile-read-only-001"
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder, \
+             mock.patch.object(core, "JOB_DB", str(Path(folder) / "jobs.db")):
+            submission_idempotency.begin(
+                core.jdb, "alice", "/api/gen/matrix-template", key, body,
+            )
+            submission_idempotency.complete(
+                core.jdb, "alice", "/api/gen/matrix-template", key,
+                {"job_id": 93, "cost": 5, "accepted": True},
+            )
+            with closing(core.jdb()) as connection:
+                connection.execute("""CREATE TABLE IF NOT EXISTS jobs(
+                    id INTEGER PRIMARY KEY,kind TEXT,username TEXT,cost INTEGER,
+                    status TEXT,payload TEXT,created_at INTEGER,updated_at INTEGER,
+                    owner TEXT,refunded INTEGER DEFAULT 0
+                )""")
+                connection.execute(
+                    "INSERT INTO jobs(id,kind,username,cost,status,payload,created_at,updated_at,owner) "
+                    "VALUES(93,'matrix_template_video','alice',5,'running','{}',1,1,'content')"
+                )
+                connection.commit()
+            replay_status, replay = self._post(
+                "/api/gen/internal/submission-reconcile", {
+                    "endpoint": "/api/gen/matrix-template",
+                    "idempotency_key": key, "input": body,
+                },
+            )
+            missing_status, missing = self._post(
+                "/api/gen/internal/submission-reconcile", {
+                    "endpoint": "/api/gen/matrix-template",
+                    "idempotency_key": "matrix-reconcile-missing-001",
+                    "input": body,
+                },
+            )
+            conflict_status, conflict = self._post(
+                "/api/gen/internal/submission-reconcile", {
+                    "endpoint": "/api/gen/matrix-template",
+                    "idempotency_key": key,
+                    "input": dict(body, bottom_text="不同文案"),
+                },
+            )
+            denied_status, _ = self._post(
+                "/api/gen/internal/submission-reconcile", {
+                    "endpoint": "/api/gen/matrix-template",
+                    "idempotency_key": key, "input": body,
+                }, internal=False,
+            )
+        self.assertEqual((replay_status, replay["job_id"]), (200, 93))
+        self.assertTrue(replay["reconciled"])
+        self.assertEqual((missing_status, missing["code"]), (404, "idempotency_not_found"))
+        self.assertEqual((conflict_status, conflict["code"]), (409, "idempotency_conflict"))
+        self.assertEqual(denied_status, 403)
+        self.assertEqual(self.points.deductions, [])
+
+    def test_submission_reconcile_health_requires_internal_token(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder, \
+             mock.patch.object(core, "JOB_DB", str(Path(folder) / "jobs.db")):
+            self.assertEqual(
+                self._post("/api/gen/internal/submission-reconcile/health", {})[0], 200,
+            )
+            self.assertEqual(
+                self._post(
+                    "/api/gen/internal/submission-reconcile/health", {}, internal=False,
+                )[0], 403,
+            )
+
+    def test_stale_processing_without_attempt_is_confirmed_uncharged(self):
+        body = {
+            "top_text": "有效标题", "bottom_text": "关注查看更多",
+            "template_id": "native-bold", "bgm": True,
+        }
+        key = "matrix-before-deduct-crash-001"
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder, \
+             mock.patch.object(core, "JOB_DB", str(Path(folder) / "jobs.db")):
+            submission_idempotency.begin(
+                core.jdb, "alice", "/api/gen/matrix-template", key, body,
+            )
+            with closing(core.jdb()) as connection:
+                connection.execute(
+                    "UPDATE submission_idempotency SET created_at=0,updated_at=0 "
+                    "WHERE username='alice' AND endpoint='/api/gen/matrix-template' "
+                    "AND idem_key=?",
+                    (key,),
+                )
+                connection.commit()
+            status, result = self._post(
+                "/api/gen/internal/submission-reconcile", {
+                    "endpoint": "/api/gen/matrix-template",
+                    "idempotency_key": key, "input": body,
+                },
+            )
+            state, _ = submission_idempotency.replay_existing(
+                core.jdb, "alice", "/api/gen/matrix-template", key, [body],
+            )
+        self.assertEqual((status, result["code"]), (404, "idempotency_not_found"))
+        self.assertEqual(state, "missing")
+        self.assertEqual(self.points.deductions, [])
+
+    def test_matrix_new_request_preflight_unavailable_is_structured_and_free(self):
+        body = {
+            "top_text": "有效标题", "bottom_text": "有效行动文案",
+            "template_id": "native-bold", "bgm": True,
+        }
+        key = "matrix-preflight-down-001"
+        cost = mock.Mock(return_value=5)
+        self.points.cost_of = cost
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder, \
+             mock.patch.object(core, "JOB_DB", str(Path(folder) / "jobs.db")), \
+             mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+             mock.patch.object(core, "HANDLERS", {"matrix_template_video": lambda payload: payload}), \
+             mock.patch.object(
+                 matrix_template_video, "validate_payload",
+                 side_effect=core.feature_flags.FeatureDisabled("模板成片服务暂不可用"),
+             ), mock.patch.object(core.jobs_store, "create_paid_job") as create:
+            status, result = self._post(
+                "/api/gen/matrix-template", body, expected=5,
+                idempotency_key=key,
+            )
+            state, _ = submission_idempotency.begin(
+                core.jdb, "alice", "/api/gen/matrix-template", key, body)
+        self.assertEqual((503, "feature_disabled"), (status, result["code"]))
+        self.assertEqual("new", state)
+        self.assertEqual([], self.points.deductions)
+        cost.assert_not_called()
+        create.assert_not_called()
+
+    def test_matrix_normal_submit_uses_durable_attempt_and_replays_once(self):
+        body = {
+            "top_text": "有效标题", "bottom_text": "关注查看更多",
+            "template_id": "native-bold", "bgm": True,
+        }
+        key = "matrix-durable-normal-001"
+        self.points.cost_of = mock.Mock(return_value=5)
+        self.points.get_points_transaction = mock.Mock(return_value=None)
+        self.points.deduct_points = mock.Mock(return_value=95)
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder, \
+             mock.patch.object(core, "JOB_DB", str(Path(folder) / "jobs.db")), \
+             mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+             mock.patch.object(core, "HANDLERS", {"matrix_template_video": lambda payload: payload}), \
+             mock.patch.object(matrix_template_video, "validate_payload", return_value=body), \
+             mock.patch.object(core, "enqueue_job", return_value=True):
+            with closing(core.jdb()) as connection:
+                connection.execute("""CREATE TABLE jobs(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT,username TEXT,cost INTEGER,
+                    status TEXT DEFAULT 'pending',payload TEXT,result TEXT,error TEXT,
+                    created_at INTEGER,updated_at INTEGER,owner TEXT,refunded INTEGER DEFAULT 0
+                    ,deleted INTEGER DEFAULT 0
+                )""")
+                submission_idempotency.ensure_table(connection)
+                core.matrix_template_submission.ensure_table(connection)
+                connection.commit()
+            first_status, first = self._post(
+                "/api/gen/matrix-template", body, expected=5, idempotency_key=key,
+            )
+            second_status, second = self._post(
+                "/api/gen/matrix-template", body, expected=5, idempotency_key=key,
+            )
+            attempt = core.matrix_template_submission.get(
+                core.jdb, "alice", "/api/gen/matrix-template", key,
+            )
+            with closing(core.jdb()) as connection:
+                job_count = connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+        self.assertEqual((first_status, second_status), (200, 200))
+        self.assertEqual(first["job_id"], second["job_id"])
+        self.assertEqual(attempt["state"], "linked")
+        self.assertEqual(attempt["job_id"], first["job_id"])
+        self.assertEqual(job_count, 1)
+        self.points.deduct_points.assert_called_once()
+
     def test_audio_validation_rejects_bad_knobs_before_generation(self):
         with self.assertRaisesRegex(ValueError, "pitch"):
             audio.validate_audio_payload({"text": "hello", "pitch": 99})
@@ -147,6 +356,89 @@ class HQCLIContentTests(unittest.TestCase):
             audio.resolve_audio_provider_voice = original
         self.assertEqual((public["voice_scope"], public["provider"]), ("public", "cosyvoice"))
         self.assertEqual((personal["voice_scope"], personal["provider"]), ("personal", "cosyvoice"))
+
+    def test_voice_clone_expands_private_upload_and_replays_same_request(self):
+        voice = {"voice_key": "vip_slot_12345678", "status": "training"}
+        replay_response = {"ok": True, "voice": dict(voice, replayed=True)}
+        with mock.patch.object(
+            cli_uploads, "expand_voice_clone_payload",
+            return_value={"slot_id": "slot_12345678", "name": "我的声音",
+                          "audio": "data:audio/wav;base64,AA==", "audio_format": "wav"},
+        ) as expand, mock.patch.object(
+            audio, "validate_clone_vip_payload", side_effect=lambda _user, value: value,
+        ), mock.patch.object(
+            submission_idempotency, "begin",
+            side_effect=[("new", None), ("replay", replay_response), ("conflict", None)],
+        ), mock.patch.object(
+            submission_idempotency, "complete",
+        ) as complete, mock.patch.object(
+            audio, "clone_request_replay", return_value=None,
+        ), mock.patch.object(
+            audio, "mark_clone_training", return_value=voice,
+        ) as mark, mock.patch.object(audio, "clone_vip_voice_background") as background:
+            first = self._post("/api/gen/cli/voice-clone", {
+                "slot_id": "slot_12345678", "name": "我的声音",
+                "audio_upload_id": "aud_" + "a" * 32,
+            }, idempotency_key="clone-request-0001")
+            second = self._post("/api/gen/cli/voice-clone", {
+                "slot_id": "slot_12345678", "name": "我的声音",
+                "audio_upload_id": "aud_" + "a" * 32,
+            }, idempotency_key="clone-request-0001")
+            conflict = self._post("/api/gen/cli/voice-clone", {
+                "slot_id": "slot_87654321", "name": "另一个声音",
+                "audio_upload_id": "aud_" + "b" * 32,
+            }, idempotency_key="clone-request-0001")
+        self.assertEqual((200, 200, 409), (first[0], second[0], conflict[0]))
+        self.assertEqual("idempotency_conflict", conflict[1]["code"])
+        self.assertEqual("training", second[1]["voice"]["status"])
+        complete.assert_called_once()
+        expand.assert_called_once()
+        mark_args = mark.call_args.args
+        self.assertEqual(
+            ("alice", "slot_12345678", "我的声音", "clone-request-0001"),
+            mark_args[:4],
+        )
+        self.assertRegex(mark_args[4], r"^[0-9a-f]{64}$")
+        background.assert_called_once_with("alice", {
+            "slot_id": "slot_12345678", "name": "我的声音",
+            "audio": "data:audio/wav;base64,AA==", "audio_format": "wav",
+            "_request_id": "clone-request-0001",
+        })
+
+    def test_voice_clone_rejects_auth_feature_and_idempotency_guards_before_upload(self):
+        payload = {
+            "slot_id": "slot_12345678", "name": "我的声音",
+            "audio_upload_id": "aud_" + "a" * 32,
+        }
+        self.assertEqual(403, self._post(
+            "/api/gen/cli/voice-clone", payload, internal=False,
+            idempotency_key="clone-request-0001",
+        )[0])
+        self.assertEqual(400, self._post("/api/gen/cli/voice-clone", payload)[0])
+        with mock.patch.object(core, "verify", return_value=None):
+            self.assertEqual(401, self._post(
+                "/api/gen/cli/voice-clone", payload,
+                idempotency_key="clone-request-0001",
+            )[0])
+        with mock.patch.object(
+            core, "verify", return_value={"username": "alice", "must_change": True},
+        ):
+            self.assertEqual(403, self._post(
+                "/api/gen/cli/voice-clone", payload,
+                idempotency_key="clone-request-0001",
+            )[0])
+        with mock.patch.object(
+            core.feature_flags, "require_enabled",
+            side_effect=core.feature_flags.FeatureDisabled("维护中"),
+        ), mock.patch.object(
+            cli_uploads, "expand_voice_clone_payload",
+            side_effect=AssertionError("disabled feature must fail before upload lookup"),
+        ):
+            status, result = self._post(
+                "/api/gen/cli/voice-clone", payload,
+                idempotency_key="clone-request-0001",
+            )
+        self.assertEqual((503, "feature_disabled"), (status, result["code"]))
 
     def test_video_lipsync_uses_owned_assets_and_real_duration_pricing(self):
         with mock.patch.object(video, "get_video_asset", return_value={

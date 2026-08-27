@@ -5,4 +5,8 @@ pypdf>=6,<7
 edge-tts>=7,<8
 faster-whisper>=1,<2
 requests>=2.32,<3
+openai-agents==0.8.4
+openai==2.40.0
+mcp==1.29.0
+httpx[socks]>=0.27,<1
 yt-dlp>=2025.1,<2028

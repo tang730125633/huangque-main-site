@@ -56,7 +56,7 @@ hq describe ip12-projects --json
 
 ## 页面入口不等于直接执行
 
-`text-video`、`short-drama`、`pricing-page`、`invite`、`recharge` 和 `bots` 是页面入口：运行后只返回固定黄雀主站链接，除非再加 `--open-browser`，否则连浏览器都不会打开，更不会生成内容、创建订单或付款。设备授权页只由 `hq login` 的登录流程使用，不作为普通页面入口。
+`text-video`、`matrix-template`、`short-drama`、`pricing-page`、`invite`、`recharge` 和 `bots` 是页面入口：运行后只返回固定黄雀主站链接，除非再加 `--open-browser`，否则连浏览器都不会打开，更不会生成内容、创建订单或付款。设备授权页只由 `hq login` 的登录流程使用，不作为普通页面入口。
 
 这批新增的直接 API 以安全读取为主：
 
@@ -76,12 +76,124 @@ hq describe ip12-projects --json
 3. 准备 UTF-8 JSON，先执行只读或报价阶段。
 4. 只有用户确认后，才执行带 `--confirm` 的写入；付费任务还必须复用同一输入与服务器返回的 `quote_token`。
 
+从 0.11.0 起，每个 capability 都包含 `agent` 字段：
+
+- `resource`、`operation`：告诉 Agent 当前是 list/get/create/update/delete/execute 还是页面导航。
+- `required_inputs`：说明每个必填 ID 应从哪个读取或上传能力取得。
+- `resource_operations`、`missing_crud`：列出同一资源已有和缺失的 CRUD。
+- `website_operations`、`website_access`：覆盖网站 91 个登记操作；没有直接 API 时明确返回导航入口。
+- `workflow`、`success_evidence`、`recovery`：约束报价、确认、幂等、轮询和失败恢复。
+
+例如 `ip12-project` 会同时告诉 Agent：先用 `ip12-projects` 取 ID，可用 `ip12-create` 创建、`ip12-message` 更新、`ip12-delete` 删除。删除必须先读取目标并显式确认。
+
 ```sh
 printf '%s\n' '{"prompt":"一只金色黄雀","provider":"openai","ratio":"1:1","quality":"hd","count":1}' > image.json
 hq run image-generate --input @image.json --json
 # 用户核对费用后，再原样重试：
 hq run image-generate --input @image.json --confirm --quote-token '<quote_token>' --json
 ```
+
+## 文案成片
+
+先读取当前可用模板、素材风格和音色，再使用同一份 UTF-8 JSON 完成报价与确认提交：
+
+```sh
+hq run text-video-templates --json
+hq run text-video-styles --json
+hq run text-video-voices --json
+
+cat > text-video.json <<'JSON'
+{
+  "text": "AI 培训如何帮助团队提高工作效率",
+  "template": "1080x1920/image_default.html",
+  "mode": "generate",
+  "style": "realistic_commercial",
+  "voice": "public:zh-CN-YunjianNeural",
+  "speech_rate": 1.0
+}
+JSON
+
+hq run text-video-generate --input @text-video.json --json
+# 核对 scene_count、cost_breakdown 和 cost 后确认：
+hq run text-video-generate --input @text-video.json --confirm --quote-token '<quote_token>' --json
+hq run task --input @- --json <<'JSON'
+{"job_id": 123}
+JSON
+```
+
+`mode=generate` 根据主题创作，`mode=fixed` 原样使用完整文案并自动拆分分镜。
+
+## 模板成片
+
+模板成片使用固定的“顶部标题 + 平台素材 + 底部行动文案”结构，不调用 AI 生图或视频模型。先读取服务状态和模板目录：
+
+```sh
+hq run matrix-template-capability --json
+hq run matrix-template-templates --json
+```
+
+从目录选择一个 `template_id`，准备 UTF-8 JSON：
+
+```sh
+cat > matrix-template.json <<'JSON'
+{
+  "top_text": "真正拉开差距的，不是工具",
+  "bottom_text": "评论区留下关键词，领取完整方案",
+  "template_id": "native-bold"
+}
+JSON
+
+hq run matrix-template-generate --input @matrix-template.json --json
+# 核对固定点数报价后，用完全相同的输入确认提交：
+hq run matrix-template-generate --input @matrix-template.json --confirm --quote-token '<quote_token>' --json
+hq run task --input @- --json <<'JSON'
+{"job_id": 123}
+JSON
+```
+
+时长由文案自动计算，背景音乐默认开启，素材固定来自平台已审核素材库。拿到 `job_id` 后只轮询 `task`，不要再次提交生成命令。
+
+需要混入口播视频素材时，先上传并导入一个或多个人物，再生成分镜方案：
+
+```sh
+hq run image-upload --file /absolute/path/avatar.png --confirm --json
+printf '%s\n' '{"image_upload_id":"img_<32位十六进制>"}' > avatar.json
+hq run text-video-avatar-import --input @avatar.json --confirm --json
+
+cat > talking-plan.json <<'JSON'
+{
+  "text": "完整文案",
+  "template": "1080x1920/image_default.html",
+  "mode": "fixed",
+  "style": "realistic_commercial",
+  "voice": "public:zh-CN-YunjianNeural",
+  "speech_rate": 1.0,
+  "ratio": 0.3
+}
+JSON
+hq run text-video-plan --input @talking-plan.json --confirm --json
+```
+
+核对返回的 `scenes` 后，将 `plan_id`、`source_hash`、人物 `asset_id` 和逐镜头选择加入原生成参数：
+
+```json
+{
+  "talking_material": {
+    "enabled": true,
+    "plan_id": "talking_plan_<32位十六进制>",
+    "source_hash": "<64位十六进制>",
+    "ratio": 0.3,
+    "default_avatar_asset_id": "local_avatar_<32位十六进制>",
+    "scenes": [
+      {"scene_id": "scene_01", "enabled": true},
+      {"scene_id": "scene_02", "enabled": false},
+      {"scene_id": "scene_03", "enabled": true, "avatar_asset_id": "local_avatar_<32位十六进制>"}
+    ]
+  }
+}
+```
+
+把 `talking_material` 合并到与规划时完全一致的文案成片 JSON，再执行原有报价和确认命令。人物与方案均为当前账号私有的短期资产；最终提交前仍会校验方案、人物、参数、分镜和价格。
 
 项目同时提供可安装的 Codex Skill：[use-huangque-cli](skills/use-huangque-cli/SKILL.md)。
 
@@ -92,8 +204,8 @@ hq run image-generate --input @image.json --confirm --quote-token '<quote_token>
 | 客户说法 | CLI 能力 | 必填输入 | 素材边界 |
 |---|---|---|---|
 | “保留原视频动作，只替换声音并让嘴型同步” | `video-lipsync` | `video_asset_id`、`audio_asset_id` | 两项都必须来自本人已完成资产；`speed` 便宜快速，`precision` 精度更高；默认保持原视频时长 |
-| “用我的数字人形象和这段文案做一条口播视频” | `digital-ip-text-generate` | `avatar_id`、`text`、`voice` | 单个本人已就绪形象；不接收人物图片上传 |
-| “用我的数字人形象和资产库这条音频做口播视频” | `digital-ip-audio-generate` | `avatar_id`、`audio_file` | `audio_file` 最长 500 字符且必须原样取自本人资产结果；不接收 URL、本机路径或音频上传 |
+| “用我的数字人形象或临时人物照片和这段文案做口播视频” | `digital-ip-text-generate` | `avatar_id` 或 `image_upload_id`、`text`、`voice` | 二选一；临时照片先通过 `image-upload` 上传 |
+| “用我的形象和已有/临时音频做口播视频” | `digital-ip-audio-generate` | `avatar_id` 或 `image_upload_id`；`audio_file` 或 `audio_upload_id` | 两组分别二选一；临时素材先上传，不接收 URL、本机路径或 base64 |
 | “让 2–5 个我的数字人分别讲同一段文案” | `digital-ip-batch-generate` | `avatars`、`text`、`voice` | `avatars` 每项是本人已就绪的 `avatar_id`，可带 `label`；共用文案、音色和字幕设置 |
 | “让 1–3 个电影化身按描述生成，也可以参考我的图或视频” | `cinematic-open-generate` | `avatar_id` 或 `avatar_ids`、`prompt` | 形象和参考图共用 9 张额度：1/2/3 个形象最多再传 8/7/6 个图片 `upload_id`；另可传 3 个视频 `upload_id`；时长 4–15 秒 |
 | “让我的电影化身模仿这段视频的动作” | `cinematic-motion-generate` | `avatar_id`、`reference_video_upload_ids` | 必须且只能放 1 个本人短期私有视频 `upload_id` |
@@ -145,7 +257,7 @@ hq run assets --input @assets.json --json
 
 - 账号、点数、权限和渠道目录读取。
 - Hermes IP12 项目、进度、报告与显式确认对话。
-- 图片、视频、音频生成与提示词优化；`image-generate` 包含最多 14 张参考图的 Banana nb2/pro，`video-generate` 包含 Sora 2/Pro。
+- 图片、视频、音频、文案成片和平台素材库模板成片生成与提示词优化；`image-generate` 包含最多 14 张参考图的 Banana nb2/pro，`video-generate` 包含 Sora 2/Pro。
 - 数字 IP 单条文案、本人资产音频与 2–5 个形象批量生成；电影化身开放式和动作模仿生成。
 - 快速图片换装与经典视频换装。
 - 私有图片/视频上传、画布创建、画布 Agent 方案与受限写入。

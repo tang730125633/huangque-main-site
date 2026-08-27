@@ -87,6 +87,9 @@
   .tv-mode{display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:4px;margin:4px 0 18px;background:#0b111d;border:1px solid rgba(148,164,187,.18);border-radius:8px}
   .tv-mode button{height:40px;border:0;border-radius:6px;background:transparent;color:#94a4bb;font:600 13px inherit;cursor:pointer}
   .tv-mode button.active{background:#1a2433;color:#f5c86f;box-shadow:inset 0 0 0 1px rgba(231,178,76,.28)}
+  .tv-source{display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:4px;margin:4px 0 18px;background:#0b111d;border:1px solid rgba(148,164,187,.18);border-radius:8px}
+  .tv-source button{min-height:40px;padding:7px 10px;border:0;border-radius:6px;background:transparent;color:#94a4bb;font:600 13px inherit;cursor:pointer}
+  .tv-source button.active{background:#1a2433;color:#f5c86f;box-shadow:inset 0 0 0 1px rgba(231,178,76,.28)}
   .tv-action:hover{background:#f1c66a}.tv-action:disabled{opacity:.58;cursor:wait}
   .tv-status{min-height:46px;margin-top:14px;padding:12px 14px;border-left:3px solid #344258;background:#0b111d;color:#94a4bb;font-size:12.5px;line-height:1.7}
   .tv-status.running{border-color:#e7b24c;color:#dbe4f0}.tv-status.done{border-color:#2dd4bf;color:#d8fff8}.tv-status.error{border-color:#f87171;color:#ffdede}
@@ -121,6 +124,11 @@
         </div>
       </div>
       <div id="templateGrid" class="tv-template-grid" role="listbox" aria-label="视频模板"><div class="tv-template-loading">正在读取专业模板库</div></div>
+      <div class="tv-label"><span>素材来源</span></div>
+      <div id="materialSource" class="tv-source" role="radiogroup" aria-label="素材来源">
+        <button id="materialSourceAi" class="active" type="button" role="radio" aria-checked="true" data-material-source="ai">AI 生成素材</button>
+        <button id="materialSourceLibrary" type="button" role="radio" aria-checked="false" data-material-source="library">平台素材库</button>
+      </div>
       <div class="tv-style-field">
         <label for="materialStyle">素材风格</label>
         <select id="materialStyle" aria-label="素材风格" disabled>
@@ -205,10 +213,10 @@
 </div></div>
 <div id="toast" class="toast"></div>
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=5c2643d5"></script>
+<script src="cloud-shell.js?v=76171dc1"></script>
 <script>
 (function(){
-  var token='__cookie__',activeBlob='',startedAt=0,pollTimer=0,activeTemplate='',activeMode='generate',templates=[],activeKind='illustration',activeOrientation='portrait',stylesReady=false,voicesReady=false,isBusy=false,busyLabel='正在生成',pendingSceneAvatarId='';
+  var token='__cookie__',activeBlob='',startedAt=0,pollTimer=0,activeTemplate='',activeMode='generate',activeMaterialSource='ai',templates=[],activeKind='illustration',activeOrientation='portrait',stylesReady=false,voicesReady=false,isBusy=false,busyLabel='正在生成',pendingSceneAvatarId='';
   var planRequestVersion=0,planRequestController=null,isPlanning=false,quoteRequestVersion=0,quoteRequestController=null,isQuoting=false,avatarRequestVersion=0,pendingAvatarUploads=0,avatarRequests={},avatarPreviewUrls={};
   var pendingStorageKey='hq-text-video-pending-v1';
   var el=function(id){return document.getElementById(id);};
@@ -319,7 +327,7 @@
       setStatus(displayStage(data.phase!=null?data.phase:data.stage)+' · '+elapsed()+' 秒','running');pollTimer=setTimeout(function(){poll(jobId);},2500);
     }).catch(function(error){clearTimeout(pollTimer);setBusy(false);setStatus(error.message||'任务查询失败','error');toast(error.message||'任务查询失败');});
   }
-  function basePayload(){return {pipeline:'pixelle',text:el('videoText').value.trim(),template:activeTemplate,mode:activeMode,style:el('materialStyle').value,voice:el('videoVoice').value,speech_rate:Number(el('speechRate').value),source_page:'text-video'};}
+  function basePayload(){return {pipeline:'pixelle',text:el('videoText').value.trim(),template:activeTemplate,mode:activeMode,style:el('materialStyle').value,material_source:activeMaterialSource,voice:el('videoVoice').value,speech_rate:Number(el('speechRate').value),source_page:'text-video'};}
   function submissionPayload(){
     var payload=basePayload(),state=talkingState.snapshot();
     if(state.enabled&&state.plan){
@@ -533,6 +541,11 @@
     el('videoText').placeholder=isTopic?'例如：AI 如何帮助美业门店提升复购率':'粘贴需要原样配音和排版的完整中文文案';
     setStatus(isTopic?'输入主题，选择模板后生成':'输入完整文案，选择模板后生成');
   }
+  function selectMaterialSource(button){
+    activeMaterialSource=button.getAttribute('data-material-source')||'ai';invalidateQuote(false);
+    [el('materialSourceAi'),el('materialSourceLibrary')].forEach(function(item){var selected=item===button;item.classList.toggle('active',selected);item.setAttribute('aria-checked',selected?'true':'false');});
+    setStatus(activeMaterialSource==='library'?'将按内容从素材库匹配画面，不调用 AI 生成素材':'将按分镜调用 AI 生成素材');
+  }
   function selectTemplate(button,template){
     activeTemplate=button.getAttribute('data-template')||'';
     Array.prototype.forEach.call(document.querySelectorAll('.tv-template'),function(item){var selected=item===button;item.classList.toggle('active',selected);item.setAttribute('aria-selected',selected?'true':'false');});
@@ -611,6 +624,8 @@
   bindPlanInvalidation(el('speechRate'),'input');
   bindPlanInvalidation(el('talkingRatio'),'input');
   Array.prototype.forEach.call(document.querySelectorAll('.tv-mode button'),function(button){button.onclick=function(){invalidateTalkingPlan();selectMode(button);};});
+  el('materialSourceAi').onclick=function(){selectMaterialSource(el('materialSourceAi'));};
+  el('materialSourceLibrary').onclick=function(){selectMaterialSource(el('materialSourceLibrary'));};
   Array.prototype.forEach.call(el('kindTabs').querySelectorAll('button'),function(button){button.onclick=function(){selectKind(button);};});
   Array.prototype.forEach.call(el('orientationTabs').querySelectorAll('button'),function(button){button.onclick=function(){selectOrientation(button);};});
   el('clearText').onclick=function(){el('videoText').value='';updateCount();invalidateTalkingPlan();el('videoText').focus();};

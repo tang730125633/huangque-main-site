@@ -340,6 +340,66 @@ class AdminE2ERunnerTests(unittest.TestCase):
                 )
         submit.assert_not_called()
 
+    def test_versioned_grok_configuration_passes_shot_and_preview_preflight(self):
+        root = Path(__file__).resolve().parents[1]
+        config = {}
+        for line in (root / "deploy" / "huangque-secrets.env.example").read_text(
+                encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#") and "=" in stripped:
+                key, value = stripped.split("=", 1)
+                config[key] = value
+
+        provider = config["HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER"]
+        model = config["HQ_SHORT_DRAMA_GROK_MODEL"]
+        session = {"token": "qa-token", "account": {
+            "username": "qa-dedicated", "points": 1000,
+            "membership_active": True,
+        }}
+        priced = []
+
+        def cost_of(kind, payload):
+            priced.append((kind, dict(payload)))
+            return 60
+
+        with patch.dict(os.environ, {
+                "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": provider,
+                "HQ_SHORT_DRAMA_GROK_MODEL": model,
+        }), patch.object(
+                self.admin.feature_flags, "is_enabled", return_value=True
+        ), patch.object(
+                self.admin, "_ready_avatar_ids", return_value=[7]
+        ), patch.object(
+                self.admin, "_ready_audio_voice_key", return_value=None
+        ), patch.object(
+                self.admin, "provider_keys", SimpleNamespace(
+                    has_candidate=lambda candidate: candidate == "xai"
+                )
+        ), patch.object(
+                self.admin, "points_domain", SimpleNamespace(cost_of=cost_of)
+        ), patch.object(
+                self.admin, "_short_drama_preview_fixture_state", return_value=None
+        ), patch.object(
+                self.admin, "_recover_short_drama_unknown"
+        ), patch.object(
+                self.admin, "list_e2e_runs", return_value=[]
+        ), patch.object(
+                self.admin, "auth_admin_request", return_value=session
+        ):
+            shot = self.admin.e2e_preflight(
+                "admin-token", "short_drama.live_action.shot_video"
+            )
+            preview = self.admin.e2e_preflight(
+                "admin-token", "short_drama.live_action.preview"
+            )
+
+        self.assertIn(provider, {"grok", "grok_xai"})
+        self.assertTrue(model)
+        self.assertTrue(shot["ready"], shot["blocker"])
+        self.assertTrue(preview["ready"], preview["blocker"])
+        self.assertTrue(priced)
+        self.assertTrue(all(payload["model"] == model for _, payload in priced))
+
     def test_short_drama_delivery_runs_confirm_quote_render_media_and_zero_point_checks(self):
         session = {"token": "qa-token", "account": {
             "username": "qa-dedicated", "points": 500, "membership_active": True,

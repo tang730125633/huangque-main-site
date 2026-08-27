@@ -1339,6 +1339,33 @@ TEXT_VIDEO_FUNCTIONS = [{
 }]
 
 
+MATRIX_TEMPLATE_FUNCTIONS = [{
+    "key": "matrix_template",
+    "name": "模板成片",
+    "desc": "使用平台素材库与原创视觉模板生成上文字、中素材、下行动文案视频",
+    "order": 10,
+    "frontend_selector": "#generateBtn",
+    "service": "content",
+    "flag_keys": ["matrix_template_video"],
+    "modes": [{
+        "key": "matrix_template.single", "name": "单条模板成片",
+        "entrypoints": [
+            _endpoint("POST", "/api/gen/matrix-template"),
+            _endpoint("GET", "/api/gen/matrix-template/templates"),
+            _endpoint("GET", "/api/gen/job/{id}"),
+        ],
+        "task_match": {"kind": "matrix_template_video"},
+        "price_keys": ["video.matrix_template"],
+        "smoke_inputs": ["顶部标题", "底部行动文案", "平台素材库", "原生大字模板"],
+        "validation": _validation({
+            "top_text": "真正拉开差距的，不是工具",
+            "bottom_text": "评论区留下关键词，领取完整方案",
+            "template_id": "native-bold", "bgm": True,
+        }),
+    }],
+}]
+
+
 ASSET_FUNCTIONS = [{
     "key": "personal_voice",
     "name": "个人音色",
@@ -1466,6 +1493,7 @@ BROWSER_JOURNEYS = {
 
 
 _PAGE_DEFS = [
+    ("creator-agent", "AI 创作助手", "/workbench/creator-agent.html"),
     ("inspiration", "灵感设计", "/workbench/inspiration.html"),
     ("leads", "平台获客", "/workbench/leads.html"),
     ("collect", "内容爬取", "/workbench/collect.html"),
@@ -1474,6 +1502,7 @@ _PAGE_DEFS = [
     ("audio", "音频生成", "/workbench/audio.html"),
     ("script", "文案编导", "/workbench/script.html"),
     ("text-video", "文案成片", "/workbench/text-video.html"),
+    ("matrix-template", "模板成片", "/workbench/matrix-template.html"),
     ("short-drama", "短剧创作", "/workbench/short-drama.html"),
     ("canvas", "无限画布", "/workbench/canvas.html"),
     ("assets", "我的资产", "/workbench/assets.html"),
@@ -1498,6 +1527,7 @@ FUNCTION_REGISTRY = [
             else LEADS_FUNCTIONS if key == "leads"
             else SCRIPT_FUNCTIONS if key == "script"
             else TEXT_VIDEO_FUNCTIONS if key == "text-video"
+            else MATRIX_TEMPLATE_FUNCTIONS if key == "matrix-template"
             else SHORT_DRAMA_FUNCTIONS if key == "short-drama"
             else CANVAS_FUNCTIONS if key == "canvas"
             else ASSET_FUNCTIONS if key == "assets"

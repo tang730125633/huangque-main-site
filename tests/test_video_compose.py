@@ -109,6 +109,34 @@ class VideoComposeAnalysisTests(unittest.TestCase):
 
 
 class VideoComposeAsrTests(unittest.TestCase):
+    def test_transcribe_base_is_isolated_from_shared_openai_relay(self):
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return json.dumps({
+                    "text": "好", "words": [{"word": "好", "start": 0, "end": 1}],
+                }).encode()
+
+        class Opener:
+            url = ""
+
+            def open(self, request, timeout):
+                self.url = request.full_url
+                return Response()
+
+        opener = Opener()
+        with mock.patch.object(asr, "OPENAI_BASE", "https://dead-relay.example/openai/v1"), \
+             mock.patch.object(asr, "OPENAI_TRANSCRIBE_BASE", "https://api.openai.com/v1"), \
+             mock.patch.object(asr, "extract_audio", return_value=1), \
+             mock.patch.object(asr, "_multipart", return_value=(b"body", "multipart/form-data")):
+            asr.transcribe("unused.mp4", opener=opener, api_key="test-key")
+        self.assertEqual("https://api.openai.com/v1/audio/transcriptions", opener.url)
+
     def test_parses_word_timestamps_and_segments(self):
         result = asr.parse_verbose_response({
             "text": "你好 AI",

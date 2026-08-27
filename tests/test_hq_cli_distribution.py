@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -13,9 +14,12 @@ ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "site/downloads/hq/install.sh"
 WINDOWS_INSTALLER = ROOT / "site/downloads/hq/install.ps1"
 WINDOWS_UNINSTALLER = ROOT / "site/downloads/hq/uninstall.ps1"
-VERSION = "0.10.3"
+VERSION = "0.11.2"
+OLD_VERSION = "0.11.1"
 RELEASE = ROOT / ("site/downloads/hq/v" + VERSION)
 WHEEL = RELEASE / ("huangque_hq_cli-%s-py3-none-any.whl" % VERSION)
+OLD_WHEEL = ROOT / ("site/downloads/hq/v%s/huangque_hq_cli-%s-py3-none-any.whl" % (
+    OLD_VERSION, OLD_VERSION))
 SOURCE = ROOT / "tools/hq-cli/src/hq_cli"
 PYTHON = shutil.which("python3.11") or shutil.which("python3.10") or sys.executable
 
@@ -66,6 +70,12 @@ class HQCLIDistributionTests(unittest.TestCase):
         self.assertIn("catch {\n            $CandidateExitCode = 1\n        }", powershell)
         self.assertIn('PowerShell 5.1', (ROOT / "tools/hq-cli/README.md").read_text(encoding="utf-8"))
 
+    def test_previous_release_remains_immutable(self):
+        self.assertEqual(
+            "6333c696d7feb1021007b73c86246520711a7b565aaa18d2ae847c5e0fb93085",
+            hashlib.sha256(OLD_WHEEL.read_bytes()).hexdigest(),
+        )
+
     def test_windows_install_and_uninstall_are_managed(self):
         install = WINDOWS_INSTALLER.read_text(encoding="utf-8")
         uninstall = WINDOWS_UNINSTALLER.read_text(encoding="utf-8")
@@ -111,6 +121,62 @@ class HQCLIDistributionTests(unittest.TestCase):
                 check=True,
             )
             subprocess.run([target / "venv/bin/hq", "version", "--json"], check=True)
+
+    @unittest.skipIf(os.name == "nt", "POSIX upgrade flow is verified on Linux CI")
+    def test_installer_upgrades_existing_0105_and_exposes_agent_guidance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            data_home = root / "data"
+            bin_root = home / ".local/bin"
+            old_target = data_home / "hq-cli" / OLD_VERSION
+            fake_bin = root / "fake-bin"
+            bin_root.mkdir(parents=True)
+            fake_bin.mkdir()
+            subprocess.run([PYTHON, "-m", "venv", old_target / "venv"], check=True)
+            subprocess.run([
+                old_target / "venv/bin/python", "-m", "pip", "install",
+                "--no-index", "--no-deps", OLD_WHEEL,
+            ], check=True)
+            (bin_root / "hq").symlink_to(old_target / "venv/bin/hq")
+            fake_curl = fake_bin / "curl"
+            fake_curl.write_text(
+                "#!/bin/sh\n"
+                "while [ $# -gt 0 ]; do\n"
+                "  if [ \"$1\" = \"-o\" ]; then shift; cp \"$HQ_TEST_WHEEL\" \"$1\"; exit 0; fi\n"
+                "  shift\n"
+                "done\n"
+                "exit 1\n",
+                encoding="utf-8",
+            )
+            fake_curl.chmod(0o755)
+            env = dict(os.environ, HOME=str(home), XDG_DATA_HOME=str(data_home),
+                       HQ_TEST_WHEEL=str(WHEEL),
+                       PATH=str(fake_bin) + os.pathsep + os.environ.get("PATH", ""))
+            before = json.loads(subprocess.check_output(
+                [bin_root / "hq", "version", "--json"], text=True, env=env))
+            self.assertEqual(OLD_VERSION, before["cli_version"])
+            subprocess.run(["sh", INSTALLER], check=True, env=env)
+            after = json.loads(subprocess.check_output(
+                [bin_root / "hq", "version", "--json"], text=True, env=env))
+            capabilities = json.loads(subprocess.check_output(
+                [bin_root / "hq", "capabilities", "--json"], text=True, env=env))
+            self.assertEqual(VERSION, after["cli_version"])
+            self.assertIn("text-video-generate", {
+                item["id"] for item in capabilities["capabilities"]})
+            self.assertIn("text-video-plan", {
+                item["id"] for item in capabilities["capabilities"]})
+            self.assertIn("text-video-avatar-import", {
+                item["id"] for item in capabilities["capabilities"]})
+            self.assertIn("agent", next(
+                item for item in capabilities["capabilities"] if item["id"] == "ip12-project"
+            ))
+            self.assertIn("matrix-template-generate", {
+                item["id"] for item in capabilities["capabilities"]})
+            self.assertEqual(
+                (data_home / "hq-cli" / VERSION / "venv/bin/hq").resolve(),
+                (bin_root / "hq").resolve(),
+            )
 
     def test_release_wheel_has_the_pinned_version(self):
         with zipfile.ZipFile(WHEEL) as archive:

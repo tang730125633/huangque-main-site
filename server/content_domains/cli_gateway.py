@@ -1,9 +1,13 @@
 """Internal quote and price-binding checks for the public HQ CLI gateway."""
 
+import hashlib
 import hmac
+import json
+import re
+import threading
 import urllib.parse
 
-from . import cli_uploads, pricing
+from . import cli_uploads, pricing, submission_idempotency
 
 
 def _internal_auth(handler, secret):
@@ -203,6 +207,101 @@ def handle_audio_upload(handler, path, verify, must_change_password, secret):
     return True
 
 
+def handle_voice_clone(handler, path, verify, must_change_password, audio, feature_flags, secret):
+    if path != "/api/gen/cli/voice-clone":
+        return False
+    if not _internal_auth(handler, secret):
+        handler._send(403, {"detail": "forbidden"})
+        return True
+    user = verify(handler._token())
+    if not user:
+        handler._send(401, {"detail": "未登录或登录已过期"})
+        return True
+    if must_change_password(user):
+        handler._send(403, {"detail": "请先修改初始密码"})
+        return True
+    try:
+        feature_flags.require_enabled("audio")
+    except feature_flags.FeatureDisabled as exc:
+        handler._send(503, {"detail": str(exc), "code": "feature_disabled"})
+        return True
+    request_id = str(handler.headers.get("Idempotency-Key") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9._:-]{8,128}", request_id):
+        handler._send(400, {"detail": "声音克隆必须提供有效幂等键", "code": "idempotency_key_required"})
+        return True
+    claim_state = ""
+    try:
+        payload = handler._json_body_strict(max_bytes=16 * 1024)
+        if not isinstance(payload, dict):
+            raise ValueError("请求体不是合法 JSON")
+        endpoint = "/api/gen/cli/voice-clone"
+        claim_state, claim_response = submission_idempotency.begin(
+            audio.adb, user["username"], endpoint, request_id, payload,
+        )
+        if claim_state == "conflict":
+            handler._send(409, {
+                "detail": "同一个幂等键不能用于不同的声音样音",
+                "code": "idempotency_conflict",
+            })
+            return True
+        if claim_state == "replay":
+            response = dict(claim_response or {})
+            if isinstance(response.get("voice"), dict):
+                response["voice"] = dict(response["voice"], replayed=True)
+            handler._send(200, response)
+            return True
+        request_digest = hashlib.sha256(json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        replay = audio.clone_request_replay(
+            user["username"], str(payload.get("slot_id") or "").strip(), request_id,
+            request_digest,
+        )
+        if replay:
+            response = {"ok": True, "voice": replay}
+            submission_idempotency.complete(
+                audio.adb, user["username"], endpoint, request_id, response,
+            )
+            handler._send(200, response)
+            return True
+        checked = cli_uploads.expand_voice_clone_payload(payload, user["username"])
+        checked = audio.validate_clone_vip_payload(user["username"], checked)
+        voice = audio.mark_clone_training(
+            user["username"], checked["slot_id"], checked.get("name"), request_id,
+            request_digest,
+        )
+        if not voice.get("replayed"):
+            checked["_request_id"] = request_id
+            threading.Thread(
+                target=audio.clone_vip_voice_background,
+                args=(user["username"], checked), daemon=True,
+            ).start()
+        response = {"ok": True, "voice": voice}
+        submission_idempotency.complete(
+            audio.adb, user["username"], endpoint, request_id, response,
+        )
+        handler._send(200, response)
+    except audio.CloneVipValidationError as exc:
+        if claim_state == "new":
+            submission_idempotency.abort(
+                audio.adb, user["username"], "/api/gen/cli/voice-clone", request_id,
+            )
+        handler._send(exc.status, {"detail": exc.detail, "code": exc.code})
+    except ValueError as exc:
+        if claim_state == "new":
+            submission_idempotency.abort(
+                audio.adb, user["username"], "/api/gen/cli/voice-clone", request_id,
+            )
+        handler._send(400, {"detail": str(exc)[:220], "code": "voice_clone_invalid"})
+    except OSError:
+        if claim_state == "new":
+            submission_idempotency.abort(
+                audio.adb, user["username"], "/api/gen/cli/voice-clone", request_id,
+            )
+        handler._send(500, {"detail": "声音样音暂时无法读取", "code": "voice_clone_failed"})
+    return True
+
+
 def handle_quote(handler, path, verify, must_change_password, is_shutting_down,
                  feature_flags, points, audio, video, secret):
     if path != "/api/gen/cli/quote":
@@ -284,6 +383,10 @@ def handle_quote(handler, path, verify, must_change_password, is_shutting_down,
             payload = _collect_search_payload(payload)
         elif kind == "leads":
             payload = _leads_payload(payload)
+        elif kind == "matrix_template_video":
+            from . import matrix_template_video
+            payload = matrix_template_video.validate_payload(
+                payload, user["username"])
         else:
             raise ValueError("CLI 报价不支持该生成类型")
         feature_flags.require_enabled(
@@ -297,7 +400,10 @@ def handle_quote(handler, path, verify, must_change_password, is_shutting_down,
         handler._send(200, {"kind": kind, "cost": cost,
                             "points": points.get_points(user["username"])})
     except feature_flags.FeatureDisabled as exc:
-        handler._send(503, {"detail": str(exc)})
+        handler._send(503, {
+            "detail": str(exc), "code": "feature_disabled",
+            "retry_after_ms": 5000,
+        })
     except (TypeError, ValueError) as exc:
         handler._send(400, {"detail": str(exc)[:220]})
     finally:

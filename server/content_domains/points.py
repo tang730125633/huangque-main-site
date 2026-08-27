@@ -142,7 +142,8 @@ def cost_of(kind, body):
                 scenes = max(1, min(20, int(body.get("n_scenes") or 1)))
             except (TypeError, ValueError):
                 scenes = 1
-            visuals = scenes * pricing.get_price("image.openai.std")
+            library_mode = body.get("material_source") == "library"
+            visuals = 0 if library_mode else scenes * pricing.get_price("image.openai.std")
             narration = pricing.get_price("audio.tts")
             copywriting = pricing.get_price("text.copy") if body.get("mode") == "generate" else 0
             body["cost_breakdown"] = {
@@ -182,6 +183,8 @@ def cost_of(kind, body):
             "total": talking + images,
         }
         return talking + images
+    if kind == "matrix_template_video":
+        return pricing.get_price("video.matrix_template")
     if kind == "breakdown":
         urls = body.get("urls")
         if isinstance(urls, list):

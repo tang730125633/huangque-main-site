@@ -77,6 +77,7 @@ CATALOG = [
     _rule("video.sora.pro.720p", "视频生成", "Sora 2 Pro", "720p", 90, "点/秒"),
     _rule("video.sora.pro.1024p", "视频生成", "Sora 2 Pro", "1024p", 150, "点/秒"),
     _rule("video.sora.pro.1080p", "视频生成", "Sora 2 Pro", "1080p", 210, "点/秒"),
+    _rule("video.matrix_template", "视频生成", "模板成片", "单条本地渲染", 5, "点/条", "平台素材库与模板渲染"),
     _rule("collect.search", "采集与获客", "内容搜索", "每次搜索", 1, "点/次"),
     _rule("collect.base", "采集与获客", "内容抓取", "每个链接", 3, "点/次"),
     _rule("collect.transcript_extra", "采集与获客", "文案 / 字幕提取", "在抓取价上加收", 3, "点/次"),

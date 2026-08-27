@@ -21,6 +21,14 @@ _TTL = 5
 
 CATALOG = [
     {
+        "key": "creator_agent_v1",
+        "name": "创作 Agent",
+        "desc": "独立对话式创作助手与站内能力调用",
+        "page": "AI 创作助手",
+        "service": "creator-agent",
+        "default_enabled": True,
+    },
+    {
         "key": "ip12_agent_production_v1",
         "name": "IP12 Agent 生产闭环",
         "desc": "仅允许 IP12 后端经内部凭据发现、读取或询价黄雀能力；不允许代替用户确认付费或写入操作",
@@ -76,6 +84,14 @@ CATALOG = [
         "name": "文案成片",
         "desc": "主题或完整文案自动生成配音、画面并套用模板成片",
         "page": "文案成片",
+        "service": "content",
+        "default_enabled": False,
+    },
+    {
+        "key": "matrix_template_video",
+        "name": "模板成片",
+        "desc": "上方标题、中部素材、下方行动文案的素材库模板视频",
+        "page": "模板成片",
         "service": "content",
         "default_enabled": False,
     },

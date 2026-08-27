@@ -43,6 +43,9 @@ class IP12AgentProductionUITests(unittest.TestCase):
         self.assertIn("<audio controls", result)
         self.assertIn("打开 Canvas", result)
         self.assertIn("下载", result)
+        self.assertIn("function productionTaskLabel", self.html)
+        self.assertNotIn("record.job_id", panel)
+        self.assertIn("productionProgressHtml(record)+productionResultHtml(record)", panel)
 
     def test_only_the_quote_card_exposes_the_paid_confirmation(self):
         confirm = self.html[self.html.index("async function confirmProduction"):self.html.index("async function refreshProduction")]
@@ -52,7 +55,10 @@ class IP12AgentProductionUITests(unittest.TestCase):
         self.assertIn('data-production-quote-card="true"', quote_card)
         self.assertIn('data-production-confirm="true"', quote_card)
         self.assertIn("确认并提交这次生产", quote_card)
-        self.assertEqual(self.html.count('onclick="confirmProduction()"'), 1)
+        self.assertNotIn('onclick="confirmProduction()"', self.html)
+        self.assertEqual(
+            self.html.count('onclick="confirmProduction(this.dataset.productionId)"'), 2,
+        )
         quote_guard = self.html[self.html.index("function productionHasValidQuote"):self.html.index("function renderProductionPanel")]
         self.assertIn("record.status!=='quoted'", quote_guard)
         self.assertIn("productionUnfilledFields", quote_guard)
@@ -64,6 +70,73 @@ class IP12AgentProductionUITests(unittest.TestCase):
         self.assertNotIn("confirmProduction", message)
         continuation = self.html[self.html.index("async function sendJumpMsg"):self.html.index("function renderProjectPanel")]
         self.assertNotIn("confirmProduction", continuation)
+
+    def test_terminal_inline_status_never_reports_failure_as_completed(self):
+        if not shutil.which("node"):
+            self.skipTest("node unavailable")
+        start = self.html.index("function productionTerminalNoteHtml")
+        end = self.html.index("function productionSpecialist", start)
+        script = self.html[start:end] + r"""
+const statuses=['done','failed','refund_pending','refunded','unknown'];
+console.log(JSON.stringify(Object.fromEntries(
+  statuses.map(status=>[status,productionTerminalNoteHtml({status})])
+)));
+"""
+        got = json.loads(subprocess.run(
+            ["node", "-e", script], capture_output=True, text=True, check=True,
+        ).stdout)
+        self.assertIn("制作已完成", got["done"])
+        self.assertIn("制作失败", got["failed"])
+        self.assertNotIn("制作已完成", got["failed"])
+        self.assertIn("退款正在处理中", got["refund_pending"])
+        self.assertIn("点数已退回", got["refunded"])
+        self.assertEqual(got["unknown"], "")
+
+    def test_expired_quote_becomes_stale_without_a_submit_request(self):
+        if not shutil.which("node"):
+            self.skipTest("node unavailable")
+        quote_start = self.html.index("function productionQuote")
+        quote_end = self.html.index("function renderProductionPanel", quote_start)
+        confirm_start = self.html.index("async function confirmProduction")
+        confirm_end = self.html.index("async function refreshProduction", confirm_start)
+        script = self.html[quote_start:quote_end] + self.html[confirm_start:confirm_end] + r"""
+let cid='project-1',state={revision:7},activeProductionId='production-1';
+let productions={'production-1':{
+  id:'production-1',status:'quoted',options:{},
+  quote:{cost:90,points:94359,expires_at:1}
+}};
+let requests=0,messages=0,renders=0,toasts=[];
+function productionUnfilledFields(){return []}
+function rememberProduction(record){productions[record.id]=record;return record}
+function refreshProductionMessages(){messages+=1}
+function renderProductionPanel(){renders+=1}
+function toast(message){toasts.push(message)}
+function newTurnRequestId(){return 'confirm-1'}
+async function productionRequest(){requests+=1;return{}}
+function updateProductionFromPayload(){}
+async function refreshProduction(){}
+global.document={
+  querySelectorAll:()=>[],
+  getElementById:()=>({classList:{contains:()=>true}})
+};
+(async()=>{
+  await confirmProduction('production-1');
+  console.log(JSON.stringify({
+    status:productions['production-1'].status,
+    quote:productions['production-1'].quote,
+    requests,messages,renders,toasts
+  }));
+})();
+"""
+        got = json.loads(subprocess.run(
+            ["node", "-e", script], capture_output=True, text=True, check=True,
+        ).stdout)
+        self.assertEqual(got["status"], "stale")
+        self.assertEqual(got["quote"], {})
+        self.assertEqual(got["requests"], 0)
+        self.assertEqual(got["messages"], 1)
+        self.assertEqual(got["renders"], 1)
+        self.assertEqual(got["toasts"], ["报价已失效，请重新获取后再确认。"])
 
     def test_missing_and_schema_render_typed_controls_and_gate_quote(self):
         controls = self.html[self.html.index("function productionParameterSchema"):self.html.index("function productionQuote")]
@@ -219,7 +292,7 @@ let productions={
 };
 let fieldNodes=[{dataset:{field:'avatar_id'},value:'42'}], calls=[];
 global.document={
-  querySelectorAll:()=>fieldNodes,
+  querySelectorAll:(selector)=>selector.includes('.harness-actions')?[]:fieldNodes,
   getElementById:()=>({innerHTML:''})
 };
 global.fetch=async (url,init)=>{
@@ -239,6 +312,7 @@ function updateProductionFromPayload(data){
 }
 function openPanel(){}
 function toast(){}
+function newTurnRequestId(){return 'turn-fixture-1'}
 (async()=>{
   await requestProductionQuote();
   const quoteCall=calls[calls.length-1];
@@ -275,7 +349,7 @@ function toast(){}
         self.assertIn("item.type==='prepare_production'", send)
         self.assertIn("else if(autoAction)await runStateAction(autoAction)", send)
         polling = self.html[self.html.index("function stopProductionPoll"):self.html.index("function productionRoute")]
-        self.assertIn("['submitting','queued','running']", polling)
+        self.assertIn("['submitting','queued','running','verifying','refund_pending']", polling)
         self.assertIn("refreshProduction(true,record.id)", polling)
         self.assertNotIn("confirmProduction(record.id)", polling)
         chat = self.html[self.html.index("function productionMessageHtml"):self.html.index("function isSafeMarkdownUrl")]
@@ -448,7 +522,10 @@ console.log(JSON.stringify({
             self.html.index("function productionInlineHtml"):
             self.html.index("function productionUiRoute")
         ]
-        self.assertIn("Object.assign({},spec,{inlineUploadField:''})", inline)
+        self.assertNotIn("Object.assign({},spec,{inlineUploadField:''})", inline)
+        self.assertIn("productionFieldControl(record,spec,false,3)", inline)
+        self.assertIn("录制/上传样音，生成我的克隆声音", self.html)
+        self.assertIn("/api/ip12/productions/clone-voice", self.html)
         self.assertIn(",false,3)", inline)
         self.assertIn("实时报价", inline)
         self.assertIn("确认并提交这次生产", inline)
@@ -460,12 +537,58 @@ console.log(JSON.stringify({
         self.assertIn("Agent 推荐", cards)
         self.assertIn("<audio controls", cards)
         self.assertIn("limit&&choices.length>limit", cards)
+        clone_poll = self.html[
+            self.html.index("function stopVoiceClonePoll"):
+            self.html.index("async function uploadSelectedMaterial")
+        ]
+        self.assertIn("voiceClonePolls", clone_poll)
+        self.assertIn("poll.inFlight||poll.timer", clone_poll)
+        self.assertIn("error.status!==429&&error.status<500", clone_poll)
+        self.assertIn("stopVoiceClonePoll(productionId)", clone_poll)
+        self.assertIn("'POST',{conversation_id:cid}", clone_poll)
         restore = self.html[
             self.html.index("function restoreProductionPanel(){"):
             self.html.index("function openProductionRecord")
         ]
         self.assertNotIn("renderProductionPanel(record)", restore)
         self.assertIn("requestProductionQuote(record.id,false)", restore)
+
+    def test_voice_clone_poll_deduplicates_retries_and_stops_terminal_states(self):
+        if not shutil.which("node"):
+            self.skipTest("node unavailable")
+        start = self.html.index("function stopVoiceClonePoll")
+        end = self.html.index("async function uploadSelectedMaterial", start)
+        functions = self.html[start:end]
+        script = functions + r"""
+const assert = require('assert');
+var voiceClonePolls={},cid='project-a',productions={p:{id:'p',options:{}}};
+var timers=[],requests=0,quotes=0,mode='ready';
+global.setTimeout=function(fn){timers.push(fn);return timers.length};
+global.clearTimeout=function(){};
+function updateProductionFromPayload(data){productions.p=data.production||productions.p;return productions.p}
+function appendProductionMessage(){}
+function toast(){}
+function productionUnfilledFields(){return []}
+function productionUnmappedMissing(){return []}
+async function requestProductionQuote(){quotes+=1}
+async function productionRequest(){requests+=1;if(mode==='429'){var e=new Error('limited');e.status=429;throw e}if(mode==='400'){var bad=new Error('bad');bad.status=400;throw bad}return{status:mode,production:{id:'p',options:{}}}}
+(async function(){
+  await Promise.all([pollVoiceClone('p'),pollVoiceClone('p')]);
+  assert.equal(requests,1);assert.equal(quotes,1);assert.equal(voiceClonePolls.p,undefined);
+  requests=0;quotes=0;mode='429';await pollVoiceClone('p');
+  assert.equal(requests,1);assert.equal(timers.length,1);assert.ok(voiceClonePolls.p);
+  mode='failed';timers.shift()();await new Promise(setImmediate);
+  assert.equal(requests,2);assert.equal(voiceClonePolls.p,undefined);
+  mode='400';await pollVoiceClone('p');
+  assert.equal(voiceClonePolls.p,undefined);
+  console.log('VOICE_CLONE_POLL_OK');
+})().catch(function(error){console.error(error);process.exit(1)});
+"""
+        result = subprocess.run(
+            ["node", "-e", script], capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("VOICE_CLONE_POLL_OK", result.stdout)
 
 
 if __name__ == "__main__":

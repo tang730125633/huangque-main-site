@@ -8,6 +8,8 @@ import time
 import uuid
 from contextlib import closing
 
+from . import short_drama_asset_graph
+
 
 VOICE_STAGES = {
     "voice_review", "video_review", "assembly_review", "completed",
@@ -965,6 +967,25 @@ def bind_voice_job(db_factory, actor_username, idempotency_key, connection, job_
     )
 
 
+def _project_dialogue_items(conn, project_id):
+    current = short_drama_asset_graph.current_project_dialogue_lines(
+        conn, project_id,
+    )
+    if current is not None:
+        return [item for item in current if isinstance(item, dict)]
+    script = conn.execute(
+        "SELECT dialogue_lines_json FROM short_drama_scripts "
+        "WHERE project_id=? ORDER BY version DESC LIMIT 1",
+        (project_id,),
+    ).fetchone()
+    if not script:
+        return None
+    return [
+        item for item in _json_value(script["dialogue_lines_json"], [])
+        if isinstance(item, dict)
+    ]
+
+
 def ensure_voice_workspace(conn, project_id, allowed_stages=None):
     conn.row_factory = sqlite3.Row
     project = conn.execute(
@@ -982,14 +1003,9 @@ def ensure_voice_workspace(conn, project_id, allowed_stages=None):
     ).fetchone()
     if existing:
         return
-    script = conn.execute(
-        "SELECT dialogue_lines_json FROM short_drama_scripts "
-        "WHERE project_id=? ORDER BY version DESC LIMIT 1",
-        (project_id,),
-    ).fetchone()
-    if not script:
+    dialogue_items = _project_dialogue_items(conn, project_id)
+    if dialogue_items is None:
         raise ValueError("短剧项目缺少已确认剧本")
-    dialogue_items = _json_value(script["dialogue_lines_json"], [])
     dialogue = {
         item.get("id"): item for item in dialogue_items
         if isinstance(item, dict) and isinstance(item.get("id"), str)
@@ -1000,11 +1016,9 @@ def ensure_voice_workspace(conn, project_id, allowed_stages=None):
             (project_id,),
         )
     }
-    shots = conn.execute(
-        "SELECT * FROM short_drama_shots WHERE project_id=? "
-        "ORDER BY sort_order,id",
-        (project_id,),
-    ).fetchall()
+    shots = short_drama_asset_graph.current_project_shots(
+        conn, project_id, materialize=True,
+    )
     if not shots:
         raise ValueError("短剧项目缺少已确认分镜")
     now = int(time.time())
@@ -1020,6 +1034,8 @@ def ensure_voice_workspace(conn, project_id, allowed_stages=None):
             source = dialogue.get(dialogue_line_id)
             if not source:
                 raise ValueError("分镜引用了不存在的台词")
+            if str(source.get("kind") or "dialogue") in {"silence", "on_screen_text"}:
+                continue
             character_key = str(source.get("character_key") or "")
             character = characters.get(character_key)
             if not character:
@@ -1443,6 +1459,22 @@ def _recommended_voice_speed(current_speed, duration_ms, available_ms):
     return recommended if 0.5 <= recommended <= 2 else None
 
 
+def _continues_parallel_group(previous, line):
+    """Use groups resolved from the complete source sequence, including non-audio rows."""
+    if not previous:
+        return False
+    previous_group = previous.get("parallel_group_id")
+    current_group = line.get("parallel_group_id")
+    if previous_group is not None and current_group is not None:
+        return previous_group == current_group
+    if line.get("timing_mode") != "simultaneous":
+        return False
+    try:
+        return int(line["sort_order"]) == int(previous["sort_order"]) + 1
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def _timeline_suggestions(lines, duration_limit=None):
     ordered = sorted(lines, key=lambda item: (item["sort_order"], item["id"]))
     durations = []
@@ -1458,14 +1490,36 @@ def _timeline_suggestions(lines, duration_limit=None):
         else:
             durations.append(duration)
     cursor = 0
+    group_start = 0
+    group_duration = 0
     suggestions = {}
-    for line, duration in zip(ordered, durations):
+    for index, (line, duration) in enumerate(zip(ordered, durations)):
+        simultaneous = _continues_parallel_group(
+            ordered[index - 1] if index else None, line
+        )
+        if not simultaneous:
+            if index > 0:
+                cursor = group_start + group_duration + VOICE_TIMELINE_GAP_MS
+            group_start = cursor
+            group_duration = 0
         if duration is None:
             suggestions[line["id"]] = (None, None)
             continue
-        suggestions[line["id"]] = (cursor, cursor + duration)
-        cursor += duration + VOICE_TIMELINE_GAP_MS
+        suggestions[line["id"]] = (group_start, group_start + duration)
+        group_duration = max(group_duration, duration)
     return suggestions
+
+
+def _parallel_group_ids(lines):
+    groups = {}
+    current_group = -1
+    ordered = sorted(lines, key=lambda item: (item["sort_order"], item["id"]))
+    for index, line in enumerate(ordered):
+        if not _continues_parallel_group(
+                ordered[index - 1] if index else None, line):
+            current_group += 1
+        groups[line["id"]] = current_group
+    return groups
 
 
 def _timeline_blockers(shot):
@@ -1476,6 +1530,7 @@ def _timeline_blockers(shot):
         shot.get("lines", []),
         key=lambda item: (item["sort_order"], item["id"]),
     )
+    parallel_groups = _parallel_group_ids(lines)
     audio_intervals = []
     subtitle_intervals = []
     for line in lines:
@@ -1537,27 +1592,36 @@ def _timeline_blockers(shot):
                     if audio_overflow_ms > 0 else None
                 ),
             )
-        audio_intervals.append((start_ms, start_ms + duration, line_id))
+        audio_intervals.append((
+            start_ms, start_ms + duration, line_id,
+            parallel_groups.get(line_id),
+        ))
         if line.get("subtitle_visible"):
             if not str(line.get("subtitle_text") or "").strip():
                 _append_unique_blocker(
                     blockers, "timeline_invalid", shot_id, line_id
                 )
-            subtitle_intervals.append((start_ms, end_ms, line_id))
+            subtitle_intervals.append((
+                start_ms, end_ms, line_id, parallel_groups.get(line_id),
+            ))
     audio_intervals.sort(key=lambda interval: (interval[0], interval[1], interval[2]))
     subtitle_intervals.sort(
         key=lambda interval: (interval[0], interval[1], interval[2])
     )
-    for previous, current in zip(audio_intervals, audio_intervals[1:]):
-        if current[0] < previous[1]:
-            _append_unique_blocker(
-                blockers, "audio_overlap", shot_id, current[2]
-            )
-    for previous, current in zip(subtitle_intervals, subtitle_intervals[1:]):
-        if current[0] < previous[1]:
-            _append_unique_blocker(
-                blockers, "subtitle_overlap", shot_id, current[2]
-            )
+    for intervals, code in (
+            (audio_intervals, "audio_overlap"),
+            (subtitle_intervals, "subtitle_overlap")):
+        for index, current in enumerate(intervals):
+            for previous in intervals[:index]:
+                if current[0] >= previous[1] or previous[0] >= current[1]:
+                    continue
+                expected_parallel = (
+                    current[3] == previous[3] and current[0] == previous[0]
+                )
+                if not expected_parallel:
+                    _append_unique_blocker(
+                        blockers, code, shot_id, current[2]
+                    )
     return blockers
 
 
@@ -1599,6 +1663,28 @@ def build_voice_snapshot(conn, project):
             (project["id"],),
         )
     }
+    dialogue_items = _project_dialogue_items(conn, project["id"]) or []
+    dialogue_by_id = {
+        str(item.get("id") or ""): item for item in dialogue_items
+    }
+    dialogue_timing_modes = {
+        line_id: (
+            "simultaneous"
+            if str(item.get("timing_mode") or "") == "simultaneous"
+            else "sequential"
+        )
+        for line_id, item in dialogue_by_id.items()
+    }
+    resolved_parallel_groups = {}
+    for source_shot in short_drama_asset_graph.current_project_shots(
+            conn, project["id"]):
+        current_group = -1
+        for index, line_id in enumerate(_json_value(
+                source_shot["dialogue_line_ids_json"], [])):
+            source = dialogue_by_id.get(str(line_id or ""), {})
+            if index == 0 or str(source.get("timing_mode") or "") != "simultaneous":
+                current_group += 1
+            resolved_parallel_groups[(source_shot["id"], str(line_id or ""))] = current_group
     voice_shots = {
         row["shot_id"]: row for row in conn.execute(
             "SELECT * FROM short_drama_voice_shots WHERE project_id=?",
@@ -1611,9 +1697,16 @@ def build_voice_snapshot(conn, project):
         "ORDER BY shot_id,sort_order",
         (project["id"],),
     ):
-        lines.setdefault(row["shot_id"], []).append(
-            _line_snapshot(row, characters.get(row["character_key"], row["character_key"]))
+        line = _line_snapshot(
+            row, characters.get(row["character_key"], row["character_key"])
         )
+        line["timing_mode"] = dialogue_timing_modes.get(
+            str(row["dialogue_line_id"] or ""), "sequential"
+        )
+        line["parallel_group_id"] = resolved_parallel_groups.get(
+            (row["shot_id"], str(row["dialogue_line_id"] or ""))
+        )
+        lines.setdefault(row["shot_id"], []).append(line)
     line_map = {
         line["id"]: line for shot_lines in lines.values() for line in shot_lines
     }
@@ -1638,12 +1731,8 @@ def build_voice_snapshot(conn, project):
         if line and line["job"] is None:
             line["job"] = dict(row)
     shots = []
-    for shot in conn.execute(
-        "SELECT id,shot_key,sort_order,duration,character_keys_json "
-        "FROM short_drama_shots "
-        "WHERE project_id=? ORDER BY sort_order,id",
-        (project["id"],),
-    ):
+    for shot in short_drama_asset_graph.current_project_shots(
+            conn, project["id"]):
         shot_lines = lines.get(shot["id"], [])
         state = voice_shots[shot["id"]]
         line_statuses = [

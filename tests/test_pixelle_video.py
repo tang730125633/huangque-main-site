@@ -1185,6 +1185,58 @@ class PixelleVideoTests(unittest.TestCase):
         self.assertEqual(default["style"], "realistic_commercial")
         self.assertEqual(selected["style"], "future_tech")
 
+    def test_prepare_defaults_and_validates_material_source(self):
+        default = self.pixelle.prepare_payload({"text": "AI 培训"})
+        library = self.pixelle.prepare_payload({
+            "text": "AI 培训", "material_source": "library",
+        })
+        self.assertEqual("ai", default["material_source"])
+        self.assertEqual("library", library["material_source"])
+        with self.assertRaisesRegex(ValueError, "有效的素材来源"):
+            self.pixelle.prepare_payload({
+                "text": "AI 培训", "material_source": "external-url",
+            })
+
+    def test_library_mode_quote_has_no_ai_visual_charge(self):
+        from content_domains import points
+
+        prepared = self.pixelle.prepare_payload({
+            "text": "AI 培训", "material_source": "library",
+        })
+        prices = {"image.openai.std": 20, "audio.tts": 10, "text.copy": 3}
+        with mock.patch.object(
+            points.pricing, "get_price", side_effect=lambda key: prices[key]
+        ):
+            cost = points.cost_of("script_to_video", prepared)
+        self.assertEqual(13, cost)
+        self.assertEqual(0, prepared["cost_breakdown"]["visual_scenes"])
+        self.assertEqual("library", prepared["material_source"])
+        self.assertNotIn("material_source", prepared["cost_breakdown"])
+
+    def test_material_library_readiness_fails_closed(self):
+        payload = self.pixelle.prepare_payload({
+            "text": "AI 培训", "material_source": "library",
+        })
+        with mock.patch.object(
+            self.pixelle, "_json_request", return_value={
+                "ready": True, "scene_count": 5, "selected_count": 6,
+            }
+        ) as request:
+            self.assertIsNone(self.pixelle.require_material_library_available(payload))
+        request.assert_called_once_with(
+            "POST", "/api/video/material-library/probe",
+            {"scene_count": 5, "orientation": "portrait"}, timeout=12,
+        )
+        for response in (
+            {"ready": False, "scene_count": 5, "selected_count": 6},
+            {"ready": True, "scene_count": 5, "selected_count": 5},
+            {"ready": True, "scene_count": 4, "selected_count": 5},
+        ):
+            with self.subTest(response=response), mock.patch.object(
+                self.pixelle, "_json_request", return_value=response
+            ), self.assertRaisesRegex(Exception, "素材库暂不可用"):
+                self.pixelle.require_material_library_available(payload)
+
     def test_prepare_defaults_normalizes_and_rejects_invalid_speech_rate(self):
         default = self.pixelle.prepare_payload({"text": "AI 培训"})
         normalized = self.pixelle.prepare_payload({
@@ -1302,6 +1354,16 @@ class PixelleVideoTests(unittest.TestCase):
             self.pixelle.STYLE_PRESETS_BY_KEY["medical_beauty"]["prompt_prefix"],
         )
         self.assertEqual(body["media_workflow"], self.pixelle.PIXELLE_MEDIA_WORKFLOW)
+
+    def test_submit_forwards_strict_library_mode(self):
+        payload = self.pixelle.prepare_payload({
+            "text": "AI 培训", "material_source": "library",
+        })
+        with mock.patch.object(
+            self.pixelle, "_json_request", return_value={"task_id": "task-library"}
+        ) as request:
+            self.assertEqual("task-library", self.pixelle._submit(payload))
+        self.assertEqual("library", request.call_args.args[2]["material_source"])
 
     def test_submit_public_voice_uses_resolved_upstream_voice_id(self):
         payload = self.pixelle.prepare_payload({"text": "AI 培训"})
@@ -1898,6 +1960,7 @@ class TextVideoPlanningApiTests(unittest.TestCase):
         cls.core = importlib.import_module("content_domains.core")
         cls.pixelle = importlib.import_module("content_domains.pixelle_video")
         cls.assets = importlib.import_module("content_domains.pixelle_talking_assets")
+        cls.script_to_video = importlib.import_module("content_domains.script_to_video")
 
     def setUp(self):
         self.originals = {
@@ -1919,7 +1982,7 @@ class TextVideoPlanningApiTests(unittest.TestCase):
         self.core.verify = self.originals["verify"]
         self.core._domains = self.originals["domains"]
 
-    def request(self, method, path, body=None, username="alice"):
+    def request(self, method, path, body=None, username="alice", extra_headers=None):
         headers = {}
         data = None
         if username is not None:
@@ -1927,6 +1990,7 @@ class TextVideoPlanningApiTests(unittest.TestCase):
         if body is not None:
             data = json.dumps(body).encode("utf-8")
             headers["Content-Type"] = "application/json"
+        headers.update(extra_headers or {})
         return urllib.request.urlopen(urllib.request.Request(
             "http://127.0.0.1:%d%s" % (self.server.server_address[1], path),
             data=data, headers=headers, method=method,
@@ -1961,6 +2025,34 @@ class TextVideoPlanningApiTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as denied:
             self.request("POST", "/api/gen/text-video/plan", body, username=None)
         self.assertEqual(denied.exception.code, 401)
+
+    def test_library_quote_inventory_shortage_fails_before_cost_or_quote(self):
+        prepared = {
+            "pipeline": "pixelle", "material_source": "library",
+            "n_scenes": 5, "template": "1080x1920/image_default.html",
+        }
+        points = mock.Mock()
+        self.core._domains = lambda: (mock.Mock(), points, mock.Mock())
+        with mock.patch.object(self.core.feature_flags, "require_enabled"), \
+             mock.patch.object(self.core.miniprogram_security, "check_payload"), \
+             mock.patch.object(
+                 self.script_to_video, "prepare_script_to_video_payload",
+                 return_value=prepared,
+             ), \
+             mock.patch.object(
+                 self.pixelle, "require_material_library_available",
+                 side_effect=self.core.feature_flags.FeatureDisabled("素材库暂不可用，请稍后重试"),
+             ) as capacity, \
+             mock.patch.object(self.pixelle, "issue_quote") as issue:
+            with self.assertRaises(urllib.error.HTTPError) as rejected:
+                self.request("POST", "/api/gen/text-video/quote", {
+                    "pipeline": "pixelle", "text": "测试主题",
+                    "material_source": "library",
+                })
+        self.assertEqual(503, rejected.exception.code)
+        capacity.assert_called_once_with(prepared)
+        points.cost_of.assert_not_called()
+        issue.assert_not_called()
 
     def test_plan_route_reuses_existing_active_job_guard(self):
         with mock.patch.object(self.pixelle, "require_available"), \
@@ -2006,6 +2098,32 @@ class TextVideoPlanningApiTests(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as denied:
                 self.request("GET", path, username="bob")
         self.assertEqual(denied.exception.code, 404)
+
+    def test_cli_avatar_import_requires_internal_auth_and_owner_upload(self):
+        avatar = {"asset_id": "local_avatar_" + "e" * 32,
+                  "mime": "image/png", "data": b"image"}
+        upload_id = "img_" + "a" * 32
+        image_data = "data:image/png;base64,aGVsbG8="
+        with mock.patch.object(self.core, "AUTH_INTERNAL_TOKEN", "internal-secret"), \
+             mock.patch.object(self.pixelle, "require_available"), \
+             mock.patch.object(self.core.cli_uploads, "load_image_data_url",
+                               return_value=image_data) as load, \
+             mock.patch.object(self.core.miniprogram_security, "check_payload") as guard, \
+             mock.patch.object(self.assets, "store_avatar", return_value=avatar) as store:
+            with self.assertRaises(urllib.error.HTTPError) as denied:
+                self.request("POST", "/api/gen/cli/text-video/avatar-import", {
+                    "image_upload_id": upload_id,
+                })
+            self.assertEqual(403, denied.exception.code)
+            with self.request(
+                    "POST", "/api/gen/cli/text-video/avatar-import",
+                    {"image_upload_id": upload_id},
+                    extra_headers={"X-HQ-Internal-Token": "internal-secret"}) as response:
+                result = json.loads(response.read())
+        self.assertEqual(avatar["asset_id"], result["asset_id"])
+        load.assert_called_once_with(upload_id, "alice")
+        guard.assert_called_once_with({"image_data": image_data})
+        store.assert_called_once_with("alice", image_data)
 
     def test_avatar_upload_rejects_invalid_image(self):
         with mock.patch.object(self.pixelle, "require_available"), \

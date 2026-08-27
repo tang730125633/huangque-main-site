@@ -61,7 +61,7 @@ MAX_DIALOGUE_LINES_PER_SCRIPT = 120
 MAX_SCRIPT_VERSIONS_PER_PROJECT = 20
 CONTENT_KEYS = {"characters", "script", "shots"}
 PLANNING_SPEC_FIELDS = {
-    "synopsis", "ratio", "target_duration", "shot_count", "visual_style", "target_platform",
+    "synopsis", "genre", "ratio", "target_duration", "shot_count", "visual_style", "target_platform",
 }
 
 
@@ -158,7 +158,7 @@ def validate_project_payload(payload, partial=False):
         raise ValueError("缺少短剧目标时长")
     if "target_duration" in cleaned:
         if type(cleaned["target_duration"]) is not int or cleaned["target_duration"] not in DURATIONS:
-            raise ValueError("短剧时长仅支持 15-30、30-60、60-90 秒")
+            raise ValueError("短剧时长仅支持 30、45、60 秒")
     if not partial and "shot_count" not in cleaned:
         raise ValueError("缺少短剧分镜数量")
     if "shot_count" in cleaned:
@@ -166,6 +166,12 @@ def validate_project_payload(payload, partial=False):
             raise ValueError("分镜数量必须为 6–10 个")
     if not partial:
         _validate_planning_limits(cleaned["target_duration"], cleaned["shot_count"])
+    if "genre" in cleaned:
+        cleaned["genre"] = str(cleaned.get("genre") or "").strip()
+        if len(cleaned["genre"]) > 40:
+            raise ValueError("题材类型不能超过 40 个字")
+    elif not partial:
+        cleaned["genre"] = ""
     cleaned["visual_style"] = str(cleaned.get("visual_style") or "电影写实").strip()[:80]
     if "point_budget" in cleaned:
         if type(cleaned["point_budget"]) is not int:
@@ -189,6 +195,7 @@ CREATE TABLE IF NOT EXISTS short_drama_projects (
   ratio TEXT NOT NULL CHECK (ratio IN ('9:16','16:9')),
   target_duration INTEGER NOT NULL CHECK (target_duration IN (30,45,60)),
   shot_count INTEGER NOT NULL CHECK (shot_count BETWEEN 6 AND 10),
+  genre TEXT NOT NULL DEFAULT '',
   visual_style TEXT NOT NULL DEFAULT '电影写实',
   target_platform TEXT NOT NULL DEFAULT '抖音',
   point_budget INTEGER NOT NULL DEFAULT 0,
@@ -1701,6 +1708,11 @@ def init_db(db_factory):
         columns = {row[1] for row in conn.execute("PRAGMA table_info(short_drama_projects)")}
         if "board_id" not in columns:
             conn.execute("ALTER TABLE short_drama_projects ADD COLUMN board_id TEXT")
+        if "genre" not in columns:
+            conn.execute(
+                "ALTER TABLE short_drama_projects ADD COLUMN genre "
+                "TEXT NOT NULL DEFAULT ''"
+            )
         if "creation_status" not in columns:
             conn.execute(
                 "ALTER TABLE short_drama_projects ADD COLUMN creation_status "
@@ -1926,6 +1938,7 @@ def _project_create_request_data(data):
         "ratio": data["ratio"],
         "target_duration": data["target_duration"],
         "shot_count": data["shot_count"],
+        "genre": data.get("genre", ""),
         "visual_style": data["visual_style"],
         "target_platform": _text(data.get("target_platform") or "抖音", 80),
         "point_budget": data.get("point_budget", 0),
@@ -1952,11 +1965,11 @@ def _insert_project_row(conn, username, data, request_data, project_id, now):
         raise ProjectLimitExceeded(max_projects)
     conn.execute(
         "INSERT INTO short_drama_projects "
-        "(id, username, board_id, title, synopsis, ratio, target_duration, shot_count, visual_style, "
+        "(id, username, board_id, title, synopsis, ratio, target_duration, shot_count, genre, visual_style, "
         "target_platform, point_budget, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (project_id, username, data.get("board_id"), data["title"], data["synopsis"], data["ratio"],
-         data["target_duration"], data["shot_count"], data["visual_style"],
+         data["target_duration"], data["shot_count"], data.get("genre", ""), data["visual_style"],
          request_data["target_platform"], request_data["point_budget"], now, now),
     )
 
@@ -2290,7 +2303,9 @@ def import_script_project(db_factory, username, payload, idempotency_key):
         "title", "synopsis", "ratio", "target_duration", "shot_count",
         "visual_style", "source_text", "filename", "import_mode",
     }
-    optional = {"content_type", "character_contract"}
+    optional = {
+        "content_type", "character_contract", "genre", "source_requirement",
+    }
     if (not isinstance(payload, dict) or not required.issubset(payload)
             or not set(payload).issubset(required | optional)):
         raise ScriptImportError("invalid_request", "剧本导入请求字段无效")
@@ -2299,8 +2314,16 @@ def import_script_project(db_factory, username, payload, idempotency_key):
             "title", "synopsis", "ratio", "target_duration", "shot_count",
             "visual_style",
         )
-    })
+    } | {"genre": payload.get("genre", "")})
     source = str(payload.get("source_text") or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    source_requirement = str(payload.get("source_requirement") or "").strip()
+    if source_requirement not in {"", "complete_story"}:
+        raise ScriptImportError("invalid_source_requirement", "故事原稿要求无效")
+    if source_requirement == "complete_story" and len(source) < 100:
+        raise ScriptImportError(
+            "complete_story_too_short",
+            "完整故事至少需要 100 个字，请补充人物、起因、发展、冲突、高潮和结局",
+        )
     if len(source) < 8:
         raise ScriptImportError("script_too_short", "导入剧本至少需要 8 个字符")
     if len(source) > 50000:
@@ -2328,6 +2351,7 @@ def import_script_project(db_factory, username, payload, idempotency_key):
         "import_mode": mode,
         "content_type": content_type,
         "character_contract": character_contract,
+        "source_requirement": source_requirement,
     }
     request_hash = hashlib.sha256(
         json.dumps(request_data, ensure_ascii=False, sort_keys=True,
@@ -3171,7 +3195,7 @@ def update_project(db_factory, username, project_id, revision, patch, avatar_loo
         if key == "script":
             return update_script(db_factory, username, project_id, revision, original_patch[key])
         return update_shots(db_factory, username, project_id, revision, original_patch[key])
-    allowed = {"title", "synopsis", "ratio", "target_duration", "shot_count", "visual_style", "target_platform", "point_budget"}
+    allowed = {"title", "synopsis", "genre", "ratio", "target_duration", "shot_count", "visual_style", "target_platform", "point_budget"}
     unknown = set(original_patch) - allowed
     if unknown:
         raise ValueError("不支持的短剧字段")
@@ -5565,6 +5589,7 @@ _HTTP_ROUTES = {
         "/api/gen/short-drama/conversation/script/shot/update",
         "/api/gen/short-drama/conversation/script/shot/regenerate",
         "/api/gen/short-drama/conversation/script/shot/lock",
+        "/api/gen/short-drama/conversation/script/shot/structure",
         "/api/gen/short-drama/conversation/script/restore",
         "/api/gen/short-drama/conversation/script/lock",
         "/api/gen/short-drama/character-studio/profile",
@@ -5577,6 +5602,11 @@ _HTTP_ROUTES = {
         "/api/gen/short-drama/asset-graph/snapshots",
         "/api/gen/short-drama/asset-graph/scenes/reference",
         "/api/gen/short-drama/asset-graph/scenes/lock",
+        "/api/gen/short-drama/asset-graph/scenes",
+        "/api/gen/short-drama/asset-graph/scenes/update",
+        "/api/gen/short-drama/asset-graph/scenes/bind-shot",
+        "/api/gen/short-drama/asset-graph/scenes/delete",
+        "/api/gen/short-drama/asset-graph/scenes/restore",
         "/api/gen/short-drama/preflight/generate",
         "/api/gen/short-drama/preflight/confirm",
         "/api/gen/short-drama/autodraft/provider-preflight",
@@ -5922,6 +5952,7 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
                   mutation_lock=None, canvas_access_resolver=None, voice_validator=None,
                   points_getter=None, audio_asset_lookup=None, audio_asset_list=None,
                   enqueue_job=None,
+                  shared_video_submission_limit=None,
                   deduct_points=None, refund_points=None, charge_lookup=None,
                   avatar_list=None, audio_asset_job_lookup=None,
                   audio_asset_recorder=None, lipsync_provider_ready=None,
@@ -6075,6 +6106,31 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
                         db_factory, owner, username, body,
                     )
                 ),
+                "/api/gen/short-drama/asset-graph/scenes": lambda: (
+                    short_drama_asset_graph.create_scene(
+                        db_factory, owner, username, body,
+                    )
+                ),
+                "/api/gen/short-drama/asset-graph/scenes/update": lambda: (
+                    short_drama_asset_graph.update_scene(
+                        db_factory, owner, username, body,
+                    )
+                ),
+                "/api/gen/short-drama/asset-graph/scenes/bind-shot": lambda: (
+                    short_drama_asset_graph.bind_scene_to_shot(
+                        db_factory, owner, username, body,
+                    )
+                ),
+                "/api/gen/short-drama/asset-graph/scenes/delete": lambda: (
+                    short_drama_asset_graph.delete_scene(
+                        db_factory, owner, username, body,
+                    )
+                ),
+                "/api/gen/short-drama/asset-graph/scenes/restore": lambda: (
+                    short_drama_asset_graph.restore_scene(
+                        db_factory, owner, username, body,
+                    )
+                ),
             }
             handler._send(200, actions[path]())
         elif method == "POST" and path == "/api/gen/short-drama/advisor":
@@ -6213,6 +6269,8 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
                     short_drama_conversation.regenerate_shot,
                 "/api/gen/short-drama/conversation/script/shot/lock":
                     short_drama_conversation.set_shot_lock,
+                "/api/gen/short-drama/conversation/script/shot/structure":
+                    short_drama_conversation.change_shot_structure,
                 "/api/gen/short-drama/conversation/script/restore":
                     short_drama_conversation.restore_version,
                 "/api/gen/short-drama/conversation/script/lock":
@@ -6316,6 +6374,10 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
                     "refund_points": refund_points,
                     "charge_lookup": charge_lookup,
                     "project_usage": _project_point_usage,
+                    "enqueue_job": enqueue_job,
+                    "shared_video_submission_limit": (
+                        shared_video_submission_limit
+                    ),
                 }
                 if mutation_lock is not None:
                     with mutation_lock:

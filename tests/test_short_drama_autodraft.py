@@ -17,6 +17,7 @@ if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
 
 from content_domains import (
+    feature_flags,
     provider_keys,
     short_drama,
     short_drama_autodraft,
@@ -57,6 +58,11 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             }
         )
         self.free.start()
+        self.content_out_path = mock.patch(
+            "content_domains.core._out_path",
+            side_effect=lambda relative: Path(self.tmp.name) / relative,
+        )
+        self.content_out_path.start()
         short_drama.init_db(self.db)
 
         self.project = short_drama.create_project(
@@ -146,6 +152,7 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         self.assertEqual("720p", request["resolution"])
 
     def tearDown(self):
+        self.content_out_path.stop()
         self.free.stop()
         self.tmp.cleanup()
 
@@ -860,9 +867,11 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             "provider_prompt": "校园教室里，学生收拾书包",
             "include_continuity_reference": False,
             "include_scene_reference": True,
+            "scene_key": "scene-group:locked-classroom",
         })
         self.assertFalse(execution["include_continuity_reference"])
         self.assertTrue(execution["include_scene_reference"])
+        self.assertEqual("scene-group:locked-classroom", execution["scene_key"])
         error = short_drama_autodraft._provider_failure_error({
             "failure": {
                 "code": "1026",
@@ -2249,6 +2258,914 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         self.assertEqual(200, handler.response[0])
         self.assertEqual("running", handler.response[1]["status"])
 
+
+    def _init_shared_jobs_table(self):
+        conn = self.db()
+        try:
+            conn.execute("""CREATE TABLE jobs(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT, username TEXT, cost INTEGER,
+                status TEXT DEFAULT 'pending', payload TEXT, result TEXT,
+                error TEXT, created_at INTEGER, updated_at INTEGER,
+                deleted INTEGER DEFAULT 0, refunded INTEGER DEFAULT 0,
+                owner TEXT
+            )""")
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _numeric_legacy_minimax_job(self, key, numeric_id="70001"):
+        job, quote = self._running_provider_job(key)
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_provider_shot_jobs SET id=?,provider=? "
+                "WHERE id=?",
+                (numeric_id, "minimax_h3", job["id"]),
+            )
+            conn.execute(
+                "UPDATE short_drama_provider_shot_attempts SET job_id=? "
+                "WHERE job_id=?",
+                (numeric_id, job["id"]),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        job["id"] = numeric_id
+        job["provider"] = "minimax_h3"
+        return job, quote
+
+    def test_minimax_quote_creates_one_shared_xiaole_paid_job(self):
+        self._lock_project_character_references()
+        self._init_shared_jobs_table()
+
+        charged = []
+        refunded = []
+        enqueued = []
+
+        def deduct(username, cost, reason, transaction_key=""):
+            charged.append((username, cost, reason, transaction_key))
+            return 100 - cost
+
+        def refund(username, cost, reason, transaction_key=""):
+            refunded.append((username, cost, reason, transaction_key))
+            return 100
+
+        def enqueue(job_id, kind=None, mode=None):
+            enqueued.append((job_id, kind, mode))
+            return True
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+        }), mock.patch.object(
+            provider_keys, "has_candidate", return_value=True,
+        ), mock.patch.object(
+            feature_flags, "is_enabled", return_value=True,
+        ):
+            quote = self._provider_quote()
+            job = short_drama_autodraft.start_provider_job(
+                self.db,
+                "alice",
+                "alice",
+                {"quote_token": quote["quote_token"]},
+                "minimax-shared-job-1",
+                deduct_points=deduct,
+                refund_points=refund,
+                enqueue_job=enqueue,
+                project_usage=short_drama._project_point_usage,
+            )
+
+        conn = self.db()
+        conn.row_factory = sqlite3.Row
+        try:
+            shared = conn.execute(
+                "SELECT * FROM jobs WHERE id=?", (int(job["id"]),)
+            ).fetchone()
+            projected = conn.execute(
+                "SELECT * FROM short_drama_provider_shot_jobs WHERE id=?",
+                (str(job["id"]),),
+            ).fetchone()
+        finally:
+            conn.close()
+
+        self.assertIsNotNone(shared)
+        self.assertEqual("xiaole_video", shared["kind"])
+        self.assertEqual("alice", shared["username"])
+        self.assertEqual(quote["cost"], shared["cost"])
+        self.assertEqual("pending", shared["status"])
+        payload = json.loads(shared["payload"])
+        self.assertEqual("minimax", payload["channel"])
+        self.assertEqual("MiniMax-H3", payload["model"])
+        self.assertEqual("2k", payload["resolution"])
+        self.assertEqual(str(shared["id"]), projected["id"])
+        self.assertEqual("minimax_h3", projected["provider"])
+        self.assertEqual("queued", projected["status"])
+        self.assertIsNone(projected["provider_job_id"])
+        self.assertEqual(1, len(charged))
+        self.assertEqual([], refunded)
+        self.assertEqual([(shared["id"], "xiaole_video", None)], enqueued)
+
+    def test_minimax_shared_job_respects_existing_xiaole_active_limit(self):
+        from content_domains import core
+
+        self._lock_project_character_references()
+        self._init_shared_jobs_table()
+        conn = self.db()
+        try:
+            conn.execute(
+                "INSERT INTO jobs(kind,username,cost,status,payload,created_at,updated_at,owner) "
+                "VALUES ('xiaole_video','alice',1,'pending','{}',1,1,'content')"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        charged = []
+        refunded = []
+        enqueued = []
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+        }), mock.patch.object(
+            provider_keys, "has_candidate", return_value=True,
+        ), mock.patch.object(
+            feature_flags, "is_enabled", return_value=True,
+        ), mock.patch.object(
+            core, "MAX_USER_ACTIVE_XIAOLE_VIDEO", 1,
+        ), mock.patch.object(
+            core, "MAX_USER_ACTIVE_JOBS", 10,
+        ):
+            quote = self._provider_quote()
+            with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+                short_drama_autodraft.start_provider_job(
+                    self.db,
+                    "alice",
+                    "alice",
+                    {"quote_token": quote["quote_token"]},
+                    "minimax-active-cap-1",
+                    deduct_points=lambda *args: charged.append(args) or 99,
+                    refund_points=lambda *args: refunded.append(args) or 100,
+                    enqueue_job=lambda *args: enqueued.append(args) or True,
+                    project_usage=short_drama._project_point_usage,
+                    shared_video_submission_limit=(
+                        core._short_drama_xiaole_submission_limit
+                    ),
+                )
+
+        self.assertEqual("xiaole_active_cap", raised.exception.code)
+        self.assertEqual([], charged)
+        self.assertEqual([], refunded)
+        self.assertEqual([], enqueued)
+
+    def test_minimax_shared_job_rechecks_active_limit_after_charge(self):
+        from content_domains import core
+
+        self._lock_project_character_references()
+        self._init_shared_jobs_table()
+        charged = []
+        refunded = []
+        enqueued = []
+
+        def deduct(username, cost, reason, transaction_key=""):
+            charged.append((username, cost, reason, transaction_key))
+            conn = self.db()
+            try:
+                conn.execute(
+                    "INSERT INTO jobs(kind,username,cost,status,payload,created_at,updated_at,owner) "
+                    "VALUES ('xiaole_video',?,1,'pending','{}',1,1,'content')",
+                    (username,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            return 100 - cost
+
+        def refund(username, cost, reason, transaction_key=""):
+            refunded.append((username, cost, reason, transaction_key))
+            return 100
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+        }), mock.patch.object(
+            provider_keys, "has_candidate", return_value=True,
+        ), mock.patch.object(
+            feature_flags, "is_enabled", return_value=True,
+        ), mock.patch.object(
+            core, "MAX_USER_ACTIVE_XIAOLE_VIDEO", 1,
+        ), mock.patch.object(
+            core, "MAX_USER_ACTIVE_JOBS", 10,
+        ):
+            quote = self._provider_quote()
+            with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+                short_drama_autodraft.start_provider_job(
+                    self.db,
+                    "alice",
+                    "alice",
+                    {"quote_token": quote["quote_token"]},
+                    "minimax-active-cap-race-1",
+                    deduct_points=deduct,
+                    refund_points=refund,
+                    enqueue_job=lambda *args: enqueued.append(args) or True,
+                    project_usage=short_drama._project_point_usage,
+                    shared_video_submission_limit=(
+                        core._short_drama_xiaole_submission_limit
+                    ),
+                )
+
+        conn = self.db()
+        try:
+            active_count = conn.execute(
+                "SELECT COUNT(*) FROM jobs WHERE username='alice' "
+                "AND status IN ('pending','running')"
+            ).fetchone()[0]
+            projected_count = conn.execute(
+                "SELECT COUNT(*) FROM short_drama_provider_shot_jobs"
+            ).fetchone()[0]
+            consumed = conn.execute(
+                "SELECT consumed_job_id FROM short_drama_provider_shot_quotes "
+                "WHERE token=?",
+                (quote["quote_token"],),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+        self.assertEqual("xiaole_active_cap", raised.exception.code)
+        self.assertEqual(1, active_count)
+        self.assertEqual(0, projected_count)
+        self.assertIsNone(consumed)
+        self.assertEqual(1, len(charged))
+        self.assertEqual(1, len(refunded))
+        self.assertEqual([], enqueued)
+
+    def test_minimax_shared_job_respects_total_active_job_limit(self):
+        from content_domains import core
+
+        self._lock_project_character_references()
+        self._init_shared_jobs_table()
+        conn = self.db()
+        try:
+            conn.execute(
+                "INSERT INTO jobs(kind,username,cost,status,payload,created_at,updated_at,owner) "
+                "VALUES ('image','alice',1,'running','{}',1,1,'content')"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        charged = []
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+        }), mock.patch.object(
+            provider_keys, "has_candidate", return_value=True,
+        ), mock.patch.object(
+            feature_flags, "is_enabled", return_value=True,
+        ), mock.patch.object(
+            core, "MAX_USER_ACTIVE_XIAOLE_VIDEO", 10,
+        ), mock.patch.object(
+            core, "MAX_USER_ACTIVE_JOBS", 1,
+        ):
+            quote = self._provider_quote()
+            with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+                short_drama_autodraft.start_provider_job(
+                    self.db,
+                    "alice",
+                    "alice",
+                    {"quote_token": quote["quote_token"]},
+                    "minimax-total-active-cap-1",
+                    deduct_points=lambda *args: charged.append(args) or 99,
+                    refund_points=lambda *_args: 100,
+                    enqueue_job=lambda *_args: True,
+                    project_usage=short_drama._project_point_usage,
+                    shared_video_submission_limit=(
+                        core._short_drama_xiaole_submission_limit
+                    ),
+                )
+
+        self.assertEqual("active_job_cap", raised.exception.code)
+        self.assertEqual([], charged)
+
+    def test_minimax_shared_job_resolves_local_reference_only_in_worker_memory(self):
+        import io
+        from PIL import Image
+
+        self._lock_project_character_references()
+        self._init_shared_jobs_table()
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_characters SET reference_url="
+                "'/api/gen/file/short_drama_refs/character.png' "
+                "WHERE project_id=?",
+                (self.project["id"],),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        image_path = mock.Mock()
+        image_path.is_file.return_value = True
+        png = io.BytesIO()
+        Image.new("RGB", (256, 256), (40, 80, 120)).save(png, "PNG")
+        image_path.stat.return_value.st_size = len(png.getvalue())
+        image_path.read_bytes.return_value = png.getvalue()
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+        }), mock.patch.object(
+            provider_keys, "has_candidate", return_value=True,
+        ), mock.patch.object(
+            feature_flags, "is_enabled", return_value=True,
+        ), mock.patch(
+            "content_domains.core._out_path", return_value=image_path,
+        ):
+            quote = self._provider_quote()
+            job = short_drama_autodraft.start_provider_job(
+                self.db,
+                "alice",
+                "alice",
+                {"quote_token": quote["quote_token"]},
+                "minimax-local-reference-1",
+                deduct_points=lambda _user, cost, _reason, _key: 100 - cost,
+                refund_points=lambda _user, _cost, _reason, _key: 100,
+                enqueue_job=lambda _job_id, _kind, _mode: True,
+                project_usage=short_drama._project_point_usage,
+            )
+
+        conn = self.db()
+        try:
+            payload = json.loads(conn.execute(
+                "SELECT payload FROM jobs WHERE id=?", (int(job["id"]),)
+            ).fetchone()[0])
+        finally:
+            conn.close()
+        self.assertEqual([], payload["reference_images"])
+        self.assertNotIn("data:image", json.dumps(payload))
+        with mock.patch(
+            "content_domains.core._out_path", return_value=image_path,
+        ):
+            resolved = short_drama_autodraft.resolve_shared_xiaole_payload(
+                self.db, int(job["id"]), "alice", payload,
+            )
+        self.assertTrue(all(
+            value.startswith("data:image/png;base64,")
+            for value in resolved["reference_images"]
+        ))
+        conn = self.db()
+        try:
+            persisted = conn.execute(
+                "SELECT payload FROM jobs WHERE id=?", (int(job["id"]),)
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertNotIn("data:image", persisted)
+
+    def test_minimax_existing_short_drama_http_route_enqueues_shared_job(self):
+        self._lock_project_character_references()
+        self._init_shared_jobs_table()
+        enqueued = []
+        verify = lambda token: {
+            "username": token,
+            "must_change": False,
+        } if token else None
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+        }), mock.patch.object(
+            provider_keys, "has_candidate", return_value=True,
+        ), mock.patch.object(
+            feature_flags, "is_enabled", return_value=True,
+        ):
+            quote = self._provider_quote()
+            handler = Handler(
+                "/api/gen/short-drama/autodraft/provider-jobs",
+                body={
+                    "project_id": self.project["id"],
+                    "quote_token": quote["quote_token"],
+                },
+                key="minimax-existing-http-route-1",
+            )
+            handled = short_drama.dispatch_http(
+                handler,
+                "POST",
+                self.db,
+                verify,
+                deduct_points=lambda _user, cost, _reason, _key: 100 - cost,
+                refund_points=lambda _user, _cost, _reason, _key: 100,
+                enqueue_job=lambda *args: enqueued.append(args) or True,
+            )
+
+        self.assertTrue(handled)
+        self.assertEqual(200, handler.response[0], handler.response[1])
+        self.assertEqual(
+            [(int(handler.response[1]["id"]), "xiaole_video", None)],
+            enqueued,
+        )
+
+    def test_minimax_shared_job_success_projects_version_without_second_provider_call(self):
+        self._lock_project_character_references()
+        self._init_shared_jobs_table()
+
+        refunded = []
+
+        def deduct(_username, cost, _reason, transaction_key=""):
+            self.assertTrue(transaction_key)
+            return 100 - cost
+
+        def refund(username, cost, reason, transaction_key=""):
+            refunded.append((username, cost, reason, transaction_key))
+            return 100
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+        }), mock.patch.object(
+            provider_keys, "has_candidate", return_value=True,
+        ), mock.patch.object(
+            feature_flags, "is_enabled", return_value=True,
+        ):
+            quote = self._provider_quote()
+            job = short_drama_autodraft.start_provider_job(
+                self.db,
+                "alice",
+                "alice",
+                {"quote_token": quote["quote_token"]},
+                "minimax-shared-success-1",
+                deduct_points=deduct,
+                refund_points=refund,
+                enqueue_job=lambda _job_id, _kind, _mode: True,
+                project_usage=short_drama._project_point_usage,
+            )
+
+        shared_result = {
+            "type": "video",
+            "status": "done",
+            "mode": "minimax",
+            "model": "MiniMax-H3",
+            "provider": "minimax_h3_cn",
+            "provider_video_id": "h3-upstream-task-1",
+            "video_file": "video/minimax_h3_result.mp4",
+            "video_url": "/api/gen/file/video/minimax_h3_result.mp4",
+            "phase": "done",
+        }
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE jobs SET status='done',result=? WHERE id=?",
+                (json.dumps(shared_result, ensure_ascii=False), int(job["id"])),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        forbidden_provider = mock.Mock(configured=True)
+        forbidden_provider.create_job.side_effect = AssertionError(
+            "shared MiniMax completion must not submit a second provider job"
+        )
+        completed = short_drama_autodraft.reconcile_shared_xiaole_job(
+            self.db, int(job["id"])
+        )
+        with mock.patch.object(
+            short_drama_autodraft, "load_by_name", return_value=forbidden_provider,
+        ):
+            replay = short_drama_autodraft.reconcile_provider_job(
+                self.db,
+                "alice",
+                self.project["id"],
+                str(job["id"]),
+                refund_points=refund,
+            )
+
+        conn = self.db()
+        conn.row_factory = sqlite3.Row
+        try:
+            versions = conn.execute(
+                "SELECT * FROM short_drama_provider_shot_versions WHERE job_id=?",
+                (str(job["id"]),),
+            ).fetchall()
+            attempt = conn.execute(
+                "SELECT * FROM short_drama_provider_shot_attempts WHERE job_id=?",
+                (str(job["id"]),),
+            ).fetchone()
+        finally:
+            conn.close()
+
+        self.assertEqual("succeeded", completed["status"])
+        self.assertEqual("succeeded", replay["status"])
+        self.assertEqual("done", completed["billing_recovery"]["state"])
+        self.assertEqual("done", replay["billing_recovery"]["state"])
+        self.assertEqual("h3-upstream-task-1", completed["provider_job_id"])
+        self.assertEqual(1, len(versions))
+        self.assertEqual(shared_result["video_file"], versions[0]["file"])
+        self.assertEqual(shared_result["video_url"], versions[0]["url"])
+        self.assertEqual("done", attempt["state"])
+        self.assertEqual([], refunded)
+        forbidden_provider.create_job.assert_not_called()
+
+    def test_minimax_queue_rejection_uses_shared_refund_owner(self):
+        self._lock_project_character_references()
+        self._init_shared_jobs_table()
+        charged = []
+        refunded = []
+
+        def deduct(username, cost, reason, transaction_key=""):
+            charged.append((username, cost, reason, transaction_key))
+            return 100 - cost
+
+        def refund(username, cost, reason, transaction_key=""):
+            refunded.append((username, cost, reason, transaction_key))
+            return 100
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+        }), mock.patch.object(
+            provider_keys, "has_candidate", return_value=True,
+        ), mock.patch.object(
+            feature_flags, "is_enabled", return_value=True,
+        ):
+            quote = self._provider_quote()
+            with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+                short_drama_autodraft.start_provider_job(
+                    self.db,
+                    "alice",
+                    "alice",
+                    {"quote_token": quote["quote_token"]},
+                    "minimax-queue-full-1",
+                    deduct_points=deduct,
+                    refund_points=refund,
+                    enqueue_job=lambda _job_id, _kind, _mode: False,
+                    project_usage=short_drama._project_point_usage,
+                )
+
+        conn = self.db()
+        conn.row_factory = sqlite3.Row
+        try:
+            shared = conn.execute("SELECT * FROM jobs").fetchone()
+            projected = conn.execute(
+                "SELECT * FROM short_drama_provider_shot_jobs"
+            ).fetchone()
+            attempt = conn.execute(
+                "SELECT * FROM short_drama_provider_shot_attempts"
+            ).fetchone()
+        finally:
+            conn.close()
+
+        self.assertEqual("provider_queue_full", raised.exception.code)
+        self.assertEqual("error", shared["status"])
+        self.assertEqual(1, shared["refunded"])
+        self.assertEqual("failed", projected["status"])
+        self.assertEqual("refunded", attempt["state"])
+        self.assertEqual(1, len(charged))
+        self.assertEqual(1, len(refunded))
+        self.assertEqual(
+            "job-refund:alice:%s" % shared["id"], refunded[0][3]
+        )
+
+    def test_minimax_failure_waits_for_shared_refund_without_double_refund(self):
+        self._lock_project_character_references()
+        self._init_shared_jobs_table()
+        direct_refunds = []
+
+        def refund(username, cost, reason, transaction_key=""):
+            direct_refunds.append((username, cost, reason, transaction_key))
+            return 100
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+        }), mock.patch.object(
+            provider_keys, "has_candidate", return_value=True,
+        ), mock.patch.object(
+            feature_flags, "is_enabled", return_value=True,
+        ):
+            quote = self._provider_quote()
+            job = short_drama_autodraft.start_provider_job(
+                self.db,
+                "alice",
+                "alice",
+                {"quote_token": quote["quote_token"]},
+                "minimax-shared-failure-1",
+                deduct_points=lambda _user, cost, _reason, _key: 100 - cost,
+                refund_points=refund,
+                enqueue_job=lambda _job_id, _kind, _mode: True,
+                project_usage=short_drama._project_point_usage,
+            )
+
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE jobs SET status='error',error='provider rejected',refunded=2 "
+                "WHERE id=?",
+                (int(job["id"]),),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        failed = short_drama_autodraft.reconcile_shared_xiaole_job(
+            self.db, int(job["id"])
+        )
+        short_drama_autodraft.retry_provider_refunds(
+            self.db,
+            mock.Mock(refund_points=refund),
+            10,
+        )
+
+        conn = self.db()
+        conn.row_factory = sqlite3.Row
+        try:
+            pending_attempt = conn.execute(
+                "SELECT * FROM short_drama_provider_shot_attempts WHERE job_id=?",
+                (str(job["id"]),),
+            ).fetchone()
+            conn.execute(
+                "UPDATE jobs SET refunded=1 WHERE id=?", (int(job["id"]),)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        settled = short_drama_autodraft.reconcile_shared_xiaole_job(
+            self.db, int(job["id"])
+        )
+        conn = self.db()
+        conn.row_factory = sqlite3.Row
+        try:
+            settled_attempt = conn.execute(
+                "SELECT * FROM short_drama_provider_shot_attempts WHERE job_id=?",
+                (str(job["id"]),),
+            ).fetchone()
+        finally:
+            conn.close()
+
+        self.assertEqual("failed", failed["status"])
+        self.assertEqual("failed", settled["status"])
+        self.assertTrue(failed["billing_recovery"]["refund_pending"])
+        self.assertTrue(settled["billing_recovery"]["refunded"])
+        self.assertEqual("refund_pending", pending_attempt["state"])
+        self.assertEqual("refunded", settled_attempt["state"])
+        self.assertEqual([], direct_refunds)
+
+    def test_minimax_quote_change_between_validation_and_insert_fails_closed(self):
+        self._lock_project_character_references()
+        self._init_shared_jobs_table()
+        charged = []
+        refunded = []
+        enqueued = []
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+        }), mock.patch.object(
+            provider_keys, "has_candidate", return_value=True,
+        ), mock.patch.object(
+            feature_flags, "is_enabled", return_value=True,
+        ):
+            quote = self._provider_quote()
+
+            def deduct(username, cost, reason, transaction_key=""):
+                charged.append((username, cost, reason, transaction_key))
+                conn = self.db()
+                try:
+                    conn.execute(
+                        "UPDATE short_drama_provider_shot_quotes "
+                        "SET request_hash='changed-after-validation' WHERE token=?",
+                        (quote["quote_token"],),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+                return 100 - cost
+
+            def refund(username, cost, reason, transaction_key=""):
+                refunded.append((username, cost, reason, transaction_key))
+                return 100
+
+            with self.assertRaises(
+                short_drama_autodraft.AutodraftError
+            ) as raised:
+                short_drama_autodraft.start_provider_job(
+                    self.db,
+                    "alice",
+                    "alice",
+                    {"quote_token": quote["quote_token"]},
+                    "minimax-quote-race-1",
+                    deduct_points=deduct,
+                    refund_points=refund,
+                    enqueue_job=lambda *args: enqueued.append(args) or True,
+                    project_usage=short_drama._project_point_usage,
+                )
+
+        conn = self.db()
+        try:
+            shared_count = conn.execute(
+                "SELECT COUNT(*) FROM jobs WHERE kind='xiaole_video' "
+                "AND status IN ('pending','running','done')"
+            ).fetchone()[0]
+            projected_count = conn.execute(
+                "SELECT COUNT(*) FROM short_drama_provider_shot_jobs"
+            ).fetchone()[0]
+            consumed = conn.execute(
+                "SELECT consumed_job_id FROM short_drama_provider_shot_quotes "
+                "WHERE token=?",
+                (quote["quote_token"],),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+        self.assertEqual("provider_quote_changed", raised.exception.code)
+        self.assertEqual(0, shared_count)
+        self.assertEqual(0, projected_count)
+        self.assertIsNone(consumed)
+        self.assertEqual(1, len(charged))
+        self.assertEqual(1, len(refunded))
+        self.assertEqual([], enqueued)
+
+    def test_minimax_character_binding_change_during_charge_fails_closed(self):
+        self._lock_project_character_references()
+        self._init_shared_jobs_table()
+        charged = []
+        refunded = []
+        enqueued = []
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+        }), mock.patch.object(
+            provider_keys, "has_candidate", return_value=True,
+        ), mock.patch.object(
+            feature_flags, "is_enabled", return_value=True,
+        ):
+            quote = self._provider_quote()
+
+            def deduct(username, cost, reason, transaction_key=""):
+                charged.append((username, cost, reason, transaction_key))
+                conn = self.db()
+                try:
+                    conn.execute(
+                        "UPDATE short_drama_characters "
+                        "SET reference_version=reference_version+1 "
+                        "WHERE project_id=? AND character_key=("
+                        "SELECT character_key FROM short_drama_characters "
+                        "WHERE project_id=? ORDER BY sort_order LIMIT 1)",
+                        (self.project["id"], self.project["id"]),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+                return 100 - cost
+
+            def refund(username, cost, reason, transaction_key=""):
+                refunded.append((username, cost, reason, transaction_key))
+                return 100
+
+            with self.assertRaises(
+                short_drama_autodraft.AutodraftError
+            ) as raised:
+                short_drama_autodraft.start_provider_job(
+                    self.db,
+                    "alice",
+                    "alice",
+                    {"quote_token": quote["quote_token"]},
+                    "minimax-character-race-1",
+                    deduct_points=deduct,
+                    refund_points=refund,
+                    enqueue_job=lambda *args: enqueued.append(args) or True,
+                    project_usage=short_drama._project_point_usage,
+                )
+
+        conn = self.db()
+        try:
+            active_shared = conn.execute(
+                "SELECT COUNT(*) FROM jobs WHERE kind='xiaole_video' "
+                "AND status IN ('pending','running','done')"
+            ).fetchone()[0]
+            projected_count = conn.execute(
+                "SELECT COUNT(*) FROM short_drama_provider_shot_jobs"
+            ).fetchone()[0]
+            consumed = conn.execute(
+                "SELECT consumed_job_id FROM short_drama_provider_shot_quotes "
+                "WHERE token=?",
+                (quote["quote_token"],),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+        self.assertEqual("provider_quote_stale", raised.exception.code)
+        self.assertEqual(0, active_shared)
+        self.assertEqual(0, projected_count)
+        self.assertIsNone(consumed)
+        self.assertEqual(1, len(charged))
+        self.assertEqual(1, len(refunded))
+        self.assertEqual([], enqueued)
+
+    def test_numeric_legacy_minimax_job_uses_legacy_provider_reconciliation(self):
+        class PendingLegacyProvider:
+            def __init__(self):
+                self.polls = []
+
+            def get_job(self, provider_job_id):
+                self.polls.append(provider_job_id)
+                return {"status": "pending"}
+
+        job, _quote = self._numeric_legacy_minimax_job(
+            "numeric-legacy-minimax-query"
+        )
+        provider = PendingLegacyProvider()
+        with mock.patch(
+            "content_domains.short_drama_autodraft.load_by_name",
+            return_value=provider,
+        ), mock.patch(
+            "content_domains.short_drama_autodraft.time.time",
+            return_value=105,
+        ):
+            result = short_drama_autodraft.reconcile_provider_job(
+                self.db, "alice", self.project["id"], job["id"]
+            )
+
+        self.assertEqual("running", result["status"])
+        self.assertEqual(["provider-timeout-job"], provider.polls)
+
+    def test_numeric_legacy_minimax_refund_pending_uses_legacy_refund_owner(self):
+        job, quote = self._numeric_legacy_minimax_job(
+            "numeric-legacy-minimax-refund"
+        )
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_provider_shot_jobs SET status='failed' "
+                "WHERE id=?",
+                (job["id"],),
+            )
+            conn.execute(
+                "UPDATE short_drama_provider_shot_attempts "
+                "SET state='refund_pending' WHERE job_id=?",
+                (job["id"],),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        refunds = []
+
+        short_drama_autodraft.retry_provider_refunds(
+            self.db,
+            mock.Mock(
+                refund_points=lambda user, cost, reason, key: refunds.append(
+                    (user, cost, reason, key)
+                )
+            ),
+            10,
+        )
+
+        conn = self.db()
+        try:
+            state = conn.execute(
+                "SELECT state FROM short_drama_provider_shot_attempts "
+                "WHERE job_id=?",
+                (job["id"],),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual("refunded", state)
+        self.assertEqual(1, len(refunds))
+        self.assertEqual(quote["cost"], refunds[0][1])
+
+    def test_numeric_legacy_minimax_ignores_unrelated_shared_job_id(self):
+        self._init_shared_jobs_table()
+        job, _quote = self._numeric_legacy_minimax_job(
+            "numeric-legacy-minimax-shared-collision"
+        )
+        conn = self.db()
+        try:
+            conn.execute(
+                "INSERT INTO jobs(id,kind,username,status,payload,refunded) "
+                "VALUES (?,?,?,?,?,0)",
+                (
+                    int(job["id"]),
+                    "xiaole_video",
+                    "alice",
+                    "running",
+                    json.dumps({
+                        "channel": "minimax",
+                        "_short_drama_provider_binding": {
+                            "project_id": "another-project",
+                            "plan_id": self.plan_id,
+                            "shot_key": "shot_01",
+                            "request_hash": "unrelated-request",
+                        },
+                    }),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        provider = mock.Mock()
+        provider.get_job.return_value = {"status": "pending"}
+
+        with mock.patch(
+            "content_domains.short_drama_autodraft.load_by_name",
+            return_value=provider,
+        ), mock.patch(
+            "content_domains.short_drama_autodraft.time.time",
+            return_value=105,
+        ):
+            result = short_drama_autodraft.reconcile_provider_job(
+                self.db, "alice", self.project["id"], job["id"]
+            )
+
+        self.assertEqual("running", result["status"])
+        provider.get_job.assert_called_once_with("provider-timeout-job")
 
 class ShortDramaContinuityChainTests(unittest.TestCase):
     def setUp(self):

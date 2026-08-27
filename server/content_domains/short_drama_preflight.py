@@ -13,7 +13,7 @@ import sqlite3
 import time
 import uuid
 
-from . import short_drama_duration
+from . import short_drama_duration, short_drama_storyboard
 
 
 QUALITY_ROUTES = {"quick_draft", "formal"}
@@ -209,12 +209,12 @@ def _duration_plan(script, target_band):
     weights = []
     speech_total_ms = 0
     for shot in shots:
-        texts = [
-            str(dialogue.get(str(line_id), {}).get("text") or "").strip()
+        lines = [
+            dialogue.get(str(line_id), {})
             for line_id in shot.get("dialogue_line_ids", [])
         ]
-        characters = sum(len(value) for value in texts)
-        speech_ms = int(math.ceil(characters / 5.2 * 1000)) if characters else 0
+        speech_seconds = short_drama_storyboard._dialogue_timeline_seconds(lines)
+        speech_ms = int(math.ceil(speech_seconds * 1000)) if speech_seconds else 0
         speech_total_ms += speech_ms
         visual_ms = max(1800, int(float(shot.get("duration_seconds") or 3) * 1000))
         weights.append(max(visual_ms, speech_ms + (500 if speech_ms else 0)))
@@ -324,6 +324,8 @@ def _material_plan(script, duration):
                     or character_key
                 ),
                 "text": str(line.get("text") or "").strip(),
+                "speech_rate": float(line.get("speech_rate") or 1.0),
+                "timing_mode": str(line.get("timing_mode") or "sequential"),
             })
         character_keys = [
             str(value) for value in shot.get("character_keys", []) if str(value)
@@ -342,6 +344,7 @@ def _material_plan(script, duration):
             ).strip(),
             "negative_prompt": str(shot.get("negative_prompt") or "").strip(),
             "camera": str(shot.get("camera") or "").strip(),
+            "sound_design": str(shot.get("sound_design") or "").strip(),
             "character_keys": character_keys,
             "character_names": [
                 characters.get(key) or key for key in character_keys

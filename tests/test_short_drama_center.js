@@ -85,8 +85,15 @@ test('创建短剧提供真人、漫剧和数字人口播三种内容类型入�
 
 test('真人短剧先确认剧本再确认角色和角色形象', async () => {
   assert.match(centerScript, /live_action_story/);
+  assert.match(html, /输入并确认完整故事/);
+  assert.match(html, /完整故事<textarea name="script_source" required minlength="100" maxlength="50000"/);
+  assert.match(html, /请填写或粘贴完整故事，包括主要人物、故事背景、关键情节、核心冲突、高潮和结局/);
+  assert.match(html, /整理故事结构/);
+  assert.doesNotMatch(html, /可以填写故事想法/);
+  assert.match(centerScript, /完整故事至少需要 100 个字/);
+  assert.match(centerScript, /source_requirement:'complete_story'/);
   assert.doesNotMatch(centerScript, /showCreateStep\('live_action_visuals'\)/);
-  assert.match(centerScript, /确认剧本，下一步：角色确认/);
+  assert.match(centerScript, /确认故事，下一步：角色确认/);
   assert.match(centerScript, /核对并保存角色资料，然后在同一界面选择、上传或生成角色标准图/);
   assert.match(centerScript, /确认角色并创建项目/);
   const calls = [];
@@ -137,10 +144,41 @@ test('导入项目沿用独立短剧创建字段', () => {
     shot_count:{value:'8'}, visual_style:{value:'温暖写实'}
   };
   assert.deepEqual(center.importProjectPayload({elements:fields}, analysis, 'faithful'), {
-    title:'回家', synopsis:analysis.synopsis, ratio:'9:16', target_duration:45,
+    title:'回家', synopsis:analysis.synopsis, ratio:'9:16', genre:'', target_duration:45,
     shot_count:8, visual_style:'温暖写实', source_text:analysis.source,
     filename:'回家.txt', import_mode:'faithful'
   });
+});
+
+test('真人短剧题材位于镜头建议之后并支持自定义', () => {
+  const recommendation = html.indexOf('id="shortDramaRecommendedShots"');
+  const genre = html.indexOf('name="genre_choice"');
+  const style = html.indexOf('name="visual_style"', genre);
+  assert.ok(recommendation >= 0 && recommendation < genre && genre < style);
+  assert.match(html, /name="genre_choice" required/);
+  assert.match(html, /value="__custom__">其他/);
+  assert.match(html, /name="genre_custom" maxlength="40"/);
+  assert.match(centerStyle, /\.short-drama-genre-field\{/);
+  assert.match(centerStyle, /\.short-drama-card-genre\{/);
+});
+
+test('真人短剧题材进入创建请求和剧本分镜确认上下文', () => {
+  const fields = {
+    title:{value:'校园来信'}, synopsis:{value:'两个学生在毕业前解开误会'},
+    ratio:{value:'9:16'}, target_duration:{value:'30'}, shot_count:{value:'6'},
+    genre_choice:{value:'校园青春'}, genre_custom:{value:''}, visual_style:{value:'电影感写实'}
+  };
+  const payload = center.createPayload({elements:fields});
+  assert.equal(payload.genre, '校园青春');
+  const preview = center.buildPlannerPreview(payload, [payload.synopsis], center.buildRecommendations([payload.synopsis])[0], {
+    protagonist:'林夏', conflict:'必须在毕业前说出真相', emotion:'青春治愈', ending:'两人和解', audience:'年轻人'
+  });
+  assert.equal(preview.genre, '校园青春');
+  assert.equal(center.plannerConfirmedContract(preview).genre, '校园青春');
+  assert.match(center.plannerPromotionMessages(preview)[0], /题材：校园青春/);
+  assert.doesNotMatch(center.plannerPromotionMessages(Object.assign({}, preview, {genre:''}))[0], /题材：/);
+  fields.genre_choice.value = '__custom__'; fields.genre_custom.value = '科幻冒险';
+  assert.equal(center.createPayload({elements:fields}).genre, '科幻冒险');
 });
 
 test('灵感助手按缺失信息动态追问并输出三个可编辑方向', () => {
@@ -985,7 +1023,12 @@ test('live action import payload carries the confirmed role contract', () => {
   });
   assert.equal(payload.content_type, 'live_action');
   assert.deepEqual(payload.character_contract, contract);
-  assert.match(centerScript, /importProjectPayload\(liveActionForm,liveActionAnalysis,'faithful',\{content_type:'live_action',character_contract:contract\}\)/);
+  const completeStoryPayload = center.importProjectPayload({title:'真人短剧',source_text:'人物：林夏\n林夏：你好。'}, analysis, 'faithful', {
+    content_type:'live_action', character_contract:contract,
+    source_requirement:'complete_story'
+  });
+  assert.equal(completeStoryPayload.source_requirement, 'complete_story');
+  assert.match(centerScript, /importProjectPayload\(liveActionForm,liveActionAnalysis,'faithful',\{content_type:'live_action',character_contract:contract,source_requirement:'complete_story'\}\)/);
   assert.match(centerScript, /\{characters:contract\.map\(backendCharacterFromRole\),character_contract:contract\}/);
   const normalized = center.normalizeCharacterContract(contract);
   assert.equal(Object.hasOwn(normalized[0], 'reference_locked'), false);
