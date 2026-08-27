@@ -29,12 +29,15 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         self.module._CACHE.update({"at": 0.0, "templates": [], "fonts": []})
 
     def templates(self):
-        return [{
+        templates = [{
             "id": "native-bold" if index == 0 else f"template-{index:02d}",
             "name": f"模板 {index}", "description": "说明", "tags": ["标签"],
-        } for index in range(13)]
+        } for index in range(15)]
+        templates[-2]["id"] = "full-overlay-bold"
+        templates[-1]["id"] = "poster-split"
+        return templates
 
-    def test_public_catalog_is_sanitized_and_requires_thirteen_templates(self):
+    def test_public_catalog_is_sanitized_and_requires_fifteen_templates(self):
         response = {"templates": self.templates(), "fonts": [
             {"value": "", "label": "自动搭配", "source": "automatic"},
             {"value": "Noto Sans SC", "label": "思源黑体", "source": "bundled"},
@@ -43,7 +46,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         ]}
         with mock.patch.object(self.module, "_request", return_value=response):
             values = self.module.public_templates(force=True)
-        self.assertEqual(13, len(values))
+        self.assertEqual(15, len(values))
         self.assertEqual("native-bold", values[0]["id"])
         self.assertEqual(
             ["", "Noto Sans SC", "AaHouDiHei"],
@@ -52,6 +55,30 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         with mock.patch.object(self.module, "_request", return_value={"templates": values[:-1]}), \
              self.assertRaisesRegex(RuntimeError, "不完整"):
             self.module.public_templates(force=True)
+        missing_required = self.templates()
+        missing_required[-1] = {
+            "id": "replacement-template", "name": "替代模板",
+            "description": "说明", "tags": ["标签"],
+        }
+        with mock.patch.object(
+            self.module, "_request", return_value={"templates": missing_required}
+        ), self.assertRaisesRegex(RuntimeError, "不完整"):
+            self.module.public_templates(force=True)
+
+    def test_availability_requires_fifteen_healthy_templates(self):
+        with mock.patch.object(self.module.feature_flags, "is_enabled", return_value=True), \
+             mock.patch.object(
+                 self.module, "_request",
+                 return_value={"ok": True, "templates": 15},
+             ):
+            self.assertEqual({
+                "enabled": True, "ready": True, "available": True,
+            }, self.module.availability(force=True))
+        for health in ({"ok": True, "templates": 13}, {"ok": False, "templates": 15}):
+            with self.subTest(health=health), \
+                 mock.patch.object(self.module.feature_flags, "is_enabled", return_value=True), \
+                 mock.patch.object(self.module, "_request", return_value=health):
+                self.assertFalse(self.module.availability(force=True)["ready"])
 
     def test_validate_payload_is_library_only_and_catalog_bound(self):
         with mock.patch.object(self.module, "require_available"), \

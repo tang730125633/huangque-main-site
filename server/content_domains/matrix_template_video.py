@@ -17,6 +17,8 @@ from . import feature_flags, pricing
 
 
 FEATURE_KEY = "matrix_template_video"
+EXPECTED_TEMPLATE_COUNT = 15
+REQUIRED_TEMPLATE_IDS = frozenset({"full-overlay-bold", "poster-split"})
 API_URL = os.environ.get("MATRIX_TEMPLATE_API_URL", "http://127.0.0.1:8112").rstrip("/")
 API_TOKEN = os.environ.get("MATRIX_TEMPLATE_API_TOKEN", "").strip()
 JOB_TIMEOUT = max(60, min(1800, int(os.environ.get("MATRIX_TEMPLATE_JOB_TIMEOUT", "1200"))))
@@ -77,7 +79,10 @@ def availability(force=False):
         return {"enabled": False, "ready": False, "available": False}
     try:
         health = _request("GET", "/health", timeout=5)
-        ready = health.get("ok") is True and int(health.get("templates") or 0) == 13
+        ready = (
+            health.get("ok") is True
+            and int(health.get("templates") or 0) == EXPECTED_TEMPLATE_COUNT
+        )
     except Exception:
         ready = False
     return {"enabled": True, "ready": ready, "available": ready}
@@ -106,7 +111,12 @@ def _refresh_catalog(force=False):
                 "description": str(raw.get("description") or "")[:160],
                 "tags": [str(item)[:20] for item in (raw.get("tags") or [])[:8]],
             })
-        if len(templates) != 13 or len({item["id"] for item in templates}) != 13:
+        template_ids = {item["id"] for item in templates}
+        if (
+            len(templates) != EXPECTED_TEMPLATE_COUNT
+            or len(template_ids) != EXPECTED_TEMPLATE_COUNT
+            or not REQUIRED_TEMPLATE_IDS.issubset(template_ids)
+        ):
             raise RuntimeError("模板目录不完整")
         fonts = [{"value": "", "label": "自动搭配", "source": "automatic"}]
         seen = {""}
