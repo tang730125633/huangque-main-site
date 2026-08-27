@@ -8,10 +8,12 @@ class Element {
   get textContent(){return this._text} set textContent(v){this._text=String(v);if(v==='')this.children=[]}
   set innerHTML(v){this._html=String(v)} get innerHTML(){return this._html||''}
   appendChild(x){this.children.push(x);return x} setAttribute(k,v){this.attributes[k]=String(v)}
+  getAttribute(k){return this.attributes[k]}
   addEventListener(k,fn){(this.listeners[k]||=[]).push(fn)}
 }
 function response(status,data){return {status,text:()=>Promise.resolve(JSON.stringify(data||{}))}}
 async function flush(n=12){for(let i=0;i<n;i++)await new Promise(r=>setImmediate(r))}
+function pendingCleared(storage){return !storage.has('hq-matrix-template-pending-v1')&&!storage.has('hq-matrix-template-pending-v2')}
 
 function createRuntime(plan, storage){
   const page=fs.readFileSync(path.join(__dirname,'..','site','workbench','matrix-template.html'),'utf8');
@@ -48,7 +50,7 @@ async function scenarioPostLoss(){
     poll:()=>Promise.resolve(response(200,{status:'done',result:{video_url:'/video',duration:8}})),
   },storage);
   await fillAndSubmit(runtime);await runtime.runTimer();await flush();
-  return {keys:runtime.requests.post.map(x=>x.options.headers['Idempotency-Key']),bodies:runtime.requests.post.map(x=>JSON.parse(x.options.body)),posts:runtime.requests.post.length,cleared:storage.size===0};
+  return {keys:runtime.requests.post.map(x=>x.options.headers['Idempotency-Key']),bodies:runtime.requests.post.map(x=>JSON.parse(x.options.body)),posts:runtime.requests.post.length,cleared:pendingCleared(storage)};
 }
 async function scenarioInProgress(){
   const storage=new Map();
@@ -57,7 +59,7 @@ async function scenarioInProgress(){
     poll:()=>Promise.resolve(response(200,{status:'done',result:{video_url:'/video',duration:8}})),
   },storage);
   await fillAndSubmit(runtime);await runtime.runTimer();await flush();
-  return {keys:runtime.requests.post.map(x=>x.options.headers['Idempotency-Key']),cleared:storage.size===0};
+  return {keys:runtime.requests.post.map(x=>x.options.headers['Idempotency-Key']),cleared:pendingCleared(storage)};
 }
 async function scenarioRefresh(){
   const storage=new Map();
@@ -65,13 +67,13 @@ async function scenarioRefresh(){
   await fillAndSubmit(first);
   const second=createRuntime({post:()=>Promise.reject(new Error('should not post')),poll:()=>Promise.resolve(response(200,{status:'done',result:{video_url:'/video',duration:8}}))},storage);
   await flush();
-  return {secondPosts:second.requests.post.length,secondPolls:second.requests.poll.length,cleared:storage.size===0};
+  return {secondPosts:second.requests.post.length,secondPolls:second.requests.poll.length,cleared:pendingCleared(storage)};
 }
 async function scenarioPollFailure(){
   const storage=new Map();
   const runtime=createRuntime({post:()=>Promise.resolve(response(200,{job_id:10})),poll:i=>i===0?Promise.reject(new Error('temporary')):Promise.resolve(response(200,{status:'done',result:{video_url:'/video',duration:8}}))},storage);
   await fillAndSubmit(runtime);const busyAfterFailure=runtime.get('generateBtn').disabled;await runtime.runTimer();await flush();
-  return {polls:runtime.requests.poll.length,busyAfterFailure,cleared:storage.size===0};
+  return {polls:runtime.requests.poll.length,busyAfterFailure,cleared:pendingCleared(storage)};
 }
 
 async function scenarioLivePreview(){
@@ -84,6 +86,42 @@ async function scenarioFontSelect(){
   await flush();runtime.get('topText').value='指定字体标题';runtime.get('bottomText').value='指定字体行动文案';runtime.get('fontFamily').value='AaHouDiHei';runtime.get('fontFamily').listeners.change[0].call(runtime.get('fontFamily'));runtime.get('generateBtn').onclick();await flush();
   return {body:JSON.parse(runtime.requests.post[0].options.body),source:runtime.get('fontSource').textContent,options:runtime.get('fontFamily').children.map(x=>x.value)};
 }
+async function scenarioBatchFive(){
+  const storage=new Map();
+  const runtime=createRuntime({
+    post:(i)=>Promise.resolve(response(200,{job_id:100+i})),
+    poll:(i)=>Promise.resolve(response(200,{status:'done',result:{video_url:'/video-'+i,duration:8+i/10}})),
+  },storage);
+  await flush();runtime.get('batchCount').value='5';await fillAndSubmit(runtime);await flush(30);
+  return {posts:runtime.requests.post.length,polls:runtime.requests.poll.length,keys:runtime.requests.post.map(x=>x.options.headers['Idempotency-Key']),bodies:runtime.requests.post.map(x=>JSON.parse(x.options.body)),cards:runtime.get('batchResults').children.length,cleared:pendingCleared(storage)};
+}
+async function scenarioLegacyPending(){
+  const storage=new Map([['hq-matrix-template-pending-v1',JSON.stringify({key:'legacy-key',body:{top_text:'旧标题',bottom_text:'旧行动文案',template_id:'native-bold',bgm:true},job_id:88,started_at:1})]]);
+  const runtime=createRuntime({post:()=>Promise.reject(new Error('should not post')),poll:()=>Promise.resolve(response(200,{status:'done',result:{video_url:'/legacy-video',duration:8}}))},storage);
+  await flush(30);return {posts:runtime.requests.post.length,polls:runtime.requests.poll.length,cleared:pendingCleared(storage)};
+}
+async function scenarioMixedFailureReload(){
+  const storage=new Map();
+  const first=createRuntime({
+    post:(i)=>Promise.resolve(i===0?response(429,{detail:'任务队列已满'}):response(200,{job_id:200+i})),
+    poll:(i)=>Promise.resolve(response(200,{status:'done',result:{video_url:'/mixed-'+i,duration:8}})),
+  },storage);
+  await flush();first.get('batchCount').value='5';await fillAndSubmit(first);await flush(30);
+  const beforeCards=first.get('batchResults').children;
+  const failed=beforeCards.find(card=>String(card.className).indexOf('failed')>=0);
+  const second=createRuntime({post:()=>Promise.reject(new Error('failed item must not repost')),poll:()=>Promise.reject(new Error('terminal batch must not repoll'))},storage);
+  await flush(30);
+  return {beforePosts:first.requests.post.length,afterPosts:second.requests.post.length,afterPolls:second.requests.poll.length,beforeCards:beforeCards.length,afterCards:second.get('batchResults').children.length,videos:beforeCards.filter(card=>card.children.some(child=>child.tagName==='VIDEO')).length,error:failed&&failed.children[1].textContent,refund:failed&&failed.children[2].textContent,failedKeyAttempts:first.requests.post.filter(call=>call.options.headers['Idempotency-Key']==='matrix-template-uuid-1').length,pendingCleared:pendingCleared(storage)};
+}
+async function scenarioJobFailureRefund(){
+  const runtime=createRuntime({post:()=>Promise.resolve(response(200,{job_id:300})),poll:()=>Promise.resolve(response(200,{status:'failed',error:'渲染失败',refunded:true}))},new Map());
+  await fillAndSubmit(runtime);await flush(20);const card=runtime.get('batchResults').children[0];return {cards:runtime.get('batchResults').children.length,error:card.children[1].textContent,refund:card.children[2].textContent};
+}
+async function scenarioRefundPendingThenConfirmed(){
+  const storage=new Map();
+  const runtime=createRuntime({post:()=>Promise.resolve(response(202,{job_id:301,refund_state:'pending'})),poll:i=>Promise.resolve(response(200,{status:'failed',error:'任务队列已满',refunded:i>0}))},storage);
+  await fillAndSubmit(runtime);await flush(20);var card=runtime.get('batchResults').children[0],before=card.children[2].textContent;await runtime.runTimer();await flush(20);card=runtime.get('batchResults').children[0];return {polls:runtime.requests.poll.length,before,after:card.children[2].textContent,title:card.children[0].textContent,cards:runtime.get('batchResults').children.length,cleared:pendingCleared(storage)};
+}
 
-async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure,livePreview:scenarioLivePreview,fontSelect:scenarioFontSelect};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}
+async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure,livePreview:scenarioLivePreview,fontSelect:scenarioFontSelect,batchFive:scenarioBatchFive,legacyPending:scenarioLegacyPending,mixedFailureReload:scenarioMixedFailureReload,jobFailureRefund:scenarioJobFailureRefund,refundPendingThenConfirmed:scenarioRefundPendingThenConfirmed};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}
 main().catch(e=>{console.error(e.stack||e);process.exitCode=1});
