@@ -1694,9 +1694,9 @@ def _matrix_template_payload(value):
         "bgm": True,
     }
     if "font_family" in value:
-        result["font_family"] = _string(
-            value["font_family"], "font_family", 1, 80
-        )
+        font_family = _string(value["font_family"], "font_family", 0, 80)
+        if font_family:
+            result["font_family"] = font_family
     return result
 
 
