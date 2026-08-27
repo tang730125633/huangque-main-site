@@ -1999,6 +1999,7 @@ def intake_system_prompt(value):
 - 先查看完整对话历史和当前待核对资料；已经回答、明确不知道或拒绝回答的内容不要重复追问。
 - 每个基础问题最多主动问一次；用户没有回答而继续补充其他内容，视为暂时跳过，不得再次追问。
 - 核心信息不足或含糊时 decision=ask_follow_up，只问一个最有价值且尚未回答的核心问题。
+- 除核对稿和三选一候选外，reply 最多两句、约 35–70 个汉字；先简短承接本轮信息，再问一个问题，不罗列示例或重复已有资料。
 - decision=ask_follow_up 时 checkpoint=0、draft 和 self_review 为空；可以把本轮已明确说出的用户事实或偏好放入 profile_updates，等待最终核对，绝不能宣布确认。
 - 用户在采集阶段提问时先直接回答；若核心信息已经足够，同一条回复必须 decision=propose_checkpoint 并附完整核对稿；若仍缺核心信息，则 decision=ask_follow_up，并在回答后只问一个缺失问题。
 - decision=answer_only 仅用于解释已经展示的待确认稿，或确实没有合适下一步的情况；不能让仍在采集或编辑中的访谈停在解释上。
@@ -2073,6 +2074,7 @@ def system_prompt(value):
 - 接受用户任意顺序、一次一项或多项的自然表达，不要求固定格式，不把访谈做成选择题。
 - 先查看完整对话历史和已确认资料；已经回答、明确不知道或拒绝回答的内容不要重复追问。
 - 信息不足时 decision=ask_follow_up，只问一个最有价值、容易回答且尚未回答的问题。
+- 除当前断点的完整核对稿或三选一候选外，reply 最多两句、约 35–70 个汉字；先承接本轮新增信息，再只问一个问题。
 - decision=ask_follow_up 时 checkpoint=0、draft 和 self_review 为空；把本轮已明确说出的用户事实或偏好放入 profile_updates，等待最终核对。
 - 用户只是在提问或跑题时 decision=answer_only，checkpoint=0，draft、self_review 和 profile_updates 都为空。
 - 非固定三选一断点信息足够时 decision=propose_checkpoint，draft 只包含当前断点的完整可确认内容，profile_updates 必须是当前断点的完整最新快照。

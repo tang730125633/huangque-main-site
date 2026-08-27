@@ -83,14 +83,14 @@ REPORTS_DIR = DATA_DIR / "reports"
 DELIVERABLES_DIR = DATA_DIR / "deliverables"
 FOUNDATION_REPORTS_DIR = DATA_DIR / "foundation_reports"
 FOUNDATION_REPORT_TEMPLATE_VERSION = "editorial-v3.3"
-FOUNDATION_REPORT_RENDER_VERSION = "consulting-v2"
+FOUNDATION_REPORT_RENDER_VERSION = "consulting-v3"
 EDITORIAL_REPORT_PROMPT = """你是黄雀 IP12 的报告主编。只使用服务端确认资料和用户原话，写给客户阅读的中文《模块1-4定位初稿》。这是一份策划提案，不是内部审计底稿。
 
 事实合同：确认事实只能复述资料；未来计划必须写成计划；任何金句、钩子、情绪曲线、传播价值和优先级都必须写在“AI包装建议”标题下，不能写成客户案例、收入、成交、流量或已发生结果。资料只说“盲目扩张失败”而未说明影响范围时，写“经营中因盲目扩张走过一段弯路”，不得推定店铺失败、倒闭或关闭。模块1-3的最终选择必须沿用服务端结果，不得改选。
 
 定位层级合同：首页“定位”卡必须分成“身份定位”和“服务方向”两行：前者是职业标签，后者是客户获得的服务；人设必须是“表达人格 + 职业角色”；价值主张必须是一句客户可获得的具体变化，不得与定位标签重复。三个月验证目标只允许出现在首页、P2 和事实附录。
 
-版式合同：正文控制为结论、短表、卡片和动作，不重复身份、平台、时间、商业目标等信息。严格按以下结构输出：
+版式合同：正文控制为结论、短表、卡片和动作，不重复身份、平台、时间、商业目标等信息。同一事实、解释或建议在正文只出现一次；首页只保留结论，故事事实只在故事资产页展开，附录只保留事实来源、边界和待确认项。严格按以下结构输出：
 ## 首页｜IP结论总览
 用五个四级标题卡片：定位、人设、价值主张、核心故事、下一步；每卡不超过3行。
 ## 模块一｜定位诊断
@@ -2775,9 +2775,22 @@ def _customer_facing_foundation_content(markdown):
     content = str(markdown or "")
     for source, target in labels.items():
         content = content.replace(source, target)
-    return content.replace("（AI包装建议）", "").replace(
+    content = content.replace("（AI包装建议）", "").replace(
         "从盲目扩张失败，到重新记录顾客问题", "从盲目扩张走过弯路，到重新记录顾客问题"
     )
+    seen, rows = set(), []
+    for raw in content.splitlines():
+        normalized = re.sub(r"[*_`]+", "", raw).strip()
+        dedupe_candidate = (
+            len(normalized) >= 12
+            and not normalized.startswith(("#", "|", "- ", "* ", "> "))
+        )
+        if dedupe_candidate and normalized in seen:
+            continue
+        if dedupe_candidate:
+            seen.add(normalized)
+        rows.append(raw)
+    return "\n".join(rows)
 
 
 def _foundation_html(markdown, title, zoom=1.0):
@@ -6390,7 +6403,7 @@ def _process_master_runtime_turn(cid, user_message, expected_revision=None, requ
         return result, 200
 
 
-_WEATHER_RE = re.compile(r"天气|气温|温度|下雨|降雨|冷不冷|热不热")
+_WEATHER_RE = re.compile(r"天气|气温|多少度|几度|下雨|降雨|冷不冷|热不热")
 _PAUSE_RE = re.compile(r"(?:暂时|现在|先).{0,4}(?:不需要|不用|不做)|算了|以后再说|晚点再说")
 _WEATHER_CODES = {
     0: "晴", 1: "大致晴朗", 2: "多云", 3: "阴",

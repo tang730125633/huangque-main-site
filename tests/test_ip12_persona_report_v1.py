@@ -67,6 +67,10 @@ class IP12PersonaReportV1Tests(unittest.TestCase):
             "从盲目扩张走过弯路，到重新记录顾客问题",
             server._customer_facing_foundation_content("从盲目扩张失败，到重新记录顾客问题"),
         )
+        self.assertEqual(
+            server._customer_facing_foundation_content("重复的完整说明文本必须只出现一次。\n重复的完整说明文本必须只出现一次。"),
+            "重复的完整说明文本必须只出现一次。",
+        )
         self.assertEqual(server._foundation_report_title(content), "IP 人设定位｜模块 1-4 初稿")
         self.assertEqual(server._foundation_report_title("### 待本人确认项\n无待补充项"), "IP 人设定位报告｜模块 1-4")
 
@@ -120,6 +124,10 @@ class IP12PersonaReportV1Tests(unittest.TestCase):
             content, {"4-4": {"content": "旧版故事快照"}}, [{"content": "修正措辞"}]
         )
         self.assertEqual(result, content)
+
+    def test_weather_shortcut_does_not_hijack_non_weather_temperature_wording(self):
+        self.assertIsNone(server._WEATHER_RE.search("记录社区里那些很普通但有温度的送花故事"))
+        self.assertIsNotNone(server._WEATHER_RE.search("今天气温多少度"))
 
 
 if __name__ == "__main__":
