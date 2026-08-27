@@ -89,6 +89,84 @@ class CreatorModelUsageTests(unittest.TestCase):
             "model_user_daily_tokens", "model_user_daily_budget",
         })
 
+    def test_peak_price_reservation_blocks_request_over_remaining_budget(self):
+        expected_cost = 7_213
+        guard = self.guard(
+            user_daily_cost_micro_usd=expected_cost * 2 - 1,
+            input_price_micro_usd_per_million=440_000,
+            output_price_micro_usd_per_million=1_320_000,
+            price_version="deepseek-v4-flash-0731-peak-test",
+        )
+        tokens, cost = guard._estimate(1_000, 2_400)
+        self.assertEqual(tokens, 11_592)
+        self.assertEqual(guard._price_for_tokens(2_400, 1_320_000), 3_168)
+        self.assertEqual(cost, expected_cost)
+
+        guard.acquire("alice", "1.1.1.1", "chat", 1_000, 2_400).finish(True)
+        with self.assertRaises(ModelUsageError) as raised:
+            guard.acquire("alice", "1.1.1.1", "chat", 1_000, 2_400)
+        self.assertEqual(raised.exception.code, "model_user_daily_budget")
+        with closing(self.db()) as connection:
+            rows = connection.execute(
+                "SELECT estimated_cost_micro_usd,price_version,"
+                "input_price_micro_usd_per_million,"
+                "output_price_micro_usd_per_million "
+                "FROM creator_model_calls WHERE username='alice'"
+            ).fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["estimated_cost_micro_usd"], expected_cost)
+        self.assertEqual(
+            rows[0]["price_version"], "deepseek-v4-flash-0731-peak-test",
+        )
+        self.assertEqual(rows[0]["input_price_micro_usd_per_million"], 440_000)
+        self.assertEqual(rows[0]["output_price_micro_usd_per_million"], 1_320_000)
+
+    def test_price_configuration_cannot_lower_official_peak_defaults(self):
+        guard = self.guard(
+            input_price_micro_usd_per_million=1,
+            output_price_micro_usd_per_million=1,
+            input_token_overhead=1,
+        )
+        self.assertEqual(guard._estimate(1_000, 2_400)[1], 7_213)
+
+    def test_legacy_rows_are_migrated_and_repriced_conservatively(self):
+        with closing(self.db()) as connection:
+            connection.execute("""CREATE TABLE creator_model_calls(
+                id TEXT PRIMARY KEY,
+                username TEXT NOT NULL,
+                ip_hash TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                day TEXT NOT NULL,
+                estimated_tokens INTEGER NOT NULL,
+                estimated_cost_micro_usd INTEGER NOT NULL,
+                state TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                lease_until INTEGER NOT NULL,
+                finished_at INTEGER NOT NULL DEFAULT 0
+            )""")
+            connection.execute(
+                "INSERT INTO creator_model_calls VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    "legacy", "alice", "hash", "chat", "2033-05-18",
+                    3_400, 673, "completed", self.clock.value, 0,
+                    self.clock.value,
+                ),
+            )
+            connection.commit()
+
+        self.guard()
+        with closing(self.db()) as connection:
+            row = connection.execute(
+                "SELECT estimated_cost_micro_usd,price_version,"
+                "input_price_micro_usd_per_million,"
+                "output_price_micro_usd_per_million "
+                "FROM creator_model_calls WHERE id='legacy'"
+            ).fetchone()
+        self.assertEqual(row["estimated_cost_micro_usd"], 15_302)
+        self.assertTrue(row["price_version"].startswith("legacy-repriced:"))
+        self.assertEqual(row["input_price_micro_usd_per_million"], 440_000)
+        self.assertEqual(row["output_price_micro_usd_per_million"], 1_320_000)
+
     def test_user_and_global_concurrency_are_shared_across_instances(self):
         first = self.guard(user_concurrency=1, global_concurrency=2)
         second = self.guard(user_concurrency=1, global_concurrency=2)

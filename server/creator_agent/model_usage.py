@@ -4,9 +4,15 @@ from __future__ import annotations
 
 from contextlib import closing
 import hashlib
-import math
 import time
 import uuid
+
+
+TOKENS_PER_PRICE_UNIT = 1_000_000
+DEFAULT_PRICE_VERSION = "deepseek-v4-flash-0731-peak-usd-v1"
+DEFAULT_INPUT_PRICE_MICRO_USD_PER_MILLION = 440_000
+DEFAULT_OUTPUT_PRICE_MICRO_USD_PER_MILLION = 1_320_000
+DEFAULT_INPUT_TOKEN_OVERHEAD = 8_192
 
 
 class ModelUsageError(RuntimeError):
@@ -48,6 +54,12 @@ class ModelUsageGuard:
                  user_daily_tokens=2_000_000, global_daily_tokens=40_000_000,
                  user_daily_cost_micro_usd=1_000_000,
                  global_daily_cost_micro_usd=20_000_000,
+                 price_version=DEFAULT_PRICE_VERSION,
+                 input_price_micro_usd_per_million=(
+                     DEFAULT_INPUT_PRICE_MICRO_USD_PER_MILLION),
+                 output_price_micro_usd_per_million=(
+                     DEFAULT_OUTPUT_PRICE_MICRO_USD_PER_MILLION),
+                 input_token_overhead=DEFAULT_INPUT_TOKEN_OVERHEAD,
                  lease_seconds=210, circuit_failures=8, circuit_seconds=60,
                  clock=None):
         self.db_factory = db_factory
@@ -63,12 +75,26 @@ class ModelUsageGuard:
         self.user_daily_cost_micro_usd = max(1, int(user_daily_cost_micro_usd))
         self.global_daily_cost_micro_usd = max(
             self.user_daily_cost_micro_usd, int(global_daily_cost_micro_usd))
+        self.price_version = str(price_version or DEFAULT_PRICE_VERSION).strip()[:120]
+        self.input_price_micro_usd_per_million = max(
+            DEFAULT_INPUT_PRICE_MICRO_USD_PER_MILLION,
+            int(input_price_micro_usd_per_million),
+        )
+        self.output_price_micro_usd_per_million = max(
+            DEFAULT_OUTPUT_PRICE_MICRO_USD_PER_MILLION,
+            int(output_price_micro_usd_per_million),
+        )
+        self.input_token_overhead = max(
+            DEFAULT_INPUT_TOKEN_OVERHEAD, int(input_token_overhead),
+        )
         self.lease_seconds = max(30, int(lease_seconds))
         self.circuit_failures = max(2, int(circuit_failures))
         self.circuit_seconds = max(10, int(circuit_seconds))
         self.clock = clock or time.time
         with closing(self.db_factory()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
             self.ensure_table(connection)
+            self._reprice_legacy_rows(connection)
             connection.commit()
 
     @staticmethod
@@ -81,6 +107,9 @@ class ModelUsageGuard:
             day TEXT NOT NULL,
             estimated_tokens INTEGER NOT NULL,
             estimated_cost_micro_usd INTEGER NOT NULL,
+            price_version TEXT NOT NULL DEFAULT 'legacy-unversioned',
+            input_price_micro_usd_per_million INTEGER NOT NULL DEFAULT 0,
+            output_price_micro_usd_per_million INTEGER NOT NULL DEFAULT 0,
             state TEXT NOT NULL,
             created_at INTEGER NOT NULL,
             lease_until INTEGER NOT NULL,
@@ -98,17 +127,77 @@ class ModelUsageGuard:
             "CREATE INDEX IF NOT EXISTS idx_creator_model_calls_day "
             "ON creator_model_calls(day,state)"
         )
+        columns = {
+            str(row[1]) for row in connection.execute(
+                "PRAGMA table_info(creator_model_calls)"
+            ).fetchall()
+        }
+        migrations = {
+            "price_version": (
+                "ALTER TABLE creator_model_calls ADD COLUMN "
+                "price_version TEXT NOT NULL DEFAULT 'legacy-unversioned'"
+            ),
+            "input_price_micro_usd_per_million": (
+                "ALTER TABLE creator_model_calls ADD COLUMN "
+                "input_price_micro_usd_per_million INTEGER NOT NULL DEFAULT 0"
+            ),
+            "output_price_micro_usd_per_million": (
+                "ALTER TABLE creator_model_calls ADD COLUMN "
+                "output_price_micro_usd_per_million INTEGER NOT NULL DEFAULT 0"
+            ),
+        }
+        for name, statement in migrations.items():
+            if name not in columns:
+                connection.execute(statement)
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_creator_model_calls_price_version "
+            "ON creator_model_calls(price_version)"
+        )
+
+    def _reprice_legacy_rows(self, connection):
+        worst_price = max(
+            self.input_price_micro_usd_per_million,
+            self.output_price_micro_usd_per_million,
+        )
+        legacy_version = ("legacy-repriced:" + self.price_version)[:120]
+        connection.execute(
+            """UPDATE creator_model_calls
+               SET estimated_cost_micro_usd=MAX(
+                       estimated_cost_micro_usd,
+                       ((estimated_tokens + ?) * ? + ? - 1) / ?
+                   ),
+                   price_version=?,
+                   input_price_micro_usd_per_million=?,
+                   output_price_micro_usd_per_million=?
+               WHERE price_version='legacy-unversioned'
+                  OR input_price_micro_usd_per_million<=0
+                  OR output_price_micro_usd_per_million<=0""",
+            (
+                self.input_token_overhead, worst_price,
+                TOKENS_PER_PRICE_UNIT, TOKENS_PER_PRICE_UNIT,
+                legacy_version, self.input_price_micro_usd_per_million,
+                self.output_price_micro_usd_per_million,
+            ),
+        )
 
     @staticmethod
     def _ip_hash(ip):
         return hashlib.sha256(str(ip or "unknown").encode("utf-8")).hexdigest()
 
     @staticmethod
-    def _estimate(input_chars, max_output_tokens):
-        input_tokens = max(1, int(input_chars or 0))
+    def _price_for_tokens(tokens, price_micro_usd_per_million):
+        numerator = int(tokens) * int(price_micro_usd_per_million)
+        return (numerator + TOKENS_PER_PRICE_UNIT - 1) // TOKENS_PER_PRICE_UNIT
+
+    def _estimate(self, input_token_upper_bound, max_output_tokens):
+        input_tokens = max(1, int(input_token_upper_bound or 0)) + self.input_token_overhead
         output_tokens = max(1, int(max_output_tokens or 0))
         total = input_tokens + output_tokens
-        cost = int(math.ceil(input_tokens * 0.14 + output_tokens * 0.28))
+        cost = self._price_for_tokens(
+            input_tokens, self.input_price_micro_usd_per_million,
+        ) + self._price_for_tokens(
+            output_tokens, self.output_price_micro_usd_per_million,
+        )
         return total, max(1, cost)
 
     @staticmethod
@@ -119,15 +208,16 @@ class ModelUsageGuard:
         ).fetchone()
         return int(row[0] or 0)
 
-    def acquire(self, username, ip, kind, input_chars, max_output_tokens=2400):
+    def acquire(self, username, ip, kind, input_token_upper_bound, max_output_tokens=2400):
         now = int(self.clock())
         day = time.strftime("%Y-%m-%d", time.gmtime(now))
         ip_hash = self._ip_hash(ip)
-        tokens, cost = self._estimate(input_chars, max_output_tokens)
+        tokens, cost = self._estimate(input_token_upper_bound, max_output_tokens)
         call_id = "creator_model_" + uuid.uuid4().hex
         with closing(self.db_factory()) as connection:
             connection.execute("BEGIN IMMEDIATE")
             self.ensure_table(connection)
+            self._reprice_legacy_rows(connection)
             connection.execute(
                 "UPDATE creator_model_calls SET state='expired',finished_at=? "
                 "WHERE state='active' AND lease_until<=?",
@@ -203,10 +293,16 @@ class ModelUsageGuard:
             connection.execute(
                 """INSERT INTO creator_model_calls(
                    id,username,ip_hash,kind,day,estimated_tokens,
-                   estimated_cost_micro_usd,state,created_at,lease_until)
-                   VALUES(?,?,?,?,?,?,?,'active',?,?)""",
+                   estimated_cost_micro_usd,price_version,
+                   input_price_micro_usd_per_million,
+                   output_price_micro_usd_per_million,
+                   state,created_at,lease_until)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,'active',?,?)""",
                 (call_id, username, ip_hash, str(kind or "")[:80], day,
-                 tokens, cost, now, now + self.lease_seconds),
+                 tokens, cost, self.price_version,
+                 self.input_price_micro_usd_per_million,
+                 self.output_price_micro_usd_per_million,
+                 now, now + self.lease_seconds),
             )
             connection.commit()
         return ModelUsageLease(self, call_id)
@@ -229,4 +325,3 @@ class ModelUsageGuard:
             return True
         except Exception:
             return False
-

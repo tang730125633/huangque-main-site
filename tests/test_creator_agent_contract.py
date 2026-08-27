@@ -77,6 +77,13 @@ class CreatorAgentContractTests(unittest.TestCase):
         self.assertIn("creator_model_calls", model_usage)
         self.assertIn("model_global_concurrency", model_usage)
         self.assertIn("model_user_daily_budget", model_usage)
+        self.assertIn("DEFAULT_INPUT_PRICE_MICRO_USD_PER_MILLION = 440_000", model_usage)
+        self.assertIn("DEFAULT_OUTPUT_PRICE_MICRO_USD_PER_MILLION = 1_320_000", model_usage)
+        self.assertIn("DEFAULT_INPUT_TOKEN_OVERHEAD = 8_192", model_usage)
+        self.assertIn("CREATOR_AGENT_MODEL_PRICE_VERSION", self.service)
+        self.assertIn("CREATOR_AGENT_MODEL_INPUT_PRICE_MICROUSD_PER_MILLION=440000", example)
+        self.assertIn("CREATOR_AGENT_MODEL_OUTPUT_PRICE_MICROUSD_PER_MILLION=1320000", example)
+        self.assertIn("CREATOR_AGENT_MODEL_INPUT_TOKEN_OVERHEAD=8192", example)
         self.assertIn("matrix_template_submission_attempts", (
             ROOT / "server/content_domains/matrix_template_submission.py"
         ).read_text(encoding="utf-8"))
@@ -156,6 +163,9 @@ class CreatorAgentContractTests(unittest.TestCase):
         self.assertIn("official DeepSeek API base", self.release)
         self.assertIn("profile_agent.py", self.release)
         self.assertIn("model_usage.py", self.release)
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        self.assertIn("fetch-depth: 0", workflow)
+        self.assertIn('git diff --check "$PR_BASE_SHA" "$PR_HEAD_SHA"', workflow)
 
     def test_deploy_contract_does_not_duplicate_shared_internal_token(self):
         example = (ROOT / "deploy/huangque-secrets.env.example").read_text(encoding="utf-8")

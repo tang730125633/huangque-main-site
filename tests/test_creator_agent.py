@@ -244,8 +244,16 @@ class CreatorAgentTests(unittest.TestCase):
             "CREATOR_AGENT_API_KEY": "test-deepseek-key",
             "CREATOR_AGENT_MODEL": "deepseek-v4-flash",
             "HQ_INTERNAL_TOKEN": "production-shared-token",
+            "CREATOR_AGENT_MODEL_PRICE_VERSION": "test-price-v2",
+            "CREATOR_AGENT_MODEL_INPUT_PRICE_MICROUSD_PER_MILLION": "500000",
+            "CREATOR_AGENT_MODEL_OUTPUT_PRICE_MICROUSD_PER_MILLION": "1400000",
+            "CREATOR_AGENT_MODEL_INPUT_TOKEN_OVERHEAD": "9000",
         })
         self.assertEqual(service.bridge.internal_token, "production-shared-token")
+        self.assertEqual(service.usage_guard.price_version, "test-price-v2")
+        self.assertEqual(service.usage_guard.input_price_micro_usd_per_million, 500_000)
+        self.assertEqual(service.usage_guard.output_price_micro_usd_per_million, 1_400_000)
+        self.assertEqual(service.usage_guard.input_token_overhead, 9_000)
         self.assertTrue(service.profile_agent.configured)
         self.assertEqual(service.profile_agent.model, "deepseek-v4-flash")
 
@@ -465,6 +473,27 @@ class CreatorAgentTests(unittest.TestCase):
         self.assertEqual(raised.exception.status, 429)
         self.assertEqual(raised.exception.code, "model_user_rate_limited")
         self.assertEqual(len([call for call in self.profile_agent.calls if call[0] == "capture"]), 1)
+
+    def test_model_cost_budget_rejects_before_deepseek_call(self):
+        self.store.update_workspace(
+            USER["username"], PROJECT_ID, profile_state=initial_state(),
+            profile={}, flow={"mode": "profile_interview"},
+        )
+        self.service.usage_guard = ModelUsageGuard(
+            self.store.db, user_daily_cost_micro_usd=1,
+            global_daily_cost_micro_usd=100_000, clock=self.clock,
+        )
+        with self.assertRaises(APIError) as raised:
+            self.service.message(USER, {"X-Forwarded-For": "1.2.3.4"}, {
+                "message": "我是企业AI顾问", "request_id": "model-budget-0001",
+                "project_id": PROJECT_ID,
+            })
+        self.assertEqual(raised.exception.status, 429)
+        self.assertEqual(raised.exception.code, "model_user_daily_budget")
+        self.assertEqual(
+            len([call for call in self.profile_agent.calls if call[0] == "capture"]),
+            0,
+        )
 
     def test_video_plan_is_per_platform_and_does_not_quote_automatically(self):
         result = self.message(
