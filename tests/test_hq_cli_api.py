@@ -139,7 +139,7 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual(200, status, payload)
         self.assertEqual(self.auth.hq_cli_api.ACTION_CATALOG_VERSION, payload["version"])
         actions = {item["action"]: item for item in payload["actions"]}
-        self.assertEqual(set(self.auth.hq_cli_api._ACTION_INPUTS) | {"image-upload", "video-upload"}, set(actions))
+        self.assertEqual(set(self.auth.hq_cli_api._ACTION_INPUTS) | {"image-upload", "video-upload", "audio-upload"}, set(actions))
         for action, item in actions.items():
             with self.subTest(action=action):
                 self.assertEqual("object", item["input_schema"]["type"])
@@ -192,7 +192,8 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual("服装图片", actions["tryon-fast-generate"]["input_schema"]
                          ["properties"]["clothes_upload_id"]["title"])
         for action, family, maximum in (("image-upload", "image", 10 * 1024 * 1024),
-                                        ("video-upload", "video", 32 * 1024 * 1024)):
+                                        ("video-upload", "video", 32 * 1024 * 1024),
+                                        ("audio-upload", "audio", 10 * 1024 * 1024)):
             with self.subTest(action=action):
                 item = actions[action]
                 self.assertEqual(family, item["family"])

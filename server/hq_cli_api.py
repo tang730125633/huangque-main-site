@@ -793,6 +793,8 @@ ACTION_CATALOG = tuple(_catalog_entry(action, fields) for action, fields in _ACT
                           ["image/jpeg", "image/png", "image/webp"], 20),
     _upload_catalog_entry("video-upload", "video", 32 * 1024 * 1024,
                           ["video/mp4", "video/quicktime", "video/webm"], 6),
+    _upload_catalog_entry("audio-upload", "audio", 10 * 1024 * 1024,
+                          ["audio/mpeg", "audio/wav", "audio/x-wav", "audio/mp4", "audio/x-m4a", "audio/aac", "audio/ogg"], 20),
 )
 for _catalog_item in ACTION_CATALOG:
     if _catalog_item["action"] in _FAMILIES:
