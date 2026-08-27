@@ -1915,16 +1915,21 @@ def action_plan(action, value):
     if action == "voice-clone-create":
         _strict_object(value, {"slot_id", "name", "audio_upload_id"},
                        ("slot_id", "name", "audio_upload_id"))
+        slot_id = _matched_string(
+            value["slot_id"], "slot_id", _VOICE_SLOT_ID_RE, 88,
+        )
+        audio_id = _audio_upload_id(value["audio_upload_id"], "audio_upload_id")
+        # 幂等键由 slot_id+样音决定，同一槽位同一份样音重复提交会命中重放，不会重复克隆。
+        idempotency_key = "hqcli-" + hashlib.sha256(
+            (slot_id + "\x00" + audio_id).encode("utf-8")).hexdigest()[:24]
         return _plan(
             "assets:write", "proxy", base=CONTENT_BASE,
             path="/api/gen/cli/voice-clone", method="POST", body={
-                "slot_id": _matched_string(
-                    value["slot_id"], "slot_id",
-                    _VOICE_SLOT_ID_RE, 88,
-                ),
+                "slot_id": slot_id,
                 "name": _string(value["name"], "name", 1, 40),
-                "audio_upload_id": _audio_upload_id(value["audio_upload_id"], "audio_upload_id"),
+                "audio_upload_id": audio_id,
             }, timeout=30, internal=True,
+            headers={"Idempotency-Key": idempotency_key},
         )
     if action == "short-drama-projects":
         _strict_object(value, {"page", "page_size"})
