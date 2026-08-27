@@ -26,7 +26,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         cls.module = importlib.import_module("content_domains.matrix_template_video")
 
     def setUp(self):
-        self.module._CACHE.update({"at": 0.0, "templates": []})
+        self.module._CACHE.update({"at": 0.0, "templates": [], "fonts": []})
 
     def templates(self):
         return [{
@@ -35,11 +35,20 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         } for index in range(13)]
 
     def test_public_catalog_is_sanitized_and_requires_thirteen_templates(self):
-        response = {"templates": self.templates()}
+        response = {"templates": self.templates(), "fonts": [
+            {"value": "", "label": "自动搭配", "source": "automatic"},
+            {"value": "Noto Sans SC", "label": "思源黑体", "source": "bundled"},
+            {"value": "AaHouDiHei", "label": "Aa厚底黑", "source": "private"},
+            {"value": "../bad", "label": "非法", "source": "private"},
+        ]}
         with mock.patch.object(self.module, "_request", return_value=response):
             values = self.module.public_templates(force=True)
         self.assertEqual(13, len(values))
         self.assertEqual("native-bold", values[0]["id"])
+        self.assertEqual(
+            ["", "Noto Sans SC", "AaHouDiHei"],
+            [item["value"] for item in self.module.public_fonts()],
+        )
         with mock.patch.object(self.module, "_request", return_value={"templates": values[:-1]}), \
              self.assertRaisesRegex(RuntimeError, "不完整"):
             self.module.public_templates(force=True)
@@ -69,6 +78,25 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             )
         self.assertNotIn("provider", payload)
         self.assertNotIn("prompt", payload)
+
+    def test_validate_payload_accepts_only_current_catalog_font(self):
+        fonts = [
+            {"value": "", "label": "自动搭配", "source": "automatic"},
+            {"value": "AaHouDiHei", "label": "Aa厚底黑", "source": "private"},
+        ]
+        expected = {
+            "top_text": "指定字体标题", "bottom_text": "指定字体行动文案",
+            "template_id": "native-bold", "font_family": "AaHouDiHei",
+            "bgm": True, "duration": 8.0,
+        }
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(self.module, "public_templates", return_value=self.templates()), \
+             mock.patch.object(self.module, "public_fonts", return_value=fonts), \
+             mock.patch.object(self.module, "_request", return_value={"payload": expected}):
+            result = self.module.validate_payload(dict(expected, duration=None), "alice")
+            self.assertEqual("AaHouDiHei", result["font_family"])
+            with self.assertRaisesRegex(ValueError, "当前可用字体"):
+                self.module.validate_payload(dict(expected, font_family="Missing Font"), "alice")
 
     def test_validate_payload_uses_authoritative_67_68_visible_character_boundary(self):
         accepted = {
@@ -405,6 +433,8 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertIn("Idempotency-Key", page)
         self.assertNotIn('id="duration"', page)
         self.assertNotIn('id="bgm"', page)
+        self.assertIn('id="fontFamily"', page)
+        self.assertIn("body.font_family=selectedFont", page)
         self.assertNotIn("素材来源", page)
         self.assertIn("template_id:activeTemplate,bgm:true", page)
         self.assertIn('hq-content[data-active="matrix-template"]{height:auto!important', page)
@@ -457,6 +487,12 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual("minimal-headline", result["template"])
         self.assertIn("--live-bg:#f5f5f2", result["style"])
         self.assertEqual("none", result["videoDisplay"])
+
+    def test_font_selector_lists_available_fonts_and_submits_parameter(self):
+        result = self.runtime("fontSelect")
+        self.assertEqual("AaHouDiHei", result["body"]["font_family"])
+        self.assertEqual("私有字体", result["source"])
+        self.assertEqual(["", "Noto Sans SC", "AaHouDiHei"], result["options"])
 
 
 if __name__ == "__main__":

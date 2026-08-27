@@ -4196,6 +4196,8 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, {
                     "templates": matrix_template_domain.public_templates(),
                     "default_template": "native-bold",
+                    "fonts": matrix_template_domain.public_fonts(),
+                    "default_font": "",
                     "cost": pricing.get_price("video.matrix_template"),
                 })
             except feature_flags.FeatureDisabled as error:
