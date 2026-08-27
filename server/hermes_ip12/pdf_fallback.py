@@ -10,6 +10,8 @@ from pathlib import Path
 
 def _styled_lines(markdown):
     lines = []
+    homepage = False
+    summary_card = False
     for raw in str(markdown or "").splitlines():
         text = raw.strip()
         if not text or re.fullmatch(r"[:|\- ]+", text):
@@ -17,8 +19,13 @@ def _styled_lines(markdown):
         kind = "body"
         if text.startswith("## "):
             kind, text = "section", text[3:]
+            homepage = text.startswith("首页")
+            summary_card = False
         elif text.startswith("#### "):
             kind, text = "card_title", text[5:]
+            summary_card = homepage
+            if homepage:
+                kind = "summary_card_title"
             if any(label in text for label in (
                 "情绪曲线", "开场钩子", "可拆选题", "使用边界", "表达边界",
                 "适用场景", "金句", "内容支柱", "具体动作", "建议产出", "验证方式",
@@ -26,6 +33,7 @@ def _styled_lines(markdown):
                 kind = "card_detail"
         elif text.startswith("### "):
             kind, text = "subsection", text[4:]
+            summary_card = False
             if "AI包装建议" in text or "执行优先级" in text:
                 kind = "advice"
         elif text.startswith("> "):
@@ -38,6 +46,8 @@ def _styled_lines(markdown):
             text = "• " + re.sub(r"^(?:[-*]|\d+[.)])\s+", "", text)
         else:
             text = re.sub(r"^#{1,4}\s*", "", text)
+            if homepage and summary_card:
+                kind = "summary_card_body"
         text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
         text = re.sub(r"`([^`]+)`", r"\1", text)
         if kind == "body" and re.match(r"(?:🥇|🥈|🥉|P[012]\b)", text):
@@ -64,7 +74,7 @@ def _wrap(text, font_name, font_size, max_width, pdfmetrics):
     return result or [""]
 
 
-def render_foundation_pdf_fallback(markdown, target):
+def render_foundation_pdf_fallback(markdown, target, title="IP 人设定位｜模块 1-4 初稿"):
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
@@ -99,6 +109,8 @@ def render_foundation_pdf_fallback(markdown, target):
     wrapped = []
     for kind, line in _styled_lines(markdown):
         line_size = (
+            10.8 if kind == "summary_card_title" else
+            10.5 if kind == "summary_card_body" else
             10.2 if kind == "section" else
             10.0 if kind in {"card_title", "advice"} else
             10.5 if kind == "card_detail" else
@@ -117,7 +129,7 @@ def render_foundation_pdf_fallback(markdown, target):
     lines_per_page = max(1, math.ceil(len(wrapped) / page_count))
 
     document = canvas.Canvas(str(target), pagesize=A4, pageCompression=1)
-    document.setTitle("IP 人设定位｜模块 1-4 初稿")
+    document.setTitle(title)
     for page_index in range(page_count):
         document.setFillColorRGB(0.965, 0.975, 0.99)
         document.rect(0, 0, width, height, stroke=0, fill=1)
@@ -125,7 +137,7 @@ def render_foundation_pdf_fallback(markdown, target):
         document.rect(0, height - 52, width, 52, stroke=0, fill=1)
         document.setFillColorRGB(1, 1, 1)
         document.setFont(header_font_name, 12)
-        document.drawString(margin_x, height - 33, "IP 人设定位 | 模块 1-4 初稿")
+        document.drawString(margin_x, height - 33, title.replace("｜", " | "))
         document.setStrokeColorRGB(0.78, 0.83, 0.9)
         document.line(margin_x, 36, width - margin_x, 36)
         document.setFillColorRGB(0.35, 0.41, 0.49)
@@ -134,7 +146,17 @@ def render_foundation_pdf_fallback(markdown, target):
         y = height - margin_top
         start = page_index * lines_per_page
         for kind, line in wrapped[start:start + lines_per_page]:
-            if kind == "section":
+            if kind == "summary_card_title":
+                document.setFillColorRGB(0.14, 0.31, 0.56)
+                document.roundRect(margin_x - 5, y - 3, width - margin_x * 2 + 10, line_height + 2, 3, stroke=0, fill=1)
+                document.setFillColorRGB(1, 1, 1)
+                document.setFont(font_name, 10.8)
+            elif kind == "summary_card_body":
+                document.setFillColorRGB(0.94, 0.96, 0.985)
+                document.roundRect(margin_x - 5, y - 3, width - margin_x * 2 + 10, line_height + 2, 3, stroke=0, fill=1)
+                document.setFillColorRGB(0.15, 0.19, 0.24)
+                document.setFont(font_name, 10.5)
+            elif kind == "section":
                 document.setFillColorRGB(0.89, 0.93, 0.98)
                 document.roundRect(margin_x - 5, y - 3, width - margin_x * 2 + 10, line_height, 3, stroke=0, fill=1)
                 document.setFillColorRGB(0.09, 0.24, 0.47)

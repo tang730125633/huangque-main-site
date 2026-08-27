@@ -56,6 +56,16 @@ class IP12PersonaReportV1Tests(unittest.TestCase):
             with mock.patch.object(server, "_foundation_pdf_page_count", return_value=6):
                 self.assertEqual(server._validate_foundation_pdf(path), 6)
 
+    def test_customer_pdf_hides_internal_labels_and_waits_for_final_title(self):
+        content = (
+            "### 故事传播卡（AI包装建议）\n建议\n\n"
+            "### 待本人确认项\n- 有效咨询口径\n"
+        )
+        self.assertIn("故事表达建议", server._customer_facing_foundation_content(content))
+        self.assertNotIn("AI包装建议", server._customer_facing_foundation_content(content))
+        self.assertEqual(server._foundation_report_title(content), "IP 人设定位｜模块 1-4 初稿")
+        self.assertEqual(server._foundation_report_title("### 待本人确认项\n无待补充项"), "IP 人设定位报告｜模块 1-4")
+
     def test_report_prompt_requires_candidates_and_selected_choice(self):
         source = inspect.getsource(server.generate_foundation_report)
         self.assertIn("候选保留要求", source)

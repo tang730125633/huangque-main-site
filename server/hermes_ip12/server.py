@@ -83,6 +83,7 @@ REPORTS_DIR = DATA_DIR / "reports"
 DELIVERABLES_DIR = DATA_DIR / "deliverables"
 FOUNDATION_REPORTS_DIR = DATA_DIR / "foundation_reports"
 FOUNDATION_REPORT_TEMPLATE_VERSION = "editorial-v3.3"
+FOUNDATION_REPORT_RENDER_VERSION = "presentation-v1"
 EDITORIAL_REPORT_PROMPT = """你是黄雀 IP12 的报告主编。只使用服务端确认资料和用户原话，写给客户阅读的中文《模块1-4定位初稿》。这是一份策划提案，不是内部审计底稿。
 
 事实合同：确认事实只能复述资料；未来计划必须写成计划；任何金句、钩子、情绪曲线、传播价值和优先级都必须写在“AI包装建议”标题下，不能写成客户案例、收入、成交、流量或已发生结果。资料只说“盲目扩张失败”而未说明影响范围时，写“经营中因盲目扩张走过一段弯路”，不得推定店铺失败、倒闭或关闭。模块1-3的最终选择必须沿用服务端结果，不得改选。
@@ -2725,6 +2726,7 @@ def _foundation_artifact(path, report_id, version):
         "bytes": len(data),
         "page_count": _foundation_pdf_page_count(path),
         "pdf_url": "/api/foundation-report/%s.pdf" % path.stem,
+        "render_version": FOUNDATION_REPORT_RENDER_VERSION,
     }
 
 
@@ -2739,6 +2741,7 @@ def _validate_foundation_artifact(report, path):
         or int(artifact.get("bytes") or 0) != len(data)
         or int(artifact.get("page_count") or 0) != page_count
         or artifact.get("sha256") != "sha256:" + hashlib.sha256(data).hexdigest()
+        or (artifact.get("render_version") and artifact.get("render_version") != FOUNDATION_REPORT_RENDER_VERSION)
     ):
         raise RuntimeError("PDF artifact metadata does not match the file")
     return page_count
@@ -2755,7 +2758,27 @@ def _mark_foundation_report_failed(convo_id):
         convo["coach_state"] = state
         save_conversation(convo_id, convo)
 
-def _foundation_html(markdown, zoom=1.0):
+def _foundation_report_title(markdown):
+    pending = re.search(r"(?ms)^###\s*待本人确认项\s*$\s*(.*?)(?=^##\s|\Z)", str(markdown or ""))
+    if pending and re.search(r"(?m)^\s*[-*]\s+(?!无待补充项)", pending.group(1)):
+        return "IP 人设定位｜模块 1-4 初稿"
+    return "IP 人设定位报告｜模块 1-4"
+
+
+def _customer_facing_foundation_content(markdown):
+    labels = {
+        "传播表达建议（AI包装建议）": "传播建议",
+        "人设传播卡（AI包装建议）": "人设传播建议",
+        "金句传播卡（AI包装建议）": "表达建议",
+        "故事传播卡（AI包装建议）": "故事表达建议",
+    }
+    content = str(markdown or "")
+    for source, target in labels.items():
+        content = content.replace(source, target)
+    return content.replace("（AI包装建议）", "")
+
+
+def _foundation_html(markdown, title, zoom=1.0):
     rows = []
     source_rows = str(markdown or "").splitlines()
     if source_rows and source_rows[0].strip().startswith("# "):
@@ -2828,7 +2851,7 @@ def _foundation_html(markdown, zoom=1.0):
     body = "\n".join(rows) or "<p>暂无已确认内容。</p>"
     zoom_css = "" if zoom == 1.0 else "body{zoom:%g}" % zoom
     return """<!doctype html><html lang='zh-CN'><meta charset='utf-8'><style>
-@page{size:A4;margin:16mm 18mm 18mm;@bottom-right{content:counter(page) '/' counter(pages);color:#69727d;font-size:8pt}}body{font-family:'Noto Sans SC','WenQuanYi Zen Hei','Microsoft YaHei',sans-serif;color:#29313b;line-height:1.75;font-size:10.2pt}.cover{border-bottom:2px solid #173d78;padding-bottom:5mm;margin-bottom:7mm}.cover h1{font-size:19pt;margin:0 0 3mm;color:#1d2632;border:0;padding:0}.meta{color:#69727d;font-size:9pt;line-height:1.7}.notice{margin:5mm 0 8mm;padding:3mm 4mm;background:#f5f7fa;border-left:3px solid #dce3ea;color:#566270}h1{font-size:18pt;margin:0 0 5mm;color:#1d2632;border-bottom:1px solid #dce3ea;padding-bottom:4mm}h2{font-size:15pt;margin:9mm 0 4mm;color:#1d2632;border-top:2px solid #dce3ea;padding-top:5mm}h3{font-size:11.5pt;margin:5mm 0 2mm;color:#1d2632}h3.advice{background:#fff3d3;color:#805808;padding:2.5mm 3mm;border-radius:2mm}h4{font-size:10.5pt;margin:5mm 0 2mm;padding:2.5mm 3mm;background:#eaf1fb;border-left:3px solid #173d78;color:#29313b;break-after:avoid}h4.detail{margin:3mm 0 1mm;padding:0;background:none;border-left:0;color:#173d78;font-size:10pt}p,li{margin:1.7mm 0}ul{margin:1.7mm 0;padding-left:6mm}li{break-inside:avoid}strong{color:#1d2632}blockquote{margin:4mm 0;padding:3mm 4mm;border-left:3px solid #dce3ea;color:#687483;background:#fafbfd}hr{border:0;border-top:2px solid #dce3ea;margin:7mm 0}table{width:100%%;border-collapse:collapse;margin:4mm 0 7mm;font-size:9.3pt;page-break-inside:avoid}th{background:#edf3ff;color:#29313b;font-weight:700}th,td{border:1px solid #d8e2f4;padding:2.5mm 3mm;text-align:left;vertical-align:top}tr:nth-child(even){background:#fafcff}%s</style><body><div class='cover'><h1>IP 人设定位｜模块 1-4 初稿</h1><div class='meta'>黄雀 IP 孵化教练 · 基于本次对话整理 · 生成后请本人确认</div></div><div class='notice'>本报告先呈现确认事实，再呈现明确标注的“AI包装建议”；后者用于传播与内容创作，不等同于已发生结果。</div>%s</body></html>""" % (zoom_css, body)
+@page{size:A4;margin:16mm 18mm 18mm;@bottom-right{content:counter(page) '/' counter(pages);color:#69727d;font-size:8pt}}body{font-family:'Noto Sans SC','WenQuanYi Zen Hei','Microsoft YaHei',sans-serif;color:#29313b;line-height:1.75;font-size:10.2pt}.cover{border-bottom:2px solid #173d78;padding-bottom:5mm;margin-bottom:7mm}.cover h1{font-size:19pt;margin:0 0 3mm;color:#1d2632;border:0;padding:0}.meta{color:#69727d;font-size:9pt;line-height:1.7}.notice{margin:5mm 0 8mm;padding:3mm 4mm;background:#f5f7fa;border-left:3px solid #dce3ea;color:#566270}h1{font-size:18pt;margin:0 0 5mm;color:#1d2632;border-bottom:1px solid #dce3ea;padding-bottom:4mm}h2{font-size:15pt;margin:9mm 0 4mm;color:#1d2632;border-top:2px solid #dce3ea;padding-top:5mm}h3{font-size:11.5pt;margin:5mm 0 2mm;color:#1d2632}h3.advice{background:#fff3d3;color:#805808;padding:2.5mm 3mm;border-radius:2mm}h4{font-size:10.5pt;margin:5mm 0 2mm;padding:2.5mm 3mm;background:#eaf1fb;border-left:3px solid #173d78;color:#29313b;break-after:avoid}h4.detail{margin:3mm 0 1mm;padding:0;background:none;border-left:0;color:#173d78;font-size:10pt}p,li{margin:1.7mm 0}ul{margin:1.7mm 0;padding-left:6mm}li{break-inside:avoid}strong{color:#1d2632}blockquote{margin:4mm 0;padding:3mm 4mm;border-left:3px solid #dce3ea;color:#687483;background:#fafbfd}hr{border:0;border-top:2px solid #dce3ea;margin:7mm 0}table{width:100%%;border-collapse:collapse;margin:4mm 0 7mm;font-size:9.3pt;page-break-inside:avoid}th{background:#edf3ff;color:#29313b;font-weight:700}th,td{border:1px solid #d8e2f4;padding:2.5mm 3mm;text-align:left;vertical-align:top}tr:nth-child(even){background:#fafcff}%s</style><body><div class='cover'><h1>%s</h1><div class='meta'>黄雀 IP 孵化教练 · 基于本次对话整理 · 生成后请本人确认</div></div><div class='notice'>本报告以确认事实和传播建议为基础；传播建议用于内容创作，不等同于已发生结果。</div>%s</body></html>""" % (zoom_css, html.escape(title), body)
 
 
 def _foundation_zoom_candidates(page_count):
@@ -2843,14 +2866,14 @@ def _foundation_zoom_candidates(page_count):
     return tuple(dict.fromkeys((*nearby, *dynamic)))
 
 
-def _render_foundation_pdf(content, browsers, root):
+def _render_foundation_pdf(content, browsers, root, title):
     last_error = RuntimeError("PDF renderer failed")
     for browser_index, browser in enumerate(browsers):
         zooms = [1.0]
         for attempt, zoom in enumerate(zooms):
             html_path = root / ("report-%d-%d.html" % (browser_index, attempt))
             pdf_path = root / ("report-%d-%d.pdf" % (browser_index, attempt))
-            html_path.write_text(_foundation_html(content, zoom=zoom), encoding="utf-8")
+            html_path.write_text(_foundation_html(content, title, zoom=zoom), encoding="utf-8")
             try:
                 subprocess.run(
                     [browser, "--headless", "--disable-gpu", "--disable-dev-shm-usage", "--no-first-run", "--no-pdf-header-footer", "--user-data-dir=" + str(root / ("profile-%d-%d" % (browser_index, attempt))), "--print-to-pdf=" + str(pdf_path), html_path.as_uri()],
@@ -2874,14 +2897,14 @@ def _render_foundation_pdf(content, browsers, root):
     raise RuntimeError("PDF renderer failed") from last_error
 
 
-def _render_foundation_pdf_resilient(content, browsers, root):
+def _render_foundation_pdf_resilient(content, browsers, root, title):
     if browsers:
         try:
-            return _render_foundation_pdf(content, browsers, root)
+            return _render_foundation_pdf(content, browsers, root, title)
         except RuntimeError:
             pass
     from pdf_fallback import render_foundation_pdf_fallback
-    return render_foundation_pdf_fallback(content, root / "report-fallback.pdf")
+    return render_foundation_pdf_fallback(content, root / "report-fallback.pdf", title=title)
 
 
 def generate_foundation_report(convo_id):
@@ -2902,6 +2925,7 @@ def generate_foundation_report(convo_id):
         if (
             report.get("status") in {"awaiting_confirmation", "confirmed"}
             and report.get("template_version") == FOUNDATION_REPORT_TEMPLATE_VERSION
+            and (report.get("artifact") or {}).get("render_version") == FOUNDATION_REPORT_RENDER_VERSION
             and not review_dirty
         ):
             try:
@@ -2970,7 +2994,10 @@ def generate_foundation_report(convo_id):
     ) if item and pathlib.Path(item).is_file()))
     with tempfile.TemporaryDirectory(prefix="hermes-foundation-", dir=str(pathlib.Path.home())) as directory:
         root = pathlib.Path(directory)
-        pdf_path = _render_foundation_pdf_resilient(content, browsers, root)
+        presentation_content = _customer_facing_foundation_content(content)
+        pdf_path = _render_foundation_pdf_resilient(
+            presentation_content, browsers, root, _foundation_report_title(content)
+        )
         _validate_foundation_pdf(pdf_path)
         staged_target = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
         try:
@@ -7586,6 +7613,7 @@ def api_generate_foundation_report():
     if (
         report.get("status") in {"awaiting_confirmation", "confirmed"}
         and report.get("template_version") == FOUNDATION_REPORT_TEMPLATE_VERSION
+        and (report.get("artifact") or {}).get("render_version") == FOUNDATION_REPORT_RENDER_VERSION
         and report.get("review_status") != "dirty"
     ):
         try:
