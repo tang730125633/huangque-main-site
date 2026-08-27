@@ -314,7 +314,14 @@ def _checked_response(status, payload, accepted=None):
         if status == 401:
             raise CliError(EXIT_AUTH, "auth_error", str(detail) + "; run `hq login --json`", {"http_status": status, "code": code})
         exit_code = EXIT_CONFIRMATION if status == 409 else EXIT_API
-        raise CliError(exit_code, str(code or "api_error"), str(detail), {"http_status": status})
+        details = {"http_status": status}
+        if isinstance(payload, dict):
+            for key in (
+                    "jobs", "job_ids", "failures", "next_index", "batch_id",
+                    "refund_state", "points_left", "submitted_count", "failed_count"):
+                if key in payload:
+                    details[key] = payload[key]
+        raise CliError(exit_code, str(code or "api_error"), str(detail), details)
     return payload
 
 
