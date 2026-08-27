@@ -1,0 +1,6 @@
+# Runtime dependencies for the isolated Creator Agent virtual environment.
+# Keep exact versions so a release can be rebuilt from main without modifying
+# the server's shared Python installation.
+reportlab==5.0.0
+pillow==12.2.0
+charset-normalizer==3.4.7

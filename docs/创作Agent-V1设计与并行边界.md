@@ -39,6 +39,8 @@ Creator Agent 直接调用 DeepSeek V4 Flash，不运行时调用、不读写同
    性格风格、价值主张、故事资产和商业目标；用户可以逐题回答、让 DeepSeek 引导或跳过。
 7. 模块 1-4 确认完成后自动生成受账号权限保护的《IP人设定位背景档案》PDF，包含原始背景、
    DeepSeek 模块总结、已确认方案、优势风险和跳过项；右侧内容成果支持预览和下载。
+   画像状态先原子提交，再生成 PDF；PDF 临时失败只标记成果失败并允许下载接口重试，不能回滚
+   已完成画像。合法最大长度回答和候选方案使用可跨页段落，不截断用户信息。
 
 Creator SQLite 是本功能的画像正本。画像修改作为版本化补充保存，后续创作优先读取最新版，
 不访问、不回写同事的 IP12 Agent 内核，也不改变历史作品。
@@ -148,6 +150,8 @@ Creator SQLite 是本功能的画像正本。画像修改作为版本化补充�
 
 本分支只开发和本地验证。未经单独授权，不推送 PR、不合并、不部署生产。
 
-正式发布必须先通过主站 ship 同步 `auth_server.py`、完整 `content_domains` 依赖与前端，
-再执行 Creator Agent 版本化 release。Creator `/health.ready` 会要求 Auth 已实际探测到
-Content 的只读 reconcile 端点；依赖未同步时 release 必须失败并回滚。
+正式发布必须从实时 `main` 执行主站 `ship`。当文件清单涉及 Creator 运行时、独立
+requirements、systemd 单元或 release 脚本时，`ship` 会从精确提交导出完整 Creator 闭包，
+调用版本化 release 创建独立 `.venv` 并安装固定依赖，不允许逐文件热改或依赖全局 pip。
+Creator `/health.ready` 会要求 Auth 已实际探测到 Content 的只读 reconcile 端点；依赖未同步
+或 PDF 运行依赖不可导入时，release 必须在切换前失败并自动回滚。

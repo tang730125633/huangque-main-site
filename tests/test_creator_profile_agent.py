@@ -142,6 +142,14 @@ class CreatorProfileAgentTests(unittest.TestCase):
         self.assertEqual(interpreted["intent"], "start_video")
         self.assertEqual(interpreted["payload"]["platforms"], ["douyin"])
 
+        chat_agent = DeepSeekProfileAgent("secret", opener=Opener({
+            "intent": "chat", "payload": {},
+        }))
+        chat = chat_agent.interpret_intent(
+            {}, {"mode": "template_review"}, "先解释为什么选择这个模板",
+        )
+        self.assertEqual(chat["intent"], "chat")
+
         reply_agent = DeepSeekProfileAgent("secret", opener=Opener({
             "reply": "方案已经准备好，你可以继续修改或确认。",
         }))

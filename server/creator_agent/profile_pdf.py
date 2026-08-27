@@ -16,7 +16,8 @@ from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.platypus import (
-    CondPageBreak, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
+    CondPageBreak, HRFlowable, PageBreak, Paragraph, SimpleDocTemplate, Spacer,
+    Table, TableStyle,
 )
 
 from .profile_agent import MODULES
@@ -76,6 +77,11 @@ def _styles():
             "ProfileSmall", parent=base["BodyText"], fontName="STSong-Light",
             fontSize=8, leading=13, textColor=colors.HexColor("#738196"),
         ),
+        "label": ParagraphStyle(
+            "ProfileLabel", parent=base["BodyText"], fontName="STSong-Light",
+            fontSize=9, leading=15, textColor=colors.HexColor("#805D18"),
+            spaceBefore=1.5 * mm, spaceAfter=1 * mm,
+        ),
     }
 
 
@@ -90,22 +96,26 @@ def _footer(canvas, document):
     canvas.restoreState()
 
 
-def _option_rows(selected, styles):
+def _option_items(selected):
     if not isinstance(selected, dict):
         return []
-    rows = []
+    items = []
     for label, key in (
         ("方案", "title"), ("一句话定位", "one_liner"),
         ("优势", "strengths"), ("风险", "risks"),
     ):
         value = selected.get(key)
         if isinstance(value, list):
-            value = "；".join(_text(item, 240) for item in value)
-        rows.append([
-            _paragraph(label, styles["small"]),
-            _paragraph(value, styles["body"]),
-        ])
-    return rows
+            value = "；".join(_text(item) for item in value)
+        items.append((label, value))
+    return items
+
+
+def _divider():
+    return HRFlowable(
+        width="100%", thickness=0.35, color=colors.HexColor("#DDE3EB"),
+        spaceBefore=1.5 * mm, spaceAfter=2 * mm,
+    )
 
 
 def render_profile_pdf(output_path, display_name, profile, state):
@@ -160,44 +170,27 @@ def render_profile_pdf(output_path, display_name, profile, state):
             story.append(Paragraph("DeepSeek 模块总结", styles["h2"]))
             story.append(_paragraph(review["summary"], styles["body"]))
         module_selected = (selected or {}).get(str(module)) or {}
-        rows = _option_rows(module_selected, styles)
-        if rows:
+        option_items = _option_items(module_selected)
+        if option_items:
+            story.append(CondPageBreak(25 * mm))
             story.append(Paragraph("已确认方案", styles["h2"]))
-            story.append(Table(rows, colWidths=[32 * mm, 123 * mm], style=TableStyle([
-                ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#FFF6DF")),
-                ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#D9CFB5")),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 7),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 7),
-                ("TOPPADDING", (0, 0), (-1, -1), 6),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-            ])))
+            for label, value in option_items:
+                story.append(CondPageBreak(18 * mm))
+                story.append(Paragraph(html.escape(label), styles["label"]))
+                story.append(_paragraph(value, styles["body"]))
+                story.append(_divider())
+        story.append(CondPageBreak(25 * mm))
         story.append(Paragraph("背景信息", styles["h2"]))
         module_answers = (answers or {}).get(str(module)) or {}
-        answer_rows = [[
-            _paragraph("采集维度", styles["small"]),
-            _paragraph("用户背景", styles["small"]),
-        ]]
         for question in MODULES[module]["questions"]:
             key = question["key"]
             value = module_answers.get(key)
             if value in (None, "") and "%d:%s" % (module, key) in skipped:
                 value = "已跳过"
-            answer_rows.append([
-                _paragraph(question["question"], styles["small"]),
-                _paragraph(value, styles["body"]),
-            ])
-        story.append(Table(answer_rows, colWidths=[58 * mm, 97 * mm], repeatRows=1,
-                           splitByRow=1, style=TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EAF0F7")),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F7F9FC")]),
-            ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#DDE3EB")),
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 6),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-            ("TOPPADDING", (0, 0), (-1, -1), 6),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-        ])))
+            story.append(CondPageBreak(18 * mm))
+            story.append(_paragraph(question["question"], styles["label"]))
+            story.append(_paragraph(value, styles["body"]))
+            story.append(_divider())
 
     document = SimpleDocTemplate(
         str(temporary), pagesize=A4, rightMargin=18 * mm, leftMargin=18 * mm,

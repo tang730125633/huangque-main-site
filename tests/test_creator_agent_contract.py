@@ -19,6 +19,7 @@ class CreatorAgentContractTests(unittest.TestCase):
         cls.nginx = (ROOT / "deploy/nginx-huangquechuanmei.conf").read_text(encoding="utf-8")
         cls.unit = (ROOT / "deploy/systemd/huangque-creator-agent.service").read_text(encoding="utf-8")
         cls.release = (ROOT / "deploy/creator-agent-release.sh").read_text(encoding="utf-8")
+        cls.ship = (ROOT / "ship").read_text(encoding="utf-8")
         cls.design = (ROOT / "docs/创作Agent-V1设计与并行边界.md").read_text(encoding="utf-8")
 
     def test_product_name_and_two_column_surface(self):
@@ -195,10 +196,18 @@ class CreatorAgentContractTests(unittest.TestCase):
         self.assertIn("profile_pdf.py", self.release)
         self.assertIn("model_usage.py", self.release)
         requirements = (
+            ROOT / "deploy/requirements-creator-agent.txt"
+        ).read_text(encoding="utf-8")
+        content_requirements = (
             ROOT / "deploy/requirements-content.txt"
         ).read_text(encoding="utf-8")
-        self.assertIn("reportlab", requirements)
-        self.assertIn("import reportlab", self.release)
+        self.assertIn("reportlab==", requirements)
+        self.assertNotIn("reportlab", content_requirements)
+        self.assertIn("requirements-creator-agent.txt", self.release)
+        self.assertIn('"$NEW_RELEASE/.venv/bin/python" -m pip install', self.release)
+        self.assertIn("current/.venv/bin/python", self.unit)
+        self.assertIn("creator-agent-release.sh", self.ship)
+        self.assertIn("CREATOR_AGENT_RELEASE_FILES", self.ship)
         store = (ROOT / "server/creator_agent/store.py").read_text(encoding="utf-8")
         self.assertIn("commit_message_turn", store)
         self.assertIn("source_message_id", store)
@@ -206,6 +215,7 @@ class CreatorAgentContractTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         self.assertIn("fetch-depth: 0", workflow)
         self.assertIn('git diff --check "$PR_BASE_SHA...$PR_HEAD_SHA"', workflow)
+        self.assertIn("pip install -r deploy/requirements-creator-agent.txt", workflow)
 
     def test_deploy_contract_does_not_duplicate_shared_internal_token(self):
         example = (ROOT / "deploy/huangque-secrets.env.example").read_text(encoding="utf-8")

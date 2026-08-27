@@ -534,7 +534,7 @@ class DeepSeekProfileAgent:
             if platform not in allowed_platforms:
                 raise ProfileAgentError("DeepSeek platform is invalid")
             payload["platform"] = platform
-        return {"intent": "" if intent == "chat" else intent, "payload": payload}
+        return {"intent": intent, "payload": payload}
 
     def compose_reply(self, profile, message, event, draft_reply):
         value = self._call(

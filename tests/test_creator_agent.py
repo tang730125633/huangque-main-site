@@ -23,6 +23,7 @@ from creator_agent.profile_agent import (
     DeepSeekProfileAgent, MODULES, current_question, initial_state,
     next_question_goal,
 )
+from creator_agent.profile_pdf import ProfilePDFError
 from creator_agent.model_usage import ModelUsageGuard
 from creator_agent.service import APIError, CreatorAgentHandler, CreatorAgentService, build_service
 from creator_agent.store import (
@@ -140,6 +141,8 @@ class FakeProfileAgent:
     def interpret_intent(self, profile, flow, message):
         self.calls.append(("interpret_intent", copy.deepcopy(profile), copy.deepcopy(flow), message))
         compact = "".join(str(message or "").split())
+        if any(word in compact for word in ("告诉我你能做什么", "先解释", "为什么选择")):
+            return {"intent": "chat", "payload": {}}
         if flow.get("mode") == "template_collect" and compact:
             return {
                 "intent": "start_video",
@@ -175,7 +178,7 @@ class FakeProfileAgent:
             }
         if compact in {"确认方案", "采用当前方案"}:
             return {"intent": "confirm_plan", "payload": {}}
-        return {"intent": "", "payload": {}}
+        return {"intent": "chat", "payload": {}}
 
     def compose_reply(self, profile, message, event, draft_reply):
         self.calls.append((
@@ -478,6 +481,33 @@ class CreatorAgentTests(unittest.TestCase):
         self.assertFalse(any(call[0] == "interpret_intent" for call in calls))
         self.assertTrue(any(call[0] == "compose_reply" for call in calls))
 
+    def test_chat_during_template_collection_does_not_create_batch(self):
+        self.store.update_workspace(
+            USER["username"], PROJECT_ID,
+            platforms=["douyin"],
+            flow={"mode": "template_collect", "platforms": ["douyin"], "topic": ""},
+        )
+        result = self.message(
+            "我还没想好，先告诉我你能做什么",
+            suffix="chat-template-collect-0001",
+        )
+        self.assertEqual(result["message_public"]["kind"], "assistant_reply")
+        self.assertEqual(self.store.batches(USER["username"], PROJECT_ID), [])
+        workspace = self.store.workspace(USER["username"], PROJECT_ID)
+        self.assertEqual(workspace["flow"]["mode"], "template_collect")
+
+    def test_chat_during_template_review_does_not_revise_batch(self):
+        draft = self._draft_batch()
+        before = self.store.batch(USER["username"], draft["id"], include_private=True)
+        result = self.message(
+            "为什么选择这个模板？先解释，不要修改",
+            suffix="chat-template-review-0001",
+        )
+        after = self.store.batch(USER["username"], draft["id"], include_private=True)
+        self.assertEqual(result["message_public"]["kind"], "assistant_reply")
+        self.assertEqual(after["revision"], before["revision"])
+        self.assertEqual(after["plan_hash"], before["plan_hash"])
+
     def test_profile_answer_fails_closed_without_deepseek_configuration(self):
         self.store.update_workspace(
             USER["username"], PROJECT_ID, profile_state=initial_state(),
@@ -539,6 +569,46 @@ class CreatorAgentTests(unittest.TestCase):
             message.get("public", {}).get("source") == "ip12"
             for message in self.store.messages(USER["username"], PROJECT_ID)
         ))
+
+    def test_profile_completion_survives_background_pdf_failure(self):
+        state = initial_state()
+        state.update({
+            "current_module": 4,
+            "question_index": len(MODULES[4]["questions"]),
+            "phase": "review",
+            "completed_modules": [1, 2, 3],
+            "selected_profiles": {
+                str(index): {"title": "模块%d方案" % index}
+                for index in range(1, 4)
+            },
+            "module_reviews": {
+                "4": self.profile_agent.build_module_review(state, 4),
+            },
+        })
+        self.store.update_workspace(
+            USER["username"], PROJECT_ID, profile_state=state,
+            profile={}, deliverables={}, flow={"mode": "profile_interview"},
+        )
+        with mock.patch(
+            "creator_agent.service.render_profile_pdf",
+            side_effect=ProfilePDFError("forced PDF failure"),
+        ):
+            result = self.message(
+                "选择第一个方案", "profile_choice",
+                {"choice_index": 0, "profile_revision": state["revision"]},
+                "profile-pdf-failure-0001",
+            )
+        workspace = self.store.workspace(USER["username"], PROJECT_ID)
+        self.assertEqual(result["message_public"]["kind"], "profile_completed")
+        self.assertTrue(workspace["profile_state"]["profile_ready"])
+        self.assertEqual(
+            workspace["deliverables"]["background_profile_pdf"]["status"],
+            "failed",
+        )
+        self.assertEqual(
+            workspace["deliverables"]["background_profile_pdf"]["error_code"],
+            "profile_pdf_failed",
+        )
 
     def test_stale_profile_action_cannot_overwrite_current_step(self):
         self.store.update_workspace(

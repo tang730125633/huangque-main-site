@@ -585,6 +585,15 @@ class CreatorAgentService:
     def _profile_pdf_path(self, username, project_id):
         return profile_pdf_path(self.profile_pdf_root, username, project_id)
 
+    @staticmethod
+    def _pending_background_pdf(project_id, revision):
+        return {
+            "title": "IP人设定位背景档案",
+            "url": "/api/creator-agent/projects/%s/background.pdf" % project_id,
+            "status": "pending",
+            "profile_revision": int(revision or 1),
+        }
+
     def _render_background_pdf(self, user, workspace, profile, state):
         path = self._profile_pdf_path(user["username"], workspace["project_id"])
         try:
@@ -602,9 +611,47 @@ class CreatorAgentService:
         return {
             "title": "IP人设定位背景档案",
             "url": "/api/creator-agent/projects/%s/background.pdf" % workspace["project_id"],
+            "status": "ready",
+            "profile_revision": int(state.get("revision") or 1),
             "size": metadata["size"],
             "generated_at": metadata["generated_at"],
         }
+
+    def _finalize_background_pdf(self, user, project_id):
+        workspace = self.store.workspace(user["username"], project_id)
+        state = (workspace or {}).get("profile_state") or {}
+        if not workspace or not state.get("profile_ready"):
+            return workspace
+        deliverables = dict(workspace.get("deliverables") or {})
+        current = deliverables.get("background_profile_pdf") or {}
+        if (
+            current.get("status") == "ready"
+            and int(current.get("profile_revision") or 0)
+            == int(state.get("revision") or 1)
+            and self._profile_pdf_path(user["username"], project_id).is_file()
+        ):
+            return workspace
+        try:
+            descriptor = self._render_background_pdf(
+                user, workspace, workspace.get("profile") or {}, state,
+            )
+        except Exception as exc:
+            descriptor = self._pending_background_pdf(
+                project_id, state.get("revision"),
+            )
+            descriptor.update({
+                "status": "failed",
+                "error_code": (
+                    exc.code if isinstance(exc, APIError) else "profile_pdf_failed"
+                ),
+            })
+        deliverables["background_profile_pdf"] = descriptor
+        try:
+            return self.store.update_workspace(
+                user["username"], project_id, deliverables=deliverables,
+            )
+        except StoreError:
+            return workspace
 
     def background_pdf(self, user, project_id):
         self._gate(user)
@@ -613,11 +660,28 @@ class CreatorAgentService:
         if not workspace or not (workspace.get("profile_state") or {}).get("profile_ready"):
             raise APIError(404, "背景档案尚未生成", "profile_pdf_not_found")
         path = self._profile_pdf_path(user["username"], project_id)
-        if not path.is_file():
-            self._render_background_pdf(
+        state = workspace.get("profile_state") or {}
+        descriptor = (workspace.get("deliverables") or {}).get(
+            "background_profile_pdf",
+        ) or {}
+        if (
+            not path.is_file()
+            or descriptor.get("status") != "ready"
+            or int(descriptor.get("profile_revision") or 0)
+            != int(state.get("revision") or 1)
+        ):
+            rendered = self._render_background_pdf(
                 user, workspace, workspace.get("profile") or {},
-                workspace.get("profile_state") or {},
+                state,
             )
+            deliverables = dict(workspace.get("deliverables") or {})
+            deliverables["background_profile_pdf"] = rendered
+            try:
+                self.store.update_workspace(
+                    user["username"], project_id, deliverables=deliverables,
+                )
+            except StoreError:
+                pass
         return path
 
     def _response(self, user, headers, project_id, reply, public=None):
@@ -848,8 +912,8 @@ class CreatorAgentService:
                     "title": "个人画像",
                     "content": profile,
                 }
-                deliverables["background_profile_pdf"] = self._render_background_pdf(
-                    user, workspace, profile, state,
+                deliverables["background_profile_pdf"] = self._pending_background_pdf(
+                    workspace["project_id"], state["revision"],
                 )
                 try:
                     completion_reply = self._model_call(
@@ -1491,6 +1555,10 @@ class CreatorAgentService:
                 return user_message["public"]["response"]
             replay_turn = user_message.get("public", {}).get("turn")
             if isinstance(replay_turn, dict) and replay_turn.get("reply"):
+                if (replay_turn.get("message_public") or {}).get("kind") in {
+                    "profile_completed", "profile_override_saved",
+                }:
+                    self._finalize_background_pdf(user, project_id)
                 response = self._response(
                     user, headers, project_id, replay_turn["reply"],
                     replay_turn.get("message_public") or {},
@@ -1585,8 +1653,8 @@ class CreatorAgentService:
                 expected_revision = int(state.get("revision") or 1)
                 state["revision"] = expected_revision + 1
                 deliverables = dict(workspace.get("deliverables") or {})
-                deliverables["background_profile_pdf"] = self._render_background_pdf(
-                    user, workspace, profile, state,
+                deliverables["background_profile_pdf"] = self._pending_background_pdf(
+                    workspace["project_id"], state["revision"],
                 )
                 workspace = self._save_profile_state(
                     user, workspace, state, expected_revision,
@@ -1624,6 +1692,25 @@ class CreatorAgentService:
                     user, workspace, state, expected_revision,
                     flow={"mode": "profile_revision"},
                 )
+            elif intent == "chat":
+                try:
+                    profile = workspace.get("profile") or {}
+                    reply = self._model_call(
+                        user, "assistant_reply",
+                        {"profile": profile, "message": message},
+                        lambda: self.profile_agent.reply(profile, message),
+                    )
+                except ProfileAgentError as exc:
+                    self._profile_model_error(exc)
+                reply_from_model = True
+                public = {
+                    "kind": "assistant_reply",
+                    "actions": [
+                        {"intent": "start_video", "label": "开始制作视频"},
+                        {"intent": "topic_plan", "label": "生成选题计划"},
+                        {"intent": "modify_profile", "label": "修改我的画像"},
+                    ],
+                }
             elif intent == "topic_plan":
                 platforms = sanitize_platforms(payload.get("platforms"))
                 if not platforms and not intent_interpreted:
@@ -1878,6 +1965,10 @@ class CreatorAgentService:
                     ) from exc
                 if self._after_profile_commit_hook:
                     self._after_profile_commit_hook()
+                if public.get("kind") in {
+                    "profile_completed", "profile_override_saved",
+                }:
+                    self._finalize_background_pdf(user, project_id)
                 response = self._response(user, headers, project_id, reply, public)
                 try:
                     self.store.update_message_public(
