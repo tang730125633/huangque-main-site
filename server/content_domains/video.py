@@ -4521,7 +4521,8 @@ def generate_heygen_video_direct(image_file, audio_file, resolution, ratio, moti
         update_video_asset_phase(job_id, "polling_video", provider_video_id=video_id)
         # ↓ 此刻已计费。之后任何失败都不能回退中转重发（同一账号，会再付一次），见 HeyGenBilledError
         try:
-            info = _heygen_poll_video(video_id, direct=True, deadline_s=VIDEO_GEN_DEADLINE)
+            info = _heygen_poll_video(video_id, direct=True, deadline_s=VIDEO_GEN_DEADLINE,
+                                      mcp=_heygen_mcp_enabled())
             update_video_asset_phase(job_id, "downloading_video", provider_video_id=video_id,
                                      source_video_url=info.get("video_url"))
             video_file = _download_video_file_direct(info["video_url"], "heygen")
@@ -4569,7 +4570,8 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion, job
         update_video_asset_phase(job_id, "polling_video", provider_video_id=video_id)
         # 中转也用同一个死线。原来它回落到 HEYGEN_TIMEOUT(1200s)，比 reaper 对口播的宽限
         # (540s)还长 —— reaper 先把任务判死并退点，worker 却还在轮询，上游照样出片照样收钱。
-        info = _heygen_poll_video(video_id, deadline_s=VIDEO_GEN_DEADLINE)
+        info = _heygen_poll_video(video_id, deadline_s=VIDEO_GEN_DEADLINE,
+                                  mcp=_heygen_mcp_enabled())
         update_video_asset_phase(job_id, "downloading_video", provider_video_id=video_id,
                                  source_video_url=info.get("video_url"))
         video_file = _download_video_file(info["video_url"], "heygen")
