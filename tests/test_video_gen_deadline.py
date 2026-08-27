@@ -42,6 +42,8 @@ video = importlib.import_module("content_domains.video")
 wavespeed = importlib.import_module("content_domains.wavespeed")
 CORE_SRC = (ROOT / "server/content_domains/core.py").read_text(encoding="utf-8")
 VIDEO_SRC = (ROOT / "server/content_domains/video.py").read_text(encoding="utf-8")
+
+
 class FifteenMinutesTests(unittest.TestCase):
     def test_the_deadline_is_fifteen_minutes(self):
         self.assertEqual(core.VIDEO_GEN_DEADLINE, 15 * 60)
