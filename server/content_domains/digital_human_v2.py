@@ -61,6 +61,7 @@ _AUDIO_USER_DAILY_BYTES = 180 * 1024 * 1024
 _AUDIO_MANAGED_DISK_BYTES = 2 * 1024 * 1024 * 1024
 _AUDIO_TRANSCRIBE_SEM = threading.BoundedSemaphore(_AUDIO_GLOBAL_ACTIVE_LIMIT)
 _MATERIAL_ASSET_ID_RE = re.compile(r"^dhm_[0-9a-f]{32}$")
+_MATERIAL_ADMISSION_ID_RE = re.compile(r"^dhma_[0-9a-f]{32}$")
 _MAX_MATERIAL_BYTES = 20 * 1024 * 1024
 _MATERIAL_TTL_SECONDS = 24 * 60 * 60
 # The authenticated material-upload route already performs ownership, hash,
@@ -147,6 +148,22 @@ def _ensure_audio_table(connection):
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_digital_human_audio_admission_limits "
         "ON digital_human_audio_admissions(state,username,client_ip_hash,created_at)"
+    )
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS digital_human_material_admissions(
+            admission_id TEXT PRIMARY KEY,
+            asset_id TEXT NOT NULL UNIQUE,
+            username TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            relative_file TEXT NOT NULL,
+            state TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            lease_until INTEGER NOT NULL
+        )"""
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_digital_human_material_admission_state "
+        "ON digital_human_material_admissions(state,lease_until,created_at)"
     )
 
 
@@ -252,7 +269,9 @@ def _remove_orphan_audio_directory(directory):
         return False
 
 
-def _audio_asset_is_referenced(asset_id, db_factory=None, jobs_db_factory=None):
+def _audio_asset_is_referenced(asset_id, db_factory=None, jobs_db_factory=None,
+                               now=None):
+    now = int(time.time() if now is None else now)
     jobs_db_factory = jobs_db_factory or jdb
     with closing(_audio_db(db_factory)) as connection:
         if connection.execute(
@@ -267,9 +286,10 @@ def _audio_asset_is_referenced(asset_id, db_factory=None, jobs_db_factory=None):
         consent_columns = ({row[1] for row in connection.execute(
             "PRAGMA table_info(digital_human_consents)",
         ).fetchall()} if consent_table else set())
-        if "voice_ref" in consent_columns and connection.execute(
-            "SELECT 1 FROM digital_human_consents WHERE voice_ref=? LIMIT 1",
-            (asset_id,),
+        if {"voice_ref", "expires_at"}.issubset(consent_columns) and connection.execute(
+            "SELECT 1 FROM digital_human_consents "
+            "WHERE voice_ref=? AND expires_at>? LIMIT 1",
+            (asset_id, now),
         ).fetchone():
             return True
     with closing(jobs_db_factory()) as connection:
@@ -307,7 +327,9 @@ def _reap_expired_audio_admissions(db_factory=None, jobs_db_factory=None,
         asset_id = _audio_asset_id_for_admission(row["admission_id"])
         directory = _audio_asset_directory(row["username"], asset_id)
         if (os.path.lexists(directory)
-                and _audio_asset_is_referenced(asset_id, db_factory, jobs_db_factory)):
+                and _audio_asset_is_referenced(
+                    asset_id, db_factory, jobs_db_factory, now=now,
+                )):
             with closing(_audio_db(db_factory)) as connection:
                 connection.execute(
                     "UPDATE digital_human_audio_admissions "
@@ -464,15 +486,22 @@ def _safe_audio_upload_id(value):
     return value
 
 
-def _audio_run_has_consent(connection, username, run_id):
+def _audio_run_has_consent(connection, username, run_id, now=None):
+    now = int(time.time() if now is None else now)
     table = connection.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='digital_human_consents'"
     ).fetchone()
     if not table:
         return False
+    columns = {row[1] for row in connection.execute(
+        "PRAGMA table_info(digital_human_consents)",
+    ).fetchall()}
+    if "expires_at" not in columns:
+        return False
     return connection.execute(
-        "SELECT 1 FROM digital_human_consents WHERE username=? AND run_id=? LIMIT 1",
-        (username, run_id),
+        "SELECT 1 FROM digital_human_consents "
+        "WHERE username=? AND run_id=? AND expires_at>? LIMIT 1",
+        (username, run_id, now),
     ).fetchone() is not None
 
 
@@ -792,6 +821,9 @@ def cleanup_expired_assets(db_factory=None, jobs_db_factory=None, now=None,
     removed = _reap_expired_audio_admissions(
         db_factory, jobs_db_factory, now=now, limit=limit,
     )
+    removed += _reap_expired_material_admissions(
+        db_factory, jobs_db_factory, now=now, limit=limit,
+    )
     with closing(_audio_db(db_factory)) as connection:
         connection.execute(
             "DELETE FROM digital_human_audio_admissions "
@@ -815,7 +847,8 @@ def cleanup_expired_assets(db_factory=None, jobs_db_factory=None, now=None,
         connection.commit()
     for table, column, root, row in candidates:
         with closing(_audio_db(db_factory)) as connection:
-            if _audio_run_has_consent(connection, row["username"], row["run_id"]):
+            if _audio_run_has_consent(
+                    connection, row["username"], row["run_id"], now=now):
                 continue
         asset_id = row["asset_id"]
         with closing(jobs_db_factory()) as connection:
@@ -839,6 +872,11 @@ def cleanup_expired_assets(db_factory=None, jobs_db_factory=None, now=None,
                 "DELETE FROM %s WHERE asset_id=? AND expires_at<=?" % table,
                 (asset_id, now),
             )
+            if table == "digital_human_material_assets" and deleted.rowcount == 1:
+                connection.execute(
+                    "DELETE FROM digital_human_material_admissions WHERE asset_id=?",
+                    (asset_id,),
+                )
             connection.commit()
         removed += int(deleted.rowcount == 1)
     return removed
@@ -1090,35 +1128,143 @@ def _customer_material(upload_id, username):
     return raw, mime, "customer_upload"
 
 
+def _material_asset_location(username, run_id, asset_id, extension):
+    if (not _MATERIAL_ASSET_ID_RE.fullmatch(str(asset_id or ""))
+            or extension not in {value[1] for value in _MATERIAL_MIMES.values()}):
+        raise ValueError("素材托管路径无效")
+    owner = hashlib.sha256(str(username).encode("utf-8")).hexdigest()[:20]
+    run_hash = hashlib.sha256(str(run_id).encode("utf-8")).hexdigest()[:20]
+    relative = pathlib.PurePosixPath(
+        "digital_human_materials", owner, run_hash, asset_id + extension,
+    ).as_posix()
+    return OUT_DIR / pathlib.PurePosixPath(relative), relative
+
+
+def _begin_material_admission(username, run_id, extension, db_factory=None,
+                              now=None, jobs_db_factory=None):
+    now = int(time.time() if now is None else now)
+    _reap_expired_material_admissions(
+        db_factory, jobs_db_factory, now=now, limit=20,
+    )
+    admission_id = "dhma_" + secrets.token_hex(16)
+    asset_id = "dhm_" + admission_id[5:]
+    target, relative = _material_asset_location(
+        username, run_id, asset_id, extension,
+    )
+    with closing(_audio_db(db_factory)) as connection:
+        connection.execute(
+            """INSERT INTO digital_human_material_admissions(
+                admission_id,asset_id,username,run_id,relative_file,state,
+                created_at,lease_until
+            ) VALUES(?,?,?,?,?,'active',?,?)""",
+            (admission_id, asset_id, username, run_id, relative, now,
+             now + _AUDIO_ADMISSION_LEASE_SECONDS),
+        )
+        connection.commit()
+    return admission_id, asset_id, target, relative
+
+
+def _remove_orphan_material_file(row):
+    try:
+        asset_id = str(row["asset_id"] or "")
+        relative = str(row["relative_file"] or "")
+        suffix = pathlib.PurePosixPath(relative).suffix.lower()
+        target, expected = _material_asset_location(
+            row["username"], row["run_id"], asset_id, suffix,
+        )
+        if relative != expected:
+            return False
+        root = OUT_DIR / "digital_human_materials"
+        if not os.path.lexists(target):
+            return True
+        for parent in (OUT_DIR, root, target.parent.parent, target.parent):
+            info = os.lstat(parent)
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+                return False
+        before = os.lstat(target)
+        if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+            return False
+        current = os.lstat(target)
+        if ((current.st_dev, current.st_ino) != (before.st_dev, before.st_ino)
+                or stat.S_ISLNK(current.st_mode) or not stat.S_ISREG(current.st_mode)):
+            return False
+        target.unlink()
+        for directory in (target.parent, target.parent.parent):
+            try:
+                directory.rmdir()
+            except OSError:
+                break
+        return True
+    except (KeyError, OSError, ValueError):
+        return False
+
+
+def _reap_expired_material_admissions(db_factory=None, jobs_db_factory=None,
+                                      now=None, limit=20):
+    """Recover material writes that ended before their asset transaction."""
+    now = int(time.time() if now is None else now)
+    limit = max(1, min(100, int(limit or 20)))
+    with closing(_audio_db(db_factory)) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            "UPDATE digital_human_material_admissions SET state='reaping' "
+            "WHERE state='active' AND lease_until<=?", (now,),
+        )
+        rows = connection.execute(
+            "SELECT * FROM digital_human_material_admissions "
+            "WHERE state='reaping' ORDER BY created_at LIMIT ?", (limit,),
+        ).fetchall()
+        connection.commit()
+    removed = 0
+    for original in rows:
+        row = dict(original)
+        with closing(_audio_db(db_factory)) as connection:
+            winner = connection.execute(
+                "SELECT 1 FROM digital_human_material_assets WHERE asset_id=? LIMIT 1",
+                (row["asset_id"],),
+            ).fetchone()
+            if winner:
+                connection.execute(
+                    "UPDATE digital_human_material_admissions SET state='committed' "
+                    "WHERE admission_id=? AND state='reaping'", (row["admission_id"],),
+                )
+                connection.commit()
+                continue
+        if not _remove_orphan_material_file(row):
+            continue
+        with closing(_audio_db(db_factory)) as connection:
+            deleted = connection.execute(
+                "DELETE FROM digital_human_material_admissions "
+                "WHERE admission_id=? AND state='reaping'", (row["admission_id"],),
+            )
+            connection.commit()
+        removed += int(deleted.rowcount == 1)
+    return removed
+
+
 def _store_material_asset(raw, mime, provider, username, run_id, plan_digest,
                           item_index, db_factory=None):
     media_type, extension = _MATERIAL_MIMES[mime]
-    asset_id = "dhm_" + secrets.token_hex(16)
-    owner = hashlib.sha256(str(username).encode("utf-8")).hexdigest()[:20]
-    directory = OUT_DIR / "digital_human_materials" / owner / hashlib.sha256(
-        str(run_id).encode("utf-8")).hexdigest()[:20]
-    directory.mkdir(parents=True, exist_ok=True)
-    target = directory / (asset_id + extension)
-    target.write_bytes(raw)
-    probe = subprocess.run([
-        "ffprobe", "-v", "error", "-select_streams", "v:0",
-        "-show_entries", "stream=codec_type,width,height", "-of", "json",
-        str(target),
-    ], check=False, timeout=60, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
+        now = int(time.time())
+        admission_id, asset_id, target, relative = _begin_material_admission(
+            username, run_id, extension, db_factory=db_factory, now=now,
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+        probe = subprocess.run([
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=codec_type,width,height", "-of", "json",
+            str(target),
+        ], check=False, timeout=60, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         streams = json.loads((probe.stdout or b"{}").decode("utf-8")).get("streams") or []
         valid_stream = (probe.returncode == 0 and streams
                         and int(streams[0].get("width") or 0) > 0
                         and int(streams[0].get("height") or 0) > 0)
-    except Exception:
-        valid_stream = False
-    if not valid_stream:
-        target.unlink(missing_ok=True)
-        raise ValueError("素材文件无法解码")
-    now = int(time.time())
-    relative = target.resolve().relative_to(OUT_DIR.resolve()).as_posix()
-    try:
+        if not valid_stream:
+            raise ValueError("素材文件无法解码")
         with closing(_audio_db(db_factory)) as connection:
+            connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 """INSERT INTO digital_human_material_assets(
                     asset_id,username,run_id,plan_digest,item_index,file,mime,
@@ -1127,15 +1273,26 @@ def _store_material_asset(raw, mime, provider, username, run_id, plan_digest,
                 (asset_id, username, run_id, plan_digest, item_index, relative,
                  mime, media_type, provider, now, now + _MATERIAL_TTL_SECONDS),
             )
+            committed = connection.execute(
+                "UPDATE digital_human_material_admissions SET state='committed',lease_until=0 "
+                "WHERE admission_id=? AND state='active'", (admission_id,),
+            )
+            if committed.rowcount != 1:
+                raise RuntimeError("素材写入租约已失效")
             connection.commit()
     except sqlite3.IntegrityError:
         target.unlink(missing_ok=True)
         with closing(_audio_db(db_factory)) as connection:
+            connection.execute(
+                "DELETE FROM digital_human_material_admissions WHERE admission_id=?",
+                (admission_id,),
+            )
             winner = connection.execute(
                 "SELECT asset_id FROM digital_human_material_assets WHERE username=? "
                 "AND run_id=? AND plan_digest=? AND item_index=?",
                 (username, run_id, plan_digest, int(item_index)),
             ).fetchone()
+            connection.commit()
         if winner:
             asset = _load_material_asset(
                 winner["asset_id"], username, run_id, plan_digest, item_index,
@@ -1148,6 +1305,13 @@ def _store_material_asset(raw, mime, provider, username, run_id, plan_digest,
         raise
     except Exception:
         target.unlink(missing_ok=True)
+        if "admission_id" in locals():
+            with closing(_audio_db(db_factory)) as connection:
+                connection.execute(
+                    "DELETE FROM digital_human_material_admissions WHERE admission_id=?",
+                    (admission_id,),
+                )
+                connection.commit()
         raise
     return {
         "asset_id": asset_id, "media_type": media_type,

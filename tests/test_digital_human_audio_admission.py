@@ -25,7 +25,8 @@ class DigitalHumanAudioAdmissionTests(unittest.TestCase):
         with closing(self.db()) as connection:
             digital_human_v2._ensure_audio_table(connection)
             connection.execute("""CREATE TABLE digital_human_consents(
-                username TEXT NOT NULL,run_id TEXT NOT NULL,voice_ref TEXT NOT NULL DEFAULT ''
+                username TEXT NOT NULL,run_id TEXT NOT NULL,
+                voice_ref TEXT NOT NULL DEFAULT '',expires_at INTEGER NOT NULL DEFAULT 0
             )""")
             connection.commit()
         with closing(self.jobs()) as connection:
@@ -176,8 +177,9 @@ class DigitalHumanAudioAdmissionTests(unittest.TestCase):
                 "WHERE admission_id=?", (consent_admission,),
             )
             connection.execute(
-                "INSERT INTO digital_human_consents(username,run_id,voice_ref) VALUES(?,?,?)",
-                ("alice", "audio-run-consent", consent_asset),
+                "INSERT INTO digital_human_consents(username,run_id,voice_ref,expires_at) "
+                "VALUES(?,?,?,?)",
+                ("alice", "audio-run-consent", consent_asset, now + 3 * 86400),
             )
             connection.commit()
         job_now, job_admission, job_asset, job_directory = \
@@ -330,15 +332,23 @@ class DigitalHumanAudioAdmissionTests(unittest.TestCase):
     def test_expired_unreferenced_files_are_collected_but_consent_is_retained(self):
         audio_root = digital_human_v2.OUT_DIR / "digital_human_audio" / "owner"
         expired = audio_root / "expired" / "source.mp3"
+        expired_consent = audio_root / "expired-consent" / "source.mp3"
         retained = audio_root / "retained" / "source.mp3"
+        job_retained = audio_root / "job-retained" / "source.mp3"
         expired.parent.mkdir(parents=True)
+        expired_consent.parent.mkdir(parents=True)
         retained.parent.mkdir(parents=True)
+        job_retained.parent.mkdir(parents=True)
         expired.write_bytes(b"old")
+        expired_consent.write_bytes(b"expired-consent-media")
         retained.write_bytes(b"keep")
+        job_retained.write_bytes(b"job-reference")
         with closing(self.db()) as connection:
             for asset_id, run_id, path in (
                 ("dha_" + "1" * 32, "audio-run-expired", expired),
                 ("dha_" + "2" * 32, "audio-run-retained", retained),
+                ("dha_" + "4" * 32, "audio-run-expired-consent", expired_consent),
+                ("dha_" + "5" * 32, "audio-run-job-retained", job_retained),
             ):
                 connection.execute(
                     """INSERT INTO digital_human_audio_uploads VALUES(
@@ -347,16 +357,163 @@ class DigitalHumanAudioAdmissionTests(unittest.TestCase):
                      path.relative_to(digital_human_v2.OUT_DIR).as_posix()),
                 )
             connection.execute(
-                "INSERT INTO digital_human_consents(username,run_id) VALUES(?,?)",
-                ("alice", "audio-run-retained"),
+                "INSERT INTO digital_human_consents(username,run_id,expires_at) VALUES(?,?,?)",
+                ("alice", "audio-run-retained", 20),
+            )
+            connection.execute(
+                "INSERT INTO digital_human_consents(username,run_id,expires_at) VALUES(?,?,?)",
+                ("alice", "audio-run-expired-consent", 9),
+            )
+            connection.commit()
+        with closing(self.jobs()) as connection:
+            connection.execute(
+                "INSERT INTO jobs(username,payload,result) VALUES(?,?,?)",
+                ("alice", '{"audio_upload_id":"%s"}' % ("dha_" + "5" * 32), "{}"),
             )
             connection.commit()
         removed = digital_human_v2.cleanup_expired_assets(
             self.db, self.jobs, now=10, limit=10,
         )
-        self.assertEqual(1, removed)
+        self.assertEqual(2, removed)
         self.assertFalse(expired.exists())
+        self.assertFalse(expired_consent.exists())
         self.assertTrue(retained.exists())
+        self.assertTrue(job_retained.exists())
+        with closing(self.db()) as connection:
+            self.assertIsNotNone(connection.execute(
+                "SELECT 1 FROM digital_human_consents "
+                "WHERE run_id='audio-run-expired-consent'",
+            ).fetchone())
+
+    def test_material_hard_exit_after_write_is_reconciled(self):
+        class HardExit(BaseException):
+            pass
+
+        with mock.patch.object(
+            digital_human_v2.subprocess, "run", side_effect=HardExit("power loss"),
+        ), self.assertRaises(HardExit):
+            digital_human_v2._store_material_asset(
+                b"material-before-hard-exit", "image/png", "local_library",
+                "alice", "material-run-hard-exit", "a" * 64, 0,
+                db_factory=self.db,
+            )
+        with closing(self.db()) as connection:
+            row = dict(connection.execute(
+                "SELECT * FROM digital_human_material_admissions",
+            ).fetchone())
+        target = digital_human_v2.OUT_DIR / row["relative_file"]
+        self.assertTrue(target.is_file())
+
+        removed = digital_human_v2.cleanup_expired_assets(
+            self.db, self.jobs,
+            now=row["lease_until"] + 1, limit=10,
+        )
+
+        self.assertEqual(1, removed)
+        self.assertFalse(target.exists())
+        with closing(self.db()) as connection:
+            self.assertIsNone(connection.execute(
+                "SELECT 1 FROM digital_human_material_admissions "
+                "WHERE admission_id=?", (row["admission_id"],),
+            ).fetchone())
+
+    def test_material_recovery_never_deletes_committed_concurrent_winner(self):
+        admission_id, asset_id, target, relative = \
+            digital_human_v2._begin_material_admission(
+                "alice", "material-run-winner", ".png", self.db, now=1000,
+                jobs_db_factory=self.jobs,
+            )
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"committed-winner")
+        with closing(self.db()) as connection:
+            connection.execute(
+                """INSERT INTO digital_human_material_assets VALUES(
+                ?,?,?,?,?,?,?,?,?,?,?)""",
+                (asset_id, "alice", "material-run-winner", "b" * 64, 0,
+                 relative, "image/png", "image", "local_library", 1000, 999999),
+            )
+            connection.commit()
+
+        self.assertEqual(0, digital_human_v2._reap_expired_material_admissions(
+            self.db, self.jobs,
+            now=1000 + digital_human_v2._AUDIO_ADMISSION_LEASE_SECONDS + 1,
+            limit=10,
+        ))
+        self.assertEqual(b"committed-winner", target.read_bytes())
+        with closing(self.db()) as connection:
+            self.assertEqual("committed", connection.execute(
+                "SELECT state FROM digital_human_material_admissions "
+                "WHERE admission_id=?", (admission_id,),
+            ).fetchone()["state"])
+
+    def test_material_recovery_rejects_cross_user_or_external_path(self):
+        admission_id, _asset_id, target, _relative = \
+            digital_human_v2._begin_material_admission(
+                "alice", "material-run-path", ".png", self.db, now=1000,
+                jobs_db_factory=self.jobs,
+            )
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"owned-material")
+        other_target, other_relative = digital_human_v2._material_asset_location(
+            "bob", "material-run-path", _asset_id, ".png",
+        )
+        other_target.parent.mkdir(parents=True)
+        other_target.write_bytes(b"other-user-unique")
+        outside = self.root / "external.png"
+        outside.write_bytes(b"external-unique")
+        with closing(self.db()) as connection:
+            connection.execute(
+                "UPDATE digital_human_material_admissions "
+                "SET relative_file=? WHERE admission_id=?",
+                (other_relative, admission_id),
+            )
+            connection.commit()
+
+        self.assertEqual(0, digital_human_v2._reap_expired_material_admissions(
+            self.db, self.jobs,
+            now=1000 + digital_human_v2._AUDIO_ADMISSION_LEASE_SECONDS + 1,
+            limit=10,
+        ))
+        self.assertEqual(b"owned-material", target.read_bytes())
+        self.assertEqual(b"other-user-unique", other_target.read_bytes())
+        with closing(self.db()) as connection:
+            connection.execute(
+                "UPDATE digital_human_material_admissions "
+                "SET relative_file='../external.png' WHERE admission_id=?",
+                (admission_id,),
+            )
+            connection.commit()
+        self.assertEqual(0, digital_human_v2._reap_expired_material_admissions(
+            self.db, self.jobs,
+            now=1000 + digital_human_v2._AUDIO_ADMISSION_LEASE_SECONDS + 2,
+            limit=10,
+        ))
+        self.assertEqual(b"external-unique", outside.read_bytes())
+
+    @unittest.skipUnless(os.name == "posix", "symlink path safety requires POSIX")
+    def test_material_recovery_never_follows_symlink(self):
+        admission_id, _asset_id, target, _relative = \
+            digital_human_v2._begin_material_admission(
+                "alice", "material-run-link", ".png", self.db, now=1000,
+                jobs_db_factory=self.jobs,
+            )
+        target.parent.mkdir(parents=True)
+        outside = self.root / "outside-material.png"
+        outside.write_bytes(b"external-unique")
+        target.symlink_to(outside)
+
+        self.assertEqual(0, digital_human_v2._reap_expired_material_admissions(
+            self.db, self.jobs,
+            now=1000 + digital_human_v2._AUDIO_ADMISSION_LEASE_SECONDS + 1,
+            limit=10,
+        ))
+        self.assertTrue(target.is_symlink())
+        self.assertEqual(b"external-unique", outside.read_bytes())
+        with closing(self.db()) as connection:
+            self.assertEqual("reaping", connection.execute(
+                "SELECT state FROM digital_human_material_admissions "
+                "WHERE admission_id=?", (admission_id,),
+            ).fetchone()["state"])
 
     @unittest.skipUnless(os.name == "posix", "symlink path safety requires POSIX")
     def test_gc_never_follows_managed_symlink(self):
