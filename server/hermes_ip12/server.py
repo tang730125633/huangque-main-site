@@ -82,12 +82,12 @@ CONVOS_DIR = DATA_DIR / "conversations"
 REPORTS_DIR = DATA_DIR / "reports"
 DELIVERABLES_DIR = DATA_DIR / "deliverables"
 FOUNDATION_REPORTS_DIR = DATA_DIR / "foundation_reports"
-FOUNDATION_REPORT_TEMPLATE_VERSION = "editorial-v3.2"
+FOUNDATION_REPORT_TEMPLATE_VERSION = "editorial-v3.3"
 EDITORIAL_REPORT_PROMPT = """你是黄雀 IP12 的报告主编。只使用服务端确认资料和用户原话，写给客户阅读的中文《模块1-4定位初稿》。这是一份策划提案，不是内部审计底稿。
 
-事实合同：确认事实只能复述资料；未来计划必须写成计划；任何金句、钩子、情绪曲线、传播价值和优先级都必须写在“AI包装建议”标题下，不能写成客户案例、收入、成交、流量或已发生结果。模块1-3的最终选择必须沿用服务端结果，不得改选。
+事实合同：确认事实只能复述资料；未来计划必须写成计划；任何金句、钩子、情绪曲线、传播价值和优先级都必须写在“AI包装建议”标题下，不能写成客户案例、收入、成交、流量或已发生结果。资料只说“盲目扩张失败”而未说明影响范围时，写“经营中因盲目扩张走过一段弯路”，不得推定店铺失败、倒闭或关闭。模块1-3的最终选择必须沿用服务端结果，不得改选。
 
-定位层级合同：定位必须是“目标人群 + 核心服务/职责”的职业或服务标签；人设必须是“表达人格 + 职业角色”；价值主张必须是一句客户可获得的具体变化，不得与定位标签重复。三个月验证目标只允许出现在首页、P2 和事实附录。
+定位层级合同：首页“定位”卡必须分成“身份定位”和“服务方向”两行：前者是职业标签，后者是客户获得的服务；人设必须是“表达人格 + 职业角色”；价值主张必须是一句客户可获得的具体变化，不得与定位标签重复。三个月验证目标只允许出现在首页、P2 和事实附录。
 
 版式合同：正文控制为结论、短表、卡片和动作，不重复身份、平台、时间、商业目标等信息。严格按以下结构输出：
 ## 首页｜IP结论总览
@@ -117,9 +117,9 @@ EDITORIAL_REPORT_PROMPT = """你是黄雀 IP12 的报告主编。只使用服务
 ### 故事传播卡（AI包装建议）
 每个故事一个四级标题卡：情绪曲线、开场钩子、可拆选题、表达边界。
 ## 内容与执行路径
-P0、P1、P2 各一项：具体动作、建议产出、验证方式；不承诺效果。
+用三个四级标题阶段卡，分别为“P0｜起步”“P1｜持续发布”“P2｜三个月验证”；每张卡用三条短句写具体动作、建议产出、验证方式，不使用竖线或 Markdown 表格，不承诺效果。
 ## 事实附录与确认清单
-集中列出证明材料、不能夸大的边界和待本人确认项。
+集中列出证明材料、不能夸大的边界和待本人确认项。如使用“三个月验证20条有效咨询”，必须新增“有效咨询口径”小节：明确判断标准、同一人重复咨询是否计数、广告/自动问候/无明确需求私信是否排除；尚未由本人确认的标准必须标为待确认，不得装作既有口径。
 
 不要输出开场客套、内部流程、模型、数据库、评分或“略/同上”。"""
 CONVERSATION_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
@@ -2951,7 +2951,7 @@ def generate_foundation_report(convo_id):
     ).json()["choices"][0]["message"]["content"]
     if not isinstance(content, str) or not content.strip():
         raise RuntimeError("AI report is empty")
-    content = _ground_foundation_story_section(content.strip(), foundation_outputs)
+    content = _ground_foundation_story_section(content.strip(), foundation_outputs, review_notes)
     FOUNDATION_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     playwright_browser = ""
     try:
@@ -3006,8 +3006,10 @@ def generate_foundation_report(convo_id):
     return record
 
 
-def _ground_foundation_story_section(content, foundation_outputs):
+def _ground_foundation_story_section(content, foundation_outputs, review_notes=()):
     """Reuse the confirmed story asset instead of letting the report rewrite history."""
+    if review_notes:
+        return content
     confirmed = str(((foundation_outputs or {}).get("4-4") or {}).get("content") or "").strip()
     if not confirmed:
         return content
@@ -5755,7 +5757,7 @@ def _process_foundation_revision_turn(cid, user_message, expected_revision=None,
         state = normalize_coach_state(convo.get("coach_state"))
         _assert_expected_revision(state, expected_revision)
         report = dict(state.get("foundation_report") or {})
-        if 4 not in state.get("completed_modules", []) or report.get("status") != "awaiting_confirmation":
+        if 4 not in state.get("completed_modules", []) or report.get("status") not in {"awaiting_confirmation", "confirmed"}:
             return {"ok": False, "error": "当前没有待修改的模块 1-4 PDF"}, 409
         snapshot_revision = state["revision"]
         report_content = _redact_mobile_numbers(str(report.get("content") or ""))[:16000]

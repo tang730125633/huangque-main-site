@@ -36,6 +36,7 @@ class HermesPdfFallbackTests(unittest.TestCase):
                 ["advice", "card_title", "priority"],
             )
             self.assertEqual(_styled_lines("#### 开场钩子")[0][0], "card_detail")
+            self.assertEqual(_styled_lines("#### P0｜起步")[0][0], "card_title")
 
             class FixedWidth:
                 @staticmethod

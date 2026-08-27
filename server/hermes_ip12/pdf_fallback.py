@@ -40,7 +40,7 @@ def _styled_lines(markdown):
             text = re.sub(r"^#{1,4}\s*", "", text)
         text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
         text = re.sub(r"`([^`]+)`", r"\1", text)
-        if re.match(r"(?:🥇|🥈|🥉|P[012]\b)", text):
+        if kind == "body" and re.match(r"(?:🥇|🥈|🥉|P[012]\b)", text):
             kind = "priority"
         lines.append((kind, text))
     return lines or [("body", "暂无已确认内容。")]

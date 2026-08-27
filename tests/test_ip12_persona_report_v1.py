@@ -68,6 +68,12 @@ class IP12PersonaReportV1Tests(unittest.TestCase):
         self.assertIn("事实附录与确认清单", server.EDITORIAL_REPORT_PROMPT)
         self.assertIn("EDITORIAL_REPORT_PROMPT", source)
         self.assertIn("定位层级合同", server.EDITORIAL_REPORT_PROMPT)
+        self.assertIn("有效咨询口径", server.EDITORIAL_REPORT_PROMPT)
+        self.assertIn("P0｜起步", server.EDITORIAL_REPORT_PROMPT)
+        self.assertIn(
+            'report.get("status") not in {"awaiting_confirmation", "confirmed"}',
+            inspect.getsource(server._process_foundation_revision_turn),
+        )
         self.assertIn(
             "FOUNDATION_REPORT_TEMPLATE_VERSION",
             inspect.getsource(server.api_generate_foundation_report),
@@ -93,6 +99,13 @@ class IP12PersonaReportV1Tests(unittest.TestCase):
         self.assertIn("事实原话：我开过一家小店。", result)
         self.assertIn("故事传播卡（AI包装建议）", result)
         self.assertIn("复盘故事卡", result)
+
+    def test_reviewed_story_correction_is_not_overwritten_by_old_snapshot(self):
+        content = "## 模块四｜故事资产挖掘\n\n### 已确认故事资产\n\n经营中走过一段弯路。"
+        result = server._ground_foundation_story_section(
+            content, {"4-4": {"content": "旧版故事快照"}}, [{"content": "修正措辞"}]
+        )
+        self.assertEqual(result, content)
 
 
 if __name__ == "__main__":
