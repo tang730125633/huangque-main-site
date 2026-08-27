@@ -13,6 +13,52 @@ class ProfileAgentError(RuntimeError):
     pass
 
 
+def _required_text(value, field, maximum, minimum=1):
+    if not isinstance(value, str):
+        raise ProfileAgentError("DeepSeek field %s must be text" % field)
+    text = re.sub(r"\s+", " ", value).strip()
+    if not minimum <= len(text) <= maximum:
+        raise ProfileAgentError("DeepSeek field %s has invalid length" % field)
+    return text
+
+
+def _required_content(value, field, maximum, minimum=1):
+    if not isinstance(value, str):
+        raise ProfileAgentError("DeepSeek field %s must be text" % field)
+    text = value.strip()
+    if not minimum <= len(text) <= maximum:
+        raise ProfileAgentError("DeepSeek field %s has invalid length" % field)
+    return text
+
+
+def _required_text_list(value, field, maximum_items=6, maximum_length=240):
+    if not isinstance(value, list) or not 1 <= len(value) <= maximum_items:
+        raise ProfileAgentError("DeepSeek field %s must be a non-empty list" % field)
+    result = [
+        _required_text(item, "%s[%d]" % (field, index), maximum_length)
+        for index, item in enumerate(value)
+    ]
+    if len(set(result)) != len(result):
+        raise ProfileAgentError("DeepSeek field %s contains duplicates" % field)
+    return result
+
+
+def _profile_option(value, index):
+    if not isinstance(value, dict):
+        raise ProfileAgentError("DeepSeek profile option must be an object")
+    prefix = "options[%d]" % index
+    return {
+        "title": _required_text(value.get("title"), prefix + ".title", 80),
+        "one_liner": _required_text(
+            value.get("one_liner"), prefix + ".one_liner", 300, minimum=2,
+        ),
+        "strengths": _required_text_list(
+            value.get("strengths"), prefix + ".strengths",
+        ),
+        "risks": _required_text_list(value.get("risks"), prefix + ".risks"),
+    }
+
+
 MODULES = {
     1: {
         "name": "定位诊断",
@@ -158,15 +204,25 @@ class DeepSeekProfileAgent:
                 "user_answer": str(message or "")[:4000],
             },
         )
-        accepted = value.get("accepted") is True
-        captured = re.sub(r"\s+", " ", str(value.get("value") or "")).strip()[:1600]
+        if not isinstance(value.get("accepted"), bool):
+            raise ProfileAgentError("DeepSeek accepted must be boolean")
+        accepted = value["accepted"]
+        captured = _required_text(
+            value.get("value"), "value", 1600,
+            minimum=1 if accepted else 0,
+        )
         if accepted and not captured:
             accepted = False
+        ack = _required_text(value.get("ack"), "ack", 300)
+        clarification = _required_text(
+            value.get("clarification"), "clarification", 300,
+            minimum=0 if accepted else 1,
+        )
         return {
             "accepted": accepted,
             "value": captured,
-            "ack": re.sub(r"\s+", " ", str(value.get("ack") or "已记录。"))[:300],
-            "clarification": re.sub(r"\s+", " ", str(value.get("clarification") or "能再具体一点吗？"))[:300],
+            "ack": ack,
+            "clarification": clarification,
         }
 
     def build_module_review(self, state, module):
@@ -174,7 +230,8 @@ class DeepSeekProfileAgent:
         value = self._call(
             "你是个人品牌策略顾问。只能使用已提供的真实回答，不得补造经历、成绩或身份。"
             "返回 JSON：summary(string)、options(array)。模块1-3提供3个差异化候选，"
-            "每项包含 title、one_liner、strengths、risks；模块4提供故事资产清单与最多2条主线候选。",
+            "每项包含非空 title、one_liner，以及 strengths、risks 两个1-6项字符串数组；"
+            "模块4只提供1-2条主线候选。",
             {
                 "module": module,
                 "module_name": name,
@@ -182,19 +239,23 @@ class DeepSeekProfileAgent:
                 "confirmed_modules": state.get("selected_profiles") or {},
             },
         )
-        options = value.get("options") if isinstance(value.get("options"), list) else []
-        options = [item for item in options if isinstance(item, dict)][:3]
-        summary = str(value.get("summary") or "").strip()[:6000]
-        minimum_options = 3 if module < 4 else 1
-        if not summary or len(options) < minimum_options:
+        raw_options = value.get("options")
+        if not isinstance(raw_options, list):
             raise ProfileAgentError("DeepSeek module review is incomplete")
+        if module < 4 and len(raw_options) != 3:
+            raise ProfileAgentError("DeepSeek module review requires three options")
+        if module == 4 and not 1 <= len(raw_options) <= 2:
+            raise ProfileAgentError("DeepSeek story review requires one or two options")
+        options = [_profile_option(item, index) for index, item in enumerate(raw_options)]
+        summary = _required_text(value.get("summary"), "summary", 6000, minimum=2)
         return {"module": module, "module_name": name, "summary": summary, "options": options}
 
     def revise_module_review(self, state, module, instruction):
         current = (state.get("module_reviews") or {}).get(str(module)) or {}
         value = self._call(
             "根据用户修改要求更新当前画像模块。只能修改用户指出的内容，不得编造新事实。"
-            "返回与 current_review 相同结构的 JSON：summary、options。",
+            "返回与 current_review 相同结构的 JSON：summary、options；每项必须保留非空"
+            "title、one_liner 以及 strengths、risks 字符串数组。",
             {
                 "module": module,
                 "answers": state.get("answers") or {},
@@ -202,24 +263,91 @@ class DeepSeekProfileAgent:
                 "instruction": str(instruction or "")[:2000],
             },
         )
-        options = value.get("options") if isinstance(value.get("options"), list) else []
-        if not value.get("summary") or not options:
+        raw_options = value.get("options")
+        if not isinstance(raw_options, list):
             raise ProfileAgentError("DeepSeek revised review is incomplete")
-        return {"module": module, "module_name": MODULES[module]["name"],
-                "summary": str(value["summary"])[:6000], "options": options[:3]}
+        if module < 4 and len(raw_options) != 3:
+            raise ProfileAgentError("DeepSeek revised review requires three options")
+        if module == 4 and not 1 <= len(raw_options) <= 2:
+            raise ProfileAgentError("DeepSeek revised story review requires one or two options")
+        options = [_profile_option(item, index) for index, item in enumerate(raw_options)]
+        return {
+            "module": module,
+            "module_name": MODULES[module]["name"],
+            "summary": _required_text(value.get("summary"), "summary", 6000, minimum=2),
+            "options": options,
+        }
 
     def topic_plan(self, profile, platforms, request):
         value = self._call(
             "你是多平台内容策划 Agent。基于已确认个人画像，为指定平台生成至少15个可执行选题，"
             "并推荐3个。只返回 JSON：reply、topics、recommended、scripts。"
-            "用户明确要求文案时，scripts 给出可直接发布的完整文案；不得编造画像事实。",
+            "topics 每项为含非空 title 的对象；recommended 是引用 topic title 的字符串数组；"
+            "scripts 每项必须包含请求内 platform 和非空 content。用户明确要求文案时，scripts "
+            "给出可直接发布的完整文案；不得编造画像事实。",
             {"profile": profile, "platforms": platforms, "request": str(request or "")[:4000]},
         )
-        topics = value.get("topics") if isinstance(value.get("topics"), list) else []
-        recommended = value.get("recommended") if isinstance(value.get("recommended"), list) else []
-        if len(topics) < 15 or len(recommended) < 3:
+        raw_topics = value.get("topics")
+        if not isinstance(raw_topics, list) or not 15 <= len(raw_topics) <= 50:
             raise ProfileAgentError("DeepSeek topic plan is incomplete")
-        return value
+        topics = []
+        topic_titles = set()
+        for index, item in enumerate(raw_topics):
+            if not isinstance(item, dict):
+                raise ProfileAgentError("DeepSeek topic must be an object")
+            title = _required_text(item.get("title"), "topics[%d].title" % index, 160, 2)
+            if title in topic_titles:
+                raise ProfileAgentError("DeepSeek topic titles must be unique")
+            topic_titles.add(title)
+            normalized = {"title": title}
+            for field in ("angle", "reason", "format"):
+                if field in item:
+                    normalized[field] = _required_text(
+                        item.get(field), "topics[%d].%s" % (index, field), 500,
+                    )
+            topics.append(normalized)
+
+        raw_recommended = value.get("recommended")
+        if not isinstance(raw_recommended, list) or not 3 <= len(raw_recommended) <= 10:
+            raise ProfileAgentError("DeepSeek recommendations are incomplete")
+        recommended = []
+        for index, item in enumerate(raw_recommended):
+            title = item.get("title") if isinstance(item, dict) else item
+            title = _required_text(title, "recommended[%d]" % index, 160, 2)
+            if title not in topic_titles or title in recommended:
+                raise ProfileAgentError("DeepSeek recommendation does not match topics")
+            recommended.append(title)
+
+        raw_scripts = value.get("scripts")
+        if not isinstance(raw_scripts, list) or len(raw_scripts) > 12:
+            raise ProfileAgentError("DeepSeek scripts must be a list")
+        allowed_platforms = {str(item) for item in platforms}
+        scripts = []
+        for index, item in enumerate(raw_scripts):
+            if not isinstance(item, dict):
+                raise ProfileAgentError("DeepSeek script must be an object")
+            platform = _required_text(
+                item.get("platform"), "scripts[%d].platform" % index, 40,
+            )
+            if platform not in allowed_platforms:
+                raise ProfileAgentError("DeepSeek script platform is not requested")
+            script = {
+                "platform": platform,
+                "content": _required_content(
+                    item.get("content"), "scripts[%d].content" % index, 12000, 2,
+                ),
+            }
+            if "title" in item:
+                script["title"] = _required_text(
+                    item.get("title"), "scripts[%d].title" % index, 160,
+                )
+            scripts.append(script)
+        return {
+            "reply": _required_text(value.get("reply"), "reply", 1600, 2),
+            "topics": topics,
+            "recommended": recommended,
+            "scripts": scripts,
+        }
 
     def reply(self, profile, message):
         value = self._call(
@@ -227,7 +355,4 @@ class DeepSeekProfileAgent:
             "不要声称调用 IP12，不要代替用户确认付费。返回 JSON：reply。",
             {"profile": profile, "message": str(message or "")[:4000]},
         )
-        reply = str(value.get("reply") or "").strip()[:1600]
-        if not reply:
-            raise ProfileAgentError("DeepSeek reply is empty")
-        return reply
+        return _required_text(value.get("reply"), "reply", 1600, 2)

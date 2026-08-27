@@ -1,3 +1,4 @@
+import copy
 import io
 import json
 import pathlib
@@ -9,7 +10,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "server"))
 
 from creator_agent.profile_agent import (
-    DeepSeekProfileAgent, MODULES, current_question, initial_state,
+    DeepSeekProfileAgent, MODULES, ProfileAgentError, current_question, initial_state,
 )
 
 
@@ -86,6 +87,53 @@ class CreatorProfileAgentTests(unittest.TestCase):
         self.assertTrue(agent.health(force=True))
         self.assertEqual(opener.url, "https://api.deepseek.com/models")
         self.assertEqual(opener.timeout, 5)
+
+    def test_module_review_rejects_missing_candidate_fields(self):
+        opener = Opener({
+            "summary": "定位总结",
+            "options": [
+                {
+                    "title": "方案%d" % index,
+                    "one_liner": "一句话定位%d" % index,
+                    "strengths": "not-a-list" if index == 1 else ["真实经历"],
+                    "risks": ["仍需验证"],
+                }
+                for index in range(1, 4)
+            ],
+        })
+        agent = DeepSeekProfileAgent("secret", opener=opener)
+        with self.assertRaises(ProfileAgentError):
+            agent.build_module_review(initial_state(), 1)
+
+    def test_topic_plan_validates_titles_recommendations_and_scripts(self):
+        valid = {
+            "reply": "已完成选题计划",
+            "topics": [{"title": "选题%d" % index} for index in range(1, 16)],
+            "recommended": ["选题1", "选题2", "选题3"],
+            "scripts": [{"platform": "douyin", "content": "这是一篇可以直接发布的完整文案"}],
+        }
+        agent = DeepSeekProfileAgent("secret", opener=Opener(valid))
+        result = agent.topic_plan({}, ["douyin"], "生成选题")
+        self.assertEqual(len(result["topics"]), 15)
+        self.assertEqual(result["recommended"], ["选题1", "选题2", "选题3"])
+
+        malformed_cases = []
+        missing_title = copy.deepcopy(valid)
+        missing_title["topics"][0] = {}
+        malformed_cases.append(missing_title)
+        unknown_recommendation = copy.deepcopy(valid)
+        unknown_recommendation["recommended"][0] = "不存在的选题"
+        malformed_cases.append(unknown_recommendation)
+        wrong_script_platform = copy.deepcopy(valid)
+        wrong_script_platform["scripts"] = [
+            {"platform": "unknown", "content": "完整文案"},
+        ]
+        malformed_cases.append(wrong_script_platform)
+        for malformed in malformed_cases:
+            with self.subTest(malformed=malformed):
+                agent = DeepSeekProfileAgent("secret", opener=Opener(malformed))
+                with self.assertRaises(ProfileAgentError):
+                    agent.topic_plan({}, ["douyin"], "生成选题")
 
 
 if __name__ == "__main__":

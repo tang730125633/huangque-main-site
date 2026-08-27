@@ -10,6 +10,7 @@ import threading
 import time
 import unittest
 from unittest import mock
+import urllib.error
 import urllib.request
 
 
@@ -531,6 +532,9 @@ class CreatorAgentTests(unittest.TestCase):
         batch = result["latest_batch"]
         self.assertEqual(batch["status"], "draft")
         self.assertEqual({item["platform"] for item in batch["plans"]}, {"douyin", "xiaohongshu"})
+        public_json = json.dumps(result, ensure_ascii=False)
+        self.assertNotIn("source_message_id", public_json)
+        self.assertNotIn("last_mutation_message_id", public_json)
         self.assertEqual(len(batch["jobs"]), 2)
         quotes = [call for call in self.bridge.calls if call[0] == "action" and call[1] == "matrix-template-generate"]
         self.assertEqual(quotes, [])
@@ -632,13 +636,173 @@ class CreatorAgentTests(unittest.TestCase):
                 {"topic": "测试", "platforms": ["douyin"]},
             ),
         )
-        with self.assertRaises(APIError) as raised:
-            self.service.message(USER, self.headers, {
-                "message": "制作视频", "request_id": "creator-turn-stuck-0001",
-                "intent": "start_video", "payload": {"topic": "测试", "platforms": ["douyin"]},
-            })
-        self.assertEqual(raised.exception.code, "idempotency_in_progress")
-        self.assertEqual(self.store.batches(USER["username"], PROJECT_ID), [])
+        result = self.service.message(USER, self.headers, {
+            "message": "制作视频", "request_id": "creator-turn-stuck-0001",
+            "intent": "start_video", "payload": {"topic": "测试", "platforms": ["douyin"]},
+        })
+        self.assertEqual(result["message_public"]["kind"], "video_plan")
+        self.assertEqual(len(self.store.batches(USER["username"], PROJECT_ID)), 1)
+
+    def test_nonprofile_turn_crash_boundaries_replay_once(self):
+        for boundary in ("after_assistant", "before_commit", "after_commit"):
+            with self.subTest(boundary=boundary):
+                request_id = "generic-crash-%s" % boundary
+                body = {
+                    "message": "查看偏好", "request_id": request_id,
+                    "intent": "view_preferences", "project_id": PROJECT_ID,
+                }
+                fired = {"value": False}
+
+                def transaction_fault(stage):
+                    if boundary == stage and not fired["value"]:
+                        fired["value"] = True
+                        raise SystemExit(stage)
+
+                def after_commit_fault():
+                    if boundary == "after_commit" and not fired["value"]:
+                        fired["value"] = True
+                        raise SystemExit("after_commit")
+
+                self.service._message_turn_fault_hook = transaction_fault
+                self.service._after_message_commit_hook = after_commit_fault
+                with self.assertRaises(SystemExit):
+                    self.service.message(USER, self.headers, body)
+                self.service._message_turn_fault_hook = None
+                self.service._after_message_commit_hook = None
+                replay = self.service.message(USER, self.headers, body)
+                self.assertIn("偏好", replay["reply"])
+                with closing(self.store.db()) as connection:
+                    user_row = connection.execute(
+                        "SELECT id,public_json FROM creator_messages "
+                        "WHERE username=? AND project_id=? AND request_id=?",
+                        (USER["username"], PROJECT_ID, request_id),
+                    ).fetchone()
+                    public = json.loads(user_row["public_json"])
+                    assistants = connection.execute(
+                        "SELECT COUNT(*) FROM creator_messages "
+                        "WHERE username=? AND project_id=? AND source_key=?",
+                        (USER["username"], PROJECT_ID,
+                         "message-turn:%d" % int(user_row["id"])),
+                    ).fetchone()[0]
+                self.assertIn("turn", public)
+                self.assertIn("response", public)
+                self.assertEqual(assistants, 1)
+
+    def test_video_side_effect_crash_recovers_one_batch(self):
+        body = {
+            "message": "制作视频", "request_id": "video-side-effect-crash-0001",
+            "intent": "start_video", "project_id": PROJECT_ID,
+            "payload": {"topic": "企业获客", "platforms": ["douyin"]},
+        }
+        fired = {"value": False}
+
+        def crash_once(stage):
+            if stage == "after_batch_create" and not fired["value"]:
+                fired["value"] = True
+                raise SystemExit(stage)
+
+        self.service._message_side_effect_fault_hook = crash_once
+        with self.assertRaises(SystemExit):
+            self.service.message(USER, self.headers, body)
+        self.service._message_side_effect_fault_hook = None
+        batches = self.store.batches(USER["username"], PROJECT_ID)
+        self.assertEqual(len(batches), 1)
+        replay = self.service.message(USER, self.headers, body)
+        self.assertEqual(replay["latest_batch"]["id"], batches[0]["id"])
+        self.assertEqual(len(self.store.batches(USER["username"], PROJECT_ID)), 1)
+        self.assertEqual(replay["workspace"]["flow"]["mode"], "template_review")
+
+    def test_topic_side_effect_crash_reuses_saved_result(self):
+        body = {
+            "message": "生成抖音选题", "request_id": "topic-side-effect-crash-0001",
+            "intent": "topic_plan", "project_id": PROJECT_ID,
+            "payload": {"platforms": ["douyin"]},
+        }
+        self.service._before_message_commit_hook = lambda: (_ for _ in ()).throw(
+            SystemExit("before_message_commit")
+        )
+        with self.assertRaises(SystemExit):
+            self.service.message(USER, self.headers, body)
+        self.service._before_message_commit_hook = None
+        calls = [call for call in self.profile_agent.calls if call[0] == "topic_plan"]
+        self.assertEqual(len(calls), 1)
+        replay = self.service.message(USER, self.headers, body)
+        self.assertEqual(replay["message_public"]["kind"], "topic_plan")
+        calls = [call for call in self.profile_agent.calls if call[0] == "topic_plan"]
+        self.assertEqual(len(calls), 1)
+        deliverables = self.store.workspace(USER["username"], PROJECT_ID)["deliverables"]
+        self.assertEqual(
+            len([key for key in deliverables if key.startswith("topic_plan_request_")]),
+            1,
+        )
+
+    def test_plan_revision_side_effect_crash_advances_once(self):
+        draft = self._draft_batch()
+        body = {
+            "message": "标题改成更直接", "request_id": "revision-side-effect-crash-0001",
+            "project_id": PROJECT_ID,
+        }
+        self.service._message_side_effect_fault_hook = lambda stage: (
+            (_ for _ in ()).throw(SystemExit(stage))
+            if stage == "after_batch_mutation" else None
+        )
+        with self.assertRaises(SystemExit):
+            self.service.message(USER, self.headers, body)
+        self.service._message_side_effect_fault_hook = None
+        changed = self.store.batch(USER["username"], draft["id"], include_private=True)
+        self.assertEqual(changed["revision"], draft["revision"] + 1)
+        replay = self.service.message(USER, self.headers, body)
+        self.assertEqual(replay["latest_batch"]["revision"], changed["revision"])
+        current = self.store.batch(USER["username"], draft["id"], include_private=True)
+        self.assertEqual(current["revision"], changed["revision"])
+
+    def test_quote_side_effect_crash_reuses_same_quote(self):
+        draft = self._draft_batch()
+        body = {
+            "message": "确认方案", "request_id": "quote-side-effect-crash-0001",
+            "intent": "confirm_plan", "project_id": PROJECT_ID,
+            "payload": {
+                "batch_id": draft["id"],
+                "expected_revision": draft["revision"],
+            },
+        }
+        self.service._before_message_commit_hook = lambda: (_ for _ in ()).throw(
+            SystemExit("before_message_commit")
+        )
+        with self.assertRaises(SystemExit):
+            self.service.message(USER, self.headers, body)
+        self.service._before_message_commit_hook = None
+        quote_calls = self.bridge.quote_count
+        quoted = self.store.batch(USER["username"], draft["id"])
+        self.assertEqual(quoted["status"], "quoted")
+        replay = self.service.message(USER, self.headers, body)
+        self.assertEqual(replay["message_public"]["kind"], "video_quote")
+        self.assertEqual(self.bridge.quote_count, quote_calls)
+
+    def test_confirmation_side_effect_crash_does_not_resubmit(self):
+        draft = self._draft_batch()
+        quoted = self.service.quote_batch(USER, draft["id"], draft["revision"])
+        body = {
+            "message": "确认扣点并开始生成",
+            "request_id": "confirm-side-effect-crash-0001",
+            "intent": "confirm_payment", "project_id": PROJECT_ID,
+            "payload": {
+                "batch_id": draft["id"],
+                "confirmation_id": "confirm-side-effect-crash",
+                "expected_revision": quoted["revision"],
+                "expected_quote_expires_at": quoted["quote_expires_at"],
+            },
+        }
+        self.service._before_message_commit_hook = lambda: (_ for _ in ()).throw(
+            SystemExit("before_message_commit")
+        )
+        with self.assertRaises(SystemExit):
+            self.service.message(USER, self.headers, body)
+        self.service._before_message_commit_hook = None
+        confirm_calls = self.bridge.confirm_count
+        replay = self.service.message(USER, self.headers, body)
+        self.assertEqual(replay["message_public"]["kind"], "video_submitted")
+        self.assertEqual(self.bridge.confirm_count, confirm_calls)
 
     def test_same_request_id_replays_and_changed_payload_conflicts(self):
         body = {
@@ -649,6 +813,10 @@ class CreatorAgentTests(unittest.TestCase):
         first = self.service.message(USER, self.headers, body)
         second = self.service.message(USER, self.headers, copy.deepcopy(body))
         self.assertEqual(first, second)
+        for item in second["messages"]:
+            if item["role"] == "user":
+                self.assertNotIn("turn", item["public"])
+                self.assertNotIn("response", item["public"])
         self.assertEqual(len(self.store.batches(USER["username"], PROJECT_ID)), 1)
         changed = copy.deepcopy(body)
         changed["payload"]["topic"] = "另一个主题"
@@ -1259,6 +1427,35 @@ class CreatorAgentTests(unittest.TestCase):
             self.assertNotIn("quote_token", json.dumps(value, ensure_ascii=False))
             health = json.load(urllib.request.urlopen(base + "/health", timeout=3))
             self.assertTrue(health["ready"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+
+    def test_http_messages_trailing_slash_is_not_routed(self):
+        CreatorAgentHandler.service = self.service
+        server = ThreadingHTTPServer(("127.0.0.1", 0), CreatorAgentHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            request = urllib.request.Request(
+                "http://127.0.0.1:%d/messages/" % server.server_address[1],
+                data=json.dumps({
+                    "message": "制作视频",
+                    "request_id": "trailing-slash-must-fail-0001",
+                }).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(request, timeout=3)
+            self.assertEqual(raised.exception.code, 404)
+            body = json.loads(raised.exception.read())
+            self.assertEqual(body["code"], "not_found")
+            self.assertFalse(any(
+                item["content"] == "制作视频"
+                for item in self.store.messages(USER["username"], PROJECT_ID)
+            ))
         finally:
             server.shutdown()
             server.server_close()
