@@ -1045,7 +1045,7 @@ _DIRECT_READ_ACTIONS = {
     "video-compose-projects", "video-compose-project", "canvas-list", "canvas-get",
     "digital-presenter-capability", "digital-presenter-project",
 }
-_NAVIGATION_ONLY_ACTIONS = {"image-upload", "video-upload", "canvas-agent-plan"}
+_NAVIGATION_ONLY_ACTIONS = {"image-upload", "video-upload", "audio-upload", "canvas-agent-plan"}
 _SOURCE_FREE_ACTIONS = _DIRECT_READ_ACTIONS | _NAVIGATION_ONLY_ACTIONS | {
     "digital-ip-audio-generate", "cinematic-open-generate", "cinematic-motion-generate",
     "tryon-fast-generate", "tryon-classic-generate", "video-compose-create",
