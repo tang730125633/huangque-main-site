@@ -1107,6 +1107,61 @@ def _trusted_scene_reference(conn, owner, project_id, scene_key, version, refere
     return _scene_asset_job_matches(conn, reference_actor, reference)
 
 
+def scene_upload_file_access(conn, username, relative, access=None):
+    """Authorize one controlled scene upload through its trusted graph evidence."""
+    conn.row_factory = sqlite3.Row
+    relative = _text(relative, 1000).replace("\\", "/").lstrip("/")
+    access = access if isinstance(access, dict) else {}
+    if not relative or ".." in relative.split("/"):
+        return False
+    candidates = conn.execute(
+        "SELECT version.*,entity.project_id AS access_project_id,"
+        "project.username AS access_owner,project.board_id AS access_board_id "
+        "FROM short_drama_graph_versions version "
+        "JOIN short_drama_graph_entities entity ON entity.id=version.entity_id "
+        "JOIN short_drama_projects project ON project.id=entity.project_id "
+        "WHERE project.deleted=0 AND entity.asset_type='scene' "
+        "AND version.references_json LIKE ?",
+        ("%" + relative + "%",),
+    ).fetchall()
+    for version in candidates:
+        references = _json(version["references_json"], [])
+        reference = next((
+            item for item in references
+            if isinstance(item, dict)
+            and _text(item.get("file"), 1000).replace("\\", "/").lstrip("/")
+            == relative
+            and _text(item.get("url"), 2000) == "/api/gen/file/" + relative
+        ), None) if isinstance(references, list) else None
+        if not reference:
+            continue
+        project_id = _text(version["access_project_id"], 160)
+        owner = _text(version["access_owner"], 160)
+        targets = conn.execute(
+            "SELECT DISTINCT target_id FROM short_drama_graph_audit "
+            "WHERE project_id=? AND action='set_scene_reference'",
+            (project_id,),
+        ).fetchall()
+        if not any(
+            _trusted_scene_reference(
+                conn, owner, project_id, _text(target[0], 160), version, reference,
+            )
+            for target in targets
+        ):
+            continue
+        board_id = _text(version["access_board_id"], 160)
+        if owner == _text(username, 160) and not board_id:
+            return True
+        if (
+            board_id
+            and _text(access.get("board_id"), 160) == board_id
+            and _text(access.get("role"), 40).lower()
+            in {"owner", "editor", "viewer"}
+        ):
+            return True
+    return False
+
+
 def scene_workspace(db_factory, owner, project_id):
     """Return user-facing scene groups without exposing graph internals."""
     with closing(_connection(db_factory)) as conn:

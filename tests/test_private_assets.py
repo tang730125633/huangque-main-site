@@ -1043,15 +1043,32 @@ esac
             root = Path(tmp)
             audio_db = str(root / "assets.db")
             job_db = str(root / "jobs.db")
+            owner_hash = hashlib.sha256(b"alice").hexdigest()[:16]
+            personal_hash = hashlib.sha256(b"personal").hexdigest()[:16]
+            shared_hash = hashlib.sha256(b"shared").hexdigest()[:16]
             personal = (
-                "short_drama_scene_uploads/ownerhash/personalhash/scene_private.png"
+                "short_drama_scene_uploads/%s/%s/scene_private.png"
+                % (owner_hash, personal_hash)
             )
             shared = (
-                "short_drama_scene_uploads/ownerhash/sharedhash/scene_shared.png"
+                "short_drama_scene_uploads/%s/%s/scene_shared.png"
+                % (owner_hash, shared_hash)
             )
+            forged = (
+                "short_drama_scene_uploads/%s/%s/scene_without_audit.png"
+                % (owner_hash, personal_hash)
+            )
+            cross_project = (
+                "short_drama_scene_uploads/%s/%s/scene_cross_project.png"
+                % (owner_hash, personal_hash)
+            )
+            wrong_prefix = "short_drama_scene_uploads/wrong/wrong/scene_wrong.png"
             for relative, content in (
                 (personal, self.PNG_1X1),
                 (shared, self.PNG_1X1),
+                (forged, self.PNG_1X1),
+                (cross_project, self.PNG_1X1),
+                (wrong_prefix, self.PNG_1X1),
             ):
                 target = root / relative
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -1061,6 +1078,10 @@ esac
                 conn.execute("CREATE TABLE video_assets(username TEXT,status TEXT,image_file TEXT,audio_file TEXT,reference_video_file TEXT,video_file TEXT)")
                 conn.execute("CREATE TABLE avatars(username TEXT,status TEXT,image_file TEXT)")
                 conn.execute("CREATE TABLE audio_voices(username TEXT,scope TEXT,preview_file TEXT)")
+                conn.execute(
+                    "INSERT INTO video_assets VALUES(?,?,?,?,?,?)",
+                    ("bob", "done", personal, None, None, None),
+                )
                 conn.commit()
             with closing(sqlite3.connect(job_db)) as conn:
                 conn.executescript("""
@@ -1073,14 +1094,30 @@ esac
                     CREATE TABLE short_drama_graph_versions(
                       entity_id TEXT,references_json TEXT,attributes_json TEXT
                     );
+                    CREATE TABLE short_drama_graph_audit(
+                      id INTEGER PRIMARY KEY,project_id TEXT,actor TEXT,action TEXT,
+                      target_id TEXT,details_json TEXT,created_at INTEGER
+                    );
                 """)
                 conn.executemany(
                     "INSERT INTO short_drama_projects VALUES(?,?,?,0)",
-                    (("personal", "alice", None), ("shared", "alice", "board-1")),
+                    (
+                        ("personal", "alice", None),
+                        ("shared", "alice", "board-1"),
+                        ("bob-project", "bob", None),
+                        ("other", "alice", None),
+                    ),
                 )
                 conn.executemany(
                     "INSERT INTO short_drama_graph_entities VALUES(?,?,'scene')",
-                    (("scene-personal", "personal"), ("scene-shared", "shared")),
+                    (
+                        ("scene-personal", "personal"),
+                        ("scene-shared", "shared"),
+                        ("scene-forged", "personal"),
+                        ("scene-wrong", "personal"),
+                        ("scene-bob-forged", "bob-project"),
+                        ("scene-cross-project", "other"),
+                    ),
                 )
                 conn.executemany(
                     "INSERT INTO short_drama_graph_versions VALUES(?,?,?)",
@@ -1090,7 +1127,9 @@ esac
                             json.dumps([{"file": personal, "url": "/api/gen/file/" + personal}]),
                             json.dumps({
                                 "source": "upload",
+                                "scene_operation_id": "operation-personal",
                                 "scene_reference_owner": "alice",
+                                "scene_reference_actor": "alice",
                                 "scene_reference_project_id": "personal",
                             }),
                         ),
@@ -1099,8 +1138,105 @@ esac
                             json.dumps([{"file": shared, "url": "/api/gen/file/" + shared}]),
                             json.dumps({
                                 "source": "upload",
+                                "scene_operation_id": "operation-shared",
                                 "scene_reference_owner": "alice",
+                                "scene_reference_actor": "alice",
                                 "scene_reference_project_id": "shared",
+                            }),
+                        ),
+                        (
+                            "scene-forged",
+                            json.dumps([{"file": forged, "url": "/api/gen/file/" + forged}]),
+                            json.dumps({
+                                "source": "upload",
+                                "scene_operation_id": "operation-missing",
+                                "scene_reference_owner": "alice",
+                                "scene_reference_actor": "alice",
+                                "scene_reference_project_id": "personal",
+                            }),
+                        ),
+                        (
+                            "scene-wrong",
+                            json.dumps([{
+                                "file": wrong_prefix,
+                                "url": "/api/gen/file/" + wrong_prefix,
+                            }]),
+                            json.dumps({
+                                "source": "upload",
+                                "scene_operation_id": "operation-wrong-prefix",
+                                "scene_reference_owner": "alice",
+                                "scene_reference_actor": "alice",
+                                "scene_reference_project_id": "personal",
+                            }),
+                        ),
+                        (
+                            "scene-bob-forged",
+                            json.dumps([{
+                                "file": personal,
+                                "url": "/api/gen/file/" + personal,
+                            }]),
+                            json.dumps({
+                                "source": "upload",
+                                "scene_operation_id": "operation-bob-forged",
+                                "scene_reference_owner": "bob",
+                                "scene_reference_actor": "bob",
+                                "scene_reference_project_id": "bob-project",
+                            }),
+                        ),
+                        (
+                            "scene-cross-project",
+                            json.dumps([{
+                                "file": cross_project,
+                                "url": "/api/gen/file/" + cross_project,
+                            }]),
+                            json.dumps({
+                                "source": "upload",
+                                "scene_operation_id": "operation-cross-project",
+                                "scene_reference_owner": "alice",
+                                "scene_reference_actor": "alice",
+                                "scene_reference_project_id": "other",
+                            }),
+                        ),
+                    ),
+                )
+                conn.executemany(
+                    "INSERT INTO short_drama_graph_audit"
+                    "(project_id,actor,action,target_id,details_json,created_at) "
+                    "VALUES(?,?,'set_scene_reference',?,?,1)",
+                    (
+                        (
+                            "personal", "alice", "scene-group:personal",
+                            json.dumps({
+                                "source": "upload",
+                                "operation_id": "operation-personal",
+                            }),
+                        ),
+                        (
+                            "shared", "alice", "scene-group:shared",
+                            json.dumps({
+                                "source": "upload",
+                                "operation_id": "operation-shared",
+                            }),
+                        ),
+                        (
+                            "personal", "alice", "scene-group:wrong-prefix",
+                            json.dumps({
+                                "source": "upload",
+                                "operation_id": "operation-wrong-prefix",
+                            }),
+                        ),
+                        (
+                            "bob-project", "bob", "scene-group:bob-forged",
+                            json.dumps({
+                                "source": "upload",
+                                "operation_id": "operation-bob-forged",
+                            }),
+                        ),
+                        (
+                            "other", "alice", "scene-group:cross-project",
+                            json.dumps({
+                                "source": "upload",
+                                "operation_id": "operation-cross-project",
                             }),
                         ),
                     ),
@@ -1144,6 +1280,15 @@ esac
                     with opener.open(base + personal, timeout=2) as response:
                         self.assertEqual(200, response.status)
                         self.assertEqual(self.PNG_1X1, response.read())
+
+                for untrusted in (forged, wrong_prefix, cross_project):
+                    with patch.object(core, "OUT_DIR", root), \
+                            patch.object(core, "AUDIO_DB", audio_db), \
+                            patch.object(core, "JOB_DB", job_db), \
+                            patch.object(core, "verify", return_value={"username": "alice"}), \
+                            self.assertRaises(urllib.error.HTTPError) as denied:
+                        opener.open(base + untrusted, timeout=2)
+                    self.assertEqual(404, denied.exception.code)
 
                 board_request = urllib.request.Request(
                     base + shared,

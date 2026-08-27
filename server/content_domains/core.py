@@ -353,10 +353,24 @@ def _sensitive_output_file(rel):
             name.startswith("tryon_cloth_") or
             name.startswith("tryon_bg_"))
 
+
+def _user_owns_scene_upload(username, rel, access=None):
+    try:
+        from . import short_drama_asset_graph
+        with closing(jdb()) as connection:
+            return short_drama_asset_graph.scene_upload_file_access(
+                connection, username, rel, access,
+            )
+    except Exception:
+        return False
+
+
 def _user_owns_output_file(username, rel, access=None):
     """敏感本地文件只允许其资产归属用户读取；删除后的资产不再放行。"""
     if not username or not rel:
         return False
+    if rel.startswith("short_drama_scene_uploads/"):
+        return _user_owns_scene_upload(username, rel, access)
     with closing(adb()) as c:
         # 配音资产(audio_assets)：生成的配音 / 克隆试听样音归属其用户。
         # 缺这一张表会让 voice_preview_*/aud_* 等敏感音频过不了归属校验→404(试听/下载"需要授权")。
@@ -387,51 +401,6 @@ def _user_owns_output_file(username, rel, access=None):
     try:
         access = access if isinstance(access, dict) else {}
         with closing(jdb()) as c:
-            try:
-                scene_rows = c.execute(
-                    "SELECT p.id AS project_id,p.username,p.board_id,"
-                    "v.references_json,v.attributes_json FROM "
-                    "short_drama_graph_versions v "
-                    "JOIN short_drama_graph_entities e ON e.id=v.entity_id "
-                    "JOIN short_drama_projects p ON p.id=e.project_id "
-                    "WHERE p.deleted=0 AND e.asset_type='scene' "
-                    "AND v.references_json LIKE ?",
-                    ("%" + rel + "%",),
-                ).fetchall()
-            except sqlite3.OperationalError:
-                scene_rows = []
-            for scene_row in scene_rows:
-                try:
-                    references = json.loads(scene_row["references_json"] or "[]")
-                    attributes = json.loads(scene_row["attributes_json"] or "{}")
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    continue
-                trusted_upload = (
-                    isinstance(attributes, dict)
-                    and str(attributes.get("source") or "").lower() == "upload"
-                    and str(attributes.get("scene_reference_owner") or "")
-                    == str(scene_row["username"] or "")
-                    and str(attributes.get("scene_reference_project_id") or "")
-                    == str(scene_row["project_id"] or "")
-                )
-                exact_reference = any(
-                    isinstance(reference, dict)
-                    and str(reference.get("file") or "")
-                    .replace("\\", "/").lstrip("/") == rel
-                    and str(reference.get("url") or "") == "/api/gen/file/" + rel
-                    for reference in references
-                ) if isinstance(references, list) else False
-                if not trusted_upload or not exact_reference:
-                    continue
-                if scene_row["username"] == username and not scene_row["board_id"]:
-                    return True
-                if (
-                    scene_row["board_id"]
-                    and str(access.get("board_id") or "") == scene_row["board_id"]
-                    and str(access.get("role") or "").lower()
-                    in {"owner", "editor", "viewer"}
-                ):
-                    return True
             try:
                 row = c.execute(
                     "SELECT p.username,p.board_id FROM "
