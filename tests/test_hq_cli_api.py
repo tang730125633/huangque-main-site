@@ -1078,6 +1078,10 @@ class HQCLIAPITests(unittest.TestCase):
             (plan["scope"], plan["generation_kind"], plan["endpoint"]),
         )
         self.assertEqual(dict(value, bgm=True), plan["payload"])
+        selected = self.auth.hq_cli_api.action_plan(
+            "matrix-template-generate", dict(value, font_family="AaHouDiHei")
+        )
+        self.assertEqual("AaHouDiHei", selected["payload"]["font_family"])
         for action, path in (
             ("matrix-template-capability", "/api/gen/matrix-template/capability"),
             ("matrix-template-templates", "/api/gen/matrix-template/templates"),
