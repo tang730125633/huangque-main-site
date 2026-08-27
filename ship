@@ -270,7 +270,7 @@ for f in "$@"; do
              unit="$(basename "$f")"
              dest=/etc/systemd/system/
              case "$unit" in
-               huangque-invite-reward-claims.service|huangque-cert-renew.service) svc="" ;;
+               huangque-invite-reward-claims.service) svc="" ;;
                *) svc="${unit%.service}" ;;
              esac
              NEED_RELOAD=1 ;;
