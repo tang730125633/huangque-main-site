@@ -19,6 +19,12 @@ WWW="/var/www/huangquechuanmei"
 HEALTH_URL="${HQ_HEALTH_URL:-https://huangquechuanmei.com/api/gen/health}"
 SERVICE_WAIT_SECONDS="${HQ_SERVICE_WAIT_SECONDS:-30}"
 CONTENT_PYTHON="${HQ_CONTENT_PYTHON:-/usr/bin/python3}"
+SHIP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CREATOR_STAGE_HELPER="$SHIP_ROOT/deploy/ship-creator-stage.sh"
+[ -f "$CREATOR_STAGE_HELPER" ] \
+  || { echo "❌ 缺少 Creator 暂存清理脚本：$CREATOR_STAGE_HELPER"; exit 1; }
+. "$CREATOR_STAGE_HELPER" \
+  || { echo "❌ Creator 暂存清理脚本加载失败"; exit 1; }
 
 case "$SERVICE_WAIT_SECONDS" in
   ''|*[!0-9]*) echo "❌ HQ_SERVICE_WAIT_SECONDS 必须是正整数"; exit 1 ;;
@@ -143,11 +149,6 @@ add_deployed(){ case " $DEPLOYED " in *" $1 "*) ;; *) DEPLOYED="$DEPLOYED $1";; 
 
 CREATOR_LOCAL_STAGE=""
 CREATOR_REMOTE_STAGE=""
-cleanup_creator_stage(){
-  set +e
-  [ -z "$CREATOR_LOCAL_STAGE" ] || rm -rf "$CREATOR_LOCAL_STAGE"
-  [ -z "$CREATOR_REMOTE_STAGE" ] || $SSHC "$REMOTE" "rm -rf '$CREATOR_REMOTE_STAGE'" >/dev/null 2>&1
-}
 trap cleanup_creator_stage EXIT
 
 if [ "$NEED_CREATOR_AGENT_RELEASE" = "1" ]; then
@@ -163,10 +164,10 @@ if [ "$NEED_CREATOR_AGENT_RELEASE" = "1" ]; then
     "sudo env CREATOR_AGENT_RELEASE_SHA='$HEAD_SHA' CREATOR_AGENT_RELEASE_DIR='$CREATOR_REMOTE_STAGE' bash '$CREATOR_REMOTE_STAGE/deploy/creator-agent-release.sh'" \
     || { echo "  ❌ Creator Agent 原子发布失败，发布脚本已执行回滚"; exit 1; }
   for tracked in $CREATOR_AGENT_DRIFT_FILES; do add_deployed "$tracked"; done
-  rm -rf "$CREATOR_LOCAL_STAGE"
+  rm -rf -- "$CREATOR_LOCAL_STAGE"
   CREATOR_LOCAL_STAGE=""
-  $SSHC "$REMOTE" "rm -rf '$CREATOR_REMOTE_STAGE'" >/dev/null 2>&1 || true
-  CREATOR_REMOTE_STAGE=""
+  cleanup_creator_remote_stage \
+    || { echo "  ❌ Creator 发布完成但暂存清理失败，已标记本次 ship 失败"; exit 1; }
   echo "  ✓ Creator Agent 完整闭包已发布并通过独立健康检查"
 fi
 

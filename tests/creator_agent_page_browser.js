@@ -25,6 +25,7 @@ const data = {
     id: 'a1b2c3d4e5f6', title: '我的个人画像', display_name: '我的个人画像', revision: 9,
     progress: { current_module: 5, module_step: 0, completed_modules: [1, 2, 3, 4], foundation_status: 'confirmed', foundation_ready: true, profile_complete: true },
     harness_actions: [], reports: {}, deliverables: {}, artifacts: [],
+    foundation_pdf_status: 'ready', foundation_pdf_error_code: '', foundation_pdf_retry_url: '',
     foundation_pdf_url: '/api/creator-agent/projects/a1b2c3d4e5f6/background.pdf',
   },
   workspace: { project_id: 'a1b2c3d4e5f6', alias: '我的个人画像', platforms: ['douyin', 'xiaohongshu'], template_video_preferences: { global: [], platforms: {} }, flow: { mode: 'template_review', batch_id: batch.id } },
@@ -41,6 +42,7 @@ let messageBodies = [];
 let dropMessageResponses = 0;
 let refreshRequests = 0;
 let requestPaths = [];
+let pdfRequests = 0;
 
 function json(response, status, value) {
   const raw = Buffer.from(JSON.stringify(value));
@@ -76,6 +78,11 @@ function serve(request, response) {
     return json(response, 200, { batch });
   }
   if (/^\/api\/creator-agent\/projects\/[^/]+\/background\.pdf$/.test(pathname)) {
+    pdfRequests += 1;
+    data.project.foundation_pdf_status = 'ready';
+    data.project.foundation_pdf_error_code = '';
+    data.project.foundation_pdf_url = pathname;
+    data.project.foundation_pdf_retry_url = '';
     const pdf = Buffer.from('%PDF-1.4\n%%EOF\n');
     response.writeHead(200, { 'Content-Type': 'application/pdf', 'Content-Length': pdf.length });
     response.end(pdf); return;
@@ -181,9 +188,45 @@ function serve(request, response) {
       }
       await page.close();
     }
+    data.project.foundation_pdf_status = 'failed';
+    data.project.foundation_pdf_error_code = 'profile_pdf_failed';
+    data.project.foundation_pdf_url = '';
+    data.project.foundation_pdf_retry_url = '/api/creator-agent/projects/a1b2c3d4e5f6/background.pdf';
+    data.project.deliverables = {};
+    pdfRequests = 0;
+    const failurePage = await browser.newPage({ viewport: { width: 1100, height: 800 } });
+    await failurePage.goto(`http://127.0.0.1:${server.address().port}/workbench/creator-agent.html`, { waitUntil: 'networkidle' });
+    await failurePage.click('[data-tab="content"]');
+    await failurePage.waitForSelector('[data-pdf-retry]');
+    const beforeRetry = await failurePage.evaluate(() => ({
+      badge: document.querySelector('[data-pdf-retry]')?.closest('.ca-artifact')?.querySelector('.ca-badge')?.textContent || '',
+      retryLabel: document.querySelector('[data-pdf-retry]')?.textContent || '',
+      frames: document.querySelectorAll('.ca-pdf').length,
+      pdfLinks: document.querySelectorAll('a[href*="background.pdf"]').length,
+      titleCount: Array.from(document.querySelectorAll('.ca-artifact header b')).filter((item) => item.textContent === 'IP人设定位背景档案').length,
+    }));
+    if (process.env.CREATOR_AGENT_QA_OUTPUT) {
+      fs.mkdirSync(process.env.CREATOR_AGENT_QA_OUTPUT, { recursive: true });
+      await failurePage.screenshot({ path: path.join(process.env.CREATOR_AGENT_QA_OUTPUT, 'creator-agent-pdf-failed.png'), fullPage: true });
+    }
+    await failurePage.click('[data-pdf-retry]');
+    await failurePage.waitForSelector('.ca-pdf');
+    const afterRetry = await failurePage.evaluate(() => ({
+      badge: Array.from(document.querySelectorAll('.ca-artifact header b')).find((item) => item.textContent === 'IP人设定位背景档案')?.parentElement?.querySelector('.ca-badge')?.textContent || '',
+      frames: document.querySelectorAll('.ca-pdf').length,
+      pdfLinks: document.querySelectorAll('a[href*="background.pdf"]').length,
+    }));
+    report.pdfFailure = { beforeRetry, afterRetry, pdfRequests };
+    if (process.env.CREATOR_AGENT_QA_OUTPUT) {
+      fs.mkdirSync(process.env.CREATOR_AGENT_QA_OUTPUT, { recursive: true });
+      await failurePage.screenshot({ path: path.join(process.env.CREATOR_AGENT_QA_OUTPUT, 'creator-agent-pdf-retry.png'), fullPage: true });
+    }
+    await failurePage.close();
   } finally {
     await browser.close(); server.close();
   }
   console.log(JSON.stringify(report));
-  if (Object.values(report).some((item) => item.width > item.viewport || item.messages < 3 || item.plans < 2 || !item.confirm || item.total !== '10 点' || !item.quoteCountdown.startsWith('报价剩余') || !item.profileTemplate.includes('回答参考') || item.tabs !== 3 || item.aiEntry !== 'creator-agent.html' || item.aiLabel !== 'AI 创作助手' || item.pdfLinks !== 2 || !item.pdfFrame.includes('/background.pdf') || !item.messageReplayStable || !item.confirmRecovered || (item.confirmQuoteExpiresAt !== undefined && item.confirmQuoteExpiresAt !== batch.quote_expires_at) || (item.expiredQuoteRequotes === false))) process.exitCode = 1;
+  const viewports = [report.desktop, report.mobile];
+  const pdfFailure = report.pdfFailure || {};
+  if (viewports.some((item) => item.width > item.viewport || item.messages < 3 || item.plans < 2 || !item.confirm || item.total !== '10 点' || !item.quoteCountdown.startsWith('报价剩余') || !item.profileTemplate.includes('回答参考') || item.tabs !== 3 || item.aiEntry !== 'creator-agent.html' || item.aiLabel !== 'AI 创作助手' || item.pdfLinks !== 2 || !item.pdfFrame.includes('/background.pdf') || !item.messageReplayStable || !item.confirmRecovered || (item.confirmQuoteExpiresAt !== undefined && item.confirmQuoteExpiresAt !== batch.quote_expires_at) || (item.expiredQuoteRequotes === false)) || pdfFailure.beforeRetry?.badge !== 'PDF 生成失败' || pdfFailure.beforeRetry?.retryLabel !== '重新生成' || pdfFailure.beforeRetry?.frames !== 0 || pdfFailure.beforeRetry?.pdfLinks !== 0 || pdfFailure.beforeRetry?.titleCount !== 1 || pdfFailure.afterRetry?.badge !== 'PDF 已生成' || pdfFailure.afterRetry?.frames !== 1 || pdfFailure.afterRetry?.pdfLinks !== 2 || pdfFailure.pdfRequests < 1) process.exitCode = 1;
 })().catch((error) => { console.error(error); process.exitCode = 1; });

@@ -565,6 +565,9 @@ class CreatorAgentTests(unittest.TestCase):
             snapshot["project"]["foundation_pdf_url"],
             "/api/creator-agent/projects/%s/background.pdf" % PROJECT_ID,
         )
+        self.assertEqual(snapshot["project"]["foundation_pdf_status"], "ready")
+        self.assertEqual(snapshot["project"]["foundation_pdf_retry_url"], "")
+        self.assertNotIn("background_profile_pdf", snapshot["project"]["deliverables"])
         self.assertFalse(any(
             message.get("public", {}).get("source") == "ip12"
             for message in self.store.messages(USER["username"], PROJECT_ID)
@@ -608,6 +611,41 @@ class CreatorAgentTests(unittest.TestCase):
         self.assertEqual(
             workspace["deliverables"]["background_profile_pdf"]["error_code"],
             "profile_pdf_failed",
+        )
+        self.assertEqual(result["project"]["foundation_pdf_status"], "failed")
+        self.assertEqual(result["project"]["foundation_pdf_url"], "")
+        self.assertEqual(
+            result["project"]["foundation_pdf_retry_url"],
+            "/api/creator-agent/projects/%s/background.pdf" % PROJECT_ID,
+        )
+        self.assertEqual(
+            result["project"]["foundation_pdf_error_code"],
+            "profile_pdf_failed",
+        )
+        self.assertNotIn(
+            "background_profile_pdf", result["project"]["deliverables"],
+        )
+
+    def test_stale_ready_pdf_is_not_exposed_for_new_profile_revision(self):
+        workspace = self.store.workspace(USER["username"], PROJECT_ID)
+        revision = int(workspace["profile_state"]["revision"])
+        self.store.update_workspace(
+            USER["username"], PROJECT_ID,
+            deliverables={
+                "background_profile_pdf": {
+                    "title": "IP人设定位背景档案",
+                    "url": "/api/creator-agent/projects/%s/background.pdf" % PROJECT_ID,
+                    "status": "ready",
+                    "profile_revision": revision - 1,
+                },
+            },
+        )
+        project = self.bootstrap()["project"]
+        self.assertEqual(project["foundation_pdf_status"], "pending")
+        self.assertEqual(project["foundation_pdf_url"], "")
+        self.assertEqual(
+            project["foundation_pdf_retry_url"],
+            "/api/creator-agent/projects/%s/background.pdf" % PROJECT_ID,
         )
 
     def test_stale_profile_action_cannot_overwrite_current_step(self):

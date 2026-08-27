@@ -20,6 +20,9 @@ class CreatorAgentContractTests(unittest.TestCase):
         cls.unit = (ROOT / "deploy/systemd/huangque-creator-agent.service").read_text(encoding="utf-8")
         cls.release = (ROOT / "deploy/creator-agent-release.sh").read_text(encoding="utf-8")
         cls.ship = (ROOT / "ship").read_text(encoding="utf-8")
+        cls.ship_creator_stage = (
+            ROOT / "deploy/ship-creator-stage.sh"
+        ).read_text(encoding="utf-8")
         cls.design = (ROOT / "docs/创作Agent-V1设计与并行边界.md").read_text(encoding="utf-8")
 
     def test_product_name_and_two_column_surface(self):
@@ -208,6 +211,13 @@ class CreatorAgentContractTests(unittest.TestCase):
         self.assertIn("current/.venv/bin/python", self.unit)
         self.assertIn("creator-agent-release.sh", self.ship)
         self.assertIn("CREATOR_AGENT_RELEASE_FILES", self.ship)
+        self.assertIn("ship-creator-stage.sh", self.ship)
+        self.assertIn('sudo rm -rf -- "$stage"', self.ship_creator_stage)
+        self.assertIn("cleanup_creator_remote_stage", self.ship_creator_stage)
+        self.assertIn("foundation_pdf_status", self.service)
+        self.assertIn("foundation_pdf_retry_url", self.service)
+        self.assertIn("PDF 生成失败", self.page)
+        self.assertIn("data-pdf-retry", self.page)
         store = (ROOT / "server/creator_agent/store.py").read_text(encoding="utf-8")
         self.assertIn("commit_message_turn", store)
         self.assertIn("source_message_id", store)

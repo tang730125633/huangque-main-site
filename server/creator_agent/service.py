@@ -450,6 +450,21 @@ class CreatorAgentService:
         progress = cls._progress(project)
         deliverables = project.get("deliverables") or {}
         background_pdf = deliverables.get("background_profile_pdf") or {}
+        public_deliverables = dict(deliverables)
+        public_deliverables.pop("background_profile_pdf", None)
+        state_revision = int(cls._state(project).get("revision") or 1)
+        descriptor_revision = int(background_pdf.get("profile_revision") or 0)
+        revision_matches = descriptor_revision == state_revision
+        raw_pdf_status = str(background_pdf.get("status") or "")
+        if not progress["foundation_ready"]:
+            pdf_status = ""
+        elif raw_pdf_status == "ready" and revision_matches:
+            pdf_status = "ready"
+        elif raw_pdf_status == "failed" and revision_matches:
+            pdf_status = "failed"
+        else:
+            pdf_status = "pending"
+        pdf_route = "/api/creator-agent/projects/%s/background.pdf" % project.get("id")
         return {
             "id": project.get("id"),
             "title": project.get("title") or "我的个人画像",
@@ -459,10 +474,21 @@ class CreatorAgentService:
             "progress": progress,
             "harness_actions": [],
             "reports": _public(project.get("reports") or {}),
-            "deliverables": _public(deliverables),
+            "deliverables": _public(public_deliverables),
             "artifacts": _public(project.get("artifacts") or []),
             "profile": _public(project.get("profile") or {}),
-            "foundation_pdf_url": str(background_pdf.get("url") or ""),
+            "foundation_pdf_status": pdf_status,
+            "foundation_pdf_error_code": (
+                str(background_pdf.get("error_code") or "")
+                if pdf_status == "failed" else ""
+            ),
+            "foundation_pdf_url": (
+                str(background_pdf.get("url") or pdf_route)
+                if pdf_status == "ready" else ""
+            ),
+            "foundation_pdf_retry_url": (
+                pdf_route if pdf_status in {"pending", "failed"} else ""
+            ),
         }
 
     @staticmethod
