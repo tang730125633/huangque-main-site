@@ -3551,9 +3551,6 @@ def api_get_convo(cid):
     if (not public_convo["harness_actions"] and not voice_clone_ui
             and isinstance(last_assistant.get("ui_action"), dict)):
         public_convo["harness_actions"] = [last_assistant["ui_action"]]
-    handoff = _post_module_six_production_action(convo)
-    if handoff and not public_convo["harness_actions"]:
-        public_convo["harness_actions"] = [handoff]
     public_convo["productions"] = _productions_summary(convo)
     public_convo["artifacts"] = [
         _artifact_public(item) for item in (convo.get("artifacts") or {}).values()

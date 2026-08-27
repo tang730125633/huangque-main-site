@@ -2083,12 +2083,7 @@ completed["deliverables"] = {"6": pack}
 server.save_conversation(completed_id, completed)
 
 detail = client.get(f"/api/conversations/{completed_id}").get_json()
-assert detail["harness_actions"][0]["type"] == "prepare_production", detail
-assert detail["harness_actions"][0]["preferred_action"] == "digital-ip-text-generate", detail
-assert detail["harness_actions"][0]["specialist_agent"] == "talking_head_video_agent", detail
-assert detail["harness_actions"][0]["options"]["ratio"] == "9:16", detail
-assert detail["harness_actions"][0]["content_target"] == {"category_id": "category_1", "topic_id": "topic_1"}, detail
-assert detail["harness_actions"][0]["allow_system_media"] is False, detail
+assert detail["harness_actions"] == [], detail
 
 with patch.object(server, "call_ai") as model:
     capability = client.post("/api/chat-complete", json={
