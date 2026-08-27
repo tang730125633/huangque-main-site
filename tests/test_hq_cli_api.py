@@ -187,6 +187,10 @@ class HQCLIAPITests(unittest.TestCase):
         audio_schema = actions["digital-ip-audio-generate"]["input_schema"]["properties"]
         self.assertEqual("^img_[0-9a-f]{32}$", text_schema["image_upload_id"]["pattern"])
         self.assertEqual("^aud_[0-9a-f]{32}$", audio_schema["audio_upload_id"]["pattern"])
+        clone_contract = " ".join(actions["voice-clone-create"]["constraints"])
+        self.assertIn("30-60 seconds", clone_contract)
+        self.assertIn("file duration alone", clone_contract)
+        self.assertIn("voice-clone-status", clone_contract)
         self.assertEqual("人物图片", actions["tryon-fast-generate"]["input_schema"]
                          ["properties"]["person_image_upload_id"]["title"])
         self.assertEqual("服装图片", actions["tryon-fast-generate"]["input_schema"]
@@ -542,7 +546,33 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual((200, "training"), (status, result["voice"]["status"]))
         plan = proxy.call_args.args[0]
         self.assertEqual("/api/gen/cli/voice-clone", plan["path"])
-        self.assertEqual("clone-request-0001", plan["headers"]["Idempotency-Key"])
+        expected_key = "hqcli-" + hashlib.sha256(
+            ("S_legacy\x00" + "aud_" + "a" * 32 + "\x00我的声音").encode("utf-8")
+        ).hexdigest()[:24]
+        self.assertEqual(expected_key, plan["headers"]["Idempotency-Key"])
+        renamed = self.auth.hq_cli_api.action_plan("voice-clone-create", {
+            "slot_id": "S_legacy", "name": "新的声音",
+            "audio_upload_id": "aud_" + "a" * 32,
+        })
+        moved = self.auth.hq_cli_api.action_plan("voice-clone-create", {
+            "slot_id": "S_other", "name": "我的声音",
+            "audio_upload_id": "aud_" + "a" * 32,
+        })
+        replaced_audio = self.auth.hq_cli_api.action_plan("voice-clone-create", {
+            "slot_id": "S_legacy", "name": "我的声音",
+            "audio_upload_id": "aud_" + "b" * 32,
+        })
+        original_key = plan["headers"]["Idempotency-Key"]
+        self.assertEqual(3, len({
+            renamed["headers"]["Idempotency-Key"],
+            moved["headers"]["Idempotency-Key"],
+            replaced_audio["headers"]["Idempotency-Key"],
+        }))
+        self.assertNotIn(original_key, {
+            renamed["headers"]["Idempotency-Key"],
+            moved["headers"]["Idempotency-Key"],
+            replaced_audio["headers"]["Idempotency-Key"],
+        })
         self.assertTrue(plan["internal"])
 
     @staticmethod
@@ -790,6 +820,45 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual(raw, captured["raw"])
         self.assertEqual("video/mp4", captured["content_type"])
         self.assertEqual(hashlib.sha256(raw).hexdigest(), captured["digest"])
+
+    def test_audio_upload_requires_scope_confirmation_and_streams_raw_bytes(self):
+        raw = b"ID3" + b"private-audio"
+        denied = self._token(["assets:read"])
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_audio_upload") as proxy:
+            status, payload = self._raw_request(
+                "/api/auth/cli/audio-upload", raw, token=denied, content_type="audio/mpeg",
+            )
+        self.assertEqual((403, "insufficient_scope"), (status, payload["code"]))
+        proxy.assert_not_called()
+
+        token = self._token(["assets:upload"])
+        status, payload = self._raw_request(
+            "/api/auth/cli/audio-upload", raw, token=token,
+            content_type="audio/mpeg", confirm=False,
+        )
+        self.assertEqual((409, "confirmation_required"), (status, payload["code"]))
+
+        captured = {}
+
+        def fake_upload(stream, length, web_token, internal_token, content_type, digest):
+            captured.update(raw=stream.read(length), content_type=content_type, digest=digest,
+                            web_token=web_token, internal_token=internal_token)
+            return 200, {"upload_id": "aud_" + "a" * 32, "sha256": digest, "duration": 60.0}
+
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_audio_upload", side_effect=fake_upload):
+            status, payload = self._raw_request(
+                "/api/auth/cli/audio-upload", raw, token=token, content_type="audio/mpeg",
+            )
+        self.assertEqual(200, status, payload)
+        self.assertEqual("aud_" + "a" * 32, payload["upload_id"])
+        self.assertEqual(raw, captured["raw"])
+        self.assertEqual("audio/mpeg", captured["content_type"])
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), captured["digest"])
+        self.assertEqual(self.auth.INTERNAL_TOKEN, captured["internal_token"])
+        with sqlite3.connect(self.auth.DB) as connection:
+            self.assertEqual(0, connection.execute(
+                "SELECT COUNT(*) FROM tokens WHERE token=?", (captured["web_token"],)
+            ).fetchone()[0])
 
     def test_canvas_create_builds_one_safe_text_node(self):
         token = self._token(["canvas:write"])

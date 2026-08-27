@@ -42,7 +42,7 @@ class HqCliTests(unittest.TestCase):
             self.assertEqual(0, code, error)
             self.assertTrue(self.payload(output)["schema"].startswith("hq."))
         code, output, _ = self.invoke(["version"])
-        self.assertEqual("0.11.2", self.payload(output)["cli_version"])
+        self.assertEqual("0.11.4", self.payload(output)["cli_version"])
         self.assertEqual("Huangque main-site CLI", self.payload(output)["product"])
         self.assertEqual("https://huangquechuanmei.com", self.payload(output)["origin"])
 
@@ -141,6 +141,30 @@ class HqCliTests(unittest.TestCase):
             ["video/mp4", "video/quicktime", "video/webm"],
             by_id["video-upload"]["file_input"]["mimeTypes"],
         )
+        self.assertEqual("assets:upload", by_id["audio-upload"]["required_scope"])
+        self.assertEqual(10 * 1024 * 1024, by_id["audio-upload"]["file_input"]["maxBytes"])
+        self.assertEqual(
+            ["audio/mpeg", "audio/wav", "audio/mp4", "audio/aac", "audio/ogg"],
+            by_id["audio-upload"]["file_input"]["mimeTypes"],
+        )
+        self.assertIn("audio-upload", by_id["voice-clone-create"]["agent"]["required_inputs"]["audio_upload_id"])
+        self.assertIn("audio-slots", by_id["voice-clone-create"]["agent"]["required_inputs"]["slot_id"])
+        self.assertTrue(any(
+            "30-60 seconds" in item
+            for item in by_id["voice-clone-create"]["constraints"]
+        ))
+        self.assertTrue(any(
+            "silence" in item
+            for item in by_id["voice-clone-create"]["constraints"]
+        ))
+        self.assertTrue(any(
+            "voice-clone-status" in item
+            for item in by_id["voice-clone-create"]["agent"]["workflow"]
+        ))
+        self.assertTrue(any(
+            "有效语音太短" in item
+            for item in by_id["voice-clone-create"]["agent"]["recovery"]
+        ))
         self.assertEqual("server_quote", by_id["canvas-agent-plan"]["cost"]["kind"])
         self.assertEqual("canvas:edit", by_id["canvas-ops"]["required_scope"])
         self.assertEqual(12, by_id["canvas-ops"]["input_schema"]["properties"]["ops"]["maxItems"])
@@ -276,6 +300,7 @@ class HqCliTests(unittest.TestCase):
             "tryon-fast-generate": {"tryon"},
             "tryon-classic-generate": {"tryon"},
             "video-upload": {"cinematic", "tryon"},
+            "audio-upload": {"tts", "digital_ip"},
             "digital-presenter-capability": {"digitalPresenter"},
             "text-video-capability": {"text_video"}, "text-video-generate": {"text_video"},
             "text-video-avatar-import": {"text_video"}, "text-video-plan": {"text_video"},
@@ -838,6 +863,24 @@ class HqCliTests(unittest.TestCase):
         self.assertEqual("vid_" + "a" * 32, self.payload(output)["result"]["upload_id"])
         upload.assert_called_once_with(video_path, "t" * 43)
 
+    def test_audio_upload_requires_confirmation_and_uses_file_transport(self):
+        self.authorize()
+        audio_path = os.path.join(self.temp.name, "sample.mp3")
+        with patch.object(client, "upload_audio") as upload:
+            code, _, error = self.invoke(["run", "audio-upload", "--file", audio_path])
+            self.assertEqual(cli.EXIT_CONFIRMATION, code)
+            upload.assert_not_called()
+            upload.return_value = (200, {
+                "upload_id": "aud_" + "a" * 32, "mime": "audio/mpeg", "bytes": 24,
+                "sha256": "b" * 64, "duration": 60.0, "expires_in": 3600,
+            })
+            code, output, error = self.invoke([
+                "run", "audio-upload", "--file", audio_path, "--confirm", "--json",
+            ])
+        self.assertEqual(0, code, error)
+        self.assertEqual("aud_" + "a" * 32, self.payload(output)["result"]["upload_id"])
+        upload.assert_called_once_with(audio_path, "t" * 43)
+
     def test_streaming_image_client_sends_no_local_path_or_filename(self):
         raw = b"\x89PNG\r\n\x1a\n" + b"private-image"
         image_path = Path(self.temp.name) / "secret-name.png"
@@ -966,6 +1009,71 @@ class HqCliTests(unittest.TestCase):
             handle.truncate(client.MAX_VIDEO_UPLOAD_BYTES + 1)
         with self.assertRaises(ValueError):
             client.upload_video(str(oversized), "t" * 43)
+
+    def test_streaming_audio_client_enforces_magic_size_and_private_transport(self):
+        raw = b"ID3" + b"private-audio"
+        audio_path = Path(self.temp.name) / "secret-name.mp3"
+        audio_path.write_bytes(raw)
+        digest = hashlib.sha256(raw).hexdigest()
+
+        class Response:
+            status = 200
+
+            def read(self, _limit):
+                return json.dumps({"upload_id": "aud_" + "a" * 32, "sha256": digest}).encode()
+
+        class Connection:
+            def __init__(self):
+                self.headers, self.sent = {}, bytearray()
+
+            def putrequest(self, method, path, **_kwargs):
+                self.method, self.path = method, path
+
+            def putheader(self, key, value):
+                self.headers[key] = value
+
+            def endheaders(self):
+                pass
+
+            def send(self, chunk):
+                self.sent.extend(chunk)
+
+            def getresponse(self):
+                return Response()
+
+            def close(self):
+                pass
+
+        connection = Connection()
+        with patch.object(client.http.client, "HTTPSConnection", return_value=connection):
+            status, payload = client.upload_audio(str(audio_path), "t" * 43)
+        self.assertEqual((200, "aud_" + "a" * 32), (status, payload["upload_id"]))
+        self.assertEqual(raw, bytes(connection.sent))
+        self.assertEqual(client.AUDIO_UPLOAD_PATH, connection.path)
+        self.assertEqual(digest, connection.headers["X-HQ-Audio-SHA256"])
+        self.assertEqual("audio/mpeg", connection.headers["Content-Type"])
+        self.assertNotIn("secret-name.mp3", json.dumps(connection.headers))
+        self.assertEqual("audio/wav", client._audio_mime(b"RIFF1234WAVE"))
+        self.assertEqual("audio/ogg", client._audio_mime(b"OggS"))
+        self.assertEqual("audio/mp4", client._audio_mime(b"\x00\x00\x00\x18ftypM4A "))
+        self.assertEqual("audio/aac", client._audio_mime(b"\xff\xf1"))
+
+        link = Path(self.temp.name) / "linked.mp3"
+        try:
+            link.symlink_to(audio_path)
+        except OSError:
+            pass
+        else:
+            with self.assertRaises(ValueError):
+                client.upload_audio(str(link), "t" * 43)
+        with self.assertRaises(ValueError):
+            client.upload_audio("relative.mp3", "t" * 43)
+        oversized = Path(self.temp.name) / "oversized.mp3"
+        with oversized.open("wb") as handle:
+            handle.write(b"ID3")
+            handle.truncate(client.MAX_AUDIO_UPLOAD_BYTES + 1)
+        with self.assertRaises(ValueError):
+            client.upload_audio(str(oversized), "t" * 43)
 
     def test_navigation_is_main_site_only_and_never_opens_by_default(self):
         with patch("hq_cli.cli.webbrowser.open") as opened:

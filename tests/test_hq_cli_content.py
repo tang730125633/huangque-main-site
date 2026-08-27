@@ -52,6 +52,16 @@ class _DispatchNothing:
     def dispatch_http(self, *args, **kwargs):
         return False
 
+    @property
+    def short_drama_production(self):
+        return self
+
+    def fail_linked_character_reference_job(self, *args, **kwargs):
+        return None
+
+    def fail_linked_job(self, *args, **kwargs):
+        return None
+
     def _http_error(self, handler, error, **kwargs):
         handler._send(400, {"detail": str(error)})
 
@@ -335,6 +345,54 @@ class HQCLIContentTests(unittest.TestCase):
         self.assertEqual(attempt["job_id"], first["job_id"])
         self.assertEqual(job_count, 1)
         self.points.deduct_points.assert_called_once()
+
+    def test_matrix_queue_full_returns_queryable_refund_state(self):
+        body = {
+            "top_text": "有效标题", "bottom_text": "关注查看更多",
+            "template_id": "native-bold", "bgm": True,
+        }
+        for pending in (False, True):
+            with self.subTest(pending=pending), \
+                 tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder, \
+                 mock.patch.object(core, "JOB_DB", str(Path(folder) / "jobs.db")), \
+                 mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+                 mock.patch.object(core, "HANDLERS", {"matrix_template_video": lambda payload: payload}), \
+                 mock.patch.object(matrix_template_video, "validate_payload", return_value=body), \
+                 mock.patch.object(core, "enqueue_job", return_value=False):
+                self.points.cost_of = mock.Mock(return_value=5)
+                self.points.get_points_transaction = mock.Mock(return_value=None)
+                self.points.deduct_points = mock.Mock(return_value=95)
+                self.points.refund_points = mock.Mock(
+                    side_effect=RuntimeError("auth unavailable") if pending else None
+                )
+                with closing(core.jdb()) as connection:
+                    connection.execute("""CREATE TABLE jobs(
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT,username TEXT,cost INTEGER,
+                        status TEXT DEFAULT 'pending',payload TEXT,result TEXT,error TEXT,
+                        created_at INTEGER,updated_at INTEGER,owner TEXT,refunded INTEGER DEFAULT 0,
+                        deleted INTEGER DEFAULT 0
+                    )""")
+                    submission_idempotency.ensure_table(connection)
+                    core.matrix_template_submission.ensure_table(connection)
+                    connection.commit()
+                key = "matrix-queue-full-%s" % ("pending" if pending else "refunded")
+                status, result = self._post(
+                    "/api/gen/matrix-template", body, expected=5,
+                    idempotency_key=key,
+                )
+                replay_status, replay = self._post(
+                    "/api/gen/matrix-template", body, expected=5,
+                    idempotency_key=key,
+                )
+                with closing(core.jdb()) as connection:
+                    row = connection.execute(
+                        "SELECT status,refunded FROM jobs WHERE id=?", (result["job_id"],)
+                    ).fetchone()
+            self.assertEqual((202, 202), (status, replay_status))
+            self.assertEqual(result["job_id"], replay["job_id"])
+            expected = "pending" if pending else "refunded"
+            self.assertEqual(expected, result["refund_state"])
+            self.assertEqual(("error", 2 if pending else 1), tuple(row))
 
     def test_audio_validation_rejects_bad_knobs_before_generation(self):
         with self.assertRaisesRegex(ValueError, "pitch"):

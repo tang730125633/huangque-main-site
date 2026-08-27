@@ -240,6 +240,17 @@ CAPABILITIES["voice-clone-create"] = _api(
      "name": {"type": "string", "minLength": 1, "maxLength": 40},
      "audio_upload_id": {"type": "string", "minLength": 36, "maxLength": 36}},
     ["slot_id", "name", "audio_upload_id"], "assets:write", "write", True)
+CAPABILITIES["voice-clone-create"]["constraints"] = [
+    "slot_id must come from audio-slots and belong to the current account",
+    "audio_upload_id must come from audio-upload and belong to the current account",
+    "the server normalizes up to 60 seconds of clear speech before creating or replacing the cloned voice",
+    "for reliable cloning, use 30-60 seconds of continuous, clear, single-speaker speech; file duration alone does not guarantee enough effective speech",
+    "long silence, music, and noise do not count as effective speech",
+]
+CAPABILITIES["voice-clone-create"]["next_actions"] = [
+    "提交后只用 voice-clone-status 轮询原 slot_id，直到 ready 或 failed。",
+    "若返回有效语音太短，重新上传30至60秒连续、清晰、单人说话的样音，再用新的 audio_upload_id 提交。",
+]
 CAPABILITIES["voice-clone-status"] = _api(
     "voice-clone-status", "声音克隆状态", "voice-clone-status", "读取一个本人声音克隆槽位的处理状态。",
     {"slot_id": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{1,87}$"}},
@@ -385,6 +396,23 @@ CAPABILITIES["video-upload"]["file_input"] = {
 }
 CAPABILITIES["video-upload"]["next_actions"] = [
     "把返回的 upload_id 写入电影化身或经典换装动作的 reference_video_upload_ids / person_video_upload_id。",
+]
+CAPABILITIES["audio-upload"] = _upload(
+    "audio-upload", "上传生成参考音频",
+    "把一个本地 MP3、WAV、M4A、AAC 或 OGG 流式上传为本人短期私有 upload_id；不扣点，不返回公开素材地址。",
+    "assets:upload",
+)
+CAPABILITIES["audio-upload"]["file_input"] = {
+    "argument": "--file", "path": "absolute", "maxBytes": 10 * 1024 * 1024,
+    "mimeTypes": ["audio/mpeg", "audio/wav", "audio/mp4", "audio/aac", "audio/ogg"],
+    "accountActiveMaxFiles": 20, "accountActiveMaxBytes": 96 * 1024 * 1024,
+}
+CAPABILITIES["audio-upload"]["constraints"] = [
+    "audio must contain a readable stream no longer than 300 seconds",
+    "the upload is private to the current account; use result.expires_in as the authoritative lifetime",
+]
+CAPABILITIES["audio-upload"]["next_actions"] = [
+    "把返回的 result.upload_id 作为 audio_upload_id 写入 voice-clone-create 或 digital-ip-audio-generate。",
 ]
 ASSET_MARK_FIELDS = {
     "kind": {"type": "string", "enum": ["image", "audio", "video", "avatar", "copy", "collect", "leads", "breakdown"]},
@@ -967,6 +995,7 @@ for identifier, website_modes in {
     "image": ["banana", "openai", "seedream", "xiaole"],
     "image-upload": ["banana", "openai", "seedream", "xiaole"],
     "video-upload": ["cinematic", "tryon"],
+    "audio-upload": ["tts", "digital_ip"],
     "image-generate": ["banana", "openai", "seedream", "xiaole"],
     "video": ["one_click", "digital_ip", "cinematic", "tryon", "grok", "sora", "minimax", "omni", "seedance"],
     "video-generate": ["grok", "sora", "minimax", "omni", "seedance"],
@@ -1083,7 +1112,7 @@ _AGENT_RESOURCES = {
     "ip12-": "ip12_project", "digital-ip-project": "digital_ip_project",
     "short-drama-": "short_drama_project", "video-compose-": "video_compose_project",
     "digital-presenter-": "digital_presenter", "canvas-": "canvas",
-    "image-upload": "asset", "video-upload": "asset", "asset": "asset", "assets": "asset",
+    "image-upload": "asset", "video-upload": "asset", "audio-upload": "asset", "asset": "asset", "assets": "asset",
     "task": "task", "voices": "voice",
     "audio-slots": "voice", "voice-clone-": "voice", "leads-crm": "lead",
     "inspiration-": "inspiration", "text-video-": "text_video",
@@ -1147,6 +1176,8 @@ def _agent_input_source(name):
         return "先调用 %s-upload，使用其本人私有 upload_id。" % family
     if name in {"avatar_id", "avatar_ids", "avatars"}:
         return "先调用 video-avatars，从 ready 形象复制 avatar_id。"
+    if name == "slot_id":
+        return "先调用 audio-slots，从当前账号可用槽位复制 slot_id。"
     if name in {"voice", "voice_key"}:
         return "先调用 voices，从可试听且 ready 的声音复制 voice_key。"
     if name in {"revision", "expected_revision", "expected_version"}:
@@ -1209,6 +1240,13 @@ def _attach_agent_guidance():
 
 
 _attach_agent_guidance()
+
+CAPABILITIES["voice-clone-create"]["agent"]["workflow"].append(
+    "提交成功后只调用 voice-clone-status 查询原 slot_id；不要重复创建。"
+)
+CAPABILITIES["voice-clone-create"]["agent"]["recovery"].append(
+    "若状态为 failed 且提示有效语音太短，上传新的30至60秒连续清晰单人语音，再用新的 audio_upload_id 发起新操作。"
+)
 
 
 
