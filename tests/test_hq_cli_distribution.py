@@ -14,8 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "site/downloads/hq/install.sh"
 WINDOWS_INSTALLER = ROOT / "site/downloads/hq/install.ps1"
 WINDOWS_UNINSTALLER = ROOT / "site/downloads/hq/uninstall.ps1"
-VERSION = "0.11.2"
-OLD_VERSION = "0.11.1"
+VERSION = "0.11.3"
+OLD_VERSION = "0.11.2"
 RELEASE = ROOT / ("site/downloads/hq/v" + VERSION)
 WHEEL = RELEASE / ("huangque_hq_cli-%s-py3-none-any.whl" % VERSION)
 OLD_WHEEL = ROOT / ("site/downloads/hq/v%s/huangque_hq_cli-%s-py3-none-any.whl" % (
@@ -72,7 +72,7 @@ class HQCLIDistributionTests(unittest.TestCase):
 
     def test_previous_release_remains_immutable(self):
         self.assertEqual(
-            "6333c696d7feb1021007b73c86246520711a7b565aaa18d2ae847c5e0fb93085",
+            "2361b2b73bdade243c378776cf13486bb1180f2115360c61a0e2058a3e34ca23",
             hashlib.sha256(OLD_WHEEL.read_bytes()).hexdigest(),
         )
 
@@ -172,6 +172,8 @@ class HQCLIDistributionTests(unittest.TestCase):
                 item for item in capabilities["capabilities"] if item["id"] == "ip12-project"
             ))
             self.assertIn("matrix-template-generate", {
+                item["id"] for item in capabilities["capabilities"]})
+            self.assertIn("audio-upload", {
                 item["id"] for item in capabilities["capabilities"]})
             self.assertEqual(
                 (data_home / "hq-cli" / VERSION / "venv/bin/hq").resolve(),

@@ -27,7 +27,6 @@ reaper 必须【后】于引擎死线触发。反过来的话，reaper 先把任
 线上实测线路一中位 909s、**p90 1612s（27 分钟）**。砍到 15 分钟会把超过一成的换装任务
 判成失败。要改它，得先把那条链路本身提速。
 """
-import ast
 import importlib
 import sys
 import unittest
@@ -43,27 +42,6 @@ video = importlib.import_module("content_domains.video")
 wavespeed = importlib.import_module("content_domains.wavespeed")
 CORE_SRC = (ROOT / "server/content_domains/core.py").read_text(encoding="utf-8")
 VIDEO_SRC = (ROOT / "server/content_domains/video.py").read_text(encoding="utf-8")
-VIDEO_TREE = ast.parse(VIDEO_SRC)
-
-
-def _heygen_poll_calls():
-    return [
-        node for node in ast.walk(VIDEO_TREE)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "_heygen_poll_video"
-    ]
-
-
-def _keyword(call, name):
-    return next((item.value for item in call.keywords if item.arg == name), None)
-
-
-def _uses_video_deadline(call):
-    value = _keyword(call, "deadline_s")
-    return isinstance(value, ast.Name) and value.id == "VIDEO_GEN_DEADLINE"
-
-
 class FifteenMinutesTests(unittest.TestCase):
     def test_the_deadline_is_fifteen_minutes(self):
         self.assertEqual(core.VIDEO_GEN_DEADLINE, 15 * 60)
@@ -75,17 +53,9 @@ class FifteenMinutesTests(unittest.TestCase):
         """
         self.assertEqual(wavespeed.WS_DEADLINE, core.VIDEO_GEN_DEADLINE, "WaveSpeed（果肉/豆姐/欧米）")
         # 口播：直连和中转两条路都要用它
-        calls = _heygen_poll_calls()
-        self.assertTrue(any(
-            _uses_video_deadline(call)
-            and isinstance(_keyword(call, "direct"), ast.Constant)
-            and _keyword(call, "direct").value is True
-            for call in calls
-        ), "HeyGen 直连口播必须使用 VIDEO_GEN_DEADLINE")
-        self.assertTrue(any(
-            _uses_video_deadline(call) and _keyword(call, "direct") is None
-            for call in calls
-        ), "HeyGen 中转口播必须使用 VIDEO_GEN_DEADLINE")
+        self.assertIn("_heygen_poll_video(video_id, direct=True, deadline_s=VIDEO_GEN_DEADLINE,", VIDEO_SRC)
+        self.assertIn("_heygen_poll_video(video_id, deadline_s=VIDEO_GEN_DEADLINE,", VIDEO_SRC)
+        self.assertGreaterEqual(VIDEO_SRC.count("mcp=_heygen_mcp_enabled()"), 2)
 
 
 class CinematicGetsThirtyMinutesTests(unittest.TestCase):
