@@ -29,6 +29,9 @@ from .profile_agent import (
     DeepSeekProfileAgent, MODULES, ProfileAgentError,
     current_question, initial_state,
 )
+from .model_usage import (
+    ModelUsageError, ModelUsageGuard, NullModelUsageGuard,
+)
 from .store import (
     CreatorAgentStore, IdempotencyConflict, QuoteExpired,
     StateConflict, StoreError, STALE_CLAIM_SECONDS,
@@ -170,21 +173,50 @@ class BridgeClient:
 
 
 class CreatorAgentService:
-    def __init__(self, store, planner, auth, bridge, profile_agent, clock=None):
+    def __init__(self, store, planner, auth, bridge, profile_agent,
+                 usage_guard=None, clock=None):
         self.store = store
         self.planner = planner
         self.auth = auth
         self.bridge = bridge
         self.profile_agent = profile_agent
+        self.usage_guard = usage_guard or NullModelUsageGuard()
         self.clock = clock or time.time
         self._locks = {}
         self._locks_guard = threading.Lock()
         self._request_context = threading.local()
+        self._before_profile_commit_hook = None
+        self._profile_turn_fault_hook = None
+        self._after_profile_commit_hook = None
 
     def _lock(self, username, project_id):
         key = username + ":" + project_id
         with self._locks_guard:
             return self._locks.setdefault(key, threading.Lock())
+
+    @staticmethod
+    def _client_ip(headers):
+        forwarded = str((headers or {}).get("X-Forwarded-For") or "").split(",", 1)[0].strip()
+        value = forwarded or str((headers or {}).get("X-Real-IP") or "").strip() or "unknown"
+        return value[:80] if re.fullmatch(r"[0-9A-Fa-f:.]{2,80}", value) else "unknown"
+
+    def _model_call(self, user, kind, payload, callback, max_output_tokens=2400):
+        input_chars = len(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        try:
+            lease = self.usage_guard.acquire(
+                user["username"], getattr(self._request_context, "client_ip", "unknown"),
+                kind, input_chars, max_output_tokens,
+            )
+        except ModelUsageError as exc:
+            self._discard_current_message()
+            raise APIError(429, exc.detail, exc.code) from exc
+        try:
+            value = callback()
+        except Exception:
+            lease.finish(False)
+            raise
+        lease.finish(True)
+        return value
 
     def health(self):
         checks = {
@@ -192,6 +224,7 @@ class CreatorAgentService:
             "auth_url": _valid_loopback_base(getattr(self.auth, "base_url", "")),
             "model_configured": bool(getattr(self.profile_agent, "configured", False)),
             "model_reachable": False,
+            "model_usage_store": bool(self.usage_guard.health()),
             "database_writable": bool(self.store.health()),
             "bridge_catalog": False,
         }
@@ -509,21 +542,27 @@ class CreatorAgentService:
             self.store.delete_message_if_unanswered(username, message_id)
         self._request_context.username = ""
         self._request_context.message_id = 0
+        self._request_context.client_ip = ""
 
     def _save_profile_state(self, user, workspace, state, expected_revision,
-                            *, profile=None, deliverables=None, flow=None):
-        try:
-            return self.store.update_profile_state(
-                user["username"], workspace["project_id"], state,
-                expected_revision, profile=profile,
-                deliverables=deliverables, flow=flow,
-            )
-        except StateConflict as exc:
-            self._discard_current_message()
-            raise APIError(
-                409, "画像已在其他页面更新，请刷新后继续",
-                "profile_state_conflict",
-            ) from exc
+                            *, profile=None, profile_overrides=None,
+                            deliverables=None, flow=None):
+        self._request_context.profile_mutation = {
+            "state": state, "expected_revision": int(expected_revision),
+            "profile": profile, "profile_overrides": profile_overrides,
+            "deliverables": deliverables, "flow": flow,
+        }
+        value = dict(workspace)
+        value["profile_state"] = state
+        if profile is not None:
+            value["profile"] = profile
+        if profile_overrides is not None:
+            value["profile_overrides"] = profile_overrides
+        if deliverables is not None:
+            value["deliverables"] = deliverables
+        if flow is not None:
+            value["flow"] = flow
+        return value
 
     def _profile_turn(self, user, workspace, message, intent, payload):
         state = dict(workspace.get("profile_state") or initial_state())
@@ -602,7 +641,12 @@ class CreatorAgentService:
                     "个人画像已完成并保存。现在可以生成选题计划，或直接制作模板视频。"
                 ), {"kind": "profile_completed", "profile": _public(profile)}
             try:
-                revised = self.profile_agent.revise_module_review(state, module, message)
+                revised = self._model_call(
+                    user, "profile_review_revision",
+                    {"state": state, "module": module, "instruction": message},
+                    lambda: self.profile_agent.revise_module_review(
+                        state, module, message),
+                )
             except ProfileAgentError as exc:
                 self._profile_model_error(exc)
             reviews = dict(state.get("module_reviews") or {})
@@ -616,10 +660,17 @@ class CreatorAgentService:
 
         answer = str(payload.get("answer") or message).strip()
         try:
-            captured = self.profile_agent.capture_answer(state, answer)
+            captured = self._model_call(
+                user, "profile_answer", {"state": state, "answer": answer},
+                lambda: self.profile_agent.capture_answer(state, answer),
+            )
         except ProfileAgentError as exc:
             self._profile_model_error(exc)
         if not captured["accepted"]:
+            state["revision"] = int(state.get("revision") or 1) + 1
+            workspace = self._save_profile_state(
+                user, workspace, state, expected_revision,
+            )
             return workspace, captured["clarification"], self._question_public(state)
         question = current_question(state)
         answers = dict(state.get("answers") or {})
@@ -638,7 +689,10 @@ class CreatorAgentService:
             next_question = current_question(state)
             return workspace, captured["ack"] + "\n\n" + next_question["question"], self._question_public(state)
         try:
-            review = self.profile_agent.build_module_review(state, module)
+            review = self._model_call(
+                user, "profile_module_review", {"state": state, "module": module},
+                lambda: self.profile_agent.build_module_review(state, module),
+            )
         except ProfileAgentError as exc:
             self._profile_model_error(exc)
         reviews = dict(state.get("module_reviews") or {})
@@ -652,7 +706,11 @@ class CreatorAgentService:
     def _generate_topic_plan(self, user, workspace, platforms, request):
         profile = workspace.get("profile") or {}
         try:
-            result = self.profile_agent.topic_plan(profile, platforms, request)
+            result = self._model_call(
+                user, "topic_plan",
+                {"profile": profile, "platforms": platforms, "request": request},
+                lambda: self.profile_agent.topic_plan(profile, platforms, request),
+            )
         except ProfileAgentError as exc:
             self._profile_model_error(exc)
         deliverables = dict(workspace.get("deliverables") or {})
@@ -761,10 +819,16 @@ class CreatorAgentService:
 
     def _create_video_plan(self, user, project, workspace, topic, platforms):
         templates = self._templates(user)
+        context = self._profile_context(project, workspace)
         try:
-            planned = self.planner.video_plan(
-                self._profile_context(project, workspace), topic, platforms, templates,
-                workspace.get("template_video_preferences"),
+            planned = self._model_call(
+                user, "template_video_plan",
+                {"profile": context, "topic": topic, "platforms": platforms,
+                 "templates": templates},
+                lambda: self.planner.video_plan(
+                    context, topic, platforms, templates,
+                    workspace.get("template_video_preferences"),
+                ),
             )
         except PlannerError as exc:
             self._profile_model_error(exc)
@@ -788,9 +852,14 @@ class CreatorAgentService:
     def _revise_video_plan(self, user, workspace, batch, instruction):
         templates = self._templates(user)
         try:
-            revised = self.planner.revise_video_plan(
-                batch.get("plans") or [], instruction, templates,
-                workspace.get("template_video_preferences"),
+            revised = self._model_call(
+                user, "template_video_revision",
+                {"plans": batch.get("plans") or [], "instruction": instruction,
+                 "templates": templates},
+                lambda: self.planner.revise_video_plan(
+                    batch.get("plans") or [], instruction, templates,
+                    workspace.get("template_video_preferences"),
+                ),
             )
         except PlannerError as exc:
             self._profile_model_error(exc)
@@ -814,9 +883,14 @@ class CreatorAgentService:
             if not mentioned or item.get("platform") in mentioned
         ]
         try:
-            revised = self.planner.revise_video_plan(
-                source_plans, instruction, templates,
-                workspace.get("template_video_preferences"),
+            revised = self._model_call(
+                user, "template_video_regeneration",
+                {"plans": source_plans, "instruction": instruction,
+                 "templates": templates},
+                lambda: self.planner.revise_video_plan(
+                    source_plans, instruction, templates,
+                    workspace.get("template_video_preferences"),
+                ),
             )
         except PlannerError as exc:
             self._profile_model_error(exc)
@@ -1150,19 +1224,46 @@ class CreatorAgentService:
                 ) from exc
             self._request_context.username = user["username"]
             self._request_context.message_id = user_message["id"]
+            self._request_context.client_ip = self._client_ip(headers)
+            self._request_context.profile_mutation = None
+            if not intent:
+                intent = self._intent_from_message(message)
+            replay_turn = user_message.get("public", {}).get("turn")
+            if isinstance(replay_turn, dict) and replay_turn.get("reply"):
+                response = self._response(
+                    user, headers, project_id, replay_turn["reply"],
+                    replay_turn.get("message_public") or {},
+                )
+                try:
+                    self.store.update_message_public(
+                        user["username"], user_message["id"],
+                        {"turn": replay_turn, "response": response},
+                    )
+                except StoreError:
+                    pass
+                self._request_context.username = ""
+                self._request_context.message_id = 0
+                self._request_context.client_ip = ""
+                return response
             if not created and user_message.get("public", {}).get("response"):
                 self._request_context.username = ""
                 self._request_context.message_id = 0
+                self._request_context.client_ip = ""
                 return user_message["public"]["response"]
-            if not created and intent not in {"confirm_plan", "confirm_payment"}:
+            profile_retry = (
+                not self._progress(project)["foundation_ready"]
+                or intent in {"profile_answer", "profile_choice"}
+                or intent == "modify_profile"
+                or (workspace.get("flow") or {}).get("mode") == "profile_revision"
+            )
+            if not created and intent not in {"confirm_plan", "confirm_payment"} and not profile_retry:
                 self._request_context.username = ""
                 self._request_context.message_id = 0
+                self._request_context.client_ip = ""
                 raise APIError(
                     409, "该请求正在处理或结果待确认，请刷新后重试",
                     "idempotency_in_progress",
                 )
-            if not intent:
-                intent = self._intent_from_message(message)
             flow = workspace.get("flow") if isinstance(workspace.get("flow"), dict) else {}
             if intent == "regenerate_video" and flow.get("mode") == "template_review":
                 intent = ""
@@ -1181,19 +1282,31 @@ class CreatorAgentService:
                 overrides["general"] = items[-50:]
                 profile = dict(workspace.get("profile") or {})
                 profile["overrides"] = overrides["general"]
-                workspace = self.store.update_workspace(
-                    user["username"], project_id, profile_overrides=overrides,
-                    profile=profile, flow={"mode": "idle"},
-                )
                 try:
-                    acknowledgement = self.profile_agent.reply(profile, message)
+                    acknowledgement = self._model_call(
+                        user, "profile_revision_reply",
+                        {"profile": profile, "message": message},
+                        lambda: self.profile_agent.reply(profile, message),
+                    )
                 except ProfileAgentError as exc:
                     self._profile_model_error(exc)
+                state = dict(workspace.get("profile_state") or initial_state())
+                expected_revision = int(state.get("revision") or 1)
+                state["revision"] = expected_revision + 1
+                workspace = self._save_profile_state(
+                    user, workspace, state, expected_revision,
+                    profile=profile, profile_overrides=overrides,
+                    flow={"mode": "idle"},
+                )
                 reply = "画像修改已保存。" + acknowledgement
                 public = {"kind": "profile_override_saved", "profile": _public(profile)}
             elif intent == "modify_profile":
-                self.store.update_workspace(
-                    user["username"], project_id, flow={"mode": "profile_revision"},
+                state = dict(workspace.get("profile_state") or initial_state())
+                expected_revision = int(state.get("revision") or 1)
+                state["revision"] = expected_revision + 1
+                workspace = self._save_profile_state(
+                    user, workspace, state, expected_revision,
+                    flow={"mode": "profile_revision"},
                 )
                 reply = "请直接告诉我需要修改的画像内容。修改会生成新版本，不影响历史作品。"
                 public = {
@@ -1402,7 +1515,12 @@ class CreatorAgentService:
                         template_video_preferences=preferences,
                     )
                 try:
-                    reply = self.profile_agent.reply(workspace.get("profile") or {}, message)
+                    profile = workspace.get("profile") or {}
+                    reply = self._model_call(
+                        user, "assistant_reply",
+                        {"profile": profile, "message": message},
+                        lambda: self.profile_agent.reply(profile, message),
+                    )
                 except ProfileAgentError as exc:
                     self._profile_model_error(exc)
                 public = {
@@ -1414,13 +1532,45 @@ class CreatorAgentService:
                     ],
                 }
 
-            self._record_assistant(user, project_id, reply, public)
-            response = self._response(user, headers, project_id, reply, public)
-            self.store.update_message_public(
-                user["username"], user_message["id"], {"response": response},
-            )
+            mutation = getattr(self._request_context, "profile_mutation", None)
+            if mutation:
+                if self._before_profile_commit_hook:
+                    self._before_profile_commit_hook()
+                try:
+                    turn = self.store.commit_profile_turn(
+                        user["username"], project_id, user_message["id"],
+                        mutation["state"], mutation["expected_revision"],
+                        reply, public, profile=mutation.get("profile"),
+                        profile_overrides=mutation.get("profile_overrides"),
+                        deliverables=mutation.get("deliverables"),
+                        flow=mutation.get("flow"),
+                        fault_hook=self._profile_turn_fault_hook,
+                    )
+                except StateConflict as exc:
+                    self._discard_current_message()
+                    raise APIError(
+                        409, "画像已在其他页面更新，请刷新后继续",
+                        "profile_state_conflict",
+                    ) from exc
+                if self._after_profile_commit_hook:
+                    self._after_profile_commit_hook()
+                response = self._response(user, headers, project_id, reply, public)
+                try:
+                    self.store.update_message_public(
+                        user["username"], user_message["id"],
+                        {"turn": turn, "response": response},
+                    )
+                except StoreError:
+                    pass
+            else:
+                self._record_assistant(user, project_id, reply, public)
+                response = self._response(user, headers, project_id, reply, public)
+                self.store.update_message_public(
+                    user["username"], user_message["id"], {"response": response},
+                )
             self._request_context.username = ""
             self._request_context.message_id = 0
+            self._request_context.client_ip = ""
             return response
 
 
@@ -1539,7 +1689,23 @@ def build_service(environment=None):
         base_url=environment.get("CREATOR_AGENT_BASE_URL", "https://api.deepseek.com"),
         model=environment.get("CREATOR_AGENT_MODEL", "deepseek-v4-flash"),
     )
-    return CreatorAgentService(store, planner, auth, bridge, profile_agent)
+    usage_guard = ModelUsageGuard(
+        store.db,
+        window_seconds=int(environment.get("CREATOR_AGENT_MODEL_WINDOW_SECONDS", "60")),
+        user_window_requests=int(environment.get("CREATOR_AGENT_MODEL_USER_WINDOW_REQUESTS", "20")),
+        ip_window_requests=int(environment.get("CREATOR_AGENT_MODEL_IP_WINDOW_REQUESTS", "30")),
+        user_concurrency=int(environment.get("CREATOR_AGENT_MODEL_USER_CONCURRENCY", "2")),
+        global_concurrency=int(environment.get("CREATOR_AGENT_MODEL_GLOBAL_CONCURRENCY", "8")),
+        user_daily_requests=int(environment.get("CREATOR_AGENT_MODEL_USER_DAILY_REQUESTS", "500")),
+        global_daily_requests=int(environment.get("CREATOR_AGENT_MODEL_GLOBAL_DAILY_REQUESTS", "10000")),
+        user_daily_tokens=int(environment.get("CREATOR_AGENT_MODEL_USER_DAILY_TOKENS", "2000000")),
+        global_daily_tokens=int(environment.get("CREATOR_AGENT_MODEL_GLOBAL_DAILY_TOKENS", "40000000")),
+        user_daily_cost_micro_usd=int(environment.get("CREATOR_AGENT_MODEL_USER_DAILY_MICROUSD", "1000000")),
+        global_daily_cost_micro_usd=int(environment.get("CREATOR_AGENT_MODEL_GLOBAL_DAILY_MICROUSD", "20000000")),
+    )
+    return CreatorAgentService(
+        store, planner, auth, bridge, profile_agent, usage_guard=usage_guard,
+    )
 
 
 def serve(host="127.0.0.1", port=8114, service=None):

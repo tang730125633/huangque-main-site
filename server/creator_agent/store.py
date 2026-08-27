@@ -364,7 +364,8 @@ class CreatorAgentStore:
         return [self._workspace(row) for row in rows]
 
     def update_profile_state(self, username, project_id, state, expected_revision,
-                             *, profile=None, deliverables=None, flow=None):
+                             *, profile=None, profile_overrides=None,
+                             deliverables=None, flow=None):
         now = int(time.time())
         with closing(self.db()) as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -387,6 +388,7 @@ class CreatorAgentStore:
             values = [_json(state), now]
             for column, value in (
                 ("profile_json", profile),
+                ("profile_overrides_json", profile_overrides),
                 ("deliverables_json", deliverables),
                 ("flow_json", flow),
             ):
@@ -403,6 +405,74 @@ class CreatorAgentStore:
                 raise StateConflict("profile update lost")
             connection.commit()
         return self.workspace(username, project_id)
+
+    def commit_profile_turn(self, username, project_id, user_message_id,
+                            state, expected_revision, reply, public,
+                            *, profile=None, profile_overrides=None,
+                            deliverables=None, flow=None,
+                            fault_hook=None):
+        now = int(time.time())
+        with closing(self.db()) as connection:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute(
+                    "SELECT profile_state_json FROM creator_workspaces "
+                    "WHERE username=? AND project_id=?",
+                    (username, project_id),
+                ).fetchone()
+                if not row:
+                    raise StoreError("workspace not found")
+                current = _loads(row["profile_state_json"], {})
+                if int(current.get("revision") or 1) != int(expected_revision):
+                    raise StateConflict("profile revision changed")
+                if int(state.get("revision") or 0) != int(expected_revision) + 1:
+                    raise StateConflict("profile revision did not advance exactly once")
+                assignments = ["profile_state_json=?", "updated_at=?"]
+                values = [_json(state), now]
+                for column, value in (
+                    ("profile_json", profile),
+                    ("profile_overrides_json", profile_overrides),
+                    ("deliverables_json", deliverables),
+                    ("flow_json", flow),
+                ):
+                    if value is not None:
+                        assignments.append(column + "=?")
+                        values.append(_json(value))
+                connection.execute(
+                    "UPDATE creator_workspaces SET %s WHERE username=? AND project_id=?" %
+                    ",".join(assignments),
+                    tuple(values) + (username, project_id),
+                )
+                if fault_hook:
+                    fault_hook("after_state")
+                assistant = connection.execute(
+                    """INSERT INTO creator_messages(
+                       username,project_id,role,content,source_key,request_id,request_hash,
+                       public_json,created_at) VALUES(?,?, 'assistant', ?, ?, NULL, '', ?, ?)""",
+                    (username, project_id, str(reply or "")[:8000],
+                     "profile-turn:%d" % int(user_message_id), _json(public or {}), now),
+                )
+                if fault_hook:
+                    fault_hook("after_assistant")
+                turn = {
+                    "reply": str(reply or "")[:8000],
+                    "message_public": public or {},
+                    "assistant_message_id": int(assistant.lastrowid),
+                }
+                changed = connection.execute(
+                    "UPDATE creator_messages SET public_json=? "
+                    "WHERE id=? AND username=? AND project_id=? AND role='user'",
+                    (_json({"turn": turn}), int(user_message_id), username, project_id),
+                )
+                if changed.rowcount != 1:
+                    raise StateConflict("profile user request claim disappeared")
+                if fault_hook:
+                    fault_hook("before_commit")
+                connection.commit()
+                return turn
+            except BaseException:
+                connection.rollback()
+                raise
 
     @staticmethod
     def _message(row):
@@ -485,9 +555,11 @@ class CreatorAgentStore:
                 "SELECT role,public_json FROM creator_messages WHERE id=? AND username=?",
                 (int(message_id), username),
             ).fetchone()
+            public = _loads(row["public_json"], {}) if row else {}
             if (
                 row and row["role"] == "user"
-                and not (_loads(row["public_json"], {}) or {}).get("response")
+                and not (public or {}).get("response")
+                and not (public or {}).get("turn")
             ):
                 connection.execute(
                     "DELETE FROM creator_messages WHERE id=? AND username=?",
