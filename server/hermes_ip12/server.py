@@ -82,14 +82,16 @@ CONVOS_DIR = DATA_DIR / "conversations"
 REPORTS_DIR = DATA_DIR / "reports"
 DELIVERABLES_DIR = DATA_DIR / "deliverables"
 FOUNDATION_REPORTS_DIR = DATA_DIR / "foundation_reports"
-FOUNDATION_REPORT_TEMPLATE_VERSION = "editorial-v3.1"
+FOUNDATION_REPORT_TEMPLATE_VERSION = "editorial-v3.2"
 EDITORIAL_REPORT_PROMPT = """你是黄雀 IP12 的报告主编。只使用服务端确认资料和用户原话，写给客户阅读的中文《模块1-4定位初稿》。这是一份策划提案，不是内部审计底稿。
 
 事实合同：确认事实只能复述资料；未来计划必须写成计划；任何金句、钩子、情绪曲线、传播价值和优先级都必须写在“AI包装建议”标题下，不能写成客户案例、收入、成交、流量或已发生结果。模块1-3的最终选择必须沿用服务端结果，不得改选。
 
+定位层级合同：定位必须是“目标人群 + 核心服务/职责”的职业或服务标签；人设必须是“表达人格 + 职业角色”；价值主张必须是一句客户可获得的具体变化，不得与定位标签重复。三个月验证目标只允许出现在首页、P2 和事实附录。
+
 版式合同：正文控制为结论、短表、卡片和动作，不重复身份、平台、时间、商业目标等信息。严格按以下结构输出：
 ## 首页｜IP结论总览
-用五个四级标题卡片：最终定位、人设方向、价值主张、核心故事、下一步；每卡不超过3行。
+用五个四级标题卡片：定位、人设、价值主张、核心故事、下一步；每卡不超过3行。
 ## 模块一｜定位诊断
 ### 最终结论
 ### 核心关键词（7个）
@@ -2708,8 +2710,8 @@ def _foundation_pdf_page_count(path):
 
 def _validate_foundation_pdf(path):
     page_count = _foundation_pdf_page_count(path)
-    if not 8 <= page_count <= 10:
-        raise RuntimeError("PDF page count is outside 8-10 pages")
+    if not 6 <= page_count <= 10:
+        raise RuntimeError("PDF page count is outside 6-10 pages")
     return page_count
 
 
@@ -2805,7 +2807,11 @@ def _foundation_html(markdown, zoom=1.0):
             continue
         line = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", line)
         if line.startswith("#### "):
-            rows.append("<h4>%s</h4>" % line[5:])
+            detail = " class='detail'" if any(label in line for label in (
+                "情绪曲线", "开场钩子", "可拆选题", "使用边界", "表达边界",
+                "适用场景", "金句", "内容支柱", "具体动作", "建议产出", "验证方式",
+            )) else ""
+            rows.append("<h4%s>%s</h4>" % (detail, line[5:]))
         elif line.startswith("### "):
             advice = " class='advice'" if "AI包装建议" in line or "执行优先级" in line else ""
             rows.append("<h3%s>%s</h3>" % (advice, line[4:]))
@@ -2822,11 +2828,11 @@ def _foundation_html(markdown, zoom=1.0):
     body = "\n".join(rows) or "<p>暂无已确认内容。</p>"
     zoom_css = "" if zoom == 1.0 else "body{zoom:%g}" % zoom
     return """<!doctype html><html lang='zh-CN'><meta charset='utf-8'><style>
-@page{size:A4;margin:16mm 18mm 18mm;@bottom-right{content:counter(page) '/' counter(pages);color:#69727d;font-size:8pt}}body{font-family:'Noto Sans SC','WenQuanYi Zen Hei','Microsoft YaHei',sans-serif;color:#29313b;line-height:1.75;font-size:10.2pt}.cover{border-bottom:2px solid #173d78;padding-bottom:5mm;margin-bottom:7mm}.cover h1{font-size:19pt;margin:0 0 3mm;color:#1d2632;border:0;padding:0}.meta{color:#69727d;font-size:9pt;line-height:1.7}.notice{margin:5mm 0 8mm;padding:3mm 4mm;background:#f5f7fa;border-left:3px solid #dce3ea;color:#566270}h1{font-size:18pt;margin:0 0 5mm;color:#1d2632;border-bottom:1px solid #dce3ea;padding-bottom:4mm}h2{font-size:15pt;margin:9mm 0 4mm;color:#1d2632;border-top:2px solid #dce3ea;padding-top:5mm}h3{font-size:11.5pt;margin:5mm 0 2mm;color:#1d2632}h3.advice{background:#fff3d3;color:#805808;padding:2.5mm 3mm;border-radius:2mm}h4{font-size:10.5pt;margin:5mm 0 2mm;padding:2.5mm 3mm;background:#eaf1fb;border-left:3px solid #173d78;color:#29313b;break-after:avoid}p,li{margin:1.7mm 0}ul{margin:1.7mm 0;padding-left:6mm}li{break-inside:avoid}strong{color:#1d2632}blockquote{margin:4mm 0;padding:3mm 4mm;border-left:3px solid #dce3ea;color:#687483;background:#fafbfd}hr{border:0;border-top:2px solid #dce3ea;margin:7mm 0}table{width:100%%;border-collapse:collapse;margin:4mm 0 7mm;font-size:9.3pt;page-break-inside:avoid}th{background:#edf3ff;color:#29313b;font-weight:700}th,td{border:1px solid #d8e2f4;padding:2.5mm 3mm;text-align:left;vertical-align:top}tr:nth-child(even){background:#fafcff}%s</style><body><div class='cover'><h1>IP 人设定位｜模块 1-4 初稿</h1><div class='meta'>黄雀 IP 孵化教练 · 基于本次对话整理 · 生成后请本人确认</div></div><div class='notice'>本报告先呈现确认事实，再呈现明确标注的“AI包装建议”；后者用于传播与内容创作，不等同于已发生结果。</div>%s</body></html>""" % (zoom_css, body)
+@page{size:A4;margin:16mm 18mm 18mm;@bottom-right{content:counter(page) '/' counter(pages);color:#69727d;font-size:8pt}}body{font-family:'Noto Sans SC','WenQuanYi Zen Hei','Microsoft YaHei',sans-serif;color:#29313b;line-height:1.75;font-size:10.2pt}.cover{border-bottom:2px solid #173d78;padding-bottom:5mm;margin-bottom:7mm}.cover h1{font-size:19pt;margin:0 0 3mm;color:#1d2632;border:0;padding:0}.meta{color:#69727d;font-size:9pt;line-height:1.7}.notice{margin:5mm 0 8mm;padding:3mm 4mm;background:#f5f7fa;border-left:3px solid #dce3ea;color:#566270}h1{font-size:18pt;margin:0 0 5mm;color:#1d2632;border-bottom:1px solid #dce3ea;padding-bottom:4mm}h2{font-size:15pt;margin:9mm 0 4mm;color:#1d2632;border-top:2px solid #dce3ea;padding-top:5mm}h3{font-size:11.5pt;margin:5mm 0 2mm;color:#1d2632}h3.advice{background:#fff3d3;color:#805808;padding:2.5mm 3mm;border-radius:2mm}h4{font-size:10.5pt;margin:5mm 0 2mm;padding:2.5mm 3mm;background:#eaf1fb;border-left:3px solid #173d78;color:#29313b;break-after:avoid}h4.detail{margin:3mm 0 1mm;padding:0;background:none;border-left:0;color:#173d78;font-size:10pt}p,li{margin:1.7mm 0}ul{margin:1.7mm 0;padding-left:6mm}li{break-inside:avoid}strong{color:#1d2632}blockquote{margin:4mm 0;padding:3mm 4mm;border-left:3px solid #dce3ea;color:#687483;background:#fafbfd}hr{border:0;border-top:2px solid #dce3ea;margin:7mm 0}table{width:100%%;border-collapse:collapse;margin:4mm 0 7mm;font-size:9.3pt;page-break-inside:avoid}th{background:#edf3ff;color:#29313b;font-weight:700}th,td{border:1px solid #d8e2f4;padding:2.5mm 3mm;text-align:left;vertical-align:top}tr:nth-child(even){background:#fafcff}%s</style><body><div class='cover'><h1>IP 人设定位｜模块 1-4 初稿</h1><div class='meta'>黄雀 IP 孵化教练 · 基于本次对话整理 · 生成后请本人确认</div></div><div class='notice'>本报告先呈现确认事实，再呈现明确标注的“AI包装建议”；后者用于传播与内容创作，不等同于已发生结果。</div>%s</body></html>""" % (zoom_css, body)
 
 
 def _foundation_zoom_candidates(page_count):
-    if page_count < 8:
+    if page_count < 6:
         nearby = (1.05, 1.1, 1.15, 1.2, 1.25, 1.3)
     elif page_count > 10:
         nearby = (0.95, 0.9, 0.85, 0.8, 0.75, 0.7)
@@ -2860,9 +2866,9 @@ def _render_foundation_pdf(content, browsers, root):
             except RuntimeError as exc:
                 last_error = exc
                 break
-            if 8 <= page_count <= 10:
+            if 6 <= page_count <= 10:
                 return pdf_path
-            last_error = RuntimeError("PDF page count is outside 8-10 pages")
+            last_error = RuntimeError("PDF page count is outside 6-10 pages")
             if zoom == 1.0:
                 zooms.extend(_foundation_zoom_candidates(page_count))
     raise RuntimeError("PDF renderer failed") from last_error
@@ -2922,18 +2928,6 @@ def generate_foundation_report(convo_id):
         "每个模块只用一张紧凑 Markdown 表保留三套候选，列为‘候选｜适配点｜风险｜状态’；"
         "状态必须写‘最终选择’或‘未选择’，不得把候选逐项展开成长卡。只能复述服务端候选，不得重新生成、改选或替用户选择。"
     )
-    messages[0]["content"] += """
-
-编辑排版优先级（本段高于前文所有“信息密度”和章节重复要求）：
-- 这是一份给客户阅读的策划提案，不是内部审计底稿。正文目标为 6–8 页；事实边界与待确认项单独作为最后 1–2 页附录。
-- 第一页必须是 `## 首页｜IP结论总览`，只用五个四级标题卡片：最终定位、人设方向、价值主张、核心故事、下一步。每张卡不超过 3 行。
-- 模块一到四各只保留一个醒目的“最终结论”，不要在不同章节反复解释相同的身份、平台、时间投入、目标人群或商业目标。
-- 候选只放在每个模块的紧凑表中；正文随后直接进入最终结论、传播表达建议和执行动作。
-- 故事正文只保留 1–2 个核心故事卡；每张卡必须有事实原话、情绪曲线、开场钩子、适用选题和表达边界，其中后四项均标为 AI包装建议。
-- `## 内容与执行路径` 必须用 P0、P1、P2 写出具体动作、建议产出和验证方式；不保证成交、收入或流量。
-- `## 事实附录与确认清单` 集中放不能夸大的边界、证明材料、待本人确认项和资料缺口。不要在正文反复出现“不能夸大”。
-- 金句、钩子和优先级必须短、可直接使用、具有传播感，但只能作为“AI包装建议”，不代表已发生结果。
-"""
     foundation_outputs = _foundation_confirmed_outputs(state)
     messages.append({
         "role": "user",

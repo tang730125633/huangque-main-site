@@ -19,6 +19,11 @@ def _styled_lines(markdown):
             kind, text = "section", text[3:]
         elif text.startswith("#### "):
             kind, text = "card_title", text[5:]
+            if any(label in text for label in (
+                "情绪曲线", "开场钩子", "可拆选题", "使用边界", "表达边界",
+                "适用场景", "金句", "内容支柱", "具体动作", "建议产出", "验证方式",
+            )):
+                kind = "card_detail"
         elif text.startswith("### "):
             kind, text = "subsection", text[4:]
             if "AI包装建议" in text or "执行优先级" in text:
@@ -47,7 +52,11 @@ def _wrap(text, font_name, font_size, max_width, pdfmetrics):
         candidate = current + character
         if current and pdfmetrics.stringWidth(candidate, font_name, font_size) > max_width:
             result.append(current)
-            current = character
+            if character in "，。；：、）】”’！？" and result:
+                result[-1] += character
+                current = ""
+            else:
+                current = character
         else:
             current = candidate
     if current:
@@ -86,20 +95,23 @@ def render_foundation_pdf_fallback(markdown, target):
 
     width, height = A4
     margin_x, margin_top, margin_bottom = 48, 76, 46
-    font_size, line_height = 9.0, 13.5
+    font_size, line_height = 10.5, 17.4
     wrapped = []
     for kind, line in _styled_lines(markdown):
         line_size = (
             10.2 if kind == "section" else
             10.0 if kind in {"card_title", "advice"} else
-            9.5 if kind == "subsection" else
-            8.7 if kind == "table" else font_size
+            10.5 if kind == "card_detail" else
+            10.6 if kind == "subsection" else
+            9.4 if kind == "table" else font_size
         )
         for segment in _wrap(line, font_name, line_size, width - margin_x * 2 - (10 if kind in {"quote", "list"} else 0), pdfmetrics):
             wrapped.append((kind, segment))
 
     maximum_lines = max(1, int((height - margin_top - margin_bottom - 24) / line_height))
-    page_count = max(8, math.ceil(len(wrapped) / maximum_lines))
+    # Keep the concise editorial report dense enough to read like a proposal,
+    # while still leaving room for the appendix and final confirmation page.
+    page_count = max(6, math.ceil(len(wrapped) / maximum_lines))
     if page_count > 10:
         raise RuntimeError("PDF fallback content is too long")
     lines_per_page = max(1, math.ceil(len(wrapped) / page_count))
@@ -132,6 +144,9 @@ def render_foundation_pdf_fallback(markdown, target):
                 document.roundRect(margin_x - 5, y - 3, width - margin_x * 2 + 10, line_height, 3, stroke=0, fill=1)
                 document.setFillColorRGB(1, 1, 1)
                 document.setFont(font_name, 10.0)
+            elif kind == "card_detail":
+                document.setFillColorRGB(0.16, 0.29, 0.46)
+                document.setFont(font_name, 10.5)
             elif kind == "advice":
                 document.setFillColorRGB(0.99, 0.95, 0.82)
                 document.roundRect(margin_x - 5, y - 3, width - margin_x * 2 + 10, line_height, 3, stroke=0, fill=1)
@@ -139,12 +154,12 @@ def render_foundation_pdf_fallback(markdown, target):
                 document.setFont(font_name, 10.0)
             elif kind == "subsection":
                 document.setFillColorRGB(0.16, 0.29, 0.46)
-                document.setFont(font_name, 9.5)
+                document.setFont(font_name, 10.6)
             elif kind == "table":
                 document.setFillColorRGB(0.94, 0.96, 0.985)
                 document.rect(margin_x - 3, y - 3, width - margin_x * 2 + 6, line_height, stroke=0, fill=1)
                 document.setFillColorRGB(0.2, 0.27, 0.35)
-                document.setFont(font_name, 8.7)
+                document.setFont(font_name, 9.4)
             elif kind == "quote":
                 document.setFillColorRGB(0.33, 0.4, 0.49)
                 document.setFont(font_name, font_size)

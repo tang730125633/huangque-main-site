@@ -49,6 +49,13 @@ class IP12PersonaReportV1Tests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "metadata"):
                     server._validate_foundation_artifact(report, path)
 
+    def test_foundation_pdf_accepts_concise_six_page_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "project-1.pdf"
+            path.write_bytes(b"%PDF-test-content%%EOF\n")
+            with mock.patch.object(server, "_foundation_pdf_page_count", return_value=6):
+                self.assertEqual(server._validate_foundation_pdf(path), 6)
+
     def test_report_prompt_requires_candidates_and_selected_choice(self):
         source = inspect.getsource(server.generate_foundation_report)
         self.assertIn("候选保留要求", source)
@@ -57,9 +64,10 @@ class IP12PersonaReportV1Tests(unittest.TestCase):
         self.assertIn("传播表达建议（AI包装建议）", source)
         self.assertIn("执行优先级（AI包装建议）", source)
         self.assertIn("template_version", source)
-        self.assertIn("首页｜IP结论总览", source)
-        self.assertIn("事实附录与确认清单", source)
+        self.assertIn("首页｜IP结论总览", server.EDITORIAL_REPORT_PROMPT)
+        self.assertIn("事实附录与确认清单", server.EDITORIAL_REPORT_PROMPT)
         self.assertIn("EDITORIAL_REPORT_PROMPT", source)
+        self.assertIn("定位层级合同", server.EDITORIAL_REPORT_PROMPT)
         self.assertIn(
             "FOUNDATION_REPORT_TEMPLATE_VERSION",
             inspect.getsource(server.api_generate_foundation_report),
