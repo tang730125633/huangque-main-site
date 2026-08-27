@@ -57,6 +57,9 @@ class IP12PersonaReportV1Tests(unittest.TestCase):
         self.assertIn("传播表达建议（AI包装建议）", source)
         self.assertIn("执行优先级（AI包装建议）", source)
         self.assertIn("template_version", source)
+        self.assertIn("首页｜IP结论总览", source)
+        self.assertIn("事实附录与确认清单", source)
+        self.assertIn("EDITORIAL_REPORT_PROMPT", source)
         self.assertIn(
             "FOUNDATION_REPORT_TEMPLATE_VERSION",
             inspect.getsource(server.api_generate_foundation_report),
@@ -69,6 +72,19 @@ class IP12PersonaReportV1Tests(unittest.TestCase):
             "_post_module_six_production_action",
             inspect.getsource(server.api_get_convo),
         )
+
+    def test_grounded_story_section_keeps_labeled_packaging_advice(self):
+        content = (
+            "## 模块四｜故事资产挖掘\n旧故事\n\n"
+            "### 故事传播卡（AI包装建议）\n#### 复盘故事卡\n情绪曲线：建议。\n\n"
+            "## 优化建议汇总\nP0 建议。"
+        )
+        result = server._ground_foundation_story_section(
+            content, {"4-4": {"content": "事实原话：我开过一家小店。"}}
+        )
+        self.assertIn("事实原话：我开过一家小店。", result)
+        self.assertIn("故事传播卡（AI包装建议）", result)
+        self.assertIn("复盘故事卡", result)
 
 
 if __name__ == "__main__":
