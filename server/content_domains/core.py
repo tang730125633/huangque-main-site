@@ -3341,6 +3341,83 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"detail": str(e)[:220]})
             except Exception as e:
                 return self._send(500, {"detail": "H3 成片导入失败：%s" % str(e)[:160]})
+        if p == "/api/gen/video/lipsync-import":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录或登录已过期"})
+            if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
+            try:
+                feature_flags.require_enabled("video")
+                length = int(self.headers.get("Content-Length") or 0)
+                if length <= 0 or length > video_domain.VIDEO_IMPORT_MAX_BYTES:
+                    raise ValueError("真人源视频不能为空且不能超过 %dMB" %
+                                     (video_domain.VIDEO_IMPORT_MAX_BYTES // 1024 // 1024))
+                raw = self.rfile.read(length)
+                if len(raw) != length:
+                    raise ValueError("真人源视频上传不完整，请重试")
+                title = urllib.parse.unquote(self.headers.get("X-Video-Title") or "")
+                asset = video_domain.import_lipsync_source_video(
+                    user["username"], raw, self.headers.get("Content-Type"), title)
+                return self._send(200, {"ok": True, "asset": asset})
+            except feature_flags.FeatureDisabled as e:
+                return self._send(503, {"detail": str(e)})
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)[:220]})
+            except Exception as e:
+                return self._send(500, {"detail": "真人源视频导入失败：%s" % str(e)[:160]})
+        if p == "/api/gen/video/lipsync-voice-sample":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录或登录已过期"})
+            if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
+            try:
+                from . import digital_human_oneclick
+                feature_flags.require_enabled("video")
+                feature_flags.require_enabled("audio")
+                body = self._json_body_strict()
+                if not isinstance(body, dict):
+                    raise ValueError("请求体必须是 JSON 对象")
+                if body.get("consent_confirmed") is not True:
+                    return self._send(403, {"detail": "请先确认真人视频与声音使用授权"})
+                slot_id = str(body.get("slot_id") or "").strip()
+                slot = next((
+                    item for item in audio_domain.list_user_audio_voice_slots(
+                        user["username"]
+                    ) if str(item.get("slot_id") or "") == slot_id
+                ), None)
+                if not slot:
+                    raise digital_human_oneclick.DigitalHumanRequestError(
+                        "音色槽位不存在或不属于当前账号",
+                        "consent_slot_mismatch", 403,
+                    )
+                sample = video_domain.extract_lipsync_voice_sample(
+                    user["username"], body.get("video_asset_id"))
+                consent = digital_human_oneclick.create_unified_video_consent(
+                    {
+                        "confirmed": body.get("consent_confirmed"),
+                        "consent_version": body.get("consent_version"),
+                        "purpose": body.get("purpose"),
+                        "run_id": body.get("run_id"),
+                        "script": body.get("script"),
+                        "slot_id": slot_id,
+                        "overwrite_confirmed": body.get("overwrite_confirmed"),
+                        "overwrite_voice_name": body.get("overwrite_voice_name"),
+                        "video_asset_id": body.get("video_asset_id"),
+                    },
+                    user["username"], os.environ.get("HQ_INTERNAL_TOKEN", ""),
+                    video_asset_id=sample["video_asset_id"],
+                    video_sha256=sample["video_sha256"],
+                    sample_sha256=sample["sha256"], slot_preimage=slot,
+                )
+                return self._send(200, {
+                    "ok": True, "sample": sample, "consent": consent,
+                })
+            except feature_flags.FeatureDisabled as e:
+                return self._send(503, {"detail": str(e)})
+            except digital_human_oneclick.DigitalHumanRequestError as e:
+                return self._send(e.status, {"detail": str(e)[:220], "code": e.code})
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)[:220]})
+            except Exception as e:
+                return self._send(500, {"detail": "真人视频原声提取失败：%s" % str(e)[:160]})
         if p == "/api/gen/leads/crm":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录"})

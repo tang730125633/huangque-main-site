@@ -27,6 +27,17 @@ HYPERFRAMES_COMMAND = os.environ.get(
 ).strip()
 TEMPLATE_ID = "viral-talking-head-v1"
 TEMPLATE_VERSION = "1.0.0"
+TEMPLATE_VARIANTS = {
+    "viral-talking-head-v1": {
+        "variant": "high", "label": "HIGH CUT · 01",
+    },
+    "professional-explainer-v1": {
+        "variant": "professional", "label": "PRO EXPLAIN · 02",
+    },
+    "clean-talking-v1": {
+        "variant": "clean", "label": "CLEAN TALK · 03",
+    },
+}
 MAX_CUES = 300
 MAX_HEADLINES = 3
 
@@ -56,6 +67,13 @@ def _highlight(text, keywords):
     return escaped
 
 
+def normalize_template_id(value):
+    template_id = str(value or TEMPLATE_ID).strip()
+    if template_id not in TEMPLATE_VARIANTS:
+        raise RenderError("不支持的剪辑模板")
+    return template_id
+
+
 def normalize_input(payload):
     if not isinstance(payload, dict):
         raise RenderError("模板输入格式无效")
@@ -63,8 +81,10 @@ def normalize_input(payload):
         duration_ms = int(payload.get("duration_ms"))
     except (TypeError, ValueError):
         raise RenderError("模板时长格式无效")
-    if not 800 <= duration_ms <= 180000:
+    if not 800 <= duration_ms <= 300000:
         raise RenderError("模板时长超出首版范围")
+    template_id = normalize_template_id(payload.get("template_id"))
+    template = TEMPLATE_VARIANTS[template_id]
     cues = []
     for index, item in enumerate(payload.get("cues") or []):
         if not isinstance(item, dict):
@@ -115,6 +135,8 @@ def normalize_input(payload):
     return {
         "duration_ms": duration_ms, "cues": cues, "hook_one": hook_one,
         "hook_two": hook_two, "headlines": headlines,
+        "template_id": template_id, "variant": template["variant"],
+        "mode_label": template["label"],
         "brand_name": _text(brand.get("name"), 24, "黄雀 AI"),
         "cta_title": cta_title, "cta_subtitle": cta_subtitle,
         "cta_start_ms": cta_start_ms, "cut_points_ms": sorted(set(cuts))[:20],
@@ -152,17 +174,32 @@ def _headline_html(headlines):
 
 def _timeline_script(data):
     duration = data["duration_ms"] / 1000.0
-    lines = [
-        '    const tl = gsap.timeline({paused:true});',
-        '    tl.from("#brand",{opacity:0,x:-36,duration:.42,ease:"power3.out"},0)',
-        '      .from("#mode-chip",{opacity:0,x:32,duration:.38,ease:"power3.out"},.08)',
-        '      .from("#hook-one",{opacity:0,y:-54,scale:.86,duration:.46,ease:"back.out(1.7)"},.05)',
-        '      .from("#hook-two",{opacity:0,y:52,scale:.76,rotation:-4,duration:.48,ease:"back.out(1.9)"},.24)',
-        '      .to("#hook-rule",{width:460,duration:.42,ease:"power3.out"},.48)',
-        '      .to("#hook",{opacity:0,y:-18,duration:.24,ease:"power2.in"},%.3f)' % min(1.92, max(.9, duration * .24)),
-    ]
+    if data["variant"] == "high":
+        lines = [
+            '    const tl = gsap.timeline({paused:true});',
+            '    tl.from("#brand",{opacity:0,x:-36,duration:.42,ease:"power3.out"},0)',
+            '      .from("#mode-chip",{opacity:0,x:32,duration:.38,ease:"power3.out"},.08)',
+            '      .from("#hook-one",{opacity:0,y:-54,scale:.86,duration:.46,ease:"back.out(1.7)"},.05)',
+            '      .from("#hook-two",{opacity:0,y:52,scale:.76,rotation:-4,duration:.48,ease:"back.out(1.9)"},.24)',
+            '      .to("#hook-rule",{width:460,duration:.42,ease:"power3.out"},.48)',
+            '      .to("#hook",{opacity:0,y:-18,duration:.24,ease:"power2.in"},%.3f)' % min(1.92, max(.9, duration * .24)),
+        ]
+    else:
+        smooth = "power2.out" if data["variant"] == "professional" else "power1.out"
+        lines = [
+            '    const tl = gsap.timeline({paused:true});',
+            '    tl.from("#brand",{opacity:0,y:-14,duration:.5,ease:"%s"},0)' % smooth,
+            '      .from("#mode-chip",{opacity:0,y:-12,duration:.46,ease:"%s"},.08)' % smooth,
+            '      .from("#hook-one",{opacity:0,y:24,scale:.98,duration:.52,ease:"%s"},.08)' % smooth,
+            '      .from("#hook-two",{opacity:0,y:22,scale:.98,duration:.54,ease:"%s"},.2)' % smooth,
+            '      .to("#hook-rule",{width:%d,duration:.5,ease:"%s"},.42)' % (
+                320 if data["variant"] == "professional" else 210, smooth),
+            '      .to("#hook",{opacity:0,y:-10,duration:.34,ease:"power1.in"},%.3f)' % min(2.2, max(1.15, duration * .24)),
+        ]
     for index, item in enumerate(data["headlines"], 1):
-        if item["text"].upper() == "AI":
+        if data["variant"] != "high":
+            props = '{opacity:0,y:24,scale:.97,duration:.36,ease:"power2.out"}'
+        elif item["text"].upper() == "AI":
             props = '{opacity:0,scale:1.08,rotation:-5,y:-22,duration:.28,ease:"back.out(1.6)"}'
         else:
             props = '{opacity:0,scale:1.75,rotation:7,y:-36,duration:.30,ease:"back.out(1.45)"}'
@@ -177,9 +214,55 @@ def _timeline_script(data):
         lines.append('      .to("#a-roll",{scale:1,duration:.24,ease:"power2.inOut"},%.3f);' % (at + .10))
     rows = ",".join('["#caption-%d",%s]' % (index, _seconds(cue["start_ms"]))
                     for index, cue in enumerate(data["cues"], 1))
-    lines.append('    [%s].forEach(([selector,start])=>tl.from(selector,{opacity:0,y:30,scale:.94,duration:.18,ease:"back.out(1.5)"},start));' % rows)
+    caption_motion = ('{opacity:0,y:30,scale:.94,duration:.18,ease:"back.out(1.5)"}'
+                      if data["variant"] == "high" else
+                      '{opacity:0,y:16,duration:.28,ease:"power2.out"}')
+    lines.append('    [%s].forEach(([selector,start])=>tl.from(selector,%s,start));' %
+                 (rows, caption_motion))
     lines.append('    window.__timelines.main = tl;')
     return "\n".join(lines)
+
+
+def _variant_css(data):
+    if data["variant"] == "professional":
+        return """
+    body.variant-professional .wash{background:linear-gradient(180deg,rgba(4,12,20,.22),transparent 30%,rgba(3,12,20,.82) 100%)}
+    body.variant-professional .brand{border-radius:7px;background:rgba(5,18,28,.84);border-color:rgba(77,208,194,.32)}
+    body.variant-professional .brand-dot,body.variant-professional .brand-rule,body.variant-professional .progress-fill,body.variant-professional .hook-underline{background:#4dd0c2;box-shadow:none}
+    body.variant-professional .mode-chip{border-radius:7px;border-color:rgba(77,208,194,.36);color:#a9eee7;background:rgba(5,18,28,.7)}
+    body.variant-professional .hook{top:190px;text-align:left}
+    body.variant-professional .hook-line{font-size:62px;transform:none;border-left:8px solid #4dd0c2;background:rgba(4,16,26,.84)}
+    body.variant-professional .hook-line.two{font-size:68px;transform:none;box-shadow:none;color:#eaf7f5;background:rgba(4,16,26,.84)}
+    body.variant-professional .hook-underline{margin-left:0;height:5px}
+    body.variant-professional .caption{left:56px;bottom:330px;min-width:0;max-width:900px;transform:none;text-align:left;border-radius:8px;border-left:7px solid #4dd0c2;background:rgba(4,16,26,.9);font-size:43px}
+    body.variant-professional .caption .key{color:#72dfd4}
+    body.variant-professional .giant{text-align:left;top:220px}
+    body.variant-professional .giant-word,body.variant-professional .giant-word.yellow{width:auto;height:auto;transform:none;border-radius:10px;border-color:#4dd0c2;background:rgba(4,16,26,.94);color:#fff;font-size:112px;text-shadow:none}
+    body.variant-professional .cta{top:220px;border-color:#4dd0c2;border-radius:10px;background:rgba(4,16,26,.94)}
+    body.variant-professional .cta b{color:#72dfd4}
+    """
+    if data["variant"] == "clean":
+        return """
+    body.variant-clean .wash{background:linear-gradient(180deg,rgba(0,0,0,.12),transparent 42%,rgba(0,0,0,.58) 100%)}
+    body.variant-clean .caption-shield{opacity:.34}
+    body.variant-clean .brand{top:46px;background:transparent;border:0;padding:0;box-shadow:none}
+    body.variant-clean .brand-dot{width:9px;height:9px;box-shadow:none}
+    body.variant-clean .brand-rule{display:none}
+    body.variant-clean .mode-chip{top:43px;border:0;background:transparent;color:rgba(255,255,255,.68);letter-spacing:2px}
+    body.variant-clean .hook{top:215px;filter:none}
+    body.variant-clean .hook-line{padding:0;background:transparent;font-size:66px;transform:none;text-shadow:0 3px 22px rgba(0,0,0,.72)}
+    body.variant-clean .hook-line.two{margin-top:10px;padding:0;color:#f4ca3b;background:transparent;font-size:74px;transform:none;box-shadow:none}
+    body.variant-clean .hook-underline{height:3px;box-shadow:none}
+    body.variant-clean .caption{bottom:300px;min-width:0;max-width:920px;padding:8px 18px;background:transparent;border:0;box-shadow:none;font-size:45px;text-shadow:0 3px 14px #000}
+    body.variant-clean .caption small{display:none}
+    body.variant-clean .giant{top:250px}
+    body.variant-clean .giant-word,body.variant-clean .giant-word.yellow{width:auto;height:auto;padding:0;background:transparent;border:0;color:#f4ca3b;font-size:118px;transform:none;text-shadow:0 4px 24px #000}
+    body.variant-clean .cta{top:255px;padding:18px;background:transparent;border:0;box-shadow:none;text-shadow:0 3px 18px #000}
+    body.variant-clean .cta b{font-size:62px}
+    body.variant-clean .progress{height:3px;background:rgba(255,255,255,.22)}
+    body.variant-clean .footer{opacity:.58}
+    """
+    return ""
 
 
 def prepare_workspace(clean_video, payload, workspace):
@@ -196,10 +279,11 @@ def prepare_workspace(clean_video, payload, workspace):
     replacements = {
         "__DURATION__": "%.3f" % duration,
         "__VARIABLES__": html.escape(json.dumps({
-            "brand": data["brand_name"], "template": TEMPLATE_ID,
+            "brand": data["brand_name"], "template": data["template_id"],
             "version": TEMPLATE_VERSION,
         }, ensure_ascii=False, separators=(",", ":")), quote=True),
         "__BRAND__": html.escape(data["brand_name"]),
+        "VIRAL TALK · 01": html.escape(data["mode_label"]),
         "__HOOK_ONE__": html.escape(data["hook_one"]),
         "__HOOK_TWO__": html.escape(data["hook_two"]),
         "__CAPTIONS__": _caption_html(data["cues"]),
@@ -213,7 +297,9 @@ def prepare_workspace(clean_video, payload, workspace):
     }
     for marker, value in replacements.items():
         markup = markup.replace(marker, value)
-    if any(marker in markup for marker in replacements):
+    markup = markup.replace("<body>", '<body class="variant-%s">' % data["variant"])
+    markup = markup.replace("</head>", "<style>%s</style>\n</head>" % _variant_css(data))
+    if any(marker in markup for marker in replacements if marker.startswith("__")):
         raise RenderError("模板变量没有完全填充")
     (workspace / "index.html").write_text(markup, encoding="utf-8")
     try:
@@ -254,5 +340,5 @@ def render(clean_video, payload, output_path, timeout=None):
     report = media.probe_media(output_path)
     if report["video_codec"] != "h264" or not report["has_audio"]:
         raise RenderError("模板输出编码不符合交付要求")
-    return {"template_id": TEMPLATE_ID, "template_version": TEMPLATE_VERSION,
+    return {"template_id": data["template_id"], "template_version": TEMPLATE_VERSION,
             "output": report, "file": str(output_path), "render_log": "ok"}
