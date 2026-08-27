@@ -25,6 +25,15 @@ import time
 import urllib.error
 import urllib.request
 
+
+class CosyVoiceTaskError(RuntimeError):
+    """CosyVoice 合成 task-failed。retryable=True 表示瞬时故障(如 InternalError/530)，可安全重试。"""
+    def __init__(self, message, code="", retryable=False):
+        super().__init__(message)
+        self.code = code
+        self.retryable = retryable
+
+
 DASHSCOPE_API_KEY = os.environ.get("DASHSCOPE_API_KEY", "")
 DASHSCOPE_HTTP = "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/customization"
 DASHSCOPE_WS_HOST = "dashscope.aliyuncs.com"
@@ -211,7 +220,13 @@ def synth(voice, text, fmt="mp3", sample_rate=22050, rate=1.0, pitch=1.0, volume
                 if event == "task-finished":
                     break
                 if event == "task-failed":
-                    raise RuntimeError("CosyVoice 合成失败: " + json.dumps(ev["header"], ensure_ascii=False)[:200])
+                    header = ev.get("header") or {}
+                    error_code = str(header.get("error_code") or "")
+                    # 瞬时故障（530/InternalError 等）可重试；其余（如内容审核）不可重试
+                    retryable = error_code in ("InternalError", "530", "TransientError")
+                    raise CosyVoiceTaskError(
+                        "CosyVoice 合成失败: " + json.dumps(header, ensure_ascii=False)[:200],
+                        code=error_code, retryable=retryable)
             elif op == 0x8:
                 break
         if not audio:
