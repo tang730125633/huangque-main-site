@@ -126,7 +126,23 @@ def render_foundation_pdf_fallback(markdown, target, title="IP 人设定位｜�
     page_count = max(6, math.ceil(len(wrapped) / maximum_lines))
     if page_count > 10:
         raise RuntimeError("PDF fallback content is too long")
-    lines_per_page = max(1, math.ceil(len(wrapped) / page_count))
+    first_module = next((index for index, (kind, text) in enumerate(wrapped)
+                         if kind == "section" and text.startswith("模块一")), 0)
+    if first_module:
+        pages = [wrapped[:first_module]]
+        remaining = wrapped[first_module:]
+        for pages_left in range(page_count - 1, 0, -1):
+            take = max(1, math.ceil(len(remaining) / pages_left))
+            while take > 1 and take < len(remaining) and remaining[take - 1][0] in {
+                "section", "subsection", "card_title", "advice"
+            }:
+                take -= 1
+            pages.append(remaining[:take])
+            remaining = remaining[take:]
+    else:
+        lines_per_page = max(1, math.ceil(len(wrapped) / page_count))
+        pages = [wrapped[index:index + lines_per_page] for index in range(0, len(wrapped), lines_per_page)]
+    page_count = len(pages)
 
     document = canvas.Canvas(str(target), pagesize=A4, pageCompression=1)
     document.setTitle(title)
@@ -144,8 +160,7 @@ def render_foundation_pdf_fallback(markdown, target, title="IP 人设定位｜�
         document.setFont("Helvetica", 8)
         document.drawRightString(width - margin_x, 22, "%d / %d" % (page_index + 1, page_count))
         y = height - margin_top
-        start = page_index * lines_per_page
-        for kind, line in wrapped[start:start + lines_per_page]:
+        for kind, line in pages[page_index]:
             if kind == "summary_card_title":
                 document.setFillColorRGB(0.14, 0.31, 0.56)
                 document.roundRect(margin_x - 5, y - 3, width - margin_x * 2 + 10, line_height + 2, 3, stroke=0, fill=1)
@@ -192,7 +207,7 @@ def render_foundation_pdf_fallback(markdown, target, title="IP 人设定位｜�
                 document.setFillColorRGB(0.15, 0.19, 0.24)
                 document.setFont(font_name, font_size)
             document.drawString(margin_x, y, line)
-            y -= line_height
+            y -= line_height + (18 if kind == "summary_card_body" else 0)
         document.showPage()
     document.save()
     return target

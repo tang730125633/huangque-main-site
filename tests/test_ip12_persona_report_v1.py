@@ -63,6 +63,10 @@ class IP12PersonaReportV1Tests(unittest.TestCase):
         )
         self.assertIn("故事表达建议", server._customer_facing_foundation_content(content))
         self.assertNotIn("AI包装建议", server._customer_facing_foundation_content(content))
+        self.assertIn(
+            "从盲目扩张走过弯路，到重新记录顾客问题",
+            server._customer_facing_foundation_content("从盲目扩张失败，到重新记录顾客问题"),
+        )
         self.assertEqual(server._foundation_report_title(content), "IP 人设定位｜模块 1-4 初稿")
         self.assertEqual(server._foundation_report_title("### 待本人确认项\n无待补充项"), "IP 人设定位报告｜模块 1-4")
 
