@@ -1694,7 +1694,7 @@ def build_service(environment=None):
         or "",
     )
     profile_agent = DeepSeekProfileAgent(
-        environment.get("CREATOR_AGENT_API_KEY") or environment.get("DEEPSEEK_API_KEY") or "",
+        environment.get("CREATOR_AGENT_API_KEY") or "",
         base_url=environment.get("CREATOR_AGENT_BASE_URL", "https://api.deepseek.com"),
         model=environment.get("CREATOR_AGENT_MODEL", "deepseek-v4-flash"),
     )

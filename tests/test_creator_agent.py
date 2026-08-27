@@ -257,6 +257,18 @@ class CreatorAgentTests(unittest.TestCase):
         self.assertTrue(service.profile_agent.configured)
         self.assertEqual(service.profile_agent.model, "deepseek-v4-flash")
 
+    def test_build_service_does_not_inherit_shared_deepseek_key(self):
+        service = build_service({
+            "CREATOR_AGENT_DB": str(pathlib.Path(self.temp.name) / "isolated-key.db"),
+            "CREATOR_AGENT_AUTH_URL": "http://127.0.0.1:8095",
+            "CREATOR_AGENT_BASE_URL": "https://api.deepseek.com",
+            "CREATOR_AGENT_MODEL": "deepseek-v4-flash",
+            "DEEPSEEK_API_KEY": "shared-key-must-not-be-used",
+            "HQ_INTERNAL_TOKEN": "production-shared-token",
+        })
+        self.assertEqual(service.profile_agent.api_key, "")
+        self.assertIsNone(service.planner.provider)
+
     def test_each_project_has_one_continuous_conversation(self):
         first = self.bootstrap()
         second = self.bootstrap()
