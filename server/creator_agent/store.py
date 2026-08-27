@@ -127,6 +127,8 @@ class CreatorAgentStore:
                     id TEXT PRIMARY KEY,
                     username TEXT NOT NULL,
                     project_id TEXT NOT NULL,
+                    source_message_id INTEGER NOT NULL DEFAULT 0,
+                    last_mutation_message_id INTEGER NOT NULL DEFAULT 0,
                     topic TEXT NOT NULL,
                     goal TEXT NOT NULL DEFAULT '',
                     status TEXT NOT NULL,
@@ -203,6 +205,8 @@ class CreatorAgentStore:
                     "quoted_revision": "INTEGER NOT NULL DEFAULT 0",
                     "quote_expires_at": "INTEGER NOT NULL DEFAULT 0",
                     "claim_id": "TEXT NOT NULL DEFAULT ''",
+                    "source_message_id": "INTEGER NOT NULL DEFAULT 0",
+                    "last_mutation_message_id": "INTEGER NOT NULL DEFAULT 0",
                 },
                 "creator_jobs": {
                     "input_hash": "TEXT NOT NULL DEFAULT ''",
@@ -226,6 +230,15 @@ class CreatorAgentStore:
                         connection.execute(
                             "ALTER TABLE %s ADD COLUMN %s %s" % (table, column, definition)
                         )
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_creator_batches_source_message "
+                "ON creator_batches(username,project_id,source_message_id) "
+                "WHERE source_message_id>0"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_creator_batches_mutation_message "
+                "ON creator_batches(username,project_id,last_mutation_message_id)"
+            )
             for row in connection.execute(
                 "SELECT id,input_json FROM creator_jobs WHERE input_hash=''"
             ).fetchall():
@@ -474,6 +487,61 @@ class CreatorAgentStore:
                 connection.rollback()
                 raise
 
+    def commit_message_turn(self, username, project_id, user_message_id,
+                            reply, public, fault_hook=None):
+        now = int(time.time())
+        source_key = "message-turn:%d" % int(user_message_id)
+        with closing(self.db()) as connection:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                user_row = connection.execute(
+                    "SELECT role FROM creator_messages "
+                    "WHERE id=? AND username=? AND project_id=?",
+                    (int(user_message_id), username, project_id),
+                ).fetchone()
+                if not user_row or user_row["role"] != "user":
+                    raise StateConflict("user request claim disappeared")
+                assistant = connection.execute(
+                    "SELECT * FROM creator_messages "
+                    "WHERE username=? AND project_id=? AND source_key=?",
+                    (username, project_id, source_key),
+                ).fetchone()
+                if not assistant:
+                    cursor = connection.execute(
+                        """INSERT INTO creator_messages(
+                           username,project_id,role,content,source_key,request_id,
+                           request_hash,public_json,created_at)
+                           VALUES(?,?, 'assistant', ?, ?, NULL, '', ?, ?)""",
+                        (username, project_id, str(reply or "")[:8000], source_key,
+                         _json(public or {}), now),
+                    )
+                    assistant = connection.execute(
+                        "SELECT * FROM creator_messages WHERE id=?",
+                        (int(cursor.lastrowid),),
+                    ).fetchone()
+                if fault_hook:
+                    fault_hook("after_assistant")
+                assistant_public = _loads(assistant["public_json"], {})
+                turn = {
+                    "reply": str(assistant["content"] or "")[:8000],
+                    "message_public": assistant_public,
+                    "assistant_message_id": int(assistant["id"]),
+                }
+                changed = connection.execute(
+                    "UPDATE creator_messages SET public_json=? "
+                    "WHERE id=? AND username=? AND project_id=? AND role='user'",
+                    (_json({"turn": turn}), int(user_message_id), username, project_id),
+                )
+                if changed.rowcount != 1:
+                    raise StateConflict("user request turn commit lost")
+                if fault_hook:
+                    fault_hook("before_commit")
+                connection.commit()
+                return turn
+            except BaseException:
+                connection.rollback()
+                raise
+
     @staticmethod
     def _message(row):
         if not row:
@@ -602,20 +670,34 @@ class CreatorAgentStore:
             })
         return value
 
-    def create_batch(self, username, project_id, topic, goal, platform_plans):
+    def create_batch(self, username, project_id, topic, goal, platform_plans,
+                     source_message_id=0):
         if not platform_plans:
             raise StoreError("platform plans are required")
         now = int(time.time())
         batch_id = "creator_batch_" + uuid.uuid4().hex
         plan_hash = _digest(platform_plans)
+        source_message_id = max(0, int(source_message_id or 0))
         with closing(self.db()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if source_message_id:
+                existing = connection.execute(
+                    "SELECT id FROM creator_batches "
+                    "WHERE username=? AND project_id=? AND source_message_id=?",
+                    (username, project_id, source_message_id),
+                ).fetchone()
+                if existing:
+                    connection.commit()
+                    return self.batch(
+                        username, existing["id"], include_private=True,
+                    )
             connection.execute(
                 """INSERT INTO creator_batches
-                   (id,username,project_id,topic,goal,status,plan_json,plan_hash,
-                    revision,created_at,updated_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-                (batch_id, username, project_id, topic, goal, "draft",
-                 _json(platform_plans), plan_hash, 1, now, now),
+                   (id,username,project_id,source_message_id,topic,goal,status,
+                    plan_json,plan_hash,revision,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (batch_id, username, project_id, source_message_id, topic, goal,
+                 "draft", _json(platform_plans), plan_hash, 1, now, now),
             )
             for plan in platform_plans:
                 platform = str(plan.get("platform") or "")
@@ -637,6 +719,28 @@ class CreatorAgentStore:
                 )
             connection.commit()
         return self.batch(username, batch_id, include_private=True)
+
+    def batch_for_source_message(self, username, project_id, message_id):
+        if int(message_id or 0) <= 0:
+            return None
+        with closing(self.db()) as connection:
+            row = connection.execute(
+                "SELECT id FROM creator_batches "
+                "WHERE username=? AND project_id=? AND source_message_id=?",
+                (username, project_id, int(message_id)),
+            ).fetchone()
+        return self.batch(username, row["id"], include_private=True) if row else None
+
+    def batch_for_mutation_message(self, username, project_id, message_id):
+        if int(message_id or 0) <= 0:
+            return None
+        with closing(self.db()) as connection:
+            row = connection.execute(
+                "SELECT id FROM creator_batches "
+                "WHERE username=? AND project_id=? AND last_mutation_message_id=?",
+                (username, project_id, int(message_id)),
+            ).fetchone()
+        return self.batch(username, row["id"], include_private=True) if row else None
 
     @staticmethod
     def _batch_row(row):
@@ -672,6 +776,10 @@ class CreatorAgentStore:
                     "plan_hash": row["plan_hash"],
                     "quoted_revision": int(row["quoted_revision"]),
                     "claim_id": row["claim_id"],
+                    "source_message_id": int(row["source_message_id"] or 0),
+                    "last_mutation_message_id": int(
+                        row["last_mutation_message_id"] or 0
+                    ),
                 })
         return value
 
@@ -1124,15 +1232,23 @@ class CreatorAgentStore:
             ).fetchone()
         return self._job(row, include_private=True)
 
-    def replace_batch_plans(self, username, batch_id, platform_plans, expected_revision):
+    def replace_batch_plans(self, username, batch_id, platform_plans,
+                            expected_revision, mutation_message_id=0):
         now = int(time.time())
         incoming = {str(item.get("platform") or ""): item for item in platform_plans}
+        mutation_message_id = max(0, int(mutation_message_id or 0))
         with closing(self.db()) as connection:
             connection.execute("BEGIN IMMEDIATE")
             row, jobs = self._locked_batch(connection, username, batch_id)
             if not row:
                 connection.rollback()
                 raise StoreError("batch not found")
+            if (
+                mutation_message_id
+                and int(row["last_mutation_message_id"] or 0) == mutation_message_id
+            ):
+                connection.commit()
+                return self.batch(username, batch_id, include_private=True)
             if int(row["revision"]) != int(expected_revision):
                 connection.rollback()
                 raise StateConflict("batch revision changed")
@@ -1163,10 +1279,11 @@ class CreatorAgentStore:
             changed = connection.execute(
                 """UPDATE creator_batches SET status='ready',plan_json=?,plan_hash=?,
                    quote_json='{}',quote_expires_at=0,confirmation_id='',quoted_revision=0,claim_id='',
-                   revision=?,updated_at=? WHERE id=? AND username=? AND revision=?
+                   revision=?,last_mutation_message_id=?,updated_at=?
+                   WHERE id=? AND username=? AND revision=?
                    AND status IN ('draft','ready','quoted') AND claim_id=''""",
-                (_json(platform_plans), _digest(platform_plans), next_revision, now,
-                 batch_id, username, int(expected_revision)),
+                (_json(platform_plans), _digest(platform_plans), next_revision,
+                 mutation_message_id, now, batch_id, username, int(expected_revision)),
             )
             if changed.rowcount != 1:
                 connection.rollback()

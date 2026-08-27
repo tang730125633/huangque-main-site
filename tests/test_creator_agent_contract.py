@@ -102,7 +102,11 @@ class CreatorAgentContractTests(unittest.TestCase):
         self.assertIn("claim_confirmation", service)
         self.assertIn("idempotency_key=idempotency_key", service)
         self.assertIn("submit_idempotency_key TEXT NOT NULL", store)
-        self.assertIn('_PRIVATE_KEYS = {"quote_token", "job_id", "idempotency_key", "confirmation_id"}', service)
+        for private_key in (
+            "quote_token", "job_id", "idempotency_key", "confirmation_id",
+            "source_message_id", "last_mutation_message_id",
+        ):
+            self.assertIn('"%s"' % private_key, service)
         self.assertIn("quote_token TEXT NOT NULL", store)
         self.assertIn("profile_state_json TEXT NOT NULL", store)
         self.assertIn("profile_json TEXT NOT NULL", store)
@@ -154,6 +158,15 @@ class CreatorAgentContractTests(unittest.TestCase):
         self.assertIn("limit_conn hq_creator_model_conn 4", self.nginx)
         self.assertIn("limit_conn hq_creator_global_conn 32", self.nginx)
         self.assertIn("location = /api/creator-agent/messages", self.nginx)
+        self.assertIn("location = /api/creator-agent/messages/", self.nginx)
+        trailing = self.nginx[
+            self.nginx.index("location = /api/creator-agent/messages/"):
+            self.nginx.index(
+                "location ^~ /api/creator-agent/",
+                self.nginx.index("location = /api/creator-agent/messages/"),
+            )
+        ]
+        self.assertIn("return 404;", trailing)
         creator_nginx = self.nginx[
             self.nginx.index("location = /api/creator-agent/messages"):
             self.nginx.index("location ^~ /api/creator-agent/", self.nginx.index("location = /api/creator-agent/messages"))
@@ -170,6 +183,10 @@ class CreatorAgentContractTests(unittest.TestCase):
         self.assertIn("official DeepSeek API base", self.release)
         self.assertIn("profile_agent.py", self.release)
         self.assertIn("model_usage.py", self.release)
+        store = (ROOT / "server/creator_agent/store.py").read_text(encoding="utf-8")
+        self.assertIn("commit_message_turn", store)
+        self.assertIn("source_message_id", store)
+        self.assertIn("last_mutation_message_id", store)
         workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         self.assertIn("fetch-depth: 0", workflow)
         self.assertIn('git diff --check "$PR_BASE_SHA...$PR_HEAD_SHA"', workflow)

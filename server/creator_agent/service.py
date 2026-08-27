@@ -41,7 +41,10 @@ from .store import (
 _PROJECT_RE = re.compile(r"^[0-9a-f]{12}$")
 _BATCH_RE = re.compile(r"^creator_batch_[0-9a-f]{32}$")
 _REQUEST_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
-_PRIVATE_KEYS = {"quote_token", "job_id", "idempotency_key", "confirmation_id"}
+_PRIVATE_KEYS = {
+    "quote_token", "job_id", "idempotency_key", "confirmation_id",
+    "source_message_id", "last_mutation_message_id",
+}
 _RUNNING = {"submitted", "queued", "running", "verifying", "processing", "submission_unknown"}
 _FAILED = {"error", "failed", "refunded", "failed_submission"}
 _DONE = {"done", "completed", "success"}
@@ -188,6 +191,10 @@ class CreatorAgentService:
         self._before_profile_commit_hook = None
         self._profile_turn_fault_hook = None
         self._after_profile_commit_hook = None
+        self._before_message_commit_hook = None
+        self._message_turn_fault_hook = None
+        self._after_message_commit_hook = None
+        self._message_side_effect_fault_hook = None
 
     def _lock(self, username, project_id):
         key = username + ":" + project_id
@@ -450,6 +457,14 @@ class CreatorAgentService:
     def _snapshot(self, user, headers, projects, project, workspace):
         batches = self.store.batches(user["username"], project["id"])
         public_project = self._public_project(project, workspace)
+        messages = self.store.messages(user["username"], project["id"])
+        for item in messages:
+            if item.get("role") != "user" or not isinstance(item.get("public"), dict):
+                continue
+            item["public"] = {
+                key: value for key, value in item["public"].items()
+                if key not in {"turn", "response"}
+            }
         quick_actions = []
         if public_project["progress"]["foundation_ready"]:
             quick_actions = [
@@ -462,7 +477,7 @@ class CreatorAgentService:
             "projects": self._project_list(user["username"], projects, project["id"], workspace),
             "project": public_project,
             "workspace": _public(workspace),
-            "messages": self.store.messages(user["username"], project["id"]),
+            "messages": messages,
             "quick_actions": quick_actions,
             "platforms": [
                 {"id": key, "label": PLATFORM_LABELS[key]} for key in ALLOWED_PLATFORMS
@@ -502,11 +517,6 @@ class CreatorAgentService:
         if not alias:
             raise APIError(400, "画像名称不能为空", "invalid_title")
         return self.store.update_workspace(user["username"], project_id, alias=alias)
-
-    def _record_assistant(self, user, project_id, content, public=None):
-        self.store.add_message(
-            user["username"], project_id, "assistant", content, public=public or {},
-        )
 
     def _response(self, user, headers, project_id, reply, public=None):
         projects = self.store.workspaces(user["username"])
@@ -549,6 +559,76 @@ class CreatorAgentService:
         self._request_context.username = ""
         self._request_context.message_id = 0
         self._request_context.client_ip = ""
+
+    def _current_message_id(self):
+        return max(0, int(getattr(self._request_context, "message_id", 0) or 0))
+
+    @staticmethod
+    def _video_plan_turn(batch, recovered=False):
+        reply = (
+            "已恢复这次已保存的视频方案，你可以继续修改或确认方案。"
+            if recovered else
+            "我已按平台分别整理方案。你可以直接说要改哪一项，确认无误后再统一报价。"
+        )
+        return reply, {
+            "kind": "video_plan",
+            "batch": _public(batch),
+            "actions": [
+                {"intent": "adjust_video_platforms", "label": "调整平台"},
+                {"intent": "confirm_plan", "label": "确认方案并查看价格", "primary": True},
+            ],
+        }
+
+    def _recover_nonprofile_side_effect(self, user, project_id, workspace):
+        message_id = self._current_message_id()
+        if not message_id:
+            return None
+        key = "topic_plan_request_%d" % message_id
+        deliverable = (workspace.get("deliverables") or {}).get(key)
+        result = deliverable.get("content") if isinstance(deliverable, dict) else None
+        if isinstance(result, dict) and result.get("reply"):
+            return str(result["reply"]), {
+                "kind": "topic_plan", "result": _public(result),
+            }
+        batch = self.store.batch_for_source_message(
+            user["username"], project_id, message_id,
+        ) or self.store.batch_for_mutation_message(
+            user["username"], project_id, message_id,
+        )
+        if not batch:
+            return None
+        self.store.update_workspace(
+            user["username"], project_id,
+            flow={"mode": "template_review", "batch_id": batch["id"]},
+        )
+        return self._video_plan_turn(batch, recovered=True)
+
+    def _finish_message_turn(self, user, headers, project_id, user_message,
+                             reply, public):
+        if self._before_message_commit_hook:
+            self._before_message_commit_hook()
+        turn = self.store.commit_message_turn(
+            user["username"], project_id, user_message["id"], reply, public,
+            fault_hook=self._message_turn_fault_hook,
+        )
+        if self._after_message_commit_hook:
+            self._after_message_commit_hook()
+        committed_reply = turn["reply"]
+        committed_public = turn.get("message_public") or {}
+        response = self._response(
+            user, headers, project_id, committed_reply, committed_public,
+        )
+        try:
+            self.store.update_message_public(
+                user["username"], user_message["id"],
+                {"turn": turn, "response": response},
+            )
+        except StoreError:
+            pass
+        self._request_context.username = ""
+        self._request_context.message_id = 0
+        self._request_context.client_ip = ""
+        return response
 
     def _save_profile_state(self, user, workspace, state, expected_revision,
                             *, profile=None, profile_overrides=None,
@@ -711,16 +791,25 @@ class CreatorAgentService:
 
     def _generate_topic_plan(self, user, workspace, platforms, request):
         profile = workspace.get("profile") or {}
-        try:
-            result = self._model_call(
-                user, "topic_plan",
-                {"profile": profile, "platforms": platforms, "request": request},
-                lambda: self.profile_agent.topic_plan(profile, platforms, request),
-            )
-        except ProfileAgentError as exc:
-            self._profile_model_error(exc)
         deliverables = dict(workspace.get("deliverables") or {})
-        key = "topic_plan_%d" % (len([item for item in deliverables if item.startswith("topic_plan_")]) + 1)
+        message_id = self._current_message_id()
+        key = (
+            "topic_plan_request_%d" % message_id if message_id else
+            "topic_plan_%d" % (
+                len([item for item in deliverables if item.startswith("topic_plan_")]) + 1
+            )
+        )
+        existing = deliverables.get(key)
+        result = existing.get("content") if isinstance(existing, dict) else None
+        if not isinstance(result, dict) or not result.get("reply"):
+            try:
+                result = self._model_call(
+                    user, "topic_plan",
+                    {"profile": profile, "platforms": platforms, "request": request},
+                    lambda: self.profile_agent.topic_plan(profile, platforms, request),
+                )
+            except ProfileAgentError as exc:
+                self._profile_model_error(exc)
         deliverables[key] = {
             "title": "选题与文案计划",
             "content": result,
@@ -824,6 +913,16 @@ class CreatorAgentService:
         return self._create_video_plan(user, project, workspace, topic, platforms)
 
     def _create_video_plan(self, user, project, workspace, topic, platforms):
+        message_id = self._current_message_id()
+        existing = self.store.batch_for_source_message(
+            user["username"], project["id"], message_id,
+        )
+        if existing:
+            self.store.update_workspace(
+                user["username"], project["id"],
+                flow={"mode": "template_review", "batch_id": existing["id"]},
+            )
+            return self._video_plan_turn(existing, recovered=True)
         templates = self._templates(user)
         context = self._profile_context(project, workspace)
         preferences = workspace.get("template_video_preferences")
@@ -841,22 +940,20 @@ class CreatorAgentService:
             self._profile_model_error(exc)
         batch = self.store.create_batch(
             user["username"], project["id"], topic, planned.get("goal") or "",
-            planned["platform_plans"],
+            planned["platform_plans"], source_message_id=message_id,
         )
+        if self._message_side_effect_fault_hook:
+            self._message_side_effect_fault_hook("after_batch_create")
         self.store.update_workspace(
             user["username"], project["id"], platforms=platforms,
             flow={"mode": "template_review", "batch_id": batch["id"]},
         )
-        return "我已按平台分别整理方案。你可以直接说要改哪一项，确认无误后再统一报价。", {
-            "kind": "video_plan",
-            "batch": _public(batch),
-            "actions": [
-                {"intent": "adjust_video_platforms", "label": "调整平台"},
-                {"intent": "confirm_plan", "label": "确认方案并查看价格", "primary": True},
-            ],
-        }
+        return self._video_plan_turn(batch)
 
     def _revise_video_plan(self, user, workspace, batch, instruction):
+        message_id = self._current_message_id()
+        if message_id and int(batch.get("last_mutation_message_id") or 0) == message_id:
+            return self._video_plan_turn(batch, recovered=True)
         templates = self._templates(user)
         preferences = workspace.get("template_video_preferences")
         try:
@@ -873,17 +970,23 @@ class CreatorAgentService:
             self._profile_model_error(exc)
         updated = self.store.replace_batch_plans(
             user["username"], batch["id"], revised["platform_plans"],
-            batch["revision"],
+            batch["revision"], mutation_message_id=message_id,
         )
-        return "已按你的要求更新方案，请继续修改或确认方案。", {
-            "kind": "video_plan", "batch": _public(updated),
-            "actions": [
-                {"intent": "adjust_video_platforms", "label": "调整平台"},
-                {"intent": "confirm_plan", "label": "确认方案并查看价格", "primary": True},
-            ],
-        }
+        if self._message_side_effect_fault_hook:
+            self._message_side_effect_fault_hook("after_batch_mutation")
+        return self._video_plan_turn(updated)
 
     def _new_video_version(self, user, project, workspace, batch, instruction):
+        message_id = self._current_message_id()
+        existing = self.store.batch_for_source_message(
+            user["username"], project["id"], message_id,
+        )
+        if existing:
+            self.store.update_workspace(
+                user["username"], project["id"],
+                flow={"mode": "template_review", "batch_id": existing["id"]},
+            )
+            return self._video_plan_turn(existing, recovered=True)
         templates = self._templates(user)
         preferences = workspace.get("template_video_preferences")
         mentioned = self._platforms_from_text(instruction)
@@ -906,18 +1009,15 @@ class CreatorAgentService:
         created = self.store.create_batch(
             user["username"], project["id"], batch.get("topic") or "新版本",
             revised.get("goal") or batch.get("goal") or "", revised["platform_plans"],
+            source_message_id=message_id,
         )
+        if self._message_side_effect_fault_hook:
+            self._message_side_effect_fault_hook("after_batch_create")
         self.store.update_workspace(
             user["username"], project["id"],
             flow={"mode": "template_review", "batch_id": created["id"]},
         )
-        return "已基于上一版创建新方案。确认后会重新报价，原视频和原任务保持不变。", {
-            "kind": "video_plan", "batch": _public(created),
-            "actions": [
-                {"intent": "adjust_video_platforms", "label": "调整平台"},
-                {"intent": "confirm_plan", "label": "确认方案并查看价格", "primary": True},
-            ],
-        }
+        return self._video_plan_turn(created)
 
     @staticmethod
     def _expected_revision(value):
@@ -1237,6 +1337,11 @@ class CreatorAgentService:
             self._request_context.profile_mutation = None
             if not intent:
                 intent = self._intent_from_message(message)
+            if not created and user_message.get("public", {}).get("response"):
+                self._request_context.username = ""
+                self._request_context.message_id = 0
+                self._request_context.client_ip = ""
+                return user_message["public"]["response"]
             replay_turn = user_message.get("public", {}).get("turn")
             if isinstance(replay_turn, dict) and replay_turn.get("reply"):
                 response = self._response(
@@ -1254,25 +1359,23 @@ class CreatorAgentService:
                 self._request_context.message_id = 0
                 self._request_context.client_ip = ""
                 return response
-            if not created and user_message.get("public", {}).get("response"):
-                self._request_context.username = ""
-                self._request_context.message_id = 0
-                self._request_context.client_ip = ""
-                return user_message["public"]["response"]
             profile_retry = (
                 not self._progress(project)["foundation_ready"]
                 or intent in {"profile_answer", "profile_choice"}
                 or intent == "modify_profile"
                 or (workspace.get("flow") or {}).get("mode") == "profile_revision"
             )
-            if not created and intent not in {"confirm_plan", "confirm_payment"} and not profile_retry:
-                self._request_context.username = ""
-                self._request_context.message_id = 0
-                self._request_context.client_ip = ""
-                raise APIError(
-                    409, "该请求正在处理或结果待确认，请刷新后重试",
-                    "idempotency_in_progress",
+            if not created and not profile_retry:
+                recovered = self._recover_nonprofile_side_effect(
+                    user, project_id, self.store.workspace(
+                        user["username"], project_id,
+                    ),
                 )
+                if recovered:
+                    return self._finish_message_turn(
+                        user, headers, project_id, user_message,
+                        recovered[0], recovered[1],
+                    )
             flow = workspace.get("flow") if isinstance(workspace.get("flow"), dict) else {}
             if intent == "regenerate_video" and flow.get("mode") == "template_review":
                 intent = ""
@@ -1572,10 +1675,8 @@ class CreatorAgentService:
                 except StoreError:
                     pass
             else:
-                self._record_assistant(user, project_id, reply, public)
-                response = self._response(user, headers, project_id, reply, public)
-                self.store.update_message_public(
-                    user["username"], user_message["id"], {"response": response},
+                return self._finish_message_turn(
+                    user, headers, project_id, user_message, reply, public,
                 )
             self._request_context.username = ""
             self._request_context.message_id = 0
@@ -1619,7 +1720,7 @@ class CreatorAgentHandler(BaseHTTPRequestHandler):
         return self.service.auth.verify(self.headers)
 
     def _route(self):
-        return urllib.parse.urlsplit(self.path).path.rstrip("/") or "/"
+        return urllib.parse.urlsplit(self.path).path or "/"
 
     def _handle(self, method):
         path = self._route()

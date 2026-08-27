@@ -114,9 +114,16 @@ Creator SQLite 是本功能的画像正本。画像修改作为版本化补充�
   该预留也只能调高。价格基线以 [DeepSeek 官方价格页](https://api-docs.deepseek.com/quick_start/pricing/) 为准。
 - nginx 对 `/api/creator-agent/messages` 另设 IP 请求与连接上限；任一闸门拒绝均返回 429，
   且不得调用 DeepSeek。Creator 路由由 nginx 覆盖 `X-Real-IP`/`X-Forwarded-For` 为连接源地址，
-  服务优先使用 `X-Real-IP`，客户端伪造的转发链不能切换持久 IP 计数桶。
+  服务优先使用 `X-Real-IP`，客户端伪造的转发链不能切换持久 IP 计数桶；`/messages/`
+  尾斜杠路径由 nginx 和应用双重拒绝，不能落入未限流的通用路由。
 - 画像状态、assistant 消息和 user request 的可回放 turn 在同一 SQLite 事务提交；模型返回后在
   任一写入断点退出，重试同 request ID 都只能推进零次或一次，不会无限 `idempotency_in_progress`。
+- 非画像回合的 assistant 与可回放 turn 同样单事务提交。选题成果按来源消息 ID 固定键保存；
+  新视频批次和方案修改分别持久化来源/修改消息 ID；报价与确认沿用原有 claim 和 provider 幂等键。
+  因此业务副作用落库后进程退出时，同 request ID 会恢复原成果，不会重复建批次、改两次方案或重复扣点。
+- DeepSeek 画像候选严格校验 `title`、`one_liner`、`strengths`、`risks` 的类型、数量和长度；
+  选题计划严格校验至少15个唯一标题、推荐项引用关系，以及 scripts 的平台和正文结构。
+  任一字段不完整都按模型响应失败处理，不写入画像、成果或视频草案。
 
 ## 并行开发边界
 
