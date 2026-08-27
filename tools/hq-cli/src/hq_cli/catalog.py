@@ -1134,6 +1134,17 @@ _AGENT_RESOURCES = {
     "audio-slots": "voice", "voice-clone-": "voice", "leads-crm": "lead",
     "inspiration-": "inspiration", "text-video-": "text_video",
 }
+_AGENT_RESOURCE_OVERRIDES = {
+    "digital-ip-projects": "digital_ip_project",
+    "digital-ip-project": "digital_ip_project",
+    "digital-ip-report": "digital_ip_project",
+    "digital-ip-create": "digital_ip_project",
+    "digital-ip-update": "digital_ip_project",
+    "digital-ip-delete": "digital_ip_project",
+    "leads-crm": "lead",
+    "leads-crm-upsert": "lead",
+    "leads-delete": "lead",
+}
 _AGENT_OPERATIONS = {
     "ip12-projects": "list", "ip12-project": "get", "ip12-report": "get",
     "ip12-create": "create", "ip12-message": "update", "ip12-delete": "delete",
@@ -1156,6 +1167,8 @@ _STANDARD_CRUD = ("list", "get", "create", "update", "delete")
 
 
 def _agent_resource(identifier):
+    if identifier in _AGENT_RESOURCE_OVERRIDES:
+        return _AGENT_RESOURCE_OVERRIDES[identifier]
     for prefix, resource in _AGENT_RESOURCES.items():
         if identifier == prefix or identifier.startswith(prefix):
             return resource
@@ -1189,7 +1202,16 @@ def _agent_input_source(name):
     if name in {"project_id", "board_id", "source_asset_id", "video_asset_id", "audio_asset_id"}:
         return "先调用同资源的 list/get 能力，从本人可访问结果复制 ID。"
     if name.endswith("upload_id") or name.endswith("upload_ids"):
-        family = "video" if "video" in name else "image" if "image" in name else "audio"
+        family = {
+            "audio_upload_id": "audio",
+            "clothes_upload_id": "image",
+            "image_upload_id": "image",
+            "person_image_upload_id": "image",
+            "person_video_upload_id": "video",
+            "reference_video_upload_ids": "video",
+        }.get(name)
+        if family is None:
+            family = "video" if "video" in name else "image"
         return "先调用 %s-upload，使用其本人私有 upload_id。" % family
     if name in {"avatar_id", "avatar_ids", "avatars"}:
         return "先调用 video-avatars，从 ready 形象复制 avatar_id。"
@@ -1204,6 +1226,20 @@ def _agent_input_source(name):
     return "由用户明确提供，并按 input_schema 校验。"
 
 
+def _required_input_names(schema):
+    names = []
+    if isinstance(schema, dict):
+        for name in schema.get("required") or []:
+            if name not in names:
+                names.append(name)
+        for key in ("oneOf", "anyOf", "allOf"):
+            for child in schema.get(key) or []:
+                for name in _required_input_names(child):
+                    if name not in names:
+                        names.append(name)
+    return names
+
+
 def _attach_agent_guidance():
     resource_operations = {}
     for capability in CAPABILITIES.values():
@@ -1214,7 +1250,7 @@ def _attach_agent_guidance():
     for capability in CAPABILITIES.values():
         agent = capability["agent"]
         operation = agent["operation"]
-        required = capability["input_schema"].get("required") or []
+        required = _required_input_names(capability["input_schema"])
         preconditions = []
         if capability["requires_auth"]:
             preconditions.append("先运行 hq status；未授权时运行 hq login。")
@@ -1263,6 +1299,16 @@ CAPABILITIES["voice-clone-create"]["agent"]["workflow"].append(
 )
 CAPABILITIES["voice-clone-create"]["agent"]["recovery"].append(
     "若状态为 failed 且提示有效语音太短，上传新的30至60秒连续清晰单人语音，再用新的 audio_upload_id 发起新操作。"
+)
+CAPABILITIES["matrix-template-batch-generate"]["agent"]["workflow"][-1] = (
+    "保存返回的全部 job_ids，之后只调用 task 查询这些原任务直到终态，并逐条验证成品与账务。"
+)
+CAPABILITIES["matrix-template-batch-generate"]["agent"]["recovery"] = [
+    "部分成功或响应不确定时，先保留错误详情中的 jobs/job_ids；不要创建新批次。",
+    "仅当返回 batch_result_pending 并明确要求恢复时，才用完全相同输入、原 quote_token 和 --confirm 重放一次。",
+]
+CAPABILITIES["leads-delete"]["agent"]["workflow"].insert(
+    1, "先调用 leads-crm 读取并核对要永久删除的本人线索，再传这些 lead_ids 和 --confirm。"
 )
 
 

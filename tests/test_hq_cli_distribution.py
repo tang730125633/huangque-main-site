@@ -14,8 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "site/downloads/hq/install.sh"
 WINDOWS_INSTALLER = ROOT / "site/downloads/hq/install.ps1"
 WINDOWS_UNINSTALLER = ROOT / "site/downloads/hq/uninstall.ps1"
-VERSION = "0.11.5"
-OLD_VERSION = "0.11.4"
+VERSION = "0.12.0"
+OLD_VERSION = "0.11.5"
 RELEASE = ROOT / ("site/downloads/hq/v" + VERSION)
 WHEEL = RELEASE / ("huangque_hq_cli-%s-py3-none-any.whl" % VERSION)
 OLD_WHEEL = ROOT / ("site/downloads/hq/v%s/huangque_hq_cli-%s-py3-none-any.whl" % (
@@ -72,7 +72,7 @@ class HQCLIDistributionTests(unittest.TestCase):
 
     def test_previous_release_remains_immutable(self):
         self.assertEqual(
-            "8b802b496cd559d75bd59cc33bdeb1ea24c0d274cd8edaf8414b2337d04a73c2",
+            "d43e14efe10eb35726312d7abbdca24f05d4d71206826e0279fa79b1896d0057",
             hashlib.sha256(OLD_WHEEL.read_bytes()).hexdigest(),
         )
 
@@ -177,6 +177,10 @@ class HQCLIDistributionTests(unittest.TestCase):
                 item["id"] for item in capabilities["capabilities"]})
             self.assertIn("audio-upload", {
                 item["id"] for item in capabilities["capabilities"]})
+            help_payload = json.loads(subprocess.check_output(
+                [bin_root / "hq", "help", "--json"], text=True, env=env))
+            self.assertIn("skill install TARGET", help_payload["commands"])
+            self.assertIn("mcp", help_payload["commands"])
             self.assertEqual(
                 (data_home / "hq-cli" / VERSION / "venv/bin/hq").resolve(),
                 (bin_root / "hq").resolve(),

@@ -13,6 +13,8 @@ import webbrowser
 
 from . import __version__
 from . import client
+from . import mcp_server
+from . import skill_install
 from .catalog import (
     CAPABILITIES, ENVIRONMENTS, VIDEO_CHANNEL_RULES,
     capability_list, resolve_url,
@@ -29,6 +31,7 @@ EXIT_NETWORK = 8
 EXIT_AUTH = 9
 EXIT_API = 10
 EXIT_CONFIRMATION = 11
+EXIT_INSTALL = 12
 MAX_INPUT_BYTES = 65536
 LOGIN_SCOPES = [
     "profile:read", "ip12:read", "ip12:write", "ip12:chat", "prompt:optimize", "canvas:read",
@@ -416,13 +419,23 @@ def build_parser():
     doctor = subcommands.add_parser("doctor", add_help=False, allow_abbrev=False)
     _add_common(doctor, "show_command_help")
     doctor.add_argument("--environment", choices=sorted(ENVIRONMENTS), default="main")
+    mcp = subcommands.add_parser("mcp", add_help=False, allow_abbrev=False)
+    _add_common(mcp, "show_command_help")
+    skill = subcommands.add_parser("skill", add_help=False, allow_abbrev=False)
+    _add_common(skill, "show_skill_help")
+    skill_commands = skill.add_subparsers(dest="skill_command")
+    install = skill_commands.add_parser("install", add_help=False, allow_abbrev=False)
+    _add_common(install, "show_skill_command_help")
+    install.add_argument("target", nargs="?", choices=("deepseek", "codex", "openclaw", "pi", "mcp"))
+    install.add_argument("--replace", action="store_true")
     return parser
 
 
 def _help(command=None):
     return _envelope(
         "hq.help/v1", command=command,
-        commands=["login", "status", "logout", "capabilities", "channels", "describe ID", "run ID", "doctor", "version"],
+        commands=["login", "status", "logout", "capabilities", "channels", "describe ID", "run ID",
+                  "skill install TARGET", "mcp", "doctor", "version"],
         next_actions=["Run `hq login --json`, then `hq capabilities --json`, then inspect and run one capability."],
     )
 
@@ -436,6 +449,26 @@ def main(argv=None):
         if args.command == "version":
             _write(sys.stdout, _envelope("hq.version/v1", product="Huangque main-site CLI",
                                          origin=ENVIRONMENTS["main"], next_actions=["Run `hq capabilities --json`. "]))
+            return 0
+        if args.command == "mcp":
+            return mcp_server.serve()
+        if args.command == "skill":
+            if (args.skill_command is None or getattr(args, "show_skill_help", False)
+                    or getattr(args, "show_skill_command_help", False)):
+                _write(sys.stdout, _help("skill"))
+                return 0
+            if args.skill_command != "install" or not args.target:
+                raise CliError(EXIT_USAGE, "usage_error", "skill install requires a target")
+            try:
+                result = skill_install.install_skill(args.target, replace=args.replace)
+            except skill_install.SkillInstallError as exc:
+                raise CliError(EXIT_INSTALL, exc.error, exc.message, exc.details)
+            except OSError as exc:
+                raise CliError(EXIT_INSTALL, "skill_install_error", "cannot install Huangque Agent Skill: %s" % exc)
+            _write(sys.stdout, _envelope(
+                "hq.skill.install/v1", result=result,
+                next_actions=["Restart or reload the selected Agent, then ask it to use `use-huangque-cli`."],
+            ))
             return 0
         if args.command == "capabilities":
             _write(sys.stdout, _envelope("hq.capabilities/v1", capabilities=capability_list(),
