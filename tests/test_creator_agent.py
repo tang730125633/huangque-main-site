@@ -474,6 +474,21 @@ class CreatorAgentTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "model_user_rate_limited")
         self.assertEqual(len([call for call in self.profile_agent.calls if call[0] == "capture"]), 1)
 
+    def test_client_ip_ignores_spoofed_forwarded_prefix(self):
+        self.assertEqual(
+            self.service._client_ip({
+                "X-Real-IP": "203.0.113.9",
+                "X-Forwarded-For": "198.51.100.77, 203.0.113.9",
+            }),
+            "203.0.113.9",
+        )
+        self.assertEqual(
+            self.service._client_ip({
+                "X-Forwarded-For": "198.51.100.77, 203.0.113.10",
+            }),
+            "203.0.113.10",
+        )
+
     def test_model_cost_budget_rejects_before_deepseek_call(self):
         self.store.update_workspace(
             USER["username"], PROJECT_ID, profile_state=initial_state(),

@@ -33,7 +33,7 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           if [ -n "$PR_BASE_SHA" ] && [ -n "$PR_HEAD_SHA" ]; then
-            git diff --check "$PR_BASE_SHA" "$PR_HEAD_SHA"
+            git diff --check "$PR_BASE_SHA...$PR_HEAD_SHA"
           elif git rev-parse HEAD^ >/dev/null 2>&1; then
             git diff --check HEAD^ HEAD
           else

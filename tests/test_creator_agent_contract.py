@@ -152,6 +152,11 @@ class CreatorAgentContractTests(unittest.TestCase):
         self.assertIn("limit_conn hq_creator_model_conn 4", self.nginx)
         self.assertIn("limit_conn hq_creator_global_conn 32", self.nginx)
         self.assertIn("location = /api/creator-agent/messages", self.nginx)
+        creator_nginx = self.nginx[
+            self.nginx.index("location = /api/creator-agent/messages"):
+            self.nginx.index("location ^~ /api/creator-agent/", self.nginx.index("location = /api/creator-agent/messages"))
+        ]
+        self.assertIn("proxy_set_header X-Forwarded-For $remote_addr", creator_nginx)
         self.assertIn('CURRENT="$RUNTIME/current"', self.release)
         release_mode = self.release.index('chmod 0755 "$NEW_RELEASE"')
         current_switch = self.release.index('mv -Tf "$CURRENT.next" "$CURRENT"')
@@ -165,7 +170,7 @@ class CreatorAgentContractTests(unittest.TestCase):
         self.assertIn("model_usage.py", self.release)
         workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         self.assertIn("fetch-depth: 0", workflow)
-        self.assertIn('git diff --check "$PR_BASE_SHA" "$PR_HEAD_SHA"', workflow)
+        self.assertIn('git diff --check "$PR_BASE_SHA...$PR_HEAD_SHA"', workflow)
 
     def test_deploy_contract_does_not_duplicate_shared_internal_token(self):
         example = (ROOT / "deploy/huangque-secrets.env.example").read_text(encoding="utf-8")
