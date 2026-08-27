@@ -988,6 +988,85 @@ def _scene_reference_identity(version):
     )
 
 
+def _scene_upload_prefix(owner, project_id):
+    owner_key = hashlib.sha256(_text(owner, 160).encode("utf-8")).hexdigest()[:16]
+    project_key = hashlib.sha256(_text(project_id, 160).encode("utf-8")).hexdigest()[:16]
+    return "short_drama_scene_uploads/%s/%s/" % (owner_key, project_key)
+
+
+def _scene_asset_job_matches(conn, actor, reference):
+    try:
+        job_id = int(reference.get("asset_job_id"))
+    except (TypeError, ValueError):
+        return False
+    job = conn.execute(
+        "SELECT result FROM jobs WHERE id=? AND username=? "
+        "AND kind='image' AND status='done'",
+        (job_id, actor),
+    ).fetchone()
+    if not job:
+        return False
+    result = _json(job[0], {})
+    urls = result.get("urls") if isinstance(result.get("urls"), list) else []
+    files = result.get("files") if isinstance(result.get("files"), list) else []
+    if not urls and result.get("url"):
+        urls = [result.get("url")]
+    if not files and result.get("file"):
+        files = [result.get("file")]
+    requested_file = _text(reference.get("file"), 1000)
+    requested_url = _text(reference.get("url"), 2000)
+    if requested_url not in [_text(value, 2000) for value in urls]:
+        return False
+    if requested_file in [_text(value, 1000) for value in files]:
+        return True
+    return requested_url == "/api/gen/file/" + requested_file
+
+
+def _trusted_scene_reference(conn, owner, project_id, scene_key, version, reference):
+    if not version or not isinstance(reference, dict):
+        return False
+    attributes = _json(version["attributes_json"], {})
+    operation_id = _text(attributes.get("scene_operation_id"), 160)
+    source = _text(attributes.get("source"), 40).lower()
+    reference_owner = _text(attributes.get("scene_reference_owner"), 160)
+    reference_actor = _text(attributes.get("scene_reference_actor"), 160)
+    reference_project = _text(attributes.get("scene_reference_project_id"), 160)
+    if (
+        not operation_id
+        or source not in {"upload", "asset"}
+        or reference_owner != _text(owner, 160)
+        or reference_project != _text(project_id, 160)
+        or not reference_actor
+    ):
+        return False
+    audits = conn.execute(
+        "SELECT actor,details_json FROM short_drama_graph_audit "
+        "WHERE project_id=? AND action='set_scene_reference' AND target_id=? "
+        "ORDER BY created_at DESC,id DESC",
+        (project_id, scene_key),
+    ).fetchall()
+    trusted_audit = next((
+        row for row in audits
+        if _text(row["actor"], 160) == reference_actor
+        and _text(_json(row["details_json"], {}).get("operation_id"), 160)
+        == operation_id
+        and _text(_json(row["details_json"], {}).get("source"), 40).lower()
+        == source
+    ), None)
+    if not trusted_audit:
+        return False
+    relative = _text(reference.get("file"), 1000).replace("\\", "/").lstrip("/")
+    if not relative or ".." in relative.split("/"):
+        return False
+    if source == "upload":
+        return (
+            relative.startswith(_scene_upload_prefix(owner, project_id))
+            and _text(reference.get("url"), 2000)
+            == "/api/gen/file/" + relative
+        )
+    return _scene_asset_job_matches(conn, reference_actor, reference)
+
+
 def scene_workspace(db_factory, owner, project_id):
     """Return user-facing scene groups without exposing graph internals."""
     with closing(_connection(db_factory)) as conn:
@@ -1022,6 +1101,11 @@ def scene_workspace(db_factory, owner, project_id):
                 continue
             references = _json(version["references_json"], [])
             reference = references[0] if references and isinstance(references[0], dict) else {}
+            if reference and not _trusted_scene_reference(
+                conn, owner, project_id, group_key, version, reference,
+            ):
+                group["locked"] = False
+                continue
             candidate = {
                 "version_id": version["id"], "version": int(version["version"]),
                 "reference_identity": _scene_reference_identity(version),
@@ -1312,7 +1396,7 @@ def restore_scene(db_factory, owner, actor, body):
     return scene_workspace(db_factory, owner, project_id)
 
 
-def _resolve_scene_reference(conn, actor, body):
+def _resolve_scene_reference(conn, owner, actor, project_id, body):
     from . import cli_uploads, image as image_domain
 
     source = _text(body.get("source"), 40).lower()
@@ -1333,7 +1417,7 @@ def _resolve_scene_reference(conn, actor, body):
         mime = cli_uploads.detect_mime(raw[:16])
         if mime not in cli_uploads.MIME_EXTENSIONS:
             raise AssetGraphError("scene_image_invalid", "场景图不是有效的 JPG、PNG 或 WebP 图片", 422)
-        relative = "short_drama_scene_uploads/scene_%s%s" % (
+        relative = _scene_upload_prefix(owner, project_id) + "scene_%s%s" % (
             uuid.uuid4().hex, cli_uploads.MIME_EXTENSIONS[mime],
         )
         created_path = (image_domain.OUT_DIR / relative).resolve()
@@ -1395,7 +1479,9 @@ def set_scene_reference(db_factory, owner, actor, body):
     try:
         with closing(_connection(db_factory)) as lookup:
             _project(lookup, owner, project_id)
-            reference, created_path = _resolve_scene_reference(lookup, actor, body)
+            reference, created_path = _resolve_scene_reference(
+                lookup, owner, actor, project_id, body,
+            )
         now = int(time.time())
         with closing(_connection(db_factory)) as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -1422,7 +1508,13 @@ def set_scene_reference(db_factory, owner, actor, body):
                 ).fetchone()[0]
                 content = {"prompt": prompt, "negative_prompt": "人物、文字、Logo、水印",
                            "references": [reference],
-                           "attributes": {"source": source, "scene_operation_id": operation_id},
+                           "attributes": {
+                               "source": source,
+                               "scene_operation_id": operation_id,
+                               "scene_reference_owner": owner,
+                               "scene_reference_actor": actor,
+                               "scene_reference_project_id": project_id,
+                           },
                            "valid_from": "", "valid_to": ""}
                 conn.execute(
                     "INSERT INTO short_drama_graph_versions"
@@ -1435,7 +1527,8 @@ def set_scene_reference(db_factory, owner, actor, body):
                 )
             revision = _bump(conn, project_id, revision, now)
             _audit(conn, project_id, actor, "set_scene_reference", scene_key,
-                   {"source": source, "shot_count": len(rows)}, now)
+                   {"source": source, "shot_count": len(rows),
+                    "operation_id": operation_id}, now)
             conn.commit()
             committed = True
         return scene_workspace(db_factory, owner, project_id)
@@ -1475,6 +1568,15 @@ def lock_scene_reference(db_factory, owner, actor, body):
             references = _json(version["references_json"], []) if version else []
             if not version or not references:
                 raise AssetGraphError("scene_reference_missing", "请先上传或生成场景图", 422)
+            reference = references[0] if isinstance(references[0], dict) else {}
+            if not _trusted_scene_reference(
+                conn, owner, project_id, scene_key, version, reference,
+            ):
+                raise AssetGraphError(
+                    "scene_reference_untrusted",
+                    "场景参考图缺少可信来源或不属于当前项目",
+                    422,
+                )
             conn.execute(
                 "UPDATE short_drama_graph_versions SET status='retired' "
                 "WHERE entity_id=? AND status='locked'", (row["id"],),
@@ -1517,6 +1619,14 @@ def locked_scene_reference(conn, project_id, shot_key, scene_key=None):
     reference = references[0] if references and isinstance(references[0], dict) else {}
     if not (_text(reference.get("file"), 1000) or _text(reference.get("url"), 2000)):
         return None
+    project = conn.execute(
+        "SELECT username FROM short_drama_projects WHERE id=? AND deleted=0",
+        (project_id,),
+    ).fetchone()
+    if not project or not _trusted_scene_reference(
+        conn, project[0], project_id, _scene_key(scene), version, reference,
+    ):
+        return None
     return {
         "scene_key": _scene_key(scene),
         "version_id": _text(version["id"], 160),
@@ -1527,6 +1637,52 @@ def locked_scene_reference(conn, project_id, shot_key, scene_key=None):
         "file": _text(reference.get("file"), 1000),
         "url": _text(reference.get("url"), 2000),
     }
+
+
+def require_locked_scene_reference(
+    conn, owner, project_id, shot_key, expected_reference,
+):
+    """Revalidate one persisted provider scene binding without trusting its paths."""
+    if not isinstance(expected_reference, dict):
+        raise AssetGraphError(
+            "scene_reference_untrusted",
+            "场景参考图缺少可信来源或不属于当前项目",
+            422,
+        )
+    project = conn.execute(
+        "SELECT username FROM short_drama_projects WHERE id=? AND deleted=0",
+        (project_id,),
+    ).fetchone()
+    if not project or _text(project[0], 160) != _text(owner, 160):
+        raise AssetGraphError(
+            "scene_reference_untrusted",
+            "场景参考图缺少可信来源或不属于当前项目",
+            422,
+        )
+    current = locked_scene_reference(
+        conn,
+        project_id,
+        shot_key,
+        _text(expected_reference.get("scene_key"), 160),
+    )
+    expected = {
+        "version_id": _text(expected_reference.get("scene_version_id"), 160),
+        "reference_identity": _text(
+            expected_reference.get("scene_reference_identity"), 160,
+        ),
+        "file": _text(expected_reference.get("file"), 1000),
+        "url": _text(expected_reference.get("url"), 2000),
+    }
+    if not current or any(
+        not value or _text(current.get(key), 2000) != value
+        for key, value in expected.items()
+    ):
+        raise AssetGraphError(
+            "scene_reference_untrusted",
+            "场景参考图缺少可信来源或不属于当前项目",
+            422,
+        )
+    return current
 
 
 def bound_scene_key(conn, project_id, shot_key, scene_key=None):
@@ -1585,12 +1741,18 @@ def create_version(db_factory, owner, actor, body):
         conn.execute("BEGIN IMMEDIATE")
         _project(conn, owner, body["project_id"])
         entity = conn.execute(
-            "SELECT id,current_version_id FROM short_drama_graph_entities "
+            "SELECT id,current_version_id,asset_type FROM short_drama_graph_entities "
             "WHERE id=? AND project_id=? AND status='active'",
             (body["entity_id"], body["project_id"]),
         ).fetchone()
         if not entity:
             raise AssetGraphError("asset_not_found", "资产不存在", 404)
+        if entity["asset_type"] == "scene" and references:
+            raise AssetGraphError(
+                "scene_reference_source_required",
+                "场景参考图只能通过受控上传或本人图片资产设置",
+                422,
+            )
         number = int(conn.execute(
             "SELECT COALESCE(MAX(version),0)+1 FROM short_drama_graph_versions WHERE entity_id=?",
             (entity["id"],),
@@ -1636,13 +1798,31 @@ def lock_version(db_factory, owner, actor, body):
                 "graph_revision_conflict", "资产图谱已更新，请刷新后重试", 409,
             )
         row = conn.execute(
-            "SELECT version.id,version.entity_id,version.status "
+            "SELECT version.id,version.entity_id,version.status,"
+            "version.references_json,version.attributes_json,"
+            "entity.asset_type,entity.asset_key "
             "FROM short_drama_graph_versions version JOIN short_drama_graph_entities entity "
             "ON entity.id=version.entity_id WHERE version.id=? AND entity.project_id=?",
             (body["version_id"], body["project_id"]),
         ).fetchone()
         if not row:
             raise AssetGraphError("asset_version_not_found", "资产版本不存在", 404)
+        references = _json(row["references_json"], [])
+        if row["asset_type"] == "scene" and references:
+            reference = references[0] if isinstance(references[0], dict) else {}
+            scene_row = next((
+                item for item in _scene_rows(conn, body["project_id"])
+                if item["id"] == row["entity_id"]
+            ), None)
+            scene_key = _scene_key(scene_row) if scene_row else row["asset_key"]
+            if not _trusted_scene_reference(
+                conn, owner, body["project_id"], scene_key, row, reference,
+            ):
+                raise AssetGraphError(
+                    "scene_reference_untrusted",
+                    "场景参考图缺少可信来源或不属于当前项目",
+                    422,
+                )
         if row["status"] != "locked":
             conn.execute(
                 "UPDATE short_drama_graph_versions SET status='retired' "

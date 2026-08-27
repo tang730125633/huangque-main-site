@@ -2604,37 +2604,129 @@ def resolve_shared_xiaole_payload(
     conn = _connection(db_factory)
     try:
         row = conn.execute(
-            "SELECT project_id,actor_username,plan_id,shot_key,provider,input_hash,"
-            "request_json FROM short_drama_provider_shot_jobs WHERE id=?",
+            "SELECT project_id,owner_username,actor_username,plan_id,shot_key,"
+            "character_key,avatar_id,provider,input_hash,request_json "
+            "FROM short_drama_provider_shot_jobs WHERE id=?",
             (str(shared_job_id),),
         ).fetchone()
+        if not row or str(row["provider"] or "") != "minimax_h3":
+            raise AutodraftError(
+                "provider_binding_invalid",
+                "麦克视频任务缺少有效的短剧资产绑定",
+                409,
+            )
+        expected = {
+            "project_id": str(row["project_id"] or ""),
+            "plan_id": str(row["plan_id"] or ""),
+            "shot_key": str(row["shot_key"] or ""),
+            "request_hash": str(row["input_hash"] or ""),
+        }
+        if (
+            str(row["actor_username"] or "") != str(actor_username or "")
+            or any(
+                str(binding.get(key) or "") != value
+                for key, value in expected.items()
+            )
+        ):
+            raise AutodraftError(
+                "provider_binding_invalid",
+                "麦克视频任务与短剧项目绑定不一致",
+                409,
+            )
+        request = _json(row["request_json"], {})
+        compact_references = list(request.get("reference_images") or [])
+        scene_references = [
+            item for item in compact_references
+            if isinstance(item, dict)
+            and str(item.get("character_key") or "") == "__scene_reference__"
+        ]
+        execution = _execution_override(
+            conn, expected["project_id"], expected["shot_key"],
+        )
+        intended_scene_key = str(
+            (execution or {}).get("scene_key") or ""
+        ).strip() or short_drama_asset_graph.bound_scene_key(
+            conn, expected["project_id"], expected["shot_key"],
+        )
+        if (
+            (intended_scene_key and len(scene_references) != 1)
+            or (not intended_scene_key and scene_references)
+            or (
+                scene_references
+                and str(scene_references[0].get("scene_key") or "").strip()
+                != intended_scene_key
+            )
+        ):
+            raise AutodraftError(
+                "provider_scene_reference_required",
+                "当前镜头绑定的场景参考图尚未锁定或不可用",
+                422,
+            )
+        plan = conn.execute(
+            "SELECT input_hash FROM short_drama_production_plans WHERE id=? "
+            "AND project_id=?",
+            (expected["plan_id"], expected["project_id"]),
+        ).fetchone()
+        request_hash = _hash({
+            "project_id": expected["project_id"],
+            "plan_id": expected["plan_id"],
+            "plan_hash": str(plan[0] or "") if plan else "",
+            "shot_key": expected["shot_key"],
+            "avatar_id": str(row["avatar_id"] or ""),
+            "provider": str(row["provider"] or ""),
+            "request": request,
+        })
+        if request_hash != expected["request_hash"]:
+            if intended_scene_key or scene_references:
+                raise AutodraftError(
+                    "provider_scene_reference_required",
+                    "当前镜头绑定的场景参考图尚未锁定或不可用",
+                    422,
+                )
+            raise AutodraftError(
+                "provider_binding_invalid",
+                "麦克视频任务的短剧请求内容已变化",
+                409,
+            )
+        if scene_references:
+            if len(scene_references) != 1:
+                raise AutodraftError(
+                    "provider_scene_reference_required",
+                    "当前镜头绑定的场景参考图尚未锁定或不可用",
+                    422,
+                )
+            try:
+                current_scene = short_drama_asset_graph.require_locked_scene_reference(
+                    conn,
+                    str(row["owner_username"] or ""),
+                    expected["project_id"],
+                    expected["shot_key"],
+                    scene_references[0],
+                )
+            except short_drama_asset_graph.AssetGraphError as exc:
+                raise AutodraftError(
+                    "provider_scene_reference_required",
+                    "当前镜头绑定的场景参考图尚未锁定或不可用",
+                    422,
+                ) from exc
+            replacement = dict(scene_references[0])
+            replacement.update({
+                "scene_key": current_scene["scene_key"],
+                "scene_version_id": current_scene["version_id"],
+                "scene_reference_identity": current_scene["reference_identity"],
+                "name": current_scene["name"],
+                "file": current_scene["file"],
+                "url": current_scene["url"],
+            })
+            compact_references = [
+                replacement if item is scene_references[0] else item
+                for item in compact_references
+            ]
     finally:
         conn.close()
-    if not row or str(row["provider"] or "") != "minimax_h3":
-        raise AutodraftError(
-            "provider_binding_invalid",
-            "麦克视频任务缺少有效的短剧资产绑定",
-            409,
-        )
-    expected = {
-        "project_id": str(row["project_id"] or ""),
-        "plan_id": str(row["plan_id"] or ""),
-        "shot_key": str(row["shot_key"] or ""),
-        "request_hash": str(row["input_hash"] or ""),
-    }
-    if (
-        str(row["actor_username"] or "") != str(actor_username or "")
-        or any(str(binding.get(key) or "") != value for key, value in expected.items())
-    ):
-        raise AutodraftError(
-            "provider_binding_invalid",
-            "麦克视频任务与短剧项目绑定不一致",
-            409,
-        )
-    request = _json(row["request_json"], {})
     provider = load_by_name("minimax_h3")
     references = provider.resolve_reference_values(
-        request.get("reference_images") or []
+        compact_references
     )
     if not references:
         raise AutodraftError(

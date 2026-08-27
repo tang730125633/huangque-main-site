@@ -136,6 +136,30 @@ class ShortDramaAssetGraphTests(unittest.TestCase):
             item["code"] == "asset_version_unlocked" for item in blocked["blockers"]
         ))
 
+    def test_generic_scene_version_rejects_bare_file_reference(self):
+        graph.sync_foundation(self.db, "alice", "alice", "p1")
+        workspace = graph.workspace(self.db, "alice", "p1")
+        scene = next(
+            entity for entity in workspace["entities"]
+            if entity["asset_type"] == "scene"
+        )
+
+        with self.assertRaises(graph.AssetGraphError) as raised:
+            graph.create_version(self.db, "alice", "alice", {
+                "project_id": "p1",
+                "graph_revision": workspace["graph_revision"],
+                "entity_id": scene["id"],
+                "prompt": "雨夜街道",
+                "references": [{
+                    "file": "other_user/private_scene.png",
+                    "url": "/api/gen/file/other_user/private_scene.png",
+                    "name": "其他用户的私有场景图",
+                }],
+            })
+
+        self.assertEqual(422, raised.exception.status)
+        self.assertEqual("scene_reference_source_required", raised.exception.code)
+
         revision = self._lock_seeded(workspace)
         ready = graph.build_snapshot(self.db, "alice", "alice", {
             "project_id": "p1", "graph_revision": revision, "shot_id": "s1",
@@ -146,6 +170,59 @@ class ShortDramaAssetGraphTests(unittest.TestCase):
             graph.current_package(self.db, "alice", "p1", "s1")["id"],
             ready["id"],
         )
+
+    def test_forged_scene_reference_is_hidden_and_rejected_by_generic_lock(self):
+        graph.sync_foundation(self.db, "alice", "alice", "p1")
+        workspace = graph.workspace(self.db, "alice", "p1")
+        scene = next(
+            entity for entity in workspace["entities"]
+            if entity["asset_type"] == "scene"
+        )
+        version = scene["versions"][0]
+        operation_id = "forged-operation"
+        with closing(self.db()) as conn:
+            conn.execute(
+                "UPDATE short_drama_graph_versions SET references_json=?,attributes_json=? "
+                "WHERE id=?",
+                (
+                    json.dumps([{
+                        "file": "short_drama_scene_uploads/owner/project/../private.png",
+                        "url": "/api/gen/file/short_drama_scene_uploads/owner/project/../private.png",
+                    }]),
+                    json.dumps({
+                        "source": "upload",
+                        "scene_operation_id": operation_id,
+                        "scene_reference_owner": "alice",
+                        "scene_reference_actor": "alice",
+                        "scene_reference_project_id": "p1",
+                    }),
+                    version["id"],
+                ),
+            )
+            conn.execute(
+                "INSERT INTO short_drama_graph_audit"
+                "(id,project_id,actor,action,target_id,details_json,created_at) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (
+                    "forged-audit", "p1", "alice", "set_scene_reference",
+                    scene["asset_key"],
+                    json.dumps({"operation_id": operation_id, "source": "upload"}),
+                    1,
+                ),
+            )
+            conn.commit()
+
+        scenes = graph.scene_workspace(self.db, "alice", "p1")
+        self.assertFalse(scenes["scenes"][0]["locked"])
+        self.assertIsNone(scenes["scenes"][0]["preview"])
+        with self.assertRaises(graph.AssetGraphError) as raised:
+            graph.lock_version(self.db, "alice", "alice", {
+                "project_id": "p1",
+                "graph_revision": workspace["graph_revision"],
+                "version_id": version["id"],
+            })
+        self.assertEqual(422, raised.exception.status)
+        self.assertEqual("scene_reference_untrusted", raised.exception.code)
 
     def test_new_version_does_not_mutate_existing_snapshot(self):
         graph.sync_foundation(self.db, "alice", "alice", "p1")
@@ -290,7 +367,10 @@ class ShortDramaAssetGraphTests(unittest.TestCase):
                 conn, "p1", "shot_001", "scene-group:missing",
             )
         self.assertEqual("雨夜街道", reference["name"])
-        self.assertTrue(reference["file"].startswith("short_drama_scene_uploads/scene_"))
+        self.assertRegex(
+            reference["file"],
+            r"^short_drama_scene_uploads/[0-9a-f]{16}/[0-9a-f]{16}/scene_",
+        )
         self.assertEqual(reference["scene_key"], selected_reference["scene_key"])
         self.assertNotEqual(reference["version_id"], second_reference["version_id"])
         self.assertEqual(
@@ -307,6 +387,44 @@ class ShortDramaAssetGraphTests(unittest.TestCase):
         )
         self.assertGreater(reference["version"], 0)
         self.assertIsNone(missing_reference)
+
+    def test_generic_lock_accepts_controlled_scene_reference(self):
+        graph.sync_foundation(self.db, "alice", "alice", "p1")
+        scenes = graph.scene_workspace(self.db, "alice", "p1")
+        scene = scenes["scenes"][0]
+        raw = b"\x89PNG\r\n\x1a\ncontrolled-scene-reference"
+        data_url = "data:image/png;base64," + base64.b64encode(raw).decode("ascii")
+        output = Path(self.temp.name) / "output"
+        fake_image = types.SimpleNamespace(OUT_DIR=output)
+        fake_uploads = types.SimpleNamespace(
+            MAX_BYTES=10 * 1024 * 1024,
+            MIME_EXTENSIONS={"image/png": ".png"},
+            detect_mime=lambda value: "image/png" if value.startswith(b"\x89PNG") else "",
+        )
+        with mock.patch.dict(sys.modules, {
+            graph.__package__ + ".image": fake_image,
+            graph.__package__ + ".cli_uploads": fake_uploads,
+        }), mock.patch.object(
+            sys.modules[graph.__package__], "image", fake_image, create=True,
+        ), mock.patch.object(
+            sys.modules[graph.__package__], "cli_uploads", fake_uploads, create=True,
+        ):
+            created = graph.set_scene_reference(self.db, "alice", "alice", {
+                "project_id": "p1",
+                "graph_revision": scenes["graph_revision"],
+                "scene_key": scene["scene_key"],
+                "source": "upload",
+                "image_data": data_url,
+                "filename": "controlled.png",
+                "prompt": "雨夜街道",
+            })
+
+        result = graph.lock_version(self.db, "alice", "alice", {
+            "project_id": "p1",
+            "graph_revision": created["graph_revision"],
+            "version_id": created["scenes"][0]["preview"]["version_id"],
+        })
+        self.assertTrue(result["ok"])
 
     def test_scene_semantic_changes_retire_locked_references_until_reconfirmed(self):
         graph.sync_foundation(self.db, "alice", "alice", "p1")

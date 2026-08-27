@@ -346,6 +346,110 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def _claim_legacy_scene_reference(
+        self, shot, *, reference_project_id, operation_id,
+    ):
+        conn = self.db()
+        try:
+            conn.row_factory = sqlite3.Row
+            scene = conn.execute(
+                "SELECT entity.id,entity.current_version_id "
+                "FROM short_drama_graph_entities entity "
+                "JOIN short_drama_graph_relations relation "
+                "ON relation.entity_id=entity.id "
+                "JOIN short_drama_shots shot ON shot.id=relation.source_id "
+                "WHERE entity.project_id=? AND entity.asset_type='scene' "
+                "AND relation.source_scope='shot' "
+                "AND relation.relation_type='located_in' AND shot.shot_key=? "
+                "LIMIT 1",
+                (self.project["id"], shot["shot_key"]),
+            ).fetchone()
+            scene_row = next(
+                item for item in short_drama_autodraft.short_drama_asset_graph._scene_rows(
+                    conn, self.project["id"],
+                )
+                if item["id"] == scene[0]
+            )
+            scene_key = short_drama_autodraft.short_drama_asset_graph._scene_key(
+                scene_row
+            )
+            conn.execute(
+                "UPDATE short_drama_graph_versions SET attributes_json=? WHERE id=?",
+                (
+                    json.dumps({
+                        "source": "upload",
+                        "scene_operation_id": operation_id,
+                        "scene_reference_owner": "alice",
+                        "scene_reference_actor": "alice",
+                        "scene_reference_project_id": reference_project_id,
+                    }),
+                    scene[1],
+                ),
+            )
+            conn.execute(
+                "INSERT INTO short_drama_graph_audit"
+                "(id,project_id,actor,action,target_id,details_json,created_at) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (
+                    operation_id,
+                    self.project["id"],
+                    "alice",
+                    "set_scene_reference",
+                    scene_key,
+                    json.dumps({
+                        "operation_id": operation_id,
+                        "source": "upload",
+                    }),
+                    1,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _set_controlled_scene_reference(self):
+        import base64
+        import io
+        from PIL import Image
+        from content_domains import image as image_domain
+
+        self._lock_project_character_references()
+        asset_graph = short_drama_autodraft.short_drama_asset_graph
+        asset_graph.sync_foundation(
+            self.db, "alice", "alice", self.project["id"],
+        )
+        scenes = asset_graph.scene_workspace(
+            self.db, "alice", self.project["id"],
+        )
+        scene = next(
+            item for item in scenes["scenes"] if item.get("shots")
+        )
+        raw = io.BytesIO()
+        Image.new("RGB", (256, 256), (45, 85, 125)).save(raw, "PNG")
+        data_url = "data:image/png;base64," + base64.b64encode(
+            raw.getvalue()
+        ).decode("ascii")
+        with mock.patch.object(image_domain, "OUT_DIR", Path(self.tmp.name)):
+            created = asset_graph.set_scene_reference(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"],
+                    "graph_revision": scenes["graph_revision"],
+                    "scene_key": scene["scene_key"],
+                    "source": "upload",
+                    "image_data": data_url,
+                    "filename": "controlled-scene.png",
+                    "prompt": "雨中的纪念广场",
+                },
+            )
+        asset_graph.lock_scene_reference(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "graph_revision": created["graph_revision"],
+                "scene_key": scene["scene_key"],
+            },
+        )
+        return scene["shots"][0]
+
     def _provider_quote(self):
         workspace = short_drama_autodraft.workspace(
             self.db, "alice", "alice", self.project["id"]
@@ -3111,6 +3215,7 @@ class ShortDramaAutodraftTests(unittest.TestCase):
             value.startswith("data:image/png;base64,")
             for value in resolved["reference_images"]
         ))
+
         conn = self.db()
         try:
             persisted = conn.execute(
@@ -3119,6 +3224,203 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         finally:
             conn.close()
         self.assertNotIn("data:image", persisted)
+
+    def test_minimax_worker_revalidates_and_resolves_controlled_scene_reference(self):
+        shot = self._set_controlled_scene_reference()
+        self._init_shared_jobs_table()
+        avatar = self._provider_avatar()
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+        }), mock.patch.object(
+            provider_keys, "has_candidate", return_value=True,
+        ), mock.patch.object(
+            feature_flags, "is_enabled", return_value=True,
+        ):
+            quote = short_drama_autodraft.create_provider_quote(
+                self.db,
+                "alice",
+                "alice",
+                {
+                    "project_id": self.project["id"],
+                    "plan_id": self.plan_id,
+                    "shot_key": shot["shot_key"],
+                    "avatar_id": avatar["id"],
+                },
+                avatar_lookup=lambda _username, _avatar_id: avatar,
+            )
+            job = short_drama_autodraft.start_provider_job(
+                self.db,
+                "alice",
+                "alice",
+                {"quote_token": quote["quote_token"]},
+                "minimax-worker-controlled-scene-1",
+                deduct_points=lambda _user, cost, _reason, _key: 100 - cost,
+                refund_points=lambda _user, _cost, _reason, _key: 100,
+                enqueue_job=lambda _job_id, _kind, _mode: True,
+                project_usage=short_drama._project_point_usage,
+            )
+
+        conn = self.db()
+        try:
+            request = json.loads(conn.execute(
+                "SELECT request_json FROM short_drama_provider_shot_jobs WHERE id=?",
+                (job["id"],),
+            ).fetchone()[0])
+            payload = json.loads(conn.execute(
+                "SELECT payload FROM jobs WHERE id=?", (int(job["id"]),)
+            ).fetchone()[0])
+        finally:
+            conn.close()
+        self.assertEqual(1, len([
+            item for item in request["reference_images"]
+            if item.get("character_key") == "__scene_reference__"
+        ]))
+        resolved = short_drama_autodraft.resolve_shared_xiaole_payload(
+            self.db, int(job["id"]), "alice", payload,
+        )
+        self.assertTrue(resolved["reference_images"])
+        self.assertTrue(all(
+            value.startswith("data:image/png;base64,")
+            for value in resolved["reference_images"]
+        ))
+
+        for mutation in ("delete", "replace"):
+            tampered = json.loads(json.dumps(request))
+            if mutation == "delete":
+                tampered["reference_images"] = [
+                    item for item in tampered["reference_images"]
+                    if item.get("character_key") != "__scene_reference__"
+                ]
+            else:
+                scene_item = next(
+                    item for item in tampered["reference_images"]
+                    if item.get("character_key") == "__scene_reference__"
+                )
+                scene_item["scene_key"] = "scene-group:same-project-substitution"
+            conn = self.db()
+            try:
+                conn.execute(
+                    "UPDATE short_drama_provider_shot_jobs SET request_json=? "
+                    "WHERE id=?",
+                    (json.dumps(tampered), job["id"]),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            provider = mock.Mock()
+            with mock.patch(
+                "content_domains.short_drama_autodraft.load_by_name",
+                return_value=provider,
+            ):
+                with self.assertRaises(
+                    short_drama_autodraft.AutodraftError
+                ) as raised:
+                    short_drama_autodraft.resolve_shared_xiaole_payload(
+                        self.db, int(job["id"]), "alice", payload,
+                    )
+            self.assertEqual(422, raised.exception.status)
+            self.assertEqual(
+                "provider_scene_reference_required", raised.exception.code,
+            )
+            provider.resolve_reference_values.assert_not_called()
+
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_provider_shot_jobs SET request_json=? WHERE id=?",
+                (json.dumps(request), job["id"]),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        asset_graph = short_drama_autodraft.short_drama_asset_graph
+        scenes = asset_graph.scene_workspace(
+            self.db, "alice", self.project["id"],
+        )
+        asset_graph.bind_scene_to_shot(self.db, "alice", "alice", {
+            "project_id": self.project["id"],
+            "graph_revision": scenes["graph_revision"],
+            "shot_key": shot["shot_key"],
+            "scene_key": "",
+        })
+        provider = mock.Mock()
+        with mock.patch(
+            "content_domains.short_drama_autodraft.load_by_name",
+            return_value=provider,
+        ):
+            with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+                short_drama_autodraft.resolve_shared_xiaole_payload(
+                    self.db, int(job["id"]), "alice", payload,
+                )
+        self.assertEqual(422, raised.exception.status)
+        self.assertEqual("provider_scene_reference_required", raised.exception.code)
+        provider.resolve_reference_values.assert_not_called()
+
+    def test_minimax_worker_rejects_forged_scene_reference_before_file_resolution(self):
+        self._lock_project_character_references()
+        self._init_shared_jobs_table()
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+        }), mock.patch.object(
+            provider_keys, "has_candidate", return_value=True,
+        ), mock.patch.object(
+            feature_flags, "is_enabled", return_value=True,
+        ):
+            quote = self._provider_quote()
+            job = short_drama_autodraft.start_provider_job(
+                self.db,
+                "alice",
+                "alice",
+                {"quote_token": quote["quote_token"]},
+                "minimax-worker-forged-scene-1",
+                deduct_points=lambda _user, cost, _reason, _key: 100 - cost,
+                refund_points=lambda _user, _cost, _reason, _key: 100,
+                enqueue_job=lambda _job_id, _kind, _mode: True,
+                project_usage=short_drama._project_point_usage,
+            )
+
+        conn = self.db()
+        try:
+            row = conn.execute(
+                "SELECT request_json FROM short_drama_provider_shot_jobs WHERE id=?",
+                (job["id"],),
+            ).fetchone()
+            request = json.loads(row[0])
+            request["reference_images"].append({
+                "character_key": "__scene_reference__",
+                "scene_key": "scene-group:forged",
+                "scene_version_id": "forged-version",
+                "scene_reference_identity": "forged-identity",
+                "file": "other_user/private_scene.png",
+                "url": "/api/gen/file/other_user/private_scene.png",
+            })
+            conn.execute(
+                "UPDATE short_drama_provider_shot_jobs SET request_json=? WHERE id=?",
+                (json.dumps(request), job["id"]),
+            )
+            payload = json.loads(conn.execute(
+                "SELECT payload FROM jobs WHERE id=?", (int(job["id"]),)
+            ).fetchone()[0])
+            conn.commit()
+        finally:
+            conn.close()
+
+        provider = mock.Mock()
+        provider.resolve_reference_values.return_value = [
+            "data:image/png;base64,Zm9yZ2Vk"
+        ]
+        with mock.patch(
+            "content_domains.short_drama_autodraft.load_by_name",
+            return_value=provider,
+        ):
+            with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+                short_drama_autodraft.resolve_shared_xiaole_payload(
+                    self.db, int(job["id"]), "alice", payload,
+                )
+
+        self.assertEqual(422, raised.exception.status)
+        self.assertEqual("provider_scene_reference_required", raised.exception.code)
+        provider.resolve_reference_values.assert_not_called()
 
     def test_minimax_existing_short_drama_http_route_enqueues_shared_job(self):
         self._lock_project_character_references()
@@ -4440,6 +4742,171 @@ class ShortDramaAutodraftTests(unittest.TestCase):
 
         self.assertEqual(422, raised.exception.status)
         self.assertEqual("provider_scene_reference_required", raised.exception.code)
+
+    def test_minimax_bound_cross_user_scene_file_is_rejected_before_provider(self):
+        from PIL import Image
+        from providers.short_drama_visual.minimax_h3 import MiniMaxH3ShotProvider
+
+        relative = "other_user/private_scene.png"
+        path = Path(self.tmp.name) / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (256, 256), (40, 80, 120)).save(path, "PNG")
+        shot = self._persist_bound_locked_scene_reference(
+            file_value=relative,
+            url_value="/api/gen/file/" + relative,
+        )
+        self._claim_legacy_scene_reference(
+            shot,
+            reference_project_id=self.project["id"],
+            operation_id="cross-user-path-operation",
+        )
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+            "MINIMAX_API_KEY": "configured-for-preflight-only",
+        }), mock.patch.object(
+            MiniMaxH3ShotProvider,
+            "resolve_reference_values",
+            side_effect=AssertionError("untrusted scene must not be encoded"),
+        ) as resolve_references, mock.patch(
+            "content_domains.core._out_path",
+            side_effect=AssertionError("untrusted scene file must not be read"),
+        ):
+            with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+                short_drama_autodraft.preview_provider_request(
+                    self.db,
+                    "alice",
+                    "alice",
+                    {
+                        "project_id": self.project["id"],
+                        "plan_id": self.plan_id,
+                        "shot_key": shot["shot_key"],
+                    },
+                    include_private=True,
+                )
+
+        self.assertEqual(422, raised.exception.status)
+        self.assertEqual("provider_scene_reference_required", raised.exception.code)
+        resolve_references.assert_not_called()
+
+    def test_minimax_cross_project_scene_is_rejected_without_quote_or_file_read(self):
+        relative = (
+            short_drama_autodraft.short_drama_asset_graph._scene_upload_prefix(
+                "alice", self.project["id"],
+            )
+            + "scene_claimed_from_other_project.png"
+        )
+        shot = self._persist_bound_locked_scene_reference(
+            file_value=relative,
+            url_value="/api/gen/file/" + relative,
+        )
+        self._claim_legacy_scene_reference(
+            shot,
+            reference_project_id="another-project",
+            operation_id="cross-project-operation",
+        )
+        avatar = self._provider_avatar()
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+            "MINIMAX_API_KEY": "configured-for-preflight-only",
+        }), mock.patch(
+            "content_domains.core._out_path",
+            side_effect=AssertionError("untrusted scene file must not be read"),
+        ):
+            with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+                short_drama_autodraft.create_provider_quote(
+                    self.db,
+                    "alice",
+                    "alice",
+                    {
+                        "project_id": self.project["id"],
+                        "plan_id": self.plan_id,
+                        "shot_key": shot["shot_key"],
+                        "avatar_id": avatar["id"],
+                    },
+                    avatar_lookup=lambda _username, _avatar_id: avatar,
+                )
+
+        self.assertEqual(422, raised.exception.status)
+        self.assertEqual("provider_scene_reference_required", raised.exception.code)
+        conn = self.db()
+        try:
+            self.assertEqual(0, conn.execute(
+                "SELECT COUNT(*) FROM short_drama_provider_shot_quotes"
+            ).fetchone()[0])
+            self.assertEqual(0, conn.execute(
+                "SELECT COUNT(*) FROM short_drama_provider_shot_jobs"
+            ).fetchone()[0])
+        finally:
+            conn.close()
+
+    def test_minimax_forged_scene_after_quote_is_rejected_without_charge_or_job(self):
+        self._lock_project_character_references()
+        self._init_shared_jobs_table()
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+        }), mock.patch.object(
+            provider_keys, "has_candidate", return_value=True,
+        ), mock.patch.object(
+            feature_flags, "is_enabled", return_value=True,
+        ):
+            quote = self._provider_quote()
+
+        prefix = short_drama_autodraft.short_drama_asset_graph._scene_upload_prefix(
+            "alice", self.project["id"],
+        )
+        forged = prefix + "../other_user/private_scene.png"
+        shot = self._persist_bound_locked_scene_reference(
+            file_value=forged,
+            url_value="/api/gen/file/" + forged,
+        )
+        self._claim_legacy_scene_reference(
+            shot,
+            reference_project_id=self.project["id"],
+            operation_id="forged-path-operation",
+        )
+        charged = []
+
+        with mock.patch.dict(os.environ, {
+            "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+        }), mock.patch.object(
+            provider_keys, "has_candidate", return_value=True,
+        ), mock.patch.object(
+            feature_flags, "is_enabled", return_value=True,
+        ), mock.patch(
+            "content_domains.core._out_path",
+            side_effect=AssertionError("untrusted scene file must not be read"),
+        ):
+            with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+                short_drama_autodraft.start_provider_job(
+                    self.db,
+                    "alice",
+                    "alice",
+                    {"quote_token": quote["quote_token"]},
+                    "minimax-forged-scene-after-quote-1",
+                    deduct_points=lambda *args: charged.append(args) or 99,
+                    refund_points=lambda *_args: 100,
+                    enqueue_job=lambda *_args: True,
+                    project_usage=short_drama._project_point_usage,
+                )
+
+        self.assertEqual(422, raised.exception.status)
+        self.assertEqual("provider_scene_reference_required", raised.exception.code)
+        self.assertEqual([], charged)
+        conn = self.db()
+        try:
+            self.assertEqual(0, conn.execute(
+                "SELECT COUNT(*) FROM short_drama_provider_shot_jobs"
+            ).fetchone()[0])
+            consumed = conn.execute(
+                "SELECT consumed_job_id FROM short_drama_provider_shot_quotes "
+                "WHERE token=?",
+                (quote["quote_token"],),
+            ).fetchone()[0]
+            self.assertIsNone(consumed)
+        finally:
+            conn.close()
 
     def test_minimax_bound_scene_without_locked_reference_is_rejected(self):
         self._lock_project_character_references()
