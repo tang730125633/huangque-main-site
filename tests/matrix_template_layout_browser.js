@@ -16,6 +16,11 @@ function serve(request, response) {
     response.setHeader('Content-Type', 'application/json');
     response.end(JSON.stringify({
       templates: templateIds.map(id => ({id, name: id, tags: ['QA']})),
+      fonts: [
+        {value: '', label: '自动搭配', source: 'automatic'},
+        {value: 'Noto Sans SC', label: '思源黑体', source: 'bundled'},
+        {value: 'YS HelloFont BangBangTi', label: '优设字由棒棒体', source: 'private'},
+      ],
       default_template: 'native-bold', cost: 5,
     }));
     return;

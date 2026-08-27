@@ -1013,7 +1013,8 @@ class HQCLIAPITests(unittest.TestCase):
                     "kind": "matrix_template_video",
                     "payload": {
                         "top_text": "有效标题", "bottom_text": "有效行动文案",
-                        "template_id": "native-bold", "bgm": True,
+                        "template_id": "native-bold",
+                        "font_family": "AaHouDiHei", "bgm": True,
                     },
                 }, plan["body"])
                 return 200, {"kind": "matrix_template_video", "cost": 5, "points": 100}
@@ -1029,7 +1030,7 @@ class HQCLIAPITests(unittest.TestCase):
 
         input_body = {
             "top_text": "  有效标题  ", "bottom_text": " 有效行动文案 ",
-            "template_id": "native-bold",
+            "template_id": "native-bold", "font_family": "AaHouDiHei",
         }
         request = {"action": "matrix-template-generate", "input": input_body, "confirm": False}
         with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
@@ -1046,7 +1047,8 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual("/api/gen/matrix-template", submitted[0]["path"])
         self.assertEqual({
             "top_text": "有效标题", "bottom_text": "有效行动文案",
-            "template_id": "native-bold", "bgm": True,
+            "template_id": "native-bold",
+            "font_family": "AaHouDiHei", "bgm": True,
         }, submitted[0]["body"])
         self.assertEqual("5", submitted[0]["headers"]["X-HQ-Expected-Cost"])
         self.assertTrue(submitted[0]["headers"]["Idempotency-Key"].startswith("hqcli-"))
@@ -1078,6 +1080,19 @@ class HQCLIAPITests(unittest.TestCase):
             (plan["scope"], plan["generation_kind"], plan["endpoint"]),
         )
         self.assertEqual(dict(value, bgm=True), plan["payload"])
+        selected = self.auth.hq_cli_api.action_plan(
+            "matrix-template-generate", dict(value, font_family="AaHouDiHei")
+        )
+        self.assertEqual("AaHouDiHei", selected["payload"]["font_family"])
+        for automatic in ("", "   "):
+            auto = self.auth.hq_cli_api.action_plan(
+                "matrix-template-generate", dict(value, font_family=automatic)
+            )
+            self.assertNotIn("font_family", auto["payload"])
+        schema = self.auth.hq_cli_api._MEDIA_SCHEMAS[
+            "matrix-template-generate"
+        ]["properties"]["font_family"]
+        self.assertEqual({"type": "string", "maxLength": 80}, schema)
         for action, path in (
             ("matrix-template-capability", "/api/gen/matrix-template/capability"),
             ("matrix-template-templates", "/api/gen/matrix-template/templates"),
