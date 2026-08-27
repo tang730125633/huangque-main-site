@@ -815,6 +815,11 @@ MATRIX_TEMPLATE_FIELDS = {
     "bottom_text": {"type": "string", "minLength": 2, "maxLength": 80},
     "template_id": {"type": "string", "minLength": 1, "maxLength": 64,
                     "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+    "font_family": {"type": "string", "maxLength": 80},
+}
+MATRIX_TEMPLATE_BATCH_FIELDS = {
+    **MATRIX_TEMPLATE_FIELDS,
+    "count": {"type": "integer", "minimum": 2, "maximum": 5},
 }
 
 for identifier, name, fields, required in (
@@ -827,6 +832,8 @@ for identifier, name, fields, required in (
      ["text", "template", "style", "voice"]),
     ("matrix-template-generate", "模板成片生成", MATRIX_TEMPLATE_FIELDS,
      ["top_text", "bottom_text", "template_id"]),
+    ("matrix-template-batch-generate", "模板成片批量生成", MATRIX_TEMPLATE_BATCH_FIELDS,
+     ["top_text", "bottom_text", "template_id", "count"]),
     ("digital-ip-text-generate", "数字IP单条文案生成", DIGITAL_IP_TEXT_FIELDS,
      ["text", "voice"]),
     ("digital-ip-audio-generate", "数字IP本人资产音频生成", DIGITAL_IP_AUDIO_FIELDS,
@@ -902,11 +909,20 @@ CAPABILITIES["text-video-generate"]["next_actions"] = [
 ]
 CAPABILITIES["matrix-template-generate"]["constraints"] = [
     "template_id must be selected from matrix-template-templates",
+    "font_family is optional and must be selected from matrix-template-templates fonts",
     "duration is calculated automatically and BGM is enabled by default",
     "the first call only quotes the fixed template-video cost",
 ]
 CAPABILITIES["matrix-template-generate"]["next_actions"] = [
     "核对报价后，用完全相同的输入、quote_token 与 --confirm 提交；拿到 job_id 后仅使用 task 轮询。",
+]
+CAPABILITIES["matrix-template-batch-generate"]["constraints"] = [
+    "template_id and optional font_family must be selected from matrix-template-templates",
+    "count creates 2-5 independent jobs under one total quote and one confirmation",
+    "duration is calculated automatically and BGM is enabled by default",
+]
+CAPABILITIES["matrix-template-batch-generate"]["next_actions"] = [
+    "核对总价与 count 后，用完全相同的输入、quote_token 与 --confirm 提交；只轮询返回的 job_ids。",
 ]
 CAPABILITIES["text-video-avatar-import"] = _api(
     "text-video-avatar-import", "导入口播人物", "text-video-avatar-import",
@@ -1030,6 +1046,7 @@ for identifier, website_modes in {
     "matrix-template": ["matrix_template.single"],
     "matrix-template-templates": ["matrix_template.single"],
     "matrix-template-generate": ["matrix_template.single"],
+    "matrix-template-batch-generate": ["matrix_template.batch"],
     "short-drama": ["live_action"],
     "short-drama-create": ["live_action"], "short-drama-delete": ["live_action"],
     "short-drama-projects": ["live_action"], "short-drama-project": ["live_action"],
@@ -1081,7 +1098,7 @@ _SITE_OPERATIONS = {
         "script.output.image", "script.output.handoff",
     ],
     "text-video": ["text_video.topic", "text_video.fixed"],
-    "matrix-template": ["matrix_template.single"],
+    "matrix-template": ["matrix_template.single", "matrix_template.batch"],
     "short-drama": [
         "short_drama.live_action.script_planning", "short_drama.live_action.character_reference",
         "short_drama.live_action.shot_video", "short_drama.live_action.preview",

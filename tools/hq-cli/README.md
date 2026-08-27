@@ -132,14 +132,15 @@ hq run matrix-template-capability --json
 hq run matrix-template-templates --json
 ```
 
-从目录选择一个 `template_id`，准备 UTF-8 JSON：
+从目录选择一个 `template_id`；需要指定字体时，同时复制 `fonts[].value` 作为可选 `font_family`。准备 UTF-8 JSON：
 
 ```sh
 cat > matrix-template.json <<'JSON'
 {
   "top_text": "真正拉开差距的，不是工具",
   "bottom_text": "评论区留下关键词，领取完整方案",
-  "template_id": "native-bold"
+  "template_id": "full-overlay-bold",
+  "font_family": "AaHouDiHei"
 }
 JSON
 
@@ -152,6 +153,26 @@ JSON
 ```
 
 时长由文案自动计算，背景音乐默认开启，素材固定来自平台已审核素材库。拿到 `job_id` 后只轮询 `task`，不要再次提交生成命令。
+
+同一文案与模板需要一次生成 2–5 条时，增加 `count` 并使用批量能力：
+
+```json
+{
+  "top_text": "真正拉开差距的，不是工具",
+  "bottom_text": "评论区留下关键词，领取完整方案",
+  "template_id": "full-overlay-bold",
+  "font_family": "AaHouDiHei",
+  "count": 5
+}
+```
+
+```sh
+hq run matrix-template-batch-generate --input @matrix-template-batch.json --json
+# 核对总价、单价和 count 后，只确认一次：
+hq run matrix-template-batch-generate --input @matrix-template-batch.json --confirm --quote-token '<quote_token>' --json
+```
+
+批量确认返回 `job_ids`；每个子任务仍沿用单条模板成片的幂等、失败退款和资产合同，只轮询这些原始 Job，不重新提交整批。
 
 需要混入口播视频素材时，先上传并导入一个或多个人物，再生成分镜方案：
 
