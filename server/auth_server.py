@@ -4941,10 +4941,15 @@ class H(BaseHTTPRequestHandler):
                 plan = dict(plan)
                 headers = dict(plan.get("headers") or {})
                 existing_key = headers.get("Idempotency-Key")
-                if existing_key and existing_key != idempotency_key:
+                if (
+                    existing_key and existing_key != idempotency_key
+                    and action != "voice-clone-create"
+                ):
                     raise hq_cli_api.CLIAPIError(
                         409, "idempotency_key 与 action 输入不一致", "idempotency_conflict",
                     )
+                # The trusted IP12 bridge owns the end-to-end clone attempt.
+                # Its key must be the only key observed by the downstream API.
                 headers["Idempotency-Key"] = idempotency_key
                 plan["headers"] = headers
             if action == "ip12-message":
