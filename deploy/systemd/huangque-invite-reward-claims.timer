@@ -2,7 +2,7 @@
 Description=Run Huangque Invite Reward Claim Expiry Processor
 
 [Timer]
-OnBootSec=1min
+OnActiveSec=1min
 OnUnitActiveSec=1min
 AccuracySec=10s
 Persistent=true
