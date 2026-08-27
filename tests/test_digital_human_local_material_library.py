@@ -80,6 +80,18 @@ class DigitalHumanLocalMaterialLibraryTests(unittest.TestCase):
         self.assertNotIn("source_url", public)
         self.assertNotIn("file_token", public)
 
+    def test_release_probe_can_verify_every_indexed_file(self):
+        self.valid_three()
+        with mock.patch.object(
+            self.domain, "_read_local_record",
+            wraps=self.domain._read_local_record,
+        ) as read:
+            result = self.domain.local_material_library_operational_probe(
+                expected_count=3, verify_all=True,
+            )
+        self.assertEqual(3, result["verified_files"])
+        self.assertEqual(3, read.call_count)
+
     def test_missing_directory_and_root_symlink_fail_closed(self):
         missing = self.root.parent / "missing"
         with mock.patch.dict(os.environ, {self.domain._LOCAL_LIBRARY_ENV: str(missing)}):

@@ -820,7 +820,7 @@ def _local_library_material(query, preferred_type):
     return raw, mime, "local_library"
 
 
-def local_material_library_operational_probe(expected_count=204):
+def local_material_library_operational_probe(expected_count=204, verify_all=False):
     root, records = _load_local_catalog(expected_count=expected_count)
     counts = {"image": 0, "video": 0, "bgm": 0}
     samples = {}
@@ -829,9 +829,13 @@ def local_material_library_operational_probe(expected_count=204):
         samples.setdefault(record["media_type"], record)
     if any(counts[kind] <= 0 for kind in counts):
         raise ValueError("本地素材库缺少图片、视频或 BGM")
-    for record in samples.values():
+    verified = records if verify_all else samples.values()
+    for record in verified:
         _read_local_record(root, record)
-    return {"ok": True, "count": len(records), "types": counts}
+    return {
+        "ok": True, "count": len(records), "types": counts,
+        "verified_files": len(records) if verify_all else len(samples),
+    }
 
 
 def _customer_material(upload_id, username):

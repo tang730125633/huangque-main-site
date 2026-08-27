@@ -4592,13 +4592,13 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion, job
 # ============ F4 · 口播视频自动字幕（whisper 时间轴 + libass 烧录） ============
 # 仅 text/audio 口播模式生效；motion 动作模仿不做字幕（多无语音，价值低）。
 # whisper 吃 CPU，用信号量把同时转写数限到 WHISPER_MAX_CONCURRENCY（默认 1），避免打满核。
-WHISPER_MODEL_NAME = os.environ.get("WHISPER_MODEL", "base")
+WHISPER_MODEL_NAME = os.environ.get("WHISPER_MODEL", "small")
 WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "cpu").strip() or "cpu"
 WHISPER_COMPUTE_TYPE = (
     os.environ.get("WHISPER_COMPUTE_TYPE", "int8").strip() or "int8"
 )
 WHISPER_CACHE_DIR = os.environ.get(
-    "WHISPER_CACHE_DIR", "/var/cache/huangque/faster-whisper",
+    "WHISPER_CACHE_DIR", "/home/ubuntu/.cache/huggingface/hub",
 ).strip()
 _whisper_sem = threading.BoundedSemaphore(max(1, int(os.environ.get("WHISPER_MAX_CONCURRENCY", "1") or "1")))
 _whisper_model = None

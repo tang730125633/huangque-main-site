@@ -91,8 +91,8 @@ class DigitalHumanSubtitlePreflightTests(unittest.TestCase):
             "WHISPER_MODEL=small",
             "WHISPER_DEVICE=cpu",
             "WHISPER_COMPUTE_TYPE=int8",
-            "WHISPER_CACHE_DIR=/var/cache/huangque/faster-whisper",
-            'Environment="SUBTITLE_FONT=Noto Sans CJK SC"',
+            "WHISPER_CACHE_DIR=/home/ubuntu/.cache/huggingface/hub",
+            'Environment="SUBTITLE_FONT=Noto Sans SC"',
             "HF_HUB_OFFLINE=1",
         ):
             self.assertIn(marker, dropin)

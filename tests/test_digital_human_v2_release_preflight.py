@@ -1,7 +1,10 @@
+import hashlib
 import importlib.util
+import json
 import os
 import pathlib
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -31,6 +34,54 @@ class DigitalHumanReleasePreflightTests(unittest.TestCase):
             "DIGITAL_HUMAN_LOCAL_MATERIAL_LIBRARY_ROOT="
             "/home/ubuntu/material-libraries/huangque-media", environment,
         )
+        whisper = (ROOT / (
+            "deploy/systemd/huangque-content.service.d/whisper.conf"
+        )).read_text("utf-8")
+        self.assertIn(
+            "WHISPER_CACHE_DIR=/home/ubuntu/.cache/huggingface/hub", whisper,
+        )
+        self.assertIn('Environment="SUBTITLE_FONT=Noto Sans SC"', whisper)
+
+    def _write_mirror(self, raw):
+        temporary = tempfile.TemporaryDirectory()
+        root = pathlib.Path(temporary.name)
+        (root / "index.jsonl").write_bytes(raw)
+        provenance = {
+            "schema_version": 1,
+            "source_host": preflight.EXPECTED_LIBRARY_PRIMARY_HOST,
+            "source_root": preflight.EXPECTED_LIBRARY_PRIMARY_ROOT,
+            "mirror_root": preflight.EXPECTED_LIBRARY_ROOT,
+            "entry_count": preflight.EXPECTED_LIBRARY_COUNT,
+            "index_sha256": hashlib.sha256(raw).hexdigest(),
+        }
+        (root / preflight.MIRROR_PROVENANCE_NAME).write_text(
+            json.dumps(provenance), encoding="utf-8",
+        )
+        return temporary, root, provenance
+
+    def test_mirror_provenance_locks_test_server_and_exact_index(self):
+        temporary, root, provenance = self._write_mirror(b'{"id":"one"}\n')
+        self.addCleanup(temporary.cleanup)
+        result = preflight._verify_material_mirror_provenance(root)
+        self.assertEqual("8.148.158.106", result["source_host"])
+        self.assertEqual(provenance["index_sha256"], result["index_sha256"])
+
+    def test_mirror_index_drift_fails_closed(self):
+        temporary, root, _provenance = self._write_mirror(b'{"id":"one"}\n')
+        self.addCleanup(temporary.cleanup)
+        (root / "index.jsonl").write_bytes(b'{"id":"two"}\n')
+        with self.assertRaisesRegex(preflight.PreflightError, "does not match"):
+            preflight._verify_material_mirror_provenance(root)
+
+    def test_mirror_from_another_host_fails_closed(self):
+        temporary, root, provenance = self._write_mirror(b'{"id":"one"}\n')
+        self.addCleanup(temporary.cleanup)
+        provenance["source_host"] = "127.0.0.1"
+        (root / preflight.MIRROR_PROVENANCE_NAME).write_text(
+            json.dumps(provenance), encoding="utf-8",
+        )
+        with self.assertRaisesRegex(preflight.PreflightError, "source is not locked"):
+            preflight._verify_material_mirror_provenance(root)
 
     def test_all_locked_dependencies_are_checked(self):
         from content_domains import core, digital_human_v2, video
@@ -40,15 +91,20 @@ class DigitalHumanReleasePreflightTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {
             "DIGITAL_HUMAN_LOCAL_MATERIAL_LIBRARY_ROOT": preflight.EXPECTED_LIBRARY_ROOT,
         }, clear=False), mock.patch.object(
+            preflight, "_verify_material_mirror_provenance",
+            return_value={"index_sha256": "a" * 64, "source_host": "8.148.158.106"},
+        ) as mirror, mock.patch.object(
             digital_human_v2, "local_material_library_operational_probe",
-            return_value={"count": 204},
+            return_value={"count": 204, "verified_files": 204},
         ) as library, mock.patch.object(
             video, "subtitle_runtime_preflight",
             return_value={"ok": True, "model": "small"},
         ) as subtitle, mock.patch.object(core, "_domains", return_value=(None, None, provider)):
             result = preflight.run()
         self.assertTrue(result["ok"])
-        library.assert_called_once_with(204)
+        self.assertEqual("a" * 64, result["library_index_sha256"])
+        self.assertEqual(2, mirror.call_count)
+        library.assert_called_once_with(204, verify_all=True)
         subtitle.assert_called_once_with()
         provider.heygen_upload_preflight.assert_called_once_with()
 
@@ -56,6 +112,16 @@ class DigitalHumanReleasePreflightTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {
             "DIGITAL_HUMAN_LOCAL_MATERIAL_LIBRARY_ROOT": "/tmp/materials",
         }, clear=False), self.assertRaisesRegex(preflight.PreflightError, "not locked"):
+            preflight.run()
+
+    def test_runtime_configuration_must_match_observed_production(self):
+        from content_domains import video
+
+        with mock.patch.dict(os.environ, {
+            "DIGITAL_HUMAN_LOCAL_MATERIAL_LIBRARY_ROOT": preflight.EXPECTED_LIBRARY_ROOT,
+        }, clear=False), mock.patch.object(
+            video, "WHISPER_CACHE_DIR", "/var/cache/huangque/faster-whisper",
+        ), self.assertRaisesRegex(preflight.PreflightError, "production locked"):
             preflight.run()
 
     def test_heygen_not_ready_fails_closed(self):
@@ -66,8 +132,11 @@ class DigitalHumanReleasePreflightTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {
             "DIGITAL_HUMAN_LOCAL_MATERIAL_LIBRARY_ROOT": preflight.EXPECTED_LIBRARY_ROOT,
         }, clear=False), mock.patch.object(
+            preflight, "_verify_material_mirror_provenance",
+            return_value={"index_sha256": "a" * 64, "source_host": "8.148.158.106"},
+        ), mock.patch.object(
             digital_human_v2, "local_material_library_operational_probe",
-            return_value={"count": 204},
+            return_value={"count": 204, "verified_files": 204},
         ), mock.patch.object(
             video, "subtitle_runtime_preflight",
             return_value={"ok": True, "model": "small"},
