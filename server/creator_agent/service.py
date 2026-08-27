@@ -13,15 +13,24 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 from .planner import (
     ALLOWED_PLATFORMS,
     PLATFORM_LABELS,
     CreatorPlanner,
+    PlannerError,
     clear_preferences,
     remember_preference,
     sanitize_platforms,
     sanitize_preferences,
+)
+from .profile_agent import (
+    DeepSeekProfileAgent, MODULES, ProfileAgentError,
+    current_question, initial_state,
+)
+from .model_usage import (
+    ModelUsageError, ModelUsageGuard, NullModelUsageGuard,
 )
 from .store import (
     CreatorAgentStore, IdempotencyConflict, QuoteExpired,
@@ -32,7 +41,10 @@ from .store import (
 _PROJECT_RE = re.compile(r"^[0-9a-f]{12}$")
 _BATCH_RE = re.compile(r"^creator_batch_[0-9a-f]{32}$")
 _REQUEST_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
-_PRIVATE_KEYS = {"quote_token", "job_id", "idempotency_key", "confirmation_id"}
+_PRIVATE_KEYS = {
+    "quote_token", "job_id", "idempotency_key", "confirmation_id",
+    "source_message_id", "last_mutation_message_id",
+}
 _RUNNING = {"submitted", "queued", "running", "verifying", "processing", "submission_unknown"}
 _FAILED = {"error", "failed", "refunded", "failed_submission"}
 _DONE = {"done", "completed", "success"}
@@ -102,93 +114,6 @@ class AuthClient:
         return user
 
 
-class JSONClient:
-    def __init__(self, base_url, timeout=30, opener=None):
-        self.base_url = str(base_url or "").rstrip("/")
-        self.timeout = int(timeout)
-        self.opener = opener or urllib.request.build_opener(urllib.request.ProxyHandler({}))
-
-    def request(self, method, path, headers, body=None, timeout=None):
-        forwarded = _auth_headers(headers)
-        forwarded["Accept"] = "application/json"
-        data = None
-        if body is not None:
-            data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-            forwarded["Content-Type"] = "application/json"
-        request = urllib.request.Request(
-            _url(self.base_url, path), data=data, headers=forwarded, method=method,
-        )
-        try:
-            with self.opener.open(request, timeout=timeout or self.timeout) as response:
-                raw = response.read(4 * 1024 * 1024 + 1)
-                status = response.getcode()
-        except urllib.error.HTTPError as exc:
-            raw, status = exc.read(4 * 1024 * 1024 + 1), exc.code
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            raise APIError(503, "IP12 服务暂不可用", "ip12_unavailable") from exc
-        if len(raw) > 4 * 1024 * 1024:
-            raise APIError(502, "IP12 响应过大", "ip12_response_too_large")
-        try:
-            value = json.loads(raw or b"{}")
-        except (TypeError, ValueError) as exc:
-            raise APIError(502, "IP12 返回了无效响应", "ip12_invalid_response") from exc
-        if not 200 <= int(status) < 300:
-            detail = value.get("detail") or value.get("error") or "IP12 请求失败"
-            code = value.get("code") or "ip12_error"
-            raise APIError(status, detail, code)
-        return value, int(status)
-
-
-class IP12Client(JSONClient):
-    def health(self):
-        value, _ = self.request("GET", "/healthz", {}, timeout=3)
-        return value
-
-    def projects(self, headers):
-        value, _ = self.request("GET", "/api/conversations", headers)
-        return value if isinstance(value, list) else value.get("items") or []
-
-    def create(self, headers, title="我的个人画像"):
-        value, _ = self.request("POST", "/api/conversations", headers, {"title": title})
-        return value
-
-    def project(self, headers, project_id):
-        value, _ = self.request("GET", "/api/conversations/" + project_id, headers)
-        return value
-
-    def turn(self, headers, project_id, *, message="", action=None,
-             expected_revision=None, request_id="", foundation_review=""):
-        body = {"conversation_id": project_id, "request_id": request_id}
-        if action is not None:
-            body["action"] = action
-        else:
-            body["message"] = message
-        if expected_revision is not None:
-            body["expected_revision"] = expected_revision
-        if foundation_review:
-            body["foundation_review"] = foundation_review
-        value, status = self.request("POST", "/api/chat-complete", headers, body, timeout=300)
-        value["http_status"] = status
-        return value
-
-    def generate_foundation(self, headers, project_id):
-        value, _ = self.request(
-            "POST", "/api/foundation-report/generate", headers,
-            {"conversation_id": project_id}, timeout=180,
-        )
-        return value
-
-    def confirm_foundation(self, headers, project_id, revision, report_id):
-        value, _ = self.request(
-            "POST", "/api/foundation-report/confirm", headers, {
-                "conversation_id": project_id,
-                "expected_revision": revision,
-                "report_id": report_id,
-            }, timeout=60,
-        )
-        return value
-
-
 class BridgeClient:
     def __init__(self, base_url, internal_token, timeout=30, opener=None):
         self.base_url = str(base_url or "http://127.0.0.1:8095").rstrip("/")
@@ -251,32 +176,77 @@ class BridgeClient:
 
 
 class CreatorAgentService:
-    def __init__(self, store, planner, auth, bridge, ip12, clock=None):
+    def __init__(self, store, planner, auth, bridge, profile_agent,
+                 usage_guard=None, clock=None):
         self.store = store
         self.planner = planner
         self.auth = auth
         self.bridge = bridge
-        self.ip12 = ip12
+        self.profile_agent = profile_agent
+        self.usage_guard = usage_guard or NullModelUsageGuard()
         self.clock = clock or time.time
         self._locks = {}
         self._locks_guard = threading.Lock()
+        self._request_context = threading.local()
+        self._before_profile_commit_hook = None
+        self._profile_turn_fault_hook = None
+        self._after_profile_commit_hook = None
+        self._before_message_commit_hook = None
+        self._message_turn_fault_hook = None
+        self._after_message_commit_hook = None
+        self._message_side_effect_fault_hook = None
 
     def _lock(self, username, project_id):
         key = username + ":" + project_id
         with self._locks_guard:
             return self._locks.setdefault(key, threading.Lock())
 
+    @staticmethod
+    def _client_ip(headers):
+        values = headers or {}
+        real_ip = str(values.get("X-Real-IP") or "").strip()
+        forwarded = str(values.get("X-Forwarded-For") or "").split(",")
+        candidates = [real_ip, forwarded[-1].strip() if forwarded else ""]
+        for value in candidates:
+            if re.fullmatch(r"[0-9A-Fa-f:.]{2,80}", value):
+                return value[:80]
+        return "unknown"
+
+    def _model_call(self, user, kind, payload, callback, max_output_tokens=2400):
+        serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        input_token_upper_bound = len(serialized.encode("utf-8"))
+        try:
+            lease = self.usage_guard.acquire(
+                user["username"], getattr(self._request_context, "client_ip", "unknown"),
+                kind, input_token_upper_bound, max_output_tokens,
+            )
+        except ModelUsageError as exc:
+            self._discard_current_message()
+            raise APIError(429, exc.detail, exc.code) from exc
+        try:
+            value = callback()
+        except Exception:
+            lease.finish(False)
+            raise
+        lease.finish(True)
+        return value
+
     def health(self):
         checks = {
             "bridge_token": bool(getattr(self.bridge, "internal_token", "")),
             "auth_url": _valid_loopback_base(getattr(self.auth, "base_url", "")),
-            "ip12_url": _valid_loopback_base(getattr(self.ip12, "base_url", "")),
+            "model_configured": bool(getattr(self.profile_agent, "configured", False)),
+            "model_reachable": False,
+            "model_usage_store": bool(self.usage_guard.health()),
             "database_writable": bool(self.store.health()),
             "bridge_catalog": False,
-            "ip12_reachable": False,
         }
         bridge_detail = ""
-        ip12_detail = ""
+        if checks["model_configured"]:
+            try:
+                checks["model_reachable"] = self.profile_agent.health() is True
+            except Exception:
+                checks["model_reachable"] = False
         if checks["bridge_token"] and checks["auth_url"]:
             try:
                 bridge = self.bridge.health()
@@ -290,22 +260,16 @@ class CreatorAgentService:
                 )
             except APIError as exc:
                 bridge_detail = exc.code
-        if checks["ip12_url"]:
-            try:
-                checks["ip12_reachable"] = self.ip12.health().get("ok") is True
-            except APIError as exc:
-                ip12_detail = exc.code
         ready = all(checks.values())
         return {
             "ok": True,
             "ready": ready,
             "service": "huangque-creator-agent",
-            "version": 2,
+            "version": 3,
             "checks": checks,
             "details": {
                 key: value for key, value in {
                     "bridge_catalog": bridge_detail,
-                    "ip12_reachable": ip12_detail,
                 }.items() if value
             },
         }
@@ -339,39 +303,51 @@ class CreatorAgentService:
         return project_id
 
     def _ensure_project(self, user, headers):
-        projects = self.ip12.projects(headers)
-        if not projects:
-            self.ip12.create(headers, "我的个人画像")
-            projects = self.ip12.projects(headers)
-        if not projects:
-            raise APIError(502, "画像项目创建失败", "project_create_failed")
-        owned = {str(item.get("id") or ""): item for item in projects if isinstance(item, dict)}
+        workspaces = self.store.workspaces(user["username"])
+        if not workspaces:
+            project_id = uuid.uuid4().hex[:12]
+            workspace = self.store.ensure_workspace(
+                user["username"], project_id, "我的个人画像",
+            )
+            workspace = self.store.update_workspace(
+                user["username"], project_id,
+                profile_state=initial_state(), flow={"mode": "profile_interview"},
+            )
+            question = current_question(workspace["profile_state"])
+            self.store.add_message(
+                user["username"], project_id, "assistant",
+                "我们先建立你的个人画像。" + question["question"],
+                public=self._question_public(workspace["profile_state"]),
+            )
+            workspaces = [workspace]
+        owned = {item["project_id"]: item for item in workspaces}
         selected = self.store.active_project(user["username"])
         if selected not in owned:
             selected = next(iter(owned))
             self.store.set_active_project(user["username"], selected)
-        item = owned[selected]
-        workspace = self.store.ensure_workspace(
-            user["username"], selected, str(item.get("title") or "我的个人画像"),
-        )
-        project = self.ip12.project(headers, selected)
-        self.store.sync_ip12_messages(user["username"], selected, project.get("messages") or [])
-        return projects, project, workspace
+        workspace = owned[selected]
+        if not workspace.get("profile_state"):
+            workspace = self.store.update_workspace(
+                user["username"], selected,
+                profile_state=initial_state(), flow={"mode": "profile_interview"},
+            )
+            question = current_question(workspace["profile_state"])
+            self.store.add_message(
+                user["username"], selected, "assistant",
+                "独立画像流程已启用。" + question["question"],
+                public=self._question_public(workspace["profile_state"]),
+            )
+        project = self._local_project(workspace)
+        return workspaces, project, workspace
 
     @staticmethod
     def _state(project):
-        return project.get("coach_state") if isinstance(project.get("coach_state"), dict) else {}
+        return project.get("profile_state") if isinstance(project.get("profile_state"), dict) else {}
 
     @classmethod
     def _foundation_ready(cls, project):
         state = cls._state(project)
-        report = state.get("foundation_report") if isinstance(state.get("foundation_report"), dict) else {}
-        completed = {int(item) for item in state.get("completed_modules") or [] if str(item).isdigit()}
-        return (
-            {1, 2, 3, 4}.issubset(completed)
-            and report.get("status") == "confirmed"
-            and report.get("review_status") != "dirty"
-        )
+        return state.get("profile_ready") is True
 
     @classmethod
     def _progress(cls, project):
@@ -380,74 +356,90 @@ class CreatorAgentService:
             int(item) for item in state.get("completed_modules") or []
             if str(item).isdigit() and 1 <= int(item) <= 6
         })
-        report = state.get("foundation_report") if isinstance(state.get("foundation_report"), dict) else {}
+        ready = cls._foundation_ready(project)
         return {
             "current_module": int(state.get("current_module") or 1),
             "module_step": int(state.get("module_step") or 0),
             "completed_modules": completed,
-            "foundation_status": str(report.get("status") or "missing"),
-            "foundation_report_id": str(report.get("report_id") or ""),
-            "foundation_ready": cls._foundation_ready(project),
-            "profile_complete": cls._foundation_ready(project),
+            "foundation_status": "confirmed" if ready else str(state.get("phase") or "collecting"),
+            "foundation_report_id": "",
+            "foundation_ready": ready,
+            "profile_complete": ready,
         }
 
     @classmethod
-    def _ip12_context(cls, project, workspace=None):
+    def _profile_context(cls, project, workspace=None):
         state = cls._state(project)
-        profile = state.get("ip_profile") if isinstance(state.get("ip_profile"), dict) else {}
+        profile = project.get("profile") if isinstance(project.get("profile"), dict) else {}
         return {
-            "ip_profile": _public(profile),
+            "profile": _public(profile),
+            "answers": _public(state.get("answers") or {}),
+            "selected_modules": _public(state.get("selected_profiles") or {}),
             "completed_modules": cls._progress(project)["completed_modules"],
-            "foundation_confirmed": cls._foundation_ready(project),
+            "profile_confirmed": cls._foundation_ready(project),
             "creator_profile_overrides": _public((workspace or {}).get("profile_overrides") or {}),
+        }
+
+    @staticmethod
+    def _local_project(workspace):
+        return {
+            "id": workspace["project_id"],
+            "title": workspace.get("alias") or "我的个人画像",
+            "updated": str(workspace.get("updated_at") or ""),
+            "profile_state": workspace.get("profile_state") or {},
+            "profile": workspace.get("profile") or {},
+            "reports": (workspace.get("profile_state") or {}).get("module_reviews") or {},
+            "deliverables": workspace.get("deliverables") or {},
+            "artifacts": [],
         }
 
     @classmethod
     def _public_project(cls, project, workspace):
         progress = cls._progress(project)
-        report = cls._state(project).get("foundation_report") or {}
         return {
             "id": project.get("id"),
             "title": project.get("title") or "我的个人画像",
             "display_name": workspace.get("alias") or project.get("title") or "我的个人画像",
             "updated": project.get("updated") or "",
-            "revision": cls._state(project).get("revision"),
+            "revision": int(cls._state(project).get("revision") or 1),
             "progress": progress,
-            "harness_actions": cls._safe_ip12_actions(project.get("harness_actions") or []),
+            "harness_actions": [],
             "reports": _public(project.get("reports") or {}),
             "deliverables": _public(project.get("deliverables") or {}),
             "artifacts": _public(project.get("artifacts") or []),
-            "foundation_pdf_url": (
-                "/workbench/ip12/api/foundation-report/%s.pdf?preview=1" % project.get("id")
-                if report.get("status") in {"awaiting_confirmation", "confirmed"} else ""
-            ),
+            "profile": _public(project.get("profile") or {}),
+            "foundation_pdf_url": "",
         }
 
     @staticmethod
-    def _safe_ip12_actions(actions):
-        allowed = {
-            "confirm_intake", "edit_intake", "confirm_checkpoint", "edit_checkpoint",
-            "select_checkpoint_choice", "resume_choice_generation",
+    def _question_public(state):
+        question = current_question(state)
+        actions = [
+            {"intent": "profile_answer", "label": option, "payload": {
+                "answer": option, "profile_revision": int(state.get("revision") or 1),
+                "module": question["module"], "field": question["key"],
+            }}
+            for option in question.get("options") or []
+        ]
+        return {
+            "kind": "profile_question", "module": question["module"],
+            "module_name": question["module_name"], "field": question["key"],
+            "template": question.get("template") or "", "actions": actions,
         }
-        return _public([
-            item for item in actions or []
-            if isinstance(item, dict) and item.get("type") in allowed
-        ])
 
     def _project_list(self, username, projects, active_id, workspace):
         result = []
         for item in projects:
-            if not isinstance(item, dict) or not item.get("id"):
+            if not isinstance(item, dict) or not item.get("project_id"):
                 continue
             item_workspace = (
-                workspace if item["id"] == active_id
-                else self.store.workspace(username, item["id"])
+                workspace if item["project_id"] == active_id else item
             ) or {}
             result.append({
-                "id": item["id"],
-                "title": item_workspace.get("alias") or item.get("title") or "我的个人画像",
-                "updated": item.get("updated") or "",
-                "active": item["id"] == active_id,
+                "id": item["project_id"],
+                "title": item_workspace.get("alias") or "我的个人画像",
+                "updated": str(item.get("updated_at") or ""),
+                "active": item["project_id"] == active_id,
             })
         return result
 
@@ -465,6 +457,14 @@ class CreatorAgentService:
     def _snapshot(self, user, headers, projects, project, workspace):
         batches = self.store.batches(user["username"], project["id"])
         public_project = self._public_project(project, workspace)
+        messages = self.store.messages(user["username"], project["id"])
+        for item in messages:
+            if item.get("role") != "user" or not isinstance(item.get("public"), dict):
+                continue
+            item["public"] = {
+                key: value for key, value in item["public"].items()
+                if key not in {"turn", "response"}
+            }
         quick_actions = []
         if public_project["progress"]["foundation_ready"]:
             quick_actions = [
@@ -477,7 +477,7 @@ class CreatorAgentService:
             "projects": self._project_list(user["username"], projects, project["id"], workspace),
             "project": public_project,
             "workspace": _public(workspace),
-            "messages": self.store.messages(user["username"], project["id"]),
+            "messages": messages,
             "quick_actions": quick_actions,
             "platforms": [
                 {"id": key, "label": PLATFORM_LABELS[key]} for key in ALLOWED_PLATFORMS
@@ -499,73 +499,327 @@ class CreatorAgentService:
     def select_project(self, user, headers, project_id):
         self._gate(user)
         project_id = self._project_id(project_id)
-        projects = self.ip12.projects(headers)
-        if project_id not in {str(item.get("id") or "") for item in projects if isinstance(item, dict)}:
+        projects = self.store.workspaces(user["username"])
+        if project_id not in {item["project_id"] for item in projects}:
             raise APIError(404, "画像项目不存在", "not_found")
         self.store.set_active_project(user["username"], project_id)
-        project = self.ip12.project(headers, project_id)
-        workspace = self.store.ensure_workspace(
-            user["username"], project_id, project.get("title") or "我的个人画像",
-        )
-        self.store.sync_ip12_messages(user["username"], project_id, project.get("messages") or [])
+        workspace = self.store.workspace(user["username"], project_id)
+        project = self._local_project(workspace)
         return self._snapshot(user, headers, projects, project, workspace)
 
     def rename_project(self, user, headers, project_id, body):
         self._gate(user)
         project_id = self._project_id(project_id)
-        project = self.ip12.project(headers, project_id)
+        workspace = self.store.workspace(user["username"], project_id)
+        if not workspace:
+            raise APIError(404, "画像项目不存在", "not_found")
         alias = re.sub(r"\s+", " ", str((body or {}).get("title") or "")).strip()[:120]
         if not alias:
             raise APIError(400, "画像名称不能为空", "invalid_title")
-        self.store.ensure_workspace(user["username"], project_id, project.get("title") or alias)
         return self.store.update_workspace(user["username"], project_id, alias=alias)
 
-    @staticmethod
-    def _clean_ip12_action(value):
-        if not isinstance(value, dict):
-            raise APIError(400, "IP12 操作无效", "invalid_action")
-        allowed = {"type", "target_id", "choice_id"}
-        result = {key: str(value.get(key) or "")[:160] for key in allowed if value.get(key)}
-        if result.get("type") not in {
-            "confirm_intake", "edit_intake", "confirm_checkpoint", "edit_checkpoint",
-            "select_checkpoint_choice", "resume_choice_generation",
-        }:
-            raise APIError(400, "IP12 操作类型无效", "invalid_action")
-        if not result.get("target_id"):
-            raise APIError(400, "IP12 操作目标无效", "invalid_action")
-        return result
-
-    def _record_assistant(self, user, project_id, content, public=None):
-        self.store.add_message(
-            user["username"], project_id, "assistant", content, public=public or {},
-        )
-
     def _response(self, user, headers, project_id, reply, public=None):
-        projects = self.ip12.projects(headers)
-        project = self.ip12.project(headers, project_id)
+        projects = self.store.workspaces(user["username"])
         workspace = self.store.workspace(user["username"], project_id)
+        project = self._local_project(workspace)
         snapshot = self._snapshot(user, headers, projects, project, workspace)
         return {"reply": reply, "message_public": _public(public or {}), **snapshot}
 
-    def _ip12_turn(self, user, headers, project, message, request_id,
-                   action=None, foundation_review="", suppress_production=False):
-        state = self._state(project)
-        result = self.ip12.turn(
-            headers, project["id"], message=message, action=action,
-            expected_revision=state.get("revision"), request_id=request_id,
-            foundation_review=foundation_review,
+    @staticmethod
+    def _review_public(review, state):
+        return {
+            "kind": "profile_review",
+            "module": review["module"],
+            "module_name": review["module_name"],
+            "summary": review["summary"],
+            "options": review["options"],
+            "actions": [
+                {
+                    "intent": "profile_choice",
+                    "label": "选择：" + str(item.get("title") or "方案 %d" % (index + 1))[:40],
+                    "payload": {
+                        "choice_index": index,
+                        "profile_revision": int(state.get("revision") or 1),
+                        "module": review["module"],
+                    },
+                }
+                for index, item in enumerate(review["options"])
+            ],
+        }
+
+    def _profile_model_error(self, error):
+        self._discard_current_message()
+        raise APIError(503, "DeepSeek V4 Flash 暂不可用，请稍后重试", "creator_model_unavailable") from error
+
+    def _discard_current_message(self):
+        username = getattr(self._request_context, "username", "")
+        message_id = getattr(self._request_context, "message_id", 0)
+        if username and message_id:
+            self.store.delete_message_if_unanswered(username, message_id)
+        self._request_context.username = ""
+        self._request_context.message_id = 0
+        self._request_context.client_ip = ""
+
+    def _current_message_id(self):
+        return max(0, int(getattr(self._request_context, "message_id", 0) or 0))
+
+    @staticmethod
+    def _video_plan_turn(batch, recovered=False):
+        reply = (
+            "已恢复这次已保存的视频方案，你可以继续修改或确认方案。"
+            if recovered else
+            "我已按平台分别整理方案。你可以直接说要改哪一项，确认无误后再统一报价。"
         )
-        latest = self.ip12.project(headers, project["id"])
-        reply = str(result.get("assistant") or "已更新画像进度。")
-        if suppress_production:
-            marker = "六步已经完成，数字人口播能力已经解锁。"
-            if marker in reply:
-                reply = reply.split(marker, 1)[0].rstrip() or "选题与文案已经完成并保存。"
-        return latest, reply, {
-            "source": "ip12",
-            "actions": self._safe_ip12_actions(result.get("actions") or []),
-            "new_completed": result.get("new_completed") or [],
-            "foundation_report": result.get("foundation_report"),
+        return reply, {
+            "kind": "video_plan",
+            "batch": _public(batch),
+            "actions": [
+                {"intent": "adjust_video_platforms", "label": "调整平台"},
+                {"intent": "confirm_plan", "label": "确认方案并查看价格", "primary": True},
+            ],
+        }
+
+    def _recover_nonprofile_side_effect(self, user, project_id, workspace):
+        message_id = self._current_message_id()
+        if not message_id:
+            return None
+        key = "topic_plan_request_%d" % message_id
+        deliverable = (workspace.get("deliverables") or {}).get(key)
+        result = deliverable.get("content") if isinstance(deliverable, dict) else None
+        if isinstance(result, dict) and result.get("reply"):
+            return str(result["reply"]), {
+                "kind": "topic_plan", "result": _public(result),
+            }
+        batch = self.store.batch_for_source_message(
+            user["username"], project_id, message_id,
+        ) or self.store.batch_for_mutation_message(
+            user["username"], project_id, message_id,
+        )
+        if not batch:
+            return None
+        self.store.update_workspace(
+            user["username"], project_id,
+            flow={"mode": "template_review", "batch_id": batch["id"]},
+        )
+        return self._video_plan_turn(batch, recovered=True)
+
+    def _finish_message_turn(self, user, headers, project_id, user_message,
+                             reply, public):
+        if self._before_message_commit_hook:
+            self._before_message_commit_hook()
+        turn = self.store.commit_message_turn(
+            user["username"], project_id, user_message["id"], reply, public,
+            fault_hook=self._message_turn_fault_hook,
+        )
+        if self._after_message_commit_hook:
+            self._after_message_commit_hook()
+        committed_reply = turn["reply"]
+        committed_public = turn.get("message_public") or {}
+        response = self._response(
+            user, headers, project_id, committed_reply, committed_public,
+        )
+        try:
+            self.store.update_message_public(
+                user["username"], user_message["id"],
+                {"turn": turn, "response": response},
+            )
+        except StoreError:
+            pass
+        self._request_context.username = ""
+        self._request_context.message_id = 0
+        self._request_context.client_ip = ""
+        return response
+
+    def _save_profile_state(self, user, workspace, state, expected_revision,
+                            *, profile=None, profile_overrides=None,
+                            deliverables=None, flow=None):
+        self._request_context.profile_mutation = {
+            "state": state, "expected_revision": int(expected_revision),
+            "profile": profile, "profile_overrides": profile_overrides,
+            "deliverables": deliverables, "flow": flow,
+        }
+        value = dict(workspace)
+        value["profile_state"] = state
+        if profile is not None:
+            value["profile"] = profile
+        if profile_overrides is not None:
+            value["profile_overrides"] = profile_overrides
+        if deliverables is not None:
+            value["deliverables"] = deliverables
+        if flow is not None:
+            value["flow"] = flow
+        return value
+
+    def _profile_turn(self, user, workspace, message, intent, payload):
+        state = dict(workspace.get("profile_state") or initial_state())
+        expected_revision = int(state.get("revision") or 1)
+        module = max(1, min(4, int(state.get("current_module") or 1)))
+        if intent in {"profile_answer", "profile_choice"}:
+            try:
+                expected_revision = int(payload.get("profile_revision"))
+            except (TypeError, ValueError) as exc:
+                self._discard_current_message()
+                raise APIError(400, "画像版本缺失，请刷新后重试", "profile_revision_required") from exc
+            if expected_revision != int(state.get("revision") or 1):
+                self._discard_current_message()
+                raise APIError(409, "画像步骤已经变化，请使用最新问题", "profile_state_conflict")
+            if state.get("profile_ready"):
+                self._discard_current_message()
+                raise APIError(409, "画像已经完成，旧选项不能再次提交", "profile_state_conflict")
+        if state.get("phase") == "review":
+            review = (state.get("module_reviews") or {}).get(str(module)) or {}
+            choice = payload.get("choice_index") if intent == "profile_choice" else None
+            if choice is None and re.search(r"(?:确认|选择|采用|就要|第)[一二三123]?", message):
+                matched = re.search(r"[一二三123]", message)
+                if matched:
+                    token = matched.group(0)
+                    choice = {"一": 0, "二": 1, "三": 2}.get(
+                        token, int(token) - 1 if token.isdigit() else 0,
+                    )
+                else:
+                    choice = 0
+            if choice is not None:
+                try:
+                    choice = int(choice)
+                    selected = review["options"][choice]
+                except (TypeError, ValueError, IndexError, KeyError) as exc:
+                    raise APIError(400, "请选择有效的画像方案", "invalid_profile_choice") from exc
+                selected_profiles = dict(state.get("selected_profiles") or {})
+                selected_profiles[str(module)] = selected
+                completed = sorted(set(state.get("completed_modules") or []) | {module})
+                state.update({
+                    "selected_profiles": selected_profiles,
+                    "completed_modules": completed,
+                    "revision": int(state.get("revision") or 1) + 1,
+                })
+                if module < 4:
+                    state.update({
+                        "current_module": module + 1, "question_index": 0,
+                        "phase": "collecting",
+                    })
+                    workspace = self._save_profile_state(
+                        user, workspace, state, expected_revision,
+                        flow={"mode": "profile_interview"},
+                    )
+                    question = current_question(state)
+                    return workspace, (
+                        "已确认%s。接下来进入%s。%s" % (
+                            MODULES[module]["name"], MODULES[module + 1]["name"],
+                            question["question"],
+                        )
+                    ), self._question_public(state)
+                state.update({"profile_ready": True, "phase": "ready"})
+                profile = {
+                    "answers": state.get("answers") or {},
+                    "modules": selected_profiles,
+                    "revision": state["revision"],
+                }
+                deliverables = dict(workspace.get("deliverables") or {})
+                deliverables["personal_profile"] = {
+                    "title": "个人画像",
+                    "content": profile,
+                }
+                workspace = self._save_profile_state(
+                    user, workspace, state, expected_revision,
+                    profile=profile, deliverables=deliverables, flow={"mode": "idle"},
+                )
+                return workspace, (
+                    "个人画像已完成并保存。现在可以生成选题计划，或直接制作模板视频。"
+                ), {"kind": "profile_completed", "profile": _public(profile)}
+            try:
+                revised = self._model_call(
+                    user, "profile_review_revision",
+                    {"state": state, "module": module, "instruction": message},
+                    lambda: self.profile_agent.revise_module_review(
+                        state, module, message),
+                )
+            except ProfileAgentError as exc:
+                self._profile_model_error(exc)
+            reviews = dict(state.get("module_reviews") or {})
+            reviews[str(module)] = revised
+            state["module_reviews"] = reviews
+            state["revision"] = int(state.get("revision") or 1) + 1
+            workspace = self._save_profile_state(
+                user, workspace, state, expected_revision,
+            )
+            return workspace, "已按你的要求更新本模块，请重新选择。", self._review_public(revised, state)
+
+        answer = str(payload.get("answer") or message).strip()
+        try:
+            captured = self._model_call(
+                user, "profile_answer", {"state": state, "answer": answer},
+                lambda: self.profile_agent.capture_answer(state, answer),
+            )
+        except ProfileAgentError as exc:
+            self._profile_model_error(exc)
+        if not captured["accepted"]:
+            state["revision"] = int(state.get("revision") or 1) + 1
+            workspace = self._save_profile_state(
+                user, workspace, state, expected_revision,
+            )
+            return workspace, captured["clarification"], self._question_public(state)
+        question = current_question(state)
+        answers = dict(state.get("answers") or {})
+        module_answers = dict(answers.get(str(module)) or {})
+        module_answers[question["key"]] = captured["value"]
+        answers[str(module)] = module_answers
+        state["answers"] = answers
+        next_index = int(state.get("question_index") or 0) + 1
+        questions = MODULES[module]["questions"]
+        state["revision"] = int(state.get("revision") or 1) + 1
+        if next_index < len(questions):
+            state["question_index"] = next_index
+            workspace = self._save_profile_state(
+                user, workspace, state, expected_revision,
+            )
+            next_question = current_question(state)
+            return workspace, captured["ack"] + "\n\n" + next_question["question"], self._question_public(state)
+        try:
+            review = self._model_call(
+                user, "profile_module_review", {"state": state, "module": module},
+                lambda: self.profile_agent.build_module_review(state, module),
+            )
+        except ProfileAgentError as exc:
+            self._profile_model_error(exc)
+        reviews = dict(state.get("module_reviews") or {})
+        reviews[str(module)] = review
+        state.update({"module_reviews": reviews, "phase": "review"})
+        workspace = self._save_profile_state(
+            user, workspace, state, expected_revision,
+        )
+        return workspace, captured["ack"] + "\n\n" + review["summary"], self._review_public(review, state)
+
+    def _generate_topic_plan(self, user, workspace, platforms, request):
+        profile = workspace.get("profile") or {}
+        deliverables = dict(workspace.get("deliverables") or {})
+        message_id = self._current_message_id()
+        key = (
+            "topic_plan_request_%d" % message_id if message_id else
+            "topic_plan_%d" % (
+                len([item for item in deliverables if item.startswith("topic_plan_")]) + 1
+            )
+        )
+        existing = deliverables.get(key)
+        result = existing.get("content") if isinstance(existing, dict) else None
+        if not isinstance(result, dict) or not result.get("reply"):
+            try:
+                result = self._model_call(
+                    user, "topic_plan",
+                    {"profile": profile, "platforms": platforms, "request": request},
+                    lambda: self.profile_agent.topic_plan(profile, platforms, request),
+                )
+            except ProfileAgentError as exc:
+                self._profile_model_error(exc)
+        deliverables[key] = {
+            "title": "选题与文案计划",
+            "content": result,
+        }
+        workspace = self.store.update_workspace(
+            user["username"], workspace["project_id"],
+            deliverables=deliverables, platforms=platforms, flow={"mode": "idle"},
+        )
+        return workspace, str(result.get("reply") or "选题与文案已经生成并保存。"), {
+            "kind": "topic_plan", "result": _public(result),
         }
 
     @staticmethod
@@ -635,34 +889,6 @@ class CreatorAgentService:
                 lines.append(PLATFORM_LABELS[key] + "：" + "；".join(value["platforms"][key]))
         return "当前没有已记录的模板视频偏好。" if not lines else "当前偏好\n" + "\n".join(lines)
 
-    @staticmethod
-    def _profile_override_section(message):
-        text = str(message or "")
-        if re.search(r"定位|赛道|技能|受众|客户|经历|兴趣", text):
-            return "module_1"
-        if re.search(r"人设|性格|表达|风格|语气", text):
-            return "module_2"
-        if re.search(r"价值|主张|优势|使命|目标", text):
-            return "module_3"
-        if re.search(r"故事|案例|挫折|成长|愿景", text):
-            return "module_4"
-        return "general"
-
-    def _record_profile_override(self, user, project_id, workspace, message):
-        overrides = workspace.get("profile_overrides")
-        overrides = dict(overrides) if isinstance(overrides, dict) else {}
-        section = self._profile_override_section(message)
-        items = list(overrides.get(section) or [])[-19:]
-        items.append({
-            "content": re.sub(r"\s+", " ", str(message or "")).strip()[:1000],
-            "updated_at": int(time.time()),
-        })
-        overrides[section] = items
-        return self.store.update_workspace(
-            user["username"], project_id, profile_overrides=overrides,
-            flow={"mode": "idle"},
-        )
-
     def _start_video(self, user, project, workspace, message, payload):
         explicit_platforms = sanitize_platforms((payload or {}).get("platforms"))
         if not explicit_platforms:
@@ -687,72 +913,111 @@ class CreatorAgentService:
         return self._create_video_plan(user, project, workspace, topic, platforms)
 
     def _create_video_plan(self, user, project, workspace, topic, platforms):
-        templates = self._templates(user)
-        planned = self.planner.video_plan(
-            self._ip12_context(project, workspace), topic, platforms, templates,
-            workspace.get("template_video_preferences"),
+        message_id = self._current_message_id()
+        existing = self.store.batch_for_source_message(
+            user["username"], project["id"], message_id,
         )
+        if existing:
+            self.store.update_workspace(
+                user["username"], project["id"],
+                flow={"mode": "template_review", "batch_id": existing["id"]},
+            )
+            return self._video_plan_turn(existing, recovered=True)
+        templates = self._templates(user)
+        context = self._profile_context(project, workspace)
+        preferences = workspace.get("template_video_preferences")
+        try:
+            planned = self._model_call(
+                user, "template_video_plan",
+                {"profile": context, "topic": topic, "platforms": platforms,
+                 "templates": templates, "preferences": preferences},
+                lambda: self.planner.video_plan(
+                    context, topic, platforms, templates,
+                    preferences,
+                ),
+            )
+        except PlannerError as exc:
+            self._profile_model_error(exc)
         batch = self.store.create_batch(
             user["username"], project["id"], topic, planned.get("goal") or "",
-            planned["platform_plans"],
+            planned["platform_plans"], source_message_id=message_id,
         )
+        if self._message_side_effect_fault_hook:
+            self._message_side_effect_fault_hook("after_batch_create")
         self.store.update_workspace(
             user["username"], project["id"], platforms=platforms,
             flow={"mode": "template_review", "batch_id": batch["id"]},
         )
-        return "我已按平台分别整理方案。你可以直接说要改哪一项，确认无误后再统一报价。", {
-            "kind": "video_plan",
-            "batch": _public(batch),
-            "actions": [
-                {"intent": "adjust_video_platforms", "label": "调整平台"},
-                {"intent": "confirm_plan", "label": "确认方案并查看价格", "primary": True},
-            ],
-        }
+        return self._video_plan_turn(batch)
 
     def _revise_video_plan(self, user, workspace, batch, instruction):
+        message_id = self._current_message_id()
+        if message_id and int(batch.get("last_mutation_message_id") or 0) == message_id:
+            return self._video_plan_turn(batch, recovered=True)
         templates = self._templates(user)
-        revised = self.planner.revise_video_plan(
-            batch.get("plans") or [], instruction, templates,
-            workspace.get("template_video_preferences"),
-        )
+        preferences = workspace.get("template_video_preferences")
+        try:
+            revised = self._model_call(
+                user, "template_video_revision",
+                {"plans": batch.get("plans") or [], "instruction": instruction,
+                 "templates": templates, "preferences": preferences},
+                lambda: self.planner.revise_video_plan(
+                    batch.get("plans") or [], instruction, templates,
+                    preferences,
+                ),
+            )
+        except PlannerError as exc:
+            self._profile_model_error(exc)
         updated = self.store.replace_batch_plans(
             user["username"], batch["id"], revised["platform_plans"],
-            batch["revision"],
+            batch["revision"], mutation_message_id=message_id,
         )
-        return "已按你的要求更新方案，请继续修改或确认方案。", {
-            "kind": "video_plan", "batch": _public(updated),
-            "actions": [
-                {"intent": "adjust_video_platforms", "label": "调整平台"},
-                {"intent": "confirm_plan", "label": "确认方案并查看价格", "primary": True},
-            ],
-        }
+        if self._message_side_effect_fault_hook:
+            self._message_side_effect_fault_hook("after_batch_mutation")
+        return self._video_plan_turn(updated)
 
     def _new_video_version(self, user, project, workspace, batch, instruction):
+        message_id = self._current_message_id()
+        existing = self.store.batch_for_source_message(
+            user["username"], project["id"], message_id,
+        )
+        if existing:
+            self.store.update_workspace(
+                user["username"], project["id"],
+                flow={"mode": "template_review", "batch_id": existing["id"]},
+            )
+            return self._video_plan_turn(existing, recovered=True)
         templates = self._templates(user)
+        preferences = workspace.get("template_video_preferences")
         mentioned = self._platforms_from_text(instruction)
         source_plans = [
             item for item in batch.get("plans") or []
             if not mentioned or item.get("platform") in mentioned
         ]
-        revised = self.planner.revise_video_plan(
-            source_plans, instruction, templates,
-            workspace.get("template_video_preferences"),
-        )
+        try:
+            revised = self._model_call(
+                user, "template_video_regeneration",
+                {"plans": source_plans, "instruction": instruction,
+                 "templates": templates, "preferences": preferences},
+                lambda: self.planner.revise_video_plan(
+                    source_plans, instruction, templates,
+                    preferences,
+                ),
+            )
+        except PlannerError as exc:
+            self._profile_model_error(exc)
         created = self.store.create_batch(
             user["username"], project["id"], batch.get("topic") or "新版本",
             revised.get("goal") or batch.get("goal") or "", revised["platform_plans"],
+            source_message_id=message_id,
         )
+        if self._message_side_effect_fault_hook:
+            self._message_side_effect_fault_hook("after_batch_create")
         self.store.update_workspace(
             user["username"], project["id"],
             flow={"mode": "template_review", "batch_id": created["id"]},
         )
-        return "已基于上一版创建新方案。确认后会重新报价，原视频和原任务保持不变。", {
-            "kind": "video_plan", "batch": _public(created),
-            "actions": [
-                {"intent": "adjust_video_platforms", "label": "调整平台"},
-                {"intent": "confirm_plan", "label": "确认方案并查看价格", "primary": True},
-            ],
-        }
+        return self._video_plan_turn(created)
 
     @staticmethod
     def _expected_revision(value):
@@ -972,6 +1237,8 @@ class CreatorAgentService:
             )
         except (QuoteExpired, StateConflict, IdempotencyConflict, StoreError) as exc:
             self._raise_store_conflict(exc)
+        if not batch.get("claimed_jobs"):
+            return self.store.batch(user["username"], batch_id)
         for job in batch.get("claimed_jobs") or []:
             try:
                 result = self._submit_matrix_job(user, job)
@@ -1064,69 +1331,96 @@ class CreatorAgentService:
                     409, "request_id 已绑定其他消息内容",
                     "idempotency_conflict",
                 ) from exc
-            if not created and user_message.get("public", {}).get("response"):
-                return user_message["public"]["response"]
-            if not created and intent not in {"confirm_plan", "confirm_payment"}:
-                raise APIError(
-                    409, "该请求正在处理或结果待确认，请刷新后重试",
-                    "idempotency_in_progress",
-                )
+            self._request_context.username = user["username"]
+            self._request_context.message_id = user_message["id"]
+            self._request_context.client_ip = self._client_ip(headers)
+            self._request_context.profile_mutation = None
             if not intent:
                 intent = self._intent_from_message(message)
+            if not created and user_message.get("public", {}).get("response"):
+                self._request_context.username = ""
+                self._request_context.message_id = 0
+                self._request_context.client_ip = ""
+                return user_message["public"]["response"]
+            replay_turn = user_message.get("public", {}).get("turn")
+            if isinstance(replay_turn, dict) and replay_turn.get("reply"):
+                response = self._response(
+                    user, headers, project_id, replay_turn["reply"],
+                    replay_turn.get("message_public") or {},
+                )
+                try:
+                    self.store.update_message_public(
+                        user["username"], user_message["id"],
+                        {"turn": replay_turn, "response": response},
+                    )
+                except StoreError:
+                    pass
+                self._request_context.username = ""
+                self._request_context.message_id = 0
+                self._request_context.client_ip = ""
+                return response
+            profile_retry = (
+                not self._progress(project)["foundation_ready"]
+                or intent in {"profile_answer", "profile_choice"}
+                or intent == "modify_profile"
+                or (workspace.get("flow") or {}).get("mode") == "profile_revision"
+            )
+            if not created and not profile_retry:
+                recovered = self._recover_nonprofile_side_effect(
+                    user, project_id, self.store.workspace(
+                        user["username"], project_id,
+                    ),
+                )
+                if recovered:
+                    return self._finish_message_turn(
+                        user, headers, project_id, user_message,
+                        recovered[0], recovered[1],
+                    )
             flow = workspace.get("flow") if isinstance(workspace.get("flow"), dict) else {}
             if intent == "regenerate_video" and flow.get("mode") == "template_review":
                 intent = ""
             progress = self._progress(project)
             public = {}
 
-            if intent == "confirm_foundation":
-                state = self._state(project)
-                report = state.get("foundation_report") or {}
-                if report.get("status") != "awaiting_confirmation" or not report.get("report_id"):
-                    raise APIError(409, "请先生成并查看最新定位画像 PDF", "foundation_not_ready")
-                self.ip12.confirm_foundation(
-                    headers, project_id, state.get("revision"), report.get("report_id"),
+            if not progress["foundation_ready"] or intent in {"profile_answer", "profile_choice"}:
+                workspace, reply, public = self._profile_turn(
+                    user, workspace, message, intent, payload,
                 )
-                reply = "定位画像已确认。现在可以开始制作视频、生成选题计划，或继续修改画像。"
-                public = {"kind": "foundation_confirmed"}
-                self.store.update_workspace(user["username"], project_id, flow={"mode": "idle"})
-            elif (
-                flow.get("mode") == "profile_revision"
-                and (self._state(project).get("foundation_report") or {}).get("status") == "confirmed"
-                and intent != "ip12_action"
-            ):
-                workspace = self._record_profile_override(
-                    user, project_id, workspace, message,
+                project = self._local_project(workspace)
+            elif flow.get("mode") == "profile_revision":
+                overrides = dict(workspace.get("profile_overrides") or {})
+                items = list(overrides.get("general") or [])
+                items.append({"content": message[:1200], "created_at": int(self.clock())})
+                overrides["general"] = items[-50:]
+                profile = dict(workspace.get("profile") or {})
+                profile["overrides"] = overrides["general"]
+                try:
+                    acknowledgement = self._model_call(
+                        user, "profile_revision_reply",
+                        {"profile": profile, "message": message},
+                        lambda: self.profile_agent.reply(profile, message),
+                    )
+                except ProfileAgentError as exc:
+                    self._profile_model_error(exc)
+                state = dict(workspace.get("profile_state") or initial_state())
+                expected_revision = int(state.get("revision") or 1)
+                state["revision"] = expected_revision + 1
+                workspace = self._save_profile_state(
+                    user, workspace, state, expected_revision,
+                    profile=profile, profile_overrides=overrides,
+                    flow={"mode": "idle"},
                 )
-                reply = "画像补充已保存。后续内容和视频会优先采用这次更新，原定位 PDF 与历史作品保持不变。"
-                public = {"kind": "profile_override_saved"}
-            elif intent == "ip12_action" or not progress["foundation_ready"] or flow.get("mode") in {"topic_plan", "profile_revision"}:
-                action = self._clean_ip12_action(payload.get("action")) if intent == "ip12_action" else None
-                foundation_review = "revision" if flow.get("mode") == "profile_revision" and action is None else ""
-                project, reply, public = self._ip12_turn(
-                    user, headers, project, message, request_id,
-                    action=action, foundation_review=foundation_review,
-                    suppress_production=flow.get("mode") == "topic_plan",
-                )
-                latest_progress = self._progress(project)
-                if 4 in latest_progress["completed_modules"] and latest_progress["foundation_status"] in {"missing", "failed"}:
-                    try:
-                        self.ip12.generate_foundation(headers, project_id)
-                        project = self.ip12.project(headers, project_id)
-                        public["foundation_generated"] = True
-                        reply += "\n\n定位画像 PDF 已生成，请在右侧预览后确认。"
-                    except APIError as exc:
-                        project = self.ip12.project(headers, project_id)
-                        if self._progress(project)["foundation_status"] not in {"awaiting_confirmation", "confirmed"}:
-                            public["foundation_error"] = exc.detail
-                latest_progress = self._progress(project)
-                if flow.get("mode") == "topic_plan" and 6 in latest_progress["completed_modules"]:
-                    self.store.update_workspace(user["username"], project_id, flow={"mode": "idle"})
+                reply = "画像修改已保存。" + acknowledgement
+                public = {"kind": "profile_override_saved", "profile": _public(profile)}
             elif intent == "modify_profile":
-                self.store.update_workspace(
-                    user["username"], project_id, flow={"mode": "profile_revision"},
+                state = dict(workspace.get("profile_state") or initial_state())
+                expected_revision = int(state.get("revision") or 1)
+                state["revision"] = expected_revision + 1
+                workspace = self._save_profile_state(
+                    user, workspace, state, expected_revision,
+                    flow={"mode": "profile_revision"},
                 )
-                reply = "请告诉我需要修改定位、人设、价值主张还是故事资产，以及具体要改什么。"
+                reply = "请直接告诉我需要修改的画像内容。修改会生成新版本，不影响历史作品。"
                 public = {
                     "kind": "profile_modules",
                     "options": ["定位诊断", "人设塑造", "价值主张", "故事资产"],
@@ -1149,23 +1443,14 @@ class CreatorAgentService:
                         "selected": selected,
                     }
                 else:
-                    workspace = self.store.update_workspace(
-                        user["username"], project_id, platforms=platforms,
-                        flow={"mode": "topic_plan", "platforms": platforms},
+                    workspace, reply, public = self._generate_topic_plan(
+                        user, workspace, platforms, message,
                     )
-                    project, reply, public = self._ip12_turn(
-                        user, headers, project,
-                        message,
-                        request_id,
-                        suppress_production=True,
-                    )
-                    public["kind"] = "topic_plan"
             elif intent == "revise_copy":
-                project, reply, public = self._ip12_turn(
-                    user, headers, project, message, request_id,
-                    suppress_production=True,
+                platforms = sanitize_platforms(workspace.get("platforms")) or ["douyin"]
+                workspace, reply, public = self._generate_topic_plan(
+                    user, workspace, platforms, "修改现有内容：" + message,
                 )
-                public["kind"] = "topic_plan"
             elif intent == "view_preferences":
                 reply = self._preferences_reply(workspace)
                 public = {"kind": "preferences"}
@@ -1191,17 +1476,10 @@ class CreatorAgentService:
                     user["username"], project_id, platforms=platforms, flow=flow,
                 )
                 if flow.get("mode") == "topic_platforms":
-                    workspace = self.store.update_workspace(
-                        user["username"], project_id, platforms=platforms,
-                        flow={"mode": "topic_plan", "platforms": platforms},
+                    workspace, reply, public = self._generate_topic_plan(
+                        user, workspace, platforms,
+                        "请根据我的画像生成完整选题计划和可发布文案",
                     )
-                    project, reply, public = self._ip12_turn(
-                        user, headers, project,
-                        message,
-                        request_id,
-                        suppress_production=True,
-                    )
-                    public["kind"] = "topic_plan"
                 elif flow.get("mode") == "template_platforms":
                     workspace = self.store.update_workspace(
                         user["username"], project_id, platforms=platforms,
@@ -1348,7 +1626,15 @@ class CreatorAgentService:
                         user["username"], project_id,
                         template_video_preferences=preferences,
                     )
-                reply = self.planner.reply(self._ip12_context(project, workspace), message)
+                try:
+                    profile = workspace.get("profile") or {}
+                    reply = self._model_call(
+                        user, "assistant_reply",
+                        {"profile": profile, "message": message},
+                        lambda: self.profile_agent.reply(profile, message),
+                    )
+                except ProfileAgentError as exc:
+                    self._profile_model_error(exc)
                 public = {
                     "kind": "assistant_reply",
                     "actions": [
@@ -1358,11 +1644,43 @@ class CreatorAgentService:
                     ],
                 }
 
-            self._record_assistant(user, project_id, reply, public)
-            response = self._response(user, headers, project_id, reply, public)
-            self.store.update_message_public(
-                user["username"], user_message["id"], {"response": response},
-            )
+            mutation = getattr(self._request_context, "profile_mutation", None)
+            if mutation:
+                if self._before_profile_commit_hook:
+                    self._before_profile_commit_hook()
+                try:
+                    turn = self.store.commit_profile_turn(
+                        user["username"], project_id, user_message["id"],
+                        mutation["state"], mutation["expected_revision"],
+                        reply, public, profile=mutation.get("profile"),
+                        profile_overrides=mutation.get("profile_overrides"),
+                        deliverables=mutation.get("deliverables"),
+                        flow=mutation.get("flow"),
+                        fault_hook=self._profile_turn_fault_hook,
+                    )
+                except StateConflict as exc:
+                    self._discard_current_message()
+                    raise APIError(
+                        409, "画像已在其他页面更新，请刷新后继续",
+                        "profile_state_conflict",
+                    ) from exc
+                if self._after_profile_commit_hook:
+                    self._after_profile_commit_hook()
+                response = self._response(user, headers, project_id, reply, public)
+                try:
+                    self.store.update_message_public(
+                        user["username"], user_message["id"],
+                        {"turn": turn, "response": response},
+                    )
+                except StoreError:
+                    pass
+            else:
+                return self._finish_message_turn(
+                    user, headers, project_id, user_message, reply, public,
+                )
+            self._request_context.username = ""
+            self._request_context.message_id = 0
+            self._request_context.client_ip = ""
             return response
 
 
@@ -1402,7 +1720,7 @@ class CreatorAgentHandler(BaseHTTPRequestHandler):
         return self.service.auth.verify(self.headers)
 
     def _route(self):
-        return urllib.parse.urlsplit(self.path).path.rstrip("/") or "/"
+        return urllib.parse.urlsplit(self.path).path or "/"
 
     def _handle(self, method):
         path = self._route()
@@ -1476,8 +1794,41 @@ def build_service(environment=None):
         or environment.get("INTERNAL_TOKEN")
         or "",
     )
-    ip12 = IP12Client(environment.get("CREATOR_AGENT_IP12_URL", "http://127.0.0.1:3102"), timeout=300)
-    return CreatorAgentService(store, planner, auth, bridge, ip12)
+    profile_agent = DeepSeekProfileAgent(
+        environment.get("CREATOR_AGENT_API_KEY") or "",
+        base_url=environment.get("CREATOR_AGENT_BASE_URL", "https://api.deepseek.com"),
+        model=environment.get("CREATOR_AGENT_MODEL", "deepseek-v4-flash"),
+    )
+    usage_guard = ModelUsageGuard(
+        store.db,
+        window_seconds=int(environment.get("CREATOR_AGENT_MODEL_WINDOW_SECONDS", "60")),
+        user_window_requests=int(environment.get("CREATOR_AGENT_MODEL_USER_WINDOW_REQUESTS", "20")),
+        ip_window_requests=int(environment.get("CREATOR_AGENT_MODEL_IP_WINDOW_REQUESTS", "30")),
+        user_concurrency=int(environment.get("CREATOR_AGENT_MODEL_USER_CONCURRENCY", "2")),
+        global_concurrency=int(environment.get("CREATOR_AGENT_MODEL_GLOBAL_CONCURRENCY", "8")),
+        user_daily_requests=int(environment.get("CREATOR_AGENT_MODEL_USER_DAILY_REQUESTS", "500")),
+        global_daily_requests=int(environment.get("CREATOR_AGENT_MODEL_GLOBAL_DAILY_REQUESTS", "10000")),
+        user_daily_tokens=int(environment.get("CREATOR_AGENT_MODEL_USER_DAILY_TOKENS", "2000000")),
+        global_daily_tokens=int(environment.get("CREATOR_AGENT_MODEL_GLOBAL_DAILY_TOKENS", "40000000")),
+        user_daily_cost_micro_usd=int(environment.get("CREATOR_AGENT_MODEL_USER_DAILY_MICROUSD", "1000000")),
+        global_daily_cost_micro_usd=int(environment.get("CREATOR_AGENT_MODEL_GLOBAL_DAILY_MICROUSD", "20000000")),
+        price_version=environment.get(
+            "CREATOR_AGENT_MODEL_PRICE_VERSION",
+            "deepseek-v4-flash-0731-peak-usd-v1",
+        ),
+        input_price_micro_usd_per_million=int(environment.get(
+            "CREATOR_AGENT_MODEL_INPUT_PRICE_MICROUSD_PER_MILLION", "440000",
+        )),
+        output_price_micro_usd_per_million=int(environment.get(
+            "CREATOR_AGENT_MODEL_OUTPUT_PRICE_MICROUSD_PER_MILLION", "1320000",
+        )),
+        input_token_overhead=int(environment.get(
+            "CREATOR_AGENT_MODEL_INPUT_TOKEN_OVERHEAD", "8192",
+        )),
+    )
+    return CreatorAgentService(
+        store, planner, auth, bridge, profile_agent, usage_guard=usage_guard,
+    )
 
 
 def serve(host="127.0.0.1", port=8114, service=None):

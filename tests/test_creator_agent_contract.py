@@ -62,8 +62,32 @@ class CreatorAgentContractTests(unittest.TestCase):
         self.assertIn("/api/auth/internal/creator-agent/catalog", self.auth)
         self.assertIn("/api/auth/internal/creator-agent/action", self.auth)
         self.assertIn("不修改同事的 `server/hermes_ip12/**`", self.design)
-        self.assertIn("CREATOR_AGENT_IP12_URL", (
-            ROOT / "deploy/huangque-secrets.env.example"
+        example = (ROOT / "deploy/huangque-secrets.env.example").read_text(encoding="utf-8")
+        profile_agent = (ROOT / "server/creator_agent/profile_agent.py").read_text(encoding="utf-8")
+        planner = (ROOT / "server/creator_agent/planner.py").read_text(encoding="utf-8")
+        model_usage = (ROOT / "server/creator_agent/model_usage.py").read_text(encoding="utf-8")
+        self.assertNotIn("CREATOR_AGENT_IP12_URL", example)
+        self.assertNotIn("IP12Client", self.service)
+        self.assertNotIn("/workbench/ip12", self.service)
+        self.assertNotIn("DEEPSEEK_API_KEY", self.service)
+        self.assertNotIn("DEEPSEEK_API_KEY", planner)
+        self.assertIn("CREATOR_AGENT_BASE_URL=https://api.deepseek.com", example)
+        self.assertIn("CREATOR_AGENT_MODEL=deepseek-v4-flash", example)
+        self.assertIn("DeepSeekProfileAgent", profile_agent)
+        self.assertIn("return cls(provider=provider, strict=True)", planner)
+        self.assertIn('"model_reachable": False', self.service)
+        self.assertIn("creator_model_calls", model_usage)
+        self.assertIn("model_global_concurrency", model_usage)
+        self.assertIn("model_user_daily_budget", model_usage)
+        self.assertIn("DEFAULT_INPUT_PRICE_MICRO_USD_PER_MILLION = 440_000", model_usage)
+        self.assertIn("DEFAULT_OUTPUT_PRICE_MICRO_USD_PER_MILLION = 1_320_000", model_usage)
+        self.assertIn("DEFAULT_INPUT_TOKEN_OVERHEAD = 8_192", model_usage)
+        self.assertIn("CREATOR_AGENT_MODEL_PRICE_VERSION", self.service)
+        self.assertIn("CREATOR_AGENT_MODEL_INPUT_PRICE_MICROUSD_PER_MILLION=440000", example)
+        self.assertIn("CREATOR_AGENT_MODEL_OUTPUT_PRICE_MICROUSD_PER_MILLION=1320000", example)
+        self.assertIn("CREATOR_AGENT_MODEL_INPUT_TOKEN_OVERHEAD=8192", example)
+        self.assertIn("matrix_template_submission_attempts", (
+            ROOT / "server/content_domains/matrix_template_submission.py"
         ).read_text(encoding="utf-8"))
 
     def test_registry_and_shell_expose_agent_as_real_page(self):
@@ -78,8 +102,15 @@ class CreatorAgentContractTests(unittest.TestCase):
         self.assertIn("claim_confirmation", service)
         self.assertIn("idempotency_key=idempotency_key", service)
         self.assertIn("submit_idempotency_key TEXT NOT NULL", store)
-        self.assertIn('_PRIVATE_KEYS = {"quote_token", "job_id", "idempotency_key", "confirmation_id"}', service)
+        for private_key in (
+            "quote_token", "job_id", "idempotency_key", "confirmation_id",
+            "source_message_id", "last_mutation_message_id",
+        ):
+            self.assertIn('"%s"' % private_key, service)
         self.assertIn("quote_token TEXT NOT NULL", store)
+        self.assertIn("profile_state_json TEXT NOT NULL", store)
+        self.assertIn("profile_json TEXT NOT NULL", store)
+        self.assertIn("deliverables_json TEXT NOT NULL", store)
 
     def test_quote_expiry_is_absolute_atomic_and_visible(self):
         store = (ROOT / "server/creator_agent/store.py").read_text(encoding="utf-8")
@@ -123,6 +154,24 @@ class CreatorAgentContractTests(unittest.TestCase):
         self.assertIn("EnvironmentFile=-/home/ubuntu/auth-service/auth.env", self.unit)
         self.assertIn('environment.get("HQ_INTERNAL_TOKEN")', self.service)
         self.assertIn("proxy_pass http://127.0.0.1:8114/", self.nginx)
+        self.assertIn("zone=hq_creator_model_rate", self.nginx)
+        self.assertIn("limit_conn hq_creator_model_conn 4", self.nginx)
+        self.assertIn("limit_conn hq_creator_global_conn 32", self.nginx)
+        self.assertIn("location = /api/creator-agent/messages", self.nginx)
+        self.assertIn("location = /api/creator-agent/messages/", self.nginx)
+        trailing = self.nginx[
+            self.nginx.index("location = /api/creator-agent/messages/"):
+            self.nginx.index(
+                "location ^~ /api/creator-agent/",
+                self.nginx.index("location = /api/creator-agent/messages/"),
+            )
+        ]
+        self.assertIn("return 404;", trailing)
+        creator_nginx = self.nginx[
+            self.nginx.index("location = /api/creator-agent/messages"):
+            self.nginx.index("location ^~ /api/creator-agent/", self.nginx.index("location = /api/creator-agent/messages"))
+        ]
+        self.assertIn("proxy_set_header X-Forwarded-For $remote_addr", creator_nginx)
         self.assertIn('CURRENT="$RUNTIME/current"', self.release)
         release_mode = self.release.index('chmod 0755 "$NEW_RELEASE"')
         current_switch = self.release.index('mv -Tf "$CURRENT.next" "$CURRENT"')
@@ -130,6 +179,17 @@ class CreatorAgentContractTests(unittest.TestCase):
         self.assertIn('mv -Tf "$CURRENT.next" "$CURRENT"', self.release)
         self.assertIn("nginx -t", self.release)
         self.assertIn('d.get("ready") is True', self.release)
+        self.assertIn("CREATOR_AGENT_MODEL=deepseek-v4-flash", self.release)
+        self.assertIn("official DeepSeek API base", self.release)
+        self.assertIn("profile_agent.py", self.release)
+        self.assertIn("model_usage.py", self.release)
+        store = (ROOT / "server/creator_agent/store.py").read_text(encoding="utf-8")
+        self.assertIn("commit_message_turn", store)
+        self.assertIn("source_message_id", store)
+        self.assertIn("last_mutation_message_id", store)
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        self.assertIn("fetch-depth: 0", workflow)
+        self.assertIn('git diff --check "$PR_BASE_SHA...$PR_HEAD_SHA"', workflow)
 
     def test_deploy_contract_does_not_duplicate_shared_internal_token(self):
         example = (ROOT / "deploy/huangque-secrets.env.example").read_text(encoding="utf-8")
