@@ -15,6 +15,54 @@ from content_domains import function_registry  # noqa: E402
 from content_domains import points as points_domain  # noqa: E402
 
 
+PRECISION_SCRIPT_EVIDENCE = {
+    "GET:/api/gen/video/assets": ("request(fresh('/api/gen/video/assets?limit=40')",),
+    "POST:/api/gen/video/lipsync-import": ("fetch('/api/gen/video/lipsync-import',{method:'POST'",),
+    "GET:/api/gen/audio/slots": ("request(fresh('/api/gen/audio/slots')",),
+    "POST:/api/gen/video/lipsync-voice-sample": ("request('/api/gen/video/lipsync-voice-sample',{method:'POST'",),
+    "POST:/api/gen/audio/clone-vip": ("request('/api/gen/audio/clone-vip',{method:'POST'",),
+    "GET:/api/gen/audio/clone-status": ("request(fresh('/api/gen/audio/clone-status?slot_id='",),
+    "POST:/api/gen/audio": ("request('/api/gen/audio',{method:'POST'",),
+    "GET:/api/gen/job/{job_id}": ("request(fresh('/api/gen/job/'+jobId)",),
+    "GET:/api/gen/audio/assets": ("'/api/gen/audio/assets?limit=120'",),
+    "POST:/api/gen/video": ("request('/api/gen/video',{method:'POST'",),
+    "POST:/api/gen/video-compose/projects": ("request('/api/gen/video-compose/projects',{method:'POST'",),
+    "POST:/api/gen/video-compose/projects/{project_id}/analyze-source": (
+        "request('/api/gen/video-compose/projects/'+state.project.id+'/analyze-source',{method:'POST'",),
+    "POST:/api/gen/video-compose/projects/{project_id}/edit-decisions": (
+        "request('/api/gen/video-compose/projects/'+state.project.id+'/edit-decisions',{method:'POST'",),
+    "POST:/api/gen/video-compose/projects/{project_id}/render": (
+        "request('/api/gen/video-compose/projects/'+state.project.id+'/render',{method:'POST'",),
+    "GET:/api/gen/video-compose/projects/{project_id}": (
+        "request(fresh('/api/gen/video-compose/projects/'+state.project.id)",),
+    "GET:/api/gen/video-compose/projects/{project_id}/output": (
+        "'/api/gen/video-compose/projects/'+state.project.id+'/output'",),
+    "GET:/api/gen/file/{path}": ("'/api/gen/file/'+item.video_file", "fetch(fresh(url)"),
+}
+
+
+def _precision_script_signatures(source):
+    return {
+        signature for signature, evidence in PRECISION_SCRIPT_EVIDENCE.items()
+        if all(marker in source for marker in evidence)
+    }
+
+
+def _uncovered_precision_signatures(signatures, templates):
+    uncovered = set()
+    for signature in signatures:
+        method, path = signature.split(":", 1)
+        sample = path.replace("{job_id}", "job-1").replace(
+            "{project_id}", "project-1"
+        ).replace("{path}", "exports/result.mp4")
+        if not any(
+            contract.endpoint_template_matches(template, method, sample)
+            for template in templates
+        ):
+            uncovered.add(signature)
+    return uncovered
+
+
 class DirectorCLIContractTests(unittest.TestCase):
     def test_workflow_states_and_transitions_are_closed_and_terminal(self):
         states = set(contract.WORKFLOW_STATES)
@@ -56,35 +104,86 @@ class DirectorCLIContractTests(unittest.TestCase):
         )
         script_sources = re.findall(r'<script[^>]+src="([^"?]+)', html)
         self.assertIn("digital-human-unified.js", script_sources)
-        loaded_sources = [html]
+        loaded_sources = {}
         for source in script_sources:
             script_path = ROOT / "site" / "workbench" / source
             if script_path.is_file():
-                loaded_sources.append(script_path.read_text(encoding="utf-8"))
-        current = {
-            value.split("?", 1)[0]
-            for source in loaded_sources
-            for value in re.findall(r"/api/gen/[A-Za-z0-9_/?=&.-]+", source)
-            if value.startswith((
-                "/api/gen/digital-human-v2/", "/api/gen/video/",
-                "/api/gen/audio", "/api/gen/job/",
-                "/api/gen/video-compose/", "/api/gen/file/",
-            ))
-        }
-        covered_roots = {
-            endpoint.split(":", 1)[1].split("?", 1)[0].split("{", 1)[0].rstrip("/")
+                loaded_sources[source] = script_path.read_text(encoding="utf-8")
+        current = _precision_script_signatures(
+            loaded_sources["digital-human-unified.js"]
+        )
+        expected = set(contract.PRECISION_INTERNAL_STEP_ENDPOINTS)
+        self.assertEqual(set(PRECISION_SCRIPT_EVIDENCE), current)
+        self.assertEqual(expected, current)
+        self.assertEqual(set(), _uncovered_precision_signatures(current, expected))
+
+    def test_precision_endpoint_gate_is_method_and_exact_template_sensitive(self):
+        current = set(PRECISION_SCRIPT_EVIDENCE)
+        templates = set(contract.PRECISION_INTERNAL_STEP_ENDPOINTS)
+        for removed in sorted(templates):
+            with self.subTest(removed=removed):
+                self.assertIn(
+                    removed,
+                    _uncovered_precision_signatures(current, templates - {removed}),
+                )
+        for signature in sorted(templates):
+            method, path = signature.split(":", 1)
+            wrong_method = "POST" if method == "GET" else "GET"
+            mutated = templates - {signature} | {wrong_method + ":" + path}
+            with self.subTest(wrong_method=signature):
+                self.assertIn(
+                    signature, _uncovered_precision_signatures(current, mutated)
+                )
+        self.assertFalse(contract.endpoint_template_matches(
+            "POST:/api/gen/video", "POST", "/api/gen/video/lipsync-import"
+        ))
+        self.assertTrue(contract.endpoint_template_matches(
+            "GET:/api/gen/job/{job_id}", "GET", "/api/gen/job/job-7"
+        ))
+
+    def test_precision_public_contract_is_one_server_owned_recoverable_run(self):
+        actions = {
+            action["id"]: action
             for action in contract.DIGITAL_HUMAN_ONECLICK_ACTIONS
-            for endpoint in action["server_endpoints"]
+            if action["group"] == "precision"
         }
-        self.assertTrue(current)
-        uncovered = {
-            endpoint for endpoint in current
-            if not any(
-                endpoint.rstrip("/") == root or endpoint.startswith(root + "/")
-                for root in covered_roots
-            )
+        self.assertEqual({
+            "digital-human-precision-plan",
+            "digital-human-precision-consent",
+            "digital-human-precision-start",
+            "digital-human-precision-status",
+            "digital-human-precision-recover",
+            "digital-human-precision-abandon",
+        }, set(actions))
+        public_endpoints = {
+            endpoint for action in actions.values() for endpoint in action["server_endpoints"]
         }
-        self.assertEqual(set(), uncovered)
+        self.assertTrue(all(
+            "/digital-human-v2/precision/" in item for item in public_endpoints
+        ))
+        self.assertTrue(
+            public_endpoints.isdisjoint(contract.PRECISION_INTERNAL_STEP_ENDPOINTS)
+        )
+        start = actions["digital-human-precision-start"]
+        self.assertEqual("quote_then_confirm", start["billing"])
+        self.assertEqual("digital-human-oneclick:generate", start["required_scope"])
+
+    def test_precision_failure_and_recovery_contract_is_idempotent(self):
+        run = contract.PRECISION_RUN_CONTRACT
+        self.assertEqual("server", run["authority"])
+        self.assertEqual(
+            ("run_id", "plan_digest", "quote_token", "request_id"),
+            run["identity_fields"],
+        )
+        self.assertEqual({
+            "full_audio_charged_response_unknown": "resume_same_run_without_recharge",
+            "precision_lipsync_failed": "resume_same_run_from_precision_lipsync",
+            "compose_failed_or_restarted": "resume_same_run_from_compose_ledger",
+            "duplicate_request_id": "return_original_run_without_recharge",
+        }, run["recovery_rules"])
+        self.assertIn("full_audio", run["persistent_stages"])
+        self.assertIn("precision_lipsync", run["persistent_stages"])
+        self.assertIn("compose", run["persistent_stages"])
 
     def test_real_paid_director_actions_match_points_domain_costs(self):
         expected = {

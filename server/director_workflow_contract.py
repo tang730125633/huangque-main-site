@@ -8,6 +8,7 @@ server-owned orchestration is implemented.
 """
 
 import copy
+import re
 
 
 CONTRACT_VERSION = "director-workflow-contract-v1"
@@ -76,6 +77,35 @@ def _action(identifier, group, scope, operations, endpoints, *, billing="free",
         "availability": availability,
         "transport": transport,
     }
+
+
+_ENDPOINT_PARAMETER = re.compile(r"^\{[a-z][a-z0-9_]*\}$")
+
+
+def endpoint_template_matches(template, method, path):
+    """Match one HTTP method and path without allowing prefix inheritance."""
+    if ":" not in template:
+        return False
+    expected_method, expected_path = template.split(":", 1)
+    actual_path = str(path).split("?", 1)[0]
+    expected_path = expected_path.split("?", 1)[0]
+    if str(method).upper() != expected_method or not actual_path.startswith("/"):
+        return False
+    expected_parts = expected_path.strip("/").split("/")
+    actual_parts = actual_path.strip("/").split("/")
+    if expected_parts[-1:] == ["{path}"]:
+        if len(actual_parts) < len(expected_parts):
+            return False
+        fixed_expected = expected_parts[:-1]
+        return actual_parts[:len(fixed_expected)] == fixed_expected and bool(
+            "/".join(actual_parts[len(fixed_expected):])
+        )
+    if len(expected_parts) != len(actual_parts):
+        return False
+    return all(
+        bool(actual) if _ENDPOINT_PARAMETER.fullmatch(expected) else actual == expected
+        for expected, actual in zip(expected_parts, actual_parts)
+    )
 
 
 DIRECTOR_ACTIONS = (
@@ -192,6 +222,44 @@ DIRECTOR_ACTIONS = (
 )
 
 
+PRECISION_INTERNAL_STEP_ENDPOINTS = (
+    "GET:/api/gen/video/assets",
+    "POST:/api/gen/video/lipsync-import",
+    "GET:/api/gen/audio/slots",
+    "POST:/api/gen/video/lipsync-voice-sample",
+    "POST:/api/gen/audio/clone-vip",
+    "GET:/api/gen/audio/clone-status",
+    "POST:/api/gen/audio",
+    "GET:/api/gen/job/{job_id}",
+    "GET:/api/gen/audio/assets",
+    "POST:/api/gen/video",
+    "POST:/api/gen/video-compose/projects",
+    "POST:/api/gen/video-compose/projects/{project_id}/analyze-source",
+    "POST:/api/gen/video-compose/projects/{project_id}/edit-decisions",
+    "POST:/api/gen/video-compose/projects/{project_id}/render",
+    "GET:/api/gen/video-compose/projects/{project_id}",
+    "GET:/api/gen/video-compose/projects/{project_id}/output",
+    "GET:/api/gen/file/{path}",
+)
+
+
+PRECISION_RUN_CONTRACT = {
+    "authority": "server",
+    "identity_fields": ("run_id", "plan_digest", "quote_token", "request_id"),
+    "persistent_stages": (
+        "source", "voice_consent", "voice_clone", "full_audio", "precision_lipsync",
+        "compose", "quality_control",
+    ),
+    "recovery_rules": {
+        "full_audio_charged_response_unknown": "resume_same_run_without_recharge",
+        "precision_lipsync_failed": "resume_same_run_from_precision_lipsync",
+        "compose_failed_or_restarted": "resume_same_run_from_compose_ledger",
+        "duplicate_request_id": "return_original_run_without_recharge",
+    },
+    "internal_step_endpoints": PRECISION_INTERNAL_STEP_ENDPOINTS,
+}
+
+
 DIGITAL_HUMAN_ONECLICK_ACTIONS = (
     _action(
         "digital-human-oneclick-capability", "oneclick", "digital-human-oneclick:read", (),
@@ -249,44 +317,35 @@ DIGITAL_HUMAN_ONECLICK_ACTIONS = (
         description="按冻结方案解析本人素材或允许的 AI 补图来源。",
     ),
     _action(
-        "digital-human-precision-source", "precision", "digital-human-oneclick:write", (),
-        ("GET:/api/gen/video/assets", "POST:/api/gen/video/lipsync-import"),
-        transport="dedicated_upload",
-        description="列出或上传本人真人 MP4 源视频，不接受跨账号资产。",
+        "digital-human-precision-plan", "precision", "digital-human-oneclick:read", (),
+        ("POST:/api/gen/digital-human-v2/precision/plan",),
+        description="冻结真人源视频、文案、音色与剪辑方案并返回完整运行报价。",
     ),
     _action(
-        "digital-human-precision-voice-consent", "precision", "digital-human-oneclick:write", (),
-        ("GET:/api/gen/audio/slots", "POST:/api/gen/video/lipsync-voice-sample"),
-        description="冻结真人视频、原声样本、文案、音色槽位与显式授权。",
+        "digital-human-precision-consent", "precision", "digital-human-oneclick:write", (),
+        ("POST:/api/gen/digital-human-v2/precision/consent",),
+        description="保存与 plan_digest 绑定的真人视频、声音复刻及成片授权。",
     ),
     _action(
-        "digital-human-precision-voice-clone", "precision", "digital-human-oneclick:generate", (),
-        ("POST:/api/gen/audio/clone-vip", "GET:/api/gen/audio/clone-status"),
+        "digital-human-precision-start", "precision", "digital-human-oneclick:generate", (),
+        ("POST:/api/gen/digital-human-v2/precision/runs",),
         billing="quote_then_confirm",
-        description="按冻结授权复刻本人音色并生成短试听。",
+        description="由服务端以唯一 request_id 启动完整 Precision 运行及持久子任务账本。",
     ),
     _action(
-        "digital-human-precision-audio", "precision", "digital-human-oneclick:generate", (),
-        ("POST:/api/gen/audio", "GET:/api/gen/job/{job_id}",
-         "GET:/api/gen/audio/assets"), billing="quote_then_confirm",
-        description="试听确认后按相同文案生成完整配音并等待原任务。",
+        "digital-human-precision-status", "precision", "digital-human-oneclick:read", (),
+        ("GET:/api/gen/digital-human-v2/precision/runs/{run_id}",),
+        description="读取完整 Precision 运行、子任务、扣点和恢复状态。",
     ),
     _action(
-        "digital-human-precision-lipsync", "precision", "digital-human-oneclick:generate", (),
-        ("POST:/api/gen/video", "GET:/api/gen/job/{job_id}",
-         "GET:/api/gen/video/assets"), billing="quote_then_confirm",
-        description="用完整配音与本人源视频提交 HeyGen Precision 口型任务。",
+        "digital-human-precision-recover", "precision", "digital-human-oneclick:write", (),
+        ("POST:/api/gen/digital-human-v2/precision/runs/{run_id}/recover",),
+        description="按原 run_id/request_id 从持久账本恢复，不重复提交已扣点步骤。",
     ),
     _action(
-        "digital-human-precision-compose", "precision", "digital-human-oneclick:write", (),
-        ("POST:/api/gen/video-compose/projects",
-         "POST:/api/gen/video-compose/projects/{project_id}/analyze-source",
-         "POST:/api/gen/video-compose/projects/{project_id}/edit-decisions",
-         "POST:/api/gen/video-compose/projects/{project_id}/render",
-         "GET:/api/gen/video-compose/projects/{project_id}",
-         "GET:/api/gen/video-compose/projects/{project_id}/output",
-         "GET:/api/gen/file/{path}"),
-        description="对 Precision 母版执行受限分析、编辑决定、模板渲染与成品读取。",
+        "digital-human-precision-abandon", "precision", "digital-human-oneclick:write", (),
+        ("POST:/api/gen/digital-human-v2/precision/runs/{run_id}/abandon",),
+        description="放弃未完成 Precision 运行并保留已发生账务的审计终态。",
     ),
 )
 
