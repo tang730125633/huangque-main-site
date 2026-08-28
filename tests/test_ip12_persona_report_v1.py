@@ -56,6 +56,21 @@ class IP12PersonaReportV1Tests(unittest.TestCase):
             with mock.patch.object(server, "_foundation_pdf_page_count", return_value=6):
                 self.assertEqual(server._validate_foundation_pdf(path), 6)
 
+    def test_pdf_appendix_covers_every_intake_item_without_exposing_mobile(self):
+        state = harness.initial_state()
+        state["intake"]["declined_fields"] = list(harness.INTAKE_COVERAGE_FIELDS)
+        for field, value in (("preferred_name", "阿青"), ("mobile", "13000000000")):
+            state["intake"]["declined_fields"].remove(field)
+            state["ip_profile"]["facts"][field] = {
+                "field": field, "value": value, "kind": "user_fact", "evidence_quote": value,
+            }
+        summary = server._foundation_intake_summary_markdown(state)
+        for field in harness.INTAKE_COVERAGE_FIELDS:
+            self.assertIn(harness.INTAKE_COVERAGE_LABELS[field], summary)
+        self.assertNotIn("13000000000", summary)
+        self.assertIn("已提供（隐私信息不在报告展示）", summary)
+        self.assertNotIn("待本人确认", summary)
+
     def test_customer_pdf_hides_internal_labels_and_waits_for_final_title(self):
         content = (
             "### 故事传播卡（AI包装建议）\n建议\n\n"
@@ -132,6 +147,17 @@ class IP12PersonaReportV1Tests(unittest.TestCase):
         self.assertIn("事实原话：我开过一家小店。", result)
         self.assertIn("故事传播卡（AI包装建议）", result)
         self.assertIn("复盘故事卡", result)
+
+    def test_foundation_story_sections_remove_contained_duplicates(self):
+        content = (
+            "### 故事资产清单\n\n"
+            "#### 1. 完整翻身\n事实原话：退掉大棚改上门；最大坑是没算成本就签长租。\n\n"
+            "#### 2. 重复踩坑\n事实原话：最大坑是没算成本就签长租。\n\n"
+            "#### 3. 公益项目\n事实原话：带过3人小组做公益领养项目\n"
+        )
+        result = server._dedupe_contained_story_sections(content)
+        self.assertNotIn("重复踩坑", result)
+        self.assertIn("#### 2. 公益项目", result)
 
     def test_reviewed_story_correction_is_not_overwritten_by_old_snapshot(self):
         content = "## 模块四｜故事资产挖掘\n\n### 已确认故事资产\n\n经营中走过一段弯路。"

@@ -102,7 +102,11 @@ def complete(messages, *, schema=None, timeout=180, workdir=None, codex_bin=None
         except OSError as exc:
             raise CodexTransportError("Codex 本地调用失败") from exc
         if result.returncode != 0:
-            raise CodexTransportError("Codex 本地调用失败")
+            detail = str(result.stderr or "").strip().splitlines()
+            raise CodexTransportError(
+                "Codex 本地调用失败%s"
+                % ("：" + detail[-1][:240] if detail else "")
+            )
         try:
             content = output_path.read_text(encoding="utf-8").strip()
         except OSError as exc:

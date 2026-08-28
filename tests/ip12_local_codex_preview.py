@@ -20,6 +20,7 @@ def main():
     os.environ["HERMES_MASTER_AGENT_MODE"] = "off"
     os.environ["HERMES_SEMANTIC_ROUTER_MODE"] = "live"
     os.environ["HERMES_SEMANTIC_DEBUG"] = "0"
+    os.environ.setdefault("HERMES_CODEX_MODEL", "gpt-5.6-terra")
     for key in list(os.environ):
         if key.upper().endswith(("_API_KEY", "_ACCESS_TOKEN", "_SECRET")):
             os.environ.pop(key, None)
@@ -29,6 +30,10 @@ def main():
     user_site = Path.home() / "Library" / "Python" / "3.9" / "lib" / "python" / "site-packages"
     if user_site.is_dir() and str(user_site) not in sys.path:
         sys.path.append(str(user_site))
+    bundled_python = Path.home() / ".cache" / "codex-runtimes" / "codex-primary-runtime" / "dependencies" / "python" / "lib"
+    for site_packages in bundled_python.glob("python*/site-packages"):
+        if str(site_packages) not in sys.path:
+            sys.path.append(str(site_packages))
     import security
     import server
 

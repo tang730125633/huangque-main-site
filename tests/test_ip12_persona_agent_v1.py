@@ -27,6 +27,15 @@ def update(field, value, quote=None, kind="user_preference"):
     return {"field": field, "value": value, "kind": kind, "evidence_quote": quote or value}
 
 
+def covered_state(updates=()):
+    state = harness.initial_state()
+    provided = {item["field"] for item in updates}
+    state["intake"]["declined_fields"] = [
+        field for field in harness.INTAKE_COVERAGE_FIELDS if field not in provided
+    ]
+    return state
+
+
 class IP12PersonaAgentV1Tests(unittest.TestCase):
     def test_release_and_prompt_contracts_are_versioned(self):
         self.assertEqual(harness.AGENT_RELEASE_MANIFEST["agent_release"], "ip12-a1-persona")
@@ -38,6 +47,7 @@ class IP12PersonaAgentV1Tests(unittest.TestCase):
         self.assertIn('os.environ["HERMES_MASTER_AGENT_MODE"] = "off"', preview)
         self.assertIn('os.environ["HERMES_SEMANTIC_ROUTER_MODE"] = "live"', preview)
         self.assertIn('os.environ["HERMES_SEMANTIC_DEBUG"] = "0"', preview)
+        self.assertIn("not _intake_pending(state)", (HERMES / "server.py").read_text(encoding="utf-8"))
 
     def test_initial_field_statuses_are_unknown(self):
         statuses = harness.normalize_state(harness.initial_state())["intake"]["field_statuses"]
@@ -47,7 +57,7 @@ class IP12PersonaAgentV1Tests(unittest.TestCase):
     def test_partial_intake_update_is_candidate(self):
         state, _, _ = harness.apply_intake_decision(
             harness.initial_state(),
-            decision(updates=[update("preferred_name", "阿青", "叫我阿青", "user_fact")]),
+            decision(reply="收到。你目前主要做什么工作？", updates=[update("preferred_name", "阿青", "叫我阿青", "user_fact")]),
             "叫我阿青",
             current_message="叫我阿青",
         )
@@ -55,7 +65,7 @@ class IP12PersonaAgentV1Tests(unittest.TestCase):
 
     def test_confirmed_intake_update_is_confirmed(self):
         state, _, _ = harness.apply_intake_decision(
-            harness.initial_state(),
+            covered_state([update("preferred_name", "阿青", "叫我阿青", "user_fact")]),
             decision(
                 "propose_checkpoint", reply="请核对。", draft="称呼：阿青",
                 updates=[update("preferred_name", "阿青", "叫我阿青", "user_fact")], checkpoint=1,
@@ -70,7 +80,7 @@ class IP12PersonaAgentV1Tests(unittest.TestCase):
         state = harness.initial_state()
         state["intake"]["asked_follow_ups"] = ["income"]
         state, _, _ = harness.apply_intake_decision(
-            state, decision("answer_only", reply="可以跳过。"), "收入不想说", current_message="收入不想说"
+            state, decision(reply="可以跳过。请问我应该怎么称呼你？"), "收入不想说", current_message="收入不想说"
         )
         refreshed = harness.normalize_state(deepcopy(state))
         self.assertIn("income", refreshed["intake"]["declined_fields"])
@@ -81,15 +91,28 @@ class IP12PersonaAgentV1Tests(unittest.TestCase):
         state["intake"]["asked_follow_ups"] = ["income"]
         state["intake"]["profile_updates"] = [update("income", "暂定", "暂定")]
         state, _, _ = harness.apply_intake_decision(
-            state, decision("answer_only", reply="可以跳过。"), "收入不提供", current_message="收入不提供"
+            state, decision(reply="可以跳过。请问我应该怎么称呼你？"), "收入不提供", current_message="收入不提供"
         )
         self.assertEqual(state["intake"]["field_statuses"]["income"], "declined")
+
+    def test_model_skip_value_is_normalized_to_declined_state(self):
+        state, _, _ = harness.apply_intake_decision(
+            harness.initial_state(),
+            decision(
+                reply="收到。你目前主要做什么工作？",
+                updates=[update("mobile", "本人选择跳过", "本人选择跳过")],
+            ),
+            "本人选择跳过",
+            current_message="继续",
+        )
+        self.assertEqual(state["intake"]["field_statuses"]["mobile"], "declined")
+        self.assertNotIn("mobile", [item["field"] for item in state["intake"].get("profile_updates", [])])
 
     def test_mixed_full_profile_only_declines_the_privacy_clause(self):
         message = "目前没有成熟内容账号。我计划提供陪跑服务，商业目标是获客。手机号、收入和年龄不提供。"
         self.assertEqual(
             set(harness._declined_intake_fields(message)),
-            {"mobile", "income", "age"},
+            {"mobile", "income", "income_source", "income_range", "age"},
         )
         self.assertEqual(
             harness._declined_intake_fields(
@@ -114,6 +137,25 @@ class IP12PersonaAgentV1Tests(unittest.TestCase):
             harness.commercial_goal_gaps(harness.initial_state()),
             ["business_goal", "offer", "primary_platform", "desired_action"],
         )
+
+    def test_intake_checkpoint_is_blocked_until_every_question_is_covered(self):
+        state = covered_state()
+        state["intake"]["declined_fields"].remove("one_year_goal")
+        with self.assertRaisesRegex(harness.HarnessError, "一年目标"):
+            harness.apply_intake_decision(
+                state,
+                decision("propose_checkpoint", reply="请核对。", draft="基础资料", checkpoint=1),
+                "其他问题都已经回答",
+            )
+
+    def test_intake_repairs_questions_outside_the_remaining_catalog(self):
+        state, normalized, _ = harness.apply_intake_decision(
+            harness.initial_state(),
+            decision(reply="你更像专业技术控，还是治愈陪伴型？"),
+            "我做宠物摄影",
+        )
+        self.assertIn("姓名或昵称", normalized["reply"])
+        self.assertEqual(state["intake"]["asked_follow_ups"], ["preferred_name"])
 
     def test_module_five_checkpoint_is_blocked_without_commercial_goal(self):
         state = harness.initial_state()
@@ -176,7 +218,7 @@ class IP12PersonaAgentV1Tests(unittest.TestCase):
             update("help_goal", "帮助他们解决内容问题", "帮助他们解决内容问题", "user_fact"),
         ]
         state, _, _ = harness.apply_intake_decision(
-            harness.initial_state(),
+            covered_state(updates),
             decision("propose_checkpoint", reply="请核对。", draft="完整基础资料", updates=updates, checkpoint=1),
             evidence,
             current_message=evidence,
@@ -212,6 +254,9 @@ class IP12PersonaAgentV1Tests(unittest.TestCase):
         state = harness.initial_state()
         state.update(current_module=4, completed_modules=[1, 2, 3], module_step=0)
         state["intake"]["status"] = "complete"
+        state["ip_profile"]["facts"]["story_comeback"] = update(
+            "story_comeback", "退租改上门", "现金流低谷时我退租改做上门拍摄", "user_fact"
+        )
         state["ip_profile"]["facts"]["previous_work_experience"] = update(
             "previous_work_experience", "经营失败后复盘", "我开店失败后开始每天复盘", "user_fact"
         )
@@ -220,6 +265,7 @@ class IP12PersonaAgentV1Tests(unittest.TestCase):
         )
         result = harness.grounded_story_node_decision(state)
         self.assertEqual(result["checkpoint"], 1)
+        self.assertIn("事实原话：现金流低谷时我退租改做上门拍摄", result["draft"])
         self.assertIn("事实原话：我开店失败后开始每天复盘", result["draft"])
         self.assertIn("事实原话：我带过4人的小项目团队", result["draft"])
         self.assertNotIn("客户结果", result["draft"])
