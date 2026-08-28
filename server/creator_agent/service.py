@@ -52,6 +52,7 @@ _FAILED = {"error", "failed", "refunded", "failed_submission"}
 _DONE = {"done", "completed", "success"}
 _QUOTE_SUBMIT_BASE_MARGIN_SECONDS = 15
 _QUOTE_SUBMIT_PER_JOB_SECONDS = 35
+_MAX_CONTENT_JOB_ID = 9_223_372_036_854_775_807
 
 
 class APIError(RuntimeError):
@@ -82,6 +83,20 @@ def _valid_loopback_base(value):
         and not parsed.username and not parsed.password
         and not parsed.query and not parsed.fragment
     )
+
+
+def _content_job_id(value):
+    if isinstance(value, bool):
+        raise APIError(502, "主站任务编号无效，提交结果需要核查", "submit_result_unknown")
+    if isinstance(value, int):
+        job_id = value
+    elif isinstance(value, str) and re.fullmatch(r"[1-9][0-9]{0,18}", value.strip()):
+        job_id = int(value.strip())
+    else:
+        raise APIError(502, "主站任务编号无效，提交结果需要核查", "submit_result_unknown")
+    if not 1 <= job_id <= _MAX_CONTENT_JOB_ID:
+        raise APIError(502, "主站任务编号无效，提交结果需要核查", "submit_result_unknown")
+    return job_id
 
 
 def _auth_headers(headers):
@@ -1399,7 +1414,11 @@ class CreatorAgentService:
 
     @staticmethod
     def _submission_result(result):
-        provider_job = str(result.get("job_id") or "")
+        raw_provider_job = result.get("job_id")
+        provider_job = (
+            str(_content_job_id(raw_provider_job))
+            if raw_provider_job not in (None, "") else ""
+        )
         status = str(result.get("status") or ("running" if provider_job else "submitted"))
         if not provider_job and status not in _DONE and status not in _FAILED:
             raise APIError(502, "任务提交结果待确认", "submit_result_unknown")
@@ -1520,8 +1539,16 @@ class CreatorAgentService:
             if not job.get("job_id") or job.get("status") not in _RUNNING:
                 continue
             try:
+                content_job_id = _content_job_id(job["job_id"])
+            except APIError as exc:
+                self.store.finish_task_poll(
+                    user["username"], job["id"], job["revision"], status="failed",
+                    result={}, error=exc.detail, refund_status="",
+                )
+                continue
+            try:
                 result = self.bridge.action(
-                    user["account_id"], "task", {"job_id": job["job_id"]},
+                    user["account_id"], "task", {"job_id": content_job_id},
                 )
                 status = str(result.get("status") or job["status"])
                 if status in _DONE:
