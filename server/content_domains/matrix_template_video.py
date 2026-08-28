@@ -17,9 +17,11 @@ from . import feature_flags, pricing
 
 
 FEATURE_KEY = "matrix_template_video"
-TRANSITION_TEMPLATE_COUNTS = frozenset({2, 15})
+TRANSITION_TEMPLATE_COUNTS = frozenset({2, 15, 19})
 APPROVED_TEMPLATE_IDS = ("full-overlay-bold", "poster-split")
 REQUIRED_TEMPLATE_IDS = frozenset(APPROVED_TEMPLATE_IDS)
+REFERENCE_TEMPLATE_RE = re.compile(r"ref-[0-9]{2}-[a-z0-9-]{1,48}\Z")
+REFERENCE_TEMPLATE_COUNT = 17
 API_URL = os.environ.get("MATRIX_TEMPLATE_API_URL", "http://127.0.0.1:8112").rstrip("/")
 API_TOKEN = os.environ.get("MATRIX_TEMPLATE_API_TOKEN", "").strip()
 JOB_TIMEOUT = max(60, min(1800, int(os.environ.get("MATRIX_TEMPLATE_JOB_TIMEOUT", "1200"))))
@@ -106,11 +108,29 @@ def _refresh_catalog(force=False):
             template_id = str(raw.get("id") or "")
             if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", template_id):
                 continue
+            engine = str(raw.get("engine") or "ffmpeg")
+            font_selectable = raw.get("font_selectable") is not False
+            font_mode = str(raw.get("font_mode") or (
+                "selectable" if font_selectable else "template_locked"
+            ))
+            variant = str(raw.get("variant") or "")
+            if engine not in {"ffmpeg", "hyperframes"}:
+                continue
+            if font_mode not in {"selectable", "template_locked"}:
+                continue
+            if engine == "hyperframes" and not re.fullmatch(
+                r"v(?:0[1-9]|1[0-7])", variant
+            ):
+                continue
             templates.append({
                 "id": template_id,
                 "name": str(raw.get("name") or template_id)[:40],
                 "description": str(raw.get("description") or "")[:160],
                 "tags": [str(item)[:20] for item in (raw.get("tags") or [])[:8]],
+                "engine": engine,
+                "font_mode": font_mode,
+                "font_selectable": font_selectable,
+                "variant": variant,
             })
         template_ids = {item["id"] for item in templates}
         if (
@@ -119,8 +139,30 @@ def _refresh_catalog(force=False):
             or not REQUIRED_TEMPLATE_IDS.issubset(template_ids)
         ):
             raise RuntimeError("模板目录不完整")
-        approved = {item["id"]: item for item in templates if item["id"] in REQUIRED_TEMPLATE_IDS}
-        templates = [approved[template_id] for template_id in APPROVED_TEMPLATE_IDS]
+        approved = {
+            item["id"]: item for item in templates
+            if item["id"] in REQUIRED_TEMPLATE_IDS
+        }
+        if len(templates) == 19:
+            references = [
+                item for item in templates
+                if REFERENCE_TEMPLATE_RE.fullmatch(item["id"])
+            ]
+            if (
+                len(references) != REFERENCE_TEMPLATE_COUNT
+                or any(
+                    item["engine"] != "hyperframes"
+                    or item["font_selectable"] is not False
+                    or item["font_mode"] != "template_locked"
+                    for item in references
+                )
+                or {item["variant"] for item in references}
+                != {f"v{index:02d}" for index in range(1, 18)}
+            ):
+                raise RuntimeError("HyperFrames 模板目录不完整")
+            templates = [approved[template_id] for template_id in APPROVED_TEMPLATE_IDS] + references
+        else:
+            templates = [approved[template_id] for template_id in APPROVED_TEMPLATE_IDS]
         fonts = [{"value": "", "label": "自动搭配", "source": "automatic"}]
         seen = {""}
         for raw in response.get("fonts") or []:
@@ -163,10 +205,17 @@ def validate_payload(raw, username=""):
     if not 2 <= len(bottom) <= 80:
         raise ValueError("底部行动文案需要 2-80 个字符")
     template_id = str(body.get("template_id") or APPROVED_TEMPLATE_IDS[0])
-    if template_id not in {item["id"] for item in public_templates()}:
+    template = next(
+        (item for item in public_templates() if item["id"] == template_id), None
+    )
+    if template is None:
         raise ValueError("请选择有效模板")
     font_family = str(body.get("font_family") or "").strip()
-    if font_family and font_family not in {item["value"] for item in public_fonts()}:
+    font_selectable = template.get("font_selectable") is not False
+    if (
+        font_selectable and font_family
+        and font_family not in {item["value"] for item in public_fonts()}
+    ):
         raise ValueError("请选择当前可用字体")
     bgm = body.get("bgm", True)
     if not isinstance(bgm, bool):
@@ -185,7 +234,7 @@ def validate_payload(raw, username=""):
         "top_text": top, "bottom_text": bottom,
         "template_id": template_id, "bgm": bgm, "duration": duration,
     }
-    if font_family:
+    if font_family and font_selectable:
         candidate["font_family"] = font_family
     batch_id = str(body.get("batch_id") or "").strip().lower()
     batch_index = body.get("batch_index")
@@ -203,6 +252,8 @@ def validate_payload(raw, username=""):
             "batch_index": batch_index,
             "batch_size": batch_size,
         })
+        if template.get("engine") == "hyperframes" and batch_size > 1:
+            raise ValueError("HyperFrames 模板暂仅支持单条生成")
     try:
         response = _request("POST", "/v1/preflight", candidate, timeout=10)
     except MatrixTemplateHTTPError as exc:

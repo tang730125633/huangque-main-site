@@ -1128,6 +1128,54 @@ class CreatorAgentTests(unittest.TestCase):
         )
         return result["latest_batch"]
 
+    def test_creator_multiplatform_hyperframes_rejects_before_child_quotes(self):
+        draft = self._draft_batch()
+        plans = copy.deepcopy(draft["plans"])
+        for plan in plans:
+            plan["input"]["template_id"] = "ref-01-chengdu-green-brush"
+        updated = self.store.replace_batch_plans(
+            USER["username"], draft["id"], plans, draft["revision"]
+        )
+        self.bridge.templates.append({
+            "id": "ref-01-chengdu-green-brush",
+            "name": "成都绿描边手写",
+            "engine": "hyperframes",
+            "font_selectable": False,
+        })
+
+        with self.assertRaises(APIError) as raised:
+            self.service.quote_batch(USER, updated["id"], updated["revision"])
+        self.assertEqual("matrix_template_single_only", raised.exception.code)
+        self.assertEqual(0, self.bridge.quote_count)
+        self.assertEqual([], [
+            call for call in self.bridge.calls
+            if call[0] == "action" and call[1] == "matrix-template-generate"
+        ])
+
+    def test_creator_single_platform_hyperframes_still_quotes(self):
+        draft = self.message(
+            "制作视频", "start_video",
+            {"topic": "企业内容获客", "platforms": ["douyin"]},
+            "single-hf-3001",
+        )["latest_batch"]
+        plans = copy.deepcopy(draft["plans"])
+        plans[0]["input"]["template_id"] = "ref-01-chengdu-green-brush"
+        updated = self.store.replace_batch_plans(
+            USER["username"], draft["id"], plans, draft["revision"]
+        )
+        self.bridge.templates.append({
+            "id": "ref-01-chengdu-green-brush",
+            "name": "成都绿描边手写",
+            "engine": "hyperframes",
+            "font_selectable": False,
+        })
+
+        quoted = self.service.quote_batch(
+            USER, updated["id"], updated["revision"]
+        )
+        self.assertEqual("quoted", quoted["status"])
+        self.assertEqual(1, self.bridge.quote_count)
+
     def test_unified_quote_keeps_private_tokens_server_side(self):
         draft = self._draft_batch()
         quoted = self.service.quote_batch(USER, draft["id"], draft["revision"])

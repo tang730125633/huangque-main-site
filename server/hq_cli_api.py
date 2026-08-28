@@ -471,6 +471,7 @@ _MEDIA_SCHEMAS = {
         "constraints": [
             "template_id and optional font_family must come from matrix-template-templates",
             "count creates 2-5 independent jobs under one total quote and one confirmation",
+            "HyperFrames and other font-locked templates are single-only; use matrix-template-generate",
             "duration is automatic, BGM is enabled, and only approved platform-library media is used",
         ],
     },

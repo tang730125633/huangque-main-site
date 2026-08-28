@@ -4,18 +4,38 @@ const path = require('path');
 const {chromium} = require('playwright');
 
 const siteRoot = path.resolve(__dirname, '..', 'site');
-const templateIds = [
-  'native-bold', 'video-diary', 'minimal-headline', 'airy-blush',
-  'yellow-blue-pop', 'business-black', 'black-gold-premium', 'data-compare',
-  'chinese-title', 'torn-magazine', 'vlog-journal', 'bilingual-split',
-  'portrait-quote',
+const referenceIds = [
+  'ref-01-chengdu-green-brush', 'ref-02-shenzhen-ai-orange',
+  'ref-03-zhengzhou-blue-banner', 'ref-04-foshan-yellow-strip',
+  'ref-05-changsha-white-red', 'ref-06-guangzhou-yellow-button',
+  'ref-07-shenzhen-red-growth', 'ref-08-puyang-yellow-white',
+  'ref-09-urumqi-soft-brush', 'ref-10-shenzhen-sisters',
+  'ref-11-nansha-clean', 'ref-12-guangzhou-brush',
+  'ref-13-shenzhen-green-location', 'ref-14-karamay-green',
+  'ref-15-tianjin-monochrome', 'ref-16-shenzhen-opc',
+  'ref-17-shenzhen-yellow-red',
 ];
+const templates = [
+  {id: 'full-overlay-bold', name: '沉浸强标题', description: '全屏素材与强标题', engine: 'ffmpeg', font_mode: 'selectable', font_selectable: true},
+  {id: 'poster-split', name: '三段式活动海报', description: '上标题、中素材、下行动号召', engine: 'ffmpeg', font_mode: 'selectable', font_selectable: true},
+  ...referenceIds.map((id, index) => ({
+    id,
+    name: `参考排版 ${String(index + 1).padStart(2, '0')}`,
+    description: `固定字体与布局 ${String(index + 1).padStart(2, '0')}`,
+    tags: ['HyperFrames', '内置字体'],
+    engine: 'hyperframes',
+    font_mode: 'template_locked',
+    font_selectable: false,
+    variant: `v${String(index + 1).padStart(2, '0')}`,
+  })),
+];
+const templateIds = templates.map(item => item.id);
 
 function serve(request, response) {
   if (request.url.startsWith('/api/gen/matrix-template/templates')) {
     response.setHeader('Content-Type', 'application/json');
     response.end(JSON.stringify({
-      templates: templateIds.map(id => ({id, name: id, tags: ['QA']})),
+      templates,
       fonts: [
         {value: '', label: '自动搭配', source: 'automatic'},
         {value: 'Noto Sans SC', label: '思源黑体', source: 'bundled'},
@@ -57,6 +77,33 @@ function hasOverflow(box) {
     for (const [name, viewport] of Object.entries({desktop: {width: 1440, height: 900}, mobile: {width: 390, height: 844}})) {
       const page = await browser.newPage({viewport});
       await page.goto(url, {waitUntil: 'networkidle'});
+      const cardReport = await page.locator('.mt-template').evaluateAll(nodes => nodes.map(node => {
+        const visual = node.querySelector('.mt-template-visual');
+        const top = node.querySelector('.mt-template-top');
+        const media = node.querySelector('.mt-template-media');
+        const bottom = node.querySelector('.mt-template-bottom');
+        const visualStyle = getComputedStyle(visual);
+        const topStyle = getComputedStyle(top);
+        const mediaStyle = getComputedStyle(media);
+        const bottomStyle = getComputedStyle(bottom);
+        return {
+          variant: visual.dataset.variant || '',
+          signature: [
+            visualStyle.backgroundColor, visualStyle.color, visualStyle.gridTemplateRows,
+            topStyle.color, topStyle.fontFamily, topStyle.textAlign,
+            mediaStyle.backgroundImage, mediaStyle.borderColor, mediaStyle.borderRadius,
+            bottomStyle.backgroundColor, bottomStyle.color, bottomStyle.borderRadius,
+          ].join('|'),
+        };
+      }));
+      if (process.env.MATRIX_QA_OUTPUT) {
+        fs.mkdirSync(process.env.MATRIX_QA_OUTPUT, {recursive: true});
+        const grid = page.locator('#templateGrid');
+        await grid.evaluate(element => { element.scrollTop = 0; });
+        await grid.screenshot({path: path.join(process.env.MATRIX_QA_OUTPUT, `matrix-${name}-catalog-start.png`)});
+        await grid.evaluate(element => { element.scrollTop = element.scrollHeight; });
+        await grid.screenshot({path: path.join(process.env.MATRIX_QA_OUTPUT, `matrix-${name}-catalog-end.png`)});
+      }
       await page.fill('#topText', '标题'.repeat(30));
       await page.fill('#bottomText', '行动'.repeat(40));
       const overflow = [];
@@ -76,10 +123,16 @@ function hasOverflow(box) {
         return {scrollTop: scroller.scrollTop, scrollHeight: scroller.scrollHeight, clientHeight: scroller.clientHeight, top: rect.top, bottom: rect.bottom, viewport: innerHeight};
       });
       if (process.env.MATRIX_QA_OUTPUT) {
-        fs.mkdirSync(process.env.MATRIX_QA_OUTPUT, {recursive: true});
-        await page.screenshot({path: path.join(process.env.MATRIX_QA_OUTPUT, `matrix-${name}.png`), fullPage: true});
+        await page.screenshot({path: path.join(process.env.MATRIX_QA_OUTPUT, `matrix-${name}-preview.png`), fullPage: true});
       }
-      report[name] = {overflow, scroll};
+      const references = cardReport.filter(item => item.variant);
+      report[name] = {
+        overflow,
+        scroll,
+        cardCount: cardReport.length,
+        referenceCount: references.length,
+        distinctReferencePreviews: new Set(references.map(item => item.signature)).size,
+      };
       await page.close();
     }
   } finally {
@@ -87,6 +140,9 @@ function hasOverflow(box) {
     server.close();
   }
   if (report.desktop.overflow.length || report.mobile.overflow.length) throw new Error(`preview overflow: ${JSON.stringify(report)}`);
+  for (const viewport of Object.values(report)) {
+    if (viewport.cardCount !== 19 || viewport.referenceCount !== 17 || viewport.distinctReferencePreviews !== 17) throw new Error(`template cards are not distinct: ${JSON.stringify(report)}`);
+  }
   const mobile = report.mobile.scroll;
   if (mobile.scrollHeight <= mobile.clientHeight || mobile.scrollTop <= 0 || mobile.top >= mobile.viewport || mobile.bottom <= 0) throw new Error(`mobile preview is unreachable: ${JSON.stringify(mobile)}`);
   process.stdout.write(JSON.stringify(report));

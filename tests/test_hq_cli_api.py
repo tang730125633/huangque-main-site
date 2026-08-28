@@ -115,6 +115,23 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual(200, status, payload)
         return payload["access_token"]
 
+    @staticmethod
+    def _matrix_template_catalog(include_hyperframes=False):
+        templates = [{
+            "id": "full-overlay-bold", "name": "沉浸强标题",
+            "engine": "ffmpeg", "font_selectable": True,
+        }, {
+            "id": "poster-split", "name": "三段式活动海报",
+            "engine": "ffmpeg", "font_selectable": True,
+        }]
+        if include_hyperframes:
+            templates.append({
+                "id": "ref-01-chengdu-green-brush",
+                "name": "成都绿描边手写",
+                "engine": "hyperframes", "font_selectable": False,
+            })
+        return {"templates": templates}
+
     def _enable_ip12_bridge(self):
         self.auth.IP12_AGENT_ALLOWED_ACCOUNT_IDS = frozenset({"*"})
         self.auth.feature_flags.init_db()
@@ -1163,6 +1180,12 @@ class HQCLIAPITests(unittest.TestCase):
             "matrix-template-generate"
         ]["properties"]["font_family"]
         self.assertEqual({"type": "string", "maxLength": 80}, schema)
+        self.assertTrue(any(
+            "single-only" in item
+            for item in self.auth.hq_cli_api._MEDIA_SCHEMAS[
+                "matrix-template-batch-generate"
+            ]["constraints"]
+        ))
         batch = self.auth.hq_cli_api.action_plan(
             "matrix-template-batch-generate", dict(
                 value, font_family="AaHouDiHei", count=3)
@@ -1198,11 +1221,74 @@ class HQCLIAPITests(unittest.TestCase):
                 self.auth.hq_cli_api.action_plan(
                     "matrix-template-batch-generate", dict(value, count=count))
 
+    def test_matrix_template_hyperframes_batch_rejects_before_quote_or_submit(self):
+        token = self._token(["generation:quote", "generation:submit"])
+        paths = []
+
+        def fake_proxy(plan, _web_token, _internal_token):
+            paths.append(plan["path"])
+            if plan["path"] == "/api/gen/matrix-template/templates":
+                return 200, self._matrix_template_catalog(include_hyperframes=True)
+            self.fail("HyperFrames batch must stop before quote or submit")
+
+        request = {
+            "action": "matrix-template-batch-generate",
+            "input": {
+                "top_text": "固定字体批量标题",
+                "bottom_text": "固定字体批量行动文案",
+                "template_id": "ref-01-chengdu-green-brush",
+                "count": 3,
+            },
+            "confirm": False,
+        }
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
+            status, result = self._request(
+                "/api/auth/cli/action", request, token=token
+            )
+        self.assertEqual((400, "matrix_template_single_only"), (
+            status, result["code"],
+        ))
+        self.assertEqual(["/api/gen/matrix-template/templates"], paths)
+
+    def test_matrix_template_hyperframes_single_still_quotes_and_submits(self):
+        token = self._token(["generation:quote", "generation:submit"])
+        submitted = []
+
+        def fake_proxy(plan, _web_token, _internal_token):
+            if plan["path"] == "/api/gen/cli/quote":
+                return 200, {"kind": "matrix_template_video", "cost": 5, "points": 100}
+            if plan["path"] == "/api/gen/matrix-template":
+                submitted.append(plan)
+                return 200, {"job_id": 193, "cost": 5, "points_left": 95}
+            self.fail("unexpected proxy path: " + plan["path"])
+
+        request = {
+            "action": "matrix-template-generate",
+            "input": {
+                "top_text": "固定字体单条标题",
+                "bottom_text": "固定字体单条行动文案",
+                "template_id": "ref-01-chengdu-green-brush",
+            },
+            "confirm": False,
+        }
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
+            status, quote = self._request(
+                "/api/auth/cli/action", request, token=token
+            )
+            status, result = self._request(
+                "/api/auth/cli/action",
+                dict(request, confirm=True, quote_token=quote["quote_token"]),
+                token=token,
+            )
+        self.assertEqual((200, 193, 1), (status, result["job_id"], len(submitted)))
+
     def test_matrix_template_batch_quotes_once_and_replays_stable_children(self):
         token = self._token(["generation:quote", "generation:submit"])
         submitted, jobs_by_key = [], {}
 
         def fake_proxy(plan, _web_token, _internal_token):
+            if plan["path"] == "/api/gen/matrix-template/templates":
+                return 200, self._matrix_template_catalog()
             if plan["path"] == "/api/gen/cli/quote":
                 return 200, {"kind": "matrix_template_video", "cost": 5, "points": 100}
             if plan["path"] == "/api/gen/matrix-template":
@@ -1218,7 +1304,7 @@ class HQCLIAPITests(unittest.TestCase):
 
         input_body = {
             "top_text": "批量有效标题", "bottom_text": "批量有效行动文案",
-            "template_id": "native-bold", "font_family": "AaHouDiHei", "count": 3,
+            "template_id": "full-overlay-bold", "font_family": "AaHouDiHei", "count": 3,
         }
         request = {
             "action": "matrix-template-batch-generate",
@@ -1254,6 +1340,8 @@ class HQCLIAPITests(unittest.TestCase):
         jobs_by_key, state = {}, {"raised": False}
 
         def fake_proxy(plan, _web_token, _internal_token):
+            if plan["path"] == "/api/gen/matrix-template/templates":
+                return 200, self._matrix_template_catalog()
             if plan["path"] == "/api/gen/cli/quote":
                 return 200, {"kind": "matrix_template_video", "cost": 5, "points": 100}
             key = plan["headers"]["Idempotency-Key"]
@@ -1270,7 +1358,7 @@ class HQCLIAPITests(unittest.TestCase):
             "action": "matrix-template-batch-generate", "confirm": False,
             "input": {
                 "top_text": "批量恢复标题", "bottom_text": "批量恢复行动文案",
-                "template_id": "native-bold", "count": 3,
+                "template_id": "full-overlay-bold", "count": 3,
             },
         }
         with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
@@ -1294,6 +1382,8 @@ class HQCLIAPITests(unittest.TestCase):
         submitted = []
 
         def fake_proxy(plan, _web_token, _internal_token):
+            if plan["path"] == "/api/gen/matrix-template/templates":
+                return 200, self._matrix_template_catalog()
             if plan["path"] == "/api/gen/cli/quote":
                 return 200, {"kind": "matrix_template_video", "cost": 5, "points": 100}
             submitted.append(plan)
@@ -1334,6 +1424,8 @@ class HQCLIAPITests(unittest.TestCase):
         submitted = []
 
         def fake_proxy(plan, _web_token, _internal_token):
+            if plan["path"] == "/api/gen/matrix-template/templates":
+                return 200, self._matrix_template_catalog()
             if plan["path"] == "/api/gen/cli/quote":
                 return 200, {"kind": "matrix_template_video", "cost": 5, "points": 100}
             submitted.append(plan)
@@ -1374,6 +1466,8 @@ class HQCLIAPITests(unittest.TestCase):
         token = self._token(["generation:quote", "generation:submit"])
 
         def fake_proxy(plan, _web_token, _internal_token):
+            if plan["path"] == "/api/gen/matrix-template/templates":
+                return 200, self._matrix_template_catalog()
             if plan["path"] == "/api/gen/cli/quote":
                 return 200, {"kind": "matrix_template_video", "cost": 5, "points": 100}
             return 200, {"cost": 5, "points_left": 95}
