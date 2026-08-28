@@ -16,6 +16,11 @@ import urllib.parse
 import urllib.request
 from decimal import Decimal, ROUND_HALF_UP
 
+try:
+    from . import director_workflow_contract
+except ImportError:  # Production can launch this module from the server directory.
+    import director_workflow_contract
+
 
 PUBLIC_ORIGIN = os.environ.get("HQ_CLI_PUBLIC_ORIGIN", "https://huangquechuanmei.com").strip().rstrip("/")
 DEVICE_TTL = 10 * 60
@@ -59,6 +64,7 @@ SCOPES = {
     "digital-presenter:read": "读取本人画布中的数字人口播项目",
     "digital-presenter:write": "经确认后创建或更新本人画布中的数字人口播项目",
 }
+SCOPES.update(director_workflow_contract.SCOPE_CONTRACT)
 DEFAULT_SCOPES = tuple(SCOPES)
 CHANNEL_CATALOG = (
     {"id": "xai", "provider": "xAI API", "category": "视频生成", "features": ["果肉视频生成"],
@@ -121,7 +127,7 @@ CONFIRMATION_ACTIONS = frozenset({
 # catalog deliberately describes inputs without exposing private upstream URLs
 # or provider credentials.
 _ACTION_INPUTS = {
-    "account": (), "channels": (), "pricing": (),
+    "account": (), "channels": (), "pricing": (), "director-capability": (),
     "text-video-capability": (), "text-video-templates": (),
     "text-video-styles": (), "text-video-voices": (),
     "text-video-generate": ("text", "template", "mode", "style", "voice", "speech_rate", "talking_material"),
@@ -185,6 +191,7 @@ _ACTION_INPUTS = {
 
 _ACTION_PURPOSES = {
     "account": "读取当前黄雀账号与点数", "channels": "读取可用渠道", "pricing": "读取实时价格",
+    "director-capability": "读取编导与数字人一键生成的完整 CLI 覆盖契约",
     "ip12-projects": "读取本人 IP12 项目", "ip12-project": "读取本人 IP12 项目详情",
     "ip12-report": "读取本人 IP12 报告", "ip12-delete": "删除本人 IP12 项目",
     "canvas-list": "读取本人画布", "canvas-get": "读取本人画布详情",
@@ -679,6 +686,7 @@ _MEDIA_SCHEMAS.update({
 })
 
 _FAMILIES = {
+    "director-capability": "director",
     "image-upload": "image", "image-generate": "image", "audio-slots": "audio", "voices": "audio", "audio-generate": "audio",
     "voice-clone-create": "audio", "voice-clone-status": "audio",
     "video-upload": "video", "video-avatars": "video", "video-generate": "video", "video-lipsync": "video", "digital-ip-text-generate": "video",
@@ -740,6 +748,8 @@ def _catalog_type(field):
 
 
 def _catalog_route(action):
+    if action.startswith("director-"):
+        return "/workbench/script"
     if action.startswith("canvas-") or action.startswith("digital-presenter-"):
         return "/workbench/canvas"
     if action.startswith("image-"):
@@ -819,7 +829,7 @@ for _catalog_item in ACTION_CATALOG:
     if _catalog_item["action"] in _FAMILIES:
         _catalog_item["family"] = _FAMILIES[_catalog_item["action"]]
 ACTION_CATALOG_MAP = {item["action"]: item for item in ACTION_CATALOG if item["transport"]["kind"] == "action"}
-ACTION_CATALOG_VERSION = "hq-action-catalog-v5"
+ACTION_CATALOG_VERSION = "hq-action-catalog-v6"
 
 
 def action_catalog(feature_states=None):
@@ -1795,6 +1805,9 @@ def action_plan(action, value):
     if action == "pricing":
         _strict_object(value, set())
         return _plan("profile:read", "proxy", base=CONTENT_BASE, path="/api/gen/pricing")
+    if action == "director-capability":
+        _strict_object(value, set())
+        return _plan("director:read", "director-capability")
     if action == "text-video-avatar-import":
         _strict_object(value, {"image_upload_id"}, ("image_upload_id",))
         return _plan(
