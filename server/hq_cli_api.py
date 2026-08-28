@@ -729,6 +729,7 @@ _FAMILIES = {
     "digital-presenter-create": "canvas", "digital-presenter-update": "canvas",
 }
 _ACTION_FEATURE_GATES = {
+    "director-script-generate": ("copy",), "director-breakdown": ("breakdown",),
     "audio-generate": ("audio",), "voice-clone-create": ("audio",), "voice-clone-status": ("audio",),
     "canvas-agent-plan": ("canvas_agent",),
     "video-lipsync": ("video",), "digital-ip-text-generate": ("video",), "digital-ip-batch-generate": ("video",),
@@ -750,6 +751,7 @@ CATALOG_FEATURE_FLAGS = tuple(sorted({flag for flags in (*_ACTION_FEATURE_GATES.
 
 _GENERATION_ACTIONS = frozenset({
     "collect-content", "collect-video", "collect-transcript", "collect-search", "leads-generate",
+    "director-script-generate", "director-breakdown",
     "canvas-agent-plan", "image-generate", "video-generate", "video-lipsync", "audio-generate",
     "digital-ip-text-generate", "digital-ip-batch-generate", "digital-ip-audio-generate",
     "cinematic-open-generate", "cinematic-motion-generate", "tryon-fast-generate", "tryon-classic-generate",
