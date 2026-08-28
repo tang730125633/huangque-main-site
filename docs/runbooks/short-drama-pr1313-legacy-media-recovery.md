@@ -13,8 +13,8 @@
 - 计划维护窗口：`2026-08-30 02:00–03:00 Asia/Shanghai`。
 - 执行、备份、验证与失败恢复负责人：`@LU-003`。
 - 固定业务提交：以本 PR 的 LU-003 批准评论明确列出的完整 40 位 SHA 为准。
-- 当前状态：因审核要求新增完整恢复结果查看、复制和下载能力，原批准已失效；等待重新固定
-  最终业务 SHA 并由 LU-003 重新批准。本文不是合并、部署或生产执行指令。
+- 当前状态：最终业务 SHA 已固定，LU-003 重新批准已发布；等待最终候选推送、CI 与最新审核。
+  本文不是合并、部署或生产执行指令。
 
 若批准后业务代码、测试语义、数据库写入逻辑或媒体生命周期规则发生变化，原批准立即
 失效，必须重新固定业务 SHA 并重新审批。批准后只允许追加评论 URL、评论 ID、作者、
@@ -112,3 +112,20 @@ PRAGMA foreign_key_check;
 - 最终验证结果：Standards/Spec 双轴无 P0-P3；自动草稿 113、精修 116、媒体/CI/资源戳
   70、工作台 125、最新主线 Director/CLI 65 项均通过；两份 OpenAPI SHA-256 一致，
   `scripts/ci_validate.py`、资源戳、语法、`git diff --check` 与 strict-main 门禁通过。
+
+## 当前批准证据（发布后追加）
+
+- 批准评论 URL：
+  `https://github.com/tang730125633/huangque-main-site/pull/1313#issuecomment-5451136589`。
+- GitHub 评论 ID / Node ID：`5451136589` / `IC_kwDOS66oj88AAAABROm-TQ`。
+- 作者与关联：`LU-003 / COLLABORATOR`。
+- 创建与更新时间：`2026-08-28T09:58:26Z` / `2026-08-28T09:58:26Z`；发布后未编辑。
+- 审批对象核对：固定业务 SHA 与候选 HEAD 均为
+  `b04f4116c64258b175c2a56b6d233f15fd029482`，同步 main 为
+  `a73ad605b9080b4b52d7bb915c95bda44ffb599d`，均与评论正文完全一致。
+- 授权边界核对：评论明确取代旧批准，并重申本批准不等于合并、部署、服务重启或生产数据
+  操作指令；后续业务逻辑变化将使本批准失效。
+- 固定业务 SHA 本地验证：Standards/Spec 双轴无 P0-P3；工作台 127、CI 正式 JavaScript
+  清单 290、历史恢复/媒体生命周期/完成完整性 Python 158 项均通过；`scripts/ci_validate.py`、
+  资源戳、JavaScript 语法及 `git diff --check` 通过。最终候选仍须以推送后的 required CI 和
+  最新远端审核为准。
