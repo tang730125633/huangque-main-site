@@ -227,6 +227,11 @@ class FakeBridge:
         if action == "matrix-template-templates":
             return {"templates": copy.deepcopy(self.templates), "cost": 5}
         if action == "task":
+            if (
+                isinstance(tool_input.get("job_id"), bool)
+                or not isinstance(tool_input.get("job_id"), int)
+            ):
+                raise APIError(400, "job_id 必须是整数", "invalid_request")
             return copy.deepcopy(self.task_results.get(str(tool_input["job_id"]), {
                 "status": "running",
             }))
@@ -1508,6 +1513,39 @@ class CreatorAgentTests(unittest.TestCase):
         self.assertEqual(result["refund_status"], "refunded")
         self.assertTrue(result["result"]["reconciled"])
 
+    def test_submission_result_requires_a_positive_content_job_id(self):
+        accepted = self.service._submission_result({
+            "status": "running", "job_id": "7161",
+        })
+        self.assertEqual(accepted["job_id"], "7161")
+        for invalid in (True, 0, -1, "0", "not-a-job", 9_223_372_036_854_775_808):
+            with self.subTest(invalid=invalid), self.assertRaises(APIError) as raised:
+                self.service._submission_result({
+                    "status": "running", "job_id": invalid,
+                })
+            self.assertEqual(raised.exception.code, "submit_result_unknown")
+
+    def test_corrupt_stored_job_id_becomes_terminal_instead_of_polling_forever(self):
+        draft = self._draft_batch()
+        quoted = self.service.quote_batch(USER, draft["id"], draft["revision"])
+        submitted = self.service.confirm_batch(
+            USER, draft["id"], "creator-confirm-corrupt-job-id",
+            quoted["revision"], quoted["quote_expires_at"],
+        )
+        corrupted = submitted["jobs"][0]
+        self.store.update_job(
+            USER["username"], corrupted["id"], job_id="provider-id-is-not-numeric",
+        )
+        refreshed = self.service.refresh_batch(USER, draft["id"])
+        current = next(item for item in refreshed["jobs"] if item["id"] == corrupted["id"])
+        self.assertEqual(current["status"], "failed")
+        self.assertIn("任务编号无效", current["error"])
+        self.assertFalse(any(
+            call[0] == "action" and call[1] == "task"
+            and call[2].get("job_id") == "provider-id-is-not-numeric"
+            for call in self.bridge.calls
+        ))
+
     def test_one_failed_platform_does_not_erase_other_success(self):
         draft = self._draft_batch()
         quoted = self.service.quote_batch(USER, draft["id"], draft["revision"])
@@ -1521,6 +1559,14 @@ class CreatorAgentTests(unittest.TestCase):
         }
         refreshed = self.service.refresh_batch(USER, draft["id"])
         self.assertEqual(refreshed["status"], "partial")
+        task_calls = [
+            call for call in self.bridge.calls
+            if call[0] == "action" and call[1] == "task"
+        ]
+        self.assertTrue(task_calls)
+        self.assertTrue(all(
+            isinstance(call[2]["job_id"], int) for call in task_calls
+        ))
         statuses = {item["platform"]: item["status"] for item in refreshed["jobs"]}
         self.assertEqual(set(statuses.values()), {"done", "failed"})
         failed = next(item for item in refreshed["jobs"] if item["status"] == "failed")
