@@ -37,6 +37,28 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         templates[-1]["id"] = "poster-split"
         return templates
 
+    def reference_templates(self):
+        return [
+            {
+                "id": "full-overlay-bold", "name": "沉浸强标题",
+                "engine": "ffmpeg", "font_mode": "selectable",
+                "font_selectable": True,
+            },
+            {
+                "id": "poster-split", "name": "海报切分",
+                "engine": "ffmpeg", "font_mode": "selectable",
+                "font_selectable": True,
+            },
+        ] + [{
+            "id": f"ref-{index:02d}-fixture-{index:02d}",
+            "name": f"参考模板 {index}",
+            "description": "固定字体模板",
+            "tags": ["HyperFrames", "内置字体"],
+            "engine": "hyperframes",
+            "font_mode": "template_locked",
+            "font_selectable": False,
+        } for index in range(1, 18)]
+
     def test_public_catalog_accepts_transition_counts_but_exposes_only_approved_templates(self):
         response = {"templates": self.templates(), "fonts": [
             {"value": "", "label": "自动搭配", "source": "automatic"},
@@ -81,8 +103,21 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             [item["id"] for item in restricted],
         )
 
-    def test_availability_accepts_two_or_fifteen_healthy_templates(self):
-        for count in (2, 15):
+        with mock.patch.object(self.module, "_request", return_value={
+            "templates": self.reference_templates(),
+        }):
+            expanded = self.module.public_templates(force=True)
+        self.assertEqual(19, len(expanded))
+        self.assertEqual(17, len([
+            item for item in expanded if item["engine"] == "hyperframes"
+        ]))
+        self.assertTrue(all(
+            item["font_selectable"] is False
+            for item in expanded if item["engine"] == "hyperframes"
+        ))
+
+    def test_availability_accepts_two_fifteen_or_nineteen_healthy_templates(self):
+        for count in (2, 15, 19):
             with self.subTest(count=count), \
                  mock.patch.object(self.module.feature_flags, "is_enabled", return_value=True), \
                  mock.patch.object(
@@ -110,6 +145,28 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                 "bottom_text": "评论区留下关键词",
                 "template_id": "native-bold",
             })
+
+    def test_reference_template_ignores_font_selection(self):
+        expected = {
+            "top_text": "活动标题", "bottom_text": "评论区回复关键词",
+            "template_id": "ref-01-fixture-01", "bgm": True,
+            "duration": 8.0,
+        }
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(
+                 self.module, "public_templates",
+                 return_value=self.reference_templates(),
+             ), \
+             mock.patch.object(
+                 self.module, "_request", return_value={"payload": expected}
+             ) as request:
+            result = self.module.validate_payload({
+                **expected,
+                "font_family": "AaHouDiHei",
+                "duration": None,
+            }, "alice")
+        self.assertNotIn("font_family", result)
+        self.assertNotIn("font_family", request.call_args.args[2])
 
     def test_missing_template_defaults_to_first_approved_layout(self):
         approved = [
@@ -601,6 +658,14 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual("AaHouDiHei", result["body"]["font_family"])
         self.assertEqual("私有字体", result["source"])
         self.assertEqual(["", "Noto Sans SC", "AaHouDiHei"], result["options"])
+
+    def test_locked_reference_template_disables_and_omits_font(self):
+        result = self.runtime("lockedFont")
+        self.assertTrue(result["disabled"])
+        self.assertEqual("", result["value"])
+        self.assertEqual("模板内置", result["source"])
+        self.assertNotIn("font_family", result["body"])
+        self.assertEqual("ref-01-fixture-01", result["body"]["template_id"])
 
     def test_batch_five_submits_distinct_jobs_and_renders_all_results(self):
         result = self.runtime("batchFive")
