@@ -40,5 +40,8 @@ class HQCLISiteCoverageTests(unittest.TestCase):
             self.assertEqual("navigate", capability["agent"]["website_access"])
             self.assertFalse(capability["confirmation_required"])
         matrix = CAPABILITIES["matrix-template"]
-        self.assertEqual(["matrix_template.single"], matrix["agent"]["website_operations"])
+        self.assertEqual(
+            ["matrix_template.single", "matrix_template.batch"],
+            matrix["agent"]["website_operations"],
+        )
         self.assertEqual("/workbench/matrix-template.html", matrix["deep_link"]["path"])
