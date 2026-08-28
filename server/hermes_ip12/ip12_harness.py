@@ -212,22 +212,29 @@ def _declined_intake_fields(message, last_topic=""):
     return matches
 
 
+def _intake_field_complete(field, item):
+    value = str((item or {}).get("value") or "").strip() if isinstance(item, dict) else str(item or "").strip()
+    if field == "personality_traits":
+        return len({part for part in re.split(r"[,，、/；;\s]+", value) if part}) >= 3
+    return bool(value)
+
+
 def intake_field_statuses(value):
     state = normalize_state(value)
     intake = state["intake"]
-    candidate_fields = {
-        str(item.get("field") or "")
+    candidate_items = {
+        str(item.get("field") or ""): item
         for item in intake.get("profile_updates") or [] if isinstance(item, dict)
     }
-    confirmed_fields = set()
+    confirmed_items = {}
     for bucket in ("facts", "preferences"):
-        confirmed_fields.update((state["ip_profile"].get(bucket) or {}).keys())
+        confirmed_items.update(state["ip_profile"].get(bucket) or {})
     declined_fields = set(intake.get("declined_fields") or [])
     return {
         field: (
-            "confirmed" if field in confirmed_fields else
+            "confirmed" if _intake_field_complete(field, confirmed_items.get(field)) else
             "declined" if field in declined_fields else
-            "candidate" if field in candidate_fields else
+            "candidate" if _intake_field_complete(field, candidate_items.get(field)) else
             "unknown"
         )
         for field in INTAKE_FIELDS
@@ -241,6 +248,7 @@ def intake_coverage_gaps(value, updates=()):
             isinstance(item, dict)
             and item.get("field") in INTAKE_FIELD_SET
             and statuses[item["field"]] == "unknown"
+            and _intake_field_complete(item["field"], item)
         ):
             statuses[item["field"]] = "candidate"
     return [field for field in INTAKE_COVERAGE_FIELDS if statuses[field] == "unknown"]
@@ -937,13 +945,18 @@ def normalize_state(value):
             if isinstance(item, str) and item in INTAKE_FIELD_SET
         ],
     )
+    confirmed_intake_items = {
+        **(profile.get("facts") or {}), **(profile.get("preferences") or {}),
+    }
+    candidate_intake_items = {
+        str(item.get("field") or ""): item
+        for item in intake.get("profile_updates") or [] if isinstance(item, dict)
+    }
     intake["field_statuses"] = {
         field: (
-            "confirmed" if field in set(profile.get("facts") or {}) | set(profile.get("preferences") or {}) else
+            "confirmed" if _intake_field_complete(field, confirmed_intake_items.get(field)) else
             "declined" if field in set(intake.get("declined_fields") or []) else
-            "candidate" if field in {
-                str(item.get("field") or "") for item in intake.get("profile_updates") or [] if isinstance(item, dict)
-            } else
+            "candidate" if _intake_field_complete(field, candidate_intake_items.get(field)) else
             "unknown"
         )
         for field in INTAKE_FIELDS

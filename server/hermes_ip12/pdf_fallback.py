@@ -66,7 +66,6 @@ def render_foundation_consulting_pdf(markdown, target, title="IP 人设定位｜
                             spaceBefore=0, spaceAfter=20, textColor=ink, fontName=font_name)
     section = ParagraphStyle("consulting-section", parent=body, fontSize=12.5, leading=18,
                              spaceBefore=13, spaceAfter=9, textColor=ink, fontName=font_name)
-    summary_section = ParagraphStyle("consulting-summary-section", parent=section, keepWithNext=1)
     card = ParagraphStyle("consulting-card", parent=body, fontSize=11.2, leading=16,
                           spaceBefore=9, spaceAfter=6, textColor=ink, fontName=font_name)
     small = ParagraphStyle("consulting-small", parent=body, fontSize=9.4, leading=14,
@@ -167,10 +166,7 @@ def render_foundation_consulting_pdf(markdown, target, title="IP 人设定位｜
             if story and not isinstance(story[-1], PageBreak): story.append(PageBreak())
             story.append(paragraph(raw[3:], module))
         elif raw.startswith("### "):
-            if raw[4:] == "采集表确认摘要":
-                story.append(paragraph(raw[4:], summary_section))
-            else:
-                story.append(KeepTogether([paragraph(raw[4:], section), Spacer(1, 1)]))
+            story.append(KeepTogether([paragraph(raw[4:], section), Spacer(1, 1)]))
         elif raw.startswith("#### "):
             story.append(KeepTogether([paragraph(raw[5:], card), Spacer(1, 1)]))
         elif raw.startswith("> "):

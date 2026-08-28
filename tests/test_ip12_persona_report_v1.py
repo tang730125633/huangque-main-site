@@ -56,7 +56,7 @@ class IP12PersonaReportV1Tests(unittest.TestCase):
             with mock.patch.object(server, "_foundation_pdf_page_count", return_value=6):
                 self.assertEqual(server._validate_foundation_pdf(path), 6)
 
-    def test_pdf_appendix_covers_every_intake_item_without_exposing_mobile(self):
+    def test_internal_intake_coverage_keeps_private_fields_out_of_customer_pdf(self):
         state = harness.initial_state()
         state["intake"]["declined_fields"] = list(harness.INTAKE_COVERAGE_FIELDS)
         for field, value in (("preferred_name", "阿青"), ("mobile", "13000000000")):
@@ -64,12 +64,13 @@ class IP12PersonaReportV1Tests(unittest.TestCase):
             state["ip_profile"]["facts"][field] = {
                 "field": field, "value": value, "kind": "user_fact", "evidence_quote": value,
             }
-        summary = server._foundation_intake_summary_markdown(state)
-        for field in harness.INTAKE_COVERAGE_FIELDS:
-            self.assertIn(harness.INTAKE_COVERAGE_LABELS[field], summary)
-        self.assertNotIn("13000000000", summary)
-        self.assertIn("已提供（隐私信息不在报告展示）", summary)
-        self.assertNotIn("待本人确认", summary)
+        coverage = server._foundation_intake_coverage(state)
+        self.assertEqual(len(coverage), len(harness.INTAKE_COVERAGE_FIELDS))
+        mobile = next(item for item in coverage if item["field"] == "mobile")
+        self.assertEqual(mobile["value"], "已提供（隐私信息不在报告展示）")
+        source = inspect.getsource(server.generate_foundation_report)
+        self.assertNotIn("_foundation_intake_summary_markdown", source)
+        self.assertIn('{"age", "gender", "mobile", "income_source", "income_range"}', source)
 
     def test_customer_pdf_hides_internal_labels_and_waits_for_final_title(self):
         content = (
@@ -78,10 +79,6 @@ class IP12PersonaReportV1Tests(unittest.TestCase):
         )
         self.assertIn("故事表达建议", server._customer_facing_foundation_content(content))
         self.assertNotIn("AI包装建议", server._customer_facing_foundation_content(content))
-        self.assertIn(
-            "从盲目扩张走过弯路，到重新记录顾客问题",
-            server._customer_facing_foundation_content("从盲目扩张失败，到重新记录顾客问题"),
-        )
         self.assertEqual(
             server._customer_facing_foundation_content("重复的完整说明文本必须只出现一次。\n重复的完整说明文本必须只出现一次。"),
             "重复的完整说明文本必须只出现一次。",
@@ -91,17 +88,32 @@ class IP12PersonaReportV1Tests(unittest.TestCase):
             "事实原话：这是需要保留的完整事实。",
         )
         customer = server._customer_facing_foundation_content(
-            "帮花店把送花故事讲得动人。\n用户原话：测试。\n属于AI包装建议。\n"
-            "有温度的表达者 + 花店经营与故事表达角色。"
+            "用户原话：测试。\n属于AI包装建议。"
         )
-        self.assertIn("帮花店把送花故事讲清楚", customer)
         self.assertIn("本人原话", customer)
         self.assertIn("传播包装建议", customer)
-        self.assertIn("以花店经营者身份，持续表达真实送花故事", customer)
         self.assertNotIn("用户原话", customer)
         self.assertNotIn("AI包装建议", customer)
         self.assertEqual(server._foundation_report_title(content), "IP 人设定位｜模块 1-4 初稿")
         self.assertEqual(server._foundation_report_title("### 待本人确认项\n无待补充项"), "IP 人设定位报告｜模块 1-4")
+
+    def test_customer_pdf_uses_current_story_facts_and_marks_incomplete_traits(self):
+        state = harness.initial_state()
+        state["ip_profile"]["facts"].update({
+            "story_pitfall": {"value": "没算成本就签长租", "evidence_quote": "没算成本就签长租"},
+            "biggest_setback": {"value": "租棚后现金流紧张", "evidence_quote": "租棚后现金流紧张"},
+            "story_comeback": {"value": "退掉大棚并转为上门拍摄", "evidence_quote": "退掉大棚并转为上门拍摄"},
+            "personality_traits": {"value": "真诚,克制", "evidence_quote": "真诚克制"},
+        })
+        content = (
+            "表达边界：只陈述经营中因盲目扩张走过一段弯路及已确认调整，不延伸为店铺失败、关闭或倒闭。\n\n"
+            "### 待本人确认项\n\n- 其他项"
+        )
+        result = server._foundation_apply_current_state(content, state)
+        self.assertNotIn("盲目扩张", result)
+        self.assertIn("没算成本就签长租", result)
+        self.assertIn("退掉大棚并转为上门拍摄", result)
+        self.assertIn("第三个性格词（当前仅确认：真诚、克制）", result)
 
     def test_report_prompt_requires_candidates_and_selected_choice(self):
         source = inspect.getsource(server.generate_foundation_report)
