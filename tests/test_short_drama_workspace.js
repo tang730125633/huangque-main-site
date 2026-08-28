@@ -2427,6 +2427,29 @@ test('legacy reported 2K shots missing evidence are not mislabeled as 768p', () 
   assert.match(workspaceSource, /data-action'\)==='recover-legacy-media'/);
 });
 
+test('legacy media recovery is disabled while a project pipeline task is active', () => {
+  const output = workspace.autodraftActionsHtml({
+    confirmed_plan:{id:'plan-1'},
+    billing:{cost:0,mode:'provider_assets_already_charged'},
+    permissions:{can_edit:true,can_recover_legacy_media:true},
+    provider_jobs:[{id:'job-active',shot_key:'shot_02',status:'submit_unknown'}],
+    provider_poc:{provider:'minimax_h3',shots:[],characters:[]},
+    production:{
+      ready:false,
+      mode:'provider_poc',
+      message:'历史 2K 镜头缺少媒体校验记录。',
+      provider:{selected:'minimax_h3',configured:true},
+      assembly:{
+        required_count:2,ready_count:2,assets_ready:true,quality_ready:false,
+        low_resolution_shot_keys:[],
+        media_verification_missing_shot_keys:['shot_01'],all_ready:false
+      }
+    }
+  }, true);
+  assert.match(output, /data-action="recover-legacy-media" disabled/);
+  assert.match(output, /请等待当前任务结束后再恢复/);
+});
+
 test('failed 1080p assembly explains the failure and allows a safe retry', () => {
   const output = workspace.autodraftActionsHtml({
     confirmed_plan:{id:'plan-1'},

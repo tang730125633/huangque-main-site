@@ -775,6 +775,130 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         self.assertEqual(403, editor_handler.response[0])
         self.assertEqual("forbidden", editor_handler.response[1]["code"])
 
+    def test_legacy_media_recovery_http_rejects_every_active_pipeline_stage(self):
+        verify = lambda token: {
+            "username": token,
+            "must_change": False,
+        } if token else None
+        now = int(time.time())
+        conn = self.db()
+        try:
+            conn.execute(
+                "INSERT INTO short_drama_refinement_versions "
+                "(id,project_id,source_draft_version_id,version,status,url,"
+                "shots_json,issues_json,input_hash,preview_file_hash,media_json,"
+                "change_summary,created_by,created_at) "
+                "VALUES ('recovery-source',?, 'draft-source',1,'draft','',"
+                "'[]','[]','input','','{}','seed','alice',?)",
+                (self.project["id"], now),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        stages = [
+            (
+                "provider",
+                "short_drama_provider_shot_jobs",
+                "INSERT INTO short_drama_provider_shot_jobs "
+                "(id,project_id,owner_username,actor_username,plan_id,shot_key,"
+                "character_key,avatar_id,provider,status,input_hash,request_json,"
+                "cost,created_at,updated_at) VALUES "
+                "('recovery-provider',?,'alice','alice',?,'shot_01','role_01',"
+                "'avatar','minimax_h3','running','input','{}',0,?,?)",
+                (self.project["id"], self.plan_id, now, now),
+            ),
+            (
+                "autodraft assembly",
+                "short_drama_autodraft_jobs",
+                "INSERT INTO short_drama_autodraft_jobs "
+                "(id,project_id,owner_username,actor_username,plan_id,status,phase,"
+                "input_hash,request_json,created_at,updated_at) VALUES "
+                "('recovery-autodraft',?,'alice','alice',?,'queued','assembly',"
+                "'input','{}',?,?)",
+                (self.project["id"], self.plan_id, now, now),
+            ),
+            (
+                "candidate adoption/refinement",
+                "short_drama_refinement_jobs",
+                "INSERT INTO short_drama_refinement_jobs "
+                "(id,project_id,source_version_id,shot_key,actor_username,"
+                "idempotency_key,request_hash,replacement_provider_version_id,"
+                "status,created_at,updated_at) VALUES "
+                "('recovery-refinement',?,'recovery-source','shot_01','alice',"
+                "'recovery-refinement-key','input','candidate-version','running',?,?)",
+                (self.project["id"], now, now),
+            ),
+            (
+                "delivery assembly",
+                "short_drama_delivery_jobs",
+                "INSERT INTO short_drama_delivery_jobs "
+                "(id,project_id,refinement_version_id,actor_username,status,phase,"
+                "input_hash,created_at,updated_at) VALUES "
+                "('recovery-delivery',?,'recovery-source','alice','running',"
+                "'assembly','input',?,?)",
+                (self.project["id"], now, now),
+            ),
+            (
+                "candidate reassembly",
+                "short_drama_reassembly_operations",
+                "INSERT INTO short_drama_reassembly_operations "
+                "(id,project_id,source_version_id,status,lease_token,lease_owner,"
+                "lease_expires_at,heartbeat_at,render_id,created_at,updated_at) "
+                "VALUES ('recovery-reassembly',?,'recovery-source','processing',"
+                "'lease','worker',?,?, 'render',?,?)",
+                (self.project["id"], now + 300, now, now, now),
+            ),
+        ]
+        for label, table, insert_sql, params in stages:
+            with self.subTest(stage=label):
+                conn = self.db()
+                try:
+                    conn.execute(insert_sql, params)
+                    conn.commit()
+                finally:
+                    conn.close()
+                output_before = sorted(
+                    path.relative_to(self.tmp.name).as_posix()
+                    for path in Path(self.tmp.name).rglob("*") if path.is_file()
+                    and path.name != "content.db"
+                )
+
+                handler = Handler(
+                    "/api/gen/short-drama/autodraft/legacy-media/recover",
+                    body={"project_id": self.project["id"]},
+                )
+                self.assertTrue(short_drama.dispatch_http(
+                    handler, "POST", self.db, verify,
+                ))
+                self.assertEqual(409, handler.response[0])
+                self.assertEqual(
+                    "legacy_media_recovery_busy", handler.response[1]["code"]
+                )
+
+                conn = self.db()
+                try:
+                    self.assertEqual(
+                        1,
+                        conn.execute(
+                            "SELECT COUNT(*) FROM %s WHERE project_id=?" % table,
+                            (self.project["id"],),
+                        ).fetchone()[0],
+                    )
+                    conn.execute(
+                        "DELETE FROM %s WHERE project_id=?" % table,
+                        (self.project["id"],),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+                output_after = sorted(
+                    path.relative_to(self.tmp.name).as_posix()
+                    for path in Path(self.tmp.name).rglob("*") if path.is_file()
+                    and path.name != "content.db"
+                )
+                self.assertEqual(output_before, output_after)
+
     def test_autodraft_workspace_exposes_owner_only_recovery_permission(self):
         owner = short_drama_autodraft.workspace(
             self.db, "alice", "alice", self.project["id"], can_edit=True,
@@ -2026,6 +2150,111 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         self.assertNotIn("native_media", old_result)
         self.assertFalse(
             (Path(self.tmp.name) / "video/minimax_h3_derived_selection_race.mp4").exists()
+        )
+        self.assertEqual(
+            [], list((Path(self.tmp.name) / "video").glob("legacy_recovery_raw_*")),
+        )
+
+    def test_recover_legacy_media_rechecks_activity_inside_write_transaction(self):
+        source_relative = "video/legacy-activity-race.mp4"
+        source = Path(self.tmp.name) / source_relative
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(b"legacy-activity-race")
+        conn = self.db()
+        try:
+            plan = json.loads(conn.execute(
+                "SELECT plan_json FROM short_drama_production_plans WHERE id=?",
+                (self.plan_id,),
+            ).fetchone()[0])
+            shot_key = plan["material_plan"][0]["shot_key"]
+            now = 1700000000
+            conn.execute(
+                "INSERT INTO short_drama_provider_shot_jobs "
+                "(id,project_id,owner_username,actor_username,plan_id,shot_key,"
+                "character_key,avatar_id,provider,provider_job_id,status,progress,"
+                "poll_count,input_hash,request_json,result_json,error_json,cost,"
+                "created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,100,1,?,?,?,?,0,?,?)",
+                (
+                    "activity-race-source-job", self.project["id"], "alice", "alice",
+                    self.plan_id, shot_key, "character_1", "avatar_1", "minimax_h3",
+                    "provider-activity-race-source", "succeeded", "activity-race-hash",
+                    json.dumps({"resolution": "2k"}),
+                    json.dumps({
+                        "resolution": "2k", "video_file": source_relative,
+                    }),
+                    None, now, now,
+                ),
+            )
+            conn.execute(
+                "INSERT INTO short_drama_provider_shot_versions "
+                "(id,project_id,job_id,shot_key,version,provider,provider_job_id,"
+                "status,file,url,input_hash,created_at) "
+                "VALUES ('activity-race-source-version',?,?,?,1,'minimax_h3',"
+                "'provider-activity-race-source','ready',?,?,?,?)",
+                (
+                    self.project["id"], "activity-race-source-job", shot_key,
+                    source_relative, "/api/gen/file/" + source_relative,
+                    "activity-race-hash", now,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        inspected = {
+            "sha256": "a" * 64,
+            "size_bytes": len(b"legacy-activity-race"),
+            "resolution": {"width": 2560, "height": 1440},
+            "audio": {
+                "audible": True, "codec": "aac", "sample_rate": 32000,
+                "channels": 2, "mean_volume_dbfs": -30.0,
+                "max_volume_dbfs": -10.0,
+            },
+            "inspected_at": 1700000001,
+        }
+
+        def start_competing_job_and_derive(_snapshot_relative):
+            conn = self.db()
+            try:
+                now = 1700000002
+                conn.execute(
+                    "INSERT INTO short_drama_provider_shot_jobs "
+                    "(id,project_id,owner_username,actor_username,plan_id,shot_key,"
+                    "character_key,avatar_id,provider,status,input_hash,request_json,"
+                    "cost,created_at,updated_at) VALUES "
+                    "('activity-race-competing-job',?,'alice','alice',?,'shot_other',"
+                    "'character_1','avatar_1','minimax_h3','running','input','{}',0,?,?)",
+                    (self.project["id"], self.plan_id, now, now),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            derived_relative = "video/minimax_h3_derived_activity_race.mp4"
+            (Path(self.tmp.name) / derived_relative).write_bytes(b"derived")
+            return derived_relative
+
+        with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+            short_drama_autodraft.recover_legacy_native_media(
+                self.db, "alice", {"project_id": self.project["id"]},
+                inspect_media=lambda *_args: inspected,
+                create_derivative=start_competing_job_and_derive,
+                hash_file=lambda _path: ("b" * 64, len(b"derived")),
+            )
+
+        self.assertEqual("legacy_media_recovery_busy", raised.exception.code)
+        conn = self.db()
+        try:
+            row = conn.execute(
+                "SELECT v.file,j.result_json FROM short_drama_provider_shot_versions v "
+                "JOIN short_drama_provider_shot_jobs j ON j.id=v.job_id "
+                "WHERE v.id='activity-race-source-version'"
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(source_relative, row[0])
+        self.assertNotIn("native_media", json.loads(row[1]))
+        self.assertFalse(
+            (Path(self.tmp.name) / "video/minimax_h3_derived_activity_race.mp4").exists()
         )
         self.assertEqual(
             [], list((Path(self.tmp.name) / "video").glob("legacy_recovery_raw_*")),

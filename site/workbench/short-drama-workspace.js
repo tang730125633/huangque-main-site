@@ -846,7 +846,10 @@
       var lowResolutionShots=(production.assembly&&production.assembly.low_resolution_shot_keys)||[];
       var missingVerificationShots=(production.assembly&&production.assembly.media_verification_missing_shot_keys)||[];
       var canRecoverLegacy=!!(autodraft.permissions&&autodraft.permissions.can_recover_legacy_media);
-      var qualityWarning=lowResolutionShots.length?'<div class="sd-check warning"><b>历史 768p 版本需要重新生成</b><p>原生 2K 草稿要求下，请重新生成：'+escapeHtml(lowResolutionShots.join('、'))+'。旧版本会继续保留。</p></div>':missingVerificationShots.length?'<div class="sd-check warning"><b>历史 2K 镜头缺少媒体校验记录</b><p>请先完成本地验证恢复：'+escapeHtml(missingVerificationShots.join('、'))+'。验证通过后无需重新生成，也不会扣点。</p>'+(canRecoverLegacy?'<button type="button" data-action="recover-legacy-media">验证并恢复历史原片</button>':'<small>仅项目所有者可以执行历史原片恢复。</small>')+'</div>':'';
+      var recoveryBusy=allProviderJobs(autodraft).some(function(item){
+        return ['billing','queued','submitting','running','submit_unknown'].indexOf(item.status)>=0;
+      })||!!(job&&['queued','running'].indexOf(job.status)>=0);
+      var qualityWarning=lowResolutionShots.length?'<div class="sd-check warning"><b>历史 768p 版本需要重新生成</b><p>原生 2K 草稿要求下，请重新生成：'+escapeHtml(lowResolutionShots.join('、'))+'。旧版本会继续保留。</p></div>':missingVerificationShots.length?'<div class="sd-check warning"><b>历史 2K 镜头缺少媒体校验记录</b><p>请先完成本地验证恢复：'+escapeHtml(missingVerificationShots.join('、'))+'。验证通过后无需重新生成，也不会扣点。</p>'+(canRecoverLegacy?'<button type="button" data-action="recover-legacy-media"'+(recoveryBusy?' disabled':'')+'>验证并恢复历史原片</button>'+(recoveryBusy?'<small>请等待当前任务结束后再恢复。</small>':''):'<small>仅项目所有者可以执行历史原片恢复。</small>')+'</div>':'';
       var bindingSummary=allRolesBound?
         '<div class="sd-check pass" id="sdProviderBindingStatus"><b>'+boundCharacters.length+'/'+characters.length+' 个角色已锁定，可开始检查镜头</b><p>人物形象统一由左侧角色卡管理，当前镜头会自动使用对应角色的已锁定形象。</p></div>':
         '<div class="sd-check warning" id="sdProviderBindingStatus"><b>角色形象尚未准备完整</b><p>'+(missingCharacters.length?'未绑定：'+escapeHtml(missingCharacters.map(function(item){return item.name||item.character_key;}).join('、'))+'。':'角色资料仍在加载。')+' 请点击左侧角色卡完成形象生成、选择与锁定。</p></div>';

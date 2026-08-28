@@ -2484,6 +2484,44 @@ def _provider_version(row):
     return item
 
 
+def _require_legacy_media_recovery_quiescent(conn, project_id, now=None):
+    """Fail closed while any project pipeline can change adopted media."""
+    now = int(time.time()) if now is None else int(now)
+    checks = (
+        (
+            "short_drama_provider_shot_jobs",
+            "status IN ('billing','queued','submitting','running','submit_unknown')",
+        ),
+        ("short_drama_autodraft_jobs", "status IN ('queued','running')"),
+        ("short_drama_refinement_jobs", "status IN ('queued','running')"),
+        ("short_drama_delivery_jobs", "status IN ('queued','running')"),
+    )
+    for table, active_where in checks:
+        active = conn.execute(
+            "SELECT 1 FROM %s WHERE project_id=? AND %s LIMIT 1"
+            % (table, active_where),
+            (project_id,),
+        ).fetchone()
+        if active:
+            raise AutodraftError(
+                "legacy_media_recovery_busy",
+                "项目仍有媒体生成、候选采用、精修或合成任务，请等待任务结束后再恢复",
+                409,
+            )
+    reassembly = conn.execute(
+        "SELECT 1 FROM short_drama_reassembly_operations "
+        "WHERE project_id=? AND status='processing' "
+        "AND COALESCE(lease_expires_at,0)>? LIMIT 1",
+        (project_id, now),
+    ).fetchone()
+    if reassembly:
+        raise AutodraftError(
+            "legacy_media_recovery_busy",
+            "项目仍有媒体生成、候选采用、精修或合成任务，请等待任务结束后再恢复",
+            409,
+        )
+
+
 def recover_legacy_native_media(
     db_factory, owner_username, body, inspect_media=None,
     create_derivative=None, hash_file=None, snapshot_file=None,
@@ -2514,6 +2552,7 @@ def recover_legacy_native_media(
     conn = _connection(db_factory)
     try:
         _project(conn, owner_username, project_id)
+        _require_legacy_media_recovery_quiescent(conn, project_id)
         plan_row = conn.execute(
             "SELECT plan_json FROM short_drama_production_plans "
             "WHERE project_id=? AND status='confirmed' "
@@ -2606,6 +2645,7 @@ def recover_legacy_native_media(
             try:
                 conn.execute("BEGIN IMMEDIATE")
                 _project(conn, owner_username, project_id)
+                _require_legacy_media_recovery_quiescent(conn, project_id)
                 current_plan_row = conn.execute(
                     "SELECT plan_json FROM short_drama_production_plans "
                     "WHERE project_id=? AND status='confirmed' "
@@ -2707,6 +2747,8 @@ def recover_legacy_native_media(
             finally:
                 conn.close()
         except Exception as error:
+            if getattr(error, "code", "") == "legacy_media_recovery_busy":
+                raise
             code = str(
                 getattr(error, "code", "") or "legacy_media_recovery_failed"
             )
