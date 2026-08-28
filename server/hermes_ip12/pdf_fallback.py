@@ -28,7 +28,13 @@ def _register_cjk_font(pdfmetrics, TTFont):
     raise RuntimeError("PDF fallback requires an embeddable CJK font")
 
 
-def render_foundation_consulting_pdf(markdown, target, title="IP 人设定位｜模块 1-4 初稿"):
+def _has_sparse_tail(path, threshold=180):
+    from pypdf import PdfReader
+    reader = PdfReader(path)
+    return len(reader.pages) > 1 and len((reader.pages[-1].extract_text() or "").strip()) < threshold
+
+
+def render_foundation_consulting_pdf(markdown, target, title="IP 人设定位｜模块 1-4 初稿", _compact=0):
     """A restrained consulting-report layout for the customer-facing PDF."""
     from reportlab.lib import colors
     from reportlab.lib.enums import TA_LEFT
@@ -51,8 +57,11 @@ def render_foundation_consulting_pdf(markdown, target, title="IP 人设定位｜
         colors.HexColor("#d9dde3"), colors.HexColor("#edf3ff"),
     )
     styles = getSampleStyleSheet()
+    body_sizes = ((10.0, 16, 6), (9.6, 15, 5), (9.2, 14, 4))
+    body_size, body_leading, body_after = body_sizes[min(int(_compact), 2)]
     body = ParagraphStyle("consulting-body", parent=styles["BodyText"], fontName=font_name,
-                          fontSize=10.0, leading=16, textColor=ink, spaceAfter=6, wordWrap="CJK")
+                          fontSize=body_size, leading=body_leading,
+                          textColor=ink, spaceAfter=body_after, wordWrap="CJK")
     module = ParagraphStyle("consulting-module", parent=body, fontSize=17, leading=23,
                             spaceBefore=0, spaceAfter=20, textColor=ink, fontName=font_name)
     section = ParagraphStyle("consulting-section", parent=body, fontSize=12.5, leading=18,
@@ -169,6 +178,8 @@ def render_foundation_consulting_pdf(markdown, target, title="IP 人设定位｜
     doc = SimpleDocTemplate(str(target), pagesize=A4, leftMargin=22 * mm, rightMargin=22 * mm,
                             topMargin=22 * mm, bottomMargin=24 * mm, title=title)
     doc.build(story, onFirstPage=footer, onLaterPages=footer)
+    if _compact < 2 and _has_sparse_tail(target):
+        return render_foundation_consulting_pdf(markdown, target, title=title, _compact=_compact + 1)
     return target
 
 

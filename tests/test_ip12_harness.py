@@ -1293,7 +1293,7 @@ class IP12HarnessTests(unittest.TestCase):
         duplicate[1]["title"] = "方向 一"
         bad_cases.append(({**valid, "choices": duplicate}, "choice_duplicate"))
         too_long = [dict(item) for item in valid["choices"]]
-        too_long[0]["title"] = "长" * 17
+        too_long[0]["title"] = "长" * 25
         bad_cases.append(({**valid, "choices": too_long}, "choice_content_length"))
         recommended = [dict(item, recommended=True) for item in valid["choices"]]
         bad_cases.append(({**valid, "choices": recommended}, "choice_recommendation_count"))

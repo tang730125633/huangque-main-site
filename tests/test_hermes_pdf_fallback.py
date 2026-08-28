@@ -19,7 +19,7 @@ class HermesPdfFallbackTests(unittest.TestCase):
         import sys
         sys.path.insert(0, str(HERMES))
         from pdf_fallback import (
-            _styled_lines, _wrap, render_foundation_consulting_pdf, render_foundation_pdf_fallback,
+            _has_sparse_tail, _styled_lines, _wrap, render_foundation_consulting_pdf, render_foundation_pdf_fallback,
         )
         from pypdf import PdfReader
 
@@ -56,6 +56,15 @@ class HermesPdfFallbackTests(unittest.TestCase):
                 Path(tmp) / "consulting.pdf",
             )
             self.assertEqual(len(PdfReader(consulting, strict=True).pages), 2)
+
+            sparse = Path(tmp) / "sparse.pdf"
+            from pypdf import PdfWriter
+            writer = PdfWriter()
+            writer.add_blank_page(width=100, height=100)
+            writer.add_blank_page(width=100, height=100)
+            with sparse.open("wb") as stream:
+                writer.write(stream)
+            self.assertTrue(_has_sparse_tail(sparse))
 
             renderer = shutil.which("pdftoppm")
             if renderer and importlib.util.find_spec("PIL"):

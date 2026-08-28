@@ -14,7 +14,7 @@ import uuid
 AVAILABLE_MODULE_COUNT = 6
 SCHEMA_VERSION = 2
 CHOICE_COUNT = 3
-CHOICE_FIELD_LIMITS = {"title": 16, "summary": 36, "reason": 16, "caution": 16}
+CHOICE_FIELD_LIMITS = {"title": 24, "summary": 36, "reason": 16, "caution": 16}
 CHOICE_REQUIRED_FIELD_ORDER = (*CHOICE_FIELD_LIMITS, "recommended")
 CHOICE_REQUIRED_FIELDS = frozenset(CHOICE_REQUIRED_FIELD_ORDER)
 CHOICE_MATERIALIZED_FIELDS = CHOICE_REQUIRED_FIELDS | {"choice_id", "display_index"}
