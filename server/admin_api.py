@@ -2949,7 +2949,7 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
                         "status_text": j["status"],
                         "duration_sec": j["duration_sec"],
                         "cost": j["cost"],
-                        "path": "任务 #%s" % j["id"],
+                        "path": j.get("path_label") or "任务 #%s" % j["id"],
                         "method": "",
                         "ip": "",
                         "ua": "",
@@ -6440,6 +6440,66 @@ def _job_payload(raw):
 call_func_name = func_names.func_name
 
 
+_SHORT_DRAMA_PROVIDER_NAMES = {
+    "minimax_h3": "短剧 · 麦克视频",
+    "grok": "短剧 · 果肉视频",
+    "micro": "短剧 · Seedance 视频",
+    "omni": "短剧 · Omni 视频",
+}
+
+
+def _short_drama_provider_call_logs(conn, since, limit):
+    """读取不经过通用 jobs 表的短剧供应商镜头任务。"""
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' "
+        "AND name='short_drama_provider_shot_jobs'"
+    ).fetchone()
+    if not exists:
+        return []
+    rows = conn.execute(
+        """SELECT id,owner_username,provider,status,cost,created_at,updated_at,
+                  shot_key
+             FROM short_drama_provider_shot_jobs
+            WHERE created_at >= ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?""",
+        (since, limit),
+    ).fetchall()
+    items = []
+    for row in rows:
+        raw_status = str(row["status"] or "unknown").lower()
+        status = (
+            "done" if raw_status in {"done", "ready", "succeeded", "completed"}
+            else "error" if raw_status in {"error", "failed", "refunded"}
+            else "running" if raw_status in {
+                "pending", "queued", "running", "processing", "submitted"
+            }
+            else raw_status
+        )
+        created_at = int(row["created_at"] or 0)
+        updated_at = int(row["updated_at"] or 0)
+        provider = str(row["provider"] or "unknown").lower()
+        items.append({
+            "id": row["id"],
+            "username": row["owner_username"] or "-",
+            "kind": "short_drama_provider_video",
+            "func": _SHORT_DRAMA_PROVIDER_NAMES.get(
+                provider, "短剧 · %s 视频" % provider
+            ),
+            "operation": str(row["shot_key"] or ""),
+            "cost": int(row["cost"] or 0),
+            "status": status,
+            "created_at": created_at,
+            "updated_at": updated_at,
+            "duration_sec": (
+                updated_at - created_at
+                if created_at and updated_at >= created_at else None
+            ),
+            "path_label": "短剧任务 #%s" % row["id"],
+        })
+    return items
+
+
 def call_logs(days=7, limit=200):
     days = max(1, min(int(days or 7), 90))
     limit = max(1, min(int(limit or 200), 500))
@@ -6480,6 +6540,11 @@ def call_logs(days=7, limit=200):
                LIMIT ?""",
             (since, limit),
         ).fetchall()
+        short_drama_items = _short_drama_provider_call_logs(c, since, limit)
+    short_drama_by_shared_id = {
+        str(item["id"]): item for item in short_drama_items
+    }
+    matched_short_drama_ids = set()
     items = []
     for row in rows:
         created_at = int(row["created_at"] or 0)
@@ -6496,6 +6561,20 @@ def call_logs(days=7, limit=200):
             "mask_present": bool(row["mask_present"]),
         })
         operation = function_registry.classify_task(kind, payload)
+        short_drama_item = short_drama_by_shared_id.get(str(row["id"]))
+        if (
+            kind == "xiaole_video"
+            and short_drama_item
+            and str(short_drama_item["username"]) == str(row["username"] or "-")
+            and int(short_drama_item["cost"] or 0) == int(row["cost"] or 0)
+        ):
+            matched_short_drama_ids.add(str(short_drama_item["id"]))
+            func = short_drama_item["func"]
+            operation = short_drama_item["operation"]
+            path_label = short_drama_item["path_label"]
+        else:
+            func = call_func_name(kind, payload)
+            path_label = None
         duration = None
         if created_at and updated_at and updated_at >= created_at:
             duration = updated_at - created_at
@@ -6504,16 +6583,22 @@ def call_logs(days=7, limit=200):
                 "id": row["id"],
                 "username": row["username"] or "-",
                 "kind": kind,
-                "func": call_func_name(kind, payload),
+                "func": func,
                 "operation": operation,
                 "cost": int(row["cost"] or 0),
                 "status": row["status"] or "unknown",
                 "created_at": created_at,
                 "updated_at": updated_at,
                 "duration_sec": duration,
+                "path_label": path_label,
             }
         )
-    return {"days": days, "limit": limit, "items": items}
+    items.extend(
+        item for item in short_drama_items
+        if str(item["id"]) not in matched_short_drama_ids
+    )
+    items.sort(key=lambda item: (item["created_at"], str(item["id"])), reverse=True)
+    return {"days": days, "limit": limit, "items": items[:limit]}
 
 
 def user_job_insights(username):

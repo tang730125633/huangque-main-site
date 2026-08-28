@@ -38,6 +38,11 @@ from .core import (
 
 import random   # 429 退避重试的抖动：不加抖动，同一批 worker 退避后又会撞在一起
 
+try:
+    from providers.short_drama_visual.base import HEYGEN_PROMPT_MAX_CHARACTERS
+except ModuleNotFoundError:  # Imported through the `server` package in tests/tools.
+    from server.providers.short_drama_visual.base import HEYGEN_PROMPT_MAX_CHARACTERS
+
 from .audio import gen_audio, get_audio_asset
 from .image_mentions import resolve_image_mentions, validate_image_mentions
 from . import (
@@ -1716,6 +1721,185 @@ def _faststart_video_file(rel):
         except Exception:
             pass
     return rel
+
+
+def _faststart_video_derivative(raw_relative):
+    raw = str(raw_relative or "").strip()
+    if not raw.lower().endswith(".mp4"):
+        raise RuntimeError("原生视频文件格式无效")
+    source = _out_path(raw)
+    if not source.is_file():
+        raise RuntimeError("原生视频文件不存在")
+    derived = "video/minimax_h3_derived_%s.mp4" % uuid.uuid4().hex
+    target = _out_path(derived)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(target.name + ".tmp.mp4")
+    try:
+        subprocess.run(
+            [
+                os.environ.get("FFMPEG_BIN", "ffmpeg"),
+                "-y", "-hide_banner", "-loglevel", "error", "-i", str(source),
+                "-map", "0", "-c", "copy", "-movflags", "+faststart",
+                str(temporary),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+            timeout=600,
+        )
+        if not temporary.is_file() or temporary.stat().st_size <= 0:
+            raise RuntimeError("原生视频派生文件为空")
+        temporary.replace(target)
+        return derived
+    except Exception:
+        try:
+            target.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _cleanup_owned_video_files(relative_paths):
+    for relative in relative_paths:
+        raw = str(relative or "").strip().replace("\\", "/")
+        parts = pathlib.PurePosixPath(raw).parts
+        if len(parts) != 2 or parts[0] != "video" or parts[1] in {".", ".."}:
+            continue
+        try:
+            target = _resolve_out_file(raw)
+            if target:
+                target.unlink(missing_ok=True)
+        except (OSError, ValueError):
+            pass
+
+
+def _native_media_result_paths(value):
+    if not isinstance(value, dict):
+        return set()
+    paths = set()
+    for key in ("video_file", "raw_video_file"):
+        if isinstance(value.get(key), str):
+            paths.add(value[key])
+    native_media = value.get("native_media")
+    if isinstance(native_media, dict):
+        for key in ("raw", "derived"):
+            item = native_media.get(key)
+            if isinstance(item, dict) and isinstance(item.get("file"), str):
+                paths.add(item["file"])
+    return paths
+
+
+def _normalized_native_video_reference(value):
+    raw = str(value or "").strip().replace("\\", "/")
+    parts = pathlib.PurePosixPath(raw).parts
+    if len(parts) != 2 or parts[0] != "video":
+        return ""
+    name = parts[1]
+    if name in {"", ".", ".."}:
+        return ""
+    return "video/" + name
+
+
+def reap_short_drama_native_orphans(now=None, grace_seconds=6 * 3600):
+    current_time = int(time.time()) if now is None else int(now)
+    grace = max(60, int(grace_seconds or 0))
+    referenced = set()
+    deleted = []
+    retained = []
+    errors = []
+    try:
+        with closing(jdb()) as connection:
+            for row in connection.execute(
+                    "SELECT result FROM jobs WHERE result IS NOT NULL"):
+                try:
+                    payload = json.loads(row[0] or "{}")
+                    if not isinstance(payload, dict):
+                        raise ValueError("reference result must be an object")
+                    referenced.update(_native_media_result_paths(payload))
+                except (TypeError, ValueError, json.JSONDecodeError) as error:
+                    raise sqlite3.DatabaseError(
+                        "jobs.result contains unreadable reference JSON"
+                    ) from error
+            tables = {
+                str(row[0]) for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            if "short_drama_provider_shot_versions" in tables:
+                referenced.update(
+                    row[0] for row in connection.execute(
+                        "SELECT file FROM short_drama_provider_shot_versions "
+                        "WHERE file IS NOT NULL"
+                    ) if row[0]
+                )
+            if "short_drama_provider_shot_jobs" in tables:
+                for row in connection.execute(
+                    "SELECT result_json FROM short_drama_provider_shot_jobs "
+                    "WHERE result_json IS NOT NULL"
+                ):
+                    try:
+                        payload = json.loads(row[0] or "{}")
+                        if not isinstance(payload, dict):
+                            raise ValueError("provider result must be an object")
+                        referenced.update(_native_media_result_paths(payload))
+                    except (TypeError, ValueError, json.JSONDecodeError) as error:
+                        raise sqlite3.DatabaseError(
+                            "provider result_json contains unreadable reference JSON"
+                        ) from error
+    except sqlite3.Error as error:
+        errors.append({
+            "scope": "jobs_database", "error": str(error)[:160],
+        })
+        return {"deleted": deleted, "retained": retained, "errors": errors}
+    try:
+        with closing(adb()) as connection:
+            referenced.update(
+                value for row in connection.execute(
+                    "SELECT video_file,image_file FROM video_assets"
+                ) for value in row if value
+            )
+    except sqlite3.Error as error:
+        errors.append({
+            "scope": "assets_database", "error": str(error)[:160],
+        })
+        return {"deleted": deleted, "retained": retained, "errors": errors}
+    referenced = {
+        normalized for normalized in (
+            _normalized_native_video_reference(item) for item in referenced
+        ) if normalized
+    }
+    video_root = _out_path("video").resolve()
+    if not video_root.is_dir():
+        return {"deleted": deleted, "retained": retained, "errors": errors}
+    for candidate in video_root.iterdir():
+        name = candidate.name
+        recognized = (
+            name.startswith("minimax_h3_raw_")
+            or name.startswith("minimax_h3_derived_")
+        )
+        if not recognized or not candidate.is_file():
+            continue
+        relative = "video/" + name
+        try:
+            resolved = candidate.resolve()
+            resolved.relative_to(video_root)
+            if relative in referenced or int(candidate.stat().st_mtime) > current_time - grace:
+                retained.append(relative)
+                continue
+            resolved.unlink()
+            deleted.append(relative)
+        except (OSError, ValueError) as error:
+            errors.append({"file": relative, "error": str(error)[:160]})
+    return {
+        "deleted": sorted(deleted),
+        "retained": sorted(retained),
+        "errors": errors,
+    }
 
 
 def _normalize_seedance_upscale_video(rel, ratio):
@@ -6031,7 +6215,8 @@ def _stream_resumable_video_download(
 
 
 def _download_xiaole_video(
-        url, prefix="xiaole", origin_headers=None, public_only=False):
+        url, prefix="xiaole", origin_headers=None, public_only=False,
+        *, faststart=True):
     # 视频 CDN 多在海外(如 vidgen.x.ai)，国内直连不通。成片下载是 GET(幂等)，故可多档尝试：
     # 优先走 egress 快隧道，避开拥塞到分钟级的 heygen 法兰克福老中转(实测 xAI 2 分钟出片、
     # 走老中转下载却要 11~19 分钟，甚至卡死被 reaper 判超时退点)。中转仅作兜底。
@@ -6084,7 +6269,7 @@ def _download_xiaole_video(
                         "视频下载结果无法原子发布"
                     ) from error
                 completed = True
-                return _faststart_video_file(filename)
+                return _faststart_video_file(filename) if faststart else filename
             except _CompletedVideoLocalIOError:
                 raise
             except _CompletedVideoCandidateError as error:
@@ -6710,7 +6895,7 @@ def gen_xiaole_video(payload):
             "image_url": public_url(cover, "image/jpeg") if cover else None,
         }
     elif channel == "minimax":
-        from . import video_minimax_h3
+        from . import short_drama_native_audio, video_minimax_h3
 
         provider_id_persisted = bool(existing and existing.get("request_id"))
 
@@ -6727,6 +6912,9 @@ def gen_xiaole_video(payload):
             )
 
         duration = int(payload.get("duration") or 5)
+        requested_resolution = str(
+            payload.get("resolution") or "2k"
+        ).strip().upper()
         if existing:
             try:
                 origin = video_minimax_h3.origin_from_payload(payload)
@@ -6747,7 +6935,7 @@ def gen_xiaole_video(payload):
                 existing["request_id"], duration, ratio,
                 job_id=job_id, heartbeat=minimax_heartbeat,
                 api_key=candidate["secret"], provider_key_id=candidate["id"],
-                resolution=payload.get("resolution") or "2K",
+                resolution=requested_resolution,
                 api_base=api_base,
             )
         else:
@@ -6756,7 +6944,7 @@ def gen_xiaole_video(payload):
                 video_minimax_h3.MiniMaxCredentialRejected,
                 lambda selected: video_minimax_h3.generate(
                     prompt, ref_images, ratio=ratio, duration=duration,
-                    resolution=payload.get("resolution") or "2K", job_id=job_id,
+                    resolution=requested_resolution, job_id=job_id,
                     heartbeat=minimax_heartbeat, api_key=selected["secret"],
                     provider_key_id=selected["id"],
                     api_base=api_base,
@@ -6769,10 +6957,11 @@ def gen_xiaole_video(payload):
                 provider_video_id=rendered.get("request_id"),
                 provider_key_id=candidate["id"], model=video_minimax_h3.MODEL,
             )
+        native_required = payload.get("_short_drama_native_audio_required") is True
         try:
             video_file = _download_video_file_direct(
                 source_url,
-                prefix="minimax_h3",
+                prefix="minimax_h3_raw" if native_required else "minimax_h3",
                 allowed_hosts=video_minimax_h3.RESULT_HOSTS,
                 max_bytes=video_minimax_h3.RESULT_MAX_BYTES,
             )
@@ -6786,11 +6975,61 @@ def gen_xiaole_video(payload):
             if str(exc).startswith("视频下载失败"):
                 raise video_minimax_h3.TransientMiniMaxError(str(exc)) from exc
             raise
+        native_audio = None
+        native_resolution = None
+        native_media = None
+        raw_video_file = None
+        owned_files = []
+        if native_required:
+            raw_video_file = video_file
+            owned_files.append(raw_video_file)
+            try:
+                evidence = short_drama_native_audio.inspect_native_media(
+                    _resolve_out_file(raw_video_file), requested_resolution
+                )
+                native_resolution = evidence["resolution"]
+                native_audio = evidence["audio"]
+                video_file = _faststart_video_derivative(raw_video_file)
+                owned_files.append(video_file)
+                derived_hash, derived_size = short_drama_native_audio.sha256_file(
+                    _resolve_out_file(video_file)
+                )
+                native_media = {
+                    "raw": {
+                        "file": raw_video_file,
+                        "sha256": evidence["sha256"],
+                        "size_bytes": evidence["size_bytes"],
+                    },
+                    "derived": {
+                        "file": video_file,
+                        "sha256": derived_hash,
+                        "size_bytes": derived_size,
+                        "derived_from_sha256": evidence["sha256"],
+                    },
+                    "resolution": native_resolution,
+                    "audio": native_audio,
+                    "inspected_at": evidence["inspected_at"],
+                }
+            except short_drama_native_audio.NativeAudioError as error:
+                _cleanup_owned_video_files(owned_files)
+                raise video_minimax_h3.MiniMaxProviderFailed(str(error)) from error
+            except Exception as error:
+                _cleanup_owned_video_files(owned_files)
+                raise video_minimax_h3.MiniMaxProviderFailed(
+                    "原生视频标准化失败，请重新生成当前镜头"
+                ) from error
         cover = _extract_first_frame_cover(video_file)
         result = dict(
             rendered, video_file=video_file, image_file=cover,
             image_url=public_url(cover, "image/jpeg") if cover else None,
         )
+        if native_audio:
+            result["native_audio"] = native_audio
+            result["native_media"] = native_media
+            result["raw_video_file"] = raw_video_file
+            if native_resolution:
+                result["native_resolution"] = native_resolution
+            result["generate_audio"] = True
     else:
         result = generate_xiaole_video(model, prompt, reference_images=ref_images, size=size, job_id=job_id, prefix=channel,
                                        duration=XIAOLE_CHANNEL_DURATION.get(channel))
@@ -6819,6 +7058,10 @@ def gen_xiaole_video(payload):
         "image_url": result.get("image_url") or (public_url(result.get("image_file"), "image/jpeg") if result.get("image_file") else None),
         "provider": result.get("provider"),
         "generate_audio": result.get("generate_audio"),
+        "native_audio": result.get("native_audio"),
+        "native_resolution": result.get("native_resolution"),
+        "native_media": result.get("native_media"),
+        "raw_video_file": result.get("raw_video_file"),
         "completion_tokens": result.get("completion_tokens"),
         "reference_storyboard_count": payload.get("_reference_storyboard_count"),
         "reference_storyboard_source_hashes": payload.get("_reference_storyboard_source_hashes"),
@@ -6945,7 +7188,7 @@ def gen_avatar(payload):
 CINEMATIC_MAX_AVATARS = 3        # HeyGen 硬上限：avatar_id 是 1~3 个 look 的数组
 CINEMATIC_RESOLUTIONS = {"720p", "1080p"}  # 兼容旧客户端；服务端最终统一覆盖为 720p
 CINEMATIC_OUTPUT_RESOLUTION = "720p"
-CINEMATIC_PROMPT_MAX = 2000
+CINEMATIC_PROMPT_MAX = HEYGEN_PROMPT_MAX_CHARACTERS
 CINEMATIC_DURATION_RANGE = (4, 15)   # HeyGen: 4~15 秒
 CINEMATIC_AUTO_DURATION = 10         # 选了「自适应」但没传参考视频时的回落值
 CINEMATIC_MODES = ("motion", "duo", "open")

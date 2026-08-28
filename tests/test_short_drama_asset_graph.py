@@ -136,6 +136,30 @@ class ShortDramaAssetGraphTests(unittest.TestCase):
             item["code"] == "asset_version_unlocked" for item in blocked["blockers"]
         ))
 
+    def test_generic_scene_version_rejects_bare_file_reference(self):
+        graph.sync_foundation(self.db, "alice", "alice", "p1")
+        workspace = graph.workspace(self.db, "alice", "p1")
+        scene = next(
+            entity for entity in workspace["entities"]
+            if entity["asset_type"] == "scene"
+        )
+
+        with self.assertRaises(graph.AssetGraphError) as raised:
+            graph.create_version(self.db, "alice", "alice", {
+                "project_id": "p1",
+                "graph_revision": workspace["graph_revision"],
+                "entity_id": scene["id"],
+                "prompt": "雨夜街道",
+                "references": [{
+                    "file": "other_user/private_scene.png",
+                    "url": "/api/gen/file/other_user/private_scene.png",
+                    "name": "其他用户的私有场景图",
+                }],
+            })
+
+        self.assertEqual(422, raised.exception.status)
+        self.assertEqual("scene_reference_source_required", raised.exception.code)
+
         revision = self._lock_seeded(workspace)
         ready = graph.build_snapshot(self.db, "alice", "alice", {
             "project_id": "p1", "graph_revision": revision, "shot_id": "s1",
@@ -146,6 +170,59 @@ class ShortDramaAssetGraphTests(unittest.TestCase):
             graph.current_package(self.db, "alice", "p1", "s1")["id"],
             ready["id"],
         )
+
+    def test_forged_scene_reference_is_hidden_and_rejected_by_generic_lock(self):
+        graph.sync_foundation(self.db, "alice", "alice", "p1")
+        workspace = graph.workspace(self.db, "alice", "p1")
+        scene = next(
+            entity for entity in workspace["entities"]
+            if entity["asset_type"] == "scene"
+        )
+        version = scene["versions"][0]
+        operation_id = "forged-operation"
+        with closing(self.db()) as conn:
+            conn.execute(
+                "UPDATE short_drama_graph_versions SET references_json=?,attributes_json=? "
+                "WHERE id=?",
+                (
+                    json.dumps([{
+                        "file": "short_drama_scene_uploads/owner/project/../private.png",
+                        "url": "/api/gen/file/short_drama_scene_uploads/owner/project/../private.png",
+                    }]),
+                    json.dumps({
+                        "source": "upload",
+                        "scene_operation_id": operation_id,
+                        "scene_reference_owner": "alice",
+                        "scene_reference_actor": "alice",
+                        "scene_reference_project_id": "p1",
+                    }),
+                    version["id"],
+                ),
+            )
+            conn.execute(
+                "INSERT INTO short_drama_graph_audit"
+                "(id,project_id,actor,action,target_id,details_json,created_at) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (
+                    "forged-audit", "p1", "alice", "set_scene_reference",
+                    scene["asset_key"],
+                    json.dumps({"operation_id": operation_id, "source": "upload"}),
+                    1,
+                ),
+            )
+            conn.commit()
+
+        scenes = graph.scene_workspace(self.db, "alice", "p1")
+        self.assertFalse(scenes["scenes"][0]["locked"])
+        self.assertIsNone(scenes["scenes"][0]["preview"])
+        with self.assertRaises(graph.AssetGraphError) as raised:
+            graph.lock_version(self.db, "alice", "alice", {
+                "project_id": "p1",
+                "graph_revision": workspace["graph_revision"],
+                "version_id": version["id"],
+            })
+        self.assertEqual(422, raised.exception.status)
+        self.assertEqual("scene_reference_untrusted", raised.exception.code)
 
     def test_new_version_does_not_mutate_existing_snapshot(self):
         graph.sync_foundation(self.db, "alice", "alice", "p1")
@@ -236,6 +313,16 @@ class ShortDramaAssetGraphTests(unittest.TestCase):
             self.assertEqual(count, 0)
 
     def test_scene_reference_is_grouped_locked_and_available_to_video_request(self):
+        with closing(self.db()) as conn:
+            conn.execute(
+                "INSERT INTO short_drama_shots"
+                "(id,project_id,shot_key,sort_order,scene_description,camera_description,"
+                "image_prompt,video_prompt,character_keys_json) "
+                "SELECT 's2',project_id,'shot_002',2,scene_description,camera_description,"
+                "image_prompt,video_prompt,character_keys_json "
+                "FROM short_drama_shots WHERE id='s1'"
+            )
+            conn.commit()
         graph.sync_foundation(self.db, "alice", "alice", "p1")
         scenes = graph.scene_workspace(self.db, "alice", "p1")
         self.assertEqual(1, len(scenes["scenes"]))
@@ -272,6 +359,7 @@ class ShortDramaAssetGraphTests(unittest.TestCase):
         self.assertTrue(locked["scenes"][0]["locked"])
         with closing(self.db()) as conn:
             reference = graph.locked_scene_reference(conn, "p1", "shot_001")
+            second_reference = graph.locked_scene_reference(conn, "p1", "shot_002")
             selected_reference = graph.locked_scene_reference(
                 conn, "p1", "shot_001", scene["scene_key"],
             )
@@ -279,9 +367,64 @@ class ShortDramaAssetGraphTests(unittest.TestCase):
                 conn, "p1", "shot_001", "scene-group:missing",
             )
         self.assertEqual("雨夜街道", reference["name"])
-        self.assertTrue(reference["file"].startswith("short_drama_scene_uploads/scene_"))
+        self.assertRegex(
+            reference["file"],
+            r"^short_drama_scene_uploads/[0-9a-f]{16}/[0-9a-f]{16}/scene_",
+        )
         self.assertEqual(reference["scene_key"], selected_reference["scene_key"])
+        self.assertNotEqual(reference["version_id"], second_reference["version_id"])
+        self.assertEqual(
+            reference["reference_identity"],
+            second_reference["reference_identity"],
+        )
+        self.assertEqual(
+            locked["scenes"][0]["preview"]["reference_identity"],
+            reference["reference_identity"],
+        )
+        self.assertEqual(
+            locked["scenes"][0]["preview"]["version_id"],
+            reference["version_id"],
+        )
+        self.assertGreater(reference["version"], 0)
         self.assertIsNone(missing_reference)
+
+    def test_generic_lock_accepts_controlled_scene_reference(self):
+        graph.sync_foundation(self.db, "alice", "alice", "p1")
+        scenes = graph.scene_workspace(self.db, "alice", "p1")
+        scene = scenes["scenes"][0]
+        raw = b"\x89PNG\r\n\x1a\ncontrolled-scene-reference"
+        data_url = "data:image/png;base64," + base64.b64encode(raw).decode("ascii")
+        output = Path(self.temp.name) / "output"
+        fake_image = types.SimpleNamespace(OUT_DIR=output)
+        fake_uploads = types.SimpleNamespace(
+            MAX_BYTES=10 * 1024 * 1024,
+            MIME_EXTENSIONS={"image/png": ".png"},
+            detect_mime=lambda value: "image/png" if value.startswith(b"\x89PNG") else "",
+        )
+        with mock.patch.dict(sys.modules, {
+            graph.__package__ + ".image": fake_image,
+            graph.__package__ + ".cli_uploads": fake_uploads,
+        }), mock.patch.object(
+            sys.modules[graph.__package__], "image", fake_image, create=True,
+        ), mock.patch.object(
+            sys.modules[graph.__package__], "cli_uploads", fake_uploads, create=True,
+        ):
+            created = graph.set_scene_reference(self.db, "alice", "alice", {
+                "project_id": "p1",
+                "graph_revision": scenes["graph_revision"],
+                "scene_key": scene["scene_key"],
+                "source": "upload",
+                "image_data": data_url,
+                "filename": "controlled.png",
+                "prompt": "雨夜街道",
+            })
+
+        result = graph.lock_version(self.db, "alice", "alice", {
+            "project_id": "p1",
+            "graph_revision": created["graph_revision"],
+            "version_id": created["scenes"][0]["preview"]["version_id"],
+        })
+        self.assertTrue(result["ok"])
 
     def test_scene_semantic_changes_retire_locked_references_until_reconfirmed(self):
         graph.sync_foundation(self.db, "alice", "alice", "p1")
@@ -440,6 +583,506 @@ class ShortDramaAssetGraphTests(unittest.TestCase):
 
         self.assertEqual("scene_asset_invalid", raised.exception.code)
         self.assertEqual(before, graph.scene_workspace(self.db, "alice", "p1"))
+
+    def test_scene_asset_rejects_selected_url_without_same_index_file(self):
+        graph.sync_foundation(self.db, "alice", "alice", "p1")
+        before = graph.scene_workspace(self.db, "alice", "p1")
+        scene = before["scenes"][0]
+        with closing(self.db()) as conn:
+            conn.execute(
+                "CREATE TABLE jobs ("
+                "id INTEGER PRIMARY KEY,username TEXT,kind TEXT,status TEXT,result TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO jobs(id,username,kind,status,result) "
+                "VALUES(92,'alice','image','done',?)",
+                (json.dumps({
+                    "urls": [
+                        "/api/gen/file/scene-a.png",
+                        "/api/gen/file/scene-b.png",
+                    ],
+                    "files": ["scene-a.png"],
+                }),),
+            )
+            conn.commit()
+        fake_image = types.SimpleNamespace(
+            _trusted_short_drama_file=lambda value, file_url=False: (
+                str(value or "").removeprefix("/api/gen/file/")
+            ),
+        )
+
+        with mock.patch.dict(sys.modules, {
+            graph.__package__ + ".image": fake_image,
+        }), mock.patch.object(
+            sys.modules[graph.__package__], "image", fake_image, create=True,
+        ):
+            with self.assertRaises(graph.AssetGraphError) as raised:
+                graph.set_scene_reference(self.db, "alice", "alice", {
+                    "project_id": "p1",
+                    "graph_revision": before["graph_revision"],
+                    "scene_key": scene["scene_key"],
+                    "source": "asset",
+                    "asset_job_id": 92,
+                    "asset_url": "/api/gen/file/scene-b.png",
+                    "filename": "scene-b.png",
+                })
+
+        self.assertEqual("scene_asset_invalid", raised.exception.code)
+        self.assertEqual(before, graph.scene_workspace(self.db, "alice", "p1"))
+
+    def test_scene_asset_allows_pure_local_url_result(self):
+        graph.sync_foundation(self.db, "alice", "alice", "p1")
+        before = graph.scene_workspace(self.db, "alice", "p1")
+        scene = before["scenes"][0]
+        with closing(self.db()) as conn:
+            conn.execute(
+                "CREATE TABLE jobs ("
+                "id INTEGER PRIMARY KEY,username TEXT,kind TEXT,status TEXT,result TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO jobs(id,username,kind,status,result) "
+                "VALUES(96,'alice','image','done',?)",
+                (json.dumps({"urls": ["/api/gen/file/scene-only-url.png"]}),),
+            )
+            conn.commit()
+        fake_image = types.SimpleNamespace(
+            _trusted_short_drama_file=lambda value, file_url=False: (
+                str(value or "").removeprefix("/api/gen/file/")
+            ),
+        )
+        with mock.patch.dict(sys.modules, {
+            graph.__package__ + ".image": fake_image,
+        }), mock.patch.object(
+            sys.modules[graph.__package__], "image", fake_image, create=True,
+        ):
+            created = graph.set_scene_reference(self.db, "alice", "alice", {
+                "project_id": "p1",
+                "graph_revision": before["graph_revision"],
+                "scene_key": scene["scene_key"],
+                "source": "asset",
+                "asset_job_id": 96,
+                "asset_url": "/api/gen/file/scene-only-url.png",
+                "filename": "scene-only-url.png",
+            })
+        locked = graph.lock_scene_reference(self.db, "alice", "alice", {
+            "project_id": "p1",
+            "graph_revision": created["graph_revision"],
+            "scene_key": scene["scene_key"],
+        })
+        selected = next(
+            item for item in locked["scenes"]
+            if item["scene_key"] == scene["scene_key"]
+        )
+        self.assertTrue(selected["locked"])
+        self.assertEqual(
+            "scene-only-url.png",
+            selected["preview"]["file"],
+        )
+
+    def test_ai_generation_frontend_payload_remains_previewable_and_lockable(self):
+        from PIL import Image
+
+        server_dir = str(Path(__file__).resolve().parents[1] / "server")
+        sys.path.insert(0, server_dir)
+        try:
+            from server.content_domains import image as image_domain
+        finally:
+            sys.path.remove(server_dir)
+
+        graph.sync_foundation(self.db, "alice", "alice", "p1")
+        before = graph.scene_workspace(self.db, "alice", "p1")
+        scene = before["scenes"][0]
+        output = Path(self.temp.name) / "output"
+        relative = "image/generated-scene.png"
+        image_path = output / relative
+        image_path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (256, 256), (40, 80, 120)).save(image_path, "PNG")
+        with closing(self.db()) as conn:
+            conn.execute(
+                "CREATE TABLE jobs ("
+                "id INTEGER PRIMARY KEY,username TEXT,kind TEXT,status TEXT,result TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO jobs(id,username,kind,status,result) "
+                "VALUES(103,'alice','image','done',?)",
+                (json.dumps({
+                    "urls": ["/api/gen/file/" + relative],
+                    "files": [relative],
+                }),),
+            )
+            conn.commit()
+
+        with mock.patch.object(image_domain, "OUT_DIR", output):
+            created = graph.set_scene_reference(self.db, "alice", "alice", {
+                "project_id": "p1",
+                "graph_revision": before["graph_revision"],
+                "scene_key": scene["scene_key"],
+                "source": "asset",
+                "reference_source": "ai_generation",
+                "asset_job_id": 103,
+                "asset_url": "/api/gen/file/" + relative,
+                "filename": "AI 生成场景图",
+            })
+            selected = next(
+                item for item in created["scenes"]
+                if item["scene_key"] == scene["scene_key"]
+            )
+            self.assertIsNotNone(selected["preview"])
+            self.assertEqual("asset", selected["preview"]["source"])
+            self.assertEqual(
+                "ai_generation", selected["preview"]["reference_source"],
+            )
+
+            locked = graph.lock_scene_reference(self.db, "alice", "alice", {
+                "project_id": "p1",
+                "graph_revision": created["graph_revision"],
+                "scene_key": scene["scene_key"],
+            })
+        locked_scene = next(
+            item for item in locked["scenes"]
+            if item["scene_key"] == scene["scene_key"]
+        )
+        self.assertTrue(locked_scene["locked"])
+
+    def test_scene_lock_rejects_unresolvable_pure_url_pair(self):
+        graph.sync_foundation(self.db, "alice", "alice", "p1")
+        before = graph.scene_workspace(self.db, "alice", "p1")
+        scene = before["scenes"][0]
+        with closing(self.db()) as conn:
+            conn.execute(
+                "CREATE TABLE jobs ("
+                "id INTEGER PRIMARY KEY,username TEXT,kind TEXT,status TEXT,result TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO jobs(id,username,kind,status,result) "
+                "VALUES(97,'alice','image','done',?)",
+                (json.dumps({"urls": ["/api/gen/file/scene-local.png"]}),),
+            )
+            conn.commit()
+        fake_image = types.SimpleNamespace(
+            _trusted_short_drama_file=lambda value, file_url=False: (
+                str(value or "").removeprefix("/api/gen/file/")
+            ),
+        )
+        with mock.patch.dict(sys.modules, {
+            graph.__package__ + ".image": fake_image,
+        }), mock.patch.object(
+            sys.modules[graph.__package__], "image", fake_image, create=True,
+        ):
+            created = graph.set_scene_reference(self.db, "alice", "alice", {
+                "project_id": "p1",
+                "graph_revision": before["graph_revision"],
+                "scene_key": scene["scene_key"],
+                "source": "asset",
+                "asset_job_id": 97,
+                "asset_url": "/api/gen/file/scene-local.png",
+                "filename": "scene-local.png",
+            })
+        selected = next(
+            item for item in created["scenes"]
+            if item["scene_key"] == scene["scene_key"]
+        )
+        with closing(self.db()) as conn:
+            conn.execute(
+                "UPDATE jobs SET result=? WHERE id=97",
+                (json.dumps({"urls": ["https://cdn.example/scene.png"]}),),
+            )
+            conn.execute(
+                "UPDATE short_drama_graph_versions SET references_json=? WHERE id=?",
+                (json.dumps([{
+                    "file": "",
+                    "url": "https://cdn.example/scene.png",
+                    "name": "external.png",
+                    "asset_job_id": 97,
+                }]), selected["preview"]["version_id"]),
+            )
+            conn.commit()
+        with self.assertRaises(graph.AssetGraphError) as raised:
+            graph.lock_scene_reference(self.db, "alice", "alice", {
+                "project_id": "p1",
+                "graph_revision": created["graph_revision"],
+                "scene_key": scene["scene_key"],
+            })
+        self.assertEqual("scene_reference_untrusted", raised.exception.code)
+
+    def test_scene_asset_rejects_same_index_local_url_file_mismatch(self):
+        graph.sync_foundation(self.db, "alice", "alice", "p1")
+        before = graph.scene_workspace(self.db, "alice", "p1")
+        scene = before["scenes"][0]
+        with closing(self.db()) as conn:
+            conn.execute(
+                "CREATE TABLE jobs ("
+                "id INTEGER PRIMARY KEY,username TEXT,kind TEXT,status TEXT,result TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO jobs(id,username,kind,status,result) "
+                "VALUES(95,'alice','image','done',?)",
+                (json.dumps({
+                    "urls": ["/api/gen/file/scene-b.png"],
+                    "files": ["scene-a.png"],
+                }),),
+            )
+            conn.commit()
+        fake_image = types.SimpleNamespace(
+            _trusted_short_drama_file=lambda value, file_url=False: (
+                str(value or "").removeprefix("/api/gen/file/")
+            ),
+        )
+        with mock.patch.dict(sys.modules, {
+            graph.__package__ + ".image": fake_image,
+        }), mock.patch.object(
+            sys.modules[graph.__package__], "image", fake_image, create=True,
+        ):
+            with self.assertRaises(graph.AssetGraphError) as raised:
+                graph.set_scene_reference(self.db, "alice", "alice", {
+                    "project_id": "p1",
+                    "graph_revision": before["graph_revision"],
+                    "scene_key": scene["scene_key"],
+                    "source": "asset",
+                    "asset_job_id": 95,
+                    "asset_url": "/api/gen/file/scene-b.png",
+                    "filename": "scene-b.png",
+                })
+        self.assertEqual("scene_asset_invalid", raised.exception.code)
+        self.assertEqual(before, graph.scene_workspace(self.db, "alice", "p1"))
+
+    def test_scene_asset_rejects_double_encoded_local_url_mismatch(self):
+        graph.sync_foundation(self.db, "alice", "alice", "p1")
+        before = graph.scene_workspace(self.db, "alice", "p1")
+        scene = before["scenes"][0]
+        with closing(self.db()) as conn:
+            conn.execute(
+                "CREATE TABLE jobs ("
+                "id INTEGER PRIMARY KEY,username TEXT,kind TEXT,status TEXT,result TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO jobs(id,username,kind,status,result) "
+                "VALUES(98,'alice','image','done',?)",
+                (json.dumps({
+                    "urls": ["/api/gen/file/a%252Fb.png"],
+                    "files": ["a/b.png"],
+                }),),
+            )
+            conn.commit()
+        fake_image = types.SimpleNamespace(
+            _trusted_short_drama_file=lambda value, file_url=False: (
+                str(value or "").removeprefix("/api/gen/file/")
+            ),
+        )
+        with mock.patch.dict(sys.modules, {
+            graph.__package__ + ".image": fake_image,
+        }), mock.patch.object(
+            sys.modules[graph.__package__], "image", fake_image, create=True,
+        ):
+            with self.assertRaises(graph.AssetGraphError) as raised:
+                graph.set_scene_reference(self.db, "alice", "alice", {
+                    "project_id": "p1",
+                    "graph_revision": before["graph_revision"],
+                    "scene_key": scene["scene_key"],
+                    "source": "asset",
+                    "asset_job_id": 98,
+                    "asset_url": "/api/gen/file/a%252Fb.png",
+                    "filename": "double-encoded.png",
+                })
+        self.assertEqual("scene_asset_invalid", raised.exception.code)
+
+    def test_scene_asset_rejects_encoded_duplicate_result_urls(self):
+        graph.sync_foundation(self.db, "alice", "alice", "p1")
+        before = graph.scene_workspace(self.db, "alice", "p1")
+        scene = before["scenes"][0]
+        with closing(self.db()) as conn:
+            conn.execute(
+                "CREATE TABLE jobs ("
+                "id INTEGER PRIMARY KEY,username TEXT,kind TEXT,status TEXT,result TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO jobs(id,username,kind,status,result) "
+                "VALUES(99,'alice','image','done',?)",
+                (json.dumps({
+                    "urls": [
+                        "/api/gen/file/a.png",
+                        "/api/gen/file/%61.png",
+                    ],
+                    "files": ["a.png", "a.png"],
+                }),),
+            )
+            conn.commit()
+        fake_image = types.SimpleNamespace(
+            _trusted_short_drama_file=lambda value, file_url=False: (
+                str(value or "").removeprefix("/api/gen/file/")
+            ),
+        )
+        with mock.patch.dict(sys.modules, {
+            graph.__package__ + ".image": fake_image,
+        }), mock.patch.object(
+            sys.modules[graph.__package__], "image", fake_image, create=True,
+        ):
+            with self.assertRaises(graph.AssetGraphError) as raised:
+                graph.set_scene_reference(self.db, "alice", "alice", {
+                    "project_id": "p1",
+                    "graph_revision": before["graph_revision"],
+                    "scene_key": scene["scene_key"],
+                    "source": "asset",
+                    "asset_job_id": 99,
+                    "asset_url": "/api/gen/file/a.png",
+                    "filename": "encoded-duplicate.png",
+                })
+        self.assertEqual("scene_asset_invalid", raised.exception.code)
+
+    def test_scene_asset_rejects_external_url_only_and_invalid_result_url(self):
+        graph.sync_foundation(self.db, "alice", "alice", "p1")
+        before = graph.scene_workspace(self.db, "alice", "p1")
+        scene = before["scenes"][0]
+        cases = (
+            (100, {"urls": ["https://cdn.example/scene.png"]}),
+            (101, {"urls": ["javascript:alert(1)"], "files": ["scene.png"]}),
+            (102, {"urls": ["https://cdn.example/scene.png"], "files": ["http://["]}),
+        )
+        with closing(self.db()) as conn:
+            conn.execute(
+                "CREATE TABLE jobs ("
+                "id INTEGER PRIMARY KEY,username TEXT,kind TEXT,status TEXT,result TEXT)"
+            )
+            conn.executemany(
+                "INSERT INTO jobs(id,username,kind,status,result) "
+                "VALUES(?,'alice','image','done',?)",
+                ((job_id, json.dumps(result)) for job_id, result in cases),
+            )
+            conn.commit()
+        fake_image = types.SimpleNamespace(
+            _trusted_short_drama_file=lambda value, file_url=False: (
+                str(value or "").removeprefix("/api/gen/file/")
+                if str(value or "").startswith("/api/gen/file/") or not file_url
+                else ""
+            ),
+        )
+        with mock.patch.dict(sys.modules, {
+            graph.__package__ + ".image": fake_image,
+        }), mock.patch.object(
+            sys.modules[graph.__package__], "image", fake_image, create=True,
+        ):
+            for job_id, result in cases:
+                with self.subTest(job_id=job_id), self.assertRaises(
+                    graph.AssetGraphError,
+                ) as raised:
+                    graph.set_scene_reference(self.db, "alice", "alice", {
+                        "project_id": "p1",
+                        "graph_revision": before["graph_revision"],
+                        "scene_key": scene["scene_key"],
+                        "source": "asset",
+                        "asset_job_id": job_id,
+                        "asset_url": result["urls"][0],
+                        "filename": "invalid.png",
+                    })
+                self.assertEqual("scene_asset_invalid", raised.exception.code)
+        self.assertEqual(before, graph.scene_workspace(self.db, "alice", "p1"))
+
+    def test_scene_asset_rejects_ambiguous_duplicate_result_url(self):
+        graph.sync_foundation(self.db, "alice", "alice", "p1")
+        before = graph.scene_workspace(self.db, "alice", "p1")
+        scene = before["scenes"][0]
+        duplicate_url = "/api/gen/file/duplicate.png"
+        with closing(self.db()) as conn:
+            conn.execute(
+                "CREATE TABLE jobs ("
+                "id INTEGER PRIMARY KEY,username TEXT,kind TEXT,status TEXT,result TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO jobs(id,username,kind,status,result) "
+                "VALUES(94,'alice','image','done',?)",
+                (json.dumps({
+                    "urls": [duplicate_url, duplicate_url],
+                    "files": ["scene-a.png", "scene-b.png"],
+                }),),
+            )
+            conn.commit()
+        fake_image = types.SimpleNamespace(
+            _trusted_short_drama_file=lambda value, file_url=False: (
+                str(value or "").removeprefix("/api/gen/file/")
+            ),
+        )
+        with mock.patch.dict(sys.modules, {
+            graph.__package__ + ".image": fake_image,
+        }), mock.patch.object(
+            sys.modules[graph.__package__], "image", fake_image, create=True,
+        ):
+            with self.assertRaises(graph.AssetGraphError) as raised:
+                graph.set_scene_reference(self.db, "alice", "alice", {
+                    "project_id": "p1",
+                    "graph_revision": before["graph_revision"],
+                    "scene_key": scene["scene_key"],
+                    "source": "asset",
+                    "asset_job_id": 94,
+                    "asset_url": duplicate_url,
+                    "filename": "duplicate.png",
+                })
+        self.assertEqual("scene_asset_invalid", raised.exception.code)
+        self.assertEqual(before, graph.scene_workspace(self.db, "alice", "p1"))
+
+    def test_scene_lock_rejects_persisted_mismatched_job_pair(self):
+        graph.sync_foundation(self.db, "alice", "alice", "p1")
+        before = graph.scene_workspace(self.db, "alice", "p1")
+        scene = before["scenes"][0]
+        with closing(self.db()) as conn:
+            conn.execute(
+                "CREATE TABLE jobs ("
+                "id INTEGER PRIMARY KEY,username TEXT,kind TEXT,status TEXT,result TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO jobs(id,username,kind,status,result) "
+                "VALUES(93,'alice','image','done',?)",
+                (json.dumps({
+                    "urls": [
+                        "/api/gen/file/scene-a.png",
+                        "/api/gen/file/scene-b.png",
+                    ],
+                    "files": ["scene-a.png", "scene-b.png"],
+                }),),
+            )
+            conn.commit()
+        fake_image = types.SimpleNamespace(
+            _trusted_short_drama_file=lambda value, file_url=False: (
+                str(value or "").removeprefix("/api/gen/file/")
+            ),
+        )
+        with mock.patch.dict(sys.modules, {
+            graph.__package__ + ".image": fake_image,
+        }), mock.patch.object(
+            sys.modules[graph.__package__], "image", fake_image, create=True,
+        ):
+            created = graph.set_scene_reference(self.db, "alice", "alice", {
+                "project_id": "p1",
+                "graph_revision": before["graph_revision"],
+                "scene_key": scene["scene_key"],
+                "source": "asset",
+                "asset_job_id": 93,
+                "asset_url": "/api/gen/file/scene-b.png",
+                "filename": "scene-b.png",
+            })
+
+        selected = next(
+            item for item in created["scenes"]
+            if item["scene_key"] == scene["scene_key"]
+        )
+        with closing(self.db()) as conn:
+            conn.execute(
+                "UPDATE short_drama_graph_versions SET references_json=? WHERE id=?",
+                (json.dumps([{
+                    "file": "scene-a.png",
+                    "url": "/api/gen/file/scene-b.png",
+                    "name": "mismatched.png",
+                    "asset_job_id": 93,
+                }]), selected["preview"]["version_id"]),
+            )
+            conn.commit()
+
+        with self.assertRaises(graph.AssetGraphError) as raised:
+            graph.lock_scene_reference(self.db, "alice", "alice", {
+                "project_id": "p1",
+                "graph_revision": created["graph_revision"],
+                "scene_key": scene["scene_key"],
+            })
+        self.assertEqual("scene_reference_untrusted", raised.exception.code)
 
     def test_scene_workspace_falls_back_to_locked_script_shots(self):
         with closing(self.db()) as conn:

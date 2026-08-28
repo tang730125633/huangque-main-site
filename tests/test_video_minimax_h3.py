@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import base64
+import hashlib
 import io
 import json
 import os
@@ -8,7 +9,9 @@ import ssl
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import ANY, Mock, patch
 
@@ -19,7 +22,11 @@ if str(SERVER) not in sys.path:
     sys.path.insert(0, str(SERVER))
 
 from content_domains import (  # noqa: E402
-    points, submission_idempotency, video, video_minimax_h3,
+    points,
+    short_drama_native_audio,
+    submission_idempotency,
+    video,
+    video_minimax_h3,
 )
 
 
@@ -55,6 +62,350 @@ class MiniMaxH3VideoTests(unittest.TestCase):
         return "data:image/%s;base64,%s" % (
             mime, base64.b64encode(output.getvalue()).decode("ascii")
         )
+
+    @staticmethod
+    def _minimax_result():
+        return {
+            "request_id": "h3-native-task",
+            "source_video_url": "https://cdn.example/native.mp4",
+            "model": "MiniMax-H3",
+            "duration": 5,
+            "ratio": "16:9",
+            "resolution": "2k",
+            "provider": "minimax_h3_cn",
+        }
+
+    def test_faststart_derivative_preserves_supplier_raw_bytes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            raw_relative = "video/minimax_h3_raw_test.mp4"
+            raw_path = root / raw_relative
+            raw_path.parent.mkdir(parents=True)
+            raw_bytes = b"immutable-provider-video"
+            raw_path.write_bytes(raw_bytes)
+
+            def run(command, **_kwargs):
+                Path(command[-1]).write_bytes(b"faststart-derived-video")
+                return None
+
+            with patch.object(video, "_out_path", side_effect=lambda rel: root / rel), \
+                    patch.object(video.subprocess, "run", side_effect=run):
+                derived_relative = video._faststart_video_derivative(raw_relative)
+
+            self.assertNotEqual(raw_relative, derived_relative)
+            self.assertEqual(raw_bytes, raw_path.read_bytes())
+            self.assertEqual(
+                b"faststart-derived-video", (root / derived_relative).read_bytes()
+            )
+
+    def test_bound_short_drama_returns_raw_and_derived_lineage(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            raw_relative = "video/minimax_h3_raw_test.mp4"
+            derived_relative = "video/minimax_h3_derived_test.mp4"
+            raw_bytes = b"immutable-provider-video"
+            derived_bytes = b"faststart-derived-video"
+
+            def download(*_args, **_kwargs):
+                path = root / raw_relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(raw_bytes)
+                return raw_relative
+
+            def derive(_relative):
+                (root / derived_relative).write_bytes(derived_bytes)
+                return derived_relative
+
+            evidence = {
+                "sha256": hashlib.sha256(raw_bytes).hexdigest(),
+                "size_bytes": len(raw_bytes),
+                "resolution": {"width": 2560, "height": 1440},
+                "audio": {"audible": True, "codec": "aac"},
+                "inspected_at": 1,
+            }
+            with patch.object(video, "get_resumable_grok_request", return_value=None), \
+                    patch.object(video.provider_keys, "claim_candidate", return_value={"id": "mm", "secret": "secret"}), \
+                    patch.object(video.provider_keys, "set_health"), \
+                    patch.object(video, "update_video_asset_phase"), \
+                    patch.object(video_minimax_h3, "generate", return_value=self._minimax_result()) as generate, \
+                    patch.object(video, "_download_video_file_direct", side_effect=download), \
+                    patch.object(video, "_faststart_video_derivative", create=True, side_effect=derive), \
+                    patch.object(video, "_resolve_out_file", side_effect=lambda rel: root / rel), \
+                    patch.object(video, "_extract_first_frame_cover", return_value=None), \
+                    patch.object(video, "public_url", return_value="https://cos.example/native.mp4"), \
+                    patch.object(short_drama_native_audio, "inspect_native_media", create=True, return_value=evidence), \
+                    patch.object(short_drama_native_audio, "inspect_native_resolution", return_value=evidence["resolution"]), \
+                    patch.object(short_drama_native_audio, "inspect_native_audio", return_value=evidence["audio"]):
+                result = video.gen_xiaole_video({
+                    "_job_id": 91,
+                    "channel": "minimax",
+                    "prompt": "人物走进旧城区",
+                    "model": "MiniMax-H3",
+                    "duration": 5,
+                    "ratio": "16:9",
+                    "resolution": "2k",
+                    "reference_images": [],
+                    "_short_drama_native_audio_required": True,
+                })
+
+            generate.assert_called_once()
+            self.assertEqual(raw_relative, result["raw_video_file"])
+            self.assertEqual(derived_relative, result["video_file"])
+            self.assertEqual(
+                evidence["sha256"], result["native_media"]["raw"]["sha256"]
+            )
+            self.assertEqual(
+                evidence["sha256"],
+                result["native_media"]["derived"]["derived_from_sha256"],
+            )
+            self.assertEqual(raw_bytes, (root / raw_relative).read_bytes())
+
+    def test_native_validation_failure_removes_owned_raw_file(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            raw_relative = "video/minimax_h3_raw_failed.mp4"
+
+            def download(*_args, **_kwargs):
+                path = root / raw_relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"silent-provider-video")
+                return raw_relative
+
+            error = short_drama_native_audio.NativeAudioError(
+                "provider_audio_silent", "声音不可听"
+            )
+            with patch.object(video, "get_resumable_grok_request", return_value=None), \
+                    patch.object(video.provider_keys, "claim_candidate", return_value={"id": "mm", "secret": "secret"}), \
+                    patch.object(video.provider_keys, "set_health"), \
+                    patch.object(video, "update_video_asset_phase"), \
+                    patch.object(video_minimax_h3, "generate", return_value=self._minimax_result()) as generate, \
+                    patch.object(video, "_download_video_file_direct", side_effect=download), \
+                    patch.object(video, "_resolve_out_file", side_effect=lambda rel: root / rel), \
+                    patch.object(short_drama_native_audio, "inspect_native_media", create=True, side_effect=error), \
+                    patch.object(short_drama_native_audio, "inspect_native_resolution", side_effect=error):
+                with self.assertRaises(video_minimax_h3.MiniMaxProviderFailed):
+                    video.gen_xiaole_video({
+                        "_job_id": 92,
+                        "channel": "minimax",
+                        "prompt": "人物走进旧城区",
+                        "model": "MiniMax-H3",
+                        "duration": 5,
+                        "ratio": "16:9",
+                        "resolution": "2k",
+                        "reference_images": [],
+                        "_short_drama_native_audio_required": True,
+                    })
+
+            generate.assert_called_once()
+            self.assertFalse((root / raw_relative).exists())
+
+    def test_native_orphan_reaper_deletes_only_unreferenced_files(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            video_root = root / "video"
+            video_root.mkdir()
+            job_db = root / "jobs.db"
+            asset_db = root / "assets.db"
+            referenced_job = "video/minimax_h3_raw_referenced.mp4"
+            referenced_provider_job = "video/minimax_h3_raw_provider_job.mp4"
+            referenced_asset = "video/minimax_h3_derived_referenced.mp4"
+            orphan_raw = "video/minimax_h3_raw_orphan.mp4"
+            orphan_derived = "video/minimax_h3_derived_orphan.mp4"
+            orphan_part = "video/minimax_h3_raw_crashed.mp4.part-deadbeef"
+            for relative in (
+                referenced_job, referenced_provider_job, referenced_asset, orphan_raw,
+                orphan_derived, orphan_part,
+            ):
+                path = root / relative
+                path.write_bytes(relative.encode("utf-8"))
+                old = time.time() - 8 * 3600
+                os.utime(path, (old, old))
+            with closing(sqlite3.connect(job_db)) as connection:
+                connection.execute(
+                    "CREATE TABLE jobs (id INTEGER, status TEXT, result TEXT)"
+                )
+                connection.execute(
+                    "INSERT INTO jobs VALUES (1,'done',?)",
+                    (json.dumps({
+                        "raw_video_file": referenced_job,
+                        "video_file": "video/minimax_h3_derived_job.mp4",
+                    }),),
+                )
+                connection.execute(
+                    "CREATE TABLE short_drama_provider_shot_jobs "
+                    "(result_json TEXT)"
+                )
+                connection.execute(
+                    "INSERT INTO short_drama_provider_shot_jobs VALUES (?)",
+                    (json.dumps({
+                        "native_media": {
+                            "raw": {"file": referenced_provider_job},
+                        },
+                    }),),
+                )
+                connection.commit()
+            with closing(sqlite3.connect(asset_db)) as connection:
+                connection.execute(
+                    "CREATE TABLE video_assets (video_file TEXT, image_file TEXT)"
+                )
+                connection.execute(
+                    "INSERT INTO video_assets VALUES (?,NULL)",
+                    (referenced_asset,),
+                )
+                connection.commit()
+            with patch.object(video, "_out_path", side_effect=lambda rel: root / rel), \
+                    patch.object(video, "jdb", side_effect=lambda: sqlite3.connect(job_db)), \
+                    patch.object(video, "adb", side_effect=lambda: sqlite3.connect(asset_db)):
+                result = video.reap_short_drama_native_orphans(
+                    now=int(time.time()), grace_seconds=6 * 3600
+                )
+
+            self.assertTrue((root / referenced_job).is_file())
+            self.assertTrue((root / referenced_provider_job).is_file())
+            self.assertTrue((root / referenced_asset).is_file())
+            self.assertFalse((root / orphan_raw).exists())
+            self.assertFalse((root / orphan_derived).exists())
+            self.assertFalse((root / orphan_part).exists())
+            self.assertEqual(
+                {orphan_raw, orphan_derived, orphan_part}, set(result["deleted"])
+            )
+
+    def test_native_orphan_reaper_preserves_recent_and_database_references(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            video_root = root / "video"
+            video_root.mkdir()
+            job_db = root / "jobs.db"
+            asset_db = root / "assets.db"
+            nested_reference = "video/minimax_h3_raw_active.mp4"
+            recent_orphan = "video/minimax_h3_derived_recent.mp4"
+            (root / nested_reference).write_bytes(b"active")
+            (root / recent_orphan).write_bytes(b"recent")
+            old = time.time() - 8 * 3600
+            os.utime(root / nested_reference, (old, old))
+            with closing(sqlite3.connect(job_db)) as connection:
+                connection.execute(
+                    "CREATE TABLE jobs (id INTEGER, status TEXT, result TEXT)"
+                )
+                connection.execute(
+                    "INSERT INTO jobs VALUES (2,'running',?)",
+                    (json.dumps({
+                        "native_media": {"raw": {"file": nested_reference}},
+                    }),),
+                )
+                connection.commit()
+            with closing(sqlite3.connect(asset_db)) as connection:
+                connection.execute(
+                    "CREATE TABLE video_assets (video_file TEXT, image_file TEXT)"
+                )
+                connection.commit()
+            with patch.object(video, "_out_path", side_effect=lambda rel: root / rel), \
+                    patch.object(video, "jdb", side_effect=lambda: sqlite3.connect(job_db)), \
+                    patch.object(video, "adb", side_effect=lambda: sqlite3.connect(asset_db)):
+                result = video.reap_short_drama_native_orphans(
+                    now=int(time.time()), grace_seconds=6 * 3600
+                )
+
+            self.assertTrue((root / nested_reference).is_file())
+            self.assertTrue((root / recent_orphan).is_file())
+            self.assertEqual([], result["deleted"])
+
+    def test_native_orphan_reaper_fails_closed_when_reference_db_is_unavailable(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            video_root = root / "video"
+            video_root.mkdir()
+            orphan = video_root / "minimax_h3_raw_must_be_retained.mp4"
+            orphan.write_bytes(b"native")
+            old = time.time() - 8 * 3600
+            os.utime(orphan, (old, old))
+
+            def unavailable():
+                raise sqlite3.OperationalError("reference database unavailable")
+
+            with patch.object(video, "_out_path", side_effect=lambda rel: root / rel), \
+                    patch.object(video, "jdb", side_effect=unavailable):
+                result = video.reap_short_drama_native_orphans(
+                    now=int(time.time()), grace_seconds=6 * 3600
+                )
+
+            self.assertTrue(orphan.is_file())
+            self.assertEqual([], result["deleted"])
+            self.assertTrue(result["errors"])
+
+            job_db = root / "jobs.db"
+            with closing(sqlite3.connect(job_db)) as connection:
+                connection.execute(
+                    "CREATE TABLE jobs (id INTEGER, status TEXT, result TEXT)"
+                )
+                connection.commit()
+            with patch.object(video, "_out_path", side_effect=lambda rel: root / rel), \
+                    patch.object(video, "jdb", side_effect=lambda: sqlite3.connect(job_db)), \
+                    patch.object(video, "adb", side_effect=unavailable):
+                asset_result = video.reap_short_drama_native_orphans(
+                    now=int(time.time()), grace_seconds=6 * 3600
+                )
+            self.assertTrue(orphan.is_file())
+            self.assertEqual([], asset_result["deleted"])
+            self.assertEqual("assets_database", asset_result["errors"][0]["scope"])
+
+    def test_native_orphan_reaper_fails_closed_on_malformed_reference_json(self):
+        for malformed_source in ("shared_job", "provider_job"):
+            for malformed_payload in ("{malformed", "[]"):
+                with self.subTest(
+                    malformed_source=malformed_source,
+                    malformed_payload=malformed_payload,
+                ), \
+                    tempfile.TemporaryDirectory() as folder:
+                    root = Path(folder)
+                    video_root = root / "video"
+                    video_root.mkdir()
+                    native = video_root / "minimax_h3_raw_unknown_reference.mp4"
+                    native.write_bytes(b"native")
+                    old = time.time() - 8 * 3600
+                    os.utime(native, (old, old))
+                    job_db = root / "jobs.db"
+                    asset_db = root / "assets.db"
+                    with closing(sqlite3.connect(job_db)) as connection:
+                        connection.execute(
+                            "CREATE TABLE jobs (id INTEGER, status TEXT, result TEXT)"
+                        )
+                        connection.execute(
+                            "CREATE TABLE short_drama_provider_shot_jobs "
+                            "(result_json TEXT)"
+                        )
+                        connection.execute(
+                            "INSERT INTO jobs VALUES (1,'done',?)",
+                            (
+                                malformed_payload
+                                if malformed_source == "shared_job" else None,
+                            ),
+                        )
+                        if malformed_source == "provider_job":
+                            connection.execute(
+                                "INSERT INTO short_drama_provider_shot_jobs VALUES (?)",
+                                (malformed_payload,),
+                            )
+                        connection.commit()
+                    with closing(sqlite3.connect(asset_db)) as connection:
+                        connection.execute(
+                            "CREATE TABLE video_assets "
+                            "(video_file TEXT, image_file TEXT)"
+                        )
+                        connection.commit()
+                    with patch.object(
+                        video, "_out_path", side_effect=lambda rel: root / rel,
+                    ), patch.object(
+                        video, "jdb", side_effect=lambda: sqlite3.connect(job_db),
+                    ), patch.object(
+                        video, "adb", side_effect=lambda: sqlite3.connect(asset_db),
+                    ):
+                        result = video.reap_short_drama_native_orphans(
+                            now=int(time.time()), grace_seconds=6 * 3600
+                        )
+                    self.assertTrue(native.is_file())
+                    self.assertEqual([], result["deleted"])
+                    self.assertTrue(result["errors"])
 
     def test_reference_request_and_20_percent_markup(self):
         image = self._image()
@@ -458,7 +809,7 @@ class MiniMaxH3VideoTests(unittest.TestCase):
                 "_minimax_origin": video_minimax_h3.ORIGIN_METASO,
             })
         generate.assert_called_once()
-        self.assertEqual("2k", generate.call_args.kwargs["resolution"])
+        self.assertEqual("2K", generate.call_args.kwargs["resolution"])
         self.assertEqual(
             video_minimax_h3.METASO_API_BASE,
             generate.call_args.kwargs["api_base"],

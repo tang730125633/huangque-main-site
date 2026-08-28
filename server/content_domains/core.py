@@ -342,6 +342,9 @@ def _sensitive_output_file(rel):
             rel.startswith("short_drama_preview/") or
             rel.startswith("short_drama_final/") or
             rel.startswith("short_drama_playback/") or
+            rel.startswith("short_drama_delivery/") or
+            rel.startswith("short_drama_delivery_inputs/") or
+            rel.startswith("short_drama_scene_uploads/") or
             rel.startswith("lipsync/") or
             rel.startswith("audio/voice_preview_") or
             rel.startswith("audio/clone_") or
@@ -350,10 +353,24 @@ def _sensitive_output_file(rel):
             name.startswith("tryon_cloth_") or
             name.startswith("tryon_bg_"))
 
+
+def _user_owns_scene_upload(username, rel, access=None):
+    try:
+        from . import short_drama_asset_graph
+        with closing(jdb()) as connection:
+            return short_drama_asset_graph.scene_upload_file_access(
+                connection, username, rel, access,
+            )
+    except Exception:
+        return False
+
+
 def _user_owns_output_file(username, rel, access=None):
     """敏感本地文件只允许其资产归属用户读取；删除后的资产不再放行。"""
     if not username or not rel:
         return False
+    if rel.startswith("short_drama_scene_uploads/"):
+        return _user_owns_scene_upload(username, rel, access)
     with closing(adb()) as c:
         # 配音资产(audio_assets)：生成的配音 / 克隆试听样音归属其用户。
         # 缺这一张表会让 voice_preview_*/aud_* 等敏感音频过不了归属校验→404(试听/下载"需要授权")。
@@ -384,13 +401,26 @@ def _user_owns_output_file(username, rel, access=None):
     try:
         access = access if isinstance(access, dict) else {}
         with closing(jdb()) as c:
-            row = c.execute(
-                "SELECT p.username,p.board_id FROM "
-                "short_drama_composition_versions v "
-                "JOIN short_drama_projects p ON p.id=v.project_id "
-                "WHERE p.deleted=0 AND ? IN (v.file,v.cover_file) LIMIT 1",
-                (rel,),
-            ).fetchone()
+            try:
+                row = c.execute(
+                    "SELECT p.username,p.board_id FROM "
+                    "short_drama_delivery_versions v "
+                    "JOIN short_drama_projects p ON p.id=v.project_id "
+                    "WHERE p.deleted=0 AND v.url IN (?,?) LIMIT 1",
+                    (rel, "/api/gen/file/" + rel),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                # Formal delivery tables are additive and may not exist in a
+                # database created by an older deployment yet.
+                row = None
+            if not row:
+                row = c.execute(
+                    "SELECT p.username,p.board_id FROM "
+                    "short_drama_composition_versions v "
+                    "JOIN short_drama_projects p ON p.id=v.project_id "
+                    "WHERE p.deleted=0 AND ? IN (v.file,v.cover_file) LIMIT 1",
+                    (rel,),
+                ).fetchone()
             if not row:
                 row = c.execute(
                     "SELECT p.username,p.board_id FROM "
@@ -1404,8 +1434,11 @@ def _run_short_drama_recovery(limit=None):
         lambda: domain.short_drama_video.retry_video_attempt_refunds(
             jdb, points, limit),
         lambda: _retry_short_drama_provider_refunds(limit),
+        lambda: domain.short_drama_refinement.retry_delivery_attempt_recovery(
+            jdb, points, getattr(points, "get_points_transaction", None), limit),
         lambda: domain.short_drama_refinement.retry_delivery_attempt_refunds(
             jdb, points, limit),
+        lambda: domain.short_drama_refinement.reap_delivery_orphans(jdb),
         lambda: jobs_store.retry_failed_refunds(jdb, _refund_once, limit),
         lambda: domain.short_drama_assembly.reconcile_final_refunds(jdb, limit),
         lambda: domain.short_drama_assembly.retry_final_charge_attempts(
@@ -1439,12 +1472,55 @@ _ALL_JOB_QUEUES = (_job_queue, _fast_job_queue, _talking_job_queue,
                    _matrix_job_queue)
 
 
+def _reap_short_drama_native_media():
+    """Best-effort cleanup before persisted jobs are recovered into queues."""
+    try:
+        from . import video
+        result = video.reap_short_drama_native_orphans()
+        for error in result.get("errors") or []:
+            print(
+                "[short-drama-native-media] orphan cleanup warning: %s"
+                % str(error)[:300],
+                flush=True,
+            )
+        return result
+    except Exception as error:
+        print(
+            "[short-drama-native-media] startup cleanup failed: %s" % error,
+            flush=True,
+        )
+        return None
+
+
+def _reap_short_drama_delivery_media():
+    """Fail-closed cleanup for crashed formal-delivery publish operations."""
+    try:
+        result = _short_drama_domain().short_drama_refinement.reap_delivery_orphans(
+            jdb
+        )
+        for error in result.get("errors") or []:
+            print(
+                "[short-drama-delivery] orphan cleanup warning: %s"
+                % str(error)[:300],
+                flush=True,
+            )
+        return result
+    except Exception as error:
+        print(
+            "[short-drama-delivery] startup cleanup failed: %s" % error,
+            flush=True,
+        )
+        return None
+
+
 def start_job_workers():
     global _workers_started
     with _job_queue_lock:
         if _workers_started:
             return
         _workers_started = True
+    _reap_short_drama_native_media()
+    _reap_short_drama_delivery_media()
     for count, q, prefix in ((JOB_WORKERS, _job_queue, "content-job-worker"), (FAST_JOB_WORKERS, _fast_job_queue, "content-fast-worker"),
                              (TALKING_JOB_WORKERS, _talking_job_queue, "content-talking-worker"),
                              (IMAGE_JOB_WORKERS, _image_job_queue, "content-image-worker"),
