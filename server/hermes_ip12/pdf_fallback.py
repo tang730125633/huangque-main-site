@@ -65,8 +65,8 @@ def render_foundation_consulting_pdf(markdown, target, title="IP 人设定位｜
                                  spaceAfter=18, textColor=ink, fontName=font_name)
     table_text = ParagraphStyle("consulting-table", parent=body, fontSize=9.2, leading=14,
                                 textColor=ink, fontName=font_name, spaceAfter=0)
-    list_text = ParagraphStyle("consulting-list", parent=body, fontSize=9.8, leading=15,
-                               textColor=ink, fontName=font_name, spaceAfter=2)
+    list_text = ParagraphStyle("consulting-list", parent=body, fontSize=9.6, leading=14,
+                               textColor=ink, fontName=font_name, spaceAfter=1)
 
     def plain(value):
         value = escape(str(value or ""))
