@@ -254,6 +254,19 @@ def intake_coverage_gaps(value, updates=()):
     return [field for field in INTAKE_COVERAGE_FIELDS if statuses[field] == "unknown"]
 
 
+def intake_incomplete_fields(value):
+    state = normalize_state(value)
+    provided = set()
+    for bucket in ("facts", "preferences"):
+        provided.update((state["ip_profile"].get(bucket) or {}).keys())
+    provided.update(
+        str(item.get("field") or "")
+        for item in state["intake"].get("profile_updates") or [] if isinstance(item, dict)
+    )
+    statuses = intake_field_statuses(state)
+    return [field for field in INTAKE_COVERAGE_FIELDS if field in provided and statuses[field] == "unknown"]
+
+
 def commercial_goal_gaps(value, updates=()):
     state = normalize_state(value)
     fields = set()

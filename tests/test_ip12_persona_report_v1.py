@@ -137,6 +137,10 @@ class IP12PersonaReportV1Tests(unittest.TestCase):
             "FOUNDATION_REPORT_TEMPLATE_VERSION",
             inspect.getsource(server.api_generate_foundation_report),
         )
+        self.assertIn(
+            "intake_incomplete_fields",
+            inspect.getsource(server.api_confirm_foundation_report),
+        )
 
     def test_module_six_action_turn_no_longer_auto_prepares_production(self):
         source = inspect.getsource(server._process_action_turn)

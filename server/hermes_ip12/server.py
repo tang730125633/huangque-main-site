@@ -7783,6 +7783,14 @@ def api_confirm_foundation_report():
             _assert_expected_revision(state, body.get("expected_revision"))
         except coach_harness.HarnessConflict as exc:
             return jsonify({"ok": False, "error": str(exc)}), 409
+        incomplete = coach_harness.intake_incomplete_fields(state)
+        if incomplete:
+            return jsonify({
+                "ok": False,
+                "error": "请先补全基础资料：%s" % "、".join(
+                    coach_harness.INTAKE_COVERAGE_LABELS[field] for field in incomplete
+                ),
+            }), 409
         report = state.get("foundation_report", {})
         if report.get("status") != "awaiting_confirmation":
             return jsonify({"ok": False, "error": "请先生成并查看模块 1-4 初稿"}), 409

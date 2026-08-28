@@ -150,6 +150,9 @@ class IP12PersonaAgentV1Tests(unittest.TestCase):
 
     def test_personality_traits_require_three_distinct_words(self):
         two_traits = update("personality_traits", "真诚,克制", "真诚、克制")
+        partial = harness.initial_state()
+        partial["ip_profile"]["facts"]["personality_traits"] = two_traits
+        self.assertEqual(harness.intake_incomplete_fields(partial), ["personality_traits"])
         with self.assertRaisesRegex(harness.HarnessError, "三个性格词"):
             harness.apply_intake_decision(
                 covered_state([two_traits]),
