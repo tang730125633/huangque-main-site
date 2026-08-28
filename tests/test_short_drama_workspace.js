@@ -2427,6 +2427,84 @@ test('legacy reported 2K shots missing evidence are not mislabeled as 768p', () 
   assert.match(workspaceSource, /data-action'\)==='recover-legacy-media'/);
 });
 
+test('legacy media recovery keeps complete partial results visible after refresh rendering', () => {
+  const evidence = workspace.legacyMediaRecoveryEvidence({
+    project_id:'project-1313',
+    recovered_shot_keys:['shot_01'],
+    failed_shots:[{
+      shot_key:'shot_02',
+      code:'provider_resolution_below_2k',
+      detail:'source video is only 1920x1080'
+    }],
+    skipped_shot_keys:['shot_03']
+  }, {
+    started_at:'2026-08-28T09:20:00.000Z',
+    completed_at:'2026-08-28T09:20:08.000Z'
+  });
+
+  const firstRender = workspace.legacyMediaRecoveryResultHtml(evidence);
+  const refreshedRender = workspace.legacyMediaRecoveryResultHtml(evidence);
+  for (const output of [firstRender, refreshedRender]) {
+    assert.match(output, /shot_01/);
+    assert.match(output, /shot_02/);
+    assert.match(output, /provider_resolution_below_2k/);
+    assert.match(output, /source video is only 1920x1080/);
+    assert.match(output, /shot_03/);
+    assert.match(output, /2026-08-28T09:20:00\.000Z/);
+    assert.match(output, /2026-08-28T09:20:08\.000Z/);
+    assert.match(output, /data-action="copy-legacy-media-recovery"/);
+    assert.match(output, /data-action="download-legacy-media-recovery"/);
+  }
+  assert.match(workspaceSource, /legacyMediaRecoveryResult=legacyMediaRecoveryEvidence\(result/);
+  assert.match(workspaceSource, /legacyMediaRecoveryResultHtml\(legacyMediaRecoveryResult\)/);
+  assert.match(workspaceStyle, /\.sd-recovery-evidence\{/);
+});
+
+test('legacy media recovery copy and download actions retain complete failure evidence', async () => {
+  const evidence = workspace.legacyMediaRecoveryEvidence({
+    project_id:'project-1313',
+    recovered_shot_keys:['shot_01'],
+    failed_shots:[{shot_key:'shot_02',code:'native_probe_failed',detail:'ffprobe timed out'}],
+    skipped_shot_keys:['shot_03']
+  }, {
+    started_at:'2026-08-28T09:20:00.000Z',
+    completed_at:'2026-08-28T09:20:08.000Z'
+  });
+  let copied = '';
+  const copyResult = await workspace.handleLegacyMediaRecoveryEvidenceAction(
+    'copy-legacy-media-recovery', evidence, {
+      clipboard:{writeText(value){copied=value;}}
+    }
+  );
+  assert.equal(copyResult.action, 'copied');
+  assert.deepEqual(JSON.parse(copied), evidence);
+
+  let downloaded = null;
+  let revoked = '';
+  const anchor = {click(){this.clicked=true;},remove(){this.removed=true;}};
+  const doc = {
+    body:{appendChild(node){downloaded=node;}},
+    createElement(tag){assert.equal(tag, 'a');return anchor;}
+  };
+  const downloadResult = await workspace.handleLegacyMediaRecoveryEvidenceAction(
+    'download-legacy-media-recovery', evidence, {
+      document:doc,
+      Blob,
+      URL:{createObjectURL(blob){anchor.blob=blob;return 'blob:recovery';},revokeObjectURL(url){revoked=url;}},
+      setTimeout(callback){callback();}
+    }
+  );
+  assert.equal(downloadResult.action, 'downloaded');
+  assert.match(anchor.download, /^legacy-media-recovery-project-1313-.*\.json$/);
+  assert.equal(anchor.href, 'blob:recovery');
+  assert.equal(anchor.clicked, true);
+  assert.equal(anchor.removed, true);
+  assert.equal(downloaded, anchor);
+  assert.equal(revoked, 'blob:recovery');
+  assert.deepEqual(JSON.parse(await anchor.blob.text()), evidence);
+  assert.match(workspaceSource, /handleLegacyMediaRecoveryEvidenceAction\(recoveryEvidenceAction,legacyMediaRecoveryResult/);
+});
+
 test('legacy media recovery is disabled while a project pipeline task is active', () => {
   const output = workspace.autodraftActionsHtml({
     confirmed_plan:{id:'plan-1'},

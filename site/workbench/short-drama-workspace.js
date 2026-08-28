@@ -812,6 +812,61 @@
     var acceptance=(plan.required_acceptance||[]).length?'<label class="sd-accept"><input id="sdAcceptAdjustments" type="checkbox"> 我已了解并接受 '+Number(plan.required_acceptance.length)+' 项系统建议</label>':'';
     return '<section class="sd-preflight"><span class="sd-stage-label">PR-3 · 制作准备</span><h2>'+(confirmed?'制作方案已确认':'制作方案 v'+Number(current.version)+' 待确认')+'</h2>'+(stale?'<div class="sd-preflight-stale">剧本或项目规格已变化，请重新体检后再确认。</div>':'')+'<div class="sd-estimate"><strong>'+Number(plan.estimate&&plan.estimate.points||0)+' 点</strong><span>'+escapeHtml(plan.estimate&&plan.estimate.resolution||'')+' · 约 '+Number(plan.estimate&&plan.estimate.minutes||0)+' 分钟</span></div><label>制作路线<select id="sdQualityRoute"'+(confirmed||!canEdit?' disabled':'')+'>'+routeOptions+'</select></label><div class="sd-checks">'+checks+'</div><p class="sd-plan-meta">'+Number(plan.duration&&plan.duration.shots&&plan.duration.shots.length||0)+' 镜 · '+Number(plan.duration&&plan.duration.target_ms||0)/1000+' 秒 · '+Number((plan.assets||[]).length)+' 项推荐素材</p>'+(confirmed?'<div class="sd-confirmed">已锁定制作方案 v'+Number(current.version)+'，下一阶段可据此生成自动草稿。</div>':acceptance+'<button data-action="confirm-plan" class="secondary" type="button"'+(plan.ready&&!stale&&canEdit?'':' disabled')+'>确认制作方案</button><button data-action="prepare" type="button"'+(canEdit?'':' disabled')+'>按当前路线重新体检</button>')+'<p class="sd-free">当前仅为估算，本阶段不扣点</p></section>';
   }
+  function legacyMediaRecoveryEvidence(result,timing){
+    result=result||{};timing=timing||{};
+    return {
+      operation_version:'legacy-media-recovery-evidence-v1',
+      project_id:text(result.project_id).trim(),
+      started_at:text(timing.started_at).trim(),
+      completed_at:text(timing.completed_at).trim(),
+      recovered_shot_keys:(result.recovered_shot_keys||[]).map(function(value){return text(value).trim();}),
+      failed_shots:(result.failed_shots||[]).map(function(item){item=item||{};return {shot_key:text(item.shot_key).trim(),code:text(item.code).trim(),detail:text(item.detail)};}),
+      skipped_shot_keys:(result.skipped_shot_keys||[]).map(function(value){return text(value).trim();})
+    };
+  }
+  function legacyMediaRecoveryResultJson(evidence){
+    return JSON.stringify(evidence||{},null,2);
+  }
+  function legacyMediaRecoveryResultHtml(evidence){
+    if(!evidence)return '';
+    var recovered=evidence.recovered_shot_keys||[],failed=evidence.failed_shots||[],skipped=evidence.skipped_shot_keys||[];
+    var recoveredHtml=recovered.map(function(shotKey){return '<li><code>'+escapeHtml(shotKey)+'</code></li>';}).join('')||'<li>无</li>';
+    var failedHtml=failed.map(function(item){return '<li><code>'+escapeHtml(item.shot_key)+'</code><b>'+escapeHtml(item.code)+'</b><small>'+escapeHtml(item.detail)+'</small></li>';}).join('')||'<li>无</li>';
+    var skippedHtml=skipped.map(function(shotKey){return '<li><code>'+escapeHtml(shotKey)+'</code></li>';}).join('')||'<li>无</li>';
+    return '<section class="sd-recovery-evidence" aria-live="polite"><header><div><span class="sd-stage-label">历史原片恢复记录</span><h3>本次校验结果</h3></div><div><button type="button" class="secondary" data-action="copy-legacy-media-recovery">复制 JSON</button><button type="button" class="secondary" data-action="download-legacy-media-recovery">下载 JSON</button></div></header><p class="sd-recovery-time"><span>开始：<time>'+escapeHtml(evidence.started_at)+'</time></span><span>完成：<time>'+escapeHtml(evidence.completed_at)+'</time></span></p><div class="sd-recovery-groups"><article class="pass"><b>已恢复 '+recovered.length+'</b><ul>'+recoveredHtml+'</ul></article><article class="warning"><b>失败 '+failed.length+'</b><ul>'+failedHtml+'</ul></article><article><b>已跳过 '+skipped.length+'</b><ul>'+skippedHtml+'</ul></article></div><details><summary>查看完整 JSON</summary><pre>'+escapeHtml(legacyMediaRecoveryResultJson(evidence))+'</pre></details></section>';
+  }
+  function handleLegacyMediaRecoveryEvidenceAction(action,evidence,dependencies){
+    dependencies=dependencies||{};
+    var payload=legacyMediaRecoveryResultJson(evidence);
+    if(action==='copy-legacy-media-recovery'){
+      var clipboard=dependencies.clipboard;
+      if(clipboard&&typeof clipboard.writeText==='function'){
+        try{return Promise.resolve(clipboard.writeText(payload)).then(function(){return {action:'copied',payload:payload};});}
+        catch(error){return Promise.reject(error);}
+      }
+      var copyDocument=dependencies.document;
+      if(copyDocument&&copyDocument.body&&typeof copyDocument.createElement==='function'&&typeof copyDocument.execCommand==='function'){
+        var textarea=copyDocument.createElement('textarea');
+        textarea.value=payload;textarea.setAttribute('readonly','');textarea.style.position='fixed';textarea.style.opacity='0';
+        copyDocument.body.appendChild(textarea);textarea.select();
+        var copied=copyDocument.execCommand('copy');textarea.remove();
+        if(copied)return Promise.resolve({action:'copied',payload:payload});
+      }
+      return Promise.reject(new Error('浏览器未开放剪贴板权限；请展开并手动复制完整 JSON。'));
+    }
+    if(action==='download-legacy-media-recovery'){
+      var downloadDocument=dependencies.document,BlobConstructor=dependencies.Blob,URLApi=dependencies.URL;
+      if(!downloadDocument||!downloadDocument.body||typeof downloadDocument.createElement!=='function'||typeof BlobConstructor!=='function'||!URLApi||typeof URLApi.createObjectURL!=='function')return Promise.reject(new Error('浏览器暂不支持下载；请展开并手动保存完整 JSON。'));
+      var blob=new BlobConstructor([payload],{type:'application/json;charset=utf-8'}),url=URLApi.createObjectURL(blob),anchor=downloadDocument.createElement('a');
+      var projectPart=text(evidence&&evidence.project_id||'project').replace(/[^0-9A-Za-z_-]+/g,'-')||'project';
+      var timePart=text(evidence&&evidence.completed_at||'result').replace(/[^0-9A-Za-z_-]+/g,'-').replace(/-+$/,'')||'result';
+      anchor.href=url;anchor.download='legacy-media-recovery-'+projectPart+'-'+timePart+'.json';
+      downloadDocument.body.appendChild(anchor);anchor.click();anchor.remove();
+      (dependencies.setTimeout||setTimeout)(function(){if(typeof URLApi.revokeObjectURL==='function')URLApi.revokeObjectURL(url);},1000);
+      return Promise.resolve({action:'downloaded',payload:payload,filename:anchor.download});
+    }
+    return Promise.resolve({action:'ignored',payload:payload});
+  }
   function autodraftActionsHtml(autodraft,canEdit){
     autodraft=autodraft||{};
     var job=autodraft.current_job,version=autodraft.current_version,billing=autodraft.billing||{},production=autodraft.production||{};
@@ -1218,7 +1273,7 @@
     root.classList.toggle('busy',!!flag);
     root.querySelectorAll('button,textarea,input,select').forEach(function(node){
       var action=node.getAttribute('data-action');
-      var readOnlyAction=action==='toggle-history'||action==='seek-refinement-shot';
+      var readOnlyAction=action==='toggle-history'||action==='seek-refinement-shot'||action==='copy-legacy-media-recovery'||action==='download-legacy-media-recovery';
       var busyState='data-workspace-disabled-before-busy',permissionState='data-workspace-disabled-before-readonly',recomputedState='data-workspace-disabled-recomputed';
       if(flag){
         if(!node.hasAttribute(busyState))node.setAttribute(busyState,node.disabled?'true':'false');
@@ -1251,7 +1306,7 @@
   }
   function mount(doc,options){
     options=options||{};
-    var projectId=text(options.projectId).trim(),client=options.client||createClient(options.fetchImpl),accountUsername='',state=normalize({}),projectDetail={characters:[]},preflight={state:'script_required',current_plan:null,versions:[]},autodraft={state:'plan_required',versions:[]},refinement=null,characterStudio=null,sceneWorkspace={graph_revision:1,scenes:[],deleted_scenes:[]},sceneImageOperations={},recoveredSceneOperations=[],pendingSceneDeleteKey='',selectedCharacterKey='',selectedShotKey='',shotEditorMode='script',selectedProviderShotKey='',providerShotErrors={},activeWorkspaceShotKey='',pollTimer=null,historyExpanded=false,inspectorExpanded=!(doc.defaultView&&doc.defaultView.innerWidth<=1050),characterNameEditing=false,characterProfileDirty=false,shotEditErrors={},characterImageOperation={character_key:'',phase:'idle',message:'',error:false,active:false};
+    var projectId=text(options.projectId).trim(),client=options.client||createClient(options.fetchImpl),accountUsername='',state=normalize({}),projectDetail={characters:[]},preflight={state:'script_required',current_plan:null,versions:[]},autodraft={state:'plan_required',versions:[]},refinement=null,legacyMediaRecoveryResult=null,characterStudio=null,sceneWorkspace={graph_revision:1,scenes:[],deleted_scenes:[]},sceneImageOperations={},recoveredSceneOperations=[],pendingSceneDeleteKey='',selectedCharacterKey='',selectedShotKey='',shotEditorMode='script',selectedProviderShotKey='',providerShotErrors={},activeWorkspaceShotKey='',pollTimer=null,historyExpanded=false,inspectorExpanded=!(doc.defaultView&&doc.defaultView.innerWidth<=1050),characterNameEditing=false,characterProfileDirty=false,shotEditErrors={},characterImageOperation={character_key:'',phase:'idle',message:'',error:false,active:false};
     var inspectorStorageKey='hq-short-drama-inspector-state';
     try{
       var savedInspectorState=doc.defaultView&&doc.defaultView.localStorage&&doc.defaultView.localStorage.getItem(inspectorStorageKey);
@@ -1861,7 +1916,7 @@
       inspectorButton.textContent=inspectorExpanded?'收起摘要':'查看摘要';
       inspectorButton.setAttribute('aria-expanded',inspectorExpanded?'true':'false');
       var qualitySummary=storyboardQualityHtml(state.current_script&&state.current_script.script);
-      doc.getElementById('sdActions').innerHTML=refinementRedoMode?'':qualitySummary+(refinement?(refinementActionsHtml(refinement,state.permissions.can_edit)+refinementProviderHtml(autodraft,refinement,state.permissions.can_edit,selectedProviderShotKey)):(autodraft.confirmed_plan?autodraftActionsHtml(autodraft,state.permissions.can_edit):preflightHtml(state.conversation,preflight,state.permissions.can_edit)));
+      doc.getElementById('sdActions').innerHTML=refinementRedoMode?'':qualitySummary+(refinement?(refinementActionsHtml(refinement,state.permissions.can_edit)+refinementProviderHtml(autodraft,refinement,state.permissions.can_edit,selectedProviderShotKey)):(autodraft.confirmed_plan?autodraftActionsHtml(autodraft,state.permissions.can_edit):preflightHtml(state.conversation,preflight,state.permissions.can_edit)))+legacyMediaRecoveryResultHtml(legacyMediaRecoveryResult);
       enhanceProviderPreflight();
       renderCharacterModal();
       renderShotModal();
@@ -2478,12 +2533,26 @@
         render();
         return;
       }
+      if(action&&['copy-legacy-media-recovery','download-legacy-media-recovery'].indexOf(action.getAttribute('data-action'))>=0){
+        var recoveryEvidenceAction=action.getAttribute('data-action'),recoveryWindow=doc.defaultView||{};
+        handleLegacyMediaRecoveryEvidenceAction(recoveryEvidenceAction,legacyMediaRecoveryResult,{
+          document:doc,
+          clipboard:recoveryWindow.navigator&&recoveryWindow.navigator.clipboard,
+          Blob:recoveryWindow.Blob,
+          URL:recoveryWindow.URL,
+          setTimeout:recoveryWindow.setTimeout?function(callback,delay){return recoveryWindow.setTimeout(callback,delay);}:setTimeout
+        }).then(function(){show(recoveryEvidenceAction==='copy-legacy-media-recovery'?'恢复结果 JSON 已复制':'恢复结果 JSON 已下载',false);})
+          .catch(function(error){show(error.message||'恢复结果留证失败',true);});
+        return;
+      }
       if(action&&action.getAttribute('data-action')==='recover-legacy-media'){
         if(action.disabled||!(autodraft.permissions&&autodraft.permissions.can_recover_legacy_media))return;
         if(!window.confirm('确认在本机校验并恢复历史 2K 原片吗？\n\n系统只处理缺少现代媒体证据的镜头，不会调用生成服务或扣点。'))return;
         busy(true);show('正在校验历史原片，请勿关闭页面…',false);
+        var recoveryStartedAt=new Date().toISOString();
         client.recoverLegacyMedia({project_id:projectId})
           .then(function(result){
+            legacyMediaRecoveryResult=legacyMediaRecoveryEvidence(result,{started_at:recoveryStartedAt,completed_at:new Date().toISOString()});
             return loadAutodraft().then(function(){
               var recovered=(result&&result.recovered_shot_keys)||[],failed=(result&&result.failed_shots)||[],skipped=(result&&result.skipped_shot_keys)||[];
               var message='历史原片校验完成：恢复 '+recovered.length+' 个，失败 '+failed.length+' 个，跳过 '+skipped.length+' 个。';
@@ -3064,5 +3133,5 @@
     }).catch(function(error){show(error.message||'工作区加载失败',true);}).finally(function(){busy(false);render();});
     return {render:render,getState:function(){return state;},getPreflight:function(){return preflight;},getAutodraft:function(){return autodraft;},getRefinement:function(){return refinement;}};
   }
-  return {createClient:createClient,shotReferenceSelectionPolicy:shotReferenceSelectionPolicy,effectiveSceneReferenceIdentity:effectiveSceneReferenceIdentity,confirmedShotDialogueHtml:confirmedShotDialogueHtml,characterImageOperationState:characterImageOperationState,characterImageAction:characterImageAction,avatarCreateUrl:avatarCreateUrl,shotDraftStorageKey:shotDraftStorageKey,discardLegacyShotDraft:discardLegacyShotDraft,cloneProjectPayload:cloneProjectPayload,normalize:normalize,conversationWorkspaceMode:conversationWorkspaceMode,sceneWorkspaceRequired:sceneWorkspaceRequired,dialogueReadingSeconds:dialogueReadingSeconds,shotTimingIssue:shotTimingIssue,shotTimingStatus:shotTimingStatus,editableShotDialogues:editableShotDialogues,setWorkspaceControlDisabled:setWorkspaceControlDisabled,applyConversationMode:applyConversationMode,quickReplyPresentation:quickReplyPresentation,messageHtml:messageHtml,importContractHtml:importContractHtml,importContractTechnicalHtml:importContractTechnicalHtml,storyActsHtml:storyActsHtml,storyboardQualityHtml:storyboardQualityHtml,scriptHeaderState:scriptHeaderState,shotMediaIndex:shotMediaIndex,activeProviderJobs:activeProviderJobs,providerJobsWithResult:providerJobsWithResult,providerJobDisplay:providerJobDisplay,currentShotExecutionPrompt:currentShotExecutionPrompt,defaultWorkspaceShotKey:defaultWorkspaceShotKey,shotStructureCapabilities:shotStructureCapabilities,shotGenerationOverviewHtml:shotGenerationOverviewHtml,sceneLockingHtml:sceneLockingHtml,shotMediaHtml:shotMediaHtml,providerShotControlsHtml:providerShotControlsHtml,scriptHtml:scriptHtml,versionHtml:versionHtml,preflightHtml:preflightHtml,autodraftActionsHtml:autodraftActionsHtml,draftHtml:draftHtml,refinementIssueGroups:refinementIssueGroups,refinementTimelineTime:refinementTimelineTime,refinementShotTimeline:refinementShotTimeline,refinementShotLocatorHtml:refinementShotLocatorHtml,refinementShotCandidateHtml:refinementShotCandidateHtml,refinementCandidateRequest:refinementCandidateRequest,refinementRedoGenerationHtml:refinementRedoGenerationHtml,refinementRedoSummaryHtml:refinementRedoSummaryHtml,refinementRedoHtml:refinementRedoHtml,refinementHtml:refinementHtml,refinementActionsHtml:refinementActionsHtml,refinementProviderHtml:refinementProviderHtml,shellHtml:shellHtml,authoritativeCharacterList:authoritativeCharacterList,movieAvatarRequired:movieAvatarRequired,userFacingVideoMessage:userFacingVideoMessage,providerStartFailureMessage:providerStartFailureMessage,sensitiveProviderFailure:sensitiveProviderFailure,saferProviderPrompt:saferProviderPrompt,providerInputReview:providerInputReview,optimizedSensitiveExecution:optimizedSensitiveExecution,syncProviderCharacterNames:syncProviderCharacterNames,syncShotBindingPrompt:syncShotBindingPrompt,providerFailureRecoveryHtml:providerFailureRecoveryHtml,providerLabel:providerLabel,setWorkspaceBusyState:setWorkspaceBusyState,mount:mount};
+  return {createClient:createClient,shotReferenceSelectionPolicy:shotReferenceSelectionPolicy,effectiveSceneReferenceIdentity:effectiveSceneReferenceIdentity,confirmedShotDialogueHtml:confirmedShotDialogueHtml,characterImageOperationState:characterImageOperationState,characterImageAction:characterImageAction,avatarCreateUrl:avatarCreateUrl,shotDraftStorageKey:shotDraftStorageKey,discardLegacyShotDraft:discardLegacyShotDraft,cloneProjectPayload:cloneProjectPayload,normalize:normalize,conversationWorkspaceMode:conversationWorkspaceMode,sceneWorkspaceRequired:sceneWorkspaceRequired,dialogueReadingSeconds:dialogueReadingSeconds,shotTimingIssue:shotTimingIssue,shotTimingStatus:shotTimingStatus,editableShotDialogues:editableShotDialogues,setWorkspaceControlDisabled:setWorkspaceControlDisabled,applyConversationMode:applyConversationMode,quickReplyPresentation:quickReplyPresentation,messageHtml:messageHtml,importContractHtml:importContractHtml,importContractTechnicalHtml:importContractTechnicalHtml,storyActsHtml:storyActsHtml,storyboardQualityHtml:storyboardQualityHtml,scriptHeaderState:scriptHeaderState,shotMediaIndex:shotMediaIndex,activeProviderJobs:activeProviderJobs,providerJobsWithResult:providerJobsWithResult,providerJobDisplay:providerJobDisplay,currentShotExecutionPrompt:currentShotExecutionPrompt,defaultWorkspaceShotKey:defaultWorkspaceShotKey,shotStructureCapabilities:shotStructureCapabilities,shotGenerationOverviewHtml:shotGenerationOverviewHtml,sceneLockingHtml:sceneLockingHtml,shotMediaHtml:shotMediaHtml,providerShotControlsHtml:providerShotControlsHtml,scriptHtml:scriptHtml,versionHtml:versionHtml,preflightHtml:preflightHtml,legacyMediaRecoveryEvidence:legacyMediaRecoveryEvidence,legacyMediaRecoveryResultJson:legacyMediaRecoveryResultJson,legacyMediaRecoveryResultHtml:legacyMediaRecoveryResultHtml,handleLegacyMediaRecoveryEvidenceAction:handleLegacyMediaRecoveryEvidenceAction,autodraftActionsHtml:autodraftActionsHtml,draftHtml:draftHtml,refinementIssueGroups:refinementIssueGroups,refinementTimelineTime:refinementTimelineTime,refinementShotTimeline:refinementShotTimeline,refinementShotLocatorHtml:refinementShotLocatorHtml,refinementShotCandidateHtml:refinementShotCandidateHtml,refinementCandidateRequest:refinementCandidateRequest,refinementRedoGenerationHtml:refinementRedoGenerationHtml,refinementRedoSummaryHtml:refinementRedoSummaryHtml,refinementRedoHtml:refinementRedoHtml,refinementHtml:refinementHtml,refinementActionsHtml:refinementActionsHtml,refinementProviderHtml:refinementProviderHtml,shellHtml:shellHtml,authoritativeCharacterList:authoritativeCharacterList,movieAvatarRequired:movieAvatarRequired,userFacingVideoMessage:userFacingVideoMessage,providerStartFailureMessage:providerStartFailureMessage,sensitiveProviderFailure:sensitiveProviderFailure,saferProviderPrompt:saferProviderPrompt,providerInputReview:providerInputReview,optimizedSensitiveExecution:optimizedSensitiveExecution,syncProviderCharacterNames:syncProviderCharacterNames,syncShotBindingPrompt:syncShotBindingPrompt,providerFailureRecoveryHtml:providerFailureRecoveryHtml,providerLabel:providerLabel,setWorkspaceBusyState:setWorkspaceBusyState,mount:mount};
 });
