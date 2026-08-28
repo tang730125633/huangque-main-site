@@ -383,6 +383,12 @@ def handle_quote(handler, path, verify, must_change_password, is_shutting_down,
             payload = _collect_search_payload(payload)
         elif kind == "leads":
             payload = _leads_payload(payload)
+        elif kind == "copy":
+            from . import text
+            payload = text.validate_copy_payload(payload)
+        elif kind == "breakdown":
+            from . import breakdown
+            payload = breakdown.validate_breakdown_payload(payload)
         elif kind == "matrix_template_video":
             from . import matrix_template_video
             payload = matrix_template_video.validate_payload(

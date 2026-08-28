@@ -128,6 +128,8 @@ CONFIRMATION_ACTIONS = frozenset({
 # or provider credentials.
 _ACTION_INPUTS = {
     "account": (), "channels": (), "pricing": (), "director-capability": (),
+    "director-script-generate": ("prompt", "style", "duration", "platform"),
+    "director-breakdown": ("url", "urls", "mode"),
     "text-video-capability": (), "text-video-templates": (),
     "text-video-styles": (), "text-video-voices": (),
     "text-video-generate": ("text", "template", "mode", "style", "voice", "speech_rate", "talking_material"),
@@ -192,6 +194,8 @@ _ACTION_INPUTS = {
 _ACTION_PURPOSES = {
     "account": "读取当前黄雀账号与点数", "channels": "读取可用渠道", "pricing": "读取实时价格",
     "director-capability": "读取编导与数字人一键生成的完整 CLI 覆盖契约",
+    "director-script-generate": "按主站编导规则生成结构化脚本与分镜",
+    "director-breakdown": "拆解抖音或小红书作品链接并生成分镜或反推提示词",
     "ip12-projects": "读取本人 IP12 项目", "ip12-project": "读取本人 IP12 项目详情",
     "ip12-report": "读取本人 IP12 报告", "ip12-delete": "删除本人 IP12 项目",
     "canvas-list": "读取本人画布", "canvas-get": "读取本人画布详情",
@@ -536,6 +540,25 @@ _TALKING_FIELDS = {
     "subtitle_position": {"type": "string", "enum": ["top", "upper", "center", "lower", "bottom"]},
 }
 _MEDIA_SCHEMAS.update({
+    "director-script-generate": {
+        "required": ["prompt"], "properties": {
+            "prompt": {"type": "string", "minLength": 1, "maxLength": 20000},
+            "style": {"type": "string", "enum": ["spoken", "story", "recommend"]},
+            "duration": {"type": "integer", "enum": [15, 30, 60]},
+            "platform": {"type": "string", "enum": ["douyin", "xiaohongshu", "channels"]},
+        }, "constraints": ["paid action: quote first, then confirm the identical normalized input"],
+    },
+    "director-breakdown": {
+        "required": [], "properties": {
+            "url": {"type": "string", "minLength": 1, "maxLength": 2000},
+            "urls": {"type": "array", "minItems": 1, "maxItems": 5,
+                     "items": {"type": "string", "minLength": 1, "maxLength": 2000}},
+            "mode": {"type": "string", "enum": ["scenes", "reverse_prompt"]},
+        }, "oneOf": [{"required": ["url"]}, {"required": ["urls"]}],
+        "constraints": ["supports public Douyin or Xiaohongshu links only",
+                        "reverse_prompt accepts exactly one URL",
+                        "paid action: quote first, then confirm the identical normalized input"],
+    },
     "canvas-list": {"required": [], "properties": {
         "limit": {"type": "integer", "minimum": 1, "maximum": 100},
         "offset": {"type": "integer", "minimum": 0, "maximum": 100000},
@@ -687,7 +710,8 @@ _MEDIA_SCHEMAS.update({
 })
 
 _FAMILIES = {
-    "director-capability": "director",
+    "director-capability": "director", "director-script-generate": "director",
+    "director-breakdown": "director",
     "image-upload": "image", "image-generate": "image", "audio-slots": "audio", "voices": "audio", "audio-generate": "audio",
     "voice-clone-create": "audio", "voice-clone-status": "audio",
     "video-upload": "video", "video-avatars": "video", "video-generate": "video", "video-lipsync": "video", "digital-ip-text-generate": "video",
@@ -705,6 +729,7 @@ _FAMILIES = {
     "digital-presenter-create": "canvas", "digital-presenter-update": "canvas",
 }
 _ACTION_FEATURE_GATES = {
+    "director-script-generate": ("copy",), "director-breakdown": ("breakdown",),
     "audio-generate": ("audio",), "voice-clone-create": ("audio",), "voice-clone-status": ("audio",),
     "canvas-agent-plan": ("canvas_agent",),
     "video-lipsync": ("video",), "digital-ip-text-generate": ("video",), "digital-ip-batch-generate": ("video",),
@@ -726,6 +751,7 @@ CATALOG_FEATURE_FLAGS = tuple(sorted({flag for flags in (*_ACTION_FEATURE_GATES.
 
 _GENERATION_ACTIONS = frozenset({
     "collect-content", "collect-video", "collect-transcript", "collect-search", "leads-generate",
+    "director-script-generate", "director-breakdown",
     "canvas-agent-plan", "image-generate", "video-generate", "video-lipsync", "audio-generate",
     "digital-ip-text-generate", "digital-ip-batch-generate", "digital-ip-audio-generate",
     "cinematic-open-generate", "cinematic-motion-generate", "tryon-fast-generate", "tryon-classic-generate",
@@ -1809,6 +1835,44 @@ def action_plan(action, value):
     if action == "director-capability":
         _strict_object(value, set())
         return _plan("director:read", "director-capability")
+    if action == "director-script-generate":
+        _strict_object(value, {"prompt", "style", "duration", "platform"}, ("prompt",))
+        style = _enum(value.get("style", "spoken"), "style", ("spoken", "story", "recommend"))
+        platform = _enum(value.get("platform", "douyin"), "platform", ("douyin", "xiaohongshu", "channels"))
+        duration = _integer(value.get("duration", 30), "duration", 15, 60)
+        if duration not in (15, 30, 60):
+            raise CLIAPIError(400, "duration 仅支持 15、30 或 60")
+        payload = {
+            "prompt": _string(value["prompt"], "prompt", 1, 20000),
+            "format": "script",
+            "style": {"spoken": "口播", "story": "剧情", "recommend": "种草"}[style],
+            "dur": str(duration) + "s",
+            "platform": {"douyin": "抖音", "xiaohongshu": "小红书", "channels": "视频号"}[platform],
+            "ctype": "分镜脚本",
+            "source_page": "script",
+        }
+        return _plan("director:generate", "generation", generation_kind="copy",
+                     endpoint="/api/gen/copy", payload=payload)
+    if action == "director-breakdown":
+        _strict_object(value, {"url", "urls", "mode"})
+        has_url, has_urls = "url" in value, "urls" in value
+        if has_url == has_urls:
+            raise CLIAPIError(400, "必须且只能提供 url 或 urls")
+        mode = _enum(value.get("mode", "scenes"), "mode", ("scenes", "reverse_prompt"))
+        payload = {"mode": mode, "source_page": "script"}
+        if has_url:
+            payload["url"] = _string(value["url"], "url", 1, 2000)
+        else:
+            urls = value["urls"]
+            if not isinstance(urls, list) or not 1 <= len(urls) <= 5:
+                raise CLIAPIError(400, "urls 必须包含 1-5 条链接")
+            payload["urls"] = [_string(item, "urls", 1, 2000) for item in urls]
+            if len(set(payload["urls"])) != len(payload["urls"]):
+                raise CLIAPIError(400, "urls 不能重复")
+        if mode == "reverse_prompt" and len(payload.get("urls", [payload.get("url")])) != 1:
+            raise CLIAPIError(400, "reverse_prompt 仅支持单条链接")
+        return _plan("director:generate", "generation", generation_kind="breakdown",
+                     endpoint="/api/gen/breakdown", payload=payload)
     if action == "text-video-avatar-import":
         _strict_object(value, {"image_upload_id"}, ("image_upload_id",))
         return _plan(

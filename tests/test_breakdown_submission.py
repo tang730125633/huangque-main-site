@@ -86,6 +86,35 @@ class BreakdownBatchTests(unittest.TestCase):
         )
         self.assertEqual("tikhub+zhipu", body["provider"])
 
+    def test_submission_validation_rejects_query_variant_of_same_work(self):
+        with mock.patch("tikhub.parse_link") as parse_link:
+            with self.assertRaisesRegex(ValueError, "同一作品"):
+                breakdown.validate_breakdown_payload({
+                    "urls": [
+                        "https://www.douyin.com/video/1234567890123456789",
+                        "https://www.douyin.com/video/1234567890123456789?share=1#reply",
+                    ],
+                })
+        parse_link.assert_not_called()
+
+    def test_submission_validation_rejects_short_and_direct_link_for_same_work(self):
+        with mock.patch(
+            "tikhub.parse_link",
+            return_value={
+                "platform": "douyin",
+                "id": "1234567890123456789",
+                "note_type": "video",
+            },
+        ) as parse_link:
+            with self.assertRaisesRegex(ValueError, "同一作品"):
+                breakdown.validate_breakdown_payload({
+                    "urls": [
+                        "https://v.douyin.com/AbCdEf/",
+                        "https://www.douyin.com/video/1234567890123456789",
+                    ],
+                })
+        parse_link.assert_called_once_with("https://v.douyin.com/AbCdEf/")
+
     def test_submission_validation_rejects_unknown_host_and_oversized_batch(self):
         with self.assertRaisesRegex(ValueError, "仅支持"):
             breakdown.validate_breakdown_payload({"url": "https://example.com/video/1"})
@@ -282,13 +311,37 @@ class BreakdownLinkSubmissionHttpTests(unittest.TestCase):
                             database.execute("SELECT COUNT(*) FROM jobs").fetchone()[0],
                         )
 
-                    with submit({
+                with mock.patch(
+                    "tikhub.parse_link",
+                    return_value={
+                        "platform": "douyin",
+                        "id": "1234567890123456789",
+                        "note_type": "video",
+                    },
+                ):
+                    with self.assertRaises(urllib.error.HTTPError) as rejected:
+                        submit({
+                            "urls": [
+                                "https://v.douyin.com/AbCdEf/",
+                                "https://www.douyin.com/video/1234567890123456789",
+                            ],
+                        })
+                    self.assertEqual(400, rejected.exception.code)
+                self.assertEqual([], fake.deductions)
+                self.assertEqual(0, core._job_queue.qsize())
+                with closing(core.jdb()) as database:
+                    self.assertEqual(
+                        0,
+                        database.execute("SELECT COUNT(*) FROM jobs").fetchone()[0],
+                    )
+
+                with submit({
                         "urls": [
                             "https://www.douyin.com/video/1234567890123456789",
                             "https://www.xiaohongshu.com/explore/64abcdef1234567890abcdef",
                         ],
                     }) as response:
-                        accepted = json.loads(response.read())
+                    accepted = json.loads(response.read())
 
                 self.assertEqual(20, accepted["cost"])
                 self.assertEqual([("fang", 20)], fake.deductions)

@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "server"))
 
 from content_domains import (
-    audio, cli_gateway, cli_uploads, core, matrix_template_video,
+    audio, breakdown, cli_gateway, cli_uploads, core, matrix_template_video,
     submission_idempotency, upstream_guard, video,
     video_minimax_h3, video_openai,
 )
@@ -138,6 +138,40 @@ class HQCLIContentTests(unittest.TestCase):
         self.assertEqual(409, status)
         self.assertEqual("quote_cost_changed", result["code"])
         self.assertEqual([], self.points.deductions)
+
+    def test_breakdown_quote_rejects_canonical_duplicates_before_pricing(self):
+        query_variants = {
+            "kind": "breakdown",
+            "payload": {"urls": [
+                "https://www.douyin.com/video/1234567890123456789",
+                "https://www.douyin.com/video/1234567890123456789?share=1#reply",
+            ]},
+        }
+        short_and_direct = {
+            "kind": "breakdown",
+            "payload": {"urls": [
+                "https://v.douyin.com/AbCdEf/",
+                "https://www.douyin.com/video/1234567890123456789",
+            ]},
+        }
+        with mock.patch.object(
+            self.points, "cost_of", wraps=self.points.cost_of,
+        ) as cost_of, mock.patch.object(
+            breakdown,
+            "_resolved_link",
+            side_effect=lambda url: {
+                "url": url,
+                "platform": "douyin",
+                "id": "1234567890123456789",
+                "note_type": "video",
+            },
+        ):
+            for request in (query_variants, short_and_direct):
+                with self.subTest(urls=request["payload"]["urls"]):
+                    status, result = self._post("/api/gen/cli/quote", request)
+                    self.assertEqual(400, status)
+                    self.assertIn("同一作品", result["detail"])
+        cost_of.assert_not_called()
 
     def test_matrix_replay_and_conflict_precede_remote_preflight(self):
         body = {

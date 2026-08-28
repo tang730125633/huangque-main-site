@@ -175,6 +175,39 @@ class HQCLIAPITests(unittest.TestCase):
                 self.assertIn("availability", item)
                 self.assertNotIn("http", json.dumps(item, ensure_ascii=False).lower())
 
+    def test_director_generation_catalog_requires_quote_confirmation_and_feature_gates(self):
+        enabled = {
+            item["action"]: item
+            for item in self.auth.hq_cli_api.action_catalog({"copy": True, "breakdown": True})["actions"]
+        }
+        expected_flags = {
+            "director-script-generate": ["copy"],
+            "director-breakdown": ["breakdown"],
+        }
+        for action, feature_flags in expected_flags.items():
+            with self.subTest(action=action):
+                item = enabled[action]
+                self.assertEqual("quote_then_confirm", item["billing"])
+                self.assertTrue(item["external_effect"])
+                self.assertTrue(item["confirmation_required"])
+                self.assertEqual("production", item["risk"])
+                self.assertEqual("quote", item["result_type"])
+                self.assertEqual("quote", item["result"]["kind"])
+                self.assertEqual("available", item["availability"]["status"])
+                self.assertEqual(feature_flags, item["availability"]["feature_flags"])
+                self.assertEqual([], item["availability"]["disabled_feature_flags"])
+
+        disabled = {
+            item["action"]: item
+            for item in self.auth.hq_cli_api.action_catalog({"copy": False, "breakdown": False})["actions"]
+        }
+        for action, feature_flags in expected_flags.items():
+            with self.subTest(action=action, disabled=True):
+                availability = disabled[action]["availability"]
+                self.assertEqual("disabled", availability["status"])
+                self.assertEqual(feature_flags, availability["feature_flags"])
+                self.assertEqual(feature_flags, availability["disabled_feature_flags"])
+
     def test_ip12_agent_catalog_has_full_media_canvas_schemas_and_upload_transports(self):
         self._enable_ip12_bridge()
         status, payload = self._request(
@@ -2006,9 +2039,11 @@ class HQCLIAPITests(unittest.TestCase):
         }, token=token)
         self.assertEqual(200, status, payload)
         self.assertEqual("director-workflow-contract-v1", payload["contract_version"])
-        self.assertEqual(1, payload["counts"]["available"])
+        self.assertEqual(3, payload["counts"]["available"])
         actions = {item["id"]: item for item in payload["actions"]}
         self.assertEqual("available", actions["director-capability"]["availability"])
+        self.assertEqual("available", actions["director-script-generate"]["availability"])
+        self.assertEqual("available", actions["director-breakdown"]["availability"])
         self.assertEqual("planned", actions["director-production-start"]["availability"])
         self.assertEqual("quote_then_confirm", actions["director-production-start"]["billing"])
 
