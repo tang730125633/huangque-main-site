@@ -25,3 +25,11 @@
 5. 发布新版 HQ CLI，并同步 wheel、Skill/MCP、根域与 Yuelei 子域安装器。
 
 每一阶段必须从当时最新 `main` 开始，锁定 Head SHA，限制 diff，并在合并后才开始依赖它的下一阶段。生产部署、重启和真实扣点验收不属于 PR 授权范围。
+
+## 三仓发布顺序
+
+- 主站服务端与用例正本：`tang730125633/huangque-main-site`
+- HQ CLI 独立正本：`tang730125633/huangque-cli`
+- Agent Skill 独立正本：`tang730125633/huangque-agent-skill`
+
+所有主站用例和动作完成注册并可执行后，先在独立 CLI 仓库补齐客户端动作、类型、MCP 和测试；再在独立 Skill 仓库更新工作流、示例、最低 CLI 版本和安全约束。Skill 形成版本化 commit/tag 后，CLI 才能固定其版本、commit 与 manifest SHA-256。最后把已发布的 CLI 精确同步回主站下载镜像与安装器，禁止直接修改旧版本 wheel。
