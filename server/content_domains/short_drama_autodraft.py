@@ -759,7 +759,7 @@ def _stable_legacy_media_snapshot(relative, copy_file=None):
     copy_file = copy_file or shutil.copyfileobj
     source = _controlled_provider_file(relative)
     suffix = source.suffix.lower()
-    if suffix not in {".mp4", ".mov", ".webm"}:
+    if suffix != ".mp4":
         raise AutodraftError(
             "provider_asset_format_invalid",
             "历史镜头文件格式不受支持，不能安全恢复", 409,
@@ -2495,6 +2495,13 @@ def recover_legacy_native_media(
     """
     from . import video as video_domain
 
+    if not isinstance(body, dict) or set(body) != {"project_id"}:
+        raise AutodraftError(
+            "legacy_media_recovery_request_invalid",
+            "历史媒体恢复请求字段无效",
+            422,
+        )
+
     inspect_media = inspect_media or short_drama_native_audio.inspect_native_media
     create_derivative = create_derivative or video_domain._faststart_video_derivative
     hash_file = hash_file or short_drama_native_audio.sha256_file
@@ -2645,6 +2652,7 @@ def recover_legacy_native_media(
                     skipped.append(shot_key)
                     continue
 
+                recovered_at = int(time.time())
                 merged_result = dict(current_result)
                 merged_result.update({
                     "resolution": "2k",
@@ -2655,12 +2663,18 @@ def recover_legacy_native_media(
                     "video_file": derived_relative,
                     "video_url": "/api/gen/file/" + derived_relative,
                     "generate_audio": True,
+                    "legacy_media_recovery": {
+                        "operation_version": "legacy-native-media-recovery-v1",
+                        "recovered_at": recovered_at,
+                        "recovered_by": owner_username,
+                        "source_file": source_relative,
+                    },
                 })
                 result_text = _json_text(merged_result)
                 conn.execute(
                     "UPDATE short_drama_provider_shot_jobs SET result_json=?,"
                     "updated_at=? WHERE id=? AND project_id=?",
-                    (result_text, int(time.time()), item["job_id"], project_id),
+                    (result_text, recovered_at, item["job_id"], project_id),
                 )
                 updated = conn.execute(
                     "UPDATE short_drama_provider_shot_versions SET file=?,url=? "
@@ -5168,7 +5182,13 @@ def workspace(
             "current_job": current,
             "current_version": versions[0] if versions else None,
             "versions": versions,
-            "permissions": {"can_edit": bool(can_edit), "actor": actor_username},
+            "permissions": {
+                "can_edit": bool(can_edit),
+                "can_recover_legacy_media": bool(
+                    can_edit and actor_username == owner_username
+                ),
+                "actor": actor_username,
+            },
             "billing": {
                 "cost": (
                     0 if capability["mode"] == "provider_poc"

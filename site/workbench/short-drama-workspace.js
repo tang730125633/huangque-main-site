@@ -380,6 +380,7 @@
       autodraft:function(id){return request('/api/gen/short-drama/autodraft?project_id='+encodeURIComponent(id));},
       providerPreflight:function(payload){return mutate('/api/gen/short-drama/autodraft/provider-preflight',payload,'provider-preflight');},
       providerQuote:function(payload){return mutate('/api/gen/short-drama/autodraft/provider-quote',payload,'provider-quote');},
+      recoverLegacyMedia:function(payload){return mutate('/api/gen/short-drama/autodraft/legacy-media/recover',payload,'legacy-media-recovery');},
       selectProviderVersion:function(payload){return mutate('/api/gen/short-drama/autodraft/provider-version/select',payload,'provider-version-select');},
       startProviderJob:function(payload){return mutate('/api/gen/short-drama/autodraft/provider-jobs',payload,'provider-shot');},
       providerJob:function(projectId,jobId){return request('/api/gen/short-drama/autodraft/provider-jobs/'+encodeURIComponent(jobId)+'?project_id='+encodeURIComponent(projectId));},
@@ -844,7 +845,8 @@
       }).join('');
       var lowResolutionShots=(production.assembly&&production.assembly.low_resolution_shot_keys)||[];
       var missingVerificationShots=(production.assembly&&production.assembly.media_verification_missing_shot_keys)||[];
-      var qualityWarning=lowResolutionShots.length?'<div class="sd-check warning"><b>历史 768p 版本需要重新生成</b><p>原生 2K 草稿要求下，请重新生成：'+escapeHtml(lowResolutionShots.join('、'))+'。旧版本会继续保留。</p></div>':missingVerificationShots.length?'<div class="sd-check warning"><b>历史 2K 镜头缺少媒体校验记录</b><p>请先完成本地验证恢复：'+escapeHtml(missingVerificationShots.join('、'))+'。验证通过后无需重新生成，也不会扣点。</p></div>':'';
+      var canRecoverLegacy=!!(autodraft.permissions&&autodraft.permissions.can_recover_legacy_media);
+      var qualityWarning=lowResolutionShots.length?'<div class="sd-check warning"><b>历史 768p 版本需要重新生成</b><p>原生 2K 草稿要求下，请重新生成：'+escapeHtml(lowResolutionShots.join('、'))+'。旧版本会继续保留。</p></div>':missingVerificationShots.length?'<div class="sd-check warning"><b>历史 2K 镜头缺少媒体校验记录</b><p>请先完成本地验证恢复：'+escapeHtml(missingVerificationShots.join('、'))+'。验证通过后无需重新生成，也不会扣点。</p>'+(canRecoverLegacy?'<button type="button" data-action="recover-legacy-media">验证并恢复历史原片</button>':'<small>仅项目所有者可以执行历史原片恢复。</small>')+'</div>':'';
       var bindingSummary=allRolesBound?
         '<div class="sd-check pass" id="sdProviderBindingStatus"><b>'+boundCharacters.length+'/'+characters.length+' 个角色已锁定，可开始检查镜头</b><p>人物形象统一由左侧角色卡管理，当前镜头会自动使用对应角色的已锁定形象。</p></div>':
         '<div class="sd-check warning" id="sdProviderBindingStatus"><b>角色形象尚未准备完整</b><p>'+(missingCharacters.length?'未绑定：'+escapeHtml(missingCharacters.map(function(item){return item.name||item.character_key;}).join('、'))+'。':'角色资料仍在加载。')+' 请点击左侧角色卡完成形象生成、选择与锁定。</p></div>';
@@ -1006,8 +1008,10 @@
     var selected=shots.filter(function(item){return text(item.shot_key)===text(selectedShotKey);})[0]||shots[0];
     var media=shotMediaIndex(autodraft||{})[text(selected.shot_key)]||{},versions=media.versions||[];
     var currentMedia=versions.filter(function(item){return Number(item.version||0)===Number(selected.provider_version||0);})[0]||versions.filter(function(item){return item.selected;})[0]||null;
-    var providerJob=autodraft&&autodraft.provider_job,refinementJob=refinement.current_refinement_job;
-    var providerActive=providerJob&&text(providerJob.shot_key)===text(selected.shot_key)&&['billing','queued','submitting','running','submit_unknown'].indexOf(providerJob.status)>=0;
+    var refinementJob=refinement.current_refinement_job;
+    var providerActive=allProviderJobs(autodraft).some(function(providerJob){
+      return providerJob&&text(providerJob.shot_key)===text(selected.shot_key)&&['billing','queued','submitting','running','submit_unknown'].indexOf(providerJob.status)>=0;
+    });
     var refinementActive=refinementJob&&text(refinementJob.shot_key)===text(selected.shot_key)&&['queued','running'].indexOf(refinementJob.status)>=0;
     var keepOriginalBlocked=providerActive||refinementActive;
     var keepOriginalHint=keepOriginalBlocked?'当前重做任务执行中，不能取消':'接受当前已知问题，继续采用原视频；不会生成新视频或扣点。';
@@ -2469,6 +2473,22 @@
         if(redoJob&&['billing','queued','submitting','running'].indexOf(redoJob.status)>=0&&!window.confirm('当前镜头仍在生成。离开后任务会继续，确认返回合成预览吗？'))return;
         refinementRedoMode=false;
         render();
+        return;
+      }
+      if(action&&action.getAttribute('data-action')==='recover-legacy-media'){
+        if(action.disabled||!(autodraft.permissions&&autodraft.permissions.can_recover_legacy_media))return;
+        if(!window.confirm('确认在本机校验并恢复历史 2K 原片吗？\n\n系统只处理缺少现代媒体证据的镜头，不会调用生成服务或扣点。'))return;
+        busy(true);show('正在校验历史原片，请勿关闭页面…',false);
+        client.recoverLegacyMedia({project_id:projectId})
+          .then(function(result){
+            return loadAutodraft().then(function(){
+              var recovered=(result&&result.recovered_shot_keys)||[],failed=(result&&result.failed_shots)||[],skipped=(result&&result.skipped_shot_keys)||[];
+              var message='历史原片校验完成：恢复 '+recovered.length+' 个，失败 '+failed.length+' 个，跳过 '+skipped.length+' 个。';
+              show(message,failed.length>0);
+            });
+          })
+          .catch(function(error){show(error.message||'历史原片恢复失败',true);})
+          .finally(function(){busy(false);render();});
         return;
       }
       if(action&&action.getAttribute('data-action')==='keep-original-refinement-shot'){

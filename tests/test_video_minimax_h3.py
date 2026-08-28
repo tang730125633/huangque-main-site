@@ -208,13 +208,16 @@ class MiniMaxH3VideoTests(unittest.TestCase):
             asset_db = root / "assets.db"
             referenced_job = "video/minimax_h3_raw_referenced.mp4"
             referenced_provider_job = "video/minimax_h3_raw_provider_job.mp4"
+            referenced_recovery = "video/legacy_recovery_raw_referenced.mp4"
             referenced_asset = "video/minimax_h3_derived_referenced.mp4"
             orphan_raw = "video/minimax_h3_raw_orphan.mp4"
             orphan_derived = "video/minimax_h3_derived_orphan.mp4"
+            orphan_recovery = "video/legacy_recovery_raw_orphan.mp4"
             orphan_part = "video/minimax_h3_raw_crashed.mp4.part-deadbeef"
             for relative in (
-                referenced_job, referenced_provider_job, referenced_asset, orphan_raw,
-                orphan_derived, orphan_part,
+                referenced_job, referenced_provider_job, referenced_recovery,
+                referenced_asset, orphan_raw, orphan_derived, orphan_recovery,
+                orphan_part,
             ):
                 path = root / relative
                 path.write_bytes(relative.encode("utf-8"))
@@ -240,6 +243,7 @@ class MiniMaxH3VideoTests(unittest.TestCase):
                     (json.dumps({
                         "native_media": {
                             "raw": {"file": referenced_provider_job},
+                            "derived": {"file": referenced_recovery},
                         },
                     }),),
                 )
@@ -262,12 +266,15 @@ class MiniMaxH3VideoTests(unittest.TestCase):
 
             self.assertTrue((root / referenced_job).is_file())
             self.assertTrue((root / referenced_provider_job).is_file())
+            self.assertTrue((root / referenced_recovery).is_file())
             self.assertTrue((root / referenced_asset).is_file())
             self.assertFalse((root / orphan_raw).exists())
             self.assertFalse((root / orphan_derived).exists())
+            self.assertFalse((root / orphan_recovery).exists())
             self.assertFalse((root / orphan_part).exists())
             self.assertEqual(
-                {orphan_raw, orphan_derived, orphan_part}, set(result["deleted"])
+                {orphan_raw, orphan_derived, orphan_recovery, orphan_part},
+                set(result["deleted"]),
             )
 
     def test_native_orphan_reaper_preserves_recent_and_database_references(self):

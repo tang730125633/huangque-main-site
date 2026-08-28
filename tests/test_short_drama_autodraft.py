@@ -33,14 +33,15 @@ from providers.short_drama_visual.base import VisualProviderError
 
 
 class Handler:
-    def __init__(self, path, body=None, key="autodraft-route-key"):
+    def __init__(self, path, body=None, key="autodraft-route-key", token="alice"):
         self.path = path
         self.body = body
         self.headers = {"Idempotency-Key": key}
         self.response = None
+        self.token = token
 
     def _token(self):
-        return "alice"
+        return self.token
 
     def _json_body_strict(self):
         return self.body
@@ -732,6 +733,57 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         )
         self.assertEqual(200, handler.response[0])
         self.assertEqual("queued", handler.response[1]["status"])
+
+    def test_legacy_media_recovery_http_route_is_owner_only(self):
+        verify = lambda token: {
+            "username": token,
+            "must_change": False,
+        } if token else None
+        owner_handler = Handler(
+            "/api/gen/short-drama/autodraft/legacy-media/recover",
+            body={"project_id": self.project["id"]},
+        )
+        self.assertTrue(short_drama.dispatch_http(
+            owner_handler, "POST", self.db, verify,
+        ))
+        self.assertEqual(200, owner_handler.response[0])
+        self.assertEqual(self.project["id"], owner_handler.response[1]["project_id"])
+
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_projects SET board_id='board-1' WHERE id=?",
+                (self.project["id"],),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        editor_handler = Handler(
+            "/api/gen/short-drama/autodraft/legacy-media/recover",
+            body={"project_id": self.project["id"]},
+            token="bob",
+        )
+        self.assertTrue(short_drama.dispatch_http(
+            editor_handler,
+            "POST",
+            self.db,
+            verify,
+            canvas_access_resolver=lambda _handler: {
+                "board_id": "board-1", "role": "editor",
+            },
+        ))
+        self.assertEqual(403, editor_handler.response[0])
+        self.assertEqual("forbidden", editor_handler.response[1]["code"])
+
+    def test_autodraft_workspace_exposes_owner_only_recovery_permission(self):
+        owner = short_drama_autodraft.workspace(
+            self.db, "alice", "alice", self.project["id"], can_edit=True,
+        )
+        editor = short_drama_autodraft.workspace(
+            self.db, "alice", "bob", self.project["id"], can_edit=True,
+        )
+        self.assertTrue(owner["permissions"]["can_recover_legacy_media"])
+        self.assertFalse(editor["permissions"]["can_recover_legacy_media"])
 
     def test_polling_finishes_with_playable_degraded_draft(self):
         job = self._start()
@@ -1745,6 +1797,14 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         self.assertEqual(derived_relative, payload["video_file"])
         self.assertTrue(payload["native_audio"]["audible"])
         self.assertEqual(
+            "legacy-native-media-recovery-v1",
+            payload["legacy_media_recovery"]["operation_version"],
+        )
+        self.assertEqual("alice", payload["legacy_media_recovery"]["recovered_by"])
+        self.assertEqual(
+            source_relative, payload["legacy_media_recovery"]["source_file"]
+        )
+        self.assertEqual(
             "a" * 64,
             payload["native_media"]["derived"]["derived_from_sha256"],
         )
@@ -1840,6 +1900,24 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         self.assertEqual(
             [], list((Path(self.tmp.name) / "video").glob("legacy_recovery_raw_*")),
         )
+
+    def test_legacy_media_snapshot_rejects_non_mp4_before_copy(self):
+        for suffix in (".mov", ".webm"):
+            with self.subTest(suffix=suffix):
+                source_relative = "video/legacy-source" + suffix
+                source = Path(self.tmp.name) / source_relative
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_bytes(b"legacy-media")
+                copied = []
+
+                with self.assertRaises(short_drama_autodraft.AutodraftError) as raised:
+                    short_drama_autodraft._stable_legacy_media_snapshot(
+                        source_relative,
+                        copy_file=lambda *_args: copied.append(True),
+                    )
+
+                self.assertEqual("provider_asset_format_invalid", raised.exception.code)
+                self.assertEqual([], copied)
 
     def test_recover_legacy_media_rejects_selection_change_during_probe(self):
         source_one = "video/legacy-selected-v1.mp4"

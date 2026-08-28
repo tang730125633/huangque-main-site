@@ -1539,13 +1539,24 @@ test('keeping the original shot is disabled while paid redo work is active', () 
   ['running','submit_unknown'].forEach((status) => {
     const autodraft = {
       provider_poc:{shots:[{shot_key:'shot_02',binding_ready:true,sequence_ready:true,character_keys:[]}],characters:[]},
-      provider_job:{shot_key:'shot_02',status},
+      provider_job:{id:'latest-other-shot',shot_key:'shot_03',status:'failed'},
+      provider_jobs:[
+        {id:'same-shot-active',shot_key:'shot_02',status},
+        {id:'other-shot-active',shot_key:'shot_03',status:'running'},
+      ],
       provider_versions:[{id:'shot-02-v2',shot_key:'shot_02',version:2,url:'/api/gen/file/shot-02-v2.mp4'}],
     };
     const output = workspace.refinementRedoHtml(refinement,autodraft,'shot_02',true);
     assert.match(output, /data-action="keep-original-refinement-shot"[^>]* disabled/);
     assert.match(output, /当前重做任务执行中，不能取消/);
   });
+
+  const otherShotOnly = workspace.refinementRedoHtml(refinement,{
+    provider_poc:{shots:[{shot_key:'shot_02',binding_ready:true,sequence_ready:true,character_keys:[]}],characters:[]},
+    provider_jobs:[{id:'other-shot-active',shot_key:'shot_03',status:'running'}],
+    provider_versions:[{id:'shot-02-v2',shot_key:'shot_02',version:2,url:'/api/gen/file/shot-02-v2.mp4'}],
+  },'shot_02',true);
+  assert.doesNotMatch(otherShotOnly, /data-action="keep-original-refinement-shot"[^>]* disabled/);
 });
 
 test('accepted original shots remain auditable instead of appearing fixed', () => {
@@ -2391,6 +2402,7 @@ test('legacy reported 2K shots missing evidence are not mislabeled as 768p', () 
   const output = workspace.autodraftActionsHtml({
     confirmed_plan:{id:'plan-1'},
     billing:{cost:0,mode:'provider_assets_already_charged'},
+    permissions:{can_edit:true,can_recover_legacy_media:true},
     provider_poc:{provider:'minimax_h3',shots:[],characters:[]},
     production:{
       ready:false,
@@ -2407,8 +2419,12 @@ test('legacy reported 2K shots missing evidence are not mislabeled as 768p', () 
   assert.match(output, /shot_01/);
   assert.match(output, /历史 2K/);
   assert.match(output, /缺少媒体校验记录/);
+  assert.match(output, /data-action="recover-legacy-media"/);
+  assert.match(output, /验证并恢复历史原片/);
   assert.doesNotMatch(output, /历史 768p/);
   assert.doesNotMatch(output, /data-action="start-draft"/);
+  assert.match(workspaceSource, /client\.recoverLegacyMedia/);
+  assert.match(workspaceSource, /data-action'\)==='recover-legacy-media'/);
 });
 
 test('failed 1080p assembly explains the failure and allows a safe retry', () => {
