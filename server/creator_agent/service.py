@@ -27,10 +27,15 @@ from .planner import (
     sanitize_preferences,
 )
 from .profile_agent import (
-    DeepSeekProfileAgent, MODULES, ProfileAgentError,
-    current_question, initial_state,
+    ANSWER_KEY_ALIASES, DeepSeekProfileAgent, MODULES, ProfileAgentError,
+    answer_quality_issue,
+    current_question, initial_state, module_completion_issue,
+    next_pending_question_index, profile_quality_issues,
 )
-from .profile_pdf import ProfilePDFError, profile_pdf_path, render_profile_pdf
+from .profile_pdf import (
+    PROFILE_PDF_SCHEMA_VERSION, ProfilePDFError, profile_pdf_path,
+    render_profile_pdf,
+)
 from .model_usage import (
     ModelUsageError, ModelUsageGuard, NullModelUsageGuard,
 )
@@ -463,6 +468,10 @@ class CreatorAgentService:
     @classmethod
     def _public_project(cls, project, workspace):
         progress = cls._progress(project)
+        quality_issues = (
+            profile_quality_issues(cls._state(project))
+            if progress["foundation_ready"] else []
+        )
         deliverables = project.get("deliverables") or {}
         background_pdf = deliverables.get("background_profile_pdf") or {}
         public_deliverables = dict(deliverables)
@@ -470,10 +479,15 @@ class CreatorAgentService:
         state_revision = int(cls._state(project).get("revision") or 1)
         descriptor_revision = int(background_pdf.get("profile_revision") or 0)
         revision_matches = descriptor_revision == state_revision
+        schema_matches = int(
+            background_pdf.get("profile_schema_version") or 0
+        ) == PROFILE_PDF_SCHEMA_VERSION
         raw_pdf_status = str(background_pdf.get("status") or "")
         if not progress["foundation_ready"]:
             pdf_status = ""
-        elif raw_pdf_status == "ready" and revision_matches:
+        elif quality_issues:
+            pdf_status = "blocked"
+        elif raw_pdf_status == "ready" and revision_matches and schema_matches:
             pdf_status = "ready"
         elif raw_pdf_status == "failed" and revision_matches:
             pdf_status = "failed"
@@ -492,6 +506,14 @@ class CreatorAgentService:
             "deliverables": _public(public_deliverables),
             "artifacts": _public(project.get("artifacts") or []),
             "profile": _public(project.get("profile") or {}),
+            "profile_quality": {
+                "status": (
+                    "needs_review" if quality_issues else
+                    ("complete" if progress["foundation_ready"] else "collecting")
+                ),
+                "issue_count": len(quality_issues),
+                "issues": _public(quality_issues[:20]),
+            },
             "foundation_pdf_status": pdf_status,
             "foundation_pdf_error_code": (
                 str(background_pdf.get("error_code") or "")
@@ -572,11 +594,18 @@ class CreatorAgentService:
             }
         quick_actions = []
         if public_project["progress"]["foundation_ready"]:
-            quick_actions = [
-                {"intent": "start_video", "label": "开始制作视频"},
-                {"intent": "topic_plan", "label": "生成选题计划"},
-                {"intent": "modify_profile", "label": "修改我的画像"},
-            ]
+            if (public_project.get("profile_quality") or {}).get("status") == "needs_review":
+                quick_actions = [{
+                    "intent": "repair_profile", "label": "完善画像",
+                }, {
+                    "intent": "modify_profile", "label": "修改我的画像",
+                }]
+            else:
+                quick_actions = [
+                    {"intent": "start_video", "label": "开始制作视频"},
+                    {"intent": "topic_plan", "label": "生成选题计划"},
+                    {"intent": "modify_profile", "label": "修改我的画像"},
+                ]
         return {
             "user": _public(user),
             "projects": self._project_list(user["username"], projects, project["id"], workspace),
@@ -633,6 +662,7 @@ class CreatorAgentService:
             "url": "/api/creator-agent/projects/%s/background.pdf" % project_id,
             "status": "pending",
             "profile_revision": int(revision or 1),
+            "profile_schema_version": PROFILE_PDF_SCHEMA_VERSION,
         }
 
     def _render_background_pdf(self, user, workspace, profile, state):
@@ -654,6 +684,7 @@ class CreatorAgentService:
             "url": "/api/creator-agent/projects/%s/background.pdf" % workspace["project_id"],
             "status": "ready",
             "profile_revision": int(state.get("revision") or 1),
+            "profile_schema_version": PROFILE_PDF_SCHEMA_VERSION,
             "size": metadata["size"],
             "generated_at": metadata["generated_at"],
         }
@@ -669,6 +700,8 @@ class CreatorAgentService:
             current.get("status") == "ready"
             and int(current.get("profile_revision") or 0)
             == int(state.get("revision") or 1)
+            and int(current.get("profile_schema_version") or 0)
+            == PROFILE_PDF_SCHEMA_VERSION
             and self._profile_pdf_path(user["username"], project_id).is_file()
         ):
             return workspace
@@ -702,6 +735,11 @@ class CreatorAgentService:
             raise APIError(404, "背景档案尚未生成", "profile_pdf_not_found")
         path = self._profile_pdf_path(user["username"], project_id)
         state = workspace.get("profile_state") or {}
+        if profile_quality_issues(state):
+            raise APIError(
+                409, "请先完善画像中的低信息或缺失内容，再生成背景档案",
+                "profile_quality_required",
+            )
         descriptor = (workspace.get("deliverables") or {}).get(
             "background_profile_pdf",
         ) or {}
@@ -710,6 +748,8 @@ class CreatorAgentService:
             or descriptor.get("status") != "ready"
             or int(descriptor.get("profile_revision") or 0)
             != int(state.get("revision") or 1)
+            or int(descriptor.get("profile_schema_version") or 0)
+            != PROFILE_PDF_SCHEMA_VERSION
         ):
             rendered = self._render_background_pdf(
                 user, workspace, workspace.get("profile") or {},
@@ -876,6 +916,56 @@ class CreatorAgentService:
             value["flow"] = flow
         return value
 
+    def _reask_profile_question(self, user, workspace, state, expected_revision,
+                                module, issue, leading_reply=""):
+        state.update({
+            "current_module": int(module),
+            "question_index": int(issue["question_index"]),
+            "phase": "collecting",
+            "active_question": None,
+        })
+        try:
+            generated = self._model_call(
+                user, "profile_clarification",
+                {"state": state, "quality_issue": issue},
+                lambda: self.profile_agent.ask_question(
+                    state, "这项信息还不足以形成可用画像：" + issue["reason"],
+                ),
+            )
+        except ProfileAgentError as exc:
+            self._profile_model_error(exc)
+        state["active_question"] = generated["question"]
+        workspace = self._save_profile_state(
+            user, workspace, state, expected_revision,
+            flow={"mode": "profile_interview"},
+        )
+        reply = (str(leading_reply or "").strip() + "\n\n" + generated["reply"]).strip()
+        return workspace, reply, self._question_public(state)
+
+    def _finish_profile_module_collection(self, user, workspace, state,
+                                          expected_revision, module, reply):
+        issue = module_completion_issue(state, module)
+        if issue:
+            return self._reask_profile_question(
+                user, workspace, state, expected_revision, module, issue, reply,
+            )
+        try:
+            review = self._model_call(
+                user, "profile_module_review", {"state": state, "module": module},
+                lambda: self.profile_agent.build_module_review(state, module),
+            )
+        except ProfileAgentError as exc:
+            self._profile_model_error(exc)
+        reviews = dict(state.get("module_reviews") or {})
+        reviews[str(module)] = review
+        state.update({"module_reviews": reviews, "phase": "review"})
+        workspace = self._save_profile_state(
+            user, workspace, state, expected_revision,
+        )
+        return workspace, (
+            str(reply or "").strip() + "\n\n" + review["summary"]
+        ).strip(), self._review_public(review, state)
+
     def _profile_turn(self, user, workspace, message, intent, payload):
         state = dict(workspace.get("profile_state") or initial_state())
         expected_revision = int(state.get("revision") or 1)
@@ -905,6 +995,13 @@ class CreatorAgentService:
                 else:
                     choice = 0
             if choice is not None:
+                issue = module_completion_issue(state, module)
+                if issue:
+                    state["revision"] = int(state.get("revision") or 1) + 1
+                    return self._reask_profile_question(
+                        user, workspace, state, expected_revision,
+                        module, issue,
+                    )
                 try:
                     choice = int(choice)
                     selected = review["options"][choice]
@@ -919,10 +1016,21 @@ class CreatorAgentService:
                     "revision": int(state.get("revision") or 1) + 1,
                 })
                 if module < 4:
+                    next_module = module + 1
                     state.update({
-                        "current_module": module + 1, "question_index": 0,
+                        "current_module": next_module,
                         "phase": "collecting",
                     })
+                    next_index = next_pending_question_index(
+                        state, next_module, start_index=-1,
+                    )
+                    if next_index is None:
+                        return self._finish_profile_module_collection(
+                            user, workspace, state, expected_revision,
+                            next_module,
+                            "已确认%s方案。" % MODULES[module]["name"],
+                        )
+                    state["question_index"] = next_index
                     try:
                         generated = self._model_call(
                             user, "profile_question",
@@ -998,37 +1106,31 @@ class CreatorAgentService:
             self._profile_model_error(exc)
         if captured["action"] == "skip":
             question = current_question(state)
+            answers = dict(state.get("answers") or {})
+            module_answers = dict(answers.get(str(module)) or {})
+            module_answers.pop(question["key"], None)
+            for alias in ANSWER_KEY_ALIASES.get(module, {}).get(question["key"], ()):
+                module_answers.pop(alias, None)
+            answers[str(module)] = module_answers
+            state["answers"] = answers
             skipped = list(state.get("skipped_questions") or [])
             skipped_key = "%d:%s" % (module, question["key"])
             if skipped_key not in skipped:
                 skipped.append(skipped_key)
             state["skipped_questions"] = skipped
-            next_index = int(state.get("question_index") or 0) + 1
-            questions = MODULES[module]["questions"]
+            next_index = next_pending_question_index(state, module)
             state["revision"] = int(state.get("revision") or 1) + 1
-            if next_index < len(questions):
+            if next_index is not None:
                 state["question_index"] = next_index
                 state["active_question"] = captured["next_question"]
                 workspace = self._save_profile_state(
                     user, workspace, state, expected_revision,
                 )
                 return workspace, captured["reply"], self._question_public(state)
-            try:
-                review = self._model_call(
-                    user, "profile_module_review", {"state": state, "module": module},
-                    lambda: self.profile_agent.build_module_review(state, module),
-                )
-            except ProfileAgentError as exc:
-                self._profile_model_error(exc)
-            reviews = dict(state.get("module_reviews") or {})
-            reviews[str(module)] = review
-            state.update({"module_reviews": reviews, "phase": "review"})
-            workspace = self._save_profile_state(
-                user, workspace, state, expected_revision,
+            return self._finish_profile_module_collection(
+                user, workspace, state, expected_revision, module,
+                captured["reply"],
             )
-            return workspace, (
-                captured["reply"] + "\n\n" + review["summary"]
-            ), self._review_public(review, state)
         if not captured["accepted"]:
             state["revision"] = int(state.get("revision") or 1) + 1
             state["active_question"] = captured["next_question"]
@@ -1037,35 +1139,45 @@ class CreatorAgentService:
             )
             return workspace, captured["reply"], self._question_public(state)
         question = current_question(state)
+        issue = answer_quality_issue(
+            state, module, question["key"], captured["value"], answer,
+        )
+        if issue:
+            state["revision"] = int(state.get("revision") or 1) + 1
+            return self._reask_profile_question(
+                user, workspace, state, expected_revision, module,
+                {
+                    "module": module,
+                    "key": question["key"],
+                    "question_index": int(state.get("question_index") or 0),
+                    "reason": issue,
+                },
+            )
         answers = dict(state.get("answers") or {})
         module_answers = dict(answers.get(str(module)) or {})
+        for alias in ANSWER_KEY_ALIASES.get(module, {}).get(question["key"], ()):
+            module_answers.pop(alias, None)
         module_answers[question["key"]] = captured["value"]
         answers[str(module)] = module_answers
         state["answers"] = answers
-        next_index = int(state.get("question_index") or 0) + 1
-        questions = MODULES[module]["questions"]
+        skipped = [
+            item for item in state.get("skipped_questions") or []
+            if item != "%d:%s" % (module, question["key"])
+        ]
+        state["skipped_questions"] = skipped
+        next_index = next_pending_question_index(state, module)
         state["revision"] = int(state.get("revision") or 1) + 1
-        if next_index < len(questions):
+        if next_index is not None:
             state["question_index"] = next_index
             state["active_question"] = captured["next_question"]
             workspace = self._save_profile_state(
                 user, workspace, state, expected_revision,
             )
             return workspace, captured["reply"], self._question_public(state)
-        try:
-            review = self._model_call(
-                user, "profile_module_review", {"state": state, "module": module},
-                lambda: self.profile_agent.build_module_review(state, module),
-            )
-        except ProfileAgentError as exc:
-            self._profile_model_error(exc)
-        reviews = dict(state.get("module_reviews") or {})
-        reviews[str(module)] = review
-        state.update({"module_reviews": reviews, "phase": "review"})
-        workspace = self._save_profile_state(
-            user, workspace, state, expected_revision,
+        return self._finish_profile_module_collection(
+            user, workspace, state, expected_revision, module,
+            captured["reply"],
         )
-        return workspace, captured["reply"] + "\n\n" + review["summary"], self._review_public(review, state)
 
     def _generate_topic_plan(self, user, workspace, platforms, request):
         profile = workspace.get("profile") or {}
@@ -1656,7 +1768,7 @@ class CreatorAgentService:
             profile_retry = (
                 not self._progress(project)["foundation_ready"]
                 or intent in {"profile_answer", "profile_choice"}
-                or intent == "modify_profile"
+                or intent in {"modify_profile", "repair_profile"}
                 or (workspace.get("flow") or {}).get("mode") == "profile_revision"
             )
             if not created and not profile_retry:
@@ -1679,6 +1791,10 @@ class CreatorAgentService:
             if intent == "regenerate_video" and flow.get("mode") == "template_review":
                 intent = ""
             progress = self._progress(project)
+            profile_issues = (
+                profile_quality_issues(workspace.get("profile_state") or {})
+                if progress["foundation_ready"] else []
+            )
             public = {}
             reply_from_model = False
 
@@ -1717,6 +1833,39 @@ class CreatorAgentService:
                 )
                 reply = acknowledgement
                 public = {"kind": "profile_override_saved", "profile": _public(profile)}
+            elif intent == "repair_profile":
+                state = dict(workspace.get("profile_state") or initial_state())
+                issues = profile_quality_issues(state)
+                if not issues:
+                    reply = "当前画像关键资料完整，不需要补采。"
+                    public = {"kind": "profile_quality_complete"}
+                else:
+                    issue = issues[0]
+                    module = int(issue["module"])
+                    expected_revision = int(state.get("revision") or 1)
+                    state.update({
+                        "revision": expected_revision + 1,
+                        "profile_ready": False,
+                        "completed_modules": [
+                            int(item) for item in state.get("completed_modules") or []
+                            if str(item).isdigit() and int(item) < module
+                        ],
+                        "selected_profiles": {
+                            key: value for key, value in
+                            (state.get("selected_profiles") or {}).items()
+                            if str(key).isdigit() and int(key) < module
+                        },
+                        "module_reviews": {
+                            key: value for key, value in
+                            (state.get("module_reviews") or {}).items()
+                            if str(key).isdigit() and int(key) < module
+                        },
+                    })
+                    workspace, reply, public = self._reask_profile_question(
+                        user, workspace, state, expected_revision,
+                        module, issue,
+                    )
+                    project = self._local_project(workspace)
             elif intent == "modify_profile":
                 state = dict(workspace.get("profile_state") or initial_state())
                 expected_revision = int(state.get("revision") or 1)
@@ -1763,6 +1912,17 @@ class CreatorAgentService:
                         {"intent": "topic_plan", "label": "生成选题计划"},
                         {"intent": "modify_profile", "label": "修改我的画像"},
                     ],
+                }
+            elif profile_issues and intent in {
+                    "start_video", "topic_plan", "revise_copy", "regenerate_video"}:
+                reply = "当前画像还有%d项关键信息需要确认，完善后再开始内容创作。" % len(profile_issues)
+                public = {
+                    "kind": "profile_quality_required",
+                    "issue_count": len(profile_issues),
+                    "actions": [{
+                        "intent": "repair_profile", "label": "完善画像",
+                        "primary": True,
+                    }],
                 }
             elif intent == "topic_plan":
                 platforms = sanitize_platforms(payload.get("platforms"))

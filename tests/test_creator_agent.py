@@ -38,6 +38,40 @@ USER = {
 }
 PROJECT_ID = "a1b2c3d4e5f6"
 
+PROFILE_ANSWERS = {
+    "basic_context": "空黎，90后，现居广州。",
+    "career_identity": "我是企业AI顾问，主要帮助企业梳理并落地AI工作流程。",
+    "career_history": "我从业两年，持续从事AI产品和自动化项目开发。",
+    "income_context": "主要收入来自AI项目咨询和定制开发，目前处于10-30万阶段。",
+    "low_point": "我曾经长期找不到合适工作，后来通过持续学习并完成独立AI项目走出低谷。",
+    "achievement": "我独立完成了第一个AI项目，并成功交付给真实客户使用。",
+    "praised_traits": "别人经常夸我耐心细致，因为我会陪客户把问题解决到底。",
+    "criticized_traits": "别人常说我容易钻研过头，导致沟通时解释得过于细致。",
+    "proven_ability": "我最擅长AI项目落地，曾经独立完成从需求分析到交付的完整项目。",
+    "content_track": "我想长期专注AI实战与效率提升赛道，持续分享可落地的方法。",
+    "target_audience": "我想服务不了解AI或刚入门、尚未掌握实际使用方法的人群。",
+    "audience_pain": "他们面临产出低、成本高和不会选择工具的问题，我能提供落地方案。",
+    "differentiation": "我的差异是能独立完成真实AI项目，证据是已有从需求到交付的客户案例。",
+    "existing_accounts": "目前还没有持续运营的内容账号。",
+    "personality_words": "耐心、理性、幽默。",
+    "communication_style": "我希望表达幽默轻松，但专业结论必须清晰准确。",
+    "disliked_style": "我不喜欢啰嗦冗长的表达，因为浪费时间且重点不突出。",
+    "content_habits": "我常分享学习心得和实战复盘，不发布未经验证的娱乐八卦。",
+    "memorable_statement": "先把真实问题解决，再谈AI能创造多少价值。",
+    "self_intro": "我是AI入门导师，专门帮助AI小白解决不会落地使用的问题。",
+    "trust_reason": "客户愿意信任我，因为我耐心细致，并持续陪伴他们完成真实项目。",
+    "ip_goal": "引流获客",
+    "time_commitment": "我每天可以稳定投入1到3小时进行内容创作。",
+    "products_services": "我提供AI咨询、工具定制开发和项目代做，按照项目范围报价交付。",
+    "short_term_goal": "未来三个月积累10个可验证的客户案例。",
+    "long_term_goal": "未来一年建立自己的AI社群，并实现稳定的自由工作。",
+    "comeback_story": "我失业后长期找不到方向，随后系统学习AI并独立完成项目，最终获得首个客户认可。",
+    "pitfall_story": "我曾因需求确认不充分导致项目返工，后来建立验收清单，避免再次损失时间。",
+    "success_story": "我从没有项目经验开始，每天实践并复盘，最终独立完成并交付第一个AI项目。",
+    "dramatic_story": "我曾在客户准备放弃项目时开始连夜定位问题，第二天完成修复并让项目顺利上线。",
+    "team_project": "我负责过一个跨角色AI项目，协调需求和开发交付，最终按期完成并总结流程。",
+}
+
 
 class FakeAuth:
     base_url = "http://127.0.0.1:8095"
@@ -278,11 +312,18 @@ class CreatorAgentTests(unittest.TestCase):
             "current_module": 4, "question_index": 1, "phase": "ready",
             "completed_modules": [1, 2, 3, 4], "profile_ready": True,
             "selected_profiles": {str(index): {"title": "模块%d方案" % index} for index in range(1, 5)},
+            "answers": {
+                str(module): {
+                    question["key"]: PROFILE_ANSWERS[question["key"]]
+                    for question in MODULES[module]["questions"]
+                }
+                for module in range(1, 5)
+            },
         })
         self.store.ensure_workspace(USER["username"], PROJECT_ID, "我的个人画像")
         self.store.update_workspace(
             USER["username"], PROJECT_ID, profile_state=state,
-            profile={"modules": state["selected_profiles"], "answers": {}},
+            profile={"modules": state["selected_profiles"], "answers": state["answers"]},
             flow={"mode": "idle"},
         )
         self.store.add_message(
@@ -446,6 +487,15 @@ class CreatorAgentTests(unittest.TestCase):
     def test_skipping_last_question_uses_deepseek_then_enters_review(self):
         state = initial_state()
         state["question_index"] = len(MODULES[1]["questions"]) - 1
+        state["answers"] = {
+            "1": {
+                key: PROFILE_ANSWERS[key]
+                for key in (
+                    "career_identity", "achievement", "proven_ability",
+                    "target_audience", "audience_pain", "differentiation",
+                )
+            },
+        }
         self.store.update_workspace(
             USER["username"], PROJECT_ID, profile_state=state,
             profile={}, flow={"mode": "profile_interview"},
@@ -468,6 +518,207 @@ class CreatorAgentTests(unittest.TestCase):
             len([call for call in self.profile_agent.calls if call[0] == "review"]),
             1,
         )
+
+    def test_meta_answer_is_reasked_without_being_saved(self):
+        state = initial_state()
+        self.store.update_workspace(
+            USER["username"], PROJECT_ID, profile_state=state,
+            profile={}, flow={"mode": "profile_interview"},
+        )
+        result = self.message(
+            "参考", "profile_answer", {"profile_revision": state["revision"]},
+            "profile-quality-meta-0001",
+        )
+        current = result["workspace"]["profile_state"]
+        self.assertEqual(current["question_index"], 0)
+        self.assertEqual(current["revision"], 2)
+        self.assertEqual(result["message_public"]["field"], "basic_context")
+        self.assertEqual(current.get("answers") or {}, {})
+        self.assertTrue(any(call[0] == "ask_question" for call in self.profile_agent.calls))
+
+    def test_skipping_a_legacy_field_removes_its_stale_alias_value(self):
+        state = initial_state()
+        state["answers"] = {"1": {"identity": "旧昵称信息"}}
+        self.store.update_workspace(
+            USER["username"], PROJECT_ID, profile_state=state,
+            profile={}, flow={"mode": "profile_interview"},
+        )
+        result = self.message(
+            "跳过", "profile_answer", {"profile_revision": state["revision"]},
+            "profile-skip-legacy-alias-0001",
+        )
+        answers = result["workspace"]["profile_state"]["answers"]["1"]
+        self.assertNotIn("identity", answers)
+        self.assertNotIn("basic_context", answers)
+
+    def test_story_module_cannot_finish_with_navigation_placeholders(self):
+        state = initial_state()
+        state.update({
+            "current_module": 4,
+            "question_index": len(MODULES[4]["questions"]) - 1,
+            "answers": {"4": {
+                "comeback_story": "参考",
+                "success_story": "用户选择回顾或修改模块4：故事资产。",
+                "dramatic_story": "用户选择回顾逆袭故事。",
+            }},
+            "skipped_questions": ["4:pitfall_story"],
+        })
+        self.store.update_workspace(
+            USER["username"], PROJECT_ID, profile_state=state,
+            profile={}, flow={"mode": "profile_interview"},
+        )
+        result = self.message(
+            "跳过", "profile_answer", {"profile_revision": state["revision"]},
+            "profile-quality-story-0001",
+        )
+        current = result["workspace"]["profile_state"]
+        self.assertEqual(current["phase"], "collecting")
+        self.assertEqual(current["question_index"], 0)
+        self.assertEqual(result["message_public"]["field"], "comeback_story")
+        self.assertNotIn("4", current.get("module_reviews") or {})
+
+    def test_legacy_review_choice_cannot_bypass_quality_gate(self):
+        state = initial_state()
+        state.update({
+            "current_module": 4,
+            "phase": "review",
+            "answers": {"4": {"comeback_story": "参考"}},
+            "module_reviews": {
+                "4": self.profile_agent.build_module_review(state, 4),
+            },
+        })
+        state["active_question"] = self.profile_agent._question(current_question(state))
+        self.store.update_workspace(
+            USER["username"], PROJECT_ID, profile_state=state,
+            profile={}, flow={"mode": "profile_interview"},
+        )
+        result = self.message(
+            "选择第一个方案", "profile_choice",
+            {"choice_index": 0, "profile_revision": state["revision"]},
+            "profile-review-quality-gate-0001",
+        )
+        current = result["workspace"]["profile_state"]
+        self.assertEqual(current["phase"], "collecting")
+        self.assertEqual(result["message_public"]["field"], "comeback_story")
+        self.assertFalse(current["profile_ready"])
+
+    def test_ready_legacy_profile_is_flagged_and_can_enter_guided_repair(self):
+        state = initial_state()
+        state.update({
+            "current_module": 4,
+            "phase": "ready",
+            "completed_modules": [1, 2, 3, 4],
+            "profile_ready": True,
+            "selected_profiles": {
+                str(index): {"title": "旧模块%d方案" % index}
+                for index in range(1, 5)
+            },
+            "module_reviews": {
+                str(index): {"module": index, "options": []}
+                for index in range(1, 5)
+            },
+            "answers": {
+                "1": {
+                    "identity": "空黎，AI。",
+                    "career_identity": "我目前是AI",
+                    "achievement": PROFILE_ANSWERS["achievement"],
+                    "proven_ability": PROFILE_ANSWERS["proven_ability"],
+                    "target_audience": PROFILE_ANSWERS["target_audience"],
+                    "audience_pain": PROFILE_ANSWERS["audience_pain"],
+                    "differentiation": "有成功案例",
+                },
+                "2": {
+                    "communication_style": PROFILE_ANSWERS["communication_style"],
+                },
+                "3": {
+                    "memorable_statement": "有，是一句话的雏形",
+                    "self_intro": PROFILE_ANSWERS["self_intro"],
+                    "trust_reason": PROFILE_ANSWERS["trust_reason"],
+                    "ip_goal": PROFILE_ANSWERS["ip_goal"],
+                    "products_services": PROFILE_ANSWERS["products_services"],
+                    "short_term_goal": PROFILE_ANSWERS["short_term_goal"],
+                    "long_term_goal": PROFILE_ANSWERS["long_term_goal"],
+                },
+                "4": {
+                    "comeback_story": "参考",
+                    "success_story": "用户选择回顾或修改模块4：故事资产。",
+                },
+            },
+        })
+        self.store.update_workspace(
+            USER["username"], PROJECT_ID, profile_state=state,
+            profile={"answers": state["answers"], "modules": state["selected_profiles"]},
+            flow={"mode": "idle"},
+        )
+        snapshot = self.bootstrap()
+        self.assertEqual(snapshot["project"]["profile_quality"]["status"], "needs_review")
+        self.assertGreater(snapshot["project"]["profile_quality"]["issue_count"], 0)
+        self.assertEqual(snapshot["project"]["foundation_pdf_status"], "blocked")
+        self.assertEqual(snapshot["project"]["foundation_pdf_url"], "")
+        self.assertEqual(snapshot["project"]["foundation_pdf_retry_url"], "")
+        intents = {item["intent"] for item in snapshot["quick_actions"]}
+        self.assertIn("repair_profile", intents)
+        self.assertNotIn("start_video", intents)
+
+        blocked = self.message(
+            "制作视频", "start_video",
+            {"topic": "测试", "platforms": ["douyin"]},
+            "profile-quality-block-video-0001",
+        )
+        self.assertEqual(blocked["message_public"]["kind"], "profile_quality_required")
+        self.assertEqual(self.store.batches(USER["username"], PROJECT_ID), [])
+        with self.assertRaises(APIError) as pdf_blocked:
+            self.service.background_pdf(USER, PROJECT_ID)
+        self.assertEqual(pdf_blocked.exception.code, "profile_quality_required")
+
+        result = self.message(
+            "完善画像", "repair_profile", {}, "profile-guided-repair-0001",
+        )
+        current = result["workspace"]["profile_state"]
+        self.assertFalse(current["profile_ready"])
+        self.assertEqual((current["current_module"], current["question_index"]), (1, 1))
+        self.assertEqual(result["message_public"]["field"], "career_identity")
+        self.assertEqual(current["completed_modules"], [])
+        self.assertEqual(current["selected_profiles"], {})
+
+    def test_repair_transition_skips_valid_answers_and_opens_next_review(self):
+        state = initial_state()
+        state.update({
+            "current_module": 1,
+            "phase": "review",
+            "module_reviews": {
+                "1": self.profile_agent.build_module_review(state, 1),
+            },
+            "answers": {
+                "1": {
+                    question["key"]: PROFILE_ANSWERS[question["key"]]
+                    for question in MODULES[1]["questions"]
+                },
+                "2": {
+                    question["key"]: PROFILE_ANSWERS[question["key"]]
+                    for question in MODULES[2]["questions"]
+                },
+            },
+        })
+        state["active_question"] = self.profile_agent._question(current_question(state))
+        self.store.update_workspace(
+            USER["username"], PROJECT_ID, profile_state=state,
+            profile={}, flow={"mode": "profile_interview"},
+        )
+        before_questions = len([
+            call for call in self.profile_agent.calls if call[0] == "ask_question"
+        ])
+        result = self.message(
+            "选择第一个方案", "profile_choice",
+            {"choice_index": 0, "profile_revision": state["revision"]},
+            "profile-repair-skip-valid-0001",
+        )
+        self.assertEqual(result["message_public"]["kind"], "profile_review")
+        self.assertEqual(result["message_public"]["module"], 2)
+        self.assertEqual(result["workspace"]["profile_state"]["phase"], "review")
+        self.assertEqual(len([
+            call for call in self.profile_agent.calls if call[0] == "ask_question"
+        ]), before_questions)
 
     def test_free_and_explicit_nonprofile_turns_use_deepseek(self):
         before = len(self.profile_agent.calls)
@@ -542,6 +793,7 @@ class CreatorAgentTests(unittest.TestCase):
             if state.get("profile_ready"):
                 break
             turn += 1
+            self.assertLess(turn, 80, "profile journey did not converge")
             if state.get("phase") == "review":
                 self.message(
                     "选择第一个方案", "profile_choice", {
@@ -550,8 +802,9 @@ class CreatorAgentTests(unittest.TestCase):
                     "profile-flow-%04d" % turn,
                 )
             else:
+                key = current_question(state)["key"]
                 self.message(
-                    "这是第%d个真实回答，包含具体经历和结果" % turn,
+                    PROFILE_ANSWERS[key],
                     "profile_answer", {"profile_revision": state["revision"]},
                     "profile-flow-%04d" % turn,
                 )
@@ -561,6 +814,10 @@ class CreatorAgentTests(unittest.TestCase):
         self.assertEqual(set(workspace["profile"]["modules"]), {"1", "2", "3", "4"})
         self.assertIn("personal_profile", workspace["deliverables"])
         self.assertIn("background_profile_pdf", workspace["deliverables"])
+        self.assertEqual(
+            workspace["deliverables"]["background_profile_pdf"]["profile_schema_version"],
+            2,
+        )
         pdf_path = self.service._profile_pdf_path(USER["username"], PROJECT_ID)
         self.assertTrue(pdf_path.is_file())
         self.assertGreater(pdf_path.stat().st_size, 1024)
@@ -585,6 +842,13 @@ class CreatorAgentTests(unittest.TestCase):
             "question_index": len(MODULES[4]["questions"]),
             "phase": "review",
             "completed_modules": [1, 2, 3],
+            "answers": {
+                str(module): {
+                    question["key"]: PROFILE_ANSWERS[question["key"]]
+                    for question in MODULES[module]["questions"]
+                }
+                for module in range(1, 5)
+            },
             "selected_profiles": {
                 str(index): {"title": "模块%d方案" % index}
                 for index in range(1, 4)
@@ -648,10 +912,36 @@ class CreatorAgentTests(unittest.TestCase):
         project = self.bootstrap()["project"]
         self.assertEqual(project["foundation_pdf_status"], "pending")
         self.assertEqual(project["foundation_pdf_url"], "")
+        path = self.service.background_pdf(USER, PROJECT_ID)
+        self.assertTrue(path.is_file())
+        refreshed = self.store.workspace(USER["username"], PROJECT_ID)
+        self.assertEqual(
+            refreshed["deliverables"]["background_profile_pdf"]["profile_schema_version"],
+            2,
+        )
         self.assertEqual(
             project["foundation_pdf_retry_url"],
             "/api/creator-agent/projects/%s/background.pdf" % PROJECT_ID,
         )
+
+    def test_old_pdf_schema_requires_regeneration(self):
+        workspace = self.store.workspace(USER["username"], PROJECT_ID)
+        revision = int(workspace["profile_state"]["revision"])
+        self.store.update_workspace(
+            USER["username"], PROJECT_ID,
+            deliverables={
+                "background_profile_pdf": {
+                    "title": "IP人设定位背景档案",
+                    "url": "/api/creator-agent/projects/%s/background.pdf" % PROJECT_ID,
+                    "status": "ready",
+                    "profile_revision": revision,
+                    "profile_schema_version": 1,
+                },
+            },
+        )
+        project = self.bootstrap()["project"]
+        self.assertEqual(project["foundation_pdf_status"], "pending")
+        self.assertEqual(project["foundation_pdf_url"], "")
 
     def test_stale_profile_action_cannot_overwrite_current_step(self):
         self.store.update_workspace(

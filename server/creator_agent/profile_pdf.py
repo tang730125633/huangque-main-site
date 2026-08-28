@@ -20,7 +20,10 @@ from reportlab.platypus import (
     Table, TableStyle,
 )
 
-from .profile_agent import MODULES
+from .profile_agent import MODULES, profile_answer_value
+
+
+PROFILE_PDF_SCHEMA_VERSION = 2
 
 
 class ProfilePDFError(RuntimeError):
@@ -181,10 +184,9 @@ def render_profile_pdf(output_path, display_name, profile, state):
                 story.append(_divider())
         story.append(CondPageBreak(25 * mm))
         story.append(Paragraph("背景信息", styles["h2"]))
-        module_answers = (answers or {}).get(str(module)) or {}
         for question in MODULES[module]["questions"]:
             key = question["key"]
-            value = module_answers.get(key)
+            value = profile_answer_value(answers, module, key)
             if value in (None, "") and "%d:%s" % (module, key) in skipped:
                 value = "已跳过"
             story.append(CondPageBreak(18 * mm))

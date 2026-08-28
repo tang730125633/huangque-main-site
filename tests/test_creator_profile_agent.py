@@ -10,7 +10,9 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "server"))
 
 from creator_agent.profile_agent import (
-    DeepSeekProfileAgent, MODULES, ProfileAgentError, current_question, initial_state,
+    DeepSeekProfileAgent, MODULES, ProfileAgentError, answer_quality_issue,
+    current_question, initial_state, module_completion_issue,
+    profile_answer_value, profile_quality_issues,
 )
 
 
@@ -72,7 +74,67 @@ class CreatorProfileAgentTests(unittest.TestCase):
         self.assertEqual(body["response_format"], {"type": "json_object"})
         self.assertIn("action", body["messages"][0]["content"])
         self.assertIn("skip", body["messages"][0]["content"])
+        self.assertIn("页面操作", body["messages"][0]["content"])
+        self.assertIn("玩笑", body["messages"][0]["content"])
         self.assertGreaterEqual(timeout, 10)
+
+    def test_quality_gate_rejects_observed_low_information_answers(self):
+        state = initial_state()
+        observed = (
+            (4, "comeback_story", "参考"),
+            (4, "success_story", "用户选择回顾或修改模块4：故事资产。"),
+            (4, "dramatic_story", "用户选择回顾逆袭故事。"),
+            (3, "memorable_statement", "有，是一句话的雏形"),
+            (1, "career_identity", "我目前是AI"),
+            (1, "differentiation", "有成功案例"),
+            (1, "criticized_traits", "别人常说我太帅了，我认为其中部分是事实。"),
+        )
+        for module, key, value in observed:
+            with self.subTest(module=module, key=key):
+                self.assertTrue(answer_quality_issue(state, module, key, value, value))
+        self.assertFalse(answer_quality_issue(
+            state, 4, "comeback_story",
+            "我失业后长期找不到方向，随后系统学习AI并完成独立项目，最终获得首个客户认可。",
+        ))
+
+    def test_module_completion_requires_key_facts_and_one_real_story(self):
+        state = initial_state()
+        issue = module_completion_issue(state, 1)
+        self.assertEqual(issue["key"], "career_identity")
+        state.update({
+            "current_module": 4,
+            "answers": {"4": {
+                "comeback_story": "我失业后长期找不到方向，随后系统学习AI并完成独立项目，最终获得首个客户认可。",
+            }},
+        })
+        self.assertIsNone(module_completion_issue(state, 4))
+
+    def test_legacy_identity_is_used_as_basic_context(self):
+        answers = {"1": {"identity": "空黎，AI从业者，现居广州。"}}
+        self.assertEqual(
+            profile_answer_value(answers, 1, "basic_context"),
+            "空黎，AI从业者，现居广州。",
+        )
+
+    def test_ready_legacy_profile_audit_lists_observed_problem_fields(self):
+        state = initial_state()
+        state["answers"] = {
+            "1": {
+                "identity": "空黎，AI。",
+                "career_identity": "我目前是AI",
+                "differentiation": "有成功案例",
+            },
+            "3": {"memorable_statement": "有，是一句话的雏形"},
+            "4": {
+                "comeback_story": "参考",
+                "success_story": "用户选择回顾或修改模块4：故事资产。",
+            },
+        }
+        keys = {(item["module"], item["key"]) for item in profile_quality_issues(state)}
+        self.assertIn((1, "career_identity"), keys)
+        self.assertIn((1, "differentiation"), keys)
+        self.assertIn((3, "memorable_statement"), keys)
+        self.assertIn((4, "comeback_story"), keys)
 
     def test_deepseek_can_interpret_navigation_as_skip(self):
         opener = Opener({
@@ -149,6 +211,14 @@ class CreatorProfileAgentTests(unittest.TestCase):
             {}, {"mode": "template_review"}, "先解释为什么选择这个模板",
         )
         self.assertEqual(chat["intent"], "chat")
+
+        repair_agent = DeepSeekProfileAgent("secret", opener=Opener({
+            "intent": "repair_profile", "payload": {},
+        }))
+        repair = repair_agent.interpret_intent(
+            {}, {"mode": "idle"}, "把低质量画像补充完整",
+        )
+        self.assertEqual(repair["intent"], "repair_profile")
 
         reply_agent = DeepSeekProfileAgent("secret", opener=Opener({
             "reply": "方案已经准备好，你可以继续修改或确认。",
