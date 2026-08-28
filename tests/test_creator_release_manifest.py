@@ -28,8 +28,10 @@ class CreatorReleaseManifestTests(unittest.TestCase):
                 "server/creator_agent/store.py",
                 "server/creator_agent/planner.py",
                 "server/creator_agent/profile_agent.py",
+                "server/creator_agent/profile_pdf.py",
                 "server/creator_agent/model_usage.py",
                 "server/creator_agent/service.py",
+                "deploy/requirements-creator-agent.txt",
                 "deploy/systemd/huangque-creator-agent.service",
                 "deploy/nginx-huangquechuanmei.conf",
             )
