@@ -267,6 +267,19 @@ def intake_incomplete_fields(value):
     return [field for field in INTAKE_COVERAGE_FIELDS if field in provided and statuses[field] == "unknown"]
 
 
+def complete_personality_traits(current_value, supplement):
+    existing = [part for part in re.split(r"[,，、/；;\s]+", str(current_value or "")) if part]
+    raw = str(supplement or "").strip()
+    match = re.search(r"(?:第三个(?:性格词)?|补充)(?:是|为|[:：])?\s*([\u4e00-\u9fffA-Za-z]{1,8})", raw)
+    candidate = match.group(1) if match else (raw if re.fullmatch(r"[\u4e00-\u9fffA-Za-z]{1,8}", raw) else "")
+    if not candidate:
+        raise HarnessError("请只补充一个真实的性格词，例如“细致”")
+    combined = list(dict.fromkeys([*existing, candidate]))
+    if len(combined) < 3:
+        raise HarnessError("这个词已经记录，请补充一个不同的性格词")
+    return "、".join(combined[:3]), candidate
+
+
 def commercial_goal_gaps(value, updates=()):
     state = normalize_state(value)
     fields = set()

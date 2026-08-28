@@ -167,6 +167,14 @@ class IP12PersonaAgentV1Tests(unittest.TestCase):
         )
         self.assertEqual(state["intake"]["field_statuses"]["personality_traits"], "candidate")
 
+    def test_legacy_personality_traits_can_be_completed_without_model(self):
+        self.assertEqual(
+            harness.complete_personality_traits("真诚,克制", "第三个性格词是细致"),
+            ("真诚、克制、细致", "细致"),
+        )
+        with self.assertRaisesRegex(harness.HarnessError, "已经记录"):
+            harness.complete_personality_traits("真诚,克制", "克制")
+
     def test_intake_repairs_questions_outside_the_remaining_catalog(self):
         state, normalized, _ = harness.apply_intake_decision(
             harness.initial_state(),

@@ -141,6 +141,14 @@ class IP12PersonaReportV1Tests(unittest.TestCase):
             "intake_incomplete_fields",
             inspect.getsource(server.api_confirm_foundation_report),
         )
+        self.assertIn("missing_intake", inspect.getsource(server.api_confirm_foundation_report))
+        supplement = inspect.getsource(server.api_supplement_intake)
+        self.assertIn("complete_personality_traits", supplement)
+        self.assertIn("generate_foundation_report", supplement)
+        page = (HERMES / "templates" / "index.html").read_text(encoding="utf-8")
+        self.assertIn("beginIntakeSupplement", page)
+        self.assertIn("/api/intake/supplement", page)
+        self.assertIn("目前已确认", inspect.getsource(server._incomplete_intake_payload))
 
     def test_module_six_action_turn_no_longer_auto_prepares_production(self):
         source = inspect.getsource(server._process_action_turn)

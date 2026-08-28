@@ -7769,6 +7769,79 @@ def api_generate_foundation_report():
                     "state": load_conversation(cid).get("coach_state", {}),
                     "artifact_notice": notice, "artifact_module": 4})
 
+def _incomplete_intake_payload(state):
+    profile = (state.get("ip_profile") or {})
+    payload = []
+    for field in coach_harness.intake_incomplete_fields(state):
+        item = (profile.get("facts") or {}).get(field) or (profile.get("preferences") or {}).get(field) or {}
+        value = str(item.get("value") or "").strip() if isinstance(item, dict) else ""
+        if field == "personality_traits":
+            known = "、".join(part for part in re.split(r"[,，、/；;\s]+", value) if part) or "无"
+            prompt = "目前已确认：%s。还缺第三个性格词，请直接输入一个真实词语。" % known
+        else:
+            prompt = "还需要补充：%s。" % coach_harness.INTAKE_COVERAGE_LABELS[field]
+        payload.append({"field": field, "label": coach_harness.INTAKE_COVERAGE_LABELS[field], "current_value": value, "prompt": prompt})
+    return payload
+
+
+@app.route("/api/intake/supplement", methods=["POST"])
+def api_supplement_intake():
+    body = request.get_json(silent=True) or {}
+    cid = str(body.get("conversation_id") or "")
+    field = str(body.get("field") or "")
+    raw_value = str(body.get("value") or "").strip()[:80]
+    request_id = str(body.get("request_id") or "")
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        if convo is None:
+            return jsonify({"ok": False, "error": "诊断不存在"}), 404
+        state = normalize_coach_state(convo.get("coach_state"))
+        try:
+            _assert_expected_revision(state, body.get("expected_revision"))
+        except coach_harness.HarnessConflict as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 409
+        if field not in coach_harness.intake_incomplete_fields(state):
+            return jsonify({"ok": False, "error": "这项基础资料已经更新，请查看最新页面"}), 409
+        if field != "personality_traits":
+            return jsonify({"ok": False, "error": "这项资料暂不支持快速补充"}), 400
+        profile = state["ip_profile"]
+        current = (profile.get("facts") or {}).get(field) or (profile.get("preferences") or {}).get(field) or {}
+        try:
+            combined, added = coach_harness.complete_personality_traits(
+                current.get("value") if isinstance(current, dict) else "", raw_value
+            )
+        except coach_harness.HarnessError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        profile["facts"][field] = {
+            "field": field, "value": combined, "kind": "user_fact", "evidence_quote": raw_value,
+        }
+        report = dict(state.get("foundation_report") or {})
+        if report.get("status") not in {"awaiting_confirmation", "confirmed"}:
+            return jsonify({"ok": False, "error": "当前没有待确认的模块 1-4 PDF"}), 409
+        report.update(status="failed", review_status="clean", error="基础资料已补充，正在更新 PDF")
+        state["foundation_report"] = report
+        state["intake"]["field_statuses"] = coach_harness.intake_field_statuses(state)
+        state["revision"] += 1
+        message_id = _turn_message_id(cid, raw_value, state["revision"], request_id)
+        _append_or_reuse_user_message(convo, raw_value, message_id)
+        convo["coach_state"] = state
+        save_conversation(cid, convo)
+    try:
+        record = generate_foundation_report(cid)
+    except Exception as exc:
+        app.logger.warning("IP12 intake supplement PDF refresh failed: %s", exc)
+        return jsonify({"ok": False, "error": "资料已补充，但 PDF 更新失败，请重试"}), 502
+    assistant = "已补充第三个性格词“%s”，基础资料现在完整；PDF 已同步更新，请重新查看后确认。" % added
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        state = normalize_coach_state(convo.get("coach_state"))
+        _append_assistant_message(convo, assistant, "intake", prompt_version="intake-v2", model=None)
+        state["revision"] += 1
+        convo["coach_state"] = state
+        save_conversation(cid, convo)
+    return jsonify({"ok": True, "assistant": assistant, "state": state, "report": record})
+
+
 @app.route("/api/foundation-report/confirm", methods=["POST"])
 def api_confirm_foundation_report():
     body = request.get_json(silent=True) or {}
@@ -7790,6 +7863,7 @@ def api_confirm_foundation_report():
                 "error": "请先补全基础资料：%s" % "、".join(
                     coach_harness.INTAKE_COVERAGE_LABELS[field] for field in incomplete
                 ),
+                "missing_intake": _incomplete_intake_payload(state),
             }), 409
         report = state.get("foundation_report", {})
         if report.get("status") != "awaiting_confirmation":

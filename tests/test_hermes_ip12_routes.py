@@ -330,10 +330,11 @@ assert replayed.get_json()["replayed"] is True, replayed.get_json()
         for path in HERMES.glob("*.py"):
             routes.update(pattern.findall(path.read_text(encoding="utf-8")))
 
-        self.assertEqual(len(routes), 88)
+        self.assertEqual(len(routes), 89)
         self.assertTrue(
             {
                 "/api/chat",
+                "/api/intake/supplement",
                 "/api/generate-report",
                 "/api/generate-deliverable",
                 "/api/generate-image",
