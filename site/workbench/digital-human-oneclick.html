@@ -35,7 +35,43 @@ body .hq-main-scroll-flush{overflow-x:hidden;overflow-y:auto}.hq-content[data-ac
 <div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
 <div class="hq-app"><div class="hq-content" data-active="script"><main class="dh-page">
   <header class="dh-head"><div><h1>数字人一键生成</h1><p id="dhUnifiedDescription">上传人物照片，选择音色配文案或上传完整录音；开头、结尾和正文每隔约 20–30 秒全屏真人出镜，其余时间自动匹配内容素材。</p></div><span id="dhUnifiedCost" class="cost-chip">合成本身 0 点 · 素材与 HeyGen 子任务按实时价格扣点</span></header>
-  <nav class="dh-mode-links" aria-label="文案编导功能"><a href="script.html">AI 写脚本</a><a class="on" href="digital-human-oneclick.html" aria-current="page">数字人一键生成</a></nav>
+  <nav class="dh-mode-links" role="tablist" aria-label="文案编导功能"><a href="script.html">AI 写脚本</a><button id="dhPhotoModeTab" class="on" type="button" role="tab" aria-selected="true" aria-controls="dhPhotoMode" data-dh-mode="photo">数字人一键生成</button><button id="dhVideoModeTab" type="button" role="tab" aria-selected="false" aria-controls="dhVideoMode" data-dh-mode="video">真人视频 Precision</button></nav>
+
+  <section id="dhVideoMode" class="dh-mode-panel" role="tabpanel" aria-labelledby="dhVideoModeTab" hidden>
+    <div id="dhVideoStages" class="stagebar"><div class="stage-pill on" data-stage="1"><b>1. 准备资料</b>真人视频与新文案</div><div class="stage-pill" data-stage="2"><b>2. 确认音色</b>提取、复刻与短试听</div><div class="stage-pill" data-stage="3"><b>3. 生成制作</b>Precision 口型与自动剪辑</div><div class="stage-pill" data-stage="4"><b>4. 成片验收</b>预览、质检和下载</div></div>
+    <div class="dh-grid">
+      <section class="panel"><div class="panel-head"><b>准备素材</b><span>只需 2 项</span></div><div class="panel-body">
+        <div class="action-dock"><p id="dhActionGuide" class="action-guide">上传真人视频并填写新文案后，先提取视频原声并生成短试听；确认是本人音色后再生成完整成片。</p><div class="actions"><button id="dhAnalyze" class="start" type="button">分析视频并复刻音色</button><button id="dhStart" class="start secondary" type="button" disabled>确认音色并生成成片</button></div></div>
+        <div class="field"><label>真人视频 <small>需要正常说话，建议 10–60 秒清晰人声</small></label><label id="dhDrop" class="drop precision-drop" for="dhVideoFile"><input id="dhVideoFile" type="file" accept="video/mp4,.mp4"><video id="dhVideoThumb" class="precision-video-preview" muted playsinline></video><div><strong id="dhVideoName">上传一条真人口播视频</strong><span id="dhVideoStatus">MP4 · 1–300 秒 · 不超过 100 MB · 仅当前账号可见</span></div></label><div id="dhSourceList" class="source-plan">正在读取本账号最近上传的真人视频…</div></div>
+        <div class="field"><label for="dhScript">新口播文案 <small id="dhCount">0 / 1000</small></label><textarea id="dhScript" class="script" maxlength="1000" placeholder="粘贴要让视频人物重新讲述的文案。系统会按完整文案生成配音，并让原视频人物重新对口型。"></textarea></div>
+        <div class="field"><label>本次视频音色 <small>自动从上传视频提取，不使用预设音色</small></label><div id="dhVoicePipeline" class="precision-pipeline">
+          <div class="precision-pipeline-item" data-voice-step="extract"><i>01</i><div><b>提取原视频人声</b><small>自动提取最长 60 秒的原视频声音</small></div><em>等待视频</em></div>
+          <div class="precision-pipeline-item" data-voice-step="clone"><i>02</i><div><b>复刻本人音色</b><small>使用当前账号自有音色槽位，不自动购买</small></div><em>等待</em></div>
+          <div class="precision-pipeline-item" data-voice-step="preview"><i>03</i><div><b>生成短试听</b><small>先试听还原度，不满意可重新提取</small></div><em>等待</em></div>
+          <div class="precision-pipeline-item" data-voice-step="confirm"><i>04</i><div><b>确认后生成完整配音</b><small>未经确认不会提交完整配音或 Precision 付费任务</small></div><em>等待确认</em></div>
+        </div><div class="precision-voice-actions"><button id="dhVoicePreview" type="button" disabled>播放音色试听</button><button id="dhVoiceRetry" class="secondary" type="button" disabled>重新提取与复刻</button></div></div>
+        <div class="field"><label>剪辑模板 <small>均可先看 10 秒无声示例</small></label><div id="dhTemplates" class="precision-templates">
+          <button class="precision-template on" type="button" data-template="viral-talking-head-v1"><video muted loop playsinline preload="metadata" src="../assets/one-click/previews/high-frequency-10s.mp4"></video><span><b>参考片高频剪辑</b><small>强钩子 · 重点大字 · 快节奏</small></span></button>
+          <button class="precision-template" type="button" data-template="professional-explainer-v1"><video muted loop playsinline preload="metadata" src="../assets/one-click/previews/professional-explainer-10s.mp4"></video><span><b>专业讲解</b><small>信息卡 · 稳健转场 · 重点清晰</small></span></button>
+          <button class="precision-template" type="button" data-template="clean-talking-v1"><video muted loop playsinline preload="metadata" src="../assets/one-click/previews/clean-talking-10s.mp4"></video><span><b>纯净口播</b><small>全程人物 · 字幕轻包装</small></span></button>
+        </div></div>
+        <label class="consent"><input id="dhConsent" type="checkbox"><span>我确认拥有该真人视频与其中声音的使用授权，同意系统提取并复刻视频人物音色，用于本次文案配音和口型生成。</span></label>
+        <div class="hint">真人视频模式固定流程：上传视频 → 提取原声 → 复刻音色 → 短试听确认 → 完整配音 → HeyGen Precision 完整口型 → 自动剪辑、字幕与质检。</div>
+      </div></section>
+      <section class="panel"><div class="panel-head"><b>生产进度</b><span id="dhOverall">等待上传真人视频</span></div><div class="panel-body">
+        <div id="dhFlow" class="steps">
+          <div class="step" data-step="source"><span class="step-no">01</span><div><b>分析真人视频</b><p>校验时长、画幅、人声质量与本人授权</p></div><span class="step-state">等待</span></div>
+          <div class="step" data-step="audio"><span class="step-no">02</span><div><b>复刻并确认音色</b><p>从原视频人声生成短试听</p></div><span class="step-state">等待</span></div>
+          <div class="step" data-step="lipsync"><span class="step-no">03</span><div><b>生成完整配音与 Precision 口型</b><p>保留身体动作，只重做嘴部动作</p></div><span class="step-state">等待</span></div>
+          <div class="step" data-step="analysis"><span class="step-no">04</span><div><b>识别并自动粗剪</b><p>处理静音、气口、停顿和疑似口误</p></div><span class="step-state">等待</span></div>
+          <div class="step" data-step="template"><span class="step-no">05</span><div><b>应用剪辑模板与字幕</b><p>根据所选模板完成重点字、信息卡和转场</p></div><span class="step-state">等待</span></div>
+          <div class="step" data-step="qc"><span class="step-no">06</span><div><b>合成并质检成片</b><p>检查口型、画面、音轨、字幕和编码</p></div><span class="step-state">等待</span></div>
+        </div>
+        <div id="dhStatus" class="source-plan">上传视频后才会提取声音；未确认短试听前，不会提交完整配音或 HeyGen Precision 任务。</div>
+        <div id="dhPrecisionResult" class="precision-preview"><b>成片已完成</b><video id="dhPreview" controls playsinline></video><div class="result-actions"><a id="dhDownload" download="huangque-precision-digital-human.mp4">下载 MP4</a><a href="assets.html?cat=video">在资产库查看</a></div></div>
+      </div></section>
+    </div>
+  </section>
 
   <section id="dhPhotoMode" class="dh-mode-panel" role="tabpanel" aria-labelledby="dhPhotoModeTab">
   <div class="stagebar"><div class="stage-pill on" data-stage="1"><b>1. 准备资料</b>照片与完整声音</div><div class="stage-pill" data-stage="2"><b>2. 确认方案</b><span id="stagePlanCopy">按时长生成镜头方案</span></div><div class="stage-pill" data-stage="3"><b>3. 生成制作</b>素材与口播</div><div class="stage-pill" data-stage="4"><b>4. 成片验收</b>预览、质检和下载</div></div>
@@ -165,6 +201,7 @@ $('restartSetup').onclick=handleRestartSetup;
 $('script').oninput=function(){prepareNextRun();$('count').textContent=this.value.length+' / 6000';if(plan&&state.script!==this.value.trim()){$('start').disabled=true;$('overall').textContent='文案已变化，请重新分析';setStage(1);}};$('allowAiMaterials').onchange=function(){prepareNextRun();if(state.phase==='approved'){this.checked=plan?plan.allow_ai_materials===true:false;return;}invalidateMaterialPlan('AI 补图选择已变化，请重新分析方案');syncMaterialPolicyHint();};$('customerMaterials').onchange=function(){prepareNextRun();if(DigitalHumanMaterialState.canChange(state.phase,customerMaterialBusy)){invalidateMaterialPlan('顾客上传素材已变化，请重新分析方案');chooseCustomerMaterials(this.files);}else renderCustomerMaterials(state.phase==='approved'?'生成已开始，顾客素材已锁定':'顾客素材仍在上传，请稍候',true);};$('customerMaterialList').onclick=function(event){var button=event.target.closest('[data-remove-material]');if(button){prepareNextRun();if(DigitalHumanMaterialState.canChange(state.phase,customerMaterialBusy)){invalidateMaterialPlan('顾客上传素材已变化，请重新分析方案');removeCustomerMaterial(Number(button.getAttribute('data-remove-material')));}else renderCustomerMaterials(state.phase==='approved'?'生成已开始，顾客素材已锁定':'顾客素材仍在上传，请稍候',true);}};$('analyze').onclick=function(){prepareNextRun();if(DigitalHumanMaterialState.canAnalyze(state.phase,customerMaterialBusy))analyze();else fail(new Error(state.phase==='approved'?'生成已开始，不能重新分析':'顾客素材仍在上传，请上传完成后再分析'));};$('start').onclick=function(){if(DigitalHumanMaterialState.canStart(state.phase,customerMaterialBusy,!!plan))start();else fail(new Error(state.phase==='approved'?'生成正在进行，请勿重复提交':customerMaterialBusy?'顾客素材仍在上传，请上传完成后再生成':'请先分析并确认方案'));};$('historyRefresh').onclick=loadDigitalHumanHistory;restore();loadVoiceSources();loadDigitalHumanHistory();
 })();
 </script>
+<script src="digital-human-unified-state.js?v=b76a7237"></script><script src="digital-human-unified.js?v=33eb8e0f"></script>
 <script>
 (function(){
   if(!window.HQ_DIGITAL_HUMAN_EMBEDDED||window.parent===window) return;

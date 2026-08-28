@@ -1733,19 +1733,18 @@ class DigitalHumanOneClickUiTests(unittest.TestCase):
         self.assertIn("cleaned.update(legacy.natural_mouth_talking_profile())", source)
         self.assertNotIn('"motion": "high" if segment["role"]', source)
 
-    def test_photo_mode_moves_under_the_director_without_unrequested_modes(self):
+    def test_photo_and_precision_modes_live_under_the_director(self):
         root = Path(__file__).resolve().parents[1]
         video_page = (root / "site" / "workbench" / "video.html").read_text(encoding="utf-8")
         photo_page = (root / "site" / "workbench" / "digital-human-oneclick.html").read_text(encoding="utf-8")
         self.assertNotIn('href="digital-human-oneclick.html"', video_page)
         self.assertIn('data-function="talking">数字化 IP', video_page)
         self.assertIn('data-active="script"', photo_page)
-        self.assertIn(
-            'href="digital-human-oneclick.html" aria-current="page">数字人一键生成</a>',
-            photo_page,
-        )
-        self.assertNotIn('id="dhVideoMode"', photo_page)
-        self.assertNotIn("digital-human-unified.js", photo_page)
+        self.assertIn('id="dhPhotoModeTab"', photo_page)
+        self.assertIn('id="dhVideoModeTab"', photo_page)
+        self.assertIn('id="dhVideoMode"', photo_page)
+        self.assertIn('真人视频 Precision', photo_page)
+        self.assertIn("digital-human-unified.js", photo_page)
         self.assertNotIn("私域批量成片", photo_page)
         self.assertNotIn("照片数字人", photo_page)
 

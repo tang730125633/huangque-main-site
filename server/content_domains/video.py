@@ -2025,10 +2025,17 @@ def validate_video_payload(payload, username=None):
         raise ValueError("mode 仅支持 text/audio/lipsync")
 
     if mode == "lipsync":
+        consent_fields = {
+            "digital_human_pipeline", "digital_human_stage",
+            "digital_human_run_id", "digital_human_script",
+            "digital_human_video_asset_id", "digital_human_video_sha256",
+            "digital_human_sample_sha256", "digital_human_slot_id",
+            "digital_human_consent_id", "clone_attempt_id",
+        }
         unknown = sorted(set(payload) - {
             "mode", "video_asset_id", "audio_asset_id", "lipsync_mode",
             "dynamic_duration",
-        })
+        } - consent_fields)
         if unknown:
             raise ValueError("口型同步不支持参数：" + unknown[0])
         if not username:
@@ -2061,7 +2068,7 @@ def validate_video_payload(payload, username=None):
         dynamic_duration = payload.get("dynamic_duration", False)
         if not isinstance(dynamic_duration, bool):
             raise ValueError("dynamic_duration 必须是布尔值")
-        return {
+        normalized = {
             "mode": "lipsync",
             "video_asset_id": video_asset_id,
             "audio_asset_id": audio_asset_id,
@@ -2073,6 +2080,14 @@ def validate_video_payload(payload, username=None):
             "ratio": video_asset.get("ratio") or "9:16",
             "resolution": video_asset.get("resolution") or "",
         }
+        # These fields have already been bound to a server-side consent record
+        # by digital_human_oneclick.verify_child_submission_with_record(). Keep
+        # them on the paid job for audit/recovery without accepting arbitrary
+        # request fields in the hardened lipsync contract.
+        for key in consent_fields:
+            if key in payload:
+                normalized[key] = payload[key]
+        return normalized
 
     image_data = str(payload.get("image_data") or "").strip()
     avatar_id = str(payload.get("avatar_id") or "").strip()
@@ -2955,6 +2970,147 @@ def import_h3_video_asset(username, raw, content_type="video/mp4", title=""):
         if temp_path:
             try: temp_path.unlink()
             except OSError: pass
+
+def import_lipsync_source_video(username, raw, content_type="video/mp4", title=""):
+    """Import an owned talking-video master for HeyGen Precision lipsync."""
+    if not raw or len(raw) > VIDEO_IMPORT_MAX_BYTES:
+        raise ValueError("真人源视频不能为空且不能超过 %dMB" %
+                         (VIDEO_IMPORT_MAX_BYTES // 1024 // 1024))
+    mime = str(content_type or "").split(";", 1)[0].strip().lower()
+    if mime not in {"video/mp4", "application/octet-stream"}:
+        raise ValueError("真人源视频仅支持 MP4")
+    if len(raw) < 12 or raw[4:8] != b"ftyp":
+        raise ValueError("文件不是有效的 MP4")
+
+    VIDEO_OUT_DIR.mkdir(parents=True, exist_ok=True)
+    temp_path = None
+    final_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+                prefix=".lipsync-source-", suffix=".mp4",
+                dir=VIDEO_OUT_DIR, delete=False) as handle:
+            handle.write(raw)
+            temp_path = pathlib.Path(handle.name)
+        probe = subprocess.run([
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=width,height,r_frame_rate:format=duration",
+            "-of", "json", str(temp_path),
+        ], capture_output=True, text=True, timeout=30)
+        if probe.returncode != 0:
+            raise ValueError("视频无法解析，请确认 MP4 文件完整")
+        info = json.loads(probe.stdout or "{}")
+        stream = (info.get("streams") or [{}])[0]
+        duration = float((info.get("format") or {}).get("duration") or 0)
+        width = int(stream.get("width") or 0)
+        height = int(stream.get("height") or 0)
+        if not width or not height or duration < 1:
+            raise ValueError("视频缺少有效画面或时长")
+        if duration > 300:
+            raise ValueError("真人源视频时长必须是 1-300 秒")
+
+        owner = hashlib.sha256(str(username).encode("utf-8")).hexdigest()[:12]
+        name = "lipsync_source_%s_%d_%s.mp4" % (
+            owner, int(time.time()), uuid.uuid4().hex[:10])
+        final_path = VIDEO_OUT_DIR / name
+        os.replace(temp_path, final_path)
+        temp_path = None
+        rel = "video/" + name
+        video_url = public_url(rel, "video/mp4", private=True)
+        clean_title = re.sub(r"\s+", " ", str(title or "")).strip()[:120]
+        record_video_asset(None, username, {
+            "mode": "lipsync_source", "video_file": rel,
+            "video_url": video_url, "text": clean_title or "真人口播源视频",
+            "resolution": "%dx%d" % (width, height),
+            "ratio": "16:9" if width >= height else "9:16",
+            "model": "Original Talking Video", "phase": "completed",
+            "status": "done",
+        })
+        with closing(adb()) as connection:
+            row = connection.execute(
+                "SELECT * FROM video_assets WHERE username=? AND video_file=? LIMIT 1",
+                (username, rel),
+            ).fetchone()
+        asset = dict(row) if row else {
+            "video_file": rel, "video_url": video_url, "status": "done",
+        }
+        asset.update({
+            "duration": duration, "width": width, "height": height,
+            "fps": stream.get("r_frame_rate") or "",
+        })
+        return asset
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError,
+            TypeError, ValueError) as exc:
+        if final_path:
+            try: final_path.unlink()
+            except OSError: pass
+        if isinstance(exc, ValueError):
+            raise
+        raise ValueError("真人源视频导入失败：%s" % str(exc)[:120])
+    finally:
+        if temp_path:
+            try: temp_path.unlink()
+            except OSError: pass
+
+
+def extract_lipsync_voice_sample(username, video_asset_id):
+    """Extract a private, bounded clone sample from an owned lipsync source."""
+    asset = get_video_asset(username, video_asset_id)
+    if not asset:
+        raise ValueError("真人源视频不存在或不属于当前账号")
+    if str(asset.get("mode") or "").strip().lower() != "lipsync_source":
+        raise ValueError("只能从本人上传的真人口播源视频提取音色")
+    source = _resolve_out_file(asset.get("video_file"))
+    if not source or not source.is_file() or not _user_owns_output_file(
+            username, asset.get("video_file")):
+        raise ValueError("真人源视频不存在或不属于当前账号")
+    video_digest = hashlib.sha256()
+    with source.open("rb") as source_handle:
+        for chunk in iter(lambda: source_handle.read(1024 * 1024), b""):
+            video_digest.update(chunk)
+
+    AUDIO_OUT_DIR.mkdir(parents=True, exist_ok=True)
+    sample_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+                prefix=".lipsync-voice-sample-", suffix=".mp3",
+                dir=AUDIO_OUT_DIR, delete=False) as handle:
+            sample_path = pathlib.Path(handle.name)
+        converted = subprocess.run([
+            "ffmpeg", "-y", "-v", "error", "-i", str(source),
+            "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000",
+            "-b:a", "48k", "-t", "60", str(sample_path),
+        ], capture_output=True, text=True, timeout=90)
+        if converted.returncode != 0 or not sample_path.is_file() \
+                or sample_path.stat().st_size < 256:
+            raise ValueError("视频中没有可用人声，请上传一条正在清晰说话的真人视频")
+        raw = sample_path.read_bytes()
+        duration = 0.0
+        probed = subprocess.run([
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", str(sample_path),
+        ], capture_output=True, text=True, timeout=20)
+        if probed.returncode == 0:
+            try:
+                duration = round(float((probed.stdout or "0").strip()), 3)
+            except (TypeError, ValueError):
+                duration = 0.0
+        return {
+            "video_asset_id": int(asset["id"]),
+            "video_sha256": video_digest.hexdigest(),
+            "audio": base64.b64encode(raw).decode("ascii"),
+            "audio_format": "mp3",
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "duration": duration,
+        }
+    except ValueError:
+        raise
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError("真人视频原声提取失败：%s" % str(exc)[:120]) from None
+    finally:
+        if sample_path:
+            try: sample_path.unlink()
+            except OSError: pass
+
 
 def get_video_job_phase(job_id):
     try:
