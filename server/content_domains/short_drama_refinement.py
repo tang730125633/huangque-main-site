@@ -5,6 +5,7 @@ local FFmpeg executor is enabled, it creates a paid 2K delivery from the
 accepted full-film draft while preserving immutable evidence.
 """
 
+import copy
 import hashlib
 import json
 import os
@@ -3320,6 +3321,135 @@ def mark_issue(db_factory, owner_username, actor_username, body):
         conn.commit()
         return _refinement(conn.execute(
             "SELECT * FROM short_drama_refinement_versions WHERE id=?", (new_id,),
+        ).fetchone())
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def keep_original_shot(db_factory, owner_username, actor_username, body):
+    """Resolve one refinement issue by explicitly accepting the original shot."""
+    project_id = str(body.get("project_id") or "").strip()
+    version_id = str(body.get("version_id") or "").strip()
+    shot_key = str(body.get("shot_key") or "").strip()
+    if not project_id or not version_id or not shot_key:
+        raise RefinementError(
+            "refinement_keep_original_invalid",
+            "保留原视频请求缺少必要信息", 422,
+        )
+    conn = _connection(db_factory)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _project(conn, owner_username, project_id)
+        current = _latest_refinement(conn, project_id)
+        if not current or current["id"] != version_id:
+            raise RefinementError(
+                "refinement_version_stale",
+                "精修版本已变化，请刷新后重新确认", 409,
+            )
+        if current["status"] == "confirmed":
+            raise RefinementError(
+                "refinement_locked", "已确认精修版本不可修改", 409,
+            )
+        shots = [dict(item) for item in current["shots"]]
+        shot = next(
+            (item for item in shots if str(item.get("shot_key")) == shot_key),
+            None,
+        )
+        issue = next(
+            (
+                dict(item) for item in current["issues"]
+                if str(item.get("shot_key") or "") == shot_key
+            ),
+            None,
+        )
+        if not shot:
+            raise RefinementError("shot_not_found", "目标镜头不存在", 404)
+        if not issue or not shot.get("issue"):
+            raise RefinementError(
+                "refinement_keep_original_not_required",
+                "该镜头没有待处理问题，无需取消重做", 409,
+            )
+        active_provider = conn.execute(
+            "SELECT 1 FROM short_drama_provider_shot_jobs "
+            "WHERE project_id=? AND shot_key=? "
+            "AND status IN "
+            "('billing','queued','submitting','running','submit_unknown') LIMIT 1",
+            (project_id, shot_key),
+        ).fetchone()
+        active_refinement = conn.execute(
+            "SELECT 1 FROM short_drama_refinement_jobs "
+            "WHERE project_id=? AND shot_key=? "
+            "AND status IN ('queued','running') LIMIT 1",
+            (project_id, shot_key),
+        ).fetchone()
+        if active_provider or active_refinement:
+            raise RefinementError(
+                "refinement_redo_active",
+                "当前镜头的重做任务正在执行，任务结束后才能保留原视频", 409,
+            )
+        now = int(time.time())
+        shot["status"] = "ready"
+        shot["issue"] = None
+        shot["refinement_resolution"] = {
+            "decision": "keep_original",
+            "issue_id": str(issue.get("issue_id") or ""),
+            "issue_code": str(issue.get("code") or ""),
+            "issue_message": str(issue.get("message") or ""),
+            "accepted_by": actor_username,
+            "accepted_at": now,
+            "source_refinement_version_id": current["id"],
+            "source_provider_version_id": str(
+                shot.get("provider_version_id") or ""
+            ),
+            "original_issue": copy.deepcopy(issue),
+            "source": {
+                "refinement_version_id": current["id"],
+                "provider_version_id": copy.deepcopy(
+                    shot.get("provider_version_id")
+                ),
+                "provider_version": copy.deepcopy(shot.get("provider_version")),
+                "provider_job_id": copy.deepcopy(shot.get("provider_job_id")),
+                "provider_file_hash": copy.deepcopy(shot.get("file_hash")),
+                "provider_file": copy.deepcopy(shot.get("file")),
+                "provider_url": copy.deepcopy(shot.get("url")),
+            },
+        }
+        issues = [
+            dict(item) for item in current["issues"]
+            if str(item.get("shot_key") or "") != shot_key
+        ]
+        version = int(conn.execute(
+            "SELECT COALESCE(MAX(version),0)+1 FROM "
+            "short_drama_refinement_versions WHERE project_id=?",
+            (project_id,),
+        ).fetchone()[0])
+        new_id = uuid.uuid4().hex
+        input_hash = _hash({
+            "source": current["input_hash"], "shots": shots,
+            "issues": issues, "decision": "keep_original",
+            "shot_key": shot_key, "accepted_by": actor_username,
+        })
+        conn.execute(
+            "INSERT INTO short_drama_refinement_versions "
+            "(id,project_id,source_draft_version_id,version,status,url,shots_json,"
+            "issues_json,input_hash,preview_file_hash,media_json,change_summary,"
+            "created_by,created_at) VALUES (?,?,?,?, 'draft',?,?,?,?,?,?,?,?,?)",
+            (
+                new_id, project_id, current["source_draft_version_id"], version,
+                current["url"], _json_text(shots), _json_text(issues), input_hash,
+                str(current.get("preview_file_hash") or ""),
+                _json_text(current.get("media") or {}),
+                "人工接受原片 %s（保留已知问题）" % shot_key,
+                actor_username, now,
+            ),
+        )
+        conn.commit()
+        return _refinement(conn.execute(
+            "SELECT * FROM short_drama_refinement_versions WHERE id=?",
+            (new_id,),
         ).fetchone())
     except Exception:
         conn.rollback()

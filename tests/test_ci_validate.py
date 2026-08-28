@@ -190,8 +190,20 @@ if (!result.info.description.includes('共 1 个操作')) process.exit(1);
             for method, route_paths in route_table.items()
             for path in route_paths
         }
-        self.assertEqual(134, len(short_drama_registered))
+        self.assertEqual(136, len(short_drama_registered))
         self.assertEqual(set(), short_drama_registered - documented)
+
+        for path in (
+            "/api/gen/short-drama/autodraft/legacy-media/recover",
+            "/api/gen/short-drama/refinement/issues/keep-original",
+        ):
+            operation = spec["paths"][path]["post"]
+            self.assertIn("requestBody", operation)
+            self.assertIn("200", operation["responses"])
+            self.assertIn("401", operation["responses"])
+            self.assertIn("403", operation["responses"])
+            self.assertIn("404", operation["responses"])
+            self.assertEqual("state-write", operation["x-hq-test-safety"])
 
     def test_openapi_validates_live_action_import_and_role_saves(self) -> None:
         spec = load_json_strict(Path("docs/api/openapi.json"))

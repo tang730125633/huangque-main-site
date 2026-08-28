@@ -5611,6 +5611,7 @@ _HTTP_ROUTES = {
         "/api/gen/short-drama/preflight/confirm",
         "/api/gen/short-drama/autodraft/provider-preflight",
         "/api/gen/short-drama/autodraft/provider-quote",
+        "/api/gen/short-drama/autodraft/legacy-media/recover",
         "/api/gen/short-drama/autodraft/provider-version/select",
         "/api/gen/short-drama/autodraft/provider-jobs",
         "/api/gen/short-drama/autodraft/provider-jobs/{job_id}/reconcile",
@@ -5622,6 +5623,7 @@ _HTTP_ROUTES = {
         "/api/gen/short-drama/refinement/candidates/reassemble",
         "/api/gen/short-drama/refinement/jobs",
         "/api/gen/short-drama/refinement/issues",
+        "/api/gen/short-drama/refinement/issues/keep-original",
         "/api/gen/short-drama/refinement/media-preference",
         "/api/gen/short-drama/refinement/reassemble",
         "/api/gen/short-drama/refinement/confirm",
@@ -6348,7 +6350,15 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
             owner = _project_username_for_access(
                 db_factory, username, project_id, access, write=True,
             )
-            if path == "/api/gen/short-drama/autodraft/provider-preflight":
+            if path == "/api/gen/short-drama/autodraft/legacy-media/recover":
+                if username != owner:
+                    raise PermissionError(
+                        "only the project owner can recover legacy media"
+                    )
+                result = short_drama_autodraft.recover_legacy_native_media(
+                    db_factory, owner, body,
+                )
+            elif path == "/api/gen/short-drama/autodraft/provider-preflight":
                 result = short_drama_autodraft.preview_provider_request(
                     db_factory, owner, username, body,
                     avatar_lookup=avatar_lookup,
@@ -6453,6 +6463,10 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
                 )
             elif path == "/api/gen/short-drama/refinement/issues":
                 result = short_drama_refinement.mark_issue(
+                    db_factory, owner, username, body,
+                )
+            elif path == "/api/gen/short-drama/refinement/issues/keep-original":
+                result = short_drama_refinement.keep_original_shot(
                     db_factory, owner, username, body,
                 )
             elif path == "/api/gen/short-drama/refinement/media-preference":

@@ -1881,6 +1881,7 @@ def reap_short_drama_native_orphans(now=None, grace_seconds=6 * 3600):
         recognized = (
             name.startswith("minimax_h3_raw_")
             or name.startswith("minimax_h3_derived_")
+            or name.startswith("legacy_recovery_raw_")
         )
         if not recognized or not candidate.is_file():
             continue

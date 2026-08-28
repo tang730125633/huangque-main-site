@@ -4170,6 +4170,129 @@ class ShortDramaRefinementTests(unittest.TestCase):
         self.assertEqual([], current["current_refinement"]["issues"])
         self.assertIsNone(current["acceptance"])
 
+    def test_keep_original_resolves_issue_without_replacing_media(self):
+        current = short_drama_refinement.workspace(
+            self.db, "alice", "alice", self.project["id"]
+        )["current_refinement"]
+        source_shot = next(
+            item for item in current["shots"] if item["shot_key"] == "shot_02"
+        )
+
+        kept = short_drama_refinement.keep_original_shot(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "version_id": current["id"],
+                "shot_key": "shot_02",
+            },
+        )
+
+        self.assertEqual([], kept["issues"])
+        self.assertEqual("draft", kept["status"])
+        kept_shot = next(
+            item for item in kept["shots"] if item["shot_key"] == "shot_02"
+        )
+        self.assertEqual("ready", kept_shot["status"])
+        self.assertIsNone(kept_shot["issue"])
+        self.assertEqual(
+            source_shot.get("provider_version_id"),
+            kept_shot.get("provider_version_id"),
+        )
+        self.assertEqual(
+            source_shot.get("file_hash"), kept_shot.get("file_hash")
+        )
+        self.assertEqual(
+            "keep_original",
+            kept_shot["refinement_resolution"]["decision"],
+        )
+        self.assertEqual(
+            current["issues"][0].get("issue_id", ""),
+            kept_shot["refinement_resolution"]["issue_id"],
+        )
+        self.assertEqual("alice", kept_shot["refinement_resolution"]["accepted_by"])
+        self.assertEqual(
+            current["issues"][0]["message"],
+            kept_shot["refinement_resolution"]["issue_message"],
+        )
+        self.assertEqual(
+            current["issues"][0],
+            kept_shot["refinement_resolution"]["original_issue"],
+        )
+        self.assertEqual(
+            current["id"],
+            kept_shot["refinement_resolution"]["source"][
+                "refinement_version_id"
+            ],
+        )
+        self.assertEqual(
+            source_shot.get("provider_job_id"),
+            kept_shot["refinement_resolution"]["source"]["provider_job_id"],
+        )
+        self.assertEqual(
+            source_shot.get("file_hash"),
+            kept_shot["refinement_resolution"]["source"]["provider_file_hash"],
+        )
+        refreshed = short_drama_refinement.workspace(
+            self.db, "alice", "alice", self.project["id"]
+        )["current_refinement"]
+        self.assertEqual(kept["id"], refreshed["id"])
+        self.assertEqual(current["url"], refreshed["url"])
+        self.assertFalse(refreshed["assembly_status"]["reassembly_required"])
+
+    def test_keep_original_rejects_active_generation_and_candidate_adoption(self):
+        current = short_drama_refinement.workspace(
+            self.db, "alice", "alice", self.project["id"]
+        )["current_refinement"]
+        for status in ("running", "submit_unknown"):
+            conn = self.db()
+            try:
+                conn.execute(
+                    "UPDATE short_drama_provider_shot_jobs SET status=? "
+                    "WHERE id='provider-job-shot_02'", (status,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            with self.subTest(provider_status=status):
+                with self.assertRaises(
+                    short_drama_refinement.RefinementError
+                ) as active_video:
+                    short_drama_refinement.keep_original_shot(
+                        self.db, "alice", "alice", {
+                            "project_id": self.project["id"],
+                            "version_id": current["id"], "shot_key": "shot_02",
+                        },
+                    )
+                self.assertEqual(
+                    "refinement_redo_active", active_video.exception.code
+                )
+
+        conn = self.db()
+        try:
+            conn.execute(
+                "UPDATE short_drama_provider_shot_jobs SET status='succeeded' "
+                "WHERE id='provider-job-shot_02'"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        replacement_id = self.add_provider_replacement("shot_02")
+        short_drama_refinement.start_refinement_job(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"], "shot_key": "shot_02",
+                "source_version_id": current["id"],
+                "replacement_provider_version_id": replacement_id,
+                "defer_reassembly": True,
+            }, "active-candidate-adoption",
+        )
+        with self.assertRaises(short_drama_refinement.RefinementError) as active_adoption:
+            short_drama_refinement.keep_original_shot(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"],
+                    "version_id": current["id"], "shot_key": "shot_02",
+                },
+            )
+        self.assertEqual("refinement_redo_active", active_adoption.exception.code)
+
     def test_marked_v3_rejects_historical_v2_until_new_v4_exists(self):
         current = self.confirmed_version("provider-monotonic-v2")
         marked_v2 = short_drama_refinement.mark_issue(
@@ -5177,6 +5300,23 @@ class ShortDramaRefinementTests(unittest.TestCase):
         self.assertTrue(short_drama.dispatch_http(issue, "POST", self.db, verify))
         self.assertEqual(200, issue.response[0])
         self.assertEqual("shot_01", issue.response[1]["issues"][-1]["shot_key"])
+
+        keep_original = Handler(
+            "/api/gen/short-drama/refinement/issues/keep-original",
+            body={
+                "project_id": self.project["id"],
+                "version_id": issue.response[1]["id"],
+                "shot_key": "shot_01",
+            },
+        )
+        self.assertTrue(short_drama.dispatch_http(
+            keep_original, "POST", self.db, verify
+        ))
+        self.assertEqual(200, keep_original.response[0])
+        self.assertEqual(
+            ["shot_02"],
+            [item["shot_key"] for item in keep_original.response[1]["issues"]],
+        )
 
 
     def test_local_ffmpeg_process_output_is_utf8_tolerant_on_windows(self):

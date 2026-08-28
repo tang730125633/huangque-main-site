@@ -11215,6 +11215,121 @@
         "x-hq-runtime-status": "pending-deployment"
       }
     },
+    "/api/gen/short-drama/autodraft/legacy-media/recover": {
+      "post": {
+        "tags": [
+          "短剧策划"
+        ],
+        "summary": "项目所有者校验并恢复历史原生 2K 镜头",
+        "description": "【会写数据、不会扣点】仅项目所有者可显式执行。服务端对缺少现代媒体证据的历史 MP4 建立稳定快照，重新校验文件身份、原生分辨率、可听音轨、SHA-256、大小与 faststart 派生文件；成功后更新采用版本和任务审计记录，失败镜头保持原状。重复执行会跳过已具备有效证据的镜头。",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XCanvasBoardId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "project_id"
+                ],
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "返回本次恢复、失败与因状态变化跳过的镜头；重复调用不会重复恢复",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "project_id",
+                    "recovered_shot_keys",
+                    "failed_shots",
+                    "skipped_shot_keys"
+                  ],
+                  "properties": {
+                    "project_id": {
+                      "type": "string"
+                    },
+                    "recovered_shot_keys": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "failed_shots": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "shot_key",
+                          "code",
+                          "detail"
+                        ],
+                        "properties": {
+                          "shot_key": {
+                            "type": "string"
+                          },
+                          "code": {
+                            "type": "string"
+                          },
+                          "detail": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    "skipped_shot_keys": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求体或项目 ID 无效"
+          },
+          "401": {
+            "description": "未登录或登录已过期"
+          },
+          "403": {
+            "description": "账号必须先修改初始密码，或当前账号不是项目所有者"
+          },
+          "404": {
+            "description": "项目不存在或当前账号无权发现"
+          },
+          "409": {
+            "description": "项目存在活动媒体生成、候选采用、精修或合成任务；或缺少已确认制作方案，或媒体校验、文件身份、版本状态发生冲突"
+          },
+          "422": {
+            "description": "请求字段不符合恢复合同"
+          },
+          "500": {
+            "description": "本地探测、复制或 faststart 派生执行异常"
+          }
+        },
+        "x-hq-test-safety": "state-write",
+        "x-hq-runtime-status": "pending-deployment"
+      }
+    },
+
     "/api/gen/short-drama/autodraft/provider-preflight": {
       "post": {
         "tags": [
@@ -16196,6 +16311,68 @@
         "x-hq-runtime-status": "active"
       }
     },
+    "/api/gen/short-drama/refinement/issues/keep-original": {
+      "post": {
+        "tags": [
+          "短剧策划"
+        ],
+        "summary": "保留原镜头并取消该镜头重做",
+        "description": "【会写数据、不会扣点】将当前问题镜头记录为人工接受原片的不可变精修新版本，保留原问题审计。目标镜头存在计费、排队、提交、运行、提交状态未知的 Provider 任务，或存在活动精修任务时返回冲突。",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "project_id",
+                  "version_id",
+                  "shot_key"
+                ],
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "version_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "shot_key": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "返回保留原片后的新精修版本；原问题保存在 refinement_resolution 审计记录中"
+          },
+          "400": {
+            "description": "请求字段无效"
+          },
+          "401": {
+            "description": "未登录或登录已过期"
+          },
+          "403": {
+            "description": "账号状态或项目写权限不允许"
+          },
+          "404": {
+            "description": "项目、精修版本或镜头不存在"
+          },
+          "409": {
+            "description": "来源不是当前精修版本、目标镜头没有待处理问题，或同镜头仍有活动生成/采用任务"
+          }
+        },
+        "x-hq-test-safety": "state-write",
+        "x-hq-runtime-status": "pending-deployment"
+      }
+    },
+
     "/api/gen/short-drama/refinement/candidates/adopt": {
       "post": {
         "tags": ["短剧策划"],
@@ -24336,17 +24513,17 @@
     }
   },
   "x-hq-document-audit": {
-    "verified_at": "2026-08-25",
-    "total_paths": 292,
-    "total_operations": 307,
+    "verified_at": "2026-08-28",
+    "total_paths": 294,
+    "total_operations": 309,
     "active_operations": 287,
-    "production_route_probe_operations": 307,
-    "newly_documented_operations_vs_v2": 131,
+    "production_route_probe_operations": 309,
+    "newly_documented_operations_vs_v2": 133,
     "registry_http_operations": 79,
     "registry_documented_operations": 79,
-    "short_drama_registered_operations": 134,
-    "short_drama_documented_operations": 134,
-    "production_pending_operations": 17,
+    "short_drama_registered_operations": 136,
+    "short_drama_documented_operations": 136,
+    "production_pending_operations": 19,
     "production_routing_unavailable_operations": 2,
     "deprecated_operations": 1,
     "customer_frontend_calls_audited": true,
