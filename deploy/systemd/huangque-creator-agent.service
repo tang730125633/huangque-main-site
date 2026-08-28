@@ -13,7 +13,7 @@ EnvironmentFile=-/home/ubuntu/auth-service/auth.env
 EnvironmentFile=-/etc/huangque/creator-agent.env
 Environment=PYTHONUNBUFFERED=1
 Environment=CREATOR_AGENT_DB=/var/lib/huangque-creator-agent/creator_agent.db
-ExecStart=/usr/bin/python3 /opt/huangque/creator-agent/current/creator_agent_api.py --host 127.0.0.1 --port 8114
+ExecStart=/opt/huangque/creator-agent/current/.venv/bin/python /opt/huangque/creator-agent/current/creator_agent_api.py --host 127.0.0.1 --port 8114
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=20

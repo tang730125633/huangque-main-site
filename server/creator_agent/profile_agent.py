@@ -63,32 +63,52 @@ MODULES = {
     1: {
         "name": "定位诊断",
         "questions": (
-            {"key": "identity", "question": "先介绍一下你现在的身份、工作或正在做的事情。", "template": "我是___，目前主要在做___。"},
-            {"key": "turning_points", "question": "你经历过哪些重要转折？请先讲一段最影响你的真实经历。", "template": "当时___，我遇到___，后来___，这让我___。"},
-            {"key": "skills", "question": "你最能帮助别人的两项能力是什么？最好各举一个结果。", "template": "能力1：___，曾经做到___；能力2：___，曾经做到___。"},
-            {"key": "interests_values", "question": "哪些方向你愿意长期投入？你最看重的原则是什么？", "template": "我长期关注___；我坚持___，不愿意___。"},
-            {"key": "audience_problem", "question": "你最想帮助哪类人？他们现在最具体的困难是什么？", "template": "我想帮助___，他们常遇到___，希望最终___。"},
+            {"key": "basic_context", "question": "了解用户希望使用的姓名或昵称、年龄阶段和所在城市。", "template": "你可以介绍昵称、年龄阶段和所在城市；不想公开的可以跳过。"},
+            {"key": "career_identity", "question": "了解当前职业、身份和主要在做的事情。", "template": "我目前是___，主要负责或正在做___。"},
+            {"key": "career_history", "question": "了解从业年限以及做过的行业和岗位轨迹。", "template": "我从业___年，先后做过___。"},
+            {"key": "income_context", "question": "可选了解主要收入来源和收入阶段，用于判断商业化基础。", "template": "主要收入来自___；收入阶段可选：10万以下、10-30万、30-50万、50-100万、100万以上。", "options": ["暂不透露", "10万以下", "10-30万", "30-50万", "50-100万", "100万以上"]},
+            {"key": "low_point", "question": "了解人生中最大的挫折或低谷，以及如何走出来。", "template": "当时发生了___，我跌到___，后来通过___走了出来。"},
+            {"key": "achievement", "question": "了解最有成就感且有具体结果的一件事。", "template": "我做过___，最终获得了___结果。"},
+            {"key": "praised_traits", "question": "了解别人最常称赞的能力或特质。", "template": "别人经常夸我___，通常因为___。"},
+            {"key": "criticized_traits", "question": "了解别人最常吐槽的缺点或争议点。", "template": "别人常说我___，我认为其中___。"},
+            {"key": "proven_ability", "question": "了解经过实战验证的最强能力及证据。", "template": "我最擅长___，曾经做到___。"},
+            {"key": "content_track", "question": "了解计划长期创作的行业或内容赛道。", "template": "我想长期做___赛道，主要因为___。"},
+            {"key": "target_audience", "question": "明确最具体的目标受众。", "template": "我想服务___人群，他们通常处于___阶段。"},
+            {"key": "audience_pain", "question": "明确能为目标受众解决的1-3个核心痛点。", "template": "他们最困扰的是___；我能帮助他们___。"},
+            {"key": "differentiation", "question": "明确为什么目标用户应该相信和选择该用户。", "template": "与其他人相比，我的真实差异是___，证据是___。"},
+            {"key": "existing_accounts", "question": "了解已有内容平台、粉丝规模、运营时长和现状。", "template": "我目前在___平台有账号，约___粉丝，运营了___；没有也可以直接说明。"},
         ),
     },
     2: {
         "name": "人设塑造",
         "questions": (
-            {"key": "communication_style", "question": "你希望别人感受到怎样的你？可以选择，也可以自己描述。", "options": ["专业可靠", "真实亲切", "犀利直接"], "template": "我希望呈现___，但不要显得___。"},
-            {"key": "future_identity", "question": "未来三年，你希望自己因为什么被记住？", "template": "我希望成为___领域里，能够___的人。"},
+            {"key": "personality_words", "question": "用三个真实词语概括用户的性格。", "template": "三个词：___、___、___。"},
+            {"key": "communication_style", "question": "了解希望呈现的说话风格，可选择1-2个并补充。", "options": ["犀利直接", "温暖走心", "专业理性", "幽默轻松"], "template": "我希望表达偏___，但不要显得___。"},
+            {"key": "disliked_style", "question": "了解特别不喜欢的博主风格和原因。", "template": "我不喜欢___类型，因为___。"},
+            {"key": "content_habits", "question": "了解朋友圈、聊天和日常发内容的习惯与禁忌。", "template": "我平时爱发___，不爱发___，绝不会___。"},
         ),
     },
     3: {
         "name": "价值主张",
         "questions": (
-            {"key": "desired_impression", "question": "别人提到你时，你最希望他们第一句话怎么评价你？", "template": "他/她是那个能帮我___的人。"},
-            {"key": "proof", "question": "你有哪些真实经历、方法或结果，能证明这件事？", "template": "我的证明包括：经历___；方法___；结果___。"},
+            {"key": "memorable_statement", "question": "了解最想让别人记住的一句话或核心信念。", "template": "我最希望别人记住：___。"},
+            {"key": "self_intro", "question": "提炼一句真实的自我介绍。", "template": "我是___，专门帮助___解决___。"},
+            {"key": "trust_reason", "question": "了解客户或朋友愿意信任和跟随的真实原因。", "template": "他们愿意相信我，是因为我___，并且做到了___。"},
+            {"key": "ip_goal", "question": "明确做IP的主要商业目标。", "options": ["引流获客", "卖课或卖产品", "打造个人品牌", "其他"], "template": "我做IP最想实现___。"},
+            {"key": "time_commitment", "question": "了解每周可稳定投入的时间。", "template": "我预计每天投入___小时，或每周投入___天。"},
+            {"key": "products_services", "question": "了解当前可销售或承接的产品和服务。", "template": "我目前可以提供___，主要价格或交付方式是___。"},
+            {"key": "short_term_goal", "question": "明确未来3个月可验证的阶段目标。", "template": "未来3个月，我希望做到___。"},
+            {"key": "long_term_goal", "question": "明确未来1年的长期目标。", "template": "未来1年，我希望成为___，并实现___。"},
         ),
     },
     4: {
         "name": "故事资产",
         "questions": (
-            {"key": "core_story", "question": "请讲一个最能代表你的完整故事：起点、冲突、转折和结果分别是什么？", "template": "起点___；冲突___；转折___；结果___。"},
-            {"key": "story_meaning", "question": "你希望这个故事让目标用户感受到什么，并记住你什么品质？", "template": "我希望他们感受到___，记住我的___，相信___。"},
+            {"key": "comeback_story", "question": "挖掘一次绝境翻身的完整故事。", "template": "当时的处境___；最难的是___；我通过___扛过来；结果___。"},
+            {"key": "pitfall_story", "question": "挖掘一次踩过的大坑及真实教训。", "template": "我曾经因为___损失或失败___；后来明白___。"},
+            {"key": "success_story", "question": "挖掘一次从普通状态到成功结果的逆袭故事。", "template": "起点___；关键转折___；行动___；最终结果___。"},
+            {"key": "dramatic_story", "question": "挖掘特别奇葩、戏剧化或反差强烈的真实经历。", "template": "最出乎意料的一次经历是___，当时___，结果___。"},
+            {"key": "team_project", "question": "了解带团队或负责项目的规模、结果和踩坑经验。", "template": "我带过___人的团队或负责___项目，结果___，最大的教训是___。"},
         ),
     },
 }
@@ -113,7 +133,55 @@ def current_question(state):
     module = max(1, min(4, int(state.get("current_module") or 1)))
     questions = MODULES[module]["questions"]
     index = max(0, min(len(questions) - 1, int(state.get("question_index") or 0)))
+    base = {"module": module, "module_name": MODULES[module]["name"], **questions[index]}
+    active = state.get("active_question")
+    if (
+        isinstance(active, dict)
+        and int(active.get("module") or 0) == module
+        and str(active.get("key") or "") == base["key"]
+        and isinstance(active.get("question"), str)
+        and active["question"].strip()
+    ):
+        return {
+            **base,
+            "question": active["question"].strip()[:500],
+            "template": str(active.get("template") or "").strip()[:500],
+            "options": list(active.get("options") or [])[:6],
+        }
+    return base
+
+
+def next_question_goal(state):
+    module = max(1, min(4, int(state.get("current_module") or 1)))
+    index = int(state.get("question_index") or 0) + 1
+    questions = MODULES[module]["questions"]
+    if index >= len(questions):
+        return None
     return {"module": module, "module_name": MODULES[module]["name"], **questions[index]}
+
+
+def _dynamic_question(value, target):
+    if not isinstance(value, dict) or not isinstance(target, dict):
+        raise ProfileAgentError("DeepSeek next question is missing")
+    raw_options = value.get("options")
+    if not isinstance(raw_options, list) or len(raw_options) > 6:
+        raise ProfileAgentError("DeepSeek question options must be a list")
+    options = []
+    for index, item in enumerate(raw_options):
+        text = _required_text(item, "question.options[%d]" % index, 80)
+        if text in options:
+            raise ProfileAgentError("DeepSeek question options contain duplicates")
+        options.append(text)
+    return {
+        "module": int(target["module"]),
+        "module_name": str(target["module_name"]),
+        "key": str(target["key"]),
+        "question": _required_content(value.get("question"), "question.question", 500, 4),
+        "template": _required_content(
+            value.get("template"), "question.template", 500, 0,
+        ),
+        "options": options,
+    }
 
 
 class DeepSeekProfileAgent:
@@ -192,37 +260,84 @@ class DeepSeekProfileAgent:
             raise ProfileAgentError("DeepSeek returned invalid JSON")
         return value
 
+    def ask_question(self, state, transition="开始画像访谈"):
+        target = {
+            key: value for key, value in current_question({
+                **state, "active_question": None,
+            }).items()
+            if key in {"module", "module_name", "key", "question", "template", "options"}
+        }
+        value = self._call(
+            "你是黄雀独立个人画像 Agent，负责通过自然对话逐步了解用户。"
+            "根据字段目标、已知回答和已确认模块，提出一个贴合用户上下文的问题。"
+            "不要照抄字段目标，不要一次问多个问题，不得编造用户信息。"
+            "返回 JSON：reply(string)、question(object)。reply 是你本轮对用户说的完整内容；"
+            "question 包含 question(string)、template(string)、options(array)。",
+            {
+                "transition": str(transition or "")[:500],
+                "question_goal": target,
+                "known_answers": state.get("answers") or {},
+                "confirmed_modules": state.get("selected_profiles") or {},
+                "skipped_questions": state.get("skipped_questions") or [],
+            },
+        )
+        return {
+            "reply": _required_content(value.get("reply"), "reply", 1600, 4),
+            "question": _dynamic_question(value.get("question"), target),
+        }
+
     def capture_answer(self, state, message):
         question = current_question(state)
+        current_goal = current_question({**state, "active_question": None})
+        next_goal = next_question_goal(state)
         value = self._call(
-            "你是黄雀独立个人画像 Agent。只理解用户对当前问题的回答，不编造事实。"
-            "返回 JSON：accepted(bool)、value(string)、ack(string)、clarification(string)。"
-            "回答含有效事实时 accepted=true；过于空泛才追问。value 是忠实、简洁的事实记录。",
+            "你是黄雀独立个人画像 Agent。理解用户对当前问题的真实意图，不编造事实。"
+            "返回 JSON：action(string)、accepted(bool)、value(string)、reply(string)、"
+            "next_question(object|null)。action 只能是 answer、skip、clarify。"
+            "有效事实用 action=answer、accepted=true，value 忠实提炼用户事实；"
+            "明确跳过、下一题、暂时或不想回答时用 action=skip；含义不清才用 action=clarify。"
+            "reply 必须是你直接回复用户的完整自然语言。若 action 为 answer/skip 且存在"
+            "next_question_goal，next_question 必须按目标生成 question、template、options；"
+            "不得照抄目标问题。clarify 时 next_question 必须围绕 current_question_goal"
+            "重新组织本轮追问，不推进字段。",
             {
                 "current_question": question,
+                "current_question_goal": current_goal,
+                "next_question_goal": next_goal,
                 "known_answers": state.get("answers") or {},
+                "confirmed_modules": state.get("selected_profiles") or {},
                 "user_answer": str(message or "")[:4000],
             },
         )
         if not isinstance(value.get("accepted"), bool):
             raise ProfileAgentError("DeepSeek accepted must be boolean")
+        action = _required_text(value.get("action"), "action", 16)
+        if action not in {"answer", "skip", "clarify"}:
+            raise ProfileAgentError("DeepSeek action is invalid")
         accepted = value["accepted"]
-        captured = _required_text(
+        captured = _required_content(
             value.get("value"), "value", 1600,
-            minimum=1 if accepted else 0,
+            minimum=1 if action == "answer" else 0,
         )
-        if accepted and not captured:
-            accepted = False
-        ack = _required_text(value.get("ack"), "ack", 300)
-        clarification = _required_text(
-            value.get("clarification"), "clarification", 300,
-            minimum=0 if accepted else 1,
-        )
+        if accepted is not (action == "answer"):
+            raise ProfileAgentError("DeepSeek action and accepted disagree")
+        if action != "answer" and captured:
+            raise ProfileAgentError("DeepSeek non-answer action contains a value")
+        raw_next = value.get("next_question")
+        if action == "clarify":
+            next_question = _dynamic_question(raw_next, current_goal)
+        elif action in {"answer", "skip"} and next_goal:
+            next_question = _dynamic_question(raw_next, next_goal)
+        else:
+            if raw_next is not None:
+                raise ProfileAgentError("DeepSeek returned an unexpected next question")
+            next_question = None
         return {
+            "action": action,
             "accepted": accepted,
             "value": captured,
-            "ack": ack,
-            "clarification": clarification,
+            "reply": _required_content(value.get("reply"), "reply", 1600, 2),
+            "next_question": next_question,
         }
 
     def build_module_review(self, state, module):
@@ -254,7 +369,8 @@ class DeepSeekProfileAgent:
         current = (state.get("module_reviews") or {}).get(str(module)) or {}
         value = self._call(
             "根据用户修改要求更新当前画像模块。只能修改用户指出的内容，不得编造新事实。"
-            "返回与 current_review 相同结构的 JSON：summary、options；每项必须保留非空"
+            "返回 JSON：reply、summary、options。reply 是直接回复用户的完整自然语言；"
+            "summary、options 与 current_review 结构相同，每项必须保留非空"
             "title、one_liner 以及 strengths、risks 字符串数组。",
             {
                 "module": module,
@@ -274,6 +390,7 @@ class DeepSeekProfileAgent:
         return {
             "module": module,
             "module_name": MODULES[module]["name"],
+            "reply": _required_content(value.get("reply"), "reply", 1600, 2),
             "summary": _required_text(value.get("summary"), "summary", 6000, minimum=2),
             "options": options,
         }
@@ -356,3 +473,79 @@ class DeepSeekProfileAgent:
             {"profile": profile, "message": str(message or "")[:4000]},
         )
         return _required_text(value.get("reply"), "reply", 1600, 2)
+
+    def complete_profile(self, profile):
+        value = self._call(
+            "你是黄雀独立个人画像 Agent。用户已完成画像模块选择。"
+            "基于提供的真实画像，生成一段简洁、有完成感的回复，说明画像已保存，并自然引导"
+            "用户继续生成选题计划或制作模板视频。不得编造成果。返回 JSON：reply(string)。",
+            {"profile": profile},
+        )
+        return _required_content(value.get("reply"), "reply", 1600, 4)
+
+    def interpret_intent(self, profile, flow, message):
+        allowed = [
+            "chat", "topic_plan", "revise_copy", "view_preferences",
+            "clear_preferences", "start_video", "regenerate_video",
+            "modify_profile", "confirm_plan",
+        ]
+        value = self._call(
+            "你是黄雀独立创作 Agent 的意图路由器。根据用户画像、当前流程和本轮原话理解意图。"
+            "只返回 JSON：intent(string)、payload(object)。intent 必须来自 allowed_intents。"
+            "payload 只可包含 topic(string)、platforms(array)、platform(string)，并忠实提取用户原话；"
+            "flow.mode=template_collect 时，用户提供主题应返回 start_video 并提取 topic；"
+            "flow.mode=template_review 时，用户提出修改应返回 regenerate_video。"
+            "不要把普通聊天误判为执行动作；涉及扣点的 confirm_payment 不能由自由文本触发。",
+            {
+                "profile": profile,
+                "flow": flow if isinstance(flow, dict) else {},
+                "message": str(message or "")[:4000],
+                "allowed_intents": allowed,
+            },
+        )
+        intent = _required_text(value.get("intent"), "intent", 40)
+        if intent not in allowed:
+            raise ProfileAgentError("DeepSeek intent is invalid")
+        raw_payload = value.get("payload")
+        if not isinstance(raw_payload, dict) or set(raw_payload) - {
+            "topic", "platforms", "platform",
+        }:
+            raise ProfileAgentError("DeepSeek intent payload is invalid")
+        payload = {}
+        if "topic" in raw_payload:
+            payload["topic"] = _required_content(
+                raw_payload.get("topic"), "payload.topic", 400, 0,
+            )
+        allowed_platforms = {"douyin", "xiaohongshu", "wechat_channels"}
+        if "platforms" in raw_payload:
+            values = raw_payload.get("platforms")
+            if not isinstance(values, list):
+                raise ProfileAgentError("DeepSeek platforms must be a list")
+            platforms = []
+            for item in values:
+                platform = _required_text(item, "payload.platforms", 40)
+                if platform not in allowed_platforms:
+                    raise ProfileAgentError("DeepSeek platform is invalid")
+                if platform not in platforms:
+                    platforms.append(platform)
+            payload["platforms"] = platforms
+        if "platform" in raw_payload:
+            platform = _required_text(raw_payload.get("platform"), "payload.platform", 40)
+            if platform not in allowed_platforms:
+                raise ProfileAgentError("DeepSeek platform is invalid")
+            payload["platform"] = platform
+        return {"intent": intent, "payload": payload}
+
+    def compose_reply(self, profile, message, event, draft_reply):
+        value = self._call(
+            "你是黄雀独立创作 Agent。根据用户原话、个人画像和后端已完成的事件，生成本轮最终回复。"
+            "必须忠实于 event 和 draft_reply，不得声称未发生的扣点、生成或发布；"
+            "一次最多提出一个必要问题，语言自然简洁。返回 JSON：reply(string)。",
+            {
+                "profile": profile,
+                "user_message": str(message or "")[:4000],
+                "event": event if isinstance(event, dict) else {},
+                "draft_reply": str(draft_reply or "")[:2000],
+            },
+        )
+        return _required_content(value.get("reply"), "reply", 2000, 2)

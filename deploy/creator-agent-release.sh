@@ -42,8 +42,11 @@ trap cleanup EXIT
 for file in "$ROOT/server/creator_agent_api.py" "$ROOT/server/creator_agent/__init__.py" \
             "$ROOT/server/creator_agent/store.py" "$ROOT/server/creator_agent/planner.py" \
             "$ROOT/server/creator_agent/profile_agent.py" \
+            "$ROOT/server/creator_agent/profile_pdf.py" \
             "$ROOT/server/creator_agent/model_usage.py" \
-            "$ROOT/server/creator_agent/service.py" "$UNIT_SOURCE" "$NGINX_SOURCE"; do
+            "$ROOT/server/creator_agent/service.py" \
+            "$ROOT/deploy/requirements-creator-agent.txt" \
+            "$UNIT_SOURCE" "$NGINX_SOURCE"; do
   [[ -f "$file" && ! -L "$file" ]] || { echo "missing release file: $file" >&2; exit 2; }
 done
 if [[ "${CREATOR_AGENT_VALIDATE_ONLY:-0}" == "1" ]]; then
@@ -74,7 +77,14 @@ chmod 0755 "$NEW_RELEASE"
 install -d -o root -g root -m 0755 "$NEW_RELEASE/creator_agent"
 install -o root -g root -m 0644 "$ROOT/server/creator_agent_api.py" "$NEW_RELEASE/creator_agent_api.py"
 install -o root -g root -m 0644 "$ROOT/server/creator_agent/"*.py "$NEW_RELEASE/creator_agent/"
-PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -m py_compile \
+install -o root -g root -m 0644 \
+  "$ROOT/deploy/requirements-creator-agent.txt" "$NEW_RELEASE/requirements.txt"
+/usr/bin/python3 -m venv "$NEW_RELEASE/.venv"
+"$NEW_RELEASE/.venv/bin/python" -m pip install \
+  --disable-pip-version-check --no-cache-dir \
+  --requirement "$NEW_RELEASE/requirements.txt"
+"$NEW_RELEASE/.venv/bin/python" -c 'import reportlab; from reportlab.platypus import SimpleDocTemplate'
+PYTHONDONTWRITEBYTECODE=1 "$NEW_RELEASE/.venv/bin/python" -m py_compile \
   "$NEW_RELEASE/creator_agent_api.py" "$NEW_RELEASE/creator_agent/"*.py
 ln -sfn "$NEW_RELEASE" "$CURRENT.next"
 mv -Tf "$CURRENT.next" "$CURRENT"

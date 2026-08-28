@@ -1905,6 +1905,26 @@ class HQCLIAPITests(unittest.TestCase):
             })
         self.assertEqual(400, raised.exception.status)
 
+    def test_director_capability_is_read_only_owner_authorized_discovery(self):
+        token = self._token(["director:read"])
+        status, payload = self._request("/api/auth/cli/action", {
+            "action": "director-capability", "input": {}, "confirm": False,
+        }, token=token)
+        self.assertEqual(200, status, payload)
+        self.assertEqual("director-workflow-contract-v1", payload["contract_version"])
+        self.assertEqual(1, payload["counts"]["available"])
+        actions = {item["id"]: item for item in payload["actions"]}
+        self.assertEqual("available", actions["director-capability"]["availability"])
+        self.assertEqual("planned", actions["director-production-start"]["availability"])
+        self.assertEqual("quote_then_confirm", actions["director-production-start"]["billing"])
+
+        token = self._token(["profile:read"])
+        status, payload = self._request("/api/auth/cli/action", {
+            "action": "director-capability", "input": {}, "confirm": False,
+        }, token=token)
+        self.assertEqual(403, status)
+        self.assertEqual("insufficient_scope", payload["code"])
+
     def test_server_requires_confirmation_for_external_ai_and_writes(self):
         token = self._token(["prompt:optimize", "ip12:write", "ip12:chat", "canvas:write", "assets:write",
                              "video-compose:write", "digital-presenter:write", "inspiration:write", "leads:write",

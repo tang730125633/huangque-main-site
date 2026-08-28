@@ -19,7 +19,11 @@ SERVER = ROOT / "server"
 sys.path.insert(0, str(SERVER))
 
 from creator_agent.planner import CreatorPlanner, GuidedPlanner, remember_preference
-from creator_agent.profile_agent import DeepSeekProfileAgent, initial_state
+from creator_agent.profile_agent import (
+    DeepSeekProfileAgent, MODULES, current_question, initial_state,
+    next_question_goal,
+)
+from creator_agent.profile_pdf import ProfilePDFError
 from creator_agent.model_usage import ModelUsageGuard
 from creator_agent.service import APIError, CreatorAgentHandler, CreatorAgentService, build_service
 from creator_agent.store import (
@@ -62,9 +66,42 @@ class FakeProfileAgent:
     def health(self):
         return True
 
+    @staticmethod
+    def _question(goal):
+        if not goal:
+            return None
+        return {
+            "module": goal["module"], "module_name": goal["module_name"],
+            "key": goal["key"], "question": "DeepSeek提问：" + goal["question"],
+            "template": goal.get("template") or "", "options": goal.get("options") or [],
+        }
+
+    def ask_question(self, state, transition=""):
+        goal = current_question({**state, "active_question": None})
+        question = self._question(goal)
+        self.calls.append(("ask_question", copy.deepcopy(state), transition))
+        return {"reply": question["question"], "question": question}
+
     def capture_answer(self, state, message):
         self.calls.append(("capture", copy.deepcopy(state), message))
-        return {"accepted": True, "value": message, "ack": "已记录。", "clarification": "请补充。"}
+        next_question = self._question(next_question_goal(state))
+        if message in {"跳过", "下一个问题", "继续下一个问题"}:
+            return {
+                "action": "skip", "accepted": False, "value": "",
+                "reply": (
+                    "DeepSeek已理解你想跳过。" +
+                    ((" " + next_question["question"]) if next_question else "")
+                ),
+                "next_question": next_question,
+            }
+        return {
+            "action": "answer", "accepted": True, "value": message,
+            "reply": (
+                "DeepSeek已理解并记录。" +
+                ((" " + next_question["question"]) if next_question else "")
+            ),
+            "next_question": next_question,
+        }
 
     def build_module_review(self, state, module):
         self.calls.append(("review", module))
@@ -80,6 +117,7 @@ class FakeProfileAgent:
 
     def revise_module_review(self, state, module, instruction):
         result = self.build_module_review(state, module)
+        result["reply"] = "DeepSeek已按你的要求更新本模块，请重新选择。"
         result["summary"] = "已修改：" + instruction
         return result
 
@@ -95,6 +133,59 @@ class FakeProfileAgent:
     def reply(self, profile, message):
         self.calls.append(("reply", copy.deepcopy(profile), message))
         return "已结合你的独立画像回答。"
+
+    def complete_profile(self, profile):
+        self.calls.append(("complete_profile", copy.deepcopy(profile)))
+        return "DeepSeek已完成并保存你的个人画像，可以继续生成选题或制作视频。"
+
+    def interpret_intent(self, profile, flow, message):
+        self.calls.append(("interpret_intent", copy.deepcopy(profile), copy.deepcopy(flow), message))
+        compact = "".join(str(message or "").split())
+        if any(word in compact for word in ("告诉我你能做什么", "先解释", "为什么选择")):
+            return {"intent": "chat", "payload": {}}
+        if flow.get("mode") == "template_collect" and compact:
+            return {
+                "intent": "start_video",
+                "payload": {"topic": compact, "platforms": flow.get("platforms") or []},
+            }
+        if flow.get("mode") == "template_review" and compact:
+            return {"intent": "regenerate_video", "payload": {}}
+        if "偏好" in compact and any(word in compact for word in ("查看", "显示")):
+            return {"intent": "view_preferences", "payload": {}}
+        if "偏好" in compact and any(word in compact for word in ("清空", "删除", "重置")):
+            return {"intent": "clear_preferences", "payload": {}}
+        if "画像" in compact and any(word in compact for word in ("修改", "调整", "更新")):
+            return {"intent": "modify_profile", "payload": {}}
+        if "文案" in compact and any(word in compact for word in ("修改", "改成", "重写", "删掉")):
+            return {"intent": "revise_copy", "payload": {}}
+        if "选题" in compact or "写文案" in compact or "口播文案" in compact:
+            return {"intent": "topic_plan", "payload": {}}
+        if any(word in compact for word in ("标题改", "底部改", "重做视频", "重新生成")):
+            return {"intent": "regenerate_video", "payload": {}}
+        if "视频" in compact and any(word in compact for word in ("制作", "生成", "做")):
+            platforms = [
+                key for key, label in {
+                    "douyin": "抖音", "xiaohongshu": "小红书",
+                    "wechat_channels": "视频号",
+                }.items() if label in compact
+            ]
+            return {
+                "intent": "start_video",
+                "payload": {
+                    "topic": compact.split("：", 1)[1] if "：" in compact else "",
+                    "platforms": platforms,
+                },
+            }
+        if compact in {"确认方案", "采用当前方案"}:
+            return {"intent": "confirm_plan", "payload": {}}
+        return {"intent": "chat", "payload": {}}
+
+    def compose_reply(self, profile, message, event, draft_reply):
+        self.calls.append((
+            "compose_reply", copy.deepcopy(profile), message,
+            copy.deepcopy(event), draft_reply,
+        ))
+        return draft_reply
 
 
 class FakeBridge:
@@ -136,6 +227,11 @@ class FakeBridge:
         if action == "matrix-template-templates":
             return {"templates": copy.deepcopy(self.templates), "cost": 5}
         if action == "task":
+            if (
+                isinstance(tool_input.get("job_id"), bool)
+                or not isinstance(tool_input.get("job_id"), int)
+            ):
+                raise APIError(400, "job_id 必须是整数", "invalid_request")
             return copy.deepcopy(self.task_results.get(str(tool_input["job_id"]), {
                 "status": "running",
             }))
@@ -222,8 +318,9 @@ class CreatorAgentTests(unittest.TestCase):
         result = service.bootstrap(USER, self.headers)
         self.assertRegex(result["project"]["id"], r"^[0-9a-f]{12}$")
         self.assertFalse(result["project"]["progress"]["profile_complete"])
-        self.assertIn("现在的身份", result["messages"][0]["content"])
+        self.assertIn("昵称", result["messages"][0]["content"])
         self.assertEqual(result["messages"][0]["public"]["kind"], "profile_question")
+        self.assertTrue(any(call[0] == "ask_question" for call in self.profile_agent.calls))
 
     def test_health_requires_bridge_model_and_writable_database(self):
         health = self.service.health()
@@ -303,10 +400,118 @@ class CreatorAgentTests(unittest.TestCase):
             profile={}, flow={"mode": "profile_interview"},
         )
         result = self.message("我是企业AI顾问", suffix="1001")
-        self.assertIn("重要转折", result["reply"])
+        self.assertIn("当前职业", result["reply"])
         self.assertEqual(len([call for call in self.profile_agent.calls if call[0] == "capture"]), 1)
         paid = [call for call in self.bridge.calls if call[0] == "action" and call[1] == "matrix-template-generate"]
         self.assertEqual(paid, [])
+
+    def test_profile_navigation_is_understood_and_answered_by_deepseek(self):
+        self.store.update_workspace(
+            USER["username"], PROJECT_ID, profile_state=initial_state(),
+            profile={}, flow={"mode": "profile_interview"},
+        )
+        body = {
+            "message": "跳过", "request_id": "profile-skip-0001",
+            "project_id": PROJECT_ID,
+        }
+        first = self.service.message(USER, self.headers, body)
+        state = first["workspace"]["profile_state"]
+        self.assertEqual((state["question_index"], state["revision"]), (1, 2))
+        self.assertEqual(first["message_public"]["field"], "career_identity")
+        self.assertIn("DeepSeek", first["reply"])
+        self.assertEqual(
+            len([call for call in self.profile_agent.calls if call[0] == "capture"]),
+            1,
+        )
+        self.assertIn("1:basic_context", state["skipped_questions"])
+        self.assertEqual(self.service.message(USER, self.headers, body), first)
+        self.assertEqual(
+            len([call for call in self.profile_agent.calls if call[0] == "capture"]),
+            1,
+        )
+
+        second = self.service.message(USER, self.headers, {
+            "message": "下一个问题", "request_id": "profile-skip-0002",
+            "project_id": PROJECT_ID,
+        })
+        state = second["workspace"]["profile_state"]
+        self.assertEqual((state["question_index"], state["revision"]), (2, 3))
+        self.assertEqual(second["message_public"]["field"], "career_history")
+        self.assertIn("DeepSeek提问", second["reply"])
+        self.assertEqual(
+            len([call for call in self.profile_agent.calls if call[0] == "capture"]),
+            2,
+        )
+
+    def test_skipping_last_question_uses_deepseek_then_enters_review(self):
+        state = initial_state()
+        state["question_index"] = len(MODULES[1]["questions"]) - 1
+        self.store.update_workspace(
+            USER["username"], PROJECT_ID, profile_state=state,
+            profile={}, flow={"mode": "profile_interview"},
+        )
+        result = self.service.message(USER, self.headers, {
+            "message": "继续下一个问题",
+            "request_id": "profile-skip-last-0001",
+            "project_id": PROJECT_ID,
+        })
+        current = result["workspace"]["profile_state"]
+        self.assertEqual(current["phase"], "review")
+        self.assertEqual(current["revision"], 2)
+        self.assertEqual(result["message_public"]["kind"], "profile_review")
+        self.assertIn("1:existing_accounts", current["skipped_questions"])
+        self.assertEqual(
+            len([call for call in self.profile_agent.calls if call[0] == "capture"]),
+            1,
+        )
+        self.assertEqual(
+            len([call for call in self.profile_agent.calls if call[0] == "review"]),
+            1,
+        )
+
+    def test_free_and_explicit_nonprofile_turns_use_deepseek(self):
+        before = len(self.profile_agent.calls)
+        free = self.message("查看我的偏好", suffix="deepseek-all-free-0001")
+        calls = self.profile_agent.calls[before:]
+        self.assertEqual(free["message_public"]["kind"], "preferences")
+        self.assertTrue(any(call[0] == "interpret_intent" for call in calls))
+        self.assertTrue(any(call[0] == "compose_reply" for call in calls))
+
+        before = len(self.profile_agent.calls)
+        explicit = self.message(
+            "查看偏好", "view_preferences", suffix="deepseek-all-explicit-0001",
+        )
+        calls = self.profile_agent.calls[before:]
+        self.assertEqual(explicit["message_public"]["kind"], "preferences")
+        self.assertFalse(any(call[0] == "interpret_intent" for call in calls))
+        self.assertTrue(any(call[0] == "compose_reply" for call in calls))
+
+    def test_chat_during_template_collection_does_not_create_batch(self):
+        self.store.update_workspace(
+            USER["username"], PROJECT_ID,
+            platforms=["douyin"],
+            flow={"mode": "template_collect", "platforms": ["douyin"], "topic": ""},
+        )
+        result = self.message(
+            "我还没想好，先告诉我你能做什么",
+            suffix="chat-template-collect-0001",
+        )
+        self.assertEqual(result["message_public"]["kind"], "assistant_reply")
+        self.assertEqual(self.store.batches(USER["username"], PROJECT_ID), [])
+        workspace = self.store.workspace(USER["username"], PROJECT_ID)
+        self.assertEqual(workspace["flow"]["mode"], "template_collect")
+
+    def test_chat_during_template_review_does_not_revise_batch(self):
+        draft = self._draft_batch()
+        before = self.store.batch(USER["username"], draft["id"], include_private=True)
+        result = self.message(
+            "为什么选择这个模板？先解释，不要修改",
+            suffix="chat-template-review-0001",
+        )
+        after = self.store.batch(USER["username"], draft["id"], include_private=True)
+        self.assertEqual(result["message_public"]["kind"], "assistant_reply")
+        self.assertEqual(after["revision"], before["revision"])
+        self.assertEqual(after["plan_hash"], before["plan_hash"])
 
     def test_profile_answer_fails_closed_without_deepseek_configuration(self):
         self.store.update_workspace(
@@ -355,10 +560,98 @@ class CreatorAgentTests(unittest.TestCase):
         self.assertEqual(workspace["profile_state"]["completed_modules"], [1, 2, 3, 4])
         self.assertEqual(set(workspace["profile"]["modules"]), {"1", "2", "3", "4"})
         self.assertIn("personal_profile", workspace["deliverables"])
+        self.assertIn("background_profile_pdf", workspace["deliverables"])
+        pdf_path = self.service._profile_pdf_path(USER["username"], PROJECT_ID)
+        self.assertTrue(pdf_path.is_file())
+        self.assertGreater(pdf_path.stat().st_size, 1024)
+        self.assertEqual(pdf_path.read_bytes()[:5], b"%PDF-")
+        snapshot = self.bootstrap()
+        self.assertEqual(
+            snapshot["project"]["foundation_pdf_url"],
+            "/api/creator-agent/projects/%s/background.pdf" % PROJECT_ID,
+        )
+        self.assertEqual(snapshot["project"]["foundation_pdf_status"], "ready")
+        self.assertEqual(snapshot["project"]["foundation_pdf_retry_url"], "")
+        self.assertNotIn("background_profile_pdf", snapshot["project"]["deliverables"])
         self.assertFalse(any(
             message.get("public", {}).get("source") == "ip12"
             for message in self.store.messages(USER["username"], PROJECT_ID)
         ))
+
+    def test_profile_completion_survives_background_pdf_failure(self):
+        state = initial_state()
+        state.update({
+            "current_module": 4,
+            "question_index": len(MODULES[4]["questions"]),
+            "phase": "review",
+            "completed_modules": [1, 2, 3],
+            "selected_profiles": {
+                str(index): {"title": "模块%d方案" % index}
+                for index in range(1, 4)
+            },
+            "module_reviews": {
+                "4": self.profile_agent.build_module_review(state, 4),
+            },
+        })
+        self.store.update_workspace(
+            USER["username"], PROJECT_ID, profile_state=state,
+            profile={}, deliverables={}, flow={"mode": "profile_interview"},
+        )
+        with mock.patch(
+            "creator_agent.service.render_profile_pdf",
+            side_effect=ProfilePDFError("forced PDF failure"),
+        ):
+            result = self.message(
+                "选择第一个方案", "profile_choice",
+                {"choice_index": 0, "profile_revision": state["revision"]},
+                "profile-pdf-failure-0001",
+            )
+        workspace = self.store.workspace(USER["username"], PROJECT_ID)
+        self.assertEqual(result["message_public"]["kind"], "profile_completed")
+        self.assertTrue(workspace["profile_state"]["profile_ready"])
+        self.assertEqual(
+            workspace["deliverables"]["background_profile_pdf"]["status"],
+            "failed",
+        )
+        self.assertEqual(
+            workspace["deliverables"]["background_profile_pdf"]["error_code"],
+            "profile_pdf_failed",
+        )
+        self.assertEqual(result["project"]["foundation_pdf_status"], "failed")
+        self.assertEqual(result["project"]["foundation_pdf_url"], "")
+        self.assertEqual(
+            result["project"]["foundation_pdf_retry_url"],
+            "/api/creator-agent/projects/%s/background.pdf" % PROJECT_ID,
+        )
+        self.assertEqual(
+            result["project"]["foundation_pdf_error_code"],
+            "profile_pdf_failed",
+        )
+        self.assertNotIn(
+            "background_profile_pdf", result["project"]["deliverables"],
+        )
+
+    def test_stale_ready_pdf_is_not_exposed_for_new_profile_revision(self):
+        workspace = self.store.workspace(USER["username"], PROJECT_ID)
+        revision = int(workspace["profile_state"]["revision"])
+        self.store.update_workspace(
+            USER["username"], PROJECT_ID,
+            deliverables={
+                "background_profile_pdf": {
+                    "title": "IP人设定位背景档案",
+                    "url": "/api/creator-agent/projects/%s/background.pdf" % PROJECT_ID,
+                    "status": "ready",
+                    "profile_revision": revision - 1,
+                },
+            },
+        )
+        project = self.bootstrap()["project"]
+        self.assertEqual(project["foundation_pdf_status"], "pending")
+        self.assertEqual(project["foundation_pdf_url"], "")
+        self.assertEqual(
+            project["foundation_pdf_retry_url"],
+            "/api/creator-agent/projects/%s/background.pdf" % PROJECT_ID,
+        )
 
     def test_stale_profile_action_cannot_overwrite_current_step(self):
         self.store.update_workspace(
@@ -438,7 +731,7 @@ class CreatorAgentTests(unittest.TestCase):
                 replay = self.service.message(USER, {}, body)
                 current = self.store.workspace(USER["username"], PROJECT_ID)["profile_state"]
                 self.assertEqual((current["revision"], current["question_index"]), (2, 1))
-                self.assertIn("重要转折", replay["reply"])
+                self.assertIn("当前职业", replay["reply"])
                 with closing(self.store.db()) as connection:
                     user_row = connection.execute(
                         "SELECT id,public_json FROM creator_messages "
@@ -469,7 +762,7 @@ class CreatorAgentTests(unittest.TestCase):
             profile={}, flow={"mode": "profile_interview"},
         )
         self.service.usage_guard = ModelUsageGuard(
-            self.store.db, user_window_requests=1, ip_window_requests=10,
+            self.store.db, user_window_requests=2, ip_window_requests=10,
             user_concurrency=1, global_concurrency=2, clock=self.clock,
         )
         headers = {"X-Forwarded-For": "1.2.3.4"}
@@ -1220,6 +1513,39 @@ class CreatorAgentTests(unittest.TestCase):
         self.assertEqual(result["refund_status"], "refunded")
         self.assertTrue(result["result"]["reconciled"])
 
+    def test_submission_result_requires_a_positive_content_job_id(self):
+        accepted = self.service._submission_result({
+            "status": "running", "job_id": "7161",
+        })
+        self.assertEqual(accepted["job_id"], "7161")
+        for invalid in (True, 0, -1, "0", "not-a-job", 9_223_372_036_854_775_808):
+            with self.subTest(invalid=invalid), self.assertRaises(APIError) as raised:
+                self.service._submission_result({
+                    "status": "running", "job_id": invalid,
+                })
+            self.assertEqual(raised.exception.code, "submit_result_unknown")
+
+    def test_corrupt_stored_job_id_becomes_terminal_instead_of_polling_forever(self):
+        draft = self._draft_batch()
+        quoted = self.service.quote_batch(USER, draft["id"], draft["revision"])
+        submitted = self.service.confirm_batch(
+            USER, draft["id"], "creator-confirm-corrupt-job-id",
+            quoted["revision"], quoted["quote_expires_at"],
+        )
+        corrupted = submitted["jobs"][0]
+        self.store.update_job(
+            USER["username"], corrupted["id"], job_id="provider-id-is-not-numeric",
+        )
+        refreshed = self.service.refresh_batch(USER, draft["id"])
+        current = next(item for item in refreshed["jobs"] if item["id"] == corrupted["id"])
+        self.assertEqual(current["status"], "failed")
+        self.assertIn("任务编号无效", current["error"])
+        self.assertFalse(any(
+            call[0] == "action" and call[1] == "task"
+            and call[2].get("job_id") == "provider-id-is-not-numeric"
+            for call in self.bridge.calls
+        ))
+
     def test_one_failed_platform_does_not_erase_other_success(self):
         draft = self._draft_batch()
         quoted = self.service.quote_batch(USER, draft["id"], draft["revision"])
@@ -1233,6 +1559,14 @@ class CreatorAgentTests(unittest.TestCase):
         }
         refreshed = self.service.refresh_batch(USER, draft["id"])
         self.assertEqual(refreshed["status"], "partial")
+        task_calls = [
+            call for call in self.bridge.calls
+            if call[0] == "action" and call[1] == "task"
+        ]
+        self.assertTrue(task_calls)
+        self.assertTrue(all(
+            isinstance(call[2]["job_id"], int) for call in task_calls
+        ))
         statuses = {item["platform"]: item["status"] for item in refreshed["jobs"]}
         self.assertEqual(set(statuses.values()), {"done", "failed"})
         failed = next(item for item in refreshed["jobs"] if item["status"] == "failed")
@@ -1297,7 +1631,8 @@ class CreatorAgentTests(unittest.TestCase):
         )
         overrides = result["workspace"]["profile_overrides"]
         self.assertIn("目标客户改为", overrides["general"][-1]["content"])
-        self.assertIn("画像修改已保存", result["reply"])
+        self.assertIn("独立画像", result["reply"])
+        self.assertTrue(any(call[0] == "reply" for call in self.profile_agent.calls))
         self.assertIn("overrides", result["workspace"]["profile"])
 
     def test_collecting_profile_is_not_treated_as_ready(self):
@@ -1456,6 +1791,27 @@ class CreatorAgentTests(unittest.TestCase):
                 item["content"] == "制作视频"
                 for item in self.store.messages(USER["username"], PROJECT_ID)
             ))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+
+    def test_http_background_pdf_is_private_and_rendered(self):
+        CreatorAgentHandler.service = self.service
+        server = ThreadingHTTPServer(("127.0.0.1", 0), CreatorAgentHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = (
+                "http://127.0.0.1:%d/projects/%s/background.pdf" %
+                (server.server_address[1], PROJECT_ID)
+            )
+            with urllib.request.urlopen(url, timeout=5) as response:
+                payload = response.read()
+                self.assertEqual(response.headers.get_content_type(), "application/pdf")
+                self.assertEqual(response.headers.get("Cache-Control"), "private, no-store")
+            self.assertEqual(payload[:5], b"%PDF-")
+            self.assertGreater(len(payload), 1024)
         finally:
             server.shutdown()
             server.server_close()

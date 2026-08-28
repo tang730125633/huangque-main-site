@@ -19,6 +19,12 @@ WWW="/var/www/huangquechuanmei"
 HEALTH_URL="${HQ_HEALTH_URL:-https://huangquechuanmei.com/api/gen/health}"
 SERVICE_WAIT_SECONDS="${HQ_SERVICE_WAIT_SECONDS:-30}"
 CONTENT_PYTHON="${HQ_CONTENT_PYTHON:-/usr/bin/python3}"
+SHIP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CREATOR_STAGE_HELPER="$SHIP_ROOT/deploy/ship-creator-stage.sh"
+[ -f "$CREATOR_STAGE_HELPER" ] \
+  || { echo "❌ 缺少 Creator 暂存清理脚本：$CREATOR_STAGE_HELPER"; exit 1; }
+. "$CREATOR_STAGE_HELPER" \
+  || { echo "❌ Creator 暂存清理脚本加载失败"; exit 1; }
 
 case "$SERVICE_WAIT_SECONDS" in
   ''|*[!0-9]*) echo "❌ HQ_SERVICE_WAIT_SECONDS 必须是正整数"; exit 1 ;;
@@ -81,6 +87,9 @@ REMOTE_MAIN="${REMOTE_MAIN%%[[:space:]]*}"
 git ls-files --error-unmatch -- "$@" >/dev/null 2>&1 \
   || { echo "❌ 仅允许发布当前 main 中 Git 跟踪的文件"; exit 1; }
 HOME_ASSET_FILES=""
+NEED_CREATOR_AGENT_RELEASE=0
+CREATOR_AGENT_RELEASE_FILES=""
+CREATOR_AGENT_DRIFT_FILES=""
 for target in "$@"; do
   case "$target" in
     site/index.html|site/homepage.css|site/homepage-particles.js|site/assets/home/*)
@@ -92,6 +101,26 @@ for target in "$@"; do
       ;;
   esac
 done
+for target in "$@"; do
+  case "$target" in
+    server/creator_agent_api.py|server/creator_agent/*.py|deploy/creator-agent-release.sh|deploy/requirements-creator-agent.txt|deploy/systemd/huangque-creator-agent.service)
+      NEED_CREATOR_AGENT_RELEASE=1
+      ;;
+  esac
+done
+if [ "$NEED_CREATOR_AGENT_RELEASE" = "1" ]; then
+  CREATOR_AGENT_RUNTIME_FILES="$(git ls-files 'server/creator_agent/*.py')" \
+    || { echo "❌ 无法读取 Creator Agent 运行模块清单"; exit 1; }
+  [ -n "$CREATOR_AGENT_RUNTIME_FILES" ] \
+    || { echo "❌ Creator Agent 运行模块清单为空"; exit 1; }
+  CREATOR_AGENT_RELEASE_FILES="server/creator_agent_api.py $CREATOR_AGENT_RUNTIME_FILES \
+deploy/creator-agent-release.sh deploy/requirements-creator-agent.txt \
+deploy/systemd/huangque-creator-agent.service deploy/nginx-huangquechuanmei.conf"
+  CREATOR_AGENT_DRIFT_FILES="server/creator_agent_api.py $CREATOR_AGENT_RUNTIME_FILES \
+deploy/systemd/huangque-creator-agent.service deploy/nginx-huangquechuanmei.conf"
+  git ls-files --error-unmatch -- $CREATOR_AGENT_RELEASE_FILES >/dev/null 2>&1 \
+    || { echo "❌ Creator Agent 发布闭包不完整"; exit 1; }
+fi
 if [ "$EXACT_CONTENT_DOMAINS" = "1" ]; then
   for target in "$@"; do
     [ "$target" != "server/content_api.py" ] \
@@ -117,6 +146,30 @@ PROVIDERS_SYNCED=0
 add_svc(){ for s in $1; do case " $RESTART " in *" $s "*) ;; *) RESTART="$RESTART $s";; esac; done; }
 add_timer(){ for t in $1; do case " $TIMERS " in *" $t "*) ;; *) TIMERS="$TIMERS $t";; esac; done; }
 add_deployed(){ case " $DEPLOYED " in *" $1 "*) ;; *) DEPLOYED="$DEPLOYED $1";; esac; }
+
+CREATOR_LOCAL_STAGE=""
+CREATOR_REMOTE_STAGE=""
+trap cleanup_creator_stage EXIT
+
+if [ "$NEED_CREATOR_AGENT_RELEASE" = "1" ]; then
+  echo "  发布 Creator Agent 完整依赖闭包"
+  CREATOR_LOCAL_STAGE="$(mktemp -d)"
+  CREATOR_REMOTE_STAGE="/tmp/huangque-creator-agent-${HEAD_SHA}-$$"
+  git archive "$HEAD_SHA" -- $CREATOR_AGENT_RELEASE_FILES \
+    | tar -x -C "$CREATOR_LOCAL_STAGE" \
+    || { echo "  ❌ Creator Agent 精确提交导出失败"; exit 1; }
+  push_dir "$CREATOR_LOCAL_STAGE/" "$CREATOR_REMOTE_STAGE/" \
+    || { echo "  ❌ Creator Agent 发布闭包上传失败"; exit 1; }
+  $SSHC "$REMOTE" \
+    "sudo env CREATOR_AGENT_RELEASE_SHA='$HEAD_SHA' CREATOR_AGENT_RELEASE_DIR='$CREATOR_REMOTE_STAGE' bash '$CREATOR_REMOTE_STAGE/deploy/creator-agent-release.sh'" \
+    || { echo "  ❌ Creator Agent 原子发布失败，发布脚本已执行回滚"; exit 1; }
+  for tracked in $CREATOR_AGENT_DRIFT_FILES; do add_deployed "$tracked"; done
+  rm -rf -- "$CREATOR_LOCAL_STAGE"
+  CREATOR_LOCAL_STAGE=""
+  cleanup_creator_remote_stage \
+    || { echo "  ❌ Creator 发布完成但暂存清理失败，已标记本次 ship 失败"; exit 1; }
+  echo "  ✓ Creator Agent 完整闭包已发布并通过独立健康检查"
+fi
 
 if [ -n "$HOME_ASSET_FILES" ]; then
   $SSHC "$REMOTE" "sudo mkdir -p '$WWW/assets/home'" \
@@ -217,6 +270,14 @@ RS
 }
 for f in "$@"; do
   timer=""
+  if [ "$NEED_CREATOR_AGENT_RELEASE" = "1" ]; then
+    case "$f" in
+      server/creator_agent_api.py|server/creator_agent/*.py|deploy/creator-agent-release.sh|deploy/requirements-creator-agent.txt|deploy/systemd/huangque-creator-agent.service|deploy/nginx-huangquechuanmei.conf)
+        echo "  ✓ $f 已包含在 Creator Agent 发布闭包中"
+        continue
+        ;;
+    esac
+  fi
   case "$f" in
     site/assets/home/*)
       if [ -n "$HOME_ASSET_FILES" ]; then
