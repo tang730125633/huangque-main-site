@@ -143,6 +143,17 @@ class CLIImageUploadTests(unittest.TestCase):
         self.assertEqual(1, len(body["reference_images"]))
         self.assertTrue(body["reference_images"][0].startswith("data:image/png;base64,"))
 
+    def test_omni_reference_is_expanded_as_provider_compatible_data_url(self):
+        png = self.upload(now=100)
+        jpeg = self.upload(JPEG, "image/jpeg", now=100)
+        body = cli_uploads.expand_image_payload({
+            "channel": "omni",
+            "reference_upload_ids": [png["upload_id"], jpeg["upload_id"]],
+        }, "alice", now=101)
+        self.assertEqual(2, len(body["reference_images"]))
+        self.assertTrue(body["reference_images"][0].startswith("data:image/png;base64,"))
+        self.assertTrue(body["reference_images"][1].startswith("data:image/jpeg;base64,"))
+
     def test_cli_quote_expands_minimax_reference_upload(self):
         uploaded = self.upload(now=int(time.time()))
 
