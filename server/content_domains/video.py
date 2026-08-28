@@ -2819,7 +2819,7 @@ def get_video_asset(username, asset_id):
         return None
     with closing(adb()) as connection:
         row = connection.execute(
-            "SELECT id,job_id,username,video_file,video_url,resolution,ratio,status "
+            "SELECT id,job_id,username,mode,video_file,video_url,resolution,ratio,status "
             "FROM video_assets WHERE id=? AND username=? "
             "AND status IN ('done','completed')",
             (asset_id, username),

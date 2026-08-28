@@ -4,6 +4,7 @@ import base64
 import importlib
 import json
 import pathlib
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -31,6 +32,33 @@ class _AssetConnection:
 
 
 class VideoPrecisionLipsyncTests(unittest.TestCase):
+    def test_owned_video_asset_query_includes_mode_for_voice_sample_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = pathlib.Path(directory) / "audio_assets.db"
+            connection = sqlite3.connect(database)
+            connection.execute(
+                "CREATE TABLE video_assets ("
+                "id INTEGER PRIMARY KEY, job_id TEXT, username TEXT, mode TEXT, "
+                "video_file TEXT, video_url TEXT, resolution TEXT, ratio TEXT, status TEXT)"
+            )
+            connection.execute(
+                "INSERT INTO video_assets VALUES (17, 'job-17', 'fang', "
+                "'lipsync_source', 'video/owned.mp4', '', '1080x1920', '9:16', 'done')"
+            )
+            connection.commit()
+            connection.close()
+
+            def open_database():
+                opened = sqlite3.connect(database)
+                opened.row_factory = sqlite3.Row
+                return opened
+
+            with mock.patch.object(video, "adb", side_effect=open_database):
+                asset = video.get_video_asset("fang", 17)
+
+        self.assertIsNotNone(asset)
+        self.assertEqual("lipsync_source", asset["mode"])
+
     def test_nginx_accepts_only_the_declared_100mb_upload_route(self):
         for relative in (
             "server/nginx-huangquechuanmei.conf",
