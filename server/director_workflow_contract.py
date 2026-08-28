@@ -56,7 +56,8 @@ SCOPE_CONTRACT = {
 
 
 def _action(identifier, group, scope, operations, endpoints, *, billing="free",
-            availability="planned", transport="action", description=""):
+            points_kind=None, availability="planned", transport="action",
+            description=""):
     return {
         "id": identifier,
         "group": group,
@@ -65,6 +66,7 @@ def _action(identifier, group, scope, operations, endpoints, *, billing="free",
         "website_operations": list(operations),
         "server_endpoints": list(endpoints),
         "billing": billing,
+        "points_kind": points_kind,
         "confirmation_required": billing == "quote_then_confirm" or scope.endswith(
             (":write", ":recover")
         ),
@@ -93,9 +95,9 @@ DIRECTOR_ACTIONS = (
         description="读取一个本人编导工作流及当前 revision。",
     ),
     _action(
-        "director-script-generate", "script", "director:write",
+        "director-script-generate", "script", "director:generate",
         ("script.write.spoken", "script.write.story", "script.write.recommend"),
-        ("POST:/api/gen/copy",),
+        ("POST:/api/gen/copy",), billing="quote_then_confirm", points_kind="copy",
         description="生成可编辑的结构化脚本与分镜。",
     ),
     _action(
@@ -109,17 +111,19 @@ DIRECTOR_ACTIONS = (
         description="导出本人结构化分镜。",
     ),
     _action(
-        "director-breakdown-upload", "breakdown", "director:write",
+        "director-breakdown-upload", "breakdown", "director:generate",
         ("script.breakdown.local_image", "script.breakdown.local_video"),
         ("POST:/api/gen/breakdown/local-upload?media_type=image",
          "POST:/api/gen/breakdown/local-upload?media_type=video"),
+        billing="quote_then_confirm", points_kind="breakdown",
         transport="dedicated_upload",
-        description="上传本人本地图片或视频用于提示词反推。",
+        description="上传本人本地图片或视频并创建付费提示词反推任务。",
     ),
     _action(
-        "director-breakdown", "breakdown", "director:write",
+        "director-breakdown", "breakdown", "director:generate",
         ("script.breakdown.scenes", "script.breakdown.reverse"),
-        ("POST:/api/gen/breakdown",),
+        ("POST:/api/gen/breakdown",), billing="quote_then_confirm",
+        points_kind="breakdown",
         description="按 scenes 或 reverse_prompt 模式拆解链接或已上传素材。",
     ),
     _action(
@@ -243,6 +247,46 @@ DIGITAL_HUMAN_ONECLICK_ACTIONS = (
         "digital-human-oneclick-material-resolve", "oneclick", "digital-human-oneclick:write", (),
         ("POST:/api/gen/digital-human-v2/material-resolve",),
         description="按冻结方案解析本人素材或允许的 AI 补图来源。",
+    ),
+    _action(
+        "digital-human-precision-source", "precision", "digital-human-oneclick:write", (),
+        ("GET:/api/gen/video/assets", "POST:/api/gen/video/lipsync-import"),
+        transport="dedicated_upload",
+        description="列出或上传本人真人 MP4 源视频，不接受跨账号资产。",
+    ),
+    _action(
+        "digital-human-precision-voice-consent", "precision", "digital-human-oneclick:write", (),
+        ("GET:/api/gen/audio/slots", "POST:/api/gen/video/lipsync-voice-sample"),
+        description="冻结真人视频、原声样本、文案、音色槽位与显式授权。",
+    ),
+    _action(
+        "digital-human-precision-voice-clone", "precision", "digital-human-oneclick:generate", (),
+        ("POST:/api/gen/audio/clone-vip", "GET:/api/gen/audio/clone-status"),
+        billing="quote_then_confirm",
+        description="按冻结授权复刻本人音色并生成短试听。",
+    ),
+    _action(
+        "digital-human-precision-audio", "precision", "digital-human-oneclick:generate", (),
+        ("POST:/api/gen/audio", "GET:/api/gen/job/{job_id}",
+         "GET:/api/gen/audio/assets"), billing="quote_then_confirm",
+        description="试听确认后按相同文案生成完整配音并等待原任务。",
+    ),
+    _action(
+        "digital-human-precision-lipsync", "precision", "digital-human-oneclick:generate", (),
+        ("POST:/api/gen/video", "GET:/api/gen/job/{job_id}",
+         "GET:/api/gen/video/assets"), billing="quote_then_confirm",
+        description="用完整配音与本人源视频提交 HeyGen Precision 口型任务。",
+    ),
+    _action(
+        "digital-human-precision-compose", "precision", "digital-human-oneclick:write", (),
+        ("POST:/api/gen/video-compose/projects",
+         "POST:/api/gen/video-compose/projects/{project_id}/analyze-source",
+         "POST:/api/gen/video-compose/projects/{project_id}/edit-decisions",
+         "POST:/api/gen/video-compose/projects/{project_id}/render",
+         "GET:/api/gen/video-compose/projects/{project_id}",
+         "GET:/api/gen/video-compose/projects/{project_id}/output",
+         "GET:/api/gen/file/{path}"),
+        description="对 Precision 母版执行受限分析、编辑决定、模板渲染与成品读取。",
     ),
 )
 
