@@ -140,6 +140,15 @@ def _resolved_link(url):
     }
 
 
+def _canonical_work_key(resolved):
+    """Return the stable identity used by both quote and submission validation."""
+    platform = str(resolved.get("platform") or "").strip().lower()
+    work_id = str(resolved.get("id") or "").strip()
+    if platform == "xhs":
+        work_id = work_id.lower()
+    return platform, work_id
+
+
 def validate_breakdown_payload(payload):
     """在扣点和入队前完成链接及作品 ID 校验。"""
     if not isinstance(payload, dict):
@@ -161,9 +170,13 @@ def validate_breakdown_payload(payload):
         urls = [_normalize_supported_link(item) for item in raw_urls]
         if mode == "reverse_prompt" and len(urls) != 1:
             raise ValueError("提示词反推暂仅支持单条视频链接")
+        resolved_links = [_resolved_link(url) for url in urls]
+        canonical_keys = [_canonical_work_key(item) for item in resolved_links]
+        if len(set(canonical_keys)) != len(canonical_keys):
+            raise ValueError("同一作品不能在一次批量拆解中重复提交")
         body.pop("url", None)
         body["urls"] = urls
-        body["_resolved_links"] = [_resolved_link(url) for url in urls]
+        body["_resolved_links"] = resolved_links
     else:
         body["url"] = _normalize_supported_link(body.get("url"))
         body.pop("urls", None)
