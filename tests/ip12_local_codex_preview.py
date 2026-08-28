@@ -17,6 +17,9 @@ def main():
     os.environ["HERMES_DATA_DIR"] = str(Path(args.data_dir).resolve())
     os.environ["HERMES_HOME"] = str(Path(args.data_dir).resolve())
     os.environ["HERMES_ENABLE_INTERNAL_TOOLS"] = "0"
+    os.environ["HERMES_MASTER_AGENT_MODE"] = "off"
+    os.environ["HERMES_SEMANTIC_ROUTER_MODE"] = "live"
+    os.environ["HERMES_SEMANTIC_DEBUG"] = "0"
     for key in list(os.environ):
         if key.upper().endswith(("_API_KEY", "_ACCESS_TOKEN", "_SECRET")):
             os.environ.pop(key, None)

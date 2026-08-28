@@ -33,6 +33,12 @@ class IP12PersonaAgentV1Tests(unittest.TestCase):
         self.assertEqual(harness.AGENT_RELEASE_MANIFEST["skills"]["intake"]["prompt_version"], "intake-v2")
         self.assertIn("business_goal", harness.intake_system_prompt(harness.initial_state()))
 
+    def test_local_preview_uses_one_semantic_coordinator(self):
+        preview = (Path(__file__).parent / "ip12_local_codex_preview.py").read_text(encoding="utf-8")
+        self.assertIn('os.environ["HERMES_MASTER_AGENT_MODE"] = "off"', preview)
+        self.assertIn('os.environ["HERMES_SEMANTIC_ROUTER_MODE"] = "live"', preview)
+        self.assertIn('os.environ["HERMES_SEMANTIC_DEBUG"] = "0"', preview)
+
     def test_initial_field_statuses_are_unknown(self):
         statuses = harness.normalize_state(harness.initial_state())["intake"]["field_statuses"]
         self.assertEqual(statuses["preferred_name"], "unknown")
