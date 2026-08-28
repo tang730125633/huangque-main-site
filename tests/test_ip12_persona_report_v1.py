@@ -71,6 +71,16 @@ class IP12PersonaReportV1Tests(unittest.TestCase):
             server._customer_facing_foundation_content("重复的完整说明文本必须只出现一次。\n重复的完整说明文本必须只出现一次。"),
             "重复的完整说明文本必须只出现一次。",
         )
+        customer = server._customer_facing_foundation_content(
+            "帮花店把送花故事讲得动人。\n用户原话：测试。\n属于AI包装建议。\n"
+            "有温度的表达者 + 花店经营与故事表达角色。"
+        )
+        self.assertIn("帮花店把送花故事讲清楚", customer)
+        self.assertIn("本人原话", customer)
+        self.assertIn("传播包装建议", customer)
+        self.assertIn("以花店经营者身份，持续表达真实送花故事", customer)
+        self.assertNotIn("用户原话", customer)
+        self.assertNotIn("AI包装建议", customer)
         self.assertEqual(server._foundation_report_title(content), "IP 人设定位｜模块 1-4 初稿")
         self.assertEqual(server._foundation_report_title("### 待本人确认项\n无待补充项"), "IP 人设定位报告｜模块 1-4")
 

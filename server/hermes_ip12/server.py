@@ -83,7 +83,7 @@ REPORTS_DIR = DATA_DIR / "reports"
 DELIVERABLES_DIR = DATA_DIR / "deliverables"
 FOUNDATION_REPORTS_DIR = DATA_DIR / "foundation_reports"
 FOUNDATION_REPORT_TEMPLATE_VERSION = "editorial-v3.3"
-FOUNDATION_REPORT_RENDER_VERSION = "consulting-v4"
+FOUNDATION_REPORT_RENDER_VERSION = "consulting-v5"
 EDITORIAL_REPORT_PROMPT = """你是黄雀 IP12 的报告主编。只使用服务端确认资料和用户原话，写给客户阅读的中文《模块1-4定位初稿》。这是一份策划提案，不是内部审计底稿。
 
 事实合同：确认事实只能复述资料；未来计划必须写成计划；任何金句、钩子、情绪曲线、传播价值和优先级都必须写在“AI包装建议”标题下，不能写成客户案例、收入、成交、流量或已发生结果。资料只说“盲目扩张失败”而未说明影响范围时，写“经营中因盲目扩张走过一段弯路”，不得推定店铺失败、倒闭或关闭。模块1-3的最终选择必须沿用服务端结果，不得改选。
@@ -2775,9 +2775,17 @@ def _customer_facing_foundation_content(markdown):
     content = str(markdown or "")
     for source, target in labels.items():
         content = content.replace(source, target)
-    content = content.replace("（AI包装建议）", "").replace(
-        "从盲目扩张失败，到重新记录顾客问题", "从盲目扩张走过弯路，到重新记录顾客问题"
-    )
+    replacements = {
+        "（AI包装建议）": "",
+        "AI包装建议": "传播包装建议",
+        "用户原话": "本人原话",
+        "用户确认": "本人确认",
+        "帮花店把送花故事讲得动人": "帮花店把送花故事讲清楚",
+        "有温度的表达者 + 花店经营与故事表达角色": "以花店经营者身份，持续表达真实送花故事",
+        "从盲目扩张失败，到重新记录顾客问题": "从盲目扩张走过弯路，到重新记录顾客问题",
+    }
+    for source, target in replacements.items():
+        content = content.replace(source, target)
     seen, rows = set(), []
     for raw in content.splitlines():
         normalized = re.sub(r"[*_`]+", "", raw).strip()
