@@ -18,9 +18,11 @@ if SERVER_DIR not in sys.path:
 
 from content_domains import (
     feature_flags,
+    image,
     points,
     provider_keys,
     short_drama,
+    short_drama_asset_graph,
     short_drama_autodraft,
     short_drama_conversation,
     short_drama_native_audio,
@@ -4494,6 +4496,143 @@ class ShortDramaAutodraftTests(unittest.TestCase):
         broken = self._native_media_evidence()
         broken["derived"]["derived_from_sha256"] = "c" * 64
         self.assertEqual({}, short_drama_autodraft._sanitized_native_media(broken))
+
+    def test_frontend_asset_payloads_reach_locked_scene_preflight(self):
+        from PIL import Image
+
+        self._lock_project_character_references()
+        self._init_shared_jobs_table()
+        short_drama_asset_graph.sync_foundation(
+            self.db, "alice", "alice", self.project["id"],
+        )
+        before = short_drama_asset_graph.scene_workspace(
+            self.db, "alice", self.project["id"],
+        )
+        scene = next(item for item in before["scenes"] if item["shots"])
+        shot_key = scene["shots"][0]["shot_key"]
+        cases = (
+            ("ai_generation", "image/ai-generated-scene.png", "AI 生成场景图"),
+            ("asset_library", "image/asset-library-scene.png", "资产库场景图"),
+        )
+        conn = self.db()
+        try:
+            jobs = []
+            for reference_source, relative, filename in cases:
+                image_path = Path(self.tmp.name) / relative
+                image_path.parent.mkdir(parents=True, exist_ok=True)
+                Image.new("RGB", (256, 256), (40, 80, 120)).save(
+                    image_path, "PNG",
+                )
+                cursor = conn.execute(
+                    "INSERT INTO jobs(kind,username,cost,status,payload,result,created_at,updated_at) "
+                    "VALUES('image','alice',0,'done','{}',?,1,1)",
+                    (json.dumps({
+                        "urls": ["/api/gen/file/" + relative],
+                        "files": [relative],
+                    }),),
+                )
+                jobs.append((
+                    reference_source, relative, filename, int(cursor.lastrowid),
+                ))
+            conn.commit()
+        finally:
+            conn.close()
+
+        current = before
+        verify = lambda _token: {
+            "username": "alice", "role": "admin", "must_change": False,
+        }
+        with mock.patch.object(image, "OUT_DIR", Path(self.tmp.name)):
+            for reference_source, relative, filename, job_id in jobs:
+                with self.subTest(reference_source=reference_source):
+                    set_handler = Handler(
+                        "/api/gen/short-drama/asset-graph/scenes/reference",
+                        body={
+                            "project_id": self.project["id"],
+                            "graph_revision": current["graph_revision"],
+                            "scene_key": scene["scene_key"],
+                            "source": "asset",
+                            "reference_source": reference_source,
+                            "asset_job_id": job_id,
+                            "asset_url": "/api/gen/file/" + relative,
+                            "filename": filename,
+                        },
+                    )
+                    self.assertTrue(short_drama.dispatch_http(
+                        set_handler, "POST", self.db, verify,
+                    ))
+                    self.assertEqual(200, set_handler.response[0])
+                    created = set_handler.response[1]
+                    selected = next(
+                        item for item in created["scenes"]
+                        if item["scene_key"] == scene["scene_key"]
+                    )
+                    self.assertIsNotNone(selected["preview"])
+                    self.assertEqual("asset", selected["preview"]["source"])
+                    self.assertEqual(
+                        reference_source,
+                        selected["preview"]["reference_source"],
+                    )
+                    lock_handler = Handler(
+                        "/api/gen/short-drama/asset-graph/scenes/lock",
+                        body={
+                            "project_id": self.project["id"],
+                            "graph_revision": created["graph_revision"],
+                            "scene_key": scene["scene_key"],
+                        },
+                    )
+                    self.assertTrue(short_drama.dispatch_http(
+                        lock_handler, "POST", self.db, verify,
+                    ))
+                    self.assertEqual(200, lock_handler.response[0])
+                    locked = lock_handler.response[1]
+                    locked_scene = next(
+                        item for item in locked["scenes"]
+                        if item["scene_key"] == scene["scene_key"]
+                    )
+                    self.assertTrue(locked_scene["locked"])
+
+                    with mock.patch.dict(os.environ, {
+                        "HQ_SHORT_DRAMA_AUTODRAFT_PROVIDER": "minimax_h3",
+                        "MINIMAX_API_KEY": "configured-for-preflight-only",
+                    }):
+                        preflight_handler = Handler(
+                            "/api/gen/short-drama/autodraft/provider-preflight",
+                            body={
+                                "project_id": self.project["id"],
+                                "plan_id": self.plan_id,
+                                "shot_key": shot_key,
+                            },
+                        )
+                        self.assertTrue(short_drama.dispatch_http(
+                            preflight_handler, "POST", self.db, verify,
+                        ))
+                        self.assertEqual(200, preflight_handler.response[0])
+                        public_result = preflight_handler.response[1]
+                        self.assertTrue(public_result["scene_reference"]["locked"])
+                        self.assertIn(
+                            "scene",
+                            [
+                                item["type"]
+                                for item in public_result["request"]["reference_inputs"]
+                            ],
+                        )
+
+                        private_result = short_drama_autodraft.preview_provider_request(
+                            self.db, "alice", "alice", {
+                                "project_id": self.project["id"],
+                                "plan_id": self.plan_id,
+                                "shot_key": shot_key,
+                            }, include_private=True,
+                        )
+
+                    provider_scene = next(
+                        item
+                        for item in private_result["_provider_request"]["reference_images"]
+                        if item.get("character_key") == "__scene_reference__"
+                    )
+                    self.assertEqual(relative, provider_scene["file"])
+                    current = locked
 
 
     def _preview_second_minimax_shot_with_scene_references(

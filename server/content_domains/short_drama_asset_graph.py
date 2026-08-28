@@ -1240,11 +1240,16 @@ def scene_workspace(db_factory, owner, project_id):
             ):
                 group["locked"] = False
                 continue
+            attributes = _json(version["attributes_json"], {})
             candidate = {
                 "version_id": version["id"], "version": int(version["version"]),
                 "reference_identity": _scene_reference_identity(version),
                 "status": version["status"], "prompt": version["prompt"],
-                "source": _json(version["attributes_json"], {}).get("source", ""),
+                "source": _text(attributes.get("source"), 40),
+                "reference_source": (
+                    _text(attributes.get("reference_source"), 40)
+                    or _text(attributes.get("source"), 40)
+                ),
                 "file": _text(reference.get("file"), 1000),
                 "url": _text(reference.get("url"), 2000),
                 "name": _text(reference.get("name"), 240),
@@ -1659,7 +1664,10 @@ def set_scene_reference(db_factory, owner, actor, body):
             if not rows:
                 raise AssetGraphError("scene_not_found", "场景不存在", 404)
             operation_id = str(uuid.uuid4())
-            source = _text(body.get("reference_source") or body.get("source"), 40)
+            source = _text(body.get("source"), 40).lower()
+            reference_source = (
+                _text(body.get("reference_source"), 40).lower() or source
+            )
             prompt = _text(body.get("prompt") or rows[0]["scene_description"], 8000)
             entity_rows = {row["id"]: row for row in rows}.values()
             for row in entity_rows:
@@ -1675,6 +1683,7 @@ def set_scene_reference(db_factory, owner, actor, body):
                            "references": [reference],
                            "attributes": {
                                "source": source,
+                               "reference_source": reference_source,
                                "scene_operation_id": operation_id,
                                "scene_reference_owner": owner,
                                "scene_reference_actor": actor,
@@ -1693,6 +1702,7 @@ def set_scene_reference(db_factory, owner, actor, body):
             revision = _bump(conn, project_id, revision, now)
             _audit(conn, project_id, actor, "set_scene_reference", scene_key,
                    {"source": source, "shot_count": len(rows),
+                    "reference_source": reference_source,
                     "operation_id": operation_id}, now)
             conn.commit()
             committed = True

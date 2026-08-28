@@ -679,6 +679,71 @@ class ShortDramaAssetGraphTests(unittest.TestCase):
             selected["preview"]["file"],
         )
 
+    def test_ai_generation_frontend_payload_remains_previewable_and_lockable(self):
+        from PIL import Image
+
+        server_dir = str(Path(__file__).resolve().parents[1] / "server")
+        sys.path.insert(0, server_dir)
+        try:
+            from server.content_domains import image as image_domain
+        finally:
+            sys.path.remove(server_dir)
+
+        graph.sync_foundation(self.db, "alice", "alice", "p1")
+        before = graph.scene_workspace(self.db, "alice", "p1")
+        scene = before["scenes"][0]
+        output = Path(self.temp.name) / "output"
+        relative = "image/generated-scene.png"
+        image_path = output / relative
+        image_path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (256, 256), (40, 80, 120)).save(image_path, "PNG")
+        with closing(self.db()) as conn:
+            conn.execute(
+                "CREATE TABLE jobs ("
+                "id INTEGER PRIMARY KEY,username TEXT,kind TEXT,status TEXT,result TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO jobs(id,username,kind,status,result) "
+                "VALUES(103,'alice','image','done',?)",
+                (json.dumps({
+                    "urls": ["/api/gen/file/" + relative],
+                    "files": [relative],
+                }),),
+            )
+            conn.commit()
+
+        with mock.patch.object(image_domain, "OUT_DIR", output):
+            created = graph.set_scene_reference(self.db, "alice", "alice", {
+                "project_id": "p1",
+                "graph_revision": before["graph_revision"],
+                "scene_key": scene["scene_key"],
+                "source": "asset",
+                "reference_source": "ai_generation",
+                "asset_job_id": 103,
+                "asset_url": "/api/gen/file/" + relative,
+                "filename": "AI 生成场景图",
+            })
+            selected = next(
+                item for item in created["scenes"]
+                if item["scene_key"] == scene["scene_key"]
+            )
+            self.assertIsNotNone(selected["preview"])
+            self.assertEqual("asset", selected["preview"]["source"])
+            self.assertEqual(
+                "ai_generation", selected["preview"]["reference_source"],
+            )
+
+            locked = graph.lock_scene_reference(self.db, "alice", "alice", {
+                "project_id": "p1",
+                "graph_revision": created["graph_revision"],
+                "scene_key": scene["scene_key"],
+            })
+        locked_scene = next(
+            item for item in locked["scenes"]
+            if item["scene_key"] == scene["scene_key"]
+        )
+        self.assertTrue(locked_scene["locked"])
+
     def test_scene_lock_rejects_unresolvable_pure_url_pair(self):
         graph.sync_foundation(self.db, "alice", "alice", "p1")
         before = graph.scene_workspace(self.db, "alice", "p1")
