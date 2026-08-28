@@ -187,6 +187,22 @@ def validate_payload(raw, username=""):
     }
     if font_family:
         candidate["font_family"] = font_family
+    batch_id = str(body.get("batch_id") or "").strip().lower()
+    batch_index = body.get("batch_index")
+    batch_size = body.get("batch_size")
+    if batch_id or batch_index is not None or batch_size is not None:
+        if (
+            not re.fullmatch(r"[0-9a-f]{32}", batch_id)
+            or isinstance(batch_index, bool) or not isinstance(batch_index, int)
+            or isinstance(batch_size, bool) or not isinstance(batch_size, int)
+            or not 1 <= batch_index <= batch_size <= 5
+        ):
+            raise ValueError("批量任务参数无效")
+        candidate.update({
+            "batch_id": batch_id,
+            "batch_index": batch_index,
+            "batch_size": batch_size,
+        })
     try:
         response = _request("POST", "/v1/preflight", candidate, timeout=10)
     except MatrixTemplateHTTPError as exc:
