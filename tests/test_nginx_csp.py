@@ -163,6 +163,18 @@ class NginxCspTest(unittest.TestCase):
                 self.assertIn("client_body_timeout 45s;", video_block)
                 self.assertIn('proxy_set_header X-HQ-Internal-Token "";', video_block)
 
+                audio_start = config.index("location = /api/auth/cli/audio-upload {")
+                audio_end = config.index("\n    }", audio_start)
+                audio_block = config[audio_start:audio_end]
+                self.assertIn("proxy_pass http://127.0.0.1:8095;", audio_block)
+                self.assertIn("proxy_request_buffering off;", audio_block)
+                self.assertIn("proxy_buffering off;", audio_block)
+                self.assertIn("client_max_body_size 10m;", audio_block)
+                self.assertIn("client_body_timeout 20s;", audio_block)
+                self.assertIn("limit_req zone=hq_cli_upload_rate burst=8 nodelay;", audio_block)
+                self.assertIn("limit_conn hq_cli_upload_conn 2;", audio_block)
+                self.assertIn('proxy_set_header X-HQ-Internal-Token "";', audio_block)
+
     def test_card_media_upload_has_a_bounded_streaming_route(self):
         config = self._config("deploy/nginx-huangquechuanmei.conf")
         start = config.index("location = /api/auth/card/media {")

@@ -132,14 +132,15 @@ hq run matrix-template-capability --json
 hq run matrix-template-templates --json
 ```
 
-从目录选择一个 `template_id`，准备 UTF-8 JSON：
+从目录选择一个 `template_id`；需要指定字体时，同时复制 `fonts[].value` 作为可选 `font_family`。准备 UTF-8 JSON：
 
 ```sh
 cat > matrix-template.json <<'JSON'
 {
   "top_text": "真正拉开差距的，不是工具",
   "bottom_text": "评论区留下关键词，领取完整方案",
-  "template_id": "native-bold"
+  "template_id": "full-overlay-bold",
+  "font_family": "AaHouDiHei"
 }
 JSON
 
@@ -152,6 +153,26 @@ JSON
 ```
 
 时长由文案自动计算，背景音乐默认开启，素材固定来自平台已审核素材库。拿到 `job_id` 后只轮询 `task`，不要再次提交生成命令。
+
+同一文案与模板需要一次生成 2–5 条时，增加 `count` 并使用批量能力：
+
+```json
+{
+  "top_text": "真正拉开差距的，不是工具",
+  "bottom_text": "评论区留下关键词，领取完整方案",
+  "template_id": "full-overlay-bold",
+  "font_family": "AaHouDiHei",
+  "count": 5
+}
+```
+
+```sh
+hq run matrix-template-batch-generate --input @matrix-template-batch.json --json
+# 核对总价、单价和 count 后，只确认一次：
+hq run matrix-template-batch-generate --input @matrix-template-batch.json --confirm --quote-token '<quote_token>' --json
+```
+
+批量确认返回 `job_ids`；每个子任务仍沿用单条模板成片的幂等、失败退款和资产合同，只轮询这些原始 Job，不重新提交整批。
 
 需要混入口播视频素材时，先上传并导入一个或多个人物，再生成分镜方案：
 
@@ -195,7 +216,31 @@ hq run text-video-plan --input @talking-plan.json --confirm --json
 
 把 `talking_material` 合并到与规划时完全一致的文案成片 JSON，再执行原有报价和确认命令。人物与方案均为当前账号私有的短期资产；最终提交前仍会校验方案、人物、参数、分镜和价格。
 
-项目同时提供可安装的 Codex Skill：[use-huangque-cli](skills/use-huangque-cli/SKILL.md)。
+## Agent Skill 与 MCP
+
+Agent 使用方法由独立公开仓库 [`huangque-agent-skill`](https://github.com/tang730125633/huangque-agent-skill) 维护，避免在 CLI 仓库复制第二份 Skill。CLI 0.12.0 起可安装同一份版本化 Skill：
+
+```sh
+hq skill install deepseek
+hq skill install codex
+hq skill install openclaw
+hq skill install pi
+```
+
+标准 MCP 服务由当前 CLI 直接提供：
+
+```json
+{
+  "mcpServers": {
+    "huangque": {
+      "command": "hq",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+`hq skill install mcp` 返回同一配置。MCP 根据当前版本的固定能力目录生成带参数约束的工具，不提供任意命令执行；写入、上传与付费确认规则和 CLI 完全相同。
 
 ## 客户大白话对照
 
@@ -225,6 +270,34 @@ hq run video-upload --file "C:\Users\Alice\Videos\reference.mp4" --confirm --jso
 ```
 
 上传只取得短期私有 `upload_id`；真正生成仍需先获取报价，再以完全相同的输入携带 `--confirm --quote-token` 提交。
+
+## 音频上传与声音克隆
+
+本地样音先通过专用上传能力取得当前账号私有的 `upload_id`，再把它作为 `audio_upload_id` 使用；有效期以返回的 `expires_in` 为准。CLI 只接受绝对路径，不会把本机路径或原文件名发给服务器：
+
+```sh
+hq run audio-slots --json
+hq run audio-upload --file /absolute/path/voice-sample.mp3 --confirm --json
+```
+
+从 `audio-slots` 复制可用 `slot_id`，再把上传结果写入克隆输入：
+
+```json
+{
+  "slot_id": "slot_<当前账号槽位>",
+  "name": "我的克隆音色",
+  "audio_upload_id": "aud_<32位十六进制>"
+}
+```
+
+```sh
+hq run voice-clone-create --input @voice-clone.json --confirm --json
+hq run voice-clone-status --input @- --json <<'JSON'
+{"slot_id":"slot_<当前账号槽位>"}
+JSON
+```
+
+状态为 `ready` 后调用 `voices` 取得 `voice_key`，再用于 `audio-generate`。音频上传支持 MP3、WAV、M4A、AAC、OGG，最大 10 MiB、最长 300 秒；声音克隆会在服务端规范化最多 60 秒清晰语音。为避免供应商判断“有效语音太短”，克隆样音应包含 30–60 秒连续、清晰、单人说话，文件总时长不能代替有效语音时长。若状态为 `failed`，先读取原槽位错误；有效语音不足时上传新的合格样音，并使用新的 `audio_upload_id` 发起新操作。上传和克隆本身不扣点，使用已有音色生成语音仍须先报价再确认。
 
 ## 内容采集与获客
 
@@ -260,7 +333,7 @@ hq run assets --input @assets.json --json
 - 图片、视频、音频、文案成片和平台素材库模板成片生成与提示词优化；`image-generate` 包含最多 14 张参考图的 Banana nb2/pro，`video-generate` 包含 Sora 2/Pro。
 - 数字 IP 单条文案、本人资产音频与 2–5 个形象批量生成；电影化身开放式和动作模仿生成。
 - 快速图片换装与经典视频换装。
-- 私有图片/视频上传、画布创建、画布 Agent 方案与受限写入。
+- 私有图片/视频/音频上传、画布创建、画布 Agent 方案与受限写入。
 - 任务、流水、资产、音色、收藏与标签。
 - 灵感案例与收藏、获客跟进、数字人形象、声音克隆槽位，以及短剧项目的安全读取。
 - 抖音 / 小红书内容、原视频、口播文案和关键词结果采集，以及多平台评论获客。
@@ -281,7 +354,7 @@ hq describe <能力名> --json
 - 外部 AI 和写操作需要显式确认；付费生成必须先报价再确认。
 - 幂等写入保留 `request_id`，并发更新保留 `revision` / `base_version`。
 - 不提供管理员、自动充值或付款、批量删除、任意文件读取或任意 HTTP 请求能力。
-- 上传只接受本人指定的 PNG/JPG/WebP 图片或 MP4/MOV/WebM 视频，要求绝对路径并拒绝符号链接；上传请求不回显本地路径和原始文件名。
+- 上传只接受本人指定的 PNG/JPG/WebP 图片、MP4/MOV/WebM 视频或 MP3/WAV/M4A/AAC/OGG 音频，要求绝对路径并拒绝符号链接；上传请求不回显本地路径和原始文件名。
 
 ## 本地开发
 

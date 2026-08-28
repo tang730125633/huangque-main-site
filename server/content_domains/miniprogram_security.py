@@ -52,7 +52,15 @@ class ContentRejected(ValueError):
 
 
 class SecurityUnavailable(RuntimeError):
-    pass
+    def __init__(self, message, stage=""):
+        super().__init__(message)
+        self.stage = str(stage or "").strip().lower()
+
+    @property
+    def code(self):
+        if self.stage:
+            return "content_security_%s_unavailable" % self.stage
+        return "content_security_unavailable"
 
 
 class _TokenInvalid(Exception):

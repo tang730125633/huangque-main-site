@@ -107,6 +107,18 @@ jobs:
       - name: 检查 JavaScript 语法
         run: find site -type f -name '*.js' -print0 | xargs -0 -n1 node --check
 
+      - name: 测试数字人工作台状态机
+        shell: bash
+        run: |
+          mapfile -t tests < <(find tests -maxdepth 1 -type f -name 'test_digital_human_*.js' -print | sort)
+          if [ "${#tests[@]}" -eq 0 ]; then
+            echo "No digital-human JavaScript tests discovered."
+            exit 1
+          fi
+          printf 'Running %d digital-human JavaScript test files:\n' "${#tests[@]}"
+          printf '  %s\n' "${tests[@]}"
+          node --test "${tests[@]}"
+
       - name: 测试工作台侧栏
         run: node tests/test_cloud_shell_sidebar.js
 
@@ -170,11 +182,11 @@ jobs:
           $oldResult = & (Join-Path $binRoot "hq.cmd") version --json | ConvertFrom-Json
           if ($oldResult.cli_version -ne "0.10.4") { throw "old CLI fixture did not start" }
           .\site\downloads\hq\install.ps1 `
-            -WheelPath .\site\downloads\hq\v0.11.2\huangque_hq_cli-0.11.2-py3-none-any.whl `
+            -WheelPath .\site\downloads\hq\v0.12.0\huangque_hq_cli-0.12.0-py3-none-any.whl `
             -InstallRoot $root -NoPathUpdate
           $hq = Join-Path $root "bin\hq.cmd"
           $result = & $hq version --json | ConvertFrom-Json
-          if ($result.cli_version -ne "0.11.2") { throw "unexpected CLI version" }
+          if ($result.cli_version -ne "0.12.0") { throw "unexpected CLI version" }
           $capabilities = & $hq capabilities --json | ConvertFrom-Json
           if (-not ($capabilities.capabilities | Where-Object id -eq "text-video-generate")) {
             throw "upgraded CLI is missing text-video-generate"

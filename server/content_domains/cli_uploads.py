@@ -661,7 +661,10 @@ def expand_image_payload(payload, username, now=None):
     if reference_ids is not None:
         loaded = [_load_image(item, username, now) for item in reference_ids]
         target = str(body.get("channel") or provider).strip().lower()
-        if target == "banana":
+        digital_human_bound = str(
+            body.get("digital_human_pipeline") or ""
+        ).strip().lower().startswith("digital_human")
+        if target == "banana" and not digital_human_bound:
             body["images"] = [
                 {"data": data, "mime_type": meta["mime"]}
                 for data, meta in loaded

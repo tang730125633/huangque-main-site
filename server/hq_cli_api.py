@@ -126,7 +126,8 @@ _ACTION_INPUTS = {
     "text-video-styles": (), "text-video-voices": (),
     "text-video-generate": ("text", "template", "mode", "style", "voice", "speech_rate", "talking_material"),
     "matrix-template-capability": (), "matrix-template-templates": (),
-    "matrix-template-generate": ("top_text", "bottom_text", "template_id"),
+    "matrix-template-generate": ("top_text", "bottom_text", "template_id", "font_family"),
+    "matrix-template-batch-generate": ("top_text", "bottom_text", "template_id", "font_family", "count"),
     "text-video-avatar-import": ("image_upload_id",),
     "text-video-plan": ("text", "template", "mode", "style", "voice", "speech_rate", "ratio"),
     "inspiration-catalog": (), "inspiration-likes": (),
@@ -205,6 +206,7 @@ _ACTION_PURPOSES = {
     "matrix-template-capability": "读取模板成片服务状态",
     "matrix-template-templates": "读取模板成片视觉模板",
     "matrix-template-generate": "使用平台素材库创建模板成片",
+    "matrix-template-batch-generate": "使用同一文案和模板批量创建 2-5 条模板成片",
     "text-video-avatar-import": "导入文案成片口播人物图片",
     "text-video-plan": "生成可选择的文案成片口播分镜方案",
     "canvas-agent-plan": "为画布生成可确认的操作方案", "canvas-ops": "写入本人画布操作",
@@ -451,6 +453,20 @@ _MEDIA_SCHEMAS = {
             "duration is automatic, BGM is enabled, and only approved platform-library media is used",
         ],
     },
+    "matrix-template-batch-generate": {
+        "required": ["top_text", "bottom_text", "template_id", "count"], "properties": {
+            "top_text": {"type": "string", "minLength": 2, "maxLength": 60},
+            "bottom_text": {"type": "string", "minLength": 2, "maxLength": 80},
+            "template_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+            "font_family": {"type": "string", "maxLength": 80},
+            "count": {"type": "integer", "minimum": 2, "maximum": 5},
+        },
+        "constraints": [
+            "template_id and optional font_family must come from matrix-template-templates",
+            "count creates 2-5 independent jobs under one total quote and one confirmation",
+            "duration is automatic, BGM is enabled, and only approved platform-library media is used",
+        ],
+    },
     "text-video-avatar-import": {
         "required": ["image_upload_id"],
         "properties": {"image_upload_id": _IMAGE_UPLOAD_SCHEMA},
@@ -522,7 +538,9 @@ _MEDIA_SCHEMAS.update({
         "name": {"type": "string", "minLength": 1, "maxLength": 40},
         "audio_upload_id": _AUDIO_UPLOAD_SCHEMA,
     }, "constraints": [
-        "sample audio is private to the current account and should contain 10-60 seconds of clear speech",
+        "sample audio is private to the current account and should contain 30-60 seconds of continuous, clear, single-speaker speech",
+        "long silence, music, and noise do not count as effective speech; file duration alone is not sufficient",
+        "after submission, poll voice-clone-status for the same slot_id until ready or failed and inspect clone_error before any new operation",
         "reusing a ready slot replaces that personal cloned voice and requires explicit confirmation",
     ]},
     "voice-clone-status": {"required": ["slot_id"], "properties": {
@@ -671,7 +689,7 @@ _FAMILIES = {
     "text-video-capability": "video", "text-video-templates": "video", "text-video-styles": "video", "text-video-voices": "video",
     "text-video-generate": "video",
     "matrix-template-capability": "video", "matrix-template-templates": "video",
-    "matrix-template-generate": "video",
+    "matrix-template-generate": "video", "matrix-template-batch-generate": "video",
     "text-video-avatar-import": "video", "text-video-plan": "video",
     "canvas-list": "canvas", "canvas-get": "canvas", "canvas-create": "canvas", "canvas-agent-plan": "canvas",
     "canvas-ops": "canvas", "digital-presenter-capability": "canvas", "digital-presenter-project": "canvas",
@@ -687,6 +705,7 @@ _ACTION_FEATURE_GATES = {
     "digital-presenter-project": ("digital_presenter",), "digital-presenter-create": ("digital_presenter",),
     "digital-presenter-update": ("digital_presenter",), "text-video-generate": ("script_to_video",),
     "matrix-template-generate": ("matrix_template_video",),
+    "matrix-template-batch-generate": ("matrix_template_video",),
     "text-video-avatar-import": ("script_to_video",), "text-video-plan": ("script_to_video",),
 }
 _OPTION_FEATURE_GATES = {
@@ -702,7 +721,7 @@ _GENERATION_ACTIONS = frozenset({
     "digital-ip-text-generate", "digital-ip-batch-generate", "digital-ip-audio-generate",
     "cinematic-open-generate", "cinematic-motion-generate", "tryon-fast-generate", "tryon-classic-generate",
     "text-video-generate",
-    "matrix-template-generate",
+    "matrix-template-generate", "matrix-template-batch-generate",
 })
 
 
@@ -793,12 +812,14 @@ ACTION_CATALOG = tuple(_catalog_entry(action, fields) for action, fields in _ACT
                           ["image/jpeg", "image/png", "image/webp"], 20),
     _upload_catalog_entry("video-upload", "video", 32 * 1024 * 1024,
                           ["video/mp4", "video/quicktime", "video/webm"], 6),
+    _upload_catalog_entry("audio-upload", "audio", 10 * 1024 * 1024,
+                          ["audio/mpeg", "audio/wav", "audio/x-wav", "audio/mp4", "audio/x-m4a", "audio/aac", "audio/ogg"], 20),
 )
 for _catalog_item in ACTION_CATALOG:
     if _catalog_item["action"] in _FAMILIES:
         _catalog_item["family"] = _FAMILIES[_catalog_item["action"]]
 ACTION_CATALOG_MAP = {item["action"]: item for item in ACTION_CATALOG if item["transport"]["kind"] == "action"}
-ACTION_CATALOG_VERSION = "hq-action-catalog-v4"
+ACTION_CATALOG_VERSION = "hq-action-catalog-v5"
 
 
 def action_catalog(feature_states=None):
@@ -1700,6 +1721,18 @@ def _matrix_template_payload(value):
     return result
 
 
+def _matrix_template_batch_payload(value):
+    _strict_object(
+        value, {"top_text", "bottom_text", "template_id", "font_family", "count"},
+        ("top_text", "bottom_text", "template_id", "count"),
+    )
+    count = _integer(value["count"], "count", 2, 5)
+    item = _matrix_template_payload({
+        key: field for key, field in value.items() if key != "count"
+    })
+    return {"item": item, "count": count}
+
+
 def _collect_url(value):
     url = _string(value, "url", 1, 2048)
     try:
@@ -1798,6 +1831,17 @@ def action_plan(action, value):
             "generation:quote", "generation",
             generation_kind="matrix_template_video",
             endpoint="/api/gen/matrix-template", payload=payload,
+        )
+    if action == "matrix-template-batch-generate":
+        payload = _matrix_template_batch_payload(value)
+        return _plan(
+            "generation:quote", "generation",
+            generation_kind="matrix_template_video_batch",
+            endpoint="/api/gen/matrix-template", payload=payload,
+            quote_endpoint="/api/gen/cli/quote",
+            quote_body={"kind": "matrix_template_video", "payload": payload["item"]},
+            quote_multiplier=payload["count"],
+            batch_item=payload["item"], batch_count=payload["count"],
         )
     if action in {"matrix-template-capability", "matrix-template-templates"}:
         _strict_object(value, set())
@@ -1913,16 +1957,22 @@ def action_plan(action, value):
     if action == "voice-clone-create":
         _strict_object(value, {"slot_id", "name", "audio_upload_id"},
                        ("slot_id", "name", "audio_upload_id"))
+        slot_id = _matched_string(
+            value["slot_id"], "slot_id", _VOICE_SLOT_ID_RE, 88,
+        )
+        audio_id = _audio_upload_id(value["audio_upload_id"], "audio_upload_id")
+        name = _string(value["name"], "name", 1, 40)
+        # 名称会写入最终音色，也属于操作输入；相同三元组重放，不同名称可作为新操作恢复失败槽位。
+        idempotency_key = "hqcli-" + hashlib.sha256(
+            (slot_id + "\x00" + audio_id + "\x00" + name).encode("utf-8")).hexdigest()[:24]
         return _plan(
             "assets:write", "proxy", base=CONTENT_BASE,
             path="/api/gen/cli/voice-clone", method="POST", body={
-                "slot_id": _matched_string(
-                    value["slot_id"], "slot_id",
-                    _VOICE_SLOT_ID_RE, 88,
-                ),
-                "name": _string(value["name"], "name", 1, 40),
-                "audio_upload_id": _audio_upload_id(value["audio_upload_id"], "audio_upload_id"),
+                "slot_id": slot_id,
+                "name": name,
+                "audio_upload_id": audio_id,
             }, timeout=30, internal=True,
+            headers={"Idempotency-Key": idempotency_key},
         )
     if action == "short-drama-projects":
         _strict_object(value, {"page", "page_size"})

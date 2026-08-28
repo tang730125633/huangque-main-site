@@ -1360,7 +1360,22 @@ MATRIX_TEMPLATE_FUNCTIONS = [{
         "validation": _validation({
             "top_text": "真正拉开差距的，不是工具",
             "bottom_text": "评论区留下关键词，领取完整方案",
-            "template_id": "native-bold", "bgm": True,
+            "template_id": "full-overlay-bold", "bgm": True,
+        }),
+    }, {
+        "key": "matrix_template.batch", "name": "批量模板成片",
+        "entrypoints": [
+            _endpoint("POST", "/api/gen/matrix-template"),
+            _endpoint("GET", "/api/gen/matrix-template/templates"),
+            _endpoint("GET", "/api/gen/job/{id}"),
+        ],
+        "task_match": {"kind": "matrix_template_video"},
+        "price_keys": ["video.matrix_template"],
+        "smoke_inputs": ["顶部标题", "底部行动文案", "模板", "字体", "批量数量2-5"],
+        "validation": _validation({
+            "top_text": "真正拉开差距的，不是工具",
+            "bottom_text": "评论区留下关键词，领取完整方案",
+            "template_id": "full-overlay-bold", "bgm": True,
         }),
     }],
 }]

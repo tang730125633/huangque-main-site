@@ -92,6 +92,26 @@ class AssetRegistryTests(unittest.TestCase):
         self.assertFalse(assets["canvas/canvas-short-drama-video.js"].required)
         self.assertFalse(assets["canvas/canvas-short-drama-video.css"].required)
 
+    def test_digital_human_assets_are_registered_and_page_uses_content_hashes(self):
+        assets = {a.name: a for a in stamp_assets.ASSETS}
+        html = (ROOT / "site" / "workbench" / "digital-human-oneclick.html").read_bytes()
+        for name in (
+            "digital-human-recovery.js",
+            "digital-human-material-state.js",
+            "digital-human-voice-state.js",
+            "digital-human-setup-state.js",
+            "digital-human-oneclick-state.js",
+            "digital-human-submit.js",
+            "digital-human-preflight.js",
+            "digital-human-error-modal.js",
+        ):
+            self.assertIn(name, assets)
+            asset = assets[name]
+            self.assertFalse(asset.required)
+            match = asset.pattern.search(html)
+            self.assertIsNotNone(match, name)
+            self.assertEqual(asset.stamp().encode("ascii"), match.group(2), name)
+
     def test_canvas_html_uses_current_canvas_asset_stamps(self):
         html = (ROOT / "site" / "workbench" / "canvas.html").read_bytes()
         assets = {a.name: a for a in stamp_assets.ASSETS}

@@ -1406,7 +1406,11 @@
       +'<button type="button" data-close-clone style="width:34px;height:34px;border:none;border-radius:9px;background:rgba(148,164,187,.08);color:#94a4bb;cursor:pointer;font-size:20px;line-height:1;">×</button></div>'
       +'<div style="padding:20px;display:flex;flex-direction:column;gap:16px;">'
       +'<label style="display:flex;flex-direction:column;gap:8px;"><span style="font-size:12.5px;font-weight:600;color:#eaf1fa;">音色名称</span><input id="cloneVoiceName" maxlength="24" placeholder="例如：我的门店口播音色" style="height:40px;border:1px solid rgba(148,164,187,.16);border-radius:11px;background:rgba(7,11,19,.5);color:#eaf1fa;outline:none;padding:0 12px;font-family:inherit;font-size:13px;"></label>'
-      +'<label style="display:flex;flex-direction:column;gap:8px;"><span style="font-size:12.5px;font-weight:600;color:#eaf1fa;">上传样音</span><div style="border:1px dashed rgba(231,178,76,.3);border-radius:14px;background:rgba(231,178,76,.04);padding:18px;text-align:center;cursor:pointer;"><input id="cloneVoiceFile" type="file" accept="audio/*" style="display:none;"><div style="font-size:13px;color:#e7b24c;font-weight:700;">\u9009\u62e960\u79d2\u4ee5\u4e0a\u7684\u97f3\u9891\u6548\u679c\u66f4\u597d</div><div id="cloneVoiceFileName" style="margin-top:7px;font-size:12px;color:#94a4bb;">支持 mp3、wav、m4a，建议 10-60 秒清晰人声</div></div></label>'
+      +'<label style="display:flex;flex-direction:column;gap:8px;"><span style="font-size:12.5px;font-weight:600;color:#eaf1fa;">样音来源</span>'
+      +'<div style="display:flex;gap:8px;"><button type="button" id="cloneTabUpload" style="flex:1;height:36px;border:1px solid rgba(231,178,76,.45);border-radius:10px;background:rgba(231,178,76,.12);color:#e7b24c;font-weight:700;cursor:pointer;font-family:inherit;font-size:13px;">📁 上传文件</button><button type="button" id="cloneTabRecord" style="flex:1;height:36px;border:1px solid rgba(148,164,187,.16);border-radius:10px;background:rgba(148,164,187,.05);color:#94a4bb;font-weight:600;cursor:pointer;font-family:inherit;font-size:13px;">🎤 实时录音</button></div>'
+      +'<div id="cloneUploadArea" style="border:1px dashed rgba(231,178,76,.3);border-radius:14px;background:rgba(231,178,76,.04);padding:18px;text-align:center;cursor:pointer;"><input id="cloneVoiceFile" type="file" accept="audio/*" style="display:none;"><div style="font-size:13px;color:#e7b24c;font-weight:700;">\u9009\u62e960\u79d2\u4ee5\u4e0a\u7684\u97f3\u9891\u6548\u679c\u66f4\u597d</div><div id="cloneVoiceFileName" style="margin-top:7px;font-size:12px;color:#94a4bb;">支持 mp3、wav、m4a，建议 10-60 秒清晰人声</div></div>'
+      +'<div id="cloneRecordArea" style="display:none;border:1px dashed rgba(45,212,191,.35);border-radius:14px;background:rgba(45,212,191,.05);padding:18px;text-align:center;"><button type="button" id="cloneRecordBtn" style="height:44px;padding:0 22px;border:none;border-radius:99px;background:linear-gradient(135deg,#2dd4bf,#14b8a6);color:#04211d;font-weight:800;cursor:pointer;font-family:inherit;font-size:14px;">🎤 开始录音</button><div id="cloneRecordStatus" style="margin-top:10px;font-size:12.5px;color:#94a4bb;">点击开始录音，建议录制 10-60 秒清晰人声</div></div>'
+      +'</label>'
       +'<audio id="cloneVoicePreview" controls style="display:none;width:100%;height:36px;"></audio>'
       +'<div id="cloneVoiceNote" style="font-size:12px;color:#5c6b82;line-height:1.6;">\u9ed8\u8ba4\u53c2\u6570\u6548\u679c\u63cf\u8ff0\uff1a\u6837\u97f3\u8d8a\u6e05\u6670\u3001\u80cc\u666f\u58f0\u8d8a\u5c11\uff0c\u540e\u7eed\u590d\u523b\u51fa\u7684\u4e2a\u4eba\u97f3\u8272\u8d8a\u7a33\u5b9a\u3002</div>'
       +'<div id="cloneVoiceVipTip" style="font-size:12px;color:#e7b24c;line-height:1.6;">VIP\u590d\u523b\u4f1a\u91c7\u7528\u66f4\u9ad8\u7cbe\u5ea6\u7684\u97f3\u8272\u5904\u7406\uff0c\u97f3\u8272\u8fd8\u539f\u5ea6\u548c\u53ef\u7528\u7a33\u5b9a\u6027\u66f4\u597d\u3002</div>'
@@ -1414,7 +1418,7 @@
       +'<div style="display:flex;justify-content:flex-end;gap:10px;padding:16px 20px;border-top:1px solid rgba(148,164,187,.12);"><button type="button" data-close-clone style="height:38px;padding:0 15px;border:1px solid rgba(148,164,187,.16);border-radius:10px;background:rgba(148,164,187,.05);color:#94a4bb;cursor:pointer;font-family:inherit;">\u53d6\u6d88</button><button type="button" id="cloneVoiceBasic" style="height:38px;padding:0 18px;border:1px solid rgba(231,178,76,.35);border-radius:10px;background:rgba(231,178,76,.08);color:#e7b24c;font-weight:700;cursor:pointer;font-family:inherit;">\u590d\u523b</button><button type="button" id="cloneVoiceVip" style="height:38px;padding:0 18px;border:none;border-radius:10px;background:linear-gradient(135deg,#f4cd72,#e7b24c);color:#1a1206;font-weight:700;cursor:pointer;font-family:inherit;">VIP\u590d\u523b</button></div>';
     wrap.appendChild(modal); document.body.appendChild(wrap);
     var cloneSubmitting=false;
-    function close(force){ if(cloneSubmitting && force!==true) return; wrap.remove(); }
+    function close(force){ if(cloneSubmitting && force!==true) return; try{ stopRecordStream(); }catch(e){} wrap.remove(); }
     wrap.querySelectorAll('[data-close-clone]').forEach(function(b){ b.onclick=close; });
     wrap.addEventListener('click',function(e){ if(e.target===wrap) close(); });
     document.addEventListener('keydown',function esc(e){ if(e.key==='Escape'&&document.getElementById('cloneVoiceModal')){ close(); document.removeEventListener('keydown',esc); } });
@@ -1441,7 +1445,82 @@
       fileName.textContent=f.name;
       preview.src=URL.createObjectURL(f);
       preview.style.display='block';
+      note.style.color='#e7b24c';
       note.textContent='已选择样音，可以先试听确认人声清晰。';
+    };
+    // —— 样音来源切换（上传 / 实时录音）——
+    var tabUpload=wrap.querySelector('#cloneTabUpload'), tabRecord=wrap.querySelector('#cloneTabRecord');
+    var uploadArea=wrap.querySelector('#cloneUploadArea'), recordArea=wrap.querySelector('#cloneRecordArea');
+    var recordBtn=wrap.querySelector('#cloneRecordBtn'), recordStatus=wrap.querySelector('#cloneRecordStatus');
+    function switchSource(mode){
+      var isUpload=(mode==='upload');
+      uploadArea.style.display=isUpload?'block':'none';
+      recordArea.style.display=isUpload?'none':'block';
+      tabUpload.style.background=isUpload?'rgba(231,178,76,.12)':'rgba(148,164,187,.05)';
+      tabUpload.style.color=isUpload?'#e7b24c':'#94a4bb';
+      tabUpload.style.borderColor=isUpload?'rgba(231,178,76,.45)':'rgba(148,164,187,.16)';
+      tabRecord.style.background=isUpload?'rgba(148,164,187,.05)':'rgba(45,212,191,.14)';
+      tabRecord.style.color=isUpload?'#94a4bb':'#2dd4bf';
+      tabRecord.style.borderColor=isUpload?'rgba(148,164,187,.16)':'rgba(45,212,191,.45)';
+    }
+    tabUpload.onclick=function(){ switchSource('upload'); };
+    tabRecord.onclick=function(){ switchSource('record'); };
+    // —— 实时录音 ——
+    var recorder=null, recordStream=null, recordChunks=[], recordTimer=null, recordSec=0;
+    function fmt(s){ var m=Math.floor(s/60), r=s%60; return m+':'+(r<10?'0':'')+r; }
+    function stopRecordStream(){
+      if(recordTimer){ clearInterval(recordTimer); recordTimer=null; }
+      if(recordStream){ try{ recordStream.getTracks().forEach(function(t){t.stop();}); }catch(e){} recordStream=null; }
+    }
+    function pickRecordMime(){
+      var candidates=['audio/mp4','audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus'];
+      for(var i=0;i<candidates.length;i++){
+        try{ if(window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(candidates[i])) return candidates[i]; }catch(e){}
+      }
+      return '';
+    }
+    recordBtn.onclick=function(){
+      if(recorder && recorder.state==='recording'){ try{ recorder.stop(); }catch(e){} return; }
+      if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+        note.style.color='#f4708a'; note.textContent='当前浏览器不支持麦克风录音，请改用上传文件。'; return;
+      }
+      recordBtn.disabled=true; recordStatus.textContent='正在请求麦克风权限...';
+      navigator.mediaDevices.getUserMedia({audio:true}).then(function(stream){
+        recordStream=stream;
+        var mime=pickRecordMime();
+        recorder=new MediaRecorder(stream, mime?{mimeType:mime}:undefined);
+        recordChunks=[];
+        recorder.ondataavailable=function(e){ if(e.data&&e.data.size) recordChunks.push(e.data); };
+        recorder.onstop=function(){
+          stopRecordStream();
+          var type=(recorder&&recorder.mimeType)||'audio/webm';
+          var blob=new Blob(recordChunks,{type:type});
+          var ext=type.indexOf('mp4')>=0?'m4a':(type.indexOf('ogg')>=0?'ogg':'webm');
+          var f=new File([blob],'录音-'+Date.now()+'.'+ext,{type:type});
+          try{
+            var dt=new DataTransfer();
+            dt.items.add(f);
+            picker.files=dt.files;
+            picker.dispatchEvent(new Event('change'));
+          }catch(e){}
+          recordBtn.disabled=false;
+          recordBtn.textContent='🎤 重新录音';
+          recordStatus.textContent='录音完成：'+fmt(recordSec)+'，已填入样音';
+          note.style.color='#2bd576';
+          note.textContent='录音已完成，可以先试听确认人声清晰。';
+          recorder=null;
+        };
+        recorder.start();
+        recordSec=0;
+        recordBtn.disabled=false;
+        recordBtn.textContent='⏹ 停止录音';
+        recordStatus.textContent='录音中 '+fmt(0);
+        recordTimer=setInterval(function(){ recordSec++; recordStatus.textContent='录音中 '+fmt(recordSec); }, 1000);
+      }).catch(function(e){
+        recordBtn.disabled=false;
+        note.style.color='#f4708a';
+        note.textContent='无法访问麦克风：'+(e&&e.message?e.message:'权限被拒绝');
+      });
     };
     basicBtn.onclick=function(){
       if(cloneSubmitting) return;

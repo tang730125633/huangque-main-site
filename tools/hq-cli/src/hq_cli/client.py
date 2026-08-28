@@ -26,8 +26,10 @@ ALLOWED_PATHS = {
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_VIDEO_UPLOAD_BYTES = 32 * 1024 * 1024
+MAX_AUDIO_UPLOAD_BYTES = 10 * 1024 * 1024
 IMAGE_UPLOAD_PATH = "/api/auth/cli/image-upload"
 VIDEO_UPLOAD_PATH = "/api/auth/cli/video-upload"
+AUDIO_UPLOAD_PATH = "/api/auth/cli/audio-upload"
 
 
 class NetworkError(Exception):
@@ -83,6 +85,20 @@ def _video_mime(header):
         return "video/webm"
     if len(header) >= 12 and header[4:8] == b"ftyp":
         return "video/quicktime" if header[8:12] == b"qt  " else "video/mp4"
+    return ""
+
+
+def _audio_mime(header):
+    if len(header) >= 2 and header[0] == 0xFF and header[1] & 0xF6 == 0xF0:
+        return "audio/aac"
+    if header.startswith(b"ID3") or (len(header) >= 2 and header[0] == 0xFF and header[1] & 0xE0 == 0xE0):
+        return "audio/mpeg"
+    if len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WAVE":
+        return "audio/wav"
+    if header.startswith(b"OggS"):
+        return "audio/ogg"
+    if len(header) >= 12 and header[4:8] == b"ftyp":
+        return "audio/mp4"
     return ""
 
 
@@ -192,10 +208,18 @@ def _open_video(path):
     )
 
 
+def _open_audio(path):
+    return _open_media(
+        path, MAX_AUDIO_UPLOAD_BYTES, _audio_mime,
+        "upload audio must be between 1 byte and 10 MiB",
+        "upload file must be MP3, WAV, M4A, AAC, or OGG",
+    )
+
+
 def _upload_media(path, token, upload_path, digest_header, opener, timeout):
     if not isinstance(token, str) or not token:
         raise ValueError("missing access token")
-    if upload_path not in {IMAGE_UPLOAD_PATH, VIDEO_UPLOAD_PATH}:
+    if upload_path not in {IMAGE_UPLOAD_PATH, VIDEO_UPLOAD_PATH, AUDIO_UPLOAD_PATH}:
         raise ValueError("HQ CLI only uploads to fixed main-site endpoints")
     descriptor, file_stat, mime, digest = opener(path)
     target = urllib.parse.urlsplit(API_BASE)
@@ -253,6 +277,12 @@ def upload_image(path, token, timeout=120):
 def upload_video(path, token, timeout=120):
     return _upload_media(
         path, token, VIDEO_UPLOAD_PATH, "X-HQ-Video-SHA256", _open_video, timeout,
+    )
+
+
+def upload_audio(path, token, timeout=120):
+    return _upload_media(
+        path, token, AUDIO_UPLOAD_PATH, "X-HQ-Audio-SHA256", _open_audio, timeout,
     )
 
 
