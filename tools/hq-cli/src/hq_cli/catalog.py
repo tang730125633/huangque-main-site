@@ -815,6 +815,11 @@ MATRIX_TEMPLATE_FIELDS = {
     "bottom_text": {"type": "string", "minLength": 2, "maxLength": 80},
     "template_id": {"type": "string", "minLength": 1, "maxLength": 64,
                     "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+    "font_family": {"type": "string", "maxLength": 80},
+}
+MATRIX_TEMPLATE_BATCH_FIELDS = {
+    **MATRIX_TEMPLATE_FIELDS,
+    "count": {"type": "integer", "minimum": 2, "maximum": 5},
 }
 
 for identifier, name, fields, required in (
@@ -827,6 +832,8 @@ for identifier, name, fields, required in (
      ["text", "template", "style", "voice"]),
     ("matrix-template-generate", "模板成片生成", MATRIX_TEMPLATE_FIELDS,
      ["top_text", "bottom_text", "template_id"]),
+    ("matrix-template-batch-generate", "模板成片批量生成", MATRIX_TEMPLATE_BATCH_FIELDS,
+     ["top_text", "bottom_text", "template_id", "count"]),
     ("digital-ip-text-generate", "数字IP单条文案生成", DIGITAL_IP_TEXT_FIELDS,
      ["text", "voice"]),
     ("digital-ip-audio-generate", "数字IP本人资产音频生成", DIGITAL_IP_AUDIO_FIELDS,
@@ -902,11 +909,20 @@ CAPABILITIES["text-video-generate"]["next_actions"] = [
 ]
 CAPABILITIES["matrix-template-generate"]["constraints"] = [
     "template_id must be selected from matrix-template-templates",
+    "font_family is optional and must be selected from matrix-template-templates fonts",
     "duration is calculated automatically and BGM is enabled by default",
     "the first call only quotes the fixed template-video cost",
 ]
 CAPABILITIES["matrix-template-generate"]["next_actions"] = [
     "核对报价后，用完全相同的输入、quote_token 与 --confirm 提交；拿到 job_id 后仅使用 task 轮询。",
+]
+CAPABILITIES["matrix-template-batch-generate"]["constraints"] = [
+    "template_id and optional font_family must be selected from matrix-template-templates",
+    "count creates 2-5 independent jobs under one total quote and one confirmation",
+    "duration is calculated automatically and BGM is enabled by default",
+]
+CAPABILITIES["matrix-template-batch-generate"]["next_actions"] = [
+    "核对总价与 count 后，用完全相同的输入、quote_token 与 --confirm 提交；只轮询返回的 job_ids。",
 ]
 CAPABILITIES["text-video-avatar-import"] = _api(
     "text-video-avatar-import", "导入口播人物", "text-video-avatar-import",
@@ -1030,6 +1046,7 @@ for identifier, website_modes in {
     "matrix-template": ["matrix_template.single"],
     "matrix-template-templates": ["matrix_template.single"],
     "matrix-template-generate": ["matrix_template.single"],
+    "matrix-template-batch-generate": ["matrix_template.batch"],
     "short-drama": ["live_action"],
     "short-drama-create": ["live_action"], "short-drama-delete": ["live_action"],
     "short-drama-projects": ["live_action"], "short-drama-project": ["live_action"],
@@ -1081,7 +1098,7 @@ _SITE_OPERATIONS = {
         "script.output.image", "script.output.handoff",
     ],
     "text-video": ["text_video.topic", "text_video.fixed"],
-    "matrix-template": ["matrix_template.single"],
+    "matrix-template": ["matrix_template.single", "matrix_template.batch"],
     "short-drama": [
         "short_drama.live_action.script_planning", "short_drama.live_action.character_reference",
         "short_drama.live_action.shot_video", "short_drama.live_action.preview",
@@ -1117,6 +1134,17 @@ _AGENT_RESOURCES = {
     "audio-slots": "voice", "voice-clone-": "voice", "leads-crm": "lead",
     "inspiration-": "inspiration", "text-video-": "text_video",
 }
+_AGENT_RESOURCE_OVERRIDES = {
+    "digital-ip-projects": "digital_ip_project",
+    "digital-ip-project": "digital_ip_project",
+    "digital-ip-report": "digital_ip_project",
+    "digital-ip-create": "digital_ip_project",
+    "digital-ip-update": "digital_ip_project",
+    "digital-ip-delete": "digital_ip_project",
+    "leads-crm": "lead",
+    "leads-crm-upsert": "lead",
+    "leads-delete": "lead",
+}
 _AGENT_OPERATIONS = {
     "ip12-projects": "list", "ip12-project": "get", "ip12-report": "get",
     "ip12-create": "create", "ip12-message": "update", "ip12-delete": "delete",
@@ -1139,6 +1167,8 @@ _STANDARD_CRUD = ("list", "get", "create", "update", "delete")
 
 
 def _agent_resource(identifier):
+    if identifier in _AGENT_RESOURCE_OVERRIDES:
+        return _AGENT_RESOURCE_OVERRIDES[identifier]
     for prefix, resource in _AGENT_RESOURCES.items():
         if identifier == prefix or identifier.startswith(prefix):
             return resource
@@ -1172,7 +1202,16 @@ def _agent_input_source(name):
     if name in {"project_id", "board_id", "source_asset_id", "video_asset_id", "audio_asset_id"}:
         return "先调用同资源的 list/get 能力，从本人可访问结果复制 ID。"
     if name.endswith("upload_id") or name.endswith("upload_ids"):
-        family = "video" if "video" in name else "image" if "image" in name else "audio"
+        family = {
+            "audio_upload_id": "audio",
+            "clothes_upload_id": "image",
+            "image_upload_id": "image",
+            "person_image_upload_id": "image",
+            "person_video_upload_id": "video",
+            "reference_video_upload_ids": "video",
+        }.get(name)
+        if family is None:
+            family = "video" if "video" in name else "image"
         return "先调用 %s-upload，使用其本人私有 upload_id。" % family
     if name in {"avatar_id", "avatar_ids", "avatars"}:
         return "先调用 video-avatars，从 ready 形象复制 avatar_id。"
@@ -1187,6 +1226,20 @@ def _agent_input_source(name):
     return "由用户明确提供，并按 input_schema 校验。"
 
 
+def _required_input_names(schema):
+    names = []
+    if isinstance(schema, dict):
+        for name in schema.get("required") or []:
+            if name not in names:
+                names.append(name)
+        for key in ("oneOf", "anyOf", "allOf"):
+            for child in schema.get(key) or []:
+                for name in _required_input_names(child):
+                    if name not in names:
+                        names.append(name)
+    return names
+
+
 def _attach_agent_guidance():
     resource_operations = {}
     for capability in CAPABILITIES.values():
@@ -1197,7 +1250,7 @@ def _attach_agent_guidance():
     for capability in CAPABILITIES.values():
         agent = capability["agent"]
         operation = agent["operation"]
-        required = capability["input_schema"].get("required") or []
+        required = _required_input_names(capability["input_schema"])
         preconditions = []
         if capability["requires_auth"]:
             preconditions.append("先运行 hq status；未授权时运行 hq login。")
@@ -1246,6 +1299,16 @@ CAPABILITIES["voice-clone-create"]["agent"]["workflow"].append(
 )
 CAPABILITIES["voice-clone-create"]["agent"]["recovery"].append(
     "若状态为 failed 且提示有效语音太短，上传新的30至60秒连续清晰单人语音，再用新的 audio_upload_id 发起新操作。"
+)
+CAPABILITIES["matrix-template-batch-generate"]["agent"]["workflow"][-1] = (
+    "保存返回的全部 job_ids，之后只调用 task 查询这些原任务直到终态，并逐条验证成品与账务。"
+)
+CAPABILITIES["matrix-template-batch-generate"]["agent"]["recovery"] = [
+    "部分成功或响应不确定时，先保留错误详情中的 jobs/job_ids；不要创建新批次。",
+    "仅当返回 batch_result_pending 并明确要求恢复时，才用完全相同输入、原 quote_token 和 --confirm 重放一次。",
+]
+CAPABILITIES["leads-delete"]["agent"]["workflow"].insert(
+    1, "先调用 leads-crm 读取并核对要永久删除的本人线索，再传这些 lead_ids 和 --confirm。"
 )
 
 

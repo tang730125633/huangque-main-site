@@ -132,14 +132,15 @@ hq run matrix-template-capability --json
 hq run matrix-template-templates --json
 ```
 
-从目录选择一个 `template_id`，准备 UTF-8 JSON：
+从目录选择一个 `template_id`；需要指定字体时，同时复制 `fonts[].value` 作为可选 `font_family`。准备 UTF-8 JSON：
 
 ```sh
 cat > matrix-template.json <<'JSON'
 {
   "top_text": "真正拉开差距的，不是工具",
   "bottom_text": "评论区留下关键词，领取完整方案",
-  "template_id": "native-bold"
+  "template_id": "full-overlay-bold",
+  "font_family": "AaHouDiHei"
 }
 JSON
 
@@ -152,6 +153,26 @@ JSON
 ```
 
 时长由文案自动计算，背景音乐默认开启，素材固定来自平台已审核素材库。拿到 `job_id` 后只轮询 `task`，不要再次提交生成命令。
+
+同一文案与模板需要一次生成 2–5 条时，增加 `count` 并使用批量能力：
+
+```json
+{
+  "top_text": "真正拉开差距的，不是工具",
+  "bottom_text": "评论区留下关键词，领取完整方案",
+  "template_id": "full-overlay-bold",
+  "font_family": "AaHouDiHei",
+  "count": 5
+}
+```
+
+```sh
+hq run matrix-template-batch-generate --input @matrix-template-batch.json --json
+# 核对总价、单价和 count 后，只确认一次：
+hq run matrix-template-batch-generate --input @matrix-template-batch.json --confirm --quote-token '<quote_token>' --json
+```
+
+批量确认返回 `job_ids`；每个子任务仍沿用单条模板成片的幂等、失败退款和资产合同，只轮询这些原始 Job，不重新提交整批。
 
 需要混入口播视频素材时，先上传并导入一个或多个人物，再生成分镜方案：
 
@@ -195,7 +216,31 @@ hq run text-video-plan --input @talking-plan.json --confirm --json
 
 把 `talking_material` 合并到与规划时完全一致的文案成片 JSON，再执行原有报价和确认命令。人物与方案均为当前账号私有的短期资产；最终提交前仍会校验方案、人物、参数、分镜和价格。
 
-项目同时提供可安装的 Codex Skill：[use-huangque-cli](skills/use-huangque-cli/SKILL.md)。
+## Agent Skill 与 MCP
+
+Agent 使用方法由独立公开仓库 [`huangque-agent-skill`](https://github.com/tang730125633/huangque-agent-skill) 维护，避免在 CLI 仓库复制第二份 Skill。CLI 0.12.0 起可安装同一份版本化 Skill：
+
+```sh
+hq skill install deepseek
+hq skill install codex
+hq skill install openclaw
+hq skill install pi
+```
+
+标准 MCP 服务由当前 CLI 直接提供：
+
+```json
+{
+  "mcpServers": {
+    "huangque": {
+      "command": "hq",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+`hq skill install mcp` 返回同一配置。MCP 根据当前版本的固定能力目录生成带参数约束的工具，不提供任意命令执行；写入、上传与付费确认规则和 CLI 完全相同。
 
 ## 客户大白话对照
 
