@@ -2133,6 +2133,7 @@ def prepare_compose_payload(payload, username, consent_record=None):
         "digital_human_consent_id", "digital_human_script",
         "digital_human_item_index",
         "digital_human_narration_mode", "digital_human_audio_upload_id",
+        "digital_human_allow_ai_materials", "digital_human_customer_upload_ids",
     }
     unknown = sorted(set(payload) - allowed)
     if unknown:
