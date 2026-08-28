@@ -57,6 +57,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             "engine": "hyperframes",
             "font_mode": "template_locked",
             "font_selectable": False,
+            "variant": f"v{index:02d}",
         } for index in range(1, 18)]
 
     def test_public_catalog_accepts_transition_counts_but_exposes_only_approved_templates(self):
@@ -115,6 +116,10 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             item["font_selectable"] is False
             for item in expanded if item["engine"] == "hyperframes"
         ))
+        self.assertEqual(
+            {f"v{index:02d}" for index in range(1, 18)},
+            {item["variant"] for item in expanded if item["engine"] == "hyperframes"},
+        )
 
     def test_availability_accepts_two_fifteen_or_nineteen_healthy_templates(self):
         for count in (2, 15, 19):
@@ -167,6 +172,18 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             }, "alice")
         self.assertNotIn("font_family", result)
         self.assertNotIn("font_family", request.call_args.args[2])
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(
+                 self.module, "public_templates",
+                 return_value=self.reference_templates(),
+             ), \
+             self.assertRaisesRegex(ValueError, "暂仅支持单条"):
+            self.module.validate_payload({
+                **expected,
+                "batch_id": "a" * 32,
+                "batch_index": 1,
+                "batch_size": 2,
+            }, "alice")
 
     def test_missing_template_defaults_to_first_approved_layout(self):
         approved = [
@@ -604,11 +621,23 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertIn("template_id:activeTemplate,bgm:true", page)
         self.assertIn('hq-content[data-active="matrix-template"]{height:auto!important', page)
         self.assertIn("function fitLiveText(node,max,min)", page)
+        self.assertIn("var referencePreviews=", page)
+        self.assertIn("data-variant", page)
+        self.assertIn("item.description", page)
         self.assertIn("node.scrollHeight>node.clientHeight", page)
         self.assertIn("fitLiveText(el('liveTop'),topSizes[activeTemplate]||34,12)", page)
         self.assertIn("fitLiveText(el('liveBottom'),20,12)", page)
         self.assertLess(shell.index("k:'text-video'"), shell.index("k:'matrix-template'"))
         self.assertIn("/api/gen/matrix-template/capability", shell)
+
+    def test_layout_browser_regression_covers_all_reference_templates(self):
+        source = (ROOT / "tests/matrix_template_layout_browser.js").read_text(
+            encoding="utf-8"
+        )
+        self.assertEqual(17, len(re.findall(r"'ref-[0-9]{2}-[a-z0-9-]+'", source)))
+        self.assertIn("cardCount !== 19", source)
+        self.assertIn("referenceCount !== 17", source)
+        self.assertIn("distinctReferencePreviews !== 17", source)
 
     def test_inline_javascript_parses(self):
         page = (ROOT / "site/workbench/matrix-template.html").read_text(encoding="utf-8")
@@ -666,6 +695,9 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual("模板内置", result["source"])
         self.assertNotIn("font_family", result["body"])
         self.assertEqual("ref-01-fixture-01", result["body"]["template_id"])
+        self.assertTrue(result["batchDisabled"])
+        self.assertEqual("1", result["batchValue"])
+        self.assertEqual("HyperFrames模板暂仅支持单条", result["batchHint"])
 
     def test_batch_five_submits_distinct_jobs_and_renders_all_results(self):
         result = self.runtime("batchFive")

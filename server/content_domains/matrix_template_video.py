@@ -113,9 +113,14 @@ def _refresh_catalog(force=False):
             font_mode = str(raw.get("font_mode") or (
                 "selectable" if font_selectable else "template_locked"
             ))
+            variant = str(raw.get("variant") or "")
             if engine not in {"ffmpeg", "hyperframes"}:
                 continue
             if font_mode not in {"selectable", "template_locked"}:
+                continue
+            if engine == "hyperframes" and not re.fullmatch(
+                r"v(?:0[1-9]|1[0-7])", variant
+            ):
                 continue
             templates.append({
                 "id": template_id,
@@ -125,6 +130,7 @@ def _refresh_catalog(force=False):
                 "engine": engine,
                 "font_mode": font_mode,
                 "font_selectable": font_selectable,
+                "variant": variant,
             })
         template_ids = {item["id"] for item in templates}
         if (
@@ -150,6 +156,8 @@ def _refresh_catalog(force=False):
                     or item["font_mode"] != "template_locked"
                     for item in references
                 )
+                or {item["variant"] for item in references}
+                != {f"v{index:02d}" for index in range(1, 18)}
             ):
                 raise RuntimeError("HyperFrames 模板目录不完整")
             templates = [approved[template_id] for template_id in APPROVED_TEMPLATE_IDS] + references
@@ -244,6 +252,8 @@ def validate_payload(raw, username=""):
             "batch_index": batch_index,
             "batch_size": batch_size,
         })
+        if template.get("engine") == "hyperframes" and batch_size > 1:
+            raise ValueError("HyperFrames 模板暂仅支持单条生成")
     try:
         response = _request("POST", "/v1/preflight", candidate, timeout=10)
     except MatrixTemplateHTTPError as exc:
