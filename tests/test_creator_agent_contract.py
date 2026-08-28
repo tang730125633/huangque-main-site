@@ -19,6 +19,10 @@ class CreatorAgentContractTests(unittest.TestCase):
         cls.nginx = (ROOT / "deploy/nginx-huangquechuanmei.conf").read_text(encoding="utf-8")
         cls.unit = (ROOT / "deploy/systemd/huangque-creator-agent.service").read_text(encoding="utf-8")
         cls.release = (ROOT / "deploy/creator-agent-release.sh").read_text(encoding="utf-8")
+        cls.ship = (ROOT / "ship").read_text(encoding="utf-8")
+        cls.ship_creator_stage = (
+            ROOT / "deploy/ship-creator-stage.sh"
+        ).read_text(encoding="utf-8")
         cls.design = (ROOT / "docs/创作Agent-V1设计与并行边界.md").read_text(encoding="utf-8")
 
     def test_product_name_and_two_column_surface(self):
@@ -35,6 +39,16 @@ class CreatorAgentContractTests(unittest.TestCase):
         self.assertNotIn("历史会话", self.page)
         self.assertNotIn("newConversation", self.page)
         self.assertIn("画像项目", self.page)
+
+    def test_deepseek_owns_questions_intent_and_replies(self):
+        profile_agent = (
+            ROOT / "server/creator_agent/profile_agent.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("def ask_question", profile_agent)
+        self.assertIn("def interpret_intent", profile_agent)
+        self.assertIn("def compose_reply", profile_agent)
+        self.assertIn('"label": "跳过"', self.service)
+        self.assertNotIn("def _intent_from_message", self.service)
 
     def test_only_three_platforms_and_no_official_account_or_bilibili(self):
         planner = (ROOT / "server/creator_agent/planner.py").read_text(encoding="utf-8")
@@ -182,7 +196,28 @@ class CreatorAgentContractTests(unittest.TestCase):
         self.assertIn("CREATOR_AGENT_MODEL=deepseek-v4-flash", self.release)
         self.assertIn("official DeepSeek API base", self.release)
         self.assertIn("profile_agent.py", self.release)
+        self.assertIn("profile_pdf.py", self.release)
         self.assertIn("model_usage.py", self.release)
+        requirements = (
+            ROOT / "deploy/requirements-creator-agent.txt"
+        ).read_text(encoding="utf-8")
+        content_requirements = (
+            ROOT / "deploy/requirements-content.txt"
+        ).read_text(encoding="utf-8")
+        self.assertIn("reportlab==", requirements)
+        self.assertNotIn("reportlab", content_requirements)
+        self.assertIn("requirements-creator-agent.txt", self.release)
+        self.assertIn('"$NEW_RELEASE/.venv/bin/python" -m pip install', self.release)
+        self.assertIn("current/.venv/bin/python", self.unit)
+        self.assertIn("creator-agent-release.sh", self.ship)
+        self.assertIn("CREATOR_AGENT_RELEASE_FILES", self.ship)
+        self.assertIn("ship-creator-stage.sh", self.ship)
+        self.assertIn('sudo rm -rf -- "$stage"', self.ship_creator_stage)
+        self.assertIn("cleanup_creator_remote_stage", self.ship_creator_stage)
+        self.assertIn("foundation_pdf_status", self.service)
+        self.assertIn("foundation_pdf_retry_url", self.service)
+        self.assertIn("PDF 生成失败", self.page)
+        self.assertIn("data-pdf-retry", self.page)
         store = (ROOT / "server/creator_agent/store.py").read_text(encoding="utf-8")
         self.assertIn("commit_message_turn", store)
         self.assertIn("source_message_id", store)
@@ -190,6 +225,7 @@ class CreatorAgentContractTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         self.assertIn("fetch-depth: 0", workflow)
         self.assertIn('git diff --check "$PR_BASE_SHA...$PR_HEAD_SHA"', workflow)
+        self.assertIn("pip install -r deploy/requirements-creator-agent.txt", workflow)
 
     def test_deploy_contract_does_not_duplicate_shared_internal_token(self):
         example = (ROOT / "deploy/huangque-secrets.env.example").read_text(encoding="utf-8")
