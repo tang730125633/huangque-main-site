@@ -4781,6 +4781,38 @@ class H(BaseHTTPRequestHandler):
     def _cli_audio_upload(self):
         return self._cli_media_upload("audio")
 
+    def _cli_matrix_template_batch_policy(self, plan, username):
+        item = plan.get("batch_item") or {}
+        template_id = str(item.get("template_id") or "")
+        status, payload = self._cli_proxy({
+            "base": hq_cli_api.CONTENT_BASE,
+            "path": "/api/gen/matrix-template/templates",
+            "method": "GET", "timeout": 10, "internal": True,
+        }, username)
+        if not 200 <= int(status) < 300 or not isinstance(payload, dict):
+            raise hq_cli_api.CLIAPIError(
+                503, "模板目录暂不可用，请稍后重试", "template_catalog_unavailable"
+            )
+        templates = {
+            str(item.get("id") or ""): item
+            for item in payload.get("templates") or []
+            if isinstance(item, dict)
+        }
+        template = templates.get(template_id)
+        if template is None:
+            raise hq_cli_api.CLIAPIError(
+                400, "请选择当前可用模板", "template_not_found"
+            )
+        if (
+            template.get("engine") == "hyperframes"
+            or template.get("font_selectable") is False
+        ):
+            raise hq_cli_api.CLIAPIError(
+                400,
+                "HyperFrames 模板暂仅支持单条生成",
+                "matrix_template_single_only",
+            )
+
     def _cli_matrix_template_batch(self, plan, username, claims):
         count = int(plan.get("batch_count") or 0)
         item = dict(plan.get("batch_item") or {})
@@ -4968,6 +5000,8 @@ class H(BaseHTTPRequestHandler):
                 return self._cli_send(200, {"board_id": plan["board_id"], "deleted": bool(deleted)})
             if plan["kind"] == "generation":
                 generation_kind, payload = plan["generation_kind"], plan["payload"]
+                if action == "matrix-template-batch-generate":
+                    self._cli_matrix_template_batch_policy(plan, row["username"])
                 if confirm:
                     if "generation:submit" not in scopes:
                         raise hq_cli_api.CLIAPIError(403, "当前 CLI 授权不能提交扣点生成", "insufficient_scope")
