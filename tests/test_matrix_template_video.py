@@ -186,6 +186,24 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "当前可用字体"):
                 self.module.validate_payload(dict(expected, font_family="Missing Font"), "alice")
 
+    def test_validate_payload_forwards_batch_identity(self):
+        expected = {
+            "top_text": "批量标题", "bottom_text": "批量行动文案",
+            "template_id": "native-bold", "bgm": True, "duration": 8.0,
+            "batch_id": "a" * 32, "batch_index": 2, "batch_size": 5,
+        }
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(self.module, "public_templates", return_value=self.templates()), \
+             mock.patch.object(self.module, "_request", return_value={"payload": expected}):
+            result = self.module.validate_payload(dict(expected, duration=None), "alice")
+        self.assertEqual(("a" * 32, 2, 5), (
+            result["batch_id"], result["batch_index"], result["batch_size"],
+        ))
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(self.module, "public_templates", return_value=self.templates()), \
+             self.assertRaisesRegex(ValueError, "批量任务参数"):
+            self.module.validate_payload(dict(expected, batch_index=6), "alice")
+
     def test_validate_payload_uses_authoritative_67_68_visible_character_boundary(self):
         accepted = {
             "top_text": "中" * 60, "bottom_text": "A" * 7 + "，。！？",
@@ -590,6 +608,11 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual(5, result["polls"])
         self.assertEqual(5, len(set(result["keys"])))
         self.assertTrue(all(body["bgm"] is True for body in result["bodies"]))
+        self.assertEqual(1, len({body["batch_id"] for body in result["bodies"]}))
+        self.assertTrue(all(re.fullmatch(r"[0-9a-f]{32}", body["batch_id"])
+                            for body in result["bodies"]))
+        self.assertEqual([1, 2, 3, 4, 5], [body["batch_index"] for body in result["bodies"]])
+        self.assertTrue(all(body["batch_size"] == 5 for body in result["bodies"]))
         self.assertEqual(5, result["cards"])
         self.assertTrue(result["cleared"])
 
