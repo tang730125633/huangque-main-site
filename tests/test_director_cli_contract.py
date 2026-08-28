@@ -210,10 +210,61 @@ class DirectorCLIContractTests(unittest.TestCase):
             if action["availability"] == "available"
         }
         planned = set(identifiers) - available
-        self.assertEqual({"director-capability"}, available)
+        self.assertEqual({
+            "director-capability", "director-script-generate", "director-breakdown",
+        }, available)
         self.assertNotIn("director-production-start", hq_cli_api.ACTION_CATALOG_MAP)
         self.assertEqual(available, set(hq_cli_api.ACTION_CATALOG_MAP) & set(identifiers))
         self.assertTrue(planned)
+
+    def test_director_script_action_uses_browser_equivalent_payload(self):
+        plan = hq_cli_api.action_plan("director-script-generate", {
+            "prompt": "介绍新品的三个卖点",
+            "style": "recommend",
+            "duration": 60,
+            "platform": "xiaohongshu",
+        })
+        self.assertEqual("director:generate", plan["scope"])
+        self.assertEqual("generation", plan["kind"])
+        self.assertEqual("copy", plan["generation_kind"])
+        self.assertEqual("/api/gen/copy", plan["endpoint"])
+        self.assertEqual({
+            "prompt": "介绍新品的三个卖点",
+            "format": "script",
+            "style": "种草",
+            "dur": "60s",
+            "platform": "小红书",
+            "ctype": "分镜脚本",
+            "source_page": "script",
+        }, plan["payload"])
+
+    def test_director_breakdown_action_rejects_ambiguous_or_invalid_batch(self):
+        with self.assertRaises(hq_cli_api.CLIAPIError):
+            hq_cli_api.action_plan("director-breakdown", {})
+        with self.assertRaises(hq_cli_api.CLIAPIError):
+            hq_cli_api.action_plan("director-breakdown", {
+                "url": "https://example.invalid/one",
+                "urls": ["https://example.invalid/two"],
+            })
+        with self.assertRaises(hq_cli_api.CLIAPIError):
+            hq_cli_api.action_plan("director-breakdown", {
+                "urls": ["https://example.invalid/one", "https://example.invalid/two"],
+                "mode": "reverse_prompt",
+            })
+
+    def test_director_breakdown_action_builds_quote_bound_payload(self):
+        plan = hq_cli_api.action_plan("director-breakdown", {
+            "urls": ["https://www.douyin.com/video/1", "https://www.douyin.com/video/2"],
+        })
+        self.assertEqual("director:generate", plan["scope"])
+        self.assertEqual("generation", plan["kind"])
+        self.assertEqual("breakdown", plan["generation_kind"])
+        self.assertEqual("/api/gen/breakdown", plan["endpoint"])
+        self.assertEqual({
+            "urls": ["https://www.douyin.com/video/1", "https://www.douyin.com/video/2"],
+            "mode": "scenes",
+            "source_page": "script",
+        }, plan["payload"])
 
     def test_scope_billing_and_recovery_boundaries_are_explicit(self):
         self.assertEqual(set(contract.SCOPE_CONTRACT), set(contract.SCOPE_CONTRACT) & set(hq_cli_api.SCOPES))

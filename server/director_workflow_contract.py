@@ -128,6 +128,7 @@ DIRECTOR_ACTIONS = (
         "director-script-generate", "script", "director:generate",
         ("script.write.spoken", "script.write.story", "script.write.recommend"),
         ("POST:/api/gen/copy",), billing="quote_then_confirm", points_kind="copy",
+        availability="available",
         description="生成可编辑的结构化脚本与分镜。",
     ),
     _action(
@@ -153,7 +154,7 @@ DIRECTOR_ACTIONS = (
         "director-breakdown", "breakdown", "director:generate",
         ("script.breakdown.scenes", "script.breakdown.reverse"),
         ("POST:/api/gen/breakdown",), billing="quote_then_confirm",
-        points_kind="breakdown",
+        points_kind="breakdown", availability="available",
         description="按 scenes 或 reverse_prompt 模式拆解链接或已上传素材。",
     ),
     _action(

@@ -2006,9 +2006,11 @@ class HQCLIAPITests(unittest.TestCase):
         }, token=token)
         self.assertEqual(200, status, payload)
         self.assertEqual("director-workflow-contract-v1", payload["contract_version"])
-        self.assertEqual(1, payload["counts"]["available"])
+        self.assertEqual(3, payload["counts"]["available"])
         actions = {item["id"]: item for item in payload["actions"]}
         self.assertEqual("available", actions["director-capability"]["availability"])
+        self.assertEqual("available", actions["director-script-generate"]["availability"])
+        self.assertEqual("available", actions["director-breakdown"]["availability"])
         self.assertEqual("planned", actions["director-production-start"]["availability"])
         self.assertEqual("quote_then_confirm", actions["director-production-start"]["billing"])
 
