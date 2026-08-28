@@ -674,6 +674,29 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual(2, result["polls"])
         self.assertTrue(result["cleared"])
 
+    def test_completed_single_result_loads_into_right_player_immediately(self):
+        result = self.runtime("instantResult")
+        self.assertEqual("/instant-video", result["src"])
+        self.assertEqual("block", result["display"])
+        self.assertEqual("none", result["live"])
+        self.assertEqual("/instant-video", result["download"])
+        self.assertEqual("metadata", result["preload"])
+        self.assertEqual(1, result["loads"])
+        self.assertEqual(1, result["pauses"])
+        self.assertTrue(result["cleared"])
+
+    def test_done_without_video_url_keeps_polling_until_result_is_ready(self):
+        result = self.runtime("delayedResultUrl")
+        self.assertEqual(1, result["before"]["polls"])
+        self.assertEqual(0, result["before"]["loads"])
+        self.assertFalse(result["before"]["cleared"])
+        self.assertIn("生成中", result["before"]["status"])
+        self.assertEqual(2, result["polls"])
+        self.assertEqual("/delayed-video", result["src"])
+        self.assertEqual("block", result["display"])
+        self.assertEqual(1, result["loads"])
+        self.assertTrue(result["cleared"])
+
     def test_live_preview_tracks_copy_and_selected_template(self):
         result = self.runtime("livePreview")
         self.assertEqual("实时标题", result["top"])
