@@ -60,3 +60,13 @@
 `@LU-003` 负责范围确认、最终验证和失败回滚判断。本记录不授权合并、部署、服务重启、
 生产数据库操作或真实 Provider 调用；上述动作仍需各自独立指令。记录提交形成的新 HEAD
 必须重新执行仓库门禁，并确认相对固定业务提交只有本文件发生变化。
+
+## 最终重固定批准元数据
+
+- 批准评论：<https://github.com/tang730125633/huangque-main-site/pull/1299#issuecomment-5448175482>
+- GitHub API 评论 ID：`5448175482`
+- GitHub GraphQL 节点 ID：`IC_kwDOS66oj88AAAABRLyPeg`
+- 作者：`LU-003`
+- `author_association`：`COLLABORATOR`
+- `created_at`：`2026-08-28T03:51:38Z`（`2026-08-28 11:51:38 +08:00`）
+- `updated_at`：`2026-08-28T03:51:38Z`（发布后未编辑）
