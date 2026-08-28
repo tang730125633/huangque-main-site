@@ -200,6 +200,85 @@ class DigitalHumanV2Tests(unittest.TestCase):
         self.assertEqual(self.domain.CONSENT_VERSION, consent["consent_version"])
         self.assertEqual(self.domain.CONSENT_PURPOSE, consent["purpose"])
 
+    def test_compose_accepts_material_policy_bound_to_authorized_plan(self):
+        upload_id = "img_" + "a" * 32
+        plan, consent = self._consent(
+            "顾客素材和人工智能补图授权必须随最终成片请求保持不变。" * 8,
+            allow_ai=True, upload_ids=[upload_id],
+            run_id="dh-v3-compose-policy-001",
+        )
+        consent_record = {
+            "id": consent["consent_id"], "username": "yuelei",
+            "run_id": consent["run_id"],
+            "consent_version": consent["consent_version"],
+            "purpose": consent["purpose"], "plan_digest": plan["plan_digest"],
+        }
+        payload = {
+            "pipeline": self.domain.PIPELINE,
+            "mode": self.domain.PIPELINE,
+            "script": plan["copy"],
+            "plan_digest": plan["plan_digest"],
+            "video_job_ids": [],
+            "material_job_ids": [],
+            "material_asset_ids": [],
+            "digital_human_pipeline": self.domain.CONSENT_PURPOSE,
+            "digital_human_stage": "compose",
+            "digital_human_consent_id": consent["consent_id"],
+            "digital_human_run_id": consent["run_id"],
+            "digital_human_plan_digest": plan["plan_digest"],
+            "digital_human_narration_mode": "text",
+            "digital_human_allow_ai_materials": True,
+            "digital_human_customer_upload_ids": [upload_id],
+        }
+        with mock.patch.object(
+                self.domain, "_owned_completed_files", return_value=([], [])), \
+                mock.patch.object(
+                    self.domain, "_owned_material_files",
+                    return_value=([], [], [], []),
+                ):
+            prepared = self.domain.prepare_compose_payload(
+                payload, "yuelei", consent_record,
+            )
+
+        self.assertTrue(prepared["allow_ai_materials"])
+        self.assertEqual([upload_id], prepared["customer_upload_ids"])
+        self.assertEqual(plan["plan_digest"], prepared["plan_digest"])
+
+    def test_compose_rejects_material_policy_changed_after_consent(self):
+        plan, consent = self._consent(
+            "最终成片不能绕过已经确认的素材策略和方案摘要。" * 8,
+            allow_ai=False, upload_ids=[],
+            run_id="dh-v3-compose-policy-002",
+        )
+        consent_record = {
+            "id": consent["consent_id"], "username": "yuelei",
+            "run_id": consent["run_id"],
+            "consent_version": consent["consent_version"],
+            "purpose": consent["purpose"], "plan_digest": plan["plan_digest"],
+        }
+        payload = {
+            "pipeline": self.domain.PIPELINE,
+            "mode": self.domain.PIPELINE,
+            "script": plan["copy"],
+            "plan_digest": plan["plan_digest"],
+            "video_job_ids": [],
+            "material_job_ids": [],
+            "material_asset_ids": [],
+            "digital_human_pipeline": self.domain.CONSENT_PURPOSE,
+            "digital_human_stage": "compose",
+            "digital_human_consent_id": consent["consent_id"],
+            "digital_human_run_id": consent["run_id"],
+            "digital_human_plan_digest": plan["plan_digest"],
+            "digital_human_narration_mode": "text",
+            "digital_human_allow_ai_materials": True,
+            "digital_human_customer_upload_ids": [],
+        }
+
+        with self.assertRaises(self.domain.DigitalHumanRequestError) as caught:
+            self.domain.prepare_compose_payload(payload, "yuelei", consent_record)
+
+        self.assertEqual("plan_digest_mismatch", caught.exception.code)
+
     def test_v2_voice_clone_routes_through_legacy_entrypoint_and_keeps_bindings(self):
         sample = b"authorized-v2-voice-sample"
         script = "这是用于验证新版数字人声音复刻授权绑定的完整口播文案。"
