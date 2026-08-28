@@ -669,7 +669,7 @@ def expand_image_payload(payload, username, now=None):
                 {"data": data, "mime_type": meta["mime"]}
                 for data, meta in loaded
             ]
-        elif target in {"minimax", "sora"}:
+        elif target in {"minimax", "omni", "sora"}:
             body["reference_images"] = [
                 "data:%s;base64,%s" % (meta["mime"], data)
                 for data, meta in loaded
