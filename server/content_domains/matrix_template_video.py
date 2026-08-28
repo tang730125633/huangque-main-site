@@ -17,6 +17,9 @@ from . import feature_flags, pricing
 
 
 FEATURE_KEY = "matrix_template_video"
+TRANSITION_TEMPLATE_COUNTS = frozenset({2, 15})
+APPROVED_TEMPLATE_IDS = ("full-overlay-bold", "poster-split")
+REQUIRED_TEMPLATE_IDS = frozenset(APPROVED_TEMPLATE_IDS)
 API_URL = os.environ.get("MATRIX_TEMPLATE_API_URL", "http://127.0.0.1:8112").rstrip("/")
 API_TOKEN = os.environ.get("MATRIX_TEMPLATE_API_TOKEN", "").strip()
 JOB_TIMEOUT = max(60, min(1800, int(os.environ.get("MATRIX_TEMPLATE_JOB_TIMEOUT", "1200"))))
@@ -77,7 +80,10 @@ def availability(force=False):
         return {"enabled": False, "ready": False, "available": False}
     try:
         health = _request("GET", "/health", timeout=5)
-        ready = health.get("ok") is True and int(health.get("templates") or 0) == 13
+        ready = (
+            health.get("ok") is True
+            and int(health.get("templates") or 0) in TRANSITION_TEMPLATE_COUNTS
+        )
     except Exception:
         ready = False
     return {"enabled": True, "ready": ready, "available": ready}
@@ -106,8 +112,15 @@ def _refresh_catalog(force=False):
                 "description": str(raw.get("description") or "")[:160],
                 "tags": [str(item)[:20] for item in (raw.get("tags") or [])[:8]],
             })
-        if len(templates) != 13 or len({item["id"] for item in templates}) != 13:
+        template_ids = {item["id"] for item in templates}
+        if (
+            len(templates) not in TRANSITION_TEMPLATE_COUNTS
+            or len(template_ids) != len(templates)
+            or not REQUIRED_TEMPLATE_IDS.issubset(template_ids)
+        ):
             raise RuntimeError("模板目录不完整")
+        approved = {item["id"]: item for item in templates if item["id"] in REQUIRED_TEMPLATE_IDS}
+        templates = [approved[template_id] for template_id in APPROVED_TEMPLATE_IDS]
         fonts = [{"value": "", "label": "自动搭配", "source": "automatic"}]
         seen = {""}
         for raw in response.get("fonts") or []:
@@ -149,7 +162,7 @@ def validate_payload(raw, username=""):
         raise ValueError("顶部标题需要 2-60 个字符")
     if not 2 <= len(bottom) <= 80:
         raise ValueError("底部行动文案需要 2-80 个字符")
-    template_id = str(body.get("template_id") or "native-bold")
+    template_id = str(body.get("template_id") or APPROVED_TEMPLATE_IDS[0])
     if template_id not in {item["id"] for item in public_templates()}:
         raise ValueError("请选择有效模板")
     font_family = str(body.get("font_family") or "").strip()
@@ -174,6 +187,22 @@ def validate_payload(raw, username=""):
     }
     if font_family:
         candidate["font_family"] = font_family
+    batch_id = str(body.get("batch_id") or "").strip().lower()
+    batch_index = body.get("batch_index")
+    batch_size = body.get("batch_size")
+    if batch_id or batch_index is not None or batch_size is not None:
+        if (
+            not re.fullmatch(r"[0-9a-f]{32}", batch_id)
+            or isinstance(batch_index, bool) or not isinstance(batch_index, int)
+            or isinstance(batch_size, bool) or not isinstance(batch_size, int)
+            or not 1 <= batch_index <= batch_size <= 5
+        ):
+            raise ValueError("批量任务参数无效")
+        candidate.update({
+            "batch_id": batch_id,
+            "batch_index": batch_index,
+            "batch_size": batch_size,
+        })
     try:
         response = _request("POST", "/v1/preflight", candidate, timeout=10)
     except MatrixTemplateHTTPError as exc:

@@ -25,6 +25,15 @@ import time
 import urllib.error
 import urllib.request
 
+
+class CosyVoiceTaskError(RuntimeError):
+    """CosyVoice 合成 task-failed。retryable=True 表示瞬时故障(如 InternalError/530)，可安全重试。"""
+    def __init__(self, message, code="", retryable=False):
+        super().__init__(message)
+        self.code = code
+        self.retryable = retryable
+
+
 DASHSCOPE_API_KEY = os.environ.get("DASHSCOPE_API_KEY", "")
 DASHSCOPE_HTTP = "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/customization"
 DASHSCOPE_WS_HOST = "dashscope.aliyuncs.com"
@@ -168,9 +177,10 @@ def _ws_frames(sock, leftover):
         yield opcode, payload
 
 
-def synth(voice, text, fmt="mp3", sample_rate=22050, rate=1.0, pitch=1.0, volume=50, timeout=60):
+def synth(voice, text, fmt="mp3", sample_rate=22050, rate=1.0, pitch=1.0, volume=50, timeout=60, instruction=""):
     """合成一段语音，返回音频字节。model 按音色自动选(预置/复刻)。
-    rate 语速(0.5~2)、pitch 音调(0.5~2)、volume 音量(0~100)——与抓包看到的参数名一致。"""
+    rate 语速(0.5~2)、pitch 音调(0.5~2)、volume 音量(0~100)——与抓包看到的参数名一致。
+    instruction 复刻音色(v3.5-plus)的 free-form 发音风格指令，<=100 字符(中文按 2 计)，预置音色不要传。"""
     if not DASHSCOPE_API_KEY:
         raise ValueError("CosyVoice 未配置（DASHSCOPE_API_KEY）")
     text = (text or "").strip()
@@ -181,6 +191,8 @@ def synth(voice, text, fmt="mp3", sample_rate=22050, rate=1.0, pitch=1.0, volume
               "rate": max(0.5, min(2.0, float(rate))),
               "pitch": max(0.5, min(2.0, float(pitch))),
               "volume": max(0, min(100, int(volume)))}
+    if instruction:
+        params["instruction"] = instruction
     sock, leftover = _ws_connect(DASHSCOPE_API_KEY, timeout)
     try:
         task_id = os.urandom(16).hex()
@@ -211,7 +223,13 @@ def synth(voice, text, fmt="mp3", sample_rate=22050, rate=1.0, pitch=1.0, volume
                 if event == "task-finished":
                     break
                 if event == "task-failed":
-                    raise RuntimeError("CosyVoice 合成失败: " + json.dumps(ev["header"], ensure_ascii=False)[:200])
+                    header = ev.get("header") or {}
+                    error_code = str(header.get("error_code") or "")
+                    # 瞬时故障（530/InternalError 等）可重试；其余（如内容审核）不可重试
+                    retryable = error_code in ("InternalError", "530", "TransientError")
+                    raise CosyVoiceTaskError(
+                        "CosyVoice 合成失败: " + json.dumps(header, ensure_ascii=False)[:200],
+                        code=error_code, retryable=retryable)
             elif op == 0x8:
                 break
         if not audio:

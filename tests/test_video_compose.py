@@ -240,6 +240,31 @@ class VideoComposeRenderTests(unittest.TestCase):
                 ],
             })
 
+    def test_all_customer_templates_prepare_distinct_visual_variants(self):
+        expected = {
+            "viral-talking-head-v1": ("variant-high", "HIGH CUT · 01"),
+            "professional-explainer-v1": ("variant-professional", "PRO EXPLAIN · 02"),
+            "clean-talking-v1": ("variant-clean", "CLEAN TALK · 03"),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            clean = pathlib.Path(directory) / "clean.mp4"
+            clean.write_bytes(b"fixture")
+            for template_id, markers in expected.items():
+                workspace = pathlib.Path(directory) / template_id
+                data = render.prepare_workspace(clean, {
+                    "template_id": template_id,
+                    "duration_ms": 3000,
+                    "cues": [{"text": "专业表达", "start_ms": 0, "end_ms": 3000}],
+                }, workspace)
+                markup = (workspace / "index.html").read_text(encoding="utf-8")
+                self.assertEqual(template_id, data["template_id"])
+                self.assertIn(markers[0], markup)
+                self.assertIn(markers[1], markup)
+
+    def test_rejects_unknown_customer_template(self):
+        with self.assertRaisesRegex(ValueError, "不支持的剪辑模板"):
+            render.normalize_template_id("mystery-template")
+
 
 class VideoComposeStoreTests(unittest.TestCase):
     def setUp(self):

@@ -24,6 +24,7 @@ import importlib.util
 import io
 import ipaddress
 import math
+import shutil
 import sqlite3
 import socket
 import tempfile
@@ -36,6 +37,11 @@ from .core import (
 )
 
 import random   # 429 退避重试的抖动：不加抖动，同一批 worker 退避后又会撞在一起
+
+try:
+    from providers.short_drama_visual.base import HEYGEN_PROMPT_MAX_CHARACTERS
+except ModuleNotFoundError:  # Imported through the `server` package in tests/tools.
+    from server.providers.short_drama_visual.base import HEYGEN_PROMPT_MAX_CHARACTERS
 
 from .audio import gen_audio, get_audio_asset
 from .image_mentions import resolve_image_mentions, validate_image_mentions
@@ -1717,6 +1723,185 @@ def _faststart_video_file(rel):
     return rel
 
 
+def _faststart_video_derivative(raw_relative):
+    raw = str(raw_relative or "").strip()
+    if not raw.lower().endswith(".mp4"):
+        raise RuntimeError("原生视频文件格式无效")
+    source = _out_path(raw)
+    if not source.is_file():
+        raise RuntimeError("原生视频文件不存在")
+    derived = "video/minimax_h3_derived_%s.mp4" % uuid.uuid4().hex
+    target = _out_path(derived)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(target.name + ".tmp.mp4")
+    try:
+        subprocess.run(
+            [
+                os.environ.get("FFMPEG_BIN", "ffmpeg"),
+                "-y", "-hide_banner", "-loglevel", "error", "-i", str(source),
+                "-map", "0", "-c", "copy", "-movflags", "+faststart",
+                str(temporary),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+            timeout=600,
+        )
+        if not temporary.is_file() or temporary.stat().st_size <= 0:
+            raise RuntimeError("原生视频派生文件为空")
+        temporary.replace(target)
+        return derived
+    except Exception:
+        try:
+            target.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _cleanup_owned_video_files(relative_paths):
+    for relative in relative_paths:
+        raw = str(relative or "").strip().replace("\\", "/")
+        parts = pathlib.PurePosixPath(raw).parts
+        if len(parts) != 2 or parts[0] != "video" or parts[1] in {".", ".."}:
+            continue
+        try:
+            target = _resolve_out_file(raw)
+            if target:
+                target.unlink(missing_ok=True)
+        except (OSError, ValueError):
+            pass
+
+
+def _native_media_result_paths(value):
+    if not isinstance(value, dict):
+        return set()
+    paths = set()
+    for key in ("video_file", "raw_video_file"):
+        if isinstance(value.get(key), str):
+            paths.add(value[key])
+    native_media = value.get("native_media")
+    if isinstance(native_media, dict):
+        for key in ("raw", "derived"):
+            item = native_media.get(key)
+            if isinstance(item, dict) and isinstance(item.get("file"), str):
+                paths.add(item["file"])
+    return paths
+
+
+def _normalized_native_video_reference(value):
+    raw = str(value or "").strip().replace("\\", "/")
+    parts = pathlib.PurePosixPath(raw).parts
+    if len(parts) != 2 or parts[0] != "video":
+        return ""
+    name = parts[1]
+    if name in {"", ".", ".."}:
+        return ""
+    return "video/" + name
+
+
+def reap_short_drama_native_orphans(now=None, grace_seconds=6 * 3600):
+    current_time = int(time.time()) if now is None else int(now)
+    grace = max(60, int(grace_seconds or 0))
+    referenced = set()
+    deleted = []
+    retained = []
+    errors = []
+    try:
+        with closing(jdb()) as connection:
+            for row in connection.execute(
+                    "SELECT result FROM jobs WHERE result IS NOT NULL"):
+                try:
+                    payload = json.loads(row[0] or "{}")
+                    if not isinstance(payload, dict):
+                        raise ValueError("reference result must be an object")
+                    referenced.update(_native_media_result_paths(payload))
+                except (TypeError, ValueError, json.JSONDecodeError) as error:
+                    raise sqlite3.DatabaseError(
+                        "jobs.result contains unreadable reference JSON"
+                    ) from error
+            tables = {
+                str(row[0]) for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            if "short_drama_provider_shot_versions" in tables:
+                referenced.update(
+                    row[0] for row in connection.execute(
+                        "SELECT file FROM short_drama_provider_shot_versions "
+                        "WHERE file IS NOT NULL"
+                    ) if row[0]
+                )
+            if "short_drama_provider_shot_jobs" in tables:
+                for row in connection.execute(
+                    "SELECT result_json FROM short_drama_provider_shot_jobs "
+                    "WHERE result_json IS NOT NULL"
+                ):
+                    try:
+                        payload = json.loads(row[0] or "{}")
+                        if not isinstance(payload, dict):
+                            raise ValueError("provider result must be an object")
+                        referenced.update(_native_media_result_paths(payload))
+                    except (TypeError, ValueError, json.JSONDecodeError) as error:
+                        raise sqlite3.DatabaseError(
+                            "provider result_json contains unreadable reference JSON"
+                        ) from error
+    except sqlite3.Error as error:
+        errors.append({
+            "scope": "jobs_database", "error": str(error)[:160],
+        })
+        return {"deleted": deleted, "retained": retained, "errors": errors}
+    try:
+        with closing(adb()) as connection:
+            referenced.update(
+                value for row in connection.execute(
+                    "SELECT video_file,image_file FROM video_assets"
+                ) for value in row if value
+            )
+    except sqlite3.Error as error:
+        errors.append({
+            "scope": "assets_database", "error": str(error)[:160],
+        })
+        return {"deleted": deleted, "retained": retained, "errors": errors}
+    referenced = {
+        normalized for normalized in (
+            _normalized_native_video_reference(item) for item in referenced
+        ) if normalized
+    }
+    video_root = _out_path("video").resolve()
+    if not video_root.is_dir():
+        return {"deleted": deleted, "retained": retained, "errors": errors}
+    for candidate in video_root.iterdir():
+        name = candidate.name
+        recognized = (
+            name.startswith("minimax_h3_raw_")
+            or name.startswith("minimax_h3_derived_")
+        )
+        if not recognized or not candidate.is_file():
+            continue
+        relative = "video/" + name
+        try:
+            resolved = candidate.resolve()
+            resolved.relative_to(video_root)
+            if relative in referenced or int(candidate.stat().st_mtime) > current_time - grace:
+                retained.append(relative)
+                continue
+            resolved.unlink()
+            deleted.append(relative)
+        except (OSError, ValueError) as error:
+            errors.append({"file": relative, "error": str(error)[:160]})
+    return {
+        "deleted": sorted(deleted),
+        "retained": sorted(retained),
+        "errors": errors,
+    }
+
+
 def _normalize_seedance_upscale_video(rel, ratio):
     """把 SeedVR2 成片收敛到标准 1080p 尺寸；音轨稍后从 Seedance 原片合回。"""
     src = _resolve_out_file(rel)
@@ -1840,10 +2025,17 @@ def validate_video_payload(payload, username=None):
         raise ValueError("mode 仅支持 text/audio/lipsync")
 
     if mode == "lipsync":
+        consent_fields = {
+            "digital_human_pipeline", "digital_human_stage",
+            "digital_human_run_id", "digital_human_script",
+            "digital_human_video_asset_id", "digital_human_video_sha256",
+            "digital_human_sample_sha256", "digital_human_slot_id",
+            "digital_human_consent_id", "clone_attempt_id",
+        }
         unknown = sorted(set(payload) - {
             "mode", "video_asset_id", "audio_asset_id", "lipsync_mode",
             "dynamic_duration",
-        })
+        } - consent_fields)
         if unknown:
             raise ValueError("口型同步不支持参数：" + unknown[0])
         if not username:
@@ -1876,7 +2068,7 @@ def validate_video_payload(payload, username=None):
         dynamic_duration = payload.get("dynamic_duration", False)
         if not isinstance(dynamic_duration, bool):
             raise ValueError("dynamic_duration 必须是布尔值")
-        return {
+        normalized = {
             "mode": "lipsync",
             "video_asset_id": video_asset_id,
             "audio_asset_id": audio_asset_id,
@@ -1888,6 +2080,14 @@ def validate_video_payload(payload, username=None):
             "ratio": video_asset.get("ratio") or "9:16",
             "resolution": video_asset.get("resolution") or "",
         }
+        # These fields have already been bound to a server-side consent record
+        # by digital_human_oneclick.verify_child_submission_with_record(). Keep
+        # them on the paid job for audit/recovery without accepting arbitrary
+        # request fields in the hardened lipsync contract.
+        for key in consent_fields:
+            if key in payload:
+                normalized[key] = payload[key]
+        return normalized
 
     image_data = str(payload.get("image_data") or "").strip()
     avatar_id = str(payload.get("avatar_id") or "").strip()
@@ -2771,6 +2971,147 @@ def import_h3_video_asset(username, raw, content_type="video/mp4", title=""):
             try: temp_path.unlink()
             except OSError: pass
 
+def import_lipsync_source_video(username, raw, content_type="video/mp4", title=""):
+    """Import an owned talking-video master for HeyGen Precision lipsync."""
+    if not raw or len(raw) > VIDEO_IMPORT_MAX_BYTES:
+        raise ValueError("真人源视频不能为空且不能超过 %dMB" %
+                         (VIDEO_IMPORT_MAX_BYTES // 1024 // 1024))
+    mime = str(content_type or "").split(";", 1)[0].strip().lower()
+    if mime not in {"video/mp4", "application/octet-stream"}:
+        raise ValueError("真人源视频仅支持 MP4")
+    if len(raw) < 12 or raw[4:8] != b"ftyp":
+        raise ValueError("文件不是有效的 MP4")
+
+    VIDEO_OUT_DIR.mkdir(parents=True, exist_ok=True)
+    temp_path = None
+    final_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+                prefix=".lipsync-source-", suffix=".mp4",
+                dir=VIDEO_OUT_DIR, delete=False) as handle:
+            handle.write(raw)
+            temp_path = pathlib.Path(handle.name)
+        probe = subprocess.run([
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=width,height,r_frame_rate:format=duration",
+            "-of", "json", str(temp_path),
+        ], capture_output=True, text=True, timeout=30)
+        if probe.returncode != 0:
+            raise ValueError("视频无法解析，请确认 MP4 文件完整")
+        info = json.loads(probe.stdout or "{}")
+        stream = (info.get("streams") or [{}])[0]
+        duration = float((info.get("format") or {}).get("duration") or 0)
+        width = int(stream.get("width") or 0)
+        height = int(stream.get("height") or 0)
+        if not width or not height or duration < 1:
+            raise ValueError("视频缺少有效画面或时长")
+        if duration > 300:
+            raise ValueError("真人源视频时长必须是 1-300 秒")
+
+        owner = hashlib.sha256(str(username).encode("utf-8")).hexdigest()[:12]
+        name = "lipsync_source_%s_%d_%s.mp4" % (
+            owner, int(time.time()), uuid.uuid4().hex[:10])
+        final_path = VIDEO_OUT_DIR / name
+        os.replace(temp_path, final_path)
+        temp_path = None
+        rel = "video/" + name
+        video_url = public_url(rel, "video/mp4", private=True)
+        clean_title = re.sub(r"\s+", " ", str(title or "")).strip()[:120]
+        record_video_asset(None, username, {
+            "mode": "lipsync_source", "video_file": rel,
+            "video_url": video_url, "text": clean_title or "真人口播源视频",
+            "resolution": "%dx%d" % (width, height),
+            "ratio": "16:9" if width >= height else "9:16",
+            "model": "Original Talking Video", "phase": "completed",
+            "status": "done",
+        })
+        with closing(adb()) as connection:
+            row = connection.execute(
+                "SELECT * FROM video_assets WHERE username=? AND video_file=? LIMIT 1",
+                (username, rel),
+            ).fetchone()
+        asset = dict(row) if row else {
+            "video_file": rel, "video_url": video_url, "status": "done",
+        }
+        asset.update({
+            "duration": duration, "width": width, "height": height,
+            "fps": stream.get("r_frame_rate") or "",
+        })
+        return asset
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError,
+            TypeError, ValueError) as exc:
+        if final_path:
+            try: final_path.unlink()
+            except OSError: pass
+        if isinstance(exc, ValueError):
+            raise
+        raise ValueError("真人源视频导入失败：%s" % str(exc)[:120])
+    finally:
+        if temp_path:
+            try: temp_path.unlink()
+            except OSError: pass
+
+
+def extract_lipsync_voice_sample(username, video_asset_id):
+    """Extract a private, bounded clone sample from an owned lipsync source."""
+    asset = get_video_asset(username, video_asset_id)
+    if not asset:
+        raise ValueError("真人源视频不存在或不属于当前账号")
+    if str(asset.get("mode") or "").strip().lower() != "lipsync_source":
+        raise ValueError("只能从本人上传的真人口播源视频提取音色")
+    source = _resolve_out_file(asset.get("video_file"))
+    if not source or not source.is_file() or not _user_owns_output_file(
+            username, asset.get("video_file")):
+        raise ValueError("真人源视频不存在或不属于当前账号")
+    video_digest = hashlib.sha256()
+    with source.open("rb") as source_handle:
+        for chunk in iter(lambda: source_handle.read(1024 * 1024), b""):
+            video_digest.update(chunk)
+
+    AUDIO_OUT_DIR.mkdir(parents=True, exist_ok=True)
+    sample_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+                prefix=".lipsync-voice-sample-", suffix=".mp3",
+                dir=AUDIO_OUT_DIR, delete=False) as handle:
+            sample_path = pathlib.Path(handle.name)
+        converted = subprocess.run([
+            "ffmpeg", "-y", "-v", "error", "-i", str(source),
+            "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000",
+            "-b:a", "48k", "-t", "60", str(sample_path),
+        ], capture_output=True, text=True, timeout=90)
+        if converted.returncode != 0 or not sample_path.is_file() \
+                or sample_path.stat().st_size < 256:
+            raise ValueError("视频中没有可用人声，请上传一条正在清晰说话的真人视频")
+        raw = sample_path.read_bytes()
+        duration = 0.0
+        probed = subprocess.run([
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", str(sample_path),
+        ], capture_output=True, text=True, timeout=20)
+        if probed.returncode == 0:
+            try:
+                duration = round(float((probed.stdout or "0").strip()), 3)
+            except (TypeError, ValueError):
+                duration = 0.0
+        return {
+            "video_asset_id": int(asset["id"]),
+            "video_sha256": video_digest.hexdigest(),
+            "audio": base64.b64encode(raw).decode("ascii"),
+            "audio_format": "mp3",
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "duration": duration,
+        }
+    except ValueError:
+        raise
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError("真人视频原声提取失败：%s" % str(exc)[:120]) from None
+    finally:
+        if sample_path:
+            try: sample_path.unlink()
+            except OSError: pass
+
+
 def get_video_job_phase(job_id):
     try:
         with closing(adb()) as c:
@@ -3018,6 +3359,23 @@ def _heygen_upload_asset_oauth(file_path, mime, timeout=240):
                                 method="POST")
     with _heygen_direct_opener().open(req, timeout=timeout) as r:
         return json.loads(r.read())
+
+
+def heygen_upload_preflight():
+    """Confirm the configured upload credential path without creating an asset."""
+    if _heygen_mcp_enabled():
+        token = str(_heygen_mcp_access_token() or "").strip()
+        if not token:
+            raise RuntimeError("HeyGen OAuth upload credential is unavailable")
+        mode = "oauth"
+    else:
+        if not str(HEYGEN_API_KEY or "").strip():
+            raise RuntimeError("HeyGen upload credential is unavailable")
+        # Constructing the dedicated opener validates the locked proxy/TLS
+        # configuration.  Do not create a disposable asset during preflight.
+        _heygen_direct_opener()
+        mode = "api_key"
+    return {"ok": True, "no_charge": True, "upload_auth": mode}
 
 
 def _heygen_upload_asset(file_path, direct=False):
@@ -4503,7 +4861,8 @@ def generate_heygen_video_direct(image_file, audio_file, resolution, ratio, moti
         update_video_asset_phase(job_id, "polling_video", provider_video_id=video_id)
         # ↓ 此刻已计费。之后任何失败都不能回退中转重发（同一账号，会再付一次），见 HeyGenBilledError
         try:
-            info = _heygen_poll_video(video_id, direct=True, deadline_s=VIDEO_GEN_DEADLINE)
+            info = _heygen_poll_video(video_id, direct=True, deadline_s=VIDEO_GEN_DEADLINE,
+                                      mcp=_heygen_mcp_enabled())
             update_video_asset_phase(job_id, "downloading_video", provider_video_id=video_id,
                                      source_video_url=info.get("video_url"))
             video_file = _download_video_file_direct(info["video_url"], "heygen")
@@ -4551,7 +4910,8 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion, job
         update_video_asset_phase(job_id, "polling_video", provider_video_id=video_id)
         # 中转也用同一个死线。原来它回落到 HEYGEN_TIMEOUT(1200s)，比 reaper 对口播的宽限
         # (540s)还长 —— reaper 先把任务判死并退点，worker 却还在轮询，上游照样出片照样收钱。
-        info = _heygen_poll_video(video_id, deadline_s=VIDEO_GEN_DEADLINE)
+        info = _heygen_poll_video(video_id, deadline_s=VIDEO_GEN_DEADLINE,
+                                  mcp=_heygen_mcp_enabled())
         update_video_asset_phase(job_id, "downloading_video", provider_video_id=video_id,
                                  source_video_url=info.get("video_url"))
         video_file = _download_video_file(info["video_url"], "heygen")
@@ -4574,11 +4934,22 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion, job
 # ============ F4 · 口播视频自动字幕（whisper 时间轴 + libass 烧录） ============
 # 仅 text/audio 口播模式生效；motion 动作模仿不做字幕（多无语音，价值低）。
 # whisper 吃 CPU，用信号量把同时转写数限到 WHISPER_MAX_CONCURRENCY（默认 1），避免打满核。
-WHISPER_MODEL_NAME = os.environ.get("WHISPER_MODEL", "base")
+WHISPER_MODEL_NAME = os.environ.get("WHISPER_MODEL", "small")
+WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "cpu").strip() or "cpu"
+WHISPER_COMPUTE_TYPE = (
+    os.environ.get("WHISPER_COMPUTE_TYPE", "int8").strip() or "int8"
+)
+WHISPER_CACHE_DIR = os.environ.get(
+    "WHISPER_CACHE_DIR", "/home/ubuntu/.cache/huggingface/hub",
+).strip()
 _whisper_sem = threading.BoundedSemaphore(max(1, int(os.environ.get("WHISPER_MAX_CONCURRENCY", "1") or "1")))
 _whisper_model = None
 _whisper_model_lock = threading.Lock()
-SUBTITLE_FONT = os.environ.get("SUBTITLE_FONT", "Noto Sans SC")  # 服务器已装，libass 可用
+_subtitle_runtime_ready = False
+_subtitle_runtime_lock = threading.Lock()
+DEFAULT_SUBTITLE_FONT = "Noto Sans SC"
+SUBTITLE_FONT = os.environ.get("SUBTITLE_FONT", DEFAULT_SUBTITLE_FONT)
+SUBTITLE_REQUIRED_CJK_GLYPHS = "黄雀字幕测试"
 # 三个预设样式；数值是相对视频高度的比例。ASS 颜色为 &HAABBGGRR。
 _SUB_STYLES = {
     "white":   {"fs": 0.052, "primary": "&H00FFFFFF", "outline": "&H00000000", "back": "&H00000000", "border": 1, "ow": 3.0, "shadow": 1, "mv": 0.060},
@@ -4594,6 +4965,134 @@ _SUB_POSITIONS = {
     "upper":  (8, 0.20),   # 偏上
     "top":    (8, 0.06),   # 顶部
 }
+
+
+class SubtitleRuntimePreflightError(RuntimeError):
+    """The local subtitle runtime is unavailable before any paid video job."""
+
+    code = "subtitle_runtime_unavailable"
+    status = 503
+
+
+def _subtitle_tool_output(command):
+    try:
+        completed = subprocess.run(
+            command, check=True, timeout=30,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError,
+            subprocess.TimeoutExpired) as exc:
+        raise SubtitleRuntimePreflightError(
+            "字幕运行环境检查失败，本次未调用付费视频渠道（未扣点）"
+        ) from exc
+    return ((completed.stdout or b"") + (completed.stderr or b"")).decode(
+        "utf-8", "replace",
+    )
+
+
+def _subtitle_charset_contains(charset, codepoint):
+    for token in str(charset or "").split():
+        try:
+            if "-" in token:
+                start, end = token.split("-", 1)
+                if int(start, 16) <= codepoint <= int(end, 16):
+                    return True
+            elif int(token, 16) == codepoint:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _subtitle_font_preflight():
+    if not shutil.which("fc-match") or not shutil.which("fc-query"):
+        raise SubtitleRuntimePreflightError(
+            "服务器缺少中文字幕字体检查工具，本次未调用付费视频渠道（未扣点）"
+        )
+    match = _subtitle_tool_output([
+        "fc-match", "--format=%{family}\n%{file}", SUBTITLE_FONT,
+    ])
+    lines = str(match or "").splitlines()
+    family = lines[0].strip() if lines else ""
+    raw_file = lines[1].strip() if len(lines) > 1 else ""
+    requested_tokens = set(re.findall(r"\w+", SUBTITLE_FONT.casefold()))
+    matched_tokens = set(re.findall(r"\w+", family.casefold()))
+    try:
+        matched_file = pathlib.Path(raw_file).resolve()
+    except (OSError, RuntimeError, ValueError):
+        matched_file = None
+    if (
+        not requested_tokens
+        or not requested_tokens.issubset(matched_tokens)
+        or not matched_file
+        or not matched_file.is_file()
+    ):
+        raise SubtitleRuntimePreflightError(
+            "服务器未匹配到指定的中文字幕字体，本次未调用付费视频渠道（未扣点）"
+        )
+    charset = _subtitle_tool_output([
+        "fc-query", "--format=%{charset}", str(matched_file),
+    ])
+    if not all(
+            _subtitle_charset_contains(charset, ord(character))
+            for character in SUBTITLE_REQUIRED_CJK_GLYPHS):
+        raise SubtitleRuntimePreflightError(
+            "服务器字幕字体缺少中文字符，本次未调用付费视频渠道（未扣点）"
+        )
+    return {"family": family[:200], "file": str(matched_file)}
+
+
+def subtitle_runtime_preflight():
+    """Load every local subtitle dependency before a paid HeyGen submission."""
+    global _subtitle_runtime_ready
+    if _subtitle_runtime_ready:
+        return {
+            "ok": True, "model": WHISPER_MODEL_NAME,
+            "device": WHISPER_DEVICE, "compute_type": WHISPER_COMPUTE_TYPE,
+            "no_charge": True,
+        }
+    with _subtitle_runtime_lock:
+        if _subtitle_runtime_ready:
+            return {
+                "ok": True, "model": WHISPER_MODEL_NAME,
+                "device": WHISPER_DEVICE,
+                "compute_type": WHISPER_COMPUTE_TYPE, "no_charge": True,
+            }
+        if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+            raise SubtitleRuntimePreflightError(
+                "服务器缺少 FFmpeg/ffprobe，无法制作字幕，本次未调用付费视频渠道（未扣点）"
+            )
+        encoders = _subtitle_tool_output(["ffmpeg", "-hide_banner", "-encoders"])
+        if "libx264" not in encoders or not re.search(
+                r"(?m)^\s*A\S*\s+aac\s", encoders):
+            raise SubtitleRuntimePreflightError(
+                "FFmpeg 缺少 H.264/AAC 编码器，本次未调用付费视频渠道（未扣点）"
+            )
+        filters = _subtitle_tool_output(["ffmpeg", "-hide_banner", "-filters"])
+        if "drawtext" not in filters or "subtitles" not in filters:
+            raise SubtitleRuntimePreflightError(
+                "FFmpeg 缺少字幕滤镜，本次未调用付费视频渠道（未扣点）"
+            )
+        _subtitle_font_preflight()
+        if not VIDEO_OUT_DIR.is_dir() or not os.access(VIDEO_OUT_DIR, os.W_OK):
+            raise SubtitleRuntimePreflightError(
+                "字幕输出目录不可写，本次未调用付费视频渠道（未扣点）"
+            )
+        try:
+            _get_whisper_model()
+        except Exception as exc:
+            detail = "faster-whisper 未安装" if isinstance(
+                exc, ModuleNotFoundError,
+            ) else "Whisper 模型未预热或无法加载"
+            raise SubtitleRuntimePreflightError(
+                "%s，本次未调用付费视频渠道（未扣点）" % detail
+            ) from exc
+        _subtitle_runtime_ready = True
+    return {
+        "ok": True, "model": WHISPER_MODEL_NAME,
+        "device": WHISPER_DEVICE, "compute_type": WHISPER_COMPUTE_TYPE,
+        "no_charge": True,
+    }
 
 def _sub_ffmpeg(cmd, timeout, cwd=None):
     try:
@@ -4620,7 +5119,13 @@ def _get_whisper_model():
                 os.environ.setdefault("HF_HUB_OFFLINE", "1")
                 try:
                     from faster_whisper import WhisperModel  # 服务器已装；本地/CI 不触发 import
-                    _whisper_model = WhisperModel(WHISPER_MODEL_NAME, device="cpu", compute_type="int8")
+                    _whisper_model = WhisperModel(
+                        WHISPER_MODEL_NAME,
+                        device=WHISPER_DEVICE,
+                        compute_type=WHISPER_COMPUTE_TYPE,
+                        download_root=WHISPER_CACHE_DIR or None,
+                        local_files_only=True,
+                    )
                 finally:
                     os.environ.update(_saved)
     return _whisper_model
@@ -5710,7 +6215,8 @@ def _stream_resumable_video_download(
 
 
 def _download_xiaole_video(
-        url, prefix="xiaole", origin_headers=None, public_only=False):
+        url, prefix="xiaole", origin_headers=None, public_only=False,
+        *, faststart=True):
     # 视频 CDN 多在海外(如 vidgen.x.ai)，国内直连不通。成片下载是 GET(幂等)，故可多档尝试：
     # 优先走 egress 快隧道，避开拥塞到分钟级的 heygen 法兰克福老中转(实测 xAI 2 分钟出片、
     # 走老中转下载却要 11~19 分钟，甚至卡死被 reaper 判超时退点)。中转仅作兜底。
@@ -5763,7 +6269,7 @@ def _download_xiaole_video(
                         "视频下载结果无法原子发布"
                     ) from error
                 completed = True
-                return _faststart_video_file(filename)
+                return _faststart_video_file(filename) if faststart else filename
             except _CompletedVideoLocalIOError:
                 raise
             except _CompletedVideoCandidateError as error:
@@ -6389,7 +6895,7 @@ def gen_xiaole_video(payload):
             "image_url": public_url(cover, "image/jpeg") if cover else None,
         }
     elif channel == "minimax":
-        from . import video_minimax_h3
+        from . import short_drama_native_audio, video_minimax_h3
 
         provider_id_persisted = bool(existing and existing.get("request_id"))
 
@@ -6406,6 +6912,9 @@ def gen_xiaole_video(payload):
             )
 
         duration = int(payload.get("duration") or 5)
+        requested_resolution = str(
+            payload.get("resolution") or "2k"
+        ).strip().upper()
         if existing:
             try:
                 origin = video_minimax_h3.origin_from_payload(payload)
@@ -6426,7 +6935,7 @@ def gen_xiaole_video(payload):
                 existing["request_id"], duration, ratio,
                 job_id=job_id, heartbeat=minimax_heartbeat,
                 api_key=candidate["secret"], provider_key_id=candidate["id"],
-                resolution=payload.get("resolution") or "2K",
+                resolution=requested_resolution,
                 api_base=api_base,
             )
         else:
@@ -6435,7 +6944,7 @@ def gen_xiaole_video(payload):
                 video_minimax_h3.MiniMaxCredentialRejected,
                 lambda selected: video_minimax_h3.generate(
                     prompt, ref_images, ratio=ratio, duration=duration,
-                    resolution=payload.get("resolution") or "2K", job_id=job_id,
+                    resolution=requested_resolution, job_id=job_id,
                     heartbeat=minimax_heartbeat, api_key=selected["secret"],
                     provider_key_id=selected["id"],
                     api_base=api_base,
@@ -6448,10 +6957,11 @@ def gen_xiaole_video(payload):
                 provider_video_id=rendered.get("request_id"),
                 provider_key_id=candidate["id"], model=video_minimax_h3.MODEL,
             )
+        native_required = payload.get("_short_drama_native_audio_required") is True
         try:
             video_file = _download_video_file_direct(
                 source_url,
-                prefix="minimax_h3",
+                prefix="minimax_h3_raw" if native_required else "minimax_h3",
                 allowed_hosts=video_minimax_h3.RESULT_HOSTS,
                 max_bytes=video_minimax_h3.RESULT_MAX_BYTES,
             )
@@ -6465,11 +6975,61 @@ def gen_xiaole_video(payload):
             if str(exc).startswith("视频下载失败"):
                 raise video_minimax_h3.TransientMiniMaxError(str(exc)) from exc
             raise
+        native_audio = None
+        native_resolution = None
+        native_media = None
+        raw_video_file = None
+        owned_files = []
+        if native_required:
+            raw_video_file = video_file
+            owned_files.append(raw_video_file)
+            try:
+                evidence = short_drama_native_audio.inspect_native_media(
+                    _resolve_out_file(raw_video_file), requested_resolution
+                )
+                native_resolution = evidence["resolution"]
+                native_audio = evidence["audio"]
+                video_file = _faststart_video_derivative(raw_video_file)
+                owned_files.append(video_file)
+                derived_hash, derived_size = short_drama_native_audio.sha256_file(
+                    _resolve_out_file(video_file)
+                )
+                native_media = {
+                    "raw": {
+                        "file": raw_video_file,
+                        "sha256": evidence["sha256"],
+                        "size_bytes": evidence["size_bytes"],
+                    },
+                    "derived": {
+                        "file": video_file,
+                        "sha256": derived_hash,
+                        "size_bytes": derived_size,
+                        "derived_from_sha256": evidence["sha256"],
+                    },
+                    "resolution": native_resolution,
+                    "audio": native_audio,
+                    "inspected_at": evidence["inspected_at"],
+                }
+            except short_drama_native_audio.NativeAudioError as error:
+                _cleanup_owned_video_files(owned_files)
+                raise video_minimax_h3.MiniMaxProviderFailed(str(error)) from error
+            except Exception as error:
+                _cleanup_owned_video_files(owned_files)
+                raise video_minimax_h3.MiniMaxProviderFailed(
+                    "原生视频标准化失败，请重新生成当前镜头"
+                ) from error
         cover = _extract_first_frame_cover(video_file)
         result = dict(
             rendered, video_file=video_file, image_file=cover,
             image_url=public_url(cover, "image/jpeg") if cover else None,
         )
+        if native_audio:
+            result["native_audio"] = native_audio
+            result["native_media"] = native_media
+            result["raw_video_file"] = raw_video_file
+            if native_resolution:
+                result["native_resolution"] = native_resolution
+            result["generate_audio"] = True
     else:
         result = generate_xiaole_video(model, prompt, reference_images=ref_images, size=size, job_id=job_id, prefix=channel,
                                        duration=XIAOLE_CHANNEL_DURATION.get(channel))
@@ -6498,6 +7058,10 @@ def gen_xiaole_video(payload):
         "image_url": result.get("image_url") or (public_url(result.get("image_file"), "image/jpeg") if result.get("image_file") else None),
         "provider": result.get("provider"),
         "generate_audio": result.get("generate_audio"),
+        "native_audio": result.get("native_audio"),
+        "native_resolution": result.get("native_resolution"),
+        "native_media": result.get("native_media"),
+        "raw_video_file": result.get("raw_video_file"),
         "completion_tokens": result.get("completion_tokens"),
         "reference_storyboard_count": payload.get("_reference_storyboard_count"),
         "reference_storyboard_source_hashes": payload.get("_reference_storyboard_source_hashes"),
@@ -6624,7 +7188,7 @@ def gen_avatar(payload):
 CINEMATIC_MAX_AVATARS = 3        # HeyGen 硬上限：avatar_id 是 1~3 个 look 的数组
 CINEMATIC_RESOLUTIONS = {"720p", "1080p"}  # 兼容旧客户端；服务端最终统一覆盖为 720p
 CINEMATIC_OUTPUT_RESOLUTION = "720p"
-CINEMATIC_PROMPT_MAX = 2000
+CINEMATIC_PROMPT_MAX = HEYGEN_PROMPT_MAX_CHARACTERS
 CINEMATIC_DURATION_RANGE = (4, 15)   # HeyGen: 4~15 秒
 CINEMATIC_AUTO_DURATION = 10         # 选了「自适应」但没传参考视频时的回落值
 CINEMATIC_MODES = ("motion", "duo", "open")

@@ -7,7 +7,9 @@ never represented as a real project result.
 
 import hashlib
 import json
+import math
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -21,11 +23,14 @@ from providers.short_drama_visual.heygen_cinematic import (
     HeyGenCinematicShotProvider,
 )
 from providers.short_drama_visual.runtime import load_by_name, load_from_environment
-from providers.short_drama_visual.base import VisualProviderError
+try:
+    from providers.short_drama_visual.base import VisualProviderError
+except ModuleNotFoundError:  # Imported through the `server` package in tests/tools.
+    from server.providers.short_drama_visual.base import VisualProviderError
 
 from . import jobs_store, points as points_domain
 from . import short_drama_assembly_plan as media_plan
-from . import short_drama_asset_graph, short_drama_duration
+from . import short_drama_asset_graph, short_drama_duration, short_drama_native_audio
 
 
 ACTIVE = {"queued", "running"}
@@ -394,9 +399,11 @@ def _provider_assembly_snapshot(conn, project_id, plan, provider_name=""):
         ).fetchall()
     }
     for row in conn.execute(
-        "SELECT * FROM short_drama_provider_shot_versions "
-        "WHERE project_id=? AND status='ready' "
-        "ORDER BY shot_key,version DESC,created_at DESC",
+        "SELECT v.*,j.request_json,j.result_json "
+        "FROM short_drama_provider_shot_versions v "
+        "JOIN short_drama_provider_shot_jobs j ON j.id=v.job_id "
+        "WHERE v.project_id=? AND v.status='ready' "
+        "ORDER BY v.shot_key,v.version DESC,v.created_at DESC",
         (project_id,),
     ).fetchall():
         item = _provider_version(row)
@@ -408,6 +415,15 @@ def _provider_assembly_snapshot(conn, project_id, plan, provider_name=""):
         else:
             latest.setdefault(key, item)
     shots = [latest[key] for key in required if key in latest]
+    assets_ready = bool(required) and len(shots) == len(required)
+    low_resolution_shot_keys = []
+    if provider_name == "minimax_h3":
+        low_resolution_shot_keys = [
+            str(item["shot_key"])
+            for item in shots
+            if not item.get("native_media")
+        ]
+    quality_ready = not low_resolution_shot_keys
     continuity_ready = []
     continuity_missing = []
     if len(required) > 1:
@@ -434,7 +450,10 @@ def _provider_assembly_snapshot(conn, project_id, plan, provider_name=""):
         "required_count": len(required),
         "ready_count": len(shots),
         "missing_shot_keys": [key for key in required if key not in latest],
-        "all_ready": bool(required) and len(shots) == len(required),
+        "assets_ready": assets_ready,
+        "quality_ready": quality_ready,
+        "low_resolution_shot_keys": low_resolution_shot_keys,
+        "all_ready": assets_ready and quality_ready,
         "continuity_required_count": max(0, len(required) - 1),
         "continuity_ready_count": len(continuity_ready),
         "continuity_ready_shot_keys": continuity_ready,
@@ -449,6 +468,163 @@ def _provider_assembly_snapshot(conn, project_id, plan, provider_name=""):
             ) or (item.get("request_snapshot") or {}).get("duration_seconds") or 0)) * 1000
             for item in shots
         ),
+    }
+
+
+def _sanitized_native_audio(value):
+    if not isinstance(value, dict):
+        return {}
+    result = {
+        "audible": value.get("audible") is True,
+        "codec": str(value.get("codec") or "")[:32],
+    }
+    for key in ("sample_rate", "channels"):
+        try:
+            result[key] = max(0, int(value.get(key) or 0))
+        except (TypeError, ValueError):
+            result[key] = 0
+    for key in ("mean_volume_dbfs", "max_volume_dbfs"):
+        try:
+            number = float(value.get(key))
+        except (TypeError, ValueError):
+            number = None
+        result[key] = number if number is not None and math.isfinite(number) else None
+    return result
+
+
+def _sanitized_native_media(value):
+    if not isinstance(value, dict):
+        return {}
+
+    def controlled_file(raw):
+        text = str(raw or "").strip().replace("\\", "/")
+        parts = Path(text).parts
+        return text if len(parts) == 2 and parts[0] == "video" else ""
+
+    def sha256(raw):
+        text = str(raw or "").strip()
+        return text if re.fullmatch(r"[0-9a-f]{64}", text) else ""
+
+    raw = value.get("raw") if isinstance(value.get("raw"), dict) else {}
+    derived = (
+        value.get("derived") if isinstance(value.get("derived"), dict) else {}
+    )
+    raw_file = controlled_file(raw.get("file"))
+    derived_file = controlled_file(derived.get("file"))
+    raw_hash = sha256(raw.get("sha256"))
+    derived_hash = sha256(derived.get("sha256"))
+    lineage_hash = sha256(derived.get("derived_from_sha256"))
+    try:
+        raw_size = int(raw.get("size_bytes") or 0)
+        derived_size = int(derived.get("size_bytes") or 0)
+        inspected_at = int(value.get("inspected_at") or 0)
+        width = int((value.get("resolution") or {}).get("width") or 0)
+        height = int((value.get("resolution") or {}).get("height") or 0)
+    except (TypeError, ValueError, AttributeError):
+        return {}
+    audio = _sanitized_native_audio(value.get("audio"))
+    if (
+        not raw_file or not derived_file or not raw_hash or not derived_hash
+        or lineage_hash != raw_hash or raw_size <= 0 or derived_size <= 0
+        or inspected_at <= 0 or max(width, height) < 2500
+        or min(width, height) < 1400 or audio.get("audible") is not True
+    ):
+        return {}
+    return {
+        "raw": {
+            "file": raw_file, "sha256": raw_hash, "size_bytes": raw_size,
+        },
+        "derived": {
+            "file": derived_file, "sha256": derived_hash,
+            "size_bytes": derived_size, "derived_from_sha256": lineage_hash,
+        },
+        "resolution": {"width": width, "height": height},
+        "audio": audio,
+        "inspected_at": inspected_at,
+    }
+
+
+def _automatic_native_audio_contract(conn, project, project_shot_count):
+    if project_shot_count <= 0:
+        return None
+    plan_row = conn.execute(
+        "SELECT plan_json FROM short_drama_production_plans "
+        "WHERE project_id=? AND status='confirmed' "
+        "ORDER BY version DESC LIMIT 1",
+        (project["id"],),
+    ).fetchone()
+    plan = _json(plan_row["plan_json"], {}) if plan_row else {}
+    required_shot_keys = [
+        str(item.get("shot_key") or "shot_%02d" % (index + 1))
+        for index, item in enumerate(plan.get("material_plan") or [])
+        if isinstance(item, dict)
+    ]
+    if len(required_shot_keys) != project_shot_count:
+        return None
+    rows = conn.execute(
+        "SELECT v.*,j.result_json,"
+        "CASE WHEN s.version_id=v.id THEN 1 ELSE 0 END selected "
+        "FROM short_drama_provider_shot_versions v "
+        "JOIN short_drama_provider_shot_jobs j ON j.id=v.job_id "
+        "LEFT JOIN short_drama_provider_shot_selections s "
+        "ON s.project_id=v.project_id AND s.shot_key=v.shot_key "
+        "WHERE v.project_id=? AND v.status='ready' "
+        "ORDER BY v.shot_key,selected DESC,v.version DESC,v.created_at DESC",
+        (project["id"],),
+    ).fetchall()
+    effective = {}
+    for row in rows:
+        item = _provider_version(row)
+        effective.setdefault(str(item["shot_key"]), item)
+    if set(effective) != set(required_shot_keys):
+        return None
+    versions = list(effective.values())
+    if (
+        len(versions) != project_shot_count
+        or any(item.get("provider") != "minimax_h3" for item in versions)
+    ):
+        return None
+    invalid_shot_keys = [
+        str(item["shot_key"]) for item in versions
+        if (item.get("native_audio") or {}).get("audible") is not True
+        or not item.get("native_media")
+    ]
+    if invalid_shot_keys:
+        return {
+            "contract_version": "short-drama-locked-media-v1",
+            "delivery_eligible": False,
+            "reason": "provider_native_audio_incomplete",
+            "media_mode": "provider_audio",
+            "invalid_shot_keys": sorted(invalid_shot_keys),
+            "audio_tracks": [], "subtitles": [],
+            "audio_hash": "", "subtitle_hash": "", "timeline_hash": "",
+            "subtitle_required": False,
+        }
+    evidence = [
+        {
+            "id": item["id"], "shot_key": item["shot_key"],
+            "input_hash": item["input_hash"],
+            "native_audio": item["native_audio"],
+            "raw_sha256": item["native_media"]["raw"]["sha256"],
+            "derived_sha256": item["native_media"]["derived"]["sha256"],
+        }
+        for item in sorted(versions, key=lambda current: str(current["shot_key"]))
+    ]
+    timeline = {
+        "mode": "provider_audio", "project_id": project["id"],
+        "version_ids": [item["id"] for item in evidence],
+        "duration_ms": short_drama_duration.choose(
+            project["target_duration"], project_shot_count,
+        ) * 1000,
+    }
+    return {
+        "contract_version": "short-drama-locked-media-v1",
+        "evidence_source": "validated_provider_native_audio",
+        "delivery_eligible": True, "reason": "",
+        "media_mode": "provider_audio", "silent_confirmed": False,
+        "confirmed_by": "system", "audio_tracks": [], "subtitles": [],
+        "audio_hash": _hash(evidence), "subtitle_hash": _hash([]),
+        "timeline_hash": _hash(timeline), "subtitle_required": False,
     }
 
 
@@ -473,6 +649,120 @@ def _controlled_provider_file(relative):
             "provider_asset_missing", "Provider 镜头文件不存在，请重新生成该镜头", 409
         )
     return target
+
+
+def _verify_native_assembly_source(
+        item, source, shot_key, *, require_locked_native_media=False):
+    provider = str(item.get("provider") or "")
+    if (
+        not require_locked_native_media
+        and provider != "minimax_h3"
+    ):
+        return
+    selected_file = str(item.get("file") or "").replace("\\", "/")
+    if require_locked_native_media and provider == "delivery_snapshot":
+        raw = (
+            (item.get("native_media") or {}).get("raw")
+            if isinstance(item.get("native_media"), dict) else None
+        )
+        raw = raw if isinstance(raw, dict) else {}
+        expected_file = str(raw.get("file") or "").replace("\\", "/")
+        expected_hash = str(raw.get("sha256") or "").strip()
+        try:
+            expected_size = int(raw.get("size_bytes") or 0)
+        except (TypeError, ValueError):
+            expected_size = 0
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_hash) or expected_size <= 0:
+            raise AutodraftError(
+                "provider_native_media_invalid",
+                "%s 缺少可信的正式导出媒体证据" % shot_key,
+                409,
+            )
+        expected = {
+            "file": expected_file,
+            "sha256": expected_hash,
+            "size_bytes": expected_size,
+        } if expected_file == selected_file else None
+    else:
+        locked = _sanitized_native_media(item.get("native_media"))
+        if not locked:
+            raise AutodraftError(
+                "provider_native_media_invalid",
+                "%s 缺少可信的原生媒体证据，请重新生成该镜头" % shot_key,
+                409,
+            )
+        expected = next(
+            (
+                locked[key] for key in ("raw", "derived")
+                if locked[key]["file"] == selected_file
+            ),
+            None,
+        )
+    if not expected:
+        raise AutodraftError(
+            "provider_native_media_changed",
+            "%s 的采用文件与锁定媒体证据不一致" % shot_key,
+            409,
+        )
+    try:
+        current = short_drama_native_audio.inspect_native_media(
+            source, expected_resolution="2K"
+        )
+    except short_drama_native_audio.NativeAudioError as error:
+        code = (
+            "provider_native_audio_invalid"
+            if "audio" in error.code
+            else "provider_native_media_invalid"
+        )
+        raise AutodraftError(
+            code, "%s：%s" % (shot_key, str(error)), 409,
+        ) from error
+    if (
+        current["sha256"] != expected["sha256"]
+        or int(current["size_bytes"]) != int(expected["size_bytes"])
+    ):
+        raise AutodraftError(
+            "provider_native_media_changed",
+            "%s 的采用文件已发生变化，请重新生成或重新采用版本" % shot_key,
+            409,
+        )
+
+
+def _verify_native_assembly_sources(assembly):
+    """Revalidate the current raw files without creating render artifacts."""
+    sources = []
+    for index, item in enumerate(assembly.get("shots") or []):
+        shot_key = str(item.get("shot_key") or "shot_%02d" % (index + 1))
+        source = _controlled_provider_file(item.get("file"))
+        _verify_native_assembly_source(item, source, shot_key)
+        sources.append(source)
+    return sources
+
+
+def _verified_native_assembly_sources(
+        assembly, snapshot_dir, *, require_locked_native_media=False):
+    snapshot_root = Path(snapshot_dir)
+    snapshot_root.mkdir(parents=True, exist_ok=True)
+    sources = []
+    for index, item in enumerate(assembly.get("shots") or []):
+        shot_key = str(item.get("shot_key") or "shot_%02d" % (index + 1))
+        source = _controlled_provider_file(item.get("file"))
+        snapshot = snapshot_root / ("source-%03d%s" % (index + 1, source.suffix))
+        try:
+            with source.open("rb") as reader, snapshot.open("xb") as writer:
+                shutil.copyfileobj(reader, writer, length=1024 * 1024)
+        except OSError as error:
+            raise AutodraftError(
+                "provider_native_media_unavailable",
+                "%s 的采用版本无法建立稳定媒体快照" % shot_key,
+                409,
+            ) from error
+        _verify_native_assembly_source(
+            item, snapshot, shot_key,
+            require_locked_native_media=require_locked_native_media,
+        )
+        sources.append(snapshot)
+    return sources
 
 
 def _table_exists(conn, name):
@@ -526,6 +816,11 @@ def _locked_media_contract(conn, project):
                 "timeline_hash": _hash(timeline),
                 "subtitle_required": False,
             }
+    native_audio_contract = _automatic_native_audio_contract(
+        conn, project, project_shot_count,
+    )
+    if native_audio_contract:
+        return native_audio_contract
     required = {
         "short_drama_shots", "short_drama_voice_shots",
         "short_drama_voice_lines", "short_drama_voice_versions",
@@ -644,20 +939,20 @@ def _run_preview_process(command, cancel_event=None, timeout=900):
         )
     except OSError as error:
         raise AutodraftError(
-            "preview_renderer_unavailable", "720p 预览合成器不可用", 503
+            "preview_renderer_unavailable", "1080p 预览合成器不可用", 503
         ) from error
     deadline = time.monotonic() + max(1, int(timeout))
     while True:
         if cancel_event is not None and cancel_event.is_set():
             _stop_preview_process(process)
             raise AutodraftError(
-                "preview_render_cancelled", "720p 预览合成已取消", 409
+                "preview_render_cancelled", "1080p 预览合成已取消", 409
             )
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             _stop_preview_process(process)
             raise AutodraftError(
-                "preview_renderer_unavailable", "720p 预览合成超时", 503
+                "preview_renderer_unavailable", "1080p 预览合成超时", 503
             )
         try:
             stdout, stderr = process.communicate(timeout=min(0.25, remaining))
@@ -671,8 +966,21 @@ def _run_preview_process(command, cancel_event=None, timeout=900):
 def _render_provider_preview(project_id, job_id, assembly, cancel_event=None):
     """Normalize paid shots with their locked audio/subtitle timeline."""
     cancel_event = cancel_event or assembly.get("_cancel_event")
-    sources = [_controlled_provider_file(item["file"]) for item in assembly["shots"]]
+    root = _content_root()
+    target_dir = root / "short_drama_autodraft" / project_id / job_id
+    temp_dir = target_dir.with_name(".%s.tmp" % target_dir.name)
+    if temp_dir.exists():
+        shutil.rmtree(temp_dir)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        sources = _verified_native_assembly_sources(
+            assembly, temp_dir / "sources"
+        )
+    except Exception:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
     if not sources:
+        shutil.rmtree(temp_dir, ignore_errors=True)
         raise AutodraftError("provider_shots_required", "没有可合成的镜头", 409)
     source_probes = []
     for source in sources:
@@ -687,13 +995,7 @@ def _render_provider_preview(project_id, job_id, assembly, cancel_event=None):
         max(1, int(item.get("duration_ms") or 0)) for item in source_probes
     )
     duration_ms = source_duration_ms or int(assembly.get("duration_ms") or 0)
-    root = _content_root()
-    target_dir = root / "short_drama_autodraft" / project_id / job_id
-    temp_dir = target_dir.with_name(".%s.tmp" % target_dir.name)
-    if temp_dir.exists():
-        shutil.rmtree(temp_dir)
-    temp_dir.mkdir(parents=True, exist_ok=True)
-    output = temp_dir / "preview-720p.mp4"
+    output = temp_dir / "preview-1080p.mp4"
     ffmpeg = os.environ.get("FFMPEG_BIN", "ffmpeg")
     command = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error"]
     for source in sources:
@@ -710,13 +1012,13 @@ def _render_provider_preview(project_id, job_id, assembly, cancel_event=None):
         _write_subtitles(subtitle_input, media["subtitles"])
         command.extend(["-f", "srt", "-i", str(subtitle_input)])
     ratio = str(assembly.get("ratio") or "16:9")
-    width, height = ((720, 1280) if ratio == "9:16" else (1280, 720))
+    width, height = ((1080, 1920) if ratio == "9:16" else (1920, 1080))
     filters = []
     labels = []
     for index in range(len(sources)):
         filters.append(
-            "[%d:v:0]scale=%d:%d:force_original_aspect_ratio=decrease,"
-            "pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black,fps=25,setsar=1,"
+            "[%d:v:0]scale=%d:%d:force_original_aspect_ratio=increase:flags=lanczos,"
+            "crop=%d:%d,fps=25,setsar=1,"
             "setpts=PTS-STARTPTS[v%d]" % (
                 index, width, height, width, height, index,
             )
@@ -772,7 +1074,7 @@ def _render_provider_preview(project_id, job_id, assembly, cancel_event=None):
     if subtitle_input:
         command.extend(["-map", "%d:0" % (len(sources) + len(audio_paths))])
     command.extend([
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "18",
         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
     ])
     if subtitle_input:
@@ -784,7 +1086,7 @@ def _render_provider_preview(project_id, job_id, assembly, cancel_event=None):
     if result.returncode != 0 or not output.is_file():
         raise AutodraftError(
             "preview_render_failed",
-            str(result.stderr or "720p 预览合成失败").strip()[-500:], 409,
+            str(result.stderr or "1080p 预览合成失败").strip()[-500:], 409,
         )
     try:
         probe = media_plan.probe_media(output)
@@ -793,11 +1095,11 @@ def _render_provider_preview(project_id, job_id, assembly, cancel_event=None):
     actual_width, actual_height = media_plan.dimensions_for_ratio(probe)
     if (actual_width, actual_height) != (width, height) or not probe.get("audio"):
         raise AutodraftError(
-            "preview_media_invalid", "720p 预览的画幅或音频流验证失败", 409
+            "preview_media_invalid", "1080p 预览的画幅或音频流验证失败", 409
         )
     if duration_ms and abs(int(probe["duration_ms"]) - duration_ms) > 1500:
         raise AutodraftError(
-            "preview_duration_invalid", "720p 预览时长与锁定时间线不一致", 409
+            "preview_duration_invalid", "1080p 预览时长与锁定时间线不一致", 409
         )
     if subtitle_input:
         try:
@@ -811,11 +1113,11 @@ def _render_provider_preview(project_id, job_id, assembly, cancel_event=None):
             )
         except (OSError, subprocess.TimeoutExpired) as error:
             raise AutodraftError(
-                "preview_probe_failed", "720p 预览字幕流验证失败", 409
+                "preview_probe_failed", "1080p 预览字幕流验证失败", 409
             ) from error
         if subtitle_probe.returncode != 0 or not subtitle_probe.stdout.strip():
             raise AutodraftError(
-                "preview_subtitle_missing", "720p 预览缺少锁定字幕流", 409
+                "preview_subtitle_missing", "1080p 预览缺少锁定字幕流", 409
             )
     if target_dir.exists():
         shutil.rmtree(target_dir)
@@ -1061,8 +1363,7 @@ def _previous_shot_reference(conn, project_id, shots, shot_key):
     if index in (None, 0):
         return None
     previous_key = str(ordered[index - 1].get("shot_key") or "")
-    row = conn.execute(
-        "SELECT version.shot_key,version.file,version.url,job.result_json "
+    query_tail = (
         "FROM short_drama_provider_shot_versions version "
         "JOIN short_drama_provider_shot_jobs job ON job.id=version.job_id "
         "LEFT JOIN short_drama_provider_shot_selections selected "
@@ -1070,9 +1371,22 @@ def _previous_shot_reference(conn, project_id, shots, shot_key):
         "AND selected.shot_key=version.shot_key AND selected.version_id=version.id "
         "WHERE version.project_id=? AND version.shot_key=? AND version.status='ready' "
         "ORDER BY CASE WHEN selected.version_id IS NOT NULL THEN 0 ELSE 1 END, "
-        "version.version DESC LIMIT 1",
-        (project_id, previous_key),
-    ).fetchone()
+        "version.version DESC LIMIT 1"
+    )
+    try:
+        row = conn.execute(
+            "SELECT version.shot_key,version.file,version.url,job.request_json,"
+            "job.result_json " + query_tail,
+            (project_id, previous_key),
+        ).fetchone()
+    except sqlite3.OperationalError as error:
+        if "request_json" not in str(error):
+            raise
+        row = conn.execute(
+            "SELECT version.shot_key,version.file,version.url,"
+            "'{}' AS request_json,job.result_json " + query_tail,
+            (project_id, previous_key),
+        ).fetchone()
     if not row:
         raise AutodraftError(
             "provider_previous_shot_required",
@@ -1080,6 +1394,16 @@ def _previous_shot_reference(conn, project_id, shots, shot_key):
             409,
         )
     result = _json(row["result_json"], {})
+    request = _json(row["request_json"], {})
+    scene_reference = next(
+        (
+            item for item in request.get("reference_images") or []
+            if isinstance(item, dict)
+            and str(item.get("character_key") or "").strip()
+            == "__scene_reference__"
+        ),
+        {},
+    )
     tail = {
         "file": str(result.get("continuity_tail_file") or "").strip(),
         "url": str(result.get("continuity_tail_url") or "").strip(),
@@ -1090,6 +1414,13 @@ def _previous_shot_reference(conn, project_id, shots, shot_key):
         "shot_key": previous_key,
         "file": str(tail.get("file") or "").strip(),
         "url": str(tail.get("url") or "").strip(),
+        "scene_key": str(scene_reference.get("scene_key") or "").strip(),
+        "scene_version_id": str(
+            scene_reference.get("scene_version_id") or ""
+        ).strip(),
+        "scene_reference_identity": str(
+            scene_reference.get("scene_reference_identity") or ""
+        ).strip(),
     }
 
 
@@ -1181,10 +1512,97 @@ def _visual_prompt(shot):
     return " ".join(parts)
 
 
+_EXECUTION_PROMPT_SEMANTICS = "structured-supplement-v1"
+_EXECUTION_PROMPT_FIELDS = (
+    ("画面与人物动作", "visual"),
+    ("景别与运镜", "camera"),
+    ("表演与情绪", "performance"),
+    ("当前镜头场景补充", "scene"),
+    ("光线、时间与天气", "lighting"),
+    ("构图与运镜补充", "composition_style"),
+    ("连续性要求", "continuity"),
+)
+
+
+def _legacy_execution_prompt(execution):
+    return "；".join(
+        str(execution.get(key) or "").strip()
+        for _label, key in _EXECUTION_PROMPT_FIELDS
+        if str(execution.get(key) or "").strip()
+    )
+
+
+def _normalize_execution_prompt_semantics(execution):
+    semantics = str(execution.get("prompt_semantics") or "").strip()
+    supplement = str(execution.get("provider_prompt") or "").strip()
+    if semantics != _EXECUTION_PROMPT_SEMANTICS:
+        if supplement and supplement == _legacy_execution_prompt(execution):
+            execution["provider_prompt"] = ""
+        execution["prompt_semantics"] = _EXECUTION_PROMPT_SEMANTICS
+    return execution
+
+
+def _normalize_execution_reference_semantics(execution):
+    execution["include_continuity_reference"] = True
+    execution["include_scene_reference"] = True
+    return execution
+
+
+def _execution_visual_prompt(execution):
+    execution = _normalize_execution_prompt_semantics(dict(execution))
+    supplement = str(execution.get("provider_prompt") or "").strip()
+    structured = [
+        "%s：%s" % (label, str(execution.get(key) or "").strip())
+        for label, key in _EXECUTION_PROMPT_FIELDS
+        if str(execution.get(key) or "").strip()
+    ]
+    if not structured:
+        return supplement
+    if supplement:
+        structured.append("补充生成要求：" + supplement)
+    return "；".join(structured)
+
+
+def _native_audio_brief(shot, character_names=None):
+    names = dict(character_names or {})
+    dialogue_lines = []
+    for item in shot.get("dialogue") or []:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        character_key = str(item.get("character_key") or "").strip()
+        speaker = (
+            names.get(character_key)
+            or str(item.get("speaker") or character_key or "旁白").strip()
+        )
+        timing = (
+            "（与上一条同时说）"
+            if item.get("timing_mode") in {
+                "simultaneous", "simultaneous_with_previous",
+            }
+            else ""
+        )
+        dialogue_lines.append("%s%s：%s" % (speaker, timing, text))
+    sound_design = str(shot.get("sound_design") or "").strip()
+    parts = ["声音必须由视频模型随画面同步生成，输出可听的原生双声道音频。"]
+    if dialogue_lines:
+        parts.append("人物台词与顺序：" + "；".join(dialogue_lines))
+    else:
+        parts.append("本镜头没有人物台词，不要擅自添加对白。")
+    parts.append(
+        "声音设计：" + sound_design
+        if sound_design
+        else "声音设计：生成与场景和动作匹配的自然环境声与必要动作音效。"
+    )
+    return " ".join(parts)
+
+
 _EXECUTION_LIMITS = {
     "visual": 600, "camera": 300, "performance": 300, "scene": 160,
     "lighting": 240, "composition_style": 240, "continuity": 360,
-    "negative_prompt": 600, "provider_prompt": 1600,
+    "sound_design": 600, "negative_prompt": 600, "provider_prompt": 1600,
 }
 
 
@@ -1199,16 +1617,14 @@ def _clean_execution(value):
                 "provider_execution_too_long", "镜头生成要求中的内容过长", 422,
             )
         result[key] = text
-    # Character reference images are mandatory for identity consistency. The
-    # continuity tail and locked scene image are optional diagnostic inputs:
-    # users may temporarily disable either after a provider moderation failure
-    # without changing the locked script or deleting any asset.
-    result["include_continuity_reference"] = (
-        value.get("include_continuity_reference") is not False
-    )
-    result["include_scene_reference"] = (
-        value.get("include_scene_reference") is not False
-    )
+    result["prompt_semantics"] = str(
+        value.get("prompt_semantics") or ""
+    ).strip()
+    _normalize_execution_prompt_semantics(result)
+    # Character and bound-scene references are mandatory identity inputs. The
+    # continuity tail is derived from immutable scene identities below rather
+    # than trusted from a client toggle.
+    _normalize_execution_reference_semantics(result)
     result["scene_key"] = str(value.get("scene_key") or "").strip()[:160]
     if "character_keys" in value:
         raw_character_keys = value.get("character_keys")
@@ -1226,20 +1642,16 @@ def _clean_execution(value):
             raise AutodraftError(
                 "provider_character_required", "请至少选择一个出镜角色", 422,
             )
-        if len(character_keys) > 4:
+        if len(character_keys) > 5:
             raise AutodraftError(
                 "provider_character_limit_exceeded",
-                "单个镜头最多绑定四个出镜角色", 422,
+                "单个镜头最多绑定五个出镜角色", 422,
             )
         result["character_keys"] = character_keys
-    if not result["provider_prompt"]:
-        parts = [
-            result["visual"], result["camera"], result["performance"],
-            result["scene"], result["lighting"], result["composition_style"],
-            result["continuity"],
-        ]
-        result["provider_prompt"] = "；".join(item for item in parts if item)
-    if not result["provider_prompt"]:
+    if not any(result[key] for key in (
+        "visual", "camera", "performance", "scene", "lighting",
+        "composition_style", "continuity", "provider_prompt",
+    )):
         raise AutodraftError("provider_prompt_required", "请填写视频生成提示词", 422)
     return result
 
@@ -1251,8 +1663,14 @@ def _execution_override(conn, project_id, shot_key):
     ).fetchone()
     if not row:
         return None
-    result = _json(row["execution_json"], {})
-    result["updated_at"] = int(row["updated_at"])
+    return _loaded_execution_override(row["execution_json"], row["updated_at"])
+
+
+def _loaded_execution_override(execution_json, updated_at):
+    result = _json(execution_json, {})
+    _normalize_execution_prompt_semantics(result)
+    _normalize_execution_reference_semantics(result)
+    result["updated_at"] = int(updated_at)
     return result
 
 
@@ -1316,7 +1734,7 @@ def preview_provider_request(
         shot = dict(shot)
         for key in (
             "scene", "camera", "continuity", "negative_prompt",
-            "provider_prompt",
+            "provider_prompt", "sound_design",
         ):
             if str(execution.get(key) or "").strip():
                 shot[key] = execution[key]
@@ -1328,9 +1746,9 @@ def preview_provider_request(
         ]
         if any(visual_parts):
             shot["visual_prompt"] = "；".join(item for item in visual_parts if item)
+        shot["provider_prompt"] = _execution_visual_prompt(execution)
         if "character_keys" in execution:
             shot["character_keys"] = list(execution["character_keys"])
-            shot["dialogue"] = []
             character_key = execution["character_keys"][0]
     if not str(shot.get("provider_prompt") or "").strip():
         source_shot = next(
@@ -1381,44 +1799,108 @@ def preview_provider_request(
     reference_images = []
     scene_reference = None
     previous_reference = None
+    bound_scene_key = ""
     avatar = None
+    character_names = {}
     if provider.name == "minimax_h3":
         if not required_character_keys:
             raise AutodraftError(
                 "provider_character_required", "当前镜头没有可用于生成的出镜角色", 422
             )
         with _read_connection(db_factory, connection) as conn:
+            requested_scene_key = str(
+                execution.get("scene_key") if execution else ""
+            ).strip()
+            bound_scene_key = (
+                requested_scene_key
+                or short_drama_asset_graph.bound_scene_key(
+                    conn, project_id, shot_key,
+                )
+            )
             scene_reference = short_drama_asset_graph.locked_scene_reference(
                 conn, project_id, shot_key,
-                execution.get("scene_key") if execution else None,
+                requested_scene_key or None,
             )
             previous_reference = _previous_shot_reference(
                 conn, project_id, shots, shot_key,
             )
-        if execution and execution.get("include_continuity_reference") is False:
+        if (
+            (requested_scene_key or bound_scene_key)
+            and not scene_reference
+        ):
+            raise AutodraftError(
+                "provider_scene_reference_required",
+                "当前镜头绑定的场景参考图尚未锁定或不可用",
+                422,
+            )
+        previous_identity = previous_reference or {}
+        current_scene_key = str(
+            (scene_reference or {}).get("scene_key") or ""
+        ).strip()
+        current_scene_reference_identity = str(
+            (scene_reference or {}).get("reference_identity") or ""
+        ).strip()
+        previous_scene_key = str(
+            previous_identity.get("scene_key")
+            or ""
+        ).strip()
+        previous_scene_reference_identity = str(
+            previous_identity.get("scene_reference_identity")
+            or ""
+        ).strip()
+        same_scene_reference = bool(
+            current_scene_key
+            and previous_scene_key == current_scene_key
+            and current_scene_reference_identity
+            and previous_scene_reference_identity
+            == current_scene_reference_identity
+        )
+        if previous_reference and not same_scene_reference:
             previous_reference = None
         if execution and execution.get("include_scene_reference") is False:
             scene_reference = None
         # Historical optional references can be URL-only. MiniMax now accepts
         # only project-owned local bytes, so omit those optional hints instead
         # of advertising a request that its Provider must reject.
-        if previous_reference and not str(
-            previous_reference.get("file") or ""
-        ).strip():
+        if previous_reference and not str(previous_reference.get("file") or "").strip():
+            if same_scene_reference:
+                raise AutodraftError(
+                    "provider_previous_tail_required",
+                    "同场景连续镜头必须保留上一镜头尾帧，请先重新生成上一镜头",
+                    409,
+                )
             previous_reference = None
         if scene_reference and not str(
             scene_reference.get("file") or ""
         ).strip():
+            if requested_scene_key or bound_scene_key:
+                raise AutodraftError(
+                    "provider_scene_reference_required",
+                    "当前镜头绑定的场景参考图尚未锁定或不可用",
+                    422,
+                )
             scene_reference = None
-        extra_reference_count = int(bool(
-            previous_reference
-            and (previous_reference.get("file") or previous_reference.get("url"))
-        ) or bool(scene_reference))
+        if scene_reference and (requested_scene_key or bound_scene_key):
+            try:
+                provider.resolve_reference_values([scene_reference])
+            except Exception as exc:
+                raise AutodraftError(
+                    "provider_scene_reference_required",
+                    "当前镜头绑定的场景参考图尚未锁定或不可用",
+                    422,
+                ) from exc
+        tail_required = bool(same_scene_reference and previous_reference)
+        extra_reference_count = int(bool(scene_reference)) + int(tail_required)
         maximum_characters = 5 - extra_reference_count
         if len(required_character_keys) > maximum_characters:
+            message = (
+                "同场景镜头必须保留上一镜头尾帧，人物标准图与场景图合计最多 4 张"
+                if tail_required else
+                "当前镜头的人物标准图与场景图合计最多 5 张"
+            )
             raise AutodraftError(
                 "provider_reference_limit_exceeded",
-                "当前镜头的角色与场景参考图总数超过视频服务上限",
+                message,
                 422,
             )
         with _read_connection(db_factory, connection) as conn:
@@ -1431,6 +1913,9 @@ def preview_provider_request(
                 tuple([project_id] + required_character_keys),
             ).fetchall()
         by_key = {str(row["character_key"]): row for row in rows}
+        character_names = {
+            key: str(row["name"] or key) for key, row in by_key.items()
+        }
         for key in required_character_keys:
             row = by_key.get(key)
             if not _locked_character_reference_ready(row, provider.name):
@@ -1446,23 +1931,25 @@ def preview_provider_request(
                 "url": str(row["reference_url"] or "").strip(),
                 "reference_version": int(row["reference_version"] or 0),
             })
-        if previous_reference and (
-            previous_reference.get("file") or previous_reference.get("url")
-        ):
+        if scene_reference:
+            reference_images.append({
+                "character_key": "__scene_reference__",
+                "scene_key": scene_reference["scene_key"],
+                "scene_version_id": scene_reference.get("version_id") or "",
+                "scene_reference_identity": (
+                    scene_reference.get("reference_identity") or ""
+                ),
+                "name": scene_reference["name"],
+                "file": scene_reference["file"],
+                "url": scene_reference["url"],
+            })
+        if tail_required:
             reference_images.append({
                 "character_key": "__continuity_tail__",
                 "continuity_shot_key": previous_reference["shot_key"],
                 "name": "上一镜头尾帧",
                 "file": previous_reference.get("file") or "",
                 "url": previous_reference.get("url") or "",
-            })
-        elif scene_reference:
-            reference_images.append({
-                "character_key": "__scene_reference__",
-                "scene_key": scene_reference["scene_key"],
-                "name": scene_reference["name"],
-                "file": scene_reference["file"],
-                "url": scene_reference["url"],
             })
         primary = by_key[required_character_keys[0]]
         character_key = required_character_keys[0]
@@ -1564,6 +2051,8 @@ def preview_provider_request(
         else timeline_duration_seconds
     )
     prompt = _visual_prompt(shot)
+    if provider.name == "minimax_h3":
+        prompt += " " + _native_audio_brief(shot, character_names)
     speech_rates = [
         float(item.get("speech_rate") or 1.0)
         for item in shot.get("dialogue") or []
@@ -1652,6 +2141,10 @@ def preview_provider_request(
         "scene_reference": ({
             "locked": True, "name": scene_reference["name"],
             "scene_key": scene_reference["scene_key"],
+            "version_id": scene_reference.get("version_id") or "",
+            "reference_identity": (
+                scene_reference.get("reference_identity") or ""
+            ),
         } if scene_reference else {"locked": False}),
         "continuity_reference": ({
             "ready": bool(previous_reference.get("file") or previous_reference.get("url")),
@@ -1773,6 +2266,41 @@ def _provider_job(row):
     return item
 
 
+def _minimax_runtime_diagnostics(item, diagnostics=None):
+    """Attach the shared video worker's live MiniMax phase to one public job."""
+    if not item or item.get("provider") != "minimax_h3":
+        return item
+    if item.get("status") not in PROVIDER_ACTIVE:
+        return item
+    if diagnostics is None:
+        from . import video as video_domain
+        diagnostics = video_domain.get_video_job_diagnostics(int(item["id"]))
+    diagnostics = diagnostics or {}
+    phase = str(diagnostics.get("phase") or "").strip().lower()
+    provider_job_id = str(
+        diagnostics.get("provider_video_id") or item.get("provider_job_id") or ""
+    ).strip()
+    if phase:
+        item["phase"] = phase
+    if provider_job_id:
+        item["provider_job_id"] = provider_job_id
+    item["progress_indeterminate"] = True
+    return item
+
+
+def _minimax_projected_status(shared_status, phase):
+    phase = str(phase or "").strip().lower()
+    if str(shared_status or "").strip().lower() != "running":
+        return "queued"
+    if phase == "minimax_submitting":
+        return "submitting"
+    if phase in {
+        "minimax_queued", "minimax_queueing", "minimax_preparing",
+    }:
+        return "queued"
+    return "running"
+
+
 def _attach_provider_attempt_state(conn, item):
     if not item:
         return item
@@ -1836,13 +2364,46 @@ def _provider_version(row):
     item["version"] = int(item["version"])
     if "request_json" in item:
         request = _json(item.pop("request_json"), {})
+        scene_reference = next(
+            (
+                reference for reference in request.get("reference_images") or []
+                if isinstance(reference, dict)
+                and str(reference.get("character_key") or "").strip()
+                == "__scene_reference__"
+            ),
+            {},
+        )
         item["request_snapshot"] = {
             "prompt": str(request.get("prompt") or ""),
             "negative_prompt": str(request.get("negative_prompt") or ""),
             "ratio": str(request.get("ratio") or ""),
             "resolution": str(request.get("resolution") or ""),
             "duration_seconds": int(request.get("duration_seconds") or 0),
+            "scene_reference": ({
+                "scene_key": str(
+                    scene_reference.get("scene_key") or ""
+                ).strip(),
+                "version_id": str(
+                    scene_reference.get("scene_version_id") or ""
+                ).strip(),
+                "reference_identity": str(
+                    scene_reference.get("scene_reference_identity") or ""
+                ).strip(),
+            } if scene_reference else None),
         }
+    if "result_json" in item:
+        result = _json(item.pop("result_json"), {})
+        item["native_media"] = _sanitized_native_media(
+            result.get("native_media")
+        )
+        item["native_audio"] = _sanitized_native_audio(
+            result.get("native_audio")
+            or (item["native_media"].get("audio") if item["native_media"] else None)
+        )
+        item["continuity_tail_ready"] = bool(
+            str(result.get("continuity_tail_file") or "").strip()
+            or str(result.get("continuity_tail_url") or "").strip()
+        )
     item["selected"] = bool(item.pop("selected", 0))
     return item
 
@@ -2010,6 +2571,7 @@ def _minimax_xiaole_payload(provider_request, quote, actor_username):
         "resolution": "2k",
         "duration": int(request.get("duration_seconds") or 0),
         "reference_images": references,
+        "generate_audio": True,
     }
     from . import video
 
@@ -2027,6 +2589,7 @@ def _minimax_xiaole_payload(provider_request, quote, actor_username):
         "shot_key": str(quote["shot_key"]),
         "request_hash": str(quote["request_hash"]),
     }
+    validated["_short_drama_native_audio_required"] = True
     return validated
 
 
@@ -2041,37 +2604,129 @@ def resolve_shared_xiaole_payload(
     conn = _connection(db_factory)
     try:
         row = conn.execute(
-            "SELECT project_id,actor_username,plan_id,shot_key,provider,input_hash,"
-            "request_json FROM short_drama_provider_shot_jobs WHERE id=?",
+            "SELECT project_id,owner_username,actor_username,plan_id,shot_key,"
+            "character_key,avatar_id,provider,input_hash,request_json "
+            "FROM short_drama_provider_shot_jobs WHERE id=?",
             (str(shared_job_id),),
         ).fetchone()
+        if not row or str(row["provider"] or "") != "minimax_h3":
+            raise AutodraftError(
+                "provider_binding_invalid",
+                "麦克视频任务缺少有效的短剧资产绑定",
+                409,
+            )
+        expected = {
+            "project_id": str(row["project_id"] or ""),
+            "plan_id": str(row["plan_id"] or ""),
+            "shot_key": str(row["shot_key"] or ""),
+            "request_hash": str(row["input_hash"] or ""),
+        }
+        if (
+            str(row["actor_username"] or "") != str(actor_username or "")
+            or any(
+                str(binding.get(key) or "") != value
+                for key, value in expected.items()
+            )
+        ):
+            raise AutodraftError(
+                "provider_binding_invalid",
+                "麦克视频任务与短剧项目绑定不一致",
+                409,
+            )
+        request = _json(row["request_json"], {})
+        compact_references = list(request.get("reference_images") or [])
+        scene_references = [
+            item for item in compact_references
+            if isinstance(item, dict)
+            and str(item.get("character_key") or "") == "__scene_reference__"
+        ]
+        execution = _execution_override(
+            conn, expected["project_id"], expected["shot_key"],
+        )
+        intended_scene_key = str(
+            (execution or {}).get("scene_key") or ""
+        ).strip() or short_drama_asset_graph.bound_scene_key(
+            conn, expected["project_id"], expected["shot_key"],
+        )
+        if (
+            (intended_scene_key and len(scene_references) != 1)
+            or (not intended_scene_key and scene_references)
+            or (
+                scene_references
+                and str(scene_references[0].get("scene_key") or "").strip()
+                != intended_scene_key
+            )
+        ):
+            raise AutodraftError(
+                "provider_scene_reference_required",
+                "当前镜头绑定的场景参考图尚未锁定或不可用",
+                422,
+            )
+        plan = conn.execute(
+            "SELECT input_hash FROM short_drama_production_plans WHERE id=? "
+            "AND project_id=?",
+            (expected["plan_id"], expected["project_id"]),
+        ).fetchone()
+        request_hash = _hash({
+            "project_id": expected["project_id"],
+            "plan_id": expected["plan_id"],
+            "plan_hash": str(plan[0] or "") if plan else "",
+            "shot_key": expected["shot_key"],
+            "avatar_id": str(row["avatar_id"] or ""),
+            "provider": str(row["provider"] or ""),
+            "request": request,
+        })
+        if request_hash != expected["request_hash"]:
+            if intended_scene_key or scene_references:
+                raise AutodraftError(
+                    "provider_scene_reference_required",
+                    "当前镜头绑定的场景参考图尚未锁定或不可用",
+                    422,
+                )
+            raise AutodraftError(
+                "provider_binding_invalid",
+                "麦克视频任务的短剧请求内容已变化",
+                409,
+            )
+        if scene_references:
+            if len(scene_references) != 1:
+                raise AutodraftError(
+                    "provider_scene_reference_required",
+                    "当前镜头绑定的场景参考图尚未锁定或不可用",
+                    422,
+                )
+            try:
+                current_scene = short_drama_asset_graph.require_locked_scene_reference(
+                    conn,
+                    str(row["owner_username"] or ""),
+                    expected["project_id"],
+                    expected["shot_key"],
+                    scene_references[0],
+                )
+            except short_drama_asset_graph.AssetGraphError as exc:
+                raise AutodraftError(
+                    "provider_scene_reference_required",
+                    "当前镜头绑定的场景参考图尚未锁定或不可用",
+                    422,
+                ) from exc
+            replacement = dict(scene_references[0])
+            replacement.update({
+                "scene_key": current_scene["scene_key"],
+                "scene_version_id": current_scene["version_id"],
+                "scene_reference_identity": current_scene["reference_identity"],
+                "name": current_scene["name"],
+                "file": current_scene["file"],
+                "url": current_scene["url"],
+            })
+            compact_references = [
+                replacement if item is scene_references[0] else item
+                for item in compact_references
+            ]
     finally:
         conn.close()
-    if not row or str(row["provider"] or "") != "minimax_h3":
-        raise AutodraftError(
-            "provider_binding_invalid",
-            "麦克视频任务缺少有效的短剧资产绑定",
-            409,
-        )
-    expected = {
-        "project_id": str(row["project_id"] or ""),
-        "plan_id": str(row["plan_id"] or ""),
-        "shot_key": str(row["shot_key"] or ""),
-        "request_hash": str(row["input_hash"] or ""),
-    }
-    if (
-        str(row["actor_username"] or "") != str(actor_username or "")
-        or any(str(binding.get(key) or "") != value for key, value in expected.items())
-    ):
-        raise AutodraftError(
-            "provider_binding_invalid",
-            "麦克视频任务与短剧项目绑定不一致",
-            409,
-        )
-    request = _json(row["request_json"], {})
     provider = load_by_name("minimax_h3")
     references = provider.resolve_reference_values(
-        request.get("reference_images") or []
+        compact_references
     )
     if not references:
         raise AutodraftError(
@@ -2106,6 +2761,7 @@ def _start_minimax_xiaole_job(
     db_factory, owner_username, actor_username, quote, idempotency_key,
     deduct_points, refund_points, enqueue_job, project_usage,
     shared_video_submission_limit,
+    video_asset_recorder=None, video_asset_phase_updater=None,
 ):
     if not callable(deduct_points) or not callable(refund_points):
         raise AutodraftError(
@@ -2332,12 +2988,7 @@ def _start_minimax_xiaole_job(
         if isinstance(error.__cause__, AutodraftError):
             raise error.__cause__
         raise
-    try:
-        queued = bool(enqueue_job(shared_job_id, "xiaole_video", None))
-    except Exception:
-        queued = False
-    if not queued:
-        reason = "麦克视频任务队列已满，请稍后重试"
+    def reject_before_enqueue(reason):
         claimed = jobs_store.set_terminal(
             db_factory,
             shared_job_id,
@@ -2366,7 +3017,34 @@ def _start_minimax_xiaole_job(
                 int(quote["cost"]),
                 refund_shared,
             )
+        if callable(video_asset_phase_updater):
+            try:
+                video_asset_phase_updater(
+                    shared_job_id,
+                    "failed",
+                    status="failed",
+                    error=reason,
+                )
+            except Exception:
+                pass
         reconcile_shared_xiaole_job(db_factory, shared_job_id)
+
+    if callable(video_asset_recorder):
+        try:
+            video_asset_recorder(shared_job_id, actor_username, payload)
+        except Exception as error:
+            reason = "麦克视频资产登记失败，请稍后重试"
+            reject_before_enqueue(reason)
+            raise AutodraftError(
+                "video_asset_register_failed", reason, 503
+            ) from error
+    try:
+        queued = bool(enqueue_job(shared_job_id, "xiaole_video", None))
+    except Exception:
+        queued = False
+    if not queued:
+        reason = "麦克视频任务队列已满，请稍后重试"
+        reject_before_enqueue(reason)
         raise AutodraftError(
             "provider_queue_full", "视频任务队列已满，请稍后重试", 429
         )
@@ -2387,6 +3065,7 @@ def start_provider_job(
     avatar_lookup=None, deduct_points=None, refund_points=None,
     charge_lookup=None, project_usage=None, enqueue_job=None,
     shared_video_submission_limit=None,
+    video_asset_recorder=None, video_asset_phase_updater=None,
 ):
     token = str(body.get("quote_token") or "").strip()
     key = _key(idempotency_key)
@@ -2456,6 +3135,8 @@ def start_provider_job(
             enqueue_job,
             project_usage,
             shared_video_submission_limit,
+            video_asset_recorder,
+            video_asset_phase_updater,
         )
     if not inspect_existing:
         provider = load_by_name(prepared_provider_name)
@@ -3298,6 +3979,12 @@ def _reconcile_minimax_xiaole_job(db_factory, row):
     finally:
         conn.close()
 
+    from . import video as video_domain
+    runtime = video_domain.get_video_job_diagnostics(int(row["id"])) or {}
+    runtime_phase = str(runtime.get("phase") or "").strip().lower()
+    runtime_provider_job_id = str(
+        runtime.get("provider_video_id") or ""
+    ).strip()
     now = int(time.time())
     if shared_status == "done":
         video_file = str(shared_result.get("video_file") or "").strip()
@@ -3305,7 +3992,21 @@ def _reconcile_minimax_xiaole_job(db_factory, row):
         provider_job_id = str(
             shared_result.get("provider_video_id") or ""
         ).strip()
-        if not video_file or not video_url or not provider_job_id:
+        native_audio = _sanitized_native_audio(
+            shared_result.get("native_audio")
+        )
+        native_media = _sanitized_native_media(
+            shared_result.get("native_media")
+        )
+        if (
+            not video_file or not video_url or not provider_job_id
+            or native_audio.get("audible") is not True
+            or not native_media
+            or native_media["derived"]["file"] != video_file
+            or str(shared_result.get("raw_video_file") or "").strip()
+            != native_media["raw"]["file"]
+            or native_media["audio"] != native_audio
+        ):
             raise AutodraftError(
                 "shared_video_result_incomplete",
                 "麦克视频已完成但产物记录不完整，请联系管理员核对",
@@ -3398,15 +4099,23 @@ def _reconcile_minimax_xiaole_job(db_factory, row):
         finally:
             conn.close()
     else:
-        projected_status = "running" if shared_status == "running" else "queued"
-        projected_progress = 35 if projected_status == "running" else 5
+        projected_status = _minimax_projected_status(
+            shared_status, runtime_phase,
+        )
+        projected_progress = {
+            "queued": 5, "submitting": 15, "running": 35,
+        }[projected_status]
         conn = _connection(db_factory)
         try:
             conn.execute(
                 "UPDATE short_drama_provider_shot_jobs SET status=?,progress=?,"
+                "provider_job_id=COALESCE(?,provider_job_id),"
                 "error_json=NULL,updated_at=? WHERE id=? "
                 "AND status NOT IN ('succeeded','failed','canceled')",
-                (projected_status, projected_progress, now, row["id"]),
+                (
+                    projected_status, projected_progress,
+                    runtime_provider_job_id or None, now, row["id"],
+                ),
             )
             conn.commit()
         finally:
@@ -3414,10 +4123,11 @@ def _reconcile_minimax_xiaole_job(db_factory, row):
 
     conn = _connection(db_factory)
     try:
-        return _attach_provider_attempt_state(conn, _provider_job(conn.execute(
+        item = _attach_provider_attempt_state(conn, _provider_job(conn.execute(
             "SELECT * FROM short_drama_provider_shot_jobs WHERE id=?",
             (row["id"],),
         ).fetchone()))
+        return _minimax_runtime_diagnostics(item, runtime)
     finally:
         conn.close()
 
@@ -3825,6 +4535,12 @@ def _complete(conn, row):
         for index, asset in enumerate(assembly["shots"]):
             shot_key = str(asset.get("shot_key") or "")
             source = material.get(shot_key) or {}
+            native_media = _sanitized_native_media(asset.get("native_media"))
+            selected_file = str(asset.get("file") or "").replace("\\", "/")
+            selected_evidence = next((
+                native_media[key] for key in ("raw", "derived")
+                if native_media and native_media[key]["file"] == selected_file
+            ), {})
             cards.append({
                 "shot_key": shot_key,
                 "sort_order": int(source.get("sort_order") or index + 1),
@@ -3835,8 +4551,11 @@ def _complete(conn, row):
                 "provider": str(asset.get("provider") or ""),
                 "provider_version_id": str(asset.get("id") or ""),
                 "provider_version": int(asset.get("version") or 0),
+                "provider_job_id": str(asset.get("provider_job_id") or ""),
                 "file": str(asset.get("file") or ""),
                 "url": str(asset.get("url") or ""),
+                "file_hash": str(selected_evidence.get("sha256") or ""),
+                "native_media": native_media,
                 "input_hash": str(asset.get("input_hash") or ""),
                 "issue": None,
             })
@@ -3860,7 +4579,7 @@ def _complete(conn, row):
             "production_mode": "provider_assembly",
             "plan_id": plan["id"],
             "plan_version": int(plan["version"]),
-            "resolution": "720p",
+            "resolution": "1080p",
             "duration_ms": rendered_duration_ms,
             "playback_url": rendered["url"],
             "playback_file": rendered["file"],
@@ -4039,7 +4758,9 @@ def workspace(
         conn.commit()
         all_versions = _versions(conn, project_id)
         provider_jobs = [
-            _attach_provider_attempt_state(conn, _provider_job(provider_row))
+            _minimax_runtime_diagnostics(
+                _attach_provider_attempt_state(conn, _provider_job(provider_row))
+            )
             for provider_row in conn.execute(
                 "SELECT j.* FROM short_drama_provider_shot_jobs j "
                 "WHERE j.project_id=? AND (j.status IN "
@@ -4057,7 +4778,8 @@ def workspace(
         provider_job = provider_jobs[0] if provider_jobs else None
         provider_versions = [
             _provider_version(row) for row in conn.execute(
-                "SELECT v.*,j.request_json,CASE WHEN s.version_id=v.id THEN 1 ELSE 0 END selected "
+                "SELECT v.*,j.request_json,j.result_json,"
+                "CASE WHEN s.version_id=v.id THEN 1 ELSE 0 END selected "
                 "FROM short_drama_provider_shot_versions v "
                 "JOIN short_drama_provider_shot_jobs j ON j.id=v.job_id "
                 "LEFT JOIN short_drama_provider_shot_selections s "
@@ -4067,9 +4789,8 @@ def workspace(
             ).fetchall()
         ]
         provider_execution_overrides = {
-            str(row["shot_key"]): dict(
-                _json(row["execution_json"], {}),
-                updated_at=int(row["updated_at"]),
+            str(row["shot_key"]): _loaded_execution_override(
+                row["execution_json"], row["updated_at"],
             )
             for row in conn.execute(
                 "SELECT shot_key,execution_json,updated_at "
@@ -4088,7 +4809,9 @@ def workspace(
             if plan else {
                 "required_shot_keys": [], "ready_shot_keys": [],
                 "required_count": 0, "ready_count": 0,
-                "missing_shot_keys": [], "all_ready": False, "shots": [],
+                "missing_shot_keys": [], "assets_ready": False,
+                "quality_ready": True, "low_resolution_shot_keys": [],
+                "all_ready": False, "shots": [],
                 "continuity_required_count": 0,
                 "continuity_ready_count": 0,
                 "continuity_ready_shot_keys": [],
@@ -4101,11 +4824,17 @@ def workspace(
                 key: value for key, value in assembly.items() if key != "shots"
             }
             capability["ready"] = bool(assembly["all_ready"])
-            capability["message"] = (
-                "全部镜头已生成，可合成 720p 预览"
-                if assembly["all_ready"]
-                else "请先完成全部镜头生成，再合成 720p 预览"
-            )
+            if assembly["all_ready"]:
+                capability["message"] = "全部镜头已生成，可合成 1080p 草稿"
+            elif assembly.get("low_resolution_shot_keys"):
+                capability["message"] = (
+                    "历史 768p 镜头不会冒充原生 2K；请重新生成："
+                    + "、".join(assembly["low_resolution_shot_keys"])
+                )
+            else:
+                capability["message"] = (
+                    "请先完成全部镜头生成，再合成 1080p 草稿"
+                )
         versions = (
             all_versions
             if capability["mode"] == "demo"
@@ -4191,16 +4920,25 @@ def start_job(
             capability["mode"] == "provider_poc" and assembly["all_ready"]
         )
         if not capability["ready"] and not provider_assembly:
-            raise AutodraftError(
-                "provider_shots_incomplete"
-                if capability["mode"] == "provider_poc"
-                else "autodraft_provider_unavailable",
-                (
+            if capability["mode"] == "provider_poc" and assembly.get(
+                "low_resolution_shot_keys"
+            ):
+                detail = (
+                    "以下镜头是历史 768p 版本，请重新生成原生 2K 后再合成："
+                    + "、".join(assembly["low_resolution_shot_keys"])
+                )
+            else:
+                detail = (
                     "请先完成全部镜头生成；缺少："
                     + "、".join(assembly["missing_shot_keys"])
                     if capability["mode"] == "provider_poc"
                     else capability["message"]
-                ),
+                )
+            raise AutodraftError(
+                "provider_shots_incomplete"
+                if capability["mode"] == "provider_poc"
+                else "autodraft_provider_unavailable",
+                detail,
                 409 if capability["mode"] == "provider_poc" else 503,
             )
         request_hash = _hash({

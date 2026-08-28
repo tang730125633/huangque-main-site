@@ -139,7 +139,7 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual(200, status, payload)
         self.assertEqual(self.auth.hq_cli_api.ACTION_CATALOG_VERSION, payload["version"])
         actions = {item["action"]: item for item in payload["actions"]}
-        self.assertEqual(set(self.auth.hq_cli_api._ACTION_INPUTS) | {"image-upload", "video-upload"}, set(actions))
+        self.assertEqual(set(self.auth.hq_cli_api._ACTION_INPUTS) | {"image-upload", "video-upload", "audio-upload"}, set(actions))
         for action, item in actions.items():
             with self.subTest(action=action):
                 self.assertEqual("object", item["input_schema"]["type"])
@@ -187,12 +187,17 @@ class HQCLIAPITests(unittest.TestCase):
         audio_schema = actions["digital-ip-audio-generate"]["input_schema"]["properties"]
         self.assertEqual("^img_[0-9a-f]{32}$", text_schema["image_upload_id"]["pattern"])
         self.assertEqual("^aud_[0-9a-f]{32}$", audio_schema["audio_upload_id"]["pattern"])
+        clone_contract = " ".join(actions["voice-clone-create"]["constraints"])
+        self.assertIn("30-60 seconds", clone_contract)
+        self.assertIn("file duration alone", clone_contract)
+        self.assertIn("voice-clone-status", clone_contract)
         self.assertEqual("人物图片", actions["tryon-fast-generate"]["input_schema"]
                          ["properties"]["person_image_upload_id"]["title"])
         self.assertEqual("服装图片", actions["tryon-fast-generate"]["input_schema"]
                          ["properties"]["clothes_upload_id"]["title"])
         for action, family, maximum in (("image-upload", "image", 10 * 1024 * 1024),
-                                        ("video-upload", "video", 32 * 1024 * 1024)):
+                                        ("video-upload", "video", 32 * 1024 * 1024),
+                                        ("audio-upload", "audio", 10 * 1024 * 1024)):
             with self.subTest(action=action):
                 item = actions[action]
                 self.assertEqual(family, item["family"])
@@ -541,7 +546,33 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual((200, "training"), (status, result["voice"]["status"]))
         plan = proxy.call_args.args[0]
         self.assertEqual("/api/gen/cli/voice-clone", plan["path"])
-        self.assertEqual("clone-request-0001", plan["headers"]["Idempotency-Key"])
+        expected_key = "hqcli-" + hashlib.sha256(
+            ("S_legacy\x00" + "aud_" + "a" * 32 + "\x00我的声音").encode("utf-8")
+        ).hexdigest()[:24]
+        self.assertEqual(expected_key, plan["headers"]["Idempotency-Key"])
+        renamed = self.auth.hq_cli_api.action_plan("voice-clone-create", {
+            "slot_id": "S_legacy", "name": "新的声音",
+            "audio_upload_id": "aud_" + "a" * 32,
+        })
+        moved = self.auth.hq_cli_api.action_plan("voice-clone-create", {
+            "slot_id": "S_other", "name": "我的声音",
+            "audio_upload_id": "aud_" + "a" * 32,
+        })
+        replaced_audio = self.auth.hq_cli_api.action_plan("voice-clone-create", {
+            "slot_id": "S_legacy", "name": "我的声音",
+            "audio_upload_id": "aud_" + "b" * 32,
+        })
+        original_key = plan["headers"]["Idempotency-Key"]
+        self.assertEqual(3, len({
+            renamed["headers"]["Idempotency-Key"],
+            moved["headers"]["Idempotency-Key"],
+            replaced_audio["headers"]["Idempotency-Key"],
+        }))
+        self.assertNotIn(original_key, {
+            renamed["headers"]["Idempotency-Key"],
+            moved["headers"]["Idempotency-Key"],
+            replaced_audio["headers"]["Idempotency-Key"],
+        })
         self.assertTrue(plan["internal"])
 
     @staticmethod
@@ -789,6 +820,45 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual(raw, captured["raw"])
         self.assertEqual("video/mp4", captured["content_type"])
         self.assertEqual(hashlib.sha256(raw).hexdigest(), captured["digest"])
+
+    def test_audio_upload_requires_scope_confirmation_and_streams_raw_bytes(self):
+        raw = b"ID3" + b"private-audio"
+        denied = self._token(["assets:read"])
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_audio_upload") as proxy:
+            status, payload = self._raw_request(
+                "/api/auth/cli/audio-upload", raw, token=denied, content_type="audio/mpeg",
+            )
+        self.assertEqual((403, "insufficient_scope"), (status, payload["code"]))
+        proxy.assert_not_called()
+
+        token = self._token(["assets:upload"])
+        status, payload = self._raw_request(
+            "/api/auth/cli/audio-upload", raw, token=token,
+            content_type="audio/mpeg", confirm=False,
+        )
+        self.assertEqual((409, "confirmation_required"), (status, payload["code"]))
+
+        captured = {}
+
+        def fake_upload(stream, length, web_token, internal_token, content_type, digest):
+            captured.update(raw=stream.read(length), content_type=content_type, digest=digest,
+                            web_token=web_token, internal_token=internal_token)
+            return 200, {"upload_id": "aud_" + "a" * 32, "sha256": digest, "duration": 60.0}
+
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_audio_upload", side_effect=fake_upload):
+            status, payload = self._raw_request(
+                "/api/auth/cli/audio-upload", raw, token=token, content_type="audio/mpeg",
+            )
+        self.assertEqual(200, status, payload)
+        self.assertEqual("aud_" + "a" * 32, payload["upload_id"])
+        self.assertEqual(raw, captured["raw"])
+        self.assertEqual("audio/mpeg", captured["content_type"])
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), captured["digest"])
+        self.assertEqual(self.auth.INTERNAL_TOKEN, captured["internal_token"])
+        with sqlite3.connect(self.auth.DB) as connection:
+            self.assertEqual(0, connection.execute(
+                "SELECT COUNT(*) FROM tokens WHERE token=?", (captured["web_token"],)
+            ).fetchone()[0])
 
     def test_canvas_create_builds_one_safe_text_node(self):
         token = self._token(["canvas:write"])
@@ -1093,6 +1163,20 @@ class HQCLIAPITests(unittest.TestCase):
             "matrix-template-generate"
         ]["properties"]["font_family"]
         self.assertEqual({"type": "string", "maxLength": 80}, schema)
+        batch = self.auth.hq_cli_api.action_plan(
+            "matrix-template-batch-generate", dict(
+                value, font_family="AaHouDiHei", count=3)
+        )
+        self.assertEqual((
+            "matrix_template_video_batch", 3, 3, "/api/gen/matrix-template",
+        ), (
+            batch["generation_kind"], batch["quote_multiplier"],
+            batch["batch_count"], batch["endpoint"],
+        ))
+        self.assertEqual("AaHouDiHei", batch["batch_item"]["font_family"])
+        self.assertEqual({
+            "kind": "matrix_template_video", "payload": batch["batch_item"],
+        }, batch["quote_body"])
         for action, path in (
             ("matrix-template-capability", "/api/gen/matrix-template/capability"),
             ("matrix-template-templates", "/api/gen/matrix-template/templates"),
@@ -1109,6 +1193,210 @@ class HQCLIAPITests(unittest.TestCase):
         ):
             with self.subTest(invalid=invalid), self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
                 self.auth.hq_cli_api.action_plan("matrix-template-generate", invalid)
+        for count in (1, 6, True):
+            with self.subTest(count=count), self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+                self.auth.hq_cli_api.action_plan(
+                    "matrix-template-batch-generate", dict(value, count=count))
+
+    def test_matrix_template_batch_quotes_once_and_replays_stable_children(self):
+        token = self._token(["generation:quote", "generation:submit"])
+        submitted, jobs_by_key = [], {}
+
+        def fake_proxy(plan, _web_token, _internal_token):
+            if plan["path"] == "/api/gen/cli/quote":
+                return 200, {"kind": "matrix_template_video", "cost": 5, "points": 100}
+            if plan["path"] == "/api/gen/matrix-template":
+                submitted.append(plan)
+                key = plan["headers"]["Idempotency-Key"]
+                jobs_by_key.setdefault(key, 200 + len(jobs_by_key))
+                job_id = jobs_by_key[key]
+                return 200, {
+                    "job_id": job_id, "cost": 5,
+                    "points_left": 100 - 5 * len(jobs_by_key),
+                }
+            self.fail("unexpected proxy path: " + plan["path"])
+
+        input_body = {
+            "top_text": "批量有效标题", "bottom_text": "批量有效行动文案",
+            "template_id": "native-bold", "font_family": "AaHouDiHei", "count": 3,
+        }
+        request = {
+            "action": "matrix-template-batch-generate",
+            "input": input_body, "confirm": False,
+        }
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
+            status, quote = self._request("/api/auth/cli/action", request, token=token)
+            self.assertEqual((200, 15, 5, 3), (
+                status, quote["cost"], quote["cost_per_job"], quote["count"],
+            ))
+            confirmed = dict(
+                request, confirm=True, quote_token=quote["quote_token"])
+            status, first = self._request(
+                "/api/auth/cli/action", confirmed, token=token)
+            replay_status, replay = self._request(
+                "/api/auth/cli/action", confirmed, token=token)
+
+        self.assertEqual((200, 200), (status, replay_status))
+        self.assertEqual([200, 201, 202], first["job_ids"])
+        self.assertEqual(first["job_ids"], replay["job_ids"])
+        self.assertEqual((3, 0, 15), (
+            first["submitted_count"], first["failed_count"], first["cost"],
+        ))
+        self.assertEqual(3, len(jobs_by_key))
+        self.assertEqual(6, len(submitted))
+        self.assertTrue(all(
+            plan["headers"]["X-HQ-Expected-Cost"] == "5"
+            for plan in submitted
+        ))
+
+    def test_matrix_template_batch_unknown_child_preserves_jobs_for_same_token_retry(self):
+        token = self._token(["generation:quote", "generation:submit"])
+        jobs_by_key, state = {}, {"raised": False}
+
+        def fake_proxy(plan, _web_token, _internal_token):
+            if plan["path"] == "/api/gen/cli/quote":
+                return 200, {"kind": "matrix_template_video", "cost": 5, "points": 100}
+            key = plan["headers"]["Idempotency-Key"]
+            if len(jobs_by_key) == 1 and not state["raised"]:
+                state["raised"] = True
+                raise RuntimeError("response lost")
+            jobs_by_key.setdefault(key, 300 + len(jobs_by_key))
+            return 200, {
+                "job_id": jobs_by_key[key], "cost": 5,
+                "points_left": 100 - 5 * len(jobs_by_key),
+            }
+
+        request = {
+            "action": "matrix-template-batch-generate", "confirm": False,
+            "input": {
+                "top_text": "批量恢复标题", "bottom_text": "批量恢复行动文案",
+                "template_id": "native-bold", "count": 3,
+            },
+        }
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
+            _, quote = self._request("/api/auth/cli/action", request, token=token)
+            confirmed = dict(
+                request, confirm=True, quote_token=quote["quote_token"])
+            pending_status, pending = self._request(
+                "/api/auth/cli/action", confirmed, token=token)
+            retry_status, recovered = self._request(
+                "/api/auth/cli/action", confirmed, token=token)
+
+        self.assertEqual((502, "batch_result_pending"), (
+            pending_status, pending["code"]))
+        self.assertEqual([300], [item["job_id"] for item in pending["jobs"]])
+        self.assertEqual(200, retry_status)
+        self.assertEqual([300, 301, 302], recovered["job_ids"])
+        self.assertEqual(3, len(jobs_by_key))
+
+    def test_matrix_template_batch_treats_refund_tracking_job_as_failure(self):
+        token = self._token(["generation:quote", "generation:submit"])
+        submitted = []
+
+        def fake_proxy(plan, _web_token, _internal_token):
+            if plan["path"] == "/api/gen/cli/quote":
+                return 200, {"kind": "matrix_template_video", "cost": 5, "points": 100}
+            submitted.append(plan)
+            return 202, {
+                "job_id": 400, "cost": 5, "points_left": 95,
+                "refund_state": "pending", "detail": "任务队列已满",
+            }
+
+        request = {
+            "action": "matrix-template-batch-generate", "confirm": False,
+            "input": {
+                "top_text": "退款跟踪标题", "bottom_text": "退款跟踪行动文案",
+                "template_id": "full-overlay-bold", "count": 3,
+            },
+        }
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
+            _, quote = self._request("/api/auth/cli/action", request, token=token)
+            status, result = self._request(
+                "/api/auth/cli/action",
+                dict(request, confirm=True, quote_token=quote["quote_token"]),
+                token=token,
+            )
+
+        self.assertEqual(202, status)
+        self.assertEqual((0, 1, 2, "partial"), (
+            result["submitted_count"], result["failed_count"],
+            result["not_submitted_count"], result["status"],
+        ))
+        self.assertEqual([], result["job_ids"])
+        self.assertEqual((400, "pending"), (
+            result["failures"][0]["job_id"],
+            result["failures"][0]["refund_state"],
+        ))
+        self.assertEqual(1, len(submitted))
+
+    def test_matrix_template_batch_success_then_refund_is_partial(self):
+        token = self._token(["generation:quote", "generation:submit"])
+        submitted = []
+
+        def fake_proxy(plan, _web_token, _internal_token):
+            if plan["path"] == "/api/gen/cli/quote":
+                return 200, {"kind": "matrix_template_video", "cost": 5, "points": 100}
+            submitted.append(plan)
+            if len(submitted) == 1:
+                return 200, {"job_id": 410, "cost": 5, "points_left": 95}
+            return 202, {
+                "job_id": 411, "cost": 5, "points_left": 90,
+                "refund_state": "pending", "detail": "任务队列已满",
+            }
+
+        request = {
+            "action": "matrix-template-batch-generate", "confirm": False,
+            "input": {
+                "top_text": "部分成功标题", "bottom_text": "部分成功行动文案",
+                "template_id": "full-overlay-bold", "count": 3,
+            },
+        }
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
+            _, quote = self._request("/api/auth/cli/action", request, token=token)
+            status, result = self._request(
+                "/api/auth/cli/action",
+                dict(request, confirm=True, quote_token=quote["quote_token"]),
+                token=token,
+            )
+
+        self.assertEqual(200, status)
+        self.assertEqual(("partial", [410], 1, 1, 1, 5), (
+            result["status"], result["job_ids"], result["submitted_count"],
+            result["failed_count"], result["not_submitted_count"], result["cost"],
+        ))
+        self.assertEqual((411, "pending"), (
+            result["failures"][0]["job_id"],
+            result["failures"][0]["refund_state"],
+        ))
+        self.assertEqual(2, len(submitted))
+
+    def test_matrix_template_batch_two_xx_without_job_id_is_pending(self):
+        token = self._token(["generation:quote", "generation:submit"])
+
+        def fake_proxy(plan, _web_token, _internal_token):
+            if plan["path"] == "/api/gen/cli/quote":
+                return 200, {"kind": "matrix_template_video", "cost": 5, "points": 100}
+            return 200, {"cost": 5, "points_left": 95}
+
+        request = {
+            "action": "matrix-template-batch-generate", "confirm": False,
+            "input": {
+                "top_text": "缺少任务编号", "bottom_text": "必须停止继续扇出",
+                "template_id": "full-overlay-bold", "count": 2,
+            },
+        }
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
+            _, quote = self._request("/api/auth/cli/action", request, token=token)
+            status, result = self._request(
+                "/api/auth/cli/action",
+                dict(request, confirm=True, quote_token=quote["quote_token"]),
+                token=token,
+            )
+
+        self.assertEqual((502, "batch_result_pending", 1), (
+            status, result["code"], result["next_index"],
+        ))
+        self.assertEqual("missing_job_id", result["failures"][0]["code"])
 
     def test_text_video_cli_rejects_changed_native_quote_before_submit(self):
         token = self._token(["generation:quote", "generation:submit"])

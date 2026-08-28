@@ -4778,6 +4778,98 @@ class H(BaseHTTPRequestHandler):
     def _cli_video_upload(self):
         return self._cli_media_upload("video")
 
+    def _cli_audio_upload(self):
+        return self._cli_media_upload("audio")
+
+    def _cli_matrix_template_batch(self, plan, username, claims):
+        count = int(plan.get("batch_count") or 0)
+        item = dict(plan.get("batch_item") or {})
+        total = int(claims.get("c") or 0)
+        if not 2 <= count <= 5 or not item or total <= 0 or total % count:
+            raise hq_cli_api.CLIAPIError(
+                500, "模板成片批量报价无效", "invalid_batch_quote")
+        cost_per_job = total // count
+        jobs, failures = [], []
+        points_left = None
+        for index in range(count):
+            child_key = "hqcli-" + hashlib.sha256(
+                (str(claims["n"]) + "\x00matrix-template\x00" + str(index)).encode("utf-8")
+            ).hexdigest()[:24]
+            submit_plan = {
+                "base": hq_cli_api.CONTENT_BASE,
+                "path": "/api/gen/matrix-template", "method": "POST",
+                "body": dict(item), "timeout": 30, "internal": True,
+                "headers": {
+                    "X-HQ-Expected-Cost": str(cost_per_job),
+                    "Idempotency-Key": child_key,
+                },
+            }
+            try:
+                status, result = self._cli_proxy(submit_plan, username)
+            except Exception:
+                return self._cli_send(502, {
+                    "detail": "批量提交结果待确认，请复用原 quote_token 重试",
+                    "code": "batch_result_pending", "jobs": jobs,
+                    "failures": [{
+                        "index": index + 1, "http_status": 502,
+                        "code": "result_unknown", "detail": "子任务提交结果未知",
+                    }],
+                    "next_index": index + 1,
+                })
+            job_id = int((result or {}).get("job_id") or 0)
+            refund_state = str((result or {}).get("refund_state") or "")
+            if 200 <= status < 300 and job_id and not refund_state:
+                jobs.append({
+                    "index": index + 1, "job_id": job_id,
+                    "cost": int((result or {}).get("cost") or cost_per_job),
+                })
+                if (result or {}).get("points_left") is not None:
+                    points_left = int(result["points_left"])
+                continue
+            if 200 <= status < 300 and not job_id:
+                return self._cli_send(502, {
+                    "detail": "批量子任务已受理但缺少 job_id，请复用原 quote_token 重试",
+                    "code": "batch_result_pending", "jobs": jobs,
+                    "failures": [{
+                        "index": index + 1, "http_status": int(status),
+                        "code": "missing_job_id", "detail": "子任务缺少 job_id",
+                    }],
+                    "next_index": index + 1,
+                })
+            failure = {
+                "index": index + 1, "http_status": int(status),
+                "code": str((result or {}).get("code") or "submit_failed"),
+                "detail": str((result or {}).get("detail") or "模板成片提交失败")[:220],
+            }
+            if job_id:
+                failure["job_id"] = job_id
+            if (result or {}).get("refund_state"):
+                failure["refund_state"] = result["refund_state"]
+            failures.append(failure)
+            if status >= 500 or failure["code"] in {
+                    "idempotency_in_progress", "reconcile_pending"}:
+                return self._cli_send(status, {
+                    "detail": "批量提交结果待确认，请复用原 quote_token 重试",
+                    "code": "batch_result_pending", "jobs": jobs,
+                    "failures": failures, "next_index": index + 1,
+                })
+            break
+        response = {
+            "count": count, "submitted_count": len(jobs),
+            "failed_count": len(failures), "job_ids": [item["job_id"] for item in jobs],
+            "jobs": jobs, "failures": failures,
+            "quoted_cost": total, "cost_per_job": cost_per_job,
+            "cost": sum(item["cost"] for item in jobs),
+        }
+        response["not_submitted_count"] = count - len(jobs) - len(failures)
+        response["status"] = "complete" if len(jobs) == count else "partial"
+        if points_left is not None:
+            response["points_left"] = points_left
+        if not jobs and failures:
+            response["detail"] = failures[0]["detail"]
+            response["code"] = failures[0]["code"]
+        return self._cli_send(200 if jobs else failures[0]["http_status"], response)
+
     def _cli_action(self, body):
         auth = self._cli_user()
         if not auth:
@@ -4881,6 +4973,9 @@ class H(BaseHTTPRequestHandler):
                     claims = hq_cli_api.verify_quote(
                         INTERNAL_TOKEN, quote_token, row["username"], generation_kind, payload,
                     )
+                    if action == "matrix-template-batch-generate":
+                        return self._cli_matrix_template_batch(
+                            plan, row["username"], claims)
                     submit_body = dict(payload)
                     if plan.get("native_quote_token_field"):
                         context = claims.get("x") if isinstance(claims.get("x"), dict) else {}
@@ -4920,9 +5015,17 @@ class H(BaseHTTPRequestHandler):
                         raise hq_cli_api.CLIAPIError(
                             502, "文案成片报价凭证缺失", "native_quote_invalid")
                     quote_context = {"native_quote_token": native_token}
+                quote_cost = result.get("cost")
+                multiplier = int(plan.get("quote_multiplier") or 1)
+                if multiplier != 1:
+                    try:
+                        quote_cost = int(quote_cost) * multiplier
+                    except (TypeError, ValueError):
+                        raise hq_cli_api.CLIAPIError(
+                            502, "模板成片单价无效", "invalid_batch_quote")
                 token, claims = hq_cli_api.issue_quote(
                     INTERNAL_TOKEN, row["username"], generation_kind, payload,
-                    result.get("cost"), context=quote_context,
+                    quote_cost, context=quote_context,
                 )
                 response = {
                     "quote_token": token, "kind": generation_kind, "cost": claims["c"],
@@ -4933,16 +5036,22 @@ class H(BaseHTTPRequestHandler):
                 for field in plan.get("quote_result_fields", ()):
                     if field in result:
                         response[field] = result[field]
+                if multiplier != 1:
+                    response["count"] = multiplier
+                    response["cost_per_job"] = int(result["cost"])
                 return self._cli_send(200, response)
             if trusted_internal and confirm and idempotency_key and plan["kind"] == "proxy":
                 plan = dict(plan)
                 headers = dict(plan.get("headers") or {})
                 existing_key = headers.get("Idempotency-Key")
-                if existing_key and existing_key != idempotency_key:
+                # 声音克隆按 slot_id+audio_upload_id+name 生成效果幂等键；它比上层调用键更稳定，
+                # 同一完整输入即使由不同 Agent request_id 触发，也不能重复复刻。
+                if existing_key and action != "voice-clone-create" and existing_key != idempotency_key:
                     raise hq_cli_api.CLIAPIError(
                         409, "idempotency_key 与 action 输入不一致", "idempotency_conflict",
                     )
-                headers["Idempotency-Key"] = idempotency_key
+                if not existing_key:
+                    headers["Idempotency-Key"] = idempotency_key
                 plan["headers"] = headers
             if action == "ip12-message":
                 claim, previous_status = hq_cli_api.begin_action_request(
@@ -5513,6 +5622,8 @@ class H(BaseHTTPRequestHandler):
             return self._cli_image_upload()
         if p == "/api/auth/cli/video-upload":
             return self._cli_video_upload()
+        if p == "/api/auth/cli/audio-upload":
+            return self._cli_audio_upload()
         if p == "/api/auth/cli/action":
             if self._content_length_exceeds(128 * 1024):
                 return self._cli_send(413, {"detail": "CLI 输入不能超过 128 KiB"})

@@ -5,7 +5,13 @@ import json
 import os
 import urllib.parse
 
-from .base import ShotVisualCapability, ShotVisualProvider, VisualProviderError
+from .base import (
+    GROK_PROMPT_MAX_CHARACTERS,
+    ShotVisualCapability,
+    ShotVisualProvider,
+    VisualProviderError,
+    validate_prompt,
+)
 
 
 GROK_RESULT_HOSTS = {"vidgen.x.ai", "files-cdn.x.ai"}
@@ -55,10 +61,7 @@ class GrokXaiShotProvider(ShotVisualProvider):
             raise VisualProviderError(
                 "visual_duration_invalid", "镜头时长必须是整数秒"
             ) from error
-        if not prompt:
-            raise VisualProviderError(
-                "visual_prompt_required", "镜头缺少可执行的画面提示词"
-            )
+        prompt = validate_prompt(prompt, GROK_PROMPT_MAX_CHARACTERS)
         if ratio not in self.capability.ratios:
             raise VisualProviderError(
                 "visual_ratio_unsupported", "果肉视频不支持当前画幅"

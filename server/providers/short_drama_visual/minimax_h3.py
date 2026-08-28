@@ -8,7 +8,13 @@ legacy jobs be queried or fetched, but it must never submit new upstream work.
 import base64
 import json
 
-from .base import ShotVisualCapability, ShotVisualProvider, VisualProviderError
+from .base import (
+    MINIMAX_PROMPT_MAX_CHARACTERS,
+    ShotVisualCapability,
+    ShotVisualProvider,
+    VisualProviderError,
+    validate_prompt,
+)
 
 
 MINIMAX_ORIGIN_METASO = "metaso"
@@ -182,19 +188,23 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
         prompt = str(request.get("prompt") or "").strip()
         ratio = str(request.get("ratio") or "").strip()
         model = str(request.get("model") or self.default_model).strip()
+        resolution = str(request.get("resolution") or "2k").strip().lower()
         try:
             duration = int(request.get("duration_seconds") or 0)
         except (TypeError, ValueError) as error:
             raise VisualProviderError("visual_duration_invalid", "镜头时长必须是整数秒") from error
         refs = list(request.get("reference_images") or [])
-        if not prompt:
-            raise VisualProviderError("visual_prompt_required", "镜头缺少可执行的画面提示词")
+        prompt = validate_prompt(prompt, MINIMAX_PROMPT_MAX_CHARACTERS)
         if ratio not in self.capability.ratios:
             raise VisualProviderError("visual_ratio_unsupported", "麦克视频不支持当前画面比例")
         if not self.capability.minimum_seconds <= duration <= self.capability.maximum_seconds:
             raise VisualProviderError("visual_duration_unsupported", "麦克视频镜头时长必须为 4 至 15 秒")
         if model != self.default_model:
             raise VisualProviderError("visual_model_unsupported", "短剧当前固定使用麦克视频")
+        if resolution not in {"768p", "2k"}:
+            raise VisualProviderError(
+                "visual_resolution_unsupported", "麦克视频仅支持 768P 或 2K"
+            )
         if not 1 <= len(refs) <= 5:
             raise VisualProviderError("visual_reference_count_invalid", "麦克视频每个镜头需要 1 至 5 张人物参考图")
         normalized_refs = []
@@ -208,6 +218,16 @@ class MiniMaxH3ShotProvider(ShotVisualProvider):
                     "character_key": str(item.get("character_key") or "").strip(),
                     "name": str(item.get("name") or "").strip(),
                     "reference_version": int(item.get("reference_version") or 0),
+                    "scene_key": str(item.get("scene_key") or "").strip(),
+                    "scene_version_id": str(
+                        item.get("scene_version_id") or ""
+                    ).strip(),
+                    "scene_reference_identity": str(
+                        item.get("scene_reference_identity") or ""
+                    ).strip(),
+                    "continuity_shot_key": str(
+                        item.get("continuity_shot_key") or ""
+                    ).strip(),
                 })
             else:
                 raise VisualProviderError("visual_reference_invalid", "角色标准图格式不正确")

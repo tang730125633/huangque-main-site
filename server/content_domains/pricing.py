@@ -73,6 +73,9 @@ CATALOG = [
     _rule("video.omni", "视频生成", "Gemini Omni 视频", "按成片时长", 30, "点/秒"),
     # Keep the historical key so deployed custom prices continue to apply.
     _rule("video.minimax_h3.768p", "视频生成", "麦克视频", "2K", 6, "点/秒", "文本或人物参考剧情视频"),
+    _rule("short_drama.delivery.2k.upto_60", "短剧正式交付", "短剧原生 2K 正式导出", "60 秒以内", 10, "点/部"),
+    _rule("short_drama.delivery.2k.upto_90", "短剧正式交付", "短剧原生 2K 正式导出", "61-90 秒", 15, "点/部"),
+    _rule("short_drama.delivery.2k.upto_120", "短剧正式交付", "短剧原生 2K 正式导出", "91-120 秒", 20, "点/部"),
     _rule("video.sora.standard.720p", "视频生成", "Sora 2", "720p", 30, "点/秒"),
     _rule("video.sora.pro.720p", "视频生成", "Sora 2 Pro", "720p", 90, "点/秒"),
     _rule("video.sora.pro.1024p", "视频生成", "Sora 2 Pro", "1024p", 150, "点/秒"),

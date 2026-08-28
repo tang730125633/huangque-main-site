@@ -15,7 +15,12 @@ if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
 
 from providers.short_drama_visual import capability_snapshot, load_from_environment
-from providers.short_drama_visual.base import VisualProviderError
+from providers.short_drama_visual.base import (
+    GROK_PROMPT_MAX_CHARACTERS,
+    HEYGEN_PROMPT_MAX_CHARACTERS,
+    MINIMAX_PROMPT_MAX_CHARACTERS,
+    VisualProviderError,
+)
 from providers.short_drama_visual.heygen_cinematic import (
     HeyGenCinematicShotProvider,
 )
@@ -47,6 +52,81 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
         with self.assertRaises(VisualProviderError) as raised:
             provider.prepare_job({"provider": "minimax_h3"})
         self.assertEqual("shared_xiaole_required", raised.exception.code)
+
+    def test_provider_prompt_limits_are_enforced_before_submission(self):
+        heygen = HeyGenCinematicShotProvider()
+        accepted = heygen.validate_request({
+            "provider_avatar_id": "avatar-1",
+            "prompt": "a" * HEYGEN_PROMPT_MAX_CHARACTERS,
+            "ratio": "16:9",
+            "duration_seconds": 5,
+        })
+        self.assertEqual(HEYGEN_PROMPT_MAX_CHARACTERS, len(accepted["prompt"]))
+        with self.assertRaises(VisualProviderError) as raised:
+            heygen.validate_request({
+                "provider_avatar_id": "avatar-1",
+                "prompt": "a" * (HEYGEN_PROMPT_MAX_CHARACTERS + 1),
+                "ratio": "16:9",
+                "duration_seconds": 5,
+            })
+        self.assertEqual("visual_prompt_too_long", raised.exception.code)
+
+    def test_prompt_limit_keeps_existing_validation_error_precedence(self):
+        with self.assertRaises(VisualProviderError) as raised:
+            HeyGenCinematicShotProvider().validate_request({
+                "prompt": "",
+                "ratio": "16:9",
+                "duration_seconds": 5,
+            })
+        self.assertEqual("provider_avatar_required", raised.exception.code)
+
+        for provider in (MiniMaxH3ShotProvider(), GrokXaiShotProvider()):
+            with self.subTest(provider=provider.name):
+                with self.assertRaises(VisualProviderError) as raised:
+                    provider.validate_request({
+                        "prompt": "",
+                        "ratio": "16:9",
+                        "duration_seconds": "not-an-integer",
+                    })
+                self.assertEqual("visual_duration_invalid", raised.exception.code)
+        self.assertFalse(raised.exception.submitted)
+
+        minimax = MiniMaxH3ShotProvider()
+        with mock.patch.object(
+            minimax, "_reference_value", return_value="data:image/png;base64,AA==",
+        ):
+            accepted = minimax.validate_request({
+                "prompt": "b" * MINIMAX_PROMPT_MAX_CHARACTERS,
+                "ratio": "16:9",
+                "duration_seconds": 5,
+                "reference_images": [{"url": "https://example.test/a.png"}],
+            })
+            self.assertEqual(
+                MINIMAX_PROMPT_MAX_CHARACTERS, len(accepted["prompt"]),
+            )
+            with self.assertRaises(VisualProviderError) as raised:
+                minimax.validate_request({
+                    "prompt": "b" * (MINIMAX_PROMPT_MAX_CHARACTERS + 1),
+                    "ratio": "16:9",
+                    "duration_seconds": 5,
+                    "reference_images": [{"url": "https://example.test/a.png"}],
+                })
+        self.assertEqual("visual_prompt_too_long", raised.exception.code)
+
+        grok = GrokXaiShotProvider()
+        accepted = grok.validate_request({
+            "prompt": "c" * GROK_PROMPT_MAX_CHARACTERS,
+            "ratio": "16:9",
+            "duration_seconds": 5,
+        })
+        self.assertEqual(GROK_PROMPT_MAX_CHARACTERS, len(accepted["prompt"]))
+        with self.assertRaises(VisualProviderError) as raised:
+            grok.validate_request({
+                "prompt": "c" * (GROK_PROMPT_MAX_CHARACTERS + 1),
+                "ratio": "16:9",
+                "duration_seconds": 5,
+            })
+        self.assertEqual("visual_prompt_too_long", raised.exception.code)
 
     def test_minimax_h3_is_the_default_short_drama_provider(self):
         with mock.patch.dict(os.environ, {}, clear=True):
@@ -157,6 +237,32 @@ class ShortDramaVisualProviderTests(unittest.TestCase):
         self.assertEqual(5, result["duration_seconds"])
         self.assertEqual("2k", result["resolution"])
         self.assertEqual(2, len(result["reference_images"]))
+
+    def test_minimax_h3_preserves_scene_reference_identity_for_next_shot(self):
+        provider = MiniMaxH3ShotProvider()
+        with mock.patch.object(
+            provider, "_reference_value", return_value="data:image/png;base64,AA=="
+        ):
+            result = provider.validate_request({
+                "prompt": "人物走进纪念广场",
+                "ratio": "16:9",
+                "resolution": "2k",
+                "duration_seconds": 5,
+                "reference_images": [{
+                    "character_key": "__scene_reference__",
+                    "scene_key": "scene:memorial-square",
+                    "scene_version_id": "scene-version-2",
+                    "scene_reference_identity": "scene-operation-2",
+                    "url": "https://cdn.example/memorial-square.png",
+                }],
+            })
+
+        scene = result["reference_images"][0]
+        self.assertEqual("scene:memorial-square", scene["scene_key"])
+        self.assertEqual("scene-version-2", scene["scene_version_id"])
+        self.assertEqual(
+            "scene-operation-2", scene["scene_reference_identity"],
+        )
 
     def test_minimax_h3_encodes_local_png_without_public_storage(self):
         provider = MiniMaxH3ShotProvider()

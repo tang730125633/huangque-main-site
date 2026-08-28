@@ -135,6 +135,28 @@ class AudioListTest(unittest.TestCase):
                 "alice", "S_other", "另一个声音", "clone-request-0001", "digest-a",
             )
 
+    def test_short_effective_speech_error_is_persisted_and_returned(self):
+        with sqlite3.connect(self.db) as conn:
+            conn.execute("UPDATE audio_voice_slots SET status='ready' WHERE id=1")
+        audio.mark_clone_training(
+            "alice", "S_test", "短样音", "clone-short-audio", "digest-short",
+        )
+        provider_error = RuntimeError(
+            'CosyVoice 音色接口失败: HTTP 400 {"code":"Audio.AudioShortError",'
+            '"message":"valid audio too short!"}'
+        )
+        with patch.object(audio, "clone_vip_voice", side_effect=provider_error):
+            audio.clone_vip_voice_background(
+                "alice", {"slot_id": "S_test", "_request_id": "clone-short-audio"},
+            )
+
+        result = audio.check_clone_status("alice", "S_test")
+
+        self.assertEqual("failed", result["status"])
+        self.assertIn("有效语音太短", result["clone_error"])
+        self.assertIn("30至60秒", result["clone_error"])
+        self.assertNotIn("停用渠道", result["clone_error"])
+
     def test_concurrent_same_voice_clone_request_has_one_atomic_claim(self):
         with sqlite3.connect(self.db) as conn:
             conn.execute("UPDATE audio_voice_slots SET status='ready' WHERE id=1")

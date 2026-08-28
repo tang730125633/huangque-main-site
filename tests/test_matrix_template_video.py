@@ -29,12 +29,15 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         self.module._CACHE.update({"at": 0.0, "templates": [], "fonts": []})
 
     def templates(self):
-        return [{
+        templates = [{
             "id": "native-bold" if index == 0 else f"template-{index:02d}",
             "name": f"模板 {index}", "description": "说明", "tags": ["标签"],
-        } for index in range(13)]
+        } for index in range(15)]
+        templates[-2]["id"] = "full-overlay-bold"
+        templates[-1]["id"] = "poster-split"
+        return templates
 
-    def test_public_catalog_is_sanitized_and_requires_thirteen_templates(self):
+    def test_public_catalog_accepts_transition_counts_but_exposes_only_approved_templates(self):
         response = {"templates": self.templates(), "fonts": [
             {"value": "", "label": "自动搭配", "source": "automatic"},
             {"value": "Noto Sans SC", "label": "思源黑体", "source": "bundled"},
@@ -43,15 +46,100 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         ]}
         with mock.patch.object(self.module, "_request", return_value=response):
             values = self.module.public_templates(force=True)
-        self.assertEqual(13, len(values))
-        self.assertEqual("native-bold", values[0]["id"])
+        self.assertEqual(
+            ["full-overlay-bold", "poster-split"],
+            [item["id"] for item in values],
+        )
         self.assertEqual(
             ["", "Noto Sans SC", "AaHouDiHei"],
             [item["value"] for item in self.module.public_fonts()],
         )
-        with mock.patch.object(self.module, "_request", return_value={"templates": values[:-1]}), \
+        with mock.patch.object(
+            self.module, "_request", return_value={"templates": self.templates()[:-2]}
+        ), \
              self.assertRaisesRegex(RuntimeError, "不完整"):
             self.module.public_templates(force=True)
+        missing_required = self.templates()
+        missing_required[-1] = {
+            "id": "replacement-template", "name": "替代模板",
+            "description": "说明", "tags": ["标签"],
+        }
+        with mock.patch.object(
+            self.module, "_request", return_value={"templates": missing_required}
+        ), self.assertRaisesRegex(RuntimeError, "不完整"):
+            self.module.public_templates(force=True)
+
+        with mock.patch.object(self.module, "_request", return_value={
+            "templates": [
+                {"id": "full-overlay-bold", "name": "沉浸强标题"},
+                {"id": "poster-split", "name": "海报切分"},
+            ],
+        }):
+            restricted = self.module.public_templates(force=True)
+        self.assertEqual(
+            ["full-overlay-bold", "poster-split"],
+            [item["id"] for item in restricted],
+        )
+
+    def test_availability_accepts_two_or_fifteen_healthy_templates(self):
+        for count in (2, 15):
+            with self.subTest(count=count), \
+                 mock.patch.object(self.module.feature_flags, "is_enabled", return_value=True), \
+                 mock.patch.object(
+                     self.module, "_request",
+                     return_value={"ok": True, "templates": count},
+                 ):
+                self.assertEqual({
+                    "enabled": True, "ready": True, "available": True,
+                }, self.module.availability(force=True))
+        for health in ({"ok": True, "templates": 13}, {"ok": False, "templates": 2}):
+            with self.subTest(health=health), \
+                 mock.patch.object(self.module.feature_flags, "is_enabled", return_value=True), \
+                 mock.patch.object(self.module, "_request", return_value=health):
+                self.assertFalse(self.module.availability(force=True)["ready"])
+
+    def test_transition_catalog_rejects_unapproved_template_submission(self):
+        with mock.patch.object(
+            self.module, "_request", return_value={"templates": self.templates()}
+        ):
+            self.module.public_templates(force=True)
+        with mock.patch.object(self.module, "require_available"), \
+             self.assertRaisesRegex(ValueError, "请选择有效模板"):
+            self.module.validate_payload({
+                "top_text": "AI 工作流",
+                "bottom_text": "评论区留下关键词",
+                "template_id": "native-bold",
+            })
+
+    def test_missing_template_defaults_to_first_approved_layout(self):
+        approved = [
+            {"id": "full-overlay-bold", "name": "沉浸强标题"},
+            {"id": "poster-split", "name": "海报切分"},
+        ]
+        expected = {
+            "top_text": "AI 工作流",
+            "bottom_text": "评论区留下关键词",
+            "template_id": "full-overlay-bold",
+            "bgm": True,
+            "duration": 8.0,
+        }
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(self.module, "public_templates", return_value=approved), \
+             mock.patch.object(self.module, "_request", return_value={"payload": expected}):
+            result = self.module.validate_payload({
+                "top_text": "AI 工作流",
+                "bottom_text": "评论区留下关键词",
+            })
+        self.assertEqual("full-overlay-bold", result["template_id"])
+
+    def test_matrix_jobs_use_dedicated_five_worker_queue(self):
+        from content_domains import core
+        self.assertIs(
+            core._pick_job_queue("matrix_template_video"),
+            core._matrix_job_queue,
+        )
+        self.assertEqual(5, core.MATRIX_JOB_WORKERS)
+        self.assertGreaterEqual(core.MAX_USER_ACTIVE_JOBS, 5)
 
     def test_validate_payload_is_library_only_and_catalog_bound(self):
         with mock.patch.object(self.module, "require_available"), \
@@ -97,6 +185,24 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             self.assertEqual("AaHouDiHei", result["font_family"])
             with self.assertRaisesRegex(ValueError, "当前可用字体"):
                 self.module.validate_payload(dict(expected, font_family="Missing Font"), "alice")
+
+    def test_validate_payload_forwards_batch_identity(self):
+        expected = {
+            "top_text": "批量标题", "bottom_text": "批量行动文案",
+            "template_id": "native-bold", "bgm": True, "duration": 8.0,
+            "batch_id": "a" * 32, "batch_index": 2, "batch_size": 5,
+        }
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(self.module, "public_templates", return_value=self.templates()), \
+             mock.patch.object(self.module, "_request", return_value={"payload": expected}):
+            result = self.module.validate_payload(dict(expected, duration=None), "alice")
+        self.assertEqual(("a" * 32, 2, 5), (
+            result["batch_id"], result["batch_index"], result["batch_size"],
+        ))
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(self.module, "public_templates", return_value=self.templates()), \
+             self.assertRaisesRegex(ValueError, "批量任务参数"):
+            self.module.validate_payload(dict(expected, batch_index=6), "alice")
 
     def test_validate_payload_uses_authoritative_67_68_visible_character_boundary(self):
         accepted = {
@@ -434,6 +540,8 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertNotIn('id="duration"', page)
         self.assertNotIn('id="bgm"', page)
         self.assertIn('id="fontFamily"', page)
+        self.assertIn('id="batchCount"', page)
+        self.assertIn("Math.min(5", page)
         self.assertIn("body.font_family=selectedFont", page)
         self.assertNotIn("素材来源", page)
         self.assertIn("template_id:activeTemplate,bgm:true", page)
@@ -493,6 +601,53 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual("AaHouDiHei", result["body"]["font_family"])
         self.assertEqual("私有字体", result["source"])
         self.assertEqual(["", "Noto Sans SC", "AaHouDiHei"], result["options"])
+
+    def test_batch_five_submits_distinct_jobs_and_renders_all_results(self):
+        result = self.runtime("batchFive")
+        self.assertEqual(5, result["posts"])
+        self.assertEqual(5, result["polls"])
+        self.assertEqual(5, len(set(result["keys"])))
+        self.assertTrue(all(body["bgm"] is True for body in result["bodies"]))
+        self.assertEqual(1, len({body["batch_id"] for body in result["bodies"]}))
+        self.assertTrue(all(re.fullmatch(r"[0-9a-f]{32}", body["batch_id"])
+                            for body in result["bodies"]))
+        self.assertEqual([1, 2, 3, 4, 5], [body["batch_index"] for body in result["bodies"]])
+        self.assertTrue(all(body["batch_size"] == 5 for body in result["bodies"]))
+        self.assertEqual(5, result["cards"])
+        self.assertTrue(result["cleared"])
+
+    def test_legacy_single_pending_state_is_recovered_after_upgrade(self):
+        result = self.runtime("legacyPending")
+        self.assertEqual(0, result["posts"])
+        self.assertEqual(1, result["polls"])
+        self.assertTrue(result["cleared"])
+
+    def test_failed_batch_item_is_visible_and_never_reposted_after_reload(self):
+        result = self.runtime("mixedFailureReload")
+        self.assertEqual(5, result["beforePosts"])
+        self.assertEqual(0, result["afterPosts"])
+        self.assertEqual(0, result["afterPolls"])
+        self.assertEqual((5, 5), (result["beforeCards"], result["afterCards"]))
+        self.assertEqual(4, result["videos"])
+        self.assertEqual("任务队列已满", result["error"])
+        self.assertEqual("未受理/未扣点", result["refund"])
+        self.assertEqual(1, result["failedKeyAttempts"])
+        self.assertTrue(result["pendingCleared"])
+
+    def test_failed_remote_job_shows_confirmed_refund(self):
+        result = self.runtime("jobFailureRefund")
+        self.assertEqual(1, result["cards"])
+        self.assertEqual("渲染失败", result["error"])
+        self.assertEqual("已退款", result["refund"])
+
+    def test_refund_pending_keeps_polling_until_confirmed(self):
+        result = self.runtime("refundPendingThenConfirmed")
+        self.assertEqual(2, result["polls"])
+        self.assertEqual("退款处理中", result["before"])
+        self.assertEqual("已退款", result["after"])
+        self.assertEqual("第 1 条生成失败", result["title"])
+        self.assertEqual(1, result["cards"])
+        self.assertTrue(result["cleared"])
 
 
 if __name__ == "__main__":

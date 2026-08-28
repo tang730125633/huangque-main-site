@@ -150,6 +150,16 @@ class RequestLogUserTests(unittest.TestCase):
             "INSERT INTO jobs VALUES(1226,'tang','xiaole_video',13,'done','{}',?,?)",
             (now - 100, now - 40),
         )
+        c.execute(
+            "CREATE TABLE short_drama_provider_shot_jobs("
+            "id TEXT PRIMARY KEY, owner_username TEXT, provider TEXT, status TEXT,"
+            "cost INTEGER, created_at INTEGER, updated_at INTEGER, shot_key TEXT)"
+        )
+        c.execute(
+            "INSERT INTO short_drama_provider_shot_jobs VALUES("
+            "'shot-job-1','tang','minimax_h3','failed',42,?,?, 'shot_09')",
+            (now - 50, now - 35),
+        )
         c.commit()
         c.close()
 
@@ -193,8 +203,10 @@ class RequestLogUserTests(unittest.TestCase):
         # 任务行：带用户/功能/点数；时间线按时间倒序
         job_rows = [x for x in items if x["source"] == "job"]
         self.assertEqual(job_rows[0]["user"], "tang")
-        self.assertEqual(job_rows[0]["cost"], 13)
-        self.assertEqual(job_rows[0]["cat"], "ok")
+        self.assertEqual(job_rows[0]["func"], "短剧 · 麦克视频 · shot_09")
+        self.assertEqual(job_rows[0]["cost"], 42)
+        self.assertEqual(job_rows[0]["cat"], "fail")
+        self.assertEqual(job_rows[0]["path"], "短剧任务 #shot-job-1")
         times = [x["time"] for x in items]
         self.assertEqual(times, sorted(times, reverse=True))
         ip12 = next(x for x in items if x["source"] == "ip12")
@@ -203,6 +215,31 @@ class RequestLogUserTests(unittest.TestCase):
         self.assertAlmostEqual(ip12["duration_sec"], 0.4321)
         self.assertEqual(ip12["request_id"], "hermes_req_1234")
         self.assertIn("error_catalog", data)
+
+    def test_shared_short_drama_job_is_enriched_without_duplicate_activity_row(self):
+        import sqlite3
+        import time as _time
+
+        now = int(_time.time())
+        connection = sqlite3.connect(str(self.db_path))
+        try:
+            connection.execute(
+                "INSERT INTO short_drama_provider_shot_jobs VALUES("
+                "'1226','tang','minimax_h3','succeeded',13,?,?, 'shot_01')",
+                (now - 100, now - 40),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        items = admin_api.call_logs(7, 20)["items"]
+        shared_rows = [item for item in items if str(item["id"]) == "1226"]
+
+        self.assertEqual(len(shared_rows), 1)
+        self.assertEqual(shared_rows[0]["func"], "短剧 · 麦克视频")
+        self.assertEqual(shared_rows[0]["operation"], "shot_01")
+        self.assertEqual(shared_rows[0]["path_label"], "短剧任务 #1226")
+        self.assertTrue(any(item["id"] == "shot-job-1" for item in items))
 
     def test_activity_filters(self):
         # source 过滤
