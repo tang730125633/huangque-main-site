@@ -559,6 +559,38 @@ class CreatorAgentService:
             raise APIError(503, "模板目录暂不可用", "template_catalog_unavailable")
         return templates
 
+    @staticmethod
+    def _template_single_only(template):
+        return bool(
+            isinstance(template, dict)
+            and (
+                template.get("engine") == "hyperframes"
+                or template.get("font_selectable") is False
+            )
+        )
+
+    def _reject_single_only_template_batch(self, user, batch):
+        jobs = batch.get("jobs") or []
+        if len(jobs) <= 1:
+            return
+        catalog = {
+            str(item.get("id") or ""): item
+            for item in self._templates(user)
+            if isinstance(item, dict)
+        }
+        for job in jobs:
+            tool_input = job.get("input") or {}
+            template_id = str(tool_input.get("template_id") or "")
+            template = catalog.get(template_id)
+            if template is None:
+                raise APIError(409, "模板目录已经变化，请重新生成方案", "template_drift")
+            if self._template_single_only(template):
+                raise APIError(
+                    400,
+                    "HyperFrames 模板暂仅支持单条生成，请只选择一个发布平台",
+                    "matrix_template_single_only",
+                )
+
     def _snapshot(self, user, headers, projects, project, workspace):
         batches = self.store.batches(user["username"], project["id"])
         public_project = self._public_project(project, workspace)
@@ -1325,6 +1357,7 @@ class CreatorAgentService:
             raise APIError(404, "视频方案不存在", "not_found")
         if current["revision"] != revision:
             raise APIError(409, "方案版本已经变化，请刷新后重试", "state_conflict")
+        self._reject_single_only_template_batch(user, current)
         now = int(self.clock())
         safety_margin = self._quote_safety_margin(len(current.get("jobs") or []))
         try:

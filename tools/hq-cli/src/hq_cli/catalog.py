@@ -918,6 +918,7 @@ CAPABILITIES["matrix-template-generate"]["next_actions"] = [
 ]
 CAPABILITIES["matrix-template-batch-generate"]["constraints"] = [
     "template_id and optional font_family must be selected from matrix-template-templates",
+    "HyperFrames and other font-locked templates are single-only; use matrix-template-generate",
     "count creates 2-5 independent jobs under one total quote and one confirmation",
     "duration is calculated automatically and BGM is enabled by default",
 ]
