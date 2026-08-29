@@ -21,9 +21,11 @@ python3 scripts/digital_human_material_mirror_release.py build \
   --output-root /home/ubuntu/releases/digital-human-materials
 ```
 
-The builder validates all 204 indexed files and emits only `manifest.json` and
-`bundle.tar.gz`. The manifest locks the source host/root, production mirror
-root, entry count, index digest, bundle digest, file count, and payload size.
+The builder validates all 318 indexed files and the reviewed source-index
+SHA-256 `d06b28d955603ee3a7f0d53865b8c475cd463bb282b01ddfedab2b7404f8240a`,
+then emits only `manifest.json` and `bundle.tar.gz`. The manifest locks the
+source host/root, production mirror root, entry count, index digest, bundle
+digest, file count, and payload size.
 The release directory is content-addressed by the index digest and cannot be
 overwritten. Record the builder's `manifest_sha256` in the reviewed release
 ticket, then transfer that exact two-file directory through the approved
@@ -62,8 +64,9 @@ rejects a missing, extra, malformed, drifting, or differently sourced record.
 Retain the reported backup until post-release acceptance is complete. No
 customer request may select a server path.
 
-The gate is fail-closed and checks that locked 204-entry mirror, the production
-`ubuntu` user's existing offline faster-whisper small cache at
+The gate is fail-closed and checks the locked 318-entry mirror, its reviewed
+source-index digest, and the production `ubuntu` user's existing offline
+faster-whisper small cache at
 `/home/ubuntu/.cache/huggingface/hub`, the installed `Noto Sans SC` Chinese
 glyph coverage, required FFmpeg encoders and filters, output access, and the
 no-charge HeyGen upload preflight. It prints no credential values. Install the
