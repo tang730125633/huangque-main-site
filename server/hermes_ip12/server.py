@@ -6922,6 +6922,7 @@ def _semantic_tool_catalog(account_id, state):
         {"tool": "weather.current", "delegate_to": "none", "capability_id": "local.weather", "available": True, "gate_status": "unlocked"},
         {"tool": "project.status", "delegate_to": "none", "capability_id": "local.project-status", "available": True, "gate_status": "unlocked"},
         {"tool": "content.revise", "delegate_to": "content_revision_agent", "capability_id": "local.content-revision", "available": 6 in completed, "gate_status": "unlocked" if 6 in completed else "locked"},
+        {"tool": "production.delegate", "delegate_to": "production_content_agent", "capability_id": "hq.tool-agent", "available": True, "gate_status": "unlocked"},
     ]
     for tool, (delegate, action, gate_id) in _SEMANTIC_CAPABILITY_MAP.items():
         entry = account_actions.get(action) or {}
@@ -7678,6 +7679,14 @@ def process_chat_request(body):
                     body.get("expected_revision"), request_id,
                 )
             elif semantic_decision and semantic_decision.get("intent") in {"direct_answer", "clarify"}:
+                result, status = _process_semantic_reply(
+                    cid, user_message, semantic_decision,
+                    body.get("expected_revision"), request_id,
+                )
+            elif (semantic_decision and semantic_decision.get("intent") == "delegate"
+                  and semantic_decision.get("delegate_to") == "production_content_agent"):
+                # 生产内容子 Agent：SDK 模式下模型已通过 production_delegate 工具拿到工具层结果，
+                # reply 已包含报价/任务信息，直接呈现。
                 result, status = _process_semantic_reply(
                     cid, user_message, semantic_decision,
                     body.get("expected_revision"), request_id,
