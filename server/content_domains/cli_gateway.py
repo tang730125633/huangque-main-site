@@ -377,6 +377,8 @@ def handle_quote(handler, path, verify, must_change_password, is_shutting_down,
         elif kind == "tryon":
             payload = cli_uploads.expand_role_media_payload(payload, user["username"])
             payload = video.validate_tryon_payload(payload)
+        elif kind == "avatar":
+            payload = video.validate_avatar_payload(payload)
         elif kind == "collect":
             payload = _collect_payload(payload)
         elif kind == "collect_search":
