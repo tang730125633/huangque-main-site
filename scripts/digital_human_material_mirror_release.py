@@ -225,11 +225,17 @@ def _catalog_snapshot(source_root, expected_count):
         index_raw = preflight._read_locked_regular(
             pathlib.Path(root) / "index.jsonl", preflight.MAX_INDEX_BYTES,
         )
-        files = []
-        for record in sorted(records, key=lambda item: item["relative"]):
-            raw, _actual_mime = domain._read_local_record(root, record)
-            files.append((record["relative"], raw))
-    return index_raw, files
+
+    def material_payloads():
+        with _library_environment(source_root):
+            for record in sorted(records, key=lambda item: item["relative"]):
+                raw, _actual_mime = domain._read_local_record(root, record)
+                try:
+                    yield record["relative"], raw
+                finally:
+                    del raw
+
+    return index_raw, material_payloads()
 
 
 def _all_snapshot_files(root):
@@ -388,8 +394,12 @@ def build_release(source_root, output_root, source_host=None, source_root_contra
         for relative, raw in files:
             destination = snapshot.joinpath(*relative.split("/"))
             destination.parent.mkdir(parents=True, exist_ok=True)
-            _write_new(destination, raw, 0o444)
-            payload_bytes += len(raw)
+            size = len(raw)
+            try:
+                _write_new(destination, raw, 0o444)
+            finally:
+                del raw
+            payload_bytes += size
         provenance = {
             "schema_version": 1,
             "source_host": source_host,
@@ -422,7 +432,7 @@ def build_release(source_root, output_root, source_host=None, source_root_contra
             "index_sha256": index_sha256,
             "bundle_name": RELEASE_BUNDLE_NAME,
             "bundle_sha256": bundle_sha256,
-            "file_count": len(files) + 2,
+            "file_count": expected_count + 2,
             "payload_bytes": payload_bytes,
         }
         manifest_raw = _canonical_json(manifest)
