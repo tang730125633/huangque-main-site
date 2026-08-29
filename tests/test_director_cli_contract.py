@@ -212,7 +212,6 @@ class DirectorCLIContractTests(unittest.TestCase):
         planned = set(identifiers) - available
         self.assertEqual({
             "director-capability", "director-script-generate", "director-breakdown",
-            "director-scene-video-generate", "director-scene-talking-generate",
         }, available)
         self.assertNotIn("director-production-start", hq_cli_api.ACTION_CATALOG_MAP)
         self.assertEqual(available, set(hq_cli_api.ACTION_CATALOG_MAP) & set(identifiers))
@@ -266,51 +265,6 @@ class DirectorCLIContractTests(unittest.TestCase):
             "mode": "scenes",
             "source_page": "script",
         }, plan["payload"])
-
-    def test_director_one_click_video_uses_browser_script_to_video_path(self):
-        plan = hq_cli_api.action_plan("director-scene-video-generate", {
-            "scenes": [
-                {"scene": "产品特写", "line": "第一句", "dur": 3},
-                {"scene": "门店全景", "line": "第二句", "dur": 4.5},
-            ],
-        })
-        self.assertEqual("director:generate", plan["scope"])
-        self.assertEqual("generation", plan["kind"])
-        self.assertEqual("script_to_video", plan["generation_kind"])
-        self.assertEqual("/api/gen/script_to_video", plan["endpoint"])
-        self.assertEqual("剧情", plan["payload"]["style"])
-        self.assertEqual(8, plan["payload"]["duration"])
-        self.assertEqual("script", plan["payload"]["source_page"])
-        self.assertNotIn("image_upload_id", plan["payload"])
-
-    def test_director_one_click_talking_requires_owned_avatar_and_voice(self):
-        plan = hq_cli_api.action_plan("director-scene-talking-generate", {
-            "scenes": [{"scene": "人物半身", "line": "今天介绍三个重点", "dur": 5}],
-            "avatar_id": 42,
-            "voice": "public:zh-CN-YunjianNeural",
-            "style": "recommend",
-            "subtitle": True,
-            "subtitle_position": "bottom",
-        })
-        self.assertEqual("script_to_video", plan["generation_kind"])
-        self.assertEqual("/api/gen/script_to_video", plan["endpoint"])
-        self.assertEqual("种草", plan["payload"]["style"])
-        self.assertEqual(42, plan["payload"]["avatar_id"])
-        self.assertEqual("public:zh-CN-YunjianNeural", plan["payload"]["voice"])
-        self.assertNotIn("image_upload_id", plan["payload"])
-        with self.assertRaises(hq_cli_api.CLIAPIError):
-            hq_cli_api.action_plan("director-scene-talking-generate", {
-                "scenes": [{"scene": "只有画面"}], "avatar_id": 42, "voice": "voice",
-            })
-
-    def test_director_one_click_actions_do_not_enable_upload_contracts(self):
-        actions = {action["id"]: action for action in contract.ALL_ACTIONS}
-        self.assertEqual("planned", actions["director-breakdown-upload"]["availability"])
-        self.assertEqual("planned", actions["director-scene-image-generate"]["availability"])
-        for identifier in (
-                "director-scene-video-generate", "director-scene-talking-generate"):
-            self.assertEqual("available", actions[identifier]["availability"])
-            self.assertEqual("script_to_video", actions[identifier]["points_kind"])
 
     def test_scope_billing_and_recovery_boundaries_are_explicit(self):
         self.assertEqual(set(contract.SCOPE_CONTRACT), set(contract.SCOPE_CONTRACT) & set(hq_cli_api.SCOPES))
