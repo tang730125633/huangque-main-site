@@ -129,10 +129,14 @@ class DigitalHumanMaterialMirrorReleaseTests(unittest.TestCase):
         domain = release._digital_human_domain()
         original_read = domain._read_local_record
         original_write = release._write_new
+        original_verify = release.verify_snapshot
         pending = []
         reads = []
+        tracking = {"active": True}
 
         def tracked_read(root, record):
+            if not tracking["active"]:
+                return original_read(root, record)
             self.assertFalse(
                 pending, "next material was read before the prior payload was written",
             )
@@ -148,11 +152,18 @@ class DigitalHumanMaterialMirrorReleaseTests(unittest.TestCase):
                 pending.clear()
             return result
 
+        def stop_tracking_before_verify(*args, **kwargs):
+            tracking["active"] = False
+            return original_verify(*args, **kwargs)
+
         with mock.patch.object(
                 domain, "_read_local_record", side_effect=tracked_read):
             with mock.patch.object(
                     release, "_write_new", side_effect=tracked_write):
-                directory, manifest = self._build()
+                with mock.patch.object(
+                        release, "verify_snapshot",
+                        side_effect=stop_tracking_before_verify):
+                    directory, manifest = self._build()
 
         self.assertFalse(pending)
         self.assertEqual(3, len(reads))
