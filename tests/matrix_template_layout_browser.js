@@ -41,7 +41,8 @@ function serve(request, response) {
         {value: 'Noto Sans SC', label: '思源黑体', source: 'bundled'},
         {value: 'YS HelloFont BangBangTi', label: '优设字由棒棒体', source: 'private'},
       ],
-      default_template: 'native-bold', cost: 5,
+      default_template: 'native-bold', max_batch_size: 5,
+      render_concurrency: 2, cost: 5,
     }));
     return;
   }
@@ -77,6 +78,16 @@ function hasOverflow(box) {
     for (const [name, viewport] of Object.entries({desktop: {width: 1440, height: 900}, mobile: {width: 390, height: 844}})) {
       const page = await browser.newPage({viewport});
       await page.goto(url, {waitUntil: 'networkidle'});
+      await page.locator('.mt-template').nth(2).click();
+      const batchControl = await page.evaluate(() => {
+        const select = document.getElementById('batchCount');
+        return {
+          disabled: select.disabled,
+          values: [...select.options].map(option => option.value),
+          labels: [...select.options].map(option => option.textContent),
+          hint: document.getElementById('batchHint').textContent,
+        };
+      });
       const cardReport = await page.locator('.mt-template').evaluateAll(nodes => nodes.map(node => {
         const visual = node.querySelector('.mt-template-visual');
         const top = node.querySelector('.mt-template-top');
@@ -129,6 +140,7 @@ function hasOverflow(box) {
       report[name] = {
         overflow,
         scroll,
+        batchControl,
         cardCount: cardReport.length,
         referenceCount: references.length,
         distinctReferencePreviews: new Set(references.map(item => item.signature)).size,
@@ -142,6 +154,7 @@ function hasOverflow(box) {
   if (report.desktop.overflow.length || report.mobile.overflow.length) throw new Error(`preview overflow: ${JSON.stringify(report)}`);
   for (const viewport of Object.values(report)) {
     if (viewport.cardCount !== 19 || viewport.referenceCount !== 17 || viewport.distinctReferencePreviews !== 17) throw new Error(`template cards are not distinct: ${JSON.stringify(report)}`);
+    if (viewport.batchControl.disabled || viewport.batchControl.values.join(',') !== '1,2,3,4,5' || viewport.batchControl.hint !== '最多5条 · 2条并行，其余排队') throw new Error(`HyperFrames batch control is unavailable: ${JSON.stringify(viewport.batchControl)}`);
   }
   const mobile = report.mobile.scroll;
   if (mobile.scrollHeight <= mobile.clientHeight || mobile.scrollTop <= 0 || mobile.top >= mobile.viewport || mobile.bottom <= 0) throw new Error(`mobile preview is unreachable: ${JSON.stringify(mobile)}`);

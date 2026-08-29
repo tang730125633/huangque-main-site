@@ -27,7 +27,13 @@ API_TOKEN = os.environ.get("MATRIX_TEMPLATE_API_TOKEN", "").strip()
 JOB_TIMEOUT = max(60, min(1800, int(os.environ.get("MATRIX_TEMPLATE_JOB_TIMEOUT", "1200"))))
 POLL_INTERVAL = max(1, min(10, int(os.environ.get("MATRIX_TEMPLATE_POLL_INTERVAL", "3"))))
 MAX_VIDEO_BYTES = 512 * 1024 * 1024
-_CACHE = {"at": 0.0, "templates": [], "fonts": []}
+_CACHE = {
+    "at": 0.0,
+    "templates": [],
+    "fonts": [],
+    "max_batch_size": 1,
+    "render_concurrency": 1,
+}
 _NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
@@ -101,6 +107,15 @@ def _refresh_catalog(force=False):
     now = time.monotonic()
     if force or now - _CACHE["at"] > 30:
         response = _request("GET", "/v1/templates", timeout=10)
+        try:
+            max_batch_size = int(response.get("max_batch_size") or 1)
+            render_concurrency = int(
+                response.get("hyperframes_concurrency") or 1
+            )
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("模板批量能力无效") from exc
+        if not 1 <= render_concurrency <= max_batch_size <= 5:
+            raise RuntimeError("模板批量能力无效")
         templates = []
         for raw in response.get("templates") or []:
             if not isinstance(raw, dict):
@@ -182,7 +197,13 @@ def _refresh_catalog(force=False):
                 "source": source,
             })
             seen.add(value)
-        _CACHE.update({"at": now, "templates": templates, "fonts": fonts})
+        _CACHE.update({
+            "at": now,
+            "templates": templates,
+            "fonts": fonts,
+            "max_batch_size": max_batch_size,
+            "render_concurrency": render_concurrency,
+        })
 
 
 def public_templates(force=False):
@@ -193,6 +214,14 @@ def public_templates(force=False):
 def public_fonts(force=False):
     _refresh_catalog(force)
     return [dict(item) for item in _CACHE["fonts"]]
+
+
+def public_batch_capability(force=False):
+    _refresh_catalog(force)
+    return {
+        "max_batch_size": int(_CACHE["max_batch_size"]),
+        "render_concurrency": int(_CACHE["render_concurrency"]),
+    }
 
 
 def validate_payload(raw, username=""):
@@ -252,8 +281,6 @@ def validate_payload(raw, username=""):
             "batch_index": batch_index,
             "batch_size": batch_size,
         })
-        if template.get("engine") == "hyperframes" and batch_size > 1:
-            raise ValueError("HyperFrames 模板暂仅支持单条生成")
     try:
         response = _request("POST", "/v1/preflight", candidate, timeout=10)
     except MatrixTemplateHTTPError as exc:

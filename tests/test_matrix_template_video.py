@@ -26,7 +26,13 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         cls.module = importlib.import_module("content_domains.matrix_template_video")
 
     def setUp(self):
-        self.module._CACHE.update({"at": 0.0, "templates": [], "fonts": []})
+        self.module._CACHE.update({
+            "at": 0.0,
+            "templates": [],
+            "fonts": [],
+            "max_batch_size": 1,
+            "render_concurrency": 1,
+        })
 
     def templates(self):
         templates = [{
@@ -106,6 +112,8 @@ class MatrixTemplateVideoTests(unittest.TestCase):
 
         with mock.patch.object(self.module, "_request", return_value={
             "templates": self.reference_templates(),
+            "max_batch_size": 5,
+            "hyperframes_concurrency": 2,
         }):
             expanded = self.module.public_templates(force=True)
         self.assertEqual(19, len(expanded))
@@ -120,6 +128,10 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             {f"v{index:02d}" for index in range(1, 18)},
             {item["variant"] for item in expanded if item["engine"] == "hyperframes"},
         )
+        self.assertEqual({
+            "max_batch_size": 5,
+            "render_concurrency": 2,
+        }, self.module.public_batch_capability())
 
     def test_availability_accepts_two_fifteen_or_nineteen_healthy_templates(self):
         for count in (2, 15, 19):
@@ -172,18 +184,24 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             }, "alice")
         self.assertNotIn("font_family", result)
         self.assertNotIn("font_family", request.call_args.args[2])
+        batch_expected = {
+            **expected,
+            "batch_id": "a" * 32,
+            "batch_index": 2,
+            "batch_size": 5,
+        }
         with mock.patch.object(self.module, "require_available"), \
              mock.patch.object(
                  self.module, "public_templates",
                  return_value=self.reference_templates(),
              ), \
-             self.assertRaisesRegex(ValueError, "暂仅支持单条"):
-            self.module.validate_payload({
-                **expected,
-                "batch_id": "a" * 32,
-                "batch_index": 1,
-                "batch_size": 2,
-            }, "alice")
+             mock.patch.object(
+                 self.module, "_request", return_value={"payload": batch_expected}
+             ):
+            batch = self.module.validate_payload(batch_expected, "alice")
+        self.assertEqual(("a" * 32, 2, 5), (
+            batch["batch_id"], batch["batch_index"], batch["batch_size"],
+        ))
 
     def test_missing_template_defaults_to_first_approved_layout(self):
         approved = [
@@ -615,7 +633,8 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertNotIn('id="bgm"', page)
         self.assertIn('id="fontFamily"', page)
         self.assertIn('id="batchCount"', page)
-        self.assertIn("Math.min(5", page)
+        self.assertIn("Math.min(batchLimit", page)
+        self.assertIn("render_concurrency", page)
         self.assertIn("body.font_family=selectedFont", page)
         self.assertNotIn("素材来源", page)
         self.assertIn("template_id:activeTemplate,bgm:true", page)
@@ -749,9 +768,14 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual("模板内置", result["source"])
         self.assertNotIn("font_family", result["body"])
         self.assertEqual("ref-01-fixture-01", result["body"]["template_id"])
-        self.assertTrue(result["batchDisabled"])
-        self.assertEqual("1", result["batchValue"])
-        self.assertEqual("HyperFrames模板暂仅支持单条", result["batchHint"])
+        self.assertFalse(result["batchDisabled"])
+        self.assertEqual("5", result["batchValue"])
+        self.assertEqual("最多5条 · 2条并行，其余排队", result["batchHint"])
+        self.assertEqual(5, result["posts"])
+        self.assertTrue(all(body["batch_size"] == 5 for body in result["bodies"]))
+        self.assertEqual([1, 2, 3, 4, 5], [
+            body["batch_index"] for body in result["bodies"]
+        ])
 
     def test_batch_five_submits_distinct_jobs_and_renders_all_results(self):
         result = self.runtime("batchFive")
