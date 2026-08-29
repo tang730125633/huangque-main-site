@@ -7273,6 +7273,74 @@ def _process_semantic_reply(cid, user_message, decision, expected_revision=None,
     return result, 200
 
 
+def _process_production_delegate_turn(cid, user_message, decision, memory,
+                                      expected_revision=None, request_id=""):
+    """生产委派落地：主 Agent 决定委派后，由服务端调生产内容子 Agent（工具层 8790）。
+    把用户意图 + IP12 画像 brief 交给工具层，工具层自行选能力、报价；
+    报价结果以文本呈现（真实的确认仍由工具层报价卡/会话流程处理）。"""
+    import urllib.request
+    import urllib.error
+    base = str(os.environ.get("HQ_TOOL_AGENT_BASE") or "http://127.0.0.1:8790").rstrip("/")
+    memory = memory if isinstance(memory, dict) else {}
+    profile = {
+        "identity": memory.get("facts") or {},
+        "preferences": memory.get("preferences") or {},
+        "confirmed_outputs": memory.get("confirmed_outputs") or {},
+        "content_topics": memory.get("content_topics") or {},
+    }
+    if not any(profile.values()):
+        profile = {"notes": "IP12 诊断画像尚未提供结构化事实"}
+    brief = {"schema": "ip12-brief/v1", "project_id": str(cid or "")[:80],
+             "profile": profile}
+    try:
+        req = urllib.request.Request(
+            base + "/agent/ip12-brief",
+            data=json.dumps({"brief": brief}, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            tool_sid = str(json.loads(resp.read().decode("utf-8")).get("session_id") or "")
+        payload = {"message": str(user_message or "")[:2000]}
+        if tool_sid:
+            payload["session_id"] = tool_sid
+        req2 = urllib.request.Request(
+            base + "/agent",
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req2, timeout=180) as resp2:
+            tool_result = json.loads(resp2.read().decode("utf-8"))
+    except Exception as exc:
+        app.logger.warning("IP12 production delegate tool layer failed: %s", exc)
+        tool_result = {"type": "error", "message": "生产子 Agent 暂时不可用，请稍后再试。"}
+    kind = tool_result.get("type")
+    if kind == "quote":
+        assistant = (
+            (tool_result.get("explanation") or "已生成报价")
+            + "（请在报价卡确认后执行）"
+        )
+    elif kind == "running":
+        assistant = str(tool_result.get("assistant_content") or "任务已提交，正在执行。")
+    elif kind == "error":
+        assistant = "生产子 Agent 出错了：" + str(tool_result.get("message") or "未知错误")[:200]
+    else:
+        assistant = str(tool_result.get("text") or tool_result.get("assistant_content") or "已完成")[:2000]
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        if convo is None:
+            return None, 404
+        state = normalize_coach_state(convo.get("coach_state"))
+        _assert_expected_revision(state, expected_revision)
+        snapshot_revision = state["revision"]
+    message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
+    assistant, next_state = _persist_unprocessed_turn(
+        cid, user_message, snapshot_revision, message_id=message_id,
+        assistant_override=assistant,
+        skills=["semantic_master_agent"],
+        memory_updates=project_memory.validated_preference_updates(decision, user_message),
+    )
+    result = _chat_result(assistant, next_state)
+    return result, 200
+
+
 def _semantic_content_target(decision, memory, user_message):
     references = decision.get("references") if isinstance(decision.get("references"), dict) else {}
     category_id, topic_id = str(references.get("category_id") or ""), str(references.get("topic_id") or "")
@@ -7686,11 +7754,17 @@ def process_chat_request(body):
             elif (semantic_decision and semantic_decision.get("intent") == "delegate"
                   and semantic_decision.get("delegate_to") == "production_content_agent"):
                 # 生产内容子 Agent：SDK 模式下模型已通过 production_delegate 工具拿到工具层结果，
-                # reply 已包含报价/任务信息，直接呈现。
-                result, status = _process_semantic_reply(
-                    cid, user_message, semantic_decision,
-                    body.get("expected_revision"), request_id,
-                )
+                # 直接呈现 reply；custom 模式由服务端真实调用工具层（选能力、报价）。
+                if AGENTS_SDK_ENABLED and semantic_decision.get("reply"):
+                    result, status = _process_semantic_reply(
+                        cid, user_message, semantic_decision,
+                        body.get("expected_revision"), request_id,
+                    )
+                else:
+                    result, status = _process_production_delegate_turn(
+                        cid, user_message, semantic_decision, memory_snapshot or {},
+                        body.get("expected_revision"), request_id,
+                    )
             elif semantic_decision and semantic_decision.get("intent") == "delegate":
                 semantic_intent = _semantic_production_intent(semantic_decision)
                 semantic_target = _semantic_content_target(
