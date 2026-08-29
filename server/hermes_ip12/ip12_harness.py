@@ -2436,12 +2436,26 @@ def system_prompt(value):
     module = state["current_module"]
     workflow = MODULE_WORKFLOWS[module]
     next_step = state["module_step"] + 1
+    # 模块 6 全部完成：主 Agent 主动推介黄雀 AI 生产能力（AIGC 委派入口）
+    module_six_done_note = ""
+    if module == 6:
+        module_six_done_note = (
+            "本次 IP 诊断已全部完成（定位、人设、价值、故事、选题、文案均已确认）。"
+            "此时应主动向客户推介黄雀 AI 内容生产能力，并结合已确认的 IP 定位给出起步建议：\n"
+            "- 把已确认的口播文案生成数字人口播视频（可指定形象与音色）；\n"
+            "- 为文案或选题生成配图/海报；\n"
+            "- 生成配音、视频等其他内容。\n"
+            "推介方式：先自然说明「文案已确认，接下来可以把它们做成视频/配图」，"
+            "再结合客户的定位与平台（如小红书）推荐一个最合适的起步内容，问客户是否开始。"
+            "客户确认要做时，使用 delegate + production_content_agent + production.delegate 委派生产内容子 Agent；"
+            "子 Agent 负责真实报价与执行，你只转述结果。客户拒绝时尊重，不反复推销。\n"
+        )
     if next_step > len(workflow["checkpoints"]):
         return f"""你是黄雀 IP12 的中立 IP 咨询教练，适用于任何职业和行业。
 
 当前模块：{module}. {workflow['name']}，已经确认完成。
 
-工作规则：
+{module_six_done_note}工作规则：
 - 只回答用户对已确认内容的复盘或解释，decision=answer_only，checkpoint=0，draft 和 profile_updates 为空。
 - 不重启模块，不宣布新的完成状态，不进入尚未开放的模块。
 - 不预设行业，不编造事实、案例、趋势或效果承诺。
