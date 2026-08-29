@@ -5754,8 +5754,8 @@ class H(BaseHTTPRequestHandler):
                 return self._cli_send(400, {"detail": "请求体不是合法 JSON"})
             return self._cli_director_breakdown_quote(d)
         if p == "/api/auth/cli/action":
-            if self._content_length_exceeds(128 * 1024):
-                return self._cli_send(413, {"detail": "CLI 输入不能超过 128 KiB"})
+            if self._content_length_exceeds(12 * 1024 * 1024):
+                return self._cli_send(413, {"detail": "CLI 输入不能超过 12 MiB"})
             d = self._body()
             if self._bad_json():
                 return self._cli_send(400, {"detail": "请求体不是合法 JSON"})
