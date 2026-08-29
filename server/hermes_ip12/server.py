@@ -7711,9 +7711,29 @@ def process_chat_request(body):
                     app.logger.warning("IP12 semantic execution rejected unsafe combination: %s", exc)
                     semantic_decision = semantic_router.safe_clarification()
                 if not _semantic_decision_allowed(semantic_decision, memory_snapshot or {}):
-                    semantic_decision = semantic_router.safe_clarification(
-                        "这项能力当前没有解锁或暂时不可用。你可以换一个目标，或者稍后再试。"
+                    # 专用代理（口播/试听）未解锁时，生产类委派回退到生产内容子 Agent（工具层，108 能力）
+                    _fallback_delegate = (
+                        semantic_decision.get("intent") == "delegate"
+                        and semantic_decision.get("delegate_to") in {
+                            "talking_head_video_agent", "audio_preview_agent"}
+                        and any(
+                            item.get("tool") == "production.delegate"
+                            and item.get("available") is True
+                            for item in (memory_snapshot or {}).get("tool_catalog") or []
+                            if isinstance(item, dict)
+                        )
                     )
+                    if _fallback_delegate:
+                        semantic_decision = dict(semantic_decision)
+                        semantic_decision.update(
+                            delegate_to="production_content_agent",
+                            tool="production.delegate",
+                        )
+                        semantic_router.validate_combination(semantic_decision)
+                    else:
+                        semantic_decision = semantic_router.safe_clarification(
+                            "这项能力当前没有解锁或暂时不可用。你可以换一个目标，或者稍后再试。"
+                        )
 
             if material_production_id:
                 result, status = _process_production_material_revision_turn(
