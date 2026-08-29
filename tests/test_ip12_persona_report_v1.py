@@ -1,4 +1,5 @@
 import hashlib
+import importlib.util
 import inspect
 import os
 import sys
@@ -13,7 +14,15 @@ HERMES = Path(__file__).parents[1] / "server" / "hermes_ip12"
 sys.path.insert(0, str(HERMES))
 
 import ip12_harness as harness
-import server
+
+SERVER_SPEC = importlib.util.spec_from_file_location(
+    "ip12_persona_report_server", HERMES / "server.py"
+)
+if SERVER_SPEC is None or SERVER_SPEC.loader is None:
+    raise RuntimeError("无法加载 Hermes IP12 server 测试模块")
+server = importlib.util.module_from_spec(SERVER_SPEC)
+sys.modules[SERVER_SPEC.name] = server
+SERVER_SPEC.loader.exec_module(server)
 
 
 class IP12PersonaReportV1Tests(unittest.TestCase):
