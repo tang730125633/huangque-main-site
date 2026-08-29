@@ -189,7 +189,7 @@ case "$*" in
   *local.test*) fake_sha="${FAKE_LOCAL_HEALTH_SHA-$fake_sha}" ;;
   *public.test*) fake_sha="${FAKE_PUBLIC_HEALTH_SHA-$fake_sha}" ;;
 esac
-printf '{"ok":true,"agent_release":"ip12-a1-persona","state_schema":2,"release_sha":"%s"}\n' "$fake_sha"
+printf '{"ok":true,"agent_release":"ip12-a2-skills","state_schema":2,"release_sha":"%s"}\n' "$fake_sha"
 exit 0
 """,
         )

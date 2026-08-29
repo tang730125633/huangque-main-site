@@ -10,6 +10,8 @@ from difflib import SequenceMatcher
 import re
 import uuid
 
+import coaching_skills
+
 
 AVAILABLE_MODULE_COUNT = 6
 SCHEMA_VERSION = 2
@@ -19,10 +21,10 @@ CHOICE_REQUIRED_FIELD_ORDER = (*CHOICE_FIELD_LIMITS, "recommended")
 CHOICE_REQUIRED_FIELDS = frozenset(CHOICE_REQUIRED_FIELD_ORDER)
 CHOICE_MATERIALIZED_FIELDS = CHOICE_REQUIRED_FIELDS | {"choice_id", "display_index"}
 AGENT_RELEASE_MANIFEST = {
-    "agent_release": "ip12-a1-persona",
+    "agent_release": "ip12-a2-skills",
     "state_schema": SCHEMA_VERSION,
     "skills": {
-        "intake": {"contract_version": "1.1.0", "prompt_version": "intake-v2"},
+        "intake": {"contract_version": "2.0.0", "prompt_version": "intake-v3"},
         "module_checkpoint": {"contract_version": "1.1.0", "prompt_version": "module-checkpoint-v2"},
         "diagnostic_choice": {"contract_version": "1.0.0", "prompt_version": "diagnostic-choice-v1"},
         "migration": {"contract_version": "1.0.0", "prompt_version": None},
@@ -33,6 +35,11 @@ AGENT_RELEASE_MANIFEST = {
         "production_bridge": {"contract_version": "1.1.0", "prompt_version": None},
         "talking_head_video_agent": {"contract_version": "1.0.0", "prompt_version": None},
         "semantic_master_agent": {"contract_version": "1.0.0", "prompt_version": "semantic-master-v1"},
+        "module_1_positioning": {"contract_version": "1.0.0", "prompt_version": "module-1-positioning-v1"},
+        "module_2_persona": {"contract_version": "1.0.0", "prompt_version": "module-2-persona-v1"},
+        "module_3_value": {"contract_version": "1.0.0", "prompt_version": "module-3-value-v1"},
+        "module_4_story": {"contract_version": "1.0.0", "prompt_version": "module-4-story-v1"},
+        "foundation_pdf": {"contract_version": "1.0.0", "prompt_version": None},
     },
 }
 
@@ -888,7 +895,7 @@ def migrate_state_v1_to_v2(value):
     return state
 
 
-def initial_state():
+def initial_state(pipeline_version=coaching_skills.LEGACY_PIPELINE):
     return {
         "schema_version": SCHEMA_VERSION,
         "revision": 1,
@@ -898,12 +905,16 @@ def initial_state():
         "module_step": 0,
         "pending": None,
         "intake": {"status": "collecting", "round": 1, "answers": {}, "asked_follow_ups": [], "declined_fields": []},
+        "pipeline_version": coaching_skills.normalize_pipeline_version(pipeline_version),
     }
 
 
 def normalize_state(value):
     state = migrate_state_v1_to_v2(value)
     state["schema_version"] = SCHEMA_VERSION
+    state["pipeline_version"] = coaching_skills.normalize_pipeline_version(
+        state.get("pipeline_version")
+    )
     try:
         state["revision"] = max(1, int(state.get("revision", 1)))
     except (TypeError, ValueError):
@@ -1059,6 +1070,23 @@ def available_actions(value):
             {"type": "confirm_intake", "target_id": target, "label": "确认补充" if revising else "确认资料", "primary": True},
             {"type": "edit_intake", "target_id": target, "label": "继续修改" if revising else "我要修改", "primary": False},
         ]
+    foundation = state.get("foundation_report") or {}
+    if (
+        state.get("pipeline_version") == coaching_skills.SKILL_PIPELINE_V1
+        and foundation.get("status") == "awaiting_snapshot_confirmation"
+    ):
+        snapshot = foundation.get("snapshot") or {}
+        target = str(snapshot.get("snapshot_id") or "")
+        actions = [{
+            "type": "confirm_foundation_snapshot", "target_id": target,
+            "snapshot_sha256": str(snapshot.get("sha256") or ""),
+            "label": "确认模块 1-4，生成 PDF", "primary": True,
+        }]
+        actions.extend({
+            "type": "reopen_foundation_module", "target_id": target,
+            "module": module, "label": "修改模块 %s" % module, "primary": False,
+        } for module in range(1, 5))
+        return actions
     pending = state.get("pending")
     if isinstance(pending, dict) and pending.get("status") == "awaiting_confirmation":
         if pending.get("choices"):
@@ -1238,8 +1266,10 @@ def duration_conflict_decision(value, message):
     return None
 
 
-def apply_action(value, action, expected_revision, *, request_id="", selected_at=""):
+def apply_action(value, action, expected_revision, *, request_id="", selected_at="", pipeline_version=None):
     state = normalize_state(value)
+    if pipeline_version is not None:
+        state["pipeline_version"] = coaching_skills.normalize_pipeline_version(pipeline_version)
     _require_revision(state, expected_revision)
     if not isinstance(action, dict):
         raise HarnessError("action 必须是对象")
@@ -1247,8 +1277,65 @@ def apply_action(value, action, expected_revision, *, request_id="", selected_at
     target_id = str(action.get("target_id") or "")
     event = {
         "assistant_prefix": "", "new_completed": [], "continue_model": False,
-        "user_label": "", "continuation_message": "",
+        "user_label": "", "continuation_message": "", "generate_foundation_report": False,
     }
+
+    if action_type in {"confirm_foundation_snapshot", "reopen_foundation_module"}:
+        if state.get("pipeline_version") != coaching_skills.SKILL_PIPELINE_V1:
+            raise HarnessConflict("当前 Project 不使用冻结快照流程")
+        foundation = state.get("foundation_report") or {}
+        if foundation.get("status") not in {"awaiting_snapshot_confirmation", "awaiting_confirmation"}:
+            raise HarnessConflict("模块 1-4 快照已经更新，请查看最新状态")
+        snapshot = foundation.get("snapshot") or {}
+        if target_id != str(snapshot.get("snapshot_id") or ""):
+            raise HarnessConflict("模块 1-4 快照已经更新，请查看最新版本")
+        coaching_skills.validate_foundation_snapshot(snapshot, state)
+        if action_type == "confirm_foundation_snapshot":
+            expected_digest = str(action.get("snapshot_sha256") or "")
+            if expected_digest and expected_digest != snapshot.get("sha256"):
+                raise HarnessConflict("模块 1-4 快照摘要不匹配")
+            state["foundation_report"] = {
+                "status": "generating", "snapshot": deepcopy(snapshot),
+                "snapshot_confirmed_at": str(selected_at or ""),
+                "snapshot_history": deepcopy(foundation.get("snapshot_history") or [])[-5:],
+            }
+            event.update(
+                assistant_prefix="✅ 模块 1-4 冻结快照已确认，正在按固定模板生成 PDF。",
+                user_label="确认模块 1-4，生成 PDF", generate_foundation_report=True,
+            )
+            _bump(state)
+            return state, event
+        try:
+            reopen_module = int(action.get("module"))
+        except (TypeError, ValueError) as exc:
+            raise HarnessError("需要选择模块 1-4 中的一个") from exc
+        if reopen_module not in {1, 2, 3, 4}:
+            raise HarnessError("只能重新修改模块 1-4")
+        outputs = state["ip_profile"]["confirmed_outputs"]
+        for key in list(outputs):
+            match = re.fullmatch(r"([1-4])-(\d+)", str(key))
+            if match and int(match.group(1)) >= reopen_module:
+                outputs.pop(key, None)
+        state["completed_modules"] = [
+            module for module in state["completed_modules"]
+            if module < reopen_module or module > 4
+        ]
+        state.update(current_module=reopen_module, module_step=0, pending=None)
+        state.pop("choice_generation", None)
+        history = list(foundation.get("snapshot_history") or [])[-4:] + [deepcopy(snapshot)]
+        state["foundation_report"] = {
+            "status": "reopening", "reopened_module": reopen_module,
+            "superseded_snapshot": deepcopy(snapshot), "snapshot_history": history,
+        }
+        event.update(
+            assistant_prefix=(
+                "已返回模块 %s；模块 %s 到模块 4 的旧结果已保留在历史快照中，"
+                "但必须逐项重新确认后才能生成新 PDF。" % (reopen_module, reopen_module)
+            ),
+            user_label="修改模块 %s" % reopen_module,
+        )
+        _bump(state)
+        return state, event
 
     if action_type == "resume_choice_generation":
         generation = state.get("choice_generation") or {}
@@ -1383,14 +1470,23 @@ def apply_action(value, action, expected_revision, *, request_id="", selected_at
     event["continue_model"] = True
 
     if step == len(MODULE_WORKFLOWS[module]["checkpoints"]):
+        if (
+            state.get("pipeline_version") == coaching_skills.SKILL_PIPELINE_V1
+            and module in {1, 2, 3, 4}
+        ):
+            coaching_skills.attach_report_payload(state, module)
         if module not in state["completed_modules"]:
             state["completed_modules"].append(module)
             state["completed_modules"].sort()
             event["new_completed"] = [module]
         event["assistant_prefix"] = "✅ 模块 %s 完成。" % module
         if module == 4:
-            state["foundation_report"] = {"status": "generating"}
-            event["assistant_prefix"] += "正在生成模块 1–4 的 IP 定位初稿，请查看后再确认进入模块 5。"
+            if state.get("pipeline_version") == coaching_skills.SKILL_PIPELINE_V1:
+                event["build_foundation_snapshot"] = True
+                event["assistant_prefix"] += "请先确认模块 1-4 冻结快照，再按固定模板生成 PDF。"
+            else:
+                state["foundation_report"] = {"status": "generating"}
+                event["assistant_prefix"] += "正在生成模块 1–4 的 IP 定位初稿，请查看后再确认进入模块 5。"
             event["continue_model"] = False
         elif module == AVAILABLE_MODULE_COUNT:
             event["assistant_prefix"] += (
@@ -1405,6 +1501,15 @@ def apply_action(value, action, expected_revision, *, request_id="", selected_at
                 state["current_module"], MODULE_WORKFLOWS[state["current_module"]]["name"]
             )
     _bump(state)
+    if event.get("build_foundation_snapshot"):
+        history = deepcopy((state.get("foundation_report") or {}).get("snapshot_history") or [])[-5:]
+        snapshot = coaching_skills.build_foundation_snapshot(state)
+        state["foundation_report"] = {
+            "status": "awaiting_snapshot_confirmation",
+            "snapshot": snapshot,
+            "snapshot_sha256": snapshot["sha256"],
+            "snapshot_history": history,
+        }
     return state, event
 
 

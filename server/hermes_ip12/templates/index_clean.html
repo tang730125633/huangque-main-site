@@ -334,7 +334,7 @@ function renderModules() {
   const done = (coachState.completed_modules || []).filter(id=>id<=AVAILABLE_MODULE_COUNT);
   const cur = Math.min(coachState.current_module || 1, AVAILABLE_MODULE_COUNT);
   const foundation = coachState.foundation_report || {};
-  const visibleDone = done.filter(id=>id!==4||['awaiting_confirmation','confirmed'].includes(foundation.status));
+  const visibleDone = done.filter(id=>id!==4||['awaiting_snapshot_confirmation','awaiting_confirmation','confirmed'].includes(foundation.status));
   const intakePending = coachState.intake?.status !== 'complete';
   const intakeLabel = !intakePending ? '' : (coachState.intake.status === 'awaiting_confirmation' ? '待确认' : (coachState.intake.status === 'editing' ? '修改中' : '交谈中'));
   list.innerHTML = MODULES.map(m => {
@@ -343,7 +343,7 @@ function renderModules() {
     const foundationLocked = m.id >= 5 && foundation.status !== 'confirmed';
     if (comingSoon) { cls += ' locked'; badge = '<span class="mod-badge">尚未开发，敬请期待</span>'; }
     else if (intakePending) { cls += ' locked'; if (m.id===1) badge = `<span class="mod-badge">基础信息 ${intakeLabel}</span>`; }
-    else if (foundationLocked) { cls += ' locked'; badge = `<span class="mod-badge">${foundation.status==='awaiting_confirmation'?'待确认 PDF':(done.includes(4)?'PDF 生成中':'等待模块 1-4')}</span>`; }
+    else if (foundationLocked) { cls += ' locked'; badge = `<span class="mod-badge">${foundation.status==='awaiting_snapshot_confirmation'?'待确认快照':(foundation.status==='awaiting_confirmation'?'待确认 PDF':(done.includes(4)?'PDF 生成中':'等待模块 1-4'))}</span>`; }
     if (visibleDone.includes(m.id)) { cls += ' completed'; check = '<span class="mod-check">✓</span>';
       reportBtn = `<span class="mod-report-btn" onclick="event.stopPropagation();viewReport(${m.id})" title="查看报告">📄</span>`; }
     if (!intakePending && m.id === cur && !visibleDone.includes(m.id)) { cls += ' current'; badge = '<span class="mod-badge">进行中</span>'; }
@@ -356,7 +356,7 @@ function renderModules() {
 function updateProgress() {
   const foundation = coachState.foundation_report || {};
   const done = (coachState.completed_modules || []).filter(id=>id<=AVAILABLE_MODULE_COUNT&&(
-    id!==4||['awaiting_confirmation','confirmed'].includes(foundation.status)
+    id!==4||['awaiting_snapshot_confirmation','awaiting_confirmation','confirmed'].includes(foundation.status)
   )).length;
   const intakePending = coachState.intake?.status !== 'complete';
   document.getElementById('progressBar').style.width = Math.round(done/AVAILABLE_MODULE_COUNT*100)+'%';
@@ -373,7 +373,9 @@ function renderReportMinis() {
   const keys=Object.keys(reports).filter(k=>reports[k]&&Number(k)<=AVAILABLE_MODULE_COUNT);
   const foundation=coachState.foundation_report||{},done=coachState.completed_modules||[];
   let foundationRows='';
-  if(foundation.status==='awaiting_confirmation'||foundation.status==='confirmed'){
+  if(foundation.status==='awaiting_snapshot_confirmation'){
+    foundationRows='<div class="report-mini" onclick="closeDrawer();runStateAction(stateActions()[0])"><span class="r-icon">🎯</span><span>确认模块 1-4 冻结快照</span></div>';
+  }else if(foundation.status==='awaiting_confirmation'||foundation.status==='confirmed'){
     foundationRows='<div class="report-mini" onclick="closeDrawer();openFoundationReport()"><span class="r-icon">📑</span><span>模块 1-4 IP 定位初稿 PDF</span></div>';
     if(foundation.status==='awaiting_confirmation'&&foundation.review_status==='dirty')foundationRows+='<div class="report-mini" onclick="closeDrawer();generateFoundationReport()"><span class="r-icon">↻</span><span>应用补充并重新生成 PDF</span></div>';
     else if(foundation.status==='awaiting_confirmation')foundationRows+='<div class="report-mini" onclick="closeDrawer();confirmFoundationReport()"><span class="r-icon">✅</span><span>确认初稿，继续模块 5</span></div>';
@@ -446,7 +448,17 @@ function stateActions(){
     {type:'confirm_checkpoint',target_id:pending.id,label:'保留并继续',primary:true},
     {type:'edit_checkpoint',target_id:pending.id,label:'修改当前内容',primary:false}
   ];
-  const foundation=coachState.foundation_report||{};if(foundation.status==='awaiting_confirmation'){
+  const foundation=coachState.foundation_report||{};if(foundation.status==='awaiting_snapshot_confirmation'){
+    const snapshot=foundation.snapshot||{},target=String(snapshot.snapshot_id||'');return[
+      {type:'confirm_foundation_snapshot',target_id:target,snapshot_sha256:String(snapshot.sha256||''),label:'确认模块 1-4，生成 PDF',primary:true},
+      ...[1,2,3,4].map(module=>({type:'reopen_foundation_module',target_id:target,module,label:`修改模块 ${module}`,primary:false}))
+    ];
+  }if(foundation.status==='awaiting_confirmation'){
+    if(coachState.pipeline_version==='ip12-skills-v1'){const snapshot=foundation.snapshot||{},target=String(snapshot.snapshot_id||'');return[
+      {type:'open_foundation_report',label:'查看 PDF',primary:false},
+      ...[1,2,3,4].map(module=>({type:'reopen_foundation_module',target_id:target,module,label:`修改模块 ${module}`,primary:false})),
+      {type:'confirm_foundation_report',label:'确认 PDF，进入模块 5',primary:true}
+    ];}
     if(foundation.review_status==='dirty')return[
       {type:'open_foundation_report',label:'查看旧版 PDF 并批注',primary:false},
       {type:'edit_foundation_report',label:'继续补充',primary:false},
@@ -606,7 +618,7 @@ function toast(msg){const t=document.createElement('div');t.className='toast';t.
 // ── Send ──
 function handleKey(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage();}}
 function newTurnRequestId(){return window.crypto&&crypto.randomUUID?crypto.randomUUID():`turn_${Date.now()}_${Math.random().toString(36).slice(2)}`;}
-function sendHarnessAction(item){return sendTurn({action:{type:item.type,target_id:item.target_id}},item.label);}
+function sendHarnessAction(item){const action={type:item.type,target_id:item.target_id};if(item.choice_id)action.choice_id=item.choice_id;if(item.module)action.module=item.module;if(item.snapshot_sha256)action.snapshot_sha256=item.snapshot_sha256;return sendTurn({action},item.label);}
 function sendMessage(){
   if(streaming||!currentConvoId)return;
   const input=document.getElementById('userInput'),text=input.value.trim();if(!text)return;
