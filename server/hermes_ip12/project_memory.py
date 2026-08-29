@@ -3,6 +3,8 @@
 import copy
 import re
 
+import coaching_skills
+
 
 SCHEMA = "ip12.project-memory/v1"
 HISTORY_LIMIT = 50
@@ -143,7 +145,7 @@ def _pending(state):
     return {
         "id": _text(pending.get("id"), 120),
         "status": _text(pending.get("status"), 60),
-        "checkpoint": int(pending.get("checkpoint") or 0),
+        "checkpoint": int(pending.get("step") or pending.get("checkpoint") or 0),
         "choices": [
             {"choice_id": _text(item.get("choice_id"), 120), "title": _text(item.get("title"), 180)}
             for item in (pending.get("choices") or [])[:5] if isinstance(item, dict)
@@ -158,6 +160,22 @@ def _available_assets(active, voice_ui):
         "voice_ready": bool(fields.intersection({"voice", "audio_upload_id"}))
         or str((voice_ui or {}).get("status") or "") in {"complete", "ready"},
     }
+
+
+def _active_skill_id(project, state):
+    pipeline = coaching_skills.normalize_pipeline_version(
+        project.get("pipeline_version") or state.get("pipeline_version")
+    )
+    if pipeline != coaching_skills.SKILL_PIPELINE_V1:
+        return ""
+    if (state.get("foundation_report") or {}).get("status") in {
+        "awaiting_snapshot_confirmation", "generating", "awaiting_confirmation",
+    }:
+        return "foundation_pdf"
+    spec = coaching_skills.skill_for_state(state)
+    if spec is not None:
+        return spec.skill_id
+    return ""
 
 
 def build(project, state, capability_gates=None):
@@ -186,6 +204,10 @@ def build(project, state, capability_gates=None):
                                   if isinstance(value, int)],
             "pending": _pending(state),
             "foundation_status": _text((state.get("foundation_report") or {}).get("status"), 60),
+            "pipeline_version": coaching_skills.normalize_pipeline_version(
+                project.get("pipeline_version") or state.get("pipeline_version")
+            ),
+            "active_skill_id": _active_skill_id(project, state),
         },
         "facts": _fact_map(profile.get("facts")),
         "preferences": _fact_map(profile.get("preferences")),
