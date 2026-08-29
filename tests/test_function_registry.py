@@ -214,6 +214,10 @@ class FunctionRegistryTests(unittest.TestCase):
         self.assertNotIn("evidence_gaps", script["functions"][1])
         output_modes = script["functions"][2]["modes"]
         self.assertEqual(
+            script["functions"][2]["frontend_selector"],
+            "#bdRemakeBtn, #bdToImageBtn",
+        )
+        self.assertEqual(
             [mode["key"] for mode in output_modes if mode["validation"]["supported"]],
             ["script.output.image"],
         )
