@@ -947,6 +947,21 @@ class IP12HarnessTests(unittest.TestCase):
         state["ip_profile"]["confirmed_outputs"]["1-1"] = {"draft": "已确认定位关键词"}
 
         self.assertIn("模块 1 已确认", harness.system_prompt(state))
+        # 新语义：模块 2 名下字段缺失时，允许先采集（ask_follow_up）
+        missing = [
+            field for field in harness.MODULE_FIELD_OWNERSHIP[2]
+            if harness.intake_field_statuses(state).get(field) == "unknown"
+        ]
+        self.assertTrue(missing, "complete_intake 不应预先采集模块 2 字段")
+        decision_ask = decision(state, kind="ask_follow_up", reply="别人通常会怎么形容你？")
+        harness.validate_model_decision(decision_ask, state, "")
+        # 模块 2 名下字段齐全后，必须直接提炼人格候选（旧保护保留）
+        state["ip_profile"]["facts"].update({
+            "personality_traits": "靠谱、较真、实战派",
+            "tone_preference": "真实聊天",
+            "disliked_style": "制造焦虑",
+            "content_habits": "猫咪日常",
+        })
         with self.assertRaisesRegex(harness.HarnessError, "必须从已有经历、行为和价值观"):
             harness.validate_model_decision(
                 decision(state, kind="ask_follow_up", reply="别人通常会怎么形容你？"),
