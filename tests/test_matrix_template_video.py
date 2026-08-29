@@ -731,7 +731,9 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual("实时标题", result["top"])
         self.assertEqual("实时行动文案", result["bottom"])
         self.assertEqual("minimal-headline", result["template"])
-        self.assertIn("--live-bg:#f5f5f2", result["style"])
+        self.assertEqual("#f5f5f2", result["liveBg"])
+        self.assertEqual("#111111", result["liveFg"])
+        self.assertEqual("#df3f36", result["liveAccent"])
         self.assertEqual("none", result["videoDisplay"])
 
     def test_font_selector_lists_available_fonts_and_submits_parameter(self):

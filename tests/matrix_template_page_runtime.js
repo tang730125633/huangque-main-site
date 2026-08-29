@@ -3,11 +3,12 @@ const path = require('path');
 const vm = require('vm');
 
 class ClassList { constructor(){this.names=new Set()} add(x){this.names.add(x)} remove(x){this.names.delete(x)} toggle(x,on){if(on)this.add(x);else this.remove(x)} }
+function styleObject(){return {setProperty(k,v){this[k]=String(v)}}}
 class Element {
-  constructor(tag='div',id=''){this.tagName=tag.toUpperCase();this.id=id;this.value='';this.checked=false;this.disabled=false;this.children=[];this.style={};this.attributes={};this.listeners={};this.classList=new ClassList();this._text='';this.href='';this.src='';this.preload='';this.loadCount=0;this.pauseCount=0;this.onerror=null;this.onloadeddata=null;this.oncanplay=null;this._hqMediaRetryTimer=0}
+  constructor(tag='div',id=''){this.tagName=tag.toUpperCase();this.id=id;this.value='';this.checked=false;this.disabled=false;this.children=[];this.style=styleObject();this.attributes={};this.listeners={};this.classList=new ClassList();this._text='';this.href='';this.src='';this.preload='';this.loadCount=0;this.pauseCount=0;this.onerror=null;this.onloadeddata=null;this.oncanplay=null;this._hqMediaRetryTimer=0}
   get textContent(){return this._text} set textContent(v){this._text=String(v);if(v==='')this.children=[]}
   set innerHTML(v){this._html=String(v)} get innerHTML(){return this._html||''}
-  appendChild(x){this.children.push(x);return x} setAttribute(k,v){this.attributes[k]=String(v)}
+  appendChild(x){this.children.push(x);return x} setAttribute(k,v){this.attributes[k]=String(v);if(k==='style'){this.style=styleObject();for(const part of String(v).split(';')){const index=part.indexOf(':');if(index>0)this.style.setProperty(part.slice(0,index).trim(),part.slice(index+1).trim())}}}
   getAttribute(k){return this.attributes[k]}
   addEventListener(k,fn){(this.listeners[k]||=[]).push(fn)}
   load(){this.loadCount++}
@@ -115,7 +116,7 @@ async function scenarioMediaRetry(){
 async function scenarioLivePreview(){
   const runtime=createRuntime({post:()=>Promise.reject(new Error('unused')),poll:()=>Promise.reject(new Error('unused'))},new Map());
   await flush();runtime.get('topText').value='实时标题';runtime.get('bottomText').value='实时行动文案';runtime.get('topText').listeners.input[0]();runtime.get('bottomText').listeners.input[0]();runtime.get('templateGrid').children[1].onclick();
-  return {top:runtime.get('liveTop').textContent,bottom:runtime.get('liveBottom').textContent,template:runtime.get('livePreview').attributes['data-template'],style:runtime.get('livePreview').attributes.style,videoDisplay:runtime.get('video').style.display};
+  const style=runtime.get('livePreview').style;return {top:runtime.get('liveTop').textContent,bottom:runtime.get('liveBottom').textContent,template:runtime.get('livePreview').attributes['data-template'],liveBg:style['--live-bg'],liveFg:style['--live-fg'],liveAccent:style['--live-accent'],videoDisplay:runtime.get('video').style.display};
 }
 async function scenarioFontSelect(){
   const runtime=createRuntime({post:()=>Promise.resolve(response(200,{job_id:11})),poll:()=>Promise.resolve(response(200,{status:'pending'}))},new Map());
