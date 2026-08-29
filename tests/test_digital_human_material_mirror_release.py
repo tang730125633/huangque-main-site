@@ -125,6 +125,40 @@ class DigitalHumanMaterialMirrorReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(release.MirrorReleaseError, "already exists"):
             self._build(self.output_a)
 
+    def test_build_consumes_material_payloads_one_at_a_time(self):
+        domain = release._digital_human_domain()
+        original_read = domain._read_local_record
+        original_write = release._write_new
+        pending = []
+        reads = []
+
+        def tracked_read(root, record):
+            self.assertFalse(
+                pending, "next material was read before the prior payload was written",
+            )
+            raw, mime = original_read(root, record)
+            pending.append(record["relative"])
+            reads.append(record["relative"])
+            return raw, mime
+
+        def tracked_write(path, raw, mode=0o600):
+            result = original_write(path, raw, mode)
+            if "/snapshot/files/" in pathlib.Path(path).as_posix():
+                self.assertEqual(1, len(pending))
+                pending.clear()
+            return result
+
+        with mock.patch.object(
+                domain, "_read_local_record", side_effect=tracked_read):
+            with mock.patch.object(
+                    release, "_write_new", side_effect=tracked_write):
+                directory, manifest = self._build()
+
+        self.assertFalse(pending)
+        self.assertEqual(3, len(reads))
+        self.assertEqual(5, manifest["file_count"])
+        self.assertTrue(directory.exists())
+
     def test_tampered_bundle_is_rejected_before_target_changes(self):
         directory, _manifest = self._build()
         self.target.mkdir()
