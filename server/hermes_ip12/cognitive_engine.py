@@ -387,11 +387,12 @@ def agents_sdk_decider(context, goal, timeout_seconds=50, *, openai_client=None,
         delegate_to: Literal[
             "none", "voice_clone_agent", "audio_preview_agent",
             "talking_head_video_agent", "content_revision_agent",
+            "production_content_agent",
         ]
         tool: Literal[
             "none", "weather.current", "project.status", "voice_clone.status",
             "voice_clone.open", "audio_preview.prepare", "talking_head.prepare",
-            "content.revise",
+            "content.revise", "production.delegate",
         ]
         reply: str = Field(max_length=1600)
         awaiting: Literal["none", "user_input", "confirmation", "feedback"]
@@ -423,6 +424,59 @@ def agents_sdk_decider(context, goal, timeout_seconds=50, *, openai_client=None,
         """Read safe avatar and voice readiness from the current production summary."""
         return asset_readiness(ctx.context)
 
+    @function_tool(name_override="production_delegate")
+    def production_delegate(ctx: RunContextWrapper[dict], intent: str, brief: str = "") -> str:
+        """把生产任务交给生产内容子 Agent（黄雀工具层）。
+        支持数字人口播、图片、视频、配音、文案成片、内容采集、获客等全量能力。
+        只传用户意图与画像上下文；报价、确认、执行全部由子 Agent 内部处理。"""
+        import http.client
+        import urllib.request
+        import urllib.error
+        base = str(os.environ.get("HQ_TOOL_AGENT_BASE") or "http://127.0.0.1:8790").rstrip("/")
+        sid = ""
+        if brief:
+            try:
+                brief_obj = json.loads(brief)
+            except Exception:
+                brief_obj = {"profile": {"notes": str(brief)[:2000]}}
+            req = urllib.request.Request(
+                base + "/agent/ip12-brief",
+                data=json.dumps({"brief": brief_obj}).encode("utf-8"),
+                headers={"Content-Type": "application/json"}, method="POST")
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    body = json.loads(resp.read().decode("utf-8"))
+                sid = str(body.get("session_id") or "")
+            except Exception:
+                sid = ""
+        payload = {"message": str(intent or "")[:2000]}
+        if sid:
+            payload["session_id"] = sid
+        req2 = urllib.request.Request(
+            base + "/agent",
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req2, timeout=180) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:
+            return json.dumps({"error": "工具层不可用：" + str(exc)[:160]}, ensure_ascii=False)
+        kind = result.get("type")
+        if kind == "quote":
+            return json.dumps({
+                "status": "quote_ready",
+                "cost": result.get("cost"),
+                "points": result.get("points"),
+                "message": result.get("explanation") or result.get("assistant_content") or "已报价",
+            }, ensure_ascii=False)
+        if kind == "running":
+            return json.dumps({"status": "running", "job_id": result.get("job_id"),
+                               "message": result.get("assistant_content") or "任务已提交"}, ensure_ascii=False)
+        if kind == "error":
+            return json.dumps({"status": "failed", "message": result.get("message") or "执行失败"}, ensure_ascii=False)
+        text = str(result.get("text") or result.get("assistant_content") or "")[:2000]
+        return json.dumps({"status": "completed", "message": text}, ensure_ascii=False)
+
     async def specialist_output(result):
         value = result.final_output
         return value.model_dump_json() if hasattr(value, "model_dump_json") else str(value)
@@ -451,6 +505,9 @@ def agents_sdk_decider(context, goal, timeout_seconds=50, *, openai_client=None,
         instructions=semantic_router.SYSTEM_PROMPT + (
             "\n\nSDK 补充：只有口播视频目标才可调用 talking_head_video_agent；"
             "天气、闲聊、状态、隐私请求、音频试听、声音复刻和文案修改都不得调用它。"
+            "\n生产内容（数字人口播以外的图片、视频、配音、文案成片、采集、获客等）"
+            "调用 production_delegate 工具，把用户意图与画像交给生产内容子 Agent；"
+            "子 Agent 返回报价或结果后，用自然语言转述给用户，不要编造报价或成品。"
         ),
         model=model,
         model_settings=ModelSettings(**settings),
@@ -459,7 +516,7 @@ def agents_sdk_decider(context, goal, timeout_seconds=50, *, openai_client=None,
             tool_description="Inspect one talking-head goal with read-only tools.",
             custom_output_extractor=specialist_output,
             include_input_schema=True,
-        )],
+        ), production_delegate],
         output_type=Decision,
     )
     async def run_once():

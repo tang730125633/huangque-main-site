@@ -11,10 +11,12 @@ INTENTS = {
 DELEGATES = {
     "none", "voice_clone_agent", "audio_preview_agent",
     "talking_head_video_agent", "content_revision_agent",
+    "production_content_agent",
 }
 TOOLS = {
     "none", "weather.current", "project.status", "voice_clone.status", "voice_clone.open",
     "audio_preview.prepare", "talking_head.prepare", "content.revise",
+    "production.delegate",
 }
 AWAITING = {"none", "user_input", "confirmation", "feedback"}
 TOOL_POLICIES = {"none", "read_only", "prepare_only"}
@@ -36,6 +38,7 @@ LEGAL_COMBINATIONS = {
     ("delegate", "voice_clone_agent", "voice_clone.open", "prepare_only", "user_input", False, True),
     ("delegate", "audio_preview_agent", "audio_preview.prepare", "prepare_only", "confirmation", True, True),
     ("delegate", "talking_head_video_agent", "talking_head.prepare", "prepare_only", "confirmation", True, True),
+    ("delegate", "production_content_agent", "production.delegate", "prepare_only", "confirmation", True, True),
     ("revise_content", "content_revision_agent", "content.revise", "prepare_only", "feedback", False, False),
 }
 
@@ -163,6 +166,7 @@ SYSTEM_PROMPT = """你是黄雀 IP12 的主控 Agent。你必须先理解用户�
 7. 制作数字人口播视频，使用 delegate + talking_head_video_agent + talking_head.prepare。能从 content_topics 确定文案时填写 category_id/topic_id；不能确定时 clarify，只问一个必要问题。
 8. 修改某篇已确认文案，使用 revise_content + content_revision_agent + content.revise，并填写文案引用；“语气更温和”等媒体参数如果没有明确要求改正文，不算文案修改。
 9. 模块 1–6 未完成且用户要继续当前流程，使用 continue_ip12。
+9a. 用户要求生成图片、视频、配音、文案成片、采集内容、获客名单等生产任务（且不匹配 5–8 的专用代理），使用 delegate + production_content_agent + production.delegate。把用户意图与已确认文案/画像一起交给生产内容子 Agent；真实报价和扣点由于子 Agent 内部完成，你只转述结果。
 10. 任何付费提交、扣点、购买、删除、上传和外部写入都不在你的工具表中。即使用户文字确认，也不能伪造执行；真实确认仍由确定性报价卡和服务端门禁处理。
 10a. 用户索要内部标识、令牌或工具参数时，简短说明这些内部信息不对外展示；拒绝时也不要复述用户提到的内部字段原名或具体值。
 11. 不说“稍后给你”“一分钟内完成”“正在生成”，除非 Project 里 job_present=true 且有对应状态。
@@ -175,7 +179,7 @@ SYSTEM_PROMPT = """你是黄雀 IP12 的主控 Agent。你必须先理解用户�
 18. 用户询问状态或用文字确认报价时，当前对象必须以 active_production.action/status 为准；audio-generate 是试听音频生成，不是声音克隆，digital-ip-text-generate 是数字人口播视频。recent_messages 与 active_production 冲突时，后者优先。
 19. 用户要求制作口播但缺少 voice_ready 时仍使用 talking_head.prepare；reply 必须明确说“声音”尚未准备好，并只引导补这一项，不得冒充已经可以提交。
 
-策略字段：普通回答和暂停用 tool_policy=none；天气、制作状态和声音克隆状态查询用 read_only；打开克隆卡、准备试听音频、准备口播视频和文案修改用 prepare_only。只有 audio_preview_agent 与 talking_head_video_agent 的 payment_policy 两项均为 true；voice_clone_agent 固定为 false,true；其他情况均为 false,false。memory_evidence 只引用 Project 结构化路径，例如 facts.location、voice_clone、active_production、content_topics.topic-1；不得复制整段私人原文。
+策略字段：普通回答和暂停用 tool_policy=none；天气、制作状态和声音克隆状态查询用 read_only；打开克隆卡、准备试听音频、准备口播视频、生产内容委派和文案修改用 prepare_only。只有 audio_preview_agent、talking_head_video_agent 与 production_content_agent 的 payment_policy 两项均为 true；voice_clone_agent 固定为 false,true；其他情况均为 false,false。memory_evidence 只引用 Project 结构化路径，例如 facts.location、voice_clone、active_production、content_topics.topic-1；不得复制整段私人原文。
 
 组合字段必须严格使用以下合同：
 - direct_answer：none/none/none/none/false,false；天气例外为 none/weather.current/read_only/none/false,false。
@@ -187,6 +191,7 @@ SYSTEM_PROMPT = """你是黄雀 IP12 的主控 Agent。你必须先理解用户�
 - voice_clone_agent：voice_clone.open/prepare_only/user_input/false,true。
 - audio_preview_agent：audio_preview.prepare/prepare_only/confirmation/true,true。
 - talking_head_video_agent：talking_head.prepare/prepare_only/confirmation/true,true。
+- production_content_agent：production.delegate/prepare_only/confirmation/true,true。
 - revise_content：content_revision_agent/content.revise/prepare_only/feedback/false,false。
 顺序均为 delegate_to/tool/tool_policy/awaiting/quote_required,explicit_confirmation_required；不得自行组合。
 intent=clarify 时 delegate_to、tool、tool_policy 必须全部为 none；不能一边澄清一边携带任何工具。

@@ -15,15 +15,19 @@
 选择权在 Agent（模型），不在人为判断分支里。人为规则只保留安全底线：
 付费先报价、确认才扣点、quote_token 一次性、删除验证归属（fail-closed）。
 
-## 二、现状与差距（已调研核实）
+## 二、现状与差距（已调研核实 · 2026-08-30 更新）
 
-| 层 | 现状 | 目标 |
-|---|---|---|
-| 模型接口 | Chat Completions（`model_router.py` 调 `/chat/completions`） | **Responses API**（带 state + function calling 循环 + reasoning） |
-| 模型 | zelong GPT-5.4 / gptsapi GPT-4o 多供应商轮换 | 建议换 Luna（与工具层同构）；是否更换由 Tang 决定 |
-| 主 Agent 决策 | `master_agent.py` 正则 decide()（shadow 模式） | 模型 function calling 自主决策 |
-| 子 Agent 记录层 | `agent_runtime.py` AgentRun/ToolCall 合同 + 状态机 ✅ 已就位 | 复用（状态机与工具层报价确认流程一致） |
-| 生产执行 | 窄生产桥（4 族能力，正则 production_intent） | 委派生产内容子 Agent（108 能力全量） |
+**重要更新：Agents SDK 基础设施已在**（`cognitive_engine.py`），差距远小于初版判断。
+
+| 层 | 现状 | 目标 | 动作 |
+|---|---|---|---|
+| 模型接口 | ✅ **已有 Responses 通道**（OpenAI Agents SDK `OpenAIResponsesModel`，带灰度开关 `AGENTS_SDK_ENABLED`） | 无需改 | 仅确认生产配置 |
+| 主 Agent 决策 | ✅ **已有** `Agent(name="ip12_master_agent", tools=[...])` + `semantic_router.SYSTEM_PROMPT` | 无需重写 | 扩展工具集 |
+| 子 Agent 当工具 | ✅ 已有雏形：`specialist.as_tool("talking_head_video_agent")`（只读检查版） | 增加生产子 Agent | **核心工作** |
+| 生产执行 | ❌ 窄生产桥（4 族，正则 `production_intent`） | 委派生产内容子 Agent（108 能力） | **核心工作** |
+| 子 Agent 记录层 | ✅ `agent_runtime.py` AgentRun/ToolCall 合同 | 复用 | 无 |
+
+结论：**阶段 1、2 无需从零做，真正的核心是「把生产内容子 Agent 注册成主 Agent 的 delegate_production 工具」。**
 
 ## 三、目标架构
 
@@ -41,21 +45,19 @@ IP12 主 Agent（模型 + Responses API）
 
 用户全程只面对一个对话框；主 Agent 负责"决定做什么"，子 Agent 负责"怎么做"。
 
-## 四、升级路径（分三个阶段，每阶段独立可验收）
+## 四、升级路径（已更新：阶段 1/2 基础设施已在，聚焦阶段 3）
 
-### 阶段 1：模型接口升级（基础设施）
-- `model_router.py` 增加 Responses 通道（保留现有 provider 作为回退）
-- 验收：一条多轮访谈走 Responses，state 正常
+### 阶段 1：模型接口 ✅ 已存在（Agents SDK + OpenAIResponsesModel + 灰度开关）
+- 待办：确认生产环境 `AGENTS_SDK_ENABLED=1`、`HERMES_AGENTS_SDK_MODEL`、Key 配置
 
-### 阶段 2：主 Agent 决策层换脑
-- `master_agent.py` 的 `decide()` 从正则改为模型 function calling（见下方提示词与工具定义）
-- 工具定义：`delegate_production`（委派生产子 Agent）、`delegate_search`（实时信息）
+### 阶段 2：决策层 ✅ 已存在（ip12_master_agent + function calling）
+- 待办：无（提示词在 `semantic_router.SYSTEM_PROMPT`，后续按需增强）
+
+### 阶段 3：注册生产内容子 Agent（核心工作）
+- `cognitive_engine.py`：新增生产内容 Agent（工具层代理）→ `as_tool("delegate_production")` → 加入 master tools
+- 配置：工具层地址（环境变量 `HQ_TOOL_AGENT_BASE`，默认 http://127.0.0.1:8790）
 - 验收三话术：取消不调工具 / 生成直接调 / 不确定追问
-
-### 阶段 3：子 Agent 接入
-- `delegate_production` 执行时转发到生产内容子 Agent（工具层 `/agent`，携带画像上下文）
-- 复用 `agent_runtime` 记录 AgentRun/ToolCall
-- 验收黄金路径：诊断完成 → "用文案生成口播" → 主 Agent 调 delegate_production → 子 Agent 报价 → 用户确认 → 成品回到对话框
+- 黄金路径：诊断完成 → "用文案生成口播" → delegate_production → 工具层报价 → 用户确认 → 成品回 IP12 对话
 
 ## 五、核心交付：主 Agent 系统提示词（草案）
 
