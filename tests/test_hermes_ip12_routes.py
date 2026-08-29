@@ -185,7 +185,7 @@ assert all(item["status"] == "unlocked" for item in server.capability_gates(stat
 import server
 payload = server.app.test_client().get('/healthz').get_json()
 assert payload['release_sha'] == 'file-release-sha', payload
-assert payload['agent_release'] == 'ip12-a0.1', payload
+assert payload['agent_release'] == 'ip12-a1-persona', payload
 assert payload['state_schema'] == 2, payload
 assert payload['master_agent_mode'] == 'off', payload
 """
@@ -330,10 +330,11 @@ assert replayed.get_json()["replayed"] is True, replayed.get_json()
         for path in HERMES.glob("*.py"):
             routes.update(pattern.findall(path.read_text(encoding="utf-8")))
 
-        self.assertEqual(len(routes), 88)
+        self.assertEqual(len(routes), 89)
         self.assertTrue(
             {
                 "/api/chat",
+                "/api/intake/supplement",
                 "/api/generate-report",
                 "/api/generate-deliverable",
                 "/api/generate-image",
@@ -2045,7 +2046,7 @@ print("IP12_PROJECT_BACKUP_OK")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("IP12_PROJECT_BACKUP_OK", result.stdout)
 
-    def test_module_six_completion_hands_off_to_talking_head_production(self):
+    def test_module_six_completion_stops_without_automatic_production_handoff(self):
         script = r'''
 from concurrent.futures import ThreadPoolExecutor
 import threading
@@ -2083,12 +2084,7 @@ completed["deliverables"] = {"6": pack}
 server.save_conversation(completed_id, completed)
 
 detail = client.get(f"/api/conversations/{completed_id}").get_json()
-assert detail["harness_actions"][0]["type"] == "prepare_production", detail
-assert detail["harness_actions"][0]["preferred_action"] == "digital-ip-text-generate", detail
-assert detail["harness_actions"][0]["specialist_agent"] == "talking_head_video_agent", detail
-assert detail["harness_actions"][0]["options"]["ratio"] == "9:16", detail
-assert detail["harness_actions"][0]["content_target"] == {"category_id": "category_1", "topic_id": "topic_1"}, detail
-assert detail["harness_actions"][0]["allow_system_media"] is False, detail
+assert detail["harness_actions"] == [], detail
 
 with patch.object(server, "call_ai") as model:
     capability = client.post("/api/chat-complete", json={
@@ -2232,11 +2228,11 @@ finished = client.post("/api/chat-complete", json={
 assert finished.status_code == 200, finished.get_data(as_text=True)
 finished_body = finished.get_json()
 assert finished_body["new_completed"] == [6], finished_body
-assert finished_body["actions"][0]["type"] == "prepare_production", finished_body
-assert finished_body["actions"][0]["specialist_agent"] == "talking_head_video_agent", finished_body
-assert "第一件数字人口播作品" in finished_body["assistant"], finished_body
+assert finished_body["actions"] == [], finished_body
+assert "当前版本到这里停止" in finished_body["assistant"], finished_body
+assert "开始制作" not in finished_body["assistant"], finished_body
 assert not server.load_conversation(final_id).get("productions")
-print("IP12_POST_MODULE_SIX_HANDOFF_OK")
+print("IP12_POST_MODULE_SIX_STOP_OK")
 '''
         with tempfile.TemporaryDirectory() as data_dir:
             env = os.environ.copy()
@@ -2246,7 +2242,7 @@ print("IP12_POST_MODULE_SIX_HANDOFF_OK")
                 capture_output=True, text=True,
             )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("IP12_POST_MODULE_SIX_HANDOFF_OK", result.stdout)
+        self.assertIn("IP12_POST_MODULE_SIX_STOP_OK", result.stdout)
 
     def test_choice_routes_migrate_select_trace_and_replay_after_receipt_eviction(self):
         script = r'''
@@ -2611,7 +2607,8 @@ assert "已确认价值：陪用户把复杂事情做成" in foundation_payload
 assert "模块4最终已确认：长期故事主线" in foundation_payload
 assert "13800138000" not in foundation_payload
 assert "三套人设方案" not in foundation_payload and "三套价值主张方案" not in foundation_payload
-assert "拆解真实问题" not in foundation_payload and "记录长期成长" not in foundation_payload
+assert "selected_choice_id" in foundation_payload
+assert "拆解真实问题" in foundation_payload and "记录长期成长" in foundation_payload
 grounded_report = server._ground_foundation_story_section(
     "## 模块一｜定位诊断\n安全内容\n\n## 模块四｜故事资产挖掘\n朋友面对堆积如山的行李，我砸掉铁饭碗。\n\n## 优化建议汇总\n建议内容",
     {"4-4": {"content": "事实原话：我帮朋友搬家整理时发现自己挺擅长。"}},

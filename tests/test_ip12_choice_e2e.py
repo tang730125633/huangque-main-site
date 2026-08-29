@@ -109,7 +109,7 @@ try:
     http = requests.Session()
     http.trust_env = False
     health = http.get(base + "/healthz", timeout=5).json()
-    assert health["agent_release"] == "ip12-a0.1"
+    assert health["agent_release"] == "ip12-a1-persona"
     assert health["state_schema"] == 2
     assert health["release_sha"] == "e2e-release-sha"
     with sync_playwright() as playwright:

@@ -67,6 +67,14 @@ def intake_decision(*, kind="propose_checkpoint", reply="这是我整理的基�
     }
 
 
+def covered_intake_state(provided=()):
+    state = harness.initial_state()
+    state["intake"]["declined_fields"] = [
+        field for field in harness.INTAKE_COVERAGE_FIELDS if field not in set(provided)
+    ]
+    return state
+
+
 class IP12HarnessTests(unittest.TestCase):
     def test_production_recommendations_stay_bounded_by_capability_family(self):
         expected = {
@@ -88,17 +96,35 @@ class IP12HarnessTests(unittest.TestCase):
 
     def complete_intake(self):
         state = harness.initial_state()
-        evidence = "我叫泽龙，22岁，在广州做 FDE，主要提供技术服务。"
+        provided = {
+            "preferred_name", "age", "city", "current_identity", "income_source",
+            "business_goal", "offer", "primary_platform", "desired_action",
+        }
+        state["intake"]["declined_fields"] = [
+            field for field in harness.INTAKE_COVERAGE_FIELDS if field not in provided
+        ]
+        evidence = (
+            "我叫泽龙，22岁，在广州做 FDE，主要提供技术服务。"
+            "我想通过内容获客，提供 AI Agent 咨询，主要做视频号，希望用户私信咨询。"
+        )
         state, _, _ = harness.apply_intake_decision(
             state,
             intake_decision(
-                draft="称呼：泽龙；年龄：22岁；城市：广州；职业：FDE；收入来源：技术服务。",
-                updates=[{
-                    "field": "preferred_name",
-                    "value": "泽龙",
-                    "kind": "user_fact",
-                    "evidence_quote": "我叫泽龙",
-                }],
+                draft=(
+                    "称呼：泽龙；年龄：22岁；城市：广州；职业：FDE；收入来源：技术服务；"
+                    "商业目标：通过内容获客；服务：AI Agent 咨询；平台：视频号；行动目标：私信咨询。"
+                ),
+                updates=[
+                    {"field": "preferred_name", "value": "泽龙", "kind": "user_fact", "evidence_quote": "我叫泽龙"},
+                    {"field": "age", "value": "22岁", "kind": "user_fact", "evidence_quote": "22岁"},
+                    {"field": "city", "value": "广州", "kind": "user_fact", "evidence_quote": "在广州"},
+                    {"field": "current_identity", "value": "FDE", "kind": "user_fact", "evidence_quote": "做 FDE"},
+                    {"field": "income_source", "value": "技术服务", "kind": "user_fact", "evidence_quote": "技术服务"},
+                    {"field": "business_goal", "value": "通过内容获客", "kind": "user_preference", "evidence_quote": "通过内容获客"},
+                    {"field": "offer", "value": "AI Agent 咨询", "kind": "user_fact", "evidence_quote": "AI Agent 咨询"},
+                    {"field": "primary_platform", "value": "视频号", "kind": "user_preference", "evidence_quote": "主要做视频号"},
+                    {"field": "desired_action", "value": "私信咨询", "kind": "user_preference", "evidence_quote": "希望用户私信咨询"},
+                ],
             ),
             evidence,
         )
@@ -119,11 +145,11 @@ class IP12HarnessTests(unittest.TestCase):
 
         state, _, reply = harness.apply_intake_decision(
             state,
-            intake_decision(kind="answer_only", reply="手机号完全可以不填。"),
+            intake_decision(kind="ask_follow_up", reply="手机号完全可以跳过。请问我该怎么称呼你？"),
             "手机号必须填吗？",
         )
         self.assertEqual(state["intake"]["status"], "collecting")
-        self.assertIn("可以不填", reply)
+        self.assertIn("可以跳过", reply)
 
         state, _, _ = harness.apply_intake_decision(
             state,
@@ -133,6 +159,7 @@ class IP12HarnessTests(unittest.TestCase):
         self.assertEqual(state["intake"]["status"], "collecting")
 
         first_draft = "称呼：泽龙；年龄：22岁；城市：广州；职业：FDE。"
+        state["intake"]["declined_fields"] = list(harness.INTAKE_COVERAGE_FIELDS)
         state, _, reply = harness.apply_intake_decision(
             state,
             intake_decision(draft=first_draft),
@@ -175,7 +202,7 @@ class IP12HarnessTests(unittest.TestCase):
     def test_intake_drops_acronym_expansions_missing_from_user_evidence(self):
         evidence = "我在广州做 FDE，主要负责 Agent 智能体开发。"
         state, normalized, reply = harness.apply_intake_decision(
-            harness.initial_state(),
+            covered_intake_state(),
             intake_decision(
                 reply="你现在做 FDE（Front-end Development Engineering）。",
                 draft="当前职业：FDE（Front-end Development Engineering）。",
@@ -195,7 +222,7 @@ class IP12HarnessTests(unittest.TestCase):
 
     def test_intake_revision_drops_unsupported_update_without_false_failure(self):
         state, _, _ = harness.apply_intake_decision(
-            harness.initial_state(),
+            covered_intake_state(),
             intake_decision(draft="过往经历：修车。"),
             "我以前修过车",
         )
@@ -233,7 +260,7 @@ class IP12HarnessTests(unittest.TestCase):
             ],
         )
         state, result, reply = harness.apply_intake_decision(
-            harness.initial_state(), proposal, "请叫我林晓，我是男性，在广州经营活动工作室。"
+            covered_intake_state(["preferred_name"]), proposal, "请叫我林晓，我是男性，在广州经营活动工作室。"
         )
 
         self.assertEqual(state["intake"]["status"], "awaiting_confirmation")
@@ -260,7 +287,7 @@ class IP12HarnessTests(unittest.TestCase):
             intake_decision(kind="ask_follow_up", reply="你目前主要的收入来源是什么？不方便也可以跳过。"),
             "我以前修过车，后来转行了。",
         )
-        self.assertEqual(state["intake"]["asked_follow_ups"], ["age", "income"])
+        self.assertEqual(state["intake"]["asked_follow_ups"], ["age", "income_source"])
 
     def test_intake_recovers_model_drift_and_keeps_latest_unconfirmed_facts(self):
         state = harness.initial_state()
@@ -298,6 +325,10 @@ class IP12HarnessTests(unittest.TestCase):
             ),
             "还是叫我阿龙吧",
         )
+        state["intake"]["declined_fields"] = [
+            field for field in harness.INTAKE_COVERAGE_FIELDS
+            if field not in {"preferred_name", "city"}
+        ]
         state, _, _ = harness.apply_intake_decision(
             state,
             intake_decision(
@@ -330,8 +361,9 @@ class IP12HarnessTests(unittest.TestCase):
         self.assertEqual(state["ip_profile"]["facts"]["city"]["value"], "广州")
 
     def test_final_intake_proposal_can_remove_a_withdrawn_partial_fact(self):
+        state = covered_intake_state(["preferred_name", "age"])
         state, _, _ = harness.apply_intake_decision(
-            harness.initial_state(),
+            state,
             intake_decision(
                 kind="ask_follow_up",
                 reply="收到。你希望我怎么称呼你？",
@@ -365,7 +397,7 @@ class IP12HarnessTests(unittest.TestCase):
 
     def test_initial_intake_revise_decision_becomes_a_confirmation_proposal(self):
         state, decision_result, _ = harness.apply_intake_decision(
-            harness.initial_state(),
+            covered_intake_state(),
             intake_decision(kind="revise_intake", draft="称呼：泽龙。"),
             "叫我泽龙",
         )
@@ -373,7 +405,7 @@ class IP12HarnessTests(unittest.TestCase):
         self.assertEqual(state["intake"]["status"], "awaiting_confirmation")
 
     def test_intake_changes_are_not_committed_before_explicit_confirmation(self):
-        state = harness.initial_state()
+        state = covered_intake_state()
         evidence = "职业背景改为：FDE，负责连接客户和研发"
         state, _, _ = harness.apply_intake_decision(
             state,
@@ -413,6 +445,7 @@ class IP12HarnessTests(unittest.TestCase):
     def test_confirmation_shortcuts_require_an_exact_unmixed_intent(self):
         state = harness.initial_state()
         self.assertIsNone(harness.shortcut_action(state, "确认"))
+        state["intake"]["declined_fields"] = list(harness.INTAKE_COVERAGE_FIELDS)
         state, _, _ = harness.apply_intake_decision(
             state,
             intake_decision(),
@@ -448,7 +481,7 @@ class IP12HarnessTests(unittest.TestCase):
             "不要求固定格式",
             "不把访谈做成选择题",
             "不要重复追问",
-            "只问一个最有价值",
+            "本轮只问一个尚未覆盖",
             "内容变更优先",
             "不得强迫",
         ):
@@ -727,6 +760,13 @@ class IP12HarnessTests(unittest.TestCase):
         self.assertIn("60 到 90 秒", decision["draft"])
         self.assertEqual(decision["profile_updates"][0]["evidence_quote"], evidence)
         self.assertIsNone(harness.compile_module_six_style(state, "我还没有想好风格"))
+
+        defaulted = harness.compile_module_six_style(
+            state, "我希望像朋友一样口语化复盘，结尾引导观众私信咨询。"
+        )
+        self.assertIn("60–90 秒", defaulted["draft"])
+        self.assertIn("250–350 字", defaulted["draft"])
+        self.assertEqual(defaulted["profile_updates"][0]["kind"], "ai_option")
 
         exact_words = (
             "1min。"
@@ -1142,12 +1182,12 @@ class IP12HarnessTests(unittest.TestCase):
             model="test-model",
             release_sha="abc123",
         )
-        self.assertEqual(trace["agent_release"], "ip12-a0.1")
+        self.assertEqual(trace["agent_release"], "ip12-a1-persona")
         self.assertEqual(trace["state_schema"], 2)
         self.assertEqual(
             trace["skills"],
             [
-                {"id": "module_checkpoint", "version": "1.0.0"},
+                {"id": "module_checkpoint", "version": "1.1.0"},
                 {"id": "diagnostic_choice", "version": "1.0.0"},
             ],
         )
@@ -1263,7 +1303,7 @@ class IP12HarnessTests(unittest.TestCase):
         duplicate[1]["title"] = "方向 一"
         bad_cases.append(({**valid, "choices": duplicate}, "choice_duplicate"))
         too_long = [dict(item) for item in valid["choices"]]
-        too_long[0]["title"] = "长" * 17
+        too_long[0]["title"] = "长" * 25
         bad_cases.append(({**valid, "choices": too_long}, "choice_content_length"))
         recommended = [dict(item, recommended=True) for item in valid["choices"]]
         bad_cases.append(({**valid, "choices": recommended}, "choice_recommendation_count"))

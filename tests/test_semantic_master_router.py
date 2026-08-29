@@ -195,6 +195,7 @@ def state():
         completed_modules=[1, 2, 3, 4, 5, 6],
         foundation_report={"status": "confirmed"},
     )
+    value["intake"]["status"] = "complete"
     return value
 
 def put(cid, productions=None, active_id="", deliverables=None):
