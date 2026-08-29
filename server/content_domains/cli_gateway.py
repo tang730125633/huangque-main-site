@@ -389,6 +389,12 @@ def handle_quote(handler, path, verify, must_change_password, is_shutting_down,
         elif kind == "breakdown":
             from . import breakdown
             payload = breakdown.validate_breakdown_payload(payload)
+        elif kind == "breakdown_upload":
+            if (not isinstance(payload, dict)
+                    or set(payload) != {"media_type", "sha256"}
+                    or payload.get("media_type") not in {"image", "video"}
+                    or not re.fullmatch(r"[0-9a-f]{64}", str(payload.get("sha256") or ""))):
+                raise ValueError("本地反推上传报价参数无效")
         elif kind == "matrix_template_video":
             from . import matrix_template_video
             payload = matrix_template_video.validate_payload(
@@ -398,11 +404,13 @@ def handle_quote(handler, path, verify, must_change_password, is_shutting_down,
         feature_flags.require_enabled(
             "banana" if kind == "image" and payload.get("provider") == "banana"
             else "video" if kind == "video_batch"
-            else "collect" if kind == "collect_search" else kind
+            else "collect" if kind == "collect_search"
+            else "breakdown" if kind == "breakdown_upload" else kind
         )
         cost = (sum(points.cost_of("video", item) for item in payload)
                 if kind == "video_batch" else pricing.get_price("collect.search")
-                if kind == "collect_search" else points.cost_of(kind, payload))
+                if kind == "collect_search" else points.cost_of(
+                    "breakdown" if kind == "breakdown_upload" else kind, payload))
         handler._send(200, {"kind": kind, "cost": cost,
                             "points": points.get_points(user["username"])})
     except feature_flags.FeatureDisabled as exc:

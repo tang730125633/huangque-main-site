@@ -199,6 +199,15 @@ class HQCLIAPITests(unittest.TestCase):
                 self.assertEqual(feature_flags, item["availability"]["feature_flags"])
                 self.assertEqual([], item["availability"]["disabled_feature_flags"])
 
+        upload = enabled["director-breakdown-upload"]
+        self.assertEqual("quote_then_confirm", upload["billing"])
+        self.assertEqual(
+            "/api/auth/cli/director-breakdown-quote",
+            upload["transport"]["quote_path"],
+        )
+        self.assertEqual("X-HQ-Quote-Token", upload["transport"]["quote_token_header"])
+        self.assertEqual("Idempotency-Key", upload["transport"]["idempotency_header"])
+
         disabled = {
             item["action"]: item
             for item in self.auth.hq_cli_api.action_catalog({"copy": False, "breakdown": False})["actions"]
@@ -796,6 +805,7 @@ class HQCLIAPITests(unittest.TestCase):
 
     def test_director_breakdown_upload_uses_director_scope_and_dedicated_proxy(self):
         raw = b"\x89PNG\r\n\x1a\n" + b"director-reference"
+        digest = hashlib.sha256(raw).hexdigest()
         denied = self._token(["assets:upload"])
         with mock.patch.object(self.auth.hq_cli_api, "proxy_director_breakdown_upload") as proxy:
             status, payload = self._raw_request(
@@ -814,30 +824,79 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual(409, status)
         self.assertEqual("confirmation_required", payload["code"])
 
+        with mock.patch.object(
+            self.auth.H, "_cli_proxy", return_value=(200, {"cost": 20, "points": 100}),
+        ):
+            status, quote = self._request(
+                "/api/auth/cli/director-breakdown-quote",
+                {"media_type": "image", "sha256": digest}, token=token,
+            )
+        self.assertEqual(200, status, quote)
+        self.assertEqual(("breakdown_upload", "image", digest, 20), (
+            quote["kind"], quote["media_type"], quote["sha256"], quote["cost"],
+        ))
+
+        status, payload = self._raw_request(
+            "/api/auth/cli/director-breakdown-image", raw, token=token,
+            extra_headers={
+                "X-HQ-File-Name": "reference.png",
+                "X-HQ-Quote-Token": quote["quote_token"],
+            },
+        )
+        self.assertEqual((400, "idempotency_key_required"), (status, payload["code"]))
+
+        status, payload = self._raw_request(
+            "/api/auth/cli/director-breakdown-image", raw, token=token,
+            extra_headers={
+                "X-HQ-File-Name": "reference.png",
+                "Idempotency-Key": "director-upload-001",
+            },
+        )
+        self.assertEqual((409, "quote_required"), (status, payload["code"]))
+
         captured = {}
 
         def fake_upload(stream, length, web_token, internal_token, content_type, digest,
-                        kind, filename):
+                        kind, filename, idempotency_key, expected_cost):
             captured.update(
                 raw=stream.read(length), web_token=web_token, internal_token=internal_token,
                 content_type=content_type, digest=digest, kind=kind, filename=filename,
+                idempotency_key=idempotency_key, expected_cost=expected_cost,
             )
-            return 200, {"ok": True, "result": {"reverse_prompt": "a presenter"}}
+            return 200, {"job_id": 42, "cost": 20, "sha256": digest}
 
         with mock.patch.object(
             self.auth.hq_cli_api, "proxy_director_breakdown_upload", side_effect=fake_upload,
         ):
             status, payload = self._raw_request(
                 "/api/auth/cli/director-breakdown-image", raw, token=token,
-                extra_headers={"X-HQ-File-Name": "reference.png"},
+                extra_headers={
+                    "X-HQ-File-Name": "reference.png",
+                    "Idempotency-Key": "director-upload-001",
+                    "X-HQ-Quote-Token": quote["quote_token"],
+                },
             )
         self.assertEqual(200, status, payload)
         self.assertEqual(raw, captured["raw"])
         self.assertEqual("image/png", captured["content_type"])
         self.assertEqual("image", captured["kind"])
         self.assertEqual("reference.png", captured["filename"])
-        self.assertEqual(hashlib.sha256(raw).hexdigest(), payload["sha256"])
+        self.assertEqual(digest, payload["sha256"])
+        self.assertEqual("director-upload-001", captured["idempotency_key"])
+        self.assertEqual(20, captured["expected_cost"])
         self.assertEqual(self.auth.INTERNAL_TOKEN, captured["internal_token"])
+
+        changed = raw + b"changed"
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_director_breakdown_upload") as proxy:
+            status, payload = self._raw_request(
+                "/api/auth/cli/director-breakdown-image", changed, token=token,
+                extra_headers={
+                    "Idempotency-Key": "director-upload-001",
+                    "X-HQ-Quote-Token": quote["quote_token"],
+                },
+            )
+        self.assertEqual((409, "quote_mismatch"), (status, payload["code"]))
+        proxy.assert_not_called()
 
     def test_ip12_internal_upload_reuses_account_bound_streaming_gateway(self):
         self._enable_ip12_bridge()

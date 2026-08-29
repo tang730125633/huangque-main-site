@@ -1,4 +1,6 @@
 import base64
+import hashlib
+import http.client
 import importlib
 import json
 import os
@@ -557,6 +559,7 @@ class BreakdownLocalUploadHttpTests(unittest.TestCase):
             "queue": core._job_queue,
             "ids": core._queued_job_ids,
             "handlers": core.HANDLERS,
+            "internal_token": core.AUTH_INTERNAL_TOKEN,
         }
         fake = FakePoints()
         server = None
@@ -570,6 +573,7 @@ class BreakdownLocalUploadHttpTests(unittest.TestCase):
             core._job_queue = queue.Queue(maxsize=4)
             core._queued_job_ids = set()
             core.HANDLERS = {"breakdown": lambda payload: payload}
+            core.AUTH_INTERNAL_TOKEN = "test-internal-secret"
             try:
                 with closing(sqlite3.connect(core.JOB_DB)) as database:
                     database.execute(
@@ -592,16 +596,66 @@ class BreakdownLocalUploadHttpTests(unittest.TestCase):
                     "Authorization": "Bearer test", "Content-Type": "image/png",
                     "Idempotency-Key": "local-upload-test-1",
                 }
-                request = urllib.request.Request(url, data=upload_data, method="POST", headers=headers)
-                with urllib.request.urlopen(request, timeout=5) as response:
+                connection = http.client.HTTPConnection(
+                    "127.0.0.1", server.server_address[1], timeout=5)
+                connection.request(
+                    "POST", "/api/gen/breakdown/local-upload?media_type=image",
+                    body=upload_data, headers=headers,
+                )
+                lost_response = connection.getresponse()
+                self.assertEqual(200, lost_response.status)
+                connection.close()  # Simulate a successful charge whose response body was lost.
+                replay = urllib.request.Request(url, data=upload_data, method="POST", headers=headers)
+                with urllib.request.urlopen(replay, timeout=5) as response:
                     accepted = json.loads(response.read())
                 replay = urllib.request.Request(url, data=upload_data, method="POST", headers=headers)
                 with urllib.request.urlopen(replay, timeout=5) as response:
                     replayed = json.loads(response.read())
-                self.assertEqual(replayed, accepted)
+                self.assertEqual(accepted, replayed)
                 self.assertEqual(20, accepted["cost"])
                 self.assertEqual(980, accepted["points_left"])
+                self.assertEqual(hashlib.sha256(upload_data).hexdigest(), accepted["sha256"])
                 self.assertEqual([("fang", 20)], fake.deductions)
+
+                changed_data = upload_data + b"-different"
+                conflict = urllib.request.Request(
+                    url, data=changed_data, method="POST", headers=headers)
+                with self.assertRaises(urllib.error.HTTPError) as rejected:
+                    urllib.request.urlopen(conflict, timeout=5)
+                self.assertEqual(409, rejected.exception.code)
+                self.assertEqual(
+                    "idempotency_conflict", json.loads(rejected.exception.read())["code"])
+                self.assertEqual([("fang", 20)], fake.deductions)
+
+                internal_headers = {
+                    "Authorization": "Bearer test", "Content-Type": "image/png",
+                    "X-HQ-Internal-Token": core.AUTH_INTERNAL_TOKEN,
+                    "X-HQ-Expected-Cost": "20",
+                }
+                negative_cases = (
+                    ("missing-digest-01", upload_data, {}, 400),
+                    ("wrong-digest-001", upload_data,
+                     {"X-HQ-Image-SHA256": "0" * 64}, 400),
+                    ("wrong-magic-0001", b"not-a-real-png",
+                     {"X-HQ-Image-SHA256": hashlib.sha256(b"not-a-real-png").hexdigest()}, 400),
+                    ("stale-quote-0001", upload_data, {
+                        "X-HQ-Image-SHA256": hashlib.sha256(upload_data).hexdigest(),
+                        "X-HQ-Expected-Cost": "19",
+                    }, 409),
+                )
+                for key, data, extra, expected_status in negative_cases:
+                    with self.subTest(key=key):
+                        case_headers = dict(internal_headers, **extra)
+                        case_headers["Idempotency-Key"] = key
+                        request = urllib.request.Request(
+                            url, data=data, method="POST", headers=case_headers)
+                        with self.assertRaises(urllib.error.HTTPError) as rejected:
+                            urllib.request.urlopen(request, timeout=5)
+                        self.assertEqual(expected_status, rejected.exception.code)
+                        payload = json.loads(rejected.exception.read())
+                        if key == "stale-quote-0001":
+                            self.assertEqual("quote_cost_changed", payload["code"])
+                        self.assertEqual([("fang", 20)], fake.deductions)
                 with closing(core.jdb()) as database:
                     row = database.execute(
                         "SELECT kind,username,cost,payload FROM jobs WHERE id=?",
@@ -674,6 +728,7 @@ class BreakdownLocalUploadHttpTests(unittest.TestCase):
                 core._job_queue = originals["queue"]
                 core._queued_job_ids = originals["ids"]
                 core.HANDLERS = originals["handlers"]
+                core.AUTH_INTERNAL_TOKEN = originals["internal_token"]
 
 
 if __name__ == "__main__":

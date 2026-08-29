@@ -879,15 +879,19 @@ def _director_breakdown_upload_catalog_entry():
                                            "video/mp4", "video/quicktime", "video/webm"],
                          }}},
         "constraints": [
-            "requires explicit confirmation and immediately charges the current breakdown price",
+            "quote first with the account, media type and file SHA-256, then confirm the identical upload",
+            "requires a stable Idempotency-Key; retrying the same file replays the original job",
             "images are limited to 20 MiB; videos are limited to 200 MiB and 120 seconds",
             "the upload is used only for the current account's reverse-prompt job",
         ],
-        "billing": "fixed_confirm", "external_effect": True,
+        "billing": "quote_then_confirm", "external_effect": True,
         "confirmation_required": True, "risk": "production",
         "result_type": "job", "result": {"kind": "job_id"},
         "ui_route": "/workbench/script",
         "transport": {"kind": "dedicated_upload", "supports": ["dedicated_upload"],
+                      "quote_path": "/api/auth/cli/director-breakdown-quote",
+                      "quote_token_header": "X-HQ-Quote-Token",
+                      "idempotency_header": "Idempotency-Key",
                       "account_active_max_files": 2},
         "availability": {"status": "available", "feature_flags": ["breakdown"],
                          "disabled_feature_flags": []},
@@ -1683,7 +1687,8 @@ def proxy_audio_upload(stream, length, web_token, internal_token, content_type, 
 
 
 def proxy_director_breakdown_upload(stream, length, web_token, internal_token,
-                                    content_type, digest, media_type, filename):
+                                    content_type, digest, media_type, filename,
+                                    idempotency_key, expected_cost):
     if media_type not in {"image", "video"}:
         raise CLIAPIError(400, "编导反推上传类型无效", "invalid_breakdown_upload")
     digest_header = "X-HQ-Image-SHA256" if media_type == "image" else "X-HQ-Video-SHA256"
@@ -1691,8 +1696,22 @@ def proxy_director_breakdown_upload(stream, length, web_token, internal_token,
         stream, length, web_token, internal_token, content_type, digest,
         "/api/gen/breakdown/local-upload?media_type=" + media_type,
         digest_header, media_type,
-        {"X-File-Name": urllib.parse.quote(filename, safe="._-")},
+        {
+            "X-File-Name": urllib.parse.quote(filename, safe="._-"),
+            "Idempotency-Key": idempotency_key,
+            "X-HQ-Expected-Cost": str(int(expected_cost)),
+        },
     )
+
+
+def director_breakdown_upload_descriptor(value):
+    """Normalize the immutable fields shared by upload quote and confirmation."""
+    _strict_object(value, {"media_type", "sha256"}, ("media_type", "sha256"))
+    media_type = _enum(value["media_type"], "media_type", ("image", "video"))
+    digest = str(value["sha256"] or "").strip().lower()
+    if not _SHA256_RE.fullmatch(digest):
+        raise CLIAPIError(400, "sha256 必须是 64 位十六进制摘要", "invalid_upload_digest")
+    return {"media_type": media_type, "sha256": digest}
 
 
 def _plan(scope, kind, **values):
