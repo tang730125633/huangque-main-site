@@ -2767,12 +2767,20 @@ def _foundation_artifact(path, report_id, version):
     }
 
 
-def _validate_foundation_artifact(report, path):
+def _validate_foundation_artifact(report, path, *, strict=False):
     page_count = _validate_foundation_pdf(path)
     artifact = (report or {}).get("artifact")
     if not isinstance(artifact, dict):
+        if strict:
+            raise RuntimeError("Deterministic PDF artifact metadata is missing")
         return page_count  # Backward-compatible validation for historical reports.
     data = path.read_bytes()
+    if strict and any(not str(value or "").strip() for value in (
+        artifact.get("kind"), artifact.get("sha256"), artifact.get("render_version"),
+        artifact.get("input_snapshot_sha256"), artifact.get("content_sha256"),
+        (report or {}).get("snapshot_sha256"), (report or {}).get("content_sha256"),
+    )):
+        raise RuntimeError("Deterministic PDF artifact metadata is incomplete")
     if (
         artifact.get("kind") != "foundation_pdf"
         or int(artifact.get("bytes") or 0) != len(data)
@@ -2780,11 +2788,11 @@ def _validate_foundation_artifact(report, path):
         or artifact.get("sha256") != "sha256:" + hashlib.sha256(data).hexdigest()
         or (artifact.get("render_version") and artifact.get("render_version") != FOUNDATION_REPORT_RENDER_VERSION)
         or (
-            artifact.get("input_snapshot_sha256")
+            (strict or artifact.get("input_snapshot_sha256"))
             and artifact.get("input_snapshot_sha256") != (report or {}).get("snapshot_sha256")
         )
         or (
-            artifact.get("content_sha256")
+            (strict or artifact.get("content_sha256"))
             and artifact.get("content_sha256") != (report or {}).get("content_sha256")
         )
     ):
@@ -3045,7 +3053,7 @@ def generate_foundation_report(convo_id):
             and not review_dirty
         ):
             try:
-                _validate_foundation_artifact(report, target)
+                _validate_foundation_artifact(report, target, strict=deterministic)
                 return report
             except (OSError, RuntimeError):
                 if report.get("status") == "confirmed":
@@ -3060,6 +3068,7 @@ def generate_foundation_report(convo_id):
             "review_notes": review_notes,
             **({
                 "snapshot": snapshot, "snapshot_sha256": snapshot["sha256"],
+                "snapshot_confirmed_at": report.get("snapshot_confirmed_at"),
                 "snapshot_history": copy.deepcopy(report.get("snapshot_history") or [])[-5:],
             } if deterministic else {}),
         }
@@ -3164,6 +3173,7 @@ def generate_foundation_report(convo_id):
         } if deterministic else {}),
         **({
             "snapshot": snapshot, "snapshot_sha256": snapshot["sha256"],
+            "snapshot_confirmed_at": report.get("snapshot_confirmed_at"),
             "snapshot_history": copy.deepcopy(report.get("snapshot_history") or [])[-5:],
             "compiler_version": coaching_skills.SKILL_REGISTRY["foundation_pdf"].contract_version,
             "content_sha256": "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest(),
@@ -5596,7 +5606,8 @@ def _persist_model_turn(
         if prefix and "harness_action" not in message_skills:
             message_skills.append("harness_action")
         primary_skill = decision_trace_skill or (
-            "intake" if was_intake else
+            ("intake" if coaching_skills.project_pipeline_version(convo) == coaching_skills.SKILL_PIPELINE_V1
+             else "intake_legacy") if was_intake else
             "diagnostic_choice" if decision.get("choices") else
             "module_checkpoint"
         )
@@ -8034,7 +8045,7 @@ def api_supplement_intake():
     with CONVERSATION_STATE_LOCK:
         convo = owned_conversation(cid)
         state = normalize_coach_state(convo.get("coach_state"))
-        _append_assistant_message(convo, assistant, "intake", prompt_version="intake-v2", model=None)
+        _append_assistant_message(convo, assistant, "intake_legacy", prompt_version="intake-v2", model=None)
         state["revision"] += 1
         convo["coach_state"] = state
         save_conversation(cid, convo)
@@ -8045,12 +8056,20 @@ def api_supplement_intake():
 def api_confirm_foundation_report():
     body = request.get_json(silent=True) or {}
     cid = str(body.get("conversation_id") or "")
+    request_id = str(body.get("request_id") or "").strip()
     with CONVERSATION_STATE_LOCK:
         convo = owned_conversation(cid)
         if convo is None:
             return jsonify({"ok": False, "error": "诊断不存在"}), 404
         state = normalize_coach_state(convo.get("coach_state"))
         convo["coach_state"] = state
+        deterministic = coaching_skills.project_pipeline_version(convo) == coaching_skills.SKILL_PIPELINE_V1
+        if deterministic:
+            if not re.fullmatch(r"[A-Za-z0-9._:-]{8,128}", request_id):
+                return jsonify({"ok": False, "error": "request_id 无效"}), 400
+            replayed = _receipt(convo, request_id)
+            if replayed is not None:
+                return jsonify(replayed)
         try:
             _assert_expected_revision(state, body.get("expected_revision"))
         except coach_harness.HarnessConflict as exc:
@@ -8067,7 +8086,7 @@ def api_confirm_foundation_report():
         report = state.get("foundation_report", {})
         if report.get("status") != "awaiting_confirmation":
             return jsonify({"ok": False, "error": "请先生成并查看模块 1-4 初稿"}), 409
-        if coaching_skills.project_pipeline_version(convo) == coaching_skills.SKILL_PIPELINE_V1:
+        if deterministic:
             try:
                 coaching_skills.validate_foundation_snapshot(report.get("snapshot"), state)
             except ValueError as exc:
@@ -8078,24 +8097,43 @@ def api_confirm_foundation_report():
         if report.get("report_id") and report_id != report["report_id"]:
             return jsonify({"ok": False, "error": "报告已经更新，请查看最新版本"}), 409
         try:
-            page_count = _validate_foundation_artifact(report, FOUNDATION_REPORTS_DIR / (cid + ".pdf"))
-            if (
-                coaching_skills.project_pipeline_version(convo) == coaching_skills.SKILL_PIPELINE_V1
-                and page_count > 8
-            ):
+            page_count = _validate_foundation_artifact(
+                report, FOUNDATION_REPORTS_DIR / (cid + ".pdf"), strict=deterministic,
+            )
+            if deterministic and page_count > 8:
                 raise RuntimeError("固定模板 PDF 页数必须为 6-8 页")
         except (OSError, RuntimeError):
             _mark_foundation_report_failed(cid)
             return jsonify({"ok": False, "error": "PDF 文件不可用，请重新生成"}), 409
-        report["status"] = "confirmed"; report["confirmed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-        current_module = int(state.get("current_module", 4))
-        state["foundation_report"] = report; state["current_module"] = min(AVAILABLE_MODULE_COUNT, max(5, current_module))
-        if current_module <= 4:
-            state["module_step"] = 0
-        state["pending"] = None
-        state["revision"] += 1
+        if deterministic:
+            try:
+                state, _ = coach_harness.apply_action(
+                    state,
+                    {"type": "confirm_foundation_report", "target_id": report_id},
+                    body.get("expected_revision"),
+                    request_id=request_id,
+                    selected_at=datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    pipeline_version=coaching_skills.SKILL_PIPELINE_V1,
+                    foundation_artifact_validated=True,
+                )
+            except coach_harness.HarnessError as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 409
+        else:
+            report["status"] = "confirmed"; report["confirmed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+            current_module = int(state.get("current_module", 4))
+            state["foundation_report"] = report; state["current_module"] = min(AVAILABLE_MODULE_COUNT, max(5, current_module))
+            if current_module <= 4:
+                state["module_step"] = 0
+            state["pending"] = None
+            state["revision"] += 1
+        result = {"ok": True, "state": state}
+        if deterministic:
+            receipts = list(convo.get("turn_receipts") or [])[-11:]
+            receipts.append({"request_id": request_id, "result": result})
+            convo["turn_receipts"] = receipts
+        convo["coach_state"] = state
         save_conversation(cid, convo)
-    return jsonify({"ok": True, "state": state})
+    return jsonify(result)
 
 @app.route("/api/jump-module", methods=["POST"])
 def api_jump():

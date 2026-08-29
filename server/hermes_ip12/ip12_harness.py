@@ -25,6 +25,7 @@ AGENT_RELEASE_MANIFEST = {
     "state_schema": SCHEMA_VERSION,
     "skills": {
         "intake": {"contract_version": "2.0.0", "prompt_version": "intake-v3"},
+        "intake_legacy": {"contract_version": "1.1.0", "prompt_version": "intake-v2"},
         "module_checkpoint": {"contract_version": "1.1.0", "prompt_version": "module-checkpoint-v2"},
         "diagnostic_choice": {"contract_version": "1.0.0", "prompt_version": "diagnostic-choice-v1"},
         "migration": {"contract_version": "1.0.0", "prompt_version": None},
@@ -1266,7 +1267,8 @@ def duration_conflict_decision(value, message):
     return None
 
 
-def apply_action(value, action, expected_revision, *, request_id="", selected_at="", pipeline_version=None):
+def apply_action(value, action, expected_revision, *, request_id="", selected_at="", pipeline_version=None,
+                 foundation_artifact_validated=False):
     state = normalize_state(value)
     if pipeline_version is not None:
         state["pipeline_version"] = coaching_skills.normalize_pipeline_version(pipeline_version)
@@ -1333,6 +1335,33 @@ def apply_action(value, action, expected_revision, *, request_id="", selected_at
                 "但必须逐项重新确认后才能生成新 PDF。" % (reopen_module, reopen_module)
             ),
             user_label="修改模块 %s" % reopen_module,
+        )
+        _bump(state)
+        return state, event
+
+    if action_type == "confirm_foundation_report":
+        if state.get("pipeline_version") != coaching_skills.SKILL_PIPELINE_V1:
+            raise HarnessConflict("当前 Project 不使用确定性 PDF 确认流程")
+        if not foundation_artifact_validated:
+            raise HarnessConflict("PDF 成品尚未通过服务端校验")
+        report = deepcopy(state.get("foundation_report") or {})
+        if report.get("status") != "awaiting_confirmation":
+            raise HarnessConflict("PDF 已更新，请查看最新状态")
+        if target_id != str(report.get("report_id") or ""):
+            raise HarnessConflict("报告已经更新，请查看最新版本")
+        coaching_skills.validate_foundation_snapshot(report.get("snapshot"), state)
+        report.update(status="confirmed", confirmed_at=str(selected_at or ""))
+        current_module = int(state.get("current_module") or 4)
+        state.update(
+            foundation_report=report,
+            current_module=min(AVAILABLE_MODULE_COUNT, max(5, current_module)),
+            pending=None,
+        )
+        if current_module <= 4:
+            state["module_step"] = 0
+        event.update(
+            assistant_prefix="✅ 模块 1-4 PDF 已确认，继续进入模块 5。",
+            user_label="确认 PDF，进入模块 5",
         )
         _bump(state)
         return state, event

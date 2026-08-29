@@ -150,6 +150,28 @@ class IP12SixSkillPipelineTests(unittest.TestCase):
             next_state["foundation_report"]["snapshot"], next_state
         )
 
+    def test_pdf_confirmation_cannot_bypass_server_artifact_validation(self):
+        state = complete_foundation_state("确认门")
+        snapshot_action = harness.available_actions(state)[0]
+        state, _ = harness.apply_action(
+            state, snapshot_action, state["revision"],
+            pipeline_version=coaching_skills.SKILL_PIPELINE_V1,
+        )
+        state["foundation_report"].update(status="awaiting_confirmation", report_id="report-v1")
+        action = {"type": "confirm_foundation_report", "target_id": "report-v1"}
+        with self.assertRaises(harness.HarnessConflict):
+            harness.apply_action(
+                state, action, state["revision"],
+                pipeline_version=coaching_skills.SKILL_PIPELINE_V1,
+            )
+        confirmed, _ = harness.apply_action(
+            state, action, state["revision"],
+            pipeline_version=coaching_skills.SKILL_PIPELINE_V1,
+            foundation_artifact_validated=True,
+        )
+        self.assertEqual(confirmed["foundation_report"]["status"], "confirmed")
+        self.assertEqual(confirmed["current_module"], 5)
+
     def test_next_skill_input_excludes_unselected_candidates(self):
         state = complete_foundation_state("候选隔离")
         projection = coaching_skills.confirmed_input_projection(state)
@@ -305,7 +327,7 @@ story = {
 }
 outputs["4-4"] = {"report_payload": story}
 snapshot = coaching_skills.build_foundation_snapshot(state)
-state["foundation_report"] = {"status":"generating", "snapshot":snapshot, "snapshot_sha256":snapshot["sha256"]}
+state["foundation_report"] = {"status":"generating", "snapshot":snapshot, "snapshot_sha256":snapshot["sha256"], "snapshot_confirmed_at":"2026-08-29T00:00:00Z"}
 cid = "deterministic-pdf"
 server.save_conversation(cid, {
     "id":cid, "title":"确定性PDF", "pipeline_version":coaching_skills.SKILL_PIPELINE_V1,
@@ -319,8 +341,26 @@ assert report["snapshot_sha256"] == snapshot["sha256"], report
 assert report["artifact"]["input_snapshot_sha256"] == snapshot["sha256"], report
 assert report["artifact"]["content_sha256"] == report["content_sha256"], report
 assert report["agent_trace"]["skills"][0]["id"] == "foundation_pdf", report
+assert report["snapshot_confirmed_at"] == "2026-08-29T00:00:00Z", report
 assert 6 <= report["artifact"]["page_count"] <= 8, report
 assert "首页｜IP结论总览" in report["content"]
+broken = dict(report)
+broken["artifact"] = dict(report["artifact"])
+broken["artifact"].pop("input_snapshot_sha256")
+try:
+    server._validate_foundation_artifact(broken, server.FOUNDATION_REPORTS_DIR / f"{cid}.pdf", strict=True)
+except RuntimeError:
+    pass
+else:
+    raise AssertionError("strict artifact validation must fail closed")
+server.current_account_id = lambda: "test"
+payload = {"conversation_id":cid, "expected_revision":server.load_conversation(cid)["coach_state"]["revision"], "report_id":report["report_id"], "request_id":"confirm-pdf-0001"}
+with server.app.test_request_context("/api/foundation-report/confirm", method="POST", json=payload):
+    first = server.api_confirm_foundation_report().get_json()
+assert first["ok"] and first["state"]["current_module"] == 5, first
+with server.app.test_request_context("/api/foundation-report/confirm", method="POST", json=payload):
+    second = server.api_confirm_foundation_report().get_json()
+assert second["ok"] and second["replayed"] is True, second
 print("DETERMINISTIC_FOUNDATION_PDF_OK")
 '''
         with tempfile.TemporaryDirectory() as data_dir:

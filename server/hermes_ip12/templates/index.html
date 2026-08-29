@@ -691,7 +691,7 @@ async function submitIntakeSupplement(value){
 
 async function confirmFoundationReport(){
   if(!cid||streaming)return;
-  try{var foundation=state.foundation_report||{};var r=await fetch('/api/foundation-report/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid,expected_revision:state.revision,report_id:foundation.report_id||''})});var d=await r.json();if(!r.ok||!d.ok){if(d.missing_intake&&d.missing_intake.length){beginIntakeSupplement(d.missing_intake[0]);return}throw new Error(d.error||'确认失败')}state=d.state;foundationEditing=false;closeFoundationReviewer();document.getElementById('userInput').placeholder='输入消息...';renderMods();toast('✅ IP 定位初稿已确认，继续模块 '+state.current_module);if((state.completed_modules||[]).indexOf(state.current_module)<0)sendJumpMsg(state.current_module)}catch(e){toast('❌ '+e.message)}
+  try{var foundation=state.foundation_report||{};var r=await fetch('/api/foundation-report/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid,expected_revision:state.revision,report_id:foundation.report_id||'',request_id:newTurnRequestId()})});var d=await r.json();if(!r.ok||!d.ok){if(d.missing_intake&&d.missing_intake.length){beginIntakeSupplement(d.missing_intake[0]);return}throw new Error(d.error||'确认失败')}state=d.state;foundationEditing=false;closeFoundationReviewer();document.getElementById('userInput').placeholder='输入消息...';renderMods();toast('✅ IP 定位初稿已确认，继续模块 '+state.current_module);if((state.completed_modules||[]).indexOf(state.current_module)<0)sendJumpMsg(state.current_module)}catch(e){toast('❌ '+e.message)}
 }
 
 async function viewReport(mid){
