@@ -1208,6 +1208,13 @@ def available_actions(value):
             "label": "生成新的三个方案",
             "primary": True,
         }]
+    completed = set(state.get("completed_modules") or [])
+    if 6 in completed:
+        # 文案已确认：提供生产准备入口（创建数字人 / 克隆音色）
+        return [
+            {"type": "open_avatar_create", "label": "👤 创建数字人形象（上传照片）", "primary": True},
+            {"type": "open_voice_clone", "label": "🎤 克隆我的声音（录制/上传样音）", "primary": False},
+        ]
     return []
 
 

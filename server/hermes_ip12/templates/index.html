@@ -556,7 +556,31 @@ function runStateAction(item){
   if(item.type==='request_quote')return requestProductionQuote();
   if(item.type==='confirm_paid_job'){var record=activeProductionId&&productions[activeProductionId];if(record)return renderProductionPanel(record);return prepareProduction(item)}
   if(item.type==='navigate_to'||item.type==='navigate_capability')return navigateToProductionRoute(item.ui_route);
+  if(item.type==='open_avatar_create')return openAvatarCreate();
+  if(item.type==='open_voice_clone')return openInlineVoiceClone();
   return sendHarnessAction(item)
+}
+var avatarCreatePending=null;
+function openAvatarCreate(){
+  if(streaming||materialUploading||!cid)return;
+  if(!window.confirm('创建数字人形象会用你上传的真人照片，按黄雀报价扣点（先报价、你确认后才创建）。是否继续？'))return;
+  var input=document.createElement('input');input.type='file';input.accept='image/png,image/jpeg,image/webp';
+  input.onchange=function(event){var file=event.target.files&&event.target.files[0];if(!file)return;submitAvatarCreate(file,null,null)};input.click()
+}
+async function submitAvatarCreate(file,quoteToken,bubble){
+  materialUploading=true;try{
+    var form=new FormData();form.append('conversation_id',cid);form.append('file',file);
+    if(quoteToken)form.append('confirm','1');
+    if(quoteToken)form.append('quote_token',quoteToken);
+    var response=await fetch('/api/ip12/avatar-create',{method:'POST',body:form}),data={};try{data=await response.json()}catch(ignore){}
+    if(!response.ok||data.ok===false)throw new Error(data.error||'创建数字人失败');
+    if(data.quote){var q=data.quote,cost=q.cost??2,points=q.points??'—';var area=document.getElementById('chatArea'),msg=document.createElement('div');msg.className='msg assistant';msg.innerHTML='<div class="av">'+moduleIcon('sparkles')+'</div><div class="bubble">创建数字人形象需扣除 <b>'+cost+'</b> 点（当前余额 '+points+'）。确认创建吗？</div>';area.appendChild(msg);scroll();var row=document.createElement('div');row.className='harness-actions';var ok=document.createElement('button');ok.type='button';ok.className='harness-action primary';ok.textContent='确认创建';ok.addEventListener('click',function(){ok.disabled=true;msg.querySelector('.bubble').innerHTML='创建数字人形象中，约 30 秒… ⏳';submitAvatarCreate(file,q.quote_token,msg)});row.appendChild(ok);msg.querySelector('.bubble').appendChild(row)}
+    else{toast('✅ 数字人形象创建已提交，稍后可在口播制作中选择。'+(data.job_id?('任务 '+data.job_id):''))}
+  }catch(e){toast('❌ '+(e.message||'创建数字人失败'))}finally{materialUploading=false}
+}
+function openInlineVoiceClone(){
+  if(!cid||streaming)return;
+  var area=document.getElementById('chatArea'),msg=document.createElement('div');msg.className='msg assistant';msg.innerHTML='<div class="av">'+moduleIcon('sparkles')+'</div><div class="bubble">'+md('接下来制作数字人口播视频时，在**音色选择**处可直接「录制/上传样音，生成我的克隆声音」（样音本身不扣点）。你可以先继续聊，或直接说“帮我做一条口播视频”进入制作。')+'</div>';area.appendChild(msg);scroll()
 }
 function choiceActionItems(actions){return(actions||[]).filter(function(item){return item.type==='select_checkpoint_choice'})}
 function choiceBubble(targetId){var found=null;document.querySelectorAll('#chatArea .msg.assistant[data-choice-target]').forEach(function(node){if(node.dataset.choiceTarget===String(targetId||''))found=node.querySelector('.bubble')});return found}

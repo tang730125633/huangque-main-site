@@ -3920,6 +3920,42 @@ def api_get_convo(cid):
     return jsonify(public_convo)
 
 
+@app.route("/api/ip12/avatar-create", methods=["POST"])
+def api_ip12_avatar_create():
+    """上传本人照片创建数字人形象（转发生产内容子 Agent / 工具层）。
+    confirm=false 时只报价；confirm=true 带 quote_token 提交创建。"""
+    cid = str(request.form.get("conversation_id") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", cid) or owned_conversation(cid) is None:
+        return jsonify({"ok": False, "error": "诊断不存在"}), 404
+    photo = request.files.get("file")
+    if photo is None or not photo.filename:
+        return jsonify({"ok": False, "error": "请先上传本人照片（jpg/png/webp）"}), 400
+    data = photo.read()
+    if not data or len(data) > 12 * 1024 * 1024:
+        return jsonify({"ok": False, "error": "照片过大（上限 12MB）或为空"}), 400
+    suffix = os.path.splitext(photo.filename or "")[1].lower()
+    mime_map = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
+    if suffix not in mime_map:
+        return jsonify({"ok": False, "error": "仅支持 jpg/png/webp 照片"}), 400
+    confirm = str(request.form.get("confirm") or "").strip() == "1"
+    quote_token = str(request.form.get("quote_token") or "").strip()
+    base = str(os.environ.get("HQ_TOOL_AGENT_BASE") or "http://127.0.0.1:8790").rstrip("/")
+    import requests as _requests
+    try:
+        files = {"file": (photo.filename, data, mime_map[suffix])}
+        url = base + "/upload/avatar"
+        if confirm:
+            url += "?confirm=1&quote_token=" + urllib.parse.quote(quote_token)
+        response = _requests.post(url, files=files, timeout=180)
+        payload = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+    except Exception as exc:
+        return jsonify({"ok": False, "error": "生产子 Agent 暂时不可用：" + str(exc)[:120]}), 502
+    if response.status_code >= 400:
+        detail = str((payload or {}).get("detail") or "创建失败")
+        return jsonify({"ok": False, "error": detail[:200]}), response.status_code
+    return jsonify(payload)
+
+
 @app.route("/api/conversations/<cid>/voice-clone-ui", methods=["POST"])
 def api_update_voice_clone_ui(cid):
     payload = request.get_json(silent=True) or {}
