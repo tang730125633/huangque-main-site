@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """爆款拆解：竞品视频链接 → 下载 → 抽帧 → ASR → GLM-4V 多模态 → 分镜脚本"""
-import os, json, time, base64, tempfile, subprocess, shutil, mimetypes, io, math, hashlib
+import os, json, time, base64, tempfile, subprocess, shutil, mimetypes, io, math, hashlib, hmac
 import http.client
 import re
 import socket
@@ -225,6 +225,13 @@ def handle_local_upload(handler, user):
     suffix = allowed[media_type][content_type]
     try:
         idem_key = core._idempotency_key(handler.headers.get("Idempotency-Key"))
+        internal_upload = core.cli_gateway._internal_auth(handler, core.AUTH_INTERNAL_TOKEN)
+        if internal_upload and not idem_key:
+            raise ValueError("CLI 付费上传必须提供 Idempotency-Key")
+        digest_header = "X-HQ-Image-SHA256" if media_type == "image" else "X-HQ-Video-SHA256"
+        expected_digest = str(handler.headers.get(digest_header) or "").strip().lower()
+        if internal_upload and not re.fullmatch(r"[0-9a-f]{64}", expected_digest):
+            raise ValueError("CLI 上传缺少有效的文件 SHA-256")
         root = _upload_root()
         temp_path = str(root / (upload_token + suffix))
         digest = hashlib.sha256()
@@ -249,6 +256,9 @@ def handle_local_upload(handler, user):
         }[content_type]
         if not valid_signature:
             raise ValueError("文件内容与声明格式不一致")
+        actual_digest = digest.hexdigest()
+        if expected_digest and not hmac.compare_digest(actual_digest, expected_digest):
+            raise ValueError("上传文件 SHA-256 与声明摘要不一致")
         body = {
             "upload_token": upload_token, "media_type": media_type,
             "mode": "reverse_prompt", "source_page": "script",
@@ -261,7 +271,7 @@ def handle_local_upload(handler, user):
         if idem_key:
             state, replay = core._idempotency_begin(user["username"], idem_endpoint, idem_key, {
                 "media_type": media_type, "content_type": content_type,
-                "content_length": content_length, "sha256": digest.hexdigest(),
+                "content_length": content_length, "sha256": actual_digest,
             })
             if state == "replay":
                 _remove_upload(temp_path)
@@ -314,7 +324,8 @@ def handle_local_upload(handler, user):
                 charge_transaction_key=("job-charge:%s:%s:%s" % (
                     user["username"], idem_endpoint, idem_key)) if idem_key else "",
             )
-            response = {"job_id": job_id, "cost": cost, "points_left": points_left}
+            response = {"job_id": job_id, "cost": cost, "points_left": points_left,
+                        "sha256": actual_digest}
             if not core.enqueue_job(job_id, "breakdown", "reverse_prompt"):
                 core._reject_pending_job(job_id, user["username"], cost, "任务队列已满，请稍后再试")
                 _remove_trusted_upload(upload_token, user["username"], job_id, temp_path)

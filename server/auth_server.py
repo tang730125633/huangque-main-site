@@ -4692,21 +4692,26 @@ class H(BaseHTTPRequestHandler):
             c.execute("DELETE FROM tokens WHERE token=?", (token,))
             c.commit(); c.close()
 
-    def _account_media_upload(self, kind, row):
+    def _account_media_upload(self, kind, row, director_breakdown=False):
         label = {"image": "图片", "video": "视频", "audio": "音频"}[kind]
-        max_bytes = {
+        max_bytes = ({
+            "image": hq_cli_api.DIRECTOR_BREAKDOWN_IMAGE_MAX_BYTES,
+            "video": hq_cli_api.DIRECTOR_BREAKDOWN_VIDEO_MAX_BYTES,
+        } if director_breakdown else {
             "image": hq_cli_api.IMAGE_UPLOAD_MAX_BYTES,
             "video": hq_cli_api.VIDEO_UPLOAD_MAX_BYTES,
             "audio": hq_cli_api.AUDIO_UPLOAD_MAX_BYTES,
-        }[kind]
+        })[kind]
         content_types = {
             "image": {"image/jpeg", "image/png", "image/webp"},
             "video": {"video/mp4", "video/quicktime", "video/webm"},
             "audio": {"audio/mpeg", "audio/wav", "audio/x-wav", "audio/mp4", "audio/x-m4a", "audio/aac", "audio/ogg"},
         }[kind]
         digest_header = {"image": "X-HQ-Image-SHA256", "video": "X-HQ-Video-SHA256", "audio": "X-HQ-Audio-SHA256"}[kind]
-        slots = {"image": hq_cli_api.IMAGE_UPLOAD_SLOTS, "video": hq_cli_api.VIDEO_UPLOAD_SLOTS,
-                 "audio": hq_cli_api.AUDIO_UPLOAD_SLOTS}[kind]
+        slots = (hq_cli_api.DIRECTOR_BREAKDOWN_UPLOAD_SLOTS if director_breakdown else {
+            "image": hq_cli_api.IMAGE_UPLOAD_SLOTS, "video": hq_cli_api.VIDEO_UPLOAD_SLOTS,
+            "audio": hq_cli_api.AUDIO_UPLOAD_SLOTS,
+        }[kind])
         proxy = {"image": hq_cli_api.proxy_image_upload, "video": hq_cli_api.proxy_video_upload,
                  "audio": hq_cli_api.proxy_audio_upload}[kind]
         invalid_code = "invalid_%s_upload" % kind
@@ -4729,14 +4734,50 @@ class H(BaseHTTPRequestHandler):
         digest = (self.headers.get(digest_header) or "").strip().lower()
         if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
             return self._cli_send(400, {"detail": "缺少有效的%s摘要" % label, "code": invalid_code})
+        idempotency_key = ""
+        expected_cost = 0
+        if director_breakdown:
+            try:
+                raw_idempotency_key = str(
+                    self.headers.get("Idempotency-Key") or "").strip()
+                if not raw_idempotency_key:
+                    raise hq_cli_api.CLIAPIError(
+                        400, "付费上传必须提供稳定的 Idempotency-Key",
+                        "idempotency_key_required",
+                    )
+                idempotency_key = hq_cli_api.validate_idempotency_key(
+                    raw_idempotency_key)
+                descriptor = hq_cli_api.director_breakdown_upload_descriptor({
+                    "media_type": kind, "sha256": digest,
+                })
+                quote_token = str(self.headers.get("X-HQ-Quote-Token") or "").strip()
+                if not quote_token:
+                    raise hq_cli_api.CLIAPIError(
+                        409, "上传前必须先取得 quote_token", "quote_required")
+                claims = hq_cli_api.verify_quote(
+                    INTERNAL_TOKEN, quote_token, row["username"],
+                    "breakdown_upload", descriptor,
+                )
+                expected_cost = int(claims["c"])
+            except hq_cli_api.CLIAPIError as exc:
+                return self._cli_send(
+                    exc.status, {"detail": exc.detail, "code": exc.code})
         if not slots.acquire(blocking=False):
             return self._cli_send(429, {"detail": "%s上传繁忙，请稍后重试" % label, "code": "upload_busy"})
         token = ""
         try:
             token = issue_token(row["username"], ttl=hq_cli_api.BRIDGE_TOKEN_TTL)
-            status, result = proxy(
-                self.rfile, length, token, INTERNAL_TOKEN, content_type, digest,
-            )
+            if director_breakdown:
+                filename = (self.headers.get("X-HQ-File-Name") or "upload").strip()
+                filename = os.path.basename(urllib.parse.unquote(filename))[:180] or "upload"
+                status, result = hq_cli_api.proxy_director_breakdown_upload(
+                    self.rfile, length, token, INTERNAL_TOKEN, content_type, digest,
+                    kind, filename, idempotency_key, expected_cost,
+                )
+            else:
+                status, result = proxy(
+                    self.rfile, length, token, INTERNAL_TOKEN, content_type, digest,
+                )
         except hq_cli_api.CLIAPIError as exc:
             status, result = exc.status, {"detail": exc.detail, "code": exc.code}
         finally:
@@ -4757,6 +4798,46 @@ class H(BaseHTTPRequestHandler):
         if "assets:upload" not in scopes:
             return self._cli_send(403, {"detail": "当前 CLI 授权缺少权限：assets:upload", "code": "insufficient_scope"})
         return self._account_media_upload(kind, row)
+
+    def _cli_director_breakdown_upload(self, kind):
+        auth = self._cli_user()
+        if not auth:
+            return self._cli_send(401, {"detail": "CLI 未登录或授权已过期", "code": "cli_unauthorized"})
+        row, scopes = auth
+        if "director:generate" not in scopes:
+            return self._cli_send(403, {"detail": "当前 CLI 授权缺少权限：director:generate", "code": "insufficient_scope"})
+        return self._account_media_upload(kind, row, director_breakdown=True)
+
+    def _cli_director_breakdown_quote(self, body):
+        auth = self._cli_user()
+        if not auth:
+            return self._cli_send(401, {"detail": "CLI 未登录或授权已过期", "code": "cli_unauthorized"})
+        row, scopes = auth
+        if "director:generate" not in scopes:
+            return self._cli_send(403, {"detail": "当前 CLI 授权缺少权限：director:generate", "code": "insufficient_scope"})
+        try:
+            descriptor = hq_cli_api.director_breakdown_upload_descriptor(body)
+            status, result = self._cli_proxy({
+                "base": hq_cli_api.CONTENT_BASE,
+                "path": "/api/gen/cli/quote", "method": "POST",
+                "body": {"kind": "breakdown_upload", "payload": descriptor},
+                "timeout": 30, "internal": True,
+            }, row["username"])
+            if not 200 <= int(status) < 300:
+                return self._cli_send(status, result)
+            token, claims = hq_cli_api.issue_quote(
+                INTERNAL_TOKEN, row["username"], "breakdown_upload",
+                descriptor, result.get("cost"),
+            )
+            return self._cli_send(200, {
+                "quote_token": token, "kind": "breakdown_upload",
+                "media_type": descriptor["media_type"], "sha256": descriptor["sha256"],
+                "cost": claims["c"], "points": result.get("points"),
+                "expires_in": hq_cli_api.QUOTE_TTL, "expires_at": claims["e"],
+                "confirmation_required": True,
+            })
+        except hq_cli_api.CLIAPIError as exc:
+            return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
 
     def _internal_ip12_agent_upload(self):
         if not self._ip12_agent_bridge_enabled():
@@ -5661,6 +5742,17 @@ class H(BaseHTTPRequestHandler):
             return self._cli_video_upload()
         if p == "/api/auth/cli/audio-upload":
             return self._cli_audio_upload()
+        if p == "/api/auth/cli/director-breakdown-image":
+            return self._cli_director_breakdown_upload("image")
+        if p == "/api/auth/cli/director-breakdown-video":
+            return self._cli_director_breakdown_upload("video")
+        if p == "/api/auth/cli/director-breakdown-quote":
+            if self._content_length_exceeds(8192):
+                return self._cli_send(413, {"detail": "请求过大"})
+            d = self._body()
+            if self._bad_json():
+                return self._cli_send(400, {"detail": "请求体不是合法 JSON"})
+            return self._cli_director_breakdown_quote(d)
         if p == "/api/auth/cli/action":
             if self._content_length_exceeds(128 * 1024):
                 return self._cli_send(413, {"detail": "CLI 输入不能超过 128 KiB"})

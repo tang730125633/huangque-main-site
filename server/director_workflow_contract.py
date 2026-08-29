@@ -147,7 +147,7 @@ DIRECTOR_ACTIONS = (
         ("POST:/api/gen/breakdown/local-upload?media_type=image",
          "POST:/api/gen/breakdown/local-upload?media_type=video"),
         billing="quote_then_confirm", points_kind="breakdown",
-        transport="dedicated_upload",
+        availability="available", transport="dedicated_upload",
         description="上传本人本地图片或视频并创建付费提示词反推任务。",
     ),
     _action(
@@ -160,7 +160,8 @@ DIRECTOR_ACTIONS = (
     _action(
         "director-scene-image-generate", "scene", "director:generate",
         ("script.output.image",), ("POST:/api/gen/image",),
-        billing="quote_then_confirm",
+        billing="quote_then_confirm", points_kind="image",
+        availability="available",
         description="根据冻结的分镜生成单镜头图片。",
     ),
     _action(
