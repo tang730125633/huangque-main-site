@@ -517,14 +517,31 @@ def main(argv=None):
             if not capability["runnable"]:
                 raise CliError(EXIT_UNAVAILABLE, "unavailable_capability", "capability is unavailable: %s" % args.id)
             is_upload = capability["kind"] == "upload"
+            is_avatar_photo = args.id == "video-avatar-create"
             if is_upload:
                 if args.input:
                     raise CliError(EXIT_USAGE, "usage_error", "upload capabilities do not accept --input")
                 payload = {}
             else:
-                if args.file:
+                if args.file and not is_avatar_photo:
                     raise CliError(EXIT_USAGE, "usage_error", "only upload capabilities accept --file")
-                payload = _load_json(args.input)
+                payload = _load_json(args.input) if args.input else {}
+                if is_avatar_photo and args.file:
+                    # 照片走 --file 文件路径（base64 超出 --input 64KB 限制），CLI 读取转 data URL
+                    import base64 as _b64
+                    import os as _os
+                    path = args.file
+                    ext = _os.path.splitext(path)[1].lower()
+                    mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg",
+                            "png": "image/png", "webp": "image/webp"}.get(ext.lstrip("."))
+                    if not mime:
+                        raise CliError(EXIT_INPUT, "input_error", "photo must be jpg/png/webp")
+                    try:
+                        with open(path, "rb") as handle:
+                            data = handle.read()
+                    except OSError as exc:
+                        raise CliError(EXIT_INPUT, "input_error", "cannot read photo: %s" % exc)
+                    payload["image_data"] = "data:%s;base64,%s" % (mime, _b64.b64encode(data).decode("ascii"))
                 _validate(capability, payload)
             if is_upload:
                 if args.open_browser or args.quote_token:
