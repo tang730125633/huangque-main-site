@@ -178,11 +178,15 @@ class HQCLIAPITests(unittest.TestCase):
     def test_director_generation_catalog_requires_quote_confirmation_and_feature_gates(self):
         enabled = {
             item["action"]: item
-            for item in self.auth.hq_cli_api.action_catalog({"copy": True, "breakdown": True})["actions"]
+            for item in self.auth.hq_cli_api.action_catalog({
+                "copy": True, "breakdown": True, "script_to_video": True,
+            })["actions"]
         }
         expected_flags = {
             "director-script-generate": ["copy"],
             "director-breakdown": ["breakdown"],
+            "director-scene-video-generate": ["script_to_video"],
+            "director-scene-talking-generate": ["script_to_video"],
         }
         for action, feature_flags in expected_flags.items():
             with self.subTest(action=action):
@@ -199,7 +203,9 @@ class HQCLIAPITests(unittest.TestCase):
 
         disabled = {
             item["action"]: item
-            for item in self.auth.hq_cli_api.action_catalog({"copy": False, "breakdown": False})["actions"]
+            for item in self.auth.hq_cli_api.action_catalog({
+                "copy": False, "breakdown": False, "script_to_video": False,
+            })["actions"]
         }
         for action, feature_flags in expected_flags.items():
             with self.subTest(action=action, disabled=True):
@@ -2039,11 +2045,13 @@ class HQCLIAPITests(unittest.TestCase):
         }, token=token)
         self.assertEqual(200, status, payload)
         self.assertEqual("director-workflow-contract-v1", payload["contract_version"])
-        self.assertEqual(3, payload["counts"]["available"])
+        self.assertEqual(5, payload["counts"]["available"])
         actions = {item["id"]: item for item in payload["actions"]}
         self.assertEqual("available", actions["director-capability"]["availability"])
         self.assertEqual("available", actions["director-script-generate"]["availability"])
         self.assertEqual("available", actions["director-breakdown"]["availability"])
+        self.assertEqual("available", actions["director-scene-video-generate"]["availability"])
+        self.assertEqual("available", actions["director-scene-talking-generate"]["availability"])
         self.assertEqual("planned", actions["director-production-start"]["availability"])
         self.assertEqual("quote_then_confirm", actions["director-production-start"]["billing"])
 

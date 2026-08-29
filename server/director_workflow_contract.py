@@ -165,15 +165,17 @@ DIRECTOR_ACTIONS = (
     ),
     _action(
         "director-scene-video-generate", "scene", "director:generate",
-        ("script.output.video.story",), ("POST:/api/gen/xiaole_video",),
-        billing="quote_then_confirm",
-        description="根据冻结的分镜生成单镜头剧情视频。",
+        ("script.output.video.story",), ("POST:/api/gen/script_to_video",),
+        billing="quote_then_confirm", points_kind="script_to_video",
+        availability="available",
+        description="按编导分镜列表一键生成剧情视频。",
     ),
     _action(
         "director-scene-talking-generate", "scene", "director:generate",
         ("script.output.video.spoken", "script.output.video.recommend"),
         ("POST:/api/gen/script_to_video",), billing="quote_then_confirm",
-        description="根据冻结的口播分镜生成人物口播镜头。",
+        points_kind="script_to_video", availability="available",
+        description="按编导分镜列表一键生成人物口播视频。",
     ),
     _action(
         "director-production-plan", "production", "director:read", (),

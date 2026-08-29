@@ -130,6 +130,11 @@ _ACTION_INPUTS = {
     "account": (), "channels": (), "pricing": (), "director-capability": (),
     "director-script-generate": ("prompt", "style", "duration", "platform"),
     "director-breakdown": ("url", "urls", "mode"),
+    "director-scene-video-generate": ("scenes", "duration"),
+    "director-scene-talking-generate": (
+        "scenes", "avatar_id", "voice", "style", "ratio", "motion",
+        "subtitle", "subtitle_style", "subtitle_position",
+    ),
     "text-video-capability": (), "text-video-templates": (),
     "text-video-styles": (), "text-video-voices": (),
     "text-video-generate": ("text", "template", "mode", "style", "voice", "speech_rate", "talking_material"),
@@ -196,6 +201,8 @@ _ACTION_PURPOSES = {
     "director-capability": "读取编导与数字人一键生成的完整 CLI 覆盖契约",
     "director-script-generate": "按主站编导规则生成结构化脚本与分镜",
     "director-breakdown": "拆解抖音或小红书作品链接并生成分镜或反推提示词",
+    "director-scene-video-generate": "按编导分镜一键生成剧情视频",
+    "director-scene-talking-generate": "按编导分镜一键生成数字人口播视频",
     "ip12-projects": "读取本人 IP12 项目", "ip12-project": "读取本人 IP12 项目详情",
     "ip12-report": "读取本人 IP12 报告", "ip12-delete": "删除本人 IP12 项目",
     "canvas-list": "读取本人画布", "canvas-get": "读取本人画布详情",
@@ -539,6 +546,14 @@ _TALKING_FIELDS = {
     "subtitle_style": {"type": "string", "enum": ["white", "variety", "bar"]},
     "subtitle_position": {"type": "string", "enum": ["top", "upper", "center", "lower", "bottom"]},
 }
+_DIRECTOR_SCENE_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "properties": {
+        "scene": {"type": "string", "maxLength": 2000},
+        "line": {"type": "string", "maxLength": 2000},
+        "dur": {"type": "number", "exclusiveMinimum": 0, "maximum": 180},
+    },
+}
 _MEDIA_SCHEMAS.update({
     "director-script-generate": {
         "required": ["prompt"], "properties": {
@@ -558,6 +573,32 @@ _MEDIA_SCHEMAS.update({
         "constraints": ["supports public Douyin or Xiaohongshu links only",
                         "reverse_prompt accepts exactly one URL",
                         "paid action: quote first, then confirm the identical normalized input"],
+    },
+    "director-scene-video-generate": {
+        "required": ["scenes"], "properties": {
+            "scenes": {"type": "array", "minItems": 1, "maxItems": 8,
+                       "items": _DIRECTOR_SCENE_SCHEMA},
+            "duration": {"type": "integer", "minimum": 1, "maximum": 15},
+        }, "constraints": [
+            "at least one scene must contain a non-empty scene description",
+            "matches the Director page one-click video path and never uploads an image",
+            "paid action: quote first, then confirm the identical normalized input",
+        ],
+    },
+    "director-scene-talking-generate": {
+        "required": ["scenes", "avatar_id", "voice"], "properties": {
+            "scenes": {"type": "array", "minItems": 1, "maxItems": 8,
+                       "items": _DIRECTOR_SCENE_SCHEMA},
+            "avatar_id": _INT_ID_SCHEMA,
+            "voice": {"type": "string", "minLength": 1, "maxLength": 128},
+            "style": {"type": "string", "enum": ["spoken", "recommend"]},
+            **_TALKING_FIELDS,
+        }, "constraints": [
+            "at least one scene must contain a non-empty spoken line",
+            "avatar_id must come from video-avatars and voice from voices",
+            "the server may reuse owned scene assets or generate montage stills; this action never uploads an image",
+            "paid action: quote first, then confirm the identical normalized input",
+        ],
     },
     "canvas-list": {"required": [], "properties": {
         "limit": {"type": "integer", "minimum": 1, "maximum": 100},
@@ -711,7 +752,8 @@ _MEDIA_SCHEMAS.update({
 
 _FAMILIES = {
     "director-capability": "director", "director-script-generate": "director",
-    "director-breakdown": "director",
+    "director-breakdown": "director", "director-scene-video-generate": "director",
+    "director-scene-talking-generate": "director",
     "image-upload": "image", "image-generate": "image", "audio-slots": "audio", "voices": "audio", "audio-generate": "audio",
     "voice-clone-create": "audio", "voice-clone-status": "audio",
     "video-upload": "video", "video-avatars": "video", "video-generate": "video", "video-lipsync": "video", "digital-ip-text-generate": "video",
@@ -730,6 +772,8 @@ _FAMILIES = {
 }
 _ACTION_FEATURE_GATES = {
     "director-script-generate": ("copy",), "director-breakdown": ("breakdown",),
+    "director-scene-video-generate": ("script_to_video",),
+    "director-scene-talking-generate": ("script_to_video",),
     "audio-generate": ("audio",), "voice-clone-create": ("audio",), "voice-clone-status": ("audio",),
     "canvas-agent-plan": ("canvas_agent",),
     "video-lipsync": ("video",), "digital-ip-text-generate": ("video",), "digital-ip-batch-generate": ("video",),
@@ -752,6 +796,7 @@ CATALOG_FEATURE_FLAGS = tuple(sorted({flag for flags in (*_ACTION_FEATURE_GATES.
 _GENERATION_ACTIONS = frozenset({
     "collect-content", "collect-video", "collect-transcript", "collect-search", "leads-generate",
     "director-script-generate", "director-breakdown",
+    "director-scene-video-generate", "director-scene-talking-generate",
     "canvas-agent-plan", "image-generate", "video-generate", "video-lipsync", "audio-generate",
     "digital-ip-text-generate", "digital-ip-batch-generate", "digital-ip-audio-generate",
     "cinematic-open-generate", "cinematic-motion-generate", "tryon-fast-generate", "tryon-classic-generate",
@@ -1818,6 +1863,28 @@ def _leads_payload(value):
     }
 
 
+def _director_scenes(value, required_field):
+    if not isinstance(value, list) or not 1 <= len(value) <= 8:
+        raise CLIAPIError(400, "scenes 必须包含 1-8 个分镜")
+    scenes = []
+    for index, item in enumerate(value, 1):
+        _strict_object(item, {"scene", "line", "dur"})
+        scene = _string(item.get("scene", ""), "scenes[%d].scene" % index, 0, 2000)
+        line = _string(item.get("line", ""), "scenes[%d].line" % index, 0, 2000)
+        if not scene and not line:
+            raise CLIAPIError(400, "第 %d 个分镜没有画面或口播内容" % index)
+        clean = {"scene": scene, "line": line}
+        if item.get("dur") is not None:
+            clean["dur"] = float(_number(
+                item["dur"], "scenes[%d].dur" % index, 0.1, 180,
+            ))
+        scenes.append(clean)
+    if not any(item[required_field] for item in scenes):
+        label = "画面描述" if required_field == "scene" else "口播文案"
+        raise CLIAPIError(400, "scenes 中至少需要一条" + label)
+    return scenes
+
+
 def action_plan(action, value):
     if not isinstance(value, dict):
         raise CLIAPIError(400, "input 必须是 JSON 对象")
@@ -1873,6 +1940,59 @@ def action_plan(action, value):
             raise CLIAPIError(400, "reverse_prompt 仅支持单条链接")
         return _plan("director:generate", "generation", generation_kind="breakdown",
                      endpoint="/api/gen/breakdown", payload=payload)
+    if action == "director-scene-video-generate":
+        _strict_object(value, {"scenes", "duration"}, ("scenes",))
+        scenes = _director_scenes(value["scenes"], "scene")
+        duration = value.get("duration")
+        if duration is None:
+            duration = min(15, max(1, int(math.ceil(
+                sum(item.get("dur", 0) for item in scenes) or 15
+            ))))
+        else:
+            duration = _integer(duration, "duration", 1, 15)
+        return _plan(
+            "director:generate", "generation", generation_kind="script_to_video",
+            endpoint="/api/gen/script_to_video", payload={
+                "scenes": scenes, "style": "剧情", "duration": duration,
+                "source_page": "script",
+            },
+        )
+    if action == "director-scene-talking-generate":
+        allowed = {
+            "scenes", "avatar_id", "voice", "style", "ratio", "motion",
+            "subtitle", "subtitle_style", "subtitle_position",
+        }
+        _strict_object(value, allowed, ("scenes", "avatar_id", "voice"))
+        payload = {
+            "scenes": _director_scenes(value["scenes"], "line"),
+            "avatar_id": _integer(value["avatar_id"], "avatar_id", 1, 2**63 - 1),
+            "voice": _string(value["voice"], "voice", 1, 128),
+            "style": {"spoken": "口播", "recommend": "种草"}[
+                _enum(value.get("style", "spoken"), "style", ("spoken", "recommend"))
+            ],
+            "source_page": "script",
+        }
+        if "ratio" in value:
+            payload["ratio"] = _enum(value["ratio"], "ratio", ("9:16", "16:9", "1:1", "4:5", "5:4"))
+        if "motion" in value:
+            payload["motion"] = _enum(value["motion"], "motion", ("low", "medium", "high"))
+        if "subtitle" in value:
+            if not isinstance(value["subtitle"], bool):
+                raise CLIAPIError(400, "subtitle 必须是布尔值")
+            payload["subtitle"] = value["subtitle"]
+        if "subtitle_style" in value:
+            payload["subtitle_style"] = _enum(
+                value["subtitle_style"], "subtitle_style", ("white", "variety", "bar"),
+            )
+        if "subtitle_position" in value:
+            payload["subtitle_position"] = _enum(
+                value["subtitle_position"], "subtitle_position",
+                ("top", "upper", "center", "lower", "bottom"),
+            )
+        return _plan(
+            "director:generate", "generation", generation_kind="script_to_video",
+            endpoint="/api/gen/script_to_video", payload=payload,
+        )
     if action == "text-video-avatar-import":
         _strict_object(value, {"image_upload_id"}, ("image_upload_id",))
         return _plan(
