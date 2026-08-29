@@ -115,17 +115,28 @@ INTAKE_FIELDS = (
 )
 INTAKE_FIELD_SET = frozenset(INTAKE_FIELDS)
 INTAKE_COVERAGE_FIELDS = (
+    # 核心必问：基本信息 + 职业背景（其余字段由对应模块的 Skill 引导采集）
     "preferred_name", "gender", "age", "city", "mobile",
     "current_identity", "experience_years", "previous_work_experience",
-    "income_source", "income_range", "biggest_setback", "biggest_achievement",
-    "most_praised", "most_criticized", "core_skill_1", "core_skill_2",
-    "niche", "target_audience", "help_goal", "differentiation", "content_account",
-    "personality_traits", "tone_preference", "disliked_style", "content_habits",
-    "memorable_line", "self_intro", "trust_reason", "story_comeback",
-    "story_pitfall", "story_success", "story_unusual", "team_project_experience",
-    "business_goal", "time_budget", "offer", "three_month_goal", "one_year_goal",
-    "long_term_interest", "primary_platform", "desired_action",
+    "income_source", "income_range",
 )
+# 字段 → 模块归属（模块 1-4 + 商业；模块 Skill 引导时只问自己名下且未采集的字段）
+MODULE_FIELD_OWNERSHIP = {
+    1: ("biggest_setback", "biggest_achievement", "most_praised", "most_criticized",
+        "core_skill_1", "core_skill_2", "niche", "target_audience", "help_goal",
+        "differentiation", "content_account", "long_term_interest"),
+    2: ("personality_traits", "tone_preference", "disliked_style", "content_habits"),
+    3: ("memorable_line", "self_intro", "trust_reason"),
+    4: ("story_comeback", "story_pitfall", "story_success", "story_unusual",
+        "team_project_experience"),
+    5: ("business_goal", "time_budget", "offer", "primary_platform",
+        "desired_action", "three_month_goal", "one_year_goal"),
+}
+MODULE_OWNED_FIELDS = frozenset(
+    field for fields in MODULE_FIELD_OWNERSHIP.values() for field in fields
+)
+# intake 阶段真正要问的（核心必问 ∪ 用户已主动提到过的模块字段确认）
+# 保持 INTAKE_COVERAGE_FIELDS 名以兼容既有调用；语义上已瘦身。
 INTAKE_COVERAGE_LABELS = {
     "preferred_name": "姓名或昵称", "gender": "性别", "age": "年龄", "city": "所在城市",
     "mobile": "手机号（可跳过）", "current_identity": "当前职业或身份",
@@ -445,19 +456,17 @@ def _intake_has_core_profile(value, updates, evidence_text):
         for item in list(state["intake"].get("profile_updates") or []) + list(updates or [])
         if isinstance(item, dict)
     }
+    # 核心闸只查瘦身后的核心必问（基本信息 + 职业背景）；
+    # 兴趣/受众/技能/帮助目标由模块 1 的 Skill 引导采集。
     required_groups = (
         ("identity", "role", "current"),
         ("experience", "career", "work"),
-        ("interest",),
-        ("audience",),
+        ("income",),
     )
-    has_help_goal = any(
-        token in field for field in fields for token in ("goal", "benefit", "value", "help")
-    ) or re.search(r"(?:希望|想要|目标).{0,30}(?:帮助|让|解决|服务)", str(evidence_text or ""))
+    has_identity_meta = any(token in field for field in fields for token in ("name", "age", "city"))
     return (
         all(any(token in field for field in fields for token in group) for group in required_groups)
-        and sum("skill" in field for field in fields) >= 2
-        and bool(has_help_goal)
+        and bool(has_identity_meta)
     )
 
 
