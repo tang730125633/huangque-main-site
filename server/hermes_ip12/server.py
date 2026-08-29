@@ -600,7 +600,10 @@ def _module_six_confirmed_sections(convo):
     sections = []
     for item in matches:
         script = item.group(5).strip()
-        if len(re.sub(r"\s+", "", script)) < 120:
+        if (
+            len(re.sub(r"\s+", "", script)) < 120
+            or _content_script_rejection_reason(script)
+        ):
             return []
         sections.append({
             "category": item.group(2).strip(), "title": item.group(3).strip(),
@@ -765,6 +768,8 @@ def _production_source(convo, target):
     version = int(current.get("version") or 0)
     if not script or version < 1:
         raise coach_harness.HarnessError("当前文案尚未准备完成")
+    if _content_script_rejection_reason(script):
+        raise coach_harness.HarnessError("当前文案格式异常，不能进入制作；请重新生成")
     return {
         "category_id": str(category.get("id") or ""),
         "topic_id": str(topic.get("id") or ""),
@@ -3327,6 +3332,59 @@ CONTENT_PACK_SCHEMA = {
     "required": ["categories"],
 }
 
+CONTENT_SCRIPT_SAFE_ERROR = (
+    "这篇文案格式异常，已停止展示。请回到对话说明需要重新生成 3 篇口播。"
+)
+CONTENT_SCRIPT_MODEL_ERROR_MARKERS = (
+    "资料中未包含模块 5",
+    "暂不能生成完整口播文案",
+    "请补充模块 5 的三类选题",
+)
+CONTENT_SCRIPT_OBJECT_KEY_RE = re.compile(
+    r"(?i)(?:^|[,\[{]\s*)(name|description|topics|title|hook|objective|script)\s*:"
+)
+
+
+def _content_script_rejection_reason(value):
+    text = str(value or "").strip()
+    compact = re.sub(r"\s+", "", text)
+    if not compact:
+        return "empty_script"
+    if any(marker in text for marker in CONTENT_SCRIPT_MODEL_ERROR_MARKERS):
+        return "model_error_message"
+    delimiters = len(re.findall(r"[{}\[\]]", text))
+    object_keys = set(CONTENT_SCRIPT_OBJECT_KEY_RE.findall(text))
+    if re.search(r"[}\]]{10,}", text):
+        return "repeated_structural_delimiters"
+    if len(object_keys) >= 3 and delimiters >= 8:
+        return "serialized_object_in_script"
+    if delimiters >= 24 and delimiters * 8 >= len(compact):
+        return "structural_output_leak"
+    return ""
+
+
+def _public_content_pack(pack):
+    result = copy.deepcopy(pack) if isinstance(pack, dict) else {}
+    invalid = False
+    for category in result.get("categories") or []:
+        for topic in (category or {}).get("topics") or []:
+            topic_invalid = False
+            versions = (topic or {}).get("versions") or []
+            for version_index, version in enumerate(versions):
+                if not isinstance(version, dict):
+                    continue
+                if _content_script_rejection_reason(version.get("content")):
+                    version["content"] = CONTENT_SCRIPT_SAFE_ERROR
+                    version["invalid_output"] = True
+                    if version_index == len(versions) - 1:
+                        invalid = topic_invalid = True
+            if topic_invalid and isinstance(topic, dict):
+                topic["status"] = "invalid"
+    if invalid:
+        result["output_valid"] = False
+        result["output_error"] = CONTENT_SCRIPT_SAFE_ERROR
+    return result
+
 
 def _parse_ai_json(response):
     content = (((response.json().get("choices") or [{}])[0].get("message") or {}).get("content"))
@@ -3360,7 +3418,7 @@ def _normalize_content_pack(raw, minimum_script_chars=120, maximum_script_chars=
             script_chars = len(re.sub(r"\s+", "", script))
             if (
                 not title or not minimum_script_chars <= script_chars <= maximum_script_chars
-                or title in seen_topics
+                or title in seen_topics or _content_script_rejection_reason(script)
             ):
                 raise ValueError("3 个精选选题必须唯一且各自包含一篇完整口播文案")
             seen_topics.add(title)
@@ -3401,8 +3459,12 @@ def _content_pack_ready(pack):
         versions = topics[0].get("versions") or []
         if not versions or not isinstance(versions[-1], dict):
             return False
-        script_chars = len(re.sub(r"\s+", "", str(versions[-1].get("content") or "")))
-        if not minimum_chars <= script_chars <= maximum_chars:
+        script = str(versions[-1].get("content") or "")
+        script_chars = len(re.sub(r"\s+", "", script))
+        if (
+            not minimum_chars <= script_chars <= maximum_chars
+            or _content_script_rejection_reason(script)
+        ):
             return False
     return True
 
@@ -3737,6 +3799,9 @@ def api_get_convo(cid):
         return jsonify(_public_chat_result(receipt))
     convo["coach_state"] = normalize_coach_state(convo.get("coach_state"))
     public_convo = json.loads(json.dumps(convo, ensure_ascii=False))
+    public_deliverables = public_convo.get("deliverables")
+    if isinstance(public_deliverables, dict) and isinstance(public_deliverables.get("6"), dict):
+        public_deliverables["6"] = _public_content_pack(public_deliverables["6"])
     for private_key in (
         "owner_account_id", "turn_receipts", "agent_runs",
         "master_agent_shadow", "semantic_master",
@@ -6013,6 +6078,8 @@ def _process_content_revision_turn(
         category, topic = _content_topic(pack, target)
         versions = topic.get("versions") or []
         current_script = str((versions[-1] if versions else {}).get("content") or "")
+        if _content_script_rejection_reason(current_script):
+            return {"ok": False, "error": "当前文案格式异常，请先重新生成 3 篇口播"}, 409
         snapshot_revision = state["revision"]
         message_id = _persist_user_message(cid, clean_message, snapshot_revision, request_id)
 
@@ -6054,6 +6121,8 @@ def _process_content_revision_turn(
             raise ValueError("文案修改判断不完整")
         if decision_type == "apply_revision" and (not revised_script or revised_script == current_script):
             raise ValueError("修改后的文案无变化")
+        if decision_type == "apply_revision" and _content_script_rejection_reason(revised_script):
+            raise ValueError("修改后的文案包含内部结构或错误提示")
     except Exception as exc:
         app.logger.warning("IP12 content revision failed: %s", exc)
         return {"ok": False, "error": "这次修改暂时没能安全完成，原文案没有变化，请重试"}, 502
@@ -7700,7 +7769,10 @@ def api_get_deliverables(cid):
     convo = owned_conversation(cid)
     if convo is None:
         return jsonify({"ok": False, "error": "诊断不存在"}), 404
-    return jsonify(convo.get("deliverables", {}))
+    deliverables = json.loads(json.dumps(convo.get("deliverables", {}), ensure_ascii=False))
+    if isinstance(deliverables.get("6"), dict):
+        deliverables["6"] = _public_content_pack(deliverables["6"])
+    return jsonify(deliverables)
 
 @app.route("/api/foundation-report/<cid>.pdf", methods=["GET"])
 def api_foundation_pdf(cid):
