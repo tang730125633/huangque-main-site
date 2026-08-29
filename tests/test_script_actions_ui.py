@@ -7,6 +7,7 @@ import unittest
 
 SCRIPT_HTML = pathlib.Path(__file__).resolve().parents[1] / "site/workbench/script.html"
 CORE_PY = pathlib.Path(__file__).resolve().parents[1] / "server/content_domains/core.py"
+FUNCTION_REGISTRY_PY = pathlib.Path(__file__).resolve().parents[1] / "server/content_domains/function_registry.py"
 
 
 def _extract_js_function(source, name):
@@ -42,6 +43,7 @@ class ScriptActionsUiTests(unittest.TestCase):
     def setUpClass(cls):
         cls.html = SCRIPT_HTML.read_text(encoding="utf-8")
         cls.core = CORE_PY.read_text(encoding="utf-8")
+        cls.function_registry = FUNCTION_REGISTRY_PY.read_text(encoding="utf-8")
 
     def test_scene_handoffs_keep_prompt_parameters(self):
         self.assertIn("handoffUrl('video.html',a.getAttribute('data-to-video')", self.html)
@@ -55,13 +57,22 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("new Blob(['﻿'+txt]", self.html)
         self.assertIn("a.download=filename", self.html)
 
-    def test_one_click_video_calls_script_to_video_api(self):
-        self.assertIn('id="scGenVideo"', self.html)
-        self.assertIn('id="scGenAudio"', self.html)
+    def test_batch_video_and_talking_generation_actions_are_removed(self):
+        self.assertNotIn('id="scGenVideo"', self.html)
+        self.assertNotIn('id="scGenAudio"', self.html)
+        self.assertNotIn("genVideoBtn", self.html)
+        self.assertNotIn("genAudioBtn", self.html)
+        self.assertNotIn("一键生成视频", self.html)
+        self.assertNotIn("一键生成口播", self.html)
+        self.assertIn('id="scToImageAll"', self.html)
+        self.assertIn("每张分镜可单独转作图/转视频/转口播，也可以全部转作图", self.html)
+        self.assertIn('"frontend_selector": "#bdRemakeBtn, #bdToImageBtn"', self.function_registry)
+
+    def test_remaining_remake_video_calls_script_to_video_api(self):
         self.assertIn("options.endpoint||'/api/gen/script_to_video'", self.html)
         self.assertIn("function _confirmDramaVideo(list)", self.html)
         self.assertIn("预计消耗 '+cost+' 点", self.html)
-        self.assertIn("if(!_confirmDramaVideo(list)) return;", self.html)
+        self.assertIn("if(!_confirmDramaVideo(scenes)) return;", self.html)
 
     def test_reverse_video_estimate_uses_server_quote(self):
         self.assertIn("noAvatarOffer.duration_costs[String(selectedDuration)]", self.html)
@@ -71,14 +82,13 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("10 秒 · 300 点", self.html)
         self.assertIn("15 秒 · 450 点", self.html)
         self.assertIn("_setGenerateBusy", self.html)
-        self.assertIn("_doGenerate({scenes:list,style:'剧情',duration:_dramaDuration(list)},genVideoBtn)", self.html)
+        self.assertIn("_doGenerate({scenes:scenes,style:'剧情',duration:_dramaDuration(scenes)},bdRemakeBtn)", self.html)
 
-    def test_one_click_video_passes_style_and_selected_avatar(self):
+    def test_remake_video_passes_style_and_selected_avatar(self):
         self.assertIn("lastStyle=style||'口播'", self.html)
-        self.assertIn("var talkingStyle=lastStyle==='剧情'?'口播':(lastStyle||'口播');", self.html)
-        self.assertIn("_doGenerate({scenes:list,style:talkingStyle,avatar_id:avatarId,voice:voice},genAudioBtn)", self.html)
+        self.assertIn("_doGenerate({scenes:scenes,style:style,avatar_id:avatarId,voice:voice},bdRemakeBtn)", self.html)
 
-    def test_one_click_video_loads_avatar_picker_for_talking_styles(self):
+    def test_remake_video_loads_avatar_picker_for_talking_styles(self):
         self.assertIn("fetch('/api/gen/video/avatars?limit=60'", self.html)
         self.assertIn('id="avatarPickModal"', self.html)
         self.assertIn('id="avatarPickGrid"', self.html)
@@ -379,7 +389,7 @@ var localStorage = {
   setItem: (key,value) => { storage[key]=String(value); },
   removeItem: key => { delete storage[key]; }
 };
-var genVideoBtn={}, bdRemakeBtn=null, scenes={innerHTML:''};
+var bdRemakeBtn={}, scenes={innerHTML:''};
 var window={HQ:null}, HQ=null;
 var cleared=[];
 function clearInterval(id){ cleared.push(id); }
@@ -410,7 +420,7 @@ setImmediate(function(){
     aStillStored:!!localStorage.getItem(aKey),
     bCleared:!localStorage.getItem(bKey),
     timerStopped:activeVideoResumeTimer===null&&cleared.indexOf(77)>=0,
-    buttonRestored:genVideoBtn.busy===false
+    buttonRestored:bdRemakeBtn.busy===false
   }));
 });
 """ % json.dumps(recovery)
@@ -440,7 +450,7 @@ var localStorage = {
   setItem: (key,value) => { storage[key]=String(value); },
   removeItem: key => { delete storage[key]; }
 };
-var genVideoBtn={}, bdRemakeBtn=null, scenes={innerHTML:''};
+var bdRemakeBtn=null, scenes={innerHTML:''};
 var window={HQ:null}, HQ=null;
 function clearInterval(){}
 function setInterval(){ return 88; }
@@ -619,7 +629,7 @@ setImmediate(function(){
         self.assertIn("n>1000", self.html)
 
     def test_talking_flow_offers_personal_voice_picker(self):
-        """一键生成口播/同款口播必须提供个人音色选择"""
+        """同款口播必须提供个人音色选择"""
         self.assertIn("function _pickVoice(onPick)", self.html)
         self.assertIn("/api/gen/audio/voices", self.html)
         self.assertIn("voice:voice", self.html)

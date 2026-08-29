@@ -60,9 +60,10 @@ class DigitalHumanV2UiTests(unittest.TestCase):
 
     def test_material_priority_and_no_visible_source_label(self):
         self.assertIn(
-            "顾客上传素材（必须全部使用） → 测试服固定本地素材库 → AI 生成图片",
+            "顾客上传素材（必须全部使用） → 黄雀已审核素材库 → AI 生成图片",
             self.page,
         )
+        self.assertNotIn("测试服固定本地素材库", self.page)
         self.assertIn("上传的每一张图片都会按顺序直接进入成片", self.page)
         self.assertIn('id="allowAiMaterials" type="checkbox"', self.page)
         self.assertNotIn('id="allowAiMaterials" type="checkbox" checked', self.page)

@@ -322,7 +322,7 @@
       </div>
 
       <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:16px; padding-top:16px; border-top:1px solid rgba(148,164,187,.1);">
-        <span id="scBatchHint" class="sc-hint">每张分镜可单独转作图/转视频/转口播，或使用下方一键生成</span>
+        <span id="scBatchHint" class="sc-hint">每张分镜可单独转作图/转视频/转口播，也可以全部转作图</span>
         <div style="display:flex; gap:9px; flex-wrap:wrap; justify-content:flex-end;">
           <button id="bdRemakeBtn" class="sc-btn" type="button" style="display:none; color:#0f172a; background:linear-gradient(135deg,#93c5fd,#60a5fa); border-color:rgba(96,165,250,.35); font-weight:700;">🎬 生成同款视频</button>
           <button id="bdEditBtn" class="sc-btn" type="button" style="display:none; color:#60a5fa; background:rgba(96,165,250,.08); border-color:rgba(96,165,250,.24);">✏️ 编辑分镜</button>
@@ -331,8 +331,6 @@
           <button id="bdReverseDrawBtn" class="sc-btn" type="button" style="display:none; color:#111827; background:linear-gradient(135deg,#c4b5fd,#a78bfa); border-color:rgba(167,139,250,.36); font-weight:700;">🎨 去作图页精修</button>
           <button id="bdToImageBtn" class="sc-btn" type="button" style="display:none; color:#e7b24c; background:rgba(231,178,76,.08); border-color:rgba(231,178,76,.24);">🎨 一键做图</button>
           <button id="scToImageAll" class="sc-btn" type="button" style="color:#e7b24c; background:rgba(231,178,76,.08); border-color:rgba(231,178,76,.24);">🎨 全部转作图</button>
-          <button id="scGenVideo" class="sc-btn" type="button" style="color:#0f172a; background:linear-gradient(135deg,#93c5fd,#60a5fa); border-color:rgba(96,165,250,.35); font-weight:700;">🎬 一键生成视频</button>
-          <button id="scGenAudio" class="sc-btn" type="button" style="color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border-color:rgba(231,178,76,.4); font-weight:700;">🎙 一键生成口播</button>
           <button id="scExport" class="sc-btn" type="button" style="color:#e7b24c; background:rgba(231,178,76,.08); border-color:rgba(231,178,76,.24);"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></span>导出脚本</button>
         </div>
       </div>
@@ -365,8 +363,7 @@
       liveStats=document.getElementById('scLiveStats'), sceneCountStat=document.getElementById('scSceneCount'),
       wordCountStat=document.getElementById('scWordCount'), estimateDurationStat=document.getElementById('scEstimateDuration');
   var panelWrite=document.getElementById('panelWrite'), panelBreakdown=document.getElementById('panelBreakdown');
-  var genVideoBtn=document.getElementById('scGenVideo'), genAudioBtn=document.getElementById('scGenAudio'),
-      scToImageAllBtn=document.getElementById('scToImageAll'),
+  var scToImageAllBtn=document.getElementById('scToImageAll'),
       bdRemakeBtn=document.getElementById('bdRemakeBtn'), bdEditBtn=document.getElementById('bdEditBtn'),
       bdEditCancelBtn=document.getElementById('bdEditCancelBtn'),
       bdReverseCopyBtn=document.getElementById('bdReverseCopyBtn'), bdReverseDrawBtn=document.getElementById('bdReverseDrawBtn'),
@@ -722,9 +719,7 @@
     if(bdReverseCopyBtn) bdReverseCopyBtn.style.display=currentMode==='breakdown'&&reverseMode&&hasReversePrompt?'':'none';
     if(bdReverseDrawBtn) bdReverseDrawBtn.style.display=currentMode==='breakdown'&&reverseMode&&hasReversePrompt?'':'none';
     if(bdToImageBtn) bdToImageBtn.style.display=currentMode==='breakdown'&&!reverseMode&&hasBreakdownScenes?'':'none';
-    if(genVideoBtn) genVideoBtn.style.display=currentMode==='breakdown'?'none':'';
     if(scToImageAllBtn) scToImageAllBtn.style.display=currentMode==='breakdown'?'none':'';
-    if(genAudioBtn) genAudioBtn.style.display=currentMode==='breakdown'?'none':'';
     if(exportBtn) exportBtn.style.display=currentMode==='breakdown'&&reverseMode?'none':'';
   }
   function switchBreakdownTool(mode){
@@ -1972,10 +1967,8 @@
       return false;
     }
     if(activeVideoResumeTimer) clearInterval(activeVideoResumeTimer);
-    _setGenerateBusy(genVideoBtn,true);
     if(bdRemakeBtn) _setGenerateBusy(bdRemakeBtn,true);
     function finishButtons(){
-      _setGenerateBusy(genVideoBtn,false);
       if(bdRemakeBtn) _setGenerateBusy(bdRemakeBtn,false);
     }
     function check(){
@@ -2121,28 +2114,6 @@
         },3000);
       }).catch(function(){ _setGenerateBusy(btn,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">网络错误，请重试</div>'; });
   }
-  if(genVideoBtn){ genVideoBtn.onclick=function(e){
-    e.preventDefault();
-    var list=getDisplayedScenes();
-    if(!list.length){ location.href='video.html'; return; }
-    var hasScenes=list.some(function(s){ return (s.scene||'').trim(); });
-    if(!hasScenes){ if(window.HQ&&window.HQ.toast) HQ.toast('脚本中没有画面描述'); return; }
-    if(!_confirmDramaVideo(list)) return;
-    _doGenerate({scenes:list,style:'剧情',duration:_dramaDuration(list)},genVideoBtn);
-  }; }
-  if(genAudioBtn){ genAudioBtn.onclick=function(e){
-    e.preventDefault();
-    var list=getDisplayedScenes();
-    if(!list.length){ location.href='video.html'; return; }
-    var hasLines=list.some(function(s){ return (s.line||'').trim(); });
-    if(!hasLines){ if(window.HQ&&window.HQ.toast) HQ.toast('脚本中没有口播文案'); return; }
-    var talkingStyle=lastStyle==='剧情'?'口播':(lastStyle||'口播');
-    _showAvatarPicker(function(avatarId){
-      _pickVoice(function(voice){
-        _doGenerate({scenes:list,style:talkingStyle,avatar_id:avatarId,voice:voice},genAudioBtn);
-      });
-    });
-  }; }
   if(bdRemakeBtn){ bdRemakeBtn.onclick=function(e){
     e.preventDefault();
     var scenes, isReverse=isBreakdownReverseTool();
