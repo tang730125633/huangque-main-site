@@ -124,6 +124,8 @@ huangque-web/    遗留副本，请勿修改
 
 获客系统的来源、混合部署方式和风控经验见 [`docs/获客系统-douyin-leadgen.md`](docs/获客系统-douyin-leadgen.md)。
 
+IP12 Agent 的架构、六 Skill、状态合同、本地练习场、测试和其他 Agent 接手边界见 [`docs/ip12-agent/README.md`](docs/ip12-agent/README.md)。
+
 ## 安全红线
 
 - 密钥、密码、Cookie、数据库、用户数据与生成产物永不进入 Git。
