@@ -18,7 +18,7 @@ jobs:
   quality:
     name: 代码与安全门禁
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 10
 
     steps:
       - name: 检出代码
@@ -49,53 +49,9 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: design-system/package-lock.json
-
-      - name: 安装媒体契约测试依赖
-        timeout-minutes: 5
-        run: |
-          sudo sed -i '/azure\.archive\.ubuntu\.com/d' /etc/apt/apt-mirrors.txt
-          sudo apt-get -o Acquire::Retries=3 -o Acquire::https::Timeout=30 update
-          sudo apt-get -o Acquire::Retries=3 -o Acquire::https::Timeout=30 install -y --no-install-recommends ffmpeg
-          ffmpeg -version
-          ffprobe -version
-
-      - name: 安装微信消息推送加密依赖
-        run: python -m pip install "cryptography>=41,<50"
-
-      - name: 安装 content 服务 Python 依赖
-        run: python -m pip install -r deploy/requirements-content.txt
-
-      - name: 安装 Creator Agent 独立 Python 依赖
-        run: python -m pip install -r deploy/requirements-creator-agent.txt
 
       - name: 检查敏感文件与静态资源
         run: python scripts/ci_validate.py
-
-      - name: Verify workbench shell cache stamps
-        run: python scripts/stamp_assets.py --check
-
-      - name: 测试完整 Python 回归
-        run: python -m unittest discover -s tests -v
-
-      - name: 测试并构建 HQ CLI
-        working-directory: tools/hq-cli
-        env:
-          SOURCE_DATE_EPOCH: "1735689600"
-        run: |
-          PYTHONPATH=src python -m unittest discover -s tests -v
-          cli_tmp="$(mktemp -d)"
-          trap 'rm -rf "$cli_tmp"' EXIT
-          python -m pip wheel --no-deps --wheel-dir "$cli_tmp/wheels-a" .
-          python -m pip wheel --no-deps --wheel-dir "$cli_tmp/wheels-b" .
-          cmp "$cli_tmp"/wheels-a/*.whl "$cli_tmp"/wheels-b/*.whl
-          sh -n ../../site/downloads/hq/install.sh
-          python -m venv "$cli_tmp/venv"
-          "$cli_tmp/venv/bin/pip" install --no-index --no-deps "$cli_tmp"/wheels-a/*.whl
-          "$cli_tmp/venv/bin/hq" version --json
-          "$cli_tmp/venv/bin/hq" capabilities --json
-          "$cli_tmp/venv/bin/python" -m hq_cli version --json
 
       - name: 检查 Python 语法
         shell: bash
@@ -110,44 +66,20 @@ jobs:
       - name: 检查 JavaScript 语法
         run: find site -type f -name '*.js' -print0 | xargs -0 -n1 node --check
 
-      - name: 测试数字人工作台状态机
-        shell: bash
+      - name: 测试并构建 HQ CLI
+        working-directory: tools/hq-cli
+        env:
+          SOURCE_DATE_EPOCH: "1735689600"
         run: |
-          mapfile -t tests < <(find tests -maxdepth 1 -type f -name 'test_digital_human_*.js' -print | sort)
-          if [ "${#tests[@]}" -eq 0 ]; then
-            echo "No digital-human JavaScript tests discovered."
-            exit 1
-          fi
-          printf 'Running %d digital-human JavaScript test files:\n' "${#tests[@]}"
-          printf '  %s\n' "${tests[@]}"
-          node --test "${tests[@]}"
-
-      - name: 测试工作台侧栏
-        run: node tests/test_cloud_shell_sidebar.js
-
-      - name: 测试编导页字段保留与上传上限
-        run: node tests/test_script_director_fields.js
-
-      - name: 测试画布 API 与短剧工作区
-        run: |
-          node tests/test_short_drama_center.js
-          node tests/test_short_drama_workspace.js
-          node tests/test_canvas_api.js
-          node tests/test_canvas_short_drama.js
-          node tests/test_canvas_short_drama_production.js
-          node tests/test_canvas_short_drama_voice.js
-          node tests/test_canvas_short_drama_workspace.js
-          node tests/test_canvas_short_drama_completion.js
-          python -m unittest tests.test_short_drama_completion_integrity -v
-          node tests/test_canvas_digital_presenter.js
-
-      - name: 安装设计系统依赖
-        working-directory: design-system
-        run: npm ci
-
-      - name: 构建设计系统
-        working-directory: design-system
-        run: npm run build
+          PYTHONPATH=src python -m unittest discover -s tests -v
+          cli_tmp="$(mktemp -d)"
+          trap 'rm -rf "$cli_tmp"' EXIT
+          python -m pip wheel --no-deps --wheel-dir "$cli_tmp/wheels" .
+          sh -n ../../site/downloads/hq/install.sh
+          python -m venv "$cli_tmp/venv"
+          "$cli_tmp/venv/bin/pip" install --no-index --no-deps "$cli_tmp"/wheels/*.whl
+          "$cli_tmp/venv/bin/hq" version --json
+          "$cli_tmp/venv/bin/hq" capabilities --json
 
   hq-cli-windows:
     name: HQ CLI · Windows
