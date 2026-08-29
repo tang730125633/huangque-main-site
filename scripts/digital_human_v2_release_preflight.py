@@ -19,7 +19,10 @@ sys.path.insert(0, str(_module_root(ROOT)))
 
 
 EXPECTED_LIBRARY_ROOT = "/home/ubuntu/material-libraries/huangque-media"
-EXPECTED_LIBRARY_COUNT = 204
+EXPECTED_LIBRARY_COUNT = 318
+EXPECTED_LIBRARY_INDEX_SHA256 = (
+    "d06b28d955603ee3a7f0d53865b8c475cd463bb282b01ddfedab2b7404f8240a"
+)
 EXPECTED_LIBRARY_PRIMARY_HOST = "8.148.158.106"
 EXPECTED_LIBRARY_PRIMARY_ROOT = "/home/ubuntu/material-libraries/huangque-media"
 EXPECTED_WHISPER_MODEL = "small"
@@ -104,6 +107,8 @@ def _verify_material_mirror_provenance(root=None):
     digest = str(provenance.get("index_sha256") or "")
     if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
         raise PreflightError("digital-human material mirror digest is invalid")
+    if digest != EXPECTED_LIBRARY_INDEX_SHA256:
+        raise PreflightError("digital-human material mirror index is not locked")
     index_raw = _read_locked_regular(root / "index.jsonl", MAX_INDEX_BYTES)
     if hashlib.sha256(index_raw).hexdigest() != digest:
         raise PreflightError("digital-human material mirror index does not match source")

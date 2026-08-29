@@ -80,6 +80,20 @@ class DigitalHumanLocalMaterialLibraryTests(unittest.TestCase):
         self.assertNotIn("source_url", public)
         self.assertNotIn("file_token", public)
 
+    def test_operational_probe_defaults_to_production_contract(self):
+        records = [
+            {"media_type": "image"},
+            {"media_type": "video"},
+            {"media_type": "bgm"},
+        ]
+        with mock.patch.object(
+                self.domain, "_load_local_catalog",
+                return_value=(self.root, records)) as load:
+            with mock.patch.object(self.domain, "_read_local_record"):
+                result = self.domain.local_material_library_operational_probe()
+        load.assert_called_once_with(expected_count=318)
+        self.assertEqual(3, result["count"])
+
     def test_release_probe_can_verify_every_indexed_file(self):
         self.valid_three()
         with mock.patch.object(
