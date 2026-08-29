@@ -736,6 +736,7 @@ if (!rendered.includes("&lt;img") || !rendered.includes("<br>")) process.exit(5)
                 ChoiceValidationError=ChoiceValidationError,
                 is_choice_checkpoint=lambda module, step: int(module or 0) in {1, 2, 3} and int(step or 0) == 2,
                 duration_conflict_decision=lambda _state, _message: None,
+                intake_clarification_reply=lambda _state, _message: "",
             ),
             "_coach_model_decision": coach_model,
             "_persist_model_turn": persist_turn,

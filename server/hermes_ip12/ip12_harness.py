@@ -147,6 +147,53 @@ INTAKE_COVERAGE_LABELS = {
     "one_year_goal": "一年目标", "long_term_interest": "长期兴趣",
     "primary_platform": "主要发布平台", "desired_action": "希望用户采取的动作",
 }
+INTAKE_NATURAL_QUESTIONS = {
+    "preferred_name": "我平时怎么称呼你比较合适？",
+    "gender": "如果你愿意说，你的性别是？不想回答可以直接跳过。",
+    "age": "如果方便，你今年多大？不想回答可以直接跳过。",
+    "city": "你现在主要在哪个城市生活或工作？",
+    "mobile": "手机号不是必填项；如果你不想提供，直接说跳过就可以。",
+    "current_identity": "你现在主要在做什么工作，或者你会怎么介绍自己的身份？",
+    "experience_years": "这件事你大概做了多久？",
+    "previous_work_experience": "在现在这份工作之前，你还做过哪些工作或行业？",
+    "income_source": "你现在主要靠什么方式获得收入？比如接项目、卖产品、上班或提供服务。",
+    "income_range": "如果方便，你目前一年的收入大概在哪个区间？不想回答可以跳过。",
+    "biggest_setback": "你经历过最难熬的一段时期是什么？当时具体发生了什么？",
+    "biggest_achievement": "到现在为止，哪件事最让你有成就感？",
+    "most_praised": "别人平时最常夸你哪一点？",
+    "most_criticized": "别人最常吐槽你哪一点？没有也可以直接说没有。",
+    "core_skill_1": "如果只选一项，你最拿手、而且真实做出过结果的能力是什么？",
+    "core_skill_2": "除了刚才那项能力，你第二拿手的能力是什么？",
+    "niche": "你准备长期做哪一类内容？比如 AI 工具、Agent 搭建、职场或创业。",
+    "target_audience": "你最想长期帮助哪一类人？比如想学 AI 的新手、想靠 AI 接单的人，或者企业老板。",
+    "help_goal": "这类人现在最卡的具体问题是什么？你最希望先帮他们解决哪一件事？",
+    "differentiation": "如果别人也在讲同一个主题，你希望大家为什么更愿意听你？可以说经历、方法或表达方式上的不同。",
+    "content_account": "你现在有没有在运营小红书、抖音、视频号或其他内容账号？没有也可以直接说没有。",
+    "personality_traits": "如果用三个词形容你自己，你会选哪三个？",
+    "tone_preference": "你希望自己说话更像哪种感觉？比如真实聊天、经历复盘、直接干货或轻松幽默。",
+    "disliked_style": "你最反感哪种博主表达？比如卖惨、制造焦虑、说教或硬推销。",
+    "content_habits": "你平时在朋友圈或聊天里最常分享什么？",
+    "memorable_line": "如果别人只能记住你一句话，你最希望是哪一句？",
+    "self_intro": "请用一句最自然的话介绍自己，不用写得像广告。",
+    "trust_reason": "别人愿意相信你、找你帮忙，通常是因为什么？",
+    "story_comeback": "你有没有一次从很困难的处境里走出来的真实经历？",
+    "story_pitfall": "你踩过最深的一个坑是什么？后来学到了什么？",
+    "story_success": "你有没有一次明显的转折，做对了什么之后结果开始变好？",
+    "story_unusual": "你经历过最出乎意料、最有画面感的一件事是什么？没有可以直接说没有。",
+    "team_project_experience": "你带过团队或做过值得讲的项目吗？你在里面负责什么？",
+    "business_goal": "你做这个 IP 最想得到什么实际结果？比如建立影响力、获得咨询、接项目或卖服务。",
+    "time_budget": "你每周大概能拿出多少时间做内容？",
+    "offer": "你现在已经在卖什么产品或服务？如果还没有，接下来最想做什么？",
+    "three_month_goal": "三个月后，你希望看到一个什么可以数出来的结果？",
+    "one_year_goal": "一年后，你希望这件事发展到什么状态？",
+    "long_term_interest": "有哪些事情是你愿意长期研究，就算暂时不赚钱也会继续做的？",
+    "primary_platform": "你准备先重点做哪个平台？比如小红书、抖音或视频号。",
+    "desired_action": "别人看完你的内容后，你最希望他做什么？比如关注、私信、预约或购买。",
+}
+INTAKE_CLARIFICATION_RE = re.compile(
+    r"不(?:太)?理解|没听懂|什么意思|说详细|多说几|换个说法|解释(?:一下)?|"
+    r"这个问题.{0,8}(?:怎么答|问什么)|没有问完|没回答我|问东答西|刚才的问题"
+)
 INTAKE_TOPIC_TO_FIELD = {
     "current_role": "current_identity",
     "experience_years": "experience_years",
@@ -362,6 +409,33 @@ def intake_follow_up_topic(reply):
             if re.search(pattern, segment):
                 return topic
     return ""
+
+
+def intake_natural_question(field, *, clarifying=False):
+    field = INTAKE_TOPIC_TO_FIELD.get(str(field or ""), str(field or ""))
+    question = INTAKE_NATURAL_QUESTIONS.get(field)
+    if not question:
+        label = INTAKE_COVERAGE_LABELS.get(field, "这部分经历")
+        question = "关于%s，你愿意结合一个真实情况具体说说吗？" % label
+    return ("可以，我换个更直白的说法：" if clarifying else "") + question
+
+
+def intake_clarification_reply(value, message):
+    state = normalize_state(value)
+    intake = state.get("intake") or {}
+    if (
+        intake.get("status") not in {"collecting", "editing"}
+        or not INTAKE_CLARIFICATION_RE.search(str(message or ""))
+    ):
+        return ""
+    field = str(intake.get("current_question_field") or "")
+    if not field:
+        field = str((intake.get("asked_follow_ups") or [""])[-1])
+    field = INTAKE_TOPIC_TO_FIELD.get(field, field)
+    if field not in INTAKE_FIELD_SET:
+        gaps = intake_coverage_gaps(state)
+        field = gaps[0] if gaps else ""
+    return intake_natural_question(field, clarifying=True)
 
 
 def _intake_has_core_profile(value, updates, evidence_text):
@@ -2184,19 +2258,19 @@ def apply_intake_decision(value, raw, evidence_text, current_message=""):
         if canonical_topic in intake.get("declined_fields", []):
             raise HarnessError("基础访谈追问了用户已经拒答的信息；请改问其他未回答项")
         if follow_up_topic in asked_follow_ups:
-            raise HarnessError("基础访谈重复追问了已经问过的可选信息；请改问其他未回答项，或直接整理现有资料")
+            if canonical_topic in coverage_gaps:
+                decision["reply"] = intake_natural_question(canonical_topic, clarifying=True)
+            else:
+                raise HarnessError("基础访谈重复追问了已经回答的信息；请改问其他未回答项")
         if coverage_gaps and (not follow_up_topic or canonical_topic not in coverage_gaps):
             remaining = [field for field in coverage_gaps if field not in asked_canonical]
             if not remaining:
-                raise HarnessError("采集表仍有未回答项，但所有项目都已询问；请让用户明确回答或跳过")
+                remaining = list(coverage_gaps)
             canonical_topic = follow_up_topic = remaining[0]
-            decision["reply"] = (
-                "我已记下你这轮补充。接下来想了解“%s”，"
-                "请按真实情况说说；不方便可以明确跳过。"
-                % INTAKE_COVERAGE_LABELS[canonical_topic]
-            )
-        if follow_up_topic:
+            decision["reply"] = intake_natural_question(canonical_topic)
+        if follow_up_topic and follow_up_topic not in asked_follow_ups:
             asked_follow_ups.append(follow_up_topic)
+        intake["current_question_field"] = canonical_topic
         if merged_updates:
             intake["profile_updates"] = list(merged_updates.values())
         if intake["status"] == "awaiting_confirmation":
