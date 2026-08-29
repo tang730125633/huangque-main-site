@@ -104,7 +104,7 @@ class DigitalHumanReleasePreflightTests(unittest.TestCase):
             return_value={"index_sha256": "a" * 64, "source_host": "8.148.158.106"},
         ) as mirror, mock.patch.object(
             digital_human_v2, "local_material_library_operational_probe",
-            return_value={"count": 204, "verified_files": 204},
+            return_value={"count": 318, "verified_files": 318},
         ) as library, mock.patch.object(
             video, "subtitle_runtime_preflight",
             return_value={"ok": True, "model": "small"},
@@ -113,7 +113,7 @@ class DigitalHumanReleasePreflightTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual("a" * 64, result["library_index_sha256"])
         self.assertEqual(2, mirror.call_count)
-        library.assert_called_once_with(204, verify_all=True)
+        library.assert_called_once_with(318, verify_all=True)
         subtitle.assert_called_once_with()
         provider.heygen_upload_preflight.assert_called_once_with()
 
@@ -145,7 +145,7 @@ class DigitalHumanReleasePreflightTests(unittest.TestCase):
             return_value={"index_sha256": "a" * 64, "source_host": "8.148.158.106"},
         ), mock.patch.object(
             digital_human_v2, "local_material_library_operational_probe",
-            return_value={"count": 204, "verified_files": 204},
+            return_value={"count": 318, "verified_files": 318},
         ), mock.patch.object(
             video, "subtitle_runtime_preflight",
             return_value={"ok": True, "model": "small"},

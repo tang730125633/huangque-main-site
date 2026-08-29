@@ -21,7 +21,7 @@ python3 scripts/digital_human_material_mirror_release.py build \
   --output-root /home/ubuntu/releases/digital-human-materials
 ```
 
-The builder validates all 204 indexed files and emits only `manifest.json` and
+The builder validates all 318 indexed files and emits only `manifest.json` and
 `bundle.tar.gz`. The manifest locks the source host/root, production mirror
 root, entry count, index digest, bundle digest, file count, and payload size.
 The release directory is content-addressed by the index digest and cannot be
@@ -62,7 +62,7 @@ rejects a missing, extra, malformed, drifting, or differently sourced record.
 Retain the reported backup until post-release acceptance is complete. No
 customer request may select a server path.
 
-The gate is fail-closed and checks that locked 204-entry mirror, the production
+The gate is fail-closed and checks that locked 318-entry mirror, the production
 `ubuntu` user's existing offline faster-whisper small cache at
 `/home/ubuntu/.cache/huggingface/hub`, the installed `Noto Sans SC` Chinese
 glyph coverage, required FFmpeg encoders and filters, output access, and the

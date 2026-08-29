@@ -19,7 +19,7 @@ sys.path.insert(0, str(_module_root(ROOT)))
 
 
 EXPECTED_LIBRARY_ROOT = "/home/ubuntu/material-libraries/huangque-media"
-EXPECTED_LIBRARY_COUNT = 204
+EXPECTED_LIBRARY_COUNT = 318
 EXPECTED_LIBRARY_PRIMARY_HOST = "8.148.158.106"
 EXPECTED_LIBRARY_PRIMARY_ROOT = "/home/ubuntu/material-libraries/huangque-media"
 EXPECTED_WHISPER_MODEL = "small"
