@@ -1023,7 +1023,7 @@ SCRIPT_FUNCTIONS = [
         "name": "脚本结果生产",
         "desc": "把当前脚本或拆解结果继续生成剧情视频、数字人口播、同款视频或图片",
         "order": 30,
-        "frontend_selector": "#scGenVideo, #scGenAudio, #bdRemakeBtn, #bdToImageBtn",
+        "frontend_selector": "#bdRemakeBtn, #bdToImageBtn",
         "service": "content",
         "modes": [
             {
