@@ -116,6 +116,7 @@ CONFIRMATION_ACTIONS = frozenset({
     "canvas-delete", "asset-favorite", "asset-tags", "asset-delete", "video-compose-create", "video-compose-analyze",
     "video-compose-review", "video-compose-render", "video-compose-delete", "digital-presenter-create",
     "digital-presenter-update", "digital-presenter-delete", "voice-clone-create",
+    "video-avatar-create",
     "inspiration-like", "leads-crm-upsert", "leads-delete",
     "short-drama-create", "short-drama-delete",
     "digital-ip-create", "digital-ip-update", "digital-ip-delete",
@@ -145,6 +146,7 @@ _ACTION_INPUTS = {
     "collect-content": ("url",), "collect-video": ("url",), "collect-transcript": ("url",),
     "collect-search": ("platform", "keyword", "page"), "leads-generate": ("url", "platform", "pages", "channels_targets"),
     "video-avatars": ("limit",), "audio-slots": (),
+    "video-avatar-create": ("image_data", "name"),
     "voice-clone-create": ("slot_id", "name", "audio_upload_id"),
     "voice-clone-status": ("slot_id",),
     "short-drama-projects": ("page", "page_size"),
@@ -213,6 +215,7 @@ _ACTION_PURPOSES = {
     "digital-ip-create": "创建本人数字 IP 项目",
     "digital-ip-update": "更新本人数字 IP 项目",
     "digital-ip-delete": "删除本人数字 IP 项目",
+    "video-avatar-create": "上传本人照片创建数字人形象",
     "voice-clone-create": "用本人样音创建或重新录制个人克隆音色",
     "voice-clone-status": "读取个人克隆音色处理状态",
     "image-generate": "生成图片", "video-generate": "生成视频", "video-lipsync": "让本人原视频匹配新口播音频",
@@ -642,6 +645,15 @@ _MEDIA_SCHEMAS.update({
     "video-avatars": {"required": [], "properties": {
         "limit": {"type": "integer", "minimum": 1, "maximum": 120},
     }, "constraints": []},
+    "video-avatar-create": {"required": ["image_data"], "properties": {
+        "image_data": {"type": "string", "minLength": 32, "maxLength": 12 * 1024 * 1024,
+                       "description": "本人真人照片的 data URL（jpg/png/webp，正脸清晰、光线充足）"},
+        "name": {"type": "string", "minLength": 1, "maxLength": 40},
+    }, "constraints": [
+        "照片必须是本人或获得授权的人像；创建后可在数字人口播/剧情视频中反复使用",
+        "创建数字人形象按 avatar.create 计费，先报价、确认后扣点提交",
+        "提交后轮询 video-avatars 直到 status 变为 ready（约 30 秒）",
+    ]},
     "video-compose-projects": {"required": [], "properties": {}, "constraints": []},
     "video-compose-project": {"required": ["project_id"], "properties": {
         "project_id": {"type": "string", "pattern": "^compose_[0-9a-f]{32}$"},
@@ -737,6 +749,7 @@ _FAMILIES = {
     "image-upload": "image", "image-generate": "image", "audio-slots": "audio", "voices": "audio", "audio-generate": "audio",
     "voice-clone-create": "audio", "voice-clone-status": "audio",
     "video-upload": "video", "video-avatars": "video", "video-generate": "video", "video-lipsync": "video", "digital-ip-text-generate": "video",
+    "video-avatar-create": "video",
     "digital-ip-batch-generate": "video", "digital-ip-audio-generate": "video", "cinematic-open-generate": "video",
     "cinematic-motion-generate": "video", "tryon-fast-generate": "video", "tryon-classic-generate": "video",
     "video-compose-projects": "video", "video-compose-project": "video", "video-compose-create": "video",
@@ -754,6 +767,7 @@ _ACTION_FEATURE_GATES = {
     "director-script-generate": ("copy",), "director-breakdown": ("breakdown",),
     "director-scene-image-generate": ("image",),
     "audio-generate": ("audio",), "voice-clone-create": ("audio",), "voice-clone-status": ("audio",),
+    "video-avatar-create": ("avatar",),
     "canvas-agent-plan": ("canvas_agent",),
     "video-lipsync": ("video",), "digital-ip-text-generate": ("video",), "digital-ip-batch-generate": ("video",),
     "digital-ip-audio-generate": ("video",), "cinematic-open-generate": ("cinematic",),
@@ -778,7 +792,7 @@ _GENERATION_ACTIONS = frozenset({
     "canvas-agent-plan", "image-generate", "video-generate", "video-lipsync", "audio-generate",
     "digital-ip-text-generate", "digital-ip-batch-generate", "digital-ip-audio-generate",
     "cinematic-open-generate", "cinematic-motion-generate", "tryon-fast-generate", "tryon-classic-generate",
-    "text-video-generate",
+    "text-video-generate", "video-avatar-create",
     "matrix-template-generate", "matrix-template-batch-generate",
 })
 
@@ -2481,7 +2495,8 @@ def action_plan(action, value):
             "video-lipsync",
             "digital-ip-text-generate", "digital-ip-batch-generate", "digital-ip-audio-generate",
             "cinematic-open-generate", "cinematic-motion-generate",
-            "tryon-fast-generate", "tryon-classic-generate"}:
+            "tryon-fast-generate", "tryon-classic-generate",
+            "video-avatar-create"}:
         payload, generation_kind, endpoint = _generation_payload(action, value)
         return _plan("generation:quote", "generation", generation_kind=generation_kind,
                      endpoint=endpoint, payload=payload)
@@ -2489,6 +2504,15 @@ def action_plan(action, value):
 
 
 def _generation_payload(action, value):
+    if action == "video-avatar-create":
+        _strict_object(value, {"image_data", "name"}, ("image_data",))
+        image_data = _string(value["image_data"], "image_data", 32, 12 * 1024 * 1024)
+        if not image_data.startswith("data:image/"):
+            raise CLIAPIError(400, "image_data 必须是图片 data URL（jpg/png/webp）")
+        body = {"image_data": image_data}
+        if "name" in value:
+            body["name"] = _string(value["name"], "name", 1, 40)
+        return body, "avatar", "/api/gen/avatar"
     if action == "video-lipsync":
         _strict_object(
             value,
