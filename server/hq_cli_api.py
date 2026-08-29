@@ -116,7 +116,6 @@ CONFIRMATION_ACTIONS = frozenset({
     "canvas-delete", "asset-favorite", "asset-tags", "asset-delete", "video-compose-create", "video-compose-analyze",
     "video-compose-review", "video-compose-render", "video-compose-delete", "digital-presenter-create",
     "digital-presenter-update", "digital-presenter-delete", "voice-clone-create",
-    "video-avatar-create",
     "inspiration-like", "leads-crm-upsert", "leads-delete",
     "short-drama-create", "short-drama-delete",
     "digital-ip-create", "digital-ip-update", "digital-ip-delete",
