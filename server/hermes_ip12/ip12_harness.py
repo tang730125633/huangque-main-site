@@ -1794,7 +1794,14 @@ def validate_model_decision(
         ):
             raise HarnessError("模块 1 已有经历、能力、兴趣、目标人群和帮助目标，必须直接提炼候选关键词")
         if state["current_module"] == 2 and "1" in confirmed_modules:
-            raise HarnessError("模块 1 已确认，必须从已有经历、行为和价值观直接提炼人格候选")
+            # 模块 2 名下字段未齐时允许先采集（ask_follow_up），补齐后才必须直接提炼
+            module2_statuses = intake_field_statuses(state)
+            missing_module2 = [
+                field for field in MODULE_FIELD_OWNERSHIP[2]
+                if module2_statuses.get(field) == "unknown"
+            ]
+            if not missing_module2:
+                raise HarnessError("模块 1 已确认，必须从已有经历、行为和价值观直接提炼人格候选")
         if state["current_module"] == 3 and (
             {"1", "2"}.issubset(confirmed_modules)
             or (
