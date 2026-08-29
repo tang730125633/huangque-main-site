@@ -4,7 +4,7 @@ const vm = require('vm');
 
 class ClassList { constructor(){this.names=new Set()} add(x){this.names.add(x)} remove(x){this.names.delete(x)} toggle(x,on){if(on)this.add(x);else this.remove(x)} }
 class Element {
-  constructor(tag='div',id=''){this.tagName=tag.toUpperCase();this.id=id;this.value='';this.checked=false;this.disabled=false;this.children=[];this.style={};this.attributes={};this.listeners={};this.classList=new ClassList();this._text='';this.href='';this.src='';this.preload='';this.loadCount=0;this.pauseCount=0}
+  constructor(tag='div',id=''){this.tagName=tag.toUpperCase();this.id=id;this.value='';this.checked=false;this.disabled=false;this.children=[];this.style={};this.attributes={};this.listeners={};this.classList=new ClassList();this._text='';this.href='';this.src='';this.preload='';this.loadCount=0;this.pauseCount=0;this.onerror=null;this.onloadeddata=null;this.oncanplay=null;this._hqMediaRetryTimer=0}
   get textContent(){return this._text} set textContent(v){this._text=String(v);if(v==='')this.children=[]}
   set innerHTML(v){this._html=String(v)} get innerHTML(){return this._html||''}
   appendChild(x){this.children.push(x);return x} setAttribute(k,v){this.attributes[k]=String(v)}
@@ -35,10 +35,11 @@ function createRuntime(plan, storage){
     }
     return Promise.resolve(response(200,{}));
   };
-  const document={getElementById:get,createElement:t=>new Element(t),documentElement:{scrollWidth:390}};
-  const context={document,window:null,fetch,sessionStorage,location:{href:''},confirm:()=>true,crypto:{randomUUID:()=>`uuid-${++uuidCount}`},Date,Math,JSON,Promise,Object,Array,String,Error,console,clearTimeout:()=>{},setTimeout:fn=>(timers.push(fn),timers.length)};
+  const documentListeners={};const windowListeners={};
+  const document={getElementById:get,createElement:t=>new Element(t),documentElement:{scrollWidth:390},hidden:false,addEventListener:(k,fn)=>{(documentListeners[k]||=[]).push(fn)}};
+  const context={document,window:null,fetch,sessionStorage,location:{href:''},confirm:()=>true,crypto:{randomUUID:()=>`uuid-${++uuidCount}`},Date,Math,JSON,Promise,Object,Array,String,Error,console,clearTimeout:()=>{},setTimeout:fn=>(timers.push(fn),timers.length),addEventListener:(k,fn)=>{(windowListeners[k]||=[]).push(fn)}};
   context.window=context;vm.createContext(context);vm.runInContext(source,context);
-  return {get,requests,timers,storage,runTimer:async()=>{const fn=timers.shift();if(fn){fn();await flush()}},flush};
+  return {get,requests,timers,storage,runTimer:async()=>{const fn=timers.shift();if(fn){fn();await flush()}},triggerWindow:async name=>{for(const fn of windowListeners[name]||[])fn();await flush()},triggerDocument:async name=>{for(const fn of documentListeners[name]||[])fn();await flush()},flush};
 }
 
 async function fillAndSubmit(runtime){
@@ -90,6 +91,27 @@ async function scenarioDelayedResultUrl(){
   return {before,polls:runtime.requests.poll.length,src:video.src,display:video.style.display,loads:video.loadCount,cleared:pendingCleared(storage)};
 }
 
+async function scenarioLongDelayedResultUrl(){
+  const storage=new Map();
+  const runtime=createRuntime({post:()=>Promise.resolve(response(200,{job_id:17})),poll:i=>Promise.resolve(response(200,{status:'done',result:i>=8?{video_url:'/slow-video',duration:8}:{duration:8}}))},storage);
+  await fillAndSubmit(runtime);await flush(20);for(let i=0;i<8;i++)await runtime.runTimer();await flush(20);const video=runtime.get('video');
+  return {polls:runtime.requests.poll.length,src:video.src,loads:video.loadCount,status:runtime.get('status').textContent,cleared:pendingCleared(storage)};
+}
+
+async function scenarioForegroundResume(){
+  const storage=new Map();
+  const runtime=createRuntime({post:()=>Promise.resolve(response(200,{job_id:15})),poll:i=>Promise.resolve(response(200,i?{status:'done',result:{video_url:'/focus-video',duration:8}}:{status:'pending'}))},storage);
+  await fillAndSubmit(runtime);await flush(20);const before={polls:runtime.requests.poll.length,loads:runtime.get('video').loadCount,cleared:pendingCleared(storage)};await runtime.triggerWindow('focus');await flush(20);const video=runtime.get('video');
+  return {before,polls:runtime.requests.poll.length,src:video.src,display:video.style.display,loads:video.loadCount,cleared:pendingCleared(storage)};
+}
+
+async function scenarioMediaRetry(){
+  const storage=new Map();
+  const runtime=createRuntime({post:()=>Promise.resolve(response(200,{job_id:16})),poll:()=>Promise.resolve(response(200,{status:'done',result:{video_url:'/retry-video',duration:8}}))},storage);
+  await fillAndSubmit(runtime);await flush(20);const video=runtime.get('video'),before={src:video.src,loads:video.loadCount,preload:video.preload};video.onerror();await runtime.runTimer();await flush(20);const after={src:video.src,loads:video.loadCount};if(video.onloadeddata)video.onloadeddata();
+  return {before,after,download:runtime.get('download').href,cleared:pendingCleared(storage)};
+}
+
 async function scenarioLivePreview(){
   const runtime=createRuntime({post:()=>Promise.reject(new Error('unused')),poll:()=>Promise.reject(new Error('unused'))},new Map());
   await flush();runtime.get('topText').value='实时标题';runtime.get('bottomText').value='实时行动文案';runtime.get('topText').listeners.input[0]();runtime.get('bottomText').listeners.input[0]();runtime.get('templateGrid').children[1].onclick();
@@ -112,7 +134,7 @@ async function scenarioBatchFive(){
     poll:(i)=>Promise.resolve(response(200,{status:'done',result:{video_url:'/video-'+i,duration:8+i/10}})),
   },storage);
   await flush();runtime.get('batchCount').value='5';await fillAndSubmit(runtime);await flush(30);
-  return {posts:runtime.requests.post.length,polls:runtime.requests.poll.length,keys:runtime.requests.post.map(x=>x.options.headers['Idempotency-Key']),bodies:runtime.requests.post.map(x=>JSON.parse(x.options.body)),cards:runtime.get('batchResults').children.length,cleared:pendingCleared(storage)};
+  const cards=runtime.get('batchResults').children;return {posts:runtime.requests.post.length,polls:runtime.requests.poll.length,keys:runtime.requests.post.map(x=>x.options.headers['Idempotency-Key']),bodies:runtime.requests.post.map(x=>JSON.parse(x.options.body)),cards:cards.length,preloads:cards.map(card=>card.children.find(child=>child.tagName==='VIDEO').preload),loads:cards.map(card=>card.children.find(child=>child.tagName==='VIDEO').loadCount),cleared:pendingCleared(storage)};
 }
 async function scenarioLegacyPending(){
   const storage=new Map([['hq-matrix-template-pending-v1',JSON.stringify({key:'legacy-key',body:{top_text:'旧标题',bottom_text:'旧行动文案',template_id:'native-bold',bgm:true},job_id:88,started_at:1})]]);
@@ -142,5 +164,5 @@ async function scenarioRefundPendingThenConfirmed(){
   await fillAndSubmit(runtime);await flush(20);var card=runtime.get('batchResults').children[0],before=card.children[2].textContent;await runtime.runTimer();await flush(20);card=runtime.get('batchResults').children[0];return {polls:runtime.requests.poll.length,before,after:card.children[2].textContent,title:card.children[0].textContent,cards:runtime.get('batchResults').children.length,cleared:pendingCleared(storage)};
 }
 
-async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure,instantResult:scenarioInstantResult,delayedResultUrl:scenarioDelayedResultUrl,livePreview:scenarioLivePreview,fontSelect:scenarioFontSelect,lockedFont:scenarioLockedFont,batchFive:scenarioBatchFive,legacyPending:scenarioLegacyPending,mixedFailureReload:scenarioMixedFailureReload,jobFailureRefund:scenarioJobFailureRefund,refundPendingThenConfirmed:scenarioRefundPendingThenConfirmed};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}
+async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure,instantResult:scenarioInstantResult,delayedResultUrl:scenarioDelayedResultUrl,longDelayedResultUrl:scenarioLongDelayedResultUrl,foregroundResume:scenarioForegroundResume,mediaRetry:scenarioMediaRetry,livePreview:scenarioLivePreview,fontSelect:scenarioFontSelect,lockedFont:scenarioLockedFont,batchFive:scenarioBatchFive,legacyPending:scenarioLegacyPending,mixedFailureReload:scenarioMixedFailureReload,jobFailureRefund:scenarioJobFailureRefund,refundPendingThenConfirmed:scenarioRefundPendingThenConfirmed};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}
 main().catch(e=>{console.error(e.stack||e);process.exitCode=1});
