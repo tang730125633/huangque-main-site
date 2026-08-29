@@ -104,6 +104,14 @@ class IP12HarnessActionsUITests(unittest.TestCase):
                 self.assertIn("foundation_review", send_message)
                 self.assertIn("foundationEditing", send_message)
 
+    def test_module_four_is_not_visually_complete_before_pdf_artifact_exists(self):
+        for filename in ("index.html", "index_clean.html"):
+            with self.subTest(filename=filename):
+                source = (TEMPLATES / filename).read_text(encoding="utf-8")
+                self.assertIn("visibleDone", source)
+                self.assertIn("'awaiting_confirmation','confirmed'", source)
+                self.assertIn("id!==4", source)
+
     def test_content_pack_targets_one_script_from_both_views(self):
         for filename in ("index.html", "index_clean.html"):
             with self.subTest(filename=filename):
@@ -177,6 +185,9 @@ class IP12HarnessActionsUITests(unittest.TestCase):
         self.assertNotIn("openFirstContentScript", send_turn)
         self.assertIn("showArtifactNotice(data)", send_turn)
         self.assertIn("第一个交付物已放到对应诊断模块下方", source)
+        notice = source[source.index("function showArtifactNotice"):source.index("async function generateFoundationReport")]
+        self.assertIn("#chatArea .harness-actions", notice)
+        self.assertIn("attachHarnessActions(currentActions()", notice)
 
     def test_project_switch_closes_stale_production_panel_and_media_is_compact(self):
         source = (TEMPLATES / "index.html").read_text(encoding="utf-8")
