@@ -156,7 +156,9 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual(200, status, payload)
         self.assertEqual(self.auth.hq_cli_api.ACTION_CATALOG_VERSION, payload["version"])
         actions = {item["action"]: item for item in payload["actions"]}
-        self.assertEqual(set(self.auth.hq_cli_api._ACTION_INPUTS) | {"image-upload", "video-upload", "audio-upload"}, set(actions))
+        self.assertEqual(set(self.auth.hq_cli_api._ACTION_INPUTS) | {
+            "image-upload", "video-upload", "audio-upload", "director-breakdown-upload",
+        }, set(actions))
         for action, item in actions.items():
             with self.subTest(action=action):
                 self.assertEqual("object", item["input_schema"]["type"])
@@ -791,6 +793,51 @@ class HQCLIAPITests(unittest.TestCase):
             self.assertEqual(0, connection.execute(
                 "SELECT COUNT(*) FROM tokens WHERE token=?", (captured["web_token"],)
             ).fetchone()[0])
+
+    def test_director_breakdown_upload_uses_director_scope_and_dedicated_proxy(self):
+        raw = b"\x89PNG\r\n\x1a\n" + b"director-reference"
+        denied = self._token(["assets:upload"])
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_director_breakdown_upload") as proxy:
+            status, payload = self._raw_request(
+                "/api/auth/cli/director-breakdown-image", raw, token=denied,
+                extra_headers={"X-HQ-File-Name": "reference.png"},
+            )
+        self.assertEqual(403, status)
+        self.assertEqual("insufficient_scope", payload["code"])
+        proxy.assert_not_called()
+
+        token = self._token(["director:generate"])
+        status, payload = self._raw_request(
+            "/api/auth/cli/director-breakdown-image", raw, token=token, confirm=False,
+            extra_headers={"X-HQ-File-Name": "reference.png"},
+        )
+        self.assertEqual(409, status)
+        self.assertEqual("confirmation_required", payload["code"])
+
+        captured = {}
+
+        def fake_upload(stream, length, web_token, internal_token, content_type, digest,
+                        kind, filename):
+            captured.update(
+                raw=stream.read(length), web_token=web_token, internal_token=internal_token,
+                content_type=content_type, digest=digest, kind=kind, filename=filename,
+            )
+            return 200, {"ok": True, "result": {"reverse_prompt": "a presenter"}}
+
+        with mock.patch.object(
+            self.auth.hq_cli_api, "proxy_director_breakdown_upload", side_effect=fake_upload,
+        ):
+            status, payload = self._raw_request(
+                "/api/auth/cli/director-breakdown-image", raw, token=token,
+                extra_headers={"X-HQ-File-Name": "reference.png"},
+            )
+        self.assertEqual(200, status, payload)
+        self.assertEqual(raw, captured["raw"])
+        self.assertEqual("image/png", captured["content_type"])
+        self.assertEqual("image", captured["kind"])
+        self.assertEqual("reference.png", captured["filename"])
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), payload["sha256"])
+        self.assertEqual(self.auth.INTERNAL_TOKEN, captured["internal_token"])
 
     def test_ip12_internal_upload_reuses_account_bound_streaming_gateway(self):
         self._enable_ip12_bridge()
@@ -2039,11 +2086,15 @@ class HQCLIAPITests(unittest.TestCase):
         }, token=token)
         self.assertEqual(200, status, payload)
         self.assertEqual("director-workflow-contract-v1", payload["contract_version"])
-        self.assertEqual(3, payload["counts"]["available"])
+        self.assertEqual(5, payload["counts"]["available"])
         actions = {item["id"]: item for item in payload["actions"]}
         self.assertEqual("available", actions["director-capability"]["availability"])
         self.assertEqual("available", actions["director-script-generate"]["availability"])
         self.assertEqual("available", actions["director-breakdown"]["availability"])
+        self.assertEqual("available", actions["director-breakdown-upload"]["availability"])
+        self.assertEqual("available", actions["director-scene-image-generate"]["availability"])
+        self.assertEqual("planned", actions["director-scene-video-generate"]["availability"])
+        self.assertEqual("planned", actions["director-scene-talking-generate"]["availability"])
         self.assertEqual("planned", actions["director-production-start"]["availability"])
         self.assertEqual("quote_then_confirm", actions["director-production-start"]["billing"])
 

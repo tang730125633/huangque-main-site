@@ -130,6 +130,7 @@ _ACTION_INPUTS = {
     "account": (), "channels": (), "pricing": (), "director-capability": (),
     "director-script-generate": ("prompt", "style", "duration", "platform"),
     "director-breakdown": ("url", "urls", "mode"),
+    "director-scene-image-generate": ("scenes", "ratio", "quality"),
     "text-video-capability": (), "text-video-templates": (),
     "text-video-styles": (), "text-video-voices": (),
     "text-video-generate": ("text", "template", "mode", "style", "voice", "speech_rate", "talking_material"),
@@ -196,6 +197,8 @@ _ACTION_PURPOSES = {
     "director-capability": "读取编导与数字人一键生成的完整 CLI 覆盖契约",
     "director-script-generate": "按主站编导规则生成结构化脚本与分镜",
     "director-breakdown": "拆解抖音或小红书作品链接并生成分镜或反推提示词",
+    "director-breakdown-upload": "上传本地图片或视频并反推可复用提示词",
+    "director-scene-image-generate": "根据编导分镜画面描述生成图片",
     "ip12-projects": "读取本人 IP12 项目", "ip12-project": "读取本人 IP12 项目详情",
     "ip12-report": "读取本人 IP12 报告", "ip12-delete": "删除本人 IP12 项目",
     "canvas-list": "读取本人画布", "canvas-get": "读取本人画布详情",
@@ -559,6 +562,24 @@ _MEDIA_SCHEMAS.update({
                         "reverse_prompt accepts exactly one URL",
                         "paid action: quote first, then confirm the identical normalized input"],
     },
+    "director-scene-image-generate": {
+        "required": ["scenes"], "properties": {
+            "scenes": {"type": "array", "minItems": 1, "maxItems": 8, "items": {
+                "type": "object", "additionalProperties": False,
+                "properties": {
+                    "scene": {"type": "string", "maxLength": 2000},
+                    "line": {"type": "string", "maxLength": 2000},
+                    "dur": {"type": "number", "exclusiveMinimum": 0, "maximum": 180},
+                },
+            }},
+            "ratio": {"type": "string", "enum": ["9:16", "16:9", "1:1", "4:5", "5:4"]},
+            "quality": {"type": "string", "enum": ["standard", "hd"]},
+        }, "constraints": [
+            "at least one scene must contain a non-empty scene description",
+            "matches the Director page scene-image path",
+            "paid action: quote first, then confirm the identical normalized input",
+        ],
+    },
     "canvas-list": {"required": [], "properties": {
         "limit": {"type": "integer", "minimum": 1, "maximum": 100},
         "offset": {"type": "integer", "minimum": 0, "maximum": 100000},
@@ -711,7 +732,8 @@ _MEDIA_SCHEMAS.update({
 
 _FAMILIES = {
     "director-capability": "director", "director-script-generate": "director",
-    "director-breakdown": "director",
+    "director-breakdown": "director", "director-breakdown-upload": "director",
+    "director-scene-image-generate": "director",
     "image-upload": "image", "image-generate": "image", "audio-slots": "audio", "voices": "audio", "audio-generate": "audio",
     "voice-clone-create": "audio", "voice-clone-status": "audio",
     "video-upload": "video", "video-avatars": "video", "video-generate": "video", "video-lipsync": "video", "digital-ip-text-generate": "video",
@@ -730,6 +752,7 @@ _FAMILIES = {
 }
 _ACTION_FEATURE_GATES = {
     "director-script-generate": ("copy",), "director-breakdown": ("breakdown",),
+    "director-scene-image-generate": ("image",),
     "audio-generate": ("audio",), "voice-clone-create": ("audio",), "voice-clone-status": ("audio",),
     "canvas-agent-plan": ("canvas_agent",),
     "video-lipsync": ("video",), "digital-ip-text-generate": ("video",), "digital-ip-batch-generate": ("video",),
@@ -751,7 +774,7 @@ CATALOG_FEATURE_FLAGS = tuple(sorted({flag for flags in (*_ACTION_FEATURE_GATES.
 
 _GENERATION_ACTIONS = frozenset({
     "collect-content", "collect-video", "collect-transcript", "collect-search", "leads-generate",
-    "director-script-generate", "director-breakdown",
+    "director-script-generate", "director-breakdown", "director-scene-image-generate",
     "canvas-agent-plan", "image-generate", "video-generate", "video-lipsync", "audio-generate",
     "digital-ip-text-generate", "digital-ip-batch-generate", "digital-ip-audio-generate",
     "cinematic-open-generate", "cinematic-motion-generate", "tryon-fast-generate", "tryon-classic-generate",
@@ -844,6 +867,33 @@ def _upload_catalog_entry(action, family, max_bytes, mime_types, max_files):
     }
 
 
+def _director_breakdown_upload_catalog_entry():
+    return {
+        "action": "director-breakdown-upload", "family": "director",
+        "purpose": "上传本人本地图片或视频并创建提示词反推任务",
+        "input_schema": {"type": "object", "additionalProperties": False,
+                         "required": ["file"], "properties": {"file": {
+                             "type": "file", "path": "absolute",
+                             "maxBytes": 200 * 1024 * 1024,
+                             "mimeTypes": ["image/jpeg", "image/png", "image/webp",
+                                           "video/mp4", "video/quicktime", "video/webm"],
+                         }}},
+        "constraints": [
+            "requires explicit confirmation and immediately charges the current breakdown price",
+            "images are limited to 20 MiB; videos are limited to 200 MiB and 120 seconds",
+            "the upload is used only for the current account's reverse-prompt job",
+        ],
+        "billing": "fixed_confirm", "external_effect": True,
+        "confirmation_required": True, "risk": "production",
+        "result_type": "job", "result": {"kind": "job_id"},
+        "ui_route": "/workbench/script",
+        "transport": {"kind": "dedicated_upload", "supports": ["dedicated_upload"],
+                      "account_active_max_files": 2},
+        "availability": {"status": "available", "feature_flags": ["breakdown"],
+                         "disabled_feature_flags": []},
+    }
+
+
 ACTION_CATALOG = tuple(_catalog_entry(action, fields) for action, fields in _ACTION_INPUTS.items()) + (
     _upload_catalog_entry("image-upload", "image", 10 * 1024 * 1024,
                           ["image/jpeg", "image/png", "image/webp"], 20),
@@ -851,6 +901,7 @@ ACTION_CATALOG = tuple(_catalog_entry(action, fields) for action, fields in _ACT
                           ["video/mp4", "video/quicktime", "video/webm"], 6),
     _upload_catalog_entry("audio-upload", "audio", 10 * 1024 * 1024,
                           ["audio/mpeg", "audio/wav", "audio/x-wav", "audio/mp4", "audio/x-m4a", "audio/aac", "audio/ogg"], 20),
+    _director_breakdown_upload_catalog_entry(),
 )
 for _catalog_item in ACTION_CATALOG:
     if _catalog_item["action"] in _FAMILIES:
@@ -914,6 +965,9 @@ VIDEO_UPLOAD_MAX_BYTES = 32 * 1024 * 1024
 VIDEO_UPLOAD_SLOTS = threading.BoundedSemaphore(2)
 AUDIO_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
 AUDIO_UPLOAD_SLOTS = threading.BoundedSemaphore(2)
+DIRECTOR_BREAKDOWN_IMAGE_MAX_BYTES = 20 * 1024 * 1024
+DIRECTOR_BREAKDOWN_VIDEO_MAX_BYTES = 200 * 1024 * 1024
+DIRECTOR_BREAKDOWN_UPLOAD_SLOTS = threading.BoundedSemaphore(2)
 _TASK_KINDS = {
     "", "image", "audio", "video", "xiaole_video", "copy", "collect", "collect_search", "leads",
     "tryon", "cinematic", "avatar", "breakdown", "script_to_video", "sora_video",
@@ -1561,7 +1615,7 @@ def proxy_json(plan, web_token, internal_token=""):
 
 
 def _proxy_media_upload(stream, length, web_token, internal_token, content_type, digest,
-                        path, digest_header, label):
+                        path, digest_header, label, extra_headers=None):
     display = {"image": "图片", "video": "视频", "audio": "音频"}[label]
     if not internal_token:
         raise CLIAPIError(503, "CLI 内部授权未配置", "not_configured")
@@ -1578,6 +1632,8 @@ def _proxy_media_upload(stream, length, web_token, internal_token, content_type,
         connection.putheader("Content-Length", str(length))
         connection.putheader("Accept", "application/json")
         connection.putheader("User-Agent", "huangque-auth-cli-upload/1")
+        for key, value in (extra_headers or {}).items():
+            connection.putheader(key, value)
         connection.endheaders()
         remaining = length
         while remaining:
@@ -1623,6 +1679,19 @@ def proxy_audio_upload(stream, length, web_token, internal_token, content_type, 
     return _proxy_media_upload(
         stream, length, web_token, internal_token, content_type, digest,
         "/api/gen/cli/audio-upload", "X-HQ-Audio-SHA256", "audio",
+    )
+
+
+def proxy_director_breakdown_upload(stream, length, web_token, internal_token,
+                                    content_type, digest, media_type, filename):
+    if media_type not in {"image", "video"}:
+        raise CLIAPIError(400, "编导反推上传类型无效", "invalid_breakdown_upload")
+    digest_header = "X-HQ-Image-SHA256" if media_type == "image" else "X-HQ-Video-SHA256"
+    return _proxy_media_upload(
+        stream, length, web_token, internal_token, content_type, digest,
+        "/api/gen/breakdown/local-upload?media_type=" + media_type,
+        digest_header, media_type,
+        {"X-File-Name": urllib.parse.quote(filename, safe="._-")},
     )
 
 
@@ -1818,6 +1887,25 @@ def _leads_payload(value):
     }
 
 
+def _director_image_scenes(value):
+    if not isinstance(value, list) or not 1 <= len(value) <= 8:
+        raise CLIAPIError(400, "scenes 必须包含 1-8 个分镜")
+    normalized = []
+    for item in value:
+        _strict_object(item, {"scene", "line", "dur"})
+        scene = {}
+        if "scene" in item:
+            scene["scene"] = _string(item["scene"], "scene", 0, 2000)
+        if "line" in item:
+            scene["line"] = _string(item["line"], "line", 0, 2000)
+        if "dur" in item:
+            scene["dur"] = _number(item["dur"], "dur", 0.1, 180)
+        normalized.append(scene)
+    if not any(item.get("scene", "").strip() for item in normalized):
+        raise CLIAPIError(400, "至少一个分镜必须包含画面描述 scene")
+    return normalized
+
+
 def action_plan(action, value):
     if not isinstance(value, dict):
         raise CLIAPIError(400, "input 必须是 JSON 对象")
@@ -1873,6 +1961,21 @@ def action_plan(action, value):
             raise CLIAPIError(400, "reverse_prompt 仅支持单条链接")
         return _plan("director:generate", "generation", generation_kind="breakdown",
                      endpoint="/api/gen/breakdown", payload=payload)
+    if action == "director-scene-image-generate":
+        _strict_object(value, {"scenes", "ratio", "quality"}, ("scenes",))
+        scenes = _director_image_scenes(value["scenes"])
+        prompt = "，".join(item["scene"].strip() for item in scenes
+                           if item.get("scene", "").strip())
+        payload = {
+            "prompt": prompt,
+            "ratio": _enum(value.get("ratio", "9:16"), "ratio",
+                           ("9:16", "16:9", "1:1", "4:5", "5:4")),
+            "quality": _enum(value.get("quality", "standard"), "quality",
+                             ("standard", "hd")),
+            "source_page": "script",
+        }
+        return _plan("director:generate", "generation", generation_kind="image",
+                     endpoint="/api/gen/image", payload=payload)
     if action == "text-video-avatar-import":
         _strict_object(value, {"image_upload_id"}, ("image_upload_id",))
         return _plan(

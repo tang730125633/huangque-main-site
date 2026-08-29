@@ -212,9 +212,20 @@ class DirectorCLIContractTests(unittest.TestCase):
         planned = set(identifiers) - available
         self.assertEqual({
             "director-capability", "director-script-generate", "director-breakdown",
+            "director-breakdown-upload", "director-scene-image-generate",
         }, available)
         self.assertNotIn("director-production-start", hq_cli_api.ACTION_CATALOG_MAP)
-        self.assertEqual(available, set(hq_cli_api.ACTION_CATALOG_MAP) & set(identifiers))
+        action_available = {
+            action["id"] for action in contract.ALL_ACTIONS
+            if action["availability"] == "available" and action["transport"] == "action"
+        }
+        self.assertEqual(action_available, set(hq_cli_api.ACTION_CATALOG_MAP) & set(identifiers))
+        self.assertIn("director-breakdown-upload", {
+            item["action"] for item in hq_cli_api.ACTION_CATALOG
+            if item["transport"]["kind"] == "dedicated_upload"
+        })
+        self.assertNotIn("director-scene-video-generate", available)
+        self.assertNotIn("director-scene-talking-generate", available)
         self.assertTrue(planned)
 
     def test_director_script_action_uses_browser_equivalent_payload(self):
@@ -265,6 +276,24 @@ class DirectorCLIContractTests(unittest.TestCase):
             "mode": "scenes",
             "source_page": "script",
         }, plan["payload"])
+
+    def test_director_scene_image_action_matches_browser_payload(self):
+        plan = hq_cli_api.action_plan("director-scene-image-generate", {
+            "scenes": [
+                {"scene": "清晨的城市天际线", "line": "第一句", "dur": 3},
+                {"scene": "办公室里展示产品", "dur": 4},
+            ],
+        })
+        self.assertEqual(("director:generate", "generation", "image", "/api/gen/image"), (
+            plan["scope"], plan["kind"], plan["generation_kind"], plan["endpoint"],
+        ))
+        self.assertEqual({
+            "prompt": "清晨的城市天际线，办公室里展示产品",
+            "ratio": "9:16", "quality": "standard", "source_page": "script",
+        }, plan["payload"])
+        for invalid in ([], [{"line": "只有口播"}], [{"scene": ""}]):
+            with self.subTest(invalid=invalid), self.assertRaises(hq_cli_api.CLIAPIError):
+                hq_cli_api.action_plan("director-scene-image-generate", {"scenes": invalid})
 
     def test_scope_billing_and_recovery_boundaries_are_explicit(self):
         self.assertEqual(set(contract.SCOPE_CONTRACT), set(contract.SCOPE_CONTRACT) & set(hq_cli_api.SCOPES))

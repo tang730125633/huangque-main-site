@@ -4692,21 +4692,26 @@ class H(BaseHTTPRequestHandler):
             c.execute("DELETE FROM tokens WHERE token=?", (token,))
             c.commit(); c.close()
 
-    def _account_media_upload(self, kind, row):
+    def _account_media_upload(self, kind, row, director_breakdown=False):
         label = {"image": "图片", "video": "视频", "audio": "音频"}[kind]
-        max_bytes = {
+        max_bytes = ({
+            "image": hq_cli_api.DIRECTOR_BREAKDOWN_IMAGE_MAX_BYTES,
+            "video": hq_cli_api.DIRECTOR_BREAKDOWN_VIDEO_MAX_BYTES,
+        } if director_breakdown else {
             "image": hq_cli_api.IMAGE_UPLOAD_MAX_BYTES,
             "video": hq_cli_api.VIDEO_UPLOAD_MAX_BYTES,
             "audio": hq_cli_api.AUDIO_UPLOAD_MAX_BYTES,
-        }[kind]
+        })[kind]
         content_types = {
             "image": {"image/jpeg", "image/png", "image/webp"},
             "video": {"video/mp4", "video/quicktime", "video/webm"},
             "audio": {"audio/mpeg", "audio/wav", "audio/x-wav", "audio/mp4", "audio/x-m4a", "audio/aac", "audio/ogg"},
         }[kind]
         digest_header = {"image": "X-HQ-Image-SHA256", "video": "X-HQ-Video-SHA256", "audio": "X-HQ-Audio-SHA256"}[kind]
-        slots = {"image": hq_cli_api.IMAGE_UPLOAD_SLOTS, "video": hq_cli_api.VIDEO_UPLOAD_SLOTS,
-                 "audio": hq_cli_api.AUDIO_UPLOAD_SLOTS}[kind]
+        slots = (hq_cli_api.DIRECTOR_BREAKDOWN_UPLOAD_SLOTS if director_breakdown else {
+            "image": hq_cli_api.IMAGE_UPLOAD_SLOTS, "video": hq_cli_api.VIDEO_UPLOAD_SLOTS,
+            "audio": hq_cli_api.AUDIO_UPLOAD_SLOTS,
+        }[kind])
         proxy = {"image": hq_cli_api.proxy_image_upload, "video": hq_cli_api.proxy_video_upload,
                  "audio": hq_cli_api.proxy_audio_upload}[kind]
         invalid_code = "invalid_%s_upload" % kind
@@ -4734,9 +4739,19 @@ class H(BaseHTTPRequestHandler):
         token = ""
         try:
             token = issue_token(row["username"], ttl=hq_cli_api.BRIDGE_TOKEN_TTL)
-            status, result = proxy(
-                self.rfile, length, token, INTERNAL_TOKEN, content_type, digest,
-            )
+            if director_breakdown:
+                filename = (self.headers.get("X-HQ-File-Name") or "upload").strip()
+                filename = os.path.basename(urllib.parse.unquote(filename))[:180] or "upload"
+                status, result = hq_cli_api.proxy_director_breakdown_upload(
+                    self.rfile, length, token, INTERNAL_TOKEN, content_type, digest,
+                    kind, filename,
+                )
+                if 200 <= int(status) < 300 and isinstance(result, dict):
+                    result = dict(result, sha256=digest)
+            else:
+                status, result = proxy(
+                    self.rfile, length, token, INTERNAL_TOKEN, content_type, digest,
+                )
         except hq_cli_api.CLIAPIError as exc:
             status, result = exc.status, {"detail": exc.detail, "code": exc.code}
         finally:
@@ -4757,6 +4772,15 @@ class H(BaseHTTPRequestHandler):
         if "assets:upload" not in scopes:
             return self._cli_send(403, {"detail": "当前 CLI 授权缺少权限：assets:upload", "code": "insufficient_scope"})
         return self._account_media_upload(kind, row)
+
+    def _cli_director_breakdown_upload(self, kind):
+        auth = self._cli_user()
+        if not auth:
+            return self._cli_send(401, {"detail": "CLI 未登录或授权已过期", "code": "cli_unauthorized"})
+        row, scopes = auth
+        if "director:generate" not in scopes:
+            return self._cli_send(403, {"detail": "当前 CLI 授权缺少权限：director:generate", "code": "insufficient_scope"})
+        return self._account_media_upload(kind, row, director_breakdown=True)
 
     def _internal_ip12_agent_upload(self):
         if not self._ip12_agent_bridge_enabled():
@@ -5661,6 +5685,10 @@ class H(BaseHTTPRequestHandler):
             return self._cli_video_upload()
         if p == "/api/auth/cli/audio-upload":
             return self._cli_audio_upload()
+        if p == "/api/auth/cli/director-breakdown-image":
+            return self._cli_director_breakdown_upload("image")
+        if p == "/api/auth/cli/director-breakdown-video":
+            return self._cli_director_breakdown_upload("video")
         if p == "/api/auth/cli/action":
             if self._content_length_exceeds(128 * 1024):
                 return self._cli_send(413, {"detail": "CLI 输入不能超过 128 KiB"})
