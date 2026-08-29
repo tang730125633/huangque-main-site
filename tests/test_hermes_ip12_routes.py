@@ -185,7 +185,7 @@ assert all(item["status"] == "unlocked" for item in server.capability_gates(stat
 import server
 payload = server.app.test_client().get('/healthz').get_json()
 assert payload['release_sha'] == 'file-release-sha', payload
-assert payload['agent_release'] == 'ip12-a1-persona', payload
+assert payload['agent_release'] == 'ip12-a2-skills', payload
 assert payload['state_schema'] == 2, payload
 assert payload['master_agent_mode'] == 'off', payload
 """
@@ -722,6 +722,10 @@ if (!rendered.includes("&lt;img") || !rendered.includes("<br>")) process.exit(5)
             "CONVERSATION_STATE_LOCK": threading.RLock(),
             "owned_conversation": lambda _cid: {"coach_state": state},
             "normalize_coach_state": lambda value: value,
+            "coaching_skills": SimpleNamespace(
+                project_pipeline_version=lambda _convo: "legacy",
+                SKILL_PIPELINE_V1="ip12-skills-v1",
+            ),
             "_intake_pending": lambda value: (value.get("intake") or {}).get("status") != "complete",
             "_assert_expected_revision": lambda _state, _revision: None,
             "_persist_user_message": lambda _cid, _message, _revision, _request_id="": "test-message-id",
@@ -830,6 +834,10 @@ if (!rendered.includes("&lt;img") || !rendered.includes("<br>")) process.exit(5)
             "_intake_pending": lambda _state: False,
             "_coach_module_five_topics": module_five,
             "AI_DEFAULT_TIMEOUT_SECONDS": 180,
+            "coaching_skills": type("Skills", (), {
+                "project_pipeline_version": staticmethod(lambda _convo: "legacy"),
+                "SKILL_PIPELINE_V1": "ip12-skills-v1",
+            }),
         }
         exec(compile(module, str(HERMES / "server.py"), "exec"), namespace)
         convo = {"coach_state": state}

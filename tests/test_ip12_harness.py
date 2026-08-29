@@ -1182,7 +1182,7 @@ class IP12HarnessTests(unittest.TestCase):
             model="test-model",
             release_sha="abc123",
         )
-        self.assertEqual(trace["agent_release"], "ip12-a1-persona")
+        self.assertEqual(trace["agent_release"], "ip12-a2-skills")
         self.assertEqual(trace["state_schema"], 2)
         self.assertEqual(
             trace["skills"],

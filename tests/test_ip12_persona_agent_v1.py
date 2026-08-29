@@ -38,8 +38,8 @@ def covered_state(updates=()):
 
 class IP12PersonaAgentV1Tests(unittest.TestCase):
     def test_release_and_prompt_contracts_are_versioned(self):
-        self.assertEqual(harness.AGENT_RELEASE_MANIFEST["agent_release"], "ip12-a1-persona")
-        self.assertEqual(harness.AGENT_RELEASE_MANIFEST["skills"]["intake"]["prompt_version"], "intake-v2")
+        self.assertEqual(harness.AGENT_RELEASE_MANIFEST["agent_release"], "ip12-a2-skills")
+        self.assertEqual(harness.AGENT_RELEASE_MANIFEST["skills"]["intake"]["prompt_version"], "intake-v3")
         self.assertIn("business_goal", harness.intake_system_prompt(harness.initial_state()))
 
     def test_local_preview_uses_one_semantic_coordinator(self):
