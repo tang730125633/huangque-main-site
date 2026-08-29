@@ -52,6 +52,10 @@ class DigitalHumanReleasePreflightTests(unittest.TestCase):
         self.assertIn('Environment="SUBTITLE_FONT=Noto Sans SC"', whisper)
 
     def _write_mirror(self, raw):
+        digest = hashlib.sha256(raw).hexdigest()
+        self.enterContext(mock.patch.object(
+            preflight, "EXPECTED_LIBRARY_INDEX_SHA256", digest,
+        ))
         temporary = tempfile.TemporaryDirectory()
         root = pathlib.Path(temporary.name)
         (root / "index.jsonl").write_bytes(raw)
@@ -61,7 +65,7 @@ class DigitalHumanReleasePreflightTests(unittest.TestCase):
             "source_root": preflight.EXPECTED_LIBRARY_PRIMARY_ROOT,
             "mirror_root": preflight.EXPECTED_LIBRARY_ROOT,
             "entry_count": preflight.EXPECTED_LIBRARY_COUNT,
-            "index_sha256": hashlib.sha256(raw).hexdigest(),
+            "index_sha256": digest,
         }
         (root / preflight.MIRROR_PROVENANCE_NAME).write_text(
             json.dumps(provenance), encoding="utf-8",
@@ -81,6 +85,21 @@ class DigitalHumanReleasePreflightTests(unittest.TestCase):
         (root / "index.jsonl").write_bytes(b'{"id":"two"}\n')
         with self.assertRaisesRegex(preflight.PreflightError, "does not match"):
             preflight._verify_material_mirror_provenance(root)
+
+    def test_material_contract_matches_reviewed_test_snapshot(self):
+        self.assertEqual(318, preflight.EXPECTED_LIBRARY_COUNT)
+        self.assertEqual(
+            "d06b28d955603ee3a7f0d53865b8c475cd463bb282b01ddfedab2b7404f8240a",
+            preflight.EXPECTED_LIBRARY_INDEX_SHA256,
+        )
+
+    def test_internally_consistent_but_unreviewed_index_fails_closed(self):
+        temporary, root, _provenance = self._write_mirror(b'{"id":"one"}\n')
+        self.addCleanup(temporary.cleanup)
+        with mock.patch.object(
+                preflight, "EXPECTED_LIBRARY_INDEX_SHA256", "0" * 64):
+            with self.assertRaisesRegex(preflight.PreflightError, "not locked"):
+                preflight._verify_material_mirror_provenance(root)
 
     def test_mirror_from_another_host_fails_closed(self):
         temporary, root, provenance = self._write_mirror(b'{"id":"one"}\n')
@@ -104,7 +123,10 @@ class DigitalHumanReleasePreflightTests(unittest.TestCase):
             return_value={"index_sha256": "a" * 64, "source_host": "8.148.158.106"},
         ) as mirror, mock.patch.object(
             digital_human_v2, "local_material_library_operational_probe",
-            return_value={"count": 204, "verified_files": 204},
+            return_value={
+                "count": preflight.EXPECTED_LIBRARY_COUNT,
+                "verified_files": preflight.EXPECTED_LIBRARY_COUNT,
+            },
         ) as library, mock.patch.object(
             video, "subtitle_runtime_preflight",
             return_value={"ok": True, "model": "small"},
@@ -113,7 +135,9 @@ class DigitalHumanReleasePreflightTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual("a" * 64, result["library_index_sha256"])
         self.assertEqual(2, mirror.call_count)
-        library.assert_called_once_with(204, verify_all=True)
+        library.assert_called_once_with(
+            preflight.EXPECTED_LIBRARY_COUNT, verify_all=True,
+        )
         subtitle.assert_called_once_with()
         provider.heygen_upload_preflight.assert_called_once_with()
 
@@ -145,7 +169,10 @@ class DigitalHumanReleasePreflightTests(unittest.TestCase):
             return_value={"index_sha256": "a" * 64, "source_host": "8.148.158.106"},
         ), mock.patch.object(
             digital_human_v2, "local_material_library_operational_probe",
-            return_value={"count": 204, "verified_files": 204},
+            return_value={
+                "count": preflight.EXPECTED_LIBRARY_COUNT,
+                "verified_files": preflight.EXPECTED_LIBRARY_COUNT,
+            },
         ), mock.patch.object(
             video, "subtitle_runtime_preflight",
             return_value={"ok": True, "model": "small"},
