@@ -1412,9 +1412,10 @@ class DigitalHumanOneClickUiTests(unittest.TestCase):
         self.assertIn("分析并预览方案", page)
         self.assertIn("确认方案并生成", page)
         self.assertIn(
-            "顾客上传素材（必须全部使用） → 测试服固定本地素材库 → AI 生成图片",
+            "顾客上传素材（必须全部使用） → 黄雀已审核素材库 → AI 生成图片",
             page,
         )
+        self.assertNotIn("测试服固定本地素材库", page)
         self.assertIn("上传的每一张图片都会按顺序直接进入成片", page)
         self.assertIn('id="allowAiMaterials" type="checkbox"', page)
         self.assertNotIn('id="allowAiMaterials" type="checkbox" checked', page)
