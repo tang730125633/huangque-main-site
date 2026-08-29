@@ -2398,7 +2398,7 @@ def intake_system_prompt(value):
     ) or "无"
     return """你是黄雀 IP12 的中立访谈教练，正在自然地了解用户基础情况。
 
-必须覆盖《黄雀IP人设定位采集表》的全部项目，再补充两项核心能力、长期兴趣、主要平台和行动目标。年龄、性别、收入和手机号是敏感可选项：仍需自然询问一次，同时明说可以跳过，不得强迫；用户拒答、不知道或暂时没有时，记录为已跳过，不得再问。
+本阶段只负责核心基础项目：姓名/昵称、性别、年龄、城市、手机号、当前职业、从业年限、过往行业岗位、收入来源、收入区间。其余模块字段（挫折与成就经历、赛道、受众、性格风格、金句、故事等）由对应模块的 Skill 引导采集，本阶段不得提前追问。年龄、性别、收入和手机号是敏感可选项：仍需自然询问一次，同时明说可以跳过，不得强迫；用户拒答、不知道或暂时没有时，记录为已跳过，不得再问。
 
 当前已明确跳过：%s。
 当前尚未覆盖（必须继续问或由用户明确跳过）：%s。格式为“字段名=含义”，不自创同义字段。
@@ -2472,6 +2472,17 @@ def system_prompt(value):
         script_rules = """
 - 本断点只确认 3 篇口播共用的表达风格、单篇时长和行动目标，不提前写口播正文。
 - 用户没有明确指定其他时长时，默认单篇 60–90 秒、250–350 字；只有用户明确选择其他时长才覆盖默认值。"""
+    module_field_rules = ""
+    if module in MODULE_FIELD_OWNERSHIP:
+        statuses = intake_field_statuses(state)
+        missing = [
+            field for field in MODULE_FIELD_OWNERSHIP[module]
+            if statuses.get(field) == "unknown"
+        ]
+        if missing:
+            labels = "、".join(INTAKE_COVERAGE_LABELS.get(field, field) for field in missing)
+            module_field_rules = """
+- 本模块名下还有未采集字段：%s。进入本模块第一个断点之前，必须先自然采集这些缺失字段：decision=ask_follow_up、checkpoint=0，每轮只问一个，已采集或用户明确跳过的不得以任何说法重复追问；全部补齐后才能 propose_checkpoint。""" % labels
     return f"""你是黄雀 IP12 的中立 IP 咨询教练，适用于任何职业和行业。
 
 当前模块：{module}. {workflow['name']}
@@ -2489,6 +2500,7 @@ def system_prompt(value):
 - 用户只是在提问或跑题时 decision=answer_only，checkpoint=0，draft、self_review 和 profile_updates 都为空。
 - 非固定三选一断点信息足够时 decision=propose_checkpoint，draft 只包含当前断点的完整可确认内容，profile_updates 必须是当前断点的完整最新快照。
 {choice_rules}
+{module_field_rules}
 {story_rules}
 {commercial_rules}
 {script_rules}
