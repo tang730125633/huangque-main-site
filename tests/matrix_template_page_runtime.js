@@ -27,7 +27,7 @@ function createRuntime(plan, storage){
   const timers=[];const requests={post:[],poll:[]};let uuidCount=0;
   const sessionStorage={getItem:k=>storage.has(k)?storage.get(k):null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)};
   const fetch=(url,options={})=>{
-    if(url==='/api/gen/matrix-template/templates')return Promise.resolve(response(200,{templates:[{id:'native-bold',name:'默认原生大字',tags:['默认'],font_selectable:true},{id:'minimal-headline',name:'极简标题',tags:['极简'],font_selectable:true},{id:'ref-01-fixture-01',name:'参考模板',description:'绿色粗描边手写标题',tags:['内置字体'],engine:'hyperframes',font_mode:'template_locked',font_selectable:false,variant:'v01'}],fonts:[{value:'',label:'自动搭配',source:'automatic'},{value:'Noto Sans SC',label:'思源黑体',source:'bundled'},{value:'AaHouDiHei',label:'Aa厚底黑',source:'private'}],default_template:'native-bold',default_font:'',max_batch_size:5,render_concurrency:2,cost:5}));
+    if(url==='/api/gen/matrix-template/templates')return Promise.resolve(response(200,{templates:[{id:'native-bold',name:'默认原生大字',tags:['默认'],font_selectable:true},{id:'minimal-headline',name:'极简标题',tags:['极简'],font_selectable:true},{id:'ref-01-fixture-01',name:'参考模板',description:'绿色粗描边手写标题',tags:['内置字体'],engine:'hyperframes',font_mode:'template_locked',font_selectable:false,variant:'v01'}],fonts:[{value:'',label:'自动搭配',source:'automatic'},{value:'Noto Sans SC',label:'思源黑体',source:'bundled'},{value:'AaHouDiHei',label:'Aa厚底黑',source:'private'}],default_template:'native-bold',default_font:'',max_batch_size:5,engine_concurrency:{ffmpeg:5,hyperframes:2},cost:5}));
     if(url==='/api/gen/matrix-template'){
       const index=requests.post.length;requests.post.push({url,options});return plan.post(index,options);
     }
@@ -135,7 +135,7 @@ async function scenarioBatchFive(){
     poll:(i)=>Promise.resolve(response(200,{status:'done',result:{video_url:'/video-'+i,duration:8+i/10}})),
   },storage);
   await flush();runtime.get('batchCount').value='5';await fillAndSubmit(runtime);await flush(30);
-  const cards=runtime.get('batchResults').children;return {posts:runtime.requests.post.length,polls:runtime.requests.poll.length,keys:runtime.requests.post.map(x=>x.options.headers['Idempotency-Key']),bodies:runtime.requests.post.map(x=>JSON.parse(x.options.body)),cards:cards.length,preloads:cards.map(card=>card.children.find(child=>child.tagName==='VIDEO').preload),loads:cards.map(card=>card.children.find(child=>child.tagName==='VIDEO').loadCount),cleared:pendingCleared(storage)};
+  const cards=runtime.get('batchResults').children;return {posts:runtime.requests.post.length,polls:runtime.requests.poll.length,keys:runtime.requests.post.map(x=>x.options.headers['Idempotency-Key']),bodies:runtime.requests.post.map(x=>JSON.parse(x.options.body)),batchHint:runtime.get('batchHint').textContent,batchLabels:runtime.get('batchCount').children.map(option=>option.textContent),cards:cards.length,preloads:cards.map(card=>card.children.find(child=>child.tagName==='VIDEO').preload),loads:cards.map(card=>card.children.find(child=>child.tagName==='VIDEO').loadCount),cleared:pendingCleared(storage)};
 }
 async function scenarioLegacyPending(){
   const storage=new Map([['hq-matrix-template-pending-v1',JSON.stringify({key:'legacy-key',body:{top_text:'旧标题',bottom_text:'旧行动文案',template_id:'native-bold',bgm:true},job_id:88,started_at:1})]]);

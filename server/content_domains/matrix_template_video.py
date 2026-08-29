@@ -32,7 +32,7 @@ _CACHE = {
     "templates": [],
     "fonts": [],
     "max_batch_size": 1,
-    "render_concurrency": 1,
+    "engine_concurrency": {"ffmpeg": 1, "hyperframes": 1},
 }
 _NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -109,12 +109,27 @@ def _refresh_catalog(force=False):
         response = _request("GET", "/v1/templates", timeout=10)
         try:
             max_batch_size = int(response.get("max_batch_size") or 1)
-            render_concurrency = int(
-                response.get("hyperframes_concurrency") or 1
-            )
+            raw_engine_concurrency = response.get("engine_concurrency") or {}
+            if not isinstance(raw_engine_concurrency, dict):
+                raise TypeError("engine concurrency must be an object")
+            engine_concurrency = {
+                "ffmpeg": int(
+                    raw_engine_concurrency.get("ffmpeg") or max_batch_size
+                ),
+                "hyperframes": int(
+                    raw_engine_concurrency.get("hyperframes")
+                    or response.get("hyperframes_concurrency") or 1
+                ),
+            }
         except (TypeError, ValueError) as exc:
             raise RuntimeError("模板批量能力无效") from exc
-        if not 1 <= render_concurrency <= max_batch_size <= 5:
+        if (
+            not 1 <= max_batch_size <= 5
+            or any(
+                not 1 <= value <= max_batch_size
+                for value in engine_concurrency.values()
+            )
+        ):
             raise RuntimeError("模板批量能力无效")
         templates = []
         for raw in response.get("templates") or []:
@@ -202,7 +217,7 @@ def _refresh_catalog(force=False):
             "templates": templates,
             "fonts": fonts,
             "max_batch_size": max_batch_size,
-            "render_concurrency": render_concurrency,
+            "engine_concurrency": engine_concurrency,
         })
 
 
@@ -220,7 +235,7 @@ def public_batch_capability(force=False):
     _refresh_catalog(force)
     return {
         "max_batch_size": int(_CACHE["max_batch_size"]),
-        "render_concurrency": int(_CACHE["render_concurrency"]),
+        "engine_concurrency": dict(_CACHE["engine_concurrency"]),
     }
 
 

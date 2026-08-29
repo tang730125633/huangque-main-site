@@ -31,7 +31,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             "templates": [],
             "fonts": [],
             "max_batch_size": 1,
-            "render_concurrency": 1,
+            "engine_concurrency": {"ffmpeg": 1, "hyperframes": 1},
         })
 
     def templates(self):
@@ -114,6 +114,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             "templates": self.reference_templates(),
             "max_batch_size": 5,
             "hyperframes_concurrency": 2,
+            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
         }):
             expanded = self.module.public_templates(force=True)
         self.assertEqual(19, len(expanded))
@@ -130,7 +131,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         )
         self.assertEqual({
             "max_batch_size": 5,
-            "render_concurrency": 2,
+            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
         }, self.module.public_batch_capability())
 
     def test_availability_accepts_two_fifteen_or_nineteen_healthy_templates(self):
@@ -634,7 +635,7 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertIn('id="fontFamily"', page)
         self.assertIn('id="batchCount"', page)
         self.assertIn("Math.min(batchLimit", page)
-        self.assertIn("render_concurrency", page)
+        self.assertIn("engine_concurrency", page)
         self.assertIn("body.font_family=selectedFont", page)
         self.assertNotIn("素材来源", page)
         self.assertIn("template_id:activeTemplate,bgm:true", page)
@@ -789,6 +790,8 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual([1, 2, 3, 4, 5], [body["batch_index"] for body in result["bodies"]])
         self.assertTrue(all(body["batch_size"] == 5 for body in result["bodies"]))
         self.assertEqual(5, result["cards"])
+        self.assertEqual("最多5条 · 可全部并行", result["batchHint"])
+        self.assertNotIn("排队", "".join(result["batchLabels"]))
         self.assertEqual(["metadata"] * 5, result["preloads"])
         self.assertEqual([1] * 5, result["loads"])
         self.assertTrue(result["cleared"])
