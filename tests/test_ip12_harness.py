@@ -267,7 +267,7 @@ class IP12HarnessTests(unittest.TestCase):
         self.assertEqual([item["field"] for item in result["profile_updates"]], ["preferred_name"])
         self.assertIn("称呼：林晓", reply)
 
-    def test_intake_rejects_repeated_optional_follow_up(self):
+    def test_intake_rephrases_unanswered_follow_up_instead_of_failing(self):
         state = harness.initial_state()
         state, _, _ = harness.apply_intake_decision(
             state,
@@ -275,12 +275,13 @@ class IP12HarnessTests(unittest.TestCase):
             "我目前在广州做 Agent 开发。",
         )
 
-        with self.assertRaisesRegex(harness.HarnessError, "重复追问"):
-            harness.apply_intake_decision(
-                state,
-                intake_decision(kind="ask_follow_up", reply="为了补齐资料，你大概属于哪个年龄段？"),
-                "我以前修过车，后来转行了。",
-            )
+        state, _, reply = harness.apply_intake_decision(
+            state,
+            intake_decision(kind="ask_follow_up", reply="为了补齐资料，你大概属于哪个年龄段？"),
+            "我不太理解，你能说详细一点吗？",
+        )
+        self.assertIn("换个更直白的说法", reply)
+        self.assertEqual(state["intake"]["asked_follow_ups"], ["age"])
 
         state, _, _ = harness.apply_intake_decision(
             state,
@@ -288,6 +289,21 @@ class IP12HarnessTests(unittest.TestCase):
             "我以前修过车，后来转行了。",
         )
         self.assertEqual(state["intake"]["asked_follow_ups"], ["age", "income_source"])
+
+    def test_intake_clarification_explains_current_question_without_advancing(self):
+        state = harness.initial_state()
+        state["intake"]["asked_follow_ups"] = ["target_audience"]
+        state["intake"]["current_question_field"] = "target_audience"
+        before = harness.intake_field_statuses(state)
+
+        reply = harness.intake_clarification_reply(
+            state, "你能多说几个字吗？我不太理解这个问题。"
+        )
+
+        self.assertIn("最想长期帮助哪一类人", reply)
+        self.assertIn("想靠 AI 接单的人", reply)
+        self.assertEqual(harness.intake_field_statuses(state), before)
+        self.assertEqual(state["intake"]["asked_follow_ups"], ["target_audience"])
 
     def test_intake_recovers_model_drift_and_keeps_latest_unconfirmed_facts(self):
         state = harness.initial_state()

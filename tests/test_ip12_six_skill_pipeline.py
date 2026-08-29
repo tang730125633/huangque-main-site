@@ -290,6 +290,54 @@ print("PIPELINE_PROJECT_COMPAT_OK")
         self.assertIn("PIPELINE_PROJECT_COMPAT_OK", result.stdout)
 
     @unittest.skipUnless(
+        importlib.util.find_spec("flask") and importlib.util.find_spec("requests"),
+        "Flask runtime dependencies are required",
+    )
+    def test_intake_clarification_is_answered_without_model_or_state_advance(self):
+        script = r'''
+import security
+import server
+
+security._validate_token = lambda _token: {"account_id":"clarify-test","username":"clarify","role":"member"}
+cid = "clarification-project"
+state = server.coach_harness.initial_state(server.coaching_skills.SKILL_PIPELINE_V1)
+state["intake"]["asked_follow_ups"] = ["target_audience"]
+state["intake"]["current_question_field"] = "target_audience"
+server.save_conversation(cid, {
+    "id":cid, "title":"澄清测试", "owner_account_id":"clarify-test",
+    "pipeline_version":server.coaching_skills.SKILL_PIPELINE_V1,
+    "messages":[], "coach_state":state, "reports":{}, "deliverables":{},
+})
+server.call_ai = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("clarification must not call model"))
+client = server.app.test_client()
+response = client.post("/api/chat-complete", headers={"Authorization":"Bearer test"}, json={
+    "conversation_id":cid, "expected_revision":state["revision"],
+    "request_id":"clarify-request-001", "message":"你能多说几个字吗？我不太理解",
+})
+assert response.status_code == 200, response.get_data(as_text=True)
+payload = response.get_json()
+assert "最想长期帮助哪一类人" in payload["assistant"], payload
+assert "想靠 AI 接单的人" in payload["assistant"], payload
+assert "我已记下" not in payload["assistant"], payload
+next_state = payload["state"]
+assert next_state["intake"]["asked_follow_ups"] == ["target_audience"], next_state["intake"]
+assert next_state["intake"].get("profile_updates", []) == [], next_state["intake"]
+print("INTAKE_CLARIFICATION_OK")
+'''
+        with tempfile.TemporaryDirectory() as data_dir:
+            env = os.environ.copy()
+            env.update(
+                OPENAI_API_KEY="dummy", HERMES_HOME=data_dir, HERMES_DATA_DIR=data_dir,
+                HERMES_IP12_SKILL_PIPELINE_DEFAULT="v1",
+            )
+            result = subprocess.run(
+                [sys.executable, "-c", script], cwd=HERMES, env=env,
+                capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("INTAKE_CLARIFICATION_OK", result.stdout)
+
+    @unittest.skipUnless(
         importlib.util.find_spec("reportlab") and importlib.util.find_spec("pypdf"),
         "reportlab and pypdf are required",
     )
