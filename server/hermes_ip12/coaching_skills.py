@@ -89,6 +89,8 @@ FACT_LABELS = {
 
 def normalize_pipeline_version(value):
     version = str(value or "").strip()
+    if version == "v1":
+        return SKILL_PIPELINE_V1
     return version if version in {LEGACY_PIPELINE, SKILL_PIPELINE_V1} else LEGACY_PIPELINE
 
 
