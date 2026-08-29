@@ -181,7 +181,7 @@ class IP12PersonaAgentV1Tests(unittest.TestCase):
             decision(reply="你更像专业技术控，还是治愈陪伴型？"),
             "我做宠物摄影",
         )
-        self.assertIn("姓名或昵称", normalized["reply"])
+        self.assertIn("怎么称呼你比较合适", normalized["reply"])
         self.assertEqual(state["intake"]["asked_follow_ups"], ["preferred_name"])
 
     def test_module_five_checkpoint_is_blocked_without_commercial_goal(self):
