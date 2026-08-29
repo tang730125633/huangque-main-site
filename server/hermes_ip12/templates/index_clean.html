@@ -334,6 +334,7 @@ function renderModules() {
   const done = (coachState.completed_modules || []).filter(id=>id<=AVAILABLE_MODULE_COUNT);
   const cur = Math.min(coachState.current_module || 1, AVAILABLE_MODULE_COUNT);
   const foundation = coachState.foundation_report || {};
+  const visibleDone = done.filter(id=>id!==4||['awaiting_confirmation','confirmed'].includes(foundation.status));
   const intakePending = coachState.intake?.status !== 'complete';
   const intakeLabel = !intakePending ? '' : (coachState.intake.status === 'awaiting_confirmation' ? '待确认' : (coachState.intake.status === 'editing' ? '修改中' : '交谈中'));
   list.innerHTML = MODULES.map(m => {
@@ -343,17 +344,20 @@ function renderModules() {
     if (comingSoon) { cls += ' locked'; badge = '<span class="mod-badge">尚未开发，敬请期待</span>'; }
     else if (intakePending) { cls += ' locked'; if (m.id===1) badge = `<span class="mod-badge">基础信息 ${intakeLabel}</span>`; }
     else if (foundationLocked) { cls += ' locked'; badge = `<span class="mod-badge">${foundation.status==='awaiting_confirmation'?'待确认 PDF':(done.includes(4)?'PDF 生成中':'等待模块 1-4')}</span>`; }
-    if (done.includes(m.id)) { cls += ' completed'; check = '<span class="mod-check">✓</span>';
+    if (visibleDone.includes(m.id)) { cls += ' completed'; check = '<span class="mod-check">✓</span>';
       reportBtn = `<span class="mod-report-btn" onclick="event.stopPropagation();viewReport(${m.id})" title="查看报告">📄</span>`; }
-    if (!intakePending && m.id === cur && !done.includes(m.id)) { cls += ' current'; badge = '<span class="mod-badge">进行中</span>'; }
+    if (!intakePending && m.id === cur && !visibleDone.includes(m.id)) { cls += ' current'; badge = '<span class="mod-badge">进行中</span>'; }
     if (intakePending && m.id===1) cls += ' current';
-    return `<div class="${cls}" onclick="closeDrawer();${comingSoon?"toast('尚未开发，敬请期待')":(foundationLocked?(foundation.status==='awaiting_confirmation'?"toast('请先确认模块 1-4 的 IP 定位初稿 PDF')":"toast('请先完成模块 1-4')"):`jumpToModule(${m.id})`)}" title="${comingSoon?'尚未开发，敬请期待':m.desc}"><div class="mod-num">${done.includes(m.id)?'✓':m.id}</div><div class="mod-info"><div class="mod-name">${m.icon} ${m.name}</div><div class="mod-desc">${m.desc}</div></div>${badge}${reportBtn}${check}</div>`;
+    return `<div class="${cls}" onclick="closeDrawer();${comingSoon?"toast('尚未开发，敬请期待')":(foundationLocked?(foundation.status==='awaiting_confirmation'?"toast('请先确认模块 1-4 的 IP 定位初稿 PDF')":"toast('请先完成模块 1-4')"):`jumpToModule(${m.id})`)}" title="${comingSoon?'尚未开发，敬请期待':m.desc}"><div class="mod-num">${visibleDone.includes(m.id)?'✓':m.id}</div><div class="mod-info"><div class="mod-name">${m.icon} ${m.name}</div><div class="mod-desc">${m.desc}</div></div>${badge}${reportBtn}${check}</div>`;
   }).join('');
   updateProgress(); renderReportMinis(); renderDeliverableMinis();
 }
 
 function updateProgress() {
-  const done = (coachState.completed_modules || []).filter(id=>id<=AVAILABLE_MODULE_COUNT).length;
+  const foundation = coachState.foundation_report || {};
+  const done = (coachState.completed_modules || []).filter(id=>id<=AVAILABLE_MODULE_COUNT&&(
+    id!==4||['awaiting_confirmation','confirmed'].includes(foundation.status)
+  )).length;
   const intakePending = coachState.intake?.status !== 'complete';
   document.getElementById('progressBar').style.width = Math.round(done/AVAILABLE_MODULE_COUNT*100)+'%';
   document.getElementById('progressText').textContent = done===AVAILABLE_MODULE_COUNT?'🎉 六步完成':done+'/'+AVAILABLE_MODULE_COUNT;

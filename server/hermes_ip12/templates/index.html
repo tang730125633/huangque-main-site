@@ -401,7 +401,7 @@ SKILL_MAP[10]=[{id:'deliverable-10',icon:'message',name:'朋友圈排期',api:'/
 SKILL_MAP[11]=[{id:'sales',icon:'trend',name:'成交话术',api:'/api/m11-sales',help:'生成私域成交SOP话术'}];
 SKILL_MAP[12]=[{id:'calendar',icon:'calendar',name:'公众号日历',api:'/api/m12-calendar',help:'生成公众号30天内容日历'}];
 
-var cid=null,state={current_module:1,completed_modules:[],module_step:0,ip_profile:{},intake:{status:'complete'}},harnessActions=[],capabilityGates=[],reports={},deliverables={},productions={},activeProductionId=null,productionPolls={},runtimeStreams={},voiceClonePolls={},streaming=false,materialUploading=false,pendingMaterialUpload=null,pendingChoiceFocus=0,convos=[],foundationEditing=false,foundationAnnotations=[],foundationReviewCid='',foundationPdfObjectUrl='',foundationPdfLoadId=0,activeContentTarget=null,activeContentPack=null,activeContentCategory=0;
+var cid=null,state={current_module:1,completed_modules:[],module_step:0,ip_profile:{},intake:{status:'complete'}},harnessActions=[],capabilityGates=[],reports={},deliverables={},productions={},activeProductionId=null,productionPolls={},runtimeStreams={},voiceClonePolls={},streaming=false,materialUploading=false,pendingMaterialUpload=null,pendingChoiceFocus=0,convos=[],foundationEditing=false,foundationAnnotations=[],foundationReviewCid='',foundationPdfObjectUrl='',foundationPdfLoadId=0,pendingIntakeSupplement=null,activeContentTarget=null,activeContentPack=null,activeContentCategory=0;
 var expandedMod=0;
 var WELCOME_HTML=document.getElementById('welcome').outerHTML;
 
@@ -474,6 +474,7 @@ async function runVideoAnalyzer(){
 function renderMods(){
   var done=(state.completed_modules||[]).filter(function(mid){return mid<=AVAILABLE_MODULE_COUNT}),cur=Math.min(state.current_module||1,AVAILABLE_MODULE_COUNT);
   var foundation=state.foundation_report||{};
+  var visibleDone=done.filter(function(mid){return mid!==4||['awaiting_confirmation','confirmed'].includes(foundation.status)});
   var intakePending=state.intake&&state.intake.status!=='complete';
   var intakeLabel=!intakePending?'':(state.intake.status==='awaiting_confirmation'?'待确认':(state.intake.status==='editing'?'修改中':'交谈中'));
   var html='';
@@ -483,8 +484,8 @@ function renderMods(){
     var comingSoon=m.id>AVAILABLE_MODULE_COUNT;
     var locked=comingSoon||intakePending||(m.id>=5&&foundation.status!=='confirmed');
     if(locked){cls+=' locked';badge=comingSoon?'<span class="mod-badge">尚未开发，敬请期待</span>':(intakePending&&m.id===1?'<span class="mod-badge">基础信息 '+intakeLabel+'</span>':(intakePending?'':'<span class="mod-badge">'+(foundation.status==='awaiting_confirmation'?'待确认 PDF':(done.indexOf(4)>=0?'PDF 生成中':'等待模块 1-4'))+'</span>'))}
-    if(done.indexOf(m.id)>=0){cls+=' done';check='<span style="color:var(--gr);font-size:12px">✓</span>'}
-    if(!intakePending&&m.id===cur&&done.indexOf(m.id)<0){cls+=' cur';badge='<span class="mod-badge">进行中</span>'}
+    if(visibleDone.indexOf(m.id)>=0){cls+=' done';check='<span style="color:var(--gr);font-size:12px">✓</span>'}
+    if(!intakePending&&m.id===cur&&visibleDone.indexOf(m.id)<0){cls+=' cur';badge='<span class="mod-badge">进行中</span>'}
     if(intakePending&&m.id===1)cls+=' cur';
     if(m.id===expandedMod)cls+=' expanded';
     var artifactSubs=moduleArtifactRows(m.id,done,foundation),hasSub=!comingSoon&&((SKILL_MAP[m.id]||[]).length>0||!!artifactSubs);
@@ -498,10 +499,10 @@ function renderMods(){
       subs+=artifactSubs;
     }
     var click=comingSoon?"toast('尚未开发，敬请期待')":(locked?(intakePending?"toast('请先补充并确认基础资料')":(foundation.status==='awaiting_confirmation'?"toast('请先确认模块 1-4 的 IP 定位初稿 PDF')":"toast('请先完成模块 1-4')")):(hasSub?'toggleExpand('+m.id+')':'jumpModule('+m.id+')'));
-    html+='<div class="'+cls+'" data-module-id="'+m.id+'" onclick="'+click+'"><div class="mod-num">'+(done.indexOf(m.id)>=0?'✓':m.id)+'</div><div class="mod-info"><div class="mod-name">'+moduleIcon(m.icon)+m.name+'</div></div>'+badge+check+(hasSub?expand:'')+subs+'</div>';
+    html+='<div class="'+cls+'" data-module-id="'+m.id+'" onclick="'+click+'"><div class="mod-num">'+(visibleDone.indexOf(m.id)>=0?'✓':m.id)+'</div><div class="mod-info"><div class="mod-name">'+moduleIcon(m.icon)+m.name+'</div></div>'+badge+check+(hasSub?expand:'')+subs+'</div>';
   }
   document.getElementById('modScroll').innerHTML=html;
-  var dc=done.length;
+  var dc=visibleDone.length;
   document.getElementById('progBar').style.width=Math.round(dc/AVAILABLE_MODULE_COUNT*100)+'%';
   document.getElementById('progText').textContent=dc===AVAILABLE_MODULE_COUNT?'🎉 六步完成':dc+'/'+AVAILABLE_MODULE_COUNT;
   var mod=M.filter(function(m){return m.id===cur})[0];
@@ -513,7 +514,7 @@ loadConvos().then(function(){var requested=new URLSearchParams(location.search).
 
 async function loadConvos(){var r=await fetch('/api/conversations');if(!r.ok)throw new Error('Project 加载失败');convos=await r.json();return convos}
 async function newDiagnosis(){try{var r=await fetch('/api/conversations',{method:'POST'}),d=await r.json();if(!r.ok){if(r.status===409&&d.code==='ip12_project_limit'){toast('最多允许创建两个 Project');toggleProjects(true);return}throw new Error(d.error||'Project 创建失败')}convos.unshift({id:d.id,title:d.title||'新诊断',current_module:1,completed_modules:[],message_count:1});selectConvo(d.id)}catch(e){toast(e.message||'Project 创建失败')}}
-async function selectConvo(id){stopProductionPolls();closePanel();closeFoundationReviewer();stopVoiceClonePolls();activeContentTarget=null;activeContentPack=null;pendingMaterialUpload=null;var r=await fetch('/api/conversations/'+id);if(!r.ok)throw new Error('Project 加载失败');var c=await r.json();cid=id;state=c.coach_state||{current_module:1,completed_modules:[],module_step:0,ip_profile:{},intake:{status:'complete'}};harnessActions=Array.isArray(c.harness_actions)?c.harness_actions:[];capabilityGates=Array.isArray(c.capability_gates)?c.capability_gates:[];reports=c.reports||{};deliverables=c.deliverables||{};productions=productionMap(c.productions);activeProductionId=restoreProductionId();updateProductionEntry();expandedMod=Number(c.artifact_notice_module)||0;foundationEditing=false;renderMods();renderChat(c.messages||[]);Object.keys(productions).forEach(function(key){connectRuntimeEvents(productions[key])});var input=document.getElementById('userInput');input.disabled=false;input.placeholder=(state.foundation_report||{}).status==='awaiting_confirmation'?'可以询问 PDF，或点击“需要修改/补充”…':'输入消息...';document.getElementById('sendBtn').disabled=false;document.getElementById('attachBtn').disabled=false;input.focus();restoreProductionPanel();restoreProductionReturnPosition();Object.keys(productions).forEach(function(productionId){var clone=(productions[productionId]||{}).voice_clone||{};if(['submitting','training'].includes(String(clone.status||'')))pollVoiceClone(productionId)})}
+async function selectConvo(id){stopProductionPolls();closePanel();closeFoundationReviewer();stopVoiceClonePolls();activeContentTarget=null;activeContentPack=null;pendingMaterialUpload=null;pendingIntakeSupplement=null;var r=await fetch('/api/conversations/'+id);if(!r.ok)throw new Error('Project 加载失败');var c=await r.json();cid=id;state=c.coach_state||{current_module:1,completed_modules:[],module_step:0,ip_profile:{},intake:{status:'complete'}};harnessActions=Array.isArray(c.harness_actions)?c.harness_actions:[];capabilityGates=Array.isArray(c.capability_gates)?c.capability_gates:[];reports=c.reports||{};deliverables=c.deliverables||{};productions=productionMap(c.productions);activeProductionId=restoreProductionId();updateProductionEntry();expandedMod=Number(c.artifact_notice_module)||0;foundationEditing=false;renderMods();renderChat(c.messages||[]);Object.keys(productions).forEach(function(key){connectRuntimeEvents(productions[key])});var input=document.getElementById('userInput');input.disabled=false;input.placeholder=(state.foundation_report||{}).status==='awaiting_confirmation'?'可以询问 PDF，或点击“需要修改/补充”…':'输入消息...';document.getElementById('sendBtn').disabled=false;document.getElementById('attachBtn').disabled=false;input.focus();restoreProductionPanel();restoreProductionReturnPosition();Object.keys(productions).forEach(function(productionId){var clone=(productions[productionId]||{}).voice_clone||{};if(['submitting','training'].includes(String(clone.status||'')))pollVoiceClone(productionId)})}
 async function jumpModule(mid){if(mid>AVAILABLE_MODULE_COUNT){toast('尚未开发，敬请期待');return}if(!cid||streaming)return;var r=await fetch('/api/jump-module',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid,module:mid})});var d=await r.json();if(!r.ok||!d.ok){toast('❌ '+(d.error||'无法切换模块'));return}state=d.state||state;renderMods();sendJumpMsg(mid)}
 
 function pageActions(){
@@ -613,7 +614,8 @@ function toast(m){var t=document.createElement('div');t.className='toast';t.text
 
 function showArtifactNotice(data){
   if(!data||!data.artifact_notice)return;expandedMod=Number(data.artifact_module)||expandedMod;renderMods();toast('📦 第一个交付物已放到对应诊断模块下方');
-  var area=document.getElementById('chatArea'),msg=document.createElement('div');msg.className='msg assistant';msg.innerHTML='<div class="av">'+moduleIcon('sparkles')+'</div><div class="bubble">'+md(data.artifact_notice)+'</div>';area.appendChild(msg);scroll()
+  document.querySelectorAll('#chatArea .harness-actions').forEach(function(row){row.remove()});
+  var area=document.getElementById('chatArea'),msg=document.createElement('div');msg.className='msg assistant';msg.innerHTML='<div class="av">'+moduleIcon('sparkles')+'</div><div class="bubble">'+md(data.artifact_notice)+'</div>';area.appendChild(msg);attachHarnessActions(currentActions(),msg.querySelector('.bubble'));scroll()
 }
 
 async function generateFoundationReport(){
@@ -662,9 +664,20 @@ function beginFoundationRevision(){
   foundationEditing=true;var input=document.getElementById('userInput');input.placeholder='可以提问，也可以说明要修改、补充或删除的内容…';input.focus();toast('Agent 会先判断这是问题、修改要求，还是需要继续问清楚')
 }
 
+function beginIntakeSupplement(item){
+  pendingIntakeSupplement=item;var area=document.getElementById('chatArea'),message=document.createElement('div');message.className='msg assistant';message.innerHTML='<div class="av">'+moduleIcon('sparkles')+'</div><div class="bubble">'+eHtml(item.prompt)+'</div>';area.appendChild(message);var input=document.getElementById('userInput');input.placeholder='请输入第三个性格词，例如：细致';input.focus();scroll();toast('还差 1 项，直接在输入框补充即可')
+}
+
+async function submitIntakeSupplement(value){
+  if(!pendingIntakeSupplement||streaming||!cid)return;var pending=pendingIntakeSupplement,input=document.getElementById('userInput'),area=document.getElementById('chatArea');streaming=true;document.getElementById('sendBtn').disabled=true;
+  var user=document.createElement('div');user.className='msg user';user.innerHTML='<div class="av">'+moduleIcon('user')+'</div><div class="bubble">'+eHtml(value)+'</div>';area.appendChild(user);var assistant=document.createElement('div');assistant.className='msg assistant';assistant.innerHTML='<div class="av">'+moduleIcon('sparkles')+'</div><div class="bubble"><div class="typing"></div></div>';area.appendChild(assistant);scroll();
+  try{var response=await fetch('/api/intake/supplement',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid,expected_revision:state.revision,field:pending.field,value:value,request_id:newTurnRequestId()})}),data=await response.json();if(!response.ok||!data.ok)throw new Error(data.error||'补充失败');state=data.state;pendingIntakeSupplement=null;assistant.querySelector('.bubble').innerHTML=md(data.assistant);input.placeholder='可以继续询问 PDF，或确认初稿…';renderMods();attachHarnessActions(currentActions(),assistant.querySelector('.bubble'));toast('✅ 基础资料已补全，PDF 已更新')}
+  catch(error){assistant.querySelector('.bubble').innerHTML='<span style="color:#ef4444">'+eHtml(error.message)+'</span>';input.placeholder='请输入一个不同的真实性格词'}finally{streaming=false;document.getElementById('sendBtn').disabled=false;input.focus()}
+}
+
 async function confirmFoundationReport(){
   if(!cid||streaming)return;
-  try{var foundation=state.foundation_report||{};var r=await fetch('/api/foundation-report/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid,expected_revision:state.revision,report_id:foundation.report_id||''})});var d=await r.json();if(!d.ok)throw new Error(d.error||'确认失败');state=d.state;foundationEditing=false;closeFoundationReviewer();document.getElementById('userInput').placeholder='输入消息...';renderMods();toast('✅ IP 定位初稿已确认，继续模块 '+state.current_module);if((state.completed_modules||[]).indexOf(state.current_module)<0)sendJumpMsg(state.current_module)}catch(e){toast('❌ '+e.message)}
+  try{var foundation=state.foundation_report||{};var r=await fetch('/api/foundation-report/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid,expected_revision:state.revision,report_id:foundation.report_id||''})});var d=await r.json();if(!r.ok||!d.ok){if(d.missing_intake&&d.missing_intake.length){beginIntakeSupplement(d.missing_intake[0]);return}throw new Error(d.error||'确认失败')}state=d.state;foundationEditing=false;closeFoundationReviewer();document.getElementById('userInput').placeholder='输入消息...';renderMods();toast('✅ IP 定位初稿已确认，继续模块 '+state.current_module);if((state.completed_modules||[]).indexOf(state.current_module)<0)sendJumpMsg(state.current_module)}catch(e){toast('❌ '+e.message)}
 }
 
 async function viewReport(mid){
@@ -857,6 +870,7 @@ function sendHarnessAction(item){var action={type:item.type,target_id:item.targe
 function sendMessage(){
   if(streaming||materialUploading||!cid)return;
   var input=document.getElementById('userInput'),text=input.value.trim();if(!text)return;
+  if(pendingIntakeSupplement){input.value='';return submitIntakeSupplement(text)}
   var turn={message:text};if(foundationEditing){turn.foundation_review='revision';foundationEditing=false;input.placeholder='可以继续询问 PDF，或再次点击“需要修改/补充”…'}
   input.value='';return sendTurn(turn,text)
 }

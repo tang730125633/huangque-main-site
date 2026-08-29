@@ -33,32 +33,35 @@ def decision(kind, reply):
 
 
 class IntakeGuidanceRegressionTests(unittest.TestCase):
-    def test_ready_profile_cannot_ask_optional_demographics(self):
-        with self.assertRaisesRegex(harness.HarnessError, "直接生成完整核对稿"):
-            harness.apply_intake_decision(
-                harness.initial_state(), decision("ask_follow_up", "你现在主要在哪个城市？"), EVIDENCE
-            )
+    def test_core_profile_still_asks_uncovered_questionnaire_items(self):
+        state, _, _ = harness.apply_intake_decision(
+            harness.initial_state(), decision("ask_follow_up", "你现在主要在哪个城市？"), EVIDENCE
+        )
+        self.assertIn("city", state["intake"]["asked_follow_ups"])
 
     def test_ready_profile_cannot_stop_after_answering_a_question(self):
         state = harness.initial_state()
         state["intake"]["profile_updates"] = CORE_UPDATES
-        with self.assertRaisesRegex(harness.HarnessError, "直接生成完整核对稿"):
+        with self.assertRaisesRegex(harness.HarnessError, "必须继续"):
             harness.apply_intake_decision(
                 state, decision("answer_only", "城市可以跳过，我们不再追问。"), EVIDENCE
             )
 
-    def test_empty_intake_can_still_answer_without_advancing(self):
+    def test_empty_intake_answers_then_continues_with_one_question(self):
         state, normalized, reply = harness.apply_intake_decision(
-            harness.initial_state(), decision("answer_only", "手机号可以不填。"), "手机号必须填吗？"
+            harness.initial_state(),
+            decision("ask_follow_up", "手机号可以跳过。先请告诉我怎么称呼你？"),
+            "手机号必须填吗？",
         )
-        self.assertEqual(normalized["decision"], "answer_only")
-        self.assertEqual(state["intake"]["status"], "collecting")
-        self.assertIn("可以不填", reply)
+        self.assertEqual(normalized["decision"], "ask_follow_up")
+        self.assertEqual(state["intake"]["asked_follow_ups"], ["preferred_name"])
+        self.assertIn("可以跳过", reply)
 
-    def test_prompt_marks_demographics_optional_and_resumes_after_questions(self):
+    def test_prompt_requires_full_coverage_and_marks_sensitive_items_optional(self):
         prompt = harness.intake_system_prompt(harness.initial_state())
-        self.assertIn("城市、收入、性别和手机号都只是可选背景", prompt)
-        self.assertIn("同一条回复必须 decision=propose_checkpoint", prompt)
+        self.assertIn("必须覆盖《黄雀IP人设定位采集表》的全部项目", prompt)
+        self.assertIn("敏感可选项", prompt)
+        self.assertIn("只有待覆盖列表为“无”", prompt)
 
 
 if __name__ == "__main__":
