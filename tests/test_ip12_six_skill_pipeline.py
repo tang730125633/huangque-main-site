@@ -128,6 +128,7 @@ class IP12SixSkillPipelineTests(unittest.TestCase):
         state = harness.initial_state()
         self.assertEqual(state["pipeline_version"], "legacy")
         self.assertEqual(coaching_skills.project_pipeline_version({"coach_state": state}), "legacy")
+        self.assertEqual(coaching_skills.normalize_pipeline_version("v1"), "ip12-skills-v1")
 
     def test_module_four_builds_and_confirms_a_frozen_snapshot(self):
         state = complete_foundation_state("林舟")
