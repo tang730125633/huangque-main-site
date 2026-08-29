@@ -680,7 +680,7 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual("block", result["display"])
         self.assertEqual("none", result["live"])
         self.assertEqual("/instant-video", result["download"])
-        self.assertEqual("metadata", result["preload"])
+        self.assertEqual("auto", result["preload"])
         self.assertEqual(1, result["loads"])
         self.assertEqual(1, result["pauses"])
         self.assertTrue(result["cleared"])
@@ -695,6 +695,35 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual("/delayed-video", result["src"])
         self.assertEqual("block", result["display"])
         self.assertEqual(1, result["loads"])
+        self.assertTrue(result["cleared"])
+
+    def test_slow_result_address_sync_does_not_require_refresh(self):
+        result = self.runtime("longDelayedResultUrl")
+        self.assertEqual(9, result["polls"])
+        self.assertEqual("/slow-video", result["src"])
+        self.assertEqual(1, result["loads"])
+        self.assertIn("完成", result["status"])
+        self.assertTrue(result["cleared"])
+
+    def test_returning_to_foreground_polls_immediately_without_refresh(self):
+        result = self.runtime("foregroundResume")
+        self.assertEqual(1, result["before"]["polls"])
+        self.assertEqual(0, result["before"]["loads"])
+        self.assertFalse(result["before"]["cleared"])
+        self.assertEqual(2, result["polls"])
+        self.assertEqual("/focus-video", result["src"])
+        self.assertEqual("block", result["display"])
+        self.assertEqual(1, result["loads"])
+        self.assertTrue(result["cleared"])
+
+    def test_result_video_retries_media_load_without_page_refresh(self):
+        result = self.runtime("mediaRetry")
+        self.assertEqual("/retry-video", result["before"]["src"])
+        self.assertEqual("auto", result["before"]["preload"])
+        self.assertEqual(1, result["before"]["loads"])
+        self.assertIn("hq_media_retry=1-", result["after"]["src"])
+        self.assertEqual(2, result["after"]["loads"])
+        self.assertEqual("/retry-video", result["download"])
         self.assertTrue(result["cleared"])
 
     def test_live_preview_tracks_copy_and_selected_template(self):
@@ -734,6 +763,8 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual([1, 2, 3, 4, 5], [body["batch_index"] for body in result["bodies"]])
         self.assertTrue(all(body["batch_size"] == 5 for body in result["bodies"]))
         self.assertEqual(5, result["cards"])
+        self.assertEqual(["metadata"] * 5, result["preloads"])
+        self.assertEqual([1] * 5, result["loads"])
         self.assertTrue(result["cleared"])
 
     def test_legacy_single_pending_state_is_recovered_after_upgrade(self):

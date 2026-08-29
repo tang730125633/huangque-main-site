@@ -384,6 +384,10 @@ def build_release(source_root, output_root, source_host=None, source_root_contra
     try:
         index_raw, files = _catalog_snapshot(source_root, expected_count)
         index_sha256 = hashlib.sha256(index_raw).hexdigest()
+        if index_sha256 != preflight.EXPECTED_LIBRARY_INDEX_SHA256:
+            raise MirrorReleaseError(
+                "source index digest does not match the locked contract"
+            )
         release_id = RELEASE_DIRECTORY_PREFIX + index_sha256[:16]
         release_final = output_root / release_id
         if release_final.exists():
@@ -503,6 +507,7 @@ def _load_release(release_directory, expected_source_host=None,
     expected_count = int(
         preflight.EXPECTED_LIBRARY_COUNT if expected_count is None else expected_count
     )
+    expected_index_sha256 = str(preflight.EXPECTED_LIBRARY_INDEX_SHA256)
     index_sha256 = str(manifest.get("index_sha256") or "")
     bundle_sha256 = str(manifest.get("bundle_sha256") or "")
     release_id = str(manifest.get("release_id") or "")
@@ -514,6 +519,7 @@ def _load_release(release_directory, expected_source_host=None,
         or manifest.get("mirror_root") != expected_mirror_root
         or type(manifest.get("entry_count")) is not int
         or manifest.get("entry_count") != expected_count
+        or index_sha256 != expected_index_sha256
         or manifest.get("bundle_name") != RELEASE_BUNDLE_NAME
         or type(manifest.get("file_count")) is not int
         or manifest.get("file_count") != expected_count + 2

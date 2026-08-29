@@ -38,12 +38,16 @@ class DigitalHumanMaterialMirrorReleaseTests(unittest.TestCase):
         self.target = self.base / "production-mirror"
         self.source.mkdir()
         self._write_source()
+        self.index_sha256 = hashlib.sha256(
+            (self.source / "index.jsonl").read_bytes()
+        ).hexdigest()
         self.contract = mock.patch.multiple(
             release.preflight,
             EXPECTED_LIBRARY_PRIMARY_HOST="8.148.158.106",
             EXPECTED_LIBRARY_PRIMARY_ROOT=str(self.source),
             EXPECTED_LIBRARY_ROOT=str(self.target),
             EXPECTED_LIBRARY_COUNT=3,
+            EXPECTED_LIBRARY_INDEX_SHA256=self.index_sha256,
         )
         self.contract.start()
 
@@ -124,6 +128,26 @@ class DigitalHumanMaterialMirrorReleaseTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(release.MirrorReleaseError, "already exists"):
             self._build(self.output_a)
+
+    def test_build_and_verify_reject_a_different_source_index(self):
+        with mock.patch.object(
+                release.preflight, "EXPECTED_LIBRARY_INDEX_SHA256", "0" * 64):
+            with self.assertRaisesRegex(
+                    release.MirrorReleaseError, "index digest"):
+                self._build(self.output_a)
+        self.assertFalse(self.output_a.exists() and any(self.output_a.iterdir()))
+
+        directory, _manifest = self._build(self.output_b)
+        with mock.patch.object(
+                release.preflight, "EXPECTED_LIBRARY_INDEX_SHA256", "0" * 64):
+            with self.assertRaisesRegex(
+                    release.MirrorReleaseError, "locked to this environment"):
+                release._load_release(
+                    directory,
+                    expected_source_root=self.source,
+                    expected_mirror_root=self.target,
+                    expected_count=3,
+                )
 
     def test_build_consumes_material_payloads_one_at_a_time(self):
         domain = release._digital_human_domain()

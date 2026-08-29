@@ -1087,7 +1087,7 @@ def _local_library_material(query, preferred_type):
     return raw, mime, "local_library"
 
 
-def local_material_library_operational_probe(expected_count=204, verify_all=False):
+def local_material_library_operational_probe(expected_count=318, verify_all=False):
     root, records = _load_local_catalog(expected_count=expected_count)
     counts = {"image": 0, "video": 0, "bgm": 0}
     samples = {}
