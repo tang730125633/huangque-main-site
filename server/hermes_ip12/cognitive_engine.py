@@ -230,6 +230,7 @@ def safe_context(memory, goal, agent_run=None):
             },
             "productions": productions,
             "active_production": copy.deepcopy(active),
+            "pending_delegate": copy.deepcopy(memory.get("pending_delegate") or {}),
         },
         "allowed_tools": allowed,
         "read_tools": ["project.read", "capability.read", "assets.read"],

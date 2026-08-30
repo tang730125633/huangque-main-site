@@ -7343,31 +7343,22 @@ def _semantic_status_label(record):
     }.get(str((record or {}).get("capability_family") or ""), "当前制作"))
 
 
-def _select_status_production(convo, user_message):
+def _select_status_production(convo, decision):
+    """状态对象选择：由 Agent 的结构化 references.production_id 决定，
+    不做关键词猜测。无引用时回退 active production，多候选且无引用 → None（澄清）。"""
     records = convo.get("productions") if isinstance(convo.get("productions"), dict) else {}
     candidates = [
         record for record in records.values()
         if isinstance(record, dict)
         and record.get("status") in project_memory.ACTIVE_PRODUCTION_STATUSES
     ]
-    message = "".join(str(user_message or "").lower().split())
-    explicit = [
-        record for record in candidates
-        if str(record.get("id") or "") in message
-        or _semantic_status_label(record).lower() in message
-        or (
-            str(record.get("capability_family") or "") == "audio"
-            and any(word in message for word in ("试听", "音频", "配音", "声音"))
-        )
-        or (
-            str(record.get("capability_family") or "") == "video"
-            and any(word in message for word in ("视频", "数字人"))
-        )
-    ]
-    if len(explicit) == 1:
-        return explicit[0], candidates
-    if len(explicit) > 1:
-        return None, explicit
+    decision = decision if isinstance(decision, dict) else {}
+    refs = decision.get("references") if isinstance(decision.get("references"), dict) else {}
+    ref_id = str(refs.get("production_id") or "")
+    if ref_id:
+        if ref_id in records:
+            return records[ref_id], candidates
+        return None, candidates
     active_id = str(convo.get("active_production_id") or "")
     if active_id in records:
         return records[active_id], candidates
@@ -7383,7 +7374,7 @@ def _process_project_status_turn(cid, user_message, decision, expected_revision=
             return None, 404
         state = normalize_coach_state(convo.get("coach_state"))
         _assert_expected_revision(state, expected_revision)
-        record, candidates = _select_status_production(convo, user_message)
+        record, candidates = _select_status_production(convo, decision)
         snapshot_revision = state["revision"]
         if record is not None:
             production_id = str(record.get("id") or "")
@@ -7429,34 +7420,13 @@ def _process_project_status_turn(cid, user_message, decision, expected_revision=
             labels = "、".join(_semantic_status_label(item) for item in candidates[:4])
             assistant = "我看到有多个待处理项目：%s。你想看哪一个？" % labels
         else:
-            completed = len(set(state.get("completed_modules") or []).intersection(range(1, 7)))
-            lines = ["当前已完成 IP12 的 %s/6 个模块。" % completed]
-            # 真实历程汇报：已确认文案 + 已生成产物（全部来自会话结构化数据）
-            pack = (convo.get("deliverables") or {}).get("6") if isinstance(convo.get("deliverables"), dict) else {}
-            titles = []
-            for category in (pack or {}).get("categories") or []:
-                for topic in (category.get("topics") or []):
-                    if topic.get("title"):
-                        titles.append(str(topic["title"]))
-            if titles:
-                lines.append("已确认 %d 篇口播文案：%s。" % (len(titles), "、".join(titles[:3])))
-            done_prods = [r for r in _production_records(convo)
-                          if str(r.get("status") or r.get("phase") or "") == "done"]
-            if done_prods:
-                kinds = ["视频" if r.get("video_url") else "音频" for r in done_prods]
-                lines.append("已生成 %d 个产物（%s）。" % (len(done_prods), "、".join(kinds)))
-            # 引导句：按状态选一个最值得继续的事，让用户可一句「是」继续
-            pending = convo.get("pending_production_delegate")
-            if isinstance(pending, dict):
-                lines.append("还有一条报价（%s 点）待确认，需要继续确认执行吗？"
-                             % (pending.get("cost") if pending.get("cost") is not None else "—"))
-            elif done_prods:
-                lines.append("需要继续用另外的文案再生成一条口播，或者调整已生成的这条吗？")
-            elif titles:
-                lines.append("需要继续选定形象和音色，生成第一篇数字人口播吗？")
+            # 事实由代码统计；「接下来推荐什么」交给 Agent 判断（模型 reply 优先）。
+            model_reply = str(decision.get("reply") or "").strip()
+            if model_reply:
+                assistant = model_reply
             else:
-                lines.append("接下来想继续做什么？")
-            assistant = "\n".join(lines)
+                completed = len(set(state.get("completed_modules") or []).intersection(range(1, 7)))
+                assistant = "当前已完成 IP12 的 %s/6 个模块，还没有正在执行的制作任务。" % completed
     else:
         label, status = _semantic_status_label(record), str(record.get("status") or "")
         quote = record.get("quote") if isinstance(record.get("quote"), dict) else {}
@@ -7662,66 +7632,6 @@ def _semantic_customer_reply(convo, reply):
     return customer_reply
 
 
-def _next_step_intent(message):
-    """判断用户是否在问「下一步/接下来做什么」（短消息语义）。"""
-    text = re.sub(r"\s+", "", str(message or ""))
-    if len(text) > 30:
-        return False
-    return bool(re.search(r"(下一步|接下来|然后呢|继续|做什么|干嘛|怎么办)", text)) and len(text) <= 12 or \
-        bool(re.search(r"^(.{0,6})(下一步|接下来)(.{0,10})", text))
-
-
-def _process_production_guide_turn(cid, user_message, expected_revision=None, request_id=""):
-    """诊断完成后、用户问下一步时的确定性引导：查真实资产，列出选项 + 附入口动作。"""
-    import requests as _requests
-    base = str(os.environ.get("HQ_TOOL_AGENT_BASE") or "http://127.0.0.1:8790").rstrip("/")
-    avatars, voices = [], []
-    try:
-        av = _requests.get(base + "/avatars", timeout=30).json()
-        avatars = (av.get("items") or [])
-    except Exception:
-        pass
-    try:
-        vs = _requests.get(base + "/voices", timeout=30).json()
-        voices = (vs.get("items") or [])
-    except Exception:
-        pass
-    avatar_lines = "\n".join(
-        "· %s" % (str(a.get("name") or "形象 %s" % a.get("id")))
-        for a in avatars[:6]
-    ) or "· 还没有可用形象"
-    voice_lines = "\n".join(
-        "· 音色 %d：%s" % (i + 1, str(v.get("display_name") or v.get("name") or ""))
-        for i, v in enumerate(voices[:6])
-    ) or "· 还没有可用音色"
-    assistant = (
-        "文案都已确认，下一步就是把它们做成内容。做数字人口播需要形象和音色，你目前：\n\n"
-        "可用形象：\n%s\n\n可用音色：\n%s\n\n"
-        "你可以直接说「用形象N和音色N生成第一篇口播」，"
-        "或者点下方按钮创建你自己的形象 / 克隆你的声音。"
-    ) % (avatar_lines, voice_lines)
-    with CONVERSATION_STATE_LOCK:
-        convo = owned_conversation(cid)
-        if convo is None:
-            return {"ok": False, "error": "诊断不存在"}, 404
-        state = normalize_coach_state(convo.get("coach_state"))
-        _assert_expected_revision(state, expected_revision)
-        snapshot_revision = state["revision"]
-    message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
-    assistant, next_state = _persist_unprocessed_turn(
-        cid, user_message, snapshot_revision, message_id=message_id,
-        assistant_override=assistant,
-        skills=["semantic_master_agent"],
-    )
-    result = _chat_result(assistant, next_state)
-    result["components"] = ["production_guide", "voice_audition", "avatar_cards"]
-    result["actions"] = [
-        {"type": "open_avatar_create", "label": "👤 创建数字人形象（上传照片/拍照）", "primary": False},
-        {"type": "open_voice_clone", "label": "🎤 克隆我的声音（录制/上传样音）", "primary": False},
-    ]
-    return result, 200
-
-
 def _process_semantic_reply(cid, user_message, decision, expected_revision=None, request_id=""):
     with CONVERSATION_STATE_LOCK:
         convo = owned_conversation(cid)
@@ -7731,20 +7641,6 @@ def _process_semantic_reply(cid, user_message, decision, expected_revision=None,
         _assert_expected_revision(state, expected_revision)
         snapshot_revision = state["revision"]
         assistant = _semantic_customer_reply(convo, decision.get("reply"))
-        # 确定性兜底：用户问已生成产物（视频/音频/结果）时，把 done 记录的 URL 附上，
-        # 主 Agent 的产物认知不回退成「没有任务」。
-        if re.search(r"视频|音频|结果|产物|生成|怎么样|在哪|好了吗", str(user_message or "")) \
-                and not re.search(r"https?://", assistant or ""):
-            produced = []
-            for record in _production_records(convo):
-                if str(record.get("status") or record.get("phase") or "") != "done":
-                    continue
-                for key, label in (("video_url", "视频"), ("audio_url", "音频")):
-                    value = str(record.get(key) or "")
-                    if value:
-                        produced.append("· %s：%s" % (label, value))
-            if produced:
-                assistant = (assistant.rstrip() + "\n\n✅ 已生成的产物：\n" + "\n".join(produced)).strip()
     message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
     assistant, next_state = _persist_unprocessed_turn(
         cid, user_message, snapshot_revision, message_id=message_id,
@@ -7830,10 +7726,7 @@ def _process_production_delegate_turn(cid, user_message, decision, memory,
                     "cost": tool_result.get("cost"),
                 }
                 save_conversation(cid, convo_q)
-        assistant = (
-            (tool_result.get("explanation") or "已生成报价")
-            + "\n\n（下方按钮确认后执行）"
-        )
+        assistant = tool_result.get("explanation") or "已生成报价"
     elif kind == "running":
         assistant = str(tool_result.get("assistant_content") or "任务已提交，正在执行。")
     elif kind == "error":
@@ -7859,6 +7752,20 @@ def _process_production_delegate_turn(cid, user_message, decision, memory,
     components = tool_result.get("components")
     if isinstance(components, list):
         result["components"] = components
+    # 报价确认按钮：结构化 actions（前端按 action 渲染，不靠回复文本触发）
+    if kind == "quote":
+        with CONVERSATION_STATE_LOCK:
+            _pc = owned_conversation(cid)
+        if _pc is not None and isinstance(_pc.get("pending_production_delegate"), dict):
+            cost = _pc["pending_production_delegate"].get("cost")
+            result["actions"] = [{
+                "type": "confirm_production_delegate",
+                "label": "确认执行（%s 点）" % cost if cost is not None else "确认执行",
+                "primary": True,
+            }] + [
+                {"type": "open_avatar_create", "label": "👤 创建数字人形象（上传照片/拍照）", "primary": False},
+                {"type": "open_voice_clone", "label": "🎤 克隆我的声音（录制/上传样音）", "primary": False},
+            ]
     return result, 200
 
 
@@ -8224,23 +8131,6 @@ def process_chat_request(body):
                     semantic_decision = semantic_router.safe_clarification()
                 except Exception as exc:
                     app.logger.warning("IP12 semantic router failed open to legacy route: %s", exc)
-                # 兜底：诊断全部完成且无进行中制作，用户问「下一步/做什么」时，
-                # 模型若没委派生产引导（只回了建议/状态），统一改写为生产引导委派。
-                if (
-                    isinstance(semantic_decision, dict)
-                    and semantic_decision.get("tool") != "production.delegate"
-                    and set(state.get("completed_modules") or []) >= {1, 2, 3, 4, 5, 6}
-                    and not (convo.get("productions") and any(
-                        isinstance(r, dict) and r.get("status") in project_memory.ACTIVE_PRODUCTION_STATUSES
-                        for r in _production_records(convo)))
-                    and _next_step_intent(user_message)
-                ):
-                    # 确定性引导：直接查资产给选项，不走模型自由发挥
-                    result, status = _process_production_guide_turn(
-                        cid, user_message, body.get("expected_revision"), request_id)
-                    semantic_decision = None
-                    return result, status
-
             if semantic_decision:
                 try:
                     semantic_router.validate_combination(semantic_decision)
@@ -8310,18 +8200,6 @@ def process_chat_request(body):
                 )
             elif (semantic_decision and semantic_decision.get("intent") == "delegate"
                   and semantic_decision.get("delegate_to") == "production_content_agent"):
-                # 诊断完成后、用户问「下一步」且无进行中制作：确定性引导（列真实资产），
-                # 不把这种开放问题丢给工具层自由发挥。
-                if (
-                    _next_step_intent(user_message)
-                    and set(state.get("completed_modules") or []) >= {1, 2, 3, 4, 5, 6}
-                    and not (convo.get("productions") and any(
-                        isinstance(r, dict) and r.get("status") in project_memory.ACTIVE_PRODUCTION_STATUSES
-                        for r in _production_records(convo)))
-                ):
-                    result, status = _process_production_guide_turn(
-                        cid, user_message, body.get("expected_revision"), request_id)
-                    return result, status
                 # 生产内容子 Agent：SDK 模式下模型已通过 production_delegate 工具拿到工具层结果，
                 # 直接呈现 reply；custom 模式由服务端真实调用工具层（选能力、报价）。
                 if AGENTS_SDK_ENABLED and semantic_decision.get("reply"):

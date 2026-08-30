@@ -263,6 +263,11 @@ def build(project, state, capability_gates=None):
         "available_assets": _available_assets(active, voice_ui),
         "productions": productions,
         "active_production": copy.deepcopy(active),
+        "pending_delegate": {
+            "present": bool(project.get("pending_production_delegate")),
+            "cost": (project.get("pending_production_delegate") or {}).get("cost")
+            if isinstance(project.get("pending_production_delegate"), dict) else None,
+        },
         "active_agent_run": {
             key: _text((active_run or {}).get(key), 200)
             for key in ("agent_id", "status", "awaiting", "next_action")
