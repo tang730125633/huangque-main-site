@@ -806,9 +806,8 @@ function maybeRenderGuide(bubble){
 }
 function maybeRenderVoices(bubble){
   if(!bubble)return;var t=bubble.textContent||'';
-  // 只在「追问音色」场景渲染试听组件；报价/确认/已选音色时不重复出现
-  if(t.indexOf('可选音色')<0&&t.indexOf('音色')<0)return;
-  if(t.indexOf('报价')>=0||t.indexOf('费用')>=0||t.indexOf('确认')>=0||t.indexOf('已选择')>=0||t.indexOf('用音色')>=0)return;
+  // 只在「列音色清单的追问」场景渲染试听组件；仅提到“音色3”等字眼不触发
+  if(t.indexOf('可选音色')<0&&t.indexOf('可用音色')<0)return;
   if(bubble.dataset.voicesDone)return;bubble.dataset.voicesDone='1';
   fetch('/api/ip12/voices',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){
     var items=d&&d.items||[];if(!items.length)return;
