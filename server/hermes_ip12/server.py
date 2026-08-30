@@ -4042,13 +4042,10 @@ def _finalize_production_result(cid, job_id):
                         cover_url = base + str(cover_data["cover_url"])
                 except Exception:
                     cover_url = ""
-            lines = ["✅ 数字人口播已生成："]
-            if video_url:
-                lines.append(video_url)
-            if audio_url:
-                lines.append("音频：" + audio_url)
-            text = "\n".join(lines)
-            msg_meta = {"components": ["video_player"], "cover_url": cover_url} if cover_url else {"components": ["video_player"]}
+            text = "✅ 数字人口播已生成，下方可直接观看。"
+            msg_meta = {"components": ["video_player"],
+                        "video_url": video_url, "audio_url": audio_url,
+                        "cover_url": cover_url}
         else:
             text = "❌ 生成失败：" + str(task.get("error") or "未知错误")[:200]
         with CONVERSATION_STATE_LOCK:
@@ -7671,6 +7668,18 @@ def _process_semantic_reply(cid, user_message, decision, expected_revision=None,
     if isinstance(components, list) and components:
         result["components"] = [c for c in components if c in {
             "voice_audition", "avatar_cards", "production_guide", "video_player"}]
+    # video_player：链接由系统从产物记录填充（回复文本不暴露 URL，只渲染播放器）
+    if "video_player" in (result.get("components") or []):
+        with CONVERSATION_STATE_LOCK:
+            _mc = owned_conversation(cid)
+        for rec in _production_records(_mc or {}):
+            if str(rec.get("status") or rec.get("phase") or "") == "done":
+                result["media"] = {
+                    "video_url": rec.get("video_url") or "",
+                    "audio_url": rec.get("audio_url") or "",
+                    "cover_url": rec.get("cover_url") or "",
+                }
+                break
     return result, 200
 
 
