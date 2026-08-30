@@ -170,8 +170,8 @@ def safe_context(memory, goal, agent_run=None):
         {
             key: copy.deepcopy(item.get(key))
             for key in (
-                "production_id", "action", "family", "status", "job_present",
-                "confirmation_present", "selected_fields",
+                "production_id", "job_id", "action", "family", "status", "job_present",
+                "confirmation_present", "video_url", "audio_url", "selected_fields",
             )
         }
         for item in (memory.get("productions") or [])[-8:]
@@ -606,6 +606,9 @@ def agents_sdk_decider(context, goal, timeout_seconds=50, *, openai_client=None,
             "委派子 Agent 报价，不要反问、不要替代子 Agent 回答素材状态。"
             "\nconfirmed_scripts 是已确认文案：用户说「文案一/文案N」就是其中第 N 篇（带全文），"
             "直接委派子 Agent，把文案全文传过去；不要再让用户重新发文案。"
+            "\nproductions 是已完成的生成产物（含 video_url/audio_url）：用户要求修改、重新生成、"
+            "调整某个已生成视频/音频时，基于对应产物信息与对话历史委派子 Agent；"
+            "不要假装不知道产物存在。"
             "\n诊断完成后要【基于结果的递进引导】：先用 production_delegate 查客户现有形象与音色，"
             "再按 形象→音色→生成 的顺序一次只问一个引导问题。"
             "引导形象环节时，必须把查询到的已有形象明确列成选项（如「用形象17」「用形象16」），"

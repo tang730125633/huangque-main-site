@@ -96,21 +96,35 @@ def _confirmed_outputs(profile):
 
 
 def _productions(project):
+    raw = project.get("productions") or {}
+    if isinstance(raw, list):
+        # 委派链路写回的是 list（{job_id, phase, video_url, audio_url}），先归一化
+        records = []
+        for item in raw:
+            if isinstance(item, dict):
+                records.append(item)
+    elif isinstance(raw, dict):
+        records = list(raw.values())
+    else:
+        records = []
     result = []
-    for record in (project.get("productions") or {}).values():
+    for record in records:
         if not isinstance(record, dict):
             continue
         specialist = record.get("specialist_agent") if isinstance(record.get("specialist_agent"), dict) else {}
         quote = record.get("quote") if isinstance(record.get("quote"), dict) else {}
         result.append({
             "production_id": _text(record.get("id"), 100),
+            "job_id": _text(record.get("job_id"), 100),
             "action": _text(record.get("action"), 100),
             "family": _text(record.get("capability_family"), 40),
-            "status": _text(record.get("status"), 60),
+            "status": _text(record.get("status") or record.get("phase"), 60),
             "created_at": _text(record.get("created_at"), 40),
             "updated_at": _text(record.get("updated_at"), 40),
             "job_present": bool(record.get("job_id")),
             "confirmation_present": bool(record.get("confirmation_id")),
+            "video_url": _text(record.get("video_url"), 400),
+            "audio_url": _text(record.get("audio_url"), 400),
             "selected_fields": sorted(str(key) for key, value in (record.get("options") or {}).items()
                                       if value not in (None, "", [], {})),
             "quote": {
