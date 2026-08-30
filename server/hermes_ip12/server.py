@@ -7645,6 +7645,57 @@ def _next_step_intent(message):
         bool(re.search(r"^(.{0,6})(下一步|接下来)(.{0,10})", text))
 
 
+def _asset_query_intent(message):
+    """查询类意图：用户要看音色/形象列表 → 返回 'voices' / 'avatars' / None。
+    这类查询必须回真实资产并带交互组件，不让模型自行罗列。"""
+    text = re.sub(r"\s+", "", str(message or ""))
+    if len(text) > 40:
+        return None
+    if re.search(r"音色|声音|voice", text, re.I) and re.search(r"看|查|有哪|列表|几个|什么|哪些|试听", text):
+        return "voices"
+    if re.search(r"形象|avatar", text, re.I) and re.search(r"看|查|有哪|列表|几个|什么|哪些", text):
+        return "avatars"
+    return None
+
+
+def _process_asset_query_turn(cid, user_message, kind, expected_revision=None, request_id=""):
+    """确定性资产查询：从工具层拉真实音色/形象，文本列表 + 结构化组件。"""
+    import requests as _requests
+    base = str(os.environ.get("HQ_TOOL_AGENT_BASE") or "http://127.0.0.1:8790").rstrip("/")
+    items = []
+    try:
+        resp = _requests.get(base + ("/voices" if kind == "voices" else "/avatars"), timeout=30)
+        items = (resp.json().get("items") or [])
+    except Exception:
+        pass
+    if kind == "voices":
+        lines = ["%d. %s" % (i + 1, str(v.get("display_name") or v.get("name") or ""))
+                 for i, v in enumerate(items[:6])]
+        assistant = ("当前可用音色（说「用音色N」即可指定；下方可试听）：\n" + "\n".join(lines))
+        components = ["voice_audition"]
+    else:
+        lines = ["%d. %s" % (i + 1, str(a.get("name") or ("形象 %s" % a.get("id"))))
+                 for i, a in enumerate(items[:6])]
+        assistant = ("当前数字人形象（说「用形象N」即可指定）：\n" + "\n".join(lines))
+        components = ["avatar_cards"]
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        if convo is None:
+            return {"ok": False, "error": "诊断不存在"}, 404
+        state = normalize_coach_state(convo.get("coach_state"))
+        _assert_expected_revision(state, expected_revision)
+        snapshot_revision = state["revision"]
+    message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
+    assistant, next_state = _persist_unprocessed_turn(
+        cid, user_message, snapshot_revision, message_id=message_id,
+        assistant_override=assistant,
+        skills=["semantic_master_agent"],
+    )
+    result = _chat_result(assistant, next_state)
+    result["components"] = components
+    return result, 200
+
+
 def _process_production_guide_turn(cid, user_message, expected_revision=None, request_id=""):
     """诊断完成后、用户问下一步时的确定性引导：查真实资产，列出选项 + 附入口动作。"""
     import requests as _requests
@@ -8244,6 +8295,12 @@ def process_chat_request(body):
             if material_production_id:
                 result, status = _process_production_material_revision_turn(
                     cid, user_message, material_production_id, material_revision_kind,
+                    body.get("expected_revision"), request_id,
+                )
+            elif _asset_query_intent(user_message):
+                # 查音色/形象类查询：直接拉真实资产 + 交互组件，不让模型自行罗列
+                result, status = _process_asset_query_turn(
+                    cid, user_message, _asset_query_intent(user_message),
                     body.get("expected_revision"), request_id,
                 )
             elif semantic_decision and semantic_decision.get("intent") == "pause":
