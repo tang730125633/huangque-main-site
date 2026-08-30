@@ -7728,20 +7728,35 @@ def _process_production_delegate_turn(cid, user_message, decision, memory,
         profile = {"notes": "IP12 诊断画像尚未提供结构化事实"}
     brief = {"schema": "ip12-brief/v1", "project_id": str(cid or "")[:80],
              "profile": profile}
-    try:
-        req = urllib.request.Request(
-            base + "/agent/ip12-brief",
-            data=json.dumps({"brief": brief}, ensure_ascii=False).encode("utf-8"),
-            headers={"Content-Type": "application/json"}, method="POST")
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            tool_sid = str(json.loads(resp.read().decode("utf-8")).get("session_id") or "")
-        payload = {"message": str(user_message or "")[:2000]}
+    tool_sid = ""
+    with CONVERSATION_STATE_LOCK:
+        _reuse = owned_conversation(cid)
+    if _reuse is not None:
+        tool_sid = str(_reuse.get("production_tool_sid") or "")
+    if not tool_sid:
+        try:
+            req = urllib.request.Request(
+                base + "/agent/ip12-brief",
+                data=json.dumps({"brief": brief}, ensure_ascii=False).encode("utf-8"),
+                headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                tool_sid = str(json.loads(resp.read().decode("utf-8")).get("session_id") or "")
+        except Exception:
+            tool_sid = ""
         if tool_sid:
-            payload["session_id"] = tool_sid
-        req2 = urllib.request.Request(
-            base + "/agent",
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={"Content-Type": "application/json"}, method="POST")
+            with CONVERSATION_STATE_LOCK:
+                _save_c = owned_conversation(cid)
+                if _save_c is not None:
+                    _save_c["production_tool_sid"] = tool_sid
+                    save_conversation(cid, _save_c)
+    payload = {"message": str(user_message or "")[:2000]}
+    if tool_sid:
+        payload["session_id"] = tool_sid
+    req2 = urllib.request.Request(
+        base + "/agent",
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json"}, method="POST")
+    try:
         with urllib.request.urlopen(req2, timeout=180) as resp2:
             tool_result = json.loads(resp2.read().decode("utf-8"))
     except Exception as exc:
