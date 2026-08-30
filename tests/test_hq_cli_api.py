@@ -865,6 +865,52 @@ class HQCLIAPITests(unittest.TestCase):
             )
             return 200, {"job_id": 42, "cost": 20, "sha256": digest}
 
+        status, payload = self._raw_request(
+            "/api/auth/cli/director-breakdown-image", raw, token=token,
+            extra_headers={
+                "X-HQ-File-Name": "reference.png",
+                "Idempotency-Key": "director-upload-001",
+                "X-HQ-Quote-Token": quote["quote_token"],
+            },
+        )
+        self.assertEqual((400, "invalid_expected_cost"), (status, payload["code"]))
+
+        for value, expected in (
+                ("not-a-number", (400, "invalid_expected_cost")),
+                ("19", (409, "quote_cost_changed"))):
+            with self.subTest(expected_cost=value):
+                status, payload = self._raw_request(
+                    "/api/auth/cli/director-breakdown-image", raw, token=token,
+                    extra_headers={
+                        "X-HQ-File-Name": "reference.png",
+                        "Idempotency-Key": "director-upload-001",
+                        "X-HQ-Quote-Token": quote["quote_token"],
+                        "X-HQ-Expected-Cost": value,
+                    },
+                )
+                self.assertEqual(expected, (status, payload["code"]))
+
+        video_raw = b"\x00\x00\x00\x18ftypmp42director-video"
+        video_digest = hashlib.sha256(video_raw).hexdigest()
+        with mock.patch.object(
+            self.auth.H, "_cli_proxy", return_value=(200, {"cost": 20, "points": 100}),
+        ):
+            status, video_quote = self._request(
+                "/api/auth/cli/director-breakdown-quote",
+                {"media_type": "video", "sha256": video_digest}, token=token,
+            )
+        self.assertEqual(200, status, video_quote)
+        status, payload = self._raw_request(
+            "/api/auth/cli/director-breakdown-video", video_raw, token=token,
+            content_type="video/mp4",
+            extra_headers={
+                "X-HQ-File-Name": "reference.mp4",
+                "Idempotency-Key": "director-upload-video-001",
+                "X-HQ-Quote-Token": video_quote["quote_token"],
+            },
+        )
+        self.assertEqual((400, "invalid_expected_cost"), (status, payload["code"]))
+
         with mock.patch.object(
             self.auth.hq_cli_api, "proxy_director_breakdown_upload", side_effect=fake_upload,
         ):
@@ -874,6 +920,7 @@ class HQCLIAPITests(unittest.TestCase):
                     "X-HQ-File-Name": "reference.png",
                     "Idempotency-Key": "director-upload-001",
                     "X-HQ-Quote-Token": quote["quote_token"],
+                    "X-HQ-Expected-Cost": "20",
                 },
             )
         self.assertEqual(200, status, payload)
@@ -893,6 +940,7 @@ class HQCLIAPITests(unittest.TestCase):
                 extra_headers={
                     "Idempotency-Key": "director-upload-001",
                     "X-HQ-Quote-Token": quote["quote_token"],
+                    "X-HQ-Expected-Cost": "20",
                 },
             )
         self.assertEqual((409, "quote_mismatch"), (status, payload["code"]))

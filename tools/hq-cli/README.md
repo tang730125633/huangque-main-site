@@ -93,6 +93,36 @@ hq run image-generate --input @image.json --json
 hq run image-generate --input @image.json --confirm --quote-token '<quote_token>' --json
 ```
 
+## Omni 参考图视频
+
+先把用户明确指定的 JPEG、PNG 或 WebP 上传为临时私有 `upload_id`，再把该 ID 写入 Omni 请求。Omni 支持 1-6 张参考图、`9:16` 或 `16:9`、3-10 秒，当前固定输出 `720p`。
+
+```sh
+hq describe image-upload --json
+hq run image-upload --file /absolute/path/reference.png --confirm --json
+
+cat > omni-video.json <<'JSON'
+{
+  "channel": "omni",
+  "prompt": "Use @图片1 as the identity and opening composition.",
+  "ratio": "9:16",
+  "duration": 5,
+  "resolution": "720p",
+  "reference_upload_ids": ["<upload_id>"]
+}
+JSON
+
+hq describe video-generate --json
+hq run video-generate --input @omni-video.json --json
+# 用户核对报价后，原样复用同一输入：
+hq run video-generate --input @omni-video.json --confirm --quote-token '<quote_token>' --json
+hq run task --input @- --json <<'JSON'
+{"job_id": 123}
+JSON
+```
+
+上传成功但报价返回参考图格式错误时，不要反复上传、转换格式或绕过 CLI 调用私有接口；保留 `upload_id`、MIME 和 SHA-256 作为证据并报告服务端兼容问题。报价失败不会扣点。
+
 ## 文案成片
 
 先读取当前可用模板、素材风格和音色，再使用同一份 UTF-8 JSON 完成报价与确认提交：
