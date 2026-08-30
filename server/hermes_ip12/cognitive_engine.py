@@ -489,12 +489,14 @@ def agents_sdk_decider(context, goal, timeout_seconds=50, *, openai_client=None,
         base = str(os.environ.get("HQ_TOOL_AGENT_BASE") or "http://127.0.0.1:8790").rstrip("/")
         project_id = str((ctx.context or {}).get("project_id") or "")
         sid = ""
-        # 复用同一生产的工具层会话（多轮选择/确认在同一上下文延续）
+        # 复用同一生产的工具层会话（多轮选择/确认在同一上下文延续）。
+        # SDK 工具在 Runner 异步上下文里执行，没有 Flask request context，
+        # 因此直接按文件读写会话（owned_conversation 依赖请求上下文，不能用）。
         try:
             import server as _server
-            with _server.CONVERSATION_STATE_LOCK:
-                convo = _server.owned_conversation(project_id)
-            if convo is not None:
+            _path = _server.conversation_path(project_id)
+            if _path.exists():
+                convo = json.loads(_path.read_text(encoding="utf-8"))
                 sid = str(convo.get("production_tool_sid") or "")
                 if not sid:
                     pending = convo.get("pending_production_delegate")
@@ -520,11 +522,11 @@ def agents_sdk_decider(context, goal, timeout_seconds=50, *, openai_client=None,
             if sid and project_id:
                 try:
                     import server as _server
-                    with _server.CONVERSATION_STATE_LOCK:
-                        convo = _server.owned_conversation(project_id)
-                        if convo is not None:
-                            convo["production_tool_sid"] = sid
-                            _server.save_conversation(project_id, convo)
+                    _path = _server.conversation_path(project_id)
+                    if _path.exists():
+                        convo = json.loads(_path.read_text(encoding="utf-8"))
+                        convo["production_tool_sid"] = sid
+                        _server.save_conversation(project_id, convo)
                 except Exception:
                     pass
         payload = {"message": str(intent or "")[:2000]}
@@ -547,17 +549,17 @@ def agents_sdk_decider(context, goal, timeout_seconds=50, *, openai_client=None,
                 if project_id:
                     import server as _server
                     from datetime import datetime as _dt
-                    with _server.CONVERSATION_STATE_LOCK:
-                        convo = _server.owned_conversation(project_id)
-                        if convo is not None:
-                            convo["pending_production_delegate"] = {
-                                "tool_sid": sid,
-                                "tool": str(result.get("tool") or ""),
-                                "params": result.get("params") or {},
-                                "quote_token": str(result.get("quote_token") or ""),
-                                "cost": result.get("cost"),
-                            }
-                            _server.save_conversation(project_id, convo)
+                    _path = _server.conversation_path(project_id)
+                    if _path.exists():
+                        convo = json.loads(_path.read_text(encoding="utf-8"))
+                        convo["pending_production_delegate"] = {
+                            "tool_sid": sid,
+                            "tool": str(result.get("tool") or ""),
+                            "params": result.get("params") or {},
+                            "quote_token": str(result.get("quote_token") or ""),
+                            "cost": result.get("cost"),
+                        }
+                        _server.save_conversation(project_id, convo)
             except Exception:
                 pass
             return json.dumps({
