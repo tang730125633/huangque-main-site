@@ -3935,6 +3935,58 @@ def api_ip12_avatars():
     return jsonify(payload)
 
 
+@app.route("/api/ip12/production-delegate/confirm", methods=["POST"])
+def api_ip12_production_delegate_confirm():
+    """确认执行委派的生产任务：用保存的会话继续（工具层两段式），返回任务号。"""
+    import requests as _requests
+    payload = request.get_json(silent=True) or {}
+    cid = str(payload.get("conversation_id") or "").strip()
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        if convo is None:
+            return jsonify({"ok": False, "error": "诊断不存在"}), 404
+        pending = convo.get("pending_production_delegate")
+        if not isinstance(pending, dict):
+            return jsonify({"ok": False, "error": "没有待确认的报价，请重新发起制作"}), 409
+        tool_sid = str(pending.get("tool_sid") or "")
+        quote_token = str(pending.get("quote_token") or "")
+        saved_tool = str(pending.get("tool") or "")
+        saved_params = pending.get("params") or {}
+        convo.pop("pending_production_delegate", None)
+        save_conversation(cid, convo)
+    base = str(os.environ.get("HQ_TOOL_AGENT_BASE") or "http://127.0.0.1:8790").rstrip("/")
+    try:
+        # 用工具层确认端点直接执行（带报价时的 quote_token）
+        response = _requests.post(
+            base + "/agent/execute",
+            json={"tool": saved_tool, "params": saved_params,
+                  "quote_token": quote_token, "session_id": tool_sid},
+            timeout=300,
+        )
+        result = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+    except Exception as exc:
+        return jsonify({"ok": False, "error": "生产子 Agent 暂时不可用：" + str(exc)[:120]}), 502
+    if response.status_code >= 400:
+        return jsonify({"ok": False, "error": str((result or {}).get("detail") or "执行失败")[:200]}), response.status_code
+    job_id = result.get("job_id") if isinstance(result, dict) else None
+    return jsonify({"ok": True, "job_id": job_id, "result": result})
+
+
+@app.route("/api/ip12/task/<job_id>", methods=["GET"])
+def api_ip12_task(job_id):
+    """轮询生产任务进度（转发工具层）。"""
+    import requests as _requests
+    base = str(os.environ.get("HQ_TOOL_AGENT_BASE") or "http://127.0.0.1:8790").rstrip("/")
+    try:
+        response = _requests.get(base + "/task/%s" % job_id, timeout=30)
+        payload = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+    except Exception as exc:
+        return jsonify({"ok": False, "error": "生产子 Agent 暂时不可用：" + str(exc)[:120]}), 502
+    if response.status_code >= 400:
+        return jsonify({"ok": False, "error": str((payload or {}).get("detail") or "查询失败")[:200]}), response.status_code
+    return jsonify(payload)
+
+
 @app.route("/api/ip12/avatar-create", methods=["POST"])
 def api_ip12_avatar_create():
     """上传本人照片创建数字人形象（转发生产内容子 Agent / 工具层）。
@@ -7381,9 +7433,21 @@ def _process_production_delegate_turn(cid, user_message, decision, memory,
         tool_result = {"type": "error", "message": "生产子 Agent 暂时不可用，请稍后再试。"}
     kind = tool_result.get("type")
     if kind == "quote":
+        # 保存委派上下文，前端渲染确认按钮；确认时用同一会话继续（工具层两段式）
+        with CONVERSATION_STATE_LOCK:
+            convo_q = owned_conversation(cid)
+            if convo_q is not None:
+                convo_q["pending_production_delegate"] = {
+                    "tool_sid": tool_sid,
+                    "tool": str(tool_result.get("tool") or ""),
+                    "params": tool_result.get("params") or {},
+                    "quote_token": str(tool_result.get("quote_token") or ""),
+                    "cost": tool_result.get("cost"),
+                }
+                save_conversation(cid, convo_q)
         assistant = (
             (tool_result.get("explanation") or "已生成报价")
-            + "（请在报价卡确认后执行）"
+            + "\n\n（下方按钮确认后执行）"
         )
     elif kind == "running":
         assistant = str(tool_result.get("assistant_content") or "任务已提交，正在执行。")
