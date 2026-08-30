@@ -569,7 +569,18 @@ def agents_sdk_decider(context, goal, timeout_seconds=50, *, openai_client=None,
                 "message": result.get("explanation") or result.get("assistant_content") or "已报价",
             }, ensure_ascii=False)
         if kind == "running":
-            return json.dumps({"status": "running", "job_id": result.get("job_id"),
+            job_id = result.get("job_id")
+            if job_id:
+                try:
+                    import server as _server
+                    import threading
+                    threading.Thread(
+                        target=_server._finalize_production_result,
+                        args=(project_id, str(job_id)), daemon=True,
+                    ).start()
+                except Exception:
+                    pass
+            return json.dumps({"status": "running", "job_id": job_id,
                                "message": result.get("assistant_content") or "任务已提交"}, ensure_ascii=False)
         if kind == "error":
             return json.dumps({"status": "failed", "message": result.get("message") or "执行失败"}, ensure_ascii=False)
