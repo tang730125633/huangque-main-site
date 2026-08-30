@@ -715,7 +715,9 @@ function confirmDelegate(){
   fetch('/api/ip12/production-delegate/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid})})
     .then(function(r){return r.json()}).then(function(d){
       if(!d.ok)throw new Error(d.error||'提交失败');
-      var jid=d.job_id;msg.querySelector('.bubble').innerHTML='任务 '+jid+' 已提交，正在生成… ⏳';scroll();
+      var jid=d.job_id;
+      if(!jid){msg.querySelector('.bubble').innerHTML='⚠️ '+(d.error||'提交未生效')+'，请重新说一次制作要求再报价确认。';scroll();return}
+      msg.querySelector('.bubble').innerHTML='任务 '+jid+' 已提交，正在生成… ⏳';scroll();
       pollDelegateTask(jid,msg.querySelector('.bubble'));
     }).catch(function(e){msg.querySelector('.bubble').innerHTML='❌ '+(e.message||'提交失败')});
 }

@@ -3977,7 +3977,11 @@ def api_ip12_production_delegate_confirm():
         return jsonify({"ok": False, "error": "生产子 Agent 暂时不可用：" + str(exc)[:120]}), 502
     if response.status_code >= 400:
         return jsonify({"ok": False, "error": str((result or {}).get("detail") or "执行失败")[:200]}), response.status_code
-    job_id = result.get("job_id") if isinstance(result, dict) else None
+    inner = (result or {}).get("result") if isinstance(result, dict) else {}
+    if isinstance(inner, dict) and inner.get("status") == "failed":
+        # 报价过期/执行被拒：如实回传，前端提示重新发起
+        return jsonify({"ok": False, "error": str(inner.get("summary") or inner.get("message") or "执行失败")[:200]}), 409
+    job_id = inner.get("job_id") if isinstance(inner, dict) else None
     return jsonify({"ok": True, "job_id": job_id, "result": result})
 
 
