@@ -125,6 +125,7 @@ def _productions(project):
             "confirmation_present": bool(record.get("confirmation_id")),
             "video_url": _text(record.get("video_url"), 400),
             "audio_url": _text(record.get("audio_url"), 400),
+            "title": _text(record.get("title"), 120),
             "selected_fields": sorted(str(key) for key, value in (record.get("options") or {}).items()
                                       if value not in (None, "", [], {})),
             "quote": {

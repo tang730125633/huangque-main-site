@@ -171,7 +171,7 @@ def safe_context(memory, goal, agent_run=None):
             key: copy.deepcopy(item.get(key))
             for key in (
                 "production_id", "job_id", "action", "family", "status", "job_present",
-                "confirmation_present", "video_url", "audio_url", "selected_fields",
+                "confirmation_present", "video_url", "audio_url", "title", "selected_fields",
             )
         }
         for item in (memory.get("productions") or [])[-8:]
