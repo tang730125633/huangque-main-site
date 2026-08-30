@@ -7430,7 +7430,33 @@ def _process_project_status_turn(cid, user_message, decision, expected_revision=
             assistant = "我看到有多个待处理项目：%s。你想看哪一个？" % labels
         else:
             completed = len(set(state.get("completed_modules") or []).intersection(range(1, 7)))
-            assistant = "当前已完成 IP12 的 %s/6 个模块，还没有正在执行的制作任务。" % completed
+            lines = ["当前已完成 IP12 的 %s/6 个模块。" % completed]
+            # 真实历程汇报：已确认文案 + 已生成产物（全部来自会话结构化数据）
+            pack = (convo.get("deliverables") or {}).get("6") if isinstance(convo.get("deliverables"), dict) else {}
+            titles = []
+            for category in (pack or {}).get("categories") or []:
+                for topic in (category.get("topics") or []):
+                    if topic.get("title"):
+                        titles.append(str(topic["title"]))
+            if titles:
+                lines.append("已确认 %d 篇口播文案：%s。" % (len(titles), "、".join(titles[:3])))
+            done_prods = [r for r in _production_records(convo)
+                          if str(r.get("status") or r.get("phase") or "") == "done"]
+            if done_prods:
+                kinds = ["视频" if r.get("video_url") else "音频" for r in done_prods]
+                lines.append("已生成 %d 个产物（%s）。" % (len(done_prods), "、".join(kinds)))
+            # 引导句：按状态选一个最值得继续的事，让用户可一句「是」继续
+            pending = convo.get("pending_production_delegate")
+            if isinstance(pending, dict):
+                lines.append("还有一条报价（%s 点）待确认，需要继续确认执行吗？"
+                             % (pending.get("cost") if pending.get("cost") is not None else "—"))
+            elif done_prods:
+                lines.append("需要继续用另外的文案再生成一条口播，或者调整已生成的这条吗？")
+            elif titles:
+                lines.append("需要继续选定形象和音色，生成第一篇数字人口播吗？")
+            else:
+                lines.append("接下来想继续做什么？")
+            assistant = "\n".join(lines)
     else:
         label, status = _semantic_status_label(record), str(record.get("status") or "")
         quote = record.get("quote") if isinstance(record.get("quote"), dict) else {}
