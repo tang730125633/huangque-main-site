@@ -20,7 +20,7 @@ import semantic_router
 
 
 SCHEMA = "ip12.cognitive-conformance/v1"
-AUTHORIZED_MAX_REQUESTS = 120
+AUTHORIZED_MAX_REQUESTS = 300  # 上站授权：44 用例 × 3 阶段 + 断连重试余量
 AUTHORIZED_MAX_CNY = 12.0
 _DEPLOYED_CORPUS = Path(__file__).with_name("eval_corpus.json")
 _SOURCE_CORPUS = Path(__file__).resolve().parents[2] / "tests/fixtures/ip12_semantic_router_cases.json"
