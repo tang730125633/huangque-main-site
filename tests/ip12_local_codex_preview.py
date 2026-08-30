@@ -32,8 +32,8 @@ def main():
         os.environ["HERMES_COGNITIVE_ENGINE"] = "agents_sdk"
         os.environ["HERMES_AGENTS_SDK_ENABLED"] = "1"
         os.environ["HERMES_AGENTS_SDK_LOCAL_BYPASS"] = "1"
-        os.environ.setdefault("HERMES_AGENTS_SDK_MODEL", "gpt-5.6-luna")
-        os.environ.setdefault("HERMES_AGENTS_SDK_PROVIDER", "openai")
+        os.environ.setdefault("HERMES_AGENTS_SDK_MODEL", os.environ.get("HERMES_AGENTS_SDK_MODEL") or "deepseek-v4-pro")
+        os.environ.setdefault("HERMES_AGENTS_SDK_PROVIDER", os.environ.get("HERMES_AGENTS_SDK_PROVIDER") or "deepseek")
         keychain_key = os.environ.get("HERMES_AGENTS_SDK_OPENAI_API_KEY")
         if not keychain_key:
             import subprocess as _sp

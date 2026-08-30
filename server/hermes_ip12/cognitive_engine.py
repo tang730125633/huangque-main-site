@@ -333,7 +333,7 @@ def agents_sdk_decider(context, goal, timeout_seconds=50, *, openai_client=None,
     provider = str(
         provider_name or os.environ.get("HERMES_AGENTS_SDK_PROVIDER") or "openai"
     ).lower()
-    if provider not in {"openai", "dashscope"}:
+    if provider not in {"openai", "dashscope", "deepseek"}:
         raise RuntimeError("agents_sdk_provider_unsupported")
     if provider == "dashscope" and str(
         os.environ.get("HERMES_AGENTS_SDK_DASHSCOPE_CONFORMANT") or "0"
@@ -364,6 +364,21 @@ def agents_sdk_decider(context, goal, timeout_seconds=50, *, openai_client=None,
                 timeout=max(1.0, float(timeout_seconds)), max_retries=0,
             )
         model = OpenAIChatCompletionsModel(model=model_name, openai_client=client)
+    elif provider == "deepseek":
+        client = openai_client
+        if client is None:
+            key = os.environ.get("HERMES_AGENTS_SDK_DEEPSEEK_API_KEY") or os.environ.get("DEEPSEEK_API_KEY")
+            if not key:
+                raise RuntimeError("agents_sdk_provider_not_configured")
+            client = AsyncOpenAI(
+                api_key=key,
+                base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
+                timeout=max(1.0, float(timeout_seconds)), max_retries=0,
+            )
+        model = OpenAIResponsesModel(
+            model=model_name,
+            openai_client=client,
+        )
     else:
         client = openai_client
         if client is None:
