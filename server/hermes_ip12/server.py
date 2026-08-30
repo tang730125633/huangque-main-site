@@ -3982,7 +3982,65 @@ def api_ip12_production_delegate_confirm():
         # 报价过期/执行被拒：如实回传，前端提示重新发起
         return jsonify({"ok": False, "error": str(inner.get("summary") or inner.get("message") or "执行失败")[:200]}), 409
     job_id = inner.get("job_id") if isinstance(inner, dict) else None
+    if job_id:
+        threading.Thread(
+            target=_finalize_production_result, args=(cid, str(job_id)), daemon=True,
+        ).start()
     return jsonify({"ok": True, "job_id": job_id, "result": result})
+
+
+def _finalize_production_result(cid, job_id):
+    """任务完成后把结果（视频/音频）作为 assistant 消息持久化，刷新页面不丢。"""
+    import requests as _requests
+    base = str(os.environ.get("HQ_TOOL_AGENT_BASE") or "http://127.0.0.1:8790").rstrip("/")
+    deadline = time.time() + 900
+    while time.time() < deadline:
+        time.sleep(6)
+        try:
+            r = _requests.get(base + "/task/" + str(job_id), timeout=30)
+            d = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+        except Exception:
+            continue
+        task = (d or {}).get("task") if isinstance(d, dict) else {}
+        task = task if isinstance(task, dict) else {}
+        phase = str(task.get("phase") or "")
+        if phase not in ("done", "failed", "error"):
+            continue
+        with CONVERSATION_STATE_LOCK:
+            convo = owned_conversation(cid)
+        if convo is None:
+            return
+        if phase == "done":
+            inner = task.get("result") if isinstance(task.get("result"), dict) else {}
+            video_url = str(inner.get("video_url") or "")
+            audio_url = str(inner.get("audio_url") or "")
+            if not video_url and not audio_url:
+                return
+            lines = ["✅ 数字人口播已生成："]
+            if video_url:
+                lines.append(video_url)
+            if audio_url:
+                lines.append("音频：" + audio_url)
+            text = "\n".join(lines)
+        else:
+            text = "❌ 生成失败：" + str(task.get("error") or "未知错误")[:200]
+        with CONVERSATION_STATE_LOCK:
+            convo = owned_conversation(cid)
+            if convo is None:
+                return
+            msgs = convo.setdefault("messages", [])
+            if msgs and str(msgs[-1].get("content") or "") == text:
+                return
+            msgs.append({"role": "assistant", "content": text})
+            prods = convo.setdefault("productions", [])
+            prods.append({
+                "job_id": str(job_id), "phase": phase,
+                "video_url": inner.get("video_url") if isinstance(inner, dict) else None,
+                "audio_url": inner.get("audio_url") if isinstance(inner, dict) else None,
+                "created_at": time.time(),
+            })
+            save_conversation(cid, convo)
+        return
 
 
 @app.route("/api/ip12/task/<job_id>", methods=["GET"])
