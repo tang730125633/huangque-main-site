@@ -8025,7 +8025,7 @@ def process_chat_request(body):
                     result, status = _process_production_guide_turn(
                         cid, user_message, body.get("expected_revision"), request_id)
                     semantic_decision = None
-                    return jsonify(result), status
+                    return result, status
 
             if semantic_decision:
                 try:
@@ -8107,7 +8107,7 @@ def process_chat_request(body):
                 ):
                     result, status = _process_production_guide_turn(
                         cid, user_message, body.get("expected_revision"), request_id)
-                    return jsonify(result), status
+                    return result, status
                 # 生产内容子 Agent：SDK 模式下模型已通过 production_delegate 工具拿到工具层结果，
                 # 直接呈现 reply；custom 模式由服务端真实调用工具层（选能力、报价）。
                 if AGENTS_SDK_ENABLED and semantic_decision.get("reply"):
