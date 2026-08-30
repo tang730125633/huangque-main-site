@@ -566,6 +566,7 @@ function runStateAction(item){
   if(item.type==='navigate_to'||item.type==='navigate_capability')return navigateToProductionRoute(item.ui_route);
   if(item.type==='open_avatar_create')return openAvatarCreate();
   if(item.type==='open_voice_clone')return openInlineVoiceClone();
+  if(item.type==='confirm_production_delegate')return confirmDelegate();
   return sendHarnessAction(item)
 }
 var avatarCreatePending=null;
@@ -709,6 +710,15 @@ function appendProductionMessage(message){var messageId=String(message&&message.
 function isSafeMarkdownUrl(value,base='https://huangque.invalid/'){try{var u=new URL(String(value??'').trim(),base);return u.protocol==='http:'||u.protocol==='https:'}catch(e){return false}}
 function sanitizeMarked(html){var t=document.createElement('template');t.innerHTML=html;t.content.querySelectorAll('a[href],img[src]').forEach(function(el){var attr=el.tagName==='A'?'href':'src';if(!isSafeMarkdownUrl(el.getAttribute(attr),location.href)){if(el.tagName==='A')el.replaceWith(document.createTextNode(el.textContent));else el.remove()}else if(el.tagName==='A'){el.rel='noopener noreferrer'}});return t.innerHTML}
 function md(t){if(!t)return'';try{if(typeof marked!=='undefined')return sanitizeMarked(marked.parse(eHtml(t)))}catch(e){return eHtml(t).replace(/\n/g,'<br>')}return eHtml(t).replace(/\n/g,'<br>')}
+function confirmDelegate(){
+  var area=document.getElementById('chatArea'),msg=document.createElement('div');msg.className='msg assistant';msg.innerHTML='<div class="av">'+moduleIcon('sparkles')+'</div><div class="bubble">正在提交… ⏳</div>';area.appendChild(msg);scroll();
+  fetch('/api/ip12/production-delegate/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid})})
+    .then(function(r){return r.json()}).then(function(d){
+      if(!d.ok)throw new Error(d.error||'提交失败');
+      var jid=d.job_id;msg.querySelector('.bubble').innerHTML='任务 '+jid+' 已提交，正在生成… ⏳';scroll();
+      pollDelegateTask(jid,msg.querySelector('.bubble'));
+    }).catch(function(e){msg.querySelector('.bubble').innerHTML='❌ '+(e.message||'提交失败')});
+}
 function maybeRenderConfirm(bubble){
   if(!bubble)return;var t=bubble.textContent||'';
   if(t.indexOf('下方按钮确认后执行')<0)return;
