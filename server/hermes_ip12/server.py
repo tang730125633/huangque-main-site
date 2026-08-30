@@ -8096,6 +8096,18 @@ def process_chat_request(body):
                 )
             elif (semantic_decision and semantic_decision.get("intent") == "delegate"
                   and semantic_decision.get("delegate_to") == "production_content_agent"):
+                # 诊断完成后、用户问「下一步」且无进行中制作：确定性引导（列真实资产），
+                # 不把这种开放问题丢给工具层自由发挥。
+                if (
+                    _next_step_intent(user_message)
+                    and set(state.get("completed_modules") or []) >= {1, 2, 3, 4, 5, 6}
+                    and not (convo.get("productions") and any(
+                        isinstance(r, dict) and r.get("status") in project_memory.ACTIVE_PRODUCTION_STATUSES
+                        for r in convo["productions"].values()))
+                ):
+                    result, status = _process_production_guide_turn(
+                        cid, user_message, body.get("expected_revision"), request_id)
+                    return jsonify(result), status
                 # 生产内容子 Agent：SDK 模式下模型已通过 production_delegate 工具拿到工具层结果，
                 # 直接呈现 reply；custom 模式由服务端真实调用工具层（选能力、报价）。
                 if AGENTS_SDK_ENABLED and semantic_decision.get("reply"):
