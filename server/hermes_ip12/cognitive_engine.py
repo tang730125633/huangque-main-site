@@ -448,12 +448,25 @@ def agents_sdk_decider(context, goal, timeout_seconds=50, *, openai_client=None,
         """把生产任务交给生产内容子 Agent（黄雀工具层）。
         支持数字人口播、图片、视频、配音、文案成片、内容采集、获客等全量能力。
         只传用户意图与画像上下文；报价、确认、执行全部由子 Agent 内部处理。"""
-        import http.client
         import urllib.request
         import urllib.error
         base = str(os.environ.get("HQ_TOOL_AGENT_BASE") or "http://127.0.0.1:8790").rstrip("/")
+        project_id = str((ctx.context or {}).get("project_id") or "")
         sid = ""
-        if brief:
+        # 复用同一生产的工具层会话（多轮选择/确认在同一上下文延续）
+        try:
+            import server as _server
+            with _server.CONVERSATION_STATE_LOCK:
+                convo = _server.owned_conversation(project_id)
+            if convo is not None:
+                sid = str(convo.get("production_tool_sid") or "")
+                if not sid:
+                    pending = convo.get("pending_production_delegate")
+                    if isinstance(pending, dict):
+                        sid = str(pending.get("tool_sid") or "")
+        except Exception:
+            sid = ""
+        if not sid and brief:
             try:
                 brief_obj = json.loads(brief)
             except Exception:
@@ -468,6 +481,16 @@ def agents_sdk_decider(context, goal, timeout_seconds=50, *, openai_client=None,
                 sid = str(body.get("session_id") or "")
             except Exception:
                 sid = ""
+            if sid and project_id:
+                try:
+                    import server as _server
+                    with _server.CONVERSATION_STATE_LOCK:
+                        convo = _server.owned_conversation(project_id)
+                        if convo is not None:
+                            convo["production_tool_sid"] = sid
+                            _server.save_conversation(project_id, convo)
+                except Exception:
+                    pass
         payload = {"message": str(intent or "")[:2000]}
         if sid:
             payload["session_id"] = sid
