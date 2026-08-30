@@ -813,9 +813,15 @@ function renderVoiceAudition(bubble){
   if(!bubble||bubble.dataset.voicesDone)return;bubble.dataset.voicesDone='1';
   fetch('/api/ip12/voices',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){
     var items=d&&d.items||[];if(!items.length)return;
-    var rows=items.slice(0,6).map(function(v,i){var au=v.preview_url?('<audio controls preload="none" src="'+eHtml(v.preview_url)+'" style="height:30px;width:100%;margin-top:4px"></audio>'):'';return '<div style="padding:6px 0;border-bottom:1px dashed #2a2f3a"><div style="font-size:13px">'+(i+1)+'. '+eHtml(String(v.display_name||v.name||v.voice_key||''))+'</div>'+au+'</div>'}).join('');
-    var wrap=document.createElement('div');wrap.style.cssText='margin-top:6px';wrap.innerHTML='<div style="font-size:12px;color:#8b93a3;margin-bottom:4px">🔊 点击播放试听：</div>'+rows;
-    bubble.appendChild(wrap);scroll()
+    var rows=items.slice(0,6).map(function(v,i){var au=v.preview_url?('<audio controls preload="none" src="'+eHtml(v.preview_url)+'" style="height:30px;width:100%;margin-top:4px"></audio>'):'';return '<div style="padding:6px 0;border-bottom:1px dashed #2a2f3a"><div style="font-size:13px">'+(i+1)+'. '+eHtml(String(v.display_name||v.name||v.voice_key||''))+'</div>'+au+'<button type="button" class="ip-btn g-select" data-voice="音色 '+(i+1)+'" style="margin-top:4px;width:100%">选这个音色</button></div>'}).join('');
+    var wrap=document.createElement('div');wrap.style.cssText='margin-top:6px';wrap.innerHTML='<div style="font-size:12px;color:#8b93a3;margin-bottom:4px">🔊 点击播放试听，选好后点「选这个音色」：</div>'+rows;
+    bubble.appendChild(wrap);scroll();
+    wrap.querySelectorAll('.g-select').forEach(function(btn){btn.addEventListener('click',function(){
+      var input=document.getElementById('userInput');input.value='用'+btn.dataset.voice+'生成数字人口播';
+      toast('已选中 '+btn.dataset.voice+'，发送即可继续');input.focus();
+      // 也可以直接发送
+      if(cid){sendMessage()}
+    })})
   }).catch(function(){})
 }
 async function pollDelegateTask(jid,bubble){
@@ -831,7 +837,11 @@ async function pollDelegateTask(jid,bubble){
       if(t.error||t.status==='failed'){bubble.innerHTML+='<div style="margin-top:6px">❌ 生成失败：'+(t.error||'未知错误')+'</div>';scroll();return;}
     }catch(e){}}
 }
-function renderAvatarCards(bubble){if(!bubble||bubble.dataset.avatarsDone)return;bubble.dataset.avatarsDone='1';fetch('/api/ip12/avatars',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){var items=d&&d.items||[];if(!items.length)return;var cards=items.slice(0,6).map(function(a){var img=a.image_url?('<img src="'+eHtml(a.image_url)+'" style="width:96px;height:96px;object-fit:cover;border-radius:10px;display:block;margin:0 auto">'):'';return '<div style="text-align:center;margin:4px">'+img+'<div style="font-size:12px;margin-top:4px">'+eHtml(String(a.name||('形象 '+a.id)))+'</div></div>'}).join('');var wrap=document.createElement('div');wrap.style.cssText='display:flex;flex-wrap:wrap;margin-top:6px';wrap.innerHTML=cards;bubble.appendChild(wrap);scroll()}).catch(function(){})}
+function renderAvatarCards(bubble){if(!bubble||bubble.dataset.avatarsDone)return;bubble.dataset.avatarsDone='1';fetch('/api/ip12/avatars',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){var items=d&&d.items||[];if(!items.length)return;var cards=items.slice(0,6).map(function(a,i){var img=a.image_url?('<img src="'+eHtml(a.image_url)+'" style="width:96px;height:96px;object-fit:cover;border-radius:10px;display:block;margin:0 auto">'):'';return '<div style="text-align:center;margin:4px">'+img+'<div style="font-size:12px;margin-top:4px">'+eHtml(String(a.name||('形象 '+a.id)))+'</div><button type="button" class="ip-btn g-select" data-avatar="形象 '+(i+1)+'" style="margin-top:4px;font-size:11px">选这个形象</button></div>'}).join('');var wrap=document.createElement('div');wrap.style.cssText='display:flex;flex-wrap:wrap;margin-top:6px';wrap.innerHTML=cards;bubble.appendChild(wrap);scroll();wrap.querySelectorAll('.g-select').forEach(function(btn){btn.addEventListener('click',function(){
+  var input=document.getElementById('userInput');input.value='用'+btn.dataset.avatar+'生成数字人口播';
+  toast('已选中 '+btn.dataset.avatar+'，发送即可继续');input.focus();
+  if(cid){sendMessage()}
+})})}).catch(function(){})}
 function eHtml(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
 function scroll(){var a=document.getElementById('chatArea');requestAnimationFrame(function(){a.scrollTop=a.scrollHeight})}
 function toast(m){var t=document.createElement('div');t.className='toast';t.textContent=m;document.body.appendChild(t);setTimeout(function(){t.remove()},3500)}
