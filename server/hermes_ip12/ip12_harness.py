@@ -1248,6 +1248,15 @@ def shortcut_action(value, message):
                     "type": item["type"], "target_id": item["target_id"],
                     "choice_id": item["choice_id"],
                 }
+        # 标题原文精确匹配：用户消息里包含某个候选标题（服务端自己生成的结构化标题）
+        # 即视为明确选择该候选，不依赖模型二次解读。
+        for item in choices:
+            title = re.sub(r"[\s，,。.!！?？]+", "", str(item.get("title") or "")).lower()
+            if title and len(title) >= 4 and title in normalized:
+                return {
+                    "type": item["type"], "target_id": item["target_id"],
+                    "choice_id": item["choice_id"],
+                }
         if normalized in EDIT_TEXTS:
             item = by_type["edit_checkpoint"]
             return {"type": item["type"], "target_id": item["target_id"]}

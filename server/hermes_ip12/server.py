@@ -8061,10 +8061,15 @@ def process_chat_request(body):
                 if request_id and turn_key in TURN_REQUESTS_IN_FLIGHT:
                     return {"ok": True, "status": "processing", "request_id": request_id}, 202
                 if any(in_flight[0] == cid for in_flight in TURN_REQUESTS_IN_FLIGHT):
-                    return {
-                        "ok": False,
-                        "error": "当前 Project 正在处理另一条回复，请等待完成后刷新",
-                    }, 409
+                    # 前一个回复还在处理：短暂等待后自动接上，不再立刻 409 打断用户
+                    deadline = time.monotonic() + 25.0
+                    while any(in_flight[0] == cid for in_flight in TURN_REQUESTS_IN_FLIGHT):
+                        if time.monotonic() >= deadline:
+                            return {
+                                "ok": False,
+                                "error": "当前 Project 正在处理另一条回复，请稍后再试",
+                            }, 409
+                        time.sleep(0.6)
                 TURN_REQUESTS_IN_FLIGHT.add(turn_key)
                 claim_key = turn_key
                 state = normalize_coach_state(convo.get("coach_state"))
