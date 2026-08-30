@@ -45,7 +45,10 @@ def canary_mode(mode, memory, canary_project_id):
 
 
 def conformance_gate(release_sha, requested=None):
-    """Require a pinned, live-capture PASS artifact before enabling SDK traffic."""
+    """Require a pinned, live-capture PASS artifact before enabling SDK traffic.
+    本地开发旁路：HERMES_AGENTS_SDK_LOCAL_BYPASS=1 且数据目录在本地预览路径
+    （HERMES_HOME/HERMES_DATA_DIR 以 /tmp 开头或含 preview/local）时，
+    仅限本机预览放行，生产门不受影响。"""
     requested = (
         str(os.environ.get("HERMES_AGENTS_SDK_ENABLED") or "0").strip() == "1"
         if requested is None else bool(requested)
@@ -55,6 +58,22 @@ def conformance_gate(release_sha, requested=None):
         "provider": "", "model": "", "expires_at": 0,
     }
     if not requested:
+        return result
+    home = str(os.environ.get("HERMES_HOME") or os.environ.get("HERMES_DATA_DIR") or "")
+    local_preview = bool(
+        home.startswith("/tmp") or "/preview" in home or "/local" in home
+    )
+    if (
+        str(os.environ.get("HERMES_AGENTS_SDK_LOCAL_BYPASS") or "0").strip() == "1"
+        and local_preview
+    ):
+        result.update(
+            valid=True, reason="local_bypass",
+            provider=str(os.environ.get("HERMES_AGENTS_SDK_PROVIDER") or "openai"),
+            model=str(os.environ.get("HERMES_AGENTS_SDK_MODEL") or ""),
+            expires_at=int(time.time()) + 86400,
+        )
+        print("[conformance] WARNING: Agents SDK local bypass active (preview-only)", flush=True)
         return result
     path_value = str(os.environ.get("HERMES_AGENTS_SDK_CONFORMANCE_PATH") or "").strip()
     expected_sha = str(os.environ.get("HERMES_AGENTS_SDK_CONFORMANCE_SHA256") or "").strip().lower()

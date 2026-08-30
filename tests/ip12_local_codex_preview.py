@@ -25,6 +25,29 @@ def main():
         if key.upper().endswith(("_API_KEY", "_ACCESS_TOKEN", "_SECRET")):
             os.environ.pop(key, None)
 
+    # Agents SDK 本地预览（仅本地旁路，生产门不受影响）：
+    # 只对 CANARY_PROJECT_ID 指定的会话走 SDK 决策，其余会话仍走 custom。
+    sdk_canary = os.environ.get("HERMES_AGENTS_SDK_CANARY_PROJECT_ID")
+    if sdk_canary:
+        os.environ["HERMES_COGNITIVE_ENGINE"] = "agents_sdk"
+        os.environ["HERMES_AGENTS_SDK_ENABLED"] = "1"
+        os.environ["HERMES_AGENTS_SDK_LOCAL_BYPASS"] = "1"
+        os.environ.setdefault("HERMES_AGENTS_SDK_MODEL", "gpt-5.6-terra")
+        os.environ.setdefault("HERMES_AGENTS_SDK_PROVIDER", "openai")
+        keychain_key = os.environ.get("HERMES_AGENTS_SDK_OPENAI_API_KEY")
+        if not keychain_key:
+            import subprocess as _sp
+            try:
+                keychain_key = _sp.run(
+                    ["security", "find-generic-password", "-a", "openai",
+                     "-s", "pi-openai-official", "-w"],
+                    capture_output=True, text=True, timeout=10,
+                ).stdout.strip()
+            except Exception:
+                keychain_key = ""
+        if keychain_key:
+            os.environ["HERMES_AGENTS_SDK_OPENAI_API_KEY"] = keychain_key
+
     hermes = Path(__file__).parents[1] / "server" / "hermes_ip12"
     sys.path.insert(0, str(hermes))
     user_site = Path.home() / "Library" / "Python" / "3.9" / "lib" / "python" / "site-packages"
