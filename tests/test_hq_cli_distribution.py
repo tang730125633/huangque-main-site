@@ -14,8 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "site/downloads/hq/install.sh"
 WINDOWS_INSTALLER = ROOT / "site/downloads/hq/install.ps1"
 WINDOWS_UNINSTALLER = ROOT / "site/downloads/hq/uninstall.ps1"
-VERSION = "0.13.0"
-OLD_VERSION = "0.11.5"
+VERSION = "0.13.1"
+OLD_VERSION = "0.13.0"
 RELEASE = ROOT / ("site/downloads/hq/v" + VERSION)
 WHEEL = RELEASE / ("huangque_hq_cli-%s-py3-none-any.whl" % VERSION)
 OLD_WHEEL = ROOT / ("site/downloads/hq/v%s/huangque_hq_cli-%s-py3-none-any.whl" % (
@@ -72,7 +72,7 @@ class HQCLIDistributionTests(unittest.TestCase):
 
     def test_previous_release_remains_immutable(self):
         self.assertEqual(
-            "d43e14efe10eb35726312d7abbdca24f05d4d71206826e0279fa79b1896d0057",
+            "f0691ce43aa8475b998f85983540b0211d71841571e6bd872845a5c250cba9b2",
             hashlib.sha256(OLD_WHEEL.read_bytes()).hexdigest(),
         )
 

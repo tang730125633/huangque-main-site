@@ -935,7 +935,6 @@ CAPABILITIES["matrix-template-generate"]["next_actions"] = [
 ]
 CAPABILITIES["matrix-template-batch-generate"]["constraints"] = [
     "template_id and optional font_family must be selected from matrix-template-templates",
-    "HyperFrames and other font-locked templates are single-only; use matrix-template-generate",
     "count creates 2-5 independent jobs under one total quote and one confirmation",
     "duration is calculated automatically and BGM is enabled by default",
 ]
@@ -973,6 +972,7 @@ CAPABILITIES["video-generate"]["input_schema"]["x-hq-channel-rules"] = VIDEO_CHA
 
 CAPABILITIES["video-generate"]["constraints"] = [
     "reference_upload_ids limits: grok=7, micro=9, omni=6, minimax=5",
+    "channel=omni accepts resolution=720p, duration=3-10, ratio=9:16|16:9, and up to 6 JPEG/PNG/WebP references from image-upload",
     "channel=minimax accepts only resolution=2k for new tasks",
     "resolution=2k is only valid when channel=minimax",
     "channel-specific ratio, duration/seconds, resolution, model, and reference rules are machine-readable in input_schema.allOf",

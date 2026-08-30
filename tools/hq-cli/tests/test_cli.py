@@ -42,7 +42,7 @@ class HqCliTests(unittest.TestCase):
             self.assertEqual(0, code, error)
             self.assertTrue(self.payload(output)["schema"].startswith("hq."))
         code, output, _ = self.invoke(["version"])
-        self.assertEqual("0.13.0", self.payload(output)["cli_version"])
+        self.assertEqual("0.13.1", self.payload(output)["cli_version"])
         self.assertEqual("Huangque main-site CLI", self.payload(output)["product"])
         self.assertEqual("https://huangquechuanmei.com", self.payload(output)["origin"])
 
@@ -1251,6 +1251,11 @@ class HqCliTests(unittest.TestCase):
         rules = schema["x-hq-channel-rules"]
         self.assertEqual([4, 15], rules["micro"]["duration"])
         self.assertEqual([3, 10], rules["omni"]["duration"])
+        self.assertTrue(any(
+            "channel=omni accepts resolution=720p" in item
+            and "JPEG/PNG/WebP" in item
+            for item in video["constraints"]
+        ))
         self.assertEqual(["2k"], rules["minimax"]["resolutions"])
         self.assertIn("21:9", rules["minimax"]["ratios"])
         self.assertNotIn("3:2", rules["minimax"]["ratios"])
