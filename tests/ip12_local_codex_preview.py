@@ -26,9 +26,8 @@ def main():
             os.environ.pop(key, None)
 
     # Agents SDK 本地预览（仅本地旁路，生产门不受影响）：
-    # 只对 CANARY_PROJECT_ID 指定的会话走 SDK 决策，其余会话仍走 custom。
-    sdk_canary = os.environ.get("HERMES_AGENTS_SDK_CANARY_PROJECT_ID")
-    if sdk_canary:
+    # 默认全量 SDK；仍可设置 CANARY_PROJECT_ID 只放行一个 Project。
+    if True:
         os.environ["HERMES_COGNITIVE_ENGINE"] = "agents_sdk"
         os.environ["HERMES_AGENTS_SDK_ENABLED"] = "1"
         os.environ["HERMES_AGENTS_SDK_LOCAL_BYPASS"] = "1"

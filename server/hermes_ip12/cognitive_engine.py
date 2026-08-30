@@ -35,10 +35,10 @@ def metrics():
 
 
 def canary_mode(mode, memory, canary_project_id):
-    """Keep SDK traffic confined to one explicitly named test Project."""
-    if mode == "agents_sdk" and (
-        not str(canary_project_id or "")
-        or str((memory or {}).get("project_id") or "") != str(canary_project_id)
+    """SDK 流量控制：指定 canary_project_id 时只放行该 Project；
+    不指定（全量）时按 mode 原样放行。本地预览才会把 mode 设为 agents_sdk。"""
+    if mode == "agents_sdk" and str(canary_project_id or "") and (
+        str((memory or {}).get("project_id") or "") != str(canary_project_id)
     ):
         return "custom"
     return mode
