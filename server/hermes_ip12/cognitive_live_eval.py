@@ -142,10 +142,14 @@ def _sdk_decider(config, model, budget, max_output_tokens, timeout_seconds):
         from openai import AsyncOpenAI
 
         hooks = AsyncBudgetHooks(budget)
-        http_client = httpx.AsyncClient(
-            trust_env=True, timeout=timeout_seconds,
-            event_hooks={"request": [hooks.request], "response": [hooks.response]},
-        )
+        # 统一网络路径：显式传受控 HTTP 代理（与 Provider/Custom 的 requests 代理一致）。
+        # 不传 transport（传了会禁用 proxy/trust_env），用 SDK 默认 transport。
+        proxy = str(os.environ.get("HQ_EVAL_HTTP_PROXY") or os.environ.get("HTTP_PROXY") or "").strip()
+        kwargs = {"trust_env": False, "timeout": timeout_seconds,
+                  "event_hooks": {"request": [hooks.request], "response": [hooks.response]}}
+        if proxy:
+            kwargs["proxy"] = proxy
+        http_client = httpx.AsyncClient(**kwargs)
         client = AsyncOpenAI(
             api_key=config["key"], base_url=config["base_url"],
             timeout=timeout_seconds, max_retries=0, http_client=http_client,
@@ -213,9 +217,11 @@ def run_t3(args):
     provider_gate_report["provider"] = "openai"
     custom = eval_contract.run_engine(
         cases, _custom_decider(config, args.model, budget, args.max_output_tokens, args.timeout),
+        case_delay=args.case_delay,
     )
     sdk = eval_contract.run_engine(
         cases, _sdk_decider(config, args.model, budget, args.max_output_tokens, args.timeout),
+        case_delay=args.case_delay,
     )
     custom_summary, sdk_summary = _eval_summary(custom), _eval_summary(sdk)
     passed = (
@@ -296,6 +302,7 @@ def main():
     parser.add_argument("--output")
     parser.add_argument("--valid-seconds", type=int, default=86400)
     parser.add_argument("--project")
+    parser.add_argument("--case-delay", type=float, default=0.0)
     parser.add_argument("--message", default="请只告诉我当前 Project 做到哪一步，不要创建或修改任何内容。")
     args = parser.parse_args()
     if args.mode == "t3":

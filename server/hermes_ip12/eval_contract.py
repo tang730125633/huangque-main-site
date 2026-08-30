@@ -292,7 +292,7 @@ def score(cases, decisions):
     return {"passed": passed, "rates": rates, "totals": totals, "results": results}
 
 
-def run_engine(cases, decider):
+def run_engine(cases, decider, case_delay=0.0):
     """Run one engine on the shared corpus without persisting raw model output."""
     validate_cases(cases)
     if not callable(decider):
@@ -300,13 +300,24 @@ def run_engine(cases, decider):
     decisions, durations, errors = {}, [], {}
     for case in cases:
         started = time.monotonic()
-        try:
-            decisions[case["id"]] = decider(
-                memory_for_case(case), str(case["message"]), copy.deepcopy(case)
-            )
-        except Exception as exc:
-            errors[case["id"]] = type(exc).__name__
+        attempts = 0
+        for attempt in range(3):
+            attempts = attempt + 1
+            try:
+                decisions[case["id"]] = decider(
+                    memory_for_case(case), str(case["message"]), copy.deepcopy(case)
+                )
+                break
+            except Exception as exc:
+                # 网络瞬时断连重试，最后一次必须落 errors，不得静默丢弃
+                if "Connection" in type(exc).__name__ and attempt < 2:
+                    time.sleep(5)
+                    continue
+                errors[case["id"]] = type(exc).__name__
+                break
         durations.append(round((time.monotonic() - started) * 1000, 3))
+        if case_delay > 0:
+            time.sleep(case_delay)
     report = score(cases, decisions)
     ordered = sorted(durations)
     p95_index = min(len(ordered) - 1, int(len(ordered) * 0.95))
