@@ -301,7 +301,7 @@ def run_engine(cases, decider, case_delay=0.0):
     for case in cases:
         started = time.monotonic()
         attempts = 0
-        for attempt in range(3):
+        for attempt in range(5):
             attempts = attempt + 1
             try:
                 decisions[case["id"]] = decider(
@@ -309,9 +309,10 @@ def run_engine(cases, decider, case_delay=0.0):
                 )
                 break
             except Exception as exc:
-                # 网络瞬时断连重试，最后一次必须落 errors，不得静默丢弃
-                if "Connection" in type(exc).__name__ and attempt < 2:
-                    time.sleep(5)
+                # 网络瞬时断连/超时重试（DeepSeek 直连偶发断连较多），最后一次必须落 errors
+                retryable = "Connection" in type(exc).__name__ or "Timeout" in type(exc).__name__
+                if retryable and attempt < 4:
+                    time.sleep(10)
                     continue
                 errors[case["id"]] = type(exc).__name__
                 break

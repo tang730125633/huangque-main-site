@@ -104,10 +104,14 @@ def _custom_decider(config, model, budget, max_output_tokens, timeout_seconds):
             "并严格匹配这个 JSON Schema：\n"
             + json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
         )
+        response_format = semantic_router.response_format()
+        if "deepseek" in (config.get("base_url") or ""):
+            # DeepSeek 不支持 json_schema，降级 json_object（提示词已要求只输出 JSON）
+            response_format = {"type": "json_object"}
         payload = {
             "model": model, "messages": messages, "stream": False,
             "max_completion_tokens": max_output_tokens,
-            "response_format": semantic_router.response_format(),
+            "response_format": response_format,
         }
         reservation = copy.deepcopy(payload)
         reservation["max_output_tokens"] = max_output_tokens

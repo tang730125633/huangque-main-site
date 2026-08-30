@@ -24,6 +24,7 @@ except ImportError:  # pragma: no cover - Windows fallback
 MODEL_PRICING_USD_PER_MTOK = {
     "gpt-5.6-sol": (4.0, 20.0),
     "gpt-5.6-terra": (2.0, 12.0),
+    "deepseek-v4-pro": (0.6, 2.5),
 }
 CNY_PER_USD_BUDGET = 7.5
 AUTHORIZED_MAX_REQUESTS = 1000
@@ -55,6 +56,10 @@ def provider_configs():
         "zelong_proxy": {
             "base_url": _base_url(os.environ.get("COPY_BASE"), "https://api.zelong.vip/v1"),
             "key": os.environ.get("COPY_API_KEY") or "",
+        },
+        "deepseek": {
+            "base_url": "https://api.deepseek.com/v1",
+            "key": os.environ.get("DEEPSEEK_API_KEY") or "",
         },
     }
 
