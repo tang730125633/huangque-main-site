@@ -291,6 +291,11 @@ body.pdf-review-resizing{cursor:col-resize;user-select:none}body.pdf-review-resi
   <div class="sec-lbl">诊断模块</div>
   <div class="mod-scroll" id="modScroll"></div>
   <div class="tools-wrap" id="toolsWrap">
+    <div class="sec-lbl" onclick="this.parentElement.classList.toggle('collapsed')">创作素材 ▾</div>
+    <div class="tool-row">
+      <button data-icon="users" onclick="openAvatarCreate()">👤 创建数字人形象</button>
+      <button data-icon="mic" onclick="openInlineVoiceClone()">🎤 克隆声音</button>
+    </div>
     <div class="sec-lbl" onclick="this.parentElement.classList.toggle('collapsed')">独立工具 ▾</div>
     <div class="tool-row">
       <button data-icon="users" onclick="loadSkill('audience')">受众画像</button>
