@@ -899,6 +899,17 @@ def _post_module_six_handoff_reply(action):
     )
 
 
+
+
+def _production_records(convo):
+    """兼容 productions 的 dict（keyed by id）与 list（委派链路写回）两种结构。"""
+    raw = convo.get("productions") or {} if isinstance(convo, dict) else {}
+    if isinstance(raw, list):
+        return [r for r in raw if isinstance(r, dict)]
+    if isinstance(raw, dict):
+        return list(raw.values())
+    return []
+
 def _production_public(record):
     """Never return a bridge quote token through a project read endpoint."""
     result = json.loads(json.dumps(record, ensure_ascii=False))
@@ -925,7 +936,7 @@ def _artifact_public(artifact):
 
 
 def _productions_summary(convo):
-    return [_production_public(record) for record in (convo.get("productions") or {}).values()]
+    return [_production_public(record) for record in _production_records(convo)]
 
 
 PRODUCTION_REQUIRED_FIELDS = {
@@ -1282,7 +1293,7 @@ def _production_material_revision_intent(message):
 
 def _editable_talking_head_productions(convo):
     return [
-        record for record in (convo.get("productions") or {}).values()
+        record for record in _production_records(convo)
         if (
             isinstance(record, dict)
             and record.get("action") in {"digital-ip-text-generate", "digital-ip-audio-generate"}
@@ -4407,7 +4418,7 @@ def api_prepare_production():
                     production_id, specialist_plan
                 )
                 previous = [
-                    item for item in convo["productions"].values()
+                    item for item in _production_records(convo)
                     if _is_talking_head_record(item)
                     and item.get("category_id") == record.get("category_id")
                     and item.get("topic_id") == record.get("topic_id")
@@ -4446,7 +4457,7 @@ def api_prepare_production():
             "ok": True, "production_id": production_id, "status": record["status"],
             "source": {key: source[key] for key in ("category_id", "topic_id", "script_version", "script_digest")},
             **recommendation,
-            "reusable_assets": [asset for item in convo["productions"].values()
+            "reusable_assets": [asset for item in _production_records(convo)
                                 if item.get("capability_family") == record["capability_family"]
                                 for asset in item.get("asset_refs", [])],
             "options": record["options"],
@@ -6910,7 +6921,7 @@ def _process_production_intent_turn(
 
 def _latest_talking_head_production(convo):
     records = [
-        record for record in (convo.get("productions") or {}).values()
+        record for record in _production_records(convo)
         if isinstance(record, dict)
         and (record.get("specialist_agent") or {}).get("agent_id") == talking_head_agent.AGENT_ID
     ]
@@ -8167,7 +8178,7 @@ def process_chat_request(body):
                     and set(state.get("completed_modules") or []) >= {1, 2, 3, 4, 5, 6}
                     and not (convo.get("productions") and any(
                         isinstance(r, dict) and r.get("status") in project_memory.ACTIVE_PRODUCTION_STATUSES
-                        for r in convo["productions"].values()))
+                        for r in _production_records(convo)))
                     and _next_step_intent(user_message)
                 ):
                     # 确定性引导：直接查资产给选项，不走模型自由发挥
@@ -8252,7 +8263,7 @@ def process_chat_request(body):
                     and set(state.get("completed_modules") or []) >= {1, 2, 3, 4, 5, 6}
                     and not (convo.get("productions") and any(
                         isinstance(r, dict) and r.get("status") in project_memory.ACTIVE_PRODUCTION_STATUSES
-                        for r in convo["productions"].values()))
+                        for r in _production_records(convo)))
                 ):
                     result, status = _process_production_guide_turn(
                         cid, user_message, body.get("expected_revision"), request_id)
