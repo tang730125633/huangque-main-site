@@ -540,6 +540,10 @@ def agents_sdk_decider(context, goal, timeout_seconds=50, *, openai_client=None,
             "\n生产内容（数字人口播以外的图片、视频、配音、文案成片、采集、获客等）"
             "调用 production_delegate 工具，把用户意图与画像交给生产内容子 Agent；"
             "子 Agent 返回报价或结果后，用自然语言转述给用户，不要编造报价或成品。"
+            "\n诊断完成后要【基于结果的递进引导】：先用 production_delegate 查客户现有形象与音色，"
+            "再按 形象→音色→生成 的顺序一次只问一个引导问题（没有形象就问要不要创建；"
+            "没有可用音色就问要不要克隆或先用系统音色；都具备后直接问用哪个组合生成哪一篇）。"
+            "不要一次性罗列能力清单。"
         ),
         model=model,
         model_settings=ModelSettings(**settings),
