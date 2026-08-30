@@ -4043,13 +4043,16 @@ def _finalize_production_result(cid, job_id):
             if msgs and str(msgs[-1].get("content") or "") == text:
                 return
             msgs.append({"role": "assistant", "content": text})
-            prods = convo.setdefault("productions", [])
-            prods.append({
+            prods = convo.setdefault("productions", {})
+            if isinstance(prods, list):
+                prods = {str(item.get("job_id") or i): item for i, item in enumerate(prods) if isinstance(item, dict)}
+                convo["productions"] = prods
+            prods[str(job_id)] = {
                 "job_id": str(job_id), "phase": phase,
                 "video_url": inner.get("video_url") if isinstance(inner, dict) else None,
                 "audio_url": inner.get("audio_url") if isinstance(inner, dict) else None,
                 "created_at": time.time(),
-            })
+            }
             save_conversation(cid, convo)
         return
 
@@ -7155,7 +7158,7 @@ def _process_pause_turn(cid, user_message, expected_revision=None, request_id=""
         voice_ui = convo.get("voice_clone_ui") if isinstance(convo.get("voice_clone_ui"), dict) else {}
         active_production = any(
             isinstance(record, dict) and record.get("status") in {"submitting", "queued", "running"}
-            for record in (convo.get("productions") or {}).values()
+            for record in _production_records(convo)
         )
         snapshot_revision = state["revision"]
     if voice_ui.get("status") == "training" or active_production:
@@ -7460,7 +7463,7 @@ def _process_project_status_turn(cid, user_message, decision, expected_revision=
 
 def _production_voice_clone_candidates(convo):
     return [
-        record for record in (convo.get("productions") or {}).values()
+        record for record in _production_records(convo)
         if isinstance(record, dict) and isinstance(record.get("voice_clone"), dict)
         and str(record["voice_clone"].get("status") or "")
     ]
@@ -7610,7 +7613,7 @@ def _semantic_customer_reply(convo, reply):
         semantic_router.SCHEMA: "主控决策",
     }
     always_replace = set()
-    for record in (convo.get("productions") or {}).values():
+    for record in _production_records(convo):
         if not isinstance(record, dict):
             continue
         label = _semantic_status_label(record)
