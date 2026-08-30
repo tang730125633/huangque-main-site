@@ -7339,6 +7339,23 @@ def _process_production_delegate_turn(cid, user_message, decision, memory,
         "confirmed_outputs": memory.get("confirmed_outputs") or {},
         "content_topics": memory.get("content_topics") or {},
     }
+    # 已确认口播文案（模块 6 交付物）→ 一起交给工具层，避免子 Agent 追问"文案是什么"
+    with CONVERSATION_STATE_LOCK:
+        convo_ctx = owned_conversation(cid)
+    if convo_ctx is not None:
+        pack = (convo_ctx.get("deliverables") or {}).get("6")
+        scripts = []
+        if isinstance(pack, dict):
+            for category in (pack.get("categories") or []):
+                for topic in (category.get("topics") or []):
+                    versions = topic.get("versions") or []
+                    if versions:
+                        scripts.append({
+                            "title": topic.get("title") or "",
+                            "content": str(versions[-1].get("content") or "")[:2000],
+                        })
+        if scripts:
+            profile["confirmed_scripts"] = scripts
     if not any(profile.values()):
         profile = {"notes": "IP12 诊断画像尚未提供结构化事实"}
     brief = {"schema": "ip12-brief/v1", "project_id": str(cid or "")[:80],
