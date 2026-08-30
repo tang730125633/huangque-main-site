@@ -161,8 +161,9 @@ function hasOverflow(box) {
     if (viewport.cardCount !== 19 || viewport.referenceCount !== 17 || viewport.distinctReferencePreviews !== 17) throw new Error(`template cards are not distinct: ${JSON.stringify(report)}`);
     const ffmpeg = viewport.batchControl.ffmpeg;
     const hyperframes = viewport.batchControl.hyperframes;
-    if (ffmpeg.disabled || ffmpeg.values.join(',') !== '1,2,3,4,5' || ffmpeg.hint !== '最多5条 · 可全部并行' || ffmpeg.labels.some(label => label.includes('排队'))) throw new Error(`FFmpeg batch control is inaccurate: ${JSON.stringify(ffmpeg)}`);
-    if (hyperframes.disabled || hyperframes.values.join(',') !== '1,2,3,4,5' || hyperframes.hint !== '最多5条 · 2条并行，其余排队' || hyperframes.labels[4] !== '5条（3条排队）') throw new Error(`HyperFrames batch control is unavailable: ${JSON.stringify(hyperframes)}`);
+    const expectedLabels = '1条,2条,3条,4条,5条';
+    if (ffmpeg.disabled || ffmpeg.values.join(',') !== '1,2,3,4,5' || ffmpeg.hint !== '最多5条' || ffmpeg.labels.join(',') !== expectedLabels) throw new Error(`FFmpeg batch control is inaccurate: ${JSON.stringify(ffmpeg)}`);
+    if (hyperframes.disabled || hyperframes.values.join(',') !== '1,2,3,4,5' || hyperframes.hint !== '最多5条' || hyperframes.labels.join(',') !== expectedLabels) throw new Error(`HyperFrames batch control is unavailable: ${JSON.stringify(hyperframes)}`);
   }
   const mobile = report.mobile.scroll;
   if (mobile.scrollHeight <= mobile.clientHeight || mobile.scrollTop <= 0 || mobile.top >= mobile.viewport || mobile.bottom <= 0) throw new Error(`mobile preview is unreachable: ${JSON.stringify(mobile)}`);
