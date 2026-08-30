@@ -7482,6 +7482,55 @@ def _next_step_intent(message):
         bool(re.search(r"^(.{0,6})(下一步|接下来)(.{0,10})", text))
 
 
+def _process_production_guide_turn(cid, user_message, expected_revision=None, request_id=""):
+    """诊断完成后、用户问下一步时的确定性引导：查真实资产，列出选项 + 附入口动作。"""
+    import requests as _requests
+    base = str(os.environ.get("HQ_TOOL_AGENT_BASE") or "http://127.0.0.1:8790").rstrip("/")
+    avatars, voices = [], []
+    try:
+        av = _requests.get(base + "/avatars", timeout=30).json()
+        avatars = (av.get("items") or [])
+    except Exception:
+        pass
+    try:
+        vs = _requests.get(base + "/voices", timeout=30).json()
+        voices = (vs.get("items") or [])
+    except Exception:
+        pass
+    avatar_lines = "\n".join(
+        "· 形象 %s" % (i + 1) for i in range(min(4, len(avatars)))
+    ) or "· 还没有可用形象"
+    voice_lines = "\n".join(
+        "· 音色 %d：%s" % (i + 1, str(v.get("display_name") or v.get("name") or ""))
+        for i, v in enumerate(voices[:6])
+    ) or "· 还没有可用音色"
+    assistant = (
+        "文案都已确认，下一步就是把它们做成内容。做数字人口播需要形象和音色，你目前：\n\n"
+        "可用形象：\n%s\n\n可用音色：\n%s\n\n"
+        "你可以直接说「用形象N和音色N生成第一篇口播」，"
+        "或者点下方按钮创建你自己的形象 / 克隆你的声音。"
+    ) % (avatar_lines, voice_lines)
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        if convo is None:
+            return {"ok": False, "error": "诊断不存在"}, 404
+        state = normalize_coach_state(convo.get("coach_state"))
+        _assert_expected_revision(state, expected_revision)
+        snapshot_revision = state["revision"]
+    message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
+    assistant, next_state = _persist_unprocessed_turn(
+        cid, user_message, snapshot_revision, message_id=message_id,
+        assistant_override=assistant,
+        skills=["semantic_master_agent"],
+    )
+    result = _chat_result(assistant, next_state)
+    result["actions"] = [
+        {"type": "open_avatar_create", "label": "👤 创建数字人形象（上传照片/拍照）", "primary": False},
+        {"type": "open_voice_clone", "label": "🎤 克隆我的声音（录制/上传样音）", "primary": False},
+    ]
+    return result, 200
+
+
 def _process_semantic_reply(cid, user_message, decision, expected_revision=None, request_id=""):
     with CONVERSATION_STATE_LOCK:
         convo = owned_conversation(cid)
@@ -7972,16 +8021,11 @@ def process_chat_request(body):
                         for r in convo["productions"].values()))
                     and _next_step_intent(user_message)
                 ):
-                    semantic_decision = {
-                        "schema": "ip12.semantic-master-decision/v1",
-                        "intent": "delegate", "delegate_to": "production_content_agent",
-                        "tool": "production.delegate", "tool_policy": "prepare_only",
-                        "awaiting": "confirmation", "confidence": 0.9, "reason_codes": ["production_guide"],
-                        "memory_evidence": [], "memory_updates": [],
-                        "payment_policy": {"quote_required": True, "explicit_confirmation_required": True},
-                        "references": {"production_id": "", "category_id": "", "topic_id": ""},
-                        "reply": "",
-                    }
+                    # 确定性引导：直接查资产给选项，不走模型自由发挥
+                    result, status = _process_production_guide_turn(
+                        cid, user_message, body.get("expected_revision"), request_id)
+                    semantic_decision = None
+                    return jsonify(result), status
 
             if semantic_decision:
                 try:
