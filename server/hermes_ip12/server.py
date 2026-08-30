@@ -7982,6 +7982,22 @@ def process_chat_request(body):
                         cid, user_message, semantic_decision,
                         body.get("expected_revision"), request_id,
                     )
+                    # SDK 模式：报价由工具层会话保存；有未确认报价时随回复附确认与入口动作
+                    if isinstance(result, dict) and status == 200:
+                        with CONVERSATION_STATE_LOCK:
+                            _c = owned_conversation(cid)
+                        if _c is not None and isinstance(_c.get("pending_production_delegate"), dict):
+                            cost = _c["pending_production_delegate"].get("cost")
+                            actions = [{
+                                "type": "confirm_production_delegate",
+                                "label": "确认执行（%s 点）" % cost if cost is not None else "确认执行",
+                                "primary": True,
+                            }]
+                            actions += [
+                                {"type": "open_avatar_create", "label": "👤 创建数字人形象（上传照片/拍照）", "primary": False},
+                                {"type": "open_voice_clone", "label": "🎤 克隆我的声音（录制/上传样音）", "primary": False},
+                            ]
+                            result["actions"] = actions
                 else:
                     result, status = _process_production_delegate_turn(
                         cid, user_message, semantic_decision, memory_snapshot or {},

@@ -482,6 +482,25 @@ def agents_sdk_decider(context, goal, timeout_seconds=50, *, openai_client=None,
             return json.dumps({"error": "工具层不可用：" + str(exc)[:160]}, ensure_ascii=False)
         kind = result.get("type")
         if kind == "quote":
+            # 把待确认报价持久化到 IP12 会话（确认按钮与继续执行需要）；token 不返回给模型
+            try:
+                project_id = str((ctx.context or {}).get("project_id") or "")
+                if project_id:
+                    import server as _server
+                    from datetime import datetime as _dt
+                    with _server.CONVERSATION_STATE_LOCK:
+                        convo = _server.owned_conversation(project_id)
+                        if convo is not None:
+                            convo["pending_production_delegate"] = {
+                                "tool_sid": sid,
+                                "tool": str(result.get("tool") or ""),
+                                "params": result.get("params") or {},
+                                "quote_token": str(result.get("quote_token") or ""),
+                                "cost": result.get("cost"),
+                            }
+                            _server.save_conversation(project_id, convo)
+            except Exception:
+                pass
             return json.dumps({
                 "status": "quote_ready",
                 "cost": result.get("cost"),
