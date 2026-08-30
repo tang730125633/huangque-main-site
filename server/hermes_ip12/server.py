@@ -7703,6 +7703,20 @@ def _process_semantic_reply(cid, user_message, decision, expected_revision=None,
         _assert_expected_revision(state, expected_revision)
         snapshot_revision = state["revision"]
         assistant = _semantic_customer_reply(convo, decision.get("reply"))
+        # 确定性兜底：用户问已生成产物（视频/音频/结果）时，把 done 记录的 URL 附上，
+        # 主 Agent 的产物认知不回退成「没有任务」。
+        if re.search(r"视频|音频|结果|产物|生成|怎么样|在哪|好了吗", str(user_message or "")) \
+                and not re.search(r"https?://", assistant or ""):
+            produced = []
+            for record in _production_records(convo):
+                if str(record.get("status") or record.get("phase") or "") != "done":
+                    continue
+                for key, label in (("video_url", "视频"), ("audio_url", "音频")):
+                    value = str(record.get(key) or "")
+                    if value:
+                        produced.append("· %s：%s" % (label, value))
+            if produced:
+                assistant = (assistant.rstrip() + "\n\n✅ 已生成的产物：\n" + "\n".join(produced)).strip()
     message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
     assistant, next_state = _persist_unprocessed_turn(
         cid, user_message, snapshot_revision, message_id=message_id,
