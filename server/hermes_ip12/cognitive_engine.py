@@ -494,6 +494,19 @@ def agents_sdk_decider(context, goal, timeout_seconds=50, *, openai_client=None,
         if kind == "error":
             return json.dumps({"status": "failed", "message": result.get("message") or "执行失败"}, ensure_ascii=False)
         text = str(result.get("text") or result.get("assistant_content") or "")[:2000]
+        # display 类结构化结果（形象/音色等）：把图片转成 markdown，前端可直接渲染
+        if result.get("type") == "display":
+            items = (result.get("result") or {}).get("items") or []
+            images = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                url = str(item.get("image_url") or "").strip()
+                name = str(item.get("name") or "")
+                if url:
+                    images.append("![%s](%s)" % (name, url))
+            if images:
+                text += "\n" + "\n".join(images[:6])
         return json.dumps({"status": "completed", "message": text}, ensure_ascii=False)
 
     async def specialist_output(result):
