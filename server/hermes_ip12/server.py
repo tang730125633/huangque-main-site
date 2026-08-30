@@ -7498,7 +7498,8 @@ def _process_production_guide_turn(cid, user_message, expected_revision=None, re
     except Exception:
         pass
     avatar_lines = "\n".join(
-        "· 形象 %s" % (i + 1) for i in range(min(4, len(avatars)))
+        "· %s" % (str(a.get("name") or "形象 %s" % a.get("id")))
+        for a in avatars[:6]
     ) or "· 还没有可用形象"
     voice_lines = "\n".join(
         "· 音色 %d：%s" % (i + 1, str(v.get("display_name") or v.get("name") or ""))
