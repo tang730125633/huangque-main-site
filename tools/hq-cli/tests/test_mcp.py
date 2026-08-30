@@ -24,6 +24,10 @@ class McpServerTests(unittest.TestCase):
         self.assertEqual({"file"}, set(paid_upload["required"]))
         self.assertTrue({"confirm", "quote_token", "expected_cost", "idempotency_key"}
                         <= set(paid_upload["properties"]))
+        self.assertEqual(
+            r"^[A-Za-z0-9._:-]{8,128}$",
+            paid_upload["properties"]["idempotency_key"]["pattern"],
+        )
         single = by_name["hq_matrix_template_generate"]["inputSchema"]
         self.assertIn("font_family", single["properties"])
         self.assertIn("quote_token", single["properties"])
@@ -71,6 +75,15 @@ class McpServerTests(unittest.TestCase):
             "--confirm", "--quote-token", "q.director", "--expected-cost", "20",
             "--idempotency-key", "director-mcp-e2e-001",
         ], ""], [calls[0][0], calls[0][1]])
+
+        rejected = mcp_server.call_tool("hq_director_breakdown_upload", {
+            "file": "/absolute/reference.png", "confirm": True,
+            "quote_token": "q.director", "expected_cost": 20,
+            "idempotency_key": "bad key!",
+        }, runner=runner)
+        self.assertTrue(rejected["isError"])
+        self.assertIn("[A-Za-z0-9._:-]{8,128}", rejected["content"][0]["text"])
+        self.assertEqual(1, len(calls))
 
     def test_template_batch_passes_one_confirmation_to_the_fixed_cli_action(self):
         calls = []

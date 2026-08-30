@@ -433,7 +433,7 @@ CAPABILITIES["director-breakdown-upload"].update({
     "constraints": [
         "quote and confirmation must use the identical account, media type, and file SHA-256",
         "expected_cost must equal cost from the same quote response",
-        "idempotency_key must remain stable when retrying an uncertain upload response",
+        "idempotency_key must match [A-Za-z0-9._:-]{8,128} and remain stable when retrying an uncertain upload response",
     ],
     "next_actions": [
         "核对报价 cost 后，复用同一文件、quote_token、cost 和稳定 idempotency_key 执行确认上传。",

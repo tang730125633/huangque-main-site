@@ -134,7 +134,7 @@ hq run director-breakdown-upload --file /absolute/path/reference.mp4 \
   --idempotency-key 'director-upload-20260830-001' --json
 ```
 
-如果确认上传的响应丢失，只能用完全相同的四项信息重试；不要生成新幂等键。文件摘要或报价发生变化时，先重新报价并再次确认。
+幂等键必须匹配 `[A-Za-z0-9._:-]{8,128}`。如果确认上传的响应丢失，只能用完全相同的四项信息重试；不要生成新幂等键。文件摘要或报价发生变化时，先重新报价并再次确认。
 
 ## 文案成片
 

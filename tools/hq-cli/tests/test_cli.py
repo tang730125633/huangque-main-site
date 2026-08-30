@@ -1013,7 +1013,15 @@ class HqCliTests(unittest.TestCase):
                 "run", "director-breakdown-upload", "--file", image_path,
             ])
             self.assertEqual(0, code, error)
-            self.assertEqual(20, self.payload(output)["result"]["cost"])
+            quote_output = self.payload(output)
+            self.assertEqual(20, quote_output["result"]["cost"])
+            confirmation = quote_output["next_actions"][0]
+            self.assertIn("hq run director-breakdown-upload", confirmation)
+            self.assertIn("--file <same-absolute-file>", confirmation)
+            self.assertIn("--confirm --quote-token <quote_token>", confirmation)
+            self.assertIn("--expected-cost 20", confirmation)
+            self.assertIn("--idempotency-key <stable-key>", confirmation)
+            self.assertIn("--json", confirmation)
             quote_call.assert_called_once_with(image_path, "t" * 43)
             upload_call.assert_not_called()
 
@@ -1037,6 +1045,17 @@ class HqCliTests(unittest.TestCase):
             ])
         self.assertEqual(cli.EXIT_CONFIRMATION, code)
         self.assertEqual("expected_cost_required", self.payload(error)["error"])
+        blocked.assert_not_called()
+
+        with patch.object(client, "upload_director_breakdown") as blocked:
+            code, _output, error = self.invoke([
+                "run", "director-breakdown-upload", "--file", image_path,
+                "--confirm", "--quote-token", "q.director",
+                "--expected-cost", "20", "--idempotency-key", "bad key!",
+            ])
+        self.assertEqual(cli.EXIT_INPUT, code)
+        self.assertEqual("invalid_upload_file", self.payload(error)["error"])
+        self.assertIn("[A-Za-z0-9._:-]{8,128}", self.payload(error)["message"])
         blocked.assert_not_called()
 
     def test_director_breakdown_client_streams_image_and_video_with_three_confirmation_headers(self):
@@ -1094,6 +1113,16 @@ class HqCliTests(unittest.TestCase):
             self.assertEqual("q.director", connection.headers["X-HQ-Quote-Token"])
             self.assertEqual("20", connection.headers["X-HQ-Expected-Cost"])
             self.assertEqual("director-cli-e2e-001", connection.headers["Idempotency-Key"])
+
+        self.assertEqual(
+            "A0._:-xy",
+            client.validate_director_breakdown_idempotency_key("A0._:-xy"),
+        )
+        for invalid_key in ("bad key!", "short", "a" * 129, "中文key-001"):
+            with self.subTest(invalid_key=invalid_key):
+                with self.assertRaisesRegex(ValueError, r"\[A-Za-z0-9\._:-\]"):
+                    client.director_breakdown_confirmation_headers(
+                        "q.director", 20, invalid_key)
 
     def test_streaming_image_client_sends_no_local_path_or_filename(self):
         raw = b"\x89PNG\r\n\x1a\n" + b"private-image"

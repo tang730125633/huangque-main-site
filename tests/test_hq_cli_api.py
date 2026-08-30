@@ -210,6 +210,10 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual("X-HQ-Quote-Token", upload["transport"]["quote_token_header"])
         self.assertEqual("X-HQ-Expected-Cost", upload["transport"]["expected_cost_header"])
         self.assertEqual("Idempotency-Key", upload["transport"]["idempotency_header"])
+        self.assertEqual(
+            r"^[A-Za-z0-9._:-]{8,128}$",
+            upload["transport"]["idempotency_key_pattern"],
+        )
         self.assertIn("same quote response", " ".join(upload["constraints"]))
 
         disabled = {

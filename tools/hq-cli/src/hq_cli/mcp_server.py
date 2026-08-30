@@ -8,6 +8,7 @@ import subprocess
 import sys
 
 from . import __version__
+from . import client
 from .catalog import CAPABILITIES, ENVIRONMENTS
 
 
@@ -126,6 +127,7 @@ def _capability_schema(capability):
             }
             properties["idempotency_key"] = {
                 "type": "string", "minLength": 8, "maxLength": 128,
+                "pattern": client.DIRECTOR_BREAKDOWN_IDEMPOTENCY_KEY_PATTERN,
                 "description": "Stable key reused only for retries of this identical file.",
             }
         else:
@@ -277,8 +279,8 @@ def _capability_command(capability, arguments):
             raise ValueError("expected_cost must be a non-negative integer")
         command.extend(["--expected-cost", str(expected_cost)])
     if idempotency_key is not None:
-        if not isinstance(idempotency_key, str) or not idempotency_key:
-            raise ValueError("idempotency_key must be a non-empty string")
+        idempotency_key = client.validate_director_breakdown_idempotency_key(
+            idempotency_key)
         command.extend(["--idempotency-key", idempotency_key])
     return command, stdin_text
 

@@ -6,6 +6,7 @@ import http.client
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import stat
 import urllib.error
@@ -35,6 +36,9 @@ DIRECTOR_BREAKDOWN_IMAGE_PATH = "/api/auth/cli/director-breakdown-image"
 DIRECTOR_BREAKDOWN_VIDEO_PATH = "/api/auth/cli/director-breakdown-video"
 DIRECTOR_BREAKDOWN_IMAGE_MAX_BYTES = 20 * 1024 * 1024
 DIRECTOR_BREAKDOWN_VIDEO_MAX_BYTES = 200 * 1024 * 1024
+DIRECTOR_BREAKDOWN_IDEMPOTENCY_KEY_PATTERN = r"^[A-Za-z0-9._:-]{8,128}$"
+_DIRECTOR_BREAKDOWN_IDEMPOTENCY_KEY_RE = re.compile(
+    DIRECTOR_BREAKDOWN_IDEMPOTENCY_KEY_PATTERN)
 
 
 class NetworkError(Exception):
@@ -322,13 +326,20 @@ def quote_director_breakdown(path, token, timeout=30):
     return status, payload
 
 
+def validate_director_breakdown_idempotency_key(idempotency_key):
+    if not isinstance(idempotency_key, str) or not _DIRECTOR_BREAKDOWN_IDEMPOTENCY_KEY_RE.fullmatch(
+            idempotency_key):
+        raise ValueError(
+            "idempotency key must match [A-Za-z0-9._:-]{8,128}")
+    return idempotency_key
+
+
 def director_breakdown_confirmation_headers(quote_token, expected_cost, idempotency_key):
     if not isinstance(quote_token, str) or not quote_token:
         raise ValueError("missing director breakdown quote token")
     if not isinstance(expected_cost, int) or isinstance(expected_cost, bool) or expected_cost < 0:
         raise ValueError("expected cost must be a non-negative integer")
-    if not isinstance(idempotency_key, str) or not 8 <= len(idempotency_key) <= 128:
-        raise ValueError("idempotency key must contain 8 to 128 characters")
+    idempotency_key = validate_director_breakdown_idempotency_key(idempotency_key)
     return {
         "X-HQ-Quote-Token": quote_token,
         "X-HQ-Expected-Cost": str(expected_cost),

@@ -907,6 +907,7 @@ def _director_breakdown_upload_catalog_entry():
                       "quote_token_header": "X-HQ-Quote-Token",
                       "expected_cost_header": "X-HQ-Expected-Cost",
                       "idempotency_header": "Idempotency-Key",
+                      "idempotency_key_pattern": r"^[A-Za-z0-9._:-]{8,128}$",
                       "account_active_max_files": 2},
         "availability": {"status": "available", "feature_flags": ["breakdown"],
                          "disabled_feature_flags": []},

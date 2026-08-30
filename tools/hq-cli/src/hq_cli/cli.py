@@ -572,9 +572,11 @@ def main(argv=None):
                     if not args.idempotency_key:
                         raise CliError(EXIT_CONFIRMATION, "idempotency_key_required", "confirmed director upload requires a stable --idempotency-key")
                     try:
+                        idempotency_key = client.validate_director_breakdown_idempotency_key(
+                            args.idempotency_key)
                         status, upload = client.upload_director_breakdown(
                             args.file, credentials["access_token"], args.quote_token,
-                            args.expected_cost, args.idempotency_key)
+                            args.expected_cost, idempotency_key)
                     except ValueError as exc:
                         raise CliError(EXIT_INPUT, "invalid_upload_file", "director upload failed: %s" % exc)
                     except client.NetworkError as exc:
@@ -630,7 +632,15 @@ def main(argv=None):
                                   timeout=310 if capability["id"] == "ip12-message" else 120)
             next_actions = list(capability["next_actions"])
             if capability["side_effect"] == "paid" and not args.confirm:
-                next_actions = ["Review cost and points, then re-run the identical input with `--confirm --quote-token <quote_token>`. "]
+                if args.id == "director-breakdown-upload":
+                    next_actions = [
+                        "Review cost and points, then re-run the identical file with "
+                        "`hq run director-breakdown-upload --file <same-absolute-file> "
+                        "--confirm --quote-token <quote_token> --expected-cost %s "
+                        "--idempotency-key <stable-key> --json`." % result["cost"],
+                    ]
+                else:
+                    next_actions = ["Review cost and points, then re-run the identical input with `--confirm --quote-token <quote_token>`. "]
             _write(sys.stdout, _envelope("hq.run/v1", capability=args.id, result=result, next_actions=next_actions))
             return 0
         if args.command == "doctor":
