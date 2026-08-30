@@ -137,29 +137,31 @@ def _custom_decider(config, model, budget, max_output_tokens, timeout_seconds):
 
 
 def _sdk_decider(config, model, budget, max_output_tokens, timeout_seconds):
-    def decide(memory, message, _case):
-        import httpx
-        from openai import AsyncOpenAI
+    import httpx
+    from openai import AsyncOpenAI
 
-        hooks = AsyncBudgetHooks(budget)
-        # 统一网络路径：显式传受控 HTTP 代理（与 Provider/Custom 的 requests 代理一致）。
-        # 不传 transport（传了会禁用 proxy/trust_env），用 SDK 默认 transport。
-        proxy = str(os.environ.get("HQ_EVAL_HTTP_PROXY") or os.environ.get("HTTP_PROXY") or "").strip()
-        kwargs = {"trust_env": False, "timeout": timeout_seconds,
-                  "event_hooks": {"request": [hooks.request], "response": [hooks.response]}}
-        if proxy:
-            kwargs["proxy"] = proxy
-        http_client = httpx.AsyncClient(**kwargs)
-        client = AsyncOpenAI(
-            api_key=config["key"], base_url=config["base_url"],
-            timeout=timeout_seconds, max_retries=0, http_client=http_client,
-        )
+    # 共享一个 client 跑全部 case：减少连接 churn（每 case 新建/关闭 client 会在语料尾段断连）。
+    # 显式受控代理，与 Provider/Custom 的 requests 路径一致。
+    hooks = AsyncBudgetHooks(budget)
+    proxy = str(os.environ.get("HQ_EVAL_HTTP_PROXY") or os.environ.get("HTTP_PROXY") or "").strip()
+    kwargs = {"trust_env": False, "timeout": timeout_seconds,
+              "event_hooks": {"request": [hooks.request], "response": [hooks.response]}}
+    if proxy:
+        kwargs["proxy"] = proxy
+    http_client = httpx.AsyncClient(**kwargs)
+    client = AsyncOpenAI(
+        api_key=config["key"], base_url=config["base_url"],
+        timeout=timeout_seconds, max_retries=0, http_client=http_client,
+    )
+
+    def decide(memory, message, _case):
         context = cognitive_engine.safe_context(memory, message)
         return cognitive_engine.agents_sdk_decider(
             context, message, timeout_seconds,
             openai_client=client, max_output_tokens=max_output_tokens,
-            close_openai_client=True, provider_name="openai", model_name=model,
+            close_openai_client=False, provider_name="openai", model_name=model,
         )
+
 
     return decide
 
