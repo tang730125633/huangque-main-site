@@ -735,7 +735,7 @@ function refreshProductionMessages(productionId){productionId=String(productionI
 function maybeRenderVideo(bubble){
   if(!bubble)return;var t=bubble.textContent||'';
   if(bubble.dataset.videoDone)return;
-  var m=t.match(/(https?:\/\/[^\s"<>]+?\.(?:mp4|webm|mov))(?:\?[^\s"<>]*)?/i);
+  var m=t.match(/(https?:\/\/[^\s"<>]+?\.(?:mp4|webm|mov)[^\s"<>]*)/i);
   if(!m)return;bubble.dataset.videoDone='1';
   var wrap=document.createElement('div');wrap.style.cssText='margin-top:6px';
   wrap.innerHTML='<video controls preload="none" style="max-width:100%;max-height:320px;border-radius:8px" src="'+eHtml(m[1])+'"></video>';
