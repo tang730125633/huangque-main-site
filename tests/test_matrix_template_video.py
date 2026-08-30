@@ -635,7 +635,8 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertIn('id="fontFamily"', page)
         self.assertIn('id="batchCount"', page)
         self.assertIn("Math.min(batchLimit", page)
-        self.assertIn("engine_concurrency", page)
+        self.assertNotIn("排队", page)
+        self.assertNotIn("（并行）", page)
         self.assertIn("body.font_family=selectedFont", page)
         self.assertNotIn("素材来源", page)
         self.assertIn("template_id:activeTemplate,bgm:true", page)
@@ -771,7 +772,7 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual("ref-01-fixture-01", result["body"]["template_id"])
         self.assertFalse(result["batchDisabled"])
         self.assertEqual("5", result["batchValue"])
-        self.assertEqual("最多5条 · 2条并行，其余排队", result["batchHint"])
+        self.assertEqual("最多5条", result["batchHint"])
         self.assertEqual(5, result["posts"])
         self.assertTrue(all(body["batch_size"] == 5 for body in result["bodies"]))
         self.assertEqual([1, 2, 3, 4, 5], [
@@ -790,8 +791,11 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual([1, 2, 3, 4, 5], [body["batch_index"] for body in result["bodies"]])
         self.assertTrue(all(body["batch_size"] == 5 for body in result["bodies"]))
         self.assertEqual(5, result["cards"])
-        self.assertEqual("最多5条 · 可全部并行", result["batchHint"])
-        self.assertNotIn("排队", "".join(result["batchLabels"]))
+        self.assertEqual("最多5条", result["batchHint"])
+        self.assertEqual(
+            ["1条", "2条", "3条", "4条", "5条"],
+            result["batchLabels"],
+        )
         self.assertEqual(["metadata"] * 5, result["preloads"])
         self.assertEqual([1] * 5, result["loads"])
         self.assertTrue(result["cleared"])
