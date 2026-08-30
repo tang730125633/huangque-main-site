@@ -140,26 +140,27 @@ def _sdk_decider(config, model, budget, max_output_tokens, timeout_seconds):
     import httpx
     from openai import AsyncOpenAI
 
-    # 共享一个 client 跑全部 case：减少连接 churn（每 case 新建/关闭 client 会在语料尾段断连）。
-    # 显式受控代理，与 Provider/Custom 的 requests 路径一致。
+    # 每 case 独立 httpx client：长连接共享在长时间评估中会断连，
+    # 独立连接 + 用完即关 换取稳定性（case_delay 已提供冷却间隔）。
+    # trust_env=False：不读系统代理环境变量，DeepSeek/OpenAI 由下方显式代理控制。
     hooks = AsyncBudgetHooks(budget)
-    proxy = str(os.environ.get("HQ_EVAL_HTTP_PROXY") or os.environ.get("HTTP_PROXY") or "").strip()
-    kwargs = {"trust_env": False, "timeout": timeout_seconds,
-              "event_hooks": {"request": [hooks.request], "response": [hooks.response]}}
-    if proxy:
-        kwargs["proxy"] = proxy
-    http_client = httpx.AsyncClient(**kwargs)
-    client = AsyncOpenAI(
-        api_key=config["key"], base_url=config["base_url"],
-        timeout=timeout_seconds, max_retries=0, http_client=http_client,
-    )
+    proxy = str(os.environ.get("HQ_EVAL_HTTP_PROXY") or "").strip()
 
     def decide(memory, message, _case):
+        kwargs = {"trust_env": False, "timeout": timeout_seconds,
+                  "event_hooks": {"request": [hooks.request], "response": [hooks.response]}}
+        if proxy:
+            kwargs["proxy"] = proxy
+        http_client = httpx.AsyncClient(**kwargs)
+        client = AsyncOpenAI(
+            api_key=config["key"], base_url=config["base_url"],
+            timeout=timeout_seconds, max_retries=0, http_client=http_client,
+        )
         context = cognitive_engine.safe_context(memory, message)
         return cognitive_engine.agents_sdk_decider(
             context, message, timeout_seconds,
             openai_client=client, max_output_tokens=max_output_tokens,
-            close_openai_client=False, provider_name="openai", model_name=model,
+            close_openai_client=True, provider_name="openai", model_name=model,
         )
 
 
@@ -205,7 +206,7 @@ def run_t3(args):
         raise RuntimeError("eval_corpus_hash_mismatch")
     eval_contract.validate_cases(cases)
     configs = provider_live_eval.provider_configs()
-    config = configs["openai_official"]
+    config = configs["deepseek" if args.provider == "deepseek" else "openai_official"]
     if not config.get("key"):
         raise RuntimeError("openai_credential_blocked")
     budget = provider_live_eval.Budget(
@@ -236,7 +237,7 @@ def run_t3(args):
         "schema": SCHEMA, "decision": "PASS" if passed else "HOLD",
         "evidence_source": "live_capture", "release_sha": args.release_sha,
         "corpus_sha256": eval_contract.CORPUS_SHA256,
-        "provider": "openai", "model": args.model,
+        "provider": args.provider, "model": args.model,
         "created_at": now, "expires_at": now + args.valid_seconds,
         "eval": sdk_summary,
         "custom_eval": custom_summary,
@@ -294,6 +295,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=("t3", "canary"), required=True)
     parser.add_argument("--model", default="gpt-5.6-terra")
+    parser.add_argument("--provider", default="openai", choices=("openai", "deepseek"))
     parser.add_argument("--release-sha", required=True)
     parser.add_argument("--budget-ledger", required=True)
     parser.add_argument("--max-requests", type=int, default=120)
