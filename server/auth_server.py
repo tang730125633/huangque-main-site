@@ -4759,6 +4759,16 @@ class H(BaseHTTPRequestHandler):
                     "breakdown_upload", descriptor,
                 )
                 expected_cost = int(claims["c"])
+                raw_expected_cost = self.headers.get("X-HQ-Expected-Cost")
+                try:
+                    client_expected_cost = int(str(raw_expected_cost or ""))
+                except (TypeError, ValueError):
+                    raise hq_cli_api.CLIAPIError(
+                        400, "expected cost is invalid", "invalid_expected_cost")
+                if client_expected_cost != expected_cost:
+                    raise hq_cli_api.CLIAPIError(
+                        409, "生成价格已变化，请重新报价",
+                        "quote_cost_changed")
             except hq_cli_api.CLIAPIError as exc:
                 return self._cli_send(
                     exc.status, {"detail": exc.detail, "code": exc.code})
