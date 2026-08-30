@@ -511,9 +511,15 @@ def main(argv=None):
             if capability is None:
                 raise CliError(EXIT_UNKNOWN_CAPABILITY, "unknown_capability", "unknown capability: %s" % args.id)
             if args.command == "describe":
-                next_action = ("Run `hq run %s --file /absolute/path --confirm --json`." % args.id
-                               if capability["kind"] == "upload" else
-                               "Use only this input_schema with `hq run %s --input @file --json`." % args.id)
+                if args.id == "director-breakdown-upload":
+                    next_action = (
+                        "Request a quote first with "
+                        "`hq run director-breakdown-upload --file /absolute/path --json`."
+                    )
+                elif capability["kind"] == "upload":
+                    next_action = "Run `hq run %s --file /absolute/path --confirm --json`." % args.id
+                else:
+                    next_action = "Use only this input_schema with `hq run %s --input @file --json`." % args.id
                 _write(sys.stdout, _envelope("hq.describe/v1", capability=capability,
                     next_actions=[next_action]))
                 return 0

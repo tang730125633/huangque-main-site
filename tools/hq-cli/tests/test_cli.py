@@ -301,6 +301,28 @@ class HqCliTests(unittest.TestCase):
         self.assertEqual(120, leads["properties"]["channels_targets"]["items"]["maxLength"])
         self.assertEqual(["douyin", "xhs", "channels"], leads["properties"]["platforms"]["items"]["enum"])
 
+    def test_describe_director_upload_is_quote_first_without_changing_free_uploads(self):
+        code, output, error = self.invoke([
+            "describe", "director-breakdown-upload", "--json",
+        ])
+        self.assertEqual(0, code, error)
+        next_action = self.payload(output)["next_actions"][0]
+        self.assertIn("Request a quote first", next_action)
+        self.assertIn(
+            "hq run director-breakdown-upload --file /absolute/path --json",
+            next_action,
+        )
+        self.assertNotIn("--confirm", next_action)
+
+        for capability_id in ("image-upload", "video-upload", "audio-upload"):
+            with self.subTest(capability_id=capability_id):
+                code, output, error = self.invoke([
+                    "describe", capability_id, "--json",
+                ])
+                self.assertEqual(0, code, error)
+                next_action = self.payload(output)["next_actions"][0]
+                self.assertIn("--confirm", next_action)
+
     def test_p0_navigation_reads_and_website_modes_are_discoverable(self):
         _, output, _ = self.invoke(["capabilities"])
         by_id = {item["id"]: item for item in self.payload(output)["capabilities"]}
