@@ -197,7 +197,8 @@ def _confirmed_scripts(project):
     """模块 6 交付的已确认口播文案（供生产委派引用）。"""
     out = []
     d6 = project.get("deliverables") if isinstance(project.get("deliverables"), dict) else {}
-    d6 = d6.get("6") if isinstance(d6, dict) else {}
+    d6 = d6.get("6") if isinstance(d6, dict) else None
+    d6 = d6 if isinstance(d6, dict) else {}
     for cat in (d6.get("categories") or [])[:6]:
         if not isinstance(cat, dict):
             continue
