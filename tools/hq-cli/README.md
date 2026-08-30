@@ -123,6 +123,19 @@ JSON
 
 上传成功但报价返回参考图格式错误时，不要反复上传、转换格式或绕过 CLI 调用私有接口；保留 `upload_id`、MIME 和 SHA-256 作为证据并报告服务端兼容问题。报价失败不会扣点。
 
+## 本地素材提示词反推
+
+图片或视频反推是付费文件上传。第一次命令只按媒体类型和文件 SHA-256 获取报价；用户确认后，必须复用同一文件、报价令牌、报价中的 `cost` 和稳定幂等键：
+
+```sh
+hq run director-breakdown-upload --file /absolute/path/reference.mp4 --json
+hq run director-breakdown-upload --file /absolute/path/reference.mp4 \
+  --confirm --quote-token '<quote_token>' --expected-cost 20 \
+  --idempotency-key 'director-upload-20260830-001' --json
+```
+
+如果确认上传的响应丢失，只能用完全相同的四项信息重试；不要生成新幂等键。文件摘要或报价发生变化时，先重新报价并再次确认。
+
 ## 文案成片
 
 先读取当前可用模板、素材风格和音色，再使用同一份 UTF-8 JSON 完成报价与确认提交：

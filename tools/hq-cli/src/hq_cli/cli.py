@@ -37,6 +37,7 @@ LOGIN_SCOPES = [
     "profile:read", "ip12:read", "ip12:write", "ip12:chat", "prompt:optimize", "canvas:read",
     "canvas:write", "canvas:agent", "canvas:edit", "tasks:read", "assets:read", "assets:write", "assets:upload",
     "generation:quote", "generation:submit",
+    "director:generate",
     "video-compose:read", "video-compose:write", "digital-presenter:read", "digital-presenter:write",
     "inspiration:read", "inspiration:write", "leads:read", "leads:write", "short-drama:read", "short-drama:write",
 ]
@@ -415,6 +416,8 @@ def build_parser():
     run.add_argument("--open-browser", action="store_true")
     run.add_argument("--confirm", action="store_true")
     run.add_argument("--quote-token")
+    run.add_argument("--expected-cost", type=int)
+    run.add_argument("--idempotency-key")
     run.add_argument("--file")
     doctor = subcommands.add_parser("doctor", add_help=False, allow_abbrev=False)
     _add_common(doctor, "show_command_help")
@@ -544,29 +547,60 @@ def main(argv=None):
                     payload["image_data"] = "data:%s;base64,%s" % (mime, _b64.b64encode(data).decode("ascii"))
                 _validate(capability, payload)
             if is_upload:
-                if args.open_browser or args.quote_token:
-                    raise CliError(EXIT_USAGE, "usage_error", "upload capabilities do not accept browser or quote options")
-                if not args.confirm:
-                    raise CliError(EXIT_CONFIRMATION, "confirmation_required", "re-run this upload with --confirm")
                 if not args.file:
                     raise CliError(EXIT_USAGE, "usage_error", "%s requires --file /absolute/path" % args.id)
                 credentials = _credentials()
-                if args.id == "video-upload":
-                    upload_kind, uploader = "video", client.upload_video
-                elif args.id == "audio-upload":
-                    upload_kind, uploader = "audio", client.upload_audio
+                paid_upload = args.id == "director-breakdown-upload"
+                if args.open_browser:
+                    raise CliError(EXIT_USAGE, "usage_error", "upload capabilities do not accept browser options")
+                if paid_upload and not args.confirm:
+                    if args.quote_token or args.expected_cost is not None or args.idempotency_key:
+                        raise CliError(EXIT_USAGE, "usage_error", "quote upload accepts only --file")
+                    try:
+                        status, upload = client.quote_director_breakdown(
+                            args.file, credentials["access_token"])
+                    except ValueError as exc:
+                        raise CliError(EXIT_INPUT, "invalid_upload_file", "director upload quote failed: %s" % exc)
+                    except client.NetworkError as exc:
+                        raise CliError(EXIT_NETWORK, "upload_error", "director upload quote failed: %s" % exc)
+                    result = _checked_response(status, upload)
+                elif paid_upload:
+                    if not args.quote_token:
+                        raise CliError(EXIT_CONFIRMATION, "quote_required", "confirmed director upload requires --quote-token")
+                    if args.expected_cost is None or args.expected_cost < 0:
+                        raise CliError(EXIT_CONFIRMATION, "expected_cost_required", "confirmed director upload requires non-negative --expected-cost from the quote")
+                    if not args.idempotency_key:
+                        raise CliError(EXIT_CONFIRMATION, "idempotency_key_required", "confirmed director upload requires a stable --idempotency-key")
+                    try:
+                        status, upload = client.upload_director_breakdown(
+                            args.file, credentials["access_token"], args.quote_token,
+                            args.expected_cost, args.idempotency_key)
+                    except ValueError as exc:
+                        raise CliError(EXIT_INPUT, "invalid_upload_file", "director upload failed: %s" % exc)
+                    except client.NetworkError as exc:
+                        raise CliError(EXIT_NETWORK, "upload_error", "director upload failed: %s" % exc)
+                    result = _checked_response(status, upload)
                 else:
-                    upload_kind, uploader = "image", client.upload_image
-                try:
-                    status, upload = uploader(args.file, credentials["access_token"])
-                except ValueError as exc:
-                    raise CliError(EXIT_INPUT, "invalid_upload_file", "%s upload failed: %s" % (upload_kind, exc))
-                except client.NetworkError as exc:
-                    raise CliError(EXIT_NETWORK, "upload_error", "%s upload failed: %s" % (upload_kind, exc))
-                result = _checked_response(status, upload)
+                    if args.quote_token or args.expected_cost is not None or args.idempotency_key:
+                        raise CliError(EXIT_USAGE, "usage_error", "free upload capabilities do not accept quote options")
+                    if not args.confirm:
+                        raise CliError(EXIT_CONFIRMATION, "confirmation_required", "re-run this upload with --confirm")
+                    if args.id == "video-upload":
+                        upload_kind, uploader = "video", client.upload_video
+                    elif args.id == "audio-upload":
+                        upload_kind, uploader = "audio", client.upload_audio
+                    else:
+                        upload_kind, uploader = "image", client.upload_image
+                    try:
+                        status, upload = uploader(args.file, credentials["access_token"])
+                    except ValueError as exc:
+                        raise CliError(EXIT_INPUT, "invalid_upload_file", "%s upload failed: %s" % (upload_kind, exc))
+                    except client.NetworkError as exc:
+                        raise CliError(EXIT_NETWORK, "upload_error", "%s upload failed: %s" % (upload_kind, exc))
+                    result = _checked_response(status, upload)
             elif capability["kind"] == "navigation":
-                if args.confirm or args.quote_token:
-                    raise CliError(EXIT_USAGE, "usage_error", "navigation does not accept --confirm or --quote-token")
+                if args.confirm or args.quote_token or args.expected_cost is not None or args.idempotency_key:
+                    raise CliError(EXIT_USAGE, "usage_error", "navigation does not accept confirmation or quote options")
                 url = resolve_url(capability, args.environment, payload)
                 opened_browser = False
                 if args.open_browser:
@@ -578,6 +612,8 @@ def main(argv=None):
             else:
                 if args.open_browser:
                     raise CliError(EXIT_USAGE, "usage_error", "API capabilities do not accept --open-browser")
+                if args.expected_cost is not None or args.idempotency_key:
+                    raise CliError(EXIT_USAGE, "usage_error", "API capabilities do not accept upload quote options")
                 paid = capability["side_effect"] == "paid"
                 if capability["confirmation_required"] and not paid and not args.confirm:
                     raise CliError(EXIT_CONFIRMATION, "confirmation_required", "re-run this action with --confirm")

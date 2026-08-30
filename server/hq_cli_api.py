@@ -893,6 +893,7 @@ def _director_breakdown_upload_catalog_entry():
                          }}},
         "constraints": [
             "quote first with the account, media type and file SHA-256, then confirm the identical upload",
+            "X-HQ-Expected-Cost must equal cost from that same quote response",
             "requires a stable Idempotency-Key; retrying the same file replays the original job",
             "images are limited to 20 MiB; videos are limited to 200 MiB and 120 seconds",
             "the upload is used only for the current account's reverse-prompt job",
@@ -904,6 +905,7 @@ def _director_breakdown_upload_catalog_entry():
         "transport": {"kind": "dedicated_upload", "supports": ["dedicated_upload"],
                       "quote_path": "/api/auth/cli/director-breakdown-quote",
                       "quote_token_header": "X-HQ-Quote-Token",
+                      "expected_cost_header": "X-HQ-Expected-Cost",
                       "idempotency_header": "Idempotency-Key",
                       "account_active_max_files": 2},
         "availability": {"status": "available", "feature_flags": ["breakdown"],
@@ -924,7 +926,7 @@ for _catalog_item in ACTION_CATALOG:
     if _catalog_item["action"] in _FAMILIES:
         _catalog_item["family"] = _FAMILIES[_catalog_item["action"]]
 ACTION_CATALOG_MAP = {item["action"]: item for item in ACTION_CATALOG if item["transport"]["kind"] == "action"}
-ACTION_CATALOG_VERSION = "hq-action-catalog-v6"
+ACTION_CATALOG_VERSION = "hq-action-catalog-v7"
 
 
 def action_catalog(feature_states=None):

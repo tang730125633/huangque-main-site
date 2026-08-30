@@ -42,7 +42,7 @@ class HqCliTests(unittest.TestCase):
             self.assertEqual(0, code, error)
             self.assertTrue(self.payload(output)["schema"].startswith("hq."))
         code, output, _ = self.invoke(["version"])
-        self.assertEqual("0.13.1", self.payload(output)["cli_version"])
+        self.assertEqual("0.13.2", self.payload(output)["cli_version"])
         self.assertEqual("Huangque main-site CLI", self.payload(output)["product"])
         self.assertEqual("https://huangquechuanmei.com", self.payload(output)["origin"])
 
@@ -77,7 +77,7 @@ class HqCliTests(unittest.TestCase):
         expected = {
             "account", "channels", "ip12-projects", "ip12-project", "ip12-create", "ip12-report", "ip12-message", "ip12-delete",
             "prompt-optimize", "canvas-list", "canvas-get", "canvas-create", "canvas-agent-plan", "canvas-ops", "tasks", "task",
-            "assets", "voices", "image-upload", "video-upload", "asset-favorite", "asset-tags", "asset-delete",
+            "assets", "voices", "image-upload", "video-upload", "director-breakdown-upload", "asset-favorite", "asset-tags", "asset-delete",
             "image-generate", "video-generate", "video-lipsync", "audio-generate",
             "digital-ip-text-generate", "digital-ip-audio-generate", "digital-ip-batch-generate",
             "cinematic-open-generate", "cinematic-motion-generate",
@@ -999,6 +999,101 @@ class HqCliTests(unittest.TestCase):
         self.assertEqual(0, code, error)
         self.assertEqual("aud_" + "a" * 32, self.payload(output)["result"]["upload_id"])
         upload.assert_called_once_with(audio_path, "t" * 43)
+
+    def test_director_breakdown_upload_quotes_then_forwards_exact_confirmation(self):
+        self.authorize()
+        image_path = os.path.join(self.temp.name, "director.png")
+        quote = {"quote_token": "q.director", "media_type": "image", "sha256": "a" * 64,
+                 "cost": 20, "points": 100, "confirmation_required": True}
+        with patch.object(client, "quote_director_breakdown", return_value=(200, quote)) as quote_call, \
+                patch.object(client, "upload_director_breakdown", return_value=(200, {
+                    "job_id": 91, "cost": 20, "sha256": "a" * 64,
+                })) as upload_call:
+            code, output, error = self.invoke([
+                "run", "director-breakdown-upload", "--file", image_path,
+            ])
+            self.assertEqual(0, code, error)
+            self.assertEqual(20, self.payload(output)["result"]["cost"])
+            quote_call.assert_called_once_with(image_path, "t" * 43)
+            upload_call.assert_not_called()
+
+            code, output, error = self.invoke([
+                "run", "director-breakdown-upload", "--file", image_path,
+                "--confirm", "--quote-token", quote["quote_token"],
+                "--expected-cost", str(quote["cost"]),
+                "--idempotency-key", "director-cli-e2e-001",
+            ])
+        self.assertEqual(0, code, error)
+        self.assertEqual(91, self.payload(output)["result"]["job_id"])
+        upload_call.assert_called_once_with(
+            image_path, "t" * 43, "q.director", 20, "director-cli-e2e-001",
+        )
+
+        with patch.object(client, "upload_director_breakdown") as blocked:
+            code, _output, error = self.invoke([
+                "run", "director-breakdown-upload", "--file", image_path,
+                "--confirm", "--quote-token", "q.director",
+                "--idempotency-key", "director-cli-e2e-001",
+            ])
+        self.assertEqual(cli.EXIT_CONFIRMATION, code)
+        self.assertEqual("expected_cost_required", self.payload(error)["error"])
+        blocked.assert_not_called()
+
+    def test_director_breakdown_client_streams_image_and_video_with_three_confirmation_headers(self):
+        samples = (
+            ("reference.png", b"\x89PNG\r\n\x1a\nprivate-director-image",
+             client.DIRECTOR_BREAKDOWN_IMAGE_PATH, "X-HQ-Image-SHA256"),
+            ("reference.mp4", b"\x00\x00\x00\x18ftypisomprivate-director-video",
+             client.DIRECTOR_BREAKDOWN_VIDEO_PATH, "X-HQ-Video-SHA256"),
+        )
+
+        class Response:
+            status = 200
+
+            def __init__(self, digest):
+                self.digest = digest
+
+            def read(self, _limit):
+                return json.dumps({"job_id": 77, "cost": 20, "sha256": self.digest}).encode()
+
+        class Connection:
+            def __init__(self, digest):
+                self.digest, self.headers, self.sent = digest, {}, bytearray()
+
+            def putrequest(self, method, path, **_kwargs):
+                self.method, self.path = method, path
+
+            def putheader(self, key, value):
+                self.headers[key] = value
+
+            def endheaders(self):
+                pass
+
+            def send(self, chunk):
+                self.sent.extend(chunk)
+
+            def getresponse(self):
+                return Response(self.digest)
+
+            def close(self):
+                pass
+
+        for filename, raw, expected_path, digest_header in samples:
+            path = Path(self.temp.name) / filename
+            path.write_bytes(raw)
+            digest = hashlib.sha256(raw).hexdigest()
+            connection = Connection(digest)
+            with patch.object(client.http.client, "HTTPSConnection", return_value=connection):
+                status, payload = client.upload_director_breakdown(
+                    str(path), "t" * 43, "q.director", 20, "director-cli-e2e-001",
+                )
+            self.assertEqual((200, 77), (status, payload["job_id"]))
+            self.assertEqual(expected_path, connection.path)
+            self.assertEqual(raw, bytes(connection.sent))
+            self.assertEqual(digest, connection.headers[digest_header])
+            self.assertEqual("q.director", connection.headers["X-HQ-Quote-Token"])
+            self.assertEqual("20", connection.headers["X-HQ-Expected-Cost"])
+            self.assertEqual("director-cli-e2e-001", connection.headers["Idempotency-Key"])
 
     def test_streaming_image_client_sends_no_local_path_or_filename(self):
         raw = b"\x89PNG\r\n\x1a\n" + b"private-image"

@@ -22,6 +22,7 @@ ALLOWED_PATHS = {
     "/api/auth/cli/status",
     "/api/auth/cli/logout",
     "/api/auth/cli/action",
+    "/api/auth/cli/director-breakdown-quote",
 }
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -30,6 +31,10 @@ MAX_AUDIO_UPLOAD_BYTES = 10 * 1024 * 1024
 IMAGE_UPLOAD_PATH = "/api/auth/cli/image-upload"
 VIDEO_UPLOAD_PATH = "/api/auth/cli/video-upload"
 AUDIO_UPLOAD_PATH = "/api/auth/cli/audio-upload"
+DIRECTOR_BREAKDOWN_IMAGE_PATH = "/api/auth/cli/director-breakdown-image"
+DIRECTOR_BREAKDOWN_VIDEO_PATH = "/api/auth/cli/director-breakdown-video"
+DIRECTOR_BREAKDOWN_IMAGE_MAX_BYTES = 20 * 1024 * 1024
+DIRECTOR_BREAKDOWN_VIDEO_MAX_BYTES = 200 * 1024 * 1024
 
 
 class NetworkError(Exception):
@@ -216,10 +221,12 @@ def _open_audio(path):
     )
 
 
-def _upload_media(path, token, upload_path, digest_header, opener, timeout):
+def _upload_media(path, token, upload_path, digest_header, opener, timeout, extra_headers=None):
     if not isinstance(token, str) or not token:
         raise ValueError("missing access token")
-    if upload_path not in {IMAGE_UPLOAD_PATH, VIDEO_UPLOAD_PATH, AUDIO_UPLOAD_PATH}:
+    if upload_path not in {
+            IMAGE_UPLOAD_PATH, VIDEO_UPLOAD_PATH, AUDIO_UPLOAD_PATH,
+            DIRECTOR_BREAKDOWN_IMAGE_PATH, DIRECTOR_BREAKDOWN_VIDEO_PATH}:
         raise ValueError("HQ CLI only uploads to fixed main-site endpoints")
     descriptor, file_stat, mime, digest = opener(path)
     target = urllib.parse.urlsplit(API_BASE)
@@ -234,6 +241,8 @@ def _upload_media(path, token, upload_path, digest_header, opener, timeout):
         connection.putheader("Content-Length", str(file_stat.st_size))
         connection.putheader(digest_header, digest)
         connection.putheader("X-HQ-Confirm", "true")
+        for key, value in (extra_headers or {}).items():
+            connection.putheader(key, value)
         connection.putheader("Accept", "application/json")
         connection.putheader("User-Agent", "hq-cli/%s" % __version__)
         connection.endheaders()
@@ -283,6 +292,65 @@ def upload_video(path, token, timeout=120):
 def upload_audio(path, token, timeout=120):
     return _upload_media(
         path, token, AUDIO_UPLOAD_PATH, "X-HQ-Audio-SHA256", _open_audio, timeout,
+    )
+
+
+def _open_director_breakdown(path):
+    descriptor, file_stat, mime, digest = _open_media(
+        path, DIRECTOR_BREAKDOWN_VIDEO_MAX_BYTES,
+        lambda header: _image_mime(header) or _video_mime(header),
+        "director breakdown upload must be between 1 byte and 200 MiB",
+        "director breakdown upload must be PNG, JPG, WebP, MP4, MOV, or WebM",
+    )
+    if mime.startswith("image/") and file_stat.st_size > DIRECTOR_BREAKDOWN_IMAGE_MAX_BYTES:
+        os.close(descriptor)
+        raise ValueError("director breakdown image must be at most 20 MiB")
+    return descriptor, file_stat, mime, digest
+
+
+def quote_director_breakdown(path, token, timeout=30):
+    descriptor, _file_stat, mime, digest = _open_director_breakdown(path)
+    os.close(descriptor)
+    media_type = "image" if mime.startswith("image/") else "video"
+    status, payload = request_json(
+        "/api/auth/cli/director-breakdown-quote", "POST",
+        {"media_type": media_type, "sha256": digest}, token, timeout,
+    )
+    if 200 <= int(status) < 300 and (
+            payload.get("sha256") != digest or payload.get("media_type") != media_type):
+        raise NetworkError("server director breakdown quote mismatch")
+    return status, payload
+
+
+def director_breakdown_confirmation_headers(quote_token, expected_cost, idempotency_key):
+    if not isinstance(quote_token, str) or not quote_token:
+        raise ValueError("missing director breakdown quote token")
+    if not isinstance(expected_cost, int) or isinstance(expected_cost, bool) or expected_cost < 0:
+        raise ValueError("expected cost must be a non-negative integer")
+    if not isinstance(idempotency_key, str) or not 8 <= len(idempotency_key) <= 128:
+        raise ValueError("idempotency key must contain 8 to 128 characters")
+    return {
+        "X-HQ-Quote-Token": quote_token,
+        "X-HQ-Expected-Cost": str(expected_cost),
+        "Idempotency-Key": idempotency_key,
+    }
+
+
+def upload_director_breakdown(path, token, quote_token, expected_cost,
+                              idempotency_key, timeout=180):
+    confirmation_headers = director_breakdown_confirmation_headers(
+        quote_token, expected_cost, idempotency_key)
+    descriptor, _file_stat, mime, _digest = _open_director_breakdown(path)
+    os.close(descriptor)
+    media_type = "image" if mime.startswith("image/") else "video"
+    return _upload_media(
+        path, token,
+        DIRECTOR_BREAKDOWN_IMAGE_PATH if media_type == "image" else DIRECTOR_BREAKDOWN_VIDEO_PATH,
+        "X-HQ-Image-SHA256" if media_type == "image" else "X-HQ-Video-SHA256",
+        _open_director_breakdown, timeout,
+        {**confirmation_headers,
+            "X-HQ-File-Name": urllib.parse.quote(os.path.basename(path), safe="._-"),
+        },
     )
 
 
