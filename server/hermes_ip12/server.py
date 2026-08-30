@@ -4042,7 +4042,8 @@ def _finalize_production_result(cid, job_id):
             msgs = convo.setdefault("messages", [])
             if msgs and str(msgs[-1].get("content") or "") == text:
                 return
-            msgs.append({"role": "assistant", "content": text})
+            msgs.append({"role": "assistant", "content": text,
+                          "meta": {"components": ["video_player"]}})
             prods = convo.setdefault("productions", {})
             if isinstance(prods, list):
                 prods = {str(item.get("job_id") or i): item for i, item in enumerate(prods) if isinstance(item, dict)}
@@ -7687,6 +7688,7 @@ def _process_production_guide_turn(cid, user_message, expected_revision=None, re
         skills=["semantic_master_agent"],
     )
     result = _chat_result(assistant, next_state)
+    result["components"] = ["production_guide", "voice_audition", "avatar_cards"]
     result["actions"] = [
         {"type": "open_avatar_create", "label": "👤 创建数字人形象（上传照片/拍照）", "primary": False},
         {"type": "open_voice_clone", "label": "🎤 克隆我的声音（录制/上传样音）", "primary": False},
@@ -7822,6 +7824,10 @@ def _process_production_delegate_turn(cid, user_message, decision, memory,
         memory_updates=project_memory.validated_preference_updates(decision, user_message),
     )
     result = _chat_result(assistant, next_state)
+    # 工具层的结构化组件标记（音色试听/形象卡）→ 透传给前端，前端不再猜文本
+    components = tool_result.get("components")
+    if isinstance(components, list):
+        result["components"] = components
     return result, 200
 
 
