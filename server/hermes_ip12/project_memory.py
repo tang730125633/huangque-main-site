@@ -178,6 +178,32 @@ def _active_skill_id(project, state):
     return ""
 
 
+def _confirmed_scripts(project):
+    """模块 6 交付的已确认口播文案（供生产委派引用）。"""
+    out = []
+    d6 = project.get("deliverables") if isinstance(project.get("deliverables"), dict) else {}
+    d6 = d6.get("6") if isinstance(d6, dict) else {}
+    for cat in (d6.get("categories") or [])[:6]:
+        if not isinstance(cat, dict):
+            continue
+        for tp in (cat.get("topics") or [])[:8]:
+            if not isinstance(tp, dict):
+                continue
+            versions = tp.get("versions") or []
+            content = ""
+            if versions and isinstance(versions[-1], dict):
+                content = str(versions[-1].get("content") or "")[:600]
+            out.append({
+                "index": len(out) + 1,
+                "title": str(tp.get("title") or "")[:120],
+                "topic_id": str(tp.get("id") or "")[:100],
+                "content": content,
+            })
+            if len(out) >= 6:
+                return out
+    return out
+
+
 def build(project, state, capability_gates=None):
     """Build a compact snapshot from one already-authorized Project."""
     project = project if isinstance(project, dict) else {}
@@ -212,6 +238,7 @@ def build(project, state, capability_gates=None):
         "facts": _fact_map(profile.get("facts")),
         "preferences": _fact_map(profile.get("preferences")),
         "confirmed_outputs": _confirmed_outputs(profile),
+        "confirmed_scripts": _confirmed_scripts(project),
         "content_topics": _content_topics(project),
         "active_content_target": _content_target(project),
         "voice_clone": {

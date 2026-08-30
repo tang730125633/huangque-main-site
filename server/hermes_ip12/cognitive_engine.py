@@ -194,6 +194,12 @@ def safe_context(memory, goal, agent_run=None):
         "project_id": str(memory.get("project_id") or "")[:100],
         "goal": str(goal or "")[:4000],
         "conversation": copy.deepcopy(memory.get("recent_messages") or [])[-10:],
+        "confirmed_scripts": [
+            {"index": int(item.get("index") or 0), "title": str(item.get("title") or "")[:120],
+             "content": str(item.get("content") or "")[:600]}
+            for item in (memory.get("confirmed_scripts") or [])[:6]
+            if isinstance(item, dict)
+        ],
         "system_voices": [
             {"index": int(item.get("index") or 0), "name": str(item.get("name") or "")[:80]}
             for item in (memory.get("system_voices") or [])[:8]
@@ -598,6 +604,8 @@ def agents_sdk_decider(context, goal, timeout_seconds=50, *, openai_client=None,
             "不要编造「音色/形象还没准备好」——除非子 Agent 明确告知。"
             "system_voices 与 avatars 是真实可用素材；用户说「用音色N/用形象N」时直接"
             "委派子 Agent 报价，不要反问、不要替代子 Agent 回答素材状态。"
+            "\nconfirmed_scripts 是已确认文案：用户说「文案一/文案N」就是其中第 N 篇（带全文），"
+            "直接委派子 Agent，把文案全文传过去；不要再让用户重新发文案。"
             "\n诊断完成后要【基于结果的递进引导】：先用 production_delegate 查客户现有形象与音色，"
             "再按 形象→音色→生成 的顺序一次只问一个引导问题。"
             "引导形象环节时，必须把查询到的已有形象明确列成选项（如「用形象17」「用形象16」），"
