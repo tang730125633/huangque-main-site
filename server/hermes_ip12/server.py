@@ -4016,6 +4016,55 @@ def api_ip12_assets():
     return jsonify(payload)
 
 
+@app.route("/api/ip12/production-submit", methods=["POST"])
+def api_ip12_production_submit():
+    """用户通过选择卡提交生产：内容类型 + 形象 + 音色 + 文案 → 构造委派走报价链。"""
+    payload = request.get_json(silent=True) or {}
+    cid = str(payload.get("conversation_id") or "").strip()
+    kind = str(payload.get("kind") or "digital_human").strip()
+    avatar = str(payload.get("avatar") or "").strip()
+    voice = str(payload.get("voice") or "").strip()
+    script = str(payload.get("script") or "文案一").strip()
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        if convo is None:
+            return jsonify({"ok": False, "error": "诊断不存在"}), 404
+        state = normalize_coach_state(convo.get("coach_state"))
+        snapshot_revision = state["revision"]
+        memory = project_memory.build(convo, state, capability_gates(state))
+    if kind == "digital_human":
+        message = "用%s和%s生成%s的数字人口播视频" % (
+            avatar or "已有形象", voice or "默认音色", script)
+    elif kind == "image":
+        message = "为%s生成一张配图" % script
+    else:
+        message = "生成一条配音：%s" % script
+    decision = {
+        "schema": "ip12.semantic-master-decision/v1",
+        "intent": "delegate", "delegate_to": "production_content_agent",
+        "tool": "production.delegate", "tool_policy": "prepare_only",
+        "awaiting": "confirmation", "confidence": 1.0, "reason_codes": ["ui_selection"],
+        "memory_evidence": [], "memory_updates": [],
+        "payment_policy": {"quote_required": True, "explicit_confirmation_required": True},
+        "references": {"production_id": "", "category_id": "", "topic_id": ""},
+        "reply": "",
+    }
+    result, status = _process_production_delegate_turn(
+        cid, message, decision, memory, snapshot_revision, "ui-select-%s" % int(time.time()))
+    if isinstance(result, dict) and status == 200:
+        with CONVERSATION_STATE_LOCK:
+            _c = owned_conversation(cid)
+        if _c is not None and isinstance(_c.get("pending_production_delegate"), dict):
+            cost = _c["pending_production_delegate"].get("cost")
+            actions = [{
+                "type": "confirm_production_delegate",
+                "label": "确认执行（%s 点）" % cost if cost is not None else "确认执行",
+                "primary": True,
+            }]
+            result["actions"] = actions
+    return jsonify(result), status
+
+
 @app.route("/api/ip12/asset-fetch", methods=["GET"])
 def api_ip12_asset_fetch():
     """代理下载素材库文件（供前端选用后转为上传文件）。"""

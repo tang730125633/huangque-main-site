@@ -273,6 +273,9 @@ body.pdf-review-resizing{cursor:col-resize;user-select:none}body.pdf-review-resi
 .ip-btn:hover{border-color:#f5b942}
 .ip-primary{background:#f5b942;color:#1a1a1a;font-weight:700}
 .ip-muted{color:#8b93a3}
+
+.g-chip{padding:4px 8px;border-radius:14px;border:1px solid #2a2f3a;background:#1a1d24;color:#e6e8ec;font-size:12px;cursor:pointer}
+.g-chip.g-on{border-color:#f5b942;background:rgba(245,185,66,.15);color:#f5b942}
 </style>
 </head>
 <body>
@@ -740,6 +743,53 @@ function confirmDelegate(){
       pollDelegateTask(jid,msg.querySelector('.bubble'));
     }).catch(function(e){msg.querySelector('.bubble').innerHTML='❌ '+(e.message||'提交失败')});
 }
+function maybeRenderGuide(bubble){
+  if(!bubble)return;var t=bubble.textContent||'';
+  if(t.indexOf('下一步就是把它们做成内容')<0 && t.indexOf('用形象N和音色N')<0)return;
+  if(bubble.dataset.guideDone)return;bubble.dataset.guideDone='1';
+  var state0={kind:'digital_human',avatar:'',voice:'',script:'文案一'};
+  var wrap=document.createElement('div');wrap.style.cssText='margin-top:8px;padding:10px;border:1px solid #2a2f3a;border-radius:10px;background:#14171c';
+  wrap.innerHTML='<div style="font-size:13px;font-weight:600;margin-bottom:8px">🎬 生产选择（点选后开始）</div>'+
+    '<div style="font-size:12px;color:#8b93a3;margin:6px 0 4px">内容类型</div>'+
+    '<div id="gKind" style="display:flex;gap:6px;flex-wrap:wrap">'+
+    '<button class="g-chip g-on" data-k="digital_human">🎬 口播视频</button>'+
+    '<button class="g-chip" data-k="image">🖼 配图</button>'+
+    '<button class="g-chip" data-k="audio">🎙 配音</button></div>'+
+    '<div style="font-size:12px;color:#8b93a3;margin:8px 0 4px">形象（口播用）</div>'+
+    '<div id="gAvatar" style="display:flex;gap:8px;flex-wrap:wrap"></div>'+
+    '<div style="font-size:12px;color:#8b93a3;margin:8px 0 4px">音色（口播用）</div>'+
+    '<div id="gVoice" style="display:flex;gap:6px;flex-wrap:wrap"></div>'+
+    '<div style="font-size:12px;color:#8b93a3;margin:8px 0 4px">文案</div>'+
+    '<div id="gScript" style="display:flex;gap:6px;flex-wrap:wrap"></div>'+
+    '<button id="gGo" class="ip-btn ip-primary" style="width:100%;margin-top:10px">开始生成</button>';
+  bubble.appendChild(wrap);scroll();
+  var setChip=function(id,key){wrap.querySelectorAll('#'+id+' .g-chip').forEach(function(c){c.classList.toggle('g-on',c.dataset.k===key)})};
+  wrap.querySelectorAll('#gKind .g-chip').forEach(function(c){c.onclick=function(){state0.kind=c.dataset.k;setChip('gKind',state0.kind)}});
+  fetch('/api/ip12/avatars').then(function(r){return r.json()}).then(function(d){
+    var items=d.items||[];var box=wrap.querySelector('#gAvatar');
+    box.innerHTML=items.slice(0,6).map(function(a){return '<button class="g-chip" data-av="'+eHtml(String(a.name||a.id))+'" style="padding:4px 6px;font-size:12px">'+eHtml(String(a.name||a.id))+'</button>'}).join('');
+    box.querySelectorAll('.g-chip').forEach(function(c){c.onclick=function(){state0.avatar=c.dataset.av;box.querySelectorAll('.g-chip').forEach(function(x){x.classList.toggle('g-on',x===c)})}});
+  }).catch(function(){});
+  fetch('/api/ip12/voices').then(function(r){return r.json()}).then(function(d){
+    var items=d.items||[];var box=wrap.querySelector('#gVoice');
+    box.innerHTML=items.slice(0,6).map(function(v,i){return '<button class="g-chip" data-vo="音色 '+(i+1)+'" style="padding:4px 6px;font-size:12px">'+(i+1)+'.'+eHtml(String(v.display_name||v.name||''))+'</button>'}).join('');
+    box.querySelectorAll('.g-chip').forEach(function(c){c.onclick=function(){state0.voice=c.dataset.vo;box.querySelectorAll('.g-chip').forEach(function(x){x.classList.toggle('g-on',x===c)})}});
+  }).catch(function(){});
+  var pack=(deliverables&&deliverables['6'])||{};var cats=pack.categories||[];
+  var titles=[];cats.forEach(function(cat){(cat.topics||[]).forEach(function(tp){titles.push(tp.title||('文案'+tp.id))})});
+  var sbox=wrap.querySelector('#gScript');
+  sbox.innerHTML=titles.slice(0,3).map(function(t,i){return '<button class="g-chip'+(i===0?' g-on':'')+'" data-sc="文案'+(['一','二','三'][i]||i)+'" style="padding:4px 6px;font-size:12px">'+eHtml(t)+'</button>'}).join('');
+  sbox.querySelectorAll('.g-chip').forEach(function(c){c.onclick=function(){state0.script=c.dataset.sc;sbox.querySelectorAll('.g-chip').forEach(function(x){x.classList.toggle('g-on',x===c)})}});
+  wrap.querySelector('#gGo').onclick=function(){
+    if(state0.kind==='digital_human'&&(!state0.avatar||!state0.voice)){toast('请先选择形象和音色');return}
+    wrap.querySelector('#gGo').disabled=true;wrap.querySelector('#gGo').textContent='提交中…';
+    fetch('/api/ip12/production-submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid,kind:state0.kind,avatar:state0.avatar,voice:state0.voice,script:state0.script})})
+      .then(function(r){return r.json()}).then(function(d){
+        var area=document.getElementById('chatArea'),msg=document.createElement('div');msg.className='msg assistant';msg.innerHTML='<div class="av">'+moduleIcon('sparkles')+'</div><div class="bubble">'+md(String(d.assistant||''))+((d.actions||[]).some(function(a){return a.type==='confirm_production_delegate'})?'':'')+'</div>';area.appendChild(msg);scroll();
+        maybeRenderConfirm(msg.querySelector('.bubble'));
+      }).catch(function(e){toast('提交失败：'+(e.message||''))});
+  };
+}
 function maybeRenderVoices(bubble){
   if(!bubble)return;var t=bubble.textContent||'';
   if(t.indexOf('可选音色')<0&&t.indexOf('音色')<0)return;
@@ -1070,7 +1120,7 @@ async function sendTurn(turn,displayText,requestId){
     var r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     if(!r.ok){recoverable=r.status>=500;if(!recoverable)try{var failed=await r.json();failureMessage=failed.error||failureMessage}catch(ignore){}throw new Error('发送失败')}
     var reader=r.body.getReader(),decoder=new TextDecoder(),buf='';
-    while(true){var part=await reader.read();if(part.done)break;buf+=decoder.decode(part.value,{stream:true});var lines=buf.split('\n');buf=lines.pop()||'';for(var i=0;i<lines.length;i++){var line=lines[i];if(!line.startsWith('data: '))continue;try{var data=JSON.parse(line.slice(6));if(data.error){recoverable=false;failureMessage=data.error;throw new Error('回复失败')}else if(data.content){full+=data.content;bubble.innerHTML=md(full)+'<span class="cursor" style="color:var(--ac)">▍</span>';scroll()}else if(data.done){sawDone=true;bubble.innerHTML=md(full);maybeRenderAvatars(bubble);maybeRenderConfirm(bubble);maybeRenderVoices(bubble);replayed=!!data.replayed;if(data.state&&(!replayed||data.state.revision>=state.revision)){state=data.state}if(data.production){if(data.reset_production_draft)try{localStorage.removeItem(productionDraftKey(data.production))}catch(ignore){}updateProductionFromPayload(data,productions[data.production.id]||null,false)}if(data.material_request_message){var material=data.material_request_message;am.dataset.messageId=String(material.message_id||'');am.dataset.productionMessage=String(material.production_id||'');bubble.innerHTML=md(full)+productionMessageHtml(material)}harnessActions=Array.isArray(data.actions)?data.actions:[];var liveChoices=choiceActionItems(harnessActions);if(liveChoices.length)am.dataset.choiceTarget=String(liveChoices[0].target_id||'');if(data.auto_deliverables){Object.keys(data.auto_deliverables).forEach(function(mid){deliverables[mid]=data.auto_deliverables[mid]});if(data.auto_deliverables['6']){activeContentPack=data.auto_deliverables['6'];openPanel('📦 文案口播交付物');if(activeContentTarget)renderActiveContentScript();else renderContentPack(document.getElementById('rpnBody'))}}renderMods();renderChoiceReceiptsInDom();var doneActions=currentActions();attachHarnessActions(doneActions,bubble);autoAction=!replayed&&doneActions.find(function(item){return item.type==='prepare_production'})||null;if(autoAction)bubble.querySelectorAll('.harness-action').forEach(function(button){button.disabled=true});showArtifactNotice(data);if(data.new_completed&&data.new_completed.length>0)data.new_completed.forEach(function(mid){toast('✅ '+M[mid-1].name+'完成！')})}}catch(e){if(e.message==='回复失败')throw e}}}
+    while(true){var part=await reader.read();if(part.done)break;buf+=decoder.decode(part.value,{stream:true});var lines=buf.split('\n');buf=lines.pop()||'';for(var i=0;i<lines.length;i++){var line=lines[i];if(!line.startsWith('data: '))continue;try{var data=JSON.parse(line.slice(6));if(data.error){recoverable=false;failureMessage=data.error;throw new Error('回复失败')}else if(data.content){full+=data.content;bubble.innerHTML=md(full)+'<span class="cursor" style="color:var(--ac)">▍</span>';scroll()}else if(data.done){sawDone=true;bubble.innerHTML=md(full);maybeRenderAvatars(bubble);maybeRenderConfirm(bubble);maybeRenderVoices(bubble);maybeRenderGuide(bubble);replayed=!!data.replayed;if(data.state&&(!replayed||data.state.revision>=state.revision)){state=data.state}if(data.production){if(data.reset_production_draft)try{localStorage.removeItem(productionDraftKey(data.production))}catch(ignore){}updateProductionFromPayload(data,productions[data.production.id]||null,false)}if(data.material_request_message){var material=data.material_request_message;am.dataset.messageId=String(material.message_id||'');am.dataset.productionMessage=String(material.production_id||'');bubble.innerHTML=md(full)+productionMessageHtml(material)}harnessActions=Array.isArray(data.actions)?data.actions:[];var liveChoices=choiceActionItems(harnessActions);if(liveChoices.length)am.dataset.choiceTarget=String(liveChoices[0].target_id||'');if(data.auto_deliverables){Object.keys(data.auto_deliverables).forEach(function(mid){deliverables[mid]=data.auto_deliverables[mid]});if(data.auto_deliverables['6']){activeContentPack=data.auto_deliverables['6'];openPanel('📦 文案口播交付物');if(activeContentTarget)renderActiveContentScript();else renderContentPack(document.getElementById('rpnBody'))}}renderMods();renderChoiceReceiptsInDom();var doneActions=currentActions();attachHarnessActions(doneActions,bubble);autoAction=!replayed&&doneActions.find(function(item){return item.type==='prepare_production'})||null;if(autoAction)bubble.querySelectorAll('.harness-action').forEach(function(button){button.disabled=true});showArtifactNotice(data);if(data.new_completed&&data.new_completed.length>0)data.new_completed.forEach(function(mid){toast('✅ '+M[mid-1].name+'完成！')})}}catch(e){if(e.message==='回复失败')throw e}}}
     if(!sawDone)throw new Error('连接中断');if(replayed)await selectConvo(turnCid);else if(autoAction)await runStateAction(autoAction);pendingChoiceFocus=0
   }catch(e){var restoreChoice=pendingChoiceFocus;if(recoverable&&await recoverTurn(turnCid,retryRequestId,bubble)){await selectConvo(turnCid);toast('✅ 回复已自动恢复')}else if(restoreChoice){await selectConvo(turnCid);var restored=restoreChoice>0?document.querySelectorAll('.choice-action')[restoreChoice-1]:document.querySelector('.choice-edit'),restoredStatus=document.querySelector('.choice-status');if(restored)restored.focus();if(restoredStatus){restoredStatus.setAttribute('role','alert');restoredStatus.textContent=failureMessage}restoreInputFocus=false}else{bubble.innerHTML='<span style="color:var(--dim)">'+eHtml(failureMessage)+'</span><div class="harness-actions"><button type="button" class="harness-action primary">重新载入 Project</button></div>';bubble.querySelector('button').onclick=function(){selectConvo(turnCid).catch(function(){toast('Project 暂时加载失败')})}}pendingChoiceFocus=0}
   finally{streaming=false;document.getElementById('sendBtn').disabled=false;document.getElementById('attachBtn').disabled=false;if(restoreInputFocus)document.getElementById('userInput').focus()}
