@@ -7473,6 +7473,15 @@ def _semantic_customer_reply(convo, reply):
     return customer_reply
 
 
+def _next_step_intent(message):
+    """判断用户是否在问「下一步/接下来做什么」（短消息语义）。"""
+    text = re.sub(r"\s+", "", str(message or ""))
+    if len(text) > 30:
+        return False
+    return bool(re.search(r"(下一步|接下来|然后呢|继续|做什么|干嘛|怎么办)", text)) and len(text) <= 12 or \
+        bool(re.search(r"^(.{0,6})(下一步|接下来)(.{0,10})", text))
+
+
 def _process_semantic_reply(cid, user_message, decision, expected_revision=None, request_id=""):
     with CONVERSATION_STATE_LOCK:
         convo = owned_conversation(cid)
@@ -7952,6 +7961,27 @@ def process_chat_request(body):
                     semantic_decision = semantic_router.safe_clarification()
                 except Exception as exc:
                     app.logger.warning("IP12 semantic router failed open to legacy route: %s", exc)
+                # 兜底：诊断全部完成且无进行中制作，用户问「下一步/做什么」时，
+                # 模型若没委派生产引导（只回了建议/状态），统一改写为生产引导委派。
+                if (
+                    isinstance(semantic_decision, dict)
+                    and semantic_decision.get("tool") != "production.delegate"
+                    and set(state.get("completed_modules") or []) >= {1, 2, 3, 4, 5, 6}
+                    and not (convo.get("productions") and any(
+                        isinstance(r, dict) and r.get("status") in project_memory.ACTIVE_PRODUCTION_STATUSES
+                        for r in convo["productions"].values()))
+                    and _next_step_intent(user_message)
+                ):
+                    semantic_decision = {
+                        "schema": "ip12.semantic-master-decision/v1",
+                        "intent": "delegate", "delegate_to": "production_content_agent",
+                        "tool": "production.delegate", "tool_policy": "prepare_only",
+                        "awaiting": "confirmation", "confidence": 0.9, "reason_codes": ["production_guide"],
+                        "memory_evidence": [], "memory_updates": [],
+                        "payment_policy": {"quote_required": True, "explicit_confirmation_required": True},
+                        "references": {"production_id": "", "category_id": "", "topic_id": ""},
+                        "reply": "",
+                    }
 
             if semantic_decision:
                 try:
