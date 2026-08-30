@@ -3589,7 +3589,7 @@ def _generate_content_pack(convo):
     script_schema.update(minLength=minimum_script_chars, maxLength=maximum_script_chars)
     # ponytail: one structured call keeps the three selected scripts consistent; split only if provider limits prove too small.
     extra_note = ""
-    for attempt in range(2):
+    for attempt in range(3):
         response = call_ai([
             {"role": "system", "content": (
                 "你是黄雀 IP12 内容策划与口播编导。严格依据本人已确认资料生成首批成品。"
@@ -3618,13 +3618,15 @@ def _generate_content_pack(convo):
         ]
         if all(minimum_script_chars <= length <= maximum_script_chars for length in lengths):
             break
-        if attempt == 0:
+        if attempt < 2:
+            target_low = min(maximum_script_chars, minimum_script_chars + 60)
             extra_note = (
-                "上一版每篇正文字数分别为 %s，全部低于 %s 个中文字符的下限。"
-                "重写时必须把每篇正文补足到 %s–%s 个中文字符之间（去空格统计），"
-                "可以增加具体细节、场景或建议，但不得虚构经历。"
+                "上一版每篇正文字数分别为 %s，没有达到 %s 个中文字符的下限（去空格统计）。"
+                "这次必须把每篇正文写到 %s–%s 个中文字符之间：把观点讲透，"
+                "加入 2-3 个具体细节或可执行建议，结尾再给一句克制的行动引导。"
+                "不要压缩内容，宁可长一些也不要低于下限；不得虚构经历。"
                 % (",".join(str(length) for length in lengths), minimum_script_chars,
-                   minimum_script_chars, maximum_script_chars)
+                   target_low, maximum_script_chars)
             )
     categories = raw.get("categories") if isinstance(raw, dict) else None
     if not isinstance(categories, list) or len(categories) != 3:
