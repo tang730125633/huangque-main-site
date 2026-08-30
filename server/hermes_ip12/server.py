@@ -3987,6 +3987,63 @@ def api_ip12_task(job_id):
     return jsonify(payload)
 
 
+@app.route("/api/ip12/voice-slots", methods=["GET"])
+def api_ip12_voice_slots():
+    """音色克隆槽位（转发工具层）。"""
+    import requests as _requests
+    base = str(os.environ.get("HQ_TOOL_AGENT_BASE") or "http://127.0.0.1:8790").rstrip("/")
+    try:
+        response = _requests.get(base + "/voice-slots", timeout=30)
+        payload = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+    except Exception as exc:
+        return jsonify({"ok": False, "error": "生产子 Agent 暂时不可用：" + str(exc)[:120]}), 502
+    if response.status_code >= 400:
+        return jsonify({"ok": False, "error": str((payload or {}).get("detail") or "查询失败")[:200]}), response.status_code
+    return jsonify(payload)
+
+
+@app.route("/api/ip12/clone-voice", methods=["POST"])
+def api_ip12_clone_voice():
+    """会话级声音克隆：上传样音 → 自动选槽 → 转发工具层训练克隆音色。"""
+    import requests as _requests
+    cid = str(request.form.get("conversation_id") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", cid) or owned_conversation(cid) is None:
+        return jsonify({"ok": False, "error": "诊断不存在"}), 404
+    sample = request.files.get("file")
+    if sample is None or not sample.filename:
+        return jsonify({"ok": False, "error": "请先录制或上传样音"}), 400
+    data = sample.read()
+    if not data or len(data) > 10 * 1024 * 1024:
+        return jsonify({"ok": False, "error": "样音过大（上限 10MB）或为空"}), 400
+    name = str(request.form.get("name") or "我的个人音色").strip()[:40]
+    base = str(os.environ.get("HQ_TOOL_AGENT_BASE") or "http://127.0.0.1:8790").rstrip("/")
+    try:
+        slots_resp = _requests.get(base + "/voice-slots", timeout=30)
+        slots = slots_resp.json() if slots_resp.headers.get("content-type", "").startswith("application/json") else {}
+    except Exception as exc:
+        return jsonify({"ok": False, "error": "生产子 Agent 暂时不可用：" + str(exc)[:120]}), 502
+    items = slots.get("items") or []
+    ready = next((s for s in items if s.get("status") == "ready"), None)
+    failed = next((s for s in items if s.get("status") == "failed"), None)
+    slot = failed or ready or (items[0] if items else None)
+    if not slot:
+        return jsonify({"ok": False, "error": "没有可用的音色槽位，请先在网页端开通"}), 409
+    slot_id = slot.get("slot_id") or slot.get("id") or ""
+    try:
+        files = {"file": (sample.filename, data)}
+        response = _requests.post(
+            base + "/upload/voice",
+            params={"slot_id": slot_id, "name": name},
+            files=files, timeout=300,
+        )
+        payload = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+    except Exception as exc:
+        return jsonify({"ok": False, "error": "生产子 Agent 暂时不可用：" + str(exc)[:120]}), 502
+    if response.status_code >= 400:
+        return jsonify({"ok": False, "error": str((payload or {}).get("detail") or "克隆失败")[:200]}), response.status_code
+    return jsonify({"ok": True, "slot_id": slot_id, "name": name, "voice": payload.get("voice") or {}})
+
+
 @app.route("/api/ip12/avatar-create", methods=["POST"])
 def api_ip12_avatar_create():
     """上传本人照片创建数字人形象（转发生产内容子 Agent / 工具层）。
