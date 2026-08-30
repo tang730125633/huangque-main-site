@@ -4000,6 +4000,21 @@ def api_ip12_task(job_id):
     return jsonify(payload)
 
 
+@app.route("/api/ip12/voices", methods=["GET"])
+def api_ip12_voices():
+    """可用音色与试听链接（转发工具层）。"""
+    import requests as _requests
+    base = str(os.environ.get("HQ_TOOL_AGENT_BASE") or "http://127.0.0.1:8790").rstrip("/")
+    try:
+        response = _requests.get(base + "/voices", timeout=30)
+        payload = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+    except Exception as exc:
+        return jsonify({"ok": False, "error": "生产子 Agent 暂时不可用：" + str(exc)[:120]}), 502
+    if response.status_code >= 400:
+        return jsonify({"ok": False, "error": str((payload or {}).get("detail") or "查询失败")[:200]}), response.status_code
+    return jsonify(payload)
+
+
 @app.route("/api/ip12/voice-slots", methods=["GET"])
 def api_ip12_voice_slots():
     """音色克隆槽位（转发工具层）。"""
