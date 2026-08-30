@@ -4367,6 +4367,7 @@ class H(BaseHTTPRequestHandler):
                     "fonts": matrix_template_domain.public_fonts(),
                     "default_font": "",
                     "cost": pricing.get_price("video.matrix_template"),
+                    **matrix_template_domain.public_batch_capability(),
                 })
             except feature_flags.FeatureDisabled as error:
                 return self._send(503, {"detail": str(error)})
