@@ -848,6 +848,9 @@ async function pollDelegateTask(jid,bubble){
     }catch(e){}}
 }
 function renderAvatarCards(bubble){if(!bubble||bubble.dataset.avatarsDone)return;bubble.dataset.avatarsDone='1';fetch('/api/ip12/avatars',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){var items=d&&d.items||[];if(!items.length)return;var cards=items.slice(0,6).map(function(a){var img=a.image_url?('<img src="'+eHtml(a.image_url)+'" style="width:96px;height:96px;object-fit:cover;border-radius:10px;display:block;margin:0 auto">'):'';return '<div style="text-align:center;margin:4px">'+img+'<div style="font-size:12px;margin-top:4px">'+eHtml(String(a.name||('形象 '+a.id)))+'</div></div>'}).join('');var wrap=document.createElement('div');wrap.style.cssText='display:flex;flex-wrap:wrap;margin-top:6px';wrap.innerHTML=cards;bubble.appendChild(wrap);scroll()}).catch(function(){})}
+function eHtml(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
+function scroll(){var a=document.getElementById('chatArea');requestAnimationFrame(function(){a.scrollTop=a.scrollHeight})}
+function toast(m){var t=document.createElement('div');t.className='toast';t.textContent=m;document.body.appendChild(t);setTimeout(function(){t.remove()},3500)}
 
 async function generateFoundationReport(){
   if(!cid||streaming)return;streaming=true;toast('正在生成模块 1-4 PDF…');
