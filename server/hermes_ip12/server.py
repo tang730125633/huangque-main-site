@@ -1234,6 +1234,18 @@ def _expanded_production_intent(message):
                 "recommended_action": action,
                 "candidate_actions": [action],
             }
+    # 自然语言制作请求（如「生成一张橘猫晒太阳的图片」「做一条口播视频」）
+    # 交给 harness 的制作意图识别（生成/制作 + 媒体类型），不再落入模型自由回复。
+    try:
+        basic = coach_harness.production_intent(message)
+    except Exception:
+        basic = None
+    if basic:
+        return {
+            "capability_family": basic["capability_family"],
+            "recommended_action": basic["recommended_action"],
+            "candidate_actions": basic.get("candidate_actions") or [basic["recommended_action"]],
+        }
     return None
 
 
