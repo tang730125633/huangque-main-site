@@ -736,13 +736,18 @@ function maybeRenderVideo(bubble){
   if(!bubble||bubble.dataset.videoDone)return;
   var media={};
   try{media=JSON.parse(bubble.dataset.media||'null')||{}}catch(e){}
-  var videoUrl=media.video_url||'',coverUrl=media.cover_url||'',audioUrl=media.audio_url||'';
-  if(!videoUrl&&!audioUrl)return;bubble.dataset.videoDone='1';
+  var items=Array.isArray(media)?media:[media];
+  items=items.filter(function(it){return it&&(it.video_url||it.audio_url)});
+  if(!items.length)return;bubble.dataset.videoDone='1';
   var wrap=document.createElement('div');wrap.style.cssText='margin-top:6px';
-  var coverHtml=coverUrl?('<img src="'+eHtml(coverUrl)+'" style="max-width:180px;max-height:240px;border-radius:8px;display:block;margin-bottom:6px;border:1px solid #2a2f3a" alt="视频封面">'):'';
-  var videoHtml=videoUrl?('<video controls preload="none" style="max-width:100%;max-height:320px;border-radius:8px" src="'+eHtml(videoUrl)+'"></video>'):'';
-  var audioHtml=audioUrl?('<audio controls preload="none" style="width:100%;margin-top:6px" src="'+eHtml(audioUrl)+'"></audio>'):'';
-  wrap.innerHTML=coverHtml+videoHtml+audioHtml;
+  var html=items.map(function(it){
+    var coverHtml=it.cover_url?('<img src="'+eHtml(it.cover_url)+'" style="max-width:180px;max-height:240px;border-radius:8px;display:block;margin-bottom:6px;border:1px solid #2a2f3a" alt="视频封面">'):'';
+    var videoHtml=it.video_url?('<video controls preload="none" style="max-width:100%;max-height:320px;border-radius:8px" src="'+eHtml(it.video_url)+'"></video>'):'';
+    var audioHtml=it.audio_url?('<audio controls preload="none" style="width:100%;margin-top:6px" src="'+eHtml(it.audio_url)+'"></audio>'):'';
+    var titleHtml=it.title?('<div style="font-size:12px;color:#8b93a3;margin:6px 0 2px">📺 '+eHtml(it.title)+'</div>'):'';
+    return '<div style="margin-bottom:10px;padding-bottom:10px;border-bottom:1px dashed #2a2f3a">'+titleHtml+coverHtml+videoHtml+audioHtml+'</div>';
+  }).join('');
+  wrap.innerHTML=html;
   bubble.appendChild(wrap);scroll()
 }
 function renderComponents(bubble,components){
@@ -752,7 +757,7 @@ function renderComponents(bubble,components){
   if(components.indexOf('production_guide')>=0)maybeRenderGuide(bubble);
   if(components.indexOf('video_player')>=0)maybeRenderVideo(bubble);
 }
-function renderChat(msgs){var a=document.getElementById('chatArea');if(!msgs||msgs.length===0){a.innerHTML=WELCOME_HTML;return}a.innerHTML=msgs.map(function(m){var productionId=String(m.production_id||''),messageId=String(m.message_id||''),choiceTarget=String(m.choice_target_id||'');return '<div class="msg '+(m.role==='user'?'user':'assistant')+'"'+(choiceTarget?' data-choice-target="'+eHtml(choiceTarget)+'"':'')+(productionId?' data-production-message="'+eHtml(productionId)+'"':'')+(messageId?' data-message-id="'+eHtml(messageId)+'"':'')+((m.meta&&m.meta.components)?' data-meta="'+eHtml(JSON.stringify(m.meta))+'"':'')+'><div class="av">'+moduleIcon(m.role==='user'?'user':'sparkles')+'</div><div class="bubble">'+md(m.content)+productionMessageHtml(m)+'</div></div>'}).join('');renderChoiceReceiptsInDom();var last=a.querySelector('.msg.assistant:last-of-type .bubble');attachHarnessActions(currentActions(),last);a.querySelectorAll('.msg.assistant').forEach(function(node){var b=node.querySelector('.bubble');if(!b)return;var mm=null;try{mm=JSON.parse(node.dataset.meta||'null')}catch(e){}if(mm){if(mm.video_url||mm.audio_url||mm.cover_url){b.dataset.media=JSON.stringify({video_url:mm.video_url||'',audio_url:mm.audio_url||'',cover_url:mm.cover_url||''})}}renderComponents(b,mm&&mm.components)})}
+function renderChat(msgs){var a=document.getElementById('chatArea');if(!msgs||msgs.length===0){a.innerHTML=WELCOME_HTML;return}a.innerHTML=msgs.map(function(m){var productionId=String(m.production_id||''),messageId=String(m.message_id||''),choiceTarget=String(m.choice_target_id||'');return '<div class="msg '+(m.role==='user'?'user':'assistant')+'"'+(choiceTarget?' data-choice-target="'+eHtml(choiceTarget)+'"':'')+(productionId?' data-production-message="'+eHtml(productionId)+'"':'')+(messageId?' data-message-id="'+eHtml(messageId)+'"':'')+((m.meta&&m.meta.components)?' data-meta="'+eHtml(JSON.stringify(m.meta))+'"':'')+'><div class="av">'+moduleIcon(m.role==='user'?'user':'sparkles')+'</div><div class="bubble">'+md(m.content)+productionMessageHtml(m)+'</div></div>'}).join('');renderChoiceReceiptsInDom();var last=a.querySelector('.msg.assistant:last-of-type .bubble');attachHarnessActions(currentActions(),last);a.querySelectorAll('.msg.assistant').forEach(function(node){var b=node.querySelector('.bubble');if(!b)return;var mm=null;try{mm=JSON.parse(node.dataset.meta||'null')}catch(e){}if(mm){if(mm.video_url||mm.audio_url||mm.cover_url){b.dataset.media=JSON.stringify({video_url:mm.video_url||'',audio_url:mm.audio_url||'',cover_url:mm.cover_url||'',title:mm.title||''})}}renderComponents(b,mm&&mm.components)})}
 function appendProductionMessage(message){var messageId=String(message&&message.message_id||'');if(!messageId)return;var exists=Array.from(document.querySelectorAll('[data-message-id]')).some(function(node){return node.dataset.messageId===messageId});if(exists)return;var area=document.getElementById('chatArea'),node=document.createElement('div'),productionId=String(message.production_id||'');node.className='msg assistant';node.dataset.messageId=messageId;if(productionId)node.dataset.productionMessage=productionId;node.innerHTML='<div class="av">'+moduleIcon('sparkles')+'</div><div class="bubble">'+md(message.content)+productionMessageHtml(message)+'</div>';area.appendChild(node);scroll()}
 function isSafeMarkdownUrl(value,base='https://huangque.invalid/'){try{var u=new URL(String(value??'').trim(),base);return u.protocol==='http:'||u.protocol==='https:'}catch(e){return false}}
 function sanitizeMarked(html){var t=document.createElement('template');t.innerHTML=html;t.content.querySelectorAll('a[href],img[src]').forEach(function(el){var attr=el.tagName==='A'?'href':'src';if(!isSafeMarkdownUrl(el.getAttribute(attr),location.href)){if(el.tagName==='A')el.replaceWith(document.createTextNode(el.textContent));else el.remove()}else if(el.tagName==='A'){el.rel='noopener noreferrer'}});return t.innerHTML}

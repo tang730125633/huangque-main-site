@@ -4061,11 +4061,13 @@ def _finalize_production_result(cid, job_id):
             if isinstance(prods, list):
                 prods = {str(item.get("job_id") or i): item for i, item in enumerate(prods) if isinstance(item, dict)}
                 convo["productions"] = prods
+            _inner_text = str(inner.get("text") or "") if isinstance(inner, dict) else ""
             prods[str(job_id)] = {
                 "job_id": str(job_id), "phase": phase,
                 "video_url": inner.get("video_url") if isinstance(inner, dict) else None,
                 "audio_url": inner.get("audio_url") if isinstance(inner, dict) else None,
                 "cover_url": cover_url or None,
+                "title": _inner_text[:30],
                 "created_at": time.time(),
             }
             save_conversation(cid, convo)
@@ -7668,18 +7670,25 @@ def _process_semantic_reply(cid, user_message, decision, expected_revision=None,
     if isinstance(components, list) and components:
         result["components"] = [c for c in components if c in {
             "voice_audition", "avatar_cards", "production_guide", "video_player"}]
-    # video_player：链接由系统从产物记录填充（回复文本不暴露 URL，只渲染播放器）
+    # video_player：链接由系统从产物记录填充（回复文本不暴露 URL，只渲染播放器）。
+    # 用户问「做了哪些视频」时把全部 done 产物渲染出来，不做半吊子。
     if "video_player" in (result.get("components") or []):
         with CONVERSATION_STATE_LOCK:
             _mc = owned_conversation(cid)
+        media_items = []
         for rec in _production_records(_mc or {}):
-            if str(rec.get("status") or rec.get("phase") or "") == "done":
-                result["media"] = {
-                    "video_url": rec.get("video_url") or "",
-                    "audio_url": rec.get("audio_url") or "",
-                    "cover_url": rec.get("cover_url") or "",
-                }
-                break
+            if str(rec.get("status") or rec.get("phase") or "") != "done":
+                continue
+            if not (rec.get("video_url") or rec.get("audio_url")):
+                continue
+            media_items.append({
+                "video_url": rec.get("video_url") or "",
+                "audio_url": rec.get("audio_url") or "",
+                "cover_url": rec.get("cover_url") or "",
+                "title": rec.get("title") or "",
+            })
+        if media_items:
+            result["media"] = media_items
     return result, 200
 
 
