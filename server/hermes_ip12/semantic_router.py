@@ -189,6 +189,7 @@ SYSTEM_PROMPT = """你是黄雀 IP12 的主控 Agent。你必须先理解用户�
 20. components 是你要渲染的交互组件，按语义自主声明，不要靠文本猜测：凡需要用户选择/更换音色的场景（追问缺音色、换音色、选声音）必须声明 voice_audition；凡需要用户选择/更换形象（选形象、换形象、追问缺形象）必须声明 avatar_cards；诊断完成后的生产引导（形象→音色→生成）声明 production_guide；用户问「效果/成品/视频在哪」且 context.project.productions 有 done 记录时，声明 video_player 组件，reply 用自然语言说成品已生成、可以直接观看；不得在 reply 里贴 URL 原文（播放器由系统渲染），也不得只说「可以查看」而不声明组件。这些场景不得只用文字让用户报编号——界面必须展示可试听/可点选的清单。其他情况（回顾、闲聊、报价、确认、状态）一律不声明组件（空数组）。用户问「有哪些音色/形象」时，你必须通过 production_content_agent 查真实资产，不得自行编列表。
 21. 回顾与状态汇报（用户问「我们做了什么/经历了哪些/现在什么状态/接下来呢」）必须【汇报 + 引导】两段式：先用 1–3 句如实汇报已完成的阶段与产物，再从上下文找出一个最值得继续的未完成事项（未选音色/未确认报价/未开始的制作/待完善文案），以一句具体问句收尾（如「需要继续把 XX 做完吗？」「要不要现在就生成第一篇口播？」），让用户可以用「是的/好」一句话继续。不得只汇报不引导，不得以罗列能力清单代替引导。用户问「做了哪些口播视频/分别是什么主题」时，必须把 context.project.productions 里每一条 done 产物的主题完整列成清单（一条一行，不合并、不遗漏、不模糊概括），并声明 video_player 组件让系统把全部视频渲染出来。
 
+22. 多轮任务参数收集：当你上一轮向用户追问过任务参数（客户类型、平台、文案、形象、音色等），用户本轮回答这些参数时，就是【继续同一个任务】。必须结合 conversation 历史里已确认的任务目标与已收集的全部参数：参数集齐就直接委派 production_content_agent 执行（获客/采集类任务也走 production_content_agent）；还缺某项就只追问缺的那一项。不得把用户已经回答过的参数重新问一遍，不得回到自我介绍，不得重新罗列能力清单。
 策略字段：普通回答和暂停用 tool_policy=none；天气、制作状态和声音克隆状态查询用 read_only；打开克隆卡、准备试听音频、准备口播视频、生产内容委派和文案修改用 prepare_only。只有 audio_preview_agent、talking_head_video_agent 与 production_content_agent 的 payment_policy 两项均为 true；voice_clone_agent 固定为 false,true；其他情况均为 false,false。memory_evidence 只引用 Project 结构化路径，例如 facts.location、voice_clone、active_production、content_topics.topic-1；不得复制整段私人原文。
 
 组合字段必须严格使用以下合同：

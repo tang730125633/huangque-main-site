@@ -8242,44 +8242,34 @@ def process_chat_request(body):
                         cid, user_message, semantic_decision,
                         body.get("expected_revision"), request_id,
                     )
-                    # SDK 模式：报价由工具层会话保存；有未确认报价时随回复附确认与入口动作
+                    # SDK 模式：报价由工具层会话保存；有未确认报价时仅随回复附确认按钮。
+                    # 创建/克隆入口常驻侧边栏，不在这里每轮重复出现。
                     if isinstance(result, dict) and status == 200:
                         with CONVERSATION_STATE_LOCK:
                             _c = owned_conversation(cid)
                         if _c is not None and isinstance(_c.get("pending_production_delegate"), dict):
                             cost = _c["pending_production_delegate"].get("cost")
-                            actions = [{
+                            result["actions"] = [{
                                 "type": "confirm_production_delegate",
                                 "label": "确认执行（%s 点）" % cost if cost is not None else "确认执行",
                                 "primary": True,
                             }]
-                            actions += [
-                                {"type": "open_avatar_create", "label": "👤 创建数字人形象（上传照片/拍照）", "primary": False},
-                                {"type": "open_voice_clone", "label": "🎤 克隆我的声音（录制/上传样音）", "primary": False},
-                            ]
-                            result["actions"] = actions
                 else:
                     result, status = _process_production_delegate_turn(
                         cid, user_message, semantic_decision, memory_snapshot or {},
                         body.get("expected_revision"), request_id,
                     )
-                    # 客户明确表达生产意向后，才随回复弹出确认与入口动作
+                    # 有未确认报价时仅随回复附确认按钮；创建/克隆入口常驻侧边栏。
                     if isinstance(result, dict) and status == 200:
                         with CONVERSATION_STATE_LOCK:
                             _c = owned_conversation(cid)
-                        actions = []
                         if _c is not None and isinstance(_c.get("pending_production_delegate"), dict):
                             cost = _c["pending_production_delegate"].get("cost")
-                            actions.append({
+                            result["actions"] = [{
                                 "type": "confirm_production_delegate",
                                 "label": "确认执行（%s 点）" % cost if cost is not None else "确认执行",
                                 "primary": True,
-                            })
-                        actions += [
-                            {"type": "open_avatar_create", "label": "👤 创建数字人形象（上传照片/拍照）", "primary": False},
-                            {"type": "open_voice_clone", "label": "🎤 克隆我的声音（录制/上传样音）", "primary": False},
-                        ]
-                        result["actions"] = actions
+                            }]
             elif semantic_decision and semantic_decision.get("intent") == "delegate":
                 semantic_intent = _semantic_production_intent(semantic_decision)
                 semantic_target = _semantic_content_target(
