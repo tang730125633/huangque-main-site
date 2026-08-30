@@ -578,10 +578,28 @@ function openModal(id,html){var m=document.getElementById(id);if(!m)return;var p
 function closeModal(id){var m=document.getElementById(id);if(m)m.style.display='none'}
 function openAvatarCreate(){
   if(streaming||materialUploading||!cid)return;stopRec();
-  openModal('ipAvatarModal','<h3 style="font-size:16px;margin-bottom:12px">👤 创建数字人形象</h3><div class="ip-opt"><button class="ip-btn" id="avCam">📷 拍照创建（调用摄像头）</button><button class="ip-btn" id="avUpload">🖼 上传图片</button><button class="ip-btn ip-muted" id="avCancel">取消</button></div>');
+  openModal('ipAvatarModal','<h3 style="font-size:16px;margin-bottom:12px">👤 创建数字人形象</h3><div class="ip-opt"><button class="ip-btn" id="avCam">📷 拍照创建（调用摄像头）</button><button class="ip-btn" id="avUpload">🖼 上传图片</button><button class="ip-btn" id="avLib">🗂 选用素材库里的素材</button><button class="ip-btn ip-muted" id="avCancel">取消</button></div>');
+  document.getElementById('avLib').onclick=function(){closeModal('ipAvatarModal');openAssetLibrary('image',function(file){submitAvatarCreate(file,null,null)})};
   document.getElementById('avUpload').onclick=function(){closeModal('ipAvatarModal');var input=document.createElement('input');input.type='file';input.accept='image/png,image/jpeg,image/webp';input.onchange=function(ev){var f=ev.target.files&&ev.target.files[0];if(f)submitAvatarCreate(f,null,null)};input.click()};
   document.getElementById('avCancel').onclick=function(){closeModal('ipAvatarModal')};
   document.getElementById('avCam').onclick=startCamera;
+}
+function openAssetLibrary(kind,onPick){
+  fetch('/api/ip12/assets?kind='+encodeURIComponent(kind),{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){
+    var items=d&&d.items||[];
+    if(!items.length){toast('素材库里暂时没有'+ (kind==='image'?'图片':'音频') +'素材');return}
+    var grid=items.slice(0,24).map(function(a){var u=a.url||'';if(kind==='image'){return '<div class="asset-cell" data-url="'+eHtml(u)+'" style="cursor:pointer"><img src="/api/ip12/asset-fetch?url='+encodeURIComponent(u)+'" style="width:100%;height:88px;object-fit:cover;border-radius:8px"></div>'}else{return '<div class="asset-cell" data-url="'+eHtml(u)+'" style="cursor:pointer;padding:8px;border:1px solid #2a2f3a;border-radius:8px;font-size:12px">🎵 音频素材 '+(items.indexOf(a)+1)+'</div>'}}).join('');
+    openModal(kind==='image'?'ipAvatarModal':'ipVoiceModal','<h3 style="font-size:16px;margin-bottom:10px">🗂 选用素材库（'+(kind==='image'?'图片':'音频')+'）</h3><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;max-height:50vh;overflow-y:auto">'+grid+'</div>');
+    document.querySelectorAll('#'+(kind==='image'?'ipAvatarModal':'ipVoiceModal')+' .asset-cell').forEach(function(cell){
+      cell.onclick=function(){var url=cell.dataset.url;if(!url)return;toast('正在读取素材…');
+        fetch('/api/ip12/asset-fetch?url='+encodeURIComponent(url)).then(function(r){return r.blob()}).then(function(blob){
+          var name=url.split('/').pop()||('asset-'+(kind==='image'?'photo.jpg':'sample.mp3'));
+          var f=new File([blob],name,{type:blob.type||(kind==='image'?'image/jpeg':'audio/mpeg')});
+          closeModal(kind==='image'?'ipAvatarModal':'ipVoiceModal');
+          onPick(f);
+        }).catch(function(e){toast('素材读取失败')})};
+    });
+  }).catch(function(){toast('素材库查询失败')});
 }
 function startCamera(){
   if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){openModal('ipAvatarModal','<h3>📷 无法拍照</h3><p style="font-size:13px;color:#8b93a3;margin:10px 0">浏览器不支持摄像头，请改上传图片</p><div class="ip-opt"><button class="ip-btn" id="avU2">🖼 上传图片</button></div>');document.getElementById('avU2').onclick=function(){closeModal('ipAvatarModal');var input=document.createElement('input');input.type='file';input.accept='image/png,image/jpeg,image/webp';input.onchange=function(ev){var f=ev.target.files&&ev.target.files[0];if(f)submitAvatarCreate(f,null,null)};input.click()};return}
@@ -610,7 +628,8 @@ function appendAvatarCard(avatars){var area=document.getElementById('chatArea'),
 }
 function openInlineVoiceClone(){
   if(!cid||streaming)return;stopRec();
-  openModal('ipVoiceModal','<h3 style="font-size:16px;margin-bottom:12px">🎤 克隆声音</h3><div class="ip-opt"><button class="ip-btn" id="vcRec">🎙 实时录音克隆（10-60 秒）</button><button class="ip-btn" id="vcUp">🎵 上传音频文件</button><button class="ip-btn ip-muted" id="vcCancel">取消</button></div>');
+  openModal('ipVoiceModal','<h3 style="font-size:16px;margin-bottom:12px">🎤 克隆声音</h3><div class="ip-opt"><button class="ip-btn" id="vcRec">🎙 实时录音克隆（10-60 秒）</button><button class="ip-btn" id="vcUp">🎵 上传音频文件</button><button class="ip-btn" id="vcLib">🗂 选用素材库里的素材</button><button class="ip-btn ip-muted" id="vcCancel">取消</button></div>');
+  document.getElementById('vcLib').onclick=function(){closeModal('ipVoiceModal');openAssetLibrary('audio',function(file){submitVoiceClone(file)})};
   document.getElementById('vcUp').onclick=function(){closeModal('ipVoiceModal');var input=document.createElement('input');input.type='file';input.accept='audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/x-m4a,audio/aac,audio/ogg';input.onchange=function(ev){var f=ev.target.files&&ev.target.files[0];if(f)submitVoiceClone(f)};input.click()};
   document.getElementById('vcCancel').onclick=function(){closeModal('ipVoiceModal')};
   document.getElementById('vcRec').onclick=startRecorder;

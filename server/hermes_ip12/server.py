@@ -4000,6 +4000,38 @@ def api_ip12_task(job_id):
     return jsonify(payload)
 
 
+@app.route("/api/ip12/assets", methods=["GET"])
+def api_ip12_assets():
+    """素材库列表（转发工具层）。"""
+    import requests as _requests
+    kind = str(request.args.get("kind") or "image").strip()
+    base = str(os.environ.get("HQ_TOOL_AGENT_BASE") or "http://127.0.0.1:8790").rstrip("/")
+    try:
+        response = _requests.get(base + "/assets", params={"kind": kind}, timeout=30)
+        payload = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+    except Exception as exc:
+        return jsonify({"ok": False, "error": "生产子 Agent 暂时不可用：" + str(exc)[:120]}), 502
+    if response.status_code >= 400:
+        return jsonify({"ok": False, "error": str((payload or {}).get("detail") or "查询失败")[:200]}), response.status_code
+    return jsonify(payload)
+
+
+@app.route("/api/ip12/asset-fetch", methods=["GET"])
+def api_ip12_asset_fetch():
+    """代理下载素材库文件（供前端选用后转为上传文件）。"""
+    import requests as _requests
+    url = str(request.args.get("url") or "").strip()
+    if not url.startswith("https://video.huangquechuanmei.com/") and not url.startswith("https://huangque-media-"):
+        return jsonify({"ok": False, "error": "素材地址无效"}), 400
+    try:
+        response = _requests.get(url, timeout=60)
+        response.raise_for_status()
+    except Exception as exc:
+        return jsonify({"ok": False, "error": "素材下载失败：" + str(exc)[:120]}), 502
+    from flask import Response as _Response
+    return _Response(response.content, content_type=response.headers.get("content-type", "application/octet-stream"))
+
+
 @app.route("/api/ip12/voices", methods=["GET"])
 def api_ip12_voices():
     """可用音色与试听链接（转发工具层）。"""
