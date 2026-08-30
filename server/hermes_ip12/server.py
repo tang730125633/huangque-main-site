@@ -8452,7 +8452,8 @@ def process_chat_request(body):
                     cid, user_message, semantic_decision,
                     body.get("expected_revision"), request_id,
                 )
-            elif semantic_decision and semantic_decision.get("intent") in {"direct_answer", "clarify"}:
+            elif (semantic_decision and semantic_decision.get("intent") in {"direct_answer", "clarify"}
+                  and production_intent is None):
                 # 状态类事实可以确定性输出（任务状态查询）：模型说了「核对/查」却没有走
                 # status 路径时，服务端补上真实查询动作，并把结果回报给用户。
                 if semantic_decision.get("intent") == "direct_answer" and _status_query_intent(user_message):
