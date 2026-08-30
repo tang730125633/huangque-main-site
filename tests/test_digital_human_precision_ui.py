@@ -1,6 +1,7 @@
 import pathlib
 import shutil
 import subprocess
+import textwrap
 import unittest
 
 
@@ -58,14 +59,139 @@ class DigitalHumanPrecisionUiTests(unittest.TestCase):
         confirm = SCRIPT[SCRIPT.index("function confirmAndGenerate("):]
         self.assertIn("generateAudio(text).then(generateLipsync)", confirm)
 
-    def test_ready_voice_slots_use_short_numbers_without_exposing_internal_ids(self):
-        slot_picker = SCRIPT[SCRIPT.index("function availableSlot("):SCRIPT.index("function pollClone(")]
-        self.assertIn("请输入要覆盖的音色序号（1-", slot_picker)
-        self.assertIn("(index+1)+' — '", slot_picker)
-        self.assertIn("ready[number-1].slot_id", slot_picker)
-        self.assertIn("（编号 '+number+'）", slot_picker)
-        self.assertNotIn("请输入要覆盖的槽位 ID", slot_picker)
-        self.assertNotIn("item.slot_id+' — '", slot_picker)
+    @unittest.skipUnless(shutil.which("node"), "Node.js required")
+    def test_ready_voice_slot_numbering_executes_selection_and_rejects_invalid_input(self):
+        harness = textwrap.dedent(
+            r"""
+            const assert = require('assert');
+            const fs = require('fs');
+            const vm = require('vm');
+
+            const appSource = fs.readFileSync(process.argv[1], 'utf8');
+            const stateApi = require(process.argv[2]);
+            const availableStart = appSource.indexOf('function availableSlot()');
+            const pollStart = appSource.indexOf('function pollClone(', availableStart);
+            const analyzeStart = appSource.indexOf('function analyzeVoice(', pollStart);
+            const previewStart = appSource.indexOf('function previewVoice(', analyzeStart);
+            assert(availableStart >= 0 && pollStart > availableStart);
+            assert(analyzeStart > pollStart && previewStart > analyzeStart);
+            const behaviorSource = appSource.slice(availableStart, pollStart)
+              + '\n' + appSource.slice(analyzeStart, previewStart);
+            const slots = [
+              {slot_id: 'internal-slot-alpha-very-long', status: 'ready', voice_name: '第一音色'},
+              {slot_id: 'internal-slot-beta-very-long', status: 'ready', voice_name: '第二音色'},
+              {slot_id: 'internal-slot-gamma-very-long', status: 'ready', voice_name: '最后音色'},
+            ];
+
+            async function exercise(answer, confirmResult) {
+              const requests = [];
+              const prompts = [];
+              const confirms = [];
+              const elements = {
+                dhScript: {value: '测试文案'},
+                dhConsent: {checked: true},
+                dhAnalyze: {disabled: false},
+              };
+              const context = {
+                DigitalHumanUnifiedState: stateApi,
+                state: {source: {id: 42}, running: false, retry: 0, runId: '', sample: null},
+                fresh: value => value,
+                request: (path, options) => {
+                  requests.push({path, options});
+                  if (path === '/api/gen/audio/slots') return Promise.resolve({items: slots});
+                  if (path === '/api/gen/video/lipsync-voice-sample') {
+                    return Promise.reject(new Error('stop-after-sample'));
+                  }
+                  return Promise.reject(new Error('unexpected request: ' + path));
+                },
+                window: {
+                  prompt: (message, initial) => {
+                    prompts.push({message, initial});
+                    return answer;
+                  },
+                  confirm: message => {
+                    confirms.push(message);
+                    return confirmResult;
+                  },
+                },
+                $: id => elements[id] || (elements[id] = {}),
+                resetVoice: () => {},
+                simpleHash: () => 'stable-test-run',
+                setStage: () => {},
+                setStep: () => {},
+                setVoiceStep: () => {},
+                status: () => {},
+                Date,
+                Number,
+                String,
+                Object,
+                Promise,
+              };
+              vm.createContext(context);
+              vm.runInContext(behaviorSource, context, {filename: 'digital-human-unified.behavior.js'});
+              context.analyzeVoice(false);
+              for (let attempt = 0; attempt < 20 && context.state.running; attempt += 1) {
+                await new Promise(resolve => setImmediate(resolve));
+              }
+              assert.strictEqual(context.state.running, false, 'analysis promise did not settle');
+              return {requests, prompts, confirms};
+            }
+
+            (async () => {
+              for (const [answer, expectedId, expectedNumber] of [
+                ['1', slots[0].slot_id, 1],
+                ['3', slots[2].slot_id, 3],
+              ]) {
+                const result = await exercise(answer, true);
+                const sample = result.requests.find(
+                  item => item.path === '/api/gen/video/lipsync-voice-sample'
+                );
+                assert(sample, 'valid selection must reach the sample endpoint');
+                assert.strictEqual(sample.options.body.slot_id, expectedId);
+                assert.strictEqual(result.confirms.length, 1);
+                assert(result.confirms[0].includes('编号 ' + expectedNumber));
+                for (const slot of slots) assert(!result.confirms[0].includes(slot.slot_id));
+                const prompt = result.prompts[0].message;
+                assert(prompt.includes('1 — 第一音色'));
+                assert(prompt.includes('3 — 最后音色'));
+                for (const slot of slots) assert(!prompt.includes(slot.slot_id));
+              }
+
+              for (const answer of ['', null, '0', '4', '1.5', 'abc']) {
+                const result = await exercise(answer, true);
+                assert.deepStrictEqual(
+                  result.requests.map(item => item.path),
+                  ['/api/gen/audio/slots'],
+                  'invalid input must stop before the paid sample endpoint'
+                );
+                assert.strictEqual(result.confirms.length, 0);
+              }
+
+              const cancelled = await exercise('1', false);
+              assert.deepStrictEqual(
+                cancelled.requests.map(item => item.path),
+                ['/api/gen/audio/slots'],
+                'cancel must stop before the paid sample endpoint'
+              );
+              assert.strictEqual(cancelled.confirms.length, 1);
+              console.log('voice slot numbering behavior tests passed');
+            })().catch(error => {
+              console.error(error && error.stack || error);
+              process.exit(1);
+            });
+            """
+        )
+        completed = subprocess.run(
+            [
+                "node", "-e", harness,
+                str(ROOT / "site/workbench/digital-human-unified.js"),
+                str(STATE_SCRIPT),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("voice slot numbering behavior tests passed", completed.stdout)
 
     def test_three_templates_have_visible_ten_second_examples(self):
         expected = {
