@@ -193,6 +193,17 @@ def safe_context(memory, goal, agent_run=None):
         "schema": "ip12.cognitive-context/v1",
         "project_id": str(memory.get("project_id") or "")[:100],
         "goal": str(goal or "")[:4000],
+        "conversation": copy.deepcopy(memory.get("recent_messages") or [])[-10:],
+        "system_voices": [
+            {"index": int(item.get("index") or 0), "name": str(item.get("name") or "")[:80]}
+            for item in (memory.get("system_voices") or [])[:8]
+            if isinstance(item, dict)
+        ],
+        "avatars": [
+            {"index": int(item.get("index") or 0), "name": str(item.get("name") or "")[:80]}
+            for item in (memory.get("avatars") or [])[:8]
+            if isinstance(item, dict)
+        ],
         "agent_run": {
             key: str(run.get(key) or "")[:160]
             for key in ("agent_id", "status", "awaiting", "next_action")

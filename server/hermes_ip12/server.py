@@ -7127,10 +7127,51 @@ def _custom_semantic_master_decision(memory, user_message):
     return decision
 
 
+_ASSET_SNAPSHOT = {"ts": 0.0, "avatars": [], "voices": [], "lock": __import__("threading").Lock()}
+
+
+def _refresh_asset_snapshot():
+    """从工具层拉真实资产快照（60s 缓存），让主 Agent 基于真实音色/形象决策，
+    而不是猜 available_assets。"""
+    with _ASSET_SNAPSHOT["lock"]:
+        if time.time() - _ASSET_SNAPSHOT["ts"] < 60:
+            return _ASSET_SNAPSHOT["avatars"], _ASSET_SNAPSHOT["voices"]
+        import urllib.request
+        import urllib.error
+        base = str(os.environ.get("HQ_TOOL_AGENT_BASE") or "http://127.0.0.1:8790").rstrip("/")
+        avatars, voices = [], []
+        for path, key, out in (
+            ("/avatars", "items", avatars),
+            ("/voices", "items", voices),
+        ):
+            try:
+                req = urllib.request.Request(base + path, method="GET")
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    body = json.loads(resp.read().decode("utf-8"))
+                for i, item in enumerate((body.get(key) or [])[:8]):
+                    if not isinstance(item, dict):
+                        continue
+                    if path == "/avatars":
+                        out.append({"index": i + 1, "name": item.get("name") or ("形象 %s" % item.get("id"))})
+                    else:
+                        out.append({"index": i + 1,
+                                    "name": item.get("display_name") or item.get("name") or "音色 %d" % (i + 1)})
+            except Exception:
+                pass
+        _ASSET_SNAPSHOT["ts"] = time.time()
+        _ASSET_SNAPSHOT["avatars"] = avatars
+        _ASSET_SNAPSHOT["voices"] = voices
+        return avatars, voices
+
+
 def _semantic_master_decision(memory, user_message):
     mode = cognitive_engine.canary_mode(
         COGNITIVE_ENGINE_MODE, memory, AGENTS_SDK_CANARY_PROJECT_ID,
     )
+    if isinstance(memory, dict):
+        avatars, voices = _refresh_asset_snapshot()
+        memory["avatars"] = avatars
+        memory["system_voices"] = voices
     return cognitive_engine.decide(
         memory,
         user_message,
