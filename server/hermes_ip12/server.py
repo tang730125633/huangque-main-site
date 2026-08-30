@@ -3901,6 +3901,15 @@ def api_get_convo(cid):
             and isinstance(last_assistant.get("ui_action"), dict)):
         public_convo["harness_actions"] = [last_assistant["ui_action"]]
     public_convo["productions"] = _productions_summary(convo)
+    # 有未消费的委派报价时，刷新后也能继续确认执行
+    pending_delegate = convo.get("pending_production_delegate")
+    if isinstance(pending_delegate, dict):
+        cost = pending_delegate.get("cost")
+        label = "确认执行（%s 点）" % cost if cost is not None else "确认执行"
+        public_convo["harness_actions"] = [{
+            "type": "confirm_production_delegate",
+            "label": label, "primary": True,
+        }]
     public_convo["artifacts"] = [
         _artifact_public(item) for item in (convo.get("artifacts") or {}).values()
         if isinstance(item, dict)
