@@ -58,6 +58,15 @@ class DigitalHumanPrecisionUiTests(unittest.TestCase):
         confirm = SCRIPT[SCRIPT.index("function confirmAndGenerate("):]
         self.assertIn("generateAudio(text).then(generateLipsync)", confirm)
 
+    def test_ready_voice_slots_use_short_numbers_without_exposing_internal_ids(self):
+        slot_picker = SCRIPT[SCRIPT.index("function availableSlot("):SCRIPT.index("function pollClone(")]
+        self.assertIn("请输入要覆盖的音色序号（1-", slot_picker)
+        self.assertIn("(index+1)+' — '", slot_picker)
+        self.assertIn("ready[number-1].slot_id", slot_picker)
+        self.assertIn("（编号 '+number+'）", slot_picker)
+        self.assertNotIn("请输入要覆盖的槽位 ID", slot_picker)
+        self.assertNotIn("item.slot_id+' — '", slot_picker)
+
     def test_three_templates_have_visible_ten_second_examples(self):
         expected = {
             "viral-talking-head-v1": "high-frequency-10s.mp4",
