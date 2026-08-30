@@ -4027,12 +4027,28 @@ def _finalize_production_result(cid, job_id):
             audio_url = str(inner.get("audio_url") or "")
             if not video_url and not audio_url:
                 return
+            # 自动挑一张封面（工具层抽帧评分，不扣点），失败不影响交付
+            cover_url = ""
+            if video_url:
+                try:
+                    import requests as _rq2
+                    cover_resp = _rq2.post(
+                        base + "/pick-cover",
+                        json={"job_id": str(job_id), "video_url": video_url},
+                        timeout=600,
+                    )
+                    cover_data = cover_resp.json() if cover_resp.headers.get("content-type", "").startswith("application/json") else {}
+                    if cover_data.get("ok") and cover_data.get("cover_url"):
+                        cover_url = base + str(cover_data["cover_url"])
+                except Exception:
+                    cover_url = ""
             lines = ["✅ 数字人口播已生成："]
             if video_url:
                 lines.append(video_url)
             if audio_url:
                 lines.append("音频：" + audio_url)
             text = "\n".join(lines)
+            msg_meta = {"components": ["video_player"], "cover_url": cover_url} if cover_url else {"components": ["video_player"]}
         else:
             text = "❌ 生成失败：" + str(task.get("error") or "未知错误")[:200]
         with CONVERSATION_STATE_LOCK:
@@ -4043,7 +4059,7 @@ def _finalize_production_result(cid, job_id):
             if msgs and str(msgs[-1].get("content") or "") == text:
                 return
             msgs.append({"role": "assistant", "content": text,
-                          "meta": {"components": ["video_player"]}})
+                          "meta": msg_meta})
             prods = convo.setdefault("productions", {})
             if isinstance(prods, list):
                 prods = {str(item.get("job_id") or i): item for i, item in enumerate(prods) if isinstance(item, dict)}
@@ -4052,6 +4068,7 @@ def _finalize_production_result(cid, job_id):
                 "job_id": str(job_id), "phase": phase,
                 "video_url": inner.get("video_url") if isinstance(inner, dict) else None,
                 "audio_url": inner.get("audio_url") if isinstance(inner, dict) else None,
+                "cover_url": cover_url or None,
                 "created_at": time.time(),
             }
             save_conversation(cid, convo)
