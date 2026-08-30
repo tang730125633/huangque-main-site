@@ -3156,7 +3156,19 @@ def generate_foundation_report(convo_id):
         )
         page_count = _validate_foundation_pdf(pdf_path)
         if deterministic and page_count > 8:
-            raise RuntimeError("Deterministic PDF page count is outside 6-8 pages")
+            # 页数超限：用紧凑档位（字体/间距压缩）重渲染，而不是直接失败
+            from pdf_fallback import render_foundation_consulting_pdf
+            title = _foundation_report_title(presentation_content)
+            for compact in (1, 2):
+                pdf_path = render_foundation_consulting_pdf(
+                    presentation_content, root / ("report-compact-%s.pdf" % compact),
+                    title=title, _compact=compact,
+                )
+                page_count = _validate_foundation_pdf(pdf_path)
+                if page_count <= 8:
+                    break
+            else:
+                raise RuntimeError("Deterministic PDF page count is outside 6-8 pages")
         staged_target = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
         try:
             shutil.copyfile(pdf_path, staged_target)
