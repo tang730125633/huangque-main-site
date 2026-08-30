@@ -8003,12 +8003,23 @@ def process_chat_request(body):
                         cid, user_message, semantic_decision, memory_snapshot or {},
                         body.get("expected_revision"), request_id,
                     )
-                    # 客户明确表达生产意向后，才随回复弹出创建数字人 / 克隆声音入口
+                    # 客户明确表达生产意向后，才随回复弹出确认与入口动作
                     if isinstance(result, dict) and status == 200:
-                        result["actions"] = [
-                            {"type": "open_avatar_create", "label": "👤 创建数字人形象（上传照片/拍照）", "primary": True},
+                        with CONVERSATION_STATE_LOCK:
+                            _c = owned_conversation(cid)
+                        actions = []
+                        if _c is not None and isinstance(_c.get("pending_production_delegate"), dict):
+                            cost = _c["pending_production_delegate"].get("cost")
+                            actions.append({
+                                "type": "confirm_production_delegate",
+                                "label": "确认执行（%s 点）" % cost if cost is not None else "确认执行",
+                                "primary": True,
+                            })
+                        actions += [
+                            {"type": "open_avatar_create", "label": "👤 创建数字人形象（上传照片/拍照）", "primary": False},
                             {"type": "open_voice_clone", "label": "🎤 克隆我的声音（录制/上传样音）", "primary": False},
                         ]
+                        result["actions"] = actions
             elif semantic_decision and semantic_decision.get("intent") == "delegate":
                 semantic_intent = _semantic_production_intent(semantic_decision)
                 semantic_target = _semantic_content_target(
