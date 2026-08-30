@@ -282,17 +282,17 @@ def public_diagnostics(events):
 def asset_readiness(context):
     project = (context or {}).get("project") if isinstance(context, dict) else {}
     project = project if isinstance(project, dict) else {}
+    voices = (context or {}).get("system_voices") or []
+    avatars = (context or {}).get("avatars") or []
     explicit = project.get("available_assets") if isinstance(project.get("available_assets"), dict) else {}
-    if explicit:
-        return {
-            "avatar_ready": explicit.get("avatar_ready") is True,
-            "voice_ready": explicit.get("voice_ready") is True,
-        }
     active = project.get("active_production") if isinstance(project.get("active_production"), dict) else {}
     fields = set(active.get("selected_fields") or [])
     return {
-        "avatar_ready": "avatar_id" in fields or "image_upload_id" in fields,
-        "voice_ready": "voice" in fields or "audio_upload_id" in fields,
+        # 系统音色/形象在快照里就代表真实可用；不要把空 active production 误读成“素材没准备好”
+        "voice_ready": bool(voices) or (explicit.get("voice_ready") is True) or "voice" in fields or "audio_upload_id" in fields,
+        "avatar_ready": bool(avatars) or (explicit.get("avatar_ready") is True) or "avatar_id" in fields or "image_upload_id" in fields,
+        "system_voices": [{"index": v.get("index"), "name": v.get("name")} for v in voices[:8]],
+        "avatars": [{"index": a.get("index"), "name": a.get("name")} for a in avatars[:8]],
     }
 
 
@@ -593,6 +593,11 @@ def agents_sdk_decider(context, goal, timeout_seconds=50, *, openai_client=None,
             "\n生产内容（数字人口播以外的图片、视频、配音、文案成片、采集、获客等）"
             "调用 production_delegate 工具，把用户意图与画像交给生产内容子 Agent；"
             "子 Agent 返回报价或结果后，用自然语言转述给用户，不要编造报价或成品。"
+            "\n上下文里有 conversation（最近的对话历史）：回复前必须先读它，用户的历史选择"
+            "（如「用形象16」「用音色6」）要尊重；不要重复问用户已经回答过的问题，"
+            "不要编造「音色/形象还没准备好」——除非子 Agent 明确告知。"
+            "system_voices 与 avatars 是真实可用素材；用户说「用音色N/用形象N」时直接"
+            "委派子 Agent 报价，不要反问、不要替代子 Agent 回答素材状态。"
             "\n诊断完成后要【基于结果的递进引导】：先用 production_delegate 查客户现有形象与音色，"
             "再按 形象→音色→生成 的顺序一次只问一个引导问题。"
             "引导形象环节时，必须把查询到的已有形象明确列成选项（如「用形象17」「用形象16」），"
