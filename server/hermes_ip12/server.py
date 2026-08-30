@@ -3920,6 +3920,21 @@ def api_get_convo(cid):
     return jsonify(public_convo)
 
 
+@app.route("/api/ip12/avatars", methods=["GET"])
+def api_ip12_avatars():
+    """数字人形象列表（转发生产内容子 Agent / 工具层）。"""
+    base = str(os.environ.get("HQ_TOOL_AGENT_BASE") or "http://127.0.0.1:8790").rstrip("/")
+    import requests as _requests
+    try:
+        response = _requests.get(base + "/avatars", timeout=30)
+        payload = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+    except Exception as exc:
+        return jsonify({"ok": False, "error": "生产子 Agent 暂时不可用：" + str(exc)[:120]}), 502
+    if response.status_code >= 400:
+        return jsonify({"ok": False, "error": str((payload or {}).get("detail") or "查询失败")[:200]}), response.status_code
+    return jsonify(payload)
+
+
 @app.route("/api/ip12/avatar-create", methods=["POST"])
 def api_ip12_avatar_create():
     """上传本人照片创建数字人形象（转发生产内容子 Agent / 工具层）。

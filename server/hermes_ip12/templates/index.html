@@ -575,8 +575,12 @@ async function submitAvatarCreate(file,quoteToken,bubble){
     var response=await fetch('/api/ip12/avatar-create',{method:'POST',body:form}),data={};try{data=await response.json()}catch(ignore){}
     if(!response.ok||data.ok===false)throw new Error(data.error||'创建数字人失败');
     if(data.quote){var q=data.quote,cost=q.cost??2,points=q.points??'—';var area=document.getElementById('chatArea'),msg=document.createElement('div');msg.className='msg assistant';msg.innerHTML='<div class="av">'+moduleIcon('sparkles')+'</div><div class="bubble">创建数字人形象需扣除 <b>'+cost+'</b> 点（当前余额 '+points+'）。确认创建吗？</div>';area.appendChild(msg);scroll();var row=document.createElement('div');row.className='harness-actions';var ok=document.createElement('button');ok.type='button';ok.className='harness-action primary';ok.textContent='确认创建';ok.addEventListener('click',function(){ok.disabled=true;msg.querySelector('.bubble').innerHTML='创建数字人形象中，约 30 秒… ⏳';submitAvatarCreate(file,q.quote_token,msg)});row.appendChild(ok);msg.querySelector('.bubble').appendChild(row)}
+    else if(data.ok&&data.avatar){toast('✅ 数字人形象创建已提交，正在生成…');await pollAvatarReady(3)}
     else{toast('✅ 数字人形象创建已提交，稍后可在口播制作中选择。'+(data.job_id?('任务 '+data.job_id):''))}
   }catch(e){toast('❌ '+(e.message||'创建数字人失败'))}finally{materialUploading=false}
+}
+async function pollAvatarReady(times){for(var i=0;i<times;i++){await delay(8000);try{var r=await fetch('/api/ip12/avatars',{cache:'no-store'}),d=await r.json();if(!r.ok||!d.ok)continue;var items=d.items||[],ready=items.filter(function(it){return String(it.status||'')==='ready'});if(ready.length){appendAvatarCard(ready);return}}catch(ignore){}}}
+function appendAvatarCard(avatars){var area=document.getElementById('chatArea'),msg=document.createElement('div');msg.className='msg assistant';var cards=avatars.slice(0,6).map(function(a){var img=a.image_url?('<img src="'+eHtml(a.image_url)+'" style="width:96px;height:96px;object-fit:cover;border-radius:10px;display:block;margin:0 auto" onerror="this.style.display=\'none\'">'):'';return '<div style="text-align:center;margin:6px;min-width:104px">'+img+'<div style="font-size:12px;margin-top:4px">'+eHtml(String(a.name||('形象 '+a.id)))+' <span style="color:#2bd576">✅ 就绪</span></div></div>'}).join('');msg.innerHTML='<div class="av">'+moduleIcon('sparkles')+'</div><div class="bubble">✅ 数字人形象已就绪，可用于口播视频：<div style="display:flex;flex-wrap:wrap;justify-content:flex-start;margin-top:6px">'+cards+'</div></div>';area.appendChild(msg);scroll()
 }
 function openInlineVoiceClone(){
   if(!cid||streaming)return;
