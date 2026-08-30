@@ -437,6 +437,9 @@ def agents_sdk_decider(context, goal, timeout_seconds=50, *, openai_client=None,
         memory_evidence: list[Evidence] = Field(default_factory=list)
         memory_updates: list[MemoryUpdate] = Field(default_factory=list)
         tool_policy: Literal["none", "read_only", "prepare_only"]
+        components: list[Literal[
+            "voice_audition", "avatar_cards", "production_guide", "video_player"
+        ]] = Field(default_factory=list)
         payment_policy: PaymentPolicy
         references: References
 
