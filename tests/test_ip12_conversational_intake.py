@@ -65,9 +65,10 @@ class ConversationalIntakeTests(unittest.TestCase):
     def test_intake_core_gaps_only_include_unknown_core_fields(self):
         state = harness.initial_state()
         self.assertEqual(list(harness.INTAKE_CORE_FIELDS), [
-            "preferred_name", "current_identity", "core_skill_1", "core_skill_2",
+            "preferred_name", "current_identity", "core_skill_1",
             "target_audience", "help_goal", "primary_platform", "niche",
         ])
+        self.assertNotIn("core_skill_2", harness.INTAKE_CORE_FIELDS)
         self.assertEqual(harness.intake_core_gaps(state), list(harness.INTAKE_CORE_FIELDS))
         self.assertIn("one_year_goal", harness.intake_coverage_gaps(state))
         self.assertNotIn("one_year_goal", harness.intake_core_gaps(state))
@@ -86,7 +87,7 @@ class ConversationalIntakeTests(unittest.TestCase):
         self.assertEqual(state["intake"]["asked_follow_ups"], ["target_audience"])
         self.assertEqual(state["intake"]["current_question_field"], "target_audience")
 
-    def test_core_profile_can_confirm_intake_and_skips_remaining_fields(self):
+    def test_core_profile_can_confirm_intake_without_marking_unasked_as_skipped(self):
         state, _, _ = harness.apply_intake_decision(
             harness.initial_state(),
             decision(
@@ -98,13 +99,29 @@ class ConversationalIntakeTests(unittest.TestCase):
         )
         self.assertEqual(state["intake"]["status"], "awaiting_confirmation")
         self.assertEqual(harness.intake_core_gaps(state), [])
-        self.assertIn("one_year_goal", state["intake"]["declined_fields"])
-        self.assertIn("city", state["intake"]["declined_fields"])
+        self.assertNotIn("one_year_goal", state["intake"]["declined_fields"])
+        self.assertNotIn("city", state["intake"]["declined_fields"])
         action = next(item for item in harness.available_actions(state) if item["type"] == "confirm_intake")
         state, event = harness.apply_action(state, action, state["revision"])
         self.assertEqual(state["intake"]["status"], "complete")
         self.assertIn("模块 1", event["assistant_prefix"])
         self.assertEqual(state["ip_profile"]["facts"]["preferred_name"]["value"], "阿青")
+
+    def test_core_profile_can_confirm_without_second_skill(self):
+        updates = [item for item in CORE_UPDATES if item["field"] != "core_skill_2"]
+        evidence = CORE_EVIDENCE.replace("方法拆解；", "")
+        state, _, _ = harness.apply_intake_decision(
+            harness.initial_state(),
+            decision(
+                "propose_checkpoint", reply="请核对核心资料。", draft="核心资料已齐",
+                updates=updates, checkpoint=1,
+            ),
+            evidence,
+            current_message=evidence,
+        )
+        self.assertEqual(state["intake"]["status"], "awaiting_confirmation")
+        self.assertEqual(harness.intake_core_gaps(state), [])
+        self.assertNotIn("core_skill_2", {item["field"] for item in updates})
 
     def test_chat_start_can_confirm_intake_without_filling_the_form(self):
         state, _, _ = harness.apply_intake_decision(
@@ -177,6 +194,9 @@ class ConversationalIntakeTests(unittest.TestCase):
         self.assertIn("IP 孵化教练", intake_prompt)
         self.assertIn("我先聊聊", intake_prompt)
         self.assertIn("先回应用户刚刚说的话", module_prompt)
+        self.assertIn("比如是A、B、C还是D", intake_prompt)
+        self.assertIn("尚未问过的可选项必须省略", intake_prompt)
+        self.assertIn("不要再出下一题", intake_prompt)
 
     def test_model_still_cannot_confirm_checkpoints(self):
         state = completed_intake()

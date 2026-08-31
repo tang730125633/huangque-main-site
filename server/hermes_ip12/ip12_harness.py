@@ -127,7 +127,7 @@ INTAKE_COVERAGE_FIELDS = (
     "long_term_interest", "primary_platform", "desired_action",
 )
 INTAKE_CORE_FIELDS = (
-    "preferred_name", "current_identity", "core_skill_1", "core_skill_2",
+    "preferred_name", "current_identity", "core_skill_1",
     "target_audience", "help_goal", "primary_platform", "niche",
 )
 INTAKE_CORE_FIELD_SET = frozenset(INTAKE_CORE_FIELDS)
@@ -2277,8 +2277,6 @@ def apply_intake_decision(value, raw, evidence_text, current_message=""):
                 "核心资料仍有未覆盖项目：%s%s；不能生成核对稿，请继续聊或让用户跳过"
                 % (gap_labels, "等" if len(core_gaps) > 6 else "")
             )
-        declined = _decline_remaining_intake_fields(state, merged_update_list)
-        coverage_gaps = intake_coverage_gaps(state, merged_update_list)
         intake.update(
             status="awaiting_confirmation",
             round=3,
@@ -2429,7 +2427,7 @@ def intake_system_prompt(value):
     ) or "无"
     return """你是黄雀 IP12 的 IP 孵化教练，不是一张表。先回应用户刚刚说的话，再从自然聊天里提取已经出现的事实；面向用户的 reply 和 draft 不要提及采集表、JSON、字段或状态机。
 
-进入核对稿前，优先掌握这些核心信息：preferred_name=姓名或昵称、current_identity=当前职业或身份、core_skill_1=最厉害的实战能力、core_skill_2=第二项核心能力、target_audience=目标受众、help_goal=能解决的问题、primary_platform=主要发布平台、niche=想做的赛道。其余项目都是可选项：能从聊天里提取就提取，用户说跳过就跳过，不得强迫。用户可以说「跳过」或「我先聊聊」开始模块 1。
+进入核对稿前，优先掌握这些核心信息：preferred_name=姓名或昵称、current_identity=当前职业或身份、core_skill_1=最厉害的实战能力、target_audience=目标受众、help_goal=能解决的问题、primary_platform=主要发布平台、niche=想做的赛道。core_skill_2 和第二项能力等其余项目都是可选项：能从聊天里提取就提取，用户说跳过就跳过，不得强迫。用户可以说「跳过」或「我先聊聊」开始模块 1。
 
 当前已明确跳过：%s。
 当前尚未掌握的核心信息：%s。
@@ -2437,11 +2435,12 @@ def intake_system_prompt(value):
 
 对话规则：
 - 先回应用户本轮内容，再决定要不要补一个自然问题；不要机械地只追问下一个空项。
-- 接受任意顺序和自然表达；用户可一次说一项或多项，不要求固定格式，不把访谈做成选择题。
+- 接受任意顺序和自然表达；用户可一次说一项或多项，不要求固定格式，不把访谈做成选择题。追问必须是开放句，禁止「比如是A、B、C还是D」这种选项句。
 - 先查看完整对话历史和当前待核对资料；已经回答、明确不知道或拒绝回答的内容不要重复追问。
 - 用户没有正面回答时，不得猜测答案；只有明确说“跳过、不知道、暂时没有、不方便”才记为已跳过。
-- 核心信息尚未齐、且用户没有说「我先聊聊 / 不想填表 / 先进入定位」时，decision=ask_follow_up；可以顺着刚才的话题问，不必按固定顺序。
-- 核心信息已齐，或用户明确说「我先聊聊 / 不想填表 / 先进入定位」时，可以 decision=propose_checkpoint、checkpoint=1；draft 合并已回答内容，跳过项只写“本人选择跳过”，尚未问过的可选项可省略或记为跳过。
+- 用户已经说出姓名/称呼、身份、受众、平台、赛道，以及至少一项拿手或能解决的问题时，立刻 decision=propose_checkpoint、checkpoint=1，不要再出下一题。help_goal 可从「帮谁做什么」提取，不要另开选择题。
+- 核心信息尚未齐、且用户没有说「我先聊聊 / 不想填表 / 先进入定位」时，decision=ask_follow_up；可以顺着刚才的话题问一个开放问题，不必按固定顺序。
+- 核心信息已齐，或用户明确说「我先聊聊 / 不想填表 / 先进入定位」时，decision=propose_checkpoint、checkpoint=1；draft 只合并用户说过的事实。只有用户明确说跳过的项才写“本人选择跳过”。尚未问过的可选项必须省略，不得写成本人选择跳过。
 - 年龄、性别、收入和手机号是敏感可选项，明说可以跳过，不得强迫。
 - decision=ask_follow_up 时 checkpoint=0、draft 和 self_review 为空；可以把本轮已明确说出的用户事实或偏好放入 profile_updates，等待最终核对，绝不能宣布确认。
 - 用户提问时先直接回答；可以用 decision=answer_only，不必被尚未填写的空项绑住。
