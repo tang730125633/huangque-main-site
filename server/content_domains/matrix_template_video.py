@@ -13,7 +13,7 @@ import urllib.request
 import uuid
 
 from .core import OUT_DIR, public_url
-from . import feature_flags, pricing
+from . import feature_flags, matrix_template_semantics, pricing
 
 
 FEATURE_KEY = "matrix_template_video"
@@ -103,6 +103,39 @@ def require_available():
         raise feature_flags.FeatureDisabled("模板成片服务暂不可用，请稍后重试")
 
 
+def _semantic_contract(value):
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {
+        "version", "max_width_px", "layers",
+    }:
+        raise RuntimeError("HyperFrames 语义排版能力无效")
+    layers = value.get("layers")
+    if (
+        value.get("version") != 1
+        or value.get("max_width_px") != 996
+        or not isinstance(layers, dict)
+        or set(layers) != {"top1", "top2", "bottom2"}
+    ):
+        raise RuntimeError("HyperFrames 语义排版能力无效")
+    normalized = {}
+    for layer, expected in {
+        "top1": (86, 2), "top2": (62, 4), "bottom2": (78, 2),
+    }.items():
+        item = layers.get(layer)
+        if not isinstance(item, dict) or set(item) != {
+            "font_size_px", "max_lines",
+        }:
+            raise RuntimeError("HyperFrames 语义排版能力无效")
+        pair = (item.get("font_size_px"), item.get("max_lines"))
+        if pair != expected:
+            raise RuntimeError("HyperFrames 语义排版能力无效")
+        normalized[layer] = {
+            "font_size_px": int(pair[0]), "max_lines": int(pair[1]),
+        }
+    return {"version": 1, "max_width_px": 996, "layers": normalized}
+
+
 def _refresh_catalog(force=False):
     now = time.monotonic()
     if force or now - _CACHE["at"] > 30:
@@ -144,6 +177,7 @@ def _refresh_catalog(force=False):
                 "selectable" if font_selectable else "template_locked"
             ))
             variant = str(raw.get("variant") or "")
+            semantic_layout = _semantic_contract(raw.get("semantic_layout"))
             if engine not in {"ffmpeg", "hyperframes"}:
                 continue
             if font_mode not in {"selectable", "template_locked"}:
@@ -152,7 +186,7 @@ def _refresh_catalog(force=False):
                 r"v(?:0[1-9]|1[0-7])", variant
             ):
                 continue
-            templates.append({
+            template = {
                 "id": template_id,
                 "name": str(raw.get("name") or template_id)[:40],
                 "description": str(raw.get("description") or "")[:160],
@@ -161,7 +195,10 @@ def _refresh_catalog(force=False):
                 "font_mode": font_mode,
                 "font_selectable": font_selectable,
                 "variant": variant,
-            })
+            }
+            if semantic_layout is not None:
+                template["semantic_layout"] = semantic_layout
+            templates.append(template)
         template_ids = {item["id"] for item in templates}
         if (
             len(templates) not in TRANSITION_TEMPLATE_COUNTS
@@ -188,6 +225,10 @@ def _refresh_catalog(force=False):
                 )
                 or {item["variant"] for item in references}
                 != {f"v{index:02d}" for index in range(1, 18)}
+                or {
+                    item["variant"] for item in references
+                    if item.get("semantic_layout")
+                } != {"v02"}
             ):
                 raise RuntimeError("HyperFrames 模板目录不完整")
             templates = [approved[template_id] for template_id in APPROVED_TEMPLATE_IDS] + references
@@ -280,6 +321,7 @@ def validate_payload(raw, username=""):
     }
     if font_family and font_selectable:
         candidate["font_family"] = font_family
+    semantic_contract = template.get("semantic_layout")
     batch_id = str(body.get("batch_id") or "").strip().lower()
     batch_index = body.get("batch_index")
     batch_size = body.get("batch_size")
@@ -296,18 +338,55 @@ def validate_payload(raw, username=""):
             "batch_index": batch_index,
             "batch_size": batch_size,
         })
-    try:
-        response = _request("POST", "/v1/preflight", candidate, timeout=10)
-    except MatrixTemplateHTTPError as exc:
-        if exc.status == 400:
-            raise ValueError(str(exc)) from exc
-        raise feature_flags.FeatureDisabled(
-            "模板成片服务暂不可用，请稍后重试"
-        ) from exc
-    except RuntimeError as exc:
-        raise feature_flags.FeatureDisabled(
-            "模板成片服务暂不可用，请稍后重试"
-        ) from exc
+    response = None
+    if semantic_contract is not None:
+        def validate_semantic_layout(semantic_layout):
+            candidate["semantic_layout"] = semantic_layout
+            try:
+                value = _request("POST", "/v1/preflight", candidate, timeout=10)
+                payload = value.get("payload") if isinstance(value, dict) else None
+                if (
+                    not isinstance(payload, dict)
+                    or payload.get("semantic_layout") != semantic_layout
+                ):
+                    return False, "生成端回显的 semantic_layout 与候选不一致"
+                return True, value
+            except MatrixTemplateHTTPError as exc:
+                if exc.status == 400 and (
+                    "语义" in str(exc) or "完整词组" in str(exc)
+                ):
+                    return False, str(exc)
+                raise
+
+        try:
+            semantic_layout, response = matrix_template_semantics.resolve(
+                top, bottom, template_id, semantic_contract,
+                validate_semantic_layout,
+            )
+            candidate["semantic_layout"] = semantic_layout
+        except MatrixTemplateHTTPError as exc:
+            if exc.status == 400:
+                raise ValueError(str(exc)) from exc
+            raise feature_flags.FeatureDisabled(
+                "模板成片服务暂不可用，请稍后重试"
+            ) from exc
+        except RuntimeError as exc:
+            raise feature_flags.FeatureDisabled(
+                "AI 语义排版或模板预检服务暂不可用，请稍后重试"
+            ) from exc
+    if response is None:
+        try:
+            response = _request("POST", "/v1/preflight", candidate, timeout=10)
+        except MatrixTemplateHTTPError as exc:
+            if exc.status == 400:
+                raise ValueError(str(exc)) from exc
+            raise feature_flags.FeatureDisabled(
+                "模板成片服务暂不可用，请稍后重试"
+            ) from exc
+        except RuntimeError as exc:
+            raise feature_flags.FeatureDisabled(
+                "模板成片服务暂不可用，请稍后重试"
+            ) from exc
     payload = response.get("payload") if isinstance(response, dict) else None
     if not isinstance(payload, dict) or set(payload) != set(candidate):
         raise RuntimeError("模板成片预检结果无效")

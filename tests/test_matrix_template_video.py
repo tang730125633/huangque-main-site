@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import importlib
 import json
 import re
@@ -44,7 +45,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         return templates
 
     def reference_templates(self):
-        return [
+        values = [
             {
                 "id": "full-overlay-bold", "name": "沉浸强标题",
                 "engine": "ffmpeg", "font_mode": "selectable",
@@ -65,6 +66,16 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             "font_selectable": False,
             "variant": f"v{index:02d}",
         } for index in range(1, 18)]
+        values[3]["semantic_layout"] = {
+            "version": 1,
+            "max_width_px": 996,
+            "layers": {
+                "top1": {"font_size_px": 86, "max_lines": 2},
+                "top2": {"font_size_px": 62, "max_lines": 4},
+                "bottom2": {"font_size_px": 78, "max_lines": 2},
+            },
+        }
+        return values
 
     def test_public_catalog_accepts_transition_counts_but_exposes_only_approved_templates(self):
         response = {"templates": self.templates(), "fonts": [
@@ -128,6 +139,10 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         self.assertEqual(
             {f"v{index:02d}" for index in range(1, 18)},
             {item["variant"] for item in expanded if item["engine"] == "hyperframes"},
+        )
+        self.assertEqual(
+            ["v02"],
+            [item["variant"] for item in expanded if item.get("semantic_layout")],
         )
         self.assertEqual({
             "max_batch_size": 5,
@@ -341,6 +356,114 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                  mock.patch.object(self.module, "_request", side_effect=error), \
                  self.assertRaises(feature_flags.FeatureDisabled):
                 self.module.validate_payload(body, "alice")
+
+    def test_v02_semantic_layout_repairs_against_generation_preflight(self):
+        template = next(
+            item for item in self.reference_templates()
+            if item.get("variant") == "v02"
+        )
+        first = {
+            "version": 1, "model": "gpt-4.1-mini",
+            "source_sha256": "a" * 64, "top1_end": 1,
+            "top_break_after": [1], "bottom_break_after": [],
+        }
+        repaired = dict(first, top1_end=5, top_break_after=[5])
+        requests = []
+
+        def preflight(_method, _path, body, **_kwargs):
+            requests.append(dict(body))
+            if len(requests) == 1:
+                raise self.module.MatrixTemplateHTTPError(
+                    400, "HyperFrames 顶部语义断点拆开了完整词组",
+                )
+            return {"payload": dict(body, duration=11)}
+
+        def resolve(_top, _bottom, _template_id, _contract, validator):
+            accepted, feedback = validator(first)
+            self.assertFalse(accepted)
+            self.assertIn("语义断点", feedback)
+            accepted, response = validator(repaired)
+            self.assertTrue(accepted)
+            return repaired, response
+
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(self.module, "public_templates", return_value=[template]), \
+             mock.patch.object(
+                 self.module.matrix_template_semantics, "resolve",
+                 side_effect=resolve,
+             ) as resolve_call, \
+             mock.patch.object(self.module, "_request", side_effect=preflight):
+            result = self.module.validate_payload({
+                "top_text": "团队8个人，每天产出100条短视频",
+                "bottom_text": "评论区扣888",
+                "template_id": template["id"],
+                "bgm": False,
+            })
+        self.assertEqual(repaired, result["semantic_layout"])
+        self.assertEqual((first, repaired), (
+            requests[0]["semantic_layout"], requests[1]["semantic_layout"],
+        ))
+        resolve_call.assert_called_once()
+
+    def test_v02_http_200_normalization_is_repaired_once_for_concurrent_batch(self):
+        template = next(
+            item for item in self.reference_templates()
+            if item.get("variant") == "v02"
+        )
+        top = "覆盖3.5万人，每天交流项目"
+        bottom = "评论区扣111"
+        first = {
+            "version": 1, "model": "gpt-4.1-mini",
+            "source_sha256": "b" * 64, "top1_end": top.index("，"),
+            "top_break_after": [3, top.index("，")],
+            "bottom_break_after": [],
+        }
+        repaired = dict(first, top_break_after=[top.index("，")])
+
+        def generated(_top, _bottom, _contract, *, previous=None,
+                      feedback=""):
+            return repaired if previous is not None and feedback else first
+
+        def preflight(_method, _path, body, **_kwargs):
+            semantic = body["semantic_layout"]
+            echoed = (
+                dict(semantic, top_break_after=[])
+                if semantic == first else semantic
+            )
+            return {
+                "payload": dict(body, semantic_layout=echoed, duration=11),
+            }
+
+        for workers in (2, 5):
+            with self.subTest(workers=workers):
+                self.module.matrix_template_semantics._CACHE.clear()
+                with mock.patch.object(self.module, "require_available"), \
+                     mock.patch.object(
+                         self.module, "public_templates", return_value=[template],
+                     ), \
+                     mock.patch.object(
+                         self.module.matrix_template_semantics, "generate",
+                         side_effect=generated,
+                     ) as generate, \
+                     mock.patch.object(
+                         self.module, "_request", side_effect=preflight,
+                     ), concurrent.futures.ThreadPoolExecutor(
+                         max_workers=workers,
+                     ) as pool:
+                    futures = [
+                        pool.submit(self.module.validate_payload, {
+                            "top_text": top,
+                            "bottom_text": bottom,
+                            "template_id": template["id"],
+                            "bgm": False,
+                        }, "alice")
+                        for _ in range(workers)
+                    ]
+                    results = [future.result() for future in futures]
+                self.assertTrue(all(
+                    item["semantic_layout"] == repaired for item in results
+                ))
+                self.assertEqual(2, generate.call_count)
 
     def test_generation_url_allows_https_or_loopback_only(self):
         for value in (
