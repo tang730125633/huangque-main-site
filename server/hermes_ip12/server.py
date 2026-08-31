@@ -6495,9 +6495,27 @@ def _process_model_turn(
         except coach_harness.HarnessConflict:
             raise
         except coach_harness.ChoiceValidationError as exc:
-            if choice_turn:
-                if choice_repaired:
+            if choice_turn and choice_repaired:
+                # 保底：把候选各字段截断到合同上限（内容长度类错误可安全自动修正），
+                # 避免模型反复超长导致三选一永远出不来。
+                _trunc = dict(raw)
+                _choices = _trunc.get("choices")
+                if isinstance(_choices, list):
+                    for _item in _choices:
+                        if not isinstance(_item, dict):
+                            continue
+                        for _field, _limit in coach_harness.CHOICE_FIELD_LIMITS.items():
+                            if isinstance(_item.get(_field), str) and len(_item[_field].strip()) > _limit:
+                                _item[_field] = _item[_field].strip()[:_limit]
+                    try:
+                        coach_harness.validate_choices(_choices)
+                        raw = _trunc
+                        app.logger.info("IP12 choice fields truncated to contract limits")
+                    except coach_harness.ChoiceValidationError:
+                        raise
+                else:
                     raise
+            if choice_turn:
                 choice_attempts += 1
                 choice_repaired = True
                 app.logger.info(

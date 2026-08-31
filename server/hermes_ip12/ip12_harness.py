@@ -2501,6 +2501,7 @@ def system_prompt(value):
         choice_rules = f"""
 - 当前是固定三选一断点。信息足够时 decision=propose_checkpoint、checkpoint=2，choices 必须恰好 {CHOICE_COUNT} 项，draft 和 profile_updates 必须为空。
 - 每项 choices 只含 title、summary、reason、caution、recommended；长度分别不超过 {CHOICE_FIELD_LIMITS['title']}、{CHOICE_FIELD_LIMITS['summary']}、{CHOICE_FIELD_LIMITS['reason']}、{CHOICE_FIELD_LIMITS['caution']} 个 Unicode 字符，标题不得重复，最多一项 recommended=true。
+- title 必须短：4–12 个字最佳，像「真实养猫避坑」「靠谱选品实战」这样的名词短语；超过 {CHOICE_FIELD_LIMITS['title']} 字会被直接拒绝，宁可牺牲修饰词也要短。
 - reply 只用一句话说明现在要选择什么，不在 reply 中重复三项内容，不替用户选择。"""
     story_rules = ""
     if module == 4:
