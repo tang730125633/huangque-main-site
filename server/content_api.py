@@ -11,9 +11,9 @@ import threading
 from http.server import ThreadingHTTPServer
 
 try:
-    from .content_domains import core, digital_human_oneclick, digital_presenter, registry, script_to_video, video_compose
+    from .content_domains import core, digital_human_oneclick, digital_human_runs, digital_presenter, registry, script_to_video, video_compose
 except ImportError:  # Running as /home/ubuntu/content-api/content_api.py
-    from content_domains import core, digital_human_oneclick, digital_presenter, registry, script_to_video, video_compose
+    from content_domains import core, digital_human_oneclick, digital_human_runs, digital_presenter, registry, script_to_video, video_compose
 
 
 PORT = core.PORT
@@ -63,6 +63,7 @@ def main():
     core.init_db()
     digital_presenter.init_db(core.jdb)
     digital_human_oneclick.init_db()
+    digital_human_runs.init_db()
     video_compose.recover_interrupted_renders()
     # 回收上次遗留的 running 孤儿 → 秒退点。
     # 优雅停机（drain）之后这里应该【一条都收不到】—— 收到就说明上次是崩溃/被 SIGKILL 了，

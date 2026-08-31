@@ -8,6 +8,8 @@ import re
 import subprocess
 import time
 import urllib.parse
+import urllib.error
+import urllib.request
 
 from .core import OUT_DIR, adb, closing, jdb
 
@@ -156,9 +158,14 @@ def gen_script_to_video(payload):
 
 def dispatch_http(handler, method, verify_token, must_change_password):
     """Serve authenticated digital-human planning and recovery endpoints."""
-    from . import digital_human_oneclick, digital_human_v2
+    from . import digital_human_oneclick, digital_human_runs, digital_human_v2
 
     path = handler.path.split("?", 1)[0]
+    run_match = re.fullmatch(
+        r"/api/gen/digital-human-v2/runs/(dh-run-[A-Za-z0-9._:%-]{1,192})"
+        r"(?:/(recover|abandon))?",
+        path,
+    )
     routes = {
         digital_human_oneclick.PLAN_PATH,
         digital_human_oneclick.CONSENT_PATH,
@@ -171,9 +178,12 @@ def dispatch_http(handler, method, verify_token, must_change_password):
         digital_human_v2.AUDIO_UPLOAD_PATH,
         digital_human_v2.MATERIAL_RESOLVE_PATH,
         digital_human_v2.HISTORY_PATH,
+        digital_human_runs.CAPABILITY_PATH,
+        digital_human_runs.QUOTE_PATH,
+        digital_human_runs.RUNS_PATH,
         DIGITAL_HUMAN_MATERIAL_UPLOAD_PATH,
     }
-    if path not in routes:
+    if path not in routes and not run_match:
         return False
 
     user = verify_token(handler._token())
@@ -266,6 +276,13 @@ def dispatch_http(handler, method, verify_token, must_change_password):
             })
         return True
 
+    if path == digital_human_runs.CAPABILITY_PATH:
+        if method != "GET":
+            handler._method_not_allowed()
+            return True
+        handler._send(200, digital_human_runs.capability_response())
+        return True
+
     if path == digital_human_v2.HISTORY_PATH:
         if method != "GET":
             handler._method_not_allowed()
@@ -285,12 +302,91 @@ def dispatch_http(handler, method, verify_token, must_change_password):
             handler._send(400, {"detail": str(exc)[:220]})
         return True
 
+    if run_match and method == "GET" and not run_match.group(2):
+        try:
+            run_id = urllib.parse.unquote(run_match.group(1))
+            handler._send(200, digital_human_runs.status_response(
+                run_id, user["username"],
+            ))
+        except digital_human_oneclick.DigitalHumanRequestError as exc:
+            handler._send(exc.status, {
+                "detail": str(exc)[:220], "code": exc.code,
+            })
+        return True
+
     if method != "POST":
         handler._method_not_allowed()
         return True
 
     try:
-        if path == digital_human_oneclick.PLAN_PATH:
+        def submit_run_job(kind, body, idempotency_key, expected_cost):
+            endpoint = {
+                "image": "/api/gen/image",
+                "video": "/api/gen/video",
+                "script_to_video": "/api/gen/script_to_video",
+            }[kind]
+            port = int(handler.server.server_address[1])
+            raw = json.dumps(
+                body, ensure_ascii=False, separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+            headers = {
+                "Authorization": "Bearer " + handler._token(),
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Idempotency-Key": idempotency_key,
+                "X-HQ-Expected-Cost": str(int(expected_cost)),
+                "X-HQ-Internal-Token": os.environ.get("HQ_INTERNAL_TOKEN", ""),
+                "User-Agent": "huangque-digital-human-runner/1",
+            }
+            request = urllib.request.Request(
+                "http://127.0.0.1:%d%s" % (port, endpoint),
+                data=raw, headers=headers, method="POST",
+            )
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({}),
+            )
+            try:
+                with opener.open(request, timeout=45) as response:
+                    status = response.getcode()
+                    result = response.read(2 * 1024 * 1024 + 1)
+            except urllib.error.HTTPError as exc:
+                status = exc.code
+                result = exc.read(2 * 1024 * 1024 + 1)
+            except (urllib.error.URLError, OSError) as exc:
+                return 502, {
+                    "detail": "子任务提交结果未知：" + str(exc)[:120],
+                    "code": "child_submit_unknown",
+                }
+            if len(result) > 2 * 1024 * 1024:
+                return 502, {"detail": "子任务响应过大", "code": "child_response_too_large"}
+            try:
+                payload = json.loads(result or b"{}")
+            except Exception:
+                payload = {"detail": "子任务返回格式无效", "code": "child_response_invalid"}
+                status = 502
+            return int(status), payload
+
+        if path == digital_human_runs.QUOTE_PATH:
+            response = digital_human_runs.quote_response(
+                handler._json_body_strict(), user["username"],
+            )
+        elif path == digital_human_runs.RUNS_PATH:
+            response = digital_human_runs.start_response(
+                handler._json_body_strict(), user["username"],
+                handler.headers.get("X-HQ-Expected-Cost"), submit_run_job,
+            )
+        elif run_match and run_match.group(2) == "recover":
+            response = digital_human_runs.recover_response(
+                urllib.parse.unquote(run_match.group(1)),
+                handler._json_body_strict(), user["username"], submit_run_job,
+            )
+        elif run_match and run_match.group(2) == "abandon":
+            response = digital_human_runs.abandon_response(
+                urllib.parse.unquote(run_match.group(1)),
+                handler._json_body_strict(), user["username"],
+            )
+        elif path == digital_human_oneclick.PLAN_PATH:
             response = digital_human_oneclick.plan_response(
                 handler._json_body_strict(),
             )
