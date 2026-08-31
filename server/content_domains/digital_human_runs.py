@@ -280,6 +280,7 @@ def _new_steps(run):
         materials.append({
             "id": "material:%d" % index, "kind": "image", "index": index,
             "status": "waiting", "job_id": 0, "asset_id": "", "attempt": 0,
+            "idempotency_key": "", "submission_uncertain": False,
             "cost": points.cost_of("image", _material_payload(run, item, index)),
             "refunded": False, "error": "", "result": {},
         })
@@ -288,6 +289,7 @@ def _new_steps(run):
         talking.append({
             "id": "talking:%d" % index, "kind": "video", "index": index,
             "status": "waiting", "job_id": 0, "attempt": 0,
+            "idempotency_key": "", "submission_uncertain": False,
             "cost": points.cost_of("video", _talking_payload(run, item, index)),
             "refunded": False, "error": "", "result": {},
         })
@@ -296,6 +298,7 @@ def _new_steps(run):
         "compose": {
             "id": "compose", "kind": "script_to_video", "index": 0,
             "status": "waiting", "job_id": 0, "attempt": 0, "cost": 0,
+            "idempotency_key": "", "submission_uncertain": False,
             "refunded": False, "error": "", "result": {},
         },
     }
@@ -364,6 +367,11 @@ def _sync(run):
     was_abandoned = run.get("status") == "abandoned"
     rows = _job_rows(run)
     for step in run["steps"]["materials"] + run["steps"]["talking"] + [run["steps"]["compose"]]:
+        if step.get("submission_uncertain") is True:
+            step["status"] = "needs_attention"
+            if not step.get("error"):
+                step["error"] = "子任务提交结果未知，必须使用原幂等键重放确认"
+            continue
         job_id = int(step.get("job_id") or 0)
         if not job_id:
             continue
@@ -425,20 +433,33 @@ def _sync(run):
 
 
 def _submit_step(run, step, body, submit_job):
-    step["attempt"] = int(step.get("attempt") or 0) + 1
-    key = "dh-run:" + _digest({
-        "run_id": run["run_id"], "step": step["id"],
-        "attempt": step["attempt"], "body": body,
-    })[:40]
+    if step.get("submission_uncertain") is True:
+        key = str(step.get("idempotency_key") or "")
+        if not key:
+            step["status"] = "needs_attention"
+            step["error"] = "待确认提交缺少持久幂等键，已停止自动重试"
+            return
+    else:
+        step["attempt"] = int(step.get("attempt") or 0) + 1
+        key = "dh-run:" + _digest({
+            "run_id": run["run_id"], "step": step["id"],
+            "attempt": step["attempt"], "body": body,
+        })[:40]
+        step["idempotency_key"] = key
+        step["job_id"] = 0
+        step["refunded"] = False
+        step["result"] = {}
     status, response = submit_job(step["kind"], body, key, int(step["cost"]))
     if 200 <= int(status) < 300 and int((response or {}).get("job_id") or 0):
         step["job_id"] = int(response["job_id"])
         step["status"] = "queued"
+        step["submission_uncertain"] = False
         step["error"] = ""
         return
-    step["status"] = (
-        "recoverable" if (response or {}).get("operation_terminal") else "needs_attention"
-    )
+    operation_terminal = bool((response or {}).get("operation_terminal"))
+    submission_unknown = (response or {}).get("code") == "child_submit_unknown"
+    step["submission_uncertain"] = submission_unknown
+    step["status"] = "recoverable" if operation_terminal else "needs_attention"
     step["error"] = str((response or {}).get("detail") or "子任务提交结果未知")[:300]
 
 
@@ -466,10 +487,22 @@ def _resolve_or_submit_material(run, step, submit_job):
 
 def _submit_children(run, submit_job, retry=False):
     for step in run["steps"]["materials"]:
-        if step["status"] == "waiting" or (retry and step["status"] == "recoverable"):
-            _resolve_or_submit_material(run, step, submit_job)
+        if step["status"] == "waiting" or (
+                retry and (step["status"] == "recoverable" or
+                           step.get("submission_uncertain") is True)):
+            if step.get("submission_uncertain") is True:
+                index = int(step["index"])
+                _submit_step(
+                    run, step,
+                    _material_payload(run, run["plan"]["materials"][index], index),
+                    submit_job,
+                )
+            else:
+                _resolve_or_submit_material(run, step, submit_job)
     for step in run["steps"]["talking"]:
-        if step["status"] == "waiting" or (retry and step["status"] == "recoverable"):
+        if step["status"] == "waiting" or (
+                retry and (step["status"] == "recoverable" or
+                           step.get("submission_uncertain") is True)):
             index = int(step["index"])
             _submit_step(
                 run, step,
@@ -497,15 +530,30 @@ def _maybe_submit_compose(run, submit_job, retry=False):
     compose = run["steps"]["compose"]
     if not all(step["status"] == "completed" for step in children):
         return
-    if compose["status"] == "waiting" or (retry and compose["status"] == "recoverable"):
+    if compose["status"] == "waiting" or (
+            retry and (compose["status"] == "recoverable" or
+                       compose.get("submission_uncertain") is True)):
         _submit_step(run, compose, _compose_payload(run), submit_job)
 
 
+def _has_uncertain_submission(run):
+    steps = run["steps"]["materials"] + run["steps"]["talking"] + [
+        run["steps"]["compose"],
+    ]
+    return any(step.get("submission_uncertain") is True for step in steps)
+
+
 def _public_run(run):
+    public_steps = json.loads(_canonical(run["steps"]))
+    steps = public_steps["materials"] + public_steps["talking"] + [
+        public_steps["compose"],
+    ]
+    for step in steps:
+        step.pop("idempotency_key", None)
     return {
         "run_id": run["run_id"], "request_id": run["request_id"],
         "plan_digest": run["plan_digest"], "status": run["status"],
-        "quoted_cost": int(run["quoted_cost"]), "steps": run["steps"],
+        "quoted_cost": int(run["quoted_cost"]), "steps": public_steps,
         "result": run.get("result") or {}, "error": run.get("error") or "",
         "created_at": int(run["created_at"]), "updated_at": int(run["updated_at"]),
         "recoverable": run["status"] == "recoverable",
@@ -624,7 +672,9 @@ def recover_response(run_id, payload, username, submit_job, db_factory=None):
         if run["status"] == "completed":
             _save_run(run, factory)
             return {"ok": True, "replayed": True, "run": _public_run(run)}
-        if run["status"] in {"needs_attention", "refund_pending"}:
+        if run["status"] == "refund_pending" or (
+                run["status"] == "needs_attention" and
+                not _has_uncertain_submission(run)):
             raise legacy.DigitalHumanRequestError(
                 "仍有子任务扣点或退款状态待确认，请稍后查询",
                 "run_recovery_pending", 409,

@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import sys
 import tempfile
@@ -180,6 +181,122 @@ class DigitalHumanRunLedgerTests(unittest.TestCase):
                 record["run_id"], "alice", submit, self.ledger_db,
             )["run"]["result"]["file"],
         )
+
+    def test_unknown_refunded_retry_reuses_persisted_key_after_restart(self):
+        normalized, plan, record = self.request_data()
+        video_keys = []
+        compose_keys = []
+        recovery_job_id = {"value": 0}
+
+        def submit(kind, body, key, cost):
+            if kind == "script_to_video":
+                compose_keys.append(key)
+                with closing(self.jobs_db()) as connection:
+                    connection.execute(
+                        "INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?)",
+                        (43, "alice", kind, "done", '{"file":"final.mp4"}', "", 0, 0),
+                    )
+                    connection.commit()
+                return 200, {"job_id": 43}
+
+            video_keys.append(key)
+            if len(video_keys) == 1:
+                with closing(self.jobs_db()) as connection:
+                    connection.execute(
+                        "INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?)",
+                        (41, "alice", kind, "pending", "{}", "", cost, 0),
+                    )
+                    connection.commit()
+                return 200, {"job_id": 41}
+
+            if not recovery_job_id["value"]:
+                recovery_job_id["value"] = 42
+                with closing(self.jobs_db()) as connection:
+                    connection.execute(
+                        "INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?)",
+                        (42, "alice", kind, "pending", "{}", "", cost, 0),
+                    )
+                    connection.commit()
+                return 502, {
+                    "code": "child_submit_unknown",
+                    "detail": "上游已受理，但响应丢失",
+                }
+            return 200, {"job_id": recovery_job_id["value"]}
+
+        with patch.object(self.runs, "_normalized_request", return_value=(normalized, plan, record)), \
+                patch.object(self.runs, "_cost_breakdown", return_value={
+                    "materials_max": 0, "materials_each": [], "talking": 10,
+                    "talking_each": [10], "compose": 0, "total": 10,
+                }), patch.object(self.runs.points, "cost_of", return_value=10):
+            self.runs.start_response({}, "alice", 10, submit, self.ledger_db)
+
+        with closing(self.jobs_db()) as connection:
+            connection.execute(
+                "UPDATE jobs SET status='failed',error='upstream failed',refunded=1 "
+                "WHERE id=41",
+            )
+            connection.commit()
+
+        status = self.runs.status_response(
+            record["run_id"], "alice", submit, self.ledger_db,
+        )
+        self.assertEqual("recoverable", status["run"]["status"])
+        unknown = self.runs.recover_response(
+            record["run_id"], {"request_id": normalized["request_id"]},
+            "alice", submit, self.ledger_db,
+        )
+        uncertain_step = unknown["run"]["steps"]["talking"][0]
+        self.assertEqual("needs_attention", uncertain_step["status"])
+        self.assertEqual(0, uncertain_step["job_id"])
+        self.assertEqual(2, uncertain_step["attempt"])
+        self.assertTrue(uncertain_step["submission_uncertain"])
+        self.assertNotIn("idempotency_key", uncertain_step)
+
+        with closing(self.ledger_db()) as connection:
+            persisted = json.loads(connection.execute(
+                "SELECT steps_json FROM digital_human_runs WHERE run_id=?",
+                (record["run_id"],),
+            ).fetchone()["steps_json"])["talking"][0]
+        self.assertEqual(video_keys[-1], persisted["idempotency_key"])
+        self.assertTrue(persisted["submission_uncertain"])
+
+        observed = self.runs.status_response(
+            record["run_id"], "alice", submit, self.ledger_db,
+        )
+        self.assertEqual("needs_attention", observed["run"]["status"])
+        self.assertEqual(2, len(video_keys))
+
+        fresh_locks = tuple(threading.RLock() for _ in range(64))
+        with patch.object(self.runs, "_RUN_LOCKS", fresh_locks):
+            replayed = self.runs.recover_response(
+                record["run_id"], {"request_id": normalized["request_id"]},
+                "alice", submit, self.ledger_db,
+            )
+        self.assertEqual("running", replayed["run"]["status"])
+        self.assertEqual(video_keys[1], video_keys[2])
+        self.assertEqual(2, replayed["run"]["steps"]["talking"][0]["attempt"])
+
+        with closing(self.jobs_db()) as connection:
+            connection.execute(
+                "UPDATE jobs SET status='done',result=? WHERE id=42",
+                ('{"file":"talking.mp4"}',),
+            )
+            connection.commit()
+        completed = self.runs.status_response(
+            record["run_id"], "alice", submit, self.ledger_db,
+        )
+        self.assertEqual("completed", completed["run"]["status"])
+        self.assertEqual(1, len(compose_keys))
+
+        with closing(self.jobs_db()) as connection:
+            paid_rows = connection.execute(
+                "SELECT id,cost,refunded FROM jobs WHERE kind='video' ORDER BY id",
+            ).fetchall()
+        self.assertEqual([41, 42], [row["id"] for row in paid_rows])
+        self.assertEqual(1, paid_rows[0]["refunded"])
+        self.assertEqual(10, sum(
+            row["cost"] for row in paid_rows if row["refunded"] == 0
+        ))
 
     def test_local_material_failure_remains_terminal_failed(self):
         run = {
