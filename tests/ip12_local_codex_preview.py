@@ -13,7 +13,8 @@ def main():
     parser.add_argument("--data-dir", default="/tmp/ip12-persona-agent-v1")
     args = parser.parse_args()
 
-    os.environ["HERMES_AI_TRANSPORT"] = "codex-cli"
+    # 本地预览默认走 Codex 本地传输；可用 HERMES_AI_TRANSPORT=http 切到 HTTP（如 DeepSeek API）
+    os.environ.setdefault("HERMES_AI_TRANSPORT", "codex-cli")
     os.environ["HERMES_DATA_DIR"] = str(Path(args.data_dir).resolve())
     os.environ["HERMES_HOME"] = str(Path(args.data_dir).resolve())
     os.environ["HERMES_ENABLE_INTERNAL_TOOLS"] = "0"
