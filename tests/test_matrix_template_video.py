@@ -44,7 +44,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         templates[-1]["id"] = "poster-split"
         return templates
 
-    def reference_templates(self):
+    def reference_templates(self, semantic_variants=("v02", "v05")):
         values = [
             {
                 "id": "full-overlay-bold", "name": "沉浸强标题",
@@ -66,25 +66,31 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             "font_selectable": False,
             "variant": f"v{index:02d}",
         } for index in range(1, 18)]
-        values[3]["semantic_layout"] = {
-            "version": 1,
-            "max_width_px": 996,
-            "layers": {
-                "top1": {"font_size_px": 86, "max_lines": 2},
-                "top2": {"font_size_px": 62, "max_lines": 4},
-                "bottom2": {"font_size_px": 78, "max_lines": 2},
+        contracts = {
+            "v02": {
+                "version": 1,
+                "max_width_px": 996,
+                "layers": {
+                    "top1": {"font_size_px": 86, "max_lines": 2},
+                    "top2": {"font_size_px": 62, "max_lines": 4},
+                    "bottom2": {"font_size_px": 78, "max_lines": 2},
+                },
+            },
+            "v05": {
+                "version": 1,
+                "max_width_px": 996,
+                "layers": {
+                    "top1": {"font_size_px": 102, "max_lines": 2},
+                    "top2": {"font_size_px": 104, "max_lines": 2},
+                    "top3": {"font_size_px": 68, "max_lines": 3},
+                    "bottom2": {"font_size_px": 70, "max_lines": 2},
+                },
             },
         }
-        values[6]["semantic_layout"] = {
-            "version": 1,
-            "max_width_px": 996,
-            "layers": {
-                "top1": {"font_size_px": 102, "max_lines": 2},
-                "top2": {"font_size_px": 104, "max_lines": 2},
-                "top3": {"font_size_px": 68, "max_lines": 3},
-                "bottom2": {"font_size_px": 70, "max_lines": 2},
-            },
-        }
+        for item in values:
+            variant = item.get("variant")
+            if variant in semantic_variants:
+                item["semantic_layout"] = contracts[variant]
         return values
 
     def test_public_catalog_accepts_transition_counts_but_exposes_only_approved_templates(self):
@@ -158,6 +164,56 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             "max_batch_size": 5,
             "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
         }, self.module.public_batch_capability())
+
+        with mock.patch.object(self.module, "_request", return_value={
+            "templates": self.reference_templates(("v02",)),
+            "max_batch_size": 5,
+            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+        }):
+            legacy = self.module.public_templates(force=True)
+        self.assertEqual(
+            ["v02"],
+            [item["variant"] for item in legacy if item.get("semantic_layout")],
+        )
+        self.assertNotIn(
+            "semantic_layout",
+            next(item for item in legacy if item.get("variant") == "v05"),
+        )
+
+    def test_reference_catalog_rejects_missing_v02_unknown_variant_and_drift(self):
+        invalid_cases = []
+        invalid_cases.append(self.reference_templates(("v05",)))
+
+        unknown = self.reference_templates(("v02",))
+        next(item for item in unknown if item.get("variant") == "v06")[
+            "semantic_layout"
+        ] = {
+            "version": 1,
+            "max_width_px": 996,
+            "layers": {
+                "top1": {"font_size_px": 102, "max_lines": 2},
+                "top2": {"font_size_px": 104, "max_lines": 2},
+                "top3": {"font_size_px": 68, "max_lines": 3},
+                "bottom2": {"font_size_px": 70, "max_lines": 2},
+            },
+        }
+        invalid_cases.append(unknown)
+
+        drift = self.reference_templates()
+        next(item for item in drift if item.get("variant") == "v05")[
+            "semantic_layout"
+        ]["layers"]["top3"]["font_size_px"] = 69
+        invalid_cases.append(drift)
+
+        for templates in invalid_cases:
+            with self.subTest(templates=templates), mock.patch.object(
+                self.module, "_request", return_value={
+                    "templates": templates,
+                    "max_batch_size": 5,
+                    "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+                },
+            ), self.assertRaisesRegex(RuntimeError, "语义排版|不完整"):
+                self.module.public_templates(force=True)
 
     def test_availability_accepts_two_fifteen_or_nineteen_healthy_templates(self):
         for count in (2, 15, 19):
@@ -414,6 +470,32 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             requests[0]["semantic_layout"], requests[1]["semantic_layout"],
         ))
         resolve_call.assert_called_once()
+
+    def test_v05_without_contract_keeps_legacy_preflight(self):
+        template = next(
+            item for item in self.reference_templates(("v02",))
+            if item.get("variant") == "v05"
+        )
+
+        def preflight(_method, _path, body, **_kwargs):
+            return {"payload": dict(body, duration=13)}
+
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(
+                 self.module, "public_templates", return_value=[template],
+             ), \
+             mock.patch.object(
+                 self.module.matrix_template_semantics, "resolve",
+             ) as resolve, \
+             mock.patch.object(self.module, "_request", side_effect=preflight):
+            result = self.module.validate_payload({
+                "top_text": "团队8个人，每天产出100条短视频",
+                "bottom_text": "评论区扣111",
+                "template_id": template["id"],
+                "bgm": False,
+            })
+        resolve.assert_not_called()
+        self.assertNotIn("semantic_layout", result)
 
     def test_v02_http_200_normalization_is_repaired_once_for_concurrent_batch(self):
         template = next(

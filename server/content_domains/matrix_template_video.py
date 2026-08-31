@@ -241,7 +241,7 @@ def _refresh_catalog(force=False):
                 or {
                     item["variant"] for item in references
                     if item.get("semantic_layout")
-                } != {"v02", "v05"}
+                } not in ({"v02"}, {"v02", "v05"})
             ):
                 raise RuntimeError("HyperFrames 模板目录不完整")
             templates = [approved[template_id] for template_id in APPROVED_TEMPLATE_IDS] + references
