@@ -1340,6 +1340,34 @@ def wants_reorganize(message):
     return len(leftover) <= 2
 
 
+_INTAKE_CORRECTION_RE = re.compile(
+    r"纠正|说清楚|改一下|不对|"
+    r"不是.{0,20}是|"
+    r"目标再说|"
+    r"咨询是后面|"
+    r"后面的事"
+)
+
+
+def wants_intake_correction(message):
+    text = str(message or "").strip()
+    if not text:
+        return False
+    compact = re.sub(r"[\s，,。.!！?？]+", "", text)
+    if compact in CONFIRM_TEXTS or text in CONFIRM_TEXTS:
+        return False
+    matched = bool(_INTAKE_CORRECTION_RE.search(text))
+    if wants_reorganize(text) and not matched:
+        return False
+    return matched
+
+
+def _pure_intake_confirm(message):
+    text = str(message or "").strip()
+    compact = re.sub(r"[\s，,。.!！?？]+", "", text)
+    return compact in CONFIRM_TEXTS or text in CONFIRM_TEXTS
+
+
 def _user_asked_question(message):
     text = str(message or "").strip()
     return bool(text and _USER_QUESTION_RE.search(text))
@@ -2256,6 +2284,207 @@ def render_model_reply(decision):
     return reply
 
 
+def _intake_known_platforms():
+    return ("抖音", "小红书", "视频号", "快手", "TikTok", "tiktok", "B站", "公众号", "微信")
+
+
+def _slice_in_message(message, value):
+    text = str(message or "")
+    value = str(value or "").strip()
+    return bool(value) and value in text
+
+
+def _make_intake_update(field, value, message, kind="user_fact"):
+    value = str(value or "").strip()
+    if not value or field not in INTAKE_FIELD_SET or value not in str(message or ""):
+        return None
+    return {
+        "field": field,
+        "value": value,
+        "kind": kind,
+        "evidence_quote": value,
+    }
+
+
+def _regex_slice(message, pattern, group=0):
+    match = re.search(pattern, str(message or ""))
+    if not match:
+        return ""
+    if group and match.lastindex and group <= match.lastindex and match.group(group) is not None:
+        return str(match.group(group)).strip()
+    return str(match.group(0)).strip()
+
+
+def _business_goal_message_slice(message):
+    text = str(message or "")
+    for pattern in (
+        r"先把[^。！!?]*立住[^。！!?]*(?:再接咨询|咨询是后面的事)?",
+        r"(?:咨询是后面的事|再接咨询)",
+        r"目标(?:再说清楚点[，,]?)?([^。！!?]+)",
+    ):
+        value = _regex_slice(text, pattern, 1 if "目标" in pattern and "(" in pattern else 0)
+        if _slice_in_message(text, value):
+            return value
+    return ""
+
+
+def _harvest_intake_updates(user_message, prior_updates=None):
+    text = str(user_message or "")
+    harvested = {}
+    for item in prior_updates or []:
+        if isinstance(item, dict) and item.get("field") in INTAKE_FIELD_SET:
+            value = str(item.get("value") or "").strip()
+            if value and (
+                value in text
+                or value == str(item.get("value") or "").strip()
+            ):
+                harvested[item["field"]] = {
+                    "field": item["field"],
+                    "value": value,
+                    "kind": item.get("kind") if item.get("kind") in {"user_fact", "user_preference", "ai_option"} else "user_fact",
+                    "evidence_quote": str(item.get("evidence_quote") or value)[:300],
+                }
+
+    def add(field, value, kind="user_fact"):
+        item = _make_intake_update(field, value, text, kind=kind)
+        if item:
+            harvested[field] = item
+
+    name = _regex_slice(text, r"(?:我是|我叫|叫我)([\u4e00-\u9fffA-Za-z0-9]{1,12})", 1)
+    add("preferred_name", name)
+
+    identity = _regex_slice(
+        text,
+        r"(?:以前做|现在(?:自己)?做|目前(?:在)?(?:做)?|现在是)[^。！!?]+",
+    )
+    add("current_identity", identity)
+    prior_role = _regex_slice(text, r"以前做([^，,。！!?]+)", 0)
+    add("previous_work_experience", prior_role)
+
+    skill = _regex_slice(
+        text,
+        r"(?:拿手的是|最擅长(?:的是)?|最厉害的是)([^。！!?]+)",
+        1,
+    )
+    add("core_skill_1", skill)
+
+    help_clause = _regex_slice(text, r"(?:帮的是|帮助的是|服务的是)\s*([^。！!?]+)", 0)
+    audience = _regex_slice(text, r"(?:帮的是|帮助的是|服务的是|目标受众(?:是)?)\s*([^。！!?]+)", 1)
+    add("target_audience", audience)
+
+    skill_val = str((harvested.get("core_skill_1") or {}).get("value") or "")
+    def _distinct_from_skill(value):
+        value = str(value or "").strip()
+        if not value:
+            return False
+        if not skill_val:
+            return True
+        return value != skill_val and skill_val not in value
+    if _distinct_from_skill(help_clause):
+        add("help_goal", help_clause)
+    elif _distinct_from_skill(audience):
+        add("help_goal", audience)
+    else:
+        goal_help = _regex_slice(text, r"(?:目标)([^。！!?]+)", 1)
+        if _distinct_from_skill(goal_help) and not re.search(r"立住|再接咨询|咨询是后面", goal_help):
+            add("help_goal", goal_help)
+
+    platform = _regex_slice(
+        text,
+        r"(?:平台(?:先)?(?:做|是)?|先做|主要做)\s*(抖音|小红书|视频号|快手|TikTok|tiktok|B站|公众号|微信)",
+        1,
+    )
+    if not platform:
+        for name_token in _intake_known_platforms():
+            if name_token in text:
+                platform = name_token
+                break
+    add("primary_platform", platform, kind="user_preference")
+
+    niche = _regex_slice(text, r"短视频个人\s*IP") or _regex_slice(text, r"个人\s*IP")
+    add("niche", niche)
+
+    business = _business_goal_message_slice(text)
+    if not business:
+        business = _regex_slice(text, r"(?:目标)([^。！!?]+)", 1)
+    add("business_goal", business)
+
+    team = _regex_slice(text, r"(?:带过团队|做过项目|团队规模)[^。！!?]{0,40}")
+    add("team_project_experience", team)
+    return list(harvested.values())
+
+
+def render_intake_draft(updates):
+    items = {}
+    for item in updates or []:
+        if not isinstance(item, dict):
+            continue
+        field = str(item.get("field") or "")
+        value = str(item.get("value") or "").strip()
+        if field in INTAKE_FIELD_SET and value:
+            items[field] = value
+    lines = ["### 基础资料核对稿"]
+    ordered = list(INTAKE_CORE_FIELDS) + [
+        field for field in INTAKE_COVERAGE_FIELDS if field not in INTAKE_CORE_FIELD_SET
+    ]
+    for field in ordered:
+        value = items.get(field)
+        if not value:
+            continue
+        label = INTAKE_COVERAGE_LABELS.get(field, field)
+        lines.append("- %s：%s" % (label, value))
+    return "\n".join(lines)
+
+
+def synthesize_intake_decision(state, user_message, prior_updates=None):
+    state = normalize_state(state)
+    existing = [
+        item for item in (state.get("intake") or {}).get("profile_updates") or []
+        if isinstance(item, dict)
+    ]
+    extras = [item for item in (prior_updates or []) if isinstance(item, dict)]
+    updates = _harvest_intake_updates(user_message, existing + extras)
+    gaps = intake_core_gaps(state, updates)
+    if not gaps:
+        draft = render_intake_draft(updates)
+        return {
+            "decision": "propose_checkpoint",
+            "checkpoint": 1,
+            "reply": "我按你刚才说的整理了一版核对稿，请看一下有没有记错。",
+            "draft": draft,
+            "self_review": "已按用户原话整理核心资料，尚未问过的可选项已省略。",
+            "choices": [],
+            "profile_updates": updates,
+            "confidence": 1.0,
+        }
+    field = gaps[0]
+    question = INTAKE_NATURAL_QUESTIONS.get(field) or (
+        "关于%s，你愿意具体说说吗？" % INTAKE_COVERAGE_LABELS.get(field, field)
+    )
+    return {
+        "decision": "ask_follow_up",
+        "checkpoint": 0,
+        "reply": question,
+        "draft": "",
+        "self_review": "",
+        "choices": [],
+        "profile_updates": updates,
+        "confidence": 1.0,
+    }
+
+
+def _intake_message_has_field_facts(message):
+    return bool(_harvest_intake_updates(message, []))
+
+
+def _help_goal_copies_skill(help_val, skill_val):
+    help_val = str(help_val or "").strip()
+    skill_val = str(skill_val or "").strip()
+    if not help_val or not skill_val:
+        return False
+    return help_val == skill_val or skill_val in help_val or help_val in skill_val
+
+
 def apply_intake_decision(value, raw, evidence_text, current_message=""):
     state = normalize_state(value)
     intake = state["intake"]
@@ -2269,9 +2498,32 @@ def apply_intake_decision(value, raw, evidence_text, current_message=""):
     intake["declined_fields"] = declined
     user_text = current_message or evidence_text
     candidate = deepcopy(raw) if isinstance(raw, dict) else raw
+    correction = (
+        intake["status"] in {"awaiting_confirmation", "editing"}
+        and not _pure_intake_confirm(user_text)
+        and (
+            wants_intake_correction(user_text)
+            or _intake_message_has_field_facts(user_text)
+        )
+    )
     if isinstance(candidate, dict):
         candidate_kind = str(candidate.get("decision") or "")
-        if (
+        if correction and candidate_kind == "answer_only":
+            harvested = _harvest_intake_updates(
+                user_text, candidate.get("profile_updates") or []
+            )
+            preview = {}
+            for item in list(intake.get("profile_updates") or []) + harvested:
+                if isinstance(item, dict) and item.get("field"):
+                    preview[item["field"]] = item
+            candidate["decision"] = "propose_checkpoint"
+            candidate["checkpoint"] = 1
+            if not str(candidate.get("draft") or "").strip():
+                candidate["draft"] = render_intake_draft(preview.values())
+            if not str(candidate.get("self_review") or "").strip():
+                candidate["self_review"] = "已按用户最新原话重整核对稿。"
+            candidate_kind = "propose_checkpoint"
+        elif (
             candidate_kind == "answer_only"
             and not wants_chat_start(user_text)
             and not _user_asked_question(user_text)
@@ -2304,13 +2556,105 @@ def apply_intake_decision(value, raw, evidence_text, current_message=""):
         ):
             declined.append(item["field"])
     intake["declined_fields"] = declined
+    previous_updates = [
+        item for item in intake.get("profile_updates") or [] if isinstance(item, dict)
+    ]
+    previous_values = {
+        str(item.get("field") or ""): str(item.get("value") or "")
+        for item in previous_updates
+        if item.get("field")
+    }
+    old_draft = str(intake.get("draft") or "")
     merged_updates = {}
-    for item in (intake.get("profile_updates") or []) + decision["profile_updates"]:
+    for item in previous_updates + decision["profile_updates"]:
         if item["field"] not in declined:
             merged_updates[item["field"]] = item
     merged_update_list = list(merged_updates.values())
     if decision["decision"] in {"ask_follow_up", "propose_checkpoint"}:
         decision["profile_updates"] = merged_update_list
+    if correction:
+        talking_goal = bool(re.search(
+            r"目标|先立|咨询往后|后面的事|咨询是后面|先把", user_text
+        ))
+        talking_problem = bool(re.search(r"能解决的问题|解决什么问题|帮他们", user_text))
+        skill_val = str((merged_updates.get("core_skill_1") or {}).get("value") or "").strip()
+        incoming_help = None
+        for item in decision["profile_updates"]:
+            if item.get("field") == "help_goal":
+                incoming_help = item
+        if talking_goal and not talking_problem and skill_val:
+            help_val = str((incoming_help or merged_updates.get("help_goal") or {}).get("value") or "")
+            if _help_goal_copies_skill(help_val, skill_val):
+                prev_help = next(
+                    (item for item in previous_updates if item.get("field") == "help_goal"),
+                    None,
+                )
+                if prev_help:
+                    merged_updates["help_goal"] = prev_help
+        if talking_goal:
+            goal_slice = _business_goal_message_slice(user_text)
+            if goal_slice:
+                merged_updates["business_goal"] = {
+                    "field": "business_goal",
+                    "value": goal_slice,
+                    "kind": "user_fact",
+                    "evidence_quote": goal_slice,
+                }
+        merged_update_list = list(merged_updates.values())
+        decision["profile_updates"] = merged_update_list
+        new_values = {
+            str(item.get("field") or ""): str(item.get("value") or "")
+            for item in merged_update_list
+            if item.get("field")
+        }
+        added = {key: value for key, value in new_values.items() if key not in previous_values}
+        changed_same = all(
+            new_values.get(field) == value for field, value in previous_values.items()
+            if field in new_values
+        )
+        values_same = changed_same and not added
+        if decision["decision"] == "propose_checkpoint":
+            if values_same and decision.get("draft") == old_draft:
+                rebuilt = render_intake_draft(merged_update_list)
+                if rebuilt == old_draft or values_same:
+                    goal_slice = _business_goal_message_slice(user_text)
+                    if re.search(r"目标|咨询", user_text) and goal_slice:
+                        merged_updates["business_goal"] = {
+                            "field": "business_goal",
+                            "value": goal_slice,
+                            "kind": "user_fact",
+                            "evidence_quote": goal_slice,
+                        }
+                    elif str(user_text or "").strip():
+                        last_field = (
+                            intake.get("current_question_field")
+                            or (intake.get("asked_follow_ups") or [None])[-1]
+                        )
+                        last_field = INTAKE_TOPIC_TO_FIELD.get(last_field, last_field)
+                        slice_val = str(user_text).strip()
+                        if last_field in INTAKE_FIELD_SET and slice_val in str(user_text):
+                            merged_updates[last_field] = {
+                                "field": last_field,
+                                "value": slice_val,
+                                "kind": "user_fact",
+                                "evidence_quote": slice_val,
+                            }
+                    merged_update_list = list(merged_updates.values())
+                    rebuilt = render_intake_draft(merged_update_list)
+                decision["draft"] = rebuilt
+                decision["profile_updates"] = merged_update_list
+            if decision.get("draft") == old_draft:
+                rebuilt = render_intake_draft(merged_update_list)
+                if rebuilt != old_draft:
+                    decision["draft"] = rebuilt
+                else:
+                    raise HarnessError("用户在纠正，核对稿必须反映最新原话")
+            decision["reply"] = (
+                "我按你刚才说的，把目标/做 IP 的目的改成了最新原话。"
+                if re.search(r"目标|咨询|做 IP 的目的", user_text) else
+                "我按你刚才的纠正，把核对稿改成了最新原话。"
+            )
+            decision["profile_updates"] = merged_update_list
     chat_start = wants_chat_start(user_text)
     whole_form = _wants_whole_form_skip(user_text)
     if chat_start:
@@ -2495,7 +2839,7 @@ def intake_system_prompt(value):
 - 接受任意顺序和自然表达；用户可一次说一项或多项，不要求固定格式，不把访谈做成选择题。追问必须是开放句，禁止「比如是A、B、C还是D」这种选项句。
 - 先查看完整对话历史和当前待核对资料；已经回答、明确不知道或拒绝回答的内容不要重复追问。
 - 用户没有正面回答时，不得猜测答案；只有明确说“跳过、不知道、暂时没有、不方便”才记为已跳过。
-- 用户已经说出姓名/称呼、身份、受众、平台、赛道，以及至少一项拿手或能解决的问题时，立刻 decision=propose_checkpoint、checkpoint=1，不要再出下一题。help_goal 可从「帮谁做什么」提取，不要另开选择题。
+- 用户已经说出姓名/称呼、身份、受众、平台、赛道，以及至少一项拿手或能解决的问题时，本轮必须立刻 decision=propose_checkpoint、checkpoint=1，不要再出下一题。禁止 answer_only，禁止只回复失败说明。help_goal 可从「帮谁做什么」提取，不要另开选择题。
 - 核心信息尚未齐、且用户没有说「我先聊聊 / 不想填表 / 先进入定位」时，decision=ask_follow_up；可以顺着刚才的话题问一个开放问题，不必按固定顺序。
 - 核心信息已齐，或用户明确说「我先聊聊 / 不想填表 / 先进入定位」时，decision=propose_checkpoint、checkpoint=1；draft 只合并用户说过的事实。只有用户明确说跳过的项才写“本人选择跳过”。尚未问过的可选项必须省略，不得写成本人选择跳过。
 - 年龄、性别、收入和手机号是敏感可选项，明说可以跳过，不得强迫。

@@ -264,5 +264,92 @@ class ConversationalIntakeTests(unittest.TestCase):
             )
 
 
+    def test_synthesize_linxia_intro_proposes_checkpoint(self):
+        intro = (
+            "我是林夏，以前做新零售店长，现在自己做私域和内容。"
+            "拿手的是把门店成交话术改成短视频。"
+            "帮的是 25-40 想做个人 IP 的实体店老板。"
+            "目标先把短视频个人 IP 立住，再接咨询。"
+            "平台先做抖音。"
+        )
+        raw = harness.synthesize_intake_decision(harness.initial_state(), intro)
+        state, normalized, _ = harness.apply_intake_decision(
+            harness.initial_state(), raw, intro, current_message=intro,
+        )
+        self.assertEqual(raw["decision"], "propose_checkpoint")
+        self.assertEqual(normalized["decision"], "propose_checkpoint")
+        self.assertEqual(harness.intake_core_gaps(state), [])
+        name = next(
+            item["value"] for item in state["intake"]["profile_updates"]
+            if item["field"] == "preferred_name"
+        )
+        platform = next(
+            item["value"] for item in state["intake"]["profile_updates"]
+            if item["field"] == "primary_platform"
+        )
+        self.assertEqual(name, "林夏")
+        self.assertIn("抖音", platform)
+        self.assertIn("林夏", normalized["draft"])
+        self.assertIn("抖音", normalized["draft"])
+        self.assertNotIn("本人选择跳过", normalized["draft"])
+        self.assertNotIn("本人选择跳过", state["intake"]["draft"])
+
+    def test_goal_correction_rewrites_awaiting_card(self):
+        skill = "把门店成交话术改成短视频"
+        updates = [
+            update("preferred_name", "林夏", "林夏"),
+            update("current_identity", "以前做新零售店长，现在自己做私域和内容"),
+            update("core_skill_1", skill, skill),
+            update("target_audience", "25-40 想做个人 IP 的实体店老板"),
+            update("help_goal", skill, skill),
+            update("primary_platform", "抖音", "抖音", "user_preference"),
+            update("niche", "短视频个人 IP"),
+        ]
+        evidence = "；".join(item["evidence_quote"] for item in updates)
+        old_draft = "### 林夏资料\n- 姓名：林夏\n- 能力：把门店成交话术改成短视频"
+        state, _, _ = harness.apply_intake_decision(
+            harness.initial_state(),
+            decision(
+                "propose_checkpoint", reply="请核对。", draft=old_draft,
+                updates=updates, checkpoint=1,
+            ),
+            evidence,
+            current_message=evidence,
+        )
+        self.assertEqual(state["intake"]["status"], "awaiting_confirmation")
+        self.assertEqual(state["intake"]["draft"], old_draft)
+        correction = "目标再说清楚点，先把短视频个人 IP 立住，咨询是后面的事。"
+        state, normalized, reply = harness.apply_intake_decision(
+            state,
+            decision(
+                "propose_checkpoint", reply="请核对。", draft=old_draft,
+                updates=updates, checkpoint=1,
+            ),
+            correction,
+            current_message=correction,
+        )
+        self.assertNotEqual(normalized["draft"], old_draft)
+        self.assertNotEqual(state["intake"]["draft"], old_draft)
+        business = next(
+            (item["value"] for item in state["intake"]["profile_updates"]
+             if item["field"] == "business_goal"),
+            "",
+        )
+        self.assertTrue("咨询是后面的事" in business or "立住" in business)
+        combined = reply + "\n" + normalized["draft"]
+        self.assertTrue(
+            "做 IP 的目的" in combined
+            or "立住" in combined
+            or "咨询是后面的事" in combined
+        )
+
+    def test_wants_intake_correction(self):
+        self.assertTrue(harness.wants_intake_correction("目标再说清楚点"))
+        self.assertFalse(harness.wants_intake_correction("确认"))
+        self.assertFalse(harness.wants_intake_correction("按刚才聊的整理一下吧"))
+
+
+
+
 if __name__ == "__main__":
     unittest.main()

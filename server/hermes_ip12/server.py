@@ -6111,15 +6111,39 @@ def _process_model_turn(
                     raise
                 except (coach_harness.HarnessError, RuntimeError, requests.RequestException) as intake_exc:
                     app.logger.warning("IP12 intake catch-all repair failed: %s", intake_exc)
-                    if _assistant_is_unprocessed_repeat(snapshot):
-                        return {
-                            "ok": False,
-                            "error": "这条消息暂时没能安全整理，请重试；已确认内容不会丢失。",
-                        }, 502
-                    assistant, next_state = _persist_unprocessed_turn(
-                        cid, user_message, snapshot_revision, prefix=prefix,
-                        message_id=message_id, assistant_override=_INTAKE_HONEST_FALLBACK,
-                    )
+                    used_synth = False
+                    try:
+                        synthesized = coach_harness.synthesize_intake_decision(
+                            state, user_message
+                        )
+                        if synthesized and synthesized.get("decision") in {
+                            "ask_follow_up", "propose_checkpoint",
+                        }:
+                            assistant, next_state = _persist_model_turn(
+                                cid,
+                                user_message if persist_user else "",
+                                snapshot_revision,
+                                synthesized,
+                                user_message,
+                                prefix=prefix,
+                                message_id=message_id,
+                                trace_skills=trace_skills,
+                            )
+                            used_synth = True
+                    except coach_harness.HarnessConflict:
+                        raise
+                    except (coach_harness.HarnessError, RuntimeError, requests.RequestException, TypeError, ValueError) as synth_exc:
+                        app.logger.warning("IP12 intake synthesize failed: %s", synth_exc)
+                    if not used_synth:
+                        if _assistant_is_unprocessed_repeat(snapshot):
+                            return {
+                                "ok": False,
+                                "error": "这条消息暂时没能安全整理，请重试；已确认内容不会丢失。",
+                            }, 502
+                        assistant, next_state = _persist_unprocessed_turn(
+                            cid, user_message, snapshot_revision, prefix=prefix,
+                            message_id=message_id, assistant_override=_INTAKE_HONEST_FALLBACK,
+                        )
             else:
                 assistant, next_state = _persist_unprocessed_turn(
                     cid, user_message, snapshot_revision, prefix=prefix, message_id=message_id
