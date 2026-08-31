@@ -6456,6 +6456,25 @@ def _process_model_turn(
                 )
             if choice_turn and time.monotonic() >= choice_deadline:
                 raise RuntimeError("候选生成超过 %s 秒总期限" % CHOICE_TOTAL_TIMEOUT_SECONDS)
+        # 回复质量校验：模型输出与上一条提问完全相同（机械重复）时带 repair 重试，
+        # 强制它解释用户疑问或换一种说法，不再把同一句问到底。
+        if isinstance(raw, dict) and not raw.get("_model_used") is False:
+            _prev_assistant = next(
+                (str(m.get("content") or "").strip()
+                 for m in reversed((snapshot.get("messages") or []))
+                 if m.get("role") == "assistant"),
+                "",
+            )
+            _new_reply = str(raw.get("reply") or "").strip()
+            if _prev_assistant and _new_reply and _new_reply == _prev_assistant:
+                raw, evidence = _coach_model_decision(
+                    snapshot, user_message,
+                    repair_error=(
+                        "你的回复与上一轮问句逐字相同。用户可能在反问、质疑或没听懂："
+                        "必须先解释你上一轮问的是什么，再换成新的自然说法提问；"
+                        "或者确认用户上一轮已给的信息并推进到下一个未覆盖项。"
+                    ),
+                )
         try:
             assistant, next_state = _persist_model_turn(
                 cid,
