@@ -6354,15 +6354,8 @@ def _process_model_turn(
                 message_id=message_id, assistant_override=assistant,
             )
             return _chat_result(assistant, next_state), 200
-        clarification = coach_harness.intake_clarification_reply(state, user_message)
-        if clarification and persist_user:
-            snapshot_revision = state["revision"]
-            message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
-            assistant, next_state = _persist_unprocessed_turn(
-                cid, user_message, snapshot_revision, prefix=prefix,
-                message_id=message_id, assistant_override=clarification, skills=["intake"],
-            )
-            return _chat_result(assistant, next_state), 200
+        # 澄清请求不再走模板 override：统一交给模型按访谈规则自然解释与重问，
+        # 避免「固定句重复问到底」的机械感。模板只保留在模型失败兜底中。
         snapshot_revision = state["revision"]
         message_id = ""
         if persist_user and user_message:
