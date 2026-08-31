@@ -378,4 +378,3 @@ def compile_foundation_markdown(snapshot):
     lines.append("- 本人选择跳过：%s" % "、".join(declined) if declined else "- 当前无新增待确认项。")
     return "\n".join(lines).strip() + "\n"
 
-import ip12_conversational_intake  # noqa: F401
