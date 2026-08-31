@@ -397,17 +397,26 @@ def persona_contract(value):
     }
 
 
-def grounded_story_node_decision(value):
+_MODULE_FOUR_STORY_HINT_RE = re.compile(
+    r"货|包装|亏|供应商|经历|那次|后来|第一批|海运|破损|"
+    r"材料|报价|供应链|单干|亏了|踩坑|复盘|"
+    r"当时|那时候|刚开始|失败|转行|退租|"
+    r"开店|创业|离职|辞职|入行|遇到过|曾经|"
+    r"自己盯|一家一家|缓过来"
+)
+_MODULE_FOUR_FACT_FIELDS = (
+    "story_comeback", "story_pitfall", "story_success", "story_unusual",
+    "biggest_setback", "biggest_achievement", "previous_work_experience",
+    "team_project_experience", "key_experience", "career_transition",
+    "turning_point", "project_experience",
+)
+
+
+def _module_four_fact_quotes(value):
     state = normalize_state(value)
     facts = state["ip_profile"].get("facts") or {}
-    preferred = (
-        "story_comeback", "story_pitfall", "story_success", "story_unusual",
-        "biggest_setback", "biggest_achievement", "previous_work_experience",
-        "team_project_experience", "key_experience", "career_transition",
-        "turning_point", "project_experience",
-    )
     items = []
-    for field in preferred:
+    for field in _MODULE_FOUR_FACT_FIELDS:
         item = facts.get(field)
         quote = str((item or {}).get("evidence_quote") or "").strip() if isinstance(item, dict) else ""
         if quote and not any(quote in existing or existing in quote for existing in items):
@@ -419,14 +428,50 @@ def grounded_story_node_decision(value):
             quote = str((item or {}).get("evidence_quote") or "").strip() if isinstance(item, dict) else ""
             if quote and quote not in items:
                 items.append(quote)
-    items = items[:8]
-    if not items:
-        raise HarnessError("模块 4 还缺少一段可回查的真实经历")
-    draft = "\n\n".join(
+    return items[:8]
+
+
+def _looks_like_module_four_story(text):
+    text = str(text or "").strip()
+    if not text:
+        return False
+    compact = re.sub(r"\s+", "", text)
+    if len(compact) < 12:
+        return False
+    return bool(_MODULE_FOUR_STORY_HINT_RE.search(text))
+
+
+def _dedup_module_four_quotes(quotes):
+    kept = []
+    for quote in quotes:
+        quote = str(quote or "").strip()
+        if not quote:
+            continue
+        compact = re.sub(r"[\W_]+", "", quote)
+        if not compact:
+            continue
+        if any(compact in re.sub(r"[\W_]+", "", other) for other in kept):
+            continue
+        kept = [other for other in kept if re.sub(r"[\W_]+", "", other) not in compact]
+        kept.append(quote)
+    return kept
+
+
+def _module_four_story_draft(quotes):
+    return "\n\n".join(
         "### 节点 %d：真实经历节点（包装建议）\n事实原话：%s\n包装建议：围绕这段真实经历提炼起点、行动、结果和反思。"
         % (index, quote)
-        for index, quote in enumerate(items, 1)
+        for index, quote in enumerate(quotes, 1)
     )
+
+
+def grounded_story_node_decision(value, user_message="", history_text=""):
+    if str(user_message or "").strip() or str(history_text or "").strip():
+        return synthesize_module_four_decision(value, user_message, history_text)
+    items = _module_four_fact_quotes(value)
+    if not items:
+        raise HarnessError("模块 4 还缺少一段可回查的真实经历")
+    draft = _module_four_story_draft(items)
     return {
         "decision": "propose_checkpoint", "checkpoint": 1,
         "reply": "我已从确认资料中整理出可回查的真实故事节点，请先核对。",
@@ -2434,6 +2479,49 @@ def render_intake_draft(updates):
         label = INTAKE_COVERAGE_LABELS.get(field, field)
         lines.append("- %s：%s" % (label, value))
     return "\n".join(lines)
+
+
+
+def synthesize_module_four_decision(state, user_message, history_text=""):
+    """Fail-open module-4 draft from exact user quotes; never paraphrase."""
+    state = normalize_state(state)
+    quotes = []
+    current = str(user_message or "").strip()
+    if _looks_like_module_four_story(current):
+        quotes.append(current)
+    for line in str(history_text or "").splitlines():
+        line = line.strip()
+        if _looks_like_module_four_story(line):
+            quotes.append(line)
+    quotes.extend(_module_four_fact_quotes(state))
+    quotes = _dedup_module_four_quotes(quotes)[:8]
+    if not quotes:
+        raise HarnessError("模块 4 还缺少一段可回查的真实经历")
+    evidence = "\n".join(
+        part for part in (str(history_text or ""), str(user_message or ""))
+        if str(part or "").strip()
+    )
+    compact_evidence = re.sub(r"\s+", "", evidence)
+    if compact_evidence:
+        grounded = [quote for quote in quotes if re.sub(r"\s+", "", quote) in compact_evidence]
+        if grounded:
+            quotes = grounded[:8]
+        else:
+            evidence = evidence + "\n" + "\n".join(quotes)
+    else:
+        evidence = "\n".join(quotes)
+    draft = _module_four_story_draft(quotes)
+    _validate_module_four_story_claims(draft, evidence)
+    return {
+        "decision": "propose_checkpoint",
+        "checkpoint": 1,
+        "reply": "我按你刚才的原话整理了故事节点，请先核对。",
+        "draft": draft,
+        "self_review": "所有节点都逐字引用用户原话，未改写。",
+        "choices": [],
+        "profile_updates": [],
+        "confidence": 1.0,
+    }
 
 
 def synthesize_intake_decision(state, user_message, prior_updates=None):
