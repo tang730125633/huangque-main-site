@@ -104,14 +104,75 @@ def require_available():
 
 
 _SEMANTIC_CONTRACTS = {
+    "v01": {
+        "top1": (70, 2), "top2": (64, 2),
+        "top3": (52, 2), "bottom2": (74, 2),
+    },
     "v02": {
         "top1": (86, 2), "top2": (62, 4), "bottom2": (78, 2),
     },
+    "v03": {
+        "top1": (86, 2), "top2": (62, 4), "bottom2": (78, 2),
+    },
+    "v04": {
+        "top1": (88, 2), "top2": (72, 2),
+        "top3": (48, 2), "bottom2": (52, 2),
+    },
     "v05": {
         "top1": (102, 2), "top2": (104, 2),
-        "top3": (68, 3), "bottom2": (70, 2),
+        "top3": (68, 2), "bottom2": (70, 2),
+    },
+    "v06": {
+        "top1": (104, 2), "top2": (76, 2),
+        "top3": (60, 2), "bottom2": (76, 2),
+    },
+    "v07": {
+        "top1": (104, 2), "top2": (68, 2),
+        "top3": (62, 2), "bottom2": (84, 2),
+    },
+    "v08": {
+        "top1": (92, 2), "top2": (62, 2),
+        "top3": (54, 2), "bottom2": (64, 2),
+    },
+    "v09": {
+        "top1": (78, 2), "top2": (50, 4), "bottom2": (66, 2),
+    },
+    "v10": {
+        "top1": (70, 2), "top2": (78, 2),
+        "top3": (54, 2), "bottom2": (80, 2),
+    },
+    "v11": {
+        "top1": (86, 2), "top2": (80, 2),
+        "top3": (54, 2), "bottom2": (76, 2),
+    },
+    "v12": {
+        "top1": (72, 2), "top2": (62, 2),
+        "top3": (50, 2), "bottom2": (62, 2),
+    },
+    "v13": {
+        "top1": (76, 2), "top2": (68, 4), "bottom2": (80, 2),
+    },
+    "v14": {
+        "top1": (72, 2), "top2": (50, 4), "bottom2": (64, 2),
+    },
+    "v15": {
+        "top1": (80, 2), "top2": (64, 4), "bottom2": (92, 2),
+    },
+    "v16": {
+        "top1": (48, 2), "top2": (68, 2),
+        "top3": (52, 2), "bottom2": (70, 2),
+    },
+    "v17": {
+        "top1": (74, 2), "top2": (64, 2),
+        "top3": (118, 2), "bottom2": (84, 2),
     },
 }
+_ALL_REFERENCE_VARIANTS = {
+    f"v{index:02d}" for index in range(1, 18)
+}
+_ALLOWED_SEMANTIC_VARIANT_SETS = (
+    {"v02"}, {"v02", "v05"}, _ALL_REFERENCE_VARIANTS,
+)
 
 
 def _semantic_contract(value, variant):
@@ -241,7 +302,7 @@ def _refresh_catalog(force=False):
                 or {
                     item["variant"] for item in references
                     if item.get("semantic_layout")
-                } not in ({"v02"}, {"v02", "v05"})
+                } not in _ALLOWED_SEMANTIC_VARIANT_SETS
             ):
                 raise RuntimeError("HyperFrames 模板目录不完整")
             templates = [approved[template_id] for template_id in APPROVED_TEMPLATE_IDS] + references

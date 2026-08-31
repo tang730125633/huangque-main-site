@@ -46,7 +46,7 @@ class MatrixTemplateSemanticsTests(unittest.TestCase):
             "layers": {
                 "top1": {"font_size_px": 102, "max_lines": 2},
                 "top2": {"font_size_px": 104, "max_lines": 2},
-                "top3": {"font_size_px": 68, "max_lines": 3},
+                "top3": {"font_size_px": 68, "max_lines": 2},
                 "bottom2": {"font_size_px": 70, "max_lines": 2},
             },
         }
