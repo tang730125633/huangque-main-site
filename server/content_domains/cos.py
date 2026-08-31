@@ -32,6 +32,7 @@ _SIGN_EXPIRE = int(os.environ.get("COS_SIGN_EXPIRE", "604800") or 604800)
 _DELETE_LOCAL = os.environ.get("COS_DELETE_LOCAL", "0").strip().lower() in ("1", "true", "yes")
 
 _client_singleton = None
+_direct_client_singleton = None
 
 
 def enabled():
@@ -43,8 +44,17 @@ def delete_local_after_upload():
     return _DELETE_LOCAL
 
 
-def _client():
-    global _client_singleton
+def _client(direct=False):
+    global _client_singleton, _direct_client_singleton
+    if direct and _direct_client_singleton is None:
+        from qcloud_cos import CosConfig, CosS3Client  # 服务器 pip 装；本地/CI 不触发 import
+        import requests
+        cfg = CosConfig(Region=_REGION, SecretId=_SECRET_ID, SecretKey=_SECRET_KEY, Scheme="https")
+        session = requests.Session()
+        session.trust_env = False
+        _direct_client_singleton = CosS3Client(cfg, session=session)
+    if direct:
+        return _direct_client_singleton
     if _client_singleton is None:
         from qcloud_cos import CosConfig, CosS3Client  # 服务器 pip 装；本地/CI 不触发 import
         cfg = CosConfig(Region=_REGION, SecretId=_SECRET_ID, SecretKey=_SECRET_KEY, Scheme="https")
@@ -75,7 +85,8 @@ def object_url(rel_key, private=False):
     return _url(_object_key(rel_key), private=private)
 
 
-def upload(local_path, rel_key, content_type=None, private=False, metadata=None):
+def upload(local_path, rel_key, content_type=None, private=False, metadata=None,
+           direct=False):
     """把本地文件上传到 COS，返回可访问 URL。未启用或失败会抛异常，由调用方回退本地。"""
     if not enabled():
         raise RuntimeError("COS 未配置")
@@ -96,7 +107,7 @@ def upload(local_path, rel_key, content_type=None, private=False, metadata=None)
                     )
                 normalized_metadata[name] = str(value)
             kwargs["Metadata"] = normalized_metadata
-        _client().put_object(**kwargs)
+        _client(direct=direct).put_object(**kwargs)
     return _url(full_key, private=private)
 
 

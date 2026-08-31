@@ -381,7 +381,9 @@ def generate(payload):
                 "provider_task_id": remote_id,
                 "status": "done",
                 "video_file": video_file,
-                "video_url": public_url(video_file, "video/mp4", private=True),
+                "video_url": public_url(
+                    video_file, "video/mp4", private=True, direct_cos=True,
+                ),
                 "duration": float(result.get("duration") or 0),
                 "phase": "done",
                 "resolution": "1080p",
