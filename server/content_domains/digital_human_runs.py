@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import json
 import re
+import threading
 import time
 from contextlib import closing
 
@@ -30,6 +31,12 @@ RUN_STATES = (
     "completed", "failed", "refund_pending", "refunded", "abandoned",
 )
 TERMINAL_STATES = ("completed", "failed", "refunded", "abandoned")
+_RUN_LOCKS = tuple(threading.RLock() for _ in range(64))
+
+
+def _run_lock(run_id):
+    digest = hashlib.sha256(run_id.encode("utf-8")).digest()
+    return _RUN_LOCKS[int.from_bytes(digest[:4], "big") % len(_RUN_LOCKS)]
 
 
 def _canonical(value):
@@ -484,6 +491,8 @@ def _compose_payload(run):
 
 
 def _maybe_submit_compose(run, submit_job, retry=False):
+    if run.get("status") == "abandoned":
+        return
     children = run["steps"]["materials"] + run["steps"]["talking"]
     compose = run["steps"]["compose"]
     if not all(step["status"] == "completed" for step in children):
@@ -533,94 +542,119 @@ def start_response(payload, username, expected_cost, submit_job, db_factory=None
         "error": "", "created_at": now, "updated_at": now, "abandoned_at": None,
     }
     run["steps"] = _new_steps(run)
-    with closing(factory()) as connection:
-        connection.execute("BEGIN IMMEDIATE")
-        row = connection.execute(
-            "SELECT * FROM digital_human_runs WHERE username=? AND request_id=?",
-            (username, normalized["request_id"]),
-        ).fetchone()
-        if row:
-            connection.commit()
-            existing = _decode_row(row)
-            if existing["request_hash"] != request_hash:
+    with _run_lock(run_id):
+        with closing(factory()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM digital_human_runs WHERE username=? AND request_id=?",
+                (username, normalized["request_id"]),
+            ).fetchone()
+            if row:
+                existing = _decode_row(row)
+                if existing["request_hash"] != request_hash:
+                    raise legacy.DigitalHumanRequestError(
+                        "request_id 已绑定其他运行输入", "idempotency_conflict", 409,
+                    )
+                connection.commit()
+                _sync(existing)
+                _maybe_submit_compose(existing, submit_job)
+                _sync(existing)
+                _save_run(existing, factory)
+                return {"ok": True, "replayed": True, "run": _public_run(existing)}
+            conflict = connection.execute(
+                "SELECT request_hash FROM digital_human_runs WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+            if conflict:
                 raise legacy.DigitalHumanRequestError(
-                    "request_id 已绑定其他运行输入", "idempotency_conflict", 409,
+                    "授权 run_id 已绑定其他 request_id", "run_id_conflict", 409,
                 )
-            return {"ok": True, "replayed": True, "run": _public_run(_sync(existing))}
-        conflict = connection.execute(
-            "SELECT request_hash FROM digital_human_runs WHERE run_id=?",
-            (run_id,),
-        ).fetchone()
-        if conflict:
-            connection.commit()
-            raise legacy.DigitalHumanRequestError(
-                "授权 run_id 已绑定其他 request_id", "run_id_conflict", 409,
+            connection.execute(
+                """INSERT INTO digital_human_runs(
+                   run_id,username,request_id,request_hash,plan_digest,consent_id,status,
+                   quoted_cost,input_json,plan_json,steps_json,result_json,error,
+                   created_at,updated_at,abandoned_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    run_id, username, run["request_id"], request_hash,
+                    run["plan_digest"], run["consent_id"], run["status"],
+                    run["quoted_cost"], _canonical(normalized), _canonical(plan),
+                    _canonical(run["steps"]), _canonical({}), "", now, now, None,
+                ),
             )
-        connection.execute(
-            """INSERT INTO digital_human_runs(
-               run_id,username,request_id,request_hash,plan_digest,consent_id,status,
-               quoted_cost,input_json,plan_json,steps_json,result_json,error,
-               created_at,updated_at,abandoned_at)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                run_id, username, run["request_id"], request_hash,
-                run["plan_digest"], run["consent_id"], run["status"],
-                run["quoted_cost"], _canonical(normalized), _canonical(plan),
-                _canonical(run["steps"]), _canonical({}), "", now, now, None,
-            ),
-        )
-        connection.commit()
-    _submit_children(run, submit_job)
-    _sync(run)
-    _maybe_submit_compose(run, submit_job)
-    _sync(run)
-    _save_run(run, factory)
+            connection.commit()
+        _submit_children(run, submit_job)
+        _sync(run)
+        _maybe_submit_compose(run, submit_job)
+        _sync(run)
+        _save_run(run, factory)
     return {"ok": True, "replayed": False, "run": _public_run(run)}
 
 
-def status_response(run_id, username, db_factory=None):
-    run = _sync(_load_run(run_id, username, db_factory))
-    _save_run(run, db_factory)
+def status_response(run_id, username, submit_job, db_factory=None):
+    run_id = str(run_id or "").strip()
+    if not RUN_ID_RE.fullmatch(run_id):
+        raise legacy.DigitalHumanRequestError("run_id 格式无效")
+    factory = db_factory or legacy.cdb
+    init_db(factory)
+    with _run_lock(run_id):
+        run = _sync(_load_run(run_id, username, factory))
+        _maybe_submit_compose(run, submit_job)
+        _sync(run)
+        _save_run(run, factory)
     return {"ok": True, "run": _public_run(run)}
 
 
 def recover_response(run_id, payload, username, submit_job, db_factory=None):
     _strict_body(payload, {"request_id"}, ("request_id",))
     request_id = str(payload.get("request_id") or "").strip()
-    run = _sync(_load_run(run_id, username, db_factory))
-    if request_id != run["request_id"]:
-        raise legacy.DigitalHumanRequestError(
-            "request_id 与原运行不一致", "idempotency_conflict", 409,
-        )
-    if run["status"] == "abandoned":
-        raise legacy.DigitalHumanRequestError("运行已放弃", "run_abandoned", 409)
-    if run["status"] == "completed":
-        return {"ok": True, "replayed": True, "run": _public_run(run)}
-    if run["status"] in {"needs_attention", "refund_pending"}:
-        raise legacy.DigitalHumanRequestError(
-            "仍有子任务扣点或退款状态待确认，请稍后查询",
-            "run_recovery_pending", 409,
-        )
-    _submit_children(run, submit_job, retry=True)
-    _sync(run)
-    _maybe_submit_compose(run, submit_job, retry=True)
-    _sync(run)
-    _save_run(run, db_factory)
+    run_id = str(run_id or "").strip()
+    if not RUN_ID_RE.fullmatch(run_id):
+        raise legacy.DigitalHumanRequestError("run_id 格式无效")
+    factory = db_factory or legacy.cdb
+    init_db(factory)
+    with _run_lock(run_id):
+        run = _sync(_load_run(run_id, username, factory))
+        if request_id != run["request_id"]:
+            raise legacy.DigitalHumanRequestError(
+                "request_id 与原运行不一致", "idempotency_conflict", 409,
+            )
+        if run["status"] == "abandoned":
+            raise legacy.DigitalHumanRequestError("运行已放弃", "run_abandoned", 409)
+        if run["status"] == "completed":
+            _save_run(run, factory)
+            return {"ok": True, "replayed": True, "run": _public_run(run)}
+        if run["status"] in {"needs_attention", "refund_pending"}:
+            raise legacy.DigitalHumanRequestError(
+                "仍有子任务扣点或退款状态待确认，请稍后查询",
+                "run_recovery_pending", 409,
+            )
+        _submit_children(run, submit_job, retry=True)
+        _sync(run)
+        _maybe_submit_compose(run, submit_job, retry=True)
+        _sync(run)
+        _save_run(run, factory)
     return {"ok": True, "replayed": False, "run": _public_run(run)}
 
 
 def abandon_response(run_id, payload, username, db_factory=None):
     _strict_body(payload, {"request_id"}, ("request_id",))
-    run = _sync(_load_run(run_id, username, db_factory))
-    if str(payload.get("request_id") or "").strip() != run["request_id"]:
-        raise legacy.DigitalHumanRequestError(
-            "request_id 与原运行不一致", "idempotency_conflict", 409,
-        )
-    if run["status"] == "completed":
-        raise legacy.DigitalHumanRequestError("已完成运行不能放弃", "run_completed", 409)
-    if run["status"] != "abandoned":
-        run["status"] = "abandoned"
-        run["abandoned_at"] = int(time.time())
-        run["error"] = "用户已放弃后续恢复；已提交子任务仍按原账务终态处理"
-        _save_run(run, db_factory)
+    run_id = str(run_id or "").strip()
+    if not RUN_ID_RE.fullmatch(run_id):
+        raise legacy.DigitalHumanRequestError("run_id 格式无效")
+    factory = db_factory or legacy.cdb
+    init_db(factory)
+    with _run_lock(run_id):
+        run = _sync(_load_run(run_id, username, factory))
+        if str(payload.get("request_id") or "").strip() != run["request_id"]:
+            raise legacy.DigitalHumanRequestError(
+                "request_id 与原运行不一致", "idempotency_conflict", 409,
+            )
+        if run["status"] == "completed":
+            raise legacy.DigitalHumanRequestError("已完成运行不能放弃", "run_completed", 409)
+        if run["status"] != "abandoned":
+            run["status"] = "abandoned"
+            run["abandoned_at"] = int(time.time())
+            run["error"] = "用户已放弃后续恢复；已提交子任务仍按原账务终态处理"
+        _save_run(run, factory)
     return {"ok": True, "run": _public_run(run)}

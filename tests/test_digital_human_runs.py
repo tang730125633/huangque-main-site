@@ -1,8 +1,11 @@
 import sqlite3
 import sys
 import tempfile
+import threading
+import time
 import unittest
 import importlib
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
@@ -98,8 +101,85 @@ class DigitalHumanRunLedgerTests(unittest.TestCase):
                 }), patch.object(self.runs.points, "cost_of", return_value=0):
             self.runs.start_response({}, "alice", 0, lambda *args: (200, {"job_id": 1}), self.ledger_db)
         with self.assertRaises(self.legacy.DigitalHumanRequestError) as raised:
-            self.runs.status_response(record["run_id"], "bob", self.ledger_db)
+            self.runs.status_response(
+                record["run_id"], "bob", lambda *args: None, self.ledger_db,
+            )
         self.assertEqual(404, raised.exception.status)
+
+    def test_completed_children_advance_compose_once_under_concurrent_status_and_recover(self):
+        normalized, plan, record = self.request_data()
+        submissions = []
+        submission_lock = threading.Lock()
+
+        def submit(kind, body, key, cost):
+            with submission_lock:
+                submissions.append((kind, key, cost))
+                job_id = 1 if kind == "video" else 2
+            if kind == "script_to_video":
+                time.sleep(0.1)
+            with closing(self.jobs_db()) as connection:
+                connection.execute(
+                    "INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?)",
+                    (
+                        job_id, "alice", kind,
+                        "pending" if kind == "video" else "done",
+                        "{}" if kind == "video" else '{"file":"final.mp4"}',
+                        "", cost, 0,
+                    ),
+                )
+                connection.commit()
+            return 200, {"job_id": job_id}
+
+        with patch.object(self.runs, "_normalized_request", return_value=(normalized, plan, record)), \
+                patch.object(self.runs, "_cost_breakdown", return_value={
+                    "materials_max": 0, "materials_each": [], "talking": 10,
+                    "talking_each": [10], "compose": 0, "total": 10,
+                }), patch.object(self.runs.points, "cost_of", return_value=10):
+            started = self.runs.start_response(
+                {}, "alice", 10, submit, self.ledger_db,
+            )
+
+        self.assertEqual("running", started["run"]["status"])
+        self.assertEqual("waiting", started["run"]["steps"]["compose"]["status"])
+        with closing(self.jobs_db()) as connection:
+            connection.execute(
+                "UPDATE jobs SET status='done',result=? WHERE id=1",
+                ('{"file":"talking.mp4"}',),
+            )
+            connection.commit()
+
+        barrier = threading.Barrier(3)
+
+        def query_status():
+            barrier.wait()
+            return self.runs.status_response(
+                record["run_id"], "alice", submit, self.ledger_db,
+            )
+
+        def recover():
+            barrier.wait()
+            return self.runs.recover_response(
+                record["run_id"], {"request_id": normalized["request_id"]},
+                "alice", submit, self.ledger_db,
+            )
+
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = [
+                executor.submit(query_status),
+                executor.submit(query_status),
+                executor.submit(recover),
+            ]
+            responses = [future.result(timeout=10) for future in futures]
+
+        self.assertTrue(all(item["run"]["status"] == "completed" for item in responses))
+        self.assertEqual(1, [item[0] for item in submissions].count("video"))
+        self.assertEqual(1, [item[0] for item in submissions].count("script_to_video"))
+        self.assertEqual(
+            "final.mp4",
+            self.runs.status_response(
+                record["run_id"], "alice", submit, self.ledger_db,
+            )["run"]["result"]["file"],
+        )
 
     def test_local_material_failure_remains_terminal_failed(self):
         run = {
