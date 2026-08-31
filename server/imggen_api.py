@@ -100,7 +100,16 @@ def _cos_get_client():
     global _cos_client
     if _cos_client is None:
         from qcloud_cos import CosConfig, CosS3Client  # 服务器已装；懒加载，本地/CI 不触发
-        _cos_client = CosS3Client(CosConfig(Region=_COS_REGION, SecretId=_COS_ID, SecretKey=_COS_KEY, Scheme="https"))
+        import requests
+        session = requests.Session()
+        session.trust_env = False
+        _cos_client = CosS3Client(
+            CosConfig(
+                Region=_COS_REGION, SecretId=_COS_ID,
+                SecretKey=_COS_KEY, Scheme="https",
+            ),
+            session=session,
+        )
     return _cos_client
 
 def _public_url(rel, content_type=None):

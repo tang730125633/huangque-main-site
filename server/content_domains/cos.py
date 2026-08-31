@@ -47,8 +47,13 @@ def _client():
     global _client_singleton
     if _client_singleton is None:
         from qcloud_cos import CosConfig, CosS3Client  # 服务器 pip 装；本地/CI 不触发 import
+        import requests
         cfg = CosConfig(Region=_REGION, SecretId=_SECRET_ID, SecretKey=_SECRET_KEY, Scheme="https")
-        _client_singleton = CosS3Client(cfg)
+        session = requests.Session()
+        # COS is a domestic storage dependency. Model egress proxies make
+        # streamed PUT requests stall and trigger the SDK's 30s x 4 retries.
+        session.trust_env = False
+        _client_singleton = CosS3Client(cfg, session=session)
     return _client_singleton
 
 
