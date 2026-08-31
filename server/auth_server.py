@@ -4692,16 +4692,20 @@ class H(BaseHTTPRequestHandler):
             c.execute("DELETE FROM tokens WHERE token=?", (token,))
             c.commit(); c.close()
 
-    def _account_media_upload(self, kind, row, director_breakdown=False):
+    def _account_media_upload(self, kind, row, director_breakdown=False,
+                              digital_human_kind=""):
         label = {"image": "图片", "video": "视频", "audio": "音频"}[kind]
         max_bytes = ({
             "image": hq_cli_api.DIRECTOR_BREAKDOWN_IMAGE_MAX_BYTES,
             "video": hq_cli_api.DIRECTOR_BREAKDOWN_VIDEO_MAX_BYTES,
-        } if director_breakdown else {
+        } if director_breakdown else ({
+            "image": 10 * 1024 * 1024,
+            "audio": 30 * 1024 * 1024,
+        } if digital_human_kind else {
             "image": hq_cli_api.IMAGE_UPLOAD_MAX_BYTES,
             "video": hq_cli_api.VIDEO_UPLOAD_MAX_BYTES,
             "audio": hq_cli_api.AUDIO_UPLOAD_MAX_BYTES,
-        })[kind]
+        }))[kind]
         content_types = {
             "image": {"image/jpeg", "image/png", "image/webp"},
             "video": {"video/mp4", "video/quicktime", "video/webm"},
@@ -4714,6 +4718,10 @@ class H(BaseHTTPRequestHandler):
         }[kind])
         proxy = {"image": hq_cli_api.proxy_image_upload, "video": hq_cli_api.proxy_video_upload,
                  "audio": hq_cli_api.proxy_audio_upload}[kind]
+        if digital_human_kind == "material":
+            proxy = hq_cli_api.proxy_digital_human_material_upload
+        elif digital_human_kind == "audio":
+            proxy = hq_cli_api.proxy_digital_human_audio_upload
         invalid_code = "invalid_%s_upload" % kind
         if (self.headers.get("X-HQ-Confirm") or "").strip().lower() != "true":
             return self._cli_send(409, {"detail": "上传本地%s需要显式确认" % label, "code": "confirmation_required"})
@@ -4784,6 +4792,11 @@ class H(BaseHTTPRequestHandler):
                     self.rfile, length, token, INTERNAL_TOKEN, content_type, digest,
                     kind, filename, idempotency_key, expected_cost,
                 )
+            elif digital_human_kind == "audio":
+                status, result = proxy(
+                    self.rfile, length, token, INTERNAL_TOKEN, content_type,
+                    digest, self.headers.get("X-HQ-Run-ID"),
+                )
             else:
                 status, result = proxy(
                     self.rfile, length, token, INTERNAL_TOKEN, content_type, digest,
@@ -4817,6 +4830,21 @@ class H(BaseHTTPRequestHandler):
         if "director:generate" not in scopes:
             return self._cli_send(403, {"detail": "当前 CLI 授权缺少权限：director:generate", "code": "insufficient_scope"})
         return self._account_media_upload(kind, row, director_breakdown=True)
+
+    def _cli_digital_human_upload(self, kind):
+        auth = self._cli_user()
+        if not auth:
+            return self._cli_send(401, {"detail": "CLI 未登录或授权已过期", "code": "cli_unauthorized"})
+        row, scopes = auth
+        if "digital-human-oneclick:write" not in scopes:
+            return self._cli_send(403, {
+                "detail": "当前 CLI 授权缺少权限：digital-human-oneclick:write",
+                "code": "insufficient_scope",
+            })
+        media = "image" if kind == "material" else "audio"
+        return self._account_media_upload(
+            media, row, digital_human_kind=kind,
+        )
 
     def _cli_director_breakdown_quote(self, body):
         auth = self._cli_user()
@@ -5752,6 +5780,10 @@ class H(BaseHTTPRequestHandler):
             return self._cli_video_upload()
         if p == "/api/auth/cli/audio-upload":
             return self._cli_audio_upload()
+        if p == "/api/auth/cli/digital-human-material-upload":
+            return self._cli_digital_human_upload("material")
+        if p == "/api/auth/cli/digital-human-audio-upload":
+            return self._cli_digital_human_upload("audio")
         if p == "/api/auth/cli/director-breakdown-image":
             return self._cli_director_breakdown_upload("image")
         if p == "/api/auth/cli/director-breakdown-video":

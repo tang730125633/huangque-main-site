@@ -120,6 +120,8 @@ CONFIRMATION_ACTIONS = frozenset({
     "short-drama-create", "short-drama-delete",
     "digital-ip-create", "digital-ip-update", "digital-ip-delete",
     "text-video-avatar-import", "text-video-plan",
+    "digital-human-oneclick-consent", "digital-human-oneclick-recover",
+    "digital-human-oneclick-abandon",
 })
 
 # This is the public contract shared by the CLI, the first-party HTTP bridge,
@@ -128,6 +130,26 @@ CONFIRMATION_ACTIONS = frozenset({
 # or provider credentials.
 _ACTION_INPUTS = {
     "account": (), "channels": (), "pricing": (), "director-capability": (),
+    "digital-human-oneclick-capability": (),
+    "digital-human-oneclick-plan": (
+        "script", "narration_mode", "audio_upload_id", "allow_ai_materials",
+        "customer_upload_ids",
+    ),
+    "digital-human-oneclick-consent": (
+        "confirmed", "consent_version", "purpose", "run_id", "plan_digest",
+        "script", "photo_sha256", "voice_mode", "voice_ref", "voice_sha256",
+        "narration_mode", "audio_upload_id", "allow_ai_materials",
+        "customer_upload_ids",
+    ),
+    "digital-human-oneclick-start": (
+        "request_id", "consent_token", "plan_digest", "script",
+        "narration_mode", "audio_upload_id", "allow_ai_materials",
+        "customer_upload_ids", "portrait_upload_id", "voice_key",
+    ),
+    "digital-human-oneclick-status": ("run_id",),
+    "digital-human-oneclick-recover": ("run_id", "request_id"),
+    "digital-human-oneclick-abandon": ("run_id", "request_id"),
+    "digital-human-oneclick-history": ("limit", "offset"),
     "director-script-generate": ("prompt", "style", "duration", "platform"),
     "director-breakdown": ("url", "urls", "mode"),
     "director-scene-image-generate": ("scenes", "ratio", "quality"),
@@ -196,6 +218,14 @@ _ACTION_INPUTS = {
 _ACTION_PURPOSES = {
     "account": "读取当前黄雀账号与点数", "channels": "读取可用渠道", "pricing": "读取实时价格",
     "director-capability": "读取编导与数字人一键生成的完整 CLI 覆盖契约",
+    "digital-human-oneclick-capability": "读取普通数字人一键生成的实时能力、限制和供应商状态",
+    "digital-human-oneclick-plan": "按文案或完整录音生成服务端冻结时间轴方案",
+    "digital-human-oneclick-consent": "保存与 plan_digest 绑定的本人照片、声音和素材授权",
+    "digital-human-oneclick-start": "报价后以唯一 request_id 启动服务端数字人运行",
+    "digital-human-oneclick-status": "读取本人数字人运行、子任务、扣点退款与成片状态",
+    "digital-human-oneclick-recover": "仅恢复原运行中可恢复的失败步骤",
+    "digital-human-oneclick-abandon": "放弃原运行的后续恢复并保留账务审计状态",
+    "digital-human-oneclick-history": "读取本人已完成的数字人成片历史",
     "director-script-generate": "按主站编导规则生成结构化脚本与分镜",
     "director-breakdown": "拆解抖音或小红书作品链接并生成分镜或反推提示词",
     "director-breakdown-upload": "上传本地图片或视频并反推可复用提示词",
@@ -741,10 +771,130 @@ _MEDIA_SCHEMAS.update({
     }, "constraints": ["soft delete guarded by the current revision"]},
 })
 
+_DIGITAL_HUMAN_RUN_ID_SCHEMA = {
+    "type": "string", "pattern": "^dh-run-[A-Za-z0-9._:-]{1,128}$",
+}
+_DIGITAL_HUMAN_REQUEST_ID_SCHEMA = {
+    "type": "string", "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+}
+_DIGITAL_HUMAN_PLAN_DIGEST_SCHEMA = {
+    "type": "string", "pattern": "^[0-9a-f]{64}$",
+}
+_DIGITAL_HUMAN_MATERIAL_IDS_SCHEMA = {
+    "type": "array", "maxItems": 12, "uniqueItems": True,
+    "items": {"type": "string", "pattern": "^img_[0-9a-f]{32}$"},
+}
+_MEDIA_SCHEMAS.update({
+    "digital-human-oneclick-capability": {
+        "required": [], "properties": {}, "constraints": [],
+    },
+    "digital-human-oneclick-plan": {
+        "required": ["narration_mode"], "properties": {
+            "script": {"type": "string", "minLength": 12, "maxLength": 6000},
+            "narration_mode": {"type": "string", "enum": ["text", "audio"]},
+            "audio_upload_id": {"type": "string", "pattern": "^dha_[0-9a-f]{32}$"},
+            "allow_ai_materials": {"type": "boolean"},
+            "customer_upload_ids": _DIGITAL_HUMAN_MATERIAL_IDS_SCHEMA,
+        },
+        "oneOf": [
+            {"required": ["script"]}, {"required": ["audio_upload_id"]},
+        ],
+        "constraints": [
+            "text mode requires script; audio mode requires a dedicated digital-human audio upload",
+            "customer_upload_ids must belong to the current account",
+        ],
+    },
+    "digital-human-oneclick-consent": {
+        "required": [
+            "confirmed", "consent_version", "purpose", "run_id",
+            "plan_digest", "photo_sha256", "voice_mode", "voice_ref",
+            "narration_mode",
+        ],
+        "properties": {
+            "confirmed": {"type": "boolean", "const": True},
+            "consent_version": {"type": "string", "const": "digital-human-material-v3"},
+            "purpose": {"type": "string", "const": "digital_human_material_v3"},
+            "run_id": _DIGITAL_HUMAN_RUN_ID_SCHEMA,
+            "plan_digest": _DIGITAL_HUMAN_PLAN_DIGEST_SCHEMA,
+            "script": {"type": "string", "maxLength": 6000},
+            "photo_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "voice_mode": {"type": "string", "enum": ["existing", "audio"]},
+            "voice_ref": {"type": "string", "maxLength": 180},
+            "voice_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "narration_mode": {"type": "string", "enum": ["text", "audio"]},
+            "audio_upload_id": {"type": "string", "pattern": "^dha_[0-9a-f]{32}$"},
+            "allow_ai_materials": {"type": "boolean"},
+            "customer_upload_ids": _DIGITAL_HUMAN_MATERIAL_IDS_SCHEMA,
+        },
+        "constraints": [
+            "authorization is owner-scoped and permanently bound to plan_digest",
+            "CLI normal mode requires a ready existing voice; clone it first when needed",
+        ],
+    },
+    "digital-human-oneclick-start": {
+        "required": [
+            "request_id", "consent_token", "plan_digest", "narration_mode",
+            "portrait_upload_id", "allow_ai_materials", "customer_upload_ids",
+        ],
+        "properties": {
+            "request_id": _DIGITAL_HUMAN_REQUEST_ID_SCHEMA,
+            "consent_token": {"type": "string", "minLength": 32, "maxLength": 512},
+            "plan_digest": _DIGITAL_HUMAN_PLAN_DIGEST_SCHEMA,
+            "script": {"type": "string", "maxLength": 6000},
+            "narration_mode": {"type": "string", "enum": ["text", "audio"]},
+            "audio_upload_id": {"type": "string", "pattern": "^dha_[0-9a-f]{32}$"},
+            "allow_ai_materials": {"type": "boolean"},
+            "customer_upload_ids": _DIGITAL_HUMAN_MATERIAL_IDS_SCHEMA,
+            "portrait_upload_id": {"type": "string", "pattern": "^img_[0-9a-f]{32}$"},
+            "voice_key": {"type": "string", "maxLength": 180},
+        },
+        "constraints": [
+            "quote first; confirmation must reuse identical input, quote_token, plan_digest and request_id",
+            "replaying request_id returns the original run without duplicate child charges",
+        ],
+    },
+    "digital-human-oneclick-status": {
+        "required": ["run_id"], "properties": {
+            "run_id": _DIGITAL_HUMAN_RUN_ID_SCHEMA,
+        }, "constraints": ["only the run owner can read status"],
+    },
+    "digital-human-oneclick-recover": {
+        "required": ["run_id", "request_id"], "properties": {
+            "run_id": _DIGITAL_HUMAN_RUN_ID_SCHEMA,
+            "request_id": _DIGITAL_HUMAN_REQUEST_ID_SCHEMA,
+        }, "constraints": [
+            "only refunded or zero-cost failed steps are resubmitted",
+            "completed and in-flight children are never recreated",
+        ],
+    },
+    "digital-human-oneclick-abandon": {
+        "required": ["run_id", "request_id"], "properties": {
+            "run_id": _DIGITAL_HUMAN_RUN_ID_SCHEMA,
+            "request_id": _DIGITAL_HUMAN_REQUEST_ID_SCHEMA,
+        }, "constraints": ["abandon stops future recovery but does not cancel already submitted billing"],
+    },
+    "digital-human-oneclick-history": {
+        "required": [], "properties": {
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+            "offset": {"type": "integer", "minimum": 0, "maximum": 2000},
+        }, "constraints": ["only completed videos owned by the current account are returned"],
+    },
+})
+
 _FAMILIES = {
     "director-capability": "director", "director-script-generate": "director",
     "director-breakdown": "director", "director-breakdown-upload": "director",
     "director-scene-image-generate": "director",
+    "digital-human-oneclick-capability": "digital-human",
+    "digital-human-oneclick-plan": "digital-human",
+    "digital-human-oneclick-consent": "digital-human",
+    "digital-human-oneclick-start": "digital-human",
+    "digital-human-oneclick-status": "digital-human",
+    "digital-human-oneclick-recover": "digital-human",
+    "digital-human-oneclick-abandon": "digital-human",
+    "digital-human-oneclick-history": "digital-human",
+    "digital-human-oneclick-material-upload": "digital-human",
+    "digital-human-oneclick-audio-upload": "digital-human",
     "image-upload": "image", "image-generate": "image", "audio-slots": "audio", "voices": "audio", "audio-generate": "audio",
     "voice-clone-create": "audio", "voice-clone-status": "audio",
     "video-upload": "video", "video-avatars": "video", "video-generate": "video", "video-lipsync": "video", "digital-ip-text-generate": "video",
@@ -793,6 +943,7 @@ _GENERATION_ACTIONS = frozenset({
     "cinematic-open-generate", "cinematic-motion-generate", "tryon-fast-generate", "tryon-classic-generate",
     "text-video-generate", "video-avatar-create",
     "matrix-template-generate", "matrix-template-batch-generate",
+    "digital-human-oneclick-start",
 })
 
 
@@ -813,6 +964,8 @@ def _catalog_type(field):
 def _catalog_route(action):
     if action.startswith("director-"):
         return "/workbench/script"
+    if action.startswith("digital-human-oneclick-"):
+        return "/workbench/digital-human-oneclick.html"
     if action.startswith("canvas-") or action.startswith("digital-presenter-"):
         return "/workbench/canvas"
     if action.startswith("image-"):
@@ -921,6 +1074,10 @@ ACTION_CATALOG = tuple(_catalog_entry(action, fields) for action, fields in _ACT
                           ["video/mp4", "video/quicktime", "video/webm"], 6),
     _upload_catalog_entry("audio-upload", "audio", 10 * 1024 * 1024,
                           ["audio/mpeg", "audio/wav", "audio/x-wav", "audio/mp4", "audio/x-m4a", "audio/aac", "audio/ogg"], 20),
+    _upload_catalog_entry("digital-human-oneclick-material-upload", "image", 10 * 1024 * 1024,
+                          ["image/jpeg", "image/png", "image/webp"], 12),
+    _upload_catalog_entry("digital-human-oneclick-audio-upload", "audio", 30 * 1024 * 1024,
+                          ["audio/mpeg", "audio/wav", "audio/x-wav", "audio/mp4", "audio/x-m4a", "audio/aac"], 1),
     _director_breakdown_upload_catalog_entry(),
 )
 for _catalog_item in ACTION_CATALOG:
@@ -978,6 +1135,7 @@ _TALKING_AVATAR_ID_RE = re.compile(r"^local_avatar_[0-9a-f]{32}$")
 _TALKING_SCENE_ID_RE = re.compile(r"^scene_[0-9]{2}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
+_DIGITAL_HUMAN_RUN_RE = re.compile(r"^dh-run-[A-Za-z0-9._:-]{1,128}$")
 _CANVAS_BASE64_RE = re.compile(r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{512,}={0,2}(?![A-Za-z0-9+/_=-])")
 IMAGE_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
 IMAGE_UPLOAD_SLOTS = threading.BoundedSemaphore(2)
@@ -1702,6 +1860,24 @@ def proxy_audio_upload(stream, length, web_token, internal_token, content_type, 
     )
 
 
+def proxy_digital_human_material_upload(
+        stream, length, web_token, internal_token, content_type, digest):
+    return _proxy_media_upload(
+        stream, length, web_token, internal_token, content_type, digest,
+        "/api/gen/script_to_video/material-upload", "X-HQ-Image-SHA256", "image",
+    )
+
+
+def proxy_digital_human_audio_upload(
+        stream, length, web_token, internal_token, content_type, digest, run_id):
+    run_id = _matched_string(run_id, "run_id", _DIGITAL_HUMAN_RUN_RE, 135)
+    return _proxy_media_upload(
+        stream, length, web_token, internal_token, content_type, digest,
+        "/api/gen/digital-human-v2/audio-upload", "X-HQ-Audio-SHA256", "audio",
+        extra_headers={"X-HQ-Run-ID": run_id},
+    )
+
+
 def proxy_director_breakdown_upload(stream, length, web_token, internal_token,
                                     content_type, digest, media_type, filename,
                                     idempotency_key, expected_cost):
@@ -1960,6 +2136,118 @@ def action_plan(action, value):
     if action == "director-capability":
         _strict_object(value, set())
         return _plan("director:read", "director-capability")
+    if action == "digital-human-oneclick-capability":
+        _strict_object(value, set())
+        return _plan(
+            "digital-human-oneclick:read", "proxy", base=CONTENT_BASE,
+            path="/api/gen/digital-human-v2/capability",
+        )
+    if action == "digital-human-oneclick-plan":
+        _strict_object(value, {
+            "script", "narration_mode", "audio_upload_id",
+            "allow_ai_materials", "customer_upload_ids",
+        }, ("narration_mode",))
+        mode = _enum(value["narration_mode"], "narration_mode", ("text", "audio"))
+        body = {
+            "narration_mode": mode,
+            "allow_ai_materials": value.get("allow_ai_materials", False),
+            "customer_upload_ids": value.get("customer_upload_ids", []),
+        }
+        if not isinstance(body["allow_ai_materials"], bool):
+            raise CLIAPIError(400, "allow_ai_materials 必须是布尔值")
+        uploads = body["customer_upload_ids"]
+        if not isinstance(uploads, list) or len(uploads) > 12:
+            raise CLIAPIError(400, "customer_upload_ids 必须是最多 12 项的数组")
+        body["customer_upload_ids"] = [
+            _upload_id(item, "customer_upload_ids") for item in uploads
+        ]
+        if len(body["customer_upload_ids"]) != len(set(body["customer_upload_ids"])):
+            raise CLIAPIError(400, "customer_upload_ids 不能重复")
+        if mode == "text":
+            if "audio_upload_id" in value:
+                raise CLIAPIError(400, "text 模式不接受 audio_upload_id")
+            body["script"] = _string(value.get("script"), "script", 12, 6000)
+        else:
+            if "script" in value:
+                raise CLIAPIError(400, "audio 模式不接受 script")
+            audio_id = _string(value.get("audio_upload_id"), "audio_upload_id", 36, 36)
+            if not re.fullmatch(r"dha_[0-9a-f]{32}", audio_id):
+                raise CLIAPIError(400, "audio_upload_id 格式不合法")
+            body["audio_upload_id"] = audio_id
+        return _plan(
+            "digital-human-oneclick:read", "proxy", base=CONTENT_BASE,
+            path="/api/gen/digital-human-v2/plan", method="POST", body=body,
+        )
+    if action == "digital-human-oneclick-consent":
+        allowed = {
+            "confirmed", "consent_version", "purpose", "run_id", "plan_digest",
+            "script", "photo_sha256", "voice_mode", "voice_ref", "voice_sha256",
+            "narration_mode", "audio_upload_id", "allow_ai_materials",
+            "customer_upload_ids",
+        }
+        _strict_object(value, allowed, (
+            "confirmed", "consent_version", "purpose", "run_id", "plan_digest",
+            "photo_sha256", "voice_mode", "voice_ref", "narration_mode",
+        ))
+        if value.get("confirmed") is not True:
+            raise CLIAPIError(400, "confirmed 必须为 true")
+        body = json.loads(json.dumps(value, ensure_ascii=False))
+        return _plan(
+            "digital-human-oneclick:write", "proxy", base=CONTENT_BASE,
+            path="/api/gen/digital-human-v2/consent", method="POST", body=body,
+        )
+    if action == "digital-human-oneclick-start":
+        allowed = {
+            "request_id", "consent_token", "plan_digest", "script",
+            "narration_mode", "audio_upload_id", "allow_ai_materials",
+            "customer_upload_ids", "portrait_upload_id", "voice_key",
+        }
+        _strict_object(value, allowed, (
+            "request_id", "consent_token", "plan_digest", "narration_mode",
+            "allow_ai_materials", "customer_upload_ids", "portrait_upload_id",
+        ))
+        payload = json.loads(json.dumps(value, ensure_ascii=False))
+        _matched_string(payload["request_id"], "request_id", _IDEMPOTENCY_KEY_RE, 128)
+        _matched_string(payload["plan_digest"], "plan_digest", _SHA256_RE, 64)
+        _upload_id(payload["portrait_upload_id"], "portrait_upload_id")
+        return _plan(
+            "digital-human-oneclick:generate", "generation",
+            generation_kind="digital_human_oneclick",
+            endpoint="/api/gen/digital-human-v2/runs", payload=payload,
+            quote_endpoint="/api/gen/digital-human-v2/runs/quote",
+            quote_body=payload,
+            quote_result_fields=("run_id", "request_id", "plan_digest", "cost_breakdown"),
+        )
+    if action in {
+            "digital-human-oneclick-status", "digital-human-oneclick-recover",
+            "digital-human-oneclick-abandon"}:
+        required = ("run_id",) if action.endswith("status") else ("run_id", "request_id")
+        _strict_object(value, set(required), required)
+        run_id = _matched_string(value["run_id"], "run_id", _DIGITAL_HUMAN_RUN_RE, 135)
+        path = "/api/gen/digital-human-v2/runs/" + urllib.parse.quote(run_id, safe="")
+        if action.endswith("status"):
+            return _plan(
+                "digital-human-oneclick:read", "proxy", base=CONTENT_BASE,
+                path=path,
+            )
+        request_id = _matched_string(
+            value["request_id"], "request_id", _IDEMPOTENCY_KEY_RE, 128,
+        )
+        suffix = "/recover" if action.endswith("recover") else "/abandon"
+        return _plan(
+            "digital-human-oneclick:write", "proxy", base=CONTENT_BASE,
+            path=path + suffix, method="POST", body={"request_id": request_id},
+        )
+    if action == "digital-human-oneclick-history":
+        _strict_object(value, {"limit", "offset"})
+        query = urllib.parse.urlencode({
+            "limit": _integer(value.get("limit", 20), "limit", 1, 50),
+            "offset": _integer(value.get("offset", 0), "offset", 0, 2000),
+        })
+        return _plan(
+            "digital-human-oneclick:read", "proxy", base=CONTENT_BASE,
+            path="/api/gen/digital-human-v2/history?" + query,
+        )
     if action == "director-script-generate":
         _strict_object(value, {"prompt", "style", "duration", "platform"}, ("prompt",))
         style = _enum(value.get("style", "spoken"), "style", ("spoken", "story", "recommend"))

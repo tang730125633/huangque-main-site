@@ -541,6 +541,58 @@ def load_image_data_url(upload_id, username, now=None):
     return "data:%s;base64,%s" % (meta["mime"], data)
 
 
+def inspect_image(upload_id, username, now=None):
+    """Return owner-scoped image metadata without exposing the stored path."""
+    _data, meta = _load_image(
+        upload_id, username, int(time.time() if now is None else now))
+    return dict(meta)
+
+
+def read_image_bytes(upload_id, username, now=None):
+    """Return verified bytes for an owner-scoped temporary image."""
+    data, meta = _load_image(
+        upload_id, username, int(time.time() if now is None else now))
+    return base64.b64decode(data), dict(meta)
+
+
+def approve_image(upload_id, username, purpose, lease_seconds, now=None):
+    """Bind a temporary image to one server-known purpose for a short lease."""
+    now = int(time.time() if now is None else now)
+    _data, meta = _load_image(upload_id, username, now)
+    purpose = str(purpose or "").strip()
+    if not re.fullmatch(r"[a-z][a-z0-9_-]{2,63}", purpose):
+        raise ValueError("图片授权用途无效")
+    lease_seconds = int(lease_seconds or 0)
+    if not 60 <= lease_seconds <= TTL:
+        raise ValueError("图片授权期限无效")
+    upload_id = str(upload_id).strip().lower()
+    _data_path, meta_path = _paths(upload_id, meta["extension"])
+    approved = dict(meta)
+    approved["approved_for"] = purpose
+    approved["approved_until"] = min(
+        int(meta["expires_at"]), now + lease_seconds,
+    )
+    temp_path = meta_path.with_name("." + meta_path.name + ".approve.tmp")
+    temp_path.write_text(
+        json.dumps(approved, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    os.chmod(temp_path, 0o600)
+    os.replace(temp_path, meta_path)
+    return approved
+
+
+def discard_image(upload_id, username, now=None):
+    """Delete one verified owner-scoped image upload."""
+    _data, meta = _load_image(
+        upload_id, username, int(time.time() if now is None else now))
+    upload_id = str(upload_id).strip().lower()
+    data_path, meta_path = _paths(upload_id, meta["extension"])
+    data_path.unlink(missing_ok=True)
+    meta_path.unlink(missing_ok=True)
+    return True
+
+
 def _load_video(upload_id, username, now):
     upload_id = str(upload_id or "").strip().lower()
     if not VIDEO_UPLOAD_ID_RE.fullmatch(upload_id):

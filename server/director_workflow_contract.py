@@ -266,51 +266,61 @@ DIGITAL_HUMAN_ONECLICK_ACTIONS = (
     _action(
         "digital-human-oneclick-capability", "oneclick", "digital-human-oneclick:read", (),
         ("GET:/api/gen/digital-human-v2/capability",),
+        availability="available",
         description="读取数字人一键生成能力与限制。",
     ),
     _action(
         "digital-human-oneclick-plan", "oneclick", "digital-human-oneclick:read", (),
         ("POST:/api/gen/digital-human-v2/plan",),
+        availability="available",
         description="按文案或完整录音生成冻结时间轴方案。",
     ),
     _action(
         "digital-human-oneclick-consent", "oneclick", "digital-human-oneclick:write", (),
         ("POST:/api/gen/digital-human-v2/consent",),
+        availability="available",
         description="保存与 plan_digest 绑定的照片、声音和 AI 素材授权。",
     ),
     _action(
         "digital-human-oneclick-audio-upload", "oneclick", "digital-human-oneclick:write", (),
         ("POST:/api/gen/digital-human-v2/audio-upload",), transport="dedicated_upload",
+        availability="available",
         description="上传本人完整口播录音并生成安全切片。",
     ),
     _action(
         "digital-human-oneclick-material-upload", "oneclick", "digital-human-oneclick:write", (),
         ("POST:/api/gen/script_to_video/material-upload",), transport="dedicated_upload",
+        availability="available",
         description="上传本人顾客素材并绑定运行。",
     ),
     _action(
         "digital-human-oneclick-start", "oneclick", "digital-human-oneclick:generate", (),
         ("POST:/api/gen/digital-human-v2/runs",), billing="quote_then_confirm",
+        availability="available",
         description="由服务端编排声音、主画面、数字人、合成与归档。",
     ),
     _action(
         "digital-human-oneclick-status", "oneclick", "digital-human-oneclick:read", (),
         ("GET:/api/gen/digital-human-v2/runs/{run_id}",),
+        availability="available",
         description="读取完整运行、子任务、失败原因和账务状态。",
     ),
     _action(
         "digital-human-oneclick-recover", "oneclick", "digital-human-oneclick:write", (),
         ("POST:/api/gen/digital-human-v2/runs/{run_id}/recover",),
+        availability="available",
         description="恢复原运行的可恢复步骤，不创建重复付费任务。",
     ),
     _action(
         "digital-human-oneclick-abandon", "oneclick", "digital-human-oneclick:write", (),
         ("POST:/api/gen/digital-human-v2/runs/{run_id}/abandon",),
+        availability="available",
         description="放弃未完成运行；已扣点步骤仍按账务终态处理。",
     ),
     _action(
         "digital-human-oneclick-history", "oneclick", "digital-human-oneclick:read", (),
         ("GET:/api/gen/digital-human-v2/history",),
+        availability="available",
         description="读取本人数字人一键生成历史。",
     ),
     _action(

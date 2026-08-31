@@ -160,6 +160,7 @@ class HQCLIAPITests(unittest.TestCase):
         actions = {item["action"]: item for item in payload["actions"]}
         self.assertEqual(set(self.auth.hq_cli_api._ACTION_INPUTS) | {
             "image-upload", "video-upload", "audio-upload", "director-breakdown-upload",
+            "digital-human-oneclick-material-upload", "digital-human-oneclick-audio-upload",
         }, set(actions))
         for action, item in actions.items():
             with self.subTest(action=action):
@@ -2278,13 +2279,15 @@ class HQCLIAPITests(unittest.TestCase):
         }, token=token)
         self.assertEqual(200, status, payload)
         self.assertEqual("director-workflow-contract-v1", payload["contract_version"])
-        self.assertEqual(5, payload["counts"]["available"])
+        self.assertEqual(15, payload["counts"]["available"])
         actions = {item["id"]: item for item in payload["actions"]}
         self.assertEqual("available", actions["director-capability"]["availability"])
         self.assertEqual("available", actions["director-script-generate"]["availability"])
         self.assertEqual("available", actions["director-breakdown"]["availability"])
         self.assertEqual("available", actions["director-breakdown-upload"]["availability"])
         self.assertEqual("available", actions["director-scene-image-generate"]["availability"])
+        self.assertEqual("available", actions["digital-human-oneclick-start"]["availability"])
+        self.assertEqual("available", actions["digital-human-oneclick-recover"]["availability"])
         self.assertEqual("planned", actions["director-scene-video-generate"]["availability"])
         self.assertEqual("planned", actions["director-scene-talking-generate"]["availability"])
         self.assertEqual("planned", actions["director-production-start"]["availability"])
