@@ -5857,6 +5857,12 @@ def _coach_model_decision(
             key: item for key, item in confirmed_outputs.items()
             if str(key).startswith("5-") and isinstance(item, dict)
         }
+    pending_collected = focused_profile.get("pending_collected") or {}
+    if pending_collected:
+        profile_data["pending_collected_summary"] = "本模块已收集但未确认（这些【不得重复追问】，直接推进到仍未覆盖的项目）：" + "；".join(
+            "%s=%s" % (str(k), str((v or {}).get("value") or "")[:40])
+            for k, v in list(pending_collected.items())[:10]
+        )
     profile_data.update({
         "persona_contract": coach_harness.persona_contract(state),
         "confirmed_selected_directions": {
