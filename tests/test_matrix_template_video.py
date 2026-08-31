@@ -47,6 +47,9 @@ class MatrixTemplateVideoTests(unittest.TestCase):
     def reference_templates(self, semantic_variants=None):
         if semantic_variants is None:
             semantic_variants = tuple(sorted(self.module._ALL_REFERENCE_VARIANTS))
+        legacy_contract = set(semantic_variants) in (
+            {"v02"}, {"v02", "v05"},
+        )
         values = [
             {
                 "id": "full-overlay-bold", "name": "沉浸强标题",
@@ -75,10 +78,16 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                     "version": 1,
                     "max_width_px": 996,
                     "layers": {
-                        layer: {
-                            "font_size_px": pair[0], "max_lines": pair[1],
-                        }
-                        for layer, pair in self.module._SEMANTIC_CONTRACTS[
+                        layer: (
+                            {"font_size_px": values[0], "max_lines": values[3]}
+                            if legacy_contract else {
+                                "font_size_px": values[0],
+                                "font_weight": values[1],
+                                "max_width_px": values[2],
+                                "max_lines": values[3],
+                            }
+                        )
+                        for layer, values in self.module._SEMANTIC_CONTRACTS[
                             variant
                         ].items()
                     },
@@ -144,6 +153,12 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             item["font_selectable"] is False
             for item in expanded if item["engine"] == "hyperframes"
         ))
+        v10 = next(item for item in expanded if item.get("variant") == "v10")
+        self.assertEqual(
+            {"font_size_px": 80, "font_weight": 400,
+             "max_width_px": 970, "max_lines": 2},
+            v10["semantic_layout"]["layers"]["bottom2"],
+        )
         self.assertEqual(
             {f"v{index:02d}" for index in range(1, 18)},
             {item["variant"] for item in expanded if item["engine"] == "hyperframes"},
@@ -166,6 +181,12 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         self.assertEqual(
             ["v02"],
             [item["variant"] for item in legacy if item.get("semantic_layout")],
+        )
+        self.assertNotIn(
+            "font_weight",
+            next(
+                item for item in legacy if item.get("variant") == "v02"
+            )["semantic_layout"]["layers"]["top1"],
         )
         self.assertNotIn(
             "semantic_layout",
@@ -203,6 +224,27 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             "semantic_layout"
         ]["layers"]["top3"]["font_size_px"] = 69
         invalid_cases.append(drift)
+
+        weight_drift = self.reference_templates()
+        next(item for item in weight_drift if item.get("variant") == "v05")[
+            "semantic_layout"
+        ]["layers"]["top2"]["font_weight"] = 800
+        invalid_cases.append(weight_drift)
+
+        width_drift = self.reference_templates()
+        next(item for item in width_drift if item.get("variant") == "v10")[
+            "semantic_layout"
+        ]["layers"]["bottom2"]["max_width_px"] = 996
+        invalid_cases.append(width_drift)
+
+        mixed_contract = self.reference_templates()
+        mixed_v02 = next(
+            item for item in mixed_contract if item.get("variant") == "v02"
+        )["semantic_layout"]["layers"]
+        for layer in mixed_v02.values():
+            layer.pop("font_weight")
+            layer.pop("max_width_px")
+        invalid_cases.append(mixed_contract)
 
         for templates in invalid_cases:
             with self.subTest(templates=templates), mock.patch.object(
