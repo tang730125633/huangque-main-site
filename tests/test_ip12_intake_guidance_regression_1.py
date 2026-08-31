@@ -57,11 +57,15 @@ class IntakeGuidanceRegressionTests(unittest.TestCase):
         self.assertEqual(state["intake"]["asked_follow_ups"], ["preferred_name"])
         self.assertIn("可以跳过", reply)
 
-    def test_prompt_requires_full_coverage_and_marks_sensitive_items_optional(self):
+    def test_prompt_treats_core_as_required_and_marks_the_rest_optional(self):
         prompt = harness.intake_system_prompt(harness.initial_state())
-        self.assertIn("必须覆盖《黄雀IP人设定位采集表》的全部项目", prompt)
+        self.assertIn("IP 孵化教练", prompt)
         self.assertIn("敏感可选项", prompt)
-        self.assertIn("只有待覆盖列表为“无”", prompt)
+        self.assertIn("我先聊聊", prompt)
+        self.assertNotIn("必须覆盖《黄雀IP人设定位采集表》的全部项目", prompt)
+        self.assertNotIn("35–70", prompt)
+        self.assertNotIn("35-70", prompt)
+        self.assertNotIn("本轮只问一个尚未覆盖的项目", prompt)
 
 
 if __name__ == "__main__":
