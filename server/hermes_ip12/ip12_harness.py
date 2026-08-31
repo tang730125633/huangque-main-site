@@ -2287,16 +2287,17 @@ def apply_intake_decision(value, raw, evidence_text, current_message=""):
         if canonical_topic in intake.get("declined_fields", []):
             raise HarnessError("基础访谈追问了用户已经拒答的信息；请改问其他未回答项")
         if follow_up_topic in asked_follow_ups:
-            if canonical_topic in coverage_gaps:
-                decision["reply"] = intake_natural_question(canonical_topic, clarifying=True)
-            else:
-                raise HarnessError("基础访谈重复追问了已经回答的信息；请改问其他未回答项")
+            raise HarnessError(
+                "你重复问了已经问过的信息（%s）；如果用户没听懂，先解释上一问的意思再换一种说法重问，"
+                "或推进到其他未覆盖项。" % INTAKE_COVERAGE_LABELS.get(canonical_topic, canonical_topic)
+            )
         if coverage_gaps and (not follow_up_topic or canonical_topic not in coverage_gaps):
-            remaining = [field for field in coverage_gaps if field not in asked_canonical]
-            if not remaining:
-                remaining = list(coverage_gaps)
-            canonical_topic = follow_up_topic = remaining[0]
-            decision["reply"] = intake_natural_question(canonical_topic)
+            remaining = [field for field in coverage_gaps if field not in asked_canonical] or list(coverage_gaps)
+            raise HarnessError(
+                "你本轮没有追问当前缺失的信息。当前未覆盖项是：%s。"
+                "请围绕其中一个，用自然的新说法追问，不要套用固定句式。"
+                % "、".join(INTAKE_COVERAGE_LABELS.get(field, field) for field in remaining[:4])
+            )
         if follow_up_topic and follow_up_topic not in asked_follow_ups:
             asked_follow_ups.append(follow_up_topic)
         intake["current_question_field"] = canonical_topic
