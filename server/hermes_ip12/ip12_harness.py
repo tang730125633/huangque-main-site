@@ -2281,26 +2281,23 @@ def apply_intake_decision(value, raw, evidence_text, current_message=""):
         follow_up_topic = intake_follow_up_topic(decision["reply"])
         canonical_topic = INTAKE_TOPIC_TO_FIELD.get(follow_up_topic, follow_up_topic)
         asked_follow_ups = intake.setdefault("asked_follow_ups", [])
-        asked_canonical = {
-            INTAKE_TOPIC_TO_FIELD.get(topic, topic) for topic in asked_follow_ups
-        }
         if canonical_topic in intake.get("declined_fields", []):
             raise HarnessError("基础访谈追问了用户已经拒答的信息；请改问其他未回答项")
-        if follow_up_topic in asked_follow_ups:
+        # 只有「问已答项」这一种真错误才拦；模型措辞与话题一律保留，不做模板覆盖
+        if (
+            canonical_topic
+            and canonical_topic not in coverage_gaps
+            and INTAKE_TOPIC_TO_FIELD.get(follow_up_topic, follow_up_topic) in {
+                INTAKE_TOPIC_TO_FIELD.get(item, item) for item in asked_follow_ups
+            }
+        ):
             raise HarnessError(
-                "你重复问了已经问过的信息（%s）；如果用户没听懂，先解释上一问的意思再换一种说法重问，"
+                "你重复问了已经回答过的信息（%s）；先解释上一问的意思或换一种说法，"
                 "或推进到其他未覆盖项。" % INTAKE_COVERAGE_LABELS.get(canonical_topic, canonical_topic)
-            )
-        if coverage_gaps and (not follow_up_topic or canonical_topic not in coverage_gaps):
-            remaining = [field for field in coverage_gaps if field not in asked_canonical] or list(coverage_gaps)
-            raise HarnessError(
-                "你本轮没有追问当前缺失的信息。当前未覆盖项是：%s。"
-                "请围绕其中一个，用自然的新说法追问，不要套用固定句式。"
-                % "、".join(INTAKE_COVERAGE_LABELS.get(field, field) for field in remaining[:4])
             )
         if follow_up_topic and follow_up_topic not in asked_follow_ups:
             asked_follow_ups.append(follow_up_topic)
-        intake["current_question_field"] = canonical_topic
+        intake["current_question_field"] = canonical_topic or intake.get("current_question_field", "")
         if merged_updates:
             intake["profile_updates"] = list(merged_updates.values())
         if intake["status"] == "awaiting_confirmation":
