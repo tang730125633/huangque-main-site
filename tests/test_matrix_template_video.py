@@ -75,6 +75,16 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                 "bottom2": {"font_size_px": 78, "max_lines": 2},
             },
         }
+        values[6]["semantic_layout"] = {
+            "version": 1,
+            "max_width_px": 996,
+            "layers": {
+                "top1": {"font_size_px": 102, "max_lines": 2},
+                "top2": {"font_size_px": 104, "max_lines": 2},
+                "top3": {"font_size_px": 68, "max_lines": 3},
+                "bottom2": {"font_size_px": 70, "max_lines": 2},
+            },
+        }
         return values
 
     def test_public_catalog_accepts_transition_counts_but_exposes_only_approved_templates(self):
@@ -141,7 +151,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             {item["variant"] for item in expanded if item["engine"] == "hyperframes"},
         )
         self.assertEqual(
-            ["v02"],
+            ["v02", "v05"],
             [item["variant"] for item in expanded if item.get("semantic_layout")],
         )
         self.assertEqual({

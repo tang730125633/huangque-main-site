@@ -38,6 +38,28 @@ class MatrixTemplateSemanticsTests(unittest.TestCase):
             },
         }
 
+    @staticmethod
+    def v05_contract():
+        return {
+            "version": 1,
+            "max_width_px": 996,
+            "layers": {
+                "top1": {"font_size_px": 102, "max_lines": 2},
+                "top2": {"font_size_px": 104, "max_lines": 2},
+                "top3": {"font_size_px": 68, "max_lines": 3},
+                "bottom2": {"font_size_px": 70, "max_lines": 2},
+            },
+        }
+
+    def test_prompt_exposes_v05_top3_to_semantic_model(self):
+        prompt = self.module._prompt(
+            "团队8个人，每天产出100条短视频",
+            "评论区扣111",
+            self.v05_contract(),
+        )
+        self.assertIn("top3: 68px", prompt)
+        self.assertIn("分配到 top3", prompt)
+
     def test_index_response_never_rewrites_source(self):
         top = "团队8个人，每天产出100条短视频，覆盖全部平台"
         bottom = "想进军健康赛道的，勾兑勾兑"
