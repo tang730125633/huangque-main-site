@@ -377,19 +377,20 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                 )
             return {"payload": dict(body, duration=11)}
 
+        def resolve(_top, _bottom, _template_id, _contract, validator):
+            accepted, feedback = validator(first)
+            self.assertFalse(accepted)
+            self.assertIn("语义断点", feedback)
+            accepted, response = validator(repaired)
+            self.assertTrue(accepted)
+            return repaired, response
+
         with mock.patch.object(self.module, "require_available"), \
              mock.patch.object(self.module, "public_templates", return_value=[template]), \
              mock.patch.object(
-                 self.module.matrix_template_semantics, "initial",
-                 return_value=("cache-key", first),
-             ), \
-             mock.patch.object(
-                 self.module.matrix_template_semantics, "generate",
-                 return_value=repaired,
-             ) as repair, \
-             mock.patch.object(
-                 self.module.matrix_template_semantics, "remember",
-             ) as remember, \
+                 self.module.matrix_template_semantics, "resolve",
+                 side_effect=resolve,
+             ) as resolve_call, \
              mock.patch.object(self.module, "_request", side_effect=preflight):
             result = self.module.validate_payload({
                 "top_text": "团队8个人，每天产出100条短视频",
@@ -401,8 +402,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         self.assertEqual((first, repaired), (
             requests[0]["semantic_layout"], requests[1]["semantic_layout"],
         ))
-        repair.assert_called_once()
-        remember.assert_called_once_with("cache-key", repaired)
+        resolve_call.assert_called_once()
 
     def test_generation_url_allows_https_or_loopback_only(self):
         for value in (

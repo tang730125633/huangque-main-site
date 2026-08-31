@@ -51,12 +51,21 @@ def _obvious_breaks(value: str) -> set[int]:
 
 def _break_splits_number_phrase(value: str, index: int) -> bool:
     boundary = index + 1
-    if boundary >= len(value) or not value[boundary].isdigit():
-        return False
-    cursor = boundary
-    while cursor < len(value) and value[cursor].isdigit():
-        cursor += 1
-    return cursor < len(value) and value[cursor] in "个家人位名款套种项台年月日天次岁"
+    left_cursor, right_cursor = boundary - 1, boundary
+    while left_cursor >= 0 and value[left_cursor].isspace():
+        left_cursor -= 1
+    while right_cursor < len(value) and value[right_cursor].isspace():
+        right_cursor += 1
+    return (
+        left_cursor >= 0 and right_cursor < len(value)
+        and (
+            value[left_cursor].isdigit() and value[right_cursor].isdigit()
+            or (
+                value[left_cursor] in "0123456789一二三四五六七八九十几两"
+                and value[right_cursor] in "个家人位名条款套种项台年月日天次岁"
+            )
+        )
+    )
 
 
 def _normalize_breaks(raw, value: str) -> list[int]:
@@ -65,12 +74,13 @@ def _normalize_breaks(raw, value: str) -> list[int]:
     if any(isinstance(item, bool) or not isinstance(item, int) for item in raw):
         raise RuntimeError("AI 语义断点格式无效")
     values = {
-        item for item in raw
-        if 0 <= item < len(value) - 1
-        and not _break_splits_number_phrase(value, item)
+        item for item in raw if 0 <= item < len(value) - 1
     }
     values.update(_obvious_breaks(value))
-    return sorted(values)
+    return sorted(
+        item for item in values
+        if not _break_splits_number_phrase(value, item)
+    )
 
 
 def _nearest_safe_top1_end(raw, breaks: list[int], top: str) -> int:
@@ -175,7 +185,7 @@ def cache_key(top: str, bottom: str, template_id: str, contract: dict) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def remember(key: str, value: dict) -> None:
+def _remember(key: str, value: dict) -> None:
     with _LOCK:
         if len(_CACHE) >= CACHE_LIMIT:
             oldest = min(_CACHE, key=lambda item: _CACHE[item][0])
@@ -183,25 +193,34 @@ def remember(key: str, value: dict) -> None:
         _CACHE[key] = (time.monotonic(), dict(value))
 
 
-def forget(key: str) -> None:
-    with _LOCK:
-        _CACHE.pop(key, None)
-
-
-def initial(top: str, bottom: str, template_id: str, contract: dict) -> tuple[str, dict]:
+def resolve(top: str, bottom: str, template_id: str, contract: dict,
+            validator) -> tuple[dict, object | None]:
     key = cache_key(top, bottom, template_id, contract)
     key_lock = _KEY_LOCKS[int(key[:8], 16) % len(_KEY_LOCKS)]
     with key_lock:
+        cached_value = None
         with _LOCK:
             now = time.monotonic()
             item = _CACHE.get(key)
             if item is not None and now - item[0] <= CACHE_SECONDS:
-                return key, dict(item[1])
+                cached_value = dict(item[1])
             _CACHE.pop(key, None)
-        value = generate(top, bottom, contract)
-        with _LOCK:
-            if len(_CACHE) >= CACHE_LIMIT:
-                oldest = min(_CACHE, key=lambda item_key: _CACHE[item_key][0])
-                _CACHE.pop(oldest, None)
-            _CACHE[key] = (time.monotonic(), dict(value))
-        return key, value
+        if cached_value is not None:
+            accepted, result = validator(cached_value)
+            if accepted:
+                _remember(key, cached_value)
+                return cached_value, result
+            previous, feedback, attempts = cached_value, str(result), 2
+        else:
+            previous, feedback, attempts = None, "", 3
+        for _attempt in range(attempts):
+            value = generate(
+                top, bottom, contract,
+                previous=previous, feedback=feedback,
+            )
+            accepted, result = validator(value)
+            if accepted:
+                _remember(key, value)
+                return value, result
+            previous, feedback = value, str(result or "语义排版校验失败")
+        raise RuntimeError("AI 语义排版经两次修复后仍未通过真实字体校验")

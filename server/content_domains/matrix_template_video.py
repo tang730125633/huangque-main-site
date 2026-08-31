@@ -322,17 +322,6 @@ def validate_payload(raw, username=""):
     if font_family and font_selectable:
         candidate["font_family"] = font_family
     semantic_contract = template.get("semantic_layout")
-    semantic_key = None
-    if semantic_contract is not None:
-        try:
-            semantic_key, semantic_layout = matrix_template_semantics.initial(
-                top, bottom, template_id, semantic_contract,
-            )
-        except RuntimeError as exc:
-            raise feature_flags.FeatureDisabled(
-                "AI 语义排版服务暂不可用，请稍后重试"
-            ) from exc
-        candidate["semantic_layout"] = semantic_layout
     batch_id = str(body.get("batch_id") or "").strip().lower()
     batch_index = body.get("batch_index")
     batch_size = body.get("batch_size")
@@ -349,43 +338,46 @@ def validate_payload(raw, username=""):
             "batch_index": batch_index,
             "batch_size": batch_size,
         })
-    semantic_repairs = 0
-    while True:
+    response = None
+    if semantic_contract is not None:
+        def validate_semantic_layout(semantic_layout):
+            candidate["semantic_layout"] = semantic_layout
+            try:
+                value = _request("POST", "/v1/preflight", candidate, timeout=10)
+                return True, value
+            except MatrixTemplateHTTPError as exc:
+                if exc.status == 400 and (
+                    "语义" in str(exc) or "完整词组" in str(exc)
+                ):
+                    return False, str(exc)
+                raise
+
         try:
-            response = _request("POST", "/v1/preflight", candidate, timeout=10)
-            break
+            semantic_layout, response = matrix_template_semantics.resolve(
+                top, bottom, template_id, semantic_contract,
+                validate_semantic_layout,
+            )
+            candidate["semantic_layout"] = semantic_layout
         except MatrixTemplateHTTPError as exc:
-            if (
-                exc.status == 400 and semantic_contract is not None
-                and semantic_repairs < 2
-                and (
-                    "语义" in str(exc)
-                    or "完整词组" in str(exc)
-                )
-            ):
-                semantic_repairs += 1
-                try:
-                    candidate["semantic_layout"] = matrix_template_semantics.generate(
-                        top, bottom, semantic_contract,
-                        previous=candidate["semantic_layout"], feedback=str(exc),
-                    )
-                except RuntimeError as repair_exc:
-                    if semantic_key:
-                        matrix_template_semantics.forget(semantic_key)
-                    raise feature_flags.FeatureDisabled(
-                        "AI 语义排版服务暂不可用，请稍后重试"
-                    ) from repair_exc
-                continue
-            if semantic_key:
-                matrix_template_semantics.forget(semantic_key)
             if exc.status == 400:
                 raise ValueError(str(exc)) from exc
             raise feature_flags.FeatureDisabled(
                 "模板成片服务暂不可用，请稍后重试"
             ) from exc
         except RuntimeError as exc:
-            if semantic_key:
-                matrix_template_semantics.forget(semantic_key)
+            raise feature_flags.FeatureDisabled(
+                "AI 语义排版或模板预检服务暂不可用，请稍后重试"
+            ) from exc
+    if response is None:
+        try:
+            response = _request("POST", "/v1/preflight", candidate, timeout=10)
+        except MatrixTemplateHTTPError as exc:
+            if exc.status == 400:
+                raise ValueError(str(exc)) from exc
+            raise feature_flags.FeatureDisabled(
+                "模板成片服务暂不可用，请稍后重试"
+            ) from exc
+        except RuntimeError as exc:
             raise feature_flags.FeatureDisabled(
                 "模板成片服务暂不可用，请稍后重试"
             ) from exc
@@ -400,10 +392,6 @@ def validate_payload(raw, username=""):
             or not isinstance(authoritative_duration, (int, float))
             or not 8 <= float(authoritative_duration) <= 15):
         raise RuntimeError("模板成片预检时长无效")
-    if semantic_key:
-        matrix_template_semantics.remember(
-            semantic_key, candidate["semantic_layout"],
-        )
     return dict(payload, duration=float(authoritative_duration))
 
 
