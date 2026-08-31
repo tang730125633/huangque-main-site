@@ -22,9 +22,13 @@ def main():
     os.environ["HERMES_SEMANTIC_ROUTER_MODE"] = "live"
     os.environ["HERMES_SEMANTIC_DEBUG"] = "0"
     os.environ.setdefault("HERMES_CODEX_MODEL", "gpt-5.6-terra")
+    # 先备份 http 传输要用的 key（脚本随后会清空所有 *_API_KEY）
+    preserved_openai_key = os.environ.get("OPENAI_API_KEY") or ""
     for key in list(os.environ):
         if key.upper().endswith(("_API_KEY", "_ACCESS_TOKEN", "_SECRET")):
             os.environ.pop(key, None)
+    if os.environ.get("HERMES_AI_TRANSPORT") == "http" and preserved_openai_key:
+        os.environ["OPENAI_API_KEY"] = preserved_openai_key
 
     # Agents SDK 本地预览（仅本地旁路，生产门不受影响）：
     # 默认全量 SDK；仍可设置 CANARY_PROJECT_ID 只放行一个 Project。
