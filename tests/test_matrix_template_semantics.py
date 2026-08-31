@@ -105,6 +105,21 @@ class MatrixTemplateSemanticsTests(unittest.TestCase):
                 for protected in range(start, end - 1):
                     self.assertNotIn(protected, breaks)
 
+    def test_numeric_lists_keep_non_grouping_comma_boundaries(self):
+        for value in (
+            "2025，2026",
+            "1，2，3个方案",
+        ):
+            with self.subTest(value=value):
+                commas = [
+                    index for index, char in enumerate(value) if char == "，"
+                ]
+                breaks = self.module._normalize_breaks(
+                    list(range(len(value) - 1)), value,
+                )
+                self.assertTrue(commas)
+                self.assertTrue(all(index in breaks for index in commas))
+
     def test_single_flight_covers_generation_repair_and_validation(self):
         top, bottom = "团队8个人，每天产出100条短视频", "评论区扣888"
         first = {
