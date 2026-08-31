@@ -20,6 +20,8 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "server"))
+sys.path.insert(0, str(ROOT / "tools/hq-cli/src"))
+from hq_cli import client as first_party_cli_client
 
 
 class HQCLIAPITests(unittest.TestCase):
@@ -206,7 +208,13 @@ class HQCLIAPITests(unittest.TestCase):
             upload["transport"]["quote_path"],
         )
         self.assertEqual("X-HQ-Quote-Token", upload["transport"]["quote_token_header"])
+        self.assertEqual("X-HQ-Expected-Cost", upload["transport"]["expected_cost_header"])
         self.assertEqual("Idempotency-Key", upload["transport"]["idempotency_header"])
+        self.assertEqual(
+            r"^[A-Za-z0-9._:-]{8,128}$",
+            upload["transport"]["idempotency_key_pattern"],
+        )
+        self.assertIn("same quote response", " ".join(upload["constraints"]))
 
         disabled = {
             item["action"]: item
@@ -945,6 +953,72 @@ class HQCLIAPITests(unittest.TestCase):
             )
         self.assertEqual((409, "quote_mismatch"), (status, payload["code"]))
         proxy.assert_not_called()
+
+    def test_first_party_director_upload_builds_quote_bound_headers_for_image_and_video(self):
+        token = self._token(["director:generate"])
+        cases = (
+            ("image", "/api/auth/cli/director-breakdown-image", "image/png",
+             b"\x89PNG\r\n\x1a\nfirst-party-image", "reference.png"),
+            ("video", "/api/auth/cli/director-breakdown-video", "video/mp4",
+             b"\x00\x00\x00\x18ftypmp42first-party-video", "reference.mp4"),
+        )
+        for index, (media_type, path, content_type, raw, filename) in enumerate(cases, 1):
+            digest = hashlib.sha256(raw).hexdigest()
+            with mock.patch.object(
+                    self.auth.H, "_cli_proxy",
+                    return_value=(200, {"cost": 20, "points": 100})):
+                status, quote = self._request(
+                    "/api/auth/cli/director-breakdown-quote",
+                    {"media_type": media_type, "sha256": digest}, token=token,
+                )
+            self.assertEqual(200, status, quote)
+            headers = first_party_cli_client.director_breakdown_confirmation_headers(
+                quote["quote_token"], quote["cost"], "director-e2e-%03d" % index,
+            )
+            headers["X-HQ-File-Name"] = filename
+            captured = {}
+
+            def fake_upload(stream, length, _web_token, _internal_token, _content_type,
+                            actual_digest, actual_media_type, _filename,
+                            idempotency_key, expected_cost):
+                captured.update(
+                    raw=stream.read(length), digest=actual_digest,
+                    media_type=actual_media_type, idempotency_key=idempotency_key,
+                    expected_cost=expected_cost,
+                )
+                return 200, {"job_id": 100 + index, "cost": expected_cost,
+                             "sha256": actual_digest}
+
+            with mock.patch.object(
+                    self.auth.hq_cli_api, "proxy_director_breakdown_upload",
+                    side_effect=fake_upload):
+                status, payload = self._raw_request(
+                    path, raw, token=token, content_type=content_type,
+                    extra_headers=headers,
+                )
+            self.assertEqual(200, status, payload)
+            self.assertEqual((raw, digest, media_type, 20), (
+                captured["raw"], captured["digest"], captured["media_type"],
+                captured["expected_cost"],
+            ))
+
+            for mutation, expected in (
+                    ({"X-HQ-Expected-Cost": None}, (400, "invalid_expected_cost")),
+                    ({"X-HQ-Expected-Cost": "19"}, (409, "quote_cost_changed"))):
+                rejected_headers = dict(headers)
+                if mutation["X-HQ-Expected-Cost"] is None:
+                    rejected_headers.pop("X-HQ-Expected-Cost")
+                else:
+                    rejected_headers.update(mutation)
+                with mock.patch.object(
+                        self.auth.hq_cli_api,
+                        "proxy_director_breakdown_upload") as proxy:
+                    rejected_status, rejected = self._raw_request(
+                        path, raw, token=token, content_type=content_type,
+                        extra_headers=rejected_headers,
+                    )
+                self.assertEqual(expected, (rejected_status, rejected["code"]))
+                proxy.assert_not_called()
 
     def test_ip12_internal_upload_reuses_account_bound_streaming_gateway(self):
         self._enable_ip12_bridge()

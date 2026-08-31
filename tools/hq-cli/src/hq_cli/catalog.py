@@ -414,6 +414,32 @@ CAPABILITIES["audio-upload"]["constraints"] = [
 CAPABILITIES["audio-upload"]["next_actions"] = [
     "把返回的 result.upload_id 作为 audio_upload_id 写入 voice-clone-create 或 digital-ip-audio-generate。",
 ]
+CAPABILITIES["director-breakdown-upload"] = _upload(
+    "director-breakdown-upload", "上传本地素材并反推提示词",
+    "先按文件摘要取得服务器报价；确认后流式上传同一图片或视频并创建付费反推任务。",
+    "director:generate",
+)
+CAPABILITIES["director-breakdown-upload"].update({
+    "side_effect": "paid",
+    "cost": {"kind": "server_quote", "unit": "points",
+             "confirmation": "quote_token + expected_cost + idempotency_key + --confirm"},
+    "file_input": {
+        "argument": "--file", "path": "absolute", "maxBytes": 200 * 1024 * 1024,
+        "mimeTypes": ["image/jpeg", "image/png", "image/webp",
+                      "video/mp4", "video/quicktime", "video/webm"],
+        "imageMaxBytes": 20 * 1024 * 1024, "videoMaxBytes": 200 * 1024 * 1024,
+        "accountActiveMaxFiles": 2,
+    },
+    "constraints": [
+        "quote and confirmation must use the identical account, media type, and file SHA-256",
+        "expected_cost must equal cost from the same quote response",
+        "idempotency_key must match [A-Za-z0-9._:-]{8,128} and remain stable when retrying an uncertain upload response",
+    ],
+    "next_actions": [
+        "核对报价 cost 后，复用同一文件、quote_token、cost 和稳定 idempotency_key 执行确认上传。",
+        "成功后只轮询返回的 job_id；响应不确定时以同一 idempotency_key 重试同一文件。",
+    ],
+})
 ASSET_MARK_FIELDS = {
     "kind": {"type": "string", "enum": ["image", "audio", "video", "avatar", "copy", "collect", "leads", "breakdown"]},
     "key": {"type": "string", "minLength": 1, "maxLength": 500},
@@ -1311,6 +1337,17 @@ def _attach_agent_guidance():
 
 
 _attach_agent_guidance()
+
+CAPABILITIES["director-breakdown-upload"]["agent"]["workflow"] = [
+    "先用同一 --file 且不带 --confirm 获取服务器报价。",
+    "向用户展示 cost 与 points，得到明确同意。",
+    "复用同一文件和 quote_token，并把该报价的 cost 原样传给 --expected-cost。",
+    "生成稳定 --idempotency-key 后带 --confirm 上传；响应不确定时只用同一键重试同一文件。",
+    "拿到 job_id 后只调用 task 直到终态，并验证成品与账务。",
+]
+CAPABILITIES["director-breakdown-upload"]["agent"]["recovery"] = [
+    "响应不确定时用相同文件、quote_token、expected_cost 和 idempotency_key 重试；禁止换键重复扣点。",
+]
 
 CAPABILITIES["voice-clone-create"]["agent"]["workflow"].append(
     "提交成功后只调用 voice-clone-status 查询原 slot_id；不要重复创建。"
