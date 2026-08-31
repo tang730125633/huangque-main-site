@@ -280,7 +280,7 @@ class IP12HarnessTests(unittest.TestCase):
             intake_decision(kind="ask_follow_up", reply="为了补齐资料，你大概属于哪个年龄段？"),
             "我不太理解，你能说详细一点吗？",
         )
-        self.assertIn("换个更直白的说法", reply)
+        self.assertEqual(reply, "为了补齐资料，你大概属于哪个年龄段？")
         self.assertEqual(state["intake"]["asked_follow_ups"], ["age"])
 
         state, _, _ = harness.apply_intake_decision(
@@ -497,7 +497,7 @@ class IP12HarnessTests(unittest.TestCase):
             "不要求固定格式",
             "不把访谈做成选择题",
             "不要重复追问",
-            "本轮只问一个尚未覆盖",
+            "先回应用户本轮内容",
             "内容变更优先",
             "不得强迫",
         ):

@@ -150,6 +150,23 @@ class ConversationalIntakeTests(unittest.TestCase):
         self.assertEqual(normalized["decision"], "answer_only")
         self.assertTrue(harness.intake_core_gaps(state))
 
+    def test_repeat_unanswered_topic_keeps_model_wording(self):
+        first = "你现在主要帮谁做内容？"
+        second = "还是社区店这边多一点，还是个人创业者也有？"
+        state, _, reply = harness.apply_intake_decision(
+            harness.initial_state(),
+            decision(reply=first),
+            "我在帮店老板做内容",
+        )
+        self.assertEqual(reply, first)
+        state, _, reply = harness.apply_intake_decision(
+            state,
+            decision(reply=second),
+            "还没完全想清楚",
+        )
+        self.assertEqual(reply, second)
+        self.assertNotIn(harness.INTAKE_NATURAL_QUESTIONS["target_audience"], reply)
+
     def test_prompts_no_longer_cap_reply_at_35_to_70_chars(self):
         intake_prompt = harness.intake_system_prompt(harness.initial_state())
         module_prompt = harness.system_prompt(completed_intake())

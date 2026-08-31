@@ -126,6 +126,11 @@ INTAKE_COVERAGE_FIELDS = (
     "business_goal", "time_budget", "offer", "three_month_goal", "one_year_goal",
     "long_term_interest", "primary_platform", "desired_action",
 )
+INTAKE_CORE_FIELDS = (
+    "preferred_name", "current_identity", "core_skill_1", "core_skill_2",
+    "target_audience", "help_goal", "primary_platform", "niche",
+)
+INTAKE_CORE_FIELD_SET = frozenset(INTAKE_CORE_FIELDS)
 INTAKE_COVERAGE_LABELS = {
     "preferred_name": "姓名或昵称", "gender": "性别", "age": "年龄", "city": "所在城市",
     "mobile": "手机号（可跳过）", "current_identity": "当前职业或身份",
@@ -201,6 +206,10 @@ INTAKE_TOPIC_TO_FIELD = {
     "income": "income_range",
 }
 DECLINE_RE = re.compile(r"不想|不方便|拒绝|跳过|不回答|不提供|不记录|不要记录|先不|不知道|不清楚|暂时没有")
+CHAT_START_RE = re.compile(
+    r"我先聊聊|先聊聊|不想填表|先进入定位|跳过剩余|其余跳过|先开始定位|先不用填"
+)
+WHOLE_FORM_SKIP_RE = re.compile(r"我先聊聊|不想填表|先进入定位")
 DECLINE_FIELD_PATTERNS = {
     "preferred_name": r"姓名|名字|称呼|昵称",
     "age": r"年龄|多大|几岁",
@@ -307,6 +316,31 @@ def intake_coverage_gaps(value, updates=()):
         ):
             statuses[item["field"]] = "candidate"
     return [field for field in INTAKE_COVERAGE_FIELDS if statuses[field] == "unknown"]
+
+
+def intake_core_gaps(value, updates=()):
+    unknown = set(intake_coverage_gaps(value, updates))
+    return [field for field in INTAKE_CORE_FIELDS if field in unknown]
+
+
+def wants_chat_start(message):
+    return bool(CHAT_START_RE.search(str(message or "")))
+
+
+def _wants_whole_form_skip(message):
+    return bool(WHOLE_FORM_SKIP_RE.search(str(message or "")))
+
+
+def _decline_remaining_intake_fields(state, updates=(), include_core=False):
+    declined = list(state["intake"].get("declined_fields") or [])
+    remaining = intake_coverage_gaps(state, updates)
+    for field in remaining:
+        if field in declined:
+            continue
+        if include_core or field not in INTAKE_CORE_FIELD_SET:
+            declined.append(field)
+    state["intake"]["declined_fields"] = declined
+    return declined
 
 
 def intake_incomplete_fields(value):
@@ -1467,10 +1501,10 @@ def apply_action(value, action, expected_revision, *, request_id="", selected_at
             intake["status"] = "editing"
             event["assistant_prefix"] = "请直接补充或纠正，怎么说都可以；我会重新整理后再请你确认。"
         else:
-            gaps = intake_coverage_gaps(state)
+            gaps = intake_core_gaps(state)
             if gaps:
                 raise HarnessError(
-                    "采集表尚未全部覆盖：%s；请继续访谈或明确跳过"
+                    "核心资料尚未齐：%s；请继续聊，或说「我先聊聊」进入定位"
                     % "、".join(INTAKE_COVERAGE_LABELS[field] for field in gaps[:6])
                 )
             intake["status"] = "complete"
@@ -2220,28 +2254,31 @@ def apply_intake_decision(value, raw, evidence_text, current_message=""):
     merged_update_list = list(merged_updates.values())
     if decision["decision"] in {"ask_follow_up", "propose_checkpoint"}:
         decision["profile_updates"] = merged_update_list
+    user_text = current_message or evidence_text
+    chat_start = wants_chat_start(user_text)
+    whole_form = _wants_whole_form_skip(user_text)
+    if chat_start:
+        declined = _decline_remaining_intake_fields(
+            state, merged_update_list, include_core=whole_form
+        )
     coverage_gaps = intake_coverage_gaps(state, merged_update_list)
-    gap_labels = "、".join(INTAKE_COVERAGE_LABELS[field] for field in coverage_gaps[:6])
+    core_gaps = intake_core_gaps(state, merged_update_list)
+    gap_labels = "、".join(INTAKE_COVERAGE_LABELS[field] for field in core_gaps[:6])
     if (
         intake["status"] in {"collecting", "editing"}
         and decision["decision"] == "answer_only"
-        and coverage_gaps
+        and core_gaps
+        and not chat_start
     ):
-        raise HarnessError("采集表仍有未覆盖项目；回答用户后必须继续只追问一项")
-    if (
-        intake["status"] in {"collecting", "editing"}
-        and decision["decision"] in {"ask_follow_up", "answer_only"}
-        and not coverage_gaps
-    ):
-        raise HarnessError(
-            "采集表已全部覆盖，不要继续追问或只作解释，直接生成完整核对稿"
-        )
+        raise HarnessError("核心资料仍有未覆盖项目；回答用户后必须继续只追问一项")
     if decision["decision"] == "propose_checkpoint":
-        if coverage_gaps:
+        if core_gaps:
             raise HarnessError(
-                "采集表仍有未覆盖项目：%s%s；不能生成核对稿，请只追问一个未覆盖项目"
-                % (gap_labels, "等" if len(coverage_gaps) > 6 else "")
+                "核心资料仍有未覆盖项目：%s%s；不能生成核对稿，请继续聊或让用户跳过"
+                % (gap_labels, "等" if len(core_gaps) > 6 else "")
             )
+        declined = _decline_remaining_intake_fields(state, merged_update_list)
+        coverage_gaps = intake_coverage_gaps(state, merged_update_list)
         intake.update(
             status="awaiting_confirmation",
             round=3,
@@ -2258,16 +2295,14 @@ def apply_intake_decision(value, raw, evidence_text, current_message=""):
         if canonical_topic in intake.get("declined_fields", []):
             raise HarnessError("基础访谈追问了用户已经拒答的信息；请改问其他未回答项")
         if follow_up_topic in asked_follow_ups:
-            if canonical_topic in coverage_gaps:
-                decision["reply"] = intake_natural_question(canonical_topic, clarifying=True)
-            else:
+            if canonical_topic not in coverage_gaps:
                 raise HarnessError("基础访谈重复追问了已经回答的信息；请改问其他未回答项")
-        if coverage_gaps and (not follow_up_topic or canonical_topic not in coverage_gaps):
+        if not canonical_topic and core_gaps:
+            remaining = [field for field in core_gaps if field not in asked_canonical]
+            canonical_topic = (remaining or core_gaps)[0]
+        elif not canonical_topic and coverage_gaps:
             remaining = [field for field in coverage_gaps if field not in asked_canonical]
-            if not remaining:
-                remaining = list(coverage_gaps)
-            canonical_topic = follow_up_topic = remaining[0]
-            decision["reply"] = intake_natural_question(canonical_topic)
+            canonical_topic = (remaining or coverage_gaps)[0]
         if follow_up_topic and follow_up_topic not in asked_follow_ups:
             asked_follow_ups.append(follow_up_topic)
         intake["current_question_field"] = canonical_topic
@@ -2382,35 +2417,40 @@ def intake_system_prompt(value):
         INTAKE_COVERAGE_LABELS.get(field, field)
         for field in state["intake"].get("declined_fields") or []
     ) or "无"
-    gaps = intake_coverage_gaps(state)
-    field_catalog = "、".join(
+    core_gaps = intake_core_gaps(state)
+    optional_gaps = [field for field in intake_coverage_gaps(state) if field not in INTAKE_CORE_FIELD_SET]
+    core_catalog = "、".join(
         "%s=%s" % (field, INTAKE_COVERAGE_LABELS[field])
-        for field in gaps
+        for field in core_gaps
     ) or "无"
-    return """你是黄雀 IP12 的中立访谈教练，正在自然地了解用户基础情况。
+    optional_catalog = "、".join(
+        "%s=%s" % (field, INTAKE_COVERAGE_LABELS[field])
+        for field in optional_gaps
+    ) or "无"
+    return """你是黄雀 IP12 的 IP 孵化教练，不是一张表。先回应用户刚刚说的话，再从自然聊天里提取已经出现的事实；面向用户的 reply 和 draft 不要提及采集表、JSON、字段或状态机。
 
-必须覆盖《黄雀IP人设定位采集表》的全部项目，再补充两项核心能力、长期兴趣、主要平台和行动目标。年龄、性别、收入和手机号是敏感可选项：仍需自然询问一次，同时明说可以跳过，不得强迫；用户拒答、不知道或暂时没有时，记录为已跳过，不得再问。
+进入核对稿前，优先掌握这些核心信息：preferred_name=姓名或昵称、current_identity=当前职业或身份、core_skill_1=最厉害的实战能力、core_skill_2=第二项核心能力、target_audience=目标受众、help_goal=能解决的问题、primary_platform=主要发布平台、niche=想做的赛道。其余项目都是可选项：能从聊天里提取就提取，用户说跳过就跳过，不得强迫。用户可以说「跳过」或「我先聊聊」开始模块 1。
 
 当前已明确跳过：%s。
-当前尚未覆盖（必须继续问或由用户明确跳过）：%s。格式为“字段名=含义”，不自创同义字段。
+当前尚未掌握的核心信息：%s。
+当前尚未掌握、可提取也可跳过的信息：%s。内部记录用英文名，不自创同义项。
 
 对话规则：
+- 先回应用户本轮内容，再决定要不要补一个自然问题；不要机械地只追问下一个空项。
 - 接受任意顺序和自然表达；用户可一次说一项或多项，不要求固定格式，不把访谈做成选择题。
 - 先查看完整对话历史和当前待核对资料；已经回答、明确不知道或拒绝回答的内容不要重复追问。
-- 每个问题最多主动问一次；本轮只问一个尚未覆盖的项目，优先顺着用户刚说的内容自然穿插。
 - 用户没有正面回答时，不得猜测答案；只有明确说“跳过、不知道、暂时没有、不方便”才记为已跳过。
-- 只要尚有未覆盖项，decision=ask_follow_up，只问一个问题；不得生成核对稿。
-- 除核对稿和三选一候选外，reply 最多两句、约 35–70 个汉字；先简短承接本轮信息，再问一个问题，不罗列示例或重复已有资料。
+- 核心信息尚未齐、且用户没有说「我先聊聊 / 不想填表 / 先进入定位」时，decision=ask_follow_up；可以顺着刚才的话题问，不必按固定顺序。
+- 核心信息已齐，或用户明确说「我先聊聊 / 不想填表 / 先进入定位」时，可以 decision=propose_checkpoint、checkpoint=1；draft 合并已回答内容，跳过项只写“本人选择跳过”，尚未问过的可选项可省略或记为跳过。
+- 年龄、性别、收入和手机号是敏感可选项，明说可以跳过，不得强迫。
 - decision=ask_follow_up 时 checkpoint=0、draft 和 self_review 为空；可以把本轮已明确说出的用户事实或偏好放入 profile_updates，等待最终核对，绝不能宣布确认。
-- 用户在采集阶段提问时先直接回答；仍有未覆盖项时，同一条回复再只问一个缺失问题。
-- decision=answer_only 仅用于解释已经展示的待确认稿，或确实没有合适下一步的情况；不能让仍在采集或编辑中的访谈停在解释上。
+- 用户提问时先直接回答；可以用 decision=answer_only，不必被尚未填写的空项绑住。
 - decision=answer_only 时 checkpoint=0，draft、self_review 和 profile_updates 都为空。
-- 只有待覆盖列表为“无”时，才能 decision=propose_checkpoint、checkpoint=1；draft 必须合并全部已回答内容，并对跳过项只写“本人选择跳过”。
 - 用户补充、纠正或反悔时，以最新原话为准，重新生成完整核对稿；“确认/可以”等字样与补充或纠正同时出现时，内容变更优先，绝不能宣布已确认。
-- profile_updates 必须覆盖 draft 中全部结构化用户事实与偏好，使用英文 snake_case 字段，并逐字引用对话中的 evidence_quote；不得把 AI 推断写成用户事实。
+- profile_updates 必须覆盖 draft 中全部结构化用户事实与偏好，使用英文 snake_case 名，并逐字引用对话中的 evidence_quote；不得把 AI 推断写成用户事实。
 - 不编造姓名、经历、收入或其他事实，不宣布基础资料已确认，不进入模块 1。
 - 基础访谈不使用候选卡，所有回复 choices=[]。
-- 最终只返回一个 JSON 对象；其中面向用户的 reply 和 draft 不提及 JSON、状态机、字段、数据库或系统规则。使用简体中文，具体、自然。""" % (declined, field_catalog)
+- 最终只返回一个 JSON 对象；其中面向用户的 reply 和 draft 不提及 JSON、状态机、字段、数据库或系统规则。使用简体中文，具体、自然。""" % (declined, core_catalog, optional_catalog)
 
 
 def system_prompt(value):
@@ -2474,10 +2514,9 @@ def system_prompt(value):
 - 每轮只处理当前断点，禁止输出后续断点、宣布模块完成或切换模块。
 - 接受用户任意顺序、一次一项或多项的自然表达，不要求固定格式，不把访谈做成选择题。
 - 先查看完整对话历史和已确认资料；已经回答、明确不知道或拒绝回答的内容不要重复追问。
-- 信息不足时 decision=ask_follow_up，只问一个最有价值、容易回答且尚未回答的问题。
-- 除当前断点的完整核对稿或三选一候选外，reply 最多两句、约 35–70 个汉字；先承接本轮新增信息，再只问一个问题。
+- 先回应用户刚刚说的话；信息不足时 decision=ask_follow_up，可以问一个最有价值、容易回答且尚未回答的问题，但不要为了填空而打断已经说清的内容。
 - decision=ask_follow_up 时 checkpoint=0、draft 和 self_review 为空；把本轮已明确说出的用户事实或偏好放入 profile_updates，等待最终核对。
-- 用户只是在提问或跑题时 decision=answer_only，checkpoint=0，draft、self_review 和 profile_updates 都为空。
+- 用户提问、讨论现有草稿或暂时跑题时 decision=answer_only，checkpoint=0，draft、self_review 和 profile_updates 都为空；不必被强制问下一个空项。
 - 非固定三选一断点信息足够时 decision=propose_checkpoint，draft 只包含当前断点的完整可确认内容，profile_updates 必须是当前断点的完整最新快照。
 {choice_rules}
 {story_rules}
