@@ -378,7 +378,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             "template_id": "native-bold", "bgm": True, "duration": None,
         }), mock.patch.object(self.module, "_request", side_effect=responses) as request, \
              mock.patch.object(self.module, "_download", return_value=("video/matrix_template_77.mp4", 4096)) as download, \
-             mock.patch.object(self.module, "public_url", return_value="/api/gen/file/token"), \
+             mock.patch.object(self.module, "public_url", return_value="/api/gen/file/token") as public_url, \
              mock.patch.object(self.module.time, "sleep"):
             result = self.module.generate(raw)
         self.assertEqual("video/matrix_template_77.mp4", result["video_file"])
@@ -386,6 +386,10 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         self.assertEqual("a" * 32, result["provider_task_id"])
         self.assertEqual("matrix-template-77", request.call_args_list[0].kwargs["request_id"])
         download.assert_called_once_with("/v1/files/%s.mp4" % ("a" * 32), "77")
+        public_url.assert_called_once_with(
+            "video/matrix_template_77.mp4", "video/mp4",
+            private=True, direct_cos=True,
+        )
         self.assertEqual("matrix_template", result["mode"])
         self.assertEqual(("done", "1080p", "9:16"), (
             result["phase"], result["resolution"], result["ratio"]
