@@ -8940,7 +8940,7 @@
       "post": {
         "tags": ["视频"],
         "summary": "使用平台素材库生成模板视频",
-        "description": "**测试安全级别：may-charge**\n\n创建模板成片任务并扣点。模板模式只使用平台素材库，不调用 AI 生图或视频生成。",
+        "description": "**测试安全级别：may-charge**\n\n创建模板成片任务并扣点。支持的 HyperFrames 模板会在扣点前用文本模型标注语义边界，再由生成服务按真实字体宽度排版。素材仍只来自平台素材库，不调用 AI 生图或视频生成。",
         "x-hq-test-safety": "may-charge",
         "x-hq-runtime-status": "active",
         "parameters": [{"$ref": "#/components/parameters/IdempotencyKeyRequired"}],
@@ -8974,7 +8974,7 @@
       "get": {
         "tags": ["视频"],
         "summary": "读取模板成片视觉模板目录",
-        "description": "**测试安全级别：safe-read**\n\n读取 13 套模板和当前单条价格，不创建任务或扣点。",
+        "description": "**测试安全级别：safe-read**\n\n读取 19 套模板、语义排版能力和当前单条价格，不创建任务或扣点。",
         "x-hq-test-safety": "safe-read",
         "x-hq-runtime-status": "active",
         "responses": {
@@ -8982,7 +8982,7 @@
             "type": "object",
             "required": ["templates", "default_template", "cost"],
             "properties": {
-              "templates": {"type": "array", "minItems": 13, "maxItems": 13, "items": {"type": "object", "additionalProperties": true}},
+              "templates": {"type": "array", "minItems": 19, "maxItems": 19, "items": {"type": "object", "additionalProperties": true}},
               "default_template": {"type": "string"},
               "cost": {"type": "integer", "minimum": 1}
             }
