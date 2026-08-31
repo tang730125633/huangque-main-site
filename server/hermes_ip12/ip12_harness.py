@@ -1296,6 +1296,55 @@ def is_continue_message(message):
     return normalized in CONTINUE_TEXTS
 
 
+_REORGANIZE_HINT_RE = re.compile(r"继续|整理|按刚才")
+_REORGANIZE_FILLER_RE = re.compile(
+    r"好的|好吧|嗯嗯|嗯好|嗯|"
+    r"那你就|那就请你|那就|那你|"
+    r"直接|"
+    r"按照我们刚才聊的|按照刚才聊的|按我们刚才聊的|按刚才聊的|"
+    r"按照刚才|按刚才|"
+    r"基于刚才(?:内容|聊的)?|"
+    r"我们刚才聊的|刚才聊的|刚才内容|"
+    r"重新整理|再整理|帮我整理|给我整理|整理一下|整理|"
+    r"继续|"
+    r"辛苦啦|辛苦了|辛苦|"
+    r"谢谢啦|谢谢你|谢谢|感谢|"
+    r"拜托了|拜托|麻烦你了|麻烦你|麻烦|"
+    r"请你|请|"
+    r"帮我|给我"
+)
+_REORGANIZE_PARTICLE_RE = re.compile(r"[啦了吧呀哦哈啊呢嘛噢嘿哟哇]+")
+_USER_QUESTION_RE = re.compile(
+    r"[?？]|"
+    r"(?:吗|呢|么)\s*[。.!！]?$|"
+    r"(?:请问|想问|问一下|我想问)|"
+    r"(?:什么意思|怎么理解|为什么|为何|怎么办|怎么样|如何|"
+    r"是不是|能不能|可不可以|是否|哪[里个些天]|什么时候)"
+)
+
+
+def wants_reorganize(message):
+    if is_continue_message(message):
+        return True
+    text = str(message or "")
+    if not _REORGANIZE_HINT_RE.search(text):
+        return False
+    compact = re.sub(r"[^\w]+", "", text)
+    leftover = compact
+    while leftover:
+        updated = _REORGANIZE_FILLER_RE.sub("", leftover)
+        if updated == leftover:
+            break
+        leftover = updated
+    leftover = _REORGANIZE_PARTICLE_RE.sub("", leftover)
+    return len(leftover) <= 2
+
+
+def _user_asked_question(message):
+    text = str(message or "").strip()
+    return bool(text and _USER_QUESTION_RE.search(text))
+
+
 def is_content_review_message(message):
     text = re.sub(r"\s+", "", str(message or "")).lower()
     return bool(re.search(
@@ -2218,9 +2267,17 @@ def apply_intake_decision(value, raw, evidence_text, current_message=""):
         if field not in declined:
             declined.append(field)
     intake["declined_fields"] = declined
+    user_text = current_message or evidence_text
     candidate = deepcopy(raw) if isinstance(raw, dict) else raw
     if isinstance(candidate, dict):
         candidate_kind = str(candidate.get("decision") or "")
+        if (
+            candidate_kind == "answer_only"
+            and not wants_chat_start(user_text)
+            and not _user_asked_question(user_text)
+        ):
+            candidate["decision"] = "ask_follow_up"
+            candidate_kind = "ask_follow_up"
         if candidate_kind in {"ask_follow_up", "answer_only"}:
             candidate.update(checkpoint=0, draft="", self_review="")
             if candidate_kind == "answer_only":
@@ -2254,7 +2311,6 @@ def apply_intake_decision(value, raw, evidence_text, current_message=""):
     merged_update_list = list(merged_updates.values())
     if decision["decision"] in {"ask_follow_up", "propose_checkpoint"}:
         decision["profile_updates"] = merged_update_list
-    user_text = current_message or evidence_text
     chat_start = wants_chat_start(user_text)
     whole_form = _wants_whole_form_skip(user_text)
     if chat_start:
@@ -2269,6 +2325,7 @@ def apply_intake_decision(value, raw, evidence_text, current_message=""):
         and decision["decision"] == "answer_only"
         and core_gaps
         and not chat_start
+        and not _user_asked_question(user_text)
     ):
         raise HarnessError("核心资料仍有未覆盖项目；回答用户后必须继续只追问一项")
     if decision["decision"] == "propose_checkpoint":

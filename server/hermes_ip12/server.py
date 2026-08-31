@@ -5200,6 +5200,15 @@ def _coach_model_decision(
         if pipeline_version == coaching_skills.SKILL_PIPELINE_V1 else None
     )
     intake_pending = _intake_pending(state)
+    if intake_pending and coach_harness.wants_reorganize(user_message):
+        reorganize = (
+            "用户要求基于刚才已说内容重新整理，不是确认口令。"
+            "请把对话历史里全部用户原话合并进 profile_updates；"
+            "核心资料已齐则 decision=propose_checkpoint、checkpoint=1 并写出完整核对 draft；"
+            "否则 decision=ask_follow_up，只问一个自然问题。"
+            "禁止 answer_only，禁止要求用户发送“继续”或任何固定口令。"
+        )
+        repair_error = ("%s；%s" % (repair_error, reorganize)) if repair_error else reorganize
     if not intake_pending and state["current_module"] == 5 and state["module_step"] == 1:
         return _coach_module_five_topics(convo, user_message, repair_error)
     if (
@@ -5641,6 +5650,41 @@ def _persist_model_turn(
     return assistant, next_state
 
 
+_OLD_UNPROCESSED_FALLBACK = (
+    "我已经记下你刚才的原话，已确认内容和当前步骤都没有改变。"
+    "这次还没整理成可确认结果；你不用重述，可以继续补充，"
+    "或发送“继续”让我基于刚才内容重新整理。"
+)
+_INTAKE_HONEST_FALLBACK = (
+    "这次没能把刚才说的内容整理成核对稿。已记下的内容都还在，你可以直接补充，不必重述，也不用发送固定口令。"
+)
+_INTAKE_CATCHALL_REPAIR = (
+    "禁止 answer_only；必须把用户新说出的事实写入 profile_updates；"
+    "核心资料已齐则 propose_checkpoint 并给出核对稿；"
+    "否则 ask_follow_up 只追问一项。"
+    "不要要求用户发送“继续”或任何固定口令。"
+)
+
+
+def _assistant_is_unprocessed_repeat(convo):
+    for item in reversed(convo.get("messages") or []):
+        if item.get("role") != "assistant":
+            continue
+        content = str(item.get("content") or "")
+        if (
+            content == _OLD_UNPROCESSED_FALLBACK
+            or "发送“继续”" in content
+            or '发送"继续"' in content
+        ):
+            return True
+        skills = ((item.get("agent_trace") or {}).get("skills") or [])
+        return any(
+            (entry.get("id") if isinstance(entry, dict) else entry) == "safety_fallback"
+            for entry in skills
+        )
+    return False
+
+
 def _persist_unprocessed_turn(
     cid, user_message, snapshot_revision, prefix="", message_id="", assistant_override="",
     skills=None, assistant_extra=None, convo_extra=None, memory_updates=None,
@@ -5653,9 +5697,7 @@ def _persist_unprocessed_turn(
         if state["revision"] != snapshot_revision:
             raise coach_harness.HarnessConflict("对话已在另一端更新，请刷新后重试")
         assistant = assistant_override or (
-            "我已经记下你刚才的原话，已确认内容和当前步骤都没有改变。"
-            "这次还没整理成可确认结果；你不用重述，可以继续补充，"
-            "或发送“继续”让我基于刚才内容重新整理。"
+            "我记下了你刚才说的。这次没能整理成核对稿；已确认内容都在，你可以直接补充，不必重述。"
         )
         if prefix:
             assistant = prefix + "\n\n" + assistant
@@ -6050,6 +6092,34 @@ def _process_model_turn(
                 assistant, next_state = _persist_choice_failure(
                     cid, user_message, snapshot_revision, prefix=prefix, message_id=message_id
                 )
+            elif _intake_pending(state):
+                try:
+                    raw, evidence = _coach_model_decision(
+                        snapshot, user_message, repair_error=_INTAKE_CATCHALL_REPAIR
+                    )
+                    assistant, next_state = _persist_model_turn(
+                        cid,
+                        user_message if persist_user else "",
+                        snapshot_revision,
+                        raw,
+                        evidence,
+                        prefix=prefix,
+                        message_id=message_id,
+                        trace_skills=trace_skills,
+                    )
+                except coach_harness.HarnessConflict:
+                    raise
+                except (coach_harness.HarnessError, RuntimeError, requests.RequestException) as intake_exc:
+                    app.logger.warning("IP12 intake catch-all repair failed: %s", intake_exc)
+                    if _assistant_is_unprocessed_repeat(snapshot):
+                        return {
+                            "ok": False,
+                            "error": "这条消息暂时没能安全整理，请重试；已确认内容不会丢失。",
+                        }, 502
+                    assistant, next_state = _persist_unprocessed_turn(
+                        cid, user_message, snapshot_revision, prefix=prefix,
+                        message_id=message_id, assistant_override=_INTAKE_HONEST_FALLBACK,
+                    )
             else:
                 assistant, next_state = _persist_unprocessed_turn(
                     cid, user_message, snapshot_revision, prefix=prefix, message_id=message_id
@@ -7529,7 +7599,10 @@ def process_chat_request(body):
                         and len(material_candidates) > 1
                     )
                 if action is None and content_target is None and not material_production_id:
-                    action = coach_harness.shortcut_action(state, user_message)
+                    if _intake_pending(state) and coach_harness.wants_reorganize(user_message):
+                        action = None
+                    else:
+                        action = coach_harness.shortcut_action(state, user_message)
                     if action:
                         action_revision = state["revision"]
                     else:

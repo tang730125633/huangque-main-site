@@ -167,6 +167,36 @@ class ConversationalIntakeTests(unittest.TestCase):
         self.assertEqual(normalized["decision"], "answer_only")
         self.assertTrue(harness.intake_core_gaps(state))
 
+    def test_answer_only_with_new_facts_is_coerced_to_follow_up_and_keeps_updates(self):
+        state, normalized, _ = harness.apply_intake_decision(
+            harness.initial_state(),
+            decision(
+                "answer_only",
+                reply="好，平台这边我记下了。",
+                updates=[update("primary_platform", "视频号", "主要做视频号", "user_preference")],
+            ),
+            "主要做视频号",
+            current_message="主要做视频号",
+        )
+        self.assertEqual(normalized["decision"], "ask_follow_up")
+        self.assertTrue(
+            any(item["field"] == "primary_platform" for item in normalized["profile_updates"])
+        )
+        self.assertTrue(
+            any(item["field"] == "primary_platform" for item in state["intake"]["profile_updates"])
+        )
+        self.assertIn("preferred_name", harness.intake_core_gaps(state))
+        self.assertNotIn("primary_platform", harness.intake_core_gaps(state))
+
+    def test_wants_reorganize_matches_polite_continue_sentence(self):
+        self.assertTrue(
+            harness.wants_reorganize("好的，那你就直接按照我们刚才聊的整理，继续！辛苦啦！")
+        )
+        self.assertFalse(
+            harness.wants_reorganize("我主要做小红书和视频号，也在做TikTok短视频")
+        )
+        self.assertTrue(harness.wants_reorganize("继续"))
+
     def test_repeat_unanswered_topic_keeps_model_wording(self):
         first = "你现在主要帮谁做内容？"
         second = "还是社区店这边多一点，还是个人创业者也有？"
