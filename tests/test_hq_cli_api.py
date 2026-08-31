@@ -1870,6 +1870,7 @@ class HQCLIAPITests(unittest.TestCase):
         channels = "https://weixin.qq.com/sph/Abc123"
         channels_443 = "https://weixin.qq.com:443/sph/Abc123"
         bilibili = "https://b23.tv/keSUqLz"
+        twitter = "https://x.com/CrazyKaomei/status/2093502767776366755?s=20"
         expected = {
             "collect-content": ("collect", "/api/gen/collect", {"url": xhs, "want": ["comments"]}),
             "collect-video": ("collect", "/api/gen/collect", {"url": douyin, "want": ["video"]}),
@@ -1906,6 +1907,16 @@ class HQCLIAPITests(unittest.TestCase):
             bilibili,
             self.auth.hq_cli_api.action_plan("collect-video", {"url": bilibili})["payload"]["url"],
         )
+        self.assertEqual(
+            twitter,
+            self.auth.hq_cli_api.action_plan("collect-content", {"url": twitter})["payload"]["url"],
+        )
+        for action in ("collect-video", "collect-transcript"):
+            with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+                self.auth.hq_cli_api.action_plan(action, {"url": twitter})
+        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+            self.auth.hq_cli_api.action_plan(
+                "collect-content", {"url": "https://x.com.evil.example/status/2093502767776366755"})
         with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
             self.auth.hq_cli_api.action_plan(
                 "collect-video", {"url": "https://douyin.com.evil.example/video/1"})

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-黄雀 AI · TikHub 客户端 —— 抖音 / 小红书 / 视频号 的「采集 + 评论区获客」统一出口。
+黄雀 AI · TikHub 客户端 —— 多平台「采集 + 评论区获客」统一出口。
 =====================================================================
 被 content_api.py 的 collect / leads 能力调用。零第三方依赖（只用 stdlib + 现有 OpenAI 代理跑 whisper）。
 
@@ -32,7 +32,7 @@ TRANSCRIBE_MODEL = os.environ.get("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-mini-transc
 _TRANSCRIBE_SEM = threading.BoundedSemaphore(max(1, int(os.environ.get("TRANSCRIBE_MAX_CONCURRENCY", "1") or "1")))
 TRANSCRIBE_TIMEOUT = max(20, int(os.environ.get("OPENAI_TRANSCRIBE_TIMEOUT", "75") or "75"))
 
-PLATFORMS = ("douyin", "xhs", "channels", "bilibili")
+PLATFORMS = ("douyin", "xhs", "channels", "bilibili", "twitter")
 
 # 直连 opener：服务器 content.env 设了 HTTPS_PROXY(给 OpenAI 用)，但该代理转 TikHub 的 Cloudflare
 # 会 SSL EOF；TikHub API + CDN 下载都强制绕过代理直连（已实测 .io/.dev 直连均 200）。
@@ -153,6 +153,8 @@ def _profile_url(platform, user_id):
         return "https://www.douyin.com/user/%s" % user_id
     if platform == "xhs":
         return "https://www.xiaohongshu.com/user/profile/%s" % user_id
+    if platform == "twitter":
+        return "https://x.com/%s" % user_id
     return None
 
 
@@ -353,6 +355,77 @@ def xhs_comments(note_id, cursor=None, count=20):
                       "avatar": _xhs_img(u.get("images")), "profile_url": _profile_url("xhs", uid),
                       "cid": c.get("id"), "replies": c.get("sub_comment_count")})
     return {"items": items, "cursor": d.get("cursor"), "has_more": d.get("has_more"), "total": d.get("comment_count")}
+
+
+# ====================================================================
+# X / Twitter（单帖详情 + 评论）
+# ====================================================================
+TWITTER = "/api/v1/twitter/web"
+
+def twitter_tweet_id(value):
+    value = str(value or "").strip()
+    if re.fullmatch(r"\d{10,24}", value):
+        return value
+    if not _is_twitter_url(value):
+        return None
+    m = re.search(r"/status/(\d{10,24})(?:[/?#]|$)", value)
+    return m.group(1) if m else None
+
+def twitter_detail(id_or_url):
+    tweet_id = twitter_tweet_id(id_or_url)
+    if not tweet_id:
+        raise TikHubError("未解析出 X 帖子 ID")
+    t = _g(TWITTER + "/fetch_tweet_detail", tweet_id=tweet_id)
+    if isinstance(t.get("tweet"), dict):
+        t = t["tweet"]
+    author = t.get("author") or t.get("user") or {}
+    screen_name = _first(author, "screen_name", "username", default="")
+    text = _first(t, "text", "full_text", default="")
+    media = t.get("media") if isinstance(t.get("media"), list) else []
+    images = [_first(item, "url", "media_url_https", "media_url") for item in media
+              if isinstance(item, dict) and item.get("type") in ("photo", "image")]
+    images = [url for url in images if url]
+    return {
+        "platform": "twitter", "id": str(t.get("tweet_id") or t.get("id") or tweet_id),
+        "url": "https://x.com/%s/status/%s" % (screen_name or "i", tweet_id),
+        "title": text[:120], "desc": text, "tags": _tags_from_text(text),
+        "author": {"name": _first(author, "name", "display_name", default=screen_name),
+                   "id": screen_name, "fans": author.get("followers_count"), "ip": None,
+                   "signature": _first(author, "description", "bio"),
+                   "profile_url": _profile_url("twitter", screen_name)},
+        "stats": {"like": _first(t, "favorite_count", "like_count"),
+                  "comment": _first(t, "reply_count", "comment_count"),
+                  "share": _first(t, "retweet_count", "repost_count"),
+                  "collect": None, "quote": t.get("quote_count"), "view": t.get("views")},
+        "cover": images[0] if images else None, "images": images, "play_url": None,
+        "subtitle_url": None, "decode_key": None, "duration": None,
+        "publish_time": _first(t, "created_at", "timestamp"), "note_type": "post",
+    }
+
+def twitter_comments(id_or_url, cursor=None, count=20):
+    tweet_id = twitter_tweet_id(id_or_url)
+    if not tweet_id:
+        raise TikHubError("未解析出 X 帖子 ID")
+    d = _g(TWITTER + "/fetch_post_comments", tweet_id=tweet_id, cursor=cursor)
+    raw = _first(d, "comments", "items", "tweets", default=[])
+    if isinstance(raw, dict):
+        raw = _first(raw, "comments", "items", "tweets", default=[])
+    items = []
+    for c in (raw if isinstance(raw, list) else [])[:max(1, int(count))]:
+        if not isinstance(c, dict):
+            continue
+        author = c.get("author") or c.get("user") or {}
+        screen_name = _first(author, "screen_name", "username", default="")
+        items.append({"text": _first(c, "text", "full_text"), "ip": None,
+                      "likes": _first(c, "favorite_count", "like_count"),
+                      "time": _first(c, "created_at", "timestamp"),
+                      "user": _first(author, "name", "display_name", default=screen_name),
+                      "user_id": screen_name, "avatar": _first(author, "profile_image_url", "avatar"),
+                      "profile_url": _profile_url("twitter", screen_name),
+                      "cid": _first(c, "tweet_id", "id"), "replies": c.get("reply_count")})
+    next_cursor = _first(d, "next_cursor", "cursor")
+    return {"items": items, "cursor": next_cursor, "has_more": bool(next_cursor),
+            "total": _first(d, "total", "reply_count")}
 
 
 # ====================================================================
@@ -601,6 +674,7 @@ _DY_HOST_SUFFIXES = ("douyin.com", "iesdouyin.com")
 _DY_HOSTS = {"v.douyin.com", "douyinvod.com"}
 _XHS_HOST_SUFFIXES = ("xiaohongshu.com", "xhslink.com", "xhslink.cn")
 _BILI_HOST_SUFFIXES = ("bilibili.com", "b23.tv")
+_TWITTER_HOST_SUFFIXES = ("x.com", "twitter.com")
 
 def _is_xhs_url(url):
     parsed = urllib.parse.urlparse(url or "")
@@ -620,6 +694,12 @@ def _is_bili_url(url):
     host = (parsed.hostname or "").lower().rstrip(".")
     return parsed.scheme in ("http", "https") and any(
         host == suffix or host.endswith("." + suffix) for suffix in _BILI_HOST_SUFFIXES)
+
+def _is_twitter_url(url):
+    parsed = urllib.parse.urlparse(url or "")
+    host = (parsed.hostname or "").lower().rstrip(".")
+    return parsed.scheme in ("http", "https") and any(
+        host == suffix or host.endswith("." + suffix) for suffix in _TWITTER_HOST_SUFFIXES)
 
 class _BiliRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -706,6 +786,8 @@ def parse_link(text):
     url = _extract_url(text)         # 干净 URL（截断粘连的中文）；口令式分享无 URL → None
     probe = (url or text).strip()
     low = probe.lower()
+    if _is_twitter_url(probe):
+        return {"platform": "twitter", "id": twitter_tweet_id(probe), "note_type": "post"}
     if _is_bili_url(probe):
         return {"platform": "bilibili", "id": bili_resolve(probe), "note_type": "video"}
     if _is_xhs_url(probe):
@@ -734,6 +816,7 @@ def _detail(platform, id_or_url, note_type="video"):
     if platform == "xhs":      return xhs_detail(id_or_url, note_type=note_type)
     if platform == "channels": return ch_detail(id_or_url)
     if platform == "bilibili": return bili_detail(id_or_url)
+    if platform == "twitter":  return twitter_detail(id_or_url)
     raise TikHubError("未知平台 " + str(platform))
 
 def _comments(platform, id_or_url, cursor=None, count=20):
@@ -741,6 +824,7 @@ def _comments(platform, id_or_url, cursor=None, count=20):
     if platform == "xhs":      return xhs_comments(id_or_url)
     if platform == "channels": return ch_comments(id_or_url, last_buffer=cursor or "")
     if platform == "bilibili": return bili_comments(id_or_url, cursor=cursor, count=count)
+    if platform == "twitter":  return twitter_comments(id_or_url, cursor=cursor, count=count)
     raise TikHubError("未知平台 " + str(platform))
 
 # 带缓存的对外入口：内容(详情)发布即固定→存 1h；评论会增→存 1h；搜索会变→存 30min。

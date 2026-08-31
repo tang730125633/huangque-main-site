@@ -1874,7 +1874,7 @@ def _matrix_template_batch_payload(value):
     return {"item": item, "count": count}
 
 
-def _collect_url(value):
+def _collect_url(value, allow_twitter=False):
     url = _string(value, "url", 1, 2048)
     try:
         parsed = urllib.parse.urlsplit(url)
@@ -1884,13 +1884,15 @@ def _collect_url(value):
         raise CLIAPIError(400, "url 格式不合法")
     allowed = ("douyin.com", "iesdouyin.com", "xiaohongshu.com", "xhslink.com", "xhslink.cn",
                "bilibili.com", "b23.tv")
+    if allow_twitter:
+        allowed += ("x.com", "twitter.com")
     channels_share = (parsed.scheme == "https" and host == "weixin.qq.com" and port in (None, 443)
                       and parsed.path.startswith("/sph/") and parsed.path[len("/sph/"):].isalnum())
     if (parsed.scheme not in {"http", "https"} or parsed.username or parsed.password
             or port not in (None, 80, 443)
             or not (channels_share or any(
                 host == suffix or host.endswith("." + suffix) for suffix in allowed))):
-        raise CLIAPIError(400, "url 仅支持抖音、小红书、视频号或 B 站公开链接")
+        raise CLIAPIError(400, "url 仅支持抖音、小红书、视频号、B 站或 X 单帖公开链接")
     return url
 
 
@@ -2133,7 +2135,8 @@ def action_plan(action, value):
         return _plan(
             "generation:quote", "generation", generation_kind="collect",
             endpoint="/api/gen/collect", submit_base=LEADGEN_BASE,
-            payload={"url": _collect_url(value["url"]), "want": [want]},
+            payload={"url": _collect_url(value["url"], allow_twitter=action == "collect-content"),
+                     "want": [want]},
         )
     if action == "collect-search":
         _strict_object(value, {"platform", "keyword", "page"}, ("platform", "keyword"))
