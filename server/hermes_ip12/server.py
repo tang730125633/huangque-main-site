@@ -5200,6 +5200,15 @@ def _coach_model_decision(
         if pipeline_version == coaching_skills.SKILL_PIPELINE_V1 else None
     )
     intake_pending = _intake_pending(state)
+    if intake_pending and coach_harness.wants_reorganize(user_message):
+        reorganize = (
+            "用户要求基于刚才已说内容重新整理，不是确认口令。"
+            "请把对话历史里全部用户原话合并进 profile_updates；"
+            "核心资料已齐则 decision=propose_checkpoint、checkpoint=1 并写出完整核对 draft；"
+            "否则 decision=ask_follow_up，只问一个自然问题。"
+            "禁止 answer_only，禁止要求用户发送“继续”或任何固定口令。"
+        )
+        repair_error = ("%s；%s" % (repair_error, reorganize)) if repair_error else reorganize
     if not intake_pending and state["current_module"] == 5 and state["module_step"] == 1:
         return _coach_module_five_topics(convo, user_message, repair_error)
     if (
@@ -5641,6 +5650,41 @@ def _persist_model_turn(
     return assistant, next_state
 
 
+_OLD_UNPROCESSED_FALLBACK = (
+    "我已经记下你刚才的原话，已确认内容和当前步骤都没有改变。"
+    "这次还没整理成可确认结果；你不用重述，可以继续补充，"
+    "或发送“继续”让我基于刚才内容重新整理。"
+)
+_INTAKE_HONEST_FALLBACK = (
+    "这次没能把刚才说的内容整理成核对稿。已记下的内容都还在，你可以直接补充，不必重述，也不用发送固定口令。"
+)
+_INTAKE_CATCHALL_REPAIR = (
+    "禁止 answer_only；必须把用户新说出的事实写入 profile_updates；"
+    "核心资料已齐则 propose_checkpoint 并给出核对稿；"
+    "否则 ask_follow_up 只追问一项。"
+    "不要要求用户发送“继续”或任何固定口令。"
+)
+
+
+def _assistant_is_unprocessed_repeat(convo):
+    for item in reversed(convo.get("messages") or []):
+        if item.get("role") != "assistant":
+            continue
+        content = str(item.get("content") or "")
+        if (
+            content == _OLD_UNPROCESSED_FALLBACK
+            or "发送“继续”" in content
+            or '发送"继续"' in content
+        ):
+            return True
+        skills = ((item.get("agent_trace") or {}).get("skills") or [])
+        return any(
+            (entry.get("id") if isinstance(entry, dict) else entry) == "safety_fallback"
+            for entry in skills
+        )
+    return False
+
+
 def _persist_unprocessed_turn(
     cid, user_message, snapshot_revision, prefix="", message_id="", assistant_override="",
     skills=None, assistant_extra=None, convo_extra=None, memory_updates=None,
@@ -5653,9 +5697,7 @@ def _persist_unprocessed_turn(
         if state["revision"] != snapshot_revision:
             raise coach_harness.HarnessConflict("对话已在另一端更新，请刷新后重试")
         assistant = assistant_override or (
-            "我已经记下你刚才的原话，已确认内容和当前步骤都没有改变。"
-            "这次还没整理成可确认结果；你不用重述，可以继续补充，"
-            "或发送“继续”让我基于刚才内容重新整理。"
+            "我记下了你刚才说的。这次没能整理成核对稿；已确认内容都在，你可以直接补充，不必重述。"
         )
         if prefix:
             assistant = prefix + "\n\n" + assistant
@@ -5767,6 +5809,42 @@ def _conversation_user_evidence(convo, current_message=""):
     return "\n".join(messages)
 
 
+def _ensure_module_four_evidence(state, convo, current_message="", evidence=""):
+    if not state or state.get("current_module") != 4:
+        return evidence
+    conv = _conversation_user_evidence(convo, current_message)
+    extra = str(evidence or "")
+    if not extra:
+        return conv
+    if conv and conv in extra:
+        return extra
+    if extra and extra in conv:
+        return conv
+    return (extra + "\n" + conv).strip()
+
+
+def _persist_synthesized_module_four(
+    cid, user_message, snapshot, snapshot_revision, persist_user, prefix,
+    message_id, trace_skills, clean_state=None, discard_pending=False,
+):
+    state = clean_state or normalize_coach_state(snapshot.get("coach_state"))
+    evidence = _conversation_user_evidence(snapshot, user_message)
+    synthesized = coach_harness.synthesize_module_four_decision(
+        state, user_message, evidence
+    )
+    return _persist_model_turn(
+        cid,
+        user_message if persist_user else "",
+        snapshot_revision,
+        _deterministic_decision(synthesized),
+        evidence,
+        prefix=prefix,
+        discard_pending=discard_pending,
+        message_id=message_id,
+        trace_skills=trace_skills,
+    )
+
+
 def _process_model_turn(
     cid, user_message, expected_revision=None, prefix="", persist_user=True, request_id="",
     trace_skills=None,
@@ -5863,6 +5941,7 @@ def _process_model_turn(
             snapshot = _model_snapshot_without_user(convo, message_id)
     try:
         raw = coach_harness.duration_conflict_decision(state, user_message)
+        evidence = user_message
         story_pending = state.get("pending") if isinstance(state.get("pending"), dict) else None
         if (
             not raw and state.get("current_module") == 4 and state.get("module_step") == 0
@@ -5875,8 +5954,11 @@ def _process_model_turn(
             )
             and (not persist_user or coach_harness.is_continue_message(user_message))
         ):
-            raw = _deterministic_decision(coach_harness.grounded_story_node_decision(state))
-            evidence = _conversation_user_evidence(snapshot, user_message)
+            conv_evidence = _conversation_user_evidence(snapshot, user_message)
+            raw = _deterministic_decision(
+                coach_harness.grounded_story_node_decision(state, user_message, conv_evidence)
+            )
+            evidence = conv_evidence
         if raw:
             if not raw.get("_model_used") is False:
                 raw = _deterministic_decision(raw)
@@ -5909,6 +5991,7 @@ def _process_model_turn(
                 )
             if choice_turn and time.monotonic() >= choice_deadline:
                 raise RuntimeError("候选生成超过 %s 秒总期限" % CHOICE_TOTAL_TIMEOUT_SECONDS)
+        evidence = _ensure_module_four_evidence(state, snapshot, user_message, evidence)
         try:
             assistant, next_state = _persist_model_turn(
                 cid,
@@ -5956,6 +6039,7 @@ def _process_model_turn(
             )
         except coach_harness.HarnessError as exc:
             raw, evidence = _coach_model_decision(snapshot, user_message, repair_error=str(exc))
+            evidence = _ensure_module_four_evidence(state, snapshot, user_message, evidence)
             try:
                 assistant, next_state = _persist_model_turn(
                     cid,
@@ -5994,53 +6078,62 @@ def _process_model_turn(
                         "我刚才错在反复写入了没有逐字依据的故事内容；这份未确认稿已清除，"
                         "我已按事实原话重新整理。"
                     )
-                    recovery_reply = "这次仍没能生成符合事实边界的故事稿。已确认内容和原话都保留；你可以自然继续，不需要重述。"
+                    clean_snapshot = json.loads(json.dumps(snapshot, ensure_ascii=False))
+                    clean_state = normalize_coach_state(clean_snapshot.get("coach_state"))
+                    clean_state["pending"] = None
+                    clean_snapshot["coach_state"] = clean_state
+                    assistant, next_state = _persist_synthesized_module_four(
+                        cid, user_message, snapshot, snapshot_revision, persist_user,
+                        "\n\n".join(item for item in (prefix, recovery_prefix) if item),
+                        message_id, trace_skills, clean_state=clean_state, discard_pending=True,
+                    )
                 else:
                     raise
-                clean_snapshot = json.loads(json.dumps(snapshot, ensure_ascii=False))
-                clean_state = normalize_coach_state(clean_snapshot.get("coach_state"))
-                clean_state["pending"] = None
-                clean_snapshot["coach_state"] = clean_state
-                try:
-                    raw, evidence = _coach_model_decision(
-                        clean_snapshot,
-                        user_message,
-                        repair_error=retry_error + "；旧的未确认草稿已移出当前状态，请直接完成当前断点，不要要求固定回复口令",
-                    )
-                    assistant, next_state = _persist_model_turn(
-                        cid,
-                        user_message if persist_user else "",
-                        snapshot_revision,
-                        raw,
-                        evidence,
-                        prefix="\n\n".join(item for item in (prefix, recovery_prefix) if item),
-                        discard_pending=True,
-                        message_id=message_id,
-                        trace_skills=trace_skills,
-                    )
-                except coach_harness.HarnessConflict:
-                    raise
-                except (coach_harness.HarnessError, RuntimeError, requests.RequestException) as final_exc:
-                    app.logger.warning("IP12 discarded invalid draft after final repair failed: %s", final_exc)
-                    assistant, next_state = _persist_model_turn(
-                        cid,
-                        user_message if persist_user else "",
-                        snapshot_revision,
-                        {
-                            "decision": "answer_only",
-                            "checkpoint": 0,
-                            "reply": recovery_reply,
-                            "draft": "",
-                            "self_review": "",
-                            "profile_updates": [],
-                            "confidence": 0,
-                        },
-                        user_message,
-                        prefix=prefix,
-                        discard_pending=True,
-                        message_id=message_id,
-                        trace_skills=trace_skills,
-                    )
+                if not retry_error.startswith("模块 4 "):
+                    clean_snapshot = json.loads(json.dumps(snapshot, ensure_ascii=False))
+                    clean_state = normalize_coach_state(clean_snapshot.get("coach_state"))
+                    clean_state["pending"] = None
+                    clean_snapshot["coach_state"] = clean_state
+                    try:
+                        raw, evidence = _coach_model_decision(
+                            clean_snapshot,
+                            user_message,
+                            repair_error=retry_error + "；旧的未确认草稿已移出当前状态，请直接完成当前断点，不要要求固定回复口令",
+                        )
+                        assistant, next_state = _persist_model_turn(
+                            cid,
+                            user_message if persist_user else "",
+                            snapshot_revision,
+                            raw,
+                            evidence,
+                            prefix="\n\n".join(item for item in (prefix, recovery_prefix) if item),
+                            discard_pending=True,
+                            message_id=message_id,
+                            trace_skills=trace_skills,
+                        )
+                    except coach_harness.HarnessConflict:
+                        raise
+                    except (coach_harness.HarnessError, RuntimeError, requests.RequestException) as final_exc:
+                        app.logger.warning("IP12 discarded invalid draft after final repair failed: %s", final_exc)
+                        assistant, next_state = _persist_model_turn(
+                            cid,
+                            user_message if persist_user else "",
+                            snapshot_revision,
+                            {
+                                "decision": "answer_only",
+                                "checkpoint": 0,
+                                "reply": recovery_reply,
+                                "draft": "",
+                                "self_review": "",
+                                "profile_updates": [],
+                                "confidence": 0,
+                            },
+                            user_message,
+                            prefix=prefix,
+                            discard_pending=True,
+                            message_id=message_id,
+                            trace_skills=trace_skills,
+                        )
     except coach_harness.HarnessConflict:
         raise
     except (coach_harness.HarnessError, RuntimeError, requests.RequestException) as exc:
@@ -6050,6 +6143,71 @@ def _process_model_turn(
                 assistant, next_state = _persist_choice_failure(
                     cid, user_message, snapshot_revision, prefix=prefix, message_id=message_id
                 )
+            elif state.get("current_module") == 4:
+                try:
+                    assistant, next_state = _persist_synthesized_module_four(
+                        cid, user_message, snapshot, snapshot_revision, persist_user,
+                        prefix, message_id, trace_skills,
+                    )
+                except coach_harness.HarnessConflict:
+                    raise
+                except (coach_harness.HarnessError, RuntimeError, requests.RequestException, TypeError, ValueError) as synth_exc:
+                    app.logger.warning("IP12 module 4 catch-all synthesize failed: %s", synth_exc)
+                    assistant, next_state = _persist_unprocessed_turn(
+                        cid, user_message, snapshot_revision, prefix=prefix, message_id=message_id
+                    )
+            elif _intake_pending(state):
+                try:
+                    raw, evidence = _coach_model_decision(
+                        snapshot, user_message, repair_error=_INTAKE_CATCHALL_REPAIR
+                    )
+                    assistant, next_state = _persist_model_turn(
+                        cid,
+                        user_message if persist_user else "",
+                        snapshot_revision,
+                        raw,
+                        evidence,
+                        prefix=prefix,
+                        message_id=message_id,
+                        trace_skills=trace_skills,
+                    )
+                except coach_harness.HarnessConflict:
+                    raise
+                except (coach_harness.HarnessError, RuntimeError, requests.RequestException) as intake_exc:
+                    app.logger.warning("IP12 intake catch-all repair failed: %s", intake_exc)
+                    used_synth = False
+                    try:
+                        synthesized = coach_harness.synthesize_intake_decision(
+                            state, user_message
+                        )
+                        if synthesized and synthesized.get("decision") in {
+                            "ask_follow_up", "propose_checkpoint",
+                        }:
+                            assistant, next_state = _persist_model_turn(
+                                cid,
+                                user_message if persist_user else "",
+                                snapshot_revision,
+                                synthesized,
+                                user_message,
+                                prefix=prefix,
+                                message_id=message_id,
+                                trace_skills=trace_skills,
+                            )
+                            used_synth = True
+                    except coach_harness.HarnessConflict:
+                        raise
+                    except (coach_harness.HarnessError, RuntimeError, requests.RequestException, TypeError, ValueError) as synth_exc:
+                        app.logger.warning("IP12 intake synthesize failed: %s", synth_exc)
+                    if not used_synth:
+                        if _assistant_is_unprocessed_repeat(snapshot):
+                            return {
+                                "ok": False,
+                                "error": "这条消息暂时没能安全整理，请重试；已确认内容不会丢失。",
+                            }, 502
+                        assistant, next_state = _persist_unprocessed_turn(
+                            cid, user_message, snapshot_revision, prefix=prefix,
+                            message_id=message_id, assistant_override=_INTAKE_HONEST_FALLBACK,
+                        )
             else:
                 assistant, next_state = _persist_unprocessed_turn(
                     cid, user_message, snapshot_revision, prefix=prefix, message_id=message_id
@@ -7529,7 +7687,10 @@ def process_chat_request(body):
                         and len(material_candidates) > 1
                     )
                 if action is None and content_target is None and not material_production_id:
-                    action = coach_harness.shortcut_action(state, user_message)
+                    if _intake_pending(state) and coach_harness.wants_reorganize(user_message):
+                        action = None
+                    else:
+                        action = coach_harness.shortcut_action(state, user_message)
                     if action:
                         action_revision = state["revision"]
                     else:

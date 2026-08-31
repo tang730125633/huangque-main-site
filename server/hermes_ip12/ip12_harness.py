@@ -126,6 +126,11 @@ INTAKE_COVERAGE_FIELDS = (
     "business_goal", "time_budget", "offer", "three_month_goal", "one_year_goal",
     "long_term_interest", "primary_platform", "desired_action",
 )
+INTAKE_CORE_FIELDS = (
+    "preferred_name", "current_identity", "core_skill_1",
+    "target_audience", "help_goal", "primary_platform", "niche",
+)
+INTAKE_CORE_FIELD_SET = frozenset(INTAKE_CORE_FIELDS)
 INTAKE_COVERAGE_LABELS = {
     "preferred_name": "姓名或昵称", "gender": "性别", "age": "年龄", "city": "所在城市",
     "mobile": "手机号（可跳过）", "current_identity": "当前职业或身份",
@@ -201,6 +206,10 @@ INTAKE_TOPIC_TO_FIELD = {
     "income": "income_range",
 }
 DECLINE_RE = re.compile(r"不想|不方便|拒绝|跳过|不回答|不提供|不记录|不要记录|先不|不知道|不清楚|暂时没有")
+CHAT_START_RE = re.compile(
+    r"我先聊聊|先聊聊|不想填表|先进入定位|跳过剩余|其余跳过|先开始定位|先不用填"
+)
+WHOLE_FORM_SKIP_RE = re.compile(r"我先聊聊|不想填表|先进入定位")
 DECLINE_FIELD_PATTERNS = {
     "preferred_name": r"姓名|名字|称呼|昵称",
     "age": r"年龄|多大|几岁",
@@ -309,6 +318,31 @@ def intake_coverage_gaps(value, updates=()):
     return [field for field in INTAKE_COVERAGE_FIELDS if statuses[field] == "unknown"]
 
 
+def intake_core_gaps(value, updates=()):
+    unknown = set(intake_coverage_gaps(value, updates))
+    return [field for field in INTAKE_CORE_FIELDS if field in unknown]
+
+
+def wants_chat_start(message):
+    return bool(CHAT_START_RE.search(str(message or "")))
+
+
+def _wants_whole_form_skip(message):
+    return bool(WHOLE_FORM_SKIP_RE.search(str(message or "")))
+
+
+def _decline_remaining_intake_fields(state, updates=(), include_core=False):
+    declined = list(state["intake"].get("declined_fields") or [])
+    remaining = intake_coverage_gaps(state, updates)
+    for field in remaining:
+        if field in declined:
+            continue
+        if include_core or field not in INTAKE_CORE_FIELD_SET:
+            declined.append(field)
+    state["intake"]["declined_fields"] = declined
+    return declined
+
+
 def intake_incomplete_fields(value):
     state = normalize_state(value)
     provided = set()
@@ -363,17 +397,26 @@ def persona_contract(value):
     }
 
 
-def grounded_story_node_decision(value):
+_MODULE_FOUR_STORY_HINT_RE = re.compile(
+    r"货|包装|亏|供应商|经历|那次|后来|第一批|海运|破损|"
+    r"材料|报价|供应链|单干|亏了|踩坑|复盘|"
+    r"当时|那时候|刚开始|失败|转行|退租|"
+    r"开店|创业|离职|辞职|入行|遇到过|曾经|"
+    r"自己盯|一家一家|缓过来"
+)
+_MODULE_FOUR_FACT_FIELDS = (
+    "story_comeback", "story_pitfall", "story_success", "story_unusual",
+    "biggest_setback", "biggest_achievement", "previous_work_experience",
+    "team_project_experience", "key_experience", "career_transition",
+    "turning_point", "project_experience",
+)
+
+
+def _module_four_fact_quotes(value):
     state = normalize_state(value)
     facts = state["ip_profile"].get("facts") or {}
-    preferred = (
-        "story_comeback", "story_pitfall", "story_success", "story_unusual",
-        "biggest_setback", "biggest_achievement", "previous_work_experience",
-        "team_project_experience", "key_experience", "career_transition",
-        "turning_point", "project_experience",
-    )
     items = []
-    for field in preferred:
+    for field in _MODULE_FOUR_FACT_FIELDS:
         item = facts.get(field)
         quote = str((item or {}).get("evidence_quote") or "").strip() if isinstance(item, dict) else ""
         if quote and not any(quote in existing or existing in quote for existing in items):
@@ -385,14 +428,50 @@ def grounded_story_node_decision(value):
             quote = str((item or {}).get("evidence_quote") or "").strip() if isinstance(item, dict) else ""
             if quote and quote not in items:
                 items.append(quote)
-    items = items[:8]
-    if not items:
-        raise HarnessError("模块 4 还缺少一段可回查的真实经历")
-    draft = "\n\n".join(
+    return items[:8]
+
+
+def _looks_like_module_four_story(text):
+    text = str(text or "").strip()
+    if not text:
+        return False
+    compact = re.sub(r"\s+", "", text)
+    if len(compact) < 12:
+        return False
+    return bool(_MODULE_FOUR_STORY_HINT_RE.search(text))
+
+
+def _dedup_module_four_quotes(quotes):
+    kept = []
+    for quote in quotes:
+        quote = str(quote or "").strip()
+        if not quote:
+            continue
+        compact = re.sub(r"[\W_]+", "", quote)
+        if not compact:
+            continue
+        if any(compact in re.sub(r"[\W_]+", "", other) for other in kept):
+            continue
+        kept = [other for other in kept if re.sub(r"[\W_]+", "", other) not in compact]
+        kept.append(quote)
+    return kept
+
+
+def _module_four_story_draft(quotes):
+    return "\n\n".join(
         "### 节点 %d：真实经历节点（包装建议）\n事实原话：%s\n包装建议：围绕这段真实经历提炼起点、行动、结果和反思。"
         % (index, quote)
-        for index, quote in enumerate(items, 1)
+        for index, quote in enumerate(quotes, 1)
     )
+
+
+def grounded_story_node_decision(value, user_message="", history_text=""):
+    if str(user_message or "").strip() or str(history_text or "").strip():
+        return synthesize_module_four_decision(value, user_message, history_text)
+    items = _module_four_fact_quotes(value)
+    if not items:
+        raise HarnessError("模块 4 还缺少一段可回查的真实经历")
+    draft = _module_four_story_draft(items)
     return {
         "decision": "propose_checkpoint", "checkpoint": 1,
         "reply": "我已从确认资料中整理出可回查的真实故事节点，请先核对。",
@@ -1262,6 +1341,83 @@ def is_continue_message(message):
     return normalized in CONTINUE_TEXTS
 
 
+_REORGANIZE_HINT_RE = re.compile(r"继续|整理|按刚才")
+_REORGANIZE_FILLER_RE = re.compile(
+    r"好的|好吧|嗯嗯|嗯好|嗯|"
+    r"那你就|那就请你|那就|那你|"
+    r"直接|"
+    r"按照我们刚才聊的|按照刚才聊的|按我们刚才聊的|按刚才聊的|"
+    r"按照刚才|按刚才|"
+    r"基于刚才(?:内容|聊的)?|"
+    r"我们刚才聊的|刚才聊的|刚才内容|"
+    r"重新整理|再整理|帮我整理|给我整理|整理一下|整理|"
+    r"继续|"
+    r"辛苦啦|辛苦了|辛苦|"
+    r"谢谢啦|谢谢你|谢谢|感谢|"
+    r"拜托了|拜托|麻烦你了|麻烦你|麻烦|"
+    r"请你|请|"
+    r"帮我|给我"
+)
+_REORGANIZE_PARTICLE_RE = re.compile(r"[啦了吧呀哦哈啊呢嘛噢嘿哟哇]+")
+_USER_QUESTION_RE = re.compile(
+    r"[?？]|"
+    r"(?:吗|呢|么)\s*[。.!！]?$|"
+    r"(?:请问|想问|问一下|我想问)|"
+    r"(?:什么意思|怎么理解|为什么|为何|怎么办|怎么样|如何|"
+    r"是不是|能不能|可不可以|是否|哪[里个些天]|什么时候)"
+)
+
+
+def wants_reorganize(message):
+    if is_continue_message(message):
+        return True
+    text = str(message or "")
+    if not _REORGANIZE_HINT_RE.search(text):
+        return False
+    compact = re.sub(r"[^\w]+", "", text)
+    leftover = compact
+    while leftover:
+        updated = _REORGANIZE_FILLER_RE.sub("", leftover)
+        if updated == leftover:
+            break
+        leftover = updated
+    leftover = _REORGANIZE_PARTICLE_RE.sub("", leftover)
+    return len(leftover) <= 2
+
+
+_INTAKE_CORRECTION_RE = re.compile(
+    r"纠正|说清楚|改一下|不对|"
+    r"不是.{0,20}是|"
+    r"目标再说|"
+    r"咨询是后面|"
+    r"后面的事"
+)
+
+
+def wants_intake_correction(message):
+    text = str(message or "").strip()
+    if not text:
+        return False
+    compact = re.sub(r"[\s，,。.!！?？]+", "", text)
+    if compact in CONFIRM_TEXTS or text in CONFIRM_TEXTS:
+        return False
+    matched = bool(_INTAKE_CORRECTION_RE.search(text))
+    if wants_reorganize(text) and not matched:
+        return False
+    return matched
+
+
+def _pure_intake_confirm(message):
+    text = str(message or "").strip()
+    compact = re.sub(r"[\s，,。.!！?？]+", "", text)
+    return compact in CONFIRM_TEXTS or text in CONFIRM_TEXTS
+
+
+def _user_asked_question(message):
+    text = str(message or "").strip()
+    return bool(text and _USER_QUESTION_RE.search(text))
+
+
 def is_content_review_message(message):
     text = re.sub(r"\s+", "", str(message or "")).lower()
     return bool(re.search(
@@ -1467,10 +1623,10 @@ def apply_action(value, action, expected_revision, *, request_id="", selected_at
             intake["status"] = "editing"
             event["assistant_prefix"] = "请直接补充或纠正，怎么说都可以；我会重新整理后再请你确认。"
         else:
-            gaps = intake_coverage_gaps(state)
+            gaps = intake_core_gaps(state)
             if gaps:
                 raise HarnessError(
-                    "采集表尚未全部覆盖：%s；请继续访谈或明确跳过"
+                    "核心资料尚未齐：%s；请继续聊，或说「我先聊聊」进入定位"
                     % "、".join(INTAKE_COVERAGE_LABELS[field] for field in gaps[:6])
                 )
             intake["status"] = "complete"
@@ -2173,6 +2329,250 @@ def render_model_reply(decision):
     return reply
 
 
+def _intake_known_platforms():
+    return ("抖音", "小红书", "视频号", "快手", "TikTok", "tiktok", "B站", "公众号", "微信")
+
+
+def _slice_in_message(message, value):
+    text = str(message or "")
+    value = str(value or "").strip()
+    return bool(value) and value in text
+
+
+def _make_intake_update(field, value, message, kind="user_fact"):
+    value = str(value or "").strip()
+    if not value or field not in INTAKE_FIELD_SET or value not in str(message or ""):
+        return None
+    return {
+        "field": field,
+        "value": value,
+        "kind": kind,
+        "evidence_quote": value,
+    }
+
+
+def _regex_slice(message, pattern, group=0):
+    match = re.search(pattern, str(message or ""))
+    if not match:
+        return ""
+    if group and match.lastindex and group <= match.lastindex and match.group(group) is not None:
+        return str(match.group(group)).strip()
+    return str(match.group(0)).strip()
+
+
+def _business_goal_message_slice(message):
+    text = str(message or "")
+    for pattern in (
+        r"先把[^。！!?]*立住[^。！!?]*(?:再接咨询|咨询是后面的事)?",
+        r"(?:咨询是后面的事|再接咨询)",
+        r"目标(?:再说清楚点[，,]?)?([^。！!?]+)",
+    ):
+        value = _regex_slice(text, pattern, 1 if "目标" in pattern and "(" in pattern else 0)
+        if _slice_in_message(text, value):
+            return value
+    return ""
+
+
+def _harvest_intake_updates(user_message, prior_updates=None):
+    text = str(user_message or "")
+    harvested = {}
+    for item in prior_updates or []:
+        if isinstance(item, dict) and item.get("field") in INTAKE_FIELD_SET:
+            value = str(item.get("value") or "").strip()
+            if value and (
+                value in text
+                or value == str(item.get("value") or "").strip()
+            ):
+                harvested[item["field"]] = {
+                    "field": item["field"],
+                    "value": value,
+                    "kind": item.get("kind") if item.get("kind") in {"user_fact", "user_preference", "ai_option"} else "user_fact",
+                    "evidence_quote": str(item.get("evidence_quote") or value)[:300],
+                }
+
+    def add(field, value, kind="user_fact"):
+        item = _make_intake_update(field, value, text, kind=kind)
+        if item:
+            harvested[field] = item
+
+    name = _regex_slice(text, r"(?:我是|我叫|叫我)([\u4e00-\u9fffA-Za-z0-9]{1,12})", 1)
+    add("preferred_name", name)
+
+    identity = _regex_slice(
+        text,
+        r"(?:以前做|现在(?:自己)?做|目前(?:在)?(?:做)?|现在是)[^。！!?]+",
+    )
+    add("current_identity", identity)
+    prior_role = _regex_slice(text, r"以前做([^，,。！!?]+)", 0)
+    add("previous_work_experience", prior_role)
+
+    skill = _regex_slice(
+        text,
+        r"(?:拿手的是|最擅长(?:的是)?|最厉害的是)([^。！!?]+)",
+        1,
+    )
+    add("core_skill_1", skill)
+
+    help_clause = _regex_slice(text, r"(?:帮的是|帮助的是|服务的是)\s*([^。！!?]+)", 0)
+    audience = _regex_slice(text, r"(?:帮的是|帮助的是|服务的是|目标受众(?:是)?)\s*([^。！!?]+)", 1)
+    add("target_audience", audience)
+
+    skill_val = str((harvested.get("core_skill_1") or {}).get("value") or "")
+    def _distinct_from_skill(value):
+        value = str(value or "").strip()
+        if not value:
+            return False
+        if not skill_val:
+            return True
+        return value != skill_val and skill_val not in value
+    if _distinct_from_skill(help_clause):
+        add("help_goal", help_clause)
+    elif _distinct_from_skill(audience):
+        add("help_goal", audience)
+    else:
+        goal_help = _regex_slice(text, r"(?:目标)([^。！!?]+)", 1)
+        if _distinct_from_skill(goal_help) and not re.search(r"立住|再接咨询|咨询是后面", goal_help):
+            add("help_goal", goal_help)
+
+    platform = _regex_slice(
+        text,
+        r"(?:平台(?:先)?(?:做|是)?|先做|主要做)\s*(抖音|小红书|视频号|快手|TikTok|tiktok|B站|公众号|微信)",
+        1,
+    )
+    if not platform:
+        for name_token in _intake_known_platforms():
+            if name_token in text:
+                platform = name_token
+                break
+    add("primary_platform", platform, kind="user_preference")
+
+    niche = _regex_slice(text, r"短视频个人\s*IP") or _regex_slice(text, r"个人\s*IP")
+    add("niche", niche)
+
+    business = _business_goal_message_slice(text)
+    if not business:
+        business = _regex_slice(text, r"(?:目标)([^。！!?]+)", 1)
+    add("business_goal", business)
+
+    team = _regex_slice(text, r"(?:带过团队|做过项目|团队规模)[^。！!?]{0,40}")
+    add("team_project_experience", team)
+    return list(harvested.values())
+
+
+def render_intake_draft(updates):
+    items = {}
+    for item in updates or []:
+        if not isinstance(item, dict):
+            continue
+        field = str(item.get("field") or "")
+        value = str(item.get("value") or "").strip()
+        if field in INTAKE_FIELD_SET and value:
+            items[field] = value
+    lines = ["### 基础资料核对稿"]
+    ordered = list(INTAKE_CORE_FIELDS) + [
+        field for field in INTAKE_COVERAGE_FIELDS if field not in INTAKE_CORE_FIELD_SET
+    ]
+    for field in ordered:
+        value = items.get(field)
+        if not value:
+            continue
+        label = INTAKE_COVERAGE_LABELS.get(field, field)
+        lines.append("- %s：%s" % (label, value))
+    return "\n".join(lines)
+
+
+
+def synthesize_module_four_decision(state, user_message, history_text=""):
+    """Fail-open module-4 draft from exact user quotes; never paraphrase."""
+    state = normalize_state(state)
+    quotes = []
+    current = str(user_message or "").strip()
+    if _looks_like_module_four_story(current):
+        quotes.append(current)
+    for line in str(history_text or "").splitlines():
+        line = line.strip()
+        if _looks_like_module_four_story(line):
+            quotes.append(line)
+    quotes.extend(_module_four_fact_quotes(state))
+    quotes = _dedup_module_four_quotes(quotes)[:8]
+    if not quotes:
+        raise HarnessError("模块 4 还缺少一段可回查的真实经历")
+    evidence = "\n".join(
+        part for part in (str(history_text or ""), str(user_message or ""))
+        if str(part or "").strip()
+    )
+    compact_evidence = re.sub(r"\s+", "", evidence)
+    if compact_evidence:
+        grounded = [quote for quote in quotes if re.sub(r"\s+", "", quote) in compact_evidence]
+        if grounded:
+            quotes = grounded[:8]
+        else:
+            evidence = evidence + "\n" + "\n".join(quotes)
+    else:
+        evidence = "\n".join(quotes)
+    draft = _module_four_story_draft(quotes)
+    _validate_module_four_story_claims(draft, evidence)
+    return {
+        "decision": "propose_checkpoint",
+        "checkpoint": 1,
+        "reply": "我按你刚才的原话整理了故事节点，请先核对。",
+        "draft": draft,
+        "self_review": "所有节点都逐字引用用户原话，未改写。",
+        "choices": [],
+        "profile_updates": [],
+        "confidence": 1.0,
+    }
+
+
+def synthesize_intake_decision(state, user_message, prior_updates=None):
+    state = normalize_state(state)
+    existing = [
+        item for item in (state.get("intake") or {}).get("profile_updates") or []
+        if isinstance(item, dict)
+    ]
+    extras = [item for item in (prior_updates or []) if isinstance(item, dict)]
+    updates = _harvest_intake_updates(user_message, existing + extras)
+    gaps = intake_core_gaps(state, updates)
+    if not gaps:
+        draft = render_intake_draft(updates)
+        return {
+            "decision": "propose_checkpoint",
+            "checkpoint": 1,
+            "reply": "我按你刚才说的整理了一版核对稿，请看一下有没有记错。",
+            "draft": draft,
+            "self_review": "已按用户原话整理核心资料，尚未问过的可选项已省略。",
+            "choices": [],
+            "profile_updates": updates,
+            "confidence": 1.0,
+        }
+    field = gaps[0]
+    question = INTAKE_NATURAL_QUESTIONS.get(field) or (
+        "关于%s，你愿意具体说说吗？" % INTAKE_COVERAGE_LABELS.get(field, field)
+    )
+    return {
+        "decision": "ask_follow_up",
+        "checkpoint": 0,
+        "reply": question,
+        "draft": "",
+        "self_review": "",
+        "choices": [],
+        "profile_updates": updates,
+        "confidence": 1.0,
+    }
+
+
+def _intake_message_has_field_facts(message):
+    return bool(_harvest_intake_updates(message, []))
+
+
+def _help_goal_copies_skill(help_val, skill_val):
+    help_val = str(help_val or "").strip()
+    skill_val = str(skill_val or "").strip()
+    if not help_val or not skill_val:
+        return False
+    return help_val == skill_val or skill_val in help_val or help_val in skill_val
+
+
 def apply_intake_decision(value, raw, evidence_text, current_message=""):
     state = normalize_state(value)
     intake = state["intake"]
@@ -2184,9 +2584,40 @@ def apply_intake_decision(value, raw, evidence_text, current_message=""):
         if field not in declined:
             declined.append(field)
     intake["declined_fields"] = declined
+    user_text = current_message or evidence_text
     candidate = deepcopy(raw) if isinstance(raw, dict) else raw
+    correction = (
+        intake["status"] in {"awaiting_confirmation", "editing"}
+        and not _pure_intake_confirm(user_text)
+        and (
+            wants_intake_correction(user_text)
+            or _intake_message_has_field_facts(user_text)
+        )
+    )
     if isinstance(candidate, dict):
         candidate_kind = str(candidate.get("decision") or "")
+        if correction and candidate_kind == "answer_only":
+            harvested = _harvest_intake_updates(
+                user_text, candidate.get("profile_updates") or []
+            )
+            preview = {}
+            for item in list(intake.get("profile_updates") or []) + harvested:
+                if isinstance(item, dict) and item.get("field"):
+                    preview[item["field"]] = item
+            candidate["decision"] = "propose_checkpoint"
+            candidate["checkpoint"] = 1
+            if not str(candidate.get("draft") or "").strip():
+                candidate["draft"] = render_intake_draft(preview.values())
+            if not str(candidate.get("self_review") or "").strip():
+                candidate["self_review"] = "已按用户最新原话重整核对稿。"
+            candidate_kind = "propose_checkpoint"
+        elif (
+            candidate_kind == "answer_only"
+            and not wants_chat_start(user_text)
+            and not _user_asked_question(user_text)
+        ):
+            candidate["decision"] = "ask_follow_up"
+            candidate_kind = "ask_follow_up"
         if candidate_kind in {"ask_follow_up", "answer_only"}:
             candidate.update(checkpoint=0, draft="", self_review="")
             if candidate_kind == "answer_only":
@@ -2213,34 +2644,127 @@ def apply_intake_decision(value, raw, evidence_text, current_message=""):
         ):
             declined.append(item["field"])
     intake["declined_fields"] = declined
+    previous_updates = [
+        item for item in intake.get("profile_updates") or [] if isinstance(item, dict)
+    ]
+    previous_values = {
+        str(item.get("field") or ""): str(item.get("value") or "")
+        for item in previous_updates
+        if item.get("field")
+    }
+    old_draft = str(intake.get("draft") or "")
     merged_updates = {}
-    for item in (intake.get("profile_updates") or []) + decision["profile_updates"]:
+    for item in previous_updates + decision["profile_updates"]:
         if item["field"] not in declined:
             merged_updates[item["field"]] = item
     merged_update_list = list(merged_updates.values())
     if decision["decision"] in {"ask_follow_up", "propose_checkpoint"}:
         decision["profile_updates"] = merged_update_list
+    if correction:
+        talking_goal = bool(re.search(
+            r"目标|先立|咨询往后|后面的事|咨询是后面|先把", user_text
+        ))
+        talking_problem = bool(re.search(r"能解决的问题|解决什么问题|帮他们", user_text))
+        skill_val = str((merged_updates.get("core_skill_1") or {}).get("value") or "").strip()
+        incoming_help = None
+        for item in decision["profile_updates"]:
+            if item.get("field") == "help_goal":
+                incoming_help = item
+        if talking_goal and not talking_problem and skill_val:
+            help_val = str((incoming_help or merged_updates.get("help_goal") or {}).get("value") or "")
+            if _help_goal_copies_skill(help_val, skill_val):
+                prev_help = next(
+                    (item for item in previous_updates if item.get("field") == "help_goal"),
+                    None,
+                )
+                if prev_help:
+                    merged_updates["help_goal"] = prev_help
+        if talking_goal:
+            goal_slice = _business_goal_message_slice(user_text)
+            if goal_slice:
+                merged_updates["business_goal"] = {
+                    "field": "business_goal",
+                    "value": goal_slice,
+                    "kind": "user_fact",
+                    "evidence_quote": goal_slice,
+                }
+        merged_update_list = list(merged_updates.values())
+        decision["profile_updates"] = merged_update_list
+        new_values = {
+            str(item.get("field") or ""): str(item.get("value") or "")
+            for item in merged_update_list
+            if item.get("field")
+        }
+        added = {key: value for key, value in new_values.items() if key not in previous_values}
+        changed_same = all(
+            new_values.get(field) == value for field, value in previous_values.items()
+            if field in new_values
+        )
+        values_same = changed_same and not added
+        if decision["decision"] == "propose_checkpoint":
+            if values_same and decision.get("draft") == old_draft:
+                rebuilt = render_intake_draft(merged_update_list)
+                if rebuilt == old_draft or values_same:
+                    goal_slice = _business_goal_message_slice(user_text)
+                    if re.search(r"目标|咨询", user_text) and goal_slice:
+                        merged_updates["business_goal"] = {
+                            "field": "business_goal",
+                            "value": goal_slice,
+                            "kind": "user_fact",
+                            "evidence_quote": goal_slice,
+                        }
+                    elif str(user_text or "").strip():
+                        last_field = (
+                            intake.get("current_question_field")
+                            or (intake.get("asked_follow_ups") or [None])[-1]
+                        )
+                        last_field = INTAKE_TOPIC_TO_FIELD.get(last_field, last_field)
+                        slice_val = str(user_text).strip()
+                        if last_field in INTAKE_FIELD_SET and slice_val in str(user_text):
+                            merged_updates[last_field] = {
+                                "field": last_field,
+                                "value": slice_val,
+                                "kind": "user_fact",
+                                "evidence_quote": slice_val,
+                            }
+                    merged_update_list = list(merged_updates.values())
+                    rebuilt = render_intake_draft(merged_update_list)
+                decision["draft"] = rebuilt
+                decision["profile_updates"] = merged_update_list
+            if decision.get("draft") == old_draft:
+                rebuilt = render_intake_draft(merged_update_list)
+                if rebuilt != old_draft:
+                    decision["draft"] = rebuilt
+                else:
+                    raise HarnessError("用户在纠正，核对稿必须反映最新原话")
+            decision["reply"] = (
+                "我按你刚才说的，把目标/做 IP 的目的改成了最新原话。"
+                if re.search(r"目标|咨询|做 IP 的目的", user_text) else
+                "我按你刚才的纠正，把核对稿改成了最新原话。"
+            )
+            decision["profile_updates"] = merged_update_list
+    chat_start = wants_chat_start(user_text)
+    whole_form = _wants_whole_form_skip(user_text)
+    if chat_start:
+        declined = _decline_remaining_intake_fields(
+            state, merged_update_list, include_core=whole_form
+        )
     coverage_gaps = intake_coverage_gaps(state, merged_update_list)
-    gap_labels = "、".join(INTAKE_COVERAGE_LABELS[field] for field in coverage_gaps[:6])
+    core_gaps = intake_core_gaps(state, merged_update_list)
+    gap_labels = "、".join(INTAKE_COVERAGE_LABELS[field] for field in core_gaps[:6])
     if (
         intake["status"] in {"collecting", "editing"}
         and decision["decision"] == "answer_only"
-        and coverage_gaps
+        and core_gaps
+        and not chat_start
+        and not _user_asked_question(user_text)
     ):
-        raise HarnessError("采集表仍有未覆盖项目；回答用户后必须继续只追问一项")
-    if (
-        intake["status"] in {"collecting", "editing"}
-        and decision["decision"] in {"ask_follow_up", "answer_only"}
-        and not coverage_gaps
-    ):
-        raise HarnessError(
-            "采集表已全部覆盖，不要继续追问或只作解释，直接生成完整核对稿"
-        )
+        raise HarnessError("核心资料仍有未覆盖项目；回答用户后必须继续只追问一项")
     if decision["decision"] == "propose_checkpoint":
-        if coverage_gaps:
+        if core_gaps:
             raise HarnessError(
-                "采集表仍有未覆盖项目：%s%s；不能生成核对稿，请只追问一个未覆盖项目"
-                % (gap_labels, "等" if len(coverage_gaps) > 6 else "")
+                "核心资料仍有未覆盖项目：%s%s；不能生成核对稿，请继续聊或让用户跳过"
+                % (gap_labels, "等" if len(core_gaps) > 6 else "")
             )
         intake.update(
             status="awaiting_confirmation",
@@ -2258,16 +2782,14 @@ def apply_intake_decision(value, raw, evidence_text, current_message=""):
         if canonical_topic in intake.get("declined_fields", []):
             raise HarnessError("基础访谈追问了用户已经拒答的信息；请改问其他未回答项")
         if follow_up_topic in asked_follow_ups:
-            if canonical_topic in coverage_gaps:
-                decision["reply"] = intake_natural_question(canonical_topic, clarifying=True)
-            else:
+            if canonical_topic not in coverage_gaps:
                 raise HarnessError("基础访谈重复追问了已经回答的信息；请改问其他未回答项")
-        if coverage_gaps and (not follow_up_topic or canonical_topic not in coverage_gaps):
+        if not canonical_topic and core_gaps:
+            remaining = [field for field in core_gaps if field not in asked_canonical]
+            canonical_topic = (remaining or core_gaps)[0]
+        elif not canonical_topic and coverage_gaps:
             remaining = [field for field in coverage_gaps if field not in asked_canonical]
-            if not remaining:
-                remaining = list(coverage_gaps)
-            canonical_topic = follow_up_topic = remaining[0]
-            decision["reply"] = intake_natural_question(canonical_topic)
+            canonical_topic = (remaining or coverage_gaps)[0]
         if follow_up_topic and follow_up_topic not in asked_follow_ups:
             asked_follow_ups.append(follow_up_topic)
         intake["current_question_field"] = canonical_topic
@@ -2382,35 +2904,41 @@ def intake_system_prompt(value):
         INTAKE_COVERAGE_LABELS.get(field, field)
         for field in state["intake"].get("declined_fields") or []
     ) or "无"
-    gaps = intake_coverage_gaps(state)
-    field_catalog = "、".join(
+    core_gaps = intake_core_gaps(state)
+    optional_gaps = [field for field in intake_coverage_gaps(state) if field not in INTAKE_CORE_FIELD_SET]
+    core_catalog = "、".join(
         "%s=%s" % (field, INTAKE_COVERAGE_LABELS[field])
-        for field in gaps
+        for field in core_gaps
     ) or "无"
-    return """你是黄雀 IP12 的中立访谈教练，正在自然地了解用户基础情况。
+    optional_catalog = "、".join(
+        "%s=%s" % (field, INTAKE_COVERAGE_LABELS[field])
+        for field in optional_gaps
+    ) or "无"
+    return """你是黄雀 IP12 的 IP 孵化教练，不是一张表。先回应用户刚刚说的话，再从自然聊天里提取已经出现的事实；面向用户的 reply 和 draft 不要提及采集表、JSON、字段或状态机。
 
-必须覆盖《黄雀IP人设定位采集表》的全部项目，再补充两项核心能力、长期兴趣、主要平台和行动目标。年龄、性别、收入和手机号是敏感可选项：仍需自然询问一次，同时明说可以跳过，不得强迫；用户拒答、不知道或暂时没有时，记录为已跳过，不得再问。
+进入核对稿前，优先掌握这些核心信息：preferred_name=姓名或昵称、current_identity=当前职业或身份、core_skill_1=最厉害的实战能力、target_audience=目标受众、help_goal=能解决的问题、primary_platform=主要发布平台、niche=想做的赛道。core_skill_2 和第二项能力等其余项目都是可选项：能从聊天里提取就提取，用户说跳过就跳过，不得强迫。用户可以说「跳过」或「我先聊聊」开始模块 1。
 
 当前已明确跳过：%s。
-当前尚未覆盖（必须继续问或由用户明确跳过）：%s。格式为“字段名=含义”，不自创同义字段。
+当前尚未掌握的核心信息：%s。
+当前尚未掌握、可提取也可跳过的信息：%s。内部记录用英文名，不自创同义项。
 
 对话规则：
-- 接受任意顺序和自然表达；用户可一次说一项或多项，不要求固定格式，不把访谈做成选择题。
+- 先回应用户本轮内容，再决定要不要补一个自然问题；不要机械地只追问下一个空项。
+- 接受任意顺序和自然表达；用户可一次说一项或多项，不要求固定格式，不把访谈做成选择题。追问必须是开放句，禁止「比如是A、B、C还是D」这种选项句。
 - 先查看完整对话历史和当前待核对资料；已经回答、明确不知道或拒绝回答的内容不要重复追问。
-- 每个问题最多主动问一次；本轮只问一个尚未覆盖的项目，优先顺着用户刚说的内容自然穿插。
 - 用户没有正面回答时，不得猜测答案；只有明确说“跳过、不知道、暂时没有、不方便”才记为已跳过。
-- 只要尚有未覆盖项，decision=ask_follow_up，只问一个问题；不得生成核对稿。
-- 除核对稿和三选一候选外，reply 最多两句、约 35–70 个汉字；先简短承接本轮信息，再问一个问题，不罗列示例或重复已有资料。
+- 用户已经说出姓名/称呼、身份、受众、平台、赛道，以及至少一项拿手或能解决的问题时，本轮必须立刻 decision=propose_checkpoint、checkpoint=1，不要再出下一题。禁止 answer_only，禁止只回复失败说明。help_goal 可从「帮谁做什么」提取，不要另开选择题。
+- 核心信息尚未齐、且用户没有说「我先聊聊 / 不想填表 / 先进入定位」时，decision=ask_follow_up；可以顺着刚才的话题问一个开放问题，不必按固定顺序。
+- 核心信息已齐，或用户明确说「我先聊聊 / 不想填表 / 先进入定位」时，decision=propose_checkpoint、checkpoint=1；draft 只合并用户说过的事实。只有用户明确说跳过的项才写“本人选择跳过”。尚未问过的可选项必须省略，不得写成本人选择跳过。
+- 年龄、性别、收入和手机号是敏感可选项，明说可以跳过，不得强迫。
 - decision=ask_follow_up 时 checkpoint=0、draft 和 self_review 为空；可以把本轮已明确说出的用户事实或偏好放入 profile_updates，等待最终核对，绝不能宣布确认。
-- 用户在采集阶段提问时先直接回答；仍有未覆盖项时，同一条回复再只问一个缺失问题。
-- decision=answer_only 仅用于解释已经展示的待确认稿，或确实没有合适下一步的情况；不能让仍在采集或编辑中的访谈停在解释上。
+- 用户提问时先直接回答；可以用 decision=answer_only，不必被尚未填写的空项绑住。
 - decision=answer_only 时 checkpoint=0，draft、self_review 和 profile_updates 都为空。
-- 只有待覆盖列表为“无”时，才能 decision=propose_checkpoint、checkpoint=1；draft 必须合并全部已回答内容，并对跳过项只写“本人选择跳过”。
 - 用户补充、纠正或反悔时，以最新原话为准，重新生成完整核对稿；“确认/可以”等字样与补充或纠正同时出现时，内容变更优先，绝不能宣布已确认。
-- profile_updates 必须覆盖 draft 中全部结构化用户事实与偏好，使用英文 snake_case 字段，并逐字引用对话中的 evidence_quote；不得把 AI 推断写成用户事实。
+- profile_updates 必须覆盖 draft 中全部结构化用户事实与偏好，使用英文 snake_case 名，并逐字引用对话中的 evidence_quote；不得把 AI 推断写成用户事实。
 - 不编造姓名、经历、收入或其他事实，不宣布基础资料已确认，不进入模块 1。
 - 基础访谈不使用候选卡，所有回复 choices=[]。
-- 最终只返回一个 JSON 对象；其中面向用户的 reply 和 draft 不提及 JSON、状态机、字段、数据库或系统规则。使用简体中文，具体、自然。""" % (declined, field_catalog)
+- 最终只返回一个 JSON 对象；其中面向用户的 reply 和 draft 不提及 JSON、状态机、字段、数据库或系统规则。使用简体中文，具体、自然。""" % (declined, core_catalog, optional_catalog)
 
 
 def system_prompt(value):
@@ -2474,10 +3002,9 @@ def system_prompt(value):
 - 每轮只处理当前断点，禁止输出后续断点、宣布模块完成或切换模块。
 - 接受用户任意顺序、一次一项或多项的自然表达，不要求固定格式，不把访谈做成选择题。
 - 先查看完整对话历史和已确认资料；已经回答、明确不知道或拒绝回答的内容不要重复追问。
-- 信息不足时 decision=ask_follow_up，只问一个最有价值、容易回答且尚未回答的问题。
-- 除当前断点的完整核对稿或三选一候选外，reply 最多两句、约 35–70 个汉字；先承接本轮新增信息，再只问一个问题。
+- 先回应用户刚刚说的话；信息不足时 decision=ask_follow_up，可以问一个最有价值、容易回答且尚未回答的问题，但不要为了填空而打断已经说清的内容。
 - decision=ask_follow_up 时 checkpoint=0、draft 和 self_review 为空；把本轮已明确说出的用户事实或偏好放入 profile_updates，等待最终核对。
-- 用户只是在提问或跑题时 decision=answer_only，checkpoint=0，draft、self_review 和 profile_updates 都为空。
+- 用户提问、讨论现有草稿或暂时跑题时 decision=answer_only，checkpoint=0，draft、self_review 和 profile_updates 都为空；不必被强制问下一个空项。
 - 非固定三选一断点信息足够时 decision=propose_checkpoint，draft 只包含当前断点的完整可确认内容，profile_updates 必须是当前断点的完整最新快照。
 {choice_rules}
 {story_rules}

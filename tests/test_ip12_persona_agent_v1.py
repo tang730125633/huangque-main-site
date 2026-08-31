@@ -138,10 +138,21 @@ class IP12PersonaAgentV1Tests(unittest.TestCase):
             ["business_goal", "offer", "primary_platform", "desired_action"],
         )
 
-    def test_intake_checkpoint_is_blocked_until_every_question_is_covered(self):
+    def test_intake_checkpoint_is_not_blocked_by_optional_coverage_gaps(self):
         state = covered_state()
         state["intake"]["declined_fields"].remove("one_year_goal")
-        with self.assertRaisesRegex(harness.HarnessError, "一年目标"):
+        state, _, _ = harness.apply_intake_decision(
+            state,
+            decision("propose_checkpoint", reply="请核对。", draft="基础资料", checkpoint=1),
+            "其他问题都已经回答",
+        )
+        self.assertEqual(state["intake"]["status"], "awaiting_confirmation")
+        self.assertIn("one_year_goal", state["intake"]["declined_fields"])
+
+    def test_intake_checkpoint_is_blocked_until_core_fields_are_covered(self):
+        state = covered_state()
+        state["intake"]["declined_fields"].remove("core_skill_1")
+        with self.assertRaisesRegex(harness.HarnessError, "最厉害的实战能力"):
             harness.apply_intake_decision(
                 state,
                 decision("propose_checkpoint", reply="请核对。", draft="基础资料", checkpoint=1),
@@ -153,12 +164,12 @@ class IP12PersonaAgentV1Tests(unittest.TestCase):
         partial = harness.initial_state()
         partial["ip_profile"]["facts"]["personality_traits"] = two_traits
         self.assertEqual(harness.intake_incomplete_fields(partial), ["personality_traits"])
-        with self.assertRaisesRegex(harness.HarnessError, "三个性格词"):
-            harness.apply_intake_decision(
-                covered_state([two_traits]),
-                decision("propose_checkpoint", reply="请核对。", draft="性格：真诚、克制", updates=[two_traits], checkpoint=1),
-                "真诚、克制",
-            )
+        skipped, _, _ = harness.apply_intake_decision(
+            covered_state([two_traits]),
+            decision("propose_checkpoint", reply="请核对。", draft="性格：真诚、克制", updates=[two_traits], checkpoint=1),
+            "真诚、克制",
+        )
+        self.assertEqual(skipped["intake"]["status"], "awaiting_confirmation")
         three_traits = update("personality_traits", "真诚,克制,细致", "真诚、克制、细致")
         state, _, _ = harness.apply_intake_decision(
             covered_state([three_traits]),
@@ -175,14 +186,19 @@ class IP12PersonaAgentV1Tests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "已经记录"):
             harness.complete_personality_traits("真诚,克制", "克制")
 
-    def test_intake_repairs_questions_outside_the_remaining_catalog(self):
-        state, normalized, _ = harness.apply_intake_decision(
+    def test_intake_keeps_model_wording_when_follow_up_is_not_the_next_gap(self):
+        custom = "你更像专业技术控，还是治愈陪伴型？"
+        state, normalized, reply = harness.apply_intake_decision(
             harness.initial_state(),
-            decision(reply="你更像专业技术控，还是治愈陪伴型？"),
+            decision(reply=custom),
             "我做宠物摄影",
         )
-        self.assertIn("怎么称呼你比较合适", normalized["reply"])
-        self.assertEqual(state["intake"]["asked_follow_ups"], ["preferred_name"])
+        self.assertEqual(normalized["reply"], custom)
+        self.assertEqual(reply, custom)
+        self.assertNotIn("怎么称呼你比较合适", reply)
+        self.assertNotIn(harness.INTAKE_NATURAL_QUESTIONS["preferred_name"], reply)
+        self.assertEqual(state["intake"]["asked_follow_ups"], [])
+        self.assertEqual(state["intake"]["current_question_field"], "preferred_name")
 
     def test_module_five_checkpoint_is_blocked_without_commercial_goal(self):
         state = harness.initial_state()
