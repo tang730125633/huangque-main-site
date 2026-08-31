@@ -344,6 +344,12 @@ def validate_payload(raw, username=""):
             candidate["semantic_layout"] = semantic_layout
             try:
                 value = _request("POST", "/v1/preflight", candidate, timeout=10)
+                payload = value.get("payload") if isinstance(value, dict) else None
+                if (
+                    not isinstance(payload, dict)
+                    or payload.get("semantic_layout") != semantic_layout
+                ):
+                    return False, "生成端回显的 semantic_layout 与候选不一致"
                 return True, value
             except MatrixTemplateHTTPError as exc:
                 if exc.status == 400 and (

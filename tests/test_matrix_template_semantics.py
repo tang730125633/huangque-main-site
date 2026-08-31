@@ -83,26 +83,26 @@ class MatrixTemplateSemanticsTests(unittest.TestCase):
         generate.assert_called_once()
         self.assertEqual(2, validator.call_count)
 
-    def test_number_classifier_boundaries_filter_tight_and_spaced_forms(self):
-        for value in (
-            "团队8个人", "团队8 个人",
-            "产出100条短视频", "产出100 条短视频",
+    def test_number_tokens_filter_arabic_chinese_decimal_and_grouped_forms(self):
+        for value, phrase in (
+            ("团队8个人", "8个人"),
+            ("团队8 个人", "8 个人"),
+            ("产出100条短视频", "100条"),
+            ("产出100 条短视频", "100 条"),
+            ("团队十二个人", "十二个人"),
+            ("团队一百个人", "一百个人"),
+            ("覆盖3.5万人", "3.5万人"),
+            ("产出1,000条视频", "1,000条"),
         ):
             with self.subTest(value=value):
-                digit_start = next(
-                    index for index, char in enumerate(value) if char.isdigit()
-                )
-                digit_end = digit_start
-                while digit_end + 1 < len(value) and value[digit_end + 1].isdigit():
-                    digit_end += 1
-                classifier = digit_end + 1
-                while value[classifier].isspace():
-                    classifier += 1
+                start = value.index(phrase)
+                end = start + len(phrase)
                 breaks = self.module._normalize_breaks(
                     list(range(len(value) - 1)), value,
                 )
-                self.assertIn(digit_start - 1, breaks)
-                for protected in range(digit_end, classifier):
+                if start:
+                    self.assertIn(start - 1, breaks)
+                for protected in range(start, end - 1):
                     self.assertNotIn(protected, breaks)
 
     def test_single_flight_covers_generation_repair_and_validation(self):

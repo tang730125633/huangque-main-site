@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import importlib
 import json
 import re
@@ -403,6 +404,66 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             requests[0]["semantic_layout"], requests[1]["semantic_layout"],
         ))
         resolve_call.assert_called_once()
+
+    def test_v02_http_200_normalization_is_repaired_once_for_concurrent_batch(self):
+        template = next(
+            item for item in self.reference_templates()
+            if item.get("variant") == "v02"
+        )
+        top = "覆盖3.5万人，每天交流项目"
+        bottom = "评论区扣111"
+        first = {
+            "version": 1, "model": "gpt-4.1-mini",
+            "source_sha256": "b" * 64, "top1_end": top.index("，"),
+            "top_break_after": [3, top.index("，")],
+            "bottom_break_after": [],
+        }
+        repaired = dict(first, top_break_after=[top.index("，")])
+
+        def generated(_top, _bottom, _contract, *, previous=None,
+                      feedback=""):
+            return repaired if previous is not None and feedback else first
+
+        def preflight(_method, _path, body, **_kwargs):
+            semantic = body["semantic_layout"]
+            echoed = (
+                dict(semantic, top_break_after=[])
+                if semantic == first else semantic
+            )
+            return {
+                "payload": dict(body, semantic_layout=echoed, duration=11),
+            }
+
+        for workers in (2, 5):
+            with self.subTest(workers=workers):
+                self.module.matrix_template_semantics._CACHE.clear()
+                with mock.patch.object(self.module, "require_available"), \
+                     mock.patch.object(
+                         self.module, "public_templates", return_value=[template],
+                     ), \
+                     mock.patch.object(
+                         self.module.matrix_template_semantics, "generate",
+                         side_effect=generated,
+                     ) as generate, \
+                     mock.patch.object(
+                         self.module, "_request", side_effect=preflight,
+                     ), concurrent.futures.ThreadPoolExecutor(
+                         max_workers=workers,
+                     ) as pool:
+                    futures = [
+                        pool.submit(self.module.validate_payload, {
+                            "top_text": top,
+                            "bottom_text": bottom,
+                            "template_id": template["id"],
+                            "bgm": False,
+                        }, "alice")
+                        for _ in range(workers)
+                    ]
+                    results = [future.result() for future in futures]
+                self.assertTrue(all(
+                    item["semantic_layout"] == repaired for item in results
+                ))
+                self.assertEqual(2, generate.call_count)
 
     def test_generation_url_allows_https_or_loopback_only(self):
         for value in (

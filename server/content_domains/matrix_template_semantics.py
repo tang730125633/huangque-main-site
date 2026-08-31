@@ -24,6 +24,10 @@ _CACHE: dict[str, tuple[float, dict]] = {}
 _LOCK = threading.Lock()
 _KEY_LOCKS = tuple(threading.Lock() for _ in range(32))
 _OBVIOUS_BOUNDARY = frozenset("，。！？；：、,.!?;:|｜ \t")
+_NUMERIC_PHRASE_RE = re.compile(
+    r"(?:[0-9]+(?:[,.，．][0-9]+)*|[零〇一二三四五六七八九十百千万亿两几]+)"
+    r"\s*[十百千万亿个家人位名条款套种项台年月日天次岁]{0,2}"
+)
 
 
 def _chat_url() -> str:
@@ -51,20 +55,9 @@ def _obvious_breaks(value: str) -> set[int]:
 
 def _break_splits_number_phrase(value: str, index: int) -> bool:
     boundary = index + 1
-    left_cursor, right_cursor = boundary - 1, boundary
-    while left_cursor >= 0 and value[left_cursor].isspace():
-        left_cursor -= 1
-    while right_cursor < len(value) and value[right_cursor].isspace():
-        right_cursor += 1
-    return (
-        left_cursor >= 0 and right_cursor < len(value)
-        and (
-            value[left_cursor].isdigit() and value[right_cursor].isdigit()
-            or (
-                value[left_cursor] in "0123456789一二三四五六七八九十几两"
-                and value[right_cursor] in "个家人位名条款套种项台年月日天次岁"
-            )
-        )
+    return any(
+        match.start() < boundary < match.end()
+        for match in _NUMERIC_PHRASE_RE.finditer(value)
     )
 
 
