@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./assets/readme/hero.svg" width="100%" alt="黄雀 AI 创智：从发现客户需求到 AI 内容生产与运营交付的一站式工作台">
+  <img src="./assets/readme/hero-zel-v1.webp" width="100%" alt="Zel and the orange cat organizing incoming ideas into a careful content production and delivery workshop">
 </p>
 
 # 黄雀 AI 创智 · 主站
