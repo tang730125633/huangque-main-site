@@ -103,7 +103,18 @@ def require_available():
         raise feature_flags.FeatureDisabled("模板成片服务暂不可用，请稍后重试")
 
 
-def _semantic_contract(value):
+_SEMANTIC_CONTRACTS = {
+    "v02": {
+        "top1": (86, 2), "top2": (62, 4), "bottom2": (78, 2),
+    },
+    "v05": {
+        "top1": (102, 2), "top2": (104, 2),
+        "top3": (68, 3), "bottom2": (70, 2),
+    },
+}
+
+
+def _semantic_contract(value, variant):
     if value is None:
         return None
     if not isinstance(value, dict) or set(value) != {
@@ -111,17 +122,17 @@ def _semantic_contract(value):
     }:
         raise RuntimeError("HyperFrames 语义排版能力无效")
     layers = value.get("layers")
+    expected_layers = _SEMANTIC_CONTRACTS.get(str(variant or ""))
     if (
         value.get("version") != 1
         or value.get("max_width_px") != 996
         or not isinstance(layers, dict)
-        or set(layers) != {"top1", "top2", "bottom2"}
+        or expected_layers is None
+        or set(layers) != set(expected_layers)
     ):
         raise RuntimeError("HyperFrames 语义排版能力无效")
     normalized = {}
-    for layer, expected in {
-        "top1": (86, 2), "top2": (62, 4), "bottom2": (78, 2),
-    }.items():
+    for layer, expected in expected_layers.items():
         item = layers.get(layer)
         if not isinstance(item, dict) or set(item) != {
             "font_size_px", "max_lines",
@@ -177,7 +188,9 @@ def _refresh_catalog(force=False):
                 "selectable" if font_selectable else "template_locked"
             ))
             variant = str(raw.get("variant") or "")
-            semantic_layout = _semantic_contract(raw.get("semantic_layout"))
+            semantic_layout = _semantic_contract(
+                raw.get("semantic_layout"), variant,
+            )
             if engine not in {"ffmpeg", "hyperframes"}:
                 continue
             if font_mode not in {"selectable", "template_locked"}:
@@ -228,7 +241,7 @@ def _refresh_catalog(force=False):
                 or {
                     item["variant"] for item in references
                     if item.get("semantic_layout")
-                } != {"v02"}
+                } not in ({"v02"}, {"v02", "v05"})
             ):
                 raise RuntimeError("HyperFrames 模板目录不完整")
             templates = [approved[template_id] for template_id in APPROVED_TEMPLATE_IDS] + references
