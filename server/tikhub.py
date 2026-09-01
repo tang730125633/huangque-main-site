@@ -14,7 +14,7 @@
 环境变量：TIKHUB_KEY（必填）、TIKHUB_BASE（默认 api.tikhub.io；大陆服务器改 api.tikhub.dev）、
          OPENAI_API_KEY / OPENAI_TRANSCRIBE_BASE（口播 ASR 专用，不跟随其他 OpenAI 中转）。
 """
-import os, re, json, time, threading, sqlite3, subprocess, tempfile, urllib.request, urllib.parse, urllib.error
+import os, re, json, time, threading, sqlite3, subprocess, tempfile, urllib.request, urllib.parse, urllib.error, ssl, socket
 from contextlib import closing
 
 KEY  = os.environ.get("TIKHUB_KEY", "")
@@ -69,6 +69,14 @@ def _cache_set(key, val, ttl):
 
 class TikHubError(Exception):
     pass
+
+
+class ChannelsDownloadError(TikHubError):
+    """The Channels media file could not be downloaded safely."""
+
+
+class ChannelsDecryptError(TikHubError):
+    """The Channels media file was downloaded but could not be decrypted."""
 
 
 # ============ 全局限流：TikHub QPS 10/s，跨线程排队稳在 ~7/s，避免突发被限流返回错笔记/空 ============
@@ -589,6 +597,40 @@ def _ch_cover_url(media):
 
 _CH_DECRYPT_API = os.environ.get("CH_DECRYPT_API", "http://127.0.0.1:3001/api/decrypt")  # Isaac64 WASM 解密服务(同下载代理 dl_service)
 _CH_REFERER = "https://channels.weixin.qq.com/"
+_CH_DOWNLOAD_ATTEMPTS = 3
+_CH_DOWNLOAD_RETRY_DELAYS = (0.8, 2.0)
+
+
+def _channels_download_error_kind(error):
+    """Classify a Channels download failure without retrying local/data errors."""
+    if isinstance(error, urllib.error.HTTPError):
+        if error.code in (400, 401, 403, 404, 410):
+            return "refresh"
+        if error.code in (408, 425, 429, 500, 502, 503, 504):
+            return "transient"
+        return "permanent"
+    reason = error.reason if isinstance(error, urllib.error.URLError) else error
+    if isinstance(reason, ssl.SSLCertVerificationError):
+        return "permanent"
+    if isinstance(reason, (ssl.SSLError, socket.timeout, TimeoutError,
+                           ConnectionResetError, ConnectionAbortedError,
+                           BrokenPipeError)):
+        return "transient"
+    message = ("%s %s" % (reason.__class__.__name__, reason)).lower()
+    if any(token in message for token in (
+            "ssl", "tls", "unexpected_eof", "eof occurred", "timed out",
+            "timeout", "connection reset", "connection aborted",
+            "remote end closed connection")):
+        return "transient"
+    return "permanent"
+
+
+def _channels_download_host(play_url):
+    """Return only the hostname so logs never expose expiring URL tokens."""
+    try:
+        return (urllib.parse.urlparse(play_url).hostname or "unknown")[:120]
+    except Exception:
+        return "unknown"
 
 def _ch_download_decrypt(play_url, decode_key, dest_path, deadline_ts, max_bytes=100_000_000):
     """视频号：下载 encfilekey 加密流(带微信 Referer) → 调 :3001 Isaac64 解密 → 落盘可播 mp4。
@@ -615,7 +657,7 @@ def _ch_download_decrypt(play_url, decode_key, dest_path, deadline_ts, max_bytes
                             "-F", "decode_key=" + str(decode_key), "-F", "video=@" + enc, "-o", dest_path],
                            capture_output=True, timeout=180)
         if p.returncode != 0 or not os.path.exists(dest_path) or not os.path.getsize(dest_path):
-            raise TikHubError("视频号解密失败：" + (p.stderr[-120:].decode("u8", "ignore") if p.stderr else "空输出"))
+            raise ChannelsDecryptError("视频号文件解密失败：" + (p.stderr[-120:].decode("u8", "ignore") if p.stderr else "空输出"))
         return dest_path
     finally:
         try: os.unlink(enc)
@@ -1027,15 +1069,63 @@ def transcript(det, video_path=None):
     """
     if det.get("platform") == "channels":
         # 视频号是 Isaac64 加密流，whisper 直接解不了；先下载→:3001 解密成可播 mp4→再 ASR。
-        pu, dk = det.get("play_url"), str(det.get("decode_key") or "")
+        current = dict(det)
+        pu, dk = current.get("play_url"), str(current.get("decode_key") or "")
         if not pu or not dk:
             return None  # 不完整 media（缺播放地址/解密密钥）→ 放弃 ASR，不报错
         fd, dec = tempfile.mkstemp(suffix=".mp4", prefix="hqchdec-"); os.close(fd)
         try:
-            _ch_download_decrypt(pu, dk, dec, time.time() + ASR_DL_DEADLINE)
+            deadline = time.time() + ASR_DL_DEADLINE
+            last_error = None
+            for attempt in range(1, _CH_DOWNLOAD_ATTEMPTS + 1):
+                pu = current.get("play_url")
+                dk = str(current.get("decode_key") or "")
+                if not pu or not dk:
+                    raise ChannelsDownloadError("视频号下载地址或解密密钥已失效，请重新提交分享链接")
+                try:
+                    _ch_download_decrypt(pu, dk, dec, deadline)
+                    last_error = None
+                    break
+                except ChannelsDecryptError:
+                    raise
+                except Exception as e:
+                    last_error = e
+                    kind = _channels_download_error_kind(e)
+                    remaining = deadline - time.time()
+                    print("[channels-download] attempt=%d/%d host=%s kind=%s error=%s remaining=%.1fs"
+                          % (attempt, _CH_DOWNLOAD_ATTEMPTS, _channels_download_host(pu),
+                             kind, e.__class__.__name__, max(0.0, remaining)), flush=True)
+                    if kind == "permanent":
+                        raise ChannelsDownloadError("视频号文件下载失败：%s" % str(e)[:120]) from e
+                    if attempt >= _CH_DOWNLOAD_ATTEMPTS or remaining <= 0:
+                        break
+
+                    # A signed Channels URL can expire independently of the job.  Refresh
+                    # immediately for an HTTP expiry, or after two TLS/network failures.
+                    if kind == "refresh" or attempt >= 2:
+                        object_id = current.get("id")
+                        if object_id:
+                            try:
+                                refreshed = ch_detail(object_id)
+                                if refreshed.get("play_url") and refreshed.get("decode_key"):
+                                    current = refreshed
+                                    print("[channels-download] refreshed signed media attempt=%d host=%s"
+                                          % (attempt, _channels_download_host(refreshed.get("play_url"))), flush=True)
+                            except Exception as refresh_error:
+                                print("[channels-download] refresh failed attempt=%d error=%s"
+                                      % (attempt, refresh_error.__class__.__name__), flush=True)
+                    delay = _CH_DOWNLOAD_RETRY_DELAYS[min(attempt - 1, len(_CH_DOWNLOAD_RETRY_DELAYS) - 1)]
+                    if delay > 0:
+                        time.sleep(min(delay, max(0.0, deadline - time.time())))
+            if last_error is not None:
+                if deadline - time.time() <= 0:
+                    raise ChannelsDownloadError("视频号文件下载超时，系统自动恢复后仍未成功，请稍后再试") from last_error
+                raise ChannelsDownloadError("视频号文件下载连接中断，系统自动恢复后仍未成功，请稍后再试") from last_error
             return {"text": _whisper(dec), "source": "asr"}
+        except (ChannelsDownloadError, ChannelsDecryptError):
+            raise
         except Exception as e:
-            raise TikHubError("视频号 ASR 失败：" + str(e)[:120])
+            raise TikHubError("视频号语音识别失败：" + str(e)[:120])
         finally:
             try: os.unlink(dec)
             except OSError: pass
