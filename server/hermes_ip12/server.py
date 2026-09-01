@@ -1235,6 +1235,13 @@ def _expanded_production_intent(message):
                 "recommended_action": action,
                 "candidate_actions": [action],
             }
+    # 文案成片（把文案做成视频/一键成片）：明确走模板成片能力，展示文案+模板准备卡
+    if re.search(r"(?:文案|脚本|文字).{0,10}(?:做成|转成|生成|成片).{0,10}(?:视频|成片)|(?:一键成片|文案成片)", text):
+        return {
+            "capability_family": "video",
+            "recommended_action": "text-video-generate",
+            "candidate_actions": ["text-video-generate"],
+        }
     # 自然语言制作请求（如「生成一张橘猫晒太阳的图片」「做一条口播视频」）
     # 交给 harness 的制作意图识别（生成/制作 + 媒体类型），不再落入模型自由回复。
     try:
@@ -7169,6 +7176,13 @@ def _process_production_intent_turn(
         ),
     )
     result = _chat_result(assistant, next_state)
+    if selected_action == "text-video-generate":
+        # 文案成片：给准备卡组件（文案+模板点选），客户不接触风格/音色/BGM
+        result["components"] = ["text_video_prep"]
+        assistant = (
+            "可以把确认的文案一键成片。你先选一篇文案，再从模板预览里挑一个喜欢的模板；"
+            "风格、音色和背景音乐我会自动帮你搭配好。"
+        )
     if selected_action in _NAVIGATION_ONLY_ACTIONS:
         result["actions"] = [{
             "type": "navigate_to",
