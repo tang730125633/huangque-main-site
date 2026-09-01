@@ -227,6 +227,456 @@ class DirectorAgentConfirmationTests(unittest.TestCase):
         self.assertTrue(result["production_offer"]["requires_confirmation"])
         self.assertEqual("东鹏特饮", result["production_offer"]["summary"]["topic"])
 
+    def test_direct_production_request_cannot_degrade_into_page_instructions(self):
+        request = director_agent.validate_payload(payload())
+        request.update(_username="alice", _job_id=42)
+        raw = json.dumps({
+            "content": "请到编导页面点击生成按钮。",
+            "stage": "understand",
+            "actions": [],
+            "warnings": [],
+            "offer_production": False,
+        }, ensure_ascii=False)
+        with mock.patch.object(
+            director_agent.director_cli, "production_is_available", return_value=True,
+        ), mock.patch(
+            "content_domains.points.cost_of", return_value=3,
+        ):
+            result = director_agent.normalize_model_result(raw, request)
+        self.assertEqual(
+            "生产信息已经准备好，预计扣除 3 点。是否开始生产？",
+            result["content"],
+        )
+        self.assertEqual("script", result["production_offer"]["kind"])
+        self.assertTrue(result["production_offer"]["requires_confirmation"])
+
+    def test_script_production_intent_does_not_capture_guidance_or_negation(self):
+        direct = director_agent.validate_payload(payload(
+            prompt="可以帮我生成一份分镜脚本吗？",
+        ))
+        guidance = director_agent.validate_payload(payload(
+            prompt="生成脚本后怎么做视频？",
+        ))
+        negated = director_agent.validate_payload(payload(
+            prompt="先不要生成分镜脚本，只帮我看看参数",
+        ))
+        capability = director_agent.validate_payload(payload(
+            prompt="你会生成什么？",
+        ))
+        capability_question = director_agent.validate_payload(payload(
+            prompt="你能不能生成一份分镜脚本？",
+        ))
+        user_rule = director_agent.validate_payload(payload(
+            prompt="不要告诉我怎么做，直接帮我生成一份分镜脚本",
+        ))
+        tutorial = director_agent.validate_payload(payload(
+            prompt="帮我生成分镜脚本的步骤",
+        ))
+        embedded_capability = director_agent.validate_payload(payload(
+            prompt="你能不能帮我生成一份分镜脚本？",
+        ))
+        meta_guidance = director_agent.validate_payload(payload(
+            prompt="不用教我如何生成脚本，直接帮我生成一份分镜脚本",
+        ))
+        self.assertTrue(director_agent._explicit_script_production_request(direct))
+        self.assertFalse(director_agent._explicit_script_production_request(guidance))
+        self.assertFalse(director_agent._explicit_script_production_request(negated))
+        self.assertFalse(director_agent._explicit_script_production_request(capability))
+        self.assertFalse(
+            director_agent._explicit_script_production_request(capability_question)
+        )
+        self.assertTrue(director_agent._explicit_script_production_request(user_rule))
+        self.assertFalse(director_agent._explicit_script_production_request(tutorial))
+        self.assertFalse(
+            director_agent._explicit_script_production_request(embedded_capability)
+        )
+        self.assertTrue(
+            director_agent._explicit_script_production_request(meta_guidance)
+        )
+
+    def test_server_intent_gate_overrides_model_in_both_directions(self):
+        def normalize(prompt, model_offer, topic="东鹏特饮"):
+            value = payload(prompt=prompt)
+            value["page_context"] = dict(value["page_context"], topic=topic)
+            request = director_agent.validate_payload(value)
+            request.update(_username="alice", _job_id=42)
+            raw = json.dumps({
+                "content": "模型原始回答",
+                "stage": "understand",
+                "actions": [],
+                "warnings": [],
+                "offer_production": model_offer,
+            }, ensure_ascii=False)
+            with mock.patch.object(
+                director_agent.director_cli, "production_is_available",
+                return_value=True,
+            ), mock.patch(
+                "content_domains.points.cost_of", return_value=3,
+            ):
+                return director_agent.normalize_model_result(raw, request)
+
+        advisory = (
+            "你能不能帮我生成一份分镜脚本？",
+            "怎么帮我生成一份分镜脚本？",
+            "如何调用编导 CLI 生成分镜脚本？",
+            "我还没有确认开始生产，只是问问流程。",
+            "生成分镜脚本需要多少点？",
+            "刚才生成脚本失败了。",
+            "先不要生成分镜脚本。",
+            "帮我生成分镜脚本，取消",
+            "帮我生成分镜脚本，先不要",
+            "帮我生成分镜脚本，算了",
+            "我不想要分镜脚本",
+            "分镜脚本先不用了",
+            "暂时不做分镜脚本",
+            "等我确认后再生成分镜脚本",
+            "生成分镜脚本要多久？",
+            "明天再生成分镜脚本",
+            "晚点生成分镜脚本",
+            "待会儿再生成分镜脚本",
+            "过会儿再生成分镜脚本",
+            "暂缓生成分镜脚本",
+            "等会儿再生成分镜脚本",
+            "晚些时候再生成分镜脚本",
+            "过两天再生成分镜脚本",
+            "下周再生成分镜脚本",
+            "生成分镜脚本一般要几分钟",
+            "分镜脚本生成需要几小时",
+            "生成分镜脚本耗时吗",
+            "生成分镜脚本什么时候能好",
+            "生成分镜脚本什么时候可以完成",
+            "生成分镜脚本要花多长时间",
+            "分镜脚本多快能生成好",
+            "还不是现在生成分镜脚本",
+            "暂时先放一放，别生成分镜脚本",
+            "以后有需要再生成分镜脚本",
+            "先不急着生成分镜脚本",
+            "生成视频但不生成脚本",
+            "不生成脚本只生成视频",
+            "先生成视频，不要生成分镜脚本",
+            "只生成视频，分镜脚本先不要",
+            "生成视频而不是脚本",
+            "生成视频而非脚本",
+            "我想生成视频，不是分镜脚本",
+            "不是要生成脚本，是要生成视频",
+            "只要视频，不要脚本",
+            "做视频，不做脚本",
+            "我不打算生成脚本",
+            "暂时没计划做脚本",
+            "目前不考虑生成脚本",
+            "我不准备生成脚本",
+            "还没决定要不要生成脚本",
+            "我没说要生成脚本",
+            "先别急，脚本过几天再做",
+            "脚本晚一会儿再生成",
+            "有空再生成脚本",
+            "脚本几天能做完",
+            "生成脚本预计要几天",
+            "什么时候能把脚本做完",
+            "先缓缓，脚本不急着做",
+            "我压根不想生成脚本",
+            "我没有打算做脚本",
+            "先不考虑做脚本",
+            "脚本暂时搁置",
+            "脚本先放一放",
+            "之后有需要再做脚本",
+            "脚本大概要几天完成",
+            "脚本预计多久能交付",
+            "我只是想问生成脚本要多久",
+            "先生成视频，脚本就不要了",
+            "我要视频而非脚本",
+            "视频可以做，脚本不做",
+            "不要生成视频",
+            "请生成视频",
+            "我们聊聊脚本",
+        )
+        execute = (
+            "不要生成视频，只帮我生成一份分镜脚本。",
+            "不要生成视频只帮我生成一份分镜脚本。",
+            "请生成 一份分镜脚本",
+            "不要告诉我怎么做，直接帮我生成一份分镜脚本",
+            "不讲方法直接帮我生成一份分镜脚本",
+            "生成一份关于新能源汽车的分镜脚本",
+            "生成关于新能源汽车的分镜脚本",
+            "写一个关于 AI 营销的脚本",
+            "围绕新能源汽车生成分镜脚本",
+            "给东鹏特饮做一份分镜脚本",
+            "按刚才方案开始生产",
+            "直接做吧",
+            "不用告诉我生成脚本的方法直接帮我生成一份分镜脚本",
+            "不要讲方法直接生成分镜脚本",
+            "按这个方案开始",
+            "就这么做",
+            "先生成分镜脚本，不要生成视频",
+            "生成脚本，不生成视频",
+            "不做视频只做分镜脚本",
+            "照这个方案开始",
+            "直接开始",
+            "现在开始",
+            "开始吧",
+            "只生成分镜脚本",
+            "分镜脚本直接做",
+            "开始生成吧",
+            "依照这个方案执行",
+            "沿用上面的方案开始做",
+            "按之前的方案做",
+            "照刚才说的做吧",
+            "生成分镜脚本但不要生成视频",
+            "只生成分镜脚本，视频先不要",
+            "视频不要，只做分镜脚本",
+            "不需要你解释生成脚本的方法，直接帮我生成一份分镜脚本",
+            "无需说明生成脚本步骤直接生成分镜脚本",
+            "不想听流程直接生成分镜脚本",
+            "别跟我讲操作方法直接做分镜脚本",
+            "不用介绍流程直接生成一份分镜脚本",
+            "做吧",
+            "生成吧",
+            "执行吧",
+            "继续做吧",
+            "继续生成",
+            "按原方案执行",
+            "照着这个方案开始",
+            "那就开始",
+            "只做脚本不做数字人",
+            "就按上面的来",
+            "根据这个方案开始",
+            "照旧开始",
+            "给我来一个脚本",
+            "直接出脚本",
+            "搞一份分镜脚本",
+            "别分析了，直接给我脚本",
+            "就这么来吧",
+            "生成脚本而不是视频",
+            "要脚本，不要视频",
+            "视频先放一边，直接生成脚本",
+            "不要成片，只出分镜",
+            "开干吧",
+            "开始干",
+            "继续吧",
+            "继续",
+            "确认开始",
+            "确认生产",
+            "就按这个来吧",
+            "用原方案继续",
+            "按刚才说的继续",
+            "直接来",
+            "就它了，开始",
+            "可以开始了",
+        )
+        for prompt in advisory:
+            with self.subTest(prompt=prompt, model_offer=True):
+                self.assertNotIn("production_offer", normalize(prompt, True))
+        for prompt in execute:
+            with self.subTest(prompt=prompt, model_offer=False):
+                result = normalize(prompt, False)
+                self.assertEqual("script", result["production_offer"]["kind"])
+                self.assertTrue(result["production_offer"]["requires_confirmation"])
+        for prompt in advisory:
+            with self.subTest(prompt=prompt, topic="", model_offer=True):
+                self.assertNotIn("production_offer", normalize(prompt, True, topic=""))
+        for prompt in (
+            "我们聊聊脚本",
+            "脚本挺重要",
+            "我对脚本有个想法",
+            "先看看这个脚本",
+        ):
+            with self.subTest(prompt=prompt, expected_intent="unknown"):
+                request = director_agent.validate_payload(payload(prompt=prompt))
+                self.assertEqual(
+                    director_agent.SCRIPT_PRODUCTION_UNKNOWN,
+                    director_agent._script_production_intent(request),
+                )
+                self.assertNotIn("production_offer", normalize(prompt, True))
+        for prompt in (
+            "生成一份关于新能源汽车的分镜脚本",
+            "生成关于新能源汽车的分镜脚本",
+            "写一个关于 AI 营销的脚本",
+            "围绕新能源汽车生成分镜脚本",
+            "围绕“AI营销”生成一份分镜脚本",
+            "围绕AI营销来生成一份分镜脚本",
+            "围绕AI营销，生成一份分镜脚本",
+            "以AI营销为题写一份分镜脚本",
+            "给新能源汽车来一份分镜脚本",
+            "做一份围绕AI营销的分镜脚本",
+            "给东鹏特饮做一份分镜脚本",
+        ):
+            with self.subTest(prompt=prompt, topic="", model_offer=False):
+                result = normalize(prompt, False, topic="")
+                self.assertEqual("script", result["production_offer"]["kind"])
+
+        cancelled_after_extraction = (
+            "帮我生成一份关于 AI 的分镜脚本，但是先不要生成",
+            "生成一份关于 AI 的分镜脚本，算了",
+        )
+        for prompt in cancelled_after_extraction:
+            with self.subTest(prompt=prompt, topic="", model_offer=True):
+                self.assertNotIn("production_offer", normalize(prompt, True, topic=""))
+
+        invalid_topic_prompts = (
+            "给我生成一份分镜脚本",
+            "为我生成一份分镜脚本",
+            "给咱们生成一份分镜脚本",
+            "为自己生成一份分镜脚本",
+            "给大家生成一份分镜脚本",
+            "给您生成一份分镜脚本",
+            "围绕上述主题生成一份分镜脚本",
+            "以刚才的主题生成一份分镜脚本",
+            "给本人生成一份分镜脚本",
+            "给大伙生成一份分镜脚本",
+            "围绕那个主题生成一份分镜脚本",
+            "以这个方向生成一份分镜脚本",
+            "围绕前文主题生成一份分镜脚本",
+            "以刚才说的主题生成一份分镜脚本",
+            "围绕上面的选题生成一份分镜脚本",
+            "以之前的选题写一份分镜脚本",
+            "按那个选题生成一份分镜脚本",
+            "围绕上次的话题生成一份分镜脚本",
+            "用前面说的主题写一份分镜脚本",
+            "给咱俩生成一份分镜脚本",
+            "以此为主题生成一份分镜脚本",
+            "按之前说的方向做一份分镜脚本",
+        )
+        for prompt in invalid_topic_prompts:
+            with self.subTest(prompt=prompt, invalid_topic=True):
+                result = normalize(prompt, False, topic="")
+                self.assertNotIn("production_offer", result)
+                self.assertEqual("请告诉我这次要生成的分镜脚本主题。", result["content"])
+
+        result = normalize("围绕AI营销生成一份分镜脚本", False, topic="")
+        self.assertEqual("AI营销", result["production_offer"]["summary"]["topic"])
+        result = normalize("围绕AI营销，生成一份分镜脚本", False, topic="")
+        self.assertEqual("AI营销", result["production_offer"]["summary"]["topic"])
+        result = normalize("以AI营销为题写一份分镜脚本", False, topic="")
+        self.assertEqual("AI营销", result["production_offer"]["summary"]["topic"])
+        result = normalize("围绕“AI营销”生成一份分镜脚本", False, topic="")
+        self.assertEqual("AI营销", result["production_offer"]["summary"]["topic"])
+        result = normalize("围绕AI营销来生成一份分镜脚本", False, topic="")
+        self.assertEqual("AI营销", result["production_offer"]["summary"]["topic"])
+        result = normalize("给新能源汽车来一份分镜脚本", False, topic="")
+        self.assertEqual("新能源汽车", result["production_offer"]["summary"]["topic"])
+        result = normalize("做一份围绕AI营销的分镜脚本", False, topic="")
+        self.assertEqual("AI营销", result["production_offer"]["summary"]["topic"])
+        result = normalize("以AI营销作为主题生成一份分镜脚本", False, topic="")
+        self.assertEqual("AI营销", result["production_offer"]["summary"]["topic"])
+        result = normalize("围绕AI营销这个主题生成一份分镜脚本", False, topic="")
+        self.assertEqual("AI营销", result["production_offer"]["summary"]["topic"])
+        result = normalize("主题是AI营销，生成一份分镜脚本", False, topic="")
+        self.assertEqual("AI营销", result["production_offer"]["summary"]["topic"])
+        result = normalize("做个低空经济分镜脚本", False, topic="")
+        self.assertEqual("低空经济", result["production_offer"]["summary"]["topic"])
+        result = normalize("写个AI营销的分镜脚本", False, topic="")
+        self.assertEqual("AI营销", result["production_offer"]["summary"]["topic"])
+        result = normalize("给我做一个AI营销主题的分镜脚本", False, topic="")
+        self.assertEqual("AI营销", result["production_offer"]["summary"]["topic"])
+        result = normalize("关于AI营销和品牌增长的脚本", False, topic="")
+        self.assertEqual(
+            "AI营销和品牌增长", result["production_offer"]["summary"]["topic"]
+        )
+        result = normalize("主题定为AI营销，生成一份分镜脚本", False, topic="")
+        self.assertEqual("AI营销", result["production_offer"]["summary"]["topic"])
+        result = normalize("选题是低空经济，直接生成分镜脚本", False, topic="")
+        self.assertEqual("低空经济", result["production_offer"]["summary"]["topic"])
+        result = normalize("写一份AI营销主题分镜脚本", False, topic="")
+        self.assertEqual("AI营销", result["production_offer"]["summary"]["topic"])
+        result = normalize("来个低空经济的脚本", False, topic="")
+        self.assertEqual("低空经济", result["production_offer"]["summary"]["topic"])
+        result = normalize("按AI营销这个选题做分镜脚本", False, topic="")
+        self.assertEqual("AI营销", result["production_offer"]["summary"]["topic"])
+
+    def test_customer_topic_and_existing_page_topic_override_model_topic_action(self):
+        def normalize(prompt, page_topic, model_topic):
+            value = payload(prompt=prompt)
+            value["page_context"] = dict(value["page_context"], topic=page_topic)
+            request = director_agent.validate_payload(value)
+            request.update(_username="alice", _job_id=42)
+            raw = json.dumps({
+                "content": "模型原始回答",
+                "stage": "production",
+                "actions": [{
+                    "type": "fill_field", "field": "topic", "value": model_topic,
+                    "label": "填入选题",
+                }],
+                "warnings": [],
+                "offer_production": True,
+            }, ensure_ascii=False)
+            with mock.patch.object(
+                director_agent.director_cli, "production_is_available",
+                return_value=True,
+            ), mock.patch(
+                "content_domains.points.cost_of", return_value=3,
+            ):
+                return director_agent.normalize_model_result(raw, request)
+
+        explicit = normalize("围绕AI营销生成一份分镜脚本", "", "房地产")
+        self.assertEqual("AI营销", explicit["production_offer"]["summary"]["topic"])
+        self.assertEqual("AI营销", explicit["plan"]["actions"][0]["value"])
+
+        existing = normalize("直接生成分镜脚本", "东鹏特饮", "房地产")
+        self.assertEqual("东鹏特饮", existing["production_offer"]["summary"]["topic"])
+        self.assertFalse(any(
+            action["type"] == "fill_field" and action["field"] == "topic"
+            for action in existing["plan"]["actions"]
+        ))
+
+        for prompt in (
+            "不做视频只做分镜脚本",
+            "无需说明生成脚本步骤直接生成分镜脚本",
+        ):
+            with self.subTest(prompt=prompt, page_topic_wins=True):
+                result = normalize(prompt, "东鹏特饮", "房地产")
+                self.assertEqual(
+                    "东鹏特饮", result["production_offer"]["summary"]["topic"]
+                )
+
+        missing = normalize("给我生成一份分镜脚本", "", "新能源汽车")
+        self.assertNotIn("production_offer", missing)
+        self.assertEqual("请告诉我这次要生成的分镜脚本主题。", missing["content"])
+
+    def test_empty_page_advisory_vetoes_model_topic_action(self):
+        value = payload(prompt="我还没有确认开始生产，只是问问流程。")
+        value["page_context"] = dict(value["page_context"], topic="")
+        request = director_agent.validate_payload(value)
+        request.update(_username="alice", _job_id=42)
+        raw = json.dumps({
+            "content": "模型误判为生产。",
+            "stage": "production",
+            "actions": [{
+                "type": "fill_field", "field": "topic", "value": "新能源汽车",
+                "label": "填入选题",
+            }],
+            "warnings": [],
+            "offer_production": True,
+        }, ensure_ascii=False)
+        with mock.patch.object(
+            director_agent.director_cli, "production_is_available", return_value=True,
+        ), mock.patch(
+            "content_domains.points.cost_of", return_value=3,
+        ):
+            result = director_agent.normalize_model_result(raw, request)
+        self.assertNotIn("production_offer", result)
+
+    def test_direct_request_extracts_topic_when_model_omits_field_action(self):
+        value = payload(prompt="帮我生成一份关于新能源汽车的分镜脚本")
+        value["page_context"] = dict(value["page_context"], topic="")
+        request = director_agent.validate_payload(value)
+        request.update(_username="alice", _job_id=42)
+        raw = json.dumps({
+            "content": "请到页面填写选题。",
+            "stage": "understand",
+            "actions": [],
+            "warnings": [],
+            "offer_production": False,
+        }, ensure_ascii=False)
+        with mock.patch.object(
+            director_agent.director_cli, "production_is_available", return_value=True,
+        ), mock.patch(
+            "content_domains.points.cost_of", return_value=3,
+        ):
+            result = director_agent.normalize_model_result(raw, request)
+        self.assertEqual("新能源汽车", result["production_offer"]["summary"]["topic"])
+        self.assertEqual("fill_field", result["plan"]["actions"][0]["type"])
+        self.assertEqual("新能源汽车", result["plan"]["actions"][0]["value"])
+
     def test_chat_job_claim_is_atomic_and_replayable_without_schema_change(self):
         with tempfile.TemporaryDirectory() as temp:
             database = pathlib.Path(temp) / "jobs.db"

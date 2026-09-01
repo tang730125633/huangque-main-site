@@ -211,7 +211,7 @@ SYSTEM_PROMPT = """你是同一个“黄雀编导 Agent”，全程陪顾客完�
 5. navigate：跳到黄雀站内 script、digital_human、ip12、assets、audio、video 或 canvas 页面。
 最多 6 个动作。actions 会在回复后由页面自动执行，所以只有顾客明确要求或意图唯一明确时才返回动作；仅咨询怎么使用时只回答，不要擅自改页面。
 可以自动预填、选择、切换模式、聚焦控件或跳转黄雀站内页面。navigate 必须是唯一动作，不得与填充、选择、切换或聚焦同时返回，避免离开页面时丢失刚填的内容。
-只有在编导页且顾客明确要立即生成分镜脚本时，offer_production 才返回 true；同时用 actions 补齐或更新顾客明确给出的选题、卖点、风格、时长和平台。服务端会在回复后生成一张需要顾客在对话框点击的确认生产单；你不得声称已扣点或已生成。仅咨询用法、意图不清、主题仍为空、拆解或数字人页时必须返回 false。
+只有在编导页且顾客明确要立即生成分镜脚本时，offer_production 才返回 true；同时用 actions 补齐或更新顾客明确给出的选题、卖点、风格、时长和平台。明确要求生成时，不要回复页面操作步骤，也不要让顾客自己去点击编导页生成按钮；服务端会在回复后生成一张需要顾客在对话框点击的确认生产单，并在确认后调用编导 CLI，把生成结果回传到当前对话框。你不得声称已扣点或已生成。仅咨询用法、意图不清、主题仍为空、拆解或数字人页时必须返回 false。
 不得通过 actions 自动选择顾客本地文件，不得勾选真人/声音授权，不得自动确认扣点、删除、发布、访问外部链接或执行任意命令。顾客可以主动点击对话框的附件按钮选择图片或视频，前端只会把文件交给当前页面已有的原生上传流程；这不代表已经授权、扣点或生成。
 在编导页，只要顾客说“反推提示词”“反推视频”“视频反推”“视频拆解”或同义表达，就把它视为明确的视频上传意图：只简短回复“请上传需要反推提示词的视频”，不要推荐粘贴链接，不要列出多种操作方式。对话框附件会把文件交给页面原生上传流程，扣点仍由顾客在页面确认。
 顾客意图不清楚时先问一个最关键的问题，actions 返回空数组。若当前已有脚本，优先解释如何修改、转配音、转视频或导出；若是拆解模式，根据 page_context.breakdown_tool 和 has_reverse_prompt 区分分镜拆解与提示词反推，再解释合法公开链接与当前结果。
@@ -1116,7 +1116,233 @@ def _ensure_page_action_allowed(page, action):
         raise ValueError("Agent 动作不属于当前页面")
 
 
-def _script_production_offer(request, actions, requested):
+SCRIPT_PRODUCTION_EXECUTE = "execute"
+SCRIPT_PRODUCTION_ADVISORY = "advisory"
+SCRIPT_PRODUCTION_UNKNOWN = "unknown"
+_SCRIPT_PRODUCTION_TARGET = re.compile(r"(?:分镜脚本|分镜|脚本)")
+_SCRIPT_PRODUCTION_OTHER_TARGET = re.compile(
+    r"(?:视频|成片|图片|海报|音频|配音|数字人)"
+)
+_SCRIPT_PRODUCTION_VERB = re.compile(
+    r"(?:生成|生产|制作|写|做|执行|开始|来|出|搞|给)"
+)
+_SCRIPT_PRODUCTION_REQUEST = re.compile(
+    r"(?:^|(?:那就|直接|请|请给我|给我))(?:我)?(?:想要|要)"
+    r"(?:一份|一个|个)?(?:分镜脚本|分镜|脚本)"
+)
+_SCRIPT_PRODUCTION_EXECUTION = re.compile(
+    r"(?:帮我|给我|为我|替我|请|开始|立即|马上|直接|现在).{0,10}"
+    r"(?:生成|生产|制作|写|做|执行)|"
+    r"^(?:请)?(?:生成|生产|制作|写|做).{0,100}(?:分镜脚本|分镜|脚本)|"
+    r"(?:我)?(?:确认|同意)(?:开始)?生产|"
+    r"调用.{0,10}(?:编导)?CLI.{0,10}(?:生成|生产|制作)|"
+    r"(?:就按|按).{0,12}(?:生成|生产|制作|执行|开始)|"
+    r"(?:生成|生产|制作|做|执行)(?:吧|就行|即可)$|"
+    r"(?:就这么|就这样|按这个方案|按该方案)(?:做|执行|开始)?$"
+)
+_SCRIPT_PRODUCTION_SCRIPT_NEGATED = re.compile(
+    r"(?:而不是|而非|不是要|不是|不要|别|暂不|先不|不用|取消|停止|无需|"
+    r"不必|不打算|没有打算|没打算|不准备|没有准备|没准备|不考虑|"
+    r"没有考虑|没考虑|不计划|没计划|没有计划|没说要|没有说要|"
+    r"压根不想|根本不想|绝不|不想要|不想|"
+    r"不需要|没有|还没|尚未|不)(?:再|现在|立即|马上|先)?"
+    r"(?:帮我|给我|为我|替我)?"
+    r"(?:生成|生产|制作|写|做|执行|确认|开始|想要|需要)?(?:一份|这个|该)?"
+    r"(?:分镜脚本|分镜|脚本)|"
+    r"(?:分镜脚本|分镜|脚本).{0,8}"
+    r"(?:先不用了?|不用了?|不要了?|不需要了?|取消|算了|不做了?|停止)$|"
+    r"(?:还不是|不是)现在.{0,8}(?:分镜脚本|分镜|脚本)"
+)
+_SCRIPT_PRODUCTION_CANCEL = re.compile(
+    r"^(?:取消|算了|先不要|暂时不要|先不用|不用了|不做了|停止|停下|先停)$"
+)
+_SCRIPT_PRODUCTION_GUIDANCE = re.compile(
+    r"(?:怎么|如何|怎样|步骤|流程|教程|方法|需要什么|需要哪些|要求|条件)"
+)
+_SCRIPT_PRODUCTION_CAPABILITY = re.compile(
+    r"(?:能不能|可不可以|是否能|是否可以|会不会|支不支持|支持不支持|"
+    r"能做什么|会生成什么)"
+)
+_SCRIPT_PRODUCTION_PRICE = re.compile(
+    r"(?:多少点|几点|多少钱|多少费用|价格|费用|收费|扣点|计费)"
+)
+_SCRIPT_PRODUCTION_STATUS = re.compile(
+    r"(?:失败|报错|错误|没成功|未成功|没有成功|完成了吗|进度|结果|"
+    r"重试|恢复|为什么没|无法生成|生成不了|只是问问|问问|咨询|了解|"
+    r"多久|多长时间|几分钟|几小时|几天|多快|耗时|什么时候能好|"
+    r"预计.{0,6}(?:几天|多久|多长时间)|"
+    r"什么时候(?:可以|能)?.{0,8}(?:完成|做完)|"
+    r"何时(?:可以|能)?.{0,8}(?:完成|做完))"
+)
+_SCRIPT_PRODUCTION_DEFER = re.compile(
+    r"(?:等我|等一下|等会儿?|以后|之后|稍后|回头|改天|明天|晚点|晚些时候|"
+    r"晚(?:一|两|几)?会儿?|待会儿?|过会儿?|过(?:一|两|几)?(?:天|周)|"
+    r"下周|有空|暂缓)"
+    r".{0,12}(?:生成|生产|制作|写|做|执行)|"
+    r"(?:再说|等等|别急|不急着|先不急着)|"
+    r"(?:分镜脚本|分镜|脚本).{0,8}(?:暂时)?(?:搁置|先放一放)|"
+    r"(?:还不是|不是)现在.{0,12}(?:生成|生产|制作|写|做|执行)"
+)
+_SCRIPT_PRODUCTION_CONTEXT_EXECUTION = re.compile(
+    r"^(?:(?:就)?(?:照|照着|依照|根据|按|沿用|用)(?:这个|该|原|旧|"
+    r"刚才(?:说的|的)?|之前(?:的)?|上面(?:的)?)?(?:方案)?(?:直接)?"
+    r"(?:开始(?:做)?|做|执行|来|继续)(?:生产)?(?:吧)?|"
+    r"(?:那就|直接|现在|马上|立即)?"
+    r"开始(?:生成|生产|制作|写|做|执行|干)?(?:吧)?|"
+    r"继续(?:生成|生产|制作|写|做|执行)(?:吧)?|"
+    r"继续(?:吧)?|开干(?:吧)?|确认(?:开始|生产)|直接来(?:吧)?|"
+    r"可以开始(?:了|吧)?|"
+    r"(?:生成|生产|制作|写|做|执行)(?:吧)?|"
+    r"直接做(?:吧)?|就(?:这么|这样)(?:做|来)(?:吧)?)$"
+)
+_SCRIPT_PRODUCTION_CONTEXT_ADVISORY = re.compile(
+    r"^(?:(?:先不要|暂时不要|不要|别|暂不|先不|不用|无需|取消|停止)"
+    r"(?:再)?(?:生成|生产|制作|写|做|执行|开始)(?:了)?|"
+    r"(?:还不是|不是)现在(?:生成|生产|制作|写|做|执行|开始))$"
+)
+_SCRIPT_PRODUCTION_META_DIRECT = re.compile(
+    r"(?:不需要|无需|不想|别|不用|不要).{0,30}"
+    r"(?:解释|说明|介绍|听|讲).{0,30}(?:流程|步骤|方法|操作)?.{0,12}"
+    r"直接.{0,12}(?:生成|生产|制作|写|做).{0,20}"
+    r"(?:分镜脚本|分镜|脚本)"
+)
+_SCRIPT_PRODUCTION_CLAUSE_SPLIT = re.compile(r"[，,。；;！？!?\n]+")
+_SCRIPT_PRODUCTION_META_GUIDANCE = re.compile(
+    r"(?:不要|别|不用|无需).{0,8}(?:告诉|教|讲)(?:我)?.{0,8}"
+    r"(?:怎么|如何|怎样)(?:做|操作|生成|生产|制作|写)"
+    r"(?:的)?(?:步骤|流程|教程|方法)?[，,。；;]?|"
+    r"(?:不|不要|别|不用|无需|不想)(?:讲|说)(?:步骤|流程|教程|方法)[，,。；;]?|"
+    r"(?:不要|别|不用|无需).{0,8}(?:告诉|教|讲)(?:我)?.{0,20}"
+    r"(?:步骤|流程|教程|方法)[，,。；;]?"
+)
+_SCRIPT_TOPIC_PATTERNS = tuple(re.compile(pattern) for pattern in (
+    r"(?:主题|选题)(?:是|为|定为)(?P<topic>[^，,。；;！？!?]{1,300})"
+    r"[，,].{0,30}(?:分镜脚本|分镜|脚本)",
+    r"关于(?P<topic>[^，,。；;！？!?]{1,300}?)(?:的)?"
+    r"(?:分镜脚本|分镜|脚本)",
+    r"以(?P<topic>[^，,。；;！？!?]{1,300}?)(?:作为主题|作为选题|为主题|为选题|为题)"
+    r".{0,20}(?:分镜脚本|分镜|脚本)",
+    r"(?:围绕|以)(?P<topic>[^，,。；;！？!?]{1,300}?)"
+    r"(?:[，,]\s*)?(?:来)?(?:生成|制作|写|做).{0,20}(?:分镜脚本|分镜|脚本)",
+    r"(?:给|为)(?!(?:我|咱们|咱俩|自己|大家|大伙|您)"
+    r"(?:来|生成|制作|写|做))(?P<topic>[^，,。；;！？!?]{1,300}?)"
+    r"(?:来|生成|制作|写|做).{0,20}(?:分镜脚本|分镜|脚本)",
+    r"围绕(?P<topic>[^，,。；;！？!?]{1,300}?)(?:的)"
+    r"(?:分镜脚本|分镜|脚本)",
+    r"按(?P<topic>[^，,。；;！？!?]{1,300}?)(?:这个|该)?选题"
+    r"(?:生成|制作|写|做).{0,20}(?:分镜脚本|分镜|脚本)",
+    r"(?:做|写|生成|制作|来)(?:一份|一个|个)"
+    r"(?P<topic>[^，,。；;！？!?]{1,300}?)(?:的)?"
+    r"(?:分镜脚本|分镜|脚本)",
+))
+_SCRIPT_INVALID_TOPICS = {
+    "我", "你", "您", "他", "她", "它", "我们", "咱们", "你们", "他们",
+    "自己", "大家", "这个", "那个", "这", "那", "该主题", "该选题",
+    "这个主题", "这个选题", "上述主题", "上述选题", "刚才主题", "刚才选题",
+    "刚才的主题", "刚才的选题", "前面主题", "前面选题", "前面的主题",
+    "前面的选题", "本人", "大伙", "那个主题", "那个选题", "前文主题",
+    "前文选题", "刚才说的主题", "刚才说的选题", "分镜", "脚本", "分镜脚本",
+    "这个方向", "那个方向", "上面的选题", "上面的主题", "之前的选题",
+    "之前的主题", "上述", "前文", "刚才说的", "刚才的", "上面的",
+    "前面的", "之前的",
+}
+_SCRIPT_INVALID_TOPIC_REFERENCE = re.compile(
+    r"^(?:我|你|您|他|她|它|我们|咱们|咱俩|你们|他们|大家|大伙|本人|自己|"
+    r"这|那|此|该|上述|上面|上次|前述|前面|前文|之前|刚才)"
+    r"(?:次|个|些)?(?:的|说的)?(?:主题|选题|话题|内容|方向|方案)?$"
+)
+
+
+def _script_production_intent(request):
+    """Return the server-authoritative production intent for this turn.
+
+    Only script-target decisions participate.  A video/image decision must not
+    override a script decision in the same turn.  Unknown is deliberately safe:
+    callers must never let the model open a billable production offer by itself.
+    """
+    if request["page_context"]["page"] != "script":
+        return SCRIPT_PRODUCTION_UNKNOWN
+    prompt = str(request.get("prompt") or "").strip()
+    prompt = _SCRIPT_PRODUCTION_META_GUIDANCE.sub("", prompt).strip()
+    compact = re.sub(r"\s+", "", prompt)
+    compact = re.sub(
+        r"(?:但是|不过|而是|然后|但)(?=(?:帮我|给我|替我|请|开始|立即|"
+        r"马上|直接|现在|确认|生成|生产|制作|写|不要|别|先不))",
+        "，", compact,
+    )
+    compact = re.sub(
+        r"((?:不要|别|暂不|先不|不用|取消|停止).{0,20}"
+        r"(?:视频|成片|图片|海报|音频|配音|数字人))"
+        r"(?=(?:只)?(?:帮我|给我|替我|请|直接|开始|生成|生产|制作|写))",
+        r"\1，", compact,
+    )
+    if not compact:
+        return SCRIPT_PRODUCTION_UNKNOWN
+    prompt_topic = _script_topic_from_prompt(request)
+    decisions = []
+    for clause in _SCRIPT_PRODUCTION_CLAUSE_SPLIT.split(compact):
+        if not clause:
+            continue
+        if _SCRIPT_PRODUCTION_CANCEL.fullmatch(clause):
+            decisions.append(SCRIPT_PRODUCTION_ADVISORY)
+            continue
+        has_script_target = bool(_SCRIPT_PRODUCTION_TARGET.search(clause))
+        has_other_target = bool(_SCRIPT_PRODUCTION_OTHER_TARGET.search(clause))
+        has_production_language = bool(
+            _SCRIPT_PRODUCTION_VERB.search(clause) or "生产" in clause
+            or "确认" in clause or _SCRIPT_PRODUCTION_REQUEST.search(clause)
+        )
+        if has_other_target and not has_script_target:
+            continue
+        if (not has_script_target
+                and _SCRIPT_PRODUCTION_CONTEXT_ADVISORY.fullmatch(clause)):
+            decisions.append(SCRIPT_PRODUCTION_ADVISORY)
+            continue
+        if not has_script_target and not has_production_language:
+            if _SCRIPT_PRODUCTION_CONTEXT_EXECUTION.fullmatch(clause):
+                decisions.append(SCRIPT_PRODUCTION_EXECUTE)
+            continue
+        if _SCRIPT_PRODUCTION_META_DIRECT.search(clause):
+            decisions.append(SCRIPT_PRODUCTION_EXECUTE)
+        elif (_SCRIPT_PRODUCTION_SCRIPT_NEGATED.search(clause)
+                or _SCRIPT_PRODUCTION_GUIDANCE.search(clause)
+                or _SCRIPT_PRODUCTION_CAPABILITY.search(clause)
+                or _SCRIPT_PRODUCTION_PRICE.search(clause)
+                or _SCRIPT_PRODUCTION_STATUS.search(clause)
+                or _SCRIPT_PRODUCTION_DEFER.search(clause)):
+            decisions.append(SCRIPT_PRODUCTION_ADVISORY)
+        elif (has_script_target and (
+                _SCRIPT_PRODUCTION_VERB.search(clause)
+                or _SCRIPT_PRODUCTION_EXECUTION.search(clause)
+                or _SCRIPT_PRODUCTION_REQUEST.search(clause))
+                or (has_script_target and prompt_topic)
+                or _SCRIPT_PRODUCTION_CONTEXT_EXECUTION.fullmatch(clause)):
+            decisions.append(SCRIPT_PRODUCTION_EXECUTE)
+    return decisions[-1] if decisions else SCRIPT_PRODUCTION_UNKNOWN
+
+
+def _explicit_script_production_request(request):
+    return _script_production_intent(request) == SCRIPT_PRODUCTION_EXECUTE
+
+
+def _script_topic_from_prompt(request):
+    prompt = str(request.get("prompt") or "").strip()
+    for pattern in _SCRIPT_TOPIC_PATTERNS:
+        match = pattern.search(prompt)
+        if not match:
+            continue
+        topic = match.group("topic").strip(" \t\r\n，,。；;！？!?：:‘’“”\"'")
+        topic = re.sub(r"(?:这个|该)(?:主题|选题)$", "", topic).strip()
+        topic = re.sub(r"(?:主题|选题)$", "", topic).strip()
+        if (topic and topic not in _SCRIPT_INVALID_TOPICS
+                and not _SCRIPT_INVALID_TOPIC_REFERENCE.fullmatch(topic)):
+            return _text(topic, FIELD_LIMITS["topic"], "选题")
+        return ""
+    return ""
+
+
+def _script_production_offer(request, actions, requested, *, force_write=False,
+                             topic_fallback=""):
     if not requested or request["page_context"]["page"] != "script":
         return None
     effective = dict(request["page_context"])
@@ -1128,7 +1354,12 @@ def _script_production_offer(request, actions, requested):
         elif action["type"] == "switch_mode":
             effective["mode"] = action["mode"]
         elif action["type"] == "navigate":
-            return None
+            if not force_write:
+                return None
+    if force_write:
+        effective["mode"] = "write"
+    if not effective.get("topic") and topic_fallback:
+        effective["topic"] = topic_fallback
     if effective.get("mode") != "write" or not effective.get("topic"):
         return None
     if not director_cli.production_is_available():
@@ -1209,9 +1440,15 @@ def normalize_model_result(raw, request):
         raise ValueError("编导助手操作数量超过限制")
     if not isinstance(warnings, list) or len(warnings) > 8:
         raise ValueError("编导助手提醒数量超过限制")
-    offer_requested = data.get("offer_production", False)
-    if not isinstance(offer_requested, bool):
+    model_offer_requested = data.get("offer_production", False)
+    if not isinstance(model_offer_requested, bool):
         raise ValueError("编导助手生产意图无效")
+    production_intent = _script_production_intent(request)
+    if production_intent == SCRIPT_PRODUCTION_EXECUTE:
+        offer_requested = True
+    else:
+        # A model suggestion alone must never open a billable confirmation.
+        offer_requested = False
     normalized = []
     for index, action in enumerate(actions):
         if not isinstance(action, dict):
@@ -1252,15 +1489,55 @@ def normalize_model_result(raw, request):
             raise ValueError("编导助手返回了不允许的动作")
         _ensure_page_action_allowed(request["page_context"]["page"], item)
         normalized.append(item)
+    topic_fallback = ""
+    if production_intent == SCRIPT_PRODUCTION_EXECUTE:
+        prompt_topic = _script_topic_from_prompt(request)
+        trusted_topic = prompt_topic or request["page_context"].get("topic") or ""
+        normalized = [
+            item for item in normalized
+            if item["type"] != "navigate"
+            and not (item["type"] == "switch_mode" and item["mode"] != "write")
+            and not (item["type"] == "fill_field" and item["field"] == "topic")
+        ]
+        topic_fallback = trusted_topic
+        if prompt_topic:
+            normalized.insert(0, {
+                "id": "action_0", "type": "fill_field", "field": "topic",
+                "value": prompt_topic, "label": "填入选题",
+            })
+            normalized = normalized[:MAX_ACTIONS]
+        if (request["page_context"].get("mode") != "write"
+                and not any(item["type"] == "switch_mode" for item in normalized)
+                and len(normalized) < MAX_ACTIONS):
+            normalized.append({
+                "id": "action_0", "type": "switch_mode", "mode": "write",
+                "label": "切换到写脚本",
+            })
+        for index, item in enumerate(normalized):
+            item["id"] = "action_%d" % (index + 1)
     if any(item["type"] == "navigate" for item in normalized):
         if len(normalized) != 1:
             raise ValueError("站内跳转必须作为独立动作，不能与页面修改同时执行")
     warnings = [_text(item, 300, "Agent 提醒") for item in warnings]
     production_offer = _script_production_offer(
         request, normalized, offer_requested,
+        force_write=production_intent == SCRIPT_PRODUCTION_EXECUTE,
+        topic_fallback=topic_fallback,
     )
     if offer_requested and production_offer is None:
-        warnings.append("对话框生产单暂未就绪，请确认已在编导撰写模式填好选题。")
+        has_topic = bool(request["page_context"].get("topic") or topic_fallback or any(
+            item["type"] == "fill_field" and item["field"] == "topic"
+            for item in normalized
+        ))
+        if production_intent == SCRIPT_PRODUCTION_EXECUTE and not has_topic:
+            content = "请告诉我这次要生成的分镜脚本主题。"
+            warnings.append("还缺少本次分镜脚本的选题。")
+        elif (production_intent == SCRIPT_PRODUCTION_EXECUTE
+                and not director_cli.production_is_available()):
+            content = "编导 CLI 生产暂时不可用，请稍后再试。"
+            warnings.append("编导 CLI 生产依赖当前不可用。")
+        else:
+            warnings.append("对话框生产单暂未就绪，请补充本次分镜脚本的选题。")
     if production_offer is not None:
         content = (
             "生产信息已经准备好，预计扣除 %d 点。是否开始生产？"
