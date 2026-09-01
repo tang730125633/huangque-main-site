@@ -108,6 +108,76 @@ def require_available():
 
 
 _SEMANTIC_CONTRACTS = {
+    "v01": {
+        "top1": (70, 400, 996, 2), "top2": (64, 400, 996, 2),
+        "top3": (52, 900, 996, 2), "bottom2": (74, 400, 848, 2),
+    },
+    "v02": {
+        "top1": (86, 400, 996, 2), "top2": (62, 400, 996, 4),
+        "bottom2": (78, 400, 996, 2),
+    },
+    "v03": {
+        "top1": (86, 900, 996, 2), "top2": (62, 400, 996, 4),
+        "bottom2": (78, 900, 996, 2),
+    },
+    "v04": {
+        "top1": (88, 900, 996, 2), "top2": (72, 900, 996, 2),
+        "top3": (48, 900, 948, 2), "bottom2": (52, 900, 996, 2),
+    },
+    "v05": {
+        "top1": (102, 900, 996, 2), "top2": (104, 900, 996, 2),
+        "top3": (68, 900, 996, 2), "bottom2": (70, 900, 862, 2),
+    },
+    "v06": {
+        "top1": (104, 900, 996, 2), "top2": (76, 900, 996, 2),
+        "top3": (60, 900, 996, 2), "bottom2": (76, 900, 924, 2),
+    },
+    "v07": {
+        "top1": (104, 900, 996, 2), "top2": (68, 900, 996, 2),
+        "top3": (62, 900, 996, 2), "bottom2": (84, 900, 996, 2),
+    },
+    "v08": {
+        "top1": (92, 900, 996, 2), "top2": (62, 900, 996, 2),
+        "top3": (54, 900, 996, 2), "bottom2": (64, 400, 948, 2),
+    },
+    "v09": {
+        "top1": (78, 400, 996, 2), "top2": (50, 700, 996, 4),
+        "bottom2": (66, 400, 996, 2),
+    },
+    "v10": {
+        "top1": (70, 400, 996, 2), "top2": (78, 400, 996, 2),
+        "top3": (54, 800, 996, 2), "bottom2": (80, 400, 970, 2),
+    },
+    "v11": {
+        "top1": (86, 900, 996, 2), "top2": (80, 800, 996, 2),
+        "top3": (54, 800, 996, 2), "bottom2": (76, 400, 996, 2),
+    },
+    "v12": {
+        "top1": (72, 400, 996, 2), "top2": (62, 400, 996, 2),
+        "top3": (50, 400, 996, 2), "bottom2": (62, 400, 996, 2),
+    },
+    "v13": {
+        "top1": (76, 900, 996, 2), "top2": (68, 900, 996, 4),
+        "bottom2": (80, 900, 996, 2),
+    },
+    "v14": {
+        "top1": (72, 400, 996, 2), "top2": (50, 800, 996, 4),
+        "bottom2": (64, 400, 996, 2),
+    },
+    "v15": {
+        "top1": (80, 900, 996, 2), "top2": (64, 900, 996, 4),
+        "bottom2": (92, 900, 996, 2),
+    },
+    "v16": {
+        "top1": (48, 400, 996, 2), "top2": (68, 400, 996, 2),
+        "top3": (52, 900, 996, 2), "bottom2": (70, 400, 996, 2),
+    },
+    "v17": {
+        "top1": (74, 900, 996, 2), "top2": (64, 900, 996, 2),
+        "top3": (118, 900, 996, 2), "bottom2": (84, 900, 996, 2),
+    },
+}
+_LEGACY_SEMANTIC_CONTRACTS = {
     "v02": {
         "top1": (86, 2), "top2": (62, 4), "bottom2": (78, 2),
     },
@@ -116,6 +186,12 @@ _SEMANTIC_CONTRACTS = {
         "top3": (68, 3), "bottom2": (70, 2),
     },
 }
+_ALL_REFERENCE_VARIANTS = {
+    f"v{index:02d}" for index in range(1, 18)
+}
+_ALLOWED_SEMANTIC_VARIANT_SETS = (
+    {"v02"}, {"v02", "v05"}, _ALL_REFERENCE_VARIANTS,
+)
 
 
 def _semantic_contract(value, variant):
@@ -136,18 +212,34 @@ def _semantic_contract(value, variant):
     ):
         raise RuntimeError("HyperFrames 语义排版能力无效")
     normalized = {}
+    contract_shape = None
     for layer, expected in expected_layers.items():
         item = layers.get(layer)
-        if not isinstance(item, dict) or set(item) != {
-            "font_size_px", "max_lines",
+        if not isinstance(item, dict):
+            raise RuntimeError("HyperFrames 语义排版能力无效")
+        keys = set(item)
+        if keys == {"font_size_px", "max_lines"}:
+            legacy_layers = _LEGACY_SEMANTIC_CONTRACTS.get(str(variant or ""))
+            if legacy_layers is None:
+                raise RuntimeError("HyperFrames 语义排版能力无效")
+            shape = "legacy"
+            actual = (item.get("font_size_px"), item.get("max_lines"))
+            wanted = legacy_layers[layer]
+        elif keys == {
+            "font_size_px", "font_weight", "max_width_px", "max_lines",
         }:
+            shape = "measured"
+            actual = (
+                item.get("font_size_px"), item.get("font_weight"),
+                item.get("max_width_px"), item.get("max_lines"),
+            )
+            wanted = expected
+        else:
             raise RuntimeError("HyperFrames 语义排版能力无效")
-        pair = (item.get("font_size_px"), item.get("max_lines"))
-        if pair != expected:
+        if contract_shape not in {None, shape} or actual != wanted:
             raise RuntimeError("HyperFrames 语义排版能力无效")
-        normalized[layer] = {
-            "font_size_px": int(pair[0]), "max_lines": int(pair[1]),
-        }
+        contract_shape = shape
+        normalized[layer] = {key: int(value) for key, value in item.items()}
     return {"version": 1, "max_width_px": 996, "layers": normalized}
 
 
@@ -232,6 +324,13 @@ def _refresh_catalog(force=False):
                 item for item in templates
                 if REFERENCE_TEMPLATE_RE.fullmatch(item["id"])
             ]
+            semantic_variants = {
+                item["variant"] for item in references
+                if item.get("semantic_layout")
+            }
+            measured_layer_keys = {
+                "font_size_px", "font_weight", "max_width_px", "max_lines",
+            }
             if (
                 len(references) != REFERENCE_TEMPLATE_COUNT
                 or any(
@@ -242,10 +341,15 @@ def _refresh_catalog(force=False):
                 )
                 or {item["variant"] for item in references}
                 != {f"v{index:02d}" for index in range(1, 18)}
-                or {
-                    item["variant"] for item in references
-                    if item.get("semantic_layout")
-                } not in ({"v02"}, {"v02", "v05"})
+                or semantic_variants not in _ALLOWED_SEMANTIC_VARIANT_SETS
+                or (
+                    semantic_variants == _ALL_REFERENCE_VARIANTS
+                    and any(
+                        set(layer) != measured_layer_keys
+                        for item in references
+                        for layer in item["semantic_layout"]["layers"].values()
+                    )
+                )
             ):
                 raise RuntimeError("HyperFrames 模板目录不完整")
             templates = [approved[template_id] for template_id in APPROVED_TEMPLATE_IDS] + references
