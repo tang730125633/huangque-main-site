@@ -8,7 +8,6 @@
   var LEGACY_STORAGE_KEYS=['hq_director_agent_v1','hq_director_agent_digital_human_v1','hq_director_agent_private_domain_v1'];
   var ROUTES={
     script:'/workbench/script.html',digital_human:'/workbench/digital-human-oneclick.html',
-    private_domain_video:'/workbench/private-domain-video.html',
     ip12:'/workbench/ip12.html',assets:'/workbench/assets.html',audio:'/workbench/audio.html',
     video:'/workbench/video.html',canvas:'/workbench/canvas.html'
   };
@@ -106,6 +105,7 @@
     var activeTemplate=doc.querySelector('.precision-template.on');
     return {
       page:'digital_human_oneclick',path:'/workbench/digital-human-oneclick.html',mode:mode,
+      guide_contract:String(doc.body&&doc.body.getAttribute&&doc.body.getAttribute('data-director-guide-contract')||''),
       narration_mode:narrationMode,script_text:scriptText,script_length:scriptText.length,
       has_portrait:hasFile(doc.getElementById('photo'))||hasClass(photoName,'file-ready'),
       has_video_source:hasFile(doc.getElementById('dhVideoFile'))||hasClass(videoName,'file-ready')||!!doc.querySelector('.precision-source.on'),
@@ -347,8 +347,12 @@
     if(!summary||typeof summary!=='object'||Array.isArray(summary)) return null;
     var cost=Number(value.expected_cost);
     if(!Number.isInteger(cost)||cost<1||cost>10000) return null;
+    var planDigest=String(value.plan_digest||''),quoteToken=String(value.quote_token||'');
+    var expiresAt=Number(value.expires_at);
     if(!/^director-production-[A-Za-z0-9_-]{16,64}$/.test(offerId)||value.kind!=='script') return null;
+    if(!/^[a-f0-9]{64}$/.test(planDigest)||!/^[A-Za-z0-9_-]{20,256}$/.test(quoteToken)||!Number.isInteger(expiresAt)||expiresAt<=0) return null;
     var clean={offer_id:offerId,kind:'script',expected_cost:cost,requires_confirmation:true,
+      plan_digest:planDigest,quote_token:quoteToken,expires_at:expiresAt,
       input:{request_id:offerId,topic:String(input.topic||'').slice(0,1000),
         selling_points:String(input.selling_points||'').slice(0,2000),style:String(input.style||''),
         duration:String(input.duration||''),platform:String(input.platform||'')},
@@ -364,6 +368,11 @@
     if(jobId!==null&&jobId!==undefined&&!/^\d{1,20}$/.test(String(jobId))) return null;
     return {offer:offer,job_id:jobId===null||jobId===undefined?null:String(jobId),
       created_at:Number(value.created_at)||Date.now()};
+  }
+  function autoResumeKind(state){
+    if(state&&state.pending_production&&state.pending_production.job_id) return 'production';
+    if(state&&state.pending_request&&state.pending_request.job_id) return 'request';
+    return '';
   }
   function readState(storage,key){
     try{
@@ -456,8 +465,6 @@
   function resumeRequest(win,record,onRecord,onProgress){
     record=validPendingRequest(record);
     if(!record) return Promise.reject(new Error('未找到可恢复的编导助手请求'));
-    var started=Date.now();
-    function timedOut(){return Date.now()-started>300000;}
     function accepted(){
       if(record.job_id) return Promise.resolve(record);
       return jsonFetch(win,'/api/gen/director_agent',{
@@ -470,13 +477,8 @@
       }).catch(function(error){
         var code=error.data&&error.data.code;
         var retryable=!error.status||error.status>=500||code==='idempotency_in_progress';
-        if(retryable&&!timedOut()){
-          if(onProgress) onProgress(0,'submitting');
-          return new Promise(function(resolve){
-            setTimeout(function(){resolve(accepted());},1400);
-          });
-        }
         error.terminal=!retryable;
+        error.uncertain=retryable;
         throw error;
       });
     }
@@ -490,14 +492,13 @@
   function resumeProduction(win,record,onRecord,onProgress){
     record=validPendingProduction(record);
     if(!record) return Promise.reject(new Error('未找到可恢复的编导生产单'));
-    var started=Date.now();
-    function timedOut(){return Date.now()-started>300000;}
     function accepted(){
       if(record.job_id) return Promise.resolve(record);
       var offer=record.offer;
       var endpoint='/api/gen/director_agent/produce';
       return jsonFetch(win,endpoint,{
-        method:'POST',body:{offer_id:offer.offer_id,input:offer.input,expected_cost:offer.expected_cost},
+        method:'POST',body:{offer_id:offer.offer_id,input:offer.input,expected_cost:offer.expected_cost,
+          plan_digest:offer.plan_digest,quote_token:offer.quote_token},
         headers:{'Idempotency-Key':offer.offer_id}
       }).then(function(data){
         if(!data.job_id) throw new Error(data.detail||'编导生产任务提交失败');
@@ -508,11 +509,7 @@
           error.priceChanged=Number(error.data.current_cost)||0; error.terminal=true; throw error;
         }
         var retryable=!error.status||error.status>=500||code==='director_cli_submit_retryable'||code==='director_production_retryable'||code==='director_reverse_retryable';
-        if(retryable&&!timedOut()){
-          if(onProgress) onProgress(0,'submitting');
-          return new Promise(function(resolve){setTimeout(function(){resolve(accepted());},1500);});
-        }
-        error.terminal=!retryable; throw error;
+        error.terminal=!retryable; error.uncertain=retryable; throw error;
       });
     }
     return accepted().then(function(){
@@ -543,7 +540,7 @@
       +'.hq-da-messages{flex:1;overflow:auto;padding:14px;display:flex;flex-direction:column;gap:10px}.hq-da-msg{max-width:88%;padding:10px 12px;border-radius:13px;font-size:13px;line-height:1.65;white-space:pre-wrap}.hq-da-msg.user{align-self:flex-end;background:#e7b24c;color:#211502}.hq-da-msg.assistant{align-self:flex-start;background:#141e2e;border:1px solid rgba(148,164,187,.12)}.hq-da-msg.error{align-self:flex-start;background:rgba(244,112,138,.12);color:#ffc1ce}'
       +'.hq-da-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:7px}.hq-da-action,.hq-da-quick{border:1px solid rgba(231,178,76,.32);border-radius:999px;background:rgba(231,178,76,.08);color:#f4cd72;padding:7px 10px;font:600 11.5px/1 inherit;cursor:pointer}.hq-da-action[disabled]{opacity:.45;cursor:not-allowed}'
       +'.hq-da-offer{align-self:flex-start;max-width:90%;padding:11px 12px;border:1px solid rgba(45,212,191,.3);border-radius:13px;background:rgba(45,212,191,.07);font-size:12px;line-height:1.65}.hq-da-confirm{margin-top:8px;border:0;border-radius:10px;background:#2dd4bf;color:#05201c;padding:8px 12px;font-weight:800;cursor:pointer}.hq-da-confirm[disabled]{opacity:.5;cursor:not-allowed}'
-      +'.hq-da-status{min-height:18px;padding:0 14px;color:#94a4bb;font-size:11px}.hq-da-compose{display:flex;gap:8px;padding:12px 14px 14px;border-top:1px solid rgba(148,164,187,.13)}.hq-da-input{flex:1;min-width:0;resize:none;border:1px solid rgba(148,164,187,.18);border-radius:12px;background:#070b13;color:#eaf1fa;padding:10px;font:13px/1.5 inherit;outline:none}.hq-da-attach{width:42px;flex:0 0 42px;border:1px solid rgba(148,164,187,.2);border-radius:12px;background:#141e2e;color:#f4cd72;font-size:20px;cursor:pointer}.hq-da-send{border:0;border-radius:12px;background:#e7b24c;color:#241604;padding:0 14px;font-weight:700;cursor:pointer}.hq-da-send[disabled],.hq-da-attach[disabled]{opacity:.5;cursor:not-allowed}'
+      +'.hq-da-status{min-height:18px;padding:0 14px;color:#94a4bb;font-size:11px}.hq-da-recovery{display:none;padding:0 14px 10px}.hq-da-recovery.on{display:block}.hq-da-retry{border:1px solid rgba(244,112,138,.35);border-radius:999px;background:rgba(244,112,138,.08);color:#ffc1ce;padding:7px 11px;font:700 11px/1 inherit;cursor:pointer}.hq-da-compose{display:flex;gap:8px;padding:12px 14px 14px;border-top:1px solid rgba(148,164,187,.13)}.hq-da-input{flex:1;min-width:0;resize:none;border:1px solid rgba(148,164,187,.18);border-radius:12px;background:#070b13;color:#eaf1fa;padding:10px;font:13px/1.5 inherit;outline:none}.hq-da-attach{width:42px;flex:0 0 42px;border:1px solid rgba(148,164,187,.2);border-radius:12px;background:#141e2e;color:#f4cd72;font-size:20px;cursor:pointer}.hq-da-send{border:0;border-radius:12px;background:#e7b24c;color:#241604;padding:0 14px;font-weight:700;cursor:pointer}.hq-da-send[disabled],.hq-da-attach[disabled]{opacity:.5;cursor:not-allowed}'
       +'.hq-agent-focus{outline:3px solid rgba(244,205,114,.78)!important;outline-offset:3px!important;box-shadow:0 0 0 7px rgba(231,178,76,.16)!important}@media(max-width:640px){.hq-da-launch{right:14px;bottom:14px}.hq-da-launch.digital-human{bottom:94px}.hq-da-panel{right:14px;bottom:70px;height:calc(100vh - 88px)}}';
     doc.head.appendChild(style);
   }
@@ -558,18 +555,26 @@
     var launch=doc.createElement('button'); launch.type='button'; launch.className='hq-da-launch'+(isDigitalHuman?' digital-human':''); launch.id='hqDirectorAgent'; launch.textContent='✦ '+assistantName; launch.setAttribute('aria-expanded',state.open?'true':'false');
     var panel=doc.createElement('section'); panel.className='hq-da-panel'+(state.open?' on':''); panel.setAttribute('aria-label',assistantName);
     var head=doc.createElement('div'); head.className='hq-da-head';
-    var title=doc.createElement('div'); title.innerHTML='<b>'+assistantName+'</b><span>贯通脚本、数字人和私域成片 · 当前：'+pageName+'</span>';
+    var title=doc.createElement('div'); title.innerHTML='<b>'+assistantName+'</b><span>贯通脚本和数字人 · 当前：'+pageName+'</span>';
     var close=doc.createElement('button'); close.type='button'; close.className='hq-da-close'; close.textContent='×'; close.setAttribute('aria-label','关闭'); head.appendChild(title); head.appendChild(close);
     var messages=doc.createElement('div'); messages.className='hq-da-messages';
     var status=doc.createElement('div'); status.className='hq-da-status';
+    var recovery=doc.createElement('div'); recovery.className='hq-da-recovery';
+    var retry=doc.createElement('button'); retry.type='button'; retry.className='hq-da-retry'; recovery.appendChild(retry);
     var compose=doc.createElement('div'); compose.className='hq-da-compose';
     var attach=doc.createElement('button'); attach.type='button'; attach.className='hq-da-attach'; attach.textContent='＋'; attach.setAttribute('aria-label','上传图片或视频'); attach.title='上传图片或视频';
     var attachmentInput=doc.createElement('input'); attachmentInput.type='file'; attachmentInput.accept='image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm,.jpg,.jpeg,.png,.webp,.mp4,.mov,.webm'; attachmentInput.multiple=true; attachmentInput.hidden=true;
     var input=doc.createElement('textarea'); input.className='hq-da-input'; input.rows=2; input.maxLength=6000; input.placeholder=isPrivateDomain?'把批量文案发给我，或告诉我想用的模板和音乐':(isDigitalHuman?'把文案发给我，或问我下一步怎么做':'例如：我第一次用，下一步该做什么？');
     var send=doc.createElement('button'); send.type='button'; send.className='hq-da-send'; send.textContent='发送'; compose.appendChild(attach); compose.appendChild(attachmentInput); compose.appendChild(input); compose.appendChild(send);
-    panel.appendChild(head); panel.appendChild(messages); panel.appendChild(status); panel.appendChild(compose); doc.body.appendChild(launch); doc.body.appendChild(panel);
+    panel.appendChild(head); panel.appendChild(messages); panel.appendChild(status); panel.appendChild(recovery); panel.appendChild(compose); doc.body.appendChild(launch); doc.body.appendChild(panel);
     function setOpen(open){state.open=!!open; panel.classList.toggle('on',state.open); launch.setAttribute('aria-expanded',state.open?'true':'false'); persist(); if(state.open) input.focus();}
     function addMessage(role,content){state.messages.push({role:role,content:String(content||'')}); state.messages=state.messages.slice(-20); persist(); render();}
+    function clearRecovery(){recovery.classList.remove('on');retry.onclick=null;}
+    function showRecovery(kind){
+      retry.textContent=kind==='production'?'重试原生产单':'重试原请求';
+      retry.onclick=function(){clearRecovery();if(kind==='production')runProduction(state.pending_production,false);else runPending(state.pending_request,false);};
+      recovery.classList.add('on');
+    }
     function actionButton(action){
       var button=doc.createElement('button'); button.type='button'; button.className='hq-da-action'; button.textContent=action.label||'应用建议';
       button.onclick=function(){
@@ -592,7 +597,7 @@
     function render(){
       messages.textContent='';
       if(!state.messages.length){
-        var welcome=doc.createElement('div'); welcome.className='hq-da-msg assistant'; welcome.textContent='你好，我是黄雀编导 Agent，会在文案编导、数字人和私域成片页面持续陪你生产。你可以把内容直接发给我，我会结合当前页面填充、切换或带你到下一步；涉及扣点、上传、授权、生成、删除和发布时，会保留必要的顾客确认。'; messages.appendChild(welcome);
+        var welcome=doc.createElement('div'); welcome.className='hq-da-msg assistant'; welcome.textContent='你好，我是黄雀编导 Agent，会在文案编导和数字人页面持续陪你生产。你可以把内容直接发给我，我会结合当前页面填充、切换或带你到下一步；涉及扣点、上传、授权、生成、删除和发布时，会保留必要的顾客确认。'; messages.appendChild(welcome);
         var quick=doc.createElement('div'); quick.className='hq-da-actions';
         (isPrivateDomain
           ?['帮我填入这批文案','帮我选择排版和时长','帮我看看还缺什么']
@@ -634,6 +639,7 @@
     }
     function runProduction(record,resumed){
       record=validPendingProduction(record); if(!record) return;
+      clearRecovery();
       state.pending_production=record; state.production_offer=record.offer; persist();
       pending=true; status.textContent=resumed?'正在恢复上次确认的生产任务…':'CLI 正在报价并提交生产…'; render();
       resumeProduction(win,record,function(updated){state.pending_production=validPendingProduction(updated);persist();},function(seconds,phase){
@@ -646,11 +652,16 @@
       }).catch(function(error){
         if(error.priceChanged>0){
           state.pending_production=null; state.production_offer.expected_cost=error.priceChanged;
+          state.production_offer.quote_token=String(error.data&&error.data.quote_token||'');
+          state.production_offer.plan_digest=String(error.data&&error.data.plan_digest||state.production_offer.plan_digest||'');
+          state.production_offer.expires_at=Number(error.data&&error.data.expires_at)||0;
+          state.production_offer=validProductionOffer(state.production_offer);
           persist(); addMessage('assistant','生成价格已更新为 '+error.priceChanged+' 点，没有扣点。请核对后再点击确认生产。');
         }else{
           if(error.terminal) state.pending_production=null;
           persist(); addMessage('error',error.message||'编导生产失败，请稍后重试');
-          status.textContent=state.pending_production?'原生产单已保留，刷新后会继续，不会重复扣点。':'';
+          status.textContent=state.pending_production?'原生产单已保留，不会自动重提；请检查后手动重试。':'';
+          if(state.pending_production) showRecovery('production');
         }
       }).finally(function(){pending=false;render();});
     }
@@ -662,6 +673,7 @@
     function runPending(record,resumed){
       record=validPendingRequest(record);
       if(!record) return;
+      clearRecovery();
       state.pending_request=record; persist();
       pending=true;
       status.textContent=resumed?'正在恢复上次未完成的请求…':'正在结合当前页面判断…';
@@ -678,11 +690,13 @@
         persist();
         addMessage('error',error.message||'黄雀编导 Agent 请求失败，请稍后重试');
         status.textContent=state.pending_request
-          ?'原请求已保留，刷新页面后会继续，不会创建新的幂等键。':'';
+          ?'原请求已保留，不会自动重提；请检查后手动重试。':'';
+        if(state.pending_request) showRecovery('request');
       }).finally(function(){pending=false;render();});
     }
     function submit(value){
       value=String(value||input.value||'').trim(); if(!value||pending) return;
+      clearRecovery();
       var body=buildPayload(value,doc,state,storage);
       var key='director-agent-'+Date.now().toString(36)+Math.random().toString(36).slice(2,10);
       var record=createPendingRequest(body,key,value);
@@ -705,8 +719,14 @@
     launch.onclick=function(){setOpen(!state.open);}; close.onclick=function(){setOpen(false);}; send.onclick=function(){submit();};
     input.addEventListener('keydown',function(event){if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();submit();}});
     render();
-    if(state.pending_production) runProduction(state.pending_production,true);
-    else if(state.pending_request) runPending(state.pending_request,true);
+    var resumeKind=autoResumeKind(state);
+    if(state.pending_production){
+      if(resumeKind==='production') runProduction(state.pending_production,true);
+      else{status.textContent='发现未确认受理的原生产单，不会自动重提。';showRecovery('production');}
+    }else if(state.pending_request){
+      if(resumeKind==='request') runPending(state.pending_request,true);
+      else{status.textContent='发现未确认受理的原请求，不会自动重提。';showRecovery('request');}
+    }
     return {
       state:state,submit:submit,setOpen:setOpen,confirmProduction:confirmProduction,
       resume:function(){if(state.pending_production)runProduction(state.pending_production,true);else runPending(state.pending_request,true);}
@@ -716,7 +736,7 @@
     buildPayload:buildPayload,validatePlan:validatePlan,applyAction:applyAction,
     attachFilesToPage:attachFilesToPage,pollJob:pollJob,
     validPendingRequest:validPendingRequest,createPendingRequest:createPendingRequest,
-    validProductionOffer:validProductionOffer,validPendingProduction:validPendingProduction,
+    validProductionOffer:validProductionOffer,validPendingProduction:validPendingProduction,autoResumeKind:autoResumeKind,
     readState:readState,saveState:saveState,readUnifiedState:readUnifiedState,resumeRequest:resumeRequest,resumeProduction:resumeProduction,
     formatScriptResult:formatScriptResult,
     bootstrap:bootstrap,mount:mount,routes:ROUTES};

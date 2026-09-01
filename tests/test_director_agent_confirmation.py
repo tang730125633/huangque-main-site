@@ -40,6 +40,32 @@ def payload(**overrides):
     return value
 
 
+def issued_script_value(db, offer_id, expected_cost=3, now=2_000_000_000):
+    cli_input = {
+        "request_id": offer_id,
+        "topic": "东鹏特饮", "selling_points": "买三送一",
+        "style": "口播", "duration": "30s", "platform": "抖音",
+    }
+    issued = director_agent._issue_production_offer(
+        db, "alice", {
+            "offer_id": offer_id, "kind": "script",
+            "expected_cost": expected_cost, "requires_confirmation": True,
+            "input": cli_input,
+            "summary": {
+                "topic": "东鹏特饮", "style": "口播",
+                "duration": "30s", "platform": "抖音",
+            },
+        }, "a1b2c3d4", now=now,
+    )
+    return {
+        "offer_id": offer_id,
+        "expected_cost": expected_cost,
+        "input": cli_input,
+        "plan_digest": issued["plan_digest"],
+        "quote_token": issued["quote_token"],
+    }
+
+
 class DirectorAgentConfirmationTests(unittest.TestCase):
     def test_ready_request_returns_direct_production_question(self):
         request = director_agent.validate_payload(payload())
@@ -207,15 +233,7 @@ class DirectorAgentConfirmationTests(unittest.TestCase):
                 connection.commit()
 
             offer_id = "director-production-1234567890abcdef"
-            value = {
-                "offer_id": offer_id,
-                "expected_cost": 3,
-                "input": {
-                    "request_id": offer_id,
-                    "topic": "东鹏特饮", "selling_points": "买三送一",
-                    "style": "口播", "duration": "30s", "platform": "抖音",
-                },
-            }
+            value = issued_script_value(db, offer_id)
             quote = {
                 "quote_token": "q" * 24, "cost": 3,
                 "points": 99, "expires_in": 60,
@@ -255,15 +273,7 @@ class DirectorAgentConfirmationTests(unittest.TestCase):
                 )""")
                 connection.commit()
             offer_id = "director-production-fedcba0987654321"
-            value = {
-                "offer_id": offer_id,
-                "expected_cost": 3,
-                "input": {
-                    "request_id": offer_id,
-                    "topic": "东鹏特饮", "selling_points": "买三送一",
-                    "style": "口播", "duration": "30s", "platform": "抖音",
-                },
-            }
+            value = issued_script_value(db, offer_id)
             with mock.patch.object(
                 director_agent.director_cli, "quote_script", return_value={
                     "quote_token": "q" * 24, "cost": 4,
@@ -278,7 +288,142 @@ class DirectorAgentConfirmationTests(unittest.TestCase):
             self.assertEqual(409, status)
             self.assertEqual("production_price_changed", result["code"])
             self.assertEqual(4, result["current_cost"])
+            self.assertNotEqual(value["quote_token"], result["quote_token"])
+            self.assertEqual(value["plan_digest"], result["plan_digest"])
             confirm_call.assert_not_called()
+
+    def test_forged_or_expired_offer_is_rejected_before_cli_quote(self):
+        with tempfile.TemporaryDirectory() as temp:
+            database = pathlib.Path(temp) / "jobs.db"
+
+            def db():
+                connection = sqlite3.connect(str(database), timeout=10)
+                connection.row_factory = sqlite3.Row
+                return connection
+
+            with closing(db()) as connection:
+                connection.execute("""CREATE TABLE jobs(
+                    id INTEGER PRIMARY KEY, kind TEXT, username TEXT,
+                    cost INTEGER, status TEXT
+                )""")
+                connection.commit()
+            offer_id = "director-production-forged1234567890"
+            forged = {
+                "offer_id": offer_id, "expected_cost": 3,
+                "input": {
+                    "request_id": offer_id, "topic": "绕过确认",
+                    "selling_points": "", "style": "口播",
+                    "duration": "30s", "platform": "抖音",
+                },
+                "plan_digest": "a" * 64,
+                "quote_token": "forged_confirmation_token_1234",
+            }
+            with mock.patch.object(
+                director_agent.director_cli, "quote_script",
+            ) as quote_call, self.assertRaisesRegex(ValueError, "服务器签发"):
+                director_agent.produce_script(
+                    db, "alice", forged, now=2_000_000_000,
+                )
+            quote_call.assert_not_called()
+
+            expired = issued_script_value(
+                db, "director-production-expired123456789",
+                now=2_000_000_000,
+            )
+            with mock.patch.object(
+                director_agent.director_cli, "quote_script",
+            ) as quote_call, self.assertRaisesRegex(ValueError, "已过期"):
+                director_agent.produce_script(
+                    db, "alice", expired,
+                    now=2_000_000_000 + director_agent.OFFER_TTL_SECONDS + 1,
+                )
+            quote_call.assert_not_called()
+
+    def test_director_agent_uses_dedicated_queue(self):
+        self.assertIs(
+            core._pick_job_queue("director_agent"),
+            core._director_agent_job_queue,
+        )
+        self.assertIsNot(core._director_agent_job_queue, core._fast_job_queue)
+        self.assertNotIn("private_domain_video", director_agent.NAV_TARGETS)
+
+    def test_digital_human_guide_contract_is_required(self):
+        context = {
+            "page": "digital_human_oneclick",
+            "path": "/workbench/digital-human-oneclick.html",
+            "mode": "photo", "narration_mode": "text",
+            "script_text": "测试口播", "script_length": 4,
+            "has_portrait": False, "has_video_source": False,
+            "has_voice_source": False, "has_drive_audio": False,
+            "customer_material_count": 0, "consent_confirmed": False,
+            "precision_template": "", "has_result": False,
+            "active_job_status": "idle",
+        }
+        with self.assertRaisesRegex(ValueError, "引导契约无效"):
+            director_agent._digital_human_page_context(context)
+        context["guide_contract"] = director_agent.DIGITAL_HUMAN_GUIDE_CONTRACT
+        self.assertEqual(
+            director_agent.DIGITAL_HUMAN_GUIDE_CONTRACT,
+            director_agent._digital_human_page_context(context)["guide_contract"],
+        )
+
+    def test_http_production_route_rejects_unissued_offer_before_cli(self):
+        with tempfile.TemporaryDirectory() as temp:
+            database = pathlib.Path(temp) / "jobs.db"
+
+            def db():
+                connection = sqlite3.connect(str(database), timeout=10)
+                connection.row_factory = sqlite3.Row
+                return connection
+
+            offer_id = "director-production-httpforged123456"
+            body = {
+                "offer_id": offer_id, "expected_cost": 3,
+                "input": {
+                    "request_id": offer_id, "topic": "绕过确认",
+                    "selling_points": "", "style": "口播",
+                    "duration": "30s", "platform": "抖音",
+                },
+                "plan_digest": "a" * 64,
+                "quote_token": "forged_confirmation_token_1234",
+            }
+            patches = [
+                mock.patch.object(core, "jdb", db),
+                mock.patch.object(core, "verify", lambda token: {
+                    "username": "alice", "must_change": False, "points": 99,
+                } if token else None),
+                mock.patch.object(core.feature_flags, "require_enabled", lambda _key: None),
+                mock.patch.object(
+                    director_agent.director_cli, "production_is_available",
+                    return_value=True,
+                ),
+                mock.patch.object(director_agent.director_cli, "quote_script"),
+            ]
+            started = []
+            for item in patches:
+                started.append(item.start())
+                self.addCleanup(item.stop)
+            quote_call = started[-1]
+            server = ThreadingHTTPServer(("127.0.0.1", 0), core.H)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+            url = "http://127.0.0.1:%d/api/gen/director_agent/produce" % server.server_address[1]
+            request = urllib.request.Request(
+                url, data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+                method="POST", headers={
+                    "Authorization": "Bearer alice",
+                    "Content-Type": "application/json",
+                    "Idempotency-Key": offer_id,
+                },
+            )
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(request, timeout=5)
+            self.assertEqual(400, raised.exception.code)
+            response = json.loads(raised.exception.read())
+            self.assertIn("服务器签发", response["detail"])
+            quote_call.assert_not_called()
 
 
 if __name__ == "__main__":

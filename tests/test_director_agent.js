@@ -191,6 +191,7 @@ function privateDomainFixture() {
   const {doc} = digitalHumanFixture('photo', 'text');
   const context = agent.createPageContext(doc);
   assert.equal(context.page, 'digital_human_oneclick');
+  assert.equal(context.guide_contract, 'digital-human-oneclick-guide-v1');
   assert.equal(context.mode, 'photo');
   assert.equal(context.narration_mode, 'text');
   assert.equal(context.script_text, '照片模式口播');
@@ -311,6 +312,9 @@ function privateDomainFixture() {
   assert.equal(restored.pending_request.key, 'director-agent-recovery123');
   assert.equal(restored.pending_request.body.page_revision, 'a1b2c3d4');
   assert.equal(restored.open, true);
+  assert.equal(agent.autoResumeKind(restored), '');
+  restored.pending_request.job_id = '77';
+  assert.equal(agent.autoResumeKind(restored), 'request');
   assert.equal(agent.validPendingRequest({
     key:'bad',body:{},job_id:null,created_at:1
   }), null);
@@ -324,7 +328,11 @@ assert.ok(source.includes("button.textContent='确认生产并扣 '+offer.expect
 assert.ok(source.includes("'/api/gen/director_agent/produce'"));
 assert.ok(source.indexOf('state.pending_request=record; persist();') <
   source.indexOf('runPending(record,false);'));
-assert.ok(source.includes('if(state.pending_request) runPending(state.pending_request,true);'));
+assert.ok(source.includes("if(resumeKind==='request') runPending(state.pending_request,true);"));
+assert.ok(source.includes("showRecovery('request')"));
+assert.ok(!source.includes("setTimeout(function(){resolve(accepted());},1400)"));
+assert.ok(!source.includes("setTimeout(function(){resolve(accepted());},1500)"));
+assert.ok(!source.includes("private_domain_video:'/workbench/private-domain-video.html'"));
 assert.ok(digitalHumanPage.includes('src="script-agent.js?'));
 assert.ok(digitalHumanPage.includes('data-director-guide-contract="digital-human-oneclick-guide-v1"'));
 for(const id of ['photoDrop','voiceUploadDrop','customerMaterialsPicker','driveAudioDrop']) {
@@ -405,9 +413,13 @@ for(const id of ['photoDrop','voiceUploadDrop','customerMaterialsPicker','driveA
       }));},
     });
   }};
+  await assert.rejects(agent.resumeRequest(
+    recoveryWin, recoveryRecord,
+    function(updated){ persistedJob = updated.job_id; }
+  ), /response lost/);
+  assert.equal(postCalls, 1);
   const recovered = await agent.resumeRequest(
-    recoveryWin,
-    recoveryRecord,
+    recoveryWin, recoveryRecord,
     function(updated){ persistedJob = updated.job_id; }
   );
   assert.equal(recovered.content, 'recovered');

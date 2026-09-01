@@ -17,6 +17,9 @@ function response(status, body) {
     kind: 'script',
     expected_cost: 3,
     requires_confirmation: true,
+    plan_digest: 'a'.repeat(64),
+    quote_token: 'server_issued_confirmation_token_1234',
+    expires_at: 2000000900,
     input: {
       request_id: 'director-production-1234567890abcdef',
       topic: '东鹏特饮', selling_points: '买三送一',
@@ -59,6 +62,10 @@ function response(status, body) {
   assert.equal(
     JSON.parse(calls[0].options.body).offer_id,
     'director-production-1234567890abcdef',
+  );
+  assert.equal(
+    JSON.parse(calls[0].options.body).quote_token,
+    'server_issued_confirmation_token_1234',
   );
   assert.match(agent.formatScriptResult(result), /脚本已生产完成/);
   assert.match(agent.formatScriptResult(result), /买三送一/);
