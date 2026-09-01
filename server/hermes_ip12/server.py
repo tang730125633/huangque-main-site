@@ -8336,6 +8336,18 @@ def _process_production_delegate_turn(cid, user_message, decision, memory,
     return result, 200
 
 
+_RESOURCE_QUERY_RE = re.compile(
+    r"(?:查|看看|看一下|查看|帮我查|多少|还剩|剩余|有没有|有哪些|余额|点数|积分)"
+)
+_RESOURCE_NAME_RE = re.compile(r"(?:形象|音色|声音|资产|余额|点数|积分|剩余|账户|数字人)")
+
+
+def _resource_query_intent(message):
+    """明确资源查询意图：查询词 + 资源词同时命中才成立（结构化兜底，非模糊路由）。"""
+    text = str(message or "")
+    return bool(_RESOURCE_QUERY_RE.search(text) and _RESOURCE_NAME_RE.search(text))
+
+
 def _semantic_content_target(decision, memory, user_message):
     references = decision.get("references") if isinstance(decision.get("references"), dict) else {}
     category_id, topic_id = str(references.get("category_id") or ""), str(references.get("topic_id") or "")
@@ -8747,6 +8759,13 @@ def process_chat_request(body):
             if material_production_id:
                 result, status = _process_production_material_revision_turn(
                     cid, user_message, material_production_id, material_revision_kind,
+                    body.get("expected_revision"), request_id,
+                )
+            elif _resource_query_intent(user_message) and semantic_decision:
+                # 确定性兜底：用户明确要查资源（形象/音色/资产/余额/点数）时，
+                # 服务端真实调工具层查询并返回结果，绝不允许模型空口"帮你查一下"。
+                result, status = _process_production_delegate_turn(
+                    cid, user_message, semantic_decision, memory_snapshot or {},
                     body.get("expected_revision"), request_id,
                 )
             elif semantic_decision and semantic_decision.get("intent") == "pause":
