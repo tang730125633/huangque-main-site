@@ -8336,6 +8336,7 @@ def _process_production_delegate_turn(cid, user_message, decision, memory,
     return result, 200
 
 
+_TALKING_HEAD_INTENT_RE = re.compile(r"(?:数字人|口播).{0,12}(?:生成|制作|做|视频|继续|来一条)|(?:生成|制作|做|继续).{0,12}(?:数字人|口播)")
 _RESOURCE_QUERY_RE = re.compile(
     r"(?:查|看看|看一下|查看|帮我查|多少|还剩|剩余|有没有|有哪些|余额|点数|积分)"
 )
@@ -8759,6 +8760,24 @@ def process_chat_request(body):
             if material_production_id:
                 result, status = _process_production_material_revision_turn(
                     cid, user_message, material_production_id, material_revision_kind,
+                    body.get("expected_revision"), request_id,
+                )
+            elif (
+                _talking_head_intent_re.search(user_message)
+                and semantic_decision
+                and semantic_decision.get("intent") in {"clarify", "direct_answer"}
+                and production_intent is None
+            ):
+                # 明确数字人口播意图被模型判成 clarify 时，交给工具层用组件引导（不再无限反问）
+                _synth = dict(semantic_decision)
+                _synth.update(
+                    intent="delegate", delegate_to="production_content_agent",
+                    tool="production.delegate", tool_policy="prepare_only",
+                    awaiting="confirmation",
+                    payment_policy={"quote_required": True, "explicit_confirmation_required": True},
+                )
+                result, status = _process_production_delegate_turn(
+                    cid, user_message, _synth, memory_snapshot or {},
                     body.get("expected_revision"), request_id,
                 )
             elif _resource_query_intent(user_message):
