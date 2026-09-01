@@ -1236,13 +1236,6 @@ def _expanded_production_intent(message):
                 "recommended_action": action,
                 "candidate_actions": [action],
             }
-    # 文案成片（把文案做成视频/一键成片）：明确走模板成片能力，展示文案+模板准备卡
-    if re.search(r"(?:文案|脚本|文字).{0,10}(?:做成|转成|生成|成片).{0,10}(?:视频|成片)|(?:一键成片|文案成片)", text):
-        return {
-            "capability_family": "video",
-            "recommended_action": "text-video-generate",
-            "candidate_actions": ["text-video-generate"],
-        }
     # 自然语言制作请求（如「生成一张橘猫晒太阳的图片」「做一条口播视频」）
     # 交给 harness 的制作意图识别（生成/制作 + 媒体类型），不再落入模型自由回复。
     try:
