@@ -4310,6 +4310,24 @@ def api_ip12_production_delegate_confirm():
         return jsonify({"ok": False, "error": "生产子 Agent 暂时不可用：" + str(exc)[:120]}), 502
     if response.status_code >= 400:
         return jsonify({"ok": False, "error": str((result or {}).get("detail") or "执行失败")[:200]}), response.status_code
+    # 安全底线（P0-3）：报价过期 → 工具层返回新报价，前端重新渲染确认按钮，不自动提交
+    if isinstance(result, dict) and result.get("quote_expired"):
+        _new_cost = result.get("cost")
+        with CONVERSATION_STATE_LOCK:
+            _convo_qe = owned_conversation(cid)
+            if _convo_qe is not None:
+                _pq = dict(_convo_qe.get("pending_production_delegate") or {})
+                _pq.update(quote_token=str(result.get("quote_token") or ""), cost=_new_cost)
+                _convo_qe["pending_production_delegate"] = _pq
+                save_conversation(cid, _convo_qe)
+        _qe_actions = [{
+            "type": "confirm_production_delegate",
+            "label": "确认执行（%s 点）" % _new_cost if _new_cost is not None else "确认执行",
+            "primary": True,
+        }]
+        return jsonify({"ok": True, "quote_expired": True,
+                        "explanation": str(result.get("explanation") or "报价已更新，请重新确认"),
+                        "cost": _new_cost, "actions": _qe_actions})
     inner = (result or {}).get("result") if isinstance(result, dict) else {}
     if isinstance(inner, dict) and inner.get("status") == "failed":
         # 报价过期/执行被拒：如实回传，前端提示重新发起

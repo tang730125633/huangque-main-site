@@ -830,6 +830,14 @@ function confirmDelegate(){
   fetch('/api/ip12/production-delegate/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid})})
     .then(function(r){return r.json()}).then(function(d){
       if(!d.ok)throw new Error(d.error||'提交失败');
+      if(d.quote_expired){
+        // 报价过期：后端已重新报价，渲染新确认按钮等用户再次确认（不自动提交）
+        msg.querySelector('.bubble').innerHTML='⚠️ '+(d.explanation||'报价已更新')+'<div class="harness-actions"></div>';scroll();
+        var row=msg.querySelector('.harness-actions'),ok=document.createElement('button');
+        ok.type='button';ok.className='harness-action primary';ok.textContent='确认执行（'+(d.cost!=null?d.cost+' 点':'')+'）';
+        ok.addEventListener('click',function(){ok.disabled=true;confirmDelegate()});
+        row.appendChild(ok);return
+      }
       var jid=d.job_id;
       if(!jid){msg.querySelector('.bubble').innerHTML='⚠️ '+(d.error||'提交未生效')+'，请重新说一次制作要求再报价确认。';scroll();return}
       msg.querySelector('.bubble').innerHTML='任务 '+jid+' 已提交，正在生成… ⏳';scroll();
