@@ -7923,15 +7923,6 @@ def _semantic_customer_reply(convo, reply):
     return customer_reply
 
 
-def _status_query_intent(message):
-    """任务状态查询（用户授权「状态类事实确定性输出」）：
-    问生成好了吗/查一下/核对/状态/看到了吗 时走真实任务轮询。"""
-    text = re.sub(r"\s+", "", str(message or ""))
-    if len(text) > 40:
-        return False
-    return bool(re.search(r"(生成好|完成了?吗|查一下|核对|状态|看到了吗|好了没|成品|作品)", text))
-
-
 def _process_semantic_reply(cid, user_message, decision, expected_revision=None, request_id=""):
     with CONVERSATION_STATE_LOCK:
         convo = owned_conversation(cid)
@@ -8539,24 +8530,10 @@ def process_chat_request(body):
                 )
             elif (semantic_decision and semantic_decision.get("intent") in {"direct_answer", "clarify"}
                   and production_intent is None):
-                # 状态类事实可以确定性输出（任务状态查询）：模型说了「核对/查」却没有走
-                # status 路径时，服务端补上真实查询动作，并把结果回报给用户。
-                if semantic_decision.get("intent") == "direct_answer" and _status_query_intent(user_message):
-                    status_decision = dict(semantic_decision)
-                    status_decision.update(
-                        intent="status", delegate_to="none", tool="project.status",
-                        tool_policy="read_only",
-                        payment_policy={"quote_required": False, "explicit_confirmation_required": False},
-                    )
-                    result, status = _process_project_status_turn(
-                        cid, user_message, status_decision,
-                        body.get("expected_revision"), request_id,
-                    )
-                else:
-                    result, status = _process_semantic_reply(
-                        cid, user_message, semantic_decision,
-                        body.get("expected_revision"), request_id,
-                    )
+                result, status = _process_semantic_reply(
+                    cid, user_message, semantic_decision,
+                    body.get("expected_revision"), request_id,
+                )
             elif (semantic_decision and semantic_decision.get("intent") == "delegate"
                   and semantic_decision.get("delegate_to") == "production_content_agent"):
                 # 明确的生产意图（文案成片/生成图片等）优先于模型的自由 reply：
