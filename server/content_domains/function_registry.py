@@ -642,6 +642,28 @@ IMAGE_FUNCTIONS = [
         ],
     },
     {
+        "key": "grok",
+        "name": "Grok 生图（xAI）",
+        "desc": "马斯克 xAI 文生图引擎，创意风格强；不支持参考图与局部修改",
+        "order": 35,
+        "frontend_selector": '[data-engine="grok"]',
+        "service": "content",
+        "dependencies": [
+            {"key": "xai", "role": "主生成", "requirement": "required", "credential_source": "env"},
+        ],
+        "modes": [
+            {
+                "key": "image.grok.text", "name": "文生图",
+                "entrypoints": [_endpoint("POST", "/api/gen/image")],
+                "task_match": {"kind": "image", "source_page": "banana", "provider": "grok", "reference_count": 0},
+                "evidence_contract": {"not_applicable": ["provider_task"]},
+                "price_keys": ["image.grok.std", "image.grok.hd"],
+                "smoke_inputs": ["短提示词"],
+                "validation": _image_validation(),
+            },
+        ],
+    },
+    {
         "key": "seedream",
         "name": "黄雀引擎 1",
         "desc": "选择标准或 Pro，支持文生图与多图参考生成",
