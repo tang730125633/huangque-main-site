@@ -470,11 +470,61 @@ def validate_payload(raw, username=""):
             try:
                 value = _request("POST", "/v1/preflight", candidate, timeout=10)
                 payload = value.get("payload") if isinstance(value, dict) else None
+                echoed = (
+                    payload.get("semantic_layout")
+                    if isinstance(payload, dict) else None
+                )
+                if isinstance(echoed, dict):
+                    echoed = dict(echoed)
+
+                def safe_break_echo(key):
+                    values = echoed.get(key)
+                    original = semantic_layout.get(key)
+                    return (
+                        isinstance(values, list)
+                        and isinstance(original, list)
+                        and all(
+                            not isinstance(item, bool) and isinstance(item, int)
+                            for item in values
+                        )
+                        and values == sorted(set(values))
+                        and set(values).issubset(original)
+                    )
+
                 if (
-                    not isinstance(payload, dict)
-                    or payload.get("semantic_layout") != semantic_layout
+                    not isinstance(echoed, dict)
+                    or set(echoed) != set(semantic_layout)
+                    or any(
+                        echoed.get(key) != semantic_layout.get(key)
+                        for key in (
+                            "version", "model", "source_sha256", "top1_end",
+                        )
+                    )
+                    or not all(safe_break_echo(key) for key in (
+                        "top_break_after", "bottom_break_after",
+                    ))
+                    or (
+                        echoed["top1_end"] != len(top) - 1
+                        and echoed["top1_end"] not in echoed["top_break_after"]
+                    )
                 ):
-                    return False, "生成端回显的 semantic_layout 与候选不一致"
+                    return False, "生成端回显的 semantic_layout 关键字段不一致"
+                normalized = echoed != semantic_layout
+                original_counts = (
+                    len(semantic_layout["top_break_after"]),
+                    len(semantic_layout["bottom_break_after"]),
+                )
+                # Cache and submit the font-authoritative subset from generation.
+                semantic_layout.clear()
+                semantic_layout.update(echoed)
+                if normalized:
+                    print(
+                        "[matrix-template-semantic-normalized] "
+                        f"template={template_id} breaks="
+                        f"{original_counts[0]}->{len(echoed['top_break_after'])},"
+                        f"{original_counts[1]}->{len(echoed['bottom_break_after'])}",
+                        flush=True,
+                    )
                 return True, value
             except MatrixTemplateHTTPError as exc:
                 if exc.status == 400 and (
