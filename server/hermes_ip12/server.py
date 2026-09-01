@@ -8558,7 +8558,7 @@ def process_chat_request(body):
                 # 走生产桥接（准备卡/报价），不呈现模型答非所问的文本。
                 if production_intent is not None:
                     result, status = _process_production_intent_turn(
-                        cid, user_message, production_intent,
+                        cid, user_message, content_target, production_intent,
                         body.get("expected_revision"), request_id,
                         semantic_master=True,
                     )
