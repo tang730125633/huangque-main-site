@@ -8553,9 +8553,17 @@ def process_chat_request(body):
                     )
             elif (semantic_decision and semantic_decision.get("intent") == "delegate"
                   and semantic_decision.get("delegate_to") == "production_content_agent"):
+                # 明确的生产意图（文案成片/生成图片等）优先于模型的自由 reply：
+                # 走生产桥接（准备卡/报价），不呈现模型答非所问的文本。
+                if production_intent is not None:
+                    result, status = _process_production_intent_turn(
+                        cid, user_message, production_intent,
+                        body.get("expected_revision"), request_id,
+                        semantic_master=True,
+                    )
                 # 生产内容子 Agent：SDK 模式下模型已通过 production_delegate 工具拿到工具层结果，
                 # 直接呈现 reply；custom 模式由服务端真实调用工具层（选能力、报价）。
-                if AGENTS_SDK_ENABLED and semantic_decision.get("reply"):
+                elif AGENTS_SDK_ENABLED and semantic_decision.get("reply"):
                     result, status = _process_semantic_reply(
                         cid, user_message, semantic_decision,
                         body.get("expected_revision"), request_id,
