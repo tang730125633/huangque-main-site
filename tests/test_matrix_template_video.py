@@ -17,6 +17,27 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVER = ROOT / "server"
+PRODUCTION_LEGACY_SEMANTIC_CONTRACTS = {
+    "v02": {
+        "version": 1,
+        "max_width_px": 996,
+        "layers": {
+            "top1": {"font_size_px": 86, "max_lines": 2},
+            "top2": {"font_size_px": 62, "max_lines": 4},
+            "bottom2": {"font_size_px": 78, "max_lines": 2},
+        },
+    },
+    "v05": {
+        "version": 1,
+        "max_width_px": 996,
+        "layers": {
+            "top1": {"font_size_px": 102, "max_lines": 2},
+            "top2": {"font_size_px": 104, "max_lines": 2},
+            "top3": {"font_size_px": 68, "max_lines": 3},
+            "bottom2": {"font_size_px": 70, "max_lines": 2},
+        },
+    },
+}
 
 
 class MatrixTemplateVideoTests(unittest.TestCase):
@@ -74,24 +95,26 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         for item in values:
             variant = item.get("variant")
             if variant in semantic_variants:
-                item["semantic_layout"] = {
-                    "version": 1,
-                    "max_width_px": 996,
-                    "layers": {
-                        layer: (
-                            {"font_size_px": values[0], "max_lines": values[3]}
-                            if legacy_contract else {
+                if legacy_contract:
+                    item["semantic_layout"] = json.loads(json.dumps(
+                        PRODUCTION_LEGACY_SEMANTIC_CONTRACTS[variant]
+                    ))
+                else:
+                    item["semantic_layout"] = {
+                        "version": 1,
+                        "max_width_px": 996,
+                        "layers": {
+                            layer: {
                                 "font_size_px": values[0],
                                 "font_weight": values[1],
                                 "max_width_px": values[2],
                                 "max_lines": values[3],
                             }
-                        )
-                        for layer, values in self.module._SEMANTIC_CONTRACTS[
-                            variant
-                        ].items()
-                    },
-                }
+                            for layer, values in self.module._SEMANTIC_CONTRACTS[
+                                variant
+                            ].items()
+                        },
+                    }
         return values
 
     def test_public_catalog_accepts_transition_counts_but_exposes_only_approved_templates(self):
@@ -159,6 +182,12 @@ class MatrixTemplateVideoTests(unittest.TestCase):
              "max_width_px": 970, "max_lines": 2},
             v10["semantic_layout"]["layers"]["bottom2"],
         )
+        v05 = next(item for item in expanded if item.get("variant") == "v05")
+        self.assertEqual(
+            {"font_size_px": 68, "font_weight": 900,
+             "max_width_px": 996, "max_lines": 2},
+            v05["semantic_layout"]["layers"]["top3"],
+        )
         self.assertEqual(
             {f"v{index:02d}" for index in range(1, 18)},
             {item["variant"] for item in expanded if item["engine"] == "hyperframes"},
@@ -206,6 +235,12 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                 if item.get("semantic_layout")
             ],
         )
+        self.assertEqual(
+            3,
+            next(
+                item for item in transitional if item.get("variant") == "v05"
+            )["semantic_layout"]["layers"]["top3"]["max_lines"],
+        )
 
     def test_reference_catalog_rejects_missing_v02_unknown_variant_and_drift(self):
         invalid_cases = []
@@ -246,6 +281,12 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             layer.pop("max_width_px")
         invalid_cases.append(mixed_contract)
 
+        legacy_v05_drift = self.reference_templates(("v02", "v05"))
+        next(
+            item for item in legacy_v05_drift if item.get("variant") == "v05"
+        )["semantic_layout"]["layers"]["top3"]["max_lines"] = 2
+        invalid_cases.append(legacy_v05_drift)
+
         for templates in invalid_cases:
             with self.subTest(templates=templates), mock.patch.object(
                 self.module, "_request", return_value={
@@ -255,6 +296,20 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                 },
             ), self.assertRaisesRegex(RuntimeError, "语义排版|不完整"):
                 self.module.public_templates(force=True)
+
+    def test_current_production_v02_v05_legacy_catalog_is_accepted(self):
+        templates = self.reference_templates(("v02", "v05"))
+        with mock.patch.object(self.module, "_request", return_value={
+            "templates": templates,
+            "max_batch_size": 5,
+            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+        }):
+            values = self.module.public_templates(force=True)
+        actual = {
+            item["variant"]: item["semantic_layout"]
+            for item in values if item.get("semantic_layout")
+        }
+        self.assertEqual(PRODUCTION_LEGACY_SEMANTIC_CONTRACTS, actual)
 
     def test_availability_accepts_two_fifteen_or_nineteen_healthy_templates(self):
         for count in (2, 15, 19):

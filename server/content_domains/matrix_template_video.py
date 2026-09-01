@@ -173,6 +173,15 @@ _SEMANTIC_CONTRACTS = {
         "top3": (118, 900, 996, 2), "bottom2": (84, 900, 996, 2),
     },
 }
+_LEGACY_SEMANTIC_CONTRACTS = {
+    "v02": {
+        "top1": (86, 2), "top2": (62, 4), "bottom2": (78, 2),
+    },
+    "v05": {
+        "top1": (102, 2), "top2": (104, 2),
+        "top3": (68, 3), "bottom2": (70, 2),
+    },
+}
 _ALL_REFERENCE_VARIANTS = {
     f"v{index:02d}" for index in range(1, 18)
 }
@@ -206,11 +215,12 @@ def _semantic_contract(value, variant):
             raise RuntimeError("HyperFrames 语义排版能力无效")
         keys = set(item)
         if keys == {"font_size_px", "max_lines"}:
-            if str(variant or "") not in {"v02", "v05"}:
+            legacy_layers = _LEGACY_SEMANTIC_CONTRACTS.get(str(variant or ""))
+            if legacy_layers is None:
                 raise RuntimeError("HyperFrames 语义排版能力无效")
             shape = "legacy"
             actual = (item.get("font_size_px"), item.get("max_lines"))
-            wanted = (expected[0], expected[3])
+            wanted = legacy_layers[layer]
         elif keys == {
             "font_size_px", "font_weight", "max_width_px", "max_lines",
         }:
