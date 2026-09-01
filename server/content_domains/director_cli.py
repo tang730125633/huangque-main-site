@@ -101,7 +101,21 @@ def production_is_available(root=None):
             or PRODUCTION_ORIGIN not in TRUSTED_PRODUCTION_ORIGINS):
         return False
     parsed = urllib.parse.urlsplit(AUTH_BASE)
-    return parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost"}
+    if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"}:
+        return False
+    try:
+        health = _local_json(
+            "/api/auth/internal/director-agent/health", {},
+            {"X-HQ-Internal-Token": INTERNAL_TOKEN}, timeout=2,
+        )
+    except DirectorCLIError:
+        return False
+    return bool(
+        health.get("ready") is True
+        and health.get("contract") == "director-agent-action/v1"
+        and health.get("stable_idempotency_required") is True
+        and health.get("actions") == ["director-script-generate"]
+    )
 
 
 def _subprocess_env():
@@ -181,9 +195,71 @@ def _local_json(path, body, headers=None, timeout=10):
         payload = json.loads(raw or b"{}")
     except (UnicodeDecodeError, ValueError):
         payload = {}
-    if not 200 <= int(status) < 300 or not isinstance(payload, dict):
-        raise DirectorCLIError(str(payload.get("detail") or "编导 CLI 内部鉴权失败")[:220])
+    if not isinstance(payload, dict):
+        payload = {}
+    if not 200 <= int(status) < 300:
+        code = str(payload.get("code") or "director_cli_error")[:80]
+        detail = str(payload.get("detail") or "编导 CLI 内部调用失败")[:220]
+        raise DirectorCLIError(
+            detail, code=code, status=int(status),
+            retryable=int(status) >= 500 or int(status) in {408, 429},
+        )
     return payload
+
+
+_SCRIPT_STYLE = {"口播": "spoken", "剧情": "story", "种草": "recommend"}
+_SCRIPT_DURATION = {"15s": 15, "30s": 30, "60s": 60}
+_SCRIPT_PLATFORM = {"抖音": "douyin", "小红书": "xiaohongshu", "视频号": "channels"}
+
+
+def _canonical_script_input(cli_input):
+    required = {
+        "request_id", "topic", "selling_points", "style", "duration", "platform",
+    }
+    if not isinstance(cli_input, dict) or set(cli_input) != required:
+        raise DirectorCLIError("编导 CLI 脚本输入格式无效", retryable=False)
+    request_id = str(cli_input.get("request_id") or "")
+    topic = str(cli_input.get("topic") or "").strip()
+    selling_points = str(cli_input.get("selling_points") or "").strip()
+    if not 8 <= len(request_id) <= 128 or not topic:
+        raise DirectorCLIError("编导 CLI 脚本输入格式无效", retryable=False)
+    try:
+        style = _SCRIPT_STYLE[cli_input["style"]]
+        duration = _SCRIPT_DURATION[cli_input["duration"]]
+        platform = _SCRIPT_PLATFORM[cli_input["platform"]]
+    except (KeyError, TypeError):
+        raise DirectorCLIError("编导 CLI 脚本选项无效", retryable=False)
+    prompt = topic
+    if selling_points:
+        prompt += "；核心卖点：" + selling_points
+    if len(prompt) > 20000:
+        raise DirectorCLIError("编导 CLI 脚本内容过长", retryable=False)
+    return request_id, {
+        "prompt": prompt,
+        "style": style,
+        "duration": duration,
+        "platform": platform,
+    }
+
+
+def _director_script_action(username, cli_input, confirm=False, quote_token=""):
+    if not isinstance(username, str) or not username.strip() or len(username.strip()) > 160:
+        raise DirectorCLIError("编导 CLI 缺少认证账号", retryable=False)
+    request_id, canonical_input = _canonical_script_input(cli_input)
+    body = {
+        "username": username.strip(),
+        "action": "director-script-generate",
+        "input": canonical_input,
+        "confirm": bool(confirm),
+    }
+    if confirm:
+        body["quote_token"] = quote_token
+        body["idempotency_key"] = request_id
+    return _local_json(
+        "/api/auth/internal/director-agent/action", body,
+        {"X-HQ-Internal-Token": INTERNAL_TOKEN},
+        timeout=PRODUCTION_CLI_TIMEOUT_SECONDS,
+    )
 
 
 def _delegation(username, purpose="director_agent_script"):
@@ -298,12 +374,16 @@ def _run_production(arguments, cli_input, username, root=None, runner=subprocess
 
 
 def quote_script(username, cli_input, root=None, runner=subprocess.run):
-    result = _run_production(
-        ["run", "script-generate"], cli_input, username, root=root, runner=runner,
-    )
-    if (not isinstance(result.get("quote_token"), str)
-            or not isinstance(result.get("cost"), int)
-            or not isinstance(result.get("expires_in"), int)):
+    if not production_is_available(root):
+        raise DirectorCLIError("编导 CLI 生产能力未安全配置")
+    result = _director_script_action(username, cli_input)
+    cost = result.get("cost")
+    expires_in = result.get("expires_in")
+    quote_token = result.get("quote_token")
+    if (not isinstance(quote_token, str) or not 20 <= len(quote_token) <= 4096
+            or isinstance(cost, bool) or not isinstance(cost, int) or not 1 <= cost <= 10000
+            or isinstance(expires_in, bool) or not isinstance(expires_in, int)
+            or not 1 <= expires_in <= 3600):
         raise DirectorCLIError("编导 CLI 报价响应无效")
     return result
 
@@ -311,9 +391,10 @@ def quote_script(username, cli_input, root=None, runner=subprocess.run):
 def confirm_script(username, cli_input, quote_token, root=None, runner=subprocess.run):
     if not isinstance(quote_token, str) or not 20 <= len(quote_token) <= 4096:
         raise DirectorCLIError("编导 CLI 报价凭证无效")
-    result = _run_production(
-        ["run", "script-generate", "--confirm", "--quote-token", quote_token],
-        cli_input, username, root=root, runner=runner,
+    if not production_is_available(root):
+        raise DirectorCLIError("编导 CLI 生产能力未安全配置")
+    result = _director_script_action(
+        username, cli_input, confirm=True, quote_token=quote_token,
     )
     job_id = result.get("job_id")
     if isinstance(job_id, bool) or not isinstance(job_id, int) or job_id <= 0:

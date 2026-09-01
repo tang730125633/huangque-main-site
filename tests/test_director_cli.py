@@ -43,6 +43,93 @@ def description_payload(identifier):
 
 
 class DirectorCLITests(unittest.TestCase):
+    def test_script_bridge_uses_canonical_internal_action_and_stable_idempotency(self):
+        cli_input = {
+            "request_id": "director-production-1234567890abcdef",
+            "topic": "东鹏特饮",
+            "selling_points": "买三送一",
+            "style": "种草",
+            "duration": "30s",
+            "platform": "抖音",
+        }
+        calls = []
+
+        def local_json(path, body, headers=None, timeout=10):
+            calls.append((path, body, headers, timeout))
+            if path.endswith("/health"):
+                return {
+                    "ready": True,
+                    "contract": "director-agent-action/v1",
+                    "actions": ["director-script-generate"],
+                    "stable_idempotency_required": True,
+                }
+            if body["confirm"]:
+                return {"job_id": 77, "points_left": 96}
+            return {
+                "quote_token": "q" * 24, "cost": 3,
+                "points": 99, "expires_in": 60,
+            }
+
+        with mock.patch.object(director_cli, "INTERNAL_TOKEN", "internal-secret"), \
+             mock.patch.object(
+                 director_cli, "PRODUCTION_ORIGIN", "https://huangquechuanmei.com",
+             ), mock.patch.object(director_cli, "_local_json", side_effect=local_json):
+            quote = director_cli.quote_script("alice", cli_input)
+            result = director_cli.confirm_script(
+                "alice", cli_input, quote["quote_token"],
+            )
+
+        self.assertEqual((quote["cost"], result["job_id"]), (3, 77))
+        actions = [item for item in calls if item[0].endswith("/action")]
+        self.assertEqual(len(actions), 2)
+        quoted, confirmed = actions[0][1], actions[1][1]
+        self.assertEqual(quoted["action"], "director-script-generate")
+        self.assertEqual(quoted["input"], {
+            "prompt": "东鹏特饮；核心卖点：买三送一",
+            "style": "recommend", "duration": 30, "platform": "douyin",
+        })
+        self.assertNotIn("idempotency_key", quoted)
+        self.assertEqual(
+            confirmed["idempotency_key"], cli_input["request_id"],
+        )
+        self.assertEqual(confirmed["input"], quoted["input"])
+
+    def test_production_health_and_quote_validation_fail_closed(self):
+        with mock.patch.object(director_cli, "INTERNAL_TOKEN", "internal-secret"), \
+             mock.patch.object(
+                 director_cli, "PRODUCTION_ORIGIN", "https://huangquechuanmei.com",
+             ), mock.patch.object(
+                 director_cli, "_local_json", return_value={
+                     "ready": True, "contract": "wrong-contract",
+                     "actions": ["director-script-generate"],
+                     "stable_idempotency_required": True,
+                 },
+             ):
+            self.assertFalse(director_cli.production_is_available())
+
+        cli_input = {
+            "request_id": "director-production-1234567890abcdef",
+            "topic": "东鹏特饮", "selling_points": "买三送一",
+            "style": "种草", "duration": "30s", "platform": "抖音",
+        }
+        responses = iter([
+            {
+                "ready": True, "contract": "director-agent-action/v1",
+                "actions": ["director-script-generate"],
+                "stable_idempotency_required": True,
+            },
+            {"quote_token": "q" * 24, "cost": True, "expires_in": 60},
+        ])
+        with mock.patch.object(director_cli, "INTERNAL_TOKEN", "internal-secret"), \
+             mock.patch.object(
+                 director_cli, "PRODUCTION_ORIGIN", "https://huangquechuanmei.com",
+             ), mock.patch.object(
+                 director_cli, "_local_json", side_effect=lambda *_args, **_kwargs: next(responses),
+             ), self.assertRaisesRegex(
+                 director_cli.DirectorCLIError, "报价响应无效",
+             ):
+            director_cli.quote_script("alice", cli_input)
+
     def test_real_repository_cli_guides_all_agent_pages(self):
         expected = {
             "script": "script",

@@ -550,6 +550,130 @@ class HQCLIAPITests(unittest.TestCase):
             for plan in submitted
         ))
 
+    def test_director_agent_internal_action_keeps_one_key_across_requotes(self):
+        action_input = {
+            "prompt": "energy drink; buy three get one free",
+            "style": "recommend", "duration": 30, "platform": "douyin",
+        }
+        submitted_keys = []
+        jobs_by_key = {}
+        charges = 0
+
+        def fake_proxy(plan, _web_token, _internal_token):
+            nonlocal charges
+            if plan["path"] == "/api/gen/cli/quote":
+                return 200, {"cost": 3, "points": 100}
+            self.assertEqual(plan["path"], "/api/gen/copy")
+            key = plan["headers"]["Idempotency-Key"]
+            submitted_keys.append(key)
+            if key not in jobs_by_key:
+                charges += 1
+                jobs_by_key[key] = 701
+            return 200, {
+                "job_id": jobs_by_key[key], "cost": 3, "points_left": 97,
+            }
+
+        quote_body = {
+            "username": "alice", "action": "director-script-generate",
+            "input": action_input, "confirm": False,
+        }
+        headers = self._agent_headers()
+        with mock.patch.object(
+                self.auth.feature_flags, "is_enabled", return_value=True,
+             ), mock.patch.object(
+                self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy,
+             ):
+            denied_status, _ = self._request(
+                "/api/auth/internal/director-agent/health", {},
+            )
+            health_status, health = self._request(
+                "/api/auth/internal/director-agent/health", {},
+                extra_headers=headers,
+            )
+            first_quote_status, first_quote = self._request(
+                "/api/auth/internal/director-agent/action", quote_body,
+                extra_headers=headers,
+            )
+            second_quote_status, second_quote = self._request(
+                "/api/auth/internal/director-agent/action", quote_body,
+                extra_headers=headers,
+            )
+            missing_key_status, missing_key = self._request(
+                "/api/auth/internal/director-agent/action", {
+                    **quote_body, "confirm": True,
+                    "quote_token": first_quote["quote_token"],
+                }, extra_headers=headers,
+            )
+            results = []
+            for quote in (first_quote, second_quote):
+                results.append(self._request(
+                    "/api/auth/internal/director-agent/action", {
+                        **quote_body, "confirm": True,
+                        "quote_token": quote["quote_token"],
+                        "idempotency_key": "director-production-1234567890abcdef",
+                    }, extra_headers=headers,
+                ))
+
+        self.assertEqual(denied_status, 403)
+        self.assertEqual(health_status, 200)
+        self.assertTrue(health["ready"])
+        self.assertEqual(health["contract"], "director-agent-action/v1")
+        self.assertEqual((first_quote_status, second_quote_status), (200, 200))
+        self.assertNotEqual(first_quote["quote_token"], second_quote["quote_token"])
+        self.assertEqual(missing_key_status, 400)
+        self.assertEqual(missing_key["code"], "idempotency_key_required")
+        self.assertEqual([status for status, _payload in results], [200, 200])
+        self.assertEqual([payload["job_id"] for _status, payload in results], [701, 701])
+        self.assertEqual(submitted_keys, [
+            "director-production-1234567890abcdef",
+            "director-production-1234567890abcdef",
+        ])
+        self.assertEqual(charges, 1)
+
+    def test_director_bridge_reaches_real_auth_contract_with_canonical_input(self):
+        from content_domains import director_cli
+
+        plans = []
+
+        def fake_proxy(plan, _web_token, _internal_token):
+            plans.append(plan)
+            if plan["path"] == "/api/gen/cli/quote":
+                return 200, {"cost": 3, "points": 100}
+            return 200, {"job_id": 801, "cost": 3, "points_left": 97}
+
+        cli_input = {
+            "request_id": "director-production-abcdef1234567890",
+            "topic": "energy drink", "selling_points": "buy three get one",
+            "style": "种草", "duration": "30s", "platform": "抖音",
+        }
+        with mock.patch.object(
+                self.auth.feature_flags, "is_enabled", return_value=True,
+             ), mock.patch.object(
+                self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy,
+             ), mock.patch.object(
+                director_cli, "AUTH_BASE", self.base,
+             ), mock.patch.object(
+                director_cli, "INTERNAL_TOKEN", self.auth.INTERNAL_TOKEN,
+             ), mock.patch.object(
+                director_cli, "PRODUCTION_ORIGIN", "https://huangquechuanmei.com",
+             ):
+            self.assertTrue(director_cli.production_is_available())
+            quote = director_cli.quote_script("alice", cli_input)
+            submitted = director_cli.confirm_script(
+                "alice", cli_input, quote["quote_token"],
+            )
+
+        self.assertEqual((quote["cost"], submitted["job_id"]), (3, 801))
+        self.assertEqual(plans[0]["body"]["payload"], {
+            "prompt": "energy drink；核心卖点：buy three get one",
+            "format": "script", "style": "种草", "dur": "30s",
+            "platform": "抖音", "ctype": "分镜脚本", "source_page": "script",
+        })
+        self.assertEqual(
+            plans[1]["headers"]["Idempotency-Key"],
+            cli_input["request_id"],
+        )
+
     def test_public_cli_route_rejects_internal_idempotency_injection(self):
         token = self._token(["assets:read"])
         with mock.patch.object(self.auth.hq_cli_api, "proxy_json") as proxy:

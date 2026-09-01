@@ -648,10 +648,10 @@ def _normalize_production_request(value):
             or not 1 <= expected_cost <= 10000):
         raise ValueError("预期点数无效")
     plan_digest = _text(value.get("plan_digest"), 64, "生产方案摘要")
-    quote_token = _text(value.get("quote_token"), 256, "生产确认凭证")
+    quote_token = _text(value.get("quote_token"), 4096, "生产确认凭证")
     if not re.fullmatch(r"[a-f0-9]{64}", plan_digest):
         raise ValueError("生产方案摘要无效")
-    if not re.fullmatch(r"[A-Za-z0-9_-]{20,256}", quote_token):
+    if not re.fullmatch(r"[A-Za-z0-9._-]{20,4096}", quote_token):
         raise ValueError("生产确认凭证无效")
     return offer_id, cli_input, expected_cost, plan_digest, quote_token
 

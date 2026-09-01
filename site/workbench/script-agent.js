@@ -350,7 +350,7 @@
     var planDigest=String(value.plan_digest||''),quoteToken=String(value.quote_token||'');
     var expiresAt=Number(value.expires_at);
     if(!/^director-production-[A-Za-z0-9_-]{16,64}$/.test(offerId)||value.kind!=='script') return null;
-    if(!/^[a-f0-9]{64}$/.test(planDigest)||!/^[A-Za-z0-9_-]{20,256}$/.test(quoteToken)||!Number.isInteger(expiresAt)||expiresAt<=0) return null;
+    if(!/^[a-f0-9]{64}$/.test(planDigest)||!/^[A-Za-z0-9._-]{20,4096}$/.test(quoteToken)||!Number.isInteger(expiresAt)||expiresAt<=0) return null;
     var clean={offer_id:offerId,kind:'script',expected_cost:cost,requires_confirmation:true,
       plan_digest:planDigest,quote_token:quoteToken,expires_at:expiresAt,
       input:{request_id:offerId,topic:String(input.topic||'').slice(0,1000),

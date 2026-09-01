@@ -67,6 +67,23 @@ def issued_script_value(db, offer_id, expected_cost=3, now=2_000_000_000):
 
 
 class DirectorAgentConfirmationTests(unittest.TestCase):
+    def test_production_confirmation_accepts_canonical_signed_quote_token_shape(self):
+        offer_id = "director-production-1234567890abcdef"
+        token = "A" * 80 + "." + "b" * 64
+        normalized = director_agent._normalize_production_request({
+            "offer_id": offer_id,
+            "input": {
+                "request_id": offer_id, "topic": "东鹏特饮",
+                "selling_points": "买三送一", "style": "种草",
+                "duration": "30s", "platform": "抖音",
+            },
+            "expected_cost": 3,
+            "plan_digest": "a" * 64,
+            "quote_token": token,
+        })
+        self.assertEqual(normalized[0], offer_id)
+        self.assertEqual(normalized[4], token)
+
     def test_ready_request_returns_direct_production_question(self):
         request = director_agent.validate_payload(payload())
         request.update(_username="alice", _job_id=42)
