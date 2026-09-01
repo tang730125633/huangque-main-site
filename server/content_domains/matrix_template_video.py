@@ -534,7 +534,16 @@ def _safe_file_url(value):
     return urllib.parse.urlunsplit((base.scheme, base.netloc, prefix + path, "", ""))
 
 
-def _download(value, job_id, timeout=240):
+def _remaining_budget(deadline_at, message="模板成片生成超时"):
+    remaining = float(deadline_at) - time.time()
+    if remaining <= 0:
+        raise RuntimeError(message)
+    return remaining
+
+
+def _download(value, job_id, timeout=240, deadline_at=None):
+    if deadline_at is None:
+        deadline_at = time.time() + float(timeout)
     url = _safe_file_url(value)
     relative = pathlib.Path("video") / ("matrix_template_%s.mp4" % str(job_id)[:64])
     target = OUT_DIR / relative
@@ -543,15 +552,23 @@ def _download(value, job_id, timeout=240):
     request = urllib.request.Request(url, headers={"Authorization": "Bearer " + API_TOKEN})
     total = 0
     try:
-        with _NO_PROXY.open(request, timeout=max(1, int(timeout))) as response, temporary.open("wb") as handle:
-            while chunk := response.read(1024 * 1024):
+        open_timeout = min(float(timeout), _remaining_budget(deadline_at))
+        with _NO_PROXY.open(request, timeout=max(0.001, open_timeout)) as response, temporary.open("wb") as handle:
+            while True:
+                _remaining_budget(deadline_at)
+                chunk = response.read(1024 * 1024)
+                _remaining_budget(deadline_at)
+                if not chunk:
+                    break
                 total += len(chunk)
                 if total > MAX_VIDEO_BYTES:
                     raise RuntimeError("模板成片文件超过大小限制")
                 handle.write(chunk)
+        _remaining_budget(deadline_at)
         with temporary.open("rb") as handle:
             if total < 1024 or b"ftyp" not in handle.read(64):
                 raise RuntimeError("模板成片文件无效")
+        _remaining_budget(deadline_at)
         os.replace(temporary, target)
     finally:
         temporary.unlink(missing_ok=True)
@@ -656,29 +673,55 @@ def generate(payload):
     local_job = str(raw.get("_job_id") or uuid.uuid4().hex)
     lifecycle = _runtime(local_job)
     deadline_at = int(lifecycle["created_at"]) + TOTAL_TIMEOUT
-    if time.time() >= deadline_at:
-        raise RuntimeError("模板成片等待超时")
-    payload = validate_payload(raw, str(raw.get("_username") or ""))
-    request_id = "matrix-template-" + re.sub(r"[^A-Za-z0-9_.:-]", "-", local_job)[:80]
-    _persist_runtime(local_job, phase="submitting", deadline_at=deadline_at)
-    remote = _request("POST", "/v1/jobs", payload, request_id=request_id, timeout=20)
-    remote_id = str(remote.get("job_id") or "")
-    if not re.fullmatch(r"[0-9a-f]{32}", remote_id):
-        raise RuntimeError("模板成片服务没有返回有效任务 ID")
-    _persist_runtime(
-        local_job, phase="provider_queued", provider_job_id=remote_id,
-        provider_submitted_at=int(time.time()), provider_status="pending",
-        deadline_at=deadline_at,
-    )
+    _remaining_budget(deadline_at, "模板成片等待超时")
+    stored_payload = lifecycle.get("payload")
+    if not isinstance(stored_payload, dict):
+        stored_payload = {}
+    runtime = stored_payload.get("_matrix_runtime")
+    if not isinstance(runtime, dict):
+        runtime = {}
+    remote_id = str(runtime.get("provider_job_id") or "")
+    if remote_id and not re.fullmatch(r"[0-9a-f]{32}", remote_id):
+        raise RuntimeError("模板成片恢复信息无效")
+
+    if remote_id:
+        payload = {
+            key: value for key, value in stored_payload.items()
+            if not str(key).startswith("_")
+        }
+    else:
+        payload = validate_payload(raw, str(raw.get("_username") or ""))
+        _remaining_budget(deadline_at)
+        request_id = "matrix-template-" + re.sub(
+            r"[^A-Za-z0-9_.:-]", "-", local_job
+        )[:80]
+        if not _persist_runtime(
+            local_job, phase="submitting", deadline_at=deadline_at,
+        ):
+            raise RuntimeError("模板成片生命周期状态保存失败")
+        remote = _request(
+            "POST", "/v1/jobs", payload, request_id=request_id,
+            timeout=min(20, _remaining_budget(deadline_at)),
+        )
+        _remaining_budget(deadline_at)
+        remote_id = str(remote.get("job_id") or "")
+        if not re.fullmatch(r"[0-9a-f]{32}", remote_id):
+            raise RuntimeError("模板成片服务没有返回有效任务 ID")
+        _persist_runtime(
+            local_job, phase="provider_queued", provider_job_id=remote_id,
+            provider_submitted_at=int(time.time()), provider_status="pending",
+            deadline_at=deadline_at,
+        )
     execution_deadline = min(time.monotonic() + JOB_TIMEOUT, time.monotonic() + max(
         0, deadline_at - time.time()
     ))
     last_status = ""
     while time.monotonic() < execution_deadline and time.time() < deadline_at:
-        remaining = max(1, int(deadline_at - time.time()))
         current = _request(
-            "GET", "/v1/jobs/" + remote_id, timeout=min(20, remaining)
+            "GET", "/v1/jobs/" + remote_id,
+            timeout=min(20, _remaining_budget(deadline_at)),
         )
+        _remaining_budget(deadline_at)
         status = str(current.get("status") or "")
         if status != last_status:
             _persist_runtime(
@@ -694,7 +737,8 @@ def generate(payload):
             if remaining <= 0:
                 raise RuntimeError("模板成片生成超时")
             video_file, file_size = _download(
-                result.get("file_url"), local_job, timeout=min(240, remaining)
+                result.get("file_url"), local_job, timeout=min(240, remaining),
+                deadline_at=deadline_at,
             )
             return {
                 "type": "matrix_template_video",

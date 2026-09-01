@@ -2,7 +2,7 @@
 """#187 P0·资金：job 状态机 CAS + 退点幂等 并发正确性单测。
 断言：无论 reaper 超时 / worker 成功 / worker 异常如何交错，点数最多退一次，
 且 error 终态不会被后到的 done 覆盖（不会既出片又退点）。"""
-import importlib, os, sys, time, unittest
+import importlib, json, os, sys, time, unittest
 from contextlib import closing
 from pathlib import Path
 
@@ -41,13 +41,13 @@ class JobRefundCasTests(unittest.TestCase):
         self.core._domains = self._orig_domains
         self.tmp.cleanup()
 
-    def _insert(self, cost=20, kind="video"):
+    def _insert(self, cost=20, kind="video", payload=None):
         now = int(time.time())
         with closing(self.core.jdb()) as c:
             cur = c.execute(
-                "INSERT INTO jobs(kind,username,cost,status,created_at,updated_at) "
-                "VALUES(?,?,?,'running',?,?)",
-                (kind, "u", cost, now, now),
+                "INSERT INTO jobs(kind,username,cost,status,payload,created_at,updated_at) "
+                "VALUES(?,?,?,'running',?,?,?)",
+                (kind, "u", cost, json.dumps(payload or {}), now, now),
             )
             c.commit()
             return cur.lastrowid
@@ -261,6 +261,37 @@ class JobRefundCasTests(unittest.TestCase):
         self.core._domains = lambda: (None, type("P", (), {
             "refund_points": staticmethod(lambda *args, **kwargs: None)
         }), _FakeVideo)
+        self.assertEqual(self.core.reclaim_orphaned_running(), 1)
+        self.assertEqual(self._row(jid)["status"], "pending")
+        self.assertEqual(self._row(jid)["refunded"], 0)
+        self.assertEqual(self.refunds, [])
+
+    def test_reclaim_requeues_matrix_job_with_persisted_provider_id(self):
+        jid = self._insert(5, kind="matrix_template_video", payload={
+            "template_id": "native-bold",
+            "_matrix_runtime": {
+                "phase": "provider_queued", "provider_job_id": "d" * 32,
+            },
+        })
+        self.assertEqual(self.core.reclaim_orphaned_running(), 1)
+        self.assertEqual(self._row(jid)["status"], "pending")
+        self.assertEqual(self._row(jid)["refunded"], 0)
+        self.assertEqual(self.refunds, [])
+
+    def test_reclaim_keeps_unknown_matrix_submission_running(self):
+        jid = self._insert(5, kind="matrix_template_video", payload={
+            "template_id": "native-bold",
+            "_matrix_runtime": {"phase": "submitting"},
+        })
+        self.assertEqual(self.core.reclaim_orphaned_running(), 0)
+        self.assertEqual(self._row(jid)["status"], "running")
+        self.assertEqual(self._row(jid)["refunded"], 0)
+        self.assertEqual(self.refunds, [])
+
+    def test_reclaim_requeues_matrix_job_before_provider_submission(self):
+        jid = self._insert(5, kind="matrix_template_video", payload={
+            "template_id": "native-bold",
+        })
         self.assertEqual(self.core.reclaim_orphaned_running(), 1)
         self.assertEqual(self._row(jid)["status"], "pending")
         self.assertEqual(self._row(jid)["refunded"], 0)

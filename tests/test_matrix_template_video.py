@@ -725,6 +725,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             "template_id": "native-bold", "bgm": True, "duration": None,
         }), mock.patch.object(self.module, "_request", side_effect=responses) as request, \
              mock.patch.object(self.module, "_download", return_value=("video/matrix_template_77.mp4", 4096)) as download, \
+             mock.patch.object(self.module, "_persist_runtime", return_value=True), \
              mock.patch.object(self.module, "public_url", return_value="/api/gen/file/token"), \
              mock.patch.object(self.module.time, "sleep"):
             result = self.module.generate(raw)
@@ -737,6 +738,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             download.call_args.args,
         )
         self.assertLessEqual(download.call_args.kwargs["timeout"], 240)
+        self.assertGreater(download.call_args.kwargs["deadline_at"], 0)
         self.assertEqual("matrix_template", result["mode"])
         self.assertEqual(("done", "1080p", "9:16"), (
             result["phase"], result["resolution"], result["ratio"]
@@ -753,6 +755,97 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             self.module.generate({"_job_id": 88, "_username": "alice"})
         validate.assert_not_called()
         request.assert_not_called()
+
+    def test_generate_rechecks_deadline_after_preflight_before_post(self):
+        clock = {"now": 100.0}
+
+        def validate(*_args, **_kwargs):
+            clock["now"] = 1301.0
+            return {"template_id": "native-bold"}
+
+        with mock.patch.object(
+            self.module, "_runtime",
+            return_value={"created_at": 100, "payload": {}},
+        ), mock.patch.object(
+            self.module.time, "time", side_effect=lambda: clock["now"],
+        ), mock.patch.object(
+            self.module, "validate_payload", side_effect=validate,
+        ), mock.patch.object(self.module, "_request") as request, \
+             mock.patch.object(self.module, "_persist_runtime") as persist, \
+             self.assertRaisesRegex(RuntimeError, "生成超时"):
+            self.module.generate({"_job_id": 90, "_username": "alice"})
+        request.assert_not_called()
+        persist.assert_not_called()
+
+    def test_generate_resumes_persisted_provider_job_without_second_post(self):
+        provider_id = "c" * 32
+        stored = {
+            "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
+            "template_id": "native-bold", "bgm": True, "duration": 8,
+            "_matrix_runtime": {
+                "phase": "provider_queued", "provider_job_id": provider_id,
+            },
+        }
+        with mock.patch.object(
+            self.module, "_runtime",
+            return_value={
+                "created_at": int(self.module.time.time()), "payload": stored,
+            },
+        ), mock.patch.object(self.module, "validate_payload") as validate, \
+             mock.patch.object(
+                 self.module, "_request",
+                 return_value={"status": "failed", "error": "renderer failed"},
+             ) as request, mock.patch.object(self.module.time, "sleep"), \
+             self.assertRaisesRegex(RuntimeError, "renderer failed"):
+            self.module.generate({"_job_id": 91, "_username": "alice"})
+        validate.assert_not_called()
+        self.assertEqual(1, request.call_count)
+        self.assertEqual(("GET", "/v1/jobs/" + provider_id), request.call_args.args)
+
+    def test_generate_does_not_post_without_durable_submitting_phase(self):
+        with mock.patch.object(
+            self.module, "_runtime",
+            return_value={
+                "created_at": int(self.module.time.time()), "payload": {},
+            },
+        ), mock.patch.object(
+            self.module, "validate_payload", return_value={
+                "template_id": "native-bold",
+            },
+        ), mock.patch.object(
+            self.module, "_persist_runtime", return_value=False,
+        ), mock.patch.object(self.module, "_request") as request, \
+             self.assertRaisesRegex(RuntimeError, "状态保存失败"):
+            self.module.generate({"_job_id": 92, "_username": "alice"})
+        request.assert_not_called()
+
+    def test_download_discards_partial_file_when_deadline_crosses_during_read(self):
+        clock = {"now": 100.0}
+
+        class SlowResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _size):
+                clock["now"] = 101.0
+                return b"\x00\x00\x00\x18ftyp" + (b"x" * 2048)
+
+        opener = mock.Mock()
+        opener.open.return_value = SlowResponse()
+        with tempfile.TemporaryDirectory() as temp, \
+             mock.patch.object(self.module, "OUT_DIR", Path(temp)), \
+             mock.patch.object(self.module, "_safe_file_url", return_value="https://example.test/file.mp4"), \
+             mock.patch.object(self.module, "_NO_PROXY", opener), \
+             mock.patch.object(self.module.time, "time", side_effect=lambda: clock["now"]), \
+             self.assertRaisesRegex(RuntimeError, "生成超时"):
+            self.module._download(
+                "/file.mp4", "slow-job", timeout=10, deadline_at=100.5,
+            )
+        self.assertFalse((Path(temp) / "video" / "matrix_template_slow-job.mp4").exists())
+        self.assertFalse((Path(temp) / "video" / "matrix_template_slow-job.mp4.part").exists())
 
     def test_generate_persists_provider_identity_and_progress(self):
         responses = [
