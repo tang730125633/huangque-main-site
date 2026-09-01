@@ -1786,7 +1786,10 @@ def validate_model_decision(
             self_review = "已按当前断点和现有证据整理，仍需用户本人确认。"
     if not reply:
         raise HarnessError("模型回复为空")
-    if decision == "ask_follow_up" and state["module_step"] >= 1:
+    if (
+        decision == "ask_follow_up"
+        and 1 <= state["module_step"] < len(MODULE_WORKFLOWS[state["current_module"]]["checkpoints"])
+    ):
         raise HarnessError(
             "上一断点已确认，当前是提炼/生成阶段：必须直接生成当前断点的核对稿，"
             "不得继续追问已采集的信息"
