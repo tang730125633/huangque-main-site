@@ -7938,7 +7938,7 @@ def _process_semantic_reply(cid, user_message, decision, expected_revision=None,
     components = decision.get("components")
     if isinstance(components, list) and components:
         result["components"] = [c for c in components if c in {
-            "voice_audition", "avatar_cards", "production_guide", "video_player"}]
+            "voice_audition", "avatar_cards", "production_guide", "video_player", "text_video_prep"}]
     # video_player：链接由系统从产物记录填充（回复文本不暴露 URL，只渲染播放器）。
     # 用户问「做了哪些视频」时把全部 done 产物渲染出来，不做半吊子。
     if "video_player" in (result.get("components") or []):

@@ -756,6 +756,7 @@ function renderComponents(bubble,components){
   if(components.indexOf('avatar_cards')>=0)renderAvatarCards(bubble);
   if(components.indexOf('production_guide')>=0)maybeRenderGuide(bubble);
   if(components.indexOf('video_player')>=0)maybeRenderVideo(bubble);
+  if(components.indexOf('text_video_prep')>=0)renderTextVideoPrep(bubble);
 }
 function renderChat(msgs){var a=document.getElementById('chatArea');if(!msgs||msgs.length===0){a.innerHTML=WELCOME_HTML;return}a.innerHTML=msgs.map(function(m){var productionId=String(m.production_id||''),messageId=String(m.message_id||''),choiceTarget=String(m.choice_target_id||'');return '<div class="msg '+(m.role==='user'?'user':'assistant')+'"'+(choiceTarget?' data-choice-target="'+eHtml(choiceTarget)+'"':'')+(productionId?' data-production-message="'+eHtml(productionId)+'"':'')+(messageId?' data-message-id="'+eHtml(messageId)+'"':'')+((m.meta&&m.meta.components)?' data-meta="'+eHtml(JSON.stringify(m.meta))+'"':'')+'><div class="av">'+moduleIcon(m.role==='user'?'user':'sparkles')+'</div><div class="bubble">'+md(m.content)+productionMessageHtml(m)+'</div></div>'}).join('');renderChoiceReceiptsInDom();var last=a.querySelector('.msg.assistant:last-of-type .bubble');attachHarnessActions(currentActions(),last);a.querySelectorAll('.msg.assistant').forEach(function(node){var b=node.querySelector('.bubble');if(!b)return;var mm=null;try{mm=JSON.parse(node.dataset.meta||'null')}catch(e){}if(mm){if(mm.video_url||mm.audio_url||mm.cover_url){b.dataset.media=JSON.stringify({video_url:mm.video_url||'',audio_url:mm.audio_url||'',cover_url:mm.cover_url||'',title:mm.title||''})}}renderComponents(b,mm&&mm.components)})}
 function appendProductionMessage(message){var messageId=String(message&&message.message_id||'');if(!messageId)return;var exists=Array.from(document.querySelectorAll('[data-message-id]')).some(function(node){return node.dataset.messageId===messageId});if(exists)return;var area=document.getElementById('chatArea'),node=document.createElement('div'),productionId=String(message.production_id||'');node.className='msg assistant';node.dataset.messageId=messageId;if(productionId)node.dataset.productionMessage=productionId;node.innerHTML='<div class="av">'+moduleIcon('sparkles')+'</div><div class="bubble">'+md(message.content)+productionMessageHtml(message)+'</div>';area.appendChild(node);scroll()}
@@ -812,6 +813,41 @@ function maybeRenderGuide(bubble){
     if(state0.kind==='digital_human'&&(!state0.avatar||!state0.voice)){toast('请先选择形象和音色');return}
     wrap.querySelector('#gGo').disabled=true;wrap.querySelector('#gGo').textContent='提交中…';
     fetch('/api/ip12/production-submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid,kind:state0.kind,avatar:state0.avatar,voice:state0.voice,script:state0.script})})
+      .then(function(r){return r.json()}).then(function(d){
+        var area=document.getElementById('chatArea'),msg=document.createElement('div');msg.className='msg assistant';msg.innerHTML='<div class="av">'+moduleIcon('sparkles')+'</div><div class="bubble">'+md(String(d.assistant||''))+'</div>';area.appendChild(msg);scroll();
+        attachHarnessActions(d.actions||[],msg.querySelector('.bubble'));
+      }).catch(function(e){toast('提交失败：'+(e.message||''))});
+  };
+}
+function renderTextVideoPrep(bubble){
+  if(!bubble||bubble.dataset.tvDone)return;bubble.dataset.tvDone='1';
+  var state0={script:'文案一',template:''};
+  var wrap=document.createElement('div');wrap.style.cssText='margin-top:8px;padding:10px;border:1px solid #2a2f3a;border-radius:10px;background:#14171c';
+  wrap.innerHTML='<div style="font-size:13px;font-weight:600;margin-bottom:8px">🎬 文案成片（风格和音色由系统自动搭配）</div>'+
+    '<div style="font-size:12px;color:#8b93a3;margin:6px 0 4px">📝 文案</div>'+
+    '<div id="tvScript" style="display:flex;gap:6px;flex-wrap:wrap"></div>'+
+    '<div style="font-size:12px;color:#8b93a3;margin:8px 0 4px">🖼 模板（点选预览图）</div>'+
+    '<div id="tvTemplates" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;max-height:40vh;overflow-y:auto"></div>'+
+    '<button id="tvGo" class="ip-btn ip-primary" style="width:100%;margin-top:10px">开始生成</button>';
+  bubble.appendChild(wrap);scroll();
+  var pack=(deliverables&&deliverables['6'])||{};var cats=pack.categories||[];
+  var titles=[];cats.forEach(function(cat){(cat.topics||[]).forEach(function(tp){titles.push(tp.title||('文案'+tp.id))})});
+  var sbox=wrap.querySelector('#tvScript');
+  sbox.innerHTML=titles.slice(0,3).map(function(t,i){return '<button class="g-chip'+(i===0?' g-on':'')+'" data-sc="文案'+(['一','二','三'][i]||i)+'" style="padding:4px 8px;font-size:12px">'+eHtml(t)+'</button>'}).join('');
+  sbox.querySelectorAll('.g-chip').forEach(function(c){c.onclick=function(){state0.script=c.dataset.sc;sbox.querySelectorAll('.g-chip').forEach(function(x){x.classList.toggle('g-on',x===c)})}});
+  fetch('/api/ip12/text-video-options',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){
+    var tpl=(d&&d.templates)||[];
+    var portrait=tpl.filter(function(t){return t.orientation==='portrait'});
+    var landscape=tpl.filter(function(t){return t.orientation!=='portrait'});
+    var show=portrait.length?portrait:tpl;
+    var grid=show.slice(0,12).map(function(t){return '<div class="tv-cell" data-key="'+eHtml(t.key)+'" data-name="'+eHtml(t.name)+'" style="cursor:pointer;text-align:center;border:1px solid #2a2f3a;border-radius:8px;padding:4px">'+(t.preview_url?('<img src="'+eHtml(t.preview_url)+'" loading="lazy" style="width:100%;aspect-ratio:9/16;object-fit:cover;border-radius:6px;background:#222">'):'')+'<div style="font-size:11px;color:#c9d1d9;margin-top:3px">'+eHtml(t.name)+'</div></div>'}).join('');
+    wrap.querySelector('#tvTemplates').innerHTML=grid;
+    wrap.querySelectorAll('.tv-cell').forEach(function(cell){cell.onclick=function(){state0.template=cell.dataset.key;wrap.querySelectorAll('.tv-cell').forEach(function(x){x.style.borderColor='#2a2f3a'});cell.style.borderColor='#f5b942'}});
+  }).catch(function(){});
+  wrap.querySelector('#tvGo').onclick=function(){
+    if(!state0.template){toast('请先点选一个模板');return}
+    wrap.querySelector('#tvGo').disabled=true;wrap.querySelector('#tvGo').textContent='提交中…';
+    fetch('/api/ip12/production-submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid,kind:'text_video',script:state0.script,template:state0.template})})
       .then(function(r){return r.json()}).then(function(d){
         var area=document.getElementById('chatArea'),msg=document.createElement('div');msg.className='msg assistant';msg.innerHTML='<div class="av">'+moduleIcon('sparkles')+'</div><div class="bubble">'+md(String(d.assistant||''))+'</div>';area.appendChild(msg);scroll();
         attachHarnessActions(d.actions||[],msg.querySelector('.bubble'));
