@@ -2264,8 +2264,11 @@ def action_plan(action, value):
             "ctype": "分镜脚本",
             "source_page": "script",
         }
-        return _plan("director:generate", "generation", generation_kind="copy",
-                     endpoint="/api/gen/copy", payload=payload)
+        return _plan(
+            "director:generate", "generation", generation_kind="copy",
+            endpoint="/api/gen/copy", payload=payload,
+            submit_headers={"X-HQ-Submission-Class": "director-agent"},
+        )
     if action == "director-breakdown":
         _strict_object(value, {"url", "urls", "mode"})
         has_url, has_urls = "url" in value, "urls" in value

@@ -5362,6 +5362,121 @@ class H(BaseHTTPRequestHandler):
         finally:
             c.close()
 
+    def _director_agent_row(self, username):
+        if not isinstance(username, str):
+            raise hq_cli_api.CLIAPIError(400, "username 不合法", "invalid_username")
+        username = username.strip()
+        if not username or len(username) > 160:
+            raise hq_cli_api.CLIAPIError(400, "username 不合法", "invalid_username")
+        c = db()
+        try:
+            return c.execute(
+                "SELECT * FROM users WHERE username=? "
+                "AND COALESCE(account_status,'active')='active'",
+                (username,),
+            ).fetchone()
+        finally:
+            c.close()
+
+    @staticmethod
+    def _director_agent_action_ready():
+        states = {
+            flag: feature_flags.is_enabled(flag)
+            for flag in hq_cli_api.CATALOG_FEATURE_FLAGS
+        }
+        action = next((
+            item for item in hq_cli_api.action_catalog(states).get("actions") or []
+            if item.get("action") == "director-script-generate"
+        ), None)
+        if not action or (action.get("availability") or {}).get("status") != "available":
+            return False
+        try:
+            plan = hq_cli_api.action_plan(
+                "director-script-generate", {"prompt": "health-check"},
+            )
+        except hq_cli_api.CLIAPIError:
+            return False
+        return bool(
+            plan.get("scope") == "director:generate"
+            and plan.get("kind") == "generation"
+            and plan.get("endpoint") == "/api/gen/copy"
+        )
+
+    def _internal_director_agent_health(self):
+        ready = self._director_agent_action_ready()
+        return self._cli_send(200, {
+            "ok": True,
+            "ready": ready,
+            "contract": "director-agent-action/v1",
+            "actions": ["director-script-generate"] if ready else [],
+            "stable_idempotency_required": True,
+        })
+
+    def _internal_director_agent_action(self, body):
+        if not isinstance(body, dict):
+            return self._cli_send(400, {
+                "detail": "请求体必须是 JSON 对象", "code": "invalid_request",
+            })
+        allowed = {
+            "username", "action", "input", "confirm", "quote_token",
+            "idempotency_key",
+        }
+        required = {"username", "action", "input", "confirm"}
+        if set(body) - allowed or not required.issubset(body):
+            return self._cli_send(400, {
+                "detail": "内部动作字段不合法", "code": "invalid_request",
+            })
+        try:
+            if body.get("action") != "director-script-generate":
+                raise hq_cli_api.CLIAPIError(
+                    404, "未知 Director Agent 能力", "unknown_action",
+                )
+            if not self._director_agent_action_ready():
+                raise hq_cli_api.CLIAPIError(
+                    503, "编导脚本生成能力不可用", "feature_disabled",
+                )
+            if not isinstance(body.get("input"), dict):
+                raise hq_cli_api.CLIAPIError(
+                    400, "input 必须是 JSON 对象", "invalid_request",
+                )
+            if not isinstance(body.get("confirm"), bool):
+                raise hq_cli_api.CLIAPIError(
+                    400, "confirm 必须是布尔值", "invalid_request",
+                )
+            row = self._director_agent_row(body.get("username"))
+            if not row:
+                raise hq_cli_api.CLIAPIError(
+                    404, "账号不存在", "account_not_found",
+                )
+            action_body = {
+                "action": "director-script-generate",
+                "input": body["input"],
+                "confirm": body["confirm"],
+                "quote_token": body.get("quote_token", ""),
+            }
+            if body["confirm"]:
+                if "idempotency_key" not in body:
+                    raise hq_cli_api.CLIAPIError(
+                        400, "确认生产必须提供稳定幂等键",
+                        "idempotency_key_required",
+                    )
+                action_body["idempotency_key"] = body["idempotency_key"]
+            elif "idempotency_key" in body:
+                raise hq_cli_api.CLIAPIError(
+                    400, "报价阶段不接受幂等键", "invalid_request",
+                )
+            scopes = frozenset({
+                "director:generate", "generation:quote",
+                "generation:submit", "tasks:read",
+            })
+            return self._execute_cli_action(
+                row, scopes, action_body, trusted_internal=True,
+            )
+        except hq_cli_api.CLIAPIError as exc:
+            return self._cli_send(exc.status, {
+                "detail": exc.detail, "code": exc.code,
+            })
+
     def _creator_agent_bridge_enabled(self):
         return feature_flags.is_enabled("creator_agent_v1")
 
@@ -5659,6 +5774,33 @@ class H(BaseHTTPRequestHandler):
             if not self._require_internal():
                 return
             return self._internal_ip12_agent_upload()
+        if p == "/api/auth/internal/director-agent/health":
+            if not self._require_internal():
+                return
+            if self._content_length_exceeds(1024):
+                return self._cli_send(413, {
+                    "detail": "请求过大", "code": "request_too_large",
+                })
+            d = self._body()
+            if self._bad_json() or not isinstance(d, dict) or d:
+                return self._cli_send(400, {
+                    "detail": "健康检查请求必须为空对象",
+                    "code": "invalid_request",
+                })
+            return self._internal_director_agent_health()
+        if p == "/api/auth/internal/director-agent/action":
+            if not self._require_internal():
+                return
+            if self._content_length_exceeds(128 * 1024):
+                return self._cli_send(413, {
+                    "detail": "请求过大", "code": "request_too_large",
+                })
+            d = self._body()
+            if self._bad_json():
+                return self._cli_send(400, {
+                    "detail": "请求体不是合法 JSON", "code": "invalid_request",
+                })
+            return self._internal_director_agent_action(d)
         if p == "/api/auth/internal/creator-agent/catalog":
             if not self._require_internal():
                 return
