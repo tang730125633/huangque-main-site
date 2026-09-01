@@ -4313,6 +4313,7 @@ def _finalize_production_result(cid, job_id):
             _inner_text = str(inner.get("text") or "") if isinstance(inner, dict) else ""
             _kind = str(task.get("kind") or "")
             _kind_label = {"script_to_video": "文案成片", "matrix": "模板成片",
+                           "matrix_template_video": "模板成片",
                            "video": "数字人口播", "image": "图片", "audio": "音频"}.get(_kind, "成品")
             prods[str(job_id)] = {
                 "job_id": str(job_id), "phase": "done",
