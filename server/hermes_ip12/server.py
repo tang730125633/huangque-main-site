@@ -4931,17 +4931,22 @@ def api_prepare_production():
             current_account_id(), recommendation["recommended_action"], catalog_entry,
             allow_system_media=bool(body.get("allow_system_media")),
         )
-        # 图片生成：把用户消息里附带的素材 upload_id 注入参考图（不再丢参考图裸生成）
+        # 图片生成：把用户消息里附带的素材 upload_id 注入参考图（不再丢参考图裸生成）；
+        # 真人参考图默认走 seedream（国内引擎，无 OpenAI 式人脸安全限制），用户点名才换
         if recommendation["recommended_action"] == "image-generate":
             _opts = body.get("options")
-            if isinstance(_opts, dict) and not _opts.get("reference_upload_ids") and not _opts.get("image_upload_id"):
-                with CONVERSATION_STATE_LOCK:
-                    _convo_ids = _production_conversation(cid)
-                _ids = _extract_upload_ids_from_last_user_message(_convo_ids or {})
-                if _ids:
-                    _opts = dict(_opts)
-                    _opts["reference_upload_ids"] = _ids
-                    body["options"] = _opts
+            if isinstance(_opts, dict):
+                _opts = dict(_opts)
+                if not _opts.get("reference_upload_ids") and not _opts.get("image_upload_id"):
+                    with CONVERSATION_STATE_LOCK:
+                        _convo_ids = _production_conversation(cid)
+                    _ids = _extract_upload_ids_from_last_user_message(_convo_ids or {})
+                    if _ids:
+                        _opts["reference_upload_ids"] = _ids
+                if not _opts.get("provider") and _opts.get("reference_upload_ids"):
+                    # 带真实人脸参考图：seedream 更稳，不撞 OpenAI 安全策略
+                    _opts["provider"] = "seedream"
+                body["options"] = _opts
         with CONVERSATION_STATE_LOCK:
             convo = _production_conversation(cid)
             if convo is None:
