@@ -4402,7 +4402,8 @@ def _finalize_production_result(cid, job_id, client_token=""):
             inner = task.get("result") if isinstance(task.get("result"), dict) else {}
             video_url = str(inner.get("video_url") or "")
             audio_url = str(inner.get("audio_url") or "")
-            image_url = str(inner.get("image_url") or "")
+            # 图片任务的结果字段可能是 image_url 或 url（黄雀后端两种都出现过）
+            image_url = str(inner.get("image_url") or inner.get("url") or "")
             if not video_url and not audio_url and not image_url:
                 return
             # 自动挑一张封面（工具层抽帧评分，不扣点），失败不影响交付
