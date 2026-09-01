@@ -26,6 +26,23 @@
     for(var i=0;i<text.length;i++){ hash^=text.charCodeAt(i); hash=Math.imul(hash,16777619); }
     return ('00000000'+(hash>>>0).toString(16)).slice(-8);
   }
+  function normalizedUsername(value){
+    value=String(value||'').trim();
+    return value&&value.length<=160?value:'';
+  }
+  function accountStorageKey(username){
+    username=normalizedUsername(username);
+    return username?STORAGE_KEY+':'+encodeURIComponent(username):'';
+  }
+  function emptyState(){
+    return {messages:[],open:false,pending_request:null,production_offer:null,pending_production:null};
+  }
+  function discardOwnerlessState(storage){
+    if(!storage||typeof storage.removeItem!=='function') return;
+    [STORAGE_KEY].concat(LEGACY_STORAGE_KEYS).forEach(function(key){
+      try{storage.removeItem(key);}catch(error){}
+    });
+  }
   function text(node){ return String(node&&node.value!=null?node.value:node&&node.textContent||'').trim(); }
   function activeText(doc,selector){ var node=doc.querySelector(selector+' .on'); return text(node); }
   function isVisible(node){
@@ -348,10 +365,13 @@
     var code=String(error&&error.data&&error.data.code||'');
     return Number(error&&error.status)===402||code==='insufficient_points';
   }
-  function readState(storage,key){
+  function readState(storage,username){
+    username=normalizedUsername(username);
+    var key=accountStorageKey(username);
+    if(!key) return emptyState();
     try{
-      var value=JSON.parse(storage.getItem(key||STORAGE_KEY)||'null');
-      if(value&&Array.isArray(value.messages)) return {
+      var value=JSON.parse(storage.getItem(key)||'null');
+      if(value&&value.owner===username&&Array.isArray(value.messages)) return {
         messages:value.messages.slice(-20),open:!!value.open,
         pending_request:validPendingRequest(value.pending_request),
         production_offer:validProductionOffer(value.production_offer),
@@ -359,31 +379,25 @@
         updated_at:Number(value.updated_at)||0
       };
     }catch(error){}
-    return {messages:[],open:false,pending_request:null,production_offer:null,pending_production:null};
+    return emptyState();
   }
-  function saveState(storage,state,key){
-    try{ storage.setItem(key||STORAGE_KEY,JSON.stringify({
-      messages:state.messages.slice(-20),open:state.open,
+  function saveState(storage,state,username){
+    username=normalizedUsername(username);
+    var key=accountStorageKey(username);
+    if(!key) return false;
+    try{ storage.setItem(key,JSON.stringify({
+      owner:username,messages:state.messages.slice(-20),open:state.open,
       pending_request:validPendingRequest(state.pending_request),
       production_offer:validProductionOffer(state.production_offer),
       pending_production:validPendingProduction(state.pending_production),
       updated_at:Date.now()
-    })); }catch(error){}
+    })); return true; }catch(error){return false;}
   }
-  function readUnifiedState(storage){
-    try{
-      if(storage.getItem(STORAGE_KEY)!==null) return readState(storage,STORAGE_KEY);
-      var selected=null,selectedRank=-1;
-      LEGACY_STORAGE_KEYS.forEach(function(key){
-        if(storage.getItem(key)===null) return;
-        var candidate=readState(storage,key);
-        var actionable=candidate.pending_production?2:(candidate.pending_request?1:0);
-        var rank=actionable*1000000000000000+(candidate.updated_at||0)*100+(candidate.messages.length||0);
-        if(rank>selectedRank){selected=candidate;selectedRank=rank;}
-      });
-      if(selected){saveState(storage,selected,STORAGE_KEY);return selected;}
-    }catch(error){}
-    return readState(storage,STORAGE_KEY);
+  function readUnifiedState(storage,username){
+    username=normalizedUsername(username);
+    if(!username) return emptyState();
+    discardOwnerlessState(storage);
+    return readState(storage,username);
   }
   function jsonFetch(win,url,options){
     options=options||{}; var headers=options.headers||{};
@@ -407,7 +421,11 @@
     if(!doc||(!doc.getElementById('scTopic')&&!doc.getElementById('dhPhotoMode'))||!win||typeof win.fetch!=='function') return Promise.resolve(null);
     return jsonFetch(win,'/api/gen/health').then(function(health){
       if(!health||health.director_agent_enabled!==true) return null;
-      return (mounter||mount)(doc,win);
+      return jsonFetch(win,'/api/auth/me').then(function(account){
+        var username=normalizedUsername(account&&account.user&&account.user.username);
+        if(!username) return null;
+        return (mounter||mount)(doc,win,username);
+      });
     }).catch(function(){return null;});
   }
   function pollJob(win,jobId,onProgress){
@@ -518,12 +536,13 @@
       +'.hq-agent-focus{outline:3px solid rgba(244,205,114,.78)!important;outline-offset:3px!important;box-shadow:0 0 0 7px rgba(231,178,76,.16)!important}@media(max-width:640px){.hq-da-launch{right:14px;bottom:14px}.hq-da-launch.digital-human{bottom:94px}.hq-da-panel{right:14px;bottom:70px;height:calc(100vh - 88px)}}';
     doc.head.appendChild(style);
   }
-  function mount(doc,win){
-    if((!doc.getElementById('scTopic')&&!doc.getElementById('dhPhotoMode'))||doc.getElementById('hqDirectorAgent')) return null;
+  function mount(doc,win,username){
+    username=normalizedUsername(username);
+    if(!username||(!doc.getElementById('scTopic')&&!doc.getElementById('dhPhotoMode'))||doc.getElementById('hqDirectorAgent')) return null;
     var page=createPageContext(doc).page,isDigitalHuman=page==='digital_human_oneclick';
     addStyles(doc); var storage=win.sessionStorage;
-    var state=readUnifiedState(storage),pending=false,currentPlan=null;
-    function persist(){saveState(storage,state,STORAGE_KEY);}
+    var state=readUnifiedState(storage,username),pending=false,currentPlan=null;
+    function persist(){saveState(storage,state,username);}
     var assistantName='黄雀编导 Agent';
     var pageName=isDigitalHuman?'数字人一键生成':'文案编导';
     var launch=doc.createElement('button'); launch.type='button'; launch.className='hq-da-launch'+(isDigitalHuman?' digital-human':''); launch.id='hqDirectorAgent'; launch.textContent='✦ '+assistantName; launch.setAttribute('aria-expanded',state.open?'true':'false');
@@ -713,7 +732,7 @@
     validPendingRequest:validPendingRequest,createPendingRequest:createPendingRequest,
     validProductionOffer:validProductionOffer,validPendingProduction:validPendingProduction,autoResumeKind:autoResumeKind,
     retainProductionOfferAfterError:retainProductionOfferAfterError,
-    readState:readState,saveState:saveState,readUnifiedState:readUnifiedState,resumeRequest:resumeRequest,resumeProduction:resumeProduction,
+    accountStorageKey:accountStorageKey,readState:readState,saveState:saveState,readUnifiedState:readUnifiedState,resumeRequest:resumeRequest,resumeProduction:resumeProduction,
     formatScriptResult:formatScriptResult,
     bootstrap:bootstrap,mount:mount,routes:ROUTES};
 });

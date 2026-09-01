@@ -246,6 +246,7 @@ function digitalHumanFixture(mode, narrationMode) {
   const storage = {
     getItem(key){ return Object.prototype.hasOwnProperty.call(values, key) ? values[key] : null; },
     setItem(key,value){ values[key] = String(value); },
+    removeItem(key){ delete values[key]; },
   };
   const pending = agent.createPendingRequest(
     {prompt:'resume me',page_revision:'a1b2c3d4',page_context:{mode:'write'}},
@@ -255,14 +256,29 @@ function digitalHumanFixture(mode, narrationMode) {
   );
   assert.equal(pending.summary.prompt, 'resume me');
   assert.equal(pending.job_id, null);
-  agent.saveState(storage,{messages:[{role:'user',content:'resume me'}],open:true,pending_request:pending});
-  const restored = agent.readState(storage);
+  agent.saveState(storage,{messages:[{role:'user',content:'resume me'}],open:true,pending_request:pending},'alice');
+  const restored = agent.readState(storage,'alice');
   assert.equal(restored.pending_request.key, 'director-agent-recovery123');
   assert.equal(restored.pending_request.body.page_revision, 'a1b2c3d4');
   assert.equal(restored.open, true);
   assert.equal(agent.autoResumeKind(restored), '');
   restored.pending_request.job_id = '77';
   assert.equal(agent.autoResumeKind(restored), 'request');
+  agent.saveState(storage,restored,'alice');
+  const otherAccount = agent.readUnifiedState(storage,'bob');
+  assert.deepEqual(otherAccount.messages, []);
+  assert.equal(otherAccount.pending_request, null);
+  assert.equal(otherAccount.production_offer, null);
+  assert.equal(otherAccount.pending_production, null);
+  assert.equal(agent.autoResumeKind(otherAccount), '');
+  assert.notEqual(agent.accountStorageKey('alice'), agent.accountStorageKey('bob'));
+  values.hq_director_agent_unified_v1 = JSON.stringify({messages:[{role:'user',content:'ownerless secret'}]});
+  const sameAccount = agent.readUnifiedState(storage,'alice');
+  assert.equal(sameAccount.messages[0].content, 'resume me');
+  assert.equal(agent.autoResumeKind(sameAccount), 'request');
+  assert.equal(values.hq_director_agent_unified_v1, undefined);
+  values[agent.accountStorageKey('bob')] = JSON.stringify({owner:'alice',messages:[{role:'user',content:'forged owner'}]});
+  assert.deepEqual(agent.readState(storage,'bob').messages, []);
   assert.equal(agent.validPendingRequest({
     key:'bad',body:{},job_id:null,created_at:1
   }), null);
@@ -270,8 +286,12 @@ function digitalHumanFixture(mode, narrationMode) {
 
 const source = require('fs').readFileSync(require('path').join(__dirname, '../site/workbench/script-agent.js'), 'utf8');
 const digitalHumanPage = require('fs').readFileSync(require('path').join(__dirname, '../site/workbench/digital-human-oneclick.html'), 'utf8');
+const cloudShell = require('fs').readFileSync(require('path').join(__dirname, '../site/workbench/cloud-shell.js'), 'utf8');
+const directorCli = require('fs').readFileSync(require('path').join(__dirname, '../server/content_domains/director_cli.py'), 'utf8');
 assert.ok(source.includes('currentPlan.actions.map(function(action){return applyAction(action,doc,win);}'));
 assert.ok(source.includes('health.director_agent_enabled!==true'));
+assert.ok(source.includes("jsonFetch(win,'/api/auth/me')"));
+assert.ok(source.includes('value.owner===username'));
 assert.ok(source.includes("button.textContent='确认生产并扣 '+offer.expected_cost+' 点'"));
 assert.ok(source.includes("'/api/gen/director_agent/produce'"));
 assert.ok(source.indexOf('state.pending_request=record; persist();') <
@@ -281,6 +301,9 @@ assert.ok(source.includes("showRecovery('request')"));
 assert.ok(!source.includes("setTimeout(function(){resolve(accepted());},1400)"));
 assert.ok(!source.includes("setTimeout(function(){resolve(accepted());},1500)"));
 assert.ok(!source.includes('private_domain_video'));
+assert.ok(!directorCli.includes('/api/auth/internal/cli/delegation'));
+assert.ok(!directorCli.includes('def quote_reverse'));
+assert.ok(cloudShell.includes("sessionStorage.removeItem('hq_director_agent_unified_v1')"));
 assert.ok(digitalHumanPage.includes('src="script-agent.js?'));
 assert.ok(digitalHumanPage.includes('data-director-guide-contract="digital-human-oneclick-guide-v1"'));
 assert.equal(agent.retainProductionOfferAfterError({status:402,data:{code:'insufficient_points'}}), true);
@@ -306,11 +329,17 @@ for(const id of ['photoDrop','voiceUploadDrop','customerMaterialsPicker','driveA
   }, function(){ mounted += 1; });
   assert.equal(disabled, null);
   assert.equal(mounted, 0);
+  const enabledCalls = [];
   const enabled = await agent.bootstrap(healthDoc, {
-    fetch(){ return Promise.resolve(healthResponse({director_agent_enabled:true})); },
-  }, function(){ mounted += 1; return 'mounted'; });
+    fetch(url){
+      enabledCalls.push(url);
+      return Promise.resolve(healthResponse(url==='/api/gen/health'
+        ?{director_agent_enabled:true}:{user:{username:'alice'}}));
+    },
+  }, function(_doc,_win,username){ mounted += 1; assert.equal(username,'alice'); return 'mounted'; });
   assert.equal(enabled, 'mounted');
   assert.equal(mounted, 1);
+  assert.deepEqual(enabledCalls,['/api/gen/health','/api/auth/me']);
   const unavailable = await agent.bootstrap(healthDoc, {
     fetch(){ return Promise.resolve(healthResponse({detail:'maintenance'}, false)); },
   }, function(){ mounted += 1; });
@@ -320,9 +349,16 @@ for(const id of ['photoDrop','voiceUploadDrop','customerMaterialsPicker','driveA
     getElementById(id){ return id === 'dhPhotoMode' ? {} : null; },
   };
   const digitalEnabled = await agent.bootstrap(digitalHealthDoc, {
-    fetch(){ return Promise.resolve(healthResponse({director_agent_enabled:true})); },
-  }, function(){ mounted += 1; return 'digital-mounted'; });
+    fetch(url){ return Promise.resolve(healthResponse(url==='/api/gen/health'
+      ?{director_agent_enabled:true}:{user:{username:'alice'}})); },
+  }, function(_doc,_win,username){ mounted += 1; assert.equal(username,'alice'); return 'digital-mounted'; });
   assert.equal(digitalEnabled, 'digital-mounted');
+  assert.equal(mounted, 2);
+  const anonymous = await agent.bootstrap(healthDoc, {
+    fetch(url){ return Promise.resolve(healthResponse(url==='/api/gen/health'
+      ?{director_agent_enabled:true}:{user:null})); },
+  }, function(){ mounted += 1; return 'must-not-mount'; });
+  assert.equal(anonymous, null);
   assert.equal(mounted, 2);
   let calls = 0;
   const win = {fetch(){

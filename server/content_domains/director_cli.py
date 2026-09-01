@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """Fail-closed HQ CLI bridge for the customer-guide Director Agent.
 
-Capability discovery is secret-free.  Customer-confirmed script production is
-the only account-bound action: it uses a two-minute user-scoped delegation,
-an isolated credentials directory, an exact trusted origin, and the real CLI
-quote/confirm contract.  No token is sent to the model or persisted in jobs.
+Capability discovery is secret-free. Customer-confirmed script production uses
+the local auth service's strict internal action contract and stable request id.
+No internal token is sent to the model or persisted in jobs.
 """
 
 import json
@@ -12,8 +11,6 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import tempfile
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -264,117 +261,6 @@ def _director_script_action(username, cli_input, confirm=False, quote_token=""):
     )
 
 
-def _delegation(username, purpose="director_agent_script"):
-    if not production_is_available():
-        raise DirectorCLIError("编导 CLI 生产能力未安全配置")
-    result = _local_json(
-        "/api/auth/internal/cli/delegation",
-        {"username": username, "purpose": purpose},
-        {"X-HQ-Internal-Token": INTERNAL_TOKEN},
-    )
-    token = str(result.get("access_token") or "")
-    origin = str(result.get("origin") or "").rstrip("/")
-    scopes = result.get("scopes") or []
-    expires_at = int(result.get("expires_at") or 0)
-    if (len(token) < 20 or origin != PRODUCTION_ORIGIN
-            or origin not in TRUSTED_PRODUCTION_ORIGINS
-            or set(scopes) != {"generation:quote", "generation:submit", "tasks:read"}
-            or expires_at <= int(time.time())):
-        raise DirectorCLIError("编导 CLI 内部委托格式无效")
-    return token, expires_at, scopes, origin
-
-
-def _revoke_delegation(token):
-    try:
-        _local_json(
-            "/api/auth/cli/logout", {}, {"Authorization": "Bearer " + token},
-        )
-    except DirectorCLIError:
-        pass
-
-
-def _run_production(arguments, cli_input, username, root=None, runner=subprocess.run):
-    capability = arguments[1] if len(arguments) >= 2 else ""
-    if (not arguments or arguments[0] != "run"
-            or capability not in {"script-generate", "breakdown-reverse"}
-            or "--open-browser" in arguments or "--file" in arguments):
-        raise DirectorCLIError("编导 CLI 生产命令不在允许范围")
-    cli_root, source = _cli_paths(root)
-    purpose = "director_agent_reverse" if capability == "breakdown-reverse" else "director_agent_script"
-    token, expires_at, scopes, origin = _delegation(username, purpose)
-    command = [
-        sys.executable, "-I", "-X", "utf8", "-c", _RUN_MODULE, str(source),
-        *arguments, "--input", "@-", "--json",
-    ]
-    try:
-        with tempfile.TemporaryDirectory(prefix="hq-director-cli-") as config_dir:
-            os.chmod(config_dir, 0o700)
-            credentials = Path(config_dir) / "credentials.json"
-            credentials.write_text(json.dumps({
-                "access_token": token, "expires_at": expires_at, "scopes": scopes,
-            }, sort_keys=True, separators=(",", ":")), encoding="utf-8")
-            os.chmod(credentials, 0o600)
-            env = _subprocess_env()
-            env["HQ_CLI_CONFIG_DIR"] = config_dir
-            env["HQ_CLI_API_BASE"] = origin
-            try:
-                completed = runner(
-                    command, cwd=str(cli_root), env=env,
-                    input=json.dumps(cli_input, ensure_ascii=False, separators=(",", ":")),
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                    encoding="utf-8", errors="replace",
-                    timeout=PRODUCTION_CLI_TIMEOUT_SECONDS, check=False,
-                )
-            except (OSError, subprocess.TimeoutExpired):
-                raise DirectorCLIError("编导 CLI 生产调用暂时不可用")
-    finally:
-        _revoke_delegation(token)
-    stdout, stderr = str(completed.stdout or ""), str(completed.stderr or "")
-    if (len(stdout.encode("utf-8")) > MAX_CLI_OUTPUT_BYTES
-            or len(stderr.encode("utf-8")) > MAX_CLI_OUTPUT_BYTES):
-        raise DirectorCLIError("编导 CLI 生产响应过大")
-    if int(completed.returncode) != 0:
-        try:
-            error_payload = json.loads(stderr)
-        except (TypeError, ValueError):
-            error_payload = {}
-        if (isinstance(error_payload, dict)
-                and error_payload.get("schema") == "hq.error/v1"):
-            code = str(error_payload.get("error") or "director_cli_error")[:80]
-            detail = str(error_payload.get("message") or "编导 CLI 生产执行失败")[:220]
-            details = error_payload.get("details")
-            http_status = details.get("http_status") if isinstance(details, dict) else None
-            if isinstance(http_status, bool) or not isinstance(http_status, int):
-                http_status = 502
-            if http_status == 402 or code == "insufficient_points":
-                raise DirectorCLIError(
-                    "点数不足，请充值后重新确认生产",
-                    code="insufficient_points", status=402, retryable=False,
-                )
-            if code == "quote_expired":
-                raise DirectorCLIError(
-                    "报价已过期，正在重新报价",
-                    code=code, status=409, retryable=True,
-                )
-            retryable = http_status >= 500 or http_status in {408, 429}
-            raise DirectorCLIError(
-                detail, code=code, status=http_status, retryable=retryable,
-            )
-        raise DirectorCLIError("编导 CLI 生产执行失败")
-    try:
-        payload = json.loads(stdout)
-    except (TypeError, ValueError):
-        payload = {}
-    if not isinstance(payload, dict):
-        raise DirectorCLIError("编导 CLI 生产响应格式无效")
-    if payload.get("schema") != "hq.run/v1" or payload.get("capability") != capability:
-        raise DirectorCLIError("编导 CLI 生产响应版本无效")
-    result = payload.get("result")
-    if not isinstance(result, dict):
-        raise DirectorCLIError("编导 CLI 生产响应格式无效")
-    return result
-
-
 def quote_script(username, cli_input, root=None, runner=subprocess.run):
     if not production_is_available(root):
         raise DirectorCLIError("编导 CLI 生产能力未安全配置")
@@ -401,31 +287,6 @@ def confirm_script(username, cli_input, quote_token, root=None, runner=subproces
     job_id = result.get("job_id")
     if isinstance(job_id, bool) or not isinstance(job_id, int) or job_id <= 0:
         raise DirectorCLIError("编导 CLI 没有返回有效任务号")
-    return result
-
-
-def quote_reverse(username, cli_input, root=None, runner=subprocess.run):
-    result = _run_production(
-        ["run", "breakdown-reverse"], cli_input, username,
-        root=root, runner=runner,
-    )
-    if (not isinstance(result.get("quote_token"), str)
-            or not isinstance(result.get("cost"), int)
-            or not isinstance(result.get("expires_in"), int)):
-        raise DirectorCLIError("视频反推 CLI 报价响应无效")
-    return result
-
-
-def confirm_reverse(username, cli_input, quote_token, root=None, runner=subprocess.run):
-    if not isinstance(quote_token, str) or not 20 <= len(quote_token) <= 4096:
-        raise DirectorCLIError("视频反推 CLI 报价凭证无效")
-    result = _run_production(
-        ["run", "breakdown-reverse", "--confirm", "--quote-token", quote_token],
-        cli_input, username, root=root, runner=runner,
-    )
-    job_id = result.get("job_id")
-    if isinstance(job_id, bool) or not isinstance(job_id, int) or job_id <= 0:
-        raise DirectorCLIError("视频反推 CLI 没有返回有效任务号")
     return result
 
 

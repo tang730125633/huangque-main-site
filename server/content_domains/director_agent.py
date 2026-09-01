@@ -391,8 +391,6 @@ def accept_chat_job(db_factory, username, payload, owner, endpoint,
 
 
 _PRODUCTION_ID_RE = re.compile(r"^director-production-[A-Za-z0-9_-]{16,64}$")
-_REVERSE_ID_RE = re.compile(r"^director-reverse-[0-9a-f]{32}$")
-_UPLOAD_TOKEN_RE = re.compile(r"^[0-9a-f]{32}$")
 _PRODUCTION_LOCKS = {}
 _PRODUCTION_LOCKS_GUARD = threading.Lock()
 
@@ -638,97 +636,6 @@ def _normalize_production_request(value):
     if not re.fullmatch(r"[A-Za-z0-9._-]{20,4096}", quote_token):
         raise ValueError("生产确认凭证无效")
     return offer_id, cli_input, expected_cost, plan_digest, quote_token
-
-
-def prepare_reverse_offer(username, staged):
-    """Use the real HQ CLI to quote one staged video before chat confirmation."""
-    token = _text((staged or {}).get("upload_token"), 32, "视频上传凭证")
-    if not _UPLOAD_TOKEN_RE.fullmatch(token):
-        raise ValueError("视频上传凭证无效")
-    offer_id = "director-reverse-" + token
-    cli_input = {"request_id": offer_id, "upload_token": token}
-    quote = director_cli.quote_reverse(username, cli_input)
-    cost = quote.get("cost")
-    if isinstance(cost, bool) or not isinstance(cost, int) or not 1 <= cost <= 10000:
-        raise director_cli.DirectorCLIError("视频反推 CLI 报价无效")
-    return {
-        "offer_id": offer_id,
-        "kind": "reverse_video",
-        "expected_cost": cost,
-        "requires_confirmation": True,
-        "input": cli_input,
-        "summary": {
-            "file_name": _text((staged or {}).get("file_name"), 180, "视频文件名"),
-            "file_size": int((staged or {}).get("file_size") or 0),
-            "duration": float((staged or {}).get("duration") or 0),
-        },
-    }
-
-
-def _normalize_reverse_request(value):
-    if not isinstance(value, dict) or set(value) != {"offer_id", "input", "expected_cost"}:
-        raise ValueError("视频反推确认参数无效")
-    offer_id = _text(value.get("offer_id"), 96, "视频反推单号")
-    raw = value.get("input")
-    if not _REVERSE_ID_RE.fullmatch(offer_id):
-        raise ValueError("视频反推单号无效")
-    if (not isinstance(raw, dict) or set(raw) != {"request_id", "upload_token"}
-            or raw.get("request_id") != offer_id):
-        raise ValueError("视频反推内容格式无效")
-    upload_token = _text(raw.get("upload_token"), 32, "视频上传凭证")
-    if not _UPLOAD_TOKEN_RE.fullmatch(upload_token) or offer_id != "director-reverse-" + upload_token:
-        raise ValueError("视频反推单与上传凭证不一致")
-    expected_cost = value.get("expected_cost")
-    if (isinstance(expected_cost, bool) or not isinstance(expected_cost, int)
-            or not 1 <= expected_cost <= 10000):
-        raise ValueError("预期点数无效")
-    return offer_id, {"request_id": offer_id, "upload_token": upload_token}, expected_cost
-
-
-def produce_reverse(db_factory, username, value):
-    """Quote and confirm a CLI video reverse request with a stable request id."""
-    username = _text(username, 160, "认证账号")
-    if not username:
-        raise ValueError("视频反推缺少认证账号")
-    _offer_id, cli_input, expected_cost = _normalize_reverse_request(value)
-    try:
-        quote = director_cli.quote_reverse(username, cli_input)
-    except director_cli.DirectorCLIError as error:
-        return error.status, {
-            "detail": str(error), "code": "director_cli_reverse_quote_failed",
-            "retry_after_ms": 1500,
-        }
-    quoted_cost = int(quote["cost"])
-    if quoted_cost != expected_cost:
-        return 409, {
-            "detail": "视频反推价格已变化，请在对话框重新确认",
-            "code": "production_price_changed", "quoted_cost": expected_cost,
-            "current_cost": quoted_cost, "points": quote.get("points"),
-        }
-    try:
-        submitted = director_cli.confirm_reverse(
-            username, cli_input, quote["quote_token"],
-        )
-    except director_cli.DirectorCLIError as error:
-        return error.status, {
-            "detail": str(error), "code": error.code,
-            "retry_after_ms": 1500,
-        }
-    job_id = int(submitted["job_id"])
-    connection = db_factory()
-    try:
-        linked = connection.execute(
-            "SELECT id,username,kind FROM jobs WHERE id=?", (job_id,),
-        ).fetchone()
-    finally:
-        connection.close()
-    if not linked or linked["username"] != username or linked["kind"] != "breakdown":
-        raise RuntimeError("视频反推 CLI 返回了无效顾客任务")
-    return 200, {
-        "job_id": job_id, "cost": quoted_cost,
-        "points_left": submitted.get("points_left"),
-        "recovered": bool(submitted.get("recovered")),
-    }
 
 
 def produce_script(db_factory, username, value, now=None, before_link=None,
