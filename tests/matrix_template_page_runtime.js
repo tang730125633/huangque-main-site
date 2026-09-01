@@ -24,16 +24,16 @@ function createRuntime(plan, storage){
   const elements=new Map();
   for(const m of page.matchAll(/<([a-z0-9-]+)[^>]*\sid="([^"]+)"[^>]*>/gi))elements.set(m[2],new Element(m[1],m[2]));
   const get=id=>elements.get(id)||(elements.set(id,new Element('div',id)),elements.get(id));
-  const timers=[];const requests={post:[],poll:[]};let uuidCount=0,timerId=0;
+  const timers=[];const requests={auth:[],post:[],poll:[]};let uuidCount=0,timerId=0,authUsername=plan.username||'alice';
   const sessionStorage={getItem:k=>storage.has(k)?storage.get(k):null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)};
   const fetch=(url,options={})=>{
-    if(url==='/api/auth/me')return Promise.resolve(response(200,{user:{username:plan.username||'alice'}}));
+    if(url==='/api/auth/me'){const index=requests.auth.length;requests.auth.push({username:authUsername});return plan.auth?plan.auth(index,authUsername):Promise.resolve(response(200,{user:{username:authUsername}}))}
     if(url==='/api/gen/matrix-template/templates')return Promise.resolve(response(200,{templates:[{id:'native-bold',name:'默认原生大字',tags:['默认'],font_selectable:true},{id:'minimal-headline',name:'极简标题',tags:['极简'],font_selectable:true},{id:'ref-01-fixture-01',name:'参考模板',description:'绿色粗描边手写标题',tags:['内置字体'],engine:'hyperframes',font_mode:'template_locked',font_selectable:false,variant:'v01'}],fonts:[{value:'',label:'自动搭配',source:'automatic'},{value:'Noto Sans SC',label:'思源黑体',source:'bundled'},{value:'AaHouDiHei',label:'Aa厚底黑',source:'private'}],default_template:'native-bold',default_font:'',max_batch_size:5,engine_concurrency:{ffmpeg:5,hyperframes:2},cost:5}));
     if(url==='/api/gen/matrix-template'){
-      const index=requests.post.length;requests.post.push({url,options});return plan.post(index,options);
+      const index=requests.post.length;requests.post.push({url,options,account:authUsername});return plan.post(index,options);
     }
     if(url.startsWith('/api/gen/job/')){
-      const index=requests.poll.length;requests.poll.push({url,options});return plan.poll(index,options);
+      const index=requests.poll.length;requests.poll.push({url,options,account:authUsername});return plan.poll(index,options);
     }
     return Promise.resolve(response(200,{}));
   };
@@ -41,7 +41,7 @@ function createRuntime(plan, storage){
   const document={getElementById:get,createElement:t=>new Element(t),documentElement:{scrollWidth:390},hidden:false,addEventListener:(k,fn)=>{(documentListeners[k]||=[]).push(fn)}};
   const context={document,window:null,fetch,sessionStorage,location:{href:''},confirm:()=>true,crypto:{randomUUID:()=>`uuid-${++uuidCount}`},Date,Math,JSON,Promise,Object,Array,String,Error,console,clearTimeout:id=>{const timer=timers.find(item=>item.id===id);if(timer)timer.active=false},setTimeout:(fn,delay=0)=>{const timer={id:++timerId,fn,delay,active:true};timers.push(timer);return timer.id},addEventListener:(k,fn)=>{(windowListeners[k]||=[]).push(fn)}};
   context.window=context;vm.createContext(context);vm.runInContext(source,context);
-  return {get,requests,timers,storage,runTimer:async()=>{while(timers.length){const timer=timers.shift();if(timer.active){timer.active=false;timer.fn();await flush();return}}},triggerWindow:async name=>{for(const fn of windowListeners[name]||[])fn();await flush()},triggerDocument:async name=>{for(const fn of documentListeners[name]||[])fn();await flush()},flush};
+  return {get,requests,timers,storage,switchUsername:name=>{authUsername=name},runTimer:async()=>{while(timers.length){const timer=timers.shift();if(timer.active){timer.active=false;timer.fn();await flush();return}}},triggerWindow:async name=>{for(const fn of windowListeners[name]||[])fn();await flush()},triggerDocument:async name=>{for(const fn of documentListeners[name]||[])fn();await flush()},flush};
 }
 
 async function fillAndSubmit(runtime){
@@ -207,6 +207,31 @@ async function scenarioCrossAccountPendingIsolation(){
   return {posts:runtime.requests.post.length,polls:runtime.requests.poll.length,aliceRetained:storage.has(aliceKey),ownerlessRemoved:!storage.has('hq-matrix-template-pending-v2'),top:runtime.get('topText').value};
 }
 
+async function scenarioDynamicAccountSwitchFailsClosed(){
+  const storage=new Map();
+  const runtime=createRuntime({post:i=>i===0?Promise.reject(new Error('response lost')):Promise.resolve(response(200,{job_id:500+i})),poll:()=>Promise.resolve(response(200,{status:'pending'}))},storage);
+  await flush(30);runtime.get('batchCount').value='2';await fillAndSubmit(runtime);await flush(30);
+  const before={postAccounts:runtime.requests.post.map(call=>call.account),pollAccounts:runtime.requests.poll.map(call=>call.account),alicePending:storage.has('hq-matrix-template-pending-v2:alice')};
+  runtime.switchUsername('bob');await runtime.runTimer();await flush(30);await runtime.runTimer();await flush(30);
+  return {before,postAccounts:runtime.requests.post.map(call=>call.account),pollAccounts:runtime.requests.poll.map(call=>call.account),bobPosts:runtime.requests.post.filter(call=>call.account==='bob').length,bobPolls:runtime.requests.poll.filter(call=>call.account==='bob').length,alicePending:storage.has('hq-matrix-template-pending-v2:alice'),bobPending:storage.has('hq-matrix-template-pending-v2:bob'),top:runtime.get('topText').value,bottom:runtime.get('bottomText').value,status:runtime.get('status').textContent};
+}
+
+async function scenarioRetryAuthFailureFailsClosed(){
+  const storage=new Map();
+  const runtime=createRuntime({auth:(i,username)=>Promise.resolve(i===4?response(503,{detail:'auth unavailable'}):response(200,{user:{username}})),post:()=>Promise.reject(new Error('response lost')),poll:()=>Promise.reject(new Error('poll must not run'))},storage);
+  await fillAndSubmit(runtime);await flush(30);const before={posts:runtime.requests.post.length,pending:storage.has('hq-matrix-template-pending-v2:alice')};await runtime.runTimer();await flush(30);
+  return {before,posts:runtime.requests.post.length,polls:runtime.requests.poll.length,pending:storage.has('hq-matrix-template-pending-v2:alice'),top:runtime.get('topText').value,status:runtime.get('status').textContent};
+}
+
+async function scenarioConcurrentStaleAuthRestoresNewOwnerOnce(){
+  let resolveBobAuth;
+  const bobAuth=new Promise(resolve=>{resolveBobAuth=resolve});
+  const storage=new Map([['hq-matrix-template-pending-v2:bob',JSON.stringify({owner:'bob',started_at:Date.now(),items:[{key:'bob-own-key',body:{top_text:'Bob 标题',bottom_text:'Bob 文案',template_id:'native-bold',bgm:true},job_id:'',status:'uncertain',result:null,error:'',refund_status:''}]})]]);
+  const runtime=createRuntime({auth:(i,username)=>username==='bob'?bobAuth:Promise.resolve(response(200,{user:{username}})),post:(i,options)=>options.headers['Idempotency-Key']==='bob-own-key'?Promise.resolve(response(200,{job_id:601})):Promise.reject(new Error('alice response lost')),poll:()=>Promise.resolve(response(200,{status:'done',result:{video_url:'/bob-own-video',duration:8}}))},storage);
+  await fillAndSubmit(runtime);await flush(30);runtime.switchUsername('bob');await runtime.runTimer();await runtime.triggerWindow('focus');resolveBobAuth(response(200,{user:{username:'bob'}}));await flush(50);
+  return {postAccounts:runtime.requests.post.map(call=>call.account),postKeys:runtime.requests.post.map(call=>call.options.headers['Idempotency-Key']),bobPosts:runtime.requests.post.filter(call=>call.account==='bob').length,bobPolls:runtime.requests.poll.filter(call=>call.account==='bob').length,alicePending:storage.has('hq-matrix-template-pending-v2:alice'),bobPending:storage.has('hq-matrix-template-pending-v2:bob'),top:runtime.get('topText').value,src:runtime.get('video').src};
+}
+
 async function scenarioForegroundDoesNotDuplicateInflightRequests(){
   let acceptPost,finishPoll;
   const postResponse=new Promise(resolve=>{acceptPost=resolve});
@@ -250,5 +275,5 @@ async function scenarioHungPollTimesOutAndRecovers(){
   return {before,afterTimeout,afterRecovery,afterLateResponse:{polls:runtime.requests.poll.length,src:runtime.get('video').src,cleared:pendingCleared(runtime.storage)}};
 }
 
-async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure,pollHttpFailure:scenarioPollHttpFailure,pollRecoveryBeyondFive:scenarioPollRecoveryBeyondFive,instantResult:scenarioInstantResult,delayedResultUrl:scenarioDelayedResultUrl,longDelayedResultUrl:scenarioLongDelayedResultUrl,foregroundResume:scenarioForegroundResume,mediaRetry:scenarioMediaRetry,livePreview:scenarioLivePreview,fontSelect:scenarioFontSelect,lockedFont:scenarioLockedFont,batchFive:scenarioBatchFive,legacyPending:scenarioLegacyPending,mixedFailureReload:scenarioMixedFailureReload,jobFailureRefund:scenarioJobFailureRefund,refundPendingThenConfirmed:scenarioRefundPendingThenConfirmed,uncertainAutoRecovery:scenarioUncertainRecoversAutomatically,staleSubmittingAutoRecovery:scenarioStaleSubmittingRecoversAutomatically,crossAccountPending:scenarioCrossAccountPendingIsolation,foregroundSingleFlight:scenarioForegroundDoesNotDuplicateInflightRequests,hungSubmissionTimeout:scenarioHungSubmissionTimesOutAndRecovers,hungPollTimeout:scenarioHungPollTimesOutAndRecovers};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}
+async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure,pollHttpFailure:scenarioPollHttpFailure,pollRecoveryBeyondFive:scenarioPollRecoveryBeyondFive,instantResult:scenarioInstantResult,delayedResultUrl:scenarioDelayedResultUrl,longDelayedResultUrl:scenarioLongDelayedResultUrl,foregroundResume:scenarioForegroundResume,mediaRetry:scenarioMediaRetry,livePreview:scenarioLivePreview,fontSelect:scenarioFontSelect,lockedFont:scenarioLockedFont,batchFive:scenarioBatchFive,legacyPending:scenarioLegacyPending,mixedFailureReload:scenarioMixedFailureReload,jobFailureRefund:scenarioJobFailureRefund,refundPendingThenConfirmed:scenarioRefundPendingThenConfirmed,uncertainAutoRecovery:scenarioUncertainRecoversAutomatically,staleSubmittingAutoRecovery:scenarioStaleSubmittingRecoversAutomatically,crossAccountPending:scenarioCrossAccountPendingIsolation,dynamicAccountSwitch:scenarioDynamicAccountSwitchFailsClosed,retryAuthFailure:scenarioRetryAuthFailureFailsClosed,concurrentStaleAuth:scenarioConcurrentStaleAuthRestoresNewOwnerOnce,foregroundSingleFlight:scenarioForegroundDoesNotDuplicateInflightRequests,hungSubmissionTimeout:scenarioHungSubmissionTimesOutAndRecovers,hungPollTimeout:scenarioHungPollTimesOutAndRecovers};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}
 main().catch(e=>{console.error(e.stack||e);process.exitCode=1});

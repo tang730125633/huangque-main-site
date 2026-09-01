@@ -1348,6 +1348,42 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertTrue(result["ownerlessRemoved"])
         self.assertEqual("", result["top"])
 
+    def test_dynamic_account_switch_stops_old_account_post_and_poll(self):
+        result = self.runtime("dynamicAccountSwitch")
+        self.assertEqual(["alice", "alice"], result["before"]["postAccounts"])
+        self.assertEqual(["alice"], result["before"]["pollAccounts"])
+        self.assertTrue(result["before"]["alicePending"])
+        self.assertEqual(0, result["bobPosts"])
+        self.assertEqual(0, result["bobPolls"])
+        self.assertEqual(["alice", "alice"], result["postAccounts"])
+        self.assertEqual(["alice"], result["pollAccounts"])
+        self.assertTrue(result["alicePending"])
+        self.assertFalse(result["bobPending"])
+        self.assertEqual("", result["top"])
+        self.assertEqual("", result["bottom"])
+        self.assertNotIn("AI 工作流", result["status"])
+
+    def test_auth_failure_before_retry_stops_paid_submission(self):
+        result = self.runtime("retryAuthFailure")
+        self.assertEqual(1, result["before"]["posts"])
+        self.assertTrue(result["before"]["pending"])
+        self.assertEqual(1, result["posts"])
+        self.assertEqual(0, result["polls"])
+        self.assertTrue(result["pending"])
+        self.assertEqual("", result["top"])
+        self.assertIn("auth unavailable", result["status"])
+
+    def test_concurrent_stale_auth_restores_new_owner_pending_once(self):
+        result = self.runtime("concurrentStaleAuth")
+        self.assertEqual(["alice", "bob"], result["postAccounts"])
+        self.assertEqual(1, result["bobPosts"])
+        self.assertEqual(1, result["bobPolls"])
+        self.assertEqual("bob-own-key", result["postKeys"][1])
+        self.assertTrue(result["alicePending"])
+        self.assertFalse(result["bobPending"])
+        self.assertEqual("Bob 标题", result["top"])
+        self.assertEqual("/bob-own-video", result["src"])
+
     def test_foreground_resume_does_not_duplicate_inflight_requests(self):
         result = self.runtime("foregroundSingleFlight")
         self.assertEqual(1, result["postsWhileInflight"])
