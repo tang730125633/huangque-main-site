@@ -115,17 +115,28 @@ INTAKE_FIELDS = (
 )
 INTAKE_FIELD_SET = frozenset(INTAKE_FIELDS)
 INTAKE_COVERAGE_FIELDS = (
+    # 核心必问：基本信息 + 职业背景（其余字段由对应模块的 Skill 引导采集）
     "preferred_name", "gender", "age", "city", "mobile",
     "current_identity", "experience_years", "previous_work_experience",
-    "income_source", "income_range", "biggest_setback", "biggest_achievement",
-    "most_praised", "most_criticized", "core_skill_1", "core_skill_2",
-    "niche", "target_audience", "help_goal", "differentiation", "content_account",
-    "personality_traits", "tone_preference", "disliked_style", "content_habits",
-    "memorable_line", "self_intro", "trust_reason", "story_comeback",
-    "story_pitfall", "story_success", "story_unusual", "team_project_experience",
-    "business_goal", "time_budget", "offer", "three_month_goal", "one_year_goal",
-    "long_term_interest", "primary_platform", "desired_action",
+    "income_source", "income_range",
 )
+# 字段 → 模块归属（模块 1-4 + 商业；模块 Skill 引导时只问自己名下且未采集的字段）
+MODULE_FIELD_OWNERSHIP = {
+    1: ("biggest_setback", "biggest_achievement", "most_praised", "most_criticized",
+        "core_skill_1", "core_skill_2", "niche", "target_audience", "help_goal",
+        "differentiation", "content_account", "long_term_interest"),
+    2: ("personality_traits", "tone_preference", "disliked_style", "content_habits"),
+    3: ("memorable_line", "self_intro", "trust_reason"),
+    4: ("story_comeback", "story_pitfall", "story_success", "story_unusual",
+        "team_project_experience"),
+    5: ("business_goal", "time_budget", "offer", "primary_platform",
+        "desired_action", "three_month_goal", "one_year_goal"),
+}
+MODULE_OWNED_FIELDS = frozenset(
+    field for fields in MODULE_FIELD_OWNERSHIP.values() for field in fields
+)
+# intake 阶段真正要问的（核心必问 ∪ 用户已主动提到过的模块字段确认）
+# 保持 INTAKE_COVERAGE_FIELDS 名以兼容既有调用；语义上已瘦身。
 INTAKE_COVERAGE_LABELS = {
     "preferred_name": "姓名或昵称", "gender": "性别", "age": "年龄", "city": "所在城市",
     "mobile": "手机号（可跳过）", "current_identity": "当前职业或身份",
@@ -445,19 +456,17 @@ def _intake_has_core_profile(value, updates, evidence_text):
         for item in list(state["intake"].get("profile_updates") or []) + list(updates or [])
         if isinstance(item, dict)
     }
+    # 核心闸只查瘦身后的核心必问（基本信息 + 职业背景）；
+    # 兴趣/受众/技能/帮助目标由模块 1 的 Skill 引导采集。
     required_groups = (
         ("identity", "role", "current"),
         ("experience", "career", "work"),
-        ("interest",),
-        ("audience",),
+        ("income",),
     )
-    has_help_goal = any(
-        token in field for field in fields for token in ("goal", "benefit", "value", "help")
-    ) or re.search(r"(?:希望|想要|目标).{0,30}(?:帮助|让|解决|服务)", str(evidence_text or ""))
+    has_identity_meta = any(token in field for field in fields for token in ("name", "age", "city"))
     return (
         all(any(token in field for field in fields for token in group) for group in required_groups)
-        and sum("skill" in field for field in fields) >= 2
-        and bool(has_help_goal)
+        and bool(has_identity_meta)
     )
 
 
@@ -1199,6 +1208,10 @@ def available_actions(value):
             "label": "生成新的三个方案",
             "primary": True,
         }]
+    completed = set(state.get("completed_modules") or [])
+    if 6 in completed:
+        # 文案已确认：不弹生产入口，等客户明确表达生产意向（委派发生时）再随对话提供
+        return []
     return []
 
 
@@ -1231,6 +1244,15 @@ def shortcut_action(value, message):
         if index:
             item = next((item for item in choices if item["display_index"] == index), None)
             if item:
+                return {
+                    "type": item["type"], "target_id": item["target_id"],
+                    "choice_id": item["choice_id"],
+                }
+        # 标题原文精确匹配：用户消息里包含某个候选标题（服务端自己生成的结构化标题）
+        # 即视为明确选择该候选，不依赖模型二次解读。
+        for item in choices:
+            title = re.sub(r"[\s，,。.!！?？]+", "", str(item.get("title") or "")).lower()
+            if title and len(title) >= 4 and title in normalized:
                 return {
                     "type": item["type"], "target_id": item["target_id"],
                     "choice_id": item["choice_id"],
@@ -1785,7 +1807,14 @@ def validate_model_decision(
         ):
             raise HarnessError("模块 1 已有经历、能力、兴趣、目标人群和帮助目标，必须直接提炼候选关键词")
         if state["current_module"] == 2 and "1" in confirmed_modules:
-            raise HarnessError("模块 1 已确认，必须从已有经历、行为和价值观直接提炼人格候选")
+            # 模块 2 名下字段未齐时允许先采集（ask_follow_up），补齐后才必须直接提炼
+            module2_statuses = intake_field_statuses(state)
+            missing_module2 = [
+                field for field in MODULE_FIELD_OWNERSHIP[2]
+                if module2_statuses.get(field) == "unknown"
+            ]
+            if not missing_module2:
+                raise HarnessError("模块 1 已确认，必须从已有经历、行为和价值观直接提炼人格候选")
         if state["current_module"] == 3 and (
             {"1", "2"}.issubset(confirmed_modules)
             or (
@@ -2252,25 +2281,23 @@ def apply_intake_decision(value, raw, evidence_text, current_message=""):
         follow_up_topic = intake_follow_up_topic(decision["reply"])
         canonical_topic = INTAKE_TOPIC_TO_FIELD.get(follow_up_topic, follow_up_topic)
         asked_follow_ups = intake.setdefault("asked_follow_ups", [])
-        asked_canonical = {
-            INTAKE_TOPIC_TO_FIELD.get(topic, topic) for topic in asked_follow_ups
-        }
         if canonical_topic in intake.get("declined_fields", []):
             raise HarnessError("基础访谈追问了用户已经拒答的信息；请改问其他未回答项")
-        if follow_up_topic in asked_follow_ups:
-            if canonical_topic in coverage_gaps:
-                decision["reply"] = intake_natural_question(canonical_topic, clarifying=True)
-            else:
-                raise HarnessError("基础访谈重复追问了已经回答的信息；请改问其他未回答项")
-        if coverage_gaps and (not follow_up_topic or canonical_topic not in coverage_gaps):
-            remaining = [field for field in coverage_gaps if field not in asked_canonical]
-            if not remaining:
-                remaining = list(coverage_gaps)
-            canonical_topic = follow_up_topic = remaining[0]
-            decision["reply"] = intake_natural_question(canonical_topic)
+        # 只有「问已答项」这一种真错误才拦；模型措辞与话题一律保留，不做模板覆盖
+        if (
+            canonical_topic
+            and canonical_topic not in coverage_gaps
+            and INTAKE_TOPIC_TO_FIELD.get(follow_up_topic, follow_up_topic) in {
+                INTAKE_TOPIC_TO_FIELD.get(item, item) for item in asked_follow_ups
+            }
+        ):
+            raise HarnessError(
+                "你重复问了已经回答过的信息（%s）；先解释上一问的意思或换一种说法，"
+                "或推进到其他未覆盖项。" % INTAKE_COVERAGE_LABELS.get(canonical_topic, canonical_topic)
+            )
         if follow_up_topic and follow_up_topic not in asked_follow_ups:
             asked_follow_ups.append(follow_up_topic)
-        intake["current_question_field"] = canonical_topic
+        intake["current_question_field"] = canonical_topic or intake.get("current_question_field", "")
         if merged_updates:
             intake["profile_updates"] = list(merged_updates.values())
         if intake["status"] == "awaiting_confirmation":
@@ -2389,7 +2416,13 @@ def intake_system_prompt(value):
     ) or "无"
     return """你是黄雀 IP12 的中立访谈教练，正在自然地了解用户基础情况。
 
-必须覆盖《黄雀IP人设定位采集表》的全部项目，再补充两项核心能力、长期兴趣、主要平台和行动目标。年龄、性别、收入和手机号是敏感可选项：仍需自然询问一次，同时明说可以跳过，不得强迫；用户拒答、不知道或暂时没有时，记录为已跳过，不得再问。
+对话风格（像一位熟悉客户的真人顾问）：
+- 每轮先承接用户刚说的内容：一句话复述核心信息并带上你的理解，例如用户说「做了四年多，之前是外贸业务员」→「四年多，从外贸业务员到自己单干，这个跨度挺实在的。」；禁止干巴巴只说「记下了」「收到」。
+- 追问一次只问一件事，措辞像朋友聊天、结合上文自然带出；禁止用相同措辞重复问第二遍。
+- 用户问「比如说/什么意思/怎么答」时，先给 1-2 个具体例子再把问题问一遍；禁止原样重复问题。
+- 用户反问或质疑时，先承认问题，再说清你刚才问的是什么，然后换一种说法重新问。
+
+本阶段只负责核心基础项目：姓名/昵称、性别、年龄、城市、手机号、当前职业、从业年限、过往行业岗位、收入来源、收入区间。其余模块字段（挫折与成就经历、赛道、受众、性格风格、金句、故事等）由对应模块的 Skill 引导采集，本阶段不得提前追问。年龄、性别、收入和手机号是敏感可选项：仍需自然询问一次，同时明说可以跳过，不得强迫；用户拒答、不知道或暂时没有时，记录为已跳过，不得再问。
 
 当前已明确跳过：%s。
 当前尚未覆盖（必须继续问或由用户明确跳过）：%s。格式为“字段名=含义”，不自创同义字段。
@@ -2398,9 +2431,12 @@ def intake_system_prompt(value):
 - 接受任意顺序和自然表达；用户可一次说一项或多项，不要求固定格式，不把访谈做成选择题。
 - 先查看完整对话历史和当前待核对资料；已经回答、明确不知道或拒绝回答的内容不要重复追问。
 - 每个问题最多主动问一次；本轮只问一个尚未覆盖的项目，优先顺着用户刚说的内容自然穿插。
-- 用户没有正面回答时，不得猜测答案；只有明确说“跳过、不知道、暂时没有、不方便”才记为已跳过。
+- 用户没有正面回答时，不得猜测答案；只有明确表达跳过意图才记为已跳过（跳过的具体措辞由你按语义判断，不按固定关键词）。
+- 用户要求解释或澄清当前问题时（无论用什么措辞），要识别这是澄清请求而非跳过或已回答：用更简单直白的话把当前这同一个问题解释清楚后重新提问，profile_updates 不变，绝不推进到下一个问题。例如用户说「你还没问我是哪件事呢」，要先解释「我问的是你最近这份工作之前还做过什么」，再自然重问，而不是把上一句原样复制。
+- 无论何种情况，reply 都不得与最近一次提问的句子完全相同或几乎相同；必须换一种新的自然说法，或先回应/解释用户的疑问再问。
 - 只要尚有未覆盖项，decision=ask_follow_up，只问一个问题；不得生成核对稿。
 - 除核对稿和三选一候选外，reply 最多两句、约 35–70 个汉字；先简短承接本轮信息，再问一个问题，不罗列示例或重复已有资料。
+- 用户每提供一条新信息，reply 必须先明确复述确认这一条（哪怕半句），再问下一个缺失项；禁止不承接用户刚说的内容就跳去问下一个问题。
 - decision=ask_follow_up 时 checkpoint=0、draft 和 self_review 为空；可以把本轮已明确说出的用户事实或偏好放入 profile_updates，等待最终核对，绝不能宣布确认。
 - 用户在采集阶段提问时先直接回答；仍有未覆盖项时，同一条回复再只问一个缺失问题。
 - decision=answer_only 仅用于解释已经展示的待确认稿，或确实没有合适下一步的情况；不能让仍在采集或编辑中的访谈停在解释上。
@@ -2414,16 +2450,38 @@ def intake_system_prompt(value):
 
 
 def system_prompt(value):
+    style = """对话风格（像一位熟悉客户的真人顾问，参考以下质感）：
+- 每轮先承接用户刚说的内容：用一句话复述核心信息并带上你的理解，例如用户说「做了四年多，之前是外贸业务员」→「四年多，从外贸业务员到自己单干，这个跨度挺实在的。」；禁止干巴巴只说「记下了」「收到」。
+- 追问一次只问一件事，但措辞像朋友聊天、结合上文自然带出，例如「你做这行多久了？之前还做过哪些行业或岗位呢？」；禁止用相同措辞重复问第二遍。
+- 用户问「比如说/什么意思/怎么答」时，先给 1-2 个具体例子再把问题问一遍，例如「比如是教看配料表、拆解营销话术，还是分享实测数据？」；禁止原样重复问题。
+- 用户反问或质疑时，先承认问题，再说清你刚才问的是什么，然后换一种说法重新问。
+- 阶段收尾用自然过渡：「这部分我们聊清楚了，我来为你整理一下。」然后给出核对稿。"""
     state = normalize_state(value)
     module = state["current_module"]
     workflow = MODULE_WORKFLOWS[module]
     next_step = state["module_step"] + 1
+    # 模块 6 全部完成：主 Agent 主动推介黄雀 AI 生产能力（AIGC 委派入口）
+    module_six_done_note = ""
+    if module == 6:
+        module_six_done_note = (
+            "本次 IP 诊断已全部完成（定位、人设、价值、故事、选题、文案均已确认）。"
+            "此时你要做的是【基于结果的递进引导】，而不是一次性罗列能力清单：\n"
+            "- 用 production_content_agent 委派查清客户当前具备什么（数字人形象、音色），再决定问什么；\n"
+            "- 一次只提一个引导问题，按生产前置条件顺序：形象 → 音色 → 生成；\n"
+            "  引导形象时必须把查到的已有形象明确列成选项（如「用形象17」「用形象16」）再附创建选项；\n"
+            "  引导音色时同样列出可用音色供选择，再给克隆选项；\n"
+            "  都具备后，直接问「用形象X和音色Y，生成第一篇口播吗？」；\n"
+            "- 用户每回答一步，就基于新结果提下一个问题，直到生产提交；\n"
+            "- 用户确认要做时，使用 delegate + production_content_agent + production.delegate 委派；"
+            "子 Agent 负责真实报价与执行，你只转述结果；\n"
+            "- 客户拒绝时尊重，不反复推销。\n"
+        )
     if next_step > len(workflow["checkpoints"]):
         return f"""你是黄雀 IP12 的中立 IP 咨询教练，适用于任何职业和行业。
 
 当前模块：{module}. {workflow['name']}，已经确认完成。
 
-工作规则：
+{module_six_done_note}工作规则：
 - 只回答用户对已确认内容的复盘或解释，decision=answer_only，checkpoint=0，draft 和 profile_updates 为空。
 - 不重启模块，不宣布新的完成状态，不进入尚未开放的模块。
 - 不预设行业，不编造事实、案例、趋势或效果承诺。
@@ -2443,6 +2501,7 @@ def system_prompt(value):
         choice_rules = f"""
 - 当前是固定三选一断点。信息足够时 decision=propose_checkpoint、checkpoint=2，choices 必须恰好 {CHOICE_COUNT} 项，draft 和 profile_updates 必须为空。
 - 每项 choices 只含 title、summary、reason、caution、recommended；长度分别不超过 {CHOICE_FIELD_LIMITS['title']}、{CHOICE_FIELD_LIMITS['summary']}、{CHOICE_FIELD_LIMITS['reason']}、{CHOICE_FIELD_LIMITS['caution']} 个 Unicode 字符，标题不得重复，最多一项 recommended=true。
+- title 必须短：4–12 个字最佳，像「真实养猫避坑」「靠谱选品实战」这样的名词短语；超过 {CHOICE_FIELD_LIMITS['title']} 字会被直接拒绝，宁可牺牲修饰词也要短。
 - reply 只用一句话说明现在要选择什么，不在 reply 中重复三项内容，不替用户选择。"""
     story_rules = ""
     if module == 4:
@@ -2463,6 +2522,18 @@ def system_prompt(value):
         script_rules = """
 - 本断点只确认 3 篇口播共用的表达风格、单篇时长和行动目标，不提前写口播正文。
 - 用户没有明确指定其他时长时，默认单篇 60–90 秒、250–350 字；只有用户明确选择其他时长才覆盖默认值。"""
+    module_field_rules = ""
+    if module in MODULE_FIELD_OWNERSHIP:
+        statuses = intake_field_statuses(state)
+        missing = [
+            field for field in MODULE_FIELD_OWNERSHIP[module]
+            if statuses.get(field) == "unknown"
+        ]
+        if missing:
+            labels = "、".join(INTAKE_COVERAGE_LABELS.get(field, field) for field in missing)
+            module_field_rules = """
+- 本模块名下还有未采集字段：%s。进入本模块第一个断点之前，必须先自然采集这些缺失字段：decision=ask_follow_up、checkpoint=0，每轮只问一个，已采集或用户明确表达跳过意图的不得以任何说法重复追问；全部补齐后才能 propose_checkpoint。
+- 用户要求解释或澄清当前问题时（措辞不限），要识别这是澄清请求而非跳过：把当前这同一个字段用更简单直白的话解释清楚后重新提问，profile_updates 不变，绝不换下一个字段。""" % labels
     return f"""你是黄雀 IP12 的中立 IP 咨询教练，适用于任何职业和行业。
 
 当前模块：{module}. {workflow['name']}
@@ -2470,6 +2541,7 @@ def system_prompt(value):
 本模块所需资料：{workflow['required']}
 {editing_note}
 
+{style}
 工作规则：
 - 每轮只处理当前断点，禁止输出后续断点、宣布模块完成或切换模块。
 - 接受用户任意顺序、一次一项或多项的自然表达，不要求固定格式，不把访谈做成选择题。
@@ -2480,6 +2552,7 @@ def system_prompt(value):
 - 用户只是在提问或跑题时 decision=answer_only，checkpoint=0，draft、self_review 和 profile_updates 都为空。
 - 非固定三选一断点信息足够时 decision=propose_checkpoint，draft 只包含当前断点的完整可确认内容，profile_updates 必须是当前断点的完整最新快照。
 {choice_rules}
+{module_field_rules}
 {story_rules}
 {commercial_rules}
 {script_rules}

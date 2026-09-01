@@ -96,21 +96,36 @@ def _confirmed_outputs(profile):
 
 
 def _productions(project):
+    raw = project.get("productions") or {}
+    if isinstance(raw, list):
+        # 委派链路写回的是 list（{job_id, phase, video_url, audio_url}），先归一化
+        records = []
+        for item in raw:
+            if isinstance(item, dict):
+                records.append(item)
+    elif isinstance(raw, dict):
+        records = list(raw.values())
+    else:
+        records = []
     result = []
-    for record in (project.get("productions") or {}).values():
+    for record in records:
         if not isinstance(record, dict):
             continue
         specialist = record.get("specialist_agent") if isinstance(record.get("specialist_agent"), dict) else {}
         quote = record.get("quote") if isinstance(record.get("quote"), dict) else {}
         result.append({
             "production_id": _text(record.get("id"), 100),
+            "job_id": _text(record.get("job_id"), 100),
             "action": _text(record.get("action"), 100),
             "family": _text(record.get("capability_family"), 40),
-            "status": _text(record.get("status"), 60),
+            "status": _text(record.get("status") or record.get("phase"), 60),
             "created_at": _text(record.get("created_at"), 40),
             "updated_at": _text(record.get("updated_at"), 40),
             "job_present": bool(record.get("job_id")),
             "confirmation_present": bool(record.get("confirmation_id")),
+            "video_url": _text(record.get("video_url"), 400),
+            "audio_url": _text(record.get("audio_url"), 400),
+            "title": _text(record.get("title"), 120),
             "selected_fields": sorted(str(key) for key, value in (record.get("options") or {}).items()
                                       if value not in (None, "", [], {})),
             "quote": {
@@ -178,6 +193,33 @@ def _active_skill_id(project, state):
     return ""
 
 
+def _confirmed_scripts(project):
+    """模块 6 交付的已确认口播文案（供生产委派引用）。"""
+    out = []
+    d6 = project.get("deliverables") if isinstance(project.get("deliverables"), dict) else {}
+    d6 = d6.get("6") if isinstance(d6, dict) else None
+    d6 = d6 if isinstance(d6, dict) else {}
+    for cat in (d6.get("categories") or [])[:6]:
+        if not isinstance(cat, dict):
+            continue
+        for tp in (cat.get("topics") or [])[:8]:
+            if not isinstance(tp, dict):
+                continue
+            versions = tp.get("versions") or []
+            content = ""
+            if versions and isinstance(versions[-1], dict):
+                content = str(versions[-1].get("content") or "")[:600]
+            out.append({
+                "index": len(out) + 1,
+                "title": str(tp.get("title") or "")[:120],
+                "topic_id": str(tp.get("id") or "")[:100],
+                "content": content,
+            })
+            if len(out) >= 6:
+                return out
+    return out
+
+
 def build(project, state, capability_gates=None):
     """Build a compact snapshot from one already-authorized Project."""
     project = project if isinstance(project, dict) else {}
@@ -212,6 +254,7 @@ def build(project, state, capability_gates=None):
         "facts": _fact_map(profile.get("facts")),
         "preferences": _fact_map(profile.get("preferences")),
         "confirmed_outputs": _confirmed_outputs(profile),
+        "confirmed_scripts": _confirmed_scripts(project),
         "content_topics": _content_topics(project),
         "active_content_target": _content_target(project),
         "voice_clone": {
@@ -222,6 +265,11 @@ def build(project, state, capability_gates=None):
         "available_assets": _available_assets(active, voice_ui),
         "productions": productions,
         "active_production": copy.deepcopy(active),
+        "pending_delegate": {
+            "present": bool(project.get("pending_production_delegate")),
+            "cost": (project.get("pending_production_delegate") or {}).get("cost")
+            if isinstance(project.get("pending_production_delegate"), dict) else None,
+        },
         "active_agent_run": {
             key: _text((active_run or {}).get(key), 200)
             for key in ("agent_id", "status", "awaiting", "next_action")

@@ -124,6 +124,9 @@ def decorate_prompt(base_prompt, state):
         str(base_prompt or "")
         + "\n\n当前 Skill 合同：%s@%s，Prompt=%s。"
           "Skill 只提出结构化候选，不得推进状态、确认用户选择或生成 PDF。"
+          "\npending_collected 是本模块已经收集但尚未确认的内容："
+          "已覆盖的字段不得重复追问，要推进到仍未覆盖的项目；"
+          "用户要例子或问「什么意思」时，先用具体例子解释你在问什么，再自然重问。"
         % (spec.skill_id, spec.contract_version, spec.prompt_version or "none")
     )
 
@@ -139,11 +142,21 @@ def confirmed_input_projection(state):
         clean.pop("choice_snapshot", None)
         clean.pop("report_payload", None)
         outputs[str(key)] = clean
+    # 当前模块 pending 中已收集但未确认的内容（模型必须看到，避免重复追问已答项）
+    pending = (state or {}).get("pending") if isinstance(state, dict) else None
+    pending_collected = {}
+    for item in ((pending or {}).get("profile_updates") or []):
+        if isinstance(item, dict) and item.get("field"):
+            pending_collected[str(item["field"])] = {
+                "value": str(item.get("value") or "")[:80],
+                "evidence_quote": str(item.get("evidence_quote") or "")[:120],
+            }
     return {
         "facts": deepcopy(profile.get("facts") or {}),
         "preferences": deepcopy(profile.get("preferences") or {}),
         "confirmed_outputs": outputs,
         "completed_modules": list((state or {}).get("completed_modules") or []),
+        "pending_collected": pending_collected,
     }
 
 
