@@ -599,6 +599,7 @@ _CH_DECRYPT_API = os.environ.get("CH_DECRYPT_API", "http://127.0.0.1:3001/api/de
 _CH_REFERER = "https://channels.weixin.qq.com/"
 _CH_DOWNLOAD_ATTEMPTS = 3
 _CH_DOWNLOAD_RETRY_DELAYS = (0.8, 2.0)
+_CH_DECRYPT_TIMEOUT = 180
 
 
 def _channels_download_error_kind(error):
@@ -632,33 +633,94 @@ def _channels_download_host(play_url):
     except Exception:
         return "unknown"
 
-def _ch_download_decrypt(play_url, decode_key, dest_path, deadline_ts, max_bytes=100_000_000):
-    """视频号：下载 encfilekey 加密流(带微信 Referer) → 调 :3001 Isaac64 解密 → 落盘可播 mp4。
-    play_url = url+urlToken；decode_key = media.decodeKey。成功返回 dest_path。"""
-    fd, enc = tempfile.mkstemp(suffix=".enc", prefix="hqch-"); os.close(fd)
-    try:
-        remain = deadline_ts - time.time()
-        if remain <= 0:
-            raise TimeoutError("下载预算已耗尽")
-        req = urllib.request.Request(play_url, headers={"User-Agent": UA, "Referer": _CH_REFERER})
-        got = 0
-        with _OPENER.open(req, timeout=min(30, remain)) as r, open(enc, "wb") as f:
-            while True:
+def _ch_set_response_timeout(response, timeout):
+    """Bind one socket read to the remaining absolute download budget."""
+    stream = getattr(response, "fp", None)
+    raw = getattr(stream, "raw", None)
+    sock = getattr(raw, "_sock", None)
+    if sock is not None and hasattr(sock, "settimeout"):
+        sock.settimeout(max(0.001, float(timeout)))
+
+
+def _ch_download_encrypted(play_url, dest_path, deadline_ts,
+                           max_bytes=100_000_000):
+    """Download one signed encrypted stream; never decrypt or run ASR."""
+    remain = deadline_ts - time.time()
+    if remain <= 0:
+        raise TimeoutError("下载预算已耗尽")
+    req = urllib.request.Request(
+        play_url, headers={"User-Agent": UA, "Referer": _CH_REFERER}
+    )
+    got = 0
+    with _OPENER.open(req, timeout=min(30, remain)) as response, \
+            open(dest_path, "wb") as output:
+        read_chunk = getattr(response, "read1", None)
+        if not callable(read_chunk):
+            read_chunk = response.read
+        while True:
+            remain = deadline_ts - time.time()
+            if remain <= 0:
+                raise TimeoutError(
+                    "视频号下载超预算（已下 %.1fMB）" % (got / 1048576.0)
+                )
+            _ch_set_response_timeout(response, remain)
+            try:
+                block = read_chunk(64 * 1024)
+            except (TimeoutError, OSError) as exc:
                 if time.time() >= deadline_ts:
-                    raise TimeoutError("视频号下载超预算（已下 %.1fMB）" % (got / 1048576.0))
-                block = r.read(262144)
-                if not block:
-                    break
-                got += len(block)
-                if got > max_bytes:
-                    raise ValueError("视频号文件超上限 %.0fMB" % (max_bytes / 1048576.0))
-                f.write(block)
-        p = subprocess.run(["curl", "-sS", "-X", "POST", _CH_DECRYPT_API,
-                            "-F", "decode_key=" + str(decode_key), "-F", "video=@" + enc, "-o", dest_path],
-                           capture_output=True, timeout=180)
-        if p.returncode != 0 or not os.path.exists(dest_path) or not os.path.getsize(dest_path):
-            raise ChannelsDecryptError("视频号文件解密失败：" + (p.stderr[-120:].decode("u8", "ignore") if p.stderr else "空输出"))
-        return dest_path
+                    raise TimeoutError(
+                        "视频号下载超预算（已下 %.1fMB）" %
+                        (got / 1048576.0)
+                    ) from exc
+                raise
+            if time.time() >= deadline_ts:
+                raise TimeoutError(
+                    "视频号下载超预算（已下 %.1fMB）" % (got / 1048576.0)
+                )
+            if not block:
+                break
+            got += len(block)
+            if got > max_bytes:
+                raise ValueError(
+                    "视频号文件超上限 %.0fMB" % (max_bytes / 1048576.0)
+                )
+            output.write(block)
+    return dest_path
+
+
+def _ch_decrypt_file(enc_path, decode_key, dest_path):
+    """Decrypt one completed download exactly once under its own timeout."""
+    try:
+        result = subprocess.run(
+            ["curl", "-sS", "-X", "POST", _CH_DECRYPT_API,
+             "-F", "decode_key=" + str(decode_key),
+             "-F", "video=@" + enc_path, "-o", dest_path],
+            capture_output=True, timeout=_CH_DECRYPT_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        raise ChannelsDecryptError(
+            "视频号文件解密超时（%ss）" % _CH_DECRYPT_TIMEOUT
+        ) from None
+    if (result.returncode != 0 or not os.path.exists(dest_path)
+            or not os.path.getsize(dest_path)):
+        detail = (
+            result.stderr[-120:].decode("u8", "ignore")
+            if result.stderr else "空输出"
+        )
+        raise ChannelsDecryptError("视频号文件解密失败：" + detail)
+    return dest_path
+
+
+def _ch_download_decrypt(play_url, decode_key, dest_path, deadline_ts,
+                         max_bytes=100_000_000):
+    """Backward-compatible one-shot helper; transcript keeps retries download-only."""
+    fd, enc = tempfile.mkstemp(suffix=".enc", prefix="hqch-")
+    os.close(fd)
+    try:
+        _ch_download_encrypted(
+            play_url, enc, deadline_ts, max_bytes=max_bytes
+        )
+        return _ch_decrypt_file(enc, decode_key, dest_path)
     finally:
         try: os.unlink(enc)
         except OSError: pass
@@ -1073,6 +1135,7 @@ def transcript(det, video_path=None):
         pu, dk = current.get("play_url"), str(current.get("decode_key") or "")
         if not pu or not dk:
             return None  # 不完整 media（缺播放地址/解密密钥）→ 放弃 ASR，不报错
+        fd, enc = tempfile.mkstemp(suffix=".enc", prefix="hqch-"); os.close(fd)
         fd, dec = tempfile.mkstemp(suffix=".mp4", prefix="hqchdec-"); os.close(fd)
         try:
             deadline = time.time() + ASR_DL_DEADLINE
@@ -1083,11 +1146,9 @@ def transcript(det, video_path=None):
                 if not pu or not dk:
                     raise ChannelsDownloadError("视频号下载地址或解密密钥已失效，请重新提交分享链接")
                 try:
-                    _ch_download_decrypt(pu, dk, dec, deadline)
+                    _ch_download_encrypted(pu, enc, deadline)
                     last_error = None
                     break
-                except ChannelsDecryptError:
-                    raise
                 except Exception as e:
                     last_error = e
                     kind = _channels_download_error_kind(e)
@@ -1121,12 +1182,15 @@ def transcript(det, video_path=None):
                 if deadline - time.time() <= 0:
                     raise ChannelsDownloadError("视频号文件下载超时，系统自动恢复后仍未成功，请稍后再试") from last_error
                 raise ChannelsDownloadError("视频号文件下载连接中断，系统自动恢复后仍未成功，请稍后再试") from last_error
+            _ch_decrypt_file(enc, dk, dec)
             return {"text": _whisper(dec), "source": "asr"}
         except (ChannelsDownloadError, ChannelsDecryptError):
             raise
         except Exception as e:
             raise TikHubError("视频号语音识别失败：" + str(e)[:120])
         finally:
+            try: os.unlink(enc)
+            except OSError: pass
             try: os.unlink(dec)
             except OSError: pass
     if det.get("subtitle_url"):  # 小红书视频笔记白送逐字稿

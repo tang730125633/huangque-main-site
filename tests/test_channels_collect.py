@@ -42,7 +42,8 @@ class TranscriptTests(unittest.TestCase):
         """视频号不再一刀切 return None，改为下载→解密→whisper。"""
         block = SRC[SRC.index('if det.get("platform") == "channels":'):]
         block = block[:block.index("if det.get(\"subtitle_url\")")]
-        self.assertIn("_ch_download_decrypt", block)
+        self.assertIn("_ch_download_encrypted", block)
+        self.assertIn("_ch_decrypt_file", block)
         self.assertIn("_whisper(", block)
         # 仍保留「缺播放地址/密钥 → None」的安全兜底
         self.assertIn("return None", block)
