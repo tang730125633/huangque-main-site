@@ -607,6 +607,112 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         ))
         resolve_call.assert_called_once()
 
+    def test_semantic_failure_falls_back_to_generation_owned_layout(self):
+        template = next(
+            item for item in self.reference_templates()
+            if item.get("variant") == "v02"
+        )
+        rejected = {
+            "version": 1, "model": "gpt-4.1-mini",
+            "source_sha256": "a" * 64, "top1_end": 1,
+            "top_break_after": [1], "bottom_break_after": [],
+        }
+        requests = []
+
+        def preflight(_method, _path, body, **_kwargs):
+            requests.append(dict(body))
+            if "semantic_layout" in body:
+                raise self.module.MatrixTemplateHTTPError(
+                    400, "HyperFrames 顶部语义断点拆开了完整词组",
+                )
+            return {"payload": dict(body, duration=11)}
+
+        def resolve(_top, _bottom, _template_id, _contract, validator):
+            accepted, feedback = validator(rejected)
+            self.assertFalse(accepted)
+            self.assertIn("语义断点", feedback)
+            raise RuntimeError("AI 语义排版经两次修复后仍未通过真实字体校验")
+
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(
+                 self.module, "public_templates", return_value=[template],
+             ), mock.patch.object(
+                 self.module.matrix_template_semantics, "resolve",
+                 side_effect=resolve,
+             ), mock.patch.object(
+                 self.module, "_request", side_effect=preflight,
+             ):
+            result = self.module.validate_payload({
+                "top_text": "团队8个人，每天产出100条短视频",
+                "bottom_text": "评论区扣888",
+                "template_id": template["id"],
+                "bgm": False,
+            })
+
+        self.assertEqual(2, len(requests))
+        self.assertIn("semantic_layout", requests[0])
+        self.assertNotIn("semantic_layout", requests[1])
+        self.assertNotIn("semantic_layout", result)
+        self.assertEqual(11, result["duration"])
+
+    def test_semantic_fallback_keeps_generation_failure_closed(self):
+        from content_domains import feature_flags
+
+        template = next(
+            item for item in self.reference_templates()
+            if item.get("variant") == "v02"
+        )
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(
+                 self.module, "public_templates", return_value=[template],
+             ), mock.patch.object(
+                 self.module.matrix_template_semantics, "resolve",
+                 side_effect=RuntimeError("AI 语义排版服务连接失败"),
+             ), mock.patch.object(
+                 self.module, "_request",
+                 side_effect=self.module.MatrixTemplateHTTPError(
+                     503, "generation unavailable",
+                 ),
+             ), self.assertRaises(feature_flags.FeatureDisabled):
+            self.module.validate_payload({
+                "top_text": "团队8个人，每天产出100条短视频",
+                "bottom_text": "评论区扣888",
+                "template_id": template["id"],
+                "bgm": False,
+            })
+
+    def test_semantic_connection_failure_uses_generation_owned_layout(self):
+        template = next(
+            item for item in self.reference_templates()
+            if item.get("variant") == "v02"
+        )
+        requests = []
+
+        def preflight(_method, _path, body, **_kwargs):
+            requests.append(dict(body))
+            return {"payload": dict(body, duration=12)}
+
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(
+                 self.module, "public_templates", return_value=[template],
+             ), mock.patch.object(
+                 self.module.matrix_template_semantics, "resolve",
+                 side_effect=RuntimeError("AI 语义排版服务连接失败"),
+             ), mock.patch.object(
+                 self.module, "_request", side_effect=preflight,
+             ):
+            result = self.module.validate_payload({
+                "top_text": "团队8个人，每天产出100条短视频",
+                "bottom_text": "评论区扣888",
+                "template_id": template["id"],
+                "bgm": False,
+            })
+
+        self.assertEqual(1, len(requests))
+        self.assertNotIn("semantic_layout", requests[0])
+        self.assertNotIn("semantic_layout", result)
+        self.assertEqual(12, result["duration"])
+
     def test_v05_without_contract_keeps_legacy_preflight(self):
         template = next(
             item for item in self.reference_templates(("v02",))
