@@ -16,6 +16,35 @@ content_out/ 鍑哄浘鐩綍(鏂囦欢鐢?content_api 鐨?/api/gen/file 鏈�
 """
 import os, json, time, base64, threading, queue, sqlite3, pathlib, urllib.request, urllib.error, io
 from contextlib import closing
+
+# 出站代理：服务器在大陆，Google/OpenAI 直连不可达（Errno 101）。
+# urllib 在 Linux 只认小写 http_proxy/https_proxy，环境文件里是大写 HTTPS_PROXY，
+# 因此显式安装 ProxyHandler（尊重 NO_PROXY），保证所有 urlopen 走隧道出站。
+def _install_egress_proxy():
+    proxy = (os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
+             or os.environ.get("https_proxy") or os.environ.get("http_proxy") or "").strip()
+    if not proxy:
+        return
+    no_proxy = set(
+        item.strip() for item in
+        (os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or "localhost,127.0.0.1").split(",")
+        if item.strip()
+    )
+
+    class _SmartProxyHandler(urllib.request.ProxyHandler):
+        def proxy_open(self, req, proxy, type):
+            host = str(getattr(req, "host", "") or "")
+            if any(host == item or host.endswith("." + item) for item in no_proxy):
+                return None
+            return super().proxy_open(req, proxy, type)
+
+    opener = urllib.request.build_opener(
+        _SmartProxyHandler({"http": proxy, "https": proxy})
+    )
+    urllib.request.install_opener(opener)
+
+
+_install_egress_proxy()
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
