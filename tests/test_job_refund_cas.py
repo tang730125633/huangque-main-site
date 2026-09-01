@@ -400,6 +400,58 @@ class JobRefundCasTests(unittest.TestCase):
         self.assertEqual(1, self._row(job_id)["refunded"])
         self.assertEqual(1, len(self.refunds))
 
+    def test_matrix_generic_reaper_waits_past_configured_total_timeout(self):
+        from content_domains import matrix_template_video
+
+        now = int(time.time())
+        job_id = self._insert(5, kind="matrix_template_video", payload={
+            "template_id": "native-bold",
+            "_matrix_runtime": {"phase": "submission_unknown"},
+        })
+        with closing(self.core.jdb()) as connection:
+            connection.execute(
+                "UPDATE jobs SET created_at=?,updated_at=? WHERE id=?",
+                (now - 1600, now - 1600, job_id),
+            )
+            connection.commit()
+
+        points_domain = self.core._domains()[1]
+
+        class FakeVideo:
+            @staticmethod
+            def retry_pending_seedance_cleanups(**_kwargs):
+                return None
+
+        with mock.patch.object(
+            matrix_template_video, "TOTAL_TIMEOUT", 1800,
+        ), mock.patch.object(
+            self.core, "_domains",
+            return_value=(None, points_domain, FakeVideo),
+        ), mock.patch.object(
+            self.core.pixelle_talking_assets, "cleanup_expired",
+        ), mock.patch.object(
+            self.core.time, "time", return_value=now,
+        ), mock.patch.object(
+            self.core.time, "sleep", side_effect=StopIteration,
+        ):
+            self.assertEqual(
+                2100,
+                self.core._kind_reaper_grace("matrix_template_video"),
+            )
+            with self.assertRaises(StopIteration):
+                self.core.reaper()
+
+        self.assertEqual("running", self._row(job_id)["status"])
+        self.assertEqual([], self.refunds)
+        with mock.patch.object(
+            matrix_template_video, "TOTAL_TIMEOUT", 1800,
+        ):
+            self.assertEqual(
+                1, self.core._expire_matrix_template_jobs(now=now + 201)
+            )
+        self.assertEqual("error", self._row(job_id)["status"])
+        self.assertEqual(1, len(self.refunds))
+
     def test_reclaim_keeps_unknown_official_submission_running(self):
         jid = self._insert(90, kind="xiaole_video")
         points_domain = self.core._domains()[1]

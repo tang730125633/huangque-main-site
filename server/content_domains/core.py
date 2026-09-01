@@ -525,7 +525,7 @@ KIND_GRACE = {"tryon": 2400, "xiaole_video": 1200, "sora_video": 1500, "image": 
               "short_drama_sound_effect": 900,
               "short_drama_preview": 1800, "short_drama_final": 3600,
               "short_drama_remux": 600,
-              "script_to_video": 1200, "matrix_template_video": 1500,
+              "script_to_video": 1200,
               "canvas_agent": 300}
 # ⚠️ tryon 【不】跟着 15 分钟走：线上实测线路一中位 909s、**p90 1612s(27 分钟)**。
 #    砍到 15 分钟会把超过一成的换装任务判成失败。要改它得先把那条链路本身提速。
@@ -1643,6 +1643,13 @@ def _start_job_heartbeat(job_id):
     return stop.set
 
 
+def _kind_reaper_grace(kind):
+    if kind == "matrix_template_video":
+        from . import matrix_template_video as matrix_template_domain
+        return int(matrix_template_domain.TOTAL_TIMEOUT) + 300
+    return KIND_GRACE.get(kind, KIND_GRACE_DEFAULT)
+
+
 def run_job(job_id):
     with closing(jdb()) as c:
         r = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
@@ -1918,7 +1925,7 @@ def reaper():
                 # 直接按 360s 的 cutoff 把任务杀掉。也就是说：一个新 kind 忘了在 KIND_GRACE 里
                 # 登记，它就只有 6 分钟寿命。（audio/copy/leads/dl 至今都不在表里，只是它们跑得快，
                 # 够不着 6 分钟才没出事 —— 这是个潜伏雷。）
-                grace = KIND_GRACE.get(r["kind"], KIND_GRACE_DEFAULT)
+                grace = _kind_reaper_grace(r["kind"])
                 if r["kind"] == "video":
                     # 口播/动作模仿统一到 VIDEO_REAPER_GRACE。原「motion 40 分钟/口播 9 分钟」两套数：
                     # motion 40 分钟是当年必回退泽龙(20~37 分钟)时定的，去线路化走 WaveSpeed 后已不需要；
