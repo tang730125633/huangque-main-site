@@ -739,7 +739,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         resolve.assert_not_called()
         self.assertNotIn("semantic_layout", result)
 
-    def test_v02_http_200_normalization_is_repaired_once_for_concurrent_batch(self):
+    def test_v02_http_200_normalization_is_accepted_once_for_concurrent_batch(self):
         template = next(
             item for item in self.reference_templates()
             if item.get("variant") == "v02"
@@ -756,14 +756,13 @@ class MatrixTemplateVideoTests(unittest.TestCase):
 
         def generated(_top, _bottom, _contract, *, previous=None,
                       feedback=""):
-            return repaired if previous is not None and feedback else first
+            self.assertIsNone(previous)
+            self.assertFalse(feedback)
+            return first
 
         def preflight(_method, _path, body, **_kwargs):
             semantic = body["semantic_layout"]
-            echoed = (
-                dict(semantic, top_break_after=[])
-                if semantic == first else semantic
-            )
+            echoed = repaired if semantic == first else semantic
             return {
                 "payload": dict(body, semantic_layout=echoed, duration=11),
             }
@@ -797,7 +796,111 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                 self.assertTrue(all(
                     item["semantic_layout"] == repaired for item in results
                 ))
-                self.assertEqual(2, generate.call_count)
+                self.assertEqual(1, generate.call_count)
+
+    def test_semantic_normalization_rejects_critical_or_expanded_changes(self):
+        template = next(
+            item for item in self.reference_templates()
+            if item.get("variant") == "v02"
+        )
+        top = "覆盖3.5万人，每天交流项目"
+        bottom = "评论区扣111"
+        first = {
+            "version": 1, "model": "gpt-4.1-mini",
+            "source_sha256": "b" * 64, "top1_end": top.index("，"),
+            "top_break_after": [3, top.index("，")],
+            "bottom_break_after": [],
+        }
+        repaired = dict(first, top_break_after=[top.index("，")])
+        tampered_values = {
+            "top1_end": dict(repaired, top1_end=len(top) - 1),
+            "expanded_breaks": dict(
+                repaired,
+                top_break_after=[top.index("，"), len(top) - 2],
+            ),
+        }
+
+        for label, tampered in tampered_values.items():
+            def generated(_top, _bottom, _contract, *, previous=None,
+                          feedback=""):
+                return repaired if previous is not None and feedback else first
+
+            def preflight(_method, _path, body, **_kwargs):
+                semantic = body["semantic_layout"]
+                echoed = tampered if semantic == first else semantic
+                return {
+                    "payload": dict(
+                        body, semantic_layout=echoed, duration=11,
+                    ),
+                }
+
+            self.module.matrix_template_semantics._CACHE.clear()
+            with self.subTest(label=label), \
+                 mock.patch.object(self.module, "require_available"), \
+                 mock.patch.object(
+                     self.module, "public_templates", return_value=[template],
+                 ), mock.patch.object(
+                     self.module.matrix_template_semantics, "generate",
+                     side_effect=generated,
+                 ) as generate, mock.patch.object(
+                     self.module, "_request", side_effect=preflight,
+                 ):
+                result = self.module.validate_payload({
+                    "top_text": top, "bottom_text": bottom,
+                    "template_id": template["id"], "bgm": False,
+                }, "alice")
+
+            self.assertEqual(repaired, result["semantic_layout"])
+            self.assertEqual(2, generate.call_count)
+
+    def test_v01_whitespace_boundary_cleanup_keeps_ai_layout(self):
+        template = next(
+            item for item in self.reference_templates()
+            if item.get("variant") == "v01"
+        )
+        top = (
+            "我是大鹏 陕西西安人 在广州有个创业圈子 "
+            "资源共享|大健康|AI矩阵社交破圈|一人公司"
+        )
+        bottom = "PL区扣888"
+        first = {
+            "version": 1, "model": "gpt-4.1-mini",
+            "source_sha256": self.module.matrix_template_semantics._source_sha256(
+                top, bottom,
+            ), "top1_end": 10,
+            "top_break_after": [4, 9, 10, 20, 25, 29, 38],
+            "bottom_break_after": [],
+        }
+        normalized = dict(
+            first, top_break_after=[4, 10, 20, 25, 29, 38],
+        )
+
+        def preflight(_method, _path, body, **_kwargs):
+            return {
+                "payload": dict(
+                    body, semantic_layout=normalized, duration=14,
+                ),
+            }
+
+        self.module.matrix_template_semantics._CACHE.clear()
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(
+                 self.module, "public_templates", return_value=[template],
+             ), mock.patch.object(
+                 self.module.matrix_template_semantics, "generate",
+                 return_value=first,
+             ) as generate, mock.patch.object(
+                 self.module, "_request", side_effect=preflight,
+             ):
+            result = self.module.validate_payload({
+                "top_text": top, "bottom_text": bottom,
+                "template_id": template["id"], "bgm": True,
+            }, "yuanzhi")
+
+        self.assertEqual(normalized, result["semantic_layout"])
+        self.assertNotIn(9, result["semantic_layout"]["top_break_after"])
+        self.assertIn(38, result["semantic_layout"]["top_break_after"])
+        self.assertEqual(1, generate.call_count)
 
     def test_generation_url_allows_https_or_loopback_only(self):
         for value in (
