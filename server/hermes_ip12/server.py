@@ -4197,10 +4197,14 @@ def api_ip12_production_delegate_confirm():
     base = str(os.environ.get("HQ_TOOL_AGENT_BASE") or "http://127.0.0.1:8790").rstrip("/")
     try:
         # 用工具层确认端点直接执行（带报价时的 quote_token）
+        _client_token = _ensure_client_hq_token(current_account_id())
+        _exec_body = {"tool": saved_tool, "params": saved_params,
+                      "quote_token": quote_token, "session_id": tool_sid}
+        if _client_token:
+            _exec_body["hq_token"] = _client_token
         response = _requests.post(
             base + "/agent/execute",
-            json={"tool": saved_tool, "params": saved_params,
-                  "quote_token": quote_token, "session_id": tool_sid},
+            json=_exec_body,
             timeout=300,
         )
         result = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
@@ -4486,6 +4490,28 @@ def _save_hq_account_tokens():
         os.chmod(_HQ_ACCOUNT_TOKENS_DIR / "tokens.json", 0o600)
     except Exception:
         pass
+
+
+def _ensure_client_hq_token(account_id):
+    """确保客户自己的 hq 授权 token：优先缓存，过期/缺失时用请求 Cookie 自动授权。"""
+    try:
+        from flask import request as _req
+        _cookies = _req.headers.get("Cookie", "")
+        _parts = dict(p.split("=", 1) for p in _cookies.split(";") if "=" in p)
+        _session_cookie = (_parts.get(" hq_session") or _parts.get("hq_session") or "").strip()
+        _load_hq_account_tokens()
+        _entry = _HQ_ACCOUNT_TOKENS.get(account_id or "")
+        if _entry and int(_entry.get("expires_at") or 0) - int(time.time()) > 3600:
+            return _entry["token"]
+        if not _session_cookie:
+            return ""
+        _fresh = _authorize_hq_for_cookie(_session_cookie)
+        _HQ_ACCOUNT_TOKENS[account_id or "x"] = _fresh
+        _save_hq_account_tokens()
+        return _fresh["token"]
+    except Exception as exc:
+        app.logger.warning("IP12 client hq token ensure failed: %s", exc)
+        return ""
 
 
 def _authorize_hq_for_cookie(hq_session_cookie):
@@ -8236,29 +8262,9 @@ def _process_production_delegate_turn(cid, user_message, decision, memory,
     if tool_sid:
         payload["session_id"] = tool_sid
     # 客户自己的 hq 授权（扣客户自己的点）：从请求 Cookie 自动续期/换 token
-    try:
-        from flask import g as _g, request as _req
-        _client_token = getattr(_g, "hq_client_token", "")
-        if not _client_token:
-            _cookies = _req.headers.get("Cookie", "")
-            _parts = dict(p.split("=", 1) for p in _cookies.split(";") if "=" in p)
-            _session_cookie = _parts.get(" hq_session") or _parts.get("hq_session") or ""
-            if _session_cookie:
-                _entry = _HQ_ACCOUNT_TOKENS.get(current_account_id() or "")
-                if _entry and int(_entry.get("expires_at") or 0) - int(time.time()) > 3600:
-                    _client_token = _entry["token"]
-                else:
-                    try:
-                        _fresh = _authorize_hq_for_cookie(_session_cookie.strip())
-                        _HQ_ACCOUNT_TOKENS[current_account_id() or "x"] = _fresh
-                        _save_hq_account_tokens()
-                        _client_token = _fresh["token"]
-                    except Exception:
-                        _client_token = ""
-        if _client_token:
-            payload["hq_token"] = _client_token
-    except Exception:
-        pass
+    _client_token = _ensure_client_hq_token(current_account_id())
+    if _client_token:
+        payload["hq_token"] = _client_token
     req2 = urllib.request.Request(
         base + "/agent",
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
