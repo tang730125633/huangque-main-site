@@ -5863,6 +5863,17 @@ class H(BaseHTTPRequestHandler):
                 "board_owner_username": board["owner_username"],
                 "role": role,
             })
+        if p == "/api/auth/session/cli-token":
+            # 客户登录态(hq_session)直接换 CLI token：一步完成，无需 device 授权。
+            # IP12 服务端用它给客户生成时提供 CLI 凭证（扣客户自己的点）。
+            row = self._cookie_user()
+            if not row:
+                return self._cli_send(401, {"detail": "请先登录黄雀账号"})
+            tok = issue_token(row["username"], ttl=8 * 3600, scope="account")
+            return self._cli_send(200, {
+                "access_token": tok, "expires_in": 8 * 3600,
+                "username": row["username"],
+            })
         if p == "/api/auth/cli/device/start":
             if self._content_length_exceeds(8192):
                 return self._cli_send(413, {"detail": "请求过大"})
