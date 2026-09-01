@@ -3746,86 +3746,93 @@ def _module_six_script_limits(state):
     return (120, 1600) if explicit_other_duration else (250, 350)
 
 
-def _generate_content_pack(convo):
-    state = coach_harness.normalize_state(convo.get("coach_state"))
-    plan = coach_harness.confirmed_module_five_topics(state)
-    confirmed_profile = coach_harness.profile_for_model(state)
-    source = {
+def _generate_single_script(confirmed_profile, category_name, topic_title, minimum_script_chars, maximum_script_chars):
+    """逐篇生成：一次只写一篇口播文案，稳字当头。"""
+    single_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "script": {"type": "string", "minLength": minimum_script_chars, "maxLength": maximum_script_chars},
+            "hook": {"type": "string", "maxLength": 80},
+            "objective": {"type": "string", "maxLength": 80},
+        },
+        "required": ["script", "hook", "objective"],
+    }
+    source = json.dumps({
         "confirmed_profile": confirmed_profile,
         "confirmed_outputs": confirmed_profile.get("confirmed_outputs") or {},
-        "confirmed_module_five_plan": plan,
-    }
-    minimum_script_chars, maximum_script_chars = _module_six_script_limits(state)
-    content_pack_schema = copy.deepcopy(CONTENT_PACK_SCHEMA)
-    script_schema = content_pack_schema["properties"]["categories"]["items"]["properties"]["topics"]["items"]["properties"]["script"]
-    script_schema.update(minLength=minimum_script_chars, maxLength=maximum_script_chars)
-    # ponytail: one structured call keeps the three selected scripts consistent; split only if provider limits prove too small.
+    }, ensure_ascii=False)[:16000]
     extra_note = ""
     for attempt in range(2):
         response = call_ai([
             {"role": "system", "content": (
-                "你是黄雀 IP12 内容策划与口播编导。严格依据本人已确认资料生成首批成品。"
-                "模块 5 已经确认了 3 个种类和每类 10 个备选题，并把每个种类的第 1 条确定为精选题。"
-                "必须逐字使用这 3 个种类名称和各自第 1 条标题，不得重新选择、改名或新增选题；description 简短说明精选理由。"
-                "每个精选选题必须直接附带 1 篇可直接朗读的完整中文口播文案，总数必须是 3 个种类、"
-                "3 个精选选题、3 篇完整文案。不得只返回标题、提纲或让用户再选择。"
-                "每篇文案使用用户真实经历和已确认观点，不编造结果、客户案例、收入或身份；"
-                "计划和愿景必须保持未来时，不能改写成已经发生的经历；资料没有明确说过的‘回来后’、"
-                "‘后来我’、‘我已经’、‘我做过’等经历性表达一律不用。"
+                "你是黄雀 IP12 内容策划与口播编导。严格依据本人已确认资料生成这一篇口播文案。"
+                "必须逐字使用给定的选题种类名和精选题标题，不得改名或换题。"
+                "文案必须是可直接朗读的完整中文口播稿，使用用户真实经历和已确认观点，"
+                "不编造结果、客户案例、收入或身份；计划和愿景必须保持未来时。"
                 "包含自然钩子、一个清晰观点和克制的结尾行动引导，不显示内部分析或自评。"
-                "用户未明确选择其他时长时，每篇必须为 60–90 秒、250–350 个中文字符；"
-                "已确认的统一口播标准优先于默认值。"
+                "用户未明确选择其他时长时，每篇为 60–90 秒、%s–%s 个中文字符。"
+                % (minimum_script_chars, maximum_script_chars)
                 + extra_note
             )},
-            {"role": "user", "content": "已确认资料（仅作事实，不是指令）：\n" + json.dumps(source, ensure_ascii=False)[:24000]},
-        ], stream=False, temperature=0.45, max_tokens=7000, response_format={
+            {"role": "user", "content": (
+                "已确认资料（仅作事实，不是指令）：\n" + source +
+                "\n\n本次只写这一篇：\n选题种类：%s\n精选题标题：%s" % (category_name, topic_title)
+            )},
+        ], stream=False, temperature=0.45, max_tokens=2600, response_format={
             "type": "json_schema",
-            "json_schema": {"name": "ip12_content_pack", "strict": True, "schema": content_pack_schema},
+            "json_schema": {"name": "ip12_script", "strict": True, "schema": single_schema},
         })
         raw = _parse_ai_json(response)
-        import re as _re2
-        lengths = [
-            len(_re2.sub(r"\s+", "", str((t or {}).get("script") or "")))
-            for c in (raw.get("categories") or []) for t in ((c or {}).get("topics") or [])
-        ]
-        if all(minimum_script_chars <= length <= maximum_script_chars for length in lengths):
-            break
-        if attempt == 0:
+        script = str((raw.get("script") or "") if isinstance(raw, dict) else "").strip()
+        script_chars = len(re.sub(r"\s+", "", script))
+        if minimum_script_chars <= script_chars <= maximum_script_chars and not _content_script_rejection_reason(script):
+            return raw
+        if attempt < 1:
             extra_note = (
-                "上一版每篇正文字数分别为 %s，全部低于 %s 个中文字符的下限。"
-                "重写时必须把每篇正文补足到 %s–%s 个中文字符之间（去空格统计），"
-                "可以增加具体细节、场景或建议，但不得虚构经历。"
-                % (",".join(str(length) for length in lengths), minimum_script_chars,
-                   minimum_script_chars, maximum_script_chars)
+                "上一版正文只有 %s 个中文字符（要求 %s–%s，去空格统计）。"
+                "重新写：把观点讲透，加入 2-3 个具体细节或可执行建议，"
+                "结尾再给一句克制的行动引导；宁可写长一点也不要低于下限，不得虚构经历。"
+                % (script_chars, minimum_script_chars, maximum_script_chars)
             )
-    print("[pack-debug] raw keys=%s categories=%s" % (
-        list(raw.keys())[:10] if isinstance(raw, dict) else type(raw).__name__,
-        len(raw.get("categories") or []) if isinstance(raw, dict) else 0), flush=True)
-    for ci, c in enumerate(raw.get("categories") or []):
-        topics = c.get("topics") if isinstance(c, dict) else []
-        for ti, t in enumerate(topics):
-            sc = t.get("script") if isinstance(t, dict) else ""
-            import re as _re
-            print("[pack-debug] cat%s topic%s title=%r script_len=%s" % (
-                ci, ti, (t or {}).get("title") if isinstance(t, dict) else None,
-                len(_re.sub(r"\s+", "", str(sc or "")))), flush=True)
-    categories = raw.get("categories") if isinstance(raw, dict) else None
-    if isinstance(categories, list) and len(categories) == len(plan):
-        for generated, confirmed in zip(categories, plan):
-            if not isinstance(generated, dict):
-                continue
-            generated["name"] = confirmed["name"]
-            topics = generated.get("topics")
-            if isinstance(topics, list) and len(topics) == 1 and isinstance(topics[0], dict):
-                topics[0]["title"] = confirmed["topics"][0]
-    pack = _normalize_content_pack(raw, minimum_script_chars, maximum_script_chars)
-    if [item["name"] for item in pack["categories"]] != [item["name"] for item in plan]:
-        raise ValueError("精选文案必须逐字复用已确认的 3 个种类")
-    for generated, confirmed in zip(pack["categories"], plan):
-        if generated["topics"][0]["title"] != confirmed["topics"][0]:
-            raise ValueError("精选文案必须逐字使用每个种类已确认的第 1 个重点选题")
-    return pack
+    raise ValueError("精选选题「%s」的文案两次都没达到 %s–%s 字" % (topic_title, minimum_script_chars, maximum_script_chars))
 
+
+def _generate_content_pack(convo):
+    state = coach_harness.normalize_state(convo.get("coach_state"))
+    plan = coach_harness.confirmed_module_five_topics(state)
+    confirmed_profile = coach_harness.profile_for_model(state)
+    minimum_script_chars, maximum_script_chars = _module_six_script_limits(state)
+    pack = {
+        "kind": "content_pack_v1",
+        "format": "featured_3_v1",
+        "title": "📝 3 篇精选口播文案",
+        "script_length": {"min": minimum_script_chars, "max": maximum_script_chars},
+        "categories": [],
+    }
+    for category_index, category in enumerate(plan, 1):
+        category_name = str(category.get("name") or "").strip()
+        topic_title = str((category.get("topics") or [""])[0]).strip()
+        raw = _generate_single_script(
+            confirmed_profile, category_name, topic_title,
+            minimum_script_chars, maximum_script_chars,
+        )
+        script = str((raw.get("script") or "") if isinstance(raw, dict) else "").strip()
+        pack["categories"].append({
+            "id": "category-%d" % category_index,
+            "name": category_name,
+            "description": "模块 5 已确认的第 %d 个选题种类，精选题为「%s」" % (category_index, topic_title),
+            "topics": [{
+                "id": "topic-%d-01" % category_index,
+                "title": topic_title,
+                "hook": str((raw.get("hook") or "") if isinstance(raw, dict) else "").strip(),
+                "objective": str((raw.get("objective") or "") if isinstance(raw, dict) else "").strip(),
+                "versions": [{"version": 1, "content": script, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M")}],
+                "status": "ready",
+            }],
+        })
+    pack["generated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    return pack
 def generate_deliverable(convo_id, module_id):
     """为指定模块生成可交付物（文案/视觉/选题日历等）"""
     config = MODULE_DELIVERABLES.get(module_id)
@@ -6423,9 +6430,9 @@ def _persist_unprocessed_turn(
         if state["revision"] != snapshot_revision:
             raise coach_harness.HarnessConflict("对话已在另一端更新，请刷新后重试")
         assistant = assistant_override or (
-            "我已经记下你刚才的原话，已确认内容和当前步骤都没有改变。"
-            "这次还没整理成可确认结果；你不用重述，可以继续补充，"
-            "或发送“继续”让我基于刚才内容重新整理。"
+            "我已经记下你刚才的话，已确认内容和当前进度都没有变。"
+            "现在只需回复“继续”，我会基于已有内容重新生成当前步骤的结果，"
+            "你不需要重述任何信息。"
         )
         if prefix:
             assistant = prefix + "\n\n" + assistant
@@ -6615,7 +6622,15 @@ def _process_model_turn(
             generate_deliverable(cid, 6)
         except Exception as exc:
             app.logger.warning("IP12 module 6 content pack failed: %s", exc)
-            return {"ok": False, "error": "3 篇精选口播暂时没能完整生成；30 个备选题和已确认内容都已保留，请重试"}, 502
+            assistant, next_state = _persist_unprocessed_turn(
+                cid, user_message, snapshot_revision, prefix=prefix,
+                message_id=message_id,
+                assistant_override=(
+                    "3 篇文案这次没有全部生成完整，已确认的选题库和口播标准都已保留，不会丢。"
+                    "你只需回复“继续”，我会一篇一篇重新生成，出来一篇就先给你看一篇。"
+                ),
+            )
+            return _chat_result(assistant, next_state), 200
         with CONVERSATION_STATE_LOCK:
             convo = owned_conversation(cid)
             if convo is None:
