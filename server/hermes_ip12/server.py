@@ -4280,7 +4280,8 @@ def _finalize_production_result(cid, job_id, client_token=""):
             inner = task.get("result") if isinstance(task.get("result"), dict) else {}
             video_url = str(inner.get("video_url") or "")
             audio_url = str(inner.get("audio_url") or "")
-            if not video_url and not audio_url:
+            image_url = str(inner.get("image_url") or "")
+            if not video_url and not audio_url and not image_url:
                 return
             # 自动挑一张封面（工具层抽帧评分，不扣点），失败不影响交付
             cover_url = ""
@@ -4302,11 +4303,14 @@ def _finalize_production_result(cid, job_id, client_token=""):
                 "script_to_video": "文案成片",
                 "matrix": "模板成片",
                 "video": "数字人口播",
+                "image": "图片",
+                "collect": "视频采集",
+                "collect_video": "视频采集",
             }.get(_kind, "成品")
             text = "✅ %s已生成，下方可直接观看。" % _kind_label
             msg_meta = {"components": ["video_player"],
                         "video_url": video_url, "audio_url": audio_url,
-                        "cover_url": cover_url}
+                        "cover_url": cover_url, "image_url": image_url}
         else:
             text = "❌ 生成失败：" + str(task.get("error") or "未知错误")[:200]
             msg_meta = {}
