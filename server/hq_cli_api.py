@@ -403,7 +403,7 @@ _MEDIA_SCHEMAS = {
     "image-generate": {
         "required": ["prompt"], "properties": {
             "prompt": {"type": "string", "minLength": 1, "maxLength": 2000},
-            "provider": {"type": "string", "enum": ["openai", "xiaole", "seedream", "banana"]},
+            "provider": {"type": "string", "enum": ["openai", "xiaole", "seedream", "banana", "grok"]},
             "ratio": {"type": "string", "enum": ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]},
             "quality": {"type": "string", "enum": ["std", "hd"]},
             "count": {"type": "integer", "minimum": 1, "maximum": 4},
