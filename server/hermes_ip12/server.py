@@ -8198,31 +8198,23 @@ def _process_semantic_reply(cid, user_message, decision, expected_revision=None,
         _assert_expected_revision(state, expected_revision)
         snapshot_revision = state["revision"]
         assistant = _semantic_customer_reply(convo, decision.get("reply"))
-    message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
-    assistant, next_state = _persist_unprocessed_turn(
-        cid, user_message, snapshot_revision, message_id=message_id,
-        assistant_override=assistant,
-        skills=["semantic_master_agent"],
-        memory_updates=project_memory.validated_preference_updates(decision, user_message),
-    )
-    result = _chat_result(assistant, next_state)
     # 模型语义决策里声明的交互组件 → 透传给前端（结构化信号，无文本猜测）
     components = decision.get("components")
+    public_components = []
     if isinstance(components, list) and components:
-        result["components"] = [c for c in components if c in {
+        public_components = [c for c in components if c in {
             "voice_audition", "avatar_cards", "production_guide", "video_player", "text_video_prep"}]
     # video_player：链接由系统从产物记录填充（回复文本不暴露 URL，只渲染播放器）。
-    # 用户问「做了哪些视频」时把全部 done 产物渲染出来，不做半吊子。
-    if "video_player" in (result.get("components") or []):
+    media_items = []
+    if "video_player" in public_components:
         with CONVERSATION_STATE_LOCK:
             _mc = owned_conversation(cid)
-        media_items = []
         _refs = decision.get("references") if isinstance(decision.get("references"), dict) else {}
         _ref_pid = str(_refs.get("production_id") or "")
         _done = [
             rec for rec in _production_records(_mc or {})
             if str(rec.get("status") or rec.get("phase") or "") == "done"
-            and (rec.get("video_url") or rec.get("audio_url"))
+            and (rec.get("video_url") or rec.get("audio_url") or rec.get("image_url"))
         ]
         if _ref_pid:
             _done = [rec for rec in _done if str(rec.get("job_id") or rec.get("id") or "") == _ref_pid] or _done
@@ -8232,11 +8224,35 @@ def _process_semantic_reply(cid, user_message, decision, expected_revision=None,
                 "video_url": rec.get("video_url") or "",
                 "audio_url": rec.get("audio_url") or "",
                 "cover_url": rec.get("cover_url") or "",
+                "image_url": rec.get("image_url") or "",
                 "title": rec.get("title") or "",
                 "kind_label": rec.get("kind_label") or "",
             })
-        if media_items:
-            result["media"] = media_items
+    # 消息持久化时把成品媒体写进 meta（刷新页面后依然渲染）
+    assistant_extra = {}
+    if media_items:
+        first = media_items[0]
+        assistant_extra["meta"] = {
+            "components": ["video_player"],
+            "video_url": first.get("video_url") or "",
+            "audio_url": first.get("audio_url") or "",
+            "cover_url": first.get("cover_url") or "",
+            "image_url": first.get("image_url") or "",
+            "title": first.get("title") or "",
+        }
+    message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
+    assistant, next_state = _persist_unprocessed_turn(
+        cid, user_message, snapshot_revision, message_id=message_id,
+        assistant_override=assistant,
+        skills=["semantic_master_agent"],
+        memory_updates=project_memory.validated_preference_updates(decision, user_message),
+        assistant_extra=assistant_extra,
+    )
+    result = _chat_result(assistant, next_state)
+    if public_components:
+        result["components"] = public_components
+    if media_items:
+        result["media"] = media_items
     return result, 200
 
 
