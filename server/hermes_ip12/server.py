@@ -4457,6 +4457,97 @@ def api_ip12_text_video_options():
         return jsonify({"ok": False, "error": str(exc)[:120]}), 502
 
 
+_HQ_ACCOUNT_TOKENS = {}  # account_id -> {"token","expires_at"}
+_HQ_ACCOUNT_TOKENS_DIR = pathlib.Path(tempfile.gettempdir()) / "ip12-hq-tokens"
+
+
+def _load_hq_account_tokens():
+    global _HQ_ACCOUNT_TOKENS
+    try:
+        path = _HQ_ACCOUNT_TOKENS_DIR / "tokens.json"
+        if path.exists():
+            _HQ_ACCOUNT_TOKENS = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+
+
+def _save_hq_account_tokens():
+    try:
+        _HQ_ACCOUNT_TOKENS_DIR.mkdir(parents=True, exist_ok=True)
+        (_HQ_ACCOUNT_TOKENS_DIR / "tokens.json").write_text(
+            json.dumps(_HQ_ACCOUNT_TOKENS, ensure_ascii=False), encoding="utf-8")
+        os.chmod(_HQ_ACCOUNT_TOKENS_DIR / "tokens.json", 0o600)
+    except Exception:
+        pass
+
+
+def _authorize_hq_for_cookie(hq_session_cookie):
+    """用客户的网页登录 Cookie 自动完成 hq 设备授权（客户无感知），返回 CLI token。"""
+    import requests as _rq
+    site = "https://huangquechuanmei.com"
+    scopes = [
+        "profile:read", "ip12:read", "ip12:write", "ip12:chat", "prompt:optimize",
+        "canvas:read", "canvas:write", "canvas:agent", "canvas:edit", "tasks:read",
+        "assets:read", "assets:write", "assets:upload", "generation:quote",
+        "generation:submit", "video-compose:read", "video-compose:write",
+        "digital-presenter:read", "digital-presenter:write", "inspiration:read",
+        "inspiration:write", "leads:read", "leads:write", "short-drama:read",
+    ]
+    headers = {"Cookie": "hq_session=%s" % hq_session_cookie, "Origin": site}
+    start = _rq.post(site + "/api/auth/cli/device/start",
+                     json={"client_name": "ip12-agent", "requested_scopes": scopes}, timeout=30)
+    start.raise_for_status()
+    start = start.json()
+    device_code, user_code = start.get("device_code"), start.get("user_code")
+    if not device_code or not user_code:
+        raise RuntimeError("device/start 异常")
+    _rq.post(site + "/api/auth/cli/device/approve",
+             json={"user_code": user_code, "approve": True}, headers=headers, timeout=30).raise_for_status()
+    for _ in range(20):
+        poll = _rq.post(site + "/api/auth/cli/device/poll",
+                        json={"device_code": device_code}, timeout=15)
+        poll.raise_for_status()
+        poll = poll.json()
+        if poll.get("access_token"):
+            return {
+                "token": poll["access_token"],
+                "expires_at": int(time.time()) + int(poll.get("expires_in", 8 * 3600)),
+            }
+        if poll.get("code") in ("authorization_pending", "slow_down"):
+            time.sleep(2)
+            continue
+        raise RuntimeError("device/poll 异常")
+    raise RuntimeError("device/poll 超时")
+
+
+@app.route("/api/ip12/hq-token", methods=["POST"])
+def api_ip12_hq_token():
+    """客户 hq 授权：用客户网页登录 Cookie 自动续期/换 token（无感知）。
+    返回 {token, expires_at}，供工具层按客户身份调用 hq。"""
+    payload = request.get_json(silent=True) or {}
+    account_id = str(payload.get("account_id") or current_account_id() or "")
+    hq_session = ""
+    cookies = request.headers.get("Cookie", "")
+    for part in cookies.split(";"):
+        part = part.strip()
+        if part.startswith("hq_session="):
+            hq_session = part.split("=", 1)[1].strip()
+            break
+    _load_hq_account_tokens()
+    entry = _HQ_ACCOUNT_TOKENS.get(account_id)
+    if entry and int(entry.get("expires_at") or 0) - int(time.time()) > 3600:
+        return jsonify({"ok": True, "token": entry["token"], "expires_at": entry["expires_at"]})
+    if not hq_session:
+        return jsonify({"ok": False, "error": "未检测到黄雀登录态，请重新登录黄雀后再试"}), 401
+    try:
+        fresh = _authorize_hq_for_cookie(hq_session)
+        _HQ_ACCOUNT_TOKENS[account_id] = fresh
+        _save_hq_account_tokens()
+        return jsonify({"ok": True, "token": fresh["token"], "expires_at": fresh["expires_at"]})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": "自动授权失败：" + str(exc)[:150]}), 502
+
+
 @app.route("/api/ip12/matrix-template-options", methods=["GET"])
 def api_ip12_matrix_template_options():
     """模板成片准备材料（代理工具层）。"""
@@ -8129,6 +8220,30 @@ def _process_production_delegate_turn(cid, user_message, decision, memory,
     payload = {"message": str(user_message or "")[:2000]}
     if tool_sid:
         payload["session_id"] = tool_sid
+    # 客户自己的 hq 授权（扣客户自己的点）：从请求 Cookie 自动续期/换 token
+    try:
+        from flask import g as _g, request as _req
+        _client_token = getattr(_g, "hq_client_token", "")
+        if not _client_token:
+            _cookies = _req.headers.get("Cookie", "")
+            _parts = dict(p.split("=", 1) for p in _cookies.split(";") if "=" in p)
+            _session_cookie = _parts.get(" hq_session") or _parts.get("hq_session") or ""
+            if _session_cookie:
+                _entry = _HQ_ACCOUNT_TOKENS.get(current_account_id() or "")
+                if _entry and int(_entry.get("expires_at") or 0) - int(time.time()) > 3600:
+                    _client_token = _entry["token"]
+                else:
+                    try:
+                        _fresh = _authorize_hq_for_cookie(_session_cookie.strip())
+                        _HQ_ACCOUNT_TOKENS[current_account_id() or "x"] = _fresh
+                        _save_hq_account_tokens()
+                        _client_token = _fresh["token"]
+                    except Exception:
+                        _client_token = ""
+        if _client_token:
+            payload["hq_token"] = _client_token
+    except Exception:
+        pass
     req2 = urllib.request.Request(
         base + "/agent",
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
