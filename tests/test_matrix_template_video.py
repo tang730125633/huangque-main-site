@@ -1253,6 +1253,15 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual(2, result["polls"])
         self.assertTrue(result["cleared"])
 
+    def test_repeated_poll_failures_keep_recovering_without_customer_click(self):
+        result = self.runtime("pollRecoveryBeyondFive")
+        self.assertEqual(1, result["before"]["polls"])
+        self.assertFalse(result["before"]["cleared"])
+        self.assertEqual(7, result["polls"])
+        self.assertEqual("/poll-recovered-video", result["src"])
+        self.assertNotIn("点击生成", result["status"])
+        self.assertTrue(result["cleared"])
+
     def test_completed_single_result_loads_into_right_player_immediately(self):
         result = self.runtime("instantResult")
         self.assertEqual("/instant-video", result["src"])
@@ -1295,34 +1304,40 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual(1, result["loads"])
         self.assertTrue(result["cleared"])
 
-    def test_uncertain_submission_requires_explicit_retry(self):
-        result = self.runtime("uncertainExplicitRetry")
-        for phase in ("afterLoad", "afterFocus", "afterVisibility"):
-            self.assertEqual(0, result[phase]["posts"])
-            self.assertIn("点击生成确认重试", result[phase]["status"])
-            self.assertNotIn("867 秒", result[phase]["status"])
-            self.assertNotIn("正在提交", result[phase]["status"])
-        self.assertEqual(1, result["afterClick"]["posts"])
+    def test_uncertain_submission_recovers_without_customer_click(self):
+        result = self.runtime("uncertainAutoRecovery")
+        self.assertEqual(1, result["afterLoad"]["posts"])
+        self.assertIn("正在自动确认提交结果", result["afterLoad"]["status"])
+        self.assertIn("不会重复扣点", result["afterLoad"]["status"])
+        self.assertNotIn("867 秒", result["afterLoad"]["status"])
+        self.assertTrue(result["afterLoad"]["busy"])
+        self.assertEqual(5, result["posts"])
         self.assertEqual(
-            "matrix-template-stable-retry-key",
-            result["afterClick"]["key"],
+            ["matrix-template-stable-retry-key"] * 5,
+            result["keys"],
         )
-        self.assertIn("0 秒", result["afterClick"]["status"])
-        self.assertNotIn("867 秒", result["afterClick"]["status"])
+        self.assertNotIn("点击生成确认重试", result["status"])
+        self.assertEqual("/auto-recovered-video", result["src"])
+        self.assertTrue(result["cleared"])
 
-    def test_stale_unaccepted_submission_is_normalized_before_restore(self):
-        result = self.runtime("staleSubmittingExplicitRetry")
-        for phase in ("afterLoad", "afterFocus", "afterVisibility"):
-            self.assertEqual(0, result[phase]["posts"])
-            self.assertIn("点击生成确认重试", result[phase]["status"])
-            self.assertNotIn("生成中", result[phase]["status"])
-        self.assertEqual(1, result["afterClick"]["posts"])
+    def test_stale_unaccepted_submission_recovers_without_customer_click(self):
+        result = self.runtime("staleSubmittingAutoRecovery")
+        self.assertEqual(1, result["posts"])
         self.assertEqual(
             "matrix-template-stale-retry-key",
-            result["afterClick"]["key"],
+            result["key"],
         )
-        self.assertIn("0 秒", result["afterClick"]["status"])
-        self.assertNotIn("120 秒", result["afterClick"]["status"])
+        self.assertEqual("/stale-recovered-video", result["src"])
+        self.assertNotIn("点击生成", result["status"])
+        self.assertTrue(result["cleared"])
+
+    def test_pending_submission_is_never_replayed_for_another_account(self):
+        result = self.runtime("crossAccountPending")
+        self.assertEqual(0, result["posts"])
+        self.assertEqual(0, result["polls"])
+        self.assertTrue(result["aliceRetained"])
+        self.assertTrue(result["ownerlessRemoved"])
+        self.assertEqual("", result["top"])
 
     def test_result_video_retries_media_load_without_page_refresh(self):
         result = self.runtime("mediaRetry")
