@@ -335,6 +335,9 @@ assert.ok(!source.includes("setTimeout(function(){resolve(accepted());},1500)"))
 assert.ok(!source.includes("private_domain_video:'/workbench/private-domain-video.html'"));
 assert.ok(digitalHumanPage.includes('src="script-agent.js?'));
 assert.ok(digitalHumanPage.includes('data-director-guide-contract="digital-human-oneclick-guide-v1"'));
+assert.equal(agent.retainProductionOfferAfterError({status:402,data:{code:'insufficient_points'}}), true);
+assert.equal(agent.retainProductionOfferAfterError({status:400,data:{code:'director_offer_expired'}}), false);
+assert.equal(agent.retainProductionOfferAfterError({status:409,data:{code:'director_offer_refreshed'}}), false);
 for(const id of ['photoDrop','voiceUploadDrop','customerMaterialsPicker','driveAudioDrop']) {
   assert.ok(digitalHumanPage.includes('id="'+id+'"'));
 }

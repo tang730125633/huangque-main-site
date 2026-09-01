@@ -374,6 +374,10 @@
     if(state&&state.pending_request&&state.pending_request.job_id) return 'request';
     return '';
   }
+  function retainProductionOfferAfterError(error){
+    var code=String(error&&error.data&&error.data.code||'');
+    return Number(error&&error.status)===402||code==='insufficient_points';
+  }
   function readState(storage,key){
     try{
       var value=JSON.parse(storage.getItem(key||STORAGE_KEY)||'null');
@@ -658,7 +662,10 @@
           state.production_offer=validProductionOffer(state.production_offer);
           persist(); addMessage('assistant','生成价格已更新为 '+error.priceChanged+' 点，没有扣点。请核对后再点击确认生产。');
         }else{
-          if(error.terminal) state.pending_production=null;
+          if(error.terminal){
+            state.pending_production=null;
+            if(!retainProductionOfferAfterError(error)) state.production_offer=null;
+          }
           persist(); addMessage('error',error.message||'编导生产失败，请稍后重试');
           status.textContent=state.pending_production?'原生产单已保留，不会自动重提；请检查后手动重试。':'';
           if(state.pending_production) showRecovery('production');
@@ -737,6 +744,7 @@
     attachFilesToPage:attachFilesToPage,pollJob:pollJob,
     validPendingRequest:validPendingRequest,createPendingRequest:createPendingRequest,
     validProductionOffer:validProductionOffer,validPendingProduction:validPendingProduction,autoResumeKind:autoResumeKind,
+    retainProductionOfferAfterError:retainProductionOfferAfterError,
     readState:readState,saveState:saveState,readUnifiedState:readUnifiedState,resumeRequest:resumeRequest,resumeProduction:resumeProduction,
     formatScriptResult:formatScriptResult,
     bootstrap:bootstrap,mount:mount,routes:ROUTES};

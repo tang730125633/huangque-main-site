@@ -61,6 +61,15 @@ OFFER_TTL_SECONDS = max(
     60, min(3600, _env_positive_int("DIRECTOR_AGENT_OFFER_TTL_SECONDS", 900))
 )
 
+
+class DirectorOfferError(ValueError):
+    """A terminal customer-confirmation error safe to return to the browser."""
+
+    def __init__(self, message, code="director_offer_invalid", status=400):
+        super().__init__(message)
+        self.code = code
+        self.status = status
+
 SCRIPT_MODES = {"write", "script_to_video", "breakdown"}
 DIGITAL_HUMAN_MODES = {"photo", "video"}
 DIGITAL_HUMAN_GUIDE_CONTRACT = "digital-human-oneclick-guide-v1"
@@ -510,40 +519,74 @@ def _issue_production_offer(db_factory, username, offer, page_revision, now=None
     return issued
 
 
-def _verify_production_offer(db_factory, username, offer_id, cli_input,
-                             expected_cost, plan_digest, quote_token, now=None):
-    """Require the exact server-issued offer before any CLI quote or submit."""
-    stamp = int(time.time() if now is None else now)
+def _claim_production_offer(connection, username, offer_id, cli_input,
+                            expected_cost, plan_digest, quote_token, stamp,
+                            before_attempt_insert=None):
+    """Validate the offer and create its durable attempt in one transaction."""
     input_hash = hashlib.sha256(_canonical(cli_input).encode("utf-8")).hexdigest()
-    connection = db_factory()
-    try:
-        _ensure_offer_table(connection)
-        row = connection.execute(
-            "SELECT * FROM director_agent_offers WHERE username=? AND offer_id=?",
+    request_json = _canonical(cli_input)
+    _ensure_offer_table(connection)
+    _ensure_production_table(connection)
+    offer = connection.execute(
+        "SELECT * FROM director_agent_offers WHERE username=? AND offer_id=?",
+        (username, offer_id),
+    ).fetchone()
+    if (not offer or offer["plan_digest"] != plan_digest
+            or offer["input_hash"] != input_hash
+            or int(offer["expected_cost"]) != int(expected_cost)
+            or not secrets.compare_digest(
+                str(offer["token_hash"]), _token_hash(quote_token))):
+        raise DirectorOfferError(
+            "生产确认单不是服务器签发或内容已经变化",
+            "director_offer_invalid",
+        )
+    attempt = connection.execute(
+        "SELECT * FROM director_cli_productions WHERE username=? AND offer_id=?",
+        (username, offer_id),
+    ).fetchone()
+    if attempt and attempt["request_hash"] != input_hash:
+        raise DirectorOfferError(
+            "同一生产单不能用于不同内容",
+            "production_idempotency_conflict", 409,
+        )
+    if (int(offer["expires_at"]) <= stamp
+            and (not offer["confirmed_at"] or not attempt)):
+        raise DirectorOfferError(
+            "生产确认单已过期，请重新让编导助手报价",
+            "director_offer_expired",
+        )
+    if not attempt:
+        connection.execute(
+            """UPDATE director_agent_offers SET confirmed_at=?,updated_at=?
+               WHERE username=? AND offer_id=? AND token_hash=?""",
+            (stamp, stamp, username, offer_id, offer["token_hash"]),
+        )
+        if before_attempt_insert is not None:
+            before_attempt_insert()
+        connection.execute(
+            """INSERT INTO director_cli_productions(
+               username,offer_id,request_hash,input_json,expected_cost,
+               state,created_at,updated_at
+               ) VALUES(?,?,?,?,?,'preparing',?,?)""",
+            (username, offer_id, input_hash, request_json,
+             expected_cost, stamp, stamp),
+        )
+        attempt = connection.execute(
+            "SELECT * FROM director_cli_productions WHERE username=? AND offer_id=?",
             (username, offer_id),
         ).fetchone()
-        if (not row or row["plan_digest"] != plan_digest
-                or row["input_hash"] != input_hash
-                or int(row["expected_cost"]) != int(expected_cost)
-                or not secrets.compare_digest(
-                    str(row["token_hash"]), _token_hash(quote_token))):
-            raise ValueError("生产确认单不是服务器签发或内容已经变化")
-        if int(row["expires_at"]) <= stamp and not row["confirmed_at"]:
-            raise ValueError("生产确认单已过期，请重新让编导助手报价")
-        if not row["confirmed_at"]:
-            connection.execute(
-                """UPDATE director_agent_offers SET confirmed_at=?,updated_at=?
-                   WHERE username=? AND offer_id=? AND token_hash=?""",
-                (stamp, stamp, username, offer_id, row["token_hash"]),
-            )
-            connection.commit()
-        return row
-    finally:
-        connection.close()
+    elif not offer["confirmed_at"]:
+        connection.execute(
+            """UPDATE director_agent_offers SET confirmed_at=?,updated_at=?
+               WHERE username=? AND offer_id=? AND token_hash=?""",
+            (stamp, stamp, username, offer_id, offer["token_hash"]),
+        )
+    return attempt
 
 
 def _rotate_production_offer(db_factory, username, offer_id, plan_digest,
-                             cli_input, expected_cost, now=None):
+                             cli_input, expected_cost, old_quote_token,
+                             now=None):
     """Bind a price-change response to a fresh customer confirmation token."""
     stamp = int(time.time() if now is None else now)
     token = secrets.token_urlsafe(32)
@@ -555,13 +598,18 @@ def _rotate_production_offer(db_factory, username, offer_id, plan_digest,
         cursor = connection.execute(
             """UPDATE director_agent_offers
                SET expected_cost=?,token_hash=?,expires_at=?,confirmed_at=NULL,updated_at=?
-               WHERE username=? AND offer_id=? AND plan_digest=? AND input_hash=?""",
+               WHERE username=? AND offer_id=? AND plan_digest=? AND input_hash=?
+                 AND token_hash=?""",
             (int(expected_cost), _token_hash(token), expires_at, stamp,
-             username, offer_id, plan_digest, input_hash),
+             username, offer_id, plan_digest, input_hash,
+             _token_hash(old_quote_token)),
         )
         if cursor.rowcount != 1:
             connection.rollback()
-            raise ValueError("生产确认单已经失效，请重新让编导助手报价")
+            raise DirectorOfferError(
+                "生产确认单已被另一个请求刷新，请使用最新确认单",
+                "director_offer_refreshed", 409,
+            )
         connection.commit()
     finally:
         connection.close()
@@ -699,7 +747,8 @@ def produce_reverse(db_factory, username, value):
     }
 
 
-def produce_script(db_factory, username, value, now=None, before_link=None):
+def produce_script(db_factory, username, value, now=None, before_link=None,
+                   before_attempt_insert=None):
     """Quote and confirm one durable CLI production request.
 
     ``client_request_id`` is also the content-service Idempotency-Key, so a
@@ -712,29 +761,19 @@ def produce_script(db_factory, username, value, now=None, before_link=None):
     offer_id, cli_input, expected_cost, plan_digest, quote_token = (
         _normalize_production_request(value)
     )
-    request_json = _canonical(cli_input)
-    request_hash = hashlib.sha256(request_json.encode("utf-8")).hexdigest()
-    _verify_production_offer(
-        db_factory, username, offer_id, cli_input, expected_cost,
-        plan_digest, quote_token, now=now,
-    )
+    confirmation_token = quote_token
+    request_hash = hashlib.sha256(_canonical(cli_input).encode("utf-8")).hexdigest()
     lock = _production_lock(username, offer_id)
     with lock:
         stamp = int(time.time() if now is None else now)
         connection = db_factory()
         try:
             connection.execute("BEGIN IMMEDIATE")
-            _ensure_production_table(connection)
-            row = connection.execute(
-                "SELECT * FROM director_cli_productions WHERE username=? AND offer_id=?",
-                (username, offer_id),
-            ).fetchone()
-            if row and row["request_hash"] != request_hash:
-                connection.rollback()
-                return 409, {
-                    "detail": "同一生产单不能用于不同内容",
-                    "code": "production_idempotency_conflict",
-                }
+            row = _claim_production_offer(
+                connection, username, offer_id, cli_input, expected_cost,
+                plan_digest, quote_token, stamp,
+                before_attempt_insert=before_attempt_insert,
+            )
             if row and row["state"] == "linked" and row["job_id"]:
                 job_id = int(row["job_id"])
                 linked = connection.execute(
@@ -748,19 +787,6 @@ def produce_script(db_factory, username, value, now=None, before_link=None):
                     "job_id": job_id, "cost": int(row["quoted_cost"] or expected_cost),
                     "points_left": row["points_left"], "recovered": True,
                 }
-            if not row:
-                connection.execute(
-                    """INSERT INTO director_cli_productions(
-                       username,offer_id,request_hash,input_json,expected_cost,
-                       state,created_at,updated_at
-                       ) VALUES(?,?,?,?,?,'preparing',?,?)""",
-                    (username, offer_id, request_hash, request_json,
-                     expected_cost, stamp, stamp),
-                )
-                row = connection.execute(
-                    "SELECT * FROM director_cli_productions WHERE username=? AND offer_id=?",
-                    (username, offer_id),
-                ).fetchone()
             connection.execute(
                 "UPDATE director_cli_productions SET expected_cost=?,updated_at=? "
                 "WHERE username=? AND offer_id=?",
@@ -770,6 +796,9 @@ def produce_script(db_factory, username, value, now=None, before_link=None):
             quoted_cost = int(row["quoted_cost"] or 0)
             quote_expires_at = int(row["quote_expires_at"] or 0)
             connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
         finally:
             connection.close()
 
@@ -803,10 +832,15 @@ def produce_script(db_factory, username, value, now=None, before_link=None):
             points = row["points_left"]
 
         if quoted_cost != expected_cost:
-            refreshed = _rotate_production_offer(
-                db_factory, username, offer_id, plan_digest, cli_input,
-                quoted_cost, now=stamp,
-            )
+            try:
+                refreshed = _rotate_production_offer(
+                    db_factory, username, offer_id, plan_digest, cli_input,
+                    quoted_cost, confirmation_token, now=stamp,
+                )
+            except DirectorOfferError as error:
+                return error.status, {
+                    "detail": str(error), "code": error.code,
+                }
             return 409, {
                 "detail": "生成价格已变化，请在对话框重新确认",
                 "code": "production_price_changed", "quoted_cost": expected_cost,

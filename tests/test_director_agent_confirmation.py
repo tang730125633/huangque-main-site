@@ -292,6 +292,110 @@ class DirectorAgentConfirmationTests(unittest.TestCase):
             self.assertEqual(value["plan_digest"], result["plan_digest"])
             confirm_call.assert_not_called()
 
+            refreshed = dict(
+                value, expected_cost=4, quote_token=result["quote_token"],
+            )
+            with mock.patch.object(
+                director_agent.director_cli, "confirm_script",
+            ) as confirm_call, self.assertRaises(
+                director_agent.DirectorOfferError,
+            ) as raised:
+                director_agent.produce_script(
+                    db, "alice", refreshed,
+                    now=result["expires_at"] + 1,
+                )
+            self.assertEqual("director_offer_expired", raised.exception.code)
+            confirm_call.assert_not_called()
+
+    def test_offer_claim_and_attempt_insert_roll_back_together_on_crash(self):
+        with tempfile.TemporaryDirectory() as temp:
+            database = pathlib.Path(temp) / "jobs.db"
+
+            def db():
+                connection = sqlite3.connect(str(database), timeout=10)
+                connection.row_factory = sqlite3.Row
+                return connection
+
+            with closing(db()) as connection:
+                connection.execute("""CREATE TABLE jobs(
+                    id INTEGER PRIMARY KEY, kind TEXT, username TEXT,
+                    cost INTEGER, status TEXT
+                )""")
+                connection.commit()
+            issued_at = 2_000_000_000
+            value = issued_script_value(
+                db, "director-production-atomic1234567890", now=issued_at,
+            )
+
+            def crash_between_claim_and_insert():
+                raise RuntimeError("simulated crash")
+
+            with self.assertRaisesRegex(RuntimeError, "simulated crash"):
+                director_agent.produce_script(
+                    db, "alice", value, now=issued_at + 1,
+                    before_attempt_insert=crash_between_claim_and_insert,
+                )
+            with closing(db()) as connection:
+                offer = connection.execute(
+                    "SELECT confirmed_at FROM director_agent_offers WHERE username='alice'"
+                ).fetchone()
+                production_table = connection.execute(
+                    "SELECT COUNT(1) FROM sqlite_master "
+                    "WHERE type='table' AND name='director_cli_productions'"
+                ).fetchone()[0]
+                attempts = (connection.execute(
+                    "SELECT COUNT(1) FROM director_cli_productions"
+                ).fetchone()[0] if production_table else 0)
+            self.assertIsNone(offer["confirmed_at"])
+            self.assertEqual(0, attempts)
+
+            with mock.patch.object(
+                director_agent.director_cli, "quote_script",
+            ) as quote_call, self.assertRaisesRegex(
+                director_agent.DirectorOfferError, "已过期",
+            ) as raised:
+                director_agent.produce_script(
+                    db, "alice", value,
+                    now=issued_at + director_agent.OFFER_TTL_SECONDS + 1,
+                )
+            self.assertEqual("director_offer_expired", raised.exception.code)
+            quote_call.assert_not_called()
+
+    def test_price_refresh_uses_old_token_compare_and_swap(self):
+        with tempfile.TemporaryDirectory() as temp:
+            database = pathlib.Path(temp) / "jobs.db"
+
+            def db():
+                connection = sqlite3.connect(str(database), timeout=10)
+                connection.row_factory = sqlite3.Row
+                return connection
+
+            value = issued_script_value(
+                db, "director-production-refresh123456789",
+            )
+            first = director_agent._rotate_production_offer(
+                db, "alice", value["offer_id"], value["plan_digest"],
+                value["input"], 4, value["quote_token"], now=2_000_000_001,
+            )
+            self.assertNotEqual(value["quote_token"], first["quote_token"])
+            with self.assertRaises(
+                director_agent.DirectorOfferError,
+            ) as raised:
+                director_agent._rotate_production_offer(
+                    db, "alice", value["offer_id"], value["plan_digest"],
+                    value["input"], 5, value["quote_token"], now=2_000_000_002,
+                )
+            self.assertEqual("director_offer_refreshed", raised.exception.code)
+            with closing(db()) as connection:
+                row = connection.execute(
+                    "SELECT expected_cost,token_hash FROM director_agent_offers"
+                ).fetchone()
+            self.assertEqual(4, row["expected_cost"])
+            self.assertEqual(
+                director_agent._token_hash(first["quote_token"]),
+                row["token_hash"],
+            )
+
     def test_forged_or_expired_offer_is_rejected_before_cli_quote(self):
         with tempfile.TemporaryDirectory() as temp:
             database = pathlib.Path(temp) / "jobs.db"
@@ -423,6 +527,7 @@ class DirectorAgentConfirmationTests(unittest.TestCase):
             self.assertEqual(400, raised.exception.code)
             response = json.loads(raised.exception.read())
             self.assertIn("服务器签发", response["detail"])
+            self.assertEqual("director_offer_invalid", response["code"])
             quote_call.assert_not_called()
 
 

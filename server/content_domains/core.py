@@ -3739,6 +3739,10 @@ class H(BaseHTTPRequestHandler):
                 return self._send(status, result)
             except feature_flags.FeatureDisabled as error:
                 return self._send(503, {"detail": str(error)})
+            except director_agent_domain.DirectorOfferError as error:
+                return self._send(error.status, {
+                    "detail": str(error)[:220], "code": error.code,
+                })
             except ValueError as error:
                 return self._send(400, {"detail": str(error)[:220]})
             except Exception:
