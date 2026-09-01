@@ -47,6 +47,10 @@ class MatrixTemplateHTTPError(RuntimeError):
         self.status = int(status)
 
 
+class MatrixTemplateProviderFailed(RuntimeError):
+    """The provider reached an authoritative failed terminal state."""
+
+
 def _validated_base():
     parsed = urllib.parse.urlsplit(API_URL)
     loopback = parsed.hostname in {"127.0.0.1", "localhost", "::1"}
@@ -541,6 +545,15 @@ def _remaining_budget(deadline_at, message="模板成片生成超时"):
     return remaining
 
 
+def _set_response_timeout(response, timeout):
+    """Apply the current absolute budget to urllib's underlying socket."""
+    stream = getattr(response, "fp", None)
+    raw = getattr(stream, "raw", None)
+    sock = getattr(raw, "_sock", None)
+    if sock is not None and hasattr(sock, "settimeout"):
+        sock.settimeout(max(0.001, float(timeout)))
+
+
 def _download(value, job_id, timeout=240, deadline_at=None):
     if deadline_at is None:
         deadline_at = time.time() + float(timeout)
@@ -554,9 +567,20 @@ def _download(value, job_id, timeout=240, deadline_at=None):
     try:
         open_timeout = min(float(timeout), _remaining_budget(deadline_at))
         with _NO_PROXY.open(request, timeout=max(0.001, open_timeout)) as response, temporary.open("wb") as handle:
+            read_chunk = getattr(response, "read1", None)
+            if not callable(read_chunk):
+                read_chunk = response.read
             while True:
-                _remaining_budget(deadline_at)
-                chunk = response.read(1024 * 1024)
+                remaining = min(float(timeout), _remaining_budget(deadline_at))
+                _set_response_timeout(response, remaining)
+                try:
+                    chunk = read_chunk(64 * 1024)
+                except (TimeoutError, OSError) as exc:
+                    try:
+                        _remaining_budget(deadline_at)
+                    except RuntimeError as deadline_error:
+                        raise deadline_error from exc
+                    raise
                 _remaining_budget(deadline_at)
                 if not chunk:
                     break
@@ -599,6 +623,26 @@ def _runtime(job_id):
     return {
         "created_at": int(row["created_at"] or time.time()),
         "payload": payload if isinstance(payload, dict) else {},
+    }
+
+
+def _durable_runtime(job_id):
+    """Read recovery state without turning a database fault into no state."""
+    from .core import jdb
+    numeric_id = int(job_id)
+    with closing(jdb()) as connection:
+        row = connection.execute(
+            "SELECT created_at,payload FROM jobs WHERE id=? AND kind=?",
+            (numeric_id, FEATURE_KEY),
+        ).fetchone()
+    if not row:
+        raise RuntimeError("模板成片生命周期记录不存在")
+    payload = json.loads(row["payload"] or "{}")
+    if not isinstance(payload, dict):
+        raise RuntimeError("模板成片生命周期记录无效")
+    return {
+        "created_at": int(row["created_at"] or time.time()),
+        "payload": payload,
     }
 
 
@@ -666,6 +710,41 @@ def public_lifecycle(row, now=None):
         "last_progress_at": int(runtime.get("last_progress_at") or created_at),
         "provider_submitted": bool(runtime.get("provider_job_id")),
     }
+
+
+def recover_worker_error(job_id, error, requeue=None):
+    """Keep paid remote work recoverable until failure or expiry is certain."""
+    lifecycle = _durable_runtime(job_id)
+    deadline_at = int(lifecycle["created_at"]) + TOTAL_TIMEOUT
+    if time.time() >= deadline_at or isinstance(
+            error, MatrixTemplateProviderFailed):
+        return False
+    payload = lifecycle["payload"]
+    runtime = payload.get("_matrix_runtime")
+    if not isinstance(runtime, dict):
+        return False
+    provider_job_id = str(runtime.get("provider_job_id") or "")
+    if provider_job_id:
+        if not re.fullmatch(r"[0-9a-f]{32}", provider_job_id):
+            raise RuntimeError("模板成片恢复信息无效")
+        _persist_runtime(
+            job_id, phase="provider_retrying", provider_status="unknown",
+            last_error=str(error)[:300],
+        )
+        if requeue:
+            requeue(job_id)
+        return True
+    phase = str(runtime.get("phase") or "")
+    if phase in {"submitting", "submission_unknown"}:
+        if isinstance(error, MatrixTemplateHTTPError) and error.status in {
+                400, 401, 403, 404, 422}:
+            return False
+        _persist_runtime(
+            job_id, phase="submission_unknown", provider_status="unknown",
+            last_error=str(error)[:300], deadline_at=deadline_at,
+        )
+        return True
+    return False
 
 
 def generate(payload):
@@ -761,7 +840,9 @@ def generate(payload):
                 "material_manifest": result.get("material_manifest") or [],
             }
         if status == "failed":
-            raise RuntimeError(str(current.get("error") or "模板成片生成失败")[:500])
+            raise MatrixTemplateProviderFailed(
+                str(current.get("error") or "模板成片生成失败")[:500]
+            )
         time.sleep(POLL_INTERVAL)
     raise RuntimeError("模板成片生成超时")
 

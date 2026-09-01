@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import http.server
 import importlib
 import json
 import re
@@ -8,7 +9,10 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
+import urllib.request
 from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
@@ -846,6 +850,59 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             )
         self.assertFalse((Path(temp) / "video" / "matrix_template_slow-job.mp4").exists())
         self.assertFalse((Path(temp) / "video" / "matrix_template_slow-job.mp4.part").exists())
+
+    def test_download_real_trickle_stream_obeys_wall_clock_deadline(self):
+        class TrickleHandler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", "20")
+                self.end_headers()
+                for _index in range(20):
+                    try:
+                        self.wfile.write(b"x")
+                        self.wfile.flush()
+                    except (
+                        BrokenPipeError, ConnectionAbortedError,
+                        ConnectionResetError,
+                    ):
+                        break
+                    time.sleep(0.1)
+
+            def log_message(self, _format, *_args):
+                return
+
+        server = http.server.ThreadingHTTPServer(
+            ("127.0.0.1", 0), TrickleHandler,
+        )
+        server.daemon_threads = True
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        url = "http://127.0.0.1:%d/video.mp4" % server.server_port
+        try:
+            with tempfile.TemporaryDirectory() as temp, \
+                 mock.patch.object(self.module, "OUT_DIR", Path(temp)), \
+                 mock.patch.object(self.module, "_safe_file_url", return_value=url), \
+                 mock.patch.object(
+                     self.module, "_NO_PROXY",
+                     urllib.request.build_opener(
+                         urllib.request.ProxyHandler({})
+                     ),
+                 ):
+                started = time.monotonic()
+                with self.assertRaisesRegex(RuntimeError, "生成超时"):
+                    self.module._download(
+                        url, "real-trickle", timeout=10,
+                        deadline_at=time.time() + 0.25,
+                    )
+                elapsed = time.monotonic() - started
+                self.assertLess(elapsed, 1.0)
+                target = Path(temp) / "video/matrix_template_real-trickle.mp4"
+                self.assertFalse(target.exists())
+                self.assertFalse(target.with_suffix(".mp4.part").exists())
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
 
     def test_generate_persists_provider_identity_and_progress(self):
         responses = [

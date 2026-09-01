@@ -5,6 +5,7 @@
 import importlib, json, os, sys, time, unittest
 from contextlib import closing
 from pathlib import Path
+from unittest import mock
 
 
 class JobRefundCasTests(unittest.TestCase):
@@ -296,6 +297,108 @@ class JobRefundCasTests(unittest.TestCase):
         self.assertEqual(self._row(jid)["status"], "pending")
         self.assertEqual(self._row(jid)["refunded"], 0)
         self.assertEqual(self.refunds, [])
+
+    def test_matrix_worker_preserves_unknown_submission_without_refund(self):
+        now = int(time.time())
+        payload = {
+            "template_id": "native-bold",
+            "_matrix_runtime": {"phase": "submitting"},
+        }
+        with closing(self.core.jdb()) as connection:
+            cursor = connection.execute(
+                "INSERT INTO jobs(kind,username,cost,status,payload,created_at,updated_at) "
+                "VALUES('matrix_template_video','u',5,'pending',?,?,?)",
+                (json.dumps(payload), now, now),
+            )
+            connection.commit()
+            job_id = cursor.lastrowid
+
+        def response_lost(_payload):
+            raise ConnectionError("provider response lost")
+
+        with mock.patch.dict(
+            self.core.HANDLERS,
+            {"matrix_template_video": response_lost},
+        ), mock.patch.object(
+            self.core, "_start_job_heartbeat", return_value=lambda: None,
+        ):
+            self.core.run_job(job_id)
+
+        self.assertEqual("running", self._row(job_id)["status"])
+        self.assertEqual([], self.refunds)
+        with closing(self.core.jdb()) as connection:
+            stored = json.loads(connection.execute(
+                "SELECT payload FROM jobs WHERE id=?", (job_id,),
+            ).fetchone()["payload"])
+        self.assertEqual(
+            "submission_unknown",
+            stored["_matrix_runtime"]["phase"],
+        )
+
+    def test_matrix_worker_requeues_known_provider_without_refund(self):
+        now = int(time.time())
+        payload = {
+            "template_id": "native-bold",
+            "_matrix_runtime": {
+                "phase": "rendering", "provider_job_id": "e" * 32,
+            },
+        }
+        with closing(self.core.jdb()) as connection:
+            cursor = connection.execute(
+                "INSERT INTO jobs(kind,username,cost,status,payload,created_at,updated_at) "
+                "VALUES('matrix_template_video','u',5,'pending',?,?,?)",
+                (json.dumps(payload), now, now),
+            )
+            connection.commit()
+            job_id = cursor.lastrowid
+
+        with mock.patch.dict(
+            self.core.HANDLERS,
+            {"matrix_template_video": mock.Mock(
+                side_effect=ConnectionError("temporary GET failure")
+            )},
+        ), mock.patch.object(
+            self.core, "_start_job_heartbeat", return_value=lambda: None,
+        ):
+            self.core.run_job(job_id)
+
+        self.assertEqual("pending", self._row(job_id)["status"])
+        self.assertEqual([], self.refunds)
+
+    def test_matrix_worker_refunds_only_authoritative_provider_failure(self):
+        from content_domains import matrix_template_video
+
+        now = int(time.time())
+        payload = {
+            "template_id": "native-bold",
+            "_matrix_runtime": {
+                "phase": "rendering", "provider_job_id": "f" * 32,
+            },
+        }
+        with closing(self.core.jdb()) as connection:
+            cursor = connection.execute(
+                "INSERT INTO jobs(kind,username,cost,status,payload,created_at,updated_at) "
+                "VALUES('matrix_template_video','u',5,'pending',?,?,?)",
+                (json.dumps(payload), now, now),
+            )
+            connection.commit()
+            job_id = cursor.lastrowid
+
+        with mock.patch.dict(
+            self.core.HANDLERS,
+            {"matrix_template_video": mock.Mock(
+                side_effect=matrix_template_video.MatrixTemplateProviderFailed(
+                    "renderer failed"
+                )
+            )},
+        ), mock.patch.object(
+            self.core, "_start_job_heartbeat", return_value=lambda: None,
+        ):
+            self.core.run_job(job_id)
+
+        self.assertEqual("error", self._row(job_id)["status"])
+        self.assertEqual(1, self._row(job_id)["refunded"])
+        self.assertEqual(1, len(self.refunds))
 
     def test_reclaim_keeps_unknown_official_submission_running(self):
         jid = self._insert(90, kind="xiaole_video")

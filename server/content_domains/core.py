@@ -1805,6 +1805,19 @@ def run_job(job_id):
                 print("[video-recovery] 恢复信息暂不可读，保留 job#%s: %s" %
                       (job_id, str(recovery_error)[:160]), flush=True)
                 return
+        if kind == "matrix_template_video":
+            try:
+                from . import matrix_template_video as matrix_template_domain
+                if matrix_template_domain.recover_worker_error(
+                        job_id, e, _requeue_running_job):
+                    return
+            except Exception as recovery_error:
+                print(
+                    "[matrix-template-recovery] 恢复信息暂不可读，保留 job#%s: %s"
+                    % (job_id, str(recovery_error)[:160]),
+                    flush=True,
+                )
+                return
         # 生成失败：CAS 抢 error 终态；抢到才记失败资产。退点走幂等(reaper 若已退则跳过)
         # from_states 含 pending：抢 running 那句自己抛异常时任务还停在 pending，只认 running 会不退点
         diagnostics = {}
