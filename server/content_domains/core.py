@@ -526,7 +526,7 @@ KIND_GRACE = {"tryon": 2400, "xiaole_video": 1200, "sora_video": 1500, "image": 
               "short_drama_preview": 1800, "short_drama_final": 3600,
               "short_drama_remux": 600,
               "script_to_video": 1200, "matrix_template_video": 1500,
-              "canvas_agent": 300}
+              "canvas_agent": 300, "director_agent": 300}
 # ⚠️ tryon 【不】跟着 15 分钟走：线上实测线路一中位 909s、**p90 1612s(27 分钟)**。
 #    砍到 15 分钟会把超过一成的换装任务判成失败。要改它得先把那条链路本身提速。
 AVATAR_COST = _env_positive_int("AVATAR_COST", 2)   # 建形象：象征性收费防刷，失败自动退点
@@ -534,7 +534,7 @@ AVATAR_COST = _env_positive_int("AVATAR_COST", 2)   # 建形象：象征性收�
 COST = {"image": 12, "copy": 3, "audio": 10, "video": VIDEO_COST, "tryon": 40,
         "cinematic": VIDEO_COST, "avatar": AVATAR_COST, "breakdown": 8,
         "script_to_video": VIDEO_COST, "matrix_template_video": 5,
-        "canvas_agent": 3}  # collect/leads/cinematic 走 cost_of() 动态算
+        "canvas_agent": 3, "director_agent": 0}  # 编导对话免费；生产由独立报价确认链路扣点
 # cinematic 的这条已经不生效了 —— 电影化身按成片秒数计费（video.cinematic_cost），
 # cost_of() 里有它自己的分支、必定先 return。留在这里只当保险：万一哪天分支被绕过，
 # 也是按 VIDEO_COST 收费，而不是回落到 0（=免费送 $7 一条的视频）。
@@ -553,6 +553,20 @@ HEYGEN_TIMEOUT = max(60, int(os.environ.get("HEYGEN_TIMEOUT", "1200")))
 
 # Domain handlers are assembled by content_domains.registry at startup.
 HANDLERS = {}
+
+
+def _director_agent_available():
+    """Fail closed when the model pair or local HQ CLI is unavailable."""
+    if "director_agent" not in HANDLERS:
+        return False
+    try:
+        from . import director_agent as director_agent_domain
+        return bool(director_agent_domain.is_available(
+            fallback_key=OPENAI_KEY, fallback_base=OPENAI_BASE,
+        ))
+    except Exception as error:
+        print("[director_agent] availability check failed: %s" % error, flush=True)
+        return False
 
 # ============ 任务库 ============
 def jdb():
@@ -1678,7 +1692,7 @@ def run_job(job_id):
                         jdb, job_id, username, payload
                     )
                 )
-        if kind in {"audio", "short_drama_sound_effect", "video", "tryon", "xiaole_video", "sora_video", "leads", "cinematic", "avatar", "breakdown", "short_drama_preview", "short_drama_final", "script_to_video", "matrix_template_video"}:
+        if kind in {"audio", "short_drama_sound_effect", "video", "tryon", "xiaole_video", "sora_video", "leads", "cinematic", "avatar", "breakdown", "short_drama_preview", "short_drama_final", "script_to_video", "matrix_template_video", "director_agent"}:
             payload["_username"] = username   # 少一个 kind，handler 就拿不到用户名/job_id：
             payload["_job_id"] = job_id       # gen_avatar 记不了形象归属，gen_cinematic 查不到用户的形象
         result = HANDLERS[kind](payload)
@@ -3622,6 +3636,110 @@ class H(BaseHTTPRequestHandler):
                 return self._send(503, {"detail": str(e), "code": "content_security_unavailable"})
             except (ValueError, LookupError, RuntimeError) as e:
                 return self._send(400, {"detail": str(e)[:220]})
+        if p == "/api/gen/director_agent":
+            user = verify(self._token())
+            if not user:
+                return self._send(401, {"detail": "未登录或登录已过期"})
+            if _must_change_password(user):
+                return self._send(403, {"detail": "请先修改初始密码"})
+            try:
+                feature_flags.require_enabled("director_agent")
+                if not _director_agent_available():
+                    return self._send(503, {
+                        "detail": "编导助手暂未配置模型服务，请稍后再试",
+                        "code": "director_agent_unavailable",
+                        "retry_after_ms": 60000,
+                    })
+                if is_shutting_down():
+                    return self._send(503, {
+                        "detail": "服务正在更新，请稍等几秒后重试（未扣点）",
+                        "code": "shutting_down", "retry_after_ms": 5000,
+                    })
+                from . import director_agent as director_agent_domain
+                body = self._json_body_strict()
+                if (isinstance(body, dict) and body.get("qa_run_id")
+                        and not cli_gateway._internal_auth(self, AUTH_INTERNAL_TOKEN)):
+                    raise PermissionError("后台质检批次仅允许内部服务提交")
+                body = director_agent_domain.validate_payload(body)
+                miniprogram_security.check_payload(body)
+                idem_key = _idempotency_key(self.headers.get("Idempotency-Key"))
+                state, response = director_agent_domain.accept_chat_job(
+                    jdb, user["username"], body, SERVICE_OWNER, p, idem_key,
+                    points_left=int(user.get("points") or 0),
+                    max_active_jobs=MAX_USER_ACTIVE_JOBS,
+                )
+                if state == "conflict":
+                    return self._send(409, {
+                        "detail": "同一个 Idempotency-Key 不能用于不同请求",
+                        "code": "idempotency_conflict",
+                    })
+                if state == "processing":
+                    return self._send(409, {
+                        "detail": "相同请求正在受理，请稍后查询",
+                        "code": "idempotency_in_progress", "retry_after_ms": 1000,
+                    })
+                if state == "limited":
+                    return self._send(429, response)
+                job_id = int(response["job_id"])
+                with closing(jdb()) as connection:
+                    row = connection.execute(
+                        "SELECT status FROM jobs WHERE id=? AND username=? AND kind='director_agent'",
+                        (job_id, user["username"]),
+                    ).fetchone()
+                if row and str(row["status"] or "") == "pending":
+                    if not enqueue_job(job_id, "director_agent"):
+                        _reject_pending_job(
+                            job_id, user["username"], 0,
+                            "编导助手队列已满，请稍后重试",
+                        )
+                return self._send(200, response)
+            except feature_flags.FeatureDisabled as error:
+                return self._send(503, {"detail": str(error)})
+            except miniprogram_security.ContentRejected as error:
+                return self._send(400, {
+                    "detail": str(error), "code": "content_rejected",
+                })
+            except miniprogram_security.SecurityUnavailable as error:
+                return self._send(503, {
+                    "detail": str(error),
+                    "code": str(getattr(error, "code", "content_security_unavailable")),
+                    "retry_after_ms": 5000,
+                })
+            except (ValueError, LookupError, PermissionError) as error:
+                return self._send(400, {"detail": str(error)[:220]})
+        if p == "/api/gen/director_agent/produce":
+            user = verify(self._token())
+            if not user:
+                return self._send(401, {"detail": "未登录或登录已过期"})
+            if _must_change_password(user):
+                return self._send(403, {"detail": "请先修改初始密码"})
+            try:
+                feature_flags.require_enabled("director_agent")
+                from . import director_agent as director_agent_domain
+                if not director_agent_domain.director_cli.production_is_available():
+                    return self._send(503, {
+                        "detail": "编导对话生产暂未安全配置",
+                        "code": "director_cli_production_unavailable",
+                    })
+                body = self._json_body_strict()
+                idem_key = _idempotency_key(self.headers.get("Idempotency-Key"))
+                if not idem_key:
+                    raise ValueError("对话生产必须提供 Idempotency-Key")
+                if not isinstance(body, dict) or body.get("offer_id") != idem_key:
+                    raise ValueError("生产单号必须与 Idempotency-Key 一致")
+                status, result = director_agent_domain.produce_script(
+                    jdb, user["username"], body,
+                )
+                return self._send(status, result)
+            except feature_flags.FeatureDisabled as error:
+                return self._send(503, {"detail": str(error)})
+            except ValueError as error:
+                return self._send(400, {"detail": str(error)[:220]})
+            except Exception:
+                return self._send(500, {
+                    "detail": "生产任务状态暂时无法确认，请用原确认单重试",
+                    "code": "director_production_retryable", "retry_after_ms": 1500,
+                })
         if p == "/api/gen/canvas-agent/quote":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})
@@ -4646,11 +4764,26 @@ class H(BaseHTTPRequestHandler):
                       "stats": {"like": it.get("like"), "comment": it.get("comment")}} for it in (r.get("items") or [])]
             return self._send(200, {"items": items, "cost": search_cost, "points_left": points_left})
         if p == "/api/gen/health":
+            director_agent_enabled = bool(
+                feature_flags.is_enabled("director_agent")
+                and _director_agent_available()
+            )
+            director_agent_production_enabled = False
+            if director_agent_enabled:
+                try:
+                    from . import director_agent as director_agent_domain
+                    director_agent_production_enabled = bool(
+                        director_agent_domain.director_cli.production_is_available()
+                    )
+                except Exception:
+                    director_agent_production_enabled = False
             return self._send(200, {"ok": True, "service": "huangque-content", "caps": list(HANDLERS), "job_workers": JOB_WORKERS, "fast_job_workers": FAST_JOB_WORKERS, "talking_job_workers": TALKING_JOB_WORKERS, "image_job_workers": IMAGE_JOB_WORKERS, "matrix_job_workers": MATRIX_JOB_WORKERS, "job_queue_max": JOB_QUEUE_MAX, "talking_job_queue_max": TALKING_JOB_QUEUE_MAX, "matrix_job_queue_max": MATRIX_JOB_QUEUE_MAX,
                                     "max_user_active_jobs": MAX_USER_ACTIVE_JOBS, "max_user_active_xiaole_video": MAX_USER_ACTIVE_XIAOLE_VIDEO, "max_user_active_sora_video": MAX_USER_ACTIVE_SORA_VIDEO, "max_user_active_tryon": MAX_USER_ACTIVE_TRYON, "max_user_active_cinematic": MAX_USER_ACTIVE_CINEMATIC,
                                     "sora_video_enabled": video_domain.sora_video_health_enabled(feature_flags),
                                     "image_xiaole_enabled": feature_flags.is_enabled("image_xiaole"),
                                     "omni_video_enabled": bool(video_domain.omni_video_is_open() and feature_flags.is_enabled("omni_video")), "seedance_video_enabled": bool(video_domain.seedance_video_is_open() and feature_flags.is_enabled("seedance_video")), "minimax_h3_video_enabled": bool(video_domain.minimax_h3_video_is_open() and feature_flags.is_enabled("minimax_h3_video")), "reverse_remake_video_offer": (reverse_remake_offer := video_domain.reverse_remake_video_offer(feature_flags, points_domain.cost_of)), "reverse_remake_video_channel": reverse_remake_offer["channel"], "seedance_reference_images_enabled": video_domain.seedance_reference_upload_is_open(), "seedance_upscale_enabled": bool(video_domain.seedance_upscale_is_open() and feature_flags.is_enabled("seedance_video")),
+                                    "director_agent_enabled": director_agent_enabled,
+                                    "director_agent_production_enabled": director_agent_production_enabled,
                                     "max_user_running_talking": MAX_USER_RUNNING_TALKING, "max_user_running_image": MAX_USER_RUNNING_IMAGE, "video_cost": pricing.get_price("video.talking.block"), "video_batch_max": min(video_domain.VIDEO_BATCH_MAX, MAX_USER_ACTIVE_JOBS), "has_openai": bool(OPENAI_KEY), "has_tikhub": bool(tikhub.KEY), "tikhub_base": tikhub.BASE})
         self._send(404, {"detail": "not found"})
     def do_PUT(self):

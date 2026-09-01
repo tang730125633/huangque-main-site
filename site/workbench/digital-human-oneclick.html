@@ -31,7 +31,7 @@ body .hq-main-scroll-flush{overflow-x:hidden;overflow-y:auto}.hq-content[data-ac
 </style>
 <link rel="stylesheet" href="theme.css?v=5873a2f4">
 </head>
-<body>
+<body data-director-guide-contract="digital-human-oneclick-guide-v1">
 <div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
 <div class="hq-app"><div class="hq-content" data-active="script"><main class="dh-page">
   <header class="dh-head"><div><h1>数字人一键生成</h1><p id="dhUnifiedDescription">上传人物照片，选择音色配文案或上传完整录音；开头、结尾和正文每隔约 20–30 秒全屏真人出镜，其余时间自动匹配内容素材。</p></div><span id="dhUnifiedCost" class="cost-chip">合成本身 0 点 · 素材与 HeyGen 子任务按实时价格扣点</span></header>
@@ -213,4 +213,5 @@ $('script').oninput=function(){prepareNextRun();$('count').textContent=this.valu
   sendHeight();
 })();
 </script>
+<script src="script-agent.js?v=35d3adcf"></script>
 </body></html>
