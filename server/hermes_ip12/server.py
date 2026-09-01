@@ -4878,6 +4878,17 @@ def _set_active_production(convo, production_id):
     return False
 
 
+def _extract_upload_ids_from_last_user_message(convo):
+    """从最近一条用户消息里解析 [已上传素材 image_upload_id=...] 的素材 id。"""
+    ids = []
+    for m in reversed(convo.get("messages") or []):
+        if m.get("role") != "user":
+            continue
+        ids = re.findall(r"image_upload_id=([A-Za-z0-9_-]{8,})", str(m.get("content") or ""))
+        break
+    return ids[:10]
+
+
 @app.route("/api/ip12/productions/prepare", methods=["POST"])
 def api_prepare_production():
     try:
@@ -4920,6 +4931,17 @@ def api_prepare_production():
             current_account_id(), recommendation["recommended_action"], catalog_entry,
             allow_system_media=bool(body.get("allow_system_media")),
         )
+        # 图片生成：把用户消息里附带的素材 upload_id 注入参考图（不再丢参考图裸生成）
+        if recommendation["recommended_action"] == "image-generate":
+            _opts = body.get("options")
+            if isinstance(_opts, dict) and not _opts.get("reference_upload_ids") and not _opts.get("image_upload_id"):
+                with CONVERSATION_STATE_LOCK:
+                    _convo_ids = _production_conversation(cid)
+                _ids = _extract_upload_ids_from_last_user_message(_convo_ids or {})
+                if _ids:
+                    _opts = dict(_opts)
+                    _opts["reference_upload_ids"] = _ids
+                    body["options"] = _opts
         with CONVERSATION_STATE_LOCK:
             convo = _production_conversation(cid)
             if convo is None:
