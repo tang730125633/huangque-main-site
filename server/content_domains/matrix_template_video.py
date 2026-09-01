@@ -496,9 +496,12 @@ def validate_payload(raw, username=""):
                 "模板成片服务暂不可用，请稍后重试"
             ) from exc
         except RuntimeError as exc:
-            raise feature_flags.FeatureDisabled(
-                "AI 语义排版或模板预检服务暂不可用，请稍后重试"
-            ) from exc
+            candidate.pop("semantic_layout", None)
+            print(
+                "[matrix-template-semantic-fallback] "
+                f"template={template_id} reason={str(exc)[:240]}",
+                flush=True,
+            )
     if response is None:
         try:
             response = _request("POST", "/v1/preflight", candidate, timeout=10)
