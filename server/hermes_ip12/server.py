@@ -8409,7 +8409,17 @@ def _process_action_turn(cid, action, expected_revision, user_message="", reques
                 (next_state["current_module"] == 5 and next_state["module_step"] == 2)
                 or (next_state["current_module"] == 6 and next_state["module_step"] in {1, 2})
             )
-            else "用户已确认上一断点。请直接处理当前唯一允许的断点。"
+            else (
+                "用户已确认上一断点。请立即生成当前断点（断点 %s：%s）的核对稿；"
+                "素材都已采集，禁止向用户提问。"
+                % (
+                    next_state["module_step"] + 1,
+                    coach_harness.MODULE_WORKFLOWS[next_state["current_module"]]["checkpoints"][next_state["module_step"]],
+                )
+                if next_state["module_step"] + 1
+                <= len(coach_harness.MODULE_WORKFLOWS[next_state["current_module"]]["checkpoints"])
+                else "用户已确认上一断点。请直接处理当前唯一允许的断点。"
+            )
         )
         continued, status = None, 502
         attempts = 2 if next_state.get("module_step") == 0 else 1
