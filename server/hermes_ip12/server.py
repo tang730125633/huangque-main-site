@@ -4350,8 +4350,12 @@ def api_ip12_task(job_id):
     """轮询生产任务进度（转发工具层）。"""
     import requests as _requests
     base = str(os.environ.get("HQ_TOOL_AGENT_BASE") or "http://127.0.0.1:8790").rstrip("/")
+    _client_token = _ensure_client_hq_token(current_account_id())
+    _task_url = base + "/task/%s" % job_id
+    if _client_token:
+        _task_url += "?hq_token=" + urllib.parse.quote(_client_token)
     try:
-        response = _requests.get(base + "/task/%s" % job_id, timeout=30)
+        response = _requests.get(_task_url, timeout=30)
         payload = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
     except Exception as exc:
         return jsonify({"ok": False, "error": "生产子 Agent 暂时不可用：" + str(exc)[:120]}), 502
