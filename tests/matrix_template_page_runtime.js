@@ -27,7 +27,7 @@ function createRuntime(plan, storage){
   const timers=[];const requests={post:[],poll:[]};let uuidCount=0;
   const sessionStorage={getItem:k=>storage.has(k)?storage.get(k):null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)};
   const fetch=(url,options={})=>{
-    if(url==='/api/gen/matrix-template/templates')return Promise.resolve(response(200,{templates:[{id:'native-bold',name:'默认原生大字',tags:['默认'],font_selectable:true},{id:'minimal-headline',name:'极简标题',tags:['极简'],font_selectable:true},{id:'ref-01-fixture-01',name:'参考模板',description:'绿色粗描边手写标题',tags:['内置字体'],engine:'hyperframes',font_mode:'template_locked',font_selectable:false,variant:'v01'}],fonts:[{value:'',label:'自动搭配',source:'automatic'},{value:'Noto Sans SC',label:'思源黑体',source:'bundled'},{value:'AaHouDiHei',label:'Aa厚底黑',source:'private'}],default_template:'native-bold',default_font:'',cost:5}));
+    if(url==='/api/gen/matrix-template/templates')return Promise.resolve(response(200,{templates:[{id:'native-bold',name:'默认原生大字',tags:['默认'],font_selectable:true},{id:'minimal-headline',name:'极简标题',tags:['极简'],font_selectable:true},{id:'ref-01-fixture-01',name:'参考模板',description:'绿色粗描边手写标题',tags:['内置字体'],engine:'hyperframes',font_mode:'template_locked',font_selectable:false,variant:'v01'}],fonts:[{value:'',label:'自动搭配',source:'automatic'},{value:'Noto Sans SC',label:'思源黑体',source:'bundled'},{value:'AaHouDiHei',label:'Aa厚底黑',source:'private'}],default_template:'native-bold',default_font:'',max_batch_size:5,engine_concurrency:{ffmpeg:5,hyperframes:2},cost:5}));
     if(url==='/api/gen/matrix-template'){
       const index=requests.post.length;requests.post.push({url,options});return plan.post(index,options);
     }
@@ -125,8 +125,8 @@ async function scenarioFontSelect(){
 }
 async function scenarioLockedFont(){
   const runtime=createRuntime({post:()=>Promise.resolve(response(200,{job_id:12})),poll:()=>Promise.resolve(response(200,{status:'pending'}))},new Map());
-  await flush();runtime.get('fontFamily').value='AaHouDiHei';runtime.get('fontFamily').listeners.change[0].call(runtime.get('fontFamily'));runtime.get('templateGrid').children[2].onclick();runtime.get('topText').value='固定字体标题';runtime.get('bottomText').value='固定字体行动文案';runtime.get('topText').listeners.input[0]();runtime.get('bottomText').listeners.input[0]();runtime.get('generateBtn').onclick();await flush();
-  return {body:JSON.parse(runtime.requests.post[0].options.body),disabled:runtime.get('fontFamily').disabled,value:runtime.get('fontFamily').value,source:runtime.get('fontSource').textContent,batchDisabled:runtime.get('batchCount').disabled,batchValue:runtime.get('batchCount').value,batchHint:runtime.get('batchHint').textContent};
+  await flush();runtime.get('fontFamily').value='AaHouDiHei';runtime.get('fontFamily').listeners.change[0].call(runtime.get('fontFamily'));runtime.get('templateGrid').children[2].onclick();runtime.get('batchCount').value='5';runtime.get('topText').value='固定字体标题';runtime.get('bottomText').value='固定字体行动文案';runtime.get('topText').listeners.input[0]();runtime.get('bottomText').listeners.input[0]();runtime.get('generateBtn').onclick();await flush();
+  return {body:JSON.parse(runtime.requests.post[0].options.body),bodies:runtime.requests.post.map(x=>JSON.parse(x.options.body)),posts:runtime.requests.post.length,disabled:runtime.get('fontFamily').disabled,value:runtime.get('fontFamily').value,source:runtime.get('fontSource').textContent,batchDisabled:runtime.get('batchCount').disabled,batchValue:runtime.get('batchCount').value,batchHint:runtime.get('batchHint').textContent};
 }
 async function scenarioBatchFive(){
   const storage=new Map();
@@ -135,7 +135,7 @@ async function scenarioBatchFive(){
     poll:(i)=>Promise.resolve(response(200,{status:'done',result:{video_url:'/video-'+i,duration:8+i/10}})),
   },storage);
   await flush();runtime.get('batchCount').value='5';await fillAndSubmit(runtime);await flush(30);
-  const cards=runtime.get('batchResults').children;return {posts:runtime.requests.post.length,polls:runtime.requests.poll.length,keys:runtime.requests.post.map(x=>x.options.headers['Idempotency-Key']),bodies:runtime.requests.post.map(x=>JSON.parse(x.options.body)),cards:cards.length,preloads:cards.map(card=>card.children.find(child=>child.tagName==='VIDEO').preload),loads:cards.map(card=>card.children.find(child=>child.tagName==='VIDEO').loadCount),cleared:pendingCleared(storage)};
+  const cards=runtime.get('batchResults').children;return {posts:runtime.requests.post.length,polls:runtime.requests.poll.length,keys:runtime.requests.post.map(x=>x.options.headers['Idempotency-Key']),bodies:runtime.requests.post.map(x=>JSON.parse(x.options.body)),batchHint:runtime.get('batchHint').textContent,batchLabels:runtime.get('batchCount').children.map(option=>option.textContent),cards:cards.length,preloads:cards.map(card=>card.children.find(child=>child.tagName==='VIDEO').preload),loads:cards.map(card=>card.children.find(child=>child.tagName==='VIDEO').loadCount),cleared:pendingCleared(storage)};
 }
 async function scenarioLegacyPending(){
   const storage=new Map([['hq-matrix-template-pending-v1',JSON.stringify({key:'legacy-key',body:{top_text:'旧标题',bottom_text:'旧行动文案',template_id:'native-bold',bgm:true},job_id:88,started_at:1})]]);
@@ -165,5 +165,27 @@ async function scenarioRefundPendingThenConfirmed(){
   await fillAndSubmit(runtime);await flush(20);var card=runtime.get('batchResults').children[0],before=card.children[2].textContent;await runtime.runTimer();await flush(20);card=runtime.get('batchResults').children[0];return {polls:runtime.requests.poll.length,before,after:card.children[2].textContent,title:card.children[0].textContent,cards:runtime.get('batchResults').children.length,cleared:pendingCleared(storage)};
 }
 
-async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure,instantResult:scenarioInstantResult,delayedResultUrl:scenarioDelayedResultUrl,longDelayedResultUrl:scenarioLongDelayedResultUrl,foregroundResume:scenarioForegroundResume,mediaRetry:scenarioMediaRetry,livePreview:scenarioLivePreview,fontSelect:scenarioFontSelect,lockedFont:scenarioLockedFont,batchFive:scenarioBatchFive,legacyPending:scenarioLegacyPending,mixedFailureReload:scenarioMixedFailureReload,jobFailureRefund:scenarioJobFailureRefund,refundPendingThenConfirmed:scenarioRefundPendingThenConfirmed};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}
+async function scenarioUncertainRequiresExplicitRetry(){
+  const key='matrix-template-stable-retry-key';
+  const storage=new Map([['hq-matrix-template-pending-v2',JSON.stringify({started_at:Date.now()-867000,items:[{key,body:{top_text:'待确认标题',bottom_text:'待确认行动文案',template_id:'native-bold',bgm:true},job_id:'',status:'uncertain',result:null,error:'提交响应丢失',refund_status:''}]})]]);
+  const runtime=createRuntime({post:()=>Promise.resolve(response(200,{job_id:401})),poll:()=>Promise.resolve(response(200,{status:'pending',elapsed_seconds:0}))},storage);
+  await flush(30);const afterLoad={posts:runtime.requests.post.length,status:runtime.get('status').textContent};
+  await runtime.triggerWindow('focus');await flush(20);const afterFocus={posts:runtime.requests.post.length,status:runtime.get('status').textContent};
+  await runtime.triggerDocument('visibilitychange');await flush(20);const afterVisibility={posts:runtime.requests.post.length,status:runtime.get('status').textContent};
+  runtime.get('generateBtn').onclick();await flush(20);
+  return {afterLoad,afterFocus,afterVisibility,afterClick:{posts:runtime.requests.post.length,key:runtime.requests.post[0]&&runtime.requests.post[0].options.headers['Idempotency-Key'],status:runtime.get('status').textContent}};
+}
+
+async function scenarioStaleSubmittingRequiresExplicitRetry(){
+  const key='matrix-template-stale-retry-key';
+  const storage=new Map([['hq-matrix-template-pending-v2',JSON.stringify({started_at:Date.now()-120000,items:[{key,body:{top_text:'旧提交标题',bottom_text:'旧提交行动文案',template_id:'native-bold',bgm:true},job_id:'',status:'submitting',result:null,error:'',refund_status:''}]})]]);
+  const runtime=createRuntime({post:()=>Promise.resolve(response(200,{job_id:402})),poll:()=>Promise.resolve(response(200,{status:'pending',elapsed_seconds:0}))},storage);
+  await flush(30);const afterLoad={posts:runtime.requests.post.length,status:runtime.get('status').textContent};
+  await runtime.triggerWindow('focus');await flush(20);const afterFocus={posts:runtime.requests.post.length,status:runtime.get('status').textContent};
+  await runtime.triggerDocument('visibilitychange');await flush(20);const afterVisibility={posts:runtime.requests.post.length,status:runtime.get('status').textContent};
+  runtime.get('generateBtn').onclick();await flush(20);
+  return {afterLoad,afterFocus,afterVisibility,afterClick:{posts:runtime.requests.post.length,key:runtime.requests.post[0]&&runtime.requests.post[0].options.headers['Idempotency-Key'],status:runtime.get('status').textContent}};
+}
+
+async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure,instantResult:scenarioInstantResult,delayedResultUrl:scenarioDelayedResultUrl,longDelayedResultUrl:scenarioLongDelayedResultUrl,foregroundResume:scenarioForegroundResume,mediaRetry:scenarioMediaRetry,livePreview:scenarioLivePreview,fontSelect:scenarioFontSelect,lockedFont:scenarioLockedFont,batchFive:scenarioBatchFive,legacyPending:scenarioLegacyPending,mixedFailureReload:scenarioMixedFailureReload,jobFailureRefund:scenarioJobFailureRefund,refundPendingThenConfirmed:scenarioRefundPendingThenConfirmed,uncertainExplicitRetry:scenarioUncertainRequiresExplicitRetry,staleSubmittingExplicitRetry:scenarioStaleSubmittingRequiresExplicitRetry};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}
 main().catch(e=>{console.error(e.stack||e);process.exitCode=1});

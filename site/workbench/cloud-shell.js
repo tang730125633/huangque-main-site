@@ -1026,6 +1026,11 @@
   }
   function _logout(){
     var h=authHeaders();
+    try{
+      sessionStorage.removeItem('hq_director_agent_unified_v1');
+      sessionStorage.removeItem('hq_director_agent_v1');
+      sessionStorage.removeItem('hq_director_agent_digital_human_v1');
+    }catch(e){}
     try{ localStorage.removeItem('hq_token'); localStorage.removeItem('hq_user'); localStorage.removeItem('hq_role'); }catch(e){}
     fetch('/api/auth/logout',{method:'POST',credentials:'same-origin',headers:h}).finally(function(){ location.reload(); });
   }

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import concurrent.futures
+import http.server
 import importlib
 import json
 import re
@@ -7,7 +9,10 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
+import urllib.request
 from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +21,27 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVER = ROOT / "server"
+PRODUCTION_LEGACY_SEMANTIC_CONTRACTS = {
+    "v02": {
+        "version": 1,
+        "max_width_px": 996,
+        "layers": {
+            "top1": {"font_size_px": 86, "max_lines": 2},
+            "top2": {"font_size_px": 62, "max_lines": 4},
+            "bottom2": {"font_size_px": 78, "max_lines": 2},
+        },
+    },
+    "v05": {
+        "version": 1,
+        "max_width_px": 996,
+        "layers": {
+            "top1": {"font_size_px": 102, "max_lines": 2},
+            "top2": {"font_size_px": 104, "max_lines": 2},
+            "top3": {"font_size_px": 68, "max_lines": 3},
+            "bottom2": {"font_size_px": 70, "max_lines": 2},
+        },
+    },
+}
 
 
 class MatrixTemplateVideoTests(unittest.TestCase):
@@ -26,7 +52,13 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         cls.module = importlib.import_module("content_domains.matrix_template_video")
 
     def setUp(self):
-        self.module._CACHE.update({"at": 0.0, "templates": [], "fonts": []})
+        self.module._CACHE.update({
+            "at": 0.0,
+            "templates": [],
+            "fonts": [],
+            "max_batch_size": 1,
+            "engine_concurrency": {"ffmpeg": 1, "hyperframes": 1},
+        })
 
     def templates(self):
         templates = [{
@@ -37,8 +69,13 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         templates[-1]["id"] = "poster-split"
         return templates
 
-    def reference_templates(self):
-        return [
+    def reference_templates(self, semantic_variants=None):
+        if semantic_variants is None:
+            semantic_variants = tuple(sorted(self.module._ALL_REFERENCE_VARIANTS))
+        legacy_contract = set(semantic_variants) in (
+            {"v02"}, {"v02", "v05"},
+        )
+        values = [
             {
                 "id": "full-overlay-bold", "name": "沉浸强标题",
                 "engine": "ffmpeg", "font_mode": "selectable",
@@ -59,6 +96,30 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             "font_selectable": False,
             "variant": f"v{index:02d}",
         } for index in range(1, 18)]
+        for item in values:
+            variant = item.get("variant")
+            if variant in semantic_variants:
+                if legacy_contract:
+                    item["semantic_layout"] = json.loads(json.dumps(
+                        PRODUCTION_LEGACY_SEMANTIC_CONTRACTS[variant]
+                    ))
+                else:
+                    item["semantic_layout"] = {
+                        "version": 1,
+                        "max_width_px": 996,
+                        "layers": {
+                            layer: {
+                                "font_size_px": values[0],
+                                "font_weight": values[1],
+                                "max_width_px": values[2],
+                                "max_lines": values[3],
+                            }
+                            for layer, values in self.module._SEMANTIC_CONTRACTS[
+                                variant
+                            ].items()
+                        },
+                    }
+        return values
 
     def test_public_catalog_accepts_transition_counts_but_exposes_only_approved_templates(self):
         response = {"templates": self.templates(), "fonts": [
@@ -106,6 +167,9 @@ class MatrixTemplateVideoTests(unittest.TestCase):
 
         with mock.patch.object(self.module, "_request", return_value={
             "templates": self.reference_templates(),
+            "max_batch_size": 5,
+            "hyperframes_concurrency": 2,
+            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
         }):
             expanded = self.module.public_templates(force=True)
         self.assertEqual(19, len(expanded))
@@ -116,10 +180,140 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             item["font_selectable"] is False
             for item in expanded if item["engine"] == "hyperframes"
         ))
+        v10 = next(item for item in expanded if item.get("variant") == "v10")
+        self.assertEqual(
+            {"font_size_px": 80, "font_weight": 400,
+             "max_width_px": 970, "max_lines": 2},
+            v10["semantic_layout"]["layers"]["bottom2"],
+        )
+        v05 = next(item for item in expanded if item.get("variant") == "v05")
+        self.assertEqual(
+            {"font_size_px": 68, "font_weight": 900,
+             "max_width_px": 996, "max_lines": 2},
+            v05["semantic_layout"]["layers"]["top3"],
+        )
         self.assertEqual(
             {f"v{index:02d}" for index in range(1, 18)},
             {item["variant"] for item in expanded if item["engine"] == "hyperframes"},
         )
+        self.assertEqual(
+            [f"v{index:02d}" for index in range(1, 18)],
+            [item["variant"] for item in expanded if item.get("semantic_layout")],
+        )
+        self.assertEqual({
+            "max_batch_size": 5,
+            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+        }, self.module.public_batch_capability())
+
+        with mock.patch.object(self.module, "_request", return_value={
+            "templates": self.reference_templates(("v02",)),
+            "max_batch_size": 5,
+            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+        }):
+            legacy = self.module.public_templates(force=True)
+        self.assertEqual(
+            ["v02"],
+            [item["variant"] for item in legacy if item.get("semantic_layout")],
+        )
+        self.assertNotIn(
+            "font_weight",
+            next(
+                item for item in legacy if item.get("variant") == "v02"
+            )["semantic_layout"]["layers"]["top1"],
+        )
+        self.assertNotIn(
+            "semantic_layout",
+            next(item for item in legacy if item.get("variant") == "v05"),
+        )
+
+        with mock.patch.object(self.module, "_request", return_value={
+            "templates": self.reference_templates(("v02", "v05")),
+            "max_batch_size": 5,
+            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+        }):
+            transitional = self.module.public_templates(force=True)
+        self.assertEqual(
+            ["v02", "v05"],
+            [
+                item["variant"] for item in transitional
+                if item.get("semantic_layout")
+            ],
+        )
+        self.assertEqual(
+            3,
+            next(
+                item for item in transitional if item.get("variant") == "v05"
+            )["semantic_layout"]["layers"]["top3"]["max_lines"],
+        )
+
+    def test_reference_catalog_rejects_missing_v02_unknown_variant_and_drift(self):
+        invalid_cases = []
+        invalid_cases.append(self.reference_templates(("v05",)))
+
+        invalid_cases.append(self.reference_templates(("v02", "v06")))
+
+        unknown = self.reference_templates()
+        next(item for item in unknown if item.get("variant") == "v17")[
+            "variant"
+        ] = "v18"
+        invalid_cases.append(unknown)
+
+        drift = self.reference_templates()
+        next(item for item in drift if item.get("variant") == "v05")[
+            "semantic_layout"
+        ]["layers"]["top3"]["font_size_px"] = 69
+        invalid_cases.append(drift)
+
+        weight_drift = self.reference_templates()
+        next(item for item in weight_drift if item.get("variant") == "v05")[
+            "semantic_layout"
+        ]["layers"]["top2"]["font_weight"] = 800
+        invalid_cases.append(weight_drift)
+
+        width_drift = self.reference_templates()
+        next(item for item in width_drift if item.get("variant") == "v10")[
+            "semantic_layout"
+        ]["layers"]["bottom2"]["max_width_px"] = 996
+        invalid_cases.append(width_drift)
+
+        mixed_contract = self.reference_templates()
+        mixed_v02 = next(
+            item for item in mixed_contract if item.get("variant") == "v02"
+        )["semantic_layout"]["layers"]
+        for layer in mixed_v02.values():
+            layer.pop("font_weight")
+            layer.pop("max_width_px")
+        invalid_cases.append(mixed_contract)
+
+        legacy_v05_drift = self.reference_templates(("v02", "v05"))
+        next(
+            item for item in legacy_v05_drift if item.get("variant") == "v05"
+        )["semantic_layout"]["layers"]["top3"]["max_lines"] = 2
+        invalid_cases.append(legacy_v05_drift)
+
+        for templates in invalid_cases:
+            with self.subTest(templates=templates), mock.patch.object(
+                self.module, "_request", return_value={
+                    "templates": templates,
+                    "max_batch_size": 5,
+                    "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+                },
+            ), self.assertRaisesRegex(RuntimeError, "语义排版|不完整"):
+                self.module.public_templates(force=True)
+
+    def test_current_production_v02_v05_legacy_catalog_is_accepted(self):
+        templates = self.reference_templates(("v02", "v05"))
+        with mock.patch.object(self.module, "_request", return_value={
+            "templates": templates,
+            "max_batch_size": 5,
+            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+        }):
+            values = self.module.public_templates(force=True)
+        actual = {
+            item["variant"]: item["semantic_layout"]
+            for item in values if item.get("semantic_layout")
+        }
+        self.assertEqual(PRODUCTION_LEGACY_SEMANTIC_CONTRACTS, actual)
 
     def test_availability_accepts_two_fifteen_or_nineteen_healthy_templates(self):
         for count in (2, 15, 19):
@@ -160,7 +354,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         with mock.patch.object(self.module, "require_available"), \
              mock.patch.object(
                  self.module, "public_templates",
-                 return_value=self.reference_templates(),
+                 return_value=self.reference_templates(("v02", "v05")),
              ), \
              mock.patch.object(
                  self.module, "_request", return_value={"payload": expected}
@@ -172,18 +366,24 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             }, "alice")
         self.assertNotIn("font_family", result)
         self.assertNotIn("font_family", request.call_args.args[2])
+        batch_expected = {
+            **expected,
+            "batch_id": "a" * 32,
+            "batch_index": 2,
+            "batch_size": 5,
+        }
         with mock.patch.object(self.module, "require_available"), \
              mock.patch.object(
                  self.module, "public_templates",
-                 return_value=self.reference_templates(),
+                 return_value=self.reference_templates(("v02", "v05")),
              ), \
-             self.assertRaisesRegex(ValueError, "暂仅支持单条"):
-            self.module.validate_payload({
-                **expected,
-                "batch_id": "a" * 32,
-                "batch_index": 1,
-                "batch_size": 2,
-            }, "alice")
+             mock.patch.object(
+                 self.module, "_request", return_value={"payload": batch_expected}
+             ):
+            batch = self.module.validate_payload(batch_expected, "alice")
+        self.assertEqual(("a" * 32, 2, 5), (
+            batch["batch_id"], batch["batch_index"], batch["batch_size"],
+        ))
 
     def test_missing_template_defaults_to_first_approved_layout(self):
         approved = [
@@ -214,6 +414,42 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         )
         self.assertEqual(5, core.MATRIX_JOB_WORKERS)
         self.assertGreaterEqual(core.MAX_USER_ACTIVE_JOBS, 5)
+
+    def test_absolute_expiry_covers_pending_and_running_without_queue_change(self):
+        from content_domains import core
+
+        rows = [
+            {"id": 1, "username": "alice", "cost": 5},
+            {"id": 2, "username": "bob", "cost": 5},
+        ]
+
+        class Connection:
+            def execute(self, sql, params):
+                self.sql = sql
+                self.params = params
+                return self
+
+            def fetchall(self):
+                return rows
+
+            def close(self):
+                return None
+
+        connection = Connection()
+        with mock.patch.object(core, "jdb", return_value=connection), \
+             mock.patch.object(
+                 core, "_fail_job_and_schedule_refund",
+                 side_effect=[True, False],
+             ) as fail, mock.patch.object(
+                 core, "_mark_video_asset_failed",
+             ) as mark, mock.patch.object(self.module, "TOTAL_TIMEOUT", 1200):
+            expired = core._expire_matrix_template_jobs(now=5000)
+        self.assertEqual(1, expired)
+        self.assertIn("status IN ('pending','running')", connection.sql)
+        self.assertEqual(3800, connection.params[1])
+        self.assertEqual(("pending", "running"), fail.call_args_list[0].kwargs["from_states"])
+        self.assertEqual("matrix_template_video", fail.call_args_list[0].kwargs["kind"])
+        mark.assert_called_once_with(1, "matrix_template_video", "模板成片超过总时限")
 
     def test_validate_payload_is_library_only_and_catalog_bound(self):
         with mock.patch.object(self.module, "require_available"), \
@@ -323,6 +559,140 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                  self.assertRaises(feature_flags.FeatureDisabled):
                 self.module.validate_payload(body, "alice")
 
+    def test_v02_semantic_layout_repairs_against_generation_preflight(self):
+        template = next(
+            item for item in self.reference_templates()
+            if item.get("variant") == "v02"
+        )
+        first = {
+            "version": 1, "model": "gpt-4.1-mini",
+            "source_sha256": "a" * 64, "top1_end": 1,
+            "top_break_after": [1], "bottom_break_after": [],
+        }
+        repaired = dict(first, top1_end=5, top_break_after=[5])
+        requests = []
+
+        def preflight(_method, _path, body, **_kwargs):
+            requests.append(dict(body))
+            if len(requests) == 1:
+                raise self.module.MatrixTemplateHTTPError(
+                    400, "HyperFrames 顶部语义断点拆开了完整词组",
+                )
+            return {"payload": dict(body, duration=11)}
+
+        def resolve(_top, _bottom, _template_id, _contract, validator):
+            accepted, feedback = validator(first)
+            self.assertFalse(accepted)
+            self.assertIn("语义断点", feedback)
+            accepted, response = validator(repaired)
+            self.assertTrue(accepted)
+            return repaired, response
+
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(self.module, "public_templates", return_value=[template]), \
+             mock.patch.object(
+                 self.module.matrix_template_semantics, "resolve",
+                 side_effect=resolve,
+             ) as resolve_call, \
+             mock.patch.object(self.module, "_request", side_effect=preflight):
+            result = self.module.validate_payload({
+                "top_text": "团队8个人，每天产出100条短视频",
+                "bottom_text": "评论区扣888",
+                "template_id": template["id"],
+                "bgm": False,
+            })
+        self.assertEqual(repaired, result["semantic_layout"])
+        self.assertEqual((first, repaired), (
+            requests[0]["semantic_layout"], requests[1]["semantic_layout"],
+        ))
+        resolve_call.assert_called_once()
+
+    def test_v05_without_contract_keeps_legacy_preflight(self):
+        template = next(
+            item for item in self.reference_templates(("v02",))
+            if item.get("variant") == "v05"
+        )
+
+        def preflight(_method, _path, body, **_kwargs):
+            return {"payload": dict(body, duration=13)}
+
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(
+                 self.module, "public_templates", return_value=[template],
+             ), \
+             mock.patch.object(
+                 self.module.matrix_template_semantics, "resolve",
+             ) as resolve, \
+             mock.patch.object(self.module, "_request", side_effect=preflight):
+            result = self.module.validate_payload({
+                "top_text": "团队8个人，每天产出100条短视频",
+                "bottom_text": "评论区扣111",
+                "template_id": template["id"],
+                "bgm": False,
+            })
+        resolve.assert_not_called()
+        self.assertNotIn("semantic_layout", result)
+
+    def test_v02_http_200_normalization_is_repaired_once_for_concurrent_batch(self):
+        template = next(
+            item for item in self.reference_templates()
+            if item.get("variant") == "v02"
+        )
+        top = "覆盖3.5万人，每天交流项目"
+        bottom = "评论区扣111"
+        first = {
+            "version": 1, "model": "gpt-4.1-mini",
+            "source_sha256": "b" * 64, "top1_end": top.index("，"),
+            "top_break_after": [3, top.index("，")],
+            "bottom_break_after": [],
+        }
+        repaired = dict(first, top_break_after=[top.index("，")])
+
+        def generated(_top, _bottom, _contract, *, previous=None,
+                      feedback=""):
+            return repaired if previous is not None and feedback else first
+
+        def preflight(_method, _path, body, **_kwargs):
+            semantic = body["semantic_layout"]
+            echoed = (
+                dict(semantic, top_break_after=[])
+                if semantic == first else semantic
+            )
+            return {
+                "payload": dict(body, semantic_layout=echoed, duration=11),
+            }
+
+        for workers in (2, 5):
+            with self.subTest(workers=workers):
+                self.module.matrix_template_semantics._CACHE.clear()
+                with mock.patch.object(self.module, "require_available"), \
+                     mock.patch.object(
+                         self.module, "public_templates", return_value=[template],
+                     ), \
+                     mock.patch.object(
+                         self.module.matrix_template_semantics, "generate",
+                         side_effect=generated,
+                     ) as generate, \
+                     mock.patch.object(
+                         self.module, "_request", side_effect=preflight,
+                     ), concurrent.futures.ThreadPoolExecutor(
+                         max_workers=workers,
+                     ) as pool:
+                    futures = [
+                        pool.submit(self.module.validate_payload, {
+                            "top_text": top,
+                            "bottom_text": bottom,
+                            "template_id": template["id"],
+                            "bgm": False,
+                        }, "alice")
+                        for _ in range(workers)
+                    ]
+                    results = [future.result() for future in futures]
+                self.assertTrue(all(
+                    item["semantic_layout"] == repaired for item in results
+                ))
+                self.assertEqual(2, generate.call_count)
+
     def test_generation_url_allows_https_or_loopback_only(self):
         for value in (
             "https://generation.example.com/internal/matrix-template",
@@ -359,6 +729,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             "template_id": "native-bold", "bgm": True, "duration": None,
         }), mock.patch.object(self.module, "_request", side_effect=responses) as request, \
              mock.patch.object(self.module, "_download", return_value=("video/matrix_template_77.mp4", 4096)) as download, \
+             mock.patch.object(self.module, "_persist_runtime", return_value=True), \
              mock.patch.object(self.module, "public_url", return_value="/api/gen/file/token"), \
              mock.patch.object(self.module.time, "sleep"):
             result = self.module.generate(raw)
@@ -366,11 +737,217 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         self.assertEqual("/api/gen/file/token", result["video_url"])
         self.assertEqual("a" * 32, result["provider_task_id"])
         self.assertEqual("matrix-template-77", request.call_args_list[0].kwargs["request_id"])
-        download.assert_called_once_with("/v1/files/%s.mp4" % ("a" * 32), "77")
+        self.assertEqual(
+            ("/v1/files/%s.mp4" % ("a" * 32), "77"),
+            download.call_args.args,
+        )
+        self.assertLessEqual(download.call_args.kwargs["timeout"], 240)
+        self.assertGreater(download.call_args.kwargs["deadline_at"], 0)
         self.assertEqual("matrix_template", result["mode"])
         self.assertEqual(("done", "1080p", "9:16"), (
             result["phase"], result["resolution"], result["ratio"]
         ))
+
+    def test_generate_uses_submission_time_as_absolute_deadline(self):
+        with mock.patch.object(
+            self.module, "_runtime",
+            return_value={"created_at": 100, "payload": {}},
+        ), mock.patch.object(self.module.time, "time", return_value=1400), \
+             mock.patch.object(self.module, "validate_payload") as validate, \
+             mock.patch.object(self.module, "_request") as request, \
+             self.assertRaisesRegex(RuntimeError, "等待超时"):
+            self.module.generate({"_job_id": 88, "_username": "alice"})
+        validate.assert_not_called()
+        request.assert_not_called()
+
+    def test_generate_rechecks_deadline_after_preflight_before_post(self):
+        clock = {"now": 100.0}
+
+        def validate(*_args, **_kwargs):
+            clock["now"] = 1301.0
+            return {"template_id": "native-bold"}
+
+        with mock.patch.object(
+            self.module, "_runtime",
+            return_value={"created_at": 100, "payload": {}},
+        ), mock.patch.object(
+            self.module.time, "time", side_effect=lambda: clock["now"],
+        ), mock.patch.object(
+            self.module, "validate_payload", side_effect=validate,
+        ), mock.patch.object(self.module, "_request") as request, \
+             mock.patch.object(self.module, "_persist_runtime") as persist, \
+             self.assertRaisesRegex(RuntimeError, "生成超时"):
+            self.module.generate({"_job_id": 90, "_username": "alice"})
+        request.assert_not_called()
+        persist.assert_not_called()
+
+    def test_generate_resumes_persisted_provider_job_without_second_post(self):
+        provider_id = "c" * 32
+        stored = {
+            "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
+            "template_id": "native-bold", "bgm": True, "duration": 8,
+            "_matrix_runtime": {
+                "phase": "provider_queued", "provider_job_id": provider_id,
+            },
+        }
+        with mock.patch.object(
+            self.module, "_runtime",
+            return_value={
+                "created_at": int(self.module.time.time()), "payload": stored,
+            },
+        ), mock.patch.object(self.module, "validate_payload") as validate, \
+             mock.patch.object(
+                 self.module, "_request",
+                 return_value={"status": "failed", "error": "renderer failed"},
+             ) as request, mock.patch.object(self.module.time, "sleep"), \
+             self.assertRaisesRegex(RuntimeError, "renderer failed"):
+            self.module.generate({"_job_id": 91, "_username": "alice"})
+        validate.assert_not_called()
+        self.assertEqual(1, request.call_count)
+        self.assertEqual(("GET", "/v1/jobs/" + provider_id), request.call_args.args)
+
+    def test_generate_does_not_post_without_durable_submitting_phase(self):
+        with mock.patch.object(
+            self.module, "_runtime",
+            return_value={
+                "created_at": int(self.module.time.time()), "payload": {},
+            },
+        ), mock.patch.object(
+            self.module, "validate_payload", return_value={
+                "template_id": "native-bold",
+            },
+        ), mock.patch.object(
+            self.module, "_persist_runtime", return_value=False,
+        ), mock.patch.object(self.module, "_request") as request, \
+             self.assertRaisesRegex(RuntimeError, "状态保存失败"):
+            self.module.generate({"_job_id": 92, "_username": "alice"})
+        request.assert_not_called()
+
+    def test_download_discards_partial_file_when_deadline_crosses_during_read(self):
+        clock = {"now": 100.0}
+
+        class SlowResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _size):
+                clock["now"] = 101.0
+                return b"\x00\x00\x00\x18ftyp" + (b"x" * 2048)
+
+        opener = mock.Mock()
+        opener.open.return_value = SlowResponse()
+        with tempfile.TemporaryDirectory() as temp, \
+             mock.patch.object(self.module, "OUT_DIR", Path(temp)), \
+             mock.patch.object(self.module, "_safe_file_url", return_value="https://example.test/file.mp4"), \
+             mock.patch.object(self.module, "_NO_PROXY", opener), \
+             mock.patch.object(self.module.time, "time", side_effect=lambda: clock["now"]), \
+             self.assertRaisesRegex(RuntimeError, "生成超时"):
+            self.module._download(
+                "/file.mp4", "slow-job", timeout=10, deadline_at=100.5,
+            )
+        self.assertFalse((Path(temp) / "video" / "matrix_template_slow-job.mp4").exists())
+        self.assertFalse((Path(temp) / "video" / "matrix_template_slow-job.mp4.part").exists())
+
+    def test_download_real_trickle_stream_obeys_wall_clock_deadline(self):
+        class TrickleHandler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", "20")
+                self.end_headers()
+                for _index in range(20):
+                    try:
+                        self.wfile.write(b"x")
+                        self.wfile.flush()
+                    except (
+                        BrokenPipeError, ConnectionAbortedError,
+                        ConnectionResetError,
+                    ):
+                        break
+                    time.sleep(0.1)
+
+            def log_message(self, _format, *_args):
+                return
+
+        server = http.server.ThreadingHTTPServer(
+            ("127.0.0.1", 0), TrickleHandler,
+        )
+        server.daemon_threads = True
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        url = "http://127.0.0.1:%d/video.mp4" % server.server_port
+        try:
+            with tempfile.TemporaryDirectory() as temp, \
+                 mock.patch.object(self.module, "OUT_DIR", Path(temp)), \
+                 mock.patch.object(self.module, "_safe_file_url", return_value=url), \
+                 mock.patch.object(
+                     self.module, "_NO_PROXY",
+                     urllib.request.build_opener(
+                         urllib.request.ProxyHandler({})
+                     ),
+                 ):
+                started = time.monotonic()
+                with self.assertRaisesRegex(RuntimeError, "生成超时"):
+                    self.module._download(
+                        url, "real-trickle", timeout=10,
+                        deadline_at=time.time() + 0.25,
+                    )
+                elapsed = time.monotonic() - started
+                self.assertLess(elapsed, 1.0)
+                target = Path(temp) / "video/matrix_template_real-trickle.mp4"
+                self.assertFalse(target.exists())
+                self.assertFalse(target.with_suffix(".mp4.part").exists())
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_generate_persists_provider_identity_and_progress(self):
+        responses = [
+            {"job_id": "b" * 32},
+            {"status": "running"},
+            {"status": "failed", "error": "renderer failed"},
+        ]
+        with mock.patch.object(
+            self.module, "_runtime",
+            return_value={"created_at": int(self.module.time.time()), "payload": {}},
+        ), mock.patch.object(self.module, "validate_payload", return_value={
+            "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
+            "template_id": "full-overlay-bold", "bgm": True, "duration": 8,
+        }), mock.patch.object(
+            self.module, "_request", side_effect=responses,
+        ), mock.patch.object(
+            self.module, "_persist_runtime", return_value=True,
+        ) as persist, mock.patch.object(self.module.time, "sleep"), \
+             self.assertRaisesRegex(RuntimeError, "renderer failed"):
+            self.module.generate({"_job_id": 89, "_username": "alice"})
+        provider = next(
+            call for call in persist.call_args_list
+            if call.kwargs.get("provider_job_id")
+        )
+        self.assertEqual("b" * 32, provider.kwargs["provider_job_id"])
+        self.assertEqual("provider_queued", provider.kwargs["phase"])
+        self.assertTrue(any(
+            call.kwargs.get("phase") == "rendering"
+            for call in persist.call_args_list
+        ))
+
+    def test_public_lifecycle_uses_server_time_and_hides_provider_id(self):
+        row = {
+            "status": "running", "created_at": 100,
+            "payload": json.dumps({"_matrix_runtime": {
+                "phase": "rendering", "provider_job_id": "secret-provider-id",
+                "last_progress_at": 180,
+            }}),
+        }
+        value = self.module.public_lifecycle(row, now=250)
+        self.assertEqual("rendering", value["phase"])
+        self.assertEqual(150, value["elapsed_seconds"])
+        self.assertEqual(100 + self.module.TOTAL_TIMEOUT, value["deadline_at"])
+        self.assertTrue(value["provider_submitted"])
+        self.assertNotIn("provider_job_id", value)
 
     def test_completed_result_archives_in_real_video_assets_schema(self):
         from content_domains import core, video
@@ -615,7 +1192,9 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertNotIn('id="bgm"', page)
         self.assertIn('id="fontFamily"', page)
         self.assertIn('id="batchCount"', page)
-        self.assertIn("Math.min(5", page)
+        self.assertIn("Math.min(batchLimit", page)
+        self.assertNotIn("排队", page)
+        self.assertNotIn("（并行）", page)
         self.assertIn("body.font_family=selectedFont", page)
         self.assertNotIn("素材来源", page)
         self.assertIn("template_id:activeTemplate,bgm:true", page)
@@ -716,6 +1295,35 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual(1, result["loads"])
         self.assertTrue(result["cleared"])
 
+    def test_uncertain_submission_requires_explicit_retry(self):
+        result = self.runtime("uncertainExplicitRetry")
+        for phase in ("afterLoad", "afterFocus", "afterVisibility"):
+            self.assertEqual(0, result[phase]["posts"])
+            self.assertIn("点击生成确认重试", result[phase]["status"])
+            self.assertNotIn("867 秒", result[phase]["status"])
+            self.assertNotIn("正在提交", result[phase]["status"])
+        self.assertEqual(1, result["afterClick"]["posts"])
+        self.assertEqual(
+            "matrix-template-stable-retry-key",
+            result["afterClick"]["key"],
+        )
+        self.assertIn("0 秒", result["afterClick"]["status"])
+        self.assertNotIn("867 秒", result["afterClick"]["status"])
+
+    def test_stale_unaccepted_submission_is_normalized_before_restore(self):
+        result = self.runtime("staleSubmittingExplicitRetry")
+        for phase in ("afterLoad", "afterFocus", "afterVisibility"):
+            self.assertEqual(0, result[phase]["posts"])
+            self.assertIn("点击生成确认重试", result[phase]["status"])
+            self.assertNotIn("生成中", result[phase]["status"])
+        self.assertEqual(1, result["afterClick"]["posts"])
+        self.assertEqual(
+            "matrix-template-stale-retry-key",
+            result["afterClick"]["key"],
+        )
+        self.assertIn("0 秒", result["afterClick"]["status"])
+        self.assertNotIn("120 秒", result["afterClick"]["status"])
+
     def test_result_video_retries_media_load_without_page_refresh(self):
         result = self.runtime("mediaRetry")
         self.assertEqual("/retry-video", result["before"]["src"])
@@ -749,9 +1357,14 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual("模板内置", result["source"])
         self.assertNotIn("font_family", result["body"])
         self.assertEqual("ref-01-fixture-01", result["body"]["template_id"])
-        self.assertTrue(result["batchDisabled"])
-        self.assertEqual("1", result["batchValue"])
-        self.assertEqual("HyperFrames模板暂仅支持单条", result["batchHint"])
+        self.assertFalse(result["batchDisabled"])
+        self.assertEqual("5", result["batchValue"])
+        self.assertEqual("最多5条", result["batchHint"])
+        self.assertEqual(5, result["posts"])
+        self.assertTrue(all(body["batch_size"] == 5 for body in result["bodies"]))
+        self.assertEqual([1, 2, 3, 4, 5], [
+            body["batch_index"] for body in result["bodies"]
+        ])
 
     def test_batch_five_submits_distinct_jobs_and_renders_all_results(self):
         result = self.runtime("batchFive")
@@ -765,6 +1378,11 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual([1, 2, 3, 4, 5], [body["batch_index"] for body in result["bodies"]])
         self.assertTrue(all(body["batch_size"] == 5 for body in result["bodies"]))
         self.assertEqual(5, result["cards"])
+        self.assertEqual("最多5条", result["batchHint"])
+        self.assertEqual(
+            ["1条", "2条", "3条", "4条", "5条"],
+            result["batchLabels"],
+        )
         self.assertEqual(["metadata"] * 5, result["preloads"])
         self.assertEqual([1] * 5, result["loads"])
         self.assertTrue(result["cleared"])

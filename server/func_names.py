@@ -154,6 +154,8 @@ def func_name(kind, payload=None):
 # 会自动查全表，防止以后有人往中间插一条把后面的吃掉。
 PATH_FUNCS = [
     ("/api/gen/file/", "取结果文件"),
+    ("/api/gen/director_agent/produce", "编导 · 顾客助手 · 确认生产"),
+    ("/api/gen/director_agent", "编导 · 顾客助手 · 对话"),
     ("/api/gen/video/assets", "视频 · 读历史"),
     ("/api/gen/video/avatars", "数字人形象 · 读列表"),
     ("/api/gen/video/avatar-", "数字人形象 · 改名/删除"),

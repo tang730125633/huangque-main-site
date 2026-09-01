@@ -52,6 +52,9 @@ def _number(value, field, minimum, maximum):
 
 def _collect_payload(payload):
     _strict_payload(payload, {"url", "want"}, ("url", "want"))
+    want = payload["want"]
+    if not isinstance(want, list) or len(want) != 1 or want[0] not in {"comments", "video", "transcript"}:
+        raise ValueError("want 仅支持 comments、video 或 transcript 中的一项")
     url = _text(payload["url"], "url", 1, 2048)
     try:
         parsed = urllib.parse.urlsplit(url)
@@ -61,16 +64,15 @@ def _collect_payload(payload):
         raise ValueError("url 格式不合法")
     allowed = ("douyin.com", "iesdouyin.com", "xiaohongshu.com", "xhslink.com", "xhslink.cn",
                "bilibili.com", "b23.tv")
+    if want == ["comments"]:
+        allowed += ("x.com", "twitter.com")
     channels_share = (parsed.scheme == "https" and host == "weixin.qq.com" and port in (None, 443)
                       and parsed.path.startswith("/sph/") and parsed.path[len("/sph/"):].isalnum())
     if (parsed.scheme not in {"http", "https"} or parsed.username or parsed.password
             or port not in (None, 80, 443)
             or not (channels_share or any(
                 host == suffix or host.endswith("." + suffix) for suffix in allowed))):
-        raise ValueError("url 仅支持抖音、小红书、视频号或 B 站公开链接")
-    want = payload["want"]
-    if not isinstance(want, list) or len(want) != 1 or want[0] not in {"comments", "video", "transcript"}:
-        raise ValueError("want 仅支持 comments、video 或 transcript 中的一项")
+        raise ValueError("url 仅支持抖音、小红书、视频号、B 站或 X 单帖公开链接")
     return {"url": url, "want": list(want)}
 
 

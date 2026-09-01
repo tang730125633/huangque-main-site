@@ -1051,6 +1051,7 @@ class HQCLIContentTests(unittest.TestCase):
             ("collect", {"url": "https://weixin.qq.com/sph/Abc123", "want": ["video"]}, 24, "collect"),
             ("collect", {"url": "https://weixin.qq.com:443/sph/Abc123", "want": ["video"]}, 24, "collect"),
             ("collect", {"url": "https://b23.tv/keSUqLz", "want": ["video"]}, 24, "collect"),
+            ("collect", {"url": "https://x.com/CrazyKaomei/status/2093502767776366755", "want": ["comments"]}, 24, "collect"),
             ("collect_search", {"platform": "xhs", "keyword": "轻食创业", "page": 2}, 1, "collect"),
             ("leads", {
                 "keyword": "美容院拓客", "platforms": ["douyin"],
@@ -1065,13 +1066,21 @@ class HQCLIContentTests(unittest.TestCase):
                     self.assertEqual((200, cost, 100), (status, result["cost"], result["points"]))
         self.assertEqual([item[3] for item in cases], checked)
 
+        for want in (["video"], ["transcript"]):
+            status, _result = self._post("/api/gen/cli/quote", {
+                "kind": "collect", "payload": {
+                    "url": "https://x.com/CrazyKaomei/status/2093502767776366755", "want": want,
+                },
+            })
+            self.assertEqual(400, status)
+
         status, result = self._post("/api/gen/cli/quote", {
             "kind": "collect", "payload": {
                 "url": "https://douyin.com.evil.example/video/1", "want": ["video"],
             },
         })
         self.assertEqual(400, status)
-        self.assertIn("仅支持抖音、小红书、视频号或 B 站", result["detail"])
+        self.assertIn("仅支持抖音、小红书、视频号、B 站或 X 单帖", result["detail"])
         for invalid_channels in (
                 "http://weixin.qq.com/sph/Abc123",
                 "https://weixin.qq.com/sph/",
@@ -1094,7 +1103,7 @@ class HQCLIContentTests(unittest.TestCase):
             },
         })
         self.assertEqual(400, status)
-        self.assertIn("仅支持抖音、小红书、视频号或 B 站", result["detail"])
+        self.assertIn("仅支持抖音、小红书、视频号、B 站或 X 单帖", result["detail"])
         status, result = self._post("/api/gen/cli/quote", {
             "kind": "leads", "payload": {
                 "keyword": "", "platforms": ["channels"], "count": 20,

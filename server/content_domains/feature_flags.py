@@ -79,6 +79,7 @@ CATALOG = [
     {"key": "dl", "name": "下载代理", "desc": "无水印视频下载代理", "page": "内容爬取", "service": "dl"},
     {"key": "copy", "name": "文案生成", "desc": "营销文案生成", "page": "文案编导", "service": "content"},
     {"key": "canvas_agent", "name": "画布 Agent", "desc": "读取画布并生成需确认的操作建议", "page": "无限画布", "service": "content", "default_enabled": False},
+    {"key": "director_agent", "name": "编导助手", "desc": "在悬浮对话框回答问题、控制安全页面动作，并由顾客确认后生产", "page": "文案编导", "service": "content", "default_enabled": False},
     {
         "key": "pixelle_text_video",
         "name": "文案成片",
