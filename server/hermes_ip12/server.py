@@ -4396,6 +4396,8 @@ def api_ip12_upload():
         "Authorization": "Bearer " + _client_token,
         "Content-Type": file.mimetype or "application/octet-stream",
         "X-HQ-%s-SHA256" % _UPLOAD_KINDS[kind]: digest,
+        # 用户在前端点上传按钮选文件 = 显式确认行为，代理代传确认头
+        "X-HQ-Confirm": "true",
     }
     try:
         resp = _requests.post(
