@@ -8761,11 +8761,23 @@ def process_chat_request(body):
                     cid, user_message, material_production_id, material_revision_kind,
                     body.get("expected_revision"), request_id,
                 )
-            elif _resource_query_intent(user_message) and semantic_decision:
-                # 确定性兜底：用户明确要查资源（形象/音色/资产/余额/点数）时，
+            elif _resource_query_intent(user_message):
+                # 确定性兜底（不依赖语义路由开关）：用户明确要查资源（形象/音色/资产/余额/点数）时，
                 # 服务端真实调工具层查询并返回结果，绝不允许模型空口"帮你查一下"。
+                _synth_decision = {
+                    "intent": "delegate",
+                    "delegate_to": "production_content_agent",
+                    "tool": "production.delegate",
+                    "tool_policy": "prepare_only",
+                    "awaiting": "confirmation",
+                    "payment_policy": {"quote_required": True, "explicit_confirmation_required": True},
+                    "reply": "",
+                    "memory_updates": [],
+                    "references": {},
+                    "components": [],
+                }
                 result, status = _process_production_delegate_turn(
-                    cid, user_message, semantic_decision, memory_snapshot or {},
+                    cid, user_message, _synth_decision, memory_snapshot or {},
                     body.get("expected_revision"), request_id,
                 )
             elif semantic_decision and semantic_decision.get("intent") == "pause":
