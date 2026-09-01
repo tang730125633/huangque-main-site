@@ -4311,12 +4311,17 @@ def _finalize_production_result(cid, job_id):
                 prods = {str(item.get("job_id") or i): item for i, item in enumerate(prods) if isinstance(item, dict)}
                 convo["productions"] = prods
             _inner_text = str(inner.get("text") or "") if isinstance(inner, dict) else ""
+            _kind = str(task.get("kind") or "")
+            _kind_label = {"script_to_video": "文案成片", "matrix": "模板成片",
+                           "video": "数字人口播", "image": "图片", "audio": "音频"}.get(_kind, "成品")
             prods[str(job_id)] = {
                 "job_id": str(job_id), "phase": phase,
                 "video_url": inner.get("video_url") if isinstance(inner, dict) else None,
                 "audio_url": inner.get("audio_url") if isinstance(inner, dict) else None,
                 "cover_url": cover_url or None,
                 "title": _inner_text[:30],
+                "kind": _kind,
+                "kind_label": _kind_label,
                 "created_at": time.time(),
             }
             save_conversation(cid, convo)
@@ -8040,16 +8045,23 @@ def _process_semantic_reply(cid, user_message, decision, expected_revision=None,
         with CONVERSATION_STATE_LOCK:
             _mc = owned_conversation(cid)
         media_items = []
-        for rec in _production_records(_mc or {}):
-            if str(rec.get("status") or rec.get("phase") or "") != "done":
-                continue
-            if not (rec.get("video_url") or rec.get("audio_url")):
-                continue
+        _refs = decision.get("references") if isinstance(decision.get("references"), dict) else {}
+        _ref_pid = str(_refs.get("production_id") or "")
+        _done = [
+            rec for rec in _production_records(_mc or {})
+            if str(rec.get("status") or rec.get("phase") or "") == "done"
+            and (rec.get("video_url") or rec.get("audio_url"))
+        ]
+        if _ref_pid:
+            _done = [rec for rec in _done if str(rec.get("job_id") or rec.get("id") or "") == _ref_pid] or _done
+        # 默认只给最新一条，避免把全部历史成品铺给用户
+        for rec in _done[-1:]:
             media_items.append({
                 "video_url": rec.get("video_url") or "",
                 "audio_url": rec.get("audio_url") or "",
                 "cover_url": rec.get("cover_url") or "",
                 "title": rec.get("title") or "",
+                "kind_label": rec.get("kind_label") or "",
             })
         if media_items:
             result["media"] = media_items
