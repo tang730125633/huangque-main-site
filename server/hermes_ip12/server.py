@@ -4322,15 +4322,32 @@ def api_ip12_production_submit():
         message = "用%s和%s生成%s的数字人口播视频" % (
             avatar or "已有形象", voice or "默认音色", script)
     elif kind == "text_video":
-        extra = str(payload.get("extra") or "")
         template = str(payload.get("template") or "")
-        style = str(payload.get("style") or "")
-        voice = str(payload.get("voice") or "")
         mode = str(payload.get("mode") or "generate")
-        message = ("把文案《%s》做成视频：模板用%s，风格%s，音色%s，模式%s。"
-                   "%s" % (script, template or "默认", style or "默认", voice or "默认",
-                           "全自动成片" if mode == "generate" else "固定文案分镜",
-                           ("\n补充要求：" + extra) if extra else ""))
+        # 取文案全文（客户选「文案一/二/三」→ 真实内容），让子 Agent 信息足够直接报价
+        script_text = ""
+        with CONVERSATION_STATE_LOCK:
+            _tv_convo = owned_conversation(cid)
+        if _tv_convo is not None:
+            _pack = ((_tv_convo.get("deliverables") or {}).get("6") or {})
+            _scripts = []
+            for _cat in (_pack.get("categories") or []):
+                for _tp in (_cat.get("topics") or []):
+                    _vs = _tp.get("versions") or []
+                    if _vs:
+                        _scripts.append((_tp.get("title") or "", str(_vs[-1].get("content") or "")))
+            _idx = {"文案一": 1, "文案二": 2, "文案三": 3}.get(str(script), 1) - 1
+            if 0 <= _idx < len(_scripts):
+                script_text = _scripts[_idx][1][:900]
+        message = (
+            "请直接生成一条文案成片（模板已经选好，不要再查模板列表）：\n"
+            "文案内容：%s\n模板 key：%s\n模式：%s\n"
+            "风格和音色由系统自动搭配。直接报价。" % (
+                script_text or ("用已确认的第 %s 篇文案" % script),
+                template or "默认竖版模板",
+                "全自动成片" if mode == "generate" else "固定文案分镜",
+            )
+        )
     elif kind == "image":
         message = "为%s生成一张配图" % script
     else:
