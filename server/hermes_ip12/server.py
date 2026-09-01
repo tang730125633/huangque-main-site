@@ -1124,6 +1124,7 @@ _SOURCE_FREE_ACTIONS = _DIRECT_READ_ACTIONS | _NAVIGATION_ONLY_ACTIONS | {
     "video-compose-analyze", "video-compose-review", "video-compose-render",
     "canvas-create", "digital-presenter-create", "digital-presenter-update",
     "image-generate", "video-generate",  # 文生图/文生视频按用户描述生成，不依赖已确认文案
+    "text-video-generate",  # 文案成片自带文案选择（准备卡），不绑 content_target
 }
 
 _EXPLICIT_MEDIA_ACTIONS = {
