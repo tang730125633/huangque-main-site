@@ -1253,6 +1253,24 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual(2, result["polls"])
         self.assertTrue(result["cleared"])
 
+    def test_poll_http_5xx_keeps_busy_and_recovers(self):
+        result = self.runtime("pollHttpFailure")
+        self.assertEqual(1, result["before"]["polls"])
+        self.assertTrue(result["before"]["busy"])
+        self.assertFalse(result["before"]["cleared"])
+        self.assertEqual(2, result["polls"])
+        self.assertEqual("/http-poll-recovered-video", result["src"])
+        self.assertTrue(result["cleared"])
+
+    def test_repeated_poll_failures_keep_recovering_without_customer_click(self):
+        result = self.runtime("pollRecoveryBeyondFive")
+        self.assertEqual(1, result["before"]["polls"])
+        self.assertFalse(result["before"]["cleared"])
+        self.assertEqual(7, result["polls"])
+        self.assertEqual("/poll-recovered-video", result["src"])
+        self.assertNotIn("点击生成", result["status"])
+        self.assertTrue(result["cleared"])
+
     def test_completed_single_result_loads_into_right_player_immediately(self):
         result = self.runtime("instantResult")
         self.assertEqual("/instant-video", result["src"])
@@ -1295,34 +1313,113 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual(1, result["loads"])
         self.assertTrue(result["cleared"])
 
-    def test_uncertain_submission_requires_explicit_retry(self):
-        result = self.runtime("uncertainExplicitRetry")
-        for phase in ("afterLoad", "afterFocus", "afterVisibility"):
-            self.assertEqual(0, result[phase]["posts"])
-            self.assertIn("点击生成确认重试", result[phase]["status"])
-            self.assertNotIn("867 秒", result[phase]["status"])
-            self.assertNotIn("正在提交", result[phase]["status"])
-        self.assertEqual(1, result["afterClick"]["posts"])
+    def test_uncertain_submission_recovers_without_customer_click(self):
+        result = self.runtime("uncertainAutoRecovery")
+        self.assertEqual(1, result["afterLoad"]["posts"])
+        self.assertIn("正在自动确认提交结果", result["afterLoad"]["status"])
+        self.assertIn("不会重复扣点", result["afterLoad"]["status"])
+        self.assertNotIn("867 秒", result["afterLoad"]["status"])
+        self.assertTrue(result["afterLoad"]["busy"])
+        self.assertEqual(5, result["posts"])
         self.assertEqual(
-            "matrix-template-stable-retry-key",
-            result["afterClick"]["key"],
+            ["matrix-template-stable-retry-key"] * 5,
+            result["keys"],
         )
-        self.assertIn("0 秒", result["afterClick"]["status"])
-        self.assertNotIn("867 秒", result["afterClick"]["status"])
+        self.assertNotIn("点击生成确认重试", result["status"])
+        self.assertEqual("/auto-recovered-video", result["src"])
+        self.assertTrue(result["cleared"])
 
-    def test_stale_unaccepted_submission_is_normalized_before_restore(self):
-        result = self.runtime("staleSubmittingExplicitRetry")
-        for phase in ("afterLoad", "afterFocus", "afterVisibility"):
-            self.assertEqual(0, result[phase]["posts"])
-            self.assertIn("点击生成确认重试", result[phase]["status"])
-            self.assertNotIn("生成中", result[phase]["status"])
-        self.assertEqual(1, result["afterClick"]["posts"])
+    def test_stale_unaccepted_submission_recovers_without_customer_click(self):
+        result = self.runtime("staleSubmittingAutoRecovery")
+        self.assertEqual(1, result["posts"])
         self.assertEqual(
             "matrix-template-stale-retry-key",
-            result["afterClick"]["key"],
+            result["key"],
         )
-        self.assertIn("0 秒", result["afterClick"]["status"])
-        self.assertNotIn("120 秒", result["afterClick"]["status"])
+        self.assertEqual("/stale-recovered-video", result["src"])
+        self.assertNotIn("点击生成", result["status"])
+        self.assertTrue(result["cleared"])
+
+    def test_pending_submission_is_never_replayed_for_another_account(self):
+        result = self.runtime("crossAccountPending")
+        self.assertEqual(0, result["posts"])
+        self.assertEqual(0, result["polls"])
+        self.assertTrue(result["aliceRetained"])
+        self.assertTrue(result["ownerlessRemoved"])
+        self.assertEqual("", result["top"])
+
+    def test_dynamic_account_switch_stops_old_account_post_and_poll(self):
+        result = self.runtime("dynamicAccountSwitch")
+        self.assertEqual(["alice", "alice"], result["before"]["postAccounts"])
+        self.assertEqual(["alice"], result["before"]["pollAccounts"])
+        self.assertTrue(result["before"]["alicePending"])
+        self.assertEqual(0, result["bobPosts"])
+        self.assertEqual(0, result["bobPolls"])
+        self.assertEqual(["alice", "alice"], result["postAccounts"])
+        self.assertEqual(["alice"], result["pollAccounts"])
+        self.assertTrue(result["alicePending"])
+        self.assertFalse(result["bobPending"])
+        self.assertEqual("", result["top"])
+        self.assertEqual("", result["bottom"])
+        self.assertNotIn("AI 工作流", result["status"])
+
+    def test_auth_failure_before_retry_stops_paid_submission(self):
+        result = self.runtime("retryAuthFailure")
+        self.assertEqual(1, result["before"]["posts"])
+        self.assertTrue(result["before"]["pending"])
+        self.assertEqual(1, result["posts"])
+        self.assertEqual(0, result["polls"])
+        self.assertTrue(result["pending"])
+        self.assertEqual("", result["top"])
+        self.assertIn("auth unavailable", result["status"])
+
+    def test_concurrent_stale_auth_restores_new_owner_pending_once(self):
+        result = self.runtime("concurrentStaleAuth")
+        self.assertEqual(["alice", "bob"], result["postAccounts"])
+        self.assertEqual(1, result["bobPosts"])
+        self.assertEqual(1, result["bobPolls"])
+        self.assertEqual("bob-own-key", result["postKeys"][1])
+        self.assertTrue(result["alicePending"])
+        self.assertFalse(result["bobPending"])
+        self.assertEqual("Bob 标题", result["top"])
+        self.assertEqual("/bob-own-video", result["src"])
+
+    def test_foreground_resume_does_not_duplicate_inflight_requests(self):
+        result = self.runtime("foregroundSingleFlight")
+        self.assertEqual(1, result["postsWhileInflight"])
+        self.assertEqual(1, result["pollsWhileInflight"])
+        self.assertEqual("/single-flight-video", result["src"])
+        self.assertTrue(result["cleared"])
+
+    def test_hung_submission_times_out_and_recovers_without_stale_callback(self):
+        result = self.runtime("hungSubmissionTimeout")
+        self.assertEqual(1, result["before"]["posts"])
+        self.assertEqual(1, result["afterTimeout"]["posts"])
+        self.assertIn("自动确认", result["afterTimeout"]["status"])
+        self.assertFalse(result["afterTimeout"]["cleared"])
+        self.assertEqual(2, result["afterRecovery"]["posts"])
+        self.assertEqual(1, len(set(result["afterRecovery"]["keys"])))
+        self.assertEqual("/timeout-recovered-video", result["afterRecovery"]["src"])
+        self.assertTrue(result["afterRecovery"]["cleared"])
+        self.assertEqual(2, result["afterLateResponse"]["posts"])
+        self.assertEqual(1, result["afterLateResponse"]["polls"])
+        self.assertEqual("/timeout-recovered-video", result["afterLateResponse"]["src"])
+        self.assertTrue(result["afterLateResponse"]["cleared"])
+
+    def test_hung_poll_times_out_and_recovers_without_stale_callback(self):
+        result = self.runtime("hungPollTimeout")
+        self.assertEqual(1, result["before"]["polls"])
+        self.assertTrue(result["before"]["busy"])
+        self.assertFalse(result["before"]["cleared"])
+        self.assertEqual(1, result["afterTimeout"]["polls"])
+        self.assertTrue(result["afterTimeout"]["busy"])
+        self.assertFalse(result["afterTimeout"]["cleared"])
+        self.assertEqual(2, result["afterRecovery"]["polls"])
+        self.assertEqual("/timeout-poll-recovered-video", result["afterRecovery"]["src"])
+        self.assertTrue(result["afterRecovery"]["cleared"])
+        self.assertEqual(2, result["afterLateResponse"]["polls"])
+        self.assertEqual("/timeout-poll-recovered-video", result["afterLateResponse"]["src"])
+        self.assertTrue(result["afterLateResponse"]["cleared"])
 
     def test_result_video_retries_media_load_without_page_refresh(self):
         result = self.runtime("mediaRetry")
