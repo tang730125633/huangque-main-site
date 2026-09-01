@@ -1253,6 +1253,15 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual(2, result["polls"])
         self.assertTrue(result["cleared"])
 
+    def test_poll_http_5xx_keeps_busy_and_recovers(self):
+        result = self.runtime("pollHttpFailure")
+        self.assertEqual(1, result["before"]["polls"])
+        self.assertTrue(result["before"]["busy"])
+        self.assertFalse(result["before"]["cleared"])
+        self.assertEqual(2, result["polls"])
+        self.assertEqual("/http-poll-recovered-video", result["src"])
+        self.assertTrue(result["cleared"])
+
     def test_repeated_poll_failures_keep_recovering_without_customer_click(self):
         result = self.runtime("pollRecoveryBeyondFive")
         self.assertEqual(1, result["before"]["polls"])
@@ -1345,6 +1354,36 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual(1, result["pollsWhileInflight"])
         self.assertEqual("/single-flight-video", result["src"])
         self.assertTrue(result["cleared"])
+
+    def test_hung_submission_times_out_and_recovers_without_stale_callback(self):
+        result = self.runtime("hungSubmissionTimeout")
+        self.assertEqual(1, result["before"]["posts"])
+        self.assertEqual(1, result["afterTimeout"]["posts"])
+        self.assertIn("自动确认", result["afterTimeout"]["status"])
+        self.assertFalse(result["afterTimeout"]["cleared"])
+        self.assertEqual(2, result["afterRecovery"]["posts"])
+        self.assertEqual(1, len(set(result["afterRecovery"]["keys"])))
+        self.assertEqual("/timeout-recovered-video", result["afterRecovery"]["src"])
+        self.assertTrue(result["afterRecovery"]["cleared"])
+        self.assertEqual(2, result["afterLateResponse"]["posts"])
+        self.assertEqual(1, result["afterLateResponse"]["polls"])
+        self.assertEqual("/timeout-recovered-video", result["afterLateResponse"]["src"])
+        self.assertTrue(result["afterLateResponse"]["cleared"])
+
+    def test_hung_poll_times_out_and_recovers_without_stale_callback(self):
+        result = self.runtime("hungPollTimeout")
+        self.assertEqual(1, result["before"]["polls"])
+        self.assertTrue(result["before"]["busy"])
+        self.assertFalse(result["before"]["cleared"])
+        self.assertEqual(1, result["afterTimeout"]["polls"])
+        self.assertTrue(result["afterTimeout"]["busy"])
+        self.assertFalse(result["afterTimeout"]["cleared"])
+        self.assertEqual(2, result["afterRecovery"]["polls"])
+        self.assertEqual("/timeout-poll-recovered-video", result["afterRecovery"]["src"])
+        self.assertTrue(result["afterRecovery"]["cleared"])
+        self.assertEqual(2, result["afterLateResponse"]["polls"])
+        self.assertEqual("/timeout-poll-recovered-video", result["afterLateResponse"]["src"])
+        self.assertTrue(result["afterLateResponse"]["cleared"])
 
     def test_result_video_retries_media_load_without_page_refresh(self):
         result = self.runtime("mediaRetry")
