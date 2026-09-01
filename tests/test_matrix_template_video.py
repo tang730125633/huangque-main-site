@@ -1238,6 +1238,17 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual(1, result["loads"])
         self.assertTrue(result["cleared"])
 
+    def test_uncertain_unaccepted_request_only_retries_after_explicit_click(self):
+        result = self.runtime("uncertainNoAuto")
+        self.assertEqual(0, result["before"]["posts"])
+        self.assertIn("点击生成继续查询", result["before"]["status"])
+        self.assertEqual(0, result["afterFocus"])
+        self.assertEqual(1, result["afterClick"])
+        self.assertEqual(1, result["polls"])
+        self.assertEqual("retry-key", result["key"])
+        self.assertEqual("/manual-retry-video", result["src"])
+        self.assertTrue(result["cleared"])
+
     def test_result_video_retries_media_load_without_page_refresh(self):
         result = self.runtime("mediaRetry")
         self.assertEqual("/retry-video", result["before"]["src"])

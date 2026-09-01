@@ -106,6 +106,14 @@ async function scenarioForegroundResume(){
   return {before,polls:runtime.requests.poll.length,src:video.src,display:video.style.display,loads:video.loadCount,cleared:pendingCleared(storage)};
 }
 
+async function scenarioUncertainDoesNotAutoResubmit(){
+  const pending={started_at:1,items:[{key:'retry-key',body:{top_text:'AI 工作流',bottom_text:'评论区留下关键词',template_id:'native-bold',bgm:true},job_id:'',status:'uncertain',result:null,error:'服务暂不可用',refund_status:'未受理/未扣点'}]};
+  const storage=new Map([['hq-matrix-template-pending-v2',JSON.stringify(pending)]]);
+  const runtime=createRuntime({post:()=>Promise.resolve(response(200,{job_id:18})),poll:()=>Promise.resolve(response(200,{status:'done',result:{video_url:'/manual-retry-video',duration:8}}))},storage);
+  await flush(20);const before={posts:runtime.requests.post.length,status:runtime.get('status').textContent};await runtime.triggerWindow('focus');await flush(20);const afterFocus=runtime.requests.post.length;runtime.get('generateBtn').onclick();await flush(20);
+  return {before,afterFocus,afterClick:runtime.requests.post.length,polls:runtime.requests.poll.length,key:runtime.requests.post[0]&&runtime.requests.post[0].options.headers['Idempotency-Key'],src:runtime.get('video').src,cleared:pendingCleared(storage)};
+}
+
 async function scenarioMediaRetry(){
   const storage=new Map();
   const runtime=createRuntime({post:()=>Promise.resolve(response(200,{job_id:16})),poll:()=>Promise.resolve(response(200,{status:'done',result:{video_url:'/retry-video',duration:8}}))},storage);
@@ -165,5 +173,5 @@ async function scenarioRefundPendingThenConfirmed(){
   await fillAndSubmit(runtime);await flush(20);var card=runtime.get('batchResults').children[0],before=card.children[2].textContent;await runtime.runTimer();await flush(20);card=runtime.get('batchResults').children[0];return {polls:runtime.requests.poll.length,before,after:card.children[2].textContent,title:card.children[0].textContent,cards:runtime.get('batchResults').children.length,cleared:pendingCleared(storage)};
 }
 
-async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure,instantResult:scenarioInstantResult,delayedResultUrl:scenarioDelayedResultUrl,longDelayedResultUrl:scenarioLongDelayedResultUrl,foregroundResume:scenarioForegroundResume,mediaRetry:scenarioMediaRetry,livePreview:scenarioLivePreview,fontSelect:scenarioFontSelect,lockedFont:scenarioLockedFont,batchFive:scenarioBatchFive,legacyPending:scenarioLegacyPending,mixedFailureReload:scenarioMixedFailureReload,jobFailureRefund:scenarioJobFailureRefund,refundPendingThenConfirmed:scenarioRefundPendingThenConfirmed};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}
+async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure,instantResult:scenarioInstantResult,delayedResultUrl:scenarioDelayedResultUrl,longDelayedResultUrl:scenarioLongDelayedResultUrl,foregroundResume:scenarioForegroundResume,uncertainNoAuto:scenarioUncertainDoesNotAutoResubmit,mediaRetry:scenarioMediaRetry,livePreview:scenarioLivePreview,fontSelect:scenarioFontSelect,lockedFont:scenarioLockedFont,batchFive:scenarioBatchFive,legacyPending:scenarioLegacyPending,mixedFailureReload:scenarioMixedFailureReload,jobFailureRefund:scenarioJobFailureRefund,refundPendingThenConfirmed:scenarioRefundPendingThenConfirmed};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}
 main().catch(e=>{console.error(e.stack||e);process.exitCode=1});
