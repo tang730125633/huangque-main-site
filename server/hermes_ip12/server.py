@@ -4256,12 +4256,13 @@ def _finalize_production_result(cid, job_id):
                 except Exception:
                     pass
         if phase not in ("done", "failed", "error"):
-            continue
-        with CONVERSATION_STATE_LOCK:
-            convo = owned_conversation(cid)
-        if convo is None:
-            return
-        if phase == "done":
+            # delivering 且成品已就绪：黄雀可能长时间停留，按完成写回
+            _res = task.get("result") if isinstance(task.get("result"), dict) else {}
+            if phase == "delivering" and _res.get("video_url"):
+                pass
+            else:
+                continue
+        if phase == "done" or phase == "delivering":
             inner = task.get("result") if isinstance(task.get("result"), dict) else {}
             video_url = str(inner.get("video_url") or "")
             audio_url = str(inner.get("audio_url") or "")
