@@ -2986,7 +2986,7 @@ def _generation_payload(action, value):
         }, ("prompt",))
         provider = _enum(
             value.get("provider", "openai"), "provider",
-            ("openai", "xiaole", "seedream", "banana"),
+            ("openai", "xiaole", "seedream", "banana", "grok"),
         )
         ratio = _string(value.get("ratio", "1:1"), "ratio", 1, 8)
         ratios = (
