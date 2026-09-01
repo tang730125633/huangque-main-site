@@ -17,6 +17,27 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVER = ROOT / "server"
+PRODUCTION_LEGACY_SEMANTIC_CONTRACTS = {
+    "v02": {
+        "version": 1,
+        "max_width_px": 996,
+        "layers": {
+            "top1": {"font_size_px": 86, "max_lines": 2},
+            "top2": {"font_size_px": 62, "max_lines": 4},
+            "bottom2": {"font_size_px": 78, "max_lines": 2},
+        },
+    },
+    "v05": {
+        "version": 1,
+        "max_width_px": 996,
+        "layers": {
+            "top1": {"font_size_px": 102, "max_lines": 2},
+            "top2": {"font_size_px": 104, "max_lines": 2},
+            "top3": {"font_size_px": 68, "max_lines": 3},
+            "bottom2": {"font_size_px": 70, "max_lines": 2},
+        },
+    },
+}
 
 
 class MatrixTemplateVideoTests(unittest.TestCase):
@@ -44,7 +65,12 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         templates[-1]["id"] = "poster-split"
         return templates
 
-    def reference_templates(self, semantic_variants=("v02", "v05")):
+    def reference_templates(self, semantic_variants=None):
+        if semantic_variants is None:
+            semantic_variants = tuple(sorted(self.module._ALL_REFERENCE_VARIANTS))
+        legacy_contract = set(semantic_variants) in (
+            {"v02"}, {"v02", "v05"},
+        )
         values = [
             {
                 "id": "full-overlay-bold", "name": "沉浸强标题",
@@ -66,31 +92,29 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             "font_selectable": False,
             "variant": f"v{index:02d}",
         } for index in range(1, 18)]
-        contracts = {
-            "v02": {
-                "version": 1,
-                "max_width_px": 996,
-                "layers": {
-                    "top1": {"font_size_px": 86, "max_lines": 2},
-                    "top2": {"font_size_px": 62, "max_lines": 4},
-                    "bottom2": {"font_size_px": 78, "max_lines": 2},
-                },
-            },
-            "v05": {
-                "version": 1,
-                "max_width_px": 996,
-                "layers": {
-                    "top1": {"font_size_px": 102, "max_lines": 2},
-                    "top2": {"font_size_px": 104, "max_lines": 2},
-                    "top3": {"font_size_px": 68, "max_lines": 3},
-                    "bottom2": {"font_size_px": 70, "max_lines": 2},
-                },
-            },
-        }
         for item in values:
             variant = item.get("variant")
             if variant in semantic_variants:
-                item["semantic_layout"] = contracts[variant]
+                if legacy_contract:
+                    item["semantic_layout"] = json.loads(json.dumps(
+                        PRODUCTION_LEGACY_SEMANTIC_CONTRACTS[variant]
+                    ))
+                else:
+                    item["semantic_layout"] = {
+                        "version": 1,
+                        "max_width_px": 996,
+                        "layers": {
+                            layer: {
+                                "font_size_px": values[0],
+                                "font_weight": values[1],
+                                "max_width_px": values[2],
+                                "max_lines": values[3],
+                            }
+                            for layer, values in self.module._SEMANTIC_CONTRACTS[
+                                variant
+                            ].items()
+                        },
+                    }
         return values
 
     def test_public_catalog_accepts_transition_counts_but_exposes_only_approved_templates(self):
@@ -152,12 +176,24 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             item["font_selectable"] is False
             for item in expanded if item["engine"] == "hyperframes"
         ))
+        v10 = next(item for item in expanded if item.get("variant") == "v10")
+        self.assertEqual(
+            {"font_size_px": 80, "font_weight": 400,
+             "max_width_px": 970, "max_lines": 2},
+            v10["semantic_layout"]["layers"]["bottom2"],
+        )
+        v05 = next(item for item in expanded if item.get("variant") == "v05")
+        self.assertEqual(
+            {"font_size_px": 68, "font_weight": 900,
+             "max_width_px": 996, "max_lines": 2},
+            v05["semantic_layout"]["layers"]["top3"],
+        )
         self.assertEqual(
             {f"v{index:02d}" for index in range(1, 18)},
             {item["variant"] for item in expanded if item["engine"] == "hyperframes"},
         )
         self.assertEqual(
-            ["v02", "v05"],
+            [f"v{index:02d}" for index in range(1, 18)],
             [item["variant"] for item in expanded if item.get("semantic_layout")],
         )
         self.assertEqual({
@@ -176,27 +212,46 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             [item["variant"] for item in legacy if item.get("semantic_layout")],
         )
         self.assertNotIn(
+            "font_weight",
+            next(
+                item for item in legacy if item.get("variant") == "v02"
+            )["semantic_layout"]["layers"]["top1"],
+        )
+        self.assertNotIn(
             "semantic_layout",
             next(item for item in legacy if item.get("variant") == "v05"),
+        )
+
+        with mock.patch.object(self.module, "_request", return_value={
+            "templates": self.reference_templates(("v02", "v05")),
+            "max_batch_size": 5,
+            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+        }):
+            transitional = self.module.public_templates(force=True)
+        self.assertEqual(
+            ["v02", "v05"],
+            [
+                item["variant"] for item in transitional
+                if item.get("semantic_layout")
+            ],
+        )
+        self.assertEqual(
+            3,
+            next(
+                item for item in transitional if item.get("variant") == "v05"
+            )["semantic_layout"]["layers"]["top3"]["max_lines"],
         )
 
     def test_reference_catalog_rejects_missing_v02_unknown_variant_and_drift(self):
         invalid_cases = []
         invalid_cases.append(self.reference_templates(("v05",)))
 
-        unknown = self.reference_templates(("v02",))
-        next(item for item in unknown if item.get("variant") == "v06")[
-            "semantic_layout"
-        ] = {
-            "version": 1,
-            "max_width_px": 996,
-            "layers": {
-                "top1": {"font_size_px": 102, "max_lines": 2},
-                "top2": {"font_size_px": 104, "max_lines": 2},
-                "top3": {"font_size_px": 68, "max_lines": 3},
-                "bottom2": {"font_size_px": 70, "max_lines": 2},
-            },
-        }
+        invalid_cases.append(self.reference_templates(("v02", "v06")))
+
+        unknown = self.reference_templates()
+        next(item for item in unknown if item.get("variant") == "v17")[
+            "variant"
+        ] = "v18"
         invalid_cases.append(unknown)
 
         drift = self.reference_templates()
@@ -204,6 +259,33 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             "semantic_layout"
         ]["layers"]["top3"]["font_size_px"] = 69
         invalid_cases.append(drift)
+
+        weight_drift = self.reference_templates()
+        next(item for item in weight_drift if item.get("variant") == "v05")[
+            "semantic_layout"
+        ]["layers"]["top2"]["font_weight"] = 800
+        invalid_cases.append(weight_drift)
+
+        width_drift = self.reference_templates()
+        next(item for item in width_drift if item.get("variant") == "v10")[
+            "semantic_layout"
+        ]["layers"]["bottom2"]["max_width_px"] = 996
+        invalid_cases.append(width_drift)
+
+        mixed_contract = self.reference_templates()
+        mixed_v02 = next(
+            item for item in mixed_contract if item.get("variant") == "v02"
+        )["semantic_layout"]["layers"]
+        for layer in mixed_v02.values():
+            layer.pop("font_weight")
+            layer.pop("max_width_px")
+        invalid_cases.append(mixed_contract)
+
+        legacy_v05_drift = self.reference_templates(("v02", "v05"))
+        next(
+            item for item in legacy_v05_drift if item.get("variant") == "v05"
+        )["semantic_layout"]["layers"]["top3"]["max_lines"] = 2
+        invalid_cases.append(legacy_v05_drift)
 
         for templates in invalid_cases:
             with self.subTest(templates=templates), mock.patch.object(
@@ -214,6 +296,20 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                 },
             ), self.assertRaisesRegex(RuntimeError, "语义排版|不完整"):
                 self.module.public_templates(force=True)
+
+    def test_current_production_v02_v05_legacy_catalog_is_accepted(self):
+        templates = self.reference_templates(("v02", "v05"))
+        with mock.patch.object(self.module, "_request", return_value={
+            "templates": templates,
+            "max_batch_size": 5,
+            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+        }):
+            values = self.module.public_templates(force=True)
+        actual = {
+            item["variant"]: item["semantic_layout"]
+            for item in values if item.get("semantic_layout")
+        }
+        self.assertEqual(PRODUCTION_LEGACY_SEMANTIC_CONTRACTS, actual)
 
     def test_availability_accepts_two_fifteen_or_nineteen_healthy_templates(self):
         for count in (2, 15, 19):
@@ -254,7 +350,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         with mock.patch.object(self.module, "require_available"), \
              mock.patch.object(
                  self.module, "public_templates",
-                 return_value=self.reference_templates(),
+                 return_value=self.reference_templates(("v02", "v05")),
              ), \
              mock.patch.object(
                  self.module, "_request", return_value={"payload": expected}
@@ -275,7 +371,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         with mock.patch.object(self.module, "require_available"), \
              mock.patch.object(
                  self.module, "public_templates",
-                 return_value=self.reference_templates(),
+                 return_value=self.reference_templates(("v02", "v05")),
              ), \
              mock.patch.object(
                  self.module, "_request", return_value={"payload": batch_expected}

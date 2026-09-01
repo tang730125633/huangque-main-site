@@ -99,7 +99,8 @@ def _prompt(top: str, bottom: str, contract: dict) -> str:
     top3 = layers.get("top3") or {}
     bottom2 = layers.get("bottom2") or {}
     top3_line = (
-        f"\n- top3: {int(top3.get('font_size_px'))}px，最多 "
+        f"\n- top3: {int(top3.get('font_size_px'))}px，"
+        f"可用宽 {int(top3.get('max_width_px') or contract.get('max_width_px') or 996)}px，最多 "
         f"{int(top3.get('max_lines'))} 行，用于更小的补充说明。"
         if top3 else ""
     )
@@ -107,9 +108,9 @@ def _prompt(top: str, bottom: str, contract: dict) -> str:
 你是中文短视频的语义边界标注器。你不能重写文案，只能返回字符索引。
 
 模板文字区宽 {int(contract.get('max_width_px') or 996)}px：
-- top1: {int(top1.get('font_size_px') or 86)}px，最多 {int(top1.get('max_lines') or 2)} 行，用于开场钩子。
-- top2: {int(top2.get('font_size_px') or 62)}px，最多 {int(top2.get('max_lines') or 4)} 行，用于具体说明。{top3_line}
-- bottom2: {int(bottom2.get('font_size_px') or 78)}px，最多 {int(bottom2.get('max_lines') or 2)} 行。
+- top1: {int(top1.get('font_size_px') or 86)}px，可用宽 {int(top1.get('max_width_px') or contract.get('max_width_px') or 996)}px，最多 {int(top1.get('max_lines') or 2)} 行，用于开场钩子。
+- top2: {int(top2.get('font_size_px') or 62)}px，可用宽 {int(top2.get('max_width_px') or contract.get('max_width_px') or 996)}px，最多 {int(top2.get('max_lines') or 4)} 行，用于具体说明。{top3_line}
+- bottom2: {int(bottom2.get('font_size_px') or 78)}px，可用宽 {int(bottom2.get('max_width_px') or contract.get('max_width_px') or 996)}px，最多 {int(bottom2.get('max_lines') or 2)} 行。
 
 请返回：
 1. top1_end：top1 最后一个字符的索引（包含）；其余顶部文案由生成端按完整分句分配到 top2，有 top3 时也可分配到 top3。
