@@ -29,7 +29,7 @@
 .short-drama-create-dialog{width:min(880px,calc(100vw - 32px));max-height:calc(100vh - 32px);overflow:auto}
 .short-drama-create-shell{width:100%;max-width:100%;box-sizing:border-box;padding:28px;overflow:hidden}.short-drama-create-header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding-bottom:20px;border-bottom:1px solid var(--hq-border,#d9dee7)}
 .short-drama-create-header h2{font-size:27px}.short-drama-create-header>div>p:last-child{margin:0;color:var(--hq-muted,#667085)}
-.short-drama-start-options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;padding:26px 0 4px}
+.short-drama-start-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;padding:26px 0 4px}
 .short-drama-draft-resume{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:18px;padding:16px 18px;border:1px solid #e2be68;border-radius:14px;background:#fff8e7;color:var(--hq-text,#172033)}
 .short-drama-draft-resume>div:first-child{display:grid;gap:4px}.short-drama-draft-resume span{color:var(--hq-muted,#667085);font-size:13px}.short-drama-draft-actions{display:flex;flex:0 0 auto;gap:9px}.short-drama-draft-actions button{min-height:40px}
 .short-drama-live-action-draft-resume{border-color:#7f6328;background:#fffaf0}

@@ -205,7 +205,7 @@ function testOpenApiContract() {
   assert.ok(shortDramaVariant, 'copy request must document format=short_drama');
   assert.equal(shortDramaVariant.properties.ratio.enum.includes('16:9'), true);
   assert.equal(shortDramaVariant.properties.shot_count.minimum, 6);
-  assert.equal(shortDramaVariant.properties.shot_count.maximum, 10);
+  assert.equal(shortDramaVariant.properties.shot_count.maximum, 20);
   assert.ok(shortDramaVariant.required.includes('project_id'));
   assert.ok(shortDramaVariant.required.includes('project_revision'));
   const planningResult = spec.components.schemas.ShortDramaPlanningResult;
@@ -616,7 +616,7 @@ async function testPureHelpers() {
     '30 second projects normalize to the only feasible shot count');
   assert.deepEqual(shortDrama.validShotCounts(30), [6]);
   assert.deepEqual(shortDrama.validShotCounts(45), [6, 7, 8, 9]);
-  assert.deepEqual(shortDrama.validShotCounts(60), [6, 7, 8, 9, 10]);
+  assert.deepEqual(shortDrama.validShotCounts(60), [6, 7, 8, 9, 10, 11, 12]);
   assert.ok(shortDrama.validateSettings({
     title: '短剧', synopsis: '这是足够长的故事梗概', ratio: '9:16',
     target_duration: 30, shot_count: 7, visual_style: '写实', target_platform: '抖音',
@@ -1681,7 +1681,7 @@ function testWorkspacePureStateAndPayloadHelpers() {
     image_prompt: 'cinematic rainy office 1', video_prompt: 'slow push in 1',
   });
   assert.deepEqual(shortDrama.validateShots(project.shots, project), []);
-  assert.match(shortDrama.validateShots(project.shots.slice(0, 5), project).join(' '), /6–10/);
+  assert.match(shortDrama.validateShots(project.shots.slice(0, 5), project).join(' '), /6–20/);
   assert.match(shortDrama.validateShots(project.shots.map((shot, index) => Object.assign({}, shot,
     index === 0 ? { image_prompt: '' } : {})), project).join(' '), /画面提示词/);
 

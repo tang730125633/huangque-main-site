@@ -21,7 +21,7 @@
 
   function validShotCounts(duration){
     duration=Number(duration);
-    return [6,7,8,9,10].filter(function(count){
+    return [6,7,8,9,10,11,12,13,14,15,16,17,18,19,20].filter(function(count){
       return 5*count<=duration&&duration<=10*count;
     });
   }
@@ -36,7 +36,7 @@
     else value.target_duration=Number(value.target_duration);
     var shotCount=Number(value.shot_count);
     if(!isFinite(shotCount)||Math.floor(shotCount)!==shotCount) shotCount=6;
-    shotCount=Math.max(6,Math.min(10,shotCount));
+    shotCount=Math.max(6,Math.min(20,shotCount));
     var allowed=validShotCounts(value.target_duration);
     value.shot_count=allowed.indexOf(shotCount)>=0?shotCount:allowed[0];
     return value;
@@ -764,8 +764,8 @@
     if(!patch.title) errors.push('请输入短剧名称');
     if(patch.synopsis.length<8) errors.push('故事梗概至少需要 8 个字');
     if([30,45,60].indexOf(patch.target_duration)<0) errors.push('目标时长必须为 30、45 或 60 秒');
-    if(patch.shot_count<6||patch.shot_count>10||Math.floor(patch.shot_count)!==patch.shot_count){
-      errors.push('分镜数量必须为 6–10 个');
+    if(patch.shot_count<6||patch.shot_count>20||Math.floor(patch.shot_count)!==patch.shot_count){
+      errors.push('分镜数量必须为 6–20 个');
     }
     if(validShotCounts(patch.target_duration).indexOf(patch.shot_count)<0){
       errors.push('目标时长与分镜数量不匹配');
@@ -820,7 +820,7 @@
 
   function validateShots(shots,project){
     var value=makeShotsPatch(shots).shots,errors=[];
-    if(value.length<6||value.length>10) errors.push('分镜卡片必须为 6–10 张');
+    if(value.length<6||value.length>20) errors.push('分镜卡片必须为 6–20 张');
     if(project&&Number(project.shot_count)!==value.length) errors.push('分镜数量必须与项目设置一致');
     var characterKeys=(project&&project.characters||[]).map(function(item){ return item.character_key; });
     var scripts=project&&project.script_versions||[],latest=scripts[scripts.length-1]||{};
@@ -1051,7 +1051,7 @@
     (project.characters||[]).forEach(function(character){ characters[character.character_key]=character.name; });
     var scripts=project.script_versions||[],latest=scripts[scripts.length-1]||{};
     (latest.dialogue_lines||[]).forEach(function(line){ dialogue[line.id]=line.text; });
-    return '<section class="nc-short-drama-panel"><header><div><span class="nc-short-drama-kicker">6–10 张可执行分镜</span><h2>分镜确认</h2></div><div class="nc-short-drama-actions"><button type="button" data-action="save-shots"'+disabledUnless(editable)+'>保存分镜</button><button type="button" class="is-primary" data-confirm-stage="storyboard_review"'+disabledUnless(editable)+'>确认分镜</button></div></header><div class="nc-short-drama-shot-list">'+
+    return '<section class="nc-short-drama-panel"><header><div><span class="nc-short-drama-kicker">6–20 张可执行分镜</span><h2>分镜确认</h2></div><div class="nc-short-drama-actions"><button type="button" data-action="save-shots"'+disabledUnless(editable)+'>保存分镜</button><button type="button" class="is-primary" data-confirm-stage="storyboard_review"'+disabledUnless(editable)+'>确认分镜</button></div></header><div class="nc-short-drama-shot-list">'+
       (project.shots||[]).map(function(shot,index){
         var names=(shot.character_keys||[]).map(function(key){ return characters[key]||key; }).join('、')||'无';
         var lines=(shot.dialogue_line_ids||[]).map(function(id){ return dialogue[id]||id; }).join(' / ')||'无台词';

@@ -550,7 +550,7 @@
           "shot_count": {
             "type": "integer",
             "minimum": 6,
-            "maximum": 10
+            "maximum": 20
           },
           "visual_style": {
             "type": "string",
@@ -791,7 +791,7 @@
           "shot_count": {
             "type": "integer",
             "minimum": 6,
-            "maximum": 10
+            "maximum": 20
           },
           "visual_style": {
             "type": "string",
@@ -931,7 +931,7 @@
           "shot_count": {
             "type": "integer",
             "minimum": 6,
-            "maximum": 10
+            "maximum": 20
           },
           "visual_style": {
             "type": "string"
@@ -1023,7 +1023,7 @@
           "shot_count": {
             "type": "integer",
             "minimum": 6,
-            "maximum": 10
+            "maximum": 20
           },
           "style": {
             "type": "string",
@@ -1098,7 +1098,7 @@
               "shot_count": {
                 "type": "integer",
                 "minimum": 6,
-                "maximum": 10
+                "maximum": 20
               }
             }
           },
@@ -1123,7 +1123,7 @@
           "shot_count": {
             "type": "integer",
             "minimum": 6,
-            "maximum": 10
+            "maximum": 20
           },
           "plan": {
             "type": "object",
@@ -15126,7 +15126,7 @@
                       "shot_count": {
                         "type": "integer",
                         "minimum": 6,
-                        "maximum": 10
+                        "maximum": 20
                       },
                       "visual_style": {
                         "type": "string",
@@ -15603,7 +15603,7 @@
                   "shot_count": {
                     "type": "integer",
                     "minimum": 6,
-                    "maximum": 10
+                    "maximum": 20
                   },
                   "visual_style": {
                     "type": "string",

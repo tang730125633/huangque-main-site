@@ -143,6 +143,115 @@ def valid_editable_plan():
 
 
 class ShortDramaProjectTests(unittest.TestCase):
+    def test_shot_count_schema_upgrade_preserves_projects_foreign_keys_and_indexes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "legacy-shot-count.db")
+            legacy_db = lambda: sqlite3.connect(path)
+            with closing(legacy_db()) as conn:
+                conn.executescript("""
+                    PRAGMA foreign_keys=ON;
+                    CREATE TABLE short_drama_projects (
+                      id TEXT PRIMARY KEY,
+                      username TEXT NOT NULL,
+                      board_id TEXT,
+                      title TEXT NOT NULL,
+                      synopsis TEXT NOT NULL,
+                      ratio TEXT NOT NULL CHECK (ratio IN ('9:16','16:9')),
+                      target_duration INTEGER NOT NULL CHECK (target_duration IN (30,45,60)),
+                      shot_count INTEGER NOT NULL CHECK (shot_count BETWEEN 6 AND 10),
+                      genre TEXT NOT NULL DEFAULT '',
+                      visual_style TEXT NOT NULL DEFAULT '电影写实',
+                      target_platform TEXT NOT NULL DEFAULT '抖音',
+                      point_budget INTEGER NOT NULL DEFAULT 0,
+                      spent_points INTEGER NOT NULL DEFAULT 0,
+                      creation_status TEXT NOT NULL DEFAULT 'formal',
+                      stage TEXT NOT NULL DEFAULT 'draft',
+                      revision INTEGER NOT NULL DEFAULT 1,
+                      deleted INTEGER NOT NULL DEFAULT 0,
+                      created_at INTEGER NOT NULL,
+                      updated_at INTEGER NOT NULL,
+                      completion_id TEXT,
+                      completed_at INTEGER,
+                      completed_by TEXT
+                    );
+                    CREATE UNIQUE INDEX uq_legacy_project_completion
+                      ON short_drama_projects(completion_id)
+                      WHERE completion_id IS NOT NULL;
+                    CREATE TABLE legacy_project_links (
+                      id TEXT PRIMARY KEY,
+                      project_id TEXT NOT NULL REFERENCES short_drama_projects(id)
+                    );
+                    CREATE TRIGGER legacy_project_links_guard
+                    BEFORE INSERT ON legacy_project_links
+                    FOR EACH ROW WHEN NOT EXISTS (
+                      SELECT 1 FROM short_drama_projects
+                      WHERE id=NEW.project_id
+                    )
+                    BEGIN
+                      SELECT RAISE(ABORT, 'project does not exist');
+                    END;
+                """)
+                conn.execute(
+                    "INSERT INTO short_drama_projects "
+                    "(id,username,title,synopsis,ratio,target_duration,shot_count,"
+                    "created_at,updated_at,completion_id) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    ("legacy", "alice", "旧项目", "旧项目故事内容", "9:16", 30, 10,
+                     1000, 1001, "completion-legacy"),
+                )
+                conn.execute(
+                    "INSERT INTO legacy_project_links(id,project_id) VALUES(?,?)",
+                    ("link-1", "legacy"),
+                )
+                conn.commit()
+
+            short_drama.init_db(legacy_db)
+            short_drama.init_db(legacy_db)
+
+            with closing(legacy_db()) as conn:
+                schema = conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='table' "
+                    "AND name='short_drama_projects'"
+                ).fetchone()[0]
+                original = conn.execute(
+                    "SELECT shot_count,completion_id FROM short_drama_projects "
+                    "WHERE id='legacy'"
+                ).fetchone()
+                link = conn.execute(
+                    "SELECT project_id FROM legacy_project_links WHERE id='link-1'"
+                ).fetchone()
+                index_names = {
+                    row[1] for row in conn.execute(
+                        "PRAGMA index_list(short_drama_projects)"
+                    )
+                }
+                trigger_sql = conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='trigger' "
+                    "AND name='legacy_project_links_guard'"
+                ).fetchone()[0]
+                foreign_key_errors = conn.execute("PRAGMA foreign_key_check").fetchall()
+                conn.execute(
+                    "INSERT INTO short_drama_projects "
+                    "(id,username,title,synopsis,ratio,target_duration,shot_count,"
+                    "created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                    ("expanded", "alice", "长短剧", "扩展镜头数量项目", "16:9", 60,
+                     18, 1002, 1003),
+                )
+                with self.assertRaises(sqlite3.IntegrityError):
+                    conn.execute(
+                        "INSERT INTO short_drama_projects "
+                        "(id,username,title,synopsis,ratio,target_duration,shot_count,"
+                        "created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                        ("too-many", "alice", "超量", "超过镜头数量限制", "16:9", 60,
+                         21, 1004, 1005),
+                    )
+
+            self.assertRegex(schema, r"shot_count\s+BETWEEN\s+6\s+AND\s+20")
+            self.assertEqual((10, "completion-legacy"), original)
+            self.assertEqual(("legacy",), link)
+            self.assertIn("uq_legacy_project_completion", index_names)
+            self.assertIn("short_drama_projects", trigger_sql)
+            self.assertEqual([], foreign_key_errors)
+
     def test_genre_schema_upgrade_preserves_legacy_projects_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = str(Path(tmp) / "legacy-content.db")
@@ -876,18 +985,18 @@ class ShortDramaProjectTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "时长与分镜数量不匹配"):
             short_drama.create_project(
                 self.db, "alice",
-                valid_project(target_duration=30, shot_count=10),
+                valid_project(target_duration=60, shot_count=8),
             )
 
     def test_partial_settings_update_validates_merged_pair(self):
         project = short_drama.create_project(
             self.db, "alice",
-            valid_project(target_duration=45, shot_count=9),
+            valid_project(target_duration=45, shot_count=8),
         )
         with self.assertRaisesRegex(ValueError, "时长与分镜数量不匹配"):
             short_drama.update_project(
                 self.db, "alice", project["id"], project["revision"],
-                {"target_duration": 30},
+                {"target_duration": 60},
             )
 
     def test_paid_planning_job_counts_before_apply(self):
@@ -2001,7 +2110,6 @@ class ShortDramaProjectTests(unittest.TestCase):
             ("shot count", lambda shots: shots[:-1]),
             ("duration type", lambda shots: replace(shots, 0, duration="5")),
             ("duration value", lambda shots: replace(shots, 0, duration=7)),
-            ("duration total", lambda shots: replace(shots, 0, duration=10)),
             ("character reference", lambda shots: replace(
                 shots, 0, character_keys=["missing-character"]
             )),
@@ -2176,9 +2284,22 @@ class ShortDramaProjectTests(unittest.TestCase):
     def test_validation_rejects_unsupported_duration_ratio_and_shot_count(self):
         base = {"title": "短剧", "synopsis": "足够长的故事梗概", "ratio": "9:16",
                 "target_duration": 30, "shot_count": 6, "visual_style": "写实"}
-        for patch in ({"ratio": "1:1"}, {"target_duration": 20}, {"shot_count": 11}):
+        for patch in ({"ratio": "1:1"}, {"target_duration": 20}, {"shot_count": 21}):
             with self.subTest(patch=patch), self.assertRaises(ValueError):
                 short_drama.create_project(self.db, "alice", dict(base, **patch))
+
+    def test_validation_accepts_recommended_shot_count_for_each_duration_band(self):
+        for duration, shot_count in ((30, 8), (45, 12), (60, 18)):
+            with self.subTest(duration=duration, shot_count=shot_count):
+                project = short_drama.create_project(
+                    self.db, "alice",
+                    valid_project(
+                        title="%s秒项目" % duration,
+                        target_duration=duration,
+                        shot_count=shot_count,
+                    ),
+                )
+                self.assertEqual(shot_count, project["shot_count"])
 
     def test_validation_rejects_coercive_or_container_project_settings(self):
         cases = (
@@ -2252,7 +2373,7 @@ class ShortDramaProjectTests(unittest.TestCase):
     def test_apply_plan_rejects_shot_counts_outside_project_limits(self):
         payload = {"title": "短剧", "synopsis": "足够长的故事梗概", "ratio": "9:16",
                    "target_duration": 30, "shot_count": 6, "visual_style": "写实"}
-        for index, count in enumerate((5, 11), start=1):
+        for index, count in enumerate((5, 21), start=1):
             with self.subTest(count=count):
                 project = short_drama.create_project(self.db, "alice", payload)
                 self._assert_plan_rejected_without_side_effects(
@@ -2262,10 +2383,10 @@ class ShortDramaProjectTests(unittest.TestCase):
     def test_apply_plan_rejects_duration_total_different_from_project_target(self):
         project = short_drama.create_project(self.db, "alice", {
             "title": "短剧", "synopsis": "足够长的故事梗概", "ratio": "9:16",
-            "target_duration": 30, "shot_count": 6, "visual_style": "写实",
+            "target_duration": 45, "shot_count": 6, "visual_style": "写实",
         })
         self._assert_plan_rejected_without_side_effects(
-            project, self._plan(6, duration=10), 999
+            project, self._plan(6, duration=5), 999
         )
 
     def test_non_draft_projects_lock_planning_spec_settings_but_allow_budget_changes(self):
@@ -2965,7 +3086,7 @@ class ShortDramaRouteTests(unittest.TestCase):
         with patch.object(image, "OUT_DIR", output), patch.object(
                 short_drama_reference_validation,
                 "validate_character_reference",
-                return_value={"has_real_person": True, "visible_extent": "full_body"},
+                return_value={"has_character": True, "framing_sufficient": True},
         ):
             status, selected = self.request(
                 "POST", "/api/gen/short-drama/select-character-reference", body=body,
@@ -3058,7 +3179,7 @@ class ShortDramaRouteTests(unittest.TestCase):
         with patch.object(image, "OUT_DIR", output), patch.object(
                 short_drama_reference_validation,
                 "validate_character_reference",
-                return_value={"has_real_person": True, "visible_extent": "half_body"},
+                return_value={"has_character": True, "framing_sufficient": True},
         ):
             status, selected = self.request(
                 "POST", "/api/gen/short-drama/select-character-reference", body=body,
@@ -3095,7 +3216,7 @@ class ShortDramaRouteTests(unittest.TestCase):
         with patch.object(image, "OUT_DIR", output), patch.object(
                 short_drama_reference_validation,
                 "validate_character_reference",
-                return_value={"has_real_person": True, "visible_extent": "half_body"},
+                return_value={"has_character": True, "framing_sufficient": True},
         ) as validate:
             status, selected = self.request(
                 "POST", "/api/gen/short-drama/select-character-reference", body=body,
@@ -3107,7 +3228,7 @@ class ShortDramaRouteTests(unittest.TestCase):
         self.assertTrue((output / selected_character["pending_reference_file"]).is_file())
         validate.assert_called_once_with(jpeg, "image/jpeg")
 
-    def test_local_reference_rejects_non_person_without_saving_or_updating(self):
+    def test_local_reference_rejects_non_character_without_saving_or_updating(self):
         project = self.applied_project()
         character = project["characters"][0]
         output = Path(self.tmp.name) / "outputs"
@@ -3121,14 +3242,14 @@ class ShortDramaRouteTests(unittest.TestCase):
         with patch.object(image, "OUT_DIR", output), patch.object(
                 short_drama_reference_validation,
                 "validate_character_reference",
-                side_effect=ValueError("请上传人物图"),
+                side_effect=ValueError("请上传清晰的角色图片"),
         ):
             status, rejected = self.request(
                 "POST", "/api/gen/short-drama/select-character-reference", body=body,
             )
 
         self.assertEqual(400, status)
-        self.assertEqual("请上传人物图", rejected["detail"])
+        self.assertEqual("请上传清晰的角色图片", rejected["detail"])
         self.assertFalse(output.exists())
         status, current = self.request(
             "GET", "/api/gen/short-drama/project?" + urllib.parse.urlencode({

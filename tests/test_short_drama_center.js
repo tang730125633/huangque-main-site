@@ -57,13 +57,16 @@ test('项目中心提供列表筛选、创建和详情入口', () => {
   assert.doesNotMatch(html, /value="1:1"/);
 });
 
-test('创建短剧提供真人、漫剧和数字人口播三种内容类型入口', () => {
-  assert.match(html, /data-content-type="live_action"/);
-  assert.match(html, /data-content-type="comic"/);
-  assert.match(html, /data-content-type="digital_presenter"/);
-  assert.match(html, /AI 真人短剧/);
-  assert.match(html, /AI 漫剧/);
-  assert.match(html, /AI 数字人口播/);
+test('创建短剧只提供单集和系列两个入口', () => {
+  const types = [...html.matchAll(/data-content-type="([^"]+)"/g)].map(match => match[1]);
+  assert.deepEqual(types, ['live_action', 'series']);
+  assert.match(html, /选择单集短剧开始创作，系列短剧功能即将开放。/);
+  assert.match(centerScript, /选择单集短剧开始创作，系列短剧功能即将开放。/);
+  assert.match(html, /<strong>AI 短剧<\/strong>/);
+  assert.match(html, /从完整故事开始，完成角色、场景、分镜与成片制作。/);
+  assert.match(html, /<strong>AI 系列短剧<\/strong>/);
+  assert.doesNotMatch(html, /AI 真人短剧|AI 漫剧|AI 数字人口播/);
+  assert.match(centerStyle, /\.short-drama-start-options\{[^}]*grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
   assert.match(html, /id="shortDramaLiveActionForm"/);
   assert.match(html, /id="shortDramaRoleConfirm"/);
   assert.match(html, /id="shortDramaCoreStory"/);
@@ -81,6 +84,21 @@ test('创建短剧提供真人、漫剧和数字人口播三种内容类型入�
   }
   assert.match(html, /aria-label="删除已导入的剧本"/);
   assert.match(centerScript, /if\(mode==='inspiration'\)\{startPlanner\(\);return;\}/);
+});
+
+test('短剧创建按新时长档位推荐 6–20 个镜头', () => {
+  assert.deepEqual(center.recommendedShotPlan(30, 'auto'), {
+    duration:30, range:'6–10', count:8, label:'30–60 秒', density:'auto'
+  });
+  assert.deepEqual(center.recommendedShotPlan(45, 'auto'), {
+    duration:45, range:'10–15', count:12, label:'60–90 秒', density:'auto'
+  });
+  assert.deepEqual(center.recommendedShotPlan(60, 'auto'), {
+    duration:60, range:'15–20', count:18, label:'90–120 秒', density:'auto'
+  });
+  assert.equal(center.recommendedShotPlan(45, 'rich').count, 15);
+  assert.equal(center.recommendedShotPlan(60, 'rich').count, 20);
+  assert.match(html, /预计 6–10 个镜头/);
 });
 
 test('认证服务不可用时不把项目误显示为零并使用中文故障提示', () => {
@@ -119,6 +137,9 @@ test('真人短剧先确认剧本再确认角色和角色形象', async () => {
   assert.match(html, /完整故事<textarea name="script_source" required minlength="100" maxlength="50000"/);
   assert.match(html, /请填写或粘贴完整故事，包括主要人物、故事背景、关键情节、核心冲突、高潮和结局/);
   assert.match(html, /整理故事结构/);
+  assert.equal((html.match(/<option value="30">30–60 秒<\/option>/g)||[]).length, 3);
+  assert.equal((html.match(/<option value="45">60–90 秒<\/option>/g)||[]).length, 3);
+  assert.equal((html.match(/<option value="60">90–120 秒<\/option>/g)||[]).length, 3);
   assert.doesNotMatch(html, /可以填写故事想法/);
   assert.match(centerScript, /完整故事至少需要 100 个字/);
   assert.match(centerScript, /source_requirement:'complete_story'/);
@@ -261,10 +282,10 @@ test('前置策划生成结构化剧本并在人工确认后准备正式对话',
   }, messages, direction);
   assert.equal(preview.title, '回家吃饭');
   assert.equal(preview.ratio, '9:16');
-  assert.equal(preview.duration_seconds, 48);
+  assert.equal(preview.duration_seconds, 60);
   assert.equal(preview.beats.length, 8);
   assert.equal(preview.shots.length, 8);
-  assert.equal(preview.shots.reduce((sum, shot) => sum + shot.duration, 0), 48);
+  assert.equal(preview.shots.reduce((sum, shot) => sum + shot.duration, 0), 60);
   assert.ok(preview.shots.every(shot => shot.scene && shot.action && shot.expression && shot.camera));
   assert.ok(preview.shots.every(shot => Array.isArray(shot.characters) && shot.characters.length));
   assert.equal(preview.quality.blocking, false);
@@ -1040,7 +1061,7 @@ test('live action role confirmation is created from the confirmed script', () =>
   assert.match(centerScript, /renderLiveActionRoleTabs/);
   assert.match(centerScript, /data-role-select/);
   assert.match(centerScript, /基础信息/);
-  assert.match(centerScript, /人物特征/);
+  assert.match(centerScript, /角色特征/);
   assert.match(centerScript, /固定造型/);
   assert.match(centerStyle, /grid-template-columns:230px minmax\(0,1fr\)/);
 });
@@ -1155,8 +1176,10 @@ test('live action roles only require fixed clothing when AI reference generation
   assert.match(centerScript, /confirm-character-reference/);
   assert.match(centerScript, /确认并锁定此标准图/);
   assert.match(html, /角色名称和性别为必填项/);
-  assert.match(centerScript, /固定服装提示词 <small>AI 生图时必填<\/small>/);
-  assert.match(centerScript, /使用 AI 生成标准图前，请先填写固定服装提示词/);
+  assert.match(centerScript, /固定造型提示词 <small>AI 生图时必填<\/small>/);
+  assert.match(centerScript, /使用 AI 生成标准图前，请先填写固定造型提示词/);
+  assert.match(centerScript, /外形、配色、纹理、装备或服装/);
+  assert.match(centerScript, /单一角色，主体清晰，身份特征完整/);
   assert.doesNotMatch(centerScript, /\{field:'fixed_clothing',label:'固定服装'\}/);
   assert.doesNotMatch(centerScript, /if\(!item\.age\)missing\.push/);
   assert.doesNotMatch(centerScript, /if\(!item\.appearance_prompt\)missing\.push/);
@@ -1207,8 +1230,8 @@ test('character reference picker supports assets uploads and AI generation', asy
   assert.doesNotMatch(centerScript, /aria-label="设置角色标准图"/);
   assert.match(centerScript, /image\/jpeg','image\/png','image\/webp/);
   assert.match(centerScript, /file\.size>10\*1024\*1024/);
-  assert.match(centerScript, /真人且至少半身，无需三视图，不扣点/);
-  assert.match(centerScript, /message==='请上传人物图'/);
+  assert.match(centerScript, /清晰角色参考图，无需三视图，不扣点/);
+  assert.match(centerScript, /showLiveActionError\(liveActionReferenceSelectionError\(message\),true\)/);
   assert.match(centerStyle, /\.short-drama-reference-picker\{/);
   const calls = [];
   const client = center.createClient(async (url, options) => {
@@ -1300,7 +1323,7 @@ test('character reference generation is tracked per role and can resume polling'
 test('character reference view guidance is grouped with the standard image', () => {
   assert.match(centerScript, /AI 标准图将包含/);
   assert.match(centerScript, /<b>正面全身<\/b><b>侧面全身<\/b><b>背面全身<\/b>/);
-  assert.match(centerScript, /<span>图片要求<\/span><b>真人<\/b><b>至少半身<\/b><b>无需三视图<\/b>/);
+  assert.match(centerScript, /<span>图片要求<\/span><b>不限角色类型<\/b><b>主体清晰完整<\/b><b>无需三视图<\/b>/);
   assert.doesNotMatch(centerScript, /正面半身/);
   assert.match(centerStyle, /\.short-drama-role-reference-content\{display:grid;gap:10px\}/);
 });
@@ -1316,7 +1339,7 @@ test('character reference validation keeps the selected image available for retr
   assert.match(centerScript, /正在检测并自动重试/);
   assert.match(centerScript, /重新检测此图片/);
   assert.match(centerScript, /重新检测所选资产/);
-  assert.match(centerScript, /\^\(请上传\|人物检测\|人物图片检测\)/);
+  assert.match(centerScript, /角色检测\|角色图片检测/);
 });
 
 test('character reference image opens an accessible large preview', () => {
@@ -1329,9 +1352,9 @@ test('character reference image opens an accessible large preview', () => {
   assert.match(centerStyle, /\.short-drama-image-preview\[open\]\{display:grid;place-items:center\}/);
 });
 
-test('live action entry exposes unavailable content types without project creation', () => {
-  assert.match(html, /data-content-type="live_action"/);
-  assert.match(html, /data-content-type="comic"/);
-  assert.match(html, /data-content-type="digital_presenter"/);
+test('系列短剧入口暂不创建项目', () => {
+  assert.match(html, /data-content-type="series" aria-disabled="true"/);
+  assert.match(html, /AI 系列短剧[\s\S]*?<em>即将开放<\/em>/);
+  assert.match(centerScript, /if\(type!=='live_action'\)/);
   assert.match(centerScript, /团队正在努力开发该功能/);
 });

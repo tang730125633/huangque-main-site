@@ -510,7 +510,7 @@ class ShortDramaStoryboardQualityTests(unittest.TestCase):
         ))
 
     def test_quality_gate_still_rejects_genuinely_identical_visuals(self):
-        script = self._compile_single_fact(6)
+        script = self._compile_single_fact(10)
         script["shots"][1]["visual"] = script["shots"][0]["visual"]
 
         quality = short_drama_storyboard.analyze_quality(script)

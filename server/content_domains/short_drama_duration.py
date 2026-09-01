@@ -2,9 +2,9 @@
 
 
 DURATION_BANDS = {
-    30: (15, 30),
-    45: (30, 60),
-    60: (60, 90),
+    30: (30, 60),
+    45: (60, 90),
+    60: (90, 120),
 }
 SHOT_DURATION_SECONDS = (5, 10)
 
@@ -19,7 +19,7 @@ def bounds(value):
         return DURATION_BANDS[key]
     # Internal tests and older imported contracts may carry an exact duration
     # outside the public presets. Preserve that value instead of silently
-    # reinterpreting it as the 15-30 second band.
+    # reinterpreting it as the first public duration band.
     if key > 0:
         return key, key
     return DURATION_BANDS[30]

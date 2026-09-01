@@ -8,30 +8,26 @@ import urllib.error
 
 
 MODEL = os.environ.get("SHORT_DRAMA_REFERENCE_VISION_MODEL", "gemini-2.5-flash").strip()
-ACCEPTED_EXTENTS = {"half_body", "three_quarter", "full_body"}
 SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["has_real_person", "visible_extent"],
+    "required": ["has_character", "framing_sufficient"],
     "properties": {
-        "has_real_person": {"type": "boolean"},
-        "visible_extent": {
-            "type": "string",
-            "enum": [
-                "head_only", "shoulders_only", "upper_body", "half_body",
-                "three_quarter", "full_body", "unknown",
-            ],
-        },
+        "has_character": {"type": "boolean"},
+        "framing_sufficient": {"type": "boolean"},
     },
 }
 INSTRUCTION = (
-    "判断图片中是否至少有一名清晰可辨的写实人类形象，并判断其中画面范围最大的一名人物的可见范围。"
-    "合格人物可以来自真实摄影、写实影视画面或写实AI生成人物图；"
-    "不包括动漫、插画、3D卡通、玩偶、雕像、人体模型，也不能只是单独合成的一张脸。"
-    "三视图、角色设定板或同一人物的多视角拼图，只要至少一个视角清晰展示合格人物，就按该视角判断。"
-    "visible_extent 必须严格选择：head_only=只有头部；shoulders_only=头肩照；"
-    "upper_body=只到胸部；half_body=至少从头到腰/髋部；three_quarter=至少从头到膝部；"
-    "full_body=从头到脚；unknown=无法可靠判断。不要依据服装、背景或文字猜测。"
+    "判断图片中是否至少有一个清晰可辨、可作为视频形象参考的主要角色主体，"
+    "并判断构图是否充分展示该角色的身份特征。"
+    "角色视觉风格和物种不受限制：允许真人摄影、写实AI、二维动漫、插画、3D卡通，"
+    "也允许动物、拟人动物、机器人、机甲、怪兽和奇幻生物；不要以非真人或非写实为由拒绝。"
+    "风景、普通物品、纯文字、抽象图形，或没有明确角色身份的画面，has_character=false。"
+    "人形角色至少应清晰展示上半身、头部和主要外形；动物、机器人、怪兽等非人类角色"
+    "应充分展示主要轮廓、结构、配色、纹理、标志性特征或装备。"
+    "主体过小、严重裁切、严重遮挡、模糊到无法辨认，或只有单独合成的一张脸时，"
+    "framing_sufficient=false。三视图、角色设定板或同一角色的多视角拼图可以合格。"
+    "只依据图片中实际可见内容判断，不要根据文字或背景猜测。"
 )
 
 
@@ -48,12 +44,12 @@ def _candidate_payload(response):
     if not text:
         raise ValueError("empty response")
     result = json.loads(text)
-    if not isinstance(result, dict) or set(result) != {"has_real_person", "visible_extent"}:
+    if not isinstance(result, dict) or set(result) != {"has_character", "framing_sufficient"}:
         raise ValueError("invalid response shape")
-    if type(result["has_real_person"]) is not bool:
-        raise ValueError("invalid person result")
-    if result["visible_extent"] not in SCHEMA["properties"]["visible_extent"]["enum"]:
-        raise ValueError("invalid extent result")
+    if type(result["has_character"]) is not bool:
+        raise ValueError("invalid character result")
+    if type(result["framing_sufficient"]) is not bool:
+        raise ValueError("invalid framing result")
     return result
 
 
@@ -61,11 +57,11 @@ def validate_character_reference(raw, mime_type):
     """Raise the exact user-facing error when the supplied image is ineligible."""
     api_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not api_key or not MODEL:
-        raise ValueError("人物图片检测暂时不可用，请稍后重试")
+        raise ValueError("角色图片检测暂时不可用，请稍后重试")
     if not isinstance(raw, (bytes, bytearray)) or not raw:
-        raise ValueError("请上传人物图")
+        raise ValueError("请上传清晰的角色图片")
     if mime_type not in {"image/jpeg", "image/png", "image/webp"}:
-        raise ValueError("请上传人物图")
+        raise ValueError("请上传清晰的角色图片")
 
     body = {
         "contents": [{"parts": [
@@ -109,20 +105,20 @@ def validate_character_reference(raw, mime_type):
             flush=True,
         )
         if code == 429:
-            raise ValueError("人物检测服务繁忙，请稍后重新检测")
+            raise ValueError("角色检测服务繁忙，请稍后重新检测")
         if code in {401, 403}:
-            raise ValueError("人物检测服务配置异常，请联系管理员")
-        raise ValueError("人物图片检测暂时不可用，请稍后重新检测")
+            raise ValueError("角色检测服务配置异常，请联系管理员")
+        raise ValueError("角色图片检测暂时不可用，请稍后重新检测")
     except Exception as error:
         print(
             "[short-drama] character reference validation failed: %s"
             % type(error).__name__,
             flush=True,
         )
-        raise ValueError("人物图片检测暂时不可用，请稍后重新检测")
+        raise ValueError("角色图片检测暂时不可用，请稍后重新检测")
 
-    if not result["has_real_person"]:
-        raise ValueError("请上传人物图")
-    if result["visible_extent"] not in ACCEPTED_EXTENTS:
-        raise ValueError("请上传至少包含半身的人物图")
+    if not result["has_character"]:
+        raise ValueError("请上传清晰的角色图片")
+    if not result["framing_sufficient"]:
+        raise ValueError("请上传主体清晰、特征完整的角色参考图")
     return result

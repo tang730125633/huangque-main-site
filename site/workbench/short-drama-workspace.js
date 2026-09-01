@@ -101,7 +101,7 @@
     var first=dialogues[0]||{};
     return {duration:duration,kind:first.kind||'silence',speech_rate:Number(first.speech_rate)||1,dialogue_count:dialogues.length,normal_seconds:normal,reading_seconds:actual,remaining_seconds:Math.round((duration-actual)*100)/100,issue:shotTimingIssue(values)};
   }
-  function durationBandLabel(value){value=Number(value)||30;return value===60?'60–90 秒':value===45?'30–60 秒':'15–30 秒';}
+  function durationBandLabel(value){value=Number(value)||30;return value===60?'90–120 秒':value===45?'60–90 秒':'30–60 秒';}
   function escapeHtml(value){return text(value).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
   function downloadFilename(value,fallback){
     var filename=text(value).trim()||fallback||'短剧';
@@ -676,7 +676,7 @@
     var total=shots.length,remaining=total-counts.completed,percent=Math.round(counts.completed*100/total);
     var message=remaining===0?'全部镜头已生成，可以合成预览':'还有 '+remaining+' 个镜头未完成';
     var warnings=(counts.active?'<span class="active">'+counts.active+' 个生成中</span>':'')+(counts.failed?'<span class="failed">'+counts.failed+' 个失败</span>':'')+(counts.pending?'<span>'+counts.pending+' 个未生成</span>':'');
-    var seconds=shots.reduce(function(sum,shot){return sum+Number(shot.duration_seconds||0);},0),target=Number(project&&project.target_duration||30),lower=target===60?60:target===45?30:15,upper=target===60?90:target===45?60:30;
+    var seconds=shots.reduce(function(sum,shot){return sum+Number(shot.duration_seconds||0);},0),target=Number(project&&project.target_duration||30),lower=target===60?90:target===45?60:30,upper=target===60?120:target===45?90:60;
     var timingClass=seconds<lower||seconds>upper?' warning':'',timingText=seconds<lower?'比建议区间少 '+(lower-seconds)+' 秒':seconds>upper?'比建议区间多 '+(seconds-upper)+' 秒':'处于建议时长范围';
     capabilities=capabilities&&typeof capabilities==='object'?capabilities:shotStructureCapabilities(shots,shots.map(function(shot){return text(shot.shot_key);}).indexOf(text(activeShotKey)),!!capabilities);
     var adjust=capabilities.enabled?'<div class="sd-shot-structure-toolbar"><button type="button" data-action="add-shot-after" data-shot-key="'+escapeHtml(activeShotKey)+'"'+(capabilities.insertAfter?'':' disabled')+'>＋ 新增镜头</button><button type="button" data-action="smart-insert-shot" data-shot-key="'+escapeHtml(activeShotKey)+'"'+(capabilities.smartInsert?'':' disabled')+'>智能插入过渡镜头</button><span>可在当前镜头前后插入；生成过的旧合成片会保留并标记需重新合成。</span></div>':'';

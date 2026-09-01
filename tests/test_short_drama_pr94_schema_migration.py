@@ -321,7 +321,7 @@ class ShortDramaPr94SchemaMigrationTests(unittest.TestCase):
         with patch.object(image, "OUT_DIR", output), patch.object(
                 short_drama_reference_validation,
                 "validate_character_reference",
-                return_value={"has_real_person": True, "visible_extent": "full_body"},
+                return_value={"has_character": True, "framing_sufficient": True},
         ):
             selected = short_drama.select_character_reference(
                 self.db, "alice", "alice", {
@@ -497,7 +497,7 @@ class ShortDramaPr94SchemaMigrationTests(unittest.TestCase):
         with patch.object(image, "OUT_DIR", output), patch.object(
                 short_drama_reference_validation,
                 "validate_character_reference",
-                return_value={"has_real_person": True, "visible_extent": "half_body"},
+                return_value={"has_character": True, "framing_sufficient": True},
         ):
             selected = short_drama.select_character_reference(
                 self.db, "alice", "alice", {

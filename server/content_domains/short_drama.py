@@ -52,7 +52,7 @@ NEXT_STAGE = {
 }
 RATIOS = {"9:16", "16:9"}
 DURATIONS = {30, 45, 60}
-SHOT_COUNTS = set(range(6, 11))
+SHOT_COUNTS = set(range(6, 21))
 DEFAULT_MAX_PROJECTS_PER_USER = 50
 DEFAULT_PROJECT_PAGE_SIZE = 20
 MAX_PROJECT_PAGE_SIZE = 50
@@ -158,12 +158,12 @@ def validate_project_payload(payload, partial=False):
         raise ValueError("缺少短剧目标时长")
     if "target_duration" in cleaned:
         if type(cleaned["target_duration"]) is not int or cleaned["target_duration"] not in DURATIONS:
-            raise ValueError("短剧时长仅支持 30、45、60 秒")
+            raise ValueError("短剧时长仅支持 30-60、60-90、90-120 秒")
     if not partial and "shot_count" not in cleaned:
         raise ValueError("缺少短剧分镜数量")
     if "shot_count" in cleaned:
         if type(cleaned["shot_count"]) is not int or cleaned["shot_count"] not in SHOT_COUNTS:
-            raise ValueError("分镜数量必须为 6–10 个")
+            raise ValueError("分镜数量必须为 6–20 个")
     if not partial:
         _validate_planning_limits(cleaned["target_duration"], cleaned["shot_count"])
     if "genre" in cleaned:
@@ -194,7 +194,7 @@ CREATE TABLE IF NOT EXISTS short_drama_projects (
   synopsis TEXT NOT NULL,
   ratio TEXT NOT NULL CHECK (ratio IN ('9:16','16:9')),
   target_duration INTEGER NOT NULL CHECK (target_duration IN (30,45,60)),
-  shot_count INTEGER NOT NULL CHECK (shot_count BETWEEN 6 AND 10),
+  shot_count INTEGER NOT NULL CHECK (shot_count BETWEEN 6 AND 20),
   genre TEXT NOT NULL DEFAULT '',
   visual_style TEXT NOT NULL DEFAULT '电影写实',
   target_platform TEXT NOT NULL DEFAULT '抖音',
@@ -743,9 +743,9 @@ def validate_planning_submission(db_factory, username, payload, access=None):
 
 def _validate_planning_limits(target_duration, shot_count):
     if target_duration not in DURATIONS:
-        raise ValueError("短剧时长仅支持 15-30、30-60、60-90 秒")
+        raise ValueError("短剧时长仅支持 30-60、60-90、90-120 秒")
     if shot_count not in SHOT_COUNTS:
-        raise ValueError("分镜数量必须为 6-10 个")
+        raise ValueError("分镜数量必须为 6-20 个")
     if not short_drama_duration.is_reachable(target_duration, shot_count):
         raise ValueError("短剧时长与分镜数量不匹配，无法组成 5/10 秒分镜")
 
@@ -760,7 +760,7 @@ def build_plan_prompt(settings):
         "script 必须包含 hook、conflict、turn、ending、dialogue_lines；每条 dialogue_lines 必须包含 id、character_key、text。"
         "id 必须是唯一字符串，严格按台词顺序使用 line_001、line_002、line_003 这类格式；"
         "例如 {\"id\":\"line_001\",\"character_key\":\"boy\",\"text\":\"你怎么又来了？\"}。\n"
-        "shots 是 6-10 条分镜数组；每条必须包含 key、duration、scene_description、camera_description、"
+        "shots 是 6-20 条分镜数组；每条必须包含 key、duration、scene_description、camera_description、"
         "character_keys、dialogue_line_ids、image_prompt、video_prompt。duration 只能为 5 或 10 秒，"
         "所有 duration 之和必须位于 %s；优先保证对白和最后一镜完整，不要为凑时长截断镜头；"
         "character_keys 和 dialogue_line_ids 只能引用前述已定义的键。"
@@ -987,7 +987,7 @@ def normalize_plan(raw, settings):
     normalized_script["turn_text"] = normalized_script["turn"]
 
     if len(shots) not in SHOT_COUNTS or len(shots) != shot_count:
-        raise ValueError("分镜数量必须等于设定数量且为 6-10 个")
+        raise ValueError("分镜数量必须等于设定数量且为 6-20 个")
     normalized_shots = []
     for shot in shots:
         if not isinstance(shot, dict):
@@ -1701,10 +1701,96 @@ def _project_detail(conn, username, project_id):
     return detail
 
 
+def _migrate_project_shot_count_constraint(conn):
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' "
+        "AND name='short_drama_projects'"
+    ).fetchone()
+    table_sql = str(row[0] if row else "")
+    if not table_sql or re.search(
+            r"\bshot_count\b[^,]*\bBETWEEN\s+6\s+AND\s+20\b",
+            table_sql, re.IGNORECASE | re.DOTALL):
+        return False
+    legacy_pattern = re.compile(
+        r"(\bshot_count\b[^,]*?\bCHECK\s*\(\s*\bshot_count\b\s+BETWEEN\s+)"
+        r"6(\s+AND\s+)10(\s*\))",
+        re.IGNORECASE | re.DOTALL,
+    )
+    migrated_sql, replacements = legacy_pattern.subn(
+        r"\g<1>6\g<2>20\g<3>", table_sql, count=1,
+    )
+    if replacements != 1:
+        return False
+    migrated_sql, table_replacements = re.subn(
+        r"^\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"
+        r"(?:\"short_drama_projects\"|\[short_drama_projects\]|"
+        r"`short_drama_projects`|short_drama_projects)",
+        'CREATE TABLE "short_drama_projects_migrating"',
+        migrated_sql,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    if table_replacements != 1:
+        raise RuntimeError("无法安全升级短剧镜头数量约束")
+    columns = [
+        str(item[1]) for item in conn.execute(
+            "PRAGMA table_info(short_drama_projects)"
+        ).fetchall()
+    ]
+    if not columns:
+        raise RuntimeError("短剧项目表结构为空，无法升级镜头数量约束")
+    schema_objects = conn.execute(
+        "SELECT type,name,sql FROM sqlite_master "
+        "WHERE sql IS NOT NULL AND ("
+        "(tbl_name='short_drama_projects' AND type IN ('index','trigger')) "
+        "OR (type='trigger' AND "
+        "instr(lower(sql),'short_drama_projects')>0)) "
+        "ORDER BY type,name"
+    ).fetchall()
+    quoted_columns = ",".join(
+        '"%s"' % name.replace('"', '""') for name in columns
+    )
+    foreign_keys_enabled = bool(conn.execute("PRAGMA foreign_keys").fetchone()[0])
+    conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute('DROP TABLE IF EXISTS "short_drama_projects_migrating"')
+        conn.execute(migrated_sql)
+        conn.execute(
+            'INSERT INTO "short_drama_projects_migrating" (%s) '
+            'SELECT %s FROM "short_drama_projects"'
+            % (quoted_columns, quoted_columns)
+        )
+        for object_type, object_name, _object_sql in schema_objects:
+            if object_type == "trigger":
+                conn.execute(
+                    'DROP TRIGGER "%s"' % object_name.replace('"', '""')
+                )
+        conn.execute('DROP TABLE "short_drama_projects"')
+        conn.execute(
+            'ALTER TABLE "short_drama_projects_migrating" '
+            'RENAME TO "short_drama_projects"'
+        )
+        for _object_type, _name, object_sql in schema_objects:
+            conn.execute(object_sql)
+        foreign_key_errors = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if foreign_key_errors:
+            raise RuntimeError("短剧镜头数量约束升级后外键检查失败")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        if foreign_keys_enabled:
+            conn.execute("PRAGMA foreign_keys=ON")
+    return True
+
+
 def init_db(db_factory):
     conn = _connection(db_factory)
     try:
         conn.executescript(_SCHEMA)
+        _migrate_project_shot_count_constraint(conn)
         columns = {row[1] for row in conn.execute("PRAGMA table_info(short_drama_projects)")}
         if "board_id" not in columns:
             conn.execute("ALTER TABLE short_drama_projects ADD COLUMN board_id TEXT")
@@ -2272,7 +2358,7 @@ def _characters_from_import_contract(contract):
             "source_type": "ai_character",
             "appearance_prompt": "；".join(
                 str(value).strip() for value in appearance_parts if value
-            ) or "电影写实人物，单人，清晰正面五官",
+            ) or "单一角色，主体清晰，身份特征完整",
             "wardrobe_prompt": "；".join(
                 str(value).strip() for value in wardrobe_parts if value
             ),
@@ -2715,7 +2801,7 @@ def finalize_live_action_project(db_factory, username, payload):
             (project_id, username),
         ).fetchone()
         if not project:
-            raise LookupError("真人短剧草稿不存在")
+            raise LookupError("AI 短剧草稿不存在")
         if int(project[0]) != revision:
             raise RevisionConflict("项目版本已变化，请刷新后重试")
         if project[2] == "formal":
@@ -2873,7 +2959,7 @@ def confirm_live_action_core_story(db_factory, username, payload):
             (project_id, username),
         ).fetchone()
         if not row:
-            raise LookupError("真人短剧草稿不存在")
+            raise LookupError("AI 短剧草稿不存在")
         if int(row[0]) != revision:
             raise RevisionConflict("项目版本已变化，请刷新后重试")
         if row[2] != "draft" or row[1] != "draft":
@@ -3537,7 +3623,7 @@ def _normalize_shots(shots, character_keys, dialogue_ids, *, expected_count=None
     if not isinstance(shots, list):
         raise ValueError("分镜数据必须是数组")
     if len(shots) not in SHOT_COUNTS or (expected_count is not None and len(shots) != expected_count):
-        raise ValueError("分镜数量必须等于设定数量且为 6–10 个")
+        raise ValueError("分镜数量必须等于设定数量且为 6–20 个")
     normalized = []
     for index, shot in enumerate(shots):
         if not isinstance(shot, dict):
@@ -3919,21 +4005,24 @@ def _character_reference_stage_allowed(conn, project_id, stage):
 
 def _character_reference_prompt(character):
     lines = [
-        "生成一张电影写实短剧角色标准图（三视图角色设定板）。",
-        "同一个人物横向排列为：正面全身、侧面全身、背面全身。",
-        "三幅视图均须从头顶到脚底完整入镜，人物等比例、同尺寸、自然站立，不要半身、不要裁切。",
-        "三幅视图必须保持同一张脸、同一年龄、同一发型、同一体型、同一套服装、颜色和配饰。",
-        "干净中性浅色背景，均匀棚拍光线，自然站姿，清晰五官，完整身体比例。",
+        "生成一张短剧角色标准图（三视图角色设定板）。",
+        "角色可以是真人、二维动漫、插画、3D卡通、动物、机器人、怪兽或奇幻生物，"
+        "严格遵循角色资料中的物种和视觉风格，不要擅自转换为真人写实。",
+        "同一个角色横向排列为：正面全身、侧面全身、背面全身。",
+        "三幅视图均须完整展示角色主体，保持等比例、同尺寸和自然姿态，不要半身、不要裁切。",
+        "三幅视图必须保持同一角色身份，轮廓、材质、配色、纹理、标志性特征和装备一致；"
+        "适用时，脸部、年龄、发型、体型、服装和配饰也必须一致。",
+        "干净中性浅色背景，均匀棚拍光线，清晰展示完整主体结构。",
         "角色名称：" + str(character["name"]),
     ]
     optional = (
         ("身份", character.get("identity_text")),
         ("性格与气质", character.get("personality")),
-        ("性别、年龄、脸型、发型、发色、身高体型及外貌", character.get("appearance_prompt")),
-        ("固定服装、固定颜色与配饰", character.get("wardrobe_prompt")),
+        ("物种、视觉风格、轮廓、材质、配色、纹理及外貌", character.get("appearance_prompt")),
+        ("固定服装、装备、颜色与配饰", character.get("wardrobe_prompt")),
     )
     lines.extend(label + "：" + str(value).strip() for label, value in optional if str(value or "").strip())
-    lines.append("禁止文字、标签、水印、额外人物、服装变化、脸部变化、遮挡脸部或夸张动作。")
+    lines.append("禁止文字、标签、水印、额外角色、外形变化、遮挡主体或夸张动作。")
     return "\n".join(lines)
 
 
@@ -4379,10 +4468,10 @@ def prepare_character_reference_submission(
             )
             if not str(role_contract.get("fixed_clothing") or "").strip():
                 raise ValueError(
-                    "使用 AI 生成标准图前，请先填写固定服装提示词"
+                    "使用 AI 生成标准图前，请先填写固定造型提示词"
                 )
         elif not str(character.get("wardrobe_prompt") or "").strip():
-            raise ValueError("使用 AI 生成标准图前，请先填写固定服装提示词")
+            raise ValueError("使用 AI 生成标准图前，请先填写固定造型提示词")
         from . import image as image_domain
         payload = image_domain.validate_image_payload({
             "provider": "banana",

@@ -19,8 +19,8 @@
   var GENRE_PRESETS=['都市情感','校园青春','家庭伦理','职场商战','悬疑推理','轻喜剧','古装剧情'];
   var PLANNER_FIELD_LABELS={topic:'故事主题',protagonist:'主角',conflict:'核心冲突',emotion:'目标情绪',ending:'结局',audience:'目标观众',style:'视觉风格'};
   function text(value){ return String(value==null?'':value); }
-  function durationBandLabel(value){value=Number(value)||30;return value===60?'60–90 秒':value===45?'30–60 秒':'15–30 秒';}
-  function plannedDuration(value,count){value=Number(value)||30;count=Math.max(1,Number(count)||1);var bounds=value===60?[60,90]:value===45?[30,60]:[15,30];return Math.max(bounds[0],Math.min(bounds[1],count*6));}
+  function durationBandLabel(value){value=Number(value)||30;return value===60?'90–120 秒':value===45?'60–90 秒':'30–60 秒';}
+  function plannedDuration(value,count){value=Number(value)||30;count=Math.max(1,Number(count)||1);var bounds=value===60?[90,120]:value===45?[60,90]:[30,60];return Math.max(bounds[0],Math.min(bounds[1],count*6));}
   function escapeHtml(value){ return text(value).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
   function normalizeProject(raw){
     raw=raw||{};
@@ -77,7 +77,7 @@
     function value(name){ return text(form&&form.elements&&form.elements[name]&&form.elements[name].value).trim(); }
     return {
       title:value('title'),synopsis:value('synopsis'),ratio:value('ratio')||'16:9',genre:projectGenre(form),
-      target_duration:Number(value('target_duration'))||30,shot_count:Number(value('shot_count'))||6,
+      target_duration:Number(value('target_duration'))||30,shot_count:Number(value('shot_count'))||8,
       visual_style:value('visual_style')||'电影感写实'
     };
   }
@@ -88,9 +88,9 @@
   function recommendedShotPlan(duration,density){
     duration=Number(duration)||30;density=text(density)||'auto';
     var plans={
-      30:{range:'4–6',auto:6,compact:6,balanced:6,rich:6,label:'15–30 秒'},
-      45:{range:'6–10',auto:8,compact:6,balanced:8,rich:9,label:'30–60 秒'},
-      60:{range:'10–15',auto:10,compact:10,balanced:10,rich:10,label:'60–90 秒'}
+      30:{range:'6–10',auto:8,compact:6,balanced:8,rich:10,label:'30–60 秒'},
+      45:{range:'10–15',auto:12,compact:10,balanced:13,rich:15,label:'60–90 秒'},
+      60:{range:'15–20',auto:18,compact:15,balanced:18,rich:20,label:'90–120 秒'}
     },plan=plans[duration]||plans[30],count=Number(plan[density]||plan.auto);
     return {duration:duration,range:plan.range,count:count,label:plan.label,density:density};
   }
@@ -544,7 +544,7 @@
     payload=payload||{};selected=selected||{};
     var title=text(payload.title||selected.title||'未命名短剧').trim();
     var synopsis=text(selected.premise||payload.synopsis||'').trim();
-    var durationBand=Number(payload.target_duration)||30,shotCount=Number(payload.shot_count)||6;
+    var durationBand=Number(payload.target_duration)||30,shotCount=Number(payload.shot_count)||8;
     var duration=plannedDuration(durationBand,shotCount);
     var notes=(messages||[]).map(compactIdea).filter(Boolean);
     understanding=understanding||plannerUnderstanding(notes,payload,{});
@@ -728,7 +728,7 @@
     });
     var compact=source.replace(/\s+/g,'');
     var duration=compact.length<=500?30:compact.length<=1000?45:60;
-    var shots=duration===30?6:duration===45?8:10;
+    var shots=duration===30?8:duration===45?12:18;
     var characters=Object.keys(names);
     var warnings=[];
     if(!sceneCount)warnings.push('没有识别到明确的场景标题，助手会在工作区帮你补充分场。');
@@ -1284,7 +1284,7 @@
       doc.getElementById('shortDramaPlannerStatus').textContent=flowState.label;
       doc.getElementById('shortDramaPlannerProgress').style.width=progressState.score+'%';
       doc.getElementById('shortDramaPlannerScore').textContent='信息完整度 '+completeness.score+'%';
-      doc.getElementById('shortDramaPlannerBrief').innerHTML='<dt>项目</dt><dd>'+escapeHtml(payload.title||'待填写')+'</dd>'+PLANNER_FIELDS.map(function(key){return plannerBriefInput(key,understanding[key],plannerMeta[key]);}).join('')+'<dt>规格</dt><dd>'+escapeHtml(payload.ratio||'16:9')+' · '+durationBandLabel(payload.target_duration)+' · '+Number(payload.shot_count||6)+' 镜</dd><dt>方向</dt><dd>'+escapeHtml(selectedDirection&&selectedDirection.title||'待选择')+'</dd>';
+      doc.getElementById('shortDramaPlannerBrief').innerHTML='<dt>项目</dt><dd>'+escapeHtml(payload.title||'待填写')+'</dd>'+PLANNER_FIELDS.map(function(key){return plannerBriefInput(key,understanding[key],plannerMeta[key]);}).join('')+'<dt>规格</dt><dd>'+escapeHtml(payload.ratio||'16:9')+' · '+durationBandLabel(payload.target_duration)+' · '+Number(payload.shot_count||8)+' 镜</dd><dt>方向</dt><dd>'+escapeHtml(selectedDirection&&selectedDirection.title||'待选择')+'</dd>';
       var conflictFields=PLANNER_FIELDS.filter(function(key){return plannerMeta[key]&&plannerMeta[key].status==='conflicted';});
       var dirtyLayers=plannerAffectedLayers(plannerDirtyFields);
       doc.getElementById('shortDramaPlannerMissing').innerHTML=(conflictFields.map(function(key){return '<span class="conflict">待确认 '+PLANNER_FIELD_LABELS[key]+'</span>';}).concat(completeness.missing.map(function(key){return '<span>待补 '+PLANNER_FIELD_LABELS[key]+'</span>';})).concat(dirtyLayers.map(function(layer){return '<span class="dirty">需更新 '+({story:'故事结构',scenes:'场景设计',shots:'镜头执行'}[layer])+'</span>';})).join(''))||'<span class="complete">关键信息已完整</span>';
@@ -1357,7 +1357,7 @@
       var pending=draft.pending_project?normalizeProject(draft.pending_project):null,pendingId=text(pending&&pending.id);
       if(pendingId&&projects.some(function(item){return text(item&&item.id)===pendingId;}))return;
       var values=draft.form||{};
-      projects.unshift({id:pendingId||'local-live-action-draft',title:text(values.title).trim()||'未命名真人短剧草稿',synopsis:liveActionDraftSynopsis(draft),genre:values.genre_choice==='__custom__'?text(values.genre_custom):text(values.genre_choice),ratio:text(values.ratio)||'16:9',target_duration:Number(values.target_duration)||30,shot_count:Number(values.shot_count)||6,revision:Number(pending&&pending.revision)||0,spent_points:Number(pending&&pending.spent_points)||0,updated_at:String(draft.saved_at||Date.now()),creation_status:'draft',local_draft:!pendingId,characters:(pending&&pending.characters)||[]});
+      projects.unshift({id:pendingId||'local-live-action-draft',title:text(values.title).trim()||'未命名 AI 短剧草稿',synopsis:liveActionDraftSynopsis(draft),genre:values.genre_choice==='__custom__'?text(values.genre_custom):text(values.genre_choice),ratio:text(values.ratio)||'16:9',target_duration:Number(values.target_duration)||30,shot_count:Number(values.shot_count)||8,revision:Number(pending&&pending.revision)||0,spent_points:Number(pending&&pending.spent_points)||0,updated_at:String(draft.saved_at||Date.now()),creation_status:'draft',local_draft:!pendingId,characters:(pending&&pending.characters)||[]});
     }
     function renderLiveActionDraftResume(draft){
       resumeLiveActionDraft=draft||null;var node=doc.getElementById('shortDramaLiveActionDraftResume');node.hidden=!resumeLiveActionDraft;
@@ -1485,7 +1485,7 @@
       var structure=liveActionAnalysis.global_structure||{},summary=text(liveActionAnalysis.synopsis||source.slice(0,260)).trim();
       function value(field,fallback){return text(structure[field]||fallback||summary).trim().slice(0,1200);}
       return {
-        title:text(liveActionForm.elements.title.value||liveActionAnalysis.title||'未命名真人短剧').trim().slice(0,120),
+        title:text(liveActionForm.elements.title.value||liveActionAnalysis.title||'未命名 AI 短剧').trim().slice(0,120),
         logline:value('premise',summary),setup:value('setup',summary),development:value('development',summary),
         turning_point:value('turning_point',summary),climax:value('climax',summary),ending:value('ending',summary),
         central_conflict:value('central_conflict','原稿未呈现明确的核心冲突，请补充人物目标和阻碍。'),theme:value('theme','人物通过行动与选择完成情绪变化。'),
@@ -1577,7 +1577,7 @@
         character_key:text(item.character_key)||('character_'+(index+1)),name:text(item.name).trim(),
         identity_text:[item.role_type,item.gender,item.age,item.identity_text,item.relationships].map(text).filter(Boolean).join('；'),
         personality:text(item.personality).trim()||'以用户确认的动作、表情、台词和连续性为准',source_type:'ai_character',avatar_id:null,
-        appearance_prompt:[item.appearance_prompt,item.gender,item.age,item.face_shape,item.hairstyle,item.hair_color,item.height_body].map(text).filter(Boolean).join('；')||'电影写实人物，单人，清晰正面五官',
+        appearance_prompt:[item.appearance_prompt,item.gender,item.age,item.face_shape,item.hairstyle,item.hair_color,item.height_body].map(text).filter(Boolean).join('；')||'单一角色，主体清晰，身份特征完整',
         wardrobe_prompt:[item.wardrobe_prompt,item.fixed_clothing,item.fixed_colors,item.accessories].map(text).filter(Boolean).join('；'),
         reference_job_id:item.reference_job_id||null,reference_file:text(item.reference_file),reference_url:text(item.reference_url),
         reference_version:Number(item.reference_version)||0,reference_locked:!!item.reference_locked,
@@ -1690,12 +1690,12 @@
         syncLiveActionReferences(project);renderLiveActionRoles();showLiveActionError('',true);scheduleLiveActionDraft();
         var status=doc.getElementById('shortDramaRoleStatus'),current=liveActionRoles[index];
         if(status&&current)status.textContent=current.name+' · 标准图已选择，请确认锁定';
-      }).catch(function(error){var message=error.message||'请稍后重试。';if(options.onError)options.onError(message);else showLiveActionError(message==='请上传人物图'?message:'标准图设置失败：'+message,true);})
+      }).catch(function(error){var message=error.message||'请稍后重试。';if(options.onError)options.onError(message);else showLiveActionError(liveActionReferenceSelectionError(message),true);})
         .finally(function(){liveActionReferenceBusy=false;renderLiveActionRoles();if(options.onFinish)options.onFinish();});
     }
     function liveActionReferenceSelectionError(message){
       message=text(message)||'请稍后重新检测。';
-      return /^(请上传|人物检测|人物图片检测)/.test(message)?message:('标准图设置失败：'+message);
+      return /^(请上传|角色检测|角色图片检测|人物检测|人物图片检测)/.test(message)?message:('标准图设置失败：'+message);
     }
     function readLiveActionReferenceFile(file){
       return new Promise(function(resolve,reject){
@@ -1715,7 +1715,7 @@
       var uploadInput=picker.querySelector('[data-reference-upload-input]');
       function openAssetLibrary(){
         var pageSize=60,assets=[],selectedAsset=null,loading=false,hasMore=true,query='';
-        var library=doc.createElement('div');library.className='short-drama-asset-library';library.innerHTML='<section class="short-drama-asset-library-box" role="dialog" aria-modal="true" aria-label="选择图片资产"><header><div><small>MY ASSETS</small><h3>选择图片资产</h3><p>选择一张真人且至少半身的图片作为 '+escapeHtml(item.name||'角色')+' 的标准图。</p></div><button type="button" data-close-asset-library aria-label="关闭资产库">×</button></header><div class="short-drama-asset-library-tools"><input type="search" data-asset-library-search placeholder="搜索提示词或资产编号"><span data-asset-library-count>正在加载…</span></div><div class="short-drama-asset-library-body"><div class="short-drama-reference-asset-grid" data-asset-library-grid></div><button type="button" class="short-drama-asset-load-more" data-asset-load-more hidden>加载更多图片</button></div><div class="short-drama-asset-library-error" data-asset-library-error hidden></div><footer><span data-asset-library-selected>尚未选择图片</span><button type="button" class="confirm" data-confirm-reference-asset disabled>确认使用所选资产</button></footer></section>';
+        var library=doc.createElement('div');library.className='short-drama-asset-library';library.innerHTML='<section class="short-drama-asset-library-box" role="dialog" aria-modal="true" aria-label="选择图片资产"><header><div><small>MY ASSETS</small><h3>选择图片资产</h3><p>选择一张主体清晰、特征完整的角色图片作为 '+escapeHtml(item.name||'角色')+' 的标准图。</p></div><button type="button" data-close-asset-library aria-label="关闭资产库">×</button></header><div class="short-drama-asset-library-tools"><input type="search" data-asset-library-search placeholder="搜索提示词或资产编号"><span data-asset-library-count>正在加载…</span></div><div class="short-drama-asset-library-body"><div class="short-drama-reference-asset-grid" data-asset-library-grid></div><button type="button" class="short-drama-asset-load-more" data-asset-load-more hidden>加载更多图片</button></div><div class="short-drama-asset-library-error" data-asset-library-error hidden></div><footer><span data-asset-library-selected>尚未选择图片</span><button type="button" class="confirm" data-confirm-reference-asset disabled>确认使用所选资产</button></footer></section>';
         picker.appendChild(library);
         var grid=library.querySelector('[data-asset-library-grid]'),count=library.querySelector('[data-asset-library-count]'),loadMore=library.querySelector('[data-asset-load-more]'),confirm=library.querySelector('[data-confirm-reference-asset]'),selectedLabel=library.querySelector('[data-asset-library-selected]'),errorNode=library.querySelector('[data-asset-library-error]'),search=library.querySelector('[data-asset-library-search]');
         function assetKey(asset){return String(asset.job_id)+'|'+text(asset.url);}
@@ -1738,7 +1738,7 @@
         renderAssetLibrary();loadAssetPage();search.focus();
       }
       function openUploadConfirmation(selection){
-        var uploadConfirm=doc.createElement('div');uploadConfirm.className='short-drama-upload-confirm';uploadConfirm.innerHTML='<section class="short-drama-upload-confirm-box" role="dialog" aria-modal="true" aria-label="确认本地上传图片"><header><div><small>LOCAL UPLOAD</small><h3>确认本地图片</h3><p>确认后将检测图片中是否包含至少半身真人。</p></div><button type="button" data-close-upload-confirm aria-label="关闭上传预览">×</button></header><div class="short-drama-upload-confirm-preview"><button type="button" data-preview-upload-reference aria-label="放大预览本地图片"><img src="'+escapeHtml(selection.image_data)+'" alt="本地上传图片预览"><span>放大预览</span></button><strong>'+escapeHtml(selection.filename)+'</strong></div><div class="short-drama-asset-library-error" data-upload-confirm-error hidden></div><footer><button type="button" data-choose-upload-again>重新选择</button><button type="button" class="confirm" data-confirm-reference-upload>确认使用此图片</button></footer></section>';
+        var uploadConfirm=doc.createElement('div');uploadConfirm.className='short-drama-upload-confirm';uploadConfirm.innerHTML='<section class="short-drama-upload-confirm-box" role="dialog" aria-modal="true" aria-label="确认本地上传图片"><header><div><small>LOCAL UPLOAD</small><h3>确认本地图片</h3><p>确认后将检测图片中是否包含清晰可识别且主体特征完整的角色。</p></div><button type="button" data-close-upload-confirm aria-label="关闭上传预览">×</button></header><div class="short-drama-upload-confirm-preview"><button type="button" data-preview-upload-reference aria-label="放大预览本地图片"><img src="'+escapeHtml(selection.image_data)+'" alt="本地上传图片预览"><span>放大预览</span></button><strong>'+escapeHtml(selection.filename)+'</strong></div><div class="short-drama-asset-library-error" data-upload-confirm-error hidden></div><footer><button type="button" data-choose-upload-again>重新选择</button><button type="button" class="confirm" data-confirm-reference-upload>确认使用此图片</button></footer></section>';
         picker.appendChild(uploadConfirm);
         var confirm=uploadConfirm.querySelector('[data-confirm-reference-upload]'),errorNode=uploadConfirm.querySelector('[data-upload-confirm-error]');
         uploadConfirm.addEventListener('click',function(event){event.stopPropagation();if(event.target===uploadConfirm||event.target.closest('[data-close-upload-confirm]')){closeLiveActionReferencePicker();var trigger=roleList.querySelector('[data-reference-source="upload"]');if(trigger)trigger.focus();return;}if(event.target.closest('[data-choose-upload-again]')){uploadConfirm.remove();uploadInput.value='';uploadInput.click();return;}if(event.target.closest('[data-preview-upload-reference]'))openLiveActionReferencePreview(selection.image_data,selection.filename,event.target.closest('[data-preview-upload-reference]'));});
@@ -1750,7 +1750,7 @@
       if(source==='upload'){uploadInput.value='';uploadInput.click();return;}
       collectLiveActionRoles();
       if(!text(liveActionRoles[index]&&liveActionRoles[index].fixed_clothing).trim()){
-        closeLiveActionReferencePicker();showLiveActionError('使用 AI 生成标准图前，请先填写固定服装提示词并重新保存当前角色。',true);activeLiveActionRole=index;renderLiveActionRoles();var clothing=roleList.querySelector('[data-role-index="'+index+'"] [data-role-field="fixed_clothing"]');if(clothing){clothing.setAttribute('aria-invalid','true');var clothingLabel=clothing.closest('label');if(clothingLabel)clothingLabel.classList.add('invalid');clothing.focus();clothing.scrollIntoView({block:'center',behavior:'smooth'});}return;
+        closeLiveActionReferencePicker();showLiveActionError('使用 AI 生成标准图前，请先填写固定造型提示词并重新保存当前角色。',true);activeLiveActionRole=index;renderLiveActionRoles();var clothing=roleList.querySelector('[data-role-index="'+index+'"] [data-role-field="fixed_clothing"]');if(clothing){clothing.setAttribute('aria-invalid','true');var clothingLabel=clothing.closest('label');if(clothingLabel)clothingLabel.classList.add('invalid');clothing.focus();clothing.scrollIntoView({block:'center',behavior:'smooth'});}return;
       }
       closeLiveActionReferencePicker();generateLiveActionReference(index);
     }
@@ -1760,7 +1760,7 @@
       var index=activeLiveActionRole,item=liveActionRoles[index],roleType=text(item.role_type)||'support',referenceTask=liveActionReferenceTask(item,index),referenceTaskCopy=liveActionReferenceTaskCopy(referenceTask),roleGenerating=liveActionRoleReferenceBusy(item,index),roleProtected=roleGenerating,referenceRule=liveActionRoleReferenceRule(item);
       var candidateUrl=text(item.pending_reference_url||item.pending_reference_file),candidateVersion=Number(item.pending_reference_version)||0,candidateSource=text(item.pending_reference_source),candidateName=text(item.pending_reference_name),displayUrl=candidateUrl||text(item.reference_url||item.reference_file),displaySource=candidateUrl?candidateSource:text(item.reference_source),displayName=candidateUrl?candidateName:text(item.reference_name);
       var referenceGuide=displaySource==='asset'||displaySource==='upload'
-        ?'<div class="short-drama-role-views"><span>图片要求</span><b>真人</b><b>至少半身</b><b>无需三视图</b></div>'
+        ?'<div class="short-drama-role-views"><span>图片要求</span><b>不限角色类型</b><b>主体清晰完整</b><b>无需三视图</b></div>'
         :displaySource==='ai_generation'
           ?'<div class="short-drama-role-views"><span>AI 标准图将包含</span><b>正面全身</b><b>侧面全身</b><b>背面全身</b></div>'
           :'<div class="short-drama-role-views"><span>标准图要求</span><b>'+(referenceRule.required?'必须设置':'可选')+'</b><b>'+escapeHtml(referenceRule.label)+'</b></div>';
@@ -1778,15 +1778,15 @@
           '<label><span class="short-drama-role-field-caption">性别 <em class="short-drama-required">*</em></span><select data-role-field="gender"><option value=""'+(!item.gender?' selected':'')+'>请选择</option><option value="女"'+(item.gender==='女'?' selected':'')+'>女</option><option value="男"'+(item.gender==='男'?' selected':'')+'>男</option><option value="其他"'+(item.gender==='其他'?' selected':'')+'>其他</option></select></label>'+
           '<label><span class="short-drama-role-field-caption">年龄</span><input data-role-field="age" maxlength="80" placeholder="例如：28 岁" value="'+escapeHtml(item.age)+'"></label>'+
           '<label class="wide"><span class="short-drama-role-field-caption">身份与关系</span><input data-role-field="identity_text" maxlength="500" placeholder="身份、职业、与其他人物的关系" value="'+escapeHtml(item.identity_text)+'"></label></div></section>'+
-          '<section class="short-drama-role-section"><div class="short-drama-role-section-title"><b>02</b><span><strong>人物特征</strong><small>用于保持角色行为与外观连续</small></span></div><div class="short-drama-role-fields">'+
-          '<label class="wide">人物性格<textarea data-role-field="personality" maxlength="500" placeholder="行为方式、情绪基调">'+escapeHtml(item.personality)+'</textarea></label>'+
-          '<label class="wide">人物关系<textarea data-role-field="relationships" maxlength="500" placeholder="与其他角色的关系">'+escapeHtml(item.relationships)+'</textarea></label>'+
+          '<section class="short-drama-role-section"><div class="short-drama-role-section-title"><b>02</b><span><strong>角色特征</strong><small>用于保持角色行为与外观连续</small></span></div><div class="short-drama-role-fields">'+
+          '<label class="wide">角色性格<textarea data-role-field="personality" maxlength="500" placeholder="行为方式、情绪基调">'+escapeHtml(item.personality)+'</textarea></label>'+
+          '<label class="wide">角色关系<textarea data-role-field="relationships" maxlength="500" placeholder="与其他角色的关系">'+escapeHtml(item.relationships)+'</textarea></label>'+
           '<label>脸型<input data-role-field="face_shape" maxlength="120" placeholder="例如：鹅蛋脸、轮廓清晰" value="'+escapeHtml(item.face_shape)+'"></label>'+
           '<label>发型<input data-role-field="hairstyle" maxlength="120" placeholder="例如：齐肩直发" value="'+escapeHtml(item.hairstyle)+'"></label>'+
           '<label>发色<input data-role-field="hair_color" maxlength="80" placeholder="例如：自然黑" value="'+escapeHtml(item.hair_color)+'"></label>'+
           '<label>身高与体型<input data-role-field="height_body" maxlength="160" placeholder="例如：165cm，匀称" value="'+escapeHtml(item.height_body)+'"></label></div></section>'+
-          '<section class="short-drama-role-section"><div class="short-drama-role-section-title"><b>03</b><span><strong>固定造型</strong><small>后续镜头必须延续的服装、颜色与配饰</small></span></div><div class="short-drama-role-fields">'+
-          '<label class="wide"><span class="short-drama-role-field-caption">固定服装提示词 <small>AI 生图时必填</small></span><textarea data-role-field="fixed_clothing" maxlength="500" placeholder="例如：蓝色棉质短袖、卡其色短裤、白色运动鞋">'+escapeHtml(item.fixed_clothing)+'</textarea></label>'+
+          '<section class="short-drama-role-section"><div class="short-drama-role-section-title"><b>03</b><span><strong>固定造型</strong><small>后续镜头必须延续的外形、配色、纹理、装备或服装</small></span></div><div class="short-drama-role-fields">'+
+          '<label class="wide"><span class="short-drama-role-field-caption">固定造型提示词 <small>AI 生图时必填</small></span><textarea data-role-field="fixed_clothing" maxlength="500" placeholder="例如：铜制外壳、独眼蓝光、深红披风；或蓝色短袖、卡其短裤">'+escapeHtml(item.fixed_clothing)+'</textarea></label>'+
           '<label>固定颜色<input data-role-field="fixed_colors" maxlength="160" placeholder="例如：米白上衣、深蓝长裤" value="'+escapeHtml(item.fixed_colors)+'"></label>'+
           '<label>固定配饰<input data-role-field="accessories" maxlength="160" placeholder="眼镜、手表、包等" value="'+escapeHtml(item.accessories)+'"></label>'+
           '<label class="wide">外貌补充<textarea data-role-field="appearance_prompt" maxlength="500" placeholder="其他需要保持一致的视觉特征">'+escapeHtml(item.appearance_prompt)+'</textarea></label>'+
@@ -1795,7 +1795,7 @@
           (displayUrl?'<button type="button" class="short-drama-role-reference-preview" data-preview-role-reference aria-label="放大预览'+escapeHtml(item.name||'角色')+'标准图"><img src="'+escapeHtml(displayUrl)+'" alt="'+escapeHtml(item.name||'角色')+'标准图"><span>点击放大</span></button>':(roleGenerating?'<div class="short-drama-role-reference-empty generating"><span></span>生成中</div>':'<div class="short-drama-role-reference-empty">'+escapeHtml(emptyReferenceTitle)+'</div>'))+
           '<div><strong>'+escapeHtml(referenceTitle)+'</strong><small>'+escapeHtml(referenceDetail)+'</small>'+
           ((candidateUrl||displayUrl&&!item.reference_locked)?'<button type="button" class="confirm" data-confirm-role-reference="'+index+'"'+((liveActionReferenceBusy||roleGenerating)?' disabled':'')+'>确认并锁定此标准图</button>':'')+'</div></div>'+
-          '<div class="short-drama-reference-sources" aria-label="选择角色标准图来源"><button type="button" data-reference-source="asset" data-reference-index="'+index+'"'+((liveActionReferenceBusy||roleGenerating||!isLiveActionRoleSaved(item))?' disabled':'')+'><b>我的资产</b><span>真人且至少半身，无需三视图，不扣点</span></button><button type="button" data-reference-source="upload" data-reference-index="'+index+'"'+((liveActionReferenceBusy||roleGenerating||!isLiveActionRoleSaved(item))?' disabled':'')+'><b>本地上传</b><span>真人且至少半身；JPG、PNG 或 WebP</span></button><button type="button" data-reference-source="ai" data-reference-index="'+index+'"'+((liveActionReferenceBusy||roleGenerating||!isLiveActionRoleSaved(item))?' disabled':'')+'><b>AI 生成</b><span>'+(roleGenerating?'当前任务生成中':'根据角色资料生成三视图，35 点')+'</span></button></div>'+
+          '<div class="short-drama-reference-sources" aria-label="选择角色标准图来源"><button type="button" data-reference-source="asset" data-reference-index="'+index+'"'+((liveActionReferenceBusy||roleGenerating||!isLiveActionRoleSaved(item))?' disabled':'')+'><b>我的资产</b><span>清晰角色参考图，无需三视图，不扣点</span></button><button type="button" data-reference-source="upload" data-reference-index="'+index+'"'+((liveActionReferenceBusy||roleGenerating||!isLiveActionRoleSaved(item))?' disabled':'')+'><b>本地上传</b><span>清晰角色参考图；JPG、PNG 或 WebP</span></button><button type="button" data-reference-source="ai" data-reference-index="'+index+'"'+((liveActionReferenceBusy||roleGenerating||!isLiveActionRoleSaved(item))?' disabled':'')+'><b>AI 生成</b><span>'+(roleGenerating?'当前任务生成中':'根据角色资料生成三视图，35 点')+'</span></button></div>'+
           (!isLiveActionRoleSaved(item)?'<small class="short-drama-reference-source-hint">请先保存当前角色，再选择标准图来源。</small>':'')+'</div></section>'+
           '</article>';
       renderLiveActionRoleTabs();
@@ -1844,10 +1844,10 @@
       liveActionForm.hidden=step!=='live_action_setup';roleConfirm.hidden=step!=='live_action_roles';coreStorySection.hidden=step!=='live_action_story';
       var editButton=doc.getElementById('shortDramaEditLiveAction'),saveButton=doc.getElementById('shortDramaSaveRole'),confirmButton=doc.getElementById('shortDramaConfirmRoles'),addButton=doc.getElementById('shortDramaAddRole');
       if(step==='live_action_roles'){editButton.textContent='← 返回剧本设计';saveButton.hidden=false;addButton.hidden=false;confirmButton.textContent='确认角色并创建项目';}
-      if(step==='live_action_setup')setCreateHeading('AI LIVE-ACTION DRAMA','创建 AI 真人短剧','先填写短剧名称和制作规格，下一步进入具体的剧本设计。');
+      if(step==='live_action_setup')setCreateHeading('AI SHORT DRAMA','创建 AI 短剧','先填写短剧名称和制作规格，下一步进入具体的剧本设计。');
       if(step==='live_action_story')setCreateHeading('COMPLETE STORY','输入并确认完整故事','填写包含人物、起因、发展、冲突、高潮和结局的完整故事，确认结构后再建立角色。');
-      if(step==='live_action_roles')setCreateHeading('ROLE CONFIRMATION','确认真人短剧角色','核对并保存角色资料，然后在同一界面选择、上传或生成角色标准图。');
-      if(step==='choice') setCreateHeading('NEW PROJECT','你想怎样开始？','选择最符合当前状态的方式，后面的制作流程完全一致。');
+      if(step==='live_action_roles')setCreateHeading('ROLE CONFIRMATION','确认短剧角色','核对并保存角色资料，然后在同一界面选择、上传或生成角色标准图。');
+      if(step==='choice') setCreateHeading('NEW PROJECT','你想怎样开始？','选择单集短剧开始创作，系列短剧功能即将开放。');
       if(step==='idea') setCreateHeading(createMode==='inspiration'?'START WITH GUIDANCE':'CREATE WITH AN IDEA',createMode==='inspiration'?'先填写基本创作边界':'创建短剧设置',createMode==='inspiration'?'只需填写题材线索和制作规格，下一步由助手与你一起完成剧本。':'先填写已有想法和制作规格，下一步仍会经过助手讨论与剧本确认。');
       if(step==='inspiration') setCreateHeading('SCRIPT CO-CREATION','剧本共创室','先和创作助手聊清想法，再选择方向、查看完整剧本并完成审稿确认。');
       if(step==='import') setCreateHeading('IMPORT A SCRIPT','导入已有剧本','上传文件或粘贴原稿，助手会先识别内容，再与你确认如何成片。');
@@ -2152,7 +2152,7 @@
       if(liveActionRoleReferenceBusy(liveActionRoles[index],index))return showLiveActionError('该角色的标准图已经在生成，请先处理其他角色。',true,{autoHide:5000});
       var error=validateLiveActionRole(index);if(error){showLiveActionError(error,true);focusLiveActionRoleError(index);return;}
       if(!isLiveActionRoleSaved(liveActionRoles[index])||!pendingLiveActionProject)return showLiveActionError('请先保存当前角色，再生成角色标准图。',true);
-      if(!text(liveActionRoles[index].fixed_clothing).trim())return showLiveActionError('使用 AI 生成标准图前，请先填写固定服装提示词并重新保存当前角色。',true);
+      if(!text(liveActionRoles[index].fixed_clothing).trim())return showLiveActionError('使用 AI 生成标准图前，请先填写固定造型提示词并重新保存当前角色。',true);
       runLiveActionReferenceTask(index);
     }
     function handleLiveActionRoleEdit(event){collectLiveActionRoles();var label=event.target.closest('label');if(label)label.classList.remove('invalid');event.target.removeAttribute('aria-invalid');if(event.type==='change'&&event.target.getAttribute('data-role-field')==='role_type')renderLiveActionRoles();else renderLiveActionRoleTabs();refreshLiveActionGenerateGate();showLiveActionError('',true);scheduleLiveActionDraft();}
@@ -2333,5 +2333,5 @@
     load().catch(function(){});
     return {reload:load,render:render};
   }
-  return {STAGES:STAGES,LABELS:LABELS,normalizeProject:normalizeProject,progress:progress,filterProjects:filterProjects,metrics:metrics,deleteErrorMessage:deleteErrorMessage,projectLoadErrorMessage:projectLoadErrorMessage,createPayload:createPayload,liveActionRoleHasReferenceActivity:liveActionRoleHasReferenceActivity,liveActionProjectHasReferenceActivity:liveActionProjectHasReferenceActivity,discardPendingLiveActionProject:discardPendingLiveActionProject,compactIdea:compactIdea,plannerChoiceIndex:plannerChoiceIndex,plannerResolveChoice:plannerResolveChoice,plannerUnderstanding:plannerUnderstanding,plannerCompleteness:plannerCompleteness,plannerFlowState:plannerFlowState,buildRecommendations:buildRecommendations,advisorStep:advisorStep,plannerLocalIntent:plannerLocalIntent,plannerLocalFieldUpdates:plannerLocalFieldUpdates,plannerLocalAdvice:plannerLocalAdvice,applyAdvisorResult:applyAdvisorResult,plannerMetaSnapshot:plannerMetaSnapshot,applyAdvisorMetadata:applyAdvisorMetadata,plannerConversationAudit:plannerConversationAudit,plannerAnswerSnapshot:plannerAnswerSnapshot,plannerChangedFields:plannerChangedFields,plannerRecap:plannerRecap,plannerProgress:plannerProgress,plannerAffectedLayers:plannerAffectedLayers,rebuildPlannerPreview:rebuildPlannerPreview,plannerDurations:plannerDurations,plannerRoles:plannerRoles,plannerReadingSeconds:plannerReadingSeconds,plannerStoryPlan:plannerStoryPlan,plannerScenePlan:plannerScenePlan,plannerDialogueSet:plannerDialogueSet,plannerQuality:plannerQuality,plannerReview:plannerReview,repairPlannerPreview:repairPlannerPreview,buildPlannerPreview:buildPlannerPreview,plannerPromotionMessages:plannerPromotionMessages,plannerConfirmedContract:plannerConfirmedContract,plannerWordDocumentHtml:plannerWordDocumentHtml,plannerWordFilename:plannerWordFilename,confirmedContractMatches:confirmedContractMatches,continuePlannerContract:continuePlannerContract,importedTitle:importedTitle,importedGlobalUnderstanding:importedGlobalUnderstanding,analyzeImportedScript:analyzeImportedScript,importProjectPayload:importProjectPayload,characterContractFromAnalysis:characterContractFromAnalysis,defaultManualCharacterContract:defaultManualCharacterContract,normalizeCharacterContract:normalizeCharacterContract,newImportKey:newImportKey,newProjectKey:newProjectKey,plannerDraftStorageKey:plannerDraftStorageKey,plannerDraftMatchesUser:plannerDraftMatchesUser,plannerDraftActiveChoices:plannerDraftActiveChoices,readPlannerDraftRecord:readPlannerDraftRecord,writePlannerDraftRecord:writePlannerDraftRecord,liveActionDraftStorageKey:liveActionDraftStorageKey,liveActionDraftMatchesUser:liveActionDraftMatchesUser,readLiveActionDraftRecord:readLiveActionDraftRecord,writeLiveActionDraftRecord:writeLiveActionDraftRecord,liveActionDraftSynopsis:liveActionDraftSynopsis,readLimitedStream:readLimitedStream,extractPdfText:extractPdfText,extractDocxText:extractDocxText,readScriptFile:readScriptFile,createClient:createClient,projectUrl:projectUrl,projectUpdatedAt:projectUpdatedAt,cardHtml:cardHtml,mount:mount};
+  return {STAGES:STAGES,LABELS:LABELS,normalizeProject:normalizeProject,progress:progress,filterProjects:filterProjects,metrics:metrics,deleteErrorMessage:deleteErrorMessage,projectLoadErrorMessage:projectLoadErrorMessage,createPayload:createPayload,recommendedShotPlan:recommendedShotPlan,liveActionRoleHasReferenceActivity:liveActionRoleHasReferenceActivity,liveActionProjectHasReferenceActivity:liveActionProjectHasReferenceActivity,discardPendingLiveActionProject:discardPendingLiveActionProject,compactIdea:compactIdea,plannerChoiceIndex:plannerChoiceIndex,plannerResolveChoice:plannerResolveChoice,plannerUnderstanding:plannerUnderstanding,plannerCompleteness:plannerCompleteness,plannerFlowState:plannerFlowState,buildRecommendations:buildRecommendations,advisorStep:advisorStep,plannerLocalIntent:plannerLocalIntent,plannerLocalFieldUpdates:plannerLocalFieldUpdates,plannerLocalAdvice:plannerLocalAdvice,applyAdvisorResult:applyAdvisorResult,plannerMetaSnapshot:plannerMetaSnapshot,applyAdvisorMetadata:applyAdvisorMetadata,plannerConversationAudit:plannerConversationAudit,plannerAnswerSnapshot:plannerAnswerSnapshot,plannerChangedFields:plannerChangedFields,plannerRecap:plannerRecap,plannerProgress:plannerProgress,plannerAffectedLayers:plannerAffectedLayers,rebuildPlannerPreview:rebuildPlannerPreview,plannerDurations:plannerDurations,plannerRoles:plannerRoles,plannerReadingSeconds:plannerReadingSeconds,plannerStoryPlan:plannerStoryPlan,plannerScenePlan:plannerScenePlan,plannerDialogueSet:plannerDialogueSet,plannerQuality:plannerQuality,plannerReview:plannerReview,repairPlannerPreview:repairPlannerPreview,buildPlannerPreview:buildPlannerPreview,plannerPromotionMessages:plannerPromotionMessages,plannerConfirmedContract:plannerConfirmedContract,plannerWordDocumentHtml:plannerWordDocumentHtml,plannerWordFilename:plannerWordFilename,confirmedContractMatches:confirmedContractMatches,continuePlannerContract:continuePlannerContract,importedTitle:importedTitle,importedGlobalUnderstanding:importedGlobalUnderstanding,analyzeImportedScript:analyzeImportedScript,importProjectPayload:importProjectPayload,characterContractFromAnalysis:characterContractFromAnalysis,defaultManualCharacterContract:defaultManualCharacterContract,normalizeCharacterContract:normalizeCharacterContract,newImportKey:newImportKey,newProjectKey:newProjectKey,plannerDraftStorageKey:plannerDraftStorageKey,plannerDraftMatchesUser:plannerDraftMatchesUser,plannerDraftActiveChoices:plannerDraftActiveChoices,readPlannerDraftRecord:readPlannerDraftRecord,writePlannerDraftRecord:writePlannerDraftRecord,liveActionDraftStorageKey:liveActionDraftStorageKey,liveActionDraftMatchesUser:liveActionDraftMatchesUser,readLiveActionDraftRecord:readLiveActionDraftRecord,writeLiveActionDraftRecord:writeLiveActionDraftRecord,liveActionDraftSynopsis:liveActionDraftSynopsis,readLimitedStream:readLimitedStream,extractPdfText:extractPdfText,extractDocxText:extractDocxText,readScriptFile:readScriptFile,createClient:createClient,projectUrl:projectUrl,projectUpdatedAt:projectUpdatedAt,cardHtml:cardHtml,mount:mount};
 });

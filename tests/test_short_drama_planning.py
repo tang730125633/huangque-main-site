@@ -36,7 +36,7 @@ def valid_raw_plan():
 
 
 class ShortDramaPlanningTests(unittest.TestCase):
-    def test_normalize_plan_requires_six_to_ten_timed_shots(self):
+    def test_normalize_plan_requires_six_to_twenty_timed_shots(self):
         settings = {"target_duration": 30, "ratio": "9:16", "shot_count": 6}
         raw = valid_raw_plan()
         raw["script"]["dialogue_lines"] = []
@@ -93,7 +93,7 @@ class ShortDramaPlanningTests(unittest.TestCase):
     def test_planning_pairs_match_reachable_five_or_ten_second_shots(self):
         for duration in (30, 45, 60):
             lower, upper = short_drama.short_drama_duration.bounds(duration)
-            for shot_count in range(6, 11):
+            for shot_count in range(6, 21):
                 totals = {
                     shot_count * 5 + ten_second_shots * 5
                     for ten_second_shots in range(shot_count + 1)
@@ -114,9 +114,18 @@ class ShortDramaPlanningTests(unittest.TestCase):
                         with self.assertRaisesRegex(ValueError, "时长与分镜数量不匹配"):
                             short_drama.validate_planning_payload(payload)
 
+    def test_public_duration_bands_start_at_thirty_seconds(self):
+        duration = short_drama.short_drama_duration
+        self.assertEqual((30, 60), duration.bounds(30))
+        self.assertEqual((60, 90), duration.bounds(45))
+        self.assertEqual((90, 120), duration.bounds(60))
+        self.assertEqual("30-60 秒", duration.label(30))
+        self.assertEqual("60-90 秒", duration.label(45))
+        self.assertEqual("90-120 秒", duration.label(60))
+
     def test_duration_choice_is_reachable_for_every_allowed_pair(self):
         for duration in (30, 45, 60):
-            for shot_count in range(6, 11):
+            for shot_count in range(6, 21):
                 totals = short_drama.short_drama_duration.reachable_totals(
                     duration, shot_count
                 )
@@ -139,7 +148,7 @@ class ShortDramaPlanningTests(unittest.TestCase):
     def test_duration_allocation_uses_only_five_or_ten_second_shots(self):
         duration = short_drama.short_drama_duration
         for band in (30, 45, 60):
-            for shot_count in range(6, 11):
+            for shot_count in range(6, 21):
                 totals = duration.reachable_totals(band, shot_count)
                 with self.subTest(band=band, shot_count=shot_count):
                     if not totals:
