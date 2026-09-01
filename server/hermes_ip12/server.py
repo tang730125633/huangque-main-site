@@ -4515,42 +4515,20 @@ def _ensure_client_hq_token(account_id):
 
 
 def _authorize_hq_for_cookie(hq_session_cookie):
-    """用客户的网页登录 Cookie 自动完成 hq 设备授权（客户无感知），返回 CLI token。"""
+    """客户登录态(hq_session)直接换 CLI token：一步完成，无需 device 授权。"""
     import requests as _rq
     site = "https://huangquechuanmei.com"
-    scopes = [
-        "profile:read", "ip12:read", "ip12:write", "ip12:chat", "prompt:optimize",
-        "canvas:read", "canvas:write", "canvas:agent", "canvas:edit", "tasks:read",
-        "assets:read", "assets:write", "assets:upload", "generation:quote",
-        "generation:submit", "video-compose:read", "video-compose:write",
-        "digital-presenter:read", "digital-presenter:write", "inspiration:read",
-        "inspiration:write", "leads:read", "leads:write", "short-drama:read",
-    ]
-    headers = {"Cookie": "hq_session=%s" % hq_session_cookie, "Origin": site}
-    start = _rq.post(site + "/api/auth/cli/device/start",
-                     json={"client_name": "ip12-agent", "requested_scopes": scopes}, timeout=30)
-    start.raise_for_status()
-    start = start.json()
-    device_code, user_code = start.get("device_code"), start.get("user_code")
-    if not device_code or not user_code:
-        raise RuntimeError("device/start 异常")
-    _rq.post(site + "/api/auth/cli/device/approve",
-             json={"user_code": user_code, "approve": True}, headers=headers, timeout=30).raise_for_status()
-    for _ in range(20):
-        poll = _rq.post(site + "/api/auth/cli/device/poll",
-                        json={"device_code": device_code}, timeout=15)
-        poll.raise_for_status()
-        poll = poll.json()
-        if poll.get("access_token"):
-            return {
-                "token": poll["access_token"],
-                "expires_at": int(time.time()) + int(poll.get("expires_in", 8 * 3600)),
-            }
-        if poll.get("code") in ("authorization_pending", "slow_down"):
-            time.sleep(2)
-            continue
-        raise RuntimeError("device/poll 异常")
-    raise RuntimeError("device/poll 超时")
+    headers = {"Cookie": "hq_session=%s" % hq_session_cookie}
+    resp = _rq.post(site + "/api/auth/session/cli-token", json={}, headers=headers, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+    token = data.get("access_token")
+    if not token:
+        raise RuntimeError("session/cli-token 未返回 token")
+    return {
+        "token": token,
+        "expires_at": int(time.time()) + int(data.get("expires_in", 8 * 3600)),
+    }
 
 
 @app.route("/api/ip12/hq-token", methods=["POST"])
