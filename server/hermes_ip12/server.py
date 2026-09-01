@@ -4283,7 +4283,13 @@ def _finalize_production_result(cid, job_id):
                         cover_url = base + str(cover_data["cover_url"])
                 except Exception:
                     cover_url = ""
-            text = "✅ 数字人口播已生成，下方可直接观看。"
+            _kind = str(task.get("kind") or "")
+            _kind_label = {
+                "script_to_video": "文案成片",
+                "matrix": "模板成片",
+                "video": "数字人口播",
+            }.get(_kind, "成品")
+            text = "✅ %s已生成，下方可直接观看。" % _kind_label
             msg_meta = {"components": ["video_player"],
                         "video_url": video_url, "audio_url": audio_url,
                         "cover_url": cover_url}
