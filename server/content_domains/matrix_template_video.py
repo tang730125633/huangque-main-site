@@ -11,6 +11,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from contextlib import closing
 
 from .core import OUT_DIR, public_url
 from . import feature_flags, matrix_template_semantics, pricing
@@ -25,6 +26,9 @@ REFERENCE_TEMPLATE_COUNT = 17
 API_URL = os.environ.get("MATRIX_TEMPLATE_API_URL", "http://127.0.0.1:8112").rstrip("/")
 API_TOKEN = os.environ.get("MATRIX_TEMPLATE_API_TOKEN", "").strip()
 JOB_TIMEOUT = max(60, min(1800, int(os.environ.get("MATRIX_TEMPLATE_JOB_TIMEOUT", "1200"))))
+TOTAL_TIMEOUT = max(300, min(1800, int(os.environ.get(
+    "MATRIX_TEMPLATE_TOTAL_TIMEOUT", "1200"
+))))
 POLL_INTERVAL = max(1, min(10, int(os.environ.get("MATRIX_TEMPLATE_POLL_INTERVAL", "3"))))
 MAX_VIDEO_BYTES = 512 * 1024 * 1024
 _CACHE = {
@@ -41,6 +45,10 @@ class MatrixTemplateHTTPError(RuntimeError):
     def __init__(self, status, detail):
         super().__init__(detail)
         self.status = int(status)
+
+
+class MatrixTemplateProviderFailed(RuntimeError):
+    """The provider reached an authoritative failed terminal state."""
 
 
 def _validated_base():
@@ -530,7 +538,25 @@ def _safe_file_url(value):
     return urllib.parse.urlunsplit((base.scheme, base.netloc, prefix + path, "", ""))
 
 
-def _download(value, job_id):
+def _remaining_budget(deadline_at, message="模板成片生成超时"):
+    remaining = float(deadline_at) - time.time()
+    if remaining <= 0:
+        raise RuntimeError(message)
+    return remaining
+
+
+def _set_response_timeout(response, timeout):
+    """Apply the current absolute budget to urllib's underlying socket."""
+    stream = getattr(response, "fp", None)
+    raw = getattr(stream, "raw", None)
+    sock = getattr(raw, "_sock", None)
+    if sock is not None and hasattr(sock, "settimeout"):
+        sock.settimeout(max(0.001, float(timeout)))
+
+
+def _download(value, job_id, timeout=240, deadline_at=None):
+    if deadline_at is None:
+        deadline_at = time.time() + float(timeout)
     url = _safe_file_url(value)
     relative = pathlib.Path("video") / ("matrix_template_%s.mp4" % str(job_id)[:64])
     target = OUT_DIR / relative
@@ -539,37 +565,260 @@ def _download(value, job_id):
     request = urllib.request.Request(url, headers={"Authorization": "Bearer " + API_TOKEN})
     total = 0
     try:
-        with _NO_PROXY.open(request, timeout=240) as response, temporary.open("wb") as handle:
-            while chunk := response.read(1024 * 1024):
+        open_timeout = min(float(timeout), _remaining_budget(deadline_at))
+        with _NO_PROXY.open(request, timeout=max(0.001, open_timeout)) as response, temporary.open("wb") as handle:
+            read_chunk = getattr(response, "read1", None)
+            if not callable(read_chunk):
+                read_chunk = response.read
+            while True:
+                remaining = min(float(timeout), _remaining_budget(deadline_at))
+                _set_response_timeout(response, remaining)
+                try:
+                    chunk = read_chunk(64 * 1024)
+                except (TimeoutError, OSError) as exc:
+                    try:
+                        _remaining_budget(deadline_at)
+                    except RuntimeError as deadline_error:
+                        raise deadline_error from exc
+                    raise
+                _remaining_budget(deadline_at)
+                if not chunk:
+                    break
                 total += len(chunk)
                 if total > MAX_VIDEO_BYTES:
                     raise RuntimeError("模板成片文件超过大小限制")
                 handle.write(chunk)
+        _remaining_budget(deadline_at)
         with temporary.open("rb") as handle:
             if total < 1024 or b"ftyp" not in handle.read(64):
                 raise RuntimeError("模板成片文件无效")
+        _remaining_budget(deadline_at)
         os.replace(temporary, target)
     finally:
         temporary.unlink(missing_ok=True)
     return relative.as_posix(), total
 
 
+def _runtime(job_id):
+    """Read the durable local lifecycle anchor for one matrix job."""
+    from .core import jdb
+    try:
+        numeric_id = int(job_id)
+    except (TypeError, ValueError):
+        return {"created_at": int(time.time()), "payload": {}}
+    try:
+        with closing(jdb()) as connection:
+            row = connection.execute(
+                "SELECT created_at,payload FROM jobs WHERE id=? AND kind=?",
+                (numeric_id, FEATURE_KEY),
+            ).fetchone()
+    except Exception:
+        return {"created_at": int(time.time()), "payload": {}}
+    if not row:
+        return {"created_at": int(time.time()), "payload": {}}
+    try:
+        payload = json.loads(row["payload"] or "{}")
+    except (TypeError, ValueError):
+        payload = {}
+    return {
+        "created_at": int(row["created_at"] or time.time()),
+        "payload": payload if isinstance(payload, dict) else {},
+    }
+
+
+def _durable_runtime(job_id):
+    """Read recovery state without turning a database fault into no state."""
+    from .core import jdb
+    numeric_id = int(job_id)
+    with closing(jdb()) as connection:
+        row = connection.execute(
+            "SELECT created_at,payload FROM jobs WHERE id=? AND kind=?",
+            (numeric_id, FEATURE_KEY),
+        ).fetchone()
+    if not row:
+        raise RuntimeError("模板成片生命周期记录不存在")
+    payload = json.loads(row["payload"] or "{}")
+    if not isinstance(payload, dict):
+        raise RuntimeError("模板成片生命周期记录无效")
+    return {
+        "created_at": int(row["created_at"] or time.time()),
+        "payload": payload,
+    }
+
+
+def _persist_runtime(job_id, **updates):
+    """Persist provider identity/progress without changing the job state."""
+    from .core import jdb
+    try:
+        numeric_id = int(job_id)
+    except (TypeError, ValueError):
+        return False
+    now = int(time.time())
+    try:
+        with closing(jdb()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT payload FROM jobs WHERE id=? AND kind=? "
+                "AND status IN ('pending','running')",
+                (numeric_id, FEATURE_KEY),
+            ).fetchone()
+            if not row:
+                connection.rollback()
+                return False
+            try:
+                payload = json.loads(row["payload"] or "{}")
+            except (TypeError, ValueError):
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            runtime = payload.get("_matrix_runtime")
+            if not isinstance(runtime, dict):
+                runtime = {}
+            runtime.update({key: value for key, value in updates.items() if value is not None})
+            runtime["last_progress_at"] = now
+            payload["_matrix_runtime"] = runtime
+            changed = connection.execute(
+                "UPDATE jobs SET payload=? WHERE id=? AND kind=? "
+                "AND status IN ('pending','running')",
+                (json.dumps(payload, ensure_ascii=False), numeric_id, FEATURE_KEY),
+            )
+            connection.commit()
+    except Exception:
+        return False
+    return changed.rowcount == 1
+
+
+def public_lifecycle(row, now=None):
+    """Return server-timed, non-sensitive lifecycle data for the owner."""
+    now = int(time.time() if now is None else now)
+    created_at = int(row["created_at"] or now)
+    try:
+        payload = json.loads(row["payload"] or "{}")
+    except (TypeError, ValueError):
+        payload = {}
+    runtime = payload.get("_matrix_runtime") if isinstance(payload, dict) else {}
+    if not isinstance(runtime, dict):
+        runtime = {}
+    status = str(row["status"] or "")
+    phase = str(runtime.get("phase") or (
+        "queued" if status == "pending" else "starting"
+    ))
+    return {
+        "phase": phase,
+        "deadline_at": created_at + TOTAL_TIMEOUT,
+        "elapsed_seconds": max(0, now - created_at),
+        "last_progress_at": int(runtime.get("last_progress_at") or created_at),
+        "provider_submitted": bool(runtime.get("provider_job_id")),
+    }
+
+
+def recover_worker_error(job_id, error, requeue=None):
+    """Keep paid remote work recoverable until failure or expiry is certain."""
+    lifecycle = _durable_runtime(job_id)
+    deadline_at = int(lifecycle["created_at"]) + TOTAL_TIMEOUT
+    if time.time() >= deadline_at or isinstance(
+            error, MatrixTemplateProviderFailed):
+        return False
+    payload = lifecycle["payload"]
+    runtime = payload.get("_matrix_runtime")
+    if not isinstance(runtime, dict):
+        return False
+    provider_job_id = str(runtime.get("provider_job_id") or "")
+    if provider_job_id:
+        if not re.fullmatch(r"[0-9a-f]{32}", provider_job_id):
+            raise RuntimeError("模板成片恢复信息无效")
+        _persist_runtime(
+            job_id, phase="provider_retrying", provider_status="unknown",
+            last_error=str(error)[:300],
+        )
+        if requeue:
+            requeue(job_id)
+        return True
+    phase = str(runtime.get("phase") or "")
+    if phase in {"submitting", "submission_unknown"}:
+        if isinstance(error, MatrixTemplateHTTPError) and error.status in {
+                400, 401, 403, 404, 422}:
+            return False
+        _persist_runtime(
+            job_id, phase="submission_unknown", provider_status="unknown",
+            last_error=str(error)[:300], deadline_at=deadline_at,
+        )
+        return True
+    return False
+
+
 def generate(payload):
     raw = dict(payload or {})
     local_job = str(raw.get("_job_id") or uuid.uuid4().hex)
-    payload = validate_payload(raw, str(raw.get("_username") or ""))
-    request_id = "matrix-template-" + re.sub(r"[^A-Za-z0-9_.:-]", "-", local_job)[:80]
-    remote = _request("POST", "/v1/jobs", payload, request_id=request_id, timeout=20)
-    remote_id = str(remote.get("job_id") or "")
-    if not re.fullmatch(r"[0-9a-f]{32}", remote_id):
-        raise RuntimeError("模板成片服务没有返回有效任务 ID")
-    deadline = time.monotonic() + JOB_TIMEOUT
-    while time.monotonic() < deadline:
-        current = _request("GET", "/v1/jobs/" + remote_id, timeout=20)
+    lifecycle = _runtime(local_job)
+    deadline_at = int(lifecycle["created_at"]) + TOTAL_TIMEOUT
+    _remaining_budget(deadline_at, "模板成片等待超时")
+    stored_payload = lifecycle.get("payload")
+    if not isinstance(stored_payload, dict):
+        stored_payload = {}
+    runtime = stored_payload.get("_matrix_runtime")
+    if not isinstance(runtime, dict):
+        runtime = {}
+    remote_id = str(runtime.get("provider_job_id") or "")
+    if remote_id and not re.fullmatch(r"[0-9a-f]{32}", remote_id):
+        raise RuntimeError("模板成片恢复信息无效")
+
+    if remote_id:
+        payload = {
+            key: value for key, value in stored_payload.items()
+            if not str(key).startswith("_")
+        }
+    else:
+        payload = validate_payload(raw, str(raw.get("_username") or ""))
+        _remaining_budget(deadline_at)
+        request_id = "matrix-template-" + re.sub(
+            r"[^A-Za-z0-9_.:-]", "-", local_job
+        )[:80]
+        if not _persist_runtime(
+            local_job, phase="submitting", deadline_at=deadline_at,
+        ):
+            raise RuntimeError("模板成片生命周期状态保存失败")
+        remote = _request(
+            "POST", "/v1/jobs", payload, request_id=request_id,
+            timeout=min(20, _remaining_budget(deadline_at)),
+        )
+        _remaining_budget(deadline_at)
+        remote_id = str(remote.get("job_id") or "")
+        if not re.fullmatch(r"[0-9a-f]{32}", remote_id):
+            raise RuntimeError("模板成片服务没有返回有效任务 ID")
+        _persist_runtime(
+            local_job, phase="provider_queued", provider_job_id=remote_id,
+            provider_submitted_at=int(time.time()), provider_status="pending",
+            deadline_at=deadline_at,
+        )
+    execution_deadline = min(time.monotonic() + JOB_TIMEOUT, time.monotonic() + max(
+        0, deadline_at - time.time()
+    ))
+    last_status = ""
+    while time.monotonic() < execution_deadline and time.time() < deadline_at:
+        current = _request(
+            "GET", "/v1/jobs/" + remote_id,
+            timeout=min(20, _remaining_budget(deadline_at)),
+        )
+        _remaining_budget(deadline_at)
         status = str(current.get("status") or "")
+        if status != last_status:
+            _persist_runtime(
+                local_job,
+                phase="rendering" if status == "running" else "provider_queued",
+                provider_status=status or "unknown",
+            )
+            last_status = status
         if status == "completed":
             result = current.get("result") or {}
-            video_file, file_size = _download(result.get("file_url"), local_job)
+            _persist_runtime(local_job, phase="delivering", provider_status=status)
+            remaining = deadline_at - time.time()
+            if remaining <= 0:
+                raise RuntimeError("模板成片生成超时")
+            video_file, file_size = _download(
+                result.get("file_url"), local_job, timeout=min(240, remaining),
+                deadline_at=deadline_at,
+            )
             return {
                 "type": "matrix_template_video",
                 "mode": "matrix_template",
@@ -591,7 +840,9 @@ def generate(payload):
                 "material_manifest": result.get("material_manifest") or [],
             }
         if status == "failed":
-            raise RuntimeError(str(current.get("error") or "模板成片生成失败")[:500])
+            raise MatrixTemplateProviderFailed(
+                str(current.get("error") or "模板成片生成失败")[:500]
+            )
         time.sleep(POLL_INTERVAL)
     raise RuntimeError("模板成片生成超时")
 

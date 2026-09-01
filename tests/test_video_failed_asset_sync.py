@@ -62,7 +62,7 @@ class FailedAssetSyncTests(unittest.TestCase):
     def test_reclaim_orphan_syncs_video_asset(self):
         """启动回收重启孤儿时也要同步 video_asset。SELECT 要带上 kind。"""
         recl = STARTUP_RECOVERY[STARTUP_RECOVERY.index("def reclaim_orphaned_running"):]
-        self.assertIn("SELECT id, username, cost, kind FROM jobs", recl)
+        self.assertIn("SELECT id, username, cost, kind, payload FROM jobs", recl)
         self.assertIn('mark_video_asset_failed(row["id"], row["kind"]', recl)
 
 
