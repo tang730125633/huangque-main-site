@@ -1224,6 +1224,14 @@ def _expanded_production_intent(message):
                 "capability_family": family, "recommended_action": action,
                 "candidate_actions": [action],
             }
+    # 能力名消歧：黄雀有「一键成片」（素材合成，旧）和「文案成片」（text-video，新）。
+    # 消息里带「文案」的成片请求走新能力；单独的「一键成片」才走素材合成。
+    if re.search(r"文案.{0,8}(?:成片|一键成片|做成视频)", text):
+        return {
+            "capability_family": "video",
+            "recommended_action": "text-video-generate",
+            "candidate_actions": ["text-video-generate"],
+        }
     for family, action, pattern in _SPECIAL_PRODUCTION_INTENTS:
         if re.search(pattern, text, re.I):
             if action not in _DIRECT_READ_ACTIONS and explanatory_question:
