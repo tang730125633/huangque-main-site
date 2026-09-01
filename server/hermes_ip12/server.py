@@ -8336,7 +8336,7 @@ def _process_production_delegate_turn(cid, user_message, decision, memory,
     return result, 200
 
 
-_TALKING_HEAD_INTENT_RE = re.compile(r"(?:数字人|口播).{0,12}(?:生成|制作|做|视频|继续|来一条)|(?:生成|制作|做|继续).{0,12}(?:数字人|口播)")
+_talking_head_intent_re = re.compile(r"(?:数字人|口播).{0,12}(?:生成|制作|做|视频|继续|来一条)|(?:生成|制作|做|继续).{0,12}(?:数字人|口播)")
 _RESOURCE_QUERY_RE = re.compile(
     r"(?:查|看看|看一下|查看|帮我查|多少|还剩|剩余|有没有|有哪些|余额|点数|积分)"
 )
