@@ -4315,7 +4315,7 @@ def _finalize_production_result(cid, job_id):
             _kind_label = {"script_to_video": "文案成片", "matrix": "模板成片",
                            "video": "数字人口播", "image": "图片", "audio": "音频"}.get(_kind, "成品")
             prods[str(job_id)] = {
-                "job_id": str(job_id), "phase": phase,
+                "job_id": str(job_id), "phase": "done",
                 "video_url": inner.get("video_url") if isinstance(inner, dict) else None,
                 "audio_url": inner.get("audio_url") if isinstance(inner, dict) else None,
                 "cover_url": cover_url or None,
