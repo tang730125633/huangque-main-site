@@ -84,7 +84,6 @@ FIELD_LIMITS = {
     "selling_points": 2000,
     "breakdown_url": 2000,
     "digital_human_script": 6000,
-    "private_domain_copy": 3000,
 }
 FIELD_NAMES = set(FIELD_LIMITS)
 OPTION_VALUES = {
@@ -97,10 +96,8 @@ OPTION_VALUES = {
         "viral-talking-head-v1", "professional-explainer-v1",
         "clean-talking-v1",
     },
-    "private_domain_template": {"data", "city", "warm", "premium"},
-    "private_domain_duration": {"8", "10"},
 }
-OPTION_NAMES = set(OPTION_VALUES) | {"private_domain_bgm"}
+OPTION_NAMES = set(OPTION_VALUES)
 FOCUS_TARGETS = {
     "topic", "selling_points", "generate_script", "breakdown_url",
     "analyze_breakdown", "generate_video", "generate_audio", "export_script",
@@ -108,7 +105,6 @@ FOCUS_TARGETS = {
     "full_audio_upload", "photo_authorization", "analyze_plan",
     "generate_photo_video", "video_upload", "precision_authorization",
     "analyze_voice", "generate_precision_video",
-    "private_domain_copy", "private_domain_randomize", "private_domain_plan",
 }
 NAV_TARGETS = {
     "script", "digital_human", "ip12", "assets", "audio", "video", "canvas",
@@ -132,18 +128,6 @@ PAGE_ACTION_SCOPE = {
             "full_audio_upload", "photo_authorization", "analyze_plan",
             "generate_photo_video", "video_upload", "precision_authorization",
             "analyze_voice", "generate_precision_video",
-        },
-    },
-    "private_domain_video": {
-        "fill_field": {"private_domain_copy"},
-        "choose_option": {
-            "private_domain_template", "private_domain_duration",
-            "private_domain_bgm",
-        },
-        "switch_mode": set(),
-        "focus": {
-            "private_domain_copy", "private_domain_randomize",
-            "private_domain_plan",
         },
     },
 }
@@ -220,14 +204,14 @@ SYSTEM_PROMPT = """你是同一个“黄雀编导 Agent”，全程陪顾客完�
 只输出 JSON，不要 Markdown 或代码围栏，格式为：
 {"content":"给顾客的回答","stage":"understand|script|breakdown|assets|video|setup|voice|production|result","actions":[],"warnings":[],"offer_production":false}
 允许的 actions 只有：
-1. fill_field：编导页可预填 topic、selling_points、breakdown_url；数字人页可预填 digital_human_script；私域批量成片页可预填 private_domain_copy；
-2. choose_option：编导页可选择 style、duration、platform、breakdown_tool；数字人页可选择 narration_mode（text/audio）和 precision_template（viral-talking-head-v1/professional-explainer-v1/clean-talking-v1）；私域批量成片页可选择 private_domain_template、private_domain_duration、private_domain_bgm；
+1. fill_field：编导页可预填 topic、selling_points、breakdown_url；数字人页可预填 digital_human_script；
+2. choose_option：编导页可选择 style、duration、platform、breakdown_tool；数字人页可选择 narration_mode（text/audio）和 precision_template（viral-talking-head-v1/professional-explainer-v1/clean-talking-v1）；
 3. switch_mode：编导页可切换 write、script_to_video、breakdown；数字人页可切换 photo、video；
 4. focus：聚焦页面白名单控件；
 5. navigate：跳到黄雀站内 script、digital_human、ip12、assets、audio、video 或 canvas 页面。
 最多 6 个动作。actions 会在回复后由页面自动执行，所以只有顾客明确要求或意图唯一明确时才返回动作；仅咨询怎么使用时只回答，不要擅自改页面。
 可以自动预填、选择、切换模式、聚焦控件或跳转黄雀站内页面。navigate 必须是唯一动作，不得与填充、选择、切换或聚焦同时返回，避免离开页面时丢失刚填的内容。
-只有在编导页且顾客明确要立即生成分镜脚本时，offer_production 才返回 true；同时用 actions 补齐或更新顾客明确给出的选题、卖点、风格、时长和平台。服务端会在回复后生成一张需要顾客在对话框点击的确认生产单；你不得声称已扣点或已生成。仅咨询用法、意图不清、主题仍为空、拆解/数字人/私域成片页时必须返回 false。
+只有在编导页且顾客明确要立即生成分镜脚本时，offer_production 才返回 true；同时用 actions 补齐或更新顾客明确给出的选题、卖点、风格、时长和平台。服务端会在回复后生成一张需要顾客在对话框点击的确认生产单；你不得声称已扣点或已生成。仅咨询用法、意图不清、主题仍为空、拆解或数字人页时必须返回 false。
 不得通过 actions 自动选择顾客本地文件，不得勾选真人/声音授权，不得自动确认扣点、删除、发布、访问外部链接或执行任意命令。顾客可以主动点击对话框的附件按钮选择图片或视频，前端只会把文件交给当前页面已有的原生上传流程；这不代表已经授权、扣点或生成。
 在编导页，只要顾客说“反推提示词”“反推视频”“视频反推”“视频拆解”或同义表达，就把它视为明确的视频上传意图：只简短回复“请上传需要反推提示词的视频”，不要推荐粘贴链接，不要列出多种操作方式。对话框附件会把文件交给页面原生上传流程，扣点仍由顾客在页面确认。
 顾客意图不清楚时先问一个最关键的问题，actions 返回空数组。若当前已有脚本，优先解释如何修改、转配音、转视频或导出；若是拆解模式，根据 page_context.breakdown_tool 和 has_reverse_prompt 区分分镜拆解与提示词反推，再解释合法公开链接与当前结果。
@@ -1038,63 +1022,6 @@ def _digital_human_page_context(value):
     }
 
 
-def _private_domain_page_context(value):
-    allowed = {
-        "page", "path", "mode", "copy_text", "copy_count", "template",
-        "duration", "bgm", "bgm_values", "asset_count",
-        "selected_asset_count", "catalog_status", "active_job_status",
-    }
-    if not isinstance(value, dict) or set(value) - allowed:
-        raise ValueError("页面上下文格式无效")
-    if value.get("path") not in {
-        "/workbench/private-domain-video",
-        "/workbench/private-domain-video.html",
-    }:
-        raise ValueError("页面上下文不属于私域批量成片")
-    if value.get("mode") != "plan":
-        raise ValueError("私域批量成片模式无效")
-    copy_text = _text(value.get("copy_text"), 3000, "批量文案")
-    copy_count = value.get("copy_count")
-    asset_count = value.get("asset_count")
-    selected_count = value.get("selected_asset_count")
-    for count, name, maximum in (
-        (copy_count, "批量文案数量", 100),
-        (asset_count, "素材数量", 10000),
-        (selected_count, "已选素材数量", 4),
-    ):
-        if (isinstance(count, bool) or not isinstance(count, int)
-                or not 0 <= count <= maximum):
-            raise ValueError("%s无效" % name)
-    template = _text(value.get("template"), 20, "排版模板")
-    duration = _text(value.get("duration"), 8, "视频时长")
-    if template not in OPTION_VALUES["private_domain_template"]:
-        raise ValueError("私域排版模板无效")
-    if duration not in OPTION_VALUES["private_domain_duration"]:
-        raise ValueError("私域视频时长无效")
-    bgm_values = value.get("bgm_values") or []
-    if (not isinstance(bgm_values, list) or len(bgm_values) > 40
-            or any(not isinstance(item, str) or not item or len(item) > 160
-                   for item in bgm_values)):
-        raise ValueError("BGM 选项无效")
-    if len(set(bgm_values)) != len(bgm_values):
-        raise ValueError("BGM 选项重复")
-    bgm = _text(value.get("bgm"), 160, "当前 BGM")
-    if bgm not in (["random"] + bgm_values):
-        raise ValueError("当前 BGM 无效")
-    catalog_status = _text(value.get("catalog_status"), 16, "素材库状态")
-    if catalog_status not in {"loading", "ready", "failed", "preview"}:
-        raise ValueError("素材库状态无效")
-    return {
-        "page": "private_domain_video", "path": value["path"],
-        "mode": "plan", "copy_text": copy_text, "copy_count": copy_count,
-        "template": template, "duration": duration, "bgm": bgm,
-        "bgm_values": bgm_values, "asset_count": asset_count,
-        "selected_asset_count": selected_count,
-        "catalog_status": catalog_status,
-        "active_job_status": _active_job_status(value.get("active_job_status")),
-    }
-
-
 def _page_context(value):
     if not isinstance(value, dict):
         raise ValueError("页面上下文格式无效")
@@ -1102,8 +1029,6 @@ def _page_context(value):
         return _script_page_context(value)
     if value.get("page") == "digital_human_oneclick":
         return _digital_human_page_context(value)
-    if value.get("page") == "private_domain_video":
-        return _private_domain_page_context(value)
     raise ValueError("页面上下文不属于黄雀编导")
 
 
@@ -1360,7 +1285,6 @@ def normalize_model_result(raw, request):
         content = {
             "script": "我可以根据当前页面回答用法、填写选题和卖点、切换写脚本或拆解模式、上传参考图片或拆解视频，并在你确认后调用编导 CLI 生成分镜脚本。",
             "digital_human_oneclick": "我可以填写数字人口播文案、接收人物图片或真人视频、检查当前缺少的素材并引导下一步；上传、授权和最终生成仍由你确认。",
-            "private_domain_video": "我可以填写批量文案、选择模板、时长和音乐，并根据当前页面引导你生成私域成片方案；随机素材、生成和发布仍由你确认。",
         }[page]
         data = {
             "content": content, "stage": "understand", "actions": [],
@@ -1400,11 +1324,7 @@ def normalize_model_result(raw, request):
             if set(action) != {"type", "field", "value", "label"} or action.get("field") not in OPTION_NAMES:
                 raise ValueError("选项动作无效")
             value = _text(action.get("value"), 160, "选项值")
-            allowed_values = (
-                request["page_context"].get("bgm_values", [])
-                if action["field"] == "private_domain_bgm"
-                else OPTION_VALUES[action["field"]]
-            )
+            allowed_values = OPTION_VALUES[action["field"]]
             if value not in allowed_values:
                 raise ValueError("选项值无效")
             item.update(field=action["field"], value=value,

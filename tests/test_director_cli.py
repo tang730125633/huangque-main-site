@@ -160,7 +160,6 @@ class DirectorCLITests(unittest.TestCase):
         expected = {
             "script": "script",
             "digital_human_oneclick": "digital-presenter-capability",
-            "private_domain_video": "assets-page",
         }
         for page, identifier in expected.items():
             with self.subTest(page=page):
@@ -171,6 +170,8 @@ class DirectorCLITests(unittest.TestCase):
                 self.assertTrue(result["execution_policy"][
                     "customer_confirmation_required_for_generation"
                 ])
+        with self.assertRaises(director_cli.DirectorCLIError):
+            director_cli.page_guide("private_domain_video")
 
     def test_bridge_runs_only_capabilities_and_describe_without_secrets(self):
         captured = []

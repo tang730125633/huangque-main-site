@@ -5,7 +5,7 @@
 })(typeof globalThis!=='undefined'?globalThis:this,function(){
   'use strict';
   var STORAGE_KEY='hq_director_agent_unified_v1';
-  var LEGACY_STORAGE_KEYS=['hq_director_agent_v1','hq_director_agent_digital_human_v1','hq_director_agent_private_domain_v1'];
+  var LEGACY_STORAGE_KEYS=['hq_director_agent_v1','hq_director_agent_digital_human_v1'];
   var ROUTES={
     script:'/workbench/script.html',digital_human:'/workbench/digital-human-oneclick.html',
     ip12:'/workbench/ip12.html',assets:'/workbench/assets.html',audio:'/workbench/audio.html',
@@ -18,8 +18,7 @@
     customer_materials:'customerMaterialsPicker',full_audio_upload:'driveAudioDrop',
     photo_authorization:'consent',analyze_plan:'analyze',generate_photo_video:'start',
     video_upload:'dhDrop',precision_authorization:'dhConsent',analyze_voice:'dhAnalyze',
-    generate_precision_video:'dhStart',private_domain_copy:'copy',
-    private_domain_randomize:'randomize',private_domain_plan:'plan'
+    generate_precision_video:'dhStart'
   };
 
   function digest(value){
@@ -119,27 +118,7 @@
       has_result:hasResult,active_job_status:digitalHumanJobStatus(doc,hasResult)
     };
   }
-  function createPrivateDomainPageContext(doc){
-    var copyText=text(doc.getElementById('copy')).slice(0,3000);
-    var bgm=doc.getElementById('bgm'),bgmValues=[];
-    if(bgm) Array.prototype.forEach.call(bgm.options||[],function(option){
-      if(option.value&&option.value!=='random') bgmValues.push(String(option.value).slice(0,160));
-    });
-    var stateText=text(doc.getElementById('serverState'));
-    var catalogStatus=/失败/.test(stateText)?'failed':(/预览/.test(stateText)?'preview':(/已连接/.test(stateText)?'ready':'loading'));
-    return {
-      page:'private_domain_video',path:'/workbench/private-domain-video.html',mode:'plan',
-      copy_text:copyText,copy_count:copyText?copyText.split(/\n\s*\n/).filter(function(item){return item.trim();}).length:0,
-      template:String((doc.getElementById('template')||{}).value||'data'),
-      duration:String((doc.getElementById('duration')||{}).value||'8'),
-      bgm:String((bgm||{}).value||'random'),bgm_values:bgmValues,
-      asset_count:Number((doc.getElementById('materials')||{}).getAttribute&&doc.getElementById('materials').getAttribute('data-asset-count'))||0,
-      selected_asset_count:Number((doc.getElementById('materials')||{}).getAttribute&&doc.getElementById('materials').getAttribute('data-selected-count'))||0,
-      catalog_status:catalogStatus,active_job_status:'idle'
-    };
-  }
   function createPageContext(doc){
-    if(doc&&doc.body&&doc.body.getAttribute('data-page')==='private_domain_video') return createPrivateDomainPageContext(doc);
     if(doc&&doc.getElementById('dhPhotoMode')) return createDigitalHumanPageContext(doc);
     return createScriptPageContext(doc);
   }
@@ -226,7 +205,6 @@
     });
     if(Object.keys(kinds).length!==1) throw new Error('图片和视频请分开上传');
     var kind=Object.keys(kinds)[0],context=createPageContext(doc),page=context.page;
-    if(page==='private_domain_video') throw new Error('当前私域成片使用服务器素材库；本地图片请到数字人页上传，本地视频请到拆解视频页上传');
     if(kind==='video'){
       if(files.length!==1) throw new Error('每次只能上传一个视频');
       if(page==='digital_human_oneclick'){
@@ -272,7 +250,7 @@
     if(action.type==='fill_field'){
       var mode=doc.getElementById('dhPhotoMode')?digitalHumanMode(doc):'';
       var fields={topic:'scTopic',selling_points:'scSell',breakdown_url:'bdUrl',
-        digital_human_script:mode==='video'?'dhScript':'script',private_domain_copy:'copy'};
+        digital_human_script:mode==='video'?'dhScript':'script'};
       var field=doc.getElementById(fields[action.field]);
       if(!field) throw new Error('页面字段不存在');
       dispatchValue(field,action.value);
@@ -283,14 +261,6 @@
       var selectors={style:'#segStyle .sc-opt',duration:'#segDur .sc-opt',platform:'#platRow .sc-chip',
         breakdown_tool:'#bdToolTabs [data-bd-tool]',narration_mode:'input[name="narrationMode"]',
         precision_template:'.precision-template'};
-      var privateSelect={private_domain_template:'template',private_domain_duration:'duration',private_domain_bgm:'bgm'}[action.field];
-      if(privateSelect){
-        var select=doc.getElementById(privateSelect),exists=false;
-        if(!select) throw new Error('页面选项不存在');
-        Array.prototype.forEach.call(select.options||[],function(option){if(String(option.value)===String(action.value))exists=true;});
-        if(!exists) throw new Error('页面上没有找到“'+action.value+'”选项');
-        dispatchValue(select,action.value); return '已选择 '+action.value;
-      }
       if(!selectors[action.field]) throw new Error('页面选项无效');
       choose(doc,selectors[action.field],action.value); return '已选择 '+action.value;
     }
@@ -434,7 +404,7 @@
   }
 
   function bootstrap(doc,win,mounter){
-    if(!doc||(!doc.getElementById('scTopic')&&!doc.getElementById('dhPhotoMode')&&!(doc.body&&doc.body.getAttribute('data-page')==='private_domain_video'))||!win||typeof win.fetch!=='function') return Promise.resolve(null);
+    if(!doc||(!doc.getElementById('scTopic')&&!doc.getElementById('dhPhotoMode'))||!win||typeof win.fetch!=='function') return Promise.resolve(null);
     return jsonFetch(win,'/api/gen/health').then(function(health){
       if(!health||health.director_agent_enabled!==true) return null;
       return (mounter||mount)(doc,win);
@@ -549,13 +519,13 @@
     doc.head.appendChild(style);
   }
   function mount(doc,win){
-    if((!doc.getElementById('scTopic')&&!doc.getElementById('dhPhotoMode')&&!(doc.body&&doc.body.getAttribute('data-page')==='private_domain_video'))||doc.getElementById('hqDirectorAgent')) return null;
-    var page=createPageContext(doc).page,isDigitalHuman=page==='digital_human_oneclick',isPrivateDomain=page==='private_domain_video';
+    if((!doc.getElementById('scTopic')&&!doc.getElementById('dhPhotoMode'))||doc.getElementById('hqDirectorAgent')) return null;
+    var page=createPageContext(doc).page,isDigitalHuman=page==='digital_human_oneclick';
     addStyles(doc); var storage=win.sessionStorage;
     var state=readUnifiedState(storage),pending=false,currentPlan=null;
     function persist(){saveState(storage,state,STORAGE_KEY);}
     var assistantName='黄雀编导 Agent';
-    var pageName=isPrivateDomain?'私域批量成片':(isDigitalHuman?'数字人一键生成':'文案编导');
+    var pageName=isDigitalHuman?'数字人一键生成':'文案编导';
     var launch=doc.createElement('button'); launch.type='button'; launch.className='hq-da-launch'+(isDigitalHuman?' digital-human':''); launch.id='hqDirectorAgent'; launch.textContent='✦ '+assistantName; launch.setAttribute('aria-expanded',state.open?'true':'false');
     var panel=doc.createElement('section'); panel.className='hq-da-panel'+(state.open?' on':''); panel.setAttribute('aria-label',assistantName);
     var head=doc.createElement('div'); head.className='hq-da-head';
@@ -568,7 +538,7 @@
     var compose=doc.createElement('div'); compose.className='hq-da-compose';
     var attach=doc.createElement('button'); attach.type='button'; attach.className='hq-da-attach'; attach.textContent='＋'; attach.setAttribute('aria-label','上传图片或视频'); attach.title='上传图片或视频';
     var attachmentInput=doc.createElement('input'); attachmentInput.type='file'; attachmentInput.accept='image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm,.jpg,.jpeg,.png,.webp,.mp4,.mov,.webm'; attachmentInput.multiple=true; attachmentInput.hidden=true;
-    var input=doc.createElement('textarea'); input.className='hq-da-input'; input.rows=2; input.maxLength=6000; input.placeholder=isPrivateDomain?'把批量文案发给我，或告诉我想用的模板和音乐':(isDigitalHuman?'把文案发给我，或问我下一步怎么做':'例如：我第一次用，下一步该做什么？');
+    var input=doc.createElement('textarea'); input.className='hq-da-input'; input.rows=2; input.maxLength=6000; input.placeholder=isDigitalHuman?'把文案发给我，或问我下一步怎么做':'例如：我第一次用，下一步该做什么？';
     var send=doc.createElement('button'); send.type='button'; send.className='hq-da-send'; send.textContent='发送'; compose.appendChild(attach); compose.appendChild(attachmentInput); compose.appendChild(input); compose.appendChild(send);
     panel.appendChild(head); panel.appendChild(messages); panel.appendChild(status); panel.appendChild(recovery); panel.appendChild(compose); doc.body.appendChild(launch); doc.body.appendChild(panel);
     function setOpen(open){state.open=!!open; panel.classList.toggle('on',state.open); launch.setAttribute('aria-expanded',state.open?'true':'false'); persist(); if(state.open) input.focus();}
@@ -603,12 +573,10 @@
       if(!state.messages.length){
         var welcome=doc.createElement('div'); welcome.className='hq-da-msg assistant'; welcome.textContent='你好，我是黄雀编导 Agent，会在文案编导和数字人页面持续陪你生产。你可以把内容直接发给我，我会结合当前页面填充、切换或带你到下一步；涉及扣点、上传、授权、生成、删除和发布时，会保留必要的顾客确认。'; messages.appendChild(welcome);
         var quick=doc.createElement('div'); quick.className='hq-da-actions';
-        (isPrivateDomain
-          ?['帮我填入这批文案','帮我选择排版和时长','帮我看看还缺什么']
-          :(isDigitalHuman
+        (isDigitalHuman
           ?['我第一次用，带我走一遍','帮我看看还缺什么','照片模式和真人视频模式怎么选']
           :['帮我生成一份分镜脚本','我第一次用，带我走一遍','生成脚本后怎么做视频']
-        )).forEach(function(label){var b=doc.createElement('button');b.type='button';b.className='hq-da-quick';b.textContent=label;b.onclick=function(){submit(label);};quick.appendChild(b);});
+        ).forEach(function(label){var b=doc.createElement('button');b.type='button';b.className='hq-da-quick';b.textContent=label;b.onclick=function(){submit(label);};quick.appendChild(b);});
         messages.appendChild(quick);
       }
       state.messages.forEach(function(message,index){

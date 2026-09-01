@@ -118,31 +118,6 @@ function digitalHumanFixture(mode, narrationMode) {
   return {doc, nodes, lists};
 }
 
-function privateDomainFixture() {
-  const templateOptions = [node('数据', {attributes: {value: 'data'}}), node('温暖', {attributes: {value: 'warm'}})];
-  const durationOptions = [node('8秒', {attributes: {value: '8'}}), node('10秒', {attributes: {value: '10'}})];
-  const bgmOptions = [node('随机', {attributes: {value: 'random'}}), node('成长', {attributes: {value: 'growth.mp3'}})];
-  templateOptions.forEach(item => { item.value = item.attributes.value; });
-  durationOptions.forEach(item => { item.value = item.attributes.value; });
-  bgmOptions.forEach(item => { item.value = item.attributes.value; });
-  const nodes = {
-    copy: node('第一条文案\n\n第二条文案'),
-    template: node('data', {options: templateOptions}),
-    duration: node('8', {options: durationOptions}),
-    bgm: node('random', {options: bgmOptions}),
-    materials: node('', {attributes: {'data-asset-count': '18', 'data-selected-count': '4'}}),
-    serverState: node('', {textContent: '测试服务器素材库已连接', noValue: true}),
-    randomize: node(''), plan: node(''),
-  };
-  const body = node('', {attributes: {'data-page': 'private_domain_video'}});
-  const doc = {
-    body, defaultView: {Event: function Event() {}},
-    getElementById(id) { const value = nodes[id] || null; if(value) value.ownerDocument = doc; return value; },
-    querySelector() { return null; }, querySelectorAll() { return []; },
-  };
-  return {doc, nodes};
-}
-
 {
   const { doc } = fixture();
   const context = agent.createPageContext(doc);
@@ -218,33 +193,6 @@ function privateDomainFixture() {
   assert.equal(context.has_voice_source, true);
   assert.equal(context.precision_template, 'viral-talking-head-v1');
 }
-
-{
-  const {doc, nodes} = privateDomainFixture();
-  const context = agent.createPageContext(doc);
-  assert.equal(context.page, 'private_domain_video');
-  assert.equal(context.copy_count, 2);
-  assert.equal(context.template, 'data');
-  assert.equal(context.duration, '8');
-  assert.deepEqual(context.bgm_values, ['growth.mp3']);
-  assert.equal(context.asset_count, 18);
-  assert.equal(context.selected_asset_count, 4);
-  assert.equal(context.catalog_status, 'ready');
-  const body = agent.buildPayload('改成温暖模板', doc, {messages: []}, {
-    getItem() { return 'private_session_123'; }, setItem() {},
-  });
-  assert.equal(body.source_page, 'private_domain_video');
-  const before = agent.createPageSnapshot(doc).page_revision;
-  agent.applyAction({type:'fill_field',field:'private_domain_copy',value:'新文案',label:'填入文案'}, doc, {});
-  assert.equal(nodes.copy.value, '新文案');
-  assert.notEqual(agent.createPageSnapshot(doc).page_revision, before);
-  agent.applyAction({type:'choose_option',field:'private_domain_template',value:'warm',label:'温暖模板'}, doc, {});
-  assert.equal(nodes.template.value, 'warm');
-  agent.applyAction({type:'focus',target:'private_domain_plan',label:'查看生成按钮'}, doc, {});
-  assert.equal(nodes.plan.focused, true);
-  assert.throws(() => agent.applyAction({type:'choose_option',field:'private_domain_bgm',value:'evil.mp3',label:'伪造音乐'}, doc, {}), /没有找到/);
-}
-
 
 {
   const { doc, nodes, lists } = fixture();
@@ -332,7 +280,7 @@ assert.ok(source.includes("if(resumeKind==='request') runPending(state.pending_r
 assert.ok(source.includes("showRecovery('request')"));
 assert.ok(!source.includes("setTimeout(function(){resolve(accepted());},1400)"));
 assert.ok(!source.includes("setTimeout(function(){resolve(accepted());},1500)"));
-assert.ok(!source.includes("private_domain_video:'/workbench/private-domain-video.html'"));
+assert.ok(!source.includes('private_domain_video'));
 assert.ok(digitalHumanPage.includes('src="script-agent.js?'));
 assert.ok(digitalHumanPage.includes('data-director-guide-contract="digital-human-oneclick-guide-v1"'));
 assert.equal(agent.retainProductionOfferAfterError({status:402,data:{code:'insufficient_points'}}), true);

@@ -44,7 +44,6 @@ CLI_ROOT = Path(os.environ.get(
 PAGE_CAPABILITY = {
     "script": "script",
     "digital_human_oneclick": "digital-presenter-capability",
-    "private_domain_video": "assets-page",
 }
 _REQUIRED_MODULE_FILES = (
     "__init__.py", "__main__.py", "catalog.py", "cli.py", "client.py",
