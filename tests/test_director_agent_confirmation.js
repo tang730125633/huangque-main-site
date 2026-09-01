@@ -70,6 +70,28 @@ function response(status, body) {
   assert.match(agent.formatScriptResult(result), /脚本已生产完成/);
   assert.match(agent.formatScriptResult(result), /买三送一/);
 
+  for (const code of ['idempotency_in_progress', 'reconcile_pending']) {
+    const recoveringWindow = {
+      fetch() {
+        return Promise.resolve(response(
+          code === 'idempotency_in_progress' ? 409 : 503,
+          {code, detail: 'original submission is recovering'},
+        ));
+      },
+    };
+    await assert.rejects(
+      agent.resumeProduction(
+        recoveringWindow, {offer, job_id: null, created_at: Date.now()},
+      ),
+      (error) => {
+        assert.equal(error.data.code, code);
+        assert.equal(error.terminal, false);
+        assert.equal(error.uncertain, true);
+        return true;
+      },
+    );
+  }
+
   console.log('director agent confirmation frontend tests passed');
 })().catch(function (error) {
   console.error(error);

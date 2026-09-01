@@ -549,7 +549,6 @@ class HQCLIAPITests(unittest.TestCase):
             plan["headers"]["Idempotency-Key"] == "ip12-confirm-0001"
             for plan in submitted
         ))
-
     def test_director_agent_internal_action_keeps_one_key_across_requotes(self):
         action_input = {
             "prompt": "energy drink; buy three get one free",
@@ -564,6 +563,9 @@ class HQCLIAPITests(unittest.TestCase):
             if plan["path"] == "/api/gen/cli/quote":
                 return 200, {"cost": 3, "points": 100}
             self.assertEqual(plan["path"], "/api/gen/copy")
+            self.assertEqual(
+                plan["headers"]["X-HQ-Submission-Class"], "director-agent",
+            )
             key = plan["headers"]["Idempotency-Key"]
             submitted_keys.append(key)
             if key not in jobs_by_key:

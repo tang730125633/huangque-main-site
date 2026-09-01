@@ -1,10 +1,12 @@
 import json
+import io
 import os
 import pathlib
 import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.error
 from unittest import mock
 
 
@@ -43,6 +45,30 @@ def description_payload(identifier):
 
 
 class DirectorCLITests(unittest.TestCase):
+    def test_submission_recovery_codes_remain_retryable(self):
+        for code, status in (
+                ("idempotency_in_progress", 409),
+                ("reconcile_pending", 503)):
+            with self.subTest(code=code):
+                error = urllib.error.HTTPError(
+                    "http://127.0.0.1/internal", status, code, {},
+                    io.BytesIO(json.dumps({
+                        "detail": "original submission is recovering",
+                        "code": code,
+                    }).encode("utf-8")),
+                )
+                opener = mock.Mock()
+                opener.open.side_effect = error
+                with mock.patch.object(
+                    director_cli.urllib.request, "build_opener",
+                    return_value=opener,
+                ), mock.patch.object(
+                    director_cli, "AUTH_BASE", "http://127.0.0.1:8011",
+                ), self.assertRaises(director_cli.DirectorCLIError) as raised:
+                    director_cli._local_json("/action", {})
+                self.assertEqual(code, raised.exception.code)
+                self.assertTrue(raised.exception.retryable)
+
     def test_script_bridge_uses_canonical_internal_action_and_stable_idempotency(self):
         cli_input = {
             "request_id": "director-production-1234567890abcdef",

@@ -202,7 +202,10 @@ def _local_json(path, body, headers=None, timeout=10):
         detail = str(payload.get("detail") or "编导 CLI 内部调用失败")[:220]
         raise DirectorCLIError(
             detail, code=code, status=int(status),
-            retryable=int(status) >= 500 or int(status) in {408, 429},
+            retryable=(
+                int(status) >= 500 or int(status) in {408, 429}
+                or code in {"idempotency_in_progress", "reconcile_pending"}
+            ),
         )
     return payload
 

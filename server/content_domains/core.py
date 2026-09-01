@@ -3823,6 +3823,12 @@ class H(BaseHTTPRequestHandler):
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})
             if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
+            director_copy_submission = bool(
+                kind == "copy"
+                and (self.headers.get("X-HQ-Submission-Class") or "").strip()
+                    == "director-agent"
+                and cli_gateway._internal_auth(self, AUTH_INTERNAL_TOKEN)
+            )
             try:
                 if kind not in {"image", "matrix_template_video"}:
                     feature_flags.require_enabled(kind)
@@ -4063,6 +4069,8 @@ class H(BaseHTTPRequestHandler):
                     raise ValueError("画布 Agent 提交必须提供 Idempotency-Key")
                 if kind == "matrix_template_video" and not idem_key:
                     raise ValueError("模板成片提交必须提供 Idempotency-Key")
+                if director_copy_submission and not idem_key:
+                    raise ValueError("编导脚本提交必须提供 Idempotency-Key")
                 if kind == "avatar" and body.get("short_drama_binding") and not idem_key:
                     raise ValueError("电影化身提交必须提供 Idempotency-Key")
                 if kind == "sora_video" and not idem_key: raise ValueError("Sora 视频提交必须提供 Idempotency-Key")
@@ -4199,7 +4207,9 @@ class H(BaseHTTPRequestHandler):
                 if not is_still_route: idem_state, idem_response = ("new", None) if seedance_idem_reserved or cinematic_idem_reserved or script_to_video_idem_reserved or matrix_template_idem_reserved or matrix_template_idem_existing else _idempotency_begin(user["username"], p, idem_key, request_body)
                 if idem_state == "replay": replay = dict(idem_response or {}); return self._send(int(replay.pop("_http_status", 200)), replay)
                 if idem_state == "conflict": return self._send(409, {"detail": "同一个 Idempotency-Key 不能用于不同请求", "code": "idempotency_conflict"})
-                if idem_state == "processing" and not is_still_route: return self._send(409, {"detail": "相同请求正在受理，请稍后查询", "code": "idempotency_in_progress", "retry_after_ms": 1000})
+                if (idem_state == "processing" and not is_still_route
+                        and not director_copy_submission):
+                    return self._send(409, {"detail": "相同请求正在受理，请稍后查询", "code": "idempotency_in_progress", "retry_after_ms": 1000})
                 if kind == "image" and body.get("short_drama_scene_binding"):
                     try:
                         _short_drama_domain().validate_scene_image_binding(
@@ -4281,7 +4291,8 @@ class H(BaseHTTPRequestHandler):
                         from . import pixelle_video as pixelle_video_domain
                         paid_association = pixelle_video_domain.paid_plan_association(
                             body, user["username"])
-                    if kind == "matrix_template_video" or digital_human_paid_child:
+                    if (kind == "matrix_template_video" or digital_human_paid_child
+                            or director_copy_submission):
                         matrix_template_submission.prepare(
                             jdb, user["username"], p, idem_key, request_body, cost,
                             kind=kind,

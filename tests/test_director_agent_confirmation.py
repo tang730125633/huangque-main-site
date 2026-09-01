@@ -17,7 +17,7 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "server"))
 
-from content_domains import core, director_agent
+from content_domains import audio, core, director_agent, upstream_guard, video
 
 
 def payload(**overrides):
@@ -67,6 +67,125 @@ def issued_script_value(db, offer_id, expected_cost=3, now=2_000_000_000):
 
 
 class DirectorAgentConfirmationTests(unittest.TestCase):
+    def test_internal_director_copy_route_uses_durable_paid_attempt_and_replays(self):
+        with tempfile.TemporaryDirectory() as temp:
+            database = pathlib.Path(temp) / "jobs.db"
+
+            def db():
+                connection = sqlite3.connect(str(database), timeout=10)
+                connection.row_factory = sqlite3.Row
+                return connection
+
+            with closing(db()) as connection:
+                connection.execute("""CREATE TABLE jobs(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    kind TEXT NOT NULL,username TEXT NOT NULL,cost INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',payload TEXT NOT NULL,
+                    result TEXT,error TEXT,refunded INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,owner TEXT
+                )""")
+                connection.commit()
+
+            class Points:
+                AuthPointsError = type("AuthPointsError", (Exception,), {})
+
+                def __init__(self):
+                    self.ledger = {}
+                    self.deductions = []
+
+                def cost_of(self, kind, _body):
+                    self.assert_kind = kind
+                    return 3
+
+                def get_points_transaction(self, key):
+                    return self.ledger.get(key)
+
+                def deduct_points(self, username, amount, _reason, transaction_key=""):
+                    if transaction_key not in self.ledger:
+                        self.deductions.append((username, amount, transaction_key))
+                        self.ledger[transaction_key] = {
+                            "username": username, "delta": -int(amount),
+                            "after_points": 97,
+                        }
+                    return 97
+
+                def refund_points(self, username, amount, _reason, transaction_key=""):
+                    self.ledger.setdefault(transaction_key, {
+                        "username": username, "delta": int(amount),
+                        "after_points": 100,
+                    })
+                    return 100
+
+            points = Points()
+            patches = [
+                mock.patch.object(core, "jdb", db),
+                mock.patch.dict(core.HANDLERS, {"copy": lambda _body: {}}),
+                mock.patch.object(core, "AUTH_INTERNAL_TOKEN", "director-internal-test"),
+                mock.patch.object(core, "verify", return_value={
+                    "username": "alice", "must_change": False, "points": 100,
+                }),
+                mock.patch.object(core, "_must_change_password", return_value=False),
+                mock.patch.object(core, "_domains", return_value=(audio, points, video)),
+                mock.patch.object(core.feature_flags, "require_enabled"),
+                mock.patch.object(core.miniprogram_security, "check_payload"),
+                mock.patch.object(upstream_guard, "exhausted_reason", return_value=None),
+                mock.patch.object(core, "_user_video_submit_limit", return_value=None),
+                mock.patch.object(core, "_user_active_job_count", return_value=0),
+                mock.patch.object(core, "is_shutting_down", return_value=False),
+                mock.patch.object(core, "enqueue_job", return_value=True),
+            ]
+            for item in patches:
+                item.start()
+                self.addCleanup(item.stop)
+
+            server = ThreadingHTTPServer(("127.0.0.1", 0), core.H)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+            url = "http://127.0.0.1:%d/api/gen/copy" % server.server_address[1]
+            body = {
+                "prompt": "energy drink; buy three get one free",
+                "format": "script", "style": "种草", "dur": "30s",
+                "platform": "抖音", "ctype": "分镜脚本",
+                "source_page": "script",
+            }
+
+            def post():
+                request = urllib.request.Request(
+                    url, data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+                    method="POST", headers={
+                        "Authorization": "Bearer alice",
+                        "Content-Type": "application/json",
+                        "Idempotency-Key": "director-production-route-0001",
+                        "X-HQ-Expected-Cost": "3",
+                        "X-HQ-Internal-Token": "director-internal-test",
+                        "X-HQ-Submission-Class": "director-agent",
+                    },
+                )
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    return response.status, json.loads(response.read())
+
+            first_status, first = post()
+            replay_status, replay = post()
+            self.assertEqual((200, 200), (first_status, replay_status))
+            self.assertEqual(first["job_id"], replay["job_id"])
+            self.assertEqual(1, len(points.deductions))
+            with closing(db()) as connection:
+                job = connection.execute(
+                    "SELECT kind,payload FROM jobs WHERE id=?", (first["job_id"],),
+                ).fetchone()
+                attempt = connection.execute(
+                    "SELECT kind,state,job_id FROM matrix_template_submission_attempts "
+                    "WHERE username='alice' AND endpoint='/api/gen/copy'",
+                ).fetchone()
+            self.assertEqual("copy", job["kind"])
+            self.assertEqual("copy_model", json.loads(job["payload"])["provider"])
+            self.assertEqual(
+                ("copy", "linked", first["job_id"]),
+                (attempt["kind"], attempt["state"], attempt["job_id"]),
+            )
+
     def test_production_confirmation_accepts_canonical_signed_quote_token_shape(self):
         offer_id = "director-production-1234567890abcdef"
         token = "A" * 80 + "." + "b" * 64

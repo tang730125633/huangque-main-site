@@ -512,7 +512,7 @@
         if(code==='production_price_changed'){
           error.priceChanged=Number(error.data.current_cost)||0; error.terminal=true; throw error;
         }
-        var retryable=!error.status||error.status>=500||code==='director_cli_submit_retryable'||code==='director_production_retryable'||code==='director_reverse_retryable';
+        var retryable=!error.status||error.status>=500||code==='idempotency_in_progress'||code==='reconcile_pending'||code==='director_cli_submit_retryable'||code==='director_production_retryable'||code==='director_reverse_retryable';
         error.terminal=!retryable; error.uncertain=retryable; throw error;
       });
     }
