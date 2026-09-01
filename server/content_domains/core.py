@@ -1034,6 +1034,13 @@ def _video_job_phase_for_public(job_id, kind):
     return _domains()[2].get_video_job_phase(job_id)
 
 
+def _matrix_template_lifecycle_for_public(row):
+    if row["kind"] != "matrix_template_video":
+        return {}
+    from . import matrix_template_video as matrix_template_domain
+    return matrix_template_domain.public_lifecycle(row)
+
+
 def _idempotency_begin(username, endpoint, key, body): return submission_idempotency.begin(jdb, username, endpoint, key, body)
 def _idempotency_complete(username, endpoint, key, response): submission_idempotency.complete(jdb, username, endpoint, key, response)
 def _idempotency_abort(username, endpoint, key): submission_idempotency.abort(jdb, username, endpoint, key)
@@ -1656,6 +1663,13 @@ def _start_job_heartbeat(job_id):
     return stop.set
 
 
+def _kind_reaper_grace(kind):
+    if kind == "matrix_template_video":
+        from . import matrix_template_video as matrix_template_domain
+        return int(matrix_template_domain.TOTAL_TIMEOUT) + 300
+    return KIND_GRACE.get(kind, KIND_GRACE_DEFAULT)
+
+
 def run_job(job_id):
     with closing(jdb()) as c:
         r = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
@@ -1818,6 +1832,19 @@ def run_job(job_id):
                 print("[video-recovery] 恢复信息暂不可读，保留 job#%s: %s" %
                       (job_id, str(recovery_error)[:160]), flush=True)
                 return
+        if kind == "matrix_template_video":
+            try:
+                from . import matrix_template_video as matrix_template_domain
+                if matrix_template_domain.recover_worker_error(
+                        job_id, e, _requeue_running_job):
+                    return
+            except Exception as recovery_error:
+                print(
+                    "[matrix-template-recovery] 恢复信息暂不可读，保留 job#%s: %s"
+                    % (job_id, str(recovery_error)[:160]),
+                    flush=True,
+                )
+                return
         # 生成失败：CAS 抢 error 终态；抢到才记失败资产。退点走幂等(reaper 若已退则跳过)
         # from_states 含 pending：抢 running 那句自己抛异常时任务还停在 pending，只认 running 会不退点
         diagnostics = {}
@@ -1906,6 +1933,10 @@ def reaper():
         except Exception:
             pass
         try:
+            _expire_matrix_template_jobs()
+        except Exception:
+            pass
+        try:
             _domains()[2].retry_pending_seedance_cleanups(points_domain=_domains()[1]); now = int(time.time()); cutoff = now - 360
             with closing(jdb()) as c:
                 stuck = c.execute("SELECT id, username, cost, kind, payload, updated_at FROM jobs WHERE status='running' AND updated_at < ?", (cutoff,)).fetchall()
@@ -1914,7 +1945,7 @@ def reaper():
                 # 直接按 360s 的 cutoff 把任务杀掉。也就是说：一个新 kind 忘了在 KIND_GRACE 里
                 # 登记，它就只有 6 分钟寿命。（audio/copy/leads/dl 至今都不在表里，只是它们跑得快，
                 # 够不着 6 分钟才没出事 —— 这是个潜伏雷。）
-                grace = KIND_GRACE.get(r["kind"], KIND_GRACE_DEFAULT)
+                grace = _kind_reaper_grace(r["kind"])
                 if r["kind"] == "video":
                     # 口播/动作模仿统一到 VIDEO_REAPER_GRACE。原「motion 40 分钟/口播 9 分钟」两套数：
                     # motion 40 分钟是当年必回退泽龙(20~37 分钟)时定的，去线路化走 WaveSpeed 后已不需要；
@@ -1946,6 +1977,32 @@ def reaper():
         except Exception:
             pass
         time.sleep(60)
+
+
+def _expire_matrix_template_jobs(now=None):
+    """Give every paid matrix job a wall-clock terminal bound, queue unchanged."""
+    from . import matrix_template_video as matrix_template_domain
+    now = int(time.time() if now is None else now)
+    cutoff = now - int(matrix_template_domain.TOTAL_TIMEOUT)
+    with closing(jdb()) as connection:
+        rows = connection.execute(
+            "SELECT id,username,cost FROM jobs WHERE kind=? "
+            "AND status IN ('pending','running') AND created_at<=? "
+            "AND COALESCE(owner,?)=? ORDER BY id",
+            ("matrix_template_video", cutoff, SERVICE_OWNER, SERVICE_OWNER),
+        ).fetchall()
+    expired = 0
+    for row in rows:
+        if _fail_job_and_schedule_refund(
+            row["id"], "模板成片超过总时限，退款处理中，请重新提交",
+            from_states=("pending", "running"), username=row["username"],
+            cost=row["cost"], kind="matrix_template_video",
+        ):
+            expired += 1
+            _mark_video_asset_failed(
+                row["id"], "matrix_template_video", "模板成片超过总时限"
+            )
+    return expired
 
 def _requeue_running_job(job_id):
     return startup_recovery.requeue_running_job(jdb, job_id)
@@ -4561,6 +4618,8 @@ class H(BaseHTTPRequestHandler):
                 except Exception:
                     pass
             d = _job_public_dict(r, phase)
+            if r["kind"] == "matrix_template_video":
+                d.update(_matrix_template_lifecycle_for_public(r))
             if r["kind"] in {"short_drama_preview", "short_drama_final"}:
                 with closing(jdb()) as c:
                     linked = c.execute(

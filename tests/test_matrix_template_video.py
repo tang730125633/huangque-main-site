@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import http.server
 import importlib
 import json
 import re
@@ -8,7 +9,10 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
+import urllib.request
 from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
@@ -411,6 +415,42 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         self.assertEqual(5, core.MATRIX_JOB_WORKERS)
         self.assertGreaterEqual(core.MAX_USER_ACTIVE_JOBS, 5)
 
+    def test_absolute_expiry_covers_pending_and_running_without_queue_change(self):
+        from content_domains import core
+
+        rows = [
+            {"id": 1, "username": "alice", "cost": 5},
+            {"id": 2, "username": "bob", "cost": 5},
+        ]
+
+        class Connection:
+            def execute(self, sql, params):
+                self.sql = sql
+                self.params = params
+                return self
+
+            def fetchall(self):
+                return rows
+
+            def close(self):
+                return None
+
+        connection = Connection()
+        with mock.patch.object(core, "jdb", return_value=connection), \
+             mock.patch.object(
+                 core, "_fail_job_and_schedule_refund",
+                 side_effect=[True, False],
+             ) as fail, mock.patch.object(
+                 core, "_mark_video_asset_failed",
+             ) as mark, mock.patch.object(self.module, "TOTAL_TIMEOUT", 1200):
+            expired = core._expire_matrix_template_jobs(now=5000)
+        self.assertEqual(1, expired)
+        self.assertIn("status IN ('pending','running')", connection.sql)
+        self.assertEqual(3800, connection.params[1])
+        self.assertEqual(("pending", "running"), fail.call_args_list[0].kwargs["from_states"])
+        self.assertEqual("matrix_template_video", fail.call_args_list[0].kwargs["kind"])
+        mark.assert_called_once_with(1, "matrix_template_video", "模板成片超过总时限")
+
     def test_validate_payload_is_library_only_and_catalog_bound(self):
         with mock.patch.object(self.module, "require_available"), \
              mock.patch.object(self.module, "public_templates", return_value=self.templates()), \
@@ -689,6 +729,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             "template_id": "native-bold", "bgm": True, "duration": None,
         }), mock.patch.object(self.module, "_request", side_effect=responses) as request, \
              mock.patch.object(self.module, "_download", return_value=("video/matrix_template_77.mp4", 4096)) as download, \
+             mock.patch.object(self.module, "_persist_runtime", return_value=True), \
              mock.patch.object(self.module, "public_url", return_value="/api/gen/file/token"), \
              mock.patch.object(self.module.time, "sleep"):
             result = self.module.generate(raw)
@@ -696,11 +737,217 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         self.assertEqual("/api/gen/file/token", result["video_url"])
         self.assertEqual("a" * 32, result["provider_task_id"])
         self.assertEqual("matrix-template-77", request.call_args_list[0].kwargs["request_id"])
-        download.assert_called_once_with("/v1/files/%s.mp4" % ("a" * 32), "77")
+        self.assertEqual(
+            ("/v1/files/%s.mp4" % ("a" * 32), "77"),
+            download.call_args.args,
+        )
+        self.assertLessEqual(download.call_args.kwargs["timeout"], 240)
+        self.assertGreater(download.call_args.kwargs["deadline_at"], 0)
         self.assertEqual("matrix_template", result["mode"])
         self.assertEqual(("done", "1080p", "9:16"), (
             result["phase"], result["resolution"], result["ratio"]
         ))
+
+    def test_generate_uses_submission_time_as_absolute_deadline(self):
+        with mock.patch.object(
+            self.module, "_runtime",
+            return_value={"created_at": 100, "payload": {}},
+        ), mock.patch.object(self.module.time, "time", return_value=1400), \
+             mock.patch.object(self.module, "validate_payload") as validate, \
+             mock.patch.object(self.module, "_request") as request, \
+             self.assertRaisesRegex(RuntimeError, "等待超时"):
+            self.module.generate({"_job_id": 88, "_username": "alice"})
+        validate.assert_not_called()
+        request.assert_not_called()
+
+    def test_generate_rechecks_deadline_after_preflight_before_post(self):
+        clock = {"now": 100.0}
+
+        def validate(*_args, **_kwargs):
+            clock["now"] = 1301.0
+            return {"template_id": "native-bold"}
+
+        with mock.patch.object(
+            self.module, "_runtime",
+            return_value={"created_at": 100, "payload": {}},
+        ), mock.patch.object(
+            self.module.time, "time", side_effect=lambda: clock["now"],
+        ), mock.patch.object(
+            self.module, "validate_payload", side_effect=validate,
+        ), mock.patch.object(self.module, "_request") as request, \
+             mock.patch.object(self.module, "_persist_runtime") as persist, \
+             self.assertRaisesRegex(RuntimeError, "生成超时"):
+            self.module.generate({"_job_id": 90, "_username": "alice"})
+        request.assert_not_called()
+        persist.assert_not_called()
+
+    def test_generate_resumes_persisted_provider_job_without_second_post(self):
+        provider_id = "c" * 32
+        stored = {
+            "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
+            "template_id": "native-bold", "bgm": True, "duration": 8,
+            "_matrix_runtime": {
+                "phase": "provider_queued", "provider_job_id": provider_id,
+            },
+        }
+        with mock.patch.object(
+            self.module, "_runtime",
+            return_value={
+                "created_at": int(self.module.time.time()), "payload": stored,
+            },
+        ), mock.patch.object(self.module, "validate_payload") as validate, \
+             mock.patch.object(
+                 self.module, "_request",
+                 return_value={"status": "failed", "error": "renderer failed"},
+             ) as request, mock.patch.object(self.module.time, "sleep"), \
+             self.assertRaisesRegex(RuntimeError, "renderer failed"):
+            self.module.generate({"_job_id": 91, "_username": "alice"})
+        validate.assert_not_called()
+        self.assertEqual(1, request.call_count)
+        self.assertEqual(("GET", "/v1/jobs/" + provider_id), request.call_args.args)
+
+    def test_generate_does_not_post_without_durable_submitting_phase(self):
+        with mock.patch.object(
+            self.module, "_runtime",
+            return_value={
+                "created_at": int(self.module.time.time()), "payload": {},
+            },
+        ), mock.patch.object(
+            self.module, "validate_payload", return_value={
+                "template_id": "native-bold",
+            },
+        ), mock.patch.object(
+            self.module, "_persist_runtime", return_value=False,
+        ), mock.patch.object(self.module, "_request") as request, \
+             self.assertRaisesRegex(RuntimeError, "状态保存失败"):
+            self.module.generate({"_job_id": 92, "_username": "alice"})
+        request.assert_not_called()
+
+    def test_download_discards_partial_file_when_deadline_crosses_during_read(self):
+        clock = {"now": 100.0}
+
+        class SlowResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _size):
+                clock["now"] = 101.0
+                return b"\x00\x00\x00\x18ftyp" + (b"x" * 2048)
+
+        opener = mock.Mock()
+        opener.open.return_value = SlowResponse()
+        with tempfile.TemporaryDirectory() as temp, \
+             mock.patch.object(self.module, "OUT_DIR", Path(temp)), \
+             mock.patch.object(self.module, "_safe_file_url", return_value="https://example.test/file.mp4"), \
+             mock.patch.object(self.module, "_NO_PROXY", opener), \
+             mock.patch.object(self.module.time, "time", side_effect=lambda: clock["now"]), \
+             self.assertRaisesRegex(RuntimeError, "生成超时"):
+            self.module._download(
+                "/file.mp4", "slow-job", timeout=10, deadline_at=100.5,
+            )
+        self.assertFalse((Path(temp) / "video" / "matrix_template_slow-job.mp4").exists())
+        self.assertFalse((Path(temp) / "video" / "matrix_template_slow-job.mp4.part").exists())
+
+    def test_download_real_trickle_stream_obeys_wall_clock_deadline(self):
+        class TrickleHandler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", "20")
+                self.end_headers()
+                for _index in range(20):
+                    try:
+                        self.wfile.write(b"x")
+                        self.wfile.flush()
+                    except (
+                        BrokenPipeError, ConnectionAbortedError,
+                        ConnectionResetError,
+                    ):
+                        break
+                    time.sleep(0.1)
+
+            def log_message(self, _format, *_args):
+                return
+
+        server = http.server.ThreadingHTTPServer(
+            ("127.0.0.1", 0), TrickleHandler,
+        )
+        server.daemon_threads = True
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        url = "http://127.0.0.1:%d/video.mp4" % server.server_port
+        try:
+            with tempfile.TemporaryDirectory() as temp, \
+                 mock.patch.object(self.module, "OUT_DIR", Path(temp)), \
+                 mock.patch.object(self.module, "_safe_file_url", return_value=url), \
+                 mock.patch.object(
+                     self.module, "_NO_PROXY",
+                     urllib.request.build_opener(
+                         urllib.request.ProxyHandler({})
+                     ),
+                 ):
+                started = time.monotonic()
+                with self.assertRaisesRegex(RuntimeError, "生成超时"):
+                    self.module._download(
+                        url, "real-trickle", timeout=10,
+                        deadline_at=time.time() + 0.25,
+                    )
+                elapsed = time.monotonic() - started
+                self.assertLess(elapsed, 1.0)
+                target = Path(temp) / "video/matrix_template_real-trickle.mp4"
+                self.assertFalse(target.exists())
+                self.assertFalse(target.with_suffix(".mp4.part").exists())
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_generate_persists_provider_identity_and_progress(self):
+        responses = [
+            {"job_id": "b" * 32},
+            {"status": "running"},
+            {"status": "failed", "error": "renderer failed"},
+        ]
+        with mock.patch.object(
+            self.module, "_runtime",
+            return_value={"created_at": int(self.module.time.time()), "payload": {}},
+        ), mock.patch.object(self.module, "validate_payload", return_value={
+            "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
+            "template_id": "full-overlay-bold", "bgm": True, "duration": 8,
+        }), mock.patch.object(
+            self.module, "_request", side_effect=responses,
+        ), mock.patch.object(
+            self.module, "_persist_runtime", return_value=True,
+        ) as persist, mock.patch.object(self.module.time, "sleep"), \
+             self.assertRaisesRegex(RuntimeError, "renderer failed"):
+            self.module.generate({"_job_id": 89, "_username": "alice"})
+        provider = next(
+            call for call in persist.call_args_list
+            if call.kwargs.get("provider_job_id")
+        )
+        self.assertEqual("b" * 32, provider.kwargs["provider_job_id"])
+        self.assertEqual("provider_queued", provider.kwargs["phase"])
+        self.assertTrue(any(
+            call.kwargs.get("phase") == "rendering"
+            for call in persist.call_args_list
+        ))
+
+    def test_public_lifecycle_uses_server_time_and_hides_provider_id(self):
+        row = {
+            "status": "running", "created_at": 100,
+            "payload": json.dumps({"_matrix_runtime": {
+                "phase": "rendering", "provider_job_id": "secret-provider-id",
+                "last_progress_at": 180,
+            }}),
+        }
+        value = self.module.public_lifecycle(row, now=250)
+        self.assertEqual("rendering", value["phase"])
+        self.assertEqual(150, value["elapsed_seconds"])
+        self.assertEqual(100 + self.module.TOTAL_TIMEOUT, value["deadline_at"])
+        self.assertTrue(value["provider_submitted"])
+        self.assertNotIn("provider_job_id", value)
 
     def test_completed_result_archives_in_real_video_assets_schema(self):
         from content_domains import core, video
@@ -1047,6 +1294,19 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual("block", result["display"])
         self.assertEqual(1, result["loads"])
         self.assertTrue(result["cleared"])
+
+    def test_uncertain_submission_requires_explicit_retry(self):
+        result = self.runtime("uncertainExplicitRetry")
+        for phase in ("afterLoad", "afterFocus", "afterVisibility"):
+            self.assertEqual(0, result[phase]["posts"])
+            self.assertIn("点击生成确认重试", result[phase]["status"])
+            self.assertNotIn("867 秒", result[phase]["status"])
+            self.assertNotIn("正在提交", result[phase]["status"])
+        self.assertEqual(1, result["afterClick"]["posts"])
+        self.assertEqual(
+            "matrix-template-stable-retry-key",
+            result["afterClick"]["key"],
+        )
 
     def test_result_video_retries_media_load_without_page_refresh(self):
         result = self.runtime("mediaRetry")
