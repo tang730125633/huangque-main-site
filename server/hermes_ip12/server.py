@@ -4244,14 +4244,17 @@ def _finalize_production_result(cid, job_id):
             seen_phase = phase
             note = _PRODUCTION_PHASE_NOTES.get(phase)
             if note and phase not in ("done", "failed", "error"):
-                with CONVERSATION_STATE_LOCK:
-                    convo = owned_conversation(cid)
-                if convo is not None:
-                    msgs = convo.setdefault("messages", [])
-                    if not (msgs and str(msgs[-1].get("content") or "").strip() == note):
-                        msgs.append({"role": "assistant", "content": note})
-                        with CONVERSATION_STATE_LOCK:
+                # daemon 线程没有 Flask 请求上下文：直接按文件读写会话
+                try:
+                    _path = conversation_path(cid)
+                    if _path.exists():
+                        convo = json.loads(_path.read_text(encoding="utf-8"))
+                        msgs = convo.setdefault("messages", [])
+                        if not (msgs and str(msgs[-1].get("content") or "").strip() == note):
+                            msgs.append({"role": "assistant", "content": note})
                             save_conversation(cid, convo)
+                except Exception:
+                    pass
         if phase not in ("done", "failed", "error"):
             continue
         with CONVERSATION_STATE_LOCK:
@@ -4285,10 +4288,12 @@ def _finalize_production_result(cid, job_id):
                         "cover_url": cover_url}
         else:
             text = "❌ 生成失败：" + str(task.get("error") or "未知错误")[:200]
-        with CONVERSATION_STATE_LOCK:
-            convo = owned_conversation(cid)
-            if convo is None:
+            msg_meta = {}
+        try:
+            _path = conversation_path(cid)
+            if not _path.exists():
                 return
+            convo = json.loads(_path.read_text(encoding="utf-8"))
             msgs = convo.setdefault("messages", [])
             if msgs and str(msgs[-1].get("content") or "") == text:
                 return
@@ -4308,6 +4313,8 @@ def _finalize_production_result(cid, job_id):
                 "created_at": time.time(),
             }
             save_conversation(cid, convo)
+        except Exception:
+            pass
         return
 
 
