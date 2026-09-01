@@ -5864,14 +5864,28 @@ class H(BaseHTTPRequestHandler):
                 "role": role,
             })
         if p == "/api/auth/session/cli-token":
-            # 客户登录态(hq_session)直接换 CLI token：一步完成，无需 device 授权。
-            # IP12 服务端用它给客户生成时提供 CLI 凭证（扣客户自己的点）。
+            # 客户登录态(hq_session)直接签发 CLI 凭证：一步完成，无需 device 授权。
+            # CLI 鉴权只认 cli_device_grants 的 issued 行，因此直接写入 issued grant。
             row = self._cookie_user()
             if not row:
                 return self._cli_send(401, {"detail": "请先登录黄雀账号"})
-            tok = issue_token(row["username"], ttl=8 * 3600, scope="account")
+            token = secrets.token_urlsafe(32)
+            scopes = tuple(hq_cli_api.SCOPES)
+            now = int(time.time())
+            scopes_json = json.dumps(scopes, separators=(",", ":"))
+            with db() as connection:
+                connection.execute(
+                    """INSERT INTO cli_device_grants(
+                       device_code_hash,user_code_hash,client_name,requested_scopes_json,
+                       approved_scopes_json,status,username,approved_at,created_at,expires_at,
+                       token_hash,token_expires_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (hq_cli_api._hash(token), hq_cli_api._hash(token), "ip12-session-bridge",
+                     scopes_json, scopes_json, "issued", row["username"], now, now,
+                     now + hq_cli_api.TOKEN_TTL, hq_cli_api._hash(token), now + hq_cli_api.TOKEN_TTL),
+                )
             return self._cli_send(200, {
-                "access_token": tok, "expires_in": 8 * 3600,
+                "access_token": token, "expires_in": hq_cli_api.TOKEN_TTL,
                 "username": row["username"],
             })
         if p == "/api/auth/cli/device/start":

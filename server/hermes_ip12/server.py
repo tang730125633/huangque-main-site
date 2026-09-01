@@ -4504,6 +4504,9 @@ def _ensure_client_hq_token(account_id):
         if _entry and int(_entry.get("expires_at") or 0) - int(time.time()) > 3600:
             return _entry["token"]
         if not _session_cookie:
+            app.logger.warning(
+                "IP12 hq token: no hq_session cookie in request (account=%s, cookie_keys=%s, cookie_len=%d)",
+                account_id, list(_parts.keys())[:6], len(_cookies))
             return ""
         _fresh = _authorize_hq_for_cookie(_session_cookie)
         _HQ_ACCOUNT_TOKENS[account_id or "x"] = _fresh
