@@ -176,5 +176,16 @@ async function scenarioUncertainRequiresExplicitRetry(){
   return {afterLoad,afterFocus,afterVisibility,afterClick:{posts:runtime.requests.post.length,key:runtime.requests.post[0]&&runtime.requests.post[0].options.headers['Idempotency-Key']}};
 }
 
-async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure,instantResult:scenarioInstantResult,delayedResultUrl:scenarioDelayedResultUrl,longDelayedResultUrl:scenarioLongDelayedResultUrl,foregroundResume:scenarioForegroundResume,mediaRetry:scenarioMediaRetry,livePreview:scenarioLivePreview,fontSelect:scenarioFontSelect,lockedFont:scenarioLockedFont,batchFive:scenarioBatchFive,legacyPending:scenarioLegacyPending,mixedFailureReload:scenarioMixedFailureReload,jobFailureRefund:scenarioJobFailureRefund,refundPendingThenConfirmed:scenarioRefundPendingThenConfirmed,uncertainExplicitRetry:scenarioUncertainRequiresExplicitRetry};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}
+async function scenarioStaleSubmittingRequiresExplicitRetry(){
+  const key='matrix-template-stale-retry-key';
+  const storage=new Map([['hq-matrix-template-pending-v2',JSON.stringify({started_at:Date.now()-120000,items:[{key,body:{top_text:'旧提交标题',bottom_text:'旧提交行动文案',template_id:'native-bold',bgm:true},job_id:'',status:'submitting',result:null,error:'',refund_status:''}]})]]);
+  const runtime=createRuntime({post:()=>Promise.resolve(response(200,{job_id:402})),poll:()=>Promise.resolve(response(200,{status:'pending',elapsed_seconds:0}))},storage);
+  await flush(30);const afterLoad={posts:runtime.requests.post.length,status:runtime.get('status').textContent};
+  await runtime.triggerWindow('focus');await flush(20);const afterFocus={posts:runtime.requests.post.length,status:runtime.get('status').textContent};
+  await runtime.triggerDocument('visibilitychange');await flush(20);const afterVisibility={posts:runtime.requests.post.length,status:runtime.get('status').textContent};
+  runtime.get('generateBtn').onclick();await flush(20);
+  return {afterLoad,afterFocus,afterVisibility,afterClick:{posts:runtime.requests.post.length,key:runtime.requests.post[0]&&runtime.requests.post[0].options.headers['Idempotency-Key']}};
+}
+
+async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure,instantResult:scenarioInstantResult,delayedResultUrl:scenarioDelayedResultUrl,longDelayedResultUrl:scenarioLongDelayedResultUrl,foregroundResume:scenarioForegroundResume,mediaRetry:scenarioMediaRetry,livePreview:scenarioLivePreview,fontSelect:scenarioFontSelect,lockedFont:scenarioLockedFont,batchFive:scenarioBatchFive,legacyPending:scenarioLegacyPending,mixedFailureReload:scenarioMixedFailureReload,jobFailureRefund:scenarioJobFailureRefund,refundPendingThenConfirmed:scenarioRefundPendingThenConfirmed,uncertainExplicitRetry:scenarioUncertainRequiresExplicitRetry,staleSubmittingExplicitRetry:scenarioStaleSubmittingRequiresExplicitRetry};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}
 main().catch(e=>{console.error(e.stack||e);process.exitCode=1});

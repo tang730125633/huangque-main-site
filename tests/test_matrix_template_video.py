@@ -1308,6 +1308,18 @@ class MatrixTemplatePageTests(unittest.TestCase):
             result["afterClick"]["key"],
         )
 
+    def test_stale_unaccepted_submission_is_normalized_before_restore(self):
+        result = self.runtime("staleSubmittingExplicitRetry")
+        for phase in ("afterLoad", "afterFocus", "afterVisibility"):
+            self.assertEqual(0, result[phase]["posts"])
+            self.assertIn("点击生成确认重试", result[phase]["status"])
+            self.assertNotIn("生成中", result[phase]["status"])
+        self.assertEqual(1, result["afterClick"]["posts"])
+        self.assertEqual(
+            "matrix-template-stale-retry-key",
+            result["afterClick"]["key"],
+        )
+
     def test_result_video_retries_media_load_without_page_refresh(self):
         result = self.runtime("mediaRetry")
         self.assertEqual("/retry-video", result["before"]["src"])
