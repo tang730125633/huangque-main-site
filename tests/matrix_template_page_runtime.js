@@ -173,7 +173,7 @@ async function scenarioUncertainRequiresExplicitRetry(){
   await runtime.triggerWindow('focus');await flush(20);const afterFocus={posts:runtime.requests.post.length,status:runtime.get('status').textContent};
   await runtime.triggerDocument('visibilitychange');await flush(20);const afterVisibility={posts:runtime.requests.post.length,status:runtime.get('status').textContent};
   runtime.get('generateBtn').onclick();await flush(20);
-  return {afterLoad,afterFocus,afterVisibility,afterClick:{posts:runtime.requests.post.length,key:runtime.requests.post[0]&&runtime.requests.post[0].options.headers['Idempotency-Key']}};
+  return {afterLoad,afterFocus,afterVisibility,afterClick:{posts:runtime.requests.post.length,key:runtime.requests.post[0]&&runtime.requests.post[0].options.headers['Idempotency-Key'],status:runtime.get('status').textContent}};
 }
 
 async function scenarioStaleSubmittingRequiresExplicitRetry(){
@@ -184,7 +184,7 @@ async function scenarioStaleSubmittingRequiresExplicitRetry(){
   await runtime.triggerWindow('focus');await flush(20);const afterFocus={posts:runtime.requests.post.length,status:runtime.get('status').textContent};
   await runtime.triggerDocument('visibilitychange');await flush(20);const afterVisibility={posts:runtime.requests.post.length,status:runtime.get('status').textContent};
   runtime.get('generateBtn').onclick();await flush(20);
-  return {afterLoad,afterFocus,afterVisibility,afterClick:{posts:runtime.requests.post.length,key:runtime.requests.post[0]&&runtime.requests.post[0].options.headers['Idempotency-Key']}};
+  return {afterLoad,afterFocus,afterVisibility,afterClick:{posts:runtime.requests.post.length,key:runtime.requests.post[0]&&runtime.requests.post[0].options.headers['Idempotency-Key'],status:runtime.get('status').textContent}};
 }
 
 async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure,instantResult:scenarioInstantResult,delayedResultUrl:scenarioDelayedResultUrl,longDelayedResultUrl:scenarioLongDelayedResultUrl,foregroundResume:scenarioForegroundResume,mediaRetry:scenarioMediaRetry,livePreview:scenarioLivePreview,fontSelect:scenarioFontSelect,lockedFont:scenarioLockedFont,batchFive:scenarioBatchFive,legacyPending:scenarioLegacyPending,mixedFailureReload:scenarioMixedFailureReload,jobFailureRefund:scenarioJobFailureRefund,refundPendingThenConfirmed:scenarioRefundPendingThenConfirmed,uncertainExplicitRetry:scenarioUncertainRequiresExplicitRetry,staleSubmittingExplicitRetry:scenarioStaleSubmittingRequiresExplicitRetry};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}

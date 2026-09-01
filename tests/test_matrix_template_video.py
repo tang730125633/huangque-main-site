@@ -1307,6 +1307,8 @@ class MatrixTemplatePageTests(unittest.TestCase):
             "matrix-template-stable-retry-key",
             result["afterClick"]["key"],
         )
+        self.assertIn("0 秒", result["afterClick"]["status"])
+        self.assertNotIn("867 秒", result["afterClick"]["status"])
 
     def test_stale_unaccepted_submission_is_normalized_before_restore(self):
         result = self.runtime("staleSubmittingExplicitRetry")
@@ -1319,6 +1321,8 @@ class MatrixTemplatePageTests(unittest.TestCase):
             "matrix-template-stale-retry-key",
             result["afterClick"]["key"],
         )
+        self.assertIn("0 秒", result["afterClick"]["status"])
+        self.assertNotIn("120 秒", result["afterClick"]["status"])
 
     def test_result_video_retries_media_load_without_page_refresh(self):
         result = self.runtime("mediaRetry")
