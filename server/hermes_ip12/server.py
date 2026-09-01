@@ -4213,11 +4213,23 @@ def api_ip12_production_delegate_confirm():
     return jsonify({"ok": True, "job_id": job_id, "result": result})
 
 
+_PRODUCTION_PHASE_NOTES = {
+    "queued": "已经排进生成队列，稍等片刻～",
+    "running": "正在生成中，进度正常，我盯着。",
+    "polling": "正在生成中，进度正常，我盯着。",
+    "polling_video": "视频正在合成，这一步通常要一两分钟，我继续盯着。",
+    "delivering": "成片已经出来了，正在做最后的交付处理，马上就能看。",
+    "submitting_video": "视频正在提交合成，稍等～",
+}
+
+
 def _finalize_production_result(cid, job_id):
-    """任务完成后把结果（视频/音频）作为 assistant 消息持久化，刷新页面不丢。"""
+    """任务追踪：状态每变化一次，主 Agent 在会话里自然汇报一句进度；
+    完成后把结果（视频/音频）作为 assistant 消息持久化，刷新页面不丢。"""
     import requests as _requests
     base = str(os.environ.get("HQ_TOOL_AGENT_BASE") or "http://127.0.0.1:8790").rstrip("/")
     deadline = time.time() + 900
+    seen_phase = ""
     while time.time() < deadline:
         time.sleep(6)
         try:
@@ -4228,6 +4240,18 @@ def _finalize_production_result(cid, job_id):
         task = (d or {}).get("task") if isinstance(d, dict) else {}
         task = task if isinstance(task, dict) else {}
         phase = str(task.get("phase") or "")
+        if phase != seen_phase:
+            seen_phase = phase
+            note = _PRODUCTION_PHASE_NOTES.get(phase)
+            if note and phase not in ("done", "failed", "error"):
+                with CONVERSATION_STATE_LOCK:
+                    convo = owned_conversation(cid)
+                if convo is not None:
+                    msgs = convo.setdefault("messages", [])
+                    if not (msgs and str(msgs[-1].get("content") or "").strip() == note):
+                        msgs.append({"role": "assistant", "content": note})
+                        with CONVERSATION_STATE_LOCK:
+                            save_conversation(cid, convo)
         if phase not in ("done", "failed", "error"):
             continue
         with CONVERSATION_STATE_LOCK:
