@@ -4266,7 +4266,13 @@ def api_ip12_production_delegate_confirm():
     if isinstance(inner, dict) and inner.get("status") == "failed":
         # 报价过期/执行被拒：如实回传，前端提示重新发起
         return jsonify({"ok": False, "error": str(inner.get("summary") or inner.get("message") or "执行失败")[:200]}), 409
-    job_id = inner.get("job_id") if isinstance(inner, dict) else None
+    # job_id 在工具层返回的顶层（{"type":"running","job_id":...}）；兼容 result 内嵌结构
+    job_id = None
+    if isinstance(result, dict):
+        job_id = result.get("job_id")
+    if not job_id and isinstance(inner, dict):
+        job_id = inner.get("job_id")
+    job_id = str(job_id) if job_id else None
     if job_id:
         threading.Thread(
             target=_finalize_production_result, args=(cid, str(job_id), _client_token), daemon=True,
