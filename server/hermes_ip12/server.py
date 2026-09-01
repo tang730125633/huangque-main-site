@@ -4364,6 +4364,55 @@ def api_ip12_task(job_id):
     return jsonify(payload)
 
 
+_UPLOAD_KINDS = {"image": "Image", "video": "Video", "audio": "Audio"}
+_UPLOAD_ACCEPT = {
+    "image": ["image/png", "image/jpeg", "image/webp"],
+    "video": ["video/mp4", "video/quicktime", "video/webm"],
+    "audio": ["audio/mpeg", "audio/wav", "audio/x-wav", "audio/mp4", "audio/x-m4a", "audio/aac", "audio/ogg"],
+}
+
+
+@app.route("/api/ip12/upload", methods=["POST"])
+def api_ip12_upload():
+    """通用素材上传：客户登录态 → CLI 凭证 → 转发 auth 上传（返回 upload_id）。"""
+    import hashlib
+    import requests as _requests
+    kind = str((request.form or {}).get("kind") or "image").strip().lower()
+    if kind not in _UPLOAD_KINDS:
+        return jsonify({"ok": False, "error": "不支持的文件类型"}), 400
+    file = request.files.get("file")
+    if file is None or not file.filename:
+        return jsonify({"ok": False, "error": "请选择文件"}), 400
+    raw = file.read(64 * 1024 * 1024)
+    if not raw:
+        return jsonify({"ok": False, "error": "文件内容为空"}), 400
+    if file.mimetype not in _UPLOAD_ACCEPT[kind]:
+        return jsonify({"ok": False, "error": "文件格式不支持（%s）" % file.mimetype}), 400
+    _client_token = _ensure_client_hq_token(current_account_id())
+    if not _client_token:
+        return jsonify({"ok": False, "error": "黄雀登录态已过期，请刷新页面重新登录后再上传"}), 401
+    digest = hashlib.sha256(raw).hexdigest()
+    headers = {
+        "Authorization": "Bearer " + _client_token,
+        "Content-Type": file.mimetype or "application/octet-stream",
+        "X-HQ-%s-SHA256" % _UPLOAD_KINDS[kind]: digest,
+    }
+    try:
+        resp = _requests.post(
+            "http://127.0.0.1:8095/api/auth/cli/%s-upload" % kind,
+            data=raw, headers=headers, timeout=180,
+        )
+        data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+    except Exception as exc:
+        return jsonify({"ok": False, "error": "上传通道暂时不可用：" + str(exc)[:120]}), 502
+    if resp.status_code >= 400:
+        return jsonify({"ok": False, "error": str((data or {}).get("detail") or "上传失败")[:200]}), resp.status_code
+    upload_id = str(data.get("upload_id") or (data.get("result") or {}).get("upload_id") or "")
+    if not upload_id:
+        upload_id = str(data.get("id") or (data.get("result") or {}).get("id") or "") if isinstance(data, dict) else ""
+    return jsonify({"ok": True, "upload_id": upload_id, "kind": kind})
+
+
 @app.route("/api/ip12/assets", methods=["GET"])
 def api_ip12_assets():
     """素材库列表（转发工具层）。"""
