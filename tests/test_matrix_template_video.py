@@ -1339,6 +1339,13 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertTrue(result["ownerlessRemoved"])
         self.assertEqual("", result["top"])
 
+    def test_foreground_resume_does_not_duplicate_inflight_requests(self):
+        result = self.runtime("foregroundSingleFlight")
+        self.assertEqual(1, result["postsWhileInflight"])
+        self.assertEqual(1, result["pollsWhileInflight"])
+        self.assertEqual("/single-flight-video", result["src"])
+        self.assertTrue(result["cleared"])
+
     def test_result_video_retries_media_load_without_page_refresh(self):
         result = self.runtime("mediaRetry")
         self.assertEqual("/retry-video", result["before"]["src"])

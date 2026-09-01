@@ -201,5 +201,20 @@ async function scenarioCrossAccountPendingIsolation(){
   return {posts:runtime.requests.post.length,polls:runtime.requests.poll.length,aliceRetained:storage.has(aliceKey),ownerlessRemoved:!storage.has('hq-matrix-template-pending-v2'),top:runtime.get('topText').value};
 }
 
-async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure,pollRecoveryBeyondFive:scenarioPollRecoveryBeyondFive,instantResult:scenarioInstantResult,delayedResultUrl:scenarioDelayedResultUrl,longDelayedResultUrl:scenarioLongDelayedResultUrl,foregroundResume:scenarioForegroundResume,mediaRetry:scenarioMediaRetry,livePreview:scenarioLivePreview,fontSelect:scenarioFontSelect,lockedFont:scenarioLockedFont,batchFive:scenarioBatchFive,legacyPending:scenarioLegacyPending,mixedFailureReload:scenarioMixedFailureReload,jobFailureRefund:scenarioJobFailureRefund,refundPendingThenConfirmed:scenarioRefundPendingThenConfirmed,uncertainAutoRecovery:scenarioUncertainRecoversAutomatically,staleSubmittingAutoRecovery:scenarioStaleSubmittingRecoversAutomatically,crossAccountPending:scenarioCrossAccountPendingIsolation};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}
+async function scenarioForegroundDoesNotDuplicateInflightRequests(){
+  let acceptPost,finishPoll;
+  const postResponse=new Promise(resolve=>{acceptPost=resolve});
+  const pollResponse=new Promise(resolve=>{finishPoll=resolve});
+  const runtime=createRuntime({post:()=>postResponse,poll:()=>pollResponse},new Map());
+  await fillAndSubmit(runtime);await flush(20);
+  await runtime.triggerWindow('focus');await runtime.triggerDocument('visibilitychange');await flush(20);
+  const postsWhileInflight=runtime.requests.post.length;
+  acceptPost(response(200,{job_id:403}));await flush(20);
+  await runtime.triggerWindow('focus');await runtime.triggerDocument('visibilitychange');await flush(20);
+  const pollsWhileInflight=runtime.requests.poll.length;
+  finishPoll(response(200,{status:'done',result:{video_url:'/single-flight-video',duration:8}}));await flush(20);
+  return {postsWhileInflight,pollsWhileInflight,src:runtime.get('video').src,cleared:pendingCleared(runtime.storage)};
+}
+
+async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure,pollRecoveryBeyondFive:scenarioPollRecoveryBeyondFive,instantResult:scenarioInstantResult,delayedResultUrl:scenarioDelayedResultUrl,longDelayedResultUrl:scenarioLongDelayedResultUrl,foregroundResume:scenarioForegroundResume,mediaRetry:scenarioMediaRetry,livePreview:scenarioLivePreview,fontSelect:scenarioFontSelect,lockedFont:scenarioLockedFont,batchFive:scenarioBatchFive,legacyPending:scenarioLegacyPending,mixedFailureReload:scenarioMixedFailureReload,jobFailureRefund:scenarioJobFailureRefund,refundPendingThenConfirmed:scenarioRefundPendingThenConfirmed,uncertainAutoRecovery:scenarioUncertainRecoversAutomatically,staleSubmittingAutoRecovery:scenarioStaleSubmittingRecoversAutomatically,crossAccountPending:scenarioCrossAccountPendingIsolation,foregroundSingleFlight:scenarioForegroundDoesNotDuplicateInflightRequests};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}
 main().catch(e=>{console.error(e.stack||e);process.exitCode=1});
