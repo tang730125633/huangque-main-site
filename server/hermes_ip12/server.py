@@ -8794,10 +8794,26 @@ def process_chat_request(body):
                 # 生产内容子 Agent：SDK 模式下模型已通过 production_delegate 工具拿到工具层结果，
                 # 直接呈现 reply；custom 模式由服务端真实调用工具层（选能力、报价）。
                 elif AGENTS_SDK_ENABLED and semantic_decision.get("reply"):
-                    result, status = _process_semantic_reply(
-                        cid, user_message, semantic_decision,
-                        body.get("expected_revision"), request_id,
-                    )
+                    # 纠偏：SDK 模式下模型可能嘴上说"去查/去生成"却没真正调 production_delegate 工具
+                    # （工具层零请求）。会话里没有工具层痕迹时，服务端真实委派，绝不让 Agent 只说不做。
+                    _tool_traces = False
+                    with CONVERSATION_STATE_LOCK:
+                        _c2 = owned_conversation(cid)
+                    if _c2 is not None and (
+                        _c2.get("production_tool_sid")
+                        or _c2.get("pending_production_delegate")
+                    ):
+                        _tool_traces = True
+                    if _tool_traces:
+                        result, status = _process_semantic_reply(
+                            cid, user_message, semantic_decision,
+                            body.get("expected_revision"), request_id,
+                        )
+                    else:
+                        result, status = _process_production_delegate_turn(
+                            cid, user_message, semantic_decision, memory_snapshot or {},
+                            body.get("expected_revision"), request_id,
+                        )
                     # SDK 模式：报价由工具层会话保存；有未确认报价时仅随回复附确认按钮。
                     # 创建/克隆入口常驻侧边栏，不在这里每轮重复出现。
                     if isinstance(result, dict) and status == 200:
