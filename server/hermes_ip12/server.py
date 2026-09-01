@@ -8066,7 +8066,12 @@ def _process_production_delegate_turn(cid, user_message, decision, memory,
     elif kind == "error":
         assistant = "生产子 Agent 出错了：" + str(tool_result.get("message") or "未知错误")[:200]
     else:
-        assistant = str(tool_result.get("text") or tool_result.get("assistant_content") or "已完成")[:2000]
+        assistant = str(tool_result.get("text") or tool_result.get("assistant_content") or "")[:2000]
+        if not assistant.strip():
+            assistant = (
+                "我刚和制作引擎沟通了一下，还需要你再补一点信息：你想用哪篇文案来做？"
+                "如果还没写文案，也可以直接告诉我主题，我先帮你写一版，再套模板出片。"
+            )
     with CONVERSATION_STATE_LOCK:
         convo = owned_conversation(cid)
         if convo is None:
