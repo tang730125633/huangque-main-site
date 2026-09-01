@@ -4320,6 +4320,16 @@ def api_ip12_production_submit():
     if kind == "digital_human":
         message = "用%s和%s生成%s的数字人口播视频" % (
             avatar or "已有形象", voice or "默认音色", script)
+    elif kind == "text_video":
+        extra = str(payload.get("extra") or "")
+        template = str(payload.get("template") or "")
+        style = str(payload.get("style") or "")
+        voice = str(payload.get("voice") or "")
+        mode = str(payload.get("mode") or "generate")
+        message = ("把文案《%s》做成视频：模板用%s，风格%s，音色%s，模式%s。"
+                   "%s" % (script, template or "默认", style or "默认", voice or "默认",
+                           "全自动成片" if mode == "generate" else "固定文案分镜",
+                           ("\n补充要求：" + extra) if extra else ""))
     elif kind == "image":
         message = "为%s生成一张配图" % script
     else:
@@ -4348,6 +4358,18 @@ def api_ip12_production_submit():
             }]
             result["actions"] = actions
     return jsonify(result), status
+
+
+@app.route("/api/ip12/text-video-options", methods=["GET"])
+def api_ip12_text_video_options():
+    """模板成片准备材料（代理工具层聚合端点）。"""
+    import requests as _rq
+    base = str(os.environ.get("HQ_TOOL_AGENT_BASE") or "http://127.0.0.1:8790").rstrip("/")
+    try:
+        resp = _rq.get(base + "/text-video-options", timeout=60)
+        return jsonify(resp.json()), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)[:120]}), 502
 
 
 @app.route("/api/ip12/asset-fetch", methods=["GET"])
