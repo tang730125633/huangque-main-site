@@ -757,6 +757,7 @@ function renderComponents(bubble,components){
   if(components.indexOf('production_guide')>=0)maybeRenderGuide(bubble);
   if(components.indexOf('video_player')>=0)maybeRenderVideo(bubble);
   if(components.indexOf('text_video_prep')>=0)renderTextVideoPrep(bubble);
+  if(components.indexOf('matrix_template_prep')>=0)renderMatrixTemplatePrep(bubble);
 }
 function renderChat(msgs){var a=document.getElementById('chatArea');if(!msgs||msgs.length===0){a.innerHTML=WELCOME_HTML;return}a.innerHTML=msgs.map(function(m){var productionId=String(m.production_id||''),messageId=String(m.message_id||''),choiceTarget=String(m.choice_target_id||'');return '<div class="msg '+(m.role==='user'?'user':'assistant')+'"'+(choiceTarget?' data-choice-target="'+eHtml(choiceTarget)+'"':'')+(productionId?' data-production-message="'+eHtml(productionId)+'"':'')+(messageId?' data-message-id="'+eHtml(messageId)+'"':'')+((m.meta&&m.meta.components)?' data-meta="'+eHtml(JSON.stringify(m.meta))+'"':'')+'><div class="av">'+moduleIcon(m.role==='user'?'user':'sparkles')+'</div><div class="bubble">'+md(m.content)+productionMessageHtml(m)+'</div></div>'}).join('');renderChoiceReceiptsInDom();var last=a.querySelector('.msg.assistant:last-of-type .bubble');attachHarnessActions(currentActions(),last);a.querySelectorAll('.msg.assistant').forEach(function(node){var b=node.querySelector('.bubble');if(!b)return;var mm=null;try{mm=JSON.parse(node.dataset.meta||'null')}catch(e){}if(mm){if(mm.video_url||mm.audio_url||mm.cover_url){b.dataset.media=JSON.stringify({video_url:mm.video_url||'',audio_url:mm.audio_url||'',cover_url:mm.cover_url||'',title:mm.title||''})}}renderComponents(b,mm&&mm.components)})}
 function appendProductionMessage(message){var messageId=String(message&&message.message_id||'');if(!messageId)return;var exists=Array.from(document.querySelectorAll('[data-message-id]')).some(function(node){return node.dataset.messageId===messageId});if(exists)return;var area=document.getElementById('chatArea'),node=document.createElement('div'),productionId=String(message.production_id||'');node.className='msg assistant';node.dataset.messageId=messageId;if(productionId)node.dataset.productionMessage=productionId;node.innerHTML='<div class="av">'+moduleIcon('sparkles')+'</div><div class="bubble">'+md(message.content)+productionMessageHtml(message)+'</div>';area.appendChild(node);scroll()}
@@ -813,6 +814,38 @@ function maybeRenderGuide(bubble){
     if(state0.kind==='digital_human'&&(!state0.avatar||!state0.voice)){toast('请先选择形象和音色');return}
     wrap.querySelector('#gGo').disabled=true;wrap.querySelector('#gGo').textContent='提交中…';
     fetch('/api/ip12/production-submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid,kind:state0.kind,avatar:state0.avatar,voice:state0.voice,script:state0.script})})
+      .then(function(r){return r.json()}).then(function(d){
+        var area=document.getElementById('chatArea'),msg=document.createElement('div');msg.className='msg assistant';msg.innerHTML='<div class="av">'+moduleIcon('sparkles')+'</div><div class="bubble">'+md(String(d.assistant||''))+'</div>';area.appendChild(msg);scroll();
+        attachHarnessActions(d.actions||[],msg.querySelector('.bubble'));
+      }).catch(function(e){toast('提交失败：'+(e.message||''))});
+  };
+}
+function renderMatrixTemplatePrep(bubble){
+  if(!bubble||bubble.dataset.mtDone)return;bubble.dataset.mtDone='1';
+  var state0={top_text:'',bottom_text:'',template_id:''};
+  var wrap=document.createElement('div');wrap.style.cssText='margin-top:8px;padding:10px;border:1px solid #2a2f3a;border-radius:10px;background:#14171c';
+  wrap.innerHTML='<div style="font-size:13px;font-weight:600;margin-bottom:8px">🪧 模板成片（字体和 BGM 自动搭配，5 点/条）</div>'+
+    '<div style="font-size:12px;color:#8b93a3;margin:6px 0 4px">✍️ 上标题（2–60 字）</div>'+
+    '<input id="mtTop" placeholder="例如：新手养猫避坑局" style="width:100%;padding:8px;background:var(--ib);border:1px solid var(--bd);color:var(--tx);border-radius:6px;font-size:12px">'+
+    '<div style="font-size:12px;color:#8b93a3;margin:8px 0 4px">✍️ 下文案（2–80 字）</div>'+
+    '<textarea id="mtBottom" rows="2" placeholder="例如：跟着苏芮养猫，少踩坑、不花冤枉钱" style="width:100%;padding:8px;background:var(--ib);border:1px solid var(--bd);color:var(--tx);border-radius:6px;font-size:12px;resize:vertical"></textarea>'+
+    '<div style="font-size:12px;color:#8b93a3;margin:8px 0 4px">🖼 模板（点选）</div>'+
+    '<div id="mtTemplates" style="display:flex;flex-direction:column;gap:6px;max-height:36vh;overflow-y:auto"></div>'+
+    '<button id="mtGo" class="ip-btn ip-primary" style="width:100%;margin-top:10px">开始生成</button>';
+  bubble.appendChild(wrap);scroll();
+  fetch('/api/ip12/matrix-template-options',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){
+    var tpl=(d&&d.templates)||[];
+    wrap.querySelector('#mtTemplates').innerHTML=tpl.slice(0,12).map(function(t){
+      return '<div class="mt-cell" data-id="'+eHtml(t.id)+'" data-name="'+eHtml(t.name)+'" style="cursor:pointer;padding:8px;border:1px solid #2a2f3a;border-radius:8px"><div style="font-size:12px;font-weight:600">'+eHtml(t.name)+'</div><div style="font-size:11px;color:#8b93a3;margin-top:2px">'+eHtml(t.description)+'</div></div>'
+    }).join('')||'<div style="color:var(--dim)">暂无模板</div>';
+    wrap.querySelectorAll('.mt-cell').forEach(function(cell){cell.onclick=function(){state0.template_id=cell.dataset.id;wrap.querySelectorAll('.mt-cell').forEach(function(x){x.style.borderColor='#2a2f3a'});cell.style.borderColor='#f5b942'}});
+  }).catch(function(){});
+  wrap.querySelector('#mtGo').onclick=function(){
+    var top=wrap.querySelector('#mtTop').value.trim(),bottom=wrap.querySelector('#mtBottom').value.trim();
+    if(!top||!bottom){toast('请先填写上标题和下文案');return}
+    if(!state0.template_id){toast('请先点选一个模板');return}
+    wrap.querySelector('#mtGo').disabled=true;wrap.querySelector('#mtGo').textContent='提交中…';
+    fetch('/api/ip12/production-submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid,kind:'matrix_template',top_text:top,bottom_text:bottom,template_id:state0.template_id})})
       .then(function(r){return r.json()}).then(function(d){
         var area=document.getElementById('chatArea'),msg=document.createElement('div');msg.className='msg assistant';msg.innerHTML='<div class="av">'+moduleIcon('sparkles')+'</div><div class="bubble">'+md(String(d.assistant||''))+'</div>';area.appendChild(msg);scroll();
         attachHarnessActions(d.actions||[],msg.querySelector('.bubble'));

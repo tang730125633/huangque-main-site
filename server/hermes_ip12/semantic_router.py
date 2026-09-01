@@ -130,7 +130,7 @@ DECISION_SCHEMA = {
         "components": {
             "type": "array", "maxItems": 4,
             "items": {"type": "string", "enum": [
-                "voice_audition", "avatar_cards", "production_guide", "video_player", "text_video_prep"
+                "voice_audition", "avatar_cards", "production_guide", "video_player", "text_video_prep", "matrix_template_prep"
             ]},
         },
         "payment_policy": {
@@ -284,7 +284,7 @@ def parse(value):
     if not isinstance(components, list):
         components = []
     result["components"] = [str(item) for item in components[:4] if item in {
-        "voice_audition", "avatar_cards", "production_guide", "video_player", "text_video_prep"}]
+        "voice_audition", "avatar_cards", "production_guide", "video_player", "text_video_prep", "matrix_template_prep"}]
     result["memory_evidence"] = [
         {key: str(item.get(key) or "")[:limit] for key, limit in (("source", 80), ("ref", 160), ("supports", 240))}
         for item in evidence[:8]

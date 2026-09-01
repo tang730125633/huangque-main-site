@@ -1224,8 +1224,16 @@ def _expanded_production_intent(message):
                 "capability_family": family, "recommended_action": action,
                 "candidate_actions": [action],
             }
-    # 能力名消歧：黄雀有「一键成片」（素材合成，旧）和「文案成片」（text-video，新）。
-    # 消息里带「文案」的成片请求走新能力；单独的「一键成片」才走素材合成。
+    # 能力名消歧：
+    # 「模板成片」→ matrix-template（上标题+下文案+视觉模板，5 点）；
+    # 带「文案」的成片 → text-video（文案成片）；
+    # 单独的「一键成片」→ video-compose（素材合成，旧）。
+    if re.search(r"模板成片|template", text) and not re.search(r"文案", text):
+        return {
+            "capability_family": "video",
+            "recommended_action": "matrix-template-generate",
+            "candidate_actions": ["matrix-template-generate"],
+        }
     if re.search(r"文案.{0,8}(?:成片|一键成片|做成视频)", text):
         return {
             "capability_family": "video",
@@ -4329,6 +4337,13 @@ def api_ip12_production_submit():
     if kind == "digital_human":
         message = "用%s和%s生成%s的数字人口播视频" % (
             avatar or "已有形象", voice or "默认音色", script)
+    elif kind == "matrix_template":
+        top_text = str(payload.get("top_text") or "").strip()
+        bottom_text = str(payload.get("bottom_text") or "").strip()
+        template_id = str(payload.get("template_id") or "")
+        message = ("请直接生成一条模板成片（不要再查模板列表）：\n"
+                   "上标题：%s\n下文案：%s\n模板 id：%s\n"
+                   "字体自动搭配。直接报价。" % (top_text, bottom_text, template_id or "默认"))
     elif kind == "text_video":
         template = str(payload.get("template") or "")
         mode = str(payload.get("mode") or "generate")
@@ -4393,6 +4408,18 @@ def api_ip12_text_video_options():
     base = str(os.environ.get("HQ_TOOL_AGENT_BASE") or "http://127.0.0.1:8790").rstrip("/")
     try:
         resp = _rq.get(base + "/text-video-options", timeout=60)
+        return jsonify(resp.json()), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)[:120]}), 502
+
+
+@app.route("/api/ip12/matrix-template-options", methods=["GET"])
+def api_ip12_matrix_template_options():
+    """模板成片准备材料（代理工具层）。"""
+    import requests as _rq
+    base = str(os.environ.get("HQ_TOOL_AGENT_BASE") or "http://127.0.0.1:8790").rstrip("/")
+    try:
+        resp = _rq.get(base + "/matrix-template-options", timeout=60)
         return jsonify(resp.json()), 200
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)[:120]}), 502
@@ -7195,6 +7222,12 @@ def _process_production_intent_turn(
         ),
     )
     result = _chat_result(assistant, next_state)
+    if selected_action == "matrix-template-generate":
+        result["components"] = ["matrix_template_prep"]
+        assistant = (
+            "可以用模板成片快速出片：你只需要给一句上标题和一句下文案，再从模板里挑一个；"
+            "字体和背景音乐我会自动搭配，每条只要 5 点。"
+        )
     if selected_action == "text-video-generate":
         # 文案成片：给准备卡组件（文案+模板点选），客户不接触风格/音色/BGM
         result["components"] = ["text_video_prep"]
