@@ -6587,7 +6587,7 @@ def _process_model_turn(
         snapshot = _model_snapshot_without_user(convo, message_id)
         prepare_module_six = (
             state.get("current_module") == 6
-            and state.get("module_step") == 1
+            and state.get("module_step") in {1, 2}
             and (
                 coach_harness.is_continue_message(user_message)
                 or coach_harness.is_content_review_message(user_message)
