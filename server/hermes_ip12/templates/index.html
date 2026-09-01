@@ -723,6 +723,28 @@ function appendEditingChoiceContext(bubble,pending){
   details.appendChild(body);bubble.appendChild(details)
 }
 function attachHarnessActions(actions,bubble){
+function renderModelPicker(bubble,models){
+  var box=document.createElement('div');box.className='model-picker';box.style.cssText='margin-top:6px;display:flex;flex-wrap:wrap;gap:6px';
+  var head=document.createElement('div');head.style.cssText='width:100%;font-size:11px;color:var(--dim);margin-top:4px';head.textContent='🎨 画质/模型：';
+  box.appendChild(head);
+  models.forEach(function(m){
+    var b=document.createElement('button');b.type='button';b.className='model-btn';b.style.cssText='border:1px solid rgba(148,164,187,.25);border-radius:8px;background:rgba(148,164,187,.06);color:#c9d4e2;padding:5px 9px;font-size:12px;cursor:pointer';
+    b.innerHTML=eHtml(m.label||m.value)+' <span style="color:var(--dim);font-size:10px">'+(m.cost!=null?eHtml(String(m.cost))+'点':'')+'</span>';
+    b.addEventListener('click',function(){switchProductionModel(m.value,b)});
+    box.appendChild(b);
+  });
+  bubble.appendChild(box);
+}
+async function switchProductionModel(model,button){
+  if(!cid)return;var btns=document.querySelectorAll('.model-btn');btns.forEach(function(x){x.disabled=true;x.style.opacity=.5});
+  try{
+    var r=await fetch('/api/ip12/production-delegate/model',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid,model:model})});
+    var d={};try{d=await r.json()}catch(e){}
+    if(!r.ok||!d.ok)throw new Error(d.error||'切换失败');
+    toast('已切换画质，费用 '+(d.cost!=null?d.cost+' 点':'已更新'));
+  }catch(e){toast(e.message||'切换失败，请重试')}
+  finally{btns.forEach(function(x){x.disabled=false;x.style.opacity=1})}
+}
 function renderChannelPicker(bubble,channels){
   var box=document.createElement('div');box.className='channel-picker';box.style.cssText='margin-top:8px;display:flex;flex-wrap:wrap;gap:6px';
   channels.forEach(function(c){
@@ -747,6 +769,8 @@ async function switchProductionChannel(channel,button){
 
   var channelActions=(actions||[]).filter(function(a){return a.type==='delegate_channel'});
   if(channelActions.length){renderChannelPicker(bubble,channelActions)}
+  var modelActions=(actions||[]).filter(function(a){return a.type==='delegate_model'});
+  if(modelActions.length){renderModelPicker(bubble,modelActions)}
   document.querySelectorAll('#chatArea .harness-actions').forEach(function(row){row.remove()});
   if(!actions||!actions.length){var pending=state.pending;if(pending&&pending.status==='editing'&&pending.choices)appendEditingChoiceContext(choiceBubble(pending.id)||bubble,pending);return}
   var choices=choiceActionItems(actions),target=choices.length&&choices[0].target_id,actionBubble=target?choiceBubble(target):bubble;if(!actionBubble)return;

@@ -4225,6 +4225,54 @@ def api_ip12_production_delegate_channel():
     return jsonify({"ok": False, "error": str((result or {}).get("message") or "重新报价失败")[:200]}), 409
 
 
+@app.route("/api/ip12/production-delegate/model", methods=["POST"])
+def api_ip12_production_delegate_model():
+    """报价卡切换模型/画质：让工具层用同一会话重新报价。"""
+    import requests as _requests
+    payload = request.get_json(silent=True) or {}
+    cid = str(payload.get("conversation_id") or "").strip()
+    model = str(payload.get("model") or "").strip()
+    if not model or not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", model):
+        return jsonify({"ok": False, "error": "模型无效"}), 400
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        if convo is None:
+            return jsonify({"ok": False, "error": "诊断不存在"}), 404
+        pending = convo.get("pending_production_delegate")
+        if not isinstance(pending, dict):
+            return jsonify({"ok": False, "error": "没有待确认的报价，请重新发起制作"}), 409
+        tool_sid = str(pending.get("tool_sid") or "")
+        if not tool_sid:
+            return jsonify({"ok": False, "error": "报价会话已失效，请重新发起"}), 409
+    base = str(os.environ.get("HQ_TOOL_AGENT_BASE") or "http://127.0.0.1:8790").rstrip("/")
+    _client_token = _ensure_client_hq_token(current_account_id())
+    _body = {"message": "画质/模型换成 %s，请用同样的内容重新报价。" % model,
+             "session_id": tool_sid}
+    if _client_token:
+        _body["hq_token"] = _client_token
+    try:
+        response = _requests.post(base + "/agent", json=_body, timeout=180)
+        result = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+    except Exception as exc:
+        return jsonify({"ok": False, "error": "生产子 Agent 暂时不可用：" + str(exc)[:120]}), 502
+    if result.get("type") == "quote":
+        with CONVERSATION_STATE_LOCK:
+            convo2 = owned_conversation(cid)
+            if convo2 is not None:
+                _p = dict(convo2.get("pending_production_delegate") or {})
+                _p.update(
+                    quote_token=str(result.get("quote_token") or ""),
+                    cost=result.get("cost"),
+                    models=result.get("models") or _p.get("models") or [],
+                )
+                convo2["pending_production_delegate"] = _p
+                save_conversation(cid, convo2)
+        return jsonify({"ok": True, "explanation": result.get("explanation") or "已重新报价",
+                        "cost": result.get("cost"), "points": result.get("points"),
+                        "models": result.get("models") or []})
+    return jsonify({"ok": False, "error": str((result or {}).get("message") or "重新报价失败")[:200]}), 409
+
+
 @app.route("/api/ip12/production-delegate/confirm", methods=["POST"])
 def api_ip12_production_delegate_confirm():
     """确认执行委派的生产任务：用保存的会话继续（工具层两段式），返回任务号。"""
@@ -8430,6 +8478,7 @@ def _process_production_delegate_turn(cid, user_message, decision, memory,
                     "quote_token": str(tool_result.get("quote_token") or ""),
                     "cost": tool_result.get("cost"),
                     "channels": tool_result.get("channels") or [],
+                    "models": tool_result.get("models") or [],
                     "provider": tool_result.get("provider") or "",
                 }
                 save_conversation(cid, convo_q)
@@ -8496,6 +8545,16 @@ def _process_production_delegate_turn(cid, user_message, decision, memory,
                      "cost": c.get("cost"), "note": str(c.get("note") or ""),
                      "primary": False}
                     for c in _channels if isinstance(c, dict)
+                ]
+            # 当前渠道的模型/画质按钮组
+            _models = _pc["pending_production_delegate"].get("models") or []
+            if _models:
+                result["actions"] += [
+                    {"type": "delegate_model", "value": str(m.get("value") or ""),
+                     "label": str(m.get("label") or m.get("value") or ""),
+                     "cost": m.get("cost"), "note": str(m.get("note") or ""),
+                     "primary": False}
+                    for m in _models if isinstance(m, dict)
                 ]
             result["actions"] += [
                 {"type": "open_avatar_create", "label": "👤 创建数字人形象（上传照片/拍照）", "primary": False},
