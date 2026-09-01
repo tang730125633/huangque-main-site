@@ -4219,7 +4219,7 @@ def api_ip12_production_delegate_confirm():
     job_id = inner.get("job_id") if isinstance(inner, dict) else None
     if job_id:
         threading.Thread(
-            target=_finalize_production_result, args=(cid, str(job_id)), daemon=True,
+            target=_finalize_production_result, args=(cid, str(job_id), _client_token), daemon=True,
         ).start()
     return jsonify({"ok": True, "job_id": job_id, "result": result})
 
@@ -4234,7 +4234,7 @@ _PRODUCTION_PHASE_NOTES = {
 }
 
 
-def _finalize_production_result(cid, job_id):
+def _finalize_production_result(cid, job_id, client_token=""):
     """任务追踪：状态每变化一次，主 Agent 在会话里自然汇报一句进度；
     完成后把结果（视频/音频）作为 assistant 消息持久化，刷新页面不丢。"""
     import requests as _requests
@@ -4244,7 +4244,10 @@ def _finalize_production_result(cid, job_id):
     while time.time() < deadline:
         time.sleep(6)
         try:
-            r = _requests.get(base + "/task/" + str(job_id), timeout=30)
+            _task_url = base + "/task/" + str(job_id)
+            if client_token:
+                _task_url += ("&" if "?" in _task_url else "?") + "hq_token=" + urllib.parse.quote(client_token)
+            r = _requests.get(_task_url, timeout=30)
             d = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
         except Exception:
             continue
@@ -8276,7 +8279,7 @@ def _process_production_delegate_turn(cid, user_message, decision, memory,
         _running_job = tool_result.get("job_id")
         if _running_job:
             threading.Thread(
-                target=_finalize_production_result, args=(cid, str(_running_job)), daemon=True,
+                target=_finalize_production_result, args=(cid, str(_running_job), _client_token), daemon=True,
             ).start()
     elif kind == "error":
         _err_msg = str(tool_result.get("message") or "")
