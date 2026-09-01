@@ -459,6 +459,7 @@ function openPath(path){window.location.href=path}
 
 async function openCapabilityGates(){
   if(cid){try{var response=await fetch('/api/conversations/'+encodeURIComponent(cid));if(response.ok){var current=await response.json();capabilityGates=current.capability_gates||capabilityGates}}catch(ignore){}}
+  if(cid){try{var hqResp=await fetch('/api/ip12/hq-token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account_id:''})});if(!hqResp.ok){toast('黄雀账号授权状态异常，生成类操作可能无法执行；请重新登录黄雀后再试。')}}catch(ignore){}}
   openPanel('能力解锁');
   var html='<div class="rpn-card"><div class="rpn-card-header">当前 Project 能做什么</div><p style="color:var(--dim);font-size:11px">能力门禁会根据已确认状态解锁；生成、扣点和写入仍需再次确认。</p></div><div class="gate-list">';
   (capabilityGates||[]).forEach(function(gate){var unlocked=gate.status==='unlocked';html+='<div class="gate-card"><div class="gate-head"><span class="gate-name">'+eHtml(gate.name)+'</span><span class="gate-status '+(unlocked?'unlocked':'locked')+'">'+(unlocked?'已解锁':'未解锁')+'</span></div><div class="gate-next">'+eHtml(gate.next_step||'')+'</div><div class="gate-rule">'+eHtml(gate.confirmation||'')+' · '+eHtml(gate.writeback||'')+'</div></div>'});

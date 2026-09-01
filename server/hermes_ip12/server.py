@@ -8298,7 +8298,14 @@ def _process_production_delegate_turn(cid, user_message, decision, memory,
                 target=_finalize_production_result, args=(cid, str(_running_job)), daemon=True,
             ).start()
     elif kind == "error":
-        assistant = "生产子 Agent 出错了：" + str(tool_result.get("message") or "未知错误")[:200]
+        _err_msg = str(tool_result.get("message") or "")
+        if "未登录" in _err_msg or "授权已过期" in _err_msg or "login" in _err_msg.lower():
+            assistant = (
+                "你的黄雀登录授权已过期，暂时无法执行生成。请刷新页面重新登录黄雀后再试；"
+                "已确认的对话内容不会丢。"
+            )
+        else:
+            assistant = "生产子 Agent 出错了：" + _err_msg[:200]
     else:
         assistant = str(tool_result.get("text") or tool_result.get("assistant_content") or "")[:2000]
         if not assistant.strip():
