@@ -1018,6 +1018,13 @@ def _video_job_phase_for_public(job_id, kind):
     return _domains()[2].get_video_job_phase(job_id)
 
 
+def _matrix_template_lifecycle_for_public(row):
+    if row["kind"] != "matrix_template_video":
+        return {}
+    from . import matrix_template_video as matrix_template_domain
+    return matrix_template_domain.public_lifecycle(row)
+
+
 def _idempotency_begin(username, endpoint, key, body): return submission_idempotency.begin(jdb, username, endpoint, key, body)
 def _idempotency_complete(username, endpoint, key, response): submission_idempotency.complete(jdb, username, endpoint, key, response)
 def _idempotency_abort(username, endpoint, key): submission_idempotency.abort(jdb, username, endpoint, key)
@@ -1886,6 +1893,10 @@ def reaper():
         except Exception:
             pass
         try:
+            _expire_matrix_template_jobs()
+        except Exception:
+            pass
+        try:
             _domains()[2].retry_pending_seedance_cleanups(points_domain=_domains()[1]); now = int(time.time()); cutoff = now - 360
             with closing(jdb()) as c:
                 stuck = c.execute("SELECT id, username, cost, kind, payload, updated_at FROM jobs WHERE status='running' AND updated_at < ?", (cutoff,)).fetchall()
@@ -1926,6 +1937,32 @@ def reaper():
         except Exception:
             pass
         time.sleep(60)
+
+
+def _expire_matrix_template_jobs(now=None):
+    """Give every paid matrix job a wall-clock terminal bound, queue unchanged."""
+    from . import matrix_template_video as matrix_template_domain
+    now = int(time.time() if now is None else now)
+    cutoff = now - int(matrix_template_domain.TOTAL_TIMEOUT)
+    with closing(jdb()) as connection:
+        rows = connection.execute(
+            "SELECT id,username,cost FROM jobs WHERE kind=? "
+            "AND status IN ('pending','running') AND created_at<=? "
+            "AND COALESCE(owner,?)=? ORDER BY id",
+            ("matrix_template_video", cutoff, SERVICE_OWNER, SERVICE_OWNER),
+        ).fetchall()
+    expired = 0
+    for row in rows:
+        if _fail_job_and_schedule_refund(
+            row["id"], "模板成片超过总时限，退款处理中，请重新提交",
+            from_states=("pending", "running"), username=row["username"],
+            cost=row["cost"], kind="matrix_template_video",
+        ):
+            expired += 1
+            _mark_video_asset_failed(
+                row["id"], "matrix_template_video", "模板成片超过总时限"
+            )
+    return expired
 
 def _requeue_running_job(job_id):
     return startup_recovery.requeue_running_job(jdb, job_id)
@@ -4433,6 +4470,8 @@ class H(BaseHTTPRequestHandler):
                 except Exception:
                     pass
             d = _job_public_dict(r, phase)
+            if r["kind"] == "matrix_template_video":
+                d.update(_matrix_template_lifecycle_for_public(r))
             if r["kind"] in {"short_drama_preview", "short_drama_final"}:
                 with closing(jdb()) as c:
                     linked = c.execute(

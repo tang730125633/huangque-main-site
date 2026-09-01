@@ -315,6 +315,42 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         self.assertEqual(5, core.MATRIX_JOB_WORKERS)
         self.assertGreaterEqual(core.MAX_USER_ACTIVE_JOBS, 5)
 
+    def test_absolute_expiry_covers_pending_and_running_without_queue_change(self):
+        from content_domains import core
+
+        rows = [
+            {"id": 1, "username": "alice", "cost": 5},
+            {"id": 2, "username": "bob", "cost": 5},
+        ]
+
+        class Connection:
+            def execute(self, sql, params):
+                self.sql = sql
+                self.params = params
+                return self
+
+            def fetchall(self):
+                return rows
+
+            def close(self):
+                return None
+
+        connection = Connection()
+        with mock.patch.object(core, "jdb", return_value=connection), \
+             mock.patch.object(
+                 core, "_fail_job_and_schedule_refund",
+                 side_effect=[True, False],
+             ) as fail, mock.patch.object(
+                 core, "_mark_video_asset_failed",
+             ) as mark, mock.patch.object(self.module, "TOTAL_TIMEOUT", 1200):
+            expired = core._expire_matrix_template_jobs(now=5000)
+        self.assertEqual(1, expired)
+        self.assertIn("status IN ('pending','running')", connection.sql)
+        self.assertEqual(3800, connection.params[1])
+        self.assertEqual(("pending", "running"), fail.call_args_list[0].kwargs["from_states"])
+        self.assertEqual("matrix_template_video", fail.call_args_list[0].kwargs["kind"])
+        mark.assert_called_once_with(1, "matrix_template_video", "模板成片超过总时限")
+
     def test_validate_payload_is_library_only_and_catalog_bound(self):
         with mock.patch.object(self.module, "require_available"), \
              mock.patch.object(self.module, "public_templates", return_value=self.templates()), \
@@ -600,11 +636,72 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         self.assertEqual("/api/gen/file/token", result["video_url"])
         self.assertEqual("a" * 32, result["provider_task_id"])
         self.assertEqual("matrix-template-77", request.call_args_list[0].kwargs["request_id"])
-        download.assert_called_once_with("/v1/files/%s.mp4" % ("a" * 32), "77")
+        self.assertEqual(
+            ("/v1/files/%s.mp4" % ("a" * 32), "77"),
+            download.call_args.args,
+        )
+        self.assertLessEqual(download.call_args.kwargs["timeout"], 240)
         self.assertEqual("matrix_template", result["mode"])
         self.assertEqual(("done", "1080p", "9:16"), (
             result["phase"], result["resolution"], result["ratio"]
         ))
+
+    def test_generate_uses_submission_time_as_absolute_deadline(self):
+        with mock.patch.object(
+            self.module, "_runtime",
+            return_value={"created_at": 100, "payload": {}},
+        ), mock.patch.object(self.module.time, "time", return_value=1400), \
+             mock.patch.object(self.module, "validate_payload") as validate, \
+             mock.patch.object(self.module, "_request") as request, \
+             self.assertRaisesRegex(RuntimeError, "等待超时"):
+            self.module.generate({"_job_id": 88, "_username": "alice"})
+        validate.assert_not_called()
+        request.assert_not_called()
+
+    def test_generate_persists_provider_identity_and_progress(self):
+        responses = [
+            {"job_id": "b" * 32},
+            {"status": "running"},
+            {"status": "failed", "error": "renderer failed"},
+        ]
+        with mock.patch.object(
+            self.module, "_runtime",
+            return_value={"created_at": int(self.module.time.time()), "payload": {}},
+        ), mock.patch.object(self.module, "validate_payload", return_value={
+            "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
+            "template_id": "full-overlay-bold", "bgm": True, "duration": 8,
+        }), mock.patch.object(
+            self.module, "_request", side_effect=responses,
+        ), mock.patch.object(
+            self.module, "_persist_runtime", return_value=True,
+        ) as persist, mock.patch.object(self.module.time, "sleep"), \
+             self.assertRaisesRegex(RuntimeError, "renderer failed"):
+            self.module.generate({"_job_id": 89, "_username": "alice"})
+        provider = next(
+            call for call in persist.call_args_list
+            if call.kwargs.get("provider_job_id")
+        )
+        self.assertEqual("b" * 32, provider.kwargs["provider_job_id"])
+        self.assertEqual("provider_queued", provider.kwargs["phase"])
+        self.assertTrue(any(
+            call.kwargs.get("phase") == "rendering"
+            for call in persist.call_args_list
+        ))
+
+    def test_public_lifecycle_uses_server_time_and_hides_provider_id(self):
+        row = {
+            "status": "running", "created_at": 100,
+            "payload": json.dumps({"_matrix_runtime": {
+                "phase": "rendering", "provider_job_id": "secret-provider-id",
+                "last_progress_at": 180,
+            }}),
+        }
+        value = self.module.public_lifecycle(row, now=250)
+        self.assertEqual("rendering", value["phase"])
+        self.assertEqual(150, value["elapsed_seconds"])
+        self.assertEqual(100 + self.module.TOTAL_TIMEOUT, value["deadline_at"])
+        self.assertTrue(value["provider_submitted"])
+        self.assertNotIn("provider_job_id", value)
 
     def test_completed_result_archives_in_real_video_assets_schema(self):
         from content_domains import core, video
