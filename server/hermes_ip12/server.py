@@ -8072,6 +8072,11 @@ def _process_production_delegate_turn(cid, user_message, decision, memory,
         assistant = tool_result.get("explanation") or "已生成报价"
     elif kind == "running":
         assistant = str(tool_result.get("assistant_content") or "任务已提交，正在执行。")
+        _running_job = tool_result.get("job_id")
+        if _running_job:
+            threading.Thread(
+                target=_finalize_production_result, args=(cid, str(_running_job)), daemon=True,
+            ).start()
     elif kind == "error":
         assistant = "生产子 Agent 出错了：" + str(tool_result.get("message") or "未知错误")[:200]
     else:
