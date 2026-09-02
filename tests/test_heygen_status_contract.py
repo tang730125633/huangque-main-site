@@ -139,6 +139,18 @@ class HeyGenStatusPollingTests(unittest.TestCase):
             with self.assertRaisesRegex(TypeError, "bug"):
                 video._heygen_poll_video("provider-task-id", direct=True, deadline_s=60)
 
+    def test_sustained_network_failure_is_not_mislabeled_as_status_contract_error(self):
+        with mock.patch.object(video.time, "time", side_effect=[0, 0, 2]), \
+             mock.patch.object(video.time, "sleep"), \
+             mock.patch.object(
+                 video, "_heygen_request_json",
+                 side_effect=video.HeyGenNetworkError("temporary network failure"),
+             ), \
+             mock.patch.object(video, "_heygen_video_status_v1") as crosscheck:
+            with self.assertRaisesRegex(video.HeyGenNetworkError, "网络持续失败"):
+                video._heygen_poll_video("provider-task-id", direct=True, deadline_s=1)
+        crosscheck.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

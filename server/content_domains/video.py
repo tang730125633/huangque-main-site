@@ -4562,6 +4562,7 @@ def _heygen_poll_video(video_id, direct=False, deadline_s=None, mcp=False):
     deadline = time.time() + (deadline_s or HEYGEN_TIMEOUT)
     last_status = ""
     net_fails = 0
+    consecutive_net_fails = 0
     unknown_count = 0
     crosschecked = False
     saw_recognized_status = False
@@ -4584,10 +4585,12 @@ def _heygen_poll_video(video_id, direct=False, deadline_s=None, mcp=False):
             # 轮询是幂等 GET、不计费——隧道瞬时抖动不该判死任务、白烧提交费(#605)。
             # 等下一轮重试；deadline 仍是总上限，不会无限转。provider 明确 failed 才判失败(见下)。
             net_fails += 1
+            consecutive_net_fails += 1
             print("[heygen] poll video_id=%s 网络抖动(%d)，%ds 后重试: %s"
                   % (video_id, net_fails, HEYGEN_POLL_INTERVAL, str(e)[:120]), flush=True)
             time.sleep(HEYGEN_POLL_INTERVAL)
             continue
+        consecutive_net_fails = 0
         info, status, recognized = _heygen_video_info(payload)
         if recognized:
             saw_recognized_status = True
@@ -4632,6 +4635,8 @@ def _heygen_poll_video(video_id, direct=False, deadline_s=None, mcp=False):
                 provider_error = "内容审核未通过，请更换人物图片、参考视频或提示词"
             raise RuntimeError("HeyGen视频生成失败: %s" % (provider_error[:160] or "上游未返回失败原因"))
         time.sleep(HEYGEN_POLL_INTERVAL)
+    if consecutive_net_fails:
+        raise HeyGenNetworkError("HeyGen状态查询网络持续失败，已保留原video_id，禁止重复提交")
     if not saw_recognized_status or unknown_count >= HEYGEN_STATUS_CROSSCHECK_AFTER:
         raise HeyGenStatusUnknownError(
             "HeyGen任务状态不可识别，已保留原video_id等待对账，禁止重复提交"
