@@ -2,9 +2,10 @@
 """#187 P0·资金：job 状态机 CAS + 退点幂等 并发正确性单测。
 断言：无论 reaper 超时 / worker 成功 / worker 异常如何交错，点数最多退一次，
 且 error 终态不会被后到的 done 覆盖（不会既出片又退点）。"""
-import importlib, os, sys, time, unittest
+import importlib, json, os, sys, time, unittest
 from contextlib import closing
 from pathlib import Path
+from unittest import mock
 
 
 class JobRefundCasTests(unittest.TestCase):
@@ -41,13 +42,13 @@ class JobRefundCasTests(unittest.TestCase):
         self.core._domains = self._orig_domains
         self.tmp.cleanup()
 
-    def _insert(self, cost=20, kind="video"):
+    def _insert(self, cost=20, kind="video", payload=None):
         now = int(time.time())
         with closing(self.core.jdb()) as c:
             cur = c.execute(
-                "INSERT INTO jobs(kind,username,cost,status,created_at,updated_at) "
-                "VALUES(?,?,?,'running',?,?)",
-                (kind, "u", cost, now, now),
+                "INSERT INTO jobs(kind,username,cost,status,payload,created_at,updated_at) "
+                "VALUES(?,?,?,'running',?,?,?)",
+                (kind, "u", cost, json.dumps(payload or {}), now, now),
             )
             c.commit()
             return cur.lastrowid
@@ -265,6 +266,191 @@ class JobRefundCasTests(unittest.TestCase):
         self.assertEqual(self._row(jid)["status"], "pending")
         self.assertEqual(self._row(jid)["refunded"], 0)
         self.assertEqual(self.refunds, [])
+
+    def test_reclaim_requeues_matrix_job_with_persisted_provider_id(self):
+        jid = self._insert(5, kind="matrix_template_video", payload={
+            "template_id": "native-bold",
+            "_matrix_runtime": {
+                "phase": "provider_queued", "provider_job_id": "d" * 32,
+            },
+        })
+        self.assertEqual(self.core.reclaim_orphaned_running(), 1)
+        self.assertEqual(self._row(jid)["status"], "pending")
+        self.assertEqual(self._row(jid)["refunded"], 0)
+        self.assertEqual(self.refunds, [])
+
+    def test_reclaim_keeps_unknown_matrix_submission_running(self):
+        jid = self._insert(5, kind="matrix_template_video", payload={
+            "template_id": "native-bold",
+            "_matrix_runtime": {"phase": "submitting"},
+        })
+        self.assertEqual(self.core.reclaim_orphaned_running(), 0)
+        self.assertEqual(self._row(jid)["status"], "running")
+        self.assertEqual(self._row(jid)["refunded"], 0)
+        self.assertEqual(self.refunds, [])
+
+    def test_reclaim_requeues_matrix_job_before_provider_submission(self):
+        jid = self._insert(5, kind="matrix_template_video", payload={
+            "template_id": "native-bold",
+        })
+        self.assertEqual(self.core.reclaim_orphaned_running(), 1)
+        self.assertEqual(self._row(jid)["status"], "pending")
+        self.assertEqual(self._row(jid)["refunded"], 0)
+        self.assertEqual(self.refunds, [])
+
+    def test_matrix_worker_preserves_unknown_submission_without_refund(self):
+        now = int(time.time())
+        payload = {
+            "template_id": "native-bold",
+            "_matrix_runtime": {"phase": "submitting"},
+        }
+        with closing(self.core.jdb()) as connection:
+            cursor = connection.execute(
+                "INSERT INTO jobs(kind,username,cost,status,payload,created_at,updated_at) "
+                "VALUES('matrix_template_video','u',5,'pending',?,?,?)",
+                (json.dumps(payload), now, now),
+            )
+            connection.commit()
+            job_id = cursor.lastrowid
+
+        def response_lost(_payload):
+            raise ConnectionError("provider response lost")
+
+        with mock.patch.dict(
+            self.core.HANDLERS,
+            {"matrix_template_video": response_lost},
+        ), mock.patch.object(
+            self.core, "_start_job_heartbeat", return_value=lambda: None,
+        ):
+            self.core.run_job(job_id)
+
+        self.assertEqual("running", self._row(job_id)["status"])
+        self.assertEqual([], self.refunds)
+        with closing(self.core.jdb()) as connection:
+            stored = json.loads(connection.execute(
+                "SELECT payload FROM jobs WHERE id=?", (job_id,),
+            ).fetchone()["payload"])
+        self.assertEqual(
+            "submission_unknown",
+            stored["_matrix_runtime"]["phase"],
+        )
+
+    def test_matrix_worker_requeues_known_provider_without_refund(self):
+        now = int(time.time())
+        payload = {
+            "template_id": "native-bold",
+            "_matrix_runtime": {
+                "phase": "rendering", "provider_job_id": "e" * 32,
+            },
+        }
+        with closing(self.core.jdb()) as connection:
+            cursor = connection.execute(
+                "INSERT INTO jobs(kind,username,cost,status,payload,created_at,updated_at) "
+                "VALUES('matrix_template_video','u',5,'pending',?,?,?)",
+                (json.dumps(payload), now, now),
+            )
+            connection.commit()
+            job_id = cursor.lastrowid
+
+        with mock.patch.dict(
+            self.core.HANDLERS,
+            {"matrix_template_video": mock.Mock(
+                side_effect=ConnectionError("temporary GET failure")
+            )},
+        ), mock.patch.object(
+            self.core, "_start_job_heartbeat", return_value=lambda: None,
+        ):
+            self.core.run_job(job_id)
+
+        self.assertEqual("pending", self._row(job_id)["status"])
+        self.assertEqual([], self.refunds)
+
+    def test_matrix_worker_refunds_only_authoritative_provider_failure(self):
+        from content_domains import matrix_template_video
+
+        now = int(time.time())
+        payload = {
+            "template_id": "native-bold",
+            "_matrix_runtime": {
+                "phase": "rendering", "provider_job_id": "f" * 32,
+            },
+        }
+        with closing(self.core.jdb()) as connection:
+            cursor = connection.execute(
+                "INSERT INTO jobs(kind,username,cost,status,payload,created_at,updated_at) "
+                "VALUES('matrix_template_video','u',5,'pending',?,?,?)",
+                (json.dumps(payload), now, now),
+            )
+            connection.commit()
+            job_id = cursor.lastrowid
+
+        with mock.patch.dict(
+            self.core.HANDLERS,
+            {"matrix_template_video": mock.Mock(
+                side_effect=matrix_template_video.MatrixTemplateProviderFailed(
+                    "renderer failed"
+                )
+            )},
+        ), mock.patch.object(
+            self.core, "_start_job_heartbeat", return_value=lambda: None,
+        ):
+            self.core.run_job(job_id)
+
+        self.assertEqual("error", self._row(job_id)["status"])
+        self.assertEqual(1, self._row(job_id)["refunded"])
+        self.assertEqual(1, len(self.refunds))
+
+    def test_matrix_generic_reaper_waits_past_configured_total_timeout(self):
+        from content_domains import matrix_template_video
+
+        now = int(time.time())
+        job_id = self._insert(5, kind="matrix_template_video", payload={
+            "template_id": "native-bold",
+            "_matrix_runtime": {"phase": "submission_unknown"},
+        })
+        with closing(self.core.jdb()) as connection:
+            connection.execute(
+                "UPDATE jobs SET created_at=?,updated_at=? WHERE id=?",
+                (now - 1600, now - 1600, job_id),
+            )
+            connection.commit()
+
+        points_domain = self.core._domains()[1]
+
+        class FakeVideo:
+            @staticmethod
+            def retry_pending_seedance_cleanups(**_kwargs):
+                return None
+
+        with mock.patch.object(
+            matrix_template_video, "TOTAL_TIMEOUT", 1800,
+        ), mock.patch.object(
+            self.core, "_domains",
+            return_value=(None, points_domain, FakeVideo),
+        ), mock.patch.object(
+            self.core.pixelle_talking_assets, "cleanup_expired",
+        ), mock.patch.object(
+            self.core.time, "time", return_value=now,
+        ), mock.patch.object(
+            self.core.time, "sleep", side_effect=StopIteration,
+        ):
+            self.assertEqual(
+                2100,
+                self.core._kind_reaper_grace("matrix_template_video"),
+            )
+            with self.assertRaises(StopIteration):
+                self.core.reaper()
+
+        self.assertEqual("running", self._row(job_id)["status"])
+        self.assertEqual([], self.refunds)
+        with mock.patch.object(
+            matrix_template_video, "TOTAL_TIMEOUT", 1800,
+        ):
+            self.assertEqual(
+                1, self.core._expire_matrix_template_jobs(now=now + 201)
+            )
+        self.assertEqual("error", self._row(job_id)["status"])
+        self.assertEqual(1, len(self.refunds))
 
     def test_reclaim_keeps_unknown_official_submission_running(self):
         jid = self._insert(90, kind="xiaole_video")

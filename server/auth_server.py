@@ -4692,16 +4692,20 @@ class H(BaseHTTPRequestHandler):
             c.execute("DELETE FROM tokens WHERE token=?", (token,))
             c.commit(); c.close()
 
-    def _account_media_upload(self, kind, row, director_breakdown=False):
+    def _account_media_upload(self, kind, row, director_breakdown=False,
+                              digital_human_kind=""):
         label = {"image": "图片", "video": "视频", "audio": "音频"}[kind]
         max_bytes = ({
             "image": hq_cli_api.DIRECTOR_BREAKDOWN_IMAGE_MAX_BYTES,
             "video": hq_cli_api.DIRECTOR_BREAKDOWN_VIDEO_MAX_BYTES,
-        } if director_breakdown else {
+        } if director_breakdown else ({
+            "image": 10 * 1024 * 1024,
+            "audio": 30 * 1024 * 1024,
+        } if digital_human_kind else {
             "image": hq_cli_api.IMAGE_UPLOAD_MAX_BYTES,
             "video": hq_cli_api.VIDEO_UPLOAD_MAX_BYTES,
             "audio": hq_cli_api.AUDIO_UPLOAD_MAX_BYTES,
-        })[kind]
+        }))[kind]
         content_types = {
             "image": {"image/jpeg", "image/png", "image/webp"},
             "video": {"video/mp4", "video/quicktime", "video/webm"},
@@ -4714,6 +4718,10 @@ class H(BaseHTTPRequestHandler):
         }[kind])
         proxy = {"image": hq_cli_api.proxy_image_upload, "video": hq_cli_api.proxy_video_upload,
                  "audio": hq_cli_api.proxy_audio_upload}[kind]
+        if digital_human_kind == "material":
+            proxy = hq_cli_api.proxy_digital_human_material_upload
+        elif digital_human_kind == "audio":
+            proxy = hq_cli_api.proxy_digital_human_audio_upload
         invalid_code = "invalid_%s_upload" % kind
         if (self.headers.get("X-HQ-Confirm") or "").strip().lower() != "true":
             return self._cli_send(409, {"detail": "上传本地%s需要显式确认" % label, "code": "confirmation_required"})
@@ -4784,6 +4792,11 @@ class H(BaseHTTPRequestHandler):
                     self.rfile, length, token, INTERNAL_TOKEN, content_type, digest,
                     kind, filename, idempotency_key, expected_cost,
                 )
+            elif digital_human_kind == "audio":
+                status, result = proxy(
+                    self.rfile, length, token, INTERNAL_TOKEN, content_type,
+                    digest, self.headers.get("X-HQ-Run-ID"),
+                )
             else:
                 status, result = proxy(
                     self.rfile, length, token, INTERNAL_TOKEN, content_type, digest,
@@ -4817,6 +4830,21 @@ class H(BaseHTTPRequestHandler):
         if "director:generate" not in scopes:
             return self._cli_send(403, {"detail": "当前 CLI 授权缺少权限：director:generate", "code": "insufficient_scope"})
         return self._account_media_upload(kind, row, director_breakdown=True)
+
+    def _cli_digital_human_upload(self, kind):
+        auth = self._cli_user()
+        if not auth:
+            return self._cli_send(401, {"detail": "CLI 未登录或授权已过期", "code": "cli_unauthorized"})
+        row, scopes = auth
+        if "digital-human-oneclick:write" not in scopes:
+            return self._cli_send(403, {
+                "detail": "当前 CLI 授权缺少权限：digital-human-oneclick:write",
+                "code": "insufficient_scope",
+            })
+        media = "image" if kind == "material" else "audio"
+        return self._account_media_upload(
+            media, row, digital_human_kind=kind,
+        )
 
     def _cli_director_breakdown_quote(self, body):
         auth = self._cli_user()
@@ -5334,6 +5362,121 @@ class H(BaseHTTPRequestHandler):
         finally:
             c.close()
 
+    def _director_agent_row(self, username):
+        if not isinstance(username, str):
+            raise hq_cli_api.CLIAPIError(400, "username 不合法", "invalid_username")
+        username = username.strip()
+        if not username or len(username) > 160:
+            raise hq_cli_api.CLIAPIError(400, "username 不合法", "invalid_username")
+        c = db()
+        try:
+            return c.execute(
+                "SELECT * FROM users WHERE username=? "
+                "AND COALESCE(account_status,'active')='active'",
+                (username,),
+            ).fetchone()
+        finally:
+            c.close()
+
+    @staticmethod
+    def _director_agent_action_ready():
+        states = {
+            flag: feature_flags.is_enabled(flag)
+            for flag in hq_cli_api.CATALOG_FEATURE_FLAGS
+        }
+        action = next((
+            item for item in hq_cli_api.action_catalog(states).get("actions") or []
+            if item.get("action") == "director-script-generate"
+        ), None)
+        if not action or (action.get("availability") or {}).get("status") != "available":
+            return False
+        try:
+            plan = hq_cli_api.action_plan(
+                "director-script-generate", {"prompt": "health-check"},
+            )
+        except hq_cli_api.CLIAPIError:
+            return False
+        return bool(
+            plan.get("scope") == "director:generate"
+            and plan.get("kind") == "generation"
+            and plan.get("endpoint") == "/api/gen/copy"
+        )
+
+    def _internal_director_agent_health(self):
+        ready = self._director_agent_action_ready()
+        return self._cli_send(200, {
+            "ok": True,
+            "ready": ready,
+            "contract": "director-agent-action/v1",
+            "actions": ["director-script-generate"] if ready else [],
+            "stable_idempotency_required": True,
+        })
+
+    def _internal_director_agent_action(self, body):
+        if not isinstance(body, dict):
+            return self._cli_send(400, {
+                "detail": "请求体必须是 JSON 对象", "code": "invalid_request",
+            })
+        allowed = {
+            "username", "action", "input", "confirm", "quote_token",
+            "idempotency_key",
+        }
+        required = {"username", "action", "input", "confirm"}
+        if set(body) - allowed or not required.issubset(body):
+            return self._cli_send(400, {
+                "detail": "内部动作字段不合法", "code": "invalid_request",
+            })
+        try:
+            if body.get("action") != "director-script-generate":
+                raise hq_cli_api.CLIAPIError(
+                    404, "未知 Director Agent 能力", "unknown_action",
+                )
+            if not self._director_agent_action_ready():
+                raise hq_cli_api.CLIAPIError(
+                    503, "编导脚本生成能力不可用", "feature_disabled",
+                )
+            if not isinstance(body.get("input"), dict):
+                raise hq_cli_api.CLIAPIError(
+                    400, "input 必须是 JSON 对象", "invalid_request",
+                )
+            if not isinstance(body.get("confirm"), bool):
+                raise hq_cli_api.CLIAPIError(
+                    400, "confirm 必须是布尔值", "invalid_request",
+                )
+            row = self._director_agent_row(body.get("username"))
+            if not row:
+                raise hq_cli_api.CLIAPIError(
+                    404, "账号不存在", "account_not_found",
+                )
+            action_body = {
+                "action": "director-script-generate",
+                "input": body["input"],
+                "confirm": body["confirm"],
+                "quote_token": body.get("quote_token", ""),
+            }
+            if body["confirm"]:
+                if "idempotency_key" not in body:
+                    raise hq_cli_api.CLIAPIError(
+                        400, "确认生产必须提供稳定幂等键",
+                        "idempotency_key_required",
+                    )
+                action_body["idempotency_key"] = body["idempotency_key"]
+            elif "idempotency_key" in body:
+                raise hq_cli_api.CLIAPIError(
+                    400, "报价阶段不接受幂等键", "invalid_request",
+                )
+            scopes = frozenset({
+                "director:generate", "generation:quote",
+                "generation:submit", "tasks:read",
+            })
+            return self._execute_cli_action(
+                row, scopes, action_body, trusted_internal=True,
+            )
+        except hq_cli_api.CLIAPIError as exc:
+            return self._cli_send(exc.status, {
+                "detail": exc.detail, "code": exc.code,
+            })
+
     def _creator_agent_bridge_enabled(self):
         return feature_flags.is_enabled("creator_agent_v1")
 
@@ -5631,6 +5774,33 @@ class H(BaseHTTPRequestHandler):
             if not self._require_internal():
                 return
             return self._internal_ip12_agent_upload()
+        if p == "/api/auth/internal/director-agent/health":
+            if not self._require_internal():
+                return
+            if self._content_length_exceeds(1024):
+                return self._cli_send(413, {
+                    "detail": "请求过大", "code": "request_too_large",
+                })
+            d = self._body()
+            if self._bad_json() or not isinstance(d, dict) or d:
+                return self._cli_send(400, {
+                    "detail": "健康检查请求必须为空对象",
+                    "code": "invalid_request",
+                })
+            return self._internal_director_agent_health()
+        if p == "/api/auth/internal/director-agent/action":
+            if not self._require_internal():
+                return
+            if self._content_length_exceeds(128 * 1024):
+                return self._cli_send(413, {
+                    "detail": "请求过大", "code": "request_too_large",
+                })
+            d = self._body()
+            if self._bad_json():
+                return self._cli_send(400, {
+                    "detail": "请求体不是合法 JSON", "code": "invalid_request",
+                })
+            return self._internal_director_agent_action(d)
         if p == "/api/auth/internal/creator-agent/catalog":
             if not self._require_internal():
                 return
@@ -5693,6 +5863,31 @@ class H(BaseHTTPRequestHandler):
                 "board_owner_username": board["owner_username"],
                 "role": role,
             })
+        if p == "/api/auth/session/cli-token":
+            # 客户登录态(hq_session)直接签发 CLI 凭证：一步完成，无需 device 授权。
+            # CLI 鉴权只认 cli_device_grants 的 issued 行，因此直接写入 issued grant。
+            row = self._cookie_user()
+            if not row:
+                return self._cli_send(401, {"detail": "请先登录黄雀账号"})
+            token = secrets.token_urlsafe(32)
+            scopes = tuple(hq_cli_api.SCOPES)
+            now = int(time.time())
+            scopes_json = json.dumps(scopes, separators=(",", ":"))
+            with db() as connection:
+                connection.execute(
+                    """INSERT INTO cli_device_grants(
+                       device_code_hash,user_code_hash,client_name,requested_scopes_json,
+                       approved_scopes_json,status,username,approved_at,created_at,expires_at,
+                       token_hash,token_expires_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (hq_cli_api._hash(token), hq_cli_api._hash(token), "ip12-session-bridge",
+                     scopes_json, scopes_json, "issued", row["username"], now, now,
+                     now + hq_cli_api.TOKEN_TTL, hq_cli_api._hash(token), now + hq_cli_api.TOKEN_TTL),
+                )
+            return self._cli_send(200, {
+                "access_token": token, "expires_in": hq_cli_api.TOKEN_TTL,
+                "username": row["username"],
+            })
         if p == "/api/auth/cli/device/start":
             if self._content_length_exceeds(8192):
                 return self._cli_send(413, {"detail": "请求过大"})
@@ -5752,6 +5947,10 @@ class H(BaseHTTPRequestHandler):
             return self._cli_video_upload()
         if p == "/api/auth/cli/audio-upload":
             return self._cli_audio_upload()
+        if p == "/api/auth/cli/digital-human-material-upload":
+            return self._cli_digital_human_upload("material")
+        if p == "/api/auth/cli/digital-human-audio-upload":
+            return self._cli_digital_human_upload("audio")
         if p == "/api/auth/cli/director-breakdown-image":
             return self._cli_director_breakdown_upload("image")
         if p == "/api/auth/cli/director-breakdown-video":

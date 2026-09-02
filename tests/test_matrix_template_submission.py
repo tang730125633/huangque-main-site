@@ -195,6 +195,48 @@ class MatrixTemplateSubmissionTests(unittest.TestCase):
         self.assertEqual(self.job_count(), 1)
         self.assertEqual(len(self.points.deductions), 1)
 
+    def test_director_copy_hard_exit_after_job_commit_replays_original_job(self):
+        endpoint = "/api/gen/copy"
+        key = "director-production-hard-crash-0001"
+        body = {
+            "prompt": "energy drink; buy three get one free",
+            "format": "script", "style": "种草", "dur": "30s",
+            "platform": "抖音", "ctype": "分镜脚本",
+            "source_page": "script",
+        }
+        state, _ = submission_idempotency.begin(
+            self.db, "alice", endpoint, key, body,
+        )
+        self.assertEqual("new", state)
+        real_create = matrix_template_submission.jobs_store.create_job_after_charge
+
+        def create_then_exit(*args, **kwargs):
+            real_create(*args, **kwargs)
+            raise SystemExit("hard exit after Director copy job commit")
+
+        with mock.patch.object(
+            matrix_template_submission.jobs_store, "create_job_after_charge",
+            side_effect=create_then_exit,
+        ), self.assertRaises(SystemExit):
+            matrix_template_submission.recover(
+                self.db, self.points, "alice", endpoint, key,
+                body=body, cost=5, owner="content", now=self.now(), kind="copy",
+            )
+
+        replay_state, replay = submission_idempotency.replay_existing(
+            self.db, "alice", endpoint, key, [body],
+        )
+        linked = matrix_template_submission.recover(
+            self.db, self.points, "alice", endpoint, key,
+            owner="content", now=self.now(), kind="copy",
+        )
+        self.assertEqual("replay", replay_state)
+        self.assertEqual("linked", linked["state"])
+        self.assertEqual("copy", linked["kind"])
+        self.assertEqual(linked["job_id"], replay["job_id"])
+        self.assertEqual(1, self.job_count())
+        self.assertEqual(1, len(self.points.deductions))
+
     def test_concurrent_recovery_uses_one_lease_one_charge_and_one_job(self):
         matrix_template_submission.prepare(
             self.db, "alice", "/api/gen/matrix-template", self.key,

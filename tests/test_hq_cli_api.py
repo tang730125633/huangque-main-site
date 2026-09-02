@@ -20,6 +20,8 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "server"))
+sys.path.insert(0, str(ROOT / "tools/hq-cli/src"))
+from hq_cli import client as first_party_cli_client
 
 
 class HQCLIAPITests(unittest.TestCase):
@@ -158,6 +160,7 @@ class HQCLIAPITests(unittest.TestCase):
         actions = {item["action"]: item for item in payload["actions"]}
         self.assertEqual(set(self.auth.hq_cli_api._ACTION_INPUTS) | {
             "image-upload", "video-upload", "audio-upload", "director-breakdown-upload",
+            "digital-human-oneclick-material-upload", "digital-human-oneclick-audio-upload",
         }, set(actions))
         for action, item in actions.items():
             with self.subTest(action=action):
@@ -206,7 +209,13 @@ class HQCLIAPITests(unittest.TestCase):
             upload["transport"]["quote_path"],
         )
         self.assertEqual("X-HQ-Quote-Token", upload["transport"]["quote_token_header"])
+        self.assertEqual("X-HQ-Expected-Cost", upload["transport"]["expected_cost_header"])
         self.assertEqual("Idempotency-Key", upload["transport"]["idempotency_header"])
+        self.assertEqual(
+            r"^[A-Za-z0-9._:-]{8,128}$",
+            upload["transport"]["idempotency_key_pattern"],
+        )
+        self.assertIn("same quote response", " ".join(upload["constraints"]))
 
         disabled = {
             item["action"]: item
@@ -540,6 +549,132 @@ class HQCLIAPITests(unittest.TestCase):
             plan["headers"]["Idempotency-Key"] == "ip12-confirm-0001"
             for plan in submitted
         ))
+    def test_director_agent_internal_action_keeps_one_key_across_requotes(self):
+        action_input = {
+            "prompt": "energy drink; buy three get one free",
+            "style": "recommend", "duration": 30, "platform": "douyin",
+        }
+        submitted_keys = []
+        jobs_by_key = {}
+        charges = 0
+
+        def fake_proxy(plan, _web_token, _internal_token):
+            nonlocal charges
+            if plan["path"] == "/api/gen/cli/quote":
+                return 200, {"cost": 3, "points": 100}
+            self.assertEqual(plan["path"], "/api/gen/copy")
+            self.assertEqual(
+                plan["headers"]["X-HQ-Submission-Class"], "director-agent",
+            )
+            key = plan["headers"]["Idempotency-Key"]
+            submitted_keys.append(key)
+            if key not in jobs_by_key:
+                charges += 1
+                jobs_by_key[key] = 701
+            return 200, {
+                "job_id": jobs_by_key[key], "cost": 3, "points_left": 97,
+            }
+
+        quote_body = {
+            "username": "alice", "action": "director-script-generate",
+            "input": action_input, "confirm": False,
+        }
+        headers = self._agent_headers()
+        with mock.patch.object(
+                self.auth.feature_flags, "is_enabled", return_value=True,
+             ), mock.patch.object(
+                self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy,
+             ):
+            denied_status, _ = self._request(
+                "/api/auth/internal/director-agent/health", {},
+            )
+            health_status, health = self._request(
+                "/api/auth/internal/director-agent/health", {},
+                extra_headers=headers,
+            )
+            first_quote_status, first_quote = self._request(
+                "/api/auth/internal/director-agent/action", quote_body,
+                extra_headers=headers,
+            )
+            second_quote_status, second_quote = self._request(
+                "/api/auth/internal/director-agent/action", quote_body,
+                extra_headers=headers,
+            )
+            missing_key_status, missing_key = self._request(
+                "/api/auth/internal/director-agent/action", {
+                    **quote_body, "confirm": True,
+                    "quote_token": first_quote["quote_token"],
+                }, extra_headers=headers,
+            )
+            results = []
+            for quote in (first_quote, second_quote):
+                results.append(self._request(
+                    "/api/auth/internal/director-agent/action", {
+                        **quote_body, "confirm": True,
+                        "quote_token": quote["quote_token"],
+                        "idempotency_key": "director-production-1234567890abcdef",
+                    }, extra_headers=headers,
+                ))
+
+        self.assertEqual(denied_status, 403)
+        self.assertEqual(health_status, 200)
+        self.assertTrue(health["ready"])
+        self.assertEqual(health["contract"], "director-agent-action/v1")
+        self.assertEqual((first_quote_status, second_quote_status), (200, 200))
+        self.assertNotEqual(first_quote["quote_token"], second_quote["quote_token"])
+        self.assertEqual(missing_key_status, 400)
+        self.assertEqual(missing_key["code"], "idempotency_key_required")
+        self.assertEqual([status for status, _payload in results], [200, 200])
+        self.assertEqual([payload["job_id"] for _status, payload in results], [701, 701])
+        self.assertEqual(submitted_keys, [
+            "director-production-1234567890abcdef",
+            "director-production-1234567890abcdef",
+        ])
+        self.assertEqual(charges, 1)
+
+    def test_director_bridge_reaches_real_auth_contract_with_canonical_input(self):
+        from content_domains import director_cli
+
+        plans = []
+
+        def fake_proxy(plan, _web_token, _internal_token):
+            plans.append(plan)
+            if plan["path"] == "/api/gen/cli/quote":
+                return 200, {"cost": 3, "points": 100}
+            return 200, {"job_id": 801, "cost": 3, "points_left": 97}
+
+        cli_input = {
+            "request_id": "director-production-abcdef1234567890",
+            "topic": "energy drink", "selling_points": "buy three get one",
+            "style": "种草", "duration": "30s", "platform": "抖音",
+        }
+        with mock.patch.object(
+                self.auth.feature_flags, "is_enabled", return_value=True,
+             ), mock.patch.object(
+                self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy,
+             ), mock.patch.object(
+                director_cli, "AUTH_BASE", self.base,
+             ), mock.patch.object(
+                director_cli, "INTERNAL_TOKEN", self.auth.INTERNAL_TOKEN,
+             ), mock.patch.object(
+                director_cli, "PRODUCTION_ORIGIN", "https://huangquechuanmei.com",
+             ):
+            self.assertTrue(director_cli.production_is_available())
+            quote = director_cli.quote_script("alice", cli_input)
+            submitted = director_cli.confirm_script(
+                "alice", cli_input, quote["quote_token"],
+            )
+
+        self.assertEqual((quote["cost"], submitted["job_id"]), (3, 801))
+        self.assertEqual(plans[0]["body"]["payload"], {
+            "prompt": "energy drink；核心卖点：buy three get one",
+            "format": "script", "style": "种草", "dur": "30s",
+            "platform": "抖音", "ctype": "分镜脚本", "source_page": "script",
+        })
+        self.assertEqual(
+            plans[1]["headers"]["Idempotency-Key"],
+            cli_input["request_id"],
+        )
 
     def test_public_cli_route_rejects_internal_idempotency_injection(self):
         token = self._token(["assets:read"])
@@ -945,6 +1080,72 @@ class HQCLIAPITests(unittest.TestCase):
             )
         self.assertEqual((409, "quote_mismatch"), (status, payload["code"]))
         proxy.assert_not_called()
+
+    def test_first_party_director_upload_builds_quote_bound_headers_for_image_and_video(self):
+        token = self._token(["director:generate"])
+        cases = (
+            ("image", "/api/auth/cli/director-breakdown-image", "image/png",
+             b"\x89PNG\r\n\x1a\nfirst-party-image", "reference.png"),
+            ("video", "/api/auth/cli/director-breakdown-video", "video/mp4",
+             b"\x00\x00\x00\x18ftypmp42first-party-video", "reference.mp4"),
+        )
+        for index, (media_type, path, content_type, raw, filename) in enumerate(cases, 1):
+            digest = hashlib.sha256(raw).hexdigest()
+            with mock.patch.object(
+                    self.auth.H, "_cli_proxy",
+                    return_value=(200, {"cost": 20, "points": 100})):
+                status, quote = self._request(
+                    "/api/auth/cli/director-breakdown-quote",
+                    {"media_type": media_type, "sha256": digest}, token=token,
+                )
+            self.assertEqual(200, status, quote)
+            headers = first_party_cli_client.director_breakdown_confirmation_headers(
+                quote["quote_token"], quote["cost"], "director-e2e-%03d" % index,
+            )
+            headers["X-HQ-File-Name"] = filename
+            captured = {}
+
+            def fake_upload(stream, length, _web_token, _internal_token, _content_type,
+                            actual_digest, actual_media_type, _filename,
+                            idempotency_key, expected_cost):
+                captured.update(
+                    raw=stream.read(length), digest=actual_digest,
+                    media_type=actual_media_type, idempotency_key=idempotency_key,
+                    expected_cost=expected_cost,
+                )
+                return 200, {"job_id": 100 + index, "cost": expected_cost,
+                             "sha256": actual_digest}
+
+            with mock.patch.object(
+                    self.auth.hq_cli_api, "proxy_director_breakdown_upload",
+                    side_effect=fake_upload):
+                status, payload = self._raw_request(
+                    path, raw, token=token, content_type=content_type,
+                    extra_headers=headers,
+                )
+            self.assertEqual(200, status, payload)
+            self.assertEqual((raw, digest, media_type, 20), (
+                captured["raw"], captured["digest"], captured["media_type"],
+                captured["expected_cost"],
+            ))
+
+            for mutation, expected in (
+                    ({"X-HQ-Expected-Cost": None}, (400, "invalid_expected_cost")),
+                    ({"X-HQ-Expected-Cost": "19"}, (409, "quote_cost_changed"))):
+                rejected_headers = dict(headers)
+                if mutation["X-HQ-Expected-Cost"] is None:
+                    rejected_headers.pop("X-HQ-Expected-Cost")
+                else:
+                    rejected_headers.update(mutation)
+                with mock.patch.object(
+                        self.auth.hq_cli_api,
+                        "proxy_director_breakdown_upload") as proxy:
+                    rejected_status, rejected = self._raw_request(
+                        path, raw, token=token, content_type=content_type,
+                        extra_headers=rejected_headers,
+                    )
+                self.assertEqual(expected, (rejected_status, rejected["code"]))
+                proxy.assert_not_called()
 
     def test_ip12_internal_upload_reuses_account_bound_streaming_gateway(self):
         self._enable_ip12_bridge()
@@ -1796,6 +1997,7 @@ class HQCLIAPITests(unittest.TestCase):
         channels = "https://weixin.qq.com/sph/Abc123"
         channels_443 = "https://weixin.qq.com:443/sph/Abc123"
         bilibili = "https://b23.tv/keSUqLz"
+        twitter = "https://x.com/CrazyKaomei/status/2093502767776366755?s=20"
         expected = {
             "collect-content": ("collect", "/api/gen/collect", {"url": xhs, "want": ["comments"]}),
             "collect-video": ("collect", "/api/gen/collect", {"url": douyin, "want": ["video"]}),
@@ -1832,6 +2034,16 @@ class HQCLIAPITests(unittest.TestCase):
             bilibili,
             self.auth.hq_cli_api.action_plan("collect-video", {"url": bilibili})["payload"]["url"],
         )
+        self.assertEqual(
+            twitter,
+            self.auth.hq_cli_api.action_plan("collect-content", {"url": twitter})["payload"]["url"],
+        )
+        for action in ("collect-video", "collect-transcript"):
+            with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+                self.auth.hq_cli_api.action_plan(action, {"url": twitter})
+        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+            self.auth.hq_cli_api.action_plan(
+                "collect-content", {"url": "https://x.com.evil.example/status/2093502767776366755"})
         with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
             self.auth.hq_cli_api.action_plan(
                 "collect-video", {"url": "https://douyin.com.evil.example/video/1"})
@@ -2193,13 +2405,15 @@ class HQCLIAPITests(unittest.TestCase):
         }, token=token)
         self.assertEqual(200, status, payload)
         self.assertEqual("director-workflow-contract-v1", payload["contract_version"])
-        self.assertEqual(5, payload["counts"]["available"])
+        self.assertEqual(15, payload["counts"]["available"])
         actions = {item["id"]: item for item in payload["actions"]}
         self.assertEqual("available", actions["director-capability"]["availability"])
         self.assertEqual("available", actions["director-script-generate"]["availability"])
         self.assertEqual("available", actions["director-breakdown"]["availability"])
         self.assertEqual("available", actions["director-breakdown-upload"]["availability"])
         self.assertEqual("available", actions["director-scene-image-generate"]["availability"])
+        self.assertEqual("available", actions["digital-human-oneclick-start"]["availability"])
+        self.assertEqual("available", actions["digital-human-oneclick-recover"]["availability"])
         self.assertEqual("planned", actions["director-scene-video-generate"]["availability"])
         self.assertEqual("planned", actions["director-scene-talking-generate"]["availability"])
         self.assertEqual("planned", actions["director-production-start"]["availability"])

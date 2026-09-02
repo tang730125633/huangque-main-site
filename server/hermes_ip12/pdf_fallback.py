@@ -163,7 +163,9 @@ def render_foundation_consulting_pdf(markdown, target, title="IP 人设定位｜
         if not raw:
             index += 1; continue
         if raw.startswith("## "):
-            if story and not isinstance(story[-1], PageBreak): story.append(PageBreak())
+            # 紧凑档位不再强制模块分页（页数质检 6-8 页；内容密度不够时靠压缩分页收敛）
+            if not _compact and story and not isinstance(story[-1], PageBreak):
+                story.append(PageBreak())
             story.append(paragraph(raw[3:], module))
         elif raw.startswith("### "):
             story.append(KeepTogether([paragraph(raw[4:], section), Spacer(1, 1)]))
@@ -175,8 +177,9 @@ def render_foundation_consulting_pdf(markdown, target, title="IP 人设定位｜
             story.append(paragraph(raw))
         index += 1
     flush_table(); flush_bullets()
-    doc = SimpleDocTemplate(str(target), pagesize=A4, leftMargin=22 * mm, rightMargin=22 * mm,
-                            topMargin=22 * mm, bottomMargin=24 * mm, title=title)
+    margin = 22 * mm if not _compact else 16 * mm
+    doc = SimpleDocTemplate(str(target), pagesize=A4, leftMargin=margin, rightMargin=margin,
+                            topMargin=margin, bottomMargin=18 * mm, title=title)
     doc.build(story, onFirstPage=footer, onLaterPages=footer)
     if _compact < 2 and _has_sparse_tail(target):
         return render_foundation_consulting_pdf(markdown, target, title=title, _compact=_compact + 1)

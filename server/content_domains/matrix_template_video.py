@@ -11,9 +11,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from contextlib import closing
 
 from .core import OUT_DIR, public_url
-from . import feature_flags, pricing
+from . import feature_flags, matrix_template_semantics, pricing
 
 
 FEATURE_KEY = "matrix_template_video"
@@ -25,6 +26,9 @@ REFERENCE_TEMPLATE_COUNT = 17
 API_URL = os.environ.get("MATRIX_TEMPLATE_API_URL", "http://127.0.0.1:8112").rstrip("/")
 API_TOKEN = os.environ.get("MATRIX_TEMPLATE_API_TOKEN", "").strip()
 JOB_TIMEOUT = max(60, min(1800, int(os.environ.get("MATRIX_TEMPLATE_JOB_TIMEOUT", "1200"))))
+TOTAL_TIMEOUT = max(300, min(1800, int(os.environ.get(
+    "MATRIX_TEMPLATE_TOTAL_TIMEOUT", "1200"
+))))
 POLL_INTERVAL = max(1, min(10, int(os.environ.get("MATRIX_TEMPLATE_POLL_INTERVAL", "3"))))
 MAX_VIDEO_BYTES = 512 * 1024 * 1024
 _CACHE = {
@@ -41,6 +45,10 @@ class MatrixTemplateHTTPError(RuntimeError):
     def __init__(self, status, detail):
         super().__init__(detail)
         self.status = int(status)
+
+
+class MatrixTemplateProviderFailed(RuntimeError):
+    """The provider reached an authoritative failed terminal state."""
 
 
 def _validated_base():
@@ -103,6 +111,142 @@ def require_available():
         raise feature_flags.FeatureDisabled("模板成片服务暂不可用，请稍后重试")
 
 
+_SEMANTIC_CONTRACTS = {
+    "v01": {
+        "top1": (70, 400, 996, 2), "top2": (64, 400, 996, 2),
+        "top3": (52, 900, 996, 2), "bottom2": (74, 400, 848, 2),
+    },
+    "v02": {
+        "top1": (86, 400, 996, 2), "top2": (62, 400, 996, 4),
+        "bottom2": (78, 400, 996, 2),
+    },
+    "v03": {
+        "top1": (86, 900, 996, 2), "top2": (62, 400, 996, 4),
+        "bottom2": (78, 900, 996, 2),
+    },
+    "v04": {
+        "top1": (88, 900, 996, 2), "top2": (72, 900, 996, 2),
+        "top3": (48, 900, 948, 2), "bottom2": (52, 900, 996, 2),
+    },
+    "v05": {
+        "top1": (102, 900, 996, 2), "top2": (104, 900, 996, 2),
+        "top3": (68, 900, 996, 2), "bottom2": (70, 900, 862, 2),
+    },
+    "v06": {
+        "top1": (104, 900, 996, 2), "top2": (76, 900, 996, 2),
+        "top3": (60, 900, 996, 2), "bottom2": (76, 900, 924, 2),
+    },
+    "v07": {
+        "top1": (104, 900, 996, 2), "top2": (68, 900, 996, 2),
+        "top3": (62, 900, 996, 2), "bottom2": (84, 900, 996, 2),
+    },
+    "v08": {
+        "top1": (92, 900, 996, 2), "top2": (62, 900, 996, 2),
+        "top3": (54, 900, 996, 2), "bottom2": (64, 400, 948, 2),
+    },
+    "v09": {
+        "top1": (78, 400, 996, 2), "top2": (50, 700, 996, 4),
+        "bottom2": (66, 400, 996, 2),
+    },
+    "v10": {
+        "top1": (70, 400, 996, 2), "top2": (78, 400, 996, 2),
+        "top3": (54, 800, 996, 2), "bottom2": (80, 400, 970, 2),
+    },
+    "v11": {
+        "top1": (86, 900, 996, 2), "top2": (80, 800, 996, 2),
+        "top3": (54, 800, 996, 2), "bottom2": (76, 400, 996, 2),
+    },
+    "v12": {
+        "top1": (72, 400, 996, 2), "top2": (62, 400, 996, 2),
+        "top3": (50, 400, 996, 2), "bottom2": (62, 400, 996, 2),
+    },
+    "v13": {
+        "top1": (76, 900, 996, 2), "top2": (68, 900, 996, 4),
+        "bottom2": (80, 900, 996, 2),
+    },
+    "v14": {
+        "top1": (72, 400, 996, 2), "top2": (50, 800, 996, 4),
+        "bottom2": (64, 400, 996, 2),
+    },
+    "v15": {
+        "top1": (80, 900, 996, 2), "top2": (64, 900, 996, 4),
+        "bottom2": (92, 900, 996, 2),
+    },
+    "v16": {
+        "top1": (48, 400, 996, 2), "top2": (68, 400, 996, 2),
+        "top3": (52, 900, 996, 2), "bottom2": (70, 400, 996, 2),
+    },
+    "v17": {
+        "top1": (74, 900, 996, 2), "top2": (64, 900, 996, 2),
+        "top3": (118, 900, 996, 2), "bottom2": (84, 900, 996, 2),
+    },
+}
+_LEGACY_SEMANTIC_CONTRACTS = {
+    "v02": {
+        "top1": (86, 2), "top2": (62, 4), "bottom2": (78, 2),
+    },
+    "v05": {
+        "top1": (102, 2), "top2": (104, 2),
+        "top3": (68, 3), "bottom2": (70, 2),
+    },
+}
+_ALL_REFERENCE_VARIANTS = {
+    f"v{index:02d}" for index in range(1, 18)
+}
+_ALLOWED_SEMANTIC_VARIANT_SETS = (
+    {"v02"}, {"v02", "v05"}, _ALL_REFERENCE_VARIANTS,
+)
+
+
+def _semantic_contract(value, variant):
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {
+        "version", "max_width_px", "layers",
+    }:
+        raise RuntimeError("HyperFrames 语义排版能力无效")
+    layers = value.get("layers")
+    expected_layers = _SEMANTIC_CONTRACTS.get(str(variant or ""))
+    if (
+        value.get("version") != 1
+        or value.get("max_width_px") != 996
+        or not isinstance(layers, dict)
+        or expected_layers is None
+        or set(layers) != set(expected_layers)
+    ):
+        raise RuntimeError("HyperFrames 语义排版能力无效")
+    normalized = {}
+    contract_shape = None
+    for layer, expected in expected_layers.items():
+        item = layers.get(layer)
+        if not isinstance(item, dict):
+            raise RuntimeError("HyperFrames 语义排版能力无效")
+        keys = set(item)
+        if keys == {"font_size_px", "max_lines"}:
+            legacy_layers = _LEGACY_SEMANTIC_CONTRACTS.get(str(variant or ""))
+            if legacy_layers is None:
+                raise RuntimeError("HyperFrames 语义排版能力无效")
+            shape = "legacy"
+            actual = (item.get("font_size_px"), item.get("max_lines"))
+            wanted = legacy_layers[layer]
+        elif keys == {
+            "font_size_px", "font_weight", "max_width_px", "max_lines",
+        }:
+            shape = "measured"
+            actual = (
+                item.get("font_size_px"), item.get("font_weight"),
+                item.get("max_width_px"), item.get("max_lines"),
+            )
+            wanted = expected
+        else:
+            raise RuntimeError("HyperFrames 语义排版能力无效")
+        if contract_shape not in {None, shape} or actual != wanted:
+            raise RuntimeError("HyperFrames 语义排版能力无效")
+        contract_shape = shape
+        normalized[layer] = {key: int(value) for key, value in item.items()}
+    return {"version": 1, "max_width_px": 996, "layers": normalized}
+
+
 def _refresh_catalog(force=False):
     now = time.monotonic()
     if force or now - _CACHE["at"] > 30:
@@ -144,6 +288,9 @@ def _refresh_catalog(force=False):
                 "selectable" if font_selectable else "template_locked"
             ))
             variant = str(raw.get("variant") or "")
+            semantic_layout = _semantic_contract(
+                raw.get("semantic_layout"), variant,
+            )
             if engine not in {"ffmpeg", "hyperframes"}:
                 continue
             if font_mode not in {"selectable", "template_locked"}:
@@ -152,7 +299,7 @@ def _refresh_catalog(force=False):
                 r"v(?:0[1-9]|1[0-7])", variant
             ):
                 continue
-            templates.append({
+            template = {
                 "id": template_id,
                 "name": str(raw.get("name") or template_id)[:40],
                 "description": str(raw.get("description") or "")[:160],
@@ -161,7 +308,10 @@ def _refresh_catalog(force=False):
                 "font_mode": font_mode,
                 "font_selectable": font_selectable,
                 "variant": variant,
-            })
+            }
+            if semantic_layout is not None:
+                template["semantic_layout"] = semantic_layout
+            templates.append(template)
         template_ids = {item["id"] for item in templates}
         if (
             len(templates) not in TRANSITION_TEMPLATE_COUNTS
@@ -178,6 +328,13 @@ def _refresh_catalog(force=False):
                 item for item in templates
                 if REFERENCE_TEMPLATE_RE.fullmatch(item["id"])
             ]
+            semantic_variants = {
+                item["variant"] for item in references
+                if item.get("semantic_layout")
+            }
+            measured_layer_keys = {
+                "font_size_px", "font_weight", "max_width_px", "max_lines",
+            }
             if (
                 len(references) != REFERENCE_TEMPLATE_COUNT
                 or any(
@@ -188,6 +345,15 @@ def _refresh_catalog(force=False):
                 )
                 or {item["variant"] for item in references}
                 != {f"v{index:02d}" for index in range(1, 18)}
+                or semantic_variants not in _ALLOWED_SEMANTIC_VARIANT_SETS
+                or (
+                    semantic_variants == _ALL_REFERENCE_VARIANTS
+                    and any(
+                        set(layer) != measured_layer_keys
+                        for item in references
+                        for layer in item["semantic_layout"]["layers"].values()
+                    )
+                )
             ):
                 raise RuntimeError("HyperFrames 模板目录不完整")
             templates = [approved[template_id] for template_id in APPROVED_TEMPLATE_IDS] + references
@@ -280,6 +446,7 @@ def validate_payload(raw, username=""):
     }
     if font_family and font_selectable:
         candidate["font_family"] = font_family
+    semantic_contract = template.get("semantic_layout")
     batch_id = str(body.get("batch_id") or "").strip().lower()
     batch_index = body.get("batch_index")
     batch_size = body.get("batch_size")
@@ -296,18 +463,108 @@ def validate_payload(raw, username=""):
             "batch_index": batch_index,
             "batch_size": batch_size,
         })
-    try:
-        response = _request("POST", "/v1/preflight", candidate, timeout=10)
-    except MatrixTemplateHTTPError as exc:
-        if exc.status == 400:
-            raise ValueError(str(exc)) from exc
-        raise feature_flags.FeatureDisabled(
-            "模板成片服务暂不可用，请稍后重试"
-        ) from exc
-    except RuntimeError as exc:
-        raise feature_flags.FeatureDisabled(
-            "模板成片服务暂不可用，请稍后重试"
-        ) from exc
+    response = None
+    if semantic_contract is not None:
+        def validate_semantic_layout(semantic_layout):
+            candidate["semantic_layout"] = semantic_layout
+            try:
+                value = _request("POST", "/v1/preflight", candidate, timeout=10)
+                payload = value.get("payload") if isinstance(value, dict) else None
+                echoed = (
+                    payload.get("semantic_layout")
+                    if isinstance(payload, dict) else None
+                )
+                if isinstance(echoed, dict):
+                    echoed = dict(echoed)
+
+                def safe_break_echo(key):
+                    values = echoed.get(key)
+                    original = semantic_layout.get(key)
+                    return (
+                        isinstance(values, list)
+                        and isinstance(original, list)
+                        and all(
+                            not isinstance(item, bool) and isinstance(item, int)
+                            for item in values
+                        )
+                        and values == sorted(set(values))
+                        and set(values).issubset(original)
+                    )
+
+                if (
+                    not isinstance(echoed, dict)
+                    or set(echoed) != set(semantic_layout)
+                    or any(
+                        echoed.get(key) != semantic_layout.get(key)
+                        for key in (
+                            "version", "model", "source_sha256", "top1_end",
+                        )
+                    )
+                    or not all(safe_break_echo(key) for key in (
+                        "top_break_after", "bottom_break_after",
+                    ))
+                    or (
+                        echoed["top1_end"] != len(top) - 1
+                        and echoed["top1_end"] not in echoed["top_break_after"]
+                    )
+                ):
+                    return False, "生成端回显的 semantic_layout 关键字段不一致"
+                normalized = echoed != semantic_layout
+                original_counts = (
+                    len(semantic_layout["top_break_after"]),
+                    len(semantic_layout["bottom_break_after"]),
+                )
+                # Cache and submit the font-authoritative subset from generation.
+                semantic_layout.clear()
+                semantic_layout.update(echoed)
+                if normalized:
+                    print(
+                        "[matrix-template-semantic-normalized] "
+                        f"template={template_id} breaks="
+                        f"{original_counts[0]}->{len(echoed['top_break_after'])},"
+                        f"{original_counts[1]}->{len(echoed['bottom_break_after'])}",
+                        flush=True,
+                    )
+                return True, value
+            except MatrixTemplateHTTPError as exc:
+                if exc.status == 400 and (
+                    "语义" in str(exc) or "完整词组" in str(exc)
+                ):
+                    return False, str(exc)
+                raise
+
+        try:
+            semantic_layout, response = matrix_template_semantics.resolve(
+                top, bottom, template_id, semantic_contract,
+                validate_semantic_layout,
+            )
+            candidate["semantic_layout"] = semantic_layout
+        except MatrixTemplateHTTPError as exc:
+            if exc.status == 400:
+                raise ValueError(str(exc)) from exc
+            raise feature_flags.FeatureDisabled(
+                "模板成片服务暂不可用，请稍后重试"
+            ) from exc
+        except RuntimeError as exc:
+            candidate.pop("semantic_layout", None)
+            print(
+                "[matrix-template-semantic-fallback] "
+                f"template={template_id} reason={str(exc)[:240]}",
+                flush=True,
+            )
+    if response is None:
+        try:
+            response = _request("POST", "/v1/preflight", candidate, timeout=10)
+        except MatrixTemplateHTTPError as exc:
+            if exc.status == 400:
+                raise ValueError(str(exc)) from exc
+            raise feature_flags.FeatureDisabled(
+                "模板成片服务暂不可用，请稍后重试"
+            ) from exc
+        except RuntimeError as exc:
+            raise feature_flags.FeatureDisabled(
+                "模板成片服务暂不可用，请稍后重试"
+            ) from exc
     payload = response.get("payload") if isinstance(response, dict) else None
     if not isinstance(payload, dict) or set(payload) != set(candidate):
         raise RuntimeError("模板成片预检结果无效")
@@ -334,7 +591,25 @@ def _safe_file_url(value):
     return urllib.parse.urlunsplit((base.scheme, base.netloc, prefix + path, "", ""))
 
 
-def _download(value, job_id):
+def _remaining_budget(deadline_at, message="模板成片生成超时"):
+    remaining = float(deadline_at) - time.time()
+    if remaining <= 0:
+        raise RuntimeError(message)
+    return remaining
+
+
+def _set_response_timeout(response, timeout):
+    """Apply the current absolute budget to urllib's underlying socket."""
+    stream = getattr(response, "fp", None)
+    raw = getattr(stream, "raw", None)
+    sock = getattr(raw, "_sock", None)
+    if sock is not None and hasattr(sock, "settimeout"):
+        sock.settimeout(max(0.001, float(timeout)))
+
+
+def _download(value, job_id, timeout=240, deadline_at=None):
+    if deadline_at is None:
+        deadline_at = time.time() + float(timeout)
     url = _safe_file_url(value)
     relative = pathlib.Path("video") / ("matrix_template_%s.mp4" % str(job_id)[:64])
     target = OUT_DIR / relative
@@ -343,37 +618,260 @@ def _download(value, job_id):
     request = urllib.request.Request(url, headers={"Authorization": "Bearer " + API_TOKEN})
     total = 0
     try:
-        with _NO_PROXY.open(request, timeout=240) as response, temporary.open("wb") as handle:
-            while chunk := response.read(1024 * 1024):
+        open_timeout = min(float(timeout), _remaining_budget(deadline_at))
+        with _NO_PROXY.open(request, timeout=max(0.001, open_timeout)) as response, temporary.open("wb") as handle:
+            read_chunk = getattr(response, "read1", None)
+            if not callable(read_chunk):
+                read_chunk = response.read
+            while True:
+                remaining = min(float(timeout), _remaining_budget(deadline_at))
+                _set_response_timeout(response, remaining)
+                try:
+                    chunk = read_chunk(64 * 1024)
+                except (TimeoutError, OSError) as exc:
+                    try:
+                        _remaining_budget(deadline_at)
+                    except RuntimeError as deadline_error:
+                        raise deadline_error from exc
+                    raise
+                _remaining_budget(deadline_at)
+                if not chunk:
+                    break
                 total += len(chunk)
                 if total > MAX_VIDEO_BYTES:
                     raise RuntimeError("模板成片文件超过大小限制")
                 handle.write(chunk)
+        _remaining_budget(deadline_at)
         with temporary.open("rb") as handle:
             if total < 1024 or b"ftyp" not in handle.read(64):
                 raise RuntimeError("模板成片文件无效")
+        _remaining_budget(deadline_at)
         os.replace(temporary, target)
     finally:
         temporary.unlink(missing_ok=True)
     return relative.as_posix(), total
 
 
+def _runtime(job_id):
+    """Read the durable local lifecycle anchor for one matrix job."""
+    from .core import jdb
+    try:
+        numeric_id = int(job_id)
+    except (TypeError, ValueError):
+        return {"created_at": int(time.time()), "payload": {}}
+    try:
+        with closing(jdb()) as connection:
+            row = connection.execute(
+                "SELECT created_at,payload FROM jobs WHERE id=? AND kind=?",
+                (numeric_id, FEATURE_KEY),
+            ).fetchone()
+    except Exception:
+        return {"created_at": int(time.time()), "payload": {}}
+    if not row:
+        return {"created_at": int(time.time()), "payload": {}}
+    try:
+        payload = json.loads(row["payload"] or "{}")
+    except (TypeError, ValueError):
+        payload = {}
+    return {
+        "created_at": int(row["created_at"] or time.time()),
+        "payload": payload if isinstance(payload, dict) else {},
+    }
+
+
+def _durable_runtime(job_id):
+    """Read recovery state without turning a database fault into no state."""
+    from .core import jdb
+    numeric_id = int(job_id)
+    with closing(jdb()) as connection:
+        row = connection.execute(
+            "SELECT created_at,payload FROM jobs WHERE id=? AND kind=?",
+            (numeric_id, FEATURE_KEY),
+        ).fetchone()
+    if not row:
+        raise RuntimeError("模板成片生命周期记录不存在")
+    payload = json.loads(row["payload"] or "{}")
+    if not isinstance(payload, dict):
+        raise RuntimeError("模板成片生命周期记录无效")
+    return {
+        "created_at": int(row["created_at"] or time.time()),
+        "payload": payload,
+    }
+
+
+def _persist_runtime(job_id, **updates):
+    """Persist provider identity/progress without changing the job state."""
+    from .core import jdb
+    try:
+        numeric_id = int(job_id)
+    except (TypeError, ValueError):
+        return False
+    now = int(time.time())
+    try:
+        with closing(jdb()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT payload FROM jobs WHERE id=? AND kind=? "
+                "AND status IN ('pending','running')",
+                (numeric_id, FEATURE_KEY),
+            ).fetchone()
+            if not row:
+                connection.rollback()
+                return False
+            try:
+                payload = json.loads(row["payload"] or "{}")
+            except (TypeError, ValueError):
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            runtime = payload.get("_matrix_runtime")
+            if not isinstance(runtime, dict):
+                runtime = {}
+            runtime.update({key: value for key, value in updates.items() if value is not None})
+            runtime["last_progress_at"] = now
+            payload["_matrix_runtime"] = runtime
+            changed = connection.execute(
+                "UPDATE jobs SET payload=? WHERE id=? AND kind=? "
+                "AND status IN ('pending','running')",
+                (json.dumps(payload, ensure_ascii=False), numeric_id, FEATURE_KEY),
+            )
+            connection.commit()
+    except Exception:
+        return False
+    return changed.rowcount == 1
+
+
+def public_lifecycle(row, now=None):
+    """Return server-timed, non-sensitive lifecycle data for the owner."""
+    now = int(time.time() if now is None else now)
+    created_at = int(row["created_at"] or now)
+    try:
+        payload = json.loads(row["payload"] or "{}")
+    except (TypeError, ValueError):
+        payload = {}
+    runtime = payload.get("_matrix_runtime") if isinstance(payload, dict) else {}
+    if not isinstance(runtime, dict):
+        runtime = {}
+    status = str(row["status"] or "")
+    phase = str(runtime.get("phase") or (
+        "queued" if status == "pending" else "starting"
+    ))
+    return {
+        "phase": phase,
+        "deadline_at": created_at + TOTAL_TIMEOUT,
+        "elapsed_seconds": max(0, now - created_at),
+        "last_progress_at": int(runtime.get("last_progress_at") or created_at),
+        "provider_submitted": bool(runtime.get("provider_job_id")),
+    }
+
+
+def recover_worker_error(job_id, error, requeue=None):
+    """Keep paid remote work recoverable until failure or expiry is certain."""
+    lifecycle = _durable_runtime(job_id)
+    deadline_at = int(lifecycle["created_at"]) + TOTAL_TIMEOUT
+    if time.time() >= deadline_at or isinstance(
+            error, MatrixTemplateProviderFailed):
+        return False
+    payload = lifecycle["payload"]
+    runtime = payload.get("_matrix_runtime")
+    if not isinstance(runtime, dict):
+        return False
+    provider_job_id = str(runtime.get("provider_job_id") or "")
+    if provider_job_id:
+        if not re.fullmatch(r"[0-9a-f]{32}", provider_job_id):
+            raise RuntimeError("模板成片恢复信息无效")
+        _persist_runtime(
+            job_id, phase="provider_retrying", provider_status="unknown",
+            last_error=str(error)[:300],
+        )
+        if requeue:
+            requeue(job_id)
+        return True
+    phase = str(runtime.get("phase") or "")
+    if phase in {"submitting", "submission_unknown"}:
+        if isinstance(error, MatrixTemplateHTTPError) and error.status in {
+                400, 401, 403, 404, 422}:
+            return False
+        _persist_runtime(
+            job_id, phase="submission_unknown", provider_status="unknown",
+            last_error=str(error)[:300], deadline_at=deadline_at,
+        )
+        return True
+    return False
+
+
 def generate(payload):
     raw = dict(payload or {})
     local_job = str(raw.get("_job_id") or uuid.uuid4().hex)
-    payload = validate_payload(raw, str(raw.get("_username") or ""))
-    request_id = "matrix-template-" + re.sub(r"[^A-Za-z0-9_.:-]", "-", local_job)[:80]
-    remote = _request("POST", "/v1/jobs", payload, request_id=request_id, timeout=20)
-    remote_id = str(remote.get("job_id") or "")
-    if not re.fullmatch(r"[0-9a-f]{32}", remote_id):
-        raise RuntimeError("模板成片服务没有返回有效任务 ID")
-    deadline = time.monotonic() + JOB_TIMEOUT
-    while time.monotonic() < deadline:
-        current = _request("GET", "/v1/jobs/" + remote_id, timeout=20)
+    lifecycle = _runtime(local_job)
+    deadline_at = int(lifecycle["created_at"]) + TOTAL_TIMEOUT
+    _remaining_budget(deadline_at, "模板成片等待超时")
+    stored_payload = lifecycle.get("payload")
+    if not isinstance(stored_payload, dict):
+        stored_payload = {}
+    runtime = stored_payload.get("_matrix_runtime")
+    if not isinstance(runtime, dict):
+        runtime = {}
+    remote_id = str(runtime.get("provider_job_id") or "")
+    if remote_id and not re.fullmatch(r"[0-9a-f]{32}", remote_id):
+        raise RuntimeError("模板成片恢复信息无效")
+
+    if remote_id:
+        payload = {
+            key: value for key, value in stored_payload.items()
+            if not str(key).startswith("_")
+        }
+    else:
+        payload = validate_payload(raw, str(raw.get("_username") or ""))
+        _remaining_budget(deadline_at)
+        request_id = "matrix-template-" + re.sub(
+            r"[^A-Za-z0-9_.:-]", "-", local_job
+        )[:80]
+        if not _persist_runtime(
+            local_job, phase="submitting", deadline_at=deadline_at,
+        ):
+            raise RuntimeError("模板成片生命周期状态保存失败")
+        remote = _request(
+            "POST", "/v1/jobs", payload, request_id=request_id,
+            timeout=min(20, _remaining_budget(deadline_at)),
+        )
+        _remaining_budget(deadline_at)
+        remote_id = str(remote.get("job_id") or "")
+        if not re.fullmatch(r"[0-9a-f]{32}", remote_id):
+            raise RuntimeError("模板成片服务没有返回有效任务 ID")
+        _persist_runtime(
+            local_job, phase="provider_queued", provider_job_id=remote_id,
+            provider_submitted_at=int(time.time()), provider_status="pending",
+            deadline_at=deadline_at,
+        )
+    execution_deadline = min(time.monotonic() + JOB_TIMEOUT, time.monotonic() + max(
+        0, deadline_at - time.time()
+    ))
+    last_status = ""
+    while time.monotonic() < execution_deadline and time.time() < deadline_at:
+        current = _request(
+            "GET", "/v1/jobs/" + remote_id,
+            timeout=min(20, _remaining_budget(deadline_at)),
+        )
+        _remaining_budget(deadline_at)
         status = str(current.get("status") or "")
+        if status != last_status:
+            _persist_runtime(
+                local_job,
+                phase="rendering" if status == "running" else "provider_queued",
+                provider_status=status or "unknown",
+            )
+            last_status = status
         if status == "completed":
             result = current.get("result") or {}
-            video_file, file_size = _download(result.get("file_url"), local_job)
+            _persist_runtime(local_job, phase="delivering", provider_status=status)
+            remaining = deadline_at - time.time()
+            if remaining <= 0:
+                raise RuntimeError("模板成片生成超时")
+            video_file, file_size = _download(
+                result.get("file_url"), local_job, timeout=min(240, remaining),
+                deadline_at=deadline_at,
+            )
             return {
                 "type": "matrix_template_video",
                 "mode": "matrix_template",
@@ -395,7 +893,9 @@ def generate(payload):
                 "material_manifest": result.get("material_manifest") or [],
             }
         if status == "failed":
-            raise RuntimeError(str(current.get("error") or "模板成片生成失败")[:500])
+            raise MatrixTemplateProviderFailed(
+                str(current.get("error") or "模板成片生成失败")[:500]
+            )
         time.sleep(POLL_INTERVAL)
     raise RuntimeError("模板成片生成超时")
 

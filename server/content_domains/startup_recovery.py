@@ -1,5 +1,7 @@
 """Recover content jobs left running when the service restarts."""
 
+import json
+import re
 import time
 from contextlib import closing
 
@@ -33,7 +35,7 @@ def reclaim_orphaned_running(
     try:
         with closing(jdb()) as conn:
             rows = conn.execute(
-                "SELECT id, username, cost, kind FROM jobs "
+                "SELECT id, username, cost, kind, payload FROM jobs "
                 "WHERE status='running' AND COALESCE(owner,?)=?",
                 (service_owner, service_owner),
             ).fetchall()
@@ -142,6 +144,42 @@ def reclaim_orphaned_running(
             except Exception as exc:
                 logger("[startup] 查询Sora恢复信息失败，保留 running job=%s: %s" %
                        (row["id"], str(exc)[:200]), flush=True)
+                continue
+        elif row["kind"] == "matrix_template_video":
+            provider = "Matrix template"
+            try:
+                payload = json.loads(row["payload"] or "{}")
+            except (TypeError, ValueError):
+                payload = {}
+            runtime = payload.get("_matrix_runtime") if isinstance(payload, dict) else {}
+            if not isinstance(runtime, dict):
+                runtime = {}
+            provider_job_id = runtime.get("provider_job_id")
+            if (isinstance(provider_job_id, str)
+                    and re.fullmatch(r"[0-9a-f]{32}", provider_job_id)):
+                request_id = provider_job_id
+            elif runtime.get("phase") or provider_job_id:
+                logger(
+                    "[startup] 模板成片提交结果未知，保留 running 待核对 job=%s"
+                    % row["id"], flush=True,
+                )
+                continue
+            else:
+                try:
+                    won_requeue = requeue_job(row["id"])
+                except Exception as exc:
+                    logger(
+                        "[startup] 模板成片提交前恢复异常 job=%s: %s"
+                        % (row["id"], exc), flush=True,
+                    )
+                    continue
+                if won_requeue:
+                    logger(
+                        "[startup] 模板成片提交前恢复排队 job=%s" % row["id"],
+                        flush=True,
+                    )
+                    requeued += 1
+                    handled += 1
                 continue
 
         if request_id:

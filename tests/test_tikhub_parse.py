@@ -69,6 +69,34 @@ def test_parse_link_channels_routes_without_network():
     assert info["platform"] == "channels"
 
 
+def test_parse_link_twitter_status_offline():
+    info = tikhub.parse_link("https://x.com/CrazyKaomei/status/2093502767776366755?s=20")
+    assert info == {"platform": "twitter", "id": "2093502767776366755", "note_type": "post"}
+
+
+def test_twitter_detail_normalizes_documented_response():
+    response = {"tweet_id": "2093502767776366755", "text": "黄雀接入 X #Agent",
+                "created_at": "2026-08-31T00:00:00Z", "favorite_count": 12,
+                "retweet_count": 3, "reply_count": 2, "quote_count": 1, "views": 99,
+                "author": {"screen_name": "CrazyKaomei", "name": "烤梅", "followers_count": 8}}
+    with mock.patch.object(tikhub, "_g", return_value=response):
+        detail = tikhub.twitter_detail("2093502767776366755")
+    assert detail["url"] == "https://x.com/CrazyKaomei/status/2093502767776366755"
+    assert detail["desc"] == "黄雀接入 X #Agent"
+    assert detail["stats"]["view"] == 99
+
+
+def test_twitter_comments_normalizes_typed_items():
+    response = {"comments": [{"tweet_id": "2", "text": "支持", "favorite_count": 4,
+                               "author": {"screen_name": "reader", "name": "读者"}}],
+                "next_cursor": "next"}
+    with mock.patch.object(tikhub, "_g", return_value=response):
+        comments = tikhub.twitter_comments("2093502767776366755")
+    assert comments["items"][0]["text"] == "支持"
+    assert comments["items"][0]["profile_url"] == "https://x.com/reader"
+    assert comments["has_more"] is True
+
+
 def test_parse_link_bilibili_video_url_offline():
     info = tikhub.parse_link("认真做 Agent https://www.bilibili.com/video/BV1EbdbBHEPa")
     assert info == {"platform": "bilibili", "id": "BV1EbdbBHEPa", "note_type": "video"}

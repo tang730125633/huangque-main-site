@@ -20,7 +20,7 @@ import semantic_router
 
 
 SCHEMA = "ip12.cognitive-conformance/v1"
-AUTHORIZED_MAX_REQUESTS = 120
+AUTHORIZED_MAX_REQUESTS = 300  # 上站授权：44 用例 × 3 阶段 + 断连重试余量
 AUTHORIZED_MAX_CNY = 12.0
 _DEPLOYED_CORPUS = Path(__file__).with_name("eval_corpus.json")
 _SOURCE_CORPUS = Path(__file__).resolve().parents[2] / "tests/fixtures/ip12_semantic_router_cases.json"
@@ -104,10 +104,14 @@ def _custom_decider(config, model, budget, max_output_tokens, timeout_seconds):
             "并严格匹配这个 JSON Schema：\n"
             + json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
         )
+        response_format = semantic_router.response_format()
+        if "deepseek" in (config.get("base_url") or ""):
+            # DeepSeek 不支持 json_schema，降级 json_object（提示词已要求只输出 JSON）
+            response_format = {"type": "json_object"}
         payload = {
             "model": model, "messages": messages, "stream": False,
             "max_completion_tokens": max_output_tokens,
-            "response_format": semantic_router.response_format(),
+            "response_format": response_format,
         }
         reservation = copy.deepcopy(payload)
         reservation["max_output_tokens"] = max_output_tokens
@@ -137,15 +141,21 @@ def _custom_decider(config, model, budget, max_output_tokens, timeout_seconds):
 
 
 def _sdk_decider(config, model, budget, max_output_tokens, timeout_seconds):
-    def decide(memory, message, _case):
-        import httpx
-        from openai import AsyncOpenAI
+    import httpx
+    from openai import AsyncOpenAI
 
-        hooks = AsyncBudgetHooks(budget)
-        http_client = httpx.AsyncClient(
-            trust_env=True, timeout=timeout_seconds,
-            event_hooks={"request": [hooks.request], "response": [hooks.response]},
-        )
+    # 每 case 独立 httpx client：长连接共享在长时间评估中会断连，
+    # 独立连接 + 用完即关 换取稳定性（case_delay 已提供冷却间隔）。
+    # trust_env=False：不读系统代理环境变量，DeepSeek/OpenAI 由下方显式代理控制。
+    hooks = AsyncBudgetHooks(budget)
+    proxy = str(os.environ.get("HQ_EVAL_HTTP_PROXY") or "").strip()
+
+    def decide(memory, message, _case):
+        kwargs = {"trust_env": False, "timeout": timeout_seconds,
+                  "event_hooks": {"request": [hooks.request], "response": [hooks.response]}}
+        if proxy:
+            kwargs["proxy"] = proxy
+        http_client = httpx.AsyncClient(**kwargs)
         client = AsyncOpenAI(
             api_key=config["key"], base_url=config["base_url"],
             timeout=timeout_seconds, max_retries=0, http_client=http_client,
@@ -156,6 +166,7 @@ def _sdk_decider(config, model, budget, max_output_tokens, timeout_seconds):
             openai_client=client, max_output_tokens=max_output_tokens,
             close_openai_client=True, provider_name="openai", model_name=model,
         )
+
 
     return decide
 
@@ -199,7 +210,7 @@ def run_t3(args):
         raise RuntimeError("eval_corpus_hash_mismatch")
     eval_contract.validate_cases(cases)
     configs = provider_live_eval.provider_configs()
-    config = configs["openai_official"]
+    config = configs["deepseek" if args.provider == "deepseek" else "openai_official"]
     if not config.get("key"):
         raise RuntimeError("openai_credential_blocked")
     budget = provider_live_eval.Budget(
@@ -213,9 +224,11 @@ def run_t3(args):
     provider_gate_report["provider"] = "openai"
     custom = eval_contract.run_engine(
         cases, _custom_decider(config, args.model, budget, args.max_output_tokens, args.timeout),
+        case_delay=args.case_delay,
     )
     sdk = eval_contract.run_engine(
         cases, _sdk_decider(config, args.model, budget, args.max_output_tokens, args.timeout),
+        case_delay=args.case_delay,
     )
     custom_summary, sdk_summary = _eval_summary(custom), _eval_summary(sdk)
     passed = (
@@ -228,7 +241,7 @@ def run_t3(args):
         "schema": SCHEMA, "decision": "PASS" if passed else "HOLD",
         "evidence_source": "live_capture", "release_sha": args.release_sha,
         "corpus_sha256": eval_contract.CORPUS_SHA256,
-        "provider": "openai", "model": args.model,
+        "provider": args.provider, "model": args.model,
         "created_at": now, "expires_at": now + args.valid_seconds,
         "eval": sdk_summary,
         "custom_eval": custom_summary,
@@ -286,6 +299,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=("t3", "canary"), required=True)
     parser.add_argument("--model", default="gpt-5.6-terra")
+    parser.add_argument("--provider", default="openai", choices=("openai", "deepseek"))
     parser.add_argument("--release-sha", required=True)
     parser.add_argument("--budget-ledger", required=True)
     parser.add_argument("--max-requests", type=int, default=120)
@@ -296,6 +310,7 @@ def main():
     parser.add_argument("--output")
     parser.add_argument("--valid-seconds", type=int, default=86400)
     parser.add_argument("--project")
+    parser.add_argument("--case-delay", type=float, default=0.0)
     parser.add_argument("--message", default="请只告诉我当前 Project 做到哪一步，不要创建或修改任何内容。")
     args = parser.parse_args()
     if args.mode == "t3":
