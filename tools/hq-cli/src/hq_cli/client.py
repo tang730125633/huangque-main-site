@@ -23,7 +23,6 @@ ALLOWED_PATHS = {
     "/api/auth/cli/status",
     "/api/auth/cli/logout",
     "/api/auth/cli/action",
-    "/api/auth/card/media",
 }
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -39,8 +38,9 @@ DIRECTOR_BREAKDOWN_VIDEO_PATH = "/api/auth/cli/director-breakdown-video"
 DIRECTOR_BREAKDOWN_QUOTE_PATH = "/api/auth/cli/director-breakdown-quote"
 ALLOWED_PATHS.add(DIRECTOR_BREAKDOWN_QUOTE_PATH)
 DOWNLOAD_PATH = "/api/gen/dl"
-BATCH_DOWNLOAD_PATH = "/api/gen/asset/batch-download"
-VIDEO_IMPORT_PATH = "/api/gen/video/import"
+BATCH_DOWNLOAD_PATH = "/api/auth/cli/asset-batch-download"
+VIDEO_IMPORT_PATH = "/api/auth/cli/video-import"
+PROFILE_AVATAR_UPLOAD_PATH = "/api/auth/cli/profile-avatar-upload"
 MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024
 
 
@@ -124,7 +124,7 @@ def download_file(url, output, token, name="video", decode_key="", timeout=300, 
             **({"X-HQ-Decode-Key": decode_key} if decode_key else {}),
     }
     if direct_path:
-        if post_payload is not None or not re.fullmatch(r"/api/creator-agent/projects/[0-9a-f]{12}/background\.pdf", direct_path):
+        if post_payload is not None or not re.fullmatch(r"/api/auth/cli/creator-agent-background-pdf\?project_id=[0-9a-f]{12}", direct_path):
             raise ValueError("direct download path is invalid")
         headers["Accept"] = "application/pdf"
         request = urllib.request.Request(API_BASE + direct_path, headers=headers, method="GET")
@@ -420,7 +420,7 @@ def _upload_media(path, token, upload_path, digest_header, opener, timeout, extr
             IMAGE_UPLOAD_PATH, VIDEO_UPLOAD_PATH, AUDIO_UPLOAD_PATH,
             DIGITAL_HUMAN_MATERIAL_UPLOAD_PATH, DIGITAL_HUMAN_AUDIO_UPLOAD_PATH,
             DIRECTOR_BREAKDOWN_IMAGE_PATH, DIRECTOR_BREAKDOWN_VIDEO_PATH,
-            VIDEO_IMPORT_PATH,
+            VIDEO_IMPORT_PATH, PROFILE_AVATAR_UPLOAD_PATH,
     } or not digest_header:
         os.close(descriptor)
         raise ValueError("HQ CLI only uploads to fixed main-site endpoints")
@@ -510,27 +510,9 @@ def upload_video_import(path, token, timeout=180):
 
 
 def upload_profile_avatar(path, token, timeout=120):
-    descriptor, file_stat, mime, _digest = _open_profile_avatar(path)
-    try:
-        raw = bytearray()
-        remaining = file_stat.st_size
-        while remaining:
-            chunk = os.read(descriptor, min(64 * 1024, remaining))
-            if not chunk:
-                raise ValueError("profile avatar changed while reading")
-            raw.extend(chunk)
-            remaining -= len(chunk)
-        after = os.fstat(descriptor)
-        if (file_stat.st_dev, file_stat.st_ino, file_stat.st_size, file_stat.st_mtime_ns) != (
-                after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
-            raise ValueError("profile avatar changed while reading")
-    finally:
-        os.close(descriptor)
-    return request_json(
-        "/api/auth/card/media", method="POST",
-        body={"field": "avatar", "data": "data:%s;base64,%s" % (
-            mime, base64.b64encode(raw).decode("ascii"),
-        )}, token=token, timeout=timeout,
+    return _upload_media(
+        path, token, PROFILE_AVATAR_UPLOAD_PATH,
+        "X-HQ-Image-SHA256", _open_profile_avatar, timeout,
     )
 
 

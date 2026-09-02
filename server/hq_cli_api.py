@@ -2439,6 +2439,14 @@ def proxy_video_upload(stream, length, web_token, internal_token, content_type, 
     )
 
 
+def proxy_video_import(stream, length, web_token, internal_token, content_type, digest, title):
+    return _proxy_media_upload(
+        stream, length, web_token, internal_token, content_type, digest,
+        "/api/gen/video/import", "X-HQ-Video-SHA256", "video",
+        extra_headers={"X-Video-Title": urllib.parse.quote(str(title or "")[:160], safe="._-")},
+    )
+
+
 def proxy_audio_upload(stream, length, web_token, internal_token, content_type, digest):
     return _proxy_media_upload(
         stream, length, web_token, internal_token, content_type, digest,

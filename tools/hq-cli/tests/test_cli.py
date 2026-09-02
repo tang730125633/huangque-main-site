@@ -188,7 +188,7 @@ class HqCliTests(unittest.TestCase):
             self.assertEqual(0, code, error)
             self.assertTrue(self.payload(output)["schema"].startswith("hq."))
         code, output, _ = self.invoke(["version"])
-        self.assertEqual("0.15.1", self.payload(output)["cli_version"])
+        self.assertEqual("0.15.2", self.payload(output)["cli_version"])
         self.assertEqual("Huangque main-site CLI", self.payload(output)["product"])
         self.assertEqual("https://huangquechuanmei.com", self.payload(output)["origin"])
 
@@ -1172,6 +1172,9 @@ class HqCliTests(unittest.TestCase):
 
     def test_web_parity_file_transports_are_fixed_and_confirmed(self):
         self.authorize()
+        self.assertEqual("/api/auth/cli/asset-batch-download", client.BATCH_DOWNLOAD_PATH)
+        self.assertEqual("/api/auth/cli/profile-avatar-upload", client.PROFILE_AVATAR_UPLOAD_PATH)
+        self.assertEqual("/api/auth/cli/video-import", client.VIDEO_IMPORT_PATH)
         avatar_path = os.path.join(self.temp.name, "avatar.png")
         video_path = os.path.join(self.temp.name, "h3.mp4")
         for capability, path, target, result in (
@@ -1218,7 +1221,7 @@ class HqCliTests(unittest.TestCase):
         self.assertEqual(0, code, error)
         download.assert_called_once_with(
             "", pdf_path, "t" * 43, "creator-profile",
-            direct_path="/api/creator-agent/projects/abc123def456/background.pdf",
+            direct_path="/api/auth/cli/creator-agent-background-pdf?project_id=abc123def456",
         )
 
     def test_audio_upload_requires_confirmation_and_uses_file_transport(self):
