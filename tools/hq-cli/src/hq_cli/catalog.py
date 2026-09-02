@@ -556,7 +556,9 @@ CAPABILITIES["short-drama-autodraft-start"] = _api(
     "确认原单镜头报价并启动一次可恢复任务。",
     {"project_id": STRING_ID, "quote_token": {"type": "string", "minLength": 1, "maxLength": 4096},
      "request_id": REQUEST_ID},
-    ["project_id", "quote_token", "request_id"], "short-drama:write", "write", True)
+    ["project_id", "quote_token", "request_id"], "short-drama:write", "write", True,
+    {"kind": "native_quote", "unit": "points", "quote_capability": "short-drama-autodraft-quote",
+     "confirmation": "quote_token input + --confirm"})
 CAPABILITIES["short-drama-autodraft-status"] = _api(
     "short-drama-autodraft-status", "短剧单镜头任务状态", "short-drama-autodraft-status",
     "读取原单镜头任务及扣点退款状态。",
@@ -570,7 +572,9 @@ CAPABILITIES["short-drama-delivery-start"] = _api(
     "确认原正式交付报价并启动一次可恢复任务。",
     {"project_id": STRING_ID, "quote_token": {"type": "string", "minLength": 1, "maxLength": 4096},
      "request_id": REQUEST_ID},
-    ["project_id", "quote_token", "request_id"], "short-drama:write", "write", True)
+    ["project_id", "quote_token", "request_id"], "short-drama:write", "write", True,
+    {"kind": "native_quote", "unit": "points", "quote_capability": "short-drama-delivery-quote",
+     "confirmation": "quote_token input + --confirm"})
 CAPABILITIES["short-drama-delivery-status"] = _api(
     "short-drama-delivery-status", "短剧正式交付状态", "short-drama-delivery-status",
     "读取原正式交付任务及退款状态。",
@@ -1608,6 +1612,8 @@ def _agent_operation(capability):
         return "navigate"
     if capability["kind"] == "upload":
         return "create"
+    if capability["cost"].get("kind") == "native_quote":
+        return "execute"
     if capability["side_effect"] == "paid":
         return "execute"
     if capability["side_effect"] == "read":
@@ -1683,7 +1689,17 @@ def _attach_agent_guidance():
             preconditions.append("授权必须包含 %s。" % capability["required_scope"])
         if capability["confirmation_required"]:
             preconditions.append("执行外部写入前必须显式传 --confirm。")
-        if capability["side_effect"] == "paid":
+        native_quote = capability["cost"].get("kind") == "native_quote"
+        if native_quote:
+            quote_capability = capability["cost"]["quote_capability"]
+            preconditions.append("授权同时必须包含 generation:submit。")
+            workflow = [
+                "先调用 %s 获取绑定当前项目/版本的服务端报价。" % quote_capability,
+                "向用户展示 cost、points 与具体扣点，得到明确同意。",
+                "仅一次把原 quote_token 放入当前输入，并传 --confirm；request_id 必须稳定。",
+                "拿到 job_id 后只调用对应 status 查询原任务，并验证成品与账务。",
+            ]
+        elif capability["side_effect"] == "paid":
             workflow = [
                 "先用相同输入且不带 --confirm 获取服务器报价。",
                 "向用户展示 cost、points 与具体扣点，得到明确同意。",
@@ -1696,7 +1712,7 @@ def _attach_agent_guidance():
             if capability["confirmation_required"]:
                 workflow.append("在执行写入前向用户说明影响并传 --confirm。")
         recovery = ["失败后先读取目标的最新状态，不盲目重复写入。"]
-        if capability["side_effect"] == "paid":
+        if capability["side_effect"] == "paid" or native_quote:
             recovery = ["响应不确定时只查询原 job_id/request_id；禁止重新提交付费创建。"]
         elif operation in {"update", "delete"}:
             recovery.append("冲突或超时后重新 list/get；确认状态未变化前不要重试。")
