@@ -223,7 +223,7 @@
   var bulkToggle=document.getElementById('bulkToggle'), bulkAll=document.getElementById('bulkAll'), bulkBar=document.getElementById('bulkBar'),
       bulkCount=document.getElementById('bulkCount'), bulkDownload=document.getElementById('bulkDownload'), bulkDelete=document.getElementById('bulkDelete'), bulkCancel=document.getElementById('bulkCancel');
   var favOnly=document.getElementById('favOnly'), tagFilter=document.getElementById('tagFilter');
-  var searchTerm='', multi=false, selected={}, visibleItems=[], MARKS={}, onlyFav=false, activeTag='', videoFrameObserver=null;
+  var searchTerm='', multi=false, selected={}, visibleItems=[], MARKS={}, onlyFav=false, activeTag='', videoFrameObserver=null, activeVideoFrames=[];
   function freshUrl(url){
     url=String(url||'');
     return /[?&]q-sign-/.test(url)||/voice_preview_/.test(url)?url:url+(url.indexOf('?')>=0?'&':'?')+'_='+(Date.now());  // voice_preview_ 内容哈希不可变，别击穿浏览器缓存
@@ -249,18 +249,21 @@
   function resetVideoFrameObserver(){
     if(videoFrameObserver) videoFrameObserver.disconnect();
     videoFrameObserver=null;
+    activeVideoFrames.forEach(function(video){
+      try{video.pause()}catch(e){}
+      try{video.removeAttribute('src');video.load()}catch(e){}
+    });
+    activeVideoFrames=[];
   }
   function activateVideoFrame(video){
     var source=String(video&&video.dataset&&video.dataset.src||'').trim();
     if(!video||!source)return;
-    video.removeAttribute('data-src');
-    // Protected local files need an authenticated fetch; production assets are
-    // returned as refreshed private COS URLs and can use efficient range loads.
-    if(source.indexOf('/api/gen/file/')===0)return;
     var preview=freshUrl(source);
     if(preview.indexOf('#')<0)preview+='#t=0.1';
-    video.preload='auto';
+    video.preload='metadata';
     video.src=preview;
+    video.removeAttribute('data-src');
+    activeVideoFrames.push(video);
     video.addEventListener('loadedmetadata',function(){
       if(video.currentTime<0.05&&isFinite(video.duration)&&video.duration>0.1){
         try{video.currentTime=Math.min(0.1,video.duration/2)}catch(e){}
