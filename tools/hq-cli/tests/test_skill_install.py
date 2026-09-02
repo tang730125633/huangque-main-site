@@ -15,9 +15,9 @@ OPENAI_YAML = b'interface:\n  display_name: "Huangque CLI"\n'
 def manifest_bytes(skill=SKILL, openai_yaml=OPENAI_YAML):
     manifest = {
         "schema": "huangque.agent-skill/v1",
-        "skill": {"name": "use-huangque-cli", "version": "0.3.0"},
+        "skill": {"name": "use-huangque-cli", "version": "0.4.0"},
         "cli": {"minimum": "0.10.2", "tested": "0.10.2", "latest": "0.10.2", "installer": "0.11.0"},
-        "source_ref": "v0.3.0",
+        "source_ref": "v0.4.0",
         "files": [
             {
                 "path": "skills/use-huangque-cli/SKILL.md",
@@ -59,7 +59,7 @@ FIXTURE_MANIFEST_SHA256 = hashlib.sha256(manifest_bytes()).hexdigest()
 
 class SkillInstallTests(unittest.TestCase):
     def test_manifest_is_pinned_to_the_reviewed_skill_release(self):
-        self.assertEqual("0.3.0", skill_install.SKILL_VERSION)
+        self.assertEqual("0.4.0", skill_install.SKILL_VERSION)
         self.assertIn(skill_install.SKILL_COMMIT, skill_install.MANIFEST_URL)
         self.assertEqual(40, len(skill_install.SKILL_COMMIT))
         self.assertRegex(skill_install.MANIFEST_SHA256, r"^[0-9a-f]{64}$")
@@ -82,7 +82,7 @@ class SkillInstallTests(unittest.TestCase):
                     self.assertEqual("installed", result["status"])
                     self.assertEqual(SKILL, (destination / "SKILL.md").read_bytes())
                     self.assertEqual(OPENAI_YAML, (destination / "agents/openai.yaml").read_bytes())
-                    self.assertEqual("0.3.0", json.loads(
+                    self.assertEqual("0.4.0", json.loads(
                         (destination / ".huangque-skill.json").read_text(encoding="utf-8")
                     )["version"])
 
