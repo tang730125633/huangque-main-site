@@ -59,6 +59,7 @@ class MatrixTemplateSemanticsTests(unittest.TestCase):
         )
         self.assertIn("top3: 68px", prompt)
         self.assertIn("分配到 top3", prompt)
+        self.assertIn("短视频", prompt)
 
     def test_prompt_exposes_layer_specific_effective_width(self):
         contract = self.v05_contract()
@@ -143,6 +144,72 @@ class MatrixTemplateSemanticsTests(unittest.TestCase):
         generate.assert_called_once()
         self.assertEqual(2, validator.call_count)
 
+    def test_repair_feedback_identifies_longest_blocks_and_protects_words(self):
+        top = (
+            "我是大鹏 陕西西安人在广州有个健康赛道创业圈子"
+            "资源共享|大健康|AI矩阵社交破圈|一人公司"
+        )
+        bottom = "PL区扣888"
+        value = {
+            "top_break_after": [3, 4, 9, 22, 27, 31, 40],
+            "bottom_break_after": [],
+        }
+        feedback = self.module._repair_feedback(
+            value, "HyperFrames 无法排入", top, bottom,
+        )
+        self.assertIn("顶部最长块为索引 10-22", feedback)
+        self.assertIn("'在广州有个健康赛道创业圈子'", feedback)
+        self.assertIn("不得原样重复", feedback)
+        self.assertIn("严禁拆开任何双字词", feedback)
+        self.assertIn("top2/top3", feedback)
+
+    def test_failed_mini_candidate_uses_stronger_repair_model(self):
+        top = (
+            "我是大鹏 陕西西安人在广州有个健康赛道创业圈子"
+            "资源共享|大健康|AI矩阵社交破圈|一人公司"
+        )
+        bottom = "PL区扣888"
+        first = {
+            "version": 1, "model": "gpt-4.1-mini",
+            "source_sha256": self.module._source_sha256(top, bottom),
+            "top1_end": 4,
+            "top_break_after": [3, 4, 9, 22, 27, 31, 40],
+            "bottom_break_after": [],
+        }
+        repaired = {
+            **first, "model": "gpt-4.1", "top1_end": 9,
+            "top_break_after": [3, 4, 9, 12, 22, 27, 31, 40],
+        }
+        calls = []
+
+        def generated(_top, _bottom, _contract, *, previous=None,
+                      feedback="", model=None):
+            calls.append({
+                "previous": previous, "feedback": feedback, "model": model,
+            })
+            return first if previous is None else repaired
+
+        validator = mock.Mock(side_effect=lambda value: (
+            (True, {"ok": True}) if value == repaired
+            else (False, "HyperFrames 文案无法在完整语义边界内排入模板")
+        ))
+        with mock.patch.object(
+            self.module, "generate", side_effect=generated,
+        ):
+            result, response = self.module.resolve(
+                top, bottom, "ref-05-changsha-white-red",
+                self.v05_contract(), validator,
+            )
+        self.assertEqual(repaired, result)
+        self.assertEqual({"ok": True}, response)
+        self.assertEqual(
+            [self.module.MODEL, self.module.REPAIR_MODEL],
+            [item["model"] for item in calls],
+        )
+        self.assertIn("顶部最长块为索引 10-22", calls[1]["feedback"])
+        self.assertEqual(first, calls[1]["previous"])
+        self.assertEqual(2, validator.call_count)
+
     def test_index_response_never_rewrites_source(self):
         top = "团队8个人，每天产出100条短视频，覆盖全部平台"
         bottom = "想进军健康赛道的，勾兑勾兑"
@@ -158,9 +225,16 @@ class MatrixTemplateSemanticsTests(unittest.TestCase):
         fake.__enter__.return_value = io.BytesIO(json.dumps(response).encode())
         fake.__exit__.return_value = False
         with mock.patch.object(self.module, "OPENAI_KEY", "configured"), \
-             mock.patch.object(self.module.urllib.request, "urlopen", return_value=fake):
-            value = self.module.generate(top, bottom, self.contract())
+             mock.patch.object(
+                 self.module.urllib.request, "urlopen", return_value=fake,
+             ) as urlopen:
+            value = self.module.generate(
+                top, bottom, self.contract(), model="gpt-4.1",
+            )
         self.assertEqual(1, value["top1_end"])
+        self.assertEqual("gpt-4.1", value["model"])
+        request_body = json.loads(urlopen.call_args.args[0].data)
+        self.assertEqual("gpt-4.1", request_body["model"])
         self.assertIn(1, value["top_break_after"])
         self.assertEqual(
             self.module._source_sha256(top, bottom), value["source_sha256"]
@@ -225,6 +299,21 @@ class MatrixTemplateSemanticsTests(unittest.TestCase):
                 self.assertTrue(commas)
                 self.assertTrue(all(index in breaks for index in commas))
 
+    def test_domain_phrases_never_accept_internal_breaks(self):
+        value = (
+            "健康赛道创业圈子资源共享大健康AI矩阵"
+            "社交破圈一人公司短视频平台源头供应链"
+        )
+        breaks = self.module._normalize_breaks(
+            list(range(len(value) - 1)), value,
+        )
+        for phrase in self.module._DOMAIN_PROTECTED_PHRASES:
+            if phrase not in value:
+                continue
+            start = value.index(phrase)
+            for index in range(start, start + len(phrase) - 1):
+                self.assertNotIn(index, breaks, phrase)
+
     def test_single_flight_covers_generation_repair_and_validation(self):
         top, bottom = "团队8个人，每天产出100条短视频", "评论区扣888"
         first = {
@@ -240,7 +329,7 @@ class MatrixTemplateSemanticsTests(unittest.TestCase):
                 self.module._CACHE.clear()
 
                 def generated(_top, _bottom, _contract, *, previous=None,
-                              feedback=""):
+                              feedback="", model=None):
                     return repaired if previous is not None and feedback else first
 
                 def validator(value):
