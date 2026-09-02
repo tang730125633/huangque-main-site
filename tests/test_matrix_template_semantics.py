@@ -69,6 +69,79 @@ class MatrixTemplateSemanticsTests(unittest.TestCase):
             contract,
         )
         self.assertIn("bottom2: 70px，可用宽 862px", prompt)
+        self.assertIn("不确定时宁可选更早的完整语义边界", prompt)
+
+    def test_top1_normalization_uses_nearest_boundary_and_prefers_earlier_tie(self):
+        self.assertEqual(
+            4,
+            self.module._nearest_safe_top1_end(5, [4, 6], "一二三四五六七八"),
+        )
+
+    def test_resolve_rebalances_to_earlier_ai_boundary_before_second_ai_call(self):
+        top = (
+            "我在广州 组了一个健康赛道创业者的圈子 "
+            "每天线上交流AI、流量、爆款项目、源头供应链"
+        )
+        bottom = "评论区扣888"
+        first_boundary = top.index(" ")
+        current_boundary = top.index(" ", first_boundary + 1)
+        value = {
+            "version": 1, "model": "gpt-4.1-mini",
+            "source_sha256": self.module._source_sha256(top, bottom),
+            "top1_end": current_boundary,
+            "top_break_after": [
+                first_boundary, current_boundary - 1, current_boundary,
+            ],
+            "bottom_break_after": [],
+        }
+
+        def validator(candidate):
+            if candidate["top1_end"] == first_boundary:
+                return True, {"ok": True}
+            return False, "HyperFrames 文案无法在完整语义边界内排入模板"
+
+        validator_mock = mock.Mock(side_effect=validator)
+        with mock.patch.object(
+            self.module, "generate", return_value=value,
+        ) as generate:
+            result, response = self.module.resolve(
+                top, bottom, "ref-04-fixture-04", self.v05_contract(),
+                validator_mock,
+            )
+        self.assertEqual(first_boundary, result["top1_end"])
+        self.assertEqual({"ok": True}, response)
+        generate.assert_called_once()
+        self.assertEqual(2, validator_mock.call_count)
+
+    def test_resolve_rebalances_three_layer_copy_at_complete_phrase(self):
+        top = (
+            "我是大鹏 陕西西安人 在广州有个健康赛道创业圈子 "
+            "资源共享|大健康|AI矩阵社交破圈|一人公司"
+        )
+        bottom = "评论区扣111"
+        spaces = [index for index, char in enumerate(top) if char == " "]
+        target, current = spaces[1], spaces[2]
+        value = {
+            "version": 1, "model": "gpt-4.1-mini",
+            "source_sha256": self.module._source_sha256(top, bottom),
+            "top1_end": current,
+            "top_break_after": [spaces[0], target, current - 1, current],
+            "bottom_break_after": [],
+        }
+        validator = mock.Mock(side_effect=lambda candidate: (
+            (True, {"ok": True}) if candidate["top1_end"] == target
+            else (False, "HyperFrames 文案无法在完整语义边界内排入模板")
+        ))
+        with mock.patch.object(
+            self.module, "generate", return_value=value,
+        ) as generate:
+            result, _response = self.module.resolve(
+                top, bottom, "ref-05-fixture-05", self.v05_contract(),
+                validator,
+            )
+        self.assertEqual(target, result["top1_end"])
+        generate.assert_called_once()
+        self.assertEqual(2, validator.call_count)
 
     def test_index_response_never_rewrites_source(self):
         top = "团队8个人，每天产出100条短视频，覆盖全部平台"

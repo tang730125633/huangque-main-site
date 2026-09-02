@@ -205,46 +205,15 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
         }, self.module.public_batch_capability())
 
-        with mock.patch.object(self.module, "_request", return_value={
-            "templates": self.reference_templates(("v02",)),
-            "max_batch_size": 5,
-            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
-        }):
-            legacy = self.module.public_templates(force=True)
-        self.assertEqual(
-            ["v02"],
-            [item["variant"] for item in legacy if item.get("semantic_layout")],
-        )
-        self.assertNotIn(
-            "font_weight",
-            next(
-                item for item in legacy if item.get("variant") == "v02"
-            )["semantic_layout"]["layers"]["top1"],
-        )
-        self.assertNotIn(
-            "semantic_layout",
-            next(item for item in legacy if item.get("variant") == "v05"),
-        )
-
-        with mock.patch.object(self.module, "_request", return_value={
-            "templates": self.reference_templates(("v02", "v05")),
-            "max_batch_size": 5,
-            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
-        }):
-            transitional = self.module.public_templates(force=True)
-        self.assertEqual(
-            ["v02", "v05"],
-            [
-                item["variant"] for item in transitional
-                if item.get("semantic_layout")
-            ],
-        )
-        self.assertEqual(
-            3,
-            next(
-                item for item in transitional if item.get("variant") == "v05"
-            )["semantic_layout"]["layers"]["top3"]["max_lines"],
-        )
+        for partial in (("v02",), ("v02", "v05")):
+            with self.subTest(partial=partial), mock.patch.object(
+                self.module, "_request", return_value={
+                    "templates": self.reference_templates(partial),
+                    "max_batch_size": 5,
+                    "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+                },
+            ), self.assertRaisesRegex(RuntimeError, "语义排版|不完整"):
+                self.module.public_templates(force=True)
 
     def test_reference_catalog_rejects_missing_v02_unknown_variant_and_drift(self):
         invalid_cases = []
@@ -301,19 +270,14 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             ), self.assertRaisesRegex(RuntimeError, "语义排版|不完整"):
                 self.module.public_templates(force=True)
 
-    def test_current_production_v02_v05_legacy_catalog_is_accepted(self):
+    def test_legacy_partial_semantic_catalog_is_rejected(self):
         templates = self.reference_templates(("v02", "v05"))
         with mock.patch.object(self.module, "_request", return_value={
             "templates": templates,
             "max_batch_size": 5,
             "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
-        }):
-            values = self.module.public_templates(force=True)
-        actual = {
-            item["variant"]: item["semantic_layout"]
-            for item in values if item.get("semantic_layout")
-        }
-        self.assertEqual(PRODUCTION_LEGACY_SEMANTIC_CONTRACTS, actual)
+        }), self.assertRaisesRegex(RuntimeError, "语义排版|不完整"):
+            self.module.public_templates(force=True)
 
     def test_availability_accepts_two_fifteen_or_nineteen_healthy_templates(self):
         for count in (2, 15, 19):
@@ -346,18 +310,36 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             })
 
     def test_reference_template_ignores_font_selection(self):
+        semantic = {
+            "version": 1, "model": "gpt-4.1-mini",
+            "source_sha256": self.module.matrix_template_semantics._source_sha256(
+                "活动标题", "评论区回复关键词",
+            ),
+            "top1_end": 3, "top_break_after": [],
+            "bottom_break_after": [],
+        }
         expected = {
             "top_text": "活动标题", "bottom_text": "评论区回复关键词",
             "template_id": "ref-01-fixture-01", "bgm": True,
-            "duration": 8.0,
+            "duration": 8.0, "semantic_layout": semantic,
         }
+
+        def resolve(_top, _bottom, _template_id, _contract, validator):
+            layout = dict(semantic)
+            accepted, response = validator(layout)
+            self.assertTrue(accepted)
+            return layout, response
+
         with mock.patch.object(self.module, "require_available"), \
              mock.patch.object(
                  self.module, "public_templates",
-                 return_value=self.reference_templates(("v02", "v05")),
+                 return_value=self.reference_templates(),
              ), \
              mock.patch.object(
-                 self.module, "_request", return_value={"payload": expected}
+                 self.module.matrix_template_semantics, "resolve",
+                 side_effect=resolve,
+             ), mock.patch.object(
+                 self.module, "_request", return_value={"payload": expected},
              ) as request:
             result = self.module.validate_payload({
                 **expected,
@@ -375,10 +357,14 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         with mock.patch.object(self.module, "require_available"), \
              mock.patch.object(
                  self.module, "public_templates",
-                 return_value=self.reference_templates(("v02", "v05")),
+                 return_value=self.reference_templates(),
              ), \
              mock.patch.object(
-                 self.module, "_request", return_value={"payload": batch_expected}
+                 self.module.matrix_template_semantics, "resolve",
+                 side_effect=resolve,
+             ), mock.patch.object(
+                 self.module, "_request",
+                 return_value={"payload": batch_expected},
              ):
             batch = self.module.validate_payload(batch_expected, "alice")
         self.assertEqual(("a" * 32, 2, 5), (
@@ -607,7 +593,74 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         ))
         resolve_call.assert_called_once()
 
-    def test_semantic_failure_falls_back_to_generation_owned_layout(self):
+    def test_worker_reuses_frozen_semantic_layout_without_second_ai_call(self):
+        template = next(
+            item for item in self.reference_templates()
+            if item.get("variant") == "v02"
+        )
+        top = "团队8个人，每天产出100条短视频"
+        bottom = "评论区扣888"
+        semantic = {
+            "version": 1, "model": "gpt-4.1-mini",
+            "source_sha256": self.module.matrix_template_semantics._source_sha256(
+                top, bottom,
+            ),
+            "top1_end": top.index("，"),
+            "top_break_after": [top.index("，")],
+            "bottom_break_after": [],
+        }
+        expected = {
+            "top_text": top, "bottom_text": bottom,
+            "template_id": template["id"], "bgm": False,
+            "duration": 11, "semantic_layout": semantic,
+        }
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(
+                 self.module, "public_templates", return_value=[template],
+             ), mock.patch.object(
+                 self.module.matrix_template_semantics, "resolve",
+             ) as resolve, mock.patch.object(
+                 self.module, "_request", return_value={"payload": expected},
+             ) as request:
+            result = self.module.validate_payload(
+                expected, "alice", trusted_semantic_layout=semantic,
+            )
+        self.assertEqual(semantic, result["semantic_layout"])
+        resolve.assert_not_called()
+        self.assertEqual(1, request.call_count)
+
+    def test_worker_rejects_invalid_frozen_layout_without_second_ai_call(self):
+        template = next(
+            item for item in self.reference_templates()
+            if item.get("variant") == "v02"
+        )
+        semantic = {
+            "version": 1, "model": "gpt-4.1-mini",
+            "source_sha256": "a" * 64, "top1_end": 1,
+            "top_break_after": [1], "bottom_break_after": [],
+        }
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(
+                 self.module, "public_templates", return_value=[template],
+             ), mock.patch.object(
+                 self.module.matrix_template_semantics, "resolve",
+             ) as resolve, mock.patch.object(
+                 self.module, "_request",
+                 side_effect=self.module.MatrixTemplateHTTPError(
+                     400, "HyperFrames 文案无法在完整语义边界内排入模板",
+                 ),
+             ), self.assertRaisesRegex(ValueError, "任务失败.*退点"):
+            self.module.validate_payload(
+                {
+                    "top_text": "团队8个人，每天产出100条短视频",
+                    "bottom_text": "评论区扣888",
+                    "template_id": template["id"], "bgm": False,
+                },
+                "alice", trusted_semantic_layout=semantic,
+            )
+        resolve.assert_not_called()
+
+    def test_semantic_failure_aborts_without_generation_owned_fallback(self):
         template = next(
             item for item in self.reference_templates()
             if item.get("variant") == "v02"
@@ -621,11 +674,9 @@ class MatrixTemplateVideoTests(unittest.TestCase):
 
         def preflight(_method, _path, body, **_kwargs):
             requests.append(dict(body))
-            if "semantic_layout" in body:
-                raise self.module.MatrixTemplateHTTPError(
-                    400, "HyperFrames 顶部语义断点拆开了完整词组",
-                )
-            return {"payload": dict(body, duration=11)}
+            raise self.module.MatrixTemplateHTTPError(
+                400, "HyperFrames 顶部语义断点拆开了完整词组",
+            )
 
         def resolve(_top, _bottom, _template_id, _contract, validator):
             accepted, feedback = validator(rejected)
@@ -641,39 +692,9 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                  side_effect=resolve,
              ), mock.patch.object(
                  self.module, "_request", side_effect=preflight,
+             ), self.assertRaisesRegex(
+                 ValueError, "AI 断句失败.*未扣点",
              ):
-            result = self.module.validate_payload({
-                "top_text": "团队8个人，每天产出100条短视频",
-                "bottom_text": "评论区扣888",
-                "template_id": template["id"],
-                "bgm": False,
-            })
-
-        self.assertEqual(2, len(requests))
-        self.assertIn("semantic_layout", requests[0])
-        self.assertNotIn("semantic_layout", requests[1])
-        self.assertNotIn("semantic_layout", result)
-        self.assertEqual(11, result["duration"])
-
-    def test_semantic_fallback_keeps_generation_failure_closed(self):
-        from content_domains import feature_flags
-
-        template = next(
-            item for item in self.reference_templates()
-            if item.get("variant") == "v02"
-        )
-        with mock.patch.object(self.module, "require_available"), \
-             mock.patch.object(
-                 self.module, "public_templates", return_value=[template],
-             ), mock.patch.object(
-                 self.module.matrix_template_semantics, "resolve",
-                 side_effect=RuntimeError("AI 语义排版服务连接失败"),
-             ), mock.patch.object(
-                 self.module, "_request",
-                 side_effect=self.module.MatrixTemplateHTTPError(
-                     503, "generation unavailable",
-                 ),
-             ), self.assertRaises(feature_flags.FeatureDisabled):
             self.module.validate_payload({
                 "top_text": "团队8个人，每天产出100条短视频",
                 "bottom_text": "评论区扣888",
@@ -681,47 +702,35 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                 "bgm": False,
             })
 
-    def test_semantic_connection_failure_uses_generation_owned_layout(self):
+        self.assertEqual(1, len(requests))
+        self.assertIn("semantic_layout", requests[0])
+
+    def test_semantic_connection_failure_aborts_before_preflight(self):
         template = next(
             item for item in self.reference_templates()
             if item.get("variant") == "v02"
         )
-        requests = []
-
-        def preflight(_method, _path, body, **_kwargs):
-            requests.append(dict(body))
-            return {"payload": dict(body, duration=12)}
-
         with mock.patch.object(self.module, "require_available"), \
              mock.patch.object(
                  self.module, "public_templates", return_value=[template],
              ), mock.patch.object(
                  self.module.matrix_template_semantics, "resolve",
                  side_effect=RuntimeError("AI 语义排版服务连接失败"),
-             ), mock.patch.object(
-                 self.module, "_request", side_effect=preflight,
-             ):
-            result = self.module.validate_payload({
+             ), mock.patch.object(self.module, "_request") as request, \
+             self.assertRaisesRegex(ValueError, "AI 断句失败.*未扣点"):
+            self.module.validate_payload({
                 "top_text": "团队8个人，每天产出100条短视频",
                 "bottom_text": "评论区扣888",
                 "template_id": template["id"],
                 "bgm": False,
             })
+        request.assert_not_called()
 
-        self.assertEqual(1, len(requests))
-        self.assertNotIn("semantic_layout", requests[0])
-        self.assertNotIn("semantic_layout", result)
-        self.assertEqual(12, result["duration"])
-
-    def test_v05_without_contract_keeps_legacy_preflight(self):
+    def test_reference_template_without_semantic_contract_fails_closed(self):
         template = next(
             item for item in self.reference_templates(("v02",))
             if item.get("variant") == "v05"
         )
-
-        def preflight(_method, _path, body, **_kwargs):
-            return {"payload": dict(body, duration=13)}
-
         with mock.patch.object(self.module, "require_available"), \
              mock.patch.object(
                  self.module, "public_templates", return_value=[template],
@@ -729,15 +738,16 @@ class MatrixTemplateVideoTests(unittest.TestCase):
              mock.patch.object(
                  self.module.matrix_template_semantics, "resolve",
              ) as resolve, \
-             mock.patch.object(self.module, "_request", side_effect=preflight):
-            result = self.module.validate_payload({
+             mock.patch.object(self.module, "_request") as request, \
+             self.assertRaisesRegex(ValueError, "AI 断句能力不可用.*未扣点"):
+            self.module.validate_payload({
                 "top_text": "团队8个人，每天产出100条短视频",
                 "bottom_text": "评论区扣111",
                 "template_id": template["id"],
                 "bgm": False,
             })
         resolve.assert_not_called()
-        self.assertNotIn("semantic_layout", result)
+        request.assert_not_called()
 
     def test_v02_http_200_normalization_is_accepted_once_for_concurrent_batch(self):
         template = next(
