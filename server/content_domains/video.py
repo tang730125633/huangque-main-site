@@ -4483,25 +4483,27 @@ def _heygen_video_info(payload):
     candidates = []
     seen = set()
 
-    def collect(node):
+    def collect(node, ancestors=()):
         if isinstance(node, list):
             for item in node[:5]:
-                collect(item)
+                collect(item, ancestors)
             return
         if not isinstance(node, dict) or id(node) in seen:
             return
         seen.add(id(node))
         for key in ("data", "result", "video"):
-            collect(node.get(key))
-        candidates.append(node)
+            collect(node.get(key), ancestors + (node,))
+        candidates.append((node, ancestors + (node,)))
 
     collect(payload)
     selected = None
+    selected_path = ()
     raw_status = ""
-    for node in candidates:
+    for node, path in candidates:
         value = node.get("status") or node.get("state")
         if value is not None and str(value).strip():
             selected = node
+            selected_path = path
             raw_status = str(value).strip().lower()
             break
     if selected is None:
@@ -4526,10 +4528,56 @@ def _heygen_video_info(payload):
         "thumbnail_url": ("thumbnail_url", "thumbnailUrl"),
         "duration": ("duration",),
     }
+    selected_path_ids = {id(node) for node in selected_path}
+
+    def meaningful(node, names):
+        return any(
+            node.get(name) is not None and str(node.get(name)).strip()
+            for name in names
+        )
+
+    # Multiple states on one wrapper path are acceptable only when their aliases
+    # normalize to the same canonical state (for example done/completed).
+    for node in selected_path:
+        if node is selected:
+            continue
+        value = node.get("status") or node.get("state")
+        other_raw_status = str(value).strip().lower() if value is not None else ""
+        if not other_raw_status:
+            continue
+        if other_raw_status in _HEYGEN_VIDEO_READY:
+            other_status = "completed"
+        elif other_raw_status in _HEYGEN_VIDEO_FAILED:
+            other_status = "failed"
+        elif other_raw_status in _HEYGEN_VIDEO_ACTIVE:
+            other_status = "processing" if other_raw_status in {
+                "processing", "in_progress", "in-progress", "rendering",
+                "generating", "running",
+            } else "pending"
+        else:
+            return dict(selected), raw_status, False
+        if other_status != status:
+            return dict(selected), raw_status, False
+
+    # Never join state from one wrapper branch to media fields or another state
+    # from its sibling.  A provider response with multiple populated branches is
+    # ambiguous, so polling must continue instead of delivering unrelated media.
+    for node, _ in candidates:
+        if id(node) in selected_path_ids:
+            continue
+        has_status = meaningful(node, ("status", "state"))
+        has_media_field = any(
+            meaningful(node, names)
+            for names in aliases.values()
+        )
+        if has_status or has_media_field:
+            return dict(selected), raw_status, False
     for canonical, names in aliases.items():
         if info.get(canonical) is not None:
             continue
-        for node in candidates:
+        # The selected node and its explicit ancestors describe one response
+        # branch.  Descendants and siblings are not safe alias sources.
+        for node in reversed(selected_path):
             value = next((node.get(name) for name in names if node.get(name) is not None), None)
             if value is not None:
                 info[canonical] = value
@@ -4628,12 +4676,27 @@ def _heygen_poll_video(video_id, direct=False, deadline_s=None, mcp=False):
                 raise RuntimeError("HeyGen完成但未返回video_url")
             return info
         if recognized and status == "failed":
-            detail = json.dumps(info, ensure_ascii=False)[:500]
-            print("[heygen] FAIL GET /videos/%s -> provider %s" % (video_id, detail), flush=True)
             provider_error = str(info.get("failure_message") or info.get("error") or info.get("failure_code") or "").strip()
             if any(word in provider_error.lower() for word in ("moderation", "flagged", "content policy", "real person")):
-                provider_error = "内容审核未通过，请更换人物图片、参考视频或提示词"
-            raise RuntimeError("HeyGen视频生成失败: %s" % (provider_error[:160] or "上游未返回失败原因"))
+                public_error = "内容审核未通过，请更换人物图片、参考视频或提示词"
+                failure_kind = "moderation"
+            else:
+                public_error = "上游返回失败状态，请稍后重试或联系客服"
+                failure_kind = "provider"
+            # Provider values may contain prompts, signed URLs, or credentials.
+            # Log only a bounded category and structural presence flags.
+            print(
+                "[heygen] FAIL GET /videos/%s status=failed failure_kind=%s "
+                "has_error=%s has_failure_code=%s"
+                % (
+                    video_id,
+                    failure_kind,
+                    bool(info.get("failure_message") or info.get("error")),
+                    bool(info.get("failure_code")),
+                ),
+                flush=True,
+            )
+            raise RuntimeError("HeyGen视频生成失败: %s" % public_error)
         time.sleep(HEYGEN_POLL_INTERVAL)
     if consecutive_net_fails:
         raise HeyGenNetworkError("HeyGen状态查询网络持续失败，已保留原video_id，禁止重复提交")

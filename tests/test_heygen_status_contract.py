@@ -23,6 +23,42 @@ class HeyGenStatusShapeTests(unittest.TestCase):
         self.assertEqual(status, "completed")
         self.assertEqual(info["video_url"], "https://cdn.example/video.mp4")
 
+    def test_media_alias_may_come_from_selected_status_ancestor(self):
+        info, status, recognized = video._heygen_video_info({
+            "result": {
+                "video_url": "https://cdn.example/video.mp4",
+                "video": {"state": "done"},
+            }
+        })
+        self.assertTrue(recognized)
+        self.assertEqual(status, "completed")
+        self.assertEqual(info["video_url"], "https://cdn.example/video.mp4")
+
+    def test_sibling_wrapper_media_is_ambiguous_instead_of_joined(self):
+        info, status, recognized = video._heygen_video_info({
+            "data": {"status": "completed"},
+            "result": {"video_url": "https://cdn.example/unrelated.mp4"},
+        })
+        self.assertFalse(recognized)
+        self.assertEqual(status, "completed")
+        self.assertNotIn("video_url", info)
+
+    def test_sibling_wrapper_status_is_ambiguous(self):
+        _, _, recognized = video._heygen_video_info({
+            "data": {"status": "completed", "video_url": "https://cdn.example/a.mp4"},
+            "result": {"status": "processing"},
+        })
+        self.assertFalse(recognized)
+
+    def test_conflicting_statuses_on_one_wrapper_path_are_ambiguous(self):
+        _, _, recognized = video._heygen_video_info({
+            "result": {
+                "status": "processing",
+                "video": {"status": "completed", "video_url": "https://cdn.example/a.mp4"},
+            }
+        })
+        self.assertFalse(recognized)
+
     def test_unknown_status_is_not_treated_as_processing(self):
         _, status, recognized = video._heygen_video_info({"data": {"status": "mystery"}})
         self.assertFalse(recognized)
@@ -98,6 +134,56 @@ class HeyGenStatusPollingTests(unittest.TestCase):
         crosscheck.assert_called_once_with("provider-task-id")
         logs = " ".join(str(call) for call in output.call_args_list)
         self.assertNotIn("404 body secret", logs)
+
+    def test_failed_status_never_logs_or_raises_provider_secrets(self):
+        payload = {
+            "data": {
+                "status": "failed",
+                "video_url": "https://files2.heygen.ai/private.mp4?Signature=secret-token",
+                "error": "provider-secret-value",
+                "failure_code": "secret-code",
+            }
+        }
+        with mock.patch.object(video, "HEYGEN_POLL_INTERVAL", 0), \
+             mock.patch.object(video, "_heygen_request_json", return_value=payload), \
+             mock.patch("builtins.print") as output:
+            with self.assertRaisesRegex(RuntimeError, "上游返回失败状态") as error:
+                video._heygen_poll_video("provider-task-id", direct=True, deadline_s=60)
+        logs = " ".join(str(call) for call in output.call_args_list)
+        exposed = logs + " " + str(error.exception)
+        for secret in (
+            "secret-token", "provider-secret-value", "secret-code",
+            "files2.heygen.ai", "private.mp4", "Signature=",
+        ):
+            self.assertNotIn(secret, exposed)
+        self.assertIn("failure_kind=provider", logs)
+
+    def test_ambiguous_sibling_media_keeps_polling_until_coherent_success(self):
+        responses = [
+            {
+                "data": {"status": "completed"},
+                "result": {"video_url": "https://cdn.example/unrelated.mp4"},
+            },
+            {"data": {"status": "completed", "video_url": "https://cdn.example/right.mp4"}},
+        ]
+        with mock.patch.object(video, "HEYGEN_POLL_INTERVAL", 0), \
+             mock.patch.object(video, "_heygen_request_json", side_effect=responses) as request, \
+             mock.patch.object(video, "_heygen_video_status_v1") as crosscheck:
+            result = video._heygen_poll_video("provider-task-id", direct=True, deadline_s=60)
+        self.assertEqual(result["video_url"], "https://cdn.example/right.mp4")
+        self.assertEqual(request.call_count, 2)
+        crosscheck.assert_not_called()
+
+    def test_moderation_failure_keeps_safe_actionable_message(self):
+        payload = {"data": {"status": "failed", "error": "real person secret detail"}}
+        with mock.patch.object(video, "HEYGEN_POLL_INTERVAL", 0), \
+             mock.patch.object(video, "_heygen_request_json", return_value=payload), \
+             mock.patch("builtins.print") as output:
+            with self.assertRaisesRegex(RuntimeError, "内容审核未通过") as error:
+                video._heygen_poll_video("provider-task-id", direct=True, deadline_s=60)
+        exposed = " ".join(str(call) for call in output.call_args_list) + str(error.exception)
+        self.assertNotIn("secret detail", exposed)
+        self.assertIn("failure_kind=moderation", exposed)
 
     def test_never_visible_task_has_precise_error_instead_of_false_timeout(self):
         with mock.patch.object(video.time, "time", side_effect=[0, 0, 2]), \
