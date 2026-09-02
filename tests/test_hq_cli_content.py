@@ -265,6 +265,105 @@ class HQCLIContentTests(unittest.TestCase):
         self.assertEqual(denied_status, 403)
         self.assertEqual(self.points.deductions, [])
 
+    def test_public_submission_status_recovers_only_current_account_jobs(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder, \
+             mock.patch.object(core, "JOB_DB", str(Path(folder) / "jobs.db")):
+            claims = [
+                ("alice", "/api/gen/image", "recover-accepted-001", {"job_id": 301, "quote_token": "secret"}),
+                ("alice", "/api/gen/video", "recover-processing-001", None),
+                ("bob", "/api/gen/image", "recover-other-user-001", {"job_id": 302}),
+                ("alice", "/api/gen/image", "recover-wrong-owner-001", {"job_id": 302}),
+                ("alice", "/api/gen/image", "recover-unresolved-001", {"accepted": True}),
+                ("alice", "/api/gen/image", "recover-invalid-json-001", {"job_id": 301}),
+            ]
+            for username, endpoint, key, response in claims:
+                self.assertEqual(
+                    "new", submission_idempotency.begin(
+                        core.jdb, username, endpoint, key, {"request": key},
+                    )[0],
+                )
+                if response is not None:
+                    submission_idempotency.complete(
+                        core.jdb, username, endpoint, key, response,
+                    )
+            for endpoint in ("/api/gen/image", "/api/gen/video"):
+                self.assertEqual(
+                    "new", submission_idempotency.begin(
+                        core.jdb, "alice", endpoint, "recover-ambiguous-001",
+                        {"endpoint": endpoint},
+                    )[0],
+                )
+            with closing(core.jdb()) as connection:
+                connection.execute("""CREATE TABLE IF NOT EXISTS jobs(
+                    id INTEGER PRIMARY KEY,kind TEXT,username TEXT,cost INTEGER,
+                    status TEXT,payload TEXT,created_at INTEGER,updated_at INTEGER,
+                    owner TEXT,refunded INTEGER DEFAULT 0
+                )""")
+                connection.executemany(
+                    "INSERT INTO jobs(id,kind,username,cost,status,payload,created_at,updated_at,owner) "
+                    "VALUES(?, 'image', ?, 5, 'running', '{}', 1, 1, 'content')",
+                    ((301, "alice"), (302, "bob")),
+                )
+                connection.execute(
+                    "UPDATE submission_idempotency SET response_json='{' "
+                    "WHERE username='alice' AND idem_key='recover-invalid-json-001'"
+                )
+                before = connection.execute(
+                    "SELECT COUNT(*) FROM submission_idempotency"
+                ).fetchone()[0]
+                connection.commit()
+
+            accepted_status, accepted = self._post(
+                "/api/gen/submission-status", {"idempotency_key": "recover-accepted-001"},
+                internal=False,
+            )
+            processing_status, processing = self._post(
+                "/api/gen/submission-status", {"idempotency_key": "recover-processing-001"},
+                internal=False,
+            )
+            missing_status, missing = self._post(
+                "/api/gen/submission-status", {"idempotency_key": "recover-missing-001"},
+                internal=False,
+            )
+            other_status, other = self._post(
+                "/api/gen/submission-status", {"idempotency_key": "recover-other-user-001"},
+                internal=False,
+            )
+            ambiguous_status, ambiguous = self._post(
+                "/api/gen/submission-status", {"idempotency_key": "recover-ambiguous-001"},
+                internal=False,
+            )
+            wrong_owner_status, wrong_owner = self._post(
+                "/api/gen/submission-status", {"idempotency_key": "recover-wrong-owner-001"},
+                internal=False,
+            )
+            unresolved_status, unresolved = self._post(
+                "/api/gen/submission-status", {"idempotency_key": "recover-unresolved-001"},
+                internal=False,
+            )
+            invalid_status, invalid = self._post(
+                "/api/gen/submission-status", {"idempotency_key": "recover-invalid-json-001"},
+                internal=False,
+            )
+            with closing(core.jdb()) as connection:
+                after = connection.execute(
+                    "SELECT COUNT(*) FROM submission_idempotency"
+                ).fetchone()[0]
+
+        self.assertEqual(200, accepted_status)
+        self.assertEqual("hq.submission-status/v1", accepted["schema"])
+        self.assertEqual(("accepted", 301), (accepted["state"], accepted["job_id"]))
+        self.assertNotIn("quote_token", accepted)
+        self.assertEqual((200, "processing"), (processing_status, processing["state"]))
+        self.assertEqual((404, "idempotency_not_found"), (missing_status, missing["code"]))
+        self.assertEqual((404, "idempotency_not_found"), (other_status, other["code"]))
+        self.assertEqual((409, "idempotency_ambiguous"), (ambiguous_status, ambiguous["code"]))
+        self.assertEqual((503, "reconcile_pending"), (wrong_owner_status, wrong_owner["code"]))
+        self.assertEqual((409, "submission_job_unresolved"), (unresolved_status, unresolved["code"]))
+        self.assertEqual((503, "submission_record_invalid"), (invalid_status, invalid["code"]))
+        self.assertEqual(before, after)
+        self.assertEqual([], self.points.deductions)
+
     def test_submission_reconcile_health_requires_internal_token(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder, \
              mock.patch.object(core, "JOB_DB", str(Path(folder) / "jobs.db")):

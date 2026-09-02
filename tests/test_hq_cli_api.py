@@ -1434,6 +1434,8 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual(409, status)
         self.assertEqual("quote_mismatch", payload["code"])
         self.assertEqual(submitted[0]["headers"]["Idempotency-Key"], submitted[1]["headers"]["Idempotency-Key"])
+        self.assertEqual(quote["submission_key"], submitted[0]["headers"]["Idempotency-Key"])
+        self.assertRegex(quote["submission_key"], r"^hqcli-[A-Za-z0-9._:-]{8,128}$")
         self.assertEqual("24", submitted[0]["headers"]["X-HQ-Expected-Cost"])
         self.assertTrue(all(plan["internal"] for plan in submitted))
 
@@ -1554,6 +1556,7 @@ class HQCLIAPITests(unittest.TestCase):
             ("generation:quote", "matrix_template_video", "/api/gen/matrix-template"),
             (plan["scope"], plan["generation_kind"], plan["endpoint"]),
         )
+
         self.assertEqual(dict(value, bgm=True), plan["payload"])
         selected = self.auth.hq_cli_api.action_plan(
             "matrix-template-generate", dict(value, font_family="AaHouDiHei")
@@ -1608,6 +1611,43 @@ class HQCLIAPITests(unittest.TestCase):
             with self.subTest(count=count), self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
                 self.auth.hq_cli_api.action_plan(
                     "matrix-template-batch-generate", dict(value, count=count))
+
+    def test_submission_status_is_account_bound_read_only_proxy(self):
+        key = "recover-cli-response-lost-001"
+        plan = self.auth.hq_cli_api.action_plan(
+            "submission-status", {"idempotency_key": key},
+        )
+        self.assertEqual(
+            ("tasks:read", "proxy", "POST", "/api/gen/submission-status",
+             {"idempotency_key": key}),
+            (plan["scope"], plan["kind"], plan["method"], plan["path"], plan["body"]),
+        )
+        token = self._token(["tasks:read"])
+        captured = {}
+
+        def fake_proxy(proxy_plan, web_token, internal_token):
+            captured.update(plan=proxy_plan, web_token=web_token, internal_token=internal_token)
+            return 200, {"schema": "hq.submission-status/v1", "state": "accepted", "job_id": 77}
+
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
+            status, result = self._request(
+                "/api/auth/cli/action", {
+                    "action": "submission-status",
+                    "input": {"idempotency_key": key}, "confirm": False,
+                }, token=token,
+            )
+        self.assertEqual((200, 77), (status, result["job_id"]))
+        self.assertEqual("/api/gen/submission-status", captured["plan"]["path"])
+        self.assertEqual("POST", captured["plan"]["method"])
+        self.assertNotIn("Idempotency-Key", captured["plan"].get("headers", {}))
+        self.assertTrue(captured["web_token"])
+
+        for invalid in (
+            {"idempotency_key": "short"},
+            {"idempotency_key": key, "endpoint": "/api/gen/image"},
+        ):
+            with self.subTest(invalid=invalid), self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+                self.auth.hq_cli_api.action_plan("submission-status", invalid)
 
     def test_matrix_template_hyperframes_batch_rejects_before_quote_or_submit(self):
         token = self._token(["generation:quote", "generation:submit"])
@@ -1703,6 +1743,7 @@ class HQCLIAPITests(unittest.TestCase):
             self.assertEqual((200, 15, 5, 3), (
                 status, quote["cost"], quote["cost_per_job"], quote["count"],
             ))
+            self.assertNotIn("submission_key", quote)
             confirmed = dict(
                 request, confirm=True, quote_token=quote["quote_token"])
             status, first = self._request(

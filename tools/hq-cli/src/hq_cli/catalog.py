@@ -369,6 +369,16 @@ CAPABILITIES["tasks"] = _api(
 CAPABILITIES["task"] = _api(
     "task", "任务详情", "task", "按任务号读取当前账号的任务状态和结果。",
     {"job_id": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807}}, ["job_id"], "tasks:read")
+CAPABILITIES["submission-status"] = _api(
+    "submission-status", "提交结果找回", "submission-status",
+    "提交响应丢失且没有任务号时，按原幂等键只读找回当前账号的任务号。",
+    {"idempotency_key": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{8,128}$"}},
+    ["idempotency_key"], "tasks:read")
+CAPABILITIES["submission-status"]["constraints"] = [
+    "Read-only: never creates, retries, charges, refunds, or cancels a task",
+    "The idempotency key must be the exact key used for the original submission",
+    "Only records and jobs owned by the authenticated account can be returned",
+]
 CAPABILITIES["assets"] = _api(
     "assets", "资产列表", "assets", "读取当前账号的图片、音频、视频、文案、采集、获客或拆解资产。",
     {"kind": {"type": "string", "enum": ["image", "audio", "video", "copy", "collect", "leads", "breakdown"]},

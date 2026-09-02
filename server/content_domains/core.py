@@ -2122,6 +2122,84 @@ class H(BaseHTTPRequestHandler):
     def _do_POST(self):
         p = self.path.split("?")[0]
         audio_domain, points_domain, video_domain = _domains()
+        if p == "/api/gen/submission-status":
+            user = verify(self._token())
+            if not user:
+                return self._send(401, {
+                    "detail": "未登录或登录已过期", "code": "unauthorized",
+                })
+            if _must_change_password(user):
+                return self._send(403, {
+                    "detail": "请先修改初始密码", "code": "password_change_required",
+                })
+            try:
+                body = self._json_body_strict(max_bytes=4096)
+                if not isinstance(body, dict) or set(body) != {"idempotency_key"}:
+                    raise ValueError("查询请求字段不合法")
+                idem_key = _idempotency_key(body.get("idempotency_key"))
+                if not idem_key:
+                    raise ValueError("缺少幂等键")
+                state, response, metadata = submission_idempotency.lookup_by_key(
+                    jdb, user["username"], idem_key,
+                )
+            except ValueError as exc:
+                return self._send(400, {
+                    "detail": str(exc)[:220], "code": "invalid_request",
+                })
+            if state == "missing":
+                return self._send(404, {
+                    "detail": "未找到当前账号已受理的原提交",
+                    "code": "idempotency_not_found",
+                })
+            if state == "ambiguous":
+                return self._send(409, {
+                    "detail": "该幂等键关联多个提交，无法安全确定原任务",
+                    "code": "idempotency_ambiguous",
+                })
+            result = {
+                "schema": "hq.submission-status/v1", "state": state,
+                "created_at": metadata.get("created_at", 0),
+                "updated_at": metadata.get("updated_at", 0),
+            }
+            if state == "processing":
+                return self._send(200, result)
+            if state != "accepted":
+                return self._send(503, {
+                    "detail": "原提交记录暂时无法安全读取",
+                    "code": "submission_record_invalid", "retry_after_ms": 3000,
+                })
+            raw_ids = None
+            if "job_id" in response and "job_ids" not in response:
+                raw_ids = [response.get("job_id")]
+            elif "job_ids" in response and "job_id" not in response:
+                raw_ids = response.get("job_ids")
+            if (
+                not isinstance(raw_ids, list) or not 1 <= len(raw_ids) <= 100
+                or any(isinstance(item, bool) or not isinstance(item, int) or item < 1
+                       for item in raw_ids)
+                or len(raw_ids) != len(set(raw_ids))
+            ):
+                return self._send(409, {
+                    "detail": "原提交尚未关联可安全查询的任务号",
+                    "code": "submission_job_unresolved",
+                })
+            placeholders = ",".join("?" for _ in raw_ids)
+            with closing(jdb()) as connection:
+                rows = connection.execute(
+                    "SELECT id FROM jobs WHERE username=? AND id IN (%s)" % placeholders,
+                    (user["username"], *raw_ids),
+                ).fetchall()
+            if {int(row["id"]) for row in rows} != set(raw_ids):
+                return self._send(503, {
+                    "detail": "已受理任务记录暂不可用",
+                    "code": "reconcile_pending", "retry_after_ms": 3000,
+                })
+            result["state"] = "accepted"
+            if len(raw_ids) == 1 and "job_id" in response:
+                result["job_id"] = raw_ids[0]
+            else:
+                result["job_ids"] = raw_ids
+            return self._send(200, result)
         if p == "/api/gen/internal/submission-reconcile/health":
             if not cli_gateway._internal_auth(self, AUTH_INTERNAL_TOKEN):
                 return self._send(403, {"detail": "forbidden", "code": "forbidden"})

@@ -55,6 +55,24 @@ class HqCliTests(unittest.TestCase):
         self.assertEqual(0, code, error)
         self.assertEqual([], self.payload(output)["result"]["items"])
 
+    def test_submission_status_sends_exact_read_only_lookup(self):
+        self.authorize()
+        key = "recover-cli-response-lost-001"
+        response = {"schema": "hq.submission-status/v1", "state": "accepted", "job_id": 77}
+        with patch("hq_cli.client.request_json", return_value=(200, response)) as request:
+            code, output, error = self.invoke(
+                ["run", "submission-status", "--input", "@-"],
+                json.dumps({"idempotency_key": key}).encode(),
+            )
+        self.assertEqual(0, code, error)
+        self.assertEqual(77, self.payload(output)["result"]["job_id"])
+        self.assertEqual("/api/auth/cli/action", request.call_args.args[0])
+        self.assertEqual({
+            "action": "submission-status",
+            "input": {"idempotency_key": key},
+            "confirm": False,
+        }, request.call_args.kwargs["body"])
+
     @unittest.skipUnless(os.name == "nt", "Windows credential behavior")
     def test_windows_credentials_use_appdata_and_dpapi(self):
         self.env.stop()

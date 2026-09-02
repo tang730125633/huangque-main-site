@@ -182,6 +182,7 @@ _ACTION_INPUTS = {
     "canvas-create": ("name", "prompt"), "canvas-agent-plan": ("prompt", "project_id", "snapshot_digest", "scope", "nodes", "edges", "selected_node_ids", "history"),
     "canvas-ops": ("board_id", "expected_version", "op_id", "ops"),
     "tasks": ("days", "kind", "page", "page_size"), "task": ("job_id",),
+    "submission-status": ("idempotency_key",),
     "assets": ("kind", "limit", "offset"), "voices": (),
     "asset-favorite": ("kind", "key", "favorite"), "asset-tags": ("kind", "key", "tags"),
     "asset-delete": ("kind", "id", "keys"),
@@ -234,7 +235,9 @@ _ACTION_PURPOSES = {
     "ip12-report": "读取本人 IP12 报告", "ip12-delete": "删除本人 IP12 项目",
     "canvas-list": "读取本人画布", "canvas-get": "读取本人画布详情",
     "canvas-delete": "删除本人创建的画布",
-    "tasks": "读取本人任务记录", "task": "读取本人任务详情", "assets": "读取本人资产", "voices": "读取可用音色",
+    "tasks": "读取本人任务记录", "task": "读取本人任务详情",
+    "submission-status": "在提交响应丢失后按幂等键找回本人原任务号",
+    "assets": "读取本人资产", "voices": "读取可用音色",
     "asset-delete": "删除本人自产资产（单条或批量）",
     "video-compose-delete": "删除本人一键成片项目",
     "digital-presenter-delete": "删除本人画布中的数字人口播项目",
@@ -1067,6 +1070,20 @@ def _director_breakdown_upload_catalog_entry():
     }
 
 
+_MEDIA_SCHEMAS["submission-status"] = {
+    "required": ["idempotency_key"],
+    "properties": {
+        "idempotency_key": {
+            "type": "string", "pattern": r"^[A-Za-z0-9._:-]{8,128}$",
+        },
+    },
+    "constraints": [
+        "read-only; never creates, retries, charges, refunds, or cancels a task",
+        "only records and jobs owned by the authenticated account are returned",
+    ],
+}
+
+
 ACTION_CATALOG = tuple(_catalog_entry(action, fields) for action, fields in _ACTION_INPUTS.items()) + (
     _upload_catalog_entry("image-upload", "image", 10 * 1024 * 1024,
                           ["image/jpeg", "image/png", "image/webp"], 20),
@@ -1084,7 +1101,7 @@ for _catalog_item in ACTION_CATALOG:
     if _catalog_item["action"] in _FAMILIES:
         _catalog_item["family"] = _FAMILIES[_catalog_item["action"]]
 ACTION_CATALOG_MAP = {item["action"]: item for item in ACTION_CATALOG if item["transport"]["kind"] == "action"}
-ACTION_CATALOG_VERSION = "hq-action-catalog-v7"
+ACTION_CATALOG_VERSION = "hq-action-catalog-v8"
 
 
 def action_catalog(feature_states=None):
@@ -2657,6 +2674,16 @@ def action_plan(action, value):
         _strict_object(value, {"job_id"}, ("job_id",))
         job_id = _integer(value["job_id"], "job_id", 1, 2**63 - 1)
         return _plan("tasks:read", "proxy", base=CONTENT_BASE, path="/api/gen/job/%d" % job_id)
+    if action == "submission-status":
+        _strict_object(value, {"idempotency_key"}, ("idempotency_key",))
+        key = _matched_string(
+            value["idempotency_key"], "idempotency_key", _IDEMPOTENCY_KEY_RE, 128,
+        )
+        return _plan(
+            "tasks:read", "proxy", base=CONTENT_BASE,
+            path="/api/gen/submission-status", method="POST",
+            body={"idempotency_key": key},
+        )
     if action == "assets":
         _strict_object(value, {"kind", "limit", "offset"}, ("kind",))
         kind = _enum(value["kind"], "kind", ("image", "audio", "video", "copy", "collect", "leads", "breakdown"))

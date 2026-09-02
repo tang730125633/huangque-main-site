@@ -121,6 +121,16 @@ hq run task --input @- --json <<'JSON'
 JSON
 ```
 
+单条付费能力的报价结果包含 `submission_key`。Agent 必须在确认前把它与原方案一起持久化；如果确认提交的 HTTP 响应丢失、因而没有取得 `job_id`，只允许按该键只读找回原任务，不能重新报价或提交：
+
+```sh
+hq run submission-status --input @- --json <<'JSON'
+{"idempotency_key":"<submission_key>"}
+JSON
+```
+
+返回 `processing` 时稍后查询同一键；返回 `accepted` 后改用原 `job_id` 调用 `task`。该查询不会创建、重试、扣点、退款或取消任务。批量任务暂不具备这一统一父提交键，仍以确认响应中的原始 `job_ids` 为准；响应丢失时必须停止，不能盲目重提。
+
 上传成功但报价返回参考图格式错误时，不要反复上传、转换格式或绕过 CLI 调用私有接口；保留 `upload_id`、MIME 和 SHA-256 作为证据并报告服务端兼容问题。报价失败不会扣点。
 
 ## 本地素材提示词反推

@@ -11,6 +11,10 @@ def ensure_table(connection):
         username TEXT NOT NULL, endpoint TEXT NOT NULL, idem_key TEXT NOT NULL,
         request_hash TEXT NOT NULL, response_json TEXT, created_at INTEGER, updated_at INTEGER,
         PRIMARY KEY(username, endpoint, idem_key))""")
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_submission_idempotency_owner_key "
+        "ON submission_idempotency(username, idem_key)"
+    )
 
 def clean_key(raw):
     key = str(raw or "").strip()
@@ -55,6 +59,37 @@ def replay_existing(db_factory, username, endpoint, key, accepted_bodies):
         db_factory, username, endpoint, key, accepted_bodies,
     )
     return state, response
+
+
+def lookup_by_key(db_factory, username, key):
+    """Read one account-owned claim by key without creating or mutating it."""
+    if not key:
+        return "missing", None, {}
+    with closing(db_factory()) as connection:
+        rows = connection.execute(
+            "SELECT response_json,created_at,updated_at "
+            "FROM submission_idempotency WHERE username=? AND idem_key=? "
+            "ORDER BY endpoint LIMIT 2",
+            (username, key),
+        ).fetchall()
+    if not rows:
+        return "missing", None, {}
+    if len(rows) != 1:
+        return "ambiguous", None, {}
+    row = rows[0]
+    metadata = {
+        "created_at": int(row["created_at"] or 0),
+        "updated_at": int(row["updated_at"] or 0),
+    }
+    if not row["response_json"]:
+        return "processing", None, metadata
+    try:
+        response = json.loads(row["response_json"])
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return "invalid", None, metadata
+    if not isinstance(response, dict):
+        return "invalid", None, metadata
+    return "accepted", response, metadata
 
 def begin(db_factory, username, endpoint, key, body):
     if not key:

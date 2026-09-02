@@ -5189,6 +5189,10 @@ class H(BaseHTTPRequestHandler):
                     "expires_at": claims["e"],
                     "confirmation_required": True,
                 }
+                if multiplier == 1:
+                    # Persist this before confirmation. The server derives the same
+                    # key again on submit; callers cannot replace it on public CLI.
+                    response["submission_key"] = "hqcli-" + claims["n"]
                 for field in plan.get("quote_result_fields", ()):
                     if field in result:
                         response[field] = result[field]
