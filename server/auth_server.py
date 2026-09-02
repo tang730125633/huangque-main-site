@@ -5059,6 +5059,11 @@ class H(BaseHTTPRequestHandler):
             plan = hq_cli_api.action_plan(action, input_body)
             if plan["scope"] not in scopes:
                 raise hq_cli_api.CLIAPIError(403, "当前 CLI 授权缺少权限：" + plan["scope"], "insufficient_scope")
+            missing_scopes = [scope for scope in plan.get("extra_scopes", ()) if scope not in scopes]
+            if missing_scopes:
+                raise hq_cli_api.CLIAPIError(
+                    403, "当前 CLI 授权缺少权限：" + missing_scopes[0], "insufficient_scope",
+                )
             if action in hq_cli_api.CONFIRMATION_ACTIONS and not confirm:
                 raise hq_cli_api.CLIAPIError(409, "该操作需要显式确认", "confirmation_required")
             if plan["kind"] == "account":

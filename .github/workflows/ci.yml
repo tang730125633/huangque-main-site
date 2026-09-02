@@ -123,11 +123,11 @@ jobs:
           $oldResult = & (Join-Path $binRoot "hq.cmd") version --json | ConvertFrom-Json
           if ($oldResult.cli_version -ne "0.10.4") { throw "old CLI fixture did not start" }
           .\site\downloads\hq\install.ps1 `
-            -WheelPath .\site\downloads\hq\v0.13.5\huangque_hq_cli-0.13.5-py3-none-any.whl `
+            -WheelPath .\site\downloads\hq\v0.14.0\huangque_hq_cli-0.14.0-py3-none-any.whl `
             -InstallRoot $root -NoPathUpdate
           $hq = Join-Path $root "bin\hq.cmd"
           $result = & $hq version --json | ConvertFrom-Json
-          if ($result.cli_version -ne "0.13.5") { throw "unexpected CLI version" }
+          if ($result.cli_version -ne "0.14.0") { throw "unexpected CLI version" }
           $capabilities = & $hq capabilities --json | ConvertFrom-Json
           if (-not ($capabilities.capabilities | Where-Object id -eq "text-video-generate")) {
             throw "upgraded CLI is missing text-video-generate"

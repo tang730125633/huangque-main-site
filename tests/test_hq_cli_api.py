@@ -161,6 +161,7 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual(set(self.auth.hq_cli_api._ACTION_INPUTS) | {
             "image-upload", "video-upload", "audio-upload", "director-breakdown-upload",
             "digital-human-oneclick-material-upload", "digital-human-oneclick-audio-upload",
+            "dl",
         }, set(actions))
         for action, item in actions.items():
             with self.subTest(action=action):
@@ -870,6 +871,79 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual(403, status)
         self.assertEqual("insufficient_scope", payload["code"])
         proxy.assert_not_called()
+
+    def test_b_class_actions_enforce_confirmation_quote_and_submit_scopes(self):
+        chat_input = {
+            "prompt": "帮我规划一条新品口播",
+            "session_id": "director-session-0001",
+            "page_revision": 1,
+            "page_context": {"page": "script", "title": "编导"},
+            "history": [],
+            "request_id": "director-chat-0001",
+        }
+        token = self._token(["director:write"])
+        with mock.patch.object(self.auth.H, "_cli_proxy") as proxy:
+            status, payload = self._request("/api/auth/cli/action", {
+                "action": "director-chat", "input": chat_input, "confirm": False,
+            }, token=token)
+        self.assertEqual((409, "confirmation_required"), (status, payload["code"]))
+        proxy.assert_not_called()
+
+        start_input = {
+            "project_id": "project-1", "quote_token": "native-quote",
+            "request_id": "autodraft-start-0001",
+        }
+        token = self._token(["short-drama:write"])
+        with mock.patch.object(self.auth.H, "_cli_proxy") as proxy:
+            status, payload = self._request("/api/auth/cli/action", {
+                "action": "short-drama-autodraft-start",
+                "input": start_input, "confirm": True,
+            }, token=token)
+        self.assertEqual((403, "insufficient_scope"), (status, payload["code"]))
+        self.assertIn("generation:submit", payload["detail"])
+        proxy.assert_not_called()
+
+        token = self._token(["short-drama:write", "generation:submit"])
+        with mock.patch.object(
+                self.auth.H, "_cli_proxy", return_value=(202, {"job_id": "job-1"})) as proxy:
+            status, payload = self._request("/api/auth/cli/action", {
+                "action": "short-drama-autodraft-start",
+                "input": start_input, "confirm": True,
+            }, token=token)
+        self.assertEqual((202, "job-1"), (status, payload["job_id"]))
+        plan = proxy.call_args.args[0]
+        self.assertEqual("autodraft-start-0001", plan["headers"]["Idempotency-Key"])
+
+        generation_input = {
+            "project_id": "project-1", "revision": 3, "character_key": "lead",
+        }
+        token = self._token(["generation:quote", "generation:submit"])
+        with mock.patch.object(
+                self.auth.H, "_cli_proxy",
+                side_effect=[
+                    (200, {"cost": 7, "points": 100}),
+                    (200, {"job_id": 77, "cost": 7, "points_left": 93}),
+                ]) as proxy:
+            status, quoted = self._request("/api/auth/cli/action", {
+                "action": "short-drama-character-reference-generate",
+                "input": generation_input, "confirm": False,
+            }, token=token)
+            self.assertEqual(200, status, quoted)
+            status, submitted = self._request("/api/auth/cli/action", {
+                "action": "short-drama-character-reference-generate",
+                "input": generation_input, "confirm": True,
+                "quote_token": quoted["quote_token"],
+            }, token=token)
+        self.assertEqual((200, 77), (status, submitted["job_id"]))
+        self.assertEqual(7, submitted["cost"])
+        self.assertEqual(
+            "/api/gen/short-drama/character-reference-quote",
+            proxy.call_args_list[0].args[0]["path"],
+        )
+        self.assertEqual(
+            "/api/gen/short-drama/generate-character-reference",
+            proxy.call_args_list[1].args[0]["path"],
+        )
 
     def test_fixed_read_proxy_uses_short_lived_web_token_and_deletes_it(self):
         token = self._token(["ip12:read"])
@@ -2410,7 +2484,7 @@ class HQCLIAPITests(unittest.TestCase):
         }, token=token)
         self.assertEqual(200, status, payload)
         self.assertEqual("director-workflow-contract-v1", payload["contract_version"])
-        self.assertEqual(15, payload["counts"]["available"])
+        self.assertEqual(30, payload["counts"]["available"])
         actions = {item["id"]: item for item in payload["actions"]}
         self.assertEqual("available", actions["director-capability"]["availability"])
         self.assertEqual("available", actions["director-script-generate"]["availability"])
@@ -2419,9 +2493,9 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual("available", actions["director-scene-image-generate"]["availability"])
         self.assertEqual("available", actions["digital-human-oneclick-start"]["availability"])
         self.assertEqual("available", actions["digital-human-oneclick-recover"]["availability"])
-        self.assertEqual("planned", actions["director-scene-video-generate"]["availability"])
-        self.assertEqual("planned", actions["director-scene-talking-generate"]["availability"])
-        self.assertEqual("planned", actions["director-production-start"]["availability"])
+        self.assertEqual("available", actions["director-scene-video-generate"]["availability"])
+        self.assertEqual("available", actions["director-scene-talking-generate"]["availability"])
+        self.assertEqual("available", actions["director-production-start"]["availability"])
         self.assertEqual("quote_then_confirm", actions["director-production-start"]["billing"])
 
         token = self._token(["profile:read"])

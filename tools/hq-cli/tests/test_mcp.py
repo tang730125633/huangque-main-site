@@ -46,7 +46,25 @@ class McpServerTests(unittest.TestCase):
             batch["properties"]["count"]["maximum"],
         ))
         self.assertIn("count", batch["required"])
+        download = by_name["hq_dl"]["inputSchema"]
+        self.assertEqual({"url", "output_file"}, set(download["required"]))
         self.assertTrue(by_name["hq_asset_delete"]["annotations"]["destructiveHint"])
+
+    def test_download_maps_output_file_without_sending_it_to_the_server(self):
+        calls = []
+
+        def runner(arguments, stdin_text):
+            calls.append((arguments, json.loads(stdin_text)))
+            return 0, {"schema": "hq.run/v1", "result": {"path": "/tmp/result.mp4"}}
+
+        result = mcp_server.call_tool("hq_dl", {
+            "url": "https://video.huangquechuanmei.com/result.mp4",
+            "output_file": "/tmp/result.mp4",
+        }, runner=runner)
+        self.assertNotIn("isError", result)
+        self.assertEqual(([
+            "run", "dl", "--input", "@-", "--output", "/tmp/result.mp4",
+        ], {"url": "https://video.huangquechuanmei.com/result.mp4"}), calls[0])
 
     def test_paid_call_reuses_cli_quote_and_confirmation_arguments(self):
         calls = []
@@ -177,7 +195,7 @@ class McpServerTests(unittest.TestCase):
 
         def runner(arguments, stdin_text):
             self.assertEqual(["version"], arguments)
-            return 0, {"schema": "hq.version/v1", "cli_version": "0.13.5"}
+            return 0, {"schema": "hq.version/v1", "cli_version": "0.14.0"}
 
         self.assertEqual(0, mcp_server.serve(source, output, runner=runner))
         responses = [json.loads(line) for line in output.getvalue().splitlines()]
@@ -206,13 +224,13 @@ class McpServerTests(unittest.TestCase):
 
         def runner(arguments, stdin_text):
             calls.append((arguments, stdin_text))
-            return 0, {"schema": "hq.version/v1", "cli_version": "0.13.5"}
+            return 0, {"schema": "hq.version/v1", "cli_version": "0.14.0"}
 
         self.assertEqual(0, mcp_server.serve(source, output, runner=runner))
         responses = [json.loads(line) for line in output.getvalue().splitlines()]
         self.assertEqual(mcp_server.PROTOCOL_VERSION, responses[0]["result"]["supportedVersions"][0])
         self.assertEqual(
-            {"name": "huangque", "version": "0.13.5"},
+            {"name": "huangque", "version": "0.14.0"},
             responses[1]["result"]["_meta"][mcp_server.SERVER_INFO_META],
         )
         self.assertEqual([(["version"], "")], calls)

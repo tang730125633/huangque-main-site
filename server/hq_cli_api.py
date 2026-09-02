@@ -122,6 +122,13 @@ CONFIRMATION_ACTIONS = frozenset({
     "text-video-avatar-import", "text-video-plan",
     "digital-human-oneclick-consent", "digital-human-oneclick-recover",
     "digital-human-oneclick-abandon",
+    "director-chat", "director-produce", "director-workflow-create",
+    "director-storyboard-update", "director-production-plan",
+    "director-production-recover", "director-remake-plan", "director-remake-recover",
+    "short-drama-advisor", "short-drama-character-reference-confirm",
+    "short-drama-preflight-plan", "short-drama-preflight-confirm",
+    "short-drama-autodraft-preflight", "short-drama-autodraft-start",
+    "short-drama-delivery-start", "short-drama-completion-confirm",
 })
 
 # This is the public contract shared by the CLI, the first-party HTTP bridge,
@@ -153,6 +160,23 @@ _ACTION_INPUTS = {
     "director-script-generate": ("prompt", "style", "duration", "platform"),
     "director-breakdown": ("url", "urls", "mode"),
     "director-scene-image-generate": ("scenes", "ratio", "quality"),
+    "director-scene-video-generate": ("scenes", "channel", "ratio", "duration", "seconds", "resolution", "model", "generate_audio", "reference_upload_ids"),
+    "director-scene-talking-generate": ("text", "template", "mode", "style", "voice", "speech_rate", "talking_material"),
+    "director-workflows": ("limit", "offset"),
+    "director-workflow-create": ("title", "source_job_id", "storyboard", "request_id"),
+    "director-workflow": ("workflow_id",),
+    "director-storyboard-update": ("workflow_id", "revision", "storyboard"),
+    "director-storyboard-export": ("workflow_id",),
+    "director-production-plan": ("workflow_id", "output_kind", "options"),
+    "director-production-start": ("workflow_id", "plan_digest", "request_id"),
+    "director-production-status": ("workflow_id",),
+    "director-production-recover": ("workflow_id", "plan_digest", "request_id"),
+    "director-remake-plan": ("workflow_id", "mode", "instruction", "options"),
+    "director-remake-start": ("workflow_id", "plan_digest", "request_id"),
+    "director-remake-status": ("workflow_id",),
+    "director-remake-recover": ("workflow_id", "plan_digest", "request_id"),
+    "director-chat": ("prompt", "session_id", "page_revision", "page_context", "history", "source_page", "request_id"),
+    "director-produce": ("offer_id", "input", "expected_cost", "plan_digest", "quote_token"),
     "text-video-capability": (), "text-video-templates": (),
     "text-video-styles": (), "text-video-voices": (),
     "text-video-generate": ("text", "template", "mode", "style", "voice", "speech_rate", "talking_material"),
@@ -173,6 +197,21 @@ _ACTION_INPUTS = {
     "short-drama-projects": ("page", "page_size"),
     "short-drama-project": ("project_id",), "short-drama-conversation": ("project_id",),
     "short-drama-preflight": ("project_id",),
+    "short-drama-advisor": ("messages", "understanding", "expected_field", "field_states", "recommendation_context", "user_message", "request_id"),
+    "short-drama-character-reference-generate": ("project_id", "revision", "character_key"),
+    "short-drama-character-reference-confirm": ("project_id", "revision", "character_key", "reference_version"),
+    "short-drama-preflight-plan": ("project_id", "conversation_revision", "quality_route", "request_id"),
+    "short-drama-preflight-confirm": ("project_id", "plan_id", "plan_version", "accepted_issue_keys", "request_id"),
+    "short-drama-autodraft-preflight": ("project_id", "plan_id", "shot_key", "character_key", "avatar_id", "execution"),
+    "short-drama-autodraft-quote": ("project_id", "plan_id", "shot_key", "character_key", "avatar_id"),
+    "short-drama-autodraft-start": ("project_id", "quote_token", "request_id"),
+    "short-drama-autodraft-status": ("project_id", "job_id"),
+    "short-drama-delivery-quote": ("project_id", "version_id"),
+    "short-drama-delivery-start": ("project_id", "quote_token", "request_id"),
+    "short-drama-delivery-status": ("project_id", "job_id"),
+    "short-drama-completion-readiness": ("project_id",),
+    "short-drama-completion": ("project_id",),
+    "short-drama-completion-confirm": ("project_id", "revision", "final_version_id", "asset_id", "delivery_hash", "acknowledged", "request_id"),
     "digital-ip-projects": (), "digital-ip-project": ("project_id",), "digital-ip-report": ("project_id",),
     "ip12-projects": (), "ip12-project": ("project_id",), "ip12-report": ("project_id",),
     "ip12-create": ("title",), "ip12-message": ("project_id", "message", "request_id"),
@@ -230,6 +269,23 @@ _ACTION_PURPOSES = {
     "director-breakdown": "拆解抖音或小红书作品链接并生成分镜或反推提示词",
     "director-breakdown-upload": "上传本地图片或视频并反推可复用提示词",
     "director-scene-image-generate": "根据编导分镜画面描述生成图片",
+    "director-scene-video-generate": "根据编导分镜画面描述生成剧情视频",
+    "director-scene-talking-generate": "根据编导口播分镜生成人物口播镜头",
+    "director-chat": "调用编导顾客助手生成可追踪的零点数对话任务",
+    "director-produce": "确认编导助手已经报价并冻结的脚本生产单",
+    "director-workflows": "读取本人编导工作流列表",
+    "director-workflow-create": "从本人已完成任务或分镜创建编导工作流",
+    "director-workflow": "读取本人编导工作流与当前 revision",
+    "director-storyboard-update": "按 revision 保存本人编导分镜",
+    "director-storyboard-export": "导出本人编导分镜 Markdown",
+    "director-production-plan": "冻结本人编导工作流生产方案",
+    "director-production-start": "报价后启动冻结的编导生产方案",
+    "director-production-status": "读取编导生产任务与账务状态",
+    "director-production-recover": "按原 request_id 恢复结果未知的编导生产",
+    "director-remake-plan": "冻结本人编导同款复刻方案",
+    "director-remake-start": "报价后启动冻结的同款复刻方案",
+    "director-remake-status": "读取同款复刻任务与账务状态",
+    "director-remake-recover": "按原 request_id 恢复结果未知的同款复刻",
     "ip12-projects": "读取本人 IP12 项目", "ip12-project": "读取本人 IP12 项目详情",
     "ip12-report": "读取本人 IP12 报告", "ip12-delete": "删除本人 IP12 项目",
     "canvas-list": "读取本人画布", "canvas-get": "读取本人画布详情",
@@ -240,6 +296,21 @@ _ACTION_PURPOSES = {
     "digital-presenter-delete": "删除本人画布中的数字人口播项目",
     "short-drama-create": "创建本人短剧项目",
     "short-drama-delete": "删除本人短剧项目",
+    "short-drama-advisor": "调用短剧顾问协商立项信息",
+    "short-drama-character-reference-generate": "报价后生成短剧角色标准图",
+    "short-drama-character-reference-confirm": "锁定已生成的角色标准图版本",
+    "short-drama-preflight-plan": "生成短剧制作体检方案",
+    "short-drama-preflight-confirm": "确认当前短剧制作体检方案",
+    "short-drama-autodraft-preflight": "编译单镜头真实视频供应商请求",
+    "short-drama-autodraft-quote": "获取单镜头真实视频报价",
+    "short-drama-autodraft-start": "确认单镜头报价并启动原任务",
+    "short-drama-autodraft-status": "读取单镜头真实视频任务状态",
+    "short-drama-delivery-quote": "获取短剧正式交付报价",
+    "short-drama-delivery-start": "确认正式交付报价并启动原任务",
+    "short-drama-delivery-status": "读取短剧正式交付任务状态",
+    "short-drama-completion-readiness": "读取短剧完成门禁与阻塞项",
+    "short-drama-completion": "读取短剧不可变完成快照",
+    "short-drama-completion-confirm": "确认短剧不可逆完成交付",
     "leads-delete": "删除本人线索跟进记录",
     "digital-ip-create": "创建本人数字 IP 项目",
     "digital-ip-update": "更新本人数字 IP 项目",
@@ -881,10 +952,228 @@ _MEDIA_SCHEMAS.update({
     },
 })
 
+_REQUEST_ID_SCHEMA = {
+    "type": "string", "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+}
+_SHORT_DRAMA_JOB_ID_SCHEMA = {
+    "type": "string", "minLength": 1, "maxLength": 160,
+}
+_SHORT_DRAMA_PROVIDER_FIELDS = {
+    "project_id": _ID_SCHEMA,
+    "plan_id": _ID_SCHEMA,
+    "shot_key": _ID_SCHEMA,
+    "character_key": _ID_SCHEMA,
+    "avatar_id": _ID_SCHEMA,
+}
+_DIRECTOR_WORKFLOW_ID_SCHEMA = {
+    "type": "string", "pattern": "^dw_[0-9a-f]{32}$",
+}
+_DIRECTOR_STORYBOARD_SCHEMA = {
+    "type": "array", "minItems": 1, "maxItems": 60,
+    "items": {"type": "object"},
+}
+_MEDIA_SCHEMAS.update({
+    "director-chat": {
+        "required": ["prompt", "session_id", "page_revision", "page_context", "request_id"],
+        "properties": {
+            "prompt": {"type": "string", "minLength": 1, "maxLength": 2000},
+            "session_id": _ID_SCHEMA,
+            "page_revision": _INT_ID_SCHEMA,
+            "page_context": {"type": "object"},
+            "history": {"type": "array", "maxItems": 12, "items": {"type": "object"}},
+            "source_page": {"type": "string", "maxLength": 80},
+            "request_id": _REQUEST_ID_SCHEMA,
+        },
+        "constraints": ["external AI call; confirm once and poll only the returned job_id"],
+    },
+    "director-produce": {
+        "required": ["offer_id", "input", "expected_cost", "plan_digest", "quote_token"],
+        "properties": {
+            "offer_id": {"type": "string", "pattern": "^director-production-[A-Za-z0-9_-]{16,64}$"},
+            "input": {"type": "object"},
+            "expected_cost": {"type": "integer", "minimum": 0},
+            "plan_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "quote_token": {"type": "string", "minLength": 20, "maxLength": 4096},
+        },
+        "constraints": ["all fields must come from the same director-chat production offer"],
+    },
+    "director-workflows": {
+        "required": [],
+        "properties": {
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+            "offset": {"type": "integer", "minimum": 0, "maximum": 2000},
+        },
+    },
+    "director-workflow-create": {
+        "required": ["title", "request_id"],
+        "properties": {
+            "title": {"type": "string", "minLength": 1, "maxLength": 120},
+            "source_job_id": _INT_ID_SCHEMA,
+            "storyboard": _DIRECTOR_STORYBOARD_SCHEMA,
+            "request_id": _REQUEST_ID_SCHEMA,
+        },
+        "oneOf": [{"required": ["source_job_id"]}, {"required": ["storyboard"]}],
+    },
+    "director-workflow": {
+        "required": ["workflow_id"], "properties": {"workflow_id": _DIRECTOR_WORKFLOW_ID_SCHEMA},
+    },
+    "director-storyboard-update": {
+        "required": ["workflow_id", "revision", "storyboard"],
+        "properties": {"workflow_id": _DIRECTOR_WORKFLOW_ID_SCHEMA, "revision": _INT_ID_SCHEMA, "storyboard": _DIRECTOR_STORYBOARD_SCHEMA},
+        "constraints": ["revision must match the latest owner-scoped workflow"],
+    },
+    "director-storyboard-export": {
+        "required": ["workflow_id"], "properties": {"workflow_id": _DIRECTOR_WORKFLOW_ID_SCHEMA},
+    },
+    "director-production-plan": {
+        "required": ["workflow_id", "output_kind", "options"],
+        "properties": {"workflow_id": _DIRECTOR_WORKFLOW_ID_SCHEMA,
+                       "output_kind": {"type": "string", "enum": ["image", "video"]},
+                       "options": {"type": "object"}},
+        "constraints": ["freezes the current storyboard revision into one owner-scoped generation plan"],
+    },
+    "director-production-start": {
+        "required": ["workflow_id", "plan_digest", "request_id"],
+        "properties": {"workflow_id": _DIRECTOR_WORKFLOW_ID_SCHEMA,
+                       "plan_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                       "request_id": _REQUEST_ID_SCHEMA},
+        "constraints": ["quote and confirmation must reuse the same workflow revision, plan_digest and request_id"],
+    },
+    "director-production-status": {
+        "required": ["workflow_id"], "properties": {"workflow_id": _DIRECTOR_WORKFLOW_ID_SCHEMA},
+    },
+    "director-production-recover": {
+        "required": ["workflow_id", "plan_digest", "request_id"],
+        "properties": {"workflow_id": _DIRECTOR_WORKFLOW_ID_SCHEMA,
+                       "plan_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                       "request_id": _REQUEST_ID_SCHEMA},
+        "constraints": ["replays only the original idempotent child submission"],
+    },
+    "director-remake-plan": {
+        "required": ["workflow_id", "mode", "instruction", "options"],
+        "properties": {"workflow_id": _DIRECTOR_WORKFLOW_ID_SCHEMA,
+                       "mode": {"type": "string", "enum": ["cinematic", "grok", "micro"]},
+                       "instruction": {"type": "string", "minLength": 1, "maxLength": 2000},
+                       "options": {"type": "object"}},
+    },
+    "director-remake-start": {
+        "required": ["workflow_id", "plan_digest", "request_id"],
+        "properties": {"workflow_id": _DIRECTOR_WORKFLOW_ID_SCHEMA,
+                       "plan_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                       "request_id": _REQUEST_ID_SCHEMA},
+    },
+    "director-remake-status": {
+        "required": ["workflow_id"], "properties": {"workflow_id": _DIRECTOR_WORKFLOW_ID_SCHEMA},
+    },
+    "director-remake-recover": {
+        "required": ["workflow_id", "plan_digest", "request_id"],
+        "properties": {"workflow_id": _DIRECTOR_WORKFLOW_ID_SCHEMA,
+                       "plan_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                       "request_id": _REQUEST_ID_SCHEMA},
+    },
+    "short-drama-advisor": {
+        "required": ["user_message", "request_id"],
+        "properties": {
+            "messages": {"type": "array", "maxItems": 20, "items": {"type": "string", "maxLength": 600}},
+            "understanding": {"type": "object"},
+            "expected_field": {"type": "string", "enum": ["", "topic", "protagonist", "conflict", "emotion", "ending", "audience", "style"]},
+            "field_states": {"type": "object"},
+            "recommendation_context": {"type": "object"},
+            "user_message": {"type": "string", "minLength": 1, "maxLength": 600},
+            "request_id": _REQUEST_ID_SCHEMA,
+        },
+        "constraints": ["external AI call with platform-funded quota; confirm once per identical turn"],
+    },
+    "short-drama-character-reference-generate": {
+        "required": ["project_id", "revision", "character_key"],
+        "properties": {"project_id": _ID_SCHEMA, "revision": _INT_ID_SCHEMA, "character_key": _ID_SCHEMA},
+        "constraints": ["server quote first; confirmation binds project revision and character profile snapshot"],
+    },
+    "short-drama-character-reference-confirm": {
+        "required": ["project_id", "revision", "character_key", "reference_version"],
+        "properties": {"project_id": _ID_SCHEMA, "revision": _INT_ID_SCHEMA, "character_key": _ID_SCHEMA, "reference_version": _INT_ID_SCHEMA},
+    },
+    "short-drama-preflight-plan": {
+        "required": ["project_id", "conversation_revision", "request_id"],
+        "properties": {"project_id": _ID_SCHEMA, "conversation_revision": _INT_ID_SCHEMA, "quality_route": {"type": "string", "enum": ["quick_draft", "quality_first"]}, "request_id": _REQUEST_ID_SCHEMA},
+    },
+    "short-drama-preflight-confirm": {
+        "required": ["project_id", "plan_id", "plan_version", "accepted_issue_keys", "request_id"],
+        "properties": {"project_id": _ID_SCHEMA, "plan_id": _ID_SCHEMA, "plan_version": _INT_ID_SCHEMA, "accepted_issue_keys": {"type": "array", "maxItems": 100, "items": _ID_SCHEMA}, "request_id": _REQUEST_ID_SCHEMA},
+    },
+    "short-drama-autodraft-preflight": {
+        "required": ["project_id", "plan_id", "shot_key"],
+        "properties": {**_SHORT_DRAMA_PROVIDER_FIELDS, "execution": {"type": "object"}},
+    },
+    "short-drama-autodraft-quote": {
+        "required": ["project_id", "plan_id", "shot_key"],
+        "properties": _SHORT_DRAMA_PROVIDER_FIELDS,
+        "constraints": ["quote only; no points are deducted until start is confirmed"],
+    },
+    "short-drama-autodraft-start": {
+        "required": ["project_id", "quote_token", "request_id"],
+        "properties": {"project_id": _ID_SCHEMA, "quote_token": {"type": "string", "minLength": 1, "maxLength": 4096}, "request_id": _REQUEST_ID_SCHEMA},
+        "constraints": ["confirm once; preserve request_id and poll only the returned job"],
+    },
+    "short-drama-autodraft-status": {
+        "required": ["project_id", "job_id"],
+        "properties": {"project_id": _ID_SCHEMA, "job_id": _SHORT_DRAMA_JOB_ID_SCHEMA},
+    },
+    "short-drama-delivery-quote": {
+        "required": ["project_id", "version_id"],
+        "properties": {"project_id": _ID_SCHEMA, "version_id": _ID_SCHEMA},
+        "constraints": ["quote only; no points are deducted until start is confirmed"],
+    },
+    "short-drama-delivery-start": {
+        "required": ["project_id", "quote_token", "request_id"],
+        "properties": {"project_id": _ID_SCHEMA, "quote_token": {"type": "string", "minLength": 1, "maxLength": 4096}, "request_id": _REQUEST_ID_SCHEMA},
+        "constraints": ["confirm once; preserve request_id and poll only the returned delivery job"],
+    },
+    "short-drama-delivery-status": {
+        "required": ["project_id", "job_id"],
+        "properties": {"project_id": _ID_SCHEMA, "job_id": _SHORT_DRAMA_JOB_ID_SCHEMA},
+    },
+    "short-drama-completion-readiness": {
+        "required": ["project_id"], "properties": {"project_id": _ID_SCHEMA},
+    },
+    "short-drama-completion": {
+        "required": ["project_id"], "properties": {"project_id": _ID_SCHEMA},
+    },
+    "short-drama-completion-confirm": {
+        "required": ["project_id", "revision", "final_version_id", "asset_id", "delivery_hash", "acknowledged", "request_id"],
+        "properties": {"project_id": _ID_SCHEMA, "revision": _INT_ID_SCHEMA, "final_version_id": _ID_SCHEMA, "asset_id": _ID_SCHEMA, "delivery_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "acknowledged": {"type": "boolean", "const": True}, "request_id": _REQUEST_ID_SCHEMA},
+        "constraints": ["irreversible owner-only completion; values must come from the latest readiness response"],
+    },
+})
+_MEDIA_SCHEMAS.update({
+    "director-scene-video-generate": {
+        "required": ["scenes"],
+        "properties": {
+            "scenes": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"type": "object"}},
+            **{key: item for key, item in _MEDIA_SCHEMAS["video-generate"]["properties"].items()
+               if key != "prompt"},
+        },
+        "constraints": list(_MEDIA_SCHEMAS["video-generate"].get("constraints", ())),
+    },
+    "director-scene-talking-generate": {
+        "required": list(_MEDIA_SCHEMAS["text-video-generate"]["required"]),
+        "properties": dict(_MEDIA_SCHEMAS["text-video-generate"]["properties"]),
+        "constraints": list(_MEDIA_SCHEMAS["text-video-generate"].get("constraints", ())),
+    },
+})
+
 _FAMILIES = {
     "director-capability": "director", "director-script-generate": "director",
     "director-breakdown": "director", "director-breakdown-upload": "director",
-    "director-scene-image-generate": "director",
+    "director-scene-image-generate": "director", "director-scene-video-generate": "director",
+    "director-scene-talking-generate": "director", "director-chat": "director",
+    "director-produce": "director", "director-workflows": "director",
+    "director-workflow-create": "director", "director-workflow": "director",
+    "director-storyboard-update": "director", "director-storyboard-export": "director",
+    "director-production-plan": "director", "director-production-start": "director",
+    "director-production-status": "director", "director-production-recover": "director",
+    "director-remake-plan": "director", "director-remake-start": "director",
+    "director-remake-status": "director", "director-remake-recover": "director",
     "digital-human-oneclick-capability": "digital-human",
     "digital-human-oneclick-plan": "digital-human",
     "digital-human-oneclick-consent": "digital-human",
@@ -911,10 +1200,25 @@ _FAMILIES = {
     "canvas-list": "canvas", "canvas-get": "canvas", "canvas-create": "canvas", "canvas-agent-plan": "canvas",
     "canvas-ops": "canvas", "digital-presenter-capability": "canvas", "digital-presenter-project": "canvas",
     "digital-presenter-create": "canvas", "digital-presenter-update": "canvas",
+    "short-drama-projects": "short-drama", "short-drama-project": "short-drama",
+    "short-drama-conversation": "short-drama", "short-drama-preflight": "short-drama",
+    "short-drama-create": "short-drama", "short-drama-delete": "short-drama",
+    "short-drama-advisor": "short-drama",
+    "short-drama-character-reference-generate": "short-drama",
+    "short-drama-character-reference-confirm": "short-drama",
+    "short-drama-preflight-plan": "short-drama", "short-drama-preflight-confirm": "short-drama",
+    "short-drama-autodraft-preflight": "short-drama", "short-drama-autodraft-quote": "short-drama",
+    "short-drama-autodraft-start": "short-drama", "short-drama-autodraft-status": "short-drama",
+    "short-drama-delivery-quote": "short-drama", "short-drama-delivery-start": "short-drama",
+    "short-drama-delivery-status": "short-drama", "short-drama-completion-readiness": "short-drama",
+    "short-drama-completion": "short-drama", "short-drama-completion-confirm": "short-drama",
 }
 _ACTION_FEATURE_GATES = {
     "director-script-generate": ("copy",), "director-breakdown": ("breakdown",),
     "director-scene-image-generate": ("image",),
+    "director-scene-video-generate": ("video",),
+    "director-scene-talking-generate": ("script_to_video",),
+    "director-chat": ("director_agent",), "director-produce": ("director_agent",),
     "audio-generate": ("audio",), "voice-clone-create": ("audio",), "voice-clone-status": ("audio",),
     "video-avatar-create": ("avatar",),
     "canvas-agent-plan": ("canvas_agent",),
@@ -938,12 +1242,15 @@ CATALOG_FEATURE_FLAGS = tuple(sorted({flag for flags in (*_ACTION_FEATURE_GATES.
 _GENERATION_ACTIONS = frozenset({
     "collect-content", "collect-video", "collect-transcript", "collect-search", "leads-generate",
     "director-script-generate", "director-breakdown", "director-scene-image-generate",
+    "director-scene-video-generate", "director-scene-talking-generate",
+    "director-production-start", "director-remake-start",
     "canvas-agent-plan", "image-generate", "video-generate", "video-lipsync", "audio-generate",
     "digital-ip-text-generate", "digital-ip-batch-generate", "digital-ip-audio-generate",
     "cinematic-open-generate", "cinematic-motion-generate", "tryon-fast-generate", "tryon-classic-generate",
     "text-video-generate", "video-avatar-create",
     "matrix-template-generate", "matrix-template-batch-generate",
     "digital-human-oneclick-start",
+    "short-drama-character-reference-generate",
 })
 
 
@@ -1067,6 +1374,33 @@ def _director_breakdown_upload_catalog_entry():
     }
 
 
+def _download_catalog_entry():
+    return {
+        "action": "dl", "family": "collect", "purpose": "下载黄雀已返回的无水印视频或图片",
+        "input_schema": {
+            "type": "object", "additionalProperties": False,
+            "required": ["url", "output_file"],
+            "properties": {
+                "url": {"type": "string", "minLength": 8, "maxLength": 4096},
+                "name": {"type": "string", "minLength": 1, "maxLength": 40},
+                "decode_key": {"type": "string", "maxLength": 4096},
+                "output_file": {"type": "file", "path": "absolute"},
+            },
+        },
+        "constraints": [
+            "the server accepts only its fixed media CDN allowlist",
+            "the client refuses redirects, symlinked parents and existing output files",
+            "decode_key is sent in a header instead of the URL",
+        ],
+        "billing": "free", "external_effect": False,
+        "confirmation_required": False, "risk": "read",
+        "result_type": "file", "result": {"kind": "local_file"},
+        "ui_route": "/workbench/assets",
+        "transport": {"kind": "download", "supports": ["fixed_download"]},
+        "availability": {"status": "available", "feature_flags": [], "disabled_feature_flags": []},
+    }
+
+
 ACTION_CATALOG = tuple(_catalog_entry(action, fields) for action, fields in _ACTION_INPUTS.items()) + (
     _upload_catalog_entry("image-upload", "image", 10 * 1024 * 1024,
                           ["image/jpeg", "image/png", "image/webp"], 20),
@@ -1079,12 +1413,13 @@ ACTION_CATALOG = tuple(_catalog_entry(action, fields) for action, fields in _ACT
     _upload_catalog_entry("digital-human-oneclick-audio-upload", "audio", 30 * 1024 * 1024,
                           ["audio/mpeg", "audio/wav", "audio/x-wav", "audio/mp4", "audio/x-m4a", "audio/aac"], 1),
     _director_breakdown_upload_catalog_entry(),
+    _download_catalog_entry(),
 )
 for _catalog_item in ACTION_CATALOG:
     if _catalog_item["action"] in _FAMILIES:
         _catalog_item["family"] = _FAMILIES[_catalog_item["action"]]
 ACTION_CATALOG_MAP = {item["action"]: item for item in ACTION_CATALOG if item["transport"]["kind"] == "action"}
-ACTION_CATALOG_VERSION = "hq-action-catalog-v7"
+ACTION_CATALOG_VERSION = "hq-action-catalog-v8"
 
 
 def action_catalog(feature_states=None):
@@ -1136,6 +1471,7 @@ _TALKING_SCENE_ID_RE = re.compile(r"^scene_[0-9]{2}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 _DIGITAL_HUMAN_RUN_RE = re.compile(r"^dh-run-[A-Za-z0-9._:-]{1,128}$")
+_DIRECTOR_WORKFLOW_RE = re.compile(r"^dw_[0-9a-f]{32}$")
 _CANVAS_BASE64_RE = re.compile(r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{512,}={0,2}(?![A-Za-z0-9+/_=-])")
 IMAGE_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
 IMAGE_UPLOAD_SLOTS = threading.BoundedSemaphore(2)
@@ -1910,6 +2246,20 @@ def _plan(scope, kind, **values):
     return {"scope": scope, "kind": kind, **values}
 
 
+def _idempotent_proxy(scope, path, value, allowed, required, *, extra_scopes=()):
+    _strict_object(value, set(allowed) | {"request_id"}, tuple(required) + ("request_id",))
+    request_id = _matched_string(
+        value["request_id"], "request_id", _IDEMPOTENCY_KEY_RE, 128,
+    )
+    return _plan(
+        scope, "proxy", base=CONTENT_BASE, path=path, method="POST",
+        body={key: json.loads(json.dumps(item, ensure_ascii=False))
+              for key, item in value.items() if key != "request_id"},
+        headers={"Idempotency-Key": request_id},
+        extra_scopes=tuple(extra_scopes),
+    )
+
+
 def _matched_string(value, field, pattern, maximum=160):
     value = _string(value, field, 1, maximum)
     if not pattern.fullmatch(value):
@@ -2119,6 +2469,14 @@ def _director_image_scenes(value):
     return normalized
 
 
+def _director_storyboard(value):
+    if not isinstance(value, list) or not 1 <= len(value) <= 60:
+        raise CLIAPIError(400, "storyboard 必须包含 1-60 个分镜")
+    if any(not isinstance(item, dict) for item in value):
+        raise CLIAPIError(400, "storyboard 分镜必须是 JSON 对象")
+    return json.loads(json.dumps(value, ensure_ascii=False))
+
+
 def action_plan(action, value):
     if not isinstance(value, dict):
         raise CLIAPIError(400, "input 必须是 JSON 对象")
@@ -2304,6 +2662,334 @@ def action_plan(action, value):
         }
         return _plan("director:generate", "generation", generation_kind="image",
                      endpoint="/api/gen/image", payload=payload)
+    if action == "director-scene-video-generate":
+        _strict_object(value, {
+            "scenes", "channel", "ratio", "duration", "seconds", "resolution",
+            "model", "generate_audio", "reference_upload_ids",
+        }, ("scenes",))
+        scenes = _director_image_scenes(value["scenes"])
+        payload = {key: item for key, item in value.items() if key != "scenes"}
+        payload["prompt"] = "，".join(
+            item["scene"].strip() for item in scenes if item.get("scene", "").strip()
+        )
+        plan = action_plan("video-generate", payload)
+        plan["scope"] = "director:generate"
+        return plan
+    if action == "director-scene-talking-generate":
+        plan = action_plan("text-video-generate", value)
+        plan["scope"] = "director:generate"
+        return plan
+    if action == "director-workflows":
+        _strict_object(value, {"limit", "offset"})
+        query = urllib.parse.urlencode({
+            "limit": _integer(value.get("limit", 20), "limit", 1, 50),
+            "offset": _integer(value.get("offset", 0), "offset", 0, 2000),
+        })
+        return _plan("director:read", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/director/workflows?" + query)
+    if action == "director-workflow-create":
+        allowed = {"title", "source_job_id", "storyboard"}
+        plan = _idempotent_proxy(
+            "director:write", "/api/gen/director/workflows", value,
+            allowed, ("title",),
+        )
+        body = plan["body"]
+        body["title"] = _string(body["title"], "title", 1, 120)
+        if ("source_job_id" in body) == ("storyboard" in body):
+            raise CLIAPIError(400, "必须且只能提供 source_job_id 或 storyboard")
+        if "source_job_id" in body:
+            body["source_job_id"] = _integer(body["source_job_id"], "source_job_id", 1, 2**63 - 1)
+        else:
+            body["storyboard"] = _director_storyboard(body["storyboard"])
+        return plan
+    if action in {"director-workflow", "director-storyboard-export"}:
+        _strict_object(value, {"workflow_id"}, ("workflow_id",))
+        workflow_id = _matched_string(
+            value["workflow_id"], "workflow_id", _DIRECTOR_WORKFLOW_RE, 35,
+        )
+        suffix = "/storyboard/export" if action.endswith("export") else ""
+        return _plan("director:read", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/director/workflows/%s%s" % (workflow_id, suffix))
+    if action == "director-storyboard-update":
+        _strict_object(value, {"workflow_id", "revision", "storyboard"},
+                       ("workflow_id", "revision", "storyboard"))
+        workflow_id = _matched_string(
+            value["workflow_id"], "workflow_id", _DIRECTOR_WORKFLOW_RE, 35,
+        )
+        return _plan(
+            "director:write", "proxy", base=CONTENT_BASE,
+            path="/api/gen/director/workflows/%s/storyboard" % workflow_id,
+            method="PUT", body={
+                "revision": _integer(value["revision"], "revision", 1, 2**63 - 1),
+                "storyboard": _director_storyboard(value["storyboard"]),
+            },
+        )
+    if action in {"director-production-plan", "director-remake-plan"}:
+        workflow_id = _matched_string(
+            value.get("workflow_id"), "workflow_id", _DIRECTOR_WORKFLOW_RE, 35,
+        )
+        if action == "director-production-plan":
+            _strict_object(value, {"workflow_id", "output_kind", "options"},
+                           ("workflow_id", "output_kind", "options"))
+            body = {
+                "output_kind": _enum(value["output_kind"], "output_kind", ("image", "video")),
+                "options": value["options"],
+            }
+        else:
+            _strict_object(value, {"workflow_id", "mode", "instruction", "options"},
+                           ("workflow_id", "mode", "instruction", "options"))
+            body = {
+                "mode": _enum(value["mode"], "mode", ("cinematic", "grok", "micro")),
+                "instruction": _string(value["instruction"], "instruction", 1, 2000),
+                "options": value["options"],
+            }
+        if not isinstance(body["options"], dict):
+            raise CLIAPIError(400, "options 必须是 JSON 对象")
+        kind = "production" if "production" in action else "remake"
+        return _plan(
+            "director:write", "proxy", base=CONTENT_BASE,
+            path="/api/gen/director/workflows/%s/%s/plan" % (workflow_id, kind),
+            method="POST", body=json.loads(json.dumps(body, ensure_ascii=False)),
+        )
+    if action in {"director-production-start", "director-remake-start"}:
+        _strict_object(value, {"workflow_id", "plan_digest", "request_id"},
+                       ("workflow_id", "plan_digest", "request_id"))
+        workflow_id = _matched_string(
+            value["workflow_id"], "workflow_id", _DIRECTOR_WORKFLOW_RE, 35,
+        )
+        payload = {
+            "plan_digest": _matched_string(value["plan_digest"], "plan_digest", _SHA256_RE, 64),
+            "request_id": _matched_string(value["request_id"], "request_id", _IDEMPOTENCY_KEY_RE, 128),
+        }
+        kind = "production" if "production" in action else "remake"
+        base = "/api/gen/director/workflows/%s/%s" % (workflow_id, kind)
+        return _plan(
+            "director:generate", "generation",
+            generation_kind="director_" + kind,
+            endpoint=base + "/start", payload=payload,
+            quote_endpoint=base + "/quote", quote_body=payload,
+            quote_result_fields=("workflow_id", "kind", "plan_digest", "request_id"),
+        )
+    if action in {"director-production-status", "director-remake-status"}:
+        _strict_object(value, {"workflow_id"}, ("workflow_id",))
+        workflow_id = _matched_string(
+            value["workflow_id"], "workflow_id", _DIRECTOR_WORKFLOW_RE, 35,
+        )
+        kind = "production" if "production" in action else "remake"
+        return _plan("director:read", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/director/workflows/%s/%s" % (workflow_id, kind))
+    if action in {"director-production-recover", "director-remake-recover"}:
+        _strict_object(value, {"workflow_id", "plan_digest", "request_id"},
+                       ("workflow_id", "plan_digest", "request_id"))
+        workflow_id = _matched_string(
+            value["workflow_id"], "workflow_id", _DIRECTOR_WORKFLOW_RE, 35,
+        )
+        request_id = _matched_string(
+            value["request_id"], "request_id", _IDEMPOTENCY_KEY_RE, 128,
+        )
+        body = {
+            "plan_digest": _matched_string(value["plan_digest"], "plan_digest", _SHA256_RE, 64),
+            "request_id": request_id,
+        }
+        kind = "production" if "production" in action else "remake"
+        return _plan(
+            "director:recover", "proxy", base=CONTENT_BASE,
+            path="/api/gen/director/workflows/%s/%s/recover" % (workflow_id, kind),
+            method="POST", body=body, headers={"Idempotency-Key": request_id},
+            extra_scopes=("generation:submit",),
+        )
+    if action == "director-chat":
+        allowed = {
+            "prompt", "session_id", "page_revision", "page_context",
+            "history", "source_page",
+        }
+        plan = _idempotent_proxy(
+            "director:write", "/api/gen/director_agent", value, allowed,
+            ("prompt", "session_id", "page_revision", "page_context"),
+        )
+        plan["body"]["prompt"] = _string(plan["body"]["prompt"], "prompt", 1, 2000)
+        plan["body"]["session_id"] = _identifier(plan["body"]["session_id"], "session_id")
+        plan["body"]["page_revision"] = _integer(
+            plan["body"]["page_revision"], "page_revision", 1, 2**63 - 1,
+        )
+        if not isinstance(plan["body"]["page_context"], dict):
+            raise CLIAPIError(400, "page_context 必须是 JSON 对象")
+        if not isinstance(plan["body"].get("history", []), list):
+            raise CLIAPIError(400, "history 必须是数组")
+        plan["body"]["quoted_cost"] = 0
+        return plan
+    if action == "director-produce":
+        required = {"offer_id", "input", "expected_cost", "plan_digest", "quote_token"}
+        _strict_object(value, required, tuple(required))
+        offer_id = _string(value["offer_id"], "offer_id", 36, 84)
+        if not re.fullmatch(r"director-production-[A-Za-z0-9_-]{16,64}", offer_id):
+            raise CLIAPIError(400, "offer_id 格式不合法")
+        body = json.loads(json.dumps(value, ensure_ascii=False))
+        if not isinstance(body["input"], dict):
+            raise CLIAPIError(400, "input 必须是 JSON 对象")
+        _integer(body["expected_cost"], "expected_cost", 0, 10**9)
+        _matched_string(body["plan_digest"], "plan_digest", _SHA256_RE, 64)
+        _string(body["quote_token"], "quote_token", 20, 4096)
+        return _plan(
+            "director:generate", "proxy", base=CONTENT_BASE,
+            path="/api/gen/director_agent/produce", method="POST", body=body,
+            headers={"Idempotency-Key": offer_id},
+            extra_scopes=("generation:submit",),
+        )
+    if action == "short-drama-advisor":
+        allowed = {
+            "messages", "understanding", "expected_field", "field_states",
+            "recommendation_context", "user_message",
+        }
+        plan = _idempotent_proxy(
+            "short-drama:write", "/api/gen/short-drama/advisor", value,
+            allowed, ("user_message",),
+        )
+        plan["body"]["user_message"] = _string(
+            plan["body"]["user_message"], "user_message", 1, 600,
+        )
+        if not isinstance(plan["body"].get("messages", []), list):
+            raise CLIAPIError(400, "messages 必须是数组")
+        return plan
+    if action == "short-drama-character-reference-generate":
+        _strict_object(value, {"project_id", "revision", "character_key"},
+                       ("project_id", "revision", "character_key"))
+        payload = {
+            "project_id": _identifier(value["project_id"], "project_id"),
+            "revision": _integer(value["revision"], "revision", 1, 2**63 - 1),
+            "character_key": _identifier(value["character_key"], "character_key"),
+        }
+        return _plan(
+            "generation:quote", "generation",
+            generation_kind="short_drama_character_reference",
+            endpoint="/api/gen/short-drama/generate-character-reference",
+            payload=payload,
+            quote_endpoint="/api/gen/short-drama/character-reference-quote",
+            quote_body=payload,
+        )
+    if action == "short-drama-character-reference-confirm":
+        required = {"project_id", "revision", "character_key", "reference_version"}
+        _strict_object(value, required, tuple(required))
+        return _plan(
+            "short-drama:write", "proxy", base=CONTENT_BASE,
+            path="/api/gen/short-drama/confirm-character-reference", method="POST",
+            body={
+                "project_id": _identifier(value["project_id"], "project_id"),
+                "revision": _integer(value["revision"], "revision", 1, 2**63 - 1),
+                "character_key": _identifier(value["character_key"], "character_key"),
+                "reference_version": _integer(value["reference_version"], "reference_version", 1, 2**63 - 1),
+            },
+        )
+    if action == "short-drama-preflight-plan":
+        plan = _idempotent_proxy(
+            "short-drama:write", "/api/gen/short-drama/preflight/generate",
+            value, {"project_id", "conversation_revision", "quality_route"},
+            ("project_id", "conversation_revision"),
+        )
+        plan["body"]["project_id"] = _identifier(plan["body"]["project_id"], "project_id")
+        plan["body"]["conversation_revision"] = _integer(
+            plan["body"]["conversation_revision"], "conversation_revision", 1, 2**63 - 1,
+        )
+        if "quality_route" in plan["body"]:
+            plan["body"]["quality_route"] = _enum(
+                plan["body"]["quality_route"], "quality_route", ("quick_draft", "quality_first"),
+            )
+        return plan
+    if action == "short-drama-preflight-confirm":
+        plan = _idempotent_proxy(
+            "short-drama:write", "/api/gen/short-drama/preflight/confirm",
+            value, {"project_id", "plan_id", "plan_version", "accepted_issue_keys"},
+            ("project_id", "plan_id", "plan_version", "accepted_issue_keys"),
+        )
+        plan["body"]["project_id"] = _identifier(plan["body"]["project_id"], "project_id")
+        plan["body"]["plan_id"] = _identifier(plan["body"]["plan_id"], "plan_id")
+        plan["body"]["plan_version"] = _integer(
+            plan["body"]["plan_version"], "plan_version", 1, 2**63 - 1,
+        )
+        issues = plan["body"]["accepted_issue_keys"]
+        if not isinstance(issues, list) or len(issues) > 100:
+            raise CLIAPIError(400, "accepted_issue_keys 必须是最多 100 项的数组")
+        plan["body"]["accepted_issue_keys"] = [
+            _identifier(item, "accepted_issue_keys") for item in issues
+        ]
+        return plan
+    if action in {"short-drama-autodraft-preflight", "short-drama-autodraft-quote"}:
+        allowed = {"project_id", "plan_id", "shot_key", "character_key", "avatar_id"}
+        if action.endswith("preflight"):
+            allowed.add("execution")
+        _strict_object(value, allowed, ("project_id", "plan_id", "shot_key"))
+        body = json.loads(json.dumps(value, ensure_ascii=False))
+        for field in ("project_id", "plan_id", "shot_key"):
+            body[field] = _identifier(body[field], field)
+        path = (
+            "/api/gen/short-drama/autodraft/provider-preflight"
+            if action.endswith("preflight")
+            else "/api/gen/short-drama/autodraft/provider-quote"
+        )
+        return _plan("short-drama:write" if action.endswith("preflight") else "short-drama:read", "proxy", base=CONTENT_BASE,
+                     path=path, method="POST", body=body)
+    if action == "short-drama-autodraft-start":
+        plan = _idempotent_proxy(
+            "short-drama:write", "/api/gen/short-drama/autodraft/provider-jobs",
+            value, {"project_id", "quote_token"}, ("project_id", "quote_token"),
+            extra_scopes=("generation:submit",),
+        )
+        plan["body"]["project_id"] = _identifier(plan["body"]["project_id"], "project_id")
+        plan["body"]["quote_token"] = _string(plan["body"]["quote_token"], "quote_token", 1, 4096)
+        return plan
+    if action == "short-drama-autodraft-status":
+        _strict_object(value, {"project_id", "job_id"}, ("project_id", "job_id"))
+        project_id = urllib.parse.quote(_identifier(value["project_id"], "project_id"), safe="")
+        job_id = urllib.parse.quote(_identifier(value["job_id"], "job_id"), safe="")
+        return _plan("short-drama:read", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/short-drama/autodraft/provider-jobs/%s?project_id=%s" % (job_id, project_id))
+    if action == "short-drama-delivery-quote":
+        _strict_object(value, {"project_id", "version_id"}, ("project_id", "version_id"))
+        return _plan("short-drama:read", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/short-drama/delivery/quote", method="POST",
+                     body={"project_id": _identifier(value["project_id"], "project_id"),
+                           "version_id": _identifier(value["version_id"], "version_id")})
+    if action == "short-drama-delivery-start":
+        plan = _idempotent_proxy(
+            "short-drama:write", "/api/gen/short-drama/delivery/jobs",
+            value, {"project_id", "quote_token"}, ("project_id", "quote_token"),
+            extra_scopes=("generation:submit",),
+        )
+        plan["body"]["project_id"] = _identifier(plan["body"]["project_id"], "project_id")
+        plan["body"]["quote_token"] = _string(plan["body"]["quote_token"], "quote_token", 1, 4096)
+        return plan
+    if action == "short-drama-delivery-status":
+        _strict_object(value, {"project_id", "job_id"}, ("project_id", "job_id"))
+        project_id = urllib.parse.quote(_identifier(value["project_id"], "project_id"), safe="")
+        job_id = urllib.parse.quote(_identifier(value["job_id"], "job_id"), safe="")
+        return _plan("short-drama:read", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/short-drama/delivery/jobs/%s?project_id=%s" % (job_id, project_id))
+    if action in {"short-drama-completion-readiness", "short-drama-completion"}:
+        _strict_object(value, {"project_id"}, ("project_id",))
+        project_id = urllib.parse.quote(_identifier(value["project_id"], "project_id"), safe="")
+        suffix = "/readiness" if action.endswith("readiness") else ""
+        return _plan("short-drama:read", "proxy", base=CONTENT_BASE,
+                     path="/api/gen/short-drama/completion%s?project_id=%s" % (suffix, project_id))
+    if action == "short-drama-completion-confirm":
+        allowed = {
+            "project_id", "revision", "final_version_id", "asset_id",
+            "delivery_hash", "acknowledged",
+        }
+        plan = _idempotent_proxy(
+            "short-drama:write", "/api/gen/short-drama/completion/confirm",
+            value, allowed, tuple(allowed),
+        )
+        body = plan["body"]
+        body["project_id"] = _identifier(body["project_id"], "project_id")
+        body["revision"] = _integer(body["revision"], "revision", 1, 2**63 - 1)
+        body["final_version_id"] = _identifier(body["final_version_id"], "final_version_id")
+        body["asset_id"] = _identifier(body["asset_id"], "asset_id")
+        body["delivery_hash"] = _matched_string(
+            body["delivery_hash"], "delivery_hash", _SHA256_RE, 64,
+        )
+        if body["acknowledged"] is not True:
+            raise CLIAPIError(400, "acknowledged 必须为 true")
+        return plan
     if action == "text-video-avatar-import":
         _strict_object(value, {"image_upload_id"}, ("image_upload_id",))
         return _plan(

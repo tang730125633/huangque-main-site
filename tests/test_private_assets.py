@@ -1363,6 +1363,33 @@ esac
         with patch.object(dl_service.urllib.request, "urlopen", side_effect=OSError("down")):
             self.assertFalse(dl_service.verify_token("valid"))
 
+    def test_download_proxy_accepts_cli_token_only_with_asset_read_scope(self):
+        denied = urllib.error.HTTPError("/api/auth/me", 401, "unauthorized", {}, None)
+        response = Mock()
+        response.read.return_value = json.dumps({
+            "user": {"username": "alice"}, "scopes": ["assets:read"],
+        }).encode()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        with patch.object(
+                dl_service.urllib.request, "urlopen",
+                side_effect=[denied, response]) as request:
+            self.assertTrue(dl_service.verify_token("cli-token"))
+        self.assertTrue(request.call_args_list[1].args[0].full_url.endswith(
+            "/api/auth/cli/status"
+        ))
+
+        no_scope = Mock()
+        no_scope.read.return_value = json.dumps({
+            "user": {"username": "alice"}, "scopes": ["profile:read"],
+        }).encode()
+        no_scope.__enter__ = Mock(return_value=no_scope)
+        no_scope.__exit__ = Mock(return_value=False)
+        with patch.object(
+                dl_service.urllib.request, "urlopen",
+                side_effect=[denied, no_scope]):
+            self.assertFalse(dl_service.verify_token("cli-token"))
+
     def test_download_proxy_accepts_only_matching_internal_token(self):
         original = dl_service.INTERNAL_TOKEN
         try:

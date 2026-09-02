@@ -116,12 +116,17 @@ DIRECTOR_ACTIONS = (
     ),
     _action(
         "director-workflows", "read", "director:read", (),
-        ("GET:/api/gen/director/workflows",),
+        ("GET:/api/gen/director/workflows",), availability="available",
         description="列出本人编导工作流。",
     ),
     _action(
+        "director-workflow-create", "write", "director:write", (),
+        ("POST:/api/gen/director/workflows",), availability="available",
+        description="从本人已完成脚本/拆解任务或显式分镜创建工作流。",
+    ),
+    _action(
         "director-workflow", "read", "director:read", (),
-        ("GET:/api/gen/director/workflows/{workflow_id}",),
+        ("GET:/api/gen/director/workflows/{workflow_id}",), availability="available",
         description="读取一个本人编导工作流及当前 revision。",
     ),
     _action(
@@ -134,11 +139,13 @@ DIRECTOR_ACTIONS = (
     _action(
         "director-storyboard-update", "storyboard", "director:write", (),
         ("PUT:/api/gen/director/workflows/{workflow_id}/storyboard",),
+        availability="available",
         description="按 revision 保存结构化分镜，冲突时拒绝覆盖。",
     ),
     _action(
         "director-storyboard-export", "storyboard", "director:read", (),
         ("GET:/api/gen/director/workflows/{workflow_id}/storyboard/export",),
+        availability="available",
         description="导出本人结构化分镜。",
     ),
     _action(
@@ -167,40 +174,45 @@ DIRECTOR_ACTIONS = (
     _action(
         "director-scene-video-generate", "scene", "director:generate",
         ("script.output.video.story",), ("POST:/api/gen/xiaole_video",),
-        billing="quote_then_confirm",
+        billing="quote_then_confirm", availability="available",
         description="根据冻结的分镜生成单镜头剧情视频。",
     ),
     _action(
         "director-scene-talking-generate", "scene", "director:generate",
         ("script.output.video.spoken", "script.output.video.recommend"),
         ("POST:/api/gen/script_to_video",), billing="quote_then_confirm",
+        availability="available",
         description="根据冻结的口播分镜生成人物口播镜头。",
     ),
     _action(
-        "director-production-plan", "production", "director:read", (),
+        "director-production-plan", "production", "director:write", (),
         ("POST:/api/gen/director/workflows/{workflow_id}/production/plan",),
+        availability="available",
         description="冻结输入并返回服务端权威生产方案与报价摘要。",
     ),
     _action(
         "director-production-start", "production", "director:generate",
         ("script.output.handoff",),
         ("POST:/api/gen/director/workflows/{workflow_id}/production/start",),
-        billing="quote_then_confirm",
-        description="用 quote_token、plan_digest 和 request_id 启动完整生产。",
+        billing="quote_then_confirm", availability="available",
+        description="用 quote_token、plan_digest 和 request_id 启动一条冻结工作流成品。",
     ),
     _action(
         "director-production-status", "production", "director:read", (),
         ("GET:/api/gen/director/workflows/{workflow_id}/production",),
+        availability="available",
         description="读取生产状态、子任务和账务状态。",
     ),
     _action(
         "director-production-recover", "production", "director:recover", (),
         ("POST:/api/gen/director/workflows/{workflow_id}/production/recover",),
+        availability="available",
         description="只恢复原 request_id 的可恢复生产，不重复扣点。",
     ),
     _action(
-        "director-remake-plan", "remake", "director:read", (),
+        "director-remake-plan", "remake", "director:write", (),
         ("POST:/api/gen/director/workflows/{workflow_id}/remake/plan",),
+        availability="available",
         description="根据反推结果冻结同款复刻方案。",
     ),
     _action(
@@ -208,17 +220,19 @@ DIRECTOR_ACTIONS = (
         ("script.output.remake.cinematic", "script.output.remake.grok",
          "script.output.remake.micro"),
         ("POST:/api/gen/cinematic", "POST:/api/gen/xiaole_video"),
-        billing="quote_then_confirm",
+        billing="quote_then_confirm", availability="available",
         description="启动电影化身、果肉或 Seedance 同款复刻。",
     ),
     _action(
         "director-remake-status", "remake", "director:read", (),
         ("GET:/api/gen/director/workflows/{workflow_id}/remake",),
+        availability="available",
         description="读取同款复刻状态与成品。",
     ),
     _action(
         "director-remake-recover", "remake", "director:recover", (),
         ("POST:/api/gen/director/workflows/{workflow_id}/remake/recover",),
+        availability="available",
         description="恢复原同款复刻任务。",
     ),
 )
