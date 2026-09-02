@@ -48,6 +48,12 @@ def _row(row):
         return None
     value = dict(row)
     value["input"] = json.loads(value.pop("input_json") or "{}")
+    execution_json = value.pop("execution_json", "")
+    value["execution_frozen"] = bool(execution_json)
+    value["execution"] = (
+        json.loads(execution_json) if execution_json
+        else dict(value["input"])
+    )
     value["response"] = json.loads(value.pop("response_json") or "{}")
     return value
 
@@ -59,6 +65,7 @@ def ensure_table(connection):
         idem_key TEXT NOT NULL,
         request_hash TEXT NOT NULL,
         input_json TEXT NOT NULL,
+        execution_json TEXT NOT NULL DEFAULT '',
         kind TEXT NOT NULL DEFAULT 'matrix_template_video',
         cost INTEGER NOT NULL,
         charge_key TEXT NOT NULL UNIQUE,
@@ -83,6 +90,11 @@ def ensure_table(connection):
         connection.execute(
             "ALTER TABLE matrix_template_submission_attempts "
             "ADD COLUMN kind TEXT NOT NULL DEFAULT 'matrix_template_video'"
+        )
+    if "execution_json" not in columns:
+        connection.execute(
+            "ALTER TABLE matrix_template_submission_attempts "
+            "ADD COLUMN execution_json TEXT NOT NULL DEFAULT ''"
         )
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_matrix_template_attempt_recovery "
@@ -123,7 +135,7 @@ def recoverable(db_factory, limit=100, now=None):
 
 
 def prepare(db_factory, username, endpoint, idem_key, body, cost, now=None,
-            kind="matrix_template_video"):
+            kind="matrix_template_video", execution_body=None):
     now = int(time.time() if now is None else now)
     cost = int(cost or 0)
     kind = str(kind or "").strip()
@@ -131,8 +143,15 @@ def prepare(db_factory, username, endpoint, idem_key, body, cost, now=None,
         raise ValueError("invalid frozen cost")
     if not kind:
         raise ValueError("invalid frozen job kind")
+    if not isinstance(body, dict):
+        raise ValueError("invalid idempotency input")
+    if execution_body is None:
+        execution_body = body
+    if not isinstance(execution_body, dict):
+        raise ValueError("invalid frozen execution input")
     digest = _hash(body)
     encoded = _json(body)
+    execution_encoded = _json(execution_body)
     charge_key, refund_key = transaction_keys(username, endpoint, idem_key)
     with closing(db_factory()) as connection:
         connection.execute("BEGIN IMMEDIATE")
@@ -145,14 +164,14 @@ def prepare(db_factory, username, endpoint, idem_key, body, cost, now=None,
         if not claim or claim["request_hash"] != digest:
             connection.rollback()
             raise AttemptConflict("submission idempotency claim is missing or changed")
-        connection.execute(
+        inserted = connection.execute(
             """INSERT OR IGNORE INTO matrix_template_submission_attempts(
-               username,endpoint,idem_key,request_hash,input_json,kind,cost,
+               username,endpoint,idem_key,request_hash,input_json,execution_json,kind,cost,
                charge_key,refund_key,state,created_at,updated_at)
-               VALUES(?,?,?,?,?,?,?,?,?,'prepared',?,?)""",
-            (username, endpoint, idem_key, digest, encoded, kind, cost,
+               VALUES(?,?,?,?,?,?,?,?,?,?,'prepared',?,?)""",
+            (username, endpoint, idem_key, digest, encoded, execution_encoded, kind, cost,
              charge_key, refund_key, now, now),
-        )
+        ).rowcount == 1
         row = connection.execute(
             "SELECT * FROM matrix_template_submission_attempts "
             "WHERE username=? AND endpoint=? AND idem_key=?",
@@ -163,6 +182,7 @@ def prepare(db_factory, username, endpoint, idem_key, body, cost, now=None,
             or row["input_json"] != encoded or int(row["cost"]) != cost
             or row["kind"] != kind
             or row["charge_key"] != charge_key or row["refund_key"] != refund_key
+            or (inserted and row["execution_json"] != execution_encoded)
         ):
             connection.rollback()
             raise AttemptConflict("submission attempt is bound to different input")
@@ -297,9 +317,13 @@ def _link_in_transaction(connection, attempt, job_id, response):
 
 
 def recover(db_factory, points, username, endpoint, idem_key, body=None, cost=None,
-            owner="content", now=None, kind="matrix_template_video"):
+            owner="content", now=None, kind="matrix_template_video",
+            execution_body=None):
     if body is not None:
-        prepare(db_factory, username, endpoint, idem_key, body, cost, now, kind)
+        prepare(
+            db_factory, username, endpoint, idem_key, body, cost, now, kind,
+            execution_body=execution_body,
+        )
     attempt = _claim(db_factory, username, endpoint, idem_key, now)
     if not attempt:
         return None
@@ -347,7 +371,7 @@ def recover(db_factory, points, username, endpoint, idem_key, body=None, cost=No
         try:
             job_id = jobs_store.create_job_after_charge(
                 db_factory, attempt["kind"], username, attempt["cost"],
-                attempt["input"], owner,
+                attempt["execution"], owner,
                 before_commit=lambda connection, linked_job_id: (
                     accepted.update(job_id=int(linked_job_id)),
                     _link_in_transaction(connection, attempt, linked_job_id, accepted),

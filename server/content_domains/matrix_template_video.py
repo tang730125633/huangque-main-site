@@ -181,21 +181,9 @@ _SEMANTIC_CONTRACTS = {
         "top3": (118, 900, 996, 2), "bottom2": (84, 900, 996, 2),
     },
 }
-_LEGACY_SEMANTIC_CONTRACTS = {
-    "v02": {
-        "top1": (86, 2), "top2": (62, 4), "bottom2": (78, 2),
-    },
-    "v05": {
-        "top1": (102, 2), "top2": (104, 2),
-        "top3": (68, 3), "bottom2": (70, 2),
-    },
-}
 _ALL_REFERENCE_VARIANTS = {
     f"v{index:02d}" for index in range(1, 18)
 }
-_ALLOWED_SEMANTIC_VARIANT_SETS = (
-    {"v02"}, {"v02", "v05"}, _ALL_REFERENCE_VARIANTS,
-)
 
 
 def _semantic_contract(value, variant):
@@ -216,33 +204,18 @@ def _semantic_contract(value, variant):
     ):
         raise RuntimeError("HyperFrames 语义排版能力无效")
     normalized = {}
-    contract_shape = None
     for layer, expected in expected_layers.items():
         item = layers.get(layer)
-        if not isinstance(item, dict):
-            raise RuntimeError("HyperFrames 语义排版能力无效")
-        keys = set(item)
-        if keys == {"font_size_px", "max_lines"}:
-            legacy_layers = _LEGACY_SEMANTIC_CONTRACTS.get(str(variant or ""))
-            if legacy_layers is None:
-                raise RuntimeError("HyperFrames 语义排版能力无效")
-            shape = "legacy"
-            actual = (item.get("font_size_px"), item.get("max_lines"))
-            wanted = legacy_layers[layer]
-        elif keys == {
+        if not isinstance(item, dict) or set(item) != {
             "font_size_px", "font_weight", "max_width_px", "max_lines",
         }:
-            shape = "measured"
-            actual = (
-                item.get("font_size_px"), item.get("font_weight"),
-                item.get("max_width_px"), item.get("max_lines"),
-            )
-            wanted = expected
-        else:
             raise RuntimeError("HyperFrames 语义排版能力无效")
-        if contract_shape not in {None, shape} or actual != wanted:
+        actual = (
+            item.get("font_size_px"), item.get("font_weight"),
+            item.get("max_width_px"), item.get("max_lines"),
+        )
+        if actual != expected:
             raise RuntimeError("HyperFrames 语义排版能力无效")
-        contract_shape = shape
         normalized[layer] = {key: int(value) for key, value in item.items()}
     return {"version": 1, "max_width_px": 996, "layers": normalized}
 
@@ -345,14 +318,11 @@ def _refresh_catalog(force=False):
                 )
                 or {item["variant"] for item in references}
                 != {f"v{index:02d}" for index in range(1, 18)}
-                or semantic_variants not in _ALLOWED_SEMANTIC_VARIANT_SETS
-                or (
-                    semantic_variants == _ALL_REFERENCE_VARIANTS
-                    and any(
-                        set(layer) != measured_layer_keys
-                        for item in references
-                        for layer in item["semantic_layout"]["layers"].values()
-                    )
+                or semantic_variants != _ALL_REFERENCE_VARIANTS
+                or any(
+                    set(layer) != measured_layer_keys
+                    for item in references
+                    for layer in item["semantic_layout"]["layers"].values()
                 )
             ):
                 raise RuntimeError("HyperFrames 模板目录不完整")
@@ -405,7 +375,7 @@ def public_batch_capability(force=False):
     }
 
 
-def validate_payload(raw, username=""):
+def validate_payload(raw, username="", *, trusted_semantic_layout=None):
     require_available()
     body = dict(raw or {})
     top = " ".join(str(body.get("top_text") or "").split())
@@ -447,6 +417,13 @@ def validate_payload(raw, username=""):
     if font_family and font_selectable:
         candidate["font_family"] = font_family
     semantic_contract = template.get("semantic_layout")
+    if (
+        template.get("engine") == "hyperframes"
+        and semantic_contract is None
+    ):
+        raise ValueError(
+            "模板 AI 断句能力不可用，视频任务未创建且未扣点"
+        )
     batch_id = str(body.get("batch_id") or "").strip().lower()
     batch_index = body.get("batch_index")
     batch_size = body.get("batch_size")
@@ -532,12 +509,22 @@ def validate_payload(raw, username=""):
                 ):
                     return False, str(exc)
                 raise
+            except RuntimeError as exc:
+                raise feature_flags.FeatureDisabled(
+                    "模板成片服务暂不可用，请稍后重试"
+                ) from exc
 
         try:
-            semantic_layout, response = matrix_template_semantics.resolve(
-                top, bottom, template_id, semantic_contract,
-                validate_semantic_layout,
-            )
+            if trusted_semantic_layout is not None:
+                semantic_layout = dict(trusted_semantic_layout)
+                accepted, response = validate_semantic_layout(semantic_layout)
+                if not accepted:
+                    raise RuntimeError(str(response or "语义排版校验失败"))
+            else:
+                semantic_layout, response = matrix_template_semantics.resolve(
+                    top, bottom, template_id, semantic_contract,
+                    validate_semantic_layout,
+                )
             candidate["semantic_layout"] = semantic_layout
         except MatrixTemplateHTTPError as exc:
             if exc.status == 400:
@@ -546,12 +533,19 @@ def validate_payload(raw, username=""):
                 "模板成片服务暂不可用，请稍后重试"
             ) from exc
         except RuntimeError as exc:
-            candidate.pop("semantic_layout", None)
             print(
-                "[matrix-template-semantic-fallback] "
+                "[matrix-template-semantic-rejected] "
                 f"template={template_id} reason={str(exc)[:240]}",
                 flush=True,
             )
+            raise ValueError(
+                (
+                    "AI 断句结果未通过生成校验，"
+                    "视频任务失败并将自动退点"
+                    if trusted_semantic_layout is not None else
+                    "AI 断句失败，视频任务未创建且未扣点，请重试"
+                )
+            ) from exc
     if response is None:
         try:
             response = _request("POST", "/v1/preflight", candidate, timeout=10)
@@ -822,7 +816,21 @@ def generate(payload):
             if not str(key).startswith("_")
         }
     else:
-        payload = validate_payload(raw, str(raw.get("_username") or ""))
+        phase = str(runtime.get("phase") or "")
+        legacy_exact_replay = (
+            phase in {"submitting", "submission_unknown"}
+            and "semantic_layout" not in stored_payload
+        )
+        if legacy_exact_replay:
+            payload = {
+                key: value for key, value in stored_payload.items()
+                if not str(key).startswith("_")
+            }
+        else:
+            payload = validate_payload(
+                raw, str(raw.get("_username") or ""),
+                trusted_semantic_layout=stored_payload.get("semantic_layout"),
+            )
         _remaining_budget(deadline_at)
         request_id = "matrix-template-" + re.sub(
             r"[^A-Za-z0-9_.:-]", "-", local_job

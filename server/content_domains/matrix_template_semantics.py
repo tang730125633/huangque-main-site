@@ -20,6 +20,7 @@ OPENAI_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 VERSION = 1
 CACHE_SECONDS = 10 * 60
 CACHE_LIMIT = 512
+MAX_TOP1_REBALANCE_CANDIDATES = 3
 _CACHE: dict[str, tuple[float, dict]] = {}
 _LOCK = threading.Lock()
 _KEY_LOCKS = tuple(threading.Lock() for _ in range(32))
@@ -86,10 +87,39 @@ def _nearest_safe_top1_end(raw, breaks: list[int], top: str) -> int:
         return len(top) - 1
     while raw + 1 < len(top) - 1 and top[raw + 1] in _OBVIOUS_BOUNDARY:
         raw += 1
-    candidates = [item for item in breaks if item >= max(0, raw)]
+    candidates = list(breaks)
     if not candidates:
         raise RuntimeError("AI top1 语义边界无效")
-    return candidates[0]
+    return min(candidates, key=lambda item: (abs(item - raw), item > raw, item))
+
+
+def _earlier_top1_candidates(value: dict, top: str) -> list[dict]:
+    current = value.get("top1_end")
+    breaks = value.get("top_break_after")
+    if (
+        isinstance(current, bool) or not isinstance(current, int)
+        or not isinstance(breaks, list)
+    ):
+        return []
+    candidates = []
+    for boundary in reversed([
+        item for item in breaks
+        if (
+            not isinstance(item, bool) and isinstance(item, int)
+            and 0 <= item < current - 1
+            and not _break_splits_number_phrase(top, item)
+        )
+    ]):
+        candidate = dict(value)
+        candidate["top1_end"] = boundary
+        candidate["top_break_after"] = list(breaks)
+        candidate["bottom_break_after"] = list(
+            value.get("bottom_break_after") or []
+        )
+        candidates.append(candidate)
+        if len(candidates) >= MAX_TOP1_REBALANCE_CANDIDATES:
+            break
+    return candidates
 
 
 def _prompt(top: str, bottom: str, contract: dict) -> str:
@@ -113,7 +143,7 @@ def _prompt(top: str, bottom: str, contract: dict) -> str:
 - bottom2: {int(bottom2.get('font_size_px') or 78)}px，可用宽 {int(bottom2.get('max_width_px') or contract.get('max_width_px') or 996)}px，最多 {int(bottom2.get('max_lines') or 2)} 行。
 
 请返回：
-1. top1_end：top1 最后一个字符的索引（包含）；其余顶部文案由生成端按完整分句分配到 top2，有 top3 时也可分配到 top3。
+1. top1_end：top1 最后一个字符的索引（包含）；其余顶部文案由生成端按完整分句分配到 top2，有 top3 时也可分配到 top3。top1 必须能在自己的字号、宽度和行数内独立排下；不确定时宁可选更早的完整语义边界。
 2. top_break_after：顶部文案中所有可安全换行的索引。
 3. bottom_break_after：底部文案中所有可安全换行的索引。
 
@@ -137,7 +167,7 @@ def _request(top: str, bottom: str, contract: dict, *, previous=None, feedback="
     if previous is not None and feedback:
         messages.extend([
             {"role": "assistant", "content": json.dumps(previous, ensure_ascii=False)},
-            {"role": "user", "content": "上一结果未通过真实字体排版校验：" + str(feedback)[:300] + "。请修正索引，不要重写文案。"},
+            {"role": "user", "content": "上一结果未通过真实字体排版校验：" + str(feedback)[:300] + "。必须修改上一结果；如果 top1 排不下，将 top1_end 移到更早的完整语义边界。不要重写文案。"},
         ])
     body = json.dumps({
         "model": MODEL,
@@ -208,12 +238,32 @@ def resolve(top: str, bottom: str, template_id: str, contract: dict,
             if item is not None and now - item[0] <= CACHE_SECONDS:
                 cached_value = dict(item[1])
             _CACHE.pop(key, None)
+        tested = set()
+
+        def validate_with_rebalance(value, prior_feedback=""):
+            last_feedback = str(prior_feedback or "语义排版校验失败")
+            for candidate in [value, *_earlier_top1_candidates(value, top)]:
+                signature = json.dumps(
+                    candidate, ensure_ascii=False, sort_keys=True,
+                    separators=(",", ":"),
+                )
+                if signature in tested:
+                    continue
+                tested.add(signature)
+                accepted, result = validator(candidate)
+                if accepted:
+                    return candidate, result, ""
+                last_feedback = str(result or last_feedback)
+            return None, None, last_feedback
+
         if cached_value is not None:
-            accepted, result = validator(cached_value)
-            if accepted:
-                _remember(key, cached_value)
-                return cached_value, result
-            previous, feedback, attempts = cached_value, str(result), 2
+            accepted_value, result, feedback = validate_with_rebalance(
+                cached_value
+            )
+            if accepted_value is not None:
+                _remember(key, accepted_value)
+                return accepted_value, result
+            previous, attempts = cached_value, 2
         else:
             previous, feedback, attempts = None, "", 3
         for _attempt in range(attempts):
@@ -221,9 +271,11 @@ def resolve(top: str, bottom: str, template_id: str, contract: dict,
                 top, bottom, contract,
                 previous=previous, feedback=feedback,
             )
-            accepted, result = validator(value)
-            if accepted:
-                _remember(key, value)
-                return value, result
-            previous, feedback = value, str(result or "语义排版校验失败")
+            accepted_value, result, feedback = validate_with_rebalance(
+                value, feedback
+            )
+            if accepted_value is not None:
+                _remember(key, accepted_value)
+                return accepted_value, result
+            previous = value
         raise RuntimeError("AI 语义排版经两次修复后仍未通过真实字体校验")

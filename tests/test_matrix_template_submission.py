@@ -1,4 +1,5 @@
 from contextlib import closing
+import json
 import pathlib
 import sqlite3
 import sys
@@ -170,6 +171,51 @@ class MatrixTemplateSubmissionTests(unittest.TestCase):
         self.assertEqual(recovered["state"], "linked")
         self.assertEqual(len(self.points.deductions), 1)
         self.assertEqual(self.job_count(), 1)
+
+    def test_execution_payload_is_frozen_separately_from_idempotency_input(self):
+        execution = dict(self.body, duration=11, semantic_layout={
+            "version": 1, "model": "gpt-4.1-mini",
+            "source_sha256": "a" * 64, "top1_end": 3,
+            "top_break_after": [3], "bottom_break_after": [],
+        })
+        prepared = matrix_template_submission.prepare(
+            self.db, "alice", "/api/gen/matrix-template", self.key,
+            self.body, 5, now=self.now(), execution_body=execution,
+        )
+        self.assertEqual(self.body, prepared["input"])
+        self.assertEqual(execution, prepared["execution"])
+        self.assertTrue(prepared["execution_frozen"])
+
+        changed_execution = dict(execution, duration=12)
+        replayed = matrix_template_submission.prepare(
+            self.db, "alice", "/api/gen/matrix-template", self.key,
+            self.body, 5, now=self.now(), execution_body=changed_execution,
+        )
+        self.assertEqual(execution, replayed["execution"])
+
+        recovered = self.recover(body_marker=False)
+        self.assertEqual("linked", recovered["state"])
+        with closing(self.db()) as connection:
+            payload = json.loads(connection.execute(
+                "SELECT payload FROM jobs WHERE id=?", (recovered["job_id"],),
+            ).fetchone()[0])
+        self.assertEqual(execution, payload)
+
+    def test_legacy_attempt_without_execution_payload_uses_original_input(self):
+        matrix_template_submission.prepare(
+            self.db, "alice", "/api/gen/matrix-template", self.key,
+            self.body, 5, now=self.now(),
+        )
+        with closing(self.db()) as connection:
+            connection.execute(
+                "UPDATE matrix_template_submission_attempts "
+                "SET execution_json='' WHERE username='alice' AND idem_key=?",
+                (self.key,),
+            )
+            connection.commit()
+        attempt = self.attempt()
+        self.assertFalse(attempt["execution_frozen"])
+        self.assertEqual(self.body, attempt["execution"])
 
     def test_hard_exit_after_job_commit_replays_linked_job(self):
         real_create = matrix_template_submission.jobs_store.create_job_after_charge
