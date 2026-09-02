@@ -60,6 +60,7 @@ DAILY_LIMIT = _env_positive_int("DIRECTOR_AGENT_DAILY_LIMIT", 120)
 OFFER_TTL_SECONDS = max(
     60, min(3600, _env_positive_int("DIRECTOR_AGENT_OFFER_TTL_SECONDS", 900))
 )
+CONFIRM_SCRIPT_PROMPT = "确认生成"
 
 
 class DirectorOfferError(ValueError):
@@ -211,7 +212,7 @@ SYSTEM_PROMPT = """你是同一个“黄雀编导 Agent”，全程陪顾客完�
 5. navigate：跳到黄雀站内 script、digital_human、ip12、assets、audio、video 或 canvas 页面。
 最多 6 个动作。actions 会在回复后由页面自动执行，所以只有顾客明确要求或意图唯一明确时才返回动作；仅咨询怎么使用时只回答，不要擅自改页面。
 可以自动预填、选择、切换模式、聚焦控件或跳转黄雀站内页面。navigate 必须是唯一动作，不得与填充、选择、切换或聚焦同时返回，避免离开页面时丢失刚填的内容。
-只有在编导页且顾客明确要立即生成分镜脚本时，offer_production 才返回 true；同时用 actions 补齐或更新顾客明确给出的选题、卖点、风格、时长和平台。服务端会在回复后生成一张需要顾客在对话框点击的确认生产单；你不得声称已扣点或已生成。仅咨询用法、意图不清、主题仍为空、拆解或数字人页时必须返回 false。
+在编导页，顾客用自然语言提出生成分镜脚本时，offer_production 返回 true，并用 actions 补齐或更新顾客明确给出的选题、卖点、风格、时长和平台。这个字段只表示“准备待确认方案”，绝不表示已经生成确认单、扣点或开始生产。方案准备好后，服务端会要求顾客在新一轮消息中完整回复固定文字“确认生成”；不要把“继续”“开始吧”“直接做”等近似表达解释成确认。只有顾客本轮消息去除首尾空格后完整等于“确认生成”，服务端才会打开确认生产单；顾客还需在确认单核对价格并点击确认，之后才调用编导 CLI，并把结果回传到当前对话框。仅咨询用法、意图不清、主题仍为空、拆解或数字人页时 offer_production 必须返回 false。
 不得通过 actions 自动选择顾客本地文件，不得勾选真人/声音授权，不得自动确认扣点、删除、发布、访问外部链接或执行任意命令。顾客可以主动点击对话框的附件按钮选择图片或视频，前端只会把文件交给当前页面已有的原生上传流程；这不代表已经授权、扣点或生成。
 在编导页，只要顾客说“反推提示词”“反推视频”“视频反推”“视频拆解”或同义表达，就把它视为明确的视频上传意图：只简短回复“请上传需要反推提示词的视频”，不要推荐粘贴链接，不要列出多种操作方式。对话框附件会把文件交给页面原生上传流程，扣点仍由顾客在页面确认。
 顾客意图不清楚时先问一个最关键的问题，actions 返回空数组。若当前已有脚本，优先解释如何修改、转配音、转视频或导出；若是拆解模式，根据 page_context.breakdown_tool 和 has_reverse_prompt 区分分镜拆解与提示词反推，再解释合法公开链接与当前结果。
@@ -448,6 +449,201 @@ def _ensure_offer_table(connection):
     )""")
 
 
+def _ensure_pending_plan_table(connection):
+    connection.execute("""CREATE TABLE IF NOT EXISTS director_agent_pending_plans(
+        username TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        offer_id TEXT NOT NULL,
+        plan_digest TEXT NOT NULL,
+        input_hash TEXT NOT NULL,
+        input_json TEXT NOT NULL,
+        expected_cost INTEGER NOT NULL,
+        page_revision TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(username, session_id),
+        UNIQUE(username, offer_id)
+    )""")
+
+
+def _pending_plan_digest(session_id, offer_id, cli_input, expected_cost,
+                         page_revision):
+    return hashlib.sha256(_canonical({
+        "session_id": session_id,
+        "offer_id": offer_id,
+        "input": cli_input,
+        "expected_cost": int(expected_cost),
+        "page_revision": page_revision,
+    }).encode("utf-8")).hexdigest()
+
+
+def _save_pending_plan(db_factory, username, session_id, plan, now=None):
+    """Durably bind one prepared, non-billable plan to this chat session."""
+    stamp = int(time.time() if now is None else now)
+    cli_input = plan["input"]
+    request_json = _canonical(cli_input)
+    input_hash = hashlib.sha256(request_json.encode("utf-8")).hexdigest()
+    digest = _pending_plan_digest(
+        session_id, plan["offer_id"], cli_input, plan["expected_cost"],
+        plan["page_revision"],
+    )
+    expires_at = stamp + OFFER_TTL_SECONDS
+    connection = db_factory()
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        _ensure_pending_plan_table(connection)
+        connection.execute(
+            """INSERT INTO director_agent_pending_plans(
+               username,session_id,offer_id,plan_digest,input_hash,input_json,
+               expected_cost,page_revision,expires_at,created_at,updated_at
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(username,session_id) DO UPDATE SET
+                 offer_id=excluded.offer_id,
+                 plan_digest=excluded.plan_digest,
+                 input_hash=excluded.input_hash,
+                 input_json=excluded.input_json,
+                 expected_cost=excluded.expected_cost,
+                 page_revision=excluded.page_revision,
+                 expires_at=excluded.expires_at,
+                 created_at=excluded.created_at,
+                 updated_at=excluded.updated_at""",
+            (username, session_id, plan["offer_id"], digest, input_hash,
+             request_json, int(plan["expected_cost"]), plan["page_revision"],
+             expires_at, stamp, stamp),
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+    saved = dict(plan)
+    saved.update(plan_digest=digest, expires_at=expires_at)
+    return saved
+
+
+def _pending_plan_confirmation(db_factory, username, request, now=None):
+    """Resolve the exact confirmation command against one durable plan."""
+    stamp = int(time.time() if now is None else now)
+    connection = db_factory()
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        _ensure_pending_plan_table(connection)
+        row = connection.execute(
+            "SELECT * FROM director_agent_pending_plans "
+            "WHERE username=? AND session_id=?",
+            (username, request["session_id"]),
+        ).fetchone()
+        if not row:
+            connection.commit()
+            return {"state": "missing"}
+        try:
+            cli_input = json.loads(row["input_json"])
+        except (TypeError, ValueError):
+            cli_input = None
+        valid_input = (
+            isinstance(cli_input, dict)
+            and set(cli_input) == {
+                "request_id", "topic", "selling_points", "style",
+                "duration", "platform",
+            }
+            and cli_input.get("request_id") == row["offer_id"]
+        )
+        expected_digest = (_pending_plan_digest(
+            request["session_id"], row["offer_id"], cli_input,
+            row["expected_cost"], row["page_revision"],
+        ) if valid_input else "")
+        if (not valid_input or row["plan_digest"] != expected_digest
+                or hashlib.sha256(row["input_json"].encode("utf-8")).hexdigest()
+                != row["input_hash"]):
+            connection.execute(
+                "DELETE FROM director_agent_pending_plans "
+                "WHERE username=? AND session_id=?",
+                (username, request["session_id"]),
+            )
+            connection.commit()
+            return {"state": "invalid"}
+        if int(row["expires_at"]) <= stamp:
+            connection.execute(
+                "DELETE FROM director_agent_pending_plans "
+                "WHERE username=? AND session_id=?",
+                (username, request["session_id"]),
+            )
+            connection.commit()
+            return {"state": "expired"}
+        context = request["page_context"]
+        current_input = {
+            "request_id": row["offer_id"],
+            "topic": context.get("topic") or "",
+            "selling_points": context.get("selling_points") or "",
+            "style": context.get("style") or "",
+            "duration": context.get("duration") or "",
+            "platform": context.get("platform") or "",
+        }
+        current_hash = hashlib.sha256(
+            _canonical(current_input).encode("utf-8")
+        ).hexdigest()
+        parameters_valid = (
+            context.get("mode") == "write"
+            and bool(current_input["topic"])
+            and all(current_input[name] in OPTION_VALUES[name]
+                    for name in ("style", "duration", "platform"))
+        )
+        if (request["page_revision"] != row["page_revision"]
+                or not parameters_valid or current_hash != row["input_hash"]):
+            connection.execute(
+                "DELETE FROM director_agent_pending_plans "
+                "WHERE username=? AND session_id=?",
+                (username, request["session_id"]),
+            )
+            connection.commit()
+            return {"state": "changed"}
+        if not director_cli.production_is_available():
+            connection.commit()
+            return {"state": "unavailable"}
+        current_cost = _copy_cost(cli_input)
+        if current_cost <= 0:
+            connection.commit()
+            return {"state": "unavailable"}
+        if current_cost != int(row["expected_cost"]):
+            new_digest = _pending_plan_digest(
+                request["session_id"], row["offer_id"], cli_input,
+                current_cost, row["page_revision"],
+            )
+            connection.execute(
+                """UPDATE director_agent_pending_plans
+                   SET expected_cost=?,plan_digest=?,expires_at=?,updated_at=?
+                   WHERE username=? AND session_id=? AND plan_digest=?""",
+                (current_cost, new_digest, stamp + OFFER_TTL_SECONDS, stamp,
+                 username, request["session_id"], row["plan_digest"]),
+            )
+            connection.commit()
+            return {"state": "price_changed", "expected_cost": current_cost}
+        connection.commit()
+        return {
+            "state": "ready",
+            "offer": {
+                "offer_id": row["offer_id"], "kind": "script",
+                "expected_cost": int(row["expected_cost"]),
+                "requires_confirmation": True,
+                "page_revision": row["page_revision"],
+                "input": cli_input,
+                "summary": {
+                    "topic": cli_input["topic"],
+                    "style": cli_input["style"],
+                    "duration": cli_input["duration"],
+                    "platform": cli_input["platform"],
+                },
+            },
+        }
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
 def _token_hash(token):
     return hashlib.sha256(str(token).encode("utf-8")).hexdigest()
 
@@ -569,22 +765,22 @@ def _claim_production_offer(connection, username, offer_id, cli_input,
 def _rotate_production_offer(db_factory, username, offer_id, plan_digest,
                              cli_input, expected_cost, old_quote_token,
                              now=None):
-    """Bind a price-change response to a fresh customer confirmation token."""
+    """Expire the clicked card and refresh the pending plan after repricing."""
     stamp = int(time.time() if now is None else now)
-    token = secrets.token_urlsafe(32)
-    expires_at = stamp + OFFER_TTL_SECONDS
     input_hash = hashlib.sha256(_canonical(cli_input).encode("utf-8")).hexdigest()
     connection = db_factory()
     try:
+        connection.execute("BEGIN IMMEDIATE")
         _ensure_offer_table(connection)
+        _ensure_pending_plan_table(connection)
         cursor = connection.execute(
             """UPDATE director_agent_offers
-               SET expected_cost=?,token_hash=?,expires_at=?,confirmed_at=NULL,updated_at=?
+               SET expected_cost=?,expires_at=?,confirmed_at=NULL,updated_at=?
                WHERE username=? AND offer_id=? AND plan_digest=? AND input_hash=?
-                 AND token_hash=?""",
-            (int(expected_cost), _token_hash(token), expires_at, stamp,
+                 AND token_hash=? AND expires_at>?""",
+            (int(expected_cost), stamp, stamp,
              username, offer_id, plan_digest, input_hash,
-             _token_hash(old_quote_token)),
+             _token_hash(old_quote_token), stamp),
         )
         if cursor.rowcount != 1:
             connection.rollback()
@@ -592,10 +788,31 @@ def _rotate_production_offer(db_factory, username, offer_id, plan_digest,
                 "生产确认单已被另一个请求刷新，请使用最新确认单",
                 "director_offer_refreshed", 409,
             )
+        pending = connection.execute(
+            "SELECT * FROM director_agent_pending_plans "
+            "WHERE username=? AND offer_id=? AND input_hash=?",
+            (username, offer_id, input_hash),
+        ).fetchone()
+        if pending:
+            pending_digest = _pending_plan_digest(
+                pending["session_id"], offer_id, cli_input, expected_cost,
+                pending["page_revision"],
+            )
+            connection.execute(
+                """UPDATE director_agent_pending_plans
+                   SET expected_cost=?,plan_digest=?,expires_at=?,updated_at=?
+                   WHERE username=? AND session_id=? AND plan_digest=?""",
+                (int(expected_cost), pending_digest,
+                 stamp + OFFER_TTL_SECONDS, stamp, username,
+                 pending["session_id"], pending["plan_digest"]),
+            )
         connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
     finally:
         connection.close()
-    return {"quote_token": token, "expires_at": expires_at}
+    return {"pending_updated": bool(pending)}
 
 
 def _normalize_production_request(value):
@@ -733,12 +950,11 @@ def produce_script(db_factory, username, value, now=None, before_link=None,
                     "detail": str(error), "code": error.code,
                 }
             return 409, {
-                "detail": "生成价格已变化，请在对话框重新确认",
+                "detail": "生成价格已变化，原确认已失效，请重新回复确认生成",
                 "code": "production_price_changed", "quoted_cost": expected_cost,
                 "current_cost": quoted_cost, "points": points,
-                "plan_digest": plan_digest,
-                "quote_token": refreshed["quote_token"],
-                "expires_at": refreshed["expires_at"],
+                "requires_new_text_confirmation": True,
+                "pending_plan_updated": bool(refreshed["pending_updated"]),
             }
 
         connection = db_factory()
@@ -1116,19 +1332,135 @@ def _ensure_page_action_allowed(page, action):
         raise ValueError("Agent 动作不属于当前页面")
 
 
-def _script_production_offer(request, actions, requested):
-    if not requested or request["page_context"]["page"] != "script":
-        return None
+_SCRIPT_TOPIC_PATTERNS = tuple(re.compile(pattern) for pattern in (
+    r"(?:主题|选题)(?:是|为|定为)(?P<topic>[^，,。；;！？!?]{1,300})"
+    r"[，,].{0,30}(?:分镜脚本|分镜|脚本)",
+    r"关于(?P<topic>[^，,。；;！？!?]{1,300}?)(?:的)?"
+    r"(?:分镜脚本|分镜|脚本)",
+    r"以(?P<topic>[^，,。；;！？!?]{1,300}?)(?:作为主题|作为选题|为主题|为选题|为题)"
+    r".{0,20}(?:分镜脚本|分镜|脚本)",
+    r"(?:围绕|以)(?P<topic>[^，,。；;！？!?]{1,300}?)"
+    r"(?:[，,]\s*)?(?:来)?(?:生成|制作|写|做).{0,20}(?:分镜脚本|分镜|脚本)",
+    r"(?:给|为)(?!(?:我|咱们|咱俩|自己|大家|大伙|您)"
+    r"(?:来|生成|制作|写|做))(?P<topic>[^，,。；;！？!?]{1,300}?)"
+    r"(?:来|生成|制作|写|做).{0,20}(?:分镜脚本|分镜|脚本)",
+    r"围绕(?P<topic>[^，,。；;！？!?]{1,300}?)(?:的)"
+    r"(?:分镜脚本|分镜|脚本)",
+    r"按(?P<topic>[^，,。；;！？!?]{1,300}?)(?:这个|该)?选题"
+    r"(?:生成|制作|写|做).{0,20}(?:分镜脚本|分镜|脚本)",
+    r"(?:做|写|生成|制作|来)(?:一份|一个|个)"
+    r"(?P<topic>[^，,。；;！？!?]{1,300}?)(?:的)?"
+    r"(?:分镜脚本|分镜|脚本)",
+))
+_SCRIPT_INVALID_TOPICS = {
+    "我", "你", "您", "他", "她", "它", "我们", "咱们", "你们", "他们",
+    "自己", "大家", "这个", "那个", "这", "那", "该主题", "该选题",
+    "这个主题", "这个选题", "上述主题", "上述选题", "刚才主题", "刚才选题",
+    "刚才的主题", "刚才的选题", "前面主题", "前面选题", "前面的主题",
+    "前面的选题", "本人", "大伙", "那个主题", "那个选题", "前文主题",
+    "前文选题", "刚才说的主题", "刚才说的选题", "分镜", "脚本", "分镜脚本",
+    "这个方向", "那个方向", "上面的选题", "上面的主题", "之前的选题",
+    "之前的主题", "上述", "前文", "刚才说的", "刚才的", "上面的",
+    "前面的", "之前的",
+}
+_SCRIPT_INVALID_TOPIC_REFERENCE = re.compile(
+    r"^(?:我|你|您|他|她|它|我们|咱们|咱俩|你们|他们|大家|大伙|本人|自己|"
+    r"这|那|此|该|上述|上面|上次|前述|前面|前文|之前|刚才)"
+    r"(?:这|那)?(?:次|个|些)?(?:的|说的)?"
+    r"(?:主题|选题|话题|内容|方向|方案)?$"
+)
+_SCRIPT_TOPIC_MODIFIER_ONLY = re.compile(
+    r"^(?:\d+(?:\.\d+)?(?:秒|分钟|分|小时)(?:内|左右)?(?:的)?|"
+    r"(?:抖音|快手|视频号|小红书|B站|微博)(?:平台|用)?(?:的)?|"
+    r"(?:口播|剧情|测评|种草|专业|幽默)(?:风格)?(?:的)?)$",
+    re.IGNORECASE,
+)
+
+
+def _explicit_script_production_request(request):
+    """Only the customer's exact current-turn command may open a card."""
+    return (
+        request["page_context"]["page"] == "script"
+        and str(request.get("prompt") or "").strip() == CONFIRM_SCRIPT_PROMPT
+    )
+
+
+def _script_topic_from_prompt(request):
+    prompt = str(request.get("prompt") or "").strip()
+    for pattern in _SCRIPT_TOPIC_PATTERNS:
+        match = pattern.search(prompt)
+        if not match:
+            continue
+        topic = match.group("topic").strip(" \t\r\n，,。；;！？!?：:‘’“”\"'")
+        topic = re.sub(r"(?:这个|该)(?:主题|选题)$", "", topic).strip()
+        topic = re.sub(r"(?:主题|选题)$", "", topic).strip()
+        if (topic and topic not in _SCRIPT_INVALID_TOPICS
+                and not _SCRIPT_INVALID_TOPIC_REFERENCE.fullmatch(topic)
+                and not _SCRIPT_TOPIC_MODIFIER_ONLY.fullmatch(topic)):
+            return _text(topic, FIELD_LIMITS["topic"], "选题")
+        return ""
+    return ""
+
+
+def _client_page_revision(page_context):
+    """Match script-agent.js digest(JSON.stringify(page_context))."""
+    serialized = json.dumps(
+        page_context, ensure_ascii=False, separators=(",", ":"),
+        allow_nan=False,
+    )
+    value = 2166136261
+    encoded = serialized.encode("utf-16-le", errors="surrogatepass")
+    for offset in range(0, len(encoded), 2):
+        value ^= encoded[offset] | (encoded[offset + 1] << 8)
+        value = (value * 16777619) & 0xffffffff
+    return "%08x" % value
+
+
+def _effective_script_context(request, actions, *, force_write=False,
+                              topic_fallback=""):
     effective = dict(request["page_context"])
     for action in actions:
-        if action["type"] == "fill_field" and action["field"] in {"topic", "selling_points"}:
+        if (action["type"] == "fill_field"
+                and action["field"] in {"topic", "selling_points"}):
             effective[action["field"]] = action["value"]
-        elif action["type"] == "choose_option" and action["field"] in {"style", "duration", "platform"}:
+        elif (action["type"] == "choose_option"
+                and action["field"] in {"style", "duration", "platform"}):
             effective[action["field"]] = action["value"]
         elif action["type"] == "switch_mode":
             effective["mode"] = action["mode"]
         elif action["type"] == "navigate":
             return None
+    if force_write:
+        effective["mode"] = "write"
+    if not effective.get("topic") and topic_fallback:
+        effective["topic"] = topic_fallback
+    return effective
+
+
+def _copy_cost(cli_input):
+    from . import points
+    copy_payload = {
+        "prompt": cli_input["topic"] + (("\n卖点：" + cli_input["selling_points"])
+                                         if cli_input["selling_points"] else ""),
+        "format": "script", "style": cli_input["style"],
+        "dur": cli_input["duration"], "platform": cli_input["platform"],
+        "ctype": "分镜脚本", "source_page": "script",
+        "client_request_id": cli_input["request_id"],
+    }
+    return int(points.cost_of("copy", copy_payload))
+
+
+def _script_production_offer(request, actions, requested, *, force_write=False,
+                             topic_fallback=""):
+    """Build a non-billable plan; this function never authorizes production."""
+    if not requested or request["page_context"]["page"] != "script":
+        return None
+    effective = _effective_script_context(
+        request, actions, force_write=force_write,
+        topic_fallback=topic_fallback,
+    )
+    if effective is None:
+        return None
     if effective.get("mode") != "write" or not effective.get("topic"):
         return None
     if not director_cli.production_is_available():
@@ -1151,16 +1483,7 @@ def _script_production_offer(request, actions, requested):
         "duration": effective["duration"],
         "platform": effective["platform"],
     }
-    from . import points
-    copy_payload = {
-        "prompt": cli_input["topic"] + (("\n卖点：" + cli_input["selling_points"])
-                                        if cli_input["selling_points"] else ""),
-        "format": "script", "style": cli_input["style"],
-        "dur": cli_input["duration"], "platform": cli_input["platform"],
-        "ctype": "分镜脚本", "source_page": "script",
-        "client_request_id": offer_id,
-    }
-    cost = int(points.cost_of("copy", copy_payload))
+    cost = _copy_cost(cli_input)
     if cost <= 0:
         return None
     return {
@@ -1171,6 +1494,7 @@ def _script_production_offer(request, actions, requested):
             "duration": cli_input["duration"], "platform": cli_input["platform"],
         },
         "requires_confirmation": True,
+        "page_revision": _client_page_revision(effective),
     }
 
 
@@ -1209,9 +1533,14 @@ def normalize_model_result(raw, request):
         raise ValueError("编导助手操作数量超过限制")
     if not isinstance(warnings, list) or len(warnings) > 8:
         raise ValueError("编导助手提醒数量超过限制")
-    offer_requested = data.get("offer_production", False)
-    if not isinstance(offer_requested, bool):
+    model_offer_requested = data.get("offer_production", False)
+    if not isinstance(model_offer_requested, bool):
         raise ValueError("编导助手生产意图无效")
+    prepare_requested = bool(
+        model_offer_requested
+        and request["page_context"]["page"] == "script"
+        and not _explicit_script_production_request(request)
+    )
     normalized = []
     for index, action in enumerate(actions):
         if not isinstance(action, dict):
@@ -1252,19 +1581,62 @@ def normalize_model_result(raw, request):
             raise ValueError("编导助手返回了不允许的动作")
         _ensure_page_action_allowed(request["page_context"]["page"], item)
         normalized.append(item)
+    topic_fallback = ""
+    if prepare_requested:
+        prompt_topic = _script_topic_from_prompt(request)
+        trusted_topic = prompt_topic or request["page_context"].get("topic") or ""
+        normalized = [
+            item for item in normalized
+            if item["type"] != "navigate"
+            and not (item["type"] == "switch_mode" and item["mode"] != "write")
+            and not (item["type"] == "fill_field" and item["field"] == "topic")
+        ]
+        topic_fallback = trusted_topic
+        if prompt_topic:
+            normalized.insert(0, {
+                "id": "action_0", "type": "fill_field", "field": "topic",
+                "value": prompt_topic, "label": "填入选题",
+            })
+            normalized = normalized[:MAX_ACTIONS]
+        if (request["page_context"].get("mode") != "write"
+                and not any(item["type"] == "switch_mode" for item in normalized)
+                and len(normalized) < MAX_ACTIONS):
+            normalized.append({
+                "id": "action_0", "type": "switch_mode", "mode": "write",
+                "label": "切换到写脚本",
+            })
+        for index, item in enumerate(normalized):
+            item["id"] = "action_%d" % (index + 1)
     if any(item["type"] == "navigate" for item in normalized):
         if len(normalized) != 1:
             raise ValueError("站内跳转必须作为独立动作，不能与页面修改同时执行")
     warnings = [_text(item, 300, "Agent 提醒") for item in warnings]
-    production_offer = _script_production_offer(
-        request, normalized, offer_requested,
+    prepared_plan = _script_production_offer(
+        request, normalized, prepare_requested,
+        force_write=prepare_requested,
+        topic_fallback=topic_fallback,
     )
-    if offer_requested and production_offer is None:
-        warnings.append("对话框生产单暂未就绪，请确认已在编导撰写模式填好选题。")
-    if production_offer is not None:
+    if prepare_requested and prepared_plan is None:
+        has_topic = bool(request["page_context"].get("topic") or topic_fallback or any(
+            item["type"] == "fill_field" and item["field"] == "topic"
+            for item in normalized
+        ))
+        if not has_topic:
+            content = "请告诉我这次要生成的分镜脚本主题。"
+            warnings.append("还缺少本次分镜脚本的选题。")
+        elif not director_cli.production_is_available():
+            content = "编导 CLI 生产暂时不可用，请稍后再试。"
+            warnings.append("编导 CLI 生产依赖当前不可用。")
+        else:
+            warnings.append("待确认方案暂未就绪，请补充本次分镜脚本的选题。")
+    if prepared_plan is not None:
+        summary = prepared_plan["summary"]
         content = (
-            "生产信息已经准备好，预计扣除 %d 点。是否开始生产？"
-            % int(production_offer["expected_cost"])
+            "方案已准备好：选题“%s”，规格为 %s · %s · %s，预计扣除 %d 点。"
+            "确认信息无误后，请回复：%s。"
+            % (summary["topic"], summary["platform"], summary["style"],
+               summary["duration"], int(prepared_plan["expected_cost"]),
+               CONFIRM_SCRIPT_PROMPT)
         )
     seed = request["session_id"] + request["page_revision"] + raw
     result = {
@@ -1274,6 +1646,26 @@ def normalize_model_result(raw, request):
             "page_revision": request["page_revision"], "stage": stage,
             "content": content, "actions": normalized,
             "warnings": [item for item in warnings if item][:8],
+            "requires_confirmation": False,
+        },
+    }
+    if prepared_plan is not None:
+        result["_pending_production_plan"] = prepared_plan
+    return result
+
+
+def _confirmation_result(request, content, *, production_offer=None,
+                         warnings=None):
+    seed = request["session_id"] + request["page_revision"] + content
+    result = {
+        "type": "director_agent", "content": content,
+        "plan": {
+            "plan_id": "plan_" + hashlib.sha256(
+                seed.encode("utf-8")
+            ).hexdigest()[:16],
+            "page_revision": request["page_revision"],
+            "stage": "production", "content": content, "actions": [],
+            "warnings": list(warnings or [])[:8],
             "requires_confirmation": False,
         },
     }
@@ -1291,12 +1683,45 @@ def gen_director_agent(payload):
     request = validate_payload(internal)
     request["_username"] = username
     request["_job_id"] = int(job_id) if job_id is not None else 0
+    from . import core
+    if _explicit_script_production_request(request):
+        confirmation = _pending_plan_confirmation(core.jdb, username, request)
+        state = confirmation["state"]
+        if state == "ready":
+            offer = _issue_production_offer(
+                core.jdb, username, confirmation["offer"],
+                request["page_revision"],
+            )
+            content = (
+                "生产确认单已准备好，预计扣除 %d 点。请再次核对价格和参数，"
+                "点击确认单后才会调用编导 CLI。"
+                % int(offer["expected_cost"])
+            )
+            return _confirmation_result(
+                request, content, production_offer=offer,
+            )
+        if state == "price_changed":
+            return _confirmation_result(
+                request,
+                "预计价格已更新为 %d 点，原确认已失效。请核对后重新回复：%s。"
+                % (int(confirmation["expected_cost"]), CONFIRM_SCRIPT_PROMPT),
+                warnings=["价格变化后必须重新发送固定确认文字。"],
+            )
+        messages = {
+            "missing": "当前会话没有待确认方案。请先告诉我选题、风格、时长和平台，我整理后再回复：确认生成。",
+            "expired": "待确认方案已过期。请重新告诉我生产要求，我整理新方案后再回复：确认生成。",
+            "changed": "页面参数或版本已经变化，原方案已失效。请让我重新整理方案后再回复：确认生成。",
+            "invalid": "待确认方案校验失败，已安全失效。请重新告诉我生产要求。",
+            "unavailable": "编导 CLI 生产暂时不可用，没有创建确认单，也不会扣点。请稍后重试。",
+        }
+        return _confirmation_result(
+            request, messages[state], warnings=["没有创建生产确认单。"],
+        )
     result = normalize_model_result(_responses_chat(request), request)
-    if result.get("production_offer"):
-        from . import core
-        result["production_offer"] = _issue_production_offer(
-            core.jdb, username, result["production_offer"],
-            request["page_revision"],
+    pending_plan = result.pop("_pending_production_plan", None)
+    if pending_plan is not None:
+        _save_pending_plan(
+            core.jdb, username, request["session_id"], pending_plan,
         )
     return result
 
