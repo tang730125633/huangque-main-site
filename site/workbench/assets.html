@@ -223,7 +223,7 @@
   var bulkToggle=document.getElementById('bulkToggle'), bulkAll=document.getElementById('bulkAll'), bulkBar=document.getElementById('bulkBar'),
       bulkCount=document.getElementById('bulkCount'), bulkDownload=document.getElementById('bulkDownload'), bulkDelete=document.getElementById('bulkDelete'), bulkCancel=document.getElementById('bulkCancel');
   var favOnly=document.getElementById('favOnly'), tagFilter=document.getElementById('tagFilter');
-  var searchTerm='', multi=false, selected={}, visibleItems=[], MARKS={}, onlyFav=false, activeTag='';
+  var searchTerm='', multi=false, selected={}, visibleItems=[], MARKS={}, onlyFav=false, activeTag='', videoFrameObserver=null;
   function freshUrl(url){
     url=String(url||'');
     return /[?&]q-sign-/.test(url)||/voice_preview_/.test(url)?url:url+(url.indexOf('?')>=0?'&':'?')+'_='+(Date.now());  // voice_preview_ 内容哈希不可变，别击穿浏览器缓存
@@ -245,6 +245,42 @@
     return fetch(freshUrl(url),{cache:'no-store',headers:{Authorization:'Bearer '+tok}})
       .then(function(r){if(r.status===401){HQ.login();throw new Error('登录已过期');}if(!r.ok)throw new Error('素材读取失败');return r.blob();})
       .then(function(blob){return URL.createObjectURL(blob);});
+  }
+  function resetVideoFrameObserver(){
+    if(videoFrameObserver) videoFrameObserver.disconnect();
+    videoFrameObserver=null;
+  }
+  function activateVideoFrame(video){
+    var source=String(video&&video.dataset&&video.dataset.src||'').trim();
+    if(!video||!source)return;
+    video.removeAttribute('data-src');
+    // Protected local files need an authenticated fetch; production assets are
+    // returned as refreshed private COS URLs and can use efficient range loads.
+    if(source.indexOf('/api/gen/file/')===0)return;
+    var preview=freshUrl(source);
+    if(preview.indexOf('#')<0)preview+='#t=0.1';
+    video.preload='auto';
+    video.src=preview;
+    video.addEventListener('loadedmetadata',function(){
+      if(video.currentTime<0.05&&isFinite(video.duration)&&video.duration>0.1){
+        try{video.currentTime=Math.min(0.1,video.duration/2)}catch(e){}
+      }
+    },{once:true});
+    video.load();
+  }
+  function queueVideoFrame(video,url){
+    video.dataset.src=String(url||'');
+    if(!('IntersectionObserver' in window)){activateVideoFrame(video);return}
+    if(!videoFrameObserver){
+      videoFrameObserver=new IntersectionObserver(function(entries,observer){
+        entries.forEach(function(entry){
+          if(!entry.isIntersecting)return;
+          observer.unobserve(entry.target);
+          activateVideoFrame(entry.target);
+        });
+      },{rootMargin:'240px 0px'});
+    }
+    videoFrameObserver.observe(video);
   }
   // 缩略图：COS 图走 imageMogr2 缩略+webp(体积降数十倍)，且不加缓存穿透→让浏览器缓存缩略图，避免每次进页面全量重下 4.9MB 原图导致裂图(#225)。非COS/本地/视频原样返回。点开/下载仍用原图 x.url。
   function thumbUrl(url, px){
@@ -864,8 +900,9 @@
     media.style.cssText='position:relative; aspect-ratio:4/3; background:rgba(7,11,19,.38); display:flex; align-items:center; justify-content:center; color:#5c6b82; overflow:hidden;'+(videoUrl?' cursor:pointer;':'');
     if(videoUrl){
       var v=document.createElement('video');
-      v.controls=false; v.preload='metadata'; v.dataset.src=videoUrl; v.muted=true; v.playsInline=true;
+      v.controls=false; v.preload='metadata'; v.muted=true; v.playsInline=true;
       if(imageUrl) v.poster=thumbUrl(imageUrl,420);
+      else queueVideoFrame(v,videoUrl);
       v.style.cssText='width:100%;height:100%;object-fit:contain;display:block;background:#050812;';
       media.onclick=function(){ openAssetVideoModal(videoUrl,title,imageUrl); };
       media.appendChild(v);
@@ -1701,6 +1738,7 @@
     focusFinalAssetCard();
   }
   function _renderBody(){
+    resetVideoFrameObserver();
     visibleItems=[];
     updateBulk();
     if(cat==='audio'){ renderAudioAssets(); return; }
