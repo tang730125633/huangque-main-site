@@ -188,7 +188,7 @@ class HqCliTests(unittest.TestCase):
             self.assertEqual(0, code, error)
             self.assertTrue(self.payload(output)["schema"].startswith("hq."))
         code, output, _ = self.invoke(["version"])
-        self.assertEqual("0.14.0", self.payload(output)["cli_version"])
+        self.assertEqual("0.14.1", self.payload(output)["cli_version"])
         self.assertEqual("Huangque main-site CLI", self.payload(output)["product"])
         self.assertEqual("https://huangquechuanmei.com", self.payload(output)["origin"])
 
@@ -268,6 +268,12 @@ class HqCliTests(unittest.TestCase):
         self.assertTrue(expected <= set(by_id))
         self.assertEqual("download", by_id["dl"]["kind"])
         self.assertEqual("paid", by_id["director-production-start"]["side_effect"])
+        for start, quote in (("short-drama-autodraft-start", "short-drama-autodraft-quote"),
+                             ("short-drama-delivery-start", "short-drama-delivery-quote")):
+            self.assertEqual("native_quote", by_id[start]["cost"]["kind"])
+            self.assertEqual(quote, by_id[start]["cost"]["quote_capability"])
+            self.assertEqual("execute", by_id[start]["agent"]["operation"])
+            self.assertIn(quote, by_id[start]["agent"]["workflow"][0])
         self.assertTrue(by_id["short-drama-completion-confirm"]["confirmation_required"])
 
     def test_every_capability_teaches_an_agent_how_to_use_and_recover_it(self):
