@@ -1,10 +1,11 @@
 #!/bin/sh
 set -eu
 
-version="0.13.2"
-wheel_name="huangque_hq_cli-0.13.2-py3-none-any.whl"
-wheel_sha256="0b196c207f12de16de1c312cbaf776ac3c72a7de63bcd80903b8463f0573603d"
-wheel_url="https://huangquechuanmei.com/downloads/hq/v0.13.2/$wheel_name"
+version="0.13.5"
+wheel_name="huangque_hq_cli-0.13.5-py3-none-any.whl"
+wheel_size="55092"
+wheel_sha256="387c686e83d2976ade3ec8ee29210c450792dd5e5c51369b8a6fcf07b2eb9fab"
+wheel_url="https://huangquechuanmei.com/downloads/hq/v0.13.5/$wheel_name"
 
 fail() { printf 'HQ CLI 安装失败：%s\n' "$1" >&2; exit 1; }
 command -v curl >/dev/null 2>&1 || fail "需要 curl"
@@ -34,6 +35,8 @@ trap cleanup EXIT HUP INT TERM
 
 wheel_path="$download_dir/$wheel_name"
 curl --proto '=https' --tlsv1.2 -fsSL "$wheel_url" -o "$wheel_path"
+actual_size="$(wc -c < "$wheel_path" | tr -d '[:space:]')"
+[ "$actual_size" = "$wheel_size" ] || fail "安装包大小校验失败"
 if command -v shasum >/dev/null 2>&1; then
   actual_sha256="$(shasum -a 256 "$wheel_path" | awk '{print $1}')"
 elif command -v sha256sum >/dev/null 2>&1; then

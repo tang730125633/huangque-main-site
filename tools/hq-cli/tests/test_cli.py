@@ -36,13 +36,156 @@ class HqCliTests(unittest.TestCase):
     def authorize(self):
         client.save_credentials("t" * 43, 2000000000, cli.LOGIN_SCOPES)
 
+    def test_director_actions_are_direct_api_capabilities(self):
+        self.assertIn("director:read", cli.LOGIN_SCOPES)
+        self.assertIn("director:generate", cli.LOGIN_SCOPES)
+        capability = cli.CAPABILITIES["director-capability"]
+        self.assertEqual("api", capability["kind"])
+        self.assertEqual("director:read", capability["required_scope"])
+        for identifier in (
+            "director-script-generate", "director-breakdown",
+            "director-scene-image-generate",
+        ):
+            with self.subTest(identifier=identifier):
+                capability = cli.CAPABILITIES[identifier]
+                self.assertEqual("api", capability["kind"])
+                self.assertEqual("paid", capability["side_effect"])
+                self.assertTrue(capability["confirmation_required"])
+                self.assertEqual("director:generate", capability["required_scope"])
+        upload = cli.CAPABILITIES["director-breakdown-upload"]
+        self.assertEqual("upload", upload["kind"])
+        self.assertEqual("paid", upload["side_effect"])
+        self.assertEqual("director:generate", upload["required_scope"])
+        self.assertEqual({
+            "kind": "dedicated_upload",
+            "quote_path": "/api/auth/cli/director-breakdown-quote",
+            "quote_token_header": "X-HQ-Quote-Token",
+            "expected_cost_header": "X-HQ-Expected-Cost",
+            "idempotency_header": "Idempotency-Key",
+        }, upload["transport"])
+        self.assertNotIn("director-scene-video-generate", cli.CAPABILITIES)
+        self.assertNotIn("director-scene-talking-generate", cli.CAPABILITIES)
+
+    def test_digital_human_oneclick_actions_are_registered_as_real_capabilities(self):
+        for scope in (
+            "digital-human-oneclick:read", "digital-human-oneclick:write",
+            "digital-human-oneclick:generate",
+        ):
+            self.assertIn(scope, cli.LOGIN_SCOPES)
+        for identifier in (
+            "digital-human-oneclick-capability", "digital-human-oneclick-plan",
+            "digital-human-oneclick-consent", "digital-human-oneclick-start",
+            "digital-human-oneclick-status", "digital-human-oneclick-recover",
+            "digital-human-oneclick-abandon", "digital-human-oneclick-history",
+        ):
+            with self.subTest(identifier=identifier):
+                self.assertEqual("api", cli.CAPABILITIES[identifier]["kind"])
+        start = cli.CAPABILITIES["digital-human-oneclick-start"]
+        self.assertEqual("paid", start["side_effect"])
+        self.assertEqual("server_quote", start["cost"]["kind"])
+        self.assertTrue(start["confirmation_required"])
+        self.assertNotIn("digital-human-precision-start", cli.CAPABILITIES)
+
+    def test_digital_human_contract_matches_merged_main_site(self):
+        consent_capability = cli.CAPABILITIES["digital-human-oneclick-consent"]
+        consent = {
+            "confirmed": True,
+            "consent_version": "digital-human-material-v3",
+            "purpose": "digital_human_material_v3",
+            "run_id": "dh-run-contract-0001",
+            "plan_digest": "a" * 64,
+            "photo_sha256": "b" * 64,
+            "voice_mode": "existing",
+            "voice_ref": "v" * 180,
+            "narration_mode": "text",
+            "customer_upload_ids": ["img_" + "c" * 32],
+        }
+        cli._validate(consent_capability, consent)
+        for field, invalid in (
+            ("confirmed", False),
+            ("consent_version", "digital-human-material-v2"),
+            ("purpose", "other-purpose"),
+            ("voice_ref", "v" * 181),
+            ("customer_upload_ids", ["not-an-upload-id"]),
+        ):
+            with self.subTest(consent_field=field):
+                with self.assertRaises(cli.CliError):
+                    cli._validate(consent_capability, {**consent, field: invalid})
+
+        start_capability = cli.CAPABILITIES["digital-human-oneclick-start"]
+        start = {
+            "request_id": "request-contract-0001",
+            "consent_token": "t" * 32,
+            "plan_digest": "a" * 64,
+            "narration_mode": "text",
+            "allow_ai_materials": False,
+            "customer_upload_ids": ["img_" + "d" * 32],
+            "portrait_upload_id": "img_" + "e" * 32,
+            "voice_key": "v" * 180,
+        }
+        cli._validate(start_capability, start)
+        cli._validate(start_capability, {**start, "consent_token": "t" * 512})
+        for field, invalid in (
+            ("consent_token", "t" * 31),
+            ("consent_token", "t" * 513),
+            ("voice_key", "v" * 181),
+            ("customer_upload_ids", ["img_bad"]),
+        ):
+            with self.subTest(start_field=field, size=len(invalid)):
+                with self.assertRaises(cli.CliError):
+                    cli._validate(start_capability, {**start, field: invalid})
+
+        history = cli.CAPABILITIES["digital-human-oneclick-history"]
+        cli._validate(history, {"limit": 50, "offset": 2000})
+        for invalid in ({"limit": 51}, {"offset": 2001}):
+            with self.assertRaises(cli.CliError):
+                cli._validate(history, invalid)
+
+        with patch("hq_cli.client.request_json") as request:
+            code, _, error = self.invoke(
+                ["run", "digital-human-oneclick-consent", "--input", "@-", "--confirm"],
+                json.dumps({**consent, "confirmed": False}).encode(),
+            )
+            malformed = json.dumps({
+                "narration_mode": "text", "customer_upload_ids": [{}],
+            }).encode()
+            item_code, _, item_error = self.invoke(
+                ["run", "digital-human-oneclick-plan", "--input", "@-"],
+                malformed,
+            )
+        self.assertEqual(cli.EXIT_INPUT, code, error)
+        self.assertEqual(cli.EXIT_INPUT, item_code, item_error)
+        self.assertEqual("input_error", self.payload(item_error)["error"])
+        request.assert_not_called()
+
+        audio_types = cli.CAPABILITIES[
+            "digital-human-oneclick-audio-upload"
+        ]["file_input"]["mimeTypes"]
+        self.assertNotIn("audio/ogg", audio_types)
+
+    def test_director_upload_describe_is_quote_first_without_changing_free_uploads(self):
+        code, output, error = self.invoke(["describe", "director-breakdown-upload", "--json"])
+        self.assertEqual(0, code, error)
+        next_action = self.payload(output)["next_actions"][0]
+        self.assertIn(
+            "hq run director-breakdown-upload --file /absolute/path --json",
+            next_action,
+        )
+        self.assertNotIn("--confirm", next_action)
+
+        for identifier in ("image-upload", "video-upload", "audio-upload"):
+            with self.subTest(identifier=identifier):
+                code, output, error = self.invoke(["describe", identifier, "--json"])
+                self.assertEqual(0, code, error)
+                self.assertIn("--confirm", self.payload(output)["next_actions"][0])
+
     def test_help_version_and_discovery_are_json(self):
         for argv in ([], ["help"], ["-h"], ["version", "--help"], ["capabilities", "--json"]):
             code, output, error = self.invoke(argv)
             self.assertEqual(0, code, error)
             self.assertTrue(self.payload(output)["schema"].startswith("hq."))
         code, output, _ = self.invoke(["version"])
-        self.assertEqual("0.13.2", self.payload(output)["cli_version"])
+        self.assertEqual("0.13.5", self.payload(output)["cli_version"])
         self.assertEqual("Huangque main-site CLI", self.payload(output)["product"])
         self.assertEqual("https://huangquechuanmei.com", self.payload(output)["origin"])
 
@@ -77,7 +220,7 @@ class HqCliTests(unittest.TestCase):
         expected = {
             "account", "channels", "ip12-projects", "ip12-project", "ip12-create", "ip12-report", "ip12-message", "ip12-delete",
             "prompt-optimize", "canvas-list", "canvas-get", "canvas-create", "canvas-agent-plan", "canvas-ops", "tasks", "task",
-            "assets", "voices", "image-upload", "video-upload", "director-breakdown-upload", "asset-favorite", "asset-tags", "asset-delete",
+            "assets", "voices", "image-upload", "video-upload", "asset-favorite", "asset-tags", "asset-delete",
             "image-generate", "video-generate", "video-lipsync", "audio-generate",
             "digital-ip-text-generate", "digital-ip-audio-generate", "digital-ip-batch-generate",
             "cinematic-open-generate", "cinematic-motion-generate",
@@ -289,6 +432,14 @@ class HqCliTests(unittest.TestCase):
         self.assertTrue(re.match(collect_url["pattern"], "https://xiaohongshu.com:443/explore/123"))
         self.assertFalse(re.match(collect_url["pattern"], "https://douyin.com:8080/video"))
         self.assertTrue(re.match(collect_url["pattern"], "https://www.xiaohongshu.com/explore/123"))
+        self.assertTrue(re.match(collect_url["pattern"], "https://weixin.qq.com/sph/Abc123"))
+        self.assertTrue(re.match(collect_url["pattern"], "https://www.bilibili.com/video/BV1EbdbBHEPa"))
+        self.assertTrue(re.match(collect_url["pattern"], "https://b23.tv/keSUqLz"))
+        self.assertFalse(re.match(collect_url["pattern"], "https://x.com/CrazyKaomei/status/2093502767776366755"))
+        content_url = by_id["collect-content"]["input_schema"]["properties"]["url"]
+        self.assertTrue(re.match(content_url["pattern"], "https://x.com/CrazyKaomei/status/2093502767776366755?s=20"))
+        self.assertTrue(re.match(content_url["pattern"], "https://twitter.com/CrazyKaomei/status/2093502767776366755"))
+        self.assertFalse(re.match(content_url["pattern"], "https://x.com.evil.example/status/2093502767776366755"))
         self.assertFalse(re.match(collect_url["pattern"], "https://example.com/video"))
         search = by_id["collect-search"]["input_schema"]
         self.assertEqual(["douyin", "xhs"], search["properties"]["platform"]["enum"])
@@ -300,28 +451,6 @@ class HqCliTests(unittest.TestCase):
         self.assertEqual(3, leads["properties"]["pages"]["maximum"])
         self.assertEqual(120, leads["properties"]["channels_targets"]["items"]["maxLength"])
         self.assertEqual(["douyin", "xhs", "channels"], leads["properties"]["platforms"]["items"]["enum"])
-
-    def test_describe_director_upload_is_quote_first_without_changing_free_uploads(self):
-        code, output, error = self.invoke([
-            "describe", "director-breakdown-upload", "--json",
-        ])
-        self.assertEqual(0, code, error)
-        next_action = self.payload(output)["next_actions"][0]
-        self.assertIn("Request a quote first", next_action)
-        self.assertIn(
-            "hq run director-breakdown-upload --file /absolute/path --json",
-            next_action,
-        )
-        self.assertNotIn("--confirm", next_action)
-
-        for capability_id in ("image-upload", "video-upload", "audio-upload"):
-            with self.subTest(capability_id=capability_id):
-                code, output, error = self.invoke([
-                    "describe", capability_id, "--json",
-                ])
-                self.assertEqual(0, code, error)
-                next_action = self.payload(output)["next_actions"][0]
-                self.assertIn("--confirm", next_action)
 
     def test_p0_navigation_reads_and_website_modes_are_discoverable(self):
         _, output, _ = self.invoke(["capabilities"])
@@ -1022,84 +1151,130 @@ class HqCliTests(unittest.TestCase):
         self.assertEqual("aud_" + "a" * 32, self.payload(output)["result"]["upload_id"])
         upload.assert_called_once_with(audio_path, "t" * 43)
 
-    def test_director_breakdown_upload_quotes_then_forwards_exact_confirmation(self):
+    def test_digital_human_material_upload_uses_dedicated_owner_scoped_transport(self):
         self.authorize()
-        image_path = os.path.join(self.temp.name, "director.png")
-        quote = {"quote_token": "q.director", "media_type": "image", "sha256": "a" * 64,
-                 "cost": 20, "points": 100, "confirmation_required": True}
-        with patch.object(client, "quote_director_breakdown", return_value=(200, quote)) as quote_call, \
-                patch.object(client, "upload_director_breakdown", return_value=(200, {
-                    "job_id": 91, "cost": 20, "sha256": "a" * 64,
-                })) as upload_call:
-            code, output, error = self.invoke([
-                "run", "director-breakdown-upload", "--file", image_path,
+        image_path = os.path.join(self.temp.name, "customer.png")
+        with patch.object(client, "upload_digital_human_material") as upload:
+            code, _, error = self.invoke([
+                "run", "digital-human-oneclick-material-upload", "--file", image_path,
             ])
-            self.assertEqual(0, code, error)
-            quote_output = self.payload(output)
-            self.assertEqual(20, quote_output["result"]["cost"])
-            confirmation = quote_output["next_actions"][0]
-            self.assertIn("hq run director-breakdown-upload", confirmation)
-            self.assertIn("--file <same-absolute-file>", confirmation)
-            self.assertIn("--confirm --quote-token <quote_token>", confirmation)
-            self.assertIn("--expected-cost 20", confirmation)
-            self.assertIn("--idempotency-key <stable-key>", confirmation)
-            self.assertIn("--json", confirmation)
-            quote_call.assert_called_once_with(image_path, "t" * 43)
-            upload_call.assert_not_called()
-
+            self.assertEqual(cli.EXIT_CONFIRMATION, code)
+            upload.assert_not_called()
+            upload.return_value = (200, {
+                "upload_id": "img_" + "c" * 32, "mime": "image/png", "bytes": 12,
+                "sha256": "d" * 64, "expires_in": 3600,
+            })
             code, output, error = self.invoke([
-                "run", "director-breakdown-upload", "--file", image_path,
-                "--confirm", "--quote-token", quote["quote_token"],
-                "--expected-cost", str(quote["cost"]),
-                "--idempotency-key", "director-cli-e2e-001",
+                "run", "digital-human-oneclick-material-upload", "--file", image_path,
+                "--confirm", "--json",
             ])
         self.assertEqual(0, code, error)
-        self.assertEqual(91, self.payload(output)["result"]["job_id"])
-        upload_call.assert_called_once_with(
-            image_path, "t" * 43, "q.director", 20, "director-cli-e2e-001",
-        )
+        self.assertEqual("img_" + "c" * 32, self.payload(output)["result"]["upload_id"])
+        upload.assert_called_once_with(image_path, "t" * 43)
 
-        with patch.object(client, "upload_director_breakdown") as blocked:
-            code, _output, error = self.invoke([
-                "run", "director-breakdown-upload", "--file", image_path,
-                "--confirm", "--quote-token", "q.director",
-                "--idempotency-key", "director-cli-e2e-001",
+    def test_digital_human_audio_upload_requires_stable_run_id(self):
+        self.authorize()
+        audio_path = os.path.join(self.temp.name, "complete.mp3")
+        run_id = "dh-run-audio-0001"
+        with patch.object(client, "upload_digital_human_audio") as upload:
+            code, _, error = self.invoke([
+                "run", "digital-human-oneclick-audio-upload", "--file", audio_path,
+                "--confirm",
             ])
-        self.assertEqual(cli.EXIT_CONFIRMATION, code)
-        self.assertEqual("expected_cost_required", self.payload(error)["error"])
-        blocked.assert_not_called()
-
-        with patch.object(client, "upload_director_breakdown") as blocked:
-            code, _output, error = self.invoke([
-                "run", "director-breakdown-upload", "--file", image_path,
-                "--confirm", "--quote-token", "q.director",
-                "--expected-cost", "20", "--idempotency-key", "bad key!",
+            self.assertEqual(cli.EXIT_USAGE, code)
+            upload.assert_not_called()
+            upload.return_value = (200, {
+                "audio_upload_id": "dha_" + "a" * 32, "duration": 60.0,
+                "slice_count": 2, "source_sha256": "b" * 64,
+            })
+            code, output, error = self.invoke([
+                "run", "digital-human-oneclick-audio-upload", "--file", audio_path,
+                "--run-id", run_id, "--confirm", "--json",
             ])
-        self.assertEqual(cli.EXIT_INPUT, code)
-        self.assertEqual("invalid_upload_file", self.payload(error)["error"])
-        self.assertIn("[A-Za-z0-9._:-]{8,128}", self.payload(error)["message"])
-        blocked.assert_not_called()
+        self.assertEqual(0, code, error)
+        self.assertEqual("dha_" + "a" * 32, self.payload(output)["result"]["audio_upload_id"])
+        upload.assert_called_once_with(audio_path, "t" * 43, run_id)
 
-    def test_director_breakdown_client_streams_image_and_video_with_three_confirmation_headers(self):
-        samples = (
-            ("reference.png", b"\x89PNG\r\n\x1a\nprivate-director-image",
-             client.DIRECTOR_BREAKDOWN_IMAGE_PATH, "X-HQ-Image-SHA256"),
-            ("reference.mp4", b"\x00\x00\x00\x18ftypisomprivate-director-video",
-             client.DIRECTOR_BREAKDOWN_VIDEO_PATH, "X-HQ-Video-SHA256"),
+    def test_director_breakdown_upload_quotes_then_confirms_the_same_file_and_cost(self):
+        self.authorize()
+        source_path = os.path.join(self.temp.name, "director-reference.png")
+        quote = {
+            "quote_token": "q.director.upload", "kind": "breakdown_upload",
+            "media_type": "image", "sha256": "b" * 64,
+            "cost": 20, "points": 100, "confirmation_required": True,
+        }
+        with patch.object(client, "quote_director_breakdown", return_value=(200, quote)) as quote_call, \
+                patch.object(client, "upload_director_breakdown") as upload:
+            code, output, error = self.invoke([
+                "run", "director-breakdown-upload", "--file", source_path, "--json",
+            ])
+            self.assertEqual(0, code, error)
+            self.assertEqual(20, self.payload(output)["result"]["cost"])
+            self.assertIn("--expected-cost <cost>", self.payload(output)["next_actions"][0])
+            quote_call.assert_called_once_with(source_path, "t" * 43)
+            upload.assert_not_called()
+
+            for arguments, expected_error in (
+                (["--confirm", "--expected-cost", "20"], "quote_required"),
+                (["--confirm", "--quote-token", quote["quote_token"]], "expected_cost_required"),
+                (["--confirm", "--quote-token", quote["quote_token"], "--expected-cost", "-1"],
+                 "expected_cost_required"),
+            ):
+                with self.subTest(arguments=arguments):
+                    code, _, error = self.invoke([
+                        "run", "director-breakdown-upload", "--file", source_path, *arguments,
+                    ])
+                    self.assertEqual(cli.EXIT_CONFIRMATION, code)
+                    self.assertEqual(expected_error, self.payload(error)["error"])
+            upload.assert_not_called()
+
+            upload.return_value = (200, {
+                "job_id": 42, "cost": 20, "sha256": "b" * 64,
+            })
+            code, output, error = self.invoke([
+                "run", "director-breakdown-upload", "--file", source_path,
+                "--confirm", "--quote-token", quote["quote_token"],
+                "--expected-cost", "20", "--json",
+            ])
+        self.assertEqual(0, code, error)
+        self.assertEqual(42, self.payload(output)["result"]["job_id"])
+        upload.assert_called_once_with(source_path, "t" * 43, quote["quote_token"], 20)
+
+    def test_director_breakdown_quote_and_upload_bind_digest_quote_cost_and_idempotency(self):
+        raw = b"\x89PNG\r\n\x1a\n" + b"director-private-image"
+        image_path = Path(self.temp.name) / "director-reference.png"
+        image_path.write_bytes(raw)
+        digest = hashlib.sha256(raw).hexdigest()
+        quote = {
+            "quote_token": "q.director.upload", "media_type": "image",
+            "sha256": digest, "cost": 20,
+        }
+        with patch.object(client, "request_json", return_value=(200, quote)) as request:
+            status, payload = client.quote_director_breakdown(str(image_path), "t" * 43)
+        self.assertEqual((200, quote), (status, payload))
+        request.assert_called_once_with(
+            client.DIRECTOR_BREAKDOWN_QUOTE_PATH, method="POST",
+            body={"media_type": "image", "sha256": digest},
+            token="t" * 43, timeout=30,
         )
+        with patch.object(client, "request_json", return_value=(200, {
+                **quote, "sha256": "c" * 64,
+        })):
+            with self.assertRaises(client.NetworkError):
+                client.quote_director_breakdown(str(image_path), "t" * 43)
 
         class Response:
             status = 200
 
-            def __init__(self, digest):
-                self.digest = digest
+            def __init__(self, response_digest):
+                self.response_digest = response_digest
 
             def read(self, _limit):
-                return json.dumps({"job_id": 77, "cost": 20, "sha256": self.digest}).encode()
+                return json.dumps({"job_id": 42, "sha256": self.response_digest}).encode()
 
         class Connection:
-            def __init__(self, digest):
-                self.digest, self.headers, self.sent = digest, {}, bytearray()
+            def __init__(self):
+                self.headers, self.sent = {}, bytearray()
 
             def putrequest(self, method, path, **_kwargs):
                 self.method, self.path = method, path
@@ -1114,37 +1289,46 @@ class HqCliTests(unittest.TestCase):
                 self.sent.extend(chunk)
 
             def getresponse(self):
-                return Response(self.digest)
+                return Response(hashlib.sha256(bytes(self.sent)).hexdigest())
 
             def close(self):
                 pass
 
-        for filename, raw, expected_path, digest_header in samples:
-            path = Path(self.temp.name) / filename
-            path.write_bytes(raw)
-            digest = hashlib.sha256(raw).hexdigest()
-            connection = Connection(digest)
-            with patch.object(client.http.client, "HTTPSConnection", return_value=connection):
-                status, payload = client.upload_director_breakdown(
-                    str(path), "t" * 43, "q.director", 20, "director-cli-e2e-001",
-                )
-            self.assertEqual((200, 77), (status, payload["job_id"]))
-            self.assertEqual(expected_path, connection.path)
-            self.assertEqual(raw, bytes(connection.sent))
-            self.assertEqual(digest, connection.headers[digest_header])
-            self.assertEqual("q.director", connection.headers["X-HQ-Quote-Token"])
-            self.assertEqual("20", connection.headers["X-HQ-Expected-Cost"])
-            self.assertEqual("director-cli-e2e-001", connection.headers["Idempotency-Key"])
+        connections = []
 
-        self.assertEqual(
-            "A0._:-xy",
-            client.validate_director_breakdown_idempotency_key("A0._:-xy"),
-        )
-        for invalid_key in ("bad key!", "short", "a" * 129, "中文key-001"):
-            with self.subTest(invalid_key=invalid_key):
-                with self.assertRaisesRegex(ValueError, r"\[A-Za-z0-9\._:-\]"):
-                    client.director_breakdown_confirmation_headers(
-                        "q.director", 20, invalid_key)
+        def connect(*_args, **_kwargs):
+            connection = Connection()
+            connections.append(connection)
+            return connection
+
+        with patch.object(client.http.client, "HTTPSConnection", side_effect=connect):
+            for token in (quote["quote_token"], quote["quote_token"], "q.director.other"):
+                status, payload = client.upload_director_breakdown(
+                    str(image_path), "t" * 43, token, 20,
+                )
+                self.assertEqual((200, 42), (status, payload["job_id"]))
+        first, replay, other = connections
+        self.assertEqual(client.DIRECTOR_BREAKDOWN_IMAGE_PATH, first.path)
+        self.assertEqual(raw, bytes(first.sent))
+        self.assertEqual(digest, first.headers["X-HQ-Image-SHA256"])
+        self.assertEqual(quote["quote_token"], first.headers["X-HQ-Quote-Token"])
+        self.assertEqual("20", first.headers["X-HQ-Expected-Cost"])
+        self.assertRegex(first.headers["Idempotency-Key"], r"^hqcli-du-[0-9a-f]{32}$")
+        self.assertEqual(first.headers["Idempotency-Key"], replay.headers["Idempotency-Key"])
+        self.assertNotEqual(first.headers["Idempotency-Key"], other.headers["Idempotency-Key"])
+        self.assertNotIn(str(image_path), json.dumps(first.headers))
+
+        video_raw = b"\x00\x00\x00\x18ftypisom" + b"director-private-video"
+        video_path = Path(self.temp.name) / "director-reference.mp4"
+        video_path.write_bytes(video_raw)
+        with patch.object(client.http.client, "HTTPSConnection", side_effect=connect):
+            status, payload = client.upload_director_breakdown(
+                str(video_path), "t" * 43, quote["quote_token"], 20,
+            )
+        video = connections[-1]
+        self.assertEqual((200, 42), (status, payload["job_id"]))
+        self.assertEqual(client.DIRECTOR_BREAKDOWN_VIDEO_PATH, video.path)
+        self.assertEqual(hashlib.sha256(video_raw).hexdigest(), video.headers["X-HQ-Video-SHA256"])
 
     def test_streaming_image_client_sends_no_local_path_or_filename(self):
         raw = b"\x89PNG\r\n\x1a\n" + b"private-image"
@@ -1339,6 +1523,82 @@ class HqCliTests(unittest.TestCase):
             handle.truncate(client.MAX_AUDIO_UPLOAD_BYTES + 1)
         with self.assertRaises(ValueError):
             client.upload_audio(str(oversized), "t" * 43)
+
+    def test_digital_human_audio_transport_is_fixed_bound_and_fail_closed(self):
+        raw = b"ID3" + b"digital-human-complete-audio"
+        audio_path = Path(self.temp.name) / "complete.mp3"
+        audio_path.write_bytes(raw)
+        digest = hashlib.sha256(raw).hexdigest()
+        run_id = "dh-run-audio-0001"
+
+        class Response:
+            status = 200
+
+            def __init__(self, source_sha256):
+                self.source_sha256 = source_sha256
+
+            def read(self, _limit):
+                return json.dumps({
+                    "audio_upload_id": "dha_" + "a" * 32,
+                    "source_sha256": self.source_sha256,
+                }).encode()
+
+        class Connection:
+            def __init__(self, source_sha256=digest):
+                self.headers, self.sent = {}, bytearray()
+                self.source_sha256 = source_sha256
+
+            def putrequest(self, method, path, **_kwargs):
+                self.method, self.path = method, path
+
+            def putheader(self, key, value):
+                self.headers[key] = value
+
+            def endheaders(self):
+                pass
+
+            def send(self, chunk):
+                self.sent.extend(chunk)
+
+            def getresponse(self):
+                return Response(self.source_sha256)
+
+            def close(self):
+                pass
+
+        connection = Connection()
+        with patch.object(client.http.client, "HTTPSConnection", return_value=connection):
+            status, payload = client.upload_digital_human_audio(
+                str(audio_path), "t" * 43, run_id,
+            )
+        self.assertEqual((200, digest), (status, payload["source_sha256"]))
+        self.assertEqual(client.DIGITAL_HUMAN_AUDIO_UPLOAD_PATH, connection.path)
+        self.assertEqual("POST", connection.method)
+        self.assertEqual(run_id, connection.headers["X-HQ-Run-ID"])
+        self.assertEqual(digest, connection.headers["X-HQ-Audio-SHA256"])
+        self.assertEqual(raw, bytes(connection.sent))
+
+        with patch.object(
+                client.http.client, "HTTPSConnection",
+                return_value=Connection("f" * 64)):
+            with self.assertRaises(client.NetworkError):
+                client.upload_digital_human_audio(str(audio_path), "t" * 43, run_id)
+
+        with patch.object(client.http.client, "HTTPSConnection") as connect:
+            with self.assertRaises(ValueError):
+                client.upload_digital_human_audio(
+                    str(audio_path), "t" * 43, "invalid-run-id",
+                )
+            ogg_path = Path(self.temp.name) / "complete.ogg"
+            ogg_path.write_bytes(b"OggS" + b"unsupported")
+            with self.assertRaises(ValueError):
+                client.upload_digital_human_audio(str(ogg_path), "t" * 43, run_id)
+            with patch.object(client, "API_BASE", "https://evil.example"):
+                with self.assertRaises(ValueError):
+                    client.upload_digital_human_audio(
+                        str(audio_path), "t" * 43, run_id,
+                    )
+        connect.assert_not_called()
 
     def test_navigation_is_main_site_only_and_never_opens_by_default(self):
         with patch("hq_cli.cli.webbrowser.open") as opened:

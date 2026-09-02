@@ -37,9 +37,10 @@ LOGIN_SCOPES = [
     "profile:read", "ip12:read", "ip12:write", "ip12:chat", "prompt:optimize", "canvas:read",
     "canvas:write", "canvas:agent", "canvas:edit", "tasks:read", "assets:read", "assets:write", "assets:upload",
     "generation:quote", "generation:submit",
-    "director:generate",
     "video-compose:read", "video-compose:write", "digital-presenter:read", "digital-presenter:write",
     "inspiration:read", "inspiration:write", "leads:read", "leads:write", "short-drama:read", "short-drama:write",
+    "director:read", "director:generate",
+    "digital-human-oneclick:read", "digital-human-oneclick:write", "digital-human-oneclick:generate",
 ]
 
 
@@ -192,6 +193,11 @@ def _validate(capability, payload):
         if key not in payload:
             continue
         value, value_type = payload[key], definition["type"]
+        if "const" in definition and value != definition["const"]:
+            raise CliError(
+                EXIT_INPUT, "input_error",
+                "input field %s must equal the documented constant" % key,
+            )
         if value_type == "string" and not isinstance(value, str):
             raise CliError(EXIT_INPUT, "input_error", "input field %s must be a string" % key)
         if value_type == "number" and (isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)):
@@ -215,12 +221,14 @@ def _validate(capability, payload):
                 raise CliError(EXIT_INPUT, "input_error", "input field %s has too few items" % key)
             if len(value) > definition.get("maxItems", len(value)):
                 raise CliError(EXIT_INPUT, "input_error", "input field %s has too many items" % key)
-            if definition.get("uniqueItems") and len(value) != len(set(value)):
-                raise CliError(EXIT_INPUT, "input_error", "input field %s contains duplicate items" % key)
             item = definition.get("items") or {}
             if item.get("type") == "string" and any(
                     not isinstance(entry, str) or len(entry) < item.get("minLength", 0)
                     or len(entry) > item.get("maxLength", len(entry)) for entry in value):
+                raise CliError(EXIT_INPUT, "input_error", "input field %s contains an invalid item" % key)
+            if item.get("pattern") and any(
+                    not isinstance(entry, str)
+                    or not re.fullmatch(item["pattern"], entry) for entry in value):
                 raise CliError(EXIT_INPUT, "input_error", "input field %s contains an invalid item" % key)
             if item.get("type") == "integer" and any(
                     isinstance(entry, bool) or not isinstance(entry, int)
@@ -229,6 +237,19 @@ def _validate(capability, payload):
                 raise CliError(EXIT_INPUT, "input_error", "input field %s contains an invalid item" % key)
             if item.get("enum") and any(entry not in item["enum"] for entry in value):
                 raise CliError(EXIT_INPUT, "input_error", "input field %s contains an invalid item" % key)
+            if definition.get("uniqueItems"):
+                try:
+                    has_duplicates = len(value) != len(set(value))
+                except TypeError:
+                    raise CliError(
+                        EXIT_INPUT, "input_error",
+                        "input field %s contains an invalid item" % key,
+                    )
+                if has_duplicates:
+                    raise CliError(
+                        EXIT_INPUT, "input_error",
+                        "input field %s contains duplicate items" % key,
+                    )
         if "enum" in definition and value not in definition["enum"]:
             raise CliError(EXIT_INPUT, "input_error", "input field %s must be one of: %s" % (key, ", ".join(map(str, definition["enum"]))))
         if "minLength" in definition and len(value) < definition["minLength"]:
@@ -417,8 +438,8 @@ def build_parser():
     run.add_argument("--confirm", action="store_true")
     run.add_argument("--quote-token")
     run.add_argument("--expected-cost", type=int)
-    run.add_argument("--idempotency-key")
     run.add_argument("--file")
+    run.add_argument("--run-id")
     doctor = subcommands.add_parser("doctor", add_help=False, allow_abbrev=False)
     _add_common(doctor, "show_command_help")
     doctor.add_argument("--environment", choices=sorted(ENVIRONMENTS), default="main")
@@ -513,8 +534,8 @@ def main(argv=None):
             if args.command == "describe":
                 if args.id == "director-breakdown-upload":
                     next_action = (
-                        "Request a quote first with "
-                        "`hq run director-breakdown-upload --file /absolute/path --json`."
+                        "First run `hq run director-breakdown-upload --file /absolute/path --json` "
+                        "to get the server quote."
                     )
                 elif capability["kind"] == "upload":
                     next_action = "Run `hq run %s --file /absolute/path --confirm --json`." % args.id
@@ -553,52 +574,71 @@ def main(argv=None):
                     payload["image_data"] = "data:%s;base64,%s" % (mime, _b64.b64encode(data).decode("ascii"))
                 _validate(capability, payload)
             if is_upload:
-                if not args.file:
-                    raise CliError(EXIT_USAGE, "usage_error", "%s requires --file /absolute/path" % args.id)
-                credentials = _credentials()
-                paid_upload = args.id == "director-breakdown-upload"
                 if args.open_browser:
                     raise CliError(EXIT_USAGE, "usage_error", "upload capabilities do not accept browser options")
-                if paid_upload and not args.confirm:
-                    if args.quote_token or args.expected_cost is not None or args.idempotency_key:
-                        raise CliError(EXIT_USAGE, "usage_error", "quote upload accepts only --file")
-                    try:
-                        status, upload = client.quote_director_breakdown(
-                            args.file, credentials["access_token"])
-                    except ValueError as exc:
-                        raise CliError(EXIT_INPUT, "invalid_upload_file", "director upload quote failed: %s" % exc)
-                    except client.NetworkError as exc:
-                        raise CliError(EXIT_NETWORK, "upload_error", "director upload quote failed: %s" % exc)
-                    result = _checked_response(status, upload)
-                elif paid_upload:
-                    if not args.quote_token:
-                        raise CliError(EXIT_CONFIRMATION, "quote_required", "confirmed director upload requires --quote-token")
-                    if args.expected_cost is None or args.expected_cost < 0:
-                        raise CliError(EXIT_CONFIRMATION, "expected_cost_required", "confirmed director upload requires non-negative --expected-cost from the quote")
-                    if not args.idempotency_key:
-                        raise CliError(EXIT_CONFIRMATION, "idempotency_key_required", "confirmed director upload requires a stable --idempotency-key")
-                    try:
-                        idempotency_key = client.validate_director_breakdown_idempotency_key(
-                            args.idempotency_key)
-                        status, upload = client.upload_director_breakdown(
-                            args.file, credentials["access_token"], args.quote_token,
-                            args.expected_cost, idempotency_key)
-                    except ValueError as exc:
-                        raise CliError(EXIT_INPUT, "invalid_upload_file", "director upload failed: %s" % exc)
-                    except client.NetworkError as exc:
-                        raise CliError(EXIT_NETWORK, "upload_error", "director upload failed: %s" % exc)
-                    result = _checked_response(status, upload)
+                if not args.file:
+                    raise CliError(EXIT_USAGE, "usage_error", "%s requires --file /absolute/path" % args.id)
+                if args.run_id and args.id != "digital-human-oneclick-audio-upload":
+                    raise CliError(EXIT_USAGE, "usage_error", "--run-id is only valid for digital-human audio upload")
+                credentials = _credentials()
+                if args.id == "director-breakdown-upload":
+                    if not args.confirm:
+                        if args.quote_token or args.expected_cost is not None:
+                            raise CliError(
+                                EXIT_USAGE, "usage_error",
+                                "an unconfirmed Director upload quote does not accept quote or cost options",
+                            )
+                        try:
+                            status, quote = client.quote_director_breakdown(
+                                args.file, credentials["access_token"],
+                            )
+                        except ValueError as exc:
+                            raise CliError(EXIT_INPUT, "invalid_upload_file", "director breakdown quote failed: %s" % exc)
+                        except client.NetworkError as exc:
+                            raise CliError(EXIT_NETWORK, "quote_error", "director breakdown quote failed: %s" % exc)
+                        result = _checked_response(status, quote)
+                    else:
+                        if not args.quote_token:
+                            raise CliError(
+                                EXIT_CONFIRMATION, "quote_required",
+                                "run without --confirm first, then reuse the returned quote_token",
+                            )
+                        if args.expected_cost is None or args.expected_cost < 0:
+                            raise CliError(
+                                EXIT_CONFIRMATION, "expected_cost_required",
+                                "confirmed Director upload requires --expected-cost from the quote",
+                            )
+                        try:
+                            status, upload = client.upload_director_breakdown(
+                                args.file, credentials["access_token"],
+                                args.quote_token, args.expected_cost,
+                            )
+                        except ValueError as exc:
+                            raise CliError(EXIT_INPUT, "invalid_upload_file", "director breakdown upload failed: %s" % exc)
+                        except client.NetworkError as exc:
+                            raise CliError(EXIT_NETWORK, "upload_error", "director breakdown upload failed: %s" % exc)
+                        result = _checked_response(status, upload)
+                    upload_kind = "director breakdown"
+                    uploader = None
                 else:
-                    if args.quote_token or args.expected_cost is not None or args.idempotency_key:
-                        raise CliError(EXIT_USAGE, "usage_error", "free upload capabilities do not accept quote options")
+                    if args.quote_token or args.expected_cost is not None:
+                        raise CliError(EXIT_USAGE, "usage_error", "free uploads do not accept quote or cost options")
                     if not args.confirm:
                         raise CliError(EXIT_CONFIRMATION, "confirmation_required", "re-run this upload with --confirm")
                     if args.id == "video-upload":
                         upload_kind, uploader = "video", client.upload_video
                     elif args.id == "audio-upload":
                         upload_kind, uploader = "audio", client.upload_audio
+                    elif args.id == "digital-human-oneclick-material-upload":
+                        upload_kind, uploader = "digital-human material", client.upload_digital_human_material
+                    elif args.id == "digital-human-oneclick-audio-upload":
+                        if not args.run_id:
+                            raise CliError(EXIT_USAGE, "usage_error", "digital-human audio upload requires --run-id")
+                        upload_kind = "digital-human audio"
+                        uploader = lambda path, token: client.upload_digital_human_audio(path, token, args.run_id)
                     else:
                         upload_kind, uploader = "image", client.upload_image
+                if uploader is not None:
                     try:
                         status, upload = uploader(args.file, credentials["access_token"])
                     except ValueError as exc:
@@ -607,7 +647,9 @@ def main(argv=None):
                         raise CliError(EXIT_NETWORK, "upload_error", "%s upload failed: %s" % (upload_kind, exc))
                     result = _checked_response(status, upload)
             elif capability["kind"] == "navigation":
-                if args.confirm or args.quote_token or args.expected_cost is not None or args.idempotency_key:
+                if args.run_id:
+                    raise CliError(EXIT_USAGE, "usage_error", "navigation does not accept --run-id")
+                if args.confirm or args.quote_token or args.expected_cost is not None:
                     raise CliError(EXIT_USAGE, "usage_error", "navigation does not accept confirmation or quote options")
                 url = resolve_url(capability, args.environment, payload)
                 opened_browser = False
@@ -618,10 +660,12 @@ def main(argv=None):
                         raise CliError(EXIT_BROWSER, "browser_error", "browser open failed: %s" % exc)
                 result = {"url": url, "opened_browser": opened_browser}
             else:
+                if args.run_id:
+                    raise CliError(EXIT_USAGE, "usage_error", "API capabilities do not accept --run-id")
                 if args.open_browser:
                     raise CliError(EXIT_USAGE, "usage_error", "API capabilities do not accept --open-browser")
-                if args.expected_cost is not None or args.idempotency_key:
-                    raise CliError(EXIT_USAGE, "usage_error", "API capabilities do not accept upload quote options")
+                if args.expected_cost is not None:
+                    raise CliError(EXIT_USAGE, "usage_error", "API capabilities do not accept --expected-cost")
                 paid = capability["side_effect"] == "paid"
                 if capability["confirmation_required"] and not paid and not args.confirm:
                     raise CliError(EXIT_CONFIRMATION, "confirmation_required", "re-run this action with --confirm")
@@ -638,12 +682,10 @@ def main(argv=None):
                                   timeout=310 if capability["id"] == "ip12-message" else 120)
             next_actions = list(capability["next_actions"])
             if capability["side_effect"] == "paid" and not args.confirm:
-                if args.id == "director-breakdown-upload":
+                if capability["id"] == "director-breakdown-upload":
                     next_actions = [
-                        "Review cost and points, then re-run the identical file with "
-                        "`hq run director-breakdown-upload --file <same-absolute-file> "
-                        "--confirm --quote-token <quote_token> --expected-cost %s "
-                        "--idempotency-key <stable-key> --json`." % result["cost"],
+                        "Review cost and points, then re-run the same file with `--confirm --quote-token <quote_token> --expected-cost <cost>`. "
+                        "If the response is uncertain, retry with the same quote token so the Idempotency-Key remains stable."
                     ]
                 else:
                     next_actions = ["Review cost and points, then re-run the identical input with `--confirm --quote-token <quote_token>`. "]

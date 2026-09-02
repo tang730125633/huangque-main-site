@@ -10,10 +10,11 @@ $ErrorActionPreference = "Stop"
 $env:PYTHONUTF8 = "1"
 $env:PIP_DISABLE_PIP_VERSION_CHECK = "1"
 
-$Version = "0.13.2"
+$Version = "0.13.5"
 $WheelName = "huangque_hq_cli-$Version-py3-none-any.whl"
-$WheelSha256 = "0b196c207f12de16de1c312cbaf776ac3c72a7de63bcd80903b8463f0573603d"
-$WheelUrl = "https://huangquechuanmei.com/downloads/hq/v0.13.2/$WheelName"
+$WheelSize = 55092
+$WheelSha256 = "387c686e83d2976ade3ec8ee29210c450792dd5e5c51369b8a6fcf07b2eb9fab"
+$WheelUrl = "https://huangquechuanmei.com/downloads/hq/v0.13.5/$WheelName"
 $MarkerText = "Huangque HQ CLI managed installation"
 
 function Fail([string]$Message) {
@@ -105,6 +106,9 @@ try {
     }
 
     $ActualHash = (Get-FileHash -LiteralPath $LocalWheel -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ((Get-Item -LiteralPath $LocalWheel).Length -ne $WheelSize) {
+        Fail "wheel size verification failed"
+    }
     if ($ActualHash -ne $WheelSha256) {
         Fail "wheel SHA-256 verification failed"
     }

@@ -1,3 +1,3 @@
 """HQ CLI: scoped Huangque main-site capabilities for agents."""
 
-__version__ = "0.13.2"
+__version__ = "0.13.5"
