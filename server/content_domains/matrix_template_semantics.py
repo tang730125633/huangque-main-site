@@ -35,11 +35,6 @@ _NUMERIC_PHRASE_RE = re.compile(
     r")(?![0-9])|[零〇一二三四五六七八九十百千万亿两几]+)"
     r"\s*[十百千万亿个家人位名条款套种项台年月日天次岁]{0,2}"
 )
-_DOMAIN_PROTECTED_PHRASES = (
-    "健康赛道", "创业圈子", "资源共享", "大健康", "AI矩阵",
-    "社交破圈", "一人公司", "短视频平台", "短视频", "源头供应链",
-    "私域流量", "高净值圈层", "人工智能",
-)
 
 
 def _chat_url() -> str:
@@ -73,17 +68,6 @@ def _break_splits_number_phrase(value: str, index: int) -> bool:
     )
 
 
-def _break_splits_protected_phrase(value: str, index: int) -> bool:
-    boundary = index + 1
-    for phrase in _DOMAIN_PROTECTED_PHRASES:
-        start = value.find(phrase)
-        while start >= 0:
-            if start < boundary < start + len(phrase):
-                return True
-            start = value.find(phrase, start + 1)
-    return False
-
-
 def _normalize_breaks(raw, value: str) -> list[int]:
     if not isinstance(raw, list) or len(raw) > 64:
         raise RuntimeError("AI 语义断点格式无效")
@@ -95,10 +79,7 @@ def _normalize_breaks(raw, value: str) -> list[int]:
     values.update(_obvious_breaks(value))
     return sorted(
         item for item in values
-        if (
-            not _break_splits_number_phrase(value, item)
-            and not _break_splits_protected_phrase(value, item)
-        )
+        if not _break_splits_number_phrase(value, item)
     )
 
 
@@ -130,7 +111,6 @@ def _earlier_top1_candidates(value: dict, top: str) -> list[dict]:
             not isinstance(item, bool) and isinstance(item, int)
             and 0 <= item < current - 1
             and not _break_splits_number_phrase(top, item)
-            and not _break_splits_protected_phrase(top, item)
         )
     ]):
         candidate = dict(value)
@@ -194,15 +174,6 @@ def _prompt(top: str, bottom: str, contract: dict) -> str:
         f"{int(top3.get('max_lines'))} 行，用于更小的补充说明。"
         if top3 else ""
     )
-    protected_terms = [
-        phrase for phrase in _DOMAIN_PROTECTED_PHRASES
-        if phrase in top or phrase in bottom
-    ]
-    protected_line = (
-        "\n输入中以下词组必须保持完整，不得在内部断开："
-        + "、".join(protected_terms) + "。"
-        if protected_terms else ""
-    )
     return f"""
 你是中文短视频的语义边界标注器。你不能重写文案，只能返回字符索引。
 
@@ -216,7 +187,7 @@ def _prompt(top: str, bottom: str, contract: dict) -> str:
 2. top_break_after：顶部文案中所有可安全换行的索引。
 3. bottom_break_after：底部文案中所有可安全换行的索引。
 
-只标记完整语义边界，不要过度细分。禁止在地名、行业名、多层名词短语、动宾短语、数字组合、列举项和短 CTA 内部标记。{protected_line}
+只标记完整语义边界，不要过度细分。禁止在地名、行业名、多层名词短语、动宾短语、数字组合、列举项和短 CTA 内部标记。
 
 顶部原文索引：{_indexed(top)}
 底部原文索引：{_indexed(bottom)}
@@ -226,26 +197,140 @@ def _prompt(top: str, bottom: str, contract: dict) -> str:
 """.strip()
 
 
+def _repair_prompt(top: str, bottom: str, contract: dict,
+                   previous: dict, feedback: str) -> str:
+    layers = contract.get("layers") or {}
+    layer_lines = []
+    for name in ("top1", "top2", "top3", "bottom2"):
+        item = layers.get(name)
+        if not isinstance(item, dict):
+            continue
+        layer_lines.append(
+            f"- {name}: {int(item.get('font_size_px') or 0)}px，"
+            f"可用宽 {int(item.get('max_width_px') or contract.get('max_width_px') or 996)}px，"
+            f"最多 {int(item.get('max_lines') or 1)} 行。"
+        )
+    return f"""
+你是中文短视频语义分块器。上一个索引方案未通过真实字体排版，现在改为先拆完整短语，再由程序换算索引。
+
+模板区域：
+{chr(10).join(layer_lines)}
+
+硬规则：
+1. 不得增删、替换或调序任何非空白字符；数组连接后必须逐字等于原文。
+2. 每块必须是完整词组或语法成分，严禁拆开双字词、地名、行业词、动宾短语、数字组合、英文词和复合名词。
+3. 顶部每块原则上 2-8 个可见字符；任何可继续按语法成分拆分的长块都不得超过 10 个字符。
+4. 每个 `|`、`｜` 或句末标点后必须结束当前块，分隔符必须保留。
+5. 先拆主语、地点状语、谓语、宾语和并列项，不要把整句当成一个块。
+6. top1_chunk_count 表示前几个 top_chunks 放入 top1，其余由排版器分配到 top2/top3。
+7. 上一结果不得原样重复。
+
+示例：
+原文“老周在深圳组建了人工智能创业团队|每天交流项目”
+应拆为 ["老周","在深圳","组建了","人工智能","创业团队|","每天","交流项目"]。
+
+顶部原文：{top}
+底部原文：{bottom}
+上一结果：{json.dumps(previous, ensure_ascii=False)}
+校验反馈：{feedback[:500]}
+
+只输出 JSON：
+{{"top_chunks":["原文片段"],"bottom_chunks":["原文片段"],"top1_chunk_count":1}}
+""".strip()
+
+
+def _align_chunks(raw, source: str, label: str) -> list[str]:
+    if not isinstance(raw, list) or not 1 <= len(raw) <= 64:
+        raise RuntimeError(f"AI {label}语义块格式无效")
+    if any(not isinstance(item, str) or not item for item in raw):
+        raise RuntimeError(f"AI {label}语义块格式无效")
+    aligned = []
+    cursor = 0
+    for raw_chunk in raw:
+        chunk = raw_chunk
+        if source.startswith(chunk, cursor):
+            aligned.append(chunk)
+            cursor += len(chunk)
+            continue
+        gap_end = cursor
+        while gap_end < len(source) and source[gap_end].isspace():
+            gap_end += 1
+        if gap_end == cursor or not source.startswith(chunk, gap_end):
+            raise RuntimeError(f"AI {label}语义块改写了原文")
+        gap = source[cursor:gap_end]
+        if aligned:
+            aligned[-1] += gap
+            aligned.append(chunk)
+        else:
+            aligned.append(gap + chunk)
+        cursor = gap_end + len(chunk)
+    trailing = source[cursor:]
+    if trailing:
+        if not trailing.isspace():
+            raise RuntimeError(f"AI {label}语义块未覆盖完整原文")
+        aligned[-1] += trailing
+    if "".join(aligned) != source:
+        raise RuntimeError(f"AI {label}语义块与原文不一致")
+    return aligned
+
+
+def _chunk_layout(raw: dict, top: str, bottom: str, model: str) -> dict:
+    if not isinstance(raw, dict):
+        raise RuntimeError("AI 语义分块返回无效")
+    top_chunks = _align_chunks(raw.get("top_chunks"), top, "顶部")
+    bottom_chunks = _align_chunks(raw.get("bottom_chunks"), bottom, "底部")
+    top1_count = raw.get("top1_chunk_count")
+    if (
+        isinstance(top1_count, bool) or not isinstance(top1_count, int)
+        or not 1 <= top1_count <= len(top_chunks)
+    ):
+        raise RuntimeError("AI top1 语义块数无效")
+
+    def break_after(chunks):
+        cursor = 0
+        result = []
+        for chunk in chunks[:-1]:
+            cursor += len(chunk)
+            result.append(cursor - 1)
+        return result
+
+    top_breaks = _normalize_breaks(break_after(top_chunks), top)
+    bottom_breaks = _normalize_breaks(break_after(bottom_chunks), bottom)
+    requested_top1_end = sum(len(item) for item in top_chunks[:top1_count]) - 1
+    top1_end = _nearest_safe_top1_end(requested_top1_end, top_breaks, top)
+    return {
+        "version": VERSION,
+        "model": model,
+        "source_sha256": _source_sha256(top, bottom),
+        "top1_end": top1_end,
+        "top_break_after": top_breaks,
+        "bottom_break_after": bottom_breaks,
+    }
+
+
 def _request(top: str, bottom: str, contract: dict, *, previous=None,
-             feedback="", model=None) -> dict:
+             feedback="", model=None, repair=False) -> dict:
     if not OPENAI_KEY:
         raise RuntimeError("AI 语义排版模型密钥未配置")
-    messages = [
-        {"role": "system", "content": _prompt(top, bottom, contract)},
-        {"role": "user", "content": "请标注语义边界。"},
-    ]
-    if previous is not None and feedback:
-        messages.extend([
-            {"role": "assistant", "content": json.dumps(previous, ensure_ascii=False)},
-            {"role": "user", "content": "上一结果未通过真实字体排版校验：" + str(feedback)[:500] + "。必须修改上一结果，不要重写文案。"},
-        ])
+    if repair:
+        messages = [
+            {"role": "system", "content": _repair_prompt(
+                top, bottom, contract, previous or {}, str(feedback or ""),
+            )},
+            {"role": "user", "content": "请按原文分成完整语义短语块。"},
+        ]
+    else:
+        messages = [
+            {"role": "system", "content": _prompt(top, bottom, contract)},
+            {"role": "user", "content": "请标注语义边界。"},
+        ]
     selected_model = str(model or MODEL).strip() or MODEL
     body = json.dumps({
         "model": selected_model,
         "messages": messages,
         "temperature": 0,
         "response_format": {"type": "json_object"},
-        "max_tokens": 300,
+        "max_tokens": 500 if repair else 300,
     }, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
         _chat_url(), data=body,
@@ -267,12 +352,14 @@ def _request(top: str, bottom: str, contract: dict, *, previous=None,
 
 
 def generate(top: str, bottom: str, contract: dict, *, previous=None,
-             feedback="", model=None) -> dict:
+             feedback="", model=None, repair=False) -> dict:
     selected_model = str(model or MODEL).strip() or MODEL
     raw = _request(
         top, bottom, contract, previous=previous, feedback=feedback,
-        model=selected_model,
+        model=selected_model, repair=repair,
     )
+    if repair:
+        return _chunk_layout(raw, top, bottom, selected_model)
     top_breaks = _normalize_breaks(raw.get("top_break_after"), top)
     bottom_breaks = _normalize_breaks(raw.get("bottom_break_after"), bottom)
     top1_end = _nearest_safe_top1_end(raw.get("top1_end"), top_breaks, top)
@@ -348,6 +435,7 @@ def resolve(top: str, bottom: str, template_id: str, contract: dict,
                 top, bottom, contract,
                 previous=previous, feedback=feedback,
                 model=selected_model,
+                repair=previous is not None,
             )
             accepted_value, result, feedback = validate_with_rebalance(
                 value, feedback

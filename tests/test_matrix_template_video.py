@@ -619,11 +619,13 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         models = []
 
         def generated(_top, _bottom, _contract, *, previous=None,
-                      feedback="", model=None):
+                      feedback="", model=None, repair=False):
             models.append(model)
             if previous is None:
+                self.assertFalse(repair)
                 return first
             self.assertIn("顶部最长块为索引 10-22", feedback)
+            self.assertTrue(repair)
             return repaired
 
         def preflight(_method, _path, body, **_kwargs):
@@ -860,9 +862,10 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         repaired = dict(first, top_break_after=[top.index("，")])
 
         def generated(_top, _bottom, _contract, *, previous=None,
-                      feedback="", model=None):
+                      feedback="", model=None, repair=False):
             self.assertIsNone(previous)
             self.assertFalse(feedback)
+            self.assertFalse(repair)
             self.assertEqual(
                 self.module.matrix_template_semantics.MODEL, model,
             )
@@ -930,7 +933,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
 
         for label, tampered in tampered_values.items():
             def generated(_top, _bottom, _contract, *, previous=None,
-                          feedback="", model=None):
+                          feedback="", model=None, repair=False):
                 return repaired if previous is not None and feedback else first
 
             def preflight(_method, _path, body, **_kwargs):
