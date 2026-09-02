@@ -4635,8 +4635,9 @@ def _heygen_poll_video(video_id, direct=False, deadline_s=None, mcp=False):
                     payload = _heygen_mcp_call("get_video", {"videoId": video_id}, timeout=90)
                 except RuntimeError as e:
                     # GET 不计费。MCP OAuth 即使在已提交后失效，也必须用 API Key 把成片/真实失败接回来。
-                    print("[heygen] MCP GET 不可用，回退 API GET video_id=%s: %s"
-                          % (video_id, str(e)[:160]), flush=True)
+                    # MCP errors may include response bodies, signed URLs, or provider details.
+                    print("[heygen] MCP GET 不可用，回退 API GET video_id=%s error_type=%s"
+                          % (video_id, type(e).__name__), flush=True)
                     payload = _heygen_request_json("GET", "/videos/" + urllib.parse.quote(video_id),
                                                    timeout=90, direct=direct)
             else:

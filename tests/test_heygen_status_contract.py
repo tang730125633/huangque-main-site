@@ -165,6 +165,36 @@ class HeyGenStatusPollingTests(unittest.TestCase):
         logs = " ".join(str(call) for call in output.call_args_list)
         self.assertNotIn("404 body secret", logs)
 
+    def test_mcp_get_error_fallback_recovers_without_logging_response_values(self):
+        secret_error = RuntimeError(
+            "provider secret https://files.heygen.ai/x?Signature=LEAK"
+        )
+        completed = {
+            "data": {
+                "status": "completed",
+                "video_url": "https://cdn.example/right.mp4",
+            }
+        }
+        with mock.patch.object(video, "_heygen_mcp_call", side_effect=secret_error) as mcp_call, \
+             mock.patch.object(video, "_heygen_request_json", return_value=completed) as request, \
+             mock.patch("builtins.print") as output:
+            result = video._heygen_poll_video(
+                "provider-task-id", direct=True, deadline_s=60, mcp=True,
+            )
+        self.assertEqual(result["video_url"], "https://cdn.example/right.mp4")
+        mcp_call.assert_called_once_with(
+            "get_video", {"videoId": "provider-task-id"}, timeout=90,
+        )
+        request.assert_called_once_with(
+            "GET", "/videos/provider-task-id", timeout=90, direct=True,
+        )
+        logs = " ".join(str(call) for call in output.call_args_list)
+        for secret in (
+            "provider secret", "Signature=LEAK", "files.heygen.ai", "/x?",
+        ):
+            self.assertNotIn(secret, logs)
+        self.assertIn("error_type=RuntimeError", logs)
+
     def test_failed_status_never_logs_or_raises_provider_secrets(self):
         payload = {
             "data": {
