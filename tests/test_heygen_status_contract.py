@@ -59,6 +59,36 @@ class HeyGenStatusShapeTests(unittest.TestCase):
         })
         self.assertFalse(recognized)
 
+    def test_conflicting_status_and_state_on_same_node_are_ambiguous(self):
+        for status_value, state_value in (
+            ("completed", "failed"),
+            ("failed", "completed"),
+            ("processing", "completed"),
+        ):
+            with self.subTest(status=status_value, state=state_value):
+                info, _, recognized = video._heygen_video_info({
+                    "data": {
+                        "status": status_value,
+                        "state": state_value,
+                        "video_url": "https://cdn.example/a.mp4",
+                    }
+                })
+                self.assertFalse(recognized)
+                self.assertEqual(info["status"], status_value)
+
+    def test_equivalent_status_and_state_aliases_on_same_node_are_accepted(self):
+        info, status, recognized = video._heygen_video_info({
+            "data": {
+                "status": "done",
+                "state": "completed",
+                "video_url": "https://cdn.example/a.mp4",
+            }
+        })
+        self.assertTrue(recognized)
+        self.assertEqual(status, "completed")
+        self.assertEqual(info["status"], "completed")
+        self.assertEqual(info["video_url"], "https://cdn.example/a.mp4")
+
     def test_unknown_status_is_not_treated_as_processing(self):
         _, status, recognized = video._heygen_video_info({"data": {"status": "mystery"}})
         self.assertFalse(recognized)

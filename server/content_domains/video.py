@@ -4483,6 +4483,37 @@ def _heygen_video_info(payload):
     candidates = []
     seen = set()
 
+    def canonical_status(value):
+        raw = str(value).strip().lower() if value is not None else ""
+        if not raw:
+            return raw, "", False
+        if raw in _HEYGEN_VIDEO_READY:
+            return raw, "completed", True
+        if raw in _HEYGEN_VIDEO_FAILED:
+            return raw, "failed", True
+        if raw in _HEYGEN_VIDEO_ACTIVE:
+            normalized = "processing" if raw in {
+                "processing", "in_progress", "in-progress", "rendering",
+                "generating", "running",
+            } else "pending"
+            return raw, normalized, True
+        return raw, "", False
+
+    def node_status(node):
+        values = []
+        for name in ("status", "state"):
+            raw, normalized, supported = canonical_status(node.get(name))
+            if raw:
+                values.append((raw, normalized, supported))
+        if not values:
+            return "", "", False, False
+        first_raw = values[0][0]
+        ambiguous = (
+            any(not supported for _, _, supported in values)
+            or len({normalized for _, normalized, _ in values}) != 1
+        )
+        return first_raw, values[0][1], True, ambiguous
+
     def collect(node, ancestors=()):
         if isinstance(node, list):
             for item in node[:5]:
@@ -4499,27 +4530,19 @@ def _heygen_video_info(payload):
     selected = None
     selected_path = ()
     raw_status = ""
+    status = ""
     for node, path in candidates:
-        value = node.get("status") or node.get("state")
-        if value is not None and str(value).strip():
+        node_raw_status, node_normalized_status, has_status, ambiguous = node_status(node)
+        if has_status:
             selected = node
             selected_path = path
-            raw_status = str(value).strip().lower()
+            raw_status = node_raw_status
+            status = node_normalized_status
+            if ambiguous:
+                return dict(selected), raw_status, False
             break
     if selected is None:
         return {}, "", False
-
-    if raw_status in _HEYGEN_VIDEO_READY:
-        status = "completed"
-    elif raw_status in _HEYGEN_VIDEO_FAILED:
-        status = "failed"
-    elif raw_status in _HEYGEN_VIDEO_ACTIVE:
-        status = "processing" if raw_status in {
-            "processing", "in_progress", "in-progress", "rendering",
-            "generating", "running",
-        } else "pending"
-    else:
-        return dict(selected), raw_status, False
 
     info = dict(selected)
     info["status"] = status
@@ -4541,20 +4564,10 @@ def _heygen_video_info(payload):
     for node in selected_path:
         if node is selected:
             continue
-        value = node.get("status") or node.get("state")
-        other_raw_status = str(value).strip().lower() if value is not None else ""
-        if not other_raw_status:
+        _, other_status, has_status, ambiguous = node_status(node)
+        if not has_status:
             continue
-        if other_raw_status in _HEYGEN_VIDEO_READY:
-            other_status = "completed"
-        elif other_raw_status in _HEYGEN_VIDEO_FAILED:
-            other_status = "failed"
-        elif other_raw_status in _HEYGEN_VIDEO_ACTIVE:
-            other_status = "processing" if other_raw_status in {
-                "processing", "in_progress", "in-progress", "rendering",
-                "generating", "running",
-            } else "pending"
-        else:
+        if ambiguous:
             return dict(selected), raw_status, False
         if other_status != status:
             return dict(selected), raw_status, False
@@ -4565,7 +4578,7 @@ def _heygen_video_info(payload):
     for node, _ in candidates:
         if id(node) in selected_path_ids:
             continue
-        has_status = meaningful(node, ("status", "state"))
+        has_status = node_status(node)[2]
         has_media_field = any(
             meaningful(node, names)
             for names in aliases.values()
