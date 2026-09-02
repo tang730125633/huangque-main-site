@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./assets/readme/hero-zel-v1.webp" width="100%" alt="Zel and the orange cat guiding discovered capabilities through a quote, confirmation, task, and result gate">
+</p>
+
 # HQ CLI
 
 [![CI](https://github.com/tang730125633/huangque-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/tang730125633/huangque-cli/actions/workflows/ci.yml)
@@ -122,19 +126,6 @@ JSON
 ```
 
 上传成功但报价返回参考图格式错误时，不要反复上传、转换格式或绕过 CLI 调用私有接口；保留 `upload_id`、MIME 和 SHA-256 作为证据并报告服务端兼容问题。报价失败不会扣点。
-
-## 本地素材提示词反推
-
-图片或视频反推是付费文件上传。第一次命令只按媒体类型和文件 SHA-256 获取报价；用户确认后，必须复用同一文件、报价令牌、报价中的 `cost` 和稳定幂等键：
-
-```sh
-hq run director-breakdown-upload --file /absolute/path/reference.mp4 --json
-hq run director-breakdown-upload --file /absolute/path/reference.mp4 \
-  --confirm --quote-token '<quote_token>' --expected-cost 20 \
-  --idempotency-key 'director-upload-20260830-001' --json
-```
-
-幂等键必须匹配 `[A-Za-z0-9._:-]{8,128}`。如果确认上传的响应丢失，只能用完全相同的四项信息重试；不要生成新幂等键。文件摘要或报价发生变化时，先重新报价并再次确认。
 
 ## 文案成片
 
@@ -342,15 +333,46 @@ JSON
 
 状态为 `ready` 后调用 `voices` 取得 `voice_key`，再用于 `audio-generate`。音频上传支持 MP3、WAV、M4A、AAC、OGG，最大 10 MiB、最长 300 秒；声音克隆会在服务端规范化最多 60 秒清晰语音。为避免供应商判断“有效语音太短”，克隆样音应包含 30–60 秒连续、清晰、单人说话，文件总时长不能代替有效语音时长。若状态为 `failed`，先读取原槽位错误；有效语音不足时上传新的合格样音，并使用新的 `audio_upload_id` 发起新操作。上传和克隆本身不扣点，使用已有音色生成语音仍须先报价再确认。
 
+## 编导工作流
+
+CLI 可以直接调用主站编导的 AI 脚本生成和公开链接拆解，不再只是打开 `/workbench/script`：
+
+```sh
+hq run director-capability --json
+hq describe director-script-generate --json
+hq describe director-breakdown --json
+hq describe director-breakdown-upload --json
+hq describe director-scene-image-generate --json
+```
+
+`director-script-generate` 接收 `prompt`，以及可选的 `style`、`duration`、`platform`；`director-breakdown` 接收一个 `url` 或最多五条 `urls`。`director-scene-image-generate` 根据 1–8 个分镜的画面描述生成图片。这三个动作先报价，再以完全相同输入、`quote_token` 和 `--confirm` 提交一次。
+
+本地图片或视频反推必须先报价，首次调用只在本地校验文件并计算 SHA-256，不上传文件：
+
+```sh
+hq run director-breakdown-upload --file <绝对路径> --json
+```
+
+审核返回的 `cost` 后，复用同一文件和 `quote_token`，并把该费用作为 `--expected-cost` 明确确认：
+
+```sh
+hq run director-breakdown-upload --file <绝对路径> --confirm \
+  --quote-token <quote_token> --expected-cost <cost> --json
+```
+
+CLI 会为同一 `quote_token` 生成稳定的 `Idempotency-Key`。若上传响应不确定，必须用同一文件、同一报价令牌和同一费用重试；不要重新报价。拿到 `job_id` 后只使用 `task` 轮询。
+
+“一键生成视频”和“一键生成口播”不属于本次 CLI 更新范围，仍按实时契约显示为不可用。
+
 ## 内容采集与获客
 
 CLI 可以直接执行采集页和获客页的核心动作，不必先打开网页：
 
 | 想做什么 | CLI 能力 | 输入 | 完成后去哪里拿结果 |
 |---|---|---|---|
-| 把一条内容的文案和评论采下来 | `collect-content` | 抖音或小红书公开内容 `url` | `task.result` 的完整文案和评论；`assets` 只存摘要 |
-| 保存一条内容的原视频 | `collect-video` | 抖音或小红书公开内容 `url` | `assets` 的 `collect` 视频链接；`task.result` 也保留结果 |
-| 提取视频里的口播文字 | `collect-transcript` | 抖音或小红书公开内容 `url` | `task.result` 的完整口播文字；`assets` 只记录是否已有口播 |
+| 把一条内容的文案和评论采下来 | `collect-content` | 抖音、小红书、视频号、B 站或 X 单帖公开 `url` | `task.result` 的完整文案和评论；`assets` 只存摘要 |
+| 保存一条内容的原视频 | `collect-video` | 抖音、小红书、视频号或 B 站公开内容 `url` | `assets` 的 `collect` 视频链接；`task.result` 也保留结果 |
+| 提取视频里的口播文字 | `collect-transcript` | 抖音、小红书、视频号或 B 站公开内容 `url` | `task.result` 的完整口播文字；`assets` 只记录是否已有口播 |
 | 按关键词搜索平台内容 | `collect-search` | `platform=douyin|xhs`、`keyword`，可选 `page` | `task.result` 的任务结果 |
 | 从多平台评论里筛选潜在客户 | `leads-generate` | 平台，以及对应的关键词 / 视频号目标；数量和页数可选 | `assets` 的 `leads` 资产 |
 

@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import subprocess
 import sys
 
 from . import __version__
-from . import client
 from .catalog import CAPABILITIES, ENVIRONMENTS
 
 
@@ -111,28 +111,31 @@ def _capability_schema(capability):
             "type": "string",
             "description": "One explicit absolute local file path accepted by this upload capability.",
         }
-        required.append("file")
         if capability["side_effect"] == "paid":
             properties["confirm"] = {
                 "type": "boolean", "default": False,
-                "description": "Leave false to quote; set true only after explicit approval.",
+                "description": "Leave false to obtain a file-bound quote; set true only after explicit user approval.",
             }
             properties["quote_token"] = {
                 "type": "string", "minLength": 1,
-                "description": "quote_token returned for this identical file.",
+                "description": "Server quote token returned for this exact file.",
             }
             properties["expected_cost"] = {
                 "type": "integer", "minimum": 0,
-                "description": "Exact cost returned by that same quote response.",
+                "description": "Quoted point cost explicitly approved by the user.",
             }
-            properties["idempotency_key"] = {
-                "type": "string", "minLength": 8, "maxLength": 128,
-                "pattern": client.DIRECTOR_BREAKDOWN_IDEMPOTENCY_KEY_PATTERN,
-                "description": "Stable key reused only for retries of this identical file.",
-            }
+            required.append("file")
         else:
             properties["confirm"] = {"type": "boolean", "const": True}
-            required.append("confirm")
+            required.extend(["file", "confirm"])
+        for flag, definition in (
+                capability.get("file_input", {}).get("requiredMetadata") or {}).items():
+            name = flag.lstrip("-").replace("-", "_")
+            properties[name] = {
+                "type": "string", "pattern": definition,
+                "description": "Required upload metadata forwarded as %s." % flag,
+            }
+            required.append(name)
     elif capability["kind"] == "navigation":
         properties["open_browser"] = {
             "type": "boolean",
@@ -243,26 +246,31 @@ def _capability_command(capability, arguments):
     confirm = values.pop("confirm", False)
     quote_token = values.pop("quote_token", None)
     expected_cost = values.pop("expected_cost", None)
-    idempotency_key = values.pop("idempotency_key", None)
     file_path = values.pop("file", None)
     open_browser = values.pop("open_browser", False)
     if not isinstance(confirm, bool):
         raise ValueError("confirm must be a boolean")
     if not isinstance(open_browser, bool):
         raise ValueError("open_browser must be a boolean")
-    if capability["id"] != "director-breakdown-upload" and (
-            expected_cost is not None or idempotency_key is not None):
-        raise ValueError("upload quote arguments are only valid for director-breakdown-upload")
     if capability["confirmation_required"] and capability["side_effect"] != "paid" and confirm is not True:
         raise ValueError("this Huangque capability requires confirm=true")
     command = ["run", capability["id"]]
     stdin_text = ""
     if capability["kind"] == "upload":
+        metadata = []
+        for flag, pattern in (
+                capability.get("file_input", {}).get("requiredMetadata") or {}).items():
+            name = flag.lstrip("-").replace("-", "_")
+            value = values.pop(name, None)
+            if not isinstance(value, str) or not re.fullmatch(pattern, value):
+                raise ValueError("upload tool requires valid %s metadata" % name)
+            metadata.extend([flag, value])
         if values:
             raise ValueError("upload tool received unexpected capability input")
         if not isinstance(file_path, str) or not file_path:
             raise ValueError("upload tool requires one file path")
         command.extend(["--file", file_path])
+        command.extend(metadata)
     else:
         command.extend(["--input", "@-"])
         stdin_text = json.dumps(values, ensure_ascii=False, separators=(",", ":"))
@@ -275,13 +283,9 @@ def _capability_command(capability, arguments):
             raise ValueError("quote_token must be a non-empty string")
         command.extend(["--quote-token", quote_token])
     if expected_cost is not None:
-        if not isinstance(expected_cost, int) or isinstance(expected_cost, bool) or expected_cost < 0:
+        if isinstance(expected_cost, bool) or not isinstance(expected_cost, int) or expected_cost < 0:
             raise ValueError("expected_cost must be a non-negative integer")
         command.extend(["--expected-cost", str(expected_cost)])
-    if idempotency_key is not None:
-        idempotency_key = client.validate_director_breakdown_idempotency_key(
-            idempotency_key)
-        command.extend(["--idempotency-key", idempotency_key])
     return command, stdin_text
 
 

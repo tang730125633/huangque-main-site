@@ -20,13 +20,22 @@ class McpServerTests(unittest.TestCase):
         self.assertIn("quote_token", paid["properties"])
         upload = by_name["hq_image_upload"]["inputSchema"]
         self.assertEqual({"file", "confirm"}, set(upload["required"]))
-        paid_upload = by_name["hq_director_breakdown_upload"]["inputSchema"]
-        self.assertEqual({"file"}, set(paid_upload["required"]))
-        self.assertTrue({"confirm", "quote_token", "expected_cost", "idempotency_key"}
-                        <= set(paid_upload["properties"]))
+        digital_human_audio = by_name[
+            "hq_digital_human_oneclick_audio_upload"
+        ]["inputSchema"]
         self.assertEqual(
-            r"^[A-Za-z0-9._:-]{8,128}$",
-            paid_upload["properties"]["idempotency_key"]["pattern"],
+            {"file", "confirm", "run_id"},
+            set(digital_human_audio["required"]),
+        )
+        self.assertEqual(
+            "^dh-run-[A-Za-z0-9._:-]{8,128}$",
+            digital_human_audio["properties"]["run_id"]["pattern"],
+        )
+        director_upload = by_name["hq_director_breakdown_upload"]["inputSchema"]
+        self.assertEqual({"file"}, set(director_upload["required"]))
+        self.assertEqual(
+            {"file", "confirm", "quote_token", "expected_cost"},
+            set(director_upload["properties"]),
         )
         single = by_name["hq_matrix_template_generate"]["inputSchema"]
         self.assertIn("font_family", single["properties"])
@@ -57,33 +66,67 @@ class McpServerTests(unittest.TestCase):
             "run", "collect-content", "--input", "@-", "--confirm", "--quote-token", "q.test",
         ], calls[0][0])
 
-    def test_paid_upload_passes_quote_cost_and_stable_key_to_cli(self):
+    def test_paid_director_upload_quotes_then_reuses_cost_and_quote_token(self):
         calls = []
 
         def runner(arguments, stdin_text):
             calls.append((arguments, stdin_text))
-            return 0, {"schema": "hq.run/v1", "result": {"job_id": 12}}
+            return 0, {"schema": "hq.run/v1", "result": {"cost": 20}}
 
-        result = mcp_server.call_tool("hq_director_breakdown_upload", {
-            "file": "/absolute/reference.png", "confirm": True,
-            "quote_token": "q.director", "expected_cost": 20,
-            "idempotency_key": "director-mcp-e2e-001",
+        quoted = mcp_server.call_tool("hq_director_breakdown_upload", {
+            "file": "/tmp/director-reference.png",
         }, runner=runner)
-        self.assertNotIn("isError", result)
-        self.assertEqual([[
-            "run", "director-breakdown-upload", "--file", "/absolute/reference.png",
-            "--confirm", "--quote-token", "q.director", "--expected-cost", "20",
-            "--idempotency-key", "director-mcp-e2e-001",
-        ], ""], [calls[0][0], calls[0][1]])
+        confirmed = mcp_server.call_tool("hq_director_breakdown_upload", {
+            "file": "/tmp/director-reference.png", "confirm": True,
+            "quote_token": "q.director.upload", "expected_cost": 20,
+        }, runner=runner)
+        self.assertNotIn("isError", quoted)
+        self.assertNotIn("isError", confirmed)
+        self.assertEqual(([
+            "run", "director-breakdown-upload", "--file", "/tmp/director-reference.png",
+        ], ""), calls[0])
+        self.assertEqual(([
+            "run", "director-breakdown-upload", "--file", "/tmp/director-reference.png",
+            "--confirm", "--quote-token", "q.director.upload", "--expected-cost", "20",
+        ], ""), calls[1])
 
-        rejected = mcp_server.call_tool("hq_director_breakdown_upload", {
-            "file": "/absolute/reference.png", "confirm": True,
-            "quote_token": "q.director", "expected_cost": 20,
-            "idempotency_key": "bad key!",
-        }, runner=runner)
-        self.assertTrue(rejected["isError"])
-        self.assertIn("[A-Za-z0-9._:-]{8,128}", rejected["content"][0]["text"])
-        self.assertEqual(1, len(calls))
+    def test_digital_human_audio_upload_maps_required_run_id(self):
+        calls = []
+
+        def runner(arguments, stdin_text):
+            calls.append((arguments, stdin_text))
+            return 0, {
+                "schema": "hq.run/v1",
+                "result": {"audio_upload_id": "dha_" + "a" * 32},
+            }
+
+        missing = mcp_server.call_tool(
+            "hq_digital_human_oneclick_audio_upload",
+            {"file": "/tmp/complete.mp3", "confirm": True},
+            runner=runner,
+        )
+        invalid = mcp_server.call_tool(
+            "hq_digital_human_oneclick_audio_upload",
+            {"file": "/tmp/complete.mp3", "run_id": "bad", "confirm": True},
+            runner=runner,
+        )
+        confirmed = mcp_server.call_tool(
+            "hq_digital_human_oneclick_audio_upload",
+            {
+                "file": "/tmp/complete.mp3",
+                "run_id": "dh-run-audio-0001",
+                "confirm": True,
+            },
+            runner=runner,
+        )
+        self.assertTrue(missing["isError"])
+        self.assertTrue(invalid["isError"])
+        self.assertNotIn("isError", confirmed)
+        self.assertEqual([([
+            "run", "digital-human-oneclick-audio-upload",
+            "--file", "/tmp/complete.mp3",
+            "--run-id", "dh-run-audio-0001", "--confirm",
+        ], "")], calls)
 
     def test_template_batch_passes_one_confirmation_to_the_fixed_cli_action(self):
         calls = []
@@ -134,7 +177,7 @@ class McpServerTests(unittest.TestCase):
 
         def runner(arguments, stdin_text):
             self.assertEqual(["version"], arguments)
-            return 0, {"schema": "hq.version/v1", "cli_version": "0.13.2"}
+            return 0, {"schema": "hq.version/v1", "cli_version": "0.13.5"}
 
         self.assertEqual(0, mcp_server.serve(source, output, runner=runner))
         responses = [json.loads(line) for line in output.getvalue().splitlines()]
@@ -163,13 +206,13 @@ class McpServerTests(unittest.TestCase):
 
         def runner(arguments, stdin_text):
             calls.append((arguments, stdin_text))
-            return 0, {"schema": "hq.version/v1", "cli_version": "0.13.2"}
+            return 0, {"schema": "hq.version/v1", "cli_version": "0.13.5"}
 
         self.assertEqual(0, mcp_server.serve(source, output, runner=runner))
         responses = [json.loads(line) for line in output.getvalue().splitlines()]
         self.assertEqual(mcp_server.PROTOCOL_VERSION, responses[0]["result"]["supportedVersions"][0])
         self.assertEqual(
-            {"name": "huangque", "version": "0.13.2"},
+            {"name": "huangque", "version": "0.13.5"},
             responses[1]["result"]["_meta"][mcp_server.SERVER_INFO_META],
         )
         self.assertEqual([(["version"], "")], calls)

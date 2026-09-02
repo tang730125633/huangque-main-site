@@ -1099,9 +1099,14 @@ class HQCLIAPITests(unittest.TestCase):
                     {"media_type": media_type, "sha256": digest}, token=token,
                 )
             self.assertEqual(200, status, quote)
-            headers = first_party_cli_client.director_breakdown_confirmation_headers(
-                quote["quote_token"], quote["cost"], "director-e2e-%03d" % index,
-            )
+            with mock.patch.object(
+                    first_party_cli_client, "_upload_media",
+                    return_value=(200, {"job_id": 100 + index})) as upload:
+                first_party_cli_client.upload_director_breakdown(
+                    "/tmp/" + filename, "cli-token", quote["quote_token"], quote["cost"],
+                )
+            self.assertEqual(path, upload.call_args.args[2][content_type])
+            headers = dict(upload.call_args.args[-1])
             headers["X-HQ-File-Name"] = filename
             captured = {}
 
