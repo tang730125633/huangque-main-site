@@ -4443,6 +4443,14 @@ class HeyGenBilledError(RuntimeError):
     """
 
 
+class HeyGenStatusUnknownError(RuntimeError):
+    """HeyGen accepted a paid submission but its status contract is unusable.
+
+    This must stay distinct from an ordinary render timeout.  Callers may refund
+    or reconcile the original provider task, but must never POST a replacement.
+    """
+
+
 # 电影化身走 HeyGen 时的轮询死线 —— 20 分钟（kongli 2026-07-14，原来跟全站的 15 分钟走）。
 #
 # 数就定在 core.CINEMATIC_GEN_DEADLINE，这里【只是引用】—— reaper 对 cinematic 的宽限
@@ -4450,26 +4458,128 @@ class HeyGenBilledError(RuntimeError):
 # reaper 宽限还长 → reaper 先把活着的任务杀了」那个老 bug。
 HEYGEN_MOTION_DEADLINE = CINEMATIC_GEN_DEADLINE
 
+# A paid task should become visible quickly.  Three empty/unknown responses trigger
+# one idempotent v1 GET cross-check, but never another create POST.  The main poll
+# remains alive until its existing deadline so eventual consistency can recover.
+HEYGEN_STATUS_CROSSCHECK_AFTER = max(
+    1, int(os.environ.get("HEYGEN_STATUS_CROSSCHECK_AFTER", "3") or 3)
+)
+
+_HEYGEN_VIDEO_READY = {"completed", "complete", "success", "succeeded", "done"}
+_HEYGEN_VIDEO_FAILED = {"failed", "failure", "error", "rejected", "canceled", "cancelled"}
+_HEYGEN_VIDEO_ACTIVE = {
+    "pending", "queued", "waiting", "created", "submitted", "processing", "in_progress",
+    "in-progress", "rendering", "generating", "running",
+}
+
+
+def _heygen_video_info(payload):
+    """Return a canonical video info dict and whether its status is supported.
+
+    HeyGen has returned both top-level and nested ``data/result/video`` shapes.
+    Only those documented wrapper names are traversed; arbitrary response content
+    is neither logged nor treated as state.
+    """
+    candidates = []
+    seen = set()
+
+    def collect(node):
+        if isinstance(node, list):
+            for item in node[:5]:
+                collect(item)
+            return
+        if not isinstance(node, dict) or id(node) in seen:
+            return
+        seen.add(id(node))
+        for key in ("data", "result", "video"):
+            collect(node.get(key))
+        candidates.append(node)
+
+    collect(payload)
+    selected = None
+    raw_status = ""
+    for node in candidates:
+        value = node.get("status") or node.get("state")
+        if value is not None and str(value).strip():
+            selected = node
+            raw_status = str(value).strip().lower()
+            break
+    if selected is None:
+        return {}, "", False
+
+    if raw_status in _HEYGEN_VIDEO_READY:
+        status = "completed"
+    elif raw_status in _HEYGEN_VIDEO_FAILED:
+        status = "failed"
+    elif raw_status in _HEYGEN_VIDEO_ACTIVE:
+        status = "processing" if raw_status in {
+            "processing", "in_progress", "in-progress", "rendering",
+            "generating", "running",
+        } else "pending"
+    else:
+        return dict(selected), raw_status, False
+
+    info = dict(selected)
+    info["status"] = status
+    aliases = {
+        "video_url": ("video_url", "videoUrl", "url"),
+        "thumbnail_url": ("thumbnail_url", "thumbnailUrl"),
+        "duration": ("duration",),
+    }
+    for canonical, names in aliases.items():
+        if info.get(canonical) is not None:
+            continue
+        for node in candidates:
+            value = next((node.get(name) for name in names if node.get(name) is not None), None)
+            if value is not None:
+                info[canonical] = value
+                break
+    return info, status, True
+
+
+def _heygen_status_shape(payload):
+    """Describe response structure without values, URLs, prompts, or credentials."""
+    known = {"data", "result", "video", "status", "state", "error", "code", "message"}
+    if not isinstance(payload, dict):
+        return "top_type=%s" % type(payload).__name__
+    top_keys = sorted(str(key) for key in payload if str(key) in known)
+    data = payload.get("data")
+    return "top_type=dict known_keys=%s data_type=%s" % (
+        ",".join(top_keys) or "none", type(data).__name__,
+    )
+
+
+def _heygen_video_status_v1(video_id):
+    """Idempotent official status cross-check; never creates or charges a task."""
+    query = urllib.parse.urlencode({"video_id": video_id})
+    return _heygen_direct_req(
+        "GET", _HEYGEN_DIRECT_API + "/v1/video_status.get?" + query,
+        ctype=None, timeout=30,
+    )
+
 
 def _heygen_poll_video(video_id, direct=False, deadline_s=None, mcp=False):
     deadline = time.time() + (deadline_s or HEYGEN_TIMEOUT)
     last_status = ""
     net_fails = 0
+    unknown_count = 0
+    crosschecked = False
+    saw_recognized_status = False
     while time.time() < deadline:
+        payload = None
         try:
             if mcp:
                 try:
-                    info = _heygen_mcp_call("get_video", {"videoId": video_id}, timeout=90)
+                    payload = _heygen_mcp_call("get_video", {"videoId": video_id}, timeout=90)
                 except RuntimeError as e:
                     # GET 不计费。MCP OAuth 即使在已提交后失效，也必须用 API Key 把成片/真实失败接回来。
                     print("[heygen] MCP GET 不可用，回退 API GET video_id=%s: %s"
                           % (video_id, str(e)[:160]), flush=True)
-                    data = _heygen_request_json("GET", "/videos/" + urllib.parse.quote(video_id),
-                                                timeout=90, direct=direct)
-                    info = data.get("data") or {}
+                    payload = _heygen_request_json("GET", "/videos/" + urllib.parse.quote(video_id),
+                                                   timeout=90, direct=direct)
             else:
-                data = _heygen_request_json("GET", "/videos/" + urllib.parse.quote(video_id), timeout=90, direct=direct)
-                info = data.get("data") or {}
+                payload = _heygen_request_json("GET", "/videos/" + urllib.parse.quote(video_id),
+                                                timeout=90, direct=direct)
         except HeyGenNetworkError as e:
             # 轮询是幂等 GET、不计费——隧道瞬时抖动不该判死任务、白烧提交费(#605)。
             # 等下一轮重试；deadline 仍是总上限，不会无限转。provider 明确 failed 才判失败(见下)。
@@ -4478,15 +4588,43 @@ def _heygen_poll_video(video_id, direct=False, deadline_s=None, mcp=False):
                   % (video_id, net_fails, HEYGEN_POLL_INTERVAL, str(e)[:120]), flush=True)
             time.sleep(HEYGEN_POLL_INTERVAL)
             continue
-        status = str(info.get("status") or "").lower()
-        if status != last_status:
-            print("[heygen] video_id=%s status=%s" % (video_id, status), flush=True)
-            last_status = status
-        if status == "completed":
+        info, status, recognized = _heygen_video_info(payload)
+        if recognized:
+            saw_recognized_status = True
+            unknown_count = 0
+        else:
+            unknown_count += 1
+            if unknown_count == 1:
+                print("[heygen] video_id=%s status_contract=unknown %s"
+                      % (video_id, _heygen_status_shape(payload)), flush=True)
+            if unknown_count >= HEYGEN_STATUS_CROSSCHECK_AFTER and not crosschecked:
+                crosschecked = True
+                try:
+                    fallback = _heygen_video_status_v1(video_id)
+                    fallback_info, fallback_status, fallback_recognized = _heygen_video_info(fallback)
+                    if fallback_recognized:
+                        info, status, recognized = fallback_info, fallback_status, True
+                        saw_recognized_status = True
+                        unknown_count = 0
+                        print("[heygen] video_id=%s status_crosscheck=v1 status=%s"
+                              % (video_id, status), flush=True)
+                    else:
+                        print("[heygen] video_id=%s status_crosscheck=v1 unknown %s"
+                              % (video_id, _heygen_status_shape(fallback)), flush=True)
+                except (RuntimeError, OSError, ValueError) as e:
+                    # Never print response bodies here: they may contain signed URLs or provider details.
+                    # The original v3/MCP GET remains authoritative and continues until the same deadline.
+                    print("[heygen] video_id=%s status_crosscheck=v1 failed error_type=%s"
+                          % (video_id, type(e).__name__), flush=True)
+        display_status = status if recognized else "unknown"
+        if display_status != last_status:
+            print("[heygen] video_id=%s status=%s" % (video_id, display_status), flush=True)
+            last_status = display_status
+        if recognized and status == "completed":
             if not info.get("video_url"):
                 raise RuntimeError("HeyGen完成但未返回video_url")
             return info
-        if status in {"failed", "error"}:
+        if recognized and status == "failed":
             detail = json.dumps(info, ensure_ascii=False)[:500]
             print("[heygen] FAIL GET /videos/%s -> provider %s" % (video_id, detail), flush=True)
             provider_error = str(info.get("failure_message") or info.get("error") or info.get("failure_code") or "").strip()
@@ -4494,6 +4632,10 @@ def _heygen_poll_video(video_id, direct=False, deadline_s=None, mcp=False):
                 provider_error = "内容审核未通过，请更换人物图片、参考视频或提示词"
             raise RuntimeError("HeyGen视频生成失败: %s" % (provider_error[:160] or "上游未返回失败原因"))
         time.sleep(HEYGEN_POLL_INTERVAL)
+    if not saw_recognized_status or unknown_count >= HEYGEN_STATUS_CROSSCHECK_AFTER:
+        raise HeyGenStatusUnknownError(
+            "HeyGen任务状态不可识别，已保留原video_id等待对账，禁止重复提交"
+        )
     raise TimeoutError("HeyGen视频生成超时")
 
 
