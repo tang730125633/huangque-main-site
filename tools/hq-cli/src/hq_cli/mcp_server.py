@@ -136,6 +136,12 @@ def _capability_schema(capability):
                 "description": "Required upload metadata forwarded as %s." % flag,
             }
             required.append(name)
+    elif capability["kind"] == "download":
+        properties["output_file"] = {
+            "type": "string",
+            "description": "One explicit absolute local destination; existing files are never overwritten.",
+        }
+        required.append("output_file")
     elif capability["kind"] == "navigation":
         properties["open_browser"] = {
             "type": "boolean",
@@ -247,6 +253,7 @@ def _capability_command(capability, arguments):
     quote_token = values.pop("quote_token", None)
     expected_cost = values.pop("expected_cost", None)
     file_path = values.pop("file", None)
+    output_file = values.pop("output_file", None)
     open_browser = values.pop("open_browser", False)
     if not isinstance(confirm, bool):
         raise ValueError("confirm must be a boolean")
@@ -271,6 +278,11 @@ def _capability_command(capability, arguments):
             raise ValueError("upload tool requires one file path")
         command.extend(["--file", file_path])
         command.extend(metadata)
+    elif capability["kind"] == "download":
+        if not isinstance(output_file, str) or not output_file:
+            raise ValueError("download tool requires one output_file")
+        command.extend(["--input", "@-", "--output", output_file])
+        stdin_text = json.dumps(values, ensure_ascii=False, separators=(",", ":"))
     else:
         command.extend(["--input", "@-"])
         stdin_text = json.dumps(values, ensure_ascii=False, separators=(",", ":"))

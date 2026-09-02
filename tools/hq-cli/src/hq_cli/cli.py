@@ -39,7 +39,7 @@ LOGIN_SCOPES = [
     "generation:quote", "generation:submit",
     "video-compose:read", "video-compose:write", "digital-presenter:read", "digital-presenter:write",
     "inspiration:read", "inspiration:write", "leads:read", "leads:write", "short-drama:read", "short-drama:write",
-    "director:read", "director:generate",
+    "director:read", "director:write", "director:generate", "director:recover",
     "digital-human-oneclick:read", "digital-human-oneclick:write", "digital-human-oneclick:generate",
 ]
 
@@ -262,9 +262,9 @@ def _validate(capability, payload):
             raise CliError(EXIT_INPUT, "input_error", "input field %s is below minimum" % key)
         if "maximum" in definition and value > definition["maximum"]:
             raise CliError(EXIT_INPUT, "input_error", "input field %s is above maximum" % key)
-    if capability.get("id") == "video-generate":
+    if capability.get("id") in {"video-generate", "director-scene-video-generate"}:
         _validate_video_channel(payload)
-    if capability.get("id") == "text-video-generate":
+    if capability.get("id") in {"text-video-generate", "director-scene-talking-generate"}:
         _validate_text_video_talking(payload)
     if capability.get("id") == "leads-generate":
         platforms = payload.get("platforms") or []
@@ -439,6 +439,7 @@ def build_parser():
     run.add_argument("--quote-token")
     run.add_argument("--expected-cost", type=int)
     run.add_argument("--file")
+    run.add_argument("--output")
     run.add_argument("--run-id")
     doctor = subcommands.add_parser("doctor", add_help=False, allow_abbrev=False)
     _add_common(doctor, "show_command_help")
@@ -539,6 +540,8 @@ def main(argv=None):
                     )
                 elif capability["kind"] == "upload":
                     next_action = "Run `hq run %s --file /absolute/path --confirm --json`." % args.id
+                elif capability["kind"] == "download":
+                    next_action = "Run `hq run dl --input @file --output /absolute/path --json`."
                 else:
                     next_action = "Use only this input_schema with `hq run %s --input @file --json`." % args.id
                 _write(sys.stdout, _envelope("hq.describe/v1", capability=capability,
@@ -547,7 +550,10 @@ def main(argv=None):
             if not capability["runnable"]:
                 raise CliError(EXIT_UNAVAILABLE, "unavailable_capability", "capability is unavailable: %s" % args.id)
             is_upload = capability["kind"] == "upload"
+            is_download = capability["kind"] == "download"
             is_avatar_photo = args.id == "video-avatar-create"
+            if args.output and not is_download:
+                raise CliError(EXIT_USAGE, "usage_error", "--output is only valid for download capabilities")
             if is_upload:
                 if args.input:
                     raise CliError(EXIT_USAGE, "usage_error", "upload capabilities do not accept --input")
@@ -646,6 +652,21 @@ def main(argv=None):
                     except client.NetworkError as exc:
                         raise CliError(EXIT_NETWORK, "upload_error", "%s upload failed: %s" % (upload_kind, exc))
                     result = _checked_response(status, upload)
+            elif is_download:
+                if not args.output:
+                    raise CliError(EXIT_USAGE, "usage_error", "dl requires --output /absolute/path")
+                if args.file or args.open_browser or args.run_id or args.confirm or args.quote_token or args.expected_cost is not None:
+                    raise CliError(EXIT_USAGE, "usage_error", "download does not accept upload, browser, confirmation, or quote options")
+                credentials = _credentials()
+                try:
+                    result = client.download_file(
+                        payload["url"], args.output, credentials["access_token"],
+                        payload.get("name", "video"), payload.get("decode_key", ""),
+                    )
+                except ValueError as exc:
+                    raise CliError(EXIT_INPUT, "invalid_download", str(exc))
+                except client.NetworkError as exc:
+                    raise CliError(EXIT_NETWORK, "download_error", str(exc))
             elif capability["kind"] == "navigation":
                 if args.run_id:
                     raise CliError(EXIT_USAGE, "usage_error", "navigation does not accept --run-id")

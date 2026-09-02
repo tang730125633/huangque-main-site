@@ -37,6 +37,8 @@ DIRECTOR_BREAKDOWN_IMAGE_PATH = "/api/auth/cli/director-breakdown-image"
 DIRECTOR_BREAKDOWN_VIDEO_PATH = "/api/auth/cli/director-breakdown-video"
 DIRECTOR_BREAKDOWN_QUOTE_PATH = "/api/auth/cli/director-breakdown-quote"
 ALLOWED_PATHS.add(DIRECTOR_BREAKDOWN_QUOTE_PATH)
+DOWNLOAD_PATH = "/api/gen/dl"
+MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024
 
 
 class NetworkError(Exception):
@@ -75,6 +77,108 @@ def request_json(path, method="GET", body=None, token="", timeout=30):
         payload = {"detail": "server returned invalid JSON"}
         status = 502
     return int(status), payload
+
+
+def download_file(url, output, token, name="video", decode_key="", timeout=300):
+    if not isinstance(token, str) or not token:
+        raise ValueError("missing access token")
+    if not isinstance(output, str) or not os.path.isabs(output):
+        raise ValueError("--output must be an absolute path")
+    requested_target = Path(os.path.normpath(output))
+    try:
+        current = Path(requested_target.anchor)
+        for part in requested_target.parent.parts[1:]:
+            current /= part
+            entry = os.lstat(current)
+            is_link = stat.S_ISLNK(entry.st_mode) or bool(
+                getattr(entry, "st_file_attributes", 0)
+                & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            )
+            system_alias = (
+                os.name != "nt" and str(current) in {"/tmp", "/var"}
+                and entry.st_uid == 0 and stat.S_ISLNK(entry.st_mode)
+            )
+            if is_link and not system_alias:
+                raise ValueError("output directory cannot contain symlinks")
+        parent = Path(os.path.realpath(requested_target.parent))
+    except OSError:
+        raise ValueError("output directory does not exist")
+    target = parent / requested_target.name
+    if not parent.is_dir():
+        raise ValueError("output directory does not exist")
+    if target.exists() or target.is_symlink():
+        raise ValueError("output already exists")
+    if not isinstance(url, str) or not url or len(url) > 4096:
+        raise ValueError("download URL is invalid")
+    if not isinstance(name, str) or not 1 <= len(name.strip()) <= 40:
+        raise ValueError("download name is invalid")
+    if not isinstance(decode_key, str) or len(decode_key) > 4096:
+        raise ValueError("decode key is invalid")
+    query = urllib.parse.urlencode({"url": url, "name": name.strip()})
+    request = urllib.request.Request(
+        API_BASE + DOWNLOAD_PATH + "?" + query,
+        headers={
+            "Accept": "application/octet-stream,image/*,video/*",
+            "Authorization": "Bearer " + token,
+            "User-Agent": "hq-cli/%s" % __version__,
+            **({"X-HQ-Decode-Key": decode_key} if decode_key else {}),
+        },
+        method="GET",
+    )
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+    temp = parent / (".%s.%s.tmp" % (target.name, secrets.token_hex(6)))
+    descriptor = None
+    try:
+        try:
+            response = opener.open(request, timeout=timeout)
+        except urllib.error.HTTPError as exc:
+            raw = exc.read(8193)
+            try:
+                detail = json.loads(raw or b"{}").get("detail")
+            except (UnicodeDecodeError, ValueError, AttributeError):
+                detail = "download failed"
+            raise NetworkError("HTTP %s: %s" % (exc.code, str(detail or "download failed")[:220]))
+        length = response.headers.get("Content-Length")
+        if length and int(length) > MAX_DOWNLOAD_BYTES:
+            response.close()
+            raise ValueError("download exceeds 2 GiB")
+        descriptor = os.open(
+            str(temp), os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600,
+        )
+        digest = hashlib.sha256()
+        total = 0
+        with response:
+            content_type = (response.headers.get("Content-Type") or "application/octet-stream").split(";", 1)[0]
+            while True:
+                chunk = response.read(64 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_DOWNLOAD_BYTES:
+                    raise ValueError("download exceeds 2 GiB")
+                pending = memoryview(chunk)
+                while pending:
+                    pending = pending[os.write(descriptor, pending):]
+                digest.update(chunk)
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = None
+        os.replace(temp, target)
+        return {
+            "path": output, "bytes": total,
+            "sha256": digest.hexdigest(), "content_type": content_type,
+        }
+    except (ValueError, NetworkError):
+        raise
+    except (OSError, urllib.error.URLError) as exc:
+        raise NetworkError(str(exc))
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            temp.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _image_mime(header):

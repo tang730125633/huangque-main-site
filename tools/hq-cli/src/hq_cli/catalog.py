@@ -66,6 +66,18 @@ def _upload(identifier, name, description, scope):
     return capability
 
 
+def _download(identifier, name, description, fields, required, scope):
+    capability = _api(
+        identifier, name, None, description, fields, required, scope,
+        side_effect="download",
+    )
+    capability["kind"] = "download"
+    capability["next_actions"] = [
+        "Use one explicit absolute --output path; existing files are never overwritten.",
+    ]
+    return capability
+
+
 STRING_ID = {"type": "string", "minLength": 1, "maxLength": 160}
 LIMIT = {"type": "integer", "minimum": 1, "maximum": 120}
 CANVAS_AGENT_NODE_ID = {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"}
@@ -135,9 +147,13 @@ for item in (
     ("leads", "获客", "/workbench/leads", "进入获客工作台。", None, "account_for_data_or_actions"),
     ("collect", "采集", "/workbench/collect", "进入内容采集工作台。", None, "account_for_data_or_actions"),
     ("image", "图片工作台", "/workbench/banana", "进入图片工作台；只预填，不提交生成。",
-     {"prompt": {"type": "string", "minLength": 1, "maxLength": 2000}}, "account_for_actions"),
+     {"prompt": {"type": "string", "minLength": 1, "maxLength": 2000},
+      "engine": {"type": "string", "enum": ["openai", "seedream", "xiaole", "banana"]},
+      "inspiration": {"type": "integer", "minimum": 1000000, "maximum": 9223372036854775807}}, "account_for_actions"),
     ("video", "视频工作台", "/workbench/video", "进入视频工作台；只预填，不提交生成。",
-     {"prompt": {"type": "string", "minLength": 1, "maxLength": 2000}}, "account_for_actions"),
+     {"prompt": {"type": "string", "minLength": 1, "maxLength": 2000},
+      "channel": {"type": "string", "enum": ["grok", "micro", "omni", "minimax", "sora"]},
+      "inspiration": {"type": "integer", "minimum": 1000000, "maximum": 9223372036854775807}}, "account_for_actions"),
     ("text-video", "文案成片", "/workbench/text-video", "进入文案成片页；页面入口不会直接提交生成。",
      None, "account_for_actions"),
     ("matrix-template", "模板成片", "/workbench/matrix-template.html", "进入模板成片页；页面入口不会直接提交生成。",
@@ -170,6 +186,119 @@ CAPABILITIES["channels"]["next_actions"] = [
 CAPABILITIES["director-capability"] = _api(
     "director-capability", "编导能力契约", "director-capability",
     "读取编导工作流、状态、权限、计费和当前可执行动作。", scope="director:read")
+REQUEST_ID = {"type": "string", "pattern": "^[A-Za-z0-9._:-]{8,128}$"}
+CAPABILITIES["director-chat"] = _api(
+    "director-chat", "编导顾客助手", "director-chat",
+    "向编导顾客助手提交一轮可追踪对话；返回零点数异步任务。",
+    {
+        "prompt": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "session_id": STRING_ID,
+        "page_revision": {"type": "integer", "minimum": 1},
+        "page_context": {"type": "object"},
+        "history": {"type": "array", "maxItems": 12, "items": {"type": "object"}},
+        "source_page": {"type": "string", "maxLength": 80},
+        "request_id": REQUEST_ID,
+    }, ["prompt", "session_id", "page_revision", "page_context", "request_id"],
+    "director:write", "external_ai", True,
+    {"kind": "external_ai", "points": 0, "detail": "不扣用户点数，但会调用编导模型并创建零点数任务。"})
+CAPABILITIES["director-chat"]["next_actions"] = [
+    "只用 task 轮询返回的 job_id；若出现 production_offer，先展示费用并等待用户确认。",
+]
+CAPABILITIES["director-produce"] = _api(
+    "director-produce", "确认编导生产单", "director-produce",
+    "确认同一轮编导助手返回的冻结脚本生产单。",
+    {
+        "offer_id": {"type": "string", "pattern": "^director-production-[A-Za-z0-9_-]{16,64}$"},
+        "input": {"type": "object"},
+        "expected_cost": {"type": "integer", "minimum": 0},
+        "plan_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "quote_token": {"type": "string", "minLength": 20, "maxLength": 4096},
+    }, ["offer_id", "input", "expected_cost", "plan_digest", "quote_token"],
+    "director:generate", "write", True)
+CAPABILITIES["director-produce"]["next_actions"] = [
+    "只确认用户已经看到并同意的 production_offer；提交后只轮询返回的原 job_id。",
+]
+DIRECTOR_WORKFLOW_ID = {"type": "string", "pattern": "^dw_[0-9a-f]{32}$"}
+DIRECTOR_STORYBOARD = {
+    "type": "array", "minItems": 1, "maxItems": 60,
+    "items": {"type": "object"},
+}
+CAPABILITIES["director-workflows"] = _api(
+    "director-workflows", "编导工作流列表", "director-workflows",
+    "读取本人持久化编导工作流。",
+    {"limit": {"type": "integer", "minimum": 1, "maximum": 50},
+     "offset": {"type": "integer", "minimum": 0, "maximum": 2000}},
+    scope="director:read")
+CAPABILITIES["director-workflow-create"] = _api(
+    "director-workflow-create", "创建编导工作流", "director-workflow-create",
+    "从本人已完成脚本/拆解任务或显式分镜创建持久工作流。",
+    {"title": {"type": "string", "minLength": 1, "maxLength": 120},
+     "source_job_id": {"type": "integer", "minimum": 1},
+     "storyboard": DIRECTOR_STORYBOARD, "request_id": REQUEST_ID},
+    ["title", "request_id"], "director:write", "write", True)
+CAPABILITIES["director-workflow-create"]["input_schema"]["oneOf"] = [
+    {"required": ["source_job_id"]}, {"required": ["storyboard"]},
+]
+CAPABILITIES["director-workflow"] = _api(
+    "director-workflow", "编导工作流", "director-workflow",
+    "读取本人一个工作流、当前 revision 与结构化分镜。",
+    {"workflow_id": DIRECTOR_WORKFLOW_ID}, ["workflow_id"], "director:read")
+CAPABILITIES["director-storyboard-update"] = _api(
+    "director-storyboard-update", "更新编导分镜", "director-storyboard-update",
+    "按 revision 保存本人结构化分镜，冲突时拒绝覆盖。",
+    {"workflow_id": DIRECTOR_WORKFLOW_ID, "revision": {"type": "integer", "minimum": 1},
+     "storyboard": DIRECTOR_STORYBOARD},
+    ["workflow_id", "revision", "storyboard"], "director:write", "write", True)
+CAPABILITIES["director-storyboard-export"] = _api(
+    "director-storyboard-export", "导出编导分镜", "director-storyboard-export",
+    "读取本人工作流并返回可保存的 Markdown 分镜。",
+    {"workflow_id": DIRECTOR_WORKFLOW_ID}, ["workflow_id"], "director:read")
+PLAN_DIGEST = {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+CAPABILITIES["director-production-plan"] = _api(
+    "director-production-plan", "编导生产计划", "director-production-plan",
+    "把当前分镜 revision 冻结为一个图片或视频生产方案。",
+    {"workflow_id": DIRECTOR_WORKFLOW_ID,
+     "output_kind": {"type": "string", "enum": ["image", "video"]},
+     "options": {"type": "object"}},
+    ["workflow_id", "output_kind", "options"], "director:write", "write", True)
+CAPABILITIES["director-production-start"] = _api(
+    "director-production-start", "启动编导生产", "director-production-start",
+    "先报价；确认后按冻结 plan_digest 启动一次底层图片或视频任务。",
+    {"workflow_id": DIRECTOR_WORKFLOW_ID, "plan_digest": PLAN_DIGEST, "request_id": REQUEST_ID},
+    ["workflow_id", "plan_digest", "request_id"], "director:generate", "paid", True,
+    {"kind": "server_quote", "unit": "points", "confirmation": "same input + quote_token + --confirm"})
+CAPABILITIES["director-production-status"] = _api(
+    "director-production-status", "编导生产状态", "director-production-status",
+    "读取本人工作流最近一次生产及底层 Job 状态。",
+    {"workflow_id": DIRECTOR_WORKFLOW_ID}, ["workflow_id"], "director:read")
+CAPABILITIES["director-production-recover"] = _api(
+    "director-production-recover", "恢复编导生产", "director-production-recover",
+    "只重放原 request_id 的结果未知提交，不创建新的付费意图。",
+    {"workflow_id": DIRECTOR_WORKFLOW_ID, "plan_digest": PLAN_DIGEST, "request_id": REQUEST_ID},
+    ["workflow_id", "plan_digest", "request_id"], "director:recover", "write", True)
+CAPABILITIES["director-remake-plan"] = _api(
+    "director-remake-plan", "编导同款复刻计划", "director-remake-plan",
+    "把当前分镜冻结为电影化身、Grok 或 Seedance 复刻方案。",
+    {"workflow_id": DIRECTOR_WORKFLOW_ID,
+     "mode": {"type": "string", "enum": ["cinematic", "grok", "micro"]},
+     "instruction": {"type": "string", "minLength": 1, "maxLength": 2000},
+     "options": {"type": "object"}},
+    ["workflow_id", "mode", "instruction", "options"], "director:write", "write", True)
+CAPABILITIES["director-remake-start"] = _api(
+    "director-remake-start", "启动编导同款复刻", "director-remake-start",
+    "先报价；确认后按冻结 plan_digest 启动一次复刻任务。",
+    {"workflow_id": DIRECTOR_WORKFLOW_ID, "plan_digest": PLAN_DIGEST, "request_id": REQUEST_ID},
+    ["workflow_id", "plan_digest", "request_id"], "director:generate", "paid", True,
+    {"kind": "server_quote", "unit": "points", "confirmation": "same input + quote_token + --confirm"})
+CAPABILITIES["director-remake-status"] = _api(
+    "director-remake-status", "编导同款复刻状态", "director-remake-status",
+    "读取本人工作流最近一次复刻及底层 Job 状态。",
+    {"workflow_id": DIRECTOR_WORKFLOW_ID}, ["workflow_id"], "director:read")
+CAPABILITIES["director-remake-recover"] = _api(
+    "director-remake-recover", "恢复编导同款复刻", "director-remake-recover",
+    "只重放原 request_id 的结果未知提交，不创建新的付费意图。",
+    {"workflow_id": DIRECTOR_WORKFLOW_ID, "plan_digest": PLAN_DIGEST, "request_id": REQUEST_ID},
+    ["workflow_id", "plan_digest", "request_id"], "director:recover", "write", True)
 
 DH_RUN_ID = {"type": "string", "pattern": "^dh-run-[A-Za-z0-9._:-]{8,128}$"}
 DH_REQUEST_ID = {"type": "string", "pattern": "^[A-Za-z0-9._:-]{8,128}$"}
@@ -274,6 +403,14 @@ for identifier, name, description in (
     CAPABILITIES[identifier] = _api(identifier, name, identifier, description, scope="assets:read")
 CAPABILITIES["pricing"] = _api(
     "pricing", "点数价格", "pricing", "读取主站当前点数价格目录。", scope="profile:read")
+CAPABILITIES["dl"] = _download(
+    "dl", "无水印下载", "把黄雀已返回的受支持视频或图片地址下载到一个明确的本地文件。",
+    {
+        "url": {"type": "string", "minLength": 8, "maxLength": 4096, "pattern": "^https?://.*$"},
+        "name": {"type": "string", "minLength": 1, "maxLength": 40},
+        "decode_key": {"type": "string", "maxLength": 4096},
+    }, ["url"], "assets:read",
+)
 CAPABILITIES["inspiration-catalog"] = _api(
     "inspiration-catalog", "灵感案例", "inspiration-catalog", "读取主站当前公开的灵感案例。",
     scope="inspiration:read")
@@ -359,6 +496,100 @@ CAPABILITIES["short-drama-delete"] = _api(
     {"project_id": {"type": "string", "minLength": 1, "maxLength": 160},
      "revision": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807}},
     ["project_id", "revision"], "short-drama:write", "delete", True)
+SD_INT = {"type": "integer", "minimum": 1, "maximum": 9223372036854775807}
+SD_PROVIDER_FIELDS = {
+    "project_id": STRING_ID, "plan_id": STRING_ID, "shot_key": STRING_ID,
+    "character_key": STRING_ID, "avatar_id": STRING_ID,
+}
+CAPABILITIES["short-drama-advisor"] = _api(
+    "short-drama-advisor", "短剧立项顾问", "short-drama-advisor",
+    "协商短剧主题、主角、冲突、情绪、结局、受众和风格。",
+    {
+        "messages": {"type": "array", "maxItems": 20, "items": {"type": "string", "maxLength": 600}},
+        "understanding": {"type": "object"},
+        "expected_field": {"type": "string", "enum": ["", "topic", "protagonist", "conflict", "emotion", "ending", "audience", "style"]},
+        "field_states": {"type": "object"},
+        "recommendation_context": {"type": "object"},
+        "user_message": {"type": "string", "minLength": 1, "maxLength": 600},
+        "request_id": REQUEST_ID,
+    }, ["user_message", "request_id"], "short-drama:write", "external_ai", True,
+    {"kind": "external_ai", "points": 0, "detail": "不扣用户点数，受平台免费额度和速率限制。"})
+CAPABILITIES["short-drama-character-reference-generate"] = _api(
+    "short-drama-character-reference-generate", "生成短剧角色标准图",
+    "short-drama-character-reference-generate",
+    "先报价；确认后按当前项目版本和角色资料生成一张标准图。",
+    {"project_id": STRING_ID, "revision": SD_INT, "character_key": STRING_ID},
+    ["project_id", "revision", "character_key"], "generation:quote", "paid", True,
+    {"kind": "server_quote", "unit": "points", "confirmation": "same input + quote_token + --confirm"})
+CAPABILITIES["short-drama-character-reference-confirm"] = _api(
+    "short-drama-character-reference-confirm", "确认短剧角色标准图",
+    "short-drama-character-reference-confirm", "锁定已经完成并审核的角色标准图版本。",
+    {"project_id": STRING_ID, "revision": SD_INT, "character_key": STRING_ID, "reference_version": SD_INT},
+    ["project_id", "revision", "character_key", "reference_version"],
+    "short-drama:write", "write", True)
+CAPABILITIES["short-drama-preflight-plan"] = _api(
+    "short-drama-preflight-plan", "生成短剧制作体检", "short-drama-preflight-plan",
+    "根据锁定剧本生成制作方案与阻塞项。",
+    {"project_id": STRING_ID, "conversation_revision": SD_INT,
+     "quality_route": {"type": "string", "enum": ["quick_draft", "quality_first"]},
+     "request_id": REQUEST_ID},
+    ["project_id", "conversation_revision", "request_id"], "short-drama:write", "write", True)
+CAPABILITIES["short-drama-preflight-confirm"] = _api(
+    "short-drama-preflight-confirm", "确认短剧制作体检", "short-drama-preflight-confirm",
+    "确认当前制作方案及系统要求人工接受的问题。",
+    {"project_id": STRING_ID, "plan_id": STRING_ID, "plan_version": SD_INT,
+     "accepted_issue_keys": {"type": "array", "maxItems": 100, "items": STRING_ID},
+     "request_id": REQUEST_ID},
+    ["project_id", "plan_id", "plan_version", "accepted_issue_keys", "request_id"],
+    "short-drama:write", "write", True)
+CAPABILITIES["short-drama-autodraft-preflight"] = _api(
+    "short-drama-autodraft-preflight", "短剧单镜头生产预检",
+    "short-drama-autodraft-preflight", "编译一个镜头的真实视频供应商请求，不扣点。",
+    {**SD_PROVIDER_FIELDS, "execution": {"type": "object"}},
+    ["project_id", "plan_id", "shot_key"], "short-drama:write", "write", True)
+CAPABILITIES["short-drama-autodraft-quote"] = _api(
+    "short-drama-autodraft-quote", "短剧单镜头报价", "short-drama-autodraft-quote",
+    "为已预检的单镜头视频创建报价，不扣点。", SD_PROVIDER_FIELDS,
+    ["project_id", "plan_id", "shot_key"], "short-drama:read")
+CAPABILITIES["short-drama-autodraft-start"] = _api(
+    "short-drama-autodraft-start", "启动短剧单镜头生产", "short-drama-autodraft-start",
+    "确认原单镜头报价并启动一次可恢复任务。",
+    {"project_id": STRING_ID, "quote_token": {"type": "string", "minLength": 1, "maxLength": 4096},
+     "request_id": REQUEST_ID},
+    ["project_id", "quote_token", "request_id"], "short-drama:write", "write", True)
+CAPABILITIES["short-drama-autodraft-status"] = _api(
+    "short-drama-autodraft-status", "短剧单镜头任务状态", "short-drama-autodraft-status",
+    "读取原单镜头任务及扣点退款状态。",
+    {"project_id": STRING_ID, "job_id": STRING_ID}, ["project_id", "job_id"], "short-drama:read")
+CAPABILITIES["short-drama-delivery-quote"] = _api(
+    "short-drama-delivery-quote", "短剧正式交付报价", "short-drama-delivery-quote",
+    "对当前已验收精修版本建立正式交付报价。",
+    {"project_id": STRING_ID, "version_id": STRING_ID}, ["project_id", "version_id"], "short-drama:read")
+CAPABILITIES["short-drama-delivery-start"] = _api(
+    "short-drama-delivery-start", "启动短剧正式交付", "short-drama-delivery-start",
+    "确认原正式交付报价并启动一次可恢复任务。",
+    {"project_id": STRING_ID, "quote_token": {"type": "string", "minLength": 1, "maxLength": 4096},
+     "request_id": REQUEST_ID},
+    ["project_id", "quote_token", "request_id"], "short-drama:write", "write", True)
+CAPABILITIES["short-drama-delivery-status"] = _api(
+    "short-drama-delivery-status", "短剧正式交付状态", "short-drama-delivery-status",
+    "读取原正式交付任务及退款状态。",
+    {"project_id": STRING_ID, "job_id": STRING_ID}, ["project_id", "job_id"], "short-drama:read")
+for _identifier, _name, _description in (
+    ("short-drama-completion-readiness", "短剧完成门禁", "读取完成交付前的锁、媒体、任务和账务阻塞项。"),
+    ("short-drama-completion", "短剧完成快照", "读取已经确认的不可变完成快照。"),
+):
+    CAPABILITIES[_identifier] = _api(
+        _identifier, _name, _identifier, _description,
+        {"project_id": STRING_ID}, ["project_id"], "short-drama:read")
+CAPABILITIES["short-drama-completion-confirm"] = _api(
+    "short-drama-completion-confirm", "确认短剧完成", "short-drama-completion-confirm",
+    "以最新 readiness 返回值确认不可逆交付。",
+    {"project_id": STRING_ID, "revision": SD_INT, "final_version_id": STRING_ID,
+     "asset_id": STRING_ID, "delivery_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+     "acknowledged": {"type": "boolean", "const": True}, "request_id": REQUEST_ID},
+    ["project_id", "revision", "final_version_id", "asset_id", "delivery_hash", "acknowledged", "request_id"],
+    "short-drama:write", "write", True)
 CAPABILITIES["ip12-projects"] = _api(
     "ip12-projects", "IP12 项目列表", "ip12-projects", "读取当前账号在主站 Hermes IP12 中的全部诊断项目。", scope="ip12:read")
 CAPABILITIES["ip12-project"] = _api(
@@ -1019,6 +1250,10 @@ DIRECTOR_SCENE_IMAGE_FIELDS = {
     "ratio": {"type": "string", "enum": ["9:16", "16:9", "1:1", "4:5", "5:4"]},
     "quality": {"type": "string", "enum": ["standard", "hd"]},
 }
+DIRECTOR_SCENE_VIDEO_FIELDS = {
+    "scenes": DIRECTOR_SCENE_IMAGE_FIELDS["scenes"],
+    **{key: item for key, item in VIDEO_FIELDS.items() if key != "prompt"},
+}
 CAPABILITIES["video-avatar-create"]["constraints"] = [
     "image_data must be a jpg/png/webp data URL of the account holder's own portrait with a clear frontal face and good lighting",
     "creation costs points per avatar.create; a quote is returned first and points are deducted only after --confirm",
@@ -1033,6 +1268,9 @@ for identifier, name, fields, required in (
     ("director-script-generate", "编导脚本生成", DIRECTOR_SCRIPT_FIELDS, ["prompt"]),
     ("director-breakdown", "编导链接拆解", DIRECTOR_BREAKDOWN_FIELDS, []),
     ("director-scene-image-generate", "编导分镜图片生成", DIRECTOR_SCENE_IMAGE_FIELDS, ["scenes"]),
+    ("director-scene-video-generate", "编导分镜视频生成", DIRECTOR_SCENE_VIDEO_FIELDS, ["scenes"]),
+    ("director-scene-talking-generate", "编导口播镜头生成", TEXT_VIDEO_FIELDS,
+     ["text", "template", "style", "voice"]),
     ("collect-content", "采集内容与评论", {"url": COLLECT_CONTENT_URL}, ["url"]),
     ("collect-video", "采集原视频", {"url": COLLECT_MEDIA_URL}, ["url"]),
     ("collect-transcript", "提取口播文案", {"url": COLLECT_MEDIA_URL}, ["url"]),

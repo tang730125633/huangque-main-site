@@ -38,13 +38,16 @@ class HqCliTests(unittest.TestCase):
 
     def test_director_actions_are_direct_api_capabilities(self):
         self.assertIn("director:read", cli.LOGIN_SCOPES)
+        self.assertIn("director:write", cli.LOGIN_SCOPES)
         self.assertIn("director:generate", cli.LOGIN_SCOPES)
+        self.assertIn("director:recover", cli.LOGIN_SCOPES)
         capability = cli.CAPABILITIES["director-capability"]
         self.assertEqual("api", capability["kind"])
         self.assertEqual("director:read", capability["required_scope"])
         for identifier in (
             "director-script-generate", "director-breakdown",
-            "director-scene-image-generate",
+            "director-scene-image-generate", "director-scene-video-generate",
+            "director-scene-talking-generate",
         ):
             with self.subTest(identifier=identifier):
                 capability = cli.CAPABILITIES[identifier]
@@ -63,8 +66,8 @@ class HqCliTests(unittest.TestCase):
             "expected_cost_header": "X-HQ-Expected-Cost",
             "idempotency_header": "Idempotency-Key",
         }, upload["transport"])
-        self.assertNotIn("director-scene-video-generate", cli.CAPABILITIES)
-        self.assertNotIn("director-scene-talking-generate", cli.CAPABILITIES)
+        self.assertIn("director-scene-video-generate", cli.CAPABILITIES)
+        self.assertIn("director-scene-talking-generate", cli.CAPABILITIES)
 
     def test_digital_human_oneclick_actions_are_registered_as_real_capabilities(self):
         for scope in (
@@ -185,7 +188,7 @@ class HqCliTests(unittest.TestCase):
             self.assertEqual(0, code, error)
             self.assertTrue(self.payload(output)["schema"].startswith("hq."))
         code, output, _ = self.invoke(["version"])
-        self.assertEqual("0.13.5", self.payload(output)["cli_version"])
+        self.assertEqual("0.14.0", self.payload(output)["cli_version"])
         self.assertEqual("Huangque main-site CLI", self.payload(output)["product"])
         self.assertEqual("https://huangquechuanmei.com", self.payload(output)["origin"])
 
@@ -238,6 +241,34 @@ class HqCliTests(unittest.TestCase):
         self.assertTrue(expected <= set(by_id))
         self.assertTrue(all(by_id[item]["availability"] == "available" for item in expected))
         self.assertTrue(all(by_id[item]["runnable"] for item in expected))
+
+    def test_b_class_capabilities_are_discoverable_with_real_side_effects(self):
+        code, output, error = self.invoke(["capabilities", "--json"])
+        self.assertEqual(0, code, error)
+        by_id = {item["id"]: item for item in self.payload(output)["capabilities"]}
+        expected = {
+            "dl", "director-chat", "director-produce",
+            "director-scene-video-generate", "director-scene-talking-generate",
+            "director-workflows", "director-workflow-create", "director-workflow",
+            "director-storyboard-update", "director-storyboard-export",
+            "director-production-plan", "director-production-start",
+            "director-production-status", "director-production-recover",
+            "director-remake-plan", "director-remake-start",
+            "director-remake-status", "director-remake-recover",
+            "short-drama-advisor", "short-drama-character-reference-generate",
+            "short-drama-character-reference-confirm", "short-drama-preflight-plan",
+            "short-drama-preflight-confirm", "short-drama-autodraft-preflight",
+            "short-drama-autodraft-quote", "short-drama-autodraft-start",
+            "short-drama-autodraft-status", "short-drama-delivery-quote",
+            "short-drama-delivery-start", "short-drama-delivery-status",
+            "short-drama-completion-readiness", "short-drama-completion",
+            "short-drama-completion-confirm",
+        }
+        self.assertEqual(156, len(by_id))
+        self.assertTrue(expected <= set(by_id))
+        self.assertEqual("download", by_id["dl"]["kind"])
+        self.assertEqual("paid", by_id["director-production-start"]["side_effect"])
+        self.assertTrue(by_id["short-drama-completion-confirm"]["confirmation_required"])
 
     def test_every_capability_teaches_an_agent_how_to_use_and_recover_it(self):
         _, output, _ = self.invoke(["capabilities"])
@@ -1150,6 +1181,52 @@ class HqCliTests(unittest.TestCase):
         self.assertEqual(0, code, error)
         self.assertEqual("aud_" + "a" * 32, self.payload(output)["result"]["upload_id"])
         upload.assert_called_once_with(audio_path, "t" * 43)
+
+    def test_dl_streams_to_one_new_absolute_file_without_leaking_decode_key(self):
+        self.authorize()
+        output_path = os.path.join(self.temp.name, "download.mp4")
+        media = b"\x00\x00\x00\x18ftypmp42download"
+
+        class Response(io.BytesIO):
+            headers = {"Content-Type": "video/mp4", "Content-Length": str(len(media))}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                self.close()
+
+        requests = []
+
+        def open_download(request, timeout=0):
+            requests.append((request, timeout))
+            return Response(media)
+
+        opener = type("Opener", (), {"open": staticmethod(open_download)})()
+        payload = json.dumps({
+            "url": "https://video.huangquechuanmei.com/asset.mp4",
+            "name": "sample", "decode_key": "private-media-key",
+        }).encode()
+        with patch("hq_cli.client.urllib.request.build_opener", return_value=opener) as build:
+            code, output, error = self.invoke([
+                "run", "dl", "--input", "@-", "--output", output_path, "--json",
+            ], payload)
+        self.assertEqual(0, code, error)
+        self.assertEqual(media, Path(output_path).read_bytes())
+        result = self.payload(output)["result"]
+        self.assertEqual((output_path, len(media)), (result["path"], result["bytes"]))
+        self.assertEqual(1, len(requests))
+        self.assertNotIn("private-media-key", requests[0][0].full_url)
+        self.assertEqual("private-media-key", requests[0][0].get_header("X-hq-decode-key"))
+        build.assert_called_once()
+
+        with patch("hq_cli.client.urllib.request.build_opener") as blocked:
+            code, _, error = self.invoke([
+                "run", "dl", "--input", "@-", "--output", output_path,
+            ], payload)
+        self.assertEqual(cli.EXIT_INPUT, code)
+        self.assertEqual("invalid_download", self.payload(error)["error"])
+        blocked.assert_not_called()
 
     def test_digital_human_material_upload_uses_dedicated_owner_scoped_transport(self):
         self.authorize()

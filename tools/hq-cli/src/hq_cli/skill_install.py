@@ -16,9 +16,9 @@ from pathlib import Path
 from . import __version__
 
 
-SKILL_VERSION = "0.1.1"
-SKILL_COMMIT = "a24cc6301e0ba933838c80bf31be2b5a51e33113"
-MANIFEST_SHA256 = "6144587c761259bfffca853d134c6f91c500b1ef45fa68917439f358cc55f869"
+SKILL_VERSION = "0.3.0"
+SKILL_COMMIT = "da65252638da03634d591d8a6bbc2901cc7b3522"
+MANIFEST_SHA256 = "be1482f93b4d89d5c26aa065996b42061eb117f219af2f03219f6eed5d9a1974"
 MANIFEST_URL = (
     "https://raw.githubusercontent.com/"
     "tang730125633/huangque-agent-skill/%s/manifest.json" % SKILL_COMMIT

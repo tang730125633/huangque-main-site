@@ -213,8 +213,20 @@ class DirectorCLIContractTests(unittest.TestCase):
         self.assertEqual({
             "director-capability", "director-script-generate", "director-breakdown",
             "director-breakdown-upload", "director-scene-image-generate",
+            "director-scene-video-generate", "director-scene-talking-generate",
+            "director-workflows", "director-workflow-create", "director-workflow",
+            "director-storyboard-update", "director-storyboard-export",
+            "director-production-plan", "director-production-start",
+            "director-production-status", "director-production-recover",
+            "director-remake-plan", "director-remake-start",
+            "director-remake-status", "director-remake-recover",
+            "digital-human-oneclick-capability", "digital-human-oneclick-plan",
+            "digital-human-oneclick-consent", "digital-human-oneclick-material-upload",
+            "digital-human-oneclick-audio-upload", "digital-human-oneclick-start",
+            "digital-human-oneclick-status", "digital-human-oneclick-recover",
+            "digital-human-oneclick-abandon", "digital-human-oneclick-history",
         }, available)
-        self.assertNotIn("director-production-start", hq_cli_api.ACTION_CATALOG_MAP)
+        self.assertIn("director-production-start", hq_cli_api.ACTION_CATALOG_MAP)
         action_available = {
             action["id"] for action in contract.ALL_ACTIONS
             if action["availability"] == "available" and action["transport"] == "action"
@@ -224,8 +236,8 @@ class DirectorCLIContractTests(unittest.TestCase):
             item["action"] for item in hq_cli_api.ACTION_CATALOG
             if item["transport"]["kind"] == "dedicated_upload"
         })
-        self.assertNotIn("director-scene-video-generate", available)
-        self.assertNotIn("director-scene-talking-generate", available)
+        self.assertIn("director-scene-video-generate", available)
+        self.assertIn("director-scene-talking-generate", available)
         self.assertTrue(planned)
 
     def test_director_script_action_uses_browser_equivalent_payload(self):

@@ -335,7 +335,7 @@ JSON
 
 ## 编导工作流
 
-CLI 可以直接调用主站编导的 AI 脚本生成和公开链接拆解，不再只是打开 `/workbench/script`：
+CLI 可以直接调用主站编导的 AI 脚本生成、公开链接拆解、工作流和成品生成，不再只是打开 `/workbench/script`：
 
 ```sh
 hq run director-capability --json
@@ -343,9 +343,16 @@ hq describe director-script-generate --json
 hq describe director-breakdown --json
 hq describe director-breakdown-upload --json
 hq describe director-scene-image-generate --json
+hq describe director-scene-video-generate --json
+hq describe director-scene-talking-generate --json
+hq describe director-workflow-create --json
+hq describe director-production-plan --json
+hq describe director-remake-plan --json
 ```
 
-`director-script-generate` 接收 `prompt`，以及可选的 `style`、`duration`、`platform`；`director-breakdown` 接收一个 `url` 或最多五条 `urls`。`director-scene-image-generate` 根据 1–8 个分镜的画面描述生成图片。这三个动作先报价，再以完全相同输入、`quote_token` 和 `--confirm` 提交一次。
+`director-script-generate` 接收 `prompt`，以及可选的 `style`、`duration`、`platform`；`director-breakdown` 接收一个 `url` 或最多五条 `urls`。单镜头图片、剧情视频和口播视频都复用主站已有报价与生成能力，先报价，再以完全相同输入、`quote_token` 和 `--confirm` 提交一次。
+
+已完成的 `copy` / `breakdown` 任务或显式分镜可以创建本人工作流。分镜更新必须携带当前 `revision`，冲突时拒绝覆盖。`director-production-plan` 和 `director-remake-plan` 冻结工作流 revision、输入与价格；启动时必须复用返回的 `plan_digest`、`quote_token` 和唯一 `request_id`。每次生产运行生成一个成品，网络结果不确定时只查状态或恢复原运行，不新建第二个付费任务。
 
 本地图片或视频反推必须先报价，首次调用只在本地校验文件并计算 SHA-256，不上传文件：
 
@@ -362,7 +369,20 @@ hq run director-breakdown-upload --file <绝对路径> --confirm \
 
 CLI 会为同一 `quote_token` 生成稳定的 `Idempotency-Key`。若上传响应不确定，必须用同一文件、同一报价令牌和同一费用重试；不要重新报价。拿到 `job_id` 后只使用 `task` 轮询。
 
-“一键生成视频”和“一键生成口播”不属于本次 CLI 更新范围，仍按实时契约显示为不可用。
+Precision 数字人的多阶段完整运行仍按实时契约显示为 planned；这不影响本节已经开放的编导视频、口播、生产和复刻动作。
+
+## 短剧五阶段与无水印下载
+
+短剧项目支持顾问对话、角色定妆、预飞计划、自动草稿、交付与完结。每个确认或启动动作都必须使用 `hq describe` 返回的输入契约；付费阶段先报价，再复用原输入、报价令牌和请求 ID。状态不确定时只轮询原项目或运行，不重复提交。
+
+本人资产或黄雀允许的结果链接可用 `dl` 下载到绝对路径：
+
+```sh
+hq describe dl --json
+hq run dl --input @download.json --output /absolute/path/result.mp4 --json
+```
+
+下载固定访问黄雀主站，不跟随重定向，不覆盖已有文件；临时文件校验并原子落盘，解码密钥只放请求头，不写入 URL。
 
 ## 内容采集与获客
 
@@ -400,7 +420,8 @@ hq run assets --input @assets.json --json
 - 快速图片换装与经典视频换装。
 - 私有图片/视频/音频上传、画布创建、画布 Agent 方案与受限写入。
 - 任务、流水、资产、音色、收藏与标签。
-- 灵感案例与收藏、获客跟进、数字人形象、声音克隆槽位，以及短剧项目的安全读取。
+- 灵感案例与收藏、获客跟进、数字人形象、声音克隆槽位，以及短剧五阶段生产。
+- 编导工作流、分镜更新/导出、单镜头生成、冻结方案生产、同款复刻与无水印下载。
 - 抖音 / 小红书内容、原视频、口播文案和关键词结果采集，以及多平台评论获客。
 - 一键成片项目的创建、分析、审核与渲染。
 - 数字人口播项目的能力检查、创建、读取与基础设置。

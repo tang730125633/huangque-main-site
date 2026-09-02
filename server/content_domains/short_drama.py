@@ -34,6 +34,7 @@ from . import (
     short_drama_timeline,
     short_drama_video,
     short_drama_voice,
+    submission_idempotency,
 )
 
 
@@ -5540,6 +5541,7 @@ _HTTP_ROUTES = {
     },
     "POST": {
         "/api/gen/short-drama/advisor",
+        "/api/gen/short-drama/character-reference-quote",
         "/api/gen/short-drama/projects",
         "/api/gen/short-drama/projects/promote",
         "/api/gen/short-drama/projects/import",
@@ -6139,10 +6141,61 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
                 ),
             }
             handler._send(200, actions[path]())
+        elif method == "POST" and path == "/api/gen/short-drama/character-reference-quote":
+            if not callable(cost_of):
+                raise ValueError("角色标准图报价暂不可用")
+            body = _request_object(handler)
+            owner = _project_username_for_access(
+                db_factory, username, str(body.get("project_id") or ""),
+                access, write=True,
+            )
+            prepared = prepare_character_reference_submission(
+                db_factory, username, owner, body,
+                "hqcli-character-reference-quote", cost_of,
+            )
+            result = {
+                "cost": int(prepared["cost"]),
+                "project_id": prepared["request"]["project_id"],
+                "character_key": prepared["request"]["character_key"],
+                "revision": int(prepared["request"]["revision"]),
+                "confirmation_required": True,
+            }
+            if callable(points_getter):
+                result["points"] = max(0, int(points_getter(username)))
+            handler._send(200, result)
         elif method == "POST" and path == "/api/gen/short-drama/advisor":
-            handler._send(200, short_drama_advisor.advise(
-                _request_object(handler), username=username, db_factory=db_factory,
-            ))
+            body = _request_object(handler)
+            key = submission_idempotency.clean_key(
+                handler.headers.get("Idempotency-Key")
+            )
+            state, replay = submission_idempotency.begin(
+                db_factory, username, path, key, body,
+            )
+            if state == "conflict":
+                raise short_drama_advisor.AdvisorError(
+                    "idempotency_conflict",
+                    "同一 Idempotency-Key 不能用于不同顾问请求", 409,
+                )
+            if state == "processing":
+                raise short_drama_advisor.AdvisorError(
+                    "idempotency_in_progress", "相同顾问请求正在处理", 409,
+                )
+            if state == "replay":
+                handler._send(200, replay)
+            else:
+                try:
+                    result = short_drama_advisor.advise(
+                        body, username=username, db_factory=db_factory,
+                    )
+                    submission_idempotency.complete(
+                        db_factory, username, path, key, result,
+                    )
+                    handler._send(200, result)
+                except Exception:
+                    submission_idempotency.abort(
+                        db_factory, username, path, key,
+                    )
+                    raise
         elif (
             method == "GET"
             and path.startswith("/api/gen/short-drama/conversation/jobs/")

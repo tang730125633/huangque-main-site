@@ -59,13 +59,21 @@ def content_type_ext(headers):
 def verify_token(token):
     if not token:
         return False
-    try:
-        req = urllib.request.Request(AUTH_BASE + "/api/auth/me",
-                                     headers={"Authorization": "Bearer " + token})
-        with urllib.request.urlopen(req, timeout=6) as r:
-            return bool(json.loads(r.read()).get("user"))
-    except Exception:
-        return False
+    for path in ("/api/auth/me", "/api/auth/cli/status"):
+        try:
+            req = urllib.request.Request(
+                AUTH_BASE + path,
+                headers={"Authorization": "Bearer " + token},
+            )
+            with urllib.request.urlopen(req, timeout=6) as r:
+                payload = json.loads(r.read())
+            if payload.get("user") and (
+                    path == "/api/auth/me"
+                    or "assets:read" in (payload.get("scopes") or [])):
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def verify_internal(headers):
@@ -159,7 +167,7 @@ class H(BaseHTTPRequestHandler):
         q = urllib.parse.parse_qs(pr.query)
         url = (q.get("url", [""])[0]).strip()
         raw = ((q.get("name", ["video"])[0])[:40]) or "video"
-        dk = (q.get("dk", [""])[0]).strip()
+        dk = (self.headers.get("X-HQ-Decode-Key") or q.get("dk", [""])[0]).strip()
         ascii_name = re.sub(r"[^a-zA-Z0-9_\-]+", "_", raw).strip("_") or "video"
         host = (urllib.parse.urlparse(url).hostname or "").lower()
         allowed_host = any(host == h or (h.startswith(".") and host.endswith(h)) for h in ALLOW)

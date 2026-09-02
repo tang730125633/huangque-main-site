@@ -17,7 +17,7 @@ from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
-import mimetypes; from . import assets_store, jobs_store, startup_recovery, submission_idempotency, matrix_template_submission, miniprogram_security, inspiration_likes, history, notifications, cli_gateway, cli_uploads, error_contract, pixelle_talking_assets  # 领域存储模块均无反向依赖
+import mimetypes; from . import assets_store, jobs_store, startup_recovery, submission_idempotency, matrix_template_submission, miniprogram_security, inspiration_likes, history, notifications, cli_gateway, cli_uploads, error_contract, pixelle_talking_assets, director_workflows  # 领域存储模块均无反向依赖
 try:
     from . import asset_batch, feature_flags, pricing
 except ImportError:  # Running core.py directly during local checks.
@@ -600,7 +600,7 @@ def init_db():
     feature_flags.init_db()
     pricing.init_db()
     pixelle_talking_assets.init_db(JOB_DB, OUT_DIR)
-    init_audio_db(); _short_drama_domain().init_db(jdb); jobs_store.ensure_video_notification_outbox(jdb)
+    init_audio_db(); _short_drama_domain().init_db(jdb); director_workflows.init_db(jdb); jobs_store.ensure_video_notification_outbox(jdb)
 
 def init_audio_db():
     now = int(time.time())
@@ -2529,6 +2529,9 @@ class H(BaseHTTPRequestHandler):
                                 points_domain.cost_of,
                             )
                         )
+                        if cli_gateway.reject_changed_cost(
+                                self, int(prepared["cost"]), AUTH_INTERNAL_TOKEN):
+                            return
                         miniprogram_security.check_payload(prepared["payload"])
                         active_jobs = _user_active_job_count(user["username"])
                         if active_jobs >= MAX_USER_ACTIVE_JOBS:
@@ -2701,6 +2704,10 @@ class H(BaseHTTPRequestHandler):
                 "replayed": False,
                 "association_status": "linked",
             })
+        if director_workflows.dispatch_http(
+                self, "POST", jdb, verify,
+                cost_of=getattr(points_domain, "cost_of", None),
+                internal_token=AUTH_INTERNAL_TOKEN): return
         if _dispatch_short_drama(self, "POST", jdb, verify,
                 getattr(points_domain, "cost_of", None), mutation_lock=_submission_lock,
                 canvas_access_resolver=_short_drama_canvas_access,
@@ -4572,6 +4579,10 @@ class H(BaseHTTPRequestHandler):
                 return self._send(503, {"detail": str(error)})
             except Exception:
                 return self._send(503, {"detail": "模板目录暂不可用"})
+        if director_workflows.dispatch_http(
+                self, "GET", jdb, verify,
+                cost_of=getattr(points_domain, "cost_of", None),
+                internal_token=AUTH_INTERNAL_TOKEN): return
         if _dispatch_short_drama(
                 self, "GET", jdb, verify,
                 getattr(points_domain, "cost_of", None),
@@ -4873,6 +4884,10 @@ class H(BaseHTTPRequestHandler):
         self._send(404, {"detail": "not found"})
     def do_PUT(self):
         audio_domain, _points_domain, _video_domain = _domains()
+        if director_workflows.dispatch_http(
+                self, "PUT", jdb, verify,
+                cost_of=getattr(_points_domain, "cost_of", None),
+                internal_token=AUTH_INTERNAL_TOKEN): return
         if _dispatch_short_drama(
                 self, "PUT", jdb, verify, mutation_lock=_submission_lock,
                 canvas_access_resolver=_short_drama_canvas_access,
