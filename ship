@@ -287,7 +287,7 @@ for f in "$@"; do
       ;;
   esac
   case "$f" in
-    server/auth_server.py|server/hq_cli_api.py|server/invites.py|server/invite_network.py|server/business_cards.py|server/wxpay.py|server/wechat_subscribe.py) dest=/home/ubuntu/auth-service/; svc=huangque-auth ;;
+    server/auth_server.py|server/hq_cli_api.py|server/director_workflow_contract.py|server/invites.py|server/invite_network.py|server/business_cards.py|server/wxpay.py|server/wechat_subscribe.py) dest=/home/ubuntu/auth-service/; svc=huangque-auth ;;
     server/content_domains/__init__.py|server/content_domains/cos.py|server/content_domains/miniprogram_security.py|server/content_domains/pricing.py)
              dest=/home/ubuntu/auth-service/content_domains/; svc=huangque-auth ;;
     server/content_domains/error_contract.py)
