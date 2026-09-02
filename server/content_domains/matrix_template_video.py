@@ -356,7 +356,9 @@ def _refresh_catalog(force=False):
                 )
             ):
                 raise RuntimeError("HyperFrames 模板目录不完整")
-            templates = [approved[template_id] for template_id in APPROVED_TEMPLATE_IDS] + references
+            templates = references + [
+                approved[template_id] for template_id in APPROVED_TEMPLATE_IDS
+            ]
         else:
             templates = [approved[template_id] for template_id in APPROVED_TEMPLATE_IDS]
         fonts = [{"value": "", "label": "自动搭配", "source": "automatic"}]

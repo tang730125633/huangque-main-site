@@ -177,6 +177,13 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             item for item in expanded if item["engine"] == "hyperframes"
         ]))
         self.assertTrue(all(
+            item["engine"] == "hyperframes" for item in expanded[:17]
+        ))
+        self.assertEqual(
+            ["full-overlay-bold", "poster-split"],
+            [item["id"] for item in expanded[-2:]],
+        )
+        self.assertTrue(all(
             item["font_selectable"] is False
             for item in expanded if item["engine"] == "hyperframes"
         ))
