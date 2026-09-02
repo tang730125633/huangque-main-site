@@ -326,7 +326,7 @@
       }
     });
   }
-  function validProductionOffer(value){
+  function validProductionOffer(value,allowLegacyRevision){
     if(!value||typeof value!=='object'||Array.isArray(value)) return null;
     var offerId=String(value.offer_id||''),input=value.input,summary=value.summary;
     if(value.requires_confirmation!==true) return null;
@@ -335,11 +335,12 @@
     var cost=Number(value.expected_cost);
     if(!Number.isInteger(cost)||cost<1||cost>10000) return null;
     var planDigest=String(value.plan_digest||''),quoteToken=String(value.quote_token||'');
+    var pageRevision=String(value.page_revision||'');
     var expiresAt=Number(value.expires_at);
     if(!/^director-production-[A-Za-z0-9_-]{16,64}$/.test(offerId)||value.kind!=='script') return null;
-    if(!/^[a-f0-9]{64}$/.test(planDigest)||!/^[A-Za-z0-9._-]{20,4096}$/.test(quoteToken)||!Number.isInteger(expiresAt)||expiresAt<=0) return null;
+    if(!/^[a-f0-9]{64}$/.test(planDigest)||!/^[A-Za-z0-9._-]{20,4096}$/.test(quoteToken)||(!allowLegacyRevision&&!/^[a-f0-9]{8,32}$/.test(pageRevision))||(allowLegacyRevision&&pageRevision&&!/^[a-f0-9]{8,32}$/.test(pageRevision))||!Number.isInteger(expiresAt)||expiresAt<=0) return null;
     var clean={offer_id:offerId,kind:'script',expected_cost:cost,requires_confirmation:true,
-      plan_digest:planDigest,quote_token:quoteToken,expires_at:expiresAt,
+      plan_digest:planDigest,quote_token:quoteToken,expires_at:expiresAt,page_revision:pageRevision,
       input:{request_id:offerId,topic:String(input.topic||'').slice(0,1000),
         selling_points:String(input.selling_points||'').slice(0,2000),style:String(input.style||''),
         duration:String(input.duration||''),platform:String(input.platform||'')},
@@ -350,7 +351,7 @@
   }
   function validPendingProduction(value){
     if(!value||typeof value!=='object'||Array.isArray(value)) return null;
-    var offer=validProductionOffer(value.offer),jobId=value.job_id;
+    var jobId=value.job_id,offer=validProductionOffer(value.offer,true);
     if(!offer) return null;
     if(jobId!==null&&jobId!==undefined&&!/^\d{1,20}$/.test(String(jobId))) return null;
     return {offer:offer,job_id:jobId===null||jobId===undefined?null:String(jobId),
@@ -642,12 +643,8 @@
         if(win.HQ&&typeof win.HQ.refreshPoints==='function') win.HQ.refreshPoints();
       }).catch(function(error){
         if(error.priceChanged>0){
-          state.pending_production=null; state.production_offer.expected_cost=error.priceChanged;
-          state.production_offer.quote_token=String(error.data&&error.data.quote_token||'');
-          state.production_offer.plan_digest=String(error.data&&error.data.plan_digest||state.production_offer.plan_digest||'');
-          state.production_offer.expires_at=Number(error.data&&error.data.expires_at)||0;
-          state.production_offer=validProductionOffer(state.production_offer);
-          persist(); addMessage('assistant','生成价格已更新为 '+error.priceChanged+' 点，没有扣点。请核对后再点击确认生产。');
+          state.pending_production=null; state.production_offer=null;
+          persist(); addMessage('assistant','生成价格已更新为 '+error.priceChanged+' 点，没有扣点，原确认已失效。请核对后重新回复：确认生成。');
         }else{
           if(error.terminal){
             state.pending_production=null;
@@ -662,6 +659,11 @@
     function confirmProduction(offer){
       if(pending||page!=='script') return;
       offer=validProductionOffer(offer); if(!offer){addMessage('error','生产单已失效，请重新告诉我你的需求');return;}
+      if(offer.page_revision!==createPageSnapshot(doc).page_revision){
+        state.production_offer=null; persist();
+        addMessage('error','页面参数已经变化，原生产单已失效。请让我重新整理方案后再回复：确认生成。');
+        return;
+      }
       runProduction({offer:offer,job_id:null,created_at:Date.now()},false);
     }
     function runPending(record,resumed){

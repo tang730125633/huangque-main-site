@@ -282,6 +282,20 @@ function digitalHumanFixture(mode, narrationMode) {
   assert.equal(agent.validPendingRequest({
     key:'bad',body:{},job_id:null,created_at:1
   }), null);
+
+  const offer={
+    offer_id:'director-production-1234567890abcdef',kind:'script',
+    expected_cost:3,requires_confirmation:true,plan_digest:'a'.repeat(64),
+    quote_token:'confirmation_token_1234567890',expires_at:2000000000,
+    page_revision:'a1b2c3d4',
+    input:{request_id:'director-production-1234567890abcdef',topic:'东鹏特饮',
+      selling_points:'买三送一',style:'口播',duration:'30s',platform:'抖音'},
+    summary:{topic:'东鹏特饮',style:'口播',duration:'30s',platform:'抖音'}
+  };
+  assert.equal(agent.validProductionOffer(offer).page_revision,'a1b2c3d4');
+  const legacyOffer=Object.assign({},offer); delete legacyOffer.page_revision;
+  assert.equal(agent.validProductionOffer(legacyOffer),null);
+  assert.ok(agent.validPendingProduction({offer:legacyOffer,job_id:'77',created_at:1}));
 }
 
 const source = require('fs').readFileSync(require('path').join(__dirname, '../site/workbench/script-agent.js'), 'utf8');
@@ -294,6 +308,9 @@ assert.ok(source.includes("jsonFetch(win,'/api/auth/me')"));
 assert.ok(source.includes('value.owner===username'));
 assert.ok(source.includes("button.textContent='确认生产并扣 '+offer.expected_cost+' 点'"));
 assert.ok(source.includes("'/api/gen/director_agent/produce'"));
+assert.ok(source.includes("state.pending_production=null; state.production_offer=null;"));
+assert.ok(source.includes('请核对后重新回复：确认生成。'));
+assert.ok(source.includes("offer.page_revision!==createPageSnapshot(doc).page_revision"));
 assert.ok(source.indexOf('state.pending_request=record; persist();') <
   source.indexOf('runPending(record,false);'));
 assert.ok(source.includes("if(resumeKind==='request') runPending(state.pending_request,true);"));
