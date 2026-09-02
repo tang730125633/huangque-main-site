@@ -725,6 +725,20 @@ def _estimate_spoken_duration(script):
 
 
 def _local_chat(body, customer):
+    # 第一个性傻瓜确认：顾客不需逐字背“确认生成”，用自然语即可触发本来已在跑的
+    # 报价→就地确认卡 流程；仍不真扣点（报价 + 点击按钮才提交）。
+    def _wants_confirm(text, missing):
+        msg = str(text or "").strip().lower().rstrip("。！？!?")
+        if not msg or (missing is not None and missing):
+            return False
+        affirmative = {
+            "可以", "好的", "好", "行", "就用它", "就用这个", "用这个", "用它",
+            "生成吧", "生成", "开始生成", "直接做", "开始", "来", "做成片吧",
+            "就这样", "没问题", "可以了", "对，就这个", "就它了", "确认生成",
+            "好，生成", "好了，生成", "可以生成", "就按这个生成", "按这个来", "动手吧",
+        }
+        return msg in affirmative or any(msg.startswith(p) for p in
+                ("可以，", "好的，", "好，", "行，", "就用", "生成吧", "开始", "没问题，", "可以了，","就这样，"))
     message = str(body.get("message") or "").strip()[:6000]
     history = body.get("history") if isinstance(body.get("history"), list) else []
     requested_attachments = body.get("attachments") if isinstance(body.get("attachments"), list) else []
@@ -852,7 +866,7 @@ def _local_chat(body, customer):
             "你可以直接给我一个需求，例如：主题是东鹏特饮，核心卖点买三送一。"
         )
         next_step = "给出一个真实业务需求进行压力测试"
-    elif message == "确认生成" and intent == "digital_human":
+    elif _wants_confirm(message, missing) and intent == "digital_human":
         if missing:
             reply = "现在还不能获取报价，因为方案缺少：%s。请先补齐这些信息，没有提交任务，也没有扣点。" % "、".join(dict.fromkeys(missing))
             next_step = "补齐缺失信息后重新确认生成"
@@ -860,7 +874,7 @@ def _local_chat(body, customer):
             offer, reply, next_step, cli_trace = _digital_human_quote(
                 customer, attachment_items, workflow_snapshot.get("script_text")
             )
-    elif message == "确认生成":
+    elif _wants_confirm(message, missing):
         if missing:
             reply = "现在还不能进入报价确认，因为方案缺少：%s。请先补齐这些信息；本地验收站不会真实扣点或生成。" % "、".join(dict.fromkeys(missing))
             next_step = "补齐缺失参数"
