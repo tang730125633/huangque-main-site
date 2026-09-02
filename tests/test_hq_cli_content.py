@@ -380,6 +380,149 @@ class HQCLIContentTests(unittest.TestCase):
         self.assertEqual(job_count, 1)
         self.points.deduct_points.assert_called_once()
 
+    def test_matrix_core_freezes_semantics_and_worker_reuses_after_cache_clear(self):
+        top = "我在广州，组了一个健康赛道创业者的圈子"
+        bottom = "评论区扣888"
+        raw = {
+            "top_text": top, "bottom_text": bottom,
+            "template_id": "ref-04-fixture-04", "bgm": False,
+        }
+        semantic = {
+            "version": 1, "model": "gpt-4.1-mini",
+            "source_sha256": matrix_template_video.matrix_template_semantics._source_sha256(
+                top, bottom,
+            ),
+            "top1_end": top.index("，"),
+            "top_break_after": [top.index("，")],
+            "bottom_break_after": [],
+        }
+        execution = dict(raw, duration=11.0, semantic_layout=semantic)
+        key = "matrix-frozen-semantic-001"
+        self.points.cost_of = mock.Mock(return_value=5)
+        self.points.get_points_transaction = mock.Mock(return_value=None)
+        self.points.deduct_points = mock.Mock(return_value=95)
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder, \
+             mock.patch.object(core, "JOB_DB", str(Path(folder) / "jobs.db")), \
+             mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+             mock.patch.object(core, "HANDLERS", {"matrix_template_video": lambda payload: payload}), \
+             mock.patch.object(core, "enqueue_job", return_value=True):
+            with closing(core.jdb()) as connection:
+                connection.execute("""CREATE TABLE jobs(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT,username TEXT,cost INTEGER,
+                    status TEXT DEFAULT 'pending',payload TEXT,result TEXT,error TEXT,
+                    created_at INTEGER,updated_at INTEGER,owner TEXT,refunded INTEGER DEFAULT 0,
+                    deleted INTEGER DEFAULT 0
+                )""")
+                submission_idempotency.ensure_table(connection)
+                core.matrix_template_submission.ensure_table(connection)
+                connection.commit()
+
+            with mock.patch.object(
+                matrix_template_video, "validate_payload", return_value=execution,
+            ):
+                status, accepted = self._post(
+                    "/api/gen/matrix-template", raw, expected=5,
+                    idempotency_key=key,
+                )
+
+            attempt = core.matrix_template_submission.get(
+                core.jdb, "alice", "/api/gen/matrix-template", key,
+            )
+            with closing(core.jdb()) as connection:
+                job_payload = json.loads(connection.execute(
+                    "SELECT payload FROM jobs WHERE id=?", (accepted["job_id"],),
+                ).fetchone()[0])
+
+            self.assertEqual(200, status)
+            self.assertEqual(raw, attempt["input"])
+            self.assertEqual(execution, attempt["execution"])
+            self.assertEqual(execution, job_payload)
+
+            contract = {
+                "version": 1, "max_width_px": 996,
+                "layers": {
+                    layer: {
+                        "font_size_px": values[0],
+                        "font_weight": values[1],
+                        "max_width_px": values[2],
+                        "max_lines": values[3],
+                    }
+                    for layer, values in matrix_template_video._SEMANTIC_CONTRACTS[
+                        "v04"
+                    ].items()
+                },
+            }
+            template = {
+                "id": raw["template_id"], "name": "fixture",
+                "engine": "hyperframes", "variant": "v04",
+                "font_mode": "template_locked", "font_selectable": False,
+                "semantic_layout": contract,
+            }
+            remote_id = "f" * 32
+            remote_calls = []
+
+            def remote_request(method, path, body=None, **kwargs):
+                remote_calls.append((method, path, body, kwargs))
+                if (method, path) == ("POST", "/v1/preflight"):
+                    return {"payload": dict(body, duration=11.0)}
+                if (method, path) == ("POST", "/v1/jobs"):
+                    return {"job_id": remote_id, "status": "pending"}
+                if (method, path) == ("GET", "/v1/jobs/" + remote_id):
+                    return {"status": "completed", "result": {
+                        "file_url": "/v1/files/" + remote_id + ".mp4",
+                        "duration": 11.0, "width": 1080, "height": 1920,
+                        "template_id": raw["template_id"],
+                        "material_manifest": [],
+                    }}
+                raise AssertionError((method, path))
+
+            matrix_template_video.matrix_template_semantics._CACHE.clear()
+            with mock.patch.object(
+                     core, "HANDLERS",
+                     {"matrix_template_video": matrix_template_video.generate},
+                 ), mock.patch.object(
+                     core, "_start_job_heartbeat", return_value=lambda: None,
+                 ), mock.patch.object(core.assets_store, "record_asset"), \
+                 mock.patch.object(video, "record_video_asset"), \
+                 mock.patch.object(matrix_template_video, "require_available"), \
+                 mock.patch.object(
+                     matrix_template_video, "public_templates", return_value=[template],
+                 ), mock.patch.object(
+                     matrix_template_video.matrix_template_semantics, "resolve",
+                     side_effect=AssertionError("worker must not call AI again"),
+                 ) as resolve, mock.patch.object(
+                     matrix_template_video, "_request", side_effect=remote_request,
+                 ), mock.patch.object(
+                     matrix_template_video, "_persist_runtime", return_value=True,
+                 ), mock.patch.object(
+                     matrix_template_video, "_download",
+                     return_value=("video/frozen-semantic.mp4", 4096),
+                 ), mock.patch.object(
+                     matrix_template_video, "public_url",
+                     return_value="/api/gen/file/frozen-semantic",
+                 ), mock.patch.object(matrix_template_video.time, "sleep"):
+                core.run_job(accepted["job_id"])
+
+            with closing(core.jdb()) as connection:
+                completed = connection.execute(
+                    "SELECT status,result FROM jobs WHERE id=?",
+                    (accepted["job_id"],),
+                ).fetchone()
+            result = json.loads(completed["result"])
+
+            resolve.assert_not_called()
+            self.assertEqual("done", completed["status"])
+            self.assertEqual("video/frozen-semantic.mp4", result["video_file"])
+            self.assertEqual(
+                ["/v1/preflight", "/v1/jobs", "/v1/jobs/" + remote_id],
+                [item[1] for item in remote_calls],
+            )
+            self.assertTrue(all(
+                call[2].get("semantic_layout") == semantic
+                for call in remote_calls[:2]
+            ))
+
     def test_matrix_queue_full_returns_queryable_refund_state(self):
         body = {
             "top_text": "有效标题", "bottom_text": "关注查看更多",

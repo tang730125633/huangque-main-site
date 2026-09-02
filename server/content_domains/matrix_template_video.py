@@ -509,6 +509,10 @@ def validate_payload(raw, username="", *, trusted_semantic_layout=None):
                 ):
                     return False, str(exc)
                 raise
+            except RuntimeError as exc:
+                raise feature_flags.FeatureDisabled(
+                    "模板成片服务暂不可用，请稍后重试"
+                ) from exc
 
         try:
             if trusted_semantic_layout is not None:
@@ -812,10 +816,21 @@ def generate(payload):
             if not str(key).startswith("_")
         }
     else:
-        payload = validate_payload(
-            raw, str(raw.get("_username") or ""),
-            trusted_semantic_layout=raw.get("semantic_layout"),
+        phase = str(runtime.get("phase") or "")
+        legacy_exact_replay = (
+            phase in {"submitting", "submission_unknown"}
+            and "semantic_layout" not in stored_payload
         )
+        if legacy_exact_replay:
+            payload = {
+                key: value for key, value in stored_payload.items()
+                if not str(key).startswith("_")
+            }
+        else:
+            payload = validate_payload(
+                raw, str(raw.get("_username") or ""),
+                trusted_semantic_layout=stored_payload.get("semantic_layout"),
+            )
         _remaining_budget(deadline_at)
         request_id = "matrix-template-" + re.sub(
             r"[^A-Za-z0-9_.:-]", "-", local_job

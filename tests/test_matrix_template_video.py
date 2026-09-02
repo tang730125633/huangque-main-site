@@ -726,6 +726,41 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             })
         request.assert_not_called()
 
+    def test_generation_preflight_connection_failure_remains_retryable_503(self):
+        from content_domains import feature_flags
+
+        template = next(
+            item for item in self.reference_templates()
+            if item.get("variant") == "v02"
+        )
+        semantic = {
+            "version": 1, "model": "gpt-4.1-mini",
+            "source_sha256": "a" * 64, "top1_end": 1,
+            "top_break_after": [1], "bottom_break_after": [],
+        }
+
+        def resolve(_top, _bottom, _template_id, _contract, validator):
+            validator(semantic)
+            self.fail("transport failure must escape the semantic resolver")
+
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(
+                 self.module, "public_templates", return_value=[template],
+             ), mock.patch.object(
+                 self.module.matrix_template_semantics, "resolve",
+                 side_effect=resolve,
+             ), mock.patch.object(
+                 self.module, "_request",
+                 side_effect=RuntimeError("生成端连接中断"),
+             ), self.assertRaisesRegex(
+                 feature_flags.FeatureDisabled, "模板成片服务暂不可用",
+             ):
+            self.module.validate_payload({
+                "top_text": "团队8个人，每天产出100条短视频",
+                "bottom_text": "评论区扣888",
+                "template_id": template["id"], "bgm": False,
+            })
+
     def test_reference_template_without_semantic_contract_fails_closed(self):
         template = next(
             item for item in self.reference_templates(("v02",))
@@ -966,6 +1001,53 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         self.assertEqual(("done", "1080p", "9:16"), (
             result["phase"], result["resolution"], result["ratio"]
         ))
+
+    def test_legacy_submission_unknown_replays_original_payload_exactly(self):
+        legacy_payload = {
+            "top_text": "有效标题", "bottom_text": "评论区扣888",
+            "template_id": "ref-04-fixture-04", "bgm": False,
+            "duration": 11,
+            "_matrix_runtime": {"phase": "submission_unknown"},
+        }
+        remote_id = "e" * 32
+        requests = []
+
+        def request(method, path, body=None, **kwargs):
+            requests.append((method, path, body, kwargs))
+            if (method, path) == ("POST", "/v1/jobs"):
+                return {"job_id": remote_id, "status": "pending"}
+            if (method, path) == ("GET", "/v1/jobs/" + remote_id):
+                return {"status": "failed", "error": "legacy request missing"}
+            raise AssertionError((method, path))
+
+        with mock.patch.object(
+            self.module, "_runtime", return_value={
+                "created_at": int(self.module.time.time()),
+                "payload": legacy_payload,
+            },
+        ), mock.patch.object(
+            self.module, "validate_payload",
+            side_effect=AssertionError("legacy unknown replay must not revalidate"),
+        ), mock.patch.object(
+            self.module, "_request", side_effect=request,
+        ), mock.patch.object(
+            self.module, "_persist_runtime", return_value=True,
+        ), mock.patch.object(self.module.time, "sleep"), \
+             self.assertRaisesRegex(
+                 self.module.MatrixTemplateProviderFailed,
+                 "legacy request missing",
+             ):
+            self.module.generate({
+                **legacy_payload, "_job_id": 77, "_username": "alice",
+            })
+
+        self.assertEqual(("POST", "/v1/jobs"), requests[0][:2])
+        self.assertEqual({
+            key: value for key, value in legacy_payload.items()
+            if not key.startswith("_")
+        }, requests[0][2])
+        self.assertEqual("matrix-template-77", requests[0][3]["request_id"])
+        self.assertTrue(all(path != "/v1/preflight" for _, path, _, _ in requests))
 
     def test_generate_uses_submission_time_as_absolute_deadline(self):
         with mock.patch.object(

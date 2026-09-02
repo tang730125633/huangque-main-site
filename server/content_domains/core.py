@@ -4296,6 +4296,9 @@ class H(BaseHTTPRequestHandler):
                         matrix_template_submission.prepare(
                             jdb, user["username"], p, idem_key, request_body, cost,
                             kind=kind,
+                            execution_body=(
+                                body if kind == "matrix_template_video" else None
+                            ),
                         )
                         self._matrix_template_charge_started = True
                         matrix_attempt = matrix_template_submission.recover(
@@ -4312,7 +4315,7 @@ class H(BaseHTTPRequestHandler):
                         jid = int(matrix_attempt["job_id"])
                         points_left = int(matrix_attempt["points_left"])
                         cost = int(matrix_attempt["cost"])
-                        body = matrix_attempt["input"]
+                        body = matrix_attempt["execution"]
                     elif is_still_route:
                         if is_shutting_down(): return self._send(503, {"detail": "服务正在更新，请稍等几秒后重试", "code": "shutting_down", "retry_after_ms": 5000})
                         if still_attempt["state"] == "accepted":
