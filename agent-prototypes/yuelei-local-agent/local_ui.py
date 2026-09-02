@@ -19,7 +19,16 @@ from http.cookies import SimpleCookie
 from pathlib import Path
 
 
-SITE = Path(sys.argv[1]).resolve()
+SITE_ARG = sys.argv[1] if len(sys.argv) > 1 else None
+if SITE_ARG is None:
+    print(
+        "用法: python local_ui.py <黄雀站点目录> [端口]\n"
+        "示例: python local_ui.py E:/AI/data/Huangque/hq-site 8765\n"
+        "说明: 需先安装并登录黄雀 CLI(hq_cli), 目录为黄雀站点数据目录。",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+SITE = Path(SITE_ARG).resolve()
 PREVIEW_ROOT = Path(__file__).resolve().parent
 HOST = "127.0.0.1"
 PORT = int(sys.argv[2]) if len(sys.argv) > 2 else 8765
@@ -37,7 +46,7 @@ MODEL_CONFIG = {
     "base_url": os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/"),
     "model": os.environ.get("DEEPSEEK_MODEL", "deepseek-chat").strip() or "deepseek-chat",
 }
-HQ_CONFIG_DIR = Path(r"E:\AI\data\Huangque\hq-cli-user")
+HQ_CONFIG_DIR = Path(os.environ.get("HQ_CLI_CONFIG_DIR", r"E:\AI\data\Huangque\hq-cli-user")).resolve()
 UPLOAD_ROOT = PREVIEW_ROOT / "uploads"
 UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
 RUN_STATE_PATH = PREVIEW_ROOT / "agent-runs.json"

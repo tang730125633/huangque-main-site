@@ -17,12 +17,33 @@
   - 意图识别 → 能力选择 → 缺失参数 → 报价 → 确认扣点 → 视频生成任务 → **对账**（成功给结果视频；失败标注已退款/待核对）；
   - **明确不自动发布、不自动删除**；素材库连接仅用于素材取用。
 
+  > 能力查询、报价、确认扣点与对账等真实动作**由黄雀 CLI（`hq_cli`）驱动**，并非纯本地假流程。
+
+## 依赖（重要）
+
+运行前需具备：
+- Python 3.10+；
+- 可访问 **DeepSeek API**（设 `DEEPSEEK_API_KEY`）；
+- **已安装可导入的黄雀 CLI `hq_cli`**：`python -m hq_cli` 能被调用；
+- **黄雀 CLI 已登录授权**：后端首次使用时通过 `hq_cli login` 完成授权（内部 `_ensure_cli_authorized` 会做校验）；
+- 三个可配置的环境变量：
+  - `DEEPSEEK_API_KEY`（必填，DeepSeek）
+  - `DEEPSEEK_BASE_URL`（可选，默认 `https://api.deepseek.com`）
+  - `HQ_CLI_CONFIG_DIR`（可选，黄雀 CLI 会话目录；**默认硬编码为当前机器路径 `E:\AI\data\Huangque\hq-cli-user`，换机需另设此变量**）
+
 ## 如何本地跑
 
 ```bash
-# 依赖：Python 3.10+、可访问 DeepSeek API 的环境
-export DEEPSEEK_API_KEY=<你的 key>      # 不要写死进代码
-python local_ui.py                      # 起 http://127.0.0.1:8765
+# 1) 依赖&登录
+pip install -r requirements.txt 2>/dev/null || true   # 视环境
+python -m hq_cli login             # 确保 CLI 已授权
+# 2) 环境变量
+#    export DEEPSEEK_API_KEY=<你的 key>
+#    export HQ_CLI_CONFIG_DIR=<你的黄雀CLI用户目录>   # 非开发机时必须设
+# 3) 启动（站点目录为必填位置参数，缺参会友好报错退出）
+export DEEPSEEK_API_KEY=<你的 key>
+export HQ_CLI_CONFIG_DIR="E:/AI/data/Huangque/hq-cli-user"   # 或你环境
+python local_ui.py <黄雀站点目录> [端口]      # 例: python local_ui.py E:/AI/data/Huangque/site 8765
 # 浏览器打开 http://127.0.0.1:8765/agent-lab.html
 # （页面 URL 带 ?admin=1 会显示"连接模型"管理面板）
 ```
