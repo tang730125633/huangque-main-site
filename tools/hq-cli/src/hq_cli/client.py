@@ -23,6 +23,7 @@ ALLOWED_PATHS = {
     "/api/auth/cli/status",
     "/api/auth/cli/logout",
     "/api/auth/cli/action",
+    "/api/auth/card/media",
 }
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -38,6 +39,8 @@ DIRECTOR_BREAKDOWN_VIDEO_PATH = "/api/auth/cli/director-breakdown-video"
 DIRECTOR_BREAKDOWN_QUOTE_PATH = "/api/auth/cli/director-breakdown-quote"
 ALLOWED_PATHS.add(DIRECTOR_BREAKDOWN_QUOTE_PATH)
 DOWNLOAD_PATH = "/api/gen/dl"
+BATCH_DOWNLOAD_PATH = "/api/gen/asset/batch-download"
+VIDEO_IMPORT_PATH = "/api/gen/video/import"
 MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024
 
 
@@ -79,7 +82,7 @@ def request_json(path, method="GET", body=None, token="", timeout=30):
     return int(status), payload
 
 
-def download_file(url, output, token, name="video", decode_key="", timeout=300):
+def download_file(url, output, token, name="video", decode_key="", timeout=300, post_payload=None, direct_path=""):
     if not isinstance(token, str) or not token:
         raise ValueError("missing access token")
     if not isinstance(output, str) or not os.path.isabs(output):
@@ -108,23 +111,32 @@ def download_file(url, output, token, name="video", decode_key="", timeout=300):
         raise ValueError("output directory does not exist")
     if target.exists() or target.is_symlink():
         raise ValueError("output already exists")
-    if not isinstance(url, str) or not url or len(url) > 4096:
+    if post_payload is None and not direct_path and (not isinstance(url, str) or not url or len(url) > 4096):
         raise ValueError("download URL is invalid")
     if not isinstance(name, str) or not 1 <= len(name.strip()) <= 40:
         raise ValueError("download name is invalid")
     if not isinstance(decode_key, str) or len(decode_key) > 4096:
         raise ValueError("decode key is invalid")
-    query = urllib.parse.urlencode({"url": url, "name": name.strip()})
-    request = urllib.request.Request(
-        API_BASE + DOWNLOAD_PATH + "?" + query,
-        headers={
+    headers = {
             "Accept": "application/octet-stream,image/*,video/*",
             "Authorization": "Bearer " + token,
             "User-Agent": "hq-cli/%s" % __version__,
             **({"X-HQ-Decode-Key": decode_key} if decode_key else {}),
-        },
-        method="GET",
-    )
+    }
+    if direct_path:
+        if post_payload is not None or not re.fullmatch(r"/api/creator-agent/projects/[0-9a-f]{12}/background\.pdf", direct_path):
+            raise ValueError("direct download path is invalid")
+        headers["Accept"] = "application/pdf"
+        request = urllib.request.Request(API_BASE + direct_path, headers=headers, method="GET")
+    elif post_payload is None:
+        query = urllib.parse.urlencode({"url": url, "name": name.strip()})
+        request = urllib.request.Request(API_BASE + DOWNLOAD_PATH + "?" + query, headers=headers, method="GET")
+    else:
+        if not isinstance(post_payload, dict) or set(post_payload) != {"assets"}:
+            raise ValueError("batch download input is invalid")
+        data = json.dumps(post_payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        headers.update({"Accept": "application/zip", "Content-Type": "application/json"})
+        request = urllib.request.Request(API_BASE + BATCH_DOWNLOAD_PATH, data=data, headers=headers, method="POST")
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
     temp = parent / (".%s.%s.tmp" % (target.name, secrets.token_hex(6)))
     descriptor = None
@@ -324,6 +336,23 @@ def _open_video(path):
     )
 
 
+def _open_video_import(path):
+    return _open_media(
+        path, 100 * 1024 * 1024,
+        lambda header: "video/mp4" if _video_mime(header) == "video/mp4" else "",
+        "import video must be between 1 byte and 100 MiB",
+        "import video must be MP4",
+    )
+
+
+def _open_profile_avatar(path):
+    return _open_media(
+        path, 4 * 1024 * 1024, _image_mime,
+        "profile avatar must be between 1 byte and 4 MiB",
+        "profile avatar must be PNG, JPG, or WebP",
+    )
+
+
 def _open_audio(path):
     return _open_media(
         path, MAX_AUDIO_UPLOAD_BYTES, _audio_mime,
@@ -391,6 +420,7 @@ def _upload_media(path, token, upload_path, digest_header, opener, timeout, extr
             IMAGE_UPLOAD_PATH, VIDEO_UPLOAD_PATH, AUDIO_UPLOAD_PATH,
             DIGITAL_HUMAN_MATERIAL_UPLOAD_PATH, DIGITAL_HUMAN_AUDIO_UPLOAD_PATH,
             DIRECTOR_BREAKDOWN_IMAGE_PATH, DIRECTOR_BREAKDOWN_VIDEO_PATH,
+            VIDEO_IMPORT_PATH,
     } or not digest_header:
         os.close(descriptor)
         raise ValueError("HQ CLI only uploads to fixed main-site endpoints")
@@ -402,6 +432,7 @@ def _upload_media(path, token, upload_path, digest_header, opener, timeout, extr
         DIRECTOR_BREAKDOWN_IMAGE_PATH, DIRECTOR_BREAKDOWN_VIDEO_PATH,
     }
     digital_human_audio = upload_path == DIGITAL_HUMAN_AUDIO_UPLOAD_PATH
+    video_import = upload_path == VIDEO_IMPORT_PATH
     expected_extra = (
         {"X-HQ-Quote-Token", "X-HQ-Expected-Cost", "Idempotency-Key"}
         if director_upload else {"X-HQ-Run-ID"} if digital_human_audio else set()
@@ -422,6 +453,8 @@ def _upload_media(path, token, upload_path, digest_header, opener, timeout, extr
                 connection.putheader(key, extra_headers[key])
         elif digital_human_audio:
             connection.putheader("X-HQ-Run-ID", extra_headers["X-HQ-Run-ID"])
+        elif video_import:
+            connection.putheader("X-Video-Title", urllib.parse.quote(os.path.basename(path).removesuffix(".mp4"), safe="._-"))
         connection.putheader("X-HQ-Confirm", "true")
         connection.putheader("Accept", "application/json")
         connection.putheader("User-Agent", "hq-cli/%s" % __version__)
@@ -453,7 +486,7 @@ def _upload_media(path, token, upload_path, digest_header, opener, timeout, extr
     if not isinstance(payload, dict):
         payload, status = {"detail": "server returned invalid JSON"}, 502
     response_digest = payload.get("source_sha256") if digital_human_audio else payload.get("sha256")
-    if 200 <= int(status) < 300 and response_digest != digest:
+    if 200 <= int(status) < 300 and not video_import and response_digest != digest:
         raise NetworkError("server upload digest mismatch")
     return int(status), payload
 
@@ -467,6 +500,37 @@ def upload_image(path, token, timeout=120):
 def upload_video(path, token, timeout=120):
     return _upload_media(
         path, token, VIDEO_UPLOAD_PATH, "X-HQ-Video-SHA256", _open_video, timeout,
+    )
+
+
+def upload_video_import(path, token, timeout=180):
+    return _upload_media(
+        path, token, VIDEO_IMPORT_PATH, "X-HQ-Video-SHA256", _open_video_import, timeout,
+    )
+
+
+def upload_profile_avatar(path, token, timeout=120):
+    descriptor, file_stat, mime, _digest = _open_profile_avatar(path)
+    try:
+        raw = bytearray()
+        remaining = file_stat.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(64 * 1024, remaining))
+            if not chunk:
+                raise ValueError("profile avatar changed while reading")
+            raw.extend(chunk)
+            remaining -= len(chunk)
+        after = os.fstat(descriptor)
+        if (file_stat.st_dev, file_stat.st_ino, file_stat.st_size, file_stat.st_mtime_ns) != (
+                after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+            raise ValueError("profile avatar changed while reading")
+    finally:
+        os.close(descriptor)
+    return request_json(
+        "/api/auth/card/media", method="POST",
+        body={"field": "avatar", "data": "data:%s;base64,%s" % (
+            mime, base64.b64encode(raw).decode("ascii"),
+        )}, token=token, timeout=timeout,
     )
 
 

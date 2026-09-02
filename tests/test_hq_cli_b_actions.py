@@ -39,7 +39,7 @@ class HQCLIBActionsTests(unittest.TestCase):
             if capability["kind"] != "navigation"
         }
         self.assertEqual(server, client)
-        self.assertEqual(136, len(server))
+        self.assertEqual(226, len(server))
         self.assertEqual("download", CAPABILITIES["dl"]["kind"])
         self.assertTrue(NEW_ACTIONS <= server)
         self.assertTrue(all(CAPABILITIES[item]["runnable"] for item in NEW_ACTIONS))

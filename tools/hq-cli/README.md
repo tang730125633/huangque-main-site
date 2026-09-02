@@ -73,6 +73,12 @@ hq describe ip12-projects --json
 
 `inspiration-like` 和 `leads-crm-upsert` 会修改当前账号的数据，因此必须显式使用 `--confirm`；它们不会调用 AI 或扣点。
 
+## 0.15.0 网页能力对等
+
+0.15.0 把目录扩展到 247 项：正常用户网页中已有后端 API 的 Creator Agent、邀请、通知、好友、账号资料、资产批量操作、画布成员、数字 IP 报告、短剧项目/剧本/角色/场景/自动制作/精修，以及头像、H3 视频、ZIP、PDF 专用传输均可直接调用。每项使用固定主站路由和独立严格 schema，不提供任意 URL/方法代理。
+
+修改密码、点数转赠和最终付款仍交给浏览器：这些流程需要密码或支付确认，CLI 不接收密码、Cookie、支付凭据或 OTP。网页本地的主题偏好、剪贴板、二维码与 JPG 导出也不伪装成服务器 API。
+
 ## 给 Agent 的安全工作流
 
 1. 运行 `hq capabilities --json` 发现能力。
@@ -85,7 +91,7 @@ hq describe ip12-projects --json
 - `resource`、`operation`：告诉 Agent 当前是 list/get/create/update/delete/execute 还是页面导航。
 - `required_inputs`：说明每个必填 ID 应从哪个读取或上传能力取得。
 - `resource_operations`、`missing_crud`：列出同一资源已有和缺失的 CRUD。
-- `website_operations`、`website_access`：覆盖网站 91 个登记操作；没有直接 API 时明确返回导航入口。
+- `website_operations`、`website_access`：说明网页对应操作和真实执行方式；API 支持的正常用户动作直接调用，密码/支付/浏览器本地动作明确交接。
 - `workflow`、`success_evidence`、`recovery`：约束报价、确认、幂等、轮询和失败恢复。
 
 例如 `ip12-project` 会同时告诉 Agent：先用 `ip12-projects` 取 ID，可用 `ip12-create` 创建、`ip12-message` 更新、`ip12-delete` 删除。删除必须先读取目标并显式确认。

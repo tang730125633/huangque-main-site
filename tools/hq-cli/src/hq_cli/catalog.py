@@ -143,6 +143,7 @@ CANVAS_OPS = {
 CAPABILITIES = {}
 for item in (
     ("login", "网页登录", "/login", "进入黄雀主站登录页。", None, "none"),
+    ("register", "网页注册", "/register", "在浏览器中进入黄雀注册页；CLI 不接收账号密码。", None, "none"),
     ("inspiration", "灵感", "/workbench/inspiration", "浏览灵感设计工作台。", None, "none"),
     ("leads", "获客", "/workbench/leads", "进入获客工作台。", None, "account_for_data_or_actions"),
     ("collect", "采集", "/workbench/collect", "进入内容采集工作台。", None, "account_for_data_or_actions"),
@@ -411,6 +412,32 @@ CAPABILITIES["dl"] = _download(
         "decode_key": {"type": "string", "maxLength": 4096},
     }, ["url"], "assets:read",
 )
+ASSET_BATCH_DOWNLOAD_FIELDS = {
+    "assets": {"type": "array", "minItems": 1, "maxItems": 120, "items": _schema({
+        "kind": {"type": "string", "enum": ["image", "audio", "video", "avatar"]},
+        "id": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807},
+    }, ["kind", "id"])},
+}
+CAPABILITIES["asset-batch-download"] = _download(
+    "asset-batch-download", "批量下载资产", "把本人选择的资产打包下载到一个新的本地 ZIP 文件。",
+    ASSET_BATCH_DOWNLOAD_FIELDS, ["assets"], "assets:read",
+)
+CAPABILITIES["creator-agent-background-pdf"] = _download(
+    "creator-agent-background-pdf", "下载 Creator Agent 画像 PDF",
+    "把本人 Creator Agent 项目的画像背景 PDF 下载到一个新的本地文件。",
+    {"project_id": {"type": "string", "pattern": "^[0-9a-f]{12}$"}},
+    ["project_id"], "creator-agent:read",
+)
+CAPABILITIES["profile-avatar-upload"] = _upload(
+    "profile-avatar-upload", "上传账号头像", "上传一张本人指定的图片并更新当前账号头像。", "account:write",
+)
+CAPABILITIES["profile-avatar-upload"]["file_input"].update({"maxBytes": 4 * 1024 * 1024})
+CAPABILITIES["video-import"] = _upload(
+    "video-import", "导入 H3 成片", "把本人指定的 MP4 导入当前账号的视频资产库。", "assets:upload",
+)
+CAPABILITIES["video-import"]["file_input"].update({
+    "maxBytes": 100 * 1024 * 1024, "mimeTypes": ["video/mp4"], "accountActiveMaxFiles": 6,
+})
 CAPABILITIES["inspiration-catalog"] = _api(
     "inspiration-catalog", "灵感案例", "inspiration-catalog", "读取主站当前公开的灵感案例。",
     scope="inspiration:read")
@@ -1300,10 +1327,11 @@ for identifier, name, fields, required in (
 CAPABILITIES["director-breakdown"]["input_schema"]["oneOf"] = [
     {"required": ["url"]}, {"required": ["urls"]},
 ]
-CAPABILITIES["director-scene-image-generate"]["constraints"] = [
-    "至少一个 scene 必须包含非空画面描述",
-    "先报价，再用完全相同的标准化输入确认一次",
-]
+for _identifier in ("director-scene-image-generate", "director-scene-video-generate"):
+    CAPABILITIES[_identifier]["constraints"] = [
+        "至少一个 scene 必须包含非空画面描述",
+        "先报价，再用完全相同的标准化输入确认一次",
+    ]
 
 CAPABILITIES["leads-generate"]["input_schema"]["anyOf"] = [
     {"required": ["keyword"]}, {"required": ["channels_targets"]},
@@ -1669,6 +1697,182 @@ def _required_input_names(schema):
                     if name not in names:
                         names.append(name)
     return names
+
+
+_WEB_PARITY_SPECS = """
+creator-agent-capability|||0|0
+creator-agent-bootstrap|||0|0
+creator-agent-message|message,request_id,project_id,intent,payload|message,request_id,project_id|1|1
+creator-agent-project-select|project_id|project_id|1|0
+creator-agent-project-rename|project_id,title|project_id,title|1|0
+creator-agent-batch-quote|batch_id,expected_revision|batch_id,expected_revision|0|0
+creator-agent-batch-confirm|batch_id,confirmation_id,expected_revision,expected_quote_expires_at|batch_id,confirmation_id,expected_revision|1|0
+creator-agent-batch-refresh|batch_id|batch_id|0|0
+task-delete|job_id|job_id|1|0
+invite-config|||0|0
+invite-dashboard|||0|0
+invite-users|level,limit,offset||0|0
+invite-rewards|limit,offset||0|0
+invite-code|||0|0
+invite-referrer|||0|0
+notifications|limit||0|0
+notification-read|notification_id|notification_id|1|0
+notifications-read-all|||1|0
+profile-update|display_name|display_name|1|0
+friends|||0|0
+friend-requests|||0|0
+friend-request|account_id|account_id|1|0
+friend-request-respond|request_id,action|request_id,action|1|0
+friend-delete|username|username|1|0
+points-transfer-recipient|account_id|account_id|0|0
+points-transfers|limit,offset||0|0
+recharge-packages|||0|0
+recharge-orders|limit,offset||0|0
+asset-marks|kind|kind|0|0
+asset-batch-delete|assets|assets|1|0
+avatar-rename|id,name|id,name|1|0
+avatar-delete|id|id|1|0
+voice-rename|slot_id,name|slot_id,name|1|0
+canvas-members|board_id|board_id|0|0
+canvas-member-add|board_id,account_id,role|board_id,account_id,role|1|0
+canvas-member-remove|board_id,username|board_id,username|1|0
+digital-ip-diagnose|project_id,revision,state|project_id,revision,state|1|0
+digital-ip-guide|project_id,revision,message,history|project_id,revision,message|1|0
+digital-ip-report-generate|project_id,revision,consent|project_id,revision,consent|1|0
+digital-ip-report-confirm|project_id,revision,report_id|project_id,revision,report_id|1|0
+digital-human-oneclick-heygen-preflight|||0|0
+digital-human-oneclick-material-resolve|digital_human_pipeline,digital_human_stage,digital_human_run_id,digital_human_plan_digest,digital_human_consent_token,digital_human_script,digital_human_narration_mode,digital_human_audio_upload_id,digital_human_allow_ai_materials,digital_human_customer_upload_ids,digital_human_item_index|digital_human_pipeline,digital_human_stage,digital_human_run_id,digital_human_plan_digest,digital_human_consent_token,digital_human_narration_mode,digital_human_allow_ai_materials,digital_human_customer_upload_ids,digital_human_item_index|1|0
+short-drama-project-update|project_id,revision,title,synopsis,genre,ratio,target_duration,shot_count,visual_style,target_platform,point_budget,characters,character_contract,script,shots|project_id,revision|1|0
+short-drama-project-promote|project,planning_messages,confirmed_contract,request_id|project,planning_messages,confirmed_contract,request_id|1|1
+short-drama-project-import|title,synopsis,ratio,target_duration,shot_count,visual_style,source_text,filename,import_mode,content_type,character_contract,genre,source_requirement,request_id|title,synopsis,ratio,target_duration,shot_count,visual_style,source_text,filename,import_mode,request_id|1|1
+short-drama-core-story|project_id,revision,core_story|project_id,revision,core_story|1|0
+short-drama-project-finalize|project_id,revision|project_id,revision|1|0
+short-drama-project-abandon|project_id,revision,request_id|project_id,revision,request_id|1|1
+short-drama-script-message|project_id,revision,message,request_id|project_id,revision,message,request_id|1|1
+short-drama-script-generate|project_id,revision,instruction,confirmed_contract,request_id|project_id,revision,request_id|1|1
+short-drama-shot-update|project_id,revision,version_id,shot_key,changes,instruction,request_id|project_id,revision,version_id,shot_key,changes,request_id|1|1
+short-drama-shot-regenerate|project_id,revision,version_id,shot_key,instruction,request_id|project_id,revision,version_id,shot_key,request_id|1|1
+short-drama-shot-lock|project_id,revision,version_id,shot_key,locked,request_id|project_id,revision,version_id,shot_key,locked,request_id|1|1
+short-drama-shot-structure|project_id,revision,version_id,shot_key,action,instruction,request_id|project_id,revision,version_id,shot_key,action,request_id|1|1
+short-drama-script-restore|project_id,revision,version_id,request_id|project_id,revision,version_id,request_id|1|1
+short-drama-script-lock|project_id,revision,request_id|project_id,revision,request_id|1|1
+short-drama-character-studio|project_id|project_id|0|0
+short-drama-character-profile|project_id,project_revision,character_key,identity_text,personality,appearance_prompt,wardrobe_prompt,name|project_id,project_revision,character_key,identity_text,personality,appearance_prompt,wardrobe_prompt|1|0
+short-drama-character-avatar|project_id,project_revision,character_key,avatar_id|project_id,project_revision,character_key,avatar_id|1|0
+short-drama-character-reference-select|project_id,revision,character_key,source,asset_job_id,asset_url,filename,image_data|project_id,revision,character_key,source|1|0
+short-drama-scene-graph|project_id|project_id|0|0
+short-drama-scene-sync|project_id,graph_revision|project_id,graph_revision|1|0
+short-drama-scene-create|project_id,graph_revision,name,description,shot_keys|project_id,graph_revision,name,description,shot_keys|1|0
+short-drama-scene-update|project_id,graph_revision,scene_key,name,description,shot_keys|project_id,graph_revision,scene_key,name,description,shot_keys|1|0
+short-drama-scene-bind-shot|project_id,graph_revision,scene_key,shot_key|project_id,graph_revision,scene_key,shot_key|1|0
+short-drama-scene-delete|project_id,graph_revision,scene_key|project_id,graph_revision,scene_key|1|0
+short-drama-scene-restore|project_id,graph_revision,scene_key|project_id,graph_revision,scene_key|1|0
+short-drama-scene-reference|project_id,graph_revision,scene_key,source,asset_job_id,asset_url,filename,image_data,prompt,reference_source|project_id,graph_revision,scene_key,source|1|0
+short-drama-scene-lock|project_id,graph_revision,scene_key|project_id,graph_revision,scene_key|1|0
+short-drama-autodraft|project_id|project_id|0|0
+short-drama-autodraft-render-start|project_id,plan_id,request_id|project_id,plan_id,request_id|1|1
+short-drama-autodraft-render-status|project_id,job_id|project_id,job_id|0|0
+short-drama-legacy-media-recover|project_id|project_id|1|0
+short-drama-provider-version-select|project_id,shot_key,version_id|project_id,shot_key,version_id|1|0
+short-drama-refinement|project_id|project_id|0|0
+short-drama-refinement-status|project_id,job_id|project_id,job_id|0|0
+short-drama-refinement-preview|project_id,shot_key,replacement_provider_version_id|project_id,shot_key|1|0
+short-drama-refinement-adopt|project_id,shot_key,source_version_id,replacement_provider_version_id,request_id|project_id,shot_key,source_version_id,replacement_provider_version_id,request_id|1|1
+short-drama-refinement-reassemble-candidates|project_id,version_id,request_id|project_id,version_id,request_id|1|1
+short-drama-refinement-start|project_id,shot_key,source_version_id,replacement_provider_version_id,request_id|project_id,shot_key,request_id|1|1
+short-drama-refinement-issue|project_id,version_id,shot_key,issue_code,message|project_id,version_id,shot_key|1|0
+short-drama-refinement-keep-original|project_id,version_id,shot_key|project_id,version_id,shot_key|1|0
+short-drama-refinement-media|project_id,mode|project_id,mode|1|0
+short-drama-refinement-reassemble|project_id,version_id,request_id|project_id,version_id,request_id|1|1
+short-drama-refinement-confirm|project_id,version_id,checklist,source_hashes|project_id,version_id,checklist,source_hashes|1|0
+short-drama-refinement-restore|project_id,version_id|project_id,version_id|1|0
+""".strip().splitlines()
+_WEB_PARITY_INTEGER_FIELDS = {"amount", "revision", "expected_revision", "expected_quote_expires_at", "notification_id", "limit", "offset", "level", "shot_count", "target_duration", "project_revision", "graph_revision", "point_budget", "asset_job_id", "digital_human_item_index"}
+_WEB_PARITY_BOOLEAN_FIELDS = {"consent", "locked", "digital_human_allow_ai_materials"}
+_WEB_PARITY_ARRAY_FIELDS = {"assets", "history", "candidate_ids", "scenes", "planning_messages", "character_contract", "characters", "shots", "shot_keys", "digital_human_customer_upload_ids"}
+_WEB_PARITY_OBJECT_FIELDS = {"payload", "state", "patch", "profile", "scene", "structure", "changes", "issue", "project", "confirmed_contract", "core_story", "script", "checklist", "source_hashes"}
+
+
+def _web_parity_field(identifier, name):
+    if name in _WEB_PARITY_INTEGER_FIELDS:
+        return {"type": "integer", "minimum": 1 if name == "notification_id" else 0, "maximum": 9223372036854775807}
+    if name in _WEB_PARITY_BOOLEAN_FIELDS:
+        return {"type": "boolean"}
+    if name == "assets":
+        return {"type": "array", "minItems": 1, "maxItems": 120, "items": {
+            "type": "object", "additionalProperties": False, "required": ["kind", "id"],
+            "properties": {"kind": {"type": "string", "enum": ["image", "audio", "video", "avatar"]},
+                           "id": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807}},
+        }}
+    if name in _WEB_PARITY_ARRAY_FIELDS:
+        return {"type": "array", "maxItems": 120, "items": {"type": "string"}} if name in {"planning_messages", "shot_keys"} else {"type": "array", "maxItems": 120}
+    if name in _WEB_PARITY_OBJECT_FIELDS:
+        return {"type": "object"}
+    item = {"type": "string", "maxLength": 8000}
+    if name.endswith("_id") or name in {"message", "title", "account_id", "username", "url", "product_type", "order_type", "action"}:
+        item["minLength"] = 1
+    if name == "request_id":
+        item.update({"minLength": 8, "maxLength": 128, "pattern": "^[A-Za-z0-9._:-]{8,128}$"})
+    if name == "action":
+        item["enum"] = (["accept", "reject"] if identifier == "friend-request-respond" else
+                        ["delete", "copy", "insert_before", "insert_after", "smart_insert", "move_up", "move_down"])
+    if name == "role":
+        item["enum"] = ["editor", "viewer"]
+    if name == "source" and identifier in {"short-drama-scene-reference", "short-drama-character-reference-select"}:
+        item["enum"] = ["asset", "upload"]
+    if name == "ratio":
+        item["enum"] = ["9:16", "16:9"]
+    if name == "import_mode":
+        item["enum"] = ["faithful", "optimize"]
+    if name == "content_type":
+        item["enum"] = ["live_action"]
+    if name == "source_requirement":
+        item["enum"] = ["", "complete_story"]
+    if name == "mode" and identifier == "short-drama-refinement-media":
+        item["enum"] = ["voice_timeline", "provider_audio", "silent"]
+    if name == "digital_human_pipeline":
+        item["const"] = "digital_human_material_v3"
+    if name == "digital_human_stage":
+        item["const"] = "material_resolve"
+    if name == "digital_human_narration_mode":
+        item["enum"] = ["text", "audio"]
+    return item
+
+
+_WEB_PARITY_ACTION_IDS = []
+for _line in _WEB_PARITY_SPECS:
+    _identifier, _field_names, _required_names, _confirm, _idempotent = _line.split("|")
+    _fields = [name for name in _field_names.split(",") if name]
+    _required = [name for name in _required_names.split(",") if name]
+    _WEB_PARITY_ACTION_IDS.append(_identifier)
+    _write = _confirm == "1"
+    if _identifier.startswith("creator-agent-"):
+        _scope = "creator-agent:%s" % ("write" if _write else "read")
+    elif _identifier == "task-delete":
+        _scope = "tasks:write"
+    elif _identifier.startswith("digital-human-oneclick-"):
+        _scope = "digital-human-oneclick:%s" % ("write" if _write else "read")
+    elif _identifier.startswith("short-drama-"):
+        _scope = "short-drama:%s" % ("write" if _write else "read")
+    elif _identifier.startswith("digital-ip-"):
+        _scope = "ip12:%s" % ("write" if _write else "read")
+    elif _identifier.startswith("canvas-member"):
+        _scope = "canvas:%s" % ("write" if _write else "read")
+    elif _identifier.startswith(("asset-", "avatar-", "voice-", "video-import")):
+        _scope = "assets:%s" % ("write" if _write else "read")
+    else:
+        _scope = "account:%s" % ("write" if _write else "read")
+    CAPABILITIES[_identifier] = _api(
+        _identifier, _identifier.replace("-", " "), _identifier,
+        "主站网页同名操作的固定、账号范围内 CLI 镜像。",
+        {name: _web_parity_field(_identifier, name) for name in _fields}, _required, _scope,
+        "write" if _write else "read", _write,
+    )
+    CAPABILITIES[_identifier]["constraints"] = [
+        "fixed first-party route; unknown input fields are rejected",
+        "owner scope is enforced by the target API",
+        *(["use the same request_id on a retry"] if _idempotent == "1" else []),
+    ]
 
 
 def _attach_agent_guidance():
