@@ -161,7 +161,8 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual(set(self.auth.hq_cli_api._ACTION_INPUTS) | {
             "image-upload", "video-upload", "audio-upload", "director-breakdown-upload",
             "digital-human-oneclick-material-upload", "digital-human-oneclick-audio-upload",
-            "dl",
+            "dl", "asset-batch-download", "profile-avatar-upload", "video-import",
+            "creator-agent-background-pdf",
         }, set(actions))
         for action, item in actions.items():
             with self.subTest(action=action):
@@ -180,6 +181,43 @@ class HQCLIAPITests(unittest.TestCase):
                 self.assertIn("transport", item)
                 self.assertIn("availability", item)
                 self.assertNotIn("http", json.dumps(item, ensure_ascii=False).lower())
+
+    def test_cli_device_bridge_owns_new_binary_and_video_transports(self):
+        upload_token = self._token(["assets:upload"])
+        raw = b"\x00\x00\x00\x18ftypisom" + b"video"
+        with mock.patch.object(
+                self.auth.hq_cli_api, "proxy_video_import",
+                return_value=(200, {"ok": True, "asset": {"id": 7}}),
+        ) as proxy:
+            status, payload = self._raw_request(
+                "/api/auth/cli/video-import", raw, token=upload_token,
+                content_type="video/mp4", extra_headers={"X-Video-Title": "sample"},
+            )
+        self.assertEqual((200, 7), (status, payload["asset"]["id"]))
+        self.assertEqual("sample", proxy.call_args.args[-1])
+
+        read_token = self._token(["assets:read", "creator-agent:read"])
+
+        def fake_binary(handler, scope, base, path, method="GET", body=None):
+            return handler._cli_send(200, {
+                "scope": scope, "base": base, "path": path,
+                "method": method, "body": body,
+            })
+
+        with mock.patch.object(self.auth.H, "_cli_binary_proxy", new=fake_binary):
+            status, payload = self._request(
+                "/api/auth/cli/asset-batch-download",
+                {"assets": [{"kind": "video", "id": 7}]}, token=read_token,
+            )
+            self.assertEqual((200, "assets:read", "POST"), (
+                status, payload["scope"], payload["method"],
+            ))
+            status, payload = self._request(
+                "/api/auth/cli/creator-agent-background-pdf?project_id=abc123def456",
+                token=read_token,
+            )
+            self.assertEqual((200, "creator-agent:read"), (status, payload["scope"]))
+            self.assertEqual("/projects/abc123def456/background.pdf", payload["path"])
 
     def test_director_generation_catalog_requires_quote_confirmation_and_feature_gates(self):
         enabled = {

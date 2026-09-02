@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # 黄雀 AI · 独立认证服务（零依赖，标准库）
 # 端口 127.0.0.1:8095，nginx 把 /api/auth/ 路由过来。与 leadgen(8090) 完全隔离。
-import datetime, sqlite3, hashlib, secrets, json, os, re, sys, time, urllib.parse, threading, shlex
+import base64, datetime, sqlite3, hashlib, secrets, json, os, re, sys, time, urllib.error, urllib.parse, urllib.request, threading, shlex
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -4692,10 +4692,57 @@ class H(BaseHTTPRequestHandler):
             c.execute("DELETE FROM tokens WHERE token=?", (token,))
             c.commit(); c.close()
 
+    def _cli_binary_proxy(self, scope, base, path, method="GET", body=None):
+        auth = self._cli_user()
+        if not auth:
+            return self._cli_send(401, {"detail": "CLI 未登录或授权已过期", "code": "cli_unauthorized"})
+        row, scopes = auth
+        if scope not in scopes:
+            return self._cli_send(403, {"detail": "当前 CLI 授权缺少权限：" + scope, "code": "insufficient_scope"})
+        token = issue_token(row["username"], ttl=hq_cli_api.BRIDGE_TOKEN_TTL)
+        try:
+            data = None
+            headers = {"Authorization": "Bearer " + token, "Accept": "application/octet-stream"}
+            if body is not None:
+                data = json.dumps(body, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+                headers["Content-Type"] = "application/json"
+            request = urllib.request.Request(base + path, data=data, headers=headers, method=method)
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), hq_cli_api._NoRedirect())
+            try:
+                response = opener.open(request, timeout=300)
+            except urllib.error.HTTPError as exc:
+                raw = exc.read(8193)
+                try:
+                    detail = json.loads(raw or b"{}").get("detail")
+                except Exception:
+                    detail = "下载失败"
+                return self._cli_send(exc.code, {"detail": str(detail or "下载失败")[:220], "code": "download_failed"})
+            self.send_response(response.getcode())
+            for name in ("Content-Type", "Content-Disposition", "Content-Length", "X-Asset-Count", "X-Asset-Skipped"):
+                value = response.headers.get(name)
+                if value:
+                    self.send_header(name, value)
+            self.send_header("Cache-Control", "private, no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            with response:
+                while True:
+                    chunk = response.read(64 * 1024)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+            return True
+        except (OSError, urllib.error.URLError):
+            return self._cli_send(502, {"detail": "下载服务暂时不可用", "code": "upstream_unavailable"})
+        finally:
+            c = db()
+            c.execute("DELETE FROM tokens WHERE token=?", (token,))
+            c.commit(); c.close()
+
     def _account_media_upload(self, kind, row, director_breakdown=False,
-                              digital_human_kind=""):
+                              digital_human_kind="", video_import=False):
         label = {"image": "图片", "video": "视频", "audio": "音频"}[kind]
-        max_bytes = ({
+        max_bytes = (100 * 1024 * 1024 if video_import else ({
             "image": hq_cli_api.DIRECTOR_BREAKDOWN_IMAGE_MAX_BYTES,
             "video": hq_cli_api.DIRECTOR_BREAKDOWN_VIDEO_MAX_BYTES,
         } if director_breakdown else ({
@@ -4705,12 +4752,14 @@ class H(BaseHTTPRequestHandler):
             "image": hq_cli_api.IMAGE_UPLOAD_MAX_BYTES,
             "video": hq_cli_api.VIDEO_UPLOAD_MAX_BYTES,
             "audio": hq_cli_api.AUDIO_UPLOAD_MAX_BYTES,
-        }))[kind]
+        }))[kind])
         content_types = {
             "image": {"image/jpeg", "image/png", "image/webp"},
             "video": {"video/mp4", "video/quicktime", "video/webm"},
             "audio": {"audio/mpeg", "audio/wav", "audio/x-wav", "audio/mp4", "audio/x-m4a", "audio/aac", "audio/ogg"},
         }[kind]
+        if video_import:
+            content_types = {"video/mp4"}
         digest_header = {"image": "X-HQ-Image-SHA256", "video": "X-HQ-Video-SHA256", "audio": "X-HQ-Audio-SHA256"}[kind]
         slots = (hq_cli_api.DIRECTOR_BREAKDOWN_UPLOAD_SLOTS if director_breakdown else {
             "image": hq_cli_api.IMAGE_UPLOAD_SLOTS, "video": hq_cli_api.VIDEO_UPLOAD_SLOTS,
@@ -4718,6 +4767,8 @@ class H(BaseHTTPRequestHandler):
         }[kind])
         proxy = {"image": hq_cli_api.proxy_image_upload, "video": hq_cli_api.proxy_video_upload,
                  "audio": hq_cli_api.proxy_audio_upload}[kind]
+        if video_import:
+            proxy = hq_cli_api.proxy_video_import
         if digital_human_kind == "material":
             proxy = hq_cli_api.proxy_digital_human_material_upload
         elif digital_human_kind == "audio":
@@ -4797,6 +4848,11 @@ class H(BaseHTTPRequestHandler):
                     self.rfile, length, token, INTERNAL_TOKEN, content_type,
                     digest, self.headers.get("X-HQ-Run-ID"),
                 )
+            elif video_import:
+                status, result = proxy(
+                    self.rfile, length, token, INTERNAL_TOKEN, content_type, digest,
+                    urllib.parse.unquote(self.headers.get("X-Video-Title") or "")[:160],
+                )
             else:
                 status, result = proxy(
                     self.rfile, length, token, INTERNAL_TOKEN, content_type, digest,
@@ -4821,6 +4877,54 @@ class H(BaseHTTPRequestHandler):
         if "assets:upload" not in scopes:
             return self._cli_send(403, {"detail": "当前 CLI 授权缺少权限：assets:upload", "code": "insufficient_scope"})
         return self._account_media_upload(kind, row)
+
+    def _cli_video_import(self):
+        auth = self._cli_user()
+        if not auth:
+            return self._cli_send(401, {"detail": "CLI 未登录或授权已过期", "code": "cli_unauthorized"})
+        row, scopes = auth
+        if "assets:upload" not in scopes:
+            return self._cli_send(403, {"detail": "当前 CLI 授权缺少权限：assets:upload", "code": "insufficient_scope"})
+        return self._account_media_upload("video", row, video_import=True)
+
+    def _cli_profile_avatar_upload(self):
+        auth = self._cli_user()
+        if not auth:
+            return self._cli_send(401, {"detail": "CLI 未登录或授权已过期", "code": "cli_unauthorized"})
+        row, scopes = auth
+        if "account:write" not in scopes:
+            return self._cli_send(403, {"detail": "当前 CLI 授权缺少权限：account:write", "code": "insufficient_scope"})
+        if (self.headers.get("X-HQ-Confirm") or "").strip().lower() != "true":
+            return self._cli_send(409, {"detail": "上传账号头像需要显式确认", "code": "confirmation_required"})
+        if self.headers.get("Transfer-Encoding"):
+            return self._cli_send(400, {"detail": "头像上传必须提供 Content-Length", "code": "invalid_image_upload"})
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            length = 0
+        content_type = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        digest = (self.headers.get("X-HQ-Image-SHA256") or "").strip().lower()
+        if not 0 < length <= 4 * 1024 * 1024 or content_type not in {"image/jpeg", "image/png", "image/webp"}:
+            return self._cli_send(400, {"detail": "头像必须是 4MB 以内的 JPG、PNG 或 WebP", "code": "invalid_image_upload"})
+        raw = self.rfile.read(length)
+        if len(raw) != length or hashlib.sha256(raw).hexdigest() != digest:
+            return self._cli_send(400, {"detail": "头像内容或摘要无效", "code": "invalid_image_upload"})
+        try:
+            data_url = "data:%s;base64,%s" % (content_type, base64.b64encode(raw).decode("ascii"))
+            key = business_cards.upload_image(data_url, "avatar", prefix="cards")
+            c = db()
+            try:
+                c.execute("BEGIN IMMEDIATE")
+                business_cards.set_media_key(c, row["id"], "avatar", key)
+                card = card_for_owner(c, row["id"])
+                c.commit()
+            finally:
+                c.close()
+            return self._cli_send(200, {"ok": True, "url": card["avatar"], "card": card, "sha256": digest})
+        except business_cards.CardError as exc:
+            return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
+        except Exception:
+            return self._cli_send(503, {"detail": "头像媒体服务暂不可用", "code": "media_unavailable"})
 
     def _cli_director_breakdown_upload(self, kind):
         auth = self._cli_user()
@@ -5952,6 +6056,24 @@ class H(BaseHTTPRequestHandler):
             return self._cli_video_upload()
         if p == "/api/auth/cli/audio-upload":
             return self._cli_audio_upload()
+        if p == "/api/auth/cli/profile-avatar-upload":
+            return self._cli_profile_avatar_upload()
+        if p == "/api/auth/cli/video-import":
+            return self._cli_video_import()
+        if p == "/api/auth/cli/asset-batch-download":
+            if self._content_length_exceeds(64 * 1024):
+                return self._cli_send(413, {"detail": "批量下载请求过大", "code": "request_too_large"})
+            d = self._body()
+            if self._bad_json() or not isinstance(d, dict) or set(d) != {"assets"}:
+                return self._cli_send(400, {"detail": "批量下载请求无效", "code": "invalid_request"})
+            try:
+                assets = hq_cli_api._web_parity_value("asset-batch-download", "assets", d["assets"])
+            except hq_cli_api.CLIAPIError as exc:
+                return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
+            return self._cli_binary_proxy(
+                "assets:read", hq_cli_api.CONTENT_BASE, "/api/gen/asset/batch-download",
+                method="POST", body={"assets": assets},
+            )
         if p == "/api/auth/cli/digital-human-material-upload":
             return self._cli_digital_human_upload("material")
         if p == "/api/auth/cli/digital-human-audio-upload":
@@ -7577,6 +7699,15 @@ class H(BaseHTTPRequestHandler):
             row, scopes = auth
             return self._cli_send(200, {"user": self._cli_public_user(row), "scopes": list(scopes),
                                         "expires_at": int(row["cli_expires_at"])})
+        if p == "/api/auth/cli/creator-agent-background-pdf":
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            project_id = str((query.get("project_id") or [""])[0]).strip()
+            if not re.fullmatch(r"[0-9a-f]{12}", project_id):
+                return self._cli_send(400, {"detail": "Creator Agent 项目标识无效", "code": "invalid_request"})
+            return self._cli_binary_proxy(
+                "creator-agent:read", hq_cli_api.CREATOR_AGENT_BASE,
+                "/projects/%s/background.pdf" % project_id,
+            )
         if p == "/api/auth/subscription/status":
             row = self._user()
             if not row:

@@ -680,7 +680,7 @@ def main(argv=None):
                     elif args.id == "creator-agent-background-pdf":
                         result = client.download_file(
                             "", args.output, credentials["access_token"], "creator-profile",
-                            direct_path="/api/creator-agent/projects/%s/background.pdf" % payload["project_id"],
+                            direct_path="/api/auth/cli/creator-agent-background-pdf?project_id=%s" % payload["project_id"],
                         )
                     else:
                         result = client.download_file(
