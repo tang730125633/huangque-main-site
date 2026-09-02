@@ -36,6 +36,7 @@ LEADGEN_BASE = "http://127.0.0.1:8100"
 IMGGEN_BASE = "http://127.0.0.1:8101"
 HERMES_BASE = "http://127.0.0.1:3102"
 ADMIN_BASE = "http://127.0.0.1:8098"
+CREATOR_AGENT_BASE = os.environ.get("HQ_CREATOR_AGENT_BASE", "http://127.0.0.1:8114").rstrip("/")
 
 SCOPES = {
     "profile:read": "读取账号公开资料与点数",
@@ -63,6 +64,11 @@ SCOPES = {
     "video-compose:write": "经确认后创建、分析、审核或渲染本人一键成片项目",
     "digital-presenter:read": "读取本人画布中的数字人口播项目",
     "digital-presenter:write": "经确认后创建或更新本人画布中的数字人口播项目",
+    "account:write": "经确认后更新本人账号资料、好友、邀请和充值订单",
+    "account:read": "读取本人账号通知、邀请、充值与点数记录",
+    "creator-agent:read": "读取本人创作助手项目和批次状态",
+    "creator-agent:write": "经确认后向本人创作助手提交消息或修改项目",
+    "tasks:write": "经确认后删除本人失败的生成任务",
 }
 SCOPES.update(director_workflow_contract.SCOPE_CONTRACT)
 DEFAULT_SCOPES = tuple(SCOPES)
@@ -253,6 +259,111 @@ _ACTION_INPUTS = {
     "tryon-fast-generate": ("person_image_upload_id", "clothes_upload_id", "seconds"),
     "tryon-classic-generate": ("person_video_upload_id", "clothes_upload_id", "background_upload_id", "seconds"),
 }
+
+# Fixed mirrors of normal-user workbench calls that were not in the v0.14
+# catalog.  This is deliberately data, not an URL proxy: every entry fixes a
+# route, method, owner scope and the exact accepted input keys.
+_WEB = "public"
+_CONTENT = "content"
+_CREATOR = "creator"
+WEB_PARITY_ACTIONS = {
+    # Creator Agent
+    "creator-agent-capability": (_CREATOR, "GET", "/capability", (), (), False, False),
+    "creator-agent-bootstrap": (_CREATOR, "GET", "/bootstrap", (), (), False, False),
+    "creator-agent-message": (_CREATOR, "POST", "/messages", ("message", "request_id", "project_id", "intent", "payload"), ("message", "request_id", "project_id"), True, True),
+    "creator-agent-project-select": (_CREATOR, "POST", "/projects/{project_id}/select", ("project_id",), ("project_id",), True, False),
+    "creator-agent-project-rename": (_CREATOR, "POST", "/projects/{project_id}/rename", ("project_id", "title"), ("project_id", "title"), True, False),
+    "creator-agent-batch-quote": (_CREATOR, "POST", "/batches/{batch_id}/quote", ("batch_id", "expected_revision"), ("batch_id", "expected_revision"), False, False),
+    "creator-agent-batch-confirm": (_CREATOR, "POST", "/batches/{batch_id}/confirm", ("batch_id", "confirmation_id", "expected_revision", "expected_quote_expires_at"), ("batch_id", "confirmation_id", "expected_revision"), True, False),
+    "creator-agent-batch-refresh": (_CREATOR, "POST", "/batches/{batch_id}/refresh", ("batch_id",), ("batch_id",), False, False),
+    "task-delete": (_CONTENT, "POST", "/api/gen/job/delete", ("job_id",), ("job_id",), True, False),
+    # Account, invitation, notification and payment (payment itself stays browser-only).
+    "invite-config": (_WEB, "GET", "/api/invite/config", (), (), False, False),
+    "invite-dashboard": (_WEB, "GET", "/api/invite/dashboard", (), (), False, False),
+    "invite-users": (_WEB, "GET", "/api/invite/users?{query}", ("level", "limit", "offset"), (), False, False),
+    "invite-rewards": (_WEB, "GET", "/api/invite/reward-points?{query}", ("limit", "offset"), (), False, False),
+    "invite-code": (_WEB, "GET", "/api/invite/code", (), (), False, False),
+    "invite-referrer": (_WEB, "GET", "/api/invite/referrer", (), (), False, False),
+    "notifications": (_WEB, "GET", "/api/auth/notifications?{query}", ("limit",), (), False, False),
+    "notification-read": (_WEB, "POST", "/api/auth/notifications/{notification_id}/read", ("notification_id",), ("notification_id",), True, False),
+    "notifications-read-all": (_WEB, "POST", "/api/auth/notifications/read-all", (), (), True, False),
+    "profile-update": (_WEB, "POST", "/api/auth/profile", ("display_name",), ("display_name",), True, False),
+    "friends": (_WEB, "GET", "/api/auth/friends", (), (), False, False),
+    "friend-requests": (_WEB, "GET", "/api/auth/friend-requests", (), (), False, False),
+    "friend-request": (_WEB, "POST", "/api/auth/friends/request", ("account_id",), ("account_id",), True, False),
+    "friend-request-respond": (_WEB, "POST", "/api/auth/friend-requests/respond", ("request_id", "action"), ("request_id", "action"), True, False),
+    "friend-delete": (_WEB, "DELETE", "/api/auth/friends/{username}", ("username",), ("username",), True, False),
+    "points-transfer-recipient": (_WEB, "GET", "/api/auth/points/transfer/recipient?{query}", ("account_id",), ("account_id",), False, False),
+    "points-transfers": (_WEB, "GET", "/api/auth/points/transfers?{query}", ("limit", "offset"), (), False, False),
+    "recharge-packages": (_WEB, "GET", "/api/auth/recharge/packages", (), (), False, False),
+    "recharge-orders": (_WEB, "GET", "/api/auth/recharge/orders?{query}", ("limit", "offset"), (), False, False),
+    # Asset library and collaborative canvas.
+    "asset-marks": (_CONTENT, "GET", "/api/gen/asset/marks?{query}", ("kind",), ("kind",), False, False),
+    "asset-batch-delete": (_CONTENT, "POST", "/api/gen/asset/batch-delete", ("assets",), ("assets",), True, False),
+    "avatar-rename": (_CONTENT, "POST", "/api/gen/video/avatar-name", ("id", "name"), ("id", "name"), True, False),
+    "avatar-delete": (_CONTENT, "POST", "/api/gen/video/avatar-delete", ("id",), ("id",), True, False),
+    "voice-rename": (_CONTENT, "POST", "/api/gen/audio/voice-name", ("slot_id", "name"), ("slot_id", "name"), True, False),
+    "canvas-members": (_WEB, "GET", "/api/auth/canvas/boards/{board_id}", ("board_id",), ("board_id",), False, False),
+    "canvas-member-add": (_WEB, "POST", "/api/auth/canvas/boards/{board_id}/members", ("board_id", "account_id", "role"), ("board_id", "account_id", "role"), True, False),
+    "canvas-member-remove": (_WEB, "DELETE", "/api/auth/canvas/boards/{board_id}/members/{username}", ("board_id", "username"), ("board_id", "username"), True, False),
+    # Digital IP / IP12 report workflow.
+    "digital-ip-diagnose": (_CONTENT, "POST", "/api/gen/digital-ip/diagnose", ("project_id", "revision", "state"), ("project_id", "revision", "state"), True, False),
+    "digital-ip-guide": (_CONTENT, "POST", "/api/gen/digital-ip/guide", ("project_id", "revision", "message", "history"), ("project_id", "revision", "message"), True, False),
+    "digital-ip-report-generate": (_CONTENT, "POST", "/api/gen/digital-ip/projects/{project_id}/report", ("project_id", "revision", "consent"), ("project_id", "revision", "consent"), True, False),
+    "digital-ip-report-confirm": (_CONTENT, "POST", "/api/gen/digital-ip/projects/{project_id}/report-confirm", ("project_id", "revision", "report_id"), ("project_id", "revision", "report_id"), True, False),
+    "digital-human-oneclick-heygen-preflight": (_CONTENT, "POST", "/api/gen/digital-human-oneclick/heygen-preflight", (), (), False, False),
+    "digital-human-oneclick-material-resolve": (_CONTENT, "POST", "/api/gen/digital-human-v2/material-resolve", ("digital_human_pipeline", "digital_human_stage", "digital_human_run_id", "digital_human_plan_digest", "digital_human_consent_token", "digital_human_script", "digital_human_narration_mode", "digital_human_audio_upload_id", "digital_human_allow_ai_materials", "digital_human_customer_upload_ids", "digital_human_item_index"), ("digital_human_pipeline", "digital_human_stage", "digital_human_run_id", "digital_human_plan_digest", "digital_human_consent_token", "digital_human_narration_mode", "digital_human_allow_ai_materials", "digital_human_customer_upload_ids", "digital_human_item_index"), True, False),
+    # Short-drama center, workspace, graph, draft, refinement and delivery.
+    "short-drama-project-update": (_CONTENT, "PUT", "/api/gen/short-drama/project?id={project_id}", ("project_id", "revision", "title", "synopsis", "genre", "ratio", "target_duration", "shot_count", "visual_style", "target_platform", "point_budget", "characters", "character_contract", "script", "shots"), ("project_id", "revision"), True, False),
+    "short-drama-project-promote": (_CONTENT, "POST", "/api/gen/short-drama/projects/promote", ("project", "planning_messages", "confirmed_contract", "request_id"), ("project", "planning_messages", "confirmed_contract", "request_id"), True, True),
+    "short-drama-project-import": (_CONTENT, "POST", "/api/gen/short-drama/projects/import", ("title", "synopsis", "ratio", "target_duration", "shot_count", "visual_style", "source_text", "filename", "import_mode", "content_type", "character_contract", "genre", "source_requirement", "request_id"), ("title", "synopsis", "ratio", "target_duration", "shot_count", "visual_style", "source_text", "filename", "import_mode", "request_id"), True, True),
+    "short-drama-core-story": (_CONTENT, "POST", "/api/gen/short-drama/projects/live-action/core-story", ("project_id", "revision", "core_story"), ("project_id", "revision", "core_story"), True, False),
+    "short-drama-project-finalize": (_CONTENT, "POST", "/api/gen/short-drama/projects/live-action/finalize", ("project_id", "revision"), ("project_id", "revision"), True, False),
+    "short-drama-project-abandon": (_CONTENT, "POST", "/api/gen/short-drama/projects/live-action/abandon", ("project_id", "revision", "request_id"), ("project_id", "revision", "request_id"), True, True),
+    "short-drama-script-message": (_CONTENT, "POST", "/api/gen/short-drama/conversation/messages", ("project_id", "revision", "message", "request_id"), ("project_id", "revision", "message", "request_id"), True, True),
+    "short-drama-script-generate": (_CONTENT, "POST", "/api/gen/short-drama/conversation/script/generate", ("project_id", "revision", "instruction", "confirmed_contract", "request_id"), ("project_id", "revision", "request_id"), True, True),
+    "short-drama-shot-update": (_CONTENT, "POST", "/api/gen/short-drama/conversation/script/shot/update", ("project_id", "revision", "version_id", "shot_key", "changes", "instruction", "request_id"), ("project_id", "revision", "version_id", "shot_key", "changes", "request_id"), True, True),
+    "short-drama-shot-regenerate": (_CONTENT, "POST", "/api/gen/short-drama/conversation/script/shot/regenerate", ("project_id", "revision", "version_id", "shot_key", "instruction", "request_id"), ("project_id", "revision", "version_id", "shot_key", "request_id"), True, True),
+    "short-drama-shot-lock": (_CONTENT, "POST", "/api/gen/short-drama/conversation/script/shot/lock", ("project_id", "revision", "version_id", "shot_key", "locked", "request_id"), ("project_id", "revision", "version_id", "shot_key", "locked", "request_id"), True, True),
+    "short-drama-shot-structure": (_CONTENT, "POST", "/api/gen/short-drama/conversation/script/shot/structure", ("project_id", "revision", "version_id", "shot_key", "action", "instruction", "request_id"), ("project_id", "revision", "version_id", "shot_key", "action", "request_id"), True, True),
+    "short-drama-script-restore": (_CONTENT, "POST", "/api/gen/short-drama/conversation/script/restore", ("project_id", "revision", "version_id", "request_id"), ("project_id", "revision", "version_id", "request_id"), True, True),
+    "short-drama-script-lock": (_CONTENT, "POST", "/api/gen/short-drama/conversation/script/lock", ("project_id", "revision", "request_id"), ("project_id", "revision", "request_id"), True, True),
+    "short-drama-character-studio": (_CONTENT, "GET", "/api/gen/short-drama/character-studio?{query}", ("project_id",), ("project_id",), False, False),
+    "short-drama-character-profile": (_CONTENT, "POST", "/api/gen/short-drama/character-studio/profile", ("project_id", "project_revision", "character_key", "identity_text", "personality", "appearance_prompt", "wardrobe_prompt", "name"), ("project_id", "project_revision", "character_key", "identity_text", "personality", "appearance_prompt", "wardrobe_prompt"), True, False),
+    "short-drama-character-avatar": (_CONTENT, "POST", "/api/gen/short-drama/character-studio/bind-avatar", ("project_id", "project_revision", "character_key", "avatar_id"), ("project_id", "project_revision", "character_key", "avatar_id"), True, False),
+    "short-drama-character-reference-select": (_CONTENT, "POST", "/api/gen/short-drama/select-character-reference", ("project_id", "revision", "character_key", "source", "asset_job_id", "asset_url", "filename", "image_data"), ("project_id", "revision", "character_key", "source"), True, False),
+    "short-drama-scene-graph": (_CONTENT, "GET", "/api/gen/short-drama/asset-graph/scenes?{query}", ("project_id",), ("project_id",), False, False),
+    "short-drama-scene-sync": (_CONTENT, "POST", "/api/gen/short-drama/asset-graph/sync", ("project_id", "graph_revision"), ("project_id", "graph_revision"), True, False),
+    "short-drama-scene-create": (_CONTENT, "POST", "/api/gen/short-drama/asset-graph/scenes", ("project_id", "graph_revision", "name", "description", "shot_keys"), ("project_id", "graph_revision", "name", "description", "shot_keys"), True, False),
+    "short-drama-scene-update": (_CONTENT, "POST", "/api/gen/short-drama/asset-graph/scenes/update", ("project_id", "graph_revision", "scene_key", "name", "description", "shot_keys"), ("project_id", "graph_revision", "scene_key", "name", "description", "shot_keys"), True, False),
+    "short-drama-scene-bind-shot": (_CONTENT, "POST", "/api/gen/short-drama/asset-graph/scenes/bind-shot", ("project_id", "graph_revision", "scene_key", "shot_key"), ("project_id", "graph_revision", "scene_key", "shot_key"), True, False),
+    "short-drama-scene-delete": (_CONTENT, "POST", "/api/gen/short-drama/asset-graph/scenes/delete", ("project_id", "graph_revision", "scene_key"), ("project_id", "graph_revision", "scene_key"), True, False),
+    "short-drama-scene-restore": (_CONTENT, "POST", "/api/gen/short-drama/asset-graph/scenes/restore", ("project_id", "graph_revision", "scene_key"), ("project_id", "graph_revision", "scene_key"), True, False),
+    "short-drama-scene-reference": (_CONTENT, "POST", "/api/gen/short-drama/asset-graph/scenes/reference", ("project_id", "graph_revision", "scene_key", "source", "asset_job_id", "asset_url", "filename", "image_data", "prompt", "reference_source"), ("project_id", "graph_revision", "scene_key", "source"), True, False),
+    "short-drama-scene-lock": (_CONTENT, "POST", "/api/gen/short-drama/asset-graph/scenes/lock", ("project_id", "graph_revision", "scene_key"), ("project_id", "graph_revision", "scene_key"), True, False),
+    "short-drama-autodraft": (_CONTENT, "GET", "/api/gen/short-drama/autodraft?{query}", ("project_id",), ("project_id",), False, False),
+    "short-drama-autodraft-render-start": (_CONTENT, "POST", "/api/gen/short-drama/autodraft/jobs", ("project_id", "plan_id", "request_id"), ("project_id", "plan_id", "request_id"), True, True),
+    "short-drama-autodraft-render-status": (_CONTENT, "GET", "/api/gen/short-drama/autodraft/jobs/{job_id}?project_id={project_id}", ("project_id", "job_id"), ("project_id", "job_id"), False, False),
+    "short-drama-legacy-media-recover": (_CONTENT, "POST", "/api/gen/short-drama/autodraft/legacy-media/recover", ("project_id",), ("project_id",), True, False),
+    "short-drama-provider-version-select": (_CONTENT, "POST", "/api/gen/short-drama/autodraft/provider-version/select", ("project_id", "shot_key", "version_id"), ("project_id", "shot_key", "version_id"), True, False),
+    "short-drama-refinement": (_CONTENT, "GET", "/api/gen/short-drama/refinement?{query}", ("project_id",), ("project_id",), False, False),
+    "short-drama-refinement-status": (_CONTENT, "GET", "/api/gen/short-drama/refinement/jobs/{job_id}?project_id={project_id}", ("project_id", "job_id"), ("project_id", "job_id"), False, False),
+    "short-drama-refinement-preview": (_CONTENT, "POST", "/api/gen/short-drama/refinement/changes/preview", ("project_id", "shot_key", "replacement_provider_version_id"), ("project_id", "shot_key"), True, False),
+    "short-drama-refinement-adopt": (_CONTENT, "POST", "/api/gen/short-drama/refinement/candidates/adopt", ("project_id", "shot_key", "source_version_id", "replacement_provider_version_id", "request_id"), ("project_id", "shot_key", "source_version_id", "replacement_provider_version_id", "request_id"), True, True),
+    "short-drama-refinement-reassemble-candidates": (_CONTENT, "POST", "/api/gen/short-drama/refinement/candidates/reassemble", ("project_id", "version_id", "request_id"), ("project_id", "version_id", "request_id"), True, True),
+    "short-drama-refinement-start": (_CONTENT, "POST", "/api/gen/short-drama/refinement/jobs", ("project_id", "shot_key", "source_version_id", "replacement_provider_version_id", "request_id"), ("project_id", "shot_key", "request_id"), True, True),
+    "short-drama-refinement-issue": (_CONTENT, "POST", "/api/gen/short-drama/refinement/issues", ("project_id", "version_id", "shot_key", "issue_code", "message"), ("project_id", "version_id", "shot_key"), True, False),
+    "short-drama-refinement-keep-original": (_CONTENT, "POST", "/api/gen/short-drama/refinement/issues/keep-original", ("project_id", "version_id", "shot_key"), ("project_id", "version_id", "shot_key"), True, False),
+    "short-drama-refinement-media": (_CONTENT, "POST", "/api/gen/short-drama/refinement/media-preference", ("project_id", "mode"), ("project_id", "mode"), True, False),
+    "short-drama-refinement-reassemble": (_CONTENT, "POST", "/api/gen/short-drama/refinement/reassemble", ("project_id", "version_id", "request_id"), ("project_id", "version_id", "request_id"), True, True),
+    "short-drama-refinement-confirm": (_CONTENT, "POST", "/api/gen/short-drama/refinement/confirm", ("project_id", "version_id", "checklist", "source_hashes"), ("project_id", "version_id", "checklist", "source_hashes"), True, False),
+    "short-drama-refinement-restore": (_CONTENT, "POST", "/api/gen/short-drama/refinement/restore", ("project_id", "version_id"), ("project_id", "version_id"), True, False),
+}
+WEB_PARITY_REMAINING = {}
+_ACTION_INPUTS.update({action: fields for action, (_, _, _, fields, _, _, _) in WEB_PARITY_ACTIONS.items()})
+CONFIRMATION_ACTIONS = frozenset(set(CONFIRMATION_ACTIONS) | {
+    action for action, (_, _, _, _, _, confirm, _) in WEB_PARITY_ACTIONS.items() if confirm
+})
 
 _ACTION_PURPOSES = {
     "account": "读取当前黄雀账号与点数", "channels": "读取可用渠道", "pricing": "读取实时价格",
@@ -1254,6 +1365,83 @@ _GENERATION_ACTIONS = frozenset({
 })
 
 
+_WEB_PARITY_INTEGER_FIELDS = frozenset({
+    "amount", "revision", "expected_revision", "expected_quote_expires_at", "notification_id",
+    "limit", "offset", "level", "shot_count", "target_duration", "project_revision",
+    "graph_revision", "point_budget", "asset_job_id", "digital_human_item_index",
+})
+_WEB_PARITY_BOOLEAN_FIELDS = frozenset({"consent", "locked", "digital_human_allow_ai_materials"})
+_WEB_PARITY_ARRAY_FIELDS = frozenset({
+    "assets", "history", "candidate_ids", "scenes", "planning_messages",
+    "character_contract", "characters", "shots", "shot_keys", "digital_human_customer_upload_ids",
+})
+_WEB_PARITY_OBJECT_FIELDS = frozenset({
+    "payload", "state", "patch", "profile", "scene", "structure", "changes", "issue",
+    "project", "confirmed_contract", "core_story", "script", "checklist", "source_hashes",
+})
+
+
+def _web_parity_schema_field(action, name):
+    if name in _WEB_PARITY_INTEGER_FIELDS:
+        return {"type": "integer", "minimum": 1 if name == "notification_id" else 0, "maximum": 2**63 - 1}
+    if name in _WEB_PARITY_BOOLEAN_FIELDS:
+        return {"type": "boolean"}
+    if name == "assets":
+        return {"type": "array", "minItems": 1, "maxItems": 120, "items": {
+            "type": "object", "additionalProperties": False, "required": ["kind", "id"],
+            "properties": {"kind": {"type": "string", "enum": ["image", "audio", "video", "avatar"]},
+                           "id": {"type": "integer", "minimum": 1, "maximum": 2**63 - 1}},
+        }}
+    if name in _WEB_PARITY_ARRAY_FIELDS:
+        return {"type": "array", "maxItems": 120, "items": {"type": "string"}} if name in {"planning_messages", "shot_keys"} else {"type": "array", "maxItems": 120}
+    if name in _WEB_PARITY_OBJECT_FIELDS:
+        return {"type": "object"}
+    field = {"type": "string", "maxLength": 8000}
+    if name.endswith("_id") or name in {"message", "title", "account_id", "username", "url", "product_type", "order_type", "action"}:
+        field["minLength"] = 1
+    if name == "request_id":
+        field.update({"minLength": 8, "maxLength": 128, "pattern": "^[A-Za-z0-9._:-]{8,128}$"})
+    if name == "action":
+        field["enum"] = (["accept", "reject"] if action == "friend-request-respond" else
+                         ["delete", "copy", "insert_before", "insert_after", "smart_insert", "move_up", "move_down"])
+    if name == "role":
+        field["enum"] = ["editor", "viewer"]
+    if name == "source" and action in {"short-drama-scene-reference", "short-drama-character-reference-select"}:
+        field["enum"] = ["asset", "upload"]
+    if name == "ratio":
+        field["enum"] = ["9:16", "16:9"]
+    if name == "import_mode":
+        field["enum"] = ["faithful", "optimize"]
+    if name == "content_type":
+        field["enum"] = ["live_action"]
+    if name == "source_requirement":
+        field["enum"] = ["", "complete_story"]
+    if name == "mode" and action == "short-drama-refinement-media":
+        field["enum"] = ["voice_timeline", "provider_audio", "silent"]
+    if name == "digital_human_pipeline":
+        field["const"] = "digital_human_material_v3"
+    if name == "digital_human_stage":
+        field["const"] = "material_resolve"
+    if name == "digital_human_narration_mode":
+        field["enum"] = ["text", "audio"]
+    return field
+
+
+_WEB_ACTION_INPUTS = {
+    action: {
+        "required": list(required),
+        "properties": {field: _web_parity_schema_field(action, field) for field in fields},
+        "constraints": [
+            "fixed first-party route; unknown input fields are rejected",
+            "owner scope is enforced by the target API",
+            *(["use the same request_id on a retry"] if idempotent else []),
+        ],
+    }
+    for action, (_, _, _, fields, required, _, idempotent) in WEB_PARITY_ACTIONS.items()
+}
+_MEDIA_SCHEMAS.update(_WEB_ACTION_INPUTS)
+
+
 def _catalog_type(field):
     if field in {"id", "avatar_id", "job_id", "limit", "offset", "page", "page_size", "days", "count", "duration", "seconds", "expected_version", "expected_revision", "revision", "source_asset_id", "target_duration", "pitch", "volume"}:
         return "integer"
@@ -1401,6 +1589,58 @@ def _download_catalog_entry():
     }
 
 
+def _asset_batch_download_catalog_entry():
+    return {
+        "action": "asset-batch-download", "family": "assets",
+        "purpose": "把本人选择的资产打包下载到一个新的本地 ZIP 文件",
+        "input_schema": {"type": "object", "additionalProperties": False,
+                         "required": ["assets", "output_file"], "properties": {
+                             "assets": _web_parity_schema_field("asset-batch-download", "assets"),
+                             "output_file": {"type": "file", "path": "absolute"},
+                         }},
+        "constraints": ["fixed POST download route", "existing local files are never overwritten"],
+        "billing": "free", "external_effect": False, "confirmation_required": False,
+        "risk": "read", "result_type": "file", "result": {"kind": "local_file"},
+        "ui_route": "/workbench/assets", "transport": {"kind": "download", "supports": ["fixed_download"]},
+        "availability": {"status": "available", "feature_flags": [], "disabled_feature_flags": []},
+    }
+
+
+def _account_media_upload_catalog_entry(action, purpose, max_bytes, mime_types, ui_route):
+    return {
+        "action": action, "family": "assets", "purpose": purpose,
+        "input_schema": {"type": "object", "additionalProperties": False,
+                         "required": ["file"], "properties": {"file": {
+                             "type": "file", "path": "absolute", "maxBytes": max_bytes,
+                             "mimeTypes": mime_types,
+                         }}},
+        "constraints": ["requires explicit confirmation", "the local path is never sent to the server"],
+        "billing": "free", "external_effect": True, "confirmation_required": True,
+        "risk": "write", "result_type": "upload", "result": {"kind": "account_asset"},
+        "ui_route": ui_route,
+        "transport": {"kind": "dedicated_upload", "supports": ["dedicated_upload"]},
+        "availability": {"status": "available", "feature_flags": [], "disabled_feature_flags": []},
+    }
+
+
+def _creator_pdf_download_catalog_entry():
+    return {
+        "action": "creator-agent-background-pdf", "family": "creator-agent",
+        "purpose": "下载本人 Creator Agent 项目的画像背景 PDF",
+        "input_schema": {"type": "object", "additionalProperties": False,
+                         "required": ["project_id", "output_file"], "properties": {
+                             "project_id": {"type": "string", "pattern": "^[0-9a-f]{12}$"},
+                             "output_file": {"type": "file", "path": "absolute"},
+                         }},
+        "constraints": ["fixed owner-scoped PDF route", "existing local files are never overwritten"],
+        "billing": "free", "external_effect": False, "confirmation_required": False,
+        "risk": "read", "result_type": "file", "result": {"kind": "local_file"},
+        "ui_route": "/workbench/creator-agent",
+        "transport": {"kind": "download", "supports": ["fixed_download"]},
+        "availability": {"status": "available", "feature_flags": ["creator_agent_v1"], "disabled_feature_flags": []},
+    }
+
+
 ACTION_CATALOG = tuple(_catalog_entry(action, fields) for action, fields in _ACTION_INPUTS.items()) + (
     _upload_catalog_entry("image-upload", "image", 10 * 1024 * 1024,
                           ["image/jpeg", "image/png", "image/webp"], 20),
@@ -1414,6 +1654,16 @@ ACTION_CATALOG = tuple(_catalog_entry(action, fields) for action, fields in _ACT
                           ["audio/mpeg", "audio/wav", "audio/x-wav", "audio/mp4", "audio/x-m4a", "audio/aac"], 1),
     _director_breakdown_upload_catalog_entry(),
     _download_catalog_entry(),
+    _asset_batch_download_catalog_entry(),
+    _account_media_upload_catalog_entry(
+        "profile-avatar-upload", "上传并更新当前账号头像", 4 * 1024 * 1024,
+        ["image/jpeg", "image/png", "image/webp"], "/workbench/settings",
+    ),
+    _account_media_upload_catalog_entry(
+        "video-import", "导入本人 H3 MP4 成片到视频资产库", 100 * 1024 * 1024,
+        ["video/mp4"], "/workbench/video",
+    ),
+    _creator_pdf_download_catalog_entry(),
 )
 for _catalog_item in ACTION_CATALOG:
     if _catalog_item["action"] in _FAMILIES:
@@ -2477,11 +2727,123 @@ def _director_storyboard(value):
     return json.loads(json.dumps(value, ensure_ascii=False))
 
 
+def _web_parity_scope(action, method):
+    write = method != "GET"
+    if action.startswith("creator-agent-"):
+        return "creator-agent:%s" % ("write" if write else "read")
+    if action == "task-delete":
+        return "tasks:write"
+    if action.startswith("digital-human-oneclick-"):
+        return "digital-human-oneclick:%s" % (
+            "read" if action.endswith("preflight") else "write"
+        )
+    if action.startswith("short-drama-"):
+        return "short-drama:%s" % ("write" if write else "read")
+    if action.startswith("digital-ip-"):
+        return "ip12:%s" % ("write" if write else "read")
+    if action.startswith("canvas-member"):
+        return "canvas:%s" % ("write" if write else "read")
+    if action.startswith(("asset-", "avatar-", "voice-", "video-import")):
+        return "assets:%s" % ("write" if write else "read")
+    return "account:%s" % ("write" if write else "read")
+
+
+def _web_parity_value(action, name, value):
+    if name == "notification_id":
+        return _integer(value, name, 1, 2**63 - 1)
+    if name in _WEB_PARITY_INTEGER_FIELDS:
+        return _integer(value, name, 0, 2**63 - 1)
+    if name in {"consent", "locked"}:
+        if not isinstance(value, bool):
+            raise CLIAPIError(400, "%s 必须是布尔值" % name)
+        return value
+    if name == "assets":
+        if not isinstance(value, list) or not 1 <= len(value) <= 120:
+            raise CLIAPIError(400, "assets 必须是 1-120 项的数组")
+        normalized, seen = [], set()
+        for item in value:
+            _strict_object(item, {"kind", "id"}, ("kind", "id"))
+            kind = _enum(item["kind"], "assets.kind", ("image", "audio", "video", "avatar"))
+            asset_id = _integer(item["id"], "assets.id", 1, 2**63 - 1)
+            if (kind, asset_id) not in seen:
+                normalized.append({"kind": kind, "id": asset_id})
+                seen.add((kind, asset_id))
+        return normalized
+    if name in _WEB_PARITY_ARRAY_FIELDS:
+        if not isinstance(value, list) or len(value) > 120:
+            raise CLIAPIError(400, "%s 必须是最多 120 项的数组" % name)
+        if name in {"planning_messages", "shot_keys"}:
+            return [_string(item, name, 1, 600) for item in value]
+        return value
+    if name in _WEB_PARITY_OBJECT_FIELDS:
+        if not isinstance(value, dict):
+            raise CLIAPIError(400, "%s 必须是 JSON 对象" % name)
+        return value
+    if name == "request_id":
+        return _matched_string(value, name, _IDEMPOTENCY_KEY_RE, 128)
+    if name == "role":
+        return _enum(value, name, ("editor", "viewer"))
+    if name == "action":
+        return _enum(value, name, (("accept", "reject") if action == "friend-request-respond" else
+                                   ("delete", "copy", "insert_before", "insert_after", "smart_insert", "move_up", "move_down")))
+    if name == "source" and action in {"short-drama-scene-reference", "short-drama-character-reference-select"}:
+        return _enum(value, name, ("asset", "upload"))
+    if name == "ratio":
+        return _enum(value, name, ("9:16", "16:9"))
+    if name == "import_mode":
+        return _enum(value, name, ("faithful", "optimize"))
+    if name == "content_type":
+        return _enum(value, name, ("live_action",))
+    if name == "source_requirement":
+        return _enum(value, name, ("", "complete_story"))
+    if name == "mode" and action == "short-drama-refinement-media":
+        return _enum(value, name, ("voice_timeline", "provider_audio", "silent"))
+    if name == "digital_human_pipeline":
+        return _enum(value, name, ("digital_human_material_v3",))
+    if name == "digital_human_stage":
+        return _enum(value, name, ("material_resolve",))
+    if name == "digital_human_narration_mode":
+        return _enum(value, name, ("text", "audio"))
+    return _string(value, name, 1 if name.endswith("_id") or name in {"message", "title", "account_id", "username", "url", "product_type", "order_type", "action"} else 0, 8000)
+
+
+def _web_parity_plan(action, value):
+    base_kind, method, template, fields, required, _, idempotent = WEB_PARITY_ACTIONS[action]
+    _strict_object(value, set(fields), required)
+    body = {name: _web_parity_value(action, name, raw) for name, raw in value.items()}
+    if action == "friend-request-respond":
+        body["action"] = _enum(body["action"], "action", ("accept", "reject"))
+    if action == "invite-users" and "level" in body:
+        body["level"] = _integer(body["level"], "level", 1, 2)
+    path_names = [name for name in fields if "{" + name + "}" in template and name != "query"]
+    path = template
+    for name in path_names:
+        path = path.replace("{" + name + "}", urllib.parse.quote(str(body[name]), safe=""))
+    for name in path_names:
+        body.pop(name, None)
+    if "{query}" in path:
+        query_fields = fields if method == "GET" else ("project_id",)
+        path = path.replace("{query}", urllib.parse.urlencode({name: body[name] for name in query_fields if name in body}))
+        if method != "GET":
+            for name in query_fields:
+                body.pop(name, None)
+    headers = {}
+    if idempotent:
+        headers["Idempotency-Key"] = body["request_id"]
+        if action != "creator-agent-message":
+            body.pop("request_id")
+    base = CREATOR_AGENT_BASE if base_kind == _CREATOR else (CONTENT_BASE if base_kind == _CONTENT else PUBLIC_ORIGIN)
+    return _plan(_web_parity_scope(action, method), "proxy", base=base, path=path,
+                 method=method, body=None if method == "GET" else body, headers=headers)
+
+
 def action_plan(action, value):
     if not isinstance(value, dict):
         raise CLIAPIError(400, "input 必须是 JSON 对象")
     if action not in ACTION_CATALOG_MAP:
         raise CLIAPIError(404, "未知 CLI 能力", "unknown_action")
+    if action in WEB_PARITY_ACTIONS:
+        return _web_parity_plan(action, value)
     if action == "account":
         _strict_object(value, set())
         return _plan("profile:read", "account")

@@ -41,6 +41,7 @@ LOGIN_SCOPES = [
     "inspiration:read", "inspiration:write", "leads:read", "leads:write", "short-drama:read", "short-drama:write",
     "director:read", "director:write", "director:generate", "director:recover",
     "digital-human-oneclick:read", "digital-human-oneclick:write", "digital-human-oneclick:generate",
+    "account:read", "account:write", "creator-agent:read", "creator-agent:write", "tasks:write",
 ]
 
 
@@ -266,6 +267,8 @@ def _validate(capability, payload):
         _validate_video_channel(payload)
     if capability.get("id") in {"text-video-generate", "director-scene-talking-generate"}:
         _validate_text_video_talking(payload)
+    if capability.get("id") in {"director-scene-image-generate", "director-scene-video-generate"}:
+        _validate_director_scenes(payload)
     if capability.get("id") == "leads-generate":
         platforms = payload.get("platforms") or []
         if any(platform in {"douyin", "xhs"} for platform in platforms) and not payload.get("keyword"):
@@ -313,6 +316,12 @@ def _validate_text_video_talking(payload):
             raise CliError(EXIT_INPUT, "input_error", "talking_material scene avatar is invalid")
     if not enabled:
         raise CliError(EXIT_INPUT, "input_error", "talking_material must enable at least one scene")
+
+
+def _validate_director_scenes(payload):
+    if not any(isinstance(item, dict) and isinstance(item.get("scene"), str)
+               and item["scene"].strip() for item in payload["scenes"]):
+        raise CliError(EXIT_INPUT, "input_error", "at least one director scene needs a description")
 
 
 def _doctor(environment):
@@ -642,6 +651,10 @@ def main(argv=None):
                             raise CliError(EXIT_USAGE, "usage_error", "digital-human audio upload requires --run-id")
                         upload_kind = "digital-human audio"
                         uploader = lambda path, token: client.upload_digital_human_audio(path, token, args.run_id)
+                    elif args.id == "profile-avatar-upload":
+                        upload_kind, uploader = "profile avatar", client.upload_profile_avatar
+                    elif args.id == "video-import":
+                        upload_kind, uploader = "H3 video", client.upload_video_import
                     else:
                         upload_kind, uploader = "image", client.upload_image
                 if uploader is not None:
@@ -654,15 +667,26 @@ def main(argv=None):
                     result = _checked_response(status, upload)
             elif is_download:
                 if not args.output:
-                    raise CliError(EXIT_USAGE, "usage_error", "dl requires --output /absolute/path")
+                    raise CliError(EXIT_USAGE, "usage_error", "%s requires --output /absolute/path" % args.id)
                 if args.file or args.open_browser or args.run_id or args.confirm or args.quote_token or args.expected_cost is not None:
                     raise CliError(EXIT_USAGE, "usage_error", "download does not accept upload, browser, confirmation, or quote options")
                 credentials = _credentials()
                 try:
-                    result = client.download_file(
-                        payload["url"], args.output, credentials["access_token"],
-                        payload.get("name", "video"), payload.get("decode_key", ""),
-                    )
+                    if args.id == "asset-batch-download":
+                        result = client.download_file(
+                            "", args.output, credentials["access_token"], "assets",
+                            post_payload={"assets": payload["assets"]},
+                        )
+                    elif args.id == "creator-agent-background-pdf":
+                        result = client.download_file(
+                            "", args.output, credentials["access_token"], "creator-profile",
+                            direct_path="/api/creator-agent/projects/%s/background.pdf" % payload["project_id"],
+                        )
+                    else:
+                        result = client.download_file(
+                            payload["url"], args.output, credentials["access_token"],
+                            payload.get("name", "video"), payload.get("decode_key", ""),
+                        )
                 except ValueError as exc:
                     raise CliError(EXIT_INPUT, "invalid_download", str(exc))
                 except client.NetworkError as exc:
