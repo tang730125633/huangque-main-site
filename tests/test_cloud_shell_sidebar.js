@@ -22,6 +22,14 @@ function readUsesFlushWorkspace() {
   return new Function(`${match[0]}; return usesFlushWorkspace;`)();
 }
 
+function readFeatureNavRetryDelay() {
+  const match = shell.match(
+    /var FEATURE_NAV_RETRY_DELAYS=\[[^\]]+\];\s*function featureNavRetryDelay\(status,attempt\)\{[^}]+\}/,
+  );
+  assert.ok(match, 'cloud-shell.js must define bounded feature-nav retries');
+  return new Function(`${match[0]}; return featureNavRetryDelay;`)();
+}
+
 test('desktop Inspiration keeps the sidebar expanded', () => {
   const navDisplayMode = readNavDisplayMode();
   assert.equal(navDisplayMode('inspiration', false), 'expanded');
@@ -44,6 +52,18 @@ test('generated navigation keeps semantic labels for compact mode', () => {
   assert.match(shell, /class="hq-nav-label"/);
   assert.match(shell, /data-nav-label=/);
   assert.match(shell, /aria-label=/);
+});
+
+test('feature navigation retries transient capability failures only', () => {
+  const retryDelay = readFeatureNavRetryDelay();
+  assert.equal(retryDelay(0, 0), 1000);
+  assert.equal(retryDelay(503, 1), 3000);
+  assert.equal(retryDelay(408, 2), 10000);
+  assert.equal(retryDelay(429, 3), 30000);
+  assert.equal(retryDelay(503, 4), -1);
+  assert.equal(retryDelay(401, 0), -1);
+  assert.equal(retryDelay(404, 0), -1);
+  assert.match(shell, /setTimeout\(function\(\)\{if\(item\.isConnected\)probe\(attempt\+1\);\},delay\)/);
 });
 
 test('compact shell styles cover the rail, footer, and reduced motion', () => {
