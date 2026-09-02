@@ -203,7 +203,7 @@ class DirectorAgentConfirmationTests(unittest.TestCase):
         self.assertEqual(normalized[0], offer_id)
         self.assertEqual(normalized[4], token)
 
-    def test_ready_request_returns_direct_production_question(self):
+    def test_ready_request_prepares_plan_without_opening_confirmation(self):
         request = director_agent.validate_payload(payload())
         request.update(_username="alice", _job_id=42)
         raw = json.dumps({
@@ -219,13 +219,12 @@ class DirectorAgentConfirmationTests(unittest.TestCase):
             "content_domains.points.cost_of", return_value=3,
         ):
             result = director_agent.normalize_model_result(raw, request)
-        self.assertEqual(
-            "生产信息已经准备好，预计扣除 3 点。是否开始生产？",
-            result["content"],
-        )
-        self.assertEqual(3, result["production_offer"]["expected_cost"])
-        self.assertTrue(result["production_offer"]["requires_confirmation"])
-        self.assertEqual("东鹏特饮", result["production_offer"]["summary"]["topic"])
+        self.assertNotIn("production_offer", result)
+        self.assertIn("请回复：确认生成", result["content"])
+        plan = result.pop("_pending_production_plan")
+        self.assertEqual(3, plan["expected_cost"])
+        self.assertEqual("东鹏特饮", plan["summary"]["topic"])
+        self.assertEqual("a1b2c3d4", request["page_revision"])
 
     def test_chat_job_claim_is_atomic_and_replayable_without_schema_change(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -424,23 +423,20 @@ class DirectorAgentConfirmationTests(unittest.TestCase):
             self.assertEqual(409, status)
             self.assertEqual("production_price_changed", result["code"])
             self.assertEqual(4, result["current_cost"])
-            self.assertNotEqual(value["quote_token"], result["quote_token"])
-            self.assertEqual(value["plan_digest"], result["plan_digest"])
+            self.assertTrue(result["requires_new_text_confirmation"])
+            self.assertFalse(result["pending_plan_updated"])
+            self.assertNotIn("quote_token", result)
             confirm_call.assert_not_called()
 
-            refreshed = dict(
-                value, expected_cost=4, quote_token=result["quote_token"],
-            )
             with mock.patch.object(
                 director_agent.director_cli, "confirm_script",
             ) as confirm_call, self.assertRaises(
                 director_agent.DirectorOfferError,
             ) as raised:
                 director_agent.produce_script(
-                    db, "alice", refreshed,
-                    now=result["expires_at"] + 1,
+                    db, "alice", value, now=2_000_000_001,
                 )
-            self.assertEqual("director_offer_expired", raised.exception.code)
+            self.assertEqual("director_offer_invalid", raised.exception.code)
             confirm_call.assert_not_called()
 
     def test_offer_claim_and_attempt_insert_roll_back_together_on_crash(self):
@@ -497,7 +493,7 @@ class DirectorAgentConfirmationTests(unittest.TestCase):
             self.assertEqual("director_offer_expired", raised.exception.code)
             quote_call.assert_not_called()
 
-    def test_price_refresh_uses_old_token_compare_and_swap(self):
+    def test_price_refresh_expires_old_token_with_compare_and_swap(self):
         with tempfile.TemporaryDirectory() as temp:
             database = pathlib.Path(temp) / "jobs.db"
 
@@ -513,7 +509,7 @@ class DirectorAgentConfirmationTests(unittest.TestCase):
                 db, "alice", value["offer_id"], value["plan_digest"],
                 value["input"], 4, value["quote_token"], now=2_000_000_001,
             )
-            self.assertNotEqual(value["quote_token"], first["quote_token"])
+            self.assertFalse(first["pending_updated"])
             with self.assertRaises(
                 director_agent.DirectorOfferError,
             ) as raised:
@@ -524,13 +520,15 @@ class DirectorAgentConfirmationTests(unittest.TestCase):
             self.assertEqual("director_offer_refreshed", raised.exception.code)
             with closing(db()) as connection:
                 row = connection.execute(
-                    "SELECT expected_cost,token_hash FROM director_agent_offers"
+                    "SELECT expected_cost,token_hash,expires_at "
+                    "FROM director_agent_offers"
                 ).fetchone()
             self.assertEqual(4, row["expected_cost"])
             self.assertEqual(
-                director_agent._token_hash(first["quote_token"]),
+                director_agent._token_hash(value["quote_token"]),
                 row["token_hash"],
             )
+            self.assertEqual(2_000_000_001, row["expires_at"])
 
     def test_forged_or_expired_offer_is_rejected_before_cli_quote(self):
         with tempfile.TemporaryDirectory() as temp:
