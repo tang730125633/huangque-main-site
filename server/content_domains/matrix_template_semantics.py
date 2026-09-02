@@ -15,6 +15,9 @@ import urllib.request
 MODEL = os.environ.get(
     "MATRIX_TEMPLATE_SEMANTIC_MODEL", "gpt-4.1-mini"
 ).strip() or "gpt-4.1-mini"
+REPAIR_MODEL = os.environ.get(
+    "MATRIX_TEMPLATE_SEMANTIC_REPAIR_MODEL", "gpt-4.1"
+).strip() or "gpt-4.1"
 OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com").rstrip("/")
 OPENAI_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 VERSION = 1
@@ -122,6 +125,43 @@ def _earlier_top1_candidates(value: dict, top: str) -> list[dict]:
     return candidates
 
 
+def _longest_segment(value: dict, text: str, key: str) -> tuple[int, int]:
+    breaks = value.get(key)
+    if not isinstance(breaks, list):
+        return (0, max(0, len(text) - 1))
+    boundaries = [-1] + sorted({
+        item for item in breaks
+        if (
+            not isinstance(item, bool) and isinstance(item, int)
+            and 0 <= item < len(text) - 1
+        )
+    }) + [len(text) - 1]
+    return max(
+        (
+            (boundaries[index - 1] + 1, boundaries[index])
+            for index in range(1, len(boundaries))
+        ),
+        key=lambda span: span[1] - span[0],
+    )
+
+
+def _repair_feedback(value: dict, feedback: str, top: str, bottom: str) -> str:
+    top_span = _longest_segment(value, top, "top_break_after")
+    bottom_span = _longest_segment(value, bottom, "bottom_break_after")
+    top_text = top[top_span[0]:top_span[1] + 1]
+    bottom_text = bottom[bottom_span[0]:bottom_span[1] + 1]
+    return (
+        f"{feedback}。上一结果已失败，不得原样重复。"
+        f"顶部最长块为索引 {top_span[0]}-{top_span[1]}，"
+        f"原文为 {top_text!r}；底部最长块为索引 "
+        f"{bottom_span[0]}-{bottom_span[1]}，原文为 {bottom_text!r}。"
+        "若 top1 已足够短但 top2/top3 仍放不下，"
+        "必须在过长语义块内新增完整短语边界。"
+        "严禁拆开任何双字词、地名、行业词、动宾短语或复合名词；"
+        "只能在语法成分或完整短语之间断开。"
+    )
+
+
 def _prompt(top: str, bottom: str, contract: dict) -> str:
     layers = contract.get("layers") or {}
     top1 = layers.get("top1") or {}
@@ -157,24 +197,140 @@ def _prompt(top: str, bottom: str, contract: dict) -> str:
 """.strip()
 
 
-def _request(top: str, bottom: str, contract: dict, *, previous=None, feedback="") -> dict:
+def _repair_prompt(top: str, bottom: str, contract: dict,
+                   previous: dict, feedback: str) -> str:
+    layers = contract.get("layers") or {}
+    layer_lines = []
+    for name in ("top1", "top2", "top3", "bottom2"):
+        item = layers.get(name)
+        if not isinstance(item, dict):
+            continue
+        layer_lines.append(
+            f"- {name}: {int(item.get('font_size_px') or 0)}px，"
+            f"可用宽 {int(item.get('max_width_px') or contract.get('max_width_px') or 996)}px，"
+            f"最多 {int(item.get('max_lines') or 1)} 行。"
+        )
+    return f"""
+你是中文短视频语义分块器。上一个索引方案未通过真实字体排版，现在改为先拆完整短语，再由程序换算索引。
+
+模板区域：
+{chr(10).join(layer_lines)}
+
+硬规则：
+1. 不得增删、替换或调序任何非空白字符；数组连接后必须逐字等于原文。
+2. 每块必须是完整词组或语法成分，严禁拆开双字词、地名、行业词、动宾短语、数字组合、英文词和复合名词。
+3. 顶部每块原则上 2-8 个可见字符；任何可继续按语法成分拆分的长块都不得超过 10 个字符。
+4. 每个 `|`、`｜` 或句末标点后必须结束当前块，分隔符必须保留。
+5. 先拆主语、地点状语、谓语、宾语和并列项，不要把整句当成一个块。
+6. top1_chunk_count 表示前几个 top_chunks 放入 top1，其余由排版器分配到 top2/top3。
+7. 上一结果不得原样重复。
+
+示例：
+原文“老周在深圳组建了人工智能创业团队|每天交流项目”
+应拆为 ["老周","在深圳","组建了","人工智能","创业团队|","每天","交流项目"]。
+
+顶部原文：{top}
+底部原文：{bottom}
+上一结果：{json.dumps(previous, ensure_ascii=False)}
+校验反馈：{feedback[:500]}
+
+只输出 JSON：
+{{"top_chunks":["原文片段"],"bottom_chunks":["原文片段"],"top1_chunk_count":1}}
+""".strip()
+
+
+def _align_chunks(raw, source: str, label: str) -> list[str]:
+    if not isinstance(raw, list) or not 1 <= len(raw) <= 64:
+        raise RuntimeError(f"AI {label}语义块格式无效")
+    if any(not isinstance(item, str) or not item for item in raw):
+        raise RuntimeError(f"AI {label}语义块格式无效")
+    aligned = []
+    cursor = 0
+    for raw_chunk in raw:
+        chunk = raw_chunk
+        if source.startswith(chunk, cursor):
+            aligned.append(chunk)
+            cursor += len(chunk)
+            continue
+        gap_end = cursor
+        while gap_end < len(source) and source[gap_end].isspace():
+            gap_end += 1
+        if gap_end == cursor or not source.startswith(chunk, gap_end):
+            raise RuntimeError(f"AI {label}语义块改写了原文")
+        gap = source[cursor:gap_end]
+        if aligned:
+            aligned[-1] += gap
+            aligned.append(chunk)
+        else:
+            aligned.append(gap + chunk)
+        cursor = gap_end + len(chunk)
+    trailing = source[cursor:]
+    if trailing:
+        if not trailing.isspace():
+            raise RuntimeError(f"AI {label}语义块未覆盖完整原文")
+        aligned[-1] += trailing
+    if "".join(aligned) != source:
+        raise RuntimeError(f"AI {label}语义块与原文不一致")
+    return aligned
+
+
+def _chunk_layout(raw: dict, top: str, bottom: str, model: str) -> dict:
+    if not isinstance(raw, dict):
+        raise RuntimeError("AI 语义分块返回无效")
+    top_chunks = _align_chunks(raw.get("top_chunks"), top, "顶部")
+    bottom_chunks = _align_chunks(raw.get("bottom_chunks"), bottom, "底部")
+    top1_count = raw.get("top1_chunk_count")
+    if (
+        isinstance(top1_count, bool) or not isinstance(top1_count, int)
+        or not 1 <= top1_count <= len(top_chunks)
+    ):
+        raise RuntimeError("AI top1 语义块数无效")
+
+    def break_after(chunks):
+        cursor = 0
+        result = []
+        for chunk in chunks[:-1]:
+            cursor += len(chunk)
+            result.append(cursor - 1)
+        return result
+
+    top_breaks = _normalize_breaks(break_after(top_chunks), top)
+    bottom_breaks = _normalize_breaks(break_after(bottom_chunks), bottom)
+    requested_top1_end = sum(len(item) for item in top_chunks[:top1_count]) - 1
+    top1_end = _nearest_safe_top1_end(requested_top1_end, top_breaks, top)
+    return {
+        "version": VERSION,
+        "model": model,
+        "source_sha256": _source_sha256(top, bottom),
+        "top1_end": top1_end,
+        "top_break_after": top_breaks,
+        "bottom_break_after": bottom_breaks,
+    }
+
+
+def _request(top: str, bottom: str, contract: dict, *, previous=None,
+             feedback="", model=None, repair=False) -> dict:
     if not OPENAI_KEY:
         raise RuntimeError("AI 语义排版模型密钥未配置")
-    messages = [
-        {"role": "system", "content": _prompt(top, bottom, contract)},
-        {"role": "user", "content": "请标注语义边界。"},
-    ]
-    if previous is not None and feedback:
-        messages.extend([
-            {"role": "assistant", "content": json.dumps(previous, ensure_ascii=False)},
-            {"role": "user", "content": "上一结果未通过真实字体排版校验：" + str(feedback)[:300] + "。必须修改上一结果；如果 top1 排不下，将 top1_end 移到更早的完整语义边界。不要重写文案。"},
-        ])
+    if repair:
+        messages = [
+            {"role": "system", "content": _repair_prompt(
+                top, bottom, contract, previous or {}, str(feedback or ""),
+            )},
+            {"role": "user", "content": "请按原文分成完整语义短语块。"},
+        ]
+    else:
+        messages = [
+            {"role": "system", "content": _prompt(top, bottom, contract)},
+            {"role": "user", "content": "请标注语义边界。"},
+        ]
+    selected_model = str(model or MODEL).strip() or MODEL
     body = json.dumps({
-        "model": MODEL,
+        "model": selected_model,
         "messages": messages,
         "temperature": 0,
         "response_format": {"type": "json_object"},
-        "max_tokens": 300,
+        "max_tokens": 500 if repair else 300,
     }, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
         _chat_url(), data=body,
@@ -195,14 +351,21 @@ def _request(top: str, bottom: str, contract: dict, *, previous=None, feedback="
         raise RuntimeError("AI 语义排版服务连接失败") from exc
 
 
-def generate(top: str, bottom: str, contract: dict, *, previous=None, feedback="") -> dict:
-    raw = _request(top, bottom, contract, previous=previous, feedback=feedback)
+def generate(top: str, bottom: str, contract: dict, *, previous=None,
+             feedback="", model=None, repair=False) -> dict:
+    selected_model = str(model or MODEL).strip() or MODEL
+    raw = _request(
+        top, bottom, contract, previous=previous, feedback=feedback,
+        model=selected_model, repair=repair,
+    )
+    if repair:
+        return _chunk_layout(raw, top, bottom, selected_model)
     top_breaks = _normalize_breaks(raw.get("top_break_after"), top)
     bottom_breaks = _normalize_breaks(raw.get("bottom_break_after"), bottom)
     top1_end = _nearest_safe_top1_end(raw.get("top1_end"), top_breaks, top)
     return {
         "version": VERSION,
-        "model": MODEL,
+        "model": selected_model,
         "source_sha256": _source_sha256(top, bottom),
         "top1_end": top1_end,
         "top_break_after": top_breaks,
@@ -212,7 +375,7 @@ def generate(top: str, bottom: str, contract: dict, *, previous=None, feedback="
 
 def cache_key(top: str, bottom: str, template_id: str, contract: dict) -> str:
     payload = json.dumps(
-        [VERSION, MODEL, template_id, top, bottom, contract],
+        [VERSION, MODEL, REPAIR_MODEL, template_id, top, bottom, contract],
         ensure_ascii=False, sort_keys=True, separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -267,9 +430,12 @@ def resolve(top: str, bottom: str, template_id: str, contract: dict,
         else:
             previous, feedback, attempts = None, "", 3
         for _attempt in range(attempts):
+            selected_model = MODEL if previous is None else REPAIR_MODEL
             value = generate(
                 top, bottom, contract,
                 previous=previous, feedback=feedback,
+                model=selected_model,
+                repair=previous is not None,
             )
             accepted_value, result, feedback = validate_with_rebalance(
                 value, feedback
@@ -278,4 +444,5 @@ def resolve(top: str, bottom: str, template_id: str, contract: dict,
                 _remember(key, accepted_value)
                 return accepted_value, result
             previous = value
+            feedback = _repair_feedback(value, feedback, top, bottom)
         raise RuntimeError("AI 语义排版经两次修复后仍未通过真实字体校验")

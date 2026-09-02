@@ -593,6 +593,68 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         ))
         resolve_call.assert_called_once()
 
+    def test_v05_long_health_copy_uses_stronger_semantic_repair(self):
+        template = next(
+            item for item in self.reference_templates()
+            if item.get("variant") == "v05"
+        )
+        top = (
+            "我是大鹏 陕西西安人在广州有个健康赛道创业圈子"
+            "资源共享|大健康|AI矩阵社交破圈|一人公司"
+        )
+        bottom = "PL区扣888"
+        source_hash = self.module.matrix_template_semantics._source_sha256(
+            top, bottom,
+        )
+        first = {
+            "version": 1, "model": "gpt-4.1-mini",
+            "source_sha256": source_hash, "top1_end": 4,
+            "top_break_after": [3, 4, 9, 22, 27, 31, 40],
+            "bottom_break_after": [],
+        }
+        repaired = {
+            **first, "model": "gpt-4.1", "top1_end": 9,
+            "top_break_after": [3, 4, 9, 12, 22, 27, 31, 40],
+        }
+        models = []
+
+        def generated(_top, _bottom, _contract, *, previous=None,
+                      feedback="", model=None, repair=False):
+            models.append(model)
+            if previous is None:
+                self.assertFalse(repair)
+                return first
+            self.assertIn("顶部最长块为索引 10-22", feedback)
+            self.assertTrue(repair)
+            return repaired
+
+        def preflight(_method, _path, body, **_kwargs):
+            if body["semantic_layout"] == first:
+                raise self.module.MatrixTemplateHTTPError(
+                    400, "HyperFrames 文案无法在完整语义边界内排入模板",
+                )
+            return {"payload": dict(body, duration=11.1)}
+
+        self.module.matrix_template_semantics._CACHE.clear()
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(
+                 self.module, "public_templates", return_value=[template],
+             ), mock.patch.object(
+                 self.module.matrix_template_semantics, "generate",
+                 side_effect=generated,
+             ), mock.patch.object(
+                 self.module, "_request", side_effect=preflight,
+             ):
+            result = self.module.validate_payload({
+                "top_text": top, "bottom_text": bottom,
+                "template_id": template["id"], "bgm": True,
+            })
+        self.assertEqual(repaired, result["semantic_layout"])
+        self.assertEqual([
+            self.module.matrix_template_semantics.MODEL,
+            self.module.matrix_template_semantics.REPAIR_MODEL,
+        ], models)
+
     def test_worker_reuses_frozen_semantic_layout_without_second_ai_call(self):
         template = next(
             item for item in self.reference_templates()
@@ -800,9 +862,13 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         repaired = dict(first, top_break_after=[top.index("，")])
 
         def generated(_top, _bottom, _contract, *, previous=None,
-                      feedback=""):
+                      feedback="", model=None, repair=False):
             self.assertIsNone(previous)
             self.assertFalse(feedback)
+            self.assertFalse(repair)
+            self.assertEqual(
+                self.module.matrix_template_semantics.MODEL, model,
+            )
             return first
 
         def preflight(_method, _path, body, **_kwargs):
@@ -867,7 +933,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
 
         for label, tampered in tampered_values.items():
             def generated(_top, _bottom, _contract, *, previous=None,
-                          feedback=""):
+                          feedback="", model=None, repair=False):
                 return repaired if previous is not None and feedback else first
 
             def preflight(_method, _path, body, **_kwargs):
