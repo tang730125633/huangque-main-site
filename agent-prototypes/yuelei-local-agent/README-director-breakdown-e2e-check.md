@@ -44,3 +44,7 @@ echo '{"mode":"reverse_prompt","url":"<链接>"}' \
 
 ## 5) 证据交付（回给我/回 PR）
 把以上每步命令输出、returncode、有无 error、以及“变体1 vs2”结果，原样贴回（可脱敏链接/账号）。我据实把 quote/confirm 契约与是否 `--expected-cost` 写进 #1420 说明 + 必要时代码对齐，再提请合。
+
+--- 一键脚本 ---
+同目录提供 `e2e_director_breakdown.sh`：在含新版能力的服务器上
+`bash e2e_director_breakdown.sh <真实视频 链接>` 自动打全套证据并打包输出目录。
