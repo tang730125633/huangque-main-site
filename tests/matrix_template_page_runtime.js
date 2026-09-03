@@ -135,7 +135,7 @@ async function scenarioLivePreview(){
 async function scenarioTemplateVisibility(){
   const runtime=createRuntime({post:()=>Promise.reject(new Error('unused')),poll:()=>Promise.reject(new Error('unused'))},new Map());
   await flush();const cards=runtime.get('templateGrid').children;
-  return {count:cards.length,html:cards.map(card=>card.innerHTML).join('\n'),active:runtime.get('livePreview').attributes['data-template']};
+  return {count:cards.length,html:cards.map(card=>card.innerHTML).join('\n'),selectedName:runtime.get('templateName').textContent,active:runtime.get('livePreview').attributes['data-template']};
 }
 async function scenarioHiddenTemplatePendingRecovery(){
   const storage=new Map([['hq-matrix-template-pending-v2:alice',JSON.stringify({owner:'alice',started_at:Date.now(),items:[{key:'hidden-template-key',body:{top_text:'旧标题',bottom_text:'旧行动文案',template_id:'full-overlay-bold',bgm:true},job_id:'',status:'uncertain',result:null,error:'',refund_status:''}]})]]);

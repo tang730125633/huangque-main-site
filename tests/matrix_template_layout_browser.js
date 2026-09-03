@@ -98,6 +98,7 @@ function hasOverflow(box) {
         const mediaStyle = getComputedStyle(media);
         const bottomStyle = getComputedStyle(bottom);
         return {
+          label: node.querySelector('strong').textContent,
           variant: visual.dataset.variant || '',
           signature: [
             visualStyle.backgroundColor, visualStyle.color, visualStyle.gridTemplateRows,
@@ -142,6 +143,7 @@ function hasOverflow(box) {
         scroll,
         batchControl: {hyperframes: hyperframesBatchControl},
         cardCount: cardReport.length,
+        cardLabels: cardReport.map(item => item.label),
         referenceCount: references.length,
         distinctReferencePreviews: new Set(references.map(item => item.signature)).size,
       };
@@ -154,6 +156,8 @@ function hasOverflow(box) {
   if (report.desktop.overflow.length || report.mobile.overflow.length) throw new Error(`preview overflow: ${JSON.stringify(report)}`);
   for (const viewport of Object.values(report)) {
     if (viewport.cardCount !== 17 || viewport.referenceCount !== 17 || viewport.distinctReferencePreviews !== 17) throw new Error(`template cards are not distinct: ${JSON.stringify(report)}`);
+    const expectedCardLabels = referenceIds.map((id, index) => `${index + 1}. 参考排版 ${String(index + 1).padStart(2, '0')}`);
+    if (viewport.cardLabels.join('|') !== expectedCardLabels.join('|')) throw new Error(`template card numbering is inaccurate: ${JSON.stringify(viewport.cardLabels)}`);
     const hyperframes = viewport.batchControl.hyperframes;
     const expectedLabels = '1条,2条,3条,4条,5条';
     if (hyperframes.disabled || hyperframes.values.join(',') !== '1,2,3,4,5' || hyperframes.hint !== '最多5条' || hyperframes.labels.join(',') !== expectedLabels) throw new Error(`HyperFrames batch control is unavailable: ${JSON.stringify(hyperframes)}`);
