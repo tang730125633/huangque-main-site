@@ -64,6 +64,7 @@
     .metric{display:flex;justify-content:space-between;align-items:center;min-height:86px}
     .metric b{font-size:30px;font-variant-numeric:tabular-nums;color:var(--gold)}
     .metric span,.label{font-size:12px;color:var(--muted)}
+    .dashboard-metric{width:100%;height:auto;padding:16px;text-align:left;font:inherit;color:inherit;appearance:none;transition:border-color .15s,background .15s,transform .15s}.dashboard-metric:hover,.dashboard-metric:focus-visible{border-color:rgba(240,190,85,.46);background:rgba(240,190,85,.07);outline:0;transform:translateY(-1px)}.dashboard-metric.attention{border-color:rgba(224,107,100,.38);background:rgba(224,107,100,.055)}.metric-main,.metric-copy{display:grid;gap:3px}.metric-copy{text-align:right}.metric-copy strong{color:var(--text);font-size:12px}.metric-copy span{max-width:170px}
     h2{font-size:16px;margin:0 0 12px}
     table{width:100%;border-collapse:collapse}
     th,td{padding:10px 8px;border-bottom:1px solid rgba(46,56,50,.8);text-align:left;vertical-align:middle}
@@ -80,7 +81,7 @@
     .module-page{min-width:0}
     .support-hero{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(280px,.6fr);gap:18px;align-items:center;padding:22px;border:1px solid rgba(240,190,85,.22);border-radius:10px;background:linear-gradient(135deg,rgba(240,190,85,.09),rgba(34,197,165,.045) 60%,rgba(23,29,26,.88));box-shadow:0 20px 60px rgba(0,0,0,.14)}
     .support-hero h2{font-size:22px;margin:0 0 7px}.support-hero p{margin:0;color:var(--muted)}
-    .support-path{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.support-path span{padding:9px 10px;border:1px solid var(--line);border-radius:7px;background:rgba(17,22,19,.7);color:var(--muted);font-size:12px}.support-path b{color:var(--gold);margin-right:6px}
+    .dashboard-watch{display:grid;gap:7px}.watch-row{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:36px;padding:7px 10px;border:1px solid var(--line);border-radius:7px;background:rgba(17,22,19,.7);color:var(--muted);font-size:12px}.watch-row b{color:var(--text);text-align:right}.watch-row.good b{color:var(--ok)}.watch-row.attention{border-color:rgba(224,107,100,.3);background:rgba(224,107,100,.06)}.watch-row.attention b{color:#ffaaa4}.watch-refresh{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:2px}.watch-refresh span{color:var(--muted);font-size:11px}
     .quick-links{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.quick-links button{height:44px;text-align:left}
     .issue-list{display:grid;gap:8px}.issue-row{display:grid;grid-template-columns:110px minmax(120px,.7fr) minmax(180px,1.4fr) 90px;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid rgba(46,56,50,.72)}.issue-row:last-child{border-bottom:0}
     .section-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:12px}
@@ -230,7 +231,7 @@
     @media (max-width:900px){.admin-sidebar{position:fixed;left:0;transform:translateX(-100%);transition:transform .18s ease}.admin-layout.nav-open .admin-sidebar{transform:none}.admin-layout.nav-open .sidebar-backdrop{display:block;position:fixed;inset:0;z-index:35;width:100%;height:100%;border:0;border-radius:0;background:rgba(2,5,3,.68)}.sidebar-resizer{display:none}.nav-toggle{display:block}.shell{padding:18px 14px 36px}header{grid-template-columns:auto minmax(0,1fr) auto;gap:10px}.top-search button{font-size:0;width:42px;padding:0}.top-search button:after{content:"搜";font-size:13px}.span3,.span4,.span6,.span8{grid-column:span 12}.channels,.feature-grid,.invite-config,.membership-recharge,.detail-grid,.case-workspace,.announcement-workspace{grid-template-columns:1fr}.ops-workspace{grid-template-columns:1fr}.ops-catalog,.ops-inspector{position:static}.ops-catalog-list{grid-template-columns:repeat(2,minmax(0,1fr))}.ops-mode-head{grid-template-columns:minmax(160px,1fr) auto}.ops-mode-head>.ops-mode-meta{grid-column:1/-1}.ops-standard-body{grid-template-columns:repeat(2,minmax(0,1fr))}.channel-map-head{grid-template-columns:1fr}.channel-map-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.ledger-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.ledger-stat:nth-child(2){border-right:0}.ledger-stat:nth-child(-n+2){border-bottom:1px solid var(--line)}.user{padding:7px}.user>div:last-child{display:none}.case-list{max-height:none}.network-node{align-items:stretch}.network-node .actions{width:100%}.customer-drawer{width:100vw}.operations-channel-context{grid-template-columns:1fr}.issue-row{grid-template-columns:90px 1fr}.issue-row>*:nth-child(3){grid-column:1/-1}.issue-row>*:nth-child(4){grid-column:2}}
     @media (max-width:900px){.operations-channel-drawer .table-wrap{overflow:visible}.operations-channel-drawer .channel-table,.operations-channel-drawer .channel-table tbody,.operations-channel-drawer .channel-table tr,.operations-channel-drawer .channel-table td{display:block;width:100%;min-width:0}.operations-channel-drawer .channel-table thead{display:none}.operations-channel-drawer .channel-table tr{padding:10px 0;border-bottom:1px solid var(--line)}.operations-channel-drawer .channel-table td{padding:5px 0;border:0}.operations-channel-drawer .channel-table td:not(:first-child):before{display:block;margin-bottom:3px;color:var(--muted);font-size:10px;font-weight:800}.operations-channel-drawer .channel-table td:nth-child(2):before{content:"凭据"}.operations-channel-drawer .channel-table td:nth-child(3):before{content:"当前配置"}.operations-channel-drawer .channel-table td:nth-child(4):before{content:"健康与轮询"}.operations-channel-drawer .channel-table td:nth-child(5):before{content:"操作"}}
     @media (max-width:560px){.channel-map{padding:14px}.channel-map-stats{grid-template-columns:1fr}.channel-map-stat{border-right:0;border-bottom:1px solid var(--line)}.channel-map-stat:last-child{border-bottom:0}.channel-map-grid{grid-template-columns:1fr}.channel-map-card:before{display:none}}
-    @media (max-width:560px){.top-search{grid-column:1/-1;grid-row:2}.user{grid-column:3;grid-row:1}.nav-toggle{grid-column:1;grid-row:1}.case-fields,.case-upload,.support-path,.quick-links,.announcement-tiers{grid-template-columns:1fr}.module-subnav{width:100%;display:grid;grid-template-columns:1fr 1fr}.module-card[data-module="operations"]>.section-head{flex-direction:column}.module-card[data-module="operations"]>.section-head>.actions{justify-content:flex-start}.ops-registry-toolbar{align-items:stretch}.ops-registry-toolbar .ops-page-picker{width:100%;display:grid;gap:6px}.ops-page-picker select,.ops-registry-toolbar select,.ops-registry-toolbar button{width:100%;min-width:0}.ops-batch-head,.ops-batch-action{align-items:stretch;flex-direction:column}.ops-batch-action button{width:100%;min-width:0}.ops-catalog-list,.ops-inspector-facts{grid-template-columns:1fr}.ops-feature-head,.ops-page-head{align-items:flex-start;flex-direction:column}.ops-feature-head .meta{justify-content:flex-start}.ops-mode-head,.ops-chain-step,.ops-standard-body,.ops-dev-row{grid-template-columns:1fr}.ops-mode-head>.ops-mode-meta{grid-column:auto}.ops-mode-details>summary,.ops-standard>summary,.ops-dev>summary{min-height:48px}.ops-dependency{flex-direction:column}.announcement-tiers{margin-left:24px}.case-item{grid-template-columns:72px 1fr}.case-thumb{width:72px;height:92px}.drawer-head{padding:0 12px}.user-detail{padding:12px}.row{align-items:flex-start;flex-direction:column}.row>.actions{width:100%}}
+    @media (max-width:560px){.top-search{grid-column:1/-1;grid-row:2}.user{grid-column:3;grid-row:1}.nav-toggle{grid-column:1;grid-row:1}.case-fields,.case-upload,.quick-links,.announcement-tiers{grid-template-columns:1fr}.watch-refresh{align-items:stretch;flex-direction:column}.watch-refresh button{width:100%}.module-subnav{width:100%;display:grid;grid-template-columns:1fr 1fr}.module-card[data-module="operations"]>.section-head{flex-direction:column}.module-card[data-module="operations"]>.section-head>.actions{justify-content:flex-start}.ops-registry-toolbar{align-items:stretch}.ops-registry-toolbar .ops-page-picker{width:100%;display:grid;gap:6px}.ops-page-picker select,.ops-registry-toolbar select,.ops-registry-toolbar button{width:100%;min-width:0}.ops-batch-head,.ops-batch-action{align-items:stretch;flex-direction:column}.ops-batch-action button{width:100%;min-width:0}.ops-catalog-list,.ops-inspector-facts{grid-template-columns:1fr}.ops-feature-head,.ops-page-head{align-items:flex-start;flex-direction:column}.ops-feature-head .meta{justify-content:flex-start}.ops-mode-head,.ops-chain-step,.ops-standard-body,.ops-dev-row{grid-template-columns:1fr}.ops-mode-head>.ops-mode-meta{grid-column:auto}.ops-mode-details>summary,.ops-standard>summary,.ops-dev>summary{min-height:48px}.ops-dependency{flex-direction:column}.announcement-tiers{margin-left:24px}.case-item{grid-template-columns:72px 1fr}.case-thumb{width:72px;height:92px}.drawer-head{padding:0 12px}.user-detail{padding:12px}.row{align-items:flex-start;flex-direction:column}.row>.actions{width:100%}}
     @media (max-width:900px){.page-heading{display:block;grid-column:2;grid-row:1;min-width:0}.page-heading h1{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.page-heading .sub{display:none}.top-search{grid-column:1/-1;grid-row:2}.user{grid-column:3;grid-row:1}.nav-toggle{grid-column:1;grid-row:1}.ops-catalog{max-height:none}}
   </style>
 </head>
@@ -290,14 +291,20 @@
       <div class="grid">
         <section class="module-page module-card span12" data-module="dashboard">
           <div class="support-hero">
-            <div><h2>从异常或客户开始处理</h2><p>先看生产异常，也可以在顶部搜索客户；任务、支付、点数、邀请关系和账号状态都能继续下钻。</p></div>
-            <div class="support-path"><span><b>1</b>找到客户</span><span><b>2</b>查看全貌</span><span><b>3</b>定位问题</span><span><b>4</b>处理并留痕</span></div>
+            <div><h2>今日盯盘</h2><p>先看进行中、失败、退款和待处理订单；所有数字都可以继续下钻。</p></div>
+            <div class="dashboard-watch" aria-label="盯盘状态">
+              <div class="watch-row" id="dashboardServiceRow"><span>基础服务</span><b id="dashboardServiceState">正在检查</b></div>
+              <div class="watch-row" id="dashboardRefundRow"><span>退款待确认</span><b id="dashboardRefundState">-</b></div>
+              <div class="watch-row"><span id="registryCoverageState">功能盘点</span><b id="registryCoverage">-</b></div>
+              <div class="watch-row"><span id="statDays">近 7 天任务</span><b id="jobTotal">-</b></div>
+              <div class="watch-refresh"><span id="dashboardUpdatedAt">尚未刷新</span><button class="mini" id="dashboardRefresh" type="button">立即刷新</button></div>
+            </div>
           </div>
           <div class="grid" style="margin-top:14px">
-            <div class="card metric span3"><div><span>功能盘点</span><b id="registryCoverage">-</b></div><span id="registryCoverageState">客户功能页</span></div>
-            <div class="card metric span3"><div><span>调用总量</span><b id="jobTotal">-</b></div><span id="statDays">-</span></div>
-            <div class="card metric span3"><div><span>高失败功能</span><b id="failKinds">-</b></div><span>失败率 ≥ 50%</span></div>
-            <div class="card metric span3"><div><span>待审批订单</span><b id="supportPendingOrders">-</b></div><span>需要人工处理</span></div>
+            <button class="card metric dashboard-metric span3" id="todayMetric" type="button"><span class="metric-main"><span>今日任务</span><b id="todayTotal">-</b></span><span class="metric-copy" id="todaySummary">正在统计</span></button>
+            <button class="card metric dashboard-metric span3" id="activeMetric" type="button"><span class="metric-main"><span>当前进行中</span><b id="activeJobs">-</b></span><span class="metric-copy" id="activeSummary">排队与生成中</span></button>
+            <button class="card metric dashboard-metric span3" id="failureMetric" type="button"><span class="metric-main"><span>高失败功能</span><b id="failKinds">-</b></span><span class="metric-copy" id="failureSummary">失败率 ≥ 50%</span></button>
+            <button class="card metric dashboard-metric span3" id="pendingMetric" type="button"><span class="metric-main"><span>待审批订单</span><b id="supportPendingOrders">-</b></span><span class="metric-copy" id="pendingOrdersSummary">需要人工处理</span></button>
             <div class="card span8">
               <div class="section-head"><div><h2>最近失败</h2><div class="hint">优先核对有明确用户的失败任务和请求。</div></div><div class="actions"><button id="days7">近 7 天</button><button id="days30">近 30 天</button><button data-jump-module="logs">查看全部</button></div></div>
               <div id="supportIssueBox" class="empty">正在读取最近失败记录...</div>
@@ -721,7 +728,7 @@
     var h=Math.floor(m/60); m=m%60;
     return h+'小时'+(m?m+'分':'');
   }
-  function kindName(k){return ({image:'图片生成',banana:'纳米香蕉',audio:'配音生成',video:'视频口播',motion:'动作模仿',tryon:'换装换背景',collect:'内容采集',leads:'获客分析',leadgen:'获客分析',dl:'下载代理',copy:'文案生成',grok_video:'果肉视频生成',seedance_video:'Seedance 视频',omni_video:'Omni 视频',minimax_h3_video:'麦克视频',xiaole_video:'历史未归档视频任务',sora_video:'Sora 视频'})[k]||k}
+  function kindName(k){return ({image:'图片生成',banana:'纳米香蕉',audio:'配音生成',video:'视频口播',motion:'动作模仿',cinematic:'电影化身',tryon:'换装换背景',collect:'内容采集',leads:'获客分析',leadgen:'获客分析',dl:'下载代理',copy:'文案生成',grok_video:'果肉视频生成',seedance_video:'Seedance 视频',omni_video:'Omni 视频',minimax_h3_video:'麦克视频',xiaole_video:'历史未归档视频任务',sora_video:'Sora 视频'})[k]||k}
   function jobStatusName(s){return ({done:'已完成',error:'失败',running:'生成中',queued:'排队中',pending:'待处理'})[s]||s}
   function jobStatusPill(s){
     var cls='neutral';
@@ -988,8 +995,9 @@
       api('/api/admin/recharge/orders?status=pending&limit=300')
     ]).then(function(results){
       renderSupportIssues(results[0]);
-      el('supportPendingOrders').textContent=Number((results[1].items||[]).length).toLocaleString();
-    }).catch(function(e){el('supportIssueBox').className='error';el('supportIssueBox').textContent=e.message;el('supportPendingOrders').textContent='-'});
+      var orders=results[1].items||[],count=orders.length,oldest=orders.reduce(function(v,x){var t=Number(x.created_at||0);return t&&(!v||t<v)?t:v},0);
+      el('supportPendingOrders').textContent=Number(count).toLocaleString();el('pendingOrdersSummary').textContent=count?(oldest?'最早已等待 '+fmtDuration(Date.now()/1000-oldest):'需要人工处理'):'当前无待审批';el('pendingMetric').classList.toggle('attention',count>0);
+    }).catch(function(e){el('supportIssueBox').className='error';el('supportIssueBox').textContent=e.message;el('supportPendingOrders').textContent='-';el('pendingOrdersSummary').textContent='读取失败';el('pendingMetric').classList.add('attention')});
   }
   function renderFeatures(items){
     var enabled=items.filter(function(x){return x.enabled}).length;
@@ -2016,8 +2024,14 @@
     var poolKeys=((d.provider_keys||{}).items||[]).length;
     el('registryCoverage').textContent=verifiedPages+' / '+registry.length;el('registryCoverageState').textContent='已盘点客户功能页';
     el('keyReady').textContent=keys+poolKeys; el('keyTotal').textContent='号池 '+poolKeys+' · 托管 '+keys;
-    el('jobTotal').textContent=(d.stats&&d.stats.total)||0; el('statDays').textContent='近 '+((d.stats&&d.stats.days)||state.days)+' 天';
-    el('failKinds').textContent=((d.stats&&d.stats.high_failure)||[]).length;
+    var stats=d.stats||{},today=stats.today||{},live=stats.live||{},high=stats.high_failure||[],services=d.services||[],offline=services.filter(function(x){return !x.online});
+    el('jobTotal').textContent=Number(stats.total||0).toLocaleString();el('statDays').textContent='近 '+(stats.days||state.days)+' 天任务';
+    el('todayTotal').textContent=Number(today.total||0).toLocaleString();el('todaySummary').textContent='完成 '+Number(today.done||0)+' · 失败 '+Number(today.error||0);
+    el('activeJobs').textContent=Number(live.running||0).toLocaleString();el('activeSummary').textContent=live.oldest_running_at?'最长已等待 '+fmtDuration(Date.now()/1000-Number(live.oldest_running_at)):'当前无排队或生成';el('activeMetric').classList.toggle('attention',Number(live.running||0)>0&&Number(live.oldest_running_at||0)<Date.now()/1000-3600);
+    el('failKinds').textContent=high.length;el('failureSummary').textContent=high.length?high.slice(0,2).map(function(x){return kindName(x.kind)}).join('、'):'暂无高失败功能';el('failureMetric').classList.toggle('attention',high.length>0);
+    el('dashboardServiceState').textContent=offline.length?offline.map(function(x){return x.name||x.key}).join('、')+'异常':services.length+' / '+services.length+' 在线';el('dashboardServiceRow').className='watch-row '+(offline.length?'attention':'good');
+    el('dashboardRefundState').textContent=Number(live.refund_pending||0)+' 笔';el('dashboardRefundRow').className='watch-row '+(Number(live.refund_pending||0)?'attention':'good');
+    el('dashboardUpdatedAt').textContent=new Date(state.overviewUpdatedAt).toLocaleTimeString()+' · 每 30 秒自动刷新';
     renderChannelConsole(d.keys||[],d.provider_keys||{}); renderFeatures(d.features||[]); renderPricing(d.pricing||[]); renderStats(d.stats||{}); renderOperations(d);
     if(state.operationsChannelMode&&!el('operationsChannelLayer').hidden&&el('providerKeyEditor').hidden)renderOperationsChannelDrawer();
     if(state.module==='operations')setTimeout(function(){probeSelectedOperation(false)},0);
@@ -2027,17 +2041,17 @@
     if(!token){el('gate').style.display='block';return Promise.resolve()}
     if(state.overviewLoading)return state.overviewPromise||Promise.resolve();
     state.overviewLoading=true;var requestPoolEpoch=state.poolEpoch;
-    if(!silent)el('operationsRefresh').disabled=true;
+    if(!silent){el('operationsRefresh').disabled=true;el('dashboardRefresh').disabled=true}
     state.overviewPromise=api('/api/admin/overview?days='+state.days).then(function(d){
       if(state.poolActions||requestPoolEpoch!==state.poolEpoch){state.refreshPending=true;return}
       state.overviewUpdatedAt=Date.now();render(d);
     }).catch(function(e){
       if(state.poolActions||requestPoolEpoch!==state.poolEpoch){state.refreshPending=true;return}
-      if(silent){toast('自动刷新失败：'+e.message);return}
+      if(silent){if(state.module==='dashboard'){el('dashboardUpdatedAt').textContent='自动刷新失败 · 数据可能已过期'}toast('自动刷新失败：'+e.message);return}
       el('app').style.display='none'; el('gate').style.display='block';
       el('gate').innerHTML='<div class="error">'+esc(e.message)+'</div>';
     }).finally(function(){
-      state.overviewLoading=false;state.overviewPromise=null;el('operationsRefresh').disabled=false;
+      state.overviewLoading=false;state.overviewPromise=null;el('operationsRefresh').disabled=false;el('dashboardRefresh').disabled=false;
       if(!state.poolActions&&state.refreshPending){state.refreshPending=false;load(true)}
     });
     return state.overviewPromise;
@@ -2050,6 +2064,12 @@
   el('operationsAttentionOnly').onchange=function(){state.operationsAttentionOnly=el('operationsAttentionOnly').checked;if(state.data){renderOperations(state.data);probeSelectedOperation(false)}};
   el('operationsDays').onchange=function(){state.days=Number(el('operationsDays').value)||7;load(false)};
   el('operationsRefresh').onclick=function(){load(false);probeSelectedOperation(true)};
+  function openDashboardJobs(status){el('reqSource').value='job';el('reqStatus').value=status||'';el('reqSearch').value='';el('reqAttributed').checked=true;state.reqPage=1;switchModule('logs')}
+  el('todayMetric').onclick=function(){openDashboardJobs('')};
+  el('activeMetric').onclick=function(){openDashboardJobs('running')};
+  el('failureMetric').onclick=function(){openDashboardJobs('fail')};
+  el('pendingMetric').onclick=function(){el('rechargeStatus').value='pending';switchModule('recharge')};
+  el('dashboardRefresh').onclick=function(){load(false)};
   el('providerKeyOpen').onclick=function(){openProviderEditor()};
   el('providerKeyCancel').onclick=function(){closeProviderEditor();if(state.operationsChannelMode&&!el('operationsChannelLayer').hidden)renderOperationsChannelDrawer()};
   el('providerKeyAdd').onclick=addProviderKey;

@@ -3182,6 +3182,8 @@ def _empty_stats(message=None):
     return {
         "days": 7,
         "total": 0,
+        "today": {"day": time.strftime("%Y-%m-%d", time.localtime()), "total": 0, "done": 0, "error": 0, "running": 0, "other": 0},
+        "live": {"running": 0, "oldest_running_at": None, "refund_pending": 0},
         "by_kind": [],
         "by_operation": [],
         "unmapped": [],
@@ -6247,6 +6249,8 @@ def job_stats(days=7):
     since = int(time.time()) - days * 86400
     rows = []
     evidence_errors = []
+    today = {"day": time.strftime("%Y-%m-%d", time.localtime()), "total": 0, "done": 0, "error": 0, "running": 0, "other": 0}
+    live = {"running": 0, "oldest_running_at": None, "refund_pending": 0}
     if not JOB_DB.exists():
         evidence_errors.append("任务证据库不存在")
     else:
@@ -6254,6 +6258,15 @@ def job_stats(days=7):
             with closing(sqlite3.connect(str(JOB_DB), timeout=10)) as connection:
                 connection.row_factory = sqlite3.Row
                 columns = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)")}
+                active = connection.execute(
+                    "SELECT COUNT(*) AS total,MIN(created_at) AS oldest FROM jobs WHERE status IN ('pending','queued','running','processing')"
+                ).fetchone()
+                live["running"] = int(active["total"] or 0)
+                live["oldest_running_at"] = int(active["oldest"] or 0) or None
+                if "refunded" in columns:
+                    live["refund_pending"] = int(connection.execute(
+                        "SELECT COUNT(*) AS total FROM jobs WHERE COALESCE(refunded,0)=2"
+                    ).fetchone()["total"] or 0)
                 refunded_sql = "COALESCE(refunded,0)" if "refunded" in columns else "0"
                 error_sql = "COALESCE(error,'')" if "error" in columns else "''"
                 result_sql = "result" if "result" in columns else "NULL"
@@ -6311,6 +6324,8 @@ def job_stats(days=7):
     trend_counts = {}
     for row in rows:
         status = str(row["status"] or "unknown").lower()
+        if time.strftime("%Y-%m-%d", time.localtime(int(row["created_at"] or 0))) == today["day"]:
+            _count_status(today, status)
         kind = _operation_feature_key(row["kind"], row["channel"])
         bucket = by_kind.setdefault(kind, {
             "kind": kind, "total": 0, "done": 0, "error": 0,
@@ -6414,6 +6429,8 @@ def job_stats(days=7):
     return {
         "days": days,
         "total": len(rows),
+        "today": today,
+        "live": live,
         "by_kind": sorted(items, key=lambda x: x["total"], reverse=True),
         "by_operation": sorted(operation_items, key=lambda x: x["operation"]),
         "unmapped": sorted(unmapped_items, key=lambda x: x["total"], reverse=True),
