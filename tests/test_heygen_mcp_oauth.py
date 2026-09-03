@@ -187,6 +187,9 @@ class HeyGenMcpOAuthTests(unittest.TestCase):
         self.assertIsNone(video._heygen_mcp_ready_text(
             ready_text.replace(video_id, "different-id", 1), video_id,
         ))
+        self.assertIsNone(video._heygen_mcp_ready_text(
+            ready_text.replace(f"video_id={video_id}", "video_id=different-id"), video_id,
+        ))
 
     def test_cinematic_create_and_poll_use_exact_mcp_contract(self):
         calls = []
