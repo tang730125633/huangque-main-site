@@ -2080,22 +2080,33 @@ class CreatorAgentHandler(BaseHTTPRequestHandler):
     def log_message(self, format_string, *args):
         return
 
+    def _take_log_user_header(self):
+        username = str(getattr(self, "_request_username", "") or "")
+        self._request_username = ""
+        return urllib.parse.quote(username[:120], safe="") if username else ""
+
     def _send(self, status, value):
         raw = json.dumps(value, ensure_ascii=False).encode("utf-8")
+        username = self._take_log_user_header()
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        if username:
+            self.send_header("X-HQ-Log-User", username)
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
 
     def _send_pdf(self, path):
         size = path.stat().st_size
+        username = self._take_log_user_header()
         self.send_response(200)
         self.send_header("Content-Type", "application/pdf")
         self.send_header("Cache-Control", "private, no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        if username:
+            self.send_header("X-HQ-Log-User", username)
         self.send_header(
             "Content-Disposition",
             'inline; filename="huangque-profile-%s.pdf"' % path.stem[-12:],
@@ -2125,7 +2136,9 @@ class CreatorAgentHandler(BaseHTTPRequestHandler):
         return value
 
     def _user(self):
-        return self.service.auth.verify(self.headers)
+        user = self.service.auth.verify(self.headers)
+        self._request_username = str(user.get("username") or "")
+        return user
 
     def _route(self):
         return urllib.parse.urlsplit(self.path).path or "/"

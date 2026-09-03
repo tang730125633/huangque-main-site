@@ -662,7 +662,7 @@ LOG_LINE_RE = re.compile(
 )
 LOG_META_RE = re.compile(
     r"\srt=(?P<duration>[0-9]+(?:\.[0-9]+)?)\srid=(?P<request_id>[A-Za-z0-9_-]+)"
-    r"(?:\shq=(?P<hq_code>[A-Z0-9-]+|-))?\s*$"
+    r"(?:\shq=(?P<hq_code>[A-Z0-9-]+|-))?(?:\su=(?P<user>\S+|-))?\s*$"
 )
 _MONTHS = {
     "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
@@ -2748,6 +2748,7 @@ def _collect_request_entries(limit, status="", q="", include_noise=False):
             meta = LOG_META_RE.search(line)
             request_id = meta.group("request_id") if meta else ""
             hq_code = "" if not meta or meta.group("hq_code") in (None, "-") else meta.group("hq_code")
+            username = "-" if not meta or meta.group("user") in (None, "-") else urllib.parse.unquote(meta.group("user"))[:120]
             if status:
                 # ok/fail = 统一语义(给合并时间线用)；单数字=状态码前缀；三位=精确
                 if status == "ok":
@@ -2767,7 +2768,7 @@ def _collect_request_entries(limit, status="", q="", include_noise=False):
                     sort_key,
                     {
                         "time": disp,
-                        "user": "-",
+                        "user": username,
                         "func": _path_func(path),
                         "ip": m.group("ip"),
                         "method": m.group("method"),

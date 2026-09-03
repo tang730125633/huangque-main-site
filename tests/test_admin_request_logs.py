@@ -11,7 +11,7 @@ SAMPLE = "\n".join(
     [
         '127.0.0.1 - - [09/Jul/2026:08:41:19 +0800] "GET /api/claim?token=worker-secret HTTP/1.1" 200 12 "-" "Python-urllib/3.11"',
         '127.0.0.1 - - [09/Jul/2026:08:41:30 +0800] "GET /api/admin/overview?days=7 HTTP/1.1" 200 900 "-" "Mozilla/5.0"',
-        '1.2.3.4 - - [09/Jul/2026:08:42:00 +0800] "POST /api/gen/image HTTP/1.1" 502 88 "-" "Mozilla/5.0" rt=1.234 rid=req_image_1234 hq=HQ-UPSTREAM-001',
+        '1.2.3.4 - - [09/Jul/2026:08:42:00 +0800] "POST /api/gen/image HTTP/1.1" 502 88 "-" "Mozilla/5.0" rt=1.234 rid=req_image_1234 hq=HQ-UPSTREAM-001 u=tang%20wu',
         '5.6.7.8 - - [09/Jul/2026:08:42:30 +0800] "GET /api/gen/job/42?api_key=abc&ratio=1:1 HTTP/1.1" 200 55 "-" "Mozilla/5.0"',
         # 畸形分号分隔 + 嵌套 URL 编码密钥 + basic auth 用户名带空格
         '2.2.2.2 - - [09/Jul/2026:08:42:40 +0800] "GET /api/gen/x?a=1;token=evil HTTP/1.1" 200 10 "-" "curl/8"',
@@ -90,6 +90,7 @@ class RequestLogTests(unittest.TestCase):
         self.assertEqual(items["/api/gen/image"]["duration_sec"], 1.234)
         self.assertEqual(items["/api/gen/image"]["request_id"], "req_image_1234")
         self.assertEqual(items["/api/gen/image"]["hq_code"], "HQ-UPSTREAM-001")
+        self.assertEqual(items["/api/gen/image"]["user"], "tang wu")
         self.assertIsNone(items["/api/gen/health"]["duration_sec"])
         self.assertEqual(items["/api/gen/health"]["request_id"], "")
         self.assertEqual(items["/api/gen/health"]["hq_code"], "")
@@ -97,6 +98,13 @@ class RequestLogTests(unittest.TestCase):
     def test_hq_error_code_is_searchable(self):
         items = admin_api.request_logs(q="HQ-UPSTREAM-001")["items"]
         self.assertEqual([x["path"] for x in items], ["/api/gen/image"])
+
+    def test_nginx_logs_but_does_not_expose_authenticated_user_header(self):
+        root = pathlib.Path(__file__).resolve().parents[1]
+        for name in ("deploy/nginx-huangquechuanmei.conf", "server/nginx-huangquechuanmei.conf"):
+            config = (root / name).read_text(encoding="utf-8")
+            self.assertIn("u=$upstream_http_x_hq_log_user", config)
+            self.assertIn("proxy_hide_header X-HQ-Log-User;", config)
 
     def test_missing_log_file(self):
         admin_api.NGINX_ACCESS_LOGS = [pathlib.Path(str(self.files[0]) + ".nope")]

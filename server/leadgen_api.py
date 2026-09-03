@@ -19,6 +19,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub
 from content_domains import cli_gateway, feature_flags, leads as leads_domain, pricing, submission_idempotency
 
+_request_log_user = threading.local()
+
+def _take_request_log_user():
+    username = str(getattr(_request_log_user, "username", "") or "")
+    _request_log_user.username = ""
+    return urllib.parse.quote(username[:120], safe="") if username else ""
+
 PORT      = int(os.environ.get("LEADGEN_API_PORT", "8100"))
 AUTH_BASE = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095")
 AUTH_COOKIE_NAME = os.environ.get("HQ_AUTH_COOKIE_NAME", "hq_session")
@@ -327,11 +334,14 @@ def add_points(username, delta, reason="", transaction_key=""):
     return _add_points_direct(username, delta)
 
 def verify(token):
+    _request_log_user.username = ""
     if not token: return None
     try:
         req = urllib.request.Request(AUTH_BASE + "/api/auth/me", headers={"Authorization": "Bearer " + token})
         with urllib.request.urlopen(req, timeout=6) as r:
-            return json.loads(r.read()).get("user")
+            user = json.loads(r.read()).get("user")
+            _request_log_user.username = (user or {}).get("username") or ""
+            return user
     except Exception:
         return None
 
@@ -621,6 +631,8 @@ class H(BaseHTTPRequestHandler):
     def _send(self, code, obj):
         b = json.dumps(obj, ensure_ascii=False).encode()
         self.send_response(code); self.send_header("Content-Type", "application/json; charset=utf-8")
+        if (username := _take_request_log_user()):
+            self.send_header("X-HQ-Log-User", username)
         self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
     def _token(self):
         return _request_token(self.headers)

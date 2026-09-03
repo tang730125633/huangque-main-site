@@ -14,7 +14,7 @@ content_out/ 鍑哄浘鐩綍(鏂囦欢鐢?content_api 鐨?/api/gen/file 鏈�
 鈿狅笍 鏈嶅姟鍣ㄥ湪澶ч檰锛孏oogle API 琚 鈫?鏈湇鍔?*璧扮幆澧冧唬鐞?*(content.env 閲岀殑 HTTPS_PROXY=mihomo)鍑哄锛?
    涓?TikHub(寮哄埗鐩磋繛)鐩稿弽銆俿ystemd 鍔犺浇鍚屼竴浠?content.env銆?
 """
-import os, json, time, base64, threading, queue, sqlite3, pathlib, urllib.request, urllib.error, io
+import os, json, time, base64, threading, queue, sqlite3, pathlib, urllib.request, urllib.error, urllib.parse, io
 from contextlib import closing
 
 # 出站代理：服务器在大陆，Google/OpenAI 直连不可达（Errno 101）。
@@ -50,6 +50,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from content_domains.image_mentions import resolve_image_mentions, validate_image_mentions
 from content_domains import cli_gateway, pricing, submission_idempotency
+
+_request_log_user = threading.local()
+
+def _take_request_log_user():
+    username = str(getattr(_request_log_user, "username", "") or "")
+    _request_log_user.username = ""
+    return urllib.parse.quote(username[:120], safe="") if username else ""
 
 try:
     from content_domains import feature_flags
@@ -314,11 +321,14 @@ def _deduct_paid_job(username, amount, reason, transaction_key=""):
     return int((data or {}).get("points") or 0)
 
 def verify(token):
+    _request_log_user.username = ""
     if not token: return None
     try:
         req = urllib.request.Request(AUTH_BASE + "/api/auth/me", headers={"Authorization": "Bearer " + token})
         with urllib.request.urlopen(req, timeout=6) as r:
-            return json.loads(r.read()).get("user")
+            user = json.loads(r.read()).get("user")
+            _request_log_user.username = (user or {}).get("username") or ""
+            return user
     except Exception:
         return None
 
@@ -616,6 +626,8 @@ class H(BaseHTTPRequestHandler):
     def _send(self, code, obj):
         b = json.dumps(obj, ensure_ascii=False).encode()
         self.send_response(code); self.send_header("Content-Type", "application/json; charset=utf-8")
+        if (username := _take_request_log_user()):
+            self.send_header("X-HQ-Log-User", username)
         self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
     def _token(self):
         return _request_token(self.headers)

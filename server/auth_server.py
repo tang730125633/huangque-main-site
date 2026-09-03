@@ -4562,16 +4562,23 @@ def clear_auth_cookie_header():
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
+    def _take_log_user_header(self):
+        username = str(getattr(self, "_request_username", "") or "")
+        self._request_username = ""
+        return urllib.parse.quote(username[:USERNAME_MAX_LENGTH], safe="") if username else ""
     def _send(self, code, obj, extra_headers=None):
         req_id = error_contract.request_id(self.headers)
         public_obj, hq_code = error_contract.normalize(code, obj, req_id)
         error_contract.audit(code, obj, req_id, hq_code)
         body = json.dumps(public_obj, ensure_ascii=False).encode()
+        username = self._take_log_user_header()
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         if hq_code:
             self.send_header("X-HQ-Error-Code", hq_code)
             self.send_header("X-HQ-Request-ID", req_id)
+        if username:
+            self.send_header("X-HQ-Log-User", username)
         for key, value in (extra_headers or {}).items():
             self.send_header(key, value)
         self.send_header("Content-Length", str(len(body)))
@@ -4579,8 +4586,11 @@ class H(BaseHTTPRequestHandler):
         self.wfile.write(body)
     def _send_raw(self, code, body, content_type="text/plain; charset=utf-8", extra_headers=None):
         body = body if isinstance(body, bytes) else str(body).encode("utf-8")
+        username = self._take_log_user_header()
         self.send_response(code)
         self.send_header("Content-Type", content_type)
+        if username:
+            self.send_header("X-HQ-Log-User", username)
         for key, value in (extra_headers or {}).items():
             self.send_header(key, value)
         self.send_header("Content-Length", str(len(body)))
@@ -4664,6 +4674,8 @@ class H(BaseHTTPRequestHandler):
                            AND COALESCE(u.account_status,'active')='active'""",
                       (tok, int(time.time()), scope)).fetchone()
         c.close()
+        if r:
+            self._request_username = r["username"]
         return r
     def _user(self):
         return self._user_from_token(request_token(self.headers))
@@ -4674,7 +4686,10 @@ class H(BaseHTTPRequestHandler):
     def _card_user(self):
         return self._card_token_user() if self.headers.get("X-HQ-Card-Token") else self._user()
     def _cli_user(self):
-        return hq_cli_api.authenticate(db, bearer_token(self.headers.get("Authorization")))
+        result = hq_cli_api.authenticate(db, bearer_token(self.headers.get("Authorization")))
+        if result:
+            self._request_username = result[0]["username"]
+        return result
     def _cli_send(self, code, body):
         return self._send(code, body, {"Cache-Control": "no-store"})
     def _cli_public_user(self, row):
