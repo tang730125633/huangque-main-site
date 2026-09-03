@@ -2131,6 +2131,68 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual("生成视频 · 5 点", result["after"]["text"])
         self.assertTrue(result["cleared"])
 
+    def test_preclaimed_submit_flight_blocks_duplicate_during_delayed_auth(self):
+        result = self.runtime("delayedPostAuth")
+        self.assertEqual((0, 0, 4), (
+            result["before"]["posts"], result["before"]["polls"],
+            result["before"]["auth"],
+        ))
+        self.assertTrue(result["before"]["action"]["busy"])
+        self.assertEqual((0, 0, 5), (
+            result["afterClick"]["posts"], result["afterClick"]["polls"],
+            result["afterClick"]["auth"],
+        ))
+        self.assertTrue(result["afterClick"]["action"]["busy"])
+        self.assertTrue(result["afterClick"]["action"]["enabled"])
+        self.assertEqual((1, 1), (result["posts"], result["polls"]))
+        self.assertEqual(6, result["auth"])
+        self.assertEqual("/delayed-auth-post-video", result["src"])
+        self.assertFalse(result["after"]["busy"])
+        self.assertTrue(result["after"]["enabled"])
+        self.assertTrue(result["cleared"])
+
+    def test_preclaimed_poll_flight_blocks_duplicate_during_delayed_auth(self):
+        result = self.runtime("delayedPollAuth")
+        self.assertEqual((1, 0, 5), (
+            result["before"]["posts"], result["before"]["polls"],
+            result["before"]["auth"],
+        ))
+        self.assertTrue(result["before"]["action"]["busy"])
+        self.assertEqual((1, 0, 6), (
+            result["afterClick"]["posts"], result["afterClick"]["polls"],
+            result["afterClick"]["auth"],
+        ))
+        self.assertTrue(result["afterClick"]["action"]["busy"])
+        self.assertEqual((1, 1, 6), (
+            result["posts"], result["polls"], result["auth"],
+        ))
+        self.assertFalse(result["action"]["busy"])
+        self.assertTrue(result["action"]["enabled"])
+        self.assertEqual("/delayed-auth-poll-video", result["src"])
+        self.assertTrue(result["cleared"])
+
+    def test_delayed_submit_auth_honors_job_linked_in_current_storage(self):
+        result = self.runtime("linkedJobDuringAuth")
+        self.assertEqual((0, 0), (
+            result["afterAuth"]["posts"], result["afterAuth"]["polls"],
+        ))
+        self.assertTrue(result["afterAuth"]["action"]["busy"])
+        self.assertEqual((0, 1), (result["posts"], result["polls"]))
+        self.assertFalse(result["action"]["busy"])
+        self.assertTrue(result["action"]["enabled"])
+        self.assertEqual("/linked-job-video", result["src"])
+        self.assertTrue(result["cleared"])
+
+    def test_delayed_poll_auth_honors_cleared_current_pending(self):
+        result = self.runtime("clearedPendingDuringAuth")
+        self.assertEqual(0, result["afterAuth"]["polls"])
+        self.assertTrue(result["afterAuth"]["cleared"])
+        self.assertEqual(0, result["polls"])
+        self.assertFalse(result["action"]["busy"])
+        self.assertTrue(result["action"]["enabled"])
+        self.assertEqual("生成视频 · 5 点", result["action"]["text"])
+        self.assertTrue(result["cleared"])
+
 
 if __name__ == "__main__":
     unittest.main()
