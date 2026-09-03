@@ -63,20 +63,14 @@ UPLOAD_TYPES = {
     ".webm": ("video", {"video/webm"}),
 }
 CLI_DESCRIBE_ALLOWLIST = {
+    # 编导 Agent 受限能力域：AI 写脚本 / 拆解视频 / 数字人一键生成。
     "director-capability", "director-script-generate", "director-breakdown",
     "director-breakdown-upload", "digital-presenter-capability",
-    "digital-ip-text-generate", "text-video-capability", "text-video-generate",
-    "text-video-templates", "text-video-styles", "text-video-voices",
-    "video-avatars", "voices", "assets", "tasks", "task",
-}
-CLI_READ_ALLOWLIST = {
-    "director-capability", "digital-presenter-capability", "text-video-capability",
-    "text-video-templates", "text-video-styles", "text-video-voices",
-    "video-avatars", "voices", "assets", "tasks", "task",
+    "digital-ip-text-generate", "voices", "tasks", "task",
 }
 CLI_QUOTE_ALLOWLIST = {
     "director-script-generate", "director-breakdown",
-    "digital-ip-text-generate", "text-video-generate",
+    "digital-ip-text-generate",
 }
 
 CAPABILITY_QUERY_PHRASES = (
@@ -304,6 +298,22 @@ def _ensure_default_attachments():
 
 
 def _run_hq(arguments, input_value=None, timeout=30):
+    # 运行时权限边界：只允许调用编导域能力（以及其素材/对账基础设施）。
+    # 这里 fail-closed，将来若出现由模型/客户提议能力名的动态路径，也无法越界到 CLI。
+    _verb = arguments[0] if arguments else ""
+    _verb = str(_verb).strip()
+    _target = arguments[1] if len(arguments) > 1 else ""
+    if _verb in ("run", "describe"):
+        if _verb == "run":
+            _allowed = (CLI_QUOTE_ALLOWLIST | {"image-upload", "video-upload", "audio-upload", "voices", "tasks", "task"})
+        else:  # describe: capabilities & infra the Agent may legitimately introspect
+            _allowed = CLI_DESCRIBE_ALLOWLIST
+        if _target not in _allowed:
+            return {
+                "ok": False, "exit_code": None,
+                "payload": {"error": "capability_not_allowed",
+                            "message": "该能力不在编导 Agent 允许调用范围，已拒绝执行。"},
+            }
     env = os.environ.copy()
     env.update({
         "PYTHONUTF8": "1",
@@ -805,7 +815,7 @@ def _local_chat(body, customer):
         catalog_result, allowed = _cli_catalog_summary()
         cli_trace = _cli_public_trace("capabilities", catalog_result)
         return {
-            "reply": "我可以帮助你准备营销脚本、拆解视频、制作数字人口播和文案成片。直接告诉我想得到什么结果，我会检查素材并给出下一步；付费生产会先显示价格，由你点击确认。",
+            "reply": "我可以帮你做这三件事：AI 写脚本、拆解视频、数字人一键生成。直接告诉我想得到什么结果，我会检查素材并给出下一步；付费生产会先显示价格，由你点击确认。",
             "analysis": {
                 "intent": "capability_catalog", "capability": "可用功能查询",
                 "missing": [], "next_step": "选择一项能力或直接描述业务需求",
@@ -861,7 +871,7 @@ def _local_chat(body, customer):
         capability = "能力介绍与功能路由"
         missing = []
         reply = (
-            "我能帮你准备营销脚本、视频拆解、数字人口播和文案成片方案，并主动判断还缺哪些信息。\n\n"
+            "我能帮你完成：AI 写脚本、拆解视频（提示词反推）、数字人一键生成，并主动判断还缺哪些信息。\n\n"
             "我可以读取可用功能、执行授权后的查询，并获取无扣点报价。付费生产必须先展示真实价格，再由你点击确认按钮；我不会自动发布或删除内容。\n\n"
             "你可以直接给我一个需求，例如：主题是东鹏特饮，核心卖点买三送一。"
         )
@@ -950,7 +960,7 @@ def _local_chat(body, customer):
             reply = "文案已经记录，人物图片、音频和素材授权也已齐全，%s。方案已经准备好；如确认使用当前内容，请完整回复：确认生成。系统随后获取报价，只有你点击价格确认按钮才会提交生产。" % duration_text
             next_step = "完整回复“确认生成”以获取报价"
     else:
-        reply = "请选择你要使用的功能：AI 写脚本、拆解视频、数字人口播或文案成片。直接回复功能名称和具体需求，我会调用对应能力，并告诉你还缺哪些信息和下一步。"
+        reply = "请选择你要使用的功能：AI 写脚本、拆解视频（提示词反推）、数字人一键生成。直接回复功能名称和具体需求，我会调用对应能力，并告诉你还缺哪些信息和下一步。"
 
     authoritative_intent = intent
     authoritative_capability = capability
