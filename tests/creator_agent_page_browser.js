@@ -24,6 +24,7 @@ const data = {
   project: {
     id: 'a1b2c3d4e5f6', title: '我的个人画像', display_name: '我的个人画像', revision: 9,
     progress: { current_module: 5, module_step: 0, completed_modules: [1, 2, 3, 4], foundation_status: 'confirmed', foundation_ready: true, profile_complete: true },
+    profile_quality: { status: 'complete', issue_count: 0, issues: [] },
     harness_actions: [], reports: {}, deliverables: {}, artifacts: [],
     foundation_pdf_status: 'ready', foundation_pdf_error_code: '', foundation_pdf_retry_url: '',
     foundation_pdf_url: '/api/creator-agent/projects/a1b2c3d4e5f6/background.pdf',
@@ -222,11 +223,38 @@ function serve(request, response) {
       await failurePage.screenshot({ path: path.join(process.env.CREATOR_AGENT_QA_OUTPUT, 'creator-agent-pdf-retry.png'), fullPage: true });
     }
     await failurePage.close();
+    data.project.profile_quality = {
+      status: 'needs_review', issue_count: 6,
+      issues: [{ module: 1, key: 'career_identity', reason: '信息不足' }],
+    };
+    data.quick_actions = [
+      { intent: 'repair_profile', label: '完善画像' },
+      { intent: 'modify_profile', label: '修改我的画像' },
+    ];
+    data.project.foundation_pdf_status = 'blocked';
+    data.project.foundation_pdf_url = '';
+    data.project.foundation_pdf_retry_url = '';
+    const qualityPage = await browser.newPage({ viewport: { width: 1100, height: 800 } });
+    await qualityPage.goto(`http://127.0.0.1:${server.address().port}/workbench/creator-agent.html`, { waitUntil: 'networkidle' });
+    report.profileQuality = await qualityPage.evaluate(() => ({
+      title: document.getElementById('progressTitle')?.textContent || '',
+      detail: document.getElementById('progressDetail')?.textContent || '',
+      repair: !!document.querySelector('[data-quick-intent="repair_profile"]'),
+      start: !!document.querySelector('[data-quick-intent="start_video"]'),
+      pdfBlocked: document.getElementById('contentPanel')?.textContent.includes('画像待完善') || false,
+      pdfFrame: document.querySelectorAll('.ca-pdf').length,
+    }));
+    if (process.env.CREATOR_AGENT_QA_OUTPUT) {
+      fs.mkdirSync(process.env.CREATOR_AGENT_QA_OUTPUT, { recursive: true });
+      await qualityPage.screenshot({ path: path.join(process.env.CREATOR_AGENT_QA_OUTPUT, 'creator-agent-profile-quality.png'), fullPage: true });
+    }
+    await qualityPage.close();
   } finally {
     await browser.close(); server.close();
   }
   console.log(JSON.stringify(report));
   const viewports = [report.desktop, report.mobile];
   const pdfFailure = report.pdfFailure || {};
-  if (viewports.some((item) => item.width > item.viewport || item.messages < 3 || item.plans < 2 || !item.confirm || item.total !== '10 点' || !item.quoteCountdown.startsWith('报价剩余') || !item.profileTemplate.includes('回答参考') || item.tabs !== 3 || item.aiEntry !== 'creator-agent.html' || item.aiLabel !== 'AI 创作助手' || item.pdfLinks !== 2 || !item.pdfFrame.includes('/background.pdf') || !item.messageReplayStable || !item.confirmRecovered || (item.confirmQuoteExpiresAt !== undefined && item.confirmQuoteExpiresAt !== batch.quote_expires_at) || (item.expiredQuoteRequotes === false)) || pdfFailure.beforeRetry?.badge !== 'PDF 生成失败' || pdfFailure.beforeRetry?.retryLabel !== '重新生成' || pdfFailure.beforeRetry?.frames !== 0 || pdfFailure.beforeRetry?.pdfLinks !== 0 || pdfFailure.beforeRetry?.titleCount !== 1 || pdfFailure.afterRetry?.badge !== 'PDF 已生成' || pdfFailure.afterRetry?.frames !== 1 || pdfFailure.afterRetry?.pdfLinks !== 2 || pdfFailure.pdfRequests < 1) process.exitCode = 1;
+  const profileQuality = report.profileQuality || {};
+  if (viewports.some((item) => item.width > item.viewport || item.messages < 3 || item.plans < 2 || !item.confirm || item.total !== '10 点' || !item.quoteCountdown.startsWith('报价剩余') || !item.profileTemplate.includes('回答参考') || item.tabs !== 3 || item.aiEntry !== 'creator-agent.html' || item.aiLabel !== 'AI 创作助手' || item.pdfLinks !== 2 || !item.pdfFrame.includes('/background.pdf') || !item.messageReplayStable || !item.confirmRecovered || (item.confirmQuoteExpiresAt !== undefined && item.confirmQuoteExpiresAt !== batch.quote_expires_at) || (item.expiredQuoteRequotes === false)) || pdfFailure.beforeRetry?.badge !== 'PDF 生成失败' || pdfFailure.beforeRetry?.retryLabel !== '重新生成' || pdfFailure.beforeRetry?.frames !== 0 || pdfFailure.beforeRetry?.pdfLinks !== 0 || pdfFailure.beforeRetry?.titleCount !== 1 || pdfFailure.afterRetry?.badge !== 'PDF 已生成' || pdfFailure.afterRetry?.frames !== 1 || pdfFailure.afterRetry?.pdfLinks !== 2 || pdfFailure.pdfRequests < 1 || profileQuality.title !== '画像需要完善' || !profileQuality.detail.includes('6 项') || !profileQuality.repair || profileQuality.start || !profileQuality.pdfBlocked || profileQuality.pdfFrame !== 0) process.exitCode = 1;
 })().catch((error) => { console.error(error); process.exitCode = 1; });
