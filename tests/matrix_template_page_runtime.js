@@ -135,10 +135,14 @@ async function scenarioLivePreview(){
 }
 async function scenarioActionPrerequisites(){
   const runtime=createRuntime({post:()=>Promise.reject(new Error('unused')),poll:()=>Promise.reject(new Error('unused'))},new Map());
-  await flush();const empty=actionState(runtime);
-  runtime.get('topText').value='有效标题';runtime.get('topText').listeners.input[0]();const topOnly=actionState(runtime);
-  runtime.get('bottomText').value='有效行动文案';runtime.get('bottomText').listeners.input[0]();const complete=actionState(runtime);
-  return {empty,topOnly,complete};
+  await flush();const empty=actionState(runtime),emptyBefore={auth:runtime.requests.auth.length,post:runtime.requests.post.length,poll:runtime.requests.poll.length,confirm:runtime.requests.confirm.length};
+  runtime.get('generateBtn').onclick();await flush();const emptyReminder={status:runtime.get('status').textContent,toast:runtime.get('toast').textContent,auth:runtime.requests.auth.length-emptyBefore.auth,post:runtime.requests.post.length-emptyBefore.post,poll:runtime.requests.poll.length-emptyBefore.poll,confirm:runtime.requests.confirm.length-emptyBefore.confirm};
+  runtime.get('topText').value='有效标题';runtime.get('topText').listeners.input[0]();const topOnly=actionState(runtime),topOnlyBefore={auth:runtime.requests.auth.length,post:runtime.requests.post.length,poll:runtime.requests.poll.length,confirm:runtime.requests.confirm.length};
+  runtime.get('generateBtn').onclick();await flush();const topOnlyReminder={status:runtime.get('status').textContent,toast:runtime.get('toast').textContent,auth:runtime.requests.auth.length-topOnlyBefore.auth,post:runtime.requests.post.length-topOnlyBefore.post,poll:runtime.requests.poll.length-topOnlyBefore.poll,confirm:runtime.requests.confirm.length-topOnlyBefore.confirm};
+  runtime.get('topText').value='';runtime.get('topText').listeners.input[0]();runtime.get('bottomText').value='有效行动文案';runtime.get('bottomText').listeners.input[0]();const bottomOnly=actionState(runtime),bottomOnlyBefore={auth:runtime.requests.auth.length,post:runtime.requests.post.length,poll:runtime.requests.poll.length,confirm:runtime.requests.confirm.length};
+  runtime.get('generateBtn').onclick();await flush();const bottomOnlyReminder={status:runtime.get('status').textContent,toast:runtime.get('toast').textContent,auth:runtime.requests.auth.length-bottomOnlyBefore.auth,post:runtime.requests.post.length-bottomOnlyBefore.post,poll:runtime.requests.poll.length-bottomOnlyBefore.poll,confirm:runtime.requests.confirm.length-bottomOnlyBefore.confirm};
+  runtime.get('topText').value='有效标题';runtime.get('topText').listeners.input[0]();const complete=actionState(runtime);
+  return {empty,emptyReminder,topOnly,topOnlyReminder,bottomOnly,bottomOnlyReminder,complete};
 }
 async function scenarioTemplateVisibility(){
   const runtime=createRuntime({post:()=>Promise.reject(new Error('unused')),poll:()=>Promise.reject(new Error('unused'))},new Map());

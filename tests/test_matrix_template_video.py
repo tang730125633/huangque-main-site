@@ -1752,10 +1752,11 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertIn("filter(function(item){return item&&!hiddenTemplateIds[item.id]})", page)
         self.assertIn(".mt-action:disabled{opacity:.55;cursor:not-allowed}", page)
         self.assertNotIn(".mt-action:disabled{opacity:.55;cursor:wait}", page)
-        self.assertIn("button.disabled=!!reason", page)
+        self.assertIn("button.disabled=!busy&&!activeTemplate", page)
+        self.assertIn("if(!checking&&warnCopy())return", page)
         self.assertIn("busy?'检查任务状态'", page)
         self.assertIn("if(!pending){busy=false;sync();return}", page)
-        self.assertIn("checking=busy", page)
+        self.assertIn("checking=busy||!!existing", page)
         self.assertIn("pendingIdentity(current)!==expectedIdentity", page)
         self.assertLess(shell.index("k:'text-video'"), shell.index("k:'matrix-template'"))
         self.assertIn("/api/gen/matrix-template/capability", shell)
@@ -2000,16 +2001,58 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual("#df3f36", result["liveAccent"])
         self.assertEqual("none", result["videoDisplay"])
 
-    def test_action_explains_missing_prerequisites_and_enables_when_complete(self):
+    def test_action_reminds_missing_copy_without_auth_or_submission(self):
         result = self.runtime("actionPrerequisites")
-        self.assertFalse(result["empty"]["enabled"])
+        self.assertTrue(result["empty"]["enabled"])
         self.assertEqual(
-            "请输入至少 2 个字的顶部文案", result["empty"]["title"],
+            "请先填写顶部文案和底部行动文案（每项至少 2 个字）",
+            result["empty"]["title"],
         )
-        self.assertFalse(result["topOnly"]["enabled"])
         self.assertEqual(
-            "请输入至少 2 个字的底部行动文案", result["topOnly"]["title"],
+            "请先填写顶部文案和底部行动文案（每项至少 2 个字）",
+            result["emptyReminder"]["status"],
         )
+        self.assertEqual(
+            result["emptyReminder"]["status"], result["emptyReminder"]["toast"],
+        )
+        self.assertEqual((0, 0, 0, 0), tuple(
+            result["emptyReminder"][name]
+            for name in ("auth", "post", "poll", "confirm")
+        ))
+        self.assertTrue(result["topOnly"]["enabled"])
+        self.assertEqual(
+            "请先填写至少 2 个字的底部行动文案",
+            result["topOnly"]["title"],
+        )
+        self.assertEqual(
+            "请先填写至少 2 个字的底部行动文案",
+            result["topOnlyReminder"]["status"],
+        )
+        self.assertEqual(
+            result["topOnlyReminder"]["status"],
+            result["topOnlyReminder"]["toast"],
+        )
+        self.assertEqual((0, 0, 0, 0), tuple(
+            result["topOnlyReminder"][name]
+            for name in ("auth", "post", "poll", "confirm")
+        ))
+        self.assertTrue(result["bottomOnly"]["enabled"])
+        self.assertEqual(
+            "请先填写至少 2 个字的顶部文案",
+            result["bottomOnly"]["title"],
+        )
+        self.assertEqual(
+            "请先填写至少 2 个字的顶部文案",
+            result["bottomOnlyReminder"]["status"],
+        )
+        self.assertEqual(
+            result["bottomOnlyReminder"]["status"],
+            result["bottomOnlyReminder"]["toast"],
+        )
+        self.assertEqual((0, 0, 0, 0), tuple(
+            result["bottomOnlyReminder"][name]
+            for name in ("auth", "post", "poll", "confirm")
+        ))
         self.assertTrue(result["complete"]["enabled"])
         self.assertEqual("生成视频 · 5 点", result["complete"]["text"])
         self.assertEqual("", result["complete"]["title"])
