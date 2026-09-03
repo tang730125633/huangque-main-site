@@ -6441,6 +6441,64 @@ def job_stats(days=7):
     }
 
 
+def dashboard_stats(days=7):
+    """Fast, read-only counts for the daily watchboard; no delivery evidence scan."""
+    days = max(1, min(int(days or 7), 90))
+    now = int(time.time())
+    since = now - days * 86400
+    today_start = int(time.mktime((*time.localtime(now)[:3], 0, 0, 0, 0, 0, -1)))
+    out = {
+        "days": days, "total": 0,
+        "today": {"day": time.strftime("%Y-%m-%d", time.localtime(now)), "total": 0, "done": 0, "error": 0, "running": 0, "other": 0},
+        "live": {"running": 0, "oldest_running_at": None, "refund_pending": 0},
+        "high_failure": [],
+    }
+    if not JOB_DB.exists():
+        return out
+    try:
+        with closing(sqlite3.connect(str(JOB_DB), timeout=10)) as connection:
+            connection.row_factory = sqlite3.Row
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)")}
+            refunded = "COALESCE(refunded,0)" if "refunded" in columns else "0"
+            rows = connection.execute(
+                """SELECT kind,status,created_at,
+                          CASE WHEN kind='xiaole_video' AND json_valid(payload)
+                               THEN LOWER(COALESCE(json_extract(payload,'$.channel'),'')) ELSE '' END AS channel,
+                          %s AS refunded
+                     FROM jobs
+                    WHERE created_at>=? OR status IN ('pending','queued','running','processing')%s""" % (
+                    refunded, " OR COALESCE(refunded,0)=2" if "refunded" in columns else "",
+                ),
+                (since,),
+            ).fetchall()
+    except sqlite3.Error:
+        return out
+    by_kind = {}
+    for row in rows:
+        status = str(row["status"] or "unknown").lower()
+        created_at = int(row["created_at"] or 0)
+        if created_at >= since:
+            out["total"] += 1
+            kind = _operation_feature_key(row["kind"], row["channel"])
+            _count_status(by_kind.setdefault(kind, {
+                "kind": kind,
+                "total": 0, "done": 0, "error": 0, "running": 0, "other": 0,
+            }), status)
+        if created_at >= today_start:
+            _count_status(out["today"], status)
+        if status in {"pending", "queued", "running", "processing"}:
+            out["live"]["running"] += 1
+            oldest = out["live"]["oldest_running_at"]
+            out["live"]["oldest_running_at"] = created_at if not oldest or created_at < oldest else oldest
+        if int(row["refunded"] or 0) == 2:
+            out["live"]["refund_pending"] += 1
+    out["high_failure"] = sorted([
+        item for item in _finish_stats(list(by_kind.values()))
+        if item["total"] >= 3 and item["failure_rate"] >= 0.5
+    ], key=lambda item: item["failure_rate"], reverse=True)
+    return out
+
+
 _PAYLOAD_FIELD_RE = re.compile(r'"(model|provider|channel|mode|keyword|url|line|variant|source_page|voice_scope)"\s*:\s*"([^"]*)"')
 
 
@@ -6966,6 +7024,19 @@ class H(BaseHTTPRequestHandler):
                     (q.get("limit") or ["200"])[0],
                 ),
             )
+        if path == "/api/admin/dashboard":
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            pages = function_registry.list_pages()
+            return self._send(200, {
+                "ok": True,
+                "user": {"username": user.get("username"), "name": user.get("name"), "role": user.get("role")},
+                "services": service_status(),
+                "registry_coverage": {
+                    "verified": sum(page.get("inventory_status") == "verified" for page in pages),
+                    "total": len(pages),
+                },
+                "stats": dashboard_stats((q.get("days") or ["7"])[0]),
+            })
         if path == "/api/admin/overview":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             services = service_status()

@@ -606,6 +606,10 @@ class FunctionRegistryTests(unittest.TestCase):
         self.assertEqual(stats["live"]["running"], 1)
         self.assertEqual(stats["live"]["refund_pending"], 1)
         self.assertEqual(stats["live"]["oldest_running_at"], noon + 6)
+        summary = self.admin.dashboard_stats(7)
+        self.assertEqual(summary["today"], stats["today"])
+        self.assertEqual(summary["live"], stats["live"])
+        self.assertEqual(summary["total"], stats["total"])
 
     def test_character_reference_evidence_source_maps_to_customer_operation(self):
         now = int(time.time())

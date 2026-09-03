@@ -658,7 +658,7 @@
   var state = {
     days:7, data:null, userTimer:null, module:'dashboard', membershipRequestId:'',
     userPage:1, userPageSize:20, reqPage:1, reqPageSize:20, detailUser:'', noticeSending:false,
-    overviewLoading:false, refreshTimer:null, poolActions:0, drawerReturnFocus:null,
+    overviewLoading:false, overviewPromise:null, dashboardLoading:false, dashboardPromise:null, refreshTimer:null, poolActions:0, drawerReturnFocus:null,
     poolEpoch:0, refreshPending:false, announcementPreview:null, announcementPreviewSignature:'',
     announcementRequestId:'', announcementPreviewLoading:false, announcementPublishing:false,
     announcementHistoryLoading:false, operationsPage:'video', operationsMode:'', operationsAttentionOnly:false,
@@ -666,7 +666,7 @@
     e2ePollTimer:null, e2ePreflights:{}, e2ePreflightPending:{}, e2eBatchPollTimer:null,
     e2eBatchPreflights:{}, e2eBatchPreflightPending:{}, e2eBatchSubmitting:false,
     e2eFixturePreparing:false, e2eFixturePollTimer:null,
-    overviewUpdatedAt:0, overviewPromise:null,
+    overviewUpdatedAt:0,
     keyProbes:{}, keyProbePending:{}, keyProbeMonitor:{}
   };
   var secretWindows = [];
@@ -728,6 +728,7 @@
     var h=Math.floor(m/60); m=m%60;
     return h+'小时'+(m?m+'分':'');
   }
+  function fmtWait(sec){sec=Number(sec);if(!isFinite(sec)||sec<86400)return fmtDuration(sec);var d=Math.floor(sec/86400),h=Math.floor(sec%86400/3600);return d+'天'+(h?h+'小时':'')}
   function kindName(k){return ({image:'图片生成',banana:'纳米香蕉',audio:'配音生成',video:'视频口播',motion:'动作模仿',cinematic:'电影化身',tryon:'换装换背景',collect:'内容采集',leads:'获客分析',leadgen:'获客分析',dl:'下载代理',copy:'文案生成',grok_video:'果肉视频生成',seedance_video:'Seedance 视频',omni_video:'Omni 视频',minimax_h3_video:'麦克视频',xiaole_video:'历史未归档视频任务',sora_video:'Sora 视频'})[k]||k}
   function jobStatusName(s){return ({done:'已完成',error:'失败',running:'生成中',queued:'排队中',pending:'待处理'})[s]||s}
   function jobStatusPill(s){
@@ -996,7 +997,7 @@
     ]).then(function(results){
       renderSupportIssues(results[0]);
       var orders=results[1].items||[],count=orders.length,oldest=orders.reduce(function(v,x){var t=Number(x.created_at||0);return t&&(!v||t<v)?t:v},0);
-      el('supportPendingOrders').textContent=Number(count).toLocaleString();el('pendingOrdersSummary').textContent=count?(oldest?'最早已等待 '+fmtDuration(Date.now()/1000-oldest):'需要人工处理'):'当前无待审批';el('pendingMetric').classList.toggle('attention',count>0);
+      el('supportPendingOrders').textContent=Number(count).toLocaleString();el('pendingOrdersSummary').textContent=count?(oldest?'最早已等待 '+fmtWait(Date.now()/1000-oldest):'需要人工处理'):'当前无待审批';el('pendingMetric').classList.toggle('attention',count>0);
     }).catch(function(e){el('supportIssueBox').className='error';el('supportIssueBox').textContent=e.message;el('supportPendingOrders').textContent='-';el('pendingOrdersSummary').textContent='读取失败';el('pendingMetric').classList.add('attention')});
   }
   function renderFeatures(items){
@@ -2004,7 +2005,7 @@
     Array.prototype.forEach.call(document.querySelectorAll('[data-module-switch]'),function(btn){btn.classList.toggle('active',btn.getAttribute('data-module-switch')===name)});
     Array.prototype.forEach.call(document.querySelectorAll('[data-module]'), function(card){card.hidden=card.getAttribute('data-module')!==name});
     el('pageTitle').textContent=moduleMeta[name][0];el('pageSubtitle').textContent=moduleMeta[name][1];closeSidebar();
-    if(name==='dashboard'){loadSupportQueue()}
+    if(name==='dashboard'){loadDashboard(false)}
     if(name==='logs'){loadReqLogs()}
     if(name==='users'){loadUsers()}
     if(name==='points'){loadPoints()}
@@ -2013,52 +2014,63 @@
     if(name==='announcements'){loadAnnouncements()}
     if(name==='inspirations'){loadInspirations()}
     if(name==='operations'&&state.data){renderOperations(state.data);probeSelectedOperation(false)}
+    if(['operations','channels','features','pricing'].indexOf(name)>=0&&!state.data)load(false)
   }
-  function render(d){
-    state.data=d;state.keyProbeMonitor=d.key_probe_monitor||{};setUser(d.user||{});
-    var routeMap={};(d.keys||[]).forEach(function(route){routeMap[route.key]=route});
-    Object.keys(d.key_probes||{}).forEach(function(key){var result=d.key_probes[key]||{},current=state.keyProbes[key],route=routeMap[key]||{},signature=String(route.credential_version||'');if(result.credential_version===signature&&(!current||Number(result.checked_at||0)>=Number((current.result||{}).checked_at||0)))state.keyProbes[key]={signature:signature,loading:false,result:result}});
-    el('app').style.display='block'; el('gate').style.display='none';
-    var registry=d.function_registry||[],verifiedPages=registry.filter(function(page){return page.inventory_status==='verified'}).length;
-    var keys=(d.keys||[]).filter(function(x){return x.configured}).length;
-    var poolKeys=((d.provider_keys||{}).items||[]).length;
-    el('registryCoverage').textContent=verifiedPages+' / '+registry.length;el('registryCoverageState').textContent='已盘点客户功能页';
-    el('keyReady').textContent=keys+poolKeys; el('keyTotal').textContent='号池 '+poolKeys+' · 托管 '+keys;
+  function renderDashboard(d){
+    setUser(d.user||{});el('app').style.display='block';el('gate').style.display='none';
+    var registry=d.function_registry||[],coverage=d.registry_coverage||{verified:registry.filter(function(page){return page.inventory_status==='verified'}).length,total:registry.length};
     var stats=d.stats||{},today=stats.today||{},live=stats.live||{},high=stats.high_failure||[],services=d.services||[],offline=services.filter(function(x){return !x.online});
+    el('registryCoverage').textContent=Number(coverage.verified||0)+' / '+Number(coverage.total||0);el('registryCoverageState').textContent='已盘点客户功能页';
     el('jobTotal').textContent=Number(stats.total||0).toLocaleString();el('statDays').textContent='近 '+(stats.days||state.days)+' 天任务';
-    el('todayTotal').textContent=Number(today.total||0).toLocaleString();el('todaySummary').textContent='完成 '+Number(today.done||0)+' · 失败 '+Number(today.error||0);
-    el('activeJobs').textContent=Number(live.running||0).toLocaleString();el('activeSummary').textContent=live.oldest_running_at?'最长已等待 '+fmtDuration(Date.now()/1000-Number(live.oldest_running_at)):'当前无排队或生成';el('activeMetric').classList.toggle('attention',Number(live.running||0)>0&&Number(live.oldest_running_at||0)<Date.now()/1000-3600);
+    el('todayTotal').textContent=Number(today.total||0).toLocaleString();el('todaySummary').textContent='完成 '+Number(today.done||0)+' · 失败 '+Number(today.error||0)+(Number(today.running||0)?' · 进行中 '+Number(today.running):'')+(Number(today.other||0)?' · 其他 '+Number(today.other):'');
+    el('activeJobs').textContent=Number(live.running||0).toLocaleString();el('activeSummary').textContent=live.oldest_running_at?'最长已等待 '+fmtWait(Date.now()/1000-Number(live.oldest_running_at)):'当前无排队或生成';el('activeMetric').classList.toggle('attention',Number(live.running||0)>0&&Number(live.oldest_running_at||0)<Date.now()/1000-3600);
     el('failKinds').textContent=high.length;el('failureSummary').textContent=high.length?high.slice(0,2).map(function(x){return kindName(x.kind)}).join('、'):'暂无高失败功能';el('failureMetric').classList.toggle('attention',high.length>0);
     el('dashboardServiceState').textContent=offline.length?offline.map(function(x){return x.name||x.key}).join('、')+'异常':services.length+' / '+services.length+' 在线';el('dashboardServiceRow').className='watch-row '+(offline.length?'attention':'good');
     el('dashboardRefundState').textContent=Number(live.refund_pending||0)+' 笔';el('dashboardRefundRow').className='watch-row '+(Number(live.refund_pending||0)?'attention':'good');
     el('dashboardUpdatedAt').textContent=new Date(state.overviewUpdatedAt).toLocaleTimeString()+' · 每 30 秒自动刷新';
+    if(state.module==='dashboard')loadSupportQueue();
+  }
+  function render(d){
+    state.data=d;state.keyProbeMonitor=d.key_probe_monitor||{};renderDashboard(d);
+    var routeMap={};(d.keys||[]).forEach(function(route){routeMap[route.key]=route});
+    Object.keys(d.key_probes||{}).forEach(function(key){var result=d.key_probes[key]||{},current=state.keyProbes[key],route=routeMap[key]||{},signature=String(route.credential_version||'');if(result.credential_version===signature&&(!current||Number(result.checked_at||0)>=Number((current.result||{}).checked_at||0)))state.keyProbes[key]={signature:signature,loading:false,result:result}});
+    el('app').style.display='block'; el('gate').style.display='none';
+    var keys=(d.keys||[]).filter(function(x){return x.configured}).length;
+    var poolKeys=((d.provider_keys||{}).items||[]).length;
+    el('keyReady').textContent=keys+poolKeys; el('keyTotal').textContent='号池 '+poolKeys+' · 托管 '+keys;
     renderChannelConsole(d.keys||[],d.provider_keys||{}); renderFeatures(d.features||[]); renderPricing(d.pricing||[]); renderStats(d.stats||{}); renderOperations(d);
     if(state.operationsChannelMode&&!el('operationsChannelLayer').hidden&&el('providerKeyEditor').hidden)renderOperationsChannelDrawer();
     if(state.module==='operations')setTimeout(function(){probeSelectedOperation(false)},0);
-    if(state.module==='dashboard')loadSupportQueue();
+  }
+  function loadDashboard(silent){
+    if(!token){el('gate').style.display='block';return Promise.resolve()}
+    if(state.dashboardLoading)return state.dashboardPromise||Promise.resolve();
+    state.dashboardLoading=true;if(!silent)el('dashboardRefresh').disabled=true;
+    state.dashboardPromise=api('/api/admin/dashboard?days='+state.days).then(function(d){state.overviewUpdatedAt=Date.now();renderDashboard(d)}).catch(function(e){if(silent){el('dashboardUpdatedAt').textContent='自动刷新失败 · 数据可能已过期';toast('自动刷新失败：'+e.message);return}el('app').style.display='none';el('gate').style.display='block';el('gate').innerHTML='<div class="error">'+esc(e.message)+'</div>'}).finally(function(){state.dashboardLoading=false;state.dashboardPromise=null;el('dashboardRefresh').disabled=false});
+    return state.dashboardPromise;
   }
   function load(silent){
     if(!token){el('gate').style.display='block';return Promise.resolve()}
     if(state.overviewLoading)return state.overviewPromise||Promise.resolve();
     state.overviewLoading=true;var requestPoolEpoch=state.poolEpoch;
-    if(!silent){el('operationsRefresh').disabled=true;el('dashboardRefresh').disabled=true}
+    if(!silent)el('operationsRefresh').disabled=true;
     state.overviewPromise=api('/api/admin/overview?days='+state.days).then(function(d){
       if(state.poolActions||requestPoolEpoch!==state.poolEpoch){state.refreshPending=true;return}
       state.overviewUpdatedAt=Date.now();render(d);
     }).catch(function(e){
       if(state.poolActions||requestPoolEpoch!==state.poolEpoch){state.refreshPending=true;return}
-      if(silent){if(state.module==='dashboard'){el('dashboardUpdatedAt').textContent='自动刷新失败 · 数据可能已过期'}toast('自动刷新失败：'+e.message);return}
+      if(silent){toast('自动刷新失败：'+e.message);return}
       el('app').style.display='none'; el('gate').style.display='block';
       el('gate').innerHTML='<div class="error">'+esc(e.message)+'</div>';
     }).finally(function(){
-      state.overviewLoading=false;state.overviewPromise=null;el('operationsRefresh').disabled=false;el('dashboardRefresh').disabled=false;
+      state.overviewLoading=false;state.overviewPromise=null;el('operationsRefresh').disabled=false;
       if(!state.poolActions&&state.refreshPending){state.refreshPending=false;load(true)}
     });
     return state.overviewPromise;
   }
   function startAutoRefresh(){
     clearInterval(state.refreshTimer);
-    state.refreshTimer=setInterval(function(){if(!document.hidden&&(state.module==='dashboard'||state.module==='operations')&&!state.poolActions)load(true)},30000);
+    state.refreshTimer=setInterval(function(){if(document.hidden||state.poolActions)return;if(state.module==='dashboard')loadDashboard(true);else if(state.module==='operations')load(true)},30000);
   }
   el('operationsPage').onchange=function(){state.operationsPage=el('operationsPage').value;state.operationsMode='';if(state.data){renderOperations(state.data);probeSelectedOperation(false)}};
   el('operationsAttentionOnly').onchange=function(){state.operationsAttentionOnly=el('operationsAttentionOnly').checked;if(state.data){renderOperations(state.data);probeSelectedOperation(false)}};
@@ -2069,12 +2081,12 @@
   el('activeMetric').onclick=function(){openDashboardJobs('running')};
   el('failureMetric').onclick=function(){openDashboardJobs('fail')};
   el('pendingMetric').onclick=function(){el('rechargeStatus').value='pending';switchModule('recharge')};
-  el('dashboardRefresh').onclick=function(){load(false)};
+  el('dashboardRefresh').onclick=function(){loadDashboard(false)};
   el('providerKeyOpen').onclick=function(){openProviderEditor()};
   el('providerKeyCancel').onclick=function(){closeProviderEditor();if(state.operationsChannelMode&&!el('operationsChannelLayer').hidden)renderOperationsChannelDrawer()};
   el('providerKeyAdd').onclick=addProviderKey;
-  el('days7').onclick=function(){state.days=7;load(false)};
-  el('days30').onclick=function(){state.days=30;load(false)};
+  el('days7').onclick=function(){state.days=7;state.data=null;loadDashboard(false)};
+  el('days30').onclick=function(){state.days=30;state.data=null;loadDashboard(false)};
   el('userRefresh').onclick=loadUsers;
   el('userSort').onchange=function(){state.userPage=1;loadUsers()};
   el('userDir').onchange=function(){state.userPage=1;loadUsers()};
@@ -2135,12 +2147,12 @@
   el('drawerClose').onclick=closeUserDetail;el('userDetailBackdrop').onclick=closeUserDetail;
   el('operationsChannelClose').onclick=closeOperationsChannels;el('operationsChannelBackdrop').onclick=closeOperationsChannels;
   document.addEventListener('keydown',function(e){if(e.key!=='Escape')return;if(!el('operationsChannelLayer').hidden)closeOperationsChannels();else if(!el('customerLayer').hidden)closeUserDetail();else closeSidebar()});
-  document.addEventListener('visibilitychange',function(){if(document.hidden){clearSecretWindows();return}if((state.module==='dashboard'||state.module==='operations')&&!state.poolActions)load(true)});
+  document.addEventListener('visibilitychange',function(){if(document.hidden){clearSecretWindows();return}if(state.poolActions)return;if(state.module==='dashboard')loadDashboard(true);else if(state.module==='operations')load(true)});
   window.addEventListener('pagehide',clearSecretWindows);
   window.addEventListener('pageshow',clearSecretWindows);
   document.addEventListener('freeze',clearSecretWindows);
   document.querySelector('[data-module-tab="dashboard"]').setAttribute('aria-current','page');
-  renderAnnouncementEffect();updateAnnouncementControls();startAutoRefresh();load(false);
+  renderAnnouncementEffect();updateAnnouncementControls();startAutoRefresh();loadDashboard(false);
 })();
 </script>
 </body>
