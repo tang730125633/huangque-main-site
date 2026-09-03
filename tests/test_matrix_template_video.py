@@ -182,6 +182,13 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         ))
         v10 = next(item for item in expanded if item.get("variant") == "v10")
         self.assertEqual(
+            (85, 65),
+            tuple(
+                v10["semantic_layout"]["layers"][layer]["font_size_px"]
+                for layer in ("top1", "top3")
+            ),
+        )
+        self.assertEqual(
             {"font_size_px": 80, "font_weight": 400,
              "max_width_px": 970, "max_lines": 2},
             v10["semantic_layout"]["layers"]["bottom2"],
@@ -387,6 +394,49 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                 "font_size_px"
             ] = invalid_size
             with self.subTest(variant=variant, layer=layer), mock.patch.object(
+                self.module, "_request", return_value={
+                    "templates": drift,
+                    "max_batch_size": 5,
+                    "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+                },
+            ), self.assertRaisesRegex(RuntimeError, "语义排版能力无效"):
+                self.module.public_templates(force=True)
+
+    def test_v10_typography_transition_accepts_only_old_or_new_sizes(self):
+        transitions = {"top1": (70, 85), "top3": (54, 65)}
+        for layer, accepted_sizes in transitions.items():
+            for font_size in accepted_sizes:
+                templates = self.reference_templates()
+                next(
+                    item for item in templates if item.get("variant") == "v10"
+                )["semantic_layout"]["layers"][layer][
+                    "font_size_px"
+                ] = font_size
+                with self.subTest(
+                    layer=layer, font_size=font_size,
+                ), mock.patch.object(self.module, "_request", return_value={
+                    "templates": templates,
+                    "max_batch_size": 5,
+                    "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+                }):
+                    values = self.module.public_templates(force=True)
+                    current = next(
+                        item for item in values if item.get("variant") == "v10"
+                    )
+                    self.assertEqual(
+                        font_size,
+                        current["semantic_layout"]["layers"][layer][
+                            "font_size_px"
+                        ],
+                    )
+
+            drift = self.reference_templates()
+            next(
+                item for item in drift if item.get("variant") == "v10"
+            )["semantic_layout"]["layers"][layer]["font_size_px"] = (
+                min(accepted_sizes) + 1
+            )
+            with self.subTest(layer=layer, drift=True), mock.patch.object(
                 self.module, "_request", return_value={
                     "templates": drift,
                     "max_batch_size": 5,
