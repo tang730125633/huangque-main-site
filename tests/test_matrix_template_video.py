@@ -194,7 +194,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         )
         v04 = next(item for item in expanded if item.get("variant") == "v04")
         self.assertEqual(
-            {"font_size_px": 60, "font_weight": 900,
+            {"font_size_px": 80, "font_weight": 900,
              "max_width_px": 996, "max_lines": 2},
             v04["semantic_layout"]["layers"]["bottom2"],
         )
@@ -202,7 +202,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         next(
             item for item in transitional_templates
             if item.get("variant") == "v04"
-        )["semantic_layout"]["layers"]["bottom2"]["font_size_px"] = 52
+        )["semantic_layout"]["layers"]["bottom2"]["font_size_px"] = 60
         with mock.patch.object(self.module, "_request", return_value={
             "templates": transitional_templates,
             "max_batch_size": 5,
@@ -210,7 +210,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         }):
             transitional = self.module.public_templates(force=True)
         self.assertEqual(
-            52,
+            60,
             next(
                 item for item in transitional
                 if item.get("variant") == "v04"
