@@ -25,7 +25,7 @@ function createRuntime(plan, storage){
   const elements=new Map();
   for(const m of page.matchAll(/<([a-z0-9-]+)[^>]*\sid="([^"]+)"[^>]*>/gi))elements.set(m[2],new Element(m[1],m[2]));
   const get=id=>elements.get(id)||(elements.set(id,new Element('div',id)),elements.get(id));
-  const timers=[];const requests={auth:[],post:[],poll:[]};let uuidCount=0,timerId=0,authUsername=plan.username||'alice';
+  const timers=[];const requests={auth:[],post:[],poll:[],confirm:[]};let uuidCount=0,timerId=0,authUsername=plan.username||'alice';
   const sessionStorage={getItem:k=>storage.has(k)?storage.get(k):null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)};
   const fetch=(url,options={})=>{
     if(url==='/api/auth/me'){const index=requests.auth.length;requests.auth.push({username:authUsername});return plan.auth?plan.auth(index,authUsername):Promise.resolve(response(200,{user:{username:authUsername}}))}
@@ -40,7 +40,7 @@ function createRuntime(plan, storage){
   };
   const documentListeners={};const windowListeners={};
   const document={getElementById:get,createElement:t=>new Element(t),documentElement:{scrollWidth:390},hidden:false,addEventListener:(k,fn)=>{(documentListeners[k]||=[]).push(fn)}};
-  const context={document,window:null,fetch,sessionStorage,location:{href:''},confirm:()=>true,crypto:{randomUUID:()=>`uuid-${++uuidCount}`},Date,Math,JSON,Promise,Object,Array,String,Error,console,clearTimeout:id=>{const timer=timers.find(item=>item.id===id);if(timer)timer.active=false},setTimeout:(fn,delay=0)=>{const timer={id:++timerId,fn,delay,active:true};timers.push(timer);return timer.id},addEventListener:(k,fn)=>{(windowListeners[k]||=[]).push(fn)}};
+  const context={document,window:null,fetch,sessionStorage,location:{href:''},confirm:message=>{requests.confirm.push(message);return true},crypto:{randomUUID:()=>`uuid-${++uuidCount}`},Date,Math,JSON,Promise,Object,Array,String,Error,console,clearTimeout:id=>{const timer=timers.find(item=>item.id===id);if(timer)timer.active=false},setTimeout:(fn,delay=0)=>{const timer={id:++timerId,fn,delay,active:true};timers.push(timer);return timer.id},addEventListener:(k,fn)=>{(windowListeners[k]||=[]).push(fn)}};
   context.window=context;vm.createContext(context);vm.runInContext(source,context);
   return {get,requests,timers,storage,switchUsername:name=>{authUsername=name},runTimer:async()=>{while(timers.length){const timer=timers.shift();if(timer.active){timer.active=false;timer.fn();await flush();return}}},triggerWindow:async name=>{for(const fn of windowListeners[name]||[])fn();await flush()},triggerDocument:async name=>{for(const fn of documentListeners[name]||[])fn();await flush()},flush};
 }
@@ -209,6 +209,24 @@ async function scenarioBusyActionChecksWithoutDuplicate(){
   return {before,during,after:actionState(runtime),posts:runtime.requests.post.length,polls:runtime.requests.poll.length,cleared:pendingCleared(runtime.storage)};
 }
 
+async function scenarioDelayedOuterCheckAuthCannotCreateNewJob(){
+  let finishPoll,releaseAuth;
+  const firstPoll=new Promise(resolve=>{finishPoll=resolve});
+  const delayedAuth=new Promise(resolve=>{releaseAuth=resolve});
+  const runtime=createRuntime({
+    auth:(index,username)=>index===5?delayedAuth:Promise.resolve(response(200,{user:{username}})),
+    post:index=>Promise.resolve(response(200,{job_id:index===0?311:312})),
+    poll:index=>index===0?firstPoll:Promise.resolve(response(200,{status:'done',result:{video_url:'/unexpected-second-video',duration:8}})),
+  },new Map());
+  await fillAndSubmit(runtime);await flush(20);
+  runtime.get('generateBtn').onclick();await flush(20);
+  const beforeTerminal={posts:runtime.requests.post.length,polls:runtime.requests.poll.length,confirms:runtime.requests.confirm.length,action:actionState(runtime)};
+  finishPoll(response(200,{status:'done',result:{video_url:'/first-video',duration:8}}));await flush(20);
+  const terminal={src:runtime.get('video').src,cleared:pendingCleared(runtime.storage),action:actionState(runtime)};
+  releaseAuth(response(200,{user:{username:'alice'}}));await flush(20);
+  return {beforeTerminal,terminal,posts:runtime.requests.post.length,polls:runtime.requests.poll.length,confirms:runtime.requests.confirm.length,keys:runtime.requests.post.map(call=>call.options.headers['Idempotency-Key']),src:runtime.get('video').src,action:actionState(runtime),cleared:pendingCleared(runtime.storage)};
+}
+
 async function scenarioDelayedCheckAuthCannotDuplicateAcceptedPost(){
   let releaseAuth;
   const delayedAuth=new Promise(resolve=>{releaseAuth=resolve});
@@ -372,5 +390,5 @@ async function scenarioHungPollTimesOutAndRecovers(){
   return {before,afterTimeout,afterRecovery,afterLateResponse:{polls:runtime.requests.poll.length,src:runtime.get('video').src,cleared:pendingCleared(runtime.storage)}};
 }
 
-async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure,pollHttpFailure:scenarioPollHttpFailure,pollRecoveryBeyondFive:scenarioPollRecoveryBeyondFive,instantResult:scenarioInstantResult,delayedResultUrl:scenarioDelayedResultUrl,longDelayedResultUrl:scenarioLongDelayedResultUrl,foregroundResume:scenarioForegroundResume,mediaRetry:scenarioMediaRetry,livePreview:scenarioLivePreview,actionPrerequisites:scenarioActionPrerequisites,templateVisibility:scenarioTemplateVisibility,hiddenTemplatePendingRecovery:scenarioHiddenTemplatePendingRecovery,fontSelect:scenarioFontSelect,lockedFont:scenarioLockedFont,batchFive:scenarioBatchFive,legacyPending:scenarioLegacyPending,mixedFailureReload:scenarioMixedFailureReload,jobFailureRefund:scenarioJobFailureRefund,refundPendingThenConfirmed:scenarioRefundPendingThenConfirmed,busyActionCheck:scenarioBusyActionChecksWithoutDuplicate,delayedPostAuth:scenarioDelayedCheckAuthCannotDuplicateAcceptedPost,delayedPollAuth:scenarioDelayedCheckAuthCannotReviveTerminalPoll,linkedJobDuringAuth:scenarioDelayedSubmitAuthHonorsLinkedJob,clearedPendingDuringAuth:scenarioDelayedPollAuthHonorsClearedPending,uncertainAutoRecovery:scenarioUncertainRecoversAutomatically,staleSubmittingAutoRecovery:scenarioStaleSubmittingRecoversAutomatically,crossAccountPending:scenarioCrossAccountPendingIsolation,dynamicAccountSwitch:scenarioDynamicAccountSwitchFailsClosed,retryAuthFailure:scenarioRetryAuthFailureFailsClosed,concurrentStaleAuth:scenarioConcurrentStaleAuthRestoresNewOwnerOnce,foregroundSingleFlight:scenarioForegroundDoesNotDuplicateInflightRequests,hungSubmissionTimeout:scenarioHungSubmissionTimesOutAndRecovers,hungPollTimeout:scenarioHungPollTimesOutAndRecovers};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}
+async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure,pollHttpFailure:scenarioPollHttpFailure,pollRecoveryBeyondFive:scenarioPollRecoveryBeyondFive,instantResult:scenarioInstantResult,delayedResultUrl:scenarioDelayedResultUrl,longDelayedResultUrl:scenarioLongDelayedResultUrl,foregroundResume:scenarioForegroundResume,mediaRetry:scenarioMediaRetry,livePreview:scenarioLivePreview,actionPrerequisites:scenarioActionPrerequisites,templateVisibility:scenarioTemplateVisibility,hiddenTemplatePendingRecovery:scenarioHiddenTemplatePendingRecovery,fontSelect:scenarioFontSelect,lockedFont:scenarioLockedFont,batchFive:scenarioBatchFive,legacyPending:scenarioLegacyPending,mixedFailureReload:scenarioMixedFailureReload,jobFailureRefund:scenarioJobFailureRefund,refundPendingThenConfirmed:scenarioRefundPendingThenConfirmed,busyActionCheck:scenarioBusyActionChecksWithoutDuplicate,delayedOuterCheckAuth:scenarioDelayedOuterCheckAuthCannotCreateNewJob,delayedPostAuth:scenarioDelayedCheckAuthCannotDuplicateAcceptedPost,delayedPollAuth:scenarioDelayedCheckAuthCannotReviveTerminalPoll,linkedJobDuringAuth:scenarioDelayedSubmitAuthHonorsLinkedJob,clearedPendingDuringAuth:scenarioDelayedPollAuthHonorsClearedPending,uncertainAutoRecovery:scenarioUncertainRecoversAutomatically,staleSubmittingAutoRecovery:scenarioStaleSubmittingRecoversAutomatically,crossAccountPending:scenarioCrossAccountPendingIsolation,dynamicAccountSwitch:scenarioDynamicAccountSwitchFailsClosed,retryAuthFailure:scenarioRetryAuthFailureFailsClosed,concurrentStaleAuth:scenarioConcurrentStaleAuthRestoresNewOwnerOnce,foregroundSingleFlight:scenarioForegroundDoesNotDuplicateInflightRequests,hungSubmissionTimeout:scenarioHungSubmissionTimesOutAndRecovers,hungPollTimeout:scenarioHungPollTimesOutAndRecovers};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}
 main().catch(e=>{console.error(e.stack||e);process.exitCode=1});

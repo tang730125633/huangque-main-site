@@ -1755,6 +1755,8 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertIn("button.disabled=!!reason", page)
         self.assertIn("busy?'检查任务状态'", page)
         self.assertIn("if(!pending){busy=false;sync();return}", page)
+        self.assertIn("checking=busy", page)
+        self.assertIn("pendingIdentity(current)!==expectedIdentity", page)
         self.assertLess(shell.index("k:'text-video'"), shell.index("k:'matrix-template'"))
         self.assertIn("/api/gen/matrix-template/capability", shell)
 
@@ -2129,6 +2131,26 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertFalse(result["after"]["busy"])
         self.assertTrue(result["after"]["enabled"])
         self.assertEqual("生成视频 · 5 点", result["after"]["text"])
+        self.assertTrue(result["cleared"])
+
+    def test_delayed_outer_check_auth_cannot_create_a_new_job(self):
+        result = self.runtime("delayedOuterCheckAuth")
+        self.assertEqual((1, 1, 1), (
+            result["beforeTerminal"]["posts"],
+            result["beforeTerminal"]["polls"],
+            result["beforeTerminal"]["confirms"],
+        ))
+        self.assertTrue(result["beforeTerminal"]["action"]["busy"])
+        self.assertEqual("/first-video", result["terminal"]["src"])
+        self.assertTrue(result["terminal"]["cleared"])
+        self.assertFalse(result["terminal"]["action"]["busy"])
+        self.assertEqual((1, 1, 1), (
+            result["posts"], result["polls"], result["confirms"],
+        ))
+        self.assertEqual(["matrix-template-uuid-1"], result["keys"])
+        self.assertEqual("/first-video", result["src"])
+        self.assertFalse(result["action"]["busy"])
+        self.assertTrue(result["action"]["enabled"])
         self.assertTrue(result["cleared"])
 
     def test_preclaimed_submit_flight_blocks_duplicate_during_delayed_auth(self):
