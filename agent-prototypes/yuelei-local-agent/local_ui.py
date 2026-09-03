@@ -86,6 +86,14 @@ CAPABILITY_QUERY_PHRASES = (
 )
 
 
+def _extract_url(value):
+    """Return the first http(s) URL in text; trailing full-width punct trimmed."""
+    m = re.search(r"https?://[^<> \t\r\n，。！？!?、；;()（）]+\S", str(value or ""))
+    if not m:
+        return ""
+    return m.group(0).strip("，。！？!?、；;：:()（）\"'")
+
+
 def _normalize_intent_text(value):
     return re.sub(r"[\s,，。！？!?、；;：:]+", "", str(value or "")).lower()
 
@@ -936,15 +944,15 @@ def _local_chat(body, customer):
                 "需求已完整。我建议采用“优惠钩子—使用场景—限时行动”的三段结构：开头直接说买三送一，中段覆盖加班、开车或运动场景，结尾强调活动时间和购买入口。\n\n"
                 "如果以上信息无误，请完整回复：确认生成。我会获取无扣点报价；只有你随后点击价格确认按钮才会提交付费任务。"
             )
-    elif intent == "breakdown" and not missing:
+    elif intent == "breakdown" and not missing and _extract_url(combined):
         cli_trace = None
         # 拆解视频/反推迟点即扣：顾客给视频来源即报价，气泡上“确认并扣 N 点”，点它才真正反推并回传。
         if not _ensure_cli_authorized():
             reply = "当前报价服务暂不可用，因此没有取得报价，也没有扣点。请稍后再试或联系工作人员。"
             next_step = "等待报价服务恢复后再次获取报价"
         else:
-            link = next((w for w in combined.split() if w.startswith(("http://", "https://"))), "")
-            input_value = {"mode": "reverse_prompt", "url": link} if link else {"mode": "reverse_prompt"}
+            link = _extract_url(combined)
+            input_value = {"mode": "reverse_prompt", "url": link}
             quote_result = _run_hq(
                 ["run", "director-breakdown", "--input", "@-", "--json"],
                 input_value=input_value, timeout=45,
@@ -983,7 +991,7 @@ def _local_chat(body, customer):
                     next_step = "检查报价信息"
     elif intent == "breakdown":
         # 尚未给出视频来源：在同一条对话里补齐，不跳页。
-        reply = "我识别到你要拆解视频（反推提示词）。请在对话框直接粘贴要反推的视频链接（抖音 / 小红书 / 视频号），或上传视频文件；拿到后我会报价，你在对话气泡里点确认才真正反推。"
+        reply = "我识别到你要拆解视频（反推提示词）。请在对话框把要反推的视频链接（抖音 / 小红书 / 视频号）粘贴给我；我拿到真实链接会报价，你在气泡点确认才真正反推。"
         next_step = "在对话框粘贴视频链接或上传视频"
     elif intent == "digital_human":
         if missing:
