@@ -1885,6 +1885,10 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual(3, result["count"])
         self.assertNotIn("沉浸强标题", result["html"])
         self.assertNotIn("三段式活动海报", result["html"])
+        self.assertIn("1. 默认原生大字", result["html"])
+        self.assertIn("2. 极简标题", result["html"])
+        self.assertIn("3. 参考模板", result["html"])
+        self.assertEqual("1. 默认原生大字", result["selectedName"])
         self.assertEqual("native-bold", result["active"])
 
     def test_pending_hidden_template_still_recovers(self):
