@@ -192,6 +192,30 @@ class MatrixTemplateVideoTests(unittest.TestCase):
              "max_width_px": 996, "max_lines": 2},
             v05["semantic_layout"]["layers"]["top3"],
         )
+        v04 = next(item for item in expanded if item.get("variant") == "v04")
+        self.assertEqual(
+            {"font_size_px": 60, "font_weight": 900,
+             "max_width_px": 996, "max_lines": 2},
+            v04["semantic_layout"]["layers"]["bottom2"],
+        )
+        transitional_templates = self.reference_templates()
+        next(
+            item for item in transitional_templates
+            if item.get("variant") == "v04"
+        )["semantic_layout"]["layers"]["bottom2"]["font_size_px"] = 52
+        with mock.patch.object(self.module, "_request", return_value={
+            "templates": transitional_templates,
+            "max_batch_size": 5,
+            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+        }):
+            transitional = self.module.public_templates(force=True)
+        self.assertEqual(
+            52,
+            next(
+                item for item in transitional
+                if item.get("variant") == "v04"
+            )["semantic_layout"]["layers"]["bottom2"]["font_size_px"],
+        )
         self.assertEqual(
             {f"v{index:02d}" for index in range(1, 18)},
             {item["variant"] for item in expanded if item["engine"] == "hyperframes"},
@@ -244,6 +268,13 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             "semantic_layout"
         ]["layers"]["bottom2"]["max_width_px"] = 996
         invalid_cases.append(width_drift)
+
+        v04_size_drift = self.reference_templates()
+        next(
+            item for item in v04_size_drift
+            if item.get("variant") == "v04"
+        )["semantic_layout"]["layers"]["bottom2"]["font_size_px"] = 59
+        invalid_cases.append(v04_size_drift)
 
         mixed_contract = self.reference_templates()
         mixed_v02 = next(

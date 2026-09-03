@@ -126,7 +126,7 @@ _SEMANTIC_CONTRACTS = {
     },
     "v04": {
         "top1": (88, 900, 996, 2), "top2": (72, 900, 996, 2),
-        "top3": (48, 900, 948, 2), "bottom2": (52, 900, 996, 2),
+        "top3": (48, 900, 948, 2), "bottom2": (60, 900, 996, 2),
     },
     "v05": {
         "top1": (102, 900, 996, 2), "top2": (104, 900, 996, 2),
@@ -184,6 +184,12 @@ _SEMANTIC_CONTRACTS = {
 _ALL_REFERENCE_VARIANTS = {
     f"v{index:02d}" for index in range(1, 18)
 }
+_SEMANTIC_LAYER_TRANSITIONS = {
+    ("v04", "bottom2"): {
+        (52, 900, 996, 2),
+        (60, 900, 996, 2),
+    },
+}
 
 
 def _semantic_contract(value, variant):
@@ -214,7 +220,10 @@ def _semantic_contract(value, variant):
             item.get("font_size_px"), item.get("font_weight"),
             item.get("max_width_px"), item.get("max_lines"),
         )
-        if actual != expected:
+        allowed = _SEMANTIC_LAYER_TRANSITIONS.get(
+            (str(variant or ""), layer), {expected},
+        )
+        if actual not in allowed:
             raise RuntimeError("HyperFrames 语义排版能力无效")
         normalized[layer] = {key: int(value) for key, value in item.items()}
     return {"version": 1, "max_width_px": 996, "layers": normalized}
