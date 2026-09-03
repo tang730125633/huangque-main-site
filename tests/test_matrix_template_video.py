@@ -1604,6 +1604,8 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertIn("node.scrollHeight>node.clientHeight", page)
         self.assertIn("fitLiveText(el('liveTop'),topSizes[activeTemplate]||34,12)", page)
         self.assertIn("fitLiveText(el('liveBottom'),20,12)", page)
+        self.assertIn("var hiddenTemplateIds={'full-overlay-bold':true,'poster-split':true}", page)
+        self.assertIn("filter(function(item){return item&&!hiddenTemplateIds[item.id]})", page)
         self.assertLess(shell.index("k:'text-video'"), shell.index("k:'matrix-template'"))
         self.assertIn("/api/gen/matrix-template/capability", shell)
 
@@ -1612,7 +1614,7 @@ class MatrixTemplatePageTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertEqual(17, len(re.findall(r"'ref-[0-9]{2}-[a-z0-9-]+'", source)))
-        self.assertIn("cardCount !== 19", source)
+        self.assertIn("cardCount !== 17", source)
         self.assertIn("referenceCount !== 17", source)
         self.assertIn("distinctReferencePreviews !== 17", source)
 
@@ -1838,6 +1840,20 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual("#111111", result["liveFg"])
         self.assertEqual("#df3f36", result["liveAccent"])
         self.assertEqual("none", result["videoDisplay"])
+
+    def test_hidden_templates_are_not_rendered_in_the_picker(self):
+        result = self.runtime("templateVisibility")
+        self.assertEqual(3, result["count"])
+        self.assertNotIn("沉浸强标题", result["html"])
+        self.assertNotIn("三段式活动海报", result["html"])
+        self.assertEqual("native-bold", result["active"])
+
+    def test_pending_hidden_template_still_recovers(self):
+        result = self.runtime("hiddenTemplatePendingRecovery")
+        self.assertEqual("full-overlay-bold", result["body"]["template_id"])
+        self.assertEqual("/hidden-template-video", result["src"])
+        self.assertEqual("native-bold", result["active"])
+        self.assertTrue(result["cleared"])
 
     def test_font_selector_lists_available_fonts_and_submits_parameter(self):
         result = self.runtime("fontSelect")
