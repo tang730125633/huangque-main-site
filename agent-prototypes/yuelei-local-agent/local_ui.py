@@ -305,7 +305,7 @@ def _run_hq(arguments, input_value=None, timeout=30):
     _target = arguments[1] if len(arguments) > 1 else ""
     if _verb in ("run", "describe"):
         if _verb == "run":
-            _allowed = (CLI_QUOTE_ALLOWLIST | {"image-upload", "voices", "tasks", "task"})
+            _allowed = (CLI_QUOTE_ALLOWLIST | {"image-upload", "video-upload", "audio-upload", "voices", "tasks", "task"})
         else:  # describe: capabilities & infra the Agent may legitimately introspect
             _allowed = CLI_DESCRIBE_ALLOWLIST
         if _target not in _allowed:
