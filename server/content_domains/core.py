@@ -3982,6 +3982,7 @@ class H(BaseHTTPRequestHandler):
                             "retry_after_ms": 1000,
                         })
                 if kind == "avatar":
+                    body = cli_uploads.expand_avatar_payload(body, user["username"])
                     body = video_domain.validate_avatar_payload(body)
                     _short_drama_domain().validate_avatar_binding_submission(
                         jdb, user["username"], body.get("short_drama_binding"),

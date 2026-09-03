@@ -5309,6 +5309,7 @@ class H(BaseHTTPRequestHandler):
                 )
                 response = {
                     "quote_token": token, "kind": generation_kind, "cost": claims["c"],
+                    "fingerprint": generation_kind + ":" + claims["h"],
                     "points": result.get("points"), "expires_in": hq_cli_api.QUOTE_TTL,
                     "expires_at": claims["e"],
                     "confirmation_required": True,
@@ -6012,6 +6013,37 @@ class H(BaseHTTPRequestHandler):
                 "access_token": token, "expires_in": hq_cli_api.TOKEN_TTL,
                 "username": row["username"],
             })
+        if p == "/api/auth/internal/cli/delegate":
+            if not self._require_internal():
+                return
+            row = self._user()
+            if not row:
+                return self._cli_send(401, {
+                    "detail": "未登录或登录已过期", "code": "web_unauthorized",
+                })
+            if self._content_length_exceeds(4096):
+                return self._cli_send(413, {"detail": "请求过大", "code": "request_too_large"})
+            d = self._body()
+            if self._bad_json() or not isinstance(d, dict):
+                return self._cli_send(400, {"detail": "请求体不是合法 JSON 对象"})
+            if set(d) != {"username", "scopes", "ttl_seconds"}:
+                return self._cli_send(400, {
+                    "detail": "请求字段必须是 username、scopes、ttl_seconds",
+                    "code": "invalid_request",
+                })
+            username = d.get("username")
+            if not isinstance(username, str) or not secrets.compare_digest(
+                    username.strip(), str(row["username"])):
+                return self._cli_send(403, {
+                    "detail": "不能为其他账号签发授权", "code": "identity_mismatch",
+                })
+            try:
+                delegated = hq_cli_api.issue_delegated_token(
+                    db, row["username"], d.get("scopes"), d.get("ttl_seconds"),
+                )
+                return self._cli_send(200, delegated)
+            except hq_cli_api.CLIAPIError as exc:
+                return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
         if p == "/api/auth/cli/device/start":
             if self._content_length_exceeds(8192):
                 return self._cli_send(413, {"detail": "请求过大"})

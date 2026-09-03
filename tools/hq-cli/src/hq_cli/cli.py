@@ -3,6 +3,7 @@
 import argparse
 import json
 import math
+import os
 import re
 import sys
 import time
@@ -33,6 +34,8 @@ EXIT_API = 10
 EXIT_CONFIRMATION = 11
 EXIT_INSTALL = 12
 MAX_INPUT_BYTES = 65536
+QUOTE_TOKEN_ENV = "HQ_CLI_QUOTE_TOKEN"
+_QUOTE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{16,4031}\.[A-Fa-f0-9]{64}$")
 LOGIN_SCOPES = [
     "profile:read", "ip12:read", "ip12:write", "ip12:chat", "prompt:optimize", "canvas:read",
     "canvas:write", "canvas:agent", "canvas:edit", "tasks:read", "assets:read", "assets:write", "assets:upload",
@@ -79,6 +82,19 @@ def _error(error):
         payload["details"] = error.details
     _write(sys.stderr, payload)
     return error.code
+
+
+def _environment_quote_token():
+    """Read the server-only quote channel without ever echoing its value."""
+    if QUOTE_TOKEN_ENV not in os.environ:
+        return None
+    token = os.environ.get(QUOTE_TOKEN_ENV, "")
+    if not isinstance(token, str) or not _QUOTE_TOKEN_RE.fullmatch(token):
+        raise CliError(
+            EXIT_CONFIRMATION, "invalid_quote_token",
+            "HQ_CLI_QUOTE_TOKEN is invalid",
+        )
+    return token
 
 
 def _reject_non_finite(value):
@@ -712,16 +728,22 @@ def main(argv=None):
                 if args.expected_cost is not None:
                     raise CliError(EXIT_USAGE, "usage_error", "API capabilities do not accept --expected-cost")
                 paid = capability["side_effect"] == "paid"
+                quote_token = args.quote_token
+                # The environment channel exists only for the in-process video
+                # Agent bridge.  Ignore it for quotes/non-paid actions and when
+                # an interactive caller explicitly supplied the CLI argument.
+                if paid and args.confirm and quote_token is None:
+                    quote_token = _environment_quote_token()
                 if capability["confirmation_required"] and not paid and not args.confirm:
                     raise CliError(EXIT_CONFIRMATION, "confirmation_required", "re-run this action with --confirm")
-                if args.quote_token and not args.confirm:
+                if quote_token and not args.confirm:
                     raise CliError(EXIT_USAGE, "usage_error", "--quote-token requires --confirm")
-                if paid and args.confirm and not args.quote_token:
+                if paid and args.confirm and not quote_token:
                     raise CliError(EXIT_CONFIRMATION, "quote_required", "run without --confirm first, then reuse the same input with the returned quote_token")
                 credentials = _credentials()
                 request_body = {"action": capability["api_action"], "input": payload, "confirm": bool(args.confirm)}
-                if args.quote_token:
-                    request_body["quote_token"] = args.quote_token
+                if quote_token:
+                    request_body["quote_token"] = quote_token
                 result = _request("/api/auth/cli/action", "POST", request_body,
                                   credentials["access_token"],
                                   timeout=310 if capability["id"] == "ip12-message" else 120)

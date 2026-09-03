@@ -52,6 +52,17 @@ class CLIMediaUploadTests(unittest.TestCase):
                 {"reference_video_upload_ids": [upload_id]}, "bob", now=101,
             )
 
+    def test_load_preview_returns_verified_bytes_and_mime_for_owner(self):
+        image_id, video_id = self.image(), self.video()
+        image, image_mime = cli_uploads.load_preview("image", image_id, "alice", now=101)
+        video, video_mime = cli_uploads.load_preview("video", video_id, "alice", now=101)
+        self.assertEqual(PNG, image)
+        self.assertEqual("image/png", image_mime)
+        self.assertEqual(MP4, video)
+        self.assertEqual("video/mp4", video_mime)
+        with self.assertRaisesRegex(ValueError, "不存在或已失效"):
+            cli_uploads.load_preview("image", image_id, "bob", now=101)
+
     def test_tryon_roles_expand_and_classic_video_is_six_seconds_max(self):
         person, clothes = self.image(), self.image()
         fast = cli_uploads.expand_role_media_payload({

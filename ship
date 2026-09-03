@@ -143,6 +143,7 @@ EXACT_DOMAIN_MODULES=""
 NEED_RELOAD=0   # 部署过 systemd 单元/drop-in 时置 1，重启前必须 daemon-reload，否则改动不生效
 CONTENT_DOMAINS_SYNCED=0
 PROVIDERS_SYNCED=0
+HQ_CLI_SYNCED=0
 add_svc(){ for s in $1; do case " $RESTART " in *" $s "*) ;; *) RESTART="$RESTART $s";; esac; done; }
 add_timer(){ for t in $1; do case " $TIMERS " in *" $t "*) ;; *) TIMERS="$TIMERS $t";; esac; done; }
 add_deployed(){ case " $DEPLOYED " in *" $1 "*) ;; *) DEPLOYED="$DEPLOYED $1";; esac; }
@@ -312,6 +313,9 @@ for f in "$@"; do
              rel="${f#server/providers/}"
              case "$rel" in */*) dest="/home/ubuntu/content-api/providers/${rel%/*}/" ;; *) dest=/home/ubuntu/content-api/providers/ ;; esac
              svc=huangque-content ;;
+    tools/hq-cli/src/hq_cli/*)
+             dest=/home/ubuntu/content-api/hq_cli/
+             svc=huangque-content ;;
     server/admin_api.py)   dest=/home/ubuntu/content-api/;  svc=huangque-admin ;;
     server/qa_fixtures/*)  dest=/home/ubuntu/content-api/qa_fixtures/; svc=huangque-admin ;;
     server/leadgen_api.py) dest=/home/ubuntu/content-api/;  svc=huangque-leadgen-api ;;
@@ -348,6 +352,8 @@ for f in "$@"; do
   case "$dest" in /etc/systemd/system/*)
     $SSHC "$REMOTE" "sudo mkdir -p $dest" || { echo "  ❌ $dest 创建失败"; exit 1; } ;;
     /home/ubuntu/content-api/providers/*|/home/ubuntu/content-api/qa_fixtures/*)
+    $SSHC "$REMOTE" "sudo mkdir -p $dest" || { echo "  ❌ $dest 创建失败"; exit 1; } ;;
+    /home/ubuntu/content-api/hq_cli/*)
     $SSHC "$REMOTE" "sudo mkdir -p $dest" || { echo "  ❌ $dest 创建失败"; exit 1; } ;;
   esac
   if [ "$f" = "scripts/drift_sentinel.py" ]; then
@@ -402,6 +408,25 @@ for f in "$@"; do
       fi
       ;;
   esac
+  # content_api 与视频 Agent 会通过 python -m hq_cli 调用工具。生产目录不是
+  # 完整 checkout，发布任一桥接依赖时必须同步整个可导入包，避免只上线调用方。
+  case "$f" in
+    server/content_api.py|server/content_domains/video_agent.py|server/content_domains/video_agent_tools.py|server/content_domains/hq_cli_executor.py|tools/hq-cli/src/hq_cli/*)
+      if [ "$HQ_CLI_SYNCED" = "0" ]; then
+        HQ_CLI_FILES="$(git ls-files tools/hq-cli/src/hq_cli)" \
+          || { echo "  ❌ 无法读取 hq_cli Git 文件清单"; exit 1; }
+        [ -n "$HQ_CLI_FILES" ] \
+          || { echo "  ❌ hq_cli Git 文件清单为空"; exit 1; }
+        $SSHC "$REMOTE" "sudo mkdir -p /home/ubuntu/content-api/hq_cli" \
+          || { echo "  ❌ hq_cli 目录创建失败"; exit 1; }
+        push_dir tools/hq-cli/src/hq_cli/ /home/ubuntu/content-api/hq_cli/ \
+          && echo "  ✓ tools/hq-cli/src/hq_cli/ → /home/ubuntu/content-api/hq_cli/（依赖闭包同步）" \
+          || { echo "  ❌ hq_cli 依赖闭包部署失败"; exit 1; }
+        for tracked in $HQ_CLI_FILES; do add_deployed "$tracked"; done
+        HQ_CLI_SYNCED=1
+      fi
+      ;;
+  esac
   case "$f" in
     server/providers/*|server/content_api.py|server/content_domains/*)
       if [ "$PROVIDERS_SYNCED" = "0" ] && { [ "$EXACT_CONTENT_DOMAINS" = "0" ] || [ "${f#server/providers/}" != "$f" ]; }; then
@@ -421,6 +446,18 @@ for f in "$@"; do
   add_svc "$svc"
   add_timer "$timer"
 done
+
+if [ "$HQ_CLI_SYNCED" = "1" ]; then
+  echo "==> 3.3/5 黄雀 CLI 部署冒烟"
+  $SSHC "$REMOTE" bash -s -- "$CONTENT_PYTHON" <<'RS' || exit 1
+set -u
+py_bin="$1"
+cd /home/ubuntu/content-api
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/home/ubuntu/content-api \
+  "$py_bin" -m hq_cli version --json >/dev/null
+RS
+  echo "  ✓ python -m hq_cli version --json 通过"
+fi
 
 # exact 模式不会同步依赖目录，因此逐个导入明确点名的模块，避免首次客户请求才暴露缺依赖。
 if [ -n "$EXACT_DOMAIN_MODULES" ]; then

@@ -41,6 +41,7 @@ class ProviderKeyPoolTests(unittest.TestCase):
                 "GEMINI_API_KEY": "",
                 "XAI_API_KEY": "",
                 "MINIMAX_API_KEY": "",
+                "DEEPSEEK_API_KEY": "",
             },
             clear=False,
         )
@@ -79,6 +80,19 @@ class ProviderKeyPoolTests(unittest.TestCase):
     def test_invalid_master_key_is_not_reported_as_ready(self):
         with patch.dict(os.environ, {provider_keys.MASTER_KEY_ENV: "invalid"}):
             self.assertFalse(provider_keys.vault_ready())
+
+    def test_deepseek_provider_is_supported_and_encrypted(self):
+        self.assertIn("deepseek", provider_keys.PROVIDERS)
+        self.assertEqual(
+            "DEEPSEEK_API_KEY", provider_keys.ENV_KEYS["deepseek"]
+        )
+        item = self.add("deepseek", "deepseek-test-secret-1234")
+        self.assertEqual("deepseek", item["provider"])
+        self.assertNotIn(b"deepseek-test-secret-1234", self.db_path.read_bytes())
+        self.assertEqual(
+            "deepseek-test-secret-1234",
+            provider_keys.candidates("deepseek", item["id"])[0]["secret"],
+        )
 
     def test_retired_key_stops_new_jobs_but_can_finish_bound_job(self):
         item = self.add()
@@ -266,6 +280,47 @@ class ProviderKeyPoolTests(unittest.TestCase):
         self.assertIn("视频模块 → 电影化身", rows["heygen"]["features"])
         self.assertEqual(rows["seedance"]["pool_provider"], "seedance")
 
+    def test_deepseek_catalog_exposes_agent_base_and_supported_models(self):
+        rows = {item["key"]: item for item in admin_api.key_status()}
+        deepseek = rows["deepseek"]
+        self.assertEqual("DeepSeek API", deepseek["name"])
+        self.assertEqual("deepseek", deepseek["pool_provider"])
+        self.assertEqual("api.deepseek.com", deepseek["pool_base_host"])
+        self.assertEqual("VIDEO_AGENT_MODEL", deepseek["model_env"])
+        self.assertEqual("deepseek-v4-flash", deepseek["model"])
+        self.assertEqual(
+            [
+                "deepseek-v4-flash",
+                "deepseek-v4-pro",
+                "deepseek-v4-flash-vision-exp",
+            ],
+            deepseek["model_options"],
+        )
+
+    def test_deepseek_probe_is_fixed_to_official_origin_without_redirects(self):
+        with patch.dict(os.environ, {
+            "DEEPSEEK_API_KEY": "deepseek-test-key",
+            "DEEPSEEK_API_BASE": "https://api.deepseek.com/v1/responses",
+        }), patch.object(
+            admin_api, "_ping_upstream", return_value={"ok": True}
+        ) as ping:
+            result = admin_api._key_ping_deepseek()
+        self.assertTrue(result["ok"])
+        self.assertEqual(ping.call_args.args[:2], (
+            "GET", "https://api.deepseek.com/v1/models",
+        ))
+        self.assertFalse(ping.call_args.kwargs["allow_redirects"])
+
+    def test_deepseek_probe_rejects_untrusted_base_before_network(self):
+        with patch.dict(os.environ, {
+            "DEEPSEEK_API_KEY": "deepseek-test-key",
+            "DEEPSEEK_API_BASE": "https://attacker.example/collect",
+        }), patch.object(admin_api, "_ping_upstream") as ping:
+            result = admin_api._key_ping_deepseek()
+        self.assertFalse(result["ok"])
+        self.assertIn("Base", result["error"])
+        ping.assert_not_called()
+
     def test_transient_manual_probe_does_not_quarantine_key(self):
         item = self.add()
         with patch.object(
@@ -388,6 +443,7 @@ class ProviderKeyPoolTests(unittest.TestCase):
         html = (ROOT / "site" / "admin" / "index.html").read_text(encoding="utf-8")
         for text in (
             "state.module==='dashboard'", "xAI API · 果肉视频", "查看 5 秒",
+            "DeepSeek API · 视频创作助手", "model_options",
             "data-provider-key-replace", "data-server-key-reveal",
             "data-provider-key-delete",
             "前端功能对应关系", "navigator.clipboard",

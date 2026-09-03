@@ -72,7 +72,12 @@ SCOPES = {
 }
 SCOPES.update(director_workflow_contract.SCOPE_CONTRACT)
 DEFAULT_SCOPES = tuple(SCOPES)
+VIDEO_AGENT_DELEGATED_SCOPES = frozenset({
+    "profile:read", "assets:read", "tasks:read", "generation:quote", "generation:submit",
+})
 CHANNEL_CATALOG = (
+    {"id": "deepseek", "provider": "DeepSeek API", "category": "视频创作助手",
+     "features": ["视频创作助手主 Agent"], "access": "direct", "capabilities": [], "selector": {}},
     {"id": "xai", "provider": "xAI API", "category": "视频生成", "features": ["果肉视频生成"],
      "access": "direct", "capabilities": ["video-generate"], "selector": {"channel": "grok"}},
     {"id": "openai", "provider": "OpenAI API", "category": "图片 / 视频", "features": ["黄雀引擎 2", "Sora 2"],
@@ -2149,6 +2154,13 @@ def _normalize_scopes(value):
     return scopes
 
 
+def _normalize_delegated_scopes(value):
+    scopes = _normalize_scopes(value)
+    if any(scope not in VIDEO_AGENT_DELEGATED_SCOPES for scope in scopes):
+        raise CLIAPIError(400, "包含不允许委托给视频助手的权限范围")
+    return scopes
+
+
 def _allow_device_start(client_key, now):
     with _START_HITS_LOCK:
         hits = [stamp for stamp in _START_HITS.get(client_key, []) if now - stamp < 600]
@@ -2293,6 +2305,58 @@ def poll_device(db_factory, body, now=None):
         if status == "expired":
             raise CLIAPIError(410, "设备授权已过期", "expired_token")
         raise CLIAPIError(409, "访问令牌已经签发，请重新登录", "already_issued")
+
+
+def issue_delegated_token(db_factory, username, scopes, ttl, now=None):
+    """Issue a short-lived, least-privilege CLI grant for an authenticated service call."""
+    now = int(time.time() if now is None else now)
+    username = _string(username, "username", 1, 64)
+    scopes = _normalize_delegated_scopes(scopes)
+    ttl = _integer(ttl, "ttl_seconds", 60, 300)
+    expires_at = now + ttl
+    scopes_json = json.dumps(scopes, separators=(",", ":"))
+    connection = db_factory()
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        user = connection.execute(
+            "SELECT username FROM users WHERE username=? "
+            "AND COALESCE(account_status,'active')='active'",
+            (username,),
+        ).fetchone()
+        if not user:
+            raise CLIAPIError(404, "用户不存在或不可用", "user_unavailable")
+        for _ in range(8):
+            token = secrets.token_urlsafe(32)
+            try:
+                connection.execute(
+                    """INSERT INTO cli_device_grants(
+                       device_code_hash,user_code_hash,client_name,requested_scopes_json,
+                       approved_scopes_json,username,status,created_at,expires_at,approved_at,
+                       token_hash,token_expires_at
+                       ) VALUES(?,?,?,?,?,?,'issued',?,?,?,?,?)""",
+                    (
+                        _hash("delegated-device:" + secrets.token_urlsafe(32)),
+                        _hash("delegated-user:" + secrets.token_urlsafe(32)),
+                        "video-agent-internal", scopes_json, scopes_json, username,
+                        now, expires_at, now, _hash(token), expires_at,
+                    ),
+                )
+                break
+            except Exception as exc:
+                if "UNIQUE" not in str(exc).upper():
+                    raise
+        else:
+            raise CLIAPIError(503, "暂时无法签发视频助手授权", "grant_unavailable")
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+    return {
+        "access_token": token, "token_type": "Bearer",
+        "expires_at": expires_at, "scopes": scopes,
+    }
 
 
 def authenticate(db_factory, token, now=None):

@@ -425,9 +425,29 @@ class KeyPingTests(unittest.TestCase):
         self.assertEqual(
             set(admin_api.KEY_PINGS),
             {
-                "openai", "xai", "gemini", "seedance", "minimax", "zelong", "zelong2", "heygen", "heygen_relay",
+                "openai", "xai", "deepseek", "gemini", "seedance", "minimax", "zelong", "zelong2", "heygen", "heygen_relay",
                 "xiaolevideo", "runninghub", "wavespeed", "cosyvoice", "tikhub", "zhipu", "cos",
             },
+        )
+
+    def test_deepseek_provider_probe_uses_non_generating_models_endpoint(self):
+        import unittest.mock as mock
+
+        with mock.patch.object(admin_api, "_env_value", return_value=""), \
+                mock.patch.object(
+                    admin_api, "_ping_upstream", return_value={"ok": True}
+                ) as ping:
+            self.assertTrue(
+                admin_api.probe_provider_secret(
+                    "deepseek", "test-only-deepseek-secret"
+                )["ok"]
+            )
+        ping.assert_called_once_with(
+            "GET",
+            "https://api.deepseek.com/models",
+            headers={"Authorization": "Bearer test-only-deepseek-secret"},
+            proxied=False,
+            allow_redirects=False,
         )
 
     def test_xai_provider_probe_uses_video_egress_route(self):
@@ -585,7 +605,7 @@ class KeyPingTests(unittest.TestCase):
             admin_api, "_ping_upstream", side_effect=AssertionError("不该发起网络请求")
         ):
             # xiaolevideo 是纯连通性拨测(有默认地址),无密钥也会真发请求,不在此列
-            for key in ["openai", "gemini", "zelong", "zelong2", "heygen", "heygen_relay", "tikhub", "runninghub", "cosyvoice", "cos"]:
+            for key in ["openai", "deepseek", "gemini", "zelong", "zelong2", "heygen", "heygen_relay", "tikhub", "runninghub", "cosyvoice", "cos"]:
                 out = admin_api.KEY_PINGS[key]()
                 self.assertFalse(out["ok"], key)
                 self.assertTrue(out.get("error"), key)

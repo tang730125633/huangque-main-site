@@ -498,6 +498,26 @@ class ShortDramaAdvisorTests(unittest.TestCase):
         self.assertEqual(5400, prepared["reserve_microusd"])
         self.assertEqual(maximum, prepared["reserve_microusd"])
 
+    def test_deepseek_v4_models_use_published_peak_rates(self):
+        self.assertEqual(
+            1760000,
+            short_drama_advisor._token_cost(
+                "deepseek-v4-flash", 1000000, 1000000,
+            ),
+        )
+        self.assertEqual(
+            1760000,
+            short_drama_advisor._token_cost(
+                "deepseek-v4-flash-vision-exp", 1000000, 1000000,
+            ),
+        )
+        self.assertEqual(
+            5280000,
+            short_drama_advisor._token_cost(
+                "deepseek-v4-pro", 1000000, 1000000,
+            ),
+        )
+
     def test_successful_request_settles_to_actual_model_cost(self):
         with mock.patch.dict(os.environ, {
             "SHORT_DRAMA_ADVISOR_API_BASE": "https://advisor.example/v1",

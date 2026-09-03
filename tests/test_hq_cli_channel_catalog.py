@@ -24,7 +24,7 @@ class HqCliChannelCatalogTests(unittest.TestCase):
         )
         self.assertNotIn('data-channel=', html)
         self.assertNotIn('data-access=', html)
-        self.assertEqual(16, len(cli_ids))
+        self.assertEqual(17, len(cli_ids))
         by_id = {item["id"]: item for item in hq_cli_api.CHANNEL_CATALOG}
         self.assertEqual([
             {"capability": "image-generate", "input": {"provider": "openai"}},

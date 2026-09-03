@@ -594,6 +594,11 @@ def discard_image(upload_id, username, now=None):
 
 
 def _load_video(upload_id, username, now):
+    data, meta = _load_video_bytes(upload_id, username, now)
+    return "data:%s;base64,%s" % (meta["mime"], base64.b64encode(data).decode("ascii")), meta
+
+
+def _load_video_bytes(upload_id, username, now):
     upload_id = str(upload_id or "").strip().lower()
     if not VIDEO_UPLOAD_ID_RE.fullmatch(upload_id):
         raise ValueError("视频 upload_id 格式不合法")
@@ -622,7 +627,19 @@ def _load_video(upload_id, username, now):
         raise ValueError("视频 upload_id 文件格式异常")
     if not hmac.compare_digest(hashlib.sha256(data).hexdigest(), str(meta.get("sha256") or "")):
         raise ValueError("视频 upload_id 文件校验失败")
-    return "data:%s;base64,%s" % (meta["mime"], base64.b64encode(data).decode("ascii")), meta
+    return data, meta
+
+
+def load_preview(kind, upload_id, username, now=None):
+    """Return verified private upload bytes without exposing its filesystem path."""
+    now = int(time.time() if now is None else now)
+    if kind == "image":
+        data, meta = read_image_bytes(upload_id, username, now)
+    elif kind == "video":
+        data, meta = _load_video_bytes(upload_id, username, now)
+    else:
+        raise ValueError("素材类型不支持预览")
+    return data, str(meta["mime"])
 
 
 def _load_audio(upload_id, username, now):
@@ -728,6 +745,22 @@ def expand_image_payload(payload, username, now=None):
             ]
         else:
             body["reference_images"] = [data for data, _meta in loaded]
+    return body
+
+
+def expand_avatar_payload(payload, username, now=None):
+    """Expand one owner-bound Agent image upload for avatar creation."""
+    if not isinstance(payload, dict):
+        raise ValueError("请求体必须是 JSON 对象")
+    body = dict(payload)
+    upload_id = body.pop("image_upload_id", None)
+    if upload_id is None:
+        return body
+    if body.get("image_data"):
+        raise ValueError("image_upload_id 不能与 image_data 同时使用")
+    now = int(time.time() if now is None else now)
+    data, meta = _load_image(upload_id, username, now)
+    body["image_data"] = "data:%s;base64,%s" % (meta["mime"], data)
     return body
 
 
