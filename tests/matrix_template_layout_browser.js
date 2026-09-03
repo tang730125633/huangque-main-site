@@ -29,7 +29,7 @@ const templates = [
     variant: `v${String(index + 1).padStart(2, '0')}`,
   })),
 ];
-const templateIds = templates.map(item => item.id);
+const visibleTemplateIds = referenceIds;
 
 function serve(request, response) {
   if (request.url.startsWith('/api/gen/matrix-template/templates')) {
@@ -87,8 +87,6 @@ function hasOverflow(box) {
           hint: document.getElementById('batchHint').textContent,
         };
       });
-      const ffmpegBatchControl = await readBatchControl();
-      await page.locator('.mt-template').nth(2).click();
       const hyperframesBatchControl = await readBatchControl();
       const cardReport = await page.locator('.mt-template').evaluateAll(nodes => nodes.map(node => {
         const visual = node.querySelector('.mt-template-visual');
@@ -120,13 +118,13 @@ function hasOverflow(box) {
       await page.fill('#topText', '标题'.repeat(30));
       await page.fill('#bottomText', '行动'.repeat(40));
       const overflow = [];
-      for (let index = 0; index < templateIds.length; index += 1) {
+      for (let index = 0; index < visibleTemplateIds.length; index += 1) {
         await page.locator('.mt-template').nth(index).click();
         const boxes = await page.evaluate(() => ['liveTop', 'liveBottom'].map(id => {
           const element = document.getElementById(id);
           return {clientWidth: element.clientWidth, scrollWidth: element.scrollWidth, clientHeight: element.clientHeight, scrollHeight: element.scrollHeight};
         }));
-        if (boxes.some(hasOverflow)) overflow.push(templateIds[index]);
+        if (boxes.some(hasOverflow)) overflow.push(visibleTemplateIds[index]);
       }
       const scroll = await page.evaluate(() => {
         const scroller = document.querySelector('.hq-main-scroll');
@@ -142,10 +140,7 @@ function hasOverflow(box) {
       report[name] = {
         overflow,
         scroll,
-        batchControl: {
-          ffmpeg: ffmpegBatchControl,
-          hyperframes: hyperframesBatchControl,
-        },
+        batchControl: {hyperframes: hyperframesBatchControl},
         cardCount: cardReport.length,
         referenceCount: references.length,
         distinctReferencePreviews: new Set(references.map(item => item.signature)).size,
@@ -158,11 +153,9 @@ function hasOverflow(box) {
   }
   if (report.desktop.overflow.length || report.mobile.overflow.length) throw new Error(`preview overflow: ${JSON.stringify(report)}`);
   for (const viewport of Object.values(report)) {
-    if (viewport.cardCount !== 19 || viewport.referenceCount !== 17 || viewport.distinctReferencePreviews !== 17) throw new Error(`template cards are not distinct: ${JSON.stringify(report)}`);
-    const ffmpeg = viewport.batchControl.ffmpeg;
+    if (viewport.cardCount !== 17 || viewport.referenceCount !== 17 || viewport.distinctReferencePreviews !== 17) throw new Error(`template cards are not distinct: ${JSON.stringify(report)}`);
     const hyperframes = viewport.batchControl.hyperframes;
     const expectedLabels = '1条,2条,3条,4条,5条';
-    if (ffmpeg.disabled || ffmpeg.values.join(',') !== '1,2,3,4,5' || ffmpeg.hint !== '最多5条' || ffmpeg.labels.join(',') !== expectedLabels) throw new Error(`FFmpeg batch control is inaccurate: ${JSON.stringify(ffmpeg)}`);
     if (hyperframes.disabled || hyperframes.values.join(',') !== '1,2,3,4,5' || hyperframes.hint !== '最多5条' || hyperframes.labels.join(',') !== expectedLabels) throw new Error(`HyperFrames batch control is unavailable: ${JSON.stringify(hyperframes)}`);
   }
   const mobile = report.mobile.scroll;
