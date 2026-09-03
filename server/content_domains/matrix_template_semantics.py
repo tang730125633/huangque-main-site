@@ -24,6 +24,7 @@ VERSION = 1
 CACHE_SECONDS = 10 * 60
 CACHE_LIMIT = 512
 MAX_TOP1_REBALANCE_CANDIDATES = 3
+CONNECTION_RETRY_DELAYS_SECONDS = (1, 2)
 _CACHE: dict[str, tuple[float, dict]] = {}
 _LOCK = threading.Lock()
 _KEY_LOCKS = tuple(threading.Lock() for _ in range(32))
@@ -332,23 +333,36 @@ def _request(top: str, bottom: str, contract: dict, *, previous=None,
         "response_format": {"type": "json_object"},
         "max_tokens": 500 if repair else 300,
     }, ensure_ascii=False).encode("utf-8")
-    request = urllib.request.Request(
-        _chat_url(), data=body,
-        headers={
-            "Authorization": "Bearer " + OPENAI_KEY,
-            "Content-Type": "application/json",
-        }, method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=15) as response:
-            payload = json.load(response)
-        return json.loads(payload["choices"][0]["message"]["content"])
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise RuntimeError("AI 语义排版返回无效") from exc
-    except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"AI 语义排版请求失败（HTTP {exc.code}）") from exc
-    except (urllib.error.URLError, TimeoutError) as exc:
-        raise RuntimeError("AI 语义排版服务连接失败") from exc
+    attempts = len(CONNECTION_RETRY_DELAYS_SECONDS) + 1
+    for attempt in range(attempts):
+        request = urllib.request.Request(
+            _chat_url(), data=body,
+            headers={
+                "Authorization": "Bearer " + OPENAI_KEY,
+                "Content-Type": "application/json",
+            }, method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:
+                payload = json.load(response)
+            return json.loads(payload["choices"][0]["message"]["content"])
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError("AI 语义排版返回无效") from exc
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(
+                f"AI 语义排版请求失败（HTTP {exc.code}）"
+            ) from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            if attempt >= len(CONNECTION_RETRY_DELAYS_SECONDS):
+                raise RuntimeError("AI 语义排版服务连接失败") from exc
+            delay = CONNECTION_RETRY_DELAYS_SECONDS[attempt]
+            print(
+                "[matrix-template-semantic-retry] "
+                f"attempt={attempt + 2}/{attempts} delay={delay}s",
+                flush=True,
+            )
+            time.sleep(delay)
+    raise RuntimeError("AI 语义排版服务连接失败")
 
 
 def generate(top: str, bottom: str, contract: dict, *, previous=None,
