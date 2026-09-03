@@ -2887,7 +2887,7 @@ def request_logs(limit=200, status="", q="", include_noise=False):
     return out
 
 
-def activity_logs(days=7, limit=200, category="", q="", source="", include_noise=False, offset=0):
+def activity_logs(days=7, limit=200, category="", q="", source="", include_noise=False, offset=0, attributed=False):
     """任务记录(jobs 库) + HTTP 请求(nginx) 合并成一条时间线，最新在前。
 
     category: '' | ok | fail | running（统一语义：任务 done/error/排队中 ↔ HTTP <400/>=400）
@@ -2963,6 +2963,8 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
     matching = []
     for key, it in sorted(merged, key=lambda x: x[0], reverse=True):
         if category and it["cat"] != category:
+            continue
+        if attributed and it.get("user") in (None, "", "-"):
             continue
         if q and all(q not in (it.get(field) or "") for field in ("path", "user", "func", "request_id", "hq_code")):
             continue
@@ -6908,6 +6910,7 @@ class H(BaseHTTPRequestHandler):
                         (q.get("source") or [""])[0],
                         (q.get("noise") or ["0"])[0] in ("1", "true"),
                         (q.get("offset") or ["0"])[0],
+                        (q.get("attributed") or ["0"])[0] in ("1", "true"),
                     ),
                 )
             except Exception as e:

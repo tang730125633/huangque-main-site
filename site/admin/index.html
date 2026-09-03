@@ -969,12 +969,12 @@
   }
   function renderSupportIssues(data){
     var items=data.items||[],box=el('supportIssueBox');
-    if(!items.length){box.className='empty';box.textContent='近 '+state.days+' 天没有匹配的失败记录';return}
+    if(!items.length){box.className='empty';box.textContent='近 '+state.days+' 天没有带用户归属的失败记录';return}
     box.className='issue-list';
     box.innerHTML=items.map(function(x){
       var user=x.user&&x.user!=='-'?x.user:'';
       var status=x.source==='job'?jobStatusName(x.status_text):('HTTP '+x.status_text);
-      return '<div class="issue-row"><code>'+esc(x.time)+'</code><div>'+(user?'<b>'+esc(user)+'</b>':'<span class="muted">用户待归属</span>')+'</div><div><b>'+esc(x.func||'未知功能')+'</b><div class="truncate muted" title="'+esc(x.path||'')+'">'+esc(x.path||status)+'</div></div><div>'+(user?'<button class="mini" data-issue-user="'+esc(user)+'">看客户</button>':'<button class="mini" data-issue-log>查日志</button>')+'</div></div>';
+      return '<div class="issue-row"><code>'+esc(x.time)+'</code><div>'+(user?'<b>'+esc(user)+'</b>':'<span class="muted">系统请求（无用户）</span>')+'</div><div><b>'+esc(x.func||'未知功能')+'</b><div class="truncate muted" title="'+esc(x.path||'')+'">'+esc(x.path||status)+'</div></div><div>'+(user?'<button class="mini" data-issue-user="'+esc(user)+'">看客户</button>':'<button class="mini" data-issue-log>查日志</button>')+'</div></div>';
     }).join('');
     Array.prototype.forEach.call(box.querySelectorAll('[data-issue-user]'),function(btn){btn.onclick=function(){var username=btn.getAttribute('data-issue-user');el('globalUserSearch').value=username;openUserDetail(username)}});
     Array.prototype.forEach.call(box.querySelectorAll('[data-issue-log]'),function(btn){btn.onclick=function(){el('reqStatus').value='fail';switchModule('logs')}});
@@ -982,7 +982,7 @@
   function loadSupportQueue(){
     el('supportIssueBox').className='empty';el('supportIssueBox').textContent='正在读取最近失败记录...';
     Promise.all([
-      api('/api/admin/activity?limit=8&offset=0&days='+encodeURIComponent(state.days)+'&status=fail'),
+      api('/api/admin/activity?limit=8&offset=0&days='+encodeURIComponent(state.days)+'&status=fail&attributed=1'),
       api('/api/admin/recharge/orders?status=pending&limit=300')
     ]).then(function(results){
       renderSupportIssues(results[0]);

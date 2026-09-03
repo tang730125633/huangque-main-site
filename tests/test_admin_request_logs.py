@@ -260,6 +260,8 @@ class RequestLogUserTests(unittest.TestCase):
         # 统一状态：fail = HTTP >=400（本样本 404）
         fails = admin_api.activity_logs(category="fail")["items"]
         self.assertTrue(fails and all(x["cat"] == "fail" for x in fails))
+        attributed = admin_api.activity_logs(category="fail", attributed=True)["items"]
+        self.assertTrue(attributed and all(x["user"] not in (None, "", "-") for x in attributed))
         # 关键词搜用户名 → 命中任务行
         hit = admin_api.activity_logs(q="tang")["items"]
         self.assertTrue(hit and all("tang" in (x["user"] or "") or "tang" in x["path"] for x in hit))
