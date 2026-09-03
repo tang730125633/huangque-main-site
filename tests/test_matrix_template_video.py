@@ -222,6 +222,18 @@ class MatrixTemplateVideoTests(unittest.TestCase):
              "max_width_px": 996, "max_lines": 2},
             v09["semantic_layout"]["layers"]["top1"],
         )
+        v12 = next(item for item in expanded if item.get("variant") == "v12")
+        self.assertEqual(
+            (80, 70),
+            tuple(
+                v12["semantic_layout"]["layers"][layer]["font_size_px"]
+                for layer in ("top1", "top3")
+            ),
+        )
+        v16 = next(item for item in expanded if item.get("variant") == "v16")
+        self.assertEqual(
+            80, v16["semantic_layout"]["layers"]["top1"]["font_size_px"],
+        )
         self.assertEqual(
             {f"v{index:02d}" for index in range(1, 18)},
             {item["variant"] for item in expanded if item["engine"] == "hyperframes"},
@@ -339,6 +351,49 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
         }), self.assertRaisesRegex(RuntimeError, "语义排版能力无效"):
             self.module.public_templates(force=True)
+
+    def test_v12_v16_typography_transition_accepts_only_old_or_new_sizes(self):
+        transitions = {
+            ("v12", "top1"): (72, 80),
+            ("v12", "top3"): (50, 70),
+            ("v16", "top1"): (48, 80),
+        }
+        legacy = self.reference_templates()
+        for (variant, layer), (old_size, _new_size) in transitions.items():
+            next(
+                item for item in legacy if item.get("variant") == variant
+            )["semantic_layout"]["layers"][layer]["font_size_px"] = old_size
+        with mock.patch.object(self.module, "_request", return_value={
+            "templates": legacy,
+            "max_batch_size": 5,
+            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+        }):
+            values = self.module.public_templates(force=True)
+        by_variant = {item.get("variant"): item for item in values}
+        for (variant, layer), (old_size, _new_size) in transitions.items():
+            self.assertEqual(
+                old_size,
+                by_variant[variant]["semantic_layout"]["layers"][layer][
+                    "font_size_px"
+                ],
+            )
+
+        for (variant, layer), (old_size, new_size) in transitions.items():
+            drift = self.reference_templates()
+            invalid_size = min(old_size, new_size) + 1
+            next(
+                item for item in drift if item.get("variant") == variant
+            )["semantic_layout"]["layers"][layer][
+                "font_size_px"
+            ] = invalid_size
+            with self.subTest(variant=variant, layer=layer), mock.patch.object(
+                self.module, "_request", return_value={
+                    "templates": drift,
+                    "max_batch_size": 5,
+                    "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+                },
+            ), self.assertRaisesRegex(RuntimeError, "语义排版能力无效"):
+                self.module.public_templates(force=True)
 
     def test_legacy_partial_semantic_catalog_is_rejected(self):
         templates = self.reference_templates(("v02", "v05"))
