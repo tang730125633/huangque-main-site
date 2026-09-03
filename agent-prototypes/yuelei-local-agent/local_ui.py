@@ -68,11 +68,6 @@ CLI_DESCRIBE_ALLOWLIST = {
     "director-breakdown-upload", "digital-presenter-capability",
     "digital-ip-text-generate", "voices", "tasks", "task",
 }
-CLI_READ_ALLOWLIST = {
-    "director-capability", "director-script-generate", "director-breakdown",
-    "director-breakdown-upload", "digital-presenter-capability",
-    "digital-ip-text-generate", "voices", "tasks", "task",
-}
 CLI_QUOTE_ALLOWLIST = {
     "director-script-generate", "director-breakdown",
     "digital-ip-text-generate",
@@ -303,6 +298,22 @@ def _ensure_default_attachments():
 
 
 def _run_hq(arguments, input_value=None, timeout=30):
+    # 运行时权限边界：只允许调用编导域能力（以及其素材/对账基础设施）。
+    # 这里 fail-closed，将来若出现由模型/客户提议能力名的动态路径，也无法越界到 CLI。
+    _verb = arguments[0] if arguments else ""
+    _verb = str(_verb).strip()
+    _target = arguments[1] if len(arguments) > 1 else ""
+    if _verb in ("run", "describe"):
+        if _verb == "run":
+            _allowed = (CLI_QUOTE_ALLOWLIST | {"image-upload", "voices", "tasks", "task"})
+        else:  # describe: capabilities & infra the Agent may legitimately introspect
+            _allowed = CLI_DESCRIBE_ALLOWLIST
+        if _target not in _allowed:
+            return {
+                "ok": False, "exit_code": None,
+                "payload": {"error": "capability_not_allowed",
+                            "message": "该能力不在编导 Agent 允许调用范围，已拒绝执行。"},
+            }
     env = os.environ.copy()
     env.update({
         "PYTHONUTF8": "1",
