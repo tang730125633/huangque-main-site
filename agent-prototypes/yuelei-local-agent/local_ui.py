@@ -733,12 +733,12 @@ def _local_chat(body, customer):
             return False
         affirmative = {
             "可以", "好的", "好", "行", "就用它", "就用这个", "用这个", "用它",
-            "生成吧", "生成", "开始生成", "直接做", "开始", "来", "做成片吧",
-            "就这样", "没问题", "可以了", "对，就这个", "就它了", "确认生成",
-            "好，生成", "好了，生成", "可以生成", "就按这个生成", "按这个来", "动手吧",
+            "生成吧", "开始生成", "直接做", "做成片吧", "就这样", "没问题",
+            "可以了", "对，就这个", "就它了", "确认生成", "好，生成", "好了，生成",
+            "可以生成", "就按这个生成", "按这个来", "动手吧", "开始吧", "那就开始吧",
         }
         return msg in affirmative or any(msg.startswith(p) for p in
-                ("可以，", "好的，", "好，", "行，", "就用", "生成吧", "开始", "没问题，", "可以了，","就这样，"))
+                ("可以，", "好的，", "好，", "行，", "就用", "生成吧", "没问题，", "可以了，", "就这样，"))
     message = str(body.get("message") or "").strip()[:6000]
     history = body.get("history") if isinstance(body.get("history"), list) else []
     requested_attachments = body.get("attachments") if isinstance(body.get("attachments"), list) else []
@@ -874,7 +874,7 @@ def _local_chat(body, customer):
             offer, reply, next_step, cli_trace = _digital_human_quote(
                 customer, attachment_items, workflow_snapshot.get("script_text")
             )
-    elif _wants_confirm(message, missing):
+    elif _wants_confirm(message, missing) and intent == "script":
         if missing:
             reply = "现在还不能进入报价确认，因为方案缺少：%s。请先补齐这些信息；本地验收站不会真实扣点或生成。" % "、".join(dict.fromkeys(missing))
             next_step = "补齐缺失参数"
