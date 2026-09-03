@@ -923,7 +923,13 @@ def delete_failed_job(username, job_id):
     return {"job_id": job_id, "deleted": True}
 # ============ 鉴权（向 auth 服务核验 token） ============
 _verify_cache = {}; _verify_cache_lock = threading.Lock()
+_request_log_user = threading.local()
 AUTH_COOKIE_NAME = os.environ.get("HQ_AUTH_COOKIE_NAME", "hq_session")
+
+def _take_request_log_user():
+    username = str(getattr(_request_log_user, "username", "") or "")
+    _request_log_user.username = ""
+    return urllib.parse.quote(username[:120], safe="") if username else ""
 
 def _cookie_token(header):
     try:
@@ -943,12 +949,15 @@ def _request_token(headers):
     return _cookie_token(headers.get("Cookie"))
 
 def verify(token):
+    _request_log_user.username = ""
     if not token: return None
     now = time.time()
     if VERIFY_CACHE_TTL:
         with _verify_cache_lock:
             item = _verify_cache.get(token)
-            if item and item[0] > now: return dict(item[1])
+            if item and item[0] > now:
+                _request_log_user.username = item[1].get("username") or ""
+                return dict(item[1])
             if item: _verify_cache.pop(token, None)
     try:
         req = urllib.request.Request(AUTH_BASE + "/api/auth/me",
@@ -970,6 +979,7 @@ def verify(token):
                     if v[0] <= now: _verify_cache.pop(k, None)
                 if len(_verify_cache) >= VERIFY_CACHE_MAX: _verify_cache.pop(next(iter(_verify_cache)), None)
             _verify_cache[token] = (now + VERIFY_CACHE_TTL, dict(user))
+    _request_log_user.username = user.get("username") or ""
     return dict(user)
 
 def _short_drama_canvas_access(handler):
@@ -2032,6 +2042,8 @@ class H(BaseHTTPRequestHandler):
         if hq_code:
             self.send_header("X-HQ-Error-Code", hq_code)
             self.send_header("X-HQ-Request-ID", req_id)
+        if (username := _take_request_log_user()):
+            self.send_header("X-HQ-Log-User", username)
         self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
 
     def _send_private_bytes(self, code, data, content_type):
@@ -2040,6 +2052,8 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Type", str(content_type or "application/octet-stream"))
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Cache-Control", "private, max-age=300")
+        if (username := _take_request_log_user()):
+            self.send_header("X-HQ-Log-User", username)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -2047,6 +2061,8 @@ class H(BaseHTTPRequestHandler):
         b = json.dumps({"detail": "Method Not Allowed"}, ensure_ascii=False).encode()
         self.send_response(405); self.send_header("Allow", "POST")
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        if (username := _take_request_log_user()):
+            self.send_header("X-HQ-Log-User", username)
         self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
     def _token(self):
         return _request_token(self.headers)
