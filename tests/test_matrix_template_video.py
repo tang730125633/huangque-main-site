@@ -1732,12 +1732,13 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertIn("Idempotency-Key", page)
         self.assertNotIn('id="duration"', page)
         self.assertNotIn('id="bgm"', page)
-        self.assertIn('id="fontFamily"', page)
+        self.assertNotIn('id="fontFamily"', page)
+        self.assertNotIn('id="fontSource"', page)
         self.assertIn('id="batchCount"', page)
         self.assertIn("Math.min(batchLimit", page)
         self.assertNotIn("排队", page)
         self.assertNotIn("（并行）", page)
-        self.assertIn("body.font_family=selectedFont", page)
+        self.assertNotIn("font_family", page)
         self.assertNotIn("素材来源", page)
         self.assertIn("template_id:activeTemplate,bgm:true", page)
         self.assertIn('hq-content[data-active="matrix-template"]{height:auto!important', page)
@@ -2075,17 +2076,15 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual("native-bold", result["active"])
         self.assertTrue(result["cleared"])
 
-    def test_font_selector_lists_available_fonts_and_submits_parameter(self):
-        result = self.runtime("fontSelect")
-        self.assertEqual("AaHouDiHei", result["body"]["font_family"])
-        self.assertEqual("私有字体", result["source"])
-        self.assertEqual(["", "Noto Sans SC", "AaHouDiHei"], result["options"])
+    def test_frontend_omits_font_selector_and_uses_template_default(self):
+        result = self.runtime("automaticFont")
+        self.assertFalse(result["fontControl"])
+        self.assertFalse(result["fontSource"])
+        self.assertNotIn("font_family", result["body"])
+        self.assertEqual("native-bold", result["body"]["template_id"])
 
-    def test_locked_reference_template_disables_and_omits_font(self):
-        result = self.runtime("lockedFont")
-        self.assertTrue(result["disabled"])
-        self.assertEqual("", result["value"])
-        self.assertEqual("模板内置", result["source"])
+    def test_locked_reference_template_omits_font_and_keeps_batch_control(self):
+        result = self.runtime("lockedTemplateBatch")
         self.assertNotIn("font_family", result["body"])
         self.assertEqual("ref-01-fixture-01", result["body"]["template_id"])
         self.assertFalse(result["batchDisabled"])

@@ -156,6 +156,7 @@ function hasOverflow(box) {
       report[name] = {
         overflow,
         scroll,
+        fontControlsPresent: await page.evaluate(() => Boolean(document.getElementById('fontFamily') || document.getElementById('fontSource'))),
         batchControl: {hyperframes: hyperframesBatchControl},
         action: {initial: initialAction, emptyReminder, ready: readyAction},
         cardCount: cardReport.length,
@@ -171,6 +172,7 @@ function hasOverflow(box) {
   }
   if (report.desktop.overflow.length || report.mobile.overflow.length) throw new Error(`preview overflow: ${JSON.stringify(report)}`);
   for (const viewport of Object.values(report)) {
+    if (viewport.fontControlsPresent) throw new Error(`font selector is still visible: ${JSON.stringify(report)}`);
     if (viewport.cardCount !== 17 || viewport.referenceCount !== 17 || viewport.distinctReferencePreviews !== 17) throw new Error(`template cards are not distinct: ${JSON.stringify(report)}`);
     const expectedCardLabels = referenceIds.map((id, index) => `${index + 1}. 参考排版 ${String(index + 1).padStart(2, '0')}`);
     if (viewport.cardLabels.join('|') !== expectedCardLabels.join('|')) throw new Error(`template card numbering is inaccurate: ${JSON.stringify(viewport.cardLabels)}`);
