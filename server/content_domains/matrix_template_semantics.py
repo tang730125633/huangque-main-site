@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import os
 import re
+import ssl
 import threading
 import time
 import urllib.error
@@ -25,6 +27,13 @@ CACHE_SECONDS = 10 * 60
 CACHE_LIMIT = 512
 MAX_TOP1_REBALANCE_CANDIDATES = 3
 CONNECTION_RETRY_DELAYS_SECONDS = (1, 2)
+_RETRYABLE_TRANSPORT_ERRORS = (
+    urllib.error.URLError,
+    TimeoutError,
+    ConnectionError,
+    http.client.IncompleteRead,
+    ssl.SSLEOFError,
+)
 _CACHE: dict[str, tuple[float, dict]] = {}
 _LOCK = threading.Lock()
 _KEY_LOCKS = tuple(threading.Lock() for _ in range(32))
@@ -352,7 +361,7 @@ def _request(top: str, bottom: str, contract: dict, *, previous=None,
             raise RuntimeError(
                 f"AI 语义排版请求失败（HTTP {exc.code}）"
             ) from exc
-        except (urllib.error.URLError, TimeoutError) as exc:
+        except _RETRYABLE_TRANSPORT_ERRORS as exc:
             if attempt >= len(CONNECTION_RETRY_DELAYS_SECONDS):
                 raise RuntimeError("AI 语义排版服务连接失败") from exc
             delay = CONNECTION_RETRY_DELAYS_SECONDS[attempt]
