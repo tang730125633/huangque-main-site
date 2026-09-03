@@ -17,6 +17,7 @@ class Element {
 function response(status,data){return {status,text:()=>Promise.resolve(JSON.stringify(data||{}))}}
 async function flush(n=12){for(let i=0;i<n;i++)await new Promise(r=>setImmediate(r))}
 function pendingCleared(storage){return ![...storage.keys()].some(key=>key.startsWith('hq-matrix-template-pending-v1')||key.startsWith('hq-matrix-template-pending-v2'))}
+function actionState(runtime){const button=runtime.get('generateBtn');return {busy:button.getAttribute('aria-busy')==='true',enabled:!button.disabled,text:button.textContent,title:button.title||''}}
 
 function createRuntime(plan, storage){
   const page=fs.readFileSync(path.join(__dirname,'..','site','workbench','matrix-template.html'),'utf8');
@@ -77,13 +78,13 @@ async function scenarioRefresh(){
 async function scenarioPollFailure(){
   const storage=new Map();
   const runtime=createRuntime({post:()=>Promise.resolve(response(200,{job_id:10})),poll:i=>i===0?Promise.reject(new Error('temporary')):Promise.resolve(response(200,{status:'done',result:{video_url:'/video',duration:8}}))},storage);
-  await fillAndSubmit(runtime);const busyAfterFailure=runtime.get('generateBtn').disabled;await runtime.runTimer();await flush();
-  return {polls:runtime.requests.poll.length,busyAfterFailure,cleared:pendingCleared(storage)};
+  await fillAndSubmit(runtime);const afterFailure=actionState(runtime);await runtime.runTimer();await flush();
+  return {polls:runtime.requests.poll.length,afterFailure,cleared:pendingCleared(storage)};
 }
 async function scenarioPollHttpFailure(){
   const storage=new Map();
   const runtime=createRuntime({post:()=>Promise.resolve(response(200,{job_id:11})),poll:i=>Promise.resolve(i===0?response(503,{detail:'poll unavailable'}):response(200,{status:'done',result:{video_url:'/http-poll-recovered-video',duration:8}}))},storage);
-  await fillAndSubmit(runtime);const before={polls:runtime.requests.poll.length,busy:runtime.get('generateBtn').disabled,cleared:pendingCleared(storage)};await runtime.runTimer();await flush(20);
+  await fillAndSubmit(runtime);const before={polls:runtime.requests.poll.length,action:actionState(runtime),cleared:pendingCleared(storage)};await runtime.runTimer();await flush(20);
   return {before,polls:runtime.requests.poll.length,src:runtime.get('video').src,cleared:pendingCleared(storage)};
 }
 async function scenarioPollRecoveryBeyondFive(){
@@ -131,6 +132,13 @@ async function scenarioLivePreview(){
   const runtime=createRuntime({post:()=>Promise.reject(new Error('unused')),poll:()=>Promise.reject(new Error('unused'))},new Map());
   await flush();runtime.get('topText').value='实时标题';runtime.get('bottomText').value='实时行动文案';runtime.get('topText').listeners.input[0]();runtime.get('bottomText').listeners.input[0]();runtime.get('templateGrid').children[1].onclick();
   const style=runtime.get('livePreview').style;return {top:runtime.get('liveTop').textContent,bottom:runtime.get('liveBottom').textContent,template:runtime.get('livePreview').attributes['data-template'],liveBg:style['--live-bg'],liveFg:style['--live-fg'],liveAccent:style['--live-accent'],videoDisplay:runtime.get('video').style.display};
+}
+async function scenarioActionPrerequisites(){
+  const runtime=createRuntime({post:()=>Promise.reject(new Error('unused')),poll:()=>Promise.reject(new Error('unused'))},new Map());
+  await flush();const empty=actionState(runtime);
+  runtime.get('topText').value='有效标题';runtime.get('topText').listeners.input[0]();const topOnly=actionState(runtime);
+  runtime.get('bottomText').value='有效行动文案';runtime.get('bottomText').listeners.input[0]();const complete=actionState(runtime);
+  return {empty,topOnly,complete};
 }
 async function scenarioTemplateVisibility(){
   const runtime=createRuntime({post:()=>Promise.reject(new Error('unused')),poll:()=>Promise.reject(new Error('unused'))},new Map());
@@ -182,19 +190,30 @@ async function scenarioMixedFailureReload(){
 }
 async function scenarioJobFailureRefund(){
   const runtime=createRuntime({post:()=>Promise.resolve(response(200,{job_id:300})),poll:()=>Promise.resolve(response(200,{status:'failed',error:'渲染失败',refunded:true}))},new Map());
-  await fillAndSubmit(runtime);await flush(20);const card=runtime.get('batchResults').children[0];return {cards:runtime.get('batchResults').children.length,error:card.children[1].textContent,refund:card.children[2].textContent};
+  await fillAndSubmit(runtime);await flush(20);const card=runtime.get('batchResults').children[0];return {cards:runtime.get('batchResults').children.length,error:card.children[1].textContent,refund:card.children[2].textContent,action:actionState(runtime)};
 }
 async function scenarioRefundPendingThenConfirmed(){
   const storage=new Map();
   const runtime=createRuntime({post:()=>Promise.resolve(response(202,{job_id:301,refund_state:'pending'})),poll:i=>Promise.resolve(response(200,{status:'failed',error:'任务队列已满',refunded:i>0}))},storage);
-  await fillAndSubmit(runtime);await flush(20);var card=runtime.get('batchResults').children[0],before=card.children[2].textContent;await runtime.runTimer();await flush(20);card=runtime.get('batchResults').children[0];return {polls:runtime.requests.poll.length,before,after:card.children[2].textContent,title:card.children[0].textContent,cards:runtime.get('batchResults').children.length,cleared:pendingCleared(storage)};
+  await fillAndSubmit(runtime);await flush(20);var card=runtime.get('batchResults').children[0],before=card.children[2].textContent,beforeAction=actionState(runtime);await runtime.runTimer();await flush(20);card=runtime.get('batchResults').children[0];return {polls:runtime.requests.poll.length,before,beforeAction,after:card.children[2].textContent,afterAction:actionState(runtime),title:card.children[0].textContent,cards:runtime.get('batchResults').children.length,cleared:pendingCleared(storage)};
+}
+
+async function scenarioBusyActionChecksWithoutDuplicate(){
+  let finishPoll;
+  const pollResponse=new Promise(resolve=>{finishPoll=resolve});
+  const runtime=createRuntime({post:()=>Promise.resolve(response(200,{job_id:306})),poll:()=>pollResponse},new Map());
+  await fillAndSubmit(runtime);await flush(20);const before=actionState(runtime);
+  runtime.get('generateBtn').onclick();await flush(20);
+  const during={action:actionState(runtime),posts:runtime.requests.post.length,polls:runtime.requests.poll.length};
+  finishPoll(response(200,{status:'failed',error:'渲染失败',refunded:true}));await flush(20);
+  return {before,during,after:actionState(runtime),posts:runtime.requests.post.length,polls:runtime.requests.poll.length,cleared:pendingCleared(runtime.storage)};
 }
 
 async function scenarioUncertainRecoversAutomatically(){
   const key='matrix-template-stable-retry-key';
   const storage=new Map([['hq-matrix-template-pending-v2:alice',JSON.stringify({owner:'alice',started_at:Date.now()-867000,items:[{key,body:{top_text:'待确认标题',bottom_text:'待确认行动文案',template_id:'native-bold',bgm:true},job_id:'',status:'uncertain',result:null,error:'提交响应丢失',refund_status:''}]})]]);
   const runtime=createRuntime({post:i=>i<4?Promise.reject(new Error('response lost')):Promise.resolve(response(200,{job_id:401})),poll:()=>Promise.resolve(response(200,{status:'done',result:{video_url:'/auto-recovered-video',duration:8}}))},storage);
-  await flush(30);const afterLoad={posts:runtime.requests.post.length,status:runtime.get('status').textContent,busy:runtime.get('generateBtn').disabled};
+  await flush(30);const afterLoad={posts:runtime.requests.post.length,status:runtime.get('status').textContent,action:actionState(runtime)};
   for(let i=0;i<4;i++){await runtime.runTimer();await flush(20)}
   return {afterLoad,posts:runtime.requests.post.length,keys:runtime.requests.post.map(x=>x.options.headers['Idempotency-Key']),status:runtime.get('status').textContent,src:runtime.get('video').src,cleared:pendingCleared(storage)};
 }
@@ -277,14 +296,14 @@ async function scenarioHungPollTimesOutAndRecovers(){
   const firstResponse=new Promise(resolve=>{finishFirst=resolve});
   const runtime=createRuntime({post:()=>Promise.resolve(response(200,{job_id:405})),poll:i=>i===0?firstResponse:Promise.resolve(response(200,{status:'done',result:{video_url:'/timeout-poll-recovered-video',duration:8}}))},new Map());
   await fillAndSubmit(runtime);await flush(20);
-  const before={polls:runtime.requests.poll.length,busy:runtime.get('generateBtn').disabled,cleared:pendingCleared(runtime.storage)};
+  const before={polls:runtime.requests.poll.length,action:actionState(runtime),cleared:pendingCleared(runtime.storage)};
   await runtime.runTimer();await flush(20);
-  const afterTimeout={polls:runtime.requests.poll.length,busy:runtime.get('generateBtn').disabled,cleared:pendingCleared(runtime.storage)};
+  const afterTimeout={polls:runtime.requests.poll.length,action:actionState(runtime),cleared:pendingCleared(runtime.storage)};
   await runtime.runTimer();await flush(30);
   const afterRecovery={polls:runtime.requests.poll.length,src:runtime.get('video').src,cleared:pendingCleared(runtime.storage)};
   finishFirst(response(200,{status:'failed',error:'late stale failure',refunded:true}));await flush(30);
   return {before,afterTimeout,afterRecovery,afterLateResponse:{polls:runtime.requests.poll.length,src:runtime.get('video').src,cleared:pendingCleared(runtime.storage)}};
 }
 
-async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure,pollHttpFailure:scenarioPollHttpFailure,pollRecoveryBeyondFive:scenarioPollRecoveryBeyondFive,instantResult:scenarioInstantResult,delayedResultUrl:scenarioDelayedResultUrl,longDelayedResultUrl:scenarioLongDelayedResultUrl,foregroundResume:scenarioForegroundResume,mediaRetry:scenarioMediaRetry,livePreview:scenarioLivePreview,templateVisibility:scenarioTemplateVisibility,hiddenTemplatePendingRecovery:scenarioHiddenTemplatePendingRecovery,fontSelect:scenarioFontSelect,lockedFont:scenarioLockedFont,batchFive:scenarioBatchFive,legacyPending:scenarioLegacyPending,mixedFailureReload:scenarioMixedFailureReload,jobFailureRefund:scenarioJobFailureRefund,refundPendingThenConfirmed:scenarioRefundPendingThenConfirmed,uncertainAutoRecovery:scenarioUncertainRecoversAutomatically,staleSubmittingAutoRecovery:scenarioStaleSubmittingRecoversAutomatically,crossAccountPending:scenarioCrossAccountPendingIsolation,dynamicAccountSwitch:scenarioDynamicAccountSwitchFailsClosed,retryAuthFailure:scenarioRetryAuthFailureFailsClosed,concurrentStaleAuth:scenarioConcurrentStaleAuthRestoresNewOwnerOnce,foregroundSingleFlight:scenarioForegroundDoesNotDuplicateInflightRequests,hungSubmissionTimeout:scenarioHungSubmissionTimesOutAndRecovers,hungPollTimeout:scenarioHungPollTimesOutAndRecovers};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}
+async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure,pollHttpFailure:scenarioPollHttpFailure,pollRecoveryBeyondFive:scenarioPollRecoveryBeyondFive,instantResult:scenarioInstantResult,delayedResultUrl:scenarioDelayedResultUrl,longDelayedResultUrl:scenarioLongDelayedResultUrl,foregroundResume:scenarioForegroundResume,mediaRetry:scenarioMediaRetry,livePreview:scenarioLivePreview,actionPrerequisites:scenarioActionPrerequisites,templateVisibility:scenarioTemplateVisibility,hiddenTemplatePendingRecovery:scenarioHiddenTemplatePendingRecovery,fontSelect:scenarioFontSelect,lockedFont:scenarioLockedFont,batchFive:scenarioBatchFive,legacyPending:scenarioLegacyPending,mixedFailureReload:scenarioMixedFailureReload,jobFailureRefund:scenarioJobFailureRefund,refundPendingThenConfirmed:scenarioRefundPendingThenConfirmed,busyActionCheck:scenarioBusyActionChecksWithoutDuplicate,uncertainAutoRecovery:scenarioUncertainRecoversAutomatically,staleSubmittingAutoRecovery:scenarioStaleSubmittingRecoversAutomatically,crossAccountPending:scenarioCrossAccountPendingIsolation,dynamicAccountSwitch:scenarioDynamicAccountSwitchFailsClosed,retryAuthFailure:scenarioRetryAuthFailureFailsClosed,concurrentStaleAuth:scenarioConcurrentStaleAuthRestoresNewOwnerOnce,foregroundSingleFlight:scenarioForegroundDoesNotDuplicateInflightRequests,hungSubmissionTimeout:scenarioHungSubmissionTimesOutAndRecovers,hungPollTimeout:scenarioHungPollTimesOutAndRecovers};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}
 main().catch(e=>{console.error(e.stack||e);process.exitCode=1});
