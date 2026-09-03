@@ -342,6 +342,7 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             "开发待归档", "后台生产链测试", "尚无真实接单证据",
             "任务记录了点数，账务台账待核对", "operationsPage:'video'",
             'id="globalUserSearch"', 'id="customerLayer"',
+            'id="reqAttributed" checked', "el('reqAttributed').checked?'&attributed=1':''",
             "/api/admin/activity?limit=8", "status=fail&attributed=1", "/api/admin/recharge/orders?status=pending",
             "module:'dashboard'", "aria-current", "/workbench/hq-icons-duotone.js",
             'class="side-nav-icon"', "prefers-reduced-motion:reduce",

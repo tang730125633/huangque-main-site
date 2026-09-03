@@ -596,7 +596,7 @@
       </section>
       <section class="card span12 module-card" data-module="logs" hidden>
         <div class="section-head">
-          <div><h2>调用与请求日志</h2><div class="hint">任务、网关请求与 IP12 应用事件按时间混排。请求号可串联网关与业务日志；未接入应用日志的普通 HTTP 请求仍可能不显示用户。</div></div>
+          <div><h2>调用与请求日志</h2><div class="hint">默认只显示有账号归属的记录；关闭“只看有用户”可查看公共探针和其他系统请求。</div></div>
           <span class="muted" id="reqCount">-</span>
         </div>
         <div class="toolbar">
@@ -613,6 +613,7 @@
             <option value="running">进行中</option>
           </select>
           <input class="field" id="reqSearch" type="search" name="hq_admin_request_search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" aria-label="搜索请求日志" placeholder="路径 / 用户 / 功能 / 黄雀错误码 / 请求号">
+          <label class="switch"><input type="checkbox" id="reqAttributed" checked> 只看有用户</label>
           <label class="switch"><input type="checkbox" id="reqNoise"> 显示轮询噪音</label>
           <button id="reqRefresh">刷新日志</button>
         </div>
@@ -963,6 +964,7 @@
       +'&source='+encodeURIComponent(el('reqSource').value||'')
       +'&status='+encodeURIComponent(el('reqStatus').value||'')
       +'&q='+encodeURIComponent(el('reqSearch').value||'')
+      +(el('reqAttributed').checked?'&attributed=1':'')
       +(el('reqNoise').checked?'&noise=1':'');
     el('reqBox').innerHTML='<div class="empty">加载中…</div>';
     api('/api/admin/activity'+q).then(renderActivity).catch(function(e){el('reqBox').innerHTML='<div class="error">'+esc(e.message)+'</div>'});
@@ -2064,6 +2066,7 @@
   el('reqRefresh').onclick=loadReqLogs;
   el('reqSource').onchange=function(){state.reqPage=1;loadReqLogs()};
   el('reqStatus').onchange=function(){state.reqPage=1;loadReqLogs()};
+  el('reqAttributed').onchange=function(){state.reqPage=1;loadReqLogs()};
   el('reqNoise').onchange=function(){state.reqPage=1;loadReqLogs()};
   el('reqSearch').oninput=function(){clearTimeout(state.reqTimer);state.reqTimer=setTimeout(function(){state.reqPage=1;loadReqLogs()},300)};
   el('rechargeRefresh').onclick=loadRecharge;
