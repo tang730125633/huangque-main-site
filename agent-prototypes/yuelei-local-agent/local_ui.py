@@ -80,6 +80,14 @@ CAPABILITY_QUERY_PHRASES = (
 )
 
 
+def _extract_url(value):
+    """Return the first http(s) URL in text; trailing full-width punct trimmed."""
+    m = re.search(r"https?://[^<> \t\r\n，。！？!?、；;()（）]+\S", str(value or ""))
+    if not m:
+        return ""
+    return m.group(0).strip("，。！？!?、；;：:()（）\"'")
+
+
 def _normalize_intent_text(value):
     return re.sub(r"[\s,，。！？!?、；;：:]+", "", str(value or "")).lower()
 
@@ -734,6 +742,64 @@ def _estimate_spoken_duration(script):
     return units, fast, slow
 
 
+def _quote_breakdown(customer, combined):
+    """编导・拆解/反推 quote：同一顾客同一条 url 只报一次价（防重复刷报价卡）。
+    返回 (reply, next_step, offer, cli_trace)。无真实链接时返回引导。"""
+    link = _extract_url(combined)
+    if not link:
+        return ("要反推需要真实视频链接，请把要反推的视频链接粘贴在对话框；没给到真实链接我不会报价，也不会扣点。",
+                "在对话框粘贴真实视频链接", None, None)
+    if not _ensure_cli_authorized():
+        return ("当前报价服务暂不可用，因此没有取得报价，也没有扣点。请稍后再试或联系工作人员。",
+                "等待报价服务恢复后再次获取报价", None, None)
+    with LOCK:
+        existing = None
+        for oid, off in list(CLI_OFFERS.items()):
+            if (off.get("owner") == customer["username"]
+                    and off.get("capability") == "director-breakdown"
+                    and off.get("status") == "quoted"
+                    and (off.get("input") or {}).get("url") == link):
+                existing = oid
+                break
+    if existing is not None:
+        cost = (CLI_OFFERS.get(existing) or {}).get("cost")
+        offer = {"offer_id": existing, "capability": "director-breakdown", "cost": cost}
+        return ("这段视频已有待确认报价，请直接在上方报价卡点确认；无需重复发“开始”，也不会重复计费。",
+                "点击上方确认按钮，或更换视频重新报价", offer, None)
+    input_value = {"mode": "reverse_prompt", "url": link}
+    quote_result = _run_hq(
+        ["run", "director-breakdown", "--input", "@-", "--json"],
+        input_value=input_value, timeout=45,
+    )
+    cli_trace = _cli_public_trace("quote", quote_result, "director-breakdown")
+    if not quote_result.get("ok"):
+        error = ((quote_result.get("payload") or {}).get("error") or "")
+        if error in {"auth_error", "auth_required"}:
+            return ("当前报价服务暂不可用，因此没有取得报价，也没有扣点。请稍后再试或联系工作人员。",
+                    "等待报价服务恢复后再次获取报价", None, cli_trace)
+        return ("当前报价服务暂不可用。没有扣点，也没有自动重试；请稍后再试或联系工作人员。",
+                "检查服务状态或修改输入后重试", None, cli_trace)
+    quote = ((quote_result.get("payload") or {}).get("result") or {})
+    quote_token = quote.get("quote_token")
+    cost = quote.get("cost")
+    if not (isinstance(quote_token, str) and quote_token and isinstance(cost, int) and not isinstance(cost, bool)):
+        return ("报价信息不完整；为避免错误扣点，我没有开放确认按钮。", "检查报价信息", None, cli_trace)
+    offer_id = uuid.uuid4().hex
+    with LOCK:
+        CLI_OFFERS[offer_id] = {
+            "capability": "director-breakdown", "input": input_value,
+            "quote_token": quote_token, "cost": cost,
+            "expires_at": time.time() + int(quote.get("expires_in") or 300),
+            "status": "quoted", "owner": customer["username"],
+        }
+    offer = {
+        "offer_id": offer_id, "capability": "director-breakdown",
+        "cost": cost, "points": quote.get("points"), "expires_in": quote.get("expires_in"),
+    }
+    reply = "拆解反推本次报价为 %d 点。仅当你在气泡点击确认后才会真正反推，并在当前对话返回结构/镜头/口播/可复用提示词。" % cost
+    return (reply, "核对价格并点击确认按钮，或更换视频", offer, cli_trace)
+
+
 def _local_chat(body, customer):
     # 第一个性傻瓜确认：顾客不需逐字背“确认生成”，用自然语即可触发本来已在跑的
     # 报价→就地确认卡 流程；仍不真扣点（报价 + 点击按钮才提交）。
@@ -946,10 +1012,18 @@ def _local_chat(body, customer):
                 "需求已完整。我建议采用“优惠钩子—使用场景—限时行动”的三段结构：开头直接说买三送一，中段覆盖加班、开车或运动场景，结尾强调活动时间和购买入口。\n\n"
                 "如果以上信息无误，请完整回复：确认生成。我会获取无扣点报价；只有你随后点击价格确认按钮才会提交付费任务。"
             )
+    elif intent == "breakdown" and not missing and _extract_url(combined):
+        # 拆解/反推 quote：同一顾客同一条 url 只报一次价（防重复刷报价卡）。
+        _rb, _nb, _ob, _cb = _quote_breakdown(customer, combined)
+        reply = _rb
+        next_step = _nb
+        offer = _ob
+        if _cb is not None:
+            cli_trace = _cb
     elif intent == "breakdown":
-        reply = "我识别到你要拆解视频。%s。拿到素材后，我应返回结构、镜头、口播、节奏和可复用提示词，而不是让你跳转页面自己操作。" % (
-            "当前还缺视频链接或上传文件" if missing else "视频来源已经具备"
-        )
+        # 尚未给出视频来源：在同一条对话里补齐，不跳页。
+        reply = "我识别到你要拆解视频（反推提示词）。请在对话框把要反推的视频链接（抖音 / 小红书 / 视频号）粘贴给我；我拿到真实链接会报价，你在气泡点确认才真正反推。"
+        next_step = "在对话框粘贴视频链接或上传视频"
     elif intent == "digital_human":
         if missing:
             reply = "我识别到你要制作数字人口播。当前还缺：%s。请直接在对话框补充这些内容；齐全后我会整理方案和授权摘要，再进入报价与确认。" % "、".join(dict.fromkeys(missing))
