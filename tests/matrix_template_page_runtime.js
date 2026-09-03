@@ -17,6 +17,7 @@ class Element {
 function response(status,data){return {status,text:()=>Promise.resolve(JSON.stringify(data||{}))}}
 async function flush(n=12){for(let i=0;i<n;i++)await new Promise(r=>setImmediate(r))}
 function pendingCleared(storage){return ![...storage.keys()].some(key=>key.startsWith('hq-matrix-template-pending-v1')||key.startsWith('hq-matrix-template-pending-v2'))}
+function actionState(runtime){const button=runtime.get('generateBtn');return {busy:button.getAttribute('aria-busy')==='true',enabled:!button.disabled,text:button.textContent,title:button.title||''}}
 
 function createRuntime(plan, storage){
   const page=fs.readFileSync(path.join(__dirname,'..','site','workbench','matrix-template.html'),'utf8');
@@ -24,7 +25,7 @@ function createRuntime(plan, storage){
   const elements=new Map();
   for(const m of page.matchAll(/<([a-z0-9-]+)[^>]*\sid="([^"]+)"[^>]*>/gi))elements.set(m[2],new Element(m[1],m[2]));
   const get=id=>elements.get(id)||(elements.set(id,new Element('div',id)),elements.get(id));
-  const timers=[];const requests={auth:[],post:[],poll:[]};let uuidCount=0,timerId=0,authUsername=plan.username||'alice';
+  const timers=[];const requests={auth:[],post:[],poll:[],confirm:[]};let uuidCount=0,timerId=0,authUsername=plan.username||'alice';
   const sessionStorage={getItem:k=>storage.has(k)?storage.get(k):null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)};
   const fetch=(url,options={})=>{
     if(url==='/api/auth/me'){const index=requests.auth.length;requests.auth.push({username:authUsername});return plan.auth?plan.auth(index,authUsername):Promise.resolve(response(200,{user:{username:authUsername}}))}
@@ -39,7 +40,7 @@ function createRuntime(plan, storage){
   };
   const documentListeners={};const windowListeners={};
   const document={getElementById:get,createElement:t=>new Element(t),documentElement:{scrollWidth:390},hidden:false,addEventListener:(k,fn)=>{(documentListeners[k]||=[]).push(fn)}};
-  const context={document,window:null,fetch,sessionStorage,location:{href:''},confirm:()=>true,crypto:{randomUUID:()=>`uuid-${++uuidCount}`},Date,Math,JSON,Promise,Object,Array,String,Error,console,clearTimeout:id=>{const timer=timers.find(item=>item.id===id);if(timer)timer.active=false},setTimeout:(fn,delay=0)=>{const timer={id:++timerId,fn,delay,active:true};timers.push(timer);return timer.id},addEventListener:(k,fn)=>{(windowListeners[k]||=[]).push(fn)}};
+  const context={document,window:null,fetch,sessionStorage,location:{href:''},confirm:message=>{requests.confirm.push(message);return true},crypto:{randomUUID:()=>`uuid-${++uuidCount}`},Date,Math,JSON,Promise,Object,Array,String,Error,console,clearTimeout:id=>{const timer=timers.find(item=>item.id===id);if(timer)timer.active=false},setTimeout:(fn,delay=0)=>{const timer={id:++timerId,fn,delay,active:true};timers.push(timer);return timer.id},addEventListener:(k,fn)=>{(windowListeners[k]||=[]).push(fn)}};
   context.window=context;vm.createContext(context);vm.runInContext(source,context);
   return {get,requests,timers,storage,switchUsername:name=>{authUsername=name},runTimer:async()=>{while(timers.length){const timer=timers.shift();if(timer.active){timer.active=false;timer.fn();await flush();return}}},triggerWindow:async name=>{for(const fn of windowListeners[name]||[])fn();await flush()},triggerDocument:async name=>{for(const fn of documentListeners[name]||[])fn();await flush()},flush};
 }
@@ -77,13 +78,13 @@ async function scenarioRefresh(){
 async function scenarioPollFailure(){
   const storage=new Map();
   const runtime=createRuntime({post:()=>Promise.resolve(response(200,{job_id:10})),poll:i=>i===0?Promise.reject(new Error('temporary')):Promise.resolve(response(200,{status:'done',result:{video_url:'/video',duration:8}}))},storage);
-  await fillAndSubmit(runtime);const busyAfterFailure=runtime.get('generateBtn').disabled;await runtime.runTimer();await flush();
-  return {polls:runtime.requests.poll.length,busyAfterFailure,cleared:pendingCleared(storage)};
+  await fillAndSubmit(runtime);const afterFailure=actionState(runtime);await runtime.runTimer();await flush();
+  return {polls:runtime.requests.poll.length,afterFailure,cleared:pendingCleared(storage)};
 }
 async function scenarioPollHttpFailure(){
   const storage=new Map();
   const runtime=createRuntime({post:()=>Promise.resolve(response(200,{job_id:11})),poll:i=>Promise.resolve(i===0?response(503,{detail:'poll unavailable'}):response(200,{status:'done',result:{video_url:'/http-poll-recovered-video',duration:8}}))},storage);
-  await fillAndSubmit(runtime);const before={polls:runtime.requests.poll.length,busy:runtime.get('generateBtn').disabled,cleared:pendingCleared(storage)};await runtime.runTimer();await flush(20);
+  await fillAndSubmit(runtime);const before={polls:runtime.requests.poll.length,action:actionState(runtime),cleared:pendingCleared(storage)};await runtime.runTimer();await flush(20);
   return {before,polls:runtime.requests.poll.length,src:runtime.get('video').src,cleared:pendingCleared(storage)};
 }
 async function scenarioPollRecoveryBeyondFive(){
@@ -131,6 +132,17 @@ async function scenarioLivePreview(){
   const runtime=createRuntime({post:()=>Promise.reject(new Error('unused')),poll:()=>Promise.reject(new Error('unused'))},new Map());
   await flush();runtime.get('topText').value='实时标题';runtime.get('bottomText').value='实时行动文案';runtime.get('topText').listeners.input[0]();runtime.get('bottomText').listeners.input[0]();runtime.get('templateGrid').children[1].onclick();
   const style=runtime.get('livePreview').style;return {top:runtime.get('liveTop').textContent,bottom:runtime.get('liveBottom').textContent,template:runtime.get('livePreview').attributes['data-template'],liveBg:style['--live-bg'],liveFg:style['--live-fg'],liveAccent:style['--live-accent'],videoDisplay:runtime.get('video').style.display};
+}
+async function scenarioActionPrerequisites(){
+  const runtime=createRuntime({post:()=>Promise.reject(new Error('unused')),poll:()=>Promise.reject(new Error('unused'))},new Map());
+  await flush();const empty=actionState(runtime),emptyBefore={auth:runtime.requests.auth.length,post:runtime.requests.post.length,poll:runtime.requests.poll.length,confirm:runtime.requests.confirm.length};
+  runtime.get('generateBtn').onclick();await flush();const emptyReminder={status:runtime.get('status').textContent,toast:runtime.get('toast').textContent,auth:runtime.requests.auth.length-emptyBefore.auth,post:runtime.requests.post.length-emptyBefore.post,poll:runtime.requests.poll.length-emptyBefore.poll,confirm:runtime.requests.confirm.length-emptyBefore.confirm};
+  runtime.get('topText').value='有效标题';runtime.get('topText').listeners.input[0]();const topOnly=actionState(runtime),topOnlyBefore={auth:runtime.requests.auth.length,post:runtime.requests.post.length,poll:runtime.requests.poll.length,confirm:runtime.requests.confirm.length};
+  runtime.get('generateBtn').onclick();await flush();const topOnlyReminder={status:runtime.get('status').textContent,toast:runtime.get('toast').textContent,auth:runtime.requests.auth.length-topOnlyBefore.auth,post:runtime.requests.post.length-topOnlyBefore.post,poll:runtime.requests.poll.length-topOnlyBefore.poll,confirm:runtime.requests.confirm.length-topOnlyBefore.confirm};
+  runtime.get('topText').value='';runtime.get('topText').listeners.input[0]();runtime.get('bottomText').value='有效行动文案';runtime.get('bottomText').listeners.input[0]();const bottomOnly=actionState(runtime),bottomOnlyBefore={auth:runtime.requests.auth.length,post:runtime.requests.post.length,poll:runtime.requests.poll.length,confirm:runtime.requests.confirm.length};
+  runtime.get('generateBtn').onclick();await flush();const bottomOnlyReminder={status:runtime.get('status').textContent,toast:runtime.get('toast').textContent,auth:runtime.requests.auth.length-bottomOnlyBefore.auth,post:runtime.requests.post.length-bottomOnlyBefore.post,poll:runtime.requests.poll.length-bottomOnlyBefore.poll,confirm:runtime.requests.confirm.length-bottomOnlyBefore.confirm};
+  runtime.get('topText').value='有效标题';runtime.get('topText').listeners.input[0]();const complete=actionState(runtime);
+  return {empty,emptyReminder,topOnly,topOnlyReminder,bottomOnly,bottomOnlyReminder,complete};
 }
 async function scenarioTemplateVisibility(){
   const runtime=createRuntime({post:()=>Promise.reject(new Error('unused')),poll:()=>Promise.reject(new Error('unused'))},new Map());
@@ -182,19 +194,115 @@ async function scenarioMixedFailureReload(){
 }
 async function scenarioJobFailureRefund(){
   const runtime=createRuntime({post:()=>Promise.resolve(response(200,{job_id:300})),poll:()=>Promise.resolve(response(200,{status:'failed',error:'渲染失败',refunded:true}))},new Map());
-  await fillAndSubmit(runtime);await flush(20);const card=runtime.get('batchResults').children[0];return {cards:runtime.get('batchResults').children.length,error:card.children[1].textContent,refund:card.children[2].textContent};
+  await fillAndSubmit(runtime);await flush(20);const card=runtime.get('batchResults').children[0];return {cards:runtime.get('batchResults').children.length,error:card.children[1].textContent,refund:card.children[2].textContent,action:actionState(runtime)};
 }
 async function scenarioRefundPendingThenConfirmed(){
   const storage=new Map();
   const runtime=createRuntime({post:()=>Promise.resolve(response(202,{job_id:301,refund_state:'pending'})),poll:i=>Promise.resolve(response(200,{status:'failed',error:'任务队列已满',refunded:i>0}))},storage);
-  await fillAndSubmit(runtime);await flush(20);var card=runtime.get('batchResults').children[0],before=card.children[2].textContent;await runtime.runTimer();await flush(20);card=runtime.get('batchResults').children[0];return {polls:runtime.requests.poll.length,before,after:card.children[2].textContent,title:card.children[0].textContent,cards:runtime.get('batchResults').children.length,cleared:pendingCleared(storage)};
+  await fillAndSubmit(runtime);await flush(20);var card=runtime.get('batchResults').children[0],before=card.children[2].textContent,beforeAction=actionState(runtime);await runtime.runTimer();await flush(20);card=runtime.get('batchResults').children[0];return {polls:runtime.requests.poll.length,before,beforeAction,after:card.children[2].textContent,afterAction:actionState(runtime),title:card.children[0].textContent,cards:runtime.get('batchResults').children.length,cleared:pendingCleared(storage)};
+}
+
+async function scenarioBusyActionChecksWithoutDuplicate(){
+  let finishPoll;
+  const pollResponse=new Promise(resolve=>{finishPoll=resolve});
+  const runtime=createRuntime({post:()=>Promise.resolve(response(200,{job_id:306})),poll:()=>pollResponse},new Map());
+  await fillAndSubmit(runtime);await flush(20);const before=actionState(runtime);
+  runtime.get('generateBtn').onclick();await flush(20);
+  const during={action:actionState(runtime),posts:runtime.requests.post.length,polls:runtime.requests.poll.length};
+  finishPoll(response(200,{status:'failed',error:'渲染失败',refunded:true}));await flush(20);
+  return {before,during,after:actionState(runtime),posts:runtime.requests.post.length,polls:runtime.requests.poll.length,cleared:pendingCleared(runtime.storage)};
+}
+
+async function scenarioDelayedOuterCheckAuthCannotCreateNewJob(){
+  let finishPoll,releaseAuth;
+  const firstPoll=new Promise(resolve=>{finishPoll=resolve});
+  const delayedAuth=new Promise(resolve=>{releaseAuth=resolve});
+  const runtime=createRuntime({
+    auth:(index,username)=>index===5?delayedAuth:Promise.resolve(response(200,{user:{username}})),
+    post:index=>Promise.resolve(response(200,{job_id:index===0?311:312})),
+    poll:index=>index===0?firstPoll:Promise.resolve(response(200,{status:'done',result:{video_url:'/unexpected-second-video',duration:8}})),
+  },new Map());
+  await fillAndSubmit(runtime);await flush(20);
+  runtime.get('generateBtn').onclick();await flush(20);
+  const beforeTerminal={posts:runtime.requests.post.length,polls:runtime.requests.poll.length,confirms:runtime.requests.confirm.length,action:actionState(runtime)};
+  finishPoll(response(200,{status:'done',result:{video_url:'/first-video',duration:8}}));await flush(20);
+  const terminal={src:runtime.get('video').src,cleared:pendingCleared(runtime.storage),action:actionState(runtime)};
+  releaseAuth(response(200,{user:{username:'alice'}}));await flush(20);
+  return {beforeTerminal,terminal,posts:runtime.requests.post.length,polls:runtime.requests.poll.length,confirms:runtime.requests.confirm.length,keys:runtime.requests.post.map(call=>call.options.headers['Idempotency-Key']),src:runtime.get('video').src,action:actionState(runtime),cleared:pendingCleared(runtime.storage)};
+}
+
+async function scenarioDelayedCheckAuthCannotDuplicateAcceptedPost(){
+  let releaseAuth;
+  const delayedAuth=new Promise(resolve=>{releaseAuth=resolve});
+  const runtime=createRuntime({
+    auth:(index,username)=>index===3?delayedAuth:Promise.resolve(response(200,{user:{username}})),
+    post:()=>Promise.resolve(response(200,{job_id:307})),
+    poll:()=>Promise.resolve(response(200,{status:'done',result:{video_url:'/delayed-auth-post-video',duration:8}})),
+  },new Map());
+  await fillAndSubmit(runtime);await flush(20);
+  const before={posts:runtime.requests.post.length,polls:runtime.requests.poll.length,auth:runtime.requests.auth.length,action:actionState(runtime)};
+  runtime.get('generateBtn').onclick();await flush(20);
+  const afterClick={posts:runtime.requests.post.length,polls:runtime.requests.poll.length,auth:runtime.requests.auth.length,action:actionState(runtime)};
+  releaseAuth(response(200,{user:{username:'alice'}}));await flush(20);
+  return {before,afterClick,after:actionState(runtime),posts:runtime.requests.post.length,polls:runtime.requests.poll.length,auth:runtime.requests.auth.length,src:runtime.get('video').src,cleared:pendingCleared(runtime.storage)};
+}
+
+async function scenarioDelayedCheckAuthCannotReviveTerminalPoll(){
+  let releaseAuth;
+  const delayedAuth=new Promise(resolve=>{releaseAuth=resolve});
+  const runtime=createRuntime({
+    auth:(index,username)=>index===4?delayedAuth:Promise.resolve(response(200,{user:{username}})),
+    post:()=>Promise.resolve(response(200,{job_id:308})),
+    poll:()=>Promise.resolve(response(200,{status:'done',result:{video_url:'/delayed-auth-poll-video',duration:8}})),
+  },new Map());
+  await fillAndSubmit(runtime);await flush(20);
+  const before={posts:runtime.requests.post.length,polls:runtime.requests.poll.length,auth:runtime.requests.auth.length,action:actionState(runtime)};
+  runtime.get('generateBtn').onclick();await flush(20);
+  const afterClick={posts:runtime.requests.post.length,polls:runtime.requests.poll.length,auth:runtime.requests.auth.length,action:actionState(runtime)};
+  releaseAuth(response(200,{user:{username:'alice'}}));await flush(20);
+  return {before,afterClick,posts:runtime.requests.post.length,polls:runtime.requests.poll.length,auth:runtime.requests.auth.length,action:actionState(runtime),src:runtime.get('video').src,cleared:pendingCleared(runtime.storage)};
+}
+
+async function scenarioDelayedSubmitAuthHonorsLinkedJob(){
+  let releaseAuth;
+  const delayedAuth=new Promise(resolve=>{releaseAuth=resolve});
+  const storage=new Map();
+  const runtime=createRuntime({
+    auth:(index,username)=>index===3?delayedAuth:Promise.resolve(response(200,{user:{username}})),
+    post:()=>Promise.reject(new Error('stale auth must not submit')),
+    poll:()=>Promise.resolve(response(200,{status:'done',result:{video_url:'/linked-job-video',duration:8}})),
+  },storage);
+  await fillAndSubmit(runtime);await flush(20);
+  const key='hq-matrix-template-pending-v2:alice',current=JSON.parse(storage.get(key));
+  current.items[0].job_id=309;current.items[0].status='pending';storage.set(key,JSON.stringify(current));
+  releaseAuth(response(200,{user:{username:'alice'}}));await flush(20);
+  const afterAuth={posts:runtime.requests.post.length,polls:runtime.requests.poll.length,action:actionState(runtime)};
+  await runtime.triggerWindow('focus');await flush(20);
+  return {afterAuth,posts:runtime.requests.post.length,polls:runtime.requests.poll.length,action:actionState(runtime),src:runtime.get('video').src,cleared:pendingCleared(storage)};
+}
+
+async function scenarioDelayedPollAuthHonorsClearedPending(){
+  let releaseAuth;
+  const delayedAuth=new Promise(resolve=>{releaseAuth=resolve});
+  const storage=new Map();
+  const runtime=createRuntime({
+    auth:(index,username)=>index===4?delayedAuth:Promise.resolve(response(200,{user:{username}})),
+    post:()=>Promise.resolve(response(200,{job_id:310})),
+    poll:()=>Promise.resolve(response(200,{status:'pending'})),
+  },storage);
+  await fillAndSubmit(runtime);await flush(20);
+  storage.delete('hq-matrix-template-pending-v2:alice');
+  releaseAuth(response(200,{user:{username:'alice'}}));await flush(20);
+  const afterAuth={polls:runtime.requests.poll.length,action:actionState(runtime),cleared:pendingCleared(storage)};
+  await runtime.triggerWindow('focus');await flush(20);
+  return {afterAuth,polls:runtime.requests.poll.length,action:actionState(runtime),cleared:pendingCleared(storage)};
 }
 
 async function scenarioUncertainRecoversAutomatically(){
   const key='matrix-template-stable-retry-key';
   const storage=new Map([['hq-matrix-template-pending-v2:alice',JSON.stringify({owner:'alice',started_at:Date.now()-867000,items:[{key,body:{top_text:'待确认标题',bottom_text:'待确认行动文案',template_id:'native-bold',bgm:true},job_id:'',status:'uncertain',result:null,error:'提交响应丢失',refund_status:''}]})]]);
   const runtime=createRuntime({post:i=>i<4?Promise.reject(new Error('response lost')):Promise.resolve(response(200,{job_id:401})),poll:()=>Promise.resolve(response(200,{status:'done',result:{video_url:'/auto-recovered-video',duration:8}}))},storage);
-  await flush(30);const afterLoad={posts:runtime.requests.post.length,status:runtime.get('status').textContent,busy:runtime.get('generateBtn').disabled};
+  await flush(30);const afterLoad={posts:runtime.requests.post.length,status:runtime.get('status').textContent,action:actionState(runtime)};
   for(let i=0;i<4;i++){await runtime.runTimer();await flush(20)}
   return {afterLoad,posts:runtime.requests.post.length,keys:runtime.requests.post.map(x=>x.options.headers['Idempotency-Key']),status:runtime.get('status').textContent,src:runtime.get('video').src,cleared:pendingCleared(storage)};
 }
@@ -277,14 +385,14 @@ async function scenarioHungPollTimesOutAndRecovers(){
   const firstResponse=new Promise(resolve=>{finishFirst=resolve});
   const runtime=createRuntime({post:()=>Promise.resolve(response(200,{job_id:405})),poll:i=>i===0?firstResponse:Promise.resolve(response(200,{status:'done',result:{video_url:'/timeout-poll-recovered-video',duration:8}}))},new Map());
   await fillAndSubmit(runtime);await flush(20);
-  const before={polls:runtime.requests.poll.length,busy:runtime.get('generateBtn').disabled,cleared:pendingCleared(runtime.storage)};
+  const before={polls:runtime.requests.poll.length,action:actionState(runtime),cleared:pendingCleared(runtime.storage)};
   await runtime.runTimer();await flush(20);
-  const afterTimeout={polls:runtime.requests.poll.length,busy:runtime.get('generateBtn').disabled,cleared:pendingCleared(runtime.storage)};
+  const afterTimeout={polls:runtime.requests.poll.length,action:actionState(runtime),cleared:pendingCleared(runtime.storage)};
   await runtime.runTimer();await flush(30);
   const afterRecovery={polls:runtime.requests.poll.length,src:runtime.get('video').src,cleared:pendingCleared(runtime.storage)};
   finishFirst(response(200,{status:'failed',error:'late stale failure',refunded:true}));await flush(30);
   return {before,afterTimeout,afterRecovery,afterLateResponse:{polls:runtime.requests.poll.length,src:runtime.get('video').src,cleared:pendingCleared(runtime.storage)}};
 }
 
-async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure,pollHttpFailure:scenarioPollHttpFailure,pollRecoveryBeyondFive:scenarioPollRecoveryBeyondFive,instantResult:scenarioInstantResult,delayedResultUrl:scenarioDelayedResultUrl,longDelayedResultUrl:scenarioLongDelayedResultUrl,foregroundResume:scenarioForegroundResume,mediaRetry:scenarioMediaRetry,livePreview:scenarioLivePreview,templateVisibility:scenarioTemplateVisibility,hiddenTemplatePendingRecovery:scenarioHiddenTemplatePendingRecovery,fontSelect:scenarioFontSelect,lockedFont:scenarioLockedFont,batchFive:scenarioBatchFive,legacyPending:scenarioLegacyPending,mixedFailureReload:scenarioMixedFailureReload,jobFailureRefund:scenarioJobFailureRefund,refundPendingThenConfirmed:scenarioRefundPendingThenConfirmed,uncertainAutoRecovery:scenarioUncertainRecoversAutomatically,staleSubmittingAutoRecovery:scenarioStaleSubmittingRecoversAutomatically,crossAccountPending:scenarioCrossAccountPendingIsolation,dynamicAccountSwitch:scenarioDynamicAccountSwitchFailsClosed,retryAuthFailure:scenarioRetryAuthFailureFailsClosed,concurrentStaleAuth:scenarioConcurrentStaleAuthRestoresNewOwnerOnce,foregroundSingleFlight:scenarioForegroundDoesNotDuplicateInflightRequests,hungSubmissionTimeout:scenarioHungSubmissionTimesOutAndRecovers,hungPollTimeout:scenarioHungPollTimesOutAndRecovers};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}
+async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure,pollHttpFailure:scenarioPollHttpFailure,pollRecoveryBeyondFive:scenarioPollRecoveryBeyondFive,instantResult:scenarioInstantResult,delayedResultUrl:scenarioDelayedResultUrl,longDelayedResultUrl:scenarioLongDelayedResultUrl,foregroundResume:scenarioForegroundResume,mediaRetry:scenarioMediaRetry,livePreview:scenarioLivePreview,actionPrerequisites:scenarioActionPrerequisites,templateVisibility:scenarioTemplateVisibility,hiddenTemplatePendingRecovery:scenarioHiddenTemplatePendingRecovery,fontSelect:scenarioFontSelect,lockedFont:scenarioLockedFont,batchFive:scenarioBatchFive,legacyPending:scenarioLegacyPending,mixedFailureReload:scenarioMixedFailureReload,jobFailureRefund:scenarioJobFailureRefund,refundPendingThenConfirmed:scenarioRefundPendingThenConfirmed,busyActionCheck:scenarioBusyActionChecksWithoutDuplicate,delayedOuterCheckAuth:scenarioDelayedOuterCheckAuthCannotCreateNewJob,delayedPostAuth:scenarioDelayedCheckAuthCannotDuplicateAcceptedPost,delayedPollAuth:scenarioDelayedCheckAuthCannotReviveTerminalPoll,linkedJobDuringAuth:scenarioDelayedSubmitAuthHonorsLinkedJob,clearedPendingDuringAuth:scenarioDelayedPollAuthHonorsClearedPending,uncertainAutoRecovery:scenarioUncertainRecoversAutomatically,staleSubmittingAutoRecovery:scenarioStaleSubmittingRecoversAutomatically,crossAccountPending:scenarioCrossAccountPendingIsolation,dynamicAccountSwitch:scenarioDynamicAccountSwitchFailsClosed,retryAuthFailure:scenarioRetryAuthFailureFailsClosed,concurrentStaleAuth:scenarioConcurrentStaleAuthRestoresNewOwnerOnce,foregroundSingleFlight:scenarioForegroundDoesNotDuplicateInflightRequests,hungSubmissionTimeout:scenarioHungSubmissionTimesOutAndRecovers,hungPollTimeout:scenarioHungPollTimesOutAndRecovers};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}
 main().catch(e=>{console.error(e.stack||e);process.exitCode=1});

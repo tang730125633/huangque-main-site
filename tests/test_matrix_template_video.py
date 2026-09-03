@@ -1750,6 +1750,14 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertIn("fitLiveText(el('liveBottom'),20,12)", page)
         self.assertIn("var hiddenTemplateIds={'full-overlay-bold':true,'poster-split':true}", page)
         self.assertIn("filter(function(item){return item&&!hiddenTemplateIds[item.id]})", page)
+        self.assertIn(".mt-action:disabled{opacity:.55;cursor:not-allowed}", page)
+        self.assertNotIn(".mt-action:disabled{opacity:.55;cursor:wait}", page)
+        self.assertIn("button.disabled=!busy&&!activeTemplate", page)
+        self.assertIn("if(!checking&&warnCopy())return", page)
+        self.assertIn("busy?'检查任务状态'", page)
+        self.assertIn("if(!pending){busy=false;sync();return}", page)
+        self.assertIn("checking=busy||!!existing", page)
+        self.assertIn("pendingIdentity(current)!==expectedIdentity", page)
         self.assertLess(shell.index("k:'text-video'"), shell.index("k:'matrix-template'"))
         self.assertIn("/api/gen/matrix-template/capability", shell)
 
@@ -1793,14 +1801,18 @@ class MatrixTemplatePageTests(unittest.TestCase):
 
     def test_single_poll_failure_keeps_busy_and_recovers(self):
         result = self.runtime("pollFailure")
-        self.assertTrue(result["busyAfterFailure"])
+        self.assertTrue(result["afterFailure"]["busy"])
+        self.assertTrue(result["afterFailure"]["enabled"])
+        self.assertEqual("检查任务状态", result["afterFailure"]["text"])
         self.assertEqual(2, result["polls"])
         self.assertTrue(result["cleared"])
 
     def test_poll_http_5xx_keeps_busy_and_recovers(self):
         result = self.runtime("pollHttpFailure")
         self.assertEqual(1, result["before"]["polls"])
-        self.assertTrue(result["before"]["busy"])
+        self.assertTrue(result["before"]["action"]["busy"])
+        self.assertTrue(result["before"]["action"]["enabled"])
+        self.assertEqual("检查任务状态", result["before"]["action"]["text"])
         self.assertFalse(result["before"]["cleared"])
         self.assertEqual(2, result["polls"])
         self.assertEqual("/http-poll-recovered-video", result["src"])
@@ -1863,7 +1875,9 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertIn("正在自动确认提交结果", result["afterLoad"]["status"])
         self.assertIn("不会重复扣点", result["afterLoad"]["status"])
         self.assertNotIn("867 秒", result["afterLoad"]["status"])
-        self.assertTrue(result["afterLoad"]["busy"])
+        self.assertTrue(result["afterLoad"]["action"]["busy"])
+        self.assertTrue(result["afterLoad"]["action"]["enabled"])
+        self.assertEqual("检查任务状态", result["afterLoad"]["action"]["text"])
         self.assertEqual(5, result["posts"])
         self.assertEqual(
             ["matrix-template-stable-retry-key"] * 5,
@@ -1953,10 +1967,12 @@ class MatrixTemplatePageTests(unittest.TestCase):
     def test_hung_poll_times_out_and_recovers_without_stale_callback(self):
         result = self.runtime("hungPollTimeout")
         self.assertEqual(1, result["before"]["polls"])
-        self.assertTrue(result["before"]["busy"])
+        self.assertTrue(result["before"]["action"]["busy"])
+        self.assertTrue(result["before"]["action"]["enabled"])
         self.assertFalse(result["before"]["cleared"])
         self.assertEqual(1, result["afterTimeout"]["polls"])
-        self.assertTrue(result["afterTimeout"]["busy"])
+        self.assertTrue(result["afterTimeout"]["action"]["busy"])
+        self.assertTrue(result["afterTimeout"]["action"]["enabled"])
         self.assertFalse(result["afterTimeout"]["cleared"])
         self.assertEqual(2, result["afterRecovery"]["polls"])
         self.assertEqual("/timeout-poll-recovered-video", result["afterRecovery"]["src"])
@@ -1984,6 +2000,62 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual("#111111", result["liveFg"])
         self.assertEqual("#df3f36", result["liveAccent"])
         self.assertEqual("none", result["videoDisplay"])
+
+    def test_action_reminds_missing_copy_without_auth_or_submission(self):
+        result = self.runtime("actionPrerequisites")
+        self.assertTrue(result["empty"]["enabled"])
+        self.assertEqual(
+            "请先填写顶部文案和底部行动文案（每项至少 2 个字）",
+            result["empty"]["title"],
+        )
+        self.assertEqual(
+            "请先填写顶部文案和底部行动文案（每项至少 2 个字）",
+            result["emptyReminder"]["status"],
+        )
+        self.assertEqual(
+            result["emptyReminder"]["status"], result["emptyReminder"]["toast"],
+        )
+        self.assertEqual((0, 0, 0, 0), tuple(
+            result["emptyReminder"][name]
+            for name in ("auth", "post", "poll", "confirm")
+        ))
+        self.assertTrue(result["topOnly"]["enabled"])
+        self.assertEqual(
+            "请先填写至少 2 个字的底部行动文案",
+            result["topOnly"]["title"],
+        )
+        self.assertEqual(
+            "请先填写至少 2 个字的底部行动文案",
+            result["topOnlyReminder"]["status"],
+        )
+        self.assertEqual(
+            result["topOnlyReminder"]["status"],
+            result["topOnlyReminder"]["toast"],
+        )
+        self.assertEqual((0, 0, 0, 0), tuple(
+            result["topOnlyReminder"][name]
+            for name in ("auth", "post", "poll", "confirm")
+        ))
+        self.assertTrue(result["bottomOnly"]["enabled"])
+        self.assertEqual(
+            "请先填写至少 2 个字的顶部文案",
+            result["bottomOnly"]["title"],
+        )
+        self.assertEqual(
+            "请先填写至少 2 个字的顶部文案",
+            result["bottomOnlyReminder"]["status"],
+        )
+        self.assertEqual(
+            result["bottomOnlyReminder"]["status"],
+            result["bottomOnlyReminder"]["toast"],
+        )
+        self.assertEqual((0, 0, 0, 0), tuple(
+            result["bottomOnlyReminder"][name]
+            for name in ("auth", "post", "poll", "confirm")
+        ))
+        self.assertTrue(result["complete"]["enabled"])
+        self.assertEqual("生成视频 · 5 点", result["complete"]["text"])
+        self.assertEqual("", result["complete"]["title"])
 
     def test_hidden_templates_are_not_rendered_in_the_picker(self):
         result = self.runtime("templateVisibility")
@@ -2069,14 +2141,121 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual(1, result["cards"])
         self.assertEqual("渲染失败", result["error"])
         self.assertEqual("已退款", result["refund"])
+        self.assertFalse(result["action"]["busy"])
+        self.assertTrue(result["action"]["enabled"])
+        self.assertEqual("生成视频 · 5 点", result["action"]["text"])
 
     def test_refund_pending_keeps_polling_until_confirmed(self):
         result = self.runtime("refundPendingThenConfirmed")
         self.assertEqual(2, result["polls"])
         self.assertEqual("退款处理中", result["before"])
+        self.assertTrue(result["beforeAction"]["busy"])
+        self.assertTrue(result["beforeAction"]["enabled"])
+        self.assertEqual("检查任务状态", result["beforeAction"]["text"])
         self.assertEqual("已退款", result["after"])
+        self.assertFalse(result["afterAction"]["busy"])
+        self.assertTrue(result["afterAction"]["enabled"])
+        self.assertEqual("生成视频 · 5 点", result["afterAction"]["text"])
         self.assertEqual("第 1 条生成失败", result["title"])
         self.assertEqual(1, result["cards"])
+        self.assertTrue(result["cleared"])
+
+    def test_busy_action_checks_existing_job_without_duplicate_submission(self):
+        result = self.runtime("busyActionCheck")
+        self.assertTrue(result["before"]["busy"])
+        self.assertTrue(result["before"]["enabled"])
+        self.assertEqual("检查任务状态", result["before"]["text"])
+        self.assertEqual((1, 1), (
+            result["during"]["posts"], result["during"]["polls"],
+        ))
+        self.assertTrue(result["during"]["action"]["busy"])
+        self.assertTrue(result["during"]["action"]["enabled"])
+        self.assertEqual((1, 1), (result["posts"], result["polls"]))
+        self.assertFalse(result["after"]["busy"])
+        self.assertTrue(result["after"]["enabled"])
+        self.assertEqual("生成视频 · 5 点", result["after"]["text"])
+        self.assertTrue(result["cleared"])
+
+    def test_delayed_outer_check_auth_cannot_create_a_new_job(self):
+        result = self.runtime("delayedOuterCheckAuth")
+        self.assertEqual((1, 1, 1), (
+            result["beforeTerminal"]["posts"],
+            result["beforeTerminal"]["polls"],
+            result["beforeTerminal"]["confirms"],
+        ))
+        self.assertTrue(result["beforeTerminal"]["action"]["busy"])
+        self.assertEqual("/first-video", result["terminal"]["src"])
+        self.assertTrue(result["terminal"]["cleared"])
+        self.assertFalse(result["terminal"]["action"]["busy"])
+        self.assertEqual((1, 1, 1), (
+            result["posts"], result["polls"], result["confirms"],
+        ))
+        self.assertEqual(["matrix-template-uuid-1"], result["keys"])
+        self.assertEqual("/first-video", result["src"])
+        self.assertFalse(result["action"]["busy"])
+        self.assertTrue(result["action"]["enabled"])
+        self.assertTrue(result["cleared"])
+
+    def test_preclaimed_submit_flight_blocks_duplicate_during_delayed_auth(self):
+        result = self.runtime("delayedPostAuth")
+        self.assertEqual((0, 0, 4), (
+            result["before"]["posts"], result["before"]["polls"],
+            result["before"]["auth"],
+        ))
+        self.assertTrue(result["before"]["action"]["busy"])
+        self.assertEqual((0, 0, 5), (
+            result["afterClick"]["posts"], result["afterClick"]["polls"],
+            result["afterClick"]["auth"],
+        ))
+        self.assertTrue(result["afterClick"]["action"]["busy"])
+        self.assertTrue(result["afterClick"]["action"]["enabled"])
+        self.assertEqual((1, 1), (result["posts"], result["polls"]))
+        self.assertEqual(6, result["auth"])
+        self.assertEqual("/delayed-auth-post-video", result["src"])
+        self.assertFalse(result["after"]["busy"])
+        self.assertTrue(result["after"]["enabled"])
+        self.assertTrue(result["cleared"])
+
+    def test_preclaimed_poll_flight_blocks_duplicate_during_delayed_auth(self):
+        result = self.runtime("delayedPollAuth")
+        self.assertEqual((1, 0, 5), (
+            result["before"]["posts"], result["before"]["polls"],
+            result["before"]["auth"],
+        ))
+        self.assertTrue(result["before"]["action"]["busy"])
+        self.assertEqual((1, 0, 6), (
+            result["afterClick"]["posts"], result["afterClick"]["polls"],
+            result["afterClick"]["auth"],
+        ))
+        self.assertTrue(result["afterClick"]["action"]["busy"])
+        self.assertEqual((1, 1, 6), (
+            result["posts"], result["polls"], result["auth"],
+        ))
+        self.assertFalse(result["action"]["busy"])
+        self.assertTrue(result["action"]["enabled"])
+        self.assertEqual("/delayed-auth-poll-video", result["src"])
+        self.assertTrue(result["cleared"])
+
+    def test_delayed_submit_auth_honors_job_linked_in_current_storage(self):
+        result = self.runtime("linkedJobDuringAuth")
+        self.assertEqual((0, 0), (
+            result["afterAuth"]["posts"], result["afterAuth"]["polls"],
+        ))
+        self.assertTrue(result["afterAuth"]["action"]["busy"])
+        self.assertEqual((0, 1), (result["posts"], result["polls"]))
+        self.assertFalse(result["action"]["busy"])
+        self.assertTrue(result["action"]["enabled"])
+        self.assertEqual("/linked-job-video", result["src"])
+        self.assertTrue(result["cleared"])
+
+    def test_delayed_poll_auth_honors_cleared_current_pending(self):
+        result = self.runtime("clearedPendingDuringAuth")
+        self.assertEqual(0, result["afterAuth"]["polls"])
+        self.assertTrue(result["afterAuth"]["cleared"])
+        self.assertEqual(0, result["polls"])
+        self.assertFalse(result["action"]["busy"])
+        self.assertTrue(result["action"]["enabled"])
+        self.assertEqual("生成视频 · 5 点", result["action"]["text"])
         self.assertTrue(result["cleared"])
 
 

@@ -88,6 +88,16 @@ function hasOverflow(box) {
         };
       });
       const hyperframesBatchControl = await readBatchControl();
+      const initialAction = await page.locator('#generateBtn').evaluate(node => ({
+        disabled: node.disabled,
+        cursor: getComputedStyle(node).cursor,
+        title: node.title,
+      }));
+      await page.locator('#generateBtn').click();
+      const emptyReminder = await page.evaluate(() => ({
+        status: document.getElementById('status').textContent,
+        toast: document.getElementById('toast').textContent,
+      }));
       const cardReport = await page.locator('.mt-template').evaluateAll(nodes => nodes.map(node => {
         const visual = node.querySelector('.mt-template-visual');
         const top = node.querySelector('.mt-template-top');
@@ -118,6 +128,11 @@ function hasOverflow(box) {
       }
       await page.fill('#topText', '标题'.repeat(30));
       await page.fill('#bottomText', '行动'.repeat(40));
+      const readyAction = await page.locator('#generateBtn').evaluate(node => ({
+        disabled: node.disabled,
+        cursor: getComputedStyle(node).cursor,
+        text: node.textContent,
+      }));
       const overflow = [];
       for (let index = 0; index < visibleTemplateIds.length; index += 1) {
         await page.locator('.mt-template').nth(index).click();
@@ -142,6 +157,7 @@ function hasOverflow(box) {
         overflow,
         scroll,
         batchControl: {hyperframes: hyperframesBatchControl},
+        action: {initial: initialAction, emptyReminder, ready: readyAction},
         cardCount: cardReport.length,
         cardLabels: cardReport.map(item => item.label),
         referenceCount: references.length,
@@ -161,6 +177,9 @@ function hasOverflow(box) {
     const hyperframes = viewport.batchControl.hyperframes;
     const expectedLabels = '1条,2条,3条,4条,5条';
     if (hyperframes.disabled || hyperframes.values.join(',') !== '1,2,3,4,5' || hyperframes.hint !== '最多5条' || hyperframes.labels.join(',') !== expectedLabels) throw new Error(`HyperFrames batch control is unavailable: ${JSON.stringify(hyperframes)}`);
+    if (viewport.action.initial.disabled || viewport.action.initial.cursor !== 'pointer' || !viewport.action.initial.title.includes('顶部文案')) throw new Error(`empty-copy action state is inaccurate: ${JSON.stringify(viewport.action.initial)}`);
+    if (!viewport.action.emptyReminder.status.includes('顶部文案和底部行动文案') || !viewport.action.emptyReminder.toast.includes('顶部文案和底部行动文案')) throw new Error(`empty-copy reminder is missing: ${JSON.stringify(viewport.action.emptyReminder)}`);
+    if (viewport.action.ready.disabled || viewport.action.ready.cursor !== 'pointer' || viewport.action.ready.text !== '生成视频 · 5 点') throw new Error(`ready action state is inaccurate: ${JSON.stringify(viewport.action.ready)}`);
   }
   const mobile = report.mobile.scroll;
   if (mobile.scrollHeight <= mobile.clientHeight || mobile.scrollTop <= 0 || mobile.top >= mobile.viewport || mobile.bottom <= 0) throw new Error(`mobile preview is unreachable: ${JSON.stringify(mobile)}`);
