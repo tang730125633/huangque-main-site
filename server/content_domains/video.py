@@ -4043,6 +4043,27 @@ def _heygen_mcp_access_token(force_refresh=False):
             os.close(lock_fd)
 
 
+def _heygen_mcp_ready_text(text, video_id):
+    """Normalize HeyGen's exact ready sentence without trusting arbitrary text or URLs."""
+    video_id = str(video_id or "").strip()
+    prefix = "Video %s is ready. Watch it in the inline player or download it from " % video_id
+    suffix = ". Call show_video with video_id=%s to display it in the inline player." % video_id
+    if not video_id or not text.startswith(prefix) or not text.endswith(suffix):
+        return None
+    video_url = text[len(prefix):-len(suffix)]
+    parsed = urllib.parse.urlsplit(video_url)
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    # ponytail: keep the observed signed-media host fail-closed; extend only if HeyGen rotates it.
+    if (parsed.scheme != "https" or parsed.hostname != "files2.heygen.ai"
+            or port not in (None, 443) or parsed.username or parsed.password
+            or not parsed.path or parsed.fragment):
+        return None
+    return {"id": video_id, "status": "completed", "video_url": video_url}
+
+
 def _heygen_mcp_call(tool, arguments, timeout=90):
     def request(token):
         payload = {"jsonrpc": "2.0", "id": uuid.uuid4().hex, "method": "tools/call",
@@ -4094,6 +4115,10 @@ def _heygen_mcp_call(tool, arguments, timeout=90):
         try:
             return json.loads(texts[0])
         except json.JSONDecodeError:
+            if tool == "get_video" and isinstance(arguments, dict):
+                ready = _heygen_mcp_ready_text(texts[0], arguments.get("videoId"))
+                if ready:
+                    return ready
             return {"text": texts[0]}
     return result.get("structuredContent") or result
 

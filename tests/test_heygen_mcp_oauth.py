@@ -135,6 +135,59 @@ class HeyGenMcpOAuthTests(unittest.TestCase):
             self.assertEqual(video._heygen_mcp_call("get_current_user", {}), {"ok": True})
         self.assertEqual(requests[0].get_header("User-agent"), "huangque-content/1.0")
 
+    def test_mcp_ready_text_becomes_completed_video(self):
+        video_id = "21c9e83eb35bcfa223f8f72bd55aa34a"
+        video_url = "https://files2.heygen.ai/video.mp4?Signature=signed"
+        ready_text = (
+            f"Video {video_id} is ready. Watch it in the inline player or download it "
+            f"from {video_url}. Call show_video with video_id={video_id} to display it "
+            "in the inline player."
+        )
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                message = {
+                    "jsonrpc": "2.0",
+                    "id": "x",
+                    "result": {
+                        "content": [{"type": "text", "text": ready_text}],
+                        "isError": False,
+                    },
+                }
+                return ("data: " + json.dumps(message) + "\n\n").encode()
+
+        class Opener:
+            def open(self, _request, **_kwargs):
+                return Response()
+
+        with patch.object(video, "_heygen_mcp_access_token", return_value="token"), \
+             patch.object(video, "_heygen_direct_opener", return_value=Opener()):
+            result = video._heygen_mcp_call("get_video", {"videoId": video_id})
+
+        self.assertEqual(result, {
+            "id": video_id,
+            "status": "completed",
+            "video_url": video_url,
+        })
+        self.assertIsNone(video._heygen_mcp_ready_text(
+            ready_text.replace("files2.heygen.ai", "attacker.example"), video_id,
+        ))
+        self.assertIsNone(video._heygen_mcp_ready_text(
+            ready_text.replace("files2.heygen.ai", "files2.heygen.ai:444"), video_id,
+        ))
+        self.assertIsNone(video._heygen_mcp_ready_text(
+            ready_text.replace("https://files2", "https://attacker@files2"), video_id,
+        ))
+        self.assertIsNone(video._heygen_mcp_ready_text(
+            ready_text.replace(video_id, "different-id", 1), video_id,
+        ))
+
     def test_cinematic_create_and_poll_use_exact_mcp_contract(self):
         calls = []
 
