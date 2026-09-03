@@ -216,6 +216,12 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                 if item.get("variant") == "v04"
             )["semantic_layout"]["layers"]["bottom2"]["font_size_px"],
         )
+        v09 = next(item for item in expanded if item.get("variant") == "v09")
+        self.assertEqual(
+            {"font_size_px": 88, "font_weight": 400,
+             "max_width_px": 996, "max_lines": 2},
+            v09["semantic_layout"]["layers"]["top1"],
+        )
         self.assertEqual(
             {f"v{index:02d}" for index in range(1, 18)},
             {item["variant"] for item in expanded if item["engine"] == "hyperframes"},
@@ -300,6 +306,39 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                 },
             ), self.assertRaisesRegex(RuntimeError, "语义排版|不完整"):
                 self.module.public_templates(force=True)
+
+    def test_v09_top1_transition_accepts_only_78_or_88_px(self):
+        for font_size in (78, 88):
+            templates = self.reference_templates()
+            next(
+                item for item in templates if item.get("variant") == "v09"
+            )["semantic_layout"]["layers"]["top1"]["font_size_px"] = font_size
+            with self.subTest(font_size=font_size), mock.patch.object(
+                self.module, "_request", return_value={
+                    "templates": templates,
+                    "max_batch_size": 5,
+                    "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+                },
+            ):
+                values = self.module.public_templates(force=True)
+                self.assertEqual(
+                    font_size,
+                    next(
+                        item for item in values
+                        if item.get("variant") == "v09"
+                    )["semantic_layout"]["layers"]["top1"]["font_size_px"],
+                )
+
+        drift = self.reference_templates()
+        next(
+            item for item in drift if item.get("variant") == "v09"
+        )["semantic_layout"]["layers"]["top1"]["font_size_px"] = 79
+        with mock.patch.object(self.module, "_request", return_value={
+            "templates": drift,
+            "max_batch_size": 5,
+            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+        }), self.assertRaisesRegex(RuntimeError, "语义排版能力无效"):
+            self.module.public_templates(force=True)
 
     def test_legacy_partial_semantic_catalog_is_rejected(self):
         templates = self.reference_templates(("v02", "v05"))
