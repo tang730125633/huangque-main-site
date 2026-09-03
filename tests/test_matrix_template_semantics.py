@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import importlib
 import concurrent.futures
+import http.client
 import io
 import json
+import ssl
 import sys
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -315,6 +318,116 @@ class MatrixTemplateSemanticsTests(unittest.TestCase):
         )
         self.assertNotIn("top_text", value)
         self.assertNotIn("bottom_text", value)
+
+    @staticmethod
+    def openai_response(content):
+        response = {
+            "choices": [{"message": {"content": json.dumps(content)}}],
+        }
+        fake = mock.MagicMock()
+        fake.__enter__.return_value = io.BytesIO(json.dumps(response).encode())
+        fake.__exit__.return_value = False
+        return fake
+
+    def test_request_retries_remote_disconnect_then_succeeds(self):
+        fake = self.openai_response({"ok": True})
+        with mock.patch.object(self.module, "OPENAI_KEY", "configured"), \
+             mock.patch.object(
+                 self.module.urllib.request, "urlopen", side_effect=[
+                     http.client.RemoteDisconnected("temporary disconnect"),
+                     http.client.RemoteDisconnected("temporary disconnect"),
+                     fake,
+                 ],
+             ) as urlopen, mock.patch.object(
+                 self.module.time, "sleep",
+             ) as sleep:
+            result = self.module._request(
+                "顶部文案", "底部文案", self.contract(),
+            )
+        self.assertEqual({"ok": True}, result)
+        self.assertEqual(3, urlopen.call_count)
+        self.assertEqual([mock.call(1), mock.call(2)], sleep.call_args_list)
+        self.assertTrue(all(
+            call.kwargs["timeout"] == 15 for call in urlopen.call_args_list
+        ))
+
+    def test_request_retries_response_body_transport_failures(self):
+        failures = (
+            http.client.IncompleteRead(b'{"choices":', 10),
+            ConnectionResetError("connection reset"),
+            ssl.SSLEOFError(8, "unexpected EOF"),
+            TimeoutError("response timeout"),
+        )
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__):
+                broken = mock.MagicMock()
+                reader = mock.MagicMock()
+                reader.read.side_effect = failure
+                broken.__enter__.return_value = reader
+                broken.__exit__.return_value = False
+                with mock.patch.object(
+                    self.module, "OPENAI_KEY", "configured",
+                ), mock.patch.object(
+                    self.module.urllib.request, "urlopen",
+                    side_effect=[broken, self.openai_response({"ok": True})],
+                ) as urlopen, mock.patch.object(
+                    self.module.time, "sleep",
+                ) as sleep:
+                    result = self.module._request(
+                        "顶部文案", "底部文案", self.contract(),
+                    )
+                self.assertEqual({"ok": True}, result)
+                self.assertEqual(2, urlopen.call_count)
+                self.assertEqual([mock.call(1)], sleep.call_args_list)
+
+    def test_request_stops_after_three_connection_failures(self):
+        with mock.patch.object(self.module, "OPENAI_KEY", "configured"), \
+             mock.patch.object(
+                 self.module.urllib.request, "urlopen",
+                 side_effect=urllib.error.URLError("offline"),
+             ) as urlopen, mock.patch.object(
+                 self.module.time, "sleep",
+             ) as sleep, self.assertRaisesRegex(
+                 RuntimeError, "AI 语义排版服务连接失败",
+             ):
+            self.module._request("顶部文案", "底部文案", self.contract())
+        self.assertEqual(3, urlopen.call_count)
+        self.assertEqual([mock.call(1), mock.call(2)], sleep.call_args_list)
+
+    def test_request_does_not_retry_http_errors(self):
+        for status in (400, 500):
+            error = urllib.error.HTTPError(
+                "https://api.openai.com/v1/chat/completions",
+                status, "HTTP failure", {}, io.BytesIO(),
+            )
+            with self.subTest(status=status), mock.patch.object(
+                self.module, "OPENAI_KEY", "configured",
+            ), mock.patch.object(
+                self.module.urllib.request, "urlopen", side_effect=error,
+            ) as urlopen, mock.patch.object(
+                self.module.time, "sleep",
+            ) as sleep, self.assertRaisesRegex(
+                RuntimeError, f"HTTP {status}",
+            ):
+                self.module._request("顶部文案", "底部文案", self.contract())
+            self.assertEqual(1, urlopen.call_count)
+            sleep.assert_not_called()
+
+    def test_request_does_not_retry_invalid_json(self):
+        invalid = mock.MagicMock()
+        invalid.__enter__.return_value = io.BytesIO(b"{not-json")
+        invalid.__exit__.return_value = False
+        with mock.patch.object(self.module, "OPENAI_KEY", "configured"), \
+             mock.patch.object(
+                 self.module.urllib.request, "urlopen", return_value=invalid,
+             ) as urlopen, mock.patch.object(
+                 self.module.time, "sleep",
+             ) as sleep, self.assertRaisesRegex(
+                 RuntimeError, "AI 语义排版返回无效",
+             ):
+            self.module._request("顶部文案", "底部文案", self.contract())
+        self.assertEqual(1, urlopen.call_count)
+        sleep.assert_not_called()
 
     def test_resolve_reuses_only_validated_cached_indices(self):
         top, bottom = "广州健康创业圈子", "评论区扣888"
