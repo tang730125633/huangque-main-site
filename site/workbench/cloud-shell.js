@@ -109,12 +109,14 @@
   }
 
   // 角色分化：仅 今日(运营台)+成本(统计看板) 是管理员专属；其余功能(含获客)所有用户都有；用户侧导以灵感为首页
+  var TOOLBOX_ROUTES={dashboard:1,leads:1,collect:1,'text-video':1,'matrix-template':1,audio:1,script:1,'short-drama':1,canvas:1,cost:1,'creator-agent':1};
   var NAV=[
-    {k:'dashboard',l:'今日',i:'home', admin:true}, {k:'inspiration',l:'灵感设计',i:'sparkles'},
-    {k:'leads',l:'平台获客',i:'search'}, {k:'collect',l:'内容爬取',i:'link'}, {k:'banana',l:'图片生成',i:'image'},
-    {k:'video',l:'视频生成',i:'video'}, {k:'text-video',l:'文案成片',i:'clapper',feature:'pixelle_text_video'}, {k:'matrix-template',l:'模板成片',i:'layers',feature:'matrix_template_video'}, {k:'audio',l:'音频生成',i:'mic'}, {k:'script',l:'文案编导',i:'edit'},
-    {k:'short-drama',l:'短剧创作',i:'clapper'}, {k:'canvas',l:'无限画布',i:'layers'}, {k:'assets',l:'我的资产',i:'folder'},
-    {k:'cost',l:'成本',i:'coins', admin:true}, {k:'settings',l:'通用设置',i:'gear'}
+    {k:'inspiration',l:'灵感设计',i:'sparkles'},
+    {k:'banana',l:'图片生成',i:'image'},
+    {k:'video',l:'视频生成',i:'video'},
+    {k:'assets',l:'我的资产',i:'folder'},
+    {k:'ai-tools',l:'AI 工具箱',i:'layers'},
+    {k:'settings',l:'通用设置',i:'gear'}
   ];
 
   // 管理员判定：已登录则一律以真实账号角色(hq_user.role)为准，忽略测试开关；
@@ -133,7 +135,7 @@
   function navHTML(active){
     var admin=isAdmin();
     return NAV.filter(function(it){ return admin || !it.admin; }).map(function(it){
-      var on=it.k===active;
+      var on=it.k===active||(it.k==='ai-tools'&&!!TOOLBOX_ROUTES[active]);
       var ntxt=on?'#eaf1fa':'#94a4bb', nbg=on?'rgba(231,178,76,.08)':'transparent', nfg=on?'#e7b24c':'#94a4bb', nbar=on?'1':'0';
       var featureAttr=it.feature?' data-nav-feature="'+escapeAttr(it.feature)+'" hidden':'';
       return '<a href="'+escapeAttr(safeUrl(it.k+'.html'))+'" class="hq-navitem" aria-label="'+escapeAttr(it.l)+'" data-nav-label="'+escapeAttr(it.l)+'"'+featureAttr+' style="position:relative; display:'+(it.feature?'none':'flex')+'; align-items:center; gap:12px; padding:10px 13px; border-radius:11px; cursor:pointer; color:'+ntxt+'; background:'+nbg+'; font-size:14px; font-weight:500; transition:.16s;">'+
@@ -219,7 +221,7 @@
   }
 
   function navDisplayMode(active,narrow){
-    return narrow || active==='inspiration' ? 'expanded' : 'compact';
+    return narrow || active==='inspiration' || active==='ai-tools' ? 'expanded' : 'compact';
   }
 
   function usesFlushWorkspace(active){
@@ -297,10 +299,6 @@
           '<div style="font-size:12px; color:#94a4bb;">剩余点数</div>'+
           '<div id="hqPointsSide" class="mono" style="font-size:30px; font-weight:700; color:#e7b24c; line-height:1.1; margin:3px 0 9px;">—</div>'+
           '<div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;"><a href="recharge.html" style="display:inline-flex; align-items:center; gap:5px; font-size:12.5px; color:#e7b24c; cursor:pointer; font-weight:600;">去充值 <span style="display:flex; width:13px;">'+icon('arrowMini')+'</span></a><button type="button" data-points-detail="1" style="border:0;background:transparent;color:#94a4bb;cursor:pointer;font:700 12.5px inherit;padding:0;">明细</button></div></div>'+
-        '<a href="creator-agent.html" class="hq-side-bots hq-side-ai-entry'+(active==='creator-agent'?' is-active':'')+'" data-nav-feature="creator_agent_v1" hidden aria-label="AI 创作助手" title="AI 创作助手" style="display:none; align-items:center; gap:8px; padding:10px 14px; border:1px solid rgba(231,178,76,.26); border-radius:12px; background:rgba(231,178,76,.07); text-decoration:none;">'+
-          '<span style="display:flex; width:18px; color:#e7b24c;">'+iconDuo('sparkles','18px','#e7b24c')+'</span>'+
-          '<span class="hq-side-bots-label" style="font-size:13px; color:#e8eef6; font-weight:700; flex:1; white-space:nowrap;">AI 创作助手</span>'+
-          '<span class="hq-side-bots-arrow" style="display:flex; width:13px; color:#e7b24c;">'+icon('arrowMini')+'</span></a>'+
         '<div id="hqUserCard"></div>'+
       '</div>';
 

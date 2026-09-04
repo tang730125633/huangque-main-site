@@ -9,6 +9,7 @@ const banana = fs.readFileSync(path.join(root, 'site/workbench/banana.html'), 'u
 const video = fs.readFileSync(path.join(root, 'site/workbench/video.html'), 'utf8');
 const audio = fs.readFileSync(path.join(root, 'site/workbench/audio.html'), 'utf8');
 const settings = fs.readFileSync(path.join(root, 'site/workbench/settings.html'), 'utf8');
+const aiTools = fs.readFileSync(path.join(root, 'site/workbench/ai-tools.html'), 'utf8');
 
 function readNavDisplayMode() {
   const match = shell.match(/function navDisplayMode\(active,narrow\)\{[^}]+\}/);
@@ -22,9 +23,10 @@ function readUsesFlushWorkspace() {
   return new Function(`${match[0]}; return usesFlushWorkspace;`)();
 }
 
-test('desktop Inspiration keeps the sidebar expanded', () => {
+test('desktop Inspiration and AI toolbox keep the sidebar expanded', () => {
   const navDisplayMode = readNavDisplayMode();
   assert.equal(navDisplayMode('inspiration', false), 'expanded');
+  assert.equal(navDisplayMode('ai-tools', false), 'expanded');
 });
 
 test('other desktop routes use the compact icon rail', () => {
@@ -104,6 +106,27 @@ test('secondary account and help destinations live under settings, not the prima
   assert.match(nav[1], /\{k:'assets',l:'我的资产'/);
   assert.match(nav[1], /\{k:'settings',l:'通用设置'/);
   assert.match(settings, /账户与帮助/);
+});
+
+test('primary sidebar only exposes the core destinations', () => {
+  const nav = shell.match(/var NAV=\[([\s\S]*?)\];/);
+  assert.ok(nav, 'cloud-shell.js must define the primary NAV array');
+  const routes = [...nav[1].matchAll(/\{k:'([^']+)'/g)].map(match => match[1]);
+  assert.deepEqual(routes, ['inspiration', 'banana', 'video', 'assets', 'ai-tools', 'settings']);
+  assert.match(shell, /var TOOLBOX_ROUTES=/);
+  for (const route of ['leads', 'collect', 'audio', 'script', 'short-drama', 'canvas']) {
+    assert.match(aiTools, new RegExp('href="' + route + '\\.html"'), route);
+    assert.doesNotMatch(nav[1], new RegExp("\\{k:'" + route + "'"), route);
+  }
+});
+
+test('AI toolbox supports search, feature gates, and admin-only tools', () => {
+  assert.match(aiTools, /data-active="ai-tools"/);
+  assert.match(aiTools, /id="toolSearch"/);
+  assert.match(aiTools, /data-tool-feature="creator_agent_v1"/);
+  assert.match(aiTools, /data-tool-feature="pixelle_text_video"/);
+  assert.match(aiTools, /data-tool-feature="matrix_template_video"/);
+  assert.match(aiTools, /data-admin-tool/);
 });
 
 test('generation routes alone use the flush workspace shell', () => {
