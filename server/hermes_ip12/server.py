@@ -4987,7 +4987,15 @@ def api_prepare_production():
             and isinstance(body.get("options"), dict)
             and bool(str(body["options"].get("text") or "").strip())
         )
-        source_unbound = not body.get("content_target") and (
+        content_target = body.get("content_target")
+        content_target_empty = not content_target or (
+            isinstance(content_target, dict)
+            and not any(
+                str(content_target.get(key) or "").strip()
+                for key in ("category_id", "topic_id")
+            )
+        )
+        source_unbound = content_target_empty and (
             preview_text_provided
             or recommendation["recommended_action"] in _SOURCE_FREE_ACTIONS
             or str(catalog_entry.get("risk") or "") == "read"
@@ -8940,6 +8948,15 @@ def process_chat_request(body):
                             content_target = handoff["content_target"]
                         else:
                             production_intent = coach_harness.production_intent(user_message)
+                    source_optional = production_intent and production_intent.get("recommended_action") in _SOURCE_FREE_ACTIONS
+                    source_optional = source_optional or bool(
+                        production_intent and production_intent.get("help_only")
+                    )
+                    if production_intent is not None and content_target is None and not source_optional:
+                        try:
+                            content_target = _production_target_from_message(convo, user_message)
+                        except coach_harness.HarnessError:
+                            production_intent = None
                     if (
                         production_intent is not None
                         and production_intent.get("recommended_action") not in _SOURCE_FREE_ACTIONS
@@ -8956,15 +8973,6 @@ def process_chat_request(body):
                         production_intent = None
                     if production_intent is None and content_target is None:
                         content_target = _content_revision_target_from_message(convo, user_message)
-                    source_optional = production_intent and production_intent.get("recommended_action") in _SOURCE_FREE_ACTIONS
-                    source_optional = source_optional or bool(
-                        production_intent and production_intent.get("help_only")
-                    )
-                    if production_intent is not None and content_target is None and not source_optional:
-                        try:
-                            content_target = _production_target_from_message(convo, user_message)
-                        except coach_harness.HarnessError:
-                            production_intent = None
 
                 pause_turn = bool(
                     action is None and production_intent is None and content_target is None
