@@ -707,6 +707,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             self.module._normalize_voiceover(
                 {"text": "口播", "voice": "vip_alice"}, "",
             )
+
         from content_domains import audio
         with mock.patch.object(
             self.module.feature_flags, "require_enabled",
@@ -750,6 +751,12 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         ), self.assertRaises(self.module.feature_flags.FeatureDisabled):
             self.module._normalize_voiceover(
                 {"text": "口播", "voice": "vip_alice"}, "alice",
+            )
+
+    def test_voiceover_copy_is_limited_to_200_characters(self):
+        with self.assertRaisesRegex(ValueError, "200 字以内"):
+            self.module._normalize_voiceover(
+                {"text": "文" * 201, "voice": "vip_alice"}, "alice",
             )
 
     def test_validate_payload_accepts_only_current_catalog_font(self):
@@ -2481,6 +2488,7 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertNotIn('id="fontSource"', page)
         self.assertIn('id="voiceoverEnabled"', page)
         self.assertIn('id="voiceoverText"', page)
+        self.assertIn('id="voiceoverText" class="mt-input" maxlength="200"', page)
         self.assertIn('id="voiceoverVoice"', page)
         self.assertIn('id="voiceoverSpeed"', page)
         self.assertIn("/api/gen/audio/voices", page)
@@ -2864,7 +2872,7 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertIn("vip_alice", result["options"])
         self.assertNotIn("vip_training", result["options"])
         self.assertNotIn("vip_failed", result["options"])
-        self.assertEqual("10 / 1000", result["count"])
+        self.assertEqual("10 / 200", result["count"])
         self.assertEqual("1.3", result["speed"])
         self.assertEqual("1.3x", result["speedLabel"])
         self.assertFalse(result["body"]["bgm"])
