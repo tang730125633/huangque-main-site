@@ -5,7 +5,7 @@
 本手册覆盖 `tang730125633/huangque-main-site#1436` 对生产共享数据库
 `/home/ubuntu/content-api/content_jobs.db` 的结构升级。目标服务器为 `dapeng-server`。
 
-当前状态：**LU-003 阶段一、阶段二审批均已核验，等待一次性推送及精确 HEAD CI；本文件不是合并、部署或重启授权。**
+当前状态：**新业务提交已固定并通过本地双轴终审，等待 LU-003 重新发布阶段一审批；本文件不是合并、部署或重启授权。**
 
 本次结构变化包括：
 
@@ -23,24 +23,16 @@
 ## 固定审批对象
 
 - PR：`tang730125633/huangque-main-site#1436`
-- 固定业务与 Schema 提交：`24e67cd43b082a646586ea02f1b4241c5dae30d1`
+- 固定业务与 Schema 提交：`5713c83ecaf7b23d133f5da6b0c16a5afa3e1aa7`
 - 基线：`main@f7c2463c201946c2ce9344ae21f06d06e9433f61`
 - 维护窗口：`2026-09-06 02:00–03:00 Asia/Shanghai`
 - 执行、备份、验证、失败恢复负责人：`@LU-003`
-- 阶段一审批评论：
-  [issuecomment-5536582840](https://github.com/tang730125633/huangque-main-site/pull/1436#issuecomment-5536582840)
-  - 评论 ID：`5536582840`
-  - Node ID：`IC_kwDOS66oj88AAAABSgGMuA`
-  - 作者：`LU-003`
-  - 作者关联：`COLLABORATOR`
-  - 创建及更新时间：`2026-09-04T06:23:17Z`
-- 阶段二最终 HEAD 审批：
-  [issuecomment-5536612768](https://github.com/tang730125633/huangque-main-site/pull/1436#issuecomment-5536612768)
-  - 评论 ID：`5536612768`
-  - Node ID：`IC_kwDOS66oj88AAAABSgIBoA`
-  - 作者：`LU-003`
-  - 作者关联：`COLLABORATOR`
-  - 创建及更新时间：`2026-09-04T06:26:48Z`
+- 阶段一审批评论：待 LU-003 发布并核验。
+- 阶段二最终 HEAD 审批：待一次性推送、精确 HEAD CI 和最新审核通过后发布。
+- 已失效历史审批：
+  [issuecomment-5536582840](https://github.com/tang730125633/huangque-main-site/pull/1436#issuecomment-5536582840)、
+  [issuecomment-5536612768](https://github.com/tang730125633/huangque-main-site/pull/1436#issuecomment-5536612768)。
+  二者绑定旧业务 SHA `24e67cd43b082a646586ea02f1b4241c5dae30d1`，因本轮业务与测试修复而失效。
 
 固定提交后只允许追加审批评论元数据、验证证据或纯 `main` 同步。若业务代码、测试或 Schema
 再次变化，阶段一审批立即失效，必须重新固定 SHA、重跑验证并取得新审批。
@@ -77,18 +69,26 @@
 5. 启动后用 `PRAGMA table_info`、`sqlite_master` 核对列和索引 SQL；再次执行完整性、外键和迁移前后计数核对。
 6. 验证精确对账：新付费任务在插入 `jobs` 的同一事务写入请求 `submission_key`；
    `result_unknown` 只按 `username + submission_key + capability 允许的 kind` 命中，错误 key、空 key及历史 `NULL` 均不得认领。
-7. 验证素材门禁：空文本元数据、普通图片冒充 ready avatar、无源视频 compose、尺寸或 SHA-256 不一致上传均被拒绝。
+7. 验证素材门禁与真实报价合同：talking 的当前账户已核验私有图片加文案和音色可报价；
+   talking 不得同时传 `avatar_id` 与 `image_upload_id`；story 的普通参考图片加剧本仍不得 ready，
+   ready avatar 加剧本必须 ready；无源视频 compose、尺寸或 SHA-256 不一致上传均被拒绝。
 8. 所有检查通过后才恢复写入；恢复后观察首批请求、任务状态、退款和错误日志，不调用真实付费 Provider 做验收。
 
 自动化验证至少包括：
 
 ```powershell
-python -m unittest tests.test_video_agent tests.test_video_agent_tools tests.test_cli_media_uploads tests.test_jobs_store tests.test_hq_cli_content -v
+python -m unittest tests.test_video_agent tests.test_video_agent_tools tests.test_video_agent_capability_contract tests.test_cli_media_uploads tests.test_cli_image_uploads tests.test_video_batch tests.test_jobs_store tests.test_hq_cli_content -v
 python -m unittest tests.test_hq_cli_api -v
 python -m unittest discover -s tools/hq-cli/tests -p "test_*.py" -v
 python scripts/ci_validate.py
 python scripts/stamp_assets.py --check
 ```
+
+本地固定提交验证证据：上述任务相关回归均通过，仓库静态门禁、资源版本戳、Python 语法及
+`git diff --check` 均通过。Windows 单进程全量发现运行 4715 项，结果为 52 failures、118 errors、
+46 skipped；在隔离的 `main@f7c2463c` 工作树中，审核点名的短剧恢复与 Sora 恢复失败可同样复现，
+而 PR 独有的 Seedance 顺序回归已修复并通过 19/19 模块测试。由于本机无 WSL/Docker，受支持
+Linux 环境的最终结论必须以一次性推送后的精确 HEAD CI/审核记录为准，不得用 Windows 结果替代。
 
 ## 失败回滚
 
