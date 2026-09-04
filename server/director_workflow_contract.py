@@ -340,6 +340,7 @@ DIGITAL_HUMAN_ONECLICK_ACTIONS = (
     _action(
         "digital-human-oneclick-material-resolve", "oneclick", "digital-human-oneclick:write", (),
         ("POST:/api/gen/digital-human-v2/material-resolve",),
+        availability="available",
         description="按冻结方案解析本人素材或允许的 AI 补图来源。",
     ),
     _action(

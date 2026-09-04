@@ -175,9 +175,14 @@ jobs:
         with:
           node-version: "22"
 
+      - name: 安装媒体回归依赖
+        run: sudo apt-get update && sudo apt-get install --yes ffmpeg
+
       - name: 安装完整回归依赖
         run: |
           python -m pip install -r deploy/requirements-content.txt
+          python -m pip install -r deploy/requirements-creator-agent.txt
+          python -m pip install -r server/hermes_ip12/requirements.txt
           python -m pip install -r server/hermes_ip12/requirements-pdf.txt
           python -m pip install "pypdf>=6,<7" "requests>=2.32,<3"
           python -m playwright install --with-deps chromium

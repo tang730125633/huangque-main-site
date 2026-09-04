@@ -140,8 +140,8 @@ class IP12PersonaAgentV1Tests(unittest.TestCase):
 
     def test_intake_checkpoint_is_blocked_until_every_question_is_covered(self):
         state = covered_state()
-        state["intake"]["declined_fields"].remove("one_year_goal")
-        with self.assertRaisesRegex(harness.HarnessError, "一年目标"):
+        state["intake"]["declined_fields"].remove("current_identity")
+        with self.assertRaisesRegex(harness.HarnessError, "当前职业"):
             harness.apply_intake_decision(
                 state,
                 decision("propose_checkpoint", reply="请核对。", draft="基础资料", checkpoint=1),

@@ -4978,8 +4978,10 @@ def api_prepare_production():
             and isinstance(body.get("options"), dict)
             and bool(str(body["options"].get("text") or "").strip())
         )
-        source_unbound = preview_text_provided or recommendation["recommended_action"] in _SOURCE_FREE_ACTIONS or (
-            str(catalog_entry.get("risk") or "") == "read"
+        source_unbound = not body.get("content_target") and (
+            preview_text_provided
+            or recommendation["recommended_action"] in _SOURCE_FREE_ACTIONS
+            or str(catalog_entry.get("risk") or "") == "read"
             or (catalog_entry.get("transport") or {}).get("kind") == "dedicated_upload"
         )
         with CONVERSATION_STATE_LOCK:
@@ -7452,9 +7454,12 @@ def _process_production_intent_turn(
     selected_action = intent["recommended_action"]
     help_only = bool(intent.get("help_only"))
     semantic_skills = ["semantic_master_agent"] if semantic_master else []
-    source_unbound = (
-        help_only or selected_action in _SOURCE_FREE_ACTIONS
-        or (selected_action == "audio-generate" and bool(intent.get("audio_preview_request")))
+    source_unbound = help_only or (
+        target is None
+        and (
+            selected_action in _SOURCE_FREE_ACTIONS
+            or (selected_action == "audio-generate" and bool(intent.get("audio_preview_request")))
+        )
     )
     with CONVERSATION_STATE_LOCK:
         convo = owned_conversation(cid)
@@ -8840,13 +8845,27 @@ def process_chat_request(body):
                 if any(in_flight[0] == cid for in_flight in TURN_REQUESTS_IN_FLIGHT):
                     # 前一个回复还在处理：短暂等待后自动接上，不再立刻 409 打断用户
                     deadline = time.monotonic() + 25.0
-                    while any(in_flight[0] == cid for in_flight in TURN_REQUESTS_IN_FLIGHT):
-                        if time.monotonic() >= deadline:
-                            return {
-                                "ok": False,
-                                "error": "当前 Project 正在处理另一条回复，请稍后再试",
-                            }, 409
-                        time.sleep(0.6)
+                    CONVERSATION_STATE_LOCK.release()
+                    try:
+                        while True:
+                            with CONVERSATION_STATE_LOCK:
+                                busy = any(
+                                    in_flight[0] == cid
+                                    for in_flight in TURN_REQUESTS_IN_FLIGHT
+                                )
+                            if not busy:
+                                break
+                            if time.monotonic() >= deadline:
+                                return {
+                                    "ok": False,
+                                    "error": "当前 Project 正在处理另一条回复，请稍后再试",
+                                }, 409
+                            time.sleep(0.6)
+                    finally:
+                        CONVERSATION_STATE_LOCK.acquire()
+                    convo = _migrate_owned_conversation(cid)
+                    if convo is None:
+                        return {"ok": False, "error": "诊断不存在"}, 404
                 TURN_REQUESTS_IN_FLIGHT.add(turn_key)
                 claim_key = turn_key
                 state = normalize_coach_state(convo.get("coach_state"))

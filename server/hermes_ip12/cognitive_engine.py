@@ -170,8 +170,8 @@ def safe_context(memory, goal, agent_run=None):
         {
             key: copy.deepcopy(item.get(key))
             for key in (
-                "production_id", "job_id", "action", "family", "status", "job_present",
-                "confirmation_present", "video_url", "audio_url", "title", "selected_fields",
+                "production_id", "action", "family", "status", "job_present",
+                "confirmation_present", "title", "selected_fields",
             )
         }
         for item in (memory.get("productions") or [])[-8:]
@@ -294,10 +294,20 @@ def asset_readiness(context):
     explicit = project.get("available_assets") if isinstance(project.get("available_assets"), dict) else {}
     active = project.get("active_production") if isinstance(project.get("active_production"), dict) else {}
     fields = set(active.get("selected_fields") or [])
+    voice_ready = (
+        explicit.get("voice_ready") is True
+        if "voice_ready" in explicit
+        else bool(voices) or "voice" in fields or "audio_upload_id" in fields
+    )
+    avatar_ready = (
+        explicit.get("avatar_ready") is True
+        if "avatar_ready" in explicit
+        else bool(avatars) or "avatar_id" in fields or "image_upload_id" in fields
+    )
     return {
         # 系统音色/形象在快照里就代表真实可用；不要把空 active production 误读成“素材没准备好”
-        "voice_ready": bool(voices) or (explicit.get("voice_ready") is True) or "voice" in fields or "audio_upload_id" in fields,
-        "avatar_ready": bool(avatars) or (explicit.get("avatar_ready") is True) or "avatar_id" in fields or "image_upload_id" in fields,
+        "voice_ready": voice_ready,
+        "avatar_ready": avatar_ready,
         "system_voices": [{"index": v.get("index"), "name": v.get("name")} for v in voices[:8]],
         "avatars": [{"index": a.get("index"), "name": a.get("name")} for a in avatars[:8]],
     }

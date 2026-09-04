@@ -29,6 +29,7 @@ def decision(**changes):
         "memory_evidence": [],
         "memory_updates": [],
         "tool_policy": "none",
+        "components": [],
         "payment_policy": {
             "quote_required": False,
             "explicit_confirmation_required": False,

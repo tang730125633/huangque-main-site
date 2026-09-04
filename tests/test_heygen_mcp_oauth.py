@@ -269,7 +269,7 @@ class HeyGenMcpOAuthTests(unittest.TestCase):
         with patch.object(video, "_HEYGEN_MCP_CREDENTIALS", "/secure/heygen-mcp.json"), \
              patch.object(video, "_heygen_mcp_call") as mcp_call, \
              patch.object(video, "_heygen_request_json", return_value=failed):
-            with self.assertRaisesRegex(RuntimeError, "MOVIO_PAYMENT_INSUFFICIENT_CREDIT"):
+            with self.assertRaisesRegex(RuntimeError, "上游返回失败状态"):
                 video._heygen_poll_video("plain-video", deadline_s=30)
         mcp_call.assert_not_called()
 

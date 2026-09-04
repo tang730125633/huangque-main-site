@@ -249,7 +249,7 @@ class PollRetriesTransientNetworkTests(unittest.TestCase):
         with patch.object(video, "_heygen_request_json", side_effect=req), \
              patch.object(video.time, "time", lambda: clock[0]), \
              patch.object(video.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s)):
-            with self.assertRaises(TimeoutError):
+            with self.assertRaises(video.HeyGenNetworkError):
                 video._heygen_poll_video("vid1", direct=True, deadline_s=30)
 
 

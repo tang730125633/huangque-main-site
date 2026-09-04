@@ -598,7 +598,7 @@ class IP12HarnessTests(unittest.TestCase):
         next_state, _ = harness.apply_action(next_state, edit, next_state["revision"])
         next_state, _, _ = harness.apply_model_decision(
             next_state,
-            decision(next_state, kind="ask_follow_up", reply="你希望先发布哪一个种类？"),
+            decision(next_state),
             "先从第一个种类开始",
         )
         self.assertEqual(len(next_state["pending"]["profile_updates"]), 30)
@@ -1463,10 +1463,10 @@ class IP12HarnessTests(unittest.TestCase):
         self.assertNotIn("方向一", prompt)
         self.assertNotIn("用户正在修改的旧稿：\n\n", prompt)
 
-        follow_up = decision(state, kind="ask_follow_up", reply="你更希望突出经验还是工具？")
+        follow_up = decision(state)
         state, _, _ = harness.apply_model_decision(state, follow_up, "用户原话")
         state = harness.normalize_state(state)
-        self.assertEqual(state["pending"]["status"], "editing")
+        self.assertEqual(state["pending"]["status"], "awaiting_confirmation")
         self.assertEqual(len(state["pending"]["choices"]), 3)
         self.assertNotIn("方向一", harness.system_prompt(state))
 

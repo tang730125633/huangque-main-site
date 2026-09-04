@@ -37,13 +37,15 @@ class HeyGenErrorTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "HTTP 401"):
                 video._heygen_wait_photo_avatar("avatar-id")
 
-    def test_provider_failure_is_logged_with_detail(self):
+    def test_provider_failure_is_logged_without_leaking_detail(self):
         result = {"data": {"status": "failed", "error": "quota exceeded"}}
         with patch.object(video, "_heygen_request_json", return_value=result):
             output = io.StringIO()
-            with redirect_stdout(output), self.assertRaisesRegex(RuntimeError, "quota exceeded"):
+            with redirect_stdout(output), self.assertRaisesRegex(RuntimeError, "上游返回失败状态") as caught:
                 video._heygen_poll_video("video-id")
             self.assertIn("[heygen] FAIL GET /videos/video-id", output.getvalue())
+            self.assertIn("has_error=True", output.getvalue())
+            self.assertNotIn("quota exceeded", str(caught.exception) + output.getvalue())
 
     def test_motion_duration_rejects_provider_overflow(self):
         """超长的参考视频要【在本地】明确拒绝，别丢给上游去报一句天书错误。

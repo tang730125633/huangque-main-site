@@ -222,6 +222,7 @@ class DirectorCLIContractTests(unittest.TestCase):
             "director-remake-status", "director-remake-recover",
             "digital-human-oneclick-capability", "digital-human-oneclick-plan",
             "digital-human-oneclick-consent", "digital-human-oneclick-material-upload",
+            "digital-human-oneclick-material-resolve",
             "digital-human-oneclick-audio-upload", "digital-human-oneclick-start",
             "digital-human-oneclick-status", "digital-human-oneclick-recover",
             "digital-human-oneclick-abandon", "digital-human-oneclick-history",

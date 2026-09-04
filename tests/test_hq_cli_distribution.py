@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "site/downloads/hq/install.sh"
 WINDOWS_INSTALLER = ROOT / "site/downloads/hq/install.ps1"
 WINDOWS_UNINSTALLER = ROOT / "site/downloads/hq/uninstall.ps1"
-VERSION = "0.15.2"
+VERSION = "0.15.3"
 OLD_VERSION = "0.15.1"
 RELEASE = ROOT / ("site/downloads/hq/v" + VERSION)
 WHEEL = RELEASE / ("huangque_hq_cli-%s-py3-none-any.whl" % VERSION)
@@ -58,6 +58,7 @@ class HQCLIDistributionTests(unittest.TestCase):
         self.assertEqual(WHEEL.name, filename)
         self.assertEqual(expected, hashlib.sha256(WHEEL.read_bytes()).hexdigest())
         source = INSTALLER.read_text(encoding="utf-8")
+        self.assertIn('wheel_size="%s"' % WHEEL.stat().st_size, source)
         self.assertIn('wheel_sha256="%s"' % expected, source)
         self.assertIn('wheel_url="https://huangquechuanmei.com/downloads/hq/v%s/$wheel_name"' % VERSION, source)
         self.assertNotIn("sudo", source)
@@ -65,6 +66,7 @@ class HQCLIDistributionTests(unittest.TestCase):
         self.assertNotIn("HQ_INSTALL", source)
 
         powershell = WINDOWS_INSTALLER.read_text(encoding="utf-8")
+        self.assertIn('$WheelSize = %s' % WHEEL.stat().st_size, powershell)
         self.assertIn('$WheelSha256 = "%s"' % expected, powershell)
         self.assertIn('https://huangquechuanmei.com/downloads/hq/v%s/$WheelName' % VERSION, powershell)
         self.assertIn("catch {\n            $CandidateExitCode = 1\n        }", powershell)

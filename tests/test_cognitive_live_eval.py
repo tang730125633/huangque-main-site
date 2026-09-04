@@ -50,14 +50,14 @@ class CognitiveLiveEvalTests(unittest.TestCase):
         self.assertEqual(cognitive_live_eval._eval_summary(report)["failed_case_ids"], ["case-bad"])
 
     def test_over_authorized_budget_stops_before_provider_lookup(self):
-        args = SimpleNamespace(max_requests=121, max_cny=10)
+        args = SimpleNamespace(max_requests=301, max_cny=10)
         with patch.object(
             provider_live_eval, "provider_configs",
             side_effect=AssertionError("provider must not be read"),
         ):
             with self.assertRaisesRegex(RuntimeError, "request_budget"):
                 cognitive_live_eval.run_t3(args)
-        args.max_requests = 120
+        args.max_requests = 300
         args.max_cny = 12.01
         with self.assertRaisesRegex(RuntimeError, "cost_budget"):
             cognitive_live_eval.run_canary(args)
@@ -67,7 +67,8 @@ class CognitiveLiveEvalTests(unittest.TestCase):
             output = Path(root) / "conformance.json"
             args = SimpleNamespace(
                 corpus=str(Path(__file__).parent / "fixtures/ip12_semantic_router_cases.json"),
-                max_requests=120, max_cny=12, budget_ledger=str(Path(root) / "budget.json"),
+                max_requests=300, max_cny=12, budget_ledger=str(Path(root) / "budget.json"),
+                provider="openai", case_delay=0,
                 model="gpt-5.6-terra", max_output_tokens=700, timeout=10,
                 release_sha="release-under-test", valid_seconds=3600, output=str(output),
             )
@@ -106,6 +107,7 @@ class CognitiveLiveEvalTests(unittest.TestCase):
                 "delegate_to": "none", "tool": "project.status", "reply": "已完成六步",
                 "awaiting": "none", "confidence": 0.9, "reason_codes": [],
                 "memory_evidence": [], "memory_updates": [], "tool_policy": "read_only",
+                "components": [],
                 "payment_policy": {"quote_required": False, "explicit_confirmation_required": False},
                 "references": {"production_id": "", "category_id": "", "topic_id": ""},
             }

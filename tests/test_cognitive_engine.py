@@ -32,6 +32,7 @@ def decision(**changes):
         "memory_evidence": [],
         "memory_updates": [],
         "tool_policy": "none",
+        "components": [],
         "payment_policy": {
             "quote_required": False,
             "explicit_confirmation_required": False,
@@ -86,7 +87,7 @@ class CognitiveEngineTests(unittest.TestCase):
         )
         self.assertEqual(
             cognitive_engine.canary_mode("agents_sdk", {"project_id": "target"}, ""),
-            "custom",
+            "agents_sdk",
         )
         self.assertEqual(cognitive_engine.canary_mode("custom", {}, "target"), "custom")
 
@@ -94,10 +95,11 @@ class CognitiveEngineTests(unittest.TestCase):
         context = cognitive_engine.safe_context(memory(), "制作口播视频")
         rendered = json.dumps(context, ensure_ascii=False)
         for private in (
-            "private-quote", "private-job", "private-slot", "private raw history",
+            "private-quote", "private-job", "private-slot",
             "private full script", "private confirmed output", "raw evidence",
         ):
             self.assertNotIn(private, rendered)
+        self.assertEqual(context["conversation"], [{"role": "user", "content": "private raw history"}])
         self.assertEqual(context["project"]["facts"]["location"], "成都")
         self.assertEqual(context["agent_run"]["status"], "planning")
         self.assertEqual(context["read_tools"], ["project.read", "capability.read", "assets.read"])
@@ -111,11 +113,13 @@ class CognitiveEngineTests(unittest.TestCase):
         })
         self.assertEqual(cognitive_engine.asset_readiness(context), {
             "avatar_ready": False, "voice_ready": True,
+            "system_voices": [], "avatars": [],
         })
         source["available_assets"] = {"avatar_ready": True, "voice_ready": False}
         second = cognitive_engine.safe_context(source, "制作")
         self.assertEqual(cognitive_engine.asset_readiness(second), {
             "avatar_ready": True, "voice_ready": False,
+            "system_voices": [], "avatars": [],
         })
 
     def test_custom_and_sdk_return_the_same_vendor_neutral_contract(self):
@@ -140,7 +144,7 @@ class CognitiveEngineTests(unittest.TestCase):
         before = copy.deepcopy(source)
         fallback = decision(reply="安全回退")
 
-        def invalid(context, _goal):
+        def invalid(context, _goal, _timeout):
             context["project"]["facts"]["location"] = "被修改"
             return decision(
                 intent="delegate", delegate_to="talking_head_video_agent",
