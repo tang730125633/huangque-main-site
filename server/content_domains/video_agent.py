@@ -372,9 +372,10 @@ def _material_gate(module, materials, brief):
     voice = bool(brief.get("voice"))
     requirements = {
         # 与 hq_quote_talking_video / digital-ip-text-generate 必填一致：
-        # 形象证据 + text 文案 + voice 音色。
+        # ready avatar 或当前账户已核验的私有图片 + text 文案 + voice 音色。
         "talking": [
-            ("image", bool(ready_avatars), "已就绪的数字人形象"),
+            ("image", bool(ready_avatars) or bool(verified_images),
+             "已就绪的数字人形象或已核验的私有图片"),
             ("text", script, "口播文案"),
             ("text", voice, "音色"),
         ],
@@ -383,8 +384,7 @@ def _material_gate(module, materials, brief):
             ("video", bool(verified_videos), "参考视频"),
         ],
         "story": [
-            ("image", bool(verified_images) or bool(ready_avatars),
-             "人物参考图或已就绪的电影化身"),
+            ("image", bool(ready_avatars), "已就绪的电影化身"),
             ("text", script, "剧情描述"),
         ],
         "create": [("text", script, "画面描述")],

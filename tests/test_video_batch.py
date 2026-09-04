@@ -545,6 +545,9 @@ class SeedanceReferenceOrderingTests(unittest.TestCase):
                     db.execute("""CREATE TABLE jobs(id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT,username TEXT,cost INTEGER,
                         status TEXT DEFAULT 'pending',payload TEXT,result TEXT,error TEXT,created_at INTEGER,updated_at INTEGER,
                         deleted INTEGER DEFAULT 0, refunded INTEGER DEFAULT 0, owner TEXT)""")
+                    # Mirror content startup before exercising the paid request path.
+                    # The submission key must exist before deduction and atomic job insert.
+                    core.jobs_store.ensure_submission_key_schema(db)
                     db.commit()
                 core.init_audio_db()
                 core._domains = lambda: (None, fake, video)
@@ -601,7 +604,7 @@ class SeedanceReferenceOrderingTests(unittest.TestCase):
                 # 资格全过：上传在扣点前完成，私有 ACL，payload 只存 cos-key:// 键不存签名 URL
                 reset()
                 status, resp = post(micro_body)
-                self.assertEqual(200, status)
+                self.assertEqual(200, status, resp)
                 self.assertEqual(1, len(put_calls))
                 self.assertIs(put_calls[0]["private"], True)
                 self.assertIs(put_calls[0]["lock_held"], False)   # COS 网络上传不得持有全局提交锁

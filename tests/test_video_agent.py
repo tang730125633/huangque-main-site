@@ -311,7 +311,7 @@ class VideoAgentTests(unittest.TestCase):
         self.assertFalse(result["ready_to_handoff"])
         self.assertEqual(result["stage"], "collect_materials")
 
-    def test_chat_never_hands_off_inputs_the_real_tools_cannot_execute(self):
+    def test_chat_handoff_matches_real_quote_tool_material_contracts(self):
         cases = (
             {
                 "name": "talking-empty-text-metadata",
@@ -324,9 +324,10 @@ class VideoAgentTests(unittest.TestCase):
                 ],
                 "avatars": [{"id": 27, "status": "ready"}],
                 "verify_upload": False,
+                "expected_ready": False,
             },
             {
-                "name": "talking-ordinary-image-is-not-avatar",
+                "name": "talking-verified-private-image-is-executable",
                 "module": "talking",
                 "brief": {"content": "介绍新品", "voice": "voice-1"},
                 "materials": [{
@@ -335,6 +336,31 @@ class VideoAgentTests(unittest.TestCase):
                 }],
                 "avatars": [],
                 "verify_upload": True,
+                "expected_ready": True,
+            },
+            {
+                "name": "story-ordinary-reference-image-is-not-an-avatar",
+                "module": "story",
+                "brief": {"content": "雨夜重逢"},
+                "materials": [{
+                    "type": "image", "name": "reference.png", "size": 100,
+                    "upload_id": "img_" + "b" * 32,
+                }],
+                "avatars": [],
+                "verify_upload": True,
+                "expected_ready": False,
+            },
+            {
+                "name": "story-ready-avatar-is-executable",
+                "module": "story",
+                "brief": {"content": "雨夜重逢"},
+                "materials": [{
+                    "type": "image", "name": "avatar.png", "size": 100,
+                    "avatar_state": "ready", "avatar_id": 27,
+                }],
+                "avatars": [{"id": 27, "status": "ready"}],
+                "verify_upload": False,
+                "expected_ready": True,
             },
             {
                 "name": "compose-without-source-video",
@@ -343,6 +369,7 @@ class VideoAgentTests(unittest.TestCase):
                 "materials": [],
                 "avatars": [],
                 "verify_upload": False,
+                "expected_ready": False,
             },
         )
         for case in cases:
@@ -384,12 +411,16 @@ class VideoAgentTests(unittest.TestCase):
                         "brief": case["brief"],
                         "materials": case["materials"],
                     }, opener=opener, username="alice", db_factory=self.db)
-                self.assertFalse(result["ready_to_handoff"])
-                self.assertEqual("collect_materials", result["stage"])
-                self.assertTrue(any(
-                    item.get("reason", "").startswith("服务端校验")
-                    for item in result["material_requests"]
-                ))
+                self.assertEqual(case["expected_ready"], result["ready_to_handoff"])
+                self.assertEqual(
+                    "plan_ready" if case["expected_ready"] else "collect_materials",
+                    result["stage"],
+                )
+                if not case["expected_ready"]:
+                    self.assertTrue(any(
+                        item.get("reason", "").startswith("服务端校验")
+                        for item in result["material_requests"]
+                    ))
 
     def test_parse_byte_range_supports_single_range_forms(self):
         self.assertEqual(video_agent._parse_byte_range("bytes=0-99", 1000), (0, 99))

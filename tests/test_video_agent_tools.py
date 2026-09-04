@@ -131,6 +131,32 @@ class VideoAgentToolTests(unittest.TestCase):
         self.assertEqual(row["quote_token"], "server-only-quote-token")
         self.assertEqual(row["status"], "awaiting_confirmation")
 
+    def test_talking_quote_accepts_verified_private_image_upload_route(self):
+        runtime = video_agent_tools.VideoAgentToolRuntime(
+            username="alice", web_token="web-token", db_factory=self.db,
+            cli_execute=self.cli_execute, now=lambda: 1000,
+        )
+        image_upload_id = "img_" + "a" * 32
+
+        result = runtime.run("hq_quote_talking_video", json.dumps({
+            "image_upload_id": image_upload_id,
+            "text": "介绍新品",
+            "voice": "voice-1",
+        }, ensure_ascii=False))
+
+        self.assertEqual(result["pending_action"]["status"], "awaiting_confirmation")
+        self.assertEqual(self.calls[0][0], "digital-ip-text-generate")
+        self.assertEqual(self.calls[0][1]["image_upload_id"], image_upload_id)
+        self.assertNotIn("avatar_id", self.calls[0][1])
+        for invalid_materials in ({}, {"avatar_id": 7, "image_upload_id": image_upload_id}):
+            with self.subTest(invalid_materials=invalid_materials):
+                with self.assertRaises(video_agent_tools.ToolError):
+                    runtime.run("hq_quote_talking_video", json.dumps({
+                        **invalid_materials,
+                        "text": "介绍新品",
+                        "voice": "voice-1",
+                    }, ensure_ascii=False))
+
     def test_quote_without_normalized_fingerprint_fails_closed(self):
         def unsafe_quote(capability, input_body, **kwargs):
             return {

@@ -142,6 +142,7 @@ _SPECS = {
         "description": "为一个数字人和一段文案取得口播视频报价；只报价，不扣点、不提交。",
         "parameters": _object({
             "avatar_id": AVATAR_ID,
+            "image_upload_id": UPLOAD_ID,
             "text": {"type": "string", "minLength": 1, "maxLength": 1000},
             "voice": {"type": "string", "minLength": 1, "maxLength": 128},
             "ratio": {"type": "string", "enum": ["9:16", "16:9", "1:1", "4:5", "5:4"]},
@@ -149,7 +150,8 @@ _SPECS = {
             "subtitle": {"type": "boolean"},
             "subtitle_style": {"type": "string", "enum": ["white", "variety", "bar"]},
             "subtitle_position": {"type": "string", "enum": ["top", "upper", "center", "lower", "bottom"]},
-        }, ["avatar_id", "text", "voice"]), "title": "数字人口播",
+        }, ["text", "voice"]), "title": "数字人口播",
+        "one_of": ("avatar_id", "image_upload_id"),
     },
     "hq_quote_story_video": {
         "capability": "cinematic-open-generate", "scope": "generation:quote", "mode": "quote",
@@ -194,6 +196,19 @@ _SPECS = {
         "at_least_one": ("clothes_upload_id", "background_upload_id"),
     },
 }
+
+
+# Publish the same conditional requirements that the runtime enforces.  These
+# clauses are part of the model-visible tool contract, not merely local checks.
+for _spec in _SPECS.values():
+    if _spec.get("one_of"):
+        _spec["parameters"]["oneOf"] = [
+            {"required": [field]} for field in _spec["one_of"]
+        ]
+    if _spec.get("at_least_one"):
+        _spec["parameters"]["anyOf"] = [
+            {"required": [field]} for field in _spec["at_least_one"]
+        ]
 
 
 TOOL_DEFINITIONS = [

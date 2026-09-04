@@ -144,6 +144,14 @@ class VideoAgentCapabilityContractTests(unittest.TestCase):
             cli_classic["properties"]["seconds"]["maximum"],
         )
 
+    def test_talking_material_contract_matches_cli_bidirectionally(self):
+        agent = self._specs()["hq_quote_talking_video"]["parameters"]
+        cli = CAPABILITIES["digital-ip-text-generate"]["input_schema"]
+
+        self.assertEqual(set(agent["properties"]), set(cli["properties"]))
+        self.assertEqual(set(agent["required"]), set(cli["required"]))
+        self.assertEqual(agent["oneOf"], cli["oneOf"])
+
     def test_read_tool_schemas_stay_inside_cli_bounds(self):
         assets = self._specs()["hq_list_assets"]["parameters"]["properties"]
         tasks = self._specs()["hq_list_tasks"]["parameters"]["properties"]
