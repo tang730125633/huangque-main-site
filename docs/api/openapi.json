@@ -6932,7 +6932,28 @@
         "summary": "可用音色列表(公开预设+个人VIP)",
         "responses": {
           "200": {
-            "description": "OK"
+            "description": "返回公共音色及当前用户个人音色；只有 ready=true 的音色可提交配音",
+            "content": {"application/json": {"schema": {
+              "type": "object",
+              "required": ["items"],
+              "properties": {
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["scope", "voice_key", "display_name", "status", "ready"],
+                    "properties": {
+                      "scope": {"type": "string", "enum": ["public", "personal"]},
+                      "voice_key": {"type": "string"},
+                      "display_name": {"type": "string"},
+                      "preview_url": {"type": "string"},
+                      "status": {"type": "string"},
+                      "ready": {"type": "boolean"}
+                    }
+                  }
+                }
+              }
+            }}}
           }
         },
         "x-hq-test-safety": "safe-read",

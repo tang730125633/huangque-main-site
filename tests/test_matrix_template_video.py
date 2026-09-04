@@ -1928,6 +1928,140 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                 )
             self.assertEqual(len(deductions), 1)
 
+    def test_http_retry_recovers_charged_voiceover_before_current_voice_validation(self):
+        from content_domains import (
+            core, matrix_template_submission, submission_idempotency,
+        )
+
+        with tempfile.TemporaryDirectory() as temp:
+            database_path = Path(temp) / "jobs.db"
+
+            def database():
+                connection = sqlite3.connect(database_path, timeout=30)
+                connection.row_factory = sqlite3.Row
+                return connection
+
+            with closing(database()) as connection:
+                connection.execute("""CREATE TABLE jobs(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    kind TEXT NOT NULL,username TEXT NOT NULL,cost INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',payload TEXT NOT NULL,
+                    result TEXT,error TEXT,refunded INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,
+                    owner TEXT
+                )""")
+                submission_idempotency.ensure_table(connection)
+                connection.commit()
+
+            request_body = {
+                "top_text": "有效标题", "bottom_text": "评论区扣关键词",
+                "template_id": "native-bold", "bgm": False,
+                "voiceover": {
+                    "text": "已冻结的口播", "voice": "vip_alice",
+                    "voice_scope": "personal", "speed": 1,
+                    "pitch": 0, "volume": 0, "delivery": "natural",
+                },
+            }
+            frozen = json.loads(json.dumps(request_body, ensure_ascii=False))
+            frozen["duration"] = 8.0
+            frozen["voiceover"]["voice_version"] = "f" * 64
+            key = "matrix-charged-voice-recovery"
+            state, _ = submission_idempotency.begin(
+                database, "alice", "/api/gen/matrix-template", key,
+                request_body,
+            )
+            self.assertEqual("new", state)
+            matrix_template_submission.prepare(
+                database, "alice", "/api/gen/matrix-template", key,
+                request_body, 5, execution_body=frozen,
+            )
+            with closing(database()) as connection:
+                connection.execute("""UPDATE matrix_template_submission_attempts
+                    SET state='charged',points_left=95,lease_token='',lease_until=0
+                    WHERE username='alice' AND endpoint='/api/gen/matrix-template'
+                      AND idem_key=?""", (key,))
+                connection.commit()
+
+            class Points:
+                deductions = 1
+
+                @classmethod
+                def deduct_points(cls, *_args, **_kwargs):
+                    cls.deductions += 1
+                    raise AssertionError("charged attempt must not deduct again")
+
+                @staticmethod
+                def refund_points(*_args, **_kwargs):
+                    raise AssertionError("charged recovery must not refund")
+
+                @staticmethod
+                def get_points_transaction(_key):
+                    return None
+
+            queued = []
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), core.H)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            original_job_db = core.JOB_DB
+            core.JOB_DB = str(database_path)
+            thread.start()
+            try:
+                with mock.patch.object(
+                    core, "verify", return_value={
+                        "username": "alice", "points": 95,
+                        "must_change": False,
+                    },
+                ), mock.patch.object(
+                    core, "_domains", return_value=(
+                        SimpleNamespace(), Points, SimpleNamespace(),
+                    ),
+                ), mock.patch.object(
+                    core, "enqueue_job",
+                    side_effect=lambda job_id, kind, mode: (
+                        queued.append((job_id, kind, mode)) or True
+                    ),
+                ), mock.patch.object(
+                    self.module, "validate_payload",
+                    side_effect=AssertionError(
+                        "current voice state must not be revalidated"
+                    ),
+                ) as validate:
+                    responses = []
+                    for _attempt in range(2):
+                        request = urllib.request.Request(
+                            "http://127.0.0.1:%d/api/gen/matrix-template"
+                            % server.server_port,
+                            data=json.dumps(request_body, ensure_ascii=False).encode(),
+                            headers={
+                                "Authorization": "Bearer account-token",
+                                "Content-Type": "application/json",
+                                "Idempotency-Key": key,
+                            },
+                            method="POST",
+                        )
+                        with urllib.request.urlopen(request, timeout=10) as response:
+                            self.assertEqual(200, response.status)
+                            responses.append(json.load(response))
+                validate.assert_not_called()
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+                core.JOB_DB = original_job_db
+
+            self.assertEqual(1, Points.deductions)
+            self.assertEqual(responses[0]["job_id"], responses[1]["job_id"])
+            self.assertTrue(responses[0]["reconciled"])
+            with closing(database()) as connection:
+                jobs = connection.execute(
+                    "SELECT id,status,payload FROM jobs ORDER BY id"
+                ).fetchall()
+            self.assertEqual(1, len(jobs))
+            self.assertEqual("pending", jobs[0]["status"])
+            self.assertEqual(frozen, json.loads(jobs[0]["payload"]))
+            self.assertEqual(
+                [(jobs[0]["id"], "matrix_template_video", None)], queued,
+            )
+
     def test_unified_function_names_cover_history_and_request_path(self):
         from server import func_names
 
@@ -2064,6 +2198,10 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertIn('id="voiceoverVoice"', page)
         self.assertIn("/api/gen/audio/voices", page)
         self.assertIn("bgm:!withVoice", page)
+        self.assertIn("function playableVoiceUrl(value)", page)
+        self.assertIn("URL.revokeObjectURL", page)
+        self.assertIn("addEventListener('pagehide',stopVoicePreview)", page)
+        self.assertIn("item.scope===voiceScope&&item.ready===true", page)
         self.assertIn('id="batchCount"', page)
         self.assertIn("Math.min(batchLimit", page)
         self.assertNotIn("排队", page)
@@ -2107,6 +2245,13 @@ class MatrixTemplatePageTests(unittest.TestCase):
         )
         self.assertIn("强制关闭 BGM", operation["description"])
         self.assertIn("时长跟随配音", operation["description"])
+        voice_item = json.loads(docs)["paths"]["/api/gen/audio/voices"]["get"][
+            "responses"
+        ]["200"]["content"]["application/json"]["schema"]["properties"][
+            "items"
+        ]["items"]
+        self.assertIn("status", voice_item["required"])
+        self.assertIn("ready", voice_item["required"])
 
     def test_layout_browser_regression_covers_all_reference_templates(self):
         source = (ROOT / "tests/matrix_template_layout_browser.js").read_text(
@@ -2429,6 +2574,8 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual("我的音色", result["scope"])
         self.assertIn("S_d21F8OR62", result["publicOptions"])
         self.assertIn("vip_alice", result["options"])
+        self.assertNotIn("vip_training", result["options"])
+        self.assertNotIn("vip_failed", result["options"])
         self.assertEqual("10 / 1000", result["count"])
         self.assertFalse(result["body"]["bgm"])
         self.assertEqual({

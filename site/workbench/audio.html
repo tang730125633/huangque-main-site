@@ -207,7 +207,7 @@
       .then(function(d){
         var got=d.items||[];
         var publics=got.filter(function(v){return v.scope==='public';}).map(normalizeVoice);
-        var personals=got.filter(function(v){return v.scope==='personal' && v.provider_voice && v.preview_url;});
+        var personals=got.filter(function(v){return v.scope==='personal' && v.ready===true && v.preview_url;});
         voices=(publics.length?publics:publicFallback.map(normalizeVoice)).concat(personals);
         if(!voices.some(function(v){return v.voice_key===selectedVoice;})) selectedVoice=(voices[0]||publicFallback[0]).voice_key;
         renderVoices();
