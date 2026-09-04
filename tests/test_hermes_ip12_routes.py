@@ -3234,10 +3234,19 @@ with patch.object(server.subprocess, "run", side_effect=fake_fallback):
 assert _validate_foundation_pdf(fallback_pdf) == 8
 assert fallback_calls == ["/fake/playwright", "/fake/chromium"]
 
-with patch.object(server, "_render_foundation_pdf", side_effect=RuntimeError("browser failed")), \
+consulting_pdf = fallback_root / "report-consulting.pdf"
+with patch("pdf_fallback.render_foundation_consulting_pdf", return_value=consulting_pdf) as consulting, \
+        patch.object(server, "_validate_foundation_pdf", side_effect=RuntimeError("too short")), \
         patch("pdf_fallback.render_foundation_pdf_fallback", return_value=fallback_pdf) as browser_free:
-    assert server._render_foundation_pdf_resilient("## 模块一", ["/fake/chromium"], fallback_root) == fallback_pdf
-browser_free.assert_called_once_with("## 模块一", fallback_root / "report-fallback.pdf")
+    assert server._render_foundation_pdf_resilient(
+        "## 模块一", ["/fake/chromium"], fallback_root, "IP 定位报告"
+    ) == fallback_pdf
+consulting.assert_called_once_with(
+    "## 模块一", fallback_root / "report-consulting.pdf", title="IP 定位报告"
+)
+browser_free.assert_called_once_with(
+    "## 模块一", fallback_root / "report-fallback.pdf", title="IP 定位报告"
+)
 
 anonymous = app.test_client()
 assert anonymous.get("/healthz").status_code == 200

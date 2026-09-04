@@ -167,7 +167,8 @@ class TheReaperDefaultIsNotZeroTests(unittest.TestCase):
     def test_an_unregistered_kind_is_not_insta_killed(self):
         self.assertNotIn("KIND_GRACE.get(r[\"kind\"], 0)", CORE_SRC,
                          "默认 grace 还是 0 —— 新 kind 只有 6 分钟寿命")
-        self.assertIn("KIND_GRACE.get(r[\"kind\"], KIND_GRACE_DEFAULT)", CORE_SRC)
+        self.assertIn("return KIND_GRACE.get(kind, KIND_GRACE_DEFAULT)", CORE_SRC)
+        self.assertGreaterEqual(core._kind_reaper_grace("unregistered"), 600)
 
     def test_the_default_is_generous(self):
         self.assertGreaterEqual(core.KIND_GRACE_DEFAULT, 600)

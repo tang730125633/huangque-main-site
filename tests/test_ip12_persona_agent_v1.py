@@ -40,7 +40,10 @@ class IP12PersonaAgentV1Tests(unittest.TestCase):
     def test_release_and_prompt_contracts_are_versioned(self):
         self.assertEqual(harness.AGENT_RELEASE_MANIFEST["agent_release"], "ip12-a2-skills")
         self.assertEqual(harness.AGENT_RELEASE_MANIFEST["skills"]["intake"]["prompt_version"], "intake-v3")
-        self.assertIn("business_goal", harness.intake_system_prompt(harness.initial_state()))
+        prompt = harness.intake_system_prompt(harness.initial_state())
+        self.assertIn("previous_work_experience", prompt)
+        self.assertNotIn("business_goal=", prompt)
+        self.assertIn("其余模块字段", prompt)
 
     def test_local_preview_uses_one_semantic_coordinator(self):
         preview = (Path(__file__).parent / "ip12_local_codex_preview.py").read_text(encoding="utf-8")
@@ -148,24 +151,15 @@ class IP12PersonaAgentV1Tests(unittest.TestCase):
                 "其他问题都已经回答",
             )
 
-    def test_personality_traits_require_three_distinct_words(self):
+    def test_personality_traits_require_three_distinct_words_when_module_collects_them(self):
         two_traits = update("personality_traits", "真诚,克制", "真诚、克制")
         partial = harness.initial_state()
-        partial["ip_profile"]["facts"]["personality_traits"] = two_traits
-        self.assertEqual(harness.intake_incomplete_fields(partial), ["personality_traits"])
-        with self.assertRaisesRegex(harness.HarnessError, "三个性格词"):
-            harness.apply_intake_decision(
-                covered_state([two_traits]),
-                decision("propose_checkpoint", reply="请核对。", draft="性格：真诚、克制", updates=[two_traits], checkpoint=1),
-                "真诚、克制",
-            )
+        partial["intake"]["profile_updates"] = [two_traits]
+        self.assertEqual(harness.intake_field_statuses(partial)["personality_traits"], "unknown")
+        self.assertNotIn("personality_traits", harness.intake_coverage_gaps(partial))
         three_traits = update("personality_traits", "真诚,克制,细致", "真诚、克制、细致")
-        state, _, _ = harness.apply_intake_decision(
-            covered_state([three_traits]),
-            decision("propose_checkpoint", reply="请核对。", draft="性格：真诚、克制、细致", updates=[three_traits], checkpoint=1),
-            "真诚、克制、细致",
-        )
-        self.assertEqual(state["intake"]["field_statuses"]["personality_traits"], "candidate")
+        partial["intake"]["profile_updates"] = [three_traits]
+        self.assertEqual(harness.intake_field_statuses(partial)["personality_traits"], "candidate")
 
     def test_legacy_personality_traits_can_be_completed_without_model(self):
         self.assertEqual(

@@ -3052,8 +3052,17 @@ def _render_foundation_pdf(content, browsers, root, title):
 
 
 def _render_foundation_pdf_resilient(content, browsers, root, title):
-    from pdf_fallback import render_foundation_consulting_pdf
-    return render_foundation_consulting_pdf(content, root / "report-consulting.pdf", title=title)
+    from pdf_fallback import render_foundation_consulting_pdf, render_foundation_pdf_fallback
+    consulting = render_foundation_consulting_pdf(
+        content, root / "report-consulting.pdf", title=title
+    )
+    try:
+        _validate_foundation_pdf(consulting)
+        return consulting
+    except RuntimeError:
+        return render_foundation_pdf_fallback(
+            content, root / "report-fallback.pdf", title=title
+        )
 
 
 def generate_foundation_report(convo_id):
@@ -7898,6 +7907,24 @@ def _process_pause_turn(cid, user_message, expected_revision=None, request_id=""
     return result, 200
 
 
+def _process_intake_clarification_turn(
+    cid, user_message, assistant, expected_revision=None, request_id=""
+):
+    with CONVERSATION_STATE_LOCK:
+        convo = owned_conversation(cid)
+        if convo is None:
+            return None, 404
+        state = normalize_coach_state(convo.get("coach_state"))
+        _assert_expected_revision(state, expected_revision)
+        snapshot_revision = state["revision"]
+    message_id = _turn_message_id(cid, user_message, snapshot_revision, request_id)
+    assistant, next_state = _persist_unprocessed_turn(
+        cid, user_message, snapshot_revision, message_id=message_id,
+        assistant_override=assistant, skills=["intake"],
+    )
+    return _chat_result(assistant, next_state), 200
+
+
 def _custom_semantic_master_decision(memory, user_message):
     response = call_ai(
         semantic_router.messages(memory, user_message),
@@ -8803,6 +8830,7 @@ def process_chat_request(body):
     memory_snapshot = None
     legacy_route = ""
     material_revision_ambiguous = False
+    intake_clarification = ""
     try:
         production_intent = None
         material_revision_kind = ""
@@ -8946,8 +8974,15 @@ def process_chat_request(body):
                     action is None and production_intent is None and content_target is None
                     and not pause_turn and foundation_review != "revision" and _WEATHER_RE.search(user_message)
                 )
+                intake_clarification = (
+                    coach_harness.intake_clarification_reply(state, user_message)
+                    if action is None and production_intent is None and content_target is None
+                    and foundation_review != "revision"
+                    else ""
+                )
                 legacy_route = (
-                    "pause_turn" if pause_turn
+                    "intake_clarification_turn" if intake_clarification
+                    else "pause_turn" if pause_turn
                     else "general_tool_turn" if weather_turn
                     else "action_turn" if action is not None
                     else "production_turn" if production_intent is not None
@@ -9021,7 +9056,12 @@ def process_chat_request(body):
                             "这项能力当前没有解锁或暂时不可用。你可以换一个目标，或者稍后再试。"
                         )
 
-            if material_production_id:
+            if intake_clarification:
+                result, status = _process_intake_clarification_turn(
+                    cid, user_message, intake_clarification,
+                    body.get("expected_revision"), request_id,
+                )
+            elif material_production_id:
                 result, status = _process_production_material_revision_turn(
                     cid, user_message, material_production_id, material_revision_kind,
                     body.get("expected_revision"), request_id,
@@ -9044,7 +9084,7 @@ def process_chat_request(body):
                     cid, user_message, _synth, memory_snapshot or {},
                     body.get("expected_revision"), request_id,
                 )
-            elif _resource_query_intent(user_message):
+            elif _resource_query_intent(user_message) and production_intent is None:
                 # 确定性兜底（不依赖语义路由开关）：用户明确要查资源（形象/音色/资产/余额/点数）时，
                 # 服务端真实调工具层查询并返回结果，绝不允许模型空口"帮你查一下"。
                 _synth_decision = {

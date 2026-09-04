@@ -301,8 +301,8 @@ import server
 security._validate_token = lambda _token: {"account_id":"clarify-test","username":"clarify","role":"member"}
 cid = "clarification-project"
 state = server.coach_harness.initial_state(server.coaching_skills.SKILL_PIPELINE_V1)
-state["intake"]["asked_follow_ups"] = ["target_audience"]
-state["intake"]["current_question_field"] = "target_audience"
+state["intake"]["asked_follow_ups"] = ["previous_work_experience"]
+state["intake"]["current_question_field"] = "previous_work_experience"
 server.save_conversation(cid, {
     "id":cid, "title":"澄清测试", "owner_account_id":"clarify-test",
     "pipeline_version":server.coaching_skills.SKILL_PIPELINE_V1,
@@ -316,11 +316,11 @@ response = client.post("/api/chat-complete", headers={"Authorization":"Bearer te
 })
 assert response.status_code == 200, response.get_data(as_text=True)
 payload = response.get_json()
-assert "最想长期帮助哪一类人" in payload["assistant"], payload
-assert "想靠 AI 接单的人" in payload["assistant"], payload
+assert "现在这份工作之前" in payload["assistant"], payload
+assert "工作或行业" in payload["assistant"], payload
 assert "我已记下" not in payload["assistant"], payload
 next_state = payload["state"]
-assert next_state["intake"]["asked_follow_ups"] == ["target_audience"], next_state["intake"]
+assert next_state["intake"]["asked_follow_ups"] == ["previous_work_experience"], next_state["intake"]
 assert next_state["intake"].get("profile_updates", []) == [], next_state["intake"]
 print("INTAKE_CLARIFICATION_OK")
 '''

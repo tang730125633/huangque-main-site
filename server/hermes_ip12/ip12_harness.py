@@ -451,23 +451,9 @@ def intake_clarification_reply(value, message):
 
 def _intake_has_core_profile(value, updates, evidence_text):
     state = normalize_state(value)
-    fields = {
-        str(item.get("field") or "").lower()
-        for item in list(state["intake"].get("profile_updates") or []) + list(updates or [])
-        if isinstance(item, dict)
-    }
-    # 核心闸只查瘦身后的核心必问（基本信息 + 职业背景）；
-    # 兴趣/受众/技能/帮助目标由模块 1 的 Skill 引导采集。
-    required_groups = (
-        ("identity", "role", "current"),
-        ("experience", "career", "work"),
-        ("income",),
-    )
-    has_identity_meta = any(token in field for field in fields for token in ("name", "age", "city"))
-    return (
-        all(any(token in field for field in fields for token in group) for group in required_groups)
-        and bool(has_identity_meta)
-    )
+    # “已覆盖”包括用户给出事实和明确跳过；两者都不应在确认后触发旧版的
+    # 兜底经历问题。模块字段由模块 1 的 Skill 接着采集。
+    return not intake_coverage_gaps(state, updates)
 
 
 def production_recommendation(requested_result, preferred_action=None):
@@ -2291,7 +2277,11 @@ def apply_intake_decision(value, raw, evidence_text, current_message=""):
         asked_follow_ups = intake.setdefault("asked_follow_ups", [])
         if canonical_topic in intake.get("declined_fields", []):
             raise HarnessError("基础访谈追问了用户已经拒答的信息；请改问其他未回答项")
-        # 只有「问已答项」这一种真错误才拦；模型措辞与话题一律保留，不做模板覆盖
+        if coverage_gaps and canonical_topic not in coverage_gaps:
+            canonical_topic = coverage_gaps[0]
+            follow_up_topic = canonical_topic
+            decision["reply"] = intake_natural_question(canonical_topic)
+        # 已答项仍拦截；合法且尚未覆盖的话题保留模型的自然措辞。
         if (
             canonical_topic
             and canonical_topic not in coverage_gaps

@@ -59,7 +59,9 @@ class IntakeGuidanceRegressionTests(unittest.TestCase):
 
     def test_prompt_requires_full_coverage_and_marks_sensitive_items_optional(self):
         prompt = harness.intake_system_prompt(harness.initial_state())
-        self.assertIn("必须覆盖《黄雀IP人设定位采集表》的全部项目", prompt)
+        self.assertIn("本阶段只负责核心基础项目", prompt)
+        self.assertIn("其余模块字段", prompt)
+        self.assertIn("本阶段不得提前追问", prompt)
         self.assertIn("敏感可选项", prompt)
         self.assertIn("只有待覆盖列表为“无”", prompt)
 
