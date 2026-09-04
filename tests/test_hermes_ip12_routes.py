@@ -3193,7 +3193,7 @@ report_html = _foundation_html("""# 忽略的总标题
 | --- | --- |
 | 账号封面 | 直接说结果 |
 > 待本人确认
-""")
+""", "IP 定位报告")
 assert "模块一｜定位诊断" in report_html
 assert "<table>" in report_html and "账号封面" in report_html
 assert "<blockquote>待本人确认</blockquote>" in report_html

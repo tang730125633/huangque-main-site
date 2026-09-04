@@ -336,7 +336,10 @@ class CognitiveEngineTests(unittest.TestCase):
             set(master.output_type.model_json_schema()["properties"]["intent"]["enum"]),
             cognitive_engine.semantic_router.INTENTS,
         )
-        self.assertEqual([tool.name for tool in master.tools], ["talking_head_video_agent"])
+        self.assertEqual(
+            [tool.name for tool in master.tools],
+            ["talking_head_video_agent", "production_delegate"],
+        )
         self.assertIs(master.model_settings.store, False)
         self.assertEqual(master.model_settings.max_tokens, 700)
         self.assertTrue(run.await_args.kwargs["run_config"].tracing_disabled)

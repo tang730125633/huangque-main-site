@@ -470,7 +470,7 @@ console.log(JSON.stringify({
     def test_chat_material_upload_is_explicit_bound_and_never_confirms_a_paid_job(self):
         self.assertIn('id="materialInput" type="file" hidden', self.html)
         self.assertIn('id="attachBtn"', self.html)
-        self.assertIn('aria-label="上传 Agent 请求的图片、视频或音频素材"', self.html)
+        self.assertIn('aria-label="上传图片、视频或音频素材"', self.html)
         upload = self.html[
             self.html.index("function pendingProductionUpload"):
             self.html.index("async function productionRequest")
@@ -490,7 +490,7 @@ console.log(JSON.stringify({
         self.assertIn("appendProductionMessage(data.material_request_message)", prepare)
         self.assertIn("^aud_", self.html)
         self.assertIn("audio/mpeg,audio/wav", self.html)
-        self.assertIn("当前没有等待上传的图片、视频或音频", self.html)
+        self.assertIn("if(pending){openProductionUpload(pending.record.id,pending.spec.name);return}", self.html)
 
     def test_digital_human_materials_stay_inside_ip12(self):
         self.assertIn('"x-hq-inline-upload-field": "image_upload_id"', self.server)

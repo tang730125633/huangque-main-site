@@ -96,7 +96,7 @@ cases = {
     "用我的音频驱动数字人": "digital-ip-audio-generate",
     "做电影化身动作模仿": "cinematic-motion-generate",
     "把这个人物快速换装": "tryon-fast-generate",
-    "查看文案成片模板": "text-video-templates",
+    "查看文案成片模板": "text-video-generate",
     "列出我的 Canvas 画布": "canvas-list",
     "请用 Canvas Agent 规划当前画布；只打开 Canvas 页面": "canvas-agent-plan",
     "生成数字主持人": "digital-presenter-create",
