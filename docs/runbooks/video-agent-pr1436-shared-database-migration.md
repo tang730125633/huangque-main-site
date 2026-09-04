@@ -5,7 +5,7 @@
 本手册覆盖 `tang730125633/huangque-main-site#1436` 对生产共享数据库
 `/home/ubuntu/content-api/content_jobs.db` 的结构升级。目标服务器为 `dapeng-server`。
 
-当前状态：**LU-003 阶段一审批的回归计数更正待核验；完成更正后方可一次性推送并等待精确 HEAD CI/审核。本文件不是合并、部署或重启授权。**
+当前状态：**LU-003 阶段一审批及回归计数更正均已核验，等待一次性推送及精确 HEAD CI/审核；本文件不是合并、部署或重启授权。**
 
 本次结构变化包括：
 
@@ -35,8 +35,15 @@
   - 作者关联：`COLLABORATOR`
   - 创建及更新时间：`2026-09-04T08:13:51Z`
   - 该评论中的“相关回归 `231/231`”为计数笔误；正确分项为核心任务相关模块
-    `229/229`、`tests.test_hq_cli_content` `35/35`，合计 `264/264`。需由 `LU-003`
-    发布补充评论确认更正后，本阶段审批才恢复有效。
+    `229/229`、`tests.test_hq_cli_content` `35/35`，合计 `264/264`。
+- 阶段一审批证据更正：
+  [issuecomment-5537746449](https://github.com/tang730125633/huangque-main-site/pull/1436#issuecomment-5537746449)
+  - 评论 ID：`5537746449`
+  - Node ID：`IC_kwDOS66oj88AAAABShNOEQ`
+  - 作者：`LU-003`
+  - 作者关联：`COLLABORATOR`
+  - 创建及更新时间：`2026-09-04T08:20:08Z`
+  - 绑定计数更正治理提交：`8f1a52b2033610601d61ae7f8a59796bfa38cf3d`
 - 阶段二最终 HEAD 审批：待一次性推送、精确 HEAD CI 和最新审核通过后发布。
 - 已失效历史审批：
   [issuecomment-5536582840](https://github.com/tang730125633/huangque-main-site/pull/1436#issuecomment-5536582840)、
