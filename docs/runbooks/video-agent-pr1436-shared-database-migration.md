@@ -5,7 +5,7 @@
 本手册覆盖 `tang730125633/huangque-main-site#1436` 对生产共享数据库
 `/home/ubuntu/content-api/content_jobs.db` 的结构升级。目标服务器为 `dapeng-server`。
 
-当前状态：**LU-003 阶段一审批已核验，等待一次性推送及精确 HEAD CI/审核；本文件不是合并、部署或重启授权。**
+当前状态：**LU-003 阶段一审批的回归计数更正待核验；完成更正后方可一次性推送并等待精确 HEAD CI/审核。本文件不是合并、部署或重启授权。**
 
 本次结构变化包括：
 
@@ -34,6 +34,9 @@
   - 作者：`LU-003`
   - 作者关联：`COLLABORATOR`
   - 创建及更新时间：`2026-09-04T08:13:51Z`
+  - 该评论中的“相关回归 `231/231`”为计数笔误；正确分项为核心任务相关模块
+    `229/229`、`tests.test_hq_cli_content` `35/35`，合计 `264/264`。需由 `LU-003`
+    发布补充评论确认更正后，本阶段审批才恢复有效。
 - 阶段二最终 HEAD 审批：待一次性推送、精确 HEAD CI 和最新审核通过后发布。
 - 已失效历史审批：
   [issuecomment-5536582840](https://github.com/tang730125633/huangque-main-site/pull/1436#issuecomment-5536582840)、
@@ -90,7 +93,8 @@ python scripts/ci_validate.py
 python scripts/stamp_assets.py --check
 ```
 
-本地固定提交验证证据：上述任务相关回归均通过，仓库静态门禁、资源版本戳、Python 语法及
+本地固定提交验证证据：核心任务相关模块 `229/229` 与 `tests.test_hq_cli_content` `35/35`
+均通过，合计 `264/264`；仓库静态门禁、资源版本戳、Python 语法及
 `git diff --check` 均通过。Windows 单进程全量发现运行 4715 项，结果为 52 failures、118 errors、
 46 skipped；在隔离的 `main@f7c2463c` 工作树中，审核点名的短剧恢复与 Sora 恢复失败可同样复现，
 而 PR 独有的 Seedance 顺序回归已修复并通过 19/19 模块测试。由于本机无 WSL/Docker，受支持
