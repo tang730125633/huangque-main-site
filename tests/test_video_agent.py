@@ -311,6 +311,86 @@ class VideoAgentTests(unittest.TestCase):
         self.assertFalse(result["ready_to_handoff"])
         self.assertEqual(result["stage"], "collect_materials")
 
+    def test_chat_never_hands_off_inputs_the_real_tools_cannot_execute(self):
+        cases = (
+            {
+                "name": "talking-empty-text-metadata",
+                "module": "talking",
+                "brief": {"voice": "voice-1"},
+                "materials": [
+                    {"type": "image", "name": "avatar.png", "size": 100,
+                     "avatar_state": "ready", "avatar_id": 27},
+                    {"type": "text", "name": "", "size": 0},
+                ],
+                "avatars": [{"id": 27, "status": "ready"}],
+                "verify_upload": False,
+            },
+            {
+                "name": "talking-ordinary-image-is-not-avatar",
+                "module": "talking",
+                "brief": {"content": "介绍新品", "voice": "voice-1"},
+                "materials": [{
+                    "type": "image", "name": "person.png", "size": 100,
+                    "upload_id": "img_" + "a" * 32,
+                }],
+                "avatars": [],
+                "verify_upload": True,
+            },
+            {
+                "name": "compose-without-source-video",
+                "module": "compose",
+                "brief": {},
+                "materials": [],
+                "avatars": [],
+                "verify_upload": False,
+            },
+        )
+        for case in cases:
+            with self.subTest(case=case["name"]):
+                content = {
+                    "reply": "可以交接制作",
+                    "stage": "plan_ready",
+                    "intent": case["module"],
+                    "video_brief": case["brief"],
+                    "missing_fields": [],
+                    "material_requests": [],
+                    "quick_replies": [],
+                    "recommended_module": case["module"],
+                    "recommendation_reason": "模型声称输入完整",
+                    "ready_to_handoff": True,
+                }
+
+                def opener(_request, timeout=0):
+                    return Response({
+                        "status": "completed",
+                        "output": [{
+                            "type": "message", "role": "assistant",
+                            "content": [{"type": "output_text", "text": json.dumps(
+                                content, ensure_ascii=False,
+                            )}],
+                        }],
+                        "usage": {"input_tokens": 10, "output_tokens": 10},
+                    })
+
+                with mock.patch.object(
+                    video_agent.video, "list_video_avatars", return_value=case["avatars"],
+                ), mock.patch.object(
+                    video_agent.cli_uploads, "verify_upload",
+                    return_value=case["verify_upload"],
+                ):
+                    result = video_agent.chat({
+                        "message": "请检查后交接",
+                        "history": [],
+                        "brief": case["brief"],
+                        "materials": case["materials"],
+                    }, opener=opener, username="alice", db_factory=self.db)
+                self.assertFalse(result["ready_to_handoff"])
+                self.assertEqual("collect_materials", result["stage"])
+                self.assertTrue(any(
+                    item.get("reason", "").startswith("服务端校验")
+                    for item in result["material_requests"]
+                ))
+
     def test_parse_byte_range_supports_single_range_forms(self):
         self.assertEqual(video_agent._parse_byte_range("bytes=0-99", 1000), (0, 99))
         self.assertEqual(video_agent._parse_byte_range("bytes=900-", 1000), (900, 999))

@@ -1307,9 +1307,7 @@ def reconcile_pending_action(pending_id, *, username, db_factory, now=None):
                         "提交正在受理，请稍后重新对账", 409,
                         pending_action=_safe_pending(row),
                     )
-                job_id = _find_submitted_job(
-                    conn, username, row, claim, timestamp
-                )
+                job_id = _find_submitted_job(conn, username, row)
                 if job_id:
                     projected = {"job_id": int(job_id)}
                     status, error_code = "submitted", None
@@ -1361,20 +1359,21 @@ def reconcile_pending_action(pending_id, *, username, db_factory, now=None):
         raise ToolError("pending_store_unavailable", "视频操作确认服务暂时不可用", 503) from error
 
 
-def _find_submitted_job(conn, username, row, claim, timestamp):
+def _find_submitted_job(conn, username, row):
     """Look for the job a stale in-flight submission may have created.
 
-    Matches on account, the idempotency claim's time window, the quoted cost
-    and the capability's job kinds.  Returns the job id or None.
+    The task ledger must carry the exact idempotency key used by the CLI
+    submission.  Account/time/cost/kind similarity is never identity: another
+    concurrent paid request can have every one of those values in common.
     """
     kinds = _CAPABILITY_JOB_KINDS.get(str(row["capability"] or "").strip())
-    if not kinds:
+    submission_key = str(row["submission_key"] or "").strip()
+    if not kinds or not submission_key:
         return None
     holes = ",".join("?" * len(kinds))
     job = conn.execute(
-        "SELECT id FROM jobs WHERE username=? AND created_at>=? AND created_at<=? "
-        "AND cost=? AND kind IN (%s) ORDER BY id DESC LIMIT 1" % holes,
-        (username, int(claim["created_at"] or 0), timestamp,
-         int(row["cost"] or 0)) + tuple(kinds),
+        "SELECT id FROM jobs WHERE username=? AND submission_key=? "
+        "AND kind IN (%s) ORDER BY id DESC LIMIT 1" % holes,
+        (username, submission_key) + tuple(kinds),
     ).fetchone()
     return int(job["id"]) if job else None

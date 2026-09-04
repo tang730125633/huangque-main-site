@@ -208,6 +208,41 @@ class JobsStoreTests(unittest.TestCase):
                 "SELECT job_id FROM job_links"
             ).fetchone()[0])
 
+    def test_paid_job_persists_exact_submission_key_with_job_insert(self):
+        submission_key = "hqcli-" + "f" * 32
+        with closing(self._conn()) as connection:
+            jobs_store.ensure_submission_key_schema(connection)
+            connection.commit()
+        job_id, _ = jobs_store.create_paid_job(
+            self._jdb, lambda *_args: 90, lambda *_args, **_kwargs: True,
+            "cinematic", "u", 90, {"prompt": "rain"}, "content",
+            submission_key=submission_key,
+        )
+        with closing(self._conn()) as connection:
+            row = connection.execute(
+                "SELECT username,kind,submission_key FROM jobs WHERE id=?", (job_id,),
+            ).fetchone()
+        self.assertEqual(("u", "cinematic", submission_key), tuple(row))
+
+    def test_submission_key_schema_upgrades_legacy_jobs_idempotently(self):
+        legacy_id = self._insert(cost=17, status="pending")
+        with closing(self._conn()) as connection:
+            jobs_store.ensure_submission_key_schema(connection)
+            jobs_store.ensure_submission_key_schema(connection)
+            connection.commit()
+            columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(jobs)")
+            }
+            indexes = {
+                row[1] for row in connection.execute("PRAGMA index_list(jobs)")
+            }
+            row = connection.execute(
+                "SELECT id,cost,status,submission_key FROM jobs WHERE id=?", (legacy_id,),
+            ).fetchone()
+        self.assertIn("submission_key", columns)
+        self.assertIn("idx_jobs_submission_key", indexes)
+        self.assertEqual((legacy_id, 17, "pending", None), tuple(row))
+
     def test_paid_job_before_commit_failure_rolls_back_job_and_association(self):
         with closing(self._conn()) as c:
             c.execute("CREATE TABLE job_links(job_id INTEGER PRIMARY KEY)")

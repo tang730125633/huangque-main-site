@@ -96,6 +96,20 @@ class CLIMediaUploadTests(unittest.TestCase):
         self.assertFalse(cli_uploads.verify_upload("audio", image_id, "alice", now=101))
         self.assertFalse(cli_uploads.verify_upload("image", "not-an-id", "alice", now=101))
 
+    def test_verify_upload_rejects_truncated_or_same_size_replaced_payload(self):
+        image_id = self.image()
+        image_path, _ = cli_uploads._paths(image_id, ".png")
+        original = image_path.read_bytes()
+        image_path.write_bytes(original[:-1])
+        self.assertFalse(cli_uploads.verify_upload("image", image_id, "alice", now=101))
+
+        video_id = self.video()
+        video_path, _ = cli_uploads._video_paths(video_id, ".mp4")
+        replaced = bytearray(video_path.read_bytes())
+        replaced[-1] ^= 1
+        video_path.write_bytes(replaced)
+        self.assertFalse(cli_uploads.verify_upload("video", video_id, "alice", now=101))
+
     def test_tryon_roles_expand_and_classic_video_is_six_seconds_max(self):
         person, clothes = self.image(), self.image()
         fast = cli_uploads.expand_role_media_payload({

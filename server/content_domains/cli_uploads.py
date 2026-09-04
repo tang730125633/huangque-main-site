@@ -643,12 +643,11 @@ def load_preview(kind, upload_id, username, now=None):
 
 
 def verify_upload(kind, upload_id, username, now=None):
-    """Lightweight owner/expiry/size verification without reading the payload.
+    """Verify an account-owned upload before it becomes planning evidence.
 
-    Meta-only existence gate for the planning UI: format, version, owner_hash,
-    expiry and stored size are checked, but not the file bytes.  The real
-    submit path always re-verifies the full payload, so a stale plan can never
-    bypass content integrity.  Any corrupt metadata fails closed (False).
+    The check streams the payload to bind size, MIME and SHA-256 to its stored
+    metadata.  It never materializes the upload in memory, and any mismatch
+    fails closed so a stale or replaced file cannot make a plan executable.
     """
     now = int(time.time() if now is None else now)
     upload_id = str(upload_id or "").strip().lower()
@@ -672,18 +671,20 @@ def verify_upload(kind, upload_id, username, now=None):
             data_path, _ = _paths(upload_id, extension)
             valid_extension = extension in MIME_EXTENSIONS.values()
             max_bytes = MAX_BYTES
+            sniff_fn = detect_mime
         else:
             data_path, _ = _video_paths(upload_id, extension)
             valid_extension = extension in VIDEO_MIME_EXTENSIONS.values()
             max_bytes = VIDEO_MAX_BYTES
+            sniff_fn = detect_video_mime
         if meta.get("version") != 1 or not valid_extension:
             return False
         if not hmac.compare_digest(str(meta.get("owner_hash") or ""), _owner_hash(username)):
             return False
         if int(meta.get("expires_at") or 0) <= now:
             return False
-        size = data_path.stat().st_size
-        return 0 < size <= max_bytes
+        _verify_file_stream(data_path, meta, max_bytes, sniff_fn)
+        return True
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         return False
 

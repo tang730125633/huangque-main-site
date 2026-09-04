@@ -353,29 +353,28 @@ def _material_gate(module, materials, brief):
     (text) — audio alone can never substitute because
     ``digital-ip-text-generate`` requires ``text``.
     """
-    if module not in {"talking", "motion", "story", "create", "tryon"}:
+    if module not in {"talking", "motion", "story", "create", "tryon", "compose"}:
         return True, []
     items = [item for item in (materials or []) if isinstance(item, dict)]
     brief = brief if isinstance(brief, dict) else {}
     images = [item for item in items if item.get("type") == "image"]
     videos = [item for item in items if item.get("type") == "video"]
-    texts = [item for item in items if item.get("type") == "text"]
     verified_images = [item for item in images if item.get("upload_verified")]
     verified_videos = [item for item in videos if item.get("upload_verified")]
     ready_avatars = [
         item for item in images
         if item.get("avatar_verified") and item.get("avatar_id")
     ]
+    # 素材元数据没有实际文本内容，不能替代真实工具 payload 的非空文案。
     script = bool(
         brief.get("script") or brief.get("content") or brief.get("subject")
-    ) or bool(texts)
+    )
     voice = bool(brief.get("voice"))
     requirements = {
         # 与 hq_quote_talking_video / digital-ip-text-generate 必填一致：
         # 形象证据 + text 文案 + voice 音色。
         "talking": [
-            ("image", bool(verified_images) or bool(ready_avatars),
-             "人物照片或已就绪的数字人形象"),
+            ("image", bool(ready_avatars), "已就绪的数字人形象"),
             ("text", script, "口播文案"),
             ("text", voice, "音色"),
         ],
@@ -396,6 +395,9 @@ def _material_gate(module, materials, brief):
                 or (bool(verified_videos) and bool(verified_images)),
                 "人物图片与服装图片（或人物视频加服装图片）",
             ),
+        ],
+        "compose": [
+            ("video", bool(verified_videos), "已核验的源视频"),
         ],
     }
     passed = True

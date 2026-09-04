@@ -856,7 +856,7 @@ class VideoAgentToolTests(unittest.TestCase):
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 kind TEXT, username TEXT, cost INTEGER,
                 status TEXT DEFAULT 'pending', payload TEXT, result TEXT, error TEXT,
-                created_at INTEGER, updated_at INTEGER)""")
+                created_at INTEGER, updated_at INTEGER, submission_key TEXT)""")
             from content_domains import submission_idempotency
             submission_idempotency.ensure_table(conn)
             conn.execute(
@@ -867,9 +867,10 @@ class VideoAgentToolTests(unittest.TestCase):
             )
             # 受理中断但任务已经创建：账本必须收敛为 submitted。
             conn.execute(
-                "INSERT INTO jobs(kind,username,cost,status,created_at,updated_at) "
-                "VALUES(?,?,?,?,?,?)",
-                ("cinematic", "alice", int(row["cost"]), "pending", 1002, 1002),
+                "INSERT INTO jobs(kind,username,cost,status,created_at,updated_at,submission_key) "
+                "VALUES(?,?,?,?,?,?,?)",
+                ("cinematic", "alice", int(row["cost"]), "pending", 1002, 1002,
+                 submission_key),
             )
             conn.commit()
         card_id = row["id"]
@@ -878,6 +879,40 @@ class VideoAgentToolTests(unittest.TestCase):
         )
         self.assertEqual(reconciled["status"], "submitted")
         self.assertGreaterEqual(reconciled["result"]["job_id"], 1)
+
+    def test_reconcile_never_claims_unrelated_same_price_same_kind_job(self):
+        submission_key = self._make_unknown_card()
+        with closing(self.db()) as conn:
+            row = conn.execute(
+                "SELECT id,cost FROM video_agent_pending_actions WHERE submission_key=?",
+                (submission_key,),
+            ).fetchone()
+            conn.execute("""CREATE TABLE IF NOT EXISTS jobs(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT, username TEXT, cost INTEGER,
+                status TEXT DEFAULT 'pending', payload TEXT, result TEXT, error TEXT,
+                created_at INTEGER, updated_at INTEGER, submission_key TEXT)""")
+            from content_domains import submission_idempotency
+            submission_idempotency.ensure_table(conn)
+            conn.execute(
+                "INSERT INTO submission_idempotency"
+                "(username,endpoint,idem_key,request_hash,response_json,created_at,updated_at) "
+                "VALUES(?,?,?,?,NULL,?,?)",
+                ("alice", "/api/gen/cinematic", submission_key, "x" * 64, 1001, 1001),
+            )
+            # 与未知卡同账号、同价格、同类型、同时间窗，但属于另一次请求。
+            conn.execute(
+                "INSERT INTO jobs(kind,username,cost,status,created_at,updated_at,submission_key) "
+                "VALUES(?,?,?,?,?,?,?)",
+                ("cinematic", "alice", int(row["cost"]), "pending", 1002, 1002,
+                 "hqcli-" + "e" * 32),
+            )
+            conn.commit()
+        reconciled = video_agent_tools.reconcile_pending_action(
+            row["id"], username="alice", db_factory=self.db, now=lambda: 2000,
+        )
+        self.assertEqual("failed", reconciled["status"])
+        self.assertNotIn("result", reconciled)
 
     def test_reconcile_stale_processing_without_job_converges_failed(self):
         submission_key = self._make_unknown_card()
@@ -890,7 +925,7 @@ class VideoAgentToolTests(unittest.TestCase):
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 kind TEXT, username TEXT, cost INTEGER,
                 status TEXT DEFAULT 'pending', payload TEXT, result TEXT, error TEXT,
-                created_at INTEGER, updated_at INTEGER)""")
+                created_at INTEGER, updated_at INTEGER, submission_key TEXT)""")
             from content_domains import submission_idempotency
             submission_idempotency.ensure_table(conn)
             conn.execute(
