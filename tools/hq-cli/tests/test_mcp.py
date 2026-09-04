@@ -195,7 +195,7 @@ class McpServerTests(unittest.TestCase):
 
         def runner(arguments, stdin_text):
             self.assertEqual(["version"], arguments)
-            return 0, {"schema": "hq.version/v1", "cli_version": "0.15.2"}
+            return 0, {"schema": "hq.version/v1", "cli_version": "0.15.3"}
 
         self.assertEqual(0, mcp_server.serve(source, output, runner=runner))
         responses = [json.loads(line) for line in output.getvalue().splitlines()]
@@ -224,13 +224,13 @@ class McpServerTests(unittest.TestCase):
 
         def runner(arguments, stdin_text):
             calls.append((arguments, stdin_text))
-            return 0, {"schema": "hq.version/v1", "cli_version": "0.15.2"}
+            return 0, {"schema": "hq.version/v1", "cli_version": "0.15.3"}
 
         self.assertEqual(0, mcp_server.serve(source, output, runner=runner))
         responses = [json.loads(line) for line in output.getvalue().splitlines()]
         self.assertEqual(mcp_server.PROTOCOL_VERSION, responses[0]["result"]["supportedVersions"][0])
         self.assertEqual(
-            {"name": "huangque", "version": "0.15.2"},
+            {"name": "huangque", "version": "0.15.3"},
             responses[1]["result"]["_meta"][mcp_server.SERVER_INFO_META],
         )
         self.assertEqual([(["version"], "")], calls)

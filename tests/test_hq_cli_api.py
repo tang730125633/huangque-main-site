@@ -111,11 +111,14 @@ class HQCLIAPITests(unittest.TestCase):
         )
 
     def _token(self, scopes=None):
+        return self._credentials(scopes)["access_token"]
+
+    def _credentials(self, scopes=None):
         start = self._start(scopes)
         self.assertEqual(200, self._approve(start)[0])
         status, payload = self._request("/api/auth/cli/device/poll", {"device_code": start["device_code"]})
         self.assertEqual(200, status, payload)
-        return payload["access_token"]
+        return payload
 
     @staticmethod
     def _matrix_template_catalog(include_hyperframes=False):
@@ -823,7 +826,7 @@ class HQCLIAPITests(unittest.TestCase):
             "edges": [], "selected_node_ids": ["n1"], "history": [],
         }
 
-    def test_device_codes_and_access_token_are_only_stored_as_hashes(self):
+    def test_device_codes_and_tokens_are_only_stored_as_hashes(self):
         start = self._start()
         with sqlite3.connect(self.auth.DB) as connection:
             row = connection.execute(
@@ -836,8 +839,11 @@ class HQCLIAPITests(unittest.TestCase):
         _, polled = self._request("/api/auth/cli/device/poll", {"device_code": start["device_code"]})
         with sqlite3.connect(self.auth.DB) as connection:
             stored = connection.execute("SELECT token_hash FROM cli_device_grants").fetchone()[0]
+            stored_refresh = connection.execute("SELECT token_hash FROM cli_refresh_tokens").fetchone()[0]
         self.assertNotEqual(polled["access_token"], stored)
+        self.assertNotEqual(polled["refresh_token"], stored_refresh)
         self.assertNotIn(polled["access_token"], Path(self.auth.DB).read_bytes().decode("latin1"))
+        self.assertNotIn(polled["refresh_token"], Path(self.auth.DB).read_bytes().decode("latin1"))
 
     def test_approval_requires_same_origin_and_browser_cookie(self):
         start = self._start()
@@ -863,14 +869,22 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual("approved", payload["status"])
 
     def test_cli_token_status_logout_and_web_token_isolation(self):
-        token = self._token()
+        credentials = self._credentials()
+        token = credentials["access_token"]
         status, payload = self._request("/api/auth/cli/status", token=token)
         self.assertEqual(200, status)
         self.assertEqual("alice", payload["user"]["username"])
         self.assertIn("generation:submit", payload["scopes"])
+        self.assertEqual("rotating_refresh_token", payload["authorization_mode"])
+        self.assertEqual(credentials["access_expires_at"], payload["access_expires_at"])
+        self.assertEqual(credentials["refresh_expires_at"], payload["refresh_expires_at"])
+        self.assertNotIn("access_token", payload)
+        self.assertNotIn("refresh_token", payload)
         status, _ = self._request("/api/auth/me", token=token)
         self.assertEqual(401, status)
-        self.assertEqual(200, self._request("/api/auth/cli/logout", {}, token=token)[0])
+        self.assertEqual(200, self._request(
+            "/api/auth/cli/logout", {"refresh_token": credentials["refresh_token"]}, token=token,
+        )[0])
         self.assertEqual(401, self._request("/api/auth/cli/status", token=token)[0])
 
     def _internal_headers(self):
@@ -974,6 +988,84 @@ class HQCLIAPITests(unittest.TestCase):
                     extra_headers=self._internal_headers(),
                 )
                 self.assertEqual(400, status)
+
+    def test_refresh_rotates_and_replay_revokes_the_device(self):
+        original = self._credentials(["profile:read", "tasks:read"])
+        status, refreshed = self._request(
+            "/api/auth/cli/refresh", {"refresh_token": original["refresh_token"]},
+        )
+        self.assertEqual(200, status, refreshed)
+        self.assertNotEqual(original["access_token"], refreshed["access_token"])
+        self.assertNotEqual(original["refresh_token"], refreshed["refresh_token"])
+        self.assertEqual(["profile:read", "tasks:read"], refreshed["scopes"])
+        self.assertEqual(401, self._request(
+            "/api/auth/cli/status", token=original["access_token"],
+        )[0])
+        status, current = self._request(
+            "/api/auth/cli/status", token=refreshed["access_token"],
+        )
+        self.assertEqual(200, status)
+        self.assertEqual(100, current["user"]["points"])
+        self.assertEqual(["profile:read", "tasks:read"], current["scopes"])
+        status, replay = self._request(
+            "/api/auth/cli/refresh", {"refresh_token": original["refresh_token"]},
+        )
+        self.assertEqual((401, "refresh_token_reused"), (status, replay["code"]))
+        self.assertNotIn(original["refresh_token"], json.dumps(replay))
+        self.assertEqual(401, self._request(
+            "/api/auth/cli/status", token=refreshed["access_token"],
+        )[0])
+
+        status, invalid = self._request(
+            "/api/auth/cli/refresh",
+            {"refresh_token": refreshed["refresh_token"], "extra": True},
+        )
+        self.assertEqual((400, "invalid_request"), (status, invalid["code"]))
+
+    def test_refresh_rejects_expiry_account_disable_and_password_change(self):
+        expired = self._credentials()
+        with sqlite3.connect(self.auth.DB) as connection:
+            connection.execute("UPDATE cli_refresh_tokens SET expires_at=0")
+            connection.commit()
+        self.assertEqual(401, self._request(
+            "/api/auth/cli/refresh", {"refresh_token": expired["refresh_token"]},
+        )[0])
+
+        disabled = self._credentials()
+        with sqlite3.connect(self.auth.DB) as connection:
+            connection.execute("UPDATE users SET account_status='banned' WHERE username='alice'")
+            connection.commit()
+        self.assertEqual(401, self._request(
+            "/api/auth/cli/refresh", {"refresh_token": disabled["refresh_token"]},
+        )[0])
+        with sqlite3.connect(self.auth.DB) as connection:
+            self.assertIsNotNone(connection.execute(
+                "SELECT revoked_at FROM cli_device_grants WHERE token_hash=?",
+                (self.auth.hq_cli_api._hash(disabled["access_token"]),),
+            ).fetchone()[0])
+
+        with sqlite3.connect(self.auth.DB) as connection:
+            connection.execute("UPDATE users SET account_status='active' WHERE username='alice'")
+            connection.commit()
+        changed = self._credentials()
+        status, _ = self._request(
+            "/api/auth/change_password",
+            {"old_password": "secret123", "new_password": "changed456"},
+            browser=self.browser,
+        )
+        self.assertEqual(200, status)
+        self.assertEqual(401, self._request(
+            "/api/auth/cli/refresh", {"refresh_token": changed["refresh_token"]},
+        )[0])
+
+    def test_admin_password_reset_revokes_device_refresh(self):
+        credentials = self._credentials()
+        reset, error = self.auth.reset_password_admin("alice", "temporary456")
+        self.assertIsNone(error)
+        self.assertTrue(reset["reauth"])
+        self.assertEqual(401, self._request(
+            "/api/auth/cli/refresh", {"refresh_token": credentials["refresh_token"]},
+        )[0])
 
     def test_denied_and_expired_device_grants_never_issue_tokens(self):
         denied = self._start()

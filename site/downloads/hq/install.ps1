@@ -10,11 +10,11 @@ $ErrorActionPreference = "Stop"
 $env:PYTHONUTF8 = "1"
 $env:PIP_DISABLE_PIP_VERSION_CHECK = "1"
 
-$Version = "0.15.2"
+$Version = "0.15.3"
 $WheelName = "huangque_hq_cli-$Version-py3-none-any.whl"
-$WheelSize = 64405
-$WheelSha256 = "5b46bddc58219f09c873aa36fc5eec8f1599fac7699a47679d7ff5cf0021e7f0"
-$WheelUrl = "https://huangquechuanmei.com/downloads/hq/v0.15.2/$WheelName"
+$WheelSize = 65345
+$WheelSha256 = "1f569064604fd2a4bcdcd3ba6d8b2e79b27f51803d75922d4e6c3c466aa9cd75"
+$WheelUrl = "https://huangquechuanmei.com/downloads/hq/v0.15.3/$WheelName"
 $MarkerText = "Huangque HQ CLI managed installation"
 
 function Fail([string]$Message) {
