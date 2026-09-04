@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import pathlib
 import re
+import subprocess
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -31,6 +34,10 @@ TOTAL_TIMEOUT = max(300, min(1800, int(os.environ.get(
 ))))
 POLL_INTERVAL = max(1, min(10, int(os.environ.get("MATRIX_TEMPLATE_POLL_INTERVAL", "3"))))
 MAX_VIDEO_BYTES = 512 * 1024 * 1024
+MAX_VOICEOVER_BYTES = 32 * 1024 * 1024
+MAX_VOICEOVER_SECONDS = 600.0
+VOICEOVER_CACHE_RETENTION_SECONDS = 24 * 60 * 60
+VOICEOVER_MUX_TIMEOUT = 180
 _CACHE = {
     "at": 0.0,
     "templates": [],
@@ -39,6 +46,8 @@ _CACHE = {
     "engine_concurrency": {"ffmpeg": 1, "hyperframes": 1},
 }
 _NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+_VOICEOVER_CACHE_LOCKS = tuple(threading.Lock() for _ in range(32))
+_VOICEOVER_SYNTH_LOCK = threading.Lock()
 
 
 class MatrixTemplateHTTPError(RuntimeError):
@@ -408,6 +417,53 @@ def public_batch_capability(force=False):
     }
 
 
+def _normalize_voiceover(value, username):
+    if value in (None, ""):
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("配音设置无效")
+    allowed = {
+        "text", "voice", "speed", "pitch", "volume", "delivery",
+        "voice_scope", "voice_version",
+    }
+    if set(value) - allowed:
+        raise ValueError("配音设置包含无效字段")
+    username = str(username or "").strip()
+    if not username:
+        raise ValueError("无法确认配音音色归属")
+    from . import audio as audio_domain
+    feature_flags.require_enabled("audio")
+    if not audio_domain.cosyvoice.enabled():
+        raise feature_flags.FeatureDisabled("配音服务暂不可用，请稍后重试")
+    normalized = audio_domain.validate_audio_payload(dict(value), username)
+    requested_scope = str(value.get("voice_scope") or "").strip()
+    if requested_scope and requested_scope != normalized.get("voice_scope"):
+        raise ValueError("配音音色归属已变化，请重新选择")
+    if normalized.get("voice_scope") == "personal":
+        audio_domain.require_owned_ready_personal_voice(
+            username, normalized["voice"],
+        )
+    provider_voice = audio_domain.resolve_audio_provider_voice(
+        username, normalized["voice"],
+    )
+    voice_version = hashlib.sha256(
+        str(provider_voice).encode("utf-8"),
+    ).hexdigest()
+    requested_version = str(value.get("voice_version") or "").strip()
+    if requested_version and requested_version != voice_version:
+        raise ValueError("配音音色版本已变化，请重新选择")
+    result = {
+        key: normalized[key]
+        for key in (
+            "text", "voice", "speed", "pitch", "volume", "delivery",
+            "voice_scope",
+        )
+        if key in normalized
+    }
+    result["voice_version"] = voice_version
+    return result
+
+
 def validate_payload(raw, username="", *, trusted_semantic_layout=None):
     require_available()
     body = dict(raw or {})
@@ -430,7 +486,8 @@ def validate_payload(raw, username="", *, trusted_semantic_layout=None):
         and font_family not in {item["value"] for item in public_fonts()}
     ):
         raise ValueError("请选择当前可用字体")
-    bgm = body.get("bgm", True)
+    voiceover = _normalize_voiceover(body.get("voiceover"), username)
+    bgm = False if voiceover else body.get("bgm", True)
     if not isinstance(bgm, bool):
         raise ValueError("背景音乐设置无效")
     duration = body.get("duration")
@@ -603,7 +660,10 @@ def validate_payload(raw, username="", *, trusted_semantic_layout=None):
             or not isinstance(authoritative_duration, (int, float))
             or not 8 <= float(authoritative_duration) <= 15):
         raise RuntimeError("模板成片预检时长无效")
-    return dict(payload, duration=float(authoritative_duration))
+    result = dict(payload, duration=float(authoritative_duration))
+    if voiceover:
+        result["voiceover"] = voiceover
+    return result
 
 
 def _safe_file_url(value):
@@ -623,6 +683,207 @@ def _remaining_budget(deadline_at, message="模板成片生成超时"):
     if remaining <= 0:
         raise RuntimeError(message)
     return remaining
+
+
+def _media_probe(path, timeout=30):
+    try:
+        completed = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-show_entries",
+                "format=duration:stream=codec_type,codec_name,width,height",
+                "-of", "json", str(path),
+            ],
+            check=True, capture_output=True, text=True,
+            timeout=max(0.1, min(30.0, float(timeout))),
+        )
+        value = json.loads(completed.stdout or "{}")
+        duration = float((value.get("format") or {}).get("duration") or 0)
+    except (OSError, subprocess.SubprocessError, TypeError, ValueError) as exc:
+        raise RuntimeError("配音文件无法读取") from exc
+    if not 0.1 <= duration <= MAX_VOICEOVER_SECONDS:
+        raise RuntimeError("配音时长无效或超过 10 分钟")
+    return value.get("streams") or [], duration
+
+
+def _voiceover_cache_path(job_id, username, payload):
+    fingerprint = hashlib.sha256(json.dumps(
+        {"username": username, "voiceover": payload},
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    batch_id = str(payload.get("_batch_id") or "")
+    scope = batch_id if re.fullmatch(r"[0-9a-f]{32}", batch_id) else str(job_id)
+    scope = re.sub(r"[^A-Za-z0-9_.-]", "-", scope)[:64] or "job"
+    owner = hashlib.sha256(str(username).encode("utf-8")).hexdigest()[:12]
+    root = OUT_DIR / ".matrix-template-voiceover"
+    return root / f"{owner}-{scope}-{fingerprint[:24]}.mp3", fingerprint
+
+
+def _cleanup_voiceover_cache(root, now=None):
+    cutoff = float(time.time() if now is None else now) - VOICEOVER_CACHE_RETENTION_SECONDS
+    try:
+        for path in root.glob("*.mp3"):
+            try:
+                if path.stat().st_mtime < cutoff:
+                    path.unlink(missing_ok=True)
+            except OSError:
+                continue
+    except OSError:
+        return
+
+
+def _owned_output_path(relative):
+    value = str(relative or "").replace("\\", "/").lstrip("/")
+    parts = [part for part in value.split("/") if part and part not in {".", ".."}]
+    if not parts or len(parts) != len([part for part in value.split("/") if part]):
+        raise RuntimeError("配音文件路径无效")
+    root = OUT_DIR.resolve()
+    path = OUT_DIR.joinpath(*parts).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise RuntimeError("配音文件路径无效") from exc
+    return path
+
+
+def _prepare_voiceover_audio(job_id, username, voiceover, batch_id, deadline_at):
+    if not voiceover:
+        return None
+    cache_payload = dict(voiceover, _batch_id=str(batch_id or ""))
+    target, fingerprint = _voiceover_cache_path(
+        job_id, str(username or ""), cache_payload,
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        target.parent.chmod(0o700)
+    except OSError:
+        pass
+    _cleanup_voiceover_cache(target.parent)
+    lock = _VOICEOVER_CACHE_LOCKS[int(fingerprint[:8], 16) % len(_VOICEOVER_CACHE_LOCKS)]
+    if not _persist_runtime(job_id, phase="synthesizing_voiceover"):
+        raise RuntimeError("模板成片配音状态保存失败")
+    if not lock.acquire(timeout=max(0.1, _remaining_budget(deadline_at))):
+        raise RuntimeError("模板成片等待共享配音超时")
+    try:
+        if target.is_file() and 0 < target.stat().st_size <= MAX_VOICEOVER_BYTES:
+            try:
+                streams, duration = _media_probe(
+                    target, timeout=_remaining_budget(deadline_at),
+                )
+                if any(item.get("codec_type") == "audio" for item in streams):
+                    prepared = {"path": target, "duration": duration,
+                                "fingerprint": fingerprint}
+                else:
+                    prepared = None
+            except RuntimeError:
+                prepared = None
+            if prepared is None:
+                target.unlink(missing_ok=True)
+        else:
+            prepared = None
+        if prepared is None:
+            _remaining_budget(deadline_at)
+            from . import audio as audio_domain
+            if not _VOICEOVER_SYNTH_LOCK.acquire(
+                timeout=max(0.1, _remaining_budget(deadline_at)),
+            ):
+                raise RuntimeError("模板成片等待配音服务超时")
+            try:
+                expected_version = str(voiceover.get("voice_version") or "")
+                if expected_version:
+                    current_provider_voice = audio_domain.resolve_audio_provider_voice(
+                        str(username or ""), voiceover["voice"],
+                    )
+                    current_version = hashlib.sha256(
+                        str(current_provider_voice).encode("utf-8"),
+                    ).hexdigest()
+                    if current_version != expected_version:
+                        raise ValueError("配音音色版本已变化，请重新选择")
+                generated = audio_domain.gen_audio(
+                    {**voiceover, "_username": str(username or "")},
+                    publish=False,
+                )
+            finally:
+                _VOICEOVER_SYNTH_LOCK.release()
+            source = _owned_output_path(generated.get("file"))
+            try:
+                size = source.stat().st_size
+                if not 0 < size <= MAX_VOICEOVER_BYTES:
+                    raise RuntimeError("配音文件大小无效")
+                streams, duration = _media_probe(
+                    source, timeout=_remaining_budget(deadline_at),
+                )
+                if not any(item.get("codec_type") == "audio" for item in streams):
+                    raise RuntimeError("配音文件缺少音轨")
+                os.replace(source, target)
+                try:
+                    target.chmod(0o600)
+                except OSError:
+                    pass
+                prepared = {"path": target, "duration": duration,
+                            "fingerprint": fingerprint}
+            finally:
+                if source != target:
+                    source.unlink(missing_ok=True)
+    finally:
+        lock.release()
+    if not _persist_runtime(
+        job_id, phase="voiceover_ready",
+        voiceover_duration_ms=int(round(prepared["duration"] * 1000)),
+        voiceover_fingerprint=fingerprint,
+    ):
+        raise RuntimeError("模板成片配音状态保存失败")
+    return prepared
+
+
+def _mux_voiceover(video_file, voiceover, deadline_at):
+    video = _owned_output_path(video_file)
+    audio = pathlib.Path(voiceover["path"])
+    duration = float(voiceover["duration"])
+    temporary = video.with_name(video.stem + ".voiceover.part.mp4")
+    temporary.unlink(missing_ok=True)
+    command = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+        "-stream_loop", "-1", "-i", str(video), "-i", str(audio),
+        "-map", "0:v:0", "-map", "1:a:0", "-map_metadata", "-1",
+        "-sn", "-dn", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+        "-t", f"{duration:.6f}", "-movflags", "+faststart", str(temporary),
+    ]
+    try:
+        remaining = _remaining_budget(deadline_at)
+        subprocess.run(
+            command, check=True, capture_output=True,
+            timeout=max(1.0, min(float(VOICEOVER_MUX_TIMEOUT), remaining)),
+        )
+        streams, actual_duration = _media_probe(
+            temporary, timeout=_remaining_budget(deadline_at),
+        )
+        video_streams = [item for item in streams if item.get("codec_type") == "video"]
+        audio_streams = [item for item in streams if item.get("codec_type") == "audio"]
+        output_size = temporary.stat().st_size
+        if (
+            len(video_streams) != 1 or len(audio_streams) != 1
+            or video_streams[0].get("codec_name") != "h264"
+            or audio_streams[0].get("codec_name") != "aac"
+            or (video_streams[0].get("width"), video_streams[0].get("height"))
+                != (1080, 1920)
+            or abs(actual_duration - duration) > 0.12
+            or not 1024 <= output_size <= MAX_VIDEO_BYTES
+        ):
+            raise MatrixTemplateProviderFailed("模板成片配音合成校验失败")
+        _remaining_budget(deadline_at)
+        os.replace(temporary, video)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError("模板成片配音合成失败") from exc
+    finally:
+        temporary.unlink(missing_ok=True)
+    return round(actual_duration, 3), output_size
+
+
+def _provider_payload(payload):
+    return {
+        key: value for key, value in payload.items()
+        if not str(key).startswith("_") and key != "voiceover"
+    }
 
 
 def _set_response_timeout(response, timeout):
@@ -864,6 +1125,12 @@ def generate(payload):
                 raw, str(raw.get("_username") or ""),
                 trusted_semantic_layout=stored_payload.get("semantic_layout"),
             )
+    voiceover = payload.get("voiceover")
+    voiceover_audio = _prepare_voiceover_audio(
+        local_job, str(raw.get("_username") or ""), voiceover,
+        payload.get("batch_id"), deadline_at,
+    )
+    if not remote_id:
         _remaining_budget(deadline_at)
         request_id = "matrix-template-" + re.sub(
             r"[^A-Za-z0-9_.:-]", "-", local_job
@@ -873,7 +1140,8 @@ def generate(payload):
         ):
             raise RuntimeError("模板成片生命周期状态保存失败")
         remote = _request(
-            "POST", "/v1/jobs", payload, request_id=request_id,
+            "POST", "/v1/jobs", _provider_payload(payload),
+            request_id=request_id,
             timeout=min(20, _remaining_budget(deadline_at)),
         )
         _remaining_budget(deadline_at)
@@ -913,7 +1181,14 @@ def generate(payload):
                 result.get("file_url"), local_job, timeout=min(240, remaining),
                 deadline_at=deadline_at,
             )
-            return {
+            final_duration = float(result.get("duration") or 0)
+            if voiceover_audio:
+                if not _persist_runtime(local_job, phase="muxing_voiceover"):
+                    raise RuntimeError("模板成片配音状态保存失败")
+                final_duration, file_size = _mux_voiceover(
+                    video_file, voiceover_audio, deadline_at,
+                )
+            response = {
                 "type": "matrix_template_video",
                 "mode": "matrix_template",
                 "provider": "matrix-template",
@@ -921,7 +1196,7 @@ def generate(payload):
                 "status": "done",
                 "video_file": video_file,
                 "video_url": public_url(video_file, "video/mp4", private=True),
-                "duration": float(result.get("duration") or 0),
+                "duration": final_duration,
                 "phase": "done",
                 "resolution": "1080p",
                 "ratio": "9:16",
@@ -933,6 +1208,15 @@ def generate(payload):
                 "file_size": file_size,
                 "material_manifest": result.get("material_manifest") or [],
             }
+            if voiceover:
+                response["voiceover"] = {
+                    "enabled": True,
+                    "voice": voiceover["voice"],
+                    "voice_scope": voiceover.get("voice_scope") or "",
+                    "duration_ms": int(round(final_duration * 1000)),
+                    "bgm": False,
+                }
+            return response
         if status == "failed":
             raise MatrixTemplateProviderFailed(
                 str(current.get("error") or "模板成片生成失败")[:500]

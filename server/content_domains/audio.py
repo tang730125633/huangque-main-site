@@ -1238,11 +1238,32 @@ def _schedule_public_preview_warmup(rows):
 
 def list_audio_voices(username):
     with closing(adb()) as c:
-        rows = c.execute("""SELECT id, scope, username, voice_key, display_name, provider_voice, preview_file, preview_url, slot_id, created_at, updated_at
-            FROM audio_voices
-            WHERE scope='public' OR (scope='personal' AND username=?)
-            ORDER BY CASE scope WHEN 'public' THEN 0 ELSE 1 END, id""", (username,)).fetchall()
-    items = [dict(r) for r in rows]
+        rows = c.execute("""SELECT v.id, v.scope, v.username, v.voice_key,
+                v.display_name, v.provider_voice, v.preview_file, v.preview_url,
+                v.slot_id, v.created_at, v.updated_at,
+                COALESCE(s.status, '') AS slot_status
+            FROM audio_voices AS v
+            LEFT JOIN audio_voice_slots AS s
+              ON v.scope='personal' AND s.username=v.username
+             AND s.slot_id=v.slot_id AND s.voice_id=v.id
+            WHERE v.scope='public' OR (v.scope='personal' AND v.username=?)
+            ORDER BY CASE v.scope WHEN 'public' THEN 0 ELSE 1 END, v.id""",
+            (username,)).fetchall()
+    items = []
+    for row in rows:
+        item = dict(row)
+        slot_status = item.pop("slot_status", "")
+        is_public = item.get("scope") == "public"
+        item["status"] = "ready" if is_public else slot_status
+        item["ready"] = bool(
+            is_public or (
+                slot_status == "ready"
+                and str(item.get("provider_voice") or "").startswith(
+                    cosyvoice.CLONE_MODEL
+                )
+            )
+        )
+        items.append(item)
     _schedule_public_preview_warmup(items)
     return items
 
