@@ -2701,6 +2701,10 @@ def reset_password_admin(username, new_password):
             c.rollback()
             return None, "not_found"
         c.execute("DELETE FROM tokens WHERE username=?", (username,))
+        c.execute(
+            "UPDATE cli_device_grants SET revoked_at=? WHERE username=? AND revoked_at IS NULL",
+            (int(time.time()), username),
+        )
         c.commit()
         return {"username": username, "must_change": True, "reauth": True}, None
     except Exception:
@@ -5993,25 +5997,23 @@ class H(BaseHTTPRequestHandler):
             row = self._cookie_user()
             if not row:
                 return self._cli_send(401, {"detail": "请先登录黄雀账号"})
-            token = secrets.token_urlsafe(32)
             scopes = tuple(hq_cli_api.SCOPES)
             now = int(time.time())
             scopes_json = json.dumps(scopes, separators=(",", ":"))
             with db() as connection:
-                connection.execute(
+                grant_seed = secrets.token_urlsafe(32)
+                cursor = connection.execute(
                     """INSERT INTO cli_device_grants(
                        device_code_hash,user_code_hash,client_name,requested_scopes_json,
                        approved_scopes_json,status,username,approved_at,created_at,expires_at,
                        token_hash,token_expires_at)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (hq_cli_api._hash(token), hq_cli_api._hash(token), "ip12-session-bridge",
-                     scopes_json, scopes_json, "issued", row["username"], now, now,
-                     now + hq_cli_api.TOKEN_TTL, hq_cli_api._hash(token), now + hq_cli_api.TOKEN_TTL),
+                       VALUES(?,?,?,?,?,?,?,?,?,?,NULL,NULL)""",
+                    (hq_cli_api._hash(grant_seed), hq_cli_api._hash(grant_seed + ":user"),
+                     "ip12-session-bridge", scopes_json, scopes_json, "approved",
+                     row["username"], now, now, now + hq_cli_api.TOKEN_TTL),
                 )
-            return self._cli_send(200, {
-                "access_token": token, "expires_in": hq_cli_api.TOKEN_TTL,
-                "username": row["username"],
-            })
+                credentials = hq_cli_api.issue_grant_tokens(connection, cursor.lastrowid, scopes, now)
+            return self._cli_send(200, {**credentials, "username": row["username"]})
         if p == "/api/auth/cli/device/start":
             if self._content_length_exceeds(8192):
                 return self._cli_send(413, {"detail": "请求过大"})
@@ -6061,9 +6063,27 @@ class H(BaseHTTPRequestHandler):
                 return self._cli_send(200, hq_cli_api.poll_device(db, d))
             except hq_cli_api.CLIAPIError as exc:
                 return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
+        if p == "/api/auth/cli/refresh":
+            if self._content_length_exceeds(4096):
+                return self._cli_send(413, {"detail": "请求过大", "code": "request_too_large"})
+            d = self._body()
+            if self._bad_json():
+                return self._cli_send(400, {"detail": "请求体不是合法 JSON", "code": "invalid_request"})
+            try:
+                hq_cli_api._strict_object(d, {"refresh_token"}, ("refresh_token",))
+                return self._cli_send(200, hq_cli_api.refresh_grant(db, d["refresh_token"]))
+            except hq_cli_api.CLIAPIError as exc:
+                return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
         if p == "/api/auth/cli/logout":
             token = bearer_token(self.headers.get("Authorization"))
-            hq_cli_api.revoke(db, token)
+            d = self._body()
+            if self._bad_json():
+                return self._cli_send(400, {"detail": "请求体不是合法 JSON", "code": "invalid_request"})
+            try:
+                hq_cli_api._strict_object(d, {"refresh_token"})
+            except hq_cli_api.CLIAPIError as exc:
+                return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
+            hq_cli_api.revoke(db, token, d.get("refresh_token"))
             return self._cli_send(200, {"ok": True})
         if p == "/api/auth/cli/image-upload":
             return self._cli_image_upload()
@@ -7219,6 +7239,10 @@ class H(BaseHTTPRequestHandler):
                 c.execute("UPDATE users SET pw_hash=?, pw_salt=?, must_change=0, card_initial_password=0 WHERE username=?",
                           (hash_pw(newp, salt), salt, row["username"]))
                 c.execute("DELETE FROM tokens WHERE username=? AND COALESCE(scope,'account')='account'", (row["username"],))
+                c.execute(
+                    "UPDATE cli_device_grants SET revoked_at=? WHERE username=? AND revoked_at IS NULL",
+                    (int(time.time()), row["username"]),
+                )
                 c.commit()
             except Exception:
                 c.rollback()
@@ -7712,8 +7736,15 @@ class H(BaseHTTPRequestHandler):
             if not auth:
                 return self._cli_send(401, {"detail": "CLI 未登录或授权已过期", "code": "cli_unauthorized"})
             row, scopes = auth
-            return self._cli_send(200, {"user": self._cli_public_user(row), "scopes": list(scopes),
-                                        "expires_at": int(row["cli_expires_at"])})
+            refresh_expires_at = row["cli_refresh_expires_at"]
+            return self._cli_send(200, {
+                "user": self._cli_public_user(row),
+                "scopes": list(scopes),
+                "authorization_mode": "rotating_refresh_token" if refresh_expires_at else "access_token_only",
+                "access_expires_at": int(row["cli_expires_at"]),
+                "expires_at": int(row["cli_expires_at"]),
+                "refresh_expires_at": int(refresh_expires_at) if refresh_expires_at else None,
+            })
         if p == "/api/auth/cli/creator-agent-background-pdf":
             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             project_id = str((query.get("project_id") or [""])[0]).strip()

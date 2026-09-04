@@ -25,6 +25,7 @@ except ImportError:  # Production can launch this module from the server directo
 PUBLIC_ORIGIN = os.environ.get("HQ_CLI_PUBLIC_ORIGIN", "https://huangquechuanmei.com").strip().rstrip("/")
 DEVICE_TTL = 10 * 60
 TOKEN_TTL = 8 * 60 * 60
+REFRESH_TOKEN_TTL = 30 * 24 * 60 * 60
 POLL_INTERVAL = 3
 BRIDGE_TOKEN_TTL = 60
 QUOTE_TTL = 5 * 60
@@ -1766,6 +1767,15 @@ def init_schema(connection):
         revoked_at INTEGER
     )""")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_cli_grants_user ON cli_device_grants(username, token_expires_at)")
+    connection.execute("""CREATE TABLE IF NOT EXISTS cli_refresh_tokens(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        grant_id INTEGER NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        expires_at INTEGER NOT NULL,
+        used_at INTEGER
+    )""")
+    connection.execute("""CREATE INDEX IF NOT EXISTS idx_cli_refresh_grant
+        ON cli_refresh_tokens(grant_id, used_at, expires_at)""")
     connection.execute("""CREATE TABLE IF NOT EXISTS cli_action_requests(
         username TEXT NOT NULL,
         action TEXT NOT NULL,
@@ -1784,6 +1794,32 @@ def init_schema(connection):
 
 def _hash(value):
     return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
+
+
+def issue_grant_tokens(connection, grant_id, scopes, now):
+    access_token = secrets.token_urlsafe(32)
+    refresh_token = secrets.token_urlsafe(48)
+    access_expires_at = now + TOKEN_TTL
+    refresh_expires_at = now + REFRESH_TOKEN_TTL
+    connection.execute(
+        """UPDATE cli_device_grants
+           SET status='issued',token_hash=?,token_expires_at=? WHERE id=?""",
+        (_hash(access_token), access_expires_at, grant_id),
+    )
+    connection.execute(
+        "INSERT INTO cli_refresh_tokens(grant_id,token_hash,expires_at) VALUES(?,?,?)",
+        (grant_id, _hash(refresh_token), refresh_expires_at),
+    )
+    return {
+        "access_token": access_token,
+        "token_type": "Bearer",
+        "expires_in": TOKEN_TTL,
+        "access_expires_at": access_expires_at,
+        "refresh_token": refresh_token,
+        "refresh_expires_in": REFRESH_TOKEN_TTL,
+        "refresh_expires_at": refresh_expires_at,
+        "scopes": list(scopes),
+    }
 
 
 def begin_action_request(db_factory, username, action, request_id, project_id, request_hash, now=None):
@@ -2274,14 +2310,12 @@ def poll_device(db_factory, body, now=None):
             connection.execute("UPDATE cli_device_grants SET status='expired' WHERE id=?", (row["id"],))
             raise CLIAPIError(410, "设备授权已过期", "expired_token")
         if status == "approved":
-            token = secrets.token_urlsafe(32)
             scopes = json.loads(row["approved_scopes_json"] or "[]")
             connection.execute(
-                """UPDATE cli_device_grants SET status='issued',token_hash=?,token_expires_at=?,last_poll_at=?
-                   WHERE id=? AND status='approved'""",
-                (_hash(token), now + TOKEN_TTL, now, row["id"]),
+                "UPDATE cli_device_grants SET last_poll_at=? WHERE id=? AND status='approved'",
+                (now, row["id"]),
             )
-            return {"access_token": token, "token_type": "Bearer", "expires_in": TOKEN_TTL, "scopes": scopes}
+            return issue_grant_tokens(connection, row["id"], scopes, now)
         if status == "pending":
             last_poll = int(row["last_poll_at"] or 0)
             if last_poll and now - last_poll < POLL_INTERVAL:
@@ -2302,7 +2336,11 @@ def authenticate(db_factory, token, now=None):
         return None
     with db_factory() as connection:
         row = connection.execute(
-            """SELECT u.*,g.approved_scopes_json AS cli_scopes,g.token_expires_at AS cli_expires_at
+            """SELECT u.*,g.id AS cli_grant_id,g.approved_scopes_json AS cli_scopes,
+                      g.token_expires_at AS cli_expires_at,
+                      (SELECT expires_at FROM cli_refresh_tokens r
+                       WHERE r.grant_id=g.id AND r.used_at IS NULL
+                       ORDER BY r.id DESC LIMIT 1) AS cli_refresh_expires_at
                FROM cli_device_grants g JOIN users u ON u.username=g.username
                WHERE g.token_hash=? AND g.status='issued' AND g.revoked_at IS NULL
                  AND g.token_expires_at>? AND COALESCE(u.account_status,'active')='active'""",
@@ -2317,15 +2355,63 @@ def authenticate(db_factory, token, now=None):
     return row, scopes
 
 
-def revoke(db_factory, token, now=None):
+def refresh_grant(db_factory, refresh_token, now=None):
+    now = int(time.time() if now is None else now)
+    refresh_token = str(refresh_token or "").strip()
+    if not 20 <= len(refresh_token) <= 200:
+        raise CLIAPIError(401, "授权已失效，请重新登录", "invalid_refresh_token")
+    error = None
+    result = None
+    with db_factory() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            """SELECT r.*,g.username,g.status,g.revoked_at,g.approved_scopes_json,
+                      COALESCE(u.account_status,'active') AS account_status
+               FROM cli_refresh_tokens r
+               JOIN cli_device_grants g ON g.id=r.grant_id
+               JOIN users u ON u.username=g.username
+               WHERE r.token_hash=?""",
+            (_hash(refresh_token),),
+        ).fetchone()
+        if not row:
+            error = CLIAPIError(401, "授权已失效，请重新登录", "invalid_refresh_token")
+        elif row["used_at"] is not None:
+            connection.execute(
+                "UPDATE cli_device_grants SET revoked_at=COALESCE(revoked_at,?) WHERE id=?",
+                (now, row["grant_id"]),
+            )
+            error = CLIAPIError(401, "检测到刷新令牌重复使用，设备授权已撤销", "refresh_token_reused")
+        elif (row["status"] != "issued" or row["revoked_at"] is not None
+              or int(row["expires_at"]) <= now or row["account_status"] != "active"):
+            connection.execute(
+                "UPDATE cli_device_grants SET revoked_at=COALESCE(revoked_at,?) WHERE id=?",
+                (now, row["grant_id"]),
+            )
+            error = CLIAPIError(401, "授权已失效，请重新登录", "invalid_refresh_token")
+        else:
+            scopes = json.loads(row["approved_scopes_json"] or "[]")
+            connection.execute("UPDATE cli_refresh_tokens SET used_at=? WHERE id=?", (now, row["id"]))
+            result = issue_grant_tokens(connection, row["grant_id"], scopes, now)
+    if error:
+        raise error
+    return result
+
+
+def revoke(db_factory, token, refresh_token="", now=None):
     now = int(time.time() if now is None else now)
     token = str(token or "").strip()
-    if not token:
+    refresh_token = str(refresh_token or "").strip()
+    if not token and not refresh_token:
         return False
     with db_factory() as connection:
         cursor = connection.execute(
-            "UPDATE cli_device_grants SET revoked_at=? WHERE token_hash=? AND revoked_at IS NULL",
-            (now, _hash(token)),
+            """UPDATE cli_device_grants SET revoked_at=?
+               WHERE revoked_at IS NULL AND (
+                   token_hash=? OR id IN (
+                       SELECT grant_id FROM cli_refresh_tokens WHERE token_hash=?
+                   )
+               )""",
+            (now, _hash(token), _hash(refresh_token)),
         )
     return cursor.rowcount > 0
 

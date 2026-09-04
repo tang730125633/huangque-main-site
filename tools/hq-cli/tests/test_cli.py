@@ -188,7 +188,7 @@ class HqCliTests(unittest.TestCase):
             self.assertEqual(0, code, error)
             self.assertTrue(self.payload(output)["schema"].startswith("hq."))
         code, output, _ = self.invoke(["version"])
-        self.assertEqual("0.15.2", self.payload(output)["cli_version"])
+        self.assertEqual("0.15.3", self.payload(output)["cli_version"])
         self.assertEqual("Huangque main-site CLI", self.payload(output)["product"])
         self.assertEqual("https://huangquechuanmei.com", self.payload(output)["origin"])
 
@@ -565,14 +565,20 @@ class HqCliTests(unittest.TestCase):
         self.assertEqual("t" * 43, request.call_args.kwargs["token"])
 
     def test_login_uses_device_flow_saves_token_without_printing_it(self):
+        refresh_token = "r" * 64
         responses = [
             (200, {"device_code": "device-secret", "user_code": "ABCD-EFGH",
                    "verification_uri": "https://huangquechuanmei.com/workbench/device?user_code=ABCD-EFGH",
                    "expires_in": 600, "interval": 3, "scopes": cli.LOGIN_SCOPES}),
             (202, {"detail": "pending", "code": "authorization_pending"}),
-            (200, {"access_token": "s" * 43, "expires_in": 28800, "scopes": cli.LOGIN_SCOPES}),
+            (200, {"access_token": "s" * 43, "expires_in": 28800,
+                   "access_expires_at": 2000000000, "refresh_token": refresh_token,
+                   "refresh_expires_in": 2592000, "refresh_expires_at": 2002592000,
+                   "scopes": cli.LOGIN_SCOPES}),
             (200, {"user": {"username": "alice", "points": 88}, "scopes": cli.LOGIN_SCOPES,
-                   "expires_at": 2000000000}),
+                   "authorization_mode": "rotating_refresh_token",
+                   "access_expires_at": 2000000000, "expires_at": 2000000000,
+                   "refresh_expires_at": 2002592000}),
         ]
         with patch("hq_cli.client.request_json", side_effect=responses) as request, \
                 patch("hq_cli.cli.time.sleep"), patch("hq_cli.cli.webbrowser.open", return_value=True):
@@ -582,8 +588,64 @@ class HqCliTests(unittest.TestCase):
         self.assertEqual("ABCD-EFGH", self.payload(progress)["user_code"])
         self.assertNotIn("device-secret", output + progress)
         self.assertNotIn("s" * 43, output + progress)
+        self.assertNotIn(refresh_token, output + progress)
         self.assertEqual("s" * 43, client.load_credentials()["access_token"])
+        self.assertEqual(refresh_token, client.load_credentials()["refresh_token"])
+        self.assertEqual("rotating_refresh_token", self.payload(output)["result"]["authorization_mode"])
         self.assertEqual(4, request.call_count)
+
+    def test_expiring_access_token_refreshes_once_before_status(self):
+        client.save_credentials("a" * 43, 1000, ["profile:read"], "r" * 64, 5000)
+        responses = [
+            (200, {"access_token": "b" * 43, "access_expires_at": 29800,
+                   "refresh_token": "n" * 64, "refresh_expires_at": 2593000,
+                   "scopes": ["profile:read"]}),
+            (200, {"user": {"username": "alice"}, "scopes": ["profile:read"],
+                   "authorization_mode": "rotating_refresh_token",
+                   "access_expires_at": 29800, "expires_at": 29800,
+                   "refresh_expires_at": 2593000}),
+        ]
+        with patch("hq_cli.cli.time.time", return_value=1000), \
+                patch("hq_cli.client.request_json", side_effect=responses) as request:
+            code, output, error = self.invoke(["status", "--json"])
+        self.assertEqual(0, code, error)
+        self.assertEqual("rotating_refresh_token", self.payload(output)["result"]["authorization_mode"])
+        self.assertEqual(["/api/auth/cli/refresh", "/api/auth/cli/status"], [
+            call.args[0] for call in request.call_args_list
+        ])
+        saved = client.load_credentials()
+        self.assertEqual("b" * 43, saved["access_token"])
+        self.assertEqual("n" * 64, saved["refresh_token"])
+
+    def test_refresh_failure_never_sends_the_paid_operation(self):
+        client.save_credentials("a" * 43, 1000, cli.LOGIN_SCOPES, "r" * 64, 5000)
+        with patch("hq_cli.cli.time.time", return_value=1000), \
+                patch("hq_cli.client.request_json", side_effect=client.NetworkError("offline")) as request:
+            code, output, error = self.invoke(
+                ["run", "image-generate", "--input", "@-", "--confirm",
+                 "--quote-token", "quote.12345678"],
+                json.dumps({"prompt": "测试图片"}, ensure_ascii=False).encode(),
+            )
+        self.assertEqual(cli.EXIT_NETWORK, code)
+        self.assertIn("授权已失效，请运行 hq login --json", error)
+        self.assertEqual(1, request.call_count)
+        self.assertEqual("/api/auth/cli/refresh", request.call_args.args[0])
+
+    def test_legacy_access_only_credentials_work_until_expiry(self):
+        client.save_credentials("a" * 43, 2000, ["profile:read"])
+        with patch("hq_cli.cli.time.time", return_value=1000), \
+                patch("hq_cli.client.request_json", return_value=(200, {"ok": True})) as request:
+            code, output, error = self.invoke(["status", "--json"])
+        self.assertEqual(0, code, error)
+        self.assertEqual("/api/auth/cli/status", request.call_args.args[0])
+
+        client.save_credentials("a" * 43, 999, ["profile:read"])
+        with patch("hq_cli.cli.time.time", return_value=1000), \
+                patch("hq_cli.client.request_json") as request:
+            code, output, error = self.invoke(["status", "--json"])
+        self.assertEqual(cli.EXIT_AUTH, code)
+        self.assertIn("授权已失效，请运行 hq login --json", error)
+        request.assert_not_called()
 
     def test_credentials_are_private_and_logout_revokes_then_deletes(self):
         self.authorize()
@@ -598,6 +660,7 @@ class HqCliTests(unittest.TestCase):
         self.assertTrue(self.payload(output)["revoked"])
         self.assertFalse(client.credentials_path().exists())
         self.assertEqual("/api/auth/cli/logout", request.call_args.args[0])
+        self.assertEqual({"refresh_token": ""}, request.call_args.kwargs["body"])
 
     def test_status_requires_authorization_and_never_accepts_password_input(self):
         code, output, error = self.invoke(["status"])

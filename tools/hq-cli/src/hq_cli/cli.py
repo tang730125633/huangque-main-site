@@ -33,6 +33,8 @@ EXIT_API = 10
 EXIT_CONFIRMATION = 11
 EXIT_INSTALL = 12
 MAX_INPUT_BYTES = 65536
+REFRESH_EARLY_SECONDS = 5 * 60
+AUTH_LOST_MESSAGE = "授权已失效，请运行 hq login --json"
 LOGIN_SCOPES = [
     "profile:read", "ip12:read", "ip12:write", "ip12:chat", "prompt:optimize", "canvas:read",
     "canvas:write", "canvas:agent", "canvas:edit", "tasks:read", "assets:read", "assets:write", "assets:upload",
@@ -368,10 +370,42 @@ def _request(path, method="GET", body=None, token="", timeout=30, accepted=None)
 
 
 def _credentials():
-    credentials = client.load_credentials()
-    if not credentials:
-        raise CliError(EXIT_AUTH, "auth_required", "HQ CLI is not authorized; run `hq login --json`")
-    return credentials
+    with client.credentials_lock():
+        credentials = client.load_credentials()
+        if not credentials:
+            raise CliError(EXIT_AUTH, "auth_required", "HQ CLI is not authorized; run `hq login --json`")
+        now = int(time.time())
+        access_expires_at = int(credentials.get("access_expires_at") or 0)
+        refresh_token = credentials.get("refresh_token") or ""
+        if not refresh_token:
+            if access_expires_at <= now:
+                client.delete_credentials()
+                raise CliError(EXIT_AUTH, "expired_token", AUTH_LOST_MESSAGE)
+            return credentials
+        if int(credentials.get("refresh_expires_at") or 0) <= now:
+            client.delete_credentials()
+            raise CliError(EXIT_AUTH, "expired_token", AUTH_LOST_MESSAGE)
+        if access_expires_at > now + REFRESH_EARLY_SECONDS:
+            return credentials
+        try:
+            status, payload = client.request_json(
+                "/api/auth/cli/refresh", method="POST",
+                body={"refresh_token": refresh_token}, timeout=30,
+            )
+        except (client.NetworkError, ValueError):
+            raise CliError(EXIT_NETWORK, "refresh_failed", AUTH_LOST_MESSAGE)
+        if status != 200 or not payload.get("access_token") or not payload.get("refresh_token"):
+            if status in {400, 401, 403, 410}:
+                client.delete_credentials()
+            raise CliError(EXIT_AUTH, "refresh_failed", AUTH_LOST_MESSAGE, {"http_status": status})
+        client.save_credentials(
+            payload["access_token"],
+            payload.get("access_expires_at") or now + int(payload.get("expires_in") or 0),
+            payload.get("scopes") or credentials.get("scopes") or [],
+            payload["refresh_token"],
+            payload.get("refresh_expires_at") or now + int(payload.get("refresh_expires_in") or 0),
+        )
+        return client.load_credentials()
 
 
 def _login(no_browser):
@@ -402,15 +436,23 @@ def _login(no_browser):
         except client.NetworkError as exc:
             raise CliError(EXIT_NETWORK, "network_error", "authorization polling failed: %s" % exc)
         if status == 200 and payload.get("access_token"):
-            expires_at = int(time.time()) + int(payload.get("expires_in") or 0)
-            client.save_credentials(payload["access_token"], expires_at, payload.get("scopes") or [])
+            now = int(time.time())
+            expires_at = payload.get("access_expires_at") or now + int(payload.get("expires_in") or 0)
+            client.save_credentials(
+                payload["access_token"], expires_at, payload.get("scopes") or [],
+                payload.get("refresh_token") or "",
+                payload.get("refresh_expires_at") or now + int(payload.get("refresh_expires_in") or 0),
+            )
             try:
                 current = _request("/api/auth/cli/status", token=payload["access_token"])
             except CliError:
                 client.delete_credentials()
                 raise
             return {"user": current.get("user"), "scopes": current.get("scopes"),
-                    "expires_at": current.get("expires_at"), "opened_browser": opened_browser}
+                    "authorization_mode": current.get("authorization_mode"),
+                    "access_expires_at": current.get("access_expires_at", current.get("expires_at")),
+                    "refresh_expires_at": current.get("refresh_expires_at"),
+                    "opened_browser": opened_browser}
         code = payload.get("code") if isinstance(payload, dict) else ""
         if status in {202, 429} and code in {"authorization_pending", "slow_down"}:
             time.sleep(interval)
@@ -530,7 +572,9 @@ def main(argv=None):
         if args.command == "logout":
             credentials = client.load_credentials()
             if credentials:
-                _request("/api/auth/cli/logout", "POST", {}, credentials["access_token"])
+                _request("/api/auth/cli/logout", "POST", {
+                    "refresh_token": credentials.get("refresh_token") or "",
+                }, credentials["access_token"])
                 client.delete_credentials()
             _write(sys.stdout, _envelope("hq.logout/v1", revoked=bool(credentials),
                                          next_actions=["Run `hq login --json` to authorize again."]))

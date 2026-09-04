@@ -56,7 +56,7 @@ hq capabilities --json
 hq describe ip12-projects --json
 ```
 
-`hq login` 使用浏览器设备授权。CLI 不接触账号密码或网页 Cookie；访问令牌在 macOS/Linux 保存到权限为 `0600` 的 `~/.config/hq-cli/credentials.json`，在 Windows 保存到 `%APPDATA%\Huangque\hq-cli\credentials.json` 并由当前 Windows 用户的 DPAPI 加密。可通过 `hq logout` 撤销。
+`hq login` 使用浏览器设备授权。CLI 不接触账号密码或网页 Cookie；8 小时访问令牌会在到期前用 30 天刷新令牌自动轮换，只有刷新令牌过期、撤销、重放、账号停用或密码变更后才需重新登录。凭证在 macOS/Linux 保存到权限为 `0600` 的 `~/.config/hq-cli/credentials.json`，在 Windows 保存到 `%APPDATA%\Huangque\hq-cli\credentials.json` 并由当前 Windows 用户的 DPAPI 加密。`hq status --json` 只显示授权模式及两个到期时间，不显示令牌；`hq logout` 会撤销整台设备的授权。
 
 ## 页面入口不等于直接执行
 

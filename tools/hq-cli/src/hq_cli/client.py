@@ -1,6 +1,7 @@
 """Fixed-origin HTTPS client and local credential storage for HQ CLI."""
 
 import base64
+from contextlib import contextmanager
 import hashlib
 import http.client
 import json
@@ -9,6 +10,7 @@ import re
 from pathlib import Path
 import secrets
 import stat
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -20,6 +22,7 @@ API_BASE = "https://huangquechuanmei.com"
 ALLOWED_PATHS = {
     "/api/auth/cli/device/start",
     "/api/auth/cli/device/poll",
+    "/api/auth/cli/refresh",
     "/api/auth/cli/status",
     "/api/auth/cli/logout",
     "/api/auth/cli/action",
@@ -586,6 +589,41 @@ def credentials_path():
     return base / "credentials.json"
 
 
+@contextmanager
+def credentials_lock():
+    path = credentials_path().with_name("credentials.lock")
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o700)
+    descriptor = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o600)
+    with os.fdopen(descriptor, "a+b") as handle:
+        if os.name == "nt":
+            import msvcrt
+            if os.fstat(handle.fileno()).st_size == 0:
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            deadline = time.monotonic() + 35
+            while True:
+                try:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            handle.seek(0)
+            if os.name == "nt":
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def _windows_dpapi(data, protect):
     import ctypes
     from ctypes import wintypes
@@ -610,15 +648,27 @@ def _windows_dpapi(data, protect):
         local_free(ctypes.cast(result_blob.pbData, ctypes.c_void_p))
 
 
-def save_credentials(token, expires_at, scopes):
+def save_credentials(token, expires_at, scopes, refresh_token="", refresh_expires_at=0):
     if not isinstance(token, str) or len(token) < 20:
         raise ValueError("invalid access token")
+    if refresh_token and (not isinstance(refresh_token, str) or len(refresh_token) < 20):
+        raise ValueError("invalid refresh token")
     path = credentials_path()
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(path.parent, 0o700)
     temp = path.with_name(".%s.%s.tmp" % (path.name, secrets.token_hex(6)))
-    payload = json.dumps({"access_token": token, "expires_at": int(expires_at), "scopes": list(scopes)},
-                         sort_keys=True, separators=(",", ":")).encode("utf-8")
+    credentials = {
+        "access_token": token,
+        "expires_at": int(expires_at),
+        "access_expires_at": int(expires_at),
+        "scopes": list(scopes),
+    }
+    if refresh_token:
+        credentials.update({
+            "refresh_token": refresh_token,
+            "refresh_expires_at": int(refresh_expires_at),
+        })
+    payload = json.dumps(credentials, sort_keys=True, separators=(",", ":")).encode("utf-8")
     if os.name == "nt":
         payload = json.dumps({
             "protected_data": base64.b64encode(_windows_dpapi(payload, True)).decode("ascii"),
@@ -654,7 +704,15 @@ def load_credentials():
     if not isinstance(token, str) or not 20 <= len(token) <= 200:
         return None
     if os.name == "nt" and not protected_with_dpapi:
-        save_credentials(token, payload.get("expires_at", 0), payload.get("scopes", []))
+        save_credentials(
+            token,
+            payload.get("access_expires_at", payload.get("expires_at", 0)),
+            payload.get("scopes", []),
+            payload.get("refresh_token", ""),
+            payload.get("refresh_expires_at", 0),
+        )
+    payload["access_expires_at"] = int(payload.get("access_expires_at", payload.get("expires_at", 0)) or 0)
+    payload["expires_at"] = payload["access_expires_at"]
     return payload
 
 
