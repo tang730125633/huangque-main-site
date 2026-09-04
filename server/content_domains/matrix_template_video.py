@@ -36,7 +36,7 @@ POLL_INTERVAL = max(1, min(10, int(os.environ.get("MATRIX_TEMPLATE_POLL_INTERVAL
 MAX_VIDEO_BYTES = 512 * 1024 * 1024
 MAX_VOICEOVER_BYTES = 32 * 1024 * 1024
 MAX_VOICEOVER_SECONDS = 600.0
-MAX_VOICEOVER_TEXT_LENGTH = 200
+MAX_VOICEOVER_TEXT_LENGTH = 120
 VOICEOVER_CACHE_RETENTION_SECONDS = 24 * 60 * 60
 VOICEOVER_MUX_TIMEOUT = 180
 _CACHE = {
@@ -433,7 +433,7 @@ def _normalize_voiceover(value, username, *, allow_legacy_text=False):
         not allow_legacy_text
         and len(str(value.get("text") or "").strip()) > MAX_VOICEOVER_TEXT_LENGTH
     ):
-        raise ValueError("口播文案需要控制在 200 字以内")
+        raise ValueError("口播文案需要控制在 120 字以内")
     username = str(username or "").strip()
     if not username:
         raise ValueError("无法确认配音音色归属")
