@@ -8982,7 +8982,7 @@
                 "additionalProperties": false,
                 "required": ["text", "voice"],
                 "properties": {
-                  "text": {"type": "string", "minLength": 1, "maxLength": 1000},
+                  "text": {"type": "string", "minLength": 1, "maxLength": 200},
                   "voice": {"type": "string", "minLength": 1, "maxLength": 128},
                   "voice_scope": {"type": "string", "enum": ["public", "personal"]},
                   "speed": {"type": "number", "minimum": 0.5, "maximum": 2.0, "default": 1.0},
