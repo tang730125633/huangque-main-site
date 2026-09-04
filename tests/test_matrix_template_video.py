@@ -2482,8 +2482,10 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertIn('id="voiceoverEnabled"', page)
         self.assertIn('id="voiceoverText"', page)
         self.assertIn('id="voiceoverVoice"', page)
+        self.assertIn('id="voiceoverSpeed"', page)
         self.assertIn("/api/gen/audio/voices", page)
         self.assertIn("bgm:!withVoice", page)
+        self.assertIn("speed:voiceSpeed()", page)
         self.assertIn("function playableVoiceUrl(value)", page)
         self.assertIn("URL.revokeObjectURL", page)
         self.assertIn("addEventListener('pagehide',stopVoicePreview)", page)
@@ -2863,10 +2865,12 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertNotIn("vip_training", result["options"])
         self.assertNotIn("vip_failed", result["options"])
         self.assertEqual("10 / 1000", result["count"])
+        self.assertEqual("1.3", result["speed"])
+        self.assertEqual("1.3x", result["speedLabel"])
         self.assertFalse(result["body"]["bgm"])
         self.assertEqual({
             "text": "这是一段完整口播文案", "voice": "vip_alice",
-            "voice_scope": "personal", "speed": 1, "pitch": 0,
+            "voice_scope": "personal", "speed": 1.3, "pitch": 0,
             "volume": 0, "delivery": "natural",
         }, result["body"]["voiceover"])
 
@@ -2885,6 +2889,8 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual("恢复后的完整口播", result["text"])
         self.assertEqual("我的音色", result["scope"])
         self.assertEqual("vip_alice", result["voice"])
+        self.assertEqual("1.6", result["speed"])
+        self.assertEqual("1.6x", result["speedLabel"])
         self.assertEqual(0, result["posts"])
         self.assertEqual("/voiceover-restored-video", result["src"])
         self.assertIn("配音", result["meta"])
