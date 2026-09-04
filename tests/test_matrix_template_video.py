@@ -753,12 +753,12 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                 {"text": "口播", "voice": "vip_alice"}, "alice",
             )
 
-    def test_voiceover_copy_is_limited_to_200_characters(self):
-        self.assertEqual(200, self.module.MAX_VOICEOVER_TEXT_LENGTH)
-        with self.assertRaisesRegex(ValueError, "200 字以内"):
+    def test_voiceover_copy_is_limited_to_120_characters(self):
+        self.assertEqual(120, self.module.MAX_VOICEOVER_TEXT_LENGTH)
+        with self.assertRaisesRegex(ValueError, "120 字以内"):
             self.module._normalize_voiceover(
                 {
-                    "text": "文" * 201, "voice": "vip_alice",
+                    "text": "文" * 121, "voice": "vip_alice",
                     "voice_version": "f" * 64,
                 },
                 "alice",
@@ -787,14 +787,14 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             {"payload": frozen, "trusted_execution": False},
         ))
 
-    def test_http_rejects_201_voiceover_characters_before_charge(self):
+    def test_http_rejects_121_voiceover_characters_before_charge(self):
         from content_domains import audio, core, points, video
 
         body = {
             "top_text": "有效标题", "bottom_text": "评论区扣关键词",
             "template_id": "native-bold", "bgm": False,
             "voiceover": {
-                "text": "文" * 201, "voice": "vip_alice",
+                "text": "文" * 121, "voice": "vip_alice",
                 "voice_scope": "personal", "speed": 1,
                 "pitch": 0, "volume": 0, "delivery": "natural",
                 "voice_version": "f" * 64,
@@ -838,7 +838,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                         urllib.request.urlopen(request, timeout=10)
                     response = json.loads(raised.exception.read())
                     self.assertEqual(400, raised.exception.code)
-                    self.assertIn("200 字以内", response["detail"])
+                    self.assertIn("120 字以内", response["detail"])
                     deduct.assert_not_called()
                 with closing(sqlite3.connect(database_path)) as connection:
                     self.assertEqual(
@@ -2691,7 +2691,7 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertNotIn('id="fontSource"', page)
         self.assertIn('id="voiceoverEnabled"', page)
         self.assertIn('id="voiceoverText"', page)
-        self.assertIn('id="voiceoverText" class="mt-input" maxlength="200"', page)
+        self.assertIn('id="voiceoverText" class="mt-input" maxlength="120"', page)
         self.assertIn('id="voiceoverVoice"', page)
         self.assertIn('id="voiceoverSpeed"', page)
         self.assertIn("/api/gen/audio/voices", page)
@@ -3101,7 +3101,7 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertIn("vip_alice", result["options"])
         self.assertNotIn("vip_training", result["options"])
         self.assertNotIn("vip_failed", result["options"])
-        self.assertEqual("10 / 200", result["count"])
+        self.assertEqual("10 / 120", result["count"])
         self.assertEqual("1.3", result["speed"])
         self.assertEqual("1.3x", result["speedLabel"])
         self.assertFalse(result["body"]["bgm"])
