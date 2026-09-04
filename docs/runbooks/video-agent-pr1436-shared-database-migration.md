@@ -5,7 +5,7 @@
 本手册覆盖 `tang730125633/huangque-main-site#1436` 对生产共享数据库
 `/home/ubuntu/content-api/content_jobs.db` 的结构升级。目标服务器为 `dapeng-server`。
 
-当前状态：**LU-003 阶段一审批已核验，等待最终 HEAD 的阶段二审批；本文件不是合并、部署或重启授权。**
+当前状态：**LU-003 阶段一、阶段二审批均已核验，等待一次性推送及精确 HEAD CI；本文件不是合并、部署或重启授权。**
 
 本次结构变化包括：
 
@@ -34,7 +34,13 @@
   - 作者：`LU-003`
   - 作者关联：`COLLABORATOR`
   - 创建及更新时间：`2026-09-04T06:23:17Z`
-- 阶段二最终 HEAD 审批：等待固定提交之后仅追加治理证据并完成最终验证
+- 阶段二最终 HEAD 审批：
+  [issuecomment-5536612768](https://github.com/tang730125633/huangque-main-site/pull/1436#issuecomment-5536612768)
+  - 评论 ID：`5536612768`
+  - Node ID：`IC_kwDOS66oj88AAAABSgIBoA`
+  - 作者：`LU-003`
+  - 作者关联：`COLLABORATOR`
+  - 创建及更新时间：`2026-09-04T06:26:48Z`
 
 固定提交后只允许追加审批评论元数据、验证证据或纯 `main` 同步。若业务代码、测试或 Schema
 再次变化，阶段一审批立即失效，必须重新固定 SHA、重跑验证并取得新审批。
