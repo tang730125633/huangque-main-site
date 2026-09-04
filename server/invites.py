@@ -1554,6 +1554,11 @@ def admin_relation_action(conn, relation_id, action, reason, operator_user_id, n
                         WHERE invite_relation_id=? AND status<>'voided'""", (now, row["id"]))
         conn.execute("UPDATE users SET account_status='banned' WHERE id=?", (row["invitee_user_id"],))
         conn.execute("DELETE FROM tokens WHERE username=(SELECT username FROM users WHERE id=?)", (row["invitee_user_id"],))
+        conn.execute(
+            """UPDATE cli_device_grants SET revoked_at=?
+               WHERE username=(SELECT username FROM users WHERE id=?) AND revoked_at IS NULL""",
+            (now, row["invitee_user_id"]),
+        )
     elif action == "unban":
         conn.execute("UPDATE user_invites SET risk_status='normal',invalid_reason=NULL,updated_at=? WHERE id=?", (now, row["id"]))
         conn.execute("UPDATE users SET account_status='active' WHERE id=?", (row["invitee_user_id"],))
