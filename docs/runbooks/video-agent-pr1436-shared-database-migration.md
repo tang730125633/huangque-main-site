@@ -5,7 +5,7 @@
 本手册覆盖 `tang730125633/huangque-main-site#1436` 对生产共享数据库
 `/home/ubuntu/content-api/content_jobs.db` 的结构升级。目标服务器为 `dapeng-server`。
 
-当前状态：**新业务提交已固定并通过本地双轴终审，等待 LU-003 重新发布阶段一审批；本文件不是合并、部署或重启授权。**
+当前状态：**LU-003 阶段一审批已核验，等待一次性推送及精确 HEAD CI/审核；本文件不是合并、部署或重启授权。**
 
 本次结构变化包括：
 
@@ -27,7 +27,13 @@
 - 基线：`main@f7c2463c201946c2ce9344ae21f06d06e9433f61`
 - 维护窗口：`2026-09-06 02:00–03:00 Asia/Shanghai`
 - 执行、备份、验证、失败恢复负责人：`@LU-003`
-- 阶段一审批评论：待 LU-003 发布并核验。
+- 阶段一审批评论：
+  [issuecomment-5537682411](https://github.com/tang730125633/huangque-main-site/pull/1436#issuecomment-5537682411)
+  - 评论 ID：`5537682411`
+  - Node ID：`IC_kwDOS66oj88AAAABShJT6w`
+  - 作者：`LU-003`
+  - 作者关联：`COLLABORATOR`
+  - 创建及更新时间：`2026-09-04T08:13:51Z`
 - 阶段二最终 HEAD 审批：待一次性推送、精确 HEAD CI 和最新审核通过后发布。
 - 已失效历史审批：
   [issuecomment-5536582840](https://github.com/tang730125633/huangque-main-site/pull/1436#issuecomment-5536582840)、
