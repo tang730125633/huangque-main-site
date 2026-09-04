@@ -8940,7 +8940,7 @@
       "post": {
         "tags": ["视频"],
         "summary": "使用平台素材库生成模板视频",
-        "description": "**测试安全级别：may-charge**\n\n创建模板成片任务并扣点。支持的 HyperFrames 模板会在扣点前用文本模型标注语义边界，再由生成服务按真实字体宽度排版。素材仍只来自平台素材库，不调用 AI 生图或视频生成。",
+        "description": "**测试安全级别：may-charge**\n\n创建模板成片任务并扣点。支持的 HyperFrames 模板会在扣点前用文本模型标注语义边界，再由生成服务按真实字体宽度排版。素材仍只来自平台素材库，不调用 AI 生图或视频生成。可选 voiceover 使用当前用户的公共或个人音色生成唯一音轨，开启后强制关闭 BGM，最终视频时长跟随配音。",
         "x-hq-test-safety": "may-charge",
         "x-hq-runtime-status": "active",
         "parameters": [{"$ref": "#/components/parameters/IdempotencyKeyRequired"}],
@@ -8955,7 +8955,21 @@
               "bottom_text": {"type": "string", "minLength": 2, "maxLength": 80},
               "template_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
               "bgm": {"type": "boolean", "default": true},
-              "duration": {"type": "number", "minimum": 8, "maximum": 15}
+              "duration": {"type": "number", "minimum": 8, "maximum": 15},
+              "voiceover": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["text", "voice"],
+                "properties": {
+                  "text": {"type": "string", "minLength": 1, "maxLength": 1000},
+                  "voice": {"type": "string", "minLength": 1, "maxLength": 128},
+                  "voice_scope": {"type": "string", "enum": ["public", "personal"]},
+                  "speed": {"type": "number", "minimum": 0.5, "maximum": 2.0, "default": 1.0},
+                  "pitch": {"type": "integer", "minimum": -12, "maximum": 12, "default": 0},
+                  "volume": {"type": "integer", "minimum": -50, "maximum": 100, "default": 0},
+                  "delivery": {"type": "string", "enum": ["natural", "energetic_hook", "clear_explain", "confident_cta"], "default": "natural"}
+                }
+              }
             }
           }}}
         },
@@ -12936,6 +12950,37 @@
           "404": {
             "description": "资产不存在、已删除或当前用户无权发现该资产"
           }
+        },
+        "x-hq-test-safety": "safe-read",
+        "x-hq-runtime-status": "active"
+      }
+    },
+    "/api/gen/short-drama/character-reference-quote": {
+      "post": {
+        "tags": ["短剧"],
+        "summary": "报价一次项目级角色标准图生成",
+        "description": "免费且不扣点。按当前项目、角色资料和 revision 返回角色标准图生成价格；共享项目需携带匹配的 X-Canvas-Board-Id，owner/editor 可用。",
+        "parameters": [{"$ref": "#/components/parameters/XCanvasBoardId"}],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {
+            "type": "object",
+            "required": ["project_id", "revision", "character_key"],
+            "additionalProperties": false,
+            "properties": {
+              "project_id": {"type": "string", "minLength": 1},
+              "revision": {"type": "integer", "minimum": 1},
+              "character_key": {"type": "string", "minLength": 1}
+            }
+          }}}
+        },
+        "responses": {
+          "200": {"description": "未扣点报价；返回 cost、points、project_id、character_key、revision 和 confirmation_required"},
+          "400": {"description": "请求字段、阶段、角色资料或报价无效"},
+          "401": {"description": "未登录"},
+          "403": {"description": "必须修改初始密码，或共享画布为 viewer/无写权限"},
+          "404": {"description": "项目或角色不存在，或当前用户无权发现"},
+          "409": {"description": "revision_conflict"}
         },
         "x-hq-test-safety": "safe-read",
         "x-hq-runtime-status": "active"
@@ -24513,16 +24558,16 @@
     }
   },
   "x-hq-document-audit": {
-    "verified_at": "2026-08-28",
-    "total_paths": 294,
-    "total_operations": 309,
-    "active_operations": 287,
-    "production_route_probe_operations": 309,
-    "newly_documented_operations_vs_v2": 133,
+    "verified_at": "2026-09-04",
+    "total_paths": 295,
+    "total_operations": 310,
+    "active_operations": 288,
+    "production_route_probe_operations": 310,
+    "newly_documented_operations_vs_v2": 134,
     "registry_http_operations": 79,
     "registry_documented_operations": 79,
-    "short_drama_registered_operations": 136,
-    "short_drama_documented_operations": 136,
+    "short_drama_registered_operations": 137,
+    "short_drama_documented_operations": 137,
     "production_pending_operations": 19,
     "production_routing_unavailable_operations": 2,
     "deprecated_operations": 1,

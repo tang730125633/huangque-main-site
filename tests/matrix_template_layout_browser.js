@@ -46,6 +46,14 @@ function serve(request, response) {
     }));
     return;
   }
+  if (request.url.startsWith('/api/gen/audio/voices')) {
+    response.setHeader('Content-Type', 'application/json');
+    response.end(JSON.stringify({items: [
+      {scope: 'public', voice_key: 'S_d21F8OR62', display_name: '温柔女声', provider_voice: 'longwan', preview_url: '/voice-public.mp3'},
+      {scope: 'personal', voice_key: 'vip_qa', display_name: '我的复刻音色', provider_voice: 'cosyvoice-v3.5-plus-qa', preview_url: '/voice-personal.mp3'},
+    ]}));
+    return;
+  }
   if (request.url.startsWith('/api/auth/me')) {
     response.setHeader('Content-Type', 'application/json');
     response.end(JSON.stringify({user: {username: 'qa', points: 100}}));
@@ -88,6 +96,23 @@ function hasOverflow(box) {
         };
       });
       const hyperframesBatchControl = await readBatchControl();
+      const voicePanelInitiallyHidden = await page.locator('#voiceoverPanel').evaluate(node => node.hidden);
+      await page.locator('#voiceoverEnabled').check();
+      await page.fill('#voiceoverText', '这是一段模板成片口播文案');
+      await page.locator('#personalVoiceTab').click();
+      const voiceControl = await page.evaluate(() => ({
+        panelHidden: document.getElementById('voiceoverPanel').hidden,
+        selectedVoice: document.getElementById('voiceoverVoice').value,
+        options: [...document.getElementById('voiceoverVoice').options].map(option => option.value),
+        previewDisabled: document.getElementById('voicePreview').disabled,
+        count: document.getElementById('voiceoverCount').textContent,
+        clientWidth: document.getElementById('voiceoverPanel').clientWidth,
+        scrollWidth: document.getElementById('voiceoverPanel').scrollWidth,
+      }));
+      if (process.env.MATRIX_QA_OUTPUT) {
+        fs.mkdirSync(process.env.MATRIX_QA_OUTPUT, {recursive: true});
+        await page.locator('#voiceoverPanel').screenshot({path: path.join(process.env.MATRIX_QA_OUTPUT, `matrix-${name}-voiceover.png`)});
+      }
       const initialAction = await page.locator('#generateBtn').evaluate(node => ({
         disabled: node.disabled,
         cursor: getComputedStyle(node).cursor,
@@ -157,6 +182,7 @@ function hasOverflow(box) {
         overflow,
         scroll,
         fontControlsPresent: await page.evaluate(() => Boolean(document.getElementById('fontFamily') || document.getElementById('fontSource'))),
+        voiceControl: {initiallyHidden: voicePanelInitiallyHidden, enabled: voiceControl},
         batchControl: {hyperframes: hyperframesBatchControl},
         action: {initial: initialAction, emptyReminder, ready: readyAction},
         cardCount: cardReport.length,
@@ -173,6 +199,8 @@ function hasOverflow(box) {
   if (report.desktop.overflow.length || report.mobile.overflow.length) throw new Error(`preview overflow: ${JSON.stringify(report)}`);
   for (const viewport of Object.values(report)) {
     if (viewport.fontControlsPresent) throw new Error(`font selector is still visible: ${JSON.stringify(report)}`);
+    const voice = viewport.voiceControl;
+    if (!voice.initiallyHidden || voice.enabled.panelHidden || voice.enabled.selectedVoice !== 'vip_qa' || voice.enabled.options.join(',') !== 'vip_qa' || voice.enabled.previewDisabled || !voice.enabled.count.startsWith('12 /') || voice.enabled.scrollWidth > voice.enabled.clientWidth) throw new Error(`voiceover control is inaccurate: ${JSON.stringify(voice)}`);
     if (viewport.cardCount !== 17 || viewport.referenceCount !== 17 || viewport.distinctReferencePreviews !== 17) throw new Error(`template cards are not distinct: ${JSON.stringify(report)}`);
     const expectedCardLabels = referenceIds.map((id, index) => `${index + 1}. 参考排版 ${String(index + 1).padStart(2, '0')}`);
     if (viewport.cardLabels.join('|') !== expectedCardLabels.join('|')) throw new Error(`template card numbering is inaccurate: ${JSON.stringify(viewport.cardLabels)}`);
