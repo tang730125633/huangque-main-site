@@ -9,132 +9,185 @@
 <link rel="stylesheet" href="../assets/cloud.css?v=8">
 <script src="theme-init.js?v=11eb385e"></script>
 <style>
-  body{ overflow:hidden; }
-  .capRow{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:22px}
-  .cap-card{display:block;position:relative;overflow:hidden;padding:16px;border:1px solid var(--hq-border,rgba(148,164,187,.14));border-radius:15px;background:linear-gradient(145deg,var(--hq-surface,rgba(16,24,39,.72)),var(--hq-surface-soft,rgba(7,11,19,.4)));box-shadow:inset 0 1px rgba(255,255,255,.025);transition:border-color .18s,box-shadow .18s,transform .18s}
-  .cap-card:hover{border-color:rgba(231,178,76,.28);box-shadow:0 14px 30px rgba(0,0,0,.18)}
-  .cap-head{display:flex;align-items:center;gap:10px}
-  .cap-icon{display:flex;width:42px;height:42px;align-items:center;justify-content:center;flex:none;border:1px solid rgba(231,178,76,.16);border-radius:11px;background:rgba(231,178,76,.07)}
-  .cap-icon img{width:34px;height:34px;object-fit:contain}
-  .cap-name{font-size:15px;font-weight:700;color:var(--hq-text,#eaf1fa)}
-  .cap-desc{margin-top:8px;color:var(--hq-muted,#94a4bb);font-size:12px}
-  .ip12-hero{position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:28px;align-items:center;overflow:hidden;margin-bottom:14px;padding:25px 30px;border:1px solid rgba(231,178,76,.24);border-radius:20px;background:radial-gradient(circle at 88% 4%,rgba(231,178,76,.18),transparent 30%),radial-gradient(circle at 65% 115%,rgba(45,212,191,.09),transparent 40%),linear-gradient(125deg,#171711,#101827 62%,#11151d);color:#eaf1fa;box-shadow:0 18px 46px rgba(0,0,0,.23)}
-  .ip12-hero:before{content:"";position:absolute;inset:0;pointer-events:none;background:linear-gradient(105deg,transparent 28%,rgba(255,255,255,.055) 50%,transparent 72%);transform:translateX(-54%)}
-  .ip12-hero:hover{transform:translateY(-2px);box-shadow:0 22px 50px rgba(0,0,0,.3)}
-  .ip12-kicker{display:inline-flex;padding:5px 10px;border:1px solid rgba(244,205,114,.3);border-radius:999px;background:rgba(231,178,76,.09);color:#f4cd72;font-size:11px;font-weight:700;letter-spacing:.08em}
-  .ip12-title{margin-top:11px;font-size:27px;font-weight:800;letter-spacing:.02em}
-  .ip12-copy{max-width:700px;margin-top:8px;color:#c2c8d6;font-size:14px;line-height:1.65}
-  .ip12-metrics{display:flex;flex-wrap:wrap;gap:12px 20px;margin-top:16px;color:#d7dceb;font-size:12px}.ip12-metrics b{color:#fff;font-size:18px}.ip12-cta{position:relative;z-index:1;display:flex;align-items:center;justify-content:center;min-width:138px;padding:13px 18px;border-radius:11px;background:linear-gradient(135deg,#f4cd72,#e7b24c);color:#211707;box-shadow:0 9px 24px rgba(231,178,76,.22);font-size:14px;font-weight:750}
-  .section-head{display:flex;align-items:center;gap:18px;margin-bottom:16px}
-  .section-title{margin:0;color:var(--hq-text,#eaf1fa);font-size:20px;font-weight:760;letter-spacing:.01em}
-  .section-title span{display:block;margin-top:3px;color:var(--hq-faint,#5c6b82);font-size:11px;font-weight:500;letter-spacing:.08em;text-transform:uppercase}
-  .search-box{display:flex;height:42px;max-width:420px;min-width:220px;flex:1;align-items:center;gap:10px;padding:0 14px;border:1px solid var(--hq-border,rgba(148,164,187,.16));border-radius:11px;background:var(--hq-field,rgba(7,11,19,.52));transition:border-color .18s,box-shadow .18s}
-  .search-box:focus-within{border-color:rgba(231,178,76,.42);box-shadow:0 0 0 3px rgba(231,178,76,.08)}
-  .category-row{display:flex;align-items:center;gap:16px;margin-bottom:18px}
-  .chip-row{display:flex;flex-wrap:wrap;gap:16px;font-size:13.5px}
-  .catalog-note{display:flex;align-items:center;gap:12px;margin-bottom:16px;padding:12px 15px;border:1px solid rgba(231,178,76,.14);border-radius:12px;background:rgba(231,178,76,.035)}
-  .catalog-copy{min-width:200px;flex:1;color:var(--hq-muted,#94a4bb);font-size:13px}
-  .masonry{ column-count:3; column-gap:16px; }
-  .masonry > *{ break-inside:avoid; margin-bottom:16px; border-radius:14px; overflow:hidden; transition:transform .15s, box-shadow .15s; }
-  .masonry > *:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,.3); }
-  .masonry img { transition: transform .3s; }
-  .masonry > *:hover img { transform: scale(1.03); }
-  .tutGrid{ grid-template-columns:repeat(3,1fr); }
-  @media (max-width:1200px){ .capRow{ grid-template-columns:repeat(2,1fr);} .masonry{ column-count:2;} .tutGrid{ grid-template-columns:repeat(2,1fr);} }
-  @media (max-width:760px){
-    .ip12-hero{grid-template-columns:1fr;gap:13px;margin-bottom:12px;padding:18px}
-    .ip12-title{margin-top:9px;font-size:21px;line-height:1.38}
-    .ip12-copy{display:-webkit-box;overflow:hidden;margin-top:6px;font-size:13px;line-height:1.55;-webkit-box-orient:vertical;-webkit-line-clamp:2}
-    .ip12-metrics{gap:10px 16px;margin-top:11px}.ip12-metrics span:last-child{display:none}.ip12-metrics b{font-size:17px}
-    .ip12-cta{min-width:0;justify-self:start;padding:10px 13px;font-size:13px}
-    .capRow{grid-template-columns:1fr 1fr;gap:9px;margin-bottom:18px}
-    .cap-card{min-height:94px;padding:12px}
-    .cap-icon{width:38px;height:38px}.cap-icon img{width:31px;height:31px}
-    .cap-name{font-size:14px}.cap-desc{overflow:hidden;margin-top:7px;font-size:11.5px;line-height:1.45;text-overflow:ellipsis;white-space:nowrap}
-    .section-head{align-items:flex-end;gap:12px;margin-bottom:13px}.section-title{font-size:19px}.section-title span{display:none}
-    .search-box{min-width:0;max-width:none}
-    .category-row{overflow-x:auto;gap:12px;margin:0 -2px 14px;padding:0 2px 4px;white-space:nowrap;scrollbar-width:none}.category-row::-webkit-scrollbar{display:none}
-    .chip-row{flex:none;flex-wrap:nowrap;gap:14px}
-    .catalog-note{gap:9px;padding:11px 12px}.catalog-copy{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-    .masonry{column-count:1}.tutGrid{grid-template-columns:1fr}
+  body{overflow:hidden}
+  .agent-entry{margin-bottom:28px}
+  .agent-heading{padding:8px 20px 22px;text-align:center}
+  .agent-heading h1{margin:0;color:var(--hq-text,#eaf1fa);font-size:32px;font-weight:800;letter-spacing:-.02em}
+  .agent-heading h1 em{color:#d99f31;font-style:normal}
+  .mobile-title-break{display:none}
+  .agent-heading p{margin:8px 0 0;color:var(--hq-muted,#94a4bb);font-size:13px}
+  .ip12-workbench{display:grid;grid-template-columns:minmax(0,1fr);gap:12px}
+  .ip12-prompt-panel{position:relative;display:flex;min-height:210px;flex-direction:column;overflow:hidden;padding:20px 22px 18px;border:1px solid var(--hq-border,rgba(148,164,187,.16));border-radius:14px;background:radial-gradient(circle at 94% 0,rgba(231,178,76,.1),transparent 28%),var(--hq-surface,rgba(16,24,39,.72));box-shadow:0 16px 38px rgba(0,0,0,.08);transition:border-color .18s,box-shadow .18s}
+  .ip12-prompt-panel:focus-within{border-color:rgba(231,178,76,.4);box-shadow:0 0 0 3px rgba(231,178,76,.07),0 14px 34px rgba(0,0,0,.08)}
+  .ip12-prompt-head{display:flex;align-items:center;gap:11px;margin-bottom:12px}
+  .ip12-agent-mark{position:relative;display:grid;width:34px;height:34px;flex:none;place-items:center;border:1px solid rgba(231,178,76,.25);border-radius:50%;background:linear-gradient(145deg,rgba(231,178,76,.12),rgba(231,178,76,.035));box-shadow:inset 0 1px rgba(255,255,255,.08)}
+  .ip12-agent-mark img{width:23px;height:23px;object-fit:contain}
+  .ip12-agent-mark:after{content:"";position:absolute;top:3px;right:2px;width:5px;height:5px;border:2px solid var(--hq-surface,#101827);border-radius:50%;background:#e7b24c;box-shadow:0 0 7px rgba(231,178,76,.7)}
+  .ip12-prompt-head strong{display:block;color:var(--hq-text,#eaf1fa);font-size:13px;font-weight:700}
+  .ip12-prompt-head span{display:block;margin-top:2px;color:var(--hq-faint,#5c6b82);font-size:10.5px}
+  .ip12-brief{width:100%;min-height:78px;flex:1;resize:none;border:0!important;outline:0;background:transparent!important;color:var(--hq-text,#eaf1fa);font:inherit;font-size:14px;line-height:1.7;box-shadow:none!important}
+  .ip12-brief::placeholder{color:var(--hq-faint,#5c6b82)}
+  .ip12-prompt-footer{display:flex;align-items:center;gap:12px;padding-top:10px}
+  .ip12-system-label{display:inline-flex;min-width:0;align-items:center;gap:5px;flex:1;color:var(--hq-muted,#94a4bb);font-size:10.5px}
+  .ip12-system-label strong{padding:4px 7px;border-radius:999px;background:rgba(231,178,76,.1);color:#d99f31;font-weight:700}
+  .ip12-shortcut{color:var(--hq-faint,#5c6b82);font-size:9.5px;white-space:nowrap}
+  .ip12-start,.gallery-create{display:inline-flex;align-items:center;justify-content:center;flex:none;border:0;border-radius:8px;background:#e7b24c;color:#211707;font:inherit;font-size:12.5px;font-weight:700;white-space:nowrap;cursor:pointer;transition:background-color .16s,transform .16s}
+  .ip12-start{min-width:126px;min-height:40px;padding:0 17px;box-shadow:0 7px 18px rgba(191,132,25,.15)}
+  .ip12-start:hover,.gallery-create:hover{background:#f0c766;transform:translateY(-1px)}
+  .ip12-presets{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+  .ip12-preset{position:relative;display:grid;min-width:0;min-height:92px;grid-template-columns:54px minmax(0,1fr) auto;grid-template-rows:auto auto;grid-template-areas:"top title action" "top desc action";align-items:center;column-gap:13px;overflow:hidden;padding:13px 15px;border:1px solid var(--hq-border,rgba(148,164,187,.16));border-radius:11px;background:linear-gradient(145deg,var(--hq-surface,rgba(16,24,39,.76)),rgba(231,178,76,.045));color:var(--hq-text,#eaf1fa);text-align:left;cursor:pointer;box-shadow:0 9px 22px rgba(0,0,0,.04);transition:border-color .16s,transform .16s,box-shadow .16s}
+  .ip12-preset:hover,.ip12-preset.is-selected{border-color:rgba(231,178,76,.48);transform:translateY(-2px);box-shadow:0 14px 30px rgba(0,0,0,.1)}
+  .preset-top{grid-area:top;display:flex;align-items:center;justify-content:center;flex-direction:column-reverse;gap:5px}
+  .preset-index{color:#d99f31;font-size:9px;font-weight:750;letter-spacing:.08em}
+  .preset-icon{display:grid;width:30px;height:30px;place-items:center;border:1px solid rgba(231,178,76,.2);border-radius:8px;background:rgba(231,178,76,.07);color:#d99f31}
+  .preset-icon svg{width:15px;height:15px}
+  .ip12-preset strong{grid-area:title;align-self:end;font-size:13.5px;font-weight:750}
+  .ip12-preset small{grid-area:desc;align-self:start;margin-top:3px;color:var(--hq-muted,#94a4bb);font-size:10.5px;line-height:1.45}
+  .preset-action{grid-area:action;display:flex;align-items:center;gap:4px;padding-left:12px;color:#d99f31;font-size:10.5px;font-weight:650;white-space:nowrap}
+  html[data-theme="light"] .ip12-prompt-panel{background:radial-gradient(circle at 92% 8%,rgba(231,178,76,.11),transparent 25%),#fff}
+  html[data-theme="light"] .ip12-preset{background:linear-gradient(145deg,#fff,#fffaf0);color:#2d2517;box-shadow:0 12px 28px rgba(70,54,24,.055)}
+  html[data-theme="light"] .ip12-preset:nth-child(2){background:linear-gradient(145deg,#fff,#fdf8ed)}
+  html[data-theme="light"] .ip12-preset:nth-child(3){background:linear-gradient(145deg,#fff,#f8faf7)}
+  html[data-theme="light"] .ip12-preset small{color:#80745f}
+  .gallery-head{display:grid;grid-template-columns:180px minmax(0,1fr);align-items:center;gap:16px;margin-bottom:13px}
+  .gallery-tools{display:flex;justify-content:flex-end;gap:14px}
+  .section-title{margin:0;color:var(--hq-text,#eaf1fa);font-size:22px;font-weight:750;letter-spacing:.01em}
+  .section-title span{display:block;margin-top:4px;color:var(--hq-muted,#94a4bb);font-size:12px;font-weight:500;letter-spacing:0}
+  .section-title strong{color:#e7b24c;font-weight:700}
+  .search-box{display:flex;width:min(100%,440px);height:40px;min-width:0;align-items:center;gap:9px;padding:0 13px;border:1px solid var(--hq-border,rgba(148,164,187,.16));border-radius:7px;background:var(--hq-field,rgba(7,11,19,.52));transition:border-color .16s,box-shadow .16s}
+  .search-box:focus-within{border-color:rgba(231,178,76,.44);box-shadow:0 0 0 3px rgba(231,178,76,.07)}
+  .gallery-create{height:40px;padding:0 15px}
+  .gallery-layout{display:grid;grid-template-columns:180px minmax(0,1fr);align-items:start;gap:16px}
+  .category-row{padding:8px;border:1px solid var(--hq-border,rgba(148,164,187,.14));border-radius:8px;background:var(--hq-surface,rgba(16,24,39,.45))}
+  .category-label{padding:7px 10px 10px;color:var(--hq-faint,#5c6b82);font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+  .chip-row{display:flex;flex-direction:column;gap:2px}
+  .chip{display:flex;width:100%;min-height:35px;align-items:center;gap:8px;padding:0 10px;border:0;border-left:2px solid transparent;border-radius:5px;background:transparent;color:var(--hq-muted,#94a4bb);font:inherit;font-size:12px;text-align:left;cursor:pointer;transition:border-color .15s,color .15s,background-color .15s}
+  .chip:hover{background:rgba(148,164,187,.06);color:var(--hq-text,#eaf1fa)}
+  .chip.is-active{border-left-color:#e7b24c;background:rgba(231,178,76,.09);color:#d99f31;font-weight:650}
+  .chip-count{margin-left:auto;color:var(--hq-faint,#5c6b82);font-size:10px;font-weight:500}
+  .masonry{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));align-items:start;gap:15px}
+  .inspiration-card{min-width:0;border-radius:8px;overflow:hidden;background:var(--hq-surface,rgba(16,24,39,.72))!important;transition:border-color .15s,box-shadow .15s}
+  .inspiration-card:hover{border-color:rgba(231,178,76,.28)!important;box-shadow:0 8px 20px rgba(0,0,0,.12)}
+  .card-media{position:relative;aspect-ratio:4/5;overflow:hidden;background:var(--hq-field,rgba(7,11,19,.52))}
+  .card-media>img{display:block;width:100%;height:100%;object-fit:cover;transition:transform .25s}
+  .inspiration-card:hover .card-media>img{transform:scale(1.012)}
+  .card-meta{display:flex;min-height:62px;align-items:center;gap:10px;padding:10px 11px;border-top:1px solid var(--hq-border,rgba(148,164,187,.12))}
+  .card-copy{min-width:0;flex:1}
+  .card-title{display:block;overflow:hidden;color:var(--hq-text,#eaf1fa);font-size:12.5px;font-weight:650;text-overflow:ellipsis;white-space:nowrap}
+  .card-sub{display:flex;align-items:center;gap:3px;margin-top:4px;color:var(--hq-muted,#94a4bb);font-size:10.5px}
+  .card-remake{display:inline-flex;min-height:29px;align-items:center;padding:0 10px;border-radius:7px;background:#e7b24c;color:#211707;font-size:11px;font-weight:650;opacity:0;transform:translateX(3px);transition:opacity .15s,transform .15s;white-space:nowrap}
+  .inspiration-card:hover .card-remake,.inspiration-card:focus-within .card-remake{opacity:1;transform:none}
+  .inspiration-watermark{opacity:.62}
+  .gallery-pagination{display:flex;align-items:center;justify-content:center;gap:10px;margin-top:20px;padding:4px 0 8px}
+  .gallery-pagination[hidden]{display:none}
+  .page-btn{min-width:74px;height:34px;border:1px solid var(--hq-border,rgba(148,164,187,.16));border-radius:7px;background:var(--hq-surface,rgba(16,24,39,.55));color:var(--hq-muted,#94a4bb);font:inherit;font-size:12px;cursor:pointer;transition:border-color .15s,color .15s}
+  .page-btn:hover:not(:disabled){border-color:rgba(231,178,76,.34);color:var(--hq-text,#eaf1fa)}
+  .page-btn:disabled{cursor:not-allowed;opacity:.38}
+  .page-info{min-width:58px;color:var(--hq-muted,#94a4bb);font-size:11.5px;text-align:center}
+  html[data-theme="light"] body .hq-bg .grid{opacity:.16!important}
+  html[data-theme="light"] body .hq-bg canvas{opacity:.18!important}
+  @media (max-width:1280px){.masonry{grid-template-columns:repeat(3,minmax(0,1fr))}}
+  @media (max-width:1080px){.preset-action{display:none}}
+  @media (max-width:980px){
+    .gallery-head{grid-template-columns:1fr}.gallery-tools{justify-content:stretch}.search-box{flex:1;width:auto}
+    .gallery-layout{grid-template-columns:1fr}.category-row{overflow-x:auto;padding:0 0 5px;border:0;background:transparent;scrollbar-width:none}.category-row::-webkit-scrollbar{display:none}.category-label{display:none}.chip-row{width:max-content;flex-direction:row;gap:7px}
+    .chip{width:auto;min-height:31px;padding:0 11px;border:1px solid var(--hq-border,rgba(148,164,187,.16));border-radius:999px;background:var(--hq-surface,rgba(16,24,39,.5))}.chip.is-active{border-color:rgba(231,178,76,.38)}.chip-count{margin-left:2px}
+    .masonry{grid-template-columns:repeat(2,minmax(0,1fr))}
   }
-  .chip{ cursor:pointer; transition:.15s; padding:1px 2px; }
-  .chip:hover{ color:#e7b24c !important; }
+  @media (max-width:620px){
+    .agent-entry{margin-bottom:23px}.agent-heading{padding:4px 6px 17px}.agent-heading h1{font-size:23px;line-height:1.3}.mobile-title-break{display:block}.agent-heading p{font-size:12px;line-height:1.5}
+    .ip12-prompt-panel{min-height:190px;padding:16px}.ip12-prompt-head span{display:none}.ip12-brief{min-height:66px;font-size:13px}.ip12-system-label span,.ip12-shortcut{display:none}.ip12-start{min-width:114px;min-height:38px;padding:0 14px}
+    .ip12-presets{grid-auto-columns:82%;grid-template-columns:none;grid-auto-flow:column;overflow-x:auto;padding-bottom:4px;scrollbar-width:none}.ip12-presets::-webkit-scrollbar{display:none}.ip12-preset{min-height:88px;grid-template-columns:48px minmax(0,1fr);grid-template-areas:"top title" "top desc";padding:11px 13px}.preset-action{display:none}
+    .gallery-head{gap:10px;margin-bottom:11px}.section-title{font-size:19px}.section-title span{font-size:11px}
+    .gallery-tools{gap:9px}.search-box{height:38px}.gallery-create{height:38px;padding:0 12px;font-size:12px}
+    .category-row{margin-bottom:0}
+    .masonry{grid-template-columns:1fr;gap:13px}.card-remake{opacity:1;transform:none}
+  }
   .ph{ position:relative; border:1px dashed rgba(231,178,76,.22); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.5), rgba(12,18,32,.4)); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; color:#5c6b82; overflow:hidden; }
   .ph::after{ content:""; position:absolute; inset:0; background:linear-gradient(100deg, transparent 30%, rgba(231,178,76,.05) 50%, transparent 70%); background-size:200% 100%; animation:hq-shimmer 3.4s ease-in-out infinite; }
   .phtag{ position:absolute; top:11px; left:11px; padding:3px 9px; font-size:10.5px; font-weight:600; border-radius:6px; background:rgba(7,11,19,.6); z-index:1; }
 </style>
-<link rel="stylesheet" href="theme.css?v=5873a2f4">
+<link rel="stylesheet" href="theme.css?v=94b85afe">
 </head>
 <body>
 <div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
 
 <div class="hq-app"><div class="hq-content" data-active="inspiration">
 
-  <a href="ip12.html" class="ip12-hero hv-lift" aria-label="进入数字化 IP 定制方案">
-    <div style="position:relative;z-index:1;min-width:0;">
-      <span class="ip12-kicker">DIGITAL IP · 定制方案</span>
-      <div class="ip12-title">把行业痛点，变成可持续的数字化 IP</div>
-      <div class="ip12-copy">从门店经营底图与行业痛点出发，完成定位诊断、价值主张与内容资产，再沉淀为可执行的图片、视频行动计划。</div>
-      <div class="ip12-metrics"><span><b>12</b> 个成长模块</span><span><b>54</b> 个经营步骤</span><span>先确认方案，再带入创作</span></div>
+  <section class="agent-entry" aria-labelledby="agentEntryTitle">
+    <header class="agent-heading">
+      <h1 id="agentEntryTitle">黄雀 · 让 <em>Agent</em><br class="mobile-title-break"> 实现你的操作</h1>
+      <p>描述你想打造的数字化 IP，黄雀将目标拆解为可以执行的成长路径。</p>
+    </header>
+    <div class="ip12-workbench">
+      <div class="ip12-prompt-panel">
+        <div class="ip12-prompt-head">
+          <span class="ip12-agent-mark" aria-hidden="true"><img src="assets/logo_sparrow.png" alt=""></span>
+          <div><strong>告诉黄雀，你想打造什么</strong><span>一句话描述目标，Agent 会继续引导你完善。</span></div>
+        </div>
+        <textarea id="ip12Brief" class="ip12-brief" maxlength="600" aria-label="描述数字化 IP 目标" placeholder="例如：我是成都的美业门店主理人，想打造专业、可信的个人 IP…"></textarea>
+        <div class="ip12-prompt-footer">
+          <div class="ip12-system-label"><strong>IP12</strong><span> · 数字化 IP 成长系统</span></div>
+          <span class="ip12-shortcut">Ctrl + Enter</span>
+          <button id="ip12Start" class="ip12-start" type="button">启动 Agent&nbsp; →</button>
+        </div>
+      </div>
+      <div class="ip12-presets" aria-label="IP12 快捷方案">
+        <button class="ip12-preset" type="button" data-ip12-brief="帮我梳理行业、目标人群、差异化价值和清晰的数字化 IP 定位。"><span class="preset-top"><span class="preset-index">STEP 01</span><span class="preset-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3"/></svg></span></span><strong>定位诊断</strong><small>找到人群、价值与差异</small><span class="preset-action">选择方案&nbsp; →</span></button>
+        <button class="ip12-preset" type="button" data-ip12-brief="基于我的行业与经历，帮我建立稳定的选题方向、内容栏目和表达体系。"><span class="preset-top"><span class="preset-index">STEP 02</span><span class="preset-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 4h14v16H5z"/><path d="M8 8h8M8 12h8M8 16h5"/></svg></span></span><strong>内容体系</strong><small>沉淀选题、栏目与表达</small><span class="preset-action">选择方案&nbsp; →</span></button>
+        <button class="ip12-preset" type="button" data-ip12-brief="帮我规划数字化 IP 的获客、成交和长期运营路径，并给出可以执行的步骤。"><span class="preset-top"><span class="preset-index">STEP 03</span><span class="preset-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 18l5-5 4 3 7-9"/><path d="M15 7h5v5"/></svg></span></span><strong>增长方案</strong><small>规划获客、成交与运营</small><span class="preset-action">选择方案&nbsp; →</span></button>
+      </div>
     </div>
-    <span class="ip12-cta">开始制作 · 定制方案&nbsp; →</span>
-  </a>
+  </section>
 
-  <!-- 顶部能力卡 -->
-  <div class="capRow">
-    <a href="banana.html" class="cap-card hv-lift">
-      <div class="cap-head"><div class="cap-icon"><img src="../assets/icons/ic_banana.png" alt=""></div><div class="cap-name">AI 作图</div></div>
-      <div class="cap-desc">黄雀引擎 2 · 专业级图片生成</div>
-    </a>
-    <a href="audio.html" class="cap-card hv-lift">
-      <div class="cap-head"><div class="cap-icon"><img src="../assets/icons/ic_audio.png" alt=""></div><div class="cap-name">AI 配音</div></div>
-      <div class="cap-desc">多音色 · 真人级配音</div>
-    </a>
-    <a href="script.html" class="cap-card hv-lift">
-      <div class="cap-head"><div class="cap-icon"><img src="../assets/icons/ic_script.png" alt=""></div><div class="cap-name">文案编导</div></div>
-      <div class="cap-desc">选题到分镜 · 一键出脚本</div>
-    </a>
-    <a href="canvas.html" class="cap-card hv-lift">
-      <div class="cap-head"><div class="cap-icon"><img src="../assets/icons/ic_canvas.png" alt=""></div><div class="cap-name">海报画布</div></div>
-      <div class="cap-desc">自由编辑 · 合成主视觉</div>
-    </a>
-  </div>
-
-  <!-- 标题 + 搜索 -->
-  <div class="section-head">
-    <h1 class="section-title">灵感案例<span>Inspiration gallery</span></h1>
-    <div class="search-box">
-      <span style="display:flex; width:16px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg></span>
-      <input id="caseSearch" type="search" name="hq_inspiration_search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" aria-label="搜索灵感案例" placeholder="搜索灵感关键字，如 美业海报 / 数字化 IP…" style="flex:1; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:13.5px; font-family:inherit;">
+  <div class="gallery-head">
+    <h1 class="section-title">灵感案例<span>已收录 <strong id="caseTotal">0</strong> 张原创样片</span></h1>
+    <div class="gallery-tools">
+      <div class="search-box">
+        <span style="display:flex; width:16px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg></span>
+        <input id="caseSearch" type="search" name="hq_inspiration_search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" aria-label="搜索灵感案例" placeholder="搜索灵感关键字，如 美业海报 / 数字化 IP…" style="flex:1; min-width:0; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:13.5px; font-family:inherit;">
+      </div>
+      <a href="banana.html" class="gallery-create">开始创作</a>
     </div>
   </div>
 
-  <!-- 分类筛选 (动态生成) -->
-  <div class="category-row">
-    <div style="font-size:13px; font-weight:600; color:#94a4bb; white-space:nowrap;">全部分类</div>
-    <div style="width:1px; height:14px; background:rgba(148,164,187,.18);"></div>
-    <div id="chips" class="chip-row"></div>
-  </div>
-
-  <!-- 灵感案例 -->
-  <div id="paneCase">
-    <div class="catalog-note">
-      <span style="display:flex; width:17px; color:#e7b24c;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg></span>
-      <div class="catalog-copy">已收录 <strong id="caseTotal" style="color:#e7b24c;">0</strong> 张黄雀原创样片 · 点击查看详情，一键做同款。</div>
-      <a href="banana.html" class="btn-gold" style="padding:8px 16px; font-size:12.5px; font-weight:600; border-radius:9px; white-space:nowrap;">去创作</a>
+  <div class="gallery-layout">
+    <aside class="category-row" aria-label="作品分类">
+      <div class="category-label">作品分类</div>
+      <div id="chips" class="chip-row"></div>
+    </aside>
+    <div id="paneCase">
+      <div class="masonry" id="caseGrid"></div>
+      <nav id="casePagination" class="gallery-pagination" aria-label="作品分页" hidden>
+        <button id="casePrev" class="page-btn" type="button">上一页</button>
+        <span id="casePageInfo" class="page-info" aria-live="polite">1 / 1</span>
+        <button id="caseNext" class="page-btn" type="button">下一页</button>
+      </nav>
     </div>
-    <div class="masonry" id="caseGrid"></div>
   </div>
 
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=7b2db7de"></script>
+<script src="cloud-shell.js?v=fda421a8"></script>
 <script>
 (function(){
   // ===== 灵感案例：数据驱动(inspirations.json) + 分类筛选 + 做同款 =====
   var grid=document.getElementById('caseGrid');
+  var ip12Brief=document.getElementById('ip12Brief'), ip12Start=document.getElementById('ip12Start');
+  function fillIP12Brief(button){
+    if(!ip12Brief)return;
+    ip12Brief.value=button.getAttribute('data-ip12-brief')||'';
+    document.querySelectorAll('.ip12-preset').forEach(function(item){item.classList.toggle('is-selected',item===button);});
+    ip12Brief.focus();
+  }
+  document.querySelectorAll('[data-ip12-brief]').forEach(function(button){button.addEventListener('click',function(){fillIP12Brief(button);});});
+  function openIP12(){
+    var brief=ip12Brief&&ip12Brief.value.trim();
+    location.href='ip12.html'+(brief?'?brief='+encodeURIComponent(brief):'');
+  }
+  if(ip12Start)ip12Start.addEventListener('click',openIP12);
+  if(ip12Brief)ip12Brief.addEventListener('keydown',function(event){if((event.ctrlKey||event.metaKey)&&event.key==='Enter')openIP12();});
   var MODEL_BADGE={nb2:'纳米香蕉 2', pro:'纳米香蕉 Pro', gpt:'黄雀引擎 2', seedream:'黄雀引擎 1 标准', seedream_pro:'黄雀引擎 1 Pro', seedance:'Seedance', micro:'Seedance', omni:'Omni', heygen:'数字化 IP', veo:'视频引擎', grok:'果肉视频'};
   function modelBadge(value,type){
     var raw=String(value||'').trim(), key=raw.toLowerCase();
@@ -146,12 +199,12 @@
     return type==='video' ? '视频引擎' : '图片引擎';
   }
   function watermarkHtml(){
-    return '<span class="inspiration-watermark" aria-hidden="true" style="position:absolute; right:10px; bottom:54px; z-index:2; pointer-events:none; padding:4px 8px; border:1px solid rgba(255,255,255,.42); border-radius:6px; background:rgba(7,11,19,.5); color:rgba(255,255,255,.88); font-size:10px; font-weight:700; letter-spacing:.08em; text-shadow:0 1px 3px rgba(0,0,0,.75); backdrop-filter:blur(3px);">黄雀AI · 灵感样片</span>';
+    return '<span class="inspiration-watermark" aria-hidden="true" style="position:absolute; right:9px; bottom:9px; z-index:2; pointer-events:none; padding:3px 7px; border:1px solid rgba(255,255,255,.34); border-radius:5px; background:rgba(7,11,19,.42); color:rgba(255,255,255,.82); font-size:9px; font-weight:650; letter-spacing:.06em; text-shadow:0 1px 3px rgba(0,0,0,.65); backdrop-filter:blur(3px);">黄雀AI · 灵感样片</span>';
   }
   function cleanPrompt(value){
     return String(value||'').replace(/无文字无水印/g,'无文字').replace(/无水印/g,'').replace(/，{2,}/g,'，').replace(/,\s*,/g,',').trim();
   }
-  var DATA=[], curCat='all', LIKE_COUNTS={}, LIKED={}, SEEN={};
+  var DATA=[], curCat='all', LIKE_COUNTS={}, LIKED={}, SEEN={}, currentPage=1, PAGE_SIZE=8;
   function trackManaged(event,ids){
     ids=(ids||[]).filter(function(id){return Number(id)>=1000000});if(!ids.length)return;
     var body=JSON.stringify({event:event,ids:ids}),url='/api/admin/public/inspiration-events';
@@ -203,64 +256,47 @@
     }).catch(function(){ /* 静态基础计数仍可正常展示 */ });
   }
   function card(x){
-    var a=document.createElement('div'); a.className='hv-lift';
+    var a=document.createElement('div'); a.className='inspiration-card';
+    a.setAttribute('data-case-id',String(x.id));
     if(x.managed)a.setAttribute('data-managed-id',String(x.id));
-    a.style.cssText='position:relative; border:1px solid rgba(148,164,187,.12); border-radius:14px; overflow:hidden; background:rgba(16,24,39,.4); cursor:pointer;';
+    a.style.cssText='position:relative; border:1px solid rgba(148,164,187,.14); overflow:hidden; background:rgba(16,24,39,.4); cursor:pointer;';
     var badge=modelBadge(x.model,x.type), isVid=(x.type==='video');
     var play=isVid?'<div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none; opacity:0.9;"><div style="width:46px; height:46px; border-radius:50%; background:rgba(7,11,19,.65); backdrop-filter:blur(4px); border:1px solid rgba(231,178,76,.5); display:flex; align-items:center; justify-content:center; color:#e7b24c;"><svg viewBox="0 0 24 24" fill="currentColor" style="width:18px;height:18px;"><path d="M7 4v16l13-8z"/></svg></div></div>':'';
     var dur=(isVid&&x.duration)?'<span style="position:absolute; right:10px; top:10px; padding:2px 7px; font-size:10px; border-radius:5px; background:rgba(7,11,19,.7); color:#eaf1fa; font-family:\'JetBrains Mono\',monospace;">'+x.duration+'</span>':'';
-    a.innerHTML='<img src="'+x.image+'" loading="lazy" style="display:block; width:100%; height:auto; object-fit:cover;">'
+    a.innerHTML='<div class="card-media"><img src="'+x.image+'" loading="lazy" alt="">'
       +play+dur+watermarkHtml()
-      +'<span style="position:absolute; top:10px; left:10px; padding:3px 9px; font-size:10.5px; font-weight:600; border-radius:6px; background:rgba(7,11,19,.62); color:#e7b24c;">'+badge+'</span>'
-      +'<div style="position:absolute; left:0; right:0; bottom:0; padding:26px 12px 11px; background:linear-gradient(transparent,rgba(7,11,19,.9)); transition:opacity .2s;">'
-      +'<div style="font-size:13px; font-weight:600; color:#eaf1fa; margin-bottom:6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">'+(x.title||'')+'</div>'
-      +'<div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">'
-      +'<span style="display:flex; align-items:center; gap:4px; font-size:11px; color:#94a4bb;">'+(x.category||'')+' · '+likeButton(x)+'</span>'
-      +'<span class="btn-gold" style="padding:5px 12px; font-size:11.5px; font-weight:600; border-radius:8px; white-space:nowrap; opacity:0.95;">做同款</span>'
-      +'</div></div>';
-    a.onmouseenter = function(){ a.style.boxShadow='0 10px 30px rgba(0,0,0,.35)'; };
-    a.onmouseleave = function(){ a.style.boxShadow=''; };
+      +'<span style="position:absolute; top:9px; left:9px; padding:3px 8px; font-size:9.5px; font-weight:650; border-radius:5px; background:rgba(7,11,19,.62); color:#e7b24c;">'+badge+'</span></div>'
+      +'<div class="card-meta"><div class="card-copy"><strong class="card-title">'+(x.title||'')+'</strong>'
+      +'<span class="card-sub">'+(x.category||'')+' · '+likeButton(x)+'</span></div>'
+      +'<span class="card-remake">做同款</span></div>';
     a.onclick=function(){ openDetail(x); };
     bindLikeButton(a,x);
     return a;
   }
   var searchInput = document.getElementById('caseSearch');
-  // 分类 → 金调3D图标（render3d 香槟金，与首页能力卡同一套）
-  var CAT_ICON = {
-    '护肤精华':'cat_serum','医美焕肤':'cat_medical','防晒':'cat_sun','面膜护肤':'cat_mask',
-    '门店拓客':'cat_store','美妆产品':'cat_makeup','美女':'cat_woman','帅哥':'cat_man','风景':'cat_scenery',
-    '皮肤管理封面':'cat_serum','医美科普配图':'cat_medical','门店活动海报':'cat_store','新客体验卡':'cat_store',
-    '招商加盟图':'cat_store','朋友圈日签':'cat_makeup','团购套餐图':'cat_makeup','数字人首帧':'cat_woman','客户案例展示':'cat_medical'
-  };
+  var CATEGORY_ORDER=['医美焕肤','医美科普配图','团购套餐图','客户案例展示','美妆产品'];
+  function categoryChip(cat,label,count){
+    var button=document.createElement('button');
+    button.type='button'; button.className='chip'+(curCat===cat?' is-active':''); button.setAttribute('data-cat',cat);
+    var name=document.createElement('span'); name.textContent=label||cat;
+    var total=document.createElement('span'); total.className='chip-count'; total.textContent=String(count||0);
+    button.appendChild(name); button.appendChild(total);
+    button.onclick=function(){setCat(cat);};
+    return button;
+  }
   function syncChips(){
     var cats = {}; DATA.forEach(function(x){ if(x.category) cats[x.category] = (cats[x.category]||0) + 1; });
     var chipsEl = document.getElementById('chips');
     if(!chipsEl) return;
     chipsEl.innerHTML = '';
-    var all = document.createElement('span');
-    all.className = 'chip'; all.setAttribute('data-cat','all'); all.textContent = '全部';
-    if(curCat==='all') { all.style.color='#e7b24c'; all.style.fontWeight='600'; }
-    all.onclick = function(){ setCat('all'); };
-    chipsEl.appendChild(all);
-    Object.keys(cats).sort().forEach(function(cat){
-      var s = document.createElement('span');
-      s.className = 'chip'; s.setAttribute('data-cat',cat);
-      s.style.display='inline-flex'; s.style.alignItems='center'; s.style.gap='6px';
-      var icoName = CAT_ICON[cat];
-      if(icoName){
-        var im = document.createElement('img');
-        im.src = '../assets/icons/ic_'+icoName+'.png'; im.alt='';
-        im.style.cssText = 'width:20px;height:20px;object-fit:contain;flex:none;';
-        s.appendChild(im);
-      }
-      var tx = document.createElement('span'); tx.textContent = cat; s.appendChild(tx);
-      if(curCat===cat){ s.style.color='#e7b24c'; s.style.fontWeight='600'; }
-      s.onclick = function(){ setCat(cat); };
-      chipsEl.appendChild(s);
-    });
+    chipsEl.appendChild(categoryChip('all','全部',DATA.length));
+    var allCats=Object.keys(cats);
+    allCats.sort(function(a,b){var ai=CATEGORY_ORDER.indexOf(a),bi=CATEGORY_ORDER.indexOf(b);if(ai<0)ai=999;if(bi<0)bi=999;return ai===bi?a.localeCompare(b,'zh-CN'):ai-bi;});
+    allCats.forEach(function(cat){chipsEl.appendChild(categoryChip(cat,cat,cats[cat]));});
   }
   function setCat(cat){
     curCat = cat;
+    currentPage = 1;
     renderCards();
     syncChips();
   }
@@ -275,16 +311,35 @@
   }
   function renderCards(){
     if(!grid) return;
-    var list = filterData();
+    var filtered = filterData(), totalPages=Math.max(1,Math.ceil(filtered.length/PAGE_SIZE));
+    if(currentPage>totalPages)currentPage=totalPages;
+    var list = filtered.slice((currentPage-1)*PAGE_SIZE,currentPage*PAGE_SIZE);
     grid.innerHTML='';
+    renderPagination(filtered.length,totalPages);
     if(!list.length){
       var e=document.createElement('div'); e.style.cssText='padding:30px; text-align:center; font-size:13px; color:#5c6b82;';
       e.textContent='暂无匹配案例，去作图生成一张吧'; grid.appendChild(e); return;
     }
     list.forEach(function(x){ grid.appendChild(card(x)); }); bindImpressions();
   }
+  var pagination=document.getElementById('casePagination'), pageInfo=document.getElementById('casePageInfo'), prevButton=document.getElementById('casePrev'), nextButton=document.getElementById('caseNext');
+  function renderPagination(total,totalPages){
+    if(!pagination)return;
+    pagination.hidden=total<=PAGE_SIZE;
+    if(pageInfo)pageInfo.textContent=currentPage+' / '+totalPages;
+    if(prevButton)prevButton.disabled=currentPage<=1;
+    if(nextButton)nextButton.disabled=currentPage>=totalPages;
+  }
+  function changePage(delta){
+    var totalPages=Math.max(1,Math.ceil(filterData().length/PAGE_SIZE)), next=Math.min(totalPages,Math.max(1,currentPage+delta));
+    if(next===currentPage)return;
+    currentPage=next; renderCards();
+    var pane=document.getElementById('paneCase'); if(pane)pane.scrollIntoView({behavior:'smooth',block:'start'});
+  }
+  if(prevButton)prevButton.addEventListener('click',function(){changePage(-1);});
+  if(nextButton)nextButton.addEventListener('click',function(){changePage(1);});
   if(searchInput){
-    searchInput.addEventListener('input', function(){ renderCards(); });
+    searchInput.addEventListener('input', function(){ currentPage=1; renderCards(); });
   }
   // ===== 详情弹窗「一键跟创」：看完整创作描述 / 复制 / 编辑 / 下载 / 跳转生成 =====
   var dlgEl=null;
