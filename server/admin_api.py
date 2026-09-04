@@ -2979,7 +2979,7 @@ def request_logs(limit=200, status="", q="", include_noise=False):
     return out
 
 
-def activity_logs(days=7, limit=200, category="", q="", source="", include_noise=False, offset=0):
+def activity_logs(days=7, limit=200, category="", q="", source="", include_noise=False, offset=0, attributed=False):
     """任务记录(jobs 库) + HTTP 请求(nginx) 合并成一条时间线，最新在前。
 
     category: '' | ok | fail | running（统一语义：任务 done/error/排队中 ↔ HTTP <400/>=400）
@@ -3055,6 +3055,8 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
     matching = []
     for key, it in sorted(merged, key=lambda x: x[0], reverse=True):
         if category and it["cat"] != category:
+            continue
+        if attributed and it.get("user") in (None, "", "-"):
             continue
         if q and all(q not in (it.get(field) or "") for field in ("path", "user", "func", "request_id", "hq_code")):
             continue
@@ -3272,6 +3274,8 @@ def _empty_stats(message=None):
     return {
         "days": 7,
         "total": 0,
+        "today": {"day": time.strftime("%Y-%m-%d", time.localtime()), "total": 0, "done": 0, "error": 0, "running": 0, "other": 0},
+        "live": {"running": 0, "oldest_running_at": None, "refund_pending": 0},
         "by_kind": [],
         "by_operation": [],
         "unmapped": [],
@@ -6337,6 +6341,8 @@ def job_stats(days=7):
     since = int(time.time()) - days * 86400
     rows = []
     evidence_errors = []
+    today = {"day": time.strftime("%Y-%m-%d", time.localtime()), "total": 0, "done": 0, "error": 0, "running": 0, "other": 0}
+    live = {"running": 0, "oldest_running_at": None, "refund_pending": 0}
     if not JOB_DB.exists():
         evidence_errors.append("任务证据库不存在")
     else:
@@ -6344,6 +6350,15 @@ def job_stats(days=7):
             with closing(sqlite3.connect(str(JOB_DB), timeout=10)) as connection:
                 connection.row_factory = sqlite3.Row
                 columns = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)")}
+                active = connection.execute(
+                    "SELECT COUNT(*) AS total,MIN(created_at) AS oldest FROM jobs WHERE status IN ('pending','queued','running','processing')"
+                ).fetchone()
+                live["running"] = int(active["total"] or 0)
+                live["oldest_running_at"] = int(active["oldest"] or 0) or None
+                if "refunded" in columns:
+                    live["refund_pending"] = int(connection.execute(
+                        "SELECT COUNT(*) AS total FROM jobs WHERE COALESCE(refunded,0)=2"
+                    ).fetchone()["total"] or 0)
                 refunded_sql = "COALESCE(refunded,0)" if "refunded" in columns else "0"
                 error_sql = "COALESCE(error,'')" if "error" in columns else "''"
                 result_sql = "result" if "result" in columns else "NULL"
@@ -6401,6 +6416,8 @@ def job_stats(days=7):
     trend_counts = {}
     for row in rows:
         status = str(row["status"] or "unknown").lower()
+        if time.strftime("%Y-%m-%d", time.localtime(int(row["created_at"] or 0))) == today["day"]:
+            _count_status(today, status)
         kind = _operation_feature_key(row["kind"], row["channel"])
         bucket = by_kind.setdefault(kind, {
             "kind": kind, "total": 0, "done": 0, "error": 0,
@@ -6504,6 +6521,8 @@ def job_stats(days=7):
     return {
         "days": days,
         "total": len(rows),
+        "today": today,
+        "live": live,
         "by_kind": sorted(items, key=lambda x: x["total"], reverse=True),
         "by_operation": sorted(operation_items, key=lambda x: x["operation"]),
         "unmapped": sorted(unmapped_items, key=lambda x: x["total"], reverse=True),
@@ -6512,6 +6531,64 @@ def job_stats(days=7):
         "high_failure": sorted(high_failure, key=lambda x: x["failure_rate"], reverse=True),
         "message": "；".join(evidence_errors) if evidence_errors else None,
     }
+
+
+def dashboard_stats(days=7):
+    """Fast, read-only counts for the daily watchboard; no delivery evidence scan."""
+    days = max(1, min(int(days or 7), 90))
+    now = int(time.time())
+    since = now - days * 86400
+    today_start = int(time.mktime((*time.localtime(now)[:3], 0, 0, 0, 0, 0, -1)))
+    out = {
+        "days": days, "total": 0,
+        "today": {"day": time.strftime("%Y-%m-%d", time.localtime(now)), "total": 0, "done": 0, "error": 0, "running": 0, "other": 0},
+        "live": {"running": 0, "oldest_running_at": None, "refund_pending": 0},
+        "high_failure": [],
+    }
+    if not JOB_DB.exists():
+        return out
+    try:
+        with closing(sqlite3.connect(str(JOB_DB), timeout=10)) as connection:
+            connection.row_factory = sqlite3.Row
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)")}
+            refunded = "COALESCE(refunded,0)" if "refunded" in columns else "0"
+            rows = connection.execute(
+                """SELECT kind,status,created_at,
+                          CASE WHEN kind='xiaole_video' AND json_valid(payload)
+                               THEN LOWER(COALESCE(json_extract(payload,'$.channel'),'')) ELSE '' END AS channel,
+                          %s AS refunded
+                     FROM jobs
+                    WHERE created_at>=? OR status IN ('pending','queued','running','processing')%s""" % (
+                    refunded, " OR COALESCE(refunded,0)=2" if "refunded" in columns else "",
+                ),
+                (since,),
+            ).fetchall()
+    except sqlite3.Error:
+        return out
+    by_kind = {}
+    for row in rows:
+        status = str(row["status"] or "unknown").lower()
+        created_at = int(row["created_at"] or 0)
+        if created_at >= since:
+            out["total"] += 1
+            kind = _operation_feature_key(row["kind"], row["channel"])
+            _count_status(by_kind.setdefault(kind, {
+                "kind": kind,
+                "total": 0, "done": 0, "error": 0, "running": 0, "other": 0,
+            }), status)
+        if created_at >= today_start:
+            _count_status(out["today"], status)
+        if status in {"pending", "queued", "running", "processing"}:
+            out["live"]["running"] += 1
+            oldest = out["live"]["oldest_running_at"]
+            out["live"]["oldest_running_at"] = created_at if not oldest or created_at < oldest else oldest
+        if int(row["refunded"] or 0) == 2:
+            out["live"]["refund_pending"] += 1
+    out["high_failure"] = sorted([
+        item for item in _finish_stats(list(by_kind.values()))
+        if item["total"] >= 3 and item["failure_rate"] >= 0.5
+    ], key=lambda item: item["failure_rate"], reverse=True)
+    return out
 
 
 _PAYLOAD_FIELD_RE = re.compile(r'"(model|provider|channel|mode|keyword|url|line|variant|source_page|voice_scope)"\s*:\s*"([^"]*)"')
@@ -7000,6 +7077,7 @@ class H(BaseHTTPRequestHandler):
                         (q.get("source") or [""])[0],
                         (q.get("noise") or ["0"])[0] in ("1", "true"),
                         (q.get("offset") or ["0"])[0],
+                        (q.get("attributed") or ["0"])[0] in ("1", "true"),
                     ),
                 )
             except Exception as e:
@@ -7038,6 +7116,19 @@ class H(BaseHTTPRequestHandler):
                     (q.get("limit") or ["200"])[0],
                 ),
             )
+        if path == "/api/admin/dashboard":
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            pages = function_registry.list_pages()
+            return self._send(200, {
+                "ok": True,
+                "user": {"username": user.get("username"), "name": user.get("name"), "role": user.get("role")},
+                "services": service_status(),
+                "registry_coverage": {
+                    "verified": sum(page.get("inventory_status") == "verified" for page in pages),
+                    "total": len(pages),
+                },
+                "stats": dashboard_stats((q.get("days") or ["7"])[0]),
+            })
         if path == "/api/admin/overview":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             services = service_status()

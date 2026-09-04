@@ -227,6 +227,11 @@ class CreatorAgentContractTests(unittest.TestCase):
         self.assertIn('git diff --check "$PR_BASE_SHA...$PR_HEAD_SHA"', workflow)
         self.assertIn("pip install -r deploy/requirements-creator-agent.txt", workflow)
 
+    def test_creator_release_updates_loaded_nginx_copy(self):
+        self.assertIn("NGINX_ENABLED=/etc/nginx/sites-enabled/huangquechuanmei", self.release)
+        self.assertIn('"$NGINX_SOURCE" "$NGINX_ENABLED"', self.release)
+        self.assertIn("nginx-enabled.state", self.release)
+
     def test_deploy_contract_does_not_duplicate_shared_internal_token(self):
         example = (ROOT / "deploy/huangque-secrets.env.example").read_text(encoding="utf-8")
         self.assertIn("HQ_INTERNAL_TOKEN=", example)

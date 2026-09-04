@@ -591,6 +591,26 @@ class FunctionRegistryTests(unittest.TestCase):
         stats = self.admin.job_stats(7)
         self.assertNotIn("一键成片证据库不存在", stats["evidence_errors"])
 
+    def test_job_stats_exposes_daily_watch_summary(self):
+        noon = int(time.mktime((*time.localtime()[:3], 12, 0, 0, 0, 0, -1)))
+        with closing(sqlite3.connect(self.admin.JOB_DB)) as connection:
+            connection.execute("UPDATE jobs SET created_at=?+id", (noon,))
+            connection.execute("UPDATE jobs SET status='running' WHERE id=6")
+            connection.execute("UPDATE jobs SET refunded=2 WHERE id=2")
+            connection.commit()
+        stats = self.admin.job_stats(7)
+        self.assertEqual(stats["today"], {
+            "day": time.strftime("%Y-%m-%d", time.localtime()),
+            "total": 6, "done": 4, "error": 1, "running": 1, "other": 0,
+        })
+        self.assertEqual(stats["live"]["running"], 1)
+        self.assertEqual(stats["live"]["refund_pending"], 1)
+        self.assertEqual(stats["live"]["oldest_running_at"], noon + 6)
+        summary = self.admin.dashboard_stats(7)
+        self.assertEqual(summary["today"], stats["today"])
+        self.assertEqual(summary["live"], stats["live"])
+        self.assertEqual(summary["total"], stats["total"])
+
     def test_character_reference_evidence_source_maps_to_customer_operation(self):
         now = int(time.time())
         (self.admin.CONTENT_OUT / "character.bin").write_bytes(b"generated-character")

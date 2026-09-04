@@ -342,7 +342,12 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             "开发待归档", "后台生产链测试", "尚无真实接单证据",
             "任务记录了点数，账务台账待核对", "operationsPage:'video'",
             'id="globalUserSearch"', 'id="customerLayer"',
-            "/api/admin/activity?limit=8", "/api/admin/recharge/orders?status=pending",
+            'id="dashboardServiceState"', 'id="dashboardRefundState"', 'id="dashboardUpdatedAt"',
+            'id="todayTotal"', 'id="activeJobs"', 'id="failureSummary"', 'id="pendingOrdersSummary"',
+            "function openDashboardJobs(status)", "每 30 秒自动刷新", "今日盯盘",
+            "/api/admin/dashboard?days=", "function loadDashboard(silent)", "loadDashboard(false)",
+            'id="reqAttributed" checked', "el('reqAttributed').checked?'&attributed=1':''",
+            "/api/admin/activity?limit=8", "status=fail&attributed=1", "/api/admin/recharge/orders?status=pending",
             "module:'dashboard'", "aria-current", "/workbench/hq-icons-duotone.js",
             'class="side-nav-icon"', "prefers-reduced-motion:reduce",
             "dashboard:'home'", "users:'users'", "logs:'clock'", "recharge:'coins'",
@@ -369,7 +374,7 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             "探针数据已过期", "号池鉴权证据已过期", "后台按渠道定时巡检",
             "var deps=registryActiveDependencies(feature,mode)",
             "data-server-probe-status", "function updateServerProbeNodes(key)",
-            "state.module==='dashboard'||state.module==='operations'", "credential_version",
+            "if(state.module==='dashboard')loadDashboard(true);else if(state.module==='operations')load(true)", "credential_version",
             "var routeUnverified=", "&force=1",
             "var evidence=registryRouteEvidence({key:meta.key}",
             "后台生产链控制台", "后台生产链可交付，客户页面仍需浏览器验收",
@@ -394,6 +399,7 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             '.ops-catalog{position:static;max-height:none}',
         ):
             self.assertIn(marker, html)
+        self.assertNotIn("用户待归属", html)
         self.assertNotIn("window.open(target", html)
         self.assertNotIn('id="operationsValidationLayer"', html)
         self.assertNotIn('id="operationsValidationFrame"', html)
