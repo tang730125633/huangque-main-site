@@ -5,7 +5,7 @@
 本手册覆盖 `tang730125633/huangque-main-site#1436` 对生产共享数据库
 `/home/ubuntu/content-api/content_jobs.db` 的结构升级。目标服务器为 `dapeng-server`。
 
-当前状态：**LU-003 阶段一审批及回归计数更正均已核验，等待一次性推送及精确 HEAD CI/审核；本文件不是合并、部署或重启授权。**
+当前状态：**最新审核修复已固定，等待受支持 Linux 完整回归及新的 LU-003 阶段一审批；本文件不是合并、部署或重启授权。**
 
 本次结构变化包括：
 
@@ -23,32 +23,22 @@
 ## 固定审批对象
 
 - PR：`tang730125633/huangque-main-site#1436`
-- 固定业务与 Schema 提交：`5713c83ecaf7b23d133f5da6b0c16a5afa3e1aa7`
+- 固定业务、测试与 CI 提交：`52516e40534a6acf24b294703e7012c589fca403`
 - 基线：`main@f7c2463c201946c2ce9344ae21f06d06e9433f61`
 - 维护窗口：`2026-09-06 02:00–03:00 Asia/Shanghai`
 - 执行、备份、验证、失败恢复负责人：`@LU-003`
-- 阶段一审批评论：
-  [issuecomment-5537682411](https://github.com/tang730125633/huangque-main-site/pull/1436#issuecomment-5537682411)
-  - 评论 ID：`5537682411`
-  - Node ID：`IC_kwDOS66oj88AAAABShJT6w`
-  - 作者：`LU-003`
-  - 作者关联：`COLLABORATOR`
-  - 创建及更新时间：`2026-09-04T08:13:51Z`
-  - 该评论中的“相关回归 `231/231`”为计数笔误；正确分项为核心任务相关模块
-    `229/229`、`tests.test_hq_cli_content` `35/35`，合计 `264/264`。
-- 阶段一审批证据更正：
-  [issuecomment-5537746449](https://github.com/tang730125633/huangque-main-site/pull/1436#issuecomment-5537746449)
-  - 评论 ID：`5537746449`
-  - Node ID：`IC_kwDOS66oj88AAAABShNOEQ`
-  - 作者：`LU-003`
-  - 作者关联：`COLLABORATOR`
-  - 创建及更新时间：`2026-09-04T08:20:08Z`
-  - 绑定计数更正治理提交：`8f1a52b2033610601d61ae7f8a59796bfa38cf3d`
-- 阶段二最终 HEAD 审批：待一次性推送、精确 HEAD CI 和最新审核通过后发布。
+- 最新审核：
+  [issuecomment-5537924343](https://github.com/tang730125633/huangque-main-site/pull/1436#issuecomment-5537924343)，
+  其提示路由与 Linux 完整回归两项 P1 已在固定提交中修复或加入强制 CI 验证。
+- 新阶段一审批：待 Linux 完整回归验证通过后由 `LU-003` 发布并绑定上述固定提交。
+- 阶段二最终 HEAD 审批：待 PR 精确 HEAD CI 和最新审核通过后发布。
 - 已失效历史审批：
   [issuecomment-5536582840](https://github.com/tang730125633/huangque-main-site/pull/1436#issuecomment-5536582840)、
-  [issuecomment-5536612768](https://github.com/tang730125633/huangque-main-site/pull/1436#issuecomment-5536612768)。
-  二者绑定旧业务 SHA `24e67cd43b082a646586ea02f1b4241c5dae30d1`，因本轮业务与测试修复而失效。
+  [issuecomment-5536612768](https://github.com/tang730125633/huangque-main-site/pull/1436#issuecomment-5536612768)、
+  [issuecomment-5537682411](https://github.com/tang730125633/huangque-main-site/pull/1436#issuecomment-5537682411)、
+  [issuecomment-5537746449](https://github.com/tang730125633/huangque-main-site/pull/1436#issuecomment-5537746449)。
+  前两者绑定业务 SHA `24e67cd43b082a646586ea02f1b4241c5dae30d1`，后两者绑定业务 SHA
+  `5713c83ecaf7b23d133f5da6b0c16a5afa3e1aa7`；均因后续业务、测试或 CI 修复而失效。
 
 固定提交后只允许追加审批评论元数据、验证证据或纯 `main` 同步。若业务代码、测试或 Schema
 再次变化，阶段一审批立即失效，必须重新固定 SHA、重跑验证并取得新审批。
@@ -96,16 +86,18 @@
 python -m unittest tests.test_video_agent tests.test_video_agent_tools tests.test_video_agent_capability_contract tests.test_cli_media_uploads tests.test_cli_image_uploads tests.test_video_batch tests.test_jobs_store tests.test_hq_cli_content -v
 python -m unittest tests.test_hq_cli_api -v
 python -m unittest discover -s tools/hq-cli/tests -p "test_*.py" -v
+python -m unittest discover -s tests -p "test_*.py" -v
 python scripts/ci_validate.py
 python scripts/stamp_assets.py --check
 ```
 
-本地固定提交验证证据：核心任务相关模块 `229/229` 与 `tests.test_hq_cli_content` `35/35`
-均通过，合计 `264/264`；仓库静态门禁、资源版本戳、Python 语法及
+本地固定提交验证证据：任务相关模块 `193/193`、主线 HQ CLI API `72/72`，合计
+`265/265`；HQ CLI 独立回归 `87/87`；仓库静态门禁、资源版本戳、Python 语法及
 `git diff --check` 均通过。Windows 单进程全量发现运行 4715 项，结果为 52 failures、118 errors、
 46 skipped；在隔离的 `main@f7c2463c` 工作树中，审核点名的短剧恢复与 Sora 恢复失败可同样复现，
-而 PR 独有的 Seedance 顺序回归已修复并通过 19/19 模块测试。由于本机无 WSL/Docker，受支持
-Linux 环境的最终结论必须以一次性推送后的精确 HEAD CI/审核记录为准，不得用 Windows 结果替代。
+而 PR 独有的 Seedance 顺序回归已修复并通过 19/19 模块测试。新增的
+`仓库完整回归 · Linux` job 会在 Ubuntu/Python 3.12 安装真实浏览器与仓库约束依赖，并执行未缩减的
+repo-root unittest discovery；该 job 绿色前不得取得阶段一审批或更新 PR，不得用 Windows 结果替代。
 
 ## 失败回滚
 
