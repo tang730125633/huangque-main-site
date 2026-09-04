@@ -728,6 +728,11 @@
         const analysisKey=Number.isInteger(input.module_index)&&Number.isInteger(input.step_index)?`${input.module_index}-${input.step_index}`:keyFor();
         if(analysis)state.analyses[analysisKey]={analysis,model:project.last_analysis.model||"AI 分析服务",usage:{}};
         persistLocal(); render();
+        const entryBrief=(new URLSearchParams(location.search).get("brief")||"").trim().slice(0,1200);
+        if(entryBrief&&!$("coachInput").value){
+          $("coachInput").value=entryBrief;
+          $("coachInput").focus();
+        }
         if(restoreLocal)queueProjectSave();
         $("projectStatus").textContent=`${projectStatusText()} · 已恢复 · 跨端可继续`;
       }catch(_){ state=structuredClone(initialState); render(); $("projectStatus").textContent="网络不可用，未加载账号档案"; }
@@ -1572,6 +1577,6 @@
     render();
     loadProject();
   </script>
-  <script src="cloud-shell.js?v=7b2db7de"></script>
+  <script src="cloud-shell.js?v=52d9a445"></script>
 </body>
 </html>
