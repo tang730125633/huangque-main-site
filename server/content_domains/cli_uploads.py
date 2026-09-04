@@ -642,6 +642,89 @@ def load_preview(kind, upload_id, username, now=None):
     return data, str(meta["mime"])
 
 
+def _verify_file_stream(path, meta, max_bytes, sniff_fn):
+    """Streaming size / mime / sha256 verification for file-backed previews."""
+    try:
+        size = path.stat().st_size
+    except OSError:
+        raise ValueError("素材文件不存在或已失效")
+    if not 0 < size <= max_bytes or size != int(meta.get("bytes") or -1):
+        raise ValueError("素材文件异常")
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        head = handle.read(32)
+        if sniff_fn(head) != meta.get("mime"):
+            raise ValueError("素材文件格式异常")
+        digest.update(head)
+        while True:
+            chunk = handle.read(64 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    if not hmac.compare_digest(digest.hexdigest(), str(meta.get("sha256") or "")):
+        raise ValueError("素材文件校验失败")
+    return size
+
+
+def open_preview(kind, upload_id, username, now=None):
+    """Return ``(binary file handle, size, mime)`` for streaming preview.
+
+    Owner / expiry / size / mime / sha256 checks are identical to the
+    whole-read paths; the caller streams from the returned handle (64KB
+    chunks, Range aware) instead of materializing up to 32MB in memory.
+    """
+    now = int(time.time() if now is None else now)
+    if kind == "image":
+        upload_id = str(upload_id or "").strip().lower()
+        if not UPLOAD_ID_RE.fullmatch(upload_id):
+            raise ValueError("图片 upload_id 格式不合法")
+        _, meta_path = _paths(upload_id, ".png")
+        try:
+            raw_meta = meta_path.read_bytes()
+            if len(raw_meta) > 4096:
+                raise ValueError("图片 upload_id 元数据异常")
+            meta = json.loads(raw_meta)
+            extension = str(meta.get("extension") or "")
+            data_path, _ = _paths(upload_id, extension)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            raise ValueError("图片 upload_id 不存在或已失效")
+        if meta.get("version") != 1 or extension not in MIME_EXTENSIONS.values():
+            raise ValueError("图片 upload_id 元数据异常")
+        if not hmac.compare_digest(str(meta.get("owner_hash") or ""), _owner_hash(username)):
+            raise ValueError("图片 upload_id 不存在或已失效")
+        if int(meta.get("expires_at") or 0) <= now:
+            data_path.unlink(missing_ok=True)
+            meta_path.unlink(missing_ok=True)
+            raise ValueError("图片 upload_id 已过期，请重新上传")
+        size = _verify_file_stream(data_path, meta, MAX_BYTES, detect_mime)
+        return open(data_path, "rb"), size, str(meta["mime"])
+    if kind == "video":
+        upload_id = str(upload_id or "").strip().lower()
+        if not VIDEO_UPLOAD_ID_RE.fullmatch(upload_id):
+            raise ValueError("视频 upload_id 格式不合法")
+        _, meta_path = _video_paths(upload_id, ".mp4")
+        try:
+            raw_meta = meta_path.read_bytes()
+            if len(raw_meta) > 4096:
+                raise ValueError("视频 upload_id 元数据异常")
+            meta = json.loads(raw_meta)
+            extension = str(meta.get("extension") or "")
+            data_path, _ = _video_paths(upload_id, extension)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            raise ValueError("视频 upload_id 不存在或已失效")
+        if meta.get("version") != 1 or extension not in VIDEO_MIME_EXTENSIONS.values():
+            raise ValueError("视频 upload_id 元数据异常")
+        if not hmac.compare_digest(str(meta.get("owner_hash") or ""), _owner_hash(username)):
+            raise ValueError("视频 upload_id 不存在或已失效")
+        if int(meta.get("expires_at") or 0) <= now:
+            data_path.unlink(missing_ok=True)
+            meta_path.unlink(missing_ok=True)
+            raise ValueError("视频 upload_id 已过期，请重新上传")
+        size = _verify_file_stream(data_path, meta, VIDEO_MAX_BYTES, detect_video_mime)
+        return open(data_path, "rb"), size, str(meta["mime"])
+    raise ValueError("素材类型不支持预览")
+
+
 def _load_audio(upload_id, username, now):
     upload_id = str(upload_id or "").strip().lower()
     if not AUDIO_UPLOAD_ID_RE.fullmatch(upload_id):

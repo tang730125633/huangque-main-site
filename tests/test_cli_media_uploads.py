@@ -63,6 +63,24 @@ class CLIMediaUploadTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "不存在或已失效"):
             cli_uploads.load_preview("image", image_id, "bob", now=101)
 
+    def test_open_preview_streams_verified_bytes_without_full_read(self):
+        image_id, video_id = self.image(), self.video()
+        handle, size, mime = cli_uploads.open_preview("image", image_id, "alice", now=101)
+        with handle:
+            self.assertEqual(size, len(PNG))
+            self.assertEqual(mime, "image/png")
+            self.assertEqual(handle.read(), PNG)
+        handle, size, mime = cli_uploads.open_preview("video", video_id, "alice", now=101)
+        with handle:
+            self.assertEqual(size, len(MP4))
+            self.assertEqual(mime, "video/mp4")
+            handle.seek(4)
+            self.assertEqual(handle.read(4), b"ftyp")
+        with self.assertRaisesRegex(ValueError, "不存在或已失效"):
+            cli_uploads.open_preview("video", video_id, "bob", now=101)
+        with self.assertRaisesRegex(ValueError, "素材类型不支持预览"):
+            cli_uploads.open_preview("audio", video_id, "alice", now=101)
+
     def test_tryon_roles_expand_and_classic_video_is_six_seconds_max(self):
         person, clothes = self.image(), self.image()
         fast = cli_uploads.expand_role_media_payload({

@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import time
 import urllib.error
 import urllib.parse
@@ -27,6 +28,9 @@ IMAGE_UPLOAD_ROUTE = "/api/gen/video/agent/uploads/image"
 VIDEO_UPLOAD_ROUTE = "/api/gen/video/agent/uploads/video"
 CONFIRM_ROUTE_RE = __import__("re").compile(
     r"^/api/gen/video/agent/actions/(vpa_[0-9a-f]{32})/confirm$"
+)
+RECONCILE_ROUTE_RE = __import__("re").compile(
+    r"^/api/gen/video/agent/actions/(vpa_[0-9a-f]{32})/reconcile$"
 )
 PREVIEW_ROUTE_RE = re.compile(
     r"^/api/gen/video/agent/uploads/(image|video)/((?:img|vid)_[0-9a-f]{32})/preview$"
@@ -122,6 +126,7 @@ _RUNTIME_DIAGNOSTIC_STAGES = frozenset({
     "chat_prepare", "chat_usage_acquire", "chat_runtime_init",
     "chat_provider_call", "chat_provider_result", "chat_usage_finalize",
     "chat_usage_release", "dispatch_confirm_parse", "dispatch_confirm",
+    "dispatch_reconcile_parse", "dispatch_reconcile",
     "dispatch_chat_parse", "dispatch_chat", "dispatch_send",
 })
 _RUNTIME_EXCEPTION_TYPES = (
@@ -313,6 +318,70 @@ def _normalized_form_value(field, value):
     return value
 
 
+def _material_gate(module, materials, brief):
+    """Recompute module readiness server-side from real, user-owned evidence.
+
+    The model's ``ready_to_handoff`` claim is not trusted by itself: the
+    recommended module must also be provably satisfied by the sanitized
+    materials list (real upload_id / avatar_id) and the user-confirmed brief.
+    ``compose`` is excluded because it operates on the asset library, which is
+    not represented in the material list.
+    """
+    if module not in {"talking", "motion", "story", "create", "tryon"}:
+        return True, []
+    items = [item for item in (materials or []) if isinstance(item, dict)]
+    brief = brief if isinstance(brief, dict) else {}
+    images = [item for item in items if item.get("type") == "image"]
+    videos = [item for item in items if item.get("type") == "video"]
+    audios = [item for item in items if item.get("type") == "audio"]
+    texts = [item for item in items if item.get("type") == "text"]
+    image_uploads = [item for item in images if item.get("upload_id")]
+    video_uploads = [item for item in videos if item.get("upload_id")]
+    ready_avatar = any(
+        item.get("avatar_state") == "ready" and item.get("avatar_id")
+        for item in images
+    )
+    person_image = bool(image_uploads) or ready_avatar
+    script = bool(
+        brief.get("script") or brief.get("content") or brief.get("subject")
+    ) or bool(texts)
+    audio_ok = bool(audios)
+    requirements = {
+        "talking": [
+            ("image", person_image, "人物照片或已就绪的数字人形象"),
+            ("text", script or audio_ok, "口播文案或音频"),
+        ],
+        "motion": [
+            ("image", ready_avatar, "已就绪的数字人形象"),
+            ("video", bool(video_uploads), "参考视频"),
+        ],
+        "story": [
+            ("image", person_image, "人物参考图或已就绪的电影化身"),
+            ("text", script, "剧情描述"),
+        ],
+        "create": [("text", script, "画面描述")],
+        "tryon": [
+            (
+                "image",
+                len(image_uploads) >= 2 or (bool(video_uploads) and bool(image_uploads)),
+                "人物图片与服装图片（或人物视频加服装图片）",
+            ),
+        ],
+    }
+    passed = True
+    hints = []
+    for material_type, ok, label in requirements.get(module, []):
+        if not ok:
+            passed = False
+            hints.append({
+                "type": material_type,
+                "label": label,
+                "reason": "服务端校验：%s尚未提供" % label,
+                "required": True,
+            })
+    return passed, hints
+
+
 def _normalize(result, materials=None):
     if not isinstance(result, dict):
         raise advisor_runtime.AdvisorError(
@@ -363,6 +432,15 @@ def _normalize(result, materials=None):
         recommended = ""
     has_blocker = bool(missing) or any(item["required"] for item in requests)
     ready = bool(result.get("ready_to_handoff")) and bool(recommended) and not has_blocker
+    if ready:
+        # 模型宣称就绪时，必须还能用真实素材与已确认简介在服务端证明就绪；
+        # 否则退回素材收集阶段并注入确定性的缺失项（见 _material_gate）。
+        gate_pass, gate_requests = _material_gate(recommended, materials, brief)
+        if not gate_pass:
+            ready = False
+            has_blocker = True
+            for item in gate_requests:
+                requests.append(item)
     if has_blocker:
         stage = "collect_materials" if requests else "clarify"
     elif ready:
@@ -422,6 +500,19 @@ def _normalize(result, materials=None):
                 "name": name, "type": material_type, "status": status,
                 "summary": _text(raw.get("summary"), 300),
             })
+    # 只保留能与用户真实素材匹配的评估；模型无法凭空评估不存在的素材。
+    real_materials = [item for item in (materials or []) if isinstance(item, dict)]
+    real_by_type = {}
+    for item in real_materials:
+        real_by_type.setdefault(item.get("type"), []).append(item)
+    matched_assessments = []
+    for assessment in assessments:
+        if any(
+            candidate.get("name") == assessment["name"]
+            for candidate in real_by_type.get(assessment["type"], [])
+        ):
+            matched_assessments.append(assessment)
+    assessments = matched_assessments
 
     form_updates = []
     raw_updates = result.get("form_updates") or []
@@ -1328,12 +1419,42 @@ def chat(body, opener=None, username=None, db_factory=None, web_token=None,
         raise
 
 
+def _parse_byte_range(range_header, size):
+    """Parse a single ``bytes=a-b``/``bytes=a-``/``bytes=-n`` range.
+
+    Returns an inclusive ``(start, end)`` tuple or ``None`` when the header is
+    absent.  A present-but-invalid header also returns ``None``; the caller
+    answers 416 because an explicit Range must never degrade silently.
+    """
+    if not range_header:
+        return None
+    match = re.fullmatch(r"\s*bytes=(\d*)-(\d*)\s*", str(range_header))
+    if not match:
+        return None
+    raw_start, raw_end = match.groups()
+    if not raw_start and not raw_end:
+        return None
+    try:
+        if raw_start and raw_end:
+            start, end = int(raw_start), int(raw_end)
+        elif raw_start:
+            start, end = int(raw_start), size - 1
+        else:
+            start, end = max(0, size - int(raw_end)), size - 1
+    except ValueError:
+        return None
+    if start < 0 or end < start or start >= size or size <= 0:
+        return None
+    return start, min(end, size - 1)
+
+
 def dispatch_http(handler, method, verify, must_change_password, db_factory):
     path = handler.path.split("?", 1)[0]
     confirm_match = CONFIRM_ROUTE_RE.fullmatch(path)
+    reconcile_match = RECONCILE_ROUTE_RE.fullmatch(path)
     preview_match = PREVIEW_ROUTE_RE.fullmatch(path)
     upload_kind = "image" if path == IMAGE_UPLOAD_ROUTE else ("video" if path == VIDEO_UPLOAD_ROUTE else "")
-    is_post_route = method == "POST" and (path == ROUTE or confirm_match or upload_kind)
+    is_post_route = method == "POST" and (path == ROUTE or confirm_match or reconcile_match or upload_kind)
     is_preview_route = method == "GET" and bool(preview_match)
     if not is_post_route and not is_preview_route:
         return False
@@ -1345,7 +1466,7 @@ def dispatch_http(handler, method, verify, must_change_password, db_factory):
     if must_change_password(user):
         handler._send(403, {"detail": "请先修改初始密码"})
         return True
-    runtime_stage = "dispatch_preview" if preview_match else ("dispatch_upload" if upload_kind else ("dispatch_confirm_parse" if confirm_match else "dispatch_chat_parse"))
+    runtime_stage = "dispatch_preview" if preview_match else ("dispatch_upload" if upload_kind else ("dispatch_confirm_parse" if confirm_match else ("dispatch_reconcile_parse" if reconcile_match else "dispatch_chat_parse")))
     try:
         if preview_match:
             preview_kind, upload_id = preview_match.groups()
@@ -1356,7 +1477,7 @@ def dispatch_http(handler, method, verify, must_change_password, db_factory):
                 })
                 return True
             try:
-                data, content_type = cli_uploads.load_preview(
+                handle, size, content_type = cli_uploads.open_preview(
                     preview_kind, upload_id, user["username"]
                 )
             except (OSError, ValueError):
@@ -1365,13 +1486,37 @@ def dispatch_http(handler, method, verify, must_change_password, db_factory):
                     "code": "upload_preview_unavailable",
                 })
                 return True
-            handler.send_response(200)
-            handler.send_header("Content-Type", content_type)
-            handler.send_header("Content-Length", str(len(data)))
-            handler.send_header("Cache-Control", "private, no-store")
-            handler.send_header("X-Content-Type-Options", "nosniff")
-            handler.end_headers()
-            handler.wfile.write(data)
+            try:
+                range_header = handler.headers.get("Range")
+                parsed = _parse_byte_range(range_header, size)
+                if range_header and parsed is None:
+                    handler.send_response(416)
+                    handler.send_header("Content-Range", "bytes */%d" % size)
+                    handler.end_headers()
+                    return True
+                status, start, end = (206, parsed[0], parsed[1]) if parsed else (200, 0, size - 1)
+                handler.send_response(status)
+                handler.send_header("Content-Type", content_type)
+                handler.send_header("Accept-Ranges", "bytes")
+                handler.send_header("Cache-Control", "private, no-store")
+                handler.send_header("X-Content-Type-Options", "nosniff")
+                if status == 206:
+                    handler.send_header(
+                        "Content-Range", "bytes %d-%d/%d" % (start, end, size)
+                    )
+                handler.send_header("Content-Length", str(end - start + 1))
+                handler.end_headers()
+                # 流式发送：预览最多 32MB，绝不整块读入内存放大并发。
+                handle.seek(start)
+                remaining = end - start + 1
+                while remaining:
+                    chunk = handle.read(min(64 * 1024, remaining))
+                    if not chunk:
+                        break
+                    handler.wfile.write(chunk)
+                    remaining -= len(chunk)
+            finally:
+                handle.close()
             return True
         if upload_kind:
             if handler.headers.get("Transfer-Encoding"):
@@ -1413,6 +1558,18 @@ def dispatch_http(handler, method, verify, must_change_password, db_factory):
                 db_factory=db_factory,
             )
             result = {"pending_action": confirmed}
+        elif reconcile_match:
+            body = handler._json_body_strict(max_bytes=1024)
+            if set(body):
+                raise video_agent_tools.ToolError(
+                    "request_invalid", "对账请求不接受额外字段", 400
+                )
+            runtime_stage = "dispatch_reconcile"
+            reconciled = video_agent_tools.reconcile_pending_action(
+                reconcile_match.group(1), username=user["username"],
+                db_factory=db_factory,
+            )
+            result = {"pending_action": reconciled}
         else:
             body = handler._json_body_strict(max_bytes=64 * 1024)
             runtime_stage = "dispatch_chat"

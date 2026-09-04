@@ -6044,6 +6044,34 @@ class H(BaseHTTPRequestHandler):
                 return self._cli_send(200, delegated)
             except hq_cli_api.CLIAPIError as exc:
                 return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
+        if p == "/api/auth/internal/cli/quote-claims":
+            # 只读核验：内容服务在付费确认前用它取得签名内的确定性字段
+            # （nonce/kind/cost/expires_at/username/payload_hash），据此构造
+            # 与 CLI 提交链路一致的幂等键，供 result_unknown 对账使用。
+            if not self._require_internal():
+                return
+            if self._content_length_exceeds(4096):
+                return self._cli_send(413, {"detail": "请求过大", "code": "request_too_large"})
+            d = self._body()
+            if self._bad_json() or not isinstance(d, dict):
+                return self._cli_send(400, {"detail": "请求体不是合法 JSON 对象"})
+            if set(d) != {"quote_token"}:
+                return self._cli_send(400, {
+                    "detail": "请求字段必须是 quote_token",
+                    "code": "invalid_request",
+                })
+            token = d.get("quote_token")
+            if not isinstance(token, str) or not 20 <= len(token) <= 4096:
+                return self._cli_send(400, {"detail": "报价凭证无效", "code": "invalid_quote"})
+            try:
+                claims = hq_cli_api.quote_claims_only(INTERNAL_TOKEN, token)
+                return self._cli_send(200, {
+                    "nonce": claims["n"], "kind": claims["k"], "cost": claims["c"],
+                    "expires_at": claims["e"], "username": claims["u"],
+                    "payload_hash": claims["h"],
+                })
+            except hq_cli_api.CLIAPIError as exc:
+                return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
         if p == "/api/auth/cli/device/start":
             if self._content_length_exceeds(8192):
                 return self._cli_send(413, {"detail": "请求过大"})

@@ -27,6 +27,7 @@ class VideoAgentToolTests(unittest.TestCase):
 
         self.db = db_factory
         self.calls = []
+        self.claims_calls = []
 
         def cli_execute(capability, input_body, **kwargs):
             self.calls.append((capability, dict(input_body), dict(kwargs)))
@@ -42,6 +43,16 @@ class VideoAgentToolTests(unittest.TestCase):
             return {"items": [{"display_name": "公共音色 1"}], "total": 1}
 
         self.cli_execute = cli_execute
+
+        def quote_claims(quote_token):
+            self.claims_calls.append(quote_token)
+            return {
+                "nonce": "f" * 32, "kind": "cinematic", "cost": 90,
+                "expires_at": 2000, "username": "alice",
+                "payload_hash": "a" * 64,
+            }
+
+        self.quote_claims = quote_claims
 
     def tearDown(self):
         self.db_path.unlink(missing_ok=True)
@@ -135,10 +146,12 @@ class VideoAgentToolTests(unittest.TestCase):
         first = video_agent_tools.confirm_pending_action(
             pending_id, "request-12345678", username="alice", web_token="web-token",
             db_factory=self.db, cli_execute=self.cli_execute, now=lambda: 1001,
+            quote_claims=self.quote_claims,
         )
         second = video_agent_tools.confirm_pending_action(
             pending_id, "request-12345678", username="alice", web_token="web-token",
             db_factory=self.db, cli_execute=self.cli_execute, now=lambda: 1002,
+            quote_claims=self.quote_claims,
         )
         self.assertEqual(first, second)
         self.assertEqual(first["status"], "submitted")
@@ -177,6 +190,7 @@ class VideoAgentToolTests(unittest.TestCase):
             quote["pending_action"]["id"], "request-12345678",
             username="alice", web_token="web-token", db_factory=self.db,
             cli_execute=exposed_confirm, now=lambda: 1001,
+            quote_claims=self.quote_claims,
         )
         self.assertEqual(confirmed["result"], {
             "job_id": 321, "cost": 8, "points_left": 992,
@@ -330,6 +344,7 @@ class VideoAgentToolTests(unittest.TestCase):
                 quote["pending_action"]["id"], "request-12345678",
                 username="bob", web_token="web-token", db_factory=self.db,
                 cli_execute=self.cli_execute, now=lambda: 1001,
+                quote_claims=self.quote_claims,
             )
         self.assertEqual(error.exception.code, "pending_action_not_found")
         self.assertEqual(len(self.calls), 1)
@@ -347,6 +362,7 @@ class VideoAgentToolTests(unittest.TestCase):
             video_agent_tools.confirm_pending_action(
                 pending_id, "request-12345678", username="alice", web_token="web-token",
                 db_factory=self.db, cli_execute=self.cli_execute, now=lambda: 1201,
+                quote_claims=self.quote_claims,
             )
         self.assertEqual(error.exception.code, "pending_action_expired")
         with closing(self.db()) as conn:
@@ -379,6 +395,7 @@ class VideoAgentToolTests(unittest.TestCase):
             video_agent_tools.confirm_pending_action(
                 pending_id, "request-12345678", username="alice", web_token="web-token",
                 db_factory=self.db, cli_execute=unknown, now=lambda: 1001,
+                quote_claims=self.quote_claims,
             )
         self.assertTrue(first.exception.unknown_outcome)
         self.assertEqual(first.exception.pending_action["status"], "result_unknown")
@@ -392,6 +409,7 @@ class VideoAgentToolTests(unittest.TestCase):
             video_agent_tools.confirm_pending_action(
                 pending_id, "request-12345678", username="alice", web_token="web-token",
                 db_factory=self.db, cli_execute=unknown, now=lambda: 1002,
+                quote_claims=self.quote_claims,
             )
         self.assertEqual(second.exception.code, "pending_action_unavailable")
         self.assertEqual(len(attempts), 1)
@@ -472,7 +490,7 @@ class VideoAgentToolTests(unittest.TestCase):
                 "INSERT INTO video_agent_pending_actions "
                 "SELECT ?,username,tool_name,capability,input_json,input_hash,quote_token,"
                 "cost,points,'awaiting_confirmation',created_at+1,expires_at,updated_at+1,"
-                "NULL,NULL,NULL FROM video_agent_pending_actions WHERE id=?",
+                "NULL,NULL,NULL,NULL FROM video_agent_pending_actions WHERE id=?",
                 (duplicate_id, pending_id),
             )
             conn.commit()
@@ -491,6 +509,247 @@ class VideoAgentToolTests(unittest.TestCase):
         self.assertEqual(by_id[duplicate_id]["status"], "cancelled")
         self.assertEqual(by_id[duplicate_id]["quote_token"], "")
         self.assertIn("result_unknown", index_sql)
+
+
+    def test_video_generate_enforces_real_cli_channel_rules(self):
+        runtime = video_agent_tools.VideoAgentToolRuntime(
+            username="alice", web_token="web-token", db_factory=self.db,
+            cli_execute=self.cli_execute, now=lambda: 1000,
+        )
+
+        def quote(payload):
+            return runtime.run(
+                "hq_quote_video_generate", json.dumps(payload, ensure_ascii=False)
+            )
+
+        # 真实 CLI 接受：minimax 只收 2k、支持 21:9/adaptive；micro 支持
+        # adaptive 与 generate_audio。
+        self.assertEqual(
+            quote({"prompt": "蓝色产品视频", "channel": "minimax",
+                   "ratio": "21:9", "resolution": "2k", "duration": 5})
+            ["pending_action"]["status"],
+            "awaiting_confirmation",
+        )
+        self.assertEqual(
+            quote({"prompt": "蓝色产品视频", "channel": "micro",
+                   "ratio": "adaptive", "generate_audio": True, "duration": 8})
+            ["pending_action"]["status"],
+            "awaiting_confirmation",
+        )
+        self.assertEqual(
+            quote({"prompt": "蓝色产品视频", "channel": "sora",
+                   "seconds": 4, "model": "sora-2-pro", "resolution": "1080p"})
+            ["pending_action"]["status"],
+            "awaiting_confirmation",
+        )
+        # 真实 CLI 必拒的组合必须在这里就被拦截，而不是 403/报错到上游。
+        invalid = [
+            {"prompt": "p", "channel": "minimax", "resolution": "720p"},
+            {"prompt": "p", "channel": "grok", "ratio": "21:9"},
+            {"prompt": "p", "resolution": "768p"},
+            {"prompt": "p", "channel": "sora", "duration": 5},
+            {"prompt": "p", "channel": "grok", "generate_audio": True},
+            {"prompt": "p", "channel": "omni", "model": "sora-2"},
+            {"prompt": "p", "channel": "sora", "seconds": 4, "model": "sora-2",
+             "resolution": "1080p"},
+            {"prompt": "p", "channel": "grok", "ratio": "16:9",
+             "resolution": "480p",
+             "reference_upload_ids": ["img_" + "a" * 32]},
+        ]
+        for payload in invalid:
+            with self.assertRaises(video_agent_tools.ToolError) as error:
+                quote(payload)
+            self.assertEqual(
+                error.exception.code, "tool_arguments_invalid", payload
+            )
+
+    def test_pending_card_input_summary_is_server_derived_and_fingerprint_bound(self):
+        runtime = video_agent_tools.VideoAgentToolRuntime(
+            username="alice", web_token="web-token", db_factory=self.db,
+            cli_execute=self.cli_execute, now=lambda: 1000,
+        )
+        result = runtime.run("hq_quote_story_video", json.dumps({
+            "avatar_id": 7, "prompt": "只生成蓝色产品视频", "duration": 8,
+            "ratio": "9:16",
+        }, ensure_ascii=False))
+        card = result["pending_action"]
+        self.assertEqual(
+            card["input"]["fingerprint"], "cinematic:" + "a" * 64,
+        )
+        by_key = {item["key"]: item for item in card["input"]["summary"]}
+        self.assertEqual(by_key["prompt"]["value"], "只生成蓝色产品视频")
+        self.assertEqual(by_key["prompt"]["label"], "画面描述")
+        self.assertEqual(by_key["duration"]["value"], "8")
+        self.assertNotIn("quote_token", {item["key"] for item in card["input"]["summary"]})
+        # 确认后的卡片依然只展示落库输入生成的摘要（与报价同源），
+        # 而不是任何模型自由文本。
+        confirmed = video_agent_tools.confirm_pending_action(
+            card["id"], "request-12345678", username="alice", web_token="web-token",
+            db_factory=self.db, cli_execute=self.cli_execute, now=lambda: 1001,
+            quote_claims=self.quote_claims,
+        )
+        self.assertEqual(confirmed["input"]["summary"], card["input"]["summary"])
+        self.assertEqual(confirmed["input"]["fingerprint"], card["input"]["fingerprint"])
+
+    def test_confirmation_reverts_when_quote_claims_fails_before_execution(self):
+        runtime = video_agent_tools.VideoAgentToolRuntime(
+            username="alice", web_token="web-token", db_factory=self.db,
+            cli_execute=self.cli_execute, now=lambda: 1000,
+        )
+        quote = runtime.run("hq_quote_story_video", json.dumps({
+            "avatar_id": 7, "prompt": "雨夜重逢",
+        }, ensure_ascii=False))
+        pending_id = quote["pending_action"]["id"]
+
+        def broken_claims(_token):
+            raise video_agent_tools.hq_cli_executor.CLIExecutionError(
+                "cli_auth_unavailable", "CLI 鉴权服务暂时不可用", 503,
+            )
+
+        with self.assertRaises(video_agent_tools.ToolError) as error:
+            video_agent_tools.confirm_pending_action(
+                pending_id, "request-12345678", username="alice", web_token="web-token",
+                db_factory=self.db, cli_execute=self.cli_execute, now=lambda: 1001,
+                quote_claims=broken_claims,
+            )
+        self.assertEqual(error.exception.code, "cli_auth_unavailable")
+        with closing(self.db()) as conn:
+            row = conn.execute(
+                "SELECT status,idempotency_key,submission_key,quote_token "
+                "FROM video_agent_pending_actions WHERE id=?",
+                (pending_id,),
+            ).fetchone()
+        self.assertEqual(row["status"], "awaiting_confirmation")
+        self.assertEqual(row["idempotency_key"], "")
+        self.assertIsNone(row["submission_key"])
+        self.assertEqual(row["quote_token"], "server-only-quote-token")
+        self.assertEqual(len(self.calls), 1)  # 只有报价，从未执行付费提交
+
+    def _make_unknown_card(self):
+        runtime = video_agent_tools.VideoAgentToolRuntime(
+            username="alice", web_token="web-token", db_factory=self.db,
+            cli_execute=self.cli_execute, now=lambda: 1000,
+        )
+        quote = runtime.run("hq_quote_story_video", json.dumps({
+            "avatar_id": 7, "prompt": "雨夜重逢",
+        }, ensure_ascii=False))
+        pending_id = quote["pending_action"]["id"]
+
+        def unknown(*args, **kwargs):
+            raise video_agent_tools.hq_cli_executor.CLIExecutionError(
+                "cli_timeout", "结果未知", 504, unknown_outcome=True,
+            )
+
+        with self.assertRaises(video_agent_tools.ToolError):
+            video_agent_tools.confirm_pending_action(
+                pending_id, "request-12345678", username="alice", web_token="web-token",
+                db_factory=self.db, cli_execute=unknown, now=lambda: 1001,
+                quote_claims=self.quote_claims,
+            )
+        with closing(self.db()) as conn:
+            return conn.execute(
+                "SELECT submission_key FROM video_agent_pending_actions WHERE id=?",
+                (pending_id,),
+            ).fetchone()[0]
+
+    def test_reconcile_converges_never_submitted_card_to_failed(self):
+        submission_key = self._make_unknown_card()
+        self.assertEqual(submission_key, "hqcli-" + "f" * 32)
+        with closing(self.db()) as conn:
+            row = conn.execute(
+                "SELECT id FROM video_agent_pending_actions WHERE submission_key=?",
+                (submission_key,),
+            ).fetchone()
+        card_id = row["id"]
+        reconciled = video_agent_tools.reconcile_pending_action(
+            card_id, username="alice", db_factory=self.db, now=lambda: 2000,
+        )
+        self.assertEqual(reconciled["status"], "failed")
+        with closing(self.db()) as conn:
+            stored = conn.execute(
+                "SELECT status,error_code,quote_token "
+                "FROM video_agent_pending_actions WHERE id=?", (card_id,)
+            ).fetchone()
+        self.assertEqual(stored["status"], "failed")
+        self.assertEqual(stored["error_code"], "reconciled_never_submitted")
+        self.assertEqual(stored["quote_token"], "")
+        # 收敛后同输入可以重新报价，不再被未知指纹永久阻断。
+        runtime = video_agent_tools.VideoAgentToolRuntime(
+            username="alice", web_token="web-token", db_factory=self.db,
+            cli_execute=self.cli_execute, now=lambda: 2001,
+        )
+        fresh = runtime.run("hq_quote_story_video", json.dumps({
+            "avatar_id": 7, "prompt": "雨夜重逢",
+        }, ensure_ascii=False))
+        self.assertTrue(fresh["confirmation_required"])
+        self.assertEqual(fresh["pending_action"]["status"], "awaiting_confirmation")
+
+    def test_reconcile_converges_recorded_submission_to_submitted(self):
+        submission_key = self._make_unknown_card()
+        with closing(self.db()) as conn:
+            row = conn.execute(
+                "SELECT id FROM video_agent_pending_actions WHERE submission_key=?",
+                (submission_key,),
+            ).fetchone()
+            from content_domains import submission_idempotency
+            submission_idempotency.ensure_table(conn)
+            conn.execute(
+                "INSERT INTO submission_idempotency"
+                "(username,endpoint,idem_key,request_hash,response_json,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                ("alice", "/api/gen/video", submission_key, "x" * 64,
+                 json.dumps({"job_id": 999, "points_left": 120}),
+                 1001, 1001),
+            )
+            conn.commit()
+        card_id = row["id"]
+        reconciled = video_agent_tools.reconcile_pending_action(
+            card_id, username="alice", db_factory=self.db, now=lambda: 2000,
+        )
+        self.assertEqual(reconciled["status"], "submitted")
+        self.assertEqual(reconciled["result"]["job_id"], 999)
+
+    def test_reconcile_stays_unknown_while_submission_has_no_response(self):
+        submission_key = self._make_unknown_card()
+        with closing(self.db()) as conn:
+            row = conn.execute(
+                "SELECT id FROM video_agent_pending_actions WHERE submission_key=?",
+                (submission_key,),
+            ).fetchone()
+            from content_domains import submission_idempotency
+            submission_idempotency.ensure_table(conn)
+            conn.execute(
+                "INSERT INTO submission_idempotency"
+                "(username,endpoint,idem_key,request_hash,response_json,created_at,updated_at) "
+                "VALUES(?,?,?,?,NULL,?,?)",
+                ("alice", "/api/gen/video", submission_key, "x" * 64, 1001, 1001),
+            )
+            conn.commit()
+        card_id = row["id"]
+        reconciled = video_agent_tools.reconcile_pending_action(
+            card_id, username="alice", db_factory=self.db, now=lambda: 2000,
+        )
+        self.assertEqual(reconciled["status"], "result_unknown")
+
+    def test_reconcile_rejects_legacy_cards_without_submission_key(self):
+        submission_key = self._make_unknown_card()
+        with closing(self.db()) as conn:
+            conn.execute(
+                "UPDATE video_agent_pending_actions SET submission_key=NULL "
+                "WHERE submission_key=?", (submission_key,)
+            )
+            row = conn.execute(
+                "SELECT id FROM video_agent_pending_actions"
+            ).fetchone()
+            conn.commit()
+        with self.assertRaises(video_agent_tools.ToolError) as error:
+            video_agent_tools.reconcile_pending_action(
+                row["id"], username="alice", db_factory=self.db, now=lambda: 2000,
+            )
+        self.assertEqual(error.exception.code, "pending_reconcile_unavailable")
+        self.assertEqual(
+            error.exception.pending_action["status"], "result_unknown",
+        )
 
 
 if __name__ == "__main__":

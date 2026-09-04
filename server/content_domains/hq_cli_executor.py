@@ -23,6 +23,7 @@ ALLOWED_CAPABILITIES = frozenset({
     "account", "channels", "pricing", "video-avatars", "voices", "assets",
     "tasks", "task", "video-generate", "digital-ip-text-generate",
     "cinematic-open-generate", "cinematic-motion-generate",
+    "tryon-fast-generate", "tryon-classic-generate",
 })
 MAX_HTTP_BYTES = 64 * 1024
 MAX_CLI_OUTPUT_BYTES = 128 * 1024
@@ -220,6 +221,70 @@ def _cli_module_root():
         if (candidate / "hq_cli" / "__main__.py").is_file():
             return candidate
     raise CLIExecutionError("cli_not_installed", "黄雀 CLI 运行模块未部署", 503)
+
+
+_CATALOG_CACHE = {}
+
+
+def load_cli_catalog():
+    """Import the deployed ``hq_cli.catalog`` through the same module root the
+    subprocess runner uses, so capability schemas are never a second copy."""
+    cached = _CATALOG_CACHE.get("catalog")
+    if cached is not None:
+        return cached
+    root = str(_cli_module_root())
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    try:
+        import hq_cli.catalog as catalog
+    except Exception as error:
+        raise CLIExecutionError(
+            "cli_not_installed", "黄雀 CLI 运行模块未部署", 503
+        ) from error
+    _CATALOG_CACHE["catalog"] = catalog
+    return catalog
+
+
+def quote_claims(quote_token, *, auth_base=None, internal_token=None,
+                 timeout=DEFAULT_TIMEOUT, http_open=None):
+    """Ask auth to verify a quote token and return its signed claims.
+
+    Read-only: used before a paid confirm to derive the deterministic
+    submission idempotency key (``hqcli-<nonce>``) that the CLI chain sends to
+    the content service.  The content service can later reconcile an unknown
+    outcome against its own ``submission_idempotency`` table with that key.
+    """
+    token = str(quote_token or "").strip()
+    if not 20 <= len(token) <= 4096:
+        raise CLIExecutionError("quote_invalid", "确认生成的报价令牌无效", 400)
+    base = _configured_auth_base(auth_base)
+    internal = internal_token if internal_token is not None else os.getenv("HQ_INTERNAL_TOKEN", "")
+    if not str(internal or "").strip():
+        raise CLIExecutionError("internal_auth_not_configured", "内部 CLI 授权尚未配置", 503)
+    result = _post_json(
+        base + "/api/auth/internal/cli/quote-claims",
+        {"quote_token": token},
+        {"X-HQ-Internal-Token": str(internal).strip()},
+        timeout=timeout, http_open=http_open or _SAFE_HTTP_OPEN,
+    )
+    claims = {
+        "nonce": str(result.get("nonce") or "").strip(),
+        "kind": str(result.get("kind") or "").strip(),
+        "cost": result.get("cost"),
+        "expires_at": result.get("expires_at"),
+        "username": str(result.get("username") or "").strip(),
+        "payload_hash": str(result.get("payload_hash") or "").strip(),
+    }
+    if (
+        not re.fullmatch(r"[0-9a-f]{32}", claims["nonce"])
+        or not claims["kind"]
+        or not isinstance(claims["cost"], int)
+        or not isinstance(claims["expires_at"], int)
+        or not claims["username"]
+        or not re.fullmatch(r"[0-9a-f]{64}", claims["payload_hash"])
+    ):
+        raise CLIExecutionError("cli_delegation_invalid", "CLI 报价凭证核验响应无效", 502)
+    return claims
 
 
 def _minimal_child_env(token, auth_base, config_dir, quote_token="", module_root=None):

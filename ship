@@ -190,9 +190,9 @@ show_service_diagnostics(){
 }
 
 wait_for_services(){
-  local s
-  [ -z "$RESTART" ] && return 0
-  for s in $RESTART; do
+  local services="${1:-$RESTART}" s
+  [ -z "$services" ] && return 0
+  for s in $services; do
     echo "  等待 $s 进入 active（最多 ${SERVICE_WAIT_SECONDS}s）"
     if $SSHC "$REMOTE" "i=0; while [ \$i -lt $SERVICE_WAIT_SECONDS ]; do systemctl is-active --quiet '$s' && exit 0; i=\$((i + 1)); sleep 1; done; exit 1"; then
       echo "  ✓ $s active"
@@ -489,12 +489,25 @@ if [ "$NEED_RELOAD" = "1" ]; then
 fi
 if [ -n "$RESTART" ]; then
   echo "==> 4/5 重启服务:$RESTART"
-  # 取「服务器」时间做基准（ActiveEnterTimestamp 是服务器时钟，用本地时间会因时差误判）
-  T0=$($SSHC "$REMOTE" "date +%s") || { echo "  ❌ 取服务器时间失败"; exit 1; }
-  $SSHC "$REMOTE" "sudo systemctl restart $RESTART" || { echo "  ❌ 重启失败"; exit 1; }
-  wait_for_services || exit 1
-  echo "  校验重启真的生效、配置已加载"
-  for s in $RESTART; do check_restart_effective "$s" "$T0" || exit 1; done
+  # 视频 Agent 的委托端点 (/api/auth/internal/cli/delegate) 与报价核验端点
+  # (/api/auth/internal/cli/quote-claims) 都在鉴权服务上：同一批发布必须
+  # 先重启并验证 auth，再重启 content，否则内容服务会在鉴权侧 404/403。
+  if printf ' %s ' "$RESTART" | grep -q ' huangque-auth '; then
+    echo "  → 先重启并验证 huangque-auth（视频 Agent 委托端点依赖）"
+    T0_AUTH=$($SSHC "$REMOTE" "date +%s") || { echo "  ❌ 取服务器时间失败"; exit 1; }
+    $SSHC "$REMOTE" "sudo systemctl restart huangque-auth" || { echo "  ❌ huangque-auth 重启失败"; exit 1; }
+    wait_for_services huangque-auth || exit 1
+    check_restart_effective huangque-auth "$T0_AUTH" || exit 1
+    RESTART=$(printf '%s\n' $RESTART | grep -v '^huangque-auth$' | tr '\n' ' ' | sed 's/ *$//')
+  fi
+  if [ -n "$RESTART" ]; then
+    # 取「服务器」时间做基准（ActiveEnterTimestamp 是服务器时钟，用本地时间会因时差误判）
+    T0=$($SSHC "$REMOTE" "date +%s") || { echo "  ❌ 取服务器时间失败"; exit 1; }
+    $SSHC "$REMOTE" "sudo systemctl restart $RESTART" || { echo "  ❌ 重启失败"; exit 1; }
+    wait_for_services || exit 1
+    echo "  校验重启真的生效、配置已加载"
+    for s in $RESTART; do check_restart_effective "$s" "$T0" || exit 1; done
+  fi
 else
   [ -n "$TIMERS" ] || echo "==> 4/5 纯前端，无需重启"
 fi

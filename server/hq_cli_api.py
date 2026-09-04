@@ -4278,3 +4278,29 @@ def verify_quote(secret, token, username, generation_kind, payload, now=None):
     if claims["e"] <= now:
         raise CLIAPIError(409, "报价已过期，请重新报价", "quote_expired")
     return claims
+
+
+def quote_claims_only(secret, token):
+    """Verify a quote token signature and return its claims without binding.
+
+    Read-only helper for the internal ``quote-claims`` endpoint: the caller
+    (content service) only needs the deterministic fields inside the signed
+    payload to build its submission idempotency key.  No username, payload or
+    expiry binding is enforced here — those checks remain on the submit path.
+    """
+    if not secret:
+        raise CLIAPIError(503, "CLI 报价签名未配置", "not_configured")
+    try:
+        encoded, signature = str(token or "").split(".", 1)
+        expected = hmac.new(secret.encode("utf-8"), encoded.encode("ascii"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            raise ValueError("signature")
+        claims = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+    except Exception:
+        raise CLIAPIError(400, "报价凭证无效，请重新报价", "invalid_quote")
+    if (claims.get("v") != 1 or not isinstance(claims.get("c"), int)
+            or not isinstance(claims.get("e"), int) or not isinstance(claims.get("n"), str)
+            or not isinstance(claims.get("u"), str) or not isinstance(claims.get("k"), str)
+            or not isinstance(claims.get("h"), str)):
+        raise CLIAPIError(400, "报价凭证无效，请重新报价", "invalid_quote")
+    return claims

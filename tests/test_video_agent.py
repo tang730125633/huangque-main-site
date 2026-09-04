@@ -186,6 +186,69 @@ class VideoAgentTests(unittest.TestCase):
         self.assertFalse(result["ready_to_handoff"])
         self.assertEqual(result["mode"], "ai")
 
+    def test_normalize_blocks_model_ready_claim_without_real_materials(self):
+        # 审核最小复现：materials=[]，模型虚构一个不存在的视频并声称 ready，
+        # 服务端必须拒绝 plan_ready / ready_to_handoff。
+        result = video_agent._normalize({
+            "reply": "素材已就绪",
+            "stage": "plan_ready",
+            "intent": "create",
+            "recommended_module": "create",
+            "ready_to_handoff": True,
+            "material_assessments": [
+                {"name": "video.mp4", "type": "video", "status": "ready",
+                 "summary": "可直接生成"},
+            ],
+        }, materials=[])
+        self.assertFalse(result["ready_to_handoff"])
+        self.assertEqual(result["stage"], "collect_materials")
+        # 不存在的素材评估被丢弃；缺失项由服务端注入而非模型文本。
+        self.assertEqual(result["material_assessments"], [])
+        self.assertTrue(any(
+            item.get("reason", "").startswith("服务端校验")
+            for item in result["material_requests"]
+        ))
+
+    def test_normalize_keeps_ready_when_real_materials_satisfy_the_module(self):
+        materials = [
+            {"type": "image", "name": "person.png", "size": 1024,
+             "avatar_state": "ready", "avatar_id": 27},
+            {"type": "text", "name": "口播稿.txt", "size": 64},
+        ]
+        result = video_agent._normalize({
+            "reply": "可以制作口播视频",
+            "stage": "plan_ready",
+            "intent": "talking",
+            "recommended_module": "talking",
+            "ready_to_handoff": True,
+            "material_assessments": [
+                {"name": "person.png", "type": "image", "status": "ready",
+                 "summary": "形象已就绪"},
+                {"name": "ghost.png", "type": "image", "status": "ready",
+                 "summary": "不存在的素材"},
+            ],
+        }, materials=materials)
+        self.assertTrue(result["ready_to_handoff"])
+        self.assertEqual(result["stage"], "plan_ready")
+        # 只保留能匹配真实素材的评估。
+        self.assertEqual(
+            [item["name"] for item in result["material_assessments"]],
+            ["person.png"],
+        )
+
+    def test_parse_byte_range_supports_single_range_forms(self):
+        self.assertEqual(video_agent._parse_byte_range("bytes=0-99", 1000), (0, 99))
+        self.assertEqual(video_agent._parse_byte_range("bytes=900-", 1000), (900, 999))
+        self.assertEqual(video_agent._parse_byte_range("bytes=-100", 1000), (900, 999))
+        self.assertEqual(video_agent._parse_byte_range(None, 1000), None)
+        self.assertIsNone(video_agent._parse_byte_range("bytes=1000-", 1000))
+        self.assertIsNone(video_agent._parse_byte_range("bytes=10-5", 1000))
+        self.assertIsNone(video_agent._parse_byte_range("bytes=0-1,4-9", 1000))
+        self.assertIsNone(video_agent._parse_byte_range("items=0-9", 1000))
+        self.assertEqual(
+            video_agent._parse_byte_range("bytes=999-5000", 1000), (999, 999)
+        )
+
     def test_normalize_treats_non_list_missing_fields_as_empty(self):
         for value in ("duration", {"duration": True}, 1, 1.5, True, False, None):
             with self.subTest(value=value):
@@ -264,7 +327,7 @@ class VideoAgentTests(unittest.TestCase):
             "preflight": {"risks": ["缺少受众", "", "多余"], "summary": "补充后可制作"},
             "recommended_module": "talking",
             "ready_to_handoff": False,
-        })
+        }, materials=[{"type": "image", "name": "person.jpg", "size": 1024}])
         self.assertEqual([step["id"] for step in result["plan_steps"]], ["brief"])
         self.assertEqual(result["draft"]["kind"], "script")
         self.assertEqual(result["material_assessments"][0]["status"], "warning")
@@ -1282,26 +1345,102 @@ class VideoAgentTests(unittest.TestCase):
             handler, "POST", lambda _token: None, lambda _user: False, self.db
         ))
 
+    def test_dispatch_reconcile_is_owner_bound_and_read_only(self):
+        pending_id = "vpa_" + "d" * 32
+        handler = FakeHandler({}, path=(
+            "/api/gen/video/agent/actions/%s/reconcile" % pending_id
+        ))
+        with mock.patch.object(
+            video_agent.video_agent_tools, "reconcile_pending_action",
+            return_value={"id": pending_id, "status": "failed"},
+        ) as reconcile:
+            handled = video_agent.dispatch_http(
+                handler, "POST", lambda _token: {"username": "alice"},
+                lambda _user: False, self.db,
+            )
+        self.assertTrue(handled)
+        reconcile.assert_called_once_with(
+            pending_id, username="alice", db_factory=self.db,
+        )
+        self.assertEqual(200, handler.sent[0])
+        self.assertEqual("failed", handler.sent[1]["pending_action"]["status"])
+
+    def test_dispatch_reconcile_rejects_extra_fields(self):
+        pending_id = "vpa_" + "e" * 32
+        handler = FakeHandler({"idempotency_key": "x-12345678"}, path=(
+            "/api/gen/video/agent/actions/%s/reconcile" % pending_id
+        ))
+        handled = video_agent.dispatch_http(
+            handler, "POST", lambda _token: {"username": "alice"},
+            lambda _user: False, self.db,
+        )
+        self.assertTrue(handled)
+        self.assertEqual(400, handler.sent[0])
+        self.assertEqual("request_invalid", handler.sent[1]["code"])
+
     def test_dispatch_upload_preview_is_owner_bound_and_returns_private_bytes(self):
         upload_id = "img_" + "a" * 32
         handler = FakeHandler({}, path=(
             "/api/gen/video/agent/uploads/image/%s/preview" % upload_id
         ))
+        preview_handle = io.BytesIO(b"preview-bytes")
         with mock.patch.object(
-            video_agent.cli_uploads, "load_preview",
-            return_value=(b"preview-bytes", "image/png"),
-        ) as load:
+            video_agent.cli_uploads, "open_preview",
+            return_value=(preview_handle, 13, "image/png"),
+        ) as opened:
             handled = video_agent.dispatch_http(
                 handler, "GET", lambda _token: {"username": "alice"},
                 lambda _user: False, self.db,
             )
         self.assertTrue(handled)
-        load.assert_called_once_with("image", upload_id, "alice")
+        opened.assert_called_once_with("image", upload_id, "alice")
         self.assertEqual(200, handler.response_status)
         self.assertEqual(b"preview-bytes", handler.wfile.getvalue())
         self.assertEqual("image/png", handler.response_headers["Content-Type"])
+        self.assertEqual("13", handler.response_headers["Content-Length"])
+        self.assertEqual("bytes", handler.response_headers["Accept-Ranges"])
         self.assertEqual("private, no-store", handler.response_headers["Cache-Control"])
         self.assertEqual("nosniff", handler.response_headers["X-Content-Type-Options"])
+
+    def test_dispatch_upload_preview_streams_range_requests(self):
+        upload_id = "vid_" + "b" * 32
+        handler = FakeHandler({}, path=(
+            "/api/gen/video/agent/uploads/video/%s/preview" % upload_id
+        ))
+        handler.headers = {"Range": "bytes=4-9"}
+        preview_handle = io.BytesIO(b"0123456789abcdef")
+        with mock.patch.object(
+            video_agent.cli_uploads, "open_preview",
+            return_value=(preview_handle, 16, "video/mp4"),
+        ):
+            handled = video_agent.dispatch_http(
+                handler, "GET", lambda _token: {"username": "alice"},
+                lambda _user: False, self.db,
+            )
+        self.assertTrue(handled)
+        self.assertEqual(206, handler.response_status)
+        self.assertEqual(b"456789", handler.wfile.getvalue())
+        self.assertEqual("bytes 4-9/16", handler.response_headers["Content-Range"])
+        self.assertEqual("6", handler.response_headers["Content-Length"])
+
+    def test_dispatch_upload_preview_rejects_invalid_range_with_416(self):
+        upload_id = "img_" + "c" * 32
+        handler = FakeHandler({}, path=(
+            "/api/gen/video/agent/uploads/image/%s/preview" % upload_id
+        ))
+        handler.headers = {"Range": "bytes=100-200"}
+        preview_handle = io.BytesIO(b"tiny")
+        with mock.patch.object(
+            video_agent.cli_uploads, "open_preview",
+            return_value=(preview_handle, 4, "image/png"),
+        ):
+            handled = video_agent.dispatch_http(
+                handler, "GET", lambda _token: {"username": "alice"},
+                lambda _user: False, self.db,
+            )
+        self.assertTrue(handled)
+        self.assertEqual(416, handler.response_status)
+        self.assertEqual("bytes */4", handler.response_headers["Content-Range"])
 
     def test_dispatch_upload_preview_hides_missing_foreign_or_expired_reason(self):
         upload_id = "img_" + "b" * 32
@@ -1309,7 +1448,7 @@ class VideoAgentTests(unittest.TestCase):
             "/api/gen/video/agent/uploads/image/%s/preview" % upload_id
         ))
         with mock.patch.object(
-            video_agent.cli_uploads, "load_preview",
+            video_agent.cli_uploads, "open_preview",
             side_effect=ValueError("图片 upload_id 已过期，请重新上传"),
         ):
             handled = video_agent.dispatch_http(

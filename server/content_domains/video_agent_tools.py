@@ -6,12 +6,28 @@ import secrets
 import time
 from contextlib import closing
 
-from . import hq_cli_executor
+from . import hq_cli_executor, submission_idempotency
 
 
 MAX_TOOL_RESULT_BYTES = 24 * 1024
 MAX_PENDING_TTL = 600
 MIN_PENDING_TTL = 30
+
+# 渠道规则只有一份正本：部署的 hq_cli.catalog。Agent 报价工具的
+# 视频参数校验直接由它推导，杜绝与真实 CLI 合同漂移（契约测试守护）。
+try:
+    _CLI_CATALOG = hq_cli_executor.load_cli_catalog()
+    VIDEO_CHANNEL_RULES = _CLI_CATALOG.VIDEO_CHANNEL_RULES
+    _VIDEO_RATIO_ENUM = sorted({
+        value for rule in VIDEO_CHANNEL_RULES.values() for value in rule["ratios"]
+    })
+    _VIDEO_RESOLUTION_ENUM = sorted({
+        value for rule in VIDEO_CHANNEL_RULES.values() for value in rule["resolutions"]
+    })
+except hq_cli_executor.CLIExecutionError:
+    VIDEO_CHANNEL_RULES = None
+    _VIDEO_RATIO_ENUM = ["1:1", "16:9", "2:3", "21:9", "3:2", "3:4", "4:3", "9:16", "adaptive"]
+    _VIDEO_RESOLUTION_ENUM = ["480p", "720p", "1024p", "1080p", "2k"]
 
 
 class ToolError(ValueError):
@@ -93,15 +109,18 @@ _SPECS = {
         "description": "根据文字与可选参考图取得视频生成报价；只报价，不扣点、不提交。",
         "parameters": _object({
             "prompt": {"type": "string", "minLength": 1, "maxLength": 2000},
-            "channel": {"type": "string", "enum": ["grok", "micro", "omni", "minimax", "sora"]},
-            "ratio": {"type": "string", "enum": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"]},
+            "channel": {"type": "string", "enum": sorted(VIDEO_CHANNEL_RULES) if VIDEO_CHANNEL_RULES else ["grok", "micro", "omni", "minimax", "sora"]},
+            "ratio": {"type": "string", "enum": _VIDEO_RATIO_ENUM},
             "duration": {"type": "integer", "minimum": 1, "maximum": 15},
             "seconds": {"type": "integer", "enum": [4, 8, 12]},
-            "resolution": {"type": "string", "enum": ["480p", "720p", "768p", "1024p", "1080p", "2k"]},
+            "resolution": {"type": "string", "enum": _VIDEO_RESOLUTION_ENUM},
             "model": {"type": "string", "enum": ["grok-imagine-video", "grok-imagine-video-1.5", "sora-2", "sora-2-pro"]},
             "generate_audio": {"type": "boolean"},
-            "reference_upload_ids": {"type": "array", "maxItems": 9, "items": UPLOAD_ID},
+            "reference_upload_ids": {"type": "array", "minItems": 1, "maxItems": 9, "items": UPLOAD_ID},
         }, ["prompt"]), "title": "自由生成视频",
+        # 与 hq_cli.catalog.VIDEO_CHANNEL_RULES 同一份数据；_parse_arguments
+        # 用它与真实 CLI 完全一致地校验渠道约束（21:9/adaptive/2k 等）。
+        "channel_rules": VIDEO_CHANNEL_RULES,
     },
     "hq_quote_talking_video": {
         "capability": "digital-ip-text-generate", "scope": "generation:quote", "mode": "quote",
@@ -188,6 +207,7 @@ CREATE TABLE IF NOT EXISTS video_agent_pending_actions(
     expires_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     idempotency_key TEXT,
+    submission_key TEXT,
     result_json TEXT,
     error_code TEXT
 );
@@ -202,20 +222,39 @@ WHERE status IN ('awaiting_confirmation','confirming','result_unknown')
 """
 
 
+# 报价热路径每次都会调用 ensure_tables；建表/迁移/去重扫描幂等且昂贵，
+# 每个进程对同一 db_factory 只执行一次。总是执行的剩余部分只有
+# CREATE IF NOT EXISTS 与索引存在性检查，代价恒定。
+_PENDING_DDL_DONE = set()
+
+
 def ensure_tables(db_factory, recover_confirming=False):
     if not callable(db_factory):
         raise ToolError("pending_store_unavailable", "视频操作确认服务暂时不可用", 503)
     try:
         with closing(db_factory()) as conn:
             conn.executescript(_PENDING_SCHEMA)
-            # Pre-fingerprint builds keyed cards by the model's raw JSON. An
-            # unsubmitted legacy quote is safe to retire and re-quote; legacy
-            # confirming/unknown cards stay as hard barriers below.
-            conn.execute(
-                "UPDATE video_agent_pending_actions "
-                "SET status='cancelled',quote_token='',error_code='legacy_fingerprint_migrated' "
-                "WHERE status='awaiting_confirmation' AND instr(input_hash,':')=0"
-            )
+            columns = {row[1] for row in conn.execute(
+                "PRAGMA table_info(video_agent_pending_actions)"
+            ).fetchall()}
+            if "submission_key" not in columns:
+                conn.execute(
+                    "ALTER TABLE video_agent_pending_actions "
+                    "ADD COLUMN submission_key TEXT"
+                )
+            marker = id(db_factory)
+            if marker not in _PENDING_DDL_DONE:
+                # Pre-fingerprint builds keyed cards by the model's raw JSON. An
+                # unsubmitted legacy quote is safe to retire and re-quote; legacy
+                # confirming/unknown cards stay as hard barriers below.
+                conn.execute(
+                    "UPDATE video_agent_pending_actions "
+                    "SET status='cancelled',quote_token='',error_code='legacy_fingerprint_migrated' "
+                    "WHERE status='awaiting_confirmation' AND instr(input_hash,':')=0"
+                )
+                _PENDING_DDL_DONE.add(marker)
+                if len(_PENDING_DDL_DONE) > 8:
+                    _PENDING_DDL_DONE.clear()
             index_row = conn.execute(
                 "SELECT sql FROM sqlite_master WHERE type='index' "
                 "AND name='idx_video_agent_pending_live_input'"
@@ -312,6 +351,110 @@ def _validate(value, schema, path="arguments"):
         raise ToolError("tool_arguments_invalid", path + " 不是允许值")
 
 
+def _validate_video_channel_rules(arguments, rules, path="arguments"):
+    """Enforce the exact channel contract of the real CLI (catalog allOf).
+
+    Mirrors hq_cli.catalog._video_channel_schema(): per-channel ratio /
+    resolution / duration-or-seconds / model / generate_audio /
+    reference_upload_ids rules, plus grok reference-resolution and sora
+    model-resolution clauses.
+    """
+    if not rules:
+        raise ToolError(
+            "cli_not_installed", "黄雀 CLI 运行模块未部署，无法校验视频参数", 503
+        )
+    channel = str(arguments.get("channel") or "grok").strip().lower()
+    rule = rules.get(channel)
+    if not rule:
+        raise ToolError("tool_arguments_invalid", path + ".channel 不是可用渠道")
+    if "ratio" in arguments and arguments["ratio"] not in rule["ratios"]:
+        raise ToolError(
+            "tool_arguments_invalid",
+            "%s.ratio 不适用于渠道 %s" % (path, channel),
+        )
+    if "resolution" in arguments and arguments["resolution"] not in rule["resolutions"]:
+        raise ToolError(
+            "tool_arguments_invalid",
+            "%s.resolution 不适用于渠道 %s" % (path, channel),
+        )
+    if rule["duration"]:
+        if "seconds" in arguments:
+            raise ToolError(
+                "tool_arguments_invalid",
+                "%s.seconds 不适用于渠道 %s（该渠道使用 duration）" % (path, channel),
+            )
+        if "duration" in arguments and not (
+            rule["duration"][0] <= arguments["duration"] <= rule["duration"][1]
+        ):
+            raise ToolError(
+                "tool_arguments_invalid",
+                "%s.duration 超出渠道 %s 的范围" % (path, channel),
+            )
+    else:
+        if "duration" in arguments:
+            raise ToolError(
+                "tool_arguments_invalid",
+                "%s.duration 不适用于渠道 %s（该渠道使用 seconds）" % (path, channel),
+            )
+        if "seconds" in arguments and arguments["seconds"] not in rule["seconds"]:
+            raise ToolError(
+                "tool_arguments_invalid",
+                "%s.seconds 不适用于渠道 %s" % (path, channel),
+            )
+    if rule["models"]:
+        if "model" in arguments and arguments["model"] not in rule["models"]:
+            raise ToolError(
+                "tool_arguments_invalid",
+                "%s.model 不适用于渠道 %s" % (path, channel),
+            )
+    elif "model" in arguments:
+        raise ToolError(
+            "tool_arguments_invalid",
+            "%s.model 不适用于渠道 %s" % (path, channel),
+        )
+    if not rule["generate_audio"] and arguments.get("generate_audio") is True:
+        raise ToolError(
+            "tool_arguments_invalid",
+            "%s.generate_audio 不适用于渠道 %s" % (path, channel),
+        )
+    if "reference_upload_ids" in arguments:
+        if len(arguments["reference_upload_ids"]) > int(rule["reference_max"]):
+            raise ToolError(
+                "tool_arguments_invalid",
+                "%s.reference_upload_ids 渠道 %s 最多 %d 张" % (
+                    path, channel, int(rule["reference_max"]),
+                ),
+            )
+    if channel == "grok":
+        if (
+            "reference_upload_ids" in arguments
+            and "resolution" in arguments
+            and arguments["resolution"] not in rule["reference_resolutions"]
+        ):
+            raise ToolError(
+                "tool_arguments_invalid",
+                "%s.resolution 带参考图时渠道 grok 仅支持 %s" % (
+                    path, "、".join(rule["reference_resolutions"]),
+                ),
+            )
+        if (
+            arguments.get("model") == "grok-imagine-video-1.5"
+            and "reference_upload_ids" not in arguments
+        ):
+            raise ToolError(
+                "tool_arguments_invalid",
+                "%s.model=grok-imagine-video-1.5 必须提供 reference_upload_ids" % path,
+            )
+    if channel == "sora":
+        model = arguments.get("model")
+        allowed = list(rule["model_resolutions"].get(model, ["720p"])) if model else ["720p"]
+        if "resolution" in arguments and arguments["resolution"] not in allowed:
+            raise ToolError(
+                "tool_arguments_invalid",
+                "%s.resolution 不适用于渠道 sora 的该模型" % path,
+            )
+
+
 def _parse_arguments(raw_arguments, spec):
     if isinstance(raw_arguments, str):
         try:
@@ -321,6 +464,9 @@ def _parse_arguments(raw_arguments, spec):
     else:
         value = raw_arguments
     _validate(value, spec["parameters"])
+    if "channel_rules" in spec:
+        # CLI 模块未部署时 rules 为 None：校验必然失败（fail-closed）。
+        _validate_video_channel_rules(value, spec["channel_rules"])
     one_of = spec.get("one_of")
     if one_of and sum(1 for key in one_of if key in value) != 1:
         raise ToolError("tool_arguments_invalid", "必须且只能选择一个数字人字段")
@@ -487,6 +633,55 @@ def _canonical(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+_FIELD_LABELS = {
+    "prompt": "画面描述", "channel": "生成渠道", "ratio": "画幅",
+    "duration": "时长（秒）", "seconds": "时长（秒）", "resolution": "分辨率",
+    "model": "模型", "generate_audio": "生成配音",
+    "reference_upload_ids": "参考图片", "avatar_id": "数字人形象",
+    "avatar_ids": "电影化身", "text": "口播文案", "voice": "音色",
+    "motion": "动作幅度", "subtitle": "字幕", "subtitle_style": "字幕样式",
+    "subtitle_position": "字幕位置", "enhance_prompt": "增强提示词",
+    "reference_image_upload_ids": "参考图片",
+    "reference_video_upload_ids": "参考视频",
+    "person_image_upload_id": "人物图片", "clothes_upload_id": "服装图片",
+    "background_upload_id": "背景图片", "person_video_upload_id": "人物视频",
+}
+
+
+def _input_summary(tool_name, stored_input_json):
+    """Build a deterministic, schema-driven summary of the stored input.
+
+    Derived only from the server-persisted input that produced the quote
+    fingerprint — never from model free text — so the confirmation card shows
+    exactly what will be submitted.
+    """
+    spec = _SPECS.get(str(tool_name or "").strip())
+    arguments = {}
+    try:
+        parsed = json.loads(stored_input_json or "{}")
+        if isinstance(parsed, dict):
+            arguments = parsed
+    except (TypeError, ValueError, json.JSONDecodeError):
+        arguments = {}
+    summary = []
+    if spec:
+        for key in spec["parameters"].get("properties", {}):
+            if key not in arguments:
+                continue
+            raw = arguments[key]
+            if isinstance(raw, list):
+                display = "、".join(str(item)[:64] for item in raw[:6])
+            elif isinstance(raw, bool):
+                display = "是" if raw else "否"
+            else:
+                display = str(raw)[:160]
+            summary.append({
+                "key": key, "label": _FIELD_LABELS.get(key, key),
+                "value": display,
+            })
+    return summary
+
+
 def _safe_pending(row, result=None):
     value = {
         "id": row["id"], "status": row["status"],
@@ -496,6 +691,15 @@ def _safe_pending(row, result=None):
         "cost": int(row["cost"] or 0),
         "points": int(row["points"]) if row["points"] is not None else None,
         "expires_at": int(row["expires_at"] or 0),
+        # 确认卡必须只展示这份由服务器从落库输入生成的确定性摘要；
+        # fingerprint 与摘要同源于 input_json，用户可据此核对提交内容。
+        "input": {
+            "fingerprint": str(row["input_hash"] or "").strip()[:200],
+            "summary": _input_summary(
+                str(row["tool_name"] if "tool_name" in row.keys() else ""),
+                str(row["input_json"] or ""),
+            ),
+        },
     }
     if result is not None:
         projected = _project_confirmation_result(result)
@@ -754,7 +958,7 @@ class VideoAgentToolRuntime:
             raise ToolError("tool_execution_failed", "黄雀工具暂时不可用", 502) from error
 
 
-def _load_pending_for_confirmation(db_factory, pending_id, username, idempotency_key, now):
+def _load_pending_for_confirmation(db_factory, pending_id, username, idempotency_key, now, submission_key=None):
     ensure_tables(db_factory)
     timestamp = int(now())
     try:
@@ -791,13 +995,16 @@ def _load_pending_for_confirmation(db_factory, pending_id, username, idempotency
                     pending_action=_safe_pending(row),
                 )
             conn.execute(
-                "UPDATE video_agent_pending_actions SET status='confirming',idempotency_key=?,updated_at=? WHERE id=?",
-                (idempotency_key, timestamp, pending_id),
+                "UPDATE video_agent_pending_actions "
+                "SET status='confirming',idempotency_key=?,submission_key=COALESCE(?,submission_key),updated_at=? WHERE id=?",
+                (idempotency_key, submission_key, timestamp, pending_id),
             )
             conn.commit()
             claimed = dict(row)
             claimed["status"] = "confirming"
             claimed["idempotency_key"] = idempotency_key
+            if submission_key:
+                claimed["submission_key"] = submission_key
             return claimed, None, False
     except ToolError:
         raise
@@ -805,8 +1012,28 @@ def _load_pending_for_confirmation(db_factory, pending_id, username, idempotency
         raise ToolError("pending_store_unavailable", "视频操作确认服务暂时不可用", 503) from error
 
 
+def _release_confirmation_claim(db_factory, pending_id, username, idempotency_key, now):
+    """Revert a just-claimed card back to awaiting_confirmation (best effort).
+
+    Only used when the card was claimed but the paid executor never ran; if the
+    process crashes in between, startup recovery keeps the fail-closed
+    result_unknown path intact.
+    """
+    try:
+        with closing(db_factory()) as conn:
+            conn.execute(
+                "UPDATE video_agent_pending_actions "
+                "SET status='awaiting_confirmation',idempotency_key='',submission_key=NULL,updated_at=? "
+                "WHERE id=? AND username=? AND status='confirming' AND idempotency_key=?",
+                (int(now()), pending_id, username, idempotency_key),
+            )
+            conn.commit()
+    except Exception:
+        pass
+
+
 def confirm_pending_action(pending_id, idempotency_key, *, username, web_token,
-                           db_factory, cli_execute=None, now=None):
+                           db_factory, cli_execute=None, now=None, quote_claims=None):
     pending_id = str(pending_id or "").strip()
     idempotency_key = str(idempotency_key or "").strip()
     username = str(username or "").strip()
@@ -820,6 +1047,31 @@ def confirm_pending_action(pending_id, idempotency_key, *, username, web_token,
     )
     if replayed:
         return _safe_pending(row, stored)
+    # 在真正执行前向鉴权服务核验报价凭证，并落库确定性的提交幂等键
+    # (hqcli-<nonce>，与 CLI 提交链路一致)。result_unknown 之后的对账
+    # 只依赖这个键，因此核验失败必须把卡片退回待确认，绝不进入执行。
+    claims_fn = quote_claims or hq_cli_executor.quote_claims
+    try:
+        claims = claims_fn(row["quote_token"])
+        submission_key = "hqcli-" + str(claims["nonce"])
+    except hq_cli_executor.CLIExecutionError as error:
+        _release_confirmation_claim(
+            db_factory, pending_id, username, idempotency_key, now_fn
+        )
+        raise ToolError(error.code, str(error), error.status)
+    try:
+        with closing(db_factory()) as conn:
+            conn.execute(
+                "UPDATE video_agent_pending_actions SET submission_key=? "
+                "WHERE id=? AND username=? AND status='confirming' AND idempotency_key=?",
+                (submission_key, pending_id, username, idempotency_key),
+            )
+            conn.commit()
+    except Exception as error:
+        raise ToolError(
+            "pending_store_unavailable", "生成可能已提交，但确认状态保存失败；请勿重复点击", 503,
+            unknown_outcome=True,
+        ) from error
     executor = cli_execute or hq_cli_executor.execute
     arguments = json.loads(row["input_json"])
     try:
@@ -874,3 +1126,95 @@ def confirm_pending_action(pending_id, idempotency_key, *, username, web_token,
         failure.pending_action = _safe_pending(updated)
         raise failure
     return _safe_pending(updated, safe_result)
+
+
+def reconcile_pending_action(pending_id, *, username, db_factory, now=None):
+    """Read-only reconciliation for cards stuck in ``result_unknown``.
+
+    The confirm path persists the deterministic submission idempotency key
+    (``hqcli-<nonce>``) before executing the paid action.  The content
+    service's ``submission_idempotency`` table then tells us, without any new
+    side effect, whether the submission ever reached the job layer:
+
+    * no claim        -> nothing was ever submitted or charged -> failed
+    * claim + response-> final outcome is recorded           -> submitted/failed
+    * claim, no resp  -> submission was in flight / interrupted -> keep unknown
+
+    Cards from pre-fingerprint builds have no submission key and stay a hard
+    barrier (fail closed); new confirmations always converge.
+    """
+    pending_id = str(pending_id or "").strip()
+    username = str(username or "").strip()
+    if not re.fullmatch(r"vpa_[0-9a-f]{32}", pending_id):
+        raise ToolError("pending_action_not_found", "待确认操作不存在或已失效", 404)
+    ensure_tables(db_factory)
+    timestamp = int((now or time.time)())
+    try:
+        with closing(db_factory()) as conn:
+            conn.row_factory = __import__("sqlite3").Row
+            submission_idempotency.ensure_table(conn)
+            row = conn.execute(
+                "SELECT * FROM video_agent_pending_actions WHERE id=? AND username=?",
+                (pending_id, username),
+            ).fetchone()
+            if not row:
+                raise ToolError("pending_action_not_found", "待确认操作不存在或已失效", 404)
+            if row["status"] != "result_unknown":
+                return _safe_pending(row)
+            key = str(row["submission_key"] or "").strip()
+            if not key:
+                raise ToolError(
+                    "pending_reconcile_unavailable",
+                    "该记录缺少可对账的提交凭证，请核对任务历史后重新报价", 409,
+                    pending_action=_safe_pending(row),
+                )
+            claim = conn.execute(
+                "SELECT response_json FROM submission_idempotency "
+                "WHERE username=? AND idem_key=?",
+                (username, key),
+            ).fetchone()
+            if not claim:
+                conn.execute(
+                    "UPDATE video_agent_pending_actions "
+                    "SET status='failed',quote_token='',"
+                    "error_code='reconciled_never_submitted',updated_at=? "
+                    "WHERE id=? AND username=? AND status='result_unknown'",
+                    (timestamp, pending_id, username),
+                )
+                conn.commit()
+                updated = conn.execute(
+                    "SELECT * FROM video_agent_pending_actions WHERE id=?", (pending_id,)
+                ).fetchone()
+                return _safe_pending(updated)
+            if not claim["response_json"]:
+                # 幂等记录存在但还没有响应：可能在途，或历史上中断。保持
+                # result_unknown 并给出明确提示，而不是制造第二个提交。
+                return _safe_pending(row)
+            try:
+                stored = json.loads(claim["response_json"])
+            except (TypeError, ValueError, json.JSONDecodeError):
+                stored = {}
+            projected = _project_confirmation_result(stored)
+            if projected:
+                status, error_code = "submitted", None
+                result_json = _canonical(projected)
+            else:
+                status, error_code = "failed", "reconciled_submission_failed"
+                result_json = None
+            conn.execute(
+                "UPDATE video_agent_pending_actions "
+                "SET status=?,quote_token='',result_json=?,error_code=?,updated_at=? "
+                "WHERE id=? AND username=? AND status='result_unknown'",
+                (status, result_json, error_code, timestamp, pending_id, username),
+            )
+            conn.commit()
+            updated = conn.execute(
+                "SELECT * FROM video_agent_pending_actions WHERE id=?", (pending_id,)
+            ).fetchone()
+            return _safe_pending(
+                updated, json.loads(result_json) if result_json else None
+            )
+    except ToolError:
+        raise
+    except Exception as error:
+        raise ToolError("pending_store_unavailable", "视频操作确认服务暂时不可用", 503) from error

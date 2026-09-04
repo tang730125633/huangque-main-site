@@ -271,8 +271,18 @@ class HQCLIExecutorTests(unittest.TestCase):
         )
         for script in (deploy, ship):
             self.assertIn("tools/hq-cli/src/hq_cli/", script)
-            self.assertIn("/home/ubuntu/content-api/hq_cli/", script)
             self.assertIn("-m hq_cli version --json", script)
+        # deploy_site.sh 通过 CONTENT_DIR 变量表达同一生产路径，
+        # 契约仍必须是 /home/ubuntu/content-api/hq_cli/。
+        self.assertIn('CONTENT_DIR="/home/ubuntu/content-api"', deploy)
+        self.assertIn("$HOST:$CONTENT_DIR/hq_cli/", deploy)
+        self.assertIn("$ROOT/tools/hq-cli/src/hq_cli/", deploy)
+        # 鉴权端必须与内容服务同一次部署，先 auth 后 content。
+        self.assertIn('AUTH_DIR="/home/ubuntu/auth-service"', deploy)
+        self.assertIn("server/auth_server.py", deploy)
+        self.assertIn("server/hq_cli_api.py", deploy)
+        self.assertIn("restart huangque-auth", deploy)
+        self.assertIn("quote-claims", deploy)
         self.assertIn("tools/hq-cli/src/hq_cli/", sentinel)
         self.assertIn("/home/ubuntu/content-api/hq_cli", sentinel)
 
