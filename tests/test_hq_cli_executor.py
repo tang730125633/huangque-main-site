@@ -292,10 +292,19 @@ class HQCLIExecutorTests(unittest.TestCase):
         self.assertIn("nginx -t", deploy)
         self.assertIn("systemctl reload nginx", deploy)
         self.assertIn("smoke_cli_bridge.sh", deploy)
-        self.assertIn("umask 077; cat > /tmp/hq-smoke.env", deploy)
         self.assertIn("deploy/nginx-huangquechuanmei.conf", ship)
         self.assertIn("smoke_cli_bridge.sh", ship)
         self.assertIn("/home/ubuntu/smoke_cli_bridge.sh", sentinel)
+        # 凭证必须编码成 JSON，通过同一个 SSH 进程的 stdin 交给远端，
+        # 不得生成可被 root source 的 shell 文件，也不得在两次 SSH 之间落盘。
+        for script in (deploy, ship):
+            self.assertIn("json.dump", script)
+            self.assertNotIn("/tmp/hq-smoke.env", script)
+        self.assertNotIn("SMOKE_ENV", smoke)
+        self.assertNotIn('. "$SMOKE_ENV"', smoke)
+        self.assertIn("exec 3<&0", smoke)
+        self.assertIn("json.load", smoke)
+        self.assertIn("os.fdopen(3", smoke)
         # 冒烟脚本从 systemd 提取内部令牌，不依赖普通用户不可读的 env 文件。
         self.assertIn("systemctl show -p Environment", smoke)
         self.assertIn("hq_cli_executor.execute", smoke)

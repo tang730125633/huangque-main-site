@@ -610,10 +610,9 @@ esac
 if [ -n "$BRIDGE_DEPLOYED" ]; then
   echo "==> 5.5/5 视频 Agent 真实链路冒烟"
   if [ -n "${HQ_SMOKE_USERNAME:-}" ] && [ -n "${HQ_SMOKE_WEB_TOKEN:-}" ]; then
-    printf 'HQ_SMOKE_USERNAME=%s\nHQ_SMOKE_WEB_TOKEN=%s\n' \
-      "$HQ_SMOKE_USERNAME" "$HQ_SMOKE_WEB_TOKEN" \
-      | $SSHC "$REMOTE" "umask 077; cat > /tmp/hq-smoke.env"
-    if $SSHC "$REMOTE" "trap 'rm -f /tmp/hq-smoke.env' EXIT; sudo bash /home/ubuntu/smoke_cli_bridge.sh /tmp/hq-smoke.env"; then
+    if HQ_SMOKE_USERNAME="$HQ_SMOKE_USERNAME" HQ_SMOKE_WEB_TOKEN="$HQ_SMOKE_WEB_TOKEN" \
+      python3 -c 'import json, os, sys; json.dump({"username": os.environ["HQ_SMOKE_USERNAME"], "web_token": os.environ["HQ_SMOKE_WEB_TOKEN"]}, sys.stdout)' \
+      | $SSHC "$REMOTE" "sudo bash /home/ubuntu/smoke_cli_bridge.sh"; then
       echo "  ✓ 临时委托 → 无扣点 CLI 读取 → 撤销 通过"
     else
       echo "  ❌ 视频 Agent 链路冒烟失败（委托端点/CLI 运行包可能未生效）"

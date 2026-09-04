@@ -89,11 +89,10 @@ $SSH "sudo install -m 0644 '$NGINX_ACTIVE' '$NGINX_ACTIVE.rollback' && \
 # 需要真实用户会话，仅在显式提供凭证时执行；通用 health 不能证明这条链路。
 echo "▸ 7/7 真实链路冒烟"
 if [ -n "${HQ_SMOKE_USERNAME:-}" ] && [ -n "${HQ_SMOKE_WEB_TOKEN:-}" ]; then
-  # 凭证经 stdin 写成远端 0600 临时文件，避免进入远端进程参数；冒烟脚本用后即删。
-  printf 'HQ_SMOKE_USERNAME=%s\nHQ_SMOKE_WEB_TOKEN=%s\n' \
-    "$HQ_SMOKE_USERNAME" "$HQ_SMOKE_WEB_TOKEN" \
-    | $SSH "umask 077; cat > /tmp/hq-smoke.env"
-  $SSH "trap 'rm -f /tmp/hq-smoke.env' EXIT; sudo bash /home/ubuntu/smoke_cli_bridge.sh /tmp/hq-smoke.env"
+  # 本地先做 JSON 编码，再经同一个 SSH 进程的 stdin 交给脚本；远端不落盘、也不 source。
+  HQ_SMOKE_USERNAME="$HQ_SMOKE_USERNAME" HQ_SMOKE_WEB_TOKEN="$HQ_SMOKE_WEB_TOKEN" \
+    python3 -c 'import json, os, sys; json.dump({"username": os.environ["HQ_SMOKE_USERNAME"], "web_token": os.environ["HQ_SMOKE_WEB_TOKEN"]}, sys.stdout)' \
+    | $SSH "sudo bash /home/ubuntu/smoke_cli_bridge.sh"
 else
   echo "  未提供 HQ_SMOKE_USERNAME / HQ_SMOKE_WEB_TOKEN，跳过真实链路冒烟（内部门禁预检已在第 3 步通过）"
 fi
