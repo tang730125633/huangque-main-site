@@ -2062,6 +2062,292 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                 [(jobs[0]["id"], "matrix_template_video", None)], queued,
             )
 
+    def test_http_shutdown_preserves_prepared_attempt_then_recovers_once(self):
+        from content_domains import (
+            core, matrix_template_submission, submission_idempotency,
+        )
+
+        with tempfile.TemporaryDirectory() as temp:
+            database_path = Path(temp) / "jobs.db"
+
+            def database():
+                connection = sqlite3.connect(database_path, timeout=30)
+                connection.row_factory = sqlite3.Row
+                return connection
+
+            with closing(database()) as connection:
+                connection.execute("""CREATE TABLE jobs(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    kind TEXT NOT NULL,username TEXT NOT NULL,cost INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',payload TEXT NOT NULL,
+                    result TEXT,error TEXT,refunded INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,
+                    owner TEXT
+                )""")
+                submission_idempotency.ensure_table(connection)
+                connection.commit()
+            request_body = {
+                "top_text": "停机标题", "bottom_text": "评论区扣关键词",
+                "template_id": "native-bold", "bgm": False,
+                "voiceover": {
+                    "text": "停机期间不能扣点", "voice": "vip_alice",
+                    "voice_scope": "personal", "speed": 1,
+                    "pitch": 0, "volume": 0, "delivery": "natural",
+                },
+            }
+            frozen = json.loads(json.dumps(request_body, ensure_ascii=False))
+            frozen["duration"] = 8.0
+            frozen["voiceover"]["voice_version"] = "a" * 64
+            key = "matrix-prepared-shutdown-recovery"
+            submission_idempotency.begin(
+                database, "alice", "/api/gen/matrix-template", key,
+                request_body,
+            )
+            matrix_template_submission.prepare(
+                database, "alice", "/api/gen/matrix-template", key,
+                request_body, 5, execution_body=frozen,
+            )
+
+            class Points:
+                deductions = 0
+
+                @classmethod
+                def deduct_points(cls, *_args, **_kwargs):
+                    cls.deductions += 1
+                    return 95
+
+                @staticmethod
+                def refund_points(*_args, **_kwargs):
+                    raise AssertionError("successful recovery must not refund")
+
+                @staticmethod
+                def get_points_transaction(_key):
+                    return None
+
+            shutting_down = {"value": True}
+            queued = []
+            original_job_db = core.JOB_DB
+            core.JOB_DB = str(database_path)
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), core.H)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+
+            def submit():
+                request = urllib.request.Request(
+                    "http://127.0.0.1:%d/api/gen/matrix-template"
+                    % server.server_port,
+                    data=json.dumps(request_body, ensure_ascii=False).encode(),
+                    headers={
+                        "Authorization": "Bearer account-token",
+                        "Content-Type": "application/json",
+                        "Idempotency-Key": key,
+                    },
+                    method="POST",
+                )
+                try:
+                    with urllib.request.urlopen(request, timeout=10) as response:
+                        return response.status, json.load(response)
+                except urllib.error.HTTPError as error:
+                    return error.code, json.loads(error.read())
+
+            try:
+                with mock.patch.object(
+                    core, "verify", return_value={
+                        "username": "alice", "points": 100,
+                        "must_change": False,
+                    },
+                ), mock.patch.object(
+                    core, "_domains", return_value=(
+                        SimpleNamespace(), Points, SimpleNamespace(),
+                    ),
+                ), mock.patch.object(
+                    core, "is_shutting_down",
+                    side_effect=lambda: shutting_down["value"],
+                ), mock.patch.object(
+                    core, "enqueue_job",
+                    side_effect=lambda job_id, kind, mode: (
+                        queued.append((job_id, kind, mode)) or True
+                    ),
+                ), mock.patch.object(
+                    self.module, "validate_payload",
+                    side_effect=AssertionError(
+                        "frozen attempt must not revalidate current voice"
+                    ),
+                ) as validate:
+                    blocked_status, blocked = submit()
+                    self.assertEqual(503, blocked_status)
+                    self.assertEqual("shutting_down", blocked["code"])
+                    with closing(database()) as connection:
+                        attempt = connection.execute(
+                            "SELECT state FROM matrix_template_submission_attempts "
+                            "WHERE idem_key=?", (key,),
+                        ).fetchone()
+                        self.assertEqual("prepared", attempt["state"])
+                        self.assertEqual(
+                            0, connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0],
+                        )
+                    self.assertEqual(0, Points.deductions)
+                    self.assertEqual([], queued)
+
+                    shutting_down["value"] = False
+                    resumed_status, resumed = submit()
+                    self.assertEqual(200, resumed_status)
+                    self.assertGreater(int(resumed["job_id"]), 0)
+                    validate.assert_not_called()
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+                core.JOB_DB = original_job_db
+
+            self.assertEqual(1, Points.deductions)
+            with closing(database()) as connection:
+                self.assertEqual(
+                    1, connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0],
+                )
+                state = connection.execute(
+                    "SELECT state FROM matrix_template_submission_attempts "
+                    "WHERE idem_key=?", (key,),
+                ).fetchone()["state"]
+            self.assertEqual("linked", state)
+            self.assertEqual(1, len(queued))
+
+    def test_background_shutdown_skips_charge_and_job_until_resumed(self):
+        from content_domains import (
+            core, matrix_template_submission, submission_idempotency,
+        )
+
+        with tempfile.TemporaryDirectory() as temp:
+            database_path = Path(temp) / "jobs.db"
+
+            def database():
+                connection = sqlite3.connect(database_path, timeout=30)
+                connection.row_factory = sqlite3.Row
+                return connection
+
+            with closing(database()) as connection:
+                connection.execute("""CREATE TABLE jobs(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    kind TEXT NOT NULL,username TEXT NOT NULL,cost INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',payload TEXT NOT NULL,
+                    result TEXT,error TEXT,refunded INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,
+                    owner TEXT
+                )""")
+                submission_idempotency.ensure_table(connection)
+                connection.commit()
+            body = {
+                "top_text": "后台恢复", "bottom_text": "评论区扣关键词",
+                "template_id": "native-bold", "bgm": True, "duration": 8.0,
+            }
+            key = "matrix-background-shutdown"
+            submission_idempotency.begin(
+                database, "alice", "/api/gen/matrix-template", key, body,
+            )
+            matrix_template_submission.prepare(
+                database, "alice", "/api/gen/matrix-template", key,
+                body, 5, execution_body=body,
+            )
+
+            class Points:
+                deductions = 0
+
+                @classmethod
+                def deduct_points(cls, *_args, **_kwargs):
+                    cls.deductions += 1
+                    return 95
+
+                @staticmethod
+                def refund_points(*_args, **_kwargs):
+                    raise AssertionError("successful recovery must not refund")
+
+                @staticmethod
+                def get_points_transaction(_key):
+                    return None
+
+            queued = []
+            original_job_db = core.JOB_DB
+            core.JOB_DB = str(database_path)
+            try:
+                with mock.patch.object(
+                    core, "_domains", return_value=(
+                        SimpleNamespace(), Points, SimpleNamespace(),
+                    ),
+                ), mock.patch.object(
+                    core, "enqueue_job",
+                    side_effect=lambda job_id, kind, mode: (
+                        queued.append((job_id, kind, mode)) or True
+                    ),
+                ), mock.patch.object(
+                    core, "is_shutting_down", return_value=True,
+                ):
+                    self.assertEqual(0, core._retry_matrix_template_submissions())
+                with closing(database()) as connection:
+                    self.assertEqual(
+                        0, connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0],
+                    )
+                    state = connection.execute(
+                        "SELECT state FROM matrix_template_submission_attempts "
+                        "WHERE idem_key=?", (key,),
+                    ).fetchone()["state"]
+                self.assertEqual("prepared", state)
+                self.assertEqual(0, Points.deductions)
+                self.assertEqual([], queued)
+
+                with mock.patch.object(
+                    core, "_domains", return_value=(
+                        SimpleNamespace(), Points, SimpleNamespace(),
+                    ),
+                ), mock.patch.object(
+                    core, "enqueue_job",
+                    side_effect=lambda job_id, kind, mode: (
+                        queued.append((job_id, kind, mode)) or True
+                    ),
+                ), mock.patch.object(
+                    core, "is_shutting_down", return_value=False,
+                ):
+                    self.assertEqual(1, core._retry_matrix_template_submissions())
+            finally:
+                core.JOB_DB = original_job_db
+
+            self.assertEqual(1, Points.deductions)
+            with closing(database()) as connection:
+                self.assertEqual(
+                    1, connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0],
+                )
+                state = connection.execute(
+                    "SELECT state FROM matrix_template_submission_attempts "
+                    "WHERE idem_key=?", (key,),
+                ).fetchone()["state"]
+            self.assertEqual("linked", state)
+            self.assertEqual(1, len(queued))
+
+    def test_background_shutdown_still_reconciles_refund_pending(self):
+        from content_domains import core, matrix_template_submission
+
+        item = {
+            "username": "alice", "endpoint": "/api/gen/matrix-template",
+            "idem_key": "matrix-refund-during-shutdown",
+        }
+        refunded = {**item, "state": "refunded", "job_id": None}
+        with mock.patch.object(
+            core, "is_shutting_down", return_value=True,
+        ), mock.patch.object(
+            matrix_template_submission, "recoverable", return_value=[item],
+        ), mock.patch.object(
+            matrix_template_submission, "get",
+            return_value={**item, "state": "refund_pending"},
+        ), mock.patch.object(
+            matrix_template_submission, "recover", return_value=refunded,
+        ) as recover, mock.patch.object(
+            core, "_domains", return_value=(
+                SimpleNamespace(), SimpleNamespace(), SimpleNamespace(),
+            ),
+        ), mock.patch.object(core, "enqueue_job") as enqueue:
+            self.assertEqual(1, core._retry_matrix_template_submissions())
+        recover.assert_called_once()
+        enqueue.assert_not_called()
+
     def test_unified_function_names_cover_history_and_request_path(self):
         from server import func_names
 

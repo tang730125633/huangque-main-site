@@ -1434,6 +1434,12 @@ def _retry_matrix_template_submissions(limit=None):
     for item in matrix_template_submission.recoverable(
             jdb, int(limit or JOB_QUEUE_MAX)):
         try:
+            if is_shutting_down():
+                current = matrix_template_submission.get(
+                    jdb, item["username"], item["endpoint"], item["idem_key"],
+                )
+                if not current or current.get("state") != "refund_pending":
+                    continue
             attempt = matrix_template_submission.recover(
                 jdb, points, item["username"], item["endpoint"],
                 item["idem_key"], owner=SERVICE_OWNER,
@@ -2160,12 +2166,22 @@ class H(BaseHTTPRequestHandler):
             return True
         if not attempt.get("execution_frozen"):
             return False
+        shutdown = is_shutting_down()
+        if shutdown and attempt.get("state") in {
+                "prepared", "charging", "charged"}:
+            self._send(503, {
+                "detail": "服务正在更新，原提交已保留，请稍后重试",
+                "code": "shutting_down", "retry_after_ms": 5000,
+            })
+            return True
         self._matrix_template_charge_started = True
         try:
-            attempt = matrix_template_submission.recover(
-                jdb, points_domain, username, endpoint, idem_key,
-                owner=SERVICE_OWNER,
-            )
+            if not (shutdown and attempt.get("state") in {
+                    "linked", "failed", "refunded"}):
+                attempt = matrix_template_submission.recover(
+                    jdb, points_domain, username, endpoint, idem_key,
+                    owner=SERVICE_OWNER,
+                )
         except matrix_template_submission.AttemptInProgress:
             self._send(409, {
                 "detail": "原提交仍在受理中，请稍后查询",
@@ -2205,7 +2221,7 @@ class H(BaseHTTPRequestHandler):
                     "code": "reconcile_pending", "retry_after_ms": 3000,
                 })
                 return True
-            if job["status"] == "pending":
+            if job["status"] == "pending" and not shutdown:
                 enqueue_job(job_id, "matrix_template_video", None)
         response["reconciled"] = True
         self._send(status, response)
