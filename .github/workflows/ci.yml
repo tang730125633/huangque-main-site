@@ -153,3 +153,33 @@ jobs:
           if ($result.schema -ne "hq.capabilities/v1") { throw "invalid capabilities output" }
           .\site\downloads\hq\uninstall.ps1 -InstallRoot $env:HQ_TEST_ROOT
           if (Test-Path $env:HQ_TEST_ROOT) { throw "uninstall left files behind" }
+
+  repo-tests-linux:
+    name: 仓库完整回归 · Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PYTHONIOENCODING: utf-8
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 配置 Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: 配置 Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: 安装完整回归依赖
+        run: |
+          python -m pip install -r server/hermes_ip12/requirements-pdf.txt
+          python -m pip install "Flask>=3.1,<4" "Pillow==12.2.0" "playwright==1.45.0" "pypdf>=6,<7" "requests>=2.32,<3"
+          python -m playwright install --with-deps chromium
+
+      - name: 运行仓库根目录完整回归
+        run: python -m unittest discover -s tests -p "test_*.py" -v

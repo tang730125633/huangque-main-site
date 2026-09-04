@@ -1379,6 +1379,126 @@ class VideoAgentTests(unittest.TestCase):
         self.assertEqual(result["reply"], "已查到价格，下一步请确认视频时长。")
         self.assertEqual(result["tool_activity"][0]["tool"], "hq_get_pricing")
 
+    def test_prompt_routes_verified_private_image_to_talking_quote(self):
+        """Exercise the real prompt/context -> model tool call -> runtime seam."""
+        payloads = []
+        route_checks = {}
+        quote_arguments = {
+            "image_upload_id": "img_" + "a" * 32,
+            "text": "介绍新品",
+            "voice": "voice-1",
+        }
+        final = {
+            "reply": "素材完整，已准备口播报价。",
+            "stage": "plan_ready",
+            "intent": "talking",
+            "video_brief": {"content": "介绍新品", "voice": "voice-1"},
+            "missing_fields": [],
+            "material_requests": [],
+            "quick_replies": [],
+            "recommended_module": "talking",
+            "recommendation_reason": "私有人物图片、文案和音色均已就绪",
+            "ready_to_handoff": True,
+        }
+
+        def opener(request, timeout=0):
+            payload = json.loads(request.data.decode("utf-8"))
+            payloads.append(payload)
+            if len(payloads) == 1:
+                instructions = payload["instructions"]
+                context = payload["input"][-1]["content"]
+                route_checks.update({
+                    "talking_image_route": (
+                        "talking 可直接使用当前账号已核验的私有人物图片 image_upload_id"
+                        in instructions
+                    ),
+                    "talking_text_voice": (
+                        "talking 必须同时具备非空文案 text 和音色 voice" in instructions
+                    ),
+                    "story_ready_avatar": (
+                        "story 必须使用当前账号已就绪的数字人形象 avatar_id 或 avatar_ids"
+                        in instructions
+                    ),
+                    "motion_ready_avatar": (
+                        "motion 同样必须使用已就绪的 avatar_id" in instructions
+                    ),
+                    "verified_context": '"upload_verified": true' in context,
+                    "image_id_context": quote_arguments["image_upload_id"] in context,
+                })
+                routes_private_image = all(route_checks.values())
+                if routes_private_image:
+                    return Response({
+                        "status": "completed",
+                        "output": [{
+                            "type": "function_call", "id": "fc_talking",
+                            "call_id": "call_talking",
+                            "name": "hq_quote_talking_video",
+                            "arguments": json.dumps(quote_arguments, ensure_ascii=False),
+                        }],
+                        "usage": {"input_tokens": 10, "output_tokens": 5},
+                    })
+                return Response({
+                    "status": "completed",
+                    "output": [{
+                        "type": "message", "role": "assistant",
+                        "content": [{"type": "output_text", "text": json.dumps({
+                            **final,
+                            "reply": "请先创建数字人形象。",
+                            "stage": "collect_materials",
+                            "missing_fields": ["avatar_id"],
+                            "ready_to_handoff": False,
+                        }, ensure_ascii=False)}],
+                    }],
+                    "usage": {"input_tokens": 10, "output_tokens": 5},
+                })
+            return Response({
+                "status": "completed",
+                "output": [{
+                    "type": "message", "role": "assistant",
+                    "content": [{
+                        "type": "output_text",
+                        "text": json.dumps(final, ensure_ascii=False),
+                    }],
+                }],
+                "usage": {"input_tokens": 12, "output_tokens": 6},
+            })
+
+        class Runtime:
+            pending_actions = []
+
+            def __init__(self):
+                self.activity = []
+                self.calls = []
+
+            def run(self, name, arguments):
+                self.calls.append((name, json.loads(arguments)))
+                self.activity.append({"tool": name, "status": "succeeded"})
+                return {"ok": True, "pending_action": {"status": "awaiting_confirmation"}}
+
+        runtime = Runtime()
+        with mock.patch.object(
+            video_agent.video, "list_video_avatars", return_value=[],
+        ), mock.patch.object(
+            video_agent.cli_uploads, "verify_upload", return_value=True,
+        ):
+            result = video_agent.chat({
+                "message": "用这张人物照片制作口播",
+                "history": [],
+                "brief": {"content": "介绍新品", "voice": "voice-1"},
+                "materials": [{
+                    "type": "image", "name": "person.png", "size": 100,
+                    "upload_id": quote_arguments["image_upload_id"],
+                }],
+            }, opener=opener, username="alice", db_factory=self.db,
+                tool_runtime=runtime)
+
+        self.assertTrue(all(route_checks.values()), route_checks)
+        self.assertEqual([
+            ("hq_quote_talking_video", quote_arguments),
+        ], runtime.calls)
+        self.assertTrue(result["ready_to_handoff"])
+        self.assertEqual("plan_ready", result["stage"])
+
     def test_tool_deadline_is_forwarded_and_checked_after_execution(self):
         with mock.patch.dict(os.environ, {
             "VIDEO_AGENT_API_BASE": "https://api.deepseek.com",
