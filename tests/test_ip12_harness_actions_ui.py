@@ -183,8 +183,8 @@ class IP12HarnessActionsUITests(unittest.TestCase):
         self.assertNotIn("openFirstContentScript", select_convo)
         self.assertNotIn("openFirstContentScript", send_turn)
         self.assertIn("showArtifactNotice(data)", send_turn)
-        self.assertIn("第一个交付物已放到对应诊断模块下方", source)
         notice = source[source.index("function showArtifactNotice"):source.index("async function generateFoundationReport")]
+        self.assertIn("data.artifact_notice", notice)
         self.assertIn("#chatArea .harness-actions", notice)
         self.assertIn("attachHarnessActions(currentActions()", notice)
 

@@ -47,7 +47,7 @@ def matching_decision(case):
         "intent": intent, "delegate_to": delegate, "tool": tool,
         "reply": reply, "awaiting": awaiting, "confidence": 0.95,
         "reason_codes": ["fixture"], "memory_evidence": [], "memory_updates": [],
-        "tool_policy": policy, "payment_policy": payment,
+        "tool_policy": policy, "components": [], "payment_policy": payment,
         "references": {
             "production_id": "", "category_id": "",
             "topic_id": str(case.get("topic_id") or ""),

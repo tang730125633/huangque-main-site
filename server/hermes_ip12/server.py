@@ -8894,25 +8894,24 @@ def process_chat_request(body):
                 else:
                     action_revision = body.get("expected_revision")
                 if action is None and not material_production_id:
-                    handoff = (
-                        _post_module_six_production_action(convo)
-                        if _post_module_six_capability_question(state, user_message)
-                        else None
-                    )
-                    if handoff:
-                        production_intent = {
-                            "capability_family": "video",
-                            "recommended_action": "digital-ip-text-generate",
-                            "candidate_actions": ["digital-ip-text-generate"],
-                            "post_module_six_handoff": True,
-                            "script_title": handoff["script_title"],
-                        }
-                        content_target = handoff["content_target"]
-                    else:
-                        production_intent = (
-                            _expanded_production_intent(user_message)
-                            or coach_harness.production_intent(user_message)
+                    production_intent = _expanded_production_intent(user_message)
+                    if production_intent is None:
+                        handoff = (
+                            _post_module_six_production_action(convo)
+                            if _post_module_six_capability_question(state, user_message)
+                            else None
                         )
+                        if handoff:
+                            production_intent = {
+                                "capability_family": "video",
+                                "recommended_action": "digital-ip-text-generate",
+                                "candidate_actions": ["digital-ip-text-generate"],
+                                "post_module_six_handoff": True,
+                                "script_title": handoff["script_title"],
+                            }
+                            content_target = handoff["content_target"]
+                        else:
+                            production_intent = coach_harness.production_intent(user_message)
                     if (
                         production_intent is not None
                         and production_intent.get("recommended_action") not in _SOURCE_FREE_ACTIONS

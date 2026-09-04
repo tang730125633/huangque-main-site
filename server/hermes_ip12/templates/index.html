@@ -996,6 +996,13 @@ function eAttr(s){var d=document.createElement('div');d.textContent=s||'';return
 function scroll(){var a=document.getElementById('chatArea');requestAnimationFrame(function(){a.scrollTop=a.scrollHeight})}
 function toast(m){var t=document.createElement('div');t.className='toast';t.textContent=m;document.body.appendChild(t);setTimeout(function(){t.remove()},3500)}
 
+function showArtifactNotice(data){
+  var notice=String(data&&data.artifact_notice||'').trim();if(!notice)return;
+  expandedMod=Number(data.artifact_module)||expandedMod;renderMods();
+  document.querySelectorAll('#chatArea .harness-actions').forEach(function(row){row.remove()});
+  var area=document.getElementById('chatArea'),message=document.createElement('div');message.className='msg assistant';message.innerHTML='<div class="av">'+moduleIcon('sparkles')+'</div><div class="bubble">'+md(notice)+'</div>';area.appendChild(message);attachHarnessActions(currentActions(),message.querySelector('.bubble'));scroll()
+}
+
 async function generateFoundationReport(){
   if(!cid||streaming)return;streaming=true;toast('正在生成模块 1-4 PDF…');
   try{var r=await fetch('/api/foundation-report/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:cid})});var d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||'PDF 生成失败');state=d.state;renderMods();showArtifactNotice(d);toast('✅ PDF 已生成，请下载查看并确认')}

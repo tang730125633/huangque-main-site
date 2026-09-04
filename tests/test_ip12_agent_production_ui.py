@@ -409,7 +409,7 @@ console.log(JSON.stringify({
         self.assertEqual(got["quotedMissing"], [])
 
     def test_production_errors_are_safe_user_messages_not_server_details(self):
-        source = self.html[self.html.index("function productionError"):self.html.index("function productionRoute")]
+        source = self.html[self.html.index("function productionError"):self.html.index("function productionKind")]
         self.assertIn("暂时无法读取生产状态，请稍后再试。", source)
         self.assertNotIn("data.error", source)
         self.assertNotIn("e.message", source)
@@ -556,9 +556,11 @@ console.log(JSON.stringify({
     def test_voice_clone_poll_deduplicates_retries_and_stops_terminal_states(self):
         if not shutil.which("node"):
             self.skipTest("node unavailable")
-        start = self.html.index("function stopVoiceClonePoll")
-        end = self.html.index("async function uploadSelectedMaterial", start)
-        functions = self.html[start:end]
+        stop_start = self.html.index("function stopVoiceClonePoll")
+        stop_end = self.html.index("function stopVoiceClonePolls", stop_start)
+        poll_start = self.html.index("async function pollVoiceClone")
+        poll_end = self.html.index("async function uploadSelectedVoiceClone", poll_start)
+        functions = self.html[stop_start:stop_end] + self.html[poll_start:poll_end]
         script = functions + r"""
 const assert = require('assert');
 var voiceClonePolls={},cid='project-a',productions={p:{id:'p',options:{}}};

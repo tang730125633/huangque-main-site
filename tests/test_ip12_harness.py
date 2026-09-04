@@ -267,7 +267,7 @@ class IP12HarnessTests(unittest.TestCase):
         self.assertEqual([item["field"] for item in result["profile_updates"]], ["preferred_name"])
         self.assertIn("称呼：林晓", reply)
 
-    def test_intake_rephrases_unanswered_follow_up_instead_of_failing(self):
+    def test_intake_keeps_model_rephrased_unanswered_follow_up_without_failing(self):
         state = harness.initial_state()
         state, _, _ = harness.apply_intake_decision(
             state,
@@ -280,7 +280,7 @@ class IP12HarnessTests(unittest.TestCase):
             intake_decision(kind="ask_follow_up", reply="为了补齐资料，你大概属于哪个年龄段？"),
             "我不太理解，你能说详细一点吗？",
         )
-        self.assertIn("换个更直白的说法", reply)
+        self.assertEqual(reply, "为了补齐资料，你大概属于哪个年龄段？")
         self.assertEqual(state["intake"]["asked_follow_ups"], ["age"])
 
         state, _, _ = harness.apply_intake_decision(

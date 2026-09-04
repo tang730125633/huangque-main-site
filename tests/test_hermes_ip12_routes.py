@@ -3213,7 +3213,7 @@ def fake_render(args, **kwargs):
     write_test_pdf(pdf_path, 8 if "body{zoom:1.05}" in html_text else 7)
     return subprocess.CompletedProcess(args, 0)
 with patch.object(server.subprocess, "run", side_effect=fake_render):
-    fitted_pdf = _render_foundation_pdf("## 模块一", ["/fake/chromium"], render_root)
+    fitted_pdf = _render_foundation_pdf("## 模块一", ["/fake/chromium"], render_root, "IP 定位报告")
 assert _validate_foundation_pdf(fitted_pdf) == 8
 assert render_calls == ["/fake/chromium", "/fake/chromium"]
 assert 0.45 in _foundation_zoom_candidates(20)
@@ -3230,7 +3230,7 @@ def fake_fallback(args, **kwargs):
     write_test_pdf(pdf_path, 8)
     return subprocess.CompletedProcess(args, 0)
 with patch.object(server.subprocess, "run", side_effect=fake_fallback):
-    fallback_pdf = _render_foundation_pdf("## 模块一", ["/fake/playwright", "/fake/chromium"], fallback_root)
+    fallback_pdf = _render_foundation_pdf("## 模块一", ["/fake/playwright", "/fake/chromium"], fallback_root, "IP 定位报告")
 assert _validate_foundation_pdf(fallback_pdf) == 8
 assert fallback_calls == ["/fake/playwright", "/fake/chromium"]
 
