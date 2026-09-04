@@ -23,8 +23,8 @@
 ## 固定审批对象
 
 - PR：`tang730125633/huangque-main-site#1436`
-- 固定业务与 Schema 提交：`FIXED_BUSINESS_SHA_PENDING`
-- 基线：审批时记录的最新 `main` SHA
+- 固定业务与 Schema 提交：`300df60dbe9b2401c4ef340c6e96f6a65725fa88`
+- 基线：`main@f7c2463c201946c2ce9344ae21f06d06e9433f61`
 - 维护窗口：`2026-09-06 02:00–03:00 Asia/Shanghai`
 - 执行、备份、验证、失败恢复负责人：`@LU-003`
 - 阶段一审批评论：等待发布并核验 URL、评论 ID、作者、时间
