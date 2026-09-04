@@ -269,6 +269,9 @@ class HQCLIExecutorTests(unittest.TestCase):
         sentinel = (ROOT / "scripts" / "drift_sentinel.py").read_text(
             encoding="utf-8"
         )
+        smoke = (ROOT / "scripts" / "smoke_cli_bridge.sh").read_text(
+            encoding="utf-8"
+        )
         for script in (deploy, ship):
             self.assertIn("tools/hq-cli/src/hq_cli/", script)
             self.assertIn("-m hq_cli version --json", script)
@@ -283,6 +286,19 @@ class HQCLIExecutorTests(unittest.TestCase):
         self.assertIn("server/hq_cli_api.py", deploy)
         self.assertIn("restart huangque-auth", deploy)
         self.assertIn("quote-claims", deploy)
+        # nginx 专用路由必须走备份 → nginx -t → reload 的发布闭包，
+        # 冒烟凭证必须经 stdin 传远端，不依赖本地 ssh 环境透传。
+        self.assertIn("deploy/nginx-huangquechuanmei.conf", deploy)
+        self.assertIn("nginx -t", deploy)
+        self.assertIn("systemctl reload nginx", deploy)
+        self.assertIn("smoke_cli_bridge.sh", deploy)
+        self.assertIn("umask 077; cat > /tmp/hq-smoke.env", deploy)
+        self.assertIn("deploy/nginx-huangquechuanmei.conf", ship)
+        self.assertIn("smoke_cli_bridge.sh", ship)
+        self.assertIn("/home/ubuntu/smoke_cli_bridge.sh", sentinel)
+        # 冒烟脚本从 systemd 提取内部令牌，不依赖普通用户不可读的 env 文件。
+        self.assertIn("systemctl show -p Environment", smoke)
+        self.assertIn("hq_cli_executor.execute", smoke)
         self.assertIn("tools/hq-cli/src/hq_cli/", sentinel)
         self.assertIn("/home/ubuntu/content-api/hq_cli", sentinel)
 

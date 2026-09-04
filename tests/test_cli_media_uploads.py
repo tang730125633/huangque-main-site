@@ -81,6 +81,21 @@ class CLIMediaUploadTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "素材类型不支持预览"):
             cli_uploads.open_preview("audio", video_id, "alice", now=101)
 
+    def test_verify_upload_checks_owner_expiry_and_size_without_full_read(self):
+        image_id, video_id = self.image(), self.video()
+        self.assertTrue(cli_uploads.verify_upload("image", image_id, "alice", now=101))
+        self.assertTrue(cli_uploads.verify_upload("video", video_id, "alice", now=101))
+        # 归属校验
+        self.assertFalse(cli_uploads.verify_upload("image", image_id, "bob", now=101))
+        self.assertFalse(cli_uploads.verify_upload("video", video_id, "bob", now=101))
+        # 过期
+        self.assertFalse(cli_uploads.verify_upload("image", image_id, "alice", now=99999))
+        # 格式/存在性
+        self.assertFalse(cli_uploads.verify_upload("image", "img_" + "f" * 32, "alice", now=101))
+        self.assertFalse(cli_uploads.verify_upload("image", "vid_" + "f" * 32, "alice", now=101))
+        self.assertFalse(cli_uploads.verify_upload("audio", image_id, "alice", now=101))
+        self.assertFalse(cli_uploads.verify_upload("image", "not-an-id", "alice", now=101))
+
     def test_tryon_roles_expand_and_classic_video_is_six_seconds_max(self):
         person, clothes = self.image(), self.image()
         fast = cli_uploads.expand_role_media_payload({

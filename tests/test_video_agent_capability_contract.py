@@ -69,6 +69,26 @@ class VideoAgentCapabilityContractTests(unittest.TestCase):
         self.assertIn("21:9", union_ratios)
         self.assertIn("adaptive", union_ratios)
 
+    def test_generate_audio_rejection_matches_cli_field_presence(self):
+        # cli.py 按"字段是否存在"拒绝非 Micro 渠道，显式 false 也必须拒绝；
+        # Agent 校验与之一致，防止模型补出可选布尔值后在下一层失败。
+        for channel, rule in VIDEO_CHANNEL_RULES.items():
+            if rule["generate_audio"]:
+                continue
+            for value in (True, False):
+                with self.assertRaises(video_agent_tools.ToolError,
+                                       msg="channel=%s value=%s" % (channel, value)):
+                    video_agent_tools._validate_video_channel_rules(
+                        {"channel": channel, "generate_audio": value},
+                        video_agent_tools.VIDEO_CHANNEL_RULES,
+                    )
+        # micro 是唯一允许 generate_audio 的渠道，false 也放行。
+        for value in (True, False):
+            video_agent_tools._validate_video_channel_rules(
+                {"channel": "micro", "generate_audio": value},
+                video_agent_tools.VIDEO_CHANNEL_RULES,
+            )
+
     def test_quote_tool_schemas_never_accept_more_than_the_cli(self):
         for tool_name, spec in self._specs().items():
             capability = spec["capability"]

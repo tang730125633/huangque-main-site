@@ -141,6 +141,8 @@ TIMERS=""
 DEPLOYED=""
 EXACT_DOMAIN_MODULES=""
 NEED_RELOAD=0   # 部署过 systemd 单元/drop-in 时置 1，重启前必须 daemon-reload，否则改动不生效
+NGINX_RELOAD=0  # 部署过 nginx 配置时置 1，走备份/nginx -t/reload 闭包
+BRIDGE_DEPLOYED=""  # 发布涉及视频 Agent 桥接链路时置 1，自动补冒烟脚本与可选真实链路冒烟
 CONTENT_DOMAINS_SYNCED=0
 PROVIDERS_SYNCED=0
 HQ_CLI_SYNCED=0
@@ -322,6 +324,8 @@ for f in "$@"; do
     server/imggen_api.py)  dest=/home/ubuntu/content-api/;  svc=huangque-imggen-api ;;
     server/dl_service.py)  dest=/home/ubuntu/dl-service/;   svc=huangque-dl ;;
     server/tikhub.py)      dest=/home/ubuntu/content-api/;  svc="huangque-leadgen-api huangque-content huangque-imggen-api" ;;
+    deploy/nginx-huangquechuanmei.conf) NGINX_RELOAD=1; add_deployed "$f"; echo "  ✓ $f → 已纳入 nginx 发布闭包（第 3.6 步安装/校验/reload）"; continue ;;
+    scripts/smoke_cli_bridge.sh) dest=/home/ubuntu/; svc="" ;;
     scripts/hq_bitable_sync_server.py) dest=/home/ubuntu/; svc="" ;;
     scripts/process_invite_reward_claims.py) dest=/home/ubuntu/auth-service/; svc="" ;;
     scripts/drift_sentinel.py) dest=/home/ubuntu/hq-drift/; svc="" ;;
@@ -447,6 +451,22 @@ for f in "$@"; do
   add_timer "$timer"
 done
 
+# 视频 Agent 桥接链路文件：同批发布时必须补冒烟脚本，并在提供凭证时跑真实链路冒烟。
+case " $DEPLOYED " in
+  *" server/auth_server.py "*|*" server/hq_cli_api.py "*|*" server/content_api.py "*|\
+  *" server/content_domains/video_agent.py "*|*" server/content_domains/video_agent_tools.py "*|\
+  *" server/content_domains/hq_cli_executor.py "*|*" server/content_domains/cli_uploads.py "*|\
+  *" tools/hq-cli/src/hq_cli/"*)
+    BRIDGE_DEPLOYED=1
+    ;;
+esac
+if [ -n "$BRIDGE_DEPLOYED" ]; then
+  push_file scripts/smoke_cli_bridge.sh /home/ubuntu/ \
+    && echo "  ✓ scripts/smoke_cli_bridge.sh → /home/ubuntu/（链路冒烟脚本随桥接发布同步）" \
+    || { echo "  ❌ 冒烟脚本部署失败"; exit 1; }
+  add_deployed "scripts/smoke_cli_bridge.sh"
+fi
+
 if [ "$HQ_CLI_SYNCED" = "1" ]; then
   echo "==> 3.3/5 黄雀 CLI 部署冒烟"
   $SSHC "$REMOTE" bash -s -- "$CONTENT_PYTHON" <<'RS' || exit 1
@@ -480,6 +500,32 @@ fi
 if [ -n "$RESTART" ]; then
   echo "==> 3.5/5 import 冒烟（每个待重启服务）"
   for s in $RESTART; do smoke_import "$s" || exit 1; done
+fi
+
+# nginx 配置闭包：备份 → 安装 → nginx -t 门禁 → reload；校验失败恢复备份，
+# 运行中的 nginx 不受影响。专用上传限额/限速只有走这个闭包才会真正生效。
+if [ "$NGINX_RELOAD" = "1" ]; then
+  echo "==> 3.6/5 nginx 配置闭包"
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -az --rsync-path="sudo rsync" -e "$SSHC" \
+      deploy/nginx-huangquechuanmei.conf "$REMOTE:/tmp/huangquechuanmei.conf" \
+      || { echo "  ❌ nginx 配置上传失败"; exit 1; }
+  else
+    scp -q $SSH_OPTS deploy/nginx-huangquechuanmei.conf "$REMOTE:/tmp/huangquechuanmei.conf" \
+      || { echo "  ❌ nginx 配置上传失败"; exit 1; }
+  fi
+  if $SSHC "$REMOTE" "sudo install -m 0644 /etc/nginx/sites-available/huangquechuanmei /etc/nginx/sites-available/huangquechuanmei.rollback && \
+      sudo install -m 0644 /tmp/huangquechuanmei.conf /etc/nginx/sites-available/huangquechuanmei && rm -f /tmp/huangquechuanmei.conf && \
+      sudo nginx -t"; then
+    $SSHC "$REMOTE" "sudo systemctl reload nginx" \
+      || { echo "  ❌ nginx reload 失败"; exit 1; }
+    echo "  ✓ nginx -t 通过并 reload"
+  else
+    $SSHC "$REMOTE" "sudo install -m 0644 /etc/nginx/sites-available/huangquechuanmei.rollback /etc/nginx/sites-available/huangquechuanmei; sudo nginx -t" \
+      || true
+    echo "  ❌ nginx 配置校验失败，已恢复备份并中止发布"
+    exit 1
+  fi
 fi
 
 # 4. 重启受影响的后端服务（纯前端则跳过）
@@ -558,6 +604,26 @@ case "$HEALTH_CODE" in
     exit 1
     ;;
 esac
+
+# 真实链路冒烟：内容服务 → 临时委托 → 无扣点 CLI 读取 → 自动撤销。
+# 仅在发布涉及视频 Agent 桥接且显式提供凭证时执行；凭证经 stdin 传远端。
+if [ -n "$BRIDGE_DEPLOYED" ]; then
+  echo "==> 5.5/5 视频 Agent 真实链路冒烟"
+  if [ -n "${HQ_SMOKE_USERNAME:-}" ] && [ -n "${HQ_SMOKE_WEB_TOKEN:-}" ]; then
+    printf 'HQ_SMOKE_USERNAME=%s\nHQ_SMOKE_WEB_TOKEN=%s\n' \
+      "$HQ_SMOKE_USERNAME" "$HQ_SMOKE_WEB_TOKEN" \
+      | $SSHC "$REMOTE" "umask 077; cat > /tmp/hq-smoke.env"
+    if $SSHC "$REMOTE" "trap 'rm -f /tmp/hq-smoke.env' EXIT; sudo bash /home/ubuntu/smoke_cli_bridge.sh /tmp/hq-smoke.env"; then
+      echo "  ✓ 临时委托 → 无扣点 CLI 读取 → 撤销 通过"
+    else
+      echo "  ❌ 视频 Agent 链路冒烟失败（委托端点/CLI 运行包可能未生效）"
+      exit 1
+    fi
+  else
+    echo "  ⏭ 未提供 HQ_SMOKE_USERNAME / HQ_SMOKE_WEB_TOKEN，跳过真实链路冒烟（通用 health 不能证明这条链路）"
+  fi
+fi
+
 SHA=$(git rev-parse --short HEAD)
 echo "✅ 上线完成 | 本次提交 $SHA"
 echo "   ↩ 要回滚这次：为 $SHA 创建 revert PR，合并到 main 后再用 ship 发布同一文件清单"

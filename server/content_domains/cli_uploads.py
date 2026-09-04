@@ -642,6 +642,52 @@ def load_preview(kind, upload_id, username, now=None):
     return data, str(meta["mime"])
 
 
+def verify_upload(kind, upload_id, username, now=None):
+    """Lightweight owner/expiry/size verification without reading the payload.
+
+    Meta-only existence gate for the planning UI: format, version, owner_hash,
+    expiry and stored size are checked, but not the file bytes.  The real
+    submit path always re-verifies the full payload, so a stale plan can never
+    bypass content integrity.  Any corrupt metadata fails closed (False).
+    """
+    now = int(time.time() if now is None else now)
+    upload_id = str(upload_id or "").strip().lower()
+    if kind == "image":
+        if not UPLOAD_ID_RE.fullmatch(upload_id):
+            return False
+        _, meta_path = _paths(upload_id, ".png")
+    elif kind == "video":
+        if not VIDEO_UPLOAD_ID_RE.fullmatch(upload_id):
+            return False
+        _, meta_path = _video_paths(upload_id, ".mp4")
+    else:
+        return False
+    try:
+        raw_meta = meta_path.read_bytes()
+        if len(raw_meta) > 4096:
+            return False
+        meta = json.loads(raw_meta)
+        extension = str(meta.get("extension") or "")
+        if kind == "image":
+            data_path, _ = _paths(upload_id, extension)
+            valid_extension = extension in MIME_EXTENSIONS.values()
+            max_bytes = MAX_BYTES
+        else:
+            data_path, _ = _video_paths(upload_id, extension)
+            valid_extension = extension in VIDEO_MIME_EXTENSIONS.values()
+            max_bytes = VIDEO_MAX_BYTES
+        if meta.get("version") != 1 or not valid_extension:
+            return False
+        if not hmac.compare_digest(str(meta.get("owner_hash") or ""), _owner_hash(username)):
+            return False
+        if int(meta.get("expires_at") or 0) <= now:
+            return False
+        size = data_path.stat().st_size
+        return 0 < size <= max_bytes
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
+
+
 def _verify_file_stream(path, meta, max_bytes, sniff_fn):
     """Streaming size / mime / sha256 verification for file-backed previews."""
     try:

@@ -69,6 +69,7 @@ BACKEND_RUNTIME = {
     'scripts/hq_bitable_sync_server.py': '/home/ubuntu/hq_bitable_sync_server.py',
     'scripts/process_invite_reward_claims.py': '/home/ubuntu/auth-service/process_invite_reward_claims.py',
     'scripts/drift_sentinel.py': '/home/ubuntu/hq-drift/drift_sentinel.py',
+    'scripts/smoke_cli_bridge.sh': '/home/ubuntu/smoke_cli_bridge.sh',
 }
 
 CONTENT_DOMAINS_RUNTIME = os.environ.get('HQ_CONTENT_DOMAINS_RUNTIME', '/home/ubuntu/content-api/content_domains')

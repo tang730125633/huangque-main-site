@@ -176,7 +176,7 @@ def init_db(db_factory):
     video_agent_tools.ensure_tables(db_factory, recover_confirming=True)
 
 
-def _clean_body(body):
+def _clean_body(body, username=None, avatar_list_fn=None):
     if not isinstance(body, dict):
         raise advisor_runtime.AdvisorError("request_invalid", "请求体必须是 JSON 对象")
 
@@ -200,6 +200,22 @@ def _clean_body(body):
         for key, value in brief.items()
         if key in ALLOWED_BRIEF_FIELDS and _text(value, 500)
     }
+
+    # 素材门禁只采信按账号实时核验过的事实：私有上传必须真实存在且归属本人，
+    # ready 形象必须出现在本人账号的真实 ready 列表里。客户端自报状态只作展示。
+    owner = str(username or "").strip()
+    ready_avatars = set()
+    if owner:
+        try:
+            avatars = (avatar_list_fn or video.list_video_avatars)(owner, 120)
+            ready_avatars = {
+                int(item.get("id"))
+                for item in avatars
+                if isinstance(item, dict) and item.get("status") == "ready"
+                and item.get("id")
+            }
+        except Exception:
+            ready_avatars = set()
 
     materials = body.get("materials") or []
     if not isinstance(materials, list) or len(materials) > MAX_MATERIALS:
@@ -243,8 +259,14 @@ def _clean_body(body):
                 material["purpose"] = purpose
         upload_id = _text(item.get("upload_id"), 40)
         expected_prefix = "img_" if material_type == "image" else ("vid_" if material_type == "video" else "")
-        if expected_prefix and re.fullmatch(expected_prefix + r"[0-9a-f]{32}", upload_id):
+        if (
+            expected_prefix
+            and re.fullmatch(expected_prefix + r"[0-9a-f]{32}", upload_id)
+            and owner
+            and cli_uploads.verify_upload(material_type, upload_id, owner)
+        ):
             material["upload_id"] = upload_id
+            material["upload_verified"] = True
         avatar_state = _text(item.get("avatar_state"), 20).lower()
         try:
             avatar_id = int(item.get("avatar_id") or 0)
@@ -252,8 +274,11 @@ def _clean_body(body):
             avatar_id = 0
         if material_type == "image" and avatar_state in {"creating", "ready", "failed"}:
             material["avatar_state"] = avatar_state
-            if avatar_state == "ready" and avatar_id > 0:
+            if avatar_state == "ready" and avatar_id > 0 and owner and avatar_id in ready_avatars:
                 material["avatar_id"] = avatar_id
+                material["avatar_verified"] = True
+            # 自报 ready 但账号无该就绪形象时只保留展示状态、不落 avatar_id，
+            # 模型与门禁都不能把它当作已创建的形象。
         cleaned_materials.append(material)
 
     message = _text(body.get("message"), MAX_MESSAGE_LENGTH)
@@ -319,13 +344,14 @@ def _normalized_form_value(field, value):
 
 
 def _material_gate(module, materials, brief):
-    """Recompute module readiness server-side from real, user-owned evidence.
+    """Recompute module readiness server-side from verified, account-owned facts.
 
-    The model's ``ready_to_handoff`` claim is not trusted by itself: the
-    recommended module must also be provably satisfied by the sanitized
-    materials list (real upload_id / avatar_id) and the user-confirmed brief.
-    ``compose`` is excluded because it operates on the asset library, which is
-    not represented in the material list.
+    Only materials whose private upload was verified against the current
+    account (``upload_verified``) or whose avatar_id sits in the account's real
+    ready avatar set (``avatar_verified``) count as evidence.  Requirements
+    mirror the actual quote tools' mandatory fields: talking needs a script
+    (text) — audio alone can never substitute because
+    ``digital-ip-text-generate`` requires ``text``.
     """
     if module not in {"talking", "motion", "story", "create", "tryon"}:
         return True, []
@@ -333,37 +359,41 @@ def _material_gate(module, materials, brief):
     brief = brief if isinstance(brief, dict) else {}
     images = [item for item in items if item.get("type") == "image"]
     videos = [item for item in items if item.get("type") == "video"]
-    audios = [item for item in items if item.get("type") == "audio"]
     texts = [item for item in items if item.get("type") == "text"]
-    image_uploads = [item for item in images if item.get("upload_id")]
-    video_uploads = [item for item in videos if item.get("upload_id")]
-    ready_avatar = any(
-        item.get("avatar_state") == "ready" and item.get("avatar_id")
-        for item in images
-    )
-    person_image = bool(image_uploads) or ready_avatar
+    verified_images = [item for item in images if item.get("upload_verified")]
+    verified_videos = [item for item in videos if item.get("upload_verified")]
+    ready_avatars = [
+        item for item in images
+        if item.get("avatar_verified") and item.get("avatar_id")
+    ]
     script = bool(
         brief.get("script") or brief.get("content") or brief.get("subject")
     ) or bool(texts)
-    audio_ok = bool(audios)
+    voice = bool(brief.get("voice"))
     requirements = {
+        # 与 hq_quote_talking_video / digital-ip-text-generate 必填一致：
+        # 形象证据 + text 文案 + voice 音色。
         "talking": [
-            ("image", person_image, "人物照片或已就绪的数字人形象"),
-            ("text", script or audio_ok, "口播文案或音频"),
+            ("image", bool(verified_images) or bool(ready_avatars),
+             "人物照片或已就绪的数字人形象"),
+            ("text", script, "口播文案"),
+            ("text", voice, "音色"),
         ],
         "motion": [
-            ("image", ready_avatar, "已就绪的数字人形象"),
-            ("video", bool(video_uploads), "参考视频"),
+            ("image", bool(ready_avatars), "已就绪的数字人形象"),
+            ("video", bool(verified_videos), "参考视频"),
         ],
         "story": [
-            ("image", person_image, "人物参考图或已就绪的电影化身"),
+            ("image", bool(verified_images) or bool(ready_avatars),
+             "人物参考图或已就绪的电影化身"),
             ("text", script, "剧情描述"),
         ],
         "create": [("text", script, "画面描述")],
         "tryon": [
             (
                 "image",
-                len(image_uploads) >= 2 or (bool(video_uploads) and bool(image_uploads)),
+                len(verified_images) >= 2
+                or (bool(verified_videos) and bool(verified_images)),
                 "人物图片与服装图片（或人物视频加服装图片）",
             ),
         ],
@@ -376,7 +406,7 @@ def _material_gate(module, materials, brief):
             hints.append({
                 "type": material_type,
                 "label": label,
-                "reason": "服务端校验：%s尚未提供" % label,
+                "reason": "服务端校验：%s尚未提供或未通过账号核验" % label,
                 "required": True,
             })
     return passed, hints
@@ -765,8 +795,8 @@ def _initial_input(cleaned):
     return items
 
 
-def _prepare_provider_request(body):
-    cleaned = _clean_body(body)
+def _prepare_provider_request(body, username=None):
+    cleaned = _clean_body(body, username=username)
     if not cleaned["message"]:
         raise advisor_runtime.AdvisorError("message_required", "请输入想法或添加素材")
     url, model = _provider_config()
@@ -1346,7 +1376,7 @@ def chat(body, opener=None, username=None, db_factory=None, web_token=None,
     runtime_stage = "chat_prepare"
     failure_stage = None
     try:
-        prepared = _prepare_provider_request(body)
+        prepared = _prepare_provider_request(body, username=username)
         cleaned = prepared["request_body"]
         request_hash = hashlib.sha256(json.dumps(
             cleaned, ensure_ascii=False, sort_keys=True, separators=(",", ":")

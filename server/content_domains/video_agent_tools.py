@@ -4,6 +4,7 @@ import json
 import re
 import secrets
 import time
+import hashlib
 from contextlib import closing
 
 from . import hq_cli_executor, submission_idempotency
@@ -12,6 +13,20 @@ from . import hq_cli_executor, submission_idempotency
 MAX_TOOL_RESULT_BYTES = 24 * 1024
 MAX_PENDING_TTL = 600
 MIN_PENDING_TTL = 30
+
+# 对账安全期：覆盖 CLI 子进程超时(35s) + 鉴权代理提交超时(30s) 的最坏在途。
+# 安全期内绝不把"暂无幂等记录"收敛为未提交，也绝不放行同输入重新报价。
+RECONCILE_SAFETY_SECONDS = 90
+
+# 能力 → 内容服务任务 kind：陈旧 processing 对账时按任务账本收敛。
+_CAPABILITY_JOB_KINDS = {
+    "video-generate": ("video", "sora_video", "xiaole_video"),
+    "digital-ip-text-generate": ("video",),
+    "cinematic-open-generate": ("cinematic",),
+    "cinematic-motion-generate": ("cinematic",),
+    "tryon-fast-generate": ("tryon",),
+    "tryon-classic-generate": ("tryon",),
+}
 
 # 渠道规则只有一份正本：部署的 hq_cli.catalog。Agent 报价工具的
 # 视频参数校验直接由它推导，杜绝与真实 CLI 合同漂移（契约测试守护）。
@@ -208,6 +223,7 @@ CREATE TABLE IF NOT EXISTS video_agent_pending_actions(
     updated_at INTEGER NOT NULL,
     idempotency_key TEXT,
     submission_key TEXT,
+    payload_json TEXT,
     result_json TEXT,
     error_code TEXT
 );
@@ -241,6 +257,11 @@ def ensure_tables(db_factory, recover_confirming=False):
                 conn.execute(
                     "ALTER TABLE video_agent_pending_actions "
                     "ADD COLUMN submission_key TEXT"
+                )
+            if "payload_json" not in columns:
+                conn.execute(
+                    "ALTER TABLE video_agent_pending_actions "
+                    "ADD COLUMN payload_json TEXT"
                 )
             marker = id(db_factory)
             if marker not in _PENDING_DDL_DONE:
@@ -412,7 +433,9 @@ def _validate_video_channel_rules(arguments, rules, path="arguments"):
             "tool_arguments_invalid",
             "%s.model 不适用于渠道 %s" % (path, channel),
         )
-    if not rule["generate_audio"] and arguments.get("generate_audio") is True:
+    # 与真实 CLI 一致（cli.py）：只要字段出现就按渠道能力判定，
+    # 显式 false 同样会被非 Micro 渠道拒绝。
+    if not rule["generate_audio"] and "generate_audio" in arguments:
         raise ToolError(
             "tool_arguments_invalid",
             "%s.generate_audio 不适用于渠道 %s" % (path, channel),
@@ -645,7 +668,50 @@ _FIELD_LABELS = {
     "reference_video_upload_ids": "参考视频",
     "person_image_upload_id": "人物图片", "clothes_upload_id": "服装图片",
     "background_upload_id": "背景图片", "person_video_upload_id": "人物视频",
+    "source_page": "来源页面", "line": "换装线路", "cine_mode": "电影模式",
+    "quality": "质量", "count": "数量", "provider": "引擎", "kind": "类型",
+    "mode": "模式", "lipsync_mode": "口型模式", "dynamic_duration": "动态时长",
+    "video_asset_id": "原视频资产", "audio_asset_id": "音频资产",
+    "image_upload_id": "图片上传", "mask_upload_id": "蒙版上传",
+    "audio_upload_id": "音频上传", "audio_file": "音频资产",
+    "style": "风格", "format": "格式", "platforms": "平台", "keyword": "关键词",
+    "count_range": "数量范围", "url": "链接",
 }
+
+
+def _payload_summary(payload):
+    """Deterministic summary of the SIGNED payload (server defaults included).
+
+    Every field is shown whole (payloads are schema-bounded); defensive caps
+    mark ``truncated`` so the confirmation card can still expand/recheck long
+    text.  This is the exact input the quote fingerprint binds.
+    """
+    summary = []
+    if not isinstance(payload, dict):
+        return summary
+    for key, raw in payload.items():
+        label = _FIELD_LABELS.get(key, key)
+        if isinstance(raw, list):
+            value = [str(entry)[:300] for entry in raw[:24]]
+            truncated = len(raw) > 24
+        elif isinstance(raw, bool):
+            value = "是" if raw else "否"
+            truncated = False
+        elif isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            value = raw
+            truncated = False
+        elif raw is None:
+            value = ""
+            truncated = False
+        else:
+            text = str(raw)
+            truncated = len(text) > 3000
+            value = text[:3000]
+        summary.append({
+            "key": key, "label": label, "value": value,
+            "truncated": bool(truncated),
+        })
+    return summary
 
 
 def _input_summary(tool_name, stored_input_json):
@@ -683,6 +749,24 @@ def _input_summary(tool_name, stored_input_json):
 
 
 def _safe_pending(row, result=None):
+    stored_payload = None
+    if "payload_json" in row.keys() and row["payload_json"]:
+        try:
+            parsed = json.loads(str(row["payload_json"]))
+            if isinstance(parsed, dict):
+                stored_payload = parsed
+        except (TypeError, ValueError, json.JSONDecodeError):
+            stored_payload = None
+    if stored_payload is not None:
+        input_summary = _payload_summary(stored_payload)
+        input_source = "signed_payload"
+    else:
+        # 旧卡片没有落库 payload，回退到按原始工具参数重建的摘要。
+        input_summary = _input_summary(
+            str(row["tool_name"] if "tool_name" in row.keys() else ""),
+            str(row["input_json"] or ""),
+        )
+        input_source = "tool_arguments"
     value = {
         "id": row["id"], "status": row["status"],
         "capability": str(row["capability"] or "")[:80],
@@ -691,14 +775,12 @@ def _safe_pending(row, result=None):
         "cost": int(row["cost"] or 0),
         "points": int(row["points"]) if row["points"] is not None else None,
         "expires_at": int(row["expires_at"] or 0),
-        # 确认卡必须只展示这份由服务器从落库输入生成的确定性摘要；
-        # fingerprint 与摘要同源于 input_json，用户可据此核对提交内容。
+        # 确认卡只展示这份由服务器生成的确定性摘要；signed_payload 与
+        # fingerprint 同源（落库时已自校验哈希），用户据此核对提交内容。
         "input": {
             "fingerprint": str(row["input_hash"] or "").strip()[:200],
-            "summary": _input_summary(
-                str(row["tool_name"] if "tool_name" in row.keys() else ""),
-                str(row["input_json"] or ""),
-            ),
+            "summary": input_summary,
+            "source": input_source,
         },
     }
     if result is not None:
@@ -794,6 +876,19 @@ def _store_quote(db_factory, username, tool_name, spec, arguments, quote, now):
     if not token:
         raise ToolError("quote_response_invalid", "黄雀 CLI 未返回有效报价", 502)
     digest = _quote_fingerprint(quote)
+    # 报价真正绑定的是鉴权服务标准化后的 payload（含默认值），确认卡必须
+    # 展示它。这里自校验 payload 与报价指纹同源，否则拒绝落卡（fail-closed）。
+    payload = quote.get("payload")
+    if not isinstance(payload, dict) or not payload:
+        raise ToolError(
+            "quote_response_invalid", "黄雀 CLI 报价未返回绑定的标准化参数", 502
+        )
+    payload_json = _canonical(payload)
+    fingerprint_digest = digest.split(":", 1)[-1]
+    if hashlib.sha256(payload_json.encode("utf-8")).hexdigest() != fingerprint_digest:
+        raise ToolError(
+            "quote_response_invalid", "黄雀 CLI 报价参数与报价指纹不匹配", 502
+        )
     try:
         cost = max(0, int(quote.get("cost") or 0))
         points = quote.get("points")
@@ -829,10 +924,11 @@ def _store_quote(db_factory, username, tool_name, spec, arguments, quote, now):
             try:
                 conn.execute(
                     "INSERT INTO video_agent_pending_actions"
-                    "(id,username,tool_name,capability,input_json,input_hash,quote_token,cost,points,status,created_at,expires_at,updated_at) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "(id,username,tool_name,capability,input_json,input_hash,quote_token,cost,points,status,created_at,expires_at,updated_at,payload_json) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (pending_id, username, tool_name, spec["capability"], input_json, digest,
-                     token, cost, points, "awaiting_confirmation", timestamp, expires_at, timestamp),
+                     token, cost, points, "awaiting_confirmation", timestamp, expires_at, timestamp,
+                     payload_json),
                 )
             except __import__("sqlite3").IntegrityError:
                 existing = conn.execute(
@@ -958,7 +1054,12 @@ class VideoAgentToolRuntime:
             raise ToolError("tool_execution_failed", "黄雀工具暂时不可用", 502) from error
 
 
-def _load_pending_for_confirmation(db_factory, pending_id, username, idempotency_key, now, submission_key=None):
+def _read_pending_for_confirmation(db_factory, pending_id, username, idempotency_key, now):
+    """Read a card without claiming; expires stale awaiting cards in place.
+
+    Any crash after this step leaves the card ``awaiting_confirmation`` and
+    re-confirmable — nothing has been claimed and no paid action can start.
+    """
     ensure_tables(db_factory)
     timestamp = int(now())
     try:
@@ -994,42 +1095,50 @@ def _load_pending_for_confirmation(db_factory, pending_id, username, idempotency
                     "pending_action_unavailable", "该操作已处理，不能重复提交", 409,
                     pending_action=_safe_pending(row),
                 )
-            conn.execute(
-                "UPDATE video_agent_pending_actions "
-                "SET status='confirming',idempotency_key=?,submission_key=COALESCE(?,submission_key),updated_at=? WHERE id=?",
-                (idempotency_key, submission_key, timestamp, pending_id),
-            )
             conn.commit()
-            claimed = dict(row)
-            claimed["status"] = "confirming"
-            claimed["idempotency_key"] = idempotency_key
-            if submission_key:
-                claimed["submission_key"] = submission_key
-            return claimed, None, False
+            return row, None, False
     except ToolError:
         raise
     except Exception as error:
         raise ToolError("pending_store_unavailable", "视频操作确认服务暂时不可用", 503) from error
 
 
-def _release_confirmation_claim(db_factory, pending_id, username, idempotency_key, now):
-    """Revert a just-claimed card back to awaiting_confirmation (best effort).
+def _claim_pending_for_confirmation(db_factory, pending_id, username,
+                                    idempotency_key, submission_key, now):
+    """Atomically move awaiting→confirming AND persist the reconciliation key.
 
-    Only used when the card was claimed but the paid executor never ran; if the
-    process crashes in between, startup recovery keeps the fail-closed
-    result_unknown path intact.
+    One single UPDATE: a crash before it leaves the card re-confirmable; after
+    it the card already carries ``submission_key``, so startup recovery can only
+    produce a reconcilable ``result_unknown`` — the two-step claim/key window
+    that could orphan cards without credentials is gone.
     """
+    timestamp = int(now())
     try:
         with closing(db_factory()) as conn:
-            conn.execute(
+            conn.row_factory = __import__("sqlite3").Row
+            conn.execute("BEGIN IMMEDIATE")
+            claimed = conn.execute(
                 "UPDATE video_agent_pending_actions "
-                "SET status='awaiting_confirmation',idempotency_key='',submission_key=NULL,updated_at=? "
-                "WHERE id=? AND username=? AND status='confirming' AND idempotency_key=?",
-                (int(now()), pending_id, username, idempotency_key),
+                "SET status='confirming',idempotency_key=?,submission_key=?,updated_at=? "
+                "WHERE id=? AND username=? AND status='awaiting_confirmation'",
+                (idempotency_key, submission_key, timestamp, pending_id, username),
             )
+            if claimed.rowcount != 1:
+                # 并发双确认的败者或状态已变化：回滚后按只读路径给出准确错误。
+                conn.rollback()
+                return _read_pending_for_confirmation(
+                    db_factory, pending_id, username, idempotency_key, now
+                )
+            row = conn.execute(
+                "SELECT * FROM video_agent_pending_actions WHERE id=?",
+                (pending_id,),
+            ).fetchone()
             conn.commit()
-    except Exception:
-        pass
+            return row, None, False
+    except ToolError:
+        raise
+    except Exception as error:
+        raise ToolError("pending_store_unavailable", "视频操作确认服务暂时不可用", 503) from error
 
 
 def confirm_pending_action(pending_id, idempotency_key, *, username, web_token,
@@ -1042,36 +1151,25 @@ def confirm_pending_action(pending_id, idempotency_key, *, username, web_token,
     if not re.fullmatch(r"vpa_[0-9a-f]{32}", pending_id):
         raise ToolError("pending_action_not_found", "待确认操作不存在或已失效", 404)
     now_fn = now or time.time
-    row, stored, replayed = _load_pending_for_confirmation(
+    row, stored, replayed = _read_pending_for_confirmation(
         db_factory, pending_id, username, idempotency_key, now_fn
     )
     if replayed:
         return _safe_pending(row, stored)
-    # 在真正执行前向鉴权服务核验报价凭证，并落库确定性的提交幂等键
-    # (hqcli-<nonce>，与 CLI 提交链路一致)。result_unknown 之后的对账
-    # 只依赖这个键，因此核验失败必须把卡片退回待确认，绝不进入执行。
+    # 先向鉴权服务核验报价凭证并取得确定性提交幂等键（hqcli-<nonce>，与
+    # CLI 提交链路一致）。此时尚未领取卡片：核验失败零副作用，卡片仍是
+    # awaiting_confirmation，无需任何回滚。
     claims_fn = quote_claims or hq_cli_executor.quote_claims
     try:
         claims = claims_fn(row["quote_token"])
         submission_key = "hqcli-" + str(claims["nonce"])
     except hq_cli_executor.CLIExecutionError as error:
-        _release_confirmation_claim(
-            db_factory, pending_id, username, idempotency_key, now_fn
-        )
         raise ToolError(error.code, str(error), error.status)
-    try:
-        with closing(db_factory()) as conn:
-            conn.execute(
-                "UPDATE video_agent_pending_actions SET submission_key=? "
-                "WHERE id=? AND username=? AND status='confirming' AND idempotency_key=?",
-                (submission_key, pending_id, username, idempotency_key),
-            )
-            conn.commit()
-    except Exception as error:
-        raise ToolError(
-            "pending_store_unavailable", "生成可能已提交，但确认状态保存失败；请勿重复点击", 503,
-            unknown_outcome=True,
-        ) from error
+    row, stored, replayed = _claim_pending_for_confirmation(
+        db_factory, pending_id, username, idempotency_key, submission_key, now_fn
+    )
+    if replayed:
+        return _safe_pending(row, stored)
     executor = cli_execute or hq_cli_executor.execute
     arguments = json.loads(row["input_json"])
     try:
@@ -1132,13 +1230,17 @@ def reconcile_pending_action(pending_id, *, username, db_factory, now=None):
     """Read-only reconciliation for cards stuck in ``result_unknown``.
 
     The confirm path persists the deterministic submission idempotency key
-    (``hqcli-<nonce>``) before executing the paid action.  The content
-    service's ``submission_idempotency`` table then tells us, without any new
-    side effect, whether the submission ever reached the job layer:
+    (``hqcli-<nonce>``) in the SAME atomic update that claims the card, so
+    every post-recovery unknown card carries credentials.  The content
+    service's ``submission_idempotency`` table plus the jobs ledger then tell
+    us, without any new side effect, whether the submission ever landed:
 
-    * no claim        -> nothing was ever submitted or charged -> failed
-    * claim + response-> final outcome is recorded           -> submitted/failed
-    * claim, no resp  -> submission was in flight / interrupted -> keep unknown
+    * no record + outside safety window -> never submitted/charged -> failed
+    * no record + inside safety window  -> may still be in flight -> keep unknown
+    * record + response                  -> final outcome recorded -> submitted/failed
+    * record, no response, inside window -> being processed -> keep unknown
+    * record, no response, stale         -> converge via jobs ledger:
+      matching job -> submitted, otherwise -> failed
 
     Cards from pre-fingerprint builds have no submission key and stay a hard
     barrier (fail closed); new confirmations always converge.
@@ -1169,11 +1271,20 @@ def reconcile_pending_action(pending_id, *, username, db_factory, now=None):
                     pending_action=_safe_pending(row),
                 )
             claim = conn.execute(
-                "SELECT response_json FROM submission_idempotency "
+                "SELECT response_json,created_at,updated_at FROM submission_idempotency "
                 "WHERE username=? AND idem_key=?",
                 (username, key),
             ).fetchone()
             if not claim:
+                # 没有幂等记录不代表"从未提交"：被杀掉的 CLI 背后的认证代理
+                # 请求可能仍在途。只有超过覆盖下游最大超时的安全期才允许
+                # 收敛为 failed，否则保持阻断并提示稍后重试。
+                if timestamp - int(row["updated_at"] or 0) < RECONCILE_SAFETY_SECONDS:
+                    raise ToolError(
+                        "pending_reconcile_in_flight",
+                        "提交可能仍在途，请稍后重新对账", 409,
+                        pending_action=_safe_pending(row),
+                    )
                 conn.execute(
                     "UPDATE video_agent_pending_actions "
                     "SET status='failed',quote_token='',"
@@ -1187,9 +1298,39 @@ def reconcile_pending_action(pending_id, *, username, db_factory, now=None):
                 ).fetchone()
                 return _safe_pending(updated)
             if not claim["response_json"]:
-                # 幂等记录存在但还没有响应：可能在途，或历史上中断。保持
-                # result_unknown 并给出明确提示，而不是制造第二个提交。
-                return _safe_pending(row)
+                # 有幂等记录但没有响应：提交曾被受理。安全期内保持未知；
+                # 超过安全期后用任务账本收敛：有匹配的任务即 submitted，
+                # 否则判定受理中断、从未创建任务（failed），绝不永久锁死。
+                if timestamp - int(claim["updated_at"] or 0) < RECONCILE_SAFETY_SECONDS:
+                    raise ToolError(
+                        "pending_reconcile_in_flight",
+                        "提交正在受理，请稍后重新对账", 409,
+                        pending_action=_safe_pending(row),
+                    )
+                job_id = _find_submitted_job(
+                    conn, username, row, claim, timestamp
+                )
+                if job_id:
+                    projected = {"job_id": int(job_id)}
+                    status, error_code = "submitted", None
+                    result_json = _canonical(projected)
+                else:
+                    status = "failed"
+                    error_code = "reconciled_stale_processing"
+                    result_json = None
+                conn.execute(
+                    "UPDATE video_agent_pending_actions "
+                    "SET status=?,quote_token='',result_json=?,error_code=?,updated_at=? "
+                    "WHERE id=? AND username=? AND status='result_unknown'",
+                    (status, result_json, error_code, timestamp, pending_id, username),
+                )
+                conn.commit()
+                updated = conn.execute(
+                    "SELECT * FROM video_agent_pending_actions WHERE id=?", (pending_id,)
+                ).fetchone()
+                return _safe_pending(
+                    updated, json.loads(result_json) if result_json else None
+                )
             try:
                 stored = json.loads(claim["response_json"])
             except (TypeError, ValueError, json.JSONDecodeError):
@@ -1218,3 +1359,22 @@ def reconcile_pending_action(pending_id, *, username, db_factory, now=None):
         raise
     except Exception as error:
         raise ToolError("pending_store_unavailable", "视频操作确认服务暂时不可用", 503) from error
+
+
+def _find_submitted_job(conn, username, row, claim, timestamp):
+    """Look for the job a stale in-flight submission may have created.
+
+    Matches on account, the idempotency claim's time window, the quoted cost
+    and the capability's job kinds.  Returns the job id or None.
+    """
+    kinds = _CAPABILITY_JOB_KINDS.get(str(row["capability"] or "").strip())
+    if not kinds:
+        return None
+    holes = ",".join("?" * len(kinds))
+    job = conn.execute(
+        "SELECT id FROM jobs WHERE username=? AND created_at>=? AND created_at<=? "
+        "AND cost=? AND kind IN (%s) ORDER BY id DESC LIMIT 1" % holes,
+        (username, int(claim["created_at"] or 0), timestamp,
+         int(row["cost"] or 0)) + tuple(kinds),
+    ).fetchone()
+    return int(job["id"]) if job else None

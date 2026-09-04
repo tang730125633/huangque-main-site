@@ -158,10 +158,42 @@ class VideoAgentTests(unittest.TestCase):
                 "purpose_state": "confirmed", "purpose": "人物或数字人形象",
                 "avatar_state": "ready", "avatar_id": 27,
             }],
-        })
+        }, username="alice", avatar_list_fn=lambda _user, _limit: [
+            {"id": 27, "status": "ready"},
+            {"id": 28, "status": "creating"},
+        ])
         self.assertEqual(cleaned["materials"][0]["purpose"], "人物或数字人形象")
         self.assertEqual(cleaned["materials"][0]["avatar_state"], "ready")
         self.assertEqual(cleaned["materials"][0]["avatar_id"], 27)
+        self.assertTrue(cleaned["materials"][0]["avatar_verified"])
+
+    def test_clean_body_strips_unverified_avatar_claims(self):
+        # 客户端自报 ready，但账号真实 ready 列表里没有该形象：不落 avatar_id。
+        cleaned = video_agent._clean_body({
+            "message": "继续",
+            "materials": [{
+                "type": "image", "name": "person.png", "size": 1234,
+                "avatar_state": "ready", "avatar_id": 999,
+            }],
+        }, username="alice", avatar_list_fn=lambda _user, _limit: [
+            {"id": 27, "status": "ready"},
+        ])
+        material = cleaned["materials"][0]
+        self.assertEqual(material["avatar_state"], "ready")
+        self.assertNotIn("avatar_id", material)
+        self.assertNotIn("avatar_verified", material)
+
+    def test_clean_body_keeps_only_uploads_verified_against_the_account(self):
+        cleaned = video_agent._clean_body({
+            "message": "继续",
+            "materials": [{
+                "type": "image", "name": "fake.png", "size": 1234,
+                "upload_id": "img_" + "a" * 32,
+            }],
+        }, username="alice", avatar_list_fn=lambda _user, _limit: [])
+        # 格式正确但未通过账号核验的上传必须被丢弃，不能进入门禁与模型上下文。
+        self.assertNotIn("upload_id", cleaned["materials"][0])
+        self.assertNotIn("upload_verified", cleaned["materials"][0])
 
     def test_normalize_enforces_safe_handoff_contract(self):
         result = video_agent._normalize({
@@ -212,13 +244,14 @@ class VideoAgentTests(unittest.TestCase):
     def test_normalize_keeps_ready_when_real_materials_satisfy_the_module(self):
         materials = [
             {"type": "image", "name": "person.png", "size": 1024,
-             "avatar_state": "ready", "avatar_id": 27},
+             "avatar_state": "ready", "avatar_id": 27, "avatar_verified": True},
             {"type": "text", "name": "口播稿.txt", "size": 64},
         ]
         result = video_agent._normalize({
             "reply": "可以制作口播视频",
             "stage": "plan_ready",
             "intent": "talking",
+            "video_brief": {"content": "介绍新品", "voice": "voice-1"},
             "recommended_module": "talking",
             "ready_to_handoff": True,
             "material_assessments": [
@@ -235,6 +268,48 @@ class VideoAgentTests(unittest.TestCase):
             [item["name"] for item in result["material_assessments"]],
             ["person.png"],
         )
+
+    def test_normalize_rejects_ready_claim_on_unverified_upload_ids(self):
+        # 格式正确但未通过账号核验的上传（或自报 ready 的形象）不能被当成
+        # 真实素材：模型据此声称 ready 必须被服务端阻断。
+        materials = [
+            {"type": "image", "name": "fake.png", "size": 1024,
+             "upload_id": "img_" + "a" * 32},
+            {"type": "image", "name": "fake-avatar.png", "size": 1024,
+             "avatar_state": "ready", "avatar_id": 999},
+        ]
+        result = video_agent._normalize({
+            "reply": "素材已就绪",
+            "stage": "plan_ready",
+            "intent": "story",
+            "video_brief": {"content": "剧情描述"},
+            "recommended_module": "story",
+            "ready_to_handoff": True,
+        }, materials=materials)
+        self.assertFalse(result["ready_to_handoff"])
+        self.assertEqual(result["stage"], "collect_materials")
+        self.assertTrue(any(
+            item.get("reason", "").startswith("服务端校验")
+            for item in result["material_requests"]
+        ))
+
+    def test_normalize_talking_requires_text_not_audio(self):
+        # 真实报价工具强制 text：音频素材不能替代口播文案。
+        materials = [
+            {"type": "image", "name": "person.png", "size": 1024,
+             "avatar_state": "ready", "avatar_id": 27, "avatar_verified": True},
+            {"type": "audio", "name": "口播.wav", "size": 999},
+        ]
+        result = video_agent._normalize({
+            "reply": "可以制作口播视频",
+            "stage": "plan_ready",
+            "intent": "talking",
+            "video_brief": {"voice": "voice-1"},
+            "recommended_module": "talking",
+            "ready_to_handoff": True,
+        }, materials=materials)
+        self.assertFalse(result["ready_to_handoff"])
+        self.assertEqual(result["stage"], "collect_materials")
 
     def test_parse_byte_range_supports_single_range_forms(self):
         self.assertEqual(video_agent._parse_byte_range("bytes=0-99", 1000), (0, 99))
@@ -1506,12 +1581,24 @@ class VideoAgentTests(unittest.TestCase):
         self.assertNotIn("private", json.dumps(handler.sent[1]))
 
     def test_clean_body_only_accepts_type_matching_upload_ids(self):
+        # 类型前缀不匹配的直接丢弃；格式匹配的还须通过账号核验才会保留。
         cleaned = video_agent._clean_body({"message": "测试", "materials": [
             {"type": "image", "name": "a.png", "upload_id": "img_" + "a" * 32},
             {"type": "video", "name": "b.mp4", "upload_id": "img_" + "b" * 32},
-        ]})
-        self.assertEqual(cleaned["materials"][0]["upload_id"], "img_" + "a" * 32)
+        ]}, username="alice", avatar_list_fn=lambda _user, _limit: [])
+        self.assertNotIn("upload_id", cleaned["materials"][0])
         self.assertNotIn("upload_id", cleaned["materials"][1])
+        with mock.patch.object(
+            video_agent.cli_uploads, "verify_upload", return_value=True,
+        ):
+            verified = video_agent._clean_body({"message": "测试", "materials": [
+                {"type": "image", "name": "a.png", "upload_id": "img_" + "a" * 32},
+                {"type": "video", "name": "b.mp4", "upload_id": "img_" + "b" * 32},
+            ]}, username="alice", avatar_list_fn=lambda _user, _limit: [])
+        self.assertEqual(verified["materials"][0]["upload_id"], "img_" + "a" * 32)
+        self.assertTrue(verified["materials"][0]["upload_verified"])
+        # 类型前缀与内容不符的即便校验函数放行也不会被采信。
+        self.assertNotIn("upload_id", verified["materials"][1])
 
     def test_dispatch_confirmation_uses_opaque_id_and_current_web_identity(self):
         handler = FakeHandler(

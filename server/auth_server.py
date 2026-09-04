@@ -5314,6 +5314,12 @@ class H(BaseHTTPRequestHandler):
                     "expires_at": claims["e"],
                     "confirmation_required": True,
                 }
+                # 报价真正绑定的标准化 payload（含服务端默认值）：确认卡必须展示
+                # 它而不是从原始工具参数重建。video-avatar-create 的 payload 含
+                # 最长 12MB 的 image_data data URL，回传会击穿 CLI 输出上限，
+                # 且该能力不在 Agent 报价工具内，因此不随报价返回 payload。
+                if generation_kind != "avatar":
+                    response["payload"] = payload
                 for field in plan.get("quote_result_fields", ()):
                     if field in result:
                         response[field] = result[field]
