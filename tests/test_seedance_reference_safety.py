@@ -707,6 +707,7 @@ class SeedanceReferenceSafetyTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         requirements = (root / "deploy/requirements-content.txt").read_text(encoding="utf-8")
         self.assertIn("cos-python-sdk-v5==1.9.44", requirements)
+        self.assertIn("cryptography==49.0.0", requirements)
         self.assertIn("Pillow==", requirements)   # 真实解码校验的运行依赖必须闭环
 
     def test_ci_installs_content_python_dependencies(self):
