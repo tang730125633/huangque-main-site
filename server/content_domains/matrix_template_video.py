@@ -418,7 +418,7 @@ def public_batch_capability(force=False):
     }
 
 
-def _normalize_voiceover(value, username):
+def _normalize_voiceover(value, username, *, allow_legacy_text=False):
     if value in (None, ""):
         return None
     if not isinstance(value, dict):
@@ -429,7 +429,10 @@ def _normalize_voiceover(value, username):
     }
     if set(value) - allowed:
         raise ValueError("配音设置包含无效字段")
-    if len(str(value.get("text") or "").strip()) > MAX_VOICEOVER_TEXT_LENGTH:
+    if (
+        not allow_legacy_text
+        and len(str(value.get("text") or "").strip()) > MAX_VOICEOVER_TEXT_LENGTH
+    ):
         raise ValueError("口播文案需要控制在 200 字以内")
     username = str(username or "").strip()
     if not username:
@@ -467,7 +470,9 @@ def _normalize_voiceover(value, username):
     return result
 
 
-def validate_payload(raw, username="", *, trusted_semantic_layout=None):
+def validate_payload(
+        raw, username="", *, trusted_semantic_layout=None,
+        trusted_frozen_execution=False):
     require_available()
     body = dict(raw or {})
     top = " ".join(str(body.get("top_text") or "").split())
@@ -489,7 +494,10 @@ def validate_payload(raw, username="", *, trusted_semantic_layout=None):
         and font_family not in {item["value"] for item in public_fonts()}
     ):
         raise ValueError("请选择当前可用字体")
-    voiceover = _normalize_voiceover(body.get("voiceover"), username)
+    voiceover = _normalize_voiceover(
+        body.get("voiceover"), username,
+        allow_legacy_text=trusted_frozen_execution,
+    )
     bgm = False if voiceover else body.get("bgm", True)
     if not isinstance(bgm, bool):
         raise ValueError("背景音乐设置无效")
@@ -949,7 +957,10 @@ def _runtime(job_id):
     try:
         numeric_id = int(job_id)
     except (TypeError, ValueError):
-        return {"created_at": int(time.time()), "payload": {}}
+        return {
+            "created_at": int(time.time()), "payload": {},
+            "trusted_execution": False,
+        }
     try:
         with closing(jdb()) as connection:
             row = connection.execute(
@@ -957,17 +968,47 @@ def _runtime(job_id):
                 (numeric_id, FEATURE_KEY),
             ).fetchone()
     except Exception:
-        return {"created_at": int(time.time()), "payload": {}}
+        return {
+            "created_at": int(time.time()), "payload": {},
+            "trusted_execution": False,
+        }
     if not row:
-        return {"created_at": int(time.time()), "payload": {}}
+        return {
+            "created_at": int(time.time()), "payload": {},
+            "trusted_execution": False,
+        }
+    trusted_execution = True
     try:
         payload = json.loads(row["payload"] or "{}")
     except (TypeError, ValueError):
         payload = {}
+        trusted_execution = False
+    if not isinstance(payload, dict):
+        payload = {}
+        trusted_execution = False
     return {
         "created_at": int(row["created_at"] or time.time()),
-        "payload": payload if isinstance(payload, dict) else {},
+        "payload": payload,
+        "trusted_execution": trusted_execution,
     }
+
+
+def _execution_payload(value):
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: item for key, item in value.items()
+        if not str(key).startswith("_")
+    }
+
+
+def _matches_trusted_execution(raw, lifecycle):
+    stored = lifecycle.get("payload")
+    return (
+        lifecycle.get("trusted_execution") is True
+        and isinstance(stored, dict)
+        and _execution_payload(raw) == _execution_payload(stored)
+    )
 
 
 def _durable_runtime(job_id):
@@ -1100,6 +1141,7 @@ def generate(payload):
     stored_payload = lifecycle.get("payload")
     if not isinstance(stored_payload, dict):
         stored_payload = {}
+    trusted_frozen_execution = _matches_trusted_execution(raw, lifecycle)
     runtime = stored_payload.get("_matrix_runtime")
     if not isinstance(runtime, dict):
         runtime = {}
@@ -1124,9 +1166,14 @@ def generate(payload):
                 if not str(key).startswith("_")
             }
         else:
+            validation_input = (
+                _execution_payload(stored_payload)
+                if trusted_frozen_execution else raw
+            )
             payload = validate_payload(
-                raw, str(raw.get("_username") or ""),
+                validation_input, str(raw.get("_username") or ""),
                 trusted_semantic_layout=stored_payload.get("semantic_layout"),
+                trusted_frozen_execution=trusted_frozen_execution,
             )
     voiceover = payload.get("voiceover")
     voiceover_audio = _prepare_voiceover_audio(
