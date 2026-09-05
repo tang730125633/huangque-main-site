@@ -1115,7 +1115,7 @@
 <script src="image-mentions.js?v=20260802f"></script>
 <script src="video-agent-canvas.js?v=4b0819c4"></script>
 <script src="video-agent-session.js?v=1405f34a"></script>
-<script src="video-agent-routing.js?v=7b4b1d64"></script>
+<script src="video-agent-routing.js?v=745552f4"></script>
 <script>
 (function(){
   var token='__cookie__';
@@ -1336,7 +1336,7 @@
     renderVideoOutput();
   }
   function closeVideoHistory(){
-    if(historyReturnView==='workbench')openVideoWorkbench({function:videoFunction,title:currentWorkbenchTitle});
+    if(historyReturnView==='workbench')openVideoWorkbench({function:videoFunction,cineMode:videoFunction==='cinematic'?cineMode:undefined,title:currentWorkbenchTitle});
     else showVideoHome();
   }
   function openVideoModule(moduleKey){

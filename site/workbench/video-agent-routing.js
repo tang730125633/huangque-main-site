@@ -29,7 +29,7 @@
     options=options||{};var effective=effectiveRoute(route,options.healthKnown,options.minimaxAvailable,options.fallback);
     if(!effective||effective.href)return effective;
     if(options.onFunction)options.onFunction(effective.function||'talking');
-    if(effective.function==='cinematic'&&options.onCineMode)options.onCineMode(cinematicMode(effective,false));
+    if(effective.function==='cinematic'&&options.onCineMode&&(effective.cineMode==='open'||effective.cineMode==='motion'))options.onCineMode(effective.cineMode);
     return effective;
   }
   return {ROUTES:ROUTES,effectiveRoute:effectiveRoute,cinematicMode:cinematicMode,handoffTarget:handoffTarget,activateRoute:activateRoute};

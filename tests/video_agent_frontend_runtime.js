@@ -21,10 +21,13 @@ const activations=[];
 routing.activateRoute(routes.story,{onFunction:value=>activations.push(['function',value]),onCineMode:value=>activations.push(['mode',value])});
 routing.activateRoute(routes.motion,{onFunction:value=>activations.push(['function',value]),onCineMode:value=>activations.push(['mode',value])});
 assert.deepEqual(activations,[['function','cinematic'],['mode','open'],['function','cinematic'],['mode','motion']]);
+const legacyDeepLink=[];routing.activateRoute({function:'cinematic'},{onFunction:value=>legacyDeepLink.push(['function',value]),onCineMode:value=>legacyDeepLink.push(['mode',value])});assert.deepEqual(legacyDeepLink,[['function','cinematic']]);
+const historyRoundTrip=[];routing.activateRoute({function:'cinematic',cineMode:'motion'},{onFunction:value=>historyRoundTrip.push(['function',value]),onCineMode:value=>historyRoundTrip.push(['mode',value])});assert.deepEqual(historyRoundTrip,[['function','cinematic'],['mode','motion']]);
 
 const source=require('node:fs').readFileSync(require('node:path').join(__dirname,'../site/workbench/video.html'),'utf8');
 assert.match(source,/story:Object\.assign\(\{\},AGENT_ROUTE_SPECS\.story/);
 assert.match(source,/var effectiveRoute=openVideoWorkbench\(route\)/);
+assert.match(source,/historyReturnView==='workbench'\)openVideoWorkbench\(\{function:videoFunction,cineMode:videoFunction==='cinematic'\?cineMode:undefined/);
 assert.match(source,/agentIdentity=agentSession\.createIdentityController/);
 assert.doesNotMatch(source,/initializeAgentChatScroll\(\);\s*restoreAgentSession\(\);/);
 assert.match(source,/id="agentPendingUpdateList"/);
