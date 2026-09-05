@@ -145,12 +145,18 @@
   }
 
   function revealReadyFeatureNav(aside){
-    var item=aside.querySelector('[data-nav-feature="pixelle_text_video"]');
-    if(!item) return;
-    fetch('/api/gen/text-video/capability',{credentials:'same-origin',cache:'no-store'})
-      .then(function(response){if(!response.ok)return null;return response.json();})
-      .then(function(data){if(data&&data.available){item.hidden=false;item.style.display='flex';}})
-      .catch(function(){});
+    [
+      ['creator_agent_v1','/api/creator-agent/capability'],
+      ['pixelle_text_video','/api/gen/text-video/capability'],
+      ['matrix_template_video','/api/gen/matrix-template/capability']
+    ].forEach(function(entry){
+      var item=aside.querySelector('[data-nav-feature="'+entry[0]+'"]');
+      if(!item)return;
+      fetch(entry[1],{credentials:'same-origin',cache:'no-store'})
+        .then(function(response){if(!response.ok)return null;return response.json();})
+        .then(function(data){if(data&&data.available){item.hidden=false;item.style.display='flex';}})
+        .catch(function(){});
+    });
   }
 
   function ensureNavStyles(){
@@ -189,6 +195,7 @@
       '.hq-aside-compact .hq-side-points{display:none!important}'+
       '.hq-aside-compact .hq-side-bots{width:44px;height:42px;justify-content:center;padding:0!important;box-sizing:border-box}'+
       '.hq-aside-compact .hq-side-bots-label,.hq-aside-compact .hq-side-bots-arrow{display:none!important}'+
+      '.hq-side-ai-entry.is-active{border-color:rgba(231,178,76,.48)!important;background:rgba(231,178,76,.12)!important;box-shadow:inset 3px 0 0 #e7b24c}'+
       '.hq-aside-compact #hqUserCard{width:44px}'+
       '.hq-aside-compact .hq-user-row,.hq-aside-compact .hq-login-row{justify-content:center!important;padding:5px!important}'+
       '.hq-aside-compact .hq-user-copy,.hq-aside-compact .hq-user-logout{display:none!important}'+
@@ -218,7 +225,7 @@
   }
 
   function usesFlushWorkspace(active){
-    return active==='banana' || active==='video' || active==='text-video' || active==='audio';
+    return active==='banana' || active==='video' || active==='text-video' || active==='matrix-template' || active==='audio';
   }
 
   function bindNavTooltips(aside){
@@ -1014,6 +1021,11 @@
   }
   function _logout(){
     var h=authHeaders();
+    try{
+      sessionStorage.removeItem('hq_director_agent_unified_v1');
+      sessionStorage.removeItem('hq_director_agent_v1');
+      sessionStorage.removeItem('hq_director_agent_digital_human_v1');
+    }catch(e){}
     try{ localStorage.removeItem('hq_token'); localStorage.removeItem('hq_user'); localStorage.removeItem('hq_role'); }catch(e){}
     notifyAuthChanged(null);
     fetch('/api/auth/logout',{method:'POST',credentials:'same-origin',headers:h}).finally(function(){ location.reload(); });

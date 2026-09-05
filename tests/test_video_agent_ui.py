@@ -176,7 +176,7 @@ class VideoAgentUiTests(unittest.TestCase):
         reset = HTML.split("function resetAgentSession", 1)[1].split(
             "function renderAgentAttachments", 1
         )[0]
-        self.assertIn("deleteAgentMediaForOwner(owner)", reset)
+        self.assertIn("deleteAgentLocalDataForOwner(owner)", reset)
 
     def test_agent_receives_only_safe_selected_material_metadata(self):
         request_logic = HTML.split("function requestVideoAgent", 1)[1].split("function ", 1)[0]
@@ -685,15 +685,15 @@ class VideoAgentUiTests(unittest.TestCase):
         self.assertIn("/api/gen/video/assets?limit=30", HTML)
         self.assertIn("renderAgentCanvasTasks", HTML)
 
-    def test_talking_recommendation_has_no_professional_page_jump(self):
+    def test_all_ready_recommendations_can_enter_the_existing_workbench(self):
         plan_logic = HTML.split(
             "function renderCanvasPlanCard", 1
         )[1].split("function renderAgentPlanStatus", 1)[0]
         view_logic = HTML.split(
             "function currentAgentPlanView", 1
         )[1].split("function ensureCanvasPlanCard", 1)[0]
-        self.assertIn("compose:route===AGENT_TASKS.compose", view_logic)
-        self.assertIn("view.compose&&view.ready", plan_logic)
+        self.assertIn("can_open:!!route", view_logic)
+        self.assertIn("view.ready&&view.can_open", plan_logic)
         self.assertIn("data-agent-plan-open", plan_logic)
         render_logic = HTML.split(
             "function renderAgentResult", 1
@@ -903,7 +903,7 @@ class VideoAgentUiTests(unittest.TestCase):
         self.assertIn("notifyAuthChanged(res.d&&res.d.user)", auth_success)
         self.assertIn("notifyAuthChanged(null)", logout)
         self.assertIn("if(previousUsername!==nextUsername)notifyAuthChanged(d.user)", CLOUD_SHELL)
-        self.assertIn('cloud-shell.js?v=85906f48', HTML)
+        self.assertRegex(HTML, r'cloud-shell\.js\?v=[0-9a-f]{8}')
 
     def test_expired_cookie_session_opens_login_and_clears_stale_user_mirror(self):
         self.assertIn("function requireLogin()", CLOUD_SHELL)
@@ -942,7 +942,7 @@ class VideoAgentUiTests(unittest.TestCase):
         self.assertIn("if(!ensureAgentSessionOwner()||agentBusy)return", workbench_analyze)
         self.assertIn("epoch!==agentSessionEpoch", workbench_analyze)
 
-    def test_result_unknown_without_action_is_terminal_and_not_retryable(self):
+    def test_result_unknown_is_not_pay_retryable_and_has_read_only_reconcile(self):
         confirm_logic = HTML.split("function confirmAgentPendingAction", 1)[1].split(
             "function saveAgentSession", 1
         )[0]
@@ -953,6 +953,18 @@ class VideoAgentUiTests(unittest.TestCase):
             "function replaceAgentPendingActions", 1
         )[0]
         self.assertNotIn("result_unknown", confirmable_logic)
+        reconcile_logic = HTML.split("function reconcileAgentPendingAction", 1)[1].split(
+            "function saveAgentSession", 1
+        )[0]
+        self.assertIn("/reconcile", reconcile_logic)
+        self.assertIn("body:'{}'", reconcile_logic)
+        self.assertIn("agentReconcileBusyId", reconcile_logic)
+        self.assertIn("pending_reconcile_in_flight", reconcile_logic)
+        self.assertIn("startAgentVideoTaskFromPending(updated)", reconcile_logic)
+        render = HTML.split("function renderAgentPendingActions", 1)[1].split(
+            "function setAgentToolActivity", 1
+        )[0]
+        self.assertIn("data-agent-reconcile", render)
 
     def test_v3_session_removes_unscoped_legacy_keys(self):
         cleanup_logic = HTML.split("function removeLegacyAgentSessions", 1)[1].split(
@@ -1041,7 +1053,7 @@ class VideoAgentUiTests(unittest.TestCase):
         self.assertIn("canvas-plan-tags missing", render)
         self.assertIn("还需确认 ", render)
         self.assertIn("继续确认", render)
-        self.assertIn('<label data-agent-plan-chat for="agentPrompt"', render)
+        self.assertIn('<button type="button" data-agent-plan-chat>', render)
         focus = HTML.split("function focusAgentPlanMissingField", 1)[1].split(
             "function renderAgentPlanStatus", 1
         )[0]
@@ -1049,6 +1061,56 @@ class VideoAgentUiTests(unittest.TestCase):
         self.assertIn("prompt.placeholder", focus)
         self.assertIn("focusAgentPlanMissingField()", HTML)
         self.assertIn("addEventListener('click',function(e){var planChat=e.target.closest('[data-agent-plan-chat]')", HTML)
+
+    def test_session_and_media_expiry_or_account_switch_delete_local_user_data(self):
+        restore = HTML.split("function restoreAgentSession", 1)[1].split(
+            "function clearAgentMemoryForOwner", 1
+        )[0]
+        self.assertIn("age>AGENT_SESSION_TTL_MS", restore)
+        self.assertIn("deleteAgentLocalDataForOwner(owner)", restore)
+        load = HTML.split("function loadAgentMediaFile", 1)[1].split(
+            "function deleteAgentMediaFile", 1
+        )[0]
+        self.assertIn("age>AGENT_SESSION_TTL_MS", load)
+        self.assertIn("deleteAgentMediaFile(owner,canvasId)", load)
+        switch = HTML.split("function switchAgentSessionOwner", 1)[1].split(
+            "function ensureAgentSessionOwner", 1
+        )[0]
+        self.assertIn("deleteAgentLocalDataForOwner(previousOwner)", switch)
+
+    def test_canvas_cards_have_keyboard_move_resize_and_image_preview(self):
+        render = HTML.split("function renderMaterialCanvas", 1)[1].split(
+            "function selectCanvasMaterial", 1
+        )[0]
+        self.assertIn('tabindex="0" role="group"', render)
+        self.assertIn("moveCanvasCardByKeyboard", render)
+        self.assertIn("resizeCanvasCardByKeyboard", render)
+        self.assertIn('class="canvas-preview-button" type="button"', render)
+        self.assertIn("button.onclick=function", render)
+
+    def test_form_updates_preserve_all_backend_fields_and_unapplied_advice(self):
+        safe = HTML.split("function safeAgentResultForSession", 1)[1].split(
+            "function pendingActionExpiresAt", 1
+        )[0]
+        for field in ("style", "voice", "music"):
+            self.assertIn("'" + field + "'", safe)
+        apply_logic = HTML.split("function applyAgentFormUpdates", 1)[1].split(
+            "function analyzeWorkbenchAgent", 1
+        )[0]
+        self.assertIn("remaining.push(update)", apply_logic)
+        self.assertIn("agentPendingUpdates=remaining", apply_logic)
+        self.assertIn("applyAgentNamedUpdate(update)", apply_logic)
+
+    def test_player_does_not_revoke_shared_cached_blob_on_modal_close(self):
+        player = HTML.split("function openVideoPlayer", 1)[1].split(
+            "function toast", 1
+        )[0]
+        self.assertNotIn("URL.revokeObjectURL", player)
+        release = HTML.split("function releaseAssetCache", 1)[1].split(
+            "function blobToDataUrl", 1
+        )[0]
+        self.assertIn("URL.revokeObjectURL(src)", release)
+        self.assertIn("window.addEventListener('pagehide',releaseAssetCache)", HTML)
 
 
 if __name__ == "__main__":
