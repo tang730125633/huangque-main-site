@@ -41,8 +41,11 @@ jobs:
           npm install --no-save --package-lock=false playwright@1.56.1
           npx playwright install --with-deps chromium
           node tests/ux_mobile_regression.mjs
+          node tests/quote_lifecycle_regression.mjs
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: main-agent-v4-mobile-${{ github.event.pull_request.head.sha || github.sha }}
           path: server/hq_ip_agent/.test-output/
+          include-hidden-files: true
+          if-no-files-found: error

@@ -39,12 +39,29 @@ PYTHONPATH=. python tests/hq-p0c-test.py
 npm install --no-save --package-lock=false playwright@1.56.1
 npx playwright install chromium
 node tests/ux_mobile_regression.mjs
+node tests/quote_lifecycle_regression.mjs
 ```
 
 GitHub `Main Agent v4 UX` 在 Linux 执行相同回归并保存三种手机宽度的截图与 JSON。
-9 项问题测试、57 项相邻断言、9 项发布故障测试；360/390/412px 验证无溢出、按钮三连击
+18 项问题测试、57 项相邻断言、9 项发布故障测试；360/390/412px 验证无溢出、按钮三连击
 只发一次确认、永久旧轮次不阻塞新回复、已完成报价卡移除。
 模型/CLI/业务 API 使用替身；不能把此测试宣称为真实扣点或真实微信内核验收。
+
+## 报价生命周期补充修复
+
+提交成功时，清空待确认报价与发布 `running` 回执在同一个状态锁内完成，不等下一轮
+模型输出；模型随后误报 `needs_approval` 也不能重新挂出已消费的报价。新报价仍可正常
+展示，价格以运行时保存的报价为准，不使用模型转述的旧价格。
+
+前端兼容历史无 ID 卡片：只显示任务状态同步入口，不再点击一次就追加一条旧卡提示。
+确认/取消前用只读 `/api/v4/state/<sid>` 核对当前报价；已提交或已替换的卡片撤下。
+旧 1 点搜索卡被 3 点视频卡替换时只展示新卡，必须再次点新卡才提交，不会沿用旧点击。
+同步失败可原位重试；不调用会恢复任务的 `/status` 作为确认预检，也不自动重试付费提交。
+五组模拟浏览器场景覆盖历史无 ID、连续点击、旧新报价转换、状态服务失败和提交响应丢失。
+
+后续发布清单的 `before` 固定为 #1446 合并提交
+`47a010980d3e638a400db542141131878eaaefd2` 的运行文件哈希；其中 main_agent.py 和 CSS
+不变。旧 Hermes、会话数据、环境和计费规则不改。本修复需 PR 合并及单独生产部署才生效。
 
 ## 从 GitHub main 精确部署与回滚
 

@@ -586,14 +586,24 @@ def _hq_run_with_file(cap: str, inputs: dict, confirm: bool, quote_token,
             "points": payload.get("points"),
             "expires_in": payload.get("expires_in"),
         }
-        state.save_subagent(sid, domain, None, pending_quote=quote)
+        # Publish quote identity and its description together: a next-step quote
+        # must never be paired with the previous step's summary/price.
+        quoted = protocol.make(protocol.NEEDS_APPROVAL,
+            "当前操作（" + cap + "）已取得报价，请核对本次点数后确认。", quote=quote)
+        state.save_subagent(sid, domain, pending_quote=quote, last_result=quoted)
         out["quote"] = quote
         out["hint"] = (
             "已取得报价（未扣点）。用户明确同意后，用完全相同的 inputs + "
             "confirm=true 提交恰好一次（quote_token 由运行时自动附上）。"
         )
     elif confirm and ok:
-        state.clear_pending_quote(sid, domain)
+        # Publish the receipt with quote consumption under one state lock. The
+        # following LLM turn can take seconds (or fail); it must not leave an
+        # executable-looking needs_approval snapshot without a pending quote.
+        receipt = {k: payload[k] for k in ("job_id", "task_id", "run_id", "request_id", "status")
+                   if payload.get(k) is not None}
+        submitted = protocol.make(protocol.RUNNING, "已确认提交，正在处理结果。", result=receipt)
+        state.save_subagent(sid, domain, pending_quote={}, last_result=submitted)
         out["hint"] = "已确认提交。若返回 job_id/task_id，后续用 task 轮询到终态。"
     return out
 
@@ -609,6 +619,17 @@ def _finish(args: dict, sid: str, domain: str) -> dict:
         error_code=(args.get("error_code") or "").strip(),
         retryable=bool(args.get("retryable")),
     )
+    if res["state"] == protocol.NEEDS_APPROVAL:
+        sess = state.get_subagent(sid, domain) or {}
+        pending = sess.get("pending_quote") or {}
+        if pending:
+            # The runtime quote, not a model's paraphrase, owns price/identity.
+            res["quote"] = dict(pending)
+        else:
+            previous = sess.get("last_result") or {}
+            res = previous if previous.get("state") in protocol.STATES \
+                and previous["state"] != protocol.NEEDS_APPROVAL else protocol.make(
+                    protocol.NEEDS_USER_INPUT, "当前没有待确认报价，不会重复提交原任务。")
     state.save_subagent(sid, domain, last_result=res)
     return {"ok": True, "note": f"已按 {res['state']} 收尾", "result": protocol.strip_for_main(res)}
 

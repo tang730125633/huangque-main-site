@@ -911,13 +911,17 @@ def _v4_delegations(sid: str) -> dict:
         if not sess:
             continue
         last = sess.get("last_result") or {}
+        pending = sess.get("pending_quote") or {}
+        summary = last.get("summary", "")
+        if pending and (last.get("quote") or {}).get("cost") != pending.get("cost"):
+            summary = "当前操作已取得新报价，请核对本次点数后确认。"
         out[domain] = {
             "agent_id": v4_skills.DOMAINS.get(domain, domain),
             "state": last.get("state"),
-            "summary": last.get("summary", ""),
+            "summary": summary,
             "question": last.get("question", ""),
-            "quote": {k: last.get("quote", {}).get(k) for k in ("cost", "points", "expires_in")},
-            "quote_id": v4_subagent.approval_id(sess.get("pending_quote") or {}),
+            "quote": {k: pending.get(k) for k in ("capability", "cost", "points", "expires_in")},
+            "quote_id": v4_subagent.approval_id(pending),
         }
     return out
 
