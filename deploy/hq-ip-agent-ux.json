@@ -3,13 +3,16 @@
   "service": "hq-ip-agent",
   "target_root": "/home/ubuntu/hq-ip-agent",
   "production_base": "f5cc900c70a8752f3efeab7fcf7f34757558e984",
+  "previous_github_commit": "60f7971b2c51f7cc5a283bab2f7d2a7d6f9ec0bc",
   "preserved_hermes_commit": "83b6bb170da836d8039c5a1ff064b27b71de9398",
   "preserved_hermes_tree": "328d52ebfc348a638162fec7e30c02378ab9ea4b",
   "files": [
-    {"source": "server/hq_ip_agent/app.py", "target": "app.py", "before": "5fe9c7478ad9ff00c4eb8bea95586b1e5d60a751a7cfa852cf29c75be58dde66", "after": "5fe9c7478ad9ff00c4eb8bea95586b1e5d60a751a7cfa852cf29c75be58dde66"},
+    {"source": "server/hq_ip_agent/app.py", "target": "app.py", "before": "5fe9c7478ad9ff00c4eb8bea95586b1e5d60a751a7cfa852cf29c75be58dde66", "after": "1bbb8a5f45a4f739fe68b87bba8d096457ef38ae5cb68ef4d4581d6ffa328366"},
     {"source": "server/hq_ip_agent/agent/v4/main_agent.py", "target": "agent/v4/main_agent.py", "before": "46550d7ec7737c742643e8b164639cadf0e91dd607e3153037c64b9f56b57ad1", "after": "46550d7ec7737c742643e8b164639cadf0e91dd607e3153037c64b9f56b57ad1"},
-    {"source": "server/hq_ip_agent/agent/v4/subagent.py", "target": "agent/v4/subagent.py", "before": "7453d3c8503350c9cd7f8f952231cafc353ee596984dca44cde190f41cffd6a3", "after": "7453d3c8503350c9cd7f8f952231cafc353ee596984dca44cde190f41cffd6a3"},
-    {"source": "site/workbench/hq-ip-agent/static/v4.js", "target": "static/v4.js", "before": "5e8afc6fd6206ec16a92aac6191c184a698eb6d06fd8e5508a8e26aea2f2db88", "after": "6ce0600c147ace9dda451b149f429302bd909d32753c5d0c77aa79ab2035370e"},
+    {"source": "server/hq_ip_agent/agent/v4/subagent.py", "target": "agent/v4/subagent.py", "before": "7453d3c8503350c9cd7f8f952231cafc353ee596984dca44cde190f41cffd6a3", "after": "7d354bdb0fd9478bbbb624e61af74ce26ec2274462130fa7e51133876654d26f"},
+    {"source": "server/hq_ip_agent/agent/v4/state.py", "target": "agent/v4/state.py", "before": "7906376e2d672967c396c8aa5609e9daccf21ecfba505b5b6bc3b11fc5aae451", "after": "f3a8d0923864fda2815d178828d18ce270961837e2258661af08605bdade8bd5"},
+    {"source": "server/hq_ip_agent/agent/v4/delivery.py", "target": "agent/v4/delivery.py", "before": "60687b1ede22a6da680d3bc0b9320a4be3c8af9e2d428423897bf11f9d2d009a", "after": "fbeabfa438eef030f1f578c881830eaae9bc0ca5cb6fc6d0a942256a3fb70ece"},
+    {"source": "site/workbench/hq-ip-agent/static/v4.js", "target": "static/v4.js", "before": "6ce0600c147ace9dda451b149f429302bd909d32753c5d0c77aa79ab2035370e", "after": "fd375cef092234daaed00698c2830d5daace12dff004c99ce6ef4b9ab6065c10"},
     {"source": "site/workbench/hq-ip-agent/static/style.css", "target": "static/style.css", "before": "8727e87def426a8c2532a6ff584cd30c608cbb6cfd4438e020be72dd41fba86c", "after": "8727e87def426a8c2532a6ff584cd30c608cbb6cfd4438e020be72dd41fba86c"}
   ]
 }

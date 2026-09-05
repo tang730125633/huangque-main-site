@@ -16,6 +16,7 @@ import re
 import tempfile
 import threading
 import time
+from urllib.parse import urlsplit
 
 from .. import config, hq_cli
 from . import livecaps, observability, protocol, skills, state
@@ -24,6 +25,140 @@ log = logging.getLogger("hq.v4.subagent")
 
 MAX_STEPS = 14
 _APPROVAL_SCOPE = threading.local()
+_TURN_SCOPE = threading.local()
+_JOB_IDS = ("job_id", "task_id", "run_id", "request_id")
+_TASK_TERMINALS = {"ready": protocol.COMPLETED, "completed": protocol.COMPLETED,
+                   "succeeded": protocol.COMPLETED, "done": protocol.COMPLETED,
+                   "error": protocol.FAILED, "failed": protocol.FAILED,
+                   "cancelled": protocol.CANCELLED, "canceled": protocol.CANCELLED}
+
+
+def quote_summary(quote):
+    """Payment-card description comes from frozen runtime data, never model prose."""
+    cap = str(quote.get("capability") or "当前操作")
+    inputs = quote.get("inputs") or {}
+    parts = [cap]
+    for key, label in (("platform", "平台"), ("keyword", "关键词"), ("page", "页码"),
+                       ("title", "标题"), ("text", "文案")):
+        value = inputs.get(key)
+        if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+            parts.append(label + "：" + str(value)[:120])
+    if isinstance(inputs.get("url"), str):
+        try:
+            url = urlsplit(inputs["url"])
+            if url.hostname:
+                parts.append("素材：" + (url.hostname + url.path)[:160])
+        except ValueError:
+            pass
+    parts.append("报价 " + approval_id(quote)[:8])
+    if quote.get("cost") is not None:
+        parts.append("本次 " + str(quote["cost"]) + " 点")
+    return "；".join(parts) + "。请确认当前操作。"
+
+
+def _job_records(last):
+    records = last.get("_runtime_jobs") or []
+    if not records and last.get("state") == protocol.RUNNING:
+        receipt = {k: last.get("result", {}).get(k) for k in _JOB_IDS
+                   if last.get("result", {}).get(k) is not None}
+        if receipt:  # compatible with already-persisted pre-upgrade receipts
+            records = [{"state": protocol.RUNNING, "result": receipt}]
+    return [dict(r, result=dict(r["result"])) for r in records]
+
+
+def _bound_outcome(sess, candidate):
+    res = dict(candidate)
+    res.pop("_runtime_jobs", None)  # model output never owns the receipt ledger
+    jobs = _job_records(sess.get("last_result") or {})
+    pending = sess.get("pending_quote") or {}
+    if res.get("state") == protocol.NEEDS_APPROVAL and pending:
+        res["quote"] = dict(pending)
+        res["summary"] = quote_summary(pending)
+    else:
+        active = [j for j in jobs if j["state"] == protocol.RUNNING]
+        observed = getattr(_TURN_SCOPE, "observed", None) or set()
+        current = [j for j in jobs if _job_key(j["result"]) in observed]
+        # A model finish, timeout, or exception is not a business-task status.
+        truth = active[-1] if active else (current[-1] if current else None)
+        if truth and res.get("state") != protocol.NEEDS_USER_INPUT:
+            status = truth["state"]
+            label = {protocol.RUNNING: "已提交，等待原任务状态更新",
+                     protocol.COMPLETED: "查询确认已完成", protocol.FAILED: "查询确认失败",
+                     protocol.CANCELLED: "查询确认已取消"}[status]
+            error = res.get("error_code")
+            result = dict(truth.get("output") or {})
+            result.update(truth["result"])
+            res = protocol.make(status, "任务 " + _job_label(result) + "：" + label + "。", result=result)
+            if error:
+                res["continuation_error"] = error
+                res["summary"] += "本轮回复处理中断，已保留原任务编号，不会重新提交。"
+    if jobs:
+        res["_runtime_jobs"] = jobs
+        res["result"] = dict(res.get("result") or {})
+        res["result"]["submitted_jobs"] = [dict(j["result"], observed_state=j["state"]) for j in jobs]
+    return res
+
+
+def _job_key(receipt):
+    # A later task/delivery response may omit the original request/run ID.
+    return next(((k, str(receipt[k])) for k in _JOB_IDS if receipt.get(k) is not None), ())
+
+
+def _job_label(receipt):
+    return "/".join(str(receipt[k]) for k in _JOB_IDS if receipt.get(k) is not None)
+
+
+def _save_outcome(sid, domain, res, messages=None):
+    def update(sess):
+        sess["last_result"] = _bound_outcome(sess, res)
+        if messages is not None:
+            sess["messages"] = list(messages)
+    return state.update_subagent(sid, domain, update)["last_result"]
+
+
+def _observe_job(sid, domain, receipt, status=protocol.RUNNING, *, submit=False, output=None):
+    def update(sess):
+        last = sess.get("last_result") or {}
+        jobs = _job_records(last)
+        key = _job_key(receipt)
+        previous = next((j for j in jobs if _job_key(j["result"]) == key), None)
+        if previous and previous["state"] != protocol.RUNNING and status == protocol.RUNNING:
+            return  # an older queued/running response cannot undo an observed terminal
+        actual_receipt = dict(previous["result"] if previous else {})
+        actual_receipt.update(receipt)
+        jobs = [j for j in jobs if _job_key(j["result"]) != key]
+        jobs.append({"state": status, "result": actual_receipt, "output": dict(output or {})})
+        if submit:
+            sess["pending_quote"] = {}
+        actual = dict(output or {})
+        actual.update(actual_receipt)
+        res = protocol.make(status, "任务 " + _job_label(receipt) + " 状态已更新。", result=actual)
+        res["_runtime_jobs"] = jobs
+        sess["last_result"] = res
+        if not submit and sess.get("pending_quote"):
+            # Polling an earlier task must not overwrite a newer approval card.
+            res = protocol.make(protocol.NEEDS_APPROVAL, "当前报价等待确认。")
+        sess["last_result"] = _bound_outcome(sess, res)
+    observed = getattr(_TURN_SCOPE, "observed", None)
+    if observed is not None:
+        observed.add(_job_key(receipt))
+    state.update_subagent(sid, domain, update)
+
+
+def _observe_task_query(sid, inputs, payload):
+    job_id = inputs.get("job_id")
+    if job_id is None or (payload.get("job_id") is not None and str(payload["job_id"]) != str(job_id)):
+        return
+    status = str(payload.get("phase") or payload.get("status") or "").lower()
+    if not status:
+        return
+    for owner in state.all_domains(sid):
+        last = (state.get_subagent(sid, owner) or {}).get("last_result") or {}
+        for job in _job_records(last):
+            if str(job["result"].get("job_id")) != str(job_id):
+                continue
+            receipt = dict(job["result"], status=status)
+            _observe_job(sid, owner, receipt, _TASK_TERMINALS.get(status, protocol.RUNNING), output=payload)
 
 try:
     from openai import OpenAI
@@ -586,15 +721,37 @@ def _hq_run_with_file(cap: str, inputs: dict, confirm: bool, quote_token,
             "points": payload.get("points"),
             "expires_in": payload.get("expires_in"),
         }
-        state.save_subagent(sid, domain, None, pending_quote=quote)
+        # Publish quote identity and its description together: a next-step quote
+        # must never be paired with the previous step's summary/price.
+        quoted = protocol.make(protocol.NEEDS_APPROVAL, quote_summary(quote), quote=quote)
+        def save_quote(current):
+            current["pending_quote"] = quote
+            current["last_result"] = _bound_outcome(current, quoted)
+        state.update_subagent(sid, domain, save_quote)
         out["quote"] = quote
         out["hint"] = (
             "已取得报价（未扣点）。用户明确同意后，用完全相同的 inputs + "
             "confirm=true 提交恰好一次（quote_token 由运行时自动附上）。"
         )
     elif confirm and ok:
-        state.clear_pending_quote(sid, domain)
+        # Publish the receipt with quote consumption under one state lock. The
+        # following LLM turn can take seconds (or fail); it must not leave an
+        # executable-looking needs_approval snapshot without a pending quote.
+        receipt = {k: payload[k] for k in ("job_id", "task_id", "run_id", "request_id", "status")
+                   if payload.get(k) is not None}
+        if any(receipt.get(k) is not None for k in _JOB_IDS):
+            _observe_job(sid, domain, receipt,
+                _TASK_TERMINALS.get(str(payload.get("phase") or receipt.get("status") or "").lower(), protocol.RUNNING),
+                submit=True, output=payload)
+        else:
+            def save_sync(current):
+                current["pending_quote"] = {}
+                current["last_result"] = _bound_outcome(current,
+                    protocol.make(protocol.RUNNING, "已确认提交，正在处理结果。", result=receipt))
+            state.update_subagent(sid, domain, save_sync)
         out["hint"] = "已确认提交。若返回 job_id/task_id，后续用 task 轮询到终态。"
+    if ok and cap == "task":
+        _observe_task_query(sid, inputs, payload)
     return out
 
 
@@ -609,7 +766,18 @@ def _finish(args: dict, sid: str, domain: str) -> dict:
         error_code=(args.get("error_code") or "").strip(),
         retryable=bool(args.get("retryable")),
     )
-    state.save_subagent(sid, domain, last_result=res)
+    if res["state"] == protocol.NEEDS_APPROVAL:
+        sess = state.get_subagent(sid, domain) or {}
+        pending = sess.get("pending_quote") or {}
+        if pending:
+            # The runtime quote, not a model's paraphrase, owns price/identity.
+            res["quote"] = dict(pending)
+        else:
+            previous = sess.get("last_result") or {}
+            res = previous if previous.get("state") in protocol.STATES \
+                and previous["state"] != protocol.NEEDS_APPROVAL else protocol.make(
+                    protocol.NEEDS_USER_INPUT, "当前没有待确认报价，不会重复提交原任务。")
+    res = _save_outcome(sid, domain, res)
     return {"ok": True, "note": f"已按 {res['state']} 收尾", "result": protocol.strip_for_main(res)}
 
 
@@ -804,9 +972,11 @@ def respond_to_approval(sid: str, domain: str, quote_id: str | None, decision: s
             if quote_id and quote_id != approval_id(quote):
                 return protocol.make(protocol.NEEDS_USER_INPUT, "这张报价已经更新，请查看当前报价后再确认。"), []
             if decision == "cancel":
-                state.clear_pending_quote(sid, domain)
                 res = protocol.make(protocol.CANCELLED, "已取消这张报价，未提交新任务。")
-                state.save_subagent(sid, domain, last_result=res)
+                def cancel(current):
+                    current["pending_quote"] = {}
+                    current["last_result"] = _bound_outcome(current, res)
+                res = state.update_subagent(sid, domain, cancel)["last_result"]
                 return res, []
             _APPROVAL_SCOPE.quote = quote
             try:
@@ -820,13 +990,22 @@ def respond_to_approval(sid: str, domain: str, quote_id: str | None, decision: s
 
 
 def _run_subagent_turn_locked(sid: str, domain: str, task: str) -> tuple[dict, list]:
+    previous = getattr(_TURN_SCOPE, "observed", None)
+    _TURN_SCOPE.observed = set()
+    try:
+        return _run_subagent_turn_impl(sid, domain, task)
+    finally:
+        _TURN_SCOPE.observed = previous
+
+
+def _run_subagent_turn_impl(sid: str, domain: str, task: str) -> tuple[dict, list]:
     """run_subagent_turn 的锁内实现（见上：同域串行，防并发覆盖会话）。"""
     if config.LLM_MODE != "openai":
-        return protocol.make(
+        return _save_outcome(sid, domain, protocol.make(
             protocol.FAILED,
             summary="未配置 LLM API Key，子 Agent 不可用（当前运行在演示模式）",
             error_code="no_llm", retryable=False,
-        ), []
+        )), []
 
     tools = subagent_tools()
     client_cfg = config.SUBAGENT_MODELS.get(domain)  # 按域模型覆盖（如 system→gpt-5.6-luna）
@@ -850,7 +1029,7 @@ def _run_subagent_turn_locked(sid: str, domain: str, task: str) -> tuple[dict, l
                         "请稍后再查或重发。",
                 error_code="turn_timeout", retryable=True,
             )
-            state.save_subagent(sid, domain, messages, last_result=res)
+            res = _save_outcome(sid, domain, res, messages)
             return res, tool_log
         try:
             msg = llm_turn(messages, tools, client_cfg=client_cfg)
@@ -864,7 +1043,7 @@ def _run_subagent_turn_locked(sid: str, domain: str, task: str) -> tuple[dict, l
                         "任务未受影响（如有 job_id 不会重复扣费），请稍后再发一次。",
                 error_code="llm_error", retryable=True,
             )
-            state.save_subagent(sid, domain, messages, last_result=res)
+            res = _save_outcome(sid, domain, res, messages)
             return res, tool_log
         messages.append(serialize_assistant(msg))
 
@@ -884,16 +1063,16 @@ def _run_subagent_turn_locked(sid: str, domain: str, task: str) -> tuple[dict, l
                     "content": json.dumps(result, ensure_ascii=False),
                 })
                 if tc.function.name == "finish":
-                    state.save_subagent(sid, domain, messages, last_result=result.get("result"))
-                    return result.get("result"), tool_log
+                    res = _save_outcome(sid, domain, result.get("result"), messages)
+                    return res, tool_log
             continue
 
         # 文本收尾兜底
         res = _synthesize_finish(sid, domain, msg.content or "", last_tool_ok)
-        state.save_subagent(sid, domain, messages, last_result=res)
+        res = _save_outcome(sid, domain, res, messages)
         return res, tool_log
 
     res = protocol.make(protocol.FAILED, summary="处理步骤超限，本轮未完成",
                         error_code="max_steps", retryable=True)
-    state.save_subagent(sid, domain, messages, last_result=res)
+    res = _save_outcome(sid, domain, res, messages)
     return res, tool_log

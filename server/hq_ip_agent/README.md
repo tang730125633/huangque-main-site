@@ -35,34 +35,62 @@ python -m pip install -r server/hq_ip_agent/requirements.txt
 python -m unittest discover -s tests -p test_hq_ip_agent_release.py -v
 cd server/hq_ip_agent
 PYTHONPATH=. python -m unittest discover -s tests -p test_ux_recovery.py -v
+PYTHONPATH=. python -m unittest discover -s tests -p test_quote_runtime_truth.py -v
 PYTHONPATH=. python tests/hq-p0c-test.py
 npm install --no-save --package-lock=false playwright@1.56.1
 npx playwright install chromium
 node tests/ux_mobile_regression.mjs
+node tests/quote_lifecycle_regression.mjs
 ```
 
 GitHub `Main Agent v4 UX` 在 Linux 执行相同回归并保存三种手机宽度的截图与 JSON。
-9 项问题测试、57 项相邻断言、9 项发布故障测试；360/390/412px 验证无溢出、按钮三连击
+18 项问题测试、20 项完整运行链故障测试、57 项相邻断言、9 项发布故障测试；360/390/412px 验证无溢出、按钮三连击
 只发一次确认、永久旧轮次不阻塞新回复、已完成报价卡移除。
 模型/CLI/业务 API 使用替身；不能把此测试宣称为真实扣点或真实微信内核验收。
+
+## 报价生命周期补充修复
+
+提交成功时，清空待确认报价与发布 `running` 回执在同一个状态锁内完成，不等下一轮
+模型输出；模型随后误报 `needs_approval` 也不能重新挂出已消费的报价。新报价仍可正常
+展示，价格以运行时保存的报价为准，不使用模型转述的旧价格。
+
+独立复审补充：报价摘要直接从当前冻结输入生成，同价但不同关键词也不能串卡。
+`agent/v4/state.py` 增加同锁内更新入口；回执账本保存在已有 last_result 内，兼容原会话格式。
+提交回执跨轮、持久化和新报价保留；模型异常、预算/步骤超限或错误 finish 不能变更未完成
+业务任务的状态。只有匹配任务的实际查询才能确认终态，真实结果 URL/内容随回执返回。
+跨域查询旧任务不会覆盖当前新报价；模型与 CLI 全部使用替身进行故障注入。
+后台 delivery.py 交付/补查也使用同一观察入口，兼容实际 CLI 的 phase=done；旧任务交付
+不撤掉新报价，仍运行的其他任务不被误报完成，延迟的 running 响应不能覆盖已知终态。
+error 到 done 的真实补回结果仍可更新，支持供应商超时后对账。
+
+前端兼容历史无 ID 卡片：只显示任务状态同步入口，不再点击一次就追加一条旧卡提示。
+确认/取消前用只读 `/api/v4/state/<sid>` 核对当前报价；已提交或已替换的卡片撤下。
+旧 1 点搜索卡被 3 点视频卡替换时只展示新卡，必须再次点新卡才提交，不会沿用旧点击。
+同步失败可原位重试；不调用会恢复任务的 `/status` 作为确认预检，也不自动重试付费提交。
+五组模拟浏览器场景覆盖历史无 ID、连续点击、旧新报价转换、状态服务失败和提交响应丢失。
+
+后续发布清单的 `before` 固定为已上线 #1448 合并提交
+`60f7971b2c51f7cc5a283bab2f7d2a7d6f9ec0bc` 的运行文件哈希；完整保留其 SSE 失败后不重复重连修复，
+合并后的手机测试同时验证 SSE 单次连接和报价只读预检。其中 main_agent.py 和 CSS
+不变。旧 Hermes、会话数据、环境和计费规则不改。本修复需 PR 合并及单独生产部署才生效。
 
 ## 从 GitHub main 精确部署与回滚
 
 先通过 PR 和同 SHA CI，合并 main 后，在干净 checkout 中锁定最新 `origin/main`。
-`deploy/hq-ip-agent-ux.json` 固定原五文件 SHA-256 和目标；
+`deploy/hq-ip-agent-ux.json` 固定七文件 SHA-256 和目标（main_agent.py/CSS 保持不变）；
 `scripts/hq_ip_agent_release.py --build <新目录> --commit <完整合并 SHA>`
-只读取该提交的 Git blobs，生成五文件发布包、manifest 和版本化发布脚本。
+只读取该提交的 Git blobs，生成七文件发布包、manifest 和版本化发布脚本。
 
 通过保留主机校验的 SSH 上传到版本化 staging，核对 release.py 的本地/远端 SHA，
 先执行 `python3 <stage>/release.py --bundle <stage> --commit <SHA>` 只读预检。
 操作员确认无活跃轮次后，授权的生产账号加 `--apply` 执行；不提供密码参数。
 
-发布仅替换 app.py、agent/v4/main_agent.py、agent/v4/subagent.py、static/v4.js、
+发布仅替换 app.py、agent/v4/main_agent.py、agent/v4/subagent.py、agent/v4/state.py、agent/v4/delivery.py、static/v4.js、
 static/style.css，备份位于 `/home/ubuntu/release-backup/hq-ip-agent-ux-*`（0700）。
-原五文件/提交不匹配即停；停同一服务后再次核验，原子替换，启动 `hq-ip-agent`，
-验证本机和公网健康、页面、JS/CSS 实际响应哈希。任何中途失败自动恢复五文件并启动
+原七文件/提交不匹配即停；停同一服务后再次核验，原子替换，启动 `hq-ip-agent`，
+验证本机和公网健康、页面、JS/CSS 实际响应哈希。任何中途失败自动恢复七文件并启动
 同一服务；若回滚仍失败，明确失败并保留备份位置。不会改 `.env`、数据或旧 Hermes。
 
 旧 Hermes 的 Git 副本不是“已验证能无损切流”的承诺：启用它属于跨服务回退，必须另行
 核对其真实运行版本、健康与 Nginx 路由后按范围确认，不能只改路由就声称完成回滚。
-本次故障回滚始终优先恢复原 hq-ip-agent 五个文件，保持用户使用同一套服务和会话。
+本次故障回滚始终优先恢复原 hq-ip-agent 七个文件，保持用户使用同一套服务和会话。
