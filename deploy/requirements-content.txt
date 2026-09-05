@@ -11,3 +11,7 @@ Pillow==12.2.0
 # Model weights must be preloaded during deployment; requests run offline.
 faster-whisper==1.2.1
 playwright==1.45.0
+# Provider credentials are encrypted at rest by the admin/content services.
+cryptography>=45,<51
+# Windows and minimal Python images do not ship the IANA timezone database.
+tzdata>=2025.2
