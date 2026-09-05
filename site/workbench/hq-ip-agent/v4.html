@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>黄雀 · 主 Agent（v4 · 业务结果路由）</title>
+  <link rel="stylesheet" href="static/style.css" />
+  <style>
+    .v4-sub { color: var(--muted, #8b949e); font-size: 12px; margin-top: 2px; }
+    .state-badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px;
+      border: 1px solid var(--border, #30363d); margin-left: 6px; }
+    .state-completed { color: #3fb950; border-color: #3fb950; }
+    .state-running { color: #58a6ff; border-color: #58a6ff; }
+    .state-needs_user_input { color: #d29922; border-color: #d29922; }
+    .state-needs_approval { color: #f0883e; border-color: #f0883e; }
+    .state-failed { color: #f85149; border-color: #f85149; }
+    .state-cancelled { color: var(--muted, #8b949e); border-color: var(--muted, #8b949e); }
+    .trace-item { padding: 8px 10px; border-bottom: 1px solid var(--border, #30363d); font-size: 12px; }
+    .trace-task { color: var(--muted, #8b949e); margin-top: 3px; }
+    .agent-chip { font-weight: 600; }
+  </style>
+</head>
+<body>
+  <header class="nav">
+    <div class="nav-inner">
+      <div class="brand">
+        <span class="brand-dot" aria-hidden="true"></span>
+        <span class="brand-name">黄雀 · 主 Agent（v4 业务结果路由）</span>
+      </div>
+      <div class="nav-right">
+        <span class="mode-badge" id="mode-badge">检测中…</span>
+        <span class="mode-badge hq-badge" id="hq-badge" title="黄雀 CLI 授权状态">🪶 授权检测中…</span>
+        <div class="hist-wrap">
+          <button class="icon-btn" id="hist-btn" aria-label="历史会话" title="最近对话">🕘</button>
+          <div class="hist-panel" id="hist-panel" hidden></div>
+        </div>
+        <a class="icon-btn" href="v3" title="回到 v3 IP 定位流程">v3</a>
+        <button class="icon-btn" id="reset-btn" aria-label="重新开始" title="重新开始对话">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="shell">
+    <aside class="report-pane" id="report-pane" hidden>
+      <div class="report-box" id="report-box">
+        <div class="report-head">
+          <span class="report-title">📄 IP 定位报告</span>
+          <span class="report-status" id="report-status">—</span>
+        </div>
+        <div class="report-phase" id="report-phase"></div>
+        <div class="report-links" id="report-links"></div>
+        <div class="report-mod" id="report-m5" hidden>
+          <div class="report-mod-head"><span>📋 选题已出</span><span class="report-mod-status" id="m5-status"></span></div>
+          <div class="report-content" id="m5-content"></div>
+        </div>
+        <div class="report-mod" id="report-m6" hidden>
+          <div class="report-mod-head"><span>🎬 口播已出</span><span class="report-mod-status" id="m6-status"></span></div>
+          <div class="report-content" id="m6-content"></div>
+        </div>
+      </div>
+    </aside>
+
+    <div class="main-col">
+      <section class="intro" id="intro">
+        <p class="eyebrow">HUANGQUE BUSINESS ROUTING · V4</p>
+        <h1 class="intro-title">一句话，<span>12 个子 Agent</span>帮你干成</h1>
+        <p class="intro-sub">主 Agent 只做路由与编排：识别你想产出什么（图片/视频/音频/文案/数字人/短剧/获客…），派给对应子 Agent 独立执行；报价由系统自动确认、即刻执行，费用透明可查。IP 定位报告是主 Agent 的内建能力。</p>
+        <div class="example-grid" id="example-grid">
+          <button class="example-card" data-q="我还有多少点数"><span class="ex-no">01</span><span class="ex-text">我还有多少点数</span><span class="ex-arrow">↗</span></button>
+          <button class="example-card" data-q="帮我出张海报：一只黄雀站在树枝上，中国水墨风"><span class="ex-no">02</span><span class="ex-text">出张海报（自动执行）</span><span class="ex-arrow">↗</span></button>
+          <button class="example-card" data-q="帮我写个口播脚本，主题是「普通人如何三个月做起来一个账号」"><span class="ex-no">03</span><span class="ex-text">写个口播脚本</span><span class="ex-arrow">↗</span></button>
+          <button class="example-card" data-q="帮我看看最近的任务列表"><span class="ex-no">04</span><span class="ex-text">查最近任务</span><span class="ex-arrow">↗</span></button>
+        </div>
+      </section>
+
+      <section class="chat-pane" id="chat-pane">
+        <div class="messages" id="messages" aria-live="polite"></div>
+        <div class="composer-wrap">
+          <form class="composer" id="composer">
+            <div class="upload-row" id="upload-row" hidden></div>
+            <textarea id="input" rows="1" placeholder="说说你想要什么成果…（Enter 发送 / Shift+Enter 换行，可直接粘贴图片）" autocomplete="off"></textarea>
+            <div class="composer-footer">
+              <button type="button" class="upload-btn" id="upload-btn" title="添加图片或音频等参考文件，随文字一起发送" aria-label="添加附件">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+              </button>
+              <input type="file" id="file-input" accept="image/png,image/jpeg,image/webp,image/gif,audio/mpeg,audio/wav,audio/mp4,audio/aac,audio/ogg,.mp3,.wav,.m4a,.aac,.ogg" multiple hidden />
+              <span class="kbd-hint">Enter 发送 · Shift+Enter 换行 · 支持粘贴文件</span>
+              <button type="button" class="send-btn" id="stop-btn" aria-label="停止等待" title="停止等待本轮回复" style="display:none">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>
+              </button>
+              <button type="submit" class="send-btn" id="send-btn" aria-label="发送">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+              </button>
+            </div>
+          </form>
+          <p class="disclaimer">付费动作自动按报价执行，每笔费用都会在对话里告诉你；形象/音色/文案版本直接点卡片选择，不用打字。</p>
+        </div>
+      </section>
+
+      <aside class="tool-pane" id="tool-pane">
+        <div class="tool-head">
+          <span class="tool-title">子 Agent 路由轨迹</span>
+          <button class="icon-btn" id="clear-tools" aria-label="清空轨迹" title="清空轨迹">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
+          </button>
+        </div>
+        <div class="tool-list" id="tool-list">
+          <p class="tool-empty">还没有派发子 Agent。你说「出张海报」「查点数」这类需求，主 Agent 会路由到对应子 Agent。</p>
+        </div>
+      </aside>
+    </div>
+  </main>
+
+  <script src="static/v4.js"></script>
+</body>
+</html>

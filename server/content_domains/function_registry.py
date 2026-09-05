@@ -1342,21 +1342,26 @@ TEXT_VIDEO_FUNCTIONS = [{
 MATRIX_TEMPLATE_FUNCTIONS = [{
     "key": "matrix_template",
     "name": "模板成片",
-    "desc": "使用平台素材库与原创视觉模板生成上文字、中素材、下行动文案视频",
+    "desc": "使用平台素材库与原创视觉模板生成上文字、中素材、下行动文案视频，可选公共或个人音色配音",
     "order": 10,
     "frontend_selector": "#generateBtn",
     "service": "content",
     "flag_keys": ["matrix_template_video"],
+    "dependencies": [{
+        "key": "cosyvoice", "role": "可选模板配音",
+        "requirement": "optional", "credential_source": "env",
+    }],
     "modes": [{
         "key": "matrix_template.single", "name": "单条模板成片",
         "entrypoints": [
             _endpoint("POST", "/api/gen/matrix-template"),
             _endpoint("GET", "/api/gen/matrix-template/templates"),
+            _endpoint("GET", "/api/gen/audio/voices"),
             _endpoint("GET", "/api/gen/job/{id}"),
         ],
         "task_match": {"kind": "matrix_template_video"},
         "price_keys": ["video.matrix_template"],
-        "smoke_inputs": ["顶部标题", "底部行动文案", "平台素材库", "原生大字模板"],
+        "smoke_inputs": ["顶部标题", "底部行动文案", "平台素材库", "原生大字模板", "可选配音"],
         "validation": _validation({
             "top_text": "真正拉开差距的，不是工具",
             "bottom_text": "评论区留下关键词，领取完整方案",
@@ -1367,11 +1372,12 @@ MATRIX_TEMPLATE_FUNCTIONS = [{
         "entrypoints": [
             _endpoint("POST", "/api/gen/matrix-template"),
             _endpoint("GET", "/api/gen/matrix-template/templates"),
+            _endpoint("GET", "/api/gen/audio/voices"),
             _endpoint("GET", "/api/gen/job/{id}"),
         ],
         "task_match": {"kind": "matrix_template_video"},
         "price_keys": ["video.matrix_template"],
-        "smoke_inputs": ["顶部标题", "底部行动文案", "模板", "字体", "批量数量2-5"],
+        "smoke_inputs": ["顶部标题", "底部行动文案", "模板", "批量数量2-5", "可选公共或个人音色配音"],
         "validation": _validation({
             "top_text": "真正拉开差距的，不是工具",
             "bottom_text": "评论区留下关键词，领取完整方案",

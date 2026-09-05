@@ -16,6 +16,7 @@ class CreatorAgentContractTests(unittest.TestCase):
         cls.flags = (ROOT / "server/content_domains/feature_flags.py").read_text(encoding="utf-8")
         cls.registry = (ROOT / "server/content_domains/function_registry.py").read_text(encoding="utf-8")
         cls.shell = (ROOT / "site/workbench/cloud-shell.js").read_text(encoding="utf-8")
+        cls.toolbox = (ROOT / "site/workbench/ai-tools.html").read_text(encoding="utf-8")
         cls.nginx = (ROOT / "deploy/nginx-huangquechuanmei.conf").read_text(encoding="utf-8")
         cls.unit = (ROOT / "deploy/systemd/huangque-creator-agent.service").read_text(encoding="utf-8")
         cls.release = (ROOT / "deploy/creator-agent-release.sh").read_text(encoding="utf-8")
@@ -69,8 +70,8 @@ class CreatorAgentContractTests(unittest.TestCase):
     def test_feature_switch_is_default_on_but_still_discoverable(self):
         block = self.flags[self.flags.index('"key": "creator_agent_v1"'):]
         self.assertIn('"default_enabled": True', block[:500])
-        self.assertIn('data-nav-feature="creator_agent_v1"', self.shell)
-        self.assertIn("/api/creator-agent/capability", self.shell)
+        self.assertIn('data-tool-feature="creator_agent_v1"', self.toolbox)
+        self.assertIn("/api/creator-agent/capability", self.toolbox)
 
     def test_independent_namespace_does_not_edit_hermes_source(self):
         self.assertIn("/api/auth/internal/creator-agent/catalog", self.auth)
@@ -106,7 +107,8 @@ class CreatorAgentContractTests(unittest.TestCase):
 
     def test_registry_and_shell_expose_agent_as_real_page(self):
         self.assertIn('(\"creator-agent\", \"AI 创作助手\", \"/workbench/creator-agent.html\")', self.registry)
-        self.assertIn('href="creator-agent.html" class="hq-side-bots hq-side-ai-entry', self.shell)
+        self.assertIn('href="creator-agent.html"', self.toolbox)
+        self.assertIn('data-tool-feature="creator_agent_v1"', self.toolbox)
         nav = self.shell[self.shell.index("var NAV=["):self.shell.index("];", self.shell.index("var NAV=["))]
         self.assertNotIn("creator-agent", nav)
 

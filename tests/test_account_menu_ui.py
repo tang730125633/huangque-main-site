@@ -9,8 +9,8 @@ SETTINGS = (ROOT / "site/workbench/settings.html").read_text(encoding="utf-8")
 
 
 class AccountMenuUiTest(unittest.TestCase):
-    def test_both_avatar_entries_share_the_account_menu_and_card_avatar(self):
-        self.assertEqual(2, SHELL.count('data-account-menu-trigger="1"'))
+    def test_sidebar_avatar_opens_the_shared_account_menu(self):
+        self.assertEqual(1, SHELL.count('data-account-menu-trigger="1"'))
         self.assertIn("_accountAvatar=d.user.avatar||''", SHELL)
         self.assertNotIn("fetch('/api/auth/card/me'", SHELL)
         self.assertIn('href="settings.html" role="menuitem"', SHELL)

@@ -156,13 +156,22 @@ class McpServerTests(unittest.TestCase):
         payload = {
             "top_text": "顶部标题", "bottom_text": "底部行动文案",
             "template_id": "poster-split", "font_family": "Noto Sans SC",
+            "voiceover": {
+                "text": "模板成片配音", "voice": "vip_alice",
+                "voice_scope": "personal", "speed": 1.2,
+            },
             "count": 2, "confirm": True, "quote_token": "q.batch",
         }
         result = mcp_server.call_tool("hq_matrix_template_batch_generate", payload, runner=runner)
         self.assertNotIn("isError", result)
         self.assertEqual({
             "top_text": "顶部标题", "bottom_text": "底部行动文案",
-            "template_id": "poster-split", "font_family": "Noto Sans SC", "count": 2,
+            "template_id": "poster-split", "font_family": "Noto Sans SC",
+            "voiceover": {
+                "text": "模板成片配音", "voice": "vip_alice",
+                "voice_scope": "personal", "speed": 1.2,
+            },
+            "count": 2,
         }, calls[0][1])
         self.assertEqual([
             "run", "matrix-template-batch-generate", "--input", "@-",
@@ -195,7 +204,7 @@ class McpServerTests(unittest.TestCase):
 
         def runner(arguments, stdin_text):
             self.assertEqual(["version"], arguments)
-            return 0, {"schema": "hq.version/v1", "cli_version": "0.15.3"}
+            return 0, {"schema": "hq.version/v1", "cli_version": "0.15.4"}
 
         self.assertEqual(0, mcp_server.serve(source, output, runner=runner))
         responses = [json.loads(line) for line in output.getvalue().splitlines()]
@@ -224,13 +233,13 @@ class McpServerTests(unittest.TestCase):
 
         def runner(arguments, stdin_text):
             calls.append((arguments, stdin_text))
-            return 0, {"schema": "hq.version/v1", "cli_version": "0.15.3"}
+            return 0, {"schema": "hq.version/v1", "cli_version": "0.15.4"}
 
         self.assertEqual(0, mcp_server.serve(source, output, runner=runner))
         responses = [json.loads(line) for line in output.getvalue().splitlines()]
         self.assertEqual(mcp_server.PROTOCOL_VERSION, responses[0]["result"]["supportedVersions"][0])
         self.assertEqual(
-            {"name": "huangque", "version": "0.15.3"},
+            {"name": "huangque", "version": "0.15.4"},
             responses[1]["result"]["_meta"][mcp_server.SERVER_INFO_META],
         )
         self.assertEqual([(["version"], "")], calls)

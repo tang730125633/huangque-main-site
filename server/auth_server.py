@@ -5062,6 +5062,13 @@ class H(BaseHTTPRequestHandler):
         if not 2 <= count <= 5 or not item or total <= 0 or total % count:
             raise hq_cli_api.CLIAPIError(
                 500, "模板成片批量报价无效", "invalid_batch_quote")
+        nonce = str(claims.get("n") or "")
+        if not re.fullmatch(r"[0-9a-f]{32}", nonce):
+            raise hq_cli_api.CLIAPIError(
+                500, "模板成片批量报价标识无效", "invalid_batch_quote")
+        batch_id = hashlib.sha256(
+            (nonce + "\x00matrix-template-batch").encode("utf-8")
+        ).hexdigest()[:32]
         cost_per_job = total // count
         jobs, failures = [], []
         points_left = None
@@ -5069,10 +5076,16 @@ class H(BaseHTTPRequestHandler):
             child_key = "hqcli-" + hashlib.sha256(
                 (str(claims["n"]) + "\x00matrix-template\x00" + str(index)).encode("utf-8")
             ).hexdigest()[:24]
+            child_body = dict(item)
+            child_body.update({
+                "batch_id": batch_id,
+                "batch_index": index + 1,
+                "batch_size": count,
+            })
             submit_plan = {
                 "base": hq_cli_api.CONTENT_BASE,
                 "path": "/api/gen/matrix-template", "method": "POST",
-                "body": dict(item), "timeout": 30, "internal": True,
+                "body": child_body, "timeout": 30, "internal": True,
                 "headers": {
                     "X-HQ-Expected-Cost": str(cost_per_job),
                     "Idempotency-Key": child_key,

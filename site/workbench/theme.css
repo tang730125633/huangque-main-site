@@ -1,7 +1,6 @@
 :root {
   --hq-page: #070b13;
   --hq-shell: rgba(8, 12, 20, .96);
-  --hq-topbar: rgba(7, 11, 19, .78);
   --hq-surface: rgba(16, 24, 39, .72);
   --hq-surface-strong: #111827;
   --hq-surface-soft: rgba(7, 11, 19, .4);
@@ -25,7 +24,6 @@ html[data-theme="light"] {
   --panel-b: rgba(246, 248, 251, .9);
   --hq-page: #f4f6f9;
   --hq-shell: rgba(255, 255, 255, .96);
-  --hq-topbar: rgba(250, 251, 253, .88);
   --hq-surface: rgba(255, 255, 255, .9);
   --hq-surface-strong: #ffffff;
   --hq-surface-soft: rgba(238, 242, 247, .76);
@@ -70,12 +68,6 @@ html[data-theme="light"] .hq-aside {
   border-color: var(--hq-border) !important;
   background: var(--hq-shell) !important;
   box-shadow: 12px 0 34px rgba(24, 36, 56, .04);
-}
-
-html[data-theme="light"] .hq-topbar {
-  border-color: var(--hq-border) !important;
-  background: var(--hq-topbar) !important;
-  box-shadow: 0 8px 28px rgba(24, 36, 56, .035);
 }
 
 html[data-theme="light"] .hq-navitem { color: var(--hq-muted) !important; }

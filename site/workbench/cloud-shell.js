@@ -109,12 +109,14 @@
   }
 
   // 角色分化：仅 今日(运营台)+成本(统计看板) 是管理员专属；其余功能(含获客)所有用户都有；用户侧导以灵感为首页
+  var TOOLBOX_ROUTES={dashboard:1,leads:1,collect:1,'text-video':1,'matrix-template':1,audio:1,script:1,'short-drama':1,canvas:1,cost:1,'creator-agent':1};
   var NAV=[
-    {k:'dashboard',l:'今日',i:'home', admin:true}, {k:'inspiration',l:'灵感设计',i:'sparkles'},
-    {k:'leads',l:'平台获客',i:'search'}, {k:'collect',l:'内容爬取',i:'link'}, {k:'banana',l:'图片生成',i:'image'},
-    {k:'video',l:'视频生成',i:'video'}, {k:'text-video',l:'文案成片',i:'clapper',feature:'pixelle_text_video'}, {k:'matrix-template',l:'模板成片',i:'layers',feature:'matrix_template_video'}, {k:'audio',l:'音频生成',i:'mic'}, {k:'script',l:'文案编导',i:'edit'},
-    {k:'short-drama',l:'短剧创作',i:'clapper'}, {k:'canvas',l:'无限画布',i:'layers'}, {k:'assets',l:'我的资产',i:'folder'}, {k:'pricing',l:'点数价格',i:'coins'}, {k:'invite',l:'邀请中心',i:'users'},
-    {k:'cost',l:'成本',i:'coins', admin:true}, {k:'tutorials',l:'教程视频',i:'play'}, {k:'settings',l:'通用设置',i:'gear'}
+    {k:'inspiration',l:'灵感设计',i:'sparkles'},
+    {k:'banana',l:'图片生成',i:'image'},
+    {k:'video',l:'视频生成',i:'video'},
+    {k:'assets',l:'我的资产',i:'folder'},
+    {k:'ai-tools',l:'AI 工具箱',i:'layers'},
+    {k:'settings',l:'通用设置',i:'gear'}
   ];
 
   // 管理员判定：已登录则一律以真实账号角色(hq_user.role)为准，忽略测试开关；
@@ -133,7 +135,7 @@
   function navHTML(active){
     var admin=isAdmin();
     return NAV.filter(function(it){ return admin || !it.admin; }).map(function(it){
-      var on=it.k===active;
+      var on=it.k===active||(it.k==='ai-tools'&&!!TOOLBOX_ROUTES[active]);
       var ntxt=on?'#eaf1fa':'#94a4bb', nbg=on?'rgba(231,178,76,.08)':'transparent', nfg=on?'#e7b24c':'#94a4bb', nbar=on?'1':'0';
       var featureAttr=it.feature?' data-nav-feature="'+escapeAttr(it.feature)+'" hidden':'';
       return '<a href="'+escapeAttr(safeUrl(it.k+'.html'))+'" class="hq-navitem" aria-label="'+escapeAttr(it.l)+'" data-nav-label="'+escapeAttr(it.l)+'"'+featureAttr+' style="position:relative; display:'+(it.feature?'none':'flex')+'; align-items:center; gap:12px; padding:10px 13px; border-radius:11px; cursor:pointer; color:'+ntxt+'; background:'+nbg+'; font-size:14px; font-weight:500; transition:.16s;">'+
@@ -208,7 +210,8 @@
       '.hq-account-menu .danger{color:#f490a5}'+
       '.hq-main-scroll{flex:1;min-height:0;overflow-y:auto;padding:26px 30px 40px}'+
       '.hq-main-scroll-flush{overflow:hidden;padding:0}'+
-      '.hq-topbar-flush{border-bottom:0!important}'+
+      '.hq-floating-burger{position:fixed;left:16px;bottom:16px;z-index:39;width:44px;height:44px;display:none;align-items:center;justify-content:center;color:#e7b24c;background:rgba(12,18,32,.94);border:1px solid rgba(231,178,76,.3);border-radius:13px;box-shadow:0 12px 30px rgba(0,0,0,.42);backdrop-filter:blur(12px);cursor:pointer}'+
+      '.hq-floating-burger:hover,.hq-floating-burger:focus-visible{border-color:rgba(231,178,76,.6);background:rgba(231,178,76,.12);outline:none}'+
       '.hq-nav-tooltip{position:fixed;z-index:9500;max-width:220px;padding:7px 10px;border:1px solid rgba(148,164,187,.18);border-radius:7px;background:#141b28;color:#eaf1fa;box-shadow:0 8px 24px rgba(0,0,0,.3);font:600 12px/1.25 inherit;white-space:nowrap;pointer-events:none;opacity:0;transform:translateX(-4px);transition:opacity .1s ease,transform .1s ease}'+
       '.hq-nav-tooltip.on{opacity:1;transform:none}'+
       '@media(max-width:1100px){.hq-main-scroll-flush{overflow-y:auto}}'+
@@ -218,7 +221,7 @@
   }
 
   function navDisplayMode(active,narrow){
-    return narrow || active==='inspiration' ? 'expanded' : 'compact';
+    return narrow || active==='inspiration' || active==='ai-tools' ? 'expanded' : 'compact';
   }
 
   function usesFlushWorkspace(active){
@@ -296,38 +299,25 @@
           '<div style="font-size:12px; color:#94a4bb;">剩余点数</div>'+
           '<div id="hqPointsSide" class="mono" style="font-size:30px; font-weight:700; color:#e7b24c; line-height:1.1; margin:3px 0 9px;">—</div>'+
           '<div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;"><a href="recharge.html" style="display:inline-flex; align-items:center; gap:5px; font-size:12.5px; color:#e7b24c; cursor:pointer; font-weight:600;">去充值 <span style="display:flex; width:13px;">'+icon('arrowMini')+'</span></a><button type="button" data-points-detail="1" style="border:0;background:transparent;color:#94a4bb;cursor:pointer;font:700 12.5px inherit;padding:0;">明细</button></div></div>'+
-        '<a href="creator-agent.html" class="hq-side-bots hq-side-ai-entry'+(active==='creator-agent'?' is-active':'')+'" data-nav-feature="creator_agent_v1" hidden aria-label="AI 创作助手" title="AI 创作助手" style="display:none; align-items:center; gap:8px; padding:10px 14px; border:1px solid rgba(231,178,76,.26); border-radius:12px; background:rgba(231,178,76,.07); text-decoration:none;">'+
-          '<span style="display:flex; width:18px; color:#e7b24c;">'+iconDuo('sparkles','18px','#e7b24c')+'</span>'+
-          '<span class="hq-side-bots-label" style="font-size:13px; color:#e8eef6; font-weight:700; flex:1; white-space:nowrap;">AI 创作助手</span>'+
-          '<span class="hq-side-bots-arrow" style="display:flex; width:13px; color:#e7b24c;">'+icon('arrowMini')+'</span></a>'+
         '<div id="hqUserCard"></div>'+
       '</div>';
 
-    var header=document.createElement('header');
-    header.className='hq-topbar'+(usesFlushWorkspace(active)?' hq-topbar-flush':'');
-    header.style.cssText='flex:none; display:flex; align-items:center; gap:14px; padding:14px 26px; border-bottom:1px solid rgba(148,164,187,.08); background:rgba(7,11,19,.4); backdrop-filter:blur(12px);';
-    header.innerHTML=
-      '<button type="button" class="hq-burger" aria-label="打开导航" aria-controls="hqSideNav" aria-expanded="false" style="display:none; width:38px; height:38px; align-items:center; justify-content:center; flex:none; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer;">'+icon('menu','18px')+'</button>'+
-      '<div class="hq-botpill" style="display:flex; align-items:center; gap:8px; padding:8px 13px; border:1px solid rgba(45,212,191,.2); border-radius:11px; background:rgba(45,212,191,.05);">'+
-        '<span style="width:7px; height:7px; border-radius:50%; background:#2dd4bf; box-shadow:0 0 8px #2dd4bf; animation:hq-pulse 2s infinite;"></span>'+
-        '<span style="font-size:13px; color:#94a4bb;"><span class="mono" style="color:#2dd4bf; font-weight:600;">34</span> 个 Bot 在线</span></div>'+
-      '<div style="margin-left:auto; display:flex; align-items:center; gap:12px;">'+
-        '<a href="recharge.html" style="display:flex; align-items:center; gap:8px; padding:8px 14px; border:1px solid rgba(231,178,76,.26); border-radius:11px; background:rgba(231,178,76,.07); cursor:pointer;">'+
-          '<span style="width:16px; height:16px; border-radius:50%; background:radial-gradient(circle at 35% 30%, #f6d488, #c8902f); flex:none;"></span>'+
-          '<span id="hqPointsTop" class="mono" style="font-size:14px; font-weight:700; color:#e7b24c;">—</span></a>'+
-        '<button type="button" data-points-detail="1" style="height:36px;padding:0 12px;border-radius:10px;cursor:pointer;font-family:inherit;font-size:12.5px;font-weight:700;color:#94a4bb;background:rgba(148,164,187,.06);border:1px solid rgba(148,164,187,.14);">明细</button>'+
-        '<button type="button" class="hq-friends-btn" aria-label="打开好友" title="好友" aria-expanded="false" style="position:relative; width:38px; height:38px; display:flex; align-items:center; justify-content:center; border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer; color:#94a4bb; background:transparent; font:inherit; padding:0;">'+iconDuo('users','18px','#e7b24c')+'<span class="hq-friends-badge" aria-label="0 条好友申请"></span></button>'+
-        '<button type="button" class="hq-notify-btn" aria-label="打开消息中心" title="消息中心" aria-expanded="false" style="position:relative; width:38px; height:38px; display:flex; align-items:center; justify-content:center; border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer; color:#94a4bb; background:transparent; font:inherit; padding:0;">'+icon('bell','17px')+'<span class="hq-notify-badge" aria-label="0 条未读通知"></span></button>'+
-        '<div id="hqAuthArea" style="display:flex; align-items:center; gap:8px;"></div></div>';
+    var burger=document.createElement('button');
+    burger.type='button';
+    burger.className='hq-floating-burger';
+    burger.setAttribute('aria-label','打开导航');
+    burger.setAttribute('aria-controls','hqSideNav');
+    burger.setAttribute('aria-expanded','false');
+    burger.innerHTML=icon('menu','19px');
 
-    // 重组 DOM：aside | main(topbar + scroll(content))
+    // 重组 DOM：aside | main(content)。全局顶栏已移除，移动端仅保留悬浮导航按钮。
     var main=document.createElement('main');
     main.style.cssText='flex:1; min-width:0; display:flex; flex-direction:column; height:100vh;';
     var scroll=document.createElement('div');
     scroll.className='hq-main-scroll'+(usesFlushWorkspace(active)?' hq-main-scroll-flush':'');
     content.parentNode.removeChild(content);
     scroll.appendChild(content);
-    main.appendChild(header); main.appendChild(scroll);
+    main.appendChild(scroll); main.appendChild(burger);
     app.style.cssText='height:100vh; display:flex; position:relative; z-index:1; overflow:hidden;';
     app.appendChild(aside); app.appendChild(main);
     bindNavTooltips(aside);
@@ -335,14 +325,12 @@
     revealReadyFeatureNav(aside);
 
     // 响应式：窄屏抽屉
-    var burger=header.querySelector('.hq-burger');
     function applyResp(){
       var narrow=window.innerWidth<900;
       var navMode=navDisplayMode(active,narrow);
       aside.classList.toggle('hq-aside-compact',navMode==='compact');
       aside.setAttribute('data-nav-mode',navMode);
-      header.querySelector('.hq-burger').style.display=narrow?'flex':'none';
-      header.querySelector('.hq-botpill').style.display=narrow?'none':'flex';
+      burger.style.display=narrow?'flex':'none';
       if(narrow){ aside.style.position='fixed'; aside.style.top=0; aside.style.bottom=0; aside.style.left=0; aside.style.transform='translateX(-100%)'; aside.style.boxShadow='0 0 60px rgba(0,0,0,.6)'; }
       else {
         open=false;
@@ -357,10 +345,8 @@
       if(burger) burger.setAttribute('aria-expanded',open?'true':'false');
     }
     burger.onclick=function(){ setNavOpen(!open); };
-    var friendsBtn=header.querySelector('.hq-friends-btn');
-    if(friendsBtn) friendsBtn.onclick=openFriendsPanel;
-    var notifyBtn=header.querySelector('.hq-notify-btn');
-    if(notifyBtn) notifyBtn.onclick=openNotificationPanel;
+    document.querySelectorAll('.hq-friends-btn').forEach(function(btn){ btn.onclick=openFriendsPanel; });
+    document.querySelectorAll('.hq-notify-btn').forEach(function(btn){ btn.onclick=openNotificationPanel; });
     window.addEventListener('resize',applyResp); applyResp();
     aside.querySelectorAll('a').forEach(function(a){ a.addEventListener('click',function(){ if(window.innerWidth<900) setNavOpen(false); }); });
     refreshPoints(); renderUser(); refreshNotificationBadge();
@@ -375,8 +361,8 @@
     fetch('/api/auth/me',{credentials:'same-origin',cache:'no-store',headers:authHeaders()}).then(function(r){ if(!r.ok) return null; return r.json(); }).then(function(d){
       if(d&&d.user){ _accountAvatar=d.user.avatar||''; try{ localStorage.removeItem('hq_token'); localStorage.setItem('hq_user',JSON.stringify(d.user)); }catch(e){} renderUser(); }
       var p=d&&d.user&&d.user.points; if(p==null) return;
-      var a=document.getElementById('hqPointsSide'), b=document.getElementById('hqPointsTop');
-      if(a) a.textContent=p; if(b) b.textContent=p;
+      var a=document.getElementById('hqPointsSide');
+      if(a) a.textContent=p;
     }).catch(function(){});
   }
 
@@ -1068,7 +1054,7 @@
   function renderUser(){
     var u=currentUser(), inn=!!u;
     var profile=readAccountJson('hq_profile_v1',u);
-    var card=document.getElementById('hqUserCard'), auth=document.getElementById('hqAuthArea');
+    var card=document.getElementById('hqUserCard');
     if(inn){
       var name=profile.nickname||(u&&(u.name||u.nickname||u.username))||'我的账号', ch=(String(name).trim()[0]||'我').toUpperCase();
       var safeName=escapeHtml(name);
@@ -1077,16 +1063,13 @@
         avatarHTML(ch,34)+
         '<div class="hq-user-copy" style="flex:1;min-width:0;"><div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+safeName+'</div><div style="font-size:11px;color:#e7b24c;">'+role+'</div></div>'+
         '<span class="hq-user-logout" style="display:flex;width:16px;color:#5c6b82;">'+icon('chevronDown','16px')+'</span></button>';
-      if(auth) auth.innerHTML='<button type="button" class="hq-account-trigger" data-account-menu-trigger="1" aria-label="打开账户菜单" aria-haspopup="menu" aria-expanded="false" aria-controls="hqAccountMenu" title="打开账户菜单" style="display:flex;border:0;border-radius:11px;background:transparent;padding:0;cursor:pointer;">'+avatarHTML(ch,38)+'</button>';
     } else {
       if(card) card.innerHTML='<button type="button" class="hq-login-row" data-login="1" aria-label="登录" title="登录" style="width:100%;display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:11px;cursor:pointer;border:1px solid rgba(148,164,187,.16);background:rgba(148,164,187,.04);font-family:inherit;text-align:left;">'+
         '<div style="width:32px;height:32px;border-radius:50%;flex:none;background:rgba(148,164,187,.12);display:flex;align-items:center;justify-content:center;color:#94a4bb;"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20a8 8 0 0 1 16 0"/></svg></div>'+
         '<div class="hq-user-copy" style="flex:1;min-width:0;"><div style="font-size:13px;font-weight:500;color:#eaf1fa;">未登录</div><div style="font-size:11px;color:#94a4bb;">登录后开启全部功能</div></div>'+
         '<span class="hq-user-logout" style="font-size:12px;color:#e7b24c;font-weight:600;white-space:nowrap;">登录</span></button>';
-      if(auth) auth.innerHTML='<button type="button" data-register="1" style="height:36px;padding:0 14px;border-radius:10px;cursor:pointer;font-family:inherit;font-size:13px;color:#94a4bb;background:rgba(148,164,187,.06);border:1px solid rgba(148,164,187,.16);">注册</button>'+
-        '<button type="button" data-login="1" style="height:36px;padding:0 16px;border-radius:10px;cursor:pointer;font-family:inherit;font-size:13px;font-weight:600;color:#1c1402;background:linear-gradient(135deg,#f6d488,#e7b24c);border:0;">登录</button>';
     }
-    [card,auth].forEach(function(el){ if(!el) return; el.onclick=function(e){
+    [card].forEach(function(el){ if(!el) return; el.onclick=function(e){
       var t=e.target.closest?e.target.closest('[data-login],[data-register],[data-logout],[data-account-menu-trigger]'):null; if(!t) return;
       if(t.getAttribute('data-logout')) _logout();
       else if(t.getAttribute('data-account-menu-trigger')){ var menu=document.getElementById('hqAccountMenu'); if(menu&&menu.classList.contains('on')) closeAccountMenu(); else openAccountMenu(t); }

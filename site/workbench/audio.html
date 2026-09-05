@@ -57,7 +57,7 @@
   .toast.show{opacity:1;transform:translateX(-50%)}
   @media (max-width:1100px){.gAud{height:auto;overflow:visible;grid-template-columns:1fr}.aud-card{height:auto;overflow:visible}.voice-grid,.param-grid{grid-template-columns:1fr}}
 </style>
-<link rel="stylesheet" href="theme.css?v=5873a2f4">
+<link rel="stylesheet" href="theme.css?v=94b85afe">
 </head>
 <body>
 <div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
@@ -132,7 +132,7 @@
 </div></div>
 <div id="toast" class="toast"></div>
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=7b2db7de"></script>
+<script src="cloud-shell.js?v=fda421a8"></script>
 <script>
 (function(){
   var tok='__cookie__';
@@ -207,7 +207,7 @@
       .then(function(d){
         var got=d.items||[];
         var publics=got.filter(function(v){return v.scope==='public';}).map(normalizeVoice);
-        var personals=got.filter(function(v){return v.scope==='personal' && v.provider_voice && v.preview_url;});
+        var personals=got.filter(function(v){return v.scope==='personal' && v.ready===true && v.preview_url;});
         voices=(publics.length?publics:publicFallback.map(normalizeVoice)).concat(personals);
         if(!voices.some(function(v){return v.voice_key===selectedVoice;})) selectedVoice=(voices[0]||publicFallback[0]).voice_key;
         renderVoices();

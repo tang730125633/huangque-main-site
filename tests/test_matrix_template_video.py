@@ -5,6 +5,7 @@ import http.server
 import importlib
 import json
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -638,6 +639,220 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         self.assertNotIn("provider", payload)
         self.assertNotIn("prompt", payload)
 
+    def test_validate_payload_uses_owned_voice_and_forces_bgm_off(self):
+        from content_domains import audio
+
+        expected_provider = {
+            "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
+            "template_id": "native-bold", "bgm": False, "duration": 8.0,
+        }
+        expected_request = dict(expected_provider, duration=None)
+        normalized_voiceover = {
+            "text": "这是一段口播文案", "voice": "vip_alice",
+            "speed": 1.0, "pitch": 0, "volume": 0,
+            "delivery": "natural", "voice_scope": "personal",
+            "provider": "cosyvoice",
+        }
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(
+                 self.module, "public_templates", return_value=self.templates(),
+             ), mock.patch.object(
+                 self.module.feature_flags, "require_enabled",
+             ), mock.patch.object(
+                 audio.cosyvoice, "enabled", return_value=True,
+             ), mock.patch.object(
+                 audio, "validate_audio_payload", return_value=normalized_voiceover,
+             ) as validate_audio, mock.patch.object(
+                 audio, "require_owned_ready_personal_voice",
+             ) as require_personal, mock.patch.object(
+                 audio, "resolve_audio_provider_voice",
+                 return_value="cosyvoice-v3.5-plus-alice",
+             ), mock.patch.object(
+                 self.module, "_request", return_value={"payload": expected_provider},
+             ) as request:
+            payload = self.module.validate_payload({
+                "top_text": "AI 工作流",
+                "bottom_text": "评论区留下关键词",
+                "template_id": "native-bold", "bgm": True,
+                "voiceover": {
+                    "text": "这是一段口播文案", "voice": "vip_alice",
+                    "voice_scope": "personal",
+                    "speed": 1.0, "pitch": 0, "volume": 0,
+                    "delivery": "natural",
+                },
+            }, "alice")
+
+        validate_audio.assert_called_once()
+        self.assertEqual("alice", validate_audio.call_args.args[1])
+        require_personal.assert_called_once_with("alice", "vip_alice")
+        self.assertEqual(expected_request, request.call_args.args[2])
+        self.assertFalse(payload["bgm"])
+        self.assertEqual("vip_alice", payload["voiceover"]["voice"])
+        self.assertEqual("personal", payload["voiceover"]["voice_scope"])
+        self.assertEqual(64, len(payload["voiceover"]["voice_version"]))
+        self.assertNotIn("provider", payload["voiceover"])
+
+    def test_voiceover_requires_structured_owned_voice_settings(self):
+        for value in (True, "vip_alice", []):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                ValueError, "配音设置无效",
+            ):
+                self.module._normalize_voiceover(value, "alice")
+        with self.assertRaisesRegex(ValueError, "无效字段"):
+            self.module._normalize_voiceover(
+                {"text": "口播", "voice": "vip_alice", "provider_voice": "secret"},
+                "alice",
+            )
+        with self.assertRaisesRegex(ValueError, "音色归属"):
+            self.module._normalize_voiceover(
+                {"text": "口播", "voice": "vip_alice"}, "",
+            )
+
+        from content_domains import audio
+        with mock.patch.object(
+            self.module.feature_flags, "require_enabled",
+        ), mock.patch.object(
+            audio.cosyvoice, "enabled", return_value=True,
+        ), mock.patch.object(audio, "validate_audio_payload", return_value={
+            "text": "口播", "voice": "vip_alice", "speed": 1.0,
+            "pitch": 0, "volume": 0, "delivery": "natural",
+            "voice_scope": "personal",
+        }), mock.patch.object(
+            audio, "require_owned_ready_personal_voice",
+        ), mock.patch.object(
+            audio, "resolve_audio_provider_voice",
+            return_value="cosyvoice-v3.5-plus-alice",
+        ), self.assertRaisesRegex(ValueError, "归属已变化"):
+            self.module._normalize_voiceover({
+                "text": "口播", "voice": "vip_alice",
+                "voice_scope": "public",
+            }, "alice")
+        with mock.patch.object(
+            self.module.feature_flags, "require_enabled",
+        ), mock.patch.object(
+            audio.cosyvoice, "enabled", return_value=True,
+        ), mock.patch.object(audio, "validate_audio_payload", return_value={
+            "text": "口播", "voice": "vip_alice", "speed": 1.0,
+            "pitch": 0, "volume": 0, "delivery": "natural",
+            "voice_scope": "personal",
+        }), mock.patch.object(
+            audio, "require_owned_ready_personal_voice",
+        ), mock.patch.object(
+            audio, "resolve_audio_provider_voice",
+            return_value="cosyvoice-v3.5-plus-new",
+        ), self.assertRaisesRegex(ValueError, "版本已变化"):
+            self.module._normalize_voiceover({
+                "text": "口播", "voice": "vip_alice",
+                "voice_scope": "personal", "voice_version": "0" * 64,
+            }, "alice")
+        with mock.patch.object(
+            self.module.feature_flags, "require_enabled",
+            side_effect=self.module.feature_flags.FeatureDisabled("配音已关闭"),
+        ), self.assertRaises(self.module.feature_flags.FeatureDisabled):
+            self.module._normalize_voiceover(
+                {"text": "口播", "voice": "vip_alice"}, "alice",
+            )
+
+    def test_voiceover_copy_is_limited_to_120_characters(self):
+        self.assertEqual(120, self.module.MAX_VOICEOVER_TEXT_LENGTH)
+        with self.assertRaisesRegex(ValueError, "120 字以内"):
+            self.module._normalize_voiceover(
+                {
+                    "text": "文" * 121, "voice": "vip_alice",
+                    "voice_version": "f" * 64,
+                },
+                "alice",
+            )
+
+    def test_legacy_voiceover_exemption_requires_matching_database_execution(self):
+        frozen = {
+            "top_text": "历史标题", "bottom_text": "评论区扣关键词",
+            "template_id": "native-bold",
+            "voiceover": {"text": "文" * 201, "voice": "vip_alice"},
+            "_matrix_runtime": {"phase": "voiceover_ready"},
+        }
+        lifecycle = {"payload": frozen, "trusted_execution": True}
+        self.assertTrue(self.module._matches_trusted_execution(
+            {**self.module._execution_payload(frozen), "_job_id": 94}, lifecycle,
+        ))
+        self.assertFalse(self.module._matches_trusted_execution(
+            {
+                **self.module._execution_payload(frozen),
+                "bottom_text": "客户端已篡改", "_job_id": 94,
+            },
+            lifecycle,
+        ))
+        self.assertFalse(self.module._matches_trusted_execution(
+            self.module._execution_payload(frozen),
+            {"payload": frozen, "trusted_execution": False},
+        ))
+
+    def test_http_rejects_121_voiceover_characters_before_charge(self):
+        from content_domains import audio, core, points, video
+
+        body = {
+            "top_text": "有效标题", "bottom_text": "评论区扣关键词",
+            "template_id": "native-bold", "bgm": False,
+            "voiceover": {
+                "text": "文" * 121, "voice": "vip_alice",
+                "voice_scope": "personal", "speed": 1,
+                "pitch": 0, "volume": 0, "delivery": "natural",
+                "voice_version": "f" * 64,
+            },
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            database_path = Path(temp) / "jobs.db"
+            original_job_db = core.JOB_DB
+            core.JOB_DB = str(database_path)
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), core.H)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                with mock.patch.object(
+                    core, "verify", return_value={
+                        "username": "alice", "points": 100,
+                        "must_change": False,
+                    },
+                ), mock.patch.object(
+                    core, "_domains", return_value=(audio, points, video),
+                ), mock.patch.object(
+                    self.module, "require_available",
+                ), mock.patch.object(
+                    self.module, "public_templates", return_value=self.templates(),
+                ), mock.patch.object(
+                    points, "deduct_points",
+                    side_effect=AssertionError("invalid request must not be charged"),
+                ) as deduct:
+                    request = urllib.request.Request(
+                        "http://127.0.0.1:%d/api/gen/matrix-template"
+                        % server.server_port,
+                        data=json.dumps(body, ensure_ascii=False).encode(),
+                        headers={
+                            "Authorization": "Bearer account-token",
+                            "Content-Type": "application/json",
+                            "Idempotency-Key": "matrix-over-limit",
+                        },
+                        method="POST",
+                    )
+                    with self.assertRaises(urllib.error.HTTPError) as raised:
+                        urllib.request.urlopen(request, timeout=10)
+                    response = json.loads(raised.exception.read())
+                    self.assertEqual(400, raised.exception.code)
+                    self.assertIn("120 字以内", response["detail"])
+                    deduct.assert_not_called()
+                with closing(sqlite3.connect(database_path)) as connection:
+                    self.assertEqual(
+                        0,
+                        connection.execute(
+                            "SELECT COUNT(*) FROM submission_idempotency"
+                        ).fetchone()[0],
+                    )
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+                core.JOB_DB = original_job_db
+
     def test_validate_payload_accepts_only_current_catalog_font(self):
         fonts = [
             {"value": "", "label": "自动搭配", "source": "automatic"},
@@ -1243,6 +1458,181 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             result["phase"], result["resolution"], result["ratio"]
         ))
 
+    def test_generate_voiceover_is_not_sent_to_renderer_and_replaces_bgm(self):
+        raw = {
+            "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
+            "template_id": "native-bold", "bgm": False,
+            "voiceover": {
+                "text": "这是最终口播", "voice": "vip_alice", "speed": 1.0,
+                "pitch": 0, "volume": 0, "delivery": "natural",
+                "voice_scope": "personal",
+            },
+            "_username": "alice", "_job_id": 78,
+        }
+        provider_id = "d" * 32
+        responses = [
+            {"job_id": provider_id, "status": "pending"},
+            {"status": "completed", "result": {
+                "file_url": f"/v1/files/{provider_id}.mp4",
+                "duration": 9.0, "width": 1080, "height": 1920,
+                "template_id": "native-bold",
+            }},
+        ]
+        prepared_audio = {
+            "path": Path("voice.mp3"), "duration": 12.345,
+            "fingerprint": "f" * 64,
+        }
+        with mock.patch.object(
+            self.module, "validate_payload", return_value={
+                key: value for key, value in raw.items() if not key.startswith("_")
+            },
+        ), mock.patch.object(
+            self.module, "_request", side_effect=responses,
+        ) as request, mock.patch.object(
+            self.module, "_prepare_voiceover_audio", return_value=prepared_audio,
+        ) as prepare_audio, mock.patch.object(
+            self.module, "_download",
+            return_value=("video/matrix_template_78.mp4", 4096),
+        ), mock.patch.object(
+            self.module, "_mux_voiceover", return_value=(12.345, 8192),
+        ) as mux, mock.patch.object(
+            self.module, "_persist_runtime", return_value=True,
+        ) as persist, mock.patch.object(
+            self.module, "public_url", return_value="/api/gen/file/voiced-video",
+        ), mock.patch.object(self.module.time, "sleep"):
+            result = self.module.generate(raw)
+
+        provider_body = request.call_args_list[0].args[2]
+        self.assertNotIn("voiceover", provider_body)
+        self.assertFalse(provider_body["bgm"])
+        prepare_audio.assert_called_once_with(
+            "78", "alice", raw["voiceover"], None, mock.ANY,
+        )
+        mux.assert_called_once_with(
+            "video/matrix_template_78.mp4", prepared_audio, mock.ANY,
+        )
+        self.assertTrue(any(
+            call.kwargs.get("phase") == "muxing_voiceover"
+            for call in persist.call_args_list
+        ))
+        self.assertEqual(12.345, result["duration"])
+        self.assertEqual(8192, result["file_size"])
+        self.assertEqual({
+            "enabled": True, "voice": "vip_alice",
+            "voice_scope": "personal", "duration_ms": 12345,
+            "bgm": False,
+        }, result["voiceover"])
+
+    def test_voiceover_cache_is_shared_by_batch_but_isolated_by_owner(self):
+        voiceover = {
+            "text": "同一批次口播", "voice": "vip_alice", "speed": 1.0,
+            "pitch": 0, "volume": 0, "delivery": "natural",
+        }
+        batch = "a" * 32
+        first, _ = self.module._voiceover_cache_path(
+            "101", "alice", dict(voiceover, _batch_id=batch),
+        )
+        second, _ = self.module._voiceover_cache_path(
+            "102", "alice", dict(voiceover, _batch_id=batch),
+        )
+        other_owner, _ = self.module._voiceover_cache_path(
+            "103", "bob", dict(voiceover, _batch_id=batch),
+        )
+        self.assertEqual(first, second)
+        self.assertNotEqual(first, other_owner)
+        self.assertNotIn("alice", first.name)
+
+    def test_prepare_voiceover_audio_synthesizes_once_for_same_batch(self):
+        from content_domains import audio
+
+        voiceover = {
+            "text": "同一批次口播", "voice": "vip_alice", "speed": 1.0,
+            "pitch": 0, "volume": 0, "delivery": "natural",
+            "voice_scope": "personal",
+            "voice_version": self.module.hashlib.sha256(
+                b"cosyvoice-v3.5-plus-alice"
+            ).hexdigest(),
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+
+            def synthesize(_payload, publish=True):
+                self.assertFalse(publish)
+                source = root / "audio/generated.mp3"
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_bytes(b"voice" * 1024)
+                return {"file": "audio/generated.mp3"}
+
+            with mock.patch.object(self.module, "OUT_DIR", root), \
+                 mock.patch.object(
+                     self.module, "_persist_runtime", return_value=True,
+                 ), mock.patch.object(
+                     self.module, "_media_probe",
+                     return_value=([{"codec_type": "audio"}], 2.5),
+                 ), mock.patch.object(
+                     audio, "resolve_audio_provider_voice",
+                     return_value="cosyvoice-v3.5-plus-alice",
+                 ), mock.patch.object(
+                     audio, "gen_audio", side_effect=synthesize,
+                 ) as generate_audio:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                    first, second = list(pool.map(
+                        lambda job_id: self.module._prepare_voiceover_audio(
+                            job_id, "alice", voiceover, "a" * 32,
+                            time.time() + 30,
+                        ),
+                        ("101", "102"),
+                    ))
+
+        self.assertEqual(1, generate_audio.call_count)
+        self.assertEqual("alice", generate_audio.call_args.args[0]["_username"])
+        self.assertEqual(first["path"], second["path"])
+        self.assertEqual(2.5, second["duration"])
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"),
+                         "ffmpeg and ffprobe are required")
+    def test_mux_voiceover_loops_video_and_keeps_only_voice_audio(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            video = root / "video/base.mp4"
+            voice = root / "voice.wav"
+            video.parent.mkdir(parents=True)
+            subprocess.run([
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-f", "lavfi", "-i", "color=c=blue:s=1080x1920:r=30:d=0.6",
+                "-f", "lavfi", "-i", "sine=frequency=880:duration=0.6",
+                "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264",
+                "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                "-shortest", str(video),
+            ], check=True, capture_output=True, timeout=30)
+            subprocess.run([
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=1.7",
+                "-c:a", "pcm_s16le", str(voice),
+            ], check=True, capture_output=True, timeout=30)
+            with mock.patch.object(self.module, "OUT_DIR", root):
+                streams, voice_duration = self.module._media_probe(voice)
+                self.assertEqual(1, len([
+                    item for item in streams if item.get("codec_type") == "audio"
+                ]))
+                duration, size = self.module._mux_voiceover(
+                    "video/base.mp4",
+                    {"path": voice, "duration": voice_duration},
+                    time.time() + 30,
+                )
+                output_streams, output_duration = self.module._media_probe(video)
+            self.assertAlmostEqual(voice_duration, duration, delta=0.05)
+            self.assertAlmostEqual(voice_duration, output_duration, delta=0.05)
+            self.assertGreater(size, 1024)
+            self.assertEqual(["h264"], [
+                item.get("codec_name") for item in output_streams
+                if item.get("codec_type") == "video"
+            ])
+            self.assertEqual(["aac"], [
+                item.get("codec_name") for item in output_streams
+                if item.get("codec_type") == "audio"
+            ])
+
     def test_legacy_submission_unknown_replays_original_payload_exactly(self):
         legacy_payload = {
             "top_text": "有效标题", "bottom_text": "评论区扣888",
@@ -1347,6 +1737,151 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         validate.assert_not_called()
         self.assertEqual(1, request.call_count)
         self.assertEqual(("GET", "/v1/jobs/" + provider_id), request.call_args.args)
+
+    def test_generate_resumes_voiceover_job_without_resubmitting_renderer(self):
+        provider_id = "c" * 32
+        voiceover = {
+            "text": "文" * 201, "voice": "vip_alice", "speed": 1.0,
+            "pitch": 0, "volume": 0, "delivery": "natural",
+            "voice_scope": "personal",
+        }
+        stored = {
+            "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
+            "template_id": "native-bold", "bgm": False, "duration": 8,
+            "voiceover": voiceover,
+            "_matrix_runtime": {
+                "phase": "provider_queued", "provider_job_id": provider_id,
+            },
+        }
+        prepared = {
+            "path": Path("voice.mp3"), "duration": 8.0,
+            "fingerprint": "f" * 64,
+        }
+        with mock.patch.object(
+            self.module, "_runtime", return_value={
+                "created_at": int(self.module.time.time()), "payload": stored,
+            },
+        ), mock.patch.object(
+            self.module, "validate_payload",
+        ) as validate, mock.patch.object(
+            self.module, "_prepare_voiceover_audio", return_value=prepared,
+        ) as prepare, mock.patch.object(
+            self.module, "_request",
+            return_value={"status": "failed", "error": "renderer failed"},
+        ) as request, mock.patch.object(self.module.time, "sleep"), \
+             self.assertRaisesRegex(RuntimeError, "renderer failed"):
+            self.module.generate({"_job_id": 93, "_username": "alice"})
+
+        validate.assert_not_called()
+        prepare.assert_called_once_with("93", "alice", voiceover, None, mock.ANY)
+        self.assertEqual(1, request.call_count)
+        self.assertEqual(("GET", "/v1/jobs/" + provider_id), request.call_args.args)
+
+    def test_worker_accepts_matching_legacy_frozen_voiceover_before_provider_submit(self):
+        from content_domains import audio, core, points
+
+        with tempfile.TemporaryDirectory() as temp:
+            database_path = Path(temp) / "jobs.db"
+            provider_voice = "cosyvoice-v3.5-plus-alice"
+            voice_version = self.module.hashlib.sha256(
+                provider_voice.encode("utf-8")
+            ).hexdigest()
+            voiceover = {
+                "text": "文" * 201, "voice": "vip_alice", "speed": 1.0,
+                "pitch": 0, "volume": 0, "delivery": "natural",
+                "voice_scope": "personal", "voice_version": voice_version,
+            }
+            stored = {
+                "top_text": "历史标题", "bottom_text": "评论区扣关键词",
+                "template_id": "native-bold", "bgm": False, "duration": 8.0,
+                "voiceover": voiceover,
+                "_matrix_runtime": {"phase": "voiceover_ready"},
+            }
+            with closing(sqlite3.connect(database_path)) as connection:
+                connection.execute("""CREATE TABLE jobs(
+                    id INTEGER PRIMARY KEY,kind TEXT NOT NULL,status TEXT NOT NULL,
+                    payload TEXT NOT NULL,created_at INTEGER NOT NULL
+                )""")
+                connection.execute(
+                    "INSERT INTO jobs(id,kind,status,payload,created_at) VALUES(?,?,?,?,?)",
+                    (
+                        94, "matrix_template_video", "pending",
+                        json.dumps(stored, ensure_ascii=False), int(time.time()),
+                    ),
+                )
+                connection.commit()
+
+            expected_preflight = {
+                "top_text": "历史标题", "bottom_text": "评论区扣关键词",
+                "template_id": "native-bold", "bgm": False, "duration": 8.0,
+            }
+            provider_id = "d" * 32
+            calls = []
+
+            def request(method, path, body=None, **kwargs):
+                calls.append((method, path, body, kwargs))
+                if (method, path) == ("POST", "/v1/preflight"):
+                    return {"payload": expected_preflight}
+                if (method, path) == ("POST", "/v1/jobs"):
+                    return {"job_id": provider_id, "status": "pending"}
+                if (method, path) == ("GET", "/v1/jobs/" + provider_id):
+                    return {"status": "failed", "error": "stop after submission"}
+                raise AssertionError((method, path))
+
+            normalized_voiceover = dict(voiceover, provider="cosyvoice")
+            prepared = {
+                "path": Path("voice.mp3"), "duration": 8.0,
+                "fingerprint": "f" * 64,
+            }
+            original_job_db = core.JOB_DB
+            core.JOB_DB = str(database_path)
+            try:
+                with mock.patch.object(
+                    self.module, "require_available",
+                ), mock.patch.object(
+                    self.module, "public_templates", return_value=self.templates(),
+                ), mock.patch.object(
+                    self.module.feature_flags, "require_enabled",
+                ), mock.patch.object(
+                    audio.cosyvoice, "enabled", return_value=True,
+                ), mock.patch.object(
+                    audio, "validate_audio_payload",
+                    return_value=normalized_voiceover,
+                ) as validate_audio, mock.patch.object(
+                    audio, "require_owned_ready_personal_voice",
+                ), mock.patch.object(
+                    audio, "resolve_audio_provider_voice",
+                    return_value=provider_voice,
+                ), mock.patch.object(
+                    self.module, "_prepare_voiceover_audio", return_value=prepared,
+                ) as prepare, mock.patch.object(
+                    self.module, "_request", side_effect=request,
+                ), mock.patch.object(
+                    self.module.time, "sleep",
+                ), mock.patch.object(
+                    points, "deduct_points",
+                    side_effect=AssertionError("worker must not charge again"),
+                ) as deduct, self.assertRaisesRegex(
+                    self.module.MatrixTemplateProviderFailed,
+                    "stop after submission",
+                ):
+                    self.module.generate({
+                        **self.module._execution_payload(stored),
+                        "_job_id": 94, "_username": "alice",
+                    })
+            finally:
+                core.JOB_DB = original_job_db
+
+            self.assertEqual(201, len(validate_audio.call_args.args[0]["text"]))
+            prepare.assert_called_once_with(
+                "94", "alice", mock.ANY, None, mock.ANY,
+            )
+            deduct.assert_not_called()
+            self.assertEqual(
+                [("POST", "/v1/preflight"), ("POST", "/v1/jobs"),
+                 ("GET", "/v1/jobs/" + provider_id)],
+                [(method, path) for method, path, _, _ in calls],
+            )
 
     def test_generate_does_not_post_without_durable_submitting_phase(self):
         with mock.patch.object(
@@ -1603,6 +2138,426 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                 )
             self.assertEqual(len(deductions), 1)
 
+    def test_http_retry_recovers_charged_voiceover_before_current_voice_validation(self):
+        from content_domains import (
+            core, matrix_template_submission, submission_idempotency,
+        )
+
+        with tempfile.TemporaryDirectory() as temp:
+            database_path = Path(temp) / "jobs.db"
+
+            def database():
+                connection = sqlite3.connect(database_path, timeout=30)
+                connection.row_factory = sqlite3.Row
+                return connection
+
+            with closing(database()) as connection:
+                connection.execute("""CREATE TABLE jobs(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    kind TEXT NOT NULL,username TEXT NOT NULL,cost INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',payload TEXT NOT NULL,
+                    result TEXT,error TEXT,refunded INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,
+                    owner TEXT
+                )""")
+                submission_idempotency.ensure_table(connection)
+                connection.commit()
+
+            request_body = {
+                "top_text": "有效标题", "bottom_text": "评论区扣关键词",
+                "template_id": "native-bold", "bgm": False,
+                "voiceover": {
+                    "text": "已冻结的口播", "voice": "vip_alice",
+                    "voice_scope": "personal", "speed": 1,
+                    "pitch": 0, "volume": 0, "delivery": "natural",
+                },
+            }
+            frozen = json.loads(json.dumps(request_body, ensure_ascii=False))
+            frozen["duration"] = 8.0
+            frozen["voiceover"]["voice_version"] = "f" * 64
+            key = "matrix-charged-voice-recovery"
+            state, _ = submission_idempotency.begin(
+                database, "alice", "/api/gen/matrix-template", key,
+                request_body,
+            )
+            self.assertEqual("new", state)
+            matrix_template_submission.prepare(
+                database, "alice", "/api/gen/matrix-template", key,
+                request_body, 5, execution_body=frozen,
+            )
+            with closing(database()) as connection:
+                connection.execute("""UPDATE matrix_template_submission_attempts
+                    SET state='charged',points_left=95,lease_token='',lease_until=0
+                    WHERE username='alice' AND endpoint='/api/gen/matrix-template'
+                      AND idem_key=?""", (key,))
+                connection.commit()
+
+            class Points:
+                deductions = 1
+
+                @classmethod
+                def deduct_points(cls, *_args, **_kwargs):
+                    cls.deductions += 1
+                    raise AssertionError("charged attempt must not deduct again")
+
+                @staticmethod
+                def refund_points(*_args, **_kwargs):
+                    raise AssertionError("charged recovery must not refund")
+
+                @staticmethod
+                def get_points_transaction(_key):
+                    return None
+
+            queued = []
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), core.H)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            original_job_db = core.JOB_DB
+            core.JOB_DB = str(database_path)
+            thread.start()
+            try:
+                with mock.patch.object(
+                    core, "verify", return_value={
+                        "username": "alice", "points": 95,
+                        "must_change": False,
+                    },
+                ), mock.patch.object(
+                    core, "_domains", return_value=(
+                        SimpleNamespace(), Points, SimpleNamespace(),
+                    ),
+                ), mock.patch.object(
+                    core, "enqueue_job",
+                    side_effect=lambda job_id, kind, mode: (
+                        queued.append((job_id, kind, mode)) or True
+                    ),
+                ), mock.patch.object(
+                    self.module, "validate_payload",
+                    side_effect=AssertionError(
+                        "current voice state must not be revalidated"
+                    ),
+                ) as validate:
+                    responses = []
+                    for _attempt in range(2):
+                        request = urllib.request.Request(
+                            "http://127.0.0.1:%d/api/gen/matrix-template"
+                            % server.server_port,
+                            data=json.dumps(request_body, ensure_ascii=False).encode(),
+                            headers={
+                                "Authorization": "Bearer account-token",
+                                "Content-Type": "application/json",
+                                "Idempotency-Key": key,
+                            },
+                            method="POST",
+                        )
+                        with urllib.request.urlopen(request, timeout=10) as response:
+                            self.assertEqual(200, response.status)
+                            responses.append(json.load(response))
+                validate.assert_not_called()
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+                core.JOB_DB = original_job_db
+
+            self.assertEqual(1, Points.deductions)
+            self.assertEqual(responses[0]["job_id"], responses[1]["job_id"])
+            self.assertTrue(responses[0]["reconciled"])
+            with closing(database()) as connection:
+                jobs = connection.execute(
+                    "SELECT id,status,payload FROM jobs ORDER BY id"
+                ).fetchall()
+            self.assertEqual(1, len(jobs))
+            self.assertEqual("pending", jobs[0]["status"])
+            self.assertEqual(frozen, json.loads(jobs[0]["payload"]))
+            self.assertEqual(
+                [(jobs[0]["id"], "matrix_template_video", None)], queued,
+            )
+
+    def test_http_shutdown_preserves_prepared_attempt_then_recovers_once(self):
+        from content_domains import (
+            core, matrix_template_submission, submission_idempotency,
+        )
+
+        with tempfile.TemporaryDirectory() as temp:
+            database_path = Path(temp) / "jobs.db"
+
+            def database():
+                connection = sqlite3.connect(database_path, timeout=30)
+                connection.row_factory = sqlite3.Row
+                return connection
+
+            with closing(database()) as connection:
+                connection.execute("""CREATE TABLE jobs(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    kind TEXT NOT NULL,username TEXT NOT NULL,cost INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',payload TEXT NOT NULL,
+                    result TEXT,error TEXT,refunded INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,
+                    owner TEXT
+                )""")
+                submission_idempotency.ensure_table(connection)
+                connection.commit()
+            request_body = {
+                "top_text": "停机标题", "bottom_text": "评论区扣关键词",
+                "template_id": "native-bold", "bgm": False,
+                "voiceover": {
+                    "text": "停机期间不能扣点", "voice": "vip_alice",
+                    "voice_scope": "personal", "speed": 1,
+                    "pitch": 0, "volume": 0, "delivery": "natural",
+                },
+            }
+            frozen = json.loads(json.dumps(request_body, ensure_ascii=False))
+            frozen["duration"] = 8.0
+            frozen["voiceover"]["voice_version"] = "a" * 64
+            key = "matrix-prepared-shutdown-recovery"
+            submission_idempotency.begin(
+                database, "alice", "/api/gen/matrix-template", key,
+                request_body,
+            )
+            matrix_template_submission.prepare(
+                database, "alice", "/api/gen/matrix-template", key,
+                request_body, 5, execution_body=frozen,
+            )
+
+            class Points:
+                deductions = 0
+
+                @classmethod
+                def deduct_points(cls, *_args, **_kwargs):
+                    cls.deductions += 1
+                    return 95
+
+                @staticmethod
+                def refund_points(*_args, **_kwargs):
+                    raise AssertionError("successful recovery must not refund")
+
+                @staticmethod
+                def get_points_transaction(_key):
+                    return None
+
+            shutting_down = {"value": True}
+            queued = []
+            original_job_db = core.JOB_DB
+            core.JOB_DB = str(database_path)
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), core.H)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+
+            def submit():
+                request = urllib.request.Request(
+                    "http://127.0.0.1:%d/api/gen/matrix-template"
+                    % server.server_port,
+                    data=json.dumps(request_body, ensure_ascii=False).encode(),
+                    headers={
+                        "Authorization": "Bearer account-token",
+                        "Content-Type": "application/json",
+                        "Idempotency-Key": key,
+                    },
+                    method="POST",
+                )
+                try:
+                    with urllib.request.urlopen(request, timeout=10) as response:
+                        return response.status, json.load(response)
+                except urllib.error.HTTPError as error:
+                    return error.code, json.loads(error.read())
+
+            try:
+                with mock.patch.object(
+                    core, "verify", return_value={
+                        "username": "alice", "points": 100,
+                        "must_change": False,
+                    },
+                ), mock.patch.object(
+                    core, "_domains", return_value=(
+                        SimpleNamespace(), Points, SimpleNamespace(),
+                    ),
+                ), mock.patch.object(
+                    core, "is_shutting_down",
+                    side_effect=lambda: shutting_down["value"],
+                ), mock.patch.object(
+                    core, "enqueue_job",
+                    side_effect=lambda job_id, kind, mode: (
+                        queued.append((job_id, kind, mode)) or True
+                    ),
+                ), mock.patch.object(
+                    self.module, "validate_payload",
+                    side_effect=AssertionError(
+                        "frozen attempt must not revalidate current voice"
+                    ),
+                ) as validate:
+                    blocked_status, blocked = submit()
+                    self.assertEqual(503, blocked_status)
+                    self.assertEqual("shutting_down", blocked["code"])
+                    with closing(database()) as connection:
+                        attempt = connection.execute(
+                            "SELECT state FROM matrix_template_submission_attempts "
+                            "WHERE idem_key=?", (key,),
+                        ).fetchone()
+                        self.assertEqual("prepared", attempt["state"])
+                        self.assertEqual(
+                            0, connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0],
+                        )
+                    self.assertEqual(0, Points.deductions)
+                    self.assertEqual([], queued)
+
+                    shutting_down["value"] = False
+                    resumed_status, resumed = submit()
+                    self.assertEqual(200, resumed_status)
+                    self.assertGreater(int(resumed["job_id"]), 0)
+                    validate.assert_not_called()
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+                core.JOB_DB = original_job_db
+
+            self.assertEqual(1, Points.deductions)
+            with closing(database()) as connection:
+                self.assertEqual(
+                    1, connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0],
+                )
+                state = connection.execute(
+                    "SELECT state FROM matrix_template_submission_attempts "
+                    "WHERE idem_key=?", (key,),
+                ).fetchone()["state"]
+            self.assertEqual("linked", state)
+            self.assertEqual(1, len(queued))
+
+    def test_background_shutdown_skips_charge_and_job_until_resumed(self):
+        from content_domains import (
+            core, matrix_template_submission, submission_idempotency,
+        )
+
+        with tempfile.TemporaryDirectory() as temp:
+            database_path = Path(temp) / "jobs.db"
+
+            def database():
+                connection = sqlite3.connect(database_path, timeout=30)
+                connection.row_factory = sqlite3.Row
+                return connection
+
+            with closing(database()) as connection:
+                connection.execute("""CREATE TABLE jobs(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    kind TEXT NOT NULL,username TEXT NOT NULL,cost INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',payload TEXT NOT NULL,
+                    result TEXT,error TEXT,refunded INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,
+                    owner TEXT
+                )""")
+                submission_idempotency.ensure_table(connection)
+                connection.commit()
+            body = {
+                "top_text": "后台恢复", "bottom_text": "评论区扣关键词",
+                "template_id": "native-bold", "bgm": True, "duration": 8.0,
+            }
+            key = "matrix-background-shutdown"
+            submission_idempotency.begin(
+                database, "alice", "/api/gen/matrix-template", key, body,
+            )
+            matrix_template_submission.prepare(
+                database, "alice", "/api/gen/matrix-template", key,
+                body, 5, execution_body=body,
+            )
+
+            class Points:
+                deductions = 0
+
+                @classmethod
+                def deduct_points(cls, *_args, **_kwargs):
+                    cls.deductions += 1
+                    return 95
+
+                @staticmethod
+                def refund_points(*_args, **_kwargs):
+                    raise AssertionError("successful recovery must not refund")
+
+                @staticmethod
+                def get_points_transaction(_key):
+                    return None
+
+            queued = []
+            original_job_db = core.JOB_DB
+            core.JOB_DB = str(database_path)
+            try:
+                with mock.patch.object(
+                    core, "_domains", return_value=(
+                        SimpleNamespace(), Points, SimpleNamespace(),
+                    ),
+                ), mock.patch.object(
+                    core, "enqueue_job",
+                    side_effect=lambda job_id, kind, mode: (
+                        queued.append((job_id, kind, mode)) or True
+                    ),
+                ), mock.patch.object(
+                    core, "is_shutting_down", return_value=True,
+                ):
+                    self.assertEqual(0, core._retry_matrix_template_submissions())
+                with closing(database()) as connection:
+                    self.assertEqual(
+                        0, connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0],
+                    )
+                    state = connection.execute(
+                        "SELECT state FROM matrix_template_submission_attempts "
+                        "WHERE idem_key=?", (key,),
+                    ).fetchone()["state"]
+                self.assertEqual("prepared", state)
+                self.assertEqual(0, Points.deductions)
+                self.assertEqual([], queued)
+
+                with mock.patch.object(
+                    core, "_domains", return_value=(
+                        SimpleNamespace(), Points, SimpleNamespace(),
+                    ),
+                ), mock.patch.object(
+                    core, "enqueue_job",
+                    side_effect=lambda job_id, kind, mode: (
+                        queued.append((job_id, kind, mode)) or True
+                    ),
+                ), mock.patch.object(
+                    core, "is_shutting_down", return_value=False,
+                ):
+                    self.assertEqual(1, core._retry_matrix_template_submissions())
+            finally:
+                core.JOB_DB = original_job_db
+
+            self.assertEqual(1, Points.deductions)
+            with closing(database()) as connection:
+                self.assertEqual(
+                    1, connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0],
+                )
+                state = connection.execute(
+                    "SELECT state FROM matrix_template_submission_attempts "
+                    "WHERE idem_key=?", (key,),
+                ).fetchone()["state"]
+            self.assertEqual("linked", state)
+            self.assertEqual(1, len(queued))
+
+    def test_background_shutdown_still_reconciles_refund_pending(self):
+        from content_domains import core, matrix_template_submission
+
+        item = {
+            "username": "alice", "endpoint": "/api/gen/matrix-template",
+            "idem_key": "matrix-refund-during-shutdown",
+        }
+        refunded = {**item, "state": "refunded", "job_id": None}
+        with mock.patch.object(
+            core, "is_shutting_down", return_value=True,
+        ), mock.patch.object(
+            matrix_template_submission, "recoverable", return_value=[item],
+        ), mock.patch.object(
+            matrix_template_submission, "get",
+            return_value={**item, "state": "refund_pending"},
+        ), mock.patch.object(
+            matrix_template_submission, "recover", return_value=refunded,
+        ) as recover, mock.patch.object(
+            core, "_domains", return_value=(
+                SimpleNamespace(), SimpleNamespace(), SimpleNamespace(),
+            ),
+        ), mock.patch.object(core, "enqueue_job") as enqueue:
+            self.assertEqual(1, core._retry_matrix_template_submissions())
+        recover.assert_called_once()
+        enqueue.assert_not_called()
+
     def test_unified_function_names_cover_history_and_request_path(self):
         from server import func_names
 
@@ -1734,13 +2689,25 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertNotIn('id="bgm"', page)
         self.assertNotIn('id="fontFamily"', page)
         self.assertNotIn('id="fontSource"', page)
+        self.assertIn('id="voiceoverEnabled"', page)
+        self.assertIn('id="voiceoverText"', page)
+        self.assertIn('id="voiceoverText" class="mt-input" maxlength="120"', page)
+        self.assertIn('id="voiceoverVoice"', page)
+        self.assertIn('id="voiceoverSpeed"', page)
+        self.assertIn("/api/gen/audio/voices", page)
+        self.assertIn("bgm:!withVoice", page)
+        self.assertIn("speed:voiceSpeed()", page)
+        self.assertIn("function playableVoiceUrl(value)", page)
+        self.assertIn("URL.revokeObjectURL", page)
+        self.assertIn("addEventListener('pagehide',stopVoicePreview)", page)
+        self.assertIn("item.scope===voiceScope&&item.ready===true", page)
         self.assertIn('id="batchCount"', page)
         self.assertIn("Math.min(batchLimit", page)
         self.assertNotIn("排队", page)
         self.assertNotIn("（并行）", page)
         self.assertNotIn("font_family", page)
         self.assertNotIn("素材来源", page)
-        self.assertIn("template_id:activeTemplate,bgm:true", page)
+        self.assertIn("template_id:activeTemplate,bgm:!withVoice", page)
         self.assertIn('hq-content[data-active="matrix-template"]{height:auto!important', page)
         self.assertIn("function fitLiveText(node,max,min)", page)
         self.assertIn("var referencePreviews=", page)
@@ -1761,6 +2728,55 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertIn("pendingIdentity(current)!==expectedIdentity", page)
         self.assertLess(shell.index("k:'text-video'"), shell.index("k:'matrix-template'"))
         self.assertIn("/api/gen/matrix-template/capability", shell)
+
+    def test_openapi_documents_owned_voiceover_contract(self):
+        docs = (ROOT / "docs/api/openapi.json").read_text(encoding="utf-8")
+        site = (ROOT / "site/api-docs/openapi.json").read_text(encoding="utf-8")
+        self.assertEqual(docs, site)
+        spec = json.loads(docs)
+        operation = spec["paths"]["/api/gen/matrix-template"]["post"]
+        schema = operation["requestBody"]["content"]["application/json"]["schema"]
+        voiceover = schema["properties"]["voiceover"]
+        self.assertFalse(voiceover["additionalProperties"])
+        self.assertEqual(["text", "voice"], voiceover["required"])
+        self.assertEqual(
+            ["public", "personal"],
+            voiceover["properties"]["voice_scope"]["enum"],
+        )
+        server_source = (
+            SERVER / "content_domains/matrix_template_video.py"
+        ).read_text(encoding="utf-8")
+        limit_match = re.search(
+            r"^MAX_VOICEOVER_TEXT_LENGTH\s*=\s*(\d+)\s*$",
+            server_source,
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(limit_match)
+        limit = int(limit_match.group(1))
+        self.assertEqual(limit, voiceover["properties"]["text"]["maxLength"])
+        page = (ROOT / "site/workbench/matrix-template.html").read_text(
+            encoding="utf-8"
+        )
+        maxlength = re.search(
+            r'id="voiceoverText"[^>]*maxlength="(\d+)"', page,
+        )
+        self.assertIsNotNone(maxlength)
+        self.assertEqual(limit, int(maxlength.group(1)))
+        audio_schema = spec["paths"]["/api/gen/audio"]["post"][
+            "requestBody"
+        ]["content"]["application/json"]["schema"]
+        self.assertEqual(
+            1000, audio_schema["properties"]["text"]["maxLength"],
+        )
+        self.assertIn("强制关闭 BGM", operation["description"])
+        self.assertIn("时长跟随配音", operation["description"])
+        voice_item = json.loads(docs)["paths"]["/api/gen/audio/voices"]["get"][
+            "responses"
+        ]["200"]["content"]["application/json"]["schema"]["properties"][
+            "items"
+        ]["items"]
+        self.assertIn("status", voice_item["required"])
+        self.assertIn("ready", voice_item["required"])
 
     def test_layout_browser_regression_covers_all_reference_templates(self):
         source = (ROOT / "tests/matrix_template_layout_browser.js").read_text(
@@ -1786,6 +2802,7 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual(2, result["posts"])
         self.assertEqual(1, len(set(result["keys"])))
         self.assertTrue(all(body["bgm"] is True for body in result["bodies"]))
+        self.assertTrue(all("voiceover" not in body for body in result["bodies"]))
         self.assertTrue(all("duration" not in body for body in result["bodies"]))
         self.assertTrue(result["cleared"])
 
@@ -2074,6 +3091,46 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual("full-overlay-bold", result["body"]["template_id"])
         self.assertEqual("/hidden-template-video", result["src"])
         self.assertEqual("native-bold", result["active"])
+        self.assertTrue(result["cleared"])
+
+    def test_voiceover_submission_uses_personal_voice_and_disables_bgm(self):
+        result = self.runtime("voiceoverSubmission")
+        self.assertFalse(result["panelHidden"])
+        self.assertEqual("我的音色", result["scope"])
+        self.assertIn("S_d21F8OR62", result["publicOptions"])
+        self.assertIn("vip_alice", result["options"])
+        self.assertNotIn("vip_training", result["options"])
+        self.assertNotIn("vip_failed", result["options"])
+        self.assertEqual("10 / 120", result["count"])
+        self.assertEqual("1.3", result["speed"])
+        self.assertEqual("1.3x", result["speedLabel"])
+        self.assertFalse(result["body"]["bgm"])
+        self.assertEqual({
+            "text": "这是一段完整口播文案", "voice": "vip_alice",
+            "voice_scope": "personal", "speed": 1.3, "pitch": 0,
+            "volume": 0, "delivery": "natural",
+        }, result["body"]["voiceover"])
+
+    def test_voiceover_requires_copy_before_auth_or_submission(self):
+        result = self.runtime("voiceoverValidation")
+        self.assertIn("口播文案", result["status"])
+        self.assertEqual(result["status"], result["toast"])
+        self.assertEqual((0, 0, 0), (
+            result["auth"], result["posts"], result["confirms"],
+        ))
+
+    def test_voiceover_pending_state_restores_after_refresh(self):
+        result = self.runtime("voiceoverRestore")
+        self.assertTrue(result["enabled"])
+        self.assertFalse(result["panelHidden"])
+        self.assertEqual("恢复后的完整口播", result["text"])
+        self.assertEqual("我的音色", result["scope"])
+        self.assertEqual("vip_alice", result["voice"])
+        self.assertEqual("1.6", result["speed"])
+        self.assertEqual("1.6x", result["speedLabel"])
+        self.assertEqual(0, result["posts"])
+        self.assertEqual("/voiceover-restored-video", result["src"])
+        self.assertIn("配音", result["meta"])
         self.assertTrue(result["cleared"])
 
     def test_frontend_omits_font_selector_and_uses_template_default(self):

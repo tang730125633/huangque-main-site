@@ -303,8 +303,35 @@ class AudioListTest(unittest.TestCase):
             items = audio.list_audio_voices("alice")
         audio._preview_warm_running = False
         self.assertEqual(len(items), 2)
+        by_key = {item["voice_key"]: item for item in items}
+        self.assertTrue(by_key["S_d21F8OR62"]["ready"])
+        self.assertEqual("ready", by_key["S_d21F8OR62"]["status"])
+        self.assertFalse(by_key["vip"]["ready"])
+        self.assertEqual("training", by_key["vip"]["status"])
         thread.assert_called_once()
         thread.return_value.start.assert_called_once()
+
+    def test_voice_list_only_marks_ready_cosyvoice_personal_slot_available(self):
+        with sqlite3.connect(self.db) as conn:
+            conn.execute("""UPDATE audio_voice_slots
+                SET status='ready' WHERE id=1""")
+            conn.execute("""UPDATE audio_voices
+                SET provider_voice='cosyvoice-v3.5-plus-bailian-test'
+                WHERE id=1""")
+
+        with patch.object(audio, "_schedule_public_preview_warmup"):
+            ready = audio.list_audio_voices("alice")
+        personal = next(item for item in ready if item["scope"] == "personal")
+        self.assertTrue(personal["ready"])
+        self.assertEqual("ready", personal["status"])
+
+        with sqlite3.connect(self.db) as conn:
+            conn.execute("UPDATE audio_voice_slots SET status='failed' WHERE id=1")
+        with patch.object(audio, "_schedule_public_preview_warmup"):
+            failed = audio.list_audio_voices("alice")
+        personal = next(item for item in failed if item["scope"] == "personal")
+        self.assertFalse(personal["ready"])
+        self.assertEqual("failed", personal["status"])
 
     def test_public_voice_migration_invalidates_old_preview_once(self):
         with sqlite3.connect(self.db) as conn:

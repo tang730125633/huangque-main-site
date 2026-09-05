@@ -1435,6 +1435,12 @@ def _retry_matrix_template_submissions(limit=None):
     for item in matrix_template_submission.recoverable(
             jdb, int(limit or JOB_QUEUE_MAX)):
         try:
+            if is_shutting_down():
+                current = matrix_template_submission.get(
+                    jdb, item["username"], item["endpoint"], item["idem_key"],
+                )
+                if not current or current.get("state") != "refund_pending":
+                    continue
             attempt = matrix_template_submission.recover(
                 jdb, points, item["username"], item["endpoint"],
                 item["idem_key"], owner=SERVICE_OWNER,
@@ -2135,6 +2141,92 @@ class H(BaseHTTPRequestHandler):
                 except Exception as exc:
                     print("[matrix_template] ALARM idempotency abort failed: %s" %
                           type(exc).__name__, flush=True)
+
+    def _recover_durable_matrix_submission(
+            self, username, endpoint, idem_key, request_body, points_domain):
+        try:
+            attempt = matrix_template_submission.get(
+                jdb, username, endpoint, idem_key,
+            )
+        except Exception:
+            self._send(503, {
+                "detail": "原模板成片提交状态暂不可读",
+                "code": "reconcile_pending", "retry_after_ms": 3000,
+            })
+            return True
+        if not attempt:
+            return False
+        if (
+            attempt.get("kind") != "matrix_template_video"
+            or attempt.get("input") != request_body
+        ):
+            self._send(409, {
+                "detail": "原模板成片提交与当前请求不一致",
+                "code": "idempotency_conflict",
+            })
+            return True
+        if not attempt.get("execution_frozen"):
+            return False
+        shutdown = is_shutting_down()
+        if shutdown and attempt.get("state") in {
+                "prepared", "charging", "charged"}:
+            self._send(503, {
+                "detail": "服务正在更新，原提交已保留，请稍后重试",
+                "code": "shutting_down", "retry_after_ms": 5000,
+            })
+            return True
+        self._matrix_template_charge_started = True
+        try:
+            if not (shutdown and attempt.get("state") in {
+                    "linked", "failed", "refunded"}):
+                attempt = matrix_template_submission.recover(
+                    jdb, points_domain, username, endpoint, idem_key,
+                    owner=SERVICE_OWNER,
+                )
+        except matrix_template_submission.AttemptInProgress:
+            self._send(409, {
+                "detail": "原提交仍在受理中，请稍后查询",
+                "code": "idempotency_in_progress", "retry_after_ms": 1000,
+            })
+            return True
+        except matrix_template_submission.AttemptRecoveryPending:
+            self._send(503, {
+                "detail": "原提交扣点、任务或退款结果待确认",
+                "code": "reconcile_pending", "retry_after_ms": 3000,
+            })
+            return True
+        except matrix_template_submission.AttemptConflict as exc:
+            self._send(409, {
+                "detail": str(exc)[:220], "code": "idempotency_conflict",
+            })
+            return True
+        if not attempt or attempt.get("state") not in {
+                "linked", "failed", "refunded"}:
+            self._send(503, {
+                "detail": "原提交状态正在恢复",
+                "code": "reconcile_pending", "retry_after_ms": 3000,
+            })
+            return True
+        response = dict(attempt.get("response") or {})
+        status = int(response.pop("_http_status", 200))
+        if attempt["state"] == "linked":
+            job_id = int(attempt.get("job_id") or response.get("job_id") or 0)
+            with closing(jdb()) as connection:
+                job = connection.execute(
+                    "SELECT status FROM jobs WHERE id=? AND username=?",
+                    (job_id, username),
+                ).fetchone()
+            if not job:
+                self._send(503, {
+                    "detail": "已受理任务记录暂不可用",
+                    "code": "reconcile_pending", "retry_after_ms": 3000,
+                })
+                return True
+            if job["status"] == "pending" and not shutdown:
+                enqueue_job(job_id, "matrix_template_video", None)
+        response["reconciled"] = True
+        self._send(status, response)
+        return True
 
     def _do_POST(self):
         p = self.path.split("?")[0]
@@ -3912,6 +4004,15 @@ class H(BaseHTTPRequestHandler):
                             if matrix_template_idem_reserved:
                                 self._matrix_template_early_idempotency = (
                                     user["username"], p, idem_key)
+                if (
+                    kind == "matrix_template_video"
+                    and matrix_template_idem_existing
+                    and self._recover_durable_matrix_submission(
+                        user["username"], p, idem_key, request_body,
+                        points_domain,
+                    )
+                ):
+                    return
                 if is_still_route:
                     request_body, still_idem_body = _short_drama_domain().short_drama_production.normalize_still_request(body, require_quote=True); idem_key = _idempotency_key(self.headers.get("Idempotency-Key"))
                     if not idem_key: raise ValueError("关键帧提交必须提供 Idempotency-Key")
