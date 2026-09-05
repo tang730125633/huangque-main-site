@@ -27,3 +27,7 @@ class DirectorRegressionGateTests(unittest.TestCase):
 
     def test_added_passing_tests_are_accepted(self):
         self.assertEqual([], gate.compare(self.report(), self.report(tests=["passing", "existing_failure", "new"], count=3)))
+
+    def test_same_import_error_is_not_a_valid_baseline(self):
+        broken = self.report(tests=["unittest.loader._FailedTest.example"])
+        self.assertTrue(gate.compare(broken, broken))

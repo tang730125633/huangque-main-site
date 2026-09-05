@@ -24,6 +24,9 @@ FRONTEND = ("tests/test_director_agent.js", "tests/test_director_agent_confirmat
 
 def compare(base, head):
     problems = []
+    for label, report in (("Base", base), ("Head", head)):
+        if any("unittest.loader._FailedTest" in name for name in report["tests"]):
+            problems.append(label + " test module failed to import; baseline exemption is not allowed")
     if not set(base["tests"]) <= set(head["tests"]):
         problems.append("Base tests were removed")
     if head["count"] < base["count"]:
