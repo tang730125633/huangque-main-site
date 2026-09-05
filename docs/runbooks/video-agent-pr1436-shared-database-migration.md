@@ -5,7 +5,7 @@
 本手册覆盖 `tang730125633/huangque-main-site#1436` 对生产共享数据库
 `/home/ubuntu/content-api/content_jobs.db` 的结构升级。目标服务器为 `dapeng-server`。
 
-当前状态：**LU-003 阶段一审批及回归计数更正均已核验，等待一次性推送及精确 HEAD CI/审核；本文件不是合并、部署或重启授权。**
+当前状态：**业务与 Schema 已重新固定，旧审批因业务修复及 `main` 合成失效；等待 LU-003 对新固定对象重新批准，以及精确 HEAD CI/审核。本文件不是合并、部署或重启授权。**
 
 本次结构变化包括：
 
@@ -23,35 +23,36 @@
 ## 固定审批对象
 
 - PR：`tang730125633/huangque-main-site#1436`
-- 固定业务与 Schema 提交：`5713c83ecaf7b23d133f5da6b0c16a5afa3e1aa7`
-- 基线：`main@f7c2463c201946c2ce9344ae21f06d06e9433f61`
+- 固定业务与 Schema 提交：`c876ddd13989b1b2be8b8d93577252b5ad47e3f6`
+- 基线：`main@a3e2c596367a8679634608c7750e178747490186`
 - 维护窗口：`2026-09-06 02:00–03:00 Asia/Shanghai`
 - 执行、备份、验证、失败恢复负责人：`@LU-003`
-- 阶段一审批评论：
+- 已失效阶段一审批评论：
   [issuecomment-5537682411](https://github.com/tang730125633/huangque-main-site/pull/1436#issuecomment-5537682411)
   - 评论 ID：`5537682411`
   - Node ID：`IC_kwDOS66oj88AAAABShJT6w`
   - 作者：`LU-003`
   - 作者关联：`COLLABORATOR`
   - 创建及更新时间：`2026-09-04T08:13:51Z`
-  - 该评论中的“相关回归 `231/231`”为计数笔误；正确分项为核心任务相关模块
-    `229/229`、`tests.test_hq_cli_content` `35/35`，合计 `264/264`。
-- 阶段一审批证据更正：
+  - 该评论绑定旧业务与 Schema 提交 `5713c83ecaf7b23d133f5da6b0c16a5afa3e1aa7`，
+    已因本轮业务修复和 `main` 合成失效，不得用于当前候选。
+- 已失效阶段一审批证据更正：
   [issuecomment-5537746449](https://github.com/tang730125633/huangque-main-site/pull/1436#issuecomment-5537746449)
   - 评论 ID：`5537746449`
   - Node ID：`IC_kwDOS66oj88AAAABShNOEQ`
   - 作者：`LU-003`
   - 作者关联：`COLLABORATOR`
   - 创建及更新时间：`2026-09-04T08:20:08Z`
-  - 绑定计数更正治理提交：`8f1a52b2033610601d61ae7f8a59796bfa38cf3d`
-- 阶段二最终 HEAD 审批：待一次性推送、精确 HEAD CI 和最新审核通过后发布。
+  - 绑定计数更正治理提交：`8f1a52b2033610601d61ae7f8a59796bfa38cf3d`；该证据不能批准当前候选。
+- 当前阶段一审批：等待 `@LU-003` 明确批准上述固定业务与 Schema 提交、基线、数据库路径、维护窗口、负责人、备份、验证及回滚方案。
+- 阶段二最终 HEAD 审批：待一次性推送、精确 HEAD CI 和最新审核通过后，由 `@LU-003` 对最终 HEAD 发布。
 - 已失效历史审批：
   [issuecomment-5536582840](https://github.com/tang730125633/huangque-main-site/pull/1436#issuecomment-5536582840)、
   [issuecomment-5536612768](https://github.com/tang730125633/huangque-main-site/pull/1436#issuecomment-5536612768)。
   二者绑定旧业务 SHA `24e67cd43b082a646586ea02f1b4241c5dae30d1`，因本轮业务与测试修复而失效。
 
-固定提交后只允许追加审批评论元数据、验证证据或纯 `main` 同步。若业务代码、测试或 Schema
-再次变化，阶段一审批立即失效，必须重新固定 SHA、重跑验证并取得新审批。
+固定提交后只允许追加审批评论元数据和验证证据。若业务代码、测试、Schema 或合入的 `main`
+再次变化，阶段一审批立即失效，必须重新固定 SHA、重跑验证并取得新审批；不得把 `main` 同步视为自动无影响。
 
 ## 部署前门禁
 
@@ -100,12 +101,12 @@ python scripts/ci_validate.py
 python scripts/stamp_assets.py --check
 ```
 
-本地固定提交验证证据：核心任务相关模块 `229/229` 与 `tests.test_hq_cli_content` `35/35`
-均通过，合计 `264/264`；仓库静态门禁、资源版本戳、Python 语法及
-`git diff --check` 均通过。Windows 单进程全量发现运行 4715 项，结果为 52 failures、118 errors、
-46 skipped；在隔离的 `main@f7c2463c` 工作树中，审核点名的短剧恢复与 Sora 恢复失败可同样复现，
-而 PR 独有的 Seedance 顺序回归已修复并通过 19/19 模块测试。由于本机无 WSL/Docker，受支持
-Linux 环境的最终结论必须以一次性推送后的精确 HEAD CI/审核记录为准，不得用 Windows 结果替代。
+本地候选验证证据：Agent、CLI 执行器与 OpenAPI 定向回归 `85/85` 通过；CLI 发布包回归
+`8/8` 通过、`2` 项 POSIX 用例按设计跳过；仓库静态门禁、资源版本戳、Python 语法及
+`git diff --check` 均通过。Windows 单进程全量发现运行 4741 项，结果为 49 failures、132 errors、
+46 skipped；失败主要集中在本机缺少 Bash、GBK/Node 子进程解码和非本 PR 模块。该运行发现并修复了
+当前候选的 CLI wheel/source 漂移。受支持 Linux 环境的最终结论必须以一次性推送后的精确 HEAD
+required CI 为准，不得用 Windows 结果替代；required CI 已增加仓库根完整 Python 回归命令。
 
 ## 失败回滚
 
