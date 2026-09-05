@@ -12,7 +12,7 @@ try {
   for (const width of [360,390,412]) {
     const page = await browser.newPage({viewport:{width,height:844}, deviceScaleFactor:1});
     const errors=[]; page.on('pageerror', e=>errors.push(e.message));
-    let submitted=0, firstPoll=true, completed=false;
+    let submitted=0, firstPoll=true, completed=false, streamRequests=0, statusRequests=0;
     const quoteId='a'.repeat(64);
     const delegation=()=> completed ? {collect:{state:'completed',summary:'采集结果已就绪',quote_id:''}} :
       {collect:{state:'needs_approval',summary:'已按小红书关键词取得采集报价，确认后提交采集任务并返回账号名单。'.repeat(3),
@@ -23,8 +23,8 @@ try {
       if(p.startsWith('/static/')) return route.fulfill({contentType:p.endsWith('.css')?'text/css':'application/javascript',body:fs.readFileSync(path.join(ui,p),'utf8')});
       if(p==='/api/health') return route.fulfill({json:{llm_mode:'live',hq_status:{ok:true}}});
       if(p==='/api/v4/start') return route.fulfill({json:{session_id:'mobile-test',async:true,seq:1,mode:'live'}});
-      if(p.includes('/api/v4/stream/')) return route.fulfill({status:200,contentType:'text/event-stream',body:': heartbeat\n\n'});
-      if(p.includes('/api/v4/status/')) return route.fulfill({json:{turns:[{seq:1,state:'working'}],jobs:[],delegations:delegation(),film:false}});
+      if(p.includes('/api/v4/stream/')) {streamRequests++; return route.fulfill({status:500,body:'fail'});}
+      if(p.includes('/api/v4/status/')) {statusRequests++; return route.fulfill({json:{turns:[{seq:1,state:'working'}],jobs:[],delegations:delegation(),film:false}});}
       if(p.includes('/api/v4/state/')) return route.fulfill({json:delegation()});
       if(p.includes('/api/v4/poll/')) {
         if(submitted && firstPoll) {firstPoll=false; return route.fulfill({json:{state:'done',seq:2,reply:'本轮采集结果已送达',delegations:delegation(),film:false}});}
@@ -59,10 +59,14 @@ try {
     await page.getByText('本轮采集结果已送达',{exact:true}).waitFor({timeout:15000});
     assert.equal(submitted,1,'triple click must only send one confirmation');
     assert.equal(await page.getByText('本轮采集结果已送达',{exact:true}).count(),1);
+    await page.waitForTimeout(3500);
+    assert.equal(streamRequests,1,'SSE failure must not reconnect in the same session');
+    assert.ok(statusRequests>=1,'HTTPS status polling must take over after SSE failure');
     completed=true;
     await page.locator('.approval-box').waitFor({state:'detached',timeout:6000});
     assert.deepEqual(errors,[]);
-    results.push({width,...layout,confirmRequests:submitted,heldReplyDelivered:true,staleCardRemoved:true});
+    results.push({width,...layout,confirmRequests:submitted,streamRequests,statusRequests,
+                  heldReplyDelivered:true,staleCardRemoved:true});
     await page.close();
   }
   fs.writeFileSync(path.join(out,'mobile-results.json'),JSON.stringify(results,null,2));

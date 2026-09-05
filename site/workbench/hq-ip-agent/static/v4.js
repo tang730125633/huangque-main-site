@@ -650,19 +650,18 @@
     autoScroll();
   }
 
-  // ---- SSE 实时推送：一条长连接收 turn/status 事件，替代轮询；断线自动降级轮询 ----
+  // ---- SSE 实时推送：首次断线后固定降级 HTTPS 轮询，不反复重建长连接 ----
   var eventSource = null;
-  var streamRetryTimer = null; // 断线重连定时器
-  var streamRetryDelay = 0;    // 指数退避：3s 起步，翻倍到 30s 封顶，连上清零
+  var streamDisabled = false;
 
   function startStream() {
+    if (streamDisabled) { startStatusPoll(); return; }
     if (eventSource || !sessionId) return;
     if (!window.EventSource) { startStatusPoll(); return; } // 老环境降级轮询
     try {
       eventSource = new EventSource("api/v4/stream/" + encodeURIComponent(sessionId));
     } catch (e) { eventSource = null; startStatusPoll(); return; }
     eventSource.onopen = function () {
-      streamRetryDelay = 0; // 连上了：重连退避清零
       // SSE 已通。轮询不取消：作为兜底双通道，SSE 假死时轮询仍能把结果送到；
       // renderedSeqs 按 seq 去重，双通道重复交付只渲染一次。
     };
@@ -697,18 +696,13 @@
       renderDeliveries(st.deliveries);
     });
     eventSource.onerror = function () {
-      // 断线（代理不支持/网络抖动）：关闭并降级到 2 秒轮询，结果不丢；
-      // 指数退避自动重连（3s → 6s → … → 30s），恢复后轮询降级自动让位。
+      // 断线（移动网络切换/代理关闭长连接）：本会话固定降级到 HTTPS 轮询，
+      // 不再反复建立 SSE；结果仍由 status + poll 双接口兜底交付。
       try { eventSource.close(); } catch (e2) {}
       eventSource = null;
+      streamDisabled = true;
       startStatusPoll();
       if (Object.keys(activeSeqs).length > 0) startTurnPoll(null);
-      streamRetryDelay = streamRetryDelay ? Math.min(streamRetryDelay * 2, 30000) : 3000;
-      if (streamRetryTimer) clearTimeout(streamRetryTimer);
-      streamRetryTimer = setTimeout(function () {
-        streamRetryTimer = null;
-        startStream();
-      }, streamRetryDelay);
     };
   }
 
@@ -1801,11 +1795,9 @@
     cancelTurnPoll();
     removeStatusBubble();
     jobTimedOut = false; // 新会话：卡死窗口重计
-    // 关掉旧会话的 SSE 长连接：否则旧 sid 的 turn/delivery/status 事件继续打进新会话 DOM，
-    // 且 startStream 的守卫（eventSource 非空即返回）会让新会话永远建不起自己的 SSE
+    // 关掉旧会话的 SSE 长连接：否则旧 sid 的事件会继续打进新会话 DOM。
     if (eventSource) { try { eventSource.close(); } catch (e2) {} eventSource = null; }
-    if (streamRetryTimer) { clearTimeout(streamRetryTimer); streamRetryTimer = null; }
-    streamRetryDelay = 0;
+    streamDisabled = false;
     pendingAttachments = [];
     renderUploads();
     intro.style.display = "";
