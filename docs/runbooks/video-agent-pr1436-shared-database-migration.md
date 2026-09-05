@@ -5,7 +5,7 @@
 本手册覆盖 `tang730125633/huangque-main-site#1436` 对生产共享数据库
 `/home/ubuntu/content-api/content_jobs.db` 的结构升级。目标服务器为 `dapeng-server`。
 
-当前状态：**业务与 Schema 已重新固定，旧审批因业务修复及 `main` 合成失效；等待 LU-003 对新固定对象重新批准，以及精确 HEAD CI/审核。本文件不是合并、部署或重启授权。**
+当前状态：**业务与 Schema 已重新固定并取得 LU-003 阶段一批准；等待版本化本证据后的最终 HEAD 阶段二批准及有效 GitHub 审核。本文件不是合并、部署或重启授权。**
 
 本次结构变化包括：
 
@@ -44,8 +44,18 @@
   - 作者关联：`COLLABORATOR`
   - 创建及更新时间：`2026-09-04T08:20:08Z`
   - 绑定计数更正治理提交：`8f1a52b2033610601d61ae7f8a59796bfa38cf3d`；该证据不能批准当前候选。
-- 当前阶段一审批：等待 `@LU-003` 明确批准上述固定业务与 Schema 提交、基线、数据库路径、维护窗口、负责人、备份、验证及回滚方案。
-- 阶段二最终 HEAD 审批：待一次性推送、精确 HEAD CI 和最新审核通过后，由 `@LU-003` 对最终 HEAD 发布。
+- 当前阶段一审批：
+  [issuecomment-5551171596](https://github.com/tang730125633/huangque-main-site/pull/1436#issuecomment-5551171596)
+  - 评论 ID：`5551171596`
+  - Node ID：`IC_kwDOS66oj88AAAABSuAoDA`
+  - 作者：`LU-003`
+  - 作者关联：`COLLABORATOR`
+  - 创建及更新时间：`2026-09-05T10:28:09Z`
+  - 明确绑定业务/Schema SHA `a22087fd3e018f75053b4f10cc24e1d4021326b5`、
+    `main@36d1790b9a5e2944512b72d684025b89113601bb`、数据库路径、维护窗口、
+    负责人、停写、一致性备份、升级/幂等验证及失败回滚方案；当前有效。
+- 阶段二最终 HEAD 审批：待本阶段一证据完成版本化、一次性推送及精确 HEAD CI 后，
+  由 `@LU-003` 对新的最终 HEAD 发布。
 - 已失效历史审批：
   [issuecomment-5536582840](https://github.com/tang730125633/huangque-main-site/pull/1436#issuecomment-5536582840)、
   [issuecomment-5536612768](https://github.com/tang730125633/huangque-main-site/pull/1436#issuecomment-5536612768)。
