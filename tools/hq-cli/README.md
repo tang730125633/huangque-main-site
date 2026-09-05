@@ -194,6 +194,24 @@ JSON
 
 时长由文案自动计算，背景音乐默认开启，素材固定来自平台已审核素材库。拿到 `job_id` 后只轮询 `task`，不要再次提交生成命令。
 
+需要配音时，先运行 `hq run voices --json`，从 `ready=true` 的项目复制 `voice_key` 和 `scope`，再添加可选 `voiceover`。文案最多 120 字，语速范围 0.5–2.0；开启后自动关闭背景音乐，成片时长跟随配音：
+
+```json
+{
+  "top_text": "真正拉开差距的，不是工具",
+  "bottom_text": "评论区留下关键词，领取完整方案",
+  "template_id": "full-overlay-bold",
+  "voiceover": {
+    "text": "真正拉开差距的，不是你用了多少工具，而是能不能把工具变成稳定产出的流程。",
+    "voice": "vip_slot_12345678",
+    "voice_scope": "personal",
+    "speed": 1.2
+  }
+}
+```
+
+不传 `voiceover` 即关闭配音并继续使用背景音乐。批量命令同样支持这组配音参数。
+
 同一文案与模板需要一次生成 2–5 条时，增加 `count` 并使用批量能力：
 
 ```json
