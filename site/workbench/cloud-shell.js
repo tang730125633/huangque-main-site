@@ -357,9 +357,15 @@
     var h=extra||{};
     return h;
   }
+  var _verifiedUsername='';
+  function notifyAuthChanged(user,verified){
+    var username=user&&typeof user.username==='string'?user.username:'';
+    _verifiedUsername=verified===true&&username?username:'';
+    try{ window.dispatchEvent(new CustomEvent('hq:auth-changed',{detail:{username:_verifiedUsername,verified:!!_verifiedUsername}})); }catch(e){}
+  }
   function refreshPoints(){
-    fetch('/api/auth/me',{credentials:'same-origin',cache:'no-store',headers:authHeaders()}).then(function(r){ if(!r.ok) return null; return r.json(); }).then(function(d){
-      if(d&&d.user){ _accountAvatar=d.user.avatar||''; try{ localStorage.removeItem('hq_token'); localStorage.setItem('hq_user',JSON.stringify(d.user)); }catch(e){} renderUser(); }
+    fetch('/api/auth/me',{credentials:'same-origin',cache:'no-store',headers:authHeaders()}).then(function(r){ if(r.status===401){ notifyAuthChanged(null,false);if(currentUser()) requireLogin(); return null; } if(!r.ok)return null; return r.json(); }).then(function(d){
+      if(d&&d.user){ _accountAvatar=d.user.avatar||''; try{ localStorage.removeItem('hq_token'); localStorage.setItem('hq_user',JSON.stringify(d.user)); }catch(e){} notifyAuthChanged(d.user,true); renderUser(); }
       var p=d&&d.user&&d.user.points; if(p==null) return;
       var a=document.getElementById('hqPointsSide');
       if(a) a.textContent=p;
@@ -952,8 +958,13 @@
   function openLogin(mode){ setLoginMode(mode); var ov=document.getElementById('hqLoginOv'); if(ov){ ov.classList.add('on'); var u=document.getElementById('hqU'); if(u) setTimeout(function(){try{u.focus();}catch(e){}},60); } }
   function openRegister(){ openLogin('register'); }
   function closeLogin(){ var ov=document.getElementById('hqLoginOv'); if(ov) ov.classList.remove('on'); }
+  function requireLogin(){
+    try{ localStorage.removeItem('hq_token'); localStorage.removeItem('hq_user'); localStorage.removeItem('hq_role'); }catch(e){}
+    _accountAvatar='';closeAccountMenu();notifyAuthChanged(null,false);renderUser();openLogin();return true;
+  }
   function authSuccess(res,msg){
     try{ localStorage.removeItem('hq_role'); localStorage.removeItem('hq_token'); if(res.d.user) localStorage.setItem('hq_user',JSON.stringify(res.d.user)); }catch(e){}
+    notifyAuthChanged(res.d&&res.d.user,true);
     hqMsg(msg||'操作成功','ok');
     setTimeout(function(){ closeLogin(); refreshPoints(); renderUser(); },450);
   }
@@ -1018,6 +1029,7 @@
       sessionStorage.removeItem('hq_director_agent_digital_human_v1');
     }catch(e){}
     try{ localStorage.removeItem('hq_token'); localStorage.removeItem('hq_user'); localStorage.removeItem('hq_role'); }catch(e){}
+    notifyAuthChanged(null,false);
     fetch('/api/auth/logout',{method:'POST',credentials:'same-origin',headers:h}).finally(function(){ location.reload(); });
   }
   function avatarHTML(ch,size){
@@ -1111,7 +1123,7 @@
   function price(key,fallback){var value=Number(pricingValues[key]);return Number.isFinite(value)&&value>0?value:fallback;}
   setInterval(function(){fetchPricing().then(function(values){pricingListeners.forEach(function(callback){callback(values)})}).catch(function(){})},30000);
 
-  window.HQ={ icon:icon, nav:NAV, escapeHtml:escapeHtml, escapeAttr:escapeAttr, safeUrl:safeUrl, isAdmin:isAdmin, refreshPoints:refreshPoints, refreshNotifications:refreshNotificationBadge, setFriendsBadge:updateFriendsBadge, registerFriendsPanel:registerFriendsPanel, setFriendsPanelExpanded:setFriendsPanelExpanded, openFriendsPanel:openFriendsPanel, login:openLogin, register:openRegister, closeLogin:closeLogin, renderUser:renderUser, onPricing:onPricing, price:price };
+  window.HQ={ icon:icon, nav:NAV, escapeHtml:escapeHtml, escapeAttr:escapeAttr, safeUrl:safeUrl, isAdmin:isAdmin, getVerifiedUser:function(){return _verifiedUsername?{username:_verifiedUsername}:null;}, refreshPoints:refreshPoints, refreshNotifications:refreshNotificationBadge, setFriendsBadge:updateFriendsBadge, registerFriendsPanel:registerFriendsPanel, setFriendsPanelExpanded:setFriendsPanelExpanded, openFriendsPanel:openFriendsPanel, login:openLogin, requireLogin:requireLogin, register:openRegister, closeLogin:closeLogin, renderUser:renderUser, onPricing:onPricing, price:price };
   function _hqInit(){ build(); buildLoginModal(); loadTaskTracker(); }
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',_hqInit); else _hqInit();
 })();
