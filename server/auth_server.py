@@ -5326,10 +5326,17 @@ class H(BaseHTTPRequestHandler):
                 )
                 response = {
                     "quote_token": token, "kind": generation_kind, "cost": claims["c"],
+                    "fingerprint": generation_kind + ":" + claims["h"],
                     "points": result.get("points"), "expires_in": hq_cli_api.QUOTE_TTL,
                     "expires_at": claims["e"],
                     "confirmation_required": True,
                 }
+                # 报价真正绑定的标准化 payload（含服务端默认值）：确认卡必须展示
+                # 它而不是从原始工具参数重建。video-avatar-create 的 payload 含
+                # 最长 12MB 的 image_data data URL，回传会击穿 CLI 输出上限，
+                # 且该能力不在 Agent 报价工具内，因此不随报价返回 payload。
+                if generation_kind != "avatar":
+                    response["payload"] = payload
                 for field in plan.get("quote_result_fields", ()):
                     if field in result:
                         response[field] = result[field]
@@ -6027,6 +6034,65 @@ class H(BaseHTTPRequestHandler):
                 )
                 credentials = hq_cli_api.issue_grant_tokens(connection, cursor.lastrowid, scopes, now)
             return self._cli_send(200, {**credentials, "username": row["username"]})
+        if p == "/api/auth/internal/cli/delegate":
+            if not self._require_internal():
+                return
+            row = self._user()
+            if not row:
+                return self._cli_send(401, {
+                    "detail": "未登录或登录已过期", "code": "web_unauthorized",
+                })
+            if self._content_length_exceeds(4096):
+                return self._cli_send(413, {"detail": "请求过大", "code": "request_too_large"})
+            d = self._body()
+            if self._bad_json() or not isinstance(d, dict):
+                return self._cli_send(400, {"detail": "请求体不是合法 JSON 对象"})
+            if set(d) != {"username", "scopes", "ttl_seconds"}:
+                return self._cli_send(400, {
+                    "detail": "请求字段必须是 username、scopes、ttl_seconds",
+                    "code": "invalid_request",
+                })
+            username = d.get("username")
+            if not isinstance(username, str) or not secrets.compare_digest(
+                    username.strip(), str(row["username"])):
+                return self._cli_send(403, {
+                    "detail": "不能为其他账号签发授权", "code": "identity_mismatch",
+                })
+            try:
+                delegated = hq_cli_api.issue_delegated_token(
+                    db, row["username"], d.get("scopes"), d.get("ttl_seconds"),
+                )
+                return self._cli_send(200, delegated)
+            except hq_cli_api.CLIAPIError as exc:
+                return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
+        if p == "/api/auth/internal/cli/quote-claims":
+            # 只读核验：内容服务在付费确认前用它取得签名内的确定性字段
+            # （nonce/kind/cost/expires_at/username/payload_hash），据此构造
+            # 与 CLI 提交链路一致的幂等键，供 result_unknown 对账使用。
+            if not self._require_internal():
+                return
+            if self._content_length_exceeds(4096):
+                return self._cli_send(413, {"detail": "请求过大", "code": "request_too_large"})
+            d = self._body()
+            if self._bad_json() or not isinstance(d, dict):
+                return self._cli_send(400, {"detail": "请求体不是合法 JSON 对象"})
+            if set(d) != {"quote_token"}:
+                return self._cli_send(400, {
+                    "detail": "请求字段必须是 quote_token",
+                    "code": "invalid_request",
+                })
+            token = d.get("quote_token")
+            if not isinstance(token, str) or not 20 <= len(token) <= 4096:
+                return self._cli_send(400, {"detail": "报价凭证无效", "code": "invalid_quote"})
+            try:
+                claims = hq_cli_api.quote_claims_only(INTERNAL_TOKEN, token)
+                return self._cli_send(200, {
+                    "nonce": claims["n"], "kind": claims["k"], "cost": claims["c"],
+                    "expires_at": claims["e"], "username": claims["u"],
+                    "payload_hash": claims["h"],
+                })
+            except hq_cli_api.CLIAPIError as exc:
+                return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
         if p == "/api/auth/cli/device/start":
             if self._content_length_exceeds(8192):
                 return self._cli_send(413, {"detail": "请求过大"})

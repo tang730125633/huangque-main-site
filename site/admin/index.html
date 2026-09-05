@@ -437,7 +437,7 @@
           <b id="providerKeyEditorTitle">新增 API Key</b>
           <div class="hint">先做免费鉴权检测，通过后加密保存。更换密钥请先新增新 Key，检测正常后再停用旧 Key。</div>
           <div class="toolbar">
-            <select id="providerKeyProvider"><option value="xai">xAI API · 果肉视频</option><option value="sora">OpenAI API · Sora 2</option><option value="seedance">火山方舟 API · Seedance</option><option value="omni">Google Gemini API · Omni</option><option value="minimax">MiniMax API · 麦克视频</option></select>
+            <select id="providerKeyProvider"><option value="xai">xAI API · 果肉视频</option><option value="deepseek">DeepSeek API · 视频创作助手</option><option value="sora">OpenAI API · Sora 2</option><option value="seedance">火山方舟 API · Seedance</option><option value="omni">Google Gemini API · Omni</option><option value="minimax">MiniMax API · 麦克视频</option></select>
             <input class="field" id="providerKeyLabel" maxlength="60" autocomplete="off" placeholder="线路名称，例如：线路 2">
             <input class="field" id="providerKeySecret" type="password" maxlength="4096" autocomplete="new-password" aria-label="API 密钥" placeholder="输入 API 密钥">
             <button class="primary" id="providerKeyAdd">检测并新增</button>
@@ -781,7 +781,8 @@
   function channelIdentity(k,features,scope,baseHost){
     features=(features||k.features||[]).map(function(x){return '<div>'+esc(x)+'</div>'}).join('');
     var base=baseHost?'<div class="key-meta">实际 Base Host：<code>'+esc(baseHost)+'</code></div>':'';
-    return '<div class="channel-title"><b>'+esc(k.name)+'</b><span class="channel-category">'+esc(scope||k.category||'API 服务')+'</span><div class="feature-map">'+features+'</div>'+base+endpointList(k)+'</div>';
+    var models=(k.model_options||[]).length?'<div class="key-meta">当前模型：<code>'+esc(k.model||'未配置')+'</code> · 可选：'+k.model_options.map(function(x){return '<code>'+esc(x)+'</code>'}).join('、')+(k.model_env?' · 环境变量 <code>'+esc(k.model_env)+'</code>':'')+'</div>':'';
+    return '<div class="channel-title"><b>'+esc(k.name)+'</b><span class="channel-category">'+esc(scope||k.category||'API 服务')+'</span><div class="feature-map">'+features+'</div>'+base+models+endpointList(k)+'</div>';
   }
   function moveProviderEditor(hostId){
     var editor=el('providerKeyEditor'),host=hostId&&el(hostId);

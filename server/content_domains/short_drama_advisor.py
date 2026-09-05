@@ -35,6 +35,11 @@ _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _MAX_INPUT_TOKENS = 16000
 _MAX_OUTPUT_TOKENS = 1200
 _MODEL_PRICES = {
+    # DeepSeek V4 peak prices per 1M tokens. Off-peak discounts are not used
+    # for reservations so the internal budget guard always stays conservative.
+    "deepseek-v4-flash": (440000, 1320000),
+    "deepseek-v4-flash-vision-exp": (440000, 1320000),
+    "deepseek-v4-pro": (1320000, 3960000),
     # xAI prices per 1M tokens: $0.30 input / $0.50 output.
     "grok-3-mini": (300000, 500000),
     "grok-3-mini-latest": (300000, 500000),
@@ -218,19 +223,34 @@ def _reset_usage_for_tests():
         _GLOBAL_ACTIVE = 0
 
 
-def _finalize_usage(ticket, outcome, provider_usage=None):
+_ACTUAL_COST_UNSET = object()
+
+
+def _finalize_usage(
+    ticket, outcome, provider_usage=None, *, settle_known_usage=False,
+    actual_cost_microusd=_ACTUAL_COST_UNSET,
+):
     if not isinstance(ticket, dict) or not ticket.get("id"):
         return
     usage = provider_usage if isinstance(provider_usage, dict) else {}
     prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens")
     completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens")
     actual_cost = ticket.get("reserve_microusd")
-    if outcome == "succeeded" and prompt_tokens is not None and completion_tokens is not None:
+    if (
+        (outcome == "succeeded" or settle_known_usage)
+        and prompt_tokens is not None
+        and completion_tokens is not None
+    ):
         try:
-            actual_cost = _token_cost(
-                ticket.get("model"), prompt_tokens, completion_tokens
-            )
-        except AdvisorError:
+            if actual_cost_microusd is _ACTUAL_COST_UNSET:
+                actual_cost = _token_cost(
+                    ticket.get("model"), prompt_tokens, completion_tokens
+                )
+            else:
+                actual_cost = int(actual_cost_microusd)
+                if actual_cost < 0:
+                    raise ValueError("negative provider cost")
+        except (AdvisorError, TypeError, ValueError):
             _AUDIT_LOG.warning(
                 "advisor_provider_usage_invalid usage_id=%s", ticket.get("id")
             )

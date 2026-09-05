@@ -17,6 +17,10 @@ class HqCliTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.env = patch.dict(os.environ, {"HQ_CLI_CONFIG_DIR": self.temp.name})
         self.env.start()
+        # Agent-only credentials/base overrides must never leak between tests.
+        os.environ.pop("HQ_CLI_ACCESS_TOKEN", None)
+        os.environ.pop("HQ_CLI_API_BASE", None)
+        os.environ.pop("HQ_CLI_QUOTE_TOKEN", None)
 
     def tearDown(self):
         self.env.stop()
@@ -672,6 +676,105 @@ class HqCliTests(unittest.TestCase):
         self.assertFalse(client.credentials_path().exists())
         self.assertEqual("/api/auth/cli/logout", request.call_args.args[0])
         self.assertEqual({"refresh_token": ""}, request.call_args.kwargs["body"])
+
+    def test_environment_access_token_has_priority_without_touching_disk(self):
+        self.authorize()
+        disk_before = client.credentials_path().read_bytes()
+        delegated = "d" * 43
+        with patch.dict(os.environ, {"HQ_CLI_ACCESS_TOKEN": delegated}):
+            credentials = client.load_credentials()
+        self.assertEqual(delegated, credentials["access_token"])
+        self.assertEqual(disk_before, client.credentials_path().read_bytes())
+
+    def test_invalid_environment_access_token_fails_closed_without_disk_fallback(self):
+        self.authorize()
+        for invalid in ("", "short", "x" * 201, "x" * 20 + "\n"):
+            with self.subTest(invalid_length=len(invalid)), \
+                    patch.dict(os.environ, {"HQ_CLI_ACCESS_TOKEN": invalid}):
+                self.assertIsNone(client.load_credentials())
+
+    def test_paid_confirmation_accepts_server_quote_from_environment_without_echo(self):
+        self.authorize()
+        quote_token = "e" * 48 + "." + "a" * 64
+        payload = {"prompt": "海边日出", "channel": "grok"}
+        with patch.dict(os.environ, {"HQ_CLI_QUOTE_TOKEN": quote_token}), patch(
+                "hq_cli.client.request_json",
+                return_value=(200, {"job_id": 100, "cost": 10}),
+        ) as request:
+            code, output, error = self.invoke(
+                ["run", "video-generate", "--input", "@-", "--confirm"],
+                json.dumps(payload, ensure_ascii=False).encode(),
+            )
+        self.assertEqual(0, code, error)
+        self.assertEqual(quote_token, request.call_args.kwargs["body"]["quote_token"])
+        self.assertNotIn(quote_token, output + error)
+
+    def test_invalid_environment_quote_fails_closed_before_http(self):
+        self.authorize()
+        payload = json.dumps({"prompt": "test", "channel": "grok"}).encode()
+        for invalid in ("", "short", "a" * 32 + "." + "z" * 64, "a" * 4097):
+            with self.subTest(invalid_length=len(invalid)), patch.dict(
+                    os.environ, {"HQ_CLI_QUOTE_TOKEN": invalid},
+            ), patch("hq_cli.client.request_json") as request:
+                code, output, error = self.invoke(
+                    ["run", "video-generate", "--input", "@-", "--confirm"], payload,
+                )
+                self.assertEqual(cli.EXIT_CONFIRMATION, code)
+                self.assertEqual("invalid_quote_token", self.payload(error)["error"])
+                if invalid:
+                    self.assertNotIn(invalid, output + error)
+                request.assert_not_called()
+
+    def test_environment_quote_is_ignored_for_quote_and_explicit_cli_argument(self):
+        self.authorize()
+        payload = {"prompt": "test", "channel": "grok"}
+        raw = json.dumps(payload).encode()
+        explicit = "interactive-quote-token"
+        with patch.dict(os.environ, {"HQ_CLI_QUOTE_TOKEN": "invalid env value"}), patch(
+                "hq_cli.client.request_json",
+                side_effect=[
+                    (200, {"quote_token": "q.new", "cost": 10}),
+                    (200, {"job_id": 10}),
+                ],
+        ) as request:
+            code, _, error = self.invoke(["run", "video-generate", "--input", "@-"], raw)
+            self.assertEqual(0, code, error)
+            code, _, error = self.invoke([
+                "run", "video-generate", "--input", "@-", "--confirm",
+                "--quote-token", explicit,
+            ], raw)
+            self.assertEqual(0, code, error)
+        first, second = request.call_args_list
+        self.assertNotIn("quote_token", first.kwargs["body"])
+        self.assertEqual(explicit, second.kwargs["body"]["quote_token"])
+
+    def test_api_base_override_allows_only_official_https_or_loopback_http_origins(self):
+        accepted = (
+            "https://huangquechuanmei.com",
+            "https://huangquechuanmei.com:443",
+            "http://127.0.0.1:8095",
+            "http://localhost:8095",
+            "http://[::1]:8095",
+        )
+        for origin in accepted:
+            with self.subTest(origin=origin), patch.dict(os.environ, {"HQ_CLI_API_BASE": origin}):
+                self.assertEqual(origin, client.api_base())
+        rejected = (
+            "http://huangquechuanmei.com",
+            "https://huangquechuanmei.com:444",
+            "https://evil.example",
+            "http://0.0.0.0:8095",
+            "http://127.0.0.1:8095/path",
+            "http://127.0.0.1:8095?query=1",
+            "http://user@127.0.0.1:8095",
+            "http://127.0.0.1:8095#fragment",
+            "http://127.0.0.1:8095/",
+            "http://127.0.0.1:\n8095",
+        )
+        for origin in rejected:
+            with self.subTest(origin=origin), patch.dict(os.environ, {"HQ_CLI_API_BASE": origin}):
+                with self.assertRaises(ValueError):
+                    client.api_base()
 
     def test_status_requires_authorization_and_never_accepts_password_input(self):
         code, output, error = self.invoke(["status"])

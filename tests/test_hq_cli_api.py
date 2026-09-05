@@ -888,6 +888,108 @@ class HQCLIAPITests(unittest.TestCase):
         )[0])
         self.assertEqual(401, self._request("/api/auth/cli/status", token=token)[0])
 
+    def _internal_headers(self):
+        return {"X-HQ-Internal-Token": self.auth.INTERNAL_TOKEN}
+
+    def test_delegated_cli_token_is_short_lived_hashed_and_least_privilege(self):
+        scopes = ["profile:read", "assets:read", "generation:quote", "generation:submit"]
+        delegated = self.auth.hq_cli_api.issue_delegated_token(
+            self.auth.db, "alice", scopes, 90, now=1000,
+        )
+        self.assertEqual(scopes, delegated["scopes"])
+        self.assertEqual(1090, delegated["expires_at"])
+        token = delegated["access_token"]
+        authenticated = self.auth.hq_cli_api.authenticate(self.auth.db, token, now=1001)
+        self.assertEqual("alice", authenticated[0]["username"])
+        self.assertEqual(tuple(scopes), authenticated[1])
+        connection = sqlite3.connect(self.auth.DB)
+        try:
+            row = connection.execute(
+                "SELECT client_name,status,token_hash,token_expires_at,approved_scopes_json "
+                "FROM cli_device_grants ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        finally:
+            connection.close()
+        self.assertEqual(("video-agent-internal", "issued"), row[:2])
+        self.assertNotEqual(token, row[2])
+        self.assertEqual(1090, row[3])
+        self.assertNotIn(token, Path(self.auth.DB).read_bytes().decode("latin1"))
+
+    def test_delegated_cli_token_rejects_invalid_scope_ttl_or_inactive_user(self):
+        cases = (
+            (["profile:read", "ip12:write"], 90, "alice"),
+            (["profile:read"], 59, "alice"),
+            (["profile:read"], 301, "alice"),
+            ([], 90, "alice"),
+            (["profile:read"], 90, "missing"),
+        )
+        for scopes, ttl, username in cases:
+            with self.subTest(scopes=scopes, ttl=ttl, username=username), \
+                    self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+                self.auth.hq_cli_api.issue_delegated_token(
+                    self.auth.db, username, scopes, ttl, now=1000,
+                )
+        connection = sqlite3.connect(self.auth.DB)
+        try:
+            connection.execute("UPDATE users SET account_status='disabled' WHERE username='alice'")
+            connection.commit()
+        finally:
+            connection.close()
+        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+            self.auth.hq_cli_api.issue_delegated_token(
+                self.auth.db, "alice", ["profile:read"], 90, now=1000,
+            )
+
+    def test_internal_delegate_endpoint_requires_service_and_matching_web_identity(self):
+        body = {
+            "username": "alice",
+            "scopes": ["profile:read", "assets:read", "tasks:read", "generation:quote"],
+            "ttl_seconds": 90,
+        }
+        web_token = self.auth.issue_token("alice", ttl=120)
+        status, _ = self._request(
+            "/api/auth/internal/cli/delegate", body, token=web_token,
+        )
+        self.assertEqual(403, status)
+        status, _ = self._request(
+            "/api/auth/internal/cli/delegate", body,
+            extra_headers=self._internal_headers(),
+        )
+        self.assertEqual(401, status)
+        status, payload = self._request(
+            "/api/auth/internal/cli/delegate", dict(body, username="bob"), token=web_token,
+            extra_headers=self._internal_headers(),
+        )
+        self.assertEqual(403, status)
+        self.assertEqual("identity_mismatch", payload["code"])
+
+        status, delegated = self._request(
+            "/api/auth/internal/cli/delegate", body, token=web_token,
+            extra_headers=self._internal_headers(),
+        )
+        self.assertEqual(200, status, delegated)
+        self.assertEqual(body["scopes"], delegated["scopes"])
+        self.assertLessEqual(delegated["expires_at"] - int(__import__("time").time()), 90)
+        cli_token = delegated["access_token"]
+        status, current = self._request("/api/auth/cli/status", token=cli_token)
+        self.assertEqual(200, status, current)
+        self.assertEqual("alice", current["user"]["username"])
+        self.assertEqual(401, self._request("/api/auth/me", token=cli_token)[0])
+
+    def test_internal_delegate_endpoint_rejects_extra_fields_and_non_agent_scopes(self):
+        web_token = self.auth.issue_token("alice", ttl=120)
+        base = {
+            "username": "alice", "scopes": ["profile:read"], "ttl_seconds": 90,
+        }
+        for body in (dict(base, raw_command="hq run account"),
+                     dict(base, scopes=["generation:submit", "canvas:edit"])):
+            with self.subTest(body_keys=sorted(body)):
+                status, _ = self._request(
+                    "/api/auth/internal/cli/delegate", body, token=web_token,
+                    extra_headers=self._internal_headers(),
+                )
+                self.assertEqual(400, status)
+
     def test_refresh_rotates_and_replay_revokes_the_device(self):
         original = self._credentials(["profile:read", "tasks:read"])
         status, refreshed = self._request(
@@ -2657,7 +2759,7 @@ class HQCLIAPITests(unittest.TestCase):
             "action": "channels", "input": {}, "confirm": False,
         }, token=token)
         self.assertEqual(200, status)
-        self.assertEqual(16, payload["total"])
+        self.assertEqual(17, payload["total"])
         self.assertEqual("alice", payload["account"])
         channels = {item["id"]: item for item in payload["channels"]}
         self.assertEqual({"channel": "sora"}, channels["openai"]["selectors"][1]["input"])

@@ -43,6 +43,23 @@ class PaidJobDeductError(Exception):
         self.detail = str(detail or "点数扣除失败")
 
 
+def ensure_submission_key_schema(connection):
+    """Add exact paid-submission identity to a legacy jobs ledger.
+
+    Existing rows stay NULL and therefore can never be guessed as a match.
+    Repeating the migration is a no-op apart from the index existence check.
+    """
+    columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(jobs)").fetchall()
+    }
+    if "submission_key" not in columns:
+        connection.execute("ALTER TABLE jobs ADD COLUMN submission_key TEXT")
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jobs_submission_key "
+        "ON jobs(username, submission_key) WHERE submission_key IS NOT NULL"
+    )
+
+
 def public_dict(row, phase=None):
     data = {key: row[key] for key in (
         "id", "kind", "username", "cost", "status", "result", "error", "created_at", "updated_at")}
@@ -298,7 +315,8 @@ def _compensate_failed_insert(jdb, refund, username, cost, kind, submission_ref,
 
 
 def create_paid_jobs(jdb, deduct, refund, kind, username, items, owner, reason_kind="",
-                     before_commit=None, charge_transaction_key="", before_charge=None):
+                     before_commit=None, charge_transaction_key="", before_charge=None,
+                     submission_key=""):
     """一次预扣并原子写入一个或多个任务；失败补偿只维护这一处。"""
     items = [(int(cost or 0), payload) for cost, payload in items]
     total = sum(cost for cost, _ in items)
@@ -314,10 +332,20 @@ def create_paid_jobs(jdb, deduct, refund, kind, username, items, owner, reason_k
             try:
                 job_ids = []
                 for cost, payload in items:
-                    cur = c.execute(
-                        "INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at,owner) VALUES(?,?,?,?,?,?,?)",
-                        (kind, username, cost, json.dumps(payload, ensure_ascii=False), now, now, owner),
-                    )
+                    if submission_key:
+                        cur = c.execute(
+                            "INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at,owner,submission_key) "
+                            "VALUES(?,?,?,?,?,?,?,?)",
+                            (kind, username, cost, json.dumps(payload, ensure_ascii=False),
+                             now, now, owner, str(submission_key)),
+                        )
+                    else:
+                        cur = c.execute(
+                            "INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at,owner) "
+                            "VALUES(?,?,?,?,?,?,?)",
+                            (kind, username, cost, json.dumps(payload, ensure_ascii=False),
+                             now, now, owner),
+                        )
                     job_ids.append(cur.lastrowid)
                 if before_commit is not None:
                     before_commit(c, tuple(job_ids))
@@ -334,14 +362,15 @@ def create_paid_jobs(jdb, deduct, refund, kind, username, items, owner, reason_k
 
 
 def create_paid_job(jdb, deduct, refund, kind, username, cost, payload, owner,
-                    before_commit=None, charge_transaction_key="", before_charge=None):
+                    before_commit=None, charge_transaction_key="", before_charge=None,
+                    submission_key=""):
     batch_callback = None
     if before_commit is not None:
         batch_callback = lambda connection, job_ids: before_commit(connection, job_ids[0])
     job_ids, points_left = create_paid_jobs(
         jdb, deduct, refund, kind, username, [(cost, payload)], owner,
         before_commit=batch_callback, charge_transaction_key=charge_transaction_key,
-        before_charge=before_charge)
+        before_charge=before_charge, submission_key=submission_key)
     return job_ids[0], points_left
 
 

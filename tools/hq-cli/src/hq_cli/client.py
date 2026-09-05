@@ -1,4 +1,4 @@
-"""Fixed-origin HTTPS client and local credential storage for HQ CLI."""
+"""Constrained-origin HTTP client and local credential storage for HQ CLI."""
 
 import base64
 from contextlib import contextmanager
@@ -19,6 +19,8 @@ from . import __version__
 
 
 API_BASE = "https://huangquechuanmei.com"
+API_BASE_ENV = "HQ_CLI_API_BASE"
+ACCESS_TOKEN_ENV = "HQ_CLI_ACCESS_TOKEN"
 ALLOWED_PATHS = {
     "/api/auth/cli/device/start",
     "/api/auth/cli/device/poll",
@@ -56,6 +58,39 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+_ACCESS_TOKEN_RE = re.compile(r"^[A-Za-z0-9._~-]{20,200}$")
+
+
+def api_base():
+    """Return a tightly constrained origin for first-party or loopback calls."""
+    configured = os.environ.get(API_BASE_ENV)
+    if configured is None:
+        return API_BASE
+    if (not configured or configured != configured.strip()
+            or any(ord(character) <= 32 or ord(character) == 127 for character in configured)):
+        raise ValueError("HQ_CLI_API_BASE must be an allowed origin")
+    try:
+        target = urllib.parse.urlsplit(configured)
+        port = target.port
+    except ValueError:
+        raise ValueError("HQ_CLI_API_BASE must be an allowed origin")
+    if (target.path or target.query or target.fragment or target.username is not None
+            or target.password is not None):
+        raise ValueError("HQ_CLI_API_BASE must be an allowed origin")
+    hostname = (target.hostname or "").lower()
+    official = (
+        target.scheme == "https" and hostname == "huangquechuanmei.com"
+        and port in {None, 443}
+    )
+    loopback = (
+        target.scheme == "http" and hostname in {"127.0.0.1", "localhost", "::1"}
+        and (port is None or 1 <= port <= 65535)
+    )
+    if not (official or loopback):
+        raise ValueError("HQ_CLI_API_BASE must be official HTTPS or loopback HTTP")
+    return configured
+
+
 def request_json(path, method="GET", body=None, token="", timeout=30):
     if path not in ALLOWED_PATHS or method not in {"GET", "POST"}:
         raise ValueError("HQ CLI only calls fixed main-site endpoints")
@@ -66,7 +101,7 @@ def request_json(path, method="GET", body=None, token="", timeout=30):
     if body is not None:
         data = json.dumps(body, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
         headers["Content-Type"] = "application/json"
-    request = urllib.request.Request(API_BASE + path, data=data, headers=headers, method=method)
+    request = urllib.request.Request(api_base() + path, data=data, headers=headers, method=method)
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
     try:
         with opener.open(request, timeout=timeout) as response:
@@ -427,8 +462,14 @@ def _upload_media(path, token, upload_path, digest_header, opener, timeout, extr
     } or not digest_header:
         os.close(descriptor)
         raise ValueError("HQ CLI only uploads to fixed main-site endpoints")
-    target = urllib.parse.urlsplit(API_BASE)
-    if target.scheme != "https" or target.hostname != "huangquechuanmei.com" or target.path not in {"", "/"}:
+    target = urllib.parse.urlsplit(api_base())
+    if target.scheme == "https":
+        allowed_host = target.hostname == "huangquechuanmei.com"
+    elif target.scheme == "http":
+        allowed_host = target.hostname in {"127.0.0.1", "localhost", "::1"}
+    else:
+        allowed_host = False
+    if not allowed_host or target.path not in {"", "/"}:
         os.close(descriptor)
         raise ValueError("HQ CLI only uploads to the fixed main-site origin")
     director_upload = upload_path in {
@@ -443,7 +484,10 @@ def _upload_media(path, token, upload_path, digest_header, opener, timeout, extr
     if set((extra_headers or {}).keys()) != expected_extra:
         os.close(descriptor)
         raise ValueError("upload metadata does not match the fixed endpoint")
-    connection = http.client.HTTPSConnection(target.hostname, target.port or 443, timeout=timeout)
+    connection_type = http.client.HTTPSConnection if target.scheme == "https" else http.client.HTTPConnection
+    connection = connection_type(
+        target.hostname, target.port or (443 if target.scheme == "https" else 80), timeout=timeout,
+    )
     try:
         connection.putrequest("POST", upload_path, skip_accept_encoding=True)
         connection.putheader("Authorization", "Bearer " + token)
@@ -690,6 +734,11 @@ def save_credentials(token, expires_at, scopes, refresh_token="", refresh_expire
 
 
 def load_credentials():
+    if ACCESS_TOKEN_ENV in os.environ:
+        token = os.environ.get(ACCESS_TOKEN_ENV, "")
+        if not isinstance(token, str) or not _ACCESS_TOKEN_RE.fullmatch(token):
+            return None
+        return {"access_token": token, "expires_at": None, "scopes": []}
     path = credentials_path()
     protected_with_dpapi = False
     try:

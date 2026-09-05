@@ -52,6 +52,64 @@ class CLIMediaUploadTests(unittest.TestCase):
                 {"reference_video_upload_ids": [upload_id]}, "bob", now=101,
             )
 
+    def test_load_preview_returns_verified_bytes_and_mime_for_owner(self):
+        image_id, video_id = self.image(), self.video()
+        image, image_mime = cli_uploads.load_preview("image", image_id, "alice", now=101)
+        video, video_mime = cli_uploads.load_preview("video", video_id, "alice", now=101)
+        self.assertEqual(PNG, image)
+        self.assertEqual("image/png", image_mime)
+        self.assertEqual(MP4, video)
+        self.assertEqual("video/mp4", video_mime)
+        with self.assertRaisesRegex(ValueError, "不存在或已失效"):
+            cli_uploads.load_preview("image", image_id, "bob", now=101)
+
+    def test_open_preview_streams_verified_bytes_without_full_read(self):
+        image_id, video_id = self.image(), self.video()
+        handle, size, mime = cli_uploads.open_preview("image", image_id, "alice", now=101)
+        with handle:
+            self.assertEqual(size, len(PNG))
+            self.assertEqual(mime, "image/png")
+            self.assertEqual(handle.read(), PNG)
+        handle, size, mime = cli_uploads.open_preview("video", video_id, "alice", now=101)
+        with handle:
+            self.assertEqual(size, len(MP4))
+            self.assertEqual(mime, "video/mp4")
+            handle.seek(4)
+            self.assertEqual(handle.read(4), b"ftyp")
+        with self.assertRaisesRegex(ValueError, "不存在或已失效"):
+            cli_uploads.open_preview("video", video_id, "bob", now=101)
+        with self.assertRaisesRegex(ValueError, "素材类型不支持预览"):
+            cli_uploads.open_preview("audio", video_id, "alice", now=101)
+
+    def test_verify_upload_checks_owner_expiry_and_size_without_full_read(self):
+        image_id, video_id = self.image(), self.video()
+        self.assertTrue(cli_uploads.verify_upload("image", image_id, "alice", now=101))
+        self.assertTrue(cli_uploads.verify_upload("video", video_id, "alice", now=101))
+        # 归属校验
+        self.assertFalse(cli_uploads.verify_upload("image", image_id, "bob", now=101))
+        self.assertFalse(cli_uploads.verify_upload("video", video_id, "bob", now=101))
+        # 过期
+        self.assertFalse(cli_uploads.verify_upload("image", image_id, "alice", now=99999))
+        # 格式/存在性
+        self.assertFalse(cli_uploads.verify_upload("image", "img_" + "f" * 32, "alice", now=101))
+        self.assertFalse(cli_uploads.verify_upload("image", "vid_" + "f" * 32, "alice", now=101))
+        self.assertFalse(cli_uploads.verify_upload("audio", image_id, "alice", now=101))
+        self.assertFalse(cli_uploads.verify_upload("image", "not-an-id", "alice", now=101))
+
+    def test_verify_upload_rejects_truncated_or_same_size_replaced_payload(self):
+        image_id = self.image()
+        image_path, _ = cli_uploads._paths(image_id, ".png")
+        original = image_path.read_bytes()
+        image_path.write_bytes(original[:-1])
+        self.assertFalse(cli_uploads.verify_upload("image", image_id, "alice", now=101))
+
+        video_id = self.video()
+        video_path, _ = cli_uploads._video_paths(video_id, ".mp4")
+        replaced = bytearray(video_path.read_bytes())
+        replaced[-1] ^= 1
+        video_path.write_bytes(replaced)
+        self.assertFalse(cli_uploads.verify_upload("video", video_id, "alice", now=101))
+
     def test_tryon_roles_expand_and_classic_video_is_six_seconds_max(self):
         person, clothes = self.image(), self.image()
         fast = cli_uploads.expand_role_media_payload({

@@ -24577,20 +24577,496 @@
           }
         }
       }
+    },
+
+  "/api/gen/video/agent/chat": {
+    "post": {
+      "tags": [
+        "视频 Agent"
+      ],
+      "summary": "视频创作助手对话",
+      "description": "【可能产生外部成本】可能调用 AI/第三方服务；禁止用于常规测速，执行前必须获得单次付费测试授权。\n\n对话式规划：返回视频方案、素材请求与可确认的报价动作；不自动扣点、不自动提交生成。",
+      "x-hq-test-safety": "may-charge",
+      "x-hq-runtime-status": "pending-deployment",
+      "responses": {
+        "200": {
+          "description": "OK"
+        },
+        "400": {
+          "description": "请求参数无效"
+        },
+        "401": {
+          "description": "未登录或登录已过期"
+        },
+        "403": {
+          "description": "无权限、账号状态不允许或会员能力未开通"
+        },
+        "404": {
+          "description": "资源不存在或不属于当前账号"
+        },
+        "409": {
+          "description": "状态、版本或幂等冲突"
+        },
+        "413": {
+          "description": "请求体过大"
+        },
+        "422": {
+          "description": "业务字段或前置状态无效"
+        },
+        "429": {
+          "description": "请求频率、并发或额度超限"
+        },
+        "502": {
+          "description": "第三方或下游服务异常"
+        },
+        "503": {
+          "description": "功能关闭、更新中或外部能力未配置"
+        }
+      },
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "properties": {
+                "message": {
+                  "type": "string",
+                  "maxLength": 2000
+                },
+                "history": {
+                  "type": "array",
+                  "maxItems": 12,
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "role": {
+                        "type": "string",
+                        "enum": [
+                          "user",
+                          "assistant"
+                        ]
+                      },
+                      "content": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "brief": {
+                  "type": "object"
+                },
+                "materials": {
+                  "type": "array",
+                  "maxItems": 9,
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "image",
+                          "video",
+                          "audio",
+                          "text"
+                        ]
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "size": {
+                        "type": "integer"
+                      },
+                      "upload_id": {
+                        "type": "string"
+                      },
+                      "avatar_state": {
+                        "type": "string",
+                        "enum": [
+                          "creating",
+                          "ready",
+                          "failed"
+                        ]
+                      },
+                      "avatar_id": {
+                        "type": "integer"
+                      },
+                      "purpose_state": {
+                        "type": "string",
+                        "enum": [
+                          "pending",
+                          "confirmed",
+                          "deferred"
+                        ]
+                      },
+                      "purpose": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "context": {
+                  "type": "string",
+                  "enum": [
+                    "home",
+                    "workbench"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      }
     }
   },
+  "/api/gen/video/agent/uploads/image": {
+    "post": {
+      "tags": [
+        "视频 Agent"
+      ],
+      "summary": "上传视频助手参考图",
+      "description": "【会写数据】会修改项目、资产或审计记录；常规测速不要执行，仅用可回收 QA 数据。\n\n上传本人 PNG/JPG/WebP 为短期私有 img_ upload_id（≤10MB）。",
+      "x-hq-test-safety": "state-write",
+      "x-hq-runtime-status": "pending-deployment",
+      "responses": {
+        "200": {
+          "description": "OK"
+        },
+        "400": {
+          "description": "请求参数无效"
+        },
+        "401": {
+          "description": "未登录或登录已过期"
+        },
+        "403": {
+          "description": "无权限、账号状态不允许或会员能力未开通"
+        },
+        "404": {
+          "description": "资源不存在或不属于当前账号"
+        },
+        "409": {
+          "description": "状态、版本或幂等冲突"
+        },
+        "413": {
+          "description": "请求体过大"
+        },
+        "422": {
+          "description": "业务字段或前置状态无效"
+        },
+        "429": {
+          "description": "请求频率、并发或额度超限"
+        },
+        "502": {
+          "description": "第三方或下游服务异常"
+        },
+        "503": {
+          "description": "功能关闭、更新中或外部能力未配置"
+        }
+      },
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/octet-stream": {
+            "schema": {
+              "type": "string",
+              "format": "binary"
+            }
+          }
+        }
+      }
+    }
+  },
+  "/api/gen/video/agent/uploads/video": {
+    "post": {
+      "tags": [
+        "视频 Agent"
+      ],
+      "summary": "上传视频助手参考视频",
+      "description": "【会写数据】会修改项目、资产或审计记录；常规测速不要执行，仅用可回收 QA 数据。\n\n上传本人 MP4/MOV/WebM 为短期私有 vid_ upload_id（≤32MB）。",
+      "x-hq-test-safety": "state-write",
+      "x-hq-runtime-status": "pending-deployment",
+      "responses": {
+        "200": {
+          "description": "OK"
+        },
+        "400": {
+          "description": "请求参数无效"
+        },
+        "401": {
+          "description": "未登录或登录已过期"
+        },
+        "403": {
+          "description": "无权限、账号状态不允许或会员能力未开通"
+        },
+        "404": {
+          "description": "资源不存在或不属于当前账号"
+        },
+        "409": {
+          "description": "状态、版本或幂等冲突"
+        },
+        "413": {
+          "description": "请求体过大"
+        },
+        "422": {
+          "description": "业务字段或前置状态无效"
+        },
+        "429": {
+          "description": "请求频率、并发或额度超限"
+        },
+        "502": {
+          "description": "第三方或下游服务异常"
+        },
+        "503": {
+          "description": "功能关闭、更新中或外部能力未配置"
+        }
+      },
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/octet-stream": {
+            "schema": {
+              "type": "string",
+              "format": "binary"
+            }
+          }
+        }
+      }
+    }
+  },
+  "/api/gen/video/agent/uploads/{kind}/{upload_id}/preview": {
+    "get": {
+      "tags": [
+        "视频 Agent"
+      ],
+      "summary": "预览视频助手上传素材",
+      "description": "【测速建议】只读接口，适合在专用 QA 账号下做低并发响应时间测试。\n\n按 Range 分块返回本人短期私有上传；不暴露文件路径。",
+      "x-hq-test-safety": "safe-read",
+      "x-hq-runtime-status": "pending-deployment",
+      "responses": {
+        "200": {
+          "description": "OK"
+        },
+        "400": {
+          "description": "请求参数无效"
+        },
+        "401": {
+          "description": "未登录或登录已过期"
+        },
+        "403": {
+          "description": "无权限、账号状态不允许或会员能力未开通"
+        },
+        "404": {
+          "description": "资源不存在或不属于当前账号"
+        },
+        "409": {
+          "description": "状态、版本或幂等冲突"
+        },
+        "413": {
+          "description": "请求体过大"
+        },
+        "422": {
+          "description": "业务字段或前置状态无效"
+        },
+        "429": {
+          "description": "请求频率、并发或额度超限"
+        },
+        "502": {
+          "description": "第三方或下游服务异常"
+        },
+        "503": {
+          "description": "功能关闭、更新中或外部能力未配置"
+        }
+      },
+      "parameters": [
+        {
+          "name": "kind",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "enum": [
+              "image",
+              "video"
+            ]
+          },
+          "description": "素材类型"
+        },
+        {
+          "name": "upload_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 36,
+            "maxLength": 36
+          },
+          "description": "img_/vid_ 前缀的私有上传 ID"
+        }
+      ]
+    }
+  },
+  "/api/gen/video/agent/actions/{pending_id}/confirm": {
+    "post": {
+      "tags": [
+        "视频 Agent"
+      ],
+      "summary": "确认视频助手待确认生成",
+      "description": "【可能产生外部成本】会扣点并提交付费生成任务；禁止用于常规测速，执行前必须获得单次付费测试授权。\n\n同一 pending_id + idempotency_key 重放返回原结果；提交前服务端核验报价凭证。",
+      "x-hq-test-safety": "may-charge",
+      "x-hq-runtime-status": "pending-deployment",
+      "responses": {
+        "200": {
+          "description": "OK"
+        },
+        "400": {
+          "description": "请求参数无效"
+        },
+        "401": {
+          "description": "未登录或登录已过期"
+        },
+        "403": {
+          "description": "无权限、账号状态不允许或会员能力未开通"
+        },
+        "404": {
+          "description": "资源不存在或不属于当前账号"
+        },
+        "409": {
+          "description": "状态、版本或幂等冲突"
+        },
+        "413": {
+          "description": "请求体过大"
+        },
+        "422": {
+          "description": "业务字段或前置状态无效"
+        },
+        "429": {
+          "description": "请求频率、并发或额度超限"
+        },
+        "502": {
+          "description": "第三方或下游服务异常"
+        },
+        "503": {
+          "description": "功能关闭、更新中或外部能力未配置"
+        }
+      },
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "properties": {
+                "idempotency_key": {
+                  "type": "string",
+                  "minLength": 8,
+                  "maxLength": 128
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "idempotency_key"
+              ]
+            }
+          }
+        }
+      },
+      "parameters": [
+        {
+          "name": "pending_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "pattern": "^vpa_[0-9a-f]{32}$"
+          },
+          "description": "待确认动作 ID"
+        }
+      ]
+    }
+  },
+  "/api/gen/video/agent/actions/{pending_id}/reconcile": {
+    "post": {
+      "tags": [
+        "视频 Agent"
+      ],
+      "summary": "对账视频助手结果未知的提交",
+      "description": "【测速建议】只读接口，适合在专用 QA 账号下做低并发响应时间测试。\n\n按落库的提交幂等键只读核对内容服务幂等记录，收敛为 submitted/failed；不产生新的付费提交。",
+      "x-hq-test-safety": "safe-read",
+      "x-hq-runtime-status": "pending-deployment",
+      "responses": {
+        "200": {
+          "description": "OK"
+        },
+        "400": {
+          "description": "请求参数无效"
+        },
+        "401": {
+          "description": "未登录或登录已过期"
+        },
+        "403": {
+          "description": "无权限、账号状态不允许或会员能力未开通"
+        },
+        "404": {
+          "description": "资源不存在或不属于当前账号"
+        },
+        "409": {
+          "description": "状态、版本或幂等冲突"
+        },
+        "413": {
+          "description": "请求体过大"
+        },
+        "422": {
+          "description": "业务字段或前置状态无效"
+        },
+        "429": {
+          "description": "请求频率、并发或额度超限"
+        },
+        "502": {
+          "description": "第三方或下游服务异常"
+        },
+        "503": {
+          "description": "功能关闭、更新中或外部能力未配置"
+        }
+      },
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "additionalProperties": false
+            }
+          }
+        }
+      },
+      "parameters": [
+        {
+          "name": "pending_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "pattern": "^vpa_[0-9a-f]{32}$"
+          },
+          "description": "待确认动作 ID"
+        }
+      ]
+    }
+  }
+  },
   "x-hq-document-audit": {
-    "verified_at": "2026-09-04",
-    "total_paths": 295,
-    "total_operations": 310,
+    "verified_at": "2026-09-05",
+    "total_paths": 301,
+    "total_operations": 316,
     "active_operations": 288,
-    "production_route_probe_operations": 310,
-    "newly_documented_operations_vs_v2": 134,
+    "production_route_probe_operations": 316,
+    "newly_documented_operations_vs_v2": 140,
     "registry_http_operations": 79,
     "registry_documented_operations": 79,
     "short_drama_registered_operations": 137,
     "short_drama_documented_operations": 137,
-    "production_pending_operations": 19,
+    "production_pending_operations": 25,
     "production_routing_unavailable_operations": 2,
     "deprecated_operations": 1,
     "customer_frontend_calls_audited": true,

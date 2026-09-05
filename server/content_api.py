@@ -11,9 +11,9 @@ import threading
 from http.server import ThreadingHTTPServer
 
 try:
-    from .content_domains import core, digital_human_oneclick, digital_human_runs, digital_presenter, registry, script_to_video, video_compose
+    from .content_domains import core, digital_human_oneclick, digital_human_runs, digital_presenter, registry, script_to_video, video_agent, video_compose
 except ImportError:  # Running as /home/ubuntu/content-api/content_api.py
-    from content_domains import core, digital_human_oneclick, digital_human_runs, digital_presenter, registry, script_to_video, video_compose
+    from content_domains import core, digital_human_oneclick, digital_human_runs, digital_presenter, registry, script_to_video, video_agent, video_compose
 
 
 PORT = core.PORT
@@ -26,6 +26,11 @@ DigitalPresenterH = digital_presenter.make_handler(core.H, core)
 
 
 class H(DigitalPresenterH):
+    def _dispatch_video_agent(self, method):
+        return video_agent.dispatch_http(
+            self, method, core.verify, core._must_change_password, core.jdb,
+        )
+
     def _dispatch_script_to_video(self, method):
         return script_to_video.dispatch_http(
             self, method, core.verify, core._must_change_password,
@@ -38,6 +43,8 @@ class H(DigitalPresenterH):
         )
 
     def do_POST(self):
+        if self._dispatch_video_agent("POST"):
+            return
         if self._dispatch_script_to_video("POST"):
             return
         if self._dispatch_video_compose("POST"):
@@ -45,6 +52,8 @@ class H(DigitalPresenterH):
         return super().do_POST()
 
     def do_GET(self):
+        if self._dispatch_video_agent("GET"):
+            return
         if self._dispatch_script_to_video("GET"):
             return
         if self._dispatch_video_compose("GET"):
@@ -61,6 +70,7 @@ class H(DigitalPresenterH):
 
 def main():
     core.init_db()
+    video_agent.init_db(core.jdb)
     digital_presenter.init_db(core.jdb)
     digital_human_oneclick.init_db()
     digital_human_runs.init_db()

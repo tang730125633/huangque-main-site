@@ -594,6 +594,7 @@ def init_db():
         _ensure_column(c, "jobs", "deleted", "INTEGER DEFAULT 0")
         _ensure_column(c, "jobs", "refunded", "INTEGER DEFAULT 0")  # 退点幂等键(#187)
         _ensure_column(c, "jobs", "owner", "TEXT")                  # 归属服务(#511)，见 SERVICE_OWNER
+        jobs_store.ensure_submission_key_schema(c)
         submission_idempotency.ensure_table(c)
         matrix_template_submission.ensure_table(c)
         c.commit()
@@ -4083,6 +4084,7 @@ class H(BaseHTTPRequestHandler):
                             "retry_after_ms": 1000,
                         })
                 if kind == "avatar":
+                    body = cli_uploads.expand_avatar_payload(body, user["username"])
                     body = video_domain.validate_avatar_payload(body)
                     _short_drama_domain().validate_avatar_binding_submission(
                         jdb, user["username"], body.get("short_drama_binding"),
@@ -4473,7 +4475,8 @@ class H(BaseHTTPRequestHandler):
                             kind, user["username"], cost, body, SERVICE_OWNER,
                             before_commit=(lambda connection, job_id: video_domain.link_staged_seedance_references(connection, staged_ref_keys, job_id, user["username"], p, idem_key)) if staged_ref_keys else paid_association,
                             charge_transaction_key=("job-charge:%s:%s:%s" % (user["username"], p, idem_key)) if idem_key else "",
-                            before_charge=(lambda: video_domain.mark_seedance_reference_charging(user["username"], p, idem_key, kind, cost, body, SERVICE_OWNER, "job-charge:%s:%s:%s" % (user["username"], p, idem_key))) if staged_ref_keys else None)
+                            before_charge=(lambda: video_domain.mark_seedance_reference_charging(user["username"], p, idem_key, kind, cost, body, SERVICE_OWNER, "job-charge:%s:%s:%s" % (user["username"], p, idem_key))) if staged_ref_keys else None,
+                            submission_key=idem_key or "")
                 except matrix_template_submission.AttemptInProgress:
                     return self._send(409, {
                         "detail": "相同模板成片请求正在恢复，请稍后查询",

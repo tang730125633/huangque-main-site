@@ -1404,8 +1404,11 @@ class HQCLIContentTests(unittest.TestCase):
             if key in claims and claims[key]["response"] is None:
                 claims.pop(key)
 
-        def create_job(*args, **_kwargs):
-            created.append(args[6])
+        def create_job(*args, **kwargs):
+            created.append({
+                "payload": args[6],
+                "submission_key": kwargs.get("submission_key"),
+            })
             return 40 + len(created), 76
 
         with tempfile.TemporaryDirectory() as folder:
@@ -1452,6 +1455,9 @@ class HQCLIContentTests(unittest.TestCase):
                     idempotency_key="hqcli-cinematic-retry-001",
                 )
                 self.assertEqual((200, 41), (status, first["job_id"]))
+                self.assertEqual(
+                    "hqcli-cinematic-retry-001", created[0]["submission_key"],
+                )
                 kept = {path for path in output_root.rglob("*") if path.is_file()}
                 self.assertEqual(1, len(kept))
 
@@ -1478,6 +1484,9 @@ class HQCLIContentTests(unittest.TestCase):
                     )
                 self.assertEqual((429, "queue_full"), (status, failed["code"]))
                 self.assertEqual(2, len(created))
+                self.assertEqual(
+                    "hqcli-cinematic-retry-002", created[1]["submission_key"],
+                )
                 self.assertEqual(kept, {
                     path for path in output_root.rglob("*") if path.is_file()
                 })
