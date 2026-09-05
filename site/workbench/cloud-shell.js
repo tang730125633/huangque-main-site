@@ -357,13 +357,15 @@
     var h=extra||{};
     return h;
   }
-  function notifyAuthChanged(user){
+  var _verifiedUser=null;
+  function notifyAuthChanged(user,verified){
     var username=user&&typeof user.username==='string'?user.username:'';
-    try{ window.dispatchEvent(new CustomEvent('hq:auth-changed',{detail:{username:username}})); }catch(e){}
+    _verifiedUser=verified===true&&username?user:null;
+    try{ window.dispatchEvent(new CustomEvent('hq:auth-changed',{detail:{username:username,verified:!!_verifiedUser}})); }catch(e){}
   }
   function refreshPoints(){
-    fetch('/api/auth/me',{credentials:'same-origin',cache:'no-store',headers:authHeaders()}).then(function(r){ if(r.status===401){ if(currentUser()) requireLogin(); return null; } if(!r.ok) return null; return r.json(); }).then(function(d){
-      if(d&&d.user){ var previous=currentUser(),previousUsername=previous&&previous.username||'',nextUsername=d.user.username||''; _accountAvatar=d.user.avatar||''; try{ localStorage.removeItem('hq_token'); localStorage.setItem('hq_user',JSON.stringify(d.user)); }catch(e){} if(previousUsername!==nextUsername)notifyAuthChanged(d.user); renderUser(); }
+    fetch('/api/auth/me',{credentials:'same-origin',cache:'no-store',headers:authHeaders()}).then(function(r){ if(r.status===401){ notifyAuthChanged(null,false);if(currentUser()) requireLogin(); return null; } if(!r.ok)return null; return r.json(); }).then(function(d){
+      if(d&&d.user){ _accountAvatar=d.user.avatar||''; try{ localStorage.removeItem('hq_token'); localStorage.setItem('hq_user',JSON.stringify(d.user)); }catch(e){} notifyAuthChanged(d.user,true); renderUser(); }
       var p=d&&d.user&&d.user.points; if(p==null) return;
       var a=document.getElementById('hqPointsSide');
       if(a) a.textContent=p;
@@ -958,11 +960,11 @@
   function closeLogin(){ var ov=document.getElementById('hqLoginOv'); if(ov) ov.classList.remove('on'); }
   function requireLogin(){
     try{ localStorage.removeItem('hq_token'); localStorage.removeItem('hq_user'); localStorage.removeItem('hq_role'); }catch(e){}
-    _accountAvatar='';closeAccountMenu();notifyAuthChanged(null);renderUser();openLogin();return true;
+    _accountAvatar='';closeAccountMenu();notifyAuthChanged(null,false);renderUser();openLogin();return true;
   }
   function authSuccess(res,msg){
     try{ localStorage.removeItem('hq_role'); localStorage.removeItem('hq_token'); if(res.d.user) localStorage.setItem('hq_user',JSON.stringify(res.d.user)); }catch(e){}
-    notifyAuthChanged(res.d&&res.d.user);
+    notifyAuthChanged(res.d&&res.d.user,true);
     hqMsg(msg||'操作成功','ok');
     setTimeout(function(){ closeLogin(); refreshPoints(); renderUser(); },450);
   }
@@ -1027,7 +1029,7 @@
       sessionStorage.removeItem('hq_director_agent_digital_human_v1');
     }catch(e){}
     try{ localStorage.removeItem('hq_token'); localStorage.removeItem('hq_user'); localStorage.removeItem('hq_role'); }catch(e){}
-    notifyAuthChanged(null);
+    notifyAuthChanged(null,false);
     fetch('/api/auth/logout',{method:'POST',credentials:'same-origin',headers:h}).finally(function(){ location.reload(); });
   }
   function avatarHTML(ch,size){
@@ -1121,7 +1123,7 @@
   function price(key,fallback){var value=Number(pricingValues[key]);return Number.isFinite(value)&&value>0?value:fallback;}
   setInterval(function(){fetchPricing().then(function(values){pricingListeners.forEach(function(callback){callback(values)})}).catch(function(){})},30000);
 
-  window.HQ={ icon:icon, nav:NAV, escapeHtml:escapeHtml, escapeAttr:escapeAttr, safeUrl:safeUrl, isAdmin:isAdmin, refreshPoints:refreshPoints, refreshNotifications:refreshNotificationBadge, setFriendsBadge:updateFriendsBadge, registerFriendsPanel:registerFriendsPanel, setFriendsPanelExpanded:setFriendsPanelExpanded, openFriendsPanel:openFriendsPanel, login:openLogin, requireLogin:requireLogin, register:openRegister, closeLogin:closeLogin, renderUser:renderUser, onPricing:onPricing, price:price };
+  window.HQ={ icon:icon, nav:NAV, escapeHtml:escapeHtml, escapeAttr:escapeAttr, safeUrl:safeUrl, isAdmin:isAdmin, getVerifiedUser:function(){return _verifiedUser;}, refreshPoints:refreshPoints, refreshNotifications:refreshNotificationBadge, setFriendsBadge:updateFriendsBadge, registerFriendsPanel:registerFriendsPanel, setFriendsPanelExpanded:setFriendsPanelExpanded, openFriendsPanel:openFriendsPanel, login:openLogin, requireLogin:requireLogin, register:openRegister, closeLogin:closeLogin, renderUser:renderUser, onPricing:onPricing, price:price };
   function _hqInit(){ build(); buildLoginModal(); loadTaskTracker(); }
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',_hqInit); else _hqInit();
 })();

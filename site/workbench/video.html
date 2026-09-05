@@ -502,6 +502,7 @@
         <div id="workbenchAgentToolActivity" class="agent-tool-activity hidden" role="status" aria-live="polite"></div>
         <div id="workbenchPendingActions" class="agent-pending-actions hidden" aria-live="polite"></div>
         <div class="workbench-agent-compose"><input id="workbenchAgentPrompt" maxlength="1000" placeholder="例如：把文案改得更口语化，并检查当前参数"><button id="workbenchAgentSend" type="button">询问 Agent</button></div>
+        <div id="agentPendingUpdateList" class="agent-pending-actions hidden" aria-live="polite"></div>
         <button id="agentApplyUpdates" class="agent-apply hidden" type="button">应用 Agent 建议到当前表单</button>
       </section>
       <div class="function-tabs hidden" aria-label="视频功能分页">
@@ -1110,8 +1111,11 @@
 <div id="toast" class="toast"></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=4a4363bd"></script>
+<script src="cloud-shell.js?v=faf49f49"></script>
 <script src="image-mentions.js?v=20260802f"></script>
+<script src="video-agent-canvas.js?v=a2070348"></script>
+<script src="video-agent-session.js?v=a4859dab"></script>
+<script src="video-agent-routing.js?v=66eaa3dc"></script>
 <script>
 (function(){
   var token='__cookie__';
@@ -1268,15 +1272,16 @@
   var AGENT_PLAN_CANVAS_ID='cvm_agent_plan';
   var canvasLayout=[], canvasSelectedIds=[], canvasPreviewUrls={}, canvasDragState=null, canvasResizeState=null, canvasPanState=null, canvasToolboxOpen=false;
   var canvasViewport={x:0,y:0,scale:1}, canvasToolMode='select', canvasSpacePanning=false;
-  var agentLastResult=null, agentPendingUpdates=[], agentPendingActions=[], agentConfirmBusyId='', agentReconcileBusyId='', agentConfirmKeys={}, agentConfirmErrors={}, agentExpiryTimer=null, agentSessionEpoch=0, agentSessionOwner='', agentToolActivity={text:'',kind:''};
+  var agentLastResult=null, agentPendingUpdates=[], agentPendingActions=[], agentConfirmBusyId='', agentReconcileBusyId='', agentConfirmKeys={}, agentConfirmErrors={}, agentExpiryTimer=null, agentSessionEpoch=0, agentSessionOwner='', agentIdentityVerified=false, agentToolActivity={text:'',kind:''};
   var agentVideoTasks=[], agentVideoTaskTimers={}, agentChatAutoFollow=true, agentChatProgrammaticScroll=false, agentChatScrollTimer=null, agentChatProgrammaticClearTimer=null, agentChatMutationObserver=null;
   var agentMaterialConfirmationId='', agentMaterialConfirmationTimer=null;
-  var AGENT_SESSION_KEY_PREFIX='hq_video_agent_session_v3:', AGENT_LEGACY_SESSION_KEYS=['hq_video_agent_session_v3','hq_video_agent_session_v2'], AGENT_SESSION_TTL_MS=30*86400000;
-  var AGENT_MEDIA_DB_NAME='hq_video_agent_media_v1',AGENT_MEDIA_STORE='media',AGENT_MEDIA_CACHE_MAX_BYTES=64*1024*1024,agentMediaDbPromise=null;
+  var agentCanvas=window.HQVideoAgentCanvas,agentSession=window.HQVideoAgentSession,agentRouting=window.HQVideoAgentRouting;
+  var AGENT_SESSION_KEY_PREFIX='hq_video_agent_session_v3:', AGENT_LEGACY_SESSION_KEYS=['hq_video_agent_session_v3','hq_video_agent_session_v2'], AGENT_SESSION_TTL_MS=agentSession.TTL_MS;
+  var agentMediaStore=agentSession.createMediaStore({indexedDB:window.indexedDB,IDBKeyRange:window.IDBKeyRange,Blob:window.Blob,safeText:agentSafeText});
   var AGENT_TASKS={
     talking:{function:'talking',title:'数字人口播',description:'使用人物照片搭配文案或现成音频，生成自然口型的讲解视频。',meta:['人物照片','文案或音频','可选字幕']},
     create:{function:'grok',title:'自由生成',description:'根据画面描述生成新视频；有参考图片时会一起带入制作流程。',meta:['文字描述','可选参考图','横屏或竖屏']},
-    story:{function:'minimax',title:'剧情故事',description:'使用人物参考图保持角色身份，根据剧情描述生成真人电影感短片。',meta:['人物参考图','剧情描述','建议 5–15 秒']},
+    story:{function:'cinematic',cineMode:'open',title:'剧情故事',description:'使用人物参考图保持角色身份，根据剧情描述生成真人电影感短片。',meta:['人物参考图','剧情描述','建议 5–15 秒']},
     motion:{function:'cinematic',title:'动作模仿',description:'让已有数字人形象参考一段视频的动作、节奏和运镜进行表演。',meta:['数字人形象','参考视频','动作与运镜']},
     tryon:{function:'tryon',title:'换装换背景',description:'使用人物照片或视频，替换服装、背景，尽量保留原人物和动作。',meta:['人物素材','衣服或背景图','保留原动作']},
     compose:{function:'talking',href:'one-click-video.html',title:'一键成片',description:'选择已经生成的口播，完成分析、粗剪、标题包装并渲染成片。',meta:['已有口播','粗剪确认','标题与 CTA']}
@@ -1297,9 +1302,10 @@
   }
   function openVideoWorkbench(route){
     route=route||AGENT_TASKS.talking;
-    if(route.href){location.href=route.href;return;}
-    if(route.function==='minimax'&&officialVideoHealthKnown&&!minimaxAvailable){
-      route=AGENT_TASKS.create;
+    if(route.href){location.href=route.href;return route;}
+    var effective=agentRouting.effectiveRoute(route,officialVideoHealthKnown,minimaxAvailable,AGENT_TASKS.create);
+    if(effective!==route){
+      route=effective;
       if(typeof toast==='function')toast('剧情故事线路暂不可用，已进入自由生成');
     }
     videoView='workbench';
@@ -1315,6 +1321,7 @@
     updateFunction(route.function||'talking');
     setTimeout(function(){renderWorkbenchAgent();renderAgentPendingActions();},0);
     if($('videoPrimary')) $('videoPrimary').scrollTop=0;
+    return route;
   }
   function openVideoHistory(){
     if(videoView==='history')return;
@@ -1389,11 +1396,10 @@
     return 'cvm_'+String(raw).replace(/[^A-Za-z0-9_-]/g,'').slice(0,48);
   }
   function clampCanvasPosition(x,y){
-    x=Number(x);y=Number(y);return {x:Math.max(0,Math.min(1,Number.isFinite(x)?x:0)),y:Math.max(0,Math.min(1,Number.isFinite(y)?y:0))};
+    return agentCanvas.clampPosition(x,y);
   }
   function safeCanvasCardSize(value,fallback){
-    value=value&&typeof value==='object'?value:{};fallback=fallback&&typeof fallback==='object'?fallback:{width:320,height:320};var width=Number(value.width),height=Number(value.height);
-    return {width:Math.round(Math.max(260,Math.min(560,Number.isFinite(width)?width:fallback.width))),height:Math.round(Math.max(220,Math.min(520,Number.isFinite(height)?height:fallback.height)))};
+    return agentCanvas.safeCardSize(value,fallback);
   }
   function canvasDefaultCardSize(meta,kind){
     if(kind==='text')return {width:260,height:206};if(kind==='plan')return {width:340,height:200};var type=meta&&meta.type||'file';if(type==='audio')return {width:300,height:220};var width=Number(meta&&meta.width),height=Number(meta&&meta.height),ratio=width>0&&height>0?width/height:1;
@@ -1565,10 +1571,10 @@
     canvasLayout.forEach(function(item,index){var meta=agentMaterialMeta.find(function(value){return value.canvas_id===item.id;}),size=canvasDefaultCardSize(meta,item.kind),col=index%3,row=Math.floor(index/3);item.width=size.width;item.height=size.height;item.x=Math.min(1,col/2);item.y=Math.min(1,row/Math.max(1,Math.ceil(canvasLayout.length/3)-1));});canvasViewport={x:0,y:0,scale:1};renderMaterialCanvas();saveAgentSession();
   }
   function moveCanvasCardByKeyboard(id,key,largeStep){
-    var item=canvasLayout.find(function(value){return value.id===id;});if(!item)return false;var step=largeStep ? .05 : .01,x=item.x,y=item.y;if(key==='ArrowLeft')x-=step;else if(key==='ArrowRight')x+=step;else if(key==='ArrowUp')y-=step;else if(key==='ArrowDown')y+=step;else return false;var pos=clampCanvasPosition(x,y);item.x=pos.x;item.y=pos.y;canvasSelectedIds=[id];renderMaterialCanvas();var card=document.querySelector('[data-canvas-id="'+id+'"]');if(card)card.focus();saveAgentSession();return true;
+    var item=canvasLayout.find(function(value){return value.id===id;});if(!agentCanvas.move(item,key,largeStep))return false;canvasSelectedIds=[id];renderMaterialCanvas();var card=document.querySelector('[data-canvas-id="'+id+'"]');if(card)card.focus();saveAgentSession();return true;
   }
   function resizeCanvasCardByKeyboard(id,key,largeStep){
-    var item=canvasLayout.find(function(value){return value.id===id;});if(!item)return false;var step=largeStep?40:10,width=Number(item.width),height=Number(item.height);if(key==='ArrowLeft')width-=step;else if(key==='ArrowRight')width+=step;else if(key==='ArrowUp')height-=step;else if(key==='ArrowDown')height+=step;else return false;var size=safeCanvasCardSize({width:width,height:height},canvasDefaultCardSize(null,item.kind));item.width=size.width;item.height=size.height;canvasSelectedIds=[id];renderMaterialCanvas();var handle=document.querySelector('[data-canvas-resize="'+id+'"]');if(handle)handle.focus();saveAgentSession();return true;
+    var item=canvasLayout.find(function(value){return value.id===id;});if(!agentCanvas.resize(item,key,largeStep,canvasDefaultCardSize(null,item&&item.kind)))return false;canvasSelectedIds=[id];renderMaterialCanvas();var handle=document.querySelector('[data-canvas-resize="'+id+'"]');if(handle)handle.focus();saveAgentSession();return true;
   }
   function beginCanvasResize(event,id){
     var stage=$('materialCanvasStage'),item=canvasLayout.find(function(value){return value.id===id;});if(canvasToolMode!=='select'||canvasSpacePanning||!stage||!item||event.button!==0)return false;event.preventDefault();event.stopPropagation();if(canvasSelectedIds.indexOf(id)<0)selectCanvasMaterial(id,false);var card=stage.querySelector('[data-canvas-id="'+id+'"]');if(!card)return false;var scale=canvasViewport.scale||1;canvasResizeState={id:id,startX:event.clientX,startY:event.clientY,width:card.offsetWidth,height:card.offsetHeight,scale:scale};card.classList.add('resizing');
@@ -1601,22 +1607,17 @@
   function removeLegacyAgentSessions(){
     AGENT_LEGACY_SESSION_KEYS.forEach(function(key){try{localStorage.removeItem(key);}catch(e){}});
   }
-  function agentMediaStorageKey(owner,canvasId){owner=agentSafeText(owner,65).trim();canvasId=agentSafeText(canvasId,64);return owner&&owner.length<=64&&/^cvm_[A-Za-z0-9_-]{4,60}$/.test(canvasId)?owner+'\u0000'+canvasId:'';}
-  function openAgentMediaDb(){
-    if(agentMediaDbPromise)return agentMediaDbPromise;agentMediaDbPromise=new Promise(function(resolve,reject){if(!window.indexedDB){reject(new Error('media_storage_unavailable'));return;}var request=indexedDB.open(AGENT_MEDIA_DB_NAME,1);request.onupgradeneeded=function(){var db=request.result,store=db.objectStoreNames.contains(AGENT_MEDIA_STORE)?request.transaction.objectStore(AGENT_MEDIA_STORE):db.createObjectStore(AGENT_MEDIA_STORE,{keyPath:'key'});if(!store.indexNames.contains('owner'))store.createIndex('owner','owner',{unique:false});};request.onsuccess=function(){resolve(request.result);};request.onerror=function(){agentMediaDbPromise=null;reject(request.error||new Error('media_storage_open_failed'));};request.onblocked=function(){agentMediaDbPromise=null;reject(new Error('media_storage_blocked'));};});return agentMediaDbPromise;
-  }
   function persistAgentMediaFile(canvasId,file){
-    var owner=currentAgentSessionOwner(),key=agentMediaStorageKey(owner,canvasId);if(!key||!file||!file.size)return Promise.reject(new Error('media_storage_invalid'));if(file.size>AGENT_MEDIA_CACHE_MAX_BYTES)return Promise.reject(new Error('media_storage_too_large'));
-    return openAgentMediaDb().then(function(db){return new Promise(function(resolve,reject){var tx=db.transaction(AGENT_MEDIA_STORE,'readwrite');tx.objectStore(AGENT_MEDIA_STORE).put({key:key,owner:owner,canvas_id:canvasId,name:agentSafeText(file.name,180)||'素材',mime:agentSafeText(file.type,100),size:Number(file.size)||0,last_modified:Number(file.lastModified)||0,blob:file,updated_at:Date.now()});tx.oncomplete=function(){resolve(true);};tx.onerror=function(){reject(tx.error||new Error('media_storage_write_failed'));};tx.onabort=function(){reject(tx.error||new Error('media_storage_write_aborted'));};});});
+    if(!agentIdentityVerified)return Promise.reject(new Error('media_storage_unverified'));return agentMediaStore.put(agentSessionOwner,canvasId,file);
   }
   function loadAgentMediaFile(owner,canvasId){
-    var key=agentMediaStorageKey(owner,canvasId);if(!key)return Promise.reject(new Error('media_storage_invalid'));return openAgentMediaDb().then(function(db){return new Promise(function(resolve,reject){var request=db.transaction(AGENT_MEDIA_STORE,'readonly').objectStore(AGENT_MEDIA_STORE).get(key);request.onsuccess=function(){var record=request.result,age=record?Date.now()-Number(record.updated_at||0):Infinity;if(!record||record.owner!==owner||record.canvas_id!==canvasId||!(record.blob instanceof Blob)){reject(new Error('media_storage_missing'));return;}if(!Number.isFinite(age)||age<0||age>AGENT_SESSION_TTL_MS){deleteAgentMediaFile(owner,canvasId);reject(new Error('media_storage_expired'));return;}resolve(record);};request.onerror=function(){reject(request.error||new Error('media_storage_read_failed'));};});});
+    if(!agentIdentityVerified||owner!==agentSessionOwner)return Promise.reject(new Error('media_storage_unverified'));return agentMediaStore.get(owner,canvasId);
   }
   function deleteAgentMediaFile(owner,canvasId){
-    var key=agentMediaStorageKey(owner,canvasId);if(!key)return Promise.resolve(false);return openAgentMediaDb().then(function(db){return new Promise(function(resolve){var tx=db.transaction(AGENT_MEDIA_STORE,'readwrite');tx.objectStore(AGENT_MEDIA_STORE).delete(key);tx.oncomplete=function(){resolve(true);};tx.onerror=tx.onabort=function(){resolve(false);};});}).catch(function(){return false;});
+    return agentMediaStore.remove(owner,canvasId);
   }
   function deleteAgentMediaForOwner(owner){
-    owner=agentSafeText(owner,65).trim();if(!owner)return Promise.resolve(false);return openAgentMediaDb().then(function(db){return new Promise(function(resolve){var tx=db.transaction(AGENT_MEDIA_STORE,'readwrite'),index=tx.objectStore(AGENT_MEDIA_STORE).index('owner'),request=index.openCursor(IDBKeyRange.only(owner));request.onsuccess=function(){var cursor=request.result;if(cursor){cursor.delete();cursor.continue();}};tx.oncomplete=function(){resolve(true);};tx.onerror=tx.onabort=function(){resolve(false);};});}).catch(function(){return false;});
+    return agentMediaStore.removeOwner(owner);
   }
   function deleteAgentLocalDataForOwner(owner){
     var storageKey=agentSessionStorageKey(owner);try{if(storageKey)localStorage.removeItem(storageKey);}catch(e){}return deleteAgentMediaForOwner(owner);
@@ -1789,7 +1790,7 @@
   }
   function reconcileAgentPendingAction(actionId){
     if(!ensureAgentSessionOwner())return Promise.resolve(false);if(agentConfirmBusyId||agentReconcileBusyId)return Promise.resolve(false);var action=agentPendingActions.find(function(item){return item.id===actionId&&item.status==='result_unknown';});if(!action)return Promise.resolve(false);var epoch=agentSessionEpoch;agentReconcileBusyId=action.id;delete agentConfirmErrors[action.id];setAgentToolActivity('正在只读核对该确认请求的真实提交结果…','busy');renderAgentPendingActions();
-    return fetch('/api/gen/video/agent/actions/'+encodeURIComponent(action.id)+'/reconcile',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:'{}'}).then(function(response){return response.json().catch(function(){return {};}).then(function(data){if(!response.ok)throw makeAgentConfirmRequestError(response,data);return data;});}).then(function(data){
+    return agentSession.reconcile(fetch,action.id,{Authorization:'Bearer '+token,'Content-Type':'application/json'},makeAgentConfirmRequestError).then(function(data){
       if(epoch!==agentSessionEpoch)return false;var updated=normalizeAgentPendingAction(data&&data.pending_action);if(!updated)throw new Error('核对结果格式不正确');upsertAgentPendingAction(updated);if(['submitted','queued','running','completed','succeeded'].indexOf(updated.status)>=0){delete agentConfirmKeys[action.id];startAgentVideoTaskFromPending(updated);setAgentToolActivity('已核实任务已提交，正在当前页面跟踪进度。');toast('已核实生成任务');return true;}if(updated.status==='failed'){delete agentConfirmKeys[action.id];setAgentToolActivity('已核实此前请求未提交，可让 Agent 重新生成方案。','warning');toast('已核实此前请求未提交');return true;}setAgentToolActivity('核对完成，请按当前状态继续操作。');return true;
     }).catch(function(error){
       if(epoch!==agentSessionEpoch)return false;var updated=error&&error.pending_action;if(updated)upsertAgentPendingAction(updated);var inFlight=Number(error&&error.status)===409&&agentSafeText(error&&error.code,80)==='pending_reconcile_in_flight';agentConfirmErrors[action.id]=inFlight?'上游仍可能在处理，请稍后再次安全核对；不要重新提交。':agentConfirmFailureMessage(error,agentPendingActions.find(function(item){return item.id===action.id;})||action);setAgentToolActivity(agentConfirmErrors[action.id],'warning');toast(agentConfirmErrors[action.id]);throw error;
@@ -1798,7 +1799,7 @@
   function saveAgentSession(){
     try{
       removeLegacyAgentSessions();var owner=currentAgentSessionOwner(),storageKey=agentSessionStorageKey(owner);
-      if(!owner||!storageKey||(agentSessionOwner&&agentSessionOwner!==owner))return false;agentSessionOwner=owner;
+      if(!agentIdentityVerified||!owner||!storageKey||(agentSessionOwner&&agentSessionOwner!==owner))return false;agentSessionOwner=owner;
       localStorage.setItem(storageKey,JSON.stringify({version:3,owner:owner,updated_at:Date.now(),conversation:safeAgentConversationForSession(agentConversation),brief:safeAgentBriefForSession(agentBrief),last_result:safeAgentResultForSession(agentLastResult),handoff_prompt:agentSafeText(agentHandoffPrompt,6000),materials:agentMaterialMeta.slice(0,9).map(safeAgentMaterialForSession),material_confirmation_id:agentMaterialConfirmationId,canvas_layout:safeCanvasLayoutForSession(canvasLayout),canvas_viewport:safeCanvasViewportForSession(canvasViewport),pending_actions:agentPendingActions.map(safeAgentPendingActionForSession).filter(Boolean),agent_video_tasks:agentVideoTasks.map(safeAgentVideoTaskForSession).filter(Boolean),confirm_keys:safeAgentConfirmKeysForSession(agentConfirmKeys),recommended_module:agentSafeText(agentLastResult&&agentLastResult.recommended_module,40)}));return true;
     }catch(e){return false;}
   }
@@ -1811,7 +1812,7 @@
   function restoreAgentMaterialPreviews(){var epoch=agentSessionEpoch,jobs=agentMaterialMeta.map(function(meta,index){if(!meta||!meta.canvas_id)return null;meta.restoring_media=true;return restoreAgentCachedMaterial(meta,index,epoch).then(function(restored){return restored?true:restoreAgentRemoteMaterialPreview(meta,epoch);});});renderMaterialCanvas();return Promise.allSettled(jobs.filter(Boolean));}
   function restoreAgentSession(){
     try{
-      removeLegacyAgentSessions();var owner=currentAgentSessionOwner(),storageKey=agentSessionStorageKey(owner);if(!owner||!storageKey)return false;agentSessionOwner=owner;
+      removeLegacyAgentSessions();var owner=currentAgentSessionOwner(),storageKey=agentSessionStorageKey(owner);if(!agentIdentityVerified||!owner||!storageKey||owner!==agentSessionOwner)return false;
       var state=JSON.parse(localStorage.getItem(storageKey)||'null'),age=state?Date.now()-Number(state.updated_at||0):Infinity;
       if(!state||state.version!==3||state.owner!==owner||!Array.isArray(state.conversation)||!Number.isFinite(age)||age<0||age>AGENT_SESSION_TTL_MS){deleteAgentLocalDataForOwner(owner);return false;}agentConversation=safeAgentConversationForSession(state.conversation);agentBrief=safeAgentBriefForSession(state.brief);agentLastResult=safeAgentResultForSession(state.last_result);agentHandoffPrompt=agentSafeText(state.handoff_prompt,6000);agentMaterialMeta=Array.isArray(state.materials)?state.materials.slice(0,9).map(safeAgentMaterialForSession):[];agentMaterialConfirmationId=agentSafeText(state.material_confirmation_id,64);if(!agentMaterialMeta.some(function(meta){return meta.canvas_id===agentMaterialConfirmationId&&meta.purpose_state==='pending';}))agentMaterialConfirmationId='';agentPendingActions=Array.isArray(state.pending_actions)?state.pending_actions.map(normalizeAgentPendingAction).filter(Boolean).slice(0,8):[];agentVideoTasks=Array.isArray(state.agent_video_tasks)?state.agent_video_tasks.map(normalizeAgentVideoTask).filter(Boolean).slice(0,8):[];agentConfirmKeys=safeAgentConfirmKeysForSession(state.confirm_keys);agentFiles=agentMaterialMeta.map(function(){return null;});agentPendingAttachmentIds=[];agentPendingUpdates=Array.isArray(agentLastResult.form_updates)?agentLastResult.form_updates:[];agentRecommendationRoute=AGENT_TASKS[agentSafeText(state.recommended_module,40)]||null;restoreCanvasLayout(state.canvas_layout);restoreCanvasViewport(state.canvas_viewport);restoreAgentMaterialPreviews();restoreAgentAvatarCreations();var thread=$('agentThread'),lastAssistantNode=null;if(thread){thread.innerHTML='';agentConversation.forEach(function(message){var node=appendAgentMessage(message.role==='user'?'user':'assistant',message.content);if(message.role==='user')renderChatMaterialOffer(node,message.content);else lastAssistantNode=node;});if(lastAssistantNode){renderAgentDraftMaterialAction(lastAssistantNode,agentLastResult.draft);renderAgentAvatarCreationAction(lastAssistantNode,agentLastResult);}}if($('agentResumeNotice'))$('agentResumeNotice').classList.remove('hidden');renderAgentPlanStatus();renderAgentWorkspace();renderAgentPendingActions();restoreAgentVideoTasks();if(agentMaterialConfirmationId)renderAgentMaterialConfirmation();else queueAgentMaterialConfirmation(agentMaterialMeta.map(function(meta){return meta.canvas_id;}));scrollAgentToLatest({force:true,behavior:'auto'});return true;
     }catch(e){return false;}
@@ -1832,9 +1833,9 @@
     var previousOwner=agentSessionOwner;if(previousOwner)deleteAgentLocalDataForOwner(previousOwner);clearAgentMemoryForOwner(nextOwner);if(nextOwner)restoreAgentSession();return true;
   }
   function ensureAgentSessionOwner(){
-    var currentOwner=currentAgentSessionOwner();if(currentOwner!==agentSessionOwner){switchAgentSessionOwner(currentOwner);toast('账号已变更，已切换到当前账号的创作会话，请重新操作');return false;}if(!currentOwner){toast('请先登录后使用视频创作助手');return false;}return true;
+    var verified=window.HQ&&window.HQ.getVerifiedUser&&window.HQ.getVerifiedUser(),currentOwner=verified&&verified.username||'';if(!agentIdentityVerified||currentOwner!==agentSessionOwner){agentIdentityVerified=!!currentOwner;switchAgentSessionOwner(currentOwner);toast(currentOwner?'账号已变更，已切换到当前账号的创作会话，请重新操作':'请先登录后使用视频创作助手');return false;}return true;
   }
-  function handleAgentAuthChanged(){switchAgentSessionOwner(currentAgentSessionOwner());}
+  function handleAgentAuthChanged(){var verified=window.HQ&&window.HQ.getVerifiedUser&&window.HQ.getVerifiedUser(),nextOwner=verified&&verified.username||'';agentIdentityVerified=!!nextOwner;switchAgentSessionOwner(nextOwner);}
   function resetAgentSession(){
     if(!ensureAgentSessionOwner())return false;if(agentConfirmBusyId||agentReconcileBusyId){toast('正在核对生成请求，请等待结果后再新建创作');return false;}var owner=currentAgentSessionOwner();removeLegacyAgentSessions();deleteAgentLocalDataForOwner(owner);return clearAgentMemoryForOwner(owner);
   }
@@ -2013,7 +2014,7 @@
       $('agentThread').appendChild(quickBox);
     }
     var route=AGENT_TASKS[result.recommended_module]||null;
-    if(route&&route.function==='minimax'&&officialVideoHealthKnown&&!minimaxAvailable)route=AGENT_TASKS.create;
+    route=agentRouting.effectiveRoute(route,officialVideoHealthKnown,minimaxAvailable,AGENT_TASKS.create);
     agentRecommendationRoute=route;
     agentLastResult=safeAgentResultForSession(result);agentPendingUpdates=Array.isArray(agentLastResult.form_updates)?agentLastResult.form_updates:[];renderAgentDraftMaterialAction(assistant,agentLastResult.draft);renderAgentAvatarCreationAction(assistant,agentLastResult);
     var pendingValues=[];if(result.pending_action)pendingValues.push(result.pending_action);if(Array.isArray(result.pending_actions))pendingValues=pendingValues.concat(result.pending_actions);pendingValues.forEach(upsertAgentPendingAction);
@@ -2050,7 +2051,8 @@
     var last=agentConversation.slice().reverse().find(function(item){return item.role==='assistant';});
     if($('workbenchAgentThread'))$('workbenchAgentThread').textContent=(last&&last.content)||'我会继续陪你完成当前制作。你可以让我优化文案、检查参数或说明下一步。';
     var preflight=collectAgentPreflight();if($('agentPreflight'))$('agentPreflight').innerHTML=preflight.map(function(item){return '<span class="'+(item.risk?'risk':'')+'">'+esc(item.text)+'</span>';}).join('');
-    if($('agentApplyUpdates')){$('agentApplyUpdates').classList.toggle('hidden',!agentPendingUpdates.length);$('agentApplyUpdates').textContent=agentPendingUpdates.length?('应用 '+agentPendingUpdates.length+' 项建议到当前表单'):'应用 Agent 建议到当前表单';}
+    var updateList=$('agentPendingUpdateList');if(updateList){updateList.innerHTML=agentPendingUpdates.map(function(update,index){return '<article class="agent-pending-card"><div><strong>'+esc(AGENT_BRIEF_LABELS[update.field]||update.field||'表单建议')+'</strong><p>'+esc(agentSafeText(update.value,300))+'</p>'+(update.reason?'<small>'+esc(agentSafeText(update.reason,300))+'</small>':'')+'</div><button type="button" data-agent-update-dismiss="'+index+'" aria-label="移除这条建议">已了解</button></article>';}).join('');updateList.classList.toggle('hidden',!agentPendingUpdates.length);updateList.querySelectorAll('[data-agent-update-dismiss]').forEach(function(button){button.onclick=function(){agentPendingUpdates.splice(Number(button.dataset.agentUpdateDismiss),1);renderWorkbenchAgent();saveAgentSession();};});}
+    if($('agentApplyUpdates')){$('agentApplyUpdates').classList.toggle('hidden',!agentPendingUpdates.length);$('agentApplyUpdates').textContent=agentPendingUpdates.length?('应用可匹配建议（共 '+agentPendingUpdates.length+' 项）'):'应用 Agent 建议到当前表单';}
     renderAgentPendingActions();
   }
   var AGENT_PARAMETER_CONTROLS={
@@ -2142,7 +2144,7 @@
         if(prompt){$('minimaxPrompt').value=prompt;$('minimaxPrompt').dispatchEvent(new Event('input'));}
         minimaxRefData=images.slice(0,5).map(function(item){return item.data;});if(xiaoleRefRenderers.minimax)xiaoleRefRenderers.minimax();
       }else if(route.function==='cinematic'){
-        applyCineMode(videos.length?'motion':'open');
+        applyCineMode(agentRouting.cinematicMode(route,!!videos.length));
         if(prompt&&$('cinePrompt')){$('cinePrompt').value=prompt;$('cinePrompt').dispatchEvent(new Event('input'));}
         cineRefVideos=videos.slice(0,cineMaxRefVideos()).map(function(item){return {data:item.data,name:item.file.name};});
         cineRefImages=images.slice(0,cineMaxRefImages()).map(function(item){return {data:item.data,name:item.file.name};});renderCineRefs();syncCineRefProbe();
@@ -2161,9 +2163,9 @@
   }
   function openAgentRecommendation(){
     if(!ensureAgentSessionOwner())return;var route=agentRecommendationRoute;if(!route)return;
-    openVideoWorkbench(route);
-    if(route.href)return;
-    handoffAgentFiles(route).catch(function(e){toast(e.message||'素材读取失败，请在制作界面重新上传');});
+    var effectiveRoute=openVideoWorkbench(route);
+    if(!effectiveRoute||effectiveRoute.href)return;
+    handoffAgentFiles(effectiveRoute).catch(function(e){toast(e.message||'素材读取失败，请在制作界面重新上传');});
   }
   var resumedVideoTaskId='';
   var focusVideoTaskId='';
@@ -4878,7 +4880,7 @@
   $('agentSendBtn').onclick=analyzeAgentRequest;
   $('agentPrompt').onkeydown=function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();analyzeAgentRequest();}};
   window.addEventListener('hq:auth-changed',handleAgentAuthChanged);
-  window.addEventListener('storage',function(e){if(!e||e.key==='hq_user'||e.key===null)handleAgentAuthChanged();});
+  window.addEventListener('storage',function(e){if(!e||e.key==='hq_user'||e.key===null){agentIdentityVerified=false;switchAgentSessionOwner('');if(window.HQ&&window.HQ.refreshPoints)window.HQ.refreshPoints();}});
   window.addEventListener('pageshow',function(){if(videoView==='home')scrollAgentToLatest({force:true,behavior:'auto'});});
   document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible'&&videoView==='home')scrollAgentToLatest({force:true,behavior:'auto'});});
   window.addEventListener('keydown',function(e){var tag=(e.target&&e.target.tagName||'').toLowerCase();if(e.code==='Space'&&!e.repeat&&videoView==='home'&&['input','textarea','select'].indexOf(tag)<0&&!(e.target&&e.target.isContentEditable)){e.preventDefault();canvasSpacePanning=true;applyCanvasViewport();}});
@@ -4887,7 +4889,6 @@
   window.addEventListener('pagehide',releaseAssetCache);
   window.addEventListener('resize',function(){if(videoView==='home')renderMaterialCanvas();});
   initializeAgentChatScroll();
-  restoreAgentSession();
   if(hasVideoDeepLink()){
     var deepFunction='talking';
     try{
