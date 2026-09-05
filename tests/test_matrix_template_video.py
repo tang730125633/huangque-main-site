@@ -1842,6 +1842,48 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             self.assertGreater(bgm_amplitude / voice_amplitude, 0.12)
             self.assertLess(bgm_amplitude / voice_amplitude, 0.4)
 
+    def test_mux_voiceover_uses_ffmpeg_44_compatible_limiter_options(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            video = root / "video/base.mp4"
+            voice = root / "voice.wav"
+            video.parent.mkdir(parents=True)
+            video.write_bytes(b"source")
+            voice.write_bytes(b"voice")
+
+            source_streams = ([{"codec_type": "audio", "codec_name": "aac"}], 8.0)
+            output_streams = ([
+                {
+                    "codec_type": "video", "codec_name": "h264",
+                    "width": 1080, "height": 1920,
+                },
+                {"codec_type": "audio", "codec_name": "aac"},
+            ], 1.2)
+
+            def run(command, **_kwargs):
+                Path(command[-1]).write_bytes(b"output" * 512)
+                return subprocess.CompletedProcess(command, 0)
+
+            with mock.patch.object(self.module, "OUT_DIR", root), \
+                 mock.patch.object(
+                     self.module, "_media_probe",
+                     side_effect=[source_streams, output_streams],
+                 ), mock.patch.object(
+                     self.module.subprocess, "run", side_effect=run,
+                 ) as execute:
+                self.module._mux_voiceover(
+                    "video/base.mp4",
+                    {"path": voice, "duration": 1.2},
+                    time.time() + 30,
+                    bgm=True,
+                    bgm_volume=0.25,
+                )
+
+            command = execute.call_args.args[0]
+            filter_graph = command[command.index("-filter_complex") + 1]
+            self.assertIn("alimiter=limit=0.95:level=false[aout]", filter_graph)
+            self.assertNotIn("latency=", filter_graph)
+
     def test_legacy_submission_unknown_replays_original_payload_exactly(self):
         legacy_payload = {
             "top_text": "有效标题", "bottom_text": "评论区扣888",

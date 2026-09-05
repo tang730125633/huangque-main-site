@@ -897,7 +897,7 @@ def _mux_voiceover(
                 "asetpts=PTS-STARTPTS[voice];"
                 "[voice][bgm]amix=inputs=2:duration=longest:"
                 "dropout_transition=0:normalize=0,"
-                "alimiter=limit=0.95:level=false:latency=true[aout]"
+                "alimiter=limit=0.95:level=false[aout]"
             ),
             "-map", "0:v:0", "-map", "[aout]",
         ])
