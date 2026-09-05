@@ -139,9 +139,84 @@ class RuntimeTruth(unittest.TestCase):
         self.run_turn([NS(content='稍后查询', tool_calls=None)])
         subagent._observe_job(self.sid, 'collect', {'job_id': 124}, submit=True)
         subagent._observe_task_query(self.sid, {'job_id': 124}, {'status': 'ready'})
+        immediate = state.get_subagent(self.sid, 'collect')['last_result']
+        self.assertEqual(immediate['state'], 'running')
+        self.assertEqual(immediate['result']['job_id'], 123)
         result = subagent._save_outcome(self.sid, 'collect', protocol.make('completed', '模型声称全部完成'))
         self.assert_receipt(result)
         self.assertEqual({j['job_id'] for j in result['result']['submitted_jobs']}, {123, 124})
+
+    def test_real_cli_phase_done_contract_completes_with_content(self):
+        result = self.run_turn([
+            tool('hq_run', {'capability_id': 'task', 'inputs': {'job_id': 123}}),
+            NS(content='结果已完成', tool_calls=None)],
+            cli_tail=[{'exit_code': 0, 'data': {'result': {
+                'phase': 'done', 'kind': 'collect', 'result': {'title': '实际内容'}}}}])
+        self.assert_receipt(result, 'completed')
+        self.assertEqual(result['result']['result']['title'], '实际内容')
+
+    def test_finalizer_does_not_erase_new_quote_or_another_job(self):
+        from agent.v4 import delivery, media
+        self.run_turn([NS(content='稍后查询', tool_calls=None)])
+        subagent._observe_job(self.sid, 'collect', {'job_id': 124}, submit=True)
+        state.save_subagent(self.sid, 'collect', pending_quote=self.quote)
+        with patch.object(media, 'extract_image_urls', return_value=[]), \
+             patch.object(state, 'persist') as persist, \
+             patch.object(delivery.streaming, 'emit'), patch.object(delivery, '_STATUS_BUST'):
+            delivery.finalize_collect(self.sid, 123, {'title': '已完成内容'})
+        last = state.get_subagent(self.sid, 'collect')['last_result']
+        self.assertEqual(last['state'], 'needs_approval')
+        self.assertEqual(last['quote']['quote_token'], 'mock-only')
+        self.assertEqual({j['result']['job_id']:j['state'] for j in last['_runtime_jobs']},
+                         {123:'completed', 124:'running'})
+        persist.assert_called_once()
+
+    def test_background_poll_does_not_erase_concurrent_quote(self):
+        from agent.v4 import delivery
+        self.run_turn([NS(content='稍后查询', tool_calls=None)])
+        def reply(*args, **kwargs):
+            state.save_subagent(self.sid, 'collect', pending_quote=self.quote)
+            return {'exit_code': 0, 'data': {'result': {'phase': 'done', 'result': {'title':'实际内容'}}}}
+        with patch.object(delivery.hq_cli, 'run', side_effect=reply), \
+             patch.object(state, 'persist'), patch.object(delivery, 'maybe_spawn_finalize'):
+            delivery.resume_stale_jobs(self.sid)
+        last = state.get_subagent(self.sid, 'collect')['last_result']
+        self.assertEqual(last['state'], 'needs_approval')
+        self.assertEqual(last['quote']['quote_token'], 'mock-only')
+        self.assertEqual(last['_runtime_jobs'][0]['state'], 'completed')
+
+    def test_background_poll_finds_original_job_behind_new_quote(self):
+        from agent.v4 import delivery
+        self.run_turn([NS(content='稍后查询', tool_calls=None)])
+        state.save_subagent(self.sid, 'collect', pending_quote=self.quote)
+        subagent._finish({'state':'needs_approval','summary':'新报价'}, self.sid, 'collect')
+        with patch.object(delivery.hq_cli, 'run', return_value={'exit_code':0,'data':{'result':{
+                'phase':'failed','error':'offline fixture'}}}) as run, \
+             patch.object(state, 'persist'):
+            delivery.resume_stale_jobs(self.sid)
+        run.assert_called_once_with('task', {'job_id':123})
+        last = state.get_subagent(self.sid, 'collect')['last_result']
+        self.assertEqual(last['state'], 'needs_approval')
+        self.assertEqual(last['_runtime_jobs'][0]['state'], 'failed')
+
+    def test_old_running_response_cannot_undo_terminal_but_reconciled_success_can(self):
+        self.run_turn([NS(content='稍后查询', tool_calls=None)])
+        subagent._observe_task_query(self.sid, {'job_id':123}, {'phase':'error'})
+        subagent._observe_task_query(self.sid, {'job_id':123}, {'phase':'running'})
+        self.assertEqual(state.get_subagent(self.sid, 'collect')['last_result']['state'], 'failed')
+        subagent._observe_task_query(self.sid, {'job_id':123}, {'phase':'done','result':{'title':'补回结果'}})
+        last = state.get_subagent(self.sid, 'collect')['last_result']
+        self.assertEqual(last['state'], 'completed')
+        self.assertEqual(last['result']['result']['title'], '补回结果')
+
+    def test_delivery_job_id_matches_receipt_with_additional_request_id(self):
+        state.clear_pending_quote(self.sid, 'collect')
+        subagent._observe_job(self.sid, 'collect', {'job_id':123,'request_id':'original-request'}, submit=True)
+        subagent._observe_job(self.sid, 'collect', {'job_id':123,'status':'done'}, protocol.COMPLETED)
+        last = state.get_subagent(self.sid, 'collect')['last_result']
+        self.assertEqual(last['state'], 'completed')
+        self.assertEqual(len(last['_runtime_jobs']), 1)
+        self.assertEqual(last['result']['request_id'], 'original-request')
 
     def test_receipt_survives_persist_and_restore(self):
         import tempfile

@@ -100,7 +100,8 @@ def _bound_outcome(sess, candidate):
 
 
 def _job_key(receipt):
-    return tuple((k, str(receipt[k])) for k in _JOB_IDS if receipt.get(k) is not None)
+    # A later task/delivery response may omit the original request/run ID.
+    return next(((k, str(receipt[k])) for k in _JOB_IDS if receipt.get(k) is not None), ())
 
 
 def _job_label(receipt):
@@ -120,19 +121,24 @@ def _observe_job(sid, domain, receipt, status=protocol.RUNNING, *, submit=False,
         last = sess.get("last_result") or {}
         jobs = _job_records(last)
         key = _job_key(receipt)
+        previous = next((j for j in jobs if _job_key(j["result"]) == key), None)
+        if previous and previous["state"] != protocol.RUNNING and status == protocol.RUNNING:
+            return  # an older queued/running response cannot undo an observed terminal
+        actual_receipt = dict(previous["result"] if previous else {})
+        actual_receipt.update(receipt)
         jobs = [j for j in jobs if _job_key(j["result"]) != key]
-        jobs.append({"state": status, "result": dict(receipt), "output": dict(output or {})})
+        jobs.append({"state": status, "result": actual_receipt, "output": dict(output or {})})
         if submit:
             sess["pending_quote"] = {}
         actual = dict(output or {})
-        actual.update(receipt)
+        actual.update(actual_receipt)
         res = protocol.make(status, "任务 " + _job_label(receipt) + " 状态已更新。", result=actual)
         res["_runtime_jobs"] = jobs
         sess["last_result"] = res
         if not submit and sess.get("pending_quote"):
             # Polling an earlier task must not overwrite a newer approval card.
-            last["_runtime_jobs"] = jobs
-            sess["last_result"] = _bound_outcome(sess, last)
+            res = protocol.make(protocol.NEEDS_APPROVAL, "当前报价等待确认。")
+        sess["last_result"] = _bound_outcome(sess, res)
     observed = getattr(_TURN_SCOPE, "observed", None)
     if observed is not None:
         observed.add(_job_key(receipt))
@@ -143,7 +149,7 @@ def _observe_task_query(sid, inputs, payload):
     job_id = inputs.get("job_id")
     if job_id is None or (payload.get("job_id") is not None and str(payload["job_id"]) != str(job_id)):
         return
-    status = str(payload.get("status") or "").lower()
+    status = str(payload.get("phase") or payload.get("status") or "").lower()
     if not status:
         return
     for owner in state.all_domains(sid):
@@ -735,7 +741,7 @@ def _hq_run_with_file(cap: str, inputs: dict, confirm: bool, quote_token,
                    if payload.get(k) is not None}
         if any(receipt.get(k) is not None for k in _JOB_IDS):
             _observe_job(sid, domain, receipt,
-                _TASK_TERMINALS.get(str(receipt.get("status") or "").lower(), protocol.RUNNING),
+                _TASK_TERMINALS.get(str(payload.get("phase") or receipt.get("status") or "").lower(), protocol.RUNNING),
                 submit=True, output=payload)
         else:
             def save_sync(current):
