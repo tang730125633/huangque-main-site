@@ -23,8 +23,8 @@
 ## 固定审批对象
 
 - PR：`tang730125633/huangque-main-site#1436`
-- 固定业务与 Schema 提交：`684d4e48ec2d24c2b8488874c715277466980c4b`
-- 基线：`main@60f7971b2c51f7cc5a283bab2f7d2a7d6f9ec0bc`
+- 固定业务与 Schema 提交：`59d696be08719df5104908a21c6de3a13c92f2e0`
+- 基线：`main@36d2693f72359cb3c8252f98958a604261a1bb48`
 - 维护窗口：`2026-09-06 02:00–03:00 Asia/Shanghai`
 - 执行、备份、验证、失败恢复负责人：`@LU-003`
 - 已失效阶段一审批评论：
@@ -101,12 +101,12 @@ python scripts/ci_validate.py
 python scripts/stamp_assets.py --check
 ```
 
-本地候选验证证据：Agent、CLI 执行器与 OpenAPI 定向回归 `85/85` 通过；CLI 发布包回归
-`8/8` 通过、`2` 项 POSIX 用例按设计跳过；仓库静态门禁、资源版本戳、Python 语法及
-`git diff --check` 均通过。Windows 单进程全量发现运行 4741 项，结果为 49 failures、132 errors、
-46 skipped；失败主要集中在本机缺少 Bash、GBK/Node 子进程解码和非本 PR 模块。该运行发现并修复了
-当前候选的 CLI wheel/source 漂移。受支持 Linux 环境的最终结论必须以一次性推送后的精确 HEAD
-required CI 为准，不得用 Windows 结果替代；required CI 已增加仓库根完整 Python 回归命令。
+本地候选验证证据：视频 Agent、委托令牌、CLI 执行器、素材所有权、报价确认、幂等、退款及
+Provider 密钥相邻回归共 `368/368` 通过；HQ CLI 回归 `87/87` 通过；仓库静态门禁、资源版本戳、
+Python 语法及 `git diff --check` 均通过。仓库历史测试会修改 `sys.path` 并复用 `server` 等通用模块名，
+因此单进程全量发现存在顺序污染，不能作为可信结论；required CI 改为每个文件使用独立解释器执行
+本 PR 全部变更测试及相邻安全回归。受支持 Linux 环境的最终结论必须以一次性推送后的精确 HEAD
+required CI 为准，不得用 Windows 结果替代。
 
 ## 失败回滚
 
