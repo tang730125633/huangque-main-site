@@ -1043,6 +1043,7 @@
     if (summaryCard && summaryCard.parentNode) summaryCard.remove();
     summaryCard = null;
     pickedChoices = {};
+    submittedQuoteIds = {};
     scriptWidgetsOffered = false;
     autoPickedDefaults = {};
     summaryConsumed = null;
@@ -1843,8 +1844,35 @@
   }
 
   // ---- 报价确认卡片：needs_approval 时出现，点按钮即可确认/取消 ----
-  function renderApprovalCard(domain, d) {
+  var submittedQuoteIds = {};
+  var approvalStateRequest = null;
+  function readApprovalState() {
+    var sid = sessionId;
+    if (approvalStateRequest && approvalStateRequest.sid === sid) return approvalStateRequest.promise;
+    var controller = new AbortController();
+    var timeout = setTimeout(function () { controller.abort(); }, 8000);
+    var request = { sid: sid };
+    // This endpoint only reads state. Unlike /status it never resumes jobs.
+    request.promise = fetch("api/v4/state/" + encodeURIComponent(sid), {
+      cache: "no-store", signal: controller.signal,
+    }).then(function (r) {
+      if (!r.ok) throw new Error("state unavailable");
+      return r.json();
+    }).then(function (data) {
+      if (sid !== sessionId || !data || typeof data !== "object" || Array.isArray(data) || data.error)
+        throw new Error("state unavailable");
+      return data;
+    }).finally(function () {
+      clearTimeout(timeout);
+      if (approvalStateRequest === request) approvalStateRequest = null;
+    });
+    approvalStateRequest = request;
+    return request.promise;
+  }
+
+  function renderApprovalCard(domain, d, fromCurrentState) {
     var key = "approval:" + domain + ":" + (d.quote_id || "legacy");
+    if (d.quote_id && submittedQuoteIds[key]) return; // delayed turn snapshot
     var previous = messages.querySelector('.approval-box[data-domain="' + domain + '"]');
     if (previous && previous.dataset.quoteId === (d.quote_id || "")) {
       previous.classList.remove("collapsed");
@@ -1858,7 +1886,7 @@
     box.dataset.quoteId = d.quote_id || "";
     var title = document.createElement("div");
     title.className = "widget-title";
-    title.textContent = (AGENT_LABEL[domain] || domain) + " 报价确认";
+    title.textContent = (AGENT_LABEL[domain] || domain) + (d.quote_id ? " 报价确认" : " 任务状态");
     box.appendChild(title);
     var body = document.createElement("div");
     body.className = "widget-list";
@@ -1869,12 +1897,13 @@
     var nm = document.createElement("div");
     nm.className = "wr-name";
     var q = d.quote || {};
-    nm.textContent = d.summary || ("本次将扣 " + (q.cost != null ? q.cost + " 点" : "相应点数"));
+    nm.textContent = d.quote_id ? (d.summary || "请核对本次报价。") : (fromCurrentState ?
+      "当前没有待确认报价；可重新获取任务状态，不会重复提交。" : "原报价已不再待确认，正在同步当前任务状态…");
     main.appendChild(nm);
-    if (q.cost != null) {
+    if (d.quote_id && q.cost != null) {
       var sub = document.createElement("div");
       sub.className = "wr-sub";
-      sub.textContent = "余额 " + (q.points != null ? q.points + " 点" : "—") +
+      sub.textContent = "本次 " + q.cost + " 点，余额 " + (q.points != null ? q.points + " 点" : "—") +
         (q.expires_in ? "，报价 " + Math.max(1, Math.round(q.expires_in / 60)) + " 分钟内有效" : "");
       main.appendChild(sub);
     }
@@ -1882,29 +1911,60 @@
     acts.className = "wr-actions";
     var ok = document.createElement("button");
     ok.className = "pick";
-    ok.textContent = domain === "collect" ? "确认采集" : "确认执行";
+    var confirmLabel = domain === "collect" ? "确认采集" : "确认执行";
+    ok.textContent = d.quote_id ? confirmLabel : "重新获取任务状态";
+    function enableRetry() {
+      ok.disabled = false; no.disabled = false;
+      ok.textContent = d.quote_id ? "重试当前报价确认" : "重新获取任务状态";
+      row.classList.remove("picked");
+    }
     function choose(decision) {
-      if (streaming || ok.disabled) return;
-      if (!d.quote_id) {
-        addMsg("assistant", "这是一张旧报价卡，请刷新页面获取当前任务状态后再操作。");
-        return;
-      }
-      if (send(decision === "confirm" ? "确认" : "先不生成，我再想想",
-               { domain: domain, quote_id: d.quote_id, decision: decision }, function () {
-                 ok.disabled = false; no.disabled = false;
-                 ok.textContent = "重试当前报价确认";
-                 row.classList.remove("picked");
-               })) {
-        ok.disabled = true; no.disabled = true;
-        ok.textContent = decision === "confirm" ? "已收到确认，正在处理…" : "正在取消…";
-        row.classList.add("picked");
-      }
+      if ((streaming && decision !== "refresh") || ok.disabled) return;
+      ok.disabled = true; no.disabled = true;
+      ok.textContent = "正在同步当前状态…";
+      var sid = sessionId;
+      readApprovalState().then(function (latest) {
+        if (sid !== sessionId || !box.isConnected) return;
+        var current = latest[domain];
+        if (!d.quote_id || !current || current.state !== "needs_approval" || current.quote_id !== d.quote_id) {
+          if (d.quote_id) submittedQuoteIds[key] = true; // consumed/replaced quote stays retired
+          // A click on the old search quote must NEVER confirm a new video quote.
+          if (current && current.state === "needs_approval" && !current.quote_id) {
+            if (d.quote_id) {
+              box.remove();
+              renderApprovalCard(domain, current, true);
+            } else {
+              nm.textContent = "当前没有待确认报价；可重新获取任务状态，不会重复提交。";
+              enableRetry();
+            }
+          } else {
+            box.remove();
+            if (current && current.state === "needs_approval") renderApprovalCard(domain, current, true);
+            if (current) renderRouting([{domain:domain, state:current.state, summary:current.summary || ""}]);
+          }
+          return;
+        }
+        if (send(decision === "confirm" ? "确认" : "先不生成，我再想想",
+                 { domain: domain, quote_id: d.quote_id, decision: decision }, function () {
+                   delete submittedQuoteIds[key];
+                   enableRetry();
+                 })) {
+          submittedQuoteIds[key] = true;
+          ok.textContent = decision === "confirm" ? "已收到确认，正在处理…" : "正在取消…";
+          row.classList.add("picked");
+        } else enableRetry();
+      }).catch(function () {
+        if (sid !== sessionId || !box.isConnected) return;
+        nm.textContent = "暂时无法获取最新任务状态。本次未提交，请点击重试。";
+        enableRetry();
+      });
     }
     ok.addEventListener("click", function () {
       choose("confirm");
     });
     var no = document.createElement("button");
     no.textContent = "先不生成";
+    no.hidden = !d.quote_id;
     no.addEventListener("click", function () {
       choose("cancel");
     });
@@ -1914,6 +1974,7 @@
     box.appendChild(body);
     messages.appendChild(box);
     autoScroll();
+    if (!d.quote_id && !fromCurrentState) choose("refresh");
   }
 
   // ---- 「等你回复」待办卡片：子 Agent 六态为 needs_user_input 时，
@@ -1945,7 +2006,7 @@
     if (!delegations) return;
     Array.prototype.forEach.call(messages.querySelectorAll(".approval-box"), function (box) {
       var current = delegations[box.dataset.domain];
-      if (!current || current.state !== "needs_approval" || !current.quote_id) box.remove();
+      if (!current || current.state !== "needs_approval") box.remove();
     });
     Object.keys(delegations).forEach(function (domain) {
       var d = delegations[domain];

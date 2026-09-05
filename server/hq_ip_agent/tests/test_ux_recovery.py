@@ -116,6 +116,122 @@ class UXRecovery(unittest.TestCase):
         respond.assert_not_called()
         self.assertIn('多张', reply)
 
+    def submit_quote(self, response):
+        inputs = {'keyword': 'demo'}
+        self.quote()
+        sess = state.get_subagent(self.sid, 'collect')
+        sess['pending_quote']['inputs_hash'] = subagent._inputs_hash('collect', inputs)
+        state.save_subagent(self.sid, 'collect', pending_quote=sess['pending_quote'])
+        with patch.object(subagent.livecaps, 'cost_kind', return_value='server_quote'), \
+             patch.object(subagent.livecaps, 'confirmation', return_value=''), \
+             patch.object(subagent.hq_cli, 'run', return_value=response) as execute:
+            out = subagent._hq_run_with_file('collect', inputs, True,
+                None, None, None, None, sess, self.sid, 'collect')
+            execute.assert_called_once()
+        return out
+
+    def test_cli_success_consumes_quote_and_publishes_progress_before_model_finish(self):
+        import app
+        out = self.submit_quote({'exit_code': 0, 'data': {'result': {'job_id': 123}}})
+        self.assertTrue(out['ok'])
+        sess = state.get_subagent(self.sid, 'collect')
+        self.assertFalse(sess['pending_quote'])
+        self.assertEqual(sess['last_result']['state'], 'running')
+        self.assertEqual(sess['last_result']['result']['job_id'], 123)
+        public = app.app.test_client().get('/api/v4/state/' + self.sid).get_json()['collect']
+        self.assertEqual(public['state'], 'running')
+        self.assertEqual(public['quote_id'], '')
+        self.assertNotIn('test-only-token', str(public))
+
+    def test_late_model_finish_cannot_resurrect_consumed_quote(self):
+        self.submit_quote({'exit_code': 0, 'data': {'result': {'job_id': 123}}})
+        result = subagent._finish({'state': 'needs_approval', 'summary': '请再次确认',
+            'quote': {'cost': 1}}, self.sid, 'collect')['result']
+        self.assertEqual(result['state'], 'running')
+        self.assertEqual(result['result']['job_id'], 123)
+        self.assertFalse(result['quote'])
+
+    def test_failed_or_ambiguous_cli_submit_preserves_original_quote(self):
+        for response in ({'exit_code': 1, 'stderr': 'timeout'},
+                         {'exit_code': 0, 'data': {'error': 'upstream', 'message': 'unknown'}}):
+            with self.subTest(response=response):
+                self.assertFalse(self.submit_quote(response)['ok'])
+                sess = state.get_subagent(self.sid, 'collect')
+                self.assertEqual(sess['pending_quote']['quote_token'], 'test-only-token')
+                self.assertEqual(sess['last_result']['state'], 'needs_approval')
+
+    def test_public_price_comes_from_current_quote_not_previous_model_summary(self):
+        import app
+        self.submit_quote({'exit_code': 0, 'data': {'result': {'job_id': 123}}})
+        q2 = {'capability': 'collect-video', 'inputs_hash': 'next-inputs',
+              'quote_token': 'new-token', 'cost': 3, 'points': 1937, 'expires_in': 300}
+        state.save_subagent(self.sid, 'collect', pending_quote=q2,
+            last_result=protocol.make('needs_approval', '旧搜索报价 1 点', quote={'cost': 1}))
+        public = app._v4_delegations(self.sid)['collect']
+        self.assertEqual(public['quote']['cost'], 3)
+        self.assertEqual(public['quote_id'], subagent.approval_id(q2))
+        self.assertNotIn('new-token', str(public))
+
+    def test_missing_quote_finish_cannot_claim_a_new_approval_exists(self):
+        result = subagent._finish({'state': 'needs_approval', 'summary': '请确认'},
+                                 self.sid, 'collect')['result']
+        self.assertNotEqual(result['state'], 'needs_approval')
+
+    def test_concurrent_clicks_use_real_submit_lifecycle_once(self):
+        self.quote()
+        q = state.get_subagent(self.sid, 'collect')['pending_quote']
+        q['inputs_hash'] = subagent._inputs_hash('collect', q['inputs'])
+        state.save_subagent(self.sid, 'collect', pending_quote=q)
+        qid = subagent.approval_id(q)
+        def submit(sid, domain, task):
+            sess = state.get_subagent(sid, domain)
+            subagent._hq_run_with_file('collect', q['inputs'], True,
+                None, None, None, None, sess, sid, domain)
+            return state.get_subagent(sid, domain)['last_result'], []
+        with patch.object(subagent, '_run_subagent_turn_locked', side_effect=submit), \
+             patch.object(subagent.livecaps, 'cost_kind', return_value='server_quote'), \
+             patch.object(subagent.livecaps, 'confirmation', return_value=''), \
+             patch.object(subagent.hq_cli, 'run', return_value={
+                 'exit_code': 0, 'data': {'result': {'job_id': 123}}}) as execute:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+                results = list(pool.map(lambda _: subagent.respond_to_approval(
+                    self.sid, 'collect', qid, 'confirm'), range(3)))
+        execute.assert_called_once()
+        self.assertTrue(all(r[0]['result']['job_id'] == 123 for r in results))
+
+    def test_next_real_quote_can_still_be_confirmed_after_previous_submit(self):
+        self.submit_quote({'exit_code': 0, 'data': {'result': {'job_id': 123}}})
+        q2 = {'capability': 'collect-video', 'inputs_hash': 'next-inputs',
+              'quote_token': 'new-token', 'cost': 3}
+        state.save_subagent(self.sid, 'collect', pending_quote=q2)
+        result = subagent._finish({'state': 'needs_approval', 'summary': '视频采集报价',
+            'quote': {'cost': 1}}, self.sid, 'collect')['result']
+        self.assertEqual(result['state'], 'needs_approval')
+        self.assertEqual(result['quote']['cost'], 3)
+
+    def test_sync_completion_still_finishes_normally(self):
+        self.submit_quote({'exit_code': 0, 'data': {'result': {'items': ['demo']}}})
+        result = subagent._finish({'state': 'completed', 'summary': '采集完成',
+            'result': {'items': ['demo']}}, self.sid, 'collect')['result']
+        self.assertEqual(result['state'], 'completed')
+        self.assertEqual(result['result'], {'items': ['demo']})
+
+    def test_next_quote_is_published_with_its_own_summary_before_model_finish(self):
+        import app
+        self.quote()
+        old = state.get_subagent(self.sid, 'collect')
+        with patch.object(subagent.livecaps, 'cost_kind', return_value='server_quote'), \
+             patch.object(subagent.hq_cli, 'run', return_value={'exit_code': 0, 'data': {'result': {
+                 'quote_token': 'next-token', 'confirmation_required': True, 'cost': 3}}}) as execute:
+            subagent._hq_run_with_file('collect-video', {'url': 'test-only'}, False,
+                None, None, None, None, old, self.sid, 'collect')
+        execute.assert_called_once()
+        public = app._v4_delegations(self.sid)['collect']
+        self.assertEqual(public['state'], 'needs_approval')
+        self.assertEqual(public['quote']['cost'], 3)
+        self.assertIn('collect-video', public['summary'])
+        self.assertNotIn('next-token', str(public))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,7 +1,7 @@
-"""Exact five-file main Agent v4 release; default is verification only.
+"""Exact seven-file main Agent v4 release; default is verification only.
 
 Build only from a clean GitHub main commit. The bundle never contains env,
-sessions, generated media, or old Hermes IP12 files. Apply preserves all five
+sessions, generated media, or old Hermes IP12 files. Apply preserves all seven
 original files and rolls them back on install/restart/health/static failure.
 """
 from __future__ import annotations
@@ -22,7 +22,7 @@ from urllib.request import urlopen
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = Path("deploy/hq-ip-agent-ux.json")
 TARGETS = {"app.py", "agent/v4/main_agent.py", "agent/v4/subagent.py",
-           "static/v4.js", "static/style.css"}
+           "agent/v4/state.py", "agent/v4/delivery.py", "static/v4.js", "static/style.css"}
 LIVE = Path("/home/ubuntu/hq-ip-agent")
 SERVICE = "hq-ip-agent"
 
@@ -33,8 +33,8 @@ def digest(path):
 
 def validate(manifest):
     rows = manifest["files"]
-    if len(rows) != 5 or {r["target"] for r in rows} != TARGETS:
-        raise ValueError("release must contain exactly the five agreed files")
+    if len(rows) != len(TARGETS) or {r["target"] for r in rows} != TARGETS:
+        raise ValueError("release must contain exactly the seven agreed files")
     if manifest["target_root"] != "/home/ubuntu/hq-ip-agent" or manifest["service"] != SERVICE:
         raise ValueError("wrong production target")
     if manifest["repository"] != "tang730125633/huangque-main-site":
@@ -189,7 +189,7 @@ def main():
         for row in validate(manifest):
             if digest(ROOT / row["source"]) != row["after"]:
                 raise ValueError("repository manifest mismatch: " + row["source"])
-        print("five-file repository manifest verified")
+        print("seven-file repository manifest verified")
         return
     manifest = json.loads((args.bundle / "manifest.json").read_text(encoding="utf-8"))
     if not re.fullmatch(r"[a-f0-9]{40}", args.commit or "") or manifest.get("github_commit") != args.commit:
@@ -214,7 +214,7 @@ def main():
         subprocess.run(["systemctl", action, SERVICE], check=True, timeout=30)
     install(args.bundle, LIVE, backup, manifest, control, lambda phase: live_health(manifest, phase))
     print(json.dumps({"deployed": True, "github_commit": args.commit, "backup": str(backup),
-                      "service": SERVICE, "files": 5, "health": "passed"}))
+                      "service": SERVICE, "files": len(manifest["files"]), "health": "passed"}))
 
 
 if __name__ == "__main__":

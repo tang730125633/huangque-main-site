@@ -55,6 +55,7 @@ def finalize_collect(sid: str, job_id, content: dict) -> list:
     绝不重复下载、重复贴图、并发写盘。"""
     from . import media as v4_media
     from . import protocol as v4_protocol
+    from . import subagent as v4_subagent
     try:
         job_id = int(job_id)
     except (TypeError, ValueError):
@@ -73,9 +74,7 @@ def finalize_collect(sid: str, job_id, content: dict) -> list:
         rel = ["api/v4/media/%s/%s/%s" % (sid, job_id, n) for n in names]
 
         # 六态刷新为 completed（看护线程/自愈路径时原状态还是 running）
-        sess = v4_state.get_subagent(sid, "collect")
-        prev = (sess or {}).get("last_result") or {}
-        new_result = dict(prev.get("result") or {})
+        new_result = dict(content)
         new_result.update({"job_id": job_id, "status": "done", "images_local": rel})
         title = ""
         author = ""
@@ -87,9 +86,10 @@ def finalize_collect(sid: str, job_id, content: dict) -> list:
         label = ("《%s》" % title) if title else ("任务 %s" % job_id)
         summary = ("%s采集完成：%d 张图片已下载到本地并直接贴给用户（链接不过期）。"
                    % (label, len(rel))) if rel else ("%s采集完成。" % label)
-        v4_state.save_subagent(sid, "collect", last_result=v4_protocol.make(
-            v4_protocol.COMPLETED, summary=summary, result=new_result,
-        ))
+        # A previous collection may finish while a newer quote is awaiting the
+        # user. Observe the actual job, never overwrite that newer quote/card.
+        v4_subagent._observe_job(sid, "collect", {"job_id": job_id, "status": "done"},
+            v4_protocol.COMPLETED, output=dict(new_result, summary=summary))
 
         # 带图消息写进历史：成对追加（user 系统事件 + assistant 带图），保持 user/assistant 交替合法
         n_comments = len(content.get("comments")) if isinstance(content, dict) \
@@ -181,67 +181,37 @@ def resume_stale_jobs(sid: str):
     解决「任务早完成了，对话里还在说『在跑/还在爬』」的错报——子 Agent 提交后
     返回 running，之后没有任何机制刷新状态，主 Agent 只能凭旧状态回话。"""
     from . import protocol as v4_protocol
+    from . import subagent as v4_subagent
     refreshed = False
     for domain in v4_state.all_domains(sid):
         sess = v4_state.get_subagent(sid, domain)
         last = (sess or {}).get("last_result") or {}
-        if last.get("state") != v4_protocol.RUNNING:
-            continue
-        job_id = (last.get("result") or {}).get("job_id")
-        if not job_id:
-            continue
-        key = (sid, domain)
-        now = time.time()
-        prev = _LAST_JOB_POLL.get(key)
-        if prev and prev[0] == job_id and now - prev[1] < _JOB_POLL_INTERVAL:
-            continue  # 刚查过且任务号没变：节流
-        _LAST_JOB_POLL[key] = (job_id, now)
-        try:
-            r = hq_cli.run("task", {"job_id": int(job_id)})
-        except (TypeError, ValueError):
-            continue
-        task_res = ((r or {}).get("data") or {}).get("result") or {}
-        phase = task_res.get("phase")
-        if not phase:
-            continue
-        if phase == "done":
-            if domain == "collect":
-                # 采集完成：图片本地化 + 带图消息 + SSE 推送（后台线程，不阻塞状态响应）
-                maybe_spawn_finalize(sid, job_id, task_res.get("result") or {})
-                refreshed = True
+        for job in v4_subagent._job_records(last):
+            job_id = job["result"].get("job_id")
+            if job["state"] != v4_protocol.RUNNING or not job_id:
                 continue
-            content = task_res.get("result") or {}
-            bits = []
-            if isinstance(content, dict):
-                for k in ("title", "prompt", "ctype", "dur", "platform"):
-                    v = content.get(k)
-                    if v:
-                        bits.append(str(v)[:40])
-                if content.get("scenes"):
-                    bits.append("%d 个分镜" % len(content["scenes"]))
-                if content.get("comments") is not None:
-                    bits.append("%d 条评论" % len(content["comments"]))
-                if content.get("images") is not None:
-                    bits.append("%d 张图片" % len(content["images"]))
-                if content.get("video_url") or content.get("url"):
-                    bits.append("链接已可访问")
-            summary = ("后台任务 %s 已完成：%s。" % (job_id, "、".join(bits))) if bits \
-                else ("后台任务 %s 已完成。" % job_id)
-            v4_state.save_subagent(sid, domain, last_result=v4_protocol.make(
-                v4_protocol.COMPLETED,
-                summary=summary,
-                result={"job_id": job_id, "status": "done", "kind": task_res.get("kind"),
-                        "detail": task_res.get("result") or {}},
-            ))
-            refreshed = True
-        elif phase in ("failed", "error", "cancelled"):
-            v4_state.save_subagent(sid, domain, last_result=v4_protocol.make(
-                v4_protocol.FAILED if phase != "cancelled" else v4_protocol.CANCELLED,
-                summary="后台任务 %s 已结束（%s）：%s" % (
-                    job_id, phase, str(task_res.get("error") or "")[:120]),
-                result={"job_id": job_id, "status": phase},
-                retryable=False,
-            ))
+            key = (sid, domain, str(job_id))
+            now = time.time()
+            prev = _LAST_JOB_POLL.get(key)
+            if prev and now - prev[1] < _JOB_POLL_INTERVAL:
+                continue
+            _LAST_JOB_POLL[key] = (job_id, now)
+            try:
+                r = hq_cli.run("task", {"job_id": int(job_id)})
+            except (TypeError, ValueError):
+                continue
+            data = (r or {}).get("data") or {}
+            if r.get("exit_code") != 0 or data.get("error"):
+                continue
+            task_res = data.get("result") or {}
+            if task_res.get("job_id") is not None and str(task_res["job_id"]) != str(job_id):
+                continue
+            phase = str(task_res.get("phase") or task_res.get("status") or "").lower()
+            if phase not in v4_subagent._TASK_TERMINALS:
+                continue
+            v4_subagent._observe_task_query(sid, {"job_id": job_id}, task_res)
+            if domain == "collect" and v4_subagent._TASK_TERMINALS[phase] == v4_protocol.COMPLETED:
+                maybe_spawn_finalize(sid, job_id, task_res.get("result") or {})
             refreshed = True
     if refreshed:
         v4_state.persist(sid)

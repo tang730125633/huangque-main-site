@@ -25,6 +25,7 @@ try {
       if(p==='/api/v4/start') return route.fulfill({json:{session_id:'mobile-test',async:true,seq:1,mode:'live'}});
       if(p.includes('/api/v4/stream/')) {streamRequests++; return route.fulfill({status:500,body:'fail'});}
       if(p.includes('/api/v4/status/')) {statusRequests++; return route.fulfill({json:{turns:[{seq:1,state:'working'}],jobs:[],delegations:delegation(),film:false}});}
+      if(p.includes('/api/v4/state/')) return route.fulfill({json:delegation()});
       if(p.includes('/api/v4/poll/')) {
         if(submitted && firstPoll) {firstPoll=false; return route.fulfill({json:{state:'done',seq:2,reply:'本轮采集结果已送达',delegations:delegation(),film:false}});}
         return route.fulfill({json:{state:'working'}});
