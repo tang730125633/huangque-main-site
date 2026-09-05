@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import pathlib
 import re
@@ -37,6 +38,7 @@ MAX_VIDEO_BYTES = 512 * 1024 * 1024
 MAX_VOICEOVER_BYTES = 32 * 1024 * 1024
 MAX_VOICEOVER_SECONDS = 600.0
 MAX_VOICEOVER_TEXT_LENGTH = 120
+DEFAULT_VOICEOVER_BGM_VOLUME = 0.2
 VOICEOVER_CACHE_RETENTION_SECONDS = 24 * 60 * 60
 VOICEOVER_MUX_TIMEOUT = 180
 _CACHE = {
@@ -470,6 +472,18 @@ def _normalize_voiceover(value, username, *, allow_legacy_text=False):
     return result
 
 
+def _normalize_bgm_volume(value):
+    if isinstance(value, bool):
+        raise ValueError("背景音乐音量需要设置为 0-100%")
+    try:
+        normalized = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("背景音乐音量需要设置为 0-100%") from exc
+    if not math.isfinite(normalized) or not 0 <= normalized <= 1:
+        raise ValueError("背景音乐音量需要设置为 0-100%")
+    return round(normalized, 3)
+
+
 def validate_payload(
         raw, username="", *, trusted_semantic_layout=None,
         trusted_frozen_execution=False):
@@ -498,9 +512,16 @@ def validate_payload(
         body.get("voiceover"), username,
         allow_legacy_text=trusted_frozen_execution,
     )
-    bgm = False if voiceover else body.get("bgm", True)
+    bgm = body.get("bgm", False if voiceover else True)
     if not isinstance(bgm, bool):
         raise ValueError("背景音乐设置无效")
+    bgm_volume = None
+    if "bgm_volume" in body:
+        if not voiceover or not bgm:
+            raise ValueError("背景音乐音量仅用于已开启背景音乐的口播")
+        bgm_volume = _normalize_bgm_volume(body["bgm_volume"])
+    elif voiceover and bgm:
+        bgm_volume = DEFAULT_VOICEOVER_BGM_VOLUME
     duration = body.get("duration")
     if duration not in (None, ""):
         try:
@@ -674,6 +695,8 @@ def validate_payload(
     result = dict(payload, duration=float(authoritative_duration))
     if voiceover:
         result["voiceover"] = voiceover
+        if bgm:
+            result["bgm_volume"] = bgm_volume
     return result
 
 
@@ -846,7 +869,9 @@ def _prepare_voiceover_audio(job_id, username, voiceover, batch_id, deadline_at)
     return prepared
 
 
-def _mux_voiceover(video_file, voiceover, deadline_at):
+def _mux_voiceover(
+        video_file, voiceover, deadline_at, *, bgm=False,
+        bgm_volume=DEFAULT_VOICEOVER_BGM_VOLUME):
     video = _owned_output_path(video_file)
     audio = pathlib.Path(voiceover["path"])
     duration = float(voiceover["duration"])
@@ -855,10 +880,34 @@ def _mux_voiceover(video_file, voiceover, deadline_at):
     command = [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
         "-stream_loop", "-1", "-i", str(video), "-i", str(audio),
-        "-map", "0:v:0", "-map", "1:a:0", "-map_metadata", "-1",
-        "-sn", "-dn", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-        "-t", f"{duration:.6f}", "-movflags", "+faststart", str(temporary),
     ]
+    if bgm:
+        volume = _normalize_bgm_volume(bgm_volume)
+        source_streams, _ = _media_probe(
+            video, timeout=_remaining_budget(deadline_at),
+        )
+        if not any(item.get("codec_type") == "audio" for item in source_streams):
+            raise MatrixTemplateProviderFailed("模板成片背景音乐音轨缺失")
+        command.extend([
+            "-filter_complex",
+            (
+                f"[0:a:0]volume={volume:.6f},atrim=start=0:end={duration:.6f},"
+                "asetpts=PTS-STARTPTS[bgm];"
+                f"[1:a:0]atrim=start=0:end={duration:.6f},"
+                "asetpts=PTS-STARTPTS[voice];"
+                "[voice][bgm]amix=inputs=2:duration=longest:"
+                "dropout_transition=0:normalize=0,"
+                "alimiter=limit=0.95:level=false:latency=true[aout]"
+            ),
+            "-map", "0:v:0", "-map", "[aout]",
+        ])
+    else:
+        command.extend(["-map", "0:v:0", "-map", "1:a:0"])
+    command.extend([
+        "-map_metadata", "-1", "-sn", "-dn", "-c:v", "copy",
+        "-c:a", "aac", "-b:a", "192k", "-t", f"{duration:.6f}",
+        "-movflags", "+faststart", str(temporary),
+    ])
     try:
         remaining = _remaining_budget(deadline_at)
         subprocess.run(
@@ -893,7 +942,7 @@ def _mux_voiceover(video_file, voiceover, deadline_at):
 def _provider_payload(payload):
     return {
         key: value for key, value in payload.items()
-        if not str(key).startswith("_") and key != "voiceover"
+        if not str(key).startswith("_") and key not in {"voiceover", "bgm_volume"}
     }
 
 
@@ -1237,6 +1286,10 @@ def generate(payload):
                     raise RuntimeError("模板成片配音状态保存失败")
                 final_duration, file_size = _mux_voiceover(
                     video_file, voiceover_audio, deadline_at,
+                    bgm=bool(payload.get("bgm")),
+                    bgm_volume=payload.get(
+                        "bgm_volume", DEFAULT_VOICEOVER_BGM_VOLUME,
+                    ),
                 )
             response = {
                 "type": "matrix_template_video",
@@ -1264,8 +1317,12 @@ def generate(payload):
                     "voice": voiceover["voice"],
                     "voice_scope": voiceover.get("voice_scope") or "",
                     "duration_ms": int(round(final_duration * 1000)),
-                    "bgm": False,
+                    "bgm": bool(payload.get("bgm")),
                 }
+                if payload.get("bgm"):
+                    response["voiceover"]["bgm_volume"] = float(payload.get(
+                        "bgm_volume", DEFAULT_VOICEOVER_BGM_VOLUME,
+                    ))
             return response
         if status == "failed":
             raise MatrixTemplateProviderFailed(

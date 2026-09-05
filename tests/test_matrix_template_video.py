@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import concurrent.futures
+import array
 import http.server
 import importlib
 import json
+import math
 import re
 import shutil
 import sqlite3
@@ -639,7 +641,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         self.assertNotIn("provider", payload)
         self.assertNotIn("prompt", payload)
 
-    def test_validate_payload_uses_owned_voice_and_forces_bgm_off(self):
+    def test_validate_payload_uses_owned_voice_and_keeps_bgm_off_by_default(self):
         from content_domains import audio
 
         expected_provider = {
@@ -673,7 +675,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             payload = self.module.validate_payload({
                 "top_text": "AI 工作流",
                 "bottom_text": "评论区留下关键词",
-                "template_id": "native-bold", "bgm": True,
+                "template_id": "native-bold", "bgm": False,
                 "voiceover": {
                     "text": "这是一段口播文案", "voice": "vip_alice",
                     "voice_scope": "personal",
@@ -691,6 +693,85 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         self.assertEqual("personal", payload["voiceover"]["voice_scope"])
         self.assertEqual(64, len(payload["voiceover"]["voice_version"]))
         self.assertNotIn("provider", payload["voiceover"])
+
+    def test_validate_payload_allows_voiceover_bgm_with_normalized_volume(self):
+        normalized_voiceover = {
+            "text": "这是一段口播文案", "voice": "public_voice",
+            "speed": 1.0, "pitch": 0, "volume": 0,
+            "delivery": "natural", "voice_scope": "public",
+            "voice_version": "f" * 64,
+        }
+        expected_provider = {
+            "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
+            "template_id": "native-bold", "bgm": True, "duration": 8.0,
+        }
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(
+                 self.module, "public_templates", return_value=self.templates(),
+             ), mock.patch.object(
+                 self.module, "_normalize_voiceover",
+                 return_value=normalized_voiceover,
+             ), mock.patch.object(
+                 self.module, "_request", return_value={"payload": expected_provider},
+             ) as request:
+            payload = self.module.validate_payload({
+                "top_text": "AI 工作流",
+                "bottom_text": "评论区留下关键词",
+                "template_id": "native-bold", "bgm": True,
+                "bgm_volume": 0.2345,
+                "voiceover": {"text": "口播", "voice": "public_voice"},
+            }, "alice")
+
+        self.assertEqual(dict(expected_provider, duration=None), request.call_args.args[2])
+        self.assertEqual(0.234, payload["bgm_volume"])
+        self.assertTrue(payload["bgm"])
+        self.assertEqual(normalized_voiceover, payload["voiceover"])
+
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(
+                 self.module, "public_templates", return_value=self.templates(),
+             ), mock.patch.object(
+                 self.module, "_normalize_voiceover",
+                 return_value=normalized_voiceover,
+             ), mock.patch.object(
+                 self.module, "_request", return_value={"payload": expected_provider},
+             ):
+            defaulted = self.module.validate_payload({
+                "top_text": "AI 工作流",
+                "bottom_text": "评论区留下关键词",
+                "template_id": "native-bold", "bgm": True,
+                "voiceover": {"text": "口播", "voice": "public_voice"},
+            }, "alice")
+        self.assertEqual(0.2, defaulted["bgm_volume"])
+
+    def test_voiceover_bgm_volume_rejects_invalid_or_inapplicable_values(self):
+        for value in (True, -0.01, 1.01, float("nan"), float("inf"), "loud"):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                    ValueError, "0-100%"):
+                self.module._normalize_bgm_volume(value)
+
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(
+                 self.module, "public_templates", return_value=self.templates(),
+             ), self.assertRaisesRegex(ValueError, "仅用于"):
+            self.module.validate_payload({
+                "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
+                "template_id": "native-bold", "bgm": True, "bgm_volume": 0.2,
+            }, "alice")
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(
+                 self.module, "public_templates", return_value=self.templates(),
+             ), mock.patch.object(
+                 self.module, "_normalize_voiceover", return_value={
+                     "text": "口播", "voice": "public_voice",
+                 },
+             ), self.assertRaisesRegex(ValueError, "仅用于"):
+            self.module.validate_payload({
+                "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
+                "template_id": "native-bold", "bgm": False,
+                "bgm_volume": 0.2,
+                "voiceover": {"text": "口播", "voice": "public_voice"},
+            }, "alice")
 
     def test_voiceover_requires_structured_owned_voice_settings(self):
         for value in (True, "vip_alice", []):
@@ -1458,7 +1539,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             result["phase"], result["resolution"], result["ratio"]
         ))
 
-    def test_generate_voiceover_is_not_sent_to_renderer_and_replaces_bgm(self):
+    def test_generate_voiceover_is_not_sent_to_renderer_and_keeps_bgm_off(self):
         raw = {
             "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
             "template_id": "native-bold", "bgm": False,
@@ -1510,6 +1591,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         )
         mux.assert_called_once_with(
             "video/matrix_template_78.mp4", prepared_audio, mock.ANY,
+            bgm=False, bgm_volume=0.2,
         )
         self.assertTrue(any(
             call.kwargs.get("phase") == "muxing_voiceover"
@@ -1521,6 +1603,64 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             "enabled": True, "voice": "vip_alice",
             "voice_scope": "personal", "duration_ms": 12345,
             "bgm": False,
+        }, result["voiceover"])
+
+    def test_generate_voiceover_can_mix_renderer_bgm_at_selected_volume(self):
+        raw = {
+            "top_text": "AI 工作流", "bottom_text": "评论区留下关键词",
+            "template_id": "native-bold", "bgm": True, "bgm_volume": 0.35,
+            "voiceover": {
+                "text": "这是带背景音乐的口播", "voice": "vip_alice",
+                "speed": 1.0, "pitch": 0, "volume": 0,
+                "delivery": "natural", "voice_scope": "personal",
+            },
+            "_username": "alice", "_job_id": 79,
+        }
+        provider_id = "e" * 32
+        responses = [
+            {"job_id": provider_id, "status": "pending"},
+            {"status": "completed", "result": {
+                "file_url": f"/v1/files/{provider_id}.mp4",
+                "duration": 9.0, "width": 1080, "height": 1920,
+                "template_id": "native-bold",
+            }},
+        ]
+        prepared_audio = {
+            "path": Path("voice.mp3"), "duration": 11.5,
+            "fingerprint": "f" * 64,
+        }
+        with mock.patch.object(
+            self.module, "validate_payload", return_value={
+                key: value for key, value in raw.items() if not key.startswith("_")
+            },
+        ), mock.patch.object(
+            self.module, "_request", side_effect=responses,
+        ) as request, mock.patch.object(
+            self.module, "_prepare_voiceover_audio", return_value=prepared_audio,
+        ), mock.patch.object(
+            self.module, "_download",
+            return_value=("video/matrix_template_79.mp4", 4096),
+        ), mock.patch.object(
+            self.module, "_mux_voiceover", return_value=(11.5, 9216),
+        ) as mux, mock.patch.object(
+            self.module, "_persist_runtime", return_value=True,
+        ), mock.patch.object(
+            self.module, "public_url", return_value="/api/gen/file/voiced-bgm-video",
+        ), mock.patch.object(self.module.time, "sleep"):
+            result = self.module.generate(raw)
+
+        provider_body = request.call_args_list[0].args[2]
+        self.assertTrue(provider_body["bgm"])
+        self.assertNotIn("voiceover", provider_body)
+        self.assertNotIn("bgm_volume", provider_body)
+        mux.assert_called_once_with(
+            "video/matrix_template_79.mp4", prepared_audio, mock.ANY,
+            bgm=True, bgm_volume=0.35,
+        )
+        self.assertEqual({
+            "enabled": True, "voice": "vip_alice",
+            "voice_scope": "personal", "duration_ms": 11500,
+            "bgm": True, "bgm_volume": 0.35,
         }, result["voiceover"])
 
     def test_voiceover_cache_is_shared_by_batch_but_isolated_by_owner(self):
@@ -1632,6 +1772,75 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                 item.get("codec_name") for item in output_streams
                 if item.get("codec_type") == "audio"
             ])
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"),
+                         "ffmpeg and ffprobe are required")
+    def test_mux_voiceover_mixes_bgm_at_selected_volume_to_voice_duration(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            video = root / "video/base.mp4"
+            voice = root / "voice.wav"
+            video.parent.mkdir(parents=True)
+            subprocess.run([
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-f", "lavfi", "-i", "color=c=blue:s=1080x1920:r=30:d=0.6",
+                "-f", "lavfi", "-i", "sine=frequency=220:duration=0.6",
+                "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264",
+                "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                "-shortest", str(video),
+            ], check=True, capture_output=True, timeout=30)
+            subprocess.run([
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-f", "lavfi", "-i", "sine=frequency=880:duration=1.7",
+                "-c:a", "pcm_s16le", str(voice),
+            ], check=True, capture_output=True, timeout=30)
+            with mock.patch.object(self.module, "OUT_DIR", root):
+                _, voice_duration = self.module._media_probe(voice)
+                duration, size = self.module._mux_voiceover(
+                    "video/base.mp4",
+                    {"path": voice, "duration": voice_duration},
+                    time.time() + 30,
+                    bgm=True,
+                    bgm_volume=0.25,
+                )
+                output_streams, output_duration = self.module._media_probe(video)
+
+            decoded = subprocess.run([
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(video),
+                "-ss", "0.2", "-t", "1.0", "-map", "0:a:0", "-ac", "1",
+                "-ar", "8000", "-f", "f32le", "pipe:1",
+            ], check=True, capture_output=True, timeout=30).stdout
+            samples = array.array("f")
+            samples.frombytes(decoded)
+            if sys.byteorder != "little":
+                samples.byteswap()
+            self.assertGreater(len(samples), 4000)
+
+            def amplitude(frequency):
+                count = len(samples)
+                real = sum(
+                    value * math.cos(2 * math.pi * frequency * index / 8000)
+                    for index, value in enumerate(samples)
+                )
+                imaginary = sum(
+                    value * math.sin(2 * math.pi * frequency * index / 8000)
+                    for index, value in enumerate(samples)
+                )
+                return 2 * math.hypot(real, imaginary) / count
+
+            voice_amplitude = amplitude(880)
+            bgm_amplitude = amplitude(220)
+            self.assertAlmostEqual(voice_duration, duration, delta=0.05)
+            self.assertAlmostEqual(voice_duration, output_duration, delta=0.05)
+            self.assertGreater(size, 1024)
+            self.assertEqual(["aac"], [
+                item.get("codec_name") for item in output_streams
+                if item.get("codec_type") == "audio"
+            ])
+            self.assertGreater(voice_amplitude, 0.02)
+            self.assertGreater(bgm_amplitude, 0.003)
+            self.assertGreater(bgm_amplitude / voice_amplitude, 0.12)
+            self.assertLess(bgm_amplitude / voice_amplitude, 0.4)
 
     def test_legacy_submission_unknown_replays_original_payload_exactly(self):
         legacy_payload = {
@@ -2681,6 +2890,7 @@ class MatrixTemplatePageTests(unittest.TestCase):
     def test_page_and_sidebar_expose_feature_after_text_video(self):
         page = (ROOT / "site/workbench/matrix-template.html").read_text(encoding="utf-8")
         shell = (ROOT / "site/workbench/cloud-shell.js").read_text(encoding="utf-8")
+        toolbox = (ROOT / "site/workbench/ai-tools.html").read_text(encoding="utf-8")
         self.assertIn('data-active="matrix-template"', page)
         self.assertIn("/api/gen/matrix-template/templates", page)
         self.assertIn("/api/gen/matrix-template'", page)
@@ -2694,8 +2904,11 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertIn('id="voiceoverText" class="mt-input" maxlength="120"', page)
         self.assertIn('id="voiceoverVoice"', page)
         self.assertIn('id="voiceoverSpeed"', page)
+        self.assertIn('id="voiceoverBgmEnabled"', page)
+        self.assertIn('id="voiceoverBgmVolume"', page)
         self.assertIn("/api/gen/audio/voices", page)
-        self.assertIn("bgm:!withVoice", page)
+        self.assertIn("bgm:withVoice?withBgm:true", page)
+        self.assertIn("body.bgm_volume=voiceBgmVolume()", page)
         self.assertIn("speed:voiceSpeed()", page)
         self.assertIn("function playableVoiceUrl(value)", page)
         self.assertIn("URL.revokeObjectURL", page)
@@ -2707,7 +2920,7 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertNotIn("（并行）", page)
         self.assertNotIn("font_family", page)
         self.assertNotIn("素材来源", page)
-        self.assertIn("template_id:activeTemplate,bgm:!withVoice", page)
+        self.assertIn("template_id:activeTemplate,bgm:withVoice?withBgm:true", page)
         self.assertIn('hq-content[data-active="matrix-template"]{height:auto!important', page)
         self.assertIn("function fitLiveText(node,max,min)", page)
         self.assertIn("var referencePreviews=", page)
@@ -2726,7 +2939,10 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertIn("if(!pending){busy=false;sync();return}", page)
         self.assertIn("checking=busy||!!existing", page)
         self.assertIn("pendingIdentity(current)!==expectedIdentity", page)
-        self.assertLess(shell.index("k:'text-video'"), shell.index("k:'matrix-template'"))
+        self.assertLess(
+            toolbox.index('href="text-video.html"'),
+            toolbox.index('href="matrix-template.html"'),
+        )
         self.assertIn("/api/gen/matrix-template/capability", shell)
 
     def test_openapi_documents_owned_voiceover_contract(self):
@@ -2754,6 +2970,10 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertIsNotNone(limit_match)
         limit = int(limit_match.group(1))
         self.assertEqual(limit, voiceover["properties"]["text"]["maxLength"])
+        bgm_volume = schema["properties"]["bgm_volume"]
+        self.assertEqual((0, 1, 0.2), (
+            bgm_volume["minimum"], bgm_volume["maximum"], bgm_volume["default"],
+        ))
         page = (ROOT / "site/workbench/matrix-template.html").read_text(
             encoding="utf-8"
         )
@@ -2768,8 +2988,8 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual(
             1000, audio_schema["properties"]["text"]["maxLength"],
         )
-        self.assertIn("强制关闭 BGM", operation["description"])
-        self.assertIn("时长跟随配音", operation["description"])
+        self.assertIn("bgm_volume", operation["description"])
+        self.assertIn("时长始终跟随配音", operation["description"])
         voice_item = json.loads(docs)["paths"]["/api/gen/audio/voices"]["get"][
             "responses"
         ]["200"]["content"]["application/json"]["schema"]["properties"][
@@ -3105,11 +3325,21 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual("1.3", result["speed"])
         self.assertEqual("1.3x", result["speedLabel"])
         self.assertFalse(result["body"]["bgm"])
+        self.assertNotIn("bgm_volume", result["body"])
         self.assertEqual({
             "text": "这是一段完整口播文案", "voice": "vip_alice",
             "voice_scope": "personal", "speed": 1.3, "pitch": 0,
             "volume": 0, "delivery": "natural",
         }, result["body"]["voiceover"])
+
+    def test_voiceover_submission_can_enable_bgm_and_set_volume(self):
+        result = self.runtime("voiceoverBgmSubmission")
+        self.assertTrue(result["body"]["bgm"])
+        self.assertEqual(0.35, result["body"]["bgm_volume"])
+        self.assertEqual("S_d21F8OR62", result["body"]["voiceover"]["voice"])
+        self.assertFalse(result["rowHidden"])
+        self.assertEqual("35", result["volume"])
+        self.assertEqual("35%", result["volumeLabel"])
 
     def test_voiceover_requires_copy_before_auth_or_submission(self):
         result = self.runtime("voiceoverValidation")
@@ -3131,6 +3361,17 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual(0, result["posts"])
         self.assertEqual("/voiceover-restored-video", result["src"])
         self.assertIn("配音", result["meta"])
+        self.assertTrue(result["cleared"])
+
+    def test_voiceover_bgm_pending_state_restores_after_refresh(self):
+        result = self.runtime("voiceoverBgmRestore")
+        self.assertTrue(result["enabled"])
+        self.assertFalse(result["rowHidden"])
+        self.assertEqual("40", result["volume"])
+        self.assertEqual("40%", result["volumeLabel"])
+        self.assertEqual(0, result["posts"])
+        self.assertEqual("/voiceover-bgm-restored-video", result["src"])
+        self.assertIn("配音 + BGM", result["meta"])
         self.assertTrue(result["cleared"])
 
     def test_frontend_omits_font_selector_and_uses_template_default(self):
