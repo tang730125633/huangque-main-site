@@ -20,7 +20,7 @@ RECONCILE_SAFETY_SECONDS = 90
 
 # 能力 → 内容服务任务 kind：陈旧 processing 对账时按任务账本收敛。
 _CAPABILITY_JOB_KINDS = {
-    "video-generate": ("video", "sora_video", "xiaole_video"),
+    "video-generate": ("sora_video", "xiaole_video"),
     "digital-ip-text-generate": ("video",),
     "cinematic-open-generate": ("cinematic",),
     "cinematic-motion-generate": ("cinematic",),
@@ -31,7 +31,7 @@ _CAPABILITY_JOB_KINDS = {
 # 能力 → 内容服务幂等端点。对账必须同时绑定真实提交端点，避免同一
 # idem_key 在其他写接口留下的响应被误认成当前付费视频提交。
 _CAPABILITY_ENDPOINTS = {
-    "video-generate": ("/api/gen/video",),
+    "video-generate": ("/api/gen/sora_video", "/api/gen/xiaole_video"),
     "digital-ip-text-generate": ("/api/gen/video",),
     "cinematic-open-generate": ("/api/gen/cinematic",),
     "cinematic-motion-generate": ("/api/gen/cinematic",),

@@ -876,6 +876,65 @@ class VideoAgentToolTests(unittest.TestCase):
                 self.assertEqual(reconciled["status"], "failed")
                 self.assertNotIn("result", reconciled)
 
+    def _reconcile_video_generate_submission(self, endpoint, kind):
+        submission_key = self._make_unknown_card()
+        with closing(self.db()) as conn:
+            row = conn.execute(
+                "SELECT id FROM video_agent_pending_actions WHERE submission_key=?",
+                (submission_key,),
+            ).fetchone()
+            conn.execute(
+                "UPDATE video_agent_pending_actions SET capability='video-generate' "
+                "WHERE id=?", (row["id"],),
+            )
+            from content_domains import submission_idempotency
+            submission_idempotency.ensure_table(conn)
+            conn.execute("""CREATE TABLE IF NOT EXISTS jobs(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT, username TEXT, cost INTEGER,
+                status TEXT DEFAULT 'pending', payload TEXT, result TEXT, error TEXT,
+                created_at INTEGER, updated_at INTEGER, submission_key TEXT)""")
+            conn.execute(
+                "INSERT INTO submission_idempotency"
+                "(username,endpoint,idem_key,request_hash,response_json,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                ("alice", endpoint, submission_key, "x" * 64,
+                 json.dumps({"job_id": 999}), 1001, 1001),
+            )
+            if kind:
+                job_id = conn.execute(
+                    "INSERT INTO jobs(kind,username,status,created_at,updated_at,submission_key) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (kind, "alice", "pending", 1002, 1002, submission_key),
+                ).lastrowid
+            else:
+                job_id = None
+            conn.commit()
+        return video_agent_tools.reconcile_pending_action(
+            row["id"], username="alice", db_factory=self.db, now=lambda: 2000,
+        ), job_id
+
+    def test_reconcile_video_generate_accepts_real_sora_endpoint_and_kind(self):
+        reconciled, job_id = self._reconcile_video_generate_submission(
+            "/api/gen/sora_video", "sora_video",
+        )
+        self.assertEqual(reconciled["status"], "submitted")
+        self.assertEqual(reconciled["result"]["job_id"], job_id)
+
+    def test_reconcile_video_generate_accepts_real_xiaole_endpoint_and_kind(self):
+        reconciled, job_id = self._reconcile_video_generate_submission(
+            "/api/gen/xiaole_video", "xiaole_video",
+        )
+        self.assertEqual(reconciled["status"], "submitted")
+        self.assertEqual(reconciled["result"]["job_id"], job_id)
+
+    def test_reconcile_video_generate_rejects_legacy_generic_endpoint(self):
+        reconciled, _job_id = self._reconcile_video_generate_submission(
+            "/api/gen/video", "xiaole_video",
+        )
+        self.assertEqual(reconciled["status"], "failed")
+        self.assertNotIn("result", reconciled)
+
     def test_reconcile_stays_unknown_while_submission_has_no_response(self):
         submission_key = self._make_unknown_card()
         with closing(self.db()) as conn:
