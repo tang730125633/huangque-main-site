@@ -4,6 +4,7 @@ import hashlib
 import importlib
 import json
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -1934,6 +1935,8 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual((200, 193, 1), (status, result["job_id"], len(submitted)))
 
     def test_matrix_template_batch_quotes_once_and_replays_stable_children(self):
+        from content_domains import matrix_template_video
+
         token = self._token(["generation:quote", "generation:submit"])
         submitted, jobs_by_key = [], {}
 
@@ -1956,6 +1959,10 @@ class HQCLIAPITests(unittest.TestCase):
         input_body = {
             "top_text": "批量有效标题", "bottom_text": "批量有效行动文案",
             "template_id": "full-overlay-bold", "font_family": "AaHouDiHei", "count": 3,
+            "voiceover": {
+                "text": "同一段批量配音", "voice": "vip_alice",
+                "voice_scope": "personal", "speed": 1.2,
+            },
         }
         request = {
             "action": "matrix-template-batch-generate",
@@ -1985,6 +1992,22 @@ class HQCLIAPITests(unittest.TestCase):
             plan["headers"]["X-HQ-Expected-Cost"] == "5"
             for plan in submitted
         ))
+        first_bodies = [plan["body"] for plan in submitted[:3]]
+        replay_bodies = [plan["body"] for plan in submitted[3:]]
+        self.assertEqual(first_bodies, replay_bodies)
+        self.assertEqual(1, len({body["batch_id"] for body in first_bodies}))
+        self.assertTrue(re.fullmatch(r"[0-9a-f]{32}", first_bodies[0]["batch_id"]))
+        self.assertEqual([1, 2, 3], [body["batch_index"] for body in first_bodies])
+        self.assertTrue(all(body["batch_size"] == 3 for body in first_bodies))
+        cache_targets = {
+            str(matrix_template_video._voiceover_cache_path(
+                200 + index,
+                "alice",
+                dict(body["voiceover"], _batch_id=body["batch_id"]),
+            )[0])
+            for index, body in enumerate(first_bodies)
+        }
+        self.assertEqual(1, len(cache_targets))
 
     def test_matrix_template_batch_unknown_child_preserves_jobs_for_same_token_retry(self):
         token = self._token(["generation:quote", "generation:submit"])
