@@ -147,6 +147,11 @@ function hasOverflow(box) {
         node.value = '1.7';
         node.dispatchEvent(new Event('input', {bubbles: true}));
       });
+      await page.locator('#voiceoverBgmEnabled').check();
+      await page.locator('#voiceoverBgmVolume').evaluate((node) => {
+        node.value = '35';
+        node.dispatchEvent(new Event('input', {bubbles: true}));
+      });
       await page.locator('#personalVoiceTab').click();
       const previewRequestStart = voicePreviewRequests.length;
       await page.locator('#voicePreview').click();
@@ -159,6 +164,10 @@ function hasOverflow(box) {
         count: document.getElementById('voiceoverCount').textContent,
         speed: document.getElementById('voiceoverSpeed').value,
         speedLabel: document.getElementById('voiceSpeedLabel').textContent,
+        bgmEnabled: document.getElementById('voiceoverBgmEnabled').checked,
+        bgmRowHidden: document.getElementById('voiceoverBgmVolumeRow').hidden,
+        bgmVolume: document.getElementById('voiceoverBgmVolume').value,
+        bgmVolumeLabel: document.getElementById('voiceoverBgmVolumeLabel').textContent,
         clientWidth: document.getElementById('voiceoverPanel').clientWidth,
         scrollWidth: document.getElementById('voiceoverPanel').scrollWidth,
         objectUrlsCreated: window.__voiceUrlAudit.created.length,
@@ -256,7 +265,7 @@ function hasOverflow(box) {
   for (const viewport of Object.values(report)) {
     if (viewport.fontControlsPresent) throw new Error(`font selector is still visible: ${JSON.stringify(report)}`);
     const voice = viewport.voiceControl;
-    if (!voice.initiallyHidden || voice.enabled.panelHidden || voice.enabled.selectedVoice !== 'vip_qa' || voice.enabled.options.join(',') !== 'vip_qa' || voice.enabled.previewDisabled || !voice.enabled.count.startsWith('12 /') || voice.enabled.speed !== '1.7' || voice.enabled.speedLabel !== '1.7x' || voice.enabled.scrollWidth > voice.enabled.clientWidth || voice.enabled.previewRequests.length !== 1 || voice.enabled.previewRequests[0].authorization !== 'Bearer __cookie__' || voice.enabled.objectUrlsCreated !== 1 || voice.enabled.objectUrlsRevoked !== 1) throw new Error(`voiceover control is inaccurate: ${JSON.stringify(voice)}`);
+    if (!voice.initiallyHidden || voice.enabled.panelHidden || voice.enabled.selectedVoice !== 'vip_qa' || voice.enabled.options.join(',') !== 'vip_qa' || voice.enabled.previewDisabled || !voice.enabled.count.startsWith('12 /') || voice.enabled.speed !== '1.7' || voice.enabled.speedLabel !== '1.7x' || !voice.enabled.bgmEnabled || voice.enabled.bgmRowHidden || voice.enabled.bgmVolume !== '35' || voice.enabled.bgmVolumeLabel !== '35%' || voice.enabled.scrollWidth > voice.enabled.clientWidth || voice.enabled.previewRequests.length !== 1 || voice.enabled.previewRequests[0].authorization !== 'Bearer __cookie__' || voice.enabled.objectUrlsCreated !== 1 || voice.enabled.objectUrlsRevoked !== 1) throw new Error(`voiceover control is inaccurate: ${JSON.stringify(voice)}`);
     if (viewport.cardCount !== 17 || viewport.referenceCount !== 17 || viewport.distinctReferencePreviews !== 17) throw new Error(`template cards are not distinct: ${JSON.stringify(report)}`);
     const expectedCardLabels = referenceIds.map((id, index) => `${index + 1}. 参考排版 ${String(index + 1).padStart(2, '0')}`);
     if (viewport.cardLabels.join('|') !== expectedCardLabels.join('|')) throw new Error(`template card numbering is inaccurate: ${JSON.stringify(viewport.cardLabels)}`);
