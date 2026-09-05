@@ -25,6 +25,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: 检查提交空白
         shell: bash
@@ -53,11 +54,30 @@ jobs:
       - name: 安装 IP12 PDF 回归依赖
         run: python -m pip install -r server/hermes_ip12/requirements-pdf.txt
 
+      - name: 安装编导生产边界测试依赖
+        run: python -m pip install cryptography==50.0.1
+
       - name: 检查敏感文件与静态资源
         run: python scripts/ci_validate.py
 
       - name: 检查静态资源版本戳
         run: python scripts/stamp_assets.py --check
+
+      - name: 编导自然对话与原生产边界回归
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python -m unittest tests.test_director_regression_gate -v
+          python scripts/check_director_regression.py --base "${PR_BASE_SHA:-HEAD^}" --report /tmp/director-regression-report.json
+
+      - name: 保存编导 Base 与 Head 测试证据（含原有失败）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: director-regression-report
+          path: /tmp/director-regression-report.json
+          if-no-files-found: warn
 
       - name: 检查 Python 语法
         shell: bash

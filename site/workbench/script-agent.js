@@ -558,7 +558,7 @@
     var compose=doc.createElement('div'); compose.className='hq-da-compose';
     var attach=doc.createElement('button'); attach.type='button'; attach.className='hq-da-attach'; attach.textContent='＋'; attach.setAttribute('aria-label','上传图片或视频'); attach.title='上传图片或视频';
     var attachmentInput=doc.createElement('input'); attachmentInput.type='file'; attachmentInput.accept='image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm,.jpg,.jpeg,.png,.webp,.mp4,.mov,.webm'; attachmentInput.multiple=true; attachmentInput.hidden=true;
-    var input=doc.createElement('textarea'); input.className='hq-da-input'; input.rows=2; input.maxLength=6000; input.placeholder=isDigitalHuman?'把文案发给我，或问我下一步怎么做':'例如：我第一次用，下一步该做什么？';
+    var input=doc.createElement('textarea'); input.className='hq-da-input'; input.rows=2; input.maxLength=6000; input.placeholder='说说想做什么，或直接发主题、文案';
     var send=doc.createElement('button'); send.type='button'; send.className='hq-da-send'; send.textContent='发送'; compose.appendChild(attach); compose.appendChild(attachmentInput); compose.appendChild(input); compose.appendChild(send);
     panel.appendChild(head); panel.appendChild(messages); panel.appendChild(status); panel.appendChild(recovery); panel.appendChild(compose); doc.body.appendChild(launch); doc.body.appendChild(panel);
     function setOpen(open){state.open=!!open; panel.classList.toggle('on',state.open); launch.setAttribute('aria-expanded',state.open?'true':'false'); persist(); if(state.open) input.focus();}
@@ -582,7 +582,7 @@
       var copy=doc.createElement('div');
       copy.textContent='生产确认\n选题：'+String(summary.topic||'')+
         '\n规格：'+[summary.platform,summary.style,summary.duration].filter(Boolean).join(' · ')+
-        '\n费用：'+offer.expected_cost+' 点（确认时由 CLI 再校验）';
+        '\n费用：'+offer.expected_cost+' 点（确认后开始制作）';
       var button=doc.createElement('button'); button.type='button'; button.className='hq-da-confirm';
       button.textContent='确认生产并扣 '+offer.expected_cost+' 点'; button.disabled=pending;
       button.onclick=function(){confirmProduction(offer);};
@@ -591,11 +591,11 @@
     function render(){
       messages.textContent='';
       if(!state.messages.length){
-        var welcome=doc.createElement('div'); welcome.className='hq-da-msg assistant'; welcome.textContent='你好，我是黄雀编导 Agent，会在文案编导和数字人页面持续陪你生产。你可以把内容直接发给我，我会结合当前页面填充、切换或带你到下一步；涉及扣点、上传、授权、生成、删除和发布时，会保留必要的顾客确认。'; messages.appendChild(welcome);
+        var welcome=doc.createElement('div'); welcome.className='hq-da-msg assistant'; welcome.textContent='你好，想做什么内容？有主题或文案直接发我。'; messages.appendChild(welcome);
         var quick=doc.createElement('div'); quick.className='hq-da-actions';
         (isDigitalHuman
-          ?['我第一次用，带我走一遍','帮我看看还缺什么','照片模式和真人视频模式怎么选']
-          :['帮我生成一份分镜脚本','我第一次用，带我走一遍','生成脚本后怎么做视频']
+          ?['帮我想个主题写口播','帮我看看还缺什么','照片模式和真人视频模式怎么选']
+          :['帮我生成一份分镜脚本','帮我想个主题写口播','帮我改一段文案']
         ).forEach(function(label){var b=doc.createElement('button');b.type='button';b.className='hq-da-quick';b.textContent=label;b.onclick=function(){submit(label);};quick.appendChild(b);});
         messages.appendChild(quick);
       }
@@ -633,9 +633,9 @@
       record=validPendingProduction(record); if(!record) return;
       clearRecovery();
       state.pending_production=record; state.production_offer=record.offer; persist();
-      pending=true; status.textContent=resumed?'正在恢复上次确认的生产任务…':'CLI 正在报价并提交生产…'; render();
+      pending=true; status.textContent=resumed?'正在恢复上次确认的生产任务…':'正在确认价格并提交制作…'; render();
       resumeProduction(win,record,function(updated){state.pending_production=validPendingProduction(updated);persist();},function(seconds,phase){
-        status.textContent=phase==='submitting'?'CLI 正在确认原提交结果…':'脚本生产中，已用 '+seconds+' 秒…';
+        status.textContent=phase==='submitting'?'正在确认原任务的提交结果…':'脚本生产中，已用 '+seconds+' 秒…';
       }).then(function(result){
         state.pending_production=null; state.production_offer=null; persist();
         addMessage('assistant',formatScriptResult(result));
@@ -672,7 +672,7 @@
       clearRecovery();
       state.pending_request=record; persist();
       pending=true;
-      status.textContent=resumed?'正在恢复上次未完成的请求…':'正在结合当前页面判断…';
+      status.textContent=resumed?'正在恢复上次未完成的请求…':'正在回复…';
       render();
       resumeRequest(win,record,function(updated){
         state.pending_request=validPendingRequest(updated);
