@@ -8,6 +8,7 @@ HTML = (ROOT / "site" / "workbench" / "video.html").read_text(encoding="utf-8")
 CLOUD_SHELL = (ROOT / "site" / "workbench" / "cloud-shell.js").read_text(encoding="utf-8")
 SESSION_MODULE = (ROOT / "site" / "workbench" / "video-agent-session.js").read_text(encoding="utf-8")
 CANVAS_MODULE = (ROOT / "site" / "workbench" / "video-agent-canvas.js").read_text(encoding="utf-8")
+ROUTING_MODULE = (ROOT / "site" / "workbench" / "video-agent-routing.js").read_text(encoding="utf-8")
 
 
 class VideoAgentUiTests(unittest.TestCase):
@@ -111,7 +112,8 @@ class VideoAgentUiTests(unittest.TestCase):
             "openCanvasImagePreview", "closeCanvasImagePreview",
         ):
             self.assertIn("function %s" % function_name, HTML)
-        self.assertIn("/canvasResizeState.scale", HTML)
+        self.assertIn("agentCanvas.bindPointerResize", HTML)
+        self.assertIn("function bindPointerResize", CANVAS_MODULE)
         self.assertIn("e.key==='Escape'", HTML)
         safe_layout = HTML.split("function safeCanvasLayoutForSession", 1)[1].split("function ", 1)[0]
         self.assertIn("width", safe_layout)
@@ -149,8 +151,8 @@ class VideoAgentUiTests(unittest.TestCase):
         self.assertIn("store.createIndex('owner','owner'", SESSION_MODULE)
         self.assertIn("owner+'\\u0000'+canvasId", SESSION_MODULE)
         persist = HTML.split("function persistAgentMediaFile", 1)[1].split("function ", 1)[0]
-        self.assertIn("agentIdentityVerified", persist)
-        self.assertIn("agentMediaStore.put(agentSessionOwner,canvasId,file)", persist)
+        self.assertIn("agentIdentity.isVerified()", persist)
+        self.assertIn("agentMediaStore.put(agentIdentity.owner(),canvasId,file)", persist)
         self.assertIn("blob:file", SESSION_MODULE)
         self.assertIn("owner:owner", SESSION_MODULE)
         cached_restore = HTML.split("function restoreAgentCachedMaterial", 1)[1].split(
@@ -392,8 +394,9 @@ class VideoAgentUiTests(unittest.TestCase):
         self.assertIn("function openAgentRecommendation", HTML)
         self.assertIn("var effectiveRoute=openVideoWorkbench(route)", HTML)
         for function_name in ("talking", "grok", "cinematic", "tryon"):
-            self.assertIn("function:'%s'" % function_name, HTML)
-        self.assertIn("story:{function:'cinematic',cineMode:'open'", HTML)
+            self.assertIn("function:'%s'" % function_name, ROUTING_MODULE)
+        self.assertIn("story:Object.assign({},AGENT_ROUTE_SPECS.story", HTML)
+        self.assertIn("story:Object.freeze({function:'cinematic',cineMode:'open'})", ROUTING_MODULE)
         self.assertIn("handoffAgentFiles(effectiveRoute)", HTML)
         self.assertIn("ready_to_handoff", HTML)
         self.assertIn("material_requests", HTML)
@@ -869,15 +872,15 @@ class VideoAgentUiTests(unittest.TestCase):
         restore_logic = HTML.split("function restoreAgentSession", 1)[1].split(
             "function resetAgentSession", 1
         )[0]
-        self.assertIn("localStorage.getItem('hq_user')", owner_logic)
-        self.assertIn("user&&user.username", owner_logic)
+        self.assertIn("agentIdentity.isVerified()", owner_logic)
+        self.assertIn("agentIdentity.owner()", owner_logic)
         self.assertIn("AGENT_SESSION_KEY_PREFIX+encodeURIComponent(owner)", owner_logic)
-        self.assertIn("!agentIdentityVerified||!owner||!storageKey", save_logic)
-        self.assertIn("agentSessionOwner&&agentSessionOwner!==owner", save_logic)
+        self.assertIn("!agentIdentity.isVerified()||!owner||!storageKey", save_logic)
+        self.assertIn("agentIdentity.owner()!==owner", save_logic)
         self.assertIn("owner:owner", save_logic)
         self.assertIn("localStorage.setItem(storageKey", save_logic)
-        self.assertIn("!agentIdentityVerified||!owner||!storageKey", restore_logic)
-        self.assertIn("owner!==agentSessionOwner", restore_logic)
+        self.assertIn("!agentIdentity.isVerified()||!owner||!storageKey", restore_logic)
+        self.assertIn("owner!==agentIdentity.owner()", restore_logic)
         self.assertIn("state.owner!==owner", restore_logic)
         self.assertIn("localStorage.getItem(storageKey)", restore_logic)
 
@@ -891,9 +894,12 @@ class VideoAgentUiTests(unittest.TestCase):
             "$('workbenchAgentPrompt').value=''",
         ):
             self.assertIn(state_reset, switch_logic)
-        self.assertIn("if(nextOwner)restoreAgentSession()", switch_logic)
+        self.assertIn("createIdentityController", HTML)
+        self.assertIn("function createIdentityController", SESSION_MODULE)
+        self.assertIn("if(previous&&options.deleteOwner)options.deleteOwner(previous)", SESSION_MODULE)
+        self.assertIn("if(verified&&options.restore)options.restore(owner)", SESSION_MODULE)
         self.assertIn("function ensureAgentSessionOwner", switch_logic)
-        self.assertIn("currentOwner!==agentSessionOwner", switch_logic)
+        self.assertIn("agentIdentity.ensure(verified)", switch_logic)
         self.assertIn("window.addEventListener('hq:auth-changed',handleAgentAuthChanged)", HTML)
         self.assertIn("window.addEventListener('storage'", HTML)
         self.assertIn("e.key==='hq_user'", HTML)
@@ -918,13 +924,14 @@ class VideoAgentUiTests(unittest.TestCase):
         restore = HTML.split("function restoreAgentSession", 1)[1].split(
             "function clearAgentMemoryForOwner", 1
         )[0]
-        self.assertIn("!agentIdentityVerified", restore)
-        self.assertIn("owner!==agentSessionOwner", restore)
+        self.assertIn("!agentIdentity.isVerified()", restore)
+        self.assertIn("owner!==agentIdentity.owner()", restore)
         auth_change = HTML.split("function handleAgentAuthChanged", 1)[1].split(
             "function resetAgentSession", 1
         )[0]
         self.assertIn("window.HQ.getVerifiedUser", auth_change)
-        self.assertIn("agentIdentityVerified=!!nextOwner", auth_change)
+        self.assertIn("agentIdentity.accept(verified)", auth_change)
+        self.assertIn("agentIdentity.invalidate()", auth_change)
         self.assertIn("notifyAuthChanged(d.user,true)", CLOUD_SHELL)
 
     def test_unmapped_agent_advice_is_visible_and_dismissible(self):
@@ -1103,14 +1110,11 @@ class VideoAgentUiTests(unittest.TestCase):
         load = HTML.split("function loadAgentMediaFile", 1)[1].split(
             "function deleteAgentMediaFile", 1
         )[0]
-        self.assertIn("agentIdentityVerified", load)
+        self.assertIn("agentIdentity.isVerified()", load)
         self.assertIn("agentMediaStore.get(owner,canvasId)", load)
         self.assertIn("isFresh(record.updated_at", SESSION_MODULE)
         self.assertIn("remove(owner,canvasId)", SESSION_MODULE)
-        switch = HTML.split("function switchAgentSessionOwner", 1)[1].split(
-            "function ensureAgentSessionOwner", 1
-        )[0]
-        self.assertIn("deleteAgentLocalDataForOwner(previousOwner)", switch)
+        self.assertIn("if(previous&&options.deleteOwner)options.deleteOwner(previous)", SESSION_MODULE)
 
     def test_canvas_cards_have_keyboard_move_resize_and_image_preview(self):
         render = HTML.split("function renderMaterialCanvas", 1)[1].split(

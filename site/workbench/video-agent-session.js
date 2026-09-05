@@ -26,5 +26,23 @@
   function reconcile(fetchFn,actionId,headers,errorFactory){
     return fetchFn('/api/gen/video/agent/actions/'+encodeURIComponent(actionId)+'/reconcile',{method:'POST',headers:headers,body:'{}'}).then(function(response){return response.json().catch(function(){return {};}).then(function(data){if(!response.ok)throw errorFactory(response,data);return data;});});
   }
-  return {TTL_MS:TTL_MS,isFresh:isFresh,createMediaStore:createMediaStore,reconcile:reconcile};
+  function createIdentityController(options){
+    options=options||{};var owner='',verified=false;
+    var clean=options.cleanOwner||function(value){return String(value||'').trim().slice(0,64);};
+    function verifiedOwner(user){return clean(user&&typeof user.username==='string'?user.username:'');}
+    function transition(next,isVerified){
+      next=isVerified?clean(next):'';var previous=owner,changed=previous!==next||verified!==!!next;
+      if(!changed)return false;
+      verified=!!next;owner=next;
+      if(previous&&options.deleteOwner)options.deleteOwner(previous);
+      if(options.clearMemory)options.clearMemory(owner);
+      if(verified&&options.restore)options.restore(owner);
+      return true;
+    }
+    function accept(user){var next=verifiedOwner(user);return transition(next,!!next);}
+    function invalidate(){return transition('',false);}
+    function ensure(user){var next=verifiedOwner(user);if(verified&&next&&next===owner)return true;if(next)accept(user);else invalidate();return false;}
+    return {accept:accept,invalidate:invalidate,ensure:ensure,isVerified:function(){return verified;},owner:function(){return owner;}};
+  }
+  return {TTL_MS:TTL_MS,isFresh:isFresh,createMediaStore:createMediaStore,reconcile:reconcile,createIdentityController:createIdentityController};
 });
