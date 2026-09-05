@@ -1,6 +1,7 @@
-"""Fixed-origin HTTPS client and local credential storage for HQ CLI."""
+"""Constrained-origin HTTP client and local credential storage for HQ CLI."""
 
 import base64
+from contextlib import contextmanager
 import hashlib
 import http.client
 import json
@@ -9,6 +10,7 @@ import re
 from pathlib import Path
 import secrets
 import stat
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -17,9 +19,12 @@ from . import __version__
 
 
 API_BASE = "https://huangquechuanmei.com"
+API_BASE_ENV = "HQ_CLI_API_BASE"
+ACCESS_TOKEN_ENV = "HQ_CLI_ACCESS_TOKEN"
 ALLOWED_PATHS = {
     "/api/auth/cli/device/start",
     "/api/auth/cli/device/poll",
+    "/api/auth/cli/refresh",
     "/api/auth/cli/status",
     "/api/auth/cli/logout",
     "/api/auth/cli/action",
@@ -53,6 +58,39 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+_ACCESS_TOKEN_RE = re.compile(r"^[A-Za-z0-9._~-]{20,200}$")
+
+
+def api_base():
+    """Return a tightly constrained origin for first-party or loopback calls."""
+    configured = os.environ.get(API_BASE_ENV)
+    if configured is None:
+        return API_BASE
+    if (not configured or configured != configured.strip()
+            or any(ord(character) <= 32 or ord(character) == 127 for character in configured)):
+        raise ValueError("HQ_CLI_API_BASE must be an allowed origin")
+    try:
+        target = urllib.parse.urlsplit(configured)
+        port = target.port
+    except ValueError:
+        raise ValueError("HQ_CLI_API_BASE must be an allowed origin")
+    if (target.path or target.query or target.fragment or target.username is not None
+            or target.password is not None):
+        raise ValueError("HQ_CLI_API_BASE must be an allowed origin")
+    hostname = (target.hostname or "").lower()
+    official = (
+        target.scheme == "https" and hostname == "huangquechuanmei.com"
+        and port in {None, 443}
+    )
+    loopback = (
+        target.scheme == "http" and hostname in {"127.0.0.1", "localhost", "::1"}
+        and (port is None or 1 <= port <= 65535)
+    )
+    if not (official or loopback):
+        raise ValueError("HQ_CLI_API_BASE must be official HTTPS or loopback HTTP")
+    return configured
+
+
 def request_json(path, method="GET", body=None, token="", timeout=30):
     if path not in ALLOWED_PATHS or method not in {"GET", "POST"}:
         raise ValueError("HQ CLI only calls fixed main-site endpoints")
@@ -63,7 +101,7 @@ def request_json(path, method="GET", body=None, token="", timeout=30):
     if body is not None:
         data = json.dumps(body, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
         headers["Content-Type"] = "application/json"
-    request = urllib.request.Request(API_BASE + path, data=data, headers=headers, method=method)
+    request = urllib.request.Request(api_base() + path, data=data, headers=headers, method=method)
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
     try:
         with opener.open(request, timeout=timeout) as response:
@@ -424,8 +462,14 @@ def _upload_media(path, token, upload_path, digest_header, opener, timeout, extr
     } or not digest_header:
         os.close(descriptor)
         raise ValueError("HQ CLI only uploads to fixed main-site endpoints")
-    target = urllib.parse.urlsplit(API_BASE)
-    if target.scheme != "https" or target.hostname != "huangquechuanmei.com" or target.path not in {"", "/"}:
+    target = urllib.parse.urlsplit(api_base())
+    if target.scheme == "https":
+        allowed_host = target.hostname == "huangquechuanmei.com"
+    elif target.scheme == "http":
+        allowed_host = target.hostname in {"127.0.0.1", "localhost", "::1"}
+    else:
+        allowed_host = False
+    if not allowed_host or target.path not in {"", "/"}:
         os.close(descriptor)
         raise ValueError("HQ CLI only uploads to the fixed main-site origin")
     director_upload = upload_path in {
@@ -440,7 +484,10 @@ def _upload_media(path, token, upload_path, digest_header, opener, timeout, extr
     if set((extra_headers or {}).keys()) != expected_extra:
         os.close(descriptor)
         raise ValueError("upload metadata does not match the fixed endpoint")
-    connection = http.client.HTTPSConnection(target.hostname, target.port or 443, timeout=timeout)
+    connection_type = http.client.HTTPSConnection if target.scheme == "https" else http.client.HTTPConnection
+    connection = connection_type(
+        target.hostname, target.port or (443 if target.scheme == "https" else 80), timeout=timeout,
+    )
     try:
         connection.putrequest("POST", upload_path, skip_accept_encoding=True)
         connection.putheader("Authorization", "Bearer " + token)
@@ -586,6 +633,41 @@ def credentials_path():
     return base / "credentials.json"
 
 
+@contextmanager
+def credentials_lock():
+    path = credentials_path().with_name("credentials.lock")
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o700)
+    descriptor = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o600)
+    with os.fdopen(descriptor, "a+b") as handle:
+        if os.name == "nt":
+            import msvcrt
+            if os.fstat(handle.fileno()).st_size == 0:
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            deadline = time.monotonic() + 35
+            while True:
+                try:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            handle.seek(0)
+            if os.name == "nt":
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def _windows_dpapi(data, protect):
     import ctypes
     from ctypes import wintypes
@@ -610,15 +692,27 @@ def _windows_dpapi(data, protect):
         local_free(ctypes.cast(result_blob.pbData, ctypes.c_void_p))
 
 
-def save_credentials(token, expires_at, scopes):
+def save_credentials(token, expires_at, scopes, refresh_token="", refresh_expires_at=0):
     if not isinstance(token, str) or len(token) < 20:
         raise ValueError("invalid access token")
+    if refresh_token and (not isinstance(refresh_token, str) or len(refresh_token) < 20):
+        raise ValueError("invalid refresh token")
     path = credentials_path()
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(path.parent, 0o700)
     temp = path.with_name(".%s.%s.tmp" % (path.name, secrets.token_hex(6)))
-    payload = json.dumps({"access_token": token, "expires_at": int(expires_at), "scopes": list(scopes)},
-                         sort_keys=True, separators=(",", ":")).encode("utf-8")
+    credentials = {
+        "access_token": token,
+        "expires_at": int(expires_at),
+        "access_expires_at": int(expires_at),
+        "scopes": list(scopes),
+    }
+    if refresh_token:
+        credentials.update({
+            "refresh_token": refresh_token,
+            "refresh_expires_at": int(refresh_expires_at),
+        })
+    payload = json.dumps(credentials, sort_keys=True, separators=(",", ":")).encode("utf-8")
     if os.name == "nt":
         payload = json.dumps({
             "protected_data": base64.b64encode(_windows_dpapi(payload, True)).decode("ascii"),
@@ -640,6 +734,11 @@ def save_credentials(token, expires_at, scopes):
 
 
 def load_credentials():
+    if ACCESS_TOKEN_ENV in os.environ:
+        token = os.environ.get(ACCESS_TOKEN_ENV, "")
+        if not isinstance(token, str) or not _ACCESS_TOKEN_RE.fullmatch(token):
+            return None
+        return {"access_token": token, "expires_at": None, "scopes": []}
     path = credentials_path()
     protected_with_dpapi = False
     try:
@@ -654,7 +753,15 @@ def load_credentials():
     if not isinstance(token, str) or not 20 <= len(token) <= 200:
         return None
     if os.name == "nt" and not protected_with_dpapi:
-        save_credentials(token, payload.get("expires_at", 0), payload.get("scopes", []))
+        save_credentials(
+            token,
+            payload.get("access_expires_at", payload.get("expires_at", 0)),
+            payload.get("scopes", []),
+            payload.get("refresh_token", ""),
+            payload.get("refresh_expires_at", 0),
+        )
+    payload["access_expires_at"] = int(payload.get("access_expires_at", payload.get("expires_at", 0)) or 0)
+    payload["expires_at"] = payload["access_expires_at"]
     return payload
 
 

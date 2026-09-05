@@ -17,6 +17,10 @@ class HqCliTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.env = patch.dict(os.environ, {"HQ_CLI_CONFIG_DIR": self.temp.name})
         self.env.start()
+        # Agent-only credentials/base overrides must never leak between tests.
+        os.environ.pop("HQ_CLI_ACCESS_TOKEN", None)
+        os.environ.pop("HQ_CLI_API_BASE", None)
+        os.environ.pop("HQ_CLI_QUOTE_TOKEN", None)
 
     def tearDown(self):
         self.env.stop()
@@ -188,7 +192,7 @@ class HqCliTests(unittest.TestCase):
             self.assertEqual(0, code, error)
             self.assertTrue(self.payload(output)["schema"].startswith("hq."))
         code, output, _ = self.invoke(["version"])
-        self.assertEqual("0.15.2", self.payload(output)["cli_version"])
+        self.assertEqual("0.15.4", self.payload(output)["cli_version"])
         self.assertEqual("Huangque main-site CLI", self.payload(output)["product"])
         self.assertEqual("https://huangquechuanmei.com", self.payload(output)["origin"])
 
@@ -392,6 +396,17 @@ class HqCliTests(unittest.TestCase):
         self.assertEqual("server_quote", by_id["matrix-template-batch-generate"]["cost"]["kind"])
         self.assertEqual(80, by_id["matrix-template-generate"]["input_schema"]
                          ["properties"]["font_family"]["maxLength"])
+        matrix_voiceover = by_id["matrix-template-generate"]["input_schema"][
+            "properties"
+        ]["voiceover"]
+        self.assertEqual(["text", "voice"], matrix_voiceover["required"])
+        self.assertEqual(120, matrix_voiceover["properties"]["text"]["maxLength"])
+        self.assertEqual(["public", "personal"],
+                         matrix_voiceover["properties"]["voice_scope"]["enum"])
+        self.assertEqual((0.5, 2.0), (
+            matrix_voiceover["properties"]["speed"]["minimum"],
+            matrix_voiceover["properties"]["speed"]["maximum"],
+        ))
         self.assertEqual(
             ["top_text", "bottom_text", "template_id"],
             by_id["matrix-template-generate"]["input_schema"]["required"],
@@ -565,14 +580,20 @@ class HqCliTests(unittest.TestCase):
         self.assertEqual("t" * 43, request.call_args.kwargs["token"])
 
     def test_login_uses_device_flow_saves_token_without_printing_it(self):
+        refresh_token = "r" * 64
         responses = [
             (200, {"device_code": "device-secret", "user_code": "ABCD-EFGH",
                    "verification_uri": "https://huangquechuanmei.com/workbench/device?user_code=ABCD-EFGH",
                    "expires_in": 600, "interval": 3, "scopes": cli.LOGIN_SCOPES}),
             (202, {"detail": "pending", "code": "authorization_pending"}),
-            (200, {"access_token": "s" * 43, "expires_in": 28800, "scopes": cli.LOGIN_SCOPES}),
+            (200, {"access_token": "s" * 43, "expires_in": 28800,
+                   "access_expires_at": 2000000000, "refresh_token": refresh_token,
+                   "refresh_expires_in": 2592000, "refresh_expires_at": 2002592000,
+                   "scopes": cli.LOGIN_SCOPES}),
             (200, {"user": {"username": "alice", "points": 88}, "scopes": cli.LOGIN_SCOPES,
-                   "expires_at": 2000000000}),
+                   "authorization_mode": "rotating_refresh_token",
+                   "access_expires_at": 2000000000, "expires_at": 2000000000,
+                   "refresh_expires_at": 2002592000}),
         ]
         with patch("hq_cli.client.request_json", side_effect=responses) as request, \
                 patch("hq_cli.cli.time.sleep"), patch("hq_cli.cli.webbrowser.open", return_value=True):
@@ -582,8 +603,64 @@ class HqCliTests(unittest.TestCase):
         self.assertEqual("ABCD-EFGH", self.payload(progress)["user_code"])
         self.assertNotIn("device-secret", output + progress)
         self.assertNotIn("s" * 43, output + progress)
+        self.assertNotIn(refresh_token, output + progress)
         self.assertEqual("s" * 43, client.load_credentials()["access_token"])
+        self.assertEqual(refresh_token, client.load_credentials()["refresh_token"])
+        self.assertEqual("rotating_refresh_token", self.payload(output)["result"]["authorization_mode"])
         self.assertEqual(4, request.call_count)
+
+    def test_expiring_access_token_refreshes_once_before_status(self):
+        client.save_credentials("a" * 43, 1000, ["profile:read"], "r" * 64, 5000)
+        responses = [
+            (200, {"access_token": "b" * 43, "access_expires_at": 29800,
+                   "refresh_token": "n" * 64, "refresh_expires_at": 2593000,
+                   "scopes": ["profile:read"]}),
+            (200, {"user": {"username": "alice"}, "scopes": ["profile:read"],
+                   "authorization_mode": "rotating_refresh_token",
+                   "access_expires_at": 29800, "expires_at": 29800,
+                   "refresh_expires_at": 2593000}),
+        ]
+        with patch("hq_cli.cli.time.time", return_value=1000), \
+                patch("hq_cli.client.request_json", side_effect=responses) as request:
+            code, output, error = self.invoke(["status", "--json"])
+        self.assertEqual(0, code, error)
+        self.assertEqual("rotating_refresh_token", self.payload(output)["result"]["authorization_mode"])
+        self.assertEqual(["/api/auth/cli/refresh", "/api/auth/cli/status"], [
+            call.args[0] for call in request.call_args_list
+        ])
+        saved = client.load_credentials()
+        self.assertEqual("b" * 43, saved["access_token"])
+        self.assertEqual("n" * 64, saved["refresh_token"])
+
+    def test_refresh_failure_never_sends_the_paid_operation(self):
+        client.save_credentials("a" * 43, 1000, cli.LOGIN_SCOPES, "r" * 64, 5000)
+        with patch("hq_cli.cli.time.time", return_value=1000), \
+                patch("hq_cli.client.request_json", side_effect=client.NetworkError("offline")) as request:
+            code, output, error = self.invoke(
+                ["run", "image-generate", "--input", "@-", "--confirm",
+                 "--quote-token", "quote.12345678"],
+                json.dumps({"prompt": "测试图片"}, ensure_ascii=False).encode(),
+            )
+        self.assertEqual(cli.EXIT_NETWORK, code)
+        self.assertIn("授权已失效，请运行 hq login --json", error)
+        self.assertEqual(1, request.call_count)
+        self.assertEqual("/api/auth/cli/refresh", request.call_args.args[0])
+
+    def test_legacy_access_only_credentials_work_until_expiry(self):
+        client.save_credentials("a" * 43, 2000, ["profile:read"])
+        with patch("hq_cli.cli.time.time", return_value=1000), \
+                patch("hq_cli.client.request_json", return_value=(200, {"ok": True})) as request:
+            code, output, error = self.invoke(["status", "--json"])
+        self.assertEqual(0, code, error)
+        self.assertEqual("/api/auth/cli/status", request.call_args.args[0])
+
+        client.save_credentials("a" * 43, 999, ["profile:read"])
+        with patch("hq_cli.cli.time.time", return_value=1000), \
+                patch("hq_cli.client.request_json") as request:
+            code, output, error = self.invoke(["status", "--json"])
+        self.assertEqual(cli.EXIT_AUTH, code)
+        self.assertIn("授权已失效，请运行 hq login --json", error)
+        request.assert_not_called()
 
     def test_credentials_are_private_and_logout_revokes_then_deletes(self):
         self.authorize()
@@ -598,6 +675,106 @@ class HqCliTests(unittest.TestCase):
         self.assertTrue(self.payload(output)["revoked"])
         self.assertFalse(client.credentials_path().exists())
         self.assertEqual("/api/auth/cli/logout", request.call_args.args[0])
+        self.assertEqual({"refresh_token": ""}, request.call_args.kwargs["body"])
+
+    def test_environment_access_token_has_priority_without_touching_disk(self):
+        self.authorize()
+        disk_before = client.credentials_path().read_bytes()
+        delegated = "d" * 43
+        with patch.dict(os.environ, {"HQ_CLI_ACCESS_TOKEN": delegated}):
+            credentials = client.load_credentials()
+        self.assertEqual(delegated, credentials["access_token"])
+        self.assertEqual(disk_before, client.credentials_path().read_bytes())
+
+    def test_invalid_environment_access_token_fails_closed_without_disk_fallback(self):
+        self.authorize()
+        for invalid in ("", "short", "x" * 201, "x" * 20 + "\n"):
+            with self.subTest(invalid_length=len(invalid)), \
+                    patch.dict(os.environ, {"HQ_CLI_ACCESS_TOKEN": invalid}):
+                self.assertIsNone(client.load_credentials())
+
+    def test_paid_confirmation_accepts_server_quote_from_environment_without_echo(self):
+        self.authorize()
+        quote_token = "e" * 48 + "." + "a" * 64
+        payload = {"prompt": "海边日出", "channel": "grok"}
+        with patch.dict(os.environ, {"HQ_CLI_QUOTE_TOKEN": quote_token}), patch(
+                "hq_cli.client.request_json",
+                return_value=(200, {"job_id": 100, "cost": 10}),
+        ) as request:
+            code, output, error = self.invoke(
+                ["run", "video-generate", "--input", "@-", "--confirm"],
+                json.dumps(payload, ensure_ascii=False).encode(),
+            )
+        self.assertEqual(0, code, error)
+        self.assertEqual(quote_token, request.call_args.kwargs["body"]["quote_token"])
+        self.assertNotIn(quote_token, output + error)
+
+    def test_invalid_environment_quote_fails_closed_before_http(self):
+        self.authorize()
+        payload = json.dumps({"prompt": "test", "channel": "grok"}).encode()
+        for invalid in ("", "short", "a" * 32 + "." + "z" * 64, "a" * 4097):
+            with self.subTest(invalid_length=len(invalid)), patch.dict(
+                    os.environ, {"HQ_CLI_QUOTE_TOKEN": invalid},
+            ), patch("hq_cli.client.request_json") as request:
+                code, output, error = self.invoke(
+                    ["run", "video-generate", "--input", "@-", "--confirm"], payload,
+                )
+                self.assertEqual(cli.EXIT_CONFIRMATION, code)
+                self.assertEqual("invalid_quote_token", self.payload(error)["error"])
+                if invalid:
+                    self.assertNotIn(invalid, output + error)
+                request.assert_not_called()
+
+    def test_environment_quote_is_ignored_for_quote_and_explicit_cli_argument(self):
+        self.authorize()
+        payload = {"prompt": "test", "channel": "grok"}
+        raw = json.dumps(payload).encode()
+        explicit = "interactive-quote-token"
+        with patch.dict(os.environ, {"HQ_CLI_QUOTE_TOKEN": "invalid env value"}), patch(
+                "hq_cli.client.request_json",
+                side_effect=[
+                    (200, {"quote_token": "q.new", "cost": 10}),
+                    (200, {"job_id": 10}),
+                ],
+        ) as request:
+            code, _, error = self.invoke(["run", "video-generate", "--input", "@-"], raw)
+            self.assertEqual(0, code, error)
+            code, _, error = self.invoke([
+                "run", "video-generate", "--input", "@-", "--confirm",
+                "--quote-token", explicit,
+            ], raw)
+            self.assertEqual(0, code, error)
+        first, second = request.call_args_list
+        self.assertNotIn("quote_token", first.kwargs["body"])
+        self.assertEqual(explicit, second.kwargs["body"]["quote_token"])
+
+    def test_api_base_override_allows_only_official_https_or_loopback_http_origins(self):
+        accepted = (
+            "https://huangquechuanmei.com",
+            "https://huangquechuanmei.com:443",
+            "http://127.0.0.1:8095",
+            "http://localhost:8095",
+            "http://[::1]:8095",
+        )
+        for origin in accepted:
+            with self.subTest(origin=origin), patch.dict(os.environ, {"HQ_CLI_API_BASE": origin}):
+                self.assertEqual(origin, client.api_base())
+        rejected = (
+            "http://huangquechuanmei.com",
+            "https://huangquechuanmei.com:444",
+            "https://evil.example",
+            "http://0.0.0.0:8095",
+            "http://127.0.0.1:8095/path",
+            "http://127.0.0.1:8095?query=1",
+            "http://user@127.0.0.1:8095",
+            "http://127.0.0.1:8095#fragment",
+            "http://127.0.0.1:8095/",
+            "http://127.0.0.1:\n8095",
+        )
+        for origin in rejected:
+            with self.subTest(origin=origin), patch.dict(os.environ, {"HQ_CLI_API_BASE": origin}):
+                with self.assertRaises(ValueError):
+                    client.api_base()
 
     def test_status_requires_authorization_and_never_accepts_password_input(self):
         code, output, error = self.invoke(["status"])
@@ -918,6 +1095,10 @@ class HqCliTests(unittest.TestCase):
             "top_text": "真正拉开差距的不是工具",
             "bottom_text": "评论区留下关键词领取方案",
             "template_id": "native-bold", "font_family": "AaHouDiHei",
+            "voiceover": {
+                "text": "把工具变成稳定产出的流程", "voice": "vip_alice",
+                "voice_scope": "personal", "speed": 1.2,
+            },
         }
         raw = json.dumps(value, ensure_ascii=False).encode("utf-8")
         quote = {
@@ -947,6 +1128,10 @@ class HqCliTests(unittest.TestCase):
             "top_text": "批量模板成片标题",
             "bottom_text": "评论区领取完整方案",
             "template_id": "native-bold", "font_family": "AaHouDiHei", "count": 3,
+            "voiceover": {
+                "text": "同一文案批量生成三条配音视频", "voice": "public_voice",
+                "voice_scope": "public", "speed": 1.1,
+            },
         }
         raw = json.dumps(value, ensure_ascii=False).encode("utf-8")
         quote = {
@@ -1014,6 +1199,15 @@ class HqCliTests(unittest.TestCase):
             dict(base, bgm=False),
             dict(base, template_id="../bad"),
             dict(base, font_family="x" * 81),
+            dict(base, voiceover={}),
+            dict(base, voiceover={"text": "只有文案"}),
+            dict(base, voiceover={"text": "文" * 121, "voice": "public_voice"}),
+            dict(base, voiceover={"text": "有效文案", "voice": "public_voice",
+                                  "voice_scope": "shared"}),
+            dict(base, voiceover={"text": "有效文案", "voice": "public_voice",
+                                  "speed": 2.1}),
+            dict(base, voiceover={"text": "有效文案", "voice": "public_voice",
+                                  "provider": "cosyvoice"}),
         ):
             with self.subTest(payload=payload), patch("hq_cli.client.request_json") as request:
                 code, _, error = self.invoke(

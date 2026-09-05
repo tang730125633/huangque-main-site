@@ -109,6 +109,26 @@ class CLIImageUploadTests(unittest.TestCase):
                 "audio_upload_id": narration["upload_id"],
             }, "bob", now=101)
 
+    def test_avatar_upload_expands_to_owner_bound_data_url(self):
+        uploaded = self.upload()
+        body = cli_uploads.expand_avatar_payload(
+            {"image_upload_id": uploaded["upload_id"], "name": "画布人物"},
+            "alice", now=101,
+        )
+        self.assertEqual("画布人物", body["name"])
+        self.assertTrue(body["image_data"].startswith("data:image/png;base64,"))
+        self.assertEqual(PNG, base64.b64decode(body["image_data"].split(",", 1)[1]))
+        self.assertNotIn("image_upload_id", body)
+        with self.assertRaisesRegex(ValueError, "不存在或已失效"):
+            cli_uploads.expand_avatar_payload(
+                {"image_upload_id": uploaded["upload_id"]}, "bob", now=101,
+            )
+        with self.assertRaisesRegex(ValueError, "不能与 image_data 同时使用"):
+            cli_uploads.expand_avatar_payload({
+                "image_upload_id": uploaded["upload_id"],
+                "image_data": "data:image/png;base64,AAAA",
+            }, "alice", now=101)
+
     def test_multi_reference_and_png_mask_contract(self):
         first, second = self.upload(now=100), self.upload(now=100)
         body = cli_uploads.expand_image_payload({

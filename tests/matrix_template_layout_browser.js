@@ -30,6 +30,21 @@ const templates = [
   })),
 ];
 const visibleTemplateIds = referenceIds;
+const voicePreviewRequests = [];
+
+function silentWav() {
+  const sampleRate = 8000;
+  const samples = 800;
+  const buffer = Buffer.alloc(44 + samples * 2);
+  buffer.write('RIFF', 0); buffer.writeUInt32LE(36 + samples * 2, 4);
+  buffer.write('WAVEfmt ', 8); buffer.writeUInt32LE(16, 16);
+  buffer.writeUInt16LE(1, 20); buffer.writeUInt16LE(1, 22);
+  buffer.writeUInt32LE(sampleRate, 24); buffer.writeUInt32LE(sampleRate * 2, 28);
+  buffer.writeUInt16LE(2, 32); buffer.writeUInt16LE(16, 34);
+  buffer.write('data', 36); buffer.writeUInt32LE(samples * 2, 40);
+  return buffer;
+}
+const previewAudio = silentWav();
 
 function serve(request, response) {
   if (request.url.startsWith('/api/gen/matrix-template/templates')) {
@@ -44,6 +59,29 @@ function serve(request, response) {
       default_template: 'native-bold', max_batch_size: 5,
       engine_concurrency: {ffmpeg: 5, hyperframes: 2}, cost: 5,
     }));
+    return;
+  }
+  if (request.url.startsWith('/api/gen/audio/voices')) {
+    response.setHeader('Content-Type', 'application/json');
+    response.end(JSON.stringify({items: [
+      {scope: 'public', voice_key: 'S_d21F8OR62', display_name: '温柔女声', provider_voice: 'longwan', preview_url: '/voice-public.mp3', status: 'ready', ready: true},
+      {scope: 'personal', voice_key: 'vip_qa', display_name: '我的复刻音色', provider_voice: 'cosyvoice-v3.5-plus-qa', preview_url: '/api/gen/file/audio/voice_preview_qa.mp3', status: 'ready', ready: true},
+      {scope: 'personal', voice_key: 'vip_training', display_name: '训练中音色', provider_voice: 'cosyvoice-v3.5-plus-training', preview_url: '/training.mp3', status: 'training', ready: false},
+      {scope: 'personal', voice_key: 'vip_failed', display_name: '失败音色', provider_voice: 'cosyvoice-v3.5-plus-failed', preview_url: '/failed.mp3', status: 'failed', ready: false},
+    ]}));
+    return;
+  }
+  if (request.url.startsWith('/api/gen/file/audio/voice_preview_qa.mp3')) {
+    const authorization = String(request.headers.authorization || '');
+    voicePreviewRequests.push({authorization, url: request.url});
+    if (authorization !== 'Bearer __cookie__') {
+      response.statusCode = 401;
+      response.end('unauthorized');
+      return;
+    }
+    response.setHeader('Content-Type', 'audio/wav');
+    response.setHeader('Content-Length', String(previewAudio.length));
+    response.end(previewAudio);
     return;
   }
   if (request.url.startsWith('/api/auth/me')) {
@@ -77,6 +115,20 @@ function hasOverflow(box) {
   try {
     for (const [name, viewport] of Object.entries({desktop: {width: 1440, height: 900}, mobile: {width: 390, height: 844}})) {
       const page = await browser.newPage({viewport});
+      await page.addInitScript(() => {
+        const create = URL.createObjectURL.bind(URL);
+        const revoke = URL.revokeObjectURL.bind(URL);
+        window.__voiceUrlAudit = {created: [], revoked: []};
+        URL.createObjectURL = (blob) => {
+          const value = create(blob);
+          window.__voiceUrlAudit.created.push(value);
+          return value;
+        };
+        URL.revokeObjectURL = (value) => {
+          window.__voiceUrlAudit.revoked.push(value);
+          return revoke(value);
+        };
+      });
       await page.goto(url, {waitUntil: 'networkidle'});
       const readBatchControl = () => page.evaluate(() => {
         const select = document.getElementById('batchCount');
@@ -88,6 +140,54 @@ function hasOverflow(box) {
         };
       });
       const hyperframesBatchControl = await readBatchControl();
+      const voicePanelInitiallyHidden = await page.locator('#voiceoverPanel').evaluate(node => node.hidden);
+      await page.locator('#voiceoverEnabled').check();
+      await page.fill('#voiceoverText', '这是一段模板成片口播文案');
+      await page.locator('#voiceoverSpeed').evaluate((node) => {
+        node.value = '1.7';
+        node.dispatchEvent(new Event('input', {bubbles: true}));
+      });
+      await page.locator('#voiceoverBgmEnabled').check();
+      await page.locator('#voiceoverBgmVolume').evaluate((node) => {
+        node.value = '35';
+        node.dispatchEvent(new Event('input', {bubbles: true}));
+      });
+      await page.locator('#personalVoiceTab').click();
+      const previewRequestStart = voicePreviewRequests.length;
+      await page.locator('#voicePreview').click();
+      await page.waitForFunction(() => window.__voiceUrlAudit.revoked.length > 0);
+      const voiceControl = await page.evaluate(() => ({
+        panelHidden: document.getElementById('voiceoverPanel').hidden,
+        selectedVoice: document.getElementById('voiceoverVoice').value,
+        options: [...document.getElementById('voiceoverVoice').options].map(option => option.value),
+        previewDisabled: document.getElementById('voicePreview').disabled,
+        count: document.getElementById('voiceoverCount').textContent,
+        speed: document.getElementById('voiceoverSpeed').value,
+        speedLabel: document.getElementById('voiceSpeedLabel').textContent,
+        bgmEnabled: document.getElementById('voiceoverBgmEnabled').checked,
+        bgmRowHidden: document.getElementById('voiceoverBgmVolumeRow').hidden,
+        bgmVolume: document.getElementById('voiceoverBgmVolume').value,
+        bgmVolumeLabel: document.getElementById('voiceoverBgmVolumeLabel').textContent,
+        clientWidth: document.getElementById('voiceoverPanel').clientWidth,
+        scrollWidth: document.getElementById('voiceoverPanel').scrollWidth,
+        objectUrlsCreated: window.__voiceUrlAudit.created.length,
+        objectUrlsRevoked: window.__voiceUrlAudit.revoked.length,
+      }));
+      voiceControl.previewRequests = voicePreviewRequests.slice(previewRequestStart);
+      if (process.env.MATRIX_QA_OUTPUT) {
+        fs.mkdirSync(process.env.MATRIX_QA_OUTPUT, {recursive: true});
+        await page.locator('#voiceoverPanel').screenshot({path: path.join(process.env.MATRIX_QA_OUTPUT, `matrix-${name}-voiceover.png`)});
+      }
+      const initialAction = await page.locator('#generateBtn').evaluate(node => ({
+        disabled: node.disabled,
+        cursor: getComputedStyle(node).cursor,
+        title: node.title,
+      }));
+      await page.locator('#generateBtn').click();
+      const emptyReminder = await page.evaluate(() => ({
+        status: document.getElementById('status').textContent,
+        toast: document.getElementById('toast').textContent,
+      }));
       const cardReport = await page.locator('.mt-template').evaluateAll(nodes => nodes.map(node => {
         const visual = node.querySelector('.mt-template-visual');
         const top = node.querySelector('.mt-template-top');
@@ -118,6 +218,11 @@ function hasOverflow(box) {
       }
       await page.fill('#topText', '标题'.repeat(30));
       await page.fill('#bottomText', '行动'.repeat(40));
+      const readyAction = await page.locator('#generateBtn').evaluate(node => ({
+        disabled: node.disabled,
+        cursor: getComputedStyle(node).cursor,
+        text: node.textContent,
+      }));
       const overflow = [];
       for (let index = 0; index < visibleTemplateIds.length; index += 1) {
         await page.locator('.mt-template').nth(index).click();
@@ -141,7 +246,10 @@ function hasOverflow(box) {
       report[name] = {
         overflow,
         scroll,
+        fontControlsPresent: await page.evaluate(() => Boolean(document.getElementById('fontFamily') || document.getElementById('fontSource'))),
+        voiceControl: {initiallyHidden: voicePanelInitiallyHidden, enabled: voiceControl},
         batchControl: {hyperframes: hyperframesBatchControl},
+        action: {initial: initialAction, emptyReminder, ready: readyAction},
         cardCount: cardReport.length,
         cardLabels: cardReport.map(item => item.label),
         referenceCount: references.length,
@@ -155,12 +263,18 @@ function hasOverflow(box) {
   }
   if (report.desktop.overflow.length || report.mobile.overflow.length) throw new Error(`preview overflow: ${JSON.stringify(report)}`);
   for (const viewport of Object.values(report)) {
+    if (viewport.fontControlsPresent) throw new Error(`font selector is still visible: ${JSON.stringify(report)}`);
+    const voice = viewport.voiceControl;
+    if (!voice.initiallyHidden || voice.enabled.panelHidden || voice.enabled.selectedVoice !== 'vip_qa' || voice.enabled.options.join(',') !== 'vip_qa' || voice.enabled.previewDisabled || !voice.enabled.count.startsWith('12 /') || voice.enabled.speed !== '1.7' || voice.enabled.speedLabel !== '1.7x' || !voice.enabled.bgmEnabled || voice.enabled.bgmRowHidden || voice.enabled.bgmVolume !== '35' || voice.enabled.bgmVolumeLabel !== '35%' || voice.enabled.scrollWidth > voice.enabled.clientWidth || voice.enabled.previewRequests.length !== 1 || voice.enabled.previewRequests[0].authorization !== 'Bearer __cookie__' || voice.enabled.objectUrlsCreated !== 1 || voice.enabled.objectUrlsRevoked !== 1) throw new Error(`voiceover control is inaccurate: ${JSON.stringify(voice)}`);
     if (viewport.cardCount !== 17 || viewport.referenceCount !== 17 || viewport.distinctReferencePreviews !== 17) throw new Error(`template cards are not distinct: ${JSON.stringify(report)}`);
     const expectedCardLabels = referenceIds.map((id, index) => `${index + 1}. 参考排版 ${String(index + 1).padStart(2, '0')}`);
     if (viewport.cardLabels.join('|') !== expectedCardLabels.join('|')) throw new Error(`template card numbering is inaccurate: ${JSON.stringify(viewport.cardLabels)}`);
     const hyperframes = viewport.batchControl.hyperframes;
     const expectedLabels = '1条,2条,3条,4条,5条';
     if (hyperframes.disabled || hyperframes.values.join(',') !== '1,2,3,4,5' || hyperframes.hint !== '最多5条' || hyperframes.labels.join(',') !== expectedLabels) throw new Error(`HyperFrames batch control is unavailable: ${JSON.stringify(hyperframes)}`);
+    if (viewport.action.initial.disabled || viewport.action.initial.cursor !== 'pointer' || !viewport.action.initial.title.includes('顶部文案')) throw new Error(`empty-copy action state is inaccurate: ${JSON.stringify(viewport.action.initial)}`);
+    if (!viewport.action.emptyReminder.status.includes('顶部文案和底部行动文案') || !viewport.action.emptyReminder.toast.includes('顶部文案和底部行动文案')) throw new Error(`empty-copy reminder is missing: ${JSON.stringify(viewport.action.emptyReminder)}`);
+    if (viewport.action.ready.disabled || viewport.action.ready.cursor !== 'pointer' || viewport.action.ready.text !== '生成视频 · 5 点') throw new Error(`ready action state is inaccurate: ${JSON.stringify(viewport.action.ready)}`);
   }
   const mobile = report.mobile.scroll;
   if (mobile.scrollHeight <= mobile.clientHeight || mobile.scrollTop <= 0 || mobile.top >= mobile.viewport || mobile.bottom <= 0) throw new Error(`mobile preview is unreachable: ${JSON.stringify(mobile)}`);

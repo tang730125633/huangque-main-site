@@ -4,6 +4,7 @@ import hashlib
 import importlib
 import json
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -111,11 +112,14 @@ class HQCLIAPITests(unittest.TestCase):
         )
 
     def _token(self, scopes=None):
+        return self._credentials(scopes)["access_token"]
+
+    def _credentials(self, scopes=None):
         start = self._start(scopes)
         self.assertEqual(200, self._approve(start)[0])
         status, payload = self._request("/api/auth/cli/device/poll", {"device_code": start["device_code"]})
         self.assertEqual(200, status, payload)
-        return payload["access_token"]
+        return payload
 
     @staticmethod
     def _matrix_template_catalog(include_hyperframes=False):
@@ -823,7 +827,7 @@ class HQCLIAPITests(unittest.TestCase):
             "edges": [], "selected_node_ids": ["n1"], "history": [],
         }
 
-    def test_device_codes_and_access_token_are_only_stored_as_hashes(self):
+    def test_device_codes_and_tokens_are_only_stored_as_hashes(self):
         start = self._start()
         with sqlite3.connect(self.auth.DB) as connection:
             row = connection.execute(
@@ -836,8 +840,11 @@ class HQCLIAPITests(unittest.TestCase):
         _, polled = self._request("/api/auth/cli/device/poll", {"device_code": start["device_code"]})
         with sqlite3.connect(self.auth.DB) as connection:
             stored = connection.execute("SELECT token_hash FROM cli_device_grants").fetchone()[0]
+            stored_refresh = connection.execute("SELECT token_hash FROM cli_refresh_tokens").fetchone()[0]
         self.assertNotEqual(polled["access_token"], stored)
+        self.assertNotEqual(polled["refresh_token"], stored_refresh)
         self.assertNotIn(polled["access_token"], Path(self.auth.DB).read_bytes().decode("latin1"))
+        self.assertNotIn(polled["refresh_token"], Path(self.auth.DB).read_bytes().decode("latin1"))
 
     def test_approval_requires_same_origin_and_browser_cookie(self):
         start = self._start()
@@ -863,15 +870,203 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual("approved", payload["status"])
 
     def test_cli_token_status_logout_and_web_token_isolation(self):
-        token = self._token()
+        credentials = self._credentials()
+        token = credentials["access_token"]
         status, payload = self._request("/api/auth/cli/status", token=token)
         self.assertEqual(200, status)
         self.assertEqual("alice", payload["user"]["username"])
         self.assertIn("generation:submit", payload["scopes"])
+        self.assertEqual("rotating_refresh_token", payload["authorization_mode"])
+        self.assertEqual(credentials["access_expires_at"], payload["access_expires_at"])
+        self.assertEqual(credentials["refresh_expires_at"], payload["refresh_expires_at"])
+        self.assertNotIn("access_token", payload)
+        self.assertNotIn("refresh_token", payload)
         status, _ = self._request("/api/auth/me", token=token)
         self.assertEqual(401, status)
-        self.assertEqual(200, self._request("/api/auth/cli/logout", {}, token=token)[0])
+        self.assertEqual(200, self._request(
+            "/api/auth/cli/logout", {"refresh_token": credentials["refresh_token"]}, token=token,
+        )[0])
         self.assertEqual(401, self._request("/api/auth/cli/status", token=token)[0])
+
+    def _internal_headers(self):
+        return {"X-HQ-Internal-Token": self.auth.INTERNAL_TOKEN}
+
+    def test_delegated_cli_token_is_short_lived_hashed_and_least_privilege(self):
+        scopes = ["profile:read", "assets:read", "generation:quote", "generation:submit"]
+        delegated = self.auth.hq_cli_api.issue_delegated_token(
+            self.auth.db, "alice", scopes, 90, now=1000,
+        )
+        self.assertEqual(scopes, delegated["scopes"])
+        self.assertEqual(1090, delegated["expires_at"])
+        token = delegated["access_token"]
+        authenticated = self.auth.hq_cli_api.authenticate(self.auth.db, token, now=1001)
+        self.assertEqual("alice", authenticated[0]["username"])
+        self.assertEqual(tuple(scopes), authenticated[1])
+        connection = sqlite3.connect(self.auth.DB)
+        try:
+            row = connection.execute(
+                "SELECT client_name,status,token_hash,token_expires_at,approved_scopes_json "
+                "FROM cli_device_grants ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        finally:
+            connection.close()
+        self.assertEqual(("video-agent-internal", "issued"), row[:2])
+        self.assertNotEqual(token, row[2])
+        self.assertEqual(1090, row[3])
+        self.assertNotIn(token, Path(self.auth.DB).read_bytes().decode("latin1"))
+
+    def test_delegated_cli_token_rejects_invalid_scope_ttl_or_inactive_user(self):
+        cases = (
+            (["profile:read", "ip12:write"], 90, "alice"),
+            (["profile:read"], 59, "alice"),
+            (["profile:read"], 301, "alice"),
+            ([], 90, "alice"),
+            (["profile:read"], 90, "missing"),
+        )
+        for scopes, ttl, username in cases:
+            with self.subTest(scopes=scopes, ttl=ttl, username=username), \
+                    self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+                self.auth.hq_cli_api.issue_delegated_token(
+                    self.auth.db, username, scopes, ttl, now=1000,
+                )
+        connection = sqlite3.connect(self.auth.DB)
+        try:
+            connection.execute("UPDATE users SET account_status='disabled' WHERE username='alice'")
+            connection.commit()
+        finally:
+            connection.close()
+        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+            self.auth.hq_cli_api.issue_delegated_token(
+                self.auth.db, "alice", ["profile:read"], 90, now=1000,
+            )
+
+    def test_internal_delegate_endpoint_requires_service_and_matching_web_identity(self):
+        body = {
+            "username": "alice",
+            "scopes": ["profile:read", "assets:read", "tasks:read", "generation:quote"],
+            "ttl_seconds": 90,
+        }
+        web_token = self.auth.issue_token("alice", ttl=120)
+        status, _ = self._request(
+            "/api/auth/internal/cli/delegate", body, token=web_token,
+        )
+        self.assertEqual(403, status)
+        status, _ = self._request(
+            "/api/auth/internal/cli/delegate", body,
+            extra_headers=self._internal_headers(),
+        )
+        self.assertEqual(401, status)
+        status, payload = self._request(
+            "/api/auth/internal/cli/delegate", dict(body, username="bob"), token=web_token,
+            extra_headers=self._internal_headers(),
+        )
+        self.assertEqual(403, status)
+        self.assertEqual("identity_mismatch", payload["code"])
+
+        status, delegated = self._request(
+            "/api/auth/internal/cli/delegate", body, token=web_token,
+            extra_headers=self._internal_headers(),
+        )
+        self.assertEqual(200, status, delegated)
+        self.assertEqual(body["scopes"], delegated["scopes"])
+        self.assertLessEqual(delegated["expires_at"] - int(__import__("time").time()), 90)
+        cli_token = delegated["access_token"]
+        status, current = self._request("/api/auth/cli/status", token=cli_token)
+        self.assertEqual(200, status, current)
+        self.assertEqual("alice", current["user"]["username"])
+        self.assertEqual(401, self._request("/api/auth/me", token=cli_token)[0])
+
+    def test_internal_delegate_endpoint_rejects_extra_fields_and_non_agent_scopes(self):
+        web_token = self.auth.issue_token("alice", ttl=120)
+        base = {
+            "username": "alice", "scopes": ["profile:read"], "ttl_seconds": 90,
+        }
+        for body in (dict(base, raw_command="hq run account"),
+                     dict(base, scopes=["generation:submit", "canvas:edit"])):
+            with self.subTest(body_keys=sorted(body)):
+                status, _ = self._request(
+                    "/api/auth/internal/cli/delegate", body, token=web_token,
+                    extra_headers=self._internal_headers(),
+                )
+                self.assertEqual(400, status)
+
+    def test_refresh_rotates_and_replay_revokes_the_device(self):
+        original = self._credentials(["profile:read", "tasks:read"])
+        status, refreshed = self._request(
+            "/api/auth/cli/refresh", {"refresh_token": original["refresh_token"]},
+        )
+        self.assertEqual(200, status, refreshed)
+        self.assertNotEqual(original["access_token"], refreshed["access_token"])
+        self.assertNotEqual(original["refresh_token"], refreshed["refresh_token"])
+        self.assertEqual(["profile:read", "tasks:read"], refreshed["scopes"])
+        self.assertEqual(401, self._request(
+            "/api/auth/cli/status", token=original["access_token"],
+        )[0])
+        status, current = self._request(
+            "/api/auth/cli/status", token=refreshed["access_token"],
+        )
+        self.assertEqual(200, status)
+        self.assertEqual(100, current["user"]["points"])
+        self.assertEqual(["profile:read", "tasks:read"], current["scopes"])
+        status, replay = self._request(
+            "/api/auth/cli/refresh", {"refresh_token": original["refresh_token"]},
+        )
+        self.assertEqual((401, "refresh_token_reused"), (status, replay["code"]))
+        self.assertNotIn(original["refresh_token"], json.dumps(replay))
+        self.assertEqual(401, self._request(
+            "/api/auth/cli/status", token=refreshed["access_token"],
+        )[0])
+
+        status, invalid = self._request(
+            "/api/auth/cli/refresh",
+            {"refresh_token": refreshed["refresh_token"], "extra": True},
+        )
+        self.assertEqual((400, "invalid_request"), (status, invalid["code"]))
+
+    def test_refresh_rejects_expiry_account_disable_and_password_change(self):
+        expired = self._credentials()
+        with sqlite3.connect(self.auth.DB) as connection:
+            connection.execute("UPDATE cli_refresh_tokens SET expires_at=0")
+            connection.commit()
+        self.assertEqual(401, self._request(
+            "/api/auth/cli/refresh", {"refresh_token": expired["refresh_token"]},
+        )[0])
+
+        disabled = self._credentials()
+        with sqlite3.connect(self.auth.DB) as connection:
+            connection.execute("UPDATE users SET account_status='banned' WHERE username='alice'")
+            connection.commit()
+        self.assertEqual(401, self._request(
+            "/api/auth/cli/refresh", {"refresh_token": disabled["refresh_token"]},
+        )[0])
+        with sqlite3.connect(self.auth.DB) as connection:
+            self.assertIsNotNone(connection.execute(
+                "SELECT revoked_at FROM cli_device_grants WHERE token_hash=?",
+                (self.auth.hq_cli_api._hash(disabled["access_token"]),),
+            ).fetchone()[0])
+
+        with sqlite3.connect(self.auth.DB) as connection:
+            connection.execute("UPDATE users SET account_status='active' WHERE username='alice'")
+            connection.commit()
+        changed = self._credentials()
+        status, _ = self._request(
+            "/api/auth/change_password",
+            {"old_password": "secret123", "new_password": "changed456"},
+            browser=self.browser,
+        )
+        self.assertEqual(200, status)
+        self.assertEqual(401, self._request(
+            "/api/auth/cli/refresh", {"refresh_token": changed["refresh_token"]},
+        )[0])
+
+    def test_admin_password_reset_revokes_device_refresh(self):
+        credentials = self._credentials()
+        reset, error = self.auth.reset_password_admin("alice", "temporary456")
+        self.assertIsNone(error)
+        self.assertTrue(reset["reauth"])
+        self.assertEqual(401, self._request(
+            "/api/auth/cli/refresh", {"refresh_token": credentials["refresh_token"]},
+        )[0])
 
     def test_denied_and_expired_device_grants_never_issue_tokens(self):
         denied = self._start()
@@ -1598,6 +1793,11 @@ class HQCLIAPITests(unittest.TestCase):
     def test_matrix_template_cli_quotes_and_confirms_normalized_payload(self):
         token = self._token(["generation:quote", "generation:submit", "tasks:read"])
         submitted = []
+        normalized_voiceover = {
+            "text": "这是一段模板成片配音文案", "voice": "vip_alice",
+            "voice_scope": "personal", "speed": 1.3,
+            "pitch": 0, "volume": 0, "delivery": "natural",
+        }
 
         def fake_proxy(plan, _web_token, _internal_token):
             if plan["path"] == "/api/gen/cli/quote":
@@ -1606,7 +1806,8 @@ class HQCLIAPITests(unittest.TestCase):
                     "payload": {
                         "top_text": "有效标题", "bottom_text": "有效行动文案",
                         "template_id": "native-bold",
-                        "font_family": "AaHouDiHei", "bgm": True,
+                        "font_family": "AaHouDiHei", "bgm": False,
+                        "voiceover": normalized_voiceover,
                     },
                 }, plan["body"])
                 return 200, {"kind": "matrix_template_video", "cost": 5, "points": 100}
@@ -1623,6 +1824,10 @@ class HQCLIAPITests(unittest.TestCase):
         input_body = {
             "top_text": "  有效标题  ", "bottom_text": " 有效行动文案 ",
             "template_id": "native-bold", "font_family": "AaHouDiHei",
+            "voiceover": {
+                "text": "  这是一段模板成片配音文案  ", "voice": "vip_alice",
+                "voice_scope": "personal", "speed": 1.25,
+            },
         }
         request = {"action": "matrix-template-generate", "input": input_body, "confirm": False}
         with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
@@ -1640,7 +1845,8 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual({
             "top_text": "有效标题", "bottom_text": "有效行动文案",
             "template_id": "native-bold",
-            "font_family": "AaHouDiHei", "bgm": True,
+            "font_family": "AaHouDiHei", "bgm": False,
+            "voiceover": normalized_voiceover,
         }, submitted[0]["body"])
         self.assertEqual("5", submitted[0]["headers"]["X-HQ-Expected-Cost"])
         self.assertTrue(submitted[0]["headers"]["Idempotency-Key"].startswith("hqcli-"))
@@ -1685,6 +1891,27 @@ class HQCLIAPITests(unittest.TestCase):
             "matrix-template-generate"
         ]["properties"]["font_family"]
         self.assertEqual({"type": "string", "maxLength": 80}, schema)
+        voiceover_schema = self.auth.hq_cli_api._MEDIA_SCHEMAS[
+            "matrix-template-generate"
+        ]["properties"]["voiceover"]
+        self.assertEqual(["text", "voice"], voiceover_schema["required"])
+        self.assertEqual(120, voiceover_schema["properties"]["text"]["maxLength"])
+        self.assertEqual((0.5, 2.0), (
+            voiceover_schema["properties"]["speed"]["minimum"],
+            voiceover_schema["properties"]["speed"]["maximum"],
+        ))
+        voiced = self.auth.hq_cli_api.action_plan(
+            "matrix-template-generate", dict(value, voiceover={
+                "text": "模板配音", "voice": "public_voice",
+                "voice_scope": "public", "speed": 1.25,
+            })
+        )
+        self.assertFalse(voiced["payload"]["bgm"])
+        self.assertEqual({
+            "text": "模板配音", "voice": "public_voice",
+            "voice_scope": "public", "speed": 1.3,
+            "pitch": 0, "volume": 0, "delivery": "natural",
+        }, voiced["payload"]["voiceover"])
         self.assertTrue(any(
             "single-only" in item
             for item in self.auth.hq_cli_api._MEDIA_SCHEMAS[
@@ -1693,7 +1920,10 @@ class HQCLIAPITests(unittest.TestCase):
         ))
         batch = self.auth.hq_cli_api.action_plan(
             "matrix-template-batch-generate", dict(
-                value, font_family="AaHouDiHei", count=3)
+                value, font_family="AaHouDiHei", count=3, voiceover={
+                    "text": "批量模板配音", "voice": "vip_alice",
+                    "voice_scope": "personal", "speed": 0.95,
+                })
         )
         self.assertEqual((
             "matrix_template_video_batch", 3, 3, "/api/gen/matrix-template",
@@ -1702,6 +1932,9 @@ class HQCLIAPITests(unittest.TestCase):
             batch["batch_count"], batch["endpoint"],
         ))
         self.assertEqual("AaHouDiHei", batch["batch_item"]["font_family"])
+        self.assertFalse(batch["batch_item"]["bgm"])
+        self.assertEqual(1.0, batch["batch_item"]["voiceover"]["speed"])
+        self.assertEqual("personal", batch["batch_item"]["voiceover"]["voice_scope"])
         self.assertEqual({
             "kind": "matrix_template_video", "payload": batch["batch_item"],
         }, batch["quote_body"])
@@ -1721,6 +1954,22 @@ class HQCLIAPITests(unittest.TestCase):
         ):
             with self.subTest(invalid=invalid), self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
                 self.auth.hq_cli_api.action_plan("matrix-template-generate", invalid)
+        for voiceover in (
+            None,
+            {},
+            {"text": "只有文案"},
+            {"text": "文" * 121, "voice": "public_voice"},
+            {"text": "有效文案", "voice": "v" * 129},
+            {"text": "有效文案", "voice": "public_voice", "voice_scope": "shared"},
+            {"text": "有效文案", "voice": "public_voice", "speed": True},
+            {"text": "有效文案", "voice": "public_voice", "speed": 2.1},
+            {"text": "有效文案", "voice": "public_voice", "provider": "cosyvoice"},
+        ):
+            with self.subTest(voiceover=voiceover), self.assertRaises(
+                    self.auth.hq_cli_api.CLIAPIError):
+                self.auth.hq_cli_api.action_plan(
+                    "matrix-template-generate", dict(value, voiceover=voiceover)
+                )
         for count in (1, 6, True):
             with self.subTest(count=count), self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
                 self.auth.hq_cli_api.action_plan(
@@ -1788,6 +2037,8 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual((200, 193, 1), (status, result["job_id"], len(submitted)))
 
     def test_matrix_template_batch_quotes_once_and_replays_stable_children(self):
+        from content_domains import matrix_template_video
+
         token = self._token(["generation:quote", "generation:submit"])
         submitted, jobs_by_key = [], {}
 
@@ -1810,6 +2061,10 @@ class HQCLIAPITests(unittest.TestCase):
         input_body = {
             "top_text": "批量有效标题", "bottom_text": "批量有效行动文案",
             "template_id": "full-overlay-bold", "font_family": "AaHouDiHei", "count": 3,
+            "voiceover": {
+                "text": "同一段批量配音", "voice": "vip_alice",
+                "voice_scope": "personal", "speed": 1.2,
+            },
         }
         request = {
             "action": "matrix-template-batch-generate",
@@ -1839,6 +2094,22 @@ class HQCLIAPITests(unittest.TestCase):
             plan["headers"]["X-HQ-Expected-Cost"] == "5"
             for plan in submitted
         ))
+        first_bodies = [plan["body"] for plan in submitted[:3]]
+        replay_bodies = [plan["body"] for plan in submitted[3:]]
+        self.assertEqual(first_bodies, replay_bodies)
+        self.assertEqual(1, len({body["batch_id"] for body in first_bodies}))
+        self.assertTrue(re.fullmatch(r"[0-9a-f]{32}", first_bodies[0]["batch_id"]))
+        self.assertEqual([1, 2, 3], [body["batch_index"] for body in first_bodies])
+        self.assertTrue(all(body["batch_size"] == 3 for body in first_bodies))
+        cache_targets = {
+            str(matrix_template_video._voiceover_cache_path(
+                200 + index,
+                "alice",
+                dict(body["voiceover"], _batch_id=body["batch_id"]),
+            )[0])
+            for index, body in enumerate(first_bodies)
+        }
+        self.assertEqual(1, len(cache_targets))
 
     def test_matrix_template_batch_unknown_child_preserves_jobs_for_same_token_retry(self):
         token = self._token(["generation:quote", "generation:submit"])
@@ -2488,7 +2759,7 @@ class HQCLIAPITests(unittest.TestCase):
             "action": "channels", "input": {}, "confirm": False,
         }, token=token)
         self.assertEqual(200, status)
-        self.assertEqual(16, payload["total"])
+        self.assertEqual(17, payload["total"])
         self.assertEqual("alice", payload["account"])
         channels = {item["id"]: item for item in payload["channels"]}
         self.assertEqual({"channel": "sora"}, channels["openai"]["selectors"][1]["input"])

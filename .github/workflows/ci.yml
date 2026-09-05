@@ -18,13 +18,14 @@ jobs:
   quality:
     name: 代码与安全门禁
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 45
 
     steps:
       - name: 检出代码
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: 检查提交空白
         shell: bash
@@ -50,14 +51,35 @@ jobs:
         with:
           node-version: "22"
 
-      - name: 安装 IP12 PDF 回归依赖
-        run: python -m pip install -r server/hermes_ip12/requirements-pdf.txt
+      - name: 安装主站回归依赖
+        run: |
+          python -m pip install -r deploy/requirements-content.txt
+          python -m pip install -r server/hermes_ip12/requirements-pdf.txt
+
+      - name: 安装编导生产边界测试依赖
+        run: python -m pip install cryptography==50.0.1
 
       - name: 检查敏感文件与静态资源
         run: python scripts/ci_validate.py
 
       - name: 检查静态资源版本戳
         run: python scripts/stamp_assets.py --check
+
+      - name: 编导自然对话与原生产边界回归
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python -m unittest tests.test_director_regression_gate -v
+          python scripts/check_director_regression.py --base "${PR_BASE_SHA:-HEAD^}" --report /tmp/director-regression-report.json
+
+      - name: 保存编导 Base 与 Head 测试证据（含原有失败）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: director-regression-report
+          path: /tmp/director-regression-report.json
+          if-no-files-found: warn
 
       - name: 检查 Python 语法
         shell: bash
@@ -71,6 +93,31 @@ jobs:
 
       - name: 检查 JavaScript 语法
         run: find site -type f -name '*.js' -print0 | xargs -0 -n1 node --check
+
+      - name: 视频创作助手与相邻安全回归测试
+        shell: bash
+        run: |
+          tests=(
+            test_admin_request_logs.py
+            test_cli_image_uploads.py
+            test_cli_media_uploads.py
+            test_hq_cli_api.py
+            test_hq_cli_channel_catalog.py
+            test_hq_cli_content.py
+            test_hq_cli_executor.py
+            test_jobs_store.py
+            test_provider_key_pool.py
+            test_short_drama_advisor.py
+            test_video_agent.py
+            test_video_agent_capability_contract.py
+            test_video_agent_tools.py
+            test_video_batch.py
+          )
+          for test_file in "${tests[@]}"; do
+            # These service suites intentionally manipulate sys.path and generic
+            # module names. A fresh interpreter prevents order-dependent imports.
+            python -m unittest discover -s tests -p "$test_file" -v
+          done
 
       - name: 测试并构建 HQ CLI
         working-directory: tools/hq-cli
@@ -123,11 +170,11 @@ jobs:
           $oldResult = & (Join-Path $binRoot "hq.cmd") version --json | ConvertFrom-Json
           if ($oldResult.cli_version -ne "0.10.4") { throw "old CLI fixture did not start" }
           .\site\downloads\hq\install.ps1 `
-            -WheelPath .\site\downloads\hq\v0.15.2\huangque_hq_cli-0.15.2-py3-none-any.whl `
+            -WheelPath .\site\downloads\hq\v0.15.4\huangque_hq_cli-0.15.4-py3-none-any.whl `
             -InstallRoot $root -NoPathUpdate
           $hq = Join-Path $root "bin\hq.cmd"
           $result = & $hq version --json | ConvertFrom-Json
-          if ($result.cli_version -ne "0.15.2") { throw "unexpected CLI version" }
+          if ($result.cli_version -ne "0.15.4") { throw "unexpected CLI version" }
           $capabilities = & $hq capabilities --json | ConvertFrom-Json
           if (-not ($capabilities.capabilities | Where-Object id -eq "text-video-generate")) {
             throw "upgraded CLI is missing text-video-generate"

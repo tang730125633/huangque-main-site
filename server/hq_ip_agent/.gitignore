@@ -1,0 +1,9 @@
+data/
+output/
+.env
+.test-output/
+__pycache__/
+*.pyc
+node_modules/
+package-lock.json
+package.json

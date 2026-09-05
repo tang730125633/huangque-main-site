@@ -141,8 +141,11 @@ TIMERS=""
 DEPLOYED=""
 EXACT_DOMAIN_MODULES=""
 NEED_RELOAD=0   # 部署过 systemd 单元/drop-in 时置 1，重启前必须 daemon-reload，否则改动不生效
+NGINX_RELOAD=0  # 部署过 nginx 配置时置 1，走备份/nginx -t/reload 闭包
+BRIDGE_DEPLOYED=""  # 发布涉及视频 Agent 桥接链路时置 1，自动补冒烟脚本与可选真实链路冒烟
 CONTENT_DOMAINS_SYNCED=0
 PROVIDERS_SYNCED=0
+HQ_CLI_SYNCED=0
 add_svc(){ for s in $1; do case " $RESTART " in *" $s "*) ;; *) RESTART="$RESTART $s";; esac; done; }
 add_timer(){ for t in $1; do case " $TIMERS " in *" $t "*) ;; *) TIMERS="$TIMERS $t";; esac; done; }
 add_deployed(){ case " $DEPLOYED " in *" $1 "*) ;; *) DEPLOYED="$DEPLOYED $1";; esac; }
@@ -189,9 +192,9 @@ show_service_diagnostics(){
 }
 
 wait_for_services(){
-  local s
-  [ -z "$RESTART" ] && return 0
-  for s in $RESTART; do
+  local services="${1:-$RESTART}" s
+  [ -z "$services" ] && return 0
+  for s in $services; do
     echo "  等待 $s 进入 active（最多 ${SERVICE_WAIT_SECONDS}s）"
     if $SSHC "$REMOTE" "i=0; while [ \$i -lt $SERVICE_WAIT_SECONDS ]; do systemctl is-active --quiet '$s' && exit 0; i=\$((i + 1)); sleep 1; done; exit 1"; then
       echo "  ✓ $s active"
@@ -312,12 +315,17 @@ for f in "$@"; do
              rel="${f#server/providers/}"
              case "$rel" in */*) dest="/home/ubuntu/content-api/providers/${rel%/*}/" ;; *) dest=/home/ubuntu/content-api/providers/ ;; esac
              svc=huangque-content ;;
+    tools/hq-cli/src/hq_cli/*)
+             dest=/home/ubuntu/content-api/hq_cli/
+             svc=huangque-content ;;
     server/admin_api.py)   dest=/home/ubuntu/content-api/;  svc=huangque-admin ;;
     server/qa_fixtures/*)  dest=/home/ubuntu/content-api/qa_fixtures/; svc=huangque-admin ;;
     server/leadgen_api.py) dest=/home/ubuntu/content-api/;  svc=huangque-leadgen-api ;;
     server/imggen_api.py)  dest=/home/ubuntu/content-api/;  svc=huangque-imggen-api ;;
     server/dl_service.py)  dest=/home/ubuntu/dl-service/;   svc=huangque-dl ;;
     server/tikhub.py)      dest=/home/ubuntu/content-api/;  svc="huangque-leadgen-api huangque-content huangque-imggen-api" ;;
+    deploy/nginx-huangquechuanmei.conf) NGINX_RELOAD=1; add_deployed "$f"; echo "  ✓ $f → 已纳入 nginx 发布闭包（第 3.6 步安装/校验/reload）"; continue ;;
+    scripts/smoke_cli_bridge.sh) dest=/home/ubuntu/; svc="" ;;
     scripts/hq_bitable_sync_server.py) dest=/home/ubuntu/; svc="" ;;
     scripts/process_invite_reward_claims.py) dest=/home/ubuntu/auth-service/; svc="" ;;
     scripts/drift_sentinel.py) dest=/home/ubuntu/hq-drift/; svc="" ;;
@@ -348,6 +356,8 @@ for f in "$@"; do
   case "$dest" in /etc/systemd/system/*)
     $SSHC "$REMOTE" "sudo mkdir -p $dest" || { echo "  ❌ $dest 创建失败"; exit 1; } ;;
     /home/ubuntu/content-api/providers/*|/home/ubuntu/content-api/qa_fixtures/*)
+    $SSHC "$REMOTE" "sudo mkdir -p $dest" || { echo "  ❌ $dest 创建失败"; exit 1; } ;;
+    /home/ubuntu/content-api/hq_cli/*)
     $SSHC "$REMOTE" "sudo mkdir -p $dest" || { echo "  ❌ $dest 创建失败"; exit 1; } ;;
   esac
   if [ "$f" = "scripts/drift_sentinel.py" ]; then
@@ -402,6 +412,25 @@ for f in "$@"; do
       fi
       ;;
   esac
+  # content_api 与视频 Agent 会通过 python -m hq_cli 调用工具。生产目录不是
+  # 完整 checkout，发布任一桥接依赖时必须同步整个可导入包，避免只上线调用方。
+  case "$f" in
+    server/content_api.py|server/content_domains/video_agent.py|server/content_domains/video_agent_tools.py|server/content_domains/hq_cli_executor.py|tools/hq-cli/src/hq_cli/*)
+      if [ "$HQ_CLI_SYNCED" = "0" ]; then
+        HQ_CLI_FILES="$(git ls-files tools/hq-cli/src/hq_cli)" \
+          || { echo "  ❌ 无法读取 hq_cli Git 文件清单"; exit 1; }
+        [ -n "$HQ_CLI_FILES" ] \
+          || { echo "  ❌ hq_cli Git 文件清单为空"; exit 1; }
+        $SSHC "$REMOTE" "sudo mkdir -p /home/ubuntu/content-api/hq_cli" \
+          || { echo "  ❌ hq_cli 目录创建失败"; exit 1; }
+        push_dir tools/hq-cli/src/hq_cli/ /home/ubuntu/content-api/hq_cli/ \
+          && echo "  ✓ tools/hq-cli/src/hq_cli/ → /home/ubuntu/content-api/hq_cli/（依赖闭包同步）" \
+          || { echo "  ❌ hq_cli 依赖闭包部署失败"; exit 1; }
+        for tracked in $HQ_CLI_FILES; do add_deployed "$tracked"; done
+        HQ_CLI_SYNCED=1
+      fi
+      ;;
+  esac
   case "$f" in
     server/providers/*|server/content_api.py|server/content_domains/*)
       if [ "$PROVIDERS_SYNCED" = "0" ] && { [ "$EXACT_CONTENT_DOMAINS" = "0" ] || [ "${f#server/providers/}" != "$f" ]; }; then
@@ -421,6 +450,34 @@ for f in "$@"; do
   add_svc "$svc"
   add_timer "$timer"
 done
+
+# 视频 Agent 桥接链路文件：同批发布时必须补冒烟脚本，并在提供凭证时跑真实链路冒烟。
+case " $DEPLOYED " in
+  *" server/auth_server.py "*|*" server/hq_cli_api.py "*|*" server/content_api.py "*|\
+  *" server/content_domains/video_agent.py "*|*" server/content_domains/video_agent_tools.py "*|\
+  *" server/content_domains/hq_cli_executor.py "*|*" server/content_domains/cli_uploads.py "*|\
+  *" tools/hq-cli/src/hq_cli/"*)
+    BRIDGE_DEPLOYED=1
+    ;;
+esac
+if [ -n "$BRIDGE_DEPLOYED" ]; then
+  push_file scripts/smoke_cli_bridge.sh /home/ubuntu/ \
+    && echo "  ✓ scripts/smoke_cli_bridge.sh → /home/ubuntu/（链路冒烟脚本随桥接发布同步）" \
+    || { echo "  ❌ 冒烟脚本部署失败"; exit 1; }
+  add_deployed "scripts/smoke_cli_bridge.sh"
+fi
+
+if [ "$HQ_CLI_SYNCED" = "1" ]; then
+  echo "==> 3.3/5 黄雀 CLI 部署冒烟"
+  $SSHC "$REMOTE" bash -s -- "$CONTENT_PYTHON" <<'RS' || exit 1
+set -u
+py_bin="$1"
+cd /home/ubuntu/content-api
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/home/ubuntu/content-api \
+  "$py_bin" -m hq_cli version --json >/dev/null
+RS
+  echo "  ✓ python -m hq_cli version --json 通过"
+fi
 
 # exact 模式不会同步依赖目录，因此逐个导入明确点名的模块，避免首次客户请求才暴露缺依赖。
 if [ -n "$EXACT_DOMAIN_MODULES" ]; then
@@ -445,6 +502,32 @@ if [ -n "$RESTART" ]; then
   for s in $RESTART; do smoke_import "$s" || exit 1; done
 fi
 
+# nginx 配置闭包：备份 → 安装 → nginx -t 门禁 → reload；校验失败恢复备份，
+# 运行中的 nginx 不受影响。专用上传限额/限速只有走这个闭包才会真正生效。
+if [ "$NGINX_RELOAD" = "1" ]; then
+  echo "==> 3.6/5 nginx 配置闭包"
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -az --rsync-path="sudo rsync" -e "$SSHC" \
+      deploy/nginx-huangquechuanmei.conf "$REMOTE:/tmp/huangquechuanmei.conf" \
+      || { echo "  ❌ nginx 配置上传失败"; exit 1; }
+  else
+    scp -q $SSH_OPTS deploy/nginx-huangquechuanmei.conf "$REMOTE:/tmp/huangquechuanmei.conf" \
+      || { echo "  ❌ nginx 配置上传失败"; exit 1; }
+  fi
+  if $SSHC "$REMOTE" "sudo install -m 0644 /etc/nginx/sites-available/huangquechuanmei /etc/nginx/sites-available/huangquechuanmei.rollback && \
+      sudo install -m 0644 /tmp/huangquechuanmei.conf /etc/nginx/sites-available/huangquechuanmei && rm -f /tmp/huangquechuanmei.conf && \
+      sudo nginx -t"; then
+    $SSHC "$REMOTE" "sudo systemctl reload nginx" \
+      || { echo "  ❌ nginx reload 失败"; exit 1; }
+    echo "  ✓ nginx -t 通过并 reload"
+  else
+    $SSHC "$REMOTE" "sudo install -m 0644 /etc/nginx/sites-available/huangquechuanmei.rollback /etc/nginx/sites-available/huangquechuanmei; sudo nginx -t" \
+      || true
+    echo "  ❌ nginx 配置校验失败，已恢复备份并中止发布"
+    exit 1
+  fi
+fi
+
 # 4. 重启受影响的后端服务（纯前端则跳过）
 if [ "$NEED_RELOAD" = "1" ]; then
   echo "==> 4/5 systemd 单元有改动，先 daemon-reload"
@@ -452,12 +535,25 @@ if [ "$NEED_RELOAD" = "1" ]; then
 fi
 if [ -n "$RESTART" ]; then
   echo "==> 4/5 重启服务:$RESTART"
-  # 取「服务器」时间做基准（ActiveEnterTimestamp 是服务器时钟，用本地时间会因时差误判）
-  T0=$($SSHC "$REMOTE" "date +%s") || { echo "  ❌ 取服务器时间失败"; exit 1; }
-  $SSHC "$REMOTE" "sudo systemctl restart $RESTART" || { echo "  ❌ 重启失败"; exit 1; }
-  wait_for_services || exit 1
-  echo "  校验重启真的生效、配置已加载"
-  for s in $RESTART; do check_restart_effective "$s" "$T0" || exit 1; done
+  # 视频 Agent 的委托端点 (/api/auth/internal/cli/delegate) 与报价核验端点
+  # (/api/auth/internal/cli/quote-claims) 都在鉴权服务上：同一批发布必须
+  # 先重启并验证 auth，再重启 content，否则内容服务会在鉴权侧 404/403。
+  if printf ' %s ' "$RESTART" | grep -q ' huangque-auth '; then
+    echo "  → 先重启并验证 huangque-auth（视频 Agent 委托端点依赖）"
+    T0_AUTH=$($SSHC "$REMOTE" "date +%s") || { echo "  ❌ 取服务器时间失败"; exit 1; }
+    $SSHC "$REMOTE" "sudo systemctl restart huangque-auth" || { echo "  ❌ huangque-auth 重启失败"; exit 1; }
+    wait_for_services huangque-auth || exit 1
+    check_restart_effective huangque-auth "$T0_AUTH" || exit 1
+    RESTART=$(printf '%s\n' $RESTART | grep -v '^huangque-auth$' | tr '\n' ' ' | sed 's/ *$//')
+  fi
+  if [ -n "$RESTART" ]; then
+    # 取「服务器」时间做基准（ActiveEnterTimestamp 是服务器时钟，用本地时间会因时差误判）
+    T0=$($SSHC "$REMOTE" "date +%s") || { echo "  ❌ 取服务器时间失败"; exit 1; }
+    $SSHC "$REMOTE" "sudo systemctl restart $RESTART" || { echo "  ❌ 重启失败"; exit 1; }
+    wait_for_services || exit 1
+    echo "  校验重启真的生效、配置已加载"
+    for s in $RESTART; do check_restart_effective "$s" "$T0" || exit 1; done
+  fi
 else
   [ -n "$TIMERS" ] || echo "==> 4/5 纯前端，无需重启"
 fi
@@ -508,6 +604,25 @@ case "$HEALTH_CODE" in
     exit 1
     ;;
 esac
+
+# 真实链路冒烟：内容服务 → 临时委托 → 无扣点 CLI 读取 → 自动撤销。
+# 仅在发布涉及视频 Agent 桥接且显式提供凭证时执行；凭证经 stdin 传远端。
+if [ -n "$BRIDGE_DEPLOYED" ]; then
+  echo "==> 5.5/5 视频 Agent 真实链路冒烟"
+  if [ -n "${HQ_SMOKE_USERNAME:-}" ] && [ -n "${HQ_SMOKE_WEB_TOKEN:-}" ]; then
+    if HQ_SMOKE_USERNAME="$HQ_SMOKE_USERNAME" HQ_SMOKE_WEB_TOKEN="$HQ_SMOKE_WEB_TOKEN" \
+      python3 -c 'import json, os, sys; json.dump({"username": os.environ["HQ_SMOKE_USERNAME"], "web_token": os.environ["HQ_SMOKE_WEB_TOKEN"]}, sys.stdout)' \
+      | $SSHC "$REMOTE" "sudo bash /home/ubuntu/smoke_cli_bridge.sh"; then
+      echo "  ✓ 临时委托 → 无扣点 CLI 读取 → 撤销 通过"
+    else
+      echo "  ❌ 视频 Agent 链路冒烟失败（委托端点/CLI 运行包可能未生效）"
+      exit 1
+    fi
+  else
+    echo "  ⏭ 未提供 HQ_SMOKE_USERNAME / HQ_SMOKE_WEB_TOKEN，跳过真实链路冒烟（通用 health 不能证明这条链路）"
+  fi
+fi
+
 SHA=$(git rev-parse --short HEAD)
 echo "✅ 上线完成 | 本次提交 $SHA"
 echo "   ↩ 要回滚这次：为 $SHA 创建 revert PR，合并到 main 后再用 ship 发布同一文件清单"

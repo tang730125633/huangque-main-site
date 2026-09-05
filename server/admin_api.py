@@ -198,6 +198,17 @@ SERVICES = [
 # 服务器实际在用的全部外部 API。
 # 名称按真实 API 提供方统一；features 负责映射用户在前端看到的功能名。
 KEY_GROUPS = [
+    {"key": "deepseek", "name": "DeepSeek API", "category": "视频创作助手",
+     "features": ["视频模块 → 视频创作助手主 Agent"], "env_features": [],
+     "pool_features": ["视频模块 → 视频创作助手主 Agent"],
+     "pool_base_env": ["DEEPSEEK_API_BASE"],
+     "pool_base_default": "https://api.deepseek.com",
+     "env": ["DEEPSEEK_API_KEY"], "pool_provider": "deepseek",
+     "model_env": "VIDEO_AGENT_MODEL", "model_default": "deepseek-v4-flash",
+     "model_options": [
+         "deepseek-v4-flash", "deepseek-v4-pro",
+         "deepseek-v4-flash-vision-exp",
+     ]},
     {"key": "xai", "name": "xAI API", "category": "视频生成",
      "features": ["视频模块 → 果肉视频生成"], "env_features": [],
      "pool_features": ["视频模块 → 果肉视频生成"],
@@ -260,6 +271,7 @@ _CREDENTIAL_VERSION_SALT = os.urandom(16)
 _PROBE_CONFIG_ENVS = {
     "openai": ["OPENAI_BASE"],
     "xai": ["XAI_API_BASE"],
+    "deepseek": ["DEEPSEEK_API_BASE", "VIDEO_AGENT_MODEL"],
     "gemini": ["GEMINI_BASE"],
     "heygen": ["HEYGEN_MCP_CREDENTIALS"],
     "tikhub": ["TIKHUB_BASE"],
@@ -1810,6 +1822,16 @@ def _key_group_base_host(item, prefix, sources):
         return ""
 
 
+def _key_group_model(item, sources):
+    env_name = str(item.get("model_env") or "").strip()
+    if env_name:
+        for src in sources:
+            value = (src["values"].get(env_name) or "").strip()
+            if value:
+                return value
+    return str(item.get("model_default") or "").strip()
+
+
 def _key_group_version(item, sources=None):
     """Opaque per-process version; detects every credential/base change without exposing it."""
     sources = env_sources() if sources is None else sources
@@ -1866,6 +1888,9 @@ def key_status():
                 "env_base_host": _key_group_base_host(item, "env", sources),
                 "pool_base_host": _key_group_base_host(item, "pool", sources),
                 "pool_provider": item.get("pool_provider"),
+                "model_env": item.get("model_env"),
+                "model": _key_group_model(item, sources),
+                "model_options": list(item.get("model_options", [])),
                 "configured": configured,
                 "required_env": item["env"],
                 "sources": found,
@@ -1927,10 +1952,21 @@ def _heygen_balances(detail):
         return None
 
 
+class _RejectRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def _ping_upstream(method, url, headers=None, body=None, proxied=False, timeout=12,
-                   proxy_url=None):
+                   proxy_url=None, allow_redirects=True):
     """真实调一次上游 API。只返回状态码/耗时/错误摘要，绝不含密钥。"""
-    if proxy_url is None:
+    if not allow_redirects:
+        selected_proxy = proxy_url if proxy_url is not None else (PROXY_URL if proxied else "")
+        proxy_handler = urllib.request.ProxyHandler(
+            {"http": selected_proxy, "https": selected_proxy} if selected_proxy else {}
+        )
+        opener = urllib.request.build_opener(proxy_handler, _RejectRedirect())
+    elif proxy_url is None:
         opener = PROXY_OPENER if proxied else DIRECT_OPENER
     elif proxy_url:
         opener = urllib.request.build_opener(
@@ -2023,13 +2059,57 @@ def _key_ping_xai():
     )
 
 
+_DEEPSEEK_BASE_PATHS = frozenset({
+    "", "/", "/v1", "/v1/", "/responses", "/responses/",
+    "/v1/responses", "/v1/responses/",
+})
+
+
+def _deepseek_models_url():
+    configured = (_env_value(["DEEPSEEK_API_BASE"]) or "https://api.deepseek.com").strip()
+    try:
+        parsed = urllib.parse.urlsplit(configured)
+        port = parsed.port
+    except ValueError:
+        return ""
+    if (
+        parsed.scheme.lower() != "https"
+        or (parsed.hostname or "").lower() != "api.deepseek.com"
+        or port not in {None, 443}
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in _DEEPSEEK_BASE_PATHS
+    ):
+        return ""
+    path = "/v1/models" if parsed.path.rstrip("/").startswith("/v1") else "/models"
+    return "https://api.deepseek.com" + path
+
+
+def _key_ping_deepseek():
+    key = _env_value(["DEEPSEEK_API_KEY"])
+    if not key:
+        return {"ok": False, "error": "密钥未配置", "mode": "auth"}
+    url = _deepseek_models_url()
+    if not url:
+        return {"ok": False, "error": "DeepSeek Base 地址配置无效", "mode": "auth"}
+    return _ping_upstream(
+        "GET", url,
+        headers={"Authorization": "Bearer " + key}, proxied=False,
+        allow_redirects=False,
+    )
+
+
 def _key_ping_heygen_mcp():
     value = _env_value(["HEYGEN_MCP_CREDENTIALS"])
     path = pathlib.Path(value) if value else None
     if not path or not path.is_file():
         return {"ok": False, "status": "not_configured", "mode": "auth"}
     try:
-        if path.stat().st_mode & 0o077:
+        # POSIX permission bits are meaningful on Unix. Windows reports a
+        # synthetic mode even after chmod(0600); access is governed by ACLs.
+        if os.name != "nt" and path.stat().st_mode & 0o077:
             return {"ok": False, "status": "credential_rejected", "mode": "auth"}
         credentials = json.loads(path.read_text(encoding="utf-8"))
         token = str(credentials.get("access_token") or "").strip()
@@ -2206,6 +2286,7 @@ def _key_ping_cos():
 # auth=真调上游验证密钥有效; reach=签名类/未知协议渠道,只测连通与延迟
 KEY_PINGS = {
     "xai": _key_ping_xai,
+    "deepseek": _key_ping_deepseek,
     "openai": _key_ping_openai,
     "gemini": _key_ping_gemini,
     "seedance": _key_ping_seedance,
@@ -2227,6 +2308,7 @@ KEY_PINGS = {
 AUTO_KEY_PING_INTERVALS = {
     "openai": 600,
     "xai": 600,
+    "deepseek": 600,
     "gemini": 600,
     "heygen": 300,
     "runninghub": 300,
@@ -2415,6 +2497,7 @@ def key_probe_monitor_status():
 
 PROVIDER_KEY_NAMES = {
     "xai": "果肉视频",
+    "deepseek": "DeepSeek 视频创作助手",
     "sora": "OpenAI Sora",
     "seedance": "火山 Seedance",
     "omni": "Gemini Omni",
@@ -2485,6 +2568,15 @@ def probe_provider_secret(provider, secret):
             "GET", base + "/models",
             headers={"Authorization": "Bearer " + secret},
             proxy_url=_xai_proxy_url() if "api.x.ai" in base else "",
+        )
+    if provider == "deepseek":
+        url = _deepseek_models_url()
+        if not url:
+            return {"ok": False, "error": "DeepSeek Base 地址配置无效", "mode": "auth"}
+        return _ping_upstream(
+            "GET", url,
+            headers={"Authorization": "Bearer " + secret}, proxied=False,
+            allow_redirects=False,
         )
     if provider == "sora":
         base = (_env_value(["OPENAI_BASE"]) or "https://api.openai.com").rstrip("/")
@@ -2887,7 +2979,7 @@ def request_logs(limit=200, status="", q="", include_noise=False):
     return out
 
 
-def activity_logs(days=7, limit=200, category="", q="", source="", include_noise=False, offset=0):
+def activity_logs(days=7, limit=200, category="", q="", source="", include_noise=False, offset=0, attributed=False):
     """任务记录(jobs 库) + HTTP 请求(nginx) 合并成一条时间线，最新在前。
 
     category: '' | ok | fail | running（统一语义：任务 done/error/排队中 ↔ HTTP <400/>=400）
@@ -2963,6 +3055,8 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
     matching = []
     for key, it in sorted(merged, key=lambda x: x[0], reverse=True):
         if category and it["cat"] != category:
+            continue
+        if attributed and it.get("user") in (None, "", "-"):
             continue
         if q and all(q not in (it.get(field) or "") for field in ("path", "user", "func", "request_id", "hq_code")):
             continue
@@ -3180,6 +3274,8 @@ def _empty_stats(message=None):
     return {
         "days": 7,
         "total": 0,
+        "today": {"day": time.strftime("%Y-%m-%d", time.localtime()), "total": 0, "done": 0, "error": 0, "running": 0, "other": 0},
+        "live": {"running": 0, "oldest_running_at": None, "refund_pending": 0},
         "by_kind": [],
         "by_operation": [],
         "unmapped": [],
@@ -6245,6 +6341,8 @@ def job_stats(days=7):
     since = int(time.time()) - days * 86400
     rows = []
     evidence_errors = []
+    today = {"day": time.strftime("%Y-%m-%d", time.localtime()), "total": 0, "done": 0, "error": 0, "running": 0, "other": 0}
+    live = {"running": 0, "oldest_running_at": None, "refund_pending": 0}
     if not JOB_DB.exists():
         evidence_errors.append("任务证据库不存在")
     else:
@@ -6252,6 +6350,15 @@ def job_stats(days=7):
             with closing(sqlite3.connect(str(JOB_DB), timeout=10)) as connection:
                 connection.row_factory = sqlite3.Row
                 columns = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)")}
+                active = connection.execute(
+                    "SELECT COUNT(*) AS total,MIN(created_at) AS oldest FROM jobs WHERE status IN ('pending','queued','running','processing')"
+                ).fetchone()
+                live["running"] = int(active["total"] or 0)
+                live["oldest_running_at"] = int(active["oldest"] or 0) or None
+                if "refunded" in columns:
+                    live["refund_pending"] = int(connection.execute(
+                        "SELECT COUNT(*) AS total FROM jobs WHERE COALESCE(refunded,0)=2"
+                    ).fetchone()["total"] or 0)
                 refunded_sql = "COALESCE(refunded,0)" if "refunded" in columns else "0"
                 error_sql = "COALESCE(error,'')" if "error" in columns else "''"
                 result_sql = "result" if "result" in columns else "NULL"
@@ -6309,6 +6416,8 @@ def job_stats(days=7):
     trend_counts = {}
     for row in rows:
         status = str(row["status"] or "unknown").lower()
+        if time.strftime("%Y-%m-%d", time.localtime(int(row["created_at"] or 0))) == today["day"]:
+            _count_status(today, status)
         kind = _operation_feature_key(row["kind"], row["channel"])
         bucket = by_kind.setdefault(kind, {
             "kind": kind, "total": 0, "done": 0, "error": 0,
@@ -6412,6 +6521,8 @@ def job_stats(days=7):
     return {
         "days": days,
         "total": len(rows),
+        "today": today,
+        "live": live,
         "by_kind": sorted(items, key=lambda x: x["total"], reverse=True),
         "by_operation": sorted(operation_items, key=lambda x: x["operation"]),
         "unmapped": sorted(unmapped_items, key=lambda x: x["total"], reverse=True),
@@ -6420,6 +6531,64 @@ def job_stats(days=7):
         "high_failure": sorted(high_failure, key=lambda x: x["failure_rate"], reverse=True),
         "message": "；".join(evidence_errors) if evidence_errors else None,
     }
+
+
+def dashboard_stats(days=7):
+    """Fast, read-only counts for the daily watchboard; no delivery evidence scan."""
+    days = max(1, min(int(days or 7), 90))
+    now = int(time.time())
+    since = now - days * 86400
+    today_start = int(time.mktime((*time.localtime(now)[:3], 0, 0, 0, 0, 0, -1)))
+    out = {
+        "days": days, "total": 0,
+        "today": {"day": time.strftime("%Y-%m-%d", time.localtime(now)), "total": 0, "done": 0, "error": 0, "running": 0, "other": 0},
+        "live": {"running": 0, "oldest_running_at": None, "refund_pending": 0},
+        "high_failure": [],
+    }
+    if not JOB_DB.exists():
+        return out
+    try:
+        with closing(sqlite3.connect(str(JOB_DB), timeout=10)) as connection:
+            connection.row_factory = sqlite3.Row
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)")}
+            refunded = "COALESCE(refunded,0)" if "refunded" in columns else "0"
+            rows = connection.execute(
+                """SELECT kind,status,created_at,
+                          CASE WHEN kind='xiaole_video' AND json_valid(payload)
+                               THEN LOWER(COALESCE(json_extract(payload,'$.channel'),'')) ELSE '' END AS channel,
+                          %s AS refunded
+                     FROM jobs
+                    WHERE created_at>=? OR status IN ('pending','queued','running','processing')%s""" % (
+                    refunded, " OR COALESCE(refunded,0)=2" if "refunded" in columns else "",
+                ),
+                (since,),
+            ).fetchall()
+    except sqlite3.Error:
+        return out
+    by_kind = {}
+    for row in rows:
+        status = str(row["status"] or "unknown").lower()
+        created_at = int(row["created_at"] or 0)
+        if created_at >= since:
+            out["total"] += 1
+            kind = _operation_feature_key(row["kind"], row["channel"])
+            _count_status(by_kind.setdefault(kind, {
+                "kind": kind,
+                "total": 0, "done": 0, "error": 0, "running": 0, "other": 0,
+            }), status)
+        if created_at >= today_start:
+            _count_status(out["today"], status)
+        if status in {"pending", "queued", "running", "processing"}:
+            out["live"]["running"] += 1
+            oldest = out["live"]["oldest_running_at"]
+            out["live"]["oldest_running_at"] = created_at if not oldest or created_at < oldest else oldest
+        if int(row["refunded"] or 0) == 2:
+            out["live"]["refund_pending"] += 1
+    out["high_failure"] = sorted([
+        item for item in _finish_stats(list(by_kind.values()))
+        if item["total"] >= 3 and item["failure_rate"] >= 0.5
+    ], key=lambda item: item["failure_rate"], reverse=True)
+    return out
 
 
 _PAYLOAD_FIELD_RE = re.compile(r'"(model|provider|channel|mode|keyword|url|line|variant|source_page|voice_scope)"\s*:\s*"([^"]*)"')
@@ -6908,6 +7077,7 @@ class H(BaseHTTPRequestHandler):
                         (q.get("source") or [""])[0],
                         (q.get("noise") or ["0"])[0] in ("1", "true"),
                         (q.get("offset") or ["0"])[0],
+                        (q.get("attributed") or ["0"])[0] in ("1", "true"),
                     ),
                 )
             except Exception as e:
@@ -6946,6 +7116,19 @@ class H(BaseHTTPRequestHandler):
                     (q.get("limit") or ["200"])[0],
                 ),
             )
+        if path == "/api/admin/dashboard":
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            pages = function_registry.list_pages()
+            return self._send(200, {
+                "ok": True,
+                "user": {"username": user.get("username"), "name": user.get("name"), "role": user.get("role")},
+                "services": service_status(),
+                "registry_coverage": {
+                    "verified": sum(page.get("inventory_status") == "verified" for page in pages),
+                    "total": len(pages),
+                },
+                "stats": dashboard_stats((q.get("days") or ["7"])[0]),
+            })
         if path == "/api/admin/overview":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             services = service_status()

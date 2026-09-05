@@ -56,7 +56,7 @@ hq capabilities --json
 hq describe ip12-projects --json
 ```
 
-`hq login` 使用浏览器设备授权。CLI 不接触账号密码或网页 Cookie；访问令牌在 macOS/Linux 保存到权限为 `0600` 的 `~/.config/hq-cli/credentials.json`，在 Windows 保存到 `%APPDATA%\Huangque\hq-cli\credentials.json` 并由当前 Windows 用户的 DPAPI 加密。可通过 `hq logout` 撤销。
+`hq login` 使用浏览器设备授权。CLI 不接触账号密码或网页 Cookie；8 小时访问令牌会在到期前用 30 天刷新令牌自动轮换，只有刷新令牌过期、撤销、重放、账号停用或密码变更后才需重新登录。凭证在 macOS/Linux 保存到权限为 `0600` 的 `~/.config/hq-cli/credentials.json`，在 Windows 保存到 `%APPDATA%\Huangque\hq-cli\credentials.json` 并由当前 Windows 用户的 DPAPI 加密。`hq status --json` 只显示授权模式及两个到期时间，不显示令牌；`hq logout` 会撤销整台设备的授权。
 
 ## 页面入口不等于直接执行
 
@@ -193,6 +193,24 @@ JSON
 ```
 
 时长由文案自动计算，背景音乐默认开启，素材固定来自平台已审核素材库。拿到 `job_id` 后只轮询 `task`，不要再次提交生成命令。
+
+需要配音时，先运行 `hq run voices --json`，从 `ready=true` 的项目复制 `voice_key` 和 `scope`，再添加可选 `voiceover`。文案最多 120 字，语速范围 0.5–2.0；开启后自动关闭背景音乐，成片时长跟随配音：
+
+```json
+{
+  "top_text": "真正拉开差距的，不是工具",
+  "bottom_text": "评论区留下关键词，领取完整方案",
+  "template_id": "full-overlay-bold",
+  "voiceover": {
+    "text": "真正拉开差距的，不是你用了多少工具，而是能不能把工具变成稳定产出的流程。",
+    "voice": "vip_slot_12345678",
+    "voice_scope": "personal",
+    "speed": 1.2
+  }
+}
+```
+
+不传 `voiceover` 即关闭配音并继续使用背景音乐。批量命令同样支持这组配音参数。
 
 同一文案与模板需要一次生成 2–5 条时，增加 `count` 并使用批量能力：
 

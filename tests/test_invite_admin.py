@@ -70,10 +70,22 @@ class InviteAdminTests(unittest.TestCase):
             data = self.auth.invites.admin_relations(c, {"invitee": "invitee"})
             self.assertEqual(data["total"], 1)
             relation_id = data["items"][0]["id"]
+            now = int(time.time())
+            c.execute(
+                """INSERT INTO cli_device_grants(
+                    device_code_hash,user_code_hash,client_name,requested_scopes_json,
+                    approved_scopes_json,username,status,created_at,expires_at,token_hash,token_expires_at)
+                    VALUES('device-hash','user-code-hash','test','[]','[]','invitee','issued',?,?,
+                           'access-hash',?)""",
+                (now, now + 600, now + 600),
+            )
             self.auth.invites.admin_relation_action(c, relation_id, "ban", "批量注册复核", self.user_id("admin", c))
             c.commit()
             row = c.execute("SELECT account_status FROM users WHERE username='invitee'").fetchone()
             self.assertEqual(row[0], "banned")
+            self.assertIsNotNone(c.execute(
+                "SELECT revoked_at FROM cli_device_grants WHERE username='invitee'",
+            ).fetchone()[0])
             self.auth.invites.admin_relation_action(c, relation_id, "unban", "确认正常", self.user_id("admin", c))
             self.auth.invites.admin_relation_action(c, relation_id, "invalidate", "测试无效", self.user_id("admin", c))
             self.auth.invites.admin_relation_action(c, relation_id, "restore", "", self.user_id("admin", c))

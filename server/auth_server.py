@@ -2701,6 +2701,10 @@ def reset_password_admin(username, new_password):
             c.rollback()
             return None, "not_found"
         c.execute("DELETE FROM tokens WHERE username=?", (username,))
+        c.execute(
+            "UPDATE cli_device_grants SET revoked_at=? WHERE username=? AND revoked_at IS NULL",
+            (int(time.time()), username),
+        )
         c.commit()
         return {"username": username, "must_change": True, "reauth": True}, None
     except Exception:
@@ -5058,6 +5062,13 @@ class H(BaseHTTPRequestHandler):
         if not 2 <= count <= 5 or not item or total <= 0 or total % count:
             raise hq_cli_api.CLIAPIError(
                 500, "模板成片批量报价无效", "invalid_batch_quote")
+        nonce = str(claims.get("n") or "")
+        if not re.fullmatch(r"[0-9a-f]{32}", nonce):
+            raise hq_cli_api.CLIAPIError(
+                500, "模板成片批量报价标识无效", "invalid_batch_quote")
+        batch_id = hashlib.sha256(
+            (nonce + "\x00matrix-template-batch").encode("utf-8")
+        ).hexdigest()[:32]
         cost_per_job = total // count
         jobs, failures = [], []
         points_left = None
@@ -5065,10 +5076,16 @@ class H(BaseHTTPRequestHandler):
             child_key = "hqcli-" + hashlib.sha256(
                 (str(claims["n"]) + "\x00matrix-template\x00" + str(index)).encode("utf-8")
             ).hexdigest()[:24]
+            child_body = dict(item)
+            child_body.update({
+                "batch_id": batch_id,
+                "batch_index": index + 1,
+                "batch_size": count,
+            })
             submit_plan = {
                 "base": hq_cli_api.CONTENT_BASE,
                 "path": "/api/gen/matrix-template", "method": "POST",
-                "body": dict(item), "timeout": 30, "internal": True,
+                "body": child_body, "timeout": 30, "internal": True,
                 "headers": {
                     "X-HQ-Expected-Cost": str(cost_per_job),
                     "Idempotency-Key": child_key,
@@ -5309,10 +5326,17 @@ class H(BaseHTTPRequestHandler):
                 )
                 response = {
                     "quote_token": token, "kind": generation_kind, "cost": claims["c"],
+                    "fingerprint": generation_kind + ":" + claims["h"],
                     "points": result.get("points"), "expires_in": hq_cli_api.QUOTE_TTL,
                     "expires_at": claims["e"],
                     "confirmation_required": True,
                 }
+                # 报价真正绑定的标准化 payload（含服务端默认值）：确认卡必须展示
+                # 它而不是从原始工具参数重建。video-avatar-create 的 payload 含
+                # 最长 12MB 的 image_data data URL，回传会击穿 CLI 输出上限，
+                # 且该能力不在 Agent 报价工具内，因此不随报价返回 payload。
+                if generation_kind != "avatar":
+                    response["payload"] = payload
                 for field in plan.get("quote_result_fields", ()):
                     if field in result:
                         response[field] = result[field]
@@ -5993,25 +6017,82 @@ class H(BaseHTTPRequestHandler):
             row = self._cookie_user()
             if not row:
                 return self._cli_send(401, {"detail": "请先登录黄雀账号"})
-            token = secrets.token_urlsafe(32)
             scopes = tuple(hq_cli_api.SCOPES)
             now = int(time.time())
             scopes_json = json.dumps(scopes, separators=(",", ":"))
             with db() as connection:
-                connection.execute(
+                grant_seed = secrets.token_urlsafe(32)
+                cursor = connection.execute(
                     """INSERT INTO cli_device_grants(
                        device_code_hash,user_code_hash,client_name,requested_scopes_json,
                        approved_scopes_json,status,username,approved_at,created_at,expires_at,
                        token_hash,token_expires_at)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (hq_cli_api._hash(token), hq_cli_api._hash(token), "ip12-session-bridge",
-                     scopes_json, scopes_json, "issued", row["username"], now, now,
-                     now + hq_cli_api.TOKEN_TTL, hq_cli_api._hash(token), now + hq_cli_api.TOKEN_TTL),
+                       VALUES(?,?,?,?,?,?,?,?,?,?,NULL,NULL)""",
+                    (hq_cli_api._hash(grant_seed), hq_cli_api._hash(grant_seed + ":user"),
+                     "ip12-session-bridge", scopes_json, scopes_json, "approved",
+                     row["username"], now, now, now + hq_cli_api.TOKEN_TTL),
                 )
-            return self._cli_send(200, {
-                "access_token": token, "expires_in": hq_cli_api.TOKEN_TTL,
-                "username": row["username"],
-            })
+                credentials = hq_cli_api.issue_grant_tokens(connection, cursor.lastrowid, scopes, now)
+            return self._cli_send(200, {**credentials, "username": row["username"]})
+        if p == "/api/auth/internal/cli/delegate":
+            if not self._require_internal():
+                return
+            row = self._user()
+            if not row:
+                return self._cli_send(401, {
+                    "detail": "未登录或登录已过期", "code": "web_unauthorized",
+                })
+            if self._content_length_exceeds(4096):
+                return self._cli_send(413, {"detail": "请求过大", "code": "request_too_large"})
+            d = self._body()
+            if self._bad_json() or not isinstance(d, dict):
+                return self._cli_send(400, {"detail": "请求体不是合法 JSON 对象"})
+            if set(d) != {"username", "scopes", "ttl_seconds"}:
+                return self._cli_send(400, {
+                    "detail": "请求字段必须是 username、scopes、ttl_seconds",
+                    "code": "invalid_request",
+                })
+            username = d.get("username")
+            if not isinstance(username, str) or not secrets.compare_digest(
+                    username.strip(), str(row["username"])):
+                return self._cli_send(403, {
+                    "detail": "不能为其他账号签发授权", "code": "identity_mismatch",
+                })
+            try:
+                delegated = hq_cli_api.issue_delegated_token(
+                    db, row["username"], d.get("scopes"), d.get("ttl_seconds"),
+                )
+                return self._cli_send(200, delegated)
+            except hq_cli_api.CLIAPIError as exc:
+                return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
+        if p == "/api/auth/internal/cli/quote-claims":
+            # 只读核验：内容服务在付费确认前用它取得签名内的确定性字段
+            # （nonce/kind/cost/expires_at/username/payload_hash），据此构造
+            # 与 CLI 提交链路一致的幂等键，供 result_unknown 对账使用。
+            if not self._require_internal():
+                return
+            if self._content_length_exceeds(4096):
+                return self._cli_send(413, {"detail": "请求过大", "code": "request_too_large"})
+            d = self._body()
+            if self._bad_json() or not isinstance(d, dict):
+                return self._cli_send(400, {"detail": "请求体不是合法 JSON 对象"})
+            if set(d) != {"quote_token"}:
+                return self._cli_send(400, {
+                    "detail": "请求字段必须是 quote_token",
+                    "code": "invalid_request",
+                })
+            token = d.get("quote_token")
+            if not isinstance(token, str) or not 20 <= len(token) <= 4096:
+                return self._cli_send(400, {"detail": "报价凭证无效", "code": "invalid_quote"})
+            try:
+                claims = hq_cli_api.quote_claims_only(INTERNAL_TOKEN, token)
+                return self._cli_send(200, {
+                    "nonce": claims["n"], "kind": claims["k"], "cost": claims["c"],
+                    "expires_at": claims["e"], "username": claims["u"],
+                    "payload_hash": claims["h"],
+                })
+            except hq_cli_api.CLIAPIError as exc:
+                return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
         if p == "/api/auth/cli/device/start":
             if self._content_length_exceeds(8192):
                 return self._cli_send(413, {"detail": "请求过大"})
@@ -6061,9 +6142,27 @@ class H(BaseHTTPRequestHandler):
                 return self._cli_send(200, hq_cli_api.poll_device(db, d))
             except hq_cli_api.CLIAPIError as exc:
                 return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
+        if p == "/api/auth/cli/refresh":
+            if self._content_length_exceeds(4096):
+                return self._cli_send(413, {"detail": "请求过大", "code": "request_too_large"})
+            d = self._body()
+            if self._bad_json():
+                return self._cli_send(400, {"detail": "请求体不是合法 JSON", "code": "invalid_request"})
+            try:
+                hq_cli_api._strict_object(d, {"refresh_token"}, ("refresh_token",))
+                return self._cli_send(200, hq_cli_api.refresh_grant(db, d["refresh_token"]))
+            except hq_cli_api.CLIAPIError as exc:
+                return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
         if p == "/api/auth/cli/logout":
             token = bearer_token(self.headers.get("Authorization"))
-            hq_cli_api.revoke(db, token)
+            d = self._body()
+            if self._bad_json():
+                return self._cli_send(400, {"detail": "请求体不是合法 JSON", "code": "invalid_request"})
+            try:
+                hq_cli_api._strict_object(d, {"refresh_token"})
+            except hq_cli_api.CLIAPIError as exc:
+                return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
+            hq_cli_api.revoke(db, token, d.get("refresh_token"))
             return self._cli_send(200, {"ok": True})
         if p == "/api/auth/cli/image-upload":
             return self._cli_image_upload()
@@ -7219,6 +7318,10 @@ class H(BaseHTTPRequestHandler):
                 c.execute("UPDATE users SET pw_hash=?, pw_salt=?, must_change=0, card_initial_password=0 WHERE username=?",
                           (hash_pw(newp, salt), salt, row["username"]))
                 c.execute("DELETE FROM tokens WHERE username=? AND COALESCE(scope,'account')='account'", (row["username"],))
+                c.execute(
+                    "UPDATE cli_device_grants SET revoked_at=? WHERE username=? AND revoked_at IS NULL",
+                    (int(time.time()), row["username"]),
+                )
                 c.commit()
             except Exception:
                 c.rollback()
@@ -7712,8 +7815,15 @@ class H(BaseHTTPRequestHandler):
             if not auth:
                 return self._cli_send(401, {"detail": "CLI 未登录或授权已过期", "code": "cli_unauthorized"})
             row, scopes = auth
-            return self._cli_send(200, {"user": self._cli_public_user(row), "scopes": list(scopes),
-                                        "expires_at": int(row["cli_expires_at"])})
+            refresh_expires_at = row["cli_refresh_expires_at"]
+            return self._cli_send(200, {
+                "user": self._cli_public_user(row),
+                "scopes": list(scopes),
+                "authorization_mode": "rotating_refresh_token" if refresh_expires_at else "access_token_only",
+                "access_expires_at": int(row["cli_expires_at"]),
+                "expires_at": int(row["cli_expires_at"]),
+                "refresh_expires_at": int(refresh_expires_at) if refresh_expires_at else None,
+            })
         if p == "/api/auth/cli/creator-agent-background-pdf":
             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             project_id = str((query.get("project_id") or [""])[0]).strip()

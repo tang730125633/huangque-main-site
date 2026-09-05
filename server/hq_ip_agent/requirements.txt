@@ -1,0 +1,5 @@
+flask>=2.2
+waitress>=3.0    # 生产 WSGI：单进程线程模型（兼容内存态），带请求队列与连接治理
+openai>=1.0
+socksio>=1.0   # 本机有 SOCKS 代理时，openai(httpx) 需要它才能走代理
+pillow>=10.0   # 大图压缩：数字人形象/上传类能力对 payload 大小有限制

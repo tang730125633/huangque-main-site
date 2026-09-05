@@ -13,9 +13,10 @@ from pathlib import Path
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
-PROVIDERS = {"xai", "sora", "seedance", "omni", "minimax"}
+PROVIDERS = {"xai", "deepseek", "sora", "seedance", "omni", "minimax"}
 ENV_KEYS = {
     "xai": "XAI_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
     "sora": "OPENAI_API_KEY",
     "seedance": "ARK_API_KEY",
     "omni": "GEMINI_API_KEY",

@@ -25,6 +25,7 @@ except ImportError:  # Production can launch this module from the server directo
 PUBLIC_ORIGIN = os.environ.get("HQ_CLI_PUBLIC_ORIGIN", "https://huangquechuanmei.com").strip().rstrip("/")
 DEVICE_TTL = 10 * 60
 TOKEN_TTL = 8 * 60 * 60
+REFRESH_TOKEN_TTL = 30 * 24 * 60 * 60
 POLL_INTERVAL = 3
 BRIDGE_TOKEN_TTL = 60
 QUOTE_TTL = 5 * 60
@@ -72,7 +73,12 @@ SCOPES = {
 }
 SCOPES.update(director_workflow_contract.SCOPE_CONTRACT)
 DEFAULT_SCOPES = tuple(SCOPES)
+VIDEO_AGENT_DELEGATED_SCOPES = frozenset({
+    "profile:read", "assets:read", "tasks:read", "generation:quote", "generation:submit",
+})
 CHANNEL_CATALOG = (
+    {"id": "deepseek", "provider": "DeepSeek API", "category": "视频创作助手",
+     "features": ["视频创作助手主 Agent"], "access": "direct", "capabilities": [], "selector": {}},
     {"id": "xai", "provider": "xAI API", "category": "视频生成", "features": ["果肉视频生成"],
      "access": "direct", "capabilities": ["video-generate"], "selector": {"channel": "grok"}},
     {"id": "openai", "provider": "OpenAI API", "category": "图片 / 视频", "features": ["黄雀引擎 2", "Sora 2"],
@@ -187,8 +193,13 @@ _ACTION_INPUTS = {
     "text-video-styles": (), "text-video-voices": (),
     "text-video-generate": ("text", "template", "mode", "style", "voice", "speech_rate", "talking_material"),
     "matrix-template-capability": (), "matrix-template-templates": (),
-    "matrix-template-generate": ("top_text", "bottom_text", "template_id", "font_family"),
-    "matrix-template-batch-generate": ("top_text", "bottom_text", "template_id", "font_family", "count"),
+    "matrix-template-generate": (
+        "top_text", "bottom_text", "template_id", "font_family", "voiceover",
+    ),
+    "matrix-template-batch-generate": (
+        "top_text", "bottom_text", "template_id", "font_family", "voiceover",
+        "count",
+    ),
     "text-video-avatar-import": ("image_upload_id",),
     "text-video-plan": ("text", "template", "mode", "style", "voice", "speech_rate", "ratio"),
     "inspiration-catalog": (), "inspiration-likes": (),
@@ -581,6 +592,21 @@ def _video_channel_schema():
     return clauses
 
 
+_MATRIX_TEMPLATE_VOICEOVER_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["text", "voice"],
+    "properties": {
+        "text": {"type": "string", "minLength": 1, "maxLength": 120},
+        "voice": {"type": "string", "minLength": 1, "maxLength": 128},
+        "voice_scope": {"type": "string", "enum": ["public", "personal"]},
+        "speed": {
+            "type": "number", "minimum": 0.5, "maximum": 2.0,
+            "default": 1.0,
+        },
+    },
+}
+
+
 _MEDIA_SCHEMAS = {
     "image-generate": {
         "required": ["prompt"], "properties": {
@@ -674,11 +700,14 @@ _MEDIA_SCHEMAS = {
             "bottom_text": {"type": "string", "minLength": 2, "maxLength": 80},
             "template_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
             "font_family": {"type": "string", "maxLength": 80},
+            "voiceover": _MATRIX_TEMPLATE_VOICEOVER_SCHEMA,
         },
         "constraints": [
             "template_id must come from matrix-template-templates",
             "font_family is optional and must come from matrix-template-templates fonts",
-            "duration is automatic, BGM is enabled, and only approved platform-library media is used",
+            "voiceover is optional; when present, voice must come from ready items returned by voices",
+            "voiceover disables BGM and makes final duration follow the generated narration",
+            "duration is automatic and only approved platform-library media is used",
         ],
     },
     "matrix-template-batch-generate": {
@@ -687,13 +716,16 @@ _MEDIA_SCHEMAS = {
             "bottom_text": {"type": "string", "minLength": 2, "maxLength": 80},
             "template_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
             "font_family": {"type": "string", "maxLength": 80},
+            "voiceover": _MATRIX_TEMPLATE_VOICEOVER_SCHEMA,
             "count": {"type": "integer", "minimum": 2, "maximum": 5},
         },
         "constraints": [
             "template_id and optional font_family must come from matrix-template-templates",
             "count creates 2-5 independent jobs under one total quote and one confirmation",
             "HyperFrames and other font-locked templates are single-only; use matrix-template-generate",
-            "duration is automatic, BGM is enabled, and only approved platform-library media is used",
+            "voiceover is optional; when present, voice must come from ready items returned by voices",
+            "voiceover disables BGM and makes final duration follow the generated narration",
+            "duration is automatic and only approved platform-library media is used",
         ],
     },
     "text-video-avatar-import": {
@@ -1766,6 +1798,15 @@ def init_schema(connection):
         revoked_at INTEGER
     )""")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_cli_grants_user ON cli_device_grants(username, token_expires_at)")
+    connection.execute("""CREATE TABLE IF NOT EXISTS cli_refresh_tokens(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        grant_id INTEGER NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        expires_at INTEGER NOT NULL,
+        used_at INTEGER
+    )""")
+    connection.execute("""CREATE INDEX IF NOT EXISTS idx_cli_refresh_grant
+        ON cli_refresh_tokens(grant_id, used_at, expires_at)""")
     connection.execute("""CREATE TABLE IF NOT EXISTS cli_action_requests(
         username TEXT NOT NULL,
         action TEXT NOT NULL,
@@ -1784,6 +1825,32 @@ def init_schema(connection):
 
 def _hash(value):
     return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
+
+
+def issue_grant_tokens(connection, grant_id, scopes, now):
+    access_token = secrets.token_urlsafe(32)
+    refresh_token = secrets.token_urlsafe(48)
+    access_expires_at = now + TOKEN_TTL
+    refresh_expires_at = now + REFRESH_TOKEN_TTL
+    connection.execute(
+        """UPDATE cli_device_grants
+           SET status='issued',token_hash=?,token_expires_at=? WHERE id=?""",
+        (_hash(access_token), access_expires_at, grant_id),
+    )
+    connection.execute(
+        "INSERT INTO cli_refresh_tokens(grant_id,token_hash,expires_at) VALUES(?,?,?)",
+        (grant_id, _hash(refresh_token), refresh_expires_at),
+    )
+    return {
+        "access_token": access_token,
+        "token_type": "Bearer",
+        "expires_in": TOKEN_TTL,
+        "access_expires_at": access_expires_at,
+        "refresh_token": refresh_token,
+        "refresh_expires_in": REFRESH_TOKEN_TTL,
+        "refresh_expires_at": refresh_expires_at,
+        "scopes": list(scopes),
+    }
 
 
 def begin_action_request(db_factory, username, action, request_id, project_id, request_hash, now=None):
@@ -2149,6 +2216,13 @@ def _normalize_scopes(value):
     return scopes
 
 
+def _normalize_delegated_scopes(value):
+    scopes = _normalize_scopes(value)
+    if any(scope not in VIDEO_AGENT_DELEGATED_SCOPES for scope in scopes):
+        raise CLIAPIError(400, "包含不允许委托给视频助手的权限范围")
+    return scopes
+
+
 def _allow_device_start(client_key, now):
     with _START_HITS_LOCK:
         hits = [stamp for stamp in _START_HITS.get(client_key, []) if now - stamp < 600]
@@ -2274,14 +2348,12 @@ def poll_device(db_factory, body, now=None):
             connection.execute("UPDATE cli_device_grants SET status='expired' WHERE id=?", (row["id"],))
             raise CLIAPIError(410, "设备授权已过期", "expired_token")
         if status == "approved":
-            token = secrets.token_urlsafe(32)
             scopes = json.loads(row["approved_scopes_json"] or "[]")
             connection.execute(
-                """UPDATE cli_device_grants SET status='issued',token_hash=?,token_expires_at=?,last_poll_at=?
-                   WHERE id=? AND status='approved'""",
-                (_hash(token), now + TOKEN_TTL, now, row["id"]),
+                "UPDATE cli_device_grants SET last_poll_at=? WHERE id=? AND status='approved'",
+                (now, row["id"]),
             )
-            return {"access_token": token, "token_type": "Bearer", "expires_in": TOKEN_TTL, "scopes": scopes}
+            return issue_grant_tokens(connection, row["id"], scopes, now)
         if status == "pending":
             last_poll = int(row["last_poll_at"] or 0)
             if last_poll and now - last_poll < POLL_INTERVAL:
@@ -2295,6 +2367,58 @@ def poll_device(db_factory, body, now=None):
         raise CLIAPIError(409, "访问令牌已经签发，请重新登录", "already_issued")
 
 
+def issue_delegated_token(db_factory, username, scopes, ttl, now=None):
+    """Issue a short-lived, least-privilege CLI grant for an authenticated service call."""
+    now = int(time.time() if now is None else now)
+    username = _string(username, "username", 1, 64)
+    scopes = _normalize_delegated_scopes(scopes)
+    ttl = _integer(ttl, "ttl_seconds", 60, 300)
+    expires_at = now + ttl
+    scopes_json = json.dumps(scopes, separators=(",", ":"))
+    connection = db_factory()
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        user = connection.execute(
+            "SELECT username FROM users WHERE username=? "
+            "AND COALESCE(account_status,'active')='active'",
+            (username,),
+        ).fetchone()
+        if not user:
+            raise CLIAPIError(404, "用户不存在或不可用", "user_unavailable")
+        for _ in range(8):
+            token = secrets.token_urlsafe(32)
+            try:
+                connection.execute(
+                    """INSERT INTO cli_device_grants(
+                       device_code_hash,user_code_hash,client_name,requested_scopes_json,
+                       approved_scopes_json,username,status,created_at,expires_at,approved_at,
+                       token_hash,token_expires_at
+                       ) VALUES(?,?,?,?,?,?,'issued',?,?,?,?,?)""",
+                    (
+                        _hash("delegated-device:" + secrets.token_urlsafe(32)),
+                        _hash("delegated-user:" + secrets.token_urlsafe(32)),
+                        "video-agent-internal", scopes_json, scopes_json, username,
+                        now, expires_at, now, _hash(token), expires_at,
+                    ),
+                )
+                break
+            except Exception as exc:
+                if "UNIQUE" not in str(exc).upper():
+                    raise
+        else:
+            raise CLIAPIError(503, "暂时无法签发视频助手授权", "grant_unavailable")
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+    return {
+        "access_token": token, "token_type": "Bearer",
+        "expires_at": expires_at, "scopes": scopes,
+    }
+
+
 def authenticate(db_factory, token, now=None):
     now = int(time.time() if now is None else now)
     token = str(token or "").strip()
@@ -2302,7 +2426,11 @@ def authenticate(db_factory, token, now=None):
         return None
     with db_factory() as connection:
         row = connection.execute(
-            """SELECT u.*,g.approved_scopes_json AS cli_scopes,g.token_expires_at AS cli_expires_at
+            """SELECT u.*,g.id AS cli_grant_id,g.approved_scopes_json AS cli_scopes,
+                      g.token_expires_at AS cli_expires_at,
+                      (SELECT expires_at FROM cli_refresh_tokens r
+                       WHERE r.grant_id=g.id AND r.used_at IS NULL
+                       ORDER BY r.id DESC LIMIT 1) AS cli_refresh_expires_at
                FROM cli_device_grants g JOIN users u ON u.username=g.username
                WHERE g.token_hash=? AND g.status='issued' AND g.revoked_at IS NULL
                  AND g.token_expires_at>? AND COALESCE(u.account_status,'active')='active'""",
@@ -2317,15 +2445,63 @@ def authenticate(db_factory, token, now=None):
     return row, scopes
 
 
-def revoke(db_factory, token, now=None):
+def refresh_grant(db_factory, refresh_token, now=None):
+    now = int(time.time() if now is None else now)
+    refresh_token = str(refresh_token or "").strip()
+    if not 20 <= len(refresh_token) <= 200:
+        raise CLIAPIError(401, "授权已失效，请重新登录", "invalid_refresh_token")
+    error = None
+    result = None
+    with db_factory() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            """SELECT r.*,g.username,g.status,g.revoked_at,g.approved_scopes_json,
+                      COALESCE(u.account_status,'active') AS account_status
+               FROM cli_refresh_tokens r
+               JOIN cli_device_grants g ON g.id=r.grant_id
+               JOIN users u ON u.username=g.username
+               WHERE r.token_hash=?""",
+            (_hash(refresh_token),),
+        ).fetchone()
+        if not row:
+            error = CLIAPIError(401, "授权已失效，请重新登录", "invalid_refresh_token")
+        elif row["used_at"] is not None:
+            connection.execute(
+                "UPDATE cli_device_grants SET revoked_at=COALESCE(revoked_at,?) WHERE id=?",
+                (now, row["grant_id"]),
+            )
+            error = CLIAPIError(401, "检测到刷新令牌重复使用，设备授权已撤销", "refresh_token_reused")
+        elif (row["status"] != "issued" or row["revoked_at"] is not None
+              or int(row["expires_at"]) <= now or row["account_status"] != "active"):
+            connection.execute(
+                "UPDATE cli_device_grants SET revoked_at=COALESCE(revoked_at,?) WHERE id=?",
+                (now, row["grant_id"]),
+            )
+            error = CLIAPIError(401, "授权已失效，请重新登录", "invalid_refresh_token")
+        else:
+            scopes = json.loads(row["approved_scopes_json"] or "[]")
+            connection.execute("UPDATE cli_refresh_tokens SET used_at=? WHERE id=?", (now, row["id"]))
+            result = issue_grant_tokens(connection, row["grant_id"], scopes, now)
+    if error:
+        raise error
+    return result
+
+
+def revoke(db_factory, token, refresh_token="", now=None):
     now = int(time.time() if now is None else now)
     token = str(token or "").strip()
-    if not token:
+    refresh_token = str(refresh_token or "").strip()
+    if not token and not refresh_token:
         return False
     with db_factory() as connection:
         cursor = connection.execute(
-            "UPDATE cli_device_grants SET revoked_at=? WHERE token_hash=? AND revoked_at IS NULL",
-            (now, _hash(token)),
+            """UPDATE cli_device_grants SET revoked_at=?
+               WHERE revoked_at IS NULL AND (
+                   token_hash=? OR id IN (
+                       SELECT grant_id FROM cli_refresh_tokens WHERE token_hash=?
+                   )
+               )""",
+            (now, _hash(token), _hash(refresh_token)),
         )
     return cursor.rowcount > 0
 
@@ -2625,9 +2801,33 @@ def _text_video_payload(value):
     return payload
 
 
+def _matrix_template_voiceover(value):
+    _strict_object(
+        value, {"text", "voice", "voice_scope", "speed"},
+        ("text", "voice"),
+    )
+    result = {
+        "text": _string(value["text"], "voiceover.text", 1, 120),
+        "voice": _string(value["voice"], "voiceover.voice", 1, 128),
+        "speed": float(Decimal(str(_number(
+            value.get("speed", 1.0), "voiceover.speed", 0.5, 2.0,
+        ))).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)),
+        "pitch": 0, "volume": 0, "delivery": "natural",
+    }
+    if "voice_scope" in value:
+        result["voice_scope"] = _enum(
+            value["voice_scope"], "voiceover.voice_scope",
+            ("public", "personal"),
+        )
+    return result
+
+
 def _matrix_template_payload(value):
     _strict_object(
-        value, {"top_text", "bottom_text", "template_id", "font_family"},
+        value, {
+            "top_text", "bottom_text", "template_id", "font_family",
+            "voiceover",
+        },
         ("top_text", "bottom_text", "template_id"),
     )
     template_id = _string(value["template_id"], "template_id", 1, 64)
@@ -2643,12 +2843,18 @@ def _matrix_template_payload(value):
         font_family = _string(value["font_family"], "font_family", 0, 80)
         if font_family:
             result["font_family"] = font_family
+    if "voiceover" in value:
+        result["voiceover"] = _matrix_template_voiceover(value["voiceover"])
+        result["bgm"] = False
     return result
 
 
 def _matrix_template_batch_payload(value):
     _strict_object(
-        value, {"top_text", "bottom_text", "template_id", "font_family", "count"},
+        value, {
+            "top_text", "bottom_text", "template_id", "font_family",
+            "voiceover", "count",
+        },
         ("top_text", "bottom_text", "template_id", "count"),
     )
     count = _integer(value["count"], "count", 2, 5)
@@ -4213,4 +4419,30 @@ def verify_quote(secret, token, username, generation_kind, payload, now=None):
         raise CLIAPIError(409, "报价与当前账号或参数不匹配，请重新报价", "quote_mismatch")
     if claims["e"] <= now:
         raise CLIAPIError(409, "报价已过期，请重新报价", "quote_expired")
+    return claims
+
+
+def quote_claims_only(secret, token):
+    """Verify a quote token signature and return its claims without binding.
+
+    Read-only helper for the internal ``quote-claims`` endpoint: the caller
+    (content service) only needs the deterministic fields inside the signed
+    payload to build its submission idempotency key.  No username, payload or
+    expiry binding is enforced here — those checks remain on the submit path.
+    """
+    if not secret:
+        raise CLIAPIError(503, "CLI 报价签名未配置", "not_configured")
+    try:
+        encoded, signature = str(token or "").split(".", 1)
+        expected = hmac.new(secret.encode("utf-8"), encoded.encode("ascii"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            raise ValueError("signature")
+        claims = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+    except Exception:
+        raise CLIAPIError(400, "报价凭证无效，请重新报价", "invalid_quote")
+    if (claims.get("v") != 1 or not isinstance(claims.get("c"), int)
+            or not isinstance(claims.get("e"), int) or not isinstance(claims.get("n"), str)
+            or not isinstance(claims.get("u"), str) or not isinstance(claims.get("k"), str)
+            or not isinstance(claims.get("h"), str)):
+        raise CLIAPIError(400, "报价凭证无效，请重新报价", "invalid_quote")
     return claims

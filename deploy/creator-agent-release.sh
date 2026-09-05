@@ -11,6 +11,7 @@ UNIT_SOURCE="$ROOT/deploy/systemd/$SERVICE"
 UNIT_TARGET="/etc/systemd/system/$SERVICE"
 NGINX_SOURCE="$ROOT/deploy/nginx-huangquechuanmei.conf"
 NGINX_TARGET=/etc/nginx/sites-available/huangquechuanmei
+NGINX_ENABLED=/etc/nginx/sites-enabled/huangquechuanmei
 BACKUP="${CREATOR_AGENT_BACKUP_DIR:-$(mktemp -d /var/tmp/creator-agent-release.XXXXXX)}"
 NEW_RELEASE=""
 OLD_CURRENT=""
@@ -28,6 +29,13 @@ cleanup(){
     if [[ -n "$OLD_CURRENT" && -d "$OLD_CURRENT" ]]; then ln -sfn "$OLD_CURRENT" "$CURRENT"; else rm -f "$CURRENT"; fi
     [[ -f "$BACKUP/unit" ]] && install -o root -g root -m 0644 "$BACKUP/unit" "$UNIT_TARGET" || rm -f "$UNIT_TARGET"
     [[ -f "$BACKUP/nginx" ]] && install -o root -g root -m 0644 "$BACKUP/nginx" "$NGINX_TARGET"
+    if [[ -f "$BACKUP/nginx-enabled.state" ]]; then
+      if grep -qx present "$BACKUP/nginx-enabled.state"; then
+        install -o root -g root -m 0644 "$BACKUP/nginx-enabled" "$NGINX_ENABLED"
+      else
+        rm -f "$NGINX_ENABLED"
+      fi
+    fi
     systemctl daemon-reload >/dev/null 2>&1 || true
     nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true
     if [[ "$WAS_ACTIVE" -eq 1 && -L "$CURRENT" ]]; then systemctl restart "$SERVICE" >/dev/null 2>&1 || true
@@ -70,6 +78,12 @@ systemctl is-active --quiet "$SERVICE" && WAS_ACTIVE=1 || true
 [[ -L "$CURRENT" ]] && OLD_CURRENT="$(readlink -f "$CURRENT")"
 [[ -f "$UNIT_TARGET" ]] && cp -a "$UNIT_TARGET" "$BACKUP/unit"
 [[ -f "$NGINX_TARGET" ]] && cp -a "$NGINX_TARGET" "$BACKUP/nginx"
+if [[ -f "$NGINX_ENABLED" ]]; then
+  cp -L "$NGINX_ENABLED" "$BACKUP/nginx-enabled"
+  printf 'present\n' > "$BACKUP/nginx-enabled.state"
+else
+  printf 'absent\n' > "$BACKUP/nginx-enabled.state"
+fi
 
 install -d -o root -g root -m 0755 "$RUNTIME" "$RELEASES"
 NEW_RELEASE="$(mktemp -d "$RELEASES/${SHA}.XXXXXX")"
@@ -91,6 +105,7 @@ mv -Tf "$CURRENT.next" "$CURRENT"
 
 install -o root -g root -m 0644 "$UNIT_SOURCE" "$UNIT_TARGET"
 install -o root -g root -m 0644 "$NGINX_SOURCE" "$NGINX_TARGET"
+install -o root -g root -m 0644 "$NGINX_SOURCE" "$NGINX_ENABLED"
 systemctl daemon-reload
 nginx -t
 systemctl enable "$SERVICE"
