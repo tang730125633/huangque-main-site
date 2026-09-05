@@ -18,25 +18,18 @@ MIN_PENDING_TTL = 30
 # 安全期内绝不把"暂无幂等记录"收敛为未提交，也绝不放行同输入重新报价。
 RECONCILE_SAFETY_SECONDS = 90
 
-# 能力 → 内容服务任务 kind：陈旧 processing 对账时按任务账本收敛。
-_CAPABILITY_JOB_KINDS = {
-    "video-generate": ("sora_video", "xiaole_video"),
-    "digital-ip-text-generate": ("video",),
-    "cinematic-open-generate": ("cinematic",),
-    "cinematic-motion-generate": ("cinematic",),
-    "tryon-fast-generate": ("tryon",),
-    "tryon-classic-generate": ("tryon",),
-}
-
-# 能力 → 内容服务幂等端点。对账必须同时绑定真实提交端点，避免同一
-# idem_key 在其他写接口留下的响应被误认成当前付费视频提交。
-_CAPABILITY_ENDPOINTS = {
-    "video-generate": ("/api/gen/sora_video", "/api/gen/xiaole_video"),
-    "digital-ip-text-generate": ("/api/gen/video",),
-    "cinematic-open-generate": ("/api/gen/cinematic",),
-    "cinematic-motion-generate": ("/api/gen/cinematic",),
-    "tryon-fast-generate": ("/api/gen/tryon",),
-    "tryon-classic-generate": ("/api/gen/tryon",),
+# 能力 → 真实提交端点 → 任务 kind。端点与 kind 必须作为一组身份
+# 一起核验；分别使用两个 allowlist 会错误接受 Sora 端点配小乐任务。
+_CAPABILITY_RECONCILE_TARGETS = {
+    "video-generate": {
+        "/api/gen/sora_video": ("sora_video",),
+        "/api/gen/xiaole_video": ("xiaole_video",),
+    },
+    "digital-ip-text-generate": {"/api/gen/video": ("video",)},
+    "cinematic-open-generate": {"/api/gen/cinematic": ("cinematic",)},
+    "cinematic-motion-generate": {"/api/gen/cinematic": ("cinematic",)},
+    "tryon-fast-generate": {"/api/gen/tryon": ("tryon",)},
+    "tryon-classic-generate": {"/api/gen/tryon": ("tryon",)},
 }
 
 # 渠道规则只有一份正本：部署的 hq_cli.catalog。Agent 报价工具的
@@ -1296,18 +1289,20 @@ def reconcile_pending_action(pending_id, *, username, db_factory, now=None):
                     "该记录缺少可对账的提交凭证，请核对任务历史后重新报价", 409,
                     pending_action=_safe_pending(row),
                 )
-            endpoints = _CAPABILITY_ENDPOINTS.get(
+            targets = _CAPABILITY_RECONCILE_TARGETS.get(
                 str(row["capability"] or "").strip()
             )
-            if not endpoints:
+            if not targets:
                 raise ToolError(
                     "pending_reconcile_unavailable",
                     "该记录的提交能力无法安全对账，请核对任务历史后重新报价", 409,
                     pending_action=_safe_pending(row),
                 )
+            endpoints = tuple(targets)
             endpoint_holes = ",".join("?" * len(endpoints))
             claim = conn.execute(
-                "SELECT response_json,created_at,updated_at FROM submission_idempotency "
+                "SELECT endpoint,response_json,created_at,updated_at "
+                "FROM submission_idempotency "
                 "WHERE username=? AND idem_key=? AND endpoint IN (%s) " % endpoint_holes,
                 (username, key) + tuple(endpoints),
             ).fetchone()
@@ -1343,7 +1338,9 @@ def reconcile_pending_action(pending_id, *, username, db_factory, now=None):
                         "提交正在受理，请稍后重新对账", 409,
                         pending_action=_safe_pending(row),
                     )
-                job_id = _find_submitted_job(conn, username, row)
+                job_id = _find_submitted_job(
+                    conn, username, row, claim["endpoint"]
+                )
                 if job_id:
                     projected = {"job_id": int(job_id)}
                     status, error_code = "submitted", None
@@ -1370,7 +1367,9 @@ def reconcile_pending_action(pending_id, *, username, db_factory, now=None):
             except (TypeError, ValueError, json.JSONDecodeError):
                 stored = {}
             projected = _project_confirmation_result(stored)
-            job_id = _find_submitted_job(conn, username, row)
+            job_id = _find_submitted_job(
+                conn, username, row, claim["endpoint"]
+            )
             if projected and job_id:
                 # 幂等响应只是结果载体；任务身份始终由 username、精确
                 # submission_key 与该 capability 允许的 kind 三者共同证明。
@@ -1399,14 +1398,17 @@ def reconcile_pending_action(pending_id, *, username, db_factory, now=None):
         raise ToolError("pending_store_unavailable", "视频操作确认服务暂时不可用", 503) from error
 
 
-def _find_submitted_job(conn, username, row):
+def _find_submitted_job(conn, username, row, endpoint):
     """Look for the job a stale in-flight submission may have created.
 
     The task ledger must carry the exact idempotency key used by the CLI
     submission.  Account/time/cost/kind similarity is never identity: another
     concurrent paid request can have every one of those values in common.
     """
-    kinds = _CAPABILITY_JOB_KINDS.get(str(row["capability"] or "").strip())
+    targets = _CAPABILITY_RECONCILE_TARGETS.get(
+        str(row["capability"] or "").strip(), {}
+    )
+    kinds = targets.get(str(endpoint or "").strip())
     submission_key = str(row["submission_key"] or "").strip()
     if not kinds or not submission_key:
         return None

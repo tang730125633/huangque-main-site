@@ -935,6 +935,20 @@ class VideoAgentToolTests(unittest.TestCase):
         self.assertEqual(reconciled["status"], "failed")
         self.assertNotIn("result", reconciled)
 
+    def test_reconcile_video_generate_rejects_sora_endpoint_with_xiaole_kind(self):
+        reconciled, _job_id = self._reconcile_video_generate_submission(
+            "/api/gen/sora_video", "xiaole_video",
+        )
+        self.assertEqual(reconciled["status"], "failed")
+        self.assertNotIn("result", reconciled)
+
+    def test_reconcile_video_generate_rejects_xiaole_endpoint_with_sora_kind(self):
+        reconciled, _job_id = self._reconcile_video_generate_submission(
+            "/api/gen/xiaole_video", "sora_video",
+        )
+        self.assertEqual(reconciled["status"], "failed")
+        self.assertNotIn("result", reconciled)
+
     def test_reconcile_stays_unknown_while_submission_has_no_response(self):
         submission_key = self._make_unknown_card()
         with closing(self.db()) as conn:
