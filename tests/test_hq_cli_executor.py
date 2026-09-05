@@ -272,34 +272,23 @@ class HQCLIExecutorTests(unittest.TestCase):
         smoke = (ROOT / "scripts" / "smoke_cli_bridge.sh").read_text(
             encoding="utf-8"
         )
-        for script in (deploy, ship):
-            self.assertIn("tools/hq-cli/src/hq_cli/", script)
-            self.assertIn("-m hq_cli version --json", script)
-        # deploy_site.sh 通过 CONTENT_DIR 变量表达同一生产路径，
-        # 契约仍必须是 /home/ubuntu/content-api/hq_cli/。
-        self.assertIn('CONTENT_DIR="/home/ubuntu/content-api"', deploy)
-        self.assertIn("$HOST:$CONTENT_DIR/hq_cli/", deploy)
-        self.assertIn("$ROOT/tools/hq-cli/src/hq_cli/", deploy)
-        # 鉴权端必须与内容服务同一次部署，先 auth 后 content。
-        self.assertIn('AUTH_DIR="/home/ubuntu/auth-service"', deploy)
-        self.assertIn("server/auth_server.py", deploy)
-        self.assertIn("server/hq_cli_api.py", deploy)
-        self.assertIn("restart huangque-auth", deploy)
-        self.assertIn("quote-claims", deploy)
-        # nginx 专用路由必须走备份 → nginx -t → reload 的发布闭包，
-        # 冒烟凭证必须经 stdin 传远端，不依赖本地 ssh 环境透传。
-        self.assertIn("deploy/nginx-huangquechuanmei.conf", deploy)
-        self.assertIn("nginx -t", deploy)
-        self.assertIn("systemctl reload nginx", deploy)
-        self.assertIn("smoke_cli_bridge.sh", deploy)
+        self.assertIn("tools/hq-cli/src/hq_cli/", ship)
+        self.assertIn("-m hq_cli version --json", ship)
+        # 视频 Agent/CLI 桥接只允许通过精确发布入口 ship 部署。旧的一键整站
+        # 脚本不得夹带 auth、CLI 包、内容域目录或桥接冒烟，避免半发布和 --delete
+        # 目录覆盖；这些契约统一由 ship 的备份、预检与回滚闭包负责。
+        self.assertNotIn("tools/hq-cli/src/hq_cli/", deploy)
+        self.assertNotIn("server/auth_server.py", deploy)
+        self.assertNotIn("server/hq_cli_api.py", deploy)
+        self.assertNotIn("server/content_domains/", deploy)
+        self.assertNotIn("smoke_cli_bridge.sh", deploy)
         self.assertIn("deploy/nginx-huangquechuanmei.conf", ship)
         self.assertIn("smoke_cli_bridge.sh", ship)
         self.assertIn("/home/ubuntu/smoke_cli_bridge.sh", sentinel)
         # 凭证必须编码成 JSON，通过同一个 SSH 进程的 stdin 交给远端，
         # 不得生成可被 root source 的 shell 文件，也不得在两次 SSH 之间落盘。
-        for script in (deploy, ship):
-            self.assertIn("json.dump", script)
-            self.assertNotIn("/tmp/hq-smoke.env", script)
+        self.assertIn("json.dump", ship)
+        self.assertNotIn("/tmp/hq-smoke.env", ship)
         self.assertNotIn("SMOKE_ENV", smoke)
         self.assertNotIn('. "$SMOKE_ENV"', smoke)
         self.assertIn("exec 3<&0", smoke)

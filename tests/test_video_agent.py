@@ -608,6 +608,44 @@ class VideoAgentTests(unittest.TestCase):
         self.assertEqual(url, "https://api.deepseek.com/responses")
         self.assertEqual(model, "deepseek-v4-flash")
 
+    def test_provider_contract_distinguishes_private_talking_image_from_story_avatar(self):
+        upload_id = "img_" + "a" * 32
+        body = {
+            "message": "用这张人物图做口播，再规划一个剧情短片",
+            "brief": {"script": "大家好", "voice": "温暖女声"},
+            "materials": [{
+                "type": "image", "name": "person.jpg", "upload_id": upload_id,
+                "purpose_state": "confirmed", "purpose": "人物或数字人形象",
+            }],
+        }
+        with mock.patch.object(
+                video_agent.video, "list_video_avatars", return_value=[]), mock.patch.object(
+                video_agent.cli_uploads, "verify_upload", return_value=True):
+            prepared = video_agent._prepare_provider_request(body, username="alice")
+
+        payload = prepared["payload"]
+        system = payload["instructions"]
+        current = json.loads(prepared["input"][-1]["content"].split("：\n", 1)[1])
+        tools = {
+            item["name"]: item for item in payload["tools"]
+            if item.get("type") == "function"
+        }
+        talking = tools["hq_quote_talking_video"]["parameters"]
+        story = tools["hq_quote_story_video"]["parameters"]
+
+        self.assertTrue(current["materials"][0]["upload_verified"])
+        self.assertEqual(upload_id, current["materials"][0]["upload_id"])
+        self.assertIn("talking 口播可直接使用", system)
+        self.assertIn("现成音频不能替代文案或音色", system)
+        self.assertIn("story 剧情故事必须使用", system)
+        self.assertIn("普通参考图片或视频不能替代电影化身", system)
+        self.assertIn("image_upload_id", talking["properties"])
+        self.assertEqual(["text", "voice"], talking["required"])
+        self.assertIn("avatar_id", story["properties"])
+        self.assertIn("avatar_ids", story["properties"])
+        self.assertEqual(["prompt"], story["required"])
+        self.assertEqual("auto", payload["tool_choice"])
+
     def test_final_output_text_accepts_safe_json_wrappers(self):
         expected = {
             "reply": "请先补充视频用途。",

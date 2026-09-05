@@ -18,7 +18,7 @@ jobs:
   quality:
     name: 代码与安全门禁
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 45
 
     steps:
       - name: 检出代码
@@ -71,6 +71,9 @@ jobs:
 
       - name: 检查 JavaScript 语法
         run: find site -type f -name '*.js' -print0 | xargs -0 -n1 node --check
+
+      - name: 仓库根 Python 回归测试
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
 
       - name: 测试并构建 HQ CLI
         working-directory: tools/hq-cli
