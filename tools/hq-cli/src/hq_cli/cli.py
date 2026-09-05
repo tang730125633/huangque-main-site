@@ -269,6 +269,9 @@ def _validate(capability, payload):
         _validate_video_channel(payload)
     if capability.get("id") in {"text-video-generate", "director-scene-talking-generate"}:
         _validate_text_video_talking(payload)
+    if capability.get("id") in {
+            "matrix-template-generate", "matrix-template-batch-generate"}:
+        _validate_matrix_template_voiceover(capability, payload)
     if capability.get("id") in {"director-scene-image-generate", "director-scene-video-generate"}:
         _validate_director_scenes(payload)
     if capability.get("id") == "leads-generate":
@@ -277,6 +280,17 @@ def _validate(capability, payload):
             raise CliError(EXIT_INPUT, "input_error", "douyin or xhs leads require keyword")
         if "channels" in platforms and not payload.get("channels_targets"):
             raise CliError(EXIT_INPUT, "input_error", "channels leads require channels_targets")
+
+
+def _validate_matrix_template_voiceover(capability, payload):
+    voiceover = payload.get("voiceover")
+    if voiceover is None:
+        return
+    definition = capability["input_schema"]["properties"]["voiceover"]
+    _validate({
+        "id": "matrix-template-voiceover",
+        "input_schema": definition,
+    }, voiceover)
 
 
 def _validate_text_video_talking(payload):

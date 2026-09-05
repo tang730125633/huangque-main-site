@@ -188,8 +188,13 @@ _ACTION_INPUTS = {
     "text-video-styles": (), "text-video-voices": (),
     "text-video-generate": ("text", "template", "mode", "style", "voice", "speech_rate", "talking_material"),
     "matrix-template-capability": (), "matrix-template-templates": (),
-    "matrix-template-generate": ("top_text", "bottom_text", "template_id", "font_family"),
-    "matrix-template-batch-generate": ("top_text", "bottom_text", "template_id", "font_family", "count"),
+    "matrix-template-generate": (
+        "top_text", "bottom_text", "template_id", "font_family", "voiceover",
+    ),
+    "matrix-template-batch-generate": (
+        "top_text", "bottom_text", "template_id", "font_family", "voiceover",
+        "count",
+    ),
     "text-video-avatar-import": ("image_upload_id",),
     "text-video-plan": ("text", "template", "mode", "style", "voice", "speech_rate", "ratio"),
     "inspiration-catalog": (), "inspiration-likes": (),
@@ -582,6 +587,21 @@ def _video_channel_schema():
     return clauses
 
 
+_MATRIX_TEMPLATE_VOICEOVER_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["text", "voice"],
+    "properties": {
+        "text": {"type": "string", "minLength": 1, "maxLength": 120},
+        "voice": {"type": "string", "minLength": 1, "maxLength": 128},
+        "voice_scope": {"type": "string", "enum": ["public", "personal"]},
+        "speed": {
+            "type": "number", "minimum": 0.5, "maximum": 2.0,
+            "default": 1.0,
+        },
+    },
+}
+
+
 _MEDIA_SCHEMAS = {
     "image-generate": {
         "required": ["prompt"], "properties": {
@@ -675,11 +695,14 @@ _MEDIA_SCHEMAS = {
             "bottom_text": {"type": "string", "minLength": 2, "maxLength": 80},
             "template_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
             "font_family": {"type": "string", "maxLength": 80},
+            "voiceover": _MATRIX_TEMPLATE_VOICEOVER_SCHEMA,
         },
         "constraints": [
             "template_id must come from matrix-template-templates",
             "font_family is optional and must come from matrix-template-templates fonts",
-            "duration is automatic, BGM is enabled, and only approved platform-library media is used",
+            "voiceover is optional; when present, voice must come from ready items returned by voices",
+            "voiceover disables BGM and makes final duration follow the generated narration",
+            "duration is automatic and only approved platform-library media is used",
         ],
     },
     "matrix-template-batch-generate": {
@@ -688,13 +711,16 @@ _MEDIA_SCHEMAS = {
             "bottom_text": {"type": "string", "minLength": 2, "maxLength": 80},
             "template_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
             "font_family": {"type": "string", "maxLength": 80},
+            "voiceover": _MATRIX_TEMPLATE_VOICEOVER_SCHEMA,
             "count": {"type": "integer", "minimum": 2, "maximum": 5},
         },
         "constraints": [
             "template_id and optional font_family must come from matrix-template-templates",
             "count creates 2-5 independent jobs under one total quote and one confirmation",
             "HyperFrames and other font-locked templates are single-only; use matrix-template-generate",
-            "duration is automatic, BGM is enabled, and only approved platform-library media is used",
+            "voiceover is optional; when present, voice must come from ready items returned by voices",
+            "voiceover disables BGM and makes final duration follow the generated narration",
+            "duration is automatic and only approved platform-library media is used",
         ],
     },
     "text-video-avatar-import": {
@@ -2711,9 +2737,33 @@ def _text_video_payload(value):
     return payload
 
 
+def _matrix_template_voiceover(value):
+    _strict_object(
+        value, {"text", "voice", "voice_scope", "speed"},
+        ("text", "voice"),
+    )
+    result = {
+        "text": _string(value["text"], "voiceover.text", 1, 120),
+        "voice": _string(value["voice"], "voiceover.voice", 1, 128),
+        "speed": float(Decimal(str(_number(
+            value.get("speed", 1.0), "voiceover.speed", 0.5, 2.0,
+        ))).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)),
+        "pitch": 0, "volume": 0, "delivery": "natural",
+    }
+    if "voice_scope" in value:
+        result["voice_scope"] = _enum(
+            value["voice_scope"], "voiceover.voice_scope",
+            ("public", "personal"),
+        )
+    return result
+
+
 def _matrix_template_payload(value):
     _strict_object(
-        value, {"top_text", "bottom_text", "template_id", "font_family"},
+        value, {
+            "top_text", "bottom_text", "template_id", "font_family",
+            "voiceover",
+        },
         ("top_text", "bottom_text", "template_id"),
     )
     template_id = _string(value["template_id"], "template_id", 1, 64)
@@ -2729,12 +2779,18 @@ def _matrix_template_payload(value):
         font_family = _string(value["font_family"], "font_family", 0, 80)
         if font_family:
             result["font_family"] = font_family
+    if "voiceover" in value:
+        result["voiceover"] = _matrix_template_voiceover(value["voiceover"])
+        result["bgm"] = False
     return result
 
 
 def _matrix_template_batch_payload(value):
     _strict_object(
-        value, {"top_text", "bottom_text", "template_id", "font_family", "count"},
+        value, {
+            "top_text", "bottom_text", "template_id", "font_family",
+            "voiceover", "count",
+        },
         ("top_text", "bottom_text", "template_id", "count"),
     )
     count = _integer(value["count"], "count", 2, 5)

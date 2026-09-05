@@ -188,7 +188,7 @@ class HqCliTests(unittest.TestCase):
             self.assertEqual(0, code, error)
             self.assertTrue(self.payload(output)["schema"].startswith("hq."))
         code, output, _ = self.invoke(["version"])
-        self.assertEqual("0.15.3", self.payload(output)["cli_version"])
+        self.assertEqual("0.15.4", self.payload(output)["cli_version"])
         self.assertEqual("Huangque main-site CLI", self.payload(output)["product"])
         self.assertEqual("https://huangquechuanmei.com", self.payload(output)["origin"])
 
@@ -392,6 +392,17 @@ class HqCliTests(unittest.TestCase):
         self.assertEqual("server_quote", by_id["matrix-template-batch-generate"]["cost"]["kind"])
         self.assertEqual(80, by_id["matrix-template-generate"]["input_schema"]
                          ["properties"]["font_family"]["maxLength"])
+        matrix_voiceover = by_id["matrix-template-generate"]["input_schema"][
+            "properties"
+        ]["voiceover"]
+        self.assertEqual(["text", "voice"], matrix_voiceover["required"])
+        self.assertEqual(120, matrix_voiceover["properties"]["text"]["maxLength"])
+        self.assertEqual(["public", "personal"],
+                         matrix_voiceover["properties"]["voice_scope"]["enum"])
+        self.assertEqual((0.5, 2.0), (
+            matrix_voiceover["properties"]["speed"]["minimum"],
+            matrix_voiceover["properties"]["speed"]["maximum"],
+        ))
         self.assertEqual(
             ["top_text", "bottom_text", "template_id"],
             by_id["matrix-template-generate"]["input_schema"]["required"],
@@ -981,6 +992,10 @@ class HqCliTests(unittest.TestCase):
             "top_text": "真正拉开差距的不是工具",
             "bottom_text": "评论区留下关键词领取方案",
             "template_id": "native-bold", "font_family": "AaHouDiHei",
+            "voiceover": {
+                "text": "把工具变成稳定产出的流程", "voice": "vip_alice",
+                "voice_scope": "personal", "speed": 1.2,
+            },
         }
         raw = json.dumps(value, ensure_ascii=False).encode("utf-8")
         quote = {
@@ -1010,6 +1025,10 @@ class HqCliTests(unittest.TestCase):
             "top_text": "批量模板成片标题",
             "bottom_text": "评论区领取完整方案",
             "template_id": "native-bold", "font_family": "AaHouDiHei", "count": 3,
+            "voiceover": {
+                "text": "同一文案批量生成三条配音视频", "voice": "public_voice",
+                "voice_scope": "public", "speed": 1.1,
+            },
         }
         raw = json.dumps(value, ensure_ascii=False).encode("utf-8")
         quote = {
@@ -1077,6 +1096,15 @@ class HqCliTests(unittest.TestCase):
             dict(base, bgm=False),
             dict(base, template_id="../bad"),
             dict(base, font_family="x" * 81),
+            dict(base, voiceover={}),
+            dict(base, voiceover={"text": "只有文案"}),
+            dict(base, voiceover={"text": "文" * 121, "voice": "public_voice"}),
+            dict(base, voiceover={"text": "有效文案", "voice": "public_voice",
+                                  "voice_scope": "shared"}),
+            dict(base, voiceover={"text": "有效文案", "voice": "public_voice",
+                                  "speed": 2.1}),
+            dict(base, voiceover={"text": "有效文案", "voice": "public_voice",
+                                  "provider": "cosyvoice"}),
         ):
             with self.subTest(payload=payload), patch("hq_cli.client.request_json") as request:
                 code, _, error = self.invoke(

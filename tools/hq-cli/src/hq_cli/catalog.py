@@ -1209,12 +1209,32 @@ TEXT_VIDEO_PLAN_FIELDS = {
 }
 TEXT_VIDEO_PLAN_FIELDS["ratio"] = {"type": "number", "minimum": 0.1, "maximum": 0.5}
 
+MATRIX_TEMPLATE_VOICEOVER = _schema({
+    "text": {
+        "type": "string", "minLength": 1, "maxLength": 120,
+        "description": "模板成片配音文案；传入 voiceover 即开启配音",
+    },
+    "voice": {
+        "type": "string", "minLength": 1, "maxLength": 128,
+        "description": "从 voices 返回的 ready=true 项复制 voice_key",
+    },
+    "voice_scope": {
+        "type": "string", "enum": ["public", "personal"],
+        "description": "可选；应与 voices 返回的 scope 一致",
+    },
+    "speed": {
+        "type": "number", "minimum": 0.5, "maximum": 2.0,
+        "default": 1.0,
+    },
+}, ["text", "voice"])
+
 MATRIX_TEMPLATE_FIELDS = {
     "top_text": {"type": "string", "minLength": 2, "maxLength": 60},
     "bottom_text": {"type": "string", "minLength": 2, "maxLength": 80},
     "template_id": {"type": "string", "minLength": 1, "maxLength": 64,
                     "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
     "font_family": {"type": "string", "maxLength": 80},
+    "voiceover": MATRIX_TEMPLATE_VOICEOVER,
 }
 MATRIX_TEMPLATE_BATCH_FIELDS = {
     **MATRIX_TEMPLATE_FIELDS,
@@ -1366,7 +1386,10 @@ CAPABILITIES["text-video-generate"]["next_actions"] = [
 CAPABILITIES["matrix-template-generate"]["constraints"] = [
     "template_id must be selected from matrix-template-templates",
     "font_family is optional and must be selected from matrix-template-templates fonts",
-    "duration is calculated automatically and BGM is enabled by default",
+    "voiceover is optional; copy voice and optional voice_scope from a ready item returned by voices",
+    "voiceover text is limited to 120 characters and speed is 0.5-2.0 in 0.1 steps",
+    "voiceover disables BGM and makes final duration follow narration; without voiceover BGM remains enabled",
+    "duration is calculated automatically",
     "the first call only quotes the fixed template-video cost",
 ]
 CAPABILITIES["matrix-template-generate"]["next_actions"] = [
@@ -1375,7 +1398,10 @@ CAPABILITIES["matrix-template-generate"]["next_actions"] = [
 CAPABILITIES["matrix-template-batch-generate"]["constraints"] = [
     "template_id and optional font_family must be selected from matrix-template-templates",
     "count creates 2-5 independent jobs under one total quote and one confirmation",
-    "duration is calculated automatically and BGM is enabled by default",
+    "voiceover is optional; copy voice and optional voice_scope from a ready item returned by voices",
+    "voiceover text is limited to 120 characters and speed is 0.5-2.0 in 0.1 steps",
+    "voiceover disables BGM and makes final duration follow narration; without voiceover BGM remains enabled",
+    "duration is calculated automatically",
 ]
 CAPABILITIES["matrix-template-batch-generate"]["next_actions"] = [
     "核对总价与 count 后，用完全相同的输入、quote_token 与 --confirm 提交；只轮询返回的 job_ids。",
