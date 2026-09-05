@@ -28,6 +28,17 @@ _CAPABILITY_JOB_KINDS = {
     "tryon-classic-generate": ("tryon",),
 }
 
+# 能力 → 内容服务幂等端点。对账必须同时绑定真实提交端点，避免同一
+# idem_key 在其他写接口留下的响应被误认成当前付费视频提交。
+_CAPABILITY_ENDPOINTS = {
+    "video-generate": ("/api/gen/video",),
+    "digital-ip-text-generate": ("/api/gen/video",),
+    "cinematic-open-generate": ("/api/gen/cinematic",),
+    "cinematic-motion-generate": ("/api/gen/cinematic",),
+    "tryon-fast-generate": ("/api/gen/tryon",),
+    "tryon-classic-generate": ("/api/gen/tryon",),
+}
+
 # 渠道规则只有一份正本：部署的 hq_cli.catalog。Agent 报价工具的
 # 视频参数校验直接由它推导，杜绝与真实 CLI 合同漂移（契约测试守护）。
 try:
@@ -1285,10 +1296,20 @@ def reconcile_pending_action(pending_id, *, username, db_factory, now=None):
                     "该记录缺少可对账的提交凭证，请核对任务历史后重新报价", 409,
                     pending_action=_safe_pending(row),
                 )
+            endpoints = _CAPABILITY_ENDPOINTS.get(
+                str(row["capability"] or "").strip()
+            )
+            if not endpoints:
+                raise ToolError(
+                    "pending_reconcile_unavailable",
+                    "该记录的提交能力无法安全对账，请核对任务历史后重新报价", 409,
+                    pending_action=_safe_pending(row),
+                )
+            endpoint_holes = ",".join("?" * len(endpoints))
             claim = conn.execute(
                 "SELECT response_json,created_at,updated_at FROM submission_idempotency "
-                "WHERE username=? AND idem_key=?",
-                (username, key),
+                "WHERE username=? AND idem_key=? AND endpoint IN (%s) " % endpoint_holes,
+                (username, key) + tuple(endpoints),
             ).fetchone()
             if not claim:
                 # 没有幂等记录不代表"从未提交"：被杀掉的 CLI 背后的认证代理
@@ -1349,11 +1370,15 @@ def reconcile_pending_action(pending_id, *, username, db_factory, now=None):
             except (TypeError, ValueError, json.JSONDecodeError):
                 stored = {}
             projected = _project_confirmation_result(stored)
-            if projected:
+            job_id = _find_submitted_job(conn, username, row)
+            if projected and job_id:
+                # 幂等响应只是结果载体；任务身份始终由 username、精确
+                # submission_key 与该 capability 允许的 kind 三者共同证明。
+                projected["job_id"] = int(job_id)
                 status, error_code = "submitted", None
                 result_json = _canonical(projected)
             else:
-                status, error_code = "failed", "reconciled_submission_failed"
+                status, error_code = "failed", "reconciled_submission_unverified"
                 result_json = None
             conn.execute(
                 "UPDATE video_agent_pending_actions "

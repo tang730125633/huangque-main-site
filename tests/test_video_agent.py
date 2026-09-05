@@ -260,7 +260,9 @@ class VideoAgentTests(unittest.TestCase):
                 {"name": "ghost.png", "type": "image", "status": "ready",
                  "summary": "不存在的素材"},
             ],
-        }, materials=materials)
+        }, materials=materials, trusted_brief={
+            "content": "介绍新品", "voice": "voice-1",
+        })
         self.assertTrue(result["ready_to_handoff"])
         self.assertEqual(result["stage"], "plan_ready")
         # 只保留能匹配真实素材的评估。
@@ -268,6 +270,22 @@ class VideoAgentTests(unittest.TestCase):
             [item["name"] for item in result["material_assessments"]],
             ["person.png"],
         )
+
+    def test_normalize_blocks_model_fabricated_script_and_voice(self):
+        materials = [{
+            "type": "image", "name": "person.png", "size": 1024,
+            "avatar_id": 27, "avatar_verified": True,
+        }]
+        result = video_agent._normalize({
+            "reply": "可以制作口播视频",
+            "stage": "plan_ready",
+            "intent": "talking",
+            "video_brief": {"content": "模型虚构文案", "voice": "fake-voice"},
+            "recommended_module": "talking",
+            "ready_to_handoff": True,
+        }, materials=materials, trusted_brief={})
+        self.assertFalse(result["ready_to_handoff"])
+        self.assertEqual(result["stage"], "collect_materials")
 
     def test_normalize_rejects_ready_claim_on_unverified_upload_ids(self):
         # 格式正确但未通过账号核验的上传（或自报 ready 的形象）不能被当成
@@ -335,8 +353,22 @@ class VideoAgentTests(unittest.TestCase):
                     "upload_id": "img_" + "a" * 32,
                 }],
                 "avatars": [],
+                "voices": [{"voice_key": "voice-1", "ready": True}],
                 "verify_upload": True,
                 "expected_ready": True,
+            },
+            {
+                "name": "talking-unverified-voice-is-not-executable",
+                "module": "talking",
+                "brief": {"content": "介绍新品", "voice": "not-owned"},
+                "materials": [{
+                    "type": "image", "name": "person.png", "size": 100,
+                    "upload_id": "img_" + "c" * 32,
+                }],
+                "avatars": [],
+                "voices": [{"voice_key": "voice-1", "ready": True}],
+                "verify_upload": True,
+                "expected_ready": False,
             },
             {
                 "name": "story-ordinary-reference-image-is-not-an-avatar",
@@ -404,6 +436,9 @@ class VideoAgentTests(unittest.TestCase):
                 ), mock.patch.object(
                     video_agent.cli_uploads, "verify_upload",
                     return_value=case["verify_upload"],
+                ), mock.patch.object(
+                    video_agent.audio, "list_audio_voices",
+                    return_value=case.get("voices", []),
                 ):
                     result = video_agent.chat({
                         "message": "请检查后交接",

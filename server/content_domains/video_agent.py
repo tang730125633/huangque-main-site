@@ -176,7 +176,7 @@ def init_db(db_factory):
     video_agent_tools.ensure_tables(db_factory, recover_confirming=True)
 
 
-def _clean_body(body, username=None, avatar_list_fn=None):
+def _clean_body(body, username=None, avatar_list_fn=None, voice_list_fn=None):
     if not isinstance(body, dict):
         raise advisor_runtime.AdvisorError("request_invalid", "请求体必须是 JSON 对象")
 
@@ -200,6 +200,26 @@ def _clean_body(body, username=None, avatar_list_fn=None):
         for key, value in brief.items()
         if key in ALLOWED_BRIEF_FIELDS and _text(value, 500)
     }
+
+    # 交接门禁只接受客户端明确回传的 brief。音色还必须是当前账号实时
+    # 列表中的 ready voice_key；模型生成的 brief 和展示名称都不能充当凭据。
+    handoff_brief = dict(cleaned_brief)
+    selected_voice = str(handoff_brief.get("voice") or "").strip()
+    if selected_voice:
+        verified_voice_keys = set()
+        if str(username or "").strip():
+            try:
+                voices = (voice_list_fn or audio.list_audio_voices)(username)
+                verified_voice_keys = {
+                    str(item.get("voice_key") or "").strip()
+                    for item in voices
+                    if isinstance(item, dict) and item.get("ready") is True
+                    and str(item.get("voice_key") or "").strip()
+                }
+            except Exception:
+                verified_voice_keys = set()
+        if selected_voice not in verified_voice_keys:
+            handoff_brief.pop("voice", None)
 
     # 素材门禁只采信按账号实时核验过的事实：私有上传必须真实存在且归属本人，
     # ready 形象必须出现在本人账号的真实 ready 列表里。客户端自报状态只作展示。
@@ -291,6 +311,7 @@ def _clean_body(body, username=None, avatar_list_fn=None):
         "message": message,
         "history": cleaned_history,
         "brief": cleaned_brief,
+        "handoff_brief": handoff_brief,
         "materials": cleaned_materials,
         "context": context,
     }
@@ -414,7 +435,7 @@ def _material_gate(module, materials, brief):
     return passed, hints
 
 
-def _normalize(result, materials=None):
+def _normalize(result, materials=None, trusted_brief=None):
     if not isinstance(result, dict):
         raise advisor_runtime.AdvisorError(
             "advisor_response_invalid", "视频创作助手返回格式无效", 502
@@ -467,7 +488,10 @@ def _normalize(result, materials=None):
     if ready:
         # 模型宣称就绪时，必须还能用真实素材与已确认简介在服务端证明就绪；
         # 否则退回素材收集阶段并注入确定性的缺失项（见 _material_gate）。
-        gate_pass, gate_requests = _material_gate(recommended, materials, brief)
+        gate_pass, gate_requests = _material_gate(
+            recommended, materials,
+            trusted_brief if isinstance(trusted_brief, dict) else {},
+        )
         if not gate_pass:
             ready = False
             has_blocker = True
@@ -1315,7 +1339,8 @@ def _call_provider_loop(prepared, opener=None, tool_runtime=None,
                     "advisor_response_invalid", "视频创作助手返回格式无效", 502
                 ) from error
             normalized = _normalize(
-                final_output, prepared["request_body"]["materials"]
+                final_output, prepared["request_body"]["materials"],
+                prepared["request_body"]["handoff_brief"],
             )
             activity = list(getattr(tool_runtime, "activity", []) or [])
             normalized["tool_activity"] = activity

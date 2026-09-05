@@ -806,21 +806,75 @@ class VideoAgentToolTests(unittest.TestCase):
             ).fetchone()
             from content_domains import submission_idempotency
             submission_idempotency.ensure_table(conn)
+            conn.execute("""CREATE TABLE IF NOT EXISTS jobs(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT, username TEXT, cost INTEGER,
+                status TEXT DEFAULT 'pending', payload TEXT, result TEXT, error TEXT,
+                created_at INTEGER, updated_at INTEGER, submission_key TEXT)""")
             conn.execute(
                 "INSERT INTO submission_idempotency"
                 "(username,endpoint,idem_key,request_hash,response_json,created_at,updated_at) "
                 "VALUES(?,?,?,?,?,?,?)",
-                ("alice", "/api/gen/video", submission_key, "x" * 64,
+                ("alice", "/api/gen/cinematic", submission_key, "x" * 64,
                  json.dumps({"job_id": 999, "points_left": 120}),
                  1001, 1001),
             )
+            job_id = conn.execute(
+                "INSERT INTO jobs(kind,username,status,created_at,updated_at,submission_key) "
+                "VALUES(?,?,?,?,?,?)",
+                ("cinematic", "alice", "pending", 1002, 1002, submission_key),
+            ).lastrowid
             conn.commit()
         card_id = row["id"]
         reconciled = video_agent_tools.reconcile_pending_action(
             card_id, username="alice", db_factory=self.db, now=lambda: 2000,
         )
         self.assertEqual(reconciled["status"], "submitted")
-        self.assertEqual(reconciled["result"]["job_id"], 999)
+        self.assertEqual(reconciled["result"]["job_id"], job_id)
+
+    def test_reconcile_recorded_response_requires_exact_endpoint_and_job_identity(self):
+        cases = (
+            ("wrong-endpoint", "/api/gen/video", "cinematic"),
+            ("wrong-kind", "/api/gen/cinematic", "video"),
+            ("missing-job", "/api/gen/cinematic", None),
+        )
+        for name, endpoint, kind in cases:
+            with self.subTest(case=name):
+                submission_key = self._make_unknown_card()
+                with closing(self.db()) as conn:
+                    row = conn.execute(
+                        "SELECT id FROM video_agent_pending_actions WHERE submission_key=?",
+                        (submission_key,),
+                    ).fetchone()
+                    from content_domains import submission_idempotency
+                    submission_idempotency.ensure_table(conn)
+                    conn.execute("""CREATE TABLE IF NOT EXISTS jobs(
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        kind TEXT, username TEXT, cost INTEGER,
+                        status TEXT DEFAULT 'pending', payload TEXT, result TEXT, error TEXT,
+                        created_at INTEGER, updated_at INTEGER, submission_key TEXT)""")
+                    conn.execute("DELETE FROM submission_idempotency")
+                    conn.execute("DELETE FROM jobs")
+                    conn.execute(
+                        "INSERT INTO submission_idempotency"
+                        "(username,endpoint,idem_key,request_hash,response_json,created_at,updated_at) "
+                        "VALUES(?,?,?,?,?,?,?)",
+                        ("alice", endpoint, submission_key, "x" * 64,
+                         json.dumps({"job_id": 999}), 1001, 1001),
+                    )
+                    if kind:
+                        conn.execute(
+                            "INSERT INTO jobs(kind,username,status,created_at,updated_at,submission_key) "
+                            "VALUES(?,?,?,?,?,?)",
+                            (kind, "alice", "pending", 1002, 1002, submission_key),
+                        )
+                    conn.commit()
+                reconciled = video_agent_tools.reconcile_pending_action(
+                    row["id"], username="alice", db_factory=self.db,
+                    now=lambda: 2000,
+                )
+                self.assertEqual(reconciled["status"], "failed")
+                self.assertNotIn("result", reconciled)
 
     def test_reconcile_stays_unknown_while_submission_has_no_response(self):
         submission_key = self._make_unknown_card()
