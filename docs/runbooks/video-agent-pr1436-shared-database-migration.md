@@ -23,7 +23,7 @@
 ## 固定审批对象
 
 - PR：`tang730125633/huangque-main-site#1436`
-- 固定业务与 Schema 提交：`59d696be08719df5104908a21c6de3a13c92f2e0`
+- 固定业务与 Schema 提交：`e1ce9c49433261ad77b153768065527b3c271d85`
 - 基线：`main@36d2693f72359cb3c8252f98958a604261a1bb48`
 - 维护窗口：`2026-09-06 02:00–03:00 Asia/Shanghai`
 - 执行、备份、验证、失败恢复负责人：`@LU-003`
@@ -85,8 +85,10 @@
 4. 从已固定且已 push 的提交部署本次文件，并仅在收到独立授权后重启对应内容服务一次。
 5. 启动后用 `PRAGMA table_info`、`sqlite_master` 核对列和索引 SQL；再次执行完整性、外键和迁移前后计数核对。
 6. 验证精确对账：新付费任务在插入 `jobs` 的同一事务写入请求 `submission_key`；
-   `result_unknown` 只按 `username + submission_key + capability 允许的 kind` 命中，错误 key、空 key及历史 `NULL` 均不得认领。
-7. 验证素材门禁与真实报价合同：talking 的当前账户已核验私有图片加文案和音色可报价；
+   `result_unknown` 只按 capability 对应的真实提交端点及 `username + submission_key + capability 允许的 kind`
+   命中，错误端点、错误 kind、错误/空 key、无任务行及历史 `NULL` 均不得认领。
+7. 验证素材门禁与真实报价合同：talking 的当前账户已核验私有图片、请求中已确认的文案及
+   当前账号实时 ready 音色可报价；模型自行填充文案/音色或账号不可用音色不得 ready；
    talking 不得同时传 `avatar_id` 与 `image_upload_id`；story 的普通参考图片加剧本仍不得 ready，
    ready avatar 加剧本必须 ready；无源视频 compose、尺寸或 SHA-256 不一致上传均被拒绝。
 8. 所有检查通过后才恢复写入；恢复后观察首批请求、任务状态、退款和错误日志，不调用真实付费 Provider 做验收。
@@ -102,7 +104,7 @@ python scripts/stamp_assets.py --check
 ```
 
 本地候选验证证据：视频 Agent、委托令牌、CLI 执行器、素材所有权、报价确认、幂等、退款及
-Provider 密钥相邻回归共 `368/368` 通过；HQ CLI 回归 `87/87` 通过；仓库静态门禁、资源版本戳、
+Provider 密钥相邻回归共 `370/370` 通过；HQ CLI 回归 `87/87` 通过；仓库静态门禁、资源版本戳、
 Python 语法及 `git diff --check` 均通过。仓库历史测试会修改 `sys.path` 并复用 `server` 等通用模块名，
 因此单进程全量发现存在顺序污染，不能作为可信结论；required CI 改为每个文件使用独立解释器执行
 本 PR 全部变更测试及相邻安全回归。受支持 Linux 环境的最终结论必须以一次性推送后的精确 HEAD
