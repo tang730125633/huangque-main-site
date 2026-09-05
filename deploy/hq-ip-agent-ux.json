@@ -7,9 +7,10 @@
   "preserved_hermes_commit": "83b6bb170da836d8039c5a1ff064b27b71de9398",
   "preserved_hermes_tree": "328d52ebfc348a638162fec7e30c02378ab9ea4b",
   "files": [
-    {"source": "server/hq_ip_agent/app.py", "target": "app.py", "before": "5fe9c7478ad9ff00c4eb8bea95586b1e5d60a751a7cfa852cf29c75be58dde66", "after": "6c19a65e782e9ab389c5871c1e67ae648df1824149fcd4a3b0270dbf82805be7"},
+    {"source": "server/hq_ip_agent/app.py", "target": "app.py", "before": "5fe9c7478ad9ff00c4eb8bea95586b1e5d60a751a7cfa852cf29c75be58dde66", "after": "1bbb8a5f45a4f739fe68b87bba8d096457ef38ae5cb68ef4d4581d6ffa328366"},
     {"source": "server/hq_ip_agent/agent/v4/main_agent.py", "target": "agent/v4/main_agent.py", "before": "46550d7ec7737c742643e8b164639cadf0e91dd607e3153037c64b9f56b57ad1", "after": "46550d7ec7737c742643e8b164639cadf0e91dd607e3153037c64b9f56b57ad1"},
-    {"source": "server/hq_ip_agent/agent/v4/subagent.py", "target": "agent/v4/subagent.py", "before": "7453d3c8503350c9cd7f8f952231cafc353ee596984dca44cde190f41cffd6a3", "after": "a0bf2449858bab7d7c01ac41f1eb320ecf544d2b12def4f81dcb2b67888aa660"},
+    {"source": "server/hq_ip_agent/agent/v4/subagent.py", "target": "agent/v4/subagent.py", "before": "7453d3c8503350c9cd7f8f952231cafc353ee596984dca44cde190f41cffd6a3", "after": "f32c98363c04d5518af2a974fe8cb8a40ef7052065507fb9b4a931d91afb0537"},
+    {"source": "server/hq_ip_agent/agent/v4/state.py", "target": "agent/v4/state.py", "before": "7906376e2d672967c396c8aa5609e9daccf21ecfba505b5b6bc3b11fc5aae451", "after": "f3a8d0923864fda2815d178828d18ce270961837e2258661af08605bdade8bd5"},
     {"source": "site/workbench/hq-ip-agent/static/v4.js", "target": "static/v4.js", "before": "5e8afc6fd6206ec16a92aac6191c184a698eb6d06fd8e5508a8e26aea2f2db88", "after": "9032d7e7adc3f4ea3a8a0d1a4d62ca09a48b2cf43888ce5004c799785ba6e137"},
     {"source": "site/workbench/hq-ip-agent/static/style.css", "target": "static/style.css", "before": "8727e87def426a8c2532a6ff584cd30c608cbb6cfd4438e020be72dd41fba86c", "after": "8727e87def426a8c2532a6ff584cd30c608cbb6cfd4438e020be72dd41fba86c"}
   ]

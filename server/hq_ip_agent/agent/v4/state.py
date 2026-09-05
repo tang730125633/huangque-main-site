@@ -105,6 +105,21 @@ def clear_pending_quote(sid: str, domain: str):
             sess["pending_quote"] = None
 
 
+def update_subagent(sid: str, domain: str, update):
+    """Atomic read/modify/write for runtime receipts, including cross-domain polls.
+
+    The callback must only transform the supplied dict (no I/O or state calls).
+    This shares save_subagent's lock, so a task observation cannot erase a quote
+    or receipt concurrently published by the owning domain.
+    """
+    with _lock:
+        sess = _subs.setdefault(sid, {}).setdefault(domain, {})
+        update(sess)
+        if domain not in _domains_used.setdefault(sid, []):
+            _domains_used[sid].append(domain)
+        return _snap_sess(sess)
+
+
 def all_domains(sid: str) -> list:
     with _lock:
         return list(_domains_used.get(sid, []))

@@ -34,6 +34,7 @@ jobs:
           HQ_PROXY_TUNNEL: '0'
         run: |
           python -m unittest discover -s tests -p test_ux_recovery.py -v
+          python -m unittest discover -s tests -p test_quote_runtime_truth.py -v
           python tests/hq-p0c-test.py
       - name: Mocked mobile browser regression
         working-directory: server/hq_ip_agent

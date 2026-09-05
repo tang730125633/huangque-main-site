@@ -913,8 +913,8 @@ def _v4_delegations(sid: str) -> dict:
         last = sess.get("last_result") or {}
         pending = sess.get("pending_quote") or {}
         summary = last.get("summary", "")
-        if pending and (last.get("quote") or {}).get("cost") != pending.get("cost"):
-            summary = "当前操作已取得新报价，请核对本次点数后确认。"
+        if pending and last.get("state") == "needs_approval":
+            summary = v4_subagent.quote_summary(pending)
         out[domain] = {
             "agent_id": v4_skills.DOMAINS.get(domain, domain),
             "state": last.get("state"),
