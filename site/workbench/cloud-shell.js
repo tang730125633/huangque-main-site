@@ -357,11 +357,11 @@
     var h=extra||{};
     return h;
   }
-  var _verifiedUser=null;
+  var _verifiedUsername='';
   function notifyAuthChanged(user,verified){
     var username=user&&typeof user.username==='string'?user.username:'';
-    _verifiedUser=verified===true&&username?user:null;
-    try{ window.dispatchEvent(new CustomEvent('hq:auth-changed',{detail:{username:username,verified:!!_verifiedUser}})); }catch(e){}
+    _verifiedUsername=verified===true&&username?username:'';
+    try{ window.dispatchEvent(new CustomEvent('hq:auth-changed',{detail:{username:_verifiedUsername,verified:!!_verifiedUsername}})); }catch(e){}
   }
   function refreshPoints(){
     fetch('/api/auth/me',{credentials:'same-origin',cache:'no-store',headers:authHeaders()}).then(function(r){ if(r.status===401){ notifyAuthChanged(null,false);if(currentUser()) requireLogin(); return null; } if(!r.ok)return null; return r.json(); }).then(function(d){
@@ -1123,7 +1123,7 @@
   function price(key,fallback){var value=Number(pricingValues[key]);return Number.isFinite(value)&&value>0?value:fallback;}
   setInterval(function(){fetchPricing().then(function(values){pricingListeners.forEach(function(callback){callback(values)})}).catch(function(){})},30000);
 
-  window.HQ={ icon:icon, nav:NAV, escapeHtml:escapeHtml, escapeAttr:escapeAttr, safeUrl:safeUrl, isAdmin:isAdmin, getVerifiedUser:function(){return _verifiedUser;}, refreshPoints:refreshPoints, refreshNotifications:refreshNotificationBadge, setFriendsBadge:updateFriendsBadge, registerFriendsPanel:registerFriendsPanel, setFriendsPanelExpanded:setFriendsPanelExpanded, openFriendsPanel:openFriendsPanel, login:openLogin, requireLogin:requireLogin, register:openRegister, closeLogin:closeLogin, renderUser:renderUser, onPricing:onPricing, price:price };
+  window.HQ={ icon:icon, nav:NAV, escapeHtml:escapeHtml, escapeAttr:escapeAttr, safeUrl:safeUrl, isAdmin:isAdmin, getVerifiedUser:function(){return _verifiedUsername?{username:_verifiedUsername}:null;}, refreshPoints:refreshPoints, refreshNotifications:refreshNotificationBadge, setFriendsBadge:updateFriendsBadge, registerFriendsPanel:registerFriendsPanel, setFriendsPanelExpanded:setFriendsPanelExpanded, openFriendsPanel:openFriendsPanel, login:openLogin, requireLogin:requireLogin, register:openRegister, closeLogin:closeLogin, renderUser:renderUser, onPricing:onPricing, price:price };
   function _hqInit(){ build(); buildLoginModal(); loadTaskTracker(); }
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',_hqInit); else _hqInit();
 })();

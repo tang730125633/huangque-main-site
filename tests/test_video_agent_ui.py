@@ -899,7 +899,7 @@ class VideoAgentUiTests(unittest.TestCase):
         self.assertIn("e.key==='hq_user'", HTML)
 
         self.assertIn("function notifyAuthChanged(user,verified)", CLOUD_SHELL)
-        self.assertIn("getVerifiedUser:function(){return _verifiedUser;}", CLOUD_SHELL)
+        self.assertIn("getVerifiedUser:function(){return _verifiedUsername?{username:_verifiedUsername}:null;}", CLOUD_SHELL)
         self.assertIn("new CustomEvent('hq:auth-changed'", CLOUD_SHELL)
         auth_success = CLOUD_SHELL.split("function authSuccess", 1)[1].split(
             "function hqDoLogin", 1
