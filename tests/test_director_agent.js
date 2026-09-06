@@ -511,6 +511,33 @@ for(const id of ['photoDrop','voiceUploadDrop','customerMaterialsPicker','driveA
     assert.match(reverse, /电影感产品特写提示词/);
   }
 
+  {
+    // 提交失败分类：终态（operation_terminal/queue_full/400）与可重试（限流/5xx/幂等处理中）
+    async function submitError(status, body) {
+      const offer = agent.validBreakdownOffer({
+        offer_id: 'director-breakdown-1234567890abcdef', kind: 'breakdown', expected_cost: 20, requires_confirmation: true,
+        idempotency_key: 'director-breakdown-1234567890abcdef',
+        input: {url: 'https://www.douyin.com/video/123', mode: 'scenes', source_page: 'script'},
+        summary: {urls: ['https://www.douyin.com/video/123'], tool: 'scenes', count: 1, label: '拆解'},
+      });
+      const record = {offer, job_id: null, idempotency_key: offer.idempotency_key, created_at: Date.now()};
+      const win = {fetch() { return Promise.resolve({ok: status >= 200 && status < 300, status, text() { return Promise.resolve(JSON.stringify(body)); }}); }};
+      try {
+        await agent.resumeBreakdown(win, record);
+        return null;
+      } catch (e) {
+        return {terminal: e.terminal, uncertain: e.uncertain};
+      }
+    }
+    assert.deepEqual(await submitError(429, {detail: '队列已满', code: 'queue_full'}), {terminal: true, uncertain: false});
+    assert.deepEqual(await submitError(500, {detail: '已退款', operation_terminal: true}), {terminal: true, uncertain: false});
+    assert.deepEqual(await submitError(400, {detail: '链接无效'}), {terminal: true, uncertain: false});
+    assert.deepEqual(await submitError(409, {detail: '受理中', code: 'idempotency_in_progress'}), {terminal: false, uncertain: true});
+    assert.deepEqual(await submitError(429, {detail: '稍后重试'}), {terminal: false, uncertain: true});
+    assert.deepEqual(await submitError(503, {detail: '服务忙'}), {terminal: false, uncertain: true});
+    assert.deepEqual(await submitError(402, {detail: '点数不足'}), {terminal: false, uncertain: true});
+  }
+
   console.log('director agent frontend tests passed');
 })().catch(function(error){
 

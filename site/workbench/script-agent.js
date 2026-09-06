@@ -488,7 +488,14 @@
         }).catch(function(error){
           transientFailures+=1;
           if(timedOut()){ error.terminal=false; reject(error); return; }
-          if(error.status&&error.status<500){ error.terminal=true; reject(error); return; }
+          var status=error.status||0;
+          if(status===429||status===408){
+            if(onProgress) onProgress(Math.floor((Date.now()-started)/1000));
+            setTimeout(tick,Math.min(8000,1400*transientFailures));
+            return;
+          }
+          if(status===401){ error.terminal=false; error.auth=true; reject(error); return; }
+          if(status&&status<500){ error.terminal=true; reject(error); return; }
           if(onProgress) onProgress(Math.floor((Date.now()-started)/1000));
           setTimeout(tick,Math.min(5000,1400*transientFailures));
         });
@@ -563,9 +570,12 @@
         if(!data.job_id) throw new Error(data.detail||'拆解任务提交失败');
         record.job_id=String(data.job_id); if(onRecord) onRecord(record); return record;
       }).catch(function(error){
-        var code=error&&error.data&&error.data.code;
-        var retryable=!error.status||error.status>=500||error.status===429||code==='idempotency_in_progress';
-        error.terminal=!retryable; error.uncertain=retryable; throw error;
+        var data=error&&error.data||{};
+        var code=data.code;
+        var status=error.status||0;
+        var operationTerminal=data.operation_terminal===true;
+        var terminal=operationTerminal||code==='queue_full'||code==='idempotency_conflict'||status===400;
+        error.terminal=terminal; error.uncertain=!terminal; throw error;
       });
     }
     return accepted().then(function(){
@@ -824,8 +834,13 @@
         }
         persist();
         addMessage('error',error.message||'拆解失败，请稍后重试');
-        status.textContent=state.pending_breakdown?'原拆解单已保留，请手动重试。':'';
-        if(state.pending_breakdown) showRecovery('breakdown');
+        if(error.auth&&win.HQ&&typeof win.HQ.login==='function') win.HQ.login();
+        if(state.pending_breakdown){
+          status.textContent='原拆解单已保留，请手动重试。';
+          showRecovery('breakdown');
+        }else{
+          status.textContent='如需重试，请让我重新报价。';
+        }
       }).finally(function(){pending=false;render();});
     }
     function runPending(record,resumed){
@@ -859,7 +874,7 @@
       var key='director-agent-'+Date.now().toString(36)+Math.random().toString(36).slice(2,10);
       var record=createPendingRequest(body,key,value);
       if(!record){ addMessage('error','黄雀编导 Agent 请求摘要保存失败，请重试'); return; }
-      input.value=''; currentPlan=null; state.production_offer=null; state.breakdown_offer=null; state.pending_breakdown=null; addMessage('user',value);
+      input.value=''; currentPlan=null; state.production_offer=null; state.breakdown_offer=null; addMessage('user',value);
       state.pending_request=record; persist();
       runPending(record,false);
     }
