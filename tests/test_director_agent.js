@@ -538,6 +538,73 @@ for(const id of ['photoDrop','voiceUploadDrop','customerMaterialsPicker','driveA
     assert.deepEqual(await submitError(402, {detail: '点数不足'}), {terminal: false, uncertain: true});
   }
 
+  // mount 路径：confirmBreakdown 不得覆盖未对账旧单，submit 不丢 pending_breakdown
+  {
+    function el(tag){
+      const children = [], listeners = {}, classes = new Set();
+      return {
+        tagName: String(tag || 'div').toUpperCase(), children,
+        className: '', textContent: '', innerHTML: '', disabled: false, hidden: false,
+        value: '', checked: false, files: [], scrollTop: 0, scrollHeight: 0, type: '',
+        rows: 0, maxLength: 0, placeholder: '', onclick: null,
+        dataset: {}, attributes: {}, style: {},
+        classList: {
+          add(n) { classes.add(n); }, remove(n) { classes.delete(n); },
+          contains(n) { return classes.has(n); },
+          toggle(n, f) { if (f === true) classes.add(n); else if (f === false) classes.delete(n); else { classes.has(n) ? classes.delete(n) : classes.add(n); } },
+        },
+        appendChild(c) { children.push(c); if (c) c.parentNode = this; return c; },
+        removeChild(c) { const i = children.indexOf(c); if (i >= 0) children.splice(i, 1); return c; },
+        remove() { if (this.parentNode) this.parentNode.removeChild(this); },
+        setAttribute(k, v) { this.attributes[k] = String(v); },
+        getAttribute(k) { return (k in this.attributes) ? this.attributes[k] : null; },
+        addEventListener(t, fn) { (listeners[t] = listeners[t] || []).push(fn); },
+        dispatchEvent() {}, click() { this.clicked = true; (listeners.click || []).forEach((fn) => fn()); },
+        focus() { this.focused = true; }, scrollIntoView() {},
+        querySelector() { return null; }, querySelectorAll() { return []; },
+      };
+    }
+    const {doc: baseDoc} = fixture();
+    const doc = Object.assign({}, baseDoc);
+    doc.createElement = (tag) => { const e = el(tag); e.ownerDocument = doc; return e; };
+    doc.head = { appendChild() {} };
+    doc.body = { appendChild() {} };
+    const win = {
+      sessionStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
+      location: { href: '' }, Event: function Event() {},
+      fetch() { return Promise.reject(new Error('unexpected fetch')); },
+    };
+    const mounted = agent.mount(doc, win, 'testuser');
+    assert.ok(mounted);
+    const oldOffer = agent.validBreakdownOffer({
+      offer_id: 'director-breakdown-old1234567890abcd', kind: 'breakdown', expected_cost: 20, requires_confirmation: true,
+      idempotency_key: 'director-breakdown-old1234567890abcd',
+      input: {url: 'https://www.douyin.com/video/1', mode: 'scenes', source_page: 'script'},
+      summary: {urls: ['https://www.douyin.com/video/1'], tool: 'scenes', count: 1, label: '拆解'},
+    });
+    const newOffer = agent.validBreakdownOffer({
+      offer_id: 'director-breakdown-new1234567890abcd', kind: 'breakdown', expected_cost: 20, requires_confirmation: true,
+      idempotency_key: 'director-breakdown-new1234567890abcd',
+      input: {url: 'https://www.douyin.com/video/1', mode: 'scenes', source_page: 'script'},
+      summary: {urls: ['https://www.douyin.com/video/1'], tool: 'scenes', count: 1, label: '拆解'},
+    });
+    mounted.state.pending_breakdown = agent.validPendingBreakdown({
+      offer: oldOffer, job_id: null, idempotency_key: oldOffer.idempotency_key, created_at: Date.now(),
+    });
+    mounted.state.breakdown_offer = oldOffer;
+
+    // 新报价不能覆盖未对账旧单
+    mounted.confirmBreakdown(newOffer);
+    assert.ok(mounted.state.pending_breakdown);
+    assert.equal(mounted.state.pending_breakdown.offer.offer_id, oldOffer.offer_id);
+    assert.ok(mounted.state.messages.some((m) => m.role === 'error' && m.content.indexOf('未完成') >= 0));
+
+    // 普通聊天不丢 pending_breakdown（数据不清空）
+    mounted.submit('刚才的结果给我看看');
+    assert.ok(mounted.state.pending_breakdown);
+    assert.equal(mounted.state.pending_breakdown.offer.offer_id, oldOffer.offer_id);
+  }
+
   console.log('director agent frontend tests passed');
 })().catch(function(error){
 

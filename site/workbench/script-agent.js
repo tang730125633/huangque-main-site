@@ -693,6 +693,12 @@
       };
       recovery.classList.add('on');
     }
+    function syncRecovery(){
+      clearRecovery();
+      if(state.pending_production) showRecovery('production');
+      else if(state.pending_breakdown) showRecovery('breakdown');
+      else if(state.pending_request) showRecovery('request');
+    }
     function actionButton(action){
       var button=doc.createElement('button'); button.type='button'; button.className='hq-da-action'; button.textContent=action.label||'应用建议';
       button.onclick=function(){
@@ -770,6 +776,7 @@
       }else{
         status.textContent='';
       }
+      syncRecovery();
     }
     function runProduction(record,resumed){
       record=validPendingProduction(record); if(!record) return;
@@ -811,6 +818,15 @@
     function confirmBreakdown(offer){
       if(pending||page!=='script') return;
       offer=validBreakdownOffer(offer); if(!offer){addMessage('error','拆解确认单已失效，请重新告诉我你的需求');return;}
+      if(state.pending_breakdown){
+        if(state.pending_breakdown.offer.offer_id===offer.offer_id){
+          runBreakdown(state.pending_breakdown,true);
+          return;
+        }
+        addMessage('error','你还有一个未完成的拆解任务，请先恢复并确认它结束后再开启新任务。');
+        syncRecovery();
+        return;
+      }
       runBreakdown({offer:offer,job_id:null,idempotency_key:offer.idempotency_key,created_at:Date.now()},false);
     }
     function runBreakdown(record,resumed){
