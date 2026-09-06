@@ -8,6 +8,7 @@ import re
 import secrets
 import threading
 import time
+from urllib.parse import urlparse
 
 from . import director_cli
 from . import submission_idempotency
@@ -184,6 +185,7 @@ DIRECTOR_AGENT_SCHEMA = _schema({
         "items": {"type": "string", "maxLength": 300},
     },
     "offer_production": {"type": "boolean"},
+    "offer_breakdown": {"type": "boolean"},
 })
 
 
@@ -1298,10 +1300,10 @@ def _effective_script_context(request, actions, *, force_write=False,
     effective = dict(request["page_context"])
     for action in actions:
         if (action["type"] == "fill_field"
-                and action["field"] in {"topic", "selling_points"}):
+                and action["field"] in {"topic", "selling_points", "breakdown_url"}):
             effective[action["field"]] = action["value"]
         elif (action["type"] == "choose_option"
-                and action["field"] in {"style", "duration", "platform"}):
+                and action["field"] in {"style", "duration", "platform", "breakdown_tool"}):
             effective[action["field"]] = action["value"]
         elif action["type"] == "switch_mode":
             effective["mode"] = action["mode"]
@@ -1375,6 +1377,89 @@ def _script_production_offer(request, actions, requested, *, force_write=False,
     }
 
 
+def _breakdown_cost(tool, urls):
+    from . import points
+    if tool == "scenes" and isinstance(urls, list) and urls:
+        return points.cost_of("breakdown", {"urls": urls})
+    return points.cost_of("breakdown", {})
+
+
+_BREAKDOWN_URL_HOST = re.compile(
+    r"^(?:douyin\.com|.*\.douyin\.com|iesdouyin\.com|.*\.iesdouyin\.com|"
+    r"xiaohongshu\.com|.*\.xiaohongshu\.com|xhslink\.com|.*\.xhslink\.com)$"
+)
+
+
+def _normalize_breakdown_urls(url_text, tool):
+    """Mirror the page/backend link checks before an offer is issued.
+
+    Returns a list of normalized http(s) URLs, or None when the input cannot
+    be submitted (so no offer is produced and no cost is quoted).
+    """
+    lines = [line.strip() for line in str(url_text or "").split("\n") if line.strip()]
+    if not lines:
+        return None
+    urls = []
+    for line in lines:
+        match = re.search(r"https?://[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]+", line)
+        if not match:
+            return None
+        parsed = urlparse(match.group(0))
+        host = (parsed.hostname or "").lower().rstrip(".")
+        if not _BREAKDOWN_URL_HOST.fullmatch(host):
+            return None
+        urls.append(parsed.geturl())
+    if len(urls) > 5:
+        return None
+    if tool == "reverse_prompt" and len(urls) != 1:
+        return None
+    return urls
+
+
+def _breakdown_offer(request, actions, requested):
+    """Build a non-billable, server-submitted breakdown/reverse offer.
+
+    The offer freezes the canonical submission body and binds a stable
+    request id (offer_id) that also serves as the Idempotency-Key.  After the
+    customer confirms, the frontend submits this frozen body directly to
+    /api/gen/breakdown; retries with the same key replay the original job.
+    """
+    if not requested or request["page_context"]["page"] != "script":
+        return None
+    effective = _effective_script_context(request, actions)
+    if effective is None:
+        return None
+    effective["mode"] = "breakdown"
+    tool = effective.get("breakdown_tool") or "scenes"
+    if tool not in BREAKDOWN_TOOLS:
+        tool = "scenes"
+    urls = _normalize_breakdown_urls(effective.get("breakdown_url"), tool)
+    if not urls:
+        return None
+    cost = _breakdown_cost(tool, urls)
+    if cost <= 0:
+        return None
+    seed = "%s\0%s\0%s\0%s" % (
+        request["_username"], request.get("_job_id"), request["session_id"],
+        _canonical({"urls": urls, "tool": tool}),
+    )
+    offer_id = "director-breakdown-" + hashlib.sha256(
+        seed.encode("utf-8")
+    ).hexdigest()[:32]
+    label = "拆解" if tool == "scenes" else "提示词反推"
+    if tool == "scenes" and len(urls) > 1:
+        submission_input = {"urls": urls, "mode": "scenes", "source_page": "script"}
+    else:
+        submission_input = {"url": urls[0], "mode": tool, "source_page": "script"}
+    return {
+        "offer_id": offer_id, "kind": "breakdown", "expected_cost": cost,
+        "requires_confirmation": True,
+        "idempotency_key": offer_id,
+        "input": submission_input,
+        "summary": {"urls": urls, "tool": tool, "count": len(urls), "label": label},
+    }
+
+
 def normalize_model_result(raw, request):
     raw = str(raw or "").strip()
     required_fields = {"content", "stage", "actions", "warnings"}
@@ -1391,7 +1476,7 @@ def normalize_model_result(raw, request):
     if data is None:
         raise ValueError("编导助手返回格式无效，请重试")
     if (not isinstance(data, dict) or not required_fields.issubset(data)
-            or set(data) - (required_fields | {"offer_production"})):
+            or set(data) - (required_fields | {"offer_production", "offer_breakdown"})):
         raise ValueError("编导助手返回了不支持的字段")
     content = _text(data.get("content"), 5000, "Agent 回答")
     stage = _text(data.get("stage"), 20, "当前阶段")
@@ -1405,10 +1490,19 @@ def normalize_model_result(raw, request):
     model_offer_requested = data.get("offer_production", False)
     if not isinstance(model_offer_requested, bool):
         raise ValueError("编导助手生产意图无效")
+    model_breakdown_requested = data.get("offer_breakdown", False)
+    if not isinstance(model_breakdown_requested, bool):
+        raise ValueError("编导助手拆解意图无效")
     prepare_requested = bool(
         model_offer_requested
         and request["page_context"]["page"] == "script"
         and not _explicit_script_production_request(request)
+    )
+    prepare_breakdown_requested = bool(
+        model_breakdown_requested
+        and request["page_context"]["page"] == "script"
+        and not _explicit_script_production_request(request)
+        and not prepare_requested
     )
     normalized = []
     for index, action in enumerate(actions):
@@ -1507,6 +1601,28 @@ def normalize_model_result(raw, request):
                summary["duration"], int(prepared_plan["expected_cost"]),
                CONFIRM_SCRIPT_PROMPT)
         )
+    breakdown_offer = None
+    if prepare_breakdown_requested:
+        breakdown_offer = _breakdown_offer(
+            request, normalized, prepare_breakdown_requested,
+        )
+        if breakdown_offer is not None:
+            if not any(item["type"] == "switch_mode" for item in normalized):
+                normalized.append({
+                    "id": "action_0", "type": "switch_mode", "mode": "breakdown",
+                    "label": "切换到拆解",
+                })
+            for index, item in enumerate(normalized):
+                item["id"] = "action_%d" % (index + 1)
+            label = breakdown_offer["summary"]["label"]
+            count = int(breakdown_offer["summary"].get("count") or 1)
+            content = (
+                "%s方案已准备好（%d 条链接），预计扣除 %d 点。确认后由服务端受理并扣点，"
+                "完成后把结果回传到对话。"
+                % (label, count, int(breakdown_offer["expected_cost"]))
+            )
+        else:
+            warnings.append("待确认的拆解方案暂未就绪，请补充抖音或小红书的视频链接。")
     seed = request["session_id"] + request["page_revision"] + raw
     result = {
         "type": "director_agent", "content": content,
@@ -1520,6 +1636,8 @@ def normalize_model_result(raw, request):
     }
     if prepared_plan is not None:
         result["_pending_production_plan"] = prepared_plan
+    if breakdown_offer is not None:
+        result["breakdown_offer"] = breakdown_offer
     return result
 
 

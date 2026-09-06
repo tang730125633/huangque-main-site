@@ -168,6 +168,48 @@ class DirectorConversationTests(unittest.TestCase):
         self.assertNotIn("production_offer", normalized)
         self.assertIn("确认生成", normalized["content"])
 
+    def test_breakdown_plan_builds_frozen_submission_offer(self):
+        request = self.request()
+        actions = [
+            {"type": "switch_mode", "mode": "breakdown", "label": "切到拆解"},
+            {"type": "fill_field", "field": "breakdown_url", "value": "https://www.douyin.com/video/1", "label": "填链接"},
+            {"type": "choose_option", "field": "breakdown_tool", "value": "scenes", "label": "拆解"},
+        ]
+        result = self.converse(
+            [tool_reply("prepare_breakdown_plan", {"actions": actions}), text_reply()], request=request,
+        )
+        self.assertTrue(result["offer_breakdown"])
+        self.assertFalse(result["offer_production"])
+        with mock.patch("content_domains.points.cost_of", return_value=20):
+            normalized = agent.normalize_model_result(json.dumps(result), request)
+        offer = normalized.get("breakdown_offer")
+        self.assertIsNotNone(offer)
+        self.assertEqual("breakdown", offer["kind"])
+        self.assertEqual(20, offer["expected_cost"])
+        self.assertEqual(offer["offer_id"], offer["idempotency_key"])
+        self.assertEqual("scenes", offer["input"]["mode"])
+        self.assertEqual("https://www.douyin.com/video/1", offer["input"]["url"])
+        self.assertEqual(["https://www.douyin.com/video/1"], offer["summary"]["urls"])
+        self.assertNotIn("click", offer)
+        self.assertTrue(any(item["type"] == "switch_mode" and item["mode"] == "breakdown"
+                           for item in normalized["plan"]["actions"]))
+
+    def test_breakdown_reverse_rejects_multiple_links_before_quoting(self):
+        request = self.request()
+        actions = [
+            {"type": "switch_mode", "mode": "breakdown", "label": "切到拆解"},
+            {"type": "fill_field", "field": "breakdown_url",
+             "value": "https://www.douyin.com/video/1\nhttps://www.douyin.com/video/2", "label": "填链接"},
+            {"type": "choose_option", "field": "breakdown_tool", "value": "reverse_prompt", "label": "反推"},
+        ]
+        result = self.converse(
+            [tool_reply("prepare_breakdown_plan", {"actions": actions}), text_reply()], request=request,
+        )
+        with mock.patch("content_domains.points.cost_of", return_value=20):
+            normalized = agent.normalize_model_result(json.dumps(result), request)
+        self.assertIsNone(normalized.get("breakdown_offer"))
+        self.assertTrue(any("单条" in warning or "暂未就绪" in warning for warning in normalized["plan"]["warnings"]))
+
     def test_actions_still_reject_generation_and_cross_page_targets(self):
         for action in ({"type": "execute", "target": "generate_video"},
                        {"type": "fill_field", "field": "digital_human_script", "value": "draft", "label": "fill"}):

@@ -35,7 +35,7 @@
     return username?STORAGE_KEY+':'+encodeURIComponent(username):'';
   }
   function emptyState(){
-    return {messages:[],open:false,pending_request:null,production_offer:null,pending_production:null};
+    return {messages:[],open:false,pending_request:null,production_offer:null,pending_production:null,breakdown_offer:null,pending_breakdown:null};
   }
   function discardOwnerlessState(storage){
     if(!storage||typeof storage.removeItem!=='function') return;
@@ -349,6 +349,42 @@
     if(!clean.input.topic) return null;
     return clean;
   }
+  function validBreakdownOffer(value){
+    if(!value||typeof value!=='object'||Array.isArray(value)) return null;
+    var offerId=String(value.offer_id||''),input=value.input,summary=value.summary;
+    if(value.requires_confirmation!==true||value.kind!=='breakdown') return null;
+    if(!/^director-breakdown-[A-Za-z0-9_-]{16,64}$/.test(offerId)) return null;
+    var cost=Number(value.expected_cost);
+    if(!Number.isInteger(cost)||cost<1||cost>10000) return null;
+    var idemKey=String(value.idempotency_key||'');
+    if(idemKey!==offerId) return null;
+    if(!input||typeof input!=='object'||Array.isArray(input)) return null;
+    var tool=String(input.mode||input.tool||'scenes');
+    if(tool!=='scenes'&&tool!=='reverse_prompt') return null;
+    var hasUrl=!!String(input.url||'').trim();
+    var hasUrls=Array.isArray(input.urls)&&input.urls.length>0;
+    if(!hasUrl&&!hasUrls) return null;
+    if(!summary||typeof summary!=='object'||Array.isArray(summary)) return null;
+    return {
+      offer_id:offerId,kind:'breakdown',expected_cost:cost,requires_confirmation:true,
+      idempotency_key:idemKey,
+      input:JSON.parse(JSON.stringify(input)),
+      summary:{urls:Array.isArray(summary.urls)?summary.urls.slice(0,5):[],
+        tool:String(summary.tool||tool),count:Number(summary.count)||1,
+        label:String(summary.label||(tool==='scenes'?'拆解':'提示词反推'))}
+    };
+  }
+  function validPendingBreakdown(value){
+    if(!value||typeof value!=='object'||Array.isArray(value)) return null;
+    var offer=validBreakdownOffer(value.offer);
+    if(!offer) return null;
+    var jobId=value.job_id;
+    if(jobId!==null&&jobId!==undefined&&!/^\d{1,20}$/.test(String(jobId))) return null;
+    var idemKey=String(value.idempotency_key||'');
+    if(!/^[A-Za-z0-9._:-]{8,128}$/.test(idemKey)) return null;
+    return {offer:offer,job_id:jobId===null||jobId===undefined?null:String(jobId),
+      idempotency_key:idemKey,created_at:Number(value.created_at)||Date.now()};
+  }
   function validPendingProduction(value){
     if(!value||typeof value!=='object'||Array.isArray(value)) return null;
     var jobId=value.job_id,offer=validProductionOffer(value.offer,true);
@@ -359,6 +395,7 @@
   }
   function autoResumeKind(state){
     if(state&&state.pending_production&&state.pending_production.job_id) return 'production';
+    if(state&&state.pending_breakdown&&state.pending_breakdown.job_id) return 'breakdown';
     if(state&&state.pending_request&&state.pending_request.job_id) return 'request';
     return '';
   }
@@ -377,6 +414,8 @@
         pending_request:validPendingRequest(value.pending_request),
         production_offer:validProductionOffer(value.production_offer),
         pending_production:validPendingProduction(value.pending_production),
+        breakdown_offer:validBreakdownOffer(value.breakdown_offer),
+        pending_breakdown:validPendingBreakdown(value.pending_breakdown),
         updated_at:Number(value.updated_at)||0
       };
     }catch(error){}
@@ -391,6 +430,8 @@
       pending_request:validPendingRequest(state.pending_request),
       production_offer:validProductionOffer(state.production_offer),
       pending_production:validPendingProduction(state.pending_production),
+      breakdown_offer:validBreakdownOffer(state.breakdown_offer),
+      pending_breakdown:validPendingBreakdown(state.pending_breakdown),
       updated_at:Date.now()
     })); return true; }catch(error){return false;}
   }
@@ -447,7 +488,14 @@
         }).catch(function(error){
           transientFailures+=1;
           if(timedOut()){ error.terminal=false; reject(error); return; }
-          if(error.status&&error.status<500){ error.terminal=true; reject(error); return; }
+          var status=error.status||0;
+          if(status===429||status===408){
+            if(onProgress) onProgress(Math.floor((Date.now()-started)/1000));
+            setTimeout(tick,Math.min(8000,1400*transientFailures));
+            return;
+          }
+          if(status===401){ error.terminal=false; error.auth=true; reject(error); return; }
+          if(status&&status<500){ error.terminal=true; reject(error); return; }
           if(onProgress) onProgress(Math.floor((Date.now()-started)/1000));
           setTimeout(tick,Math.min(5000,1400*transientFailures));
         });
@@ -510,6 +558,31 @@
     });
   }
 
+  function resumeBreakdown(win,record,onRecord,onProgress){
+    record=validPendingBreakdown(record);
+    if(!record) return Promise.reject(new Error('未找到可恢复的拆解单'));
+    function accepted(){
+      if(record.job_id) return Promise.resolve(record);
+      return jsonFetch(win,'/api/gen/breakdown',{
+        method:'POST',body:record.offer.input,
+        headers:{'Idempotency-Key':record.idempotency_key}
+      }).then(function(data){
+        if(!data.job_id) throw new Error(data.detail||'拆解任务提交失败');
+        record.job_id=String(data.job_id); if(onRecord) onRecord(record); return record;
+      }).catch(function(error){
+        var data=error&&error.data||{};
+        var code=data.code;
+        var status=error.status||0;
+        var operationTerminal=data.operation_terminal===true;
+        var terminal=operationTerminal||code==='queue_full'||code==='idempotency_conflict'||status===400;
+        error.terminal=terminal; error.uncertain=!terminal; throw error;
+      });
+    }
+    return accepted().then(function(){
+      return pollJob(win,record.job_id,function(seconds){if(onProgress) onProgress(seconds,'polling');});
+    });
+  }
+
   function formatScriptResult(result){
     var scenes=result&&Array.isArray(result.scenes)?result.scenes:[];
     if(!scenes.length) return '生产已完成：\n'+String(result&&result.text||'脚本已生成').slice(0,12000);
@@ -520,6 +593,52 @@
       if(scene.line) lines.push('口播：'+String(scene.line));
     });
     return lines.join('\n').slice(0,16000);
+  }
+
+  function reversePromptFromResult(result){
+    if(!result||typeof result!=='object') return '';
+    if(typeof result.prompt==='string'&&result.prompt.trim()) return result.prompt.trim();
+    var sections=result.sections;
+    if(sections&&typeof sections==='object'&&!Array.isArray(sections)){
+      var labels={subject:'主体',scene:'场景',composition:'构图',action:'动作',lighting:'光影',style:'风格',parameters:'参数'};
+      return Object.keys(labels).map(function(key){
+        var value=sections[key];
+        return (value===undefined||value===null||!String(value).trim())?'':labels[key]+'：'+String(value).trim();
+      }).filter(Boolean).join('\n');
+    }
+    return '';
+  }
+  function formatScenes(scenes){
+    scenes=Array.isArray(scenes)?scenes:[];
+    if(!scenes.length) return '拆解完成，但没有解析出有效分镜。';
+    var lines=['拆解完成 · 共 '+scenes.length+' 个分镜'];
+    scenes.slice(0,20).forEach(function(scene,index){
+      var dur=(scene&&scene.dur)!=null?String(scene.dur).trim():'';
+      lines.push('\n镜头 '+(index+1)+(dur?' · '+dur:''));
+      if(scene&&scene.scene) lines.push('画面：'+String(scene.scene));
+      if(scene&&scene.line) lines.push('口播：'+String(scene.line));
+    });
+    return lines.join('\n').slice(0,16000);
+  }
+  function formatBreakdownResult(result){
+    if(!result||typeof result!=='object') return '拆解已完成。';
+    if(result.type==='breakdown_batch'){
+      var results=Array.isArray(result.results)?result.results:[];
+      var parts=['批量拆解完成：'+results.length+'/'+(Number(result.total)||results.length)+' 成功'];
+      results.forEach(function(item,index){
+        var scenes=item&&Array.isArray(item.scenes)?item.scenes:[];
+        if(scenes.length) parts.push('\n【第'+(index+1)+'条】'+formatScenes(scenes));
+      });
+      var errors=Array.isArray(result.errors)?result.errors:[];
+      if(errors.length) parts.push('\n失败 '+errors.length+' 条：'+errors.map(function(e){return String(e&&e.detail||'');}).join('；'));
+      return parts.join('\n').slice(0,16000);
+    }
+    if(result.type==='breakdown_reverse'){
+      var prompt=reversePromptFromResult(result);
+      if(!prompt) return '提示词反推完成，但结果为空。';
+      return '提示词反推完成：\n'+prompt.slice(0,12000);
+    }
+    return formatScenes(result.scenes);
   }
 
   function addStyles(doc){
@@ -565,9 +684,20 @@
     function addMessage(role,content){state.messages.push({role:role,content:String(content||'')}); state.messages=state.messages.slice(-20); persist(); render();}
     function clearRecovery(){recovery.classList.remove('on');retry.onclick=null;}
     function showRecovery(kind){
-      retry.textContent=kind==='production'?'重试原生产单':'重试原请求';
-      retry.onclick=function(){clearRecovery();if(kind==='production')runProduction(state.pending_production,false);else runPending(state.pending_request,false);};
+      retry.textContent=kind==='production'?'重试原生产单':(kind==='breakdown'?'重试原拆解单':'重试原请求');
+      retry.onclick=function(){
+        clearRecovery();
+        if(kind==='production') runProduction(state.pending_production,false);
+        else if(kind==='breakdown') runBreakdown(state.pending_breakdown,false);
+        else runPending(state.pending_request,false);
+      };
       recovery.classList.add('on');
+    }
+    function syncRecovery(){
+      clearRecovery();
+      if(state.pending_production) showRecovery('production');
+      else if(state.pending_breakdown) showRecovery('breakdown');
+      else if(state.pending_request) showRecovery('request');
     }
     function actionButton(action){
       var button=doc.createElement('button'); button.type='button'; button.className='hq-da-action'; button.textContent=action.label||'应用建议';
@@ -586,6 +716,20 @@
       var button=doc.createElement('button'); button.type='button'; button.className='hq-da-confirm';
       button.textContent='确认生产并扣 '+offer.expected_cost+' 点'; button.disabled=pending;
       button.onclick=function(){confirmProduction(offer);};
+      card.appendChild(copy); card.appendChild(button); return card;
+    }
+    function breakdownCard(offer){
+      var card=doc.createElement('div'); card.className='hq-da-offer';
+      var summary=offer.summary||{};
+      var urls=Array.isArray(summary.urls)?summary.urls:[];
+      var linkText=urls.length?urls.slice(0,3).join('\n')+(urls.length>3?'\n…共 '+urls.length+' 条':''):'';
+      var copy=doc.createElement('div');
+      copy.textContent=String(summary.label||'拆解')+'确认\n链接：'+linkText+
+        '\n方式：'+String(summary.tool==='reverse_prompt'?'提示词反推':'分镜拆解')+
+        '\n费用：'+offer.expected_cost+' 点（确认后由服务端受理并扣点）';
+      var button=doc.createElement('button'); button.type='button'; button.className='hq-da-confirm';
+      button.textContent='确认并扣 '+offer.expected_cost+' 点'; button.disabled=pending;
+      button.onclick=function(){confirmBreakdown(offer);};
       card.appendChild(copy); card.appendChild(button); return card;
     }
     function render(){
@@ -607,6 +751,9 @@
         if(message.role==='assistant'&&index===state.messages.length-1&&state.production_offer){
           messages.appendChild(productionCard(state.production_offer));
         }
+        if(message.role==='assistant'&&index===state.messages.length-1&&state.breakdown_offer){
+          messages.appendChild(breakdownCard(state.breakdown_offer));
+        }
       });
       messages.scrollTop=messages.scrollHeight; send.disabled=pending; attach.disabled=pending; input.disabled=pending;
     }
@@ -614,12 +761,13 @@
       state.pending_request=null; persist();
       currentPlan=result&&result.plan||null;
       state.production_offer=validProductionOffer(result&&result.production_offer);
+      state.breakdown_offer=validBreakdownOffer(result&&result.breakdown_offer);
       addMessage('assistant',result&&result.content||'我已经看完当前页面。');
       if(currentPlan&&currentPlan.actions.length){
         try{
           validatePlan(currentPlan,doc);
           var applied=currentPlan.actions.map(function(action){return applyAction(action,doc,win);});
-          status.textContent=applied.join('；')+(state.production_offer?'。生产单已在对话中等待你确认。':'。');
+          status.textContent=applied.join('；')+(state.production_offer?'。生产单已在对话中等待你确认。':(state.breakdown_offer?'。拆解确认单已在对话中等待你确认。':'。'));
           currentPlan=null;
           render();
         }catch(error){
@@ -628,6 +776,7 @@
       }else{
         status.textContent='';
       }
+      syncRecovery();
     }
     function runProduction(record,resumed){
       record=validPendingProduction(record); if(!record) return;
@@ -666,6 +815,50 @@
       }
       runProduction({offer:offer,job_id:null,created_at:Date.now()},false);
     }
+    function confirmBreakdown(offer){
+      if(pending||page!=='script') return;
+      offer=validBreakdownOffer(offer); if(!offer){addMessage('error','拆解确认单已失效，请重新告诉我你的需求');return;}
+      if(state.pending_breakdown){
+        if(state.pending_breakdown.offer.offer_id===offer.offer_id){
+          runBreakdown(state.pending_breakdown,true);
+          return;
+        }
+        addMessage('error','你还有一个未完成的拆解任务，请先恢复并确认它结束后再开启新任务。');
+        syncRecovery();
+        return;
+      }
+      runBreakdown({offer:offer,job_id:null,idempotency_key:offer.idempotency_key,created_at:Date.now()},false);
+    }
+    function runBreakdown(record,resumed){
+      record=validPendingBreakdown(record); if(!record) return;
+      clearRecovery();
+      state.pending_breakdown=record; state.breakdown_offer=record.offer; persist();
+      pending=true; status.textContent=resumed?'正在恢复上次的拆解任务…':'正在提交拆解任务…'; render();
+      resumeBreakdown(win,record,function(updated){
+        state.pending_breakdown=validPendingBreakdown(updated); persist();
+      },function(seconds,phase){
+        status.textContent=phase==='submitting'?'正在确认原任务的受理结果…':'拆解/反推中，已用 '+seconds+' 秒…';
+      }).then(function(result){
+        state.pending_breakdown=null; state.breakdown_offer=null; persist();
+        addMessage('assistant',formatBreakdownResult(result));
+        status.textContent='拆解结果已回传到对话。';
+        if(win.HQ&&typeof win.HQ.refreshPoints==='function') win.HQ.refreshPoints();
+      }).catch(function(error){
+        if(error.terminal){
+          state.pending_breakdown=null;
+          state.breakdown_offer=null;
+        }
+        persist();
+        addMessage('error',error.message||'拆解失败，请稍后重试');
+        if(error.auth&&win.HQ&&typeof win.HQ.login==='function') win.HQ.login();
+        if(state.pending_breakdown){
+          status.textContent='原拆解单已保留，请手动重试。';
+          showRecovery('breakdown');
+        }else{
+          status.textContent='如需重试，请让我重新报价。';
+        }
+      }).finally(function(){pending=false;render();});
+    }
     function runPending(record,resumed){
       record=validPendingRequest(record);
       if(!record) return;
@@ -697,7 +890,7 @@
       var key='director-agent-'+Date.now().toString(36)+Math.random().toString(36).slice(2,10);
       var record=createPendingRequest(body,key,value);
       if(!record){ addMessage('error','黄雀编导 Agent 请求摘要保存失败，请重试'); return; }
-      input.value=''; currentPlan=null; state.production_offer=null; addMessage('user',value);
+      input.value=''; currentPlan=null; state.production_offer=null; state.breakdown_offer=null; addMessage('user',value);
       state.pending_request=record; persist();
       runPending(record,false);
     }
@@ -719,13 +912,16 @@
     if(state.pending_production){
       if(resumeKind==='production') runProduction(state.pending_production,true);
       else{status.textContent='发现未确认受理的原生产单，不会自动重提。';showRecovery('production');}
+    }else if(state.pending_breakdown){
+      if(resumeKind==='breakdown') runBreakdown(state.pending_breakdown,true);
+      else{status.textContent='发现未确认受理的拆解单，不会自动重提。';showRecovery('breakdown');}
     }else if(state.pending_request){
       if(resumeKind==='request') runPending(state.pending_request,true);
       else{status.textContent='发现未确认受理的原请求，不会自动重提。';showRecovery('request');}
     }
     return {
-      state:state,submit:submit,setOpen:setOpen,confirmProduction:confirmProduction,
-      resume:function(){if(state.pending_production)runProduction(state.pending_production,true);else runPending(state.pending_request,true);}
+      state:state,submit:submit,setOpen:setOpen,confirmProduction:confirmProduction,confirmBreakdown:confirmBreakdown,
+      resume:function(){if(state.pending_production)runProduction(state.pending_production,true);else if(state.pending_breakdown)runBreakdown(state.pending_breakdown,true);else runPending(state.pending_request,true);}
     };
   }
   return {digest:digest,createPageContext:createPageContext,createPageSnapshot:createPageSnapshot,
@@ -734,7 +930,9 @@
     validPendingRequest:validPendingRequest,createPendingRequest:createPendingRequest,
     validProductionOffer:validProductionOffer,validPendingProduction:validPendingProduction,autoResumeKind:autoResumeKind,
     retainProductionOfferAfterError:retainProductionOfferAfterError,
-    accountStorageKey:accountStorageKey,readState:readState,saveState:saveState,readUnifiedState:readUnifiedState,resumeRequest:resumeRequest,resumeProduction:resumeProduction,
+    accountStorageKey:accountStorageKey,readState:readState,saveState:saveState,readUnifiedState:readUnifiedState,resumeRequest:resumeRequest,resumeProduction:resumeProduction,resumeBreakdown:resumeBreakdown,
     formatScriptResult:formatScriptResult,
+    validBreakdownOffer:validBreakdownOffer,validPendingBreakdown:validPendingBreakdown,
+    formatBreakdownResult:formatBreakdownResult,
     bootstrap:bootstrap,mount:mount,routes:ROUTES};
 });

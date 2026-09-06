@@ -452,6 +452,159 @@ for(const id of ['photoDrop','voiceUploadDrop','customerMaterialsPicker','driveA
   }}, pollingRecord);
   assert.equal(existing.content, 'continued');
   assert.equal(existingCalls, 1);
+
+  // 拆解确认单：冻结提交体 + 稳定幂等键 + 结构化结果格式化
+  {
+    const offer = agent.validBreakdownOffer({
+      offer_id: 'director-breakdown-1234567890abcdef',
+      kind: 'breakdown', expected_cost: 20, requires_confirmation: true,
+      idempotency_key: 'director-breakdown-1234567890abcdef',
+      input: {url: 'https://www.douyin.com/video/123', mode: 'scenes', source_page: 'script'},
+      summary: {urls: ['https://www.douyin.com/video/123'], tool: 'scenes', count: 1, label: '拆解'},
+    });
+    assert.ok(offer);
+    assert.equal(offer.kind, 'breakdown');
+    assert.equal(offer.idempotency_key, offer.offer_id);
+    assert.equal(offer.input.mode, 'scenes');
+    assert.equal(agent.validBreakdownOffer({
+      ...offer, offer_id: 'not-a-director-offer',
+    }), null);
+    // 幂等键必须与 offer_id 一致，避免重复扣点
+    assert.equal(agent.validBreakdownOffer({
+      ...offer, idempotency_key: 'director-breakdown-other1234567890',
+    }), null);
+    // 缺少冻结链接的确认单无效
+    assert.equal(agent.validBreakdownOffer({
+      ...offer, input: {mode: 'scenes'},
+    }), null);
+  }
+  {
+    const pending = agent.validPendingBreakdown({
+      offer: {
+        offer_id: 'director-breakdown-1234567890abcdef',
+        kind: 'breakdown', expected_cost: 20, requires_confirmation: true,
+        idempotency_key: 'director-breakdown-1234567890abcdef',
+        input: {url: 'https://www.douyin.com/video/123', mode: 'scenes', source_page: 'script'},
+        summary: {urls: ['https://www.douyin.com/video/123'], tool: 'scenes', count: 1, label: '拆解'},
+      },
+      job_id: '77', idempotency_key: 'director-breakdown-1234567890abcdef', created_at: 1,
+    });
+    assert.ok(pending);
+    assert.equal(pending.job_id, '77');
+  }
+  {
+    // 分镜时长来自结构化 scene.dur，不混入镜号
+    const text = agent.formatBreakdownResult({
+      scenes: [
+        {dur: '7s', scene: '产品特写', line: '买三送一'},
+        {dur: '12.5s', scene: '使用演示'},
+      ],
+    });
+    assert.match(text, /镜头 1 · 7s/);
+    assert.match(text, /镜头 2 · 12\.5s/);
+    assert.doesNotMatch(text, /017s/);
+    // 反推结果从结构化字段提取，不读 DOM
+    const reverse = agent.formatBreakdownResult({
+      type: 'breakdown_reverse',
+      prompt: '电影感产品特写提示词',
+    });
+    assert.match(reverse, /电影感产品特写提示词/);
+  }
+
+  {
+    // 提交失败分类：终态（operation_terminal/queue_full/400）与可重试（限流/5xx/幂等处理中）
+    async function submitError(status, body) {
+      const offer = agent.validBreakdownOffer({
+        offer_id: 'director-breakdown-1234567890abcdef', kind: 'breakdown', expected_cost: 20, requires_confirmation: true,
+        idempotency_key: 'director-breakdown-1234567890abcdef',
+        input: {url: 'https://www.douyin.com/video/123', mode: 'scenes', source_page: 'script'},
+        summary: {urls: ['https://www.douyin.com/video/123'], tool: 'scenes', count: 1, label: '拆解'},
+      });
+      const record = {offer, job_id: null, idempotency_key: offer.idempotency_key, created_at: Date.now()};
+      const win = {fetch() { return Promise.resolve({ok: status >= 200 && status < 300, status, text() { return Promise.resolve(JSON.stringify(body)); }}); }};
+      try {
+        await agent.resumeBreakdown(win, record);
+        return null;
+      } catch (e) {
+        return {terminal: e.terminal, uncertain: e.uncertain};
+      }
+    }
+    assert.deepEqual(await submitError(429, {detail: '队列已满', code: 'queue_full'}), {terminal: true, uncertain: false});
+    assert.deepEqual(await submitError(500, {detail: '已退款', operation_terminal: true}), {terminal: true, uncertain: false});
+    assert.deepEqual(await submitError(400, {detail: '链接无效'}), {terminal: true, uncertain: false});
+    assert.deepEqual(await submitError(409, {detail: '受理中', code: 'idempotency_in_progress'}), {terminal: false, uncertain: true});
+    assert.deepEqual(await submitError(429, {detail: '稍后重试'}), {terminal: false, uncertain: true});
+    assert.deepEqual(await submitError(503, {detail: '服务忙'}), {terminal: false, uncertain: true});
+    assert.deepEqual(await submitError(402, {detail: '点数不足'}), {terminal: false, uncertain: true});
+  }
+
+  // mount 路径：confirmBreakdown 不得覆盖未对账旧单，submit 不丢 pending_breakdown
+  {
+    function el(tag){
+      const children = [], listeners = {}, classes = new Set();
+      return {
+        tagName: String(tag || 'div').toUpperCase(), children,
+        className: '', textContent: '', innerHTML: '', disabled: false, hidden: false,
+        value: '', checked: false, files: [], scrollTop: 0, scrollHeight: 0, type: '',
+        rows: 0, maxLength: 0, placeholder: '', onclick: null,
+        dataset: {}, attributes: {}, style: {},
+        classList: {
+          add(n) { classes.add(n); }, remove(n) { classes.delete(n); },
+          contains(n) { return classes.has(n); },
+          toggle(n, f) { if (f === true) classes.add(n); else if (f === false) classes.delete(n); else { classes.has(n) ? classes.delete(n) : classes.add(n); } },
+        },
+        appendChild(c) { children.push(c); if (c) c.parentNode = this; return c; },
+        removeChild(c) { const i = children.indexOf(c); if (i >= 0) children.splice(i, 1); return c; },
+        remove() { if (this.parentNode) this.parentNode.removeChild(this); },
+        setAttribute(k, v) { this.attributes[k] = String(v); },
+        getAttribute(k) { return (k in this.attributes) ? this.attributes[k] : null; },
+        addEventListener(t, fn) { (listeners[t] = listeners[t] || []).push(fn); },
+        dispatchEvent() {}, click() { this.clicked = true; (listeners.click || []).forEach((fn) => fn()); },
+        focus() { this.focused = true; }, scrollIntoView() {},
+        querySelector() { return null; }, querySelectorAll() { return []; },
+      };
+    }
+    const {doc: baseDoc} = fixture();
+    const doc = Object.assign({}, baseDoc);
+    doc.createElement = (tag) => { const e = el(tag); e.ownerDocument = doc; return e; };
+    doc.head = { appendChild() {} };
+    doc.body = { appendChild() {} };
+    const win = {
+      sessionStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
+      location: { href: '' }, Event: function Event() {},
+      fetch() { return Promise.reject(new Error('unexpected fetch')); },
+    };
+    const mounted = agent.mount(doc, win, 'testuser');
+    assert.ok(mounted);
+    const oldOffer = agent.validBreakdownOffer({
+      offer_id: 'director-breakdown-old1234567890abcd', kind: 'breakdown', expected_cost: 20, requires_confirmation: true,
+      idempotency_key: 'director-breakdown-old1234567890abcd',
+      input: {url: 'https://www.douyin.com/video/1', mode: 'scenes', source_page: 'script'},
+      summary: {urls: ['https://www.douyin.com/video/1'], tool: 'scenes', count: 1, label: '拆解'},
+    });
+    const newOffer = agent.validBreakdownOffer({
+      offer_id: 'director-breakdown-new1234567890abcd', kind: 'breakdown', expected_cost: 20, requires_confirmation: true,
+      idempotency_key: 'director-breakdown-new1234567890abcd',
+      input: {url: 'https://www.douyin.com/video/1', mode: 'scenes', source_page: 'script'},
+      summary: {urls: ['https://www.douyin.com/video/1'], tool: 'scenes', count: 1, label: '拆解'},
+    });
+    mounted.state.pending_breakdown = agent.validPendingBreakdown({
+      offer: oldOffer, job_id: null, idempotency_key: oldOffer.idempotency_key, created_at: Date.now(),
+    });
+    mounted.state.breakdown_offer = oldOffer;
+
+    // 新报价不能覆盖未对账旧单
+    mounted.confirmBreakdown(newOffer);
+    assert.ok(mounted.state.pending_breakdown);
+    assert.equal(mounted.state.pending_breakdown.offer.offer_id, oldOffer.offer_id);
+    assert.ok(mounted.state.messages.some((m) => m.role === 'error' && m.content.indexOf('未完成') >= 0));
+
+    // 普通聊天不丢 pending_breakdown（数据不清空）
+    mounted.submit('刚才的结果给我看看');
+    assert.ok(mounted.state.pending_breakdown);
+    assert.equal(mounted.state.pending_breakdown.offer.offer_id, oldOffer.offer_id);
+  }
+
   console.log('director agent frontend tests passed');
 })().catch(function(error){
 
