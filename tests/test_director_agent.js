@@ -453,47 +453,62 @@ for(const id of ['photoDrop','voiceUploadDrop','customerMaterialsPicker','driveA
   assert.equal(existing.content, 'continued');
   assert.equal(existingCalls, 1);
 
-  // 拆解确认单校验与受控点击
+  // 拆解确认单：冻结提交体 + 稳定幂等键 + 结构化结果格式化
   {
     const offer = agent.validBreakdownOffer({
       offer_id: 'director-breakdown-1234567890abcdef',
       kind: 'breakdown', expected_cost: 20, requires_confirmation: true,
-      page_revision: '450dcb6c',
-      click: {type: 'click', target: 'analyze_breakdown', label: '开始拆解'},
-      input: {url: 'https://www.douyin.com/video/123', tool: 'scenes'},
-      summary: {url: 'https://www.douyin.com/video/123', tool: 'scenes', label: '拆解'},
+      idempotency_key: 'director-breakdown-1234567890abcdef',
+      input: {url: 'https://www.douyin.com/video/123', mode: 'scenes', source_page: 'script'},
+      summary: {urls: ['https://www.douyin.com/video/123'], tool: 'scenes', count: 1, label: '拆解'},
     });
     assert.ok(offer);
     assert.equal(offer.kind, 'breakdown');
-    assert.equal(offer.click.target, 'analyze_breakdown');
+    assert.equal(offer.idempotency_key, offer.offer_id);
+    assert.equal(offer.input.mode, 'scenes');
     assert.equal(agent.validBreakdownOffer({
       ...offer, offer_id: 'not-a-director-offer',
     }), null);
+    // 幂等键必须与 offer_id 一致，避免重复扣点
     assert.equal(agent.validBreakdownOffer({
-      ...offer, click: {type: 'click', target: 'generate_script'},
+      ...offer, idempotency_key: 'director-breakdown-other1234567890',
+    }), null);
+    // 缺少冻结链接的确认单无效
+    assert.equal(agent.validBreakdownOffer({
+      ...offer, input: {mode: 'scenes'},
     }), null);
   }
   {
-    const {doc, nodes} = fixture('breakdown', 'scenes');
-    const offer = agent.validBreakdownOffer({
-      offer_id: 'director-breakdown-1234567890abcdef',
-      kind: 'breakdown', expected_cost: 20, requires_confirmation: true,
-      page_revision: agent.breakdownPageRevision(doc),
-      click: {type: 'click', target: 'analyze_breakdown', label: '开始拆解'},
-      input: {url: 'https://www.douyin.com/video/123', tool: 'scenes'},
-      summary: {url: 'https://www.douyin.com/video/123', tool: 'scenes', label: '拆解'},
+    const pending = agent.validPendingBreakdown({
+      offer: {
+        offer_id: 'director-breakdown-1234567890abcdef',
+        kind: 'breakdown', expected_cost: 20, requires_confirmation: true,
+        idempotency_key: 'director-breakdown-1234567890abcdef',
+        input: {url: 'https://www.douyin.com/video/123', mode: 'scenes', source_page: 'script'},
+        summary: {urls: ['https://www.douyin.com/video/123'], tool: 'scenes', count: 1, label: '拆解'},
+      },
+      job_id: '77', idempotency_key: 'director-breakdown-1234567890abcdef', created_at: 1,
     });
-    assert.ok(offer);
-    agent.clickPageButton(offer.click.target, doc);
-    assert.equal(nodes.bdGen.clicked, true);
-    assert.throws(() => agent.applyAction({type: 'click', target: 'analyze_breakdown', label: 'x'}, doc, {}), /确认后执行/);
+    assert.ok(pending);
+    assert.equal(pending.job_id, '77');
   }
   {
-    const {doc} = fixture('breakdown', 'scenes');
-    const revision = agent.breakdownPageRevision(doc);
-    assert.match(revision, /^[a-f0-9]{8}$/);
-    doc.getElementById('bdUrl').value = 'https://www.xiaohongshu.com/explore/1';
-    assert.notEqual(revision, agent.breakdownPageRevision(doc));
+    // 分镜时长来自结构化 scene.dur，不混入镜号
+    const text = agent.formatBreakdownResult({
+      scenes: [
+        {dur: '7s', scene: '产品特写', line: '买三送一'},
+        {dur: '12.5s', scene: '使用演示'},
+      ],
+    });
+    assert.match(text, /镜头 1 · 7s/);
+    assert.match(text, /镜头 2 · 12\.5s/);
+    assert.doesNotMatch(text, /017s/);
+    // 反推结果从结构化字段提取，不读 DOM
+    const reverse = agent.formatBreakdownResult({
+      type: 'breakdown_reverse',
+      prompt: '电影感产品特写提示词',
+    });
+    assert.match(reverse, /电影感产品特写提示词/);
   }
 
   console.log('director agent frontend tests passed');

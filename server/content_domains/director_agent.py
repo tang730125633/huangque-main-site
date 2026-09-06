@@ -8,6 +8,7 @@ import re
 import secrets
 import threading
 import time
+from urllib.parse import urlparse
 
 from . import director_cli
 from . import submission_idempotency
@@ -114,16 +115,11 @@ FOCUS_TARGETS = {
 NAV_TARGETS = {
     "script", "digital_human", "ip12", "assets", "audio", "video", "canvas",
 }
-# 页面付费按钮，仅在顾客确认报价单后由前端点击；普通自动应用绝不执行点击。
-CLICK_TARGETS = {
-    "analyze_breakdown": "bdGen",
-}
 PAGE_ACTION_SCOPE = {
     "script": {
         "fill_field": {"topic", "selling_points", "breakdown_url"},
         "choose_option": {"style", "duration", "platform", "breakdown_tool"},
         "switch_mode": SCRIPT_MODES,
-        "click": set(CLICK_TARGETS),
         "focus": {
             "topic", "selling_points", "generate_script", "breakdown_url",
             "analyze_breakdown", "generate_video", "generate_audio", "export_script",
@@ -181,11 +177,6 @@ DIRECTOR_AGENT_SCHEMA = _schema({
         _schema({
             "type": {"type": "string", "const": "navigate"},
             "target": {"type": "string", "enum": sorted(NAV_TARGETS)},
-            "label": {"type": "string", "maxLength": 80},
-        }),
-        _schema({
-            "type": {"type": "string", "const": "click"},
-            "target": {"type": "string", "enum": sorted(CLICK_TARGETS)},
             "label": {"type": "string", "maxLength": 80},
         }),
     ]}},
@@ -1214,7 +1205,7 @@ def _ensure_page_action_allowed(page, action):
     kind = action.get("type")
     key = {
         "fill_field": "field", "choose_option": "field",
-        "switch_mode": "mode", "focus": "target", "click": "target",
+        "switch_mode": "mode", "focus": "target",
     }.get(kind)
     if not key or action.get(key) not in scope.get(kind, set()):
         raise ValueError("Agent 动作不属于当前页面")
@@ -1386,40 +1377,54 @@ def _script_production_offer(request, actions, requested, *, force_write=False,
     }
 
 
-def _breakdown_cost(tool, url_text):
+def _breakdown_cost(tool, urls):
     from . import points
-    if tool == "scenes":
-        urls = [line for line in str(url_text or "").split("\n") if line.strip()]
-        if urls:
-            return points.cost_of("breakdown", {"urls": urls})
+    if tool == "scenes" and isinstance(urls, list) and urls:
+        return points.cost_of("breakdown", {"urls": urls})
     return points.cost_of("breakdown", {})
 
 
-def _breakdown_revision(effective):
-    """Revision over only the fields the breakdown click depends on.
+_BREAKDOWN_URL_HOST = re.compile(
+    r"^(?:douyin\.com|.*\.douyin\.com|iesdouyin\.com|.*\.iesdouyin\.com|"
+    r"xiaohongshu\.com|.*\.xiaohongshu\.com|xhslink\.com|.*\.xhslink\.com)$"
+)
 
-    The full page revision changes when the page switches between write and
-    breakdown (scene_count / has_script flip with the mode), which would
-    invalidate a still-valid breakdown offer.  Only mode, URL, tool and job
-    state actually gate the click.
+
+def _normalize_breakdown_urls(url_text, tool):
+    """Mirror the page/backend link checks before an offer is issued.
+
+    Returns a list of normalized http(s) URLs, or None when the input cannot
+    be submitted (so no offer is produced and no cost is quoted).
     """
-    return _client_page_revision({
-        "mode": effective.get("mode") or "",
-        "breakdown_url": effective.get("breakdown_url") or "",
-        "breakdown_tool": effective.get("breakdown_tool") or "scenes",
-        "active_job_status": effective.get("active_job_status") or "idle",
-    })
+    lines = [line.strip() for line in str(url_text or "").split("\n") if line.strip()]
+    if not lines:
+        return None
+    urls = []
+    for line in lines:
+        match = re.search(r"https?://[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]+", line)
+        if not match:
+            return None
+        parsed = urlparse(match.group(0))
+        host = (parsed.hostname or "").lower().rstrip(".")
+        if not _BREAKDOWN_URL_HOST.fullmatch(host):
+            return None
+        urls.append(parsed.geturl())
+    if len(urls) > 5:
+        return None
+    if tool == "reverse_prompt" and len(urls) != 1:
+        return None
+    return urls
 
 
-def _breakdown_offer(request, actions, click_action, requested):
-    """Build a non-billable, client-side-click breakdown/reverse offer.
+def _breakdown_offer(request, actions, requested):
+    """Build a non-billable, server-submitted breakdown/reverse offer.
 
-    Unlike script production, the paid job is submitted by the page's own
-    breakdown button (bdGen) after the customer confirms this card.  The offer
-    only authorizes the click; it never submits a job or charges points itself.
+    The offer freezes the canonical submission body and binds a stable
+    request id (offer_id) that also serves as the Idempotency-Key.  After the
+    customer confirms, the frontend submits this frozen body directly to
+    /api/gen/breakdown; retries with the same key replay the original job.
     """
-    if (not requested or click_action is None
-            or request["page_context"]["page"] != "script"):
+    if not requested or request["page_context"]["page"] != "script":
         return None
     effective = _effective_script_context(request, actions)
     if effective is None:
@@ -1428,27 +1433,30 @@ def _breakdown_offer(request, actions, click_action, requested):
     tool = effective.get("breakdown_tool") or "scenes"
     if tool not in BREAKDOWN_TOOLS:
         tool = "scenes"
-    url = effective.get("breakdown_url") or ""
-    if click_action.get("target") != "analyze_breakdown" or not url:
+    urls = _normalize_breakdown_urls(effective.get("breakdown_url"), tool)
+    if not urls:
         return None
-    cost = _breakdown_cost(tool, url)
+    cost = _breakdown_cost(tool, urls)
     if cost <= 0:
         return None
     seed = "%s\0%s\0%s\0%s" % (
         request["_username"], request.get("_job_id"), request["session_id"],
-        _canonical({"url": url, "tool": tool}),
+        _canonical({"urls": urls, "tool": tool}),
     )
     offer_id = "director-breakdown-" + hashlib.sha256(
         seed.encode("utf-8")
     ).hexdigest()[:32]
     label = "拆解" if tool == "scenes" else "提示词反推"
+    if tool == "scenes" and len(urls) > 1:
+        submission_input = {"urls": urls, "mode": "scenes", "source_page": "script"}
+    else:
+        submission_input = {"url": urls[0], "mode": tool, "source_page": "script"}
     return {
         "offer_id": offer_id, "kind": "breakdown", "expected_cost": cost,
         "requires_confirmation": True,
-        "page_revision": _breakdown_revision(effective),
-        "click": dict(click_action),
-        "input": {"url": url, "tool": tool},
-        "summary": {"url": url, "tool": tool, "label": label},
+        "idempotency_key": offer_id,
+        "input": submission_input,
+        "summary": {"urls": urls, "tool": tool, "count": len(urls), "label": label},
     }
 
 
@@ -1532,16 +1540,10 @@ def normalize_model_result(raw, request):
             if set(action) != {"type", "target", "label"} or action.get("target") not in NAV_TARGETS:
                 raise ValueError("站内引导动作无效")
             item.update(target=action["target"], label=_text(action.get("label"), 80, "动作名称") or "前往下一步")
-        elif kind == "click":
-            if set(action) != {"type", "target", "label"} or action.get("target") not in CLICK_TARGETS:
-                raise ValueError("点击动作无效")
-            item.update(target=action["target"], label=_text(action.get("label"), 80, "动作名称") or "点击页面")
         else:
             raise ValueError("编导助手返回了不允许的动作")
         _ensure_page_action_allowed(request["page_context"]["page"], item)
         normalized.append(item)
-    if any(item["type"] == "click" for item in normalized) and not prepare_breakdown_requested:
-        raise ValueError("点击动作必须伴随拆解确认")
     topic_fallback = ""
     if prepare_requested:
         prompt_topic = _script_topic_from_prompt(request)
@@ -1601,12 +1603,8 @@ def normalize_model_result(raw, request):
         )
     breakdown_offer = None
     if prepare_breakdown_requested:
-        click_actions = [item for item in normalized if item["type"] == "click"]
-        click_action = click_actions[0] if len(click_actions) == 1 else None
-        if click_action is not None:
-            normalized = [item for item in normalized if item["type"] != "click"]
         breakdown_offer = _breakdown_offer(
-            request, normalized, click_action, prepare_breakdown_requested,
+            request, normalized, prepare_breakdown_requested,
         )
         if breakdown_offer is not None:
             if not any(item["type"] == "switch_mode" for item in normalized):
@@ -1617,12 +1615,13 @@ def normalize_model_result(raw, request):
             for index, item in enumerate(normalized):
                 item["id"] = "action_%d" % (index + 1)
             label = breakdown_offer["summary"]["label"]
+            count = int(breakdown_offer["summary"].get("count") or 1)
             content = (
-                "%s方案已准备好，预计扣除 %d 点。确认后我会自动点击页面按钮"
-                "开始%s，完成后把结果回传到对话。"
-                % (label, int(breakdown_offer["expected_cost"]), label)
+                "%s方案已准备好（%d 条链接），预计扣除 %d 点。确认后由服务端受理并扣点，"
+                "完成后把结果回传到对话。"
+                % (label, count, int(breakdown_offer["expected_cost"]))
             )
-        elif click_action is not None:
+        else:
             warnings.append("待确认的拆解方案暂未就绪，请补充抖音或小红书的视频链接。")
     seed = request["session_id"] + request["page_revision"] + raw
     result = {
