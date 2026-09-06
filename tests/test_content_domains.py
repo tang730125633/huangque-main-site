@@ -361,6 +361,30 @@ class ContentDomainTests(unittest.TestCase):
         self.assertEqual(public["result"]["url"], "/api/gen/file/video/demo.mp4")
         self.assertEqual(public["phase"], "done")
 
+    def test_job_media_urls_are_refreshed_from_stored_files(self):
+        core = importlib.import_module("content_domains.core")
+        cos = importlib.import_module("content_domains.cos")
+        result = {
+            "video_file": "video/result.mp4",
+            "video_url": "https://old.example/expired.mp4",
+            "image_file": "image/result.png",
+            "image_url": "https://old.example/expired.png",
+            "file": "audio/result.mp3",
+            "url": "https://old.example/expired.mp3",
+            "files": ["image/one.png", "image/two.png"],
+            "urls": ["https://old.example/one.png", "https://old.example/two.png"],
+        }
+        with patch.object(cos, "enabled", return_value=True), \
+                patch.object(cos, "object_url", side_effect=lambda key, private: "https://fresh.example/" + key):
+            refreshed = core._refresh_job_media_urls(result)
+        self.assertEqual(refreshed["video_url"], "https://fresh.example/video/result.mp4")
+        self.assertEqual(refreshed["image_url"], "https://fresh.example/image/result.png")
+        self.assertEqual(refreshed["url"], "https://fresh.example/audio/result.mp3")
+        self.assertEqual(refreshed["urls"], [
+            "https://fresh.example/image/one.png", "https://fresh.example/image/two.png",
+        ])
+        self.assertEqual(result["video_url"], "https://old.example/expired.mp4")
+
     def test_must_change_password_flag(self):
         core = importlib.import_module("content_domains.core")
         self.assertTrue(core._must_change_password({"must_change": True}))

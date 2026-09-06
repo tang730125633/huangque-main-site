@@ -1036,6 +1036,39 @@ def _must_change_password(user):
 
 _job_public_dict, _idempotency_key = jobs_store.public_dict, submission_idempotency.clean_key
 
+
+def _refresh_job_media_urls(result):
+    """任务查询时按已落库文件重新签名，避免把过期 COS 地址交给用户。"""
+    if not isinstance(result, dict):
+        return result
+    try:
+        from . import cos
+        if not cos.enabled():
+            return result
+        refreshed = dict(result)
+        for file_key, url_key in (
+            ("video_file", "video_url"),
+            ("image_file", "image_url"),
+            ("audio_file", "audio_url"),
+        ):
+            if refreshed.get(file_key):
+                refreshed[url_key] = cos.object_url(refreshed[file_key], private=True)
+        media_suffixes = {
+            ".jpg", ".jpeg", ".png", ".webp", ".gif",
+            ".mp3", ".wav", ".m4a", ".aac", ".ogg",
+            ".mp4", ".mov", ".webm",
+        }
+        if refreshed.get("file") and pathlib.PurePosixPath(str(refreshed["file"])).suffix.lower() in media_suffixes:
+            refreshed["url"] = cos.object_url(refreshed["file"], private=True)
+        if isinstance(refreshed.get("files"), list) and refreshed["files"] and all(
+                pathlib.PurePosixPath(str(value)).suffix.lower() in media_suffixes
+                for value in refreshed["files"]):
+            refreshed["urls"] = [cos.object_url(value, private=True) for value in refreshed["files"]]
+        return refreshed
+    except Exception as e:
+        print("[job] COS 签名刷新失败: %s" % e, flush=True)
+        return result
+
 _PUBLIC_VIDEO_PHASE_KINDS = {"video", "tryon", "xiaole_video", "sora_video", "cinematic", "script_to_video"}
 
 
@@ -4763,6 +4796,7 @@ class H(BaseHTTPRequestHandler):
                 except Exception:
                     pass
             d = _job_public_dict(r, phase)
+            d["result"] = _refresh_job_media_urls(d.get("result"))
             if r["kind"] == "matrix_template_video":
                 d.update(_matrix_template_lifecycle_for_public(r))
             if r["kind"] in {"short_drama_preview", "short_drama_final"}:
