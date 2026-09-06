@@ -168,6 +168,40 @@ class DirectorConversationTests(unittest.TestCase):
         self.assertNotIn("production_offer", normalized)
         self.assertIn("确认生成", normalized["content"])
 
+    def test_breakdown_plan_builds_client_click_offer_and_strips_click_from_auto_apply(self):
+        request = self.request()
+        actions = [
+            {"type": "switch_mode", "mode": "breakdown", "label": "切到拆解"},
+            {"type": "fill_field", "field": "breakdown_url", "value": "https://www.douyin.com/video/1", "label": "填链接"},
+            {"type": "choose_option", "field": "breakdown_tool", "value": "scenes", "label": "拆解"},
+            {"type": "click", "target": "analyze_breakdown", "label": "开始拆解"},
+        ]
+        result = self.converse(
+            [tool_reply("prepare_breakdown_plan", {"actions": actions}), text_reply()], request=request,
+        )
+        self.assertTrue(result["offer_breakdown"])
+        self.assertFalse(result["offer_production"])
+        with mock.patch("content_domains.points.cost_of", return_value=20):
+            normalized = agent.normalize_model_result(json.dumps(result), request)
+        offer = normalized.get("breakdown_offer")
+        self.assertIsNotNone(offer)
+        self.assertEqual("breakdown", offer["kind"])
+        self.assertEqual(20, offer["expected_cost"])
+        self.assertEqual("analyze_breakdown", offer["click"]["target"])
+        self.assertEqual("scenes", offer["input"]["tool"])
+        self.assertFalse(any(item["type"] == "click" for item in normalized["plan"]["actions"]))
+        self.assertTrue(any(item["type"] == "switch_mode" and item["mode"] == "breakdown"
+                           for item in normalized["plan"]["actions"]))
+
+    def test_click_without_breakdown_offer_is_rejected(self):
+        request = self.request()
+        result = self.converse(
+            [tool_reply("propose_page_actions", {"actions": [{"type": "click", "target": "analyze_breakdown", "label": "点"}]}), text_reply()],
+            request=request,
+        )
+        with self.assertRaises(ValueError):
+            agent.normalize_model_result(json.dumps(result), request)
+
     def test_actions_still_reject_generation_and_cross_page_targets(self):
         for action in ({"type": "execute", "target": "generate_video"},
                        {"type": "fill_field", "field": "digital_human_script", "value": "draft", "label": "fill"}):

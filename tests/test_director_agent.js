@@ -452,6 +452,50 @@ for(const id of ['photoDrop','voiceUploadDrop','customerMaterialsPicker','driveA
   }}, pollingRecord);
   assert.equal(existing.content, 'continued');
   assert.equal(existingCalls, 1);
+
+  // 拆解确认单校验与受控点击
+  {
+    const offer = agent.validBreakdownOffer({
+      offer_id: 'director-breakdown-1234567890abcdef',
+      kind: 'breakdown', expected_cost: 20, requires_confirmation: true,
+      page_revision: '450dcb6c',
+      click: {type: 'click', target: 'analyze_breakdown', label: '开始拆解'},
+      input: {url: 'https://www.douyin.com/video/123', tool: 'scenes'},
+      summary: {url: 'https://www.douyin.com/video/123', tool: 'scenes', label: '拆解'},
+    });
+    assert.ok(offer);
+    assert.equal(offer.kind, 'breakdown');
+    assert.equal(offer.click.target, 'analyze_breakdown');
+    assert.equal(agent.validBreakdownOffer({
+      ...offer, offer_id: 'not-a-director-offer',
+    }), null);
+    assert.equal(agent.validBreakdownOffer({
+      ...offer, click: {type: 'click', target: 'generate_script'},
+    }), null);
+  }
+  {
+    const {doc, nodes} = fixture('breakdown', 'scenes');
+    const offer = agent.validBreakdownOffer({
+      offer_id: 'director-breakdown-1234567890abcdef',
+      kind: 'breakdown', expected_cost: 20, requires_confirmation: true,
+      page_revision: agent.breakdownPageRevision(doc),
+      click: {type: 'click', target: 'analyze_breakdown', label: '开始拆解'},
+      input: {url: 'https://www.douyin.com/video/123', tool: 'scenes'},
+      summary: {url: 'https://www.douyin.com/video/123', tool: 'scenes', label: '拆解'},
+    });
+    assert.ok(offer);
+    agent.clickPageButton(offer.click.target, doc);
+    assert.equal(nodes.bdGen.clicked, true);
+    assert.throws(() => agent.applyAction({type: 'click', target: 'analyze_breakdown', label: 'x'}, doc, {}), /确认后执行/);
+  }
+  {
+    const {doc} = fixture('breakdown', 'scenes');
+    const revision = agent.breakdownPageRevision(doc);
+    assert.match(revision, /^[a-f0-9]{8}$/);
+    doc.getElementById('bdUrl').value = 'https://www.xiaohongshu.com/explore/1';
+    assert.notEqual(revision, agent.breakdownPageRevision(doc));
+  }
+
   console.log('director agent frontend tests passed');
 })().catch(function(error){
 

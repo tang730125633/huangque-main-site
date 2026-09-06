@@ -20,6 +20,9 @@
     video_upload:'dhDrop',precision_authorization:'dhConsent',analyze_voice:'dhAnalyze',
     generate_precision_video:'dhStart'
   };
+  var CLICK_TARGETS={
+    analyze_breakdown:'bdGen'
+  };
 
   function digest(value){
     var text=JSON.stringify(value),hash=2166136261;
@@ -35,7 +38,7 @@
     return username?STORAGE_KEY+':'+encodeURIComponent(username):'';
   }
   function emptyState(){
-    return {messages:[],open:false,pending_request:null,production_offer:null,pending_production:null};
+    return {messages:[],open:false,pending_request:null,production_offer:null,pending_production:null,breakdown_offer:null};
   }
   function discardOwnerlessState(storage){
     if(!storage||typeof storage.removeItem!=='function') return;
@@ -142,6 +145,15 @@
   function createPageSnapshot(doc){
     var context=createPageContext(doc);
     return {page_context:context,page_revision:digest(context)};
+  }
+  function breakdownPageRevision(doc){
+    var ctx=createScriptPageContext(doc);
+    return digest({
+      mode:ctx.mode,
+      breakdown_url:ctx.breakdown_url,
+      breakdown_tool:ctx.breakdown_tool,
+      active_job_status:ctx.active_job_status
+    });
   }
   function sessionId(storage){
     var stored='';
@@ -299,7 +311,19 @@
       if(win&&win.location) win.location.href=ROUTES[action.target];
       return '正在前往下一步';
     }
+    if(action.type==='click'){
+      throw new Error('点击动作必须经报价确认后执行');
+    }
     throw new Error('不允许执行这个动作');
+  }
+  function clickPageButton(target,doc){
+    var buttonId=CLICK_TARGETS[target];
+    var button=buttonId?doc.getElementById(buttonId):null;
+    if(!button) throw new Error('页面按钮不存在');
+    if(button.disabled) throw new Error('页面按钮暂不可用，请稍后重试');
+    if(typeof button.click!=='function') throw new Error('页面按钮无法点击');
+    button.click();
+    return '已点击页面按钮';
   }
   function validPendingRequest(value){
     if(!value||typeof value!=='object'||Array.isArray(value)) return null;
@@ -349,6 +373,30 @@
     if(!clean.input.topic) return null;
     return clean;
   }
+  function validBreakdownOffer(value){
+    if(!value||typeof value!=='object'||Array.isArray(value)) return null;
+    var offerId=String(value.offer_id||''),input=value.input,summary=value.summary;
+    if(value.requires_confirmation!==true||value.kind!=='breakdown') return null;
+    if(!/^director-breakdown-[A-Za-z0-9_-]{16,64}$/.test(offerId)) return null;
+    var cost=Number(value.expected_cost);
+    if(!Number.isInteger(cost)||cost<1||cost>10000) return null;
+    var pageRevision=String(value.page_revision||'');
+    if(!/^[a-f0-9]{8,32}$/.test(pageRevision)) return null;
+    var click=value.click;
+    if(!click||typeof click!=='object'||click.type!=='click'||!CLICK_TARGETS[click.target]) return null;
+    if(!input||typeof input!=='object'||Array.isArray(input)||!String(input.url||'').trim()) return null;
+    var tool=String(input.tool||'scenes');
+    if(tool!=='scenes'&&tool!=='reverse_prompt') return null;
+    if(!summary||typeof summary!=='object'||Array.isArray(summary)) return null;
+    return {
+      offer_id:offerId,kind:'breakdown',expected_cost:cost,requires_confirmation:true,
+      page_revision:pageRevision,
+      click:{type:'click',target:click.target,label:String(click.label||'')},
+      input:{url:String(input.url).slice(0,2000),tool:tool},
+      summary:{url:String(summary.url||'').slice(0,2000),tool:String(summary.tool||tool),
+        label:String(summary.label||(tool==='scenes'?'拆解':'提示词反推'))}
+    };
+  }
   function validPendingProduction(value){
     if(!value||typeof value!=='object'||Array.isArray(value)) return null;
     var jobId=value.job_id,offer=validProductionOffer(value.offer,true);
@@ -377,6 +425,7 @@
         pending_request:validPendingRequest(value.pending_request),
         production_offer:validProductionOffer(value.production_offer),
         pending_production:validPendingProduction(value.pending_production),
+        breakdown_offer:validBreakdownOffer(value.breakdown_offer),
         updated_at:Number(value.updated_at)||0
       };
     }catch(error){}
@@ -391,6 +440,7 @@
       pending_request:validPendingRequest(state.pending_request),
       production_offer:validProductionOffer(state.production_offer),
       pending_production:validPendingProduction(state.pending_production),
+      breakdown_offer:validBreakdownOffer(state.breakdown_offer),
       updated_at:Date.now()
     })); return true; }catch(error){return false;}
   }
@@ -522,6 +572,43 @@
     return lines.join('\n').slice(0,16000);
   }
 
+  function readBreakdownScenes(doc){
+    var cards=Array.prototype.slice.call(doc.querySelectorAll('#scScenes .sc-card')).filter(function(card){
+      return !(card.getAttribute&&card.getAttribute('data-placeholder')==='1');
+    });
+    return cards.map(function(card){
+      var scene='',line='',dur='';
+      Array.prototype.slice.call(card.querySelectorAll('div')).forEach(function(div){
+        var value=(div.textContent||'').trim();
+        if(!scene&&value.indexOf('画面：')===0) scene=value.slice(3).replace(/^[\s:：]+/,'').trim();
+        if(!line&&value.indexOf('口播：')===0) line=value.slice(3).replace(/^[\s:：]+/,'').trim();
+      });
+      var match=String(card.textContent||'').match(/(\d+)s/);
+      if(match) dur=match[1]+'s';
+      return {dur:dur,scene:scene,line:line};
+    }).filter(function(item){return item.scene||item.line;});
+  }
+  function readReversePrompt(doc){
+    var node=doc.getElementById('bdReversePromptText');
+    return node?String(node.textContent||'').trim():'';
+  }
+  function formatBreakdownResult(doc){
+    var scenes=readBreakdownScenes(doc);
+    if(!scenes.length) return '拆解已完成，分镜显示在右侧预览区。';
+    var lines=['拆解完成 · 共 '+scenes.length+' 个分镜'];
+    scenes.slice(0,20).forEach(function(scene,index){
+      lines.push('\n镜头 '+(index+1)+(scene.dur?' · '+scene.dur:''));
+      if(scene.scene) lines.push('画面：'+scene.scene);
+      if(scene.line) lines.push('口播：'+scene.line);
+    });
+    return lines.join('\n').slice(0,16000);
+  }
+  function formatReverseResult(doc){
+    var prompt=readReversePrompt(doc);
+    if(!prompt) return '提示词反推已完成，结果显示在右侧预览区。';
+    return '提示词反推完成：\n'+prompt.slice(0,12000);
+  }
+
   function addStyles(doc){
     if(doc.getElementById('hqDirectorAgentStyle')) return;
     var style=doc.createElement('style'); style.id='hqDirectorAgentStyle';
@@ -588,6 +675,18 @@
       button.onclick=function(){confirmProduction(offer);};
       card.appendChild(copy); card.appendChild(button); return card;
     }
+    function breakdownCard(offer){
+      var card=doc.createElement('div'); card.className='hq-da-offer';
+      var summary=offer.summary||{};
+      var copy=doc.createElement('div');
+      copy.textContent=String(summary.label||'拆解')+'确认\n链接：'+String(summary.url||'')+
+        '\n方式：'+String(summary.tool==='reverse_prompt'?'提示词反推':'分镜拆解')+
+        '\n费用：'+offer.expected_cost+' 点（确认后自动点击页面按钮）';
+      var button=doc.createElement('button'); button.type='button'; button.className='hq-da-confirm';
+      button.textContent='确认并扣 '+offer.expected_cost+' 点'; button.disabled=pending;
+      button.onclick=function(){confirmBreakdown(offer);};
+      card.appendChild(copy); card.appendChild(button); return card;
+    }
     function render(){
       messages.textContent='';
       if(!state.messages.length){
@@ -607,6 +706,9 @@
         if(message.role==='assistant'&&index===state.messages.length-1&&state.production_offer){
           messages.appendChild(productionCard(state.production_offer));
         }
+        if(message.role==='assistant'&&index===state.messages.length-1&&state.breakdown_offer){
+          messages.appendChild(breakdownCard(state.breakdown_offer));
+        }
       });
       messages.scrollTop=messages.scrollHeight; send.disabled=pending; attach.disabled=pending; input.disabled=pending;
     }
@@ -614,12 +716,13 @@
       state.pending_request=null; persist();
       currentPlan=result&&result.plan||null;
       state.production_offer=validProductionOffer(result&&result.production_offer);
+      state.breakdown_offer=validBreakdownOffer(result&&result.breakdown_offer);
       addMessage('assistant',result&&result.content||'我已经看完当前页面。');
       if(currentPlan&&currentPlan.actions.length){
         try{
           validatePlan(currentPlan,doc);
           var applied=currentPlan.actions.map(function(action){return applyAction(action,doc,win);});
-          status.textContent=applied.join('；')+(state.production_offer?'。生产单已在对话中等待你确认。':'。');
+          status.textContent=applied.join('；')+(state.production_offer?'。生产单已在对话中等待你确认。':(state.breakdown_offer?'。拆解确认单已在对话中等待你确认。':'。'));
           currentPlan=null;
           render();
         }catch(error){
@@ -666,6 +769,69 @@
       }
       runProduction({offer:offer,job_id:null,created_at:Date.now()},false);
     }
+    function breakdownPreviewOutcome(doc,expectedTool){
+      var ctx=createScriptPageContext(doc);
+      if(expectedTool==='reverse_prompt'&&ctx.has_reverse_prompt){
+        return {done:true,text:formatReverseResult(doc)};
+      }
+      if(expectedTool==='scenes'&&ctx.has_breakdown&&ctx.breakdown_scene_count>0){
+        return {done:true,text:formatBreakdownResult(doc)};
+      }
+      var preview=doc.getElementById('scScenes');
+      var previewText=preview?String(preview.textContent||'').trim():'';
+      if(/失败|错误|点数不足|格式不正确|最多提交|已退点|无法/.test(previewText)){
+        return {failed:true,text:previewText.replace(/\s+/g,' ').slice(0,300)};
+      }
+      return {waiting:true};
+    }
+    function confirmBreakdown(offer){
+      if(pending||page!=='script') return;
+      offer=validBreakdownOffer(offer); if(!offer){addMessage('error','拆解确认单已失效，请重新告诉我你的需求');return;}
+      if(offer.page_revision!==breakdownPageRevision(doc)){
+        state.breakdown_offer=null; persist();
+        addMessage('error','页面参数已经变化，原拆解确认单已失效。请让我重新整理方案。');
+        return;
+      }
+      runBreakdown(offer);
+    }
+    function runBreakdown(offer){
+      clearRecovery();
+      state.breakdown_offer=offer; persist();
+      pending=true; status.textContent='正在点击页面按钮并等待结果…'; render();
+      try{
+        clickPageButton(offer.click.target,doc);
+      }catch(error){
+        pending=false; render();
+        addMessage('error',error.message||'页面按钮点击失败');
+        status.textContent='';
+        return;
+      }
+      var started=Date.now(),expectedTool=offer.input.tool;
+      var iv=setInterval(function(){
+        var outcome=breakdownPreviewOutcome(doc,expectedTool);
+        if(outcome.done){
+          clearInterval(iv);
+          state.breakdown_offer=null; persist();
+          addMessage('assistant',outcome.text);
+          status.textContent=expectedTool==='reverse_prompt'?'反推结果已回传到对话。':'拆解结果已回传到对话。';
+          if(win.HQ&&typeof win.HQ.refreshPoints==='function') win.HQ.refreshPoints();
+          pending=false; render();
+        }else if(outcome.failed){
+          clearInterval(iv);
+          state.breakdown_offer=null; persist();
+          addMessage('error',outcome.text||'拆解失败，请查看右侧预览区');
+          status.textContent='';
+          if(win.HQ&&typeof win.HQ.refreshPoints==='function') win.HQ.refreshPoints();
+          pending=false; render();
+        }else if(Date.now()-started>180000){
+          clearInterval(iv);
+          state.breakdown_offer=null; persist();
+          addMessage('assistant','任务仍在处理中，结果会显示在右侧预览区，也可以稍后在生成记录查看。');
+          status.textContent='';
+          pending=false; render();
+        }
+      },2000);
+    }
     function runPending(record,resumed){
       record=validPendingRequest(record);
       if(!record) return;
@@ -697,7 +863,7 @@
       var key='director-agent-'+Date.now().toString(36)+Math.random().toString(36).slice(2,10);
       var record=createPendingRequest(body,key,value);
       if(!record){ addMessage('error','黄雀编导 Agent 请求摘要保存失败，请重试'); return; }
-      input.value=''; currentPlan=null; state.production_offer=null; addMessage('user',value);
+      input.value=''; currentPlan=null; state.production_offer=null; state.breakdown_offer=null; addMessage('user',value);
       state.pending_request=record; persist();
       runPending(record,false);
     }
@@ -736,5 +902,7 @@
     retainProductionOfferAfterError:retainProductionOfferAfterError,
     accountStorageKey:accountStorageKey,readState:readState,saveState:saveState,readUnifiedState:readUnifiedState,resumeRequest:resumeRequest,resumeProduction:resumeProduction,
     formatScriptResult:formatScriptResult,
+    validBreakdownOffer:validBreakdownOffer,clickPageButton:clickPageButton,
+    breakdownPageRevision:breakdownPageRevision,formatBreakdownResult:formatBreakdownResult,formatReverseResult:formatReverseResult,
     bootstrap:bootstrap,mount:mount,routes:ROUTES};
 });
