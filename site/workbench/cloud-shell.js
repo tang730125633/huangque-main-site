@@ -364,7 +364,7 @@
     try{ window.dispatchEvent(new CustomEvent('hq:auth-changed',{detail:{username:_verifiedUsername,verified:!!_verifiedUsername}})); }catch(e){}
   }
   function refreshPoints(){
-    fetch('/api/auth/me',{credentials:'same-origin',cache:'no-store',headers:authHeaders()}).then(function(r){ if(r.status===401){ notifyAuthChanged(null,false);if(currentUser()) requireLogin(); return null; } if(!r.ok)return null; return r.json(); }).then(function(d){
+    fetch('/api/auth/me',{credentials:'same-origin',cache:'no-store',headers:authHeaders()}).then(function(r){ if(r.status===401){ requireLogin(); return null; } if(!r.ok){ notifyAuthChanged(null,false);renderUser();return null; } return r.json(); }).then(function(d){
       if(d&&d.user){ _accountAvatar=d.user.avatar||''; try{ localStorage.removeItem('hq_token'); localStorage.setItem('hq_user',JSON.stringify(d.user)); }catch(e){} notifyAuthChanged(d.user,true); renderUser(); }
       var p=d&&d.user&&d.user.points; if(p==null) return;
       var a=document.getElementById('hqPointsSide');
@@ -1011,6 +1011,10 @@
 
   // ===== 用户登录态显示（左下侧栏卡 + 右上注册/登录）=====
   function currentUser(){ try{ return JSON.parse(localStorage.getItem('hq_user')||'null'); }catch(e){ return null; } }
+  function verifiedCurrentUser(){
+    var user=currentUser();
+    return user&&_verifiedUsername&&user.username===_verifiedUsername?user:null;
+  }
   var _accountAvatar='';
   function membershipRoleName(user){
     if(user&&user.role==='admin') return '管理员';
@@ -1054,7 +1058,7 @@
     document.querySelectorAll('[data-account-menu-trigger]').forEach(function(x){ x.setAttribute('aria-expanded','false'); });
   }
   function openAccountMenu(anchor){
-    var u=currentUser(); if(!u) return;
+    var u=verifiedCurrentUser(); if(!u) return;
     var menu=ensureAccountMenu(), rect=anchor.getBoundingClientRect(), width=226, gap=8;
     document.getElementById('hqAccountMenuName').textContent=u.name||u.nickname||u.username||'我的账号';
     document.getElementById('hqAccountMenuRole').textContent=membershipRoleName(u);
@@ -1064,7 +1068,7 @@
     var first=menu.querySelector('[role="menuitem"]'); if(first) first.focus();
   }
   function renderUser(){
-    var u=currentUser(), inn=!!u;
+    var u=verifiedCurrentUser(), inn=!!u;
     var profile=readAccountJson('hq_profile_v1',u);
     var card=document.getElementById('hqUserCard');
     if(inn){

@@ -16,6 +16,12 @@ class AccountMenuUiTest(unittest.TestCase):
         self.assertIn('href="settings.html" role="menuitem"', SHELL)
         self.assertIn('data-logout="1" role="menuitem"', SHELL)
 
+    def test_cached_account_is_not_rendered_as_a_verified_login(self):
+        self.assertIn("function verifiedCurrentUser()", SHELL)
+        self.assertIn("var u=verifiedCurrentUser(); if(!u) return;", SHELL)
+        self.assertIn("var u=verifiedCurrentUser(), inn=!!u;", SHELL)
+        self.assertIn("if(r.status===401){ requireLogin(); return null; }", SHELL)
+
     def test_payment_methods_use_local_brand_icons(self):
         for name in ("wechat", "alipay"):
             self.assertIn("../assets/brands/%s.svg" % name, RECHARGE)

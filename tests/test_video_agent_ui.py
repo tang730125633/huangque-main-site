@@ -986,7 +986,7 @@ class VideoAgentUiTests(unittest.TestCase):
         self.assertIn("notifyAuthChanged(null,false)", require_login)
         self.assertIn("renderUser();openLogin()", require_login)
         self.assertIn("requireLogin:requireLogin", CLOUD_SHELL)
-        self.assertIn("if(r.status===401){ notifyAuthChanged(null,false);if(currentUser()) requireLogin()", CLOUD_SHELL)
+        self.assertIn("if(r.status===401){ requireLogin(); return null; }", CLOUD_SHELL)
         unauthorized = HTML.split("function handleAgentUnauthorized", 1)[1].split(
             "function ", 1
         )[0]

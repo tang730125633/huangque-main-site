@@ -23,6 +23,15 @@ function readUsesFlushWorkspace() {
   return new Function(`${match[0]}; return usesFlushWorkspace;`)();
 }
 
+function verifyCachedUser(cachedUser, verifiedUsername) {
+  const match = shell.match(/function verifiedCurrentUser\(\)\{[\s\S]*?\n  \}/);
+  assert.ok(match, 'cloud-shell.js must define verifiedCurrentUser()');
+  return new Function('currentUser', '_verifiedUsername', `${match[0]}; return verifiedCurrentUser();`)(
+    () => cachedUser,
+    verifiedUsername,
+  );
+}
+
 test('desktop Inspiration and AI toolbox keep the sidebar expanded', () => {
   const navDisplayMode = readNavDisplayMode();
   assert.equal(navDisplayMode('inspiration', false), 'expanded');
@@ -88,6 +97,13 @@ test('signed-in users display their concrete membership tier', () => {
   assert.match(shell, /experience:'体验官',partner:'合伙人',initiator:'发起人'/);
   assert.match(shell, /var role=membershipRoleName\(u\)/);
   assert.doesNotMatch(shell, /\?'管理员':'会员'/);
+});
+
+test('cached account data is trusted only after server verification', () => {
+  const cached = { username: 'local-cache', role: 'admin' };
+  assert.equal(verifyCachedUser(cached, ''), null);
+  assert.equal(verifyCachedUser(cached, 'another-user'), null);
+  assert.deepEqual(verifyCachedUser(cached, 'local-cache'), cached);
 });
 
 test('point prices are visible and refresh on open pages', () => {
