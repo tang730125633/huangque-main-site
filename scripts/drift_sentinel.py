@@ -57,6 +57,7 @@ BACKEND_RUNTIME = {
     'server/wechat_virtual_pay.py': '/home/ubuntu/auth-service/wechat_virtual_pay.py',
     'server/sync_virtual_pay_goods.py': '/home/ubuntu/auth-service/sync_virtual_pay_goods.py',
     'server/content_api.py': '/home/ubuntu/content-api/content_api.py',
+    'server/heygen_oauth.py': '/home/ubuntu/content-api/heygen_oauth.py',
     'server/imggen_api.py': '/home/ubuntu/content-api/imggen_api.py',
     'server/leadgen_api.py': '/home/ubuntu/content-api/leadgen_api.py',
     'server/tikhub.py': '/home/ubuntu/content-api/tikhub.py',
