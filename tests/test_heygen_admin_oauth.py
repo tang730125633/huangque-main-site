@@ -42,6 +42,23 @@ class HeyGenAdminOAuthTests(unittest.TestCase):
         heygen_oauth._flows.clear()
         heygen_oauth._credential_epochs.clear()
 
+    def test_runtime_module_is_covered_by_all_deployment_manifests(self):
+        root = pathlib.Path(__file__).resolve().parents[1]
+        ship = (root / "ship").read_text(encoding="utf-8")
+        sentinel = (root / "scripts/drift_sentinel.py").read_text(encoding="utf-8")
+        legacy_deploy = (root / "scripts/deploy_site.sh").read_text(encoding="utf-8")
+
+        self.assertIn(
+            'server/heygen_oauth.py) dest=/home/ubuntu/content-api/; '
+            'svc="huangque-content huangque-admin"',
+            ship,
+        )
+        self.assertIn(
+            "'server/heygen_oauth.py': '/home/ubuntu/content-api/heygen_oauth.py'",
+            sentinel,
+        )
+        self.assertIn('"$ROOT/server/heygen_oauth.py"', legacy_deploy)
+
     def test_begin_uses_pkce_state_resource_and_fixed_redirect(self):
         result = heygen_oauth.begin_authorization(
             "C:/safe/heygen.json",

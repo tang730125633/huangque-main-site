@@ -318,6 +318,7 @@ for f in "$@"; do
     tools/hq-cli/src/hq_cli/*)
              dest=/home/ubuntu/content-api/hq_cli/
              svc=huangque-content ;;
+    server/heygen_oauth.py) dest=/home/ubuntu/content-api/; svc="huangque-content huangque-admin" ;;
     server/admin_api.py)   dest=/home/ubuntu/content-api/;  svc=huangque-admin ;;
     server/qa_fixtures/*)  dest=/home/ubuntu/content-api/qa_fixtures/; svc=huangque-admin ;;
     server/leadgen_api.py) dest=/home/ubuntu/content-api/;  svc=huangque-leadgen-api ;;
