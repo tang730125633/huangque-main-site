@@ -66,26 +66,48 @@
     system: "系统",
   };
 
-  // ---- 滚动策略：只有用户停在底部（粘底）时才自动跟随滚动；
-  // 用户一往上翻（离开底部超过阈值）就绝不打扰，Agent 思考时也不拖人。----
+  // ---- 滚动策略：锚点永远是「聊天区底部」（最后一条消息），绝不用整页滚底——
+  // 手机端页面最下面是「子 Agent 路由轨迹」面板，整页滚底会把用户拽进轨迹里
+  // （用户投诉：每说完一句话都被跳到最下面的轨迹）。只有用户停在聊天区底部附近
+  // 才自动跟随；往上翻历史、或主动滑进下方轨迹面板，都不打扰。----
   var scrollSticky = true;
+  var chatPane = document.getElementById("chat-pane");
+
+  function chatBottomY() {
+    if (!chatPane) return 0;
+    return chatPane.offsetTop + chatPane.offsetHeight;
+  }
 
   function updateSticky() {
-    var gap = document.body.scrollHeight - (window.scrollY + window.innerHeight);
-    scrollSticky = gap < 120;
+    var gap = chatBottomY() - (window.scrollY + window.innerHeight);
+    // 只有视口确实停在聊天区底部附近才算粘底：往上翻历史（gap 大）或
+    // 往下滑进轨迹面板（gap 变负）都不自动跟随，绝不打扰
+    scrollSticky = gap < 140 && gap > -60;
   }
   window.addEventListener("scroll", updateSticky, { passive: true });
   window.addEventListener("resize", updateSticky);
 
-  function autoScroll() {
-    if (!scrollSticky) return;
-    window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
+  function scrollToChatBottom(behavior) {
+    var msgs = document.getElementById("messages");
+    var last = msgs && msgs.lastElementChild;
+    if (last && last.scrollIntoView) {
+      // .msg 带 scroll-margin-bottom，滚动后最后一条消息完整露在输入框上方
+      last.scrollIntoView({ block: "end", behavior: behavior });
+      return;
+    }
+    var composer = document.getElementById("composer");
+    if (composer && composer.scrollIntoView) composer.scrollIntoView({ block: "end", behavior: behavior });
   }
 
-  // 用户主动动作（发消息/点卡片）后强制回到粘底模式并滚到底
+  function autoScroll() {
+    if (!scrollSticky) return;
+    scrollToChatBottom("smooth");
+  }
+
+  // 用户主动动作（发消息/点卡片）后强制回到粘底模式并滚到聊天区底部
   function forceScrollBottom() {
     scrollSticky = true;
-    window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
+    scrollToChatBottom("smooth");
   }
 
   // 组装一条消息的 DOM（不插入、不滚动）：addMsg 与恢复历史的批量渲染共用。
@@ -211,7 +233,9 @@
       var detail = st.detail || {};
       var r = detail.result || {};
       el.classList.add("auth-ok");
-      el.textContent = "🪶 黄雀已授权" + fmtAuthExpiry(r.expires_at);
+      el.textContent = r.authorization_mode === "per_customer_session"
+        ? "🪶 能力随当前账号"
+        : "🪶 黄雀已授权" + fmtAuthExpiry(r.expires_at);
     } else {
       el.classList.add("auth-bad");
       el.textContent = "🪶 黄雀授权已过期";
@@ -347,6 +371,7 @@
 
   // ---- 发送 ----
   var pendingAttachments = []; // {file_id, url}
+  var startupSend = null;      // 页面刚出现但 session_id 还没回来时，只暂存第一条发送
 
   function setStreaming(v) {
     streaming = v;
@@ -595,12 +620,15 @@
         renderActionCards(d.delegations, true); // 待回复/待确认：摆在眼前（先看问题）
         // 出片引导四句：卡片是附件不是主角。锚定目标=本轮引导气泡（回复），
         // 保证「引导在上、选择在下」整体进入视口，而不是卡片把话顶出屏幕。
-        renderWidgets(d.widgets, { anchor: el });
+        renderWidgets(d.widgets, { anchor: el, filmMode: true });
       } else {
         filmStash = null;
         unloadFilmKit();
         collapseOldCards();
         renderActionCards(d.delegations, false);
+        // 非出片轮也要渲染非出片卡（audio 域的音色/声音克隆槽位卡）：
+        // 用户在音频配音/克隆替换流程里点选后，选择随下一条消息发回后端。
+        renderWidgets(d.widgets, { anchor: el, filmMode: false });
       }
     }
     setBadge(d.mode);
@@ -774,11 +802,86 @@
     return false;
   }
 
+  // ---- 网络状态提示（#29：断网明示，绝不悄悄补跑）----
+  // 无离线队列：断网时发送会立即失败并明确告知，网络恢复后**不会**自动补发，
+  // 由用户手动重发——避免「服务恢复后离线请求悄悄自动补跑」造成误扣点/重复提交。
+  function netBanner(show, text) {
+    var b = $("net-banner");
+    if (!b) return;
+    if (show) { b.textContent = text; b.hidden = false; }
+    else b.hidden = true;
+  }
+  window.addEventListener("offline", function () {
+    netBanner(true, "⚠ 网络已断开：消息发不出去。恢复后我会提示你重发，不会自动补发。");
+  });
+  window.addEventListener("online", function () {
+    netBanner(true, "✅ 网络已恢复，刚才没发出去的消息请重新发送（系统不会自动补发）。");
+    setTimeout(function () { netBanner(false, ""); }, 6000);
+  });
+  if (navigator.onLine === false) {
+    netBanner(true, "⚠ 网络已断开：消息发不出去。恢复后我会提示你重发，不会自动补发。");
+  }
+
+  // 非出片点选（声音克隆槽位等）：用户点选后必须随他下一条消息发回后端。
+  // 后端约定消息以「【点选】<卡片标题>：<选项>」开头；点选的 id 对槽位卡就是 slot_id。
+  function pendingPickNote() {
+    var parts = [];
+    ["avatar", "voice", "script"].forEach(function (k) {
+      var c = pickedChoices[k];
+      if (!c || c.film !== false || !c.manual) return;
+      var body = c.label + "（id=" + c.id;
+      if (c.slot_id && c.slot_id !== c.id) body += "，slot_id=" + c.slot_id;
+      if (c.created_at && c.label.indexOf("创建于") < 0) body += "，创建于 " + fmtDate(c.created_at);
+      body += "）";
+      parts.push(body);
+    });
+    if (!parts.length) return "";
+    return "【点选】" + parts.join("；") + "\n";
+  }
+  // 发送成功才真正消费（点选移出 pickedChoices）；失败放回去，用户原样重发不丢选择。
+  var inFlightPicks = null;
+  function consumePendingPicks() {
+    var out = {};
+    ["avatar", "voice", "script"].forEach(function (k) {
+      var c = pickedChoices[k];
+      if (!c || c.film !== false || !c.manual) return;
+      out[k] = c;
+      delete pickedChoices[k];
+      clearPickedMarks(k);
+    });
+    inFlightPicks = Object.keys(out).length ? out : null;
+  }
+  function clearConsumedPicks() {
+    if (!inFlightPicks) return;
+    Object.keys(inFlightPicks).forEach(function (k) { persistChoice(k, null); });
+    inFlightPicks = null;
+  }
+  function restorePendingPicks() {
+    if (!inFlightPicks) return;
+    Object.keys(inFlightPicks).forEach(function (k) { pickedChoices[k] = inFlightPicks[k]; });
+    inFlightPicks = null;
+  }
+
   function send(text, approval, onSendError) {
     if (streaming) return;
     text = (text || input.value).trim();
     // 只贴了附件没打字也可以发送（附件-only 消息）
     if (!text && !pendingAttachments.length) return;
+    // 断网拦截：不把消息写进对话（避免「以为发出去了」），明确告知手动重发
+    if (navigator.onLine === false) {
+      addMsg("assistant", "当前网络已断开，这条消息还没有发出去；网络恢复后请重新发送（不会自动补发）。");
+      return false;
+    }
+    // 初始化竞态：首屏已经能看到输入区，但 /start 还没返回 session_id。
+    // 第一条发送短暂排队，拿到 sid 后原样自动发送；不写失败气泡，也不要求用户刷新/重按。
+    if (!sessionId) {
+      startupSend = { text: text, approval: approval, onSendError: onSendError };
+      setStreaming(true);
+      ensureStatusBubble();
+      return true;
+    }
+    var pickNote = pendingPickNote();
+    if (pickNote) text = pickNote + (text || "已点选，请按所选继续。");
     var attachments = pendingAttachments.map(function (a) { return a.file_id; });
     var attNames = pendingAttachments.map(function (a) {
       return (a.kind === "audio" ? "录音：" : a.kind === "image" ? "图片：" : "文件：") + (a.name || "");
@@ -800,6 +903,8 @@
     setStreaming(true);
     showTyping();
     sendController = new AbortController();
+    // 非出片点选随本条消息发出：fetch 前才消费（此前任何返回/拦截都不丢选择）
+    if (pickNote) consumePendingPicks();
     // 发送本身应该秒回（服务端立即返回确认）；万一网络卡住，60 秒兜底中止
     var timer = setTimeout(function () {
       if (sendController) sendController.abort();
@@ -815,10 +920,12 @@
       .then(function (data) {
         hideTyping();
         if (data.error) {
+          restorePendingPicks(); // 服务端拒收：点选放回，用户重发不丢
           removeStatusBubble(); addMsg("assistant", "出错了：" + data.error);
           if (onSendError) onSendError();
           return;
         }
+        clearConsumedPicks(); // 已确认送达并受理：点选正式消费并同步清掉会话暂存
         if (data.async && data.seq != null) {
           // 即时反馈：状态气泡立刻出现并实时更新，输入框马上可继续发
           jobTimedOut = false; // 新一轮开始：卡死窗口重计
@@ -832,11 +939,12 @@
       })
       .catch(function (err) {
         hideTyping();
+        restorePendingPicks(); // 网络层失败：点选放回，用户原样重发不丢选择
         if (onSendError) onSendError();
         if (err && err.name === "AbortError") {
-          addMsg("assistant", "发送超时了，请检查网络后重发。");
+          addMsg("assistant", "发送超时了，请检查网络后重发（不会自动补发）。");
         } else {
-          addMsg("assistant", "网络请求失败，请刷新重试。");
+          addMsg("assistant", "网络请求失败，请稍后手动重发（不会自动补发）。");
         }
       })
       .finally(function () {
@@ -1012,6 +1120,7 @@
     if (w && w.id) delete renderedWidgets[w.id];
     if (kind) {
       delete pickedChoices[kind];   // 关掉=本次不出片：已选的同来源项一并撤销
+      persistChoice(kind, null);
       clearPickedMarks(kind);
     }
     updateSummaryCard();
@@ -1022,6 +1131,10 @@
   // film=false 的轮次 → 卸载全部出片组件（不是收起，是卸掉）；
   // 只有出片轮（film=true）才重新挂上。前端不再拿关键词猜用户意图。----
   function isFilmWidget(w) {
+    if (!w) return false;
+    // 后端标记 film=false 的卡（audio 域的音色/声音克隆槽位卡）不属于出片流程：
+    // 非出片轮照常渲染、不被出片货架卸载逻辑带走。
+    if (w.film === false) return false;
     return !!w && (w.type === "avatar_pick" || w.type === "voice_pick" ||
       w.type === "script_pick" || w.type === "option_pick");
   }
@@ -1036,13 +1149,19 @@
       delete renderedWidgets[k];
     });
   }
-  // 卸载全部出片组件（当前轮不是出片轮）：不是收起，是彻底移除；选择状态一并清空，
+  // 卸载全部出片组件（当前轮不是出片轮）：不是收起，是彻底移除；出片选择一并清空，
   // 下一次出片从干净状态重新开始（默认勾选重新生效）。数字人待办卡也属出片流程，一并下线。
+  // 非出片点选（声音克隆槽位等 film=false 的选择）保留：它要随用户下一条消息发回后端。
   function unloadFilmKit() {
     unloadFilmWidgetsDOM();
     if (summaryCard && summaryCard.parentNode) summaryCard.remove();
     summaryCard = null;
-    pickedChoices = {};
+    Object.keys(pickedChoices).forEach(function (k) {
+      if (!pickedChoices[k] || pickedChoices[k].film !== false) {
+        delete pickedChoices[k];
+        persistChoice(k, null);
+      }
+    });
     submittedQuoteIds = {};
     scriptWidgetsOffered = false;
     autoPickedDefaults = {};
@@ -1056,10 +1175,15 @@
     delete actionCards["digital-human"];
   }
   // ---- 乐观卸载 + 暂存：用户发消息瞬间就先把出片区卸掉（附件跟着话下线），
-  // 但把已点选的选择暂存；若后端这轮回是出片轮，选择原样恢复（出片续聊不丢已选）。----
+  // 但把已点选的出片选择暂存；若后端这轮回是出片轮，选择原样恢复（出片续聊不丢已选）。
+  // 非出片点选（声音克隆槽位）不进暂存：它们不属于出片流程，卸载时原样保留。----
   var filmStash = null;
   function stashFilmKit() {
-    if (!pickedChoices.avatar && !pickedChoices.voice && !pickedChoices.script) {
+    var hasFilmPick = ["avatar", "voice", "script"].some(function (k) {
+      var c = pickedChoices[k];
+      return c && c.film !== false;
+    });
+    if (!hasFilmPick) {
       filmStash = null;
       return;
     }
@@ -1072,7 +1196,9 @@
   }
   function restoreFilmStash() {
     if (!filmStash) return;
-    pickedChoices = filmStash.pickedChoices || {};
+    ["avatar", "voice", "script"].forEach(function (k) {
+      if (filmStash.pickedChoices[k]) pickedChoices[k] = filmStash.pickedChoices[k];
+    });
     scriptWidgetsOffered = filmStash.scriptWidgetsOffered;
     autoPickedDefaults = filmStash.autoPickedDefaults || {};
     summaryConsumed = filmStash.summaryConsumed;
@@ -1080,37 +1206,48 @@
   }
 
   // ---- 收起旧卡（纪律3）：新回复发出时，把此前渲染的素材卡/出片配置卡收成一行 ----
+  // 非出片卡（声音克隆槽位面板）例外：它的使命就是让用户点选，收起会让用户多一步展开。----
   function collapseOldCards() {
     Array.prototype.forEach.call(
       document.querySelectorAll("#messages > .widget-box:not(.action-box), #messages > .summary-card"),
-      function (n) { n.classList.add("collapsed"); }
+      function (n) {
+        if (n.classList.contains("nonfilm-panel")) return;
+        n.classList.add("collapsed");
+      }
     );
   }
 
   function renderWidgets(widgets, opts) {
     if (!widgets || !widgets.length) return;
     opts = opts || {};
+    // filmMode：true 只渲染出片卡（出片轮调用）；false 只渲染非出片卡
+    // （audio 域的音色/声音克隆槽位卡——非出片轮也要让用户点选，不能卸）。
+    var wantFilm = opts.filmMode !== false;
+    widgets = widgets.filter(function (w) { return isFilmWidget(w) === wantFilm; });
+    if (!widgets.length) return;
     var anyNew = false;
     var lastNewBox = null;
 
     // 音色合并：所有 voice_pick（我的克隆槽位 + 系统公共音色）并成「一块」，
-    // 用「我的 / 系统」标签切开，绝不上下一拆二。
+    // 用「我的 / 系统」标签切开，绝不上下一拆二。出片卡与非出片卡分成两块面板，
+    // 各自独立渲染/卸载（非出片的槽位卡不受出片货架卸载影响）。
     var voiceWidgets = widgets.filter(function (w) { return w.type === "voice_pick"; });
     var others = widgets.filter(function (w) { return w.type !== "voice_pick" && !isWidgetDismissed(w); });
     var voiceAllDismissed = voiceWidgets.every(isWidgetDismissed);
     if (voiceWidgets.length && !voiceAllDismissed) {
       var vp = voiceWidgetsFingerprint(voiceWidgets);
-      var vrec = renderedWidgets["voice_panel"];
+      var panelKey = wantFilm ? "voice_panel" : "voice_panel_nonfilm";
+      var vrec = renderedWidgets[panelKey];
       if (!(vrec && vrec.fp === vp && vrec.el && vrec.el.parentNode)) {
         if (vrec && vrec.el) vrec.el.remove();
         var vbox = renderVoicePanel(voiceWidgets, opts);
         if (vbox) {
           messages.appendChild(vbox);
-          renderedWidgets["voice_panel"] = { fp: vp, el: vbox, film: true };
+          renderedWidgets[panelKey] = { fp: vp, el: vbox, film: wantFilm };
           anyNew = true;
           lastNewBox = vbox;
         } else {
-          delete renderedWidgets["voice_panel"];
+          delete renderedWidgets[panelKey];
         }
       }
     }
@@ -1145,15 +1282,16 @@
   }
 
   // ---- 给默认（出片引导第三句）：默认形象=本人形象、默认音色=本人声音/克隆音色，
-  // 渲染时自动勾选一次；用户 × 撤掉后绝不自动选回。----
+  // 渲染时自动勾选一次；用户 × 撤掉后绝不自动选回。
+  // 只对出片卡（film）生效：非出片的槽位卡绝不能自动勾选（替换哪个槽位必须用户自己点）。----
   function autoPickDefaults(widgets) {
     if (!autoPickedDefaults.avatar && !pickedChoices.avatar) {
-      var aw = (widgets || []).filter(function (w) { return w.type === "avatar_pick"; })[0];
+      var aw = (widgets || []).filter(function (w) { return w.type === "avatar_pick" && w.film !== false; })[0];
       var item = defaultOf(aw, function (it) { return it.name === "本人形象"; });
       if (item) autoPickChoice(aw, item, "avatar");
     }
     if (!autoPickedDefaults.voice && !pickedChoices.voice) {
-      var vws = (widgets || []).filter(function (w) { return w.type === "voice_pick"; });
+      var vws = (widgets || []).filter(function (w) { return w.type === "voice_pick" && w.film !== false; });
       var def = null;
       // 优先「本人」名字的音色，其次克隆音色，最后第一个
       vws.forEach(function (w) {
@@ -1241,14 +1379,19 @@
 
     var box = document.createElement("div");
     box.className = "widget-box voice-panel";
+    // 非出片面板（声音克隆槽位卡）标记：新回复不自动收起，用户直接点选
+    if (opts && opts.filmMode === false) box.classList.add("nonfilm-panel");
     makeWidgetHead(box, "🎙 音色（▶ 可试听，点击选中）", function () {
       // 关掉整个音色面板：底层每个 voice_pick 都记关闭，绝不自动重弹
       ws.forEach(function (w) { dismissedWidgetIds[widgetDismissKey(w)] = true; });
       saveDismissed();
       delete pickedChoices.voice;
+      persistChoice("voice", null);
       clearPickedMarks("voice");
       if (box.parentNode) box.remove();
-      delete renderedWidgets["voice_panel"];
+      Object.keys(renderedWidgets).forEach(function (k) {
+        if (renderedWidgets[k] && renderedWidgets[k].el === box) delete renderedWidgets[k];
+      });
       updateSummaryCard();
     });
     if (opts && opts.collapsed) box.classList.add("collapsed");
@@ -1510,7 +1653,12 @@
       image_url: it.image_url || "",
       preview_url: it.preview_url || "",
       widgetTitle: w.title || "",
+      film: w.film !== false,       // 出片选择 or 非出片选择（声音克隆槽位）
+      manual: !!el,                 // 用户手动点选（自动勾选默认=manual false）
+      slot_id: it.slot_id || "",    // 声音克隆槽位：voice-clone-* 要用的槽位参数
+      created_at: it.created_at || "",
     };
+    persistChoice(kind, pickedChoices[kind]);
     // 同一类内单选：清掉该类其他卡片的高亮（形象/音色/文案各只留一个选中）
     clearPickedMarks(kind);
     if (el) { // 手动点选：直接标记点击的卡片
@@ -1523,6 +1671,15 @@
     }
     summaryConsumed = null; // 用户又在主动选了：允许出新配置卡
     updateSummaryCard(silent ? { scroll: false } : {});
+  }
+
+  function persistChoice(kind, choice) {
+    if (!sessionId) return;
+    fetch("api/v4/selection", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId, kind: kind, choice: choice }),
+    }).catch(function () { /* 本地选择仍可继续；刷新时以后端最后成功状态为准 */ });
   }
 
   function markPickedById(kind, itemId) {
@@ -1584,19 +1741,24 @@
 
   // ---- 出片配置卡（一次性附件，不在输入框上方钉常驻栏）：
   // 左脸（形象缩略图）· 中声（音色名）· 右文案（标题）+ 大绿色确认按钮。
-  // 每个格子都能 × 撤销；整卡 × 关掉=本次不出片、对话继续，且不再自动弹出。----
+  // 每个格子都能 × 撤销；整卡 × 关掉=本次不出片、对话继续，且不再自动弹出。
+  // 配置卡只反映「出片」选择（film）；非出片点选（声音克隆槽位）不在这里展示。----
+  function isFilmPick(k) {
+    var c = pickedChoices[k];
+    return !!(c && c.film !== false);
+  }
   function summarySignature() {
     return ["avatar", "voice", "script"].map(function (k) {
       var c = pickedChoices[k];
-      return k + "=" + (c ? c.id : "");
+      return k + "=" + (isFilmPick(k) ? c.id : "");
     }).join("|");
   }
 
   function updateSummaryCard(opts) {
     opts = opts || {};
     var sig = summarySignature();
-    var needScript = scriptWidgetsOffered && !pickedChoices.script; // 出过文案卡就必须选一版
-    var hasAny = !!(pickedChoices.avatar || pickedChoices.voice || pickedChoices.script);
+    var needScript = scriptWidgetsOffered && !isFilmPick("script"); // 出过文案卡就必须选一版
+    var hasAny = isFilmPick("avatar") || isFilmPick("voice") || isFilmPick("script");
     if (!hasAny) {
       if (summaryCard) { summaryCard.remove(); summaryCard = null; }
       return;
@@ -1631,7 +1793,10 @@
     close.textContent = "×";
     close.title = "取消本次出片（对话继续，不再自动弹出）";
     close.addEventListener("click", function () {
-      Object.keys(pickedChoices).forEach(function (k) { delete pickedChoices[k]; });
+      Object.keys(pickedChoices).forEach(function (k) {
+        delete pickedChoices[k];
+        persistChoice(k, null);
+      });
       ["avatar", "voice", "script"].forEach(clearPickedMarks);
       summaryConsumed = sig;
       if (summaryCard) { summaryCard.remove(); summaryCard = null; }
@@ -1679,6 +1844,7 @@
         x.title = "移除这一项";
         x.addEventListener("click", function () {
           delete pickedChoices[kind];
+          persistChoice(kind, null);
           clearPickedMarks(kind);
           updateSummaryCard();
         });
@@ -1781,6 +1947,7 @@
     renderedWidgets = {};
     renderedSeqs = {};
     activeSeqs = {};
+    startupSend = null;
     pickedChoices = {};
     scriptWidgetsOffered = false;
     autoPickedDefaults = {};
@@ -1808,11 +1975,23 @@
     toolList.innerHTML = '<p class="tool-empty">还没有派发子 Agent。你说「出张海报」「查点数」这类需求，主 Agent 会路由到对应子 Agent。</p>';
   });
 
+  $("export-btn").addEventListener("click", function () {
+    if (!sessionId) return;
+    window.location.href = "api/v4/export/" + encodeURIComponent(sessionId) + ".jsonl";
+  });
+
   // ---- 启动 ----
   function start() {
     fetch("api/v4/start", { method: "POST" })
       .then(function (r) { return r.json(); })
       .then(function (data) {
+        if (data.error) {
+          startupSend = null;
+          setStreaming(false);
+          removeStatusBubble();
+          addMsg("assistant", data.error);
+          return;
+        }
         sessionId = data.session_id;
         localStorage.setItem("hq-v4-session-id", sessionId);
         cleanupOldDismissed(sessionId);
@@ -1825,11 +2004,28 @@
           jobTimedOut = false;
           ensureStatusBubble();
           startTurnPoll(data.seq);
+          if (startupSend) {
+            var queued = startupSend;
+            startupSend = null;
+            setStreaming(false);
+            send(queued.text, queued.approval, queued.onSendError);
+          }
           return;
         }
         addMsg("assistant", data.reply || "你好，说说你想要什么成果。");
+        if (startupSend) {
+          var queuedSync = startupSend;
+          startupSend = null;
+          setStreaming(false);
+          send(queuedSync.text, queuedSync.approval, queuedSync.onSendError);
+        }
       })
-      .catch(function () { addMsg("assistant", "启动失败，请确认服务已运行。"); });
+      .catch(function () {
+        startupSend = null;
+        setStreaming(false);
+        removeStatusBubble();
+        addMsg("assistant", "启动失败，请确认服务已运行。");
+      });
   }
 
   // ---- 恢复：刷新页面后找回上次对话（sid 存 localStorage，服务端已落盘）----
@@ -2041,6 +2237,12 @@
     fetch("api/v4/restore/" + encodeURIComponent(savedSid))
       .then(function (r) { return r.json(); })
       .then(function (data) {
+        if (data.code === "unauthorized" || data.code === "session_forbidden" ||
+            data.code === "session_owner_missing") {
+          localStorage.removeItem("hq-v4-session-id");
+          addMsg("assistant", data.error || "请先登录黄雀账号。");
+          return;
+        }
         if (!data.ok || !data.history || !data.history.length) {
           localStorage.removeItem("hq-v4-session-id");
           start();
@@ -2049,6 +2251,8 @@
         sessionId = savedSid;
         cleanupOldDismissed(sessionId);
         loadDismissed();
+        pickedChoices = data.selected_choices && typeof data.selected_choices === "object"
+          ? data.selected_choices : {};
         // 恢复的助手气泡也带 data-reply（原始文本）：轮询排空时按内容去重，回放轮次绝不重复贴。
         // 批量建 DOM（DocumentFragment）一次插入、只在末尾滚一次：几百上千条消息恢复不再逐条平滑滚动卡顿。
         var frag = document.createDocumentFragment();
@@ -2067,7 +2271,10 @@
         // 旧素材卡只在「最后意图仍是出片」时按收起态恢复（该条消息的附件）；
         // 最后在聊别的（哪怕会话里出过片）→ 不渲染任何出片卡，连收起态都不留。
         if (data.film === true) {
-          renderWidgets(data.widgets, { collapsed: true });
+          renderWidgets(data.widgets, { collapsed: true, filmMode: true });
+        } else {
+          // 非出片卡（声音克隆槽位等）照常按收起态恢复：刷新不丢点选入口
+          renderWidgets(data.widgets, { collapsed: true, filmMode: false });
         }
         renderReport(data.report);
         setBadge(data.mode);

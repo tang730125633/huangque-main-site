@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 import os
 import re
+import logging
+import time
 import urllib.error
 import urllib.request
 
@@ -16,6 +18,7 @@ from .core import (
 
 COPY_API_BASE = os.environ.get("COPY_API_BASE", "").strip()
 COPY_API_KEY = os.environ.get("COPY_API_KEY", "").strip()
+LOGGER = logging.getLogger(__name__)
 
 
 def _provider_config():
@@ -73,6 +76,10 @@ ZHIPU_API_KEY = (os.environ.get("ZHIPU_API_KEY") or "").strip()
 DIRECTOR_ZHIPU_API_KEY = (os.environ.get("REVERSE_ZHIPU_KEY") or "").strip()
 DIRECTOR_ZHIPU_MODEL = (
     os.environ.get("REVERSE_ZHIPU_MODEL") or "glm-4v-plus"
+).strip()
+DIRECTOR_ZHIPU_MAX_ATTEMPTS = 3
+DIRECTOR_OPENAI_MODEL = (
+    os.environ.get("DIRECTOR_OPENAI_MODEL") or "gpt-5.6-luna"
 ).strip()
 
 
@@ -149,6 +156,20 @@ def sanitize_script_scenes(scenes, brief):
     return cleaned
 
 
+class _ZhipuRateLimited(RuntimeError):
+    pass
+
+
+def _zhipu_retry_delay(error, attempt):
+    retry_after = (error.headers or {}).get("Retry-After")
+    try:
+        if retry_after is not None:
+            return min(30.0, max(0.0, float(retry_after)))
+    except (TypeError, ValueError):
+        pass
+    return min(8.0, float(2 ** attempt))
+
+
 def _zhipu_request(messages, temp, api_key, model):
     if not api_key:
         raise RuntimeError("REVERSE_ZHIPU_KEY is not configured")
@@ -157,15 +178,55 @@ def _zhipu_request(messages, temp, api_key, model):
         "messages": messages,
         "temperature": temp,
     }, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(
-        ZHIPU_API_BASE + "/chat/completions",
-        data=body,
-        headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
-        method="POST",
-    )
-    with _NOPROXY.open(req, timeout=300) as response:
-        d = json.loads(response.read())
-    return (d.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
+    for attempt in range(DIRECTOR_ZHIPU_MAX_ATTEMPTS):
+        req = urllib.request.Request(
+            ZHIPU_API_BASE + "/chat/completions",
+            data=body,
+            headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with _NOPROXY.open(req, timeout=300) as response:
+                d = json.loads(response.read())
+            return (d.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
+        except urllib.error.HTTPError as error:
+            if error.code != 429:
+                raise RuntimeError("编导模型请求失败（HTTP %s）" % error.code) from error
+            if attempt + 1 >= DIRECTOR_ZHIPU_MAX_ATTEMPTS:
+                raise _ZhipuRateLimited("编导模型请求过于频繁") from error
+            time.sleep(_zhipu_retry_delay(error, attempt))
+    raise _ZhipuRateLimited("编导模型请求过于频繁")
+
+
+def _openai_director_request(messages, temp, model):
+    payload = {
+        "model": model,
+        "messages": messages,
+    }
+    # GPT-5.6 Luna only accepts its default temperature value. Older fallback
+    # models retain the tuned director temperature used by the existing flow.
+    if model != "gpt-5.6-luna":
+        payload["temperature"] = temp
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    d = _post_chat(body)
+    content = (d.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
+    if not content:
+        raise RuntimeError("编导模型返回为空")
+    return content
+
+
+def _director_request(messages, temp):
+    try:
+        return _openai_director_request(messages, temp, DIRECTOR_OPENAI_MODEL)
+    except RuntimeError:
+        if DIRECTOR_OPENAI_MODEL == FALLBACK_COPY_MODEL:
+            raise
+        LOGGER.warning(
+            "director model %s failed; using fallback model %s",
+            DIRECTOR_OPENAI_MODEL,
+            FALLBACK_COPY_MODEL,
+        )
+        return _openai_director_request(messages, temp, FALLBACK_COPY_MODEL)
 
 
 def _chat(sysmsg, usermsg, temp):
@@ -208,10 +269,10 @@ def _chat(sysmsg, usermsg, temp):
 
 
 def _director_chat(sysmsg, usermsg, temp):
-    return _zhipu_request([
+    return _director_request([
         {"role": "system", "content": sysmsg},
         {"role": "user", "content": usermsg},
-    ], temp, DIRECTOR_ZHIPU_API_KEY, DIRECTOR_ZHIPU_MODEL)
+    ], temp)
 
 
 def _director_chat_multimodal(sysmsg, usermsg, image_data_urls, temp=0.85):
@@ -219,10 +280,10 @@ def _director_chat_multimodal(sysmsg, usermsg, image_data_urls, temp=0.85):
     content = [{"type": "text", "text": usermsg}]
     for url in (image_data_urls or []):
         content.append({"type": "image_url", "image_url": {"url": str(url), "detail": "low"}})
-    return _zhipu_request([
+    return _director_request([
         {"role": "system", "content": sysmsg},
         {"role": "user", "content": content},
-    ], temp, DIRECTOR_ZHIPU_API_KEY, DIRECTOR_ZHIPU_MODEL)
+    ], temp)
 
 
 def gen_copy(payload):

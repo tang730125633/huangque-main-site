@@ -9,12 +9,23 @@ import urllib.error
 import urllib.parse
 from contextlib import closing
 
-from .core import jdb
+from .core import jdb, OPENAI_BASE, OPENAI_KEY, COPY_MODEL as FALLBACK_COPY_MODEL
 from . import egress
 
 ZHIPU_API_BASE = (os.environ.get("REVERSE_ZHIPU_BASE") or "https://open.bigmodel.cn/api/paas/v4").rstrip("/")
 ZHIPU_API_KEY = (os.environ.get("REVERSE_ZHIPU_KEY") or "").strip()
 ZHIPU_MODEL = (os.environ.get("REVERSE_ZHIPU_MODEL") or "glm-4v-plus").strip()
+BREAKDOWN_OPENAI_MODEL = (
+    os.environ.get("BREAKDOWN_OPENAI_MODEL") or "gpt-5.6-luna"
+).strip()
+BREAKDOWN_FALLBACK_MODEL = (
+    os.environ.get("BREAKDOWN_FALLBACK_MODEL") or FALLBACK_COPY_MODEL
+).strip()
+OPENAI_CHAT_BASE = (OPENAI_BASE or "https://api.openai.com").rstrip("/")
+OPENAI_CHAT_PATH = (
+    "/chat/completions" if OPENAI_CHAT_BASE.endswith("/v1")
+    else "/v1/chat/completions"
+)
 BREAKDOWN_DOWNLOAD_BUDGET = max(
     30, int(os.environ.get("BREAKDOWN_DOWNLOAD_BUDGET", "180") or "180")
 )
@@ -1911,9 +1922,9 @@ def _fill_reverse_window_frames(
 
 
 def _chat_multimodal(sysmsg, usermsg, image_paths, temp=0.7, max_tokens=None):
-    """编导视觉理解统一走智谱 GLM-4V。"""
-    if not ZHIPU_API_KEY:
-        raise RuntimeError("REVERSE_ZHIPU_KEY is not configured")
+    """编导视觉理解统一走 Luna，失败时回退现有 OpenAI 文案模型。"""
+    if not OPENAI_KEY:
+        raise RuntimeError("OPENAI_API_KEY is not configured")
 
     content = [{"type": "text", "text": usermsg}]
     image_paths = _evenly_spaced_frames(image_paths, _AI_MAX_FRAMES)
@@ -1936,30 +1947,49 @@ def _chat_multimodal(sysmsg, usermsg, image_paths, temp=0.7, max_tokens=None):
             },
         })
 
-    body = {
-        "model": ZHIPU_MODEL,
-        "messages": [
+    messages = [
             {"role": "system", "content": sysmsg},
             {"role": "user", "content": content}
-        ],
-        "temperature": temp,
-    }
-    if max_tokens is not None:
-        body["max_tokens"] = int(max_tokens)
-
-    request_data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-    try:
-        d = egress.post_json_idempotent(
-            ZHIPU_API_BASE, ZHIPU_API_BASE, "/chat/completions",
-            request_data,
-            {
-                "Authorization": "Bearer " + ZHIPU_API_KEY,
-                "Content-Type": "application/json",
-            },
-            log=lambda message: print("[breakdown] %s" % message, flush=True),
-            max_attempts=2,
-        )
-    except Exception as error:
+        ]
+    models = [BREAKDOWN_OPENAI_MODEL]
+    if BREAKDOWN_FALLBACK_MODEL and BREAKDOWN_FALLBACK_MODEL not in models:
+        models.append(BREAKDOWN_FALLBACK_MODEL)
+    failure = None
+    d = None
+    request_data = b""
+    for model_index, model in enumerate(models):
+        body = {"model": model, "messages": messages}
+        if model == "gpt-5.6-luna":
+            if max_tokens is not None:
+                body["max_completion_tokens"] = int(max_tokens)
+        else:
+            body["temperature"] = temp
+            if max_tokens is not None:
+                body["max_tokens"] = int(max_tokens)
+        request_data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        try:
+            d = egress.post_json_idempotent(
+                OPENAI_CHAT_BASE, OPENAI_CHAT_BASE, OPENAI_CHAT_PATH,
+                request_data,
+                {
+                    "Authorization": "Bearer " + OPENAI_KEY,
+                    "Content-Type": "application/json",
+                },
+                log=lambda message: print("[breakdown] %s" % message, flush=True),
+                max_attempts=2,
+            )
+            break
+        except Exception as error:
+            failure = error
+            if model_index + 1 < len(models):
+                print(
+                    "[breakdown] model %s failed; using fallback model %s"
+                    % (model, models[model_index + 1]),
+                    flush=True,
+                )
+                continue
+    if d is None:
+        error = failure or RuntimeError("AI 分析服务未返回结果")
         code = int(getattr(error, "code", 0) or 0)
         reason = getattr(error, "reason", None)
         detail = str(error or "").lower()

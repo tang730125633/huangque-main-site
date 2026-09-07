@@ -39,6 +39,8 @@ CATALOG = [
     _rule("image.banana.pro.hd", "图片生成", "纳米香蕉 Pro", "高清", 44, "点/张"),
     _rule("image.openai.std", "图片生成", "黄雀引擎 2", "标准", 20, "点/张"),
     _rule("image.openai.hd", "图片生成", "黄雀引擎 2", "高清", 35, "点/张"),
+    _rule("image.grok.std", "图片生成", "Grok（xAI）", "标准", 15, "点/张"),
+    _rule("image.grok.hd", "图片生成", "Grok（xAI）", "高清", 25, "点/张"),
     _rule("image.seedream.std.std", "图片生成", "黄雀引擎 1", "标准版 · 标准", 8, "点/张"),
     _rule("image.seedream.std.hd", "图片生成", "黄雀引擎 1", "标准版 · 高清", 12, "点/张", "短剧关键帧固定生成 2 张"),
     _rule("image.seedream.pro.std", "图片生成", "黄雀引擎 1", "Pro · 标准", 15, "点/张"),

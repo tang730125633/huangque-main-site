@@ -10,8 +10,9 @@ import os
 import subprocess
 import tempfile
 import threading
+from contextlib import contextmanager
 
-from . import config
+from . import config, customer_auth
 
 _TIMEOUT = int(os.environ.get("HQ_TIMEOUT", "180"))
 
@@ -25,9 +26,53 @@ def hq_semaphore() -> threading.Semaphore:
     return _HQ_SEMAPHORE
 
 
-def _subprocess_run(cmd: list) -> subprocess.CompletedProcess:
+def _child_env(config_dir: str | None = None) -> dict:
+    """最小子进程环境：模型/API 密钥绝不跟着进入 CLI。"""
+    env = {}
+    for key in (
+        "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP", "TMPDIR",
+        "LANG", "LC_ALL", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
+    ):
+        if os.environ.get(key):
+            env[key] = os.environ[key]
+    env.update({"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"})
+    if config_dir:
+        env["HQ_CLI_CONFIG_DIR"] = config_dir
+    return env
+
+
+@contextmanager
+def _customer_profile(session_id: str):
+    credential = customer_auth.REGISTRY.get(str(session_id or ""))
+    if credential is None:
+        raise RuntimeError("customer_identity_required")
+    with tempfile.TemporaryDirectory(prefix="hq_customer_") as directory:
+        path = os.path.join(directory, "credentials.json")
+        payload = json.dumps({
+            "access_token": credential.access_token,
+            "access_expires_at": credential.expires_at,
+            "expires_at": credential.expires_at,
+            "scopes": list(credential.scopes),
+        }, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+        yield directory
+
+
+def _subprocess_run(cmd: list, *, session_id: str | None = None,
+                    customer_required: bool = False) -> subprocess.CompletedProcess:
     with _HQ_SEMAPHORE:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=_TIMEOUT)
+        if customer_required:
+            with _customer_profile(str(session_id or "")) as directory:
+                return subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=_TIMEOUT,
+                    env=_child_env(directory),
+                )
+        return subprocess.run(
+            cmd, capture_output=True, text=True, timeout=_TIMEOUT,
+            env=_child_env(),
+        )
 
 
 def _bin() -> str:
@@ -42,6 +87,7 @@ def run(
     expected_cost=None,
     file_path: str | None = None,
     output: str | None = None,
+    session_id: str | None = None,
 ):
     """运行 `hq run <capability> [--input @file] [--file <path>] [--output <path>]
     [--confirm] [--quote-token <token>] [--expected-cost <cost>] --json`。
@@ -74,7 +120,7 @@ def run(
             cmd += ["--expected-cost", str(expected_cost)]
         cmd += ["--json"]
 
-        proc = _subprocess_run(cmd)
+        proc = _subprocess_run(cmd, session_id=session_id, customer_required=True)
         stdout = (proc.stdout or "").strip()
         stderr = (proc.stderr or "").strip()
         # 成功结果在 stdout；错误结果（JSON）在 stderr。
@@ -88,6 +134,17 @@ def run(
             "data": data,
             "stderr": stderr[:800],
         }
+    except RuntimeError as exc:
+        if str(exc) == "customer_identity_required":
+            return {
+                "exit_code": 4,
+                "data": {
+                    "error": "customer_identity_required",
+                    "message": "当前会话没有可用的客户身份，请重新登录黄雀账号后再试",
+                },
+                "stderr": "",
+            }
+        raise
     except subprocess.TimeoutExpired:
         return {"exit_code": -1, "data": {"error": "timeout"}, "stderr": ""}
     finally:
@@ -98,16 +155,30 @@ def run(
                 pass
 
 
-def status():
+def status(session_id: str | None = None):
     """`hq status --json`"""
     try:
-        proc = _subprocess_run([_bin(), "status", "--json"])
+        proc = _subprocess_run(
+            [_bin(), "status", "--json"],
+            session_id=session_id, customer_required=True,
+        )
         raw = (proc.stdout or "").strip() or (proc.stderr or "").strip()
         try:
             data = json.loads(raw) if raw else {}
         except json.JSONDecodeError:
             data = {"raw_output": raw[:2000]}
         return {"exit_code": proc.returncode, "data": data, "stderr": (proc.stderr or "")[:800]}
+    except RuntimeError as exc:
+        if str(exc) == "customer_identity_required":
+            return {
+                "exit_code": 4,
+                "data": {
+                    "error": "customer_identity_required",
+                    "message": "当前会话没有可用的客户身份，请重新登录黄雀账号后再试",
+                },
+                "stderr": "",
+            }
+        raise
     except subprocess.TimeoutExpired:
         return {"exit_code": -1, "data": {"error": "timeout"}, "stderr": ""}
 
@@ -124,3 +195,16 @@ def describe(capability: str):
         return {"exit_code": proc.returncode, "data": data, "stderr": (proc.stderr or "")[:800]}
     except subprocess.TimeoutExpired:
         return {"exit_code": -1, "data": {"error": "timeout"}, "stderr": ""}
+
+
+def capabilities():
+    """`hq capabilities --json`（目录公开，但仍使用最小子进程环境）。"""
+    try:
+        proc = _subprocess_run([_bin(), "capabilities", "--json"])
+        raw = (proc.stdout or "").strip() or (proc.stderr or "").strip()
+        try:
+            return json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            return {}
+    except subprocess.TimeoutExpired:
+        return {}

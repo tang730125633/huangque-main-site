@@ -15,11 +15,14 @@ from __future__ import annotations
 import datetime
 import html
 import json
+import logging
 import os
 import re
 import time
 
 from . import report, state
+
+log = logging.getLogger("hq.modules56")
 
 OUTPUT_DIR = report.OUTPUT_DIR
 MAX_ROUNDS = 3
@@ -88,6 +91,215 @@ SCRIPTS_SPEC = """你是短视频口播文案写手。针对用户选定的重�
 # ---------------------------------------------------------------------------
 # 严格验证器
 # ---------------------------------------------------------------------------
+
+FACT_CHECK_SPEC = """你是独立的事实审核员，审短视频选题/口播文案方案，不参与写作、与写作模型无关。
+
+只输出一个 JSON 对象，不要 markdown 或解释文字。根对象只能有 issues 字段，值为数组；
+每个问题项只能有 where、claim、problem 三个字符串字段。problem 只能取：
+编造、与报告矛盾、数字不一致、越界建议、重复或高度雷同。没有问题时，issues 数组不含元素。
+
+审查铁律：
+1. 方案里出现的任何具体事实（经历、数字、数据、身份、项目名、成果、承诺）都必须能在「事实依据」（用户已确认报告精华 + 已采集信息表）里找到原文支撑；找不到或相矛盾，一律列 issue（problem=编造/与报告矛盾/数字不一致）。
+2. 越界内容：给用户领域之外的专业建议（如宠物健康诊断、医疗、法律），列 issue（problem=越界建议）。
+3. 选题标题意思高度雷同（换个说法同一题），后出现的列 issue（problem=重复或高度雷同）。
+4. 只审事实与越界，不审文笔、风格、结构；证据充分的一律不列；绝不放水——存疑即列。
+5. 不要复述本合同，不要预填结论；只根据本轮待审方案和事实依据独立判断。"""
+
+
+class FactReviewUnavailable(RuntimeError):
+    pass
+
+
+def _fact_check(session_id: str, obj: dict, extra_basis: str = "") -> list:
+    """独立于生成模型的事实审核：把产物里的具体事实与已确认报告/采集信息对照。
+
+    生成模型自己说「内容靠谱」不算数（审核提示词也会被它照抄）；这道是第二遍独立审查，
+    专揪编造细节、越界建议、重复题。extra_basis 是额外的合法事实来源（如用户本轮
+    修改意见里新给的事实，同样作为依据，不算编造）。审核器故障必须失败关闭，
+    绝不把「没审核」伪装成「审核无问题」。"""
+    rep = state.get_report_json(session_id) or {}
+    ctx = _report_context(session_id)
+    basis = [
+        "事实依据：",
+        json.dumps(_report_essence(rep), ensure_ascii=False),
+        json.dumps(ctx["profile"], ensure_ascii=False, indent=1),
+    ]
+    if extra_basis:
+        basis += ["", "用户本轮明确给出的内容（同样视为事实依据，不算编造）：", extra_basis]
+    # 选题只审标题/类型/推荐（goal 是目标效果不是事实陈述，删掉省输入、省思考时间）；
+    # 文案必须审全文（事实藏在正文里）。输入越短审核越快，对话越流畅。
+    if isinstance(obj.get("topics"), list):
+        audit_obj = {
+            "topics": [{"title": t.get("title"), "type": t.get("type")}
+                       for t in obj.get("topics") if isinstance(t, dict)],
+            "recommended": obj.get("recommended") or [],
+        }
+    else:
+        audit_obj = obj
+    msgs = [
+        {"role": "system", "content": FACT_CHECK_SPEC},
+        {"role": "user", "content": "\n".join([
+            "待审方案：",
+            json.dumps(audit_obj, ensure_ascii=False, indent=1),
+            "",
+            *basis,
+        ])},
+    ]
+    try:
+        raw = report._llm_chat(msgs, max_tokens=8000, temperature=0.0)
+    except RuntimeError as e:
+        log.warning("事实审核调用失败，本次内容不进入可交付状态：%s", e)
+        raise FactReviewUnavailable("事实审核服务暂时不可用") from e
+    parsed = report._parse_json(raw)
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("issues"), list):
+        log.warning("事实审核输出无法解析，本次内容不进入可交付状态")
+        raise FactReviewUnavailable("事实审核结果无法解析")
+    return [i for i in parsed["issues"] if isinstance(i, dict)]
+
+
+def _review_unavailable(session_id: str, meta_key: str, topic: str = "",
+                        detail: str = "事实审核暂时不可用，本次内容没有被标记为通过，也没有进入可交付状态。稍后可重试审核。") -> dict:
+    meta = {
+        "status": "review_unavailable",
+        "phase": "事实审核未完成，本次内容尚未进入可交付状态",
+        "fact_review_status": "unavailable",
+    }
+    if topic:
+        meta["topic"] = topic
+    state.set_report(session_id, {meta_key: meta})
+    return {
+        "ok": False,
+        "status": "review_unavailable",
+        "error": detail,
+        "fact_review_status": "unavailable",
+    }
+
+
+# ---------------------------------------------------------------------------
+# 审核挂起 + 自动重审：审核服务暂时不可用时，已生成内容不丢、不假装通过；
+# 落盘为 review_pending，由运行时泵（状态轮询/每轮对话）按退避自动重审，
+# 通过后落盘 ready 并回注系统事件，主 Agent 把结果转述给用户。
+# 此前这里直接把已生成内容丢弃、只回一句「稍后可重试」，主 Agent 顺着话
+# 许下「服务一恢复就重新审核发你」的空头承诺，用户永远等不到下文（投诉）。
+# ---------------------------------------------------------------------------
+_PENDING_KEY = "_pending_review"
+# 审核失败只快速补审一次（老板要求：最多允许一次失败重试，绝不拉长等待）：
+# 首次失败 → 15 秒后自动补审一次 → 仍失败就直接交付并如实标注「未经事实审核」。
+_REVIEW_MAX_ATTEMPTS = 1
+_REVIEW_RETRY_BACKOFF = 15  # 秒
+
+
+def _save_pending_review(session_id: str, kind: str, obj: dict, topic: str = "",
+                         feedback: str = "", attempts: int = 1) -> None:
+    state.set_report(session_id, {
+        _PENDING_KEY: {"kind": kind, "obj": obj, "topic": topic, "feedback": feedback,
+                       "attempts": attempts, "ts": time.time()},
+    })
+    if kind == "m5":
+        state.set_report(session_id, {"m5": {
+            "status": "review_pending",
+            "fact_review_status": "unavailable",
+            "phase": "选题已生成，事实审核服务暂不可用，系统将自动补审一次，仍失败则直接交付",
+            "ts": time.time()}})
+    else:
+        state.set_report(session_id, {"m6": {
+            "status": "review_pending", "topic": topic or "",
+            "fact_review_status": "unavailable",
+            "phase": "文案已生成，事实审核服务暂不可用，系统将自动补审一次，仍失败则直接交付",
+            "ts": time.time()}})
+
+
+def _pending_result(kind: str, topic: str = "") -> dict:
+    what = "选题清单" if kind == "m5" else "文案"
+    out = {
+        "ok": False,
+        "status": "review_pending",
+        "fact_review_status": "unavailable",
+        "error": f"{what}已经生成好了，只差事实审核这一步，而审核服务这会儿连不上。"
+                 f"系统约 {_REVIEW_RETRY_BACKOFF} 秒后会自动补审一次；要是还不行，就直接把{what}发给你"
+                 f"（并注明还没过审核），绝不让你干等。",
+    }
+    if topic:
+        out["topic"] = topic
+    return out
+
+
+def retry_pending_review(session_id: str):
+    """自动补审挂起内容。成功返回 ready 结果；未到退避时间返回 pending 结果；
+    补审一次仍失败 → 当场直接交付（ready + unreviewed，如实标注）；没有挂起内容返回 None。"""
+    meta = state.get_report_full(session_id) or {}
+    p = meta.get(_PENDING_KEY) or {}
+    if not p or not p.get("obj"):
+        return None
+    kind = p.get("kind")
+    obj = p["obj"]
+    topic = p.get("topic") or ""
+    feedback = p.get("feedback") or ""
+    cur = (meta.get("m5") or {}) if kind == "m5" else (meta.get("m6") or {})
+    if cur.get("status") != "review_pending":
+        state.set_report(session_id, {_PENDING_KEY: None})  # 别的路径已推进，清掉挂起
+        return None
+    attempts = int(p.get("attempts") or 1)
+
+    def _deliver_unreviewed():
+        # 补审一次仍失败：不再让用户干等——内容直接交付，并如实标注未经事实审核
+        # （老板要求：等待是最差的体验，宁可先交付可改的内容，也不能卡住对话）
+        state.set_report(session_id, {_PENDING_KEY: None})
+        if kind == "m5":
+            return _persist_topics(session_id, obj, [], unreviewed=True)
+        return _persist_scripts(session_id, obj, [], topic=topic,
+                                revised=(kind == "m6_revise"), unreviewed=True)
+
+    if attempts > _REVIEW_MAX_ATTEMPTS:
+        return _deliver_unreviewed()  # 入口兜底：状态异常时也保证交付
+    if time.time() - float(p.get("ts") or 0) < _REVIEW_RETRY_BACKOFF:
+        return _pending_result(kind, topic)
+    try:
+        if kind == "m5":
+            user_parts = _topics_user_parts(session_id)
+            obj2, fact_issues = _fact_checked(session_id, TOPICS_SPEC, user_parts, validate_topics,
+                                              obj, "m5", "m5_", 8000)
+            return _persist_topics(session_id, obj2, fact_issues)
+        revised = kind == "m6_revise"
+        if revised:
+            user_parts = _revise_user_parts(session_id, feedback)
+        else:
+            user_parts = _scripts_user_parts(session_id, topic)
+        obj2, fact_issues = _fact_checked(session_id, SCRIPTS_SPEC, user_parts, validate_scripts,
+                                          obj, "m6", "m6_", 4000,
+                                          extra_basis=feedback if revised else "")
+        return _persist_scripts(session_id, obj2, fact_issues, topic, revised=revised)
+    except FactReviewUnavailable:
+        if attempts >= _REVIEW_MAX_ATTEMPTS:
+            return _deliver_unreviewed()  # 已补审过一次仍失败：当场交付，不再多等
+        _save_pending_review(session_id, kind, obj, topic=topic, feedback=feedback,
+                             attempts=attempts + 1)
+        return _pending_result(kind, topic)
+
+
+def _fact_checked(session_id: str, spec: str, user_parts: list, validate_fn,
+                  obj: dict, meta_key: str, status_prefix: str, max_tokens: int,
+                  extra_basis: str = ""):
+    """独立事实审核 + 最多一轮修订。返回 (最终版本, 剩余问题)。
+
+    剩余问题不为空时**不藏**：随结果一起返回，主 Agent 必须如实告知用户哪些内容
+    未能核实，绝不把待核实内容当确认事实讲给用户。"""
+    issues = _fact_check(session_id, obj, extra_basis)
+    if not issues:
+        return obj, []
+    parts = list(user_parts) + [
+        "",
+        "上一版通过了模板校验，但独立事实审核发现以下问题，必须逐条修正后重新输出完整 JSON：",
+        json.dumps(issues, ensure_ascii=False, indent=1),
+        "修正要求：编造/无依据的事实一律改成事实依据里有原文支撑的内容，或直接删掉该说法；"
+        "越界建议整条删除；重复选题合并成一条。除修正问题外，其余已通过的内容保留。",
+    ]
+    obj2, _ = _run_loop(session_id, spec, parts, validate_fn, prev_draft=obj,
+                        meta_key=meta_key, status_prefix=status_prefix,
+                        max_tokens=max_tokens, rounds=2)
+    if obj2 is None:
+        return obj, issues  # 修订失败：保留已通过校验的版本，如实标注问题
+    return obj2, _fact_check(session_id, obj2, extra_basis)
 
 def validate_topics(obj: dict) -> list[str]:
     gaps: list[str] = []
@@ -235,7 +447,8 @@ def _user_name(session_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _run_loop(session_id: str, spec: str, user_parts: list, validate_fn,
-              prev_draft, meta_key: str, status_prefix: str, max_tokens: int = MAX_TOKENS):
+              prev_draft, meta_key: str, status_prefix: str, max_tokens: int = MAX_TOKENS,
+              rounds: int = MAX_ROUNDS):
     meta = state.get_report_full(session_id)
 
     def put(sub: dict):
@@ -257,12 +470,14 @@ def _run_loop(session_id: str, spec: str, user_parts: list, validate_fn,
 
     obj = None
     gaps: list[str] = []
-    for rnd in range(1, MAX_ROUNDS + 1):
+    for rnd in range(1, rounds + 1):
         put({
             "status": status_prefix + "generating", "round": rnd, "rounds": rnd,
             "gaps": [], "phase": f"第 {rnd} 轮生成中…", "ts": time.time()})
+        # 修订轮逐步提温：同温度重试容易原样复读同一份坏稿，提温逼出新思路
+        temperature = min(1.0, 0.5 + (rnd - 1) * 0.2)
         try:
-            raw = report._llm_chat(msgs, max_tokens=max_tokens)
+            raw = report._llm_chat(msgs, max_tokens=max_tokens, temperature=temperature)
         except RuntimeError as e:
             put({"status": "failed", "error": str(e)})
             return None, {"status": "failed", "error": str(e)}
@@ -287,53 +502,48 @@ def _run_loop(session_id: str, spec: str, user_parts: list, validate_fn,
         msgs.append({"role": "assistant", "content": raw})
         msgs.append({"role": "user", "content": report._revise_feedback(gaps)})
 
-    state.set_report(session_id, {meta_key: {"status": "incomplete", "rounds": MAX_ROUNDS, "gaps": list(gaps)}})
+    state.set_report(session_id, {meta_key: {"status": "incomplete", "rounds": rounds, "gaps": list(gaps)}})
     return None, {"status": "incomplete", "gaps": list(gaps)}
 
 
 def _persist(session_id: str, name: str, suffix: str, obj: dict) -> dict:
+    """选题/文案落盘：只出 Markdown + JSON，不再转 PDF。
+    理由：PDF 转换多一道工序、多一个失败点；MD 是纯文本，网页直接渲染显示
+    比「下载再打开」快得多（体验优先：等待是最差体验）。"""
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    json_path = os.path.join(OUTPUT_DIR, f"{name}_{suffix}.json")
+    base = f"{report.session_file_prefix(session_id)}_{name}_{suffix}"
+    json_path = os.path.join(OUTPUT_DIR, f"{base}.json")
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(obj, f, ensure_ascii=False, indent=1)
-    md_path = os.path.join(OUTPUT_DIR, f"{name}_{suffix}.md")
+    md_path = os.path.join(OUTPUT_DIR, f"{base}.md")
     with open(md_path, "w", encoding="utf-8") as f:
         f.write(render_md(obj, suffix))
-    pdf_path = os.path.join(OUTPUT_DIR, f"{name}_{suffix}.pdf")
-    ok, err = report.chrome_print(render_html(obj, suffix), pdf_path)
-    return {"pdf": os.path.basename(pdf_path) if ok else None,
-            "md": os.path.basename(md_path),
-            "json": os.path.basename(json_path),
-            "pdf_error": err}
+    return {"md": os.path.basename(md_path),
+            "json": os.path.basename(json_path)}
 
 
 # ---------------------------------------------------------------------------
 # 模块5：选题生成
 # ---------------------------------------------------------------------------
 
-def generate_topics(session_id: str) -> dict:
-    meta = state.get_report_full(session_id)
-    if not meta.get("confirmed"):
-        return {"ok": False, "error": "用户还没有在 UI 上确认模块1-4 报告；确认后才能进入模块5（选题生成）。"}
-    rep = state.get_report_json(session_id)
-    if not rep:
-        return {"ok": False, "error": "没有可用的模块1-4 报告，请先生成报告。"}
-
+def _topics_user_parts(session_id: str) -> list:
+    """模块5 的生成输入（生成与自动重审共用，避免把大段素材存进挂起状态）。"""
     inputs = _extract_m5_inputs(session_id)
     missing = [k for k, v in inputs.items() if not v]
     ctx = _report_context(session_id)
+    rep = state.get_report_json(session_id) or {}
     stories = ((rep.get("m4_story") or {}).get("stories") or [])
     story_briefs = [{"title": s.get("title"), "一句话": s.get("one_liner"), "钩子": s.get("hook")}
                     for s in stories]
 
-    user_parts = [
+    parts = [
         "以下是模块5 的输入（直接从用户已确认的 PDF 报告提取，不要重复询问这些信息）：",
         json.dumps(inputs, ensure_ascii=False, indent=1),
     ]
     if missing:
-        user_parts += ["", f"注意：以下输入项尚未采集到（{ '、'.join(missing) }）。"
-                           "选题仍要尽力产出，但请把它们写进 required_info，由顾问向用户追问。"]
-    user_parts += [
+        parts += ["", f"注意：以下输入项尚未采集到（{ '、'.join(missing) }）。"
+                       "选题仍要尽力产出，但请把它们写进 required_info，由顾问向用户追问。"]
+    parts += [
         "",
         "用户已确认报告的精华（选题必须扎根其中的真实内容；定位/标签/金句/变现路径）：",
         json.dumps(_report_essence(rep), ensure_ascii=False),
@@ -344,27 +554,42 @@ def generate_topics(session_id: str) -> dict:
         "故事库速览（用于故事型选题，引用这些真实故事）：",
         json.dumps(story_briefs, ensure_ascii=False, indent=1),
     ]
+    return parts
 
-    obj, loop_meta = _run_loop(session_id, TOPICS_SPEC, user_parts, validate_topics,
-                               prev_draft=None, meta_key="m5", status_prefix="m5_",
-                               max_tokens=3000)
-    if obj is None:
-        return {"ok": False, "status": loop_meta.get("status", "failed"),
-                "error": loop_meta.get("error"),
-                "gaps": loop_meta.get("gaps", []),
-                "note": "选题方案未通过模板校验。请根据 gaps 判断：缺分析就再调 m5_topics；缺原始信息就追问用户。"}
 
+def _persist_topics(session_id: str, obj: dict, fact_issues: list, rounds=None,
+                    unreviewed: bool = False) -> dict:
+    """模块5 落盘与交付结果（生成/自动重审成功/两次失败直接交付共用）。"""
     name = _user_name(session_id)
     files = _persist(session_id, name, "选题生成_模块5", obj)
-    state.set_report(session_id, {
-        "m5": {"status": "ready", "files": files, "rounds": loop_meta.get("rounds"),
-               "phase": "选题方案已生成并通过模板校验"},
-        "_m5_json": obj,
-    })
+    if unreviewed:
+        meta_m5 = {
+            "status": "ready", "files": files, "fact_issues": [],
+            "fact_review_status": "unreviewed",
+            "phase": "选题已生成并交付（事实审核两次未完成，已如实告知用户）",
+        }
+    else:
+        meta_m5 = {
+            "status": "ready", "files": files, "fact_issues": fact_issues,
+            "fact_review_status": "passed" if not fact_issues else "issues",
+            "phase": "选题方案已生成并通过模板校验" + ("（事实审核有残留问题，如实告知用户）" if fact_issues else ""),
+        }
+    if rounds is not None:
+        meta_m5["rounds"] = rounds
+    state.set_report(session_id, {"m5": meta_m5, "_m5_json": obj, _PENDING_KEY: None})
 
     by_type: dict[str, list] = {}
     for t in obj["topics"]:
         by_type.setdefault(t["type"], []).append(t["title"])
+    if unreviewed:
+        note = ("为保对话流畅已直接交付，但事实审核两次未完成。转述时必须明确告诉用户："
+                "这版还没过事实审核，细节请以他自己了解的情况为准，发现不对随时提。"
+                "并请用户从中选定一个重点选题（这是模块6 的触发条件）。")
+    else:
+        note = "请把选题清单与 3 个重点推荐完整转述给用户，并请用户从中选定一个重点选题（这是模块6 的触发条件）。"
+        if fact_issues:
+            note += ("事实审核有 %d 处残留问题（见 fact_issues）：转述时**必须如实标注**哪些内容未能核实、"
+                     "绝不能当已确认事实讲给用户（用户投诉过「审核通过≠靠谱」）。" % len(fact_issues))
     return {
         "ok": True, "status": "ready",
         "count": len(obj["topics"]),
@@ -372,30 +597,58 @@ def generate_topics(session_id: str) -> dict:
         "topics": obj["topics"],
         "recommended": obj["recommended"],
         "required_info": obj.get("required_info") or [],
+        "fact_issues": [] if unreviewed else fact_issues,
+        "fact_review_status": "unreviewed" if unreviewed else ("passed" if not fact_issues else "issues"),
         "files": {k: v for k, v in files.items()},
-        "note": "请把选题清单与 3 个重点推荐完整转述给用户，并请用户从中选定一个重点选题（这是模块6 的触发条件）。",
+        "note": note,
     }
+
+
+def generate_topics(session_id: str) -> dict:
+    meta = state.get_report_full(session_id)
+    # 审核挂起中：优先把上一轮已生成的内容重审掉，而不是重新生成
+    p = meta.get(_PENDING_KEY) or {}
+    if p.get("kind") == "m5":
+        return retry_pending_review(session_id) or _pending_result("m5")
+    if not meta.get("confirmed"):
+        return {"ok": False, "error": "用户还没有在 UI 上确认模块1-4 报告；确认后才能进入模块5（选题生成）。"}
+    rep = state.get_report_json(session_id)
+    if not rep:
+        return {"ok": False, "error": "没有可用的模块1-4 报告，请先生成报告。"}
+
+    user_parts = _topics_user_parts(session_id)
+
+    obj, loop_meta = _run_loop(session_id, TOPICS_SPEC, user_parts, validate_topics,
+                               prev_draft=None, meta_key="m5", status_prefix="m5_",
+                               max_tokens=8000)
+    if obj is None:
+        return {"ok": False, "status": loop_meta.get("status", "failed"),
+                "error": loop_meta.get("error"),
+                "gaps": loop_meta.get("gaps", []),
+                "note": "选题方案未通过模板校验。请根据 gaps 判断：缺分析就再调 m5_topics；缺原始信息就追问用户。"}
+
+    # 独立事实审核 + 最多一轮修订（审核器通过≠内容靠谱，防编造/越界/重复题）
+    try:
+        obj, fact_issues = _fact_checked(session_id, TOPICS_SPEC, user_parts, validate_topics,
+                                         obj, "m5", "m5_", 8000)
+    except FactReviewUnavailable:
+        _save_pending_review(session_id, "m5", obj)
+        return _pending_result("m5")
+
+    return _persist_topics(session_id, obj, fact_issues, rounds=loop_meta.get("rounds"))
 
 
 # ---------------------------------------------------------------------------
 # 模块6：文案生成
 # ---------------------------------------------------------------------------
 
-def generate_scripts(session_id: str, topic: str) -> dict:
-    meta = state.get_report_full(session_id)
-    if not (meta.get("_m5_json") or {}).get("topics"):
-        return {"ok": False, "error": "还没有生成模块5 的选题方案，请先完成模块5。"}
-    topic = (topic or "").strip()
-    if not topic:
-        return {"ok": False, "error": "缺少参数 topic（用户选定的重点选题标题）"}
+def _scripts_user_parts(session_id: str, topic: str) -> list:
     rep = state.get_report_json(session_id) or {}
     ctx = _report_context(session_id)
-
     stories = ((rep.get("m4_story") or {}).get("stories") or [])
     m2 = (rep.get("m2_persona") or {})
     quote = (m2.get("core") or {}).get("quote") or ((m2.get("recommendation") or {}).get("title") or "")
-
-    user_parts = [
+    return [
         f"用户选定的重点选题：「{topic}」。请针对这个选题写三份口播文案。",
         "",
         "文案必须结合用户真实故事与人设（素材如下）：",
@@ -412,6 +665,85 @@ def generate_scripts(session_id: str, topic: str) -> dict:
         json.dumps(ctx["profile"], ensure_ascii=False, indent=1),
     ]
 
+
+def _revise_user_parts(session_id: str, feedback: str) -> list:
+    rep = state.get_report_json(session_id) or {}
+    ctx = _report_context(session_id)
+    return [
+        f"用户对上一版文案提出以下修改意见：{feedback}",
+        "请据此修改相关部分（其余内容逐字保留），并重新输出完整 JSON。",
+        "",
+        "素材（保持事实一致，不编造）：",
+        "已确认报告精华（定位/标签/价值主张/变现路径）：",
+        json.dumps(_report_essence(rep), ensure_ascii=False),
+        "",
+        "已采集信息表：",
+        json.dumps(ctx["profile"], ensure_ascii=False, indent=1),
+    ]
+
+
+def _persist_scripts(session_id: str, obj: dict, fact_issues: list, topic: str = "",
+                     revised: bool = False, rounds=None, unreviewed: bool = False) -> dict:
+    """模块6 落盘与交付结果（生成/修订/自动重审成功/两次失败直接交付共用）。"""
+    name = _user_name(session_id)
+    files = _persist(session_id, name, "文案生成_模块6", obj)
+    topic_out = obj.get("topic") or topic or ""
+    if unreviewed:
+        meta_m6 = {
+            "status": "ready", "files": files, "topic": topic_out, "fact_issues": [],
+            "fact_review_status": "unreviewed",
+            "phase": "文案已生成并交付（事实审核两次未完成，已如实告知用户）",
+        }
+    else:
+        meta_m6 = {
+            "status": "ready", "files": files, "topic": topic_out, "fact_issues": fact_issues,
+            "fact_review_status": "passed" if not fact_issues else "issues",
+            "phase": ("已按用户意见修订" if revised else "文案已生成并通过模板校验")
+                     + ("（事实审核有残留问题，如实告知用户）" if fact_issues else ""),
+        }
+    if rounds is not None:
+        meta_m6["rounds"] = rounds
+    state.set_report(session_id, {"m6": meta_m6, "_m6_json": obj, _PENDING_KEY: None})
+
+    rec = obj.get("recommended") or {}
+    if unreviewed:
+        note = ("为保对话流畅已直接交付，但事实审核两次未完成。转述时必须明确告诉用户："
+                "这版还没过事实审核，细节请以他自己了解的情况为准，发现不对随时提。")
+    else:
+        note = "请把三份文案与推荐理由转述给用户；用户可逐条提修改意见，用 script_revise 修订。"
+        if fact_issues:
+            note += "事实审核有 %d 处残留问题（见 fact_issues）：转述时**必须如实标注**哪些内容未能核实，" \
+                    "绝不能当已确认事实讲给用户。" % len(fact_issues)
+    return {
+        "ok": True, "status": "ready", "topic": topic_out,
+        "scripts": [{"style": s["style"], "hook": s["hook"], "quote": s["quote"],
+                     "cta": s["cta"], "full_text": s["full_text"]} for s in obj["scripts"]],
+        "recommended": rec,
+        "required_info": obj.get("required_info") or [],
+        "fact_review_status": "unreviewed" if unreviewed else ("passed" if not fact_issues else "issues"),
+        "fact_issues": [] if unreviewed else fact_issues,
+        "files": {k: v for k, v in files.items()},
+        "note": note,
+    }
+
+
+def generate_scripts(session_id: str, topic: str) -> dict:
+    meta = state.get_report_full(session_id)
+    # 审核挂起中：优先重审上一轮已生成的内容，而不是重新生成
+    p = meta.get(_PENDING_KEY) or {}
+    if p.get("kind") in ("m6_scripts", "m6_revise"):
+        if not topic or (topic or "").strip() == (p.get("topic") or ""):
+            return retry_pending_review(session_id) or _pending_result("m6", p.get("topic") or "")
+        # 用户换了选题：旧挂起作废，按新选题重新生成
+        state.set_report(session_id, {_PENDING_KEY: None})
+    if not (meta.get("_m5_json") or {}).get("topics"):
+        return {"ok": False, "error": "还没有生成模块5 的选题方案，请先完成模块5。"}
+    topic = (topic or "").strip()
+    if not topic:
+        return {"ok": False, "error": "缺少参数 topic（用户选定的重点选题标题）"}
+
+    user_parts = _scripts_user_parts(session_id, topic)
+
     # 把 topic 先落盘：生成中途服务重启时，中断自愈能据此恢复 m6 参数
     m6_cur = dict((state.get_report_full(session_id) or {}).get("m6") or {})
     m6_cur.update({"status": "m6_generating", "topic": topic, "ts": time.time()})
@@ -426,28 +758,24 @@ def generate_scripts(session_id: str, topic: str) -> dict:
                 "gaps": loop_meta.get("gaps", []),
                 "note": "文案方案未通过模板校验。请根据 gaps 判断：缺分析就再调 m6_scripts；缺原始信息就追问用户。"}
 
-    name = _user_name(session_id)
-    files = _persist(session_id, name, "文案生成_模块6", obj)
-    state.set_report(session_id, {
-        "m6": {"status": "ready", "files": files, "rounds": loop_meta.get("rounds"),
-               "topic": topic, "phase": "文案已生成并通过模板校验"},
-        "_m6_json": obj,
-    })
+    # 独立事实审核 + 最多一轮修订（防把虚构当事实写进正式脚本，用户投诉过「审核通过≠靠谱」）
+    try:
+        obj, fact_issues = _fact_checked(session_id, SCRIPTS_SPEC, user_parts, validate_scripts,
+                                         obj, "m6", "m6_", 4000)
+    except FactReviewUnavailable:
+        _save_pending_review(session_id, "m6_scripts", obj, topic=topic)
+        return _pending_result("m6", topic)
 
-    rec = obj.get("recommended") or {}
-    return {
-        "ok": True, "status": "ready", "topic": topic,
-        "scripts": [{"style": s["style"], "hook": s["hook"], "quote": s["quote"],
-                     "cta": s["cta"], "full_text": s["full_text"]} for s in obj["scripts"]],
-        "recommended": rec,
-        "required_info": obj.get("required_info") or [],
-        "files": {k: v for k, v in files.items()},
-        "note": "请把三份文案与推荐理由转述给用户；用户可逐条提修改意见，用 script_revise 修订。",
-    }
+    return _persist_scripts(session_id, obj, fact_issues, topic,
+                            rounds=loop_meta.get("rounds"))
 
 
 def revise_scripts(session_id: str, feedback: str) -> dict:
     meta = state.get_report_full(session_id)
+    # 审核挂起中：优先重审上一轮已生成的内容（含用户修改意见），而不是重新生成
+    p = meta.get(_PENDING_KEY) or {}
+    if p.get("kind") in ("m6_scripts", "m6_revise"):
+        return retry_pending_review(session_id) or _pending_result("m6", p.get("topic") or "")
     prev = meta.get("_m6_json")
     if not prev:
         return {"ok": False, "error": "还没有生成模块6 的文案，请先选定选题生成文案。"}
@@ -455,19 +783,7 @@ def revise_scripts(session_id: str, feedback: str) -> dict:
     if not feedback:
         return {"ok": False, "error": "缺少参数 feedback（用户的修改意见）"}
 
-    rep = state.get_report_json(session_id) or {}
-    ctx = _report_context(session_id)
-    user_parts = [
-        f"用户对上一版文案提出以下修改意见：{feedback}",
-        "请据此修改相关部分（其余内容逐字保留），并重新输出完整 JSON。",
-        "",
-        "素材（保持事实一致，不编造）：",
-        "已确认报告精华（定位/标签/价值主张/变现路径）：",
-        json.dumps(_report_essence(rep), ensure_ascii=False),
-        "",
-        "已采集信息表：",
-        json.dumps(ctx["profile"], ensure_ascii=False, indent=1),
-    ]
+    user_parts = _revise_user_parts(session_id, feedback)
 
     # 中断自愈需要 topic：从上一版内容里找回并先落盘
     m6_cur = dict((state.get_report_full(session_id) or {}).get("m6") or {})
@@ -481,14 +797,19 @@ def revise_scripts(session_id: str, feedback: str) -> dict:
     if obj is None:
         return {"ok": False, "status": "incomplete", "gaps": loop_meta.get("gaps", [])}
 
-    name = _user_name(session_id)
-    files = _persist(session_id, name, "文案生成_模块6", obj)
-    state.set_report(session_id, {
-        "m6": {"status": "ready", "files": files, "rounds": loop_meta.get("rounds"),
-               "topic": obj.get("topic", ""), "phase": "已按用户意见修订"},
-        "_m6_json": obj,
-    })
-    return {"ok": True, "status": "ready", "files": {k: v for k, v in files.items()}}
+    # 独立事实审核 + 最多一轮修订；用户本轮意见里的新事实同样视为依据，不误伤
+    try:
+        obj, fact_issues = _fact_checked(session_id, SCRIPTS_SPEC, user_parts, validate_scripts,
+                                         obj, "m6", "m6_", 4000, extra_basis=feedback)
+    except FactReviewUnavailable:
+        _save_pending_review(session_id, "m6_revise", obj,
+                             topic=obj.get("topic") or m6_cur.get("topic") or "",
+                             feedback=feedback)
+        return _pending_result("m6", obj.get("topic") or m6_cur.get("topic") or "")
+
+    return _persist_scripts(session_id, obj, fact_issues,
+                            obj.get("topic") or m6_cur.get("topic") or "",
+                            revised=True, rounds=loop_meta.get("rounds"))
 
 
 # ---------------------------------------------------------------------------

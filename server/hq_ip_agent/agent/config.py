@@ -23,6 +23,8 @@ def _load_dotenv():
 
 _load_dotenv()
 
+AUTH_BASE = os.environ.get("HQ_AUTH_BASE", "http://127.0.0.1:8095").rstrip("/")
+
 
 def _hq_bin() -> str:
     return (
@@ -117,7 +119,8 @@ def _vision_config():
 
 _MODEL_PROVIDER_PRESETS = {
     # provider → (默认 base_url, 密钥环境变量候选（按序取第一个存在）, 可选代理, create 附加参数)
-    "deepseek": ("https://api.deepseek.com", ("DEEPSEEK_API_KEY", "LLM_API_KEY"), None, {}),
+    "deepseek": ("https://api.deepseek.com", ("DEEPSEEK_API_KEY", "LLM_API_KEY"), None,
+                 {"reasoning_effort": "low"}),
     # 国内直连 api.openai.com 不通：默认走本机 SSH 隧道（dapeng-server xray-egress 出境
     # 代理，app.py 启动时自动保持 127.0.0.1:17897 隧道；用 17897 而非 7897 是因为本机
     # MacPacket 透明代理会拦截 7897 这类常见代理端口）；可用 OPENAI_PROXY 覆盖。
