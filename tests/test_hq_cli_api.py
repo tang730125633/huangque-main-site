@@ -1806,7 +1806,8 @@ class HQCLIAPITests(unittest.TestCase):
                     "payload": {
                         "top_text": "有效标题", "bottom_text": "有效行动文案",
                         "template_id": "native-bold",
-                        "font_family": "AaHouDiHei", "bgm": False,
+                        "font_family": "AaHouDiHei", "bgm": True,
+                        "bgm_volume": 0.35,
                         "voiceover": normalized_voiceover,
                     },
                 }, plan["body"])
@@ -1827,6 +1828,7 @@ class HQCLIAPITests(unittest.TestCase):
             "voiceover": {
                 "text": "  这是一段模板成片配音文案  ", "voice": "vip_alice",
                 "voice_scope": "personal", "speed": 1.25,
+                "bgm": True, "bgm_volume": 0.35,
             },
         }
         request = {"action": "matrix-template-generate", "input": input_body, "confirm": False}
@@ -1845,7 +1847,8 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual({
             "top_text": "有效标题", "bottom_text": "有效行动文案",
             "template_id": "native-bold",
-            "font_family": "AaHouDiHei", "bgm": False,
+            "font_family": "AaHouDiHei", "bgm": True,
+            "bgm_volume": 0.35,
             "voiceover": normalized_voiceover,
         }, submitted[0]["body"])
         self.assertEqual("5", submitted[0]["headers"]["X-HQ-Expected-Cost"])
@@ -1900,6 +1903,12 @@ class HQCLIAPITests(unittest.TestCase):
             voiceover_schema["properties"]["speed"]["minimum"],
             voiceover_schema["properties"]["speed"]["maximum"],
         ))
+        self.assertEqual(False, voiceover_schema["properties"]["bgm"]["default"])
+        self.assertEqual((0, 1, 0.2), (
+            voiceover_schema["properties"]["bgm_volume"]["minimum"],
+            voiceover_schema["properties"]["bgm_volume"]["maximum"],
+            voiceover_schema["properties"]["bgm_volume"]["default"],
+        ))
         voiced = self.auth.hq_cli_api.action_plan(
             "matrix-template-generate", dict(value, voiceover={
                 "text": "模板配音", "voice": "public_voice",
@@ -1912,6 +1921,18 @@ class HQCLIAPITests(unittest.TestCase):
             "voice_scope": "public", "speed": 1.3,
             "pitch": 0, "volume": 0, "delivery": "natural",
         }, voiced["payload"]["voiceover"])
+        self.assertNotIn("bgm_volume", voiced["payload"])
+        mixed = self.auth.hq_cli_api.action_plan(
+            "matrix-template-generate", dict(value, voiceover={
+                "text": "模板配音", "voice": "public_voice",
+                "voice_scope": "public", "speed": 1.25,
+                "bgm": True, "bgm_volume": 0.3546,
+            })
+        )
+        self.assertTrue(mixed["payload"]["bgm"])
+        self.assertEqual(0.355, mixed["payload"]["bgm_volume"])
+        self.assertNotIn("bgm", mixed["payload"]["voiceover"])
+        self.assertNotIn("bgm_volume", mixed["payload"]["voiceover"])
         self.assertTrue(any(
             "single-only" in item
             for item in self.auth.hq_cli_api._MEDIA_SCHEMAS[
@@ -1923,6 +1944,7 @@ class HQCLIAPITests(unittest.TestCase):
                 value, font_family="AaHouDiHei", count=3, voiceover={
                     "text": "批量模板配音", "voice": "vip_alice",
                     "voice_scope": "personal", "speed": 0.95,
+                    "bgm": True,
                 })
         )
         self.assertEqual((
@@ -1932,7 +1954,8 @@ class HQCLIAPITests(unittest.TestCase):
             batch["batch_count"], batch["endpoint"],
         ))
         self.assertEqual("AaHouDiHei", batch["batch_item"]["font_family"])
-        self.assertFalse(batch["batch_item"]["bgm"])
+        self.assertTrue(batch["batch_item"]["bgm"])
+        self.assertEqual(0.2, batch["batch_item"]["bgm_volume"])
         self.assertEqual(1.0, batch["batch_item"]["voiceover"]["speed"])
         self.assertEqual("personal", batch["batch_item"]["voiceover"]["voice_scope"])
         self.assertEqual({
@@ -1963,6 +1986,14 @@ class HQCLIAPITests(unittest.TestCase):
             {"text": "有效文案", "voice": "public_voice", "voice_scope": "shared"},
             {"text": "有效文案", "voice": "public_voice", "speed": True},
             {"text": "有效文案", "voice": "public_voice", "speed": 2.1},
+            {"text": "有效文案", "voice": "public_voice", "bgm": 1},
+            {"text": "有效文案", "voice": "public_voice", "bgm_volume": 0.2},
+            {"text": "有效文案", "voice": "public_voice", "bgm": False,
+             "bgm_volume": 0.2},
+            {"text": "有效文案", "voice": "public_voice", "bgm": True,
+             "bgm_volume": -0.01},
+            {"text": "有效文案", "voice": "public_voice", "bgm": True,
+             "bgm_volume": 1.01},
             {"text": "有效文案", "voice": "public_voice", "provider": "cosyvoice"},
         ):
             with self.subTest(voiceover=voiceover), self.assertRaises(
@@ -2064,6 +2095,7 @@ class HQCLIAPITests(unittest.TestCase):
             "voiceover": {
                 "text": "同一段批量配音", "voice": "vip_alice",
                 "voice_scope": "personal", "speed": 1.2,
+                "bgm": True, "bgm_volume": 0.3,
             },
         }
         request = {
@@ -2101,6 +2133,9 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertTrue(re.fullmatch(r"[0-9a-f]{32}", first_bodies[0]["batch_id"]))
         self.assertEqual([1, 2, 3], [body["batch_index"] for body in first_bodies])
         self.assertTrue(all(body["batch_size"] == 3 for body in first_bodies))
+        self.assertTrue(all(body["bgm"] is True for body in first_bodies))
+        self.assertTrue(all(body["bgm_volume"] == 0.3 for body in first_bodies))
+        self.assertTrue(all("bgm" not in body["voiceover"] for body in first_bodies))
         cache_targets = {
             str(matrix_template_video._voiceover_cache_path(
                 200 + index,

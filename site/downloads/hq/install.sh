@@ -1,11 +1,11 @@
 #!/bin/sh
 set -eu
 
-version="0.15.4"
-wheel_name="huangque_hq_cli-0.15.4-py3-none-any.whl"
-wheel_size="66911"
-wheel_sha256="f9893cc7611e7adc650ac470880a784730415b70bfdecd35bc598102e5d0ff70"
-wheel_url="https://huangquechuanmei.com/downloads/hq/v0.15.4/$wheel_name"
+version="0.15.5"
+wheel_name="huangque_hq_cli-0.15.5-py3-none-any.whl"
+wheel_size="67282"
+wheel_sha256="6d54affbd7bca0bb41e9f462231fc770aee1401321228eea332d4fd0107be466"
+wheel_url="https://huangquechuanmei.com/downloads/hq/v0.15.5/$wheel_name"
 
 fail() { printf 'HQ CLI 安装失败：%s\n' "$1" >&2; exit 1; }
 command -v curl >/dev/null 2>&1 || fail "需要 curl"

@@ -603,6 +603,12 @@ _MATRIX_TEMPLATE_VOICEOVER_SCHEMA = {
             "type": "number", "minimum": 0.5, "maximum": 2.0,
             "default": 1.0,
         },
+        "bgm": {"type": "boolean", "default": False},
+        "bgm_volume": {
+            "type": "number", "minimum": 0, "maximum": 1,
+            "default": 0.2,
+            "description": "only valid when bgm=true",
+        },
     },
 }
 
@@ -706,7 +712,8 @@ _MEDIA_SCHEMAS = {
             "template_id must come from matrix-template-templates",
             "font_family is optional and must come from matrix-template-templates fonts",
             "voiceover is optional; when present, voice must come from ready items returned by voices",
-            "voiceover disables BGM and makes final duration follow the generated narration",
+            "voiceover.bgm defaults to false; when true, bgm_volume defaults to 0.2 and must be between 0 and 1",
+            "with voiceover, final duration always follows the generated narration",
             "duration is automatic and only approved platform-library media is used",
         ],
     },
@@ -724,7 +731,8 @@ _MEDIA_SCHEMAS = {
             "count creates 2-5 independent jobs under one total quote and one confirmation",
             "HyperFrames and other font-locked templates are single-only; use matrix-template-generate",
             "voiceover is optional; when present, voice must come from ready items returned by voices",
-            "voiceover disables BGM and makes final duration follow the generated narration",
+            "voiceover.bgm defaults to false; when true, bgm_volume defaults to 0.2 and must be between 0 and 1",
+            "with voiceover, final duration always follows the generated narration",
             "duration is automatic and only approved platform-library media is used",
         ],
     },
@@ -2803,7 +2811,9 @@ def _text_video_payload(value):
 
 def _matrix_template_voiceover(value):
     _strict_object(
-        value, {"text", "voice", "voice_scope", "speed"},
+        value, {
+            "text", "voice", "voice_scope", "speed", "bgm", "bgm_volume",
+        },
         ("text", "voice"),
     )
     result = {
@@ -2819,7 +2829,21 @@ def _matrix_template_voiceover(value):
             value["voice_scope"], "voiceover.voice_scope",
             ("public", "personal"),
         )
-    return result
+    bgm = value.get("bgm", False)
+    if not isinstance(bgm, bool):
+        raise CLIAPIError(400, "voiceover.bgm 必须是布尔值")
+    bgm_volume = None
+    if "bgm_volume" in value:
+        if not bgm:
+            raise CLIAPIError(
+                400, "voiceover.bgm_volume 仅在 bgm=true 时可用",
+            )
+        bgm_volume = float(Decimal(str(_number(
+            value["bgm_volume"], "voiceover.bgm_volume", 0, 1,
+        ))).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP))
+    elif bgm:
+        bgm_volume = 0.2
+    return result, bgm, bgm_volume
 
 
 def _matrix_template_payload(value):
@@ -2844,8 +2868,13 @@ def _matrix_template_payload(value):
         if font_family:
             result["font_family"] = font_family
     if "voiceover" in value:
-        result["voiceover"] = _matrix_template_voiceover(value["voiceover"])
-        result["bgm"] = False
+        voiceover, bgm, bgm_volume = _matrix_template_voiceover(
+            value["voiceover"]
+        )
+        result["voiceover"] = voiceover
+        result["bgm"] = bgm
+        if bgm:
+            result["bgm_volume"] = bgm_volume
     return result
 
 

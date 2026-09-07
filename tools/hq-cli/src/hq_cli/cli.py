@@ -307,6 +307,11 @@ def _validate_matrix_template_voiceover(capability, payload):
         "id": "matrix-template-voiceover",
         "input_schema": definition,
     }, voiceover)
+    if "bgm_volume" in voiceover and voiceover.get("bgm") is not True:
+        raise CliError(
+            EXIT_INPUT, "input_error",
+            "voiceover.bgm_volume requires voiceover.bgm=true",
+        )
 
 
 def _validate_text_video_talking(payload):
