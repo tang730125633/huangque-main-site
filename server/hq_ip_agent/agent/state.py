@@ -31,7 +31,7 @@ def get_report(session_id: str) -> dict:
     """报告元信息（含 status/file/rounds/gaps/chosen 等，不含报告全文）。"""
     with _lock:
         meta = dict(_reports.get(session_id, {}))
-        for key in ("_json", "_m5_json", "_m6_json"):
+        for key in ("_json", "_m5_json", "_m6_json", "_pending_review"):
             meta.pop(key, None)  # 全文只留在服务端，不外发
         return meta
 

@@ -2,6 +2,8 @@
 import copy
 import concurrent.futures
 import unittest
+import uuid
+from types import SimpleNamespace as NS
 from unittest.mock import patch
 from agent import state as profiles
 from agent.v4 import main_agent, state, subagent, protocol
@@ -9,7 +11,7 @@ from agent.v4 import main_agent, state, subagent, protocol
 
 class UXRecovery(unittest.TestCase):
     def setUp(self):
-        self.sid = self.id()
+        self.sid = uuid.uuid4().hex
         state.reset(self.sid)
         profiles.reset(self.sid)
 
@@ -89,16 +91,28 @@ class UXRecovery(unittest.TestCase):
     def test_plain_confirmation_after_completed_collect_does_not_start_again(self):
         state.save_subagent(self.sid, "collect", last_result=protocol.make("completed", "原采集已完成"))
         with patch.object(main_agent, "build_system_prompt", return_value="test"), \
-             patch.object(subagent, "llm_turn") as llm:
+             patch.object(subagent, "llm_turn", return_value=NS(
+                 content="原任务已经完成，不会重复提交。", tool_calls=None)) as llm, \
+             patch.object(main_agent, "_unsupported_execution_claim", return_value={}), \
+             patch.object(subagent, "respond_to_approval") as approve, \
+             patch.object(subagent.hq_cli, "run") as execute:
             reply, _, _ = main_agent.run_turn(self.sid, "确认")
-            llm.assert_not_called()
-        self.assertIn("不会重复提交", reply)
+            # Mock mode answers without a model call; OpenAI mode may ask the
+            # model for a conversational reply. Neither mode may re-submit.
+            self.assertLessEqual(llm.call_count, 1)
+            approve.assert_not_called()
+            execute.assert_not_called()
+        self.assertTrue(reply)
 
     def test_http_card_carries_exact_quote_identity_to_background_turn(self):
         import app
         qid = self.quote()
         choice = {"domain": "collect", "quote_id": qid, "decision": "confirm"}
-        with patch.object(app, "_spawn_turn", return_value=123) as spawn:
+        user = {"username": "unit", "account_id": "HQ-UNIT"}
+        state.set_owner(self.sid, user)
+        with patch.object(app.CUSTOMER_AUTH, "verify", return_value=user), \
+             patch.object(app, "_ensure_cli_identity", return_value=None), \
+             patch.object(app, "_spawn_turn", return_value=123) as spawn:
             response = app.app.test_client().post('/api/v4/chat', json={
                 "session_id": self.sid, "message": "确认", "approval": choice})
         self.assertEqual(response.status_code, 200)
@@ -111,6 +125,7 @@ class UXRecovery(unittest.TestCase):
         self.quote()
         state.save_subagent(self.sid, 'image', pending_quote={"capability": "image", "quote_token": "other"})
         with patch.object(main_agent, 'build_system_prompt', return_value='test'), \
+             patch.object(main_agent, '_typed_approval_decision', return_value='confirm'), \
              patch.object(subagent, 'respond_to_approval') as respond:
             reply, _, _ = main_agent.run_turn(self.sid, '确认')
         respond.assert_not_called()
@@ -138,7 +153,10 @@ class UXRecovery(unittest.TestCase):
         self.assertFalse(sess['pending_quote'])
         self.assertEqual(sess['last_result']['state'], 'running')
         self.assertEqual(sess['last_result']['result']['job_id'], 123)
-        public = app.app.test_client().get('/api/v4/state/' + self.sid).get_json()['collect']
+        user = {"username": "unit", "account_id": "HQ-UNIT"}
+        state.set_owner(self.sid, user)
+        with patch.object(app.CUSTOMER_AUTH, "verify", return_value=user):
+            public = app.app.test_client().get('/api/v4/state/' + self.sid).get_json()['collect']
         self.assertEqual(public['state'], 'running')
         self.assertEqual(public['quote_id'], '')
         self.assertNotIn('test-only-token', str(public))

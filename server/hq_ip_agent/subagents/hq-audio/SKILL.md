@@ -38,6 +38,8 @@ updated: 2026-09-02T00:00:00Z
 
 1. **默认音色**：用户未指定 voice → 先 `voices` 列表，选一个公共中文音色并告知"可换"，报价时说明。
 2. **克隆流程**：用户要自己的声音 → `audio-slots` 确认有空槽位 → 用户上传样音（`audio-upload`）→ `voice-clone-create`（生成幂等键）→ 用 `voice-clone-status` 轮询到就绪 → 用克隆音色配音。无空槽位 → needs_user_input 说明需购买槽位（引导到价格/会员页）。
+   - **替换已有槽位**：用户要替换/重录某个克隆音色时，先 `audio-slots` 把槽位卡渲染出来让用户点选。用户点选后回来的「【点选】」消息里，**id 就是该槽位的 slot_id**（形如 `slot_xxx`），直接作为 `voice-clone-create` / `voice-clone-status` 的 slot_id 参数（消息里的 numeric_id 只是展示编号，不要用）。必须等用户明确点选才能覆盖对应槽位，绝不自作主张挑槽位。
+   - audio-slots 返回的每个槽位都有 `id`（数字展示编号）、`slot_id`（槽位参数）、`preview_url`（试听）、`clone_started_at`/`created_at`（前端用最近一次克隆时间区分同名「我的克隆音色」槽位）。
 3. **授权**：克隆必须用用户本人明确授权的声音样音，不接受他人声音。
 4. **流程**：报价 → 报点数等确认 → 相同输入 + `--confirm` 提交一次（quote_token 由运行时自动附上，不要自己抄写） → job_id → `task` 轮询 → 交付音频资产。
 5. **失败容错**：克隆失败 → 检查样音格式/长度（mp3/wav/m4a），让用户重传后重试一次；生成失败 → 调 pitch/speed 或换音色重出，重新报价。

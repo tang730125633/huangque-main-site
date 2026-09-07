@@ -6,7 +6,6 @@
 """
 from __future__ import annotations
 
-import json
 import threading
 import time
 
@@ -39,16 +38,8 @@ def capabilities(force: bool = False) -> list[dict]:
 
 
 def _raw_capabilities() -> dict:
-    import subprocess
-    from .. import config
     try:
-        with hq_cli.hq_semaphore():  # 与 hq_cli 共用全局并发闸
-            proc = subprocess.run(
-                [config.HQ_BIN, "capabilities", "--json"],
-                capture_output=True, text=True, timeout=120,
-            )
-        raw = (proc.stdout or "").strip() or (proc.stderr or "").strip()
-        return json.loads(raw) if raw else {}
+        return hq_cli.capabilities()
     except Exception:
         return {}
 

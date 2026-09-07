@@ -4,7 +4,7 @@ description: "Business rules for the Huangque image sub-agent: image business ou
 short_description: 出图业务规则（image 域）。
 short_description_zh: 黄雀出图子 Agent 业务规则：图片类业务结果、可用 hq 能力、默认引擎与容错。
 version: 1
-updated: 2026-09-02T00:00:00Z
+updated: 2026-09-07T05:43:00Z
 ---
 
 # image-business：黄雀出图子 Agent 业务规则
@@ -46,11 +46,11 @@ updated: 2026-09-02T00:00:00Z
 
 ## ③ 默认策略与容错逻辑
 
-1. **默认引擎**：用户未指定 provider → `provider=banana + model=nb2`（纳米香蕉 2：快、便宜、中文理解强）；用户点名引擎则用点名的，并按其限制校验参考图数量。
+1. **默认引擎**：用户未指定 provider → `provider=seedream + variant=std`（黄雀引擎 1：稳定、较快、成本低）；用户点名引擎则用点名的，并按其限制校验参考图数量。Banana 仅在用户明确点名时使用。
 2. **默认比例**：短视频场景 9:16；封面/头像 1:1；不确定时按场景取默认并在报价时说明。
 3. **流程**：需求不清 → 先 `prompt-optimize` 优化；→ 报价（不带 --confirm）→ 把点数报给用户等确认 → 用完全相同输入 + `--confirm --quote-token` 提交恰好一次 → 拿 job_id → `task` 轮询到终态 → 交付资产。
 4. **多张**：count 1~4 一次调用生成；超过 4 张分多次，每次重新报价确认。
-5. **失败容错**：同参数重试 1 次；仍失败 → 换引擎按 banana → seedream → openai 顺序重新报价；再失败 → failed（retryable=false）并说明原因。
+5. **失败容错**：任务失败后禁止复用旧 job_id 或口头声称已重提；只有用户明确同意再次扣费并取得新 quote_token，才按 seedream → openai 顺序重新报价并提交新 job_id。Banana 不自动回退；再失败 → failed（retryable=false）并说明原因。
 6. **参考图超限**：当前引擎参考图数量不够 → 换支持更多参考图的引擎（如 openai 16 张）。
 7. **URL 转上传**：图生图收到 http 图片 URL 而无 upload_id → 先下载并 `image-upload` 拿 upload_id（>10MB 先压缩到最长边 1280 的 JPEG）。
 8. **不自动重复扣点**：用户不满意 → 提示换引擎/换 model/改 ratio 重出，每次重出都必须重新报价并等确认。

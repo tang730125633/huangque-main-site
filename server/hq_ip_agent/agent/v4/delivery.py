@@ -28,6 +28,7 @@ COLLECT_MEDIA_DIR = os.path.join(
 _COLLECT_WATCHERS_GUARD = threading.Lock()
 _COLLECT_WATCHERS = set()   # (sid, job_id)：采集任务看护线程（running → 完成交付）
 _FINALIZING = set()         # (sid, job_id)：正在执行交付（防并发重复）
+_DELIVERING = set()         # (sid, job_id)：普通任务终态交付（防 status/turn 并发重复）
 
 # 状态缓存失效回调（app.py 注入：交付/轮次完成时清 status 缓存，下一帧状态立即更新）
 _STATUS_BUST = lambda sid: None
@@ -45,6 +46,78 @@ def collect_marker_delivered(sid: str, job_id) -> bool:
         if m.get("media_job") == job_id:
             return True
     return False
+
+
+def task_marker_delivered(sid: str, job_id) -> bool:
+    """普通后台任务的终态是否已经进入过对话。"""
+    return any(str(m.get("task_job")) == str(job_id) for m in reversed(v4_state.get_main_history(sid)))
+
+
+def _result_urls(value, found=None) -> list:
+    """从真实任务结果中取最多 3 个公网链接，直接交给现有消息渲染器。"""
+    found = found if found is not None else []
+    if len(found) >= 3:
+        return found
+    if isinstance(value, dict):
+        for item in value.values():
+            _result_urls(item, found)
+    elif isinstance(value, list):
+        for item in value:
+            _result_urls(item, found)
+    elif isinstance(value, str) and value.startswith(("https://", "http://")) and value not in found:
+        found.append(value)
+    return found[:3]
+
+
+def deliver_terminal(sid: str, domain: str, job_id, terminal: str, payload: dict) -> bool:
+    """把非采集任务的真实终态写进历史并实时推到对话；幂等。"""
+    key = (sid, str(job_id))
+    with _COLLECT_WATCHERS_GUARD:
+        if key in _DELIVERING or task_marker_delivered(sid, job_id):
+            return False
+        _DELIVERING.add(key)
+    try:
+        payload = payload or {}
+        result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+        detail = next((str(v).strip() for v in (
+            payload.get("summary"), payload.get("message"), payload.get("error_message"),
+            payload.get("error"), payload.get("detail"),
+            result.get("summary"), result.get("message"), result.get("error_message"),
+            result.get("error"), result.get("detail"),
+        ) if v), "")
+        if len(detail) > 300:
+            detail = detail[:300] + "…"
+        label = {
+            "completed": "✅ 已完成",
+            "failed": "⚠️ 失败",
+            "cancelled": "已取消",
+        }.get(terminal, "状态已更新")
+        text = "任务 %s %s。" % (job_id, label)
+        if detail:
+            text += "\n" + detail
+        if terminal == "failed" and (payload.get("refunded") or result.get("refunded")):
+            text += "\n这次费用已自动退回、没扣点。想再拍一遍，说声「重试」就行。"
+        urls = _result_urls(payload)
+        if urls:
+            text += "\n" + "\n".join(urls)
+        sys_note = "（系统事件，用户不可见：%s 任务 %s 已到终态：%s" % (domain, job_id, terminal or "未知")
+        if detail:
+            sys_note += "，原因：%s" % detail
+        if terminal == "failed" and (payload.get("refunded") or result.get("refunded")):
+            sys_note += "，已自动退款"
+        sys_note += "。用户问起时如实说明原因；失败且已退款时主动告知已退回并给出「说声重试」的出口）"
+        v4_state.append_main_history(sid, [
+            {"role": "user", "content": sys_note},
+            {"role": "assistant", "content": text, "task_job": str(job_id), "task_domain": domain},
+        ])
+        v4_state.persist(sid)
+        _STATUS_BUST(sid)
+        streaming.emit(sid, "delivery", {"reply": text, "images": []})
+        log.info("job %s terminal delivered: %s", job_id, terminal, extra=observability.ctx(sid))
+        return True
+    finally:
+        with _COLLECT_WATCHERS_GUARD:
+            _DELIVERING.discard(key)
 
 
 def finalize_collect(sid: str, job_id, content: dict) -> list:
@@ -150,7 +223,7 @@ def spawn_collect_watcher(sid: str, job_id):
         try:
             while time.time() < deadline:
                 time.sleep(8)
-                r = hq_cli.run("task", {"job_id": job_id})
+                r = hq_cli.run("task", {"job_id": job_id}, session_id=sid)
                 task_res = ((r or {}).get("data") or {}).get("result") or {}
                 phase = task_res.get("phase")
                 if phase == "done":
@@ -174,12 +247,18 @@ _JOB_POLL_INTERVAL = 20          # 秒：同一 running 任务两次补查的最
 _LAST_JOB_POLL = {}              # (sid, domain) -> (job_id, 上次补查时间)
 
 
-def resume_stale_jobs(sid: str):
+def resume_stale_jobs(sid: str, force: bool = False):
     """后台任务自愈：把还停在 running 的异步子 Agent 任务补查一遍，
     发现已完成就刷新 last_result 为 completed 并落盘。
 
     解决「任务早完成了，对话里还在说『在跑/还在爬』」的错报——子 Agent 提交后
-    返回 running，之后没有任何机制刷新状态，主 Agent 只能凭旧状态回话。"""
+    返回 running，之后没有任何机制刷新状态，主 Agent 只能凭旧状态回话。
+
+    force=True（客户轮次开工时）：无视 20s 节流必须拿到最新状态。教训（2026-09-07
+    job 7756）：节流表在轮询开始时登记，客户轮次撞上在途轮询会跳过补查、带着
+    「running」旧态开跑，1 秒后终态送达——客户看到「任务失败」后主 Agent 又说
+    「还在生成中」，自相矛盾。客户轮次是必须给准确口径的时刻，多一次只读 task
+    查询完全可接受。"""
     from . import protocol as v4_protocol
     from . import subagent as v4_subagent
     refreshed = False
@@ -193,11 +272,11 @@ def resume_stale_jobs(sid: str):
             key = (sid, domain, str(job_id))
             now = time.time()
             prev = _LAST_JOB_POLL.get(key)
-            if prev and now - prev[1] < _JOB_POLL_INTERVAL:
+            if not force and prev and now - prev[1] < _JOB_POLL_INTERVAL:
                 continue
             _LAST_JOB_POLL[key] = (job_id, now)
             try:
-                r = hq_cli.run("task", {"job_id": int(job_id)})
+                r = hq_cli.run("task", {"job_id": int(job_id)}, session_id=sid)
             except (TypeError, ValueError):
                 continue
             data = (r or {}).get("data") or {}
@@ -206,12 +285,15 @@ def resume_stale_jobs(sid: str):
             task_res = data.get("result") or {}
             if task_res.get("job_id") is not None and str(task_res["job_id"]) != str(job_id):
                 continue
-            phase = str(task_res.get("phase") or task_res.get("status") or "").lower()
+            phase = v4_subagent._task_status(task_res)
             if phase not in v4_subagent._TASK_TERMINALS:
                 continue
+            terminal = v4_subagent._TASK_TERMINALS[phase]
             v4_subagent._observe_task_query(sid, {"job_id": job_id}, task_res)
-            if domain == "collect" and v4_subagent._TASK_TERMINALS[phase] == v4_protocol.COMPLETED:
+            if domain == "collect" and terminal == v4_protocol.COMPLETED:
                 maybe_spawn_finalize(sid, job_id, task_res.get("result") or {})
+            else:
+                deliver_terminal(sid, domain, job_id, terminal, task_res)
             refreshed = True
     if refreshed:
         v4_state.persist(sid)

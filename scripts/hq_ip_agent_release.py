@@ -187,7 +187,11 @@ def main():
     if not args.bundle:
         manifest = json.loads((ROOT / MANIFEST).read_text(encoding="utf-8"))
         for row in validate(manifest):
-            if digest(ROOT / row["source"]) != row["after"]:
+            # Verify the exact Git payload that build() will package. Reading the
+            # worktree here is not portable because Windows may smudge LF blobs
+            # to CRLF even when the committed release payload remains unchanged.
+            payload = git("show", ":" + row["source"])
+            if hashlib.sha256(payload).hexdigest() != row["after"]:
                 raise ValueError("repository manifest mismatch: " + row["source"])
         print("seven-file repository manifest verified")
         return

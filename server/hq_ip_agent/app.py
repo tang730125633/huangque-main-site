@@ -2,17 +2,21 @@
 
 运行：python app.py   （默认 http://127.0.0.1:8000）
 """
+import collections
 import json
 import logging
 import os
+import re
+import threading
 import time
 import uuid
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, request, send_from_directory, stream_with_context
+from flask import Flask, Response, g, jsonify, request, send_from_directory, stream_with_context
 
-from agent import config, hq_cli, report, state
+from agent import config, customer_auth, report, state
 from agent.v4 import delivery as v4_delivery
+from agent.v4 import exporter as v4_exporter
 from agent.v4 import main_agent as v4_main
 from agent.v4 import observability
 from agent.v4 import skills as v4_skills
@@ -32,6 +36,10 @@ if not (_page_root / "v4.html").is_file():
     _page_root = Path(__file__).resolve().parents[2] / "site/workbench/hq-ip-agent"
     _static_root = _page_root / "static"
 app = Flask(__name__, static_folder=str(_static_root), static_url_path="/static")
+CUSTOMER_AUTH = customer_auth.AuthClient(config.AUTH_BASE)
+_SID_RE = re.compile(r"^[0-9a-f]{32}$")
+_CLI_IDENTITY_LOCK = threading.Lock()
+SSE_AUTH_RECHECK_SECONDS = 30
 
 
 @app.get("/")
@@ -57,17 +65,17 @@ def index_v4():
 
 @app.get("/api/health")
 def health():
-    status = {"ok": False, "detail": "未检测"}
-    try:
-        r = hq_cli.status()
-        status = {"ok": r.get("exit_code") == 0, "detail": r.get("data")}
-    except Exception as e:  # pragma: no cover
-        status = {"ok": False, "detail": str(e)}
+    cli_ready = os.path.isfile(config.HQ_BIN) and os.access(config.HQ_BIN, os.X_OK)
     return jsonify({
         "llm_mode": config.LLM_MODE,
         "llm_model": config.LLM_MODEL if config.LLM_MODE == "openai" else None,
-        "hq_bin": config.HQ_BIN,
-        "hq_status": status,
+        "hq_status": {
+            "ok": cli_ready,
+            "detail": {"result": {
+                "authorization_mode": "per_customer_session",
+                "shared_fallback": False,
+            }},
+        },
     })
 
 
@@ -92,30 +100,24 @@ def _visible_history(messages: list) -> list:
     return out
 
 
-def _drop_session_file(sid: str):
-    import os
-    for prefix in ("", "v4-"):
-        p = os.path.join(state.SESSION_DIR, f"{prefix}{sid}.json")
-        try:
-            os.remove(p)
-        except OSError:
-            pass
-
-
-def _list_sessions(prefix: str, limit: int = 12) -> list:
+def _list_sessions(prefix: str, account_id: str, limit: int = 12) -> list:
     """列出落盘的最近会话（按更新时间倒序），带预览。prefix='' 为 v3，'v4-' 为 v4。"""
     import glob
     import os as _os
     import time as _time
     out = []
-    for p in glob.glob(_os.path.join(state.SESSION_DIR, f"{prefix}*.json")):
+    session_root = v4_state.SESSION_DIR if prefix == "v4-" else state.SESSION_DIR
+    for p in glob.glob(_os.path.join(session_root, f"{prefix}*.json")):
         name = _os.path.basename(p)[len(prefix):-5]
-        if not name:
+        if not _valid_sid(name):
             continue
         try:
             with open(p, "r", encoding="utf-8") as f:
                 snap = json.load(f)
         except (OSError, json.JSONDecodeError):
+            continue
+        owner = snap.get("owner") or {}
+        if owner.get("account_id") != account_id:
             continue
         hist = snap.get("main") if prefix == "v4-" else snap.get("history")
         preview, turns = _session_preview(hist)
@@ -159,12 +161,98 @@ def _session_preview(messages: list):
 
 @app.get("/api/v4/sessions")
 def v4_sessions_list():
-    return jsonify({"sessions": _list_sessions("v4-")})
+    return jsonify({"sessions": _list_sessions("v4-", g.hq_user["account_id"], limit=200)})
+
+
+@app.get("/api/v4/tasks/<sid>")
+def v4_tasks(sid):
+    """任务面板：本会话全部异步任务（图片/视频/数字人等）的真实状态清单。
+
+    状态只信真实查询：先 force 补查 running 任务，再落清单——绝不假绿。
+    每条任务带可见对话里的宣布消息下标（前端点击跳到那次任务）。"""
+    denied = _authorize_sid(sid)
+    if denied:
+        return denied
+    state.restore(sid)
+    try:
+        v4_delivery.resume_stale_jobs(sid, force=True)
+    except Exception:
+        pass
+    from agent.v4 import subagent as v4_subagent
+    tasks = []
+    for domain in v4_state.all_domains(sid):
+        sess = v4_state.get_subagent(sid, domain) or {}
+        last = sess.get("last_result") or {}
+        for job in v4_subagent._job_records(last):
+            r = job.get("output") if isinstance(job.get("output"), dict) else {}
+            if not r.get("id"):
+                r = job.get("result") or {}
+            job_id = r.get("job_id") or r.get("id")
+            if not job_id:
+                continue
+            tasks.append({
+                "job_id": str(job_id),
+                "domain": domain,
+                "kind": r.get("kind"),
+                "state": job.get("state"),
+                "phase": r.get("phase"),
+                "status": r.get("status"),
+                "refunded": bool(r.get("refunded")),
+                "cost": r.get("cost"),
+                "error": (r.get("error") or r.get("detail") or "")[:200],
+                "created_at": r.get("created_at"),
+                "updated_at": r.get("updated_at"),
+                "result": r.get("result") or {},
+            })
+        pq = sess.get("pending_quote") or {}
+        if pq:
+            tasks.append({
+                "job_id": None,
+                "domain": domain,
+                "kind": "quote",
+                "state": "needs_approval",
+                "capability": pq.get("capability"),
+                "cost": pq.get("cost"),
+                "points": pq.get("points"),
+                "created_at": int(time.time()),
+            })
+    # 对话锚点 + 产物：任务在可见历史里被宣布的消息下标；产物优先取对话里实际交付的
+    # 链接（客户真实拿到的东西，比任务载荷里的相对文件名可靠）
+    visible = _visible_history(v4_state.get_main_history(sid))
+    for t in tasks:
+        jid = t.get("job_id")
+        if not jid:
+            continue
+        pat = re.compile(r"(?<!\d)%s(?!\d)" % re.escape(jid))
+        urls = []
+        anchor = None
+        for i, m in enumerate(visible):
+            if m.get("role") != "assistant" or not pat.search(m.get("content") or ""):
+                continue
+            if anchor is None:
+                anchor = i
+            for u in re.findall(r"https?://[^\s\"'<>）】)]+", m.get("content") or ""):
+                if u not in urls:
+                    urls.append(u)
+                if len(urls) >= 3:
+                    break
+            if len(urls) >= 3:
+                break
+        if not urls:
+            urls = v4_delivery._result_urls(t.get("result") or {})
+        t["products"] = urls[:3]
+        t.pop("result", None)
+        t["msg_index"] = anchor
+    tasks.sort(key=lambda t: t.get("created_at") or 0, reverse=True)
+    return jsonify({"ok": True, "tasks": tasks})
 
 
 @app.get("/api/report/<sid>")
 def report_status(sid):
     """报告生成进度轮询（生成是同步长任务，前端边等边刷进度）。"""
+    denied = _authorize_sid(sid)
+    if denied:
+        return denied
     state.restore(sid)
     return jsonify(_report_summary(sid))
 
@@ -184,7 +272,7 @@ def _report_summary(sid: str) -> dict:
         "title": meta.get("title"),
         "confirmed": bool(meta.get("confirmed")),
         "error": meta.get("error"),
-        "files": _file_links(meta.get("files")),
+        "files": _file_links(sid, meta.get("files")),
     }
     for key in ("m5", "m6"):
         mod = meta.get(key) or {}
@@ -194,23 +282,37 @@ def _report_summary(sid: str) -> dict:
             "rounds": mod.get("rounds"),
             "gaps": mod.get("gaps", []),
             "topic": mod.get("topic"),
-            "files": _file_links(mod.get("files")),
+            "files": _file_links(sid, mod.get("files")),
         }
     return out
 
 
-def _file_links(files: dict) -> dict:
+def _file_links(sid: str, files: dict) -> dict:
     """产物下载链接。用相对路径：页面挂在 /workbench/ip12/ 或 /hermes-ip12/ 等前缀下，
     写死根路径 /api/download 会跳去主站其他后端导致 404，相对路径随页面前缀正确解析。"""
     files = files or {}
     return {
-        kind: f"api/download/{files[kind]}" if files.get(kind) else None
+        kind: f"api/download/{sid}/{os.path.basename(files[kind])}" if files.get(kind) else None
         for kind in ("pdf", "md", "json")
     }
 
 
-@app.get("/api/download/<path:filename>")
-def download(filename):
+@app.get("/api/download/<sid>/<path:filename>")
+def download(sid, filename):
+    denied = _authorize_sid(sid)
+    if denied:
+        return denied
+    if filename != os.path.basename(filename):
+        return jsonify({"error": "文件不存在"}), 404
+    state.restore(sid)
+    full = state.get_report_full(sid) or {}
+    allowed = set()
+    for section in (full, full.get("m5") or {}, full.get("m6") or {}):
+        for value in ((section.get("files") or {}).values()):
+            if value:
+                allowed.add(os.path.basename(str(value)))
+    if filename not in allowed:
+        return jsonify({"error": "文件不存在"}), 404
     os.makedirs(report.OUTPUT_DIR, exist_ok=True)
     return send_from_directory(
         report.OUTPUT_DIR, filename, as_attachment=True,
@@ -225,6 +327,10 @@ _MEDIA_MIME = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
 @app.get("/api/v4/media/<path:subpath>")
 def v4_media(subpath: str):
     """采集成果图片：本地化后长期可访问（CDN 直链会过期/防盗链，页面直连常 403）。"""
+    sid = subpath.split("/", 1)[0]
+    denied = _authorize_sid(sid)
+    if denied:
+        return denied
     base = os.path.abspath(v4_delivery.COLLECT_MEDIA_DIR)
     full = os.path.abspath(os.path.join(base, subpath))
     if not full.startswith(base + os.sep) or not os.path.isfile(full):
@@ -252,11 +358,94 @@ def _same_origin_ok() -> bool:
         return False
 
 
+def _auth_error(exc: customer_auth.AuthError):
+    return jsonify({"error": exc.message, "code": exc.code}), exc.status
+
+
+@app.before_request
+def _authenticate_api():
+    """所有业务 API 复用 Creator 的网站凭证回查；健康探针不含客户数据。"""
+    if not request.path.startswith("/api/") or request.path == "/api/health":
+        return None
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not _same_origin_ok():
+        return jsonify({"error": "跨站请求被拒绝", "code": "origin_forbidden"}), 403
+    try:
+        g.hq_user = CUSTOMER_AUTH.verify(request.headers)
+    except customer_auth.AuthError as exc:
+        return _auth_error(exc)
+    return None
+
+
+def _valid_sid(sid: str) -> bool:
+    return bool(_SID_RE.fullmatch(str(sid or "")))
+
+
+def _ensure_cli_identity(sid: str):
+    # ponytail: one global lock is sufficient while issuance is rare; shard by sid only if contention appears.
+    with _CLI_IDENTITY_LOCK:
+        credential = customer_auth.REGISTRY.get(sid)
+        if credential:
+            if (credential.account_id == g.hq_user["account_id"]
+                    and credential.username == g.hq_user["username"]):
+                return None
+            log.warning("security_event=identity_mismatch sid=%s requester=%s owner=%s",
+                        sid, g.hq_user["account_id"], credential.account_id)
+            return jsonify({"error": "会话执行身份冲突，已拒绝调用", "code": "identity_mismatch"}), 403
+        try:
+            issued = CUSTOMER_AUTH.issue_cli(request.headers, g.hq_user)
+            try:
+                previous = customer_auth.REGISTRY.put(sid, issued)
+            except customer_auth.AuthError:
+                CUSTOMER_AUTH.revoke(issued)
+                raise
+            if previous and previous.access_token != issued.access_token:
+                CUSTOMER_AUTH.revoke(previous)
+            log.info("security_event=cli_identity_bound sid=%s account_id=%s",
+                     sid, issued.account_id)
+        except customer_auth.AuthError as exc:
+            return _auth_error(exc)
+    return None
+
+
+def _authorize_sid(sid: str, *, cli: bool = False):
+    """Validate syntax, existence and ownership before touching session state."""
+    if not _valid_sid(sid):
+        return jsonify({"error": "会话编号无效", "code": "invalid_session"}), 400
+    if not v4_state.is_loaded(sid) and not v4_state.restore(sid):
+        return jsonify({"error": "会话不存在或已过期", "code": "session_not_found"}), 404
+    owner = v4_state.get_owner(sid)
+    if not owner:
+        return jsonify({
+            "error": "这段旧会话没有客户归属，请新建会话后继续",
+            "code": "session_owner_missing",
+        }), 403
+    if owner != g.hq_user:
+        log.warning("security_event=session_forbidden sid=%s requester=%s owner=%s",
+                    sid, g.hq_user["account_id"], owner.get("account_id"))
+        return jsonify({"error": "这段会话不属于当前登录账号", "code": "session_forbidden"}), 403
+    if cli:
+        return _ensure_cli_identity(sid)
+    return None
+
+
+def _drop_cli_identity(sid: str):
+    credential = customer_auth.REGISTRY.drop(sid)
+    if credential:
+        CUSTOMER_AUTH.revoke(credential)
+
+
 @app.post("/api/v4/start")
 def v4_start():
     """新会话：立即返回 session_id 与确认，开场白在后台轮次生成（首屏不再白等 10-18 秒）。"""
     sid = uuid.uuid4().hex
     v4_state.reset(sid)
+    if not v4_state.set_owner(sid, g.hq_user):
+        return jsonify({"error": "无法绑定当前登录账号", "code": "identity_invalid"}), 500
+    denied = _ensure_cli_identity(sid)
+    if denied:
+        v4_state.reset(sid)
+        return denied
+    v4_state.persist(sid)
     seq = _spawn_turn(sid, None)  # message=None：开场轮（走 main_agent 开场分支）
     return jsonify({
         "session_id": sid,
@@ -276,6 +465,9 @@ def v4_chat():
     message = (body.get("message") or "").strip()
     if not sid:
         return jsonify({"error": "缺少 session_id"}), 400
+    denied = _authorize_sid(sid, cli=True)
+    if denied:
+        return denied
     if not message:
         return jsonify({"error": "消息不能为空"}), 400
     # 附件：先解析出本地路径（便宜），视觉描述等重活在后台线程做
@@ -303,8 +495,6 @@ def v4_chat():
 # 后台轮次：即时确认 + 后台执行 + 轮询取结果
 # ---------------------------------------------------------------------------
 
-import threading
-
 _TURN_LOCK = threading.Lock()      # 保护下列注册表
 _TURN_RESULTS = {}                 # sid -> {seq: {"state": working|done|error, ...}}
 _CONFIRM_LOCKS = {}                # sid -> {"lock": Lock, "refs": 使用计数, "touch": 最近使用}
@@ -314,6 +504,14 @@ _GLOBAL_SEQ = 0                    # 全局单调轮次号（毫秒时间戳保�
                                    # 前端凭「结果 seq >= 我发起的 seq」判断等到了哪轮）
 _TURN_STALE_SECONDS = 600          # working 超过该时长视为中断（> TURN_BUDGET + 收尾余量），
                                    # poll 兜底返回 error，前端不会无限干等
+                                   # 排队中的轮次（queued=True）不受此限：前面轮次最长 5 分钟，
+                                   # 排队等待不是「卡死」，开始执行时才重新计时
+
+# 会话轮次队列：同一 sid 的轮次严格按到达顺序串行执行（FIFO）。
+# 修复「连发两条消息时后发的先答、历史顺序错乱」——并发轮次曾让 Agent 先回答追问、
+# 再处理更早的长消息，追问里已答过的问题也会被反复再问（线上金线实测抓到）。
+_TURN_QUEUE_GUARD = threading.Lock()   # 保护 _TURN_QUEUES 注册表
+_TURN_QUEUES = {}                      # sid -> {"q": deque[(seq, work)], "busy": bool, "touch": ts}
 
 # ---------------------------------------------------------------------------
 # SSE 实时推送：前端挂一条长连接收「turn 完成」与「状态快照」事件，
@@ -475,6 +673,21 @@ def _trim_registries():
                         _CONFIRM_LOCKS.pop(sid, None)
     except Exception:
         pass
+    # 会话轮次队列：跑空且无消费者的 sid 条目回收（同确认锁：只动内存登记）
+    try:
+        with _TURN_QUEUE_GUARD:
+            for sid in list(_TURN_QUEUES.keys()):
+                e = _TURN_QUEUES[sid]
+                if not e["busy"] and not e["q"] and now - e["touch"] > _REGISTRY_IDLE_SECONDS:
+                    _TURN_QUEUES.pop(sid, None)
+            if len(_TURN_QUEUES) > _REGISTRY_CAPS["confirm_locks"]:
+                for sid in sorted(_TURN_QUEUES, key=lambda s: _TURN_QUEUES[s]["touch"])[
+                        : len(_TURN_QUEUES) - _REGISTRY_CAPS["confirm_locks"]]:
+                    e = _TURN_QUEUES[sid]
+                    if not e["busy"] and not e["q"]:
+                        _TURN_QUEUES.pop(sid, None)
+    except Exception:
+        pass
     # 补查节流表：条目数封顶（值里带 ts，按最旧踢；实现在 v4_delivery）
     try:
         v4_delivery.trim_job_poll(now, cap=_REGISTRY_CAPS["job_poll"])
@@ -494,7 +707,16 @@ def _trim_registries():
     except Exception:
         pass
     try:
+        v4_subagent.trim_material_cache(now)
+    except Exception:
+        pass
+    try:
         v4_state.trim_persist_guards(now, max_idle=_REGISTRY_IDLE_SECONDS)
+    except Exception:
+        pass
+    try:
+        for credential in customer_auth.REGISTRY.trim(now, max_idle=_REGISTRY_IDLE_SECONDS):
+            CUSTOMER_AUTH.revoke(credential)
     except Exception:
         pass
 
@@ -512,19 +734,110 @@ def _start_janitor():
 
 
 # ---------------------------------------------------------------------------
+# 文案兜底派发：主 Agent「空口答应」时再做一次小型语义判断。
+# 业务意图由模型理解；代码只校验当前流程允许的动作，避免关键词/正则截断自然语言。
+# 幂等仍由 _ASYNC_JOBS 与报告状态守卫保证。
+# ---------------------------------------------------------------------------
+
+def _writing_context(sid: str) -> tuple[list, list, str]:
+    """返回当前允许的动作、候选选题和默认选题；不判断用户语义。"""
+    full = state.get_report_full(sid) or {}
+    m5 = full.get("m5") or {}
+    m6 = full.get("m6") or {}
+    m5j = full.get("_m5_json") or {}
+    candidates = [t.get("title") for t in (m5j.get("topics") or []) if t.get("title")]
+    default_topic = ""
+    for rec in (m5j.get("recommended") or []):
+        title = rec.get("title")
+        if title:
+            default_topic = title
+            break
+    if not default_topic and candidates:
+        default_topic = candidates[0]
+    allowed = []
+    if m5.get("status") == "ready" and (m6.get("status") or "") in ("", "failed", "incomplete"):
+        allowed.append("m6_scripts")
+    if m6.get("status") == "ready":
+        allowed.append("script_revise")
+    return allowed, candidates, default_topic
+
+
+def _classify_writing_action(msg: str, allowed: list, candidates: list) -> dict:
+    """让模型按完整语义判断是否要生成/修改文案；失败时安全地不派发。"""
+    prompt = (
+        "你只负责判断用户此刻是否明确要求执行文案动作。结合允许动作和候选选题理解整句语义，"
+        "不要依赖关键词；闲聊、评价、拒绝、暂缓或不确定都返回 none。"
+        "如果用户主要在要图片、海报、视频、音频等其他产物，即使他正在提供要写在产物上的文字，"
+        "也必须返回 none，不能把产物制作误判成修改模块6文案。"
+        "只输出 JSON：{\"action\":\"允许动作之一或none\",\"topic\":\"候选选题原文或空串\"}。"
+    )
+    raw = report._llm_chat([
+        {"role": "system", "content": prompt},
+        {"role": "user", "content": json.dumps({
+            "message": msg,
+            "allowed_actions": allowed,
+            "action_meanings": {
+                "m6_scripts": "从用户选定的候选选题继续生成口播文案",
+                "script_revise": "按用户意见修改已经生成的口播文案",
+            },
+            "candidate_topics": candidates,
+        }, ensure_ascii=False)},
+    ], max_tokens=400, temperature=0.0)
+    parsed = report._parse_json(raw) or {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _maybe_auto_dispatch_writing(sid: str, msg: str, seq: int = None):
+    """主 Agent 未派发时，用模型语义做一次最小兜底。"""
+    if not msg or msg.startswith("（系统事件"):
+        return
+    try:
+        allowed, candidates, default_topic = _writing_context(sid)
+        if not allowed:
+            return
+        decision = _classify_writing_action(msg, allowed, candidates)
+        action = decision.get("action")
+        if action not in allowed:
+            return
+        if action == "m6_scripts":
+            topic = decision.get("topic")
+            if topic not in candidates:
+                topic = default_topic
+            if not topic:
+                return
+            v4_main._dispatch_report_async("m6_scripts", {"topic": topic}, sid)
+        elif action == "script_revise":
+            v4_main._dispatch_report_async("script_revise", {"feedback": msg}, sid)
+        log.info("semantic auto-dispatch %s", action, extra=observability.ctx(sid, seq))
+    except Exception:
+        log.exception("semantic auto-dispatch writing failed", extra=observability.ctx(sid, seq))
+
+
+# ---------------------------------------------------------------------------
 # 采集成果交付：任务完成后把图片下载到本地并「贴」进对话（带图消息 + SSE 实时推送）
 # ---------------------------------------------------------------------------
 
 def _spawn_turn(sid: str, message: str, paths: list = None, approval: dict = None) -> int:
-    """登记一个后台轮次并启动工作线程。返回轮次号 seq（前端轮询用）。"""
+    """登记一个后台轮次并放入该会话的 FIFO 队列。返回轮次号 seq（前端轮询用）。
+
+    同一 sid 的轮次串行执行：用户连发的消息按到达顺序一条接一条处理，
+    后发消息不再抢跑（并发轮次曾导致回复顺序错乱、Agent 先答后问）。
+    嵌套派发的系统事件轮（自动确认续跑模块5）只是再次入队，天然排在当前轮之后。
+    """
     paths = paths or []
     global _GLOBAL_SEQ
     with _TURN_LOCK:
         _GLOBAL_SEQ = max(int(time.time() * 1000), _GLOBAL_SEQ + 1)
         seq = _GLOBAL_SEQ
-        _TURN_RESULTS.setdefault(sid, {})[seq] = {"state": "working", "ts": time.time()}
+        # queued=True：还在排队没开跑。状态对前端仍显示 working（有活要干），
+        # 但 poll 的「超时误杀」检查跳过它——排队等待不是卡死。
+        _TURN_RESULTS.setdefault(sid, {})[seq] = {"state": "working", "ts": time.time(), "queued": True}
 
     def work():
+        started_at = int(time.time() * 1000)
+        tool_log = []
+        routing = []
+        log.info("turn work start seq=%s", seq, extra=observability.ctx(sid, seq))
         try:
             msg = message
             if paths:
@@ -561,8 +874,10 @@ def _spawn_turn(sid: str, message: str, paths: list = None, approval: dict = Non
             except Exception:
                 pass
             # 后台任务自愈：把停在 running 的异步任务补查一遍并刷新六态（「还在跑」错报的根修）
+            # force=True：客户轮次开工必须拿到最新任务状态，无视 20s 节流
+            # （否则撞上在途轮询会带着旧态开跑，终态随后送达 → 「失败」后又说「还在生成中」自相矛盾）
             try:
-                v4_delivery.resume_stale_jobs(sid)
+                v4_delivery.resume_stale_jobs(sid, force=True)
             except Exception:
                 pass
             try:
@@ -590,7 +905,9 @@ def _spawn_turn(sid: str, message: str, paths: list = None, approval: dict = Non
                 log.exception("turn %s run_turn failed", seq, extra=observability.ctx(sid, seq))
                 result = {
                     "state": "error",
-                    "reply": "这轮处理出错了（%s）。你可以再发一次试试，任务不会重复扣费。" % type(err).__name__,
+                    "reply": ("这轮没有成功（%s），原请求已保留，系统不会自动补跑。"
+                              "稍后明确说“重试本轮”即可，不用重述内容；已有任务不会重复扣费。"
+                              % type(err).__name__),
                 }
                 # 出错轮也带上当前报告/派发/出片状态：前端绝不用「缺字段」去隐藏报告栏、清出片选择
                 try:
@@ -613,8 +930,23 @@ def _spawn_turn(sid: str, message: str, paths: list = None, approval: dict = Non
                         ])
                 except Exception:
                     pass
+            v4_state.append_turn_audit(sid, {
+                "seq": seq,
+                "started_at": started_at,
+                "finished_at": int(time.time() * 1000),
+                "state": result.get("state"),
+                "tools": [
+                    {key: entry.get(key) for key in ("name", "domain", "ok") if entry.get(key) is not None}
+                    for entry in tool_log
+                ],
+                "routing": [
+                    {key: entry.get(key) for key in ("domain", "state", "task", "summary") if entry.get(key) is not None}
+                    for entry in routing
+                ],
+            })
             v4_state.persist(sid)
             state.persist(sid)
+            log.info("turn-post persist-ok seq=%s", seq, extra=observability.ctx(sid, seq))
             # 采集成果交付：running 的任务挂看护线程（完成自动贴图）；已完成未交付的立即交付
             try:
                 collect_sess = v4_state.get_subagent(sid, "collect")
@@ -632,6 +964,7 @@ def _spawn_turn(sid: str, message: str, paths: list = None, approval: dict = Non
                             v4_delivery.maybe_spawn_finalize(sid, jid, content)
             except Exception:
                 pass  # 交付失败不影响本轮响应
+            log.info("turn-post delivery-ok seq=%s", seq, extra=observability.ctx(sid, seq))
             # 体验优先：报告定稿后自动确认并续跑模块5，不打断用户。
             # 只认 final：draft_ready 是「三套方案待用户选」阶段，绝不能跳过用户的选择。
             # 确认锁 + 锁内二次检查：并发轮次同时看到 final+未确认时也只触发一次模块5。
@@ -659,6 +992,15 @@ def _spawn_turn(sid: str, message: str, paths: list = None, approval: dict = Non
                 if confirm_entry is not None:
                     with _CONFIRM_LOCKS_GUARD:
                         confirm_entry["refs"] -= 1
+            log.info("turn-post confirm-ok seq=%s", seq, extra=observability.ctx(sid, seq))
+            # 文案兜底派发：主 Agent 说「正在生成」却没调工具时由代码补派发。
+            # 只在本轮成功（done）时兜底；报错轮不猜用户意图。
+            try:
+                if (result or {}).get("state") == "done" and not routing:
+                    _maybe_auto_dispatch_writing(sid, msg, seq)
+            except Exception:
+                pass  # 兜底派发失败不影响本轮交付
+            log.info("turn-post autodispatch-ok seq=%s", seq, extra=observability.ctx(sid, seq))
             with _TURN_LOCK:
                 _TURN_RESULTS.setdefault(sid, {})[seq] = result
                 # 只保留最近 10 个轮次，防内存膨胀
@@ -666,13 +1008,15 @@ def _spawn_turn(sid: str, message: str, paths: list = None, approval: dict = Non
                     _TURN_RESULTS[sid].pop(k, None)
             _status_cache_bust(sid)
             v4_streaming.emit(sid, "turn", dict(result, seq=seq))
+            log.info("turn-post publish-ok seq=%s", seq, extra=observability.ctx(sid, seq))
         except Exception:
             # 收尾段任何意外（锁/落盘异常）都不能让轮次永远停在 working
             log.exception("turn %s fatal", seq, extra=observability.ctx(sid, seq))
             try:
                 result = {
                     "state": "error",
-                    "reply": "这轮后台处理中断了，请重新发送刚才那条消息。",
+                    "reply": ("这轮后台处理中断了，原请求已保留，系统不会自动补跑。"
+                              "稍后明确说“重试本轮”即可，不用重述内容。"),
                 }
                 # 同 run_turn 异常路径：带上当前界面状态，前端不会误隐藏报告栏/清出片选择
                 try:
@@ -681,6 +1025,15 @@ def _spawn_turn(sid: str, message: str, paths: list = None, approval: dict = Non
                     result["film"] = v4_state.get_last_film(sid)
                 except Exception:
                     pass
+                v4_state.append_turn_audit(sid, {
+                    "seq": seq,
+                    "started_at": started_at,
+                    "finished_at": int(time.time() * 1000),
+                    "state": "error",
+                    "tools": [],
+                    "routing": [],
+                })
+                v4_state.persist(sid)
                 with _TURN_LOCK:
                     _TURN_RESULTS.setdefault(sid, {})[seq] = result
                 _status_cache_bust(sid)
@@ -688,8 +1041,51 @@ def _spawn_turn(sid: str, message: str, paths: list = None, approval: dict = Non
             except Exception:
                 pass
 
-    threading.Thread(target=work, daemon=True, name="turn-%s-%d" % (sid[:8], seq)).start()
+    with _TURN_QUEUE_GUARD:
+        entry = _TURN_QUEUES.get(sid)
+        if entry is None or (not entry["busy"] and not entry["q"]):
+            entry = {"q": collections.deque(), "busy": False, "touch": time.time()}
+            _TURN_QUEUES[sid] = entry
+        entry["q"].append((seq, work))
+        entry["touch"] = time.time()
+        if not entry["busy"]:
+            entry["busy"] = True
+            threading.Thread(target=_turn_worker, args=(sid,), daemon=True,
+                             name="turnq-%s" % sid[:8]).start()
     return seq
+
+
+def _turn_worker(sid: str):
+    """会话轮次队列消费者：把该 sid 的轮次一个接一个按入队顺序跑完。
+
+    work() 自身全 try/except（任何失败都会落一个 error 结果，绝不外抛），
+    这里只防御注册表层面的意外；队列跑空即退出，下一波消息会再起线程。
+    """
+    while True:
+        try:
+            with _TURN_QUEUE_GUARD:
+                entry = _TURN_QUEUES.get(sid)
+                if entry is None or not entry["q"]:
+                    if entry is not None:
+                        entry["busy"] = False
+                    return
+                seq, work = entry["q"].popleft()
+            # 真正开始执行：刷新计时起点（排队等待的时长不计入 poll 超时误杀窗口）
+            with _TURN_LOCK:
+                r = (_TURN_RESULTS.get(sid) or {}).get(seq)
+                if r is not None:
+                    r["queued"] = False
+                    r["ts"] = time.time()
+            work()
+        except Exception:
+            log.exception("turn queue worker %s crashed", sid)
+            with _TURN_QUEUE_GUARD:
+                entry = _TURN_QUEUES.get(sid)
+                if entry is not None and entry["q"]:
+                    continue  # 队列本身没坏，继续消费下一条
+                if entry is not None:
+                    entry["busy"] = False
+            return
 
 
 # 报告类重活在后台线程跑，完成后经此入口把「系统事件」回注成新一轮对话
@@ -700,18 +1096,24 @@ v4_main.set_turn_spawner(_spawn_turn)
 def v4_poll(sid):
     """轮询后台轮次结果：按轮次号顺序交付所有已完成结果（FIFO），响应带 seq。
     working 超过 _TURN_STALE_SECONDS 的轮次视为中断（线程崩溃/服务重启），兜底返回 error；
+    排队中的轮次（queued）跳过该检查——同会话轮次串行，等待前面轮次不是卡死。
     无任何轮次记录时返回 idle——前端据此提示重发而不是干等。"""
+    denied = _authorize_sid(sid)
+    if denied:
+        return denied
     with _TURN_LOCK:
         results = _TURN_RESULTS.get(sid) or {}
         now = time.time()
         stale = [
             k for k, v in results.items()
-            if v.get("state") == "working" and now - v.get("ts", 0) > _TURN_STALE_SECONDS
+            if v.get("state") == "working" and not v.get("queued")
+            and now - v.get("ts", 0) > _TURN_STALE_SECONDS
         ]
         for k in stale:
             results[k] = {
                 "state": "error",
-                "reply": "这轮后台处理中断了（等待过久），请重新发送刚才那条消息。",
+                "reply": ("这轮后台处理中断了（等待过久），原请求已保留，系统不会自动补跑。"
+                          "稍后明确说“重试本轮”即可，不用重述内容。"),
             }
         done_keys = sorted(k for k, v in results.items() if v.get("state") != "working")
         if done_keys:
@@ -732,6 +1134,9 @@ def v4_poll(sid):
 def v4_status(sid):
     """实时进度：进行中的轮次（含已耗时）、子 Agent 正在调用的工具、各域六态与报告状态。
     前端可 2 秒一刷（SSE 的降级路径），把「正在干什么」画在对话气泡里，用户不用猜。"""
+    denied = _authorize_sid(sid, cli=True)
+    if denied:
+        return denied
     return jsonify(_v4_status_payload(sid))
 
 
@@ -739,12 +1144,32 @@ def v4_status(sid):
 def v4_stream(sid):
     """SSE 实时推送：turn 完成事件 + 每 2 秒一次状态快照（兼作心跳）。
     前端优先走这条长连接，连接失败自动降级回轮询接口。"""
+    denied = _authorize_sid(sid, cli=True)
+    if denied:
+        return denied
+    owner = dict(g.hq_user)
+
     def gen():
         sub = v4_streaming.subscribe(sid)
+        next_identity_check = time.time() + SSE_AUTH_RECHECK_SECONDS
         try:
             # 首帧即当前状态，前端不用再单独拉一次
             yield v4_streaming.sse_event("status", _v4_status_payload(sid))
             while True:
+                if time.time() >= next_identity_check:
+                    try:
+                        current = CUSTOMER_AUTH.verify(request.headers)
+                    except customer_auth.AuthError:
+                        log.info("security_event=sse_auth_expired sid=%s account_id=%s",
+                                 sid, owner["account_id"])
+                        _drop_cli_identity(sid)
+                        return
+                    if current != owner:
+                        log.warning("security_event=sse_identity_changed sid=%s requester=%s owner=%s",
+                                    sid, current.get("account_id"), owner["account_id"])
+                        _drop_cli_identity(sid)
+                        return
+                    next_identity_check = time.time() + SSE_AUTH_RECHECK_SECONDS
                 with sub["cond"]:
                     sub["cond"].wait(timeout=2.0)
                     events = []
@@ -768,8 +1193,9 @@ def v4_stream(sid):
 @app.get("/api/v4/restore/<sid>")
 def v4_restore(sid):
     """恢复一个 v4 会话：可见对话历史 + 各域子 Agent 六态 + 报告状态。"""
-    if not v4_state.restore(sid):
-        return jsonify({"ok": False, "error": "会话不存在或已过期"}), 404
+    denied = _authorize_sid(sid, cli=True)
+    if denied:
+        return denied
     state.restore(sid)  # 本地 IP 管线的报告状态一并恢复
     return jsonify({
         "ok": True,
@@ -777,6 +1203,7 @@ def v4_restore(sid):
         "delegations": _v4_delegations(sid),
         "report": _report_summary(sid),
         "widgets": v4_state.get_widgets(sid),
+        "selected_choices": v4_state.get_selections(sid),
         "film": v4_state.get_last_film(sid),
         "mode": config.LLM_MODE,
     })
@@ -784,26 +1211,44 @@ def v4_restore(sid):
 
 @app.post("/api/v4/reset")
 def v4_reset():
-    if not _same_origin_ok():
-        return jsonify({"error": "跨站请求被拒绝"}), 403
     body = request.get_json(force=True, silent=True) or {}
     sid = (body.get("session_id") or "").strip()
     if sid:
+        denied = _authorize_sid(sid)
+        if denied:
+            return denied
+        _drop_cli_identity(sid)
         v4_state.reset(sid)
-        _drop_session_file(sid)
+        # 「重新开始」只结束当前内存会话并新建 sid；旧会话文件保留，供历史恢复与导出。
     return jsonify({"ok": True})
+
+
+@app.get("/api/v4/export/<sid>.jsonl")
+def v4_export(sid):
+    """导出当前客户自己的完整会话证据；不包含凭证和服务器绝对路径。"""
+    denied = _authorize_sid(sid)
+    if denied:
+        return denied
+    state.restore(sid)
+    body = v4_exporter.build_jsonl(sid)
+    return Response(
+        body,
+        mimetype="application/x-ndjson",
+        headers={"Content-Disposition": f'attachment; filename="ip12-{sid}.jsonl"'},
+    )
 
 
 @app.post("/api/v4/confirm")
 def v4_confirm():
     """v4 页面的「确认报告」：锁定报告 → 后台轮次注入系统事件，主 Agent 自主启动模块5。
     立即返回确认（不再同步等 10-18 秒），模块5 进展走 SSE/轮询。"""
-    if not _same_origin_ok():
-        return jsonify({"error": "跨站请求被拒绝"}), 403
     body = request.get_json(force=True, silent=True) or {}
     sid = (body.get("session_id") or "").strip()
     if not sid:
         return jsonify({"error": "缺少 session_id"}), 400
+    denied = _authorize_sid(sid, cli=True)
+    if denied:
+        return denied
     state.restore(sid)
     meta = state.get_report(sid)
     if not meta or meta.get("status") not in ("final", "draft_ready"):
@@ -827,6 +1272,9 @@ def v4_confirm():
 
 @app.get("/api/v4/state/<sid>")
 def v4_state_view(sid):
+    denied = _authorize_sid(sid)
+    if denied:
+        return denied
     return jsonify(_v4_delegations(sid))
 
 
@@ -863,6 +1311,9 @@ def v4_upload():
     f = request.files.get("file")
     if not sid:
         return jsonify({"error": "缺少 session_id"}), 400
+    denied = _authorize_sid(sid)
+    if denied:
+        return denied
     if not f or not f.filename:
         return jsonify({"error": "缺少文件"}), 400
     ext = os.path.splitext(f.filename)[1].lower()
@@ -884,8 +1335,41 @@ def v4_upload():
     })
 
 
+@app.post("/api/v4/selection")
+def v4_selection():
+    if (request.content_length or 0) > 8192:
+        return jsonify({"error": "选择内容过大"}), 413
+    body = request.get_json(force=True, silent=True) or {}
+    sid = str(body.get("session_id") or "").strip()
+    denied = _authorize_sid(sid)
+    if denied:
+        return denied
+    kind = body.get("kind")
+    choice = body.get("choice")
+    if kind not in {"avatar", "voice", "script"}:
+        return jsonify({"error": "选择类型无效"}), 400
+    if choice is not None:
+        if not isinstance(choice, dict) or set(choice) - {
+                "id", "label", "image_url", "preview_url", "widgetTitle",
+                "film", "manual", "slot_id", "created_at"}:
+            return jsonify({"error": "选择内容无效"}), 400
+        choice = {
+            key: (value[:2000] if isinstance(value, str) else value)
+            for key, value in choice.items()
+            if isinstance(value, (str, bool, int, float))
+        }
+        if not str(choice.get("id") or "").strip():
+            return jsonify({"error": "选择内容缺少 id"}), 400
+    selected = v4_state.set_selection(sid, kind, choice)
+    v4_state.persist(sid)
+    return jsonify({"ok": True, "selected_choices": selected})
+
+
 @app.get("/api/v4/file/<sid>/<file_id>")
 def v4_file(sid, file_id):
+    denied = _authorize_sid(sid)
+    if denied:
+        return denied
     path = _resolve_upload(sid, file_id)
     if not path:
         return jsonify({"error": "文件不存在"}), 404
@@ -934,6 +1418,34 @@ def _v4_delegations(sid: str) -> dict:
 
 if __name__ == "__main__":
     observability.setup_logging()
+    # 卡死诊断：SIGUSR2 把全线程 Python 栈打进 stderr（journalctl 可查）。
+    # 遇到 turnq 线程静默死亡、进程无异常日志的悬案时，kill -USR2 <pid> 抓现场。
+    import faulthandler
+    import signal as _signal
+    faulthandler.register(_signal.SIGUSR2, all_threads=True)
+    log.info("faulthandler registered (SIGUSR2 -> all-thread stack dump)")
+
+    # 优雅停机：部署重启（SIGTERM）前先在途轮次与后台任务收尾（最多 HQ_DRAIN_SECONDS 秒），
+    # 不再把用户正在等的回复/报告半路掐死——神秘顾客实测「报告正生成、重启后永远等不到」。
+    def _drain_and_exit(signum, frame):
+        log.info("SIGTERM received: draining in-flight turns (max %ss)...",
+                 os.environ.get("HQ_DRAIN_SECONDS", "60"))
+        deadline = time.time() + float(os.environ.get("HQ_DRAIN_SECONDS", "60"))
+        while time.time() < deadline:
+            busy_turns = any(
+                v.get("state") == "working"
+                for vv in _TURN_RESULTS.values() for v in vv.values())
+            try:
+                busy_jobs = v4_main.any_jobs_running()
+            except Exception:
+                busy_jobs = False
+            if not busy_turns and not busy_jobs:
+                break
+            time.sleep(1)
+        log.info("drain finished, exiting")
+        raise SystemExit(0)
+
+    _signal.signal(_signal.SIGTERM, _drain_and_exit)
     # 业务 skill 安装副本校验：本机子 Agent 副本与项目源不同步时告警提醒 push
     # （服务器无 Penguin 副本目录会自动跳过；HQ_SKILL_SYNC_WARN=0 关闭）
     if os.environ.get("HQ_SKILL_SYNC_WARN", "1") != "0":
