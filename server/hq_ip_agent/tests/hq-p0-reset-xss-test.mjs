@@ -15,6 +15,7 @@ page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
 await page.route('**/*', async (route) => {
   const req = route.request();
   const url = req.url();
+  if (url.includes('/api/auth/me')) return route.fulfill({ json: { user: { username: 'test-user' } } });
   if (url.includes('/api/v4/stream/')) {
     const sid = decodeURIComponent(url.split('/api/v4/stream/')[1]);
     return route.fulfill({ status: 200, contentType: 'text/event-stream', body:

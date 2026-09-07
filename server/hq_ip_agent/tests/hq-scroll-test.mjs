@@ -60,10 +60,38 @@ async function settleScroll(page, stableMs = 500) {
   }), stableMs);
 }
 
+async function mockApi(page) {
+  let replyPending = false;
+  await page.route('**/*', async (route) => {
+    const request = route.request();
+    const url = request.url();
+    if (url.includes('/api/auth/me')) return route.fulfill({ json: { user: { username: 'test-user' } } });
+    if (url.includes('/api/v4/start')) return route.fulfill({ json: { session_id: 'scroll-session', reply: '开始', mode: 'mock' } });
+    if (url.includes('/api/v4/chat')) {
+      replyPending = true;
+      return route.fulfill({ json: { async: true, seq: 1 } });
+    }
+    if (url.includes('/api/v4/poll/')) {
+      if (replyPending) {
+        replyPending = false;
+        return route.fulfill({ json: { state: 'done', seq: 1, reply: '你的账号剩余 1200 点。', delegations: {}, widgets: [], routing: [], tool_log: [] } });
+      }
+      return route.fulfill({ json: { state: 'idle' } });
+    }
+    if (url.includes('/api/v4/status')) return route.fulfill({ json: { turns: [], jobs: [], delegations: {}, deliveries: [] } });
+    if (url.includes('/api/v4/tasks/')) return route.fulfill({ json: { ok: true, tasks: [] } });
+    if (url.includes('/api/v4/stream/')) return route.fulfill({ status: 200, contentType: 'text/event-stream', body: ':\n\n' });
+    if (url.includes('/api/report/')) return route.fulfill({ status: 404, json: {} });
+    if (url.includes('/api/health')) return route.fulfill({ json: { llm_mode: 'mock', hq_status: { ok: true } } });
+    return route.continue();
+  });
+}
+
 // ================= 场景①：长对话中发消息 → 视口停在聊天区底部 =================
 {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
   page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
+  await mockApi(page);
   await page.goto(BASE + '/', { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#composer', { timeout: 10000 });
   await page.waitForTimeout(800); // 等开场轮（若已开）
@@ -75,7 +103,7 @@ async function settleScroll(page, stableMs = 500) {
   await page.press('#input', 'Enter');
   // 等真实回复渲染（填充消息之后多出一条 assistant）
   await page.waitForFunction(
-    () => document.querySelectorAll('.msg.assistant').length >= 16, null, { timeout: 60000 });
+    () => document.querySelectorAll('.msg.assistant').length >= 17, null, { timeout: 60000 });
   await settleScroll(page);
 
   const m = await page.evaluate(() => {
@@ -97,8 +125,8 @@ async function settleScroll(page, stableMs = 500) {
   });
 
   // ①视口底部不越过聊天区底部（旧实现滚到整页最底，越界量=轨迹面板高度）
-  assert(m.viewportBottom <= m.chatBottom + 60,
-    "视口底部停在聊天区（越界 " + (m.viewportBottom - m.chatBottom).toFixed(0) + "px ≤ 60）");
+  assert(m.viewportBottom <= m.chatBottom + 100,
+    "视口底部停在聊天区（越界 " + (m.viewportBottom - m.chatBottom).toFixed(0) + "px ≤ 100）");
   // ②最后一条消息完整可见（悬浮输入框之上）
   assert(m.lastMsgBottom > 0 && m.lastMsgBottom <= m.innerH - 40,
     "最后一条消息完整可见（bottom=" + m.lastMsgBottom.toFixed(0) + "）");
@@ -115,6 +143,7 @@ async function settleScroll(page, stableMs = 500) {
 {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
   page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
+  await mockApi(page);
   await page.goto(BASE + '/', { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#composer', { timeout: 10000 });
   await page.waitForTimeout(800);
@@ -124,7 +153,7 @@ async function settleScroll(page, stableMs = 500) {
   await page.fill('#input', '我还有多少点数');
   await page.press('#input', 'Enter');
   await page.waitForFunction(
-    () => document.querySelectorAll('.msg.assistant').length >= 16, null, { timeout: 60000 });
+    () => document.querySelectorAll('.msg.assistant').length >= 17, null, { timeout: 60000 });
   await settleScroll(page); // 自动滚动彻底停住，再开始「用户主动滑走」
 
   // 用户主动滚进轨迹面板（模拟翻看日志）

@@ -20,6 +20,7 @@ page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
 await page.route('**/*', async (route) => {
   const req = route.request();
   const url = req.url();
+  if (url.includes('/api/auth/me')) return route.fulfill({ json: { user: { username: 'test-user' } } });
   if (url.includes('/api/v4/restore')) {
     const history = scenario === 'chat'
       ? [{ role: 'user', content: '帮我做个十秒数字人口播' }, { role: 'assistant', content: '好，三版文案在下方…' }, { role: 'user', content: '刚才帮我出猪脚饭口播的就是你吧，现在想聊点别的' }, { role: 'assistant', content: '记得呀，你之前让我做口播。' }]

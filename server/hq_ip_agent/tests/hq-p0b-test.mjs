@@ -15,6 +15,7 @@ const browser = await chromium.launch({ executablePath: process.env.HQ_CHROMIUM 
   await page.route('**/*', async (route) => {
     const req = route.request();
     const url = req.url();
+    if (url.includes('/api/auth/me')) return route.fulfill({ json: { user: { username: 'test-user' } } });
     if (url.includes('/api/v4/restore')) {
       return route.fulfill({ json: {
         ok: true,
@@ -57,10 +58,17 @@ const browser = await chromium.launch({ executablePath: process.env.HQ_CHROMIUM 
 {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
+  await page.addInitScript(() => {
+    if (sessionStorage.getItem('hq-p0b-storage-cleared') !== '1') {
+      localStorage.removeItem('hq-v4-session-id');
+      sessionStorage.setItem('hq-p0b-storage-cleared', '1');
+    }
+  });
   let restoreN = 0;
   await page.route('**/*', async (route) => {
     const req = route.request();
     const url = req.url();
+    if (url.includes('/api/auth/me')) return route.fulfill({ json: { user: { username: 'test-user' } } });
     if (url.includes('/api/v4/restore')) {
       restoreN += 1;
       if (restoreN === 1) return route.fulfill({ status: 500, body: 'boom' });
@@ -103,6 +111,7 @@ const browser = await chromium.launch({ executablePath: process.env.HQ_CHROMIUM 
   await page.route('**/*', async (route) => {
     const req = route.request();
     const url = req.url();
+    if (url.includes('/api/auth/me')) return route.fulfill({ json: { user: { username: 'test-user' } } });
     if (url.includes('/api/v4/status')) return route.fulfill({ json: { turns: [], jobs: ['m5_topics'], delegations: {}, report: null, film: false } });
     if (url.includes('/api/v4/poll')) return route.fulfill({ json: { state: 'idle' } });
     if (url.includes('/api/v4/stream/')) return route.fulfill({ status: 200, contentType: 'text/event-stream', body: ':\n' }).catch(() => {});

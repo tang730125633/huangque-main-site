@@ -1,7 +1,7 @@
-"""Exact seven-file main Agent v4 release; default is verification only.
+"""Exact eight-file main Agent v4 release; default is verification only.
 
 Build only from a clean GitHub main commit. The bundle never contains env,
-sessions, generated media, or old Hermes IP12 files. Apply preserves all seven
+sessions, generated media, or old Hermes IP12 files. Apply preserves all eight
 original files and rolls them back on install/restart/health/static failure.
 """
 from __future__ import annotations
@@ -22,7 +22,8 @@ from urllib.request import urlopen
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = Path("deploy/hq-ip-agent-ux.json")
 TARGETS = {"app.py", "agent/v4/main_agent.py", "agent/v4/subagent.py",
-           "agent/v4/state.py", "agent/v4/delivery.py", "static/v4.js", "static/style.css"}
+           "agent/v4/state.py", "agent/v4/delivery.py", "static/v4.html",
+           "static/v4.js", "static/style.css"}
 LIVE = Path("/home/ubuntu/hq-ip-agent")
 SERVICE = "hq-ip-agent"
 
@@ -34,14 +35,17 @@ def digest(path):
 def validate(manifest):
     rows = manifest["files"]
     if len(rows) != len(TARGETS) or {r["target"] for r in rows} != TARGETS:
-        raise ValueError("release must contain exactly the seven agreed files")
+        raise ValueError("release must contain exactly the eight agreed files")
     if manifest["target_root"] != "/home/ubuntu/hq-ip-agent" or manifest["service"] != SERVICE:
         raise ValueError("wrong production target")
     if manifest["repository"] != "tang730125633/huangque-main-site":
         raise ValueError("wrong GitHub repository")
     for row in rows:
-        expected = ("site/workbench/hq-ip-agent/" if row["target"].startswith("static/")
-                    else "server/hq_ip_agent/") + row["target"]
+        if row["target"] == "static/v4.html":
+            expected = "site/workbench/hq-ip-agent/v4.html"
+        else:
+            expected = ("site/workbench/hq-ip-agent/" if row["target"].startswith("static/")
+                        else "server/hq_ip_agent/") + row["target"]
         if row["source"] != expected:
             raise ValueError("source mapping mismatch")
         if any(not re.fullmatch(r"[a-f0-9]{64}", row[k]) for k in ("before", "after")):
@@ -193,7 +197,7 @@ def main():
             payload = git("show", ":" + row["source"])
             if hashlib.sha256(payload).hexdigest() != row["after"]:
                 raise ValueError("repository manifest mismatch: " + row["source"])
-        print("seven-file repository manifest verified")
+        print("eight-file repository manifest verified")
         return
     manifest = json.loads((args.bundle / "manifest.json").read_text(encoding="utf-8"))
     if not re.fullmatch(r"[a-f0-9]{40}", args.commit or "") or manifest.get("github_commit") != args.commit:

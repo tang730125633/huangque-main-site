@@ -54,6 +54,132 @@
   var m6Status = $("m6-status");
   var m5Content = $("m5-content");
   var m6Content = $("m6-content");
+  var authGate = $("auth-gate");
+  var authCheckingCopy = $("auth-checking-copy");
+  var authLoginForm = $("auth-login-form");
+  var authMessage = $("auth-message");
+  var authSubmit = $("auth-submit");
+  var appBooted = false;
+  var nativeFetch = window.fetch.bind(window);
+
+  function accountReturnPath() {
+    var path = location.pathname === "/workbench/ip12/" ? location.pathname : "/workbench/ip12/";
+    return path + (location.pathname === path ? location.search : "");
+  }
+
+  function setApplicationLocked(locked) {
+    var nav = document.querySelector(".nav");
+    var shell = document.querySelector(".shell");
+    [nav, shell].forEach(function (node) {
+      if (!node) return;
+      if (locked) node.setAttribute("inert", "");
+      else node.removeAttribute("inert");
+    });
+    document.body.classList.toggle("auth-required", locked);
+    document.body.classList.remove("auth-checking");
+  }
+
+  function stopAccountActivity() {
+    if (sendController) { try { sendController.abort(); } catch (ignore) {} }
+    if (eventSource) { try { eventSource.close(); } catch (ignore) {} eventSource = null; }
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    if (authTimer) { clearInterval(authTimer); authTimer = null; }
+    cancelTaskPoll();
+    cancelTurnPoll();
+    removeStatusBubble();
+    hideTyping();
+    setStreaming(false);
+  }
+
+  function showAccountLogin(message) {
+    stopAccountActivity();
+    setApplicationLocked(true);
+    authGate.hidden = false;
+    authGate.setAttribute("aria-busy", "false");
+    authCheckingCopy.hidden = true;
+    authLoginForm.hidden = false;
+    authMessage.classList.remove("ok");
+    authMessage.textContent = message || "";
+    $("auth-alt-link").href = "/login.html?next=" + encodeURIComponent(accountReturnPath());
+    setTimeout(function () { try { $("auth-username").focus(); } catch (ignore) {} }, 60);
+  }
+
+  function unlockApplication() {
+    setApplicationLocked(false);
+    authGate.hidden = true;
+    authGate.setAttribute("aria-busy", "false");
+  }
+
+  function appFetch(input, init) {
+    return nativeFetch(input, init).then(function (response) {
+      if (response.status === 401) showAccountLogin("登录状态已失效，请重新登录后继续。");
+      return response;
+    });
+  }
+
+  function bootAuthenticated() {
+    unlockApplication();
+    if (appBooted) return;
+    appBooted = true;
+    tryRestore();
+  }
+
+  function checkAuthentication() {
+    nativeFetch("/api/auth/me", {credentials: "same-origin", cache: "no-store"})
+      .then(function (response) {
+        if (response.status === 401) { showAccountLogin(); return null; }
+        if (!response.ok) throw new Error("auth_status_" + response.status);
+        return response.json();
+      })
+      .then(function (data) {
+        if (!data) return;
+        if (!data.user) { showAccountLogin(); return; }
+        try { localStorage.setItem("hq_user", JSON.stringify(data.user)); } catch (ignore) {}
+        bootAuthenticated();
+      })
+      .catch(function () {
+        showAccountLogin("暂时无法确认登录状态，请检查网络后重试。");
+      });
+  }
+
+  authLoginForm.addEventListener("submit", function (event) {
+    event.preventDefault();
+    var username = ($("auth-username").value || "").trim();
+    var password = $("auth-password").value || "";
+    if (!username || !password) {
+      authMessage.textContent = "请填写账号和密码。";
+      return;
+    }
+    authSubmit.disabled = true;
+    authMessage.classList.remove("ok");
+    authMessage.textContent = "正在登录…";
+    nativeFetch("/api/auth/login", {
+      method: "POST", credentials: "same-origin", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({username: username, password: password}),
+    })
+      .then(function (response) {
+        return response.json().catch(function () { return {}; }).then(function (data) {
+          return {ok: response.ok, data: data};
+        });
+      })
+      .then(function (result) {
+        if (!result.ok || !result.data.user) {
+          authSubmit.disabled = false;
+          authMessage.textContent = result.data.detail || result.data.error || "账号或密码错误。";
+          return;
+        }
+        try { localStorage.setItem("hq_user", JSON.stringify(result.data.user)); } catch (ignore) {}
+        authMessage.classList.add("ok");
+        authMessage.textContent = "登录成功，正在进入…";
+        if (appBooted) { location.reload(); return; }
+        authSubmit.disabled = false;
+        bootAuthenticated();
+      })
+      .catch(function () {
+        authSubmit.disabled = false;
+        authMessage.textContent = "网络错误，请稍后重试。";
+      });
+  });
 
   var STATE_LABEL = {
     completed: "已完成", running: "运行中", needs_user_input: "要补充信息",
@@ -490,7 +616,7 @@
       }
       btn.disabled = true;
       btn.textContent = "加载中…";
-      fetch(md)
+      appFetch(md)
         .then(function (resp) {
           if (!resp.ok) throw new Error(String(resp.status));
           return resp.text();
@@ -513,7 +639,7 @@
 
   function pollReport() {
     if (!sessionId) return;
-    fetch("api/report/" + encodeURIComponent(sessionId))
+    appFetch("api/report/" + encodeURIComponent(sessionId))
       .then(function (r) { return r.json(); })
       .then(renderReport)
       .catch(function () {});
@@ -605,7 +731,7 @@
 
   function pollTasks() {
     if (!sessionId) return;
-    fetch("api/v4/tasks/" + encodeURIComponent(sessionId))
+    appFetch("api/v4/tasks/" + encodeURIComponent(sessionId))
       .then(function (r) { return r.json(); })
       .then(function (d) { if (d && d.ok) renderTasks(d.tasks || []); })
       .catch(function () {});
@@ -758,7 +884,7 @@
     if (statusTimer) return;
     statusTimer = setInterval(function () {
       if (!sessionId) return;
-      fetch("api/v4/status/" + encodeURIComponent(sessionId))
+      appFetch("api/v4/status/" + encodeURIComponent(sessionId))
         .then(function (r) { return r.json(); })
         .then(function (st) {
           activeJobs = (st.jobs || []).length > 0;
@@ -1017,7 +1143,7 @@
         }
         return;
       }
-      fetch("api/v4/poll/" + encodeURIComponent(sessionId))
+      appFetch("api/v4/poll/" + encodeURIComponent(sessionId))
         .then(function (r) { return r.json(); })
         .then(function (d) {
           if (!turnPoll) return;
@@ -1170,7 +1296,7 @@
       if (sendController) sendController.abort();
     }, 60000);
 
-    fetch("api/v4/chat", {
+    appFetch("api/v4/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ session_id: sessionId, message: messageText, attachments: attachments, approval: approval }),
@@ -1179,6 +1305,11 @@
       .then(function (r) { return r.json(); })
       .then(function (data) {
         hideTyping();
+        if (data.code === "unauthorized") {
+          restorePendingPicks();
+          if (onSendError) onSendError();
+          return;
+        }
         if (data.error) {
           restorePendingPicks(); // 服务端拒收：点选放回，用户重发不丢
           removeStatusBubble(); addMsg("assistant", "出错了：" + data.error);
@@ -1430,7 +1561,7 @@
       assetGrid.innerHTML = '<div class="asset-empty">会话还没准备好，请稍等页面加载完。</div>';
       return;
     }
-    fetch("api/v4/assets?session_id=" + encodeURIComponent(sessionId))
+    appFetch("api/v4/assets?session_id=" + encodeURIComponent(sessionId))
       .then(function (r) { return r.json(); })
       .then(function (d) {
         if (d && d.ok) {
@@ -1495,7 +1626,7 @@
     if (assetBusy || !sessionId) return;
     assetBusy = true;
     card.classList.add("asset-busy");
-    fetch("api/v4/assets/use", {
+    appFetch("api/v4/assets/use", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ session_id: sessionId, asset_id: a.id })
@@ -1521,7 +1652,7 @@
     if (assetBusy || !sessionId) return;
     assetBusy = true;
     card.classList.add("asset-busy");
-    fetch("api/v4/assets/" + encodeURIComponent(a.id) + "?session_id=" + encodeURIComponent(sessionId), { method: "DELETE" })
+    appFetch("api/v4/assets/" + encodeURIComponent(a.id) + "?session_id=" + encodeURIComponent(sessionId), { method: "DELETE" })
       .then(function (r) { return r.json(); })
       .then(function (d) {
         if (d && d.ok) {
@@ -2184,7 +2315,7 @@
 
   function persistChoice(kind, choice) {
     if (!sessionId) return;
-    fetch("api/v4/selection", {
+    appFetch("api/v4/selection", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ session_id: sessionId, kind: kind, choice: choice }),
@@ -2444,7 +2575,7 @@
   // ---- 重置 ----
   $("reset-btn").addEventListener("click", function () {
     if (sessionId) {
-      fetch("api/v4/reset", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionId }) });
+      appFetch("api/v4/reset", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionId }) });
     }
     localStorage.removeItem("hq-v4-session-id");
     messages.innerHTML = "";
@@ -2496,9 +2627,10 @@
 
   // ---- 启动 ----
   function start() {
-    fetch("api/v4/start", { method: "POST" })
+    appFetch("api/v4/start", { method: "POST" })
       .then(function (r) { return r.json(); })
       .then(function (data) {
+        if (data.code === "unauthorized") return;
         if (data.error) {
           startupSend = null;
           setStreaming(false);
@@ -2564,7 +2696,7 @@
     var timeout = setTimeout(function () { controller.abort(); }, 8000);
     var request = { sid: sid };
     // This endpoint only reads state. Unlike /status it never resumes jobs.
-    request.promise = fetch("api/v4/state/" + encodeURIComponent(sid), {
+    request.promise = appFetch("api/v4/state/" + encodeURIComponent(sid), {
       cache: "no-store", signal: controller.signal,
     }).then(function (r) {
       if (!r.ok) throw new Error("state unavailable");
@@ -2749,13 +2881,17 @@
       if (qsSid) { savedSid = qsSid; localStorage.setItem("hq-v4-session-id", qsSid); }
     } catch (e) {}
     if (!savedSid) { start(); return; }
-    fetch("api/v4/restore/" + encodeURIComponent(savedSid))
+    appFetch("api/v4/restore/" + encodeURIComponent(savedSid))
       .then(function (r) { return r.json(); })
       .then(function (data) {
-        if (data.code === "unauthorized" || data.code === "session_forbidden" ||
-            data.code === "session_owner_missing") {
+        if (data.code === "unauthorized") {
           localStorage.removeItem("hq-v4-session-id");
-          addMsg("assistant", data.error || "请先登录黄雀账号。");
+          showAccountLogin(data.error || "请先登录黄雀账号，再使用主 Agent。");
+          return;
+        }
+        if (data.code === "session_forbidden" || data.code === "session_owner_missing") {
+          localStorage.removeItem("hq-v4-session-id");
+          start();
           return;
         }
         if (!data.ok || !data.history || !data.history.length) {
@@ -2800,7 +2936,7 @@
         if (!pollTimer) pollTimer = setInterval(pollReport, 3000);
         startStream(); // 常开长连接：后台任务完成交付（如采集贴图）实时送达
         // 刷新页面时若有轮次还在后台跑：恢复状态气泡继续等，不让用户迷茫
-        fetch("api/v4/status/" + encodeURIComponent(savedSid))
+        appFetch("api/v4/status/" + encodeURIComponent(savedSid))
           .then(function (r) { return r.json(); })
           .then(function (st) {
             var working = (st.turns || []).filter(function (t) { return t.state === "working"; });
@@ -2856,7 +2992,7 @@
     autoScroll();
   }
 
-  fetch("api/health")
+  appFetch("api/health")
     .then(function (r) { return r.json(); })
     .then(function (h) {
       setBadge(h.llm_mode);
@@ -2864,7 +3000,7 @@
       // 授权徽标每分钟自刷：过期了立刻变红，不等任务失败才发现
       if (!authTimer) {
         authTimer = setInterval(function () {
-          fetch("api/health")
+          appFetch("api/health")
             .then(function (r) { return r.json(); })
             .then(setHqBadge)
             .catch(function () {});
@@ -2936,7 +3072,7 @@
     var willShow = histPanel.hidden;
     histPanel.hidden = !histPanel.hidden;
     if (willShow) {
-      fetch("api/v4/sessions")
+      appFetch("api/v4/sessions")
         .then(function (r) { return r.json(); })
         .then(function (d) { renderSessions(d.sessions || []); })
         .catch(function () { renderSessions([]); });
@@ -2948,5 +3084,5 @@
     }
   });
 
-  tryRestore();
+  checkAuthentication();
 })();

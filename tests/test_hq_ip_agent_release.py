@@ -40,7 +40,8 @@ class ReleaseTests(unittest.TestCase):
     def test_repository_manifest_matches_git_sources(self):
         manifest = json.loads((ROOT / release.MANIFEST).read_text(encoding="utf-8"))
         for row in release.validate(manifest):
-            self.assertEqual(release.digest(ROOT / row["source"]), row["after"])
+            payload = release.git("show", ":" + row["source"])
+            self.assertEqual(hashlib.sha256(payload).hexdigest(), row["after"])
 
     def test_success_changes_only_declared_files_and_keeps_backup(self):
         untouched = self.live / "unrelated.txt"

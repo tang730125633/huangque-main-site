@@ -282,7 +282,7 @@
     if(!value||value.length>1024)return "";
     try{
       var target=new URL(value,location.origin);
-      return target.origin===location.origin&&/^\/workbench\/[a-zA-Z0-9_-]+(?:\.html)?$/.test(target.pathname)
+      return target.origin===location.origin&&/^\/workbench\/(?:[a-zA-Z0-9_-]+(?:\.html)?|ip12\/)$/.test(target.pathname)
         ? target.pathname+target.search : "";
     }catch(e){ return ""; }
   }

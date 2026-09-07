@@ -20,8 +20,45 @@
     .agent-chip { font-weight: 600; }
   </style>
 </head>
-<body>
-  <header class="nav">
+<body class="auth-required auth-checking">
+  <div class="auth-gate" id="auth-gate" aria-live="polite">
+    <section class="auth-card" role="dialog" aria-modal="true" aria-label="黄雀账号登录">
+      <div class="auth-brand">
+        <span class="auth-brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20.2 12.2a6 6 0 0 1-8.5-8.5L5 10.5V19h8.5z" />
+            <path d="M16 8 2 22M17.5 15H9" />
+          </svg>
+        </span>
+        <span><strong>黄雀 AI</strong><small>HUANGQUE AGENT</small></span>
+      </div>
+      <div class="auth-checking-copy" id="auth-checking-copy">
+        <span class="auth-checking-dot" aria-hidden="true"></span>
+        <p>正在确认登录状态…</p>
+      </div>
+      <form class="auth-login-form" id="auth-login-form" hidden>
+        <p class="auth-kicker">IP12 · 主 Agent</p>
+        <h1 id="auth-title">登录后继续创作</h1>
+        <p class="auth-subtitle">使用黄雀账号登录，继续使用主 Agent 完成定位、编排与交付。</p>
+        <label class="auth-field">
+          <span>账号</span>
+          <input id="auth-username" name="username" autocomplete="username" maxlength="64" placeholder="请输入账号" required />
+        </label>
+        <label class="auth-field">
+          <span>密码</span>
+          <input id="auth-password" name="password" type="password" autocomplete="current-password" maxlength="128" placeholder="请输入密码" required />
+        </label>
+        <p class="auth-message" id="auth-message" role="status"></p>
+        <button class="auth-submit" id="auth-submit" type="submit">登录并继续</button>
+        <div class="auth-links">
+          <a id="auth-alt-link" href="/login.html?next=%2Fworkbench%2Fip12%2F">其他登录方式 / 注册账号</a>
+          <a href="/workbench/inspiration.html">返回工作台</a>
+        </div>
+      </form>
+    </section>
+  </div>
+
+  <header class="nav" inert>
     <div class="nav-inner">
       <div class="brand">
         <span class="brand-dot" aria-hidden="true"></span>
@@ -43,7 +80,7 @@
     </div>
   </header>
 
-  <main class="shell">
+  <main class="shell" inert>
     <aside class="report-pane" id="report-pane" hidden>
       <div class="report-box" id="report-box">
         <div class="report-head">

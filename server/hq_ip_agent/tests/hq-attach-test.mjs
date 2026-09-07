@@ -16,9 +16,11 @@ let uploadCount = 0;
 await page.route('**/*', async (route) => {
   const req = route.request();
   const url = req.url();
+  if (url.includes('/api/auth/me')) return route.fulfill({ json: { user: { username: 'test-user' } } });
   if (url.includes('/api/v4/start') && req.method() === 'POST') {
     return route.fulfill({ json: { session_id: 'attach-test-1', reply: '测试开始', mode: { llm_mode: 'mock', llm_model: 'test' } } });
   }
+  if (url.includes('/api/v4/restore')) return route.fulfill({ json: { ok: false } });
   if (url.includes('/api/v4/upload')) {
     uploadCount++;
     return route.fulfill({ json: { ok: true, file_id: 'att-' + uploadCount, name: '测试图.png', url: 'api/v4/media/att-1.png', kind: 'image' } });

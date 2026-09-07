@@ -41,6 +41,7 @@ let restoreFilm = false; // 本轮 restore 的 film 标志（模拟后端轮次�
 await page.route('**/*', async (route) => {
   const req = route.request();
   const url = req.url();
+  if (url.includes('/api/auth/me')) return route.fulfill({ json: { user: { username: 'test-user' } } });
   if (url.includes('/api/v4/restore/') && req.method() === 'GET') {
     return route.fulfill({ json: {
       ok: true,

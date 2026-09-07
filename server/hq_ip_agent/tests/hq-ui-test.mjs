@@ -69,13 +69,20 @@ function turnPayload(seq, kind) {
 
 const browser = await chromium.launch({ executablePath: process.env.HQ_CHROMIUM || '/Users/xlzj/Library/Caches/ms-playwright/chromium-1223/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing' });
 const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
-page.on('console', (m) => { if (m.type() === 'error') errors.push('console: ' + m.text()); });
+page.on('console', (m) => {
+  if (m.type() === 'error') errors.push('console: ' + m.text() + (m.location().url ? ' @ ' + m.location().url : ''));
+});
 page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
 
 await page.route('**/*', async (route) => {
   const req = route.request();
   const url = req.url();
   const method = req.method();
+  if (url.includes('/api/auth/me')) return route.fulfill({ json: { user: { username: 'test-user' } } });
+  if (url.startsWith('https://example.com/')) {
+    const png = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c626001000000ffff03000006000557bfabd40000000049454e44ae426082', 'hex');
+    return route.fulfill({ status: 200, contentType: 'image/png', body: png });
+  }
   if (url.includes('/api/v4/start') && method === 'POST') {
     return route.fulfill({ json: { session_id: 'test-session-1', reply: '测试开始', mode: { llm_mode: 'mock', llm_model: 'test' } } });
   }
@@ -102,6 +109,7 @@ await page.route('**/*', async (route) => {
   if (url.includes('/api/v4/status')) {
     return route.fulfill({ json: { turns: [], jobs: [], delegations: {}, film: lastFilm, tool: null, report: reportPayload() } });
   }
+  if (url.includes('/api/v4/tasks/')) return route.fulfill({ json: { ok: true, tasks: [] } });
   if (url.includes('/api/v4/stream')) {
     return route.fulfill({ status: 200, contentType: 'text/event-stream', body: ':\n' }).catch(() => {});
   }

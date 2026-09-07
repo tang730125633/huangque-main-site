@@ -14,6 +14,7 @@ page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
 await page.route('**/*', async (route) => {
   const req = route.request();
   const url = req.url();
+  if (url.includes('/api/auth/me')) return route.fulfill({ json: { user: { username: 'test-user' } } });
   if (url.includes('/api/v4/restore')) {
     return route.fulfill({ json: {
       ok: true,

@@ -12,7 +12,8 @@
     {"source": "server/hq_ip_agent/agent/v4/subagent.py", "target": "agent/v4/subagent.py", "before": "4820e29b719f221484faa46b7f1a818afe670fc0fa95e44d3f0f2971166db44e", "after": "4820e29b719f221484faa46b7f1a818afe670fc0fa95e44d3f0f2971166db44e"},
     {"source": "server/hq_ip_agent/agent/v4/state.py", "target": "agent/v4/state.py", "before": "1156dd5077a71c0f8a8fc090bfc72ee0e8a0ebe7b962e14500913b2cfcadbcc7", "after": "1156dd5077a71c0f8a8fc090bfc72ee0e8a0ebe7b962e14500913b2cfcadbcc7"},
     {"source": "server/hq_ip_agent/agent/v4/delivery.py", "target": "agent/v4/delivery.py", "before": "c727678d8ed098da1bd0f2ccda0793e98ec22df23c8637a533dd2db509071f8a", "after": "c727678d8ed098da1bd0f2ccda0793e98ec22df23c8637a533dd2db509071f8a"},
-    {"source": "site/workbench/hq-ip-agent/static/v4.js", "target": "static/v4.js", "before": "90a334c4c9b40d4525c033de89283bacad98a75224c2306cb0b46a1f5ba1f103", "after": "0dfe6656aa76d27caa89a07eb664851c34da8e67dcce3631ecda8b4fc1a4f2be"},
-    {"source": "site/workbench/hq-ip-agent/static/style.css", "target": "static/style.css", "before": "690dfb853f9e6e02a9f40500ac4d0f494bc7216f6e7aa2324f2f01eec4734bb9", "after": "56360f2597b5290cf0f0d38d3abbb6af77da8b8c546dd74cf77a7c6c94e929f3"}
+    {"source": "site/workbench/hq-ip-agent/v4.html", "target": "static/v4.html", "before": "debbf3e6aa8840e518f79ee6b5342fd49ff7a948a98b464ae63ed64f12e36b55", "after": "065af17bbd827b2c3b80c726cab8fd075003221d5238fbc24b1f5c8beb2f6376"},
+    {"source": "site/workbench/hq-ip-agent/static/v4.js", "target": "static/v4.js", "before": "0dfe6656aa76d27caa89a07eb664851c34da8e67dcce3631ecda8b4fc1a4f2be", "after": "a3579162b2c7809e3bfbd54113dc7bfc6abaf491c3fba382b30f9f5e909fc191"},
+    {"source": "site/workbench/hq-ip-agent/static/style.css", "target": "static/style.css", "before": "56360f2597b5290cf0f0d38d3abbb6af77da8b8c546dd74cf77a7c6c94e929f3", "after": "d5f052b902bd8fdd8efbae14815741fddb6440a530e7884af4a0d9e1c4f86946"}
   ]
 }

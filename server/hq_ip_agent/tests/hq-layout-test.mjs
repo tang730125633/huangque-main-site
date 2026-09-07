@@ -28,6 +28,7 @@ page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
 await page.route('**/*', async (route) => {
   const req = route.request();
   const url = req.url();
+  if (url.includes('/api/auth/me')) return route.fulfill({ json: { user: { username: 'test-user' } } });
   if (url.includes('/api/v4/start') && req.method() === 'POST') {
     return route.fulfill({ json: { session_id: 'test-session-1', reply: '测试开始', mode: { llm_mode: 'mock', llm_model: 'test' } } });
   }
