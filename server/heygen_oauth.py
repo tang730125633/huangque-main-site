@@ -6,6 +6,7 @@ service restart safely invalidates an unfinished login.
 """
 
 import base64
+import contextlib
 import hashlib
 import json
 import os
@@ -35,7 +36,34 @@ class HeyGenOAuthError(RuntimeError):
 
 
 _flows = {}
+_credential_epochs = {}
 _flow_lock = threading.Lock()
+
+
+@contextlib.contextmanager
+def credential_file_lock(path):
+    """Serialize credential replacement/removal across admin and content processes."""
+    target = pathlib.Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = pathlib.Path(str(target) + ".lock")
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        if hasattr(os, "fchmod"):
+            os.fchmod(descriptor, 0o600)
+        if os.name == "nt":
+            import msvcrt
+            current = os.lseek(descriptor, 0, os.SEEK_CUR)
+            try:
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+            finally:
+                os.lseek(descriptor, current, os.SEEK_SET)
+        else:
+            import fcntl
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)
 
 
 def _now(now=None):
@@ -188,6 +216,7 @@ def begin_authorization(path, redirect_uri, actor, now=None):
             "actor": str(actor or "admin")[:120],
             "created_at": current,
             "expires_at": current + FLOW_TTL_SECONDS,
+            "credential_epoch": _credential_epochs.get(str(pathlib.Path(path)), 0),
         }
     query = urllib.parse.urlencode({
         "response_type": "code",
@@ -268,7 +297,12 @@ def complete_authorization(state, code, opener=None, now=None):
         "authorized_at": issued_at,
         "authorized_by": flow["actor"],
     }
-    _atomic_write_credentials(flow["credential_path"], credentials)
+    with credential_file_lock(flow["credential_path"]):
+        with _flow_lock:
+            current_epoch = _credential_epochs.get(flow["credential_path"], 0)
+        if current_epoch != flow.get("credential_epoch", 0):
+            raise HeyGenOAuthError("HeyGen 授权已被断开，请返回后台重新连接")
+        _atomic_write_credentials(flow["credential_path"], credentials)
     return {"ok": True, "actor": flow["actor"]}
 
 
@@ -276,10 +310,17 @@ def disconnect(path):
     if not path:
         return False
     target = pathlib.Path(path)
-    try:
-        target.unlink()
-        return True
-    except FileNotFoundError:
-        return False
-    except OSError as exc:
-        raise HeyGenOAuthError("无法移除本地 HeyGen 授权") from exc
+    target_key = str(target)
+    with credential_file_lock(target):
+        with _flow_lock:
+            _credential_epochs[target_key] = _credential_epochs.get(target_key, 0) + 1
+            for state, flow in list(_flows.items()):
+                if flow.get("credential_path") == target_key:
+                    _flows.pop(state, None)
+        try:
+            target.unlink()
+            return True
+        except FileNotFoundError:
+            return False
+        except OSError as exc:
+            raise HeyGenOAuthError("无法移除本地 HeyGen 授权") from exc

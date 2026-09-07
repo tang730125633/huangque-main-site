@@ -294,18 +294,25 @@ class VideoAgentToolTests(unittest.TestCase):
             routed.append((tool_name, dict(arguments)))
             return "local"
 
+        def local_quote(_name, arguments):
+            payload = dict(arguments)
+            payload.update({"mode": "text", "ratio": "9:16", "voice": "voice-stable"})
+            canonical = json.dumps(
+                payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+            )
+            return {
+                "quote_token": "local-" + "a" * 64,
+                "fingerprint": "local:" + hashlib.sha256(
+                    canonical.encode("utf-8")
+                ).hexdigest(),
+                "payload": payload,
+                "cost": 30, "expires_in": 120,
+            }
+
         runtime = video_agent_tools.VideoAgentToolRuntime(
             username="alice", web_token="web-token", db_factory=self.db,
             cli_execute=self.cli_execute, quote_router=route_quote,
-            local_quote=lambda _name, arguments: {
-                "quote_token": "local-" + "a" * 64,
-                "fingerprint": "local:" + hashlib.sha256(
-                    json.dumps(arguments, ensure_ascii=False, sort_keys=True,
-                               separators=(",", ":")).encode("utf-8")
-                ).hexdigest(),
-                "payload": dict(arguments),
-                "cost": 30, "expires_in": 120,
-            },
+            local_quote=local_quote,
             now=lambda: 1000,
         )
         quote = runtime.run("hq_quote_talking_video", json.dumps({
@@ -337,6 +344,15 @@ class VideoAgentToolTests(unittest.TestCase):
             "task_domain": "local",
         })
         self.assertEqual(len(local_submits), 1)
+        with closing(self.db()) as conn:
+            submission_key = conn.execute(
+                "SELECT submission_key FROM video_agent_pending_actions WHERE id=?",
+                (pending_id,),
+            ).fetchone()[0]
+        self.assertEqual(local_submits[0][1], submission_key)
+        self.assertTrue(submission_key.startswith("hqlocal-"))
+        self.assertEqual(local_submits[0][0]["voice"], "voice-stable")
+        self.assertEqual(local_submits[0][0]["ratio"], "9:16")
         self.assertEqual(len(self.calls), 0)  # no remote quote or submit
 
         status_calls = []

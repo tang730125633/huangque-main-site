@@ -42,9 +42,21 @@ class HeyGenMcpOAuthTests(unittest.TestCase):
              patch.object(video, "_HEYGEN_MCP_CREDENTIALS", "/secure/heygen-mcp.json"), \
              patch.object(Path, "is_file", return_value=True), \
              patch.object(Path, "read_text", return_value=credentials), \
-             patch.object(video, "_heygen_mcp_call") as call:
+             patch.object(video, "_heygen_require_subscription_credits", return_value={"remaining": 1}) as credits:
             self.assertTrue(video.require_avatar_submission_ready())
-        call.assert_not_called()
+        credits.assert_called_once_with()
+
+    def test_subscription_request_preflight_rejects_empty_plan_before_charge(self):
+        credentials = json.dumps({
+            "access_token": "access", "expires_at": 4102444800,
+        })
+        with patch.object(video, "_HEYGEN_BILLING_MODE", "subscription"), \
+             patch.object(video, "_HEYGEN_MCP_CREDENTIALS", "/secure/heygen-mcp.json"), \
+             patch.object(Path, "is_file", return_value=True), \
+             patch.object(Path, "read_text", return_value=credentials), \
+             patch.object(video, "_heygen_require_subscription_credits", side_effect=ValueError("套餐额度不足")):
+            with self.assertRaisesRegex(ValueError, "套餐额度不足"):
+                video.require_video_submission_ready({"mode": "audio"})
 
     def test_talking_preflight_rejects_missing_voice_service_before_charge(self):
         with patch.object(video, "require_avatar_submission_ready", return_value=True), \
@@ -433,7 +445,11 @@ class HeyGenMcpOAuthTests(unittest.TestCase):
             credentials.chmod(0o600)
             with patch.object(video, "_HEYGEN_MCP_CREDENTIALS", str(credentials)), \
                  patch.object(video, "_heygen_direct_opener", return_value=Opener()), \
-                 patch.object(video.time, "time", return_value=1000):
+                 patch.object(video.time, "time", return_value=1000), \
+                 patch.object(
+                     video.heygen_oauth_store, "credential_file_lock",
+                     wraps=video.heygen_oauth_store.credential_file_lock,
+                 ) as credential_lock:
                 self.assertEqual(video._heygen_mcp_access_token(), "new-access")
                 self.assertEqual(video._heygen_mcp_access_token(), "new-access")
             saved = json.loads(credentials.read_text())
@@ -442,6 +458,7 @@ class HeyGenMcpOAuthTests(unittest.TestCase):
                 self.assertEqual(os.stat(credentials).st_mode & 0o077, 0)
                 self.assertEqual(os.stat(str(credentials) + ".lock").st_mode & 0o077, 0)
             self.assertEqual(len(requests), 1)
+            self.assertEqual(credential_lock.call_count, 2)
             self.assertEqual(requests[0].get_header("User-agent"), "huangque-content/1.0")
 
     def test_official_cli_nested_oauth_schema_can_refresh_for_mcp(self):
@@ -477,6 +494,7 @@ class HeyGenMcpOAuthTests(unittest.TestCase):
             credentials.chmod(0o600)
             with patch.object(video, "_HEYGEN_MCP_CREDENTIALS", str(credentials)), \
                  patch.object(video, "_heygen_direct_opener", return_value=Opener()), \
+                 patch.object(video, "_heygen_require_subscription_credits", return_value={"remaining": 1}), \
                  patch.object(video.time, "time", return_value=2_000_000_000):
                 self.assertTrue(video.require_avatar_submission_ready())
                 self.assertEqual(video._heygen_mcp_access_token(), "nested-new")

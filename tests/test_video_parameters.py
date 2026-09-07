@@ -111,6 +111,18 @@ class TryonParameterValidationTests(unittest.TestCase):
             CORE_SRC.index("cost = points_domain.cost_of(kind, body)"),
         )
 
+    def test_talking_subscription_preflight_runs_before_job_or_deduction(self):
+        validate = CORE_SRC.index(
+            "body = video_domain.validate_video_payload(body, user[\"username\"])"
+        )
+        preflight = CORE_SRC.index(
+            "video_domain.require_video_submission_ready(body)", validate
+        )
+        create_job = CORE_SRC.index("jobs_store.create_job_after_charge", preflight)
+        deduct = CORE_SRC.index("points_domain.deduct_points", preflight)
+        self.assertLess(preflight, create_job)
+        self.assertLess(preflight, deduct)
+
 
 class VideoParameterUiTests(unittest.TestCase):
     def test_talking_resolution_is_fixed_at_1080p(self):

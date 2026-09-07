@@ -121,17 +121,27 @@ class VideoAgentTests(unittest.TestCase):
         get_avatar.assert_called_once_with("alice", 2)
 
     def test_local_talking_quote_uses_authoritative_video_pricing(self):
+        normalized = {
+            "avatar_id": 2, "text": "欢迎", "voice": "voice-stable",
+            "mode": "text", "ratio": "9:16", "resolution": "1080p",
+        }
         with mock.patch.object(
             video_agent.points, "cost_of", return_value=30,
-        ) as cost_of:
-            quote = video_agent._local_talking_quote(
+        ) as cost_of, mock.patch.object(
+            video_agent.video, "validate_video_payload", return_value=normalized,
+        ) as validate:
+            quote = video_agent._local_talking_quote("alice")(
                 "hq_quote_talking_video",
                 {"avatar_id": 2, "text": "欢迎", "voice": "voice-1"},
             )
         self.assertEqual(quote["cost"], 30)
+        self.assertEqual(quote["payload"], normalized)
         self.assertRegex(quote["fingerprint"], r"^local:[0-9a-f]{64}$")
         self.assertNotEqual(quote["quote_token"], quote["fingerprint"])
-        cost_of.assert_called_once()
+        validate.assert_called_once_with(
+            {"avatar_id": 2, "text": "欢迎", "voice": "voice-1"}, "alice",
+        )
+        cost_of.assert_called_once_with("video", normalized)
 
     def test_local_content_submit_is_loopback_and_keeps_idempotency(self):
         requests = []

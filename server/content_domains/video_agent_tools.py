@@ -1271,7 +1271,9 @@ def confirm_pending_action(pending_id, idempotency_key, *, username, web_token,
     if replayed:
         return _safe_pending(row, stored)
     executor = cli_execute or hq_cli_executor.execute
-    arguments = json.loads(row["input_json"])
+    arguments = json.loads(
+        row["payload_json"] if execution_domain == "local" else row["input_json"]
+    )
     try:
         if execution_domain == "local":
             if not callable(local_submit):
@@ -1279,7 +1281,10 @@ def confirm_pending_action(pending_id, idempotency_key, *, username, web_token,
                     "local_submission_unavailable",
                     "本地视频提交服务暂时不可用", 503,
                 )
-            result = local_submit(dict(arguments), idempotency_key)
+            # The content service must persist the same deterministic key that
+            # this card records. Otherwise an accepted request whose response
+            # is lost cannot be reconciled and may be submitted a second time.
+            result = local_submit(dict(arguments), submission_key)
             if not isinstance(result, dict):
                 raise ToolError(
                     "local_submission_invalid",

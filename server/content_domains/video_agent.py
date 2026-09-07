@@ -131,26 +131,40 @@ def _local_talking_quote_router(username):
     return route
 
 
-def _local_talking_quote(tool_name, arguments):
-    if tool_name != "hq_quote_talking_video":
-        raise video_agent_tools.ToolError(
-            "local_quote_unsupported", "该视频能力不支持本地报价", 400,
+def _local_talking_quote(username):
+    owner = str(username or "").strip()
+
+    def quote(tool_name, arguments):
+        if tool_name != "hq_quote_talking_video":
+            raise video_agent_tools.ToolError(
+                "local_quote_unsupported", "该视频能力不支持本地报价", 400,
+            )
+        # Bind the card, price and later submission to the exact payload the
+        # content endpoint accepts (including defaults and account-scoped voice
+        # normalization), rather than the model's raw arguments.
+        try:
+            payload = video.validate_video_payload(dict(arguments), owner)
+        except (LookupError, TypeError, ValueError) as error:
+            raise video_agent_tools.ToolError(
+                "local_quote_invalid", str(error)[:220], 400,
+            ) from error
+        canonical = json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
         )
-    canonical = json.dumps(
-        arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
-    )
-    return {
-        "quote_token": "local-" + hashlib.sha256(
-            ("confirm:" + canonical).encode("utf-8")
-        ).hexdigest(),
-        "fingerprint": "local:" + hashlib.sha256(
-            canonical.encode("utf-8")
-        ).hexdigest(),
-        "payload": dict(arguments),
-        "cost": int(points.cost_of("video", dict(arguments))),
-        "expires_in": 120,
-        "confirmation_required": True,
-    }
+        return {
+            "quote_token": "local-" + hashlib.sha256(
+                ("confirm:" + canonical).encode("utf-8")
+            ).hexdigest(),
+            "fingerprint": "local:" + hashlib.sha256(
+                canonical.encode("utf-8")
+            ).hexdigest(),
+            "payload": payload,
+            "cost": int(points.cost_of("video", payload)),
+            "expires_in": 120,
+            "confirmation_required": True,
+        }
+
+    return quote
 
 
 def _local_content_request(path, web_token, *, method="GET", payload=None,
@@ -1613,7 +1627,7 @@ def chat(body, opener=None, username=None, db_factory=None, web_token=None,
                     username=username, web_token=web_token, db_factory=db_factory,
                     read_fallbacks=_local_read_fallbacks(username),
                     quote_router=_local_talking_quote_router(username),
-                    local_quote=_local_talking_quote,
+                    local_quote=_local_talking_quote(username),
                 )
             runtime_stage = "chat_provider_call"
             result = _call_provider(prepared, opener=opener, tool_runtime=runtime)

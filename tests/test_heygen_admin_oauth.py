@@ -36,9 +36,11 @@ class _Opener:
 class HeyGenAdminOAuthTests(unittest.TestCase):
     def setUp(self):
         heygen_oauth._flows.clear()
+        heygen_oauth._credential_epochs.clear()
 
     def tearDown(self):
         heygen_oauth._flows.clear()
+        heygen_oauth._credential_epochs.clear()
 
     def test_begin_uses_pkce_state_resource_and_fixed_redirect(self):
         result = heygen_oauth.begin_authorization(
@@ -123,6 +125,31 @@ class HeyGenAdminOAuthTests(unittest.TestCase):
             self.assertTrue(heygen_oauth.disconnect(path))
             self.assertFalse(path.exists())
             self.assertFalse(heygen_oauth.disconnect(path))
+
+    def test_disconnect_invalidates_authorization_already_exchanging(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "credentials"
+            started = heygen_oauth.begin_authorization(
+                path, "http://127.0.0.1:8104/api/admin/heygen-oauth/callback",
+                "qilin", now=100,
+            )
+            state = urllib.parse.parse_qs(
+                urllib.parse.urlsplit(started["authorization_url"]).query
+            )["state"][0]
+            flow = heygen_oauth._consume_flow(state, now=101)
+            self.assertFalse(heygen_oauth.disconnect(path))
+            # Reinsert the already-consumed flow to deterministically model a
+            # callback that was exchanging its code while disconnect completed.
+            heygen_oauth._flows[state] = flow
+            opener = _Opener({
+                "access_token": "stale-access", "refresh_token": "stale-refresh",
+                "expires_in": 3600,
+            })
+            with self.assertRaisesRegex(heygen_oauth.HeyGenOAuthError, "已被断开"):
+                heygen_oauth.complete_authorization(
+                    state, "authorization-code", opener=opener, now=110,
+                )
+            self.assertFalse(path.exists())
 
 
 if __name__ == "__main__":

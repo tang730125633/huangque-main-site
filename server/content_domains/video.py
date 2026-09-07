@@ -1,22 +1,4 @@
 # -*- coding: utf-8 -*-
-try:
-    import fcntl
-except ImportError:  # Windows does not provide POSIX fcntl.
-    import msvcrt
-
-    class _WindowsFcntlCompat:
-        LOCK_EX = 2
-
-        @staticmethod
-        def flock(file_descriptor, _operation):
-            current = os.lseek(file_descriptor, 0, os.SEEK_CUR)
-            try:
-                os.lseek(file_descriptor, 0, os.SEEK_SET)
-                msvcrt.locking(file_descriptor, msvcrt.LK_LOCK, 1)
-            finally:
-                os.lseek(file_descriptor, current, os.SEEK_SET)
-
-    fcntl = _WindowsFcntlCompat()
 import email.utils
 import hashlib
 import http.client
@@ -55,6 +37,10 @@ from . import (
     short_drama_visual_gate,
     submission_idempotency,
 )
+try:
+    import heygen_oauth as heygen_oauth_store
+except ModuleNotFoundError:
+    from .. import heygen_oauth as heygen_oauth_store
 
 VALID_VIDEO_MODES = {"text", "audio", "lipsync"}
 VALID_VIDEO_RATIOS = {"9:16", "16:9", "1:1", "4:5", "5:4"}
@@ -4144,6 +4130,10 @@ def require_avatar_submission_ready():
             "HeyGen 套餐连接尚未完成，本次未提交且未扣点，"
             "请先在管理后台完成 MCP OAuth 授权"
         )
+    # Subscription exhaustion is a definite rejection. Check it before the
+    # request path creates a job or deducts local points, not later in a worker
+    # that would have to compensate with a refund.
+    _heygen_require_subscription_credits()
     return True
 
 
@@ -4159,17 +4149,15 @@ def require_video_submission_ready(payload=None):
 
 
 def _heygen_mcp_access_token(force_refresh=False):
+    if not str(_HEYGEN_MCP_CREDENTIALS or "").strip():
+        raise HeyGenMCPAuthError("HeyGen MCP OAuth 未配置")
     path = pathlib.Path(_HEYGEN_MCP_CREDENTIALS)
     with _heygen_mcp_auth_lock:
-        if not path.is_file():
-            raise HeyGenMCPAuthError("HeyGen MCP OAuth 未配置")
-        if os.name != "nt" and path.stat().st_mode & 0o077:
-            raise HeyGenMCPAuthError("HeyGen MCP OAuth 凭据权限必须为 600")
-        lock_fd = os.open(str(path) + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
-        try:
-            if hasattr(os, "fchmod"):
-                os.fchmod(lock_fd, 0o600)
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        with heygen_oauth_store.credential_file_lock(path):
+            if not path.is_file():
+                raise HeyGenMCPAuthError("HeyGen MCP OAuth 未配置")
+            if os.name != "nt" and path.stat().st_mode & 0o077:
+                raise HeyGenMCPAuthError("HeyGen MCP OAuth 凭据权限必须为 600")
             stored = json.loads(path.read_text(encoding="utf-8"))
             credentials, expires_at = _heygen_mcp_credential_view(stored)
             if not force_refresh and credentials.get("access_token") and (not expires_at or expires_at > time.time() + 60):
@@ -4211,8 +4199,6 @@ def _heygen_mcp_access_token(force_refresh=False):
             os.chmod(temp_path, 0o600)
             os.replace(temp_path, path)
             return credentials["access_token"]
-        finally:
-            os.close(lock_fd)
 
 
 def _heygen_mcp_ready_text(text, video_id):
