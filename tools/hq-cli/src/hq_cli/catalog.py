@@ -1226,6 +1226,14 @@ MATRIX_TEMPLATE_VOICEOVER = _schema({
         "type": "number", "minimum": 0.5, "maximum": 2.0,
         "default": 1.0,
     },
+    "bgm": {
+        "type": "boolean", "default": False,
+        "description": "可选；口播时是否同时加入背景音乐，默认关闭",
+    },
+    "bgm_volume": {
+        "type": "number", "minimum": 0, "maximum": 1, "default": 0.2,
+        "description": "仅在 bgm=true 时可用；0.2 表示 20%",
+    },
 }, ["text", "voice"])
 
 MATRIX_TEMPLATE_FIELDS = {
@@ -1388,7 +1396,8 @@ CAPABILITIES["matrix-template-generate"]["constraints"] = [
     "font_family is optional and must be selected from matrix-template-templates fonts",
     "voiceover is optional; copy voice and optional voice_scope from a ready item returned by voices",
     "voiceover text is limited to 120 characters and speed is 0.5-2.0 in 0.1 steps",
-    "voiceover disables BGM and makes final duration follow narration; without voiceover BGM remains enabled",
+    "voiceover.bgm defaults to false; when true, bgm_volume defaults to 0.2 and accepts 0-1",
+    "with voiceover, final duration always follows narration; without voiceover BGM remains enabled",
     "duration is calculated automatically",
     "the first call only quotes the fixed template-video cost",
 ]
@@ -1400,7 +1409,8 @@ CAPABILITIES["matrix-template-batch-generate"]["constraints"] = [
     "count creates 2-5 independent jobs under one total quote and one confirmation",
     "voiceover is optional; copy voice and optional voice_scope from a ready item returned by voices",
     "voiceover text is limited to 120 characters and speed is 0.5-2.0 in 0.1 steps",
-    "voiceover disables BGM and makes final duration follow narration; without voiceover BGM remains enabled",
+    "voiceover.bgm defaults to false; when true, bgm_volume defaults to 0.2 and accepts 0-1",
+    "with voiceover, final duration always follows narration; without voiceover BGM remains enabled",
     "duration is calculated automatically",
 ]
 CAPABILITIES["matrix-template-batch-generate"]["next_actions"] = [

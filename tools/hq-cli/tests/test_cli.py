@@ -192,7 +192,7 @@ class HqCliTests(unittest.TestCase):
             self.assertEqual(0, code, error)
             self.assertTrue(self.payload(output)["schema"].startswith("hq."))
         code, output, _ = self.invoke(["version"])
-        self.assertEqual("0.15.4", self.payload(output)["cli_version"])
+        self.assertEqual("0.15.5", self.payload(output)["cli_version"])
         self.assertEqual("Huangque main-site CLI", self.payload(output)["product"])
         self.assertEqual("https://huangquechuanmei.com", self.payload(output)["origin"])
 
@@ -406,6 +406,12 @@ class HqCliTests(unittest.TestCase):
         self.assertEqual((0.5, 2.0), (
             matrix_voiceover["properties"]["speed"]["minimum"],
             matrix_voiceover["properties"]["speed"]["maximum"],
+        ))
+        self.assertFalse(matrix_voiceover["properties"]["bgm"]["default"])
+        self.assertEqual((0, 1, 0.2), (
+            matrix_voiceover["properties"]["bgm_volume"]["minimum"],
+            matrix_voiceover["properties"]["bgm_volume"]["maximum"],
+            matrix_voiceover["properties"]["bgm_volume"]["default"],
         ))
         self.assertEqual(
             ["top_text", "bottom_text", "template_id"],
@@ -1098,6 +1104,7 @@ class HqCliTests(unittest.TestCase):
             "voiceover": {
                 "text": "把工具变成稳定产出的流程", "voice": "vip_alice",
                 "voice_scope": "personal", "speed": 1.2,
+                "bgm": True, "bgm_volume": 0.35,
             },
         }
         raw = json.dumps(value, ensure_ascii=False).encode("utf-8")
@@ -1131,6 +1138,7 @@ class HqCliTests(unittest.TestCase):
             "voiceover": {
                 "text": "同一文案批量生成三条配音视频", "voice": "public_voice",
                 "voice_scope": "public", "speed": 1.1,
+                "bgm": True,
             },
         }
         raw = json.dumps(value, ensure_ascii=False).encode("utf-8")
@@ -1206,6 +1214,16 @@ class HqCliTests(unittest.TestCase):
                                   "voice_scope": "shared"}),
             dict(base, voiceover={"text": "有效文案", "voice": "public_voice",
                                   "speed": 2.1}),
+            dict(base, voiceover={"text": "有效文案", "voice": "public_voice",
+                                  "bgm": 1}),
+            dict(base, voiceover={"text": "有效文案", "voice": "public_voice",
+                                  "bgm_volume": 0.2}),
+            dict(base, voiceover={"text": "有效文案", "voice": "public_voice",
+                                  "bgm": False, "bgm_volume": 0.2}),
+            dict(base, voiceover={"text": "有效文案", "voice": "public_voice",
+                                  "bgm": True, "bgm_volume": -0.01}),
+            dict(base, voiceover={"text": "有效文案", "voice": "public_voice",
+                                  "bgm": True, "bgm_volume": 1.01}),
             dict(base, voiceover={"text": "有效文案", "voice": "public_voice",
                                   "provider": "cosyvoice"}),
         ):
