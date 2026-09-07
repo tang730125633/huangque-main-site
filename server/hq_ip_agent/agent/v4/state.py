@@ -11,14 +11,59 @@ import json
 import os
 import threading
 import time
+import uuid
 
 _lock = threading.Lock()
 _main = {}   # sid -> [message dict]
+_main_meta = {}  # sid -> [{event_id, created_at, legacy}]，与 _main 同序，不污染 LLM 消息
 _subs = {}   # sid -> {domain: {"messages": [...], "pending_quote": dict|None, "last_result": dict|None}}
+_turn_audits = {}  # sid -> [{seq, started_at, finished_at, state, tools, routing}]
 _domains_used = {}  # sid -> [domain 使用顺序]（对话记忆/调试用）
 _widgets = {}  # sid -> [交互卡片 widget dict]（形象/音色/文案点选等，前端渲染）
 _last_film = {}  # sid -> bool：最近一轮是否是出片轮（派发了 digital-human）。
                  # 前端意图门控的唯一权威信号：卡片跟当前意图走，不跟会话历史走。
+_owners = {}  # sid -> {username, account_id}；唯一持久化的客户身份，不含任何凭证。
+_selections = {}  # sid -> {avatar|voice|script: safe choice metadata}
+
+
+def set_owner(sid: str, user: dict) -> bool:
+    """绑定会话所有者。已绑定会话绝不允许改绑给另一个账号。"""
+    owner = {
+        "username": str((user or {}).get("username") or "").strip(),
+        "account_id": str((user or {}).get("account_id") or "").strip(),
+    }
+    if not owner["username"] or not owner["account_id"]:
+        return False
+    with _lock:
+        current = _owners.get(sid)
+        if current and current != owner:
+            return False
+        _owners[sid] = owner
+        return True
+
+
+def get_owner(sid: str) -> dict | None:
+    with _lock:
+        owner = _owners.get(sid)
+        return dict(owner) if owner else None
+
+
+def set_selection(sid: str, kind: str, choice: dict | None) -> dict:
+    with _lock:
+        selected = _selections.setdefault(sid, {})
+        if choice:
+            selected[kind] = dict(choice)
+        else:
+            selected.pop(kind, None)
+        if not selected:
+            _selections.pop(sid, None)
+            return {}
+        return {key: dict(value) for key, value in selected.items()}
+
+
+def get_selections(sid: str) -> dict:
+    with _lock:
+        return {key: dict(value) for key, value in _selections.get(sid, {}).items()}
 
 
 def set_last_film(sid: str, film: bool):
@@ -35,7 +80,7 @@ def is_loaded(sid: str) -> bool:
     """内存里是否已加载该会话（服务重启后为空；已加载则以内存为准，避免重复 restore
     与正在运行的轮次竞态——commit 后、persist 前被磁盘旧版覆盖会丢消息）。"""
     with _lock:
-        return sid in _main or sid in _subs or sid in _widgets
+        return sid in _main or sid in _subs or sid in _widgets or sid in _owners or sid in _selections
 
 
 def get_main_history(sid: str) -> list:
@@ -43,15 +88,50 @@ def get_main_history(sid: str) -> list:
         return list(_main.get(sid, []))
 
 
+def get_main_history_with_meta(sid: str) -> list:
+    """导出用：把消息与独立元数据按序配对；旧会话缺元数据时明确标 legacy。"""
+    with _lock:
+        messages = list(_main.get(sid, []))
+        meta = list(_main_meta.get(sid, []))
+    return [
+        {"message": dict(message), "meta": dict(meta[i]) if i < len(meta) else {
+            "event_id": None, "created_at": None, "legacy": True,
+        }}
+        for i, message in enumerate(messages)
+    ]
+
+
 def set_main_history(sid: str, messages: list):
     with _lock:
         _main[sid] = list(messages)
+        _main_meta[sid] = [
+            {"event_id": None, "created_at": None, "legacy": True}
+            for _ in messages
+        ]
 
 
 def append_main_history(sid: str, messages: list):
-    """原子追加消息：并发轮次各自追加、互不覆盖（聊天不排队的关键）。"""
+    """原子追加消息：并发轮次各自追加、互不覆盖（聊天不排队的关键）。
+
+    空助手回复一律过滤：模型偶发空输出会让用户看到一条空白气泡
+    （用户投诉「不知道发生什么」），在任何路径都不得落盘。
+    """
+    keep = [
+        m for m in messages
+        if not (m.get("role") == "assistant" and not (m.get("content") or "").strip())
+    ]
+    now = int(time.time() * 1000)
+    meta = [
+        {"event_id": uuid.uuid4().hex, "created_at": now, "legacy": False}
+        for _ in keep
+    ]
     with _lock:
-        _main.setdefault(sid, []).extend(list(messages))
+        current = _main.setdefault(sid, [])
+        current_meta = _main_meta.setdefault(sid, [])
+        while len(current_meta) < len(current):
+            current_meta.append({"event_id": None, "created_at": None, "legacy": True})
+        current.extend(keep)
+        current_meta.extend(meta)
 
 
 def ensure_main_seed(sid: str, system_msg: dict) -> None:
@@ -61,9 +141,30 @@ def ensure_main_seed(sid: str, system_msg: dict) -> None:
         msgs = _main.get(sid)
         if not msgs:
             _main[sid] = [dict(system_msg)]
+            _main_meta[sid] = [{
+                "event_id": uuid.uuid4().hex,
+                "created_at": int(time.time() * 1000),
+                "legacy": False,
+            }]
             return
+        if len(_main_meta.get(sid, [])) < len(msgs):
+            _main_meta[sid] = [
+                {"event_id": None, "created_at": None, "legacy": True}
+                for _ in msgs
+            ]
         if msgs[0].get("role") == "system" and msgs[0].get("content") != system_msg.get("content"):
             msgs[0] = dict(system_msg)
+
+
+def append_turn_audit(sid: str, audit: dict) -> None:
+    """持久化一轮真实执行摘要；只存工具名/结果，不存 token 或工具完整参数。"""
+    with _lock:
+        _turn_audits.setdefault(sid, []).append(dict(audit or {}))
+
+
+def get_turn_audits(sid: str) -> list:
+    with _lock:
+        return [dict(item) for item in _turn_audits.get(sid, [])]
 
 
 def _snap_sess(s: dict) -> dict:
@@ -72,6 +173,7 @@ def _snap_sess(s: dict) -> dict:
         "messages": list(s.get("messages") or []),
         "pending_quote": dict(s.get("pending_quote") or {}),
         "last_result": dict(s.get("last_result") or {}) if s.get("last_result") else None,
+        "draft": dict(s.get("draft") or {}),
     }
 
 
@@ -158,10 +260,14 @@ def clear_widgets(sid: str):
 def reset(sid: str):
     with _lock:
         _main.pop(sid, None)
+        _main_meta.pop(sid, None)
         _subs.pop(sid, None)
+        _turn_audits.pop(sid, None)
         _domains_used.pop(sid, None)
         _widgets.pop(sid, None)
         _last_film.pop(sid, None)
+        _owners.pop(sid, None)
+        _selections.pop(sid, None)
 
 
 # ---------------------------------------------------------------------------
@@ -184,10 +290,16 @@ def _snap_dict(sid: str) -> dict:
     with _lock:
         return {
             "main": list(_main.get(sid, [])),
+            "main_meta": [dict(item) for item in _main_meta.get(sid, [])],
             "subs": {d: _snap_sess(s) for d, s in _subs.get(sid, {}).items()},
+            "turn_audits": [dict(item) for item in _turn_audits.get(sid, [])],
             "domains_used": list(_domains_used.get(sid, [])),
             "widgets": list(_widgets.get(sid, [])),
             "last_film": bool(_last_film.get(sid)),
+            "owner": dict(_owners.get(sid) or {}),
+            "selected_choices": {
+                key: dict(value) for key, value in _selections.get(sid, {}).items()
+            },
         }
 
 
@@ -247,11 +359,29 @@ def restore(sid: str) -> bool:
         if _main.get(sid) or _subs.get(sid):
             return True
         _main[sid] = list(snap.get("main") or [])
+        restored_meta = list(snap.get("main_meta") or [])
+        _main_meta[sid] = [
+            dict(restored_meta[i]) if i < len(restored_meta) else {
+                "event_id": None, "created_at": None, "legacy": True,
+            }
+            for i in range(len(_main[sid]))
+        ]
         _subs[sid] = {
             d: _snap_sess(s)
             for d, s in (snap.get("subs") or {}).items()
         }
+        _turn_audits[sid] = [dict(item) for item in (snap.get("turn_audits") or [])]
         _domains_used[sid] = list(snap.get("domains_used") or [])
         _widgets[sid] = list(snap.get("widgets") or [])
         _last_film[sid] = bool(snap.get("last_film"))
+        owner = snap.get("owner") or {}
+        if owner.get("username") and owner.get("account_id"):
+            _owners[sid] = {
+                "username": str(owner["username"]),
+                "account_id": str(owner["account_id"]),
+            }
+        _selections[sid] = {
+            key: dict(value) for key, value in (snap.get("selected_choices") or {}).items()
+            if key in {"avatar", "voice", "script"} and isinstance(value, dict)
+        }
     return True

@@ -194,7 +194,7 @@ class RuntimeTruth(unittest.TestCase):
                 'phase':'failed','error':'offline fixture'}}}) as run, \
              patch.object(state, 'persist'):
             delivery.resume_stale_jobs(self.sid)
-        run.assert_called_once_with('task', {'job_id':123})
+        run.assert_called_once_with('task', {'job_id':123}, session_id=self.sid)
         last = state.get_subagent(self.sid, 'collect')['last_result']
         self.assertEqual(last['state'], 'needs_approval')
         self.assertEqual(last['_runtime_jobs'][0]['state'], 'failed')

@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import datetime
+import hashlib
 import html
 import json
 import os
@@ -91,7 +92,7 @@ REPORT_SPEC = """你是资深 IP 人设定位分析师。根据下方「已采�
     "monetization": [{"path": "路径", "position": "定位", "script": "承接话术"}] // 必须恰好 3 条
   },
   "m4_story": {
-    "stories": [                                                            // 至少 5 个故事
+    "stories": [                                                            // 数量不限：只写用户实际讲过的真实故事，素材不足就写实际有的数量，绝不编造
       {"title": "故事名", "one_liner": "一句话", "emotion_curve": "情绪词（状态）→情绪词（状态）→…",
        "scenarios": "适用场景", "hook": "钩子设计（必须是一个以问号结尾的钩子问题）",
        "spread": "星级（⭐1-5）+一句传播价值点评"}
@@ -114,7 +115,9 @@ REPORT_SPEC = """你是资深 IP 人设定位分析师。根据下方「已采�
 2. 分析层内容必须具体、可落地、有判断：关键词提炼要带解读、推荐理由要逐条论证、潜在风险要写清成因与应对、情绪曲线必须是「情绪词（状态）→情绪词（状态）→…」链式表达、钩子设计必须是能勾住点击的问题（以“？”结尾）。
 3. 三套人设方案 A/B/C 必须有实质差异：核心特质、故事基调、标签、人设公式、优势、劣势六项各自不同，且每套都要写优势与劣势。
 4. 每个故事的传播价值给星级（⭐1-5）+一句点评。
-5. 输出必须是完整 JSON，所有字段全部覆盖，不留空、不写“待补充/略/TODO”之类的占位。"""
+5. 故事与引用严格求真：m4_story 的每个故事必须能在已采集信息里找到用户原话出处（时间、人物、事件对得上），用户没讲过的经历一律不写，故事不够就写实际有的数量，绝不为凑数虚构；m3 的 diagnosis.original、m4 的 slogan_upgrades.original、self_intro.original 若引用用户原话必须逐字引用，用户没说过的话不得写成「原话」。
+6. 身份属性不臆测：性别、年龄、从业年限、城市、公司规模等具体事实，用户没提供的**一律不得自行填写**——用中性/模糊表述（如「经营者」「多年」），绝不编造「老板娘」「十年」「十几年」这类具体说法。
+7. 输出必须是完整 JSON，所有字段全部覆盖，不留空、不写“待补充/略/TODO”之类的占位。"""
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +204,7 @@ def validate(report: dict) -> list[str]:
     # ---- 模块四 · 故事资产挖掘 ----
     m4 = report.get("m4_story") or {}
     stories = m4.get("stories") or []
-    need(len(stories) >= 5, f"模块四·故事库至少 5 个（当前 {len(stories)} 个）")
+    need(len(stories) >= 1, "模块四·故事库至少 1 个——只写用户实际讲过的真实故事，素材不足就写实际有的数量，绝不为凑数虚构")
     for i, s in enumerate(stories):
         stitle = (s.get("title") if isinstance(s, dict) else "?") or f"第{i + 1}个"
         for k4 in ("title", "one_liner", "emotion_curve", "scenarios", "hook", "spread"):
@@ -264,7 +267,8 @@ def _llm_chat(messages: list, max_tokens: int = MAX_TOKENS, temperature: float =
     for use_json_mode in (True, False):
         try:
             params = dict(model=config.LLM_MODEL, messages=messages,
-                          temperature=temperature, max_tokens=max_tokens)
+                          temperature=temperature, max_tokens=max_tokens,
+                          reasoning_effort="low")
             if use_json_mode:
                 params["response_format"] = {"type": "json_object"}
             resp = client.chat.completions.create(**params)
@@ -308,6 +312,98 @@ def _parse_json(text: str):
     return None
 
 
+# ---------------------------------------------------------------------------
+# 故事事实核对：报告里每个故事必须能在用户对话原文里找到出处。
+# 生成模型自己说「靠谱」不算数（模板校验只查格式不查事实）；这道是一次
+# LLM 独立核对（flash + reasoning_effort=low，几秒内完成），专揪编造经历。
+# 核对服务不可用/解析失败 → fail-open 直接交付（体验优先），phase 如实标注。
+# ---------------------------------------------------------------------------
+
+STORY_FACT_CHECK_SPEC = """你是事实核对员。输入「待核对清单」和「用户对话原文」。清单每项含 title（S=故事、K=关键词解读、M=变现话术，带序号）与 text。
+逐条判定 text 中的具体事实（人物、事件、地点、性别、年限、金额等数字）是否能在对话原文里找到出处：
+- 标题相似但事件对不上（例如用户讲新西兰客户、写成美国客户）也算无出处；
+- 用户没提供的身份属性/具体数字（性别、从业年限、金额）一律算无出处，即使「听起来合理」；
+判定只依据对话原文，不许脑补。
+无出处项给出 fix：一句去掉臆测事实的中性表述（如「义乌老板娘」→「义乌经营者」）；S 类 fix 留空。
+只输出 JSON：{"verdicts":[{"title":"S1","source":"yes|no","fix":"..."}]}"""
+
+
+def _load_user_lines(session_id: str, cap_chars: int = 8000) -> str:
+    """读主会话落盘历史里的用户真实消息原文（跳过系统注入消息），供事实核对用。"""
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "data", "sessions", f"v4-{session_id}.json",
+    )
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            snap = json.load(f)
+    except (OSError, ValueError):
+        return ""
+    lines: list[str] = []
+    total = 0
+    for m in reversed((snap.get("main") or [])):
+        if not isinstance(m, dict) or m.get("role") != "user":
+            continue
+        text = str(m.get("content") or "").strip()
+        if not text or text.startswith("（"):
+            continue
+        lines.append(text[:600])
+        total += len(lines[-1])
+        if total >= cap_chars:
+            break
+    return "\n".join(reversed(lines))
+
+
+def _fact_items(report: dict) -> list:
+    """核对对象（短编号定位）：S=故事、K=关键词解读、M=变现话术。"""
+    items: list[dict] = []
+    m4 = report.get("m4_story") or {}
+    for i, s in enumerate((m4.get("stories") or [])):
+        if isinstance(s, dict) and s.get("title"):
+            items.append({"title": f"S{i + 1}", "text": s.get("one_liner", "")})
+    m1 = report.get("m1_positioning") or {}
+    for i, kw in enumerate((m1.get("keywords") or [])):
+        if isinstance(kw, dict) and kw.get("name"):
+            items.append({"title": f"K{i + 1}", "text": kw.get("desc", "")})
+    m3 = report.get("m3_value") or {}
+    for i, row in enumerate((m3.get("monetization") or [])):
+        if isinstance(row, dict) and row.get("path"):
+            items.append({"title": f"M{i + 1}", "text": row.get("script", "")})
+    return items
+
+
+def _check_story_sources(session_id: str, report: dict) -> dict:
+    """返回 {"ok": bool, "no_source": {"S/K/M<序号>": fix}}；ok=False 表示核对未完成（fail-open）。"""
+    items = _fact_items(report)
+    if not items:
+        return {"ok": True, "no_source": {}}
+    user_lines = _load_user_lines(session_id)
+    if not user_lines:
+        return {"ok": False, "no_source": {}}
+    msgs = [
+        {"role": "system", "content": STORY_FACT_CHECK_SPEC},
+        {"role": "user", "content": "\n".join([
+            "待核对清单：",
+            json.dumps(items, ensure_ascii=False),
+            "",
+            "用户对话原文：",
+            user_lines,
+        ])},
+    ]
+    try:
+        raw = _llm_chat(msgs, max_tokens=8000, temperature=0.0)
+    except RuntimeError:
+        return {"ok": False, "no_source": {}}
+    parsed = _parse_json(raw)
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("verdicts"), list):
+        return {"ok": False, "no_source": {}}
+    no_src: dict[str, str] = {}
+    for v in parsed["verdicts"]:
+        if isinstance(v, dict) and v.get("source") != "yes" and v.get("title"):
+            no_src[str(v.get("title"))] = str(v.get("fix") or "")
+    return {"ok": True, "no_source": no_src}
+
+
 def _profile_for_generation(session_id: str) -> dict:
     p = state.get_profile(session_id)
     return {k: v for k, v in p.items() if not k.startswith("__") and v}
@@ -317,6 +413,16 @@ def _draft_messages(session_id: str, instruction: str = "", prev_draft: dict | N
     profile = _profile_for_generation(session_id)
     msgs = [{"role": "system", "content": REPORT_SPEC}]
     parts = ["以下是已采集的用户信息（JSON）：", json.dumps(profile, ensure_ascii=False, indent=1)]
+    # 用户对话原文（真实素材：故事/金句/数据）。报告里引用的故事必须出自这里，
+    # 让模型有料可用，而不是故事素材缺失时靠编造凑数。
+    user_lines = _load_user_lines(session_id)
+    if user_lines:
+        parts += [
+            "",
+            "以下是用户对话中的真实素材原文（故事、金句、数据等）："
+            "报告中每个故事的出处必须能在上面这些材料里找到，不得编造。",
+            user_lines,
+        ]
     if prev_draft:
         parts += ["", "以下是上一版已通过的完整报告 JSON（作为基底）：",
                   json.dumps(prev_draft, ensure_ascii=False)]
@@ -346,8 +452,11 @@ def _revise_feedback(gaps: list[str]) -> str:
 # ---------------------------------------------------------------------------
 
 def _run_loop(session_id: str, instruction: str, prev_draft: dict | None,
-              max_rounds: int, meta_prefix: str) -> tuple[dict | None, dict]:
-    """通用循环：返回 (通过校验的报告或 None, 本轮元信息)。"""
+              max_rounds: int, meta_prefix: str,
+              expect_chosen: str | None = None) -> tuple[dict | None, dict]:
+    """通用循环：返回 (通过校验的报告或 None, 本轮元信息)。
+    expect_chosen：定稿时用户已选定的方案 id，校验强制最终推荐=用户所选，
+    绝不允许定稿后推荐口径回退到草稿阶段的推荐款。"""
     meta = {"status": meta_prefix + "generating", "round": 1, "gaps": [], "ts": time.time()}
     state.set_report(session_id, meta)
 
@@ -356,8 +465,9 @@ def _run_loop(session_id: str, instruction: str, prev_draft: dict | None,
     gaps: list[str] = []
 
     for rnd in range(1, max_rounds + 1):
+        phase_word = "定稿" if meta_prefix == "final_" else f"第 {rnd} 轮"
         meta = {"status": meta_prefix + "generating", "round": rnd,
-                "rounds": rnd, "gaps": [], "phase": f"第 {rnd} 轮生成中…", "ts": time.time()}
+                "rounds": rnd, "gaps": [], "phase": f"{phase_word}生成中…", "ts": time.time()}
         state.set_report(session_id, meta)
         try:
             raw = _llm_chat(msgs)
@@ -374,14 +484,22 @@ def _run_loop(session_id: str, instruction: str, prev_draft: dict | None,
             continue
 
         gaps = validate(report)
+        if expect_chosen:
+            rec = (report.get("m2_persona") or {}).get("recommendation") or {}
+            if rec.get("chosen") != expect_chosen:
+                gaps.append(f"模块二·最终推荐必须指定方案{expect_chosen}"
+                            f"（这是用户已选定的方案，不是模型建议，不得写回草稿推荐款）")
         if not gaps:
             meta = {"status": meta_prefix + "validated", "round": rnd, "rounds": rnd,
                     "gaps": [], "phase": "模板校验通过"}
+            # 提前暴露全文：get_report 立即可读三套方案（options 不受事实核对影响），
+            # 客户问「方案要点」时主 Agent 不用把用户甩去开 PDF。
+            meta["_json"] = report
             state.set_report(session_id, meta)
             return report, meta
 
         meta = {"status": meta_prefix + "generating", "round": rnd, "rounds": rnd,
-                "gaps": list(gaps), "phase": f"第 {rnd} 轮校验发现 {len(gaps)} 处缺口，让 LLM 修订重跑",
+                "gaps": list(gaps), "phase": f"{phase_word}校验发现 {len(gaps)} 处缺口，让 LLM 修订重跑",
                 "ts": time.time()}
         state.set_report(session_id, meta)
         msgs.append({"role": "assistant", "content": raw})
@@ -393,23 +511,108 @@ def _run_loop(session_id: str, instruction: str, prev_draft: dict | None,
     return None, meta
 
 
-def generate_draft(session_id: str, instruction: str = "") -> dict:
-    """生成初稿（含自动修订循环），成功后渲染 PDF 并写入状态。"""
+def _apply_chosen(report: dict, chosen: str) -> str:
+    """确定性兜底：最终推荐强制=用户所选方案，返回该方案标题。
+
+    用户选择是输入、不是模型内容：无论生成模型把 recommendation 写成什么，
+    推荐口径一律以用户所选为准（用户已选 B 却报 A 是 P1 硬伤，口头锁定更不可）。
+    """
+    m2 = report.setdefault("m2_persona", {})
+    option = next((o for o in (m2.get("options") or [])
+                   if o.get("id") == chosen), None)
+    title = (option or {}).get("title") or f"方案{chosen}"
+    rec = m2.setdefault("recommendation", {})
+    rec["chosen"] = chosen
+    rec["title"] = title
+    doc_note = f"人设方案已按用户选择确定为方案{chosen}《{title}》。"
+    m4 = report.setdefault("m4_story", {})
+    doc_status = m4.get("doc_status") or ""
+    if doc_note not in doc_status:
+        m4["doc_status"] = (doc_status + "\n" if doc_status else "") + doc_note
+    return title
+
+
+def generate_draft(session_id: str, instruction: str = "", chosen: str | None = None) -> dict:
+    """生成报告：用户未选方案时出三套方案初稿（draft_ready）；
+    用户已明确选定方案（chosen=A/B/C）时直接按所选方案出定稿（final），
+    不再生成初稿让用户三选一——用户已经选过，再问就是打扰。"""
     profile = _profile_for_generation(session_id)
     if not profile:
         return {"ok": False, "status": "no_info",
                 "error": "内部信息表还是空的，需要先聊出基础信息（至少职业/经历/方向/性格）再生成报告"}
 
     report, meta = _run_loop(session_id, instruction, prev_draft=None,
-                             max_rounds=MAX_ROUNDS, meta_prefix="draft_")
+                             max_rounds=MAX_ROUNDS,
+                             # 用户预选方案时目标就是定稿：中间态用 final_ 前缀，
+                             # 前端显示「定稿生成中…」，主 Agent 也不会误判成草稿再补一刀 finalize。
+                             meta_prefix="final_" if chosen else "draft_",
+                             expect_chosen=chosen)
     if report is None:
         return {"ok": False, "status": meta.get("status", "failed"),
                 "error": meta.get("error"),
                 "gaps": meta.get("gaps", []),
                 "note": "报告未通过模板校验。请根据 gaps 判断：缺分析就带上缺口说明再调 generate_report；缺原始信息就继续追问用户。"}
 
-    files = _persist(session_id, _normalize_meta(report), suffix="初稿")
-    meta.update(status="draft_ready", files=files, gaps=[], phase="初稿已生成并通过模板校验")
+    # 事实核对：剔除对话里找不到出处的故事、修正臆测的身份属性/数字（P0 硬伤）。
+    # 核对失败不阻塞交付（fail-open，体验优先），phase 如实标注。
+    review = _check_story_sources(session_id, report)
+    removed = fixed = 0
+    if review["ok"]:
+        no_src = review["no_source"] or {}
+        m4 = report.get("m4_story") or {}
+        stories = m4.get("stories") or []
+        kept = [s for i, s in enumerate(stories) if f"S{i + 1}" not in no_src]
+        removed = len(stories) - len(kept)
+        if removed:
+            m4["stories"] = kept
+            if not kept:
+                m4["main_storyline"] = {
+                    "primary": "（用户尚未提供可核实的故事，先不硬编）",
+                    "reasons": ["真实性优先：报告绝不虚构用户经历"],
+                }
+            report["m4_story"] = m4
+        m1 = report.get("m1_positioning") or {}
+        for i, kw in enumerate((m1.get("keywords") or [])):
+            fix = no_src.get(f"K{i + 1}")
+            if isinstance(kw, dict) and fix:
+                kw["desc"] = fix
+                fixed += 1
+        m3 = report.get("m3_value") or {}
+        for i, row in enumerate((m3.get("monetization") or [])):
+            fix = no_src.get(f"M{i + 1}")
+            if isinstance(row, dict) and fix:
+                row["script"] = fix
+                fixed += 1
+
+    files = _persist(session_id, _normalize_meta(report), suffix="定稿" if chosen else "初稿")
+    if review["ok"]:
+        phase = "初稿已生成并通过模板校验与事实核对"
+        if removed or fixed:
+            bits = []
+            if removed:
+                bits.append(f"剔除 {removed} 条无出处故事")
+            if fixed:
+                bits.append(f"修正 {fixed} 处臆测表述")
+            phase += "（" + "、".join(bits) + "）"
+    else:
+        phase = "初稿已生成并通过模板校验（事实核对未完成，故事与事实请用户自行确认）"
+
+    if chosen:
+        # 用户预选方案：一次生成直接出定稿，跳过「三选一」环节。
+        title = _apply_chosen(report, chosen)
+        meta.update(status="final", files=files, gaps=[], chosen=chosen, chosen_title=title,
+                    phase=f"定稿已生成（已按用户所选方案{chosen}《{title}》）")
+        meta["_json"] = report
+        state.set_report(session_id, meta)
+        return {"ok": True, "status": "final", "chosen": chosen, "chosen_title": title,
+                "rounds": meta.get("rounds"),
+                "title": report.get("meta", {}).get("name"),
+                "files": {k: v for k, v in files.items()},
+                "required_info": report.get("required_info") or [],
+                "note": "用户已预先选定方案，报告已直接按所选方案定稿（final）。"
+                        "转述时最终推荐只说用户所选方案，绝不再摆三套方案让用户重新选。"}
+
+    meta.update(status="draft_ready", files=files, gaps=[], phase=phase)
     meta["_json"] = report
     state.set_report(session_id, meta)
 
@@ -421,6 +624,9 @@ def generate_draft(session_id: str, instruction: str = "") -> dict:
            "recommended": (report.get("m2_persona", {}).get("recommendation") or {}).get("chosen"),
            "required_info": report.get("required_info") or [],
            "note": "请务必在对话里把三套人设方案展示给用户，让用户选择或提修改意见（这是必须的交互环节）。"}
+    if removed or fixed:
+        out["note"] += ("另外，本次生成已剔除无出处故事、修正臆测表述——转述报告内容时"
+                        "只讲真实素材，不要提被剔除/修正的内容。")
     return out
 
 
@@ -443,9 +649,14 @@ def finalize(session_id: str, chosen: str) -> dict:
         f"其余所有字段逐字保留上一版内容，不得改动、不得删减、不得新增。"
     )
     report, meta = _run_loop(session_id, instruction, prev_draft=prev,
-                             max_rounds=MAX_FINAL_ROUNDS, meta_prefix="final_")
+                             max_rounds=MAX_FINAL_ROUNDS, meta_prefix="final_",
+                             expect_chosen=chosen)
     if report is None:
         return {"ok": False, "status": "incomplete", "gaps": meta.get("gaps", [])}
+
+    # 用户选择是确定性输入，不是模型内容：最终推荐强制=用户所选，
+    # 双重兜底（校验已挡一轮，这里再覆盖一次），杜绝定稿后口径回退到草稿推荐款。
+    title = _apply_chosen(report, chosen)
 
     files = _persist(session_id, _normalize_meta(report), suffix="定稿")
     meta.update(status="final", files=files, chosen=chosen, chosen_title=title,
@@ -482,6 +693,14 @@ def _safe_name(name: str) -> str:
     return s[:20]
 
 
+def session_file_prefix(session_id: str) -> str:
+    """Stable per-session namespace; production UUIDs stay directly traceable."""
+    value = str(session_id or "")
+    if re.fullmatch(r"[0-9a-f]{32}", value):
+        return value
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:32]
+
+
 def _normalize_meta(report: dict) -> dict:
     """元数据服务端定：整理日期 = 今天，参考框架固定。分析内容不动。"""
     if not isinstance(report, dict):
@@ -494,10 +713,11 @@ def _normalize_meta(report: dict) -> dict:
 
 def _persist(session_id: str, report: dict, suffix: str) -> dict:
     name = _safe_name((report.get("meta") or {}).get("name"))
-    base = f"{name}_IP人设定位_{suffix}"
+    prefix = session_file_prefix(session_id)
+    base = f"{prefix}_{name}_IP人设定位_{suffix}"
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    json_path = os.path.join(OUTPUT_DIR, f"{name}_report.json")
+    json_path = os.path.join(OUTPUT_DIR, f"{prefix}_{name}_report.json")
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=1)
 
@@ -836,7 +1056,11 @@ def _render_html(report: dict, chosen_note: bool = False) -> str:
 
 
 def chrome_print(html_text: str, pdf_path: str) -> tuple[bool, str | None]:
-    """HTML → headless Chrome 打印 PDF（公开：模块5/6 复用）。"""
+    """HTML → headless Chrome 打印 PDF（尽力而为，绝不阻塞交付）。
+
+    体验优先：PDF 只是「锦上添花」的下载件，Markdown 才是网页主呈现——
+    渲染超时（8 秒）或失败就放弃，返回失败原因，绝不重试拖慢交付。
+    """
     if not CHROME_BIN:
         return False, "未找到 Chrome，无法渲染 PDF"
     try:
@@ -846,11 +1070,11 @@ def chrome_print(html_text: str, pdf_path: str) -> tuple[bool, str | None]:
         cmd = [CHROME_BIN, "--headless=new", "--disable-gpu", "--no-sandbox",
                "--no-pdf-header-footer", "--virtual-time-budget=10000",
                f"--print-to-pdf={pdf_path}", f"file://{html_path}"]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
         ok = proc.returncode == 0 and os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 1000
         return ok, (None if ok else (proc.stderr or "")[:400])
     except subprocess.TimeoutExpired:
-        return False, "Chrome 渲染超时"
+        return False, "Chrome 渲染超时（8 秒），已放弃 PDF，以 Markdown 呈现"
     finally:
         try:
             os.remove(html_path)
