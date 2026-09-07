@@ -35,6 +35,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from PIL import Image
+
 SERVER = str(Path(__file__).resolve().parents[1] / "server")
 if SERVER not in sys.path:
     sys.path.insert(0, SERVER)
@@ -115,6 +117,27 @@ class PipelineWiringTests(unittest.TestCase):
         """
         block = SRC.split("def gen_avatar")[1].split("\ndef ")[0]
         self.assertNotIn("heygen_slot", block)
+
+    def test_avatar_provider_readiness_is_checked_before_paid_job_creation(self):
+        src = Path(core.__file__).read_text(encoding="utf-8")
+        route = src.split('if kind == "avatar":', 1)[1]
+        preflight = route.index("video_domain.require_avatar_submission_ready()")
+        charge = route.index("jobs_store.create_paid_job(")
+        self.assertLess(preflight, charge)
+        self.assertIn("except video_domain.HeyGenMCPAuthError as e:", route[:charge])
+        self.assertIn('"code": "heygen_mcp_auth_required"', route[:charge])
+        self.assertIn('"charged": False', route[:charge])
+
+    def test_talking_video_provider_readiness_is_checked_before_paid_job_creation(self):
+        src = Path(core.__file__).read_text(encoding="utf-8")
+        route = src.split('elif kind == "video":', 1)[1]
+        validation = route.index("video_domain.validate_video_payload")
+        preflight = route.index("video_domain.require_video_submission_ready(body)")
+        charge = route.index("jobs_store.create_paid_job(")
+        self.assertLess(validation, preflight)
+        self.assertLess(preflight, charge)
+        self.assertIn("except video_domain.HeyGenMCPAuthError as e:", route[:charge])
+        self.assertIn('"charged": False', route[:charge])
 
     def test_cinematic_gets_a_real_pool_now_that_20_way_is_proven(self):
         # 20 路并发实测通过 → 剧情视频不再需要「份额上限」，给满 10 个
@@ -214,7 +237,33 @@ class AvatarValidationTests(unittest.TestCase):
                     video._heygen_upload_asset(image, direct=True), "asset-1")
             self.assertEqual(request.call_args.args[3], "image/jpeg")
 
-    def test_png_is_canonicalized_to_jpeg_before_heygen_upload(self):
+    def test_png_is_canonicalized_with_pillow_before_heygen_upload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            image = Path(tmp) / "source.png"
+            Image.new("RGB", (12, 8), (20, 80, 140)).save(image, "PNG")
+
+            with patch.object(video.subprocess, "run") as ffmpeg:
+                canonical = video._ensure_heygen_image_jpg(image)
+            ffmpeg.assert_not_called()
+            self.assertEqual(canonical.suffix, ".jpg")
+            self.assertEqual(video._detect_image_mime(
+                canonical.read_bytes()), "image/jpeg")
+
+    def test_transparent_png_is_flattened_on_white_before_jpeg(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            image = Path(tmp) / "transparent.png"
+            source = Image.new("RGBA", (8, 8), (0, 0, 0, 0))
+            source.putpixel((4, 4), (220, 20, 20, 255))
+            source.save(image, "PNG")
+
+            canonical = video._ensure_heygen_image_jpg(image)
+
+            with Image.open(canonical) as converted:
+                self.assertEqual(converted.mode, "RGB")
+                corner = converted.getpixel((0, 0))
+                self.assertTrue(all(channel >= 240 for channel in corner), corner)
+
+    def test_ffmpeg_remains_a_fallback_when_pillow_is_unavailable(self):
         with tempfile.TemporaryDirectory() as tmp:
             image = Path(tmp) / "source.png"
             image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"png-payload")
@@ -223,11 +272,25 @@ class AvatarValidationTests(unittest.TestCase):
                 Path(command[-1]).write_bytes(
                     b"\xff\xd8\xff\xe0" + b"jpeg-payload")
 
-            with patch.object(video.subprocess, "run", side_effect=convert):
+            with patch.dict(sys.modules, {"PIL": None}), \
+                 patch.object(video.subprocess, "run", side_effect=convert) as ffmpeg:
                 canonical = video._ensure_heygen_image_jpg(image)
-            self.assertEqual(canonical.suffix, ".jpg")
+
+            ffmpeg.assert_called_once()
             self.assertEqual(video._detect_image_mime(
                 canonical.read_bytes()), "image/jpeg")
+
+    def test_missing_pillow_and_ffmpeg_reports_image_component_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            image = Path(tmp) / "source.png"
+            image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"png-payload")
+
+            with patch.dict(sys.modules, {"PIL": None}), \
+                 patch.object(video.subprocess, "run", side_effect=FileNotFoundError):
+                with self.assertRaisesRegex(ValueError, "图片处理组件不可用"):
+                    video._ensure_heygen_image_jpg(image)
+
+            self.assertEqual(list(Path(tmp).glob("heygen_img_*.jpg")), [])
 
     def test_avatar_persists_the_canonical_jpeg(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -238,7 +301,7 @@ class AvatarValidationTests(unittest.TestCase):
             canonical.write_bytes(b"\xff\xd8\xff\xe0" + b"jpeg-payload")
             recorded = {}
 
-            def record(_username, image_file, *_args):
+            def record(_username, image_file, *_args, **_kwargs):
                 recorded["image_file"] = image_file
                 return {"id": 7, "name": "人物"}
 

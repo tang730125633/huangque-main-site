@@ -312,6 +312,7 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
             "handlers": core.HANDLERS,
             "enqueue": core.enqueue_job,
             "validate_video": video.validate_video_payload,
+            "require_video_ready": video.require_video_submission_ready,
             "validate_tryon": video.validate_tryon_payload,
             "validate_xiaole": video.validate_xiaole_video_payload,
             "record_pending": video.record_video_pending_asset,
@@ -328,6 +329,7 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
             core.MAX_USER_ACTIVE_TRYON = 1
             core.HANDLERS = {"video": lambda body: body, "tryon": lambda body: body, "xiaole_video": lambda body: body}
             video.validate_video_payload = lambda body, username: body
+            video.require_video_submission_ready = lambda body=None: True
             video.validate_tryon_payload = lambda body: body
             video.validate_xiaole_video_payload = lambda body, username=None: body
             try:
@@ -429,6 +431,7 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
                 core.HANDLERS = originals["handlers"]
                 core.enqueue_job = originals["enqueue"]
                 video.validate_video_payload = originals["validate_video"]
+                video.require_video_submission_ready = originals["require_video_ready"]
                 video.validate_tryon_payload = originals["validate_tryon"]
                 video.validate_xiaole_video_payload = originals["validate_xiaole"]
                 video.record_video_pending_asset = originals["record_pending"]

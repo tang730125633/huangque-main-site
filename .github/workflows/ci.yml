@@ -106,13 +106,18 @@ jobs:
             test_hq_cli_channel_catalog.py
             test_hq_cli_content.py
             test_hq_cli_executor.py
+            test_heygen_admin_oauth.py
+            test_heygen_mcp_oauth.py
             test_jobs_store.py
             test_provider_key_pool.py
             test_short_drama_advisor.py
             test_video_agent.py
             test_video_agent_capability_contract.py
             test_video_agent_tools.py
+            test_video_agent_ui.py
             test_video_batch.py
+            test_video_gen_deadline.py
+            test_video_parameters.py
           )
           for test_file in "${tests[@]}"; do
             # These service suites intentionally manipulate sys.path and generic

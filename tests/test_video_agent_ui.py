@@ -442,6 +442,7 @@ class VideoAgentUiTests(unittest.TestCase):
             "status===401", "status===403", "status===400||status===413",
             "status===429", "status===502", "status===503", "status===504",
             "code==='advisor_response_invalid'",
+            "code==='advisor_provider_payment_required'",
         ):
             self.assertIn(condition, message_logic)
         self.assertIn("请求编号：", message_logic)
@@ -467,6 +468,8 @@ class VideoAgentUiTests(unittest.TestCase):
             "function pendingActionExpiresAt", 1
         )[0]
         self.assertNotIn("reply:'智能分析暂时不可用。'+failure", fallback_logic)
+        self.assertIn("paymentUnavailable", fallback_logic)
+        self.assertIn("智能分析服务额度不足", fallback_logic)
         self.assertNotIn("degraded_message", session_logic)
         for sensitive_field in ("request_id", "hq_code", "payload"):
             self.assertNotIn(sensitive_field, session_logic)
@@ -658,6 +661,28 @@ class VideoAgentUiTests(unittest.TestCase):
         for unsafe_fragment in ("error.payload", "data.detail", "error.message"):
             self.assertNotIn(unsafe_fragment, confirm_logic)
 
+    def test_terminal_confirmation_errors_auto_hide_but_unknown_results_remain(self):
+        self.assertIn("AGENT_PENDING_ERROR_DISPLAY_MS=8000", HTML)
+        self.assertIn("function isAgentPendingActionDismissible", HTML)
+        self.assertIn("function scheduleAgentPendingDismiss", HTML)
+        dismiss_logic = HTML.split(
+            "function scheduleAgentPendingDismiss", 1
+        )[1].split("function ", 1)[0]
+        for status in ("failed", "expired", "cancelled"):
+            self.assertIn("'%s'" % status, HTML.split(
+                "function isAgentPendingActionDismissible", 1
+            )[1].split("function ", 1)[0])
+        self.assertNotIn("result_unknown", HTML.split(
+            "function isAgentPendingActionDismissible", 1
+        )[1].split("function ", 1)[0])
+        self.assertIn("agentPendingActions.filter", dismiss_logic)
+        self.assertIn("delete agentConfirmErrors[action.id]", dismiss_logic)
+        self.assertIn("saveAgentSession()", dismiss_logic)
+        restore_logic = HTML.split("function restoreAgentSession", 1)[1].split(
+            "function clearAgentMemoryForOwner", 1
+        )[0]
+        self.assertIn("restoreAgentPendingActions", restore_logic)
+
     def test_agent_chat_accepts_one_or_many_safe_pending_actions(self):
         render_logic = HTML.split("function renderAgentResult", 1)[1].split("function analyzeAgentRequest", 1)[0]
         self.assertIn("result.pending_action", render_logic)
@@ -670,7 +695,7 @@ class VideoAgentUiTests(unittest.TestCase):
         for function_name in (
             "normalizeAgentVideoTask", "startAgentVideoTaskFromPending",
             "pollAgentVideoTask", "renderAgentInlineTasks",
-            "renderAgentCanvasTasks",
+            "renderAgentCanvasTasks", "agentVideoTaskFailureMessage",
         ):
             self.assertIn("function %s" % function_name, HTML)
         normalize_pending = HTML.split(
@@ -689,6 +714,10 @@ class VideoAgentUiTests(unittest.TestCase):
             "function confirmAgentPendingAction", 1
         )[1].split("function saveAgentSession", 1)[0]
         self.assertIn("startAgentVideoTaskFromPending", confirm_logic)
+        self.assertIn("pending_action_id:action.id", HTML)
+        self.assertIn("/api/gen/video/agent/actions/", HTML)
+        self.assertIn("/status", HTML)
+        self.assertIn("预扣点数已退回", HTML)
         self.assertIn("/api/gen/job/", HTML)
         self.assertIn("/api/gen/video/assets?limit=30", HTML)
         self.assertIn("renderAgentCanvasTasks", HTML)
@@ -786,13 +815,18 @@ class VideoAgentUiTests(unittest.TestCase):
         self.assertIn("loadAgentMediaFile(owner,meta.canvas_id)", payload)
         self.assertIn("readFileData(localFile)", payload)
         self.assertIn("image_data:data", payload)
-        create = HTML.split("function requestAgentAvatarCreation", 1)[1].split(
-            "function ", 1
+        confirm = HTML.split("function openAgentAvatarCreationConfirm", 1)[1].split(
+            "function requestAgentAvatarCreation", 1
         )[0]
-        self.assertIn("window.confirm", create)
+        self.assertIn('role="dialog"', confirm)
+        self.assertIn("取消不会提交或扣点", confirm)
+        self.assertIn("submitAgentAvatarCreation(id)", confirm)
+        create = HTML.split("function submitAgentAvatarCreation", 1)[1].split(
+            "function agentAvatarFailureMessage", 1
+        )[0]
+        self.assertNotIn("window.confirm", create)
         self.assertIn("agentAvatarCreationPayload(meta)", create)
         self.assertIn("fetch('/api/gen/avatar'", create)
-        self.assertLess(create.index("window.confirm"), create.index("agentAvatarCreationPayload(meta)"))
         self.assertIn("pollAgentAvatarCreation", HTML)
         safe_material = HTML.split(
             "function safeAgentMaterialForSession", 1
@@ -1050,21 +1084,46 @@ class VideoAgentUiTests(unittest.TestCase):
         )[0]
         self.assertIn("insufficient", failure)
         self.assertIn("data&&data.refunded", failure)
-        self.assertIn("数字人服务额度不足，本次未生成", failure)
+        self.assertIn("HeyGen API 钱包额度不足，本次未生成", failure)
+        self.assertIn("当前任务没有切换到 API 计费", failure)
+        self.assertIn("HeyGen 套餐额度不足，本次未生成", failure)
+        self.assertIn("HeyGen 套餐连接尚未完成", failure)
+        self.assertIn("请先在管理后台完成 MCP OAuth 授权", failure)
+        submit = HTML.split("function submitAgentAvatarCreation", 1)[1].split(
+            "function agentAvatarFailureMessage", 1
+        )[0]
+        self.assertIn("error.data=data", submit)
+        self.assertIn("heygen_mcp_auth_required", submit)
+        self.assertIn("本次未提交且未扣点", submit)
         self.assertIn("点已退回", failure)
         self.assertIn("退款状态尚未确认，请到任务记录核对扣点与退款结果", failure)
         self.assertNotIn("将按系统规则自动退回", failure)
         self.assertIn("数字人服务当前繁忙", failure)
         self.assertIn("数字人服务响应超时", failure)
         self.assertIn("未检测到清晰人脸", failure)
+        self.assertIn("图片处理组件不可用", failure)
+        self.assertIn("请联系管理员配置图片处理服务", failure)
         poll = HTML.split("function pollAgentAvatarCreation", 1)[1].split(
             "function restoreAgentAvatarCreations", 1
         )[0]
         self.assertIn("meta.avatar_error=agentAvatarFailureMessage(data)", poll)
-        self.assertIn("if(data.refunded)delete meta.avatar_idempotency_key", poll)
         self.assertNotIn("meta.avatar_error=agentSafeText(data.error", poll)
         self.assertIn("tries<90?3000:10000", poll)
         self.assertNotIn("if(tries<90)setTimeout", poll)
+        self.assertIn("if(data.refunded){delete meta.avatar_job_id;delete meta.avatar_idempotency_key;}", poll)
+        self.assertNotIn("if(avatarState==='failed'){avatarJobId=0;avatarKey='';}", HTML)
+        self.assertIn("box.textContent=agentAvatarFailureMessage(d)", HTML)
+
+    def test_admin_has_user_driven_heygen_oauth_controls(self):
+        admin_html = (ROOT / "site" / "admin" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('id="heygenOAuthBox"', admin_html)
+        self.assertIn("/api/admin/heygen-oauth/start", admin_html)
+        self.assertIn("/api/admin/heygen-oauth/status", admin_html)
+        self.assertIn("/api/admin/heygen-oauth/disconnect", admin_html)
+        self.assertIn("window.open('about:blank'", admin_html)
+        self.assertIn("不调用 API Wallet", admin_html)
+        self.assertNotIn("access_token", admin_html)
+        self.assertNotIn("refresh_token", admin_html)
 
     def test_canvas_text_editor_fills_resized_card_without_covering_handle(self):
         self.assertIn(".canvas-text-card{width:260px;min-width:260px;min-height:220px", HTML)

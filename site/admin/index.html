@@ -136,6 +136,7 @@
     .channel-map-title{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}.channel-map-title b{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.channel-map-title .pill{flex:none}
     .channel-map-category{margin-top:5px;color:var(--gold);font-size:10px;font-weight:800}.channel-map-features{display:flex;flex-wrap:wrap;gap:5px;margin-top:10px}.channel-map-features span{padding:4px 6px;border:1px solid rgba(154,166,159,.16);border-radius:5px;background:rgba(154,166,159,.055);color:var(--muted);font-size:10px}.channel-map-meta{display:flex;justify-content:space-between;gap:8px;margin-top:10px;padding-top:9px;border-top:1px solid rgba(46,56,50,.75);color:var(--muted);font-size:10px}
     .channel-detail{border:1px solid var(--line);border-radius:8px;background:rgba(17,22,19,.54)}.channel-detail>summary{padding:12px 14px;color:#f6dfa9;font-weight:800;cursor:pointer}.channel-detail[open]>summary{border-bottom:1px solid var(--line)}.channel-detail .table-wrap{border-radius:0 0 8px 8px}
+    .oauth-card{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:16px;align-items:center;margin:0 0 14px;padding:16px;border:1px solid rgba(34,197,165,.28);border-radius:10px;background:linear-gradient(135deg,rgba(34,197,165,.08),rgba(17,22,19,.86))}.oauth-card h3{margin:0 0 5px;font-size:15px}.oauth-card p{margin:0;color:var(--muted);font-size:12px}.oauth-meta{display:flex;flex-wrap:wrap;gap:7px;margin-top:10px}.oauth-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px}.oauth-card[data-state="error"]{border-color:rgba(224,107,100,.32)}
     .ops-note{padding:10px 12px;border:1px solid rgba(110,168,255,.2);border-radius:7px;background:rgba(110,168,255,.055);color:var(--muted);font-size:12px}
     .ops-batch{display:grid;gap:10px;margin-bottom:12px;padding:13px;border:1px solid rgba(240,190,85,.28);border-radius:9px;background:rgba(240,190,85,.055)}.ops-batch-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.ops-batch-head b{display:block;color:#f6dfa9}.ops-batch-head span,.ops-batch-state{display:block;margin-top:3px;color:var(--muted);font-size:11px}.ops-batch-counts{display:flex;gap:6px;flex-wrap:wrap}.ops-batch-action{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-top:10px;border-top:1px solid var(--line)}.ops-batch-action button{min-width:220px}.ops-batch-results{border-top:1px solid var(--line)}.ops-batch-results>summary{padding-top:10px;color:var(--info);font-size:11px;font-weight:800;cursor:pointer}.ops-batch-items{display:grid;gap:5px;margin-top:8px}.ops-batch-item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:7px;border:1px solid var(--line);border-radius:6px;font-size:10px}.ops-batch-item span{color:var(--muted);overflow-wrap:anywhere}
     .pager{display:flex;align-items:center;justify-content:flex-end;gap:10px;padding-top:14px}
@@ -446,6 +447,7 @@
         </div>
         <div class="ops-note" style="margin-bottom:12px">安全说明：完整 Key 默认隐藏；管理员点击「查看 5 秒」后，按钮会在 5 秒内变成「复制」，随后自动清除。每次查看都会写入审计记录。</div>
         <div id="channelMap" class="channel-map" aria-label="API 渠道关系图"></div>
+        <div id="heygenOAuthBox" aria-live="polite"></div>
         <div id="channelKeyBox"></div>
       </section>
       <section class="card span12 module-card" data-module="features" hidden>
@@ -774,6 +776,36 @@
       };
     });
   }
+  var heygenOAuthPoll=0;
+  function renderHeygenOAuthStatus(d){
+    var box=el('heygenOAuthBox'),connected=!!d.configured;
+    var label=d.status==='connected'?'已连接':(d.status==='refresh_required'?'已连接 · 待自动续期':(d.status==='credential_rejected'?'凭据异常':'未连接'));
+    var account=d.account||{},identity=account.email||account.username||'';
+    var expiry=d.expires_at?('有效期至 '+fmtTime(d.expires_at)):'';
+    box.innerHTML='<section class="oauth-card" data-state="'+(d.status==='credential_rejected'?'error':'normal')+'"><div><h3>HeyGen 网页套餐连接</h3><p>数字人形象与口播视频使用 HeyGen 网页套餐额度，不调用 API Wallet。</p><div class="oauth-meta"><span class="pill '+(connected?'ok':(d.status==='credential_rejected'?'fail':'warn'))+'">'+esc(label)+'</span>'+(identity?'<span class="pill neutral">'+esc(identity)+'</span>':'')+(expiry?'<span class="muted">'+esc(expiry)+'</span>':'')+'</div></div><div class="oauth-actions"><button class="mini primary" data-heygen-oauth-connect>'+(connected?'重新授权':'连接 HeyGen')+'</button>'+(connected?'<button class="mini" data-heygen-oauth-test>检测套餐</button><button class="mini danger" data-heygen-oauth-disconnect>断开</button>':'')+'</div></section>';
+    var connect=box.querySelector('[data-heygen-oauth-connect]');
+    if(connect)connect.onclick=startHeygenOAuth;
+    var test=box.querySelector('[data-heygen-oauth-test]');
+    if(test)test.onclick=function(){test.disabled=true;api('/api/admin/ping?key=heygen&force=1').then(function(result){toast(result.ok?'HeyGen 套餐连接正常':(result.message||result.error||'套餐检测失败'));loadHeygenOAuthStatus()}).catch(function(e){toast(e.message)}).finally(function(){test.disabled=false})};
+    var disconnect=box.querySelector('[data-heygen-oauth-disconnect]');
+    if(disconnect)disconnect.onclick=disconnectHeygenOAuth;
+  }
+  function loadHeygenOAuthStatus(){
+    return api('/api/admin/heygen-oauth/status').then(renderHeygenOAuthStatus).catch(function(e){el('heygenOAuthBox').innerHTML='<div class="error">'+esc(e.message)+'</div>'});
+  }
+  function startHeygenOAuth(){
+    var popup=window.open('about:blank','hqHeyGenOAuth','popup,width=720,height=760');
+    if(!popup){toast('浏览器拦截了授权窗口，请允许弹窗后重试');return}
+    popup.document.write('<p style="font:16px system-ui;padding:32px">正在打开 HeyGen 授权…</p>');
+    api('/api/admin/heygen-oauth/start',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})
+      .then(function(d){popup.location.replace(d.authorization_url);clearInterval(heygenOAuthPoll);var end=Date.now()+Number(d.expires_in||600)*1000;heygenOAuthPoll=setInterval(function(){if(Date.now()>end){clearInterval(heygenOAuthPoll);return}loadHeygenOAuthStatus().then(function(){var pill=el('heygenOAuthBox').querySelector('.pill.ok');if(pill)clearInterval(heygenOAuthPoll)})},2000)})
+      .catch(function(e){popup.close();toast(e.message)});
+  }
+  function disconnectHeygenOAuth(){
+    if(!confirm('仅移除黄雀本地保存的 HeyGen 套餐授权，继续吗？'))return;
+    api('/api/admin/heygen-oauth/disconnect',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(){toast('本地 HeyGen 授权已移除');loadHeygenOAuthStatus()}).catch(function(e){toast(e.message)});
+  }
+  window.addEventListener('message',function(event){if(event.origin===location.origin&&event.data&&event.data.type==='hq:heygen-oauth'){clearInterval(heygenOAuthPoll);loadHeygenOAuthStatus();toast(event.data.ok?'HeyGen 已连接':'HeyGen 授权未完成')}});
   function endpointList(k){
     var eps=k.endpoints||[];
     return eps.length?'<details class="eplist"><summary>接口清单（'+eps.length+'）</summary>'+eps.map(function(e){return '<div class="ep"><code>'+esc(e.m)+' '+esc(e.p)+'</code><div class="muted">'+esc(e.d)+(e.fee?' · 计费':' · 免费')+'</div></div>'}).join('')+'</details>':'';
@@ -891,6 +923,7 @@
   }
   function renderChannelConsole(envItems,data){
     clearSecretWindows();data=data||{};var items=data.items||[],rows=[];
+    loadHeygenOAuthStatus();
     el('providerKeyState').textContent=data.configured?'保险箱已启用':'保险箱未配置';
     var channelCards=(envItems||[]).map(function(meta){
       var pool=meta.pool_provider?items.filter(function(k){return k.provider===meta.pool_provider}):[];

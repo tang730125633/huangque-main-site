@@ -244,7 +244,8 @@ CREATE TABLE IF NOT EXISTS video_agent_pending_actions(
     submission_key TEXT,
     payload_json TEXT,
     result_json TEXT,
-    error_code TEXT
+    error_code TEXT,
+    execution_domain TEXT NOT NULL DEFAULT 'remote'
 );
 CREATE INDEX IF NOT EXISTS idx_video_agent_pending_user
 ON video_agent_pending_actions(username, created_at DESC);
@@ -281,6 +282,11 @@ def ensure_tables(db_factory, recover_confirming=False):
                 conn.execute(
                     "ALTER TABLE video_agent_pending_actions "
                     "ADD COLUMN payload_json TEXT"
+                )
+            if "execution_domain" not in columns:
+                conn.execute(
+                    "ALTER TABLE video_agent_pending_actions "
+                    "ADD COLUMN execution_domain TEXT NOT NULL DEFAULT 'remote'"
                 )
             marker = id(db_factory)
             if marker not in _PENDING_DDL_DONE:
@@ -605,6 +611,34 @@ def _project_confirmation_result(value):
         item = value.get(key)
         if isinstance(item, int) and not isinstance(item, bool) and item >= 0:
             projected[key] = item
+    if value.get("task_domain") in {"local", "remote"}:
+        projected["task_domain"] = value["task_domain"]
+    return projected
+
+
+def _project_browser_task(value):
+    """Expose only progress and the current user's generated video URL."""
+    if not isinstance(value, dict):
+        return {}
+    source = value.get("task") if isinstance(value.get("task"), dict) else value
+    projected = _allowlisted_dict(source, _TASK_FIELDS)
+    raw_result = source.get("result")
+    if isinstance(raw_result, str):
+        try:
+            raw_result = json.loads(raw_result)
+        except (TypeError, ValueError):
+            raw_result = {}
+    if isinstance(raw_result, dict):
+        safe_result = {}
+        for key in ("video_url", "url", "output_url"):
+            candidate = raw_result.get(key)
+            if isinstance(candidate, str) and (
+                    re.match(r"^https?://[^\s]{1,2000}$", candidate)
+                    or re.match(r"^/api/gen/file/[A-Za-z0-9._~!$&'()*+,;=:@%/-]{1,1900}$", candidate)):
+                safe_result["video_url"] = candidate
+                break
+        if safe_result:
+            projected["result"] = safe_result
     return projected
 
 
@@ -844,7 +878,8 @@ def _pending_quote_response(pending, *, reused):
     }
 
 
-def _reusable_pending(db_factory, username, capability, input_json, now):
+def _reusable_pending(db_factory, username, capability, input_json, now,
+                      execution_domain="remote"):
     ensure_tables(db_factory)
     timestamp = int(now())
     try:
@@ -857,12 +892,20 @@ def _reusable_pending(db_factory, username, capability, input_json, now):
                 "AND status='awaiting_confirmation' AND expires_at<=?",
                 (timestamp, username, capability, input_json, timestamp),
             )
+            conn.execute(
+                "UPDATE video_agent_pending_actions "
+                "SET status='cancelled',quote_token='',updated_at=? "
+                "WHERE username=? AND capability=? AND input_json=? "
+                "AND status='awaiting_confirmation' AND execution_domain<>?",
+                (timestamp, username, capability, input_json, execution_domain),
+            )
             row = conn.execute(
                 "SELECT * FROM video_agent_pending_actions "
                 "WHERE username=? AND capability=? AND input_json=? "
+                "AND execution_domain=? "
                 "AND status IN ('awaiting_confirmation','confirming','result_unknown') "
                 "ORDER BY created_at DESC LIMIT 1",
-                (username, capability, input_json),
+                (username, capability, input_json, execution_domain),
             ).fetchone()
             conn.commit()
         return _safe_pending(row) if row else None
@@ -890,7 +933,8 @@ def _legacy_unknown_pending(db_factory, username, capability):
         raise ToolError("pending_store_unavailable", "视频操作确认服务暂时不可用", 503) from error
 
 
-def _store_quote(db_factory, username, tool_name, spec, arguments, quote, now):
+def _store_quote(db_factory, username, tool_name, spec, arguments, quote, now,
+                 execution_domain="remote"):
     token = str(quote.get("quote_token") or "").strip()
     if not token:
         raise ToolError("quote_response_invalid", "黄雀 CLI 未返回有效报价", 502)
@@ -933,9 +977,10 @@ def _store_quote(db_factory, username, tool_name, spec, arguments, quote, now):
             existing = conn.execute(
                 "SELECT * FROM video_agent_pending_actions "
                 "WHERE username=? AND capability=? AND input_hash=? "
+                "AND execution_domain=? "
                 "AND status IN ('awaiting_confirmation','confirming','result_unknown') "
                 "ORDER BY created_at DESC LIMIT 1",
-                (username, spec["capability"], digest),
+                (username, spec["capability"], digest, execution_domain),
             ).fetchone()
             if existing:
                 conn.commit()
@@ -943,11 +988,11 @@ def _store_quote(db_factory, username, tool_name, spec, arguments, quote, now):
             try:
                 conn.execute(
                     "INSERT INTO video_agent_pending_actions"
-                    "(id,username,tool_name,capability,input_json,input_hash,quote_token,cost,points,status,created_at,expires_at,updated_at,payload_json) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "(id,username,tool_name,capability,input_json,input_hash,quote_token,cost,points,status,created_at,expires_at,updated_at,payload_json,execution_domain) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (pending_id, username, tool_name, spec["capability"], input_json, digest,
                      token, cost, points, "awaiting_confirmation", timestamp, expires_at, timestamp,
-                     payload_json),
+                     payload_json, execution_domain),
                 )
             except __import__("sqlite3").IntegrityError:
                 existing = conn.execute(
@@ -969,13 +1014,16 @@ def _store_quote(db_factory, username, tool_name, spec, arguments, quote, now):
 
 class VideoAgentToolRuntime:
     def __init__(self, *, username, web_token, db_factory,
-                 cli_execute=None, now=None, read_fallbacks=None):
+                 cli_execute=None, now=None, read_fallbacks=None,
+                 quote_router=None, local_quote=None):
         self.username = str(username or "").strip()
         self.web_token = str(web_token or "").strip()
         self.db_factory = db_factory
         self.cli_execute = cli_execute or hq_cli_executor.execute
         self.now = now or time.time
         self.read_fallbacks = dict(read_fallbacks or {})
+        self.quote_router = quote_router
+        self.local_quote = local_quote
         self.pending_actions = []
         self.activity = []
 
@@ -992,9 +1040,20 @@ class VideoAgentToolRuntime:
         self.activity.append(activity)
         try:
             if spec["mode"] == "quote":
+                execution_domain = "remote"
+                if callable(self.quote_router):
+                    execution_domain = str(
+                        self.quote_router(name, dict(arguments)) or "remote"
+                    ).strip().lower()
+                    if execution_domain not in {"local", "remote"}:
+                        raise ToolError(
+                            "execution_domain_invalid",
+                            "视频任务执行域无效", 500,
+                        )
                 input_json = _input_json(arguments)
                 pending = _reusable_pending(
-                    self.db_factory, self.username, spec["capability"], input_json, self.now
+                    self.db_factory, self.username, spec["capability"], input_json,
+                    self.now, execution_domain,
                 )
                 if not pending:
                     pending = _legacy_unknown_pending(
@@ -1018,12 +1077,21 @@ class VideoAgentToolRuntime:
             }
             if timeout_seconds is not None:
                 cli_kwargs["timeout"] = max(1, min(35, float(timeout_seconds)))
-            result = self.cli_execute(
-                spec["capability"], arguments, **cli_kwargs
-            )
+            if spec["mode"] == "quote" and execution_domain == "local":
+                if not callable(self.local_quote):
+                    raise ToolError(
+                        "local_quote_unavailable",
+                        "本地视频报价服务暂时不可用", 503,
+                    )
+                result = self.local_quote(name, dict(arguments))
+            else:
+                result = self.cli_execute(
+                    spec["capability"], arguments, **cli_kwargs
+                )
             if spec["mode"] == "quote":
                 pending = _store_quote(
-                    self.db_factory, self.username, name, spec, arguments, result, self.now
+                    self.db_factory, self.username, name, spec, arguments, result,
+                    self.now, execution_domain,
                 )
                 if not any(item.get("id") == pending["id"] for item in self.pending_actions):
                     self.pending_actions.append(pending)
@@ -1161,7 +1229,8 @@ def _claim_pending_for_confirmation(db_factory, pending_id, username,
 
 
 def confirm_pending_action(pending_id, idempotency_key, *, username, web_token,
-                           db_factory, cli_execute=None, now=None, quote_claims=None):
+                           db_factory, cli_execute=None, local_submit=None,
+                           now=None, quote_claims=None):
     pending_id = str(pending_id or "").strip()
     idempotency_key = str(idempotency_key or "").strip()
     username = str(username or "").strip()
@@ -1178,26 +1247,58 @@ def confirm_pending_action(pending_id, idempotency_key, *, username, web_token,
     # 先向鉴权服务核验报价凭证并取得确定性提交幂等键（hqcli-<nonce>，与
     # CLI 提交链路一致）。此时尚未领取卡片：核验失败零副作用，卡片仍是
     # awaiting_confirmation，无需任何回滚。
-    claims_fn = quote_claims or hq_cli_executor.quote_claims
-    try:
-        claims = claims_fn(row["quote_token"])
-        submission_key = "hqcli-" + str(claims["nonce"])
-    except hq_cli_executor.CLIExecutionError as error:
-        raise ToolError(error.code, str(error), error.status)
+    execution_domain = (
+        str(row["execution_domain"] or "remote")
+        if "execution_domain" in row.keys() else "remote"
+    )
+    if execution_domain == "local":
+        local_token = str(row["quote_token"] or "")
+        if not re.fullmatch(r"local-[0-9a-f]{64}", local_token):
+            raise ToolError("quote_response_invalid", "本地视频报价凭证无效", 502)
+        submission_key = "hqlocal-" + hashlib.sha256(
+            local_token.encode("ascii")
+        ).hexdigest()[:32]
+    else:
+        claims_fn = quote_claims or hq_cli_executor.quote_claims
+        try:
+            claims = claims_fn(row["quote_token"])
+            submission_key = "hqcli-" + str(claims["nonce"])
+        except hq_cli_executor.CLIExecutionError as error:
+            raise ToolError(error.code, str(error), error.status)
     row, stored, replayed = _claim_pending_for_confirmation(
         db_factory, pending_id, username, idempotency_key, submission_key, now_fn
     )
     if replayed:
         return _safe_pending(row, stored)
     executor = cli_execute or hq_cli_executor.execute
-    arguments = json.loads(row["input_json"])
+    arguments = json.loads(
+        row["payload_json"] if execution_domain == "local" else row["input_json"]
+    )
     try:
-        result = executor(
-            row["capability"], arguments,
-            username=username, web_token=web_token,
-            scopes=["generation:quote", "generation:submit"],
-            confirm=True, quote_token=row["quote_token"],
-        )
+        if execution_domain == "local":
+            if not callable(local_submit):
+                raise ToolError(
+                    "local_submission_unavailable",
+                    "本地视频提交服务暂时不可用", 503,
+                )
+            # The content service must persist the same deterministic key that
+            # this card records. Otherwise an accepted request whose response
+            # is lost cannot be reconciled and may be submitted a second time.
+            result = local_submit(dict(arguments), submission_key)
+            if not isinstance(result, dict):
+                raise ToolError(
+                    "local_submission_invalid",
+                    "本地视频提交结果格式无效", 502,
+                )
+            result = dict(result)
+            result["task_domain"] = "local"
+        else:
+            result = executor(
+                row["capability"], arguments,
+                username=username, web_token=web_token,
+                scopes=["generation:quote", "generation:submit"],
+                confirm=True, quote_token=row["quote_token"],
+            )
         safe_result = _project_confirmation_result(result)
         result_json = _canonical(safe_result)
         status = "submitted"
@@ -1209,6 +1310,12 @@ def confirm_pending_action(pending_id, idempotency_key, *, username, web_token,
         result_json = None
         failure = ToolError(error.code, str(error), error.status,
                             unknown_outcome=error.unknown_outcome)
+    except ToolError as error:
+        status = "result_unknown" if error.unknown_outcome else "failed"
+        error_code = error.code
+        safe_result = None
+        result_json = None
+        failure = error
     except Exception as error:
         status = "result_unknown"
         error_code = "confirmation_failed"
@@ -1419,3 +1526,60 @@ def _find_submitted_job(conn, username, row, endpoint):
         (username, submission_key) + tuple(kinds),
     ).fetchone()
     return int(job["id"]) if job else None
+
+
+def get_pending_action_task_status(pending_id, *, username, web_token, db_factory,
+                                   cli_execute=None, local_status=None):
+    """Read the remote CLI task created by a confirmed pending action."""
+    pending_id = str(pending_id or "").strip()
+    username = str(username or "").strip()
+    if not re.fullmatch(r"vpa_[0-9a-f]{32}", pending_id):
+        raise ToolError("pending_action_not_found", "待确认操作不存在或已失效", 404)
+    ensure_tables(db_factory)
+    try:
+        with closing(db_factory()) as conn:
+            conn.row_factory = __import__("sqlite3").Row
+            row = conn.execute(
+                "SELECT * FROM video_agent_pending_actions WHERE id=? AND username=?",
+                (pending_id, username),
+            ).fetchone()
+    except Exception as error:
+        raise ToolError("pending_store_unavailable", "任务状态服务暂时不可用", 503) from error
+    if not row:
+        raise ToolError("pending_action_not_found", "待确认操作不存在或已失效", 404)
+    try:
+        stored = json.loads(row["result_json"] or "{}")
+    except (TypeError, ValueError):
+        stored = {}
+    pending = _safe_pending(row, stored)
+    if row["status"] != "submitted":
+        return {"pending_action": pending, "task": {"status": row["status"]}}
+    job_id = stored.get("job_id")
+    if not ((isinstance(job_id, int) and not isinstance(job_id, bool) and job_id > 0)
+            or (isinstance(job_id, str) and re.fullmatch(r"[1-9][0-9]{0,18}", job_id))):
+        raise ToolError("task_handle_invalid", "已提交任务缺少有效任务号", 502)
+    executor = cli_execute or hq_cli_executor.execute
+    try:
+        if stored.get("task_domain") == "local":
+            if not callable(local_status):
+                raise ToolError(
+                    "local_task_status_unavailable",
+                    "本地任务状态服务暂时不可用", 503,
+                )
+            task = local_status(int(job_id))
+        else:
+            task = executor(
+                "task", {"job_id": int(job_id)}, username=username,
+                web_token=web_token, scopes=["tasks:read"], confirm=False,
+            )
+    except ToolError:
+        raise
+    except hq_cli_executor.CLIExecutionError as error:
+        raise ToolError(error.code, str(error), error.status,
+                        unknown_outcome=error.unknown_outcome) from error
+    except Exception as error:
+        raise ToolError("task_status_unavailable", "任务状态暂时不可用", 502) from error
+    projected = _project_browser_task(task)
+    if not projected:
+        raise ToolError("task_status_invalid", "任务状态返回格式无效", 502)
+    return {"pending_action": pending, "task": projected}

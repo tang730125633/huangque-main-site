@@ -549,7 +549,7 @@ class KeyPingTests(unittest.TestCase):
             proxy_url=proxy,
         )
 
-    def test_heygen_ping_requires_mcp_when_runtime_uses_it(self):
+    def test_heygen_ping_prefers_mcp_without_touching_api_wallet(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         credentials = pathlib.Path(directory.name) / "heygen-mcp.json"
@@ -568,16 +568,26 @@ class KeyPingTests(unittest.TestCase):
 
         with mock.patch.object(admin_api, "_env_value", side_effect=env), \
                 mock.patch.object(admin_api, "_heygen_proxy_url", return_value=""), \
-                mock.patch.object(admin_api, "_ping_upstream", side_effect=[
-                    {"ok": True, "latency_ms": 4, "plan_credit": 12, "api_wallet": 3},
-                    {"ok": True, "latency_ms": 6},
-                ]) as ping:
+                mock.patch.object(admin_api, "_ping_upstream", return_value={
+                    "ok": True, "latency_ms": 6, "plan_credit": 12,
+                }) as ping:
             result = admin_api._key_ping_heygen()
         self.assertTrue(result["ok"])
-        self.assertEqual(result["components"], "API Key + MCP OAuth")
+        self.assertEqual(result["components"], "MCP OAuth · 网页套餐")
         self.assertEqual(result["plan_credit"], 12)
-        self.assertEqual(result["latency_ms"], 10)
-        self.assertEqual(ping.call_count, 2)
+        self.assertEqual(result["latency_ms"], 6)
+        self.assertEqual(ping.call_count, 1)
+        self.assertEqual(ping.call_args.args[1], "https://mcp.heygen.com/mcp/v1/")
+
+    def test_admin_exposes_oauth_routes_without_token_fields(self):
+        source = pathlib.Path(admin_api.__file__).read_text(encoding="utf-8")
+        self.assertIn('"/api/admin/heygen-oauth/start"', source)
+        self.assertIn('"/api/admin/heygen-oauth/status"', source)
+        self.assertIn('"/api/admin/heygen-oauth/callback"', source)
+        self.assertIn('"/api/admin/heygen-oauth/disconnect"', source)
+        status_route = source.split('if path == "/api/admin/heygen-oauth/status":', 1)[1].split("\n", 3)[0:3]
+        self.assertNotIn("access_token", "\n".join(status_route))
+        self.assertNotIn("refresh_token", "\n".join(status_route))
 
     def test_expired_mcp_is_not_reported_as_heygen_ready(self):
         directory = tempfile.TemporaryDirectory()

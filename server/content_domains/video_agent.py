@@ -18,7 +18,7 @@ import urllib.request
 
 from . import short_drama_advisor as advisor_runtime
 from . import (
-    audio, cli_uploads, error_contract, pricing, provider_keys, video,
+    audio, cli_uploads, error_contract, points, pricing, provider_keys, video,
     video_agent_tools,
 )
 
@@ -31,6 +31,9 @@ CONFIRM_ROUTE_RE = __import__("re").compile(
 )
 RECONCILE_ROUTE_RE = __import__("re").compile(
     r"^/api/gen/video/agent/actions/(vpa_[0-9a-f]{32})/reconcile$"
+)
+ACTION_STATUS_ROUTE_RE = re.compile(
+    r"^/api/gen/video/agent/actions/(vpa_[0-9a-f]{32})/status$"
 )
 PREVIEW_ROUTE_RE = re.compile(
     r"^/api/gen/video/agent/uploads/(image|video)/((?:img|vid)_[0-9a-f]{32})/preview$"
@@ -69,6 +72,7 @@ MAX_FINAL_OUTPUT_CANDIDATES = 2
 MAX_DIAGNOSTIC_ITEM_TYPES = 16
 MAX_AGENT_SECONDS = 90
 MAX_TOOL_SECONDS = 35
+MAX_LOCAL_TASK_RESPONSE_BYTES = 64 * 1024
 ALLOWED_MODELS = {
     "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp",
 }
@@ -102,6 +106,149 @@ def _local_read_fallbacks(username):
     }
 
 
+def _local_talking_quote_router(username):
+    owner = str(username or "").strip()
+
+    def route(tool_name, arguments):
+        if tool_name != "hq_quote_talking_video":
+            return "remote"
+        avatar_id = arguments.get("avatar_id")
+        try:
+            avatar = video.get_video_avatar(owner, avatar_id)
+        except (LookupError, TypeError, ValueError):
+            return "remote"
+        if str(avatar.get("status") or "").lower() != "ready":
+            raise video_agent_tools.ToolError(
+                "avatar_not_ready", "数字人形象尚未就绪，暂时不能生成口播视频", 409,
+            )
+        if not str(avatar.get("provider_avatar_id") or "").strip():
+            raise video_agent_tools.ToolError(
+                "avatar_provider_mapping_missing",
+                "数字人形象缺少生成服务标识，请重新创建形象", 409,
+            )
+        return "local"
+
+    return route
+
+
+def _local_talking_quote(username):
+    owner = str(username or "").strip()
+
+    def quote(tool_name, arguments):
+        if tool_name != "hq_quote_talking_video":
+            raise video_agent_tools.ToolError(
+                "local_quote_unsupported", "该视频能力不支持本地报价", 400,
+            )
+        # Bind the card, price and later submission to the exact payload the
+        # content endpoint accepts (including defaults and account-scoped voice
+        # normalization), rather than the model's raw arguments.
+        try:
+            payload = video.validate_video_payload(dict(arguments), owner)
+        except (LookupError, TypeError, ValueError) as error:
+            raise video_agent_tools.ToolError(
+                "local_quote_invalid", str(error)[:220], 400,
+            ) from error
+        canonical = json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        )
+        return {
+            "quote_token": "local-" + hashlib.sha256(
+                ("confirm:" + canonical).encode("utf-8")
+            ).hexdigest(),
+            "fingerprint": "local:" + hashlib.sha256(
+                canonical.encode("utf-8")
+            ).hexdigest(),
+            "payload": payload,
+            "cost": int(points.cost_of("video", payload)),
+            "expires_in": 120,
+            "confirmation_required": True,
+        }
+
+    return quote
+
+
+def _local_content_request(path, web_token, *, method="GET", payload=None,
+                           idempotency_key="", opener=None):
+    try:
+        port = int(os.getenv("CONTENT_API_PORT", "8096"))
+    except (TypeError, ValueError) as error:
+        raise video_agent_tools.ToolError(
+            "local_content_origin_invalid", "本地内容服务地址配置无效", 503,
+        ) from error
+    if not 1 <= port <= 65535 or not re.fullmatch(r"/api/gen/[A-Za-z0-9_./-]+", path):
+        raise video_agent_tools.ToolError(
+            "local_content_origin_invalid", "本地内容服务地址配置无效", 503,
+        )
+    body = None
+    headers = {
+        "Authorization": "Bearer " + str(web_token or ""),
+        "Accept": "application/json",
+    }
+    if payload is not None:
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    if idempotency_key:
+        headers["Idempotency-Key"] = str(idempotency_key)
+    request = urllib.request.Request(
+        "http://127.0.0.1:%d%s" % (port, path), data=body,
+        headers=headers, method=method,
+    )
+    open_request = opener or urllib.request.build_opener(
+        urllib.request.ProxyHandler({}), _NoRedirect(),
+    ).open
+    try:
+        response = open_request(request, timeout=60)
+        raw = response.read(MAX_LOCAL_TASK_RESPONSE_BYTES + 1)
+        status = int(getattr(response, "status", 200) or 200)
+    except urllib.error.HTTPError as error:
+        raw = error.read(MAX_LOCAL_TASK_RESPONSE_BYTES + 1)
+        status = int(error.code)
+    except (OSError, TimeoutError, urllib.error.URLError) as error:
+        raise video_agent_tools.ToolError(
+            "local_submission_unknown" if method == "POST" else "local_task_status_unavailable",
+            "本地视频提交结果未知，请勿重复点击并到任务记录核对"
+            if method == "POST" else "本地任务状态暂时不可用",
+            502, unknown_outcome=(method == "POST"),
+        ) from error
+    if len(raw) > MAX_LOCAL_TASK_RESPONSE_BYTES:
+        raise video_agent_tools.ToolError(
+            "local_content_response_too_large", "本地内容服务响应过大", 502,
+            unknown_outcome=(method == "POST"),
+        )
+    try:
+        value = json.loads(raw.decode("utf-8")) if raw else {}
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise video_agent_tools.ToolError(
+            "local_content_response_invalid", "本地内容服务响应格式无效", 502,
+            unknown_outcome=(method == "POST"),
+        ) from error
+    if not isinstance(value, dict):
+        raise video_agent_tools.ToolError(
+            "local_content_response_invalid", "本地内容服务响应格式无效", 502,
+            unknown_outcome=(method == "POST"),
+        )
+    if status < 200 or status >= 300:
+        detail = value.get("detail")
+        if not isinstance(detail, str):
+            detail = "本地视频提交失败" if method == "POST" else "本地任务状态查询失败"
+        code = value.get("code") if isinstance(value.get("code"), str) else "local_content_rejected"
+        raise video_agent_tools.ToolError(code[:80], detail[:220], status)
+    return value
+
+
+def _local_talking_submitter(web_token):
+    return lambda arguments, idempotency_key: _local_content_request(
+        "/api/gen/video", web_token, method="POST", payload=arguments,
+        idempotency_key=idempotency_key,
+    )
+
+
+def _local_talking_status_reader(web_token):
+    return lambda job_id: _local_content_request(
+        "/api/gen/job/%d" % int(job_id), web_token,
+    )
+
+
 _RESPONSE_STATUSES = frozenset({"in_progress", "completed", "incomplete", "failed"})
 _RESPONSE_ITEM_TYPES = frozenset({
     "message", "reasoning", "function_call", "custom_tool_call", "web_search_call",
@@ -127,6 +274,7 @@ _RUNTIME_DIAGNOSTIC_STAGES = frozenset({
     "chat_provider_call", "chat_provider_result", "chat_usage_finalize",
     "chat_usage_release", "dispatch_confirm_parse", "dispatch_confirm",
     "dispatch_reconcile_parse", "dispatch_reconcile",
+    "dispatch_status",
     "dispatch_chat_parse", "dispatch_chat", "dispatch_send",
 })
 _RUNTIME_EXCEPTION_TYPES = (
@@ -895,9 +1043,19 @@ def _claim_provider_candidate(attempted_ids):
 def _post_response(prepared, input_items, opener=None, timeout=45,
                    disable_tools=False):
     attempted_ids = set()
+    payment_required = False
     request_open = opener or _provider_opener()
     while True:
-        candidate = _claim_provider_candidate(attempted_ids)
+        try:
+            candidate = _claim_provider_candidate(attempted_ids)
+        except advisor_runtime.AdvisorError as error:
+            if payment_required and error.code == "advisor_provider_failed":
+                raise advisor_runtime.AdvisorError(
+                    "advisor_provider_payment_required",
+                    "视频创作助手 DeepSeek 额度不足，请在管理后台补充额度或更换密钥",
+                    503,
+                ) from error
+            raise
         attempted_ids.add(candidate["id"])
         body = dict(prepared["payload"])
         if disable_tools:
@@ -929,10 +1087,11 @@ def _post_response(prepared, input_items, opener=None, timeout=45,
             raise
         except urllib.error.HTTPError as error:
             latency_ms = int((time.monotonic() - started) * 1000)
-            if error.code in (401, 403):
+            if error.code in (401, 402, 403):
                 advisor_runtime._set_candidate_health(
                     candidate, False, latency_ms, "HTTP %s" % error.code
                 )
+                payment_required = payment_required or error.code == 402
                 continue
             raise advisor_runtime.AdvisorError(
                 "advisor_provider_failed",
@@ -1191,6 +1350,33 @@ def _parse_final_output_text(value):
     raise _FinalOutputParseError("no_json_object", offset)
 
 
+def _plain_text_fallback(value, materials=None):
+    """Turn a provider's non-JSON answer into a display-only safe result."""
+    reply = _text(value, 1200).strip()
+    # This workbench is Chinese-first. Keep malformed JSON, protocol chatter,
+    # and English diagnostic/sentinel strings on the existing fail-closed path.
+    if not reply or not re.search(r"[\u3400-\u9fff]", reply) or any(
+            marker in reply for marker in ("{", "}")):
+        return None
+    normalized = _normalize({
+        "reply": reply,
+        "stage": "clarify",
+        "intent": "unknown",
+        "video_brief": {},
+        "missing_fields": [],
+        "material_requests": [],
+        "quick_replies": [],
+        "recommended_module": "",
+        "ready_to_handoff": False,
+    }, materials)
+    normalized.update({
+        "mode": "ai_text_fallback",
+        "degraded": True,
+        "degraded_message": "智能分析已返回文字答复；结构化建议暂不可用，本次未执行付费命令。",
+    })
+    return normalized
+
+
 def _usage_add(total, usage):
     if not isinstance(usage, dict):
         return False
@@ -1335,6 +1521,19 @@ def _call_provider_loop(prepared, opener=None, tool_runtime=None,
                     replay.append({"role": "user", "content": _FORMAT_REPAIR_INPUT})
                     repair_mode = True
                     continue
+                if repair_mode and error.reason == "no_json_object":
+                    normalized = _plain_text_fallback(
+                        content, prepared["request_body"]["materials"]
+                    )
+                    if normalized:
+                        activity = list(getattr(tool_runtime, "activity", []) or [])
+                        normalized["tool_activity"] = activity
+                        normalized["tool_activities"] = activity
+                        normalized["_provider_usage"] = dict(total_usage)
+                        normalized["_provider_usage_complete"] = bool(
+                            usage_state["envelopes"] and usage_state["complete"]
+                        )
+                        return normalized
                 raise advisor_runtime.AdvisorError(
                     "advisor_response_invalid", "视频创作助手返回格式无效", 502
                 ) from error
@@ -1427,6 +1626,8 @@ def chat(body, opener=None, username=None, db_factory=None, web_token=None,
                 runtime = video_agent_tools.VideoAgentToolRuntime(
                     username=username, web_token=web_token, db_factory=db_factory,
                     read_fallbacks=_local_read_fallbacks(username),
+                    quote_router=_local_talking_quote_router(username),
+                    local_quote=_local_talking_quote(username),
                 )
             runtime_stage = "chat_provider_call"
             result = _call_provider(prepared, opener=opener, tool_runtime=runtime)
@@ -1511,11 +1712,13 @@ def dispatch_http(handler, method, verify, must_change_password, db_factory):
     path = handler.path.split("?", 1)[0]
     confirm_match = CONFIRM_ROUTE_RE.fullmatch(path)
     reconcile_match = RECONCILE_ROUTE_RE.fullmatch(path)
+    status_match = ACTION_STATUS_ROUTE_RE.fullmatch(path)
     preview_match = PREVIEW_ROUTE_RE.fullmatch(path)
     upload_kind = "image" if path == IMAGE_UPLOAD_ROUTE else ("video" if path == VIDEO_UPLOAD_ROUTE else "")
     is_post_route = method == "POST" and (path == ROUTE or confirm_match or reconcile_match or upload_kind)
     is_preview_route = method == "GET" and bool(preview_match)
-    if not is_post_route and not is_preview_route:
+    is_status_route = method == "GET" and bool(status_match)
+    if not is_post_route and not is_preview_route and not is_status_route:
         return False
     web_token = handler._token()
     user = verify(web_token)
@@ -1525,9 +1728,25 @@ def dispatch_http(handler, method, verify, must_change_password, db_factory):
     if must_change_password(user):
         handler._send(403, {"detail": "请先修改初始密码"})
         return True
-    runtime_stage = "dispatch_preview" if preview_match else ("dispatch_upload" if upload_kind else ("dispatch_confirm_parse" if confirm_match else ("dispatch_reconcile_parse" if reconcile_match else "dispatch_chat_parse")))
+    runtime_stage = (
+        "dispatch_preview" if preview_match else
+        "dispatch_status" if status_match else
+        "dispatch_upload" if upload_kind else
+        "dispatch_confirm_parse" if confirm_match else
+        "dispatch_reconcile_parse" if reconcile_match else
+        "dispatch_chat_parse"
+    )
     try:
-        if preview_match:
+        if status_match:
+            runtime_stage = "dispatch_status"
+            result = video_agent_tools.get_pending_action_task_status(
+                status_match.group(1), username=user["username"],
+                web_token=web_token, db_factory=db_factory,
+                local_status=_local_talking_status_reader(web_token),
+            )
+            handler._send(200, result)
+            return True
+        elif preview_match:
             preview_kind, upload_id = preview_match.groups()
             if not upload_id.startswith("img_" if preview_kind == "image" else "vid_"):
                 handler._send(404, {
@@ -1615,6 +1834,7 @@ def dispatch_http(handler, method, verify, must_change_password, db_factory):
                 confirm_match.group(1), body.get("idempotency_key"),
                 username=user["username"], web_token=web_token,
                 db_factory=db_factory,
+                local_submit=_local_talking_submitter(web_token),
             )
             result = {"pending_action": confirmed}
         elif reconcile_match:

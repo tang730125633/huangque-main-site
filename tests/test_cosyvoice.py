@@ -165,6 +165,25 @@ class AudioVoiceMappingTests(unittest.TestCase):
         self.assertEqual(self.audio._cosy_voice_for("S_d21F8OR62"), "longwan")
         self.assertEqual(self.audio._cosy_voice_for("S_pa0E8OR62"), "longcheng")
 
+    def test_public_display_name_resolves_to_canonical_voice_key(self):
+        row = {
+            "scope": "public",
+            "voice_key": "S_xaUB8OR62",
+            "display_name": "公共音色 4",
+            "provider_voice": "longxiaoxia",
+        }
+        connection = unittest.mock.Mock()
+        connection.execute.return_value.fetchall.return_value = [row]
+        with unittest.mock.patch.object(self.audio, "adb", return_value=connection):
+            self.assertEqual(
+                self.audio.normalize_audio_voice_key("qilin", "公共音色 4"),
+                "S_xaUB8OR62",
+            )
+            self.assertEqual(
+                self.audio.resolve_audio_provider_voice("qilin", "公共音色 4"),
+                "longxiaoxia",
+            )
+
     def test_clone_id_passthrough(self):
         vid = "cosyvoice-v3.5-plus-bailian-abc"
         self.assertEqual(self.audio._cosy_voice_for(vid), vid)
