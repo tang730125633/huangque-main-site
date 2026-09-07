@@ -21,20 +21,34 @@ execution_domain TEXT NOT NULL DEFAULT 'remote'
 ## 固定审批对象
 
 - PR：`tang730125633/huangque-main-site#1455`
-- 固定业务与 Schema 提交：`03ea21d69cd6e19c9a70a6a2001a3e35a6923f15`
+- 固定业务与 Schema 提交：`98aa650e10955c5dce5c91d98d2915a3352ae9f9`
 - 基线：`main@3197f4608c03112094f384840ce3ea713a1e2a61`
 - 生产数据库：`/home/ubuntu/content-api/content_jobs.db`
 - 维护窗口：`2026-09-07 10:00–23:30 Asia/Shanghai`
 - 执行、备份、验证与失败回滚负责人：`@LU-003`
-- 阶段一批准：
+- 已失效阶段一批准：
   [issuecomment-5565362511](https://github.com/tang730125633/huangque-main-site/pull/1455#issuecomment-5565362511)
   - 评论 ID：`5565362511`
   - Node ID：`IC_kwDOS66oj88AAAABS7ixTw`
   - 作者：`LU-003`
   - 作者关联：`COLLABORATOR`
   - 创建及更新时间：`2026-09-07T05:13:00Z`
-  - 明确绑定上述 PR、业务/Schema SHA、main 基线、数据库路径、维护窗口、停写、
-    WAL 一致性备份、升级与幂等验证及失败回滚。
+  - 绑定旧业务/Schema SHA `03ea21d69cd6e19c9a70a6a2001a3e35a6923f15`；因后续
+    HeyGen billing 路由修复失效，不得用于当前候选。
+- 已失效阶段二批准：
+  [issuecomment-5565420409](https://github.com/tang730125633/huangque-main-site/pull/1455#issuecomment-5565420409)
+  - 绑定旧最终 HEAD `b3592c820665c3d8921f9ae4230b1e8d0e1b561b`；因业务代码
+    变化失效，不得用于当前候选。
+- 当前阶段一批准：
+  [issuecomment-5565543319](https://github.com/tang730125633/huangque-main-site/pull/1455#issuecomment-5565543319)
+  - 评论 ID：`5565543319`
+  - Node ID：`IC_kwDOS66oj88AAAABS7tzlw`
+  - 作者：`LU-003`
+  - 作者关联：`COLLABORATOR`
+  - 创建及更新时间：`2026-09-07T05:32:15Z`
+  - 明确绑定当前业务/Schema SHA `98aa650e10955c5dce5c91d98d2915a3352ae9f9`、
+    main 基线、数据库路径、维护窗口、停写、WAL 一致性备份、升级与幂等验证及失败回滚，
+    并明确取代旧阶段一批准。
 - 阶段二最终 HEAD 批准：待本文版本化、一次性推送及精确 HEAD CI 后，由 `@LU-003`
   对新的最终 HEAD 发布。
 
@@ -93,9 +107,11 @@ python scripts/stamp_assets.py --check
 git diff --check
 ```
 
-本地候选验证证据：相关实现与负向回归 `229/229` 通过，HQ CLI `87/87` 通过，director
+本地候选验证证据：相关实现与负向回归 `246/246` 通过，HQ CLI `87/87` 通过，director
 regression gate `5/5` 通过；仓库 CI 文件隔离测试清单、Python/JavaScript 语法、前端运行时、
-资源版本戳及 `git diff --check` 均通过。仓库测试共享模块名和全局 mock，单进程全量发现会发生
+资源版本戳及 `git diff --check` 均通过。新增负向测试覆盖显式 API Wallet 模式在保留 OAuth
+凭据时仍全程使用 API 上传/创建/轮询，以及套餐模式全程使用 MCP；相关测试已加入 required CI
+的逐文件隔离清单。仓库测试共享模块名和全局 mock，单进程全量发现会发生
 顺序污染；最终结论以精确 HEAD 的 required CI 隔离执行结果为准。
 
 ## 失败回滚
