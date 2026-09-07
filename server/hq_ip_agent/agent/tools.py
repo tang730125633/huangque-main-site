@@ -6,6 +6,7 @@
 """
 import json
 import uuid
+from typing import Optional
 
 from . import hq_cli, modules56, report, state
 from .info_schema import FIELDS, MODULES, core_ratio
@@ -65,9 +66,36 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "load_ip12_profile",
+            "description": (
+                "从黄雀主站拉取用户已保存的 IP 定位项目档案（基础资料、模块进度、已存报告），"
+                "老系统（Hermes IP12）与新系统（数字化 IP）自动切换：老系统不可用时自动从新系统拉。"
+                "使用时机：用户说「按我主站的定位/档案/IP12 项目做」；或新会话信息表为空、"
+                "用户希望直接沿用主站已有定位（如「按主站已有的 IP12 定位写口播」）。"
+                "project_id 不传时自动取最近一个项目；主站有多个项目时先让用户确认用哪个。"
+                "返回主站档案原文（JSON）——从中提取人设事实用 update_profile 逐项写入内部信息表，"
+                "并在回复里向用户复述档案要点，确认无误后再用于创作/报告。"
+                "主站无项目/两边接口都不可用时如实告知用户，绝不编造档案内容。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project_id": {
+                        "type": "string",
+                        "description": "主站 IP12 项目 ID；不传则自动取最近项目",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "generate_report",
             "description": (
                 "用已采集信息生成《IP人设定位｜模块1-4》报告初稿 PDF。"
+                "用户已明确选定方案时带 chosen 参数，直接出定稿（final）。"
                 "工具内部严格按样例模板校验（模块一核心关键词×7/最终定位/市场机缘/潜在风险，"
                 "模块二三套人设方案+推荐理由+核心人设要素，模块三诊断/价值主张/推荐金句/备选金句/"
                 "自我介绍优化/变现路径，模块四故事库≥5（含情绪曲线/钩子设计/传播价值）/故事主线/"
@@ -81,6 +109,15 @@ TOOLS = [
                     "instruction": {
                         "type": "string",
                         "description": "可选的生成要求，例如用户刚补充的重点信息或特别要求",
+                    },
+                    "chosen": {
+                        "type": "string",
+                        "enum": ["A", "B", "C"],
+                        "description": (
+                            "用户已在对话里明确选定人设方案时传 A/B/C："
+                            "报告将直接按所选方案生成定稿（status=final），"
+                            "不再生成三套方案让用户重新选。用户还没选定时不要传。"
+                        ),
                     },
                 },
                 "required": [],
@@ -305,34 +342,79 @@ def _err(message, data=None):
     return {"ok": False, "error": message, "result": data}
 
 
+def _seg(key: str) -> str:
+    """键的末段（模块 id 之后的部分），用于模糊匹配。"""
+    return key.split(".", 1)[1] if "." in key else key
+
+
+def _seg_match(a: str, b: str) -> bool:
+    """两段文本是否「同一个词」：相等 / 互为子串（长段 ≥5 字符）/ 公共前缀 ≥4。"""
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    # 互为子串只认长段（≥5 字符），避免 rise⊂praised 这类短段误匹配
+    if len(a) >= 5 and a in b:
+        return True
+    if len(b) >= 5 and b in a:
+        return True
+    n = 0
+    for ca, cb in zip(a, b):
+        if ca != cb:
+            break
+        n += 1
+    return n >= 4
+
+
+def _key_covers(field_key: str, fact_key: str) -> bool:
+    """判断一个已写入的事实键是否「覆盖」某规范字段。
+
+    LLM 写信息表时常自造键（如 audience.target、basic.personality、advantage.differentiator），
+    与规范键（direction.audience、style.personality、direction.differentiation）对不上，
+    导致明明答过的题被判「未采」而重复提问。这里拿字段末段同时比对事实键的
+    整键与末段（前缀模块名可能正是规范字段名，如 audience.target → audience）。
+    """
+    fseg = _seg(field_key)
+    return _seg_match(fseg, fact_key) or _seg_match(fseg, _seg(fact_key))
+
+
 def _profile_status(session_id: str) -> dict:
-    """按采集表字段粒度回报采集进度（软提示，供 Agent 判断下一个问题）。"""
+    """按采集表字段粒度回报采集进度（软提示，供 Agent 判断下一个问题）。
+
+    只展开「核心字段」的缺失清单，非核心字段只给计数——防止主 Agent 把
+    整张 43 问清单贴给用户（用户投诉：出现大量的重复问题）。
+    """
     profile = state.get_profile(session_id)
     covered = set()
     for key, val in profile.items():
         if not key.startswith("__") and val:
             covered.add(key)
-            if "." not in key:
-                # 自然语言键：如果值里提到某个字段 key，也算覆盖到该字段
-                for f in FIELDS:
-                    if f["key"].split(".", 1)[1] in key:
-                        covered.add(f["key"])
+            # 事实键（含自然语言键）与规范字段做双向模糊匹配：
+            # 已经答过的字段（哪怕写了「无/没有」）一律算覆盖，绝不重问
+            for f in FIELDS:
+                if _key_covers(f["key"], key):
+                    covered.add(f["key"])
 
     modules = []
     for m in MODULES:
-        entries = []
+        collected = []
+        missing_core = []
+        n_missing_noncore = 0
         for f in FIELDS:
             if f["module"] != m["id"]:
                 continue
-            done = f["key"] in covered
-            entries.append({"key": f["key"], "label": f["label"], "core": f["core"], "done": done})
-        collected = [e for e in entries if e["done"]]
-        missing = [e for e in entries if not e["done"]]
+            if f["key"] in covered:
+                collected.append(f["key"])
+            elif f["core"]:
+                missing_core.append({"key": f["key"], "label": f["label"]})
+            else:
+                n_missing_noncore += 1
         modules.append({
             "module": m["id"], "name": m["name"],
-            "collected": [e["key"] for e in collected],
-            "missing": [{"key": e["key"], "label": e["label"], "core": e["core"]} for e in missing],
-            "collected_count": len(collected), "total": len(entries),
+            "collected": collected,
+            "missing_core": missing_core,
+            "missing_noncore_count": n_missing_noncore,
+            "collected_count": len(collected),
         })
 
     core_done = [f["key"] for f in FIELDS if f["core"] and f["key"] in covered]
@@ -346,7 +428,153 @@ def _profile_status(session_id: str) -> dict:
         "modules": modules,
         "hint": "核心字段覆盖率越高，越适合生成报告；生成前建议 core_ratio ≥ 0.7，"
                 "且故事资产、职业背景、内容方向、性格风格、价值主张、商业目标均有核心字段已采。",
+        "note": "本结果仅供你内部判断下一个问题：一次只挑一个未采的核心字段问；"
+                "已采的字段（含用户答过「没有/无」的）绝不重问；"
+                "绝不把字段/问题清单整段贴给用户。",
     }
+
+
+def _pluck_project_ids(node):
+    """容错提取项目 ID 列表（主站返回结构未文档化，多种形状都认）。"""
+    ids = []
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if k in ("project_id", "id", "pid") and isinstance(v, str) and v:
+                ids.append(v)
+            ids += _pluck_project_ids(v)
+    elif isinstance(node, list):
+        for item in node:
+            ids += _pluck_project_ids(item)
+    out = []
+    for i in ids:
+        if i not in out:
+            out.append(i)
+    return out
+
+
+_CLI_AUTH_ERRORS = {
+    "auth_error", "auth_required", "expired_token", "refresh_failed",
+    "customer_identity_required", "unauthorized",
+}
+
+
+def _cli_auth_error(resp: dict) -> bool:
+    data = (resp or {}).get("data") or {}
+    return isinstance(data, dict) and str(data.get("error") or "") in _CLI_AUTH_ERRORS
+
+
+def _load_ip12_profile(session_id: str, project_id: Optional[str]) -> dict:
+    """从黄雀主站拉取 IP 定位档案，返回档案原文供主 Agent 提取写入。
+
+    解决「新会话读不到主站已有 IP 定位」：用户换会话/换设备后，
+    说「按我主站的定位做」时由主 Agent 调本工具把主站档案拉回对话。
+
+    双通道：优先老系统（Hermes IP12：ip12-projects/ip12-project）；
+    老系统不可用（上游 502/维护）或无项目时自动降级新系统
+    （数字化 IP：digital-ip-projects/digital-ip-project/digital-ip-report）。
+    """
+    err_ip12 = None
+    projects_resp = hq_cli.run("ip12-projects", session_id=session_id)
+    if _cli_auth_error(projects_resp):
+        return _err("当前网页登录身份无法取得专属黄雀 CLI 授权。请重新登录后再试；不会回退公共账号。")
+    proj_data = projects_resp.get("data") or {}
+    all_ids = []
+    if isinstance(proj_data, dict) and not proj_data.get("error"):
+        all_ids = _pluck_project_ids(proj_data)
+        if not all_ids:
+            err_ip12 = "IP12 老系统没有项目"
+    else:
+        err_ip12 = str(proj_data.get("message") or proj_data.get("error")) if isinstance(proj_data, dict) else "未知错误"
+
+    if all_ids:
+        if project_id and project_id not in all_ids:
+            # 老系统可用且用户指定的项目不在其中：直接列选项，不降级
+            return _err("主站没有找到项目 %s。现有项目：%s —— 请用户确认用哪一个。"
+                        % (project_id, "、".join(all_ids[:8])))
+        pid = project_id or all_ids[0]  # 最近项目排在最前（主站列表按更新时间倒序）
+        one_resp = hq_cli.run("ip12-project", {"project_id": pid}, session_id=session_id)
+        one_data = one_resp.get("data") or {}
+        if isinstance(one_data, dict) and not one_data.get("error"):
+            archive = one_data.get("result") if isinstance(one_data, dict) else one_data
+            n_projects = len(all_ids)
+            return _ok(
+                {"source": "ip12", "project_id": pid, "archive": archive},
+                note=("主站 IP12 档案原文（JSON，result 字段）。请从中提取人设事实，"
+                      "用 update_profile 逐项写入内部信息表（键尽量用规范字段键，如 basic.name、"
+                      "career.current_job、direction.track、style.tone、business.goal），"
+                      "然后向用户复述档案要点（两三句），确认无误后再用于后续创作/报告。"
+                      "档案缺的字段不要脑补，需要的继续访谈补齐。"
+                      + ("主站共有 %d 个项目：%s；本次取的是 %s。" % (n_projects, "、".join(all_ids[:8]), pid)
+                         if n_projects > 1 else "本次取的是主站唯一项目 %s。" % pid)),
+            )
+
+    # ---- 降级：新系统（数字化 IP）----
+    dig_resp = hq_cli.run("digital-ip-projects", session_id=session_id)
+    if _cli_auth_error(dig_resp):
+        return _err("当前网页登录身份无法取得专属黄雀 CLI 授权。请重新登录后再试；不会回退公共账号。")
+    dig_data = dig_resp.get("data") or {}
+    if not isinstance(dig_data, dict) or dig_data.get("error"):
+        if err_ip12:
+            msg = ("主站档案接口两边都不可用：IP12（%s）；数字化 IP（%s）。"
+                   % (err_ip12, str(dig_data.get("message") or dig_data.get("error"))))
+        else:
+            msg = "主站档案接口两边都没有找到可用数据。"
+        return _err(msg + " 稍后再试，或先按对话继续采集，不编造档案内容。")
+    dig_result = dig_data.get("result") if isinstance(dig_data, dict) else {}
+    dig_items = dig_result.get("items") if isinstance(dig_result, dict) else None
+    if not isinstance(dig_items, list) or not dig_items:
+        return _err("您的主站账号下还没有 IP 定位项目档案。"
+                    "可以就在这里重新做一份定位（我一步步问您），或先去主站创建项目。")
+    dig_ids = [str(i.get("id")) for i in dig_items if isinstance(i, dict) and i.get("id")]
+    dig_titles = {str(i.get("id")): (i.get("title") or "未命名")
+                  for i in dig_items if isinstance(i, dict) and i.get("id")}
+    dig_reports = {str(i.get("id")): bool((i.get("foundation_stage") or {}).get("report_id"))
+                   for i in dig_items if isinstance(i, dict) and i.get("id")}
+    if project_id:
+        if project_id not in dig_ids:
+            return _err("主站没有找到项目 %s。现有项目：%s —— 请用户确认用哪一个。"
+                        % (project_id, "、".join((dig_ids + all_ids)[:8])))
+        pid = project_id
+    else:
+        pid = dig_ids[0]
+
+    one_resp = hq_cli.run("digital-ip-project", {"project_id": pid}, session_id=session_id)
+    one_data = one_resp.get("data") or {}
+    if not isinstance(one_data, dict) or one_data.get("error"):
+        return _err("读取项目 %s 失败：%s。稍后再试。"
+                    % (pid, one_data.get("message") or one_data.get("error")))
+    proj = one_data.get("result") if isinstance(one_data, dict) else {}
+    archive = {"project": proj}
+
+    # 有已存报告时一并拉回（报告里是人设定位的成稿）
+    try:
+        found_stage = (proj.get("project") or {}).get("foundation_stage") or {}
+        if found_stage.get("report_id"):
+            rep_resp = hq_cli.run("digital-ip-report", {"project_id": pid}, session_id=session_id)
+            rep_data = rep_resp.get("data") or {}
+            if isinstance(rep_data, dict) and not rep_data.get("error"):
+                archive["report"] = rep_data.get("result") if isinstance(rep_data, dict) else {}
+    except Exception:
+        pass  # 报告拉取失败不阻塞：项目资料本身已可用
+
+    n_projects = len(dig_ids)
+    proj_list = "、".join(
+        "%s%s" % (dig_titles.get(i, i), "（有已存报告）" if dig_reports.get(i) else "")
+        for i in dig_ids[:8])
+    src_note = ("（主站 IP12 老系统暂时不可用：%s，本次从新系统「数字化 IP」拉的档案）" % err_ip12) if err_ip12 else ""
+    return _ok(
+        {"source": "digital-ip", "project_id": pid, "archive": archive},
+        note=("主站 IP 定位档案原文（JSON，result 字段；project 是项目资料（问卷答案/对话/进度），"
+              "report 是已存报告成稿）。请从中提取人设事实，用 update_profile 逐项写入内部信息表"
+              "（键尽量用规范字段键，如 basic.name、career.current_job、direction.track、style.tone、"
+              "business.goal），然后向用户复述档案要点（两三句），确认无误后再用于后续创作/报告。"
+              "档案缺的字段不要脑补，需要的继续访谈补齐。" + src_note
+              + ("主站共有 %d 个项目：%s。本次自动取的是最近更新的「%s」；"
+                 "如果用户说的定位像是另一个项目（比如另一个有已存报告的），"
+                 "先向用户确认要用哪个，再带 project_id 重新拉。"
+                 % (n_projects, proj_list, dig_titles.get(pid, pid))
+                 if n_projects > 1 else "本次取的是主站唯一项目「%s」。" % dig_titles.get(pid, pid))),
+    )
 
 
 def _fmt_hq(resp):
@@ -383,9 +611,16 @@ def dispatch(name: str, args: dict, session_id: str) -> dict:
     if name == "profile_status":
         return _ok(_profile_status(session_id), note="采集进度（按模块/字段）")
 
+    if name == "load_ip12_profile":
+        return _load_ip12_profile(session_id, args.get("project_id"))
+
     # 报告生成（严格按样例模板，内容全部由 LLM 产出）
     if name == "generate_report":
-        return report.generate_draft(session_id, (args.get("instruction") or "").strip())
+        chosen = str(args.get("chosen") or "").strip().upper()
+        if chosen not in ("A", "B", "C"):
+            chosen = None
+        return report.generate_draft(session_id, (args.get("instruction") or "").strip(),
+                                     chosen)
 
     if name == "finalize_report":
         return report.finalize(session_id, (args.get("chosen") or "").strip().upper())
@@ -399,7 +634,7 @@ def dispatch(name: str, args: dict, session_id: str) -> dict:
     if name == "get_report":
         full = state.get_report_full(session_id)
         meta = dict(full)
-        for key in ("_json", "_m5_json", "_m6_json"):
+        for key in ("_json", "_m5_json", "_m6_json", "_pending_review"):
             meta.pop(key, None)  # 全文只留在服务端，不外发
         # 三套人设方案 + 推荐：主 Agent 可直接发进对话让用户选（初稿异步完成后用）
         rep = full.get("_json") or {}
@@ -415,7 +650,20 @@ def dispatch(name: str, args: dict, session_id: str) -> dict:
                 "chosen": rec.get("chosen"), "title": rec.get("title"),
                 "reasons": rec.get("reasons"),
             }
-        return _ok(meta, note="当前报告状态")
+            if meta.get("status") == "final":
+                note = ("当前报告状态：已定稿（final）。最终推荐=用户所选方案"
+                        f"{meta.get('chosen') or ''}《{meta.get('chosen_title') or ''}》——"
+                        "只提这一个方案，不要再把三套方案摆出来让用户重新选，"
+                        "也不要重提草稿阶段的推荐款。")
+            else:
+                note = ("当前报告状态。三套人设方案已在 options 里，可直接列给用户选；"
+                        "若 status 还不是 draft_ready/final，故事与细节仍在最终核对中，"
+                        "先只展示方案选项，等状态就绪再转述细节。")
+        else:
+            note = ("当前报告状态（还没有三套方案内容）。报告生成中或尚未启动："
+                    "告诉用户正在生成、进度实时可见，稍后再查 get_report 就能拿到三套方案列给用户，"
+                    "不要甩一句「去开 PDF」让用户自己翻。")
+        return _ok(meta, note=note)
 
     # 模块5（选题）/ 模块6（文案）：生成+校验+修订循环，内容全部由 LLM 产出
     if name == "m5_topics":
@@ -433,7 +681,7 @@ def dispatch(name: str, args: dict, session_id: str) -> dict:
     if name == "get_m5m6":
         full = state.get_report_full(session_id)
         meta = dict(full)
-        for key in ("_json", "_m5_json", "_m6_json"):
+        for key in ("_json", "_m5_json", "_m6_json", "_pending_review"):
             meta.pop(key, None)  # 全文只留在服务端，不外发
         out = {"m5": meta.get("m5"), "m6": meta.get("m6"), "confirmed": meta.get("confirmed")}
         # 内容全文：主 Agent 拿到后原样发进对话（选题清单/三版文案），不用只甩链接
@@ -453,28 +701,34 @@ def dispatch(name: str, args: dict, session_id: str) -> dict:
 
     # 黄雀 CLI
     if name == "hq_status":
-        return _fmt_hq(hq_cli.status())
+        return _fmt_hq(hq_cli.status(session_id=session_id))
 
     if name == "hq_ip12_projects":
-        return _fmt_hq(hq_cli.run("ip12-projects"))
+        return _fmt_hq(hq_cli.run("ip12-projects", session_id=session_id))
 
     if name == "hq_ip12_create":
         title = (args.get("title") or "").strip()
         if not title:
             return _err("缺少参数 title")
-        return _fmt_hq(hq_cli.run("ip12-create", {"title": title}, confirm=True))
+        return _fmt_hq(hq_cli.run(
+            "ip12-create", {"title": title}, confirm=True, session_id=session_id,
+        ))
 
     if name == "hq_ip12_project":
         pid = (args.get("project_id") or "").strip()
         if not pid:
             return _err("缺少参数 project_id")
-        return _fmt_hq(hq_cli.run("ip12-project", {"project_id": pid}))
+        return _fmt_hq(hq_cli.run(
+            "ip12-project", {"project_id": pid}, session_id=session_id,
+        ))
 
     if name == "hq_ip12_report":
         pid = (args.get("project_id") or "").strip()
         if not pid:
             return _err("缺少参数 project_id")
-        return _fmt_hq(hq_cli.run("ip12-report", {"project_id": pid}))
+        return _fmt_hq(hq_cli.run(
+            "ip12-report", {"project_id": pid}, session_id=session_id,
+        ))
 
     if name == "hq_ip12_message":
         pid = (args.get("project_id") or "").strip()
@@ -487,6 +741,7 @@ def dispatch(name: str, args: dict, session_id: str) -> dict:
                 "ip12-message",
                 {"project_id": pid, "message": msg, "request_id": rid},
                 confirm=True,
+                session_id=session_id,
             )
         )
 

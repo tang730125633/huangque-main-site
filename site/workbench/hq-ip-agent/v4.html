@@ -34,6 +34,7 @@
           <button class="icon-btn" id="hist-btn" aria-label="历史会话" title="最近对话">🕘</button>
           <div class="hist-panel" id="hist-panel" hidden></div>
         </div>
+        <button class="icon-btn export-btn" id="export-btn" aria-label="导出对话" title="导出本次对话 JSONL">导出对话</button>
         <a class="icon-btn" href="v3" title="回到 v3 IP 定位流程">v3</a>
         <button class="icon-btn" id="reset-btn" aria-label="重新开始" title="重新开始对话">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>
@@ -78,6 +79,7 @@
       <section class="chat-pane" id="chat-pane">
         <div class="messages" id="messages" aria-live="polite"></div>
         <div class="composer-wrap">
+          <div class="net-banner" id="net-banner" hidden></div>
           <form class="composer" id="composer">
             <div class="upload-row" id="upload-row" hidden></div>
             <textarea id="input" rows="1" placeholder="说说你想要什么成果…（Enter 发送 / Shift+Enter 换行，可直接粘贴图片）" autocomplete="off"></textarea>

@@ -370,6 +370,52 @@ def _gen_image_xiaole_locked(prompt, ratio, quality, count, img, references=None
             "count": len(files_out), "file": files_out[0], "url": urls[0],
             "files": files_out, "urls": urls, "ratio": ratio, "prompt": prompt}
 
+_GROK_SIZES = {"1:1": "1024x1024", "2:3": "832x1248", "3:2": "1248x832", "3:4": "896x1152",
+               "4:3": "1152x896", "4:5": "896x1120", "5:4": "1120x896", "9:16": "768x1344",
+               "16:9": "1344x768", "21:9": "1536x640"}
+
+
+def _gen_image_grok(prompt, ratio, quality, count):
+    """Grok 生图（xAI grok-2-image）：OpenAI 兼容 images/generations，走自建出境链。"""
+    from content_domains import egress
+    from content_domains.video_xai import XAI_API_KEY, XAI_API_BASE, _request_json, _error_detail, TransientXaiError, XaiCredentialError
+    if not XAI_API_KEY:
+        raise ValueError("Grok 生图未配置（XAI_API_KEY）")
+    size = _GROK_SIZES.get(ratio, "1024x1024")
+    body = {
+        "model": "grok-2-image",
+        "prompt": prompt,
+        "n": count,
+        "size": size,
+        "response_format": "b64_json",
+    }
+    _proxy = egress.preferred_proxy()
+    opener = (
+        urllib.request.build_opener(urllib.request.ProxyHandler({"http": _proxy, "https": _proxy}))
+        if _proxy else egress._DIRECT
+    )
+    try:
+        data = _request_json(opener, "POST", "images/generations", body=body, timeout=240)
+    except (TransientXaiError, XaiCredentialError) as exc:
+        raise ValueError(str(exc)[:160])
+    except Exception as exc:
+        raise ValueError("Grok 生图失败：" + _error_detail(exc)[:160])
+    files_out, urls = [], []
+    for i, item in enumerate((data or {}).get("data") or []):
+        b64 = item.get("b64_json")
+        if not b64:
+            continue
+        fn = "img_%s_%d.png" % (uuid.uuid4().hex, i)
+        (OUT_DIR / fn).write_bytes(base64.b64decode(b64))
+        files_out.append(fn)
+        urls.append(public_url(fn, "image/png"))
+    if not files_out:
+        raise ValueError("Grok 出图返回为空")
+    return {"type": "image", "mode": "text2img", "provider": "grok", "count": len(files_out),
+            "file": files_out[0], "url": urls[0], "files": files_out, "urls": urls,
+            "ratio": ratio, "prompt": prompt}
+
+
 def _dispatch_gpt(provider, path, body, ct, base, key, proxy, streaming=False):
     """gpt 家族出图分发。openai(官方) 走出境优先级链 VPS→mihomo→heygen；泽龙系维持原样。"""
     if provider == "zelong2":
@@ -682,6 +728,15 @@ def gen_image(payload):
         count = max(1, min(SEEDREAM_MAX_N, int(payload.get("count") or 1)))
         seedream_refs = refs if len(refs) > 1 else (refs[0] if refs else None)
         result = _gen_image_seedream(prompt, ratio, q, count, seedream_refs, variant)
+        result["prompt"] = user_prompt
+        return result
+    if provider == "grok":
+        if mask:
+            raise ValueError("Grok 生图暂不支持局部修改（蒙版），请改用黄雀引擎 2")
+        if refs:
+            raise ValueError("Grok 生图是文生图引擎，暂不支持参考图/合影合成，请改用 Seedream（黄雀引擎 1）")
+        count = max(1, min(2, int(payload.get("count") or 1)))
+        result = _gen_image_grok(prompt, ratio, quality, count)
         result["prompt"] = user_prompt
         return result
     size  = SIZES.get(ratio, "1024x1024")

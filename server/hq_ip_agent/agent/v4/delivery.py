@@ -28,6 +28,7 @@ COLLECT_MEDIA_DIR = os.path.join(
 _COLLECT_WATCHERS_GUARD = threading.Lock()
 _COLLECT_WATCHERS = set()   # (sid, job_id)：采集任务看护线程（running → 完成交付）
 _FINALIZING = set()         # (sid, job_id)：正在执行交付（防并发重复）
+_DELIVERING = set()         # (sid, job_id)：普通任务终态交付（防 status/turn 并发重复）
 
 # 状态缓存失效回调（app.py 注入：交付/轮次完成时清 status 缓存，下一帧状态立即更新）
 _STATUS_BUST = lambda sid: None
@@ -45,6 +46,68 @@ def collect_marker_delivered(sid: str, job_id) -> bool:
         if m.get("media_job") == job_id:
             return True
     return False
+
+
+def task_marker_delivered(sid: str, job_id) -> bool:
+    """普通后台任务的终态是否已经进入过对话。"""
+    return any(str(m.get("task_job")) == str(job_id) for m in reversed(v4_state.get_main_history(sid)))
+
+
+def _result_urls(value, found=None) -> list:
+    """从真实任务结果中取最多 3 个公网链接，直接交给现有消息渲染器。"""
+    found = found if found is not None else []
+    if len(found) >= 3:
+        return found
+    if isinstance(value, dict):
+        for item in value.values():
+            _result_urls(item, found)
+    elif isinstance(value, list):
+        for item in value:
+            _result_urls(item, found)
+    elif isinstance(value, str) and value.startswith(("https://", "http://")) and value not in found:
+        found.append(value)
+    return found[:3]
+
+
+def deliver_terminal(sid: str, domain: str, job_id, terminal: str, payload: dict) -> bool:
+    """把非采集任务的真实终态写进历史并实时推到对话；幂等。"""
+    key = (sid, str(job_id))
+    with _COLLECT_WATCHERS_GUARD:
+        if key in _DELIVERING or task_marker_delivered(sid, job_id):
+            return False
+        _DELIVERING.add(key)
+    try:
+        payload = payload or {}
+        result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+        detail = next((str(v).strip() for v in (
+            payload.get("summary"), payload.get("message"), payload.get("error_message"),
+            result.get("summary"), result.get("message"), result.get("error_message"),
+        ) if v), "")
+        if len(detail) > 300:
+            detail = detail[:300] + "…"
+        label = {
+            "completed": "✅ 已完成",
+            "failed": "⚠️ 失败",
+            "cancelled": "已取消",
+        }.get(terminal, "状态已更新")
+        text = "任务 %s %s。" % (job_id, label)
+        if detail:
+            text += "\n" + detail
+        urls = _result_urls(payload)
+        if urls:
+            text += "\n" + "\n".join(urls)
+        v4_state.append_main_history(sid, [
+            {"role": "user", "content": "（系统事件，用户不可见：%s 任务 %s 已到终态）" % (domain, job_id)},
+            {"role": "assistant", "content": text, "task_job": str(job_id), "task_domain": domain},
+        ])
+        v4_state.persist(sid)
+        _STATUS_BUST(sid)
+        streaming.emit(sid, "delivery", {"reply": text, "images": []})
+        log.info("job %s terminal delivered: %s", job_id, terminal, extra=observability.ctx(sid))
+        return True
+    finally:
+        with _COLLECT_WATCHERS_GUARD:
+            _DELIVERING.discard(key)
 
 
 def finalize_collect(sid: str, job_id, content: dict) -> list:
@@ -150,7 +213,7 @@ def spawn_collect_watcher(sid: str, job_id):
         try:
             while time.time() < deadline:
                 time.sleep(8)
-                r = hq_cli.run("task", {"job_id": job_id})
+                r = hq_cli.run("task", {"job_id": job_id}, session_id=sid)
                 task_res = ((r or {}).get("data") or {}).get("result") or {}
                 phase = task_res.get("phase")
                 if phase == "done":
@@ -197,7 +260,7 @@ def resume_stale_jobs(sid: str):
                 continue
             _LAST_JOB_POLL[key] = (job_id, now)
             try:
-                r = hq_cli.run("task", {"job_id": int(job_id)})
+                r = hq_cli.run("task", {"job_id": int(job_id)}, session_id=sid)
             except (TypeError, ValueError):
                 continue
             data = (r or {}).get("data") or {}
@@ -206,12 +269,15 @@ def resume_stale_jobs(sid: str):
             task_res = data.get("result") or {}
             if task_res.get("job_id") is not None and str(task_res["job_id"]) != str(job_id):
                 continue
-            phase = str(task_res.get("phase") or task_res.get("status") or "").lower()
+            phase = v4_subagent._task_status(task_res)
             if phase not in v4_subagent._TASK_TERMINALS:
                 continue
+            terminal = v4_subagent._TASK_TERMINALS[phase]
             v4_subagent._observe_task_query(sid, {"job_id": job_id}, task_res)
-            if domain == "collect" and v4_subagent._TASK_TERMINALS[phase] == v4_protocol.COMPLETED:
+            if domain == "collect" and terminal == v4_protocol.COMPLETED:
                 maybe_spawn_finalize(sid, job_id, task_res.get("result") or {})
+            else:
+                deliver_terminal(sid, domain, job_id, terminal, task_res)
             refreshed = True
     if refreshed:
         v4_state.persist(sid)

@@ -69,6 +69,7 @@ button { font-family: inherit; }
 }
 .icon-btn:hover { background: var(--gray-100); color: var(--fg); }
 .dark .icon-btn:hover { background: #1f1f1f; }
+.export-btn { width: auto; padding: 0 10px; font-size: 12px; white-space: nowrap; }
 
 /* ---- Shell ---- */
 /* ---- Shell：左报告栏 + 主列（聊天）---- */
@@ -113,7 +114,7 @@ button { font-family: inherit; }
 /* ---- Chat ---- */
 .chat-pane { display: flex; flex-direction: column; }
 .messages { display: flex; flex-direction: column; gap: 16px; padding: 8px 0 20px; min-height: 120px; }
-.msg { display: flex; flex-direction: column; max-width: 85%; }
+.msg { display: flex; flex-direction: column; max-width: 85%; scroll-margin-bottom: 96px; }
 .msg.user { align-self: flex-end; }
 .msg.assistant { align-self: flex-start; }
 .bubble {
@@ -153,6 +154,9 @@ button { font-family: inherit; }
 
 /* ---- Composer ---- */
 .composer-wrap { position: sticky; bottom: 0; background: linear-gradient(to bottom, transparent, var(--bg) 40%); padding-top: 16px; }
+.net-banner { margin: 0 0 8px; padding: 8px 12px; border-radius: 8px; font-size: 13px;
+  background: #fef3c7; color: #92400e; border: 1px solid #fde68a; }
+[data-theme="dark"] .net-banner, .dark .net-banner { background: #3b2f12; color: #fcd34d; border-color: #6b5518; }
 .composer {
   border: 1px solid var(--control-border); border-radius: var(--radius-card);
   background: var(--surface); padding: 10px 12px 8px;
