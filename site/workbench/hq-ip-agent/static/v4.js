@@ -1219,9 +1219,9 @@
   var uploadRow = $("upload-row");
   var fileInput = $("file-input");
 
-  $("upload-btn").addEventListener("click", function () { fileInput.click(); });
+  $("upload-btn").addEventListener("click", function () { openAssetPanel(); });
   fileInput.addEventListener("change", function () {
-    Array.prototype.forEach.call(fileInput.files, function (f) { uploadFile(f); });
+    Array.prototype.forEach.call(fileInput.files, function (f) { uploadFile(f, null); });
     fileInput.value = "";
   });
 
@@ -1233,30 +1233,102 @@
     return "file";
   }
 
-  function uploadFile(f) {
+  // 图片压缩：大图上传前先在本地压小（长边 1600 + JPEG q0.88），
+  // 10MB 原图压到几百 KB，上传从几十秒变一两秒；压不划算就用原图，绝不阻塞上传。
+  function compressImage(file, cb) {
+    var MAX_DIM = 1600, QUALITY = 0.88, MIN_BYTES = 512 * 1024;
+    if (file.size < MIN_BYTES) { cb(null); return; }
+    if (/\.gif$/i.test(file.name)) { cb(null); return; } // 动图不压，避免丢动画
+    var url;
+    try { url = URL.createObjectURL(file); } catch (e) { cb(null); return; }
+    var img = new Image();
+    img.onload = function () {
+      URL.revokeObjectURL(url);
+      var w = img.naturalWidth || 0, h = img.naturalHeight || 0;
+      if (!w || !h || Math.max(w, h) <= MAX_DIM) { cb(null); return; }
+      var scale = MAX_DIM / Math.max(w, h);
+      var cw = Math.round(w * scale), ch = Math.round(h * scale);
+      var canvas = document.createElement("canvas");
+      canvas.width = cw; canvas.height = ch;
+      canvas.getContext("2d").drawImage(img, 0, 0, cw, ch);
+      try {
+        canvas.toBlob(function (blob) {
+          cb(blob && blob.size < file.size * 0.95 ? blob : null);
+        }, "image/jpeg", QUALITY);
+      } catch (e) { cb(null); }
+    };
+    img.onerror = function () { URL.revokeObjectURL(url); cb(null); };
+    img.src = url;
+  }
+
+  function uploadFile(f, opts) {
     if (!f) return;
-    // 客户端预检：类型/大小不对当场提示，不用白传一遍等后端拒绝
+    if (!sessionId) {
+      addMsg("assistant", "会话还没准备好，请稍等页面加载完再传。");
+      return;
+    }
+    opts = opts || {};
+    // 客户端预检：类型不对当场提示，不用白传一遍等后端拒绝
     var ALLOWED_EXT = /\.(png|jpg|jpeg|webp|gif|mp3|wav|m4a|aac|ogg)$/i;
-    var MAX_UPLOAD_MB = 10;
     if (!ALLOWED_EXT.test(f.name)) {
       addMsg("assistant", "附件「" + f.name + "」格式不支持（支持图片和音频）。");
+      if (opts.onDone) opts.onDone({ ok: false });
       return;
     }
-    if (f.size > MAX_UPLOAD_MB * 1024 * 1024) {
+    var MAX_UPLOAD_MB = 10;
+    var isImage = fileKind(f.name) === "image";
+    if (!isImage && f.size > MAX_UPLOAD_MB * 1024 * 1024) {
       addMsg("assistant", "附件「" + f.name + "」超过 " + MAX_UPLOAD_MB + " MB，请压缩后再上传。");
+      if (opts.onDone) opts.onDone({ ok: false });
       return;
     }
-    var fd = new FormData();
-    fd.append("session_id", sessionId);
-    fd.append("file", f);
-    fetch("api/v4/upload", { method: "POST", body: fd })
-      .then(function (r) { return r.json(); })
-      .then(function (data) {
-        if (!data.ok) { addMsg("assistant", "附件上传失败：" + (data.error || "未知错误")); return; }
-        pendingAttachments.push({ file_id: data.file_id, url: data.url, name: data.name || f.name, kind: data.kind || fileKind(f.name) });
-        renderUploads();
-      })
-      .catch(function () { addMsg("assistant", "附件上传失败，请重试。"); });
+    function doUpload(file, displayName) {
+      if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
+        addMsg("assistant", "附件「" + displayName + "」还是超过 " + MAX_UPLOAD_MB + " MB，请手动压缩后再传。");
+        if (opts.onDone) opts.onDone({ ok: false });
+        return;
+      }
+      var xhr = new XMLHttpRequest();
+      xhr.open("POST", "api/v4/upload");
+      xhr.upload.onprogress = function (e) {
+        if (!e.lengthComputable) return;
+        var pct = Math.round((e.loaded / e.total) * 100);
+        if (opts.onProgress) opts.onProgress(pct);
+      };
+      xhr.onload = function () {
+        var data = {};
+        try { data = JSON.parse(xhr.responseText || "{}"); } catch (err) {}
+        if (!data.ok) { addMsg("assistant", "附件上传失败：" + (data.error || "未知错误")); }
+        else {
+          pendingAttachments.push({ file_id: data.file_id, url: data.url, name: data.name || displayName, kind: data.kind || fileKind(displayName) });
+          renderUploads();
+          if (data.asset && data.asset.quota && !assetPanel.hidden) renderAssetQuota(data.asset.quota);
+          if (data.asset && data.asset.quota_exceeded) {
+            addMsg("assistant", "附件已发到对话，但云空间已满（50MB），这次没存进素材库。可在素材库里删除旧素材后再传。");
+          }
+        }
+        if (opts.onDone) opts.onDone(data);
+      };
+      xhr.onerror = function () {
+        addMsg("assistant", "附件上传失败，请重试。");
+        if (opts.onDone) opts.onDone({ ok: false });
+      };
+      var fd = new FormData();
+      fd.append("session_id", sessionId);
+      fd.append("file", file, displayName);
+      xhr.send(fd);
+    }
+    if (!isImage) { doUpload(f, f.name); return; }
+    if (opts.onProgress) opts.onProgress(0);
+    compressImage(f, function (blob) {
+      if (blob) {
+        var newName = f.name.replace(/\.(png|webp|jpe?g)$/i, "") + ".jpg";
+        var nf = new File([blob], newName, { type: "image/jpeg" });
+        doUpload(nf, newName);
+      } else {
+        doUpload(f, f.name);
+      }
+    });
   }
 
   function renderUploads() {
@@ -1327,6 +1399,183 @@
     e.preventDefault();
     Array.prototype.forEach.call(files, function (f) { uploadFile(f); });
   });
+
+  // ---- 素材库面板：＋号打开；可复用账号云空间素材，或继续上传新素材（串行+进度条）----
+  var assetPanel = $("asset-panel");
+  var assetGrid = $("asset-grid");
+  var assetFileInput = $("asset-file-input");
+  var assetQuotaFill = $("asset-quota-fill");
+  var assetQuotaText = $("asset-quota-text");
+  var assetUploadProgress = $("asset-upload-progress");
+  var assetUploadProgressFill = $("asset-upload-progress-fill");
+  var assetUploadProgressName = $("asset-upload-progress-name");
+  var assetBusy = false; // 取用/删除串行锁，防止连点重复请求
+
+  function fmtBytes(n) {
+    n = Number(n) || 0;
+    if (n < 1024) return n + " B";
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+    return (n / 1024 / 1024).toFixed(1) + " MB";
+  }
+
+  function renderAssetQuota(quota) {
+    if (!quota || !quota.limit) return;
+    var pct = Math.min(100, Math.max(0, Math.round((quota.used / quota.limit) * 100)));
+    assetQuotaFill.style.width = pct + "%";
+    assetQuotaText.textContent = "云空间 " + fmtBytes(quota.used) + " / " + fmtBytes(quota.limit);
+  }
+
+  function loadAssets() {
+    if (!sessionId) {
+      assetGrid.innerHTML = '<div class="asset-empty">会话还没准备好，请稍等页面加载完。</div>';
+      return;
+    }
+    fetch("api/v4/assets?session_id=" + encodeURIComponent(sessionId))
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d && d.ok) {
+          renderAssetQuota(d.quota);
+          renderAssets(d.assets || []);
+        } else {
+          assetGrid.innerHTML = '<div class="asset-empty">素材库加载失败：' + escapeText((d && d.error) || "未知错误") + "</div>";
+        }
+      })
+      .catch(function () {
+        assetGrid.innerHTML = '<div class="asset-empty">素材库加载失败，请检查网络。</div>';
+      });
+  }
+
+  function renderAssets(list) {
+    assetGrid.innerHTML = "";
+    if (!list || !list.length) {
+      var empty = document.createElement("div");
+      empty.className = "asset-empty";
+      empty.textContent = "还没有素材。上传过的图片/音频会自动存到这里，网络差时下次点一下就能用，不用重传。";
+      assetGrid.appendChild(empty);
+      return;
+    }
+    list.forEach(function (a) {
+      var card = document.createElement("div");
+      card.className = "asset-card";
+      card.title = a.name + " · " + fmtBytes(a.size);
+      if (a.thumb) {
+        var img = document.createElement("img");
+        img.src = a.thumb;
+        img.alt = a.name;
+        img.loading = "lazy";
+        card.appendChild(img);
+      } else {
+        var ic = document.createElement("span");
+        ic.className = "asset-icon";
+        ic.textContent = fileKind(a.name) === "audio" ? "🎵" : "📎";
+        card.appendChild(ic);
+      }
+      var nm = document.createElement("span");
+      nm.className = "asset-name";
+      nm.textContent = a.name;
+      nm.title = a.name;
+      card.appendChild(nm);
+      var del = document.createElement("button");
+      del.type = "button";
+      del.className = "asset-del";
+      del.textContent = "×";
+      del.title = "删除这个素材";
+      del.setAttribute("aria-label", "删除素材 " + a.name);
+      del.addEventListener("click", function (e) {
+        e.stopPropagation();
+        if (confirm("确定删除素材「" + a.name + "」吗？删除后不可恢复。")) deleteAsset(a, card);
+      });
+      card.appendChild(del);
+      card.addEventListener("click", function () { useAsset(a, card); });
+      assetGrid.appendChild(card);
+    });
+  }
+
+  function useAsset(a, card) {
+    if (assetBusy || !sessionId) return;
+    assetBusy = true;
+    card.classList.add("asset-busy");
+    fetch("api/v4/assets/use", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId, asset_id: a.id })
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d && d.ok) {
+          pendingAttachments.push({ file_id: d.file_id, url: d.url, name: d.name, kind: d.kind || fileKind(d.name) });
+          renderUploads();
+          addMsg("assistant", "已从素材库取用「" + d.name + "」，发送时随文字一起发出。");
+        } else {
+          addMsg("assistant", "取用素材失败：" + ((d && d.error) || "未知错误"));
+        }
+      })
+      .catch(function () { addMsg("assistant", "取用素材失败，请检查网络。"); })
+      .finally(function () {
+        assetBusy = false;
+        card.classList.remove("asset-busy");
+      });
+  }
+
+  function deleteAsset(a, card) {
+    if (assetBusy || !sessionId) return;
+    assetBusy = true;
+    card.classList.add("asset-busy");
+    fetch("api/v4/assets/" + encodeURIComponent(a.id) + "?session_id=" + encodeURIComponent(sessionId), { method: "DELETE" })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d && d.ok) {
+          renderAssetQuota(d.quota);
+          if (card.parentNode) card.parentNode.removeChild(card);
+          if (!assetGrid.children.length) renderAssets([]);
+        } else {
+          addMsg("assistant", "删除素材失败：" + ((d && d.error) || "未知错误"));
+        }
+      })
+      .catch(function () { addMsg("assistant", "删除素材失败，请检查网络。"); })
+      .finally(function () { assetBusy = false; });
+  }
+
+  function openAssetPanel() {
+    assetPanel.hidden = false;
+    loadAssets();
+  }
+  function closeAssetPanel() {
+    assetPanel.hidden = true;
+    assetUploadProgress.hidden = true;
+  }
+
+  $("asset-panel-close").addEventListener("click", closeAssetPanel);
+  $("asset-upload-new").addEventListener("click", function () { assetFileInput.click(); });
+  document.addEventListener("click", function (e) {
+    // 点「＋」按钮本体或其内部 SVG 图标都算点按钮：用 contains 判断，不误关面板
+    if (!assetPanel.hidden && !assetPanel.contains(e.target) && !$("upload-btn").contains(e.target)) {
+      closeAssetPanel();
+    }
+  });
+
+  // 素材面板里的「上传新素材」：一次可选多个，串行上传（网络差时逐个传稳），进度条显示当前文件
+  assetFileInput.addEventListener("change", function () {
+    var files = Array.prototype.slice.call(assetFileInput.files || []);
+    assetFileInput.value = "";
+    if (!files.length) return;
+    openAssetPanel();
+    assetUploadNext(files, 0);
+  });
+  function assetUploadNext(files, i) {
+    if (i >= files.length) {
+      assetUploadProgress.hidden = true;
+      loadAssets(); // 全部传完：刷新列表和配额
+      return;
+    }
+    assetUploadProgressName.textContent = "上传 " + (i + 1) + "/" + files.length + "：" + files[i].name;
+    assetUploadProgressFill.style.width = "0%";
+    assetUploadProgress.hidden = false;
+    uploadFile(files[i], {
+      onProgress: function (pct) { assetUploadProgressFill.style.width = pct + "%"; },
+      onDone: function () { assetUploadNext(files, i + 1); }
+    });
+  }
 
   composer.addEventListener("submit", function (e) { e.preventDefault(); send(); });
 

@@ -3,10 +3,12 @@
 运行：python app.py   （默认 http://127.0.0.1:8000）
 """
 import collections
+import hashlib
 import json
 import logging
 import os
 import re
+import shutil
 import threading
 import time
 import uuid
@@ -1289,6 +1291,98 @@ _ALLOWED_ATTACH_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif",
 _AUDIO_EXT = {".mp3", ".wav", ".m4a", ".aac", ".ogg"}
 _MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 
+# ---- 素材库（账号级云空间，50MB）：上传的素材可跨会话复用，网络差时不用重传 ----
+ASSET_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "assets")
+_ASSET_QUOTA_BYTES = 50 * 1024 * 1024
+_ASSET_THUMB_MAX = 360
+_ASSET_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+def _asset_dir(account_id: str) -> str:
+    return os.path.join(ASSET_ROOT, account_id)
+
+
+def _asset_index(account_id: str) -> dict:
+    p = os.path.join(_asset_dir(account_id), "index.json")
+    try:
+        with open(p, encoding="utf-8") as f:
+            idx = json.load(f)
+        if isinstance(idx.get("items"), list):
+            return idx
+    except Exception:
+        pass
+    return {"total_bytes": 0, "items": []}
+
+
+def _asset_save_index(account_id: str, idx: dict) -> None:
+    d = _asset_dir(account_id)
+    os.makedirs(d, exist_ok=True)
+    tmp = os.path.join(d, "index.json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(idx, f, ensure_ascii=False)
+    os.replace(tmp, os.path.join(d, "index.json"))
+
+
+def _asset_thumb_for(account_id: str, asset_id: str, src_path: str) -> bool:
+    try:
+        from PIL import Image
+        with Image.open(src_path) as im:
+            im.thumbnail((_ASSET_THUMB_MAX, _ASSET_THUMB_MAX))
+            out = os.path.join(_asset_dir(account_id), "thumbs", asset_id + ".jpg")
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+            im.convert("RGB").save(out, "JPEG", quality=80)
+        return True
+    except Exception:
+        return False
+
+
+def _sha256_file(path: str) -> str:
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return ""
+
+
+def _asset_ingest(account_id: str, src_path: str, name: str, ext: str) -> dict:
+    """把上传文件收进账号素材库（50MB 云空间，sha256 去重）。
+
+    返回 {asset_id, saved, quota_exceeded, quota:{used,limit}}；任何失败都不影响会话内上传。
+    """
+    try:
+        size = os.path.getsize(src_path)
+    except OSError:
+        return {"saved": False}
+    idx = _asset_index(account_id)
+    used = int(idx.get("total_bytes") or 0)
+    quota = {"used": used, "limit": _ASSET_QUOTA_BYTES}
+    digest = _sha256_file(src_path)
+    if digest:
+        for it in idx.get("items", []):
+            if it.get("sha256") == digest:
+                return {"asset_id": it["id"], "saved": False, "duplicate_of": it["id"],
+                        "quota_exceeded": False, "quota": quota}
+    if used + size > _ASSET_QUOTA_BYTES:
+        return {"asset_id": None, "saved": False, "quota_exceeded": True, "quota": quota}
+    aid = uuid.uuid4().hex
+    try:
+        dst = os.path.join(_asset_dir(account_id), aid + ext)
+        os.makedirs(_asset_dir(account_id), exist_ok=True)
+        shutil.copyfile(src_path, dst)
+    except OSError:
+        return {"saved": False}
+    has_thumb = _asset_thumb_for(account_id, aid, dst)
+    item = {"id": aid, "name": name, "ext": ext, "size": size,
+            "created_at": int(time.time()), "sha256": digest, "has_thumb": has_thumb}
+    idx["items"].append(item)
+    idx["total_bytes"] = used + size
+    _asset_save_index(account_id, idx)
+    return {"asset_id": aid, "saved": True, "quota_exceeded": False,
+            "quota": {"used": used + size, "limit": _ASSET_QUOTA_BYTES}}
+
 
 def _upload_dir(sid: str) -> str:
     return os.path.join(UPLOAD_DIR, sid)
@@ -1326,13 +1420,124 @@ def v4_upload():
     file_id = f"{uuid.uuid4().hex}{ext}"
     with open(os.path.join(_upload_dir(sid), file_id), "wb") as out:
         out.write(data)
-    return jsonify({
+    resp = {
         "ok": True,
         "file_id": file_id,
         "name": f.filename,
         "kind": "audio" if ext in _AUDIO_EXT else "image",
         "url": f"/api/v4/file/{sid}/{file_id}",
+    }
+    # 素材库：收进账号云空间（50MB），网络差时可复用不重传；失败不影响本次会话上传
+    account_id = (g.hq_user or {}).get("account_id")
+    if account_id:
+        resp["asset"] = _asset_ingest(account_id, os.path.join(_upload_dir(sid), file_id),
+                                      f.filename or file_id, ext)
+    return jsonify(resp)
+
+
+@app.get("/api/v4/assets")
+def v4_assets():
+    sid = (request.args.get("session_id") or "").strip()
+    denied = _authorize_sid(sid)
+    if denied:
+        return denied
+    idx = _asset_index(g.hq_user["account_id"])
+    items = sorted(idx.get("items", []), key=lambda x: x.get("created_at") or 0, reverse=True)
+    out = []
+    for it in items:
+        out.append({
+            "id": it["id"], "name": it.get("name", ""), "size": it.get("size", 0),
+            "created_at": it.get("created_at"), "has_thumb": bool(it.get("has_thumb")),
+            "thumb": f"/api/v4/asset/{it['id']}/thumb?session_id={sid}" if it.get("has_thumb") else "",
+            "url": f"/api/v4/asset/{it['id']}/file?session_id={sid}",
+        })
+    return jsonify({"ok": True, "assets": out,
+                    "quota": {"used": int(idx.get("total_bytes") or 0), "limit": _ASSET_QUOTA_BYTES}})
+
+
+@app.post("/api/v4/assets/use")
+def v4_asset_use():
+    body = request.get_json(force=True, silent=True) or {}
+    sid = str(body.get("session_id") or "").strip()
+    denied = _authorize_sid(sid)
+    if denied:
+        return denied
+    asset_id = str(body.get("asset_id") or "").strip()
+    if not _ASSET_ID_RE.fullmatch(asset_id):
+        return jsonify({"error": "素材编号无效"}), 400
+    idx = _asset_index(g.hq_user["account_id"])
+    item = next((i for i in idx.get("items", []) if i.get("id") == asset_id), None)
+    if not item:
+        return jsonify({"error": "素材不存在"}), 404
+    src = os.path.join(_asset_dir(g.hq_user["account_id"]), asset_id + item.get("ext", ""))
+    if not os.path.isfile(src):
+        return jsonify({"error": "素材文件丢失"}), 404
+    os.makedirs(_upload_dir(sid), exist_ok=True)
+    fid = uuid.uuid4().hex + item.get("ext", "")
+    shutil.copyfile(src, os.path.join(_upload_dir(sid), fid))
+    return jsonify({
+        "ok": True, "file_id": fid,
+        "name": item.get("name") or ("素材" + item.get("ext", "")),
+        "url": f"/api/v4/file/{sid}/{fid}",
+        "kind": "audio" if item.get("ext", "") in _AUDIO_EXT else "image",
     })
+
+
+@app.delete("/api/v4/assets/<asset_id>")
+def v4_asset_delete(asset_id):
+    sid = (request.args.get("session_id") or "").strip()
+    denied = _authorize_sid(sid)
+    if denied:
+        return denied
+    if not _ASSET_ID_RE.fullmatch(asset_id):
+        return jsonify({"error": "素材编号无效"}), 400
+    idx = _asset_index(g.hq_user["account_id"])
+    item = next((i for i in idx.get("items", []) if i.get("id") == asset_id), None)
+    if not item:
+        return jsonify({"error": "素材不存在"}), 404
+    d = _asset_dir(g.hq_user["account_id"])
+    for p in (os.path.join(d, asset_id + item.get("ext", "")),
+              os.path.join(d, "thumbs", asset_id + ".jpg")):
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+    idx["items"] = [i for i in idx.get("items", []) if i.get("id") != asset_id]
+    idx["total_bytes"] = max(0, int(idx.get("total_bytes") or 0) - int(item.get("size") or 0))
+    _asset_save_index(g.hq_user["account_id"], idx)
+    return jsonify({"ok": True, "quota": {"used": idx["total_bytes"], "limit": _ASSET_QUOTA_BYTES}})
+
+
+@app.get("/api/v4/asset/<asset_id>/thumb")
+def v4_asset_thumb(asset_id):
+    sid = (request.args.get("session_id") or "").strip()
+    denied = _authorize_sid(sid)
+    if denied:
+        return denied
+    if not _ASSET_ID_RE.fullmatch(asset_id):
+        return jsonify({"error": "素材编号无效"}), 400
+    p = os.path.join(_asset_dir(g.hq_user["account_id"]), "thumbs", asset_id + ".jpg")
+    if not os.path.isfile(p):
+        return jsonify({"error": "缩略图不存在"}), 404
+    return send_from_directory(os.path.dirname(p), os.path.basename(p), max_age=3600)
+
+
+@app.get("/api/v4/asset/<asset_id>/file")
+def v4_asset_file(asset_id):
+    sid = (request.args.get("session_id") or "").strip()
+    denied = _authorize_sid(sid)
+    if denied:
+        return denied
+    if not _ASSET_ID_RE.fullmatch(asset_id):
+        return jsonify({"error": "素材编号无效"}), 400
+    idx = _asset_index(g.hq_user["account_id"])
+    item = next((i for i in idx.get("items", []) if i.get("id") == asset_id), None)
+    if not item:
+        return jsonify({"error": "素材不存在"}), 404
+    p = os.path.join(_asset_dir(g.hq_user["account_id"]), asset_id + item.get("ext", ""))
+    if not os.path.isfile(p):
+        return jsonify({"error": "素材文件丢失"}), 404
+    return send_from_directory(os.path.dirname(p), os.path.basename(p), max_age=3600)
 
 
 @app.post("/api/v4/selection")

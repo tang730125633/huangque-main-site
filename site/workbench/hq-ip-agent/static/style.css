@@ -414,6 +414,63 @@ button { font-family: inherit; }
   font-size: 18px; line-height: 1; }
 .upload-btn:hover { border-color: var(--brand-600); color: var(--brand-600); background: var(--surface); }
 
+/* ---- 素材库面板：＋号展开，浮在输入框上方 ---- */
+.composer { position: relative; }
+.asset-panel {
+  position: absolute; left: 0; right: 0; bottom: calc(100% + 8px); z-index: 30;
+  display: flex; flex-direction: column; gap: 10px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-card);
+  padding: 12px 14px; box-shadow: 0 12px 32px rgb(0 0 0 / .14);
+  max-height: min(420px, 60vh);
+}
+.asset-panel[hidden], .asset-upload-progress[hidden] { display: none; }
+.asset-panel-head { display: flex; align-items: center; justify-content: space-between; }
+.asset-panel-title { font-size: 13px; font-weight: 600; }
+.asset-panel-close { border: none; background: none; color: var(--fg-muted); font-size: 18px;
+  line-height: 1; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
+.asset-panel-close:hover { color: var(--fg); background: var(--gray-100); }
+.dark .asset-panel-close:hover { background: #1f1f1f; }
+.asset-quota { display: flex; flex-direction: column; gap: 4px; }
+.asset-quota-bar { height: 6px; border-radius: 9999px; background: var(--gray-100); overflow: hidden; }
+.dark .asset-quota-bar { background: #1f1f1f; }
+.asset-quota-fill { height: 100%; width: 0; border-radius: 9999px; background: var(--brand-600);
+  transition: width 300ms var(--ease); }
+.asset-quota-text { font-size: 11px; color: var(--fg-faint); }
+.asset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+  gap: 8px; overflow-y: auto; padding: 2px; }
+.asset-card { position: relative; display: flex; flex-direction: column; gap: 4px; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 10px; padding: 4px; background: var(--bg);
+  transition: border-color 150ms, transform 150ms; }
+.asset-card:hover { border-color: var(--brand-600); transform: translateY(-1px); }
+.asset-card.asset-busy { opacity: .55; pointer-events: none; }
+.asset-card img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px; display: block;
+  background: var(--gray-100); }
+.dark .asset-card img { background: #1f1f1f; }
+.asset-icon { display: flex; align-items: center; justify-content: center; aspect-ratio: 1;
+  font-size: 22px; border-radius: 6px; background: var(--gray-100); }
+.dark .asset-icon { background: #1f1f1f; }
+.asset-name { font-size: 10.5px; color: var(--fg-muted); white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; }
+.asset-del { position: absolute; top: 6px; right: 6px; width: 18px; height: 18px; line-height: 16px;
+  text-align: center; border-radius: 50%; background: rgba(0,0,0,.6); color: #fff; font-size: 11px;
+  border: 0; cursor: pointer; padding: 0; opacity: 0; transition: opacity 150ms; }
+.asset-card:hover .asset-del, .asset-del:focus-visible { opacity: 1; }
+@media (pointer: coarse) { .asset-del { opacity: 1; } } /* 触屏没有 hover，删除钮常显 */
+.asset-empty { grid-column: 1 / -1; font-size: 12px; color: var(--fg-faint); padding: 18px 4px; }
+.asset-upload-progress { display: flex; flex-direction: column; gap: 4px; }
+.asset-upload-progress-name { font-size: 11px; color: var(--fg-muted); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.asset-upload-progress-bar { height: 6px; border-radius: 9999px; background: var(--gray-100); overflow: hidden; }
+.dark .asset-upload-progress-bar { background: #1f1f1f; }
+.asset-upload-progress-fill { height: 100%; width: 0; border-radius: 9999px; background: var(--live);
+  transition: width 150ms linear; }
+.asset-panel-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.asset-panel-hint { font-size: 11px; color: var(--fg-faint); }
+.asset-upload-new { flex: none; font-size: 12px; padding: 5px 12px; border-radius: 8px;
+  border: 1px solid var(--brand-600); background: none; color: var(--brand-600); cursor: pointer; }
+.asset-upload-new:hover { background: var(--brand-50); }
+.dark .asset-upload-new:hover { background: rgb(138 180 248 / .12); }
+
 /* ---- 处理中状态气泡（实时进度：耗时/工具/六态/报告阶段） ---- */
 .bubble.status-bubble { border: 1px solid var(--border); background: var(--surface);
   border-radius: 12px; padding: 10px 14px; max-width: min(520px, 100%); }
