@@ -33,7 +33,67 @@ body {
   font-size: 14px; line-height: 1.5;
   min-height: 100vh;
 }
+body.auth-required { overflow: hidden; }
 button { font-family: inherit; }
+
+/* ---- Account gate: IP12 is a standalone app, so it owns a small login surface. ---- */
+.auth-gate {
+  position: fixed; inset: 0; z-index: 1000;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+  background:
+    radial-gradient(circle at 76% 16%, rgba(231, 178, 76, .12), transparent 30%),
+    rgba(8, 12, 19, .76);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+}
+.auth-gate[hidden] { display: none; }
+.auth-card {
+  width: min(440px, 100%); padding: 30px;
+  border: 1px solid rgba(231, 178, 76, .24); border-radius: 22px;
+  background: linear-gradient(150deg, #fff 0%, #fff 68%, #fff8e9 100%);
+  box-shadow: 0 30px 90px rgba(0, 0, 0, .32);
+  color: #111827;
+}
+.auth-brand { display: flex; align-items: center; gap: 11px; margin-bottom: 30px; }
+.auth-brand-mark {
+  width: 40px; height: 40px; display: grid; place-items: center;
+  border: 1px solid #f0d79f; border-radius: 12px; background: #fff9ed; color: #b37c16;
+}
+.auth-brand-mark svg { width: 22px; height: 22px; }
+.auth-brand > span:last-child { display: grid; line-height: 1; }
+.auth-brand strong { font-size: 16px; letter-spacing: .05em; }
+.auth-brand small { margin-top: 7px; color: #9a6f1c; font-size: 9px; font-weight: 700; letter-spacing: .15em; }
+.auth-checking-copy { min-height: 170px; display: grid; place-items: center; align-content: center; gap: 14px; color: #6b7280; }
+.auth-checking-copy[hidden] { display: none; }
+.auth-checking-dot { width: 11px; height: 11px; border-radius: 50%; background: #e7b24c; box-shadow: 0 0 0 7px rgba(231, 178, 76, .14); animation: auth-pulse 1.2s ease-in-out infinite; }
+.auth-checking-copy p { margin: 0; font-size: 14px; }
+.auth-login-form { display: grid; gap: 14px; }
+.auth-login-form[hidden] { display: none; }
+.auth-kicker { margin: 0; color: #b37c16; font-size: 11px; font-weight: 800; letter-spacing: .13em; text-transform: uppercase; }
+.auth-login-form h1 { margin: -2px 0 0; font-size: 28px; line-height: 1.28; letter-spacing: -.035em; }
+.auth-subtitle { margin: -5px 0 7px; color: #6b7280; font-size: 14px; line-height: 1.7; }
+.auth-field { display: grid; gap: 7px; color: #4b5563; font-size: 12px; font-weight: 700; }
+.auth-field input {
+  width: 100%; height: 50px; padding: 0 14px;
+  border: 1px solid #dfe3e8; border-radius: 11px; outline: 0;
+  background: #f9fafb; color: #111827; font: 15px inherit;
+  transition: border-color .18s, box-shadow .18s, background .18s;
+}
+.auth-field input:focus { border-color: #d7a53f; background: #fff; box-shadow: 0 0 0 3px rgba(231, 178, 76, .14); }
+.auth-message { min-height: 21px; margin: -2px 0; color: #b91c1c; font-size: 13px; text-align: center; }
+.auth-message.ok { color: #15803d; }
+.auth-submit {
+  height: 50px; border: 0; border-radius: 11px; cursor: pointer;
+  background: #e7b24c; color: #17130b; font-size: 15px; font-weight: 800;
+  box-shadow: 0 12px 28px rgba(190, 132, 26, .22);
+}
+.auth-submit:hover { background: #efc462; }
+.auth-submit:disabled { cursor: wait; opacity: .62; }
+.auth-links { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 3px; }
+.auth-links a { color: #6b7280; font-size: 12px; text-decoration: none; }
+.auth-links a:first-child { color: #9a6700; font-weight: 700; }
+.auth-links a:hover { text-decoration: underline; }
+@keyframes auth-pulse { 50% { transform: scale(.72); opacity: .55; } }
 
 /* ---- Nav ---- */
 .nav {
@@ -263,6 +323,13 @@ button { font-family: inherit; }
   .report-pane .report-box { margin: 18px 0 4px; }
 }
 @media (max-width: 640px) {
+  .auth-gate { align-items: flex-end; padding: 12px; background: rgba(8, 12, 19, .68); }
+  .auth-card { width: 100%; padding: 24px 20px calc(22px + env(safe-area-inset-bottom)); border-radius: 22px; }
+  .auth-brand { margin-bottom: 24px; }
+  .auth-checking-copy { min-height: 210px; }
+  .auth-login-form h1 { font-size: 25px; }
+  .auth-field input, .auth-submit { height: 52px; }
+  .auth-links { align-items: flex-start; }
   .intro { padding: 32px 0 28px; }
   .intro-title { font-size: 26px; }
   .example-grid { grid-template-columns: 1fr; }

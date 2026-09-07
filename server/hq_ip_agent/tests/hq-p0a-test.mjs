@@ -18,6 +18,7 @@ const browser = await chromium.launch({ executablePath: process.env.HQ_CHROMIUM 
   await page.route('**/*', async (route) => {
     const req = route.request();
     const url = req.url();
+    if (url.includes('/api/auth/me')) return route.fulfill({ json: { user: { username: 'test-user' } } });
     if (url.includes('/api/v4/chat')) {
       const body = JSON.parse(req.postData() || '{}');
       if (body.message.includes('第一条')) return route.fulfill({ json: { async: true, seq: 1001, reply: '' } });
@@ -74,6 +75,7 @@ const browser = await chromium.launch({ executablePath: process.env.HQ_CHROMIUM 
   await page.route('**/*', async (route) => {
     const req = route.request();
     const url = req.url();
+    if (url.includes('/api/auth/me')) return route.fulfill({ json: { user: { username: 'test-user' } } });
     if (url.includes('/api/v4/stream/')) {
       streamLog.push(Date.now());
       return route.fulfill({ status: 500, body: 'fail' });
@@ -105,6 +107,7 @@ const browser = await chromium.launch({ executablePath: process.env.HQ_CHROMIUM 
   await page.route('**/*', async (route) => {
     const req = route.request();
     const url = req.url();
+    if (url.includes('/api/auth/me')) return route.fulfill({ json: { user: { username: 'test-user' } } });
     if (url.includes('/api/v4/stream/')) return route.fulfill({ status: 500, body: 'fail' }); // SSE 全程断线
     if (url.includes('/api/v4/status')) {
       return route.fulfill({ json: {
@@ -144,6 +147,7 @@ const browser = await chromium.launch({ executablePath: process.env.HQ_CHROMIUM 
   await page.route('**/*', async (route) => {
     const req = route.request();
     const url = req.url();
+    if (url.includes('/api/auth/me')) return route.fulfill({ json: { user: { username: 'test-user' } } });
     if (url.includes('/api/v4/restore')) return route.fulfill({ json: {
       ok: true, history: history, widgets: [], delegations: {}, report: null, film: false, mode: { llm_mode: 'mock' },
     } });

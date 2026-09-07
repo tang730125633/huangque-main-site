@@ -13,6 +13,7 @@ for (const scenario of ['example-card', 'send-button', 'enter-key']) {
   await page.route('**/*', async (route) => {
     const request = route.request();
     const url = request.url();
+    if (url.includes('/api/auth/me')) return route.fulfill({ json: { user: { username: 'test-user' } } });
     if (url.includes('/api/v4/start')) {
       await new Promise((resolve) => setTimeout(resolve, 500));
       return route.fulfill({ json: { session_id: 'a'.repeat(32), async: true, seq: 1, mode: 'mock' } });

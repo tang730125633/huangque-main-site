@@ -19,6 +19,7 @@ try {
        quote_id:quoteId,quote:{cost:1,points:1939,expires_in:300}}};
     await page.route('**/*', async route=>{
       const req=route.request(), url=new URL(req.url()), p=url.pathname;
+      if(p==='/api/auth/me') return route.fulfill({json:{user:{username:'test-user'}}});
       if(p==='/v4') return route.fulfill({contentType:'text/html',body:fs.readFileSync(path.join(ui,'v4.html'),'utf8')});
       if(p==='/workbench/inspiration.html') return route.fulfill({contentType:'text/html',body:'<!doctype html><title>灵感设计</title><h1>灵感设计</h1>'});
       if(p.startsWith('/static/')) return route.fulfill({contentType:p.endsWith('.css')?'text/css':'application/javascript',body:fs.readFileSync(path.join(ui,p),'utf8')});

@@ -19,6 +19,7 @@ async function harness(initial, latest=initial) {
   page.on('pageerror', e=>h.errors.push(e.message));
   await page.route('**/*', async route=>{
     const req=route.request(), p=new URL(req.url()).pathname;
+    if(p==='/api/auth/me') return route.fulfill({json:{user:{username:'test-user'}}});
     if(p==='/v4') return route.fulfill({contentType:'text/html',body:fs.readFileSync(path.join(ui,'v4.html'),'utf8')});
     if(p.startsWith('/static/')) {
       const body = process.env.HQ_BASELINE_REF && p.endsWith('/v4.js') ? execFileSync('git',
