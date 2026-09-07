@@ -2,7 +2,7 @@
   "repository": "tang730125633/huangque-main-site",
   "service": "hq-ip-agent",
   "target_root": "/home/ubuntu/hq-ip-agent",
-  "production_base": "b5b50fe08c40420d6cd46fdc607c3ca31ad478df",
+  "production_base": "6383e5b04f870d68c8791bf1699a9ee937dc9edc",
   "previous_github_commit": "4c761c87bfd763845249fce9fa823fdd626d80d5",
   "preserved_hermes_commit": "83b6bb170da836d8039c5a1ff064b27b71de9398",
   "preserved_hermes_tree": "328d52ebfc348a638162fec7e30c02378ab9ea4b",
