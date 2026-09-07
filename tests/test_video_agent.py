@@ -5,6 +5,7 @@ import os
 import sqlite3
 import sys
 import unittest
+import urllib.error
 from contextlib import closing
 from pathlib import Path
 from unittest import mock
@@ -107,6 +108,50 @@ class VideoAgentTests(unittest.TestCase):
         self.assertEqual(cleaned["brief"], {"platform": "小红书"})
         self.assertEqual(cleaned["materials"], [{"type": "image", "name": "person.jpg", "size": 1234}])
         self.assertNotIn("data", json.dumps(cleaned, ensure_ascii=False))
+
+    def test_local_talking_quote_router_uses_owned_ready_provider_avatar(self):
+        with mock.patch.object(video_agent.video, "get_video_avatar", return_value={
+            "id": 2, "username": "alice", "status": "ready",
+            "provider_avatar_id": "provider-avatar",
+        }) as get_avatar:
+            domain = video_agent._local_talking_quote_router("alice")(
+                "hq_quote_talking_video", {"avatar_id": 2},
+            )
+        self.assertEqual(domain, "local")
+        get_avatar.assert_called_once_with("alice", 2)
+
+    def test_local_talking_quote_uses_authoritative_video_pricing(self):
+        with mock.patch.object(
+            video_agent.points, "cost_of", return_value=30,
+        ) as cost_of:
+            quote = video_agent._local_talking_quote(
+                "hq_quote_talking_video",
+                {"avatar_id": 2, "text": "欢迎", "voice": "voice-1"},
+            )
+        self.assertEqual(quote["cost"], 30)
+        self.assertRegex(quote["fingerprint"], r"^local:[0-9a-f]{64}$")
+        self.assertNotEqual(quote["quote_token"], quote["fingerprint"])
+        cost_of.assert_called_once()
+
+    def test_local_content_submit_is_loopback_and_keeps_idempotency(self):
+        requests = []
+
+        def open_request(request, timeout):
+            requests.append((request, timeout))
+            return Response({"job_id": 651, "cost": 30, "points_left": 970})
+
+        with mock.patch.dict(os.environ, {"CONTENT_API_PORT": "8105"}):
+            result = video_agent._local_content_request(
+                "/api/gen/video", "web-token", method="POST",
+                payload={"avatar_id": 2, "text": "欢迎", "voice": "voice-1"},
+                idempotency_key="confirm-12345678", opener=open_request,
+            )
+        request = requests[0][0]
+        self.assertEqual(request.full_url, "http://127.0.0.1:8105/api/gen/video")
+        self.assertEqual(request.get_method(), "POST")
+        self.assertEqual(request.get_header("Authorization"), "Bearer web-token")
+        self.assertEqual(request.get_header("Idempotency-key"), "confirm-12345678")
+        self.assertEqual(result["job_id"], 651)
 
     def test_clean_body_accepts_local_media_probe_but_not_file_content(self):
         cleaned = video_agent._clean_body({
@@ -681,6 +726,30 @@ class VideoAgentTests(unittest.TestCase):
         self.assertEqual(["prompt"], story["required"])
         self.assertEqual("auto", payload["tool_choice"])
 
+    def test_provider_402_marks_candidate_unhealthy_and_reports_quota(self):
+        def opener(request, timeout=0):
+            raise urllib.error.HTTPError(
+                request.full_url, 402, "Payment Required", {}, None
+            )
+
+        with mock.patch.dict(os.environ, {
+            "VIDEO_AGENT_API_BASE": "https://api.deepseek.com",
+            "DEEPSEEK_API_BASE": "",
+        }, clear=False):
+            prepared = video_agent._prepare_provider_request({
+                "message": "你好", "history": [], "brief": {}, "materials": [],
+            })
+        with self.assertRaises(short_drama_advisor.AdvisorError) as raised:
+            video_agent._post_response(prepared, prepared["input"], opener=opener)
+
+        self.assertEqual("advisor_provider_payment_required", raised.exception.code)
+        self.assertEqual(503, raised.exception.status)
+        short_drama_advisor.provider_keys.set_health.assert_called_once()
+        health_call = short_drama_advisor.provider_keys.set_health.call_args.args
+        self.assertEqual("deepseek-key-1", health_call[0])
+        self.assertFalse(health_call[1])
+        self.assertEqual("HTTP 402", health_call[3])
+
     def test_final_output_text_accepts_safe_json_wrappers(self):
         expected = {
             "reply": "请先补充视频用途。",
@@ -809,7 +878,7 @@ class VideoAgentTests(unittest.TestCase):
         self.assertNotIn(unsafe_output, diagnostic)
         self.assertNotIn(user_message, diagnostic)
 
-    def test_final_output_repair_fails_closed_after_two_provider_calls_without_tools(self):
+    def test_final_output_repair_falls_back_to_display_only_text_after_two_calls(self):
         payloads = []
         responses = [
             {
@@ -824,7 +893,7 @@ class VideoAgentTests(unittest.TestCase):
                 "status": "completed",
                 "output": [{
                     "type": "message", "role": "assistant",
-                    "content": [{"type": "output_text", "text": "second plain text"}],
+                    "content": [{"type": "output_text", "text": "请告诉我人物形象需要怎样使用。"}],
                 }],
                 "usage": {"input_tokens": 3, "output_tokens": 1},
             },
@@ -851,16 +920,20 @@ class VideoAgentTests(unittest.TestCase):
             prepared = video_agent._prepare_provider_request({
                 "message": "你好", "history": [], "brief": {}, "materials": [],
             })
-        with self.assertLogs("video_agent.response", level="WARNING"), \
-                self.assertRaises(short_drama_advisor.AdvisorError) as error:
-            video_agent._call_provider(
+        with self.assertLogs("video_agent.response", level="WARNING"):
+            result = video_agent._call_provider(
                 prepared, opener=opener, tool_runtime=runtime
             )
-        self.assertEqual("advisor_response_invalid", error.exception.code)
         self.assertEqual(2, len(payloads))
         self.assertEqual(0, runtime.calls)
         self.assertNotIn("tools", payloads[1])
         self.assertNotIn("tool_choice", payloads[1])
+        self.assertEqual("请告诉我人物形象需要怎样使用。", result["reply"])
+        self.assertEqual("ai_text_fallback", result["mode"])
+        self.assertTrue(result["degraded"])
+        self.assertFalse(result["ready_to_handoff"])
+        self.assertNotIn("pending_action", result)
+        self.assertNotIn("pending_actions", result)
 
     def test_repair_function_call_is_rejected_without_running_runtime(self):
         payloads = []
@@ -1805,6 +1878,7 @@ class VideoAgentTests(unittest.TestCase):
         ))
         self.assertEqual(confirm.call_args.kwargs["username"], "alice")
         self.assertEqual(confirm.call_args.kwargs["web_token"], "token")
+        self.assertTrue(callable(confirm.call_args.kwargs["local_submit"]))
 
     def test_dispatch_confirmation_rejects_extra_fields_before_execution(self):
         handler = FakeHandler(
@@ -1822,6 +1896,27 @@ class VideoAgentTests(unittest.TestCase):
         self.assertEqual(handler.sent[0], 400)
         self.assertEqual(handler.sent[1]["code"], "request_invalid")
         confirm.assert_not_called()
+
+    def test_dispatch_pending_action_status_uses_current_web_identity(self):
+        pending_id = "vpa_0123456789abcdef0123456789abcdef"
+        handler = FakeHandler({}, path=(
+            "/api/gen/video/agent/actions/%s/status" % pending_id
+        ))
+        status = {"pending_action": {"id": pending_id}, "task": {"status": "running"}}
+        with mock.patch.object(
+            video_agent.video_agent_tools, "get_pending_action_task_status",
+            return_value=status,
+        ) as query:
+            handled = video_agent.dispatch_http(
+                handler, "GET", lambda _token: {"username": "alice"},
+                lambda _user: False, self.db,
+            )
+        self.assertTrue(handled)
+        self.assertEqual(handler.sent, (200, status))
+        self.assertEqual(query.call_args.args, (pending_id,))
+        self.assertEqual(query.call_args.kwargs["username"], "alice")
+        self.assertEqual(query.call_args.kwargs["web_token"], "token")
+        self.assertTrue(callable(query.call_args.kwargs["local_status"]))
 
 
 if __name__ == "__main__":

@@ -287,6 +287,158 @@ class VideoAgentToolTests(unittest.TestCase):
         self.assertNotIn("secret-token", serialized)
         self.assertNotIn("upstream-private", serialized)
 
+    def test_local_talking_avatar_routes_confirmation_and_status_locally(self):
+        routed = []
+
+        def route_quote(tool_name, arguments):
+            routed.append((tool_name, dict(arguments)))
+            return "local"
+
+        runtime = video_agent_tools.VideoAgentToolRuntime(
+            username="alice", web_token="web-token", db_factory=self.db,
+            cli_execute=self.cli_execute, quote_router=route_quote,
+            local_quote=lambda _name, arguments: {
+                "quote_token": "local-" + "a" * 64,
+                "fingerprint": "local:" + hashlib.sha256(
+                    json.dumps(arguments, ensure_ascii=False, sort_keys=True,
+                               separators=(",", ":")).encode("utf-8")
+                ).hexdigest(),
+                "payload": dict(arguments),
+                "cost": 30, "expires_in": 120,
+            },
+            now=lambda: 1000,
+        )
+        quote = runtime.run("hq_quote_talking_video", json.dumps({
+            "avatar_id": 7, "text": "欢迎来到直播间", "voice": "voice-1",
+        }, ensure_ascii=False))
+        pending_id = quote["pending_action"]["id"]
+        with closing(self.db()) as conn:
+            domain = conn.execute(
+                "SELECT execution_domain FROM video_agent_pending_actions WHERE id=?",
+                (pending_id,),
+            ).fetchone()[0]
+        self.assertEqual(domain, "local")
+        self.assertEqual(routed[0][0], "hq_quote_talking_video")
+
+        local_submits = []
+
+        def local_submit(arguments, idempotency_key):
+            local_submits.append((dict(arguments), idempotency_key))
+            return {"job_id": 654, "cost": 30, "points_left": 970}
+
+        confirmed = video_agent_tools.confirm_pending_action(
+            pending_id, "request-12345678", username="alice",
+            web_token="web-token", db_factory=self.db,
+            cli_execute=self.cli_execute, local_submit=local_submit,
+            now=lambda: 1001,
+        )
+        self.assertEqual(confirmed["result"], {
+            "job_id": 654, "cost": 30, "points_left": 970,
+            "task_domain": "local",
+        })
+        self.assertEqual(len(local_submits), 1)
+        self.assertEqual(len(self.calls), 0)  # no remote quote or submit
+
+        status_calls = []
+
+        def local_status(job_id):
+            status_calls.append(job_id)
+            return {
+                "job_id": job_id, "status": "done", "progress": 100,
+                "result": {"video_url": "/api/gen/file/video/alice/out.mp4"},
+            }
+
+        status = video_agent_tools.get_pending_action_task_status(
+            pending_id, username="alice", web_token="web-token",
+            db_factory=self.db, cli_execute=self.cli_execute,
+            local_status=local_status,
+        )
+        self.assertEqual(status_calls, [654])
+        self.assertEqual(status["task"]["result"]["video_url"],
+                         "/api/gen/file/video/alice/out.mp4")
+        self.assertEqual(len(self.calls), 0)
+
+    def test_definitive_local_submission_error_is_not_marked_unknown(self):
+        runtime = video_agent_tools.VideoAgentToolRuntime(
+            username="alice", web_token="web-token", db_factory=self.db,
+            cli_execute=self.cli_execute,
+            quote_router=lambda _name, _arguments: "local", now=lambda: 1000,
+            local_quote=lambda _name, arguments: {
+                "quote_token": "local-" + "a" * 64,
+                "fingerprint": "local:" + hashlib.sha256(
+                    json.dumps(arguments, ensure_ascii=False, sort_keys=True,
+                               separators=(",", ":")).encode("utf-8")
+                ).hexdigest(),
+                "payload": dict(arguments),
+                "cost": 30, "expires_in": 120,
+            },
+        )
+        pending_id = runtime.run("hq_quote_talking_video", json.dumps({
+            "avatar_id": 7, "text": "欢迎", "voice": "voice-1",
+        }, ensure_ascii=False))["pending_action"]["id"]
+
+        def rejected(_arguments, _idempotency_key):
+            raise video_agent_tools.ToolError(
+                "avatar_not_ready", "数字人形象尚未就绪", 409,
+            )
+
+        with self.assertRaises(video_agent_tools.ToolError) as error:
+            video_agent_tools.confirm_pending_action(
+                pending_id, "request-12345678", username="alice",
+                web_token="web-token", db_factory=self.db,
+                cli_execute=self.cli_execute, local_submit=rejected,
+                now=lambda: 1001,
+            )
+        self.assertEqual(error.exception.code, "avatar_not_ready")
+        self.assertFalse(error.exception.unknown_outcome)
+        self.assertEqual(error.exception.pending_action["status"], "failed")
+
+    def test_submitted_action_status_reads_remote_cli_task_without_resubmitting(self):
+        def remote_cli(capability, input_body, **kwargs):
+            if kwargs.get("confirm"):
+                return {"job_id": 321, "cost": 8, "points_left": 992}
+            if capability == "task":
+                return {
+                    "job_id": 321, "status": "running", "phase": "rendering",
+                    "progress": 42, "access_token": "secret-token",
+                }
+            return self.cli_execute(capability, input_body, **kwargs)
+
+        runtime = video_agent_tools.VideoAgentToolRuntime(
+            username="alice", web_token="web-token", db_factory=self.db,
+            cli_execute=remote_cli, now=lambda: 1000,
+        )
+        quote = runtime.run("hq_quote_talking_video", json.dumps({
+            "avatar_id": 7, "text": "欢迎来到直播间", "voice": "voice-1",
+        }, ensure_ascii=False))
+        pending_id = quote["pending_action"]["id"]
+        video_agent_tools.confirm_pending_action(
+            pending_id, "request-12345678", username="alice",
+            web_token="web-token", db_factory=self.db,
+            cli_execute=remote_cli, now=lambda: 1001,
+            quote_claims=self.quote_claims,
+        )
+        result = video_agent_tools.get_pending_action_task_status(
+            pending_id, username="alice", web_token="web-token",
+            db_factory=self.db, cli_execute=remote_cli,
+        )
+        self.assertEqual(result["task"], {
+            "job_id": 321, "status": "running", "phase": "rendering",
+            "progress": 42,
+        })
+        self.assertEqual(result["pending_action"]["result"]["job_id"], 321)
+        self.assertNotIn("secret-token", json.dumps(result))
+
+    def test_remote_task_status_allows_only_http_video_result(self):
+        projected = video_agent_tools._project_browser_task({
+            "job_id": 321, "status": "done",
+            "result": {"video_url": "https://cdn.example/video.mp4", "token": "secret"},
+        })
+        self.assertEqual(projected["result"], {
+            "video_url": "https://cdn.example/video.mp4",
+        })
+        self.assertNotIn("secret", json.dumps(projected))
+
     def test_unknown_or_extra_arguments_fail_before_cli(self):
         runtime = video_agent_tools.VideoAgentToolRuntime(
             username="alice", web_token="web-token", db_factory=self.db,
@@ -578,7 +730,8 @@ class VideoAgentToolTests(unittest.TestCase):
                 "INSERT INTO video_agent_pending_actions "
                 "SELECT ?,username,tool_name,capability,input_json,input_hash,quote_token,"
                 "cost,points,'awaiting_confirmation',created_at+1,expires_at,updated_at+1,"
-                "NULL,NULL,NULL,NULL,NULL FROM video_agent_pending_actions WHERE id=?",
+                "NULL,NULL,NULL,NULL,NULL,execution_domain "
+                "FROM video_agent_pending_actions WHERE id=?",
                 (duplicate_id, pending_id),
             )
             conn.commit()

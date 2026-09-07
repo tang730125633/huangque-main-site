@@ -28,6 +28,18 @@ class VideoResolutionValidationTests(unittest.TestCase):
             video.validate_video_payload({"mode": "text", "image_data": PNG, "text": "hi",
                                           "voice": "v", "resolution": "4k"})
 
+    def test_talking_normalizes_voice_display_name_before_queueing(self):
+        payload = {
+            "mode": "text", "image_data": PNG, "text": "hi",
+            "voice": "公共音色 4",
+        }
+        with patch.object(
+            video, "normalize_audio_voice_key", return_value="S_xaUB8OR62",
+        ) as normalize:
+            cleaned = video.validate_video_payload(payload, username="qilin")
+        self.assertEqual(cleaned["voice"], "S_xaUB8OR62")
+        normalize.assert_called_once_with("qilin", "公共音色 4")
+
     def test_cinematic_overrides_legacy_1080p_to_720p(self):
         out = video.validate_cinematic_payload({
             "avatar_ids": [1], "prompt": "海边跳舞", "resolution": "1080p", "ratio": "9:16"})

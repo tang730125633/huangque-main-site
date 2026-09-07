@@ -15,6 +15,7 @@ from importlib import import_module
 import base64
 import binascii
 import hashlib
+import html
 import json
 import mimetypes
 import os
@@ -27,9 +28,11 @@ import uuid
 
 try:
     import func_names                    # 生产：admin_api.py 直接跑，同目录下就是 func_names.py
+    import heygen_oauth
     import inspiration_cases
 except ModuleNotFoundError:              # 测试：以包的形式 import server.admin_api，server/ 不在 sys.path 上
     from . import func_names
+    from . import heygen_oauth
     from . import inspiration_cases
 import sqlite3
 import time
@@ -111,6 +114,8 @@ ASSET_DB = pathlib.Path(os.environ.get("AUDIO_DB", str(BASE / "audio_assets.db")
 VIDEO_COMPOSE_DB = pathlib.Path(os.environ.get("VIDEO_COMPOSE_DB", str(BASE / "video_compose.db")))
 ADMIN_DB = pathlib.Path(os.environ.get("ADMIN_DB", str(BASE / "admin_config.db")))
 QA_FIXTURE_DIR = pathlib.Path(os.environ.get("HQ_QA_FIXTURE_DIR", str(BASE / "qa_fixtures")))
+HEYGEN_MCP_CREDENTIALS = os.environ.get("HEYGEN_MCP_CREDENTIALS", "").strip()
+HEYGEN_OAUTH_REDIRECT_BASE = os.environ.get("HEYGEN_OAUTH_REDIRECT_BASE", "").strip().rstrip("/")
 CONTENT_OUT = pathlib.Path(os.environ.get("CONTENT_OUT", str(BASE / "content_out")))
 E2E_TEST_USERNAME = os.environ.get("HQ_E2E_TEST_USERNAME", "").strip()
 E2E_RUN_LOCK = threading.Lock()
@@ -731,6 +736,19 @@ def _xai_proxy_url():
 def _heygen_proxy_url():
     """Use the same dedicated egress route as direct HeyGen video requests."""
     return egress.heygen_proxy() if egress is not None else PROXY_URL
+
+
+def _heygen_oauth_opener():
+    proxy = _heygen_proxy_url()
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({"http": proxy, "https": proxy} if proxy else {})
+    )
+
+
+def _heygen_oauth_redirect_uri():
+    if not HEYGEN_OAUTH_REDIRECT_BASE:
+        raise heygen_oauth.HeyGenOAuthError("服务器尚未配置 HeyGen OAuth 回调地址")
+    return HEYGEN_OAUTH_REDIRECT_BASE + "/api/admin/heygen-oauth/callback"
 
 
 def db():
@@ -2138,6 +2156,10 @@ def _key_ping_heygen_mcp():
 
 
 def _key_ping_heygen():
+    if _env_value(["HEYGEN_MCP_CREDENTIALS"]):
+        result = _key_ping_heygen_mcp()
+        result["components"] = "MCP OAuth · 网页套餐"
+        return result
     key = _env_value(["HEYGEN_API_KEY"])
     if not key:
         return {"ok": False, "error": "密钥未配置"}
@@ -2145,16 +2167,8 @@ def _key_ping_heygen():
         "GET", "https://api.heygen.com/v2/user/remaining_quota",
         headers={"X-Api-Key": key}, proxy_url=_heygen_proxy_url(),
     )
-    api["components"] = "API Key"
-    if not api.get("ok") or not _env_value(["HEYGEN_MCP_CREDENTIALS"]):
-        return api
-    mcp = _key_ping_heygen_mcp()
-    for field in ("plan_credit", "api_wallet"):
-        if api.get(field) is not None:
-            mcp[field] = api[field]
-    mcp["latency_ms"] = int(api.get("latency_ms") or 0) + int(mcp.get("latency_ms") or 0)
-    mcp["components"] = "API Key + MCP OAuth"
-    return mcp
+    api["components"] = "API Key · API 钱包"
+    return api
 
 
 def _key_ping_tikhub():
@@ -6870,6 +6884,32 @@ class H(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_html(self, code, title, detail, ok=False):
+        title = html.escape(str(title or "HeyGen 授权"))
+        detail = html.escape(str(detail or ""))
+        status = "true" if ok else "false"
+        body = ("<!doctype html><html lang='zh-CN'><meta charset='utf-8'>"
+                "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                "<title>%s</title><style>body{margin:0;background:#0b0f0d;color:#eef3ef;"
+                "font:16px/1.6 system-ui;padding:48px}main{max-width:560px;margin:auto;"
+                "padding:28px;border:1px solid #33443b;border-radius:16px;background:#111713}"
+                "h1{font-size:22px;color:#f0be55}p{color:#b7c2bb}</style><main><h1>%s</h1>"
+                "<p>%s</p><p>可以关闭此窗口并返回黄雀后台。</p></main>"
+                "<script>if(window.opener){window.opener.postMessage({type:'hq:heygen-oauth',"
+                "ok:%s},location.origin)}</script></html>" % (title, title, detail, status)).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'",
+        )
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _token(self):
         return request_token(self.headers)
 
@@ -6894,6 +6934,28 @@ class H(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if not path.startswith("/api/admin/"):
             return self._send(404, {"detail": "not found"})
+        if path == "/api/admin/heygen-oauth/callback":
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                if (query.get("error") or [""])[0]:
+                    raise heygen_oauth.HeyGenOAuthError("你取消了 HeyGen 授权")
+                result = heygen_oauth.complete_authorization(
+                    (query.get("state") or [""])[0],
+                    (query.get("code") or [""])[0],
+                    opener=_heygen_oauth_opener(),
+                )
+                try:
+                    _admin_audit(result.get("actor") or "admin", "heygen.oauth.connect", "heygen", {
+                        "result": "connected", "billing": "subscription",
+                    })
+                except Exception:
+                    pass
+                _KEY_PING_CACHE.pop("heygen", None)
+                return self._send_html(200, "HeyGen 已连接", "网页套餐授权已安全保存。", ok=True)
+            except heygen_oauth.HeyGenOAuthError as exc:
+                return self._send_html(400, "HeyGen 授权未完成", str(exc), ok=False)
+            except Exception:
+                return self._send_html(500, "HeyGen 授权未完成", "本地后台处理授权时发生错误。", ok=False)
         if path == "/api/admin/public/inspirations":
             try:
                 return self._send(200, inspiration_cases.list_public(ADMIN_DB))
@@ -6908,6 +6970,8 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"items": service_status()})
         if path == "/api/admin/keys":
             return self._send(200, {"items": key_status()})
+        if path == "/api/admin/heygen-oauth/status":
+            return self._send(200, heygen_oauth.credential_status(HEYGEN_MCP_CREDENTIALS))
         if path == "/api/admin/provider-keys":
             return self._send(200, provider_key_list())
         if path == "/api/admin/channels":
@@ -7181,6 +7245,27 @@ class H(BaseHTTPRequestHandler):
         user = self._admin()
         if not user:
             return
+        if path == "/api/admin/heygen-oauth/start":
+            try:
+                result = heygen_oauth.begin_authorization(
+                    HEYGEN_MCP_CREDENTIALS,
+                    _heygen_oauth_redirect_uri(),
+                    user.get("username") or "admin",
+                )
+                return self._send(200, result)
+            except heygen_oauth.HeyGenOAuthError as exc:
+                return self._send(400, {"detail": str(exc)})
+        if path == "/api/admin/heygen-oauth/disconnect":
+            try:
+                removed = heygen_oauth.disconnect(HEYGEN_MCP_CREDENTIALS)
+                _admin_audit(user.get("username") or "admin", "heygen.oauth.disconnect", "heygen", {
+                    "result": "removed" if removed else "already_absent",
+                    "scope": "local_credential_only",
+                })
+                _KEY_PING_CACHE.pop("heygen", None)
+                return self._send(200, {"ok": True, "removed": removed})
+            except heygen_oauth.HeyGenOAuthError as exc:
+                return self._send(500, {"detail": str(exc)})
         if path == "/api/admin/e2e/run":
             try:
                 body = self._body()

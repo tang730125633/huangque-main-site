@@ -1057,30 +1057,47 @@ def ensure_audio_voice(username, voice_key):
     # \u5408\u6210\u4e0d\u9700\u8981 audio_voices \u884c(resolve \u56de\u843d alloy \u5373\u53ef)\uff0c\u6240\u4ee5\u8fd4\u56de None\uff0c\u8ba9 voice_id \u7559\u7a7a\u3002
     return None
 
-def resolve_audio_provider_voice(username, voice_key):
+def _resolve_audio_voice_record(username, voice_reference):
     username = (username or "").strip()
-    voice_key = (voice_key or "S_d21F8OR62").strip()
-    public_keys = set()  # dapeng/zelong/paul removed
-    public_key = voice_key.lower()
+    voice_reference = (voice_reference or "S_d21F8OR62").strip()
     with closing(adb()) as c:
-        r = c.execute("""SELECT provider_voice FROM audio_voices
-            WHERE scope='public' AND username='' AND voice_key=?""",
-            (voice_key,)).fetchone()
-    if r:
-        return r["provider_voice"]
-    if public_key in public_keys:
-        ensure_audio_voice(username, public_key)
-        return VOICE_MAP.get(public_key, "alloy")
-    if voice_key == "personal":
-        ensure_audio_voice(username, voice_key)
+        rows = c.execute("""SELECT scope, voice_key, display_name, provider_voice
+            FROM audio_voices
+            WHERE (scope='public' OR (scope='personal' AND username=?))
+              AND (voice_key=? OR display_name=?)
+            ORDER BY CASE scope WHEN 'public' THEN 0 ELSE 1 END, id""",
+            (username, voice_reference, voice_reference)).fetchall()
+    exact = [dict(row) for row in rows if row["voice_key"] == voice_reference]
+    if len(exact) == 1:
+        return exact[0]
+    named = [dict(row) for row in rows if row["display_name"] == voice_reference]
+    if len(named) == 1:
+        return named[0]
+    if len(exact) > 1 or len(named) > 1:
+        raise ValueError("音色名称不唯一，请重新选择")
+    if voice_reference == "personal":
         return VOICE_MAP.get("personal", "alloy")
-    with closing(adb()) as c:
-        r = c.execute("""SELECT provider_voice FROM audio_voices
-            WHERE scope='personal' AND username=? AND voice_key=?""",
-            (username, voice_key)).fetchone()
-    if not r:
-        raise ValueError("个人音色不存在或不属于当前账号")
-    return r["provider_voice"]
+    raise ValueError("个人音色不存在或不属于当前账号")
+
+
+def normalize_audio_voice_key(username, voice_reference):
+    """Resolve a user-facing voice label to its stable, account-scoped key."""
+    reference = (voice_reference or "S_d21F8OR62").strip()
+    # Stable keys are already canonical. Avoid a redundant lookup and keep the
+    # validator usable in isolated callers that initialise the voice DB later.
+    if re.fullmatch(r"[A-Za-z0-9_.:-]+", reference):
+        return reference
+    record = _resolve_audio_voice_record(username, reference)
+    if isinstance(record, dict):
+        return record["voice_key"]
+    return reference
+
+
+def resolve_audio_provider_voice(username, voice_key):
+    record = _resolve_audio_voice_record(username, voice_key)
+    if isinstance(record, dict):
+        return record["provider_voice"]
+    return record
 
 def record_audio_asset(job_id, username, result):
     if not result or result.get("type") != "audio":
@@ -1465,6 +1482,7 @@ def validate_audio_payload(payload, username=""):
                 or len(bound_provider_voice) > 256):
             raise ValueError("完整配音的音色版本绑定无效，请重新授权")
     elif username:
+        voice_key = normalize_audio_voice_key(username, voice_key)
         resolve_audio_provider_voice(username, voice_key)
         # Keep Tang's customer-audio audit metadata without exposing the
         # provider voice identifier.

@@ -28,6 +28,8 @@ import shutil
 import sqlite3
 import socket
 import tempfile
+import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 
 from .core import (
     AUDIO_OUT_DIR, CINEMATIC_GEN_DEADLINE, HEYGEN_API_BASE, HEYGEN_API_KEY, HEYGEN_POLL_INTERVAL,
@@ -43,9 +45,10 @@ try:
 except ModuleNotFoundError:  # Imported through the `server` package in tests/tools.
     from server.providers.short_drama_visual.base import HEYGEN_PROMPT_MAX_CHARACTERS
 
-from .audio import gen_audio, get_audio_asset
+from .audio import gen_audio, get_audio_asset, normalize_audio_voice_key
 from .image_mentions import resolve_image_mentions, validate_image_mentions
 from . import (
+    cosyvoice,
     pricing,
     provider_keys,
     short_drama_media_sanitize,
@@ -2099,11 +2102,15 @@ def validate_video_payload(payload, username=None):
     if image_data and not _is_valid_data_url(image_data, VALID_IMAGE_MIMES):
         raise ValueError("image_data 不是有效的人物形象图片")
     line = None
+    voice_key = ""
     if mode == "text":
         if not str(payload.get("text") or "").strip():
             raise ValueError("mode=text 时 text 必填")
         if not (payload.get("voice") or "").strip():
             raise ValueError("mode=text 时 voice 必填")
+        voice_key = str(payload.get("voice") or "").strip()
+        if username:
+            voice_key = normalize_audio_voice_key(username, voice_key)
     elif mode == "audio":
         audio_data = (payload.get("audio_data") or "").strip()
         audio_file = (payload.get("audio_file") or "").strip()
@@ -2114,7 +2121,13 @@ def validate_video_payload(payload, username=None):
         if audio_file:
             audio_file = _normalize_audio_file_ref(audio_file, username=username)
     if avatar_id and username:
-        get_video_avatar(username, avatar_id)
+        avatar = get_video_avatar(username, avatar_id)
+        if (_heygen_subscription_mode()
+                and not str(avatar.get("provider_image_asset_id") or "").strip()):
+            raise ValueError(
+                "该数字人形象缺少 HeyGen 图片素材编号，本次未提交且未扣点，"
+                "请重新创建形象后再生成"
+            )
 
     ratio = (payload.get("ratio") or "9:16").strip()
     if ratio not in VALID_VIDEO_RATIOS:
@@ -2140,6 +2153,8 @@ def validate_video_payload(payload, username=None):
     cleaned["ratio"] = ratio
     cleaned["resolution"] = resolution
     cleaned["motion"] = motion
+    if mode == "text":
+        cleaned["voice"] = voice_key
     if mode == "audio":
         cleaned["audio_file"] = audio_file
         cleaned["audio_data"] = audio_data
@@ -3140,9 +3155,12 @@ def _avatar_display_name(username):
         row = c.execute("SELECT COUNT(*) AS n FROM avatars WHERE username=?", (username,)).fetchone()
     return "形象 %d" % ((row["n"] if row else 0) + 1)
 
-def record_video_avatar(username, image_file, provider_avatar_id, provider_avatar_group_id=None, name=None):
+def record_video_avatar(username, image_file, provider_avatar_id,
+                        provider_avatar_group_id=None, name=None,
+                        provider_image_asset_id=None):
     username = (username or "").strip()
     provider_avatar_id = (provider_avatar_id or "").strip()
+    provider_image_asset_id = (provider_image_asset_id or "").strip() or None
     image_file = (image_file or "").strip()
     if not username or not provider_avatar_id or not image_file:
         return None
@@ -3150,16 +3168,20 @@ def record_video_avatar(username, image_file, provider_avatar_id, provider_avata
     name = (name or _avatar_display_name(username)).strip()[:40] or _avatar_display_name(username)
     with closing(adb()) as c:
         c.execute("""INSERT INTO avatars
-            (username, name, image_file, provider_avatar_id, provider_avatar_group_id, status, created_at, updated_at)
-            VALUES(?,?,?,?,?,?,?,?)
+            (username, name, image_file, provider_avatar_id, provider_avatar_group_id,
+             provider_image_asset_id, status, created_at, updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?)
             ON CONFLICT(username, provider_avatar_id) DO UPDATE SET
                 image_file=COALESCE(excluded.image_file, avatars.image_file),
                 provider_avatar_group_id=COALESCE(excluded.provider_avatar_group_id, avatars.provider_avatar_group_id),
+                provider_image_asset_id=COALESCE(excluded.provider_image_asset_id, avatars.provider_image_asset_id),
                 status=COALESCE(excluded.status, avatars.status),
                 updated_at=excluded.updated_at""",
-            (username, name, image_file, provider_avatar_id, provider_avatar_group_id, "ready", now, now))
+            (username, name, image_file, provider_avatar_id, provider_avatar_group_id,
+             provider_image_asset_id, "ready", now, now))
         c.commit()
         row = c.execute("""SELECT id, username, name, image_file, provider_avatar_id, provider_avatar_group_id,
+                   provider_image_asset_id,
                    status, created_at, updated_at
             FROM avatars WHERE username=? AND provider_avatar_id=?""", (username, provider_avatar_id)).fetchone()
     return dict(row) if row else None
@@ -3168,11 +3190,13 @@ def list_video_avatars(username, limit=120):
     limit = max(1, min(120, int(limit or 120)))
     with closing(adb()) as c:
         rows = c.execute("""SELECT id, username, name, image_file, provider_avatar_id, provider_avatar_group_id,
+                   provider_image_asset_id,
                    status, created_at, updated_at
             FROM avatars WHERE username=? AND status!='deleted' ORDER BY id DESC LIMIT ?""", (username, limit)).fetchall()
     items = []
     for r in rows:
         d = dict(r)
+        d.pop("provider_image_asset_id", None)
         d["image_url"] = _file_url(d["image_file"]) if d.get("image_file") else None
         items.append(d)
     return items
@@ -3184,6 +3208,7 @@ def get_video_avatar(username, avatar_id):
         raise ValueError("形象不存在")
     with closing(adb()) as c:
         row = c.execute("""SELECT id, username, name, image_file, provider_avatar_id, provider_avatar_group_id,
+                   provider_image_asset_id,
                    status, created_at, updated_at
             FROM avatars WHERE id=? AND username=? AND status!='deleted'""", (avatar_id, username)).fetchone()
     if not row:
@@ -3468,11 +3493,45 @@ def _ensure_heygen_image_jpg(image_path):
             out.unlink()
         except OSError:
             pass
+    # Content 服务已经把 Pillow 固定为运行依赖。优先在进程内完成转换，避免仅为一张
+    # 静态图片依赖外部 ffmpeg 可执行文件；透明 PNG/WebP 铺白底，防止转 JPEG 后变黑。
+    try:
+        from PIL import Image, ImageOps
+    except (ImportError, ModuleNotFoundError):
+        Image = ImageOps = None
+    if Image is not None:
+        try:
+            with Image.open(path) as source:
+                source.load()
+                normalized = ImageOps.exif_transpose(source)
+                has_alpha = normalized.mode in {"RGBA", "LA"} or (
+                    normalized.mode == "P" and "transparency" in normalized.info
+                )
+                if has_alpha:
+                    rgba = normalized.convert("RGBA")
+                    flattened = Image.new("RGB", rgba.size, (255, 255, 255))
+                    flattened.paste(rgba, mask=rgba.getchannel("A"))
+                    normalized = flattened
+                elif normalized.mode != "RGB":
+                    normalized = normalized.convert("RGB")
+                normalized.save(out, "JPEG", quality=92, optimize=True)
+        except Exception as exc:
+            discard_partial()
+            raise ValueError(
+                "图片格式转换失败，请上传完整的 jpg/png/webp 人物形象图"
+            ) from exc
+        if (out.exists() and out.stat().st_size > 0
+                and _detect_image_mime(out.read_bytes()) == "image/jpeg"):
+            return out
+        discard_partial()
+        raise ValueError("图片格式转换失败，请上传完整的 jpg/png/webp 人物形象图")
+
+    # 裸开发环境可能没有 Pillow；保留原 ffmpeg 路径作为兼容兜底。
     try:
         subprocess.run(cmd, check=True, timeout=120, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except FileNotFoundError:
         discard_partial()
-        raise ValueError("服务器未安装 ffmpeg，无法转换图片格式")
+        raise ValueError("图片处理组件不可用，无法转换图片格式")
     except subprocess.CalledProcessError as e:
         discard_partial()
         detail = (e.stderr or b"").decode("utf-8", "replace")[:220]
@@ -3758,19 +3817,48 @@ def _shrink_motion_reference(reference_video_file):
         pass
     return "video/" + small.name
 
-def _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion, direct=False):
+def _heygen_mcp_file_input(file_path, allowed_mimes=None, max_bytes=32 * 1024 * 1024):
+    """Encode a local file for MCP tools that explicitly accept inline base64."""
+    path = pathlib.Path(file_path)
+    if not path.is_file():
+        raise ValueError("视频素材文件不存在")
+    raw = path.read_bytes()
+    if not raw or len(raw) > max_bytes:
+        raise ValueError("HeyGen 套餐模式素材必须小于 32MB")
+    mime = (_detect_image_mime(raw) or mimetypes.guess_type(str(path))[0]
+            or "application/octet-stream")
+    if allowed_mimes and mime not in allowed_mimes:
+        raise ValueError("HeyGen 套餐模式不支持该素材格式")
+    return {
+        "type": "base64",
+        "data": base64.b64encode(raw).decode("ascii"),
+        "media_type": mime,
+    }
+
+
+def _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion,
+                         direct=False, audio_url=None):
     title = "huangque video %d" % int(time.time())
-    if _heygen_mcp_enabled():
-        data = _heygen_mcp_call("create_video_from_image", {
+    if _heygen_subscription_mode():
+        image = image_asset_id
+        if isinstance(image_asset_id, pathlib.Path):
+            image = _heygen_mcp_file_input(image_asset_id, VALID_IMAGE_MIMES)
+        elif not isinstance(image_asset_id, dict):
+            image = {"type": "asset_id", "asset_id": image_asset_id}
+        arguments = {
             "title": title,
-            "image": {"type": "asset_id", "asset_id": image_asset_id},
-            "audioAssetId": audio_asset_id,
+            "image": image,
             "resolution": resolution,
             "aspectRatio": ratio,
             "fit": "cover",
             "expressiveness": motion,
             "outputFormat": "mp4",
-        }, timeout=90)
+        }
+        if audio_url:
+            arguments["audioUrl"] = audio_url
+        else:
+            arguments["audioAssetId"] = audio_asset_id
+        data = _heygen_mcp_call("create_video_from_image", arguments, timeout=90)
         video_id = str(data.get("video_id") or data.get("id") or "").strip()
     else:
         body = json.dumps({
@@ -3809,10 +3897,15 @@ def _find_nested_dict(obj, pred):
 
 def _heygen_create_photo_avatar(image_asset_id, direct=False):
     name = "huangque_photo_avatar_%d" % int(time.time())
-    if _heygen_mcp_enabled():
+    if _heygen_subscription_mode():
+        file_input = image_asset_id
+        if isinstance(image_asset_id, pathlib.Path):
+            raise ValueError("HeyGen MCP 创建形象前必须先上传图片并提供 asset_id")
+        elif not isinstance(image_asset_id, dict):
+            file_input = {"type": "asset_id", "asset_id": image_asset_id}
         data = _heygen_mcp_call("create_photo_avatar", {
             "name": name,
-            "file": {"type": "asset_id", "asset_id": image_asset_id},
+            "file": file_input,
         }, timeout=90)
     else:
         body = json.dumps({
@@ -3852,7 +3945,7 @@ def _heygen_look_status(avatar_item_id, avatar_group_id="", direct=False):
 
     look 级状态只在 v2：`GET /v2/photo_avatar/{look_id}` → `status`（pending / completed / failed）。
     """
-    if _heygen_mcp_enabled():
+    if _heygen_subscription_mode():
         d = _heygen_mcp_call("get_avatar_look", {"lookId": avatar_item_id}, timeout=20)
         node = d.get("data") or d.get("avatar_item") or d
         error = node.get("error") or {}
@@ -3982,7 +4075,9 @@ DUO_MOTION_PROMPT = DUO_MOTION_PROMPT_BASE
 
 _HEYGEN_MCP_URL = "https://mcp.heygen.com/mcp/v1/"
 _HEYGEN_MCP_TOKEN_URL = "https://api2.heygen.com/v1/oauth/token"
+_HEYGEN_OAUTH_CLIENT_ID = "q2A2QRSke2LrFTPJhoDbHtXh"
 _HEYGEN_MCP_CREDENTIALS = os.environ.get("HEYGEN_MCP_CREDENTIALS", "").strip()
+_HEYGEN_BILLING_MODE = os.environ.get("HEYGEN_BILLING_MODE", "auto").strip().lower()
 _heygen_mcp_auth_lock = threading.Lock()
 
 
@@ -3992,6 +4087,75 @@ class HeyGenMCPAuthError(RuntimeError):
 
 def _heygen_mcp_enabled():
     return bool(_HEYGEN_MCP_CREDENTIALS)
+
+
+def _heygen_subscription_mode():
+    if _HEYGEN_BILLING_MODE in {"subscription", "plan", "mcp"}:
+        return True
+    if _HEYGEN_BILLING_MODE in {"api", "wallet", "api_wallet"}:
+        return False
+    return _heygen_mcp_enabled()
+
+
+def _heygen_mcp_credential_view(value):
+    """Return the active OAuth block plus its numeric expiry."""
+    if not isinstance(value, dict):
+        return {}, 0
+    credentials = value.get("oauth") if isinstance(value.get("oauth"), dict) else value
+    raw_expiry = credentials.get("expires_at")
+    if raw_expiry in (None, ""):
+        return credentials, 0
+    try:
+        expires_at = float(raw_expiry)
+        if not math.isfinite(expires_at):
+            raise ValueError("non-finite expires_at")
+    except (TypeError, ValueError):
+        try:
+            stamp = str(raw_expiry).replace("Z", "+00:00")
+            parsed = datetime.fromisoformat(stamp)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            expires_at = parsed.timestamp()
+        except (TypeError, ValueError):
+            # Distinguish an invalid expiry from an omitted expiry.  Invalid data
+            # must fail closed instead of turning an access token into a
+            # never-expiring credential.
+            expires_at = -1
+    return credentials, expires_at
+
+
+def require_avatar_submission_ready():
+    """Reject an obviously unusable subscription route before job creation/charging."""
+    if not _heygen_subscription_mode():
+        return True
+    path = pathlib.Path(_HEYGEN_MCP_CREDENTIALS)
+    try:
+        credentials = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except (OSError, ValueError, TypeError):
+        credentials = {}
+    credentials, expires_at = _heygen_mcp_credential_view(credentials)
+    access_ready = bool(
+        credentials.get("access_token")
+        and (not expires_at or expires_at > time.time() + 60)
+    )
+    refresh_ready = bool(credentials.get("refresh_token"))
+    if not access_ready and not refresh_ready:
+        raise HeyGenMCPAuthError(
+            "HeyGen 套餐连接尚未完成，本次未提交且未扣点，"
+            "请先在管理后台完成 MCP OAuth 授权"
+        )
+    return True
+
+
+def require_video_submission_ready(payload=None):
+    """Reject an unusable HeyGen route before a talking-video charge."""
+    require_avatar_submission_ready()
+    body = payload if isinstance(payload, dict) else {}
+    if str(body.get("mode") or "text").strip().lower() == "text" and not cosyvoice.enabled():
+        raise ValueError(
+            "口播音色服务尚未配置，本次未提交且未扣点，请先在管理后台配置阿里百炼 API"
+        )
+    return True
 
 
 def _heygen_mcp_access_token(force_refresh=False):
@@ -4006,14 +4170,16 @@ def _heygen_mcp_access_token(force_refresh=False):
             if hasattr(os, "fchmod"):
                 os.fchmod(lock_fd, 0o600)
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
-            credentials = json.loads(path.read_text(encoding="utf-8"))
-            if not force_refresh and credentials.get("access_token") and float(credentials.get("expires_at") or 0) > time.time() + 60:
+            stored = json.loads(path.read_text(encoding="utf-8"))
+            credentials, expires_at = _heygen_mcp_credential_view(stored)
+            if not force_refresh and credentials.get("access_token") and (not expires_at or expires_at > time.time() + 60):
                 return credentials["access_token"]
-            if not credentials.get("client_id") or not credentials.get("refresh_token"):
+            if not credentials.get("refresh_token"):
                 raise HeyGenMCPAuthError("HeyGen MCP OAuth 不可刷新，请重新授权")
+            client_id = credentials.get("client_id") or _HEYGEN_OAUTH_CLIENT_ID
             body = urllib.parse.urlencode({
                 "grant_type": "refresh_token",
-                "client_id": credentials["client_id"],
+                "client_id": client_id,
                 "refresh_token": credentials["refresh_token"],
                 "resource": _HEYGEN_MCP_URL.rstrip("/"),
             }).encode()
@@ -4028,13 +4194,19 @@ def _heygen_mcp_access_token(force_refresh=False):
                 detail = exc.read().decode("utf-8", "replace").replace("\n", " ")[:300]
                 raise HeyGenMCPAuthError("HeyGen MCP OAuth 刷新失败: HTTP %s %s" % (exc.code, detail)) from exc
             credentials.update({
+                "client_id": client_id,
                 "access_token": refreshed["access_token"],
                 # HeyGen 当前 refresh token 为一次性；响应不下发新 token 时不能保留已失效的旧值。
                 "refresh_token": refreshed.get("refresh_token") or "",
                 "expires_at": int(time.time()) + int(refreshed.get("expires_in") or 3600),
             })
+            if isinstance(stored.get("oauth"), dict):
+                stored["oauth"] = credentials
+                persisted = stored
+            else:
+                persisted = credentials
             with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(path.parent), delete=False) as temp:
-                json.dump(credentials, temp, ensure_ascii=False)
+                json.dump(persisted, temp, ensure_ascii=False)
                 temp_path = temp.name
             os.chmod(temp_path, 0o600)
             os.replace(temp_path, path)
@@ -4121,6 +4293,191 @@ def _heygen_mcp_call(tool, arguments, timeout=90):
                     return ready
             return {"text": texts[0]}
     return result.get("structuredContent") or result
+
+
+def _heygen_upload_required_headers(upload):
+    """Return the safe subset of headers explicitly required by the upload slot."""
+    value = None
+    for key in ("required_headers", "requiredHeaders", "upload_headers", "uploadHeaders", "headers"):
+        if key in upload:
+            value = upload.get(key)
+            break
+    pairs = []
+    if isinstance(value, dict):
+        pairs = value.items()
+    elif isinstance(value, list):
+        pairs = (
+            (item.get("name") or item.get("key"), item.get("value"))
+            for item in value
+            if isinstance(item, dict)
+        )
+    headers = {}
+    for raw_name, raw_value in pairs:
+        name = str(raw_name or "").strip()
+        header_value = str(raw_value or "").strip()
+        lower_name = name.lower()
+        if not name or not header_value or "\r" in header_value or "\n" in header_value:
+            continue
+        if lower_name in {"content-type", "content-length", "content-md5"} or lower_name.startswith("x-amz-"):
+            headers[name] = header_value
+    return headers
+
+
+def _heygen_presigned_upload_headers(upload, upload_url, mime, raw_length, checksum_header):
+    headers = _heygen_upload_required_headers(upload)
+    lower_names = {name.lower() for name in headers}
+    parsed_query = urllib.parse.parse_qs(urllib.parse.urlparse(upload_url).query, keep_blank_values=True)
+    query = {str(key).lower(): values for key, values in parsed_query.items()}
+    signed_headers = {
+        item.strip().lower()
+        for value in query.get("x-amz-signedheaders", [])
+        for item in urllib.parse.unquote(value).split(";")
+        if item.strip()
+    }
+
+    if "content-type" not in lower_names:
+        headers["Content-Type"] = mime
+    if "content-length" not in lower_names:
+        headers["Content-Length"] = str(raw_length)
+    if (
+        "x-amz-checksum-sha256" not in lower_names
+        and "x-amz-checksum-sha256" in signed_headers
+        and "x-amz-checksum-sha256" not in query
+    ):
+        headers["x-amz-checksum-sha256"] = checksum_header
+    return headers
+
+
+def _heygen_presigned_upload_error(exc):
+    code = ""
+    request_id = ""
+    try:
+        raw = exc.read(64 * 1024)
+        root = ET.fromstring(raw)
+        for node in root.iter():
+            name = node.tag.rsplit("}", 1)[-1]
+            if name == "Code":
+                code = str(node.text or "").strip()[:80]
+            elif name == "RequestId":
+                request_id = str(node.text or "").strip()[:120]
+    except (ET.ParseError, OSError, TypeError, ValueError):
+        pass
+    parts = ["HTTP %s" % exc.code]
+    if code:
+        parts.append("Code=%s" % code)
+    if request_id:
+        parts.append("RequestId=%s" % request_id)
+    return " ".join(parts)
+
+
+def _heygen_mcp_upload_asset(file_path):
+    """Upload one image into the same OAuth workspace used by MCP creation."""
+    path = pathlib.Path(file_path)
+    if not path.is_file():
+        raise ValueError("数字人形象图片不存在")
+    raw = path.read_bytes()
+    if not raw or len(raw) > 32 * 1024 * 1024:
+        raise ValueError("数字人形象图片必须小于 32MB")
+    mime = _detect_image_mime(raw) or mimetypes.guess_type(str(path))[0]
+    if mime not in VALID_IMAGE_MIMES:
+        raise ValueError("数字人形象仅支持 jpg、png 或 webp 图片")
+    checksum_digest = hashlib.sha256(raw).digest()
+    checksum = checksum_digest.hex()
+    checksum_header = base64.b64encode(checksum_digest).decode("ascii")
+
+    # Do not retry the init call: its result may have been committed remotely even
+    # when the response is lost. PUT is repeatable and completion is idempotent.
+    initiated = _heygen_mcp_call("create_asset_upload", {
+        "filename": path.name,
+        "contentType": mime,
+        "sizeBytes": len(raw),
+        "checksumSha256": checksum,
+    }, timeout=30)
+    upload = _find_nested_dict(
+        initiated,
+        lambda node: bool(
+            node.get("asset_id") or node.get("assetId")
+        ) and bool(
+            node.get("upload_url") or node.get("uploadUrl")
+        ),
+    )
+    if not upload:
+        raise RuntimeError(
+            "HeyGen MCP 未返回素材上传地址: %s"
+            % json.dumps(initiated, ensure_ascii=False)[:300]
+        )
+    asset_id = str(upload.get("asset_id") or upload.get("assetId") or "").strip()
+    upload_url = str(upload.get("upload_url") or upload.get("uploadUrl") or "").strip()
+    parsed = urllib.parse.urlparse(upload_url)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        raise RuntimeError("HeyGen MCP 返回了无效的素材上传地址")
+
+    def put_file():
+        request = urllib.request.Request(
+            upload_url,
+            data=raw,
+            headers=_heygen_presigned_upload_headers(
+                upload, upload_url, mime, len(raw), checksum_header,
+            ),
+            method="PUT",
+        )
+        try:
+            with _heygen_direct_opener().open(request, timeout=120) as response:
+                status = int(getattr(response, "status", 200) or 200)
+                if status < 200 or status >= 300:
+                    raise RuntimeError("HeyGen MCP 素材上传失败: HTTP %s" % status)
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(
+                "HeyGen MCP 素材上传失败: %s" % _heygen_presigned_upload_error(exc)
+            ) from exc
+        except OSError as exc:
+            raise HeyGenNetworkError(
+                "HeyGen MCP 素材上传网络失败: %s"
+                % str(getattr(exc, "reason", exc))[:200]
+            ) from exc
+
+    _heygen_retry_net(put_file, "MCP 素材上传")
+    _heygen_retry_net(
+        lambda: _heygen_mcp_call("complete_asset_upload", {
+            "assetId": asset_id,
+            "checksumSha256": checksum,
+        }, timeout=30),
+        "MCP 素材入库",
+    )
+    return asset_id
+
+
+def _heygen_subscription_credit_status():
+    """Read the OAuth account's web-plan credits without touching the API wallet."""
+    response = _heygen_mcp_call("get_current_user", {}, timeout=30)
+    root = response.get("data") if isinstance(response, dict) else None
+    root = root if isinstance(root, dict) else response
+    account = _find_nested_dict(
+        root,
+        lambda node: isinstance(node.get("subscription"), dict),
+    )
+    if not account:
+        raise RuntimeError("HeyGen 套餐额度状态不可用，请重新连接 MCP OAuth")
+    subscription = account["subscription"]
+    credits = subscription.get("credits") or {}
+    premium = ((credits.get("premium_credits") or {}).get("remaining"))
+    addon = ((credits.get("add_on_credits") or {}).get("remaining"))
+    values = [value for value in (premium, addon) if isinstance(value, (int, float))]
+    if not values:
+        raise RuntimeError("HeyGen 套餐未返回可用额度，请重新连接 MCP OAuth")
+    return {
+        "plan": str(subscription.get("plan") or "").strip(),
+        "premium": premium,
+        "add_on": addon,
+        "remaining": sum(values),
+    }
+
+
+def _heygen_require_subscription_credits():
+    status = _heygen_subscription_credit_status()
+    if status["remaining"] <= 0:
+        raise ValueError("HeyGen 套餐额度不足，请先补充套餐额度后重试")
+    return status
 
 
 def _heygen_create_cinematic_video(avatar_item_id, reference_asset_id, ratio, resolution, duration,
@@ -4644,7 +5001,8 @@ def _heygen_video_status_v1(video_id):
     )
 
 
-def _heygen_poll_video(video_id, direct=False, deadline_s=None, mcp=False):
+def _heygen_poll_video(video_id, direct=False, deadline_s=None, mcp=False,
+                       allow_api_fallback=True):
     deadline = time.time() + (deadline_s or HEYGEN_TIMEOUT)
     last_status = ""
     net_fails = 0
@@ -4659,6 +5017,8 @@ def _heygen_poll_video(video_id, direct=False, deadline_s=None, mcp=False):
                 try:
                     payload = _heygen_mcp_call("get_video", {"videoId": video_id}, timeout=90)
                 except RuntimeError as e:
+                    if not allow_api_fallback:
+                        raise
                     # GET 不计费。MCP OAuth 即使在已提交后失效，也必须用 API Key 把成片/真实失败接回来。
                     # MCP errors may include response bodies, signed URLs, or provider details.
                     print("[heygen] MCP GET 不可用，回退 API GET video_id=%s error_type=%s"
@@ -5085,6 +5445,67 @@ def _download_video_file_direct(url, prefix="vid", *, allowed_hosts=None, max_by
         target.write_bytes(data)
     return _faststart_video_file(fn)
 
+def generate_heygen_video_subscription(image_file, audio_file, resolution, ratio, motion,
+                                        job_id=None, image_asset_id=None):
+    """Generate through OAuth/MCP only, billing the web plan and never the API wallet."""
+    image_asset_id = str(image_asset_id or "").strip()
+    image_fp = None if image_asset_id else _resolve_out_file(image_file)
+    audio_fp = _resolve_out_file(audio_file)
+    if (not image_asset_id and not image_fp) or not audio_fp:
+        raise ValueError("视频素材文件不存在")
+    audio_fp = _ensure_heygen_audio_mp3(audio_fp)
+    _heygen_require_subscription_credits()
+    if not image_asset_id:
+        image_asset_id = _heygen_mcp_upload_asset(image_fp)
+    image_input = {"type": "asset_id", "asset_id": image_asset_id}
+    audio_rel = _owned_output_relative(audio_fp)
+    audio_url = public_url(audio_rel, "audio/mpeg", private=True)
+    parsed_audio_url = urllib.parse.urlparse(str(audio_url or ""))
+    if parsed_audio_url.scheme != "https" or not parsed_audio_url.hostname:
+        raise RuntimeError("HeyGen 套餐模式需要可访问的 HTTPS 音频地址，请配置私有 COS 存储")
+    update_video_asset_phase(job_id, "submitting_video", billing_mode="subscription")
+    with heygen_slot("口播套餐"):
+        video_id = _heygen_retry_429(
+            lambda: _heygen_create_video(
+                image_input, None, resolution, ratio, motion,
+                audio_url=audio_url,
+            ),
+            "口播套餐",
+        )
+        update_video_asset_phase(job_id, "polling_video", provider_video_id=video_id,
+                                 billing_mode="subscription")
+        try:
+            info = _heygen_poll_video(
+                video_id, deadline_s=VIDEO_GEN_DEADLINE, mcp=True,
+                allow_api_fallback=False,
+            )
+            update_video_asset_phase(job_id, "downloading_video", provider_video_id=video_id,
+                                     source_video_url=info.get("video_url"),
+                                     billing_mode="subscription")
+            video_file = _download_video_file_direct(info["video_url"], "heygen")
+            cover = _extract_first_frame_cover(video_file)
+        except Exception as exc:
+            raise HeyGenBilledError(
+                "口播已提交 HeyGen 套餐(video_id=%s，可能已计费)，后续失败: %s"
+                % (video_id, str(exc)[:180])
+            ) from exc
+    result = {
+        "video_id": video_id,
+        "video_file": video_file,
+        "video_url": _file_url(video_file),
+        "source_video_url": info.get("video_url"),
+        "thumbnail_url": info.get("thumbnail_url"),
+        "duration": info.get("duration"),
+        "provider": "heygen_mcp_subscription",
+        "billing_mode": "subscription",
+        "image_asset_id": image_asset_id,
+    }
+    if cover:
+        result["image_file"] = cover
+        result["image_url"] = public_url(cover, "image/jpeg")
+    return result
+
+
 def generate_heygen_video_direct(image_file, audio_file, resolution, ratio, motion, job_id=None):
     """数字人口播直连 HeyGen v3(type=image + expressiveness)：与泽龙中转同一套 API/参数(honor resolution+expressiveness)，
     只是 direct=True 走 api.heygen.com 出境。原 v2 talking_photo 直连丢了 expressiveness 且忽略 resolution
@@ -5131,7 +5552,16 @@ def generate_heygen_video_direct(image_file, audio_file, resolution, ratio, moti
         ret["image_url"] = public_url(cover, "image/jpeg")
     return ret
 
-def generate_heygen_video(image_file, audio_file, resolution, ratio, motion, job_id=None):
+def generate_heygen_video(image_file, audio_file, resolution, ratio, motion,
+                          job_id=None, image_asset_id=None):
+    if _heygen_subscription_mode():
+        if not _heygen_mcp_enabled():
+            raise HeyGenMCPAuthError("HeyGen 套餐模式未配置 MCP OAuth，请先完成授权")
+        # 套餐模式是单独的计费边界。任何 MCP/OAuth/COS 失败都必须原样失败并退黄雀点数，
+        # 绝不能静默回落到 API Key，否则会从美元 API Wallet 扣费。
+        return generate_heygen_video_subscription(
+            image_file, audio_file, resolution, ratio, motion, job_id=job_id,
+            image_asset_id=image_asset_id)
     if _HEYGEN_DIRECT and HEYGEN_API_KEY:
         try:
             return generate_heygen_video_direct(image_file, audio_file, resolution, ratio, motion, job_id=job_id)
@@ -5600,7 +6030,9 @@ def gen_video(payload):
     if mode not in {"text", "audio", "lipsync"}:
         raise ValueError("生成方式不正确")
     # 口播(text/audio)走 HeyGen。
-    if not HEYGEN_API_KEY:
+    if _heygen_subscription_mode() and not _heygen_mcp_enabled():
+        raise ValueError("HeyGen 套餐模式未配置 MCP OAuth，请先完成授权")
+    if not _heygen_subscription_mode() and not HEYGEN_API_KEY:
         raise ValueError("视频生成服务未配置")
     if mode == "lipsync":
         reference_video_file = payload.get("reference_video_file")
@@ -5637,8 +6069,12 @@ def gen_video(payload):
     if avatar_id:
         avatar = get_video_avatar((payload.get("_username") or "").strip(), avatar_id)
         image_file = avatar.get("image_file")
+        image_asset_id = str(avatar.get("provider_image_asset_id") or "").strip()
+        if _heygen_subscription_mode() and not image_asset_id:
+            raise ValueError("该数字人形象缺少 HeyGen 图片素材编号，请重新创建形象后再生成")
     else:
         image_file = _save_data_file(payload.get("image_data"), "vid_img", [".jpg", ".png", ".webp"])
+        image_asset_id = ""
     if not image_file:
         raise ValueError("请先上传人物形象图片")
     text = (payload.get("text") or "").strip()
@@ -5685,7 +6121,12 @@ def gen_video(payload):
     created_avatar = None
     update_video_asset_phase(job_id, "files_saved", image_file=image_file, audio_file=audio_file,
                              resolution=resolution, ratio=ratio, motion=motion)
-    video_result = generate_heygen_video(image_file, audio_file, resolution, ratio, motion, job_id=job_id)
+    generate_options = {"job_id": job_id}
+    if image_asset_id:
+        generate_options["image_asset_id"] = image_asset_id
+    video_result = generate_heygen_video(
+        image_file, audio_file, resolution, ratio, motion, **generate_options
+    )
     bgm_error = None
     if bgm_file and video_result.get("video_file"):
         try:
@@ -7375,20 +7816,27 @@ def gen_avatar(payload):
             image_file if canonical_fp == source_fp
             else _owned_output_relative(canonical_fp)
         )
-        # 传图和建 look 都对瞬时网络错误重试 —— 建形象免费，重发不会重复计费（见 _heygen_retry_net）。
-        # 隧道扛不住 5 路以上的并发 TLS 握手，不重试的话用户会莫名其妙地建形象失败。
-        asset_id = _heygen_retry_net(
-            lambda: _heygen_upload_asset(canonical_fp, direct=True),
-            "建形象传图",
-        )
+        if _heygen_subscription_mode():
+            require_avatar_submission_ready()
+            # The upload and create calls must share the same OAuth workspace.
+            # Direct API asset ids are not visible to the subscription MCP session.
+            avatar_source = _heygen_mcp_upload_asset(canonical_fp)
+        else:
+            avatar_source = _heygen_retry_net(
+                lambda: _heygen_upload_asset(canonical_fp, direct=True),
+                "建形象传图",
+            )
         item_id, group_id = _heygen_retry_net(
             lambda: _heygen_retry_429(
-                lambda: _heygen_create_photo_avatar(asset_id, direct=True), "建形象"),
+                lambda: _heygen_create_photo_avatar(avatar_source, direct=True), "建形象"),
             "建形象提交")
         _heygen_wait_photo_avatar(item_id, group_id, direct=True)
         row = record_video_avatar(
             username, canonical_file, item_id, group_id,
             payload.get("name"),
+            provider_image_asset_id=(
+                avatar_source if _heygen_subscription_mode() else None
+            ),
         ) or {}
         persisted_fp = canonical_fp
         return {

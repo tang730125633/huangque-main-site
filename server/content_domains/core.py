@@ -702,6 +702,7 @@ def init_audio_db():
             image_file TEXT NOT NULL,
             provider_avatar_id TEXT NOT NULL,
             provider_avatar_group_id TEXT,
+            provider_image_asset_id TEXT,
             status TEXT NOT NULL DEFAULT 'ready',
             created_at INTEGER,
             updated_at INTEGER,
@@ -746,6 +747,7 @@ def init_audio_db():
         _ensure_column(c, "video_assets", "tryon_mode", "TEXT")
         _ensure_column(c, "video_assets", "model", "TEXT")
         _ensure_column(c, "avatars", "provider_avatar_group_id", "TEXT")
+        _ensure_column(c, "avatars", "provider_image_asset_id", "TEXT")
         _ensure_column(c, "avatars", "status", "TEXT NOT NULL DEFAULT 'ready'")
         public = [
             ("public", "", "S_d21F8OR62", "\u516c\u5171\u97f3\u8272 1", "S_d21F8OR62"),
@@ -4119,6 +4121,7 @@ class H(BaseHTTPRequestHandler):
                 if kind == "avatar":
                     body = cli_uploads.expand_avatar_payload(body, user["username"])
                     body = video_domain.validate_avatar_payload(body)
+                    video_domain.require_avatar_submission_ready()
                     _short_drama_domain().validate_avatar_binding_submission(
                         jdb, user["username"], body.get("short_drama_binding"),
                         require_revision=False,
@@ -4159,7 +4162,9 @@ class H(BaseHTTPRequestHandler):
                             idempotency_key=idem_key, access=still_access)
                         body = prepared["image_payload"]
                 elif kind == "copy" and isinstance(body, dict) and body.get("format") == "short_drama": body = _short_drama_domain().validate_planning_submission(jdb, user["username"], body, _short_drama_canvas_access(self))
-                elif kind == "video": body = video_domain.validate_video_payload(body, user["username"])
+                elif kind == "video":
+                    body = video_domain.validate_video_payload(body, user["username"])
+                    video_domain.require_video_submission_ready(body)
                 elif kind == "tryon": body = video_domain.validate_tryon_payload(body)
                 elif kind == "cinematic": body = video_domain.validate_cinematic_payload(
                     body, user["username"], self._cinematic_reference_files)
@@ -4262,6 +4267,12 @@ class H(BaseHTTPRequestHandler):
                     "detail": str(e),
                     "code": str(getattr(e, "code", "content_security_unavailable")),
                     "retry_after_ms": 5000,
+                })
+            except video_domain.HeyGenMCPAuthError as e:
+                return self._send(503, {
+                    "detail": str(e),
+                    "code": "heygen_mcp_auth_required",
+                    "charged": False,
                 })
             except (video_domain.SeedanceReferenceUnavailable if isinstance(video_domain.SeedanceReferenceUnavailable, type) and issubclass(video_domain.SeedanceReferenceUnavailable, BaseException) else ()) as e: return self._send(e.status, {"detail": str(e)[:220], "code": e.code, "retry_after_ms": 60000})
             except (ValueError, LookupError, PermissionError, _short_drama_domain().RevisionConflict) as e:
