@@ -67,14 +67,12 @@
   </main>
 </div></div>
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=f201ca5b"></script>
+<script src="cloud-shell.js?v=a36ab678"></script>
 <script>
 (function(){
   var search=document.getElementById('toolSearch'), cards=Array.from(document.querySelectorAll('.tool-card')), empty=document.getElementById('toolEmpty');
-  function currentUser(){try{return JSON.parse(localStorage.getItem('hq_user')||'null')}catch(_){return null}}
-  var user=currentUser(), previewRole='';
-  try{previewRole=new URLSearchParams(location.search).get('admin')==='1'?'admin':localStorage.getItem('hq_role')||''}catch(_){}
-  if((user&&user.role==='admin')||(!user&&previewRole==='admin')) document.querySelectorAll('[data-admin-tool]').forEach(function(card){card.hidden=false});
+  function renderAdminTools(user){document.querySelectorAll('[data-admin-tool]').forEach(function(card){card.hidden=!(user&&user.role==='admin')});filter()}
+  window.addEventListener('hq:auth-changed',function(event){var detail=event&&event.detail||{};renderAdminTools(detail.verified?detail.user:null)});
   var capabilities=[['creator_agent_v1','/api/creator-agent/capability'],['pixelle_text_video','/api/gen/text-video/capability'],['matrix_template_video','/api/gen/matrix-template/capability']];
   capabilities.forEach(function(entry){fetch(entry[1],{credentials:'same-origin',cache:'no-store'}).then(function(response){return response.ok?response.json():null}).then(function(data){if(data&&data.available){var card=document.querySelector('[data-tool-feature="'+entry[0]+'"]');if(card)card.hidden=false}}).catch(function(){})});
   function filter(){var query=(search.value||'').trim().toLowerCase(), shown=0;cards.forEach(function(card){var match=!query||(card.getAttribute('data-search')||'').toLowerCase().includes(query);card.style.display=match?'':'none';if(match&&!card.hidden)shown++});empty.classList.toggle('on',shown===0)}

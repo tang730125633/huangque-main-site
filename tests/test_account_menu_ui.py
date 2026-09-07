@@ -21,6 +21,7 @@ class AccountMenuUiTest(unittest.TestCase):
         self.assertIn("var u=verifiedCurrentUser(); if(!u) return;", SHELL)
         self.assertIn("var u=verifiedCurrentUser(), inn=!!u;", SHELL)
         self.assertIn("if(r.status===401){ requireLogin(); return null; }", SHELL)
+        self.assertIn("getVerifiedUser:verifiedCurrentUser", SHELL)
 
     def test_payment_methods_use_local_brand_icons(self):
         for name in ("wechat", "alipay"):

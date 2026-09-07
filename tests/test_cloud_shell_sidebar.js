@@ -24,12 +24,21 @@ function readUsesFlushWorkspace() {
 }
 
 function verifyCachedUser(cachedUser, verifiedUsername) {
-  const match = shell.match(/function verifiedCurrentUser\(\)\{[\s\S]*?\n  \}/);
+  const match = shell.match(/function verifiedCurrentUser\(\)\{[^\n]+\}/);
   assert.ok(match, 'cloud-shell.js must define verifiedCurrentUser()');
-  return new Function('currentUser', '_verifiedUsername', `${match[0]}; return verifiedCurrentUser();`)(
-    () => cachedUser,
-    verifiedUsername,
+  return new Function('_verifiedUser', `${match[0]}; return verifiedCurrentUser();`)(cachedUser&&cachedUser.username===verifiedUsername?cachedUser:null);
+}
+
+function renderAdminTools(user) {
+  const match = aiTools.match(/function renderAdminTools\(user\)\{[^\n]+\}/);
+  assert.ok(match, 'ai-tools.html must define renderAdminTools(user)');
+  const cards = [{hidden: false}, {hidden: false}];
+  let filterCalls = 0;
+  new Function('document', 'filter', `${match[0]}; renderAdminTools(${JSON.stringify(user)});`)(
+    {querySelectorAll: () => cards},
+    () => { filterCalls += 1; },
   );
+  return {cards, filterCalls};
 }
 
 test('desktop Inspiration and AI toolbox keep the sidebar expanded', () => {
@@ -104,6 +113,17 @@ test('cached account data is trusted only after server verification', () => {
   assert.equal(verifyCachedUser(cached, ''), null);
   assert.equal(verifyCachedUser(cached, 'another-user'), null);
   assert.deepEqual(verifyCachedUser(cached, 'local-cache'), cached);
+});
+
+test('admin tools wait for and follow the server-verified auth event', () => {
+  assert.doesNotMatch(aiTools, /localStorage\.getItem\('hq_user'\)/);
+  assert.match(aiTools, /window\.addEventListener\('hq:auth-changed'/);
+  assert.match(aiTools, /detail\.verified\?detail\.user:null/);
+  assert.ok(renderAdminTools(null).cards.every(card => card.hidden));
+  assert.ok(renderAdminTools({username: 'member', role: 'member'}).cards.every(card => card.hidden));
+  const admin = renderAdminTools({username: 'admin', role: 'admin'});
+  assert.ok(admin.cards.every(card => !card.hidden));
+  assert.equal(admin.filterCalls, 1);
 });
 
 test('point prices are visible and refresh on open pages', () => {

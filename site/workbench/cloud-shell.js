@@ -119,15 +119,15 @@
     {k:'settings',l:'通用设置',i:'gear'}
   ];
 
-  // 管理员判定：已登录则一律以真实账号角色(hq_user.role)为准，忽略测试开关；
+  // 管理员判定：已登录则一律以服务端验证快照为准，忽略测试开关；
   // 仅在"未登录预览"时才用 ?admin=1/0 测试开关(写入 hq_role)。
   function isAdmin(){
     try{
       var q=new URLSearchParams(location.search);
       if(q.get('admin')==='1') localStorage.setItem('hq_role','admin');
       if(q.get('admin')==='0') localStorage.removeItem('hq_role');
-      var u=JSON.parse(localStorage.getItem('hq_user')||'null');
-      if(u) return u.role==='admin';                    // 已登录：真实角色说了算
+      var u=verifiedCurrentUser();
+      if(u) return u.role==='admin';                    // 已登录：服务端角色说了算
       return localStorage.getItem('hq_role')==='admin';  // 未登录：仅预览开关
     }catch(e){ return false; }
   }
@@ -357,19 +357,39 @@
     var h=extra||{};
     return h;
   }
-  var _verifiedUsername='';
+  // ===== 服务端验证身份状态 =====
+  var _verifiedUser=null,_authVerificationEpoch=0;
+  function verifiedCurrentUser(){ return _verifiedUser?Object.assign({},_verifiedUser):null; }
   function notifyAuthChanged(user,verified){
     var username=user&&typeof user.username==='string'?user.username:'';
-    _verifiedUsername=verified===true&&username?username:'';
-    try{ window.dispatchEvent(new CustomEvent('hq:auth-changed',{detail:{username:_verifiedUsername,verified:!!_verifiedUsername}})); }catch(e){}
+    _verifiedUser=verified===true&&username?Object.assign({},user):null;
+    try{ window.dispatchEvent(new CustomEvent('hq:auth-changed',{detail:{username:_verifiedUser?_verifiedUser.username:'',user:verifiedCurrentUser(),verified:!!_verifiedUser}})); }catch(e){}
+  }
+  function invalidateAuthenticatedUi(){
+    _authVerificationEpoch++;
+    _accountAvatar='';closeAccountMenu();notifyAuthChanged(null,false);renderUser();
   }
   function refreshPoints(){
-    fetch('/api/auth/me',{credentials:'same-origin',cache:'no-store',headers:authHeaders()}).then(function(r){ if(r.status===401){ requireLogin(); return null; } if(!r.ok){ notifyAuthChanged(null,false);renderUser();return null; } return r.json(); }).then(function(d){
-      if(d&&d.user){ _accountAvatar=d.user.avatar||''; try{ localStorage.removeItem('hq_token'); localStorage.setItem('hq_user',JSON.stringify(d.user)); }catch(e){} notifyAuthChanged(d.user,true); renderUser(); }
+    var requestEpoch=++_authVerificationEpoch;
+    return fetch('/api/auth/me',{credentials:'same-origin',cache:'no-store',headers:authHeaders()}).then(function(r){
+      if(requestEpoch!==_authVerificationEpoch) return null;
+      if(r.status===401){ requireLogin(); return null; }
+      if(!r.ok) throw new Error('auth verification failed');
+      return r.json();
+    }).then(function(d){
+      if(requestEpoch!==_authVerificationEpoch||d===null) return null;
+      if(!d||!d.user||typeof d.user.username!=='string'||!d.user.username) throw new Error('invalid auth response');
+      _accountAvatar=d.user.avatar||''; try{ localStorage.removeItem('hq_token'); localStorage.setItem('hq_user',JSON.stringify(d.user)); }catch(e){} notifyAuthChanged(d.user,true); renderUser();
       var p=d&&d.user&&d.user.points; if(p==null) return;
       var a=document.getElementById('hqPointsSide');
       if(a) a.textContent=p;
-    }).catch(function(){});
+      return d.user;
+    }).catch(function(){ if(requestEpoch===_authVerificationEpoch) invalidateAuthenticatedUi(); return null; });
+  }
+  function handleAuthStorageChange(e){
+    if(e&&e.key!==null&&e.key!=='hq_user') return;
+    invalidateAuthenticatedUi();
+    if(e&&e.key==='hq_user'&&e.newValue) refreshPoints();
   }
 
   // ===== 点数消费明细（全站共享入口）=====
@@ -960,10 +980,11 @@
   function closeLogin(){ var ov=document.getElementById('hqLoginOv'); if(ov) ov.classList.remove('on'); }
   function requireLogin(){
     try{ localStorage.removeItem('hq_token'); localStorage.removeItem('hq_user'); localStorage.removeItem('hq_role'); }catch(e){}
-    _accountAvatar='';closeAccountMenu();notifyAuthChanged(null,false);renderUser();openLogin();return true;
+    invalidateAuthenticatedUi();openLogin();return true;
   }
   function authSuccess(res,msg){
     try{ localStorage.removeItem('hq_role'); localStorage.removeItem('hq_token'); if(res.d.user) localStorage.setItem('hq_user',JSON.stringify(res.d.user)); }catch(e){}
+    _authVerificationEpoch++;
     notifyAuthChanged(res.d&&res.d.user,true);
     hqMsg(msg||'操作成功','ok');
     setTimeout(function(){ closeLogin(); refreshPoints(); renderUser(); },450);
@@ -1011,10 +1032,6 @@
 
   // ===== 用户登录态显示（左下侧栏卡 + 右上注册/登录）=====
   function currentUser(){ try{ return JSON.parse(localStorage.getItem('hq_user')||'null'); }catch(e){ return null; } }
-  function verifiedCurrentUser(){
-    var user=currentUser();
-    return user&&_verifiedUsername&&user.username===_verifiedUsername?user:null;
-  }
   var _accountAvatar='';
   function membershipRoleName(user){
     if(user&&user.role==='admin') return '管理员';
@@ -1033,6 +1050,7 @@
       sessionStorage.removeItem('hq_director_agent_digital_human_v1');
     }catch(e){}
     try{ localStorage.removeItem('hq_token'); localStorage.removeItem('hq_user'); localStorage.removeItem('hq_role'); }catch(e){}
+    _authVerificationEpoch++;
     notifyAuthChanged(null,false);
     fetch('/api/auth/logout',{method:'POST',credentials:'same-origin',headers:h}).finally(function(){ location.reload(); });
   }
@@ -1127,7 +1145,8 @@
   function price(key,fallback){var value=Number(pricingValues[key]);return Number.isFinite(value)&&value>0?value:fallback;}
   setInterval(function(){fetchPricing().then(function(values){pricingListeners.forEach(function(callback){callback(values)})}).catch(function(){})},30000);
 
-  window.HQ={ icon:icon, nav:NAV, escapeHtml:escapeHtml, escapeAttr:escapeAttr, safeUrl:safeUrl, isAdmin:isAdmin, getVerifiedUser:function(){return _verifiedUsername?{username:_verifiedUsername}:null;}, refreshPoints:refreshPoints, refreshNotifications:refreshNotificationBadge, setFriendsBadge:updateFriendsBadge, registerFriendsPanel:registerFriendsPanel, setFriendsPanelExpanded:setFriendsPanelExpanded, openFriendsPanel:openFriendsPanel, login:openLogin, requireLogin:requireLogin, register:openRegister, closeLogin:closeLogin, renderUser:renderUser, onPricing:onPricing, price:price };
+  window.addEventListener('storage',handleAuthStorageChange);
+  window.HQ={ icon:icon, nav:NAV, escapeHtml:escapeHtml, escapeAttr:escapeAttr, safeUrl:safeUrl, isAdmin:isAdmin, getVerifiedUser:verifiedCurrentUser, refreshPoints:refreshPoints, refreshNotifications:refreshNotificationBadge, setFriendsBadge:updateFriendsBadge, registerFriendsPanel:registerFriendsPanel, setFriendsPanelExpanded:setFriendsPanelExpanded, openFriendsPanel:openFriendsPanel, login:openLogin, requireLogin:requireLogin, register:openRegister, closeLogin:closeLogin, renderUser:renderUser, onPricing:onPricing, price:price };
   function _hqInit(){ build(); buildLoginModal(); loadTaskTracker(); }
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',_hqInit); else _hqInit();
 })();
