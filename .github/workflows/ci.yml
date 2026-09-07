@@ -98,6 +98,7 @@ jobs:
         shell: bash
         run: |
           node tests/video_agent_frontend_runtime.js
+          node --test tests/test_cloud_shell_sidebar.js tests/test_cloud_shell_auth_runtime.js
           tests=(
             test_admin_request_logs.py
             test_cli_image_uploads.py

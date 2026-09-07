@@ -939,7 +939,8 @@ class VideoAgentUiTests(unittest.TestCase):
         self.assertIn("e.key==='hq_user'", HTML)
 
         self.assertIn("function notifyAuthChanged(user,verified)", CLOUD_SHELL)
-        self.assertIn("getVerifiedUser:function(){return _verifiedUsername?{username:_verifiedUsername}:null;}", CLOUD_SHELL)
+        self.assertIn("getVerifiedUser:verifiedCurrentUser", CLOUD_SHELL)
+        self.assertIn("user:verifiedCurrentUser()", CLOUD_SHELL)
         self.assertIn("new CustomEvent('hq:auth-changed'", CLOUD_SHELL)
         auth_success = CLOUD_SHELL.split("function authSuccess", 1)[1].split(
             "function hqDoLogin", 1
@@ -983,10 +984,14 @@ class VideoAgentUiTests(unittest.TestCase):
             "function ", 1
         )[0]
         self.assertIn("localStorage.removeItem('hq_user')", require_login)
-        self.assertIn("notifyAuthChanged(null,false)", require_login)
-        self.assertIn("renderUser();openLogin()", require_login)
+        self.assertIn("invalidateAuthenticatedUi();openLogin()", require_login)
+        invalidate = CLOUD_SHELL.split("function invalidateAuthenticatedUi()", 1)[1].split(
+            "function ", 1
+        )[0]
+        self.assertIn("notifyAuthChanged(null,false)", invalidate)
+        self.assertIn("renderUser()", invalidate)
         self.assertIn("requireLogin:requireLogin", CLOUD_SHELL)
-        self.assertIn("if(r.status===401){ notifyAuthChanged(null,false);if(currentUser()) requireLogin()", CLOUD_SHELL)
+        self.assertIn("if(r.status===401){ requireLogin(); return null; }", CLOUD_SHELL)
         unauthorized = HTML.split("function handleAgentUnauthorized", 1)[1].split(
             "function ", 1
         )[0]
