@@ -12,7 +12,7 @@
     {"source": "server/hq_ip_agent/agent/v4/subagent.py", "target": "agent/v4/subagent.py", "before": "7453d3c8503350c9cd7f8f952231cafc353ee596984dca44cde190f41cffd6a3", "after": "7d354bdb0fd9478bbbb624e61af74ce26ec2274462130fa7e51133876654d26f"},
     {"source": "server/hq_ip_agent/agent/v4/state.py", "target": "agent/v4/state.py", "before": "7906376e2d672967c396c8aa5609e9daccf21ecfba505b5b6bc3b11fc5aae451", "after": "f3a8d0923864fda2815d178828d18ce270961837e2258661af08605bdade8bd5"},
     {"source": "server/hq_ip_agent/agent/v4/delivery.py", "target": "agent/v4/delivery.py", "before": "60687b1ede22a6da680d3bc0b9320a4be3c8af9e2d428423897bf11f9d2d009a", "after": "fbeabfa438eef030f1f578c881830eaae9bc0ca5cb6fc6d0a942256a3fb70ece"},
-    {"source": "site/workbench/hq-ip-agent/static/v4.js", "target": "static/v4.js", "before": "6ce0600c147ace9dda451b149f429302bd909d32753c5d0c77aa79ab2035370e", "after": "fd375cef092234daaed00698c2830d5daace12dff004c99ce6ef4b9ab6065c10"},
-    {"source": "site/workbench/hq-ip-agent/static/style.css", "target": "static/style.css", "before": "8727e87def426a8c2532a6ff584cd30c608cbb6cfd4438e020be72dd41fba86c", "after": "8727e87def426a8c2532a6ff584cd30c608cbb6cfd4438e020be72dd41fba86c"}
+    {"source": "site/workbench/hq-ip-agent/static/v4.js", "target": "static/v4.js", "before": "6ce0600c147ace9dda451b149f429302bd909d32753c5d0c77aa79ab2035370e", "after": "3c652b53eafacfc714241d9664f35fbede771023a5b542396bec86f8dd731821"},
+    {"source": "site/workbench/hq-ip-agent/static/style.css", "target": "static/style.css", "before": "8727e87def426a8c2532a6ff584cd30c608cbb6cfd4438e020be72dd41fba86c", "after": "b81c281bfcf300cfdd8e692777ac30309b12c1b554450cb48942a41e5f3f57de"}
   ]
 }

@@ -2151,6 +2151,26 @@
   // ---- 历史会话：服务端按落盘文件列出，点一下接回任何一次对话 ----
   var histBtn = $("hist-btn");
   var histPanel = $("hist-panel");
+  var workbenchReturn = document.createElement("a");
+  workbenchReturn.className = "mobile-workbench-return";
+  workbenchReturn.id = "workbench-return";
+  workbenchReturn.href = "/workbench/inspiration.html";
+  workbenchReturn.setAttribute("aria-label", "返回工作台");
+  workbenchReturn.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/><path d="M9 12h10"/></svg><span>返回工作台</span>';
+  var navInner = document.querySelector(".nav-inner");
+  navInner.insertBefore(workbenchReturn, navInner.querySelector(".brand"));
+
+  workbenchReturn.addEventListener("click", function (event) {
+    try {
+      var previous = document.referrer ? new URL(document.referrer) : null;
+      var canReturn = previous && previous.origin === location.origin &&
+        previous.href !== location.href && previous.pathname.indexOf("/workbench/") === 0;
+      if (canReturn) {
+        event.preventDefault();
+        history.back();
+      }
+    } catch (ignore) {}
+  });
 
   function fmtTime(ts) {
     var d = new Date(ts * 1000);

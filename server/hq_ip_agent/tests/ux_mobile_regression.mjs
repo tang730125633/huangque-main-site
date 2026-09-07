@@ -20,6 +20,7 @@ try {
     await page.route('**/*', async route=>{
       const req=route.request(), url=new URL(req.url()), p=url.pathname;
       if(p==='/v4') return route.fulfill({contentType:'text/html',body:fs.readFileSync(path.join(ui,'v4.html'),'utf8')});
+      if(p==='/workbench/inspiration.html') return route.fulfill({contentType:'text/html',body:'<!doctype html><title>灵感设计</title><h1>灵感设计</h1>'});
       if(p.startsWith('/static/')) return route.fulfill({contentType:p.endsWith('.css')?'text/css':'application/javascript',body:fs.readFileSync(path.join(ui,p),'utf8')});
       if(p==='/api/health') return route.fulfill({json:{llm_mode:'live',hq_status:{ok:true}}});
       if(p==='/api/v4/start') return route.fulfill({json:{session_id:'mobile-test',async:true,seq:1,mode:'live'}});
@@ -65,8 +66,17 @@ try {
     completed=true;
     await page.locator('.approval-box').waitFor({state:'detached',timeout:6000});
     assert.deepEqual(errors,[]);
+    const backToWorkbench=page.getByRole('link',{name:'返回工作台'});
+    await backToWorkbench.waitFor();
+    assert.equal(await backToWorkbench.isVisible(),true,'mobile direct entry must expose a visible workbench return');
+    await page.setViewportSize({width:1280,height:800});
+    assert.equal(await backToWorkbench.isHidden(),true,'desktop navigation must remain unchanged');
+    await page.setViewportSize({width,height:844});
+    assert.equal(await backToWorkbench.isVisible(),true);
+    await backToWorkbench.click();
+    await page.waitForURL('**/workbench/inspiration.html');
     results.push({width,...layout,confirmRequests:submitted,streamRequests,statusRequests,
-                  heldReplyDelivered:true,staleCardRemoved:true});
+                  heldReplyDelivered:true,staleCardRemoved:true,workbenchReturn:true});
     await page.close();
   }
   fs.writeFileSync(path.join(out,'mobile-results.json'),JSON.stringify(results,null,2));
