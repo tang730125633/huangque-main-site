@@ -83,6 +83,85 @@ class HeyGenMcpOAuthTests(unittest.TestCase):
                     "i.jpg", "a.mp3", "1080p", "9:16", "medium")
         direct.assert_not_called()
 
+    def test_explicit_api_wallet_ignores_present_oauth_for_upload_create_and_poll(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image = Path(temp_dir) / "portrait.jpg"
+            image.write_bytes(b"jpeg-bytes")
+            with patch.object(video, "_HEYGEN_BILLING_MODE", "api"), \
+                 patch.object(video, "_HEYGEN_MCP_CREDENTIALS", "/secure/unused-oauth.json"), \
+                 patch.object(video, "_detect_image_mime", return_value="image/jpeg"), \
+                 patch.object(video, "_heygen_upload_asset_oauth", return_value={
+                     "data": {"asset_id": "oauth-asset"},
+                 }) as oauth_upload, \
+                 patch.object(video, "_heygen_direct_req", return_value={
+                     "data": {"asset_id": "api-asset"},
+                 }) as api_upload:
+                self.assertEqual(video._heygen_upload_asset(image, direct=True), "api-asset")
+            oauth_upload.assert_not_called()
+            api_upload.assert_called_once()
+
+        with patch.object(video, "_HEYGEN_BILLING_MODE", "api"), \
+             patch.object(video, "_HEYGEN_MCP_CREDENTIALS", "/secure/unused-oauth.json"), \
+             patch.object(video, "_heygen_mcp_call") as mcp_create, \
+             patch.object(video, "_heygen_request_json", return_value={
+                 "data": {"video_id": "api-video"},
+             }) as api_create:
+            self.assertEqual(video._heygen_create_cinematic_video(
+                "look-1", [], "9:16", "720p", 10, direct=True,
+            ), "api-video")
+        mcp_create.assert_not_called()
+        api_create.assert_called_once()
+
+        image = Path("image.jpg")
+        audio = Path("audio.mp3")
+        with patch.object(video, "_HEYGEN_BILLING_MODE", "api"), \
+             patch.object(video, "_HEYGEN_MCP_CREDENTIALS", "/secure/unused-oauth.json"), \
+             patch.object(video, "_resolve_out_file", side_effect=[image, audio]), \
+             patch.object(video, "_ensure_heygen_audio_mp3", return_value=audio), \
+             patch.object(video, "_upload_heygen_image_asset", return_value="api-image"), \
+             patch.object(video, "_heygen_upload_asset", return_value="api-audio"), \
+             patch.object(video, "_heygen_retry_net", side_effect=lambda fn, _what: fn()), \
+             patch.object(video, "_heygen_retry_429", side_effect=lambda fn, _what: fn()), \
+             patch.object(video, "_heygen_create_video", return_value="api-video"), \
+             patch.object(video, "_heygen_poll_video", return_value={
+                 "video_url": "https://example.test/video.mp4",
+             }) as poll, \
+             patch.object(video, "_download_video_file_direct", return_value="video/out.mp4"), \
+             patch.object(video, "_extract_first_frame_cover", return_value=None), \
+             patch.object(video, "heygen_slot", side_effect=lambda _label: nullcontext()), \
+             patch.object(video, "update_video_asset_phase"):
+            video.generate_heygen_video_direct(
+                "image.jpg", "audio.mp3", "1080p", "9:16", "medium",
+            )
+        self.assertFalse(poll.call_args.kwargs["mcp"])
+
+    def test_subscription_mode_routes_upload_and_cinematic_create_to_mcp(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image = Path(temp_dir) / "portrait.jpg"
+            image.write_bytes(b"jpeg-bytes")
+            with patch.object(video, "_HEYGEN_BILLING_MODE", "subscription"), \
+                 patch.object(video, "_HEYGEN_MCP_CREDENTIALS", "/secure/heygen-oauth.json"), \
+                 patch.object(video, "_detect_image_mime", return_value="image/jpeg"), \
+                 patch.object(video, "_heygen_upload_asset_oauth", return_value={
+                     "data": {"asset_id": "oauth-asset"},
+                 }) as oauth_upload, \
+                 patch.object(video, "_heygen_direct_req") as api_upload:
+                self.assertEqual(video._heygen_upload_asset(image, direct=True), "oauth-asset")
+            oauth_upload.assert_called_once()
+            api_upload.assert_not_called()
+
+        with patch.object(video, "_HEYGEN_BILLING_MODE", "subscription"), \
+             patch.object(video, "_HEYGEN_MCP_CREDENTIALS", "/secure/heygen-oauth.json"), \
+             patch.object(video, "_heygen_mcp_call", return_value={
+                 "video_id": "plan-video",
+             }) as mcp_create, \
+             patch.object(video, "_heygen_request_json") as api_create:
+            self.assertEqual(video._heygen_create_cinematic_video(
+                "look-1", [], "9:16", "720p", 10, direct=True,
+            ), "plan-video")
+        mcp_create.assert_called_once()
+        api_create.assert_not_called()
+
     def test_mcp_file_input_is_limited_to_tools_that_accept_inline_base64(self):
         with patch.object(Path, "is_file", return_value=True), \
              patch.object(Path, "read_bytes", return_value=b"\xff\xd8\xff\xe0jpeg"):
@@ -714,13 +793,14 @@ class HeyGenMcpOAuthTests(unittest.TestCase):
         api_get.assert_called_once_with("GET", "/videos/mcp-video", timeout=90, direct=True)
 
 
-    def test_upload_asset_uses_oauth_when_mcp_enabled(self):
+    def test_upload_asset_uses_oauth_in_subscription_mode(self):
         with tempfile.NamedTemporaryFile(suffix=".jpg", dir=ROOT, delete=False) as f:
             f.write(b"fake-image")
             f.flush()
             image_path = f.name
         try:
-            with patch.object(video, "_heygen_mcp_enabled", return_value=True), \
+            with patch.object(video, "_HEYGEN_BILLING_MODE", "subscription"), \
+                 patch.object(video, "_HEYGEN_MCP_CREDENTIALS", "/secure/heygen-oauth.json"), \
                  patch.object(video, "_heygen_upload_asset_oauth",
                               return_value={"data": {"id": "asset-oauth"}}) as oauth, \
                  patch.object(video, "_heygen_direct_req") as direct:

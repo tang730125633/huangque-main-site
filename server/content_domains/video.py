@@ -3375,7 +3375,7 @@ def _heygen_upload_asset_oauth(file_path, mime, timeout=240):
 
 def heygen_upload_preflight():
     """Confirm the configured upload credential path without creating an asset."""
-    if _heygen_mcp_enabled():
+    if _heygen_subscription_mode():
         token = str(_heygen_mcp_access_token() or "").strip()
         if not token:
             raise RuntimeError("HeyGen OAuth upload credential is unavailable")
@@ -3400,8 +3400,9 @@ def _heygen_upload_asset(file_path, direct=False):
     if direct:
         # HeyGen 素材上传端点收「raw 文件字节 + 文件 mime」(同口播直连 #405 的 /v1/asset)；
         # 发 multipart/form-data 会被 HeyGen 判 "Content type not supported application/octet-stream" 400。
-        # MCP 启用时用 OAuth token 上传，确保 asset 与 MCP create_photo_avatar 同钱包（否则 Asset not found）。
-        if _heygen_mcp_enabled():
+        # 套餐模式用 OAuth token 上传，确保 asset 与 MCP create_photo_avatar 同钱包（否则 Asset not found）。
+        # 凭据文件存在不代表启用套餐；显式 API Wallet 模式必须始终使用 API Key 钱包。
+        if _heygen_subscription_mode():
             d = _heygen_upload_asset_oauth(file_path, mime)
         else:
             d = _heygen_direct_req(
@@ -4492,7 +4493,7 @@ def _heygen_create_cinematic_video(avatar_item_id, reference_asset_id, ratio, re
     refs = [{"type": "asset_id", "asset_id": a} for a in refs if a]
     if refs:
         payload["references"] = refs
-    if _heygen_mcp_enabled():
+    if _heygen_subscription_mode():
         arguments = {
             "prompt": payload["prompt"],
             "avatarId": payload["avatar_id"],
@@ -5140,7 +5141,7 @@ def generate_heygen_lipsync(source_video_file, audio_file, quality="speed",
     request_id = str(job_id or hashlib.sha256(
         (str(source_video_file) + "\0" + str(audio_file) + "\0" + str(quality)).encode()
     ).hexdigest()[:32])
-    mcp = _heygen_mcp_enabled()
+    mcp = _heygen_subscription_mode()
     video_asset_id = audio_asset_id = None
     if mcp:
         detection_video_file = _mux_seedance_upscale_audio(
@@ -5519,7 +5520,7 @@ def generate_heygen_video_direct(image_file, audio_file, resolution, ratio, moti
         # ↓ 此刻已计费。之后任何失败都不能回退中转重发（同一账号，会再付一次），见 HeyGenBilledError
         try:
             info = _heygen_poll_video(video_id, direct=True, deadline_s=VIDEO_GEN_DEADLINE,
-                                      mcp=_heygen_mcp_enabled())
+                                      mcp=_heygen_subscription_mode())
             update_video_asset_phase(job_id, "downloading_video", provider_video_id=video_id,
                                      source_video_url=info.get("video_url"))
             video_file = _download_video_file_direct(info["video_url"], "heygen")
@@ -5577,7 +5578,7 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion,
         # 中转也用同一个死线。原来它回落到 HEYGEN_TIMEOUT(1200s)，比 reaper 对口播的宽限
         # (540s)还长 —— reaper 先把任务判死并退点，worker 却还在轮询，上游照样出片照样收钱。
         info = _heygen_poll_video(video_id, deadline_s=VIDEO_GEN_DEADLINE,
-                                  mcp=_heygen_mcp_enabled())
+                                  mcp=_heygen_subscription_mode())
         update_video_asset_phase(job_id, "downloading_video", provider_video_id=video_id,
                                  source_video_url=info.get("video_url"))
         video_file = _download_video_file(info["video_url"], "heygen")
@@ -8334,7 +8335,7 @@ def gen_cinematic(payload):
         update_video_asset_phase(job_id, "polling_video", provider_video_id=video_id)
         try:
             info = _heygen_poll_video(video_id, direct=True, deadline_s=HEYGEN_MOTION_DEADLINE,
-                                      mcp=_heygen_mcp_enabled())
+                                      mcp=_heygen_subscription_mode())
             update_video_asset_phase(job_id, "downloading_video", source_video_url=info.get("video_url"))
             video_file = _download_video_file_direct(info["video_url"], "cinematic")
         except Exception as e:

@@ -733,7 +733,8 @@ class HQCLIContentTests(unittest.TestCase):
             }}
 
         with mock.patch.object(video, "_resolve_out_file", side_effect=lambda value: Path("/") / value), \
-                mock.patch.object(video, "_heygen_mcp_enabled", return_value=False), \
+                mock.patch.object(video, "_HEYGEN_BILLING_MODE", "api"), \
+                mock.patch.object(video, "_HEYGEN_MCP_CREDENTIALS", "/secure/unused-oauth.json"), \
                 mock.patch.object(video, "_heygen_upload_asset", side_effect=["vid_asset", "aud_asset"]), \
                 mock.patch.object(video, "_heygen_request_json", side_effect=request), \
                 mock.patch.object(video, "_download_video_file_direct", return_value="video/lipsync.mp4"), \
@@ -764,7 +765,8 @@ class HQCLIContentTests(unittest.TestCase):
             }
 
         with mock.patch.object(video, "_resolve_out_file", side_effect=lambda value: Path("/") / value), \
-                mock.patch.object(video, "_heygen_mcp_enabled", return_value=True), \
+                mock.patch.object(video, "_HEYGEN_BILLING_MODE", "subscription"), \
+                mock.patch.object(video, "_HEYGEN_MCP_CREDENTIALS", "/secure/heygen-oauth.json"), \
                 mock.patch.object(video, "_mux_seedance_upscale_audio", return_value="video/detection.mp4"), \
                 mock.patch.object(video, "public_url", side_effect=lambda value, *_args, **_kwargs: "https://media.test/" + value), \
                 mock.patch.object(video, "_heygen_mcp_call", side_effect=mcp), \

@@ -57,7 +57,7 @@ class FifteenMinutesTests(unittest.TestCase):
         # 口播：直连和中转两条路都要用它
         self.assertIn("_heygen_poll_video(video_id, direct=True, deadline_s=VIDEO_GEN_DEADLINE,", VIDEO_SRC)
         self.assertIn("_heygen_poll_video(video_id, deadline_s=VIDEO_GEN_DEADLINE,", VIDEO_SRC)
-        self.assertGreaterEqual(VIDEO_SRC.count("mcp=_heygen_mcp_enabled()"), 2)
+        self.assertGreaterEqual(VIDEO_SRC.count("mcp=_heygen_subscription_mode()"), 2)
 
 
 class CinematicGetsThirtyMinutesTests(unittest.TestCase):
