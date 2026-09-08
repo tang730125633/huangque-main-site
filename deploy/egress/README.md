@@ -1,16 +1,19 @@
 # 作图与采集出境隧道（部署说明）
 
 把作图三引擎（nb2 / pro / gpt）的官方 API 请求，从拥塞的 heygen 共享中转，改为优先走
-自建 VPS Reality 隧道直连官方，前档超时/报错自动降级。
+自建 VPS 隧道直连官方，前档超时/报错自动降级。
 
 ## 出境优先级链（`content_domains/egress.py`）
 
-1. **首选** `EGRESS_PROXY` —— 本机 `xray-hqvps` HTTP 代理（生产当前为 `127.0.0.1:10811`）
-2. **备选** `EGRESS_PROXY_FALLBACK` —— 独立的 `xray-egress-novix` HTTP 代理（生产当前为 `127.0.0.1:10810`）
+1. **首选** `EGRESS_PROXY` —— Novix VPS 的 VLESS/Reality HTTP 代理（生产为 `127.0.0.1:10810`）
+2. **备选** `EGRESS_PROXY_FALLBACK` —— 搬瓦工独立 VPS 的 Hysteria2/UDP HTTP 代理（生产为 `127.0.0.1:10812`）
 3. **兜底** heygen 中转 —— `GEMINI_BASE` / `OPENAI_BASE`，直连
 
 > 两个 `EGRESS_*` 都不配时，链里只剩 heygen 一档 = 改动前的老行为。**代码合并零风险；
 > 真正切换靠下面的部署。**
+
+生产现存的新加坡中转已失联，修复前不得把第三档计为健康容灾；当前有效主备是
+`10810` 与 `10812`。
 
 ## 一、装隧道客户端（xray）
 
@@ -34,16 +37,38 @@ ss -tlnp | grep 10809
 curl -s -o /dev/null -m 20 -x http://127.0.0.1:10809 -w '%{http_code}\n' https://api.openai.com/v1/models  # 不带 Key 时期望 401
 ```
 
-生产环境当前另有两套独立客户端：
+生产环境另有两套 Xray 客户端：
 
-- `xray-hqvps.service` → `127.0.0.1:10811`（主）；
-- `huangque-egress-novix-client.service` → `127.0.0.1:10810`（备）。
+- `xray-hqvps.service` → `127.0.0.1:10811`（VMess/WebSocket，保留但不在当前主备链）；
+- `huangque-egress-novix-client.service` → `127.0.0.1:10810`（VLESS/Reality，当前主线）。
+
+`10811` 与 `10810` 最终使用同一个公网出口，不能互相作为独立容灾。独立备用必须使用
+不同 VPS 和不同公网 IP；当前由 `huangque-hysteria-egress.service` 在本机 `10812` 提供。
 
 `127.0.0.1:7999` 的 Mihomo 线路曾在 2026-09-01 对图片、视频、COS、OpenAI、Gemini
 全部返回 TLS `unexpected eof`。在重新完成多轮探针前，不得把它设为主出口或 fallback；
 `service active` 只证明进程存在，不证明隧道可用。
 
-## 二、打开代码里的出境链（content.env）
+## 二、装独立 UDP 备用客户端（Hysteria2）
+
+服务端使用独立搬瓦工 VPS 的专用 `8446/udp` 实例，不复用团队成员端口或认证。主站安装与
+服务端相同版本的官方 Hysteria 二进制，将
+`deploy/egress/hysteria-client.example.yaml` 复制为
+`/home/ubuntu/egress/hysteria-production.yaml`，填入专用认证和服务端证书 SHA-256 指纹，权限设为
+`600`。客户端不配置固定带宽，使用默认拥塞控制，避免错误带宽估计造成抖动。
+
+```bash
+sudo install -m 0755 hysteria-linux-amd64 /usr/local/bin/hysteria
+sudo install -o ubuntu -g ubuntu -m 0600 hysteria-production.yaml /home/ubuntu/egress/
+sudo install -m 0644 deploy/systemd/huangque-hysteria-egress.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now huangque-hysteria-egress
+
+curl -m 10 -x http://127.0.0.1:10812 -o /dev/null -w '%{http_code}\n' \
+  https://api.openai.com/v1/models  # 不带 Key 时期望 401
+```
+
+## 三、打开代码里的出境链（content.env）
 
 在 `/home/ubuntu/content-api/content.env` 增加：
 
@@ -51,8 +76,8 @@ curl -s -o /dev/null -m 20 -x http://127.0.0.1:10809 -w '%{http_code}\n' https:/
 HTTP_PROXY=http://127.0.0.1:10810
 HTTPS_PROXY=http://127.0.0.1:10810
 ALL_PROXY=http://127.0.0.1:10810
-EGRESS_PROXY=http://127.0.0.1:10811          # 首选：xray-hqvps
-EGRESS_PROXY_FALLBACK=http://127.0.0.1:10810 # 备选：Novix Reality
+EGRESS_PROXY=http://127.0.0.1:10810          # 首选：Novix Reality/TCP
+EGRESS_PROXY_FALLBACK=http://127.0.0.1:10812 # 备选：搬瓦工 Hysteria2/UDP
 NO_PROXY=localhost,127.0.0.1,zelong.vip,huangquechuanmei.com,huangque-media-1435693839.cos.ap-guangzhou.myqcloud.com
 no_proxy=localhost,127.0.0.1,zelong.vip,huangquechuanmei.com,huangque-media-1435693839.cos.ap-guangzhou.myqcloud.com
 # EGRESS_TIMEOUT=210                          # 可选，每个代理档超时秒数（默认 210，覆盖 gpt-image-2 ~174s）
@@ -84,12 +109,14 @@ sudo systemctl restart huangque-leadgen-api  # 图片/视频采集、ASR、COS �
 
 ```bash
 # 主、备线路都要跑；以下 401/403 表示 TLS/路由可达，不表示已认证。
-curl -m 10 -x http://127.0.0.1:10811 -o /dev/null -w '%{http_code}\n' https://api.openai.com/v1/models
-curl -m 10 -x http://127.0.0.1:10810 -o /dev/null -w '%{http_code}\n' https://generativelanguage.googleapis.com/v1beta/models
+curl -m 10 -x http://127.0.0.1:10810 -o /dev/null -w '%{http_code}\n' https://api.openai.com/v1/models
+curl -m 10 -x http://127.0.0.1:10812 -o /dev/null -w '%{http_code}\n' https://generativelanguage.googleapis.com/v1beta/models
 
 # 图片与视频片段必须返回 200/206 和非零字节。
-curl -m 10 -x http://127.0.0.1:10811 -o /dev/null https://www.gstatic.com/webp/gallery/1.jpg
-curl -m 10 -x http://127.0.0.1:10811 -H 'Range: bytes=0-262143' -o /dev/null https://media.w3.org/2010/05/sintel/trailer.mp4
+curl -m 10 -x http://127.0.0.1:10810 -o /dev/null https://www.gstatic.com/webp/gallery/1.jpg
+curl -m 10 -x http://127.0.0.1:10810 -H 'Range: bytes=0-262143' -o /dev/null https://media.w3.org/2010/05/sintel/trailer.mp4
+curl -m 10 -x http://127.0.0.1:10812 -o /dev/null https://www.gstatic.com/webp/gallery/1.jpg
+curl -m 10 -x http://127.0.0.1:10812 -H 'Range: bytes=0-262143' -o /dev/null https://media.w3.org/2010/05/sintel/trailer.mp4
 
 # COS 走 NO_PROXY；未带签名访问 Bucket 根返回 403 即证明 DNS/TLS 可达。
 curl -m 10 -o /dev/null -w '%{http_code}\n' https://huangque-media-1435693839.cos.ap-guangzhou.myqcloud.com/
@@ -103,6 +130,15 @@ curl -m 10 -o /dev/null -w '%{http_code}\n' https://huangque-media-1435693839.co
 优先恢复改动前的 `content.env` 备份并重启受影响服务。紧急降级时可把 `EGRESS_PROXY` 与
 `EGRESS_PROXY_FALLBACK` 都移除，退回 heygen 兜底；不要回切未经探针验证的 7999。
 （隧道服务可留着不影响，代码不读 `EGRESS_*` 就不会用它。）
+
+确认业务进程不再引用 `10812` 后，可停用主站客户端：
+
+```bash
+sudo systemctl disable --now huangque-hysteria-egress
+```
+
+完整撤销搬瓦工实例时，再停用 `hysteria-server@production-egress` 并精确删除
+`8446/udp` 防火墙规则；不得影响 443 或团队 8441–8445 实例。
 
 ## 注意
 
