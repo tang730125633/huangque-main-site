@@ -201,6 +201,10 @@ _ACTION_INPUTS = {
         "top_text", "bottom_text", "template_id", "font_family", "voiceover",
         "count",
     ),
+    "video-timeline-compose": (
+        "segments", "ratio", "preserve_source_audio", "bgm",
+        "bgm_asset_id", "bgm_volume", "voiceover",
+    ),
     "text-video-avatar-import": ("image_upload_id",),
     "text-video-plan": ("text", "template", "mode", "style", "voice", "speech_rate", "ratio"),
     "inspiration-catalog": (), "inspiration-likes": (),
@@ -447,6 +451,7 @@ _ACTION_PURPOSES = {
     "matrix-template-templates": "读取模板成片视觉模板",
     "matrix-template-generate": "使用平台素材库创建模板成片",
     "matrix-template-batch-generate": "使用同一文案和模板批量创建 2-5 条模板成片",
+    "video-timeline-compose": "把本人图片、视频和文字卡按时间轴拼接成片",
     "text-video-avatar-import": "导入文案成片口播人物图片",
     "text-video-plan": "生成可选择的文案成片口播分镜方案",
     "canvas-agent-plan": "为画布生成可确认的操作方案", "canvas-ops": "写入本人画布操作",
@@ -735,6 +740,71 @@ _MEDIA_SCHEMAS = {
             "voiceover.bgm defaults to false; when true, bgm_volume defaults to 0.2 and must be between 0 and 1",
             "with voiceover, final duration always follows the generated narration",
             "duration is automatic and only approved platform-library media is used",
+        ],
+    },
+    "video-timeline-compose": {
+        "required": ["segments"], "properties": {
+            "segments": {
+                "type": "array", "minItems": 2, "maxItems": 20,
+                "items": {"oneOf": [
+                    {
+                        "type": "object", "additionalProperties": False,
+                        "required": ["type", "asset_id"],
+                        "properties": {
+                            "type": {"const": "image"},
+                            "asset_id": _INT_ID_SCHEMA,
+                            "asset_index": {"type": "integer", "minimum": 0, "maximum": 3},
+                            "duration": {"type": "number", "minimum": 1, "maximum": 10},
+                            "transition": {"type": "string", "enum": ["none", "fade"]},
+                        },
+                    },
+                    {
+                        "type": "object", "additionalProperties": False,
+                        "required": ["type", "asset_id"],
+                        "properties": {
+                            "type": {"const": "video"},
+                            "asset_id": _INT_ID_SCHEMA,
+                            "trim_start": {"type": "number", "minimum": 0},
+                            "trim_end": {"type": "number", "exclusiveMinimum": 0},
+                            "transition": {"type": "string", "enum": ["none", "fade"]},
+                        },
+                    },
+                    {
+                        "type": "object", "additionalProperties": False,
+                        "required": ["type", "text"],
+                        "properties": {
+                            "type": {"const": "text_card"},
+                            "text": {"type": "string", "minLength": 1, "maxLength": 120},
+                            "style": {"type": "string", "enum": ["full-overlay-bold"]},
+                            "duration": {"type": "number", "minimum": 1, "maximum": 8},
+                            "transition": {"type": "string", "enum": ["none", "fade"]},
+                        },
+                    },
+                ]},
+            },
+            "ratio": {"type": "string", "enum": ["9:16", "16:9", "1:1"]},
+            "preserve_source_audio": {"type": "boolean", "default": True},
+            "bgm": {"type": "boolean", "default": False},
+            "bgm_asset_id": _INT_ID_SCHEMA,
+            "bgm_volume": {"type": "number", "minimum": 0.05, "maximum": 0.8},
+            "voiceover": {
+                "type": "object", "additionalProperties": False,
+                "required": ["text", "voice"],
+                "properties": {
+                    "text": {"type": "string", "minLength": 1, "maxLength": 120},
+                    "voice": {"type": "string", "minLength": 1, "maxLength": 128},
+                    "voice_scope": {"type": "string", "enum": ["public", "personal"]},
+                    "speed": {"type": "number", "minimum": 0.5, "maximum": 2.0},
+                },
+            },
+        },
+        "constraints": [
+            "asset_id must reference a completed image or video owned by the current account",
+            "transition applies from the current segment into the next; the final segment must use none",
+            "image duration is 1-10s; text card duration is 1-8s; each trimmed video is at most 60s",
+            "the final timeline is at most 180s and renders at 1080p",
+            "bgm=true requires a current owner-scoped bgm_asset_id; no platform music is chosen automatically",
+            "quote is free; confirmation must reuse identical input and quote_token",
         ],
     },
     "text-video-avatar-import": {
@@ -1348,6 +1418,7 @@ _FAMILIES = {
     "text-video-generate": "video",
     "matrix-template-capability": "video", "matrix-template-templates": "video",
     "matrix-template-generate": "video", "matrix-template-batch-generate": "video",
+    "video-timeline-compose": "video",
     "text-video-avatar-import": "video", "text-video-plan": "video",
     "canvas-list": "canvas", "canvas-get": "canvas", "canvas-create": "canvas", "canvas-agent-plan": "canvas",
     "canvas-ops": "canvas", "digital-presenter-capability": "canvas", "digital-presenter-project": "canvas",
@@ -1382,6 +1453,7 @@ _ACTION_FEATURE_GATES = {
     "digital-presenter-update": ("digital_presenter",), "text-video-generate": ("script_to_video",),
     "matrix-template-generate": ("matrix_template_video",),
     "matrix-template-batch-generate": ("matrix_template_video",),
+    "video-timeline-compose": ("matrix_template_video",),
     "text-video-avatar-import": ("script_to_video",), "text-video-plan": ("script_to_video",),
 }
 _OPTION_FEATURE_GATES = {
@@ -1401,6 +1473,7 @@ _GENERATION_ACTIONS = frozenset({
     "cinematic-open-generate", "cinematic-motion-generate", "tryon-fast-generate", "tryon-classic-generate",
     "text-video-generate", "video-avatar-create",
     "matrix-template-generate", "matrix-template-batch-generate",
+    "video-timeline-compose",
     "digital-human-oneclick-start",
     "short-drama-character-reference-generate",
 })
@@ -2896,6 +2969,126 @@ def _matrix_template_batch_payload(value):
     return {"item": item, "count": count}
 
 
+def _timeline_voiceover(value):
+    _strict_object(
+        value, {"text", "voice", "voice_scope", "speed"},
+        ("text", "voice"),
+    )
+    result = {
+        "text": _string(value["text"], "voiceover.text", 1, 120),
+        "voice": _string(value["voice"], "voiceover.voice", 1, 128),
+        "speed": float(Decimal(str(_number(
+            value.get("speed", 1.0), "voiceover.speed", 0.5, 2.0,
+        ))).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)),
+    }
+    if "voice_scope" in value:
+        result["voice_scope"] = _enum(
+            value["voice_scope"], "voiceover.voice_scope",
+            ("public", "personal"),
+        )
+    return result
+
+
+def _timeline_segment(value, index, final):
+    if not isinstance(value, dict):
+        raise CLIAPIError(400, "segments[%d] 必须是对象" % index)
+    kind = _enum(value.get("type"), "segments[%d].type" % index,
+                 ("image", "video", "text_card"))
+    transition = _enum(
+        value.get("transition", "none"), "segments[%d].transition" % index,
+        ("none", "fade"),
+    )
+    if final and transition != "none":
+        raise CLIAPIError(400, "最后一段 transition 必须是 none")
+    if kind == "image":
+        _strict_object(
+            value, {"type", "asset_id", "asset_index", "duration", "transition"},
+            ("type", "asset_id"),
+        )
+        return {
+            "type": kind,
+            "asset_id": _integer(value["asset_id"], "asset_id", 1, 2**63 - 1),
+            "asset_index": _integer(value.get("asset_index", 0), "asset_index", 0, 3),
+            "duration": float(Decimal(str(_number(
+                value.get("duration", 3), "duration", 1, 10,
+            ))).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)),
+            "transition": transition,
+        }
+    if kind == "video":
+        _strict_object(
+            value, {"type", "asset_id", "trim_start", "trim_end", "transition"},
+            ("type", "asset_id"),
+        )
+        result = {
+            "type": kind,
+            "asset_id": _integer(value["asset_id"], "asset_id", 1, 2**63 - 1),
+            "trim_start": float(Decimal(str(_number(
+                value.get("trim_start", 0), "trim_start", 0, 86400,
+            ))).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)),
+            "transition": transition,
+        }
+        if "trim_end" in value:
+            result["trim_end"] = float(Decimal(str(_number(
+                value["trim_end"], "trim_end", 0.001, 86400,
+            ))).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP))
+            if result["trim_end"] <= result["trim_start"]:
+                raise CLIAPIError(400, "trim_end 必须大于 trim_start")
+        return result
+    _strict_object(
+        value, {"type", "text", "style", "duration", "transition"},
+        ("type", "text"),
+    )
+    return {
+        "type": kind,
+        "text": _string(value["text"], "text", 1, 120),
+        "style": _enum(value.get("style", "full-overlay-bold"), "style",
+                       ("full-overlay-bold",)),
+        "duration": float(Decimal(str(_number(
+            value.get("duration", 3), "duration", 1, 8,
+        ))).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)),
+        "transition": transition,
+    }
+
+
+def _timeline_payload(value):
+    _strict_object(
+        value, {
+            "segments", "ratio", "preserve_source_audio", "bgm",
+            "bgm_asset_id", "bgm_volume", "voiceover",
+        }, ("segments",),
+    )
+    segments = value["segments"]
+    if not isinstance(segments, list) or not 2 <= len(segments) <= 20:
+        raise CLIAPIError(400, "segments 必须包含 2-20 段")
+    preserve = value.get("preserve_source_audio", True)
+    bgm = value.get("bgm", bool(value.get("bgm_asset_id")))
+    if not isinstance(preserve, bool) or not isinstance(bgm, bool):
+        raise CLIAPIError(400, "preserve_source_audio 和 bgm 必须是布尔值")
+    if bgm != bool(value.get("bgm_asset_id")):
+        raise CLIAPIError(400, "bgm=true 时必须提供 bgm_asset_id；关闭时不能提供")
+    result = {
+        "mode": "timeline",
+        "segments": [
+            _timeline_segment(item, index, index == len(segments) - 1)
+            for index, item in enumerate(segments)
+        ],
+        "ratio": _enum(value.get("ratio", "9:16"), "ratio", ("9:16", "16:9", "1:1")),
+        "preserve_source_audio": preserve, "bgm": bgm,
+    }
+    if bgm:
+        result["bgm_asset_id"] = _integer(
+            value["bgm_asset_id"], "bgm_asset_id", 1, 2**63 - 1,
+        )
+        result["bgm_volume"] = float(Decimal(str(_number(
+            value.get("bgm_volume", 0.18), "bgm_volume", 0.05, 0.8,
+        ))).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP))
+    elif "bgm_volume" in value:
+        raise CLIAPIError(400, "bgm_volume 仅在 bgm=true 时使用")
+    if "voiceover" in value:
+        result["voiceover"] = _timeline_voiceover(value["voiceover"])
+    return result
+
+
 def _collect_url(value, allow_twitter=False):
     url = _string(value, "url", 1, 2048)
     try:
@@ -3634,6 +3827,14 @@ def action_plan(action, value):
             "generation:quote", "generation",
             generation_kind="matrix_template_video",
             endpoint="/api/gen/matrix-template", payload=payload,
+        )
+    if action == "video-timeline-compose":
+        payload = _timeline_payload(value)
+        return _plan(
+            "generation:quote", "generation",
+            generation_kind="matrix_template_video",
+            endpoint="/api/gen/matrix-template", payload=payload,
+            quote_result_fields=("cost_breakdown",),
         )
     if action == "matrix-template-batch-generate":
         payload = _matrix_template_batch_payload(value)

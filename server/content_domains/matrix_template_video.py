@@ -487,6 +487,9 @@ def _normalize_bgm_volume(value):
 def validate_payload(
         raw, username="", *, trusted_semantic_layout=None,
         trusted_frozen_execution=False):
+    if isinstance(raw, dict) and raw.get("mode") == "timeline":
+        from . import timeline_compose
+        return timeline_compose.validate_payload(raw, username)
     require_available()
     body = dict(raw or {})
     top = " ".join(str(body.get("top_text") or "").split())
@@ -1183,6 +1186,9 @@ def recover_worker_error(job_id, error, requeue=None):
 
 def generate(payload):
     raw = dict(payload or {})
+    if raw.get("mode") == "timeline":
+        from . import timeline_compose
+        return timeline_compose.generate(raw)
     local_job = str(raw.get("_job_id") or uuid.uuid4().hex)
     lifecycle = _runtime(local_job)
     deadline_at = int(lifecycle["created_at"]) + TOTAL_TIMEOUT
@@ -1333,6 +1339,9 @@ def generate(payload):
 
 
 def cost(payload):
+    if isinstance(payload, dict) and payload.get("mode") == "timeline":
+        from . import timeline_compose
+        return timeline_compose.cost(payload)
     return pricing.get_price("video.matrix_template")
 
 

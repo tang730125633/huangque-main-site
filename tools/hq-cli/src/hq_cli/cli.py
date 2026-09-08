@@ -288,6 +288,8 @@ def _validate(capability, payload):
     if capability.get("id") in {
             "matrix-template-generate", "matrix-template-batch-generate"}:
         _validate_matrix_template_voiceover(capability, payload)
+    if capability.get("id") == "video-timeline-compose":
+        _validate_timeline_compose(payload)
     if capability.get("id") in {"director-scene-image-generate", "director-scene-video-generate"}:
         _validate_director_scenes(payload)
     if capability.get("id") == "leads-generate":
@@ -312,6 +314,35 @@ def _validate_matrix_template_voiceover(capability, payload):
             EXIT_INPUT, "input_error",
             "voiceover.bgm_volume requires voiceover.bgm=true",
         )
+
+
+def _validate_timeline_compose(payload):
+    segments = payload.get("segments") or []
+    for index, item in enumerate(segments):
+        if not isinstance(item, dict):
+            raise CliError(EXIT_INPUT, "input_error", "timeline segment must be an object")
+        kind = item.get("type")
+        allowed = {
+            "image": {"type", "asset_id", "asset_index", "duration", "transition"},
+            "video": {"type", "asset_id", "trim_start", "trim_end", "transition"},
+            "text_card": {"type", "text", "style", "duration", "transition"},
+        }.get(kind)
+        if allowed is None or set(item) - allowed:
+            raise CliError(EXIT_INPUT, "input_error", "timeline segment %d is invalid" % index)
+        if kind in {"image", "video"} and (
+                isinstance(item.get("asset_id"), bool)
+                or not isinstance(item.get("asset_id"), int)
+                or item["asset_id"] < 1):
+            raise CliError(EXIT_INPUT, "input_error", "timeline asset_id is invalid")
+        if kind == "text_card" and not isinstance(item.get("text"), str):
+            raise CliError(EXIT_INPUT, "input_error", "timeline text card is invalid")
+        if item.get("transition", "none") not in {"none", "fade"}:
+            raise CliError(EXIT_INPUT, "input_error", "timeline transition must be none or fade")
+    if segments and segments[-1].get("transition", "none") != "none":
+        raise CliError(EXIT_INPUT, "input_error", "final timeline transition must be none")
+    bgm = payload.get("bgm", bool(payload.get("bgm_asset_id")))
+    if not isinstance(bgm, bool) or bgm != bool(payload.get("bgm_asset_id")):
+        raise CliError(EXIT_INPUT, "input_error", "bgm=true requires bgm_asset_id")
 
 
 def _validate_text_video_talking(payload):
