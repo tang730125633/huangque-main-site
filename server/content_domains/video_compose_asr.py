@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """Timestamped ASR adapter for one-click-video analysis."""
 
+import base64
+import binascii
 import json
 import mimetypes
 import os
@@ -23,10 +25,64 @@ ASR_MODEL = os.environ.get("VIDEO_COMPOSE_ASR_MODEL", "whisper-1").strip() or "w
 MAX_SOURCE_SECONDS = max(10, min(600, int(os.environ.get("VIDEO_COMPOSE_MAX_SECONDS", "180") or 180)))
 MAX_AUDIO_BYTES = 24 * 1024 * 1024
 _ASR_LOCK = threading.BoundedSemaphore(1)
+VOICE_INPUT_MAX_BYTES = 512 * 1024
+VOICE_INPUT_MAX_SECONDS = 60
+VOICE_INPUT_RATE_LIMIT = 6
+_VOICE_INPUT_RATE_LOCK = threading.Lock()
+_VOICE_INPUT_HITS = {}
 
 
 class AsrError(ValueError):
     pass
+
+
+class VoiceInputRateLimited(AsrError):
+    pass
+
+
+def _check_voice_input_rate(username, now=None):
+    stamp = float(time.time() if now is None else now)
+    with _VOICE_INPUT_RATE_LOCK:
+        hits = [item for item in _VOICE_INPUT_HITS.get(username, []) if stamp - item < 60]
+        if len(hits) >= VOICE_INPUT_RATE_LIMIT:
+            raise VoiceInputRateLimited("语音输入太频繁，请稍后再试")
+        hits.append(stamp)
+        _VOICE_INPUT_HITS[username] = hits
+
+
+def transcribe_voice_input(payload, username, transcriber=None):
+    if not isinstance(payload, dict) or set(payload) != {"audio", "format"}:
+        raise AsrError("语音输入参数无效")
+    if payload.get("format") != "mp3":
+        raise AsrError("当前只支持 MP3 录音")
+    encoded = payload.get("audio")
+    if not isinstance(encoded, str) or not encoded or len(encoded) > 700000:
+        raise AsrError("录音为空或超过 60 秒")
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise AsrError("录音数据无效") from error
+    if not raw or len(raw) > VOICE_INPUT_MAX_BYTES:
+        raise AsrError("录音为空或超过 60 秒")
+    if not (raw.startswith(b"ID3") or (len(raw) > 1 and raw[0] == 0xFF and raw[1] & 0xE0 == 0xE0)):
+        raise AsrError("录音格式无效")
+    _check_voice_input_rate(str(username or ""))
+    descriptor, path = tempfile.mkstemp(prefix="hq-voice-input-", suffix=".mp3")
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(raw)
+        if _duration_seconds(path) > VOICE_INPUT_MAX_SECONDS:
+            raise AsrError("请把每段语音控制在 60 秒以内")
+        result = (transcriber or transcribe)(path)
+        text = str((result or {}).get("text") or "").strip()
+        if not text:
+            raise AsrError("没有听清楚，请靠近手机再说一次")
+        return {"text": text, "duration_ms": int((result or {}).get("duration_ms") or 0)}
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 def _run(command, timeout):
