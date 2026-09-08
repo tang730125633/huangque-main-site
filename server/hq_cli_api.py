@@ -70,6 +70,7 @@ SCOPES = {
     "creator-agent:read": "读取本人创作助手项目和批次状态",
     "creator-agent:write": "经确认后向本人创作助手提交消息或修改项目",
     "tasks:write": "经确认后删除本人失败的生成任务",
+    "developer:read": "读取黄雀管理员账号可见的后台状态",
 }
 SCOPES.update(director_workflow_contract.SCOPE_CONTRACT)
 DEFAULT_SCOPES = tuple(SCOPES)
@@ -2382,7 +2383,16 @@ def approve_device(db_factory, username, body, now=None):
                 return {"ok": True, "status": "approved"}
             raise CLIAPIError(409, "授权码已处理", "already_processed")
         status = "approved" if body["approve"] else "denied"
-        scopes = row["requested_scopes_json"] if body["approve"] else None
+        scopes = None
+        if body["approve"]:
+            scopes = json.loads(row["requested_scopes_json"] or "[]")
+            user = connection.execute(
+                "SELECT role FROM users WHERE username=? AND COALESCE(account_status,'active')='active'",
+                (username,),
+            ).fetchone()
+            if not user or user["role"] != "admin":
+                scopes = [scope for scope in scopes if scope != "developer:read"]
+            scopes = json.dumps(scopes, separators=(",", ":"))
         connection.execute(
             """UPDATE cli_device_grants
                SET status=?,username=?,approved_scopes_json=?,approved_at=? WHERE id=?""",
@@ -2526,6 +2536,8 @@ def authenticate(db_factory, token, now=None):
         scopes = tuple(json.loads(row["cli_scopes"] or "[]"))
     except Exception:
         return None
+    if row["role"] != "admin":
+        scopes = tuple(scope for scope in scopes if scope != "developer:read")
     return row, scopes
 
 
@@ -3279,6 +3291,16 @@ def _web_parity_plan(action, value):
 def action_plan(action, value):
     if not isinstance(value, dict):
         raise CLIAPIError(400, "input 必须是 JSON 对象")
+    developer_paths = {
+        "developer-overview": "/api/admin/dashboard",
+        "developer-services": "/api/admin/services",
+        "developer-channels": "/api/admin/channels",
+        "developer-features": "/api/admin/features",
+        "developer-pricing": "/api/admin/pricing",
+    }
+    if action in developer_paths:
+        _strict_object(value, set())
+        return _plan("developer:read", "proxy", base=ADMIN_BASE, path=developer_paths[action])
     if action not in ACTION_CATALOG_MAP:
         raise CLIAPIError(404, "未知 CLI 能力", "unknown_action")
     if action in WEB_PARITY_ACTIONS:
