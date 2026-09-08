@@ -3657,6 +3657,14 @@ _XIAOLE_FEATURE_BY_CHANNEL = {
     "minimax": "minimax_h3_video",
 }
 
+_TASK_RUNNING_STATES = {
+    "pending", "queued", "running", "processing", "submitted",
+    "billing", "submitting", "submit_unknown",
+}
+_TASK_DONE_STATES = {"done", "completed", "succeeded", "ready"}
+_TASK_FAILED_STATES = {"error", "failed", "refunded", "canceled"}
+
+
 def _operation_feature_key(kind, channel=""):
     kind = str(kind or "unknown")
     if kind == "xiaole_video":
@@ -3666,14 +3674,11 @@ def _operation_feature_key(kind, channel=""):
 
 def _count_status(bucket, status, count=1):
     bucket["total"] += count
-    if status in {"done", "completed", "succeeded", "ready"}:
+    if status in _TASK_DONE_STATES:
         bucket["done"] += count
-    elif status in {"error", "failed", "refunded", "canceled"}:
+    elif status in _TASK_FAILED_STATES:
         bucket["error"] += count
-    elif status in {
-        "pending", "queued", "running", "processing", "submitted",
-        "billing", "submitting", "submit_unknown",
-    }:
+    elif status in _TASK_RUNNING_STATES:
         bucket["running"] += count
     else:
         bucket["other"] += count
@@ -4076,6 +4081,14 @@ def _job_evidence(row, asset=None, allow_remote=True,
         )
         if structured is not None:
             evidence.update(structured)
+    evidence["provider_task_id"] = (
+        _sanitize_task_identifier(evidence.get("provider_task_id")) or None
+    )
+    evidence["error"] = _sanitize_task_error(evidence.get("error"))
+    evidence["result_url"] = (
+        _sanitize_path(str(evidence["result_url"]))
+        if evidence.get("result_url") else None
+    )
     return evidence
 
 
@@ -6752,8 +6765,12 @@ def job_stats(days=7):
             with closing(sqlite3.connect(str(JOB_DB), timeout=10)) as connection:
                 connection.row_factory = sqlite3.Row
                 columns = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)")}
+                running_states = sorted(_TASK_RUNNING_STATES)
+                running_marks = ",".join("?" for _ in running_states)
                 active = connection.execute(
-                    "SELECT COUNT(*) AS total,MIN(created_at) AS oldest FROM jobs WHERE status IN ('pending','queued','running','processing')"
+                    "SELECT COUNT(*) AS total,MIN(created_at) AS oldest "
+                    "FROM jobs WHERE status IN (%s)" % running_marks,
+                    running_states,
                 ).fetchone()
                 live["running"] = int(active["total"] or 0)
                 live["oldest_running_at"] = int(active["oldest"] or 0) or None
@@ -6954,16 +6971,19 @@ def dashboard_stats(days=7):
             connection.row_factory = sqlite3.Row
             columns = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)")}
             refunded = "COALESCE(refunded,0)" if "refunded" in columns else "0"
+            running_states = sorted(_TASK_RUNNING_STATES)
+            running_marks = ",".join("?" for _ in running_states)
             rows = connection.execute(
                 """SELECT id,username,kind,cost,status,created_at,
                           CASE WHEN kind='xiaole_video' AND json_valid(payload)
                                THEN LOWER(COALESCE(json_extract(payload,'$.channel'),'')) ELSE '' END AS channel,
                           %s AS refunded
                      FROM jobs
-                    WHERE created_at>=? OR status IN ('pending','queued','running','processing')%s""" % (
-                    refunded, " OR COALESCE(refunded,0)=2" if "refunded" in columns else "",
+                    WHERE created_at>=? OR status IN (%s)%s""" % (
+                    refunded, running_marks,
+                    " OR COALESCE(refunded,0)=2" if "refunded" in columns else "",
                 ),
-                (since,),
+                (since, *running_states),
             ).fetchall()
             provider_rows = []
             provider_refunds = []
@@ -6974,9 +6994,8 @@ def dashboard_stats(days=7):
                     """SELECT id,owner_username AS username,provider,cost,status,
                               created_at,updated_at
                          FROM short_drama_provider_shot_jobs
-                        WHERE created_at>=? OR status IN
-                              ('billing','queued','submitting','running','submit_unknown')""",
-                    (since,),
+                        WHERE created_at>=? OR status IN (%s)""" % running_marks,
+                    (since, *running_states),
                 ).fetchall()
             if connection.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' "
@@ -7008,7 +7027,7 @@ def dashboard_stats(days=7):
             }), status)
         if created_at >= today_start:
             _count_status(out["today"], status)
-        if status in {"pending", "queued", "running", "processing"}:
+        if status in _TASK_RUNNING_STATES:
             out["live"]["running"] += 1
             oldest = out["live"]["oldest_running_at"]
             out["live"]["oldest_running_at"] = created_at if not oldest or created_at < oldest else oldest
@@ -7093,19 +7112,14 @@ _SHORT_DRAMA_PROVIDER_NAMES = {
 }
 
 
-_TASK_RUNNING_STATES = {
-    "pending", "queued", "running", "processing", "submitted",
-    "billing", "submitting", "submit_unknown",
-}
-_TASK_DONE_STATES = {"done", "completed", "succeeded", "ready"}
-_TASK_FAILED_STATES = {"error", "failed", "refunded", "canceled"}
 _TASK_SECRET_TEXT_RE = re.compile(
     r"(?i)([\"']?(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|token|secret|"
-    r"password|passwd|pwd|credential|authorization|x-amz-credential|x-amz-signature)"
+    r"password|passwd|pwd|credential|authorization|signature|q[_-]?signature|"
+    r"x-amz-credential|x-amz-signature)"
     r"[\"']?\s*[:=]\s*)(?:(?:bearer|basic)\s+)?(?:[\"'][^\"']*[\"']|[^\s,;&]+)"
 )
 _TASK_AUTH_SCHEME_RE = re.compile(r"(?i)\b(bearer|basic)\s+[^\s,;&]+")
-_TASK_PUBLIC_IDENTIFIER_RE = re.compile(r"^(?:task:)?\d+$")
+_TASK_PUBLIC_IDENTIFIER_RE = re.compile(r"^task:\d+$")
 
 
 def _sanitize_task_error(value):
@@ -7115,10 +7129,10 @@ def _sanitize_task_error(value):
     return _TASK_AUTH_SCHEME_RE.sub(r"\1 ***", text)[:240]
 
 
-def _sanitize_task_identifier(value):
+def _sanitize_task_identifier(value, allow_local_task=False):
     """Keep task ids useful while masking external and idempotency identifiers."""
     text = str(value or "").replace("\r", "").replace("\n", "").strip()[:160]
-    if not text or _TASK_PUBLIC_IDENTIFIER_RE.fullmatch(text):
+    if not text or (allow_local_task and _TASK_PUBLIC_IDENTIFIER_RE.fullmatch(text)):
         return text
     if len(text) <= 8:
         return "***"
@@ -7140,8 +7154,11 @@ def _task_runtime_record(item):
     result_reference = bool(item.get("result_reference"))
     delivery_verified = bool(item.get("delivery_verified"))
     artifact_check = str(item.get("artifact_check") or "not_recorded")
+    raw_correlation_id = item.get("correlation_id")
     correlation_id = _sanitize_task_identifier(
-        item.get("correlation_id") or "task:%s" % item.get("id")
+        raw_correlation_id or "task:%s" % item.get("id"),
+        allow_local_task=(not raw_correlation_id and str(item.get("id") or "").isdigit())
+        or item.get("correlation_source") == "task",
     )
     error = _sanitize_task_error(item.get("error"))
     delivery_failed = (
@@ -7481,7 +7498,8 @@ def call_logs(days=7, limit=200):
                 "artifact_check": str(evidence.get("artifact_check") or "not_recorded"),
                 "delivery_detail": str(evidence.get("delivery_detail") or ""),
                 "correlation_id": _sanitize_task_identifier(
-                    correlation_id or "task:%s" % row["id"]
+                    correlation_id or "task:%s" % row["id"],
+                    allow_local_task=correlation_source == "task",
                 ),
                 "correlation_source": correlation_source,
                 "refunded": int(row["refunded"] or 0),

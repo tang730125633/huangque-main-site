@@ -515,7 +515,7 @@ class FunctionRegistryTests(unittest.TestCase):
         operations = {item["operation"]: item for item in stats["by_operation"]}
         grok = operations["video.grok.image"]
         self.assertEqual((grok["done"], grok["error"]), (1, 0))
-        self.assertEqual(grok["latest"]["provider_task_id"], "provider-1")
+        self.assertEqual(grok["latest"]["provider_task_id"], "provid…er-1")
         self.assertTrue(grok["latest"]["output_reference_present"])
         self.assertTrue(grok["latest"]["delivery_verified"])
         self.assertEqual(grok["latest"]["artifact_check"], "file_exists")
@@ -524,7 +524,7 @@ class FunctionRegistryTests(unittest.TestCase):
         self.assertEqual(motion["latest"]["billing_state"], "refunded")
         avatar = operations["video.cinematic.avatar"]["latest"]
         self.assertEqual(avatar["result_url"], "https://cdn.example/avatar.jpg")
-        self.assertEqual(avatar["provider_task_id"], "avatar-1")
+        self.assertEqual(avatar["provider_task_id"], "***")
         self.assertIn("video.one_click.compose", operations)
         compose = operations["video.one_click.compose"]["latest"]
         self.assertEqual(compose["business_id_type"], "project_id")
@@ -610,6 +610,54 @@ class FunctionRegistryTests(unittest.TestCase):
         self.assertEqual(summary["today"], stats["today"])
         self.assertEqual(summary["live"], stats["live"])
         self.assertEqual(summary["total"], stats["total"])
+
+    def test_admin_evidence_redacts_external_ids_errors_and_signed_result_urls(self):
+        with closing(sqlite3.connect(self.admin.JOB_DB)) as connection:
+            connection.execute(
+                "UPDATE jobs SET result=?, error=? WHERE id=1",
+                (
+                    json.dumps({
+                        "video_url": "https://private.example/video.mp4?q-signature=result-secret",
+                    }),
+                    "Authorization: Bearer job-secret",
+                ),
+            )
+            connection.commit()
+        with closing(sqlite3.connect(self.admin.ASSET_DB)) as connection:
+            connection.execute(
+                "UPDATE video_assets SET provider_video_id=?, video_url=?, error=? WHERE job_id=1",
+                (
+                    "1234567890",
+                    "https://private.example/video.mp4?Signature=asset-secret",
+                    "access_token=asset-error-secret",
+                ),
+            )
+            connection.commit()
+
+        latest = {
+            item["operation"]: item["latest"] for item in self.admin.job_stats(7)["by_operation"]
+        }["video.grok.image"]
+        self.assertEqual(latest["provider_task_id"], "123456…7890")
+        self.assertIn("q-signature=***", latest["result_url"])
+        serialized = json.dumps(latest, ensure_ascii=False)
+        for secret in ("result-secret", "asset-secret", "job-secret", "asset-error-secret"):
+            self.assertNotIn(secret, serialized)
+
+    def test_stale_submitted_job_remains_in_live_counts(self):
+        old = int(time.time()) - 8 * 86400
+        with closing(sqlite3.connect(self.admin.JOB_DB)) as connection:
+            connection.execute(
+                "UPDATE jobs SET status='submitted', created_at=?, updated_at=? WHERE id=6",
+                (old, old + 10),
+            )
+            connection.commit()
+
+        detailed = self.admin.job_stats(7)
+        summary = self.admin.dashboard_stats(7)
+        self.assertEqual(detailed["live"]["running"], 1)
+        self.assertEqual(detailed["live"]["oldest_running_at"], old)
+        self.assertEqual(summary["live"]["running"], 1)
+        self.assertEqual(summary["live"]["oldest_running_at"], old)
 
     def test_dashboard_includes_provider_only_tasks_refunds_and_deduplicates_shared_jobs(self):
         now = int(time.time())
@@ -750,7 +798,7 @@ class FunctionRegistryTests(unittest.TestCase):
         self.assertIn("script.output.image", by_operation)
         self.assertEqual(
             by_operation["image.xiaole.reference"]["latest"]["provider_task_id"],
-            "xiaole-23",
+            "xiaole…e-23",
         )
         banana = by_operation["image.banana.pro.reference"]["latest"]
         self.assertEqual(banana["result_url"], "https://cdn.example/image.png")

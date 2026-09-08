@@ -1664,7 +1664,8 @@ class AdminE2ERunnerTests(unittest.TestCase):
             run = self.admin._public_e2e_run(row)
         stages = {stage["key"]: stage for stage in run["stages"]}
         self.assertTrue(all(stage["state"] == "passed" for stage in run["stages"]))
-        self.assertIn("xiaole-201", stages["provider"]["detail"])
+        self.assertIn("xiaole…-201", stages["provider"]["detail"])
+        self.assertNotIn("xiaole-201", stages["provider"]["detail"])
         self.assertEqual(stages["delivery"]["detail"], "文件存在且可解码")
 
     def test_image_placeholder_provider_id_cannot_pass_provider_stage(self):

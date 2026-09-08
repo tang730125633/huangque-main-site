@@ -378,6 +378,7 @@ class RequestLogUserTests(unittest.TestCase):
         secrets = (
             "bearer-secret.jwt.value", "basic-secret", "access-secret",
             "refresh-secret", "credential-secret", "signature-secret",
+            "cos-signature-secret", "cloudfront-signature-secret",
         )
         record = admin_api._task_runtime_record({
             "id": 1303,
@@ -389,6 +390,8 @@ class RequestLogUserTests(unittest.TestCase):
                 "refresh-token=refresh-secret "
                 "url=https://example.invalid/a?X-Amz-Credential=credential-secret"
                 "&X-Amz-Signature=signature-secret"
+                " cos=https://example.invalid/b?q-signature=cos-signature-secret"
+                " cloudfront=https://example.invalid/c?Signature=cloudfront-signature-secret"
             ),
         })
 
@@ -397,14 +400,31 @@ class RequestLogUserTests(unittest.TestCase):
         self.assertIn("Authorization: ***", record["error"])
         self.assertIn('\"access_token\":***', record["error"])
         self.assertIn("X-Amz-Signature=***", record["error"])
+        self.assertIn("q-signature=***", record["error"])
+        self.assertIn("Signature=***", record["error"])
 
     def test_external_task_identifiers_are_masked_but_local_task_ids_remain_searchable(self):
-        self.assertEqual(admin_api._sanitize_task_identifier("task:1304"), "task:1304")
+        self.assertEqual(
+            admin_api._sanitize_task_identifier("task:1304", allow_local_task=True),
+            "task:1304",
+        )
+        self.assertEqual(admin_api._sanitize_task_identifier("task:1304"), "task:1…1304")
+        self.assertEqual(admin_api._sanitize_task_identifier("1234567890"), "123456…7890")
         self.assertEqual(
             admin_api._sanitize_task_identifier("provider-sensitive-abcdef"),
             "provid…cdef",
         )
         self.assertEqual(admin_api._sanitize_task_identifier("short"), "***")
+
+        record = admin_api._task_runtime_record({
+            "id": 1304,
+            "status": "running",
+            "provider_task_id": "1234567890",
+            "correlation_id": "9876543210",
+            "correlation_source": "payload",
+        })
+        self.assertEqual(record["provider_task_id"], "123456…7890")
+        self.assertEqual(record["correlation_id"], "987654…3210")
 
     def test_activity_filters(self):
         # source 过滤
