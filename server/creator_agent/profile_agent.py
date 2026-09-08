@@ -64,25 +64,25 @@ MODULES = {
         "name": "定位诊断",
         "questions": (
             {"key": "basic_context", "question": "了解用户希望使用的姓名或昵称、年龄阶段和所在城市。", "template": "你可以介绍昵称、年龄阶段和所在城市；不想公开的可以跳过。"},
-            {"key": "career_identity", "question": "了解当前职业、身份和主要在做的事情。", "template": "我目前是___，主要负责或正在做___。"},
+            {"key": "career_identity", "question": "了解当前职业、身份和主要在做的事情。", "template": "我目前是___，主要负责或正在做___。", "quality": "必须是人的真实职业或角色，并说明正在做的工作；不能只回答‘我是AI’。"},
             {"key": "career_history", "question": "了解从业年限以及做过的行业和岗位轨迹。", "template": "我从业___年，先后做过___。"},
             {"key": "income_context", "question": "可选了解主要收入来源和收入阶段，用于判断商业化基础。", "template": "主要收入来自___；收入阶段可选：10万以下、10-30万、30-50万、50-100万、100万以上。", "options": ["暂不透露", "10万以下", "10-30万", "30-50万", "50-100万", "100万以上"]},
-            {"key": "low_point", "question": "了解人生中最大的挫折或低谷，以及如何走出来。", "template": "当时发生了___，我跌到___，后来通过___走了出来。"},
-            {"key": "achievement", "question": "了解最有成就感且有具体结果的一件事。", "template": "我做过___，最终获得了___结果。"},
+            {"key": "low_point", "question": "了解人生中最大的挫折或低谷，以及如何走出来。", "template": "当时发生了___，我跌到___，后来通过___走了出来。", "quality": "必须同时包含真实处境和走出来的行动，只有‘找不到工作’等结果不够。"},
+            {"key": "achievement", "question": "了解最有成就感且有具体结果的一件事。", "template": "我做过___，最终获得了___结果。", "quality": "必须包含做了什么和可核实的结果。"},
             {"key": "praised_traits", "question": "了解别人最常称赞的能力或特质。", "template": "别人经常夸我___，通常因为___。"},
-            {"key": "criticized_traits", "question": "了解别人最常吐槽的缺点或争议点。", "template": "别人常说我___，我认为其中___。"},
-            {"key": "proven_ability", "question": "了解经过实战验证的最强能力及证据。", "template": "我最擅长___，曾经做到___。"},
+            {"key": "criticized_traits", "question": "了解别人最常吐槽的缺点或争议点。", "template": "别人常说我___，我认为其中___。", "quality": "必须是真实缺点、争议或负面反馈；赞美、自夸或玩笑不能当作批评。"},
+            {"key": "proven_ability", "question": "了解经过实战验证的最强能力及证据。", "template": "我最擅长___，曾经做到___。", "quality": "必须同时包含能力和真实案例或结果证据。"},
             {"key": "content_track", "question": "了解计划长期创作的行业或内容赛道。", "template": "我想长期做___赛道，主要因为___。"},
             {"key": "target_audience", "question": "明确最具体的目标受众。", "template": "我想服务___人群，他们通常处于___阶段。"},
             {"key": "audience_pain", "question": "明确能为目标受众解决的1-3个核心痛点。", "template": "他们最困扰的是___；我能帮助他们___。"},
-            {"key": "differentiation", "question": "明确为什么目标用户应该相信和选择该用户。", "template": "与其他人相比，我的真实差异是___，证据是___。"},
+            {"key": "differentiation", "question": "明确为什么目标用户应该相信和选择该用户。", "template": "与其他人相比，我的真实差异是___，证据是___。", "quality": "必须说明具体差异和证据；只有‘有成功案例’不够。"},
             {"key": "existing_accounts", "question": "了解已有内容平台、粉丝规模、运营时长和现状。", "template": "我目前在___平台有账号，约___粉丝，运营了___；没有也可以直接说明。"},
         ),
     },
     2: {
         "name": "人设塑造",
         "questions": (
-            {"key": "personality_words", "question": "用三个真实词语概括用户的性格。", "template": "三个词：___、___、___。"},
+            {"key": "personality_words", "question": "用三个真实词语概括用户的性格。", "template": "三个词：___、___、___。", "quality": "必须提供三个不同且真实的性格词。"},
             {"key": "communication_style", "question": "了解希望呈现的说话风格，可选择1-2个并补充。", "options": ["犀利直接", "温暖走心", "专业理性", "幽默轻松"], "template": "我希望表达偏___，但不要显得___。"},
             {"key": "disliked_style", "question": "了解特别不喜欢的博主风格和原因。", "template": "我不喜欢___类型，因为___。"},
             {"key": "content_habits", "question": "了解朋友圈、聊天和日常发内容的习惯与禁忌。", "template": "我平时爱发___，不爱发___，绝不会___。"},
@@ -91,7 +91,7 @@ MODULES = {
     3: {
         "name": "价值主张",
         "questions": (
-            {"key": "memorable_statement", "question": "了解最想让别人记住的一句话或核心信念。", "template": "我最希望别人记住：___。"},
+            {"key": "memorable_statement", "question": "了解最想让别人记住的一句话或核心信念。", "template": "我最希望别人记住：___。", "quality": "必须给出一句可以直接展示的完整原话；‘有’或‘一句话的雏形’不算答案。"},
             {"key": "self_intro", "question": "提炼一句真实的自我介绍。", "template": "我是___，专门帮助___解决___。"},
             {"key": "trust_reason", "question": "了解客户或朋友愿意信任和跟随的真实原因。", "template": "他们愿意相信我，是因为我___，并且做到了___。"},
             {"key": "ip_goal", "question": "明确做IP的主要商业目标。", "options": ["引流获客", "卖课或卖产品", "打造个人品牌", "其他"], "template": "我做IP最想实现___。"},
@@ -104,14 +104,223 @@ MODULES = {
     4: {
         "name": "故事资产",
         "questions": (
-            {"key": "comeback_story", "question": "挖掘一次绝境翻身的完整故事。", "template": "当时的处境___；最难的是___；我通过___扛过来；结果___。"},
-            {"key": "pitfall_story", "question": "挖掘一次踩过的大坑及真实教训。", "template": "我曾经因为___损失或失败___；后来明白___。"},
-            {"key": "success_story", "question": "挖掘一次从普通状态到成功结果的逆袭故事。", "template": "起点___；关键转折___；行动___；最终结果___。"},
-            {"key": "dramatic_story", "question": "挖掘特别奇葩、戏剧化或反差强烈的真实经历。", "template": "最出乎意料的一次经历是___，当时___，结果___。"},
-            {"key": "team_project", "question": "了解带团队或负责项目的规模、结果和踩坑经验。", "template": "我带过___人的团队或负责___项目，结果___，最大的教训是___。"},
+            {"key": "comeback_story", "question": "挖掘一次绝境翻身的完整故事。", "template": "当时的处境___；最难的是___；我通过___扛过来；结果___。", "quality": "必须是真实故事，至少包含处境、行动和结果；‘参考’、‘回顾模块’等操作文字不是答案。"},
+            {"key": "pitfall_story", "question": "挖掘一次踩过的大坑及真实教训。", "template": "我曾经因为___损失或失败___；后来明白___。", "quality": "必须是真实故事，至少包含事件、损失或失败以及教训。"},
+            {"key": "success_story", "question": "挖掘一次从普通状态到成功结果的逆袭故事。", "template": "起点___；关键转折___；行动___；最终结果___。", "quality": "必须是真实故事，至少包含起点、行动和结果。"},
+            {"key": "dramatic_story", "question": "挖掘特别奇葩、戏剧化或反差强烈的真实经历。", "template": "最出乎意料的一次经历是___，当时___，结果___。", "quality": "必须是真实经历和结果，不能记录用户的页面操作或选择。"},
+            {"key": "team_project", "question": "了解带团队或负责项目的规模、结果和踩坑经验。", "template": "我带过___人的团队或负责___项目，结果___，最大的教训是___。", "quality": "必须包含真实项目或团队规模、结果和经验；没有可以明确跳过。"},
         ),
     },
 }
+
+
+ANSWER_KEY_ALIASES = {
+    1: {"basic_context": ("identity",)},
+}
+
+_MIN_ANSWER_LENGTH = {
+    "career_identity": 6,
+    "low_point": 12,
+    "achievement": 10,
+    "praised_traits": 6,
+    "criticized_traits": 8,
+    "proven_ability": 10,
+    "content_track": 8,
+    "target_audience": 8,
+    "audience_pain": 12,
+    "differentiation": 10,
+    "personality_words": 5,
+    "communication_style": 6,
+    "disliked_style": 8,
+    "content_habits": 8,
+    "memorable_statement": 6,
+    "self_intro": 8,
+    "trust_reason": 10,
+    "products_services": 10,
+    "short_term_goal": 6,
+    "long_term_goal": 6,
+    "comeback_story": 24,
+    "pitfall_story": 24,
+    "success_story": 24,
+    "dramatic_story": 24,
+    "team_project": 24,
+}
+
+_MODULE_REQUIRED_GROUPS = {
+    1: (
+        ("career_identity",),
+        ("achievement", "proven_ability"),
+        ("target_audience",),
+        ("audience_pain",),
+        ("differentiation",),
+    ),
+    2: (("personality_words",), ("communication_style",)),
+    3: (
+        ("memorable_statement",), ("self_intro",), ("trust_reason",),
+        ("ip_goal",), ("products_services",),
+        ("short_term_goal",), ("long_term_goal",),
+    ),
+    4: ((
+        "comeback_story", "pitfall_story", "success_story",
+        "dramatic_story", "team_project",
+    ),),
+}
+
+_META_ANSWER_PATTERNS = (
+    re.compile(r"^(?:参考|回顾|修改|继续|下一题|下一个问题|当前模块|待补充|以后再说)$"),
+    re.compile(r"^(?:用户)?(?:选择|要求|希望).{0,30}(?:回顾|修改|跳过|模块|故事)$"),
+    re.compile(r"(?:用户选择回顾|用户选择修改|回顾或修改模块|当前问题|页面操作)"),
+)
+
+
+def _compact_answer(value):
+    return re.sub(r"[\s，。,.!！?？:：;；\"'“”‘’（）()【】\[\]]+", "", str(value or "")).lower()
+
+
+def profile_answer_value(answers, module, key):
+    module_answers = (
+        (answers or {}).get(str(module))
+        if isinstance(answers, dict) else {}
+    ) or {}
+    value = module_answers.get(key)
+    if value not in (None, ""):
+        return value
+    for alias in ANSWER_KEY_ALIASES.get(int(module), {}).get(str(key), ()):
+        value = module_answers.get(alias)
+        if value not in (None, ""):
+            return value
+    return ""
+
+
+def answer_quality_issue(state, module, key, value, source=""):
+    text = str(value or "").strip()
+    source_text = str(source or "").strip()
+    compact = _compact_answer(text)
+    source_compact = _compact_answer(source_text)
+    for candidate in (compact, source_compact):
+        if candidate and any(pattern.search(candidate) for pattern in _META_ANSWER_PATTERNS):
+            return "这条内容是操作指令或占位文字，不是人物画像事实"
+    minimum = int(_MIN_ANSWER_LENGTH.get(str(key)) or 1)
+    if len(compact) < minimum:
+        return "信息过少，尚不足以形成可用画像"
+    if key == "career_identity" and re.match(r"^(?:我)?(?:目前)?(?:是)?ai(?:[,，。]|$)", text.lower()):
+        return "需要说明真实职业或角色，不能只写‘我是AI’"
+    if key == "low_point" and not re.search(r"后来|通过|走出|解决|调整|转折|重新", text):
+        return "需要补充后来采取的行动以及如何走出低谷"
+    if key == "achievement" and not re.search(r"完成|获得|实现|提升|降低|结果|做到", text):
+        return "需要补充具体行动和结果"
+    if key == "proven_ability" and not re.search(r"曾经|完成|做到|案例|结果|项目|证明", text):
+        return "需要补充能证明能力的真实案例或结果"
+    if key == "differentiation" and (
+            compact in {"有成功案例", "我有成功案例", "我有经验", "专业"}
+            or not re.search(r"因为|证据|案例|结果|相比|不同|独立|做到", text)):
+        return "需要同时说明具体差异和证据"
+    if key == "personality_words":
+        words = [item.strip() for item in re.split(r"[、,，;；/|和]+", text) if item.strip()]
+        if len(set(words)) < 3:
+            return "需要提供三个不同的真实性格词"
+    if key == "criticized_traits" and not re.search(
+            r"缺点|不足|容易|不够|拖延|急躁|固执|啰嗦|争议|问题|吐槽|批评|过于|影响|但是", text):
+        return "需要描述真实缺点或负面反馈，赞美和玩笑不能代替"
+    if key == "memorable_statement" and (
+            "雏形" in text or compact in {"有", "有一句话", "还没想好"}):
+        return "需要给出一句可以直接展示的完整原话"
+    if key in {
+            "comeback_story", "pitfall_story", "success_story",
+            "dramatic_story", "team_project"} and (
+            not re.search(r"后来|随后|通过|行动|尝试|决定|开始|调整|协调|负责", text)
+            or not re.search(r"结果|最终|因此|成功|失败|损失|完成|上线|交付|教训", text)):
+        return "真实故事需要同时包含采取的行动和最终结果或教训"
+    return ""
+
+
+def next_pending_question_index(state, module, start_index=None):
+    module = int(module)
+    start = int(state.get("question_index") or 0) if start_index is None else int(start_index)
+    skipped = set(state.get("skipped_questions") or [])
+    answers = state.get("answers") or {}
+    for index in range(start + 1, len(MODULES[module]["questions"])):
+        question = MODULES[module]["questions"][index]
+        key = question["key"]
+        value = profile_answer_value(answers, module, key)
+        if value not in (None, ""):
+            if answer_quality_issue(state, module, key, value):
+                return index
+            continue
+        if "%d:%s" % (module, key) in skipped:
+            continue
+        return index
+    return None
+
+
+def _module_required_issues(state, module):
+    module = int(module)
+    answers = state.get("answers") or {}
+    questions = MODULES[module]["questions"]
+    by_key = {item["key"]: index for index, item in enumerate(questions)}
+    issues = []
+    for group in _MODULE_REQUIRED_GROUPS[module]:
+        valid = False
+        reasons = []
+        for key in group:
+            value = profile_answer_value(answers, module, key)
+            issue = answer_quality_issue(state, module, key, value) if value else "缺少回答"
+            if not issue:
+                valid = True
+                break
+            reasons.append(issue)
+        if not valid:
+            key = group[0]
+            issues.append({
+                "module": module,
+                "key": key,
+                "question_index": by_key[key],
+                "reason": reasons[0] if len(group) == 1 else "至少需要补充一项真实案例或故事",
+            })
+    return issues
+
+
+def module_completion_issue(state, module):
+    module = int(module)
+    answers = state.get("answers") or {}
+    questions = MODULES[module]["questions"]
+    for index, question in enumerate(questions):
+        key = question["key"]
+        value = profile_answer_value(answers, module, key)
+        if not value:
+            continue
+        reason = answer_quality_issue(state, module, key, value)
+        if reason:
+            return {
+                "module": module, "key": key,
+                "question_index": index, "reason": reason,
+            }
+    required = _module_required_issues(state, module)
+    return required[0] if required else None
+
+
+def profile_quality_issues(state):
+    issues = []
+    seen = set()
+    answers = state.get("answers") or {}
+    for module in range(1, 5):
+        for index, question in enumerate(MODULES[module]["questions"]):
+            key = question["key"]
+            value = profile_answer_value(answers, module, key)
+            if not value:
+                continue
+            reason = answer_quality_issue(state, module, key, value)
+            if reason:
+                issues.append({
+                    "module": module, "key": key,
+                    "question_index": index, "reason": reason,
+                })
+                seen.add((module, key))
+        for completion in _module_required_issues(state, module):
+            if (module, completion["key"]) not in seen:
+                issues.append(completion)
+                seen.add((module, completion["key"]))
+    return issues
 
 
 def initial_state():
@@ -153,11 +362,13 @@ def current_question(state):
 
 def next_question_goal(state):
     module = max(1, min(4, int(state.get("current_module") or 1)))
-    index = int(state.get("question_index") or 0) + 1
-    questions = MODULES[module]["questions"]
-    if index >= len(questions):
+    index = next_pending_question_index(state, module)
+    if index is None:
         return None
-    return {"module": module, "module_name": MODULES[module]["name"], **questions[index]}
+    return {
+        "module": module, "module_name": MODULES[module]["name"],
+        **MODULES[module]["questions"][index],
+    }
 
 
 def _dynamic_question(value, target):
@@ -265,7 +476,10 @@ class DeepSeekProfileAgent:
             key: value for key, value in current_question({
                 **state, "active_question": None,
             }).items()
-            if key in {"module", "module_name", "key", "question", "template", "options"}
+            if key in {
+                "module", "module_name", "key", "question", "template",
+                "options", "quality",
+            }
         }
         value = self._call(
             "你是黄雀独立个人画像 Agent，负责通过自然对话逐步了解用户。"
@@ -295,7 +509,10 @@ class DeepSeekProfileAgent:
             "返回 JSON：action(string)、accepted(bool)、value(string)、reply(string)、"
             "next_question(object|null)。action 只能是 answer、skip、clarify。"
             "有效事实用 action=answer、accepted=true，value 忠实提炼用户事实；"
-            "明确跳过、下一题、暂时或不想回答时用 action=skip；含义不清才用 action=clarify。"
+            "明确跳过、下一题、暂时或不想回答时用 action=skip；含义不清、信息不足、"
+            "只有玩笑或不满足 current_question.quality 时必须用 action=clarify。"
+            "‘参考’、‘回顾模块’、‘用户选择’等页面操作或元描述绝不是人物事实；"
+            "不能把赞美当缺点，不能把‘一句话的雏形’当作实际原话，故事必须有真实细节。"
             "reply 必须是你直接回复用户的完整自然语言。若 action 为 answer/skip 且存在"
             "next_question_goal，next_question 必须按目标生成 question、template、options；"
             "不得照抄目标问题。clarify 时 next_question 必须围绕 current_question_goal"
@@ -487,7 +704,7 @@ class DeepSeekProfileAgent:
         allowed = [
             "chat", "topic_plan", "revise_copy", "view_preferences",
             "clear_preferences", "start_video", "regenerate_video",
-            "modify_profile", "confirm_plan",
+            "modify_profile", "repair_profile", "confirm_plan",
         ]
         value = self._call(
             "你是黄雀独立创作 Agent 的意图路由器。根据用户画像、当前流程和本轮原话理解意图。"
@@ -495,6 +712,7 @@ class DeepSeekProfileAgent:
             "payload 只可包含 topic(string)、platforms(array)、platform(string)，并忠实提取用户原话；"
             "flow.mode=template_collect 时，用户提供主题应返回 start_video 并提取 topic；"
             "flow.mode=template_review 时，用户提出修改应返回 regenerate_video。"
+            "用户要求完善、补齐或修复低质量画像时返回 repair_profile；普通自由修改返回 modify_profile。"
             "不要把普通聊天误判为执行动作；涉及扣点的 confirm_payment 不能由自由文本触发。",
             {
                 "profile": profile,
