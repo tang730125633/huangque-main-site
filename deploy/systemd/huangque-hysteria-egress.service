@@ -1,0 +1,22 @@
+# Hysteria2/UDP 独立备用出口。真实认证配置为 600 权限文件，不进 Git。
+[Unit]
+Description=Huangque independent Hysteria2 UDP egress fallback
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+Environment=HYSTERIA_DISABLE_UPDATE_CHECK=1
+ExecStart=/usr/local/bin/hysteria client --config /home/ubuntu/egress/hysteria-production.yaml
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

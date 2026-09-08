@@ -1,0 +1,15 @@
+# 真实认证与证书指纹只放服务器的 600 权限配置，不进 Git。
+server: 45.62.113.15:8446
+auth: <HYSTERIA_AUTH_PASSWORD>
+
+obfs:
+  type: salamander
+  salamander:
+    password: <HYSTERIA_OBFS_PASSWORD>
+
+tls:
+  insecure: true
+  pinSHA256: <SERVER_CERT_SHA256_FINGERPRINT>
+
+http:
+  listen: 127.0.0.1:10812
