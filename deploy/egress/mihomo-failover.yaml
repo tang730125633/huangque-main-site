@@ -1,0 +1,32 @@
+port: 10813
+bind-address: 127.0.0.1
+allow-lan: false
+mode: rule
+log-level: info
+ipv6: false
+
+proxies:
+  - name: reality-main
+    type: http
+    server: 127.0.0.1
+    port: 10810
+  - name: hysteria2-backup
+    type: http
+    server: 127.0.0.1
+    port: 10812
+
+proxy-groups:
+  - name: huangque-egress
+    type: fallback
+    proxies:
+      - reality-main
+      - hysteria2-backup
+    url: https://www.gstatic.com/generate_204
+    interval: 30
+    lazy: false
+    timeout: 5000
+    max-failed-times: 1
+    expected-status: 204
+
+rules:
+  - MATCH,huangque-egress

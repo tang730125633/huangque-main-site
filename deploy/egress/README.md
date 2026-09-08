@@ -68,16 +68,38 @@ curl -m 10 -x http://127.0.0.1:10812 -o /dev/null -w '%{http_code}\n' \
   https://api.openai.com/v1/models  # 不带 Key 时期望 401
 ```
 
-## 三、打开代码里的出境链（content.env）
+## 三、装自动故障转移前门（Mihomo）
+
+`10810` 和 `10812` 都是本机 HTTP 代理。专用 Mihomo 实例在 `10813` 提供统一 HTTP 前门，
+每 30 秒经两条线路请求 `gstatic generate_204`：首线不健康时，新连接按顺序改走 UDP 备线；
+主线恢复后自动回到首线。已建立的请求不会迁移或重放，避免非幂等付费 POST 被重复提交。
+
+```bash
+sudo install -m 0644 deploy/egress/mihomo-failover.yaml \
+  /etc/huangque/mihomo-egress-failover.yaml
+sudo install -m 0644 deploy/systemd/huangque-egress-router.service \
+  /etc/systemd/system/huangque-egress-router.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now huangque-egress-router
+
+curl -m 10 -x http://127.0.0.1:10813 -o /dev/null -w '%{http_code}\n' \
+  https://api.openai.com/v1/models  # 不带 Key 时期望 401
+```
+
+Mihomo 只为新连接选择健康线路，不会把失败中的请求换线重发。作图链仍由
+`content_domains/egress.py` 在明确 429 或可证明请求尚未送达时安全降级。
+
+## 四、打开代码里的出境链（content.env）
 
 在 `/home/ubuntu/content-api/content.env` 增加：
 
 ```
-HTTP_PROXY=http://127.0.0.1:10810
-HTTPS_PROXY=http://127.0.0.1:10810
-ALL_PROXY=http://127.0.0.1:10810
+HTTP_PROXY=http://127.0.0.1:10813
+HTTPS_PROXY=http://127.0.0.1:10813
+ALL_PROXY=http://127.0.0.1:10813
 EGRESS_PROXY=http://127.0.0.1:10810          # 首选：Novix Reality/TCP
 EGRESS_PROXY_FALLBACK=http://127.0.0.1:10812 # 备选：搬瓦工 Hysteria2/UDP
+HEYGEN_DIRECT_PROXY=                         # 留空，按上面的 EGRESS 主备选择
 NO_PROXY=localhost,127.0.0.1,zelong.vip,huangquechuanmei.com,huangque-media-1435693839.cos.ap-guangzhou.myqcloud.com
 no_proxy=localhost,127.0.0.1,zelong.vip,huangquechuanmei.com,huangque-media-1435693839.cos.ap-guangzhou.myqcloud.com
 # EGRESS_TIMEOUT=210                          # 可选，每个代理档超时秒数（默认 210，覆盖 gpt-image-2 ~174s）
@@ -111,6 +133,7 @@ sudo systemctl restart huangque-leadgen-api  # 图片/视频采集、ASR、COS �
 # 主、备线路都要跑；以下 401/403 表示 TLS/路由可达，不表示已认证。
 curl -m 10 -x http://127.0.0.1:10810 -o /dev/null -w '%{http_code}\n' https://api.openai.com/v1/models
 curl -m 10 -x http://127.0.0.1:10812 -o /dev/null -w '%{http_code}\n' https://generativelanguage.googleapis.com/v1beta/models
+curl -m 10 -x http://127.0.0.1:10813 -o /dev/null -w '%{http_code}\n' https://api.openai.com/v1/models
 
 # 图片与视频片段必须返回 200/206 和非零字节。
 curl -m 10 -x http://127.0.0.1:10810 -o /dev/null https://www.gstatic.com/webp/gallery/1.jpg
@@ -134,6 +157,7 @@ curl -m 10 -o /dev/null -w '%{http_code}\n' https://huangque-media-1435693839.co
 确认业务进程不再引用 `10812` 后，可停用主站客户端：
 
 ```bash
+sudo systemctl disable --now huangque-egress-router
 sudo systemctl disable --now huangque-hysteria-egress
 ```
 
