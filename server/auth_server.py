@@ -98,6 +98,11 @@ ANNOUNCEMENT_REQUEST_ID_MAX_LENGTH = 128
 SHANGHAI_TZ = datetime.timezone(datetime.timedelta(hours=8))
 MEMBERSHIP_ENFORCEMENT_ENV = "HQ_MEMBERSHIP_ENFORCEMENT_ENABLED"
 E2E_TEST_USERNAME = os.environ.get("HQ_E2E_TEST_USERNAME", "").strip()
+MYSTERY_SHOPPER_USERNAME = os.environ.get("HQ_MYSTERY_SHOPPER_USERNAME", "").strip()
+MYSTERY_SHOPPER_SIGNER_SECRET = os.environ.get("HQ_MYSTERY_SHOPPER_SIGNER_SECRET", "").strip()
+MYSTERY_SHOPPER_CLI_SCOPES = (
+    "profile:read", "ip12:read", "assets:read", "tasks:read", "generation:quote",
+)
 VIRTUAL_PAY_RECONCILE_INTERVAL_SECONDS = 60
 VIRTUAL_PAY_RECONCILE_BATCH = 100
 VIRTUAL_PAY_RECONCILE_MIN_AGE_SECONDS = 10
@@ -5833,6 +5838,36 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         p = self.path.split("?")[0]
+        if p == "/api/auth/mystery-shopper/cli-token":
+            if not MYSTERY_SHOPPER_USERNAME or not MYSTERY_SHOPPER_SIGNER_SECRET:
+                return self._cli_send(503, {
+                    "detail": "神秘顾客 CLI 签发未配置", "code": "not_configured",
+                })
+            signer = self.headers.get("X-HQ-Mystery-Signer") or ""
+            if not secrets.compare_digest(signer, MYSTERY_SHOPPER_SIGNER_SECRET):
+                return self._cli_send(403, {"detail": "forbidden", "code": "forbidden"})
+            if self._content_length_exceeds(1024):
+                return self._cli_send(413, {"detail": "请求过大", "code": "request_too_large"})
+            d = self._body()
+            if self._bad_json() or not isinstance(d, dict):
+                return self._cli_send(400, {"detail": "请求体不是合法 JSON 对象"})
+            if d:
+                return self._cli_send(400, {
+                    "detail": "该接口不接受账号或权限参数", "code": "invalid_request",
+                })
+            try:
+                delegated = hq_cli_api.issue_delegated_token(
+                    db, MYSTERY_SHOPPER_USERNAME,
+                    list(MYSTERY_SHOPPER_CLI_SCOPES), 120,
+                    client_name="mystery-shopper-internal",
+                )
+                return self._cli_send(200, {
+                    **delegated,
+                    "access_expires_at": delegated["expires_at"],
+                    "username": MYSTERY_SHOPPER_USERNAME,
+                })
+            except hq_cli_api.CLIAPIError as exc:
+                return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
         if p == "/api/auth/admin/e2e/session":
             if not self._require_internal():
                 return

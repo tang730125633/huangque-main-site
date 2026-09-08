@@ -34,6 +34,8 @@ class HQCLIAPITests(unittest.TestCase):
         self.auth.DB = os.path.join(self.tmp.name, "users.db")
         self.auth.AUTH_COOKIE_SECURE = False
         self.auth.INTERNAL_TOKEN = "test-internal-secret"
+        self.auth.MYSTERY_SHOPPER_USERNAME = "alice"
+        self.auth.MYSTERY_SHOPPER_SIGNER_SECRET = "test-mystery-signer"
         self.auth.feature_flags.DB_PATH = Path(self.tmp.name) / "feature_flags.db"
         self.auth.feature_flags.invalidate_cache()
         self.auth.init_db()
@@ -959,6 +961,37 @@ class HQCLIAPITests(unittest.TestCase):
             self.auth.hq_cli_api.issue_delegated_token(
                 self.auth.db, "alice", ["profile:read"], 90, now=1000,
             )
+
+    def test_mystery_shopper_signer_is_fixed_short_lived_and_read_quote_only(self):
+        path = "/api/auth/mystery-shopper/cli-token"
+        self.assertEqual(403, self._request(path, {})[0])
+        headers = {"X-HQ-Mystery-Signer": self.auth.MYSTERY_SHOPPER_SIGNER_SECRET}
+        self.assertEqual(400, self._request(
+            path, {"username": "bob"}, extra_headers=headers,
+        )[0])
+
+        status, delegated = self._request(path, {}, extra_headers=headers)
+        self.assertEqual(200, status, delegated)
+        self.assertEqual("alice", delegated["username"])
+        self.assertEqual(list(self.auth.MYSTERY_SHOPPER_CLI_SCOPES), delegated["scopes"])
+        self.assertNotIn("refresh_token", delegated)
+        self.assertEqual(delegated["expires_at"], delegated["access_expires_at"])
+        self.assertLessEqual(delegated["expires_at"] - int(time.time()), 120)
+
+        status, current = self._request(
+            "/api/auth/cli/status", token=delegated["access_token"],
+        )
+        self.assertEqual(200, status, current)
+        self.assertEqual("alice", current["user"]["username"])
+        self.assertEqual(list(self.auth.MYSTERY_SHOPPER_CLI_SCOPES), current["scopes"])
+        connection = sqlite3.connect(self.auth.DB)
+        try:
+            client_name = connection.execute(
+                "SELECT client_name FROM cli_device_grants ORDER BY id DESC LIMIT 1"
+            ).fetchone()[0]
+        finally:
+            connection.close()
+        self.assertEqual("mystery-shopper-internal", client_name)
 
     def test_internal_delegate_endpoint_requires_service_and_matching_web_identity(self):
         body = {
