@@ -116,7 +116,12 @@
 
       <details class="tool-pane" id="tool-pane">
         <summary class="tool-head">
-          <span class="tool-title">执行明细</span>
+          <span class="tool-heading">
+            <span class="tool-title">执行明细</span>
+            <span class="tool-list" id="tool-list">
+              <span class="tool-empty">还没有派发子 Agent。</span>
+            </span>
+          </span>
           <span class="tool-toggle" aria-hidden="true"></span>
         </summary>
         <div class="tool-body">
@@ -125,9 +130,6 @@
             <button class="icon-btn" id="clear-tools" aria-label="清空轨迹" title="清空轨迹">
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
             </button>
-          </div>
-          <div class="tool-list" id="tool-list">
-            <p class="tool-empty">还没有派发子 Agent。你说「出张海报」「查点数」这类需求，主 Agent 会路由到对应子 Agent。</p>
           </div>
         </div>
       </details>

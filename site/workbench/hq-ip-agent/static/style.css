@@ -319,17 +319,21 @@ button { font-family: inherit; }
   border: 1px solid var(--border); border-radius: var(--radius-card);
   background: var(--surface); overflow: hidden;
 }
-.tool-head { display: flex; align-items: center; justify-content: space-between; padding: 11px 12px;
+.tool-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 11px 12px;
   cursor: pointer; list-style: none; }
 .tool-head::-webkit-details-marker { display: none; }
+.tool-heading { flex: 1; min-width: 0; }
 .tool-title { font-size: 13px; font-weight: 600; letter-spacing: -0.01em; }
-.tool-toggle { color: var(--fg-faint); font-size: 11px; }
+.tool-toggle { flex: none; color: var(--fg-faint); font-size: 11px; }
 .tool-toggle::before { content: "展开"; }
 .tool-pane[open] .tool-toggle::before { content: "收起"; }
 .tool-body { border-top: 1px solid var(--border); padding: 8px 12px 12px; }
 .tool-actions { display: flex; align-items: center; justify-content: space-between;
   color: var(--fg-faint); font-size: 11px; }
 .tool-actions .icon-btn { width: 28px; height: 28px; }
+.tool-pane:not([open]) .tool-empty, .tool-pane:not([open]) .trace-item:not(:first-child) { display: none; }
+.tool-pane:not([open]) .trace-item:first-child { padding: 3px 0 0; border: 0; }
+.tool-pane[open] .tool-list { margin-top: 8px; }
 .tool-list { display: flex; flex-direction: column; gap: 8px; }
 .tool-empty { font-size: 12px; color: var(--fg-faint); margin: 0; }
 .tool-item { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; }
