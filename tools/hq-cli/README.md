@@ -234,6 +234,23 @@ hq run matrix-template-batch-generate --input @matrix-template-batch.json --conf
 
 批量确认返回 `job_ids`；每个子任务仍沿用单条模板成片的幂等、失败退款和资产合同，只轮询这些原始 Job，不重新提交整批。
 
+把本人已经完成的图片、视频与文字卡按顺序拼成一条成片时，使用 `video-timeline-compose`。每段的 `transition` 表示它进入下一段的方式，最后一段必须为 `none`：
+
+```json
+{
+  "segments": [
+    {"type":"image","asset_id":101,"duration":3,"transition":"fade"},
+    {"type":"video","asset_id":202,"trim_start":0,"trim_end":5,"transition":"fade"},
+    {"type":"text_card","text":"把 AI 变成真正能交付结果的人","duration":3,"transition":"none"}
+  ],
+  "ratio":"9:16",
+  "preserve_source_audio":true,
+  "bgm":false
+}
+```
+
+首轮只返回按“基础费 + 素材段 + 每 30 秒”计算的 `cost_breakdown`，不会创建任务或扣点。核对素材顺序、裁剪和报价后，用完全相同的 JSON、`quote_token` 与 `--confirm` 提交。需要背景音乐时必须同时提供当前账号自己的 `bgm_asset_id`，系统不会自动挑选版权不明的音乐。
+
 需要混入口播视频素材时，先上传并导入一个或多个人物，再生成分镜方案：
 
 ```sh

@@ -196,6 +196,9 @@ def cost_of(kind, body):
         }
         return talking + images
     if kind == "matrix_template_video":
+        if isinstance(body, dict) and body.get("mode") == "timeline":
+            from . import timeline_compose
+            return timeline_compose.cost(body)
         return pricing.get_price("video.matrix_template")
     if kind == "breakdown":
         urls = body.get("urls")

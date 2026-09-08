@@ -415,8 +415,11 @@ def handle_quote(handler, path, verify, must_change_password, is_shutting_down,
                 if kind == "video_batch" else pricing.get_price("collect.search")
                 if kind == "collect_search" else points.cost_of(
                     "breakdown" if kind == "breakdown_upload" else kind, payload))
-        handler._send(200, {"kind": kind, "cost": cost,
-                            "points": points.get_points(user["username"])})
+        response = {"kind": kind, "cost": cost,
+                    "points": points.get_points(user["username"])}
+        if isinstance(payload, dict) and isinstance(payload.get("cost_breakdown"), dict):
+            response["cost_breakdown"] = payload["cost_breakdown"]
+        handler._send(200, response)
     except feature_flags.FeatureDisabled as exc:
         handler._send(503, {
             "detail": str(exc), "code": "feature_disabled",

@@ -192,7 +192,7 @@ class HqCliTests(unittest.TestCase):
             self.assertEqual(0, code, error)
             self.assertTrue(self.payload(output)["schema"].startswith("hq."))
         code, output, _ = self.invoke(["version"])
-        self.assertEqual("0.15.5", self.payload(output)["cli_version"])
+        self.assertEqual("0.15.6", self.payload(output)["cli_version"])
         self.assertEqual("Huangque main-site CLI", self.payload(output)["product"])
         self.assertEqual("https://huangquechuanmei.com", self.payload(output)["origin"])
 
@@ -236,7 +236,7 @@ class HqCliTests(unittest.TestCase):
             "text-video-capability", "text-video-templates", "text-video-styles", "text-video-voices",
             "text-video-avatar-import", "text-video-plan", "text-video-generate", "pricing",
             "matrix-template-capability", "matrix-template-templates", "matrix-template-generate",
-            "matrix-template-batch-generate",
+            "matrix-template-batch-generate", "video-timeline-compose",
             "inspiration-catalog", "inspiration-likes", "inspiration-like",
             "collect-content", "collect-video", "collect-transcript", "collect-search", "leads-generate",
             "leads-crm", "leads-crm-upsert", "video-avatars", "audio-slots",
@@ -268,7 +268,7 @@ class HqCliTests(unittest.TestCase):
             "short-drama-completion-readiness", "short-drama-completion",
             "short-drama-completion-confirm",
         }
-        self.assertEqual(247, len(by_id))
+        self.assertEqual(248, len(by_id))
         self.assertTrue(expected <= set(by_id))
         self.assertEqual("download", by_id["dl"]["kind"])
         self.assertEqual("paid", by_id["director-production-start"]["side_effect"])
@@ -394,6 +394,12 @@ class HqCliTests(unittest.TestCase):
         self.assertEqual("server_quote", by_id["text-video-generate"]["cost"]["kind"])
         self.assertEqual("server_quote", by_id["matrix-template-generate"]["cost"]["kind"])
         self.assertEqual("server_quote", by_id["matrix-template-batch-generate"]["cost"]["kind"])
+        self.assertEqual("server_quote", by_id["video-timeline-compose"]["cost"]["kind"])
+        self.assertEqual(["segments"], by_id["video-timeline-compose"]["input_schema"]["required"])
+        self.assertEqual((2, 20), (
+            by_id["video-timeline-compose"]["input_schema"]["properties"]["segments"]["minItems"],
+            by_id["video-timeline-compose"]["input_schema"]["properties"]["segments"]["maxItems"],
+        ))
         self.assertEqual(80, by_id["matrix-template-generate"]["input_schema"]
                          ["properties"]["font_family"]["maxLength"])
         matrix_voiceover = by_id["matrix-template-generate"]["input_schema"][
@@ -562,6 +568,7 @@ class HqCliTests(unittest.TestCase):
             "matrix-template-templates": {"matrix_template.single"},
             "matrix-template-generate": {"matrix_template.single"},
             "matrix-template-batch-generate": {"matrix_template.batch"},
+            "video-timeline-compose": {"matrix_template.single"},
             "digital-ip-projects": {"digital_ip"},
             "pricing": {"pricing.catalog"},
             "inspiration-catalog": {"inspiration.browse"}, "inspiration-like": {"inspiration.like"},
@@ -1128,6 +1135,48 @@ class HqCliTests(unittest.TestCase):
         first, second = request.call_args_list
         self.assertEqual(first.kwargs["body"]["input"], second.kwargs["body"]["input"])
         self.assertEqual("q.matrix", second.kwargs["body"]["quote_token"])
+
+    def test_timeline_compose_quotes_breakdown_and_rejects_bad_final_transition(self):
+        self.authorize()
+        value = {
+            "segments": [
+                {"type": "image", "asset_id": 11, "duration": 3, "transition": "fade"},
+                {"type": "video", "asset_id": 22, "trim_start": 0, "trim_end": 5,
+                 "transition": "none"},
+            ],
+            "ratio": "9:16", "preserve_source_audio": True, "bgm": False,
+        }
+        raw = json.dumps(value, ensure_ascii=False).encode("utf-8")
+        quote = {
+            "quote_token": "q.timeline", "kind": "matrix_template_video",
+            "cost": 9, "points": 100, "expires_in": 300,
+            "cost_breakdown": {"base": 5, "segments": 2, "duration": 2, "total": 9},
+            "confirmation_required": True,
+        }
+        with patch("hq_cli.client.request_json", side_effect=[
+                (200, quote), (200, {"job_id": 93, "cost": 9, "points_left": 91})]) as request:
+            code, output, error = self.invoke(
+                ["run", "video-timeline-compose", "--input", "@-"], raw)
+            self.assertEqual(0, code, error)
+            self.assertEqual(9, self.payload(output)["result"]["cost"])
+            self.assertEqual(9, self.payload(output)["result"]["cost_breakdown"]["total"])
+            code, output, error = self.invoke([
+                "run", "video-timeline-compose", "--input", "@-", "--confirm",
+                "--quote-token", "q.timeline",
+            ], raw)
+        self.assertEqual(0, code, error)
+        self.assertEqual(93, self.payload(output)["result"]["job_id"])
+        first, second = request.call_args_list
+        self.assertEqual(first.kwargs["body"]["input"], second.kwargs["body"]["input"])
+        invalid = dict(value)
+        invalid["segments"] = [dict(item) for item in value["segments"]]
+        invalid["segments"][-1]["transition"] = "fade"
+        code, _output, error = self.invoke(
+            ["run", "video-timeline-compose", "--input", "@-"],
+            json.dumps(invalid).encode(),
+        )
+        self.assertEqual(cli.EXIT_INPUT, code)
+        self.assertIn("final timeline transition", error)
 
     def test_matrix_template_batch_quotes_and_confirms_exact_count(self):
         self.authorize()
