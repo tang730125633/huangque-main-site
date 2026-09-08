@@ -1,0 +1,22 @@
+# Local HTTP proxy front door: Reality primary, independent Hysteria2/UDP fallback.
+[Unit]
+Description=Huangque automatic egress failover router
+After=network-online.target huangque-hysteria-egress.service
+Wants=network-online.target huangque-hysteria-egress.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+StateDirectory=huangque-egress-router
+ExecStart=/usr/local/bin/mihomo -d /var/lib/huangque-egress-router -f /etc/huangque/mihomo-egress-failover.yaml
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
