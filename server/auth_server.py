@@ -7851,9 +7851,17 @@ class H(BaseHTTPRequestHandler):
                 return self._cli_send(401, {"detail": "CLI 未登录或授权已过期", "code": "cli_unauthorized"})
             row, scopes = auth
             refresh_expires_at = row["cli_refresh_expires_at"]
+            developer = row["role"] == "admin" and "developer:read" in scopes
             return self._cli_send(200, {
                 "user": self._cli_public_user(row),
                 "scopes": list(scopes),
+                "identity": {
+                    "account_role": row["role"],
+                    "agent_role": "developer_admin" if developer else "user",
+                    "developer": developer,
+                    "backend_admin": developer,
+                },
+                "skill_entitlements": ["huangque-developer-admin"] if developer else [],
                 "authorization_mode": "rotating_refresh_token" if refresh_expires_at else "access_token_only",
                 "access_expires_at": int(row["cli_expires_at"]),
                 "expires_at": int(row["cli_expires_at"]),

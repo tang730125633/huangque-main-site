@@ -898,6 +898,12 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual("alice", payload["user"]["username"])
         self.assertIn("generation:submit", payload["scopes"])
+        self.assertNotIn("developer:read", payload["scopes"])
+        self.assertEqual({
+            "account_role": "member", "agent_role": "user",
+            "developer": False, "backend_admin": False,
+        }, payload["identity"])
+        self.assertEqual([], payload["skill_entitlements"])
         self.assertEqual("rotating_refresh_token", payload["authorization_mode"])
         self.assertEqual(credentials["access_expires_at"], payload["access_expires_at"])
         self.assertEqual(credentials["refresh_expires_at"], payload["refresh_expires_at"])
@@ -909,6 +915,51 @@ class HQCLIAPITests(unittest.TestCase):
             "/api/auth/cli/logout", {"refresh_token": credentials["refresh_token"]}, token=token,
         )[0])
         self.assertEqual(401, self._request("/api/auth/cli/status", token=token)[0])
+
+    def test_developer_scope_is_server_granted_only_to_admin(self):
+        member = self._credentials(["profile:read", "developer:read"])
+        self.assertNotIn("developer:read", member["scopes"])
+        status, payload = self._request("/api/auth/cli/action", {
+            "action": "developer-services", "input": {},
+        }, token=member["access_token"])
+        self.assertEqual(403, status)
+        self.assertEqual("insufficient_scope", payload["code"])
+
+        connection = sqlite3.connect(self.auth.DB)
+        try:
+            connection.execute("UPDATE users SET role='admin' WHERE username='alice'")
+            connection.commit()
+        finally:
+            connection.close()
+        admin = self._credentials(["profile:read", "developer:read"])
+        status, payload = self._request("/api/auth/cli/status", token=admin["access_token"])
+        self.assertEqual(200, status)
+        self.assertIn("developer:read", payload["scopes"])
+        self.assertEqual("developer_admin", payload["identity"]["agent_role"])
+        self.assertTrue(payload["identity"]["backend_admin"])
+        self.assertEqual(["huangque-developer-admin"], payload["skill_entitlements"])
+
+        with mock.patch.object(
+                self.auth.H, "_cli_proxy", return_value=(200, {"items": []})) as proxy:
+            status, payload = self._request("/api/auth/cli/action", {
+                "action": "developer-services", "input": {},
+            }, token=admin["access_token"])
+        self.assertEqual((200, {"items": []}), (status, payload))
+        plan, username = proxy.call_args.args
+        self.assertEqual("alice", username)
+        self.assertEqual((self.auth.hq_cli_api.ADMIN_BASE, "/api/admin/services", "GET"), (
+            plan["base"], plan["path"], plan.get("method", "GET")))
+
+        connection = sqlite3.connect(self.auth.DB)
+        try:
+            connection.execute("UPDATE users SET role='member' WHERE username='alice'")
+            connection.commit()
+        finally:
+            connection.close()
+        status, payload = self._request("/api/auth/cli/status", token=admin["access_token"])
+        self.assertEqual(200, status)
+        self.assertNotIn("developer:read", payload["scopes"])
+        self.assertFalse(payload["identity"]["backend_admin"])
 
     def _internal_headers(self):
         return {"X-HQ-Internal-Token": self.auth.INTERNAL_TOKEN}
@@ -2785,6 +2836,17 @@ class HQCLIAPITests(unittest.TestCase):
             plan = self.auth.hq_cli_api.action_plan(action, {})
             self.assertEqual(expected, (plan["scope"], plan["path"]))
             self.assertEqual(self.auth.hq_cli_api.CONTENT_BASE, plan["base"])
+        developer_cases = {
+            "developer-overview": "/api/admin/dashboard",
+            "developer-services": "/api/admin/services",
+            "developer-channels": "/api/admin/channels",
+            "developer-features": "/api/admin/features",
+            "developer-pricing": "/api/admin/pricing",
+        }
+        for action, path in developer_cases.items():
+            plan = self.auth.hq_cli_api.action_plan(action, {})
+            self.assertEqual(("developer:read", self.auth.hq_cli_api.ADMIN_BASE, path), (
+                plan["scope"], plan["base"], plan["path"]))
         project = self.auth.hq_cli_api.action_plan(
             "digital-ip-project", {"project_id": "project_1"})
         report = self.auth.hq_cli_api.action_plan(
