@@ -37,6 +37,8 @@ class TimelineComposeTests(unittest.TestCase):
 
     def test_validation_binds_owned_assets_duration_and_price_breakdown(self):
         with mock.patch.object(
+            timeline_compose.shutil, "which", return_value="/usr/bin/tool",
+        ), mock.patch.object(
             timeline_compose, "_owned_file",
             side_effect=[("/tmp/image.png", "i"), ("/tmp/video.mp4", "v")],
         ) as owned, mock.patch.object(
@@ -77,7 +79,8 @@ class TimelineComposeTests(unittest.TestCase):
             dict(self.payload(), bgm=True),
             dict(self.payload(), segments=[{"type": "image", "asset_id": 11}]),
         ]
-        with mock.patch.object(timeline_compose, "_owned_file", return_value=("/tmp/a", "x")), \
+        with mock.patch.object(timeline_compose.shutil, "which", return_value="/usr/bin/tool"), \
+             mock.patch.object(timeline_compose, "_owned_file", return_value=("/tmp/a", "x")), \
              mock.patch.object(timeline_compose, "_probe_image"), \
              mock.patch.object(timeline_compose, "_probe", return_value={
                  "duration": 5.0, "has_audio": False, "width": 720, "height": 1280,
@@ -89,11 +92,15 @@ class TimelineComposeTests(unittest.TestCase):
     def test_fractional_asset_id_is_rejected(self):
         value = self.payload()
         value["segments"][0]["asset_id"] = 11.5
-        with self.assertRaisesRegex(ValueError, "asset_id 无效"):
+        with mock.patch.object(
+            timeline_compose.shutil, "which", return_value="/usr/bin/tool",
+        ), self.assertRaisesRegex(ValueError, "asset_id 无效"):
             timeline_compose.validate_payload(value, "alice")
 
     def test_unreadable_image_is_rejected_before_quote(self):
         with mock.patch.object(
+            timeline_compose.shutil, "which", return_value="/usr/bin/tool",
+        ), mock.patch.object(
             timeline_compose, "_owned_file", return_value=("/tmp/broken.png", "x"),
         ), mock.patch.object(
             timeline_compose, "_probe_image", side_effect=ValueError("图片素材无法读取"),
@@ -131,6 +138,8 @@ class TimelineComposeTests(unittest.TestCase):
                 with mock.patch.object(core, "verify", return_value={
                     "username": "alice", "points": 100, "must_change": False,
                 }), mock.patch.object(
+                    timeline_compose.shutil, "which", return_value="/usr/bin/tool",
+                ), mock.patch.object(
                     core, "_domains", return_value=(audio, points, video),
                 ), mock.patch.object(
                     timeline_compose, "_owned_file",
