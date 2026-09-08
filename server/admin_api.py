@@ -3665,6 +3665,16 @@ _TASK_DONE_STATES = {"done", "completed", "succeeded", "ready"}
 _TASK_FAILED_STATES = {"error", "failed", "refunded", "canceled"}
 
 
+def _is_shared_provider_job(row, generic_rows):
+    """Match the provider projection to its generic xiaole job, when present."""
+    shared = generic_rows.get(str(row["id"]))
+    return bool(
+        shared
+        and str(shared["username"] or "-") == str(row["username"] or "-")
+        and int(shared["cost"] or 0) == int(row["cost"] or 0)
+    )
+
+
 def _operation_feature_key(kind, channel=""):
     kind = str(kind or "unknown")
     if kind == "xiaole_video":
@@ -4081,15 +4091,7 @@ def _job_evidence(row, asset=None, allow_remote=True,
         )
         if structured is not None:
             evidence.update(structured)
-    evidence["provider_task_id"] = (
-        _sanitize_task_identifier(evidence.get("provider_task_id")) or None
-    )
-    evidence["error"] = _sanitize_task_error(evidence.get("error"))
-    evidence["result_url"] = (
-        _sanitize_path(str(evidence["result_url"]))
-        if evidence.get("result_url") else None
-    )
-    return evidence
+    return _sanitize_admin_evidence(evidence)
 
 
 def _e2e_job_evidence(job_id):
@@ -4165,8 +4167,8 @@ def _e2e_stage(key, name, state, detail):
 
 def _public_short_drama_shot_run(item, evidence):
     failed = item.get("status") in {"failed", "unknown"}
-    provider_job_id = str(evidence.get("provider_job_id") or "")
-    provider_task_id = str(evidence.get("provider_task_id") or "")
+    provider_job_id = _sanitize_task_identifier(evidence.get("provider_job_id"))
+    provider_task_id = _sanitize_task_identifier(evidence.get("provider_task_id"))
     provider_status = str(evidence.get("provider_status") or "")
     completed = provider_status == "succeeded"
     delivered = bool(evidence.get("delivery_verified"))
@@ -4210,7 +4212,7 @@ def _public_short_drama_shot_run(item, evidence):
     public_evidence = dict(evidence)
     public_evidence.pop("quote_token", None)
     item["evidence"] = public_evidence
-    return item
+    return _sanitize_public_admin_payload(item)
 
 
 def _public_short_drama_preview_run(item, evidence):
@@ -4219,7 +4221,7 @@ def _public_short_drama_preview_run(item, evidence):
     ready = list(evidence.get("ready_shot_keys") or [])
     total = len(required) or 6
     ready_count = len(ready)
-    preview_job_id = str(evidence.get("preview_job_id") or "")
+    preview_job_id = _sanitize_task_identifier(evidence.get("preview_job_id"))
     preview_done = evidence.get("preview_status") == "succeeded"
     delivered = bool(evidence.get("delivery_verified"))
     billing_ok = bool(evidence.get("billing_verified"))
@@ -4260,12 +4262,12 @@ def _public_short_drama_preview_run(item, evidence):
     public_evidence.pop("quote_tokens", None)
     public_evidence.pop("provider_task_ids", None)
     item["evidence"] = public_evidence
-    return item
+    return _sanitize_public_admin_payload(item)
 
 
 def _public_short_drama_delivery_run(item, evidence):
     failed = item.get("status") in {"failed", "unknown"}
-    delivery_job_id = str(evidence.get("delivery_job_id") or "")
+    delivery_job_id = _sanitize_task_identifier(evidence.get("delivery_job_id"))
     completed = evidence.get("delivery_status") == "succeeded"
     delivered = bool(evidence.get("delivery_verified"))
     billing_ok = bool(evidence.get("billing_verified"))
@@ -4306,7 +4308,7 @@ def _public_short_drama_delivery_run(item, evidence):
     public_evidence = dict(evidence)
     public_evidence.pop("quote_token", None)
     item["evidence"] = public_evidence
-    return item
+    return _sanitize_public_admin_payload(item)
 
 
 def _public_e2e_run(row):
@@ -4364,7 +4366,7 @@ def _public_e2e_run(row):
             "script_version_id": project_evidence.get("script_version_id"),
             "plan_id": project_evidence.get("plan_id"),
         }
-        return item
+        return _sanitize_public_admin_payload(item)
     evidence = _e2e_job_evidence(item.get("job_id"))
     if evidence:
         job_status = evidence["status"]
@@ -4472,7 +4474,7 @@ def _public_e2e_run(row):
                    "失败任务已退款" if refunded else ("扣点流水一致" if billing_passed else ("点数变化一致，尚未找到扣点流水" if billing_ok else "等待终态扣点 / 退款证据"))),
     ]
     item["evidence"] = dict(evidence or {}, **project_evidence)
-    return item
+    return _sanitize_public_admin_payload(item)
 
 
 def _public_e2e_rows(rows):
@@ -6711,11 +6713,7 @@ def _short_drama_shot_operation_stat(since):
         "total": 0, "done": 0, "error": 0, "running": 0, "other": 0,
     }
     for row in rows:
-        _count_status(bucket, {
-            "succeeded": "completed", "failed": "failed", "canceled": "failed",
-            "billing": "running", "queued": "running", "submitting": "running",
-            "running": "running", "submit_unknown": "unknown",
-        }.get(str(row["status"] or "").lower(), "unknown"))
+        _count_status(bucket, str(row["status"] or "unknown").lower())
     row = rows[0]
     try:
         result = json.loads(row["result_json"] or "{}")
@@ -6767,13 +6765,36 @@ def job_stats(days=7):
                 columns = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)")}
                 running_states = sorted(_TASK_RUNNING_STATES)
                 running_marks = ",".join("?" for _ in running_states)
-                active = connection.execute(
-                    "SELECT COUNT(*) AS total,MIN(created_at) AS oldest "
+                active_rows = connection.execute(
+                    "SELECT id,username,kind,cost,status,created_at "
                     "FROM jobs WHERE status IN (%s)" % running_marks,
                     running_states,
-                ).fetchone()
-                live["running"] = int(active["total"] or 0)
-                live["oldest_running_at"] = int(active["oldest"] or 0) or None
+                ).fetchall()
+                live["running"] = len(active_rows)
+                active_times = [int(row["created_at"] or 0) for row in active_rows]
+                live["oldest_running_at"] = min(active_times) if active_times else None
+                generic_active = {
+                    str(row["id"]): row for row in active_rows
+                    if str(row["kind"] or "").lower() == "xiaole_video"
+                }
+                if connection.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' "
+                        "AND name='short_drama_provider_shot_jobs'").fetchone():
+                    provider_active = connection.execute(
+                        """SELECT id,owner_username AS username,provider,cost,status,created_at
+                             FROM short_drama_provider_shot_jobs
+                            WHERE status IN (%s)""" % running_marks,
+                        running_states,
+                    ).fetchall()
+                    for row in provider_active:
+                        if _is_shared_provider_job(row, generic_active):
+                            continue
+                        live["running"] += 1
+                        created_at = int(row["created_at"] or 0)
+                        oldest = live["oldest_running_at"]
+                        live["oldest_running_at"] = (
+                            created_at if not oldest or created_at < oldest else oldest
+                        )
                 if "refunded" in columns:
                     live["refund_pending"] = int(connection.execute(
                         "SELECT COUNT(*) AS total FROM jobs WHERE COALESCE(refunded,0)=2"
@@ -6929,6 +6950,11 @@ def job_stats(days=7):
     items = _finish_stats(list(by_kind.values()))
     operation_items = _finish_stats(list(by_operation.values()))
     unmapped_items = _finish_stats(list(unmapped.values()))
+    for item in operation_items:
+        if isinstance(item.get("latest"), dict):
+            item["latest"] = _sanitize_admin_evidence(item["latest"])
+    for item in unmapped_items:
+        item["latest_error"] = _sanitize_task_error(item.get("latest_error"))
     high_failure = [
         item for item in items
         if item["total"] >= 3 and item["failure_rate"] >= 0.5
@@ -7040,12 +7066,7 @@ def dashboard_stats(days=7):
         "omni": "omni_video",
     }
     for row in provider_rows:
-        shared = generic_rows.get(str(row["id"]))
-        if (
-            shared
-            and str(shared["username"] or "-") == str(row["username"] or "-")
-            and int(shared["cost"] or 0) == int(row["cost"] or 0)
-        ):
+        if _is_shared_provider_job(row, generic_rows):
             continue
         raw_status = str(row["status"] or "unknown").lower()
         status = (
@@ -7124,9 +7145,14 @@ _TASK_PUBLIC_IDENTIFIER_RE = re.compile(r"^task:\d+$")
 
 def _sanitize_task_error(value):
     """Return a compact operator-facing failure reason without common secrets."""
+    return _redact_task_text(value)[:240]
+
+
+def _redact_task_text(value):
+    """Redact secrets from arbitrary public evidence text without truncating it."""
     text = str(value or "").replace("\r", " ").replace("\n", " ").strip()
     text = _TASK_SECRET_TEXT_RE.sub(r"\1***", text)
-    return _TASK_AUTH_SCHEME_RE.sub(r"\1 ***", text)[:240]
+    return _TASK_AUTH_SCHEME_RE.sub(r"\1 ***", text)
 
 
 def _sanitize_task_identifier(value, allow_local_task=False):
@@ -7137,6 +7163,63 @@ def _sanitize_task_identifier(value, allow_local_task=False):
     if len(text) <= 8:
         return "***"
     return "%s…%s" % (text[:6], text[-4:])
+
+
+def _sanitize_admin_evidence(evidence):
+    """Apply the same public redaction to every admin evidence projection."""
+    if not isinstance(evidence, dict):
+        return evidence
+    evidence["provider_task_id"] = (
+        _sanitize_task_identifier(evidence.get("provider_task_id")) or None
+    )
+    evidence["error"] = _sanitize_task_error(evidence.get("error"))
+    evidence["result_url"] = (
+        _sanitize_path(str(evidence["result_url"]))
+        if evidence.get("result_url") else None
+    )
+    return evidence
+
+
+_PUBLIC_EXTERNAL_ID_FIELDS = {
+    "provider_job_id", "provider_task_id", "provider_video_id",
+    "preview_job_id", "delivery_job_id", "request_id", "correlation_id",
+    "idempotency_key", "submission_key", "charge_key", "refund_key",
+}
+_PUBLIC_EXTERNAL_ID_COLLECTIONS = {
+    "provider_jobs", "provider_task_ids", "submitted_job_ids",
+}
+
+
+def _sanitize_public_admin_payload(value, field=""):
+    """Recursively sanitize evidence at the admin API serialization boundary."""
+    field = str(field or "").lower()
+    if isinstance(value, dict):
+        if field in _PUBLIC_EXTERNAL_ID_COLLECTIONS:
+            return {
+                key: (_sanitize_task_identifier(item)
+                      if not isinstance(item, (dict, list, tuple))
+                      else _sanitize_public_admin_payload(item, field))
+                for key, item in value.items()
+            }
+        return {
+            key: _sanitize_public_admin_payload(item, str(key).lower())
+            for key, item in value.items()
+            if str(key).lower() not in {"quote_token", "quote_tokens"}
+        }
+    if isinstance(value, (list, tuple)):
+        if field in _PUBLIC_EXTERNAL_ID_COLLECTIONS:
+            return [_sanitize_task_identifier(item) for item in value]
+        return [_sanitize_public_admin_payload(item, field) for item in value]
+    if value is None:
+        return None
+    if field in _PUBLIC_EXTERNAL_ID_FIELDS:
+        return _sanitize_task_identifier(value) or None
+    if field in _PUBLIC_EXTERNAL_ID_COLLECTIONS:
+        return _sanitize_task_identifier(value)
+    if isinstance(value, str):
+        text = _sanitize_path(value) if "url" in field or field.endswith("uri") else value
+        return _redact_task_text(text)
+    return value
 
 
 def _task_runtime_record(item):

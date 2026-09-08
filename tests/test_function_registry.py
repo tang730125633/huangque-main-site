@@ -622,6 +622,10 @@ class FunctionRegistryTests(unittest.TestCase):
                     "Authorization: Bearer job-secret",
                 ),
             )
+            connection.execute(
+                "UPDATE jobs SET error=? WHERE id=6",
+                ("Signature=unmapped-secret",),
+            )
             connection.commit()
         with closing(sqlite3.connect(self.admin.ASSET_DB)) as connection:
             connection.execute(
@@ -634,13 +638,62 @@ class FunctionRegistryTests(unittest.TestCase):
             )
             connection.commit()
 
+        stats = self.admin.job_stats(7)
         latest = {
-            item["operation"]: item["latest"] for item in self.admin.job_stats(7)["by_operation"]
+            item["operation"]: item["latest"] for item in stats["by_operation"]
         }["video.grok.image"]
         self.assertEqual(latest["provider_task_id"], "123456…7890")
         self.assertIn("q-signature=***", latest["result_url"])
-        serialized = json.dumps(latest, ensure_ascii=False)
-        for secret in ("result-secret", "asset-secret", "job-secret", "asset-error-secret"):
+        serialized_stats = json.dumps(stats, ensure_ascii=False)
+        for secret in (
+            "result-secret", "asset-secret", "job-secret", "asset-error-secret",
+            "unmapped-secret",
+        ):
+            self.assertNotIn(secret, serialized_stats)
+
+    def test_provider_only_stats_share_live_states_and_public_redaction(self):
+        now = int(time.time())
+        old = now - 8 * 86400
+        with closing(sqlite3.connect(self.admin.JOB_DB)) as connection:
+            connection.execute(
+                """CREATE TABLE short_drama_provider_shot_jobs(
+                    id TEXT PRIMARY KEY,project_id TEXT,owner_username TEXT,
+                    provider TEXT,status TEXT,cost INTEGER,created_at INTEGER,
+                    updated_at INTEGER,provider_job_id TEXT,result_json TEXT,error_json TEXT)"""
+            )
+            connection.execute(
+                """CREATE TABLE short_drama_provider_shot_attempts(
+                    job_id TEXT,state TEXT)"""
+            )
+            connection.executemany(
+                "INSERT INTO short_drama_provider_shot_jobs VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                [
+                    (
+                        "provider-recent", "project-1", "alice", "grok",
+                        "submit_unknown", 12, now - 60, now - 30, "1234567890",
+                        json.dumps({"url": "https://private.example/shot.mp4?q-signature=shot-secret"}),
+                        json.dumps({"detail": "Authorization: Bearer provider-secret"}),
+                    ),
+                    (
+                        "provider-old", "project-1", "alice", "grok",
+                        "billing", 12, old, old + 10, "9988776655", "{}", "{}",
+                    ),
+                ],
+            )
+            connection.commit()
+
+        stats = self.admin.job_stats(7)
+        self.assertEqual(stats["live"]["running"], 2)
+        self.assertEqual(stats["live"]["oldest_running_at"], old)
+        shot = next(
+            item for item in stats["by_operation"]
+            if item["operation"] == "short_drama.live_action.shot_video"
+        )
+        self.assertEqual((shot["total"], shot["running"]), (1, 1))
+        self.assertEqual(shot["latest"]["provider_task_id"], "123456…7890")
+        self.assertIn("q-signature=***", shot["latest"]["result_url"])
+        serialized = json.dumps(shot, ensure_ascii=False)
+        for secret in ("1234567890", "shot-secret", "provider-secret"):
             self.assertNotIn(secret, serialized)
 
     def test_stale_submitted_job_remains_in_live_counts(self):

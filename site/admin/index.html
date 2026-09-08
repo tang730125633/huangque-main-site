@@ -1993,7 +1993,7 @@
     if(registryE2EFresh(registryE2ERun(mode,data))){if((mode.validation||{}).browser_supported&&!registryBrowserPassed(registryE2ERun(mode,data)))return ['warn','客户页待验收','生产链已通过 8/8，但真实客户页六项旅程未通过','断点 · 1 客户页面'];return ['ok',(mode.validation||{}).browser_supported?'完整旅程通过':'生产链通过',(mode.validation||{}).browser_supported?'客户页 6/6 与生产链 8/8 绑定同一 job_id':'业务接口到作品与扣点一致；客户页面交互另行验收',(mode.validation||{}).browser_supported?'闭环 · 6 / 6 + 8 / 8':'闭环 · 8 / 8'];}
     if(routeUnverified)return ['warn','渠道待验证','必需线路尚无新鲜鉴权证据，不能判为端到端正常','断点 · 4 渠道与凭据'];
     if(!stat||!latest)return ['warn','未验证','尚无该客户模式的真实任务证据','断点 · 1 端到端测试'];
-    if(['pending','queued','running','processing','created','rendering'].indexOf(String(latest.status||'').toLowerCase())>=0)return ['neutral','进行中','最近任务尚未到达终态',latest.provider_task_id?'当前 · 6 生成执行':'当前 · 5 等待供应商接单'];
+    if(['pending','queued','running','processing','submitted','billing','submitting','submit_unknown','created','rendering'].indexOf(String(latest.status||'').toLowerCase())>=0)return ['neutral','进行中','最近任务尚未到达终态',latest.provider_task_id?'当前 · 6 生成执行':'当前 · 5 等待供应商接单'];
     var acceptanceType=contract.acceptance_id_type||'job_id';
     if(!latest.business_accepted||!latest[acceptanceType])return ['warn','业务受理待统一','没有可核对的真实 '+acceptanceType,'断点 · 3 业务接口'];
     if(notApplicable.indexOf('provider_task')<0&&!latest.provider_task_id)return ['warn','供应商接单未证明','没有 provider_task_id / video_id','断点 · 5 供应商接单'];

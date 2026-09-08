@@ -771,6 +771,34 @@ class AdminE2ERunnerTests(unittest.TestCase):
         self.assertEqual(result["provider_jobs"]["shot_01"], "provider-shot-01")
         self.assertEqual(result["submitted_job_ids"], ["provider-shot-01"])
 
+    def test_short_drama_public_evidence_recursively_redacts_external_values(self):
+        item = {
+            "run_id": "run-public-redaction", "status": "failed",
+            "username": "qa-dedicated", "points_before": 100,
+            "error": "Authorization: Bearer item-secret",
+        }
+        evidence = {
+            "provider": "grok", "provider_job_id": "1234567890",
+            "provider_task_id": "provider-sensitive-task",
+            "provider_error": "access_token=provider-secret",
+            "result_url": "https://private.example/shot.mp4?Signature=url-secret",
+            "provider_jobs": {"shot_01": "provider-job-sensitive"},
+            "submitted_job_ids": ["submitted-job-sensitive"],
+            "quote_token": "quote-secret",
+        }
+
+        public = self.admin._public_short_drama_shot_run(item, evidence)
+        serialized = json.dumps(public, ensure_ascii=False)
+
+        for secret in (
+            "item-secret", "1234567890", "provider-sensitive-task",
+            "provider-secret", "url-secret", "provider-job-sensitive",
+            "submitted-job-sensitive", "quote-secret",
+        ):
+            self.assertNotIn(secret, serialized)
+        self.assertIn("123456…7890", serialized)
+        self.assertIn("Signature=***", serialized)
+
     def test_short_drama_preview_finishes_file_and_six_charge_ledger_chain(self):
         run_id = "preview-run"
         job_ids = ["provider-%s" % index for index in range(1, 7)]
