@@ -73,8 +73,9 @@ SCOPES = {
 }
 SCOPES.update(director_workflow_contract.SCOPE_CONTRACT)
 DEFAULT_SCOPES = tuple(SCOPES)
-VIDEO_AGENT_DELEGATED_SCOPES = frozenset({
-    "profile:read", "assets:read", "tasks:read", "generation:quote", "generation:submit",
+DELEGATED_SCOPES = frozenset({
+    "profile:read", "ip12:read", "assets:read", "tasks:read",
+    "generation:quote", "generation:submit",
 })
 CHANNEL_CATALOG = (
     {"id": "deepseek", "provider": "DeepSeek API", "category": "视频创作助手",
@@ -2226,8 +2227,8 @@ def _normalize_scopes(value):
 
 def _normalize_delegated_scopes(value):
     scopes = _normalize_scopes(value)
-    if any(scope not in VIDEO_AGENT_DELEGATED_SCOPES for scope in scopes):
-        raise CLIAPIError(400, "包含不允许委托给视频助手的权限范围")
+    if any(scope not in DELEGATED_SCOPES for scope in scopes):
+        raise CLIAPIError(400, "包含不允许委托的权限范围")
     return scopes
 
 
@@ -2375,10 +2376,12 @@ def poll_device(db_factory, body, now=None):
         raise CLIAPIError(409, "访问令牌已经签发，请重新登录", "already_issued")
 
 
-def issue_delegated_token(db_factory, username, scopes, ttl, now=None):
+def issue_delegated_token(db_factory, username, scopes, ttl, now=None,
+                          client_name="video-agent-internal"):
     """Issue a short-lived, least-privilege CLI grant for an authenticated service call."""
     now = int(time.time() if now is None else now)
     username = _string(username, "username", 1, 64)
+    client_name = _string(client_name, "client_name", 1, 80)
     scopes = _normalize_delegated_scopes(scopes)
     ttl = _integer(ttl, "ttl_seconds", 60, 300)
     expires_at = now + ttl
@@ -2405,7 +2408,7 @@ def issue_delegated_token(db_factory, username, scopes, ttl, now=None):
                     (
                         _hash("delegated-device:" + secrets.token_urlsafe(32)),
                         _hash("delegated-user:" + secrets.token_urlsafe(32)),
-                        "video-agent-internal", scopes_json, scopes_json, username,
+                        client_name, scopes_json, scopes_json, username,
                         now, expires_at, now, _hash(token), expires_at,
                     ),
                 )
@@ -2414,7 +2417,7 @@ def issue_delegated_token(db_factory, username, scopes, ttl, now=None):
                 if "UNIQUE" not in str(exc).upper():
                     raise
         else:
-            raise CLIAPIError(503, "暂时无法签发视频助手授权", "grant_unavailable")
+            raise CLIAPIError(503, "暂时无法签发委托授权", "grant_unavailable")
         connection.commit()
     except Exception:
         connection.rollback()
