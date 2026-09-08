@@ -2412,6 +2412,25 @@ class H(BaseHTTPRequestHandler):
                 self, p, verify, _must_change_password, is_shutting_down,
                 feature_flags, points_domain, audio_domain, video_domain,
                 AUTH_INTERNAL_TOKEN): return
+        if p == "/api/gen/speech-to-text":
+            user = verify(self._token())
+            if not user:
+                return self._send(401, {"detail": "未登录或登录已过期"})
+            if _must_change_password(user):
+                return self._send(403, {"detail": "请先修改初始密码"})
+            from . import video_compose_asr
+            try:
+                body = self._json_body_strict(max_bytes=720000)
+                result = video_compose_asr.transcribe_voice_input(body, user["username"])
+                return self._send(200, {"ok": True, **result})
+            except video_compose_asr.VoiceInputRateLimited as error:
+                return self._send(429, {"detail": str(error), "code": "rate_limited"})
+            except error_contract.RequestBodyTooLarge:
+                return self._send(413, {"detail": "录音超过 60 秒，请分段说"})
+            except video_compose_asr.AsrError as error:
+                detail = str(error)
+                status = 503 if detail.startswith(("语音识别服务", "一键成片 ASR")) else 400
+                return self._send(status, {"detail": detail[:220]})
         text_video_avatar_import = p == "/api/gen/cli/text-video/avatar-import"
         if p in {"/api/gen/text-video/plan", "/api/gen/text-video/avatar"} or text_video_avatar_import:
             if text_video_avatar_import and not cli_gateway._internal_auth(
