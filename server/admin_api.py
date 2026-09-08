@@ -3666,11 +3666,14 @@ def _operation_feature_key(kind, channel=""):
 
 def _count_status(bucket, status, count=1):
     bucket["total"] += count
-    if status in {"done", "completed"}:
+    if status in {"done", "completed", "succeeded", "ready"}:
         bucket["done"] += count
-    elif status in {"error", "failed", "refunded"}:
+    elif status in {"error", "failed", "refunded", "canceled"}:
         bucket["error"] += count
-    elif status in {"pending", "queued", "running", "processing"}:
+    elif status in {
+        "pending", "queued", "running", "processing", "submitted",
+        "billing", "submitting", "submit_unknown",
+    }:
         bucket["running"] += count
     else:
         bucket["other"] += count
@@ -6952,7 +6955,7 @@ def dashboard_stats(days=7):
             columns = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)")}
             refunded = "COALESCE(refunded,0)" if "refunded" in columns else "0"
             rows = connection.execute(
-                """SELECT kind,status,created_at,
+                """SELECT id,username,kind,cost,status,created_at,
                           CASE WHEN kind='xiaole_video' AND json_valid(payload)
                                THEN LOWER(COALESCE(json_extract(payload,'$.channel'),'')) ELSE '' END AS channel,
                           %s AS refunded
@@ -6962,9 +6965,37 @@ def dashboard_stats(days=7):
                 ),
                 (since,),
             ).fetchall()
+            provider_rows = []
+            provider_refunds = []
+            if connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='short_drama_provider_shot_jobs'").fetchone():
+                provider_rows = connection.execute(
+                    """SELECT id,owner_username AS username,provider,cost,status,
+                              created_at,updated_at
+                         FROM short_drama_provider_shot_jobs
+                        WHERE created_at>=? OR status IN
+                              ('billing','queued','submitting','running','submit_unknown')""",
+                    (since,),
+                ).fetchall()
+            if connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='short_drama_provider_shot_attempts'").fetchone():
+                provider_refunds = connection.execute(
+                    """SELECT COALESCE(job_id,id) AS logical_id
+                         FROM short_drama_provider_shot_attempts
+                        WHERE state='refund_pending'"""
+                ).fetchall()
     except sqlite3.Error:
         return out
     by_kind = {}
+    generic_rows = {
+        str(row["id"]): row for row in rows
+        if str(row["kind"] or "").lower() == "xiaole_video"
+    }
+    generic_refund_ids = {
+        str(row["id"]) for row in rows if int(row["refunded"] or 0) == 2
+    }
     for row in rows:
         status = str(row["status"] or "unknown").lower()
         created_at = int(row["created_at"] or 0)
@@ -6983,6 +7014,51 @@ def dashboard_stats(days=7):
             out["live"]["oldest_running_at"] = created_at if not oldest or created_at < oldest else oldest
         if int(row["refunded"] or 0) == 2:
             out["live"]["refund_pending"] += 1
+    provider_kind = {
+        "minimax_h3": "minimax_h3_video",
+        "grok": "grok_video",
+        "micro": "seedance_video",
+        "omni": "omni_video",
+    }
+    for row in provider_rows:
+        shared = generic_rows.get(str(row["id"]))
+        if (
+            shared
+            and str(shared["username"] or "-") == str(row["username"] or "-")
+            and int(shared["cost"] or 0) == int(row["cost"] or 0)
+        ):
+            continue
+        raw_status = str(row["status"] or "unknown").lower()
+        status = (
+            "done" if raw_status == "succeeded"
+            else "error" if raw_status in {"failed", "canceled"}
+            else "running" if raw_status in {
+                "billing", "queued", "submitting", "running", "submit_unknown",
+            }
+            else raw_status
+        )
+        created_at = int(row["created_at"] or 0)
+        if created_at >= since:
+            out["total"] += 1
+            kind = provider_kind.get(
+                str(row["provider"] or "").lower(), "short_drama_provider_video",
+            )
+            _count_status(by_kind.setdefault(kind, {
+                "kind": kind,
+                "total": 0, "done": 0, "error": 0, "running": 0, "other": 0,
+            }), status)
+        if created_at >= today_start:
+            _count_status(out["today"], status)
+        if status == "running":
+            out["live"]["running"] += 1
+            oldest = out["live"]["oldest_running_at"]
+            out["live"]["oldest_running_at"] = (
+                created_at if not oldest or created_at < oldest else oldest
+            )
+    out["live"]["refund_pending"] += sum(
+        str(row["logical_id"] or "") not in generic_refund_ids
+        for row in provider_refunds
+    )
     out["high_failure"] = sorted([
         item for item in _finish_stats(list(by_kind.values()))
         if item["total"] >= 3 and item["failure_rate"] >= 0.5
@@ -7017,19 +7093,36 @@ _SHORT_DRAMA_PROVIDER_NAMES = {
 }
 
 
-_TASK_RUNNING_STATES = {"pending", "queued", "running", "processing", "submitted"}
+_TASK_RUNNING_STATES = {
+    "pending", "queued", "running", "processing", "submitted",
+    "billing", "submitting", "submit_unknown",
+}
 _TASK_DONE_STATES = {"done", "completed", "succeeded", "ready"}
-_TASK_FAILED_STATES = {"error", "failed", "refunded"}
+_TASK_FAILED_STATES = {"error", "failed", "refunded", "canceled"}
 _TASK_SECRET_TEXT_RE = re.compile(
-    r"(?i)(api[_ -]?key|token|secret|password|passwd|pwd|credential|authorization)"
-    r"(\s*[:=]\s*)([^\s,;&]+)"
+    r"(?i)([\"']?(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|token|secret|"
+    r"password|passwd|pwd|credential|authorization|x-amz-credential|x-amz-signature)"
+    r"[\"']?\s*[:=]\s*)(?:(?:bearer|basic)\s+)?(?:[\"'][^\"']*[\"']|[^\s,;&]+)"
 )
+_TASK_AUTH_SCHEME_RE = re.compile(r"(?i)\b(bearer|basic)\s+[^\s,;&]+")
+_TASK_PUBLIC_IDENTIFIER_RE = re.compile(r"^(?:task:)?\d+$")
 
 
 def _sanitize_task_error(value):
     """Return a compact operator-facing failure reason without common secrets."""
     text = str(value or "").replace("\r", " ").replace("\n", " ").strip()
-    return _TASK_SECRET_TEXT_RE.sub(r"\1\2***", text)[:240]
+    text = _TASK_SECRET_TEXT_RE.sub(r"\1***", text)
+    return _TASK_AUTH_SCHEME_RE.sub(r"\1 ***", text)[:240]
+
+
+def _sanitize_task_identifier(value):
+    """Keep task ids useful while masking external and idempotency identifiers."""
+    text = str(value or "").replace("\r", "").replace("\n", "").strip()[:160]
+    if not text or _TASK_PUBLIC_IDENTIFIER_RE.fullmatch(text):
+        return text
+    if len(text) <= 8:
+        return "***"
+    return "%s…%s" % (text[:6], text[-4:])
 
 
 def _task_runtime_record(item):
@@ -7043,11 +7136,13 @@ def _task_runtime_record(item):
     status = str(item.get("status") or "unknown").lower()
     route = str(item.get("provider") or item.get("channel") or "").strip()
     model = str(item.get("model") or "").strip()
-    provider_task_id = str(item.get("provider_task_id") or "").strip()[:160]
+    provider_task_id = _sanitize_task_identifier(item.get("provider_task_id"))
     result_reference = bool(item.get("result_reference"))
     delivery_verified = bool(item.get("delivery_verified"))
     artifact_check = str(item.get("artifact_check") or "not_recorded")
-    correlation_id = str(item.get("correlation_id") or "task:%s" % item.get("id")).strip()[:160]
+    correlation_id = _sanitize_task_identifier(
+        item.get("correlation_id") or "task:%s" % item.get("id")
+    )
     error = _sanitize_task_error(item.get("error"))
     delivery_failed = (
         status in _TASK_DONE_STATES
@@ -7160,11 +7255,9 @@ def _short_drama_provider_call_logs(conn, since, limit):
     for row in rows:
         raw_status = str(row["status"] or "unknown").lower()
         status = (
-            "done" if raw_status in {"done", "ready", "succeeded", "completed"}
-            else "error" if raw_status in {"error", "failed", "refunded"}
-            else "running" if raw_status in {
-                "pending", "queued", "running", "processing", "submitted"
-            }
+            "done" if raw_status in _TASK_DONE_STATES
+            else "error" if raw_status in _TASK_FAILED_STATES
+            else "running" if raw_status in _TASK_RUNNING_STATES
             else raw_status
         )
         created_at = int(row["created_at"] or 0)
@@ -7382,12 +7475,14 @@ def call_logs(days=7, limit=200):
                 "channel": str(row["channel"] or ""),
                 "provider": str(row["provider"] or ""),
                 "model": str(row["model"] or ""),
-                "provider_task_id": str(row["provider_task_id"] or ""),
+                "provider_task_id": _sanitize_task_identifier(row["provider_task_id"]),
                 "result_reference": bool(evidence.get("output_reference_present")),
                 "delivery_verified": bool(evidence.get("delivery_verified")),
                 "artifact_check": str(evidence.get("artifact_check") or "not_recorded"),
                 "delivery_detail": str(evidence.get("delivery_detail") or ""),
-                "correlation_id": correlation_id or "task:%s" % row["id"],
+                "correlation_id": _sanitize_task_identifier(
+                    correlation_id or "task:%s" % row["id"]
+                ),
                 "correlation_source": correlation_source,
                 "refunded": int(row["refunded"] or 0),
                 "error": str(row["job_error"] or ""),

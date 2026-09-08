@@ -611,6 +611,49 @@ class FunctionRegistryTests(unittest.TestCase):
         self.assertEqual(summary["live"], stats["live"])
         self.assertEqual(summary["total"], stats["total"])
 
+    def test_dashboard_includes_provider_only_tasks_refunds_and_deduplicates_shared_jobs(self):
+        now = int(time.time())
+        with closing(sqlite3.connect(self.admin.JOB_DB)) as connection:
+            connection.execute("UPDATE jobs SET refunded=2 WHERE id=2")
+            connection.execute(
+                """CREATE TABLE short_drama_provider_shot_jobs(
+                    id TEXT PRIMARY KEY,owner_username TEXT,provider TEXT,
+                    status TEXT,cost INTEGER,created_at INTEGER,updated_at INTEGER)"""
+            )
+            connection.execute(
+                """CREATE TABLE short_drama_provider_shot_attempts(
+                    id TEXT PRIMARY KEY,job_id TEXT,state TEXT)"""
+            )
+            connection.executemany(
+                "INSERT INTO short_drama_provider_shot_jobs VALUES(?,?,?,?,?,?,?)",
+                [
+                    ("provider-running", "alice", "grok", "submitting", 12, now - 70, now - 5),
+                    ("provider-failed-1", "alice", "grok", "failed", 12, now - 60, now - 4),
+                    ("provider-failed-2", "alice", "grok", "failed", 12, now - 50, now - 3),
+                    ("provider-failed-3", "alice", "grok", "canceled", 12, now - 40, now - 2),
+                    ("1", "qa", "grok", "succeeded", 60, now - 30, now - 1),
+                ],
+            )
+            connection.executemany(
+                "INSERT INTO short_drama_provider_shot_attempts VALUES(?,?,?)",
+                [
+                    ("refund-provider", "provider-failed-1", "refund_pending"),
+                    ("refund-shared", "2", "refund_pending"),
+                ],
+            )
+            connection.commit()
+
+        summary = self.admin.dashboard_stats(7)
+
+        # Four provider-only rows are added; id=1 is the same xiaole task already
+        # present in jobs and must not be counted twice.
+        self.assertEqual(summary["total"], 10)
+        self.assertEqual(summary["live"]["running"], 1)
+        # Generic job 2 and provider-only attempt each contribute one unresolved refund.
+        self.assertEqual(summary["live"]["refund_pending"], 2)
+        grok = next(item for item in summary["high_failure"] if item["kind"] == "grok_video")
+        self.assertEqual((grok["total"], grok["done"], grok["error"], grok["running"]), (5, 1, 3, 1))
+
     def test_character_reference_evidence_source_maps_to_customer_operation(self):
         now = int(time.time())
         (self.admin.CONTENT_OUT / "character.bin").write_bytes(b"generated-character")

@@ -229,9 +229,9 @@ class RequestLogUserTests(unittest.TestCase):
             connection.close()
 
         item = next(x for x in admin_api.call_logs(7, 20)["items"] if x["id"] == 1226)
-        self.assertEqual(item["correlation_id"], "idem-visible-1226")
+        self.assertEqual(item["correlation_id"], "idem-v…1226")
         self.assertEqual(item["correlation_source"], "idempotency")
-        activity = admin_api.activity_logs(source="job", q="idem-visible-1226")
+        activity = admin_api.activity_logs(source="job", q="idem-v…1226")
         self.assertEqual([row["task_id"] for row in activity["items"]], ["1226"])
 
     def test_activity_merges_jobs_and_http(self):
@@ -304,7 +304,7 @@ class RequestLogUserTests(unittest.TestCase):
         item = next(x for x in admin_api.call_logs(7, 20)["items"] if x["id"] == 1300)
         self.assertEqual(item["route"], "banana")
         self.assertEqual(item["model"], "nb2")
-        self.assertEqual(item["provider_task_id"], "provider-abc-123")
+        self.assertEqual(item["provider_task_id"], "provid…-123")
         self.assertEqual(item["evidence_tone"], "warn")
         self.assertEqual(item["evidence_label"], "完成 · 成品未核验")
         self.assertEqual(item["stages"][-1]["state"], "recorded")
@@ -347,7 +347,7 @@ class RequestLogUserTests(unittest.TestCase):
                     if x["id"] == 1302
                 )
                 activity = admin_api.activity_logs(
-                    source="job", q="request-visible-1302",
+                    source="job", q="reques…1302",
                 )
 
         self.assertTrue(item["delivery_verified"])
@@ -355,7 +355,7 @@ class RequestLogUserTests(unittest.TestCase):
         self.assertEqual(item["evidence_tone"], "ok")
         self.assertEqual(item["evidence_label"], "完成 · 成品已核验")
         self.assertEqual(item["stages"][-1]["state"], "passed")
-        self.assertEqual(item["correlation_id"], "request-visible-1302")
+        self.assertEqual(item["correlation_id"], "reques…1302")
         self.assertEqual([row["task_id"] for row in activity["items"]], ["1302"])
 
     def test_task_error_summary_redacts_common_secrets(self):
@@ -373,6 +373,38 @@ class RequestLogUserTests(unittest.TestCase):
         self.assertIn("password:***", record["error"])
         generation = next(stage for stage in record["stages"] if stage["key"] == "generation")
         self.assertIn("token=***", generation["detail"])
+
+    def test_task_error_summary_redacts_auth_headers_json_and_signed_urls(self):
+        secrets = (
+            "bearer-secret.jwt.value", "basic-secret", "access-secret",
+            "refresh-secret", "credential-secret", "signature-secret",
+        )
+        record = admin_api._task_runtime_record({
+            "id": 1303,
+            "status": "error",
+            "error": (
+                "Authorization: Bearer bearer-secret.jwt.value "
+                "authorization=Basic basic-secret "
+                '\"access_token\":\"access-secret\" '
+                "refresh-token=refresh-secret "
+                "url=https://example.invalid/a?X-Amz-Credential=credential-secret"
+                "&X-Amz-Signature=signature-secret"
+            ),
+        })
+
+        for secret in secrets:
+            self.assertNotIn(secret, record["error"])
+        self.assertIn("Authorization: ***", record["error"])
+        self.assertIn('\"access_token\":***', record["error"])
+        self.assertIn("X-Amz-Signature=***", record["error"])
+
+    def test_external_task_identifiers_are_masked_but_local_task_ids_remain_searchable(self):
+        self.assertEqual(admin_api._sanitize_task_identifier("task:1304"), "task:1304")
+        self.assertEqual(
+            admin_api._sanitize_task_identifier("provider-sensitive-abcdef"),
+            "provid…cdef",
+        )
+        self.assertEqual(admin_api._sanitize_task_identifier("short"), "***")
 
     def test_activity_filters(self):
         # source 过滤
