@@ -62,7 +62,7 @@
     <div class="nav-inner">
       <div class="brand">
         <span class="brand-dot" aria-hidden="true"></span>
-        <span class="brand-name">黄雀 · 主 Agent（v4 业务结果路由）</span>
+        <span class="brand-name">黄雀 · IP12 Agent</span>
       </div>
       <div class="nav-right">
         <span class="mode-badge" id="mode-badge">检测中…</span>
@@ -81,32 +81,59 @@
   </header>
 
   <main class="shell" inert>
-    <aside class="report-pane" id="report-pane" hidden>
-      <div class="report-box" id="report-box">
-        <div class="report-head">
-          <span class="report-title">📄 IP 定位报告</span>
-          <span class="report-status" id="report-status">—</span>
-        </div>
-        <div class="report-phase" id="report-phase"></div>
-        <div class="report-links" id="report-links"></div>
-        <div class="report-mod" id="report-m5" hidden>
-          <div class="report-mod-head"><span>📋 选题已出</span><span class="report-mod-status" id="m5-status"></span></div>
-          <div class="report-content" id="m5-content"></div>
-        </div>
-        <div class="report-mod" id="report-m6" hidden>
-          <div class="report-mod-head"><span>🎬 口播已出</span><span class="report-mod-status" id="m6-status"></span></div>
-          <div class="report-content" id="m6-content"></div>
-        </div>
+    <div class="workspace-rail" aria-label="当前进展">
+      <div class="workspace-rail-head">
+        <span>当前进展</span>
+        <small>成果与任务</small>
       </div>
-    </aside>
 
-    <aside class="task-pane" id="task-pane" hidden>
-      <div class="task-head">
-        <span class="task-title">🧵 任务清单</span>
-        <span class="task-hint">点任务跳回那次对话</span>
-      </div>
-      <div class="task-list" id="task-list"></div>
-    </aside>
+      <section class="report-pane" id="report-pane" hidden>
+        <div class="report-box" id="report-box">
+          <div class="report-head">
+            <span class="report-title">📄 IP 定位报告</span>
+            <span class="report-status" id="report-status">—</span>
+          </div>
+          <div class="report-phase" id="report-phase"></div>
+          <div class="report-links" id="report-links"></div>
+          <div class="report-mod" id="report-m5" hidden>
+            <div class="report-mod-head"><span>📋 选题已出</span><span class="report-mod-status" id="m5-status"></span></div>
+            <div class="report-content" id="m5-content"></div>
+          </div>
+          <div class="report-mod" id="report-m6" hidden>
+            <div class="report-mod-head"><span>🎬 口播已出</span><span class="report-mod-status" id="m6-status"></span></div>
+            <div class="report-content" id="m6-content"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="task-pane" id="task-pane" hidden>
+        <div class="task-head">
+          <span class="task-title">🧵 任务清单</span>
+          <span class="task-hint">点击定位对话</span>
+        </div>
+        <div class="task-list" id="task-list"></div>
+      </section>
+
+      <details class="tool-pane" id="tool-pane">
+        <summary class="tool-head">
+          <span class="tool-heading">
+            <span class="tool-title">执行明细</span>
+            <span class="tool-list" id="tool-list">
+              <span class="tool-empty">还没有派发子 Agent。</span>
+            </span>
+          </span>
+          <span class="tool-toggle" aria-hidden="true"></span>
+        </summary>
+        <div class="tool-body">
+          <div class="tool-actions">
+            <span>子 Agent 路由轨迹</span>
+            <button class="icon-btn" id="clear-tools" aria-label="清空轨迹" title="清空轨迹">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
+            </button>
+          </div>
+        </div>
+      </details>
+    </div>
 
     <div class="main-col">
       <section class="intro" id="intro">
@@ -132,7 +159,7 @@
               <button type="button" class="upload-btn" id="upload-btn" title="添加图片或音频等参考文件，随文字一起发送" aria-label="添加附件">
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
               </button>
-              <input type="file" id="file-input" accept="image/png,image/jpeg,image/webp,image/gif,audio/mpeg,audio/wav,audio/mp4,audio/aac,audio/ogg,.mp3,.wav,.m4a,.aac,.ogg" multiple hidden />
+              <input type="file" id="file-input" accept="image/png,image/jpeg,image/webp,image/gif,audio/mpeg,audio/wav,audio/mp4,audio/aac,audio/ogg,video/mp4,video/quicktime,video/webm,.mp3,.wav,.m4a,.aac,.ogg,.mp4,.mov,.webm" multiple hidden />
               <input type="file" id="asset-file-input" accept="image/png,image/jpeg,image/webp,image/gif,audio/mpeg,audio/wav,audio/mp4,audio/aac,audio/ogg,.mp3,.wav,.m4a,.aac,.ogg" multiple hidden />
               <div class="asset-panel" id="asset-panel" hidden>
                 <div class="asset-panel-head">
@@ -167,17 +194,6 @@
       </section>
       <button class="back-bottom" id="back-bottom" hidden>↓ 返回最新对话</button>
 
-      <aside class="tool-pane" id="tool-pane">
-        <div class="tool-head">
-          <span class="tool-title">子 Agent 路由轨迹</span>
-          <button class="icon-btn" id="clear-tools" aria-label="清空轨迹" title="清空轨迹">
-            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
-          </button>
-        </div>
-        <div class="tool-list" id="tool-list">
-          <p class="tool-empty">还没有派发子 Agent。你说「出张海报」「查点数」这类需求，主 Agent 会路由到对应子 Agent。</p>
-        </div>
-      </aside>
     </div>
   </main>
 
