@@ -6012,9 +6012,9 @@ class H(BaseHTTPRequestHandler):
                 "role": role,
             })
         if p == "/api/auth/session/cli-token":
-            # 客户登录态(hq_session)直接签发 CLI 凭证：一步完成，无需 device 授权。
+            # 客户登录态（网页 Cookie 或小程序 Bearer）直接签发 CLI 凭证。
             # CLI 鉴权只认 cli_device_grants 的 issued 行，因此直接写入 issued grant。
-            row = self._cookie_user()
+            row = self._user()
             if not row:
                 return self._cli_send(401, {"detail": "请先登录黄雀账号"})
             scopes = tuple(hq_cli_api.SCOPES)

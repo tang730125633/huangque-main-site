@@ -149,6 +149,26 @@ class HQCLIAPITests(unittest.TestCase):
     def _agent_headers(self):
         return {"X-HQ-Internal-Token": self.auth.INTERNAL_TOKEN}
 
+    def test_session_cli_token_accepts_cookie_and_account_bearer(self):
+        status, cookie_payload = self._request(
+            "/api/auth/session/cli-token", {}, browser=self.browser,
+        )
+        self.assertEqual(200, status, cookie_payload)
+        web_token = self.auth.issue_token("alice", ttl=120)
+        status, bearer_payload = self._request(
+            "/api/auth/session/cli-token", {}, token=web_token,
+        )
+        self.assertEqual(200, status, bearer_payload)
+        self.assertEqual("alice", bearer_payload["username"])
+        self.assertTrue(bearer_payload["access_token"])
+        self.assertEqual(401, self._request(
+            "/api/auth/session/cli-token", {}, token=bearer_payload["access_token"],
+        )[0])
+        card_token = self.auth.issue_token("alice", ttl=120, scope="card")
+        self.assertEqual(401, self._request(
+            "/api/auth/session/cli-token", {}, token=card_token,
+        )[0])
+
     def _enable_creator_bridge(self):
         self.auth.feature_flags.init_db()
         return self.auth.feature_flags.set_enabled("creator_agent_v1", True, "test")

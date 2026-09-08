@@ -20,6 +20,7 @@ INTERNAL_AUTH_PATHS = (
     "/api/auth/admin/password/reset",
     "/api/auth/admin/recharge/review",
     "/api/auth/admin/recharge/orders",
+    "/api/auth/session/cli-token",
 )
 
 
