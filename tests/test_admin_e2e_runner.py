@@ -1856,6 +1856,22 @@ class AdminE2ERunnerTests(unittest.TestCase):
         self.assertIn("/api/gen/dl?", request.full_url)
         self.assertEqual(request.get_header("X-hq-internal-token"), "internal-test-token")
 
+    def test_collect_video_list_evidence_never_downloads_remote_artifact(self):
+        with patch.object(self.admin, "_download_proxy_evidence") as download:
+            evidence = self.admin._structured_asset_evidence({
+                "id": 89,
+                "kind": "collect",
+                "collect_mode": "video",
+                "result_json": json.dumps({
+                    "video": {"play_url": "https://example.com/video.mp4"},
+                }),
+            }, allow_remote=False, asset={"id": 11, "kind": "collect", "stage": "material"})
+
+        download.assert_not_called()
+        self.assertFalse(evidence["delivery_verified"])
+        self.assertTrue(evidence["output_reference_present"])
+        self.assertEqual(evidence["artifact_check"], "reference_only")
+
     def test_collect_video_concurrent_check_is_waiting_not_failed(self):
         entered = threading.Event()
         release = threading.Event()

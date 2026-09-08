@@ -200,6 +200,26 @@ SERVICES = [
     },
 ]
 
+SERVICE_MONITOR_INTERVAL_SECONDS = max(
+    15, int(os.environ.get("HQ_SERVICE_MONITOR_INTERVAL_SECONDS", "60"))
+)
+SERVICE_MONITOR_FAILURE_THRESHOLD = max(
+    2, int(os.environ.get("HQ_SERVICE_MONITOR_FAILURE_THRESHOLD", "2"))
+)
+E2E_FRESHNESS_SECONDS = max(
+    3600, int(os.environ.get("HQ_E2E_FRESHNESS_SECONDS", str(24 * 60 * 60)))
+)
+_SERVICE_MONITOR_LOCK = threading.Lock()
+_SERVICE_MONITOR_CYCLE_LOCK = threading.Lock()
+_SERVICE_MONITOR_STATE = {
+    "started_at": 0,
+    "last_cycle_at": 0,
+    "last_cycle_duration_ms": 0,
+    "services": [],
+    "acceptance": {},
+}
+_SERVICE_MONITOR_STARTED = False
+
 # 服务器实际在用的全部外部 API。
 # 名称按真实 API 提供方统一；features 负责映射用户在前端看到的功能名。
 KEY_GROUPS = [
@@ -3043,7 +3063,12 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
         for j in call_logs(days, source_limit)["items"]:
             t = time.localtime(j["created_at"]) if j["created_at"] else None
             key = (t.tm_year, t.tm_mon, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec) if t else (0, 0, 0, 0, 0, 0)
-            cat = "ok" if j["status"] == "done" else ("fail" if j["status"] == "error" else "running")
+            job_status = str(j.get("status") or "unknown").lower()
+            cat = (
+                "ok" if job_status in _TASK_DONE_STATES
+                else "fail" if job_status in _TASK_FAILED_STATES
+                else "running"
+            )
             merged.append(
                 (
                     key,
@@ -3062,6 +3087,21 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
                         "ua": "",
                         "request_id": "",
                         "hq_code": "",
+                        "task_id": j.get("task_id") or str(j["id"]),
+                        "channel": j.get("channel") or "",
+                        "provider": j.get("provider") or "",
+                        "route": j.get("route") or "",
+                        "model": j.get("model") or "",
+                        "provider_task_id": j.get("provider_task_id") or "",
+                        "correlation_id": j.get("correlation_id") or "task:%s" % j["id"],
+                        "result_reference": bool(j.get("result_reference")),
+                        "delivery_verified": bool(j.get("delivery_verified")),
+                        "artifact_check": j.get("artifact_check") or "not_recorded",
+                        "refunded": int(j.get("refunded") or 0),
+                        "error": j.get("error") or "",
+                        "evidence_tone": j.get("evidence_tone") or "neutral",
+                        "evidence_label": j.get("evidence_label") or "证据未采集",
+                        "stages": list(j.get("stages") or []),
                     },
                 )
             )
@@ -3072,7 +3112,14 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
             continue
         if attributed and it.get("user") in (None, "", "-"):
             continue
-        if q and all(q not in (it.get(field) or "") for field in ("path", "user", "func", "request_id", "hq_code")):
+        if q and all(
+            q.lower() not in str(it.get(field) or "").lower()
+            for field in (
+                "path", "user", "func", "request_id", "hq_code", "task_id",
+                "channel", "provider", "route", "model", "provider_task_id",
+                "correlation_id",
+            )
+        ):
             continue
         matching.append(it)
     total = len(matching)
@@ -3083,6 +3130,22 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
         "offset": offset,
         "total": total,
         "days": days,
+        "summary": {
+            "total": total,
+            "done": sum(item.get("cat") == "ok" for item in matching),
+            "failed": sum(item.get("cat") == "fail" for item in matching),
+            "running": sum(item.get("cat") == "running" for item in matching),
+            "evidence_gaps": sum(
+                item.get("source") == "job"
+                and item.get("evidence_tone") in {"warn", "neutral"}
+                for item in matching
+            ),
+            "evidence_unclosed": sum(
+                item.get("source") == "job"
+                and item.get("evidence_tone") != "ok"
+                for item in matching
+            ),
+        },
         "error_catalog": error_contract.public_catalog(),
     }
     if message and source != "job":
@@ -3127,8 +3190,295 @@ def probe_service(svc):
     return out
 
 
+def acceptance_freshness(now=None):
+    """Read stored acceptance results without launching paid or generating calls."""
+    now = int(now or time.time())
+    operation_ids = []
+    for page in function_registry.list_pages():
+        for feature in page.get("functions", []):
+            for mode in feature.get("modes", []):
+                if (mode.get("validation") or {}).get("supported"):
+                    operation_ids.append(str(mode.get("key") or ""))
+    operation_ids = sorted({item for item in operation_ids if item})
+    latest = {}
+    try:
+        with closing(db()) as connection:
+            rows = connection.execute(
+                """SELECT current.operation_id,current.status,current.updated_at
+                   FROM admin_e2e_runs AS current
+                   WHERE NOT EXISTS (
+                       SELECT 1 FROM admin_e2e_runs AS newer
+                       WHERE newer.operation_id=current.operation_id
+                         AND (newer.created_at>current.created_at
+                              OR (newer.created_at=current.created_at
+                                  AND newer.rowid>current.rowid))
+                   )"""
+            ).fetchall()
+        latest = {str(row["operation_id"]): row for row in rows}
+    except sqlite3.Error:
+        return {
+            "available": False,
+            "total": len(operation_ids),
+            "fresh": 0,
+            "due": len(operation_ids),
+            "active": 0,
+            "items": [],
+            "detail": "验收记录暂不可读；未自动执行收费测试",
+        }
+    items = []
+    for operation_id in operation_ids:
+        row = latest.get(operation_id)
+        status = str(row["status"] or "") if row else "missing"
+        updated_at = int(row["updated_at"] or 0) if row else 0
+        if status in E2E_ACTIVE_STATUSES - {"unknown"}:
+            freshness = "active"
+        elif status == "completed" and updated_at >= now - E2E_FRESHNESS_SECONDS:
+            freshness = "fresh"
+        elif status == "completed":
+            freshness = "stale"
+        elif row:
+            freshness = "failed"
+        else:
+            freshness = "missing"
+        items.append({
+            "operation_id": operation_id,
+            "status": status,
+            "freshness": freshness,
+            "updated_at": updated_at,
+            "manual_confirmation_required": freshness != "fresh",
+        })
+    return {
+        "available": True,
+        "total": len(items),
+        "fresh": sum(item["freshness"] == "fresh" for item in items),
+        "due": sum(item["freshness"] in {"stale", "failed", "missing"} for item in items),
+        "active": sum(item["freshness"] == "active" for item in items),
+        "items": items,
+        "detail": "这里只检查历史验收是否过期；可能扣点的全流程测试必须由管理员确认",
+    }
+
+
+def _persisted_open_service_incidents():
+    try:
+        with closing(db()) as connection:
+            rows = connection.execute(
+                """SELECT action,target FROM admin_audit
+                   WHERE action IN ('service.incident.open','service.incident.recovered')
+                   ORDER BY created_at DESC,id DESC"""
+            ).fetchall()
+    except sqlite3.Error:
+        return set()
+    latest = {}
+    for row in rows:
+        latest.setdefault(str(row["target"]), str(row["action"]))
+    return {
+        key for key, action in latest.items()
+        if action == "service.incident.open"
+    }
+
+
+def run_service_monitor_cycle(probe=None, services=None, now=None, record_events=True):
+    with _SERVICE_MONITOR_CYCLE_LOCK:
+        return _run_service_monitor_cycle(
+            probe=probe, services=services, now=now, record_events=record_events,
+        )
+
+
+def _run_service_monitor_cycle(probe=None, services=None, now=None, record_events=True):
+    """Probe base services and record only confirmed incident transitions."""
+    now = int(now or time.time())
+    started = time.monotonic()
+    probe = probe or probe_service
+    persisted_open = _persisted_open_service_incidents() if record_events else set()
+    checked = []
+    for service in (services or SERVICES):
+        try:
+            checked.append(probe(service))
+        except Exception as exc:
+            item = dict(service)
+            item.pop("health_url", None)
+            item.update({
+                "online": False,
+                "status": "offline",
+                "checked_at": now,
+                "error": _sanitize_task_error(exc),
+            })
+            checked.append(item)
+
+    transitions = []
+    with _SERVICE_MONITOR_LOCK:
+        previous = {
+            str(item.get("key")): item
+            for item in _SERVICE_MONITOR_STATE.get("services", [])
+        }
+        monitored = []
+        for raw in checked:
+            item = dict(raw)
+            key = str(item.get("key") or "unknown")
+            before = previous.get(key) or {}
+            was_incident = bool(before.get("incident_open")) or (
+                not before and key in persisted_open
+            )
+            if item.get("online"):
+                failures = 0
+                passes = int(before.get("consecutive_passes") or 0) + 1
+                incident_open = False
+                monitor_status = "healthy"
+                monitor_label = "基础存活检查通过"
+                if was_incident:
+                    transitions.append((
+                        "service.incident.recovered", key,
+                        {
+                            "service": item.get("name") or key,
+                            "latency_ms": item.get("latency_ms"),
+                            "confirmed_by": passes,
+                        },
+                    ))
+            else:
+                failures = int(before.get("consecutive_failures") or 0) + 1
+                passes = 0
+                incident_open = was_incident or failures >= SERVICE_MONITOR_FAILURE_THRESHOLD
+                monitor_status = "incident" if incident_open else "confirming"
+                monitor_label = (
+                    "连续检查失败，异常已确认"
+                    if incident_open else "首次失败，等待下一轮确认"
+                )
+                if incident_open and not was_incident:
+                    transitions.append((
+                        "service.incident.open", key,
+                        {
+                            "service": item.get("name") or key,
+                            "consecutive_failures": failures,
+                            "error": _sanitize_task_error(item.get("error")),
+                        },
+                    ))
+            item.update({
+                "consecutive_failures": failures,
+                "consecutive_passes": passes,
+                "incident_open": incident_open,
+                "monitor_status": monitor_status,
+                "monitor_label": monitor_label,
+                "evidence_scope": "base_service",
+                "functional_delivery_verified": False,
+            })
+            monitored.append(item)
+        acceptance = acceptance_freshness(now)
+        _SERVICE_MONITOR_STATE.update({
+            "started_at": int(_SERVICE_MONITOR_STATE.get("started_at") or now),
+            "last_cycle_at": now,
+            "last_cycle_duration_ms": int((time.monotonic() - started) * 1000),
+            "services": monitored,
+            "acceptance": acceptance,
+        })
+        snapshot = {
+            key: value for key, value in _SERVICE_MONITOR_STATE.items()
+            if key != "services"
+        }
+        snapshot["services"] = [dict(item) for item in monitored]
+
+    if record_events:
+        for action, target, detail in transitions:
+            try:
+                _admin_audit("system:health-monitor", action, target, detail)
+            except sqlite3.Error:
+                pass
+    snapshot["summary"] = {
+        "total": len(snapshot["services"]),
+        "base_online": sum(bool(item.get("online")) for item in snapshot["services"]),
+        "confirming": sum(item.get("monitor_status") == "confirming" for item in snapshot["services"]),
+        "incidents": sum(bool(item.get("incident_open")) for item in snapshot["services"]),
+        "functional_delivery_verified": False,
+    }
+    snapshot["interval_seconds"] = SERVICE_MONITOR_INTERVAL_SECONDS
+    snapshot["failure_threshold"] = SERVICE_MONITOR_FAILURE_THRESHOLD
+    return snapshot
+
+
+def service_monitor_status():
+    with _SERVICE_MONITOR_LOCK:
+        services = [dict(item) for item in _SERVICE_MONITOR_STATE.get("services", [])]
+        snapshot = {
+            key: value for key, value in _SERVICE_MONITOR_STATE.items()
+            if key != "services"
+        }
+    snapshot["services"] = services
+    snapshot["summary"] = {
+        "total": len(services),
+        "base_online": sum(bool(item.get("online")) for item in services),
+        "confirming": sum(item.get("monitor_status") == "confirming" for item in services),
+        "incidents": sum(bool(item.get("incident_open")) for item in services),
+        "functional_delivery_verified": False,
+    }
+    snapshot["interval_seconds"] = SERVICE_MONITOR_INTERVAL_SECONDS
+    snapshot["failure_threshold"] = SERVICE_MONITOR_FAILURE_THRESHOLD
+    return snapshot
+
+
+def service_monitor_events(limit=20):
+    try:
+        with closing(db()) as connection:
+            rows = connection.execute(
+                """SELECT action,target,detail,created_at FROM admin_audit
+                   WHERE action IN ('service.incident.open','service.incident.recovered')
+                   ORDER BY created_at DESC,id DESC LIMIT ?""",
+                (max(1, min(int(limit or 20), 100)),),
+            ).fetchall()
+    except sqlite3.Error:
+        return []
+    events = []
+    for row in rows:
+        try:
+            detail = json.loads(row["detail"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            detail = {}
+        events.append({
+            "event": "recovered" if row["action"].endswith("recovered") else "opened",
+            "service_key": row["target"],
+            "service": detail.get("service") or row["target"],
+            "detail": detail,
+            "created_at": int(row["created_at"] or 0),
+        })
+    return events
+
+
+def service_health_monitor():
+    snapshot = service_monitor_status()
+    if not snapshot.get("last_cycle_at"):
+        snapshot = run_service_monitor_cycle(record_events=False)
+    snapshot["events"] = service_monitor_events()
+    return snapshot
+
+
+def service_monitor_loop(stop_event):
+    while not stop_event.is_set():
+        try:
+            run_service_monitor_cycle()
+        except Exception:
+            pass
+        stop_event.wait(SERVICE_MONITOR_INTERVAL_SECONDS)
+
+
+def start_service_monitor():
+    global _SERVICE_MONITOR_STARTED
+    with _SERVICE_MONITOR_LOCK:
+        if _SERVICE_MONITOR_STARTED:
+            return None
+        _SERVICE_MONITOR_STARTED = True
+    thread = threading.Thread(
+        target=service_monitor_loop,
+        args=(threading.Event(),),
+        daemon=True,
+        name="admin-service-health-monitor",
+    )
+    thread.start()
+    return thread
+
+
 def service_status():
-    return [probe_service(svc) for svc in SERVICES]
+    snapshot = service_monitor_status()
+    if not snapshot.get("services"):
+        snapshot = run_service_monitor_cycle(record_events=False)
+    return snapshot["services"]
 
 
 def load_channels():
@@ -3532,7 +3882,33 @@ def _download_proxy_evidence(job_id, video):
     return status == "passed", detail
 
 
-def _structured_asset_evidence(row):
+_STRUCTURED_ASSET_UNSET = object()
+
+
+def _structured_asset_records(job_ids):
+    """Bulk-load the persisted structured asset row for task list evidence."""
+    job_ids = sorted({int(job_id) for job_id in job_ids if job_id})
+    if not job_ids or not ASSET_DB.exists():
+        return {}, None
+    placeholders = ",".join("?" for _ in job_ids)
+    try:
+        with closing(sqlite3.connect(str(ASSET_DB), timeout=10)) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute(
+                """SELECT id,job_id,kind,stage FROM assets
+                   WHERE job_id IN (%s) AND deleted=0
+                   ORDER BY id DESC""" % placeholders,
+                tuple(job_ids),
+            ).fetchall()
+        records = {}
+        for row in rows:
+            records.setdefault(int(row["job_id"]), dict(row))
+        return records, None
+    except sqlite3.Error:
+        return {}, "结构化成品证据读取失败"
+
+
+def _structured_asset_evidence(row, allow_remote=True, asset=_STRUCTURED_ASSET_UNSET):
     kind = str(row["kind"] or "").lower()
     if kind not in {"collect", "leads", "copy", "breakdown", "canvas_agent"}:
         return None
@@ -3556,7 +3932,7 @@ def _structured_asset_evidence(row):
         video, copy = result.get("video") or {}, result.get("copy") or {}
         if mode == "video":
             valid = bool(video.get("play_url"))
-            if valid:
+            if valid and allow_remote:
                 valid, download_detail = _download_proxy_evidence(row["id"], video)
                 download_pending = valid is None
         elif mode == "transcript":
@@ -3599,8 +3975,9 @@ def _structured_asset_evidence(row):
                  and isinstance(plan.get("actions"), list)
                  and plan.get("requires_confirmation") is True
                  and {"text", "image"}.issubset(draft_modes))
-    asset = None
-    if kind != "canvas_agent" and ASSET_DB.exists():
+    asset_supplied = asset is not _STRUCTURED_ASSET_UNSET
+    asset = (asset or None) if asset_supplied else None
+    if asset is None and not asset_supplied and kind != "canvas_agent" and ASSET_DB.exists():
         try:
             with closing(sqlite3.connect(str(ASSET_DB), timeout=10)) as connection:
                 connection.row_factory = sqlite3.Row
@@ -3611,11 +3988,16 @@ def _structured_asset_evidence(row):
         except sqlite3.Error:
             asset = None
     requires_asset = kind != "canvas_agent"
+    reference_only = bool(
+        kind == "collect" and mode == "video" and valid and not allow_remote
+    )
     return {
-        "delivery_verified": bool(valid and (asset or not requires_asset)),
+        "delivery_verified": bool(valid and (asset or not requires_asset) and not reference_only),
         "artifact_check": ("checking" if download_pending else (
             "download_proxy" if valid and asset and kind == "collect"
                             and str(row["collect_mode"] or "").lower() == "video"
+                            and allow_remote
+                            else "reference_only" if reference_only
                             else "structured_result" if valid and not requires_asset
                             else "structured_asset") if valid and (asset or not requires_asset) else (
             "invalid_structured" if not valid else "missing"
@@ -3628,7 +4010,8 @@ def _structured_asset_evidence(row):
     }
 
 
-def _job_evidence(row, asset=None):
+def _job_evidence(row, asset=None, allow_remote=True,
+                  structured_asset=_STRUCTURED_ASSET_UNSET):
     asset = asset or {}
     status = str(row["status"] or "unknown").lower()
     cost = int(row["cost"] or 0)
@@ -3685,7 +4068,9 @@ def _job_evidence(row, asset=None):
         "error": str(row["error"] or asset.get("error") or "")[:300],
     })
     if status in {"done", "completed"}:
-        structured = _structured_asset_evidence(row)
+        structured = _structured_asset_evidence(
+            row, allow_remote=allow_remote, asset=structured_asset,
+        )
         if structured is not None:
             evidence.update(structured)
     return evidence
@@ -3740,7 +4125,7 @@ def _e2e_job_evidence(job_id):
         asset = dict(assets.get(int(job_id)) or {})
         asset["route_provider"] = row["route_provider"]
         asset["voice_scope"] = row["voice_scope"]
-        evidence = _job_evidence(row, asset)
+        evidence = _job_evidence(row, asset, allow_remote=True)
         if row["kind"] in {
             "video", "tryon", "xiaole_video", "sora_video", "cinematic",
             "script_to_video",
@@ -6504,7 +6889,7 @@ def job_stats(days=7):
             else assets.get(int(row["id"]))
         )
         by_operation[operation]["latest"] = _job_evidence(
-            row, asset
+            row, asset, allow_remote=False
         )
     compose, compose_error = _compose_operation_stat(since)
     if compose_error:
@@ -6632,6 +7017,128 @@ _SHORT_DRAMA_PROVIDER_NAMES = {
 }
 
 
+_TASK_RUNNING_STATES = {"pending", "queued", "running", "processing", "submitted"}
+_TASK_DONE_STATES = {"done", "completed", "succeeded", "ready"}
+_TASK_FAILED_STATES = {"error", "failed", "refunded"}
+_TASK_SECRET_TEXT_RE = re.compile(
+    r"(?i)(api[_ -]?key|token|secret|password|passwd|pwd|credential|authorization)"
+    r"(\s*[:=]\s*)([^\s,;&]+)"
+)
+
+
+def _sanitize_task_error(value):
+    """Return a compact operator-facing failure reason without common secrets."""
+    text = str(value or "").replace("\r", " ").replace("\n", " ").strip()
+    return _TASK_SECRET_TEXT_RE.sub(r"\1\2***", text)[:240]
+
+
+def _task_runtime_record(item):
+    """Return the single task-observability interface used by admin list views.
+
+    Every stage is based on evidence stored on the same task. A result reference is
+    deliberately not treated as verified delivery. Local files and structured
+    assets reuse the same verifier as the full acceptance flow; remote downloads
+    remain an explicitly triggered acceptance action.
+    """
+    status = str(item.get("status") or "unknown").lower()
+    route = str(item.get("provider") or item.get("channel") or "").strip()
+    model = str(item.get("model") or "").strip()
+    provider_task_id = str(item.get("provider_task_id") or "").strip()[:160]
+    result_reference = bool(item.get("result_reference"))
+    delivery_verified = bool(item.get("delivery_verified"))
+    artifact_check = str(item.get("artifact_check") or "not_recorded")
+    correlation_id = str(item.get("correlation_id") or "task:%s" % item.get("id")).strip()[:160]
+    error = _sanitize_task_error(item.get("error"))
+    delivery_failed = (
+        status in _TASK_DONE_STATES
+        and artifact_check in {"missing", "decode_failed", "invalid_structured"}
+    )
+    delivery_details = {
+        "decodable": "成品文件存在、非空且格式可解码",
+        "file_exists": "成品文件存在且非空",
+        "structured_asset": "结构化结果有效且已登记客户资产",
+        "structured_result": "结构化结果内容完整",
+        "download_proxy": "已通过下载代理取得完整、可解码的视频",
+        "checking": "成品正在核验，当前不能判定已交付",
+        "reference_only": "已有远程成品引用；需人工发起完整验收后才能确认可下载与可解码",
+        "missing": "任务已完成，但找不到对应成品文件或客户资产",
+        "decode_failed": "成品文件存在，但格式读取或解码失败",
+        "invalid_structured": "任务已完成，但结构化结果内容不完整",
+        "not_recorded": "未采集可核验的成品证据",
+    }
+    stages = [
+        {
+            "key": "accepted", "name": "业务受理", "state": "passed",
+            "detail": "任务记录 #%s 已建立；关联号 %s" % (item.get("id"), correlation_id),
+        },
+        {
+            "key": "route", "name": "选择线路",
+            "state": "passed" if route else "unknown",
+            "detail": route if route else "未采集实际渠道，不能推断线路",
+        },
+        {
+            "key": "provider", "name": "供应商接单",
+            "state": "passed" if provider_task_id else "unknown",
+            "detail": ("供应商任务号 " + provider_task_id)
+            if provider_task_id else "未采集供应商任务号，可能不适用或尚未接单",
+        },
+        {
+            "key": "generation", "name": "生成终态",
+            "state": (
+                "passed" if status in _TASK_DONE_STATES
+                else "failed" if status in _TASK_FAILED_STATES
+                else "running" if status in _TASK_RUNNING_STATES
+                else "unknown"
+            ),
+            "detail": "任务状态 " + status + ((" · " + error) if error else ""),
+        },
+        {
+            "key": "delivery", "name": "成品交付",
+            "state": (
+                "passed" if delivery_verified
+                else "failed" if delivery_failed
+                else "recorded" if result_reference or artifact_check == "checking"
+                else "unknown"
+            ),
+            "detail": str(item.get("delivery_detail") or delivery_details.get(
+                artifact_check, "成品证据状态：" + artifact_check,
+            )),
+        },
+    ]
+    if status in _TASK_FAILED_STATES:
+        tone, label = "fail", "任务失败"
+    elif status in _TASK_RUNNING_STATES:
+        tone, label = "running", "执行中"
+    elif status in _TASK_DONE_STATES and delivery_verified:
+        tone, label = "ok", "完成 · 成品已核验"
+    elif delivery_failed:
+        tone, label = "fail", "完成 · 成品核验失败"
+    elif status in _TASK_DONE_STATES and result_reference:
+        tone, label = "warn", "完成 · 成品未核验"
+    elif status in _TASK_DONE_STATES:
+        tone, label = "warn", "完成 · 缺少成品证据"
+    elif provider_task_id:
+        tone, label = "neutral", "供应商已接单"
+    elif route:
+        tone, label = "neutral", "线路已记录"
+    else:
+        tone, label = "neutral", "任务已受理"
+    return {
+        "task_id": str(item.get("id") or ""),
+        "route": route,
+        "model": model,
+        "provider_task_id": provider_task_id,
+        "correlation_id": correlation_id,
+        "result_reference": result_reference,
+        "delivery_verified": delivery_verified,
+        "artifact_check": artifact_check,
+        "error": error,
+        "evidence_tone": tone,
+        "evidence_label": label,
+        "stages": stages,
+    }
+
+
 def _short_drama_provider_call_logs(conn, since, limit):
     """读取不经过通用 jobs 表的短剧供应商镜头任务。"""
     exists = conn.execute(
@@ -6680,6 +7187,12 @@ def _short_drama_provider_call_logs(conn, since, limit):
                 if created_at and updated_at >= created_at else None
             ),
             "path_label": "短剧任务 #%s" % row["id"],
+            "channel": "",
+            "provider": provider,
+            "model": "",
+            "provider_task_id": "",
+            "result_reference": False,
+            "refunded": 0,
         })
     return items
 
@@ -6692,6 +7205,11 @@ def call_logs(days=7, limit=200):
     since = int(time.time()) - days * 86400
     with closing(sqlite3.connect(str(JOB_DB), timeout=10)) as c:
         c.row_factory = sqlite3.Row
+        columns = {row["name"] for row in c.execute("PRAGMA table_info(jobs)")}
+        result_sql = "result" if "result" in columns else "NULL"
+        refunded_sql = "COALESCE(refunded,0)" if "refunded" in columns else "0"
+        error_sql = "COALESCE(error,'')" if "error" in columns else "''"
+        submission_sql = "COALESCE(submission_key,'')" if "submission_key" in columns else "''"
         # substr: payload 整条可达几百 KB(含 base64 图),只取识别功能名所需的前缀。
         # 依赖 jobs(created_at) 索引(idx_jobs_created,2026-07-09 已建),否则 310MB 全表扫要 2 秒
         rows = c.execute(
@@ -6716,18 +7234,74 @@ def call_logs(days=7, limit=200):
                       CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.provider'),'')) ELSE '' END AS provider,
                       CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.model'),'')) ELSE '' END AS model,
                       CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.variant'),'')) ELSE '' END AS variant,
-                      CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.voice_scope'),'')) ELSE '' END AS voice_scope,
-                      CASE WHEN json_valid(payload) AND json_type(payload,'$.mask')='text' THEN 1 ELSE 0 END AS mask_present
+                       CASE WHEN json_valid(payload) THEN LOWER(COALESCE(json_extract(payload,'$.voice_scope'),'')) ELSE '' END AS voice_scope,
+                       CASE WHEN json_valid(payload) THEN COALESCE(
+                            json_extract(payload,'$.request_id'),
+                            json_extract(payload,'$.client_request_id'),
+                            json_extract(payload,'$.idempotency_key'),'') ELSE '' END AS correlation_id,
+                       %s AS submission_key,
+                       CASE WHEN json_valid(payload) AND json_type(payload,'$.mask')='text' THEN 1 ELSE 0 END AS mask_present,
+                      CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.provider_task_id'),json_extract(%s,'$.request_id'),json_extract(%s,'$.provider_video_id'),json_extract(%s,'$.video_id'),json_extract(%s,'$.provider_avatar_id'),'') ELSE '' END AS provider_task_id,
+                      CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.video_url'),json_extract(%s,'$.image_url'),json_extract(%s,'$.url'),json_extract(%s,'$.urls[0]'),'') ELSE '' END AS result_url,
+                       CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.video_file'),json_extract(%s,'$.image_file'),json_extract(%s,'$.file'),json_extract(%s,'$.files[0]'),'') ELSE '' END AS result_file,
+                       %s AS result_json,
+                       %s AS refunded,
+                       %s AS job_error
                FROM jobs
                WHERE created_at >= ?
                ORDER BY created_at DESC, id DESC
-               LIMIT ?""",
+               LIMIT ?""" % (
+                    submission_sql,
+                    result_sql, result_sql, result_sql, result_sql, result_sql, result_sql,
+                    result_sql, result_sql, result_sql, result_sql, result_sql,
+                    result_sql, result_sql, result_sql, result_sql, result_sql,
+                    result_sql, refunded_sql, error_sql,
+               ),
             (since, limit),
         ).fetchall()
         short_drama_items = _short_drama_provider_call_logs(c, since, limit)
+        idempotency_by_job = {}
+        idempotency_table = c.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='submission_idempotency'"
+        ).fetchone()
+        if idempotency_table:
+            claims = c.execute(
+                """SELECT idem_key,response_json FROM submission_idempotency
+                   WHERE updated_at>=? AND response_json IS NOT NULL
+                   ORDER BY updated_at DESC LIMIT ?""",
+                (since, max(1000, limit * 10)),
+            ).fetchall()
+            for claim in claims:
+                try:
+                    response = json.loads(claim["response_json"] or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                job_ids = []
+                if isinstance(response, dict):
+                    if response.get("job_id") is not None:
+                        job_ids.append(response["job_id"])
+                    if isinstance(response.get("job_ids"), list):
+                        job_ids.extend(response["job_ids"])
+                for job_id in job_ids:
+                    try:
+                        idempotency_by_job.setdefault(int(job_id), str(claim["idem_key"] or ""))
+                    except (TypeError, ValueError):
+                        continue
     short_drama_by_shared_id = {
         str(item["id"]): item for item in short_drama_items
     }
+    row_ids = [int(row["id"]) for row in rows]
+    video_assets, _ = _video_asset_evidence([
+        int(row["id"]) for row in rows
+        if str(row["kind"] or "").lower() not in {
+            "audio", "image", "collect", "leads", "copy", "breakdown", "canvas_agent",
+        }
+    ])
+    audio_assets, _ = _audio_asset_evidence([
+        int(row["id"]) for row in rows
+        if str(row["kind"] or "").lower() == "audio"
+    ])
+    structured_assets, _ = _structured_asset_records(row_ids)
     matched_short_drama_ids = set()
     items = []
     for row in rows:
@@ -6762,8 +7336,38 @@ def call_logs(days=7, limit=200):
         duration = None
         if created_at and updated_at and updated_at >= created_at:
             duration = updated_at - created_at
-        items.append(
-            {
+        evidence_row = dict(row)
+        evidence_row.update({
+            "provider_result_id": row["provider_task_id"],
+            "request_mode": row["mode"],
+            "collect_mode": (
+                str((payload.get("want") or ["comments"])[0]).lower()
+                if isinstance(payload.get("want") or ["comments"], list)
+                else "comments"
+            ),
+            "error": row["job_error"],
+        })
+        media_asset = (
+            audio_assets.get(int(row["id"]))
+            if str(kind).lower() == "audio"
+            else video_assets.get(int(row["id"]))
+        )
+        evidence = _job_evidence(
+            evidence_row,
+            media_asset,
+            allow_remote=False,
+            structured_asset=structured_assets.get(int(row["id"])),
+        )
+        correlation_sources = (
+            (row["correlation_id"], "payload"),
+            (row["submission_key"], "submission"),
+            (idempotency_by_job.get(int(row["id"])), "idempotency"),
+        )
+        correlation_id, correlation_source = next(
+            ((str(value).strip()[:160], source) for value, source in correlation_sources if value),
+            ("task:%s" % row["id"], "task"),
+        )
+        item = {
                 "id": row["id"],
                 "username": row["username"] or "-",
                 "kind": kind,
@@ -6775,13 +7379,27 @@ def call_logs(days=7, limit=200):
                 "updated_at": updated_at,
                 "duration_sec": duration,
                 "path_label": path_label,
+                "channel": str(row["channel"] or ""),
+                "provider": str(row["provider"] or ""),
+                "model": str(row["model"] or ""),
+                "provider_task_id": str(row["provider_task_id"] or ""),
+                "result_reference": bool(evidence.get("output_reference_present")),
+                "delivery_verified": bool(evidence.get("delivery_verified")),
+                "artifact_check": str(evidence.get("artifact_check") or "not_recorded"),
+                "delivery_detail": str(evidence.get("delivery_detail") or ""),
+                "correlation_id": correlation_id or "task:%s" % row["id"],
+                "correlation_source": correlation_source,
+                "refunded": int(row["refunded"] or 0),
+                "error": str(row["job_error"] or ""),
             }
-        )
+        items.append(item)
     items.extend(
         item for item in short_drama_items
         if str(item["id"]) not in matched_short_drama_ids
     )
     items.sort(key=lambda item: (item["created_at"], str(item["id"])), reverse=True)
+    for item in items:
+        item.update(_task_runtime_record(item))
     return {"days": days, "limit": limit, "items": items[:limit]}
 
 
@@ -6968,6 +7586,8 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "service": "huangque-admin"})
         if path == "/api/admin/services":
             return self._send(200, {"items": service_status()})
+        if path == "/api/admin/health-monitor":
+            return self._send(200, service_health_monitor())
         if path == "/api/admin/keys":
             return self._send(200, {"items": key_status()})
         if path == "/api/admin/heygen-oauth/status":
@@ -7183,10 +7803,12 @@ class H(BaseHTTPRequestHandler):
         if path == "/api/admin/dashboard":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             pages = function_registry.list_pages()
+            health_monitor = service_health_monitor()
             return self._send(200, {
                 "ok": True,
                 "user": {"username": user.get("username"), "name": user.get("name"), "role": user.get("role")},
-                "services": service_status(),
+                "services": health_monitor["services"],
+                "health_monitor": health_monitor,
                 "registry_coverage": {
                     "verified": sum(page.get("inventory_status") == "verified" for page in pages),
                     "total": len(pages),
@@ -7195,7 +7817,8 @@ class H(BaseHTTPRequestHandler):
             })
         if path == "/api/admin/overview":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            services = service_status()
+            health_monitor = service_health_monitor()
+            services = health_monitor["services"]
             days = (q.get("days") or ["7"])[0]
             _recover_short_drama_unknown(self._token())
             _resume_short_drama_character_runs(self._token())
@@ -7210,6 +7833,7 @@ class H(BaseHTTPRequestHandler):
                     "ok": True,
                     "user": {"username": user.get("username"), "name": user.get("name"), "role": user.get("role")},
                     "services": services,
+                    "health_monitor": health_monitor,
                     "keys": key_status(),
                     "key_probes": key_probe_status(),
                     "key_probe_monitor": key_probe_monitor_status(),
@@ -7761,5 +8385,6 @@ class H(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     init_db()
     start_key_probe_monitor()
+    start_service_monitor()
     print("huangque-admin on 127.0.0.1:%d" % PORT)
     ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
