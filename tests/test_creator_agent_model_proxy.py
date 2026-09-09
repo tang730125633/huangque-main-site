@@ -13,7 +13,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "server"))
 
 from creator_agent.model_proxy import AccountModelProxy
-from creator_agent.service import CreatorAgentHandler
+from creator_agent.service import AuthClient, CreatorAgentHandler
 
 
 class FakeLease:
@@ -82,6 +82,23 @@ class FakeAuth:
         return {"username": "tang", "account_id": "HQ-1"}
 
 
+class FakeAuthOpener:
+    def __init__(self):
+        self.paths = []
+
+    def open(self, request, timeout=0):
+        self.paths.append(request.full_url)
+        if request.full_url.endswith("/api/auth/me"):
+            raise urllib.error.HTTPError(request.full_url, 401, "unauthorized", {}, io.BytesIO(b"{}"))
+        payload = {
+            "user": {"username": "tang", "account_id": "HQ-1"},
+            "scopes": ["creator-agent:read"],
+        }
+        response = FakeResponse()
+        response.body = io.BytesIO(json.dumps(payload).encode())
+        return response
+
+
 class FakeService:
     def __init__(self):
         self.auth = FakeAuth()
@@ -131,6 +148,17 @@ class AccountModelProxyTests(unittest.TestCase):
         self.assertEqual(upstream.get_header("Authorization"), "Bearer provider-secret")
         self.assertIn(b'data: [DONE]', raw)
         self.assertTrue(self.service.usage_guard.lease.success)
+
+    def test_creator_service_accepts_scoped_cli_login_after_web_auth_rejects_it(self):
+        opener = FakeAuthOpener()
+        user = AuthClient("http://127.0.0.1:8095", opener=opener).verify({
+            "Authorization": "Bearer cli-access-token",
+        })
+        self.assertEqual(user["username"], "tang")
+        self.assertEqual(opener.paths, [
+            "http://127.0.0.1:8095/api/auth/me",
+            "http://127.0.0.1:8095/api/auth/cli/status",
+        ])
 
     def test_rejects_missing_login_and_image_input(self):
         body = {

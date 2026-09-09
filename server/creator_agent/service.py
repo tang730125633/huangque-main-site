@@ -123,7 +123,23 @@ class AuthClient:
             with self.opener.open(request, timeout=self.timeout) as response:
                 result = json.load(response)
         except urllib.error.HTTPError as exc:
-            raise APIError(401 if exc.code in (401, 403) else 502, "登录状态无效", "unauthorized") from exc
+            authorization = str((headers or {}).get("Authorization") or "")
+            if exc.code not in (401, 403) or not authorization.lower().startswith("bearer "):
+                raise APIError(401 if exc.code in (401, 403) else 502, "登录状态无效", "unauthorized") from exc
+            cli_request = urllib.request.Request(
+                _url(self.base_url, "/api/auth/cli/status"),
+                headers={"Authorization": authorization},
+            )
+            try:
+                with self.opener.open(cli_request, timeout=self.timeout) as response:
+                    result = json.load(response)
+            except urllib.error.HTTPError as cli_exc:
+                raise APIError(401, "登录状态无效", "unauthorized") from cli_exc
+            except (urllib.error.URLError, TimeoutError, ValueError) as cli_exc:
+                raise APIError(503, "账号服务暂不可用", "auth_unavailable") from cli_exc
+            scopes = set(result.get("scopes") or []) if isinstance(result, dict) else set()
+            if "creator-agent:read" not in scopes:
+                raise APIError(403, "当前 CLI 授权缺少 Creator Agent 权限", "insufficient_scope")
         except (urllib.error.URLError, TimeoutError, ValueError) as exc:
             raise APIError(503, "账号服务暂不可用", "auth_unavailable") from exc
         user = result.get("user") if isinstance(result, dict) else None
