@@ -3107,7 +3107,12 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
             )
 
     matching = []
-    for key, it in sorted(merged, key=lambda x: x[0], reverse=True):
+    # Keep every active task ahead of newer terminal/request rows so pagination
+    # cannot hide work that still needs operator attention.
+    for key, it in sorted(
+            merged,
+            key=lambda x: (x[1].get("cat") == "running", x[0]),
+            reverse=True):
         if category and it["cat"] != category:
             continue
         if attributed and it.get("user") in (None, "", "-"):
@@ -6627,7 +6632,8 @@ def _compose_operation_stat(since):
             error_sql = "COALESCE(error,'')" if "error" in columns else "''"
             rows = connection.execute(
                 """SELECT id,status,output_file,output_asset_id,created_at,updated_at,%s AS error
-                   FROM video_compose_projects WHERE created_at>=?
+                   FROM video_compose_projects
+                   WHERE created_at>=? OR status NOT IN ('completed','failed','refunded')
                    ORDER BY created_at DESC""" % error_sql,
                 (since,),
             ).fetchall()
@@ -6687,7 +6693,8 @@ def _character_reference_operation_stat(since):
             rows = connection.execute(
                 """SELECT job_id,status,error,created_at,updated_at
                    FROM short_drama_character_reference_jobs
-                   WHERE created_at>=? ORDER BY created_at DESC""",
+                   WHERE created_at>=? OR status IN ('linked','ready')
+                   ORDER BY created_at DESC""",
                 (since,),
             ).fetchall()
     except sqlite3.Error:
@@ -6726,12 +6733,15 @@ def _short_drama_shot_operation_stat(since):
                     "SELECT 1 FROM sqlite_master WHERE type='table' "
                     "AND name='short_drama_provider_shot_jobs'").fetchone():
                 return None, None
+            running_states = sorted(_TASK_RUNNING_STATES)
+            running_marks = ",".join("?" for _ in running_states)
             rows = connection.execute(
                 """SELECT j.*,a.state AS attempt_state
                    FROM short_drama_provider_shot_jobs j
                    LEFT JOIN short_drama_provider_shot_attempts a ON a.job_id=j.id
-                   WHERE j.created_at>=? ORDER BY j.created_at DESC""",
-                (since,),
+                   WHERE j.created_at>=? OR j.status IN (%s)
+                   ORDER BY j.created_at DESC""" % running_marks,
+                (since, *running_states),
             ).fetchall()
     except sqlite3.Error:
         return None, "短剧逐镜证据读取失败"
@@ -6880,14 +6890,16 @@ def job_stats(days=7):
                               CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.video_file'),json_extract(%s,'$.image_file'),json_extract(%s,'$.file'),json_extract(%s,'$.files[0]'),'') ELSE '' END AS result_file,
                               CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.provider_task_id'),json_extract(%s,'$.request_id'),json_extract(%s,'$.provider_video_id'),json_extract(%s,'$.video_id'),json_extract(%s,'$.provider_avatar_id'),'') ELSE '' END AS provider_result_id,
                               %s AS result_json
-                       FROM jobs WHERE created_at>=? ORDER BY created_at DESC""" % (
+                       FROM jobs
+                       WHERE created_at>=? OR status IN (%s)
+                       ORDER BY created_at DESC""" % (
                            refunded_sql, error_sql,
                            result_sql, result_sql, result_sql, result_sql, result_sql,
                            result_sql, result_sql, result_sql, result_sql, result_sql,
                            result_sql, result_sql, result_sql, result_sql, result_sql, result_sql,
-                           result_sql,
+                           result_sql, running_marks,
                        ),
-                    (since,),
+                    (since, *running_states),
                 ).fetchall()
         except sqlite3.Error:
             evidence_errors.append("任务证据读取失败")
@@ -7286,6 +7298,11 @@ def _task_runtime_record(item):
         or item.get("correlation_source") == "task",
     )
     error = _sanitize_task_error(item.get("error"))
+    refunded = int(item.get("refunded") or 0)
+    refund_detail = (
+        " · 退款待确认" if refunded == 2
+        else " · 已退款" if refunded == 1 else ""
+    )
     delivery_failed = (
         status in _TASK_DONE_STATES
         and artifact_check in {"missing", "decode_failed", "invalid_structured"}
@@ -7327,7 +7344,7 @@ def _task_runtime_record(item):
                 else "running" if status in _TASK_RUNNING_STATES
                 else "unknown"
             ),
-            "detail": "任务状态 " + status + ((" · " + error) if error else ""),
+            "detail": "任务状态 " + status + refund_detail + ((" · " + error) if error else ""),
         },
         {
             "key": "delivery", "name": "成品交付",
@@ -7343,7 +7360,11 @@ def _task_runtime_record(item):
         },
     ]
     if status in _TASK_FAILED_STATES:
-        tone, label = "fail", "任务失败"
+        tone, label = "fail", (
+            "任务失败 · 退款待确认" if refunded == 2
+            else "任务失败 · 已退款" if refunded == 1
+            else "任务失败"
+        )
     elif status in _TASK_RUNNING_STATES:
         tone, label = "running", "执行中"
     elif status in _TASK_DONE_STATES and delivery_verified:

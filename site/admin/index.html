@@ -1149,6 +1149,8 @@
         route.push(x.route?'<span class="recorded">线路 '+esc(x.route)+'</span>':'<span>线路未采集</span>');
         route.push(x.model?'<span class="recorded">模型 '+esc(x.model)+'</span>':'<span>模型未采集</span>');
         if(x.provider_task_id)route.push('<span class="recorded" title="'+esc(x.provider_task_id)+'">供应商单号 '+esc(String(x.provider_task_id).slice(0,18))+'</span>');
+        if(Number(x.refunded)===2)route.push('<span class="recorded">退款待确认</span>');
+        if(Number(x.refunded)===1)route.push('<span class="recorded">已退款</span>');
       }else{
         if(x.hq_code)route.push('<span class="recorded">'+esc(x.hq_code)+'</span>');
         if(x.method)route.push('<span>'+esc(x.method)+'</span>');

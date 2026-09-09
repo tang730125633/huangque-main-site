@@ -711,7 +711,7 @@ class FunctionRegistryTests(unittest.TestCase):
             item for item in stats["by_operation"]
             if item["operation"] == "short_drama.live_action.shot_video"
         )
-        self.assertEqual((shot["total"], shot["running"]), (1, 1))
+        self.assertEqual((shot["total"], shot["running"]), (2, 2))
         self.assertEqual(shot["latest"]["provider_task_id"], "123456…7890")
         self.assertIn("q-signature=***", shot["latest"]["result_url"])
         serialized = json.dumps(shot, ensure_ascii=False)
@@ -744,6 +744,10 @@ class FunctionRegistryTests(unittest.TestCase):
         self.assertEqual(detailed["live"]["oldest_running_at"], old)
         self.assertEqual(summary["live"]["running"], 1)
         self.assertEqual(summary["live"]["oldest_running_at"], old)
+        stale_kind = next(
+            item for item in detailed["by_kind"] if item["kind"] == "xiaole_video"
+        )
+        self.assertEqual(stale_kind["running"], 1)
 
     def test_dashboard_includes_provider_only_tasks_refunds_and_deduplicates_shared_jobs(self):
         now = int(time.time())

@@ -312,9 +312,28 @@ class RequestLogUserTests(unittest.TestCase):
             connection.close()
 
         items = admin_api.call_logs(7, 2)["items"]
+        activity = admin_api.activity_logs(7, 2)["items"]
 
         self.assertEqual({str(item["id"]) for item in items}, {"1226", "shot-job-1"})
         self.assertTrue(all(item["status"] == "running" for item in items))
+        self.assertEqual(
+            {str(item["task_id"]) for item in activity},
+            {"1226", "shot-job-1"},
+        )
+        self.assertTrue(all(item["cat"] == "running" for item in activity))
+
+    def test_task_runtime_record_distinguishes_refund_states(self):
+        pending = admin_api._task_runtime_record({
+            "id": 1306, "status": "failed", "refunded": 2,
+        })
+        refunded = admin_api._task_runtime_record({
+            "id": 1307, "status": "failed", "refunded": 1,
+        })
+
+        self.assertEqual(pending["evidence_label"], "任务失败 · 退款待确认")
+        self.assertEqual(refunded["evidence_label"], "任务失败 · 已退款")
+        self.assertIn("退款待确认", pending["stages"][3]["detail"])
+        self.assertIn("已退款", refunded["stages"][3]["detail"])
 
     def test_task_runtime_record_exposes_real_route_model_and_unverified_delivery(self):
         import sqlite3

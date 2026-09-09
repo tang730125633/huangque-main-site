@@ -10,6 +10,13 @@ class AdminErrorCodeUITests(unittest.TestCase):
         self.assertIn("errorCatalog[x.hq_code]", html)
         self.assertIn("taskRawField('错误说明',errorInfo.message||x.hq_code||'无')", html)
 
+    def test_task_stream_displays_refund_evidence(self):
+        html = (Path(__file__).parents[1] / "site/admin/index.html").read_text(encoding="utf-8")
+        self.assertIn("Number(x.refunded)===2", html)
+        self.assertIn("退款待确认", html)
+        self.assertIn("Number(x.refunded)===1", html)
+        self.assertIn("已退款", html)
+
 
 if __name__ == "__main__":
     unittest.main()
