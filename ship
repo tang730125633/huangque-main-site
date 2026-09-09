@@ -295,6 +295,8 @@ for f in "$@"; do
              dest=/home/ubuntu/auth-service/content_domains/; svc=huangque-auth ;;
     server/content_domains/error_contract.py)
              dest=/home/ubuntu/auth-service/content_domains/; svc=huangque-auth ;;
+    server/content_domains/editorial_contract.py)
+             dest=/home/ubuntu/auth-service/content_domains/; svc=huangque-auth ;;
     server/wechat_virtual_pay.py|server/sync_virtual_pay_goods.py)
              dest=/home/ubuntu/auth-service/; svc=huangque-auth ;;
     server/content_api.py) dest=/home/ubuntu/content-api/;  svc=huangque-content ;;
@@ -386,7 +388,7 @@ for f in "$@"; do
         || { echo "  ❌ 旧公开测试素材移除失败"; exit 1; }
       ;;
   esac
-  if [ "$f" = "server/content_domains/pricing.py" ] || [ "$f" = "server/content_domains/error_contract.py" ] || [ "$f" = "server/content_domains/feature_flags.py" ]; then
+  if [ "$f" = "server/content_domains/pricing.py" ] || [ "$f" = "server/content_domains/error_contract.py" ] || [ "$f" = "server/content_domains/feature_flags.py" ] || [ "$f" = "server/content_domains/editorial_contract.py" ]; then
     push_file "$f" /home/ubuntu/content-api/content_domains/ \
       && echo "  ✓ $f → /home/ubuntu/content-api/content_domains/" \
       || { echo "  ❌ $f 部署到 content 失败"; exit 1; }
@@ -395,7 +397,7 @@ for f in "$@"; do
   add_deployed "$f"
   case "$f" in
     server/content_api.py|server/content_domains/*)
-      if [ "$f" = "server/content_domains/pricing.py" ] || [ "$f" = "server/content_domains/error_contract.py" ] || [ "$f" = "server/content_domains/feature_flags.py" ]; then
+      if [ "$f" = "server/content_domains/pricing.py" ] || [ "$f" = "server/content_domains/error_contract.py" ] || [ "$f" = "server/content_domains/feature_flags.py" ] || [ "$f" = "server/content_domains/editorial_contract.py" ]; then
         echo "  ✓ 共享模块已分别部署到 auth 与 content"
       elif [ "$EXACT_CONTENT_DOMAINS" = "1" ] && [ "$f" != "server/content_api.py" ]; then
         echo "  ✓ file-only 模式：$f 不触发 content_domains 整目录同步"
