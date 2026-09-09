@@ -8,7 +8,7 @@ import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -18,7 +18,16 @@ if str(SERVER) not in sys.path:
     sys.path.insert(0, str(SERVER))
 
 import admin_api  # noqa: E402
-from content_domains import provider_keys, video  # noqa: E402
+from content_domains import (  # noqa: E402
+    provider_keys,
+    short_drama_advisor,
+    video,
+    video_agent,
+    video_gemini_omni,
+    video_openai,
+    video_seedance,
+    video_xai,
+)
 
 
 class ProviderKeyPoolTests(unittest.TestCase):
@@ -76,6 +85,90 @@ class ProviderKeyPoolTests(unittest.TestCase):
             provider_keys.candidates("sora", item["id"])[0]["secret"],
             "sk-provider-secret-1234",
         )
+        self.assertEqual(
+            provider_keys.candidates("sora", item["id"])[0]["base_url"],
+            "https://api.openai.com",
+        )
+
+    def test_base_url_is_bound_to_key_and_public_without_secret(self):
+        with patch.dict(
+            os.environ, {"HQ_PROVIDER_BASE_HOST_ALLOWLIST": "gateway.example.com"}
+        ):
+            item = provider_keys.add_key(
+                "sora", "兼容线路", "sk-provider-secret-5678", "tang1",
+                {"ok": True}, base_url="https://gateway.example.com/v1/",
+            )
+        self.assertEqual(item["base_url"], "https://gateway.example.com/v1")
+        candidate = provider_keys.candidates("sora", item["id"])[0]
+        self.assertEqual(candidate["base_url"], item["base_url"])
+        self.assertNotIn("secret", item)
+
+    def test_base_url_rejects_ssrf_and_unapproved_hosts(self):
+        for value in (
+            "http://api.openai.com",
+            "https://user:pass@api.openai.com",
+            "https://127.0.0.1/v1",
+            "https://metadata.google.internal",
+            "https://unapproved.example.com/v1",
+        ):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                provider_keys.normalize_base_url("sora", value)
+
+        with patch.dict(
+            os.environ, {"HQ_PROVIDER_BASE_HOST_ALLOWLIST": "gateway.example.com"}
+        ):
+            with self.assertRaises(ValueError):
+                provider_keys.normalize_base_url(
+                    "minimax", "https://gateway.example.com/minimax"
+                )
+
+    def test_runtime_adapters_use_candidate_base_url(self):
+        openai_base = "https://api.openai.com/v1"
+        candidate = {"base_url": "https://api.x.ai/v1"}
+        self.assertEqual(
+            video_openai._api_url("videos", openai_base),
+            openai_base + "/videos",
+        )
+        self.assertEqual(
+            short_drama_advisor._candidate_url(candidate),
+            "https://api.x.ai/v1/chat/completions",
+        )
+        deepseek = {"base_url": "https://api.deepseek.com/v1"}
+        self.assertEqual(
+            video_agent._candidate_url(deepseek),
+            "https://api.deepseek.com/v1/responses",
+        )
+
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = b"{}"
+        xai_opener = Mock()
+        xai_opener.open.return_value = response
+        video_xai._request_json(
+            xai_opener, "GET", "/models", api_key="secret-1234",
+            api_base="https://api.x.ai/v1",
+        )
+        self.assertEqual(
+            xai_opener.open.call_args.args[0].full_url,
+            "https://api.x.ai/v1/models",
+        )
+
+        seedance_opener = Mock()
+        seedance_opener.open.return_value = response
+        video_seedance._request_json(
+            seedance_opener, "GET", "/tasks", api_key="secret-1234",
+            api_base="https://ark.cn-beijing.volces.com/api/v3",
+        )
+        self.assertEqual(
+            seedance_opener.open.call_args.args[0].full_url,
+            "https://ark.cn-beijing.volces.com/api/v3/tasks",
+        )
+        self.assertEqual(
+            video_gemini_omni._api_base(
+                "https://generativelanguage.googleapis.com"
+            ),
+            "https://generativelanguage.googleapis.com",
+        )
 
     def test_invalid_master_key_is_not_reported_as_ready(self):
         with patch.dict(os.environ, {provider_keys.MASTER_KEY_ENV: "invalid"}):
@@ -131,6 +224,41 @@ class ProviderKeyPoolTests(unittest.TestCase):
         self.assertEqual(current, first)
         self.assertEqual(legacy, first)
 
+    def test_environment_snapshot_keeps_root_managed_custom_base_url(self):
+        with patch.dict(
+            os.environ,
+            {
+                "OPENAI_API_KEY": "sk-environment-custom-base",
+                "OPENAI_BASE": "https://legacy-gateway.example.com/v1/",
+            },
+        ):
+            provider_keys._LEGACY_IMPORT_PATHS.discard(str(self.db_path))
+            provider_keys.init_db()
+            candidate = provider_keys.candidates("sora")[0]
+
+        self.assertEqual(
+            candidate["base_url"], "https://legacy-gateway.example.com/v1"
+        )
+
+    def test_old_database_rows_freeze_base_url_during_schema_migration(self):
+        item = self.add()
+        with closing(sqlite3.connect(str(self.db_path))) as conn:
+            conn.execute(
+                "UPDATE provider_api_keys SET base_url='' WHERE id=?", (item["id"],)
+            )
+            conn.commit()
+
+        with patch.dict(
+            os.environ, {"OPENAI_BASE": "https://legacy-gateway.example.com/v1"}
+        ):
+            provider_keys.init_db()
+        with patch.dict(os.environ, {"OPENAI_BASE": "https://api.openai.com"}):
+            candidate = provider_keys.candidates("sora", item["id"])[0]
+
+        self.assertEqual(
+            candidate["base_url"], "https://legacy-gateway.example.com/v1"
+        )
+
     def test_unsnapshotted_environment_key_stops_new_paid_tasks(self):
         os.environ["OPENAI_API_KEY"] = "sk-environment-late"
         with self.assertRaisesRegex(
@@ -179,18 +307,27 @@ class ProviderKeyPoolTests(unittest.TestCase):
             admin_api,
             "probe_provider_secret",
             return_value={"ok": True, "http_status": 200, "latency_ms": 12},
-        ):
+        ) as probe:
             result = admin_api.add_provider_key(
                 "tang1",
                 {
                     "provider": "omni",
                     "label": "Omni 线路 2",
                     "secret": "gemini-provider-secret-7788",
+                    "base_url": "https://generativelanguage.googleapis.com",
                 },
-            )
+                )
         self.assertTrue(result["ok"])
         self.assertEqual(result["item"]["last4"], "7788")
+        self.assertEqual(
+            result["item"]["base_url"],
+            "https://generativelanguage.googleapis.com",
+        )
         self.assertNotIn("secret", str(result))
+        probe.assert_called_once_with(
+            "omni", "gemini-provider-secret-7788",
+            "https://generativelanguage.googleapis.com",
+        )
 
     def test_background_probe_refreshes_stale_managed_key_without_generating(self):
         item = self.add("omni", "gemini-provider-secret-7788")
@@ -208,7 +345,10 @@ class ProviderKeyPoolTests(unittest.TestCase):
             skipped = admin_api.probe_provider_keys(now=1010)
         self.assertEqual(checked, [{"id": item["id"], "provider": "omni", "ok": True}])
         self.assertEqual(skipped, [])
-        probe.assert_called_once_with("omni", "gemini-provider-secret-7788")
+        probe.assert_called_once_with(
+            "omni", "gemini-provider-secret-7788",
+            "https://generativelanguage.googleapis.com",
+        )
         self.assertEqual(provider_keys.public_key(item["id"])["health_status"], "healthy")
 
     def test_xai_keys_rotate_by_least_use_and_can_be_revealed_with_audit(self):
@@ -320,6 +460,20 @@ class ProviderKeyPoolTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("Base", result["error"])
         ping.assert_not_called()
+
+    def test_managed_deepseek_probe_accepts_a_full_responses_base(self):
+        with patch.object(
+            admin_api, "_ping_upstream", return_value={"ok": True}
+        ) as ping:
+            result = admin_api.probe_provider_secret(
+                "deepseek", "deepseek-test-key",
+                "https://api.deepseek.com/v1/responses",
+            )
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            ping.call_args.args[:2],
+            ("GET", "https://api.deepseek.com/v1/models"),
+        )
 
     def test_transient_manual_probe_does_not_quarantine_key(self):
         item = self.add()
@@ -463,6 +617,9 @@ class ProviderKeyPoolTests(unittest.TestCase):
         self.assertIn("加密号池（视频）", html)
         self.assertIn("env_base_host", html)
         self.assertIn("pool_base_host", html)
+        self.assertIn('id="providerKeyBaseUrl"', html)
+        self.assertIn("base_url:baseUrl", html)
+        self.assertIn("data-base-url", html)
         self.assertNotIn("left-=1", html)
         self.assertIn("!state.poolActions", html)
         self.assertIn("requestPoolEpoch!==state.poolEpoch", html)

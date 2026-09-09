@@ -146,11 +146,12 @@ def _human_error(code, detail, api_key=None):
     return "Seedance 官方视频接口失败: HTTP %s %s" % (code, text)
 
 
-def _request_json(opener, method, path, body=None, timeout=90, api_key=None):
+def _request_json(opener, method, path, body=None, timeout=90, api_key=None,
+                  api_base=None):
     api_key = ARK_API_KEY if api_key is None else str(api_key).strip()
     if not api_key:
         raise ValueError("Seedance 官方视频未配置（ARK_API_KEY）")
-    url = ARK_BASE + "/" + str(path or "").lstrip("/")
+    url = str(api_base or ARK_BASE).strip().rstrip("/") + "/" + str(path or "").lstrip("/")
     headers = {
         "Authorization": "Bearer " + api_key,
         "Accept": "application/json",
@@ -286,6 +287,7 @@ def _poll(
     sleep=None,
     api_key=None,
     provider_key_id=None,
+    api_base=None,
 ):
     now = now or time.time
     sleep = sleep or time.sleep
@@ -302,6 +304,7 @@ def _poll(
                 + urllib.parse.quote(str(task_id), safe=""),
                 timeout=60,
                 api_key=api_key,
+                api_base=api_base,
             )
             transient_attempt = 0
             last_transient = None
@@ -396,6 +399,7 @@ def generate(
     sleep=None,
     api_key=None,
     provider_key_id=None,
+    api_base=None,
 ):
     """只创建一次付费任务；取得 id 后才进入可安全重试的 GET 轮询。"""
     payload = _build_payload(
@@ -416,6 +420,7 @@ def generate(
             payload,
             timeout=120,
             api_key=api_key,
+            api_base=api_base,
         )
     except CreateOutcomeUnknown:
         raise
@@ -449,6 +454,7 @@ def generate(
         sleep=sleep,
         api_key=api_key,
         provider_key_id=provider_key_id,
+        api_base=api_base,
     )
 
 
@@ -465,6 +471,7 @@ def resume(
     sleep=None,
     api_key=None,
     provider_key_id=None,
+    api_base=None,
 ):
     """仅查询已有任务，不会发起新的生成。"""
     task_id = str(task_id or "").strip()
@@ -484,4 +491,5 @@ def resume(
         sleep=sleep,
         api_key=api_key,
         provider_key_id=provider_key_id,
+        api_base=api_base,
     )

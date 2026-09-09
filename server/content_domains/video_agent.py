@@ -845,6 +845,16 @@ def _provider_config():
     return "https://api.deepseek.com" + path, model
 
 
+def _candidate_url(candidate):
+    base = provider_keys.normalize_base_url(
+        "deepseek", candidate.get("base_url")
+    )
+    path = urllib.parse.urlsplit(base).path.rstrip("/")
+    if path.endswith("/responses"):
+        return base
+    return base + "/responses"
+
+
 def _deepseek_compatible_schema(value):
     """Return a request-only schema using DeepSeek's supported keyword subset."""
     if isinstance(value, dict):
@@ -1068,7 +1078,7 @@ def _post_response(prepared, input_items, opener=None, timeout=45,
                 "advisor_input_too_large", "视频创作助手工具上下文过长，请新建会话后重试", 413
             )
         request = urllib.request.Request(
-            prepared["url"], data=encoded,
+            _candidate_url(candidate), data=encoded,
             headers={
                 "Authorization": "Bearer " + candidate["secret"],
                 "Content-Type": "application/json",

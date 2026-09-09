@@ -295,6 +295,13 @@ def _provider_config():
     return base + "/chat/completions", model
 
 
+def _candidate_url(candidate):
+    base = provider_keys.normalize_base_url("xai", candidate.get("base_url"))
+    if not base.endswith("/v1"):
+        base += "/v1"
+    return base + "/chat/completions"
+
+
 def _token_cost(model, prompt_tokens, completion_tokens):
     prices = _MODEL_PRICES.get(str(model or ""))
     if prices is None:
@@ -643,7 +650,6 @@ def _prepare_provider_request(body):
 def _advise_provider(body, opener=None, prepared=None):
     prepared = prepared or _prepare_provider_request(body)
     request_body = prepared["request_body"]
-    url = prepared["url"]
     payload = prepared["payload"]
     attempted_ids = set()
     request_open = opener or _provider_opener()
@@ -651,7 +657,7 @@ def _advise_provider(body, opener=None, prepared=None):
         candidate = _claim_provider_candidate(attempted_ids)
         attempted_ids.add(candidate["id"])
         request = urllib.request.Request(
-            url,
+            _candidate_url(candidate),
             data=payload,
             headers={
                 "Authorization": "Bearer " + candidate["secret"],
