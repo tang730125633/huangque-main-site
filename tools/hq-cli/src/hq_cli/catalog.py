@@ -632,33 +632,6 @@ CAPABILITIES["short-drama-completion-confirm"] = _api(
      "acknowledged": {"type": "boolean", "const": True}, "request_id": REQUEST_ID},
     ["project_id", "revision", "final_version_id", "asset_id", "delivery_hash", "acknowledged", "request_id"],
     "short-drama:write", "write", True)
-CAPABILITIES["ip12-projects"] = _api(
-    "ip12-projects", "IP12 项目列表", "ip12-projects", "读取当前账号在主站 Hermes IP12 中的全部诊断项目。", scope="ip12:read")
-CAPABILITIES["ip12-project"] = _api(
-    "ip12-project", "IP12 项目资料", "ip12-project", "读取一个本人 Hermes IP12 项目的基础资料、对话、模块进度与已存报告。",
-    {"project_id": STRING_ID}, ["project_id"], "ip12:read")
-CAPABILITIES["ip12-create"] = _api(
-    "ip12-create", "创建 IP12 项目", "ip12-create", "在当前账号创建一个新的 IP12 项目。",
-    {"title": {"type": "string", "minLength": 1, "maxLength": 120}}, ["title"], "ip12:write", "write", True)
-CAPABILITIES["ip12-delete"] = _api(
-    "ip12-delete", "删除 IP12 项目", "ip12-delete", "删除当前账号的一个 IP12 项目；删除前应先读取并核对目标。",
-    {"project_id": STRING_ID}, ["project_id"], "ip12:write", "delete", True)
-CAPABILITIES["ip12-delete"]["next_actions"] = [
-    "删除不可恢复；先用 ip12-project 读取核对 project_id，再以 --confirm 确认删除。",
-]
-CAPABILITIES["ip12-report"] = _api(
-    "ip12-report", "读取 IP12 报告", "ip12-report", "读取一个本人 Hermes IP12 项目已经保存的模块报告；不会重新生成报告。",
-    {"project_id": STRING_ID}, ["project_id"], "ip12:read")
-CAPABILITIES["ip12-message"] = _api(
-    "ip12-message", "继续 IP12 对话", "ip12-message",
-    "向本人 IP12 项目提交一轮回答并调用 AI 教练；request_id 必须每轮唯一，重试同一轮时保持不变。",
-    {"project_id": STRING_ID, "message": {"type": "string", "minLength": 1, "maxLength": 4000},
-     "request_id": STRING_ID},
-    ["project_id", "message", "request_id"], "ip12:chat", "external_ai", True,
-    {"kind": "external_ai", "points": 0, "detail": "不扣点，但会写入 IP12 项目并调用黄雀 AI。"})
-CAPABILITIES["ip12-message"]["next_actions"] = [
-    "网络超时后只可用完全相同的输入和 request_id 重试；若返回结果未知，先读取 IP12 项目。",
-]
 CAPABILITIES["prompt-optimize"] = _api(
     "prompt-optimize", "优化提示词", "prompt-optimize", "真实调用黄雀主站提示词优化服务。",
     {"prompt": {"type": "string", "minLength": 1, "maxLength": 2000},
@@ -1682,8 +1655,6 @@ _AGENT_RESOURCE_OVERRIDES = {
     "leads-delete": "lead",
 }
 _AGENT_OPERATIONS = {
-    "ip12-projects": "list", "ip12-project": "get", "ip12-report": "get",
-    "ip12-create": "create", "ip12-message": "update", "ip12-delete": "delete",
     "digital-ip-projects": "list", "digital-ip-project": "get", "digital-ip-report": "get",
     "short-drama-projects": "list", "short-drama-project": "get",
     "short-drama-conversation": "get", "short-drama-preflight": "get",

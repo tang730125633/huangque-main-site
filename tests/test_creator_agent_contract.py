@@ -73,10 +73,9 @@ class CreatorAgentContractTests(unittest.TestCase):
         self.assertIn('data-tool-feature="creator_agent_v1"', self.toolbox)
         self.assertIn("/api/creator-agent/capability", self.toolbox)
 
-    def test_independent_namespace_does_not_edit_hermes_source(self):
+    def test_independent_namespace_uses_its_own_runtime(self):
         self.assertIn("/api/auth/internal/creator-agent/catalog", self.auth)
         self.assertIn("/api/auth/internal/creator-agent/action", self.auth)
-        self.assertIn("不修改同事的 `server/hermes_ip12/**`", self.design)
         example = (ROOT / "deploy/huangque-secrets.env.example").read_text(encoding="utf-8")
         profile_agent = (ROOT / "server/creator_agent/profile_agent.py").read_text(encoding="utf-8")
         planner = (ROOT / "server/creator_agent/planner.py").read_text(encoding="utf-8")

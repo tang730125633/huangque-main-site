@@ -29,21 +29,16 @@ REFRESH_TOKEN_TTL = 30 * 24 * 60 * 60
 POLL_INTERVAL = 3
 BRIDGE_TOKEN_TTL = 60
 QUOTE_TTL = 5 * 60
-ACTION_REQUEST_TTL = 30 * 24 * 60 * 60
-ACTION_INFLIGHT_TTL = 10 * 60
-CLI_CHAT_REQUESTS_PER_MINUTE = 6
 CONTENT_BASE = "http://127.0.0.1:8096"
 LEADGEN_BASE = "http://127.0.0.1:8100"
 IMGGEN_BASE = "http://127.0.0.1:8101"
-HERMES_BASE = "http://127.0.0.1:3102"
 ADMIN_BASE = "http://127.0.0.1:8098"
 CREATOR_AGENT_BASE = os.environ.get("HQ_CREATOR_AGENT_BASE", "http://127.0.0.1:8114").rstrip("/")
 
 SCOPES = {
     "profile:read": "读取账号公开资料与点数",
-    "ip12:read": "读取本人 IP12 项目与报告",
-    "ip12:write": "创建本人 IP12 项目",
-    "ip12:chat": "向本人 IP12 项目提交回答并调用 AI 教练",
+    "ip12:read": "读取本人数字化 IP 项目与报告",
+    "ip12:write": "管理本人数字化 IP 项目",
     "prompt:optimize": "把提示词发送给黄雀 AI 优化",
     "canvas:read": "读取本人可访问的画布",
     "canvas:write": "创建本人画布",
@@ -127,7 +122,7 @@ CHANNEL_CATALOG = (
      "access": "managed", "capabilities": ["image-upload", "assets"], "selector": {}},
 )
 CONFIRMATION_ACTIONS = frozenset({
-    "ip12-create", "ip12-message", "ip12-delete", "prompt-optimize", "canvas-create", "canvas-ops",
+    "prompt-optimize", "canvas-create", "canvas-ops",
     "canvas-delete", "asset-favorite", "asset-tags", "asset-delete", "video-compose-create", "video-compose-analyze",
     "video-compose-review", "video-compose-render", "video-compose-delete", "digital-presenter-create",
     "digital-presenter-update", "digital-presenter-delete", "voice-clone-create",
@@ -237,9 +232,6 @@ _ACTION_INPUTS = {
     "short-drama-completion": ("project_id",),
     "short-drama-completion-confirm": ("project_id", "revision", "final_version_id", "asset_id", "delivery_hash", "acknowledged", "request_id"),
     "digital-ip-projects": (), "digital-ip-project": ("project_id",), "digital-ip-report": ("project_id",),
-    "ip12-projects": (), "ip12-project": ("project_id",), "ip12-report": ("project_id",),
-    "ip12-create": ("title",), "ip12-message": ("project_id", "message", "request_id"),
-    "ip12-delete": ("project_id",),
     "prompt-optimize": ("prompt", "kind"),
     "canvas-list": ("limit", "offset"), "canvas-get": ("board_id",),
     "canvas-create": ("name", "prompt"), "canvas-agent-plan": ("prompt", "project_id", "snapshot_digest", "scope", "nodes", "edges", "selected_node_ids", "history"),
@@ -415,8 +407,6 @@ _ACTION_PURPOSES = {
     "director-remake-start": "报价后启动冻结的同款复刻方案",
     "director-remake-status": "读取同款复刻任务与账务状态",
     "director-remake-recover": "按原 request_id 恢复结果未知的同款复刻",
-    "ip12-projects": "读取本人 IP12 项目", "ip12-project": "读取本人 IP12 项目详情",
-    "ip12-report": "读取本人 IP12 报告", "ip12-delete": "删除本人 IP12 项目",
     "canvas-list": "读取本人画布", "canvas-get": "读取本人画布详情",
     "canvas-delete": "删除本人创建的画布",
     "tasks": "读取本人任务记录", "task": "读取本人任务详情", "assets": "读取本人资产", "voices": "读取可用音色",
@@ -1897,20 +1887,6 @@ def init_schema(connection):
     )""")
     connection.execute("""CREATE INDEX IF NOT EXISTS idx_cli_refresh_grant
         ON cli_refresh_tokens(grant_id, used_at, expires_at)""")
-    connection.execute("""CREATE TABLE IF NOT EXISTS cli_action_requests(
-        username TEXT NOT NULL,
-        action TEXT NOT NULL,
-        request_id TEXT NOT NULL,
-        project_id TEXT NOT NULL,
-        request_hash TEXT NOT NULL,
-        status TEXT NOT NULL,
-        http_status INTEGER,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        PRIMARY KEY(username, action, request_id)
-    )""")
-    connection.execute("""CREATE INDEX IF NOT EXISTS idx_cli_action_active
-        ON cli_action_requests(username, action, project_id, status, updated_at)""")
 
 
 def _hash(value):
@@ -1941,72 +1917,6 @@ def issue_grant_tokens(connection, grant_id, scopes, now):
         "refresh_expires_at": refresh_expires_at,
         "scopes": list(scopes),
     }
-
-
-def begin_action_request(db_factory, username, action, request_id, project_id, request_hash, now=None):
-    """Claim one persistent CLI action or describe the existing claim."""
-    now = int(time.time() if now is None else now)
-    connection = db_factory()
-    try:
-        connection.execute("BEGIN IMMEDIATE")
-        connection.execute("DELETE FROM cli_action_requests WHERE updated_at<?", (now - ACTION_REQUEST_TTL,))
-        connection.execute(
-            "UPDATE cli_action_requests SET status='uncertain',updated_at=? "
-            "WHERE status='in_progress' AND updated_at<?",
-            (now, now - ACTION_INFLIGHT_TTL),
-        )
-        row = connection.execute(
-            "SELECT request_hash,status,http_status FROM cli_action_requests "
-            "WHERE username=? AND action=? AND request_id=?",
-            (username, action, request_id),
-        ).fetchone()
-        if row:
-            connection.commit()
-            if row["request_hash"] != request_hash:
-                return "conflict", row["http_status"]
-            return row["status"], row["http_status"]
-        recent = connection.execute(
-            "SELECT COUNT(*) FROM cli_action_requests WHERE username=? AND action=? AND created_at>=?",
-            (username, action, now - 60),
-        ).fetchone()[0]
-        if int(recent) >= CLI_CHAT_REQUESTS_PER_MINUTE:
-            connection.commit()
-            return "rate_limited", None
-        active = connection.execute(
-            "SELECT status FROM cli_action_requests WHERE username=? AND action=? AND project_id=? "
-            "AND (status='in_progress' OR (status='uncertain' AND updated_at>=?)) "
-            "ORDER BY updated_at DESC LIMIT 1",
-            (username, action, project_id, now - ACTION_INFLIGHT_TTL),
-        ).fetchone()
-        if active:
-            connection.commit()
-            return ("uncertain" if active["status"] == "uncertain" else "busy"), None
-        connection.execute(
-            "INSERT INTO cli_action_requests(username,action,request_id,project_id,request_hash,status,created_at,updated_at) "
-            "VALUES(?,?,?,?,?,'in_progress',?,?)",
-            (username, action, request_id, project_id, request_hash, now, now),
-        )
-        connection.commit()
-        return "new", None
-    except Exception:
-        connection.rollback()
-        raise
-    finally:
-        connection.close()
-
-
-def finish_action_request(db_factory, username, action, request_id, http_status=None, uncertain=False, now=None):
-    now = int(time.time() if now is None else now)
-    connection = db_factory()
-    try:
-        connection.execute(
-            "UPDATE cli_action_requests SET status=?,http_status=?,updated_at=? "
-            "WHERE username=? AND action=? AND request_id=? AND status='in_progress'",
-            ("uncertain" if uncertain else "completed", http_status, now, username, action, request_id),
-        )
-        connection.commit()
-    finally:
-        connection.close()
 
 
 def _strict_object(value, allowed, required=()):
@@ -4098,42 +4008,6 @@ def action_plan(action, value):
                      path="/api/gen/digital-ip/projects/"
                      + urllib.parse.quote(project_id, safe=""),
                      method="DELETE", body=body)
-    if action == "ip12-projects":
-        _strict_object(value, set())
-        return _plan("ip12:read", "proxy", base=HERMES_BASE, path="/api/conversations")
-    if action in {"ip12-project", "ip12-report"}:
-        _strict_object(value, {"project_id"}, ("project_id",))
-        project_id = _identifier(value["project_id"], "project_id")
-        suffix = "/reports" if action == "ip12-report" else ""
-        return _plan("ip12:read", "proxy", base=HERMES_BASE,
-                     path="/api/conversations/" + urllib.parse.quote(project_id, safe="") + suffix)
-    if action == "ip12-create":
-        _strict_object(value, {"title"}, ("title",))
-        title = _string(value["title"], "title", 1, 120)
-        return _plan("ip12:write", "proxy", base=HERMES_BASE, path="/api/conversations",
-                     method="POST", body={"title": title})
-    if action == "ip12-delete":
-        _strict_object(value, {"project_id"}, ("project_id",))
-        project_id = _identifier(value["project_id"], "project_id")
-        return _plan("ip12:write", "proxy", base=HERMES_BASE,
-                     path="/api/conversations/" + urllib.parse.quote(project_id, safe=""),
-                     method="DELETE")
-    if action == "ip12-message":
-        _strict_object(value, {"project_id", "message", "request_id"}, ("project_id", "message", "request_id"))
-        project_id = _identifier(value["project_id"], "project_id")
-        message = value["message"]
-        if (not isinstance(message, str) or not 1 <= len(message.strip()) <= 4000
-                or any(ord(ch) < 32 and ch not in "\r\n\t" for ch in message)):
-            raise CLIAPIError(400, "message 长度或内容不合法")
-        message = message.strip()
-        request_id = _identifier(value["request_id"], "request_id")
-        request_hash = _hash(json.dumps(
-            {"project_id": project_id, "message": message}, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
-        ))
-        return _plan("ip12:chat", "proxy", base=HERMES_BASE, path="/api/chat-complete",
-                     method="POST", body={"conversation_id": project_id, "message": message}, timeout=290,
-                     headers={"Idempotency-Key": request_id}, request_id=request_id,
-                     project_id=project_id, request_hash=request_hash)
     if action == "prompt-optimize":
         _strict_object(value, {"prompt", "kind"}, ("prompt", "kind"))
         prompt = _string(value["prompt"], "prompt", 1, 2000)

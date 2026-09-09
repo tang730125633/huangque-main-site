@@ -54,7 +54,7 @@ _KNOWN_LEAK_FINGERPRINTS = {
 
 CHECKED_ATTRIBUTES = {"href", "src", "poster"}
 IGNORED_SCHEMES = {"data", "http", "https", "mailto", "tel", "blob", "javascript"}
-IGNORED_SERVER_PREFIXES = ("/api/", "/admin/", "/health")
+IGNORED_SERVER_PREFIXES = ("/api/", "/admin/", "/health", "/workbench/ip12")
 
 
 def reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -227,15 +227,6 @@ def candidate_paths(html_file: Path, reference: str) -> list[Path]:
         return []
     if path_text.startswith(IGNORED_SERVER_PREFIXES):
         return []
-
-    # This standalone Flask page is served at /v4, not at its source filename.
-    # Only accept its v3 link when the actual backend still registers the route;
-    # all assets and every other link continue through the normal checks below.
-    if (html_file == ROOT / "site/workbench/hq-ip-agent/v4.html"
-            and path_text == "v3"):
-        backend = ROOT / "server/hq_ip_agent/app.py"
-        if backend.is_file() and '@app.get("/v3")' in backend.read_text(encoding="utf-8"):
-            return [backend]
 
     if path_text == "/":
         base = STATIC_ROOT / "index.html"

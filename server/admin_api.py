@@ -663,14 +663,6 @@ NGINX_ACCESS_LOGS = [
     ).split(",")
     if p.strip()
 ]
-HERMES_AUDIT_LOGS = [
-    pathlib.Path(p.strip())
-    for p in os.environ.get(
-        "HERMES_AUDIT_LOGS",
-        "/home/ubuntu/hermes-web/data/audit/security.jsonl",
-    ).split(",")
-    if p.strip()
-]
 # nginx combined 格式：ip - user [time] "METHOD path HTTP/x" status size "referer" "ua"
 # remote_user 可能带空格（basic auth），所以 ip 之后宽松匹配到第一个 [
 LOG_LINE_RE = re.compile(
@@ -2903,86 +2895,6 @@ def _collect_request_entries(limit, status="", q="", include_noise=False):
     return entries, message
 
 
-def _hermes_func(method, path, event):
-    if event == "authentication":
-        return "IP12 · 登录验证"
-    if event == "authorization":
-        return "IP12 · 权限验证"
-    if event == "rate_limit":
-        return "IP12 · 请求限流"
-    if event == "concurrency_limit":
-        return "IP12 · 并发限制"
-    if event == "storage_quota":
-        return "IP12 · 存储空间"
-    if path == "/api/conversations":
-        return "IP12 · 新建项目" if method == "POST" else "IP12 · 项目列表"
-    if path.startswith("/api/conversations/"):
-        return "IP12 · 删除项目" if method == "DELETE" else "IP12 · 打开项目"
-    for prefix, name in (
-        ("/api/foundation-report/generate", "IP12 · 生成初稿 PDF"),
-        ("/api/foundation-report/confirm", "IP12 · 确认初稿"),
-        ("/api/foundation-report/", "IP12 · 查看 PDF"),
-        ("/api/chat-complete", "IP12 · 完整对话"),
-        ("/api/chat", "IP12 · 教练对话"),
-        ("/api/generate-report", "IP12 · 生成模块报告"),
-        ("/api/generate-deliverable", "IP12 · 生成交付物"),
-        ("/api/jump-module", "IP12 · 切换模块"),
-        ("/api/", "IP12 · 其他功能"),
-    ):
-        if path.startswith(prefix):
-            return name
-    return "IP12"
-
-
-def _collect_hermes_entries(limit):
-    entries = []
-    for log_path in (p for p in HERMES_AUDIT_LOGS if p.exists()):
-        try:
-            lines = _tail_lines(log_path)
-        except Exception:
-            continue
-        for line in lines:
-            try:
-                row = json.loads(line)
-                timestamp = int(row.get("time") or 0)
-            except (TypeError, ValueError, json.JSONDecodeError):
-                continue
-            status = row.get("status")
-            try:
-                status_code = int(status)
-            except (TypeError, ValueError):
-                status_code = None
-            failed = status_code >= 400 if status_code is not None else str(status) not in {"ok", "success"}
-            local = time.localtime(timestamp)
-            key = (local.tm_year, local.tm_mon, local.tm_mday, local.tm_hour, local.tm_min, local.tm_sec)
-            duration_ms = row.get("duration_ms")
-            try:
-                duration_sec = float(duration_ms) / 1000 if duration_ms is not None else None
-            except (TypeError, ValueError):
-                duration_sec = None
-            method = str(row.get("method") or "")[:12]
-            path = str(row.get("path") or "")[:500]
-            event = str(row.get("event") or "")[:80]
-            entries.append((key, {
-                "source": "ip12",
-                "time": "%02d-%02d %02d:%02d:%02d" % key[1:],
-                "user": str(row.get("username") or "-")[:120],
-                "func": _hermes_func(method, path, event),
-                "cat": "fail" if failed else "ok",
-                "status_text": str(status or "-"),
-                "duration_sec": duration_sec,
-                "cost": None,
-                "path": path,
-                "method": method,
-                "ip": str(row.get("ip") or "")[:80],
-                "ua": "",
-                "request_id": str(row.get("request_id") or "")[:128],
-                "hq_code": error_contract.code_for(status_code) if failed and status_code is not None else "",
-            }))
-    entries.sort(key=lambda x: x[0], reverse=True)
-    return entries[:limit]
-
-
 def request_logs(limit=200, status="", q="", include_noise=False):
     """聚合各 nginx access log 尾部的后端 /api/ 请求日志（最新在前）。"""
     limit = max(1, min(int(limit or 200), 500))
@@ -2997,7 +2909,7 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
     """任务记录(jobs 库) + HTTP 请求(nginx) 合并成一条时间线，最新在前。
 
     category: '' | ok | fail | running（统一语义：任务 done/error/排队中 ↔ HTTP <400/>=400）
-    source:   '' | job | http | ip12
+    source:   '' | job | http
     """
     limit = max(1, min(int(limit or 200), 100))
     offset = max(0, int(offset or 0))
@@ -3035,9 +2947,6 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
                     },
                 )
             )
-
-    if source in ("", "ip12") and category != "running":
-        merged.extend(_collect_hermes_entries(source_limit))
 
     if source in ("", "job"):
         for j in call_logs(days, source_limit)["items"]:
