@@ -77,9 +77,11 @@ def make_html(job):
 .title{{position:absolute;left:32px;top:176px;width:656px;z-index:4;text-align:center;color:#74160e}}
 .title-line{{height:80px;display:flex;justify-content:center;align-items:center}}
 .title-ink{{display:inline-block;flex-shrink:0;white-space:nowrap;font-size:62px;line-height:1.24;letter-spacing:-1px;transform:scaleX(.82) skewX(-6deg);-webkit-text-stroke:3.5px #fffdf8;paint-order:stroke fill;text-shadow:0 2px 2px #36302b44}}
-.caption{{position:absolute;width:604px;height:122px;z-index:5;color:#fffdf8;white-space:nowrap}}
-.caption.upper{{left:58px;top:798px;text-align:left}}.caption.lower{{right:58px;top:934px;text-align:right}}
-.caption-text{{height:84px;font-size:54px;line-height:84px;letter-spacing:-1.1px;transform:scaleX(.87);transform-origin:left center;-webkit-text-stroke:1.6px #181311;paint-order:stroke fill;text-shadow:1px 2px 2px #181311aa}}
+.caption{{position:absolute;width:604px;height:146px;z-index:5;color:#fffdf8;white-space:nowrap}}
+.caption.upper{{left:58px;top:798px;text-align:left}}.caption.lower{{right:58px;top:958px;text-align:right}}
+/* The 74px accent glyphs have taller font bounds than their 84px line box.
+   Reserve 24px below that line, including its 7px entrance motion, for English. */
+.caption-text{{height:108px;font-size:54px;line-height:84px;letter-spacing:-1.1px;transform:scaleX(.87);transform-origin:left center;-webkit-text-stroke:1.6px #181311;paint-order:stroke fill;text-shadow:1px 2px 2px #181311aa}}
 .caption.lower .caption-text{{transform-origin:right center}}
 .glyph{{display:inline-block}}.accent{{font-size:74px;color:#8b2025;-webkit-text-stroke:3px #fffdf8;text-shadow:0 0 5px #fffdf8cc,1px 2px 3px #18131166}}
 .english{{height:32px;line-height:32px;width:max-content;max-width:100%;padding:0 6px;border-radius:3px;background:#181311cc;font-family:EnglishSans,sans-serif;font-weight:400;color:#fffdf8;letter-spacing:-.25px;-webkit-text-stroke:0;paint-order:normal;text-shadow:0 1px 2px #181311,0 -1px 2px #181311,1px 0 2px #181311,-1px 0 2px #181311}}
@@ -127,12 +129,12 @@ Promise.all([document.fonts.load('400 26px EnglishSans'),
         for (const key of ['whiteSpace','overflowWrap','width','height','minHeight','lineHeight','fontSize'])
           english.style[key]=probe.style[key];
       }}
-      const height=84+probe.getBoundingClientRect().height+6;
+      const height=108+probe.getBoundingClientRect().height+6;
       english.parentElement.style.height=height+'px';
       if (english.parentElement.classList.contains('upper')) {{
         const next=english.parentElement.nextElementSibling;
         if (next && next.classList.contains('lower'))
-          next.style.top=(934+Math.max(0,height-122))+'px';
+          next.style.top=(958+Math.max(0,height-146))+'px';
       }}
     }} finally {{probe.remove();}}
   }}

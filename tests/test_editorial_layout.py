@@ -18,6 +18,18 @@ class EditorialLayoutTests(unittest.TestCase):
                 self.assertEqual(fixture_plan(english),
                     editorial_contract.validate_plan(fixture_plan(english), 5))
 
+    def test_short_accent_and_mixed_pair_regressions_are_not_rejected(self):
+        plan = fixture_plan(CASES['accent-short'])
+        self.assertEqual(['内容'], plan['keywords'])
+        self.assertEqual('Small', plan['captions'][0]['en'])
+        self.assertEqual('内容有价值', plan['captions'][0]['text'])
+        mixed = fixture_plan(CASES['mixed-three-pairs'])
+        self.assertEqual(6, len(mixed['captions']))
+        self.assertEqual(mixed, editorial_contract.validate_plan(mixed, 5))
+        html = editorial_markup.make_html({**plan, 'duration': 5})
+        self.assertIn('height:108px;font-size:54px;line-height:84px', html)
+        self.assertNotIn('data-layout-allow-overlap', html)
+
     def test_fixed_fonts_are_ready_before_timeline_registration(self):
         html = editorial_markup.make_html({**fixture_plan(CASES['reported-both']), 'duration': 5})
         self.assertLess(html.index('document.fonts.load'), html.index('const tl='))

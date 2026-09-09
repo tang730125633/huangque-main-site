@@ -41,7 +41,7 @@ try {
       await measure(1);
       assert.deepEqual(await measure(3), measured, fixture.name + ': layout changed after reverse seek');
       assert.deepEqual(errors, [], fixture.name + ': page errors');
-      assert.equal(measured.length, 2, fixture.name + ': missing/extra captions');
+      assert.equal(measured.length, fixture.english.length, fixture.name + ': missing/extra captions');
       for (const [index, item] of measured.entries()) {
         assert.equal(item.text, fixture.english[index], 'Text changed/truncated');
         assert.ok(item.size >= 20 && item.size <= 26, 'Unreadable/unexpected font size');
@@ -54,13 +54,17 @@ try {
         assert.ok(item.textBounds.left >= 0 && item.textBounds.right <= 720 &&
           item.textBounds.top >= 0 && item.textBounds.bottom <= 1280, 'Text escapes canvas');
         assert.ok(item.box.bottom <= item.caption.bottom, 'English escapes owning caption');
+        assert.ok(item.chinese.bottom < item.textBounds.top,
+          'Accent Chinese font bounds collide with its own English');
       }
-      assert.ok(measured[0].textBounds.bottom < measured[1].chinese.top,
-        'Upper English collides with the next Chinese caption');
+      for (let index = 0; index + 1 < measured.length; index += 2) {
+        assert.ok(measured[index].textBounds.bottom < measured[index + 1].chinese.top,
+          'Upper English collides with the next Chinese caption');
+      }
       if (fixture.name === 'short-original') {
         assert.deepEqual(measured.map(item => item.size), [26, 26]);
         assert.deepEqual(measured.map(item => item.box.height), [32, 32]);
-        assert.deepEqual(measured.map(item => item.caption.top), [798, 934]);
+        assert.deepEqual(measured.map(item => item.caption.top), [798, 958]);
       }
       await page.screenshot({path: path.join(output, fixture.name + '.png')});
       records.push({name: fixture.name, measured});

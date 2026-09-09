@@ -21,17 +21,30 @@ CASES = {
     'wide-58': ['W' * 58, 'W' * 58],
     'wide-44': ['W' * 44, 'W' * 44],
     'escaped-text': ['A <b>literal</b> caption & a quoted "word"', 'One computer'],
+    'accent-short': ['Small', 'One person'],
+    'mixed-three-pairs': [REPORTED_ENGLISH, 'One person', 'Small', 'W' * 58,
+                          'W' * 44, REPORTED_ENGLISH],
 }
 
 
 def fixture_plan(english):
+    # Keep the reviewer's short-English/accent-glyph failure, and a longer
+    # sequence whose pairs have different one/two-line combinations.
+    accent = english == CASES['accent-short'] or len(english) > 2
+    word = '内容' if accent else '一个人'
+    if len(english) == 2:
+        captions = [{'start': .5, 'end': 2, 'text': '内容有价值' if accent else '一个人', 'en': english[0]},
+                    {'start': 2.1, 'end': 4.5, 'text': '内容有价值' if accent else '一台电脑', 'en': english[1]}]
+    else:
+        captions = [{'start': round(.2 + i * 4.4 / len(english), 3),
+                     'end': round(.2 + (i + 1) * 4.4 / len(english) - .06, 3),
+                     'text': '内容有价值', 'en': line} for i, line in enumerate(english)]
     return {'schema': contract.SCHEMA_ID, 'timebase': 'edited_output',
         'transcript_hash': 'a' * 64, 'edit_decision_version': 1,
         'title': ['一个人的效率', '让内容更有价值'],
-        'captions': [{'start': .5, 'end': 2, 'text': '一个人', 'en': english[0]},
-                     {'start': 2.1, 'end': 4.5, 'text': '一台电脑', 'en': english[1]}],
-        'keywords': ['一个人'], 'camera': [{'at': 0, 'scale': 1, 'transition': 'cut'}],
-        'keyword_punches': [{'at': .5, 'word': '一个人', 'strength': 1.075}], 'callouts': []}
+        'captions': captions,
+        'keywords': [word], 'camera': [{'at': 0, 'scale': 1, 'transition': 'cut'}],
+        'keyword_punches': [{'at': .5, 'word': word, 'strength': 1.075}], 'callouts': []}
 
 
 def main():
