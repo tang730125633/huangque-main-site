@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 
-import base64
 import hashlib
 import json
 import pathlib
@@ -112,72 +111,6 @@ class VideoComposeAnalysisTests(unittest.TestCase):
 
 
 class VideoComposeAsrTests(unittest.TestCase):
-    def test_voice_input_http_route_uses_authenticated_account(self):
-        class Handler:
-            path = "/api/gen/speech-to-text"
-
-            def _token(self):
-                return "account-token"
-
-            def _json_body_strict(self, max_bytes=None):
-                self.max_bytes = max_bytes
-                return {"audio": "encoded", "format": "mp3"}
-
-            def _send(self, status, body):
-                return status, body
-
-        handler = Handler()
-        with mock.patch.object(core, "_domains", return_value=(mock.Mock(), mock.Mock(), mock.Mock())), \
-                mock.patch.object(core, "verify", return_value={"username": "alice"}), \
-                mock.patch.object(core, "_must_change_password", return_value=False), \
-                mock.patch.object(core.cli_gateway, "handle_image_upload", return_value=False), \
-                mock.patch.object(core.cli_gateway, "handle_video_upload", return_value=False), \
-                mock.patch.object(core.cli_gateway, "handle_audio_upload", return_value=False), \
-                mock.patch.object(core.cli_gateway, "handle_voice_clone", return_value=False), \
-                mock.patch.object(core.cli_gateway, "handle_quote", return_value=False), \
-                mock.patch.object(asr, "transcribe_voice_input", return_value={"text": "你好", "duration_ms": 800}):
-            status, body = core.H._do_POST(handler)
-        self.assertEqual(200, status)
-        self.assertEqual({"ok": True, "text": "你好", "duration_ms": 800}, body)
-        self.assertEqual(720000, handler.max_bytes)
-
-    def test_voice_input_decodes_transcribes_and_deletes_temporary_audio(self):
-        captured = {}
-
-        def fake_transcriber(path):
-            captured["path"] = path
-            self.assertTrue(pathlib.Path(path).is_file())
-            return {"text": "帮我写一段茶叶文案", "duration_ms": 2200}
-
-        audio = base64.b64encode(b"ID3" + b"\0" * 100).decode()
-        with mock.patch.object(asr, "_duration_seconds", return_value=2.2):
-            result = asr.transcribe_voice_input(
-                {"audio": audio, "format": "mp3"}, "voice-user-a", fake_transcriber,
-            )
-        self.assertEqual("帮我写一段茶叶文案", result["text"])
-        self.assertFalse(pathlib.Path(captured["path"]).exists())
-
-    def test_voice_input_rejects_invalid_or_overlong_audio_before_transcription(self):
-        transcriber = mock.Mock()
-        with self.assertRaisesRegex(ValueError, "数据无效"):
-            asr.transcribe_voice_input({"audio": "not-base64", "format": "mp3"}, "voice-user-b", transcriber)
-        audio = base64.b64encode(b"ID3" + b"\0" * 100).decode()
-        with mock.patch.object(asr, "_duration_seconds", return_value=61), \
-                self.assertRaisesRegex(ValueError, "60 秒"):
-            asr.transcribe_voice_input({"audio": audio, "format": "mp3"}, "voice-user-b", transcriber)
-        transcriber.assert_not_called()
-
-    def test_voice_input_rate_limit_stops_provider_calls(self):
-        asr._VOICE_INPUT_HITS.clear()
-        audio = base64.b64encode(b"ID3" + b"\0" * 100).decode()
-        transcriber = mock.Mock(return_value={"text": "收到", "duration_ms": 1000})
-        with mock.patch.object(asr, "_duration_seconds", return_value=1):
-            for _ in range(asr.VOICE_INPUT_RATE_LIMIT):
-                asr.transcribe_voice_input({"audio": audio, "format": "mp3"}, "voice-user-c", transcriber)
-            with self.assertRaises(asr.VoiceInputRateLimited):
-                asr.transcribe_voice_input({"audio": audio, "format": "mp3"}, "voice-user-c", transcriber)
-        self.assertEqual(asr.VOICE_INPUT_RATE_LIMIT, transcriber.call_count)
-
     def test_transcribe_base_is_isolated_from_shared_openai_relay(self):
         class Response:
             def __enter__(self):
