@@ -720,7 +720,6 @@
             <option value="">全部日志</option>
             <option value="job" selected>只看生产任务</option>
             <option value="http">只看 HTTP 请求</option>
-            <option value="ip12">只看 IP12</option>
           </select>
           <select id="reqStatus">
             <option value="">全部状态</option>
@@ -1138,10 +1137,10 @@
     el('reqUpdatedAt').textContent=new Date().toLocaleTimeString()+' · 每 15 秒刷新';
     if(!items.length){el('reqBox').innerHTML='<div class="empty">'+esc(d.message||'当前筛选没有任务或请求记录')+'</div>';return}
     el('reqBox').innerHTML='<div class="task-stream">'+items.map(function(x){
-      var isJob=x.source==='job',isIp12=x.source==='ip12';
-      var type=isJob?'生产任务':(isIp12?'IP12 请求':'HTTP 请求');
+      var isJob=x.source==='job';
+      var type=isJob?'生产任务':'HTTP 请求';
       var tone=isJob?(x.evidence_tone==='fail'?'fail':(x.evidence_tone==='ok'?'ok':(x.evidence_tone==='running'||x.evidence_tone==='warn'?'warn':'neutral'))):(x.cat==='fail'?'fail':'ok');
-      var statusLabel=isJob?(x.evidence_label||'任务证据未采集'):((isIp12?'IP12 ':'HTTP ')+String(x.status_text||'-'));
+      var statusLabel=isJob?(x.evidence_label||'任务证据未采集'):('HTTP '+String(x.status_text||'-'));
       var identity=isJob?('任务 #'+String(x.task_id||'未采集')+' · 关联 '+String(x.correlation_id||('task:'+String(x.task_id||'未采集')))):(x.request_id?String(x.request_id).slice(0,16):'无请求号');
       var route=[];
       if(x.user&&x.user!=='-')route.push('<span class="recorded">用户 '+esc(x.user)+'</span>');else route.push('<span>用户未归属</span>');

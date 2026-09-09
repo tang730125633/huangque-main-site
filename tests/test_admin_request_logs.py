@@ -468,6 +468,7 @@ class RequestLogUserTests(unittest.TestCase):
         self.assertTrue(only_jobs and all(x["source"] == "job" for x in only_jobs))
         only_http = admin_api.activity_logs(source="http")["items"]
         self.assertTrue(only_http and all(x["source"] == "http" for x in only_http))
+        self.assertEqual(admin_api.activity_logs(source="ip12")["items"], [])
         # 统一状态：fail = HTTP >=400（本样本 404）
         fails = admin_api.activity_logs(category="fail")["items"]
         self.assertTrue(fails and all(x["cat"] == "fail" for x in fails))

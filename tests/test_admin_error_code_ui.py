@@ -17,6 +17,12 @@ class AdminErrorCodeUITests(unittest.TestCase):
         self.assertIn("Number(x.refunded)===1", html)
         self.assertIn("已退款", html)
 
+    def test_removed_ip12_source_is_not_exposed(self):
+        html = (Path(__file__).parents[1] / "site/admin/index.html").read_text(encoding="utf-8")
+        self.assertNotIn('<option value="ip12"', html)
+        self.assertNotIn("isIp12", html)
+        self.assertNotIn("IP12 请求", html)
+
 
 if __name__ == "__main__":
     unittest.main()
