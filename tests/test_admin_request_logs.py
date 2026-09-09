@@ -478,6 +478,61 @@ class RequestLogUserTests(unittest.TestCase):
         hit = admin_api.activity_logs(q="tang")["items"]
         self.assertTrue(hit and all("tang" in (x["user"] or "") or "tang" in x["path"] for x in hit))
 
+    def test_activity_user_filter_is_exact_and_before_pagination(self):
+        result = admin_api.activity_logs(source="job", user="TANG", limit=1)
+        self.assertGreater(result["total"], 0)
+        self.assertTrue(all(item["user"] == "tang" for item in result["items"]))
+        self.assertEqual(admin_api.activity_logs(user="tan")["total"], 0)
+
+    def test_activity_includes_actual_observed_model_without_claiming_delivery(self):
+        observed = [{'stage':'provider_submit', 'state':'recorded', 'provider':'minimax',
+                     'model':'MiniMax-H3', 'transport':'direct', 'host':'metaso.cn'}]
+        with mock.patch.object(admin_api.runtime_observability, 'traces', return_value=observed):
+            rows = admin_api.activity_logs(source='job', q='1226')['items']
+        self.assertEqual(rows[0]['model'], 'MiniMax-H3')
+        self.assertEqual(rows[0]['runtime_trace'][0]['host'], 'metaso.cn')
+        self.assertFalse(rows[0]['delivery_verified'])
+
+    def test_activity_search_finds_task_behind_500_newer_rows(self):
+        import sqlite3
+        import time
+        now = int(time.time())
+        from contextlib import closing
+        with closing(sqlite3.connect(str(self.db_path))) as connection:
+            connection.executemany(
+                "INSERT INTO jobs(id,username,kind,cost,status,payload,created_at,updated_at) "
+                "VALUES(?, 'other', 'copy', 0, 'done', '{}', ?, ?)",
+                [(2000 + i, now, now) for i in range(510)],
+            )
+            connection.commit()
+        result = admin_api.activity_logs(source="job", q="1226")
+        self.assertTrue(any(item["task_id"] == "1226" for item in result["items"]))
+        result = admin_api.activity_logs(source="job", user="tang")
+        self.assertTrue(any(item["task_id"] == "1226" for item in result["items"]))
+
+    def test_large_task_window_verifies_only_current_page(self):
+        import sqlite3
+        import time
+        from contextlib import closing
+        from unittest.mock import patch
+        now = int(time.time())
+        with closing(sqlite3.connect(str(self.db_path))) as connection:
+            connection.executemany(
+                "INSERT INTO jobs(id,username,kind,cost,status,payload,created_at,updated_at) "
+                "VALUES(?, 'load_user', 'copy', 0, 'done', '{}', ?, ?)",
+                [(10000+i, now, now) for i in range(10000)],
+            )
+            connection.commit()
+        started = time.perf_counter()
+        with patch.object(admin_api, '_job_evidence', wraps=admin_api._job_evidence) as verifier:
+            result = admin_api.activity_logs(source='job', user='load_user', limit=20, offset=40)
+        self.assertEqual(result['total'], 10000)
+        self.assertEqual(len(result['items']), 20)
+        self.assertEqual(verifier.call_count, 20)
+        self.assertEqual(result['summary']['evidence_scope'], 'page')
+        self.assertTrue(all('_detail' not in row for row in result['items']))
+        print('\n10,000 task benchmark: %.3fs, verified %d rows' % (time.perf_counter()-started, verifier.call_count))
+
     def test_activity_fail_filter_not_crowded_out(self):
         # 404 行不在最新 2 条里；fail 条件下推到采集层后依然能查到
         fails = admin_api.activity_logs(category="fail", limit=2, source="http")["items"]
@@ -550,7 +605,8 @@ class ServiceMonitorTests(unittest.TestCase):
         admin_api._SERVICE_MONITOR_STATE.update(self.old_state)
         self.db_path.unlink(missing_ok=True)
 
-    def test_incident_requires_consecutive_failures_and_records_recovery_once(self):
+    @mock.patch.object(admin_api.runtime_observability, 'enqueue')
+    def test_incident_requires_consecutive_failures_and_records_recovery_once(self, enqueue):
         service = {"key": "content", "name": "内容生成服务", "health_url": "http://invalid"}
         results = [
             {"key": "content", "name": "内容生成服务", "online": False, "error": "refused"},
@@ -575,6 +631,10 @@ class ServiceMonitorTests(unittest.TestCase):
         self.assertFalse(recovered["summary"]["functional_delivery_verified"])
         events = admin_api.service_monitor_events()
         self.assertEqual([item["event"] for item in reversed(events)], ["opened", "recovered"])
+        self.assertEqual(enqueue.call_args_list, [
+            mock.call('service.incident.open', 'content', 160),
+            mock.call('service.incident.recovered', 'content', 280),
+        ])
 
     def test_acceptance_freshness_never_runs_paid_validation(self):
         import sqlite3

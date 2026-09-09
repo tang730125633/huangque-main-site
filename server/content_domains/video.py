@@ -1361,6 +1361,15 @@ def validate_xiaole_video_payload(payload, username=None):
     cleaned = {key: value for key, value in payload.items()
                if not str(key).startswith("_")}
     channel = str(cleaned.get("channel") or "grok").strip().lower()
+    from . import channel_manager
+    managed = channel_manager.capture('xiaole_video', dict(cleaned, channel=channel))
+    if managed.get('_channel_binding'):
+        from . import feature_flags
+        feature_flags.require_enabled({'grok':'grok_video','minimax':'minimax_h3_video','omni':'omni_video','micro':'seedance_video'}.get(channel,'xiaole_video'))
+        # The runtime uses the managed adapter; retain the frontend identity for pricing.
+        managed.pop('_channel_binding', None)
+        managed['operation'] = 'generate'
+        return managed
     if channel not in XIAOLE_CHANNEL_MODELS:
         raise ValueError("未知视频渠道：%s" % channel)
     if channel in DISABLED_XIAOLE_VIDEO_CHANNELS:
@@ -7782,7 +7791,7 @@ def gen_xiaole_video(payload):
             "image_url": public_url(cover, "image/jpeg") if cover else None,
         }
     elif channel == "minimax":
-        from . import short_drama_native_audio, video_minimax_h3
+        from . import short_drama_native_audio, video_minimax_h3, runtime_observability
 
         provider_id_persisted = bool(existing and existing.get("request_id"))
 
@@ -7846,12 +7855,12 @@ def gen_xiaole_video(payload):
             )
         native_required = payload.get("_short_drama_native_audio_required") is True
         try:
-            video_file = _download_video_file_direct(
+            video_file = runtime_observability.call(job_id, 'download', lambda: _download_video_file_direct(
                 source_url,
                 prefix="minimax_h3_raw" if native_required else "minimax_h3",
                 allowed_hosts=video_minimax_h3.RESULT_HOSTS,
                 max_bytes=video_minimax_h3.RESULT_MAX_BYTES,
-            )
+            ), provider='minimax', model=video_minimax_h3.MODEL, transport='direct')
         except CompletedVideoDownloadError:
             # Provider generation is already complete and all bounded GET/resume
             # routes were exhausted. End/refund instead of requeueing forever.

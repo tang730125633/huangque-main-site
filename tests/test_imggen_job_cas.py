@@ -77,6 +77,19 @@ class ImggenJobCasTests(unittest.TestCase):
             row = c.execute("SELECT status,cost,owner FROM jobs WHERE id=?", (jid,)).fetchone()
         self.assertEqual(("pending", 14, "imggen"), tuple(row))
 
+    def test_managed_channel_snapshot_is_consumed_by_image_worker(self):
+        jid = self._insert(status='pending')
+        binding = {'id':'channel-one','version':2}
+        with closing(self.m.jdb()) as c:
+            c.execute('UPDATE jobs SET payload=? WHERE id=?', (json.dumps({'prompt':'test','_channel_binding':binding}),jid))
+            c.commit()
+        with patch('content_domains.channel_runtime.run_task',return_value={'type':'image','file':'test.png'}) as run, patch.object(self.m,'gen_banana') as legacy:
+            self.m.run_job(jid)
+        self.assertEqual(run.call_args.args[0],binding)
+        self.assertEqual(run.call_args.args[2],jid)
+        legacy.assert_not_called()
+        self.assertEqual(self._row(jid)['status'],'done')
+
     def test_banana_submit_binds_quote_charge_and_idempotency(self):
         charges = []
 

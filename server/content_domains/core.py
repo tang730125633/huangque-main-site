@@ -1767,7 +1767,11 @@ def run_job(job_id):
         if kind in {"audio", "short_drama_sound_effect", "video", "tryon", "xiaole_video", "sora_video", "leads", "cinematic", "avatar", "breakdown", "short_drama_preview", "short_drama_final", "script_to_video", "matrix_template_video", "director_agent"}:
             payload["_username"] = username   # 少一个 kind，handler 就拿不到用户名/job_id：
             payload["_job_id"] = job_id       # gen_avatar 记不了形象归属，gen_cinematic 查不到用户的形象
-        result = HANDLERS[kind](payload)
+        if payload.get('_channel_binding'):
+            from .channel_runtime import run_task
+            result = run_task(payload['_channel_binding'], payload, job_id)
+        else:
+            result = HANDLERS[kind](payload)
         breakdown_refund_prepared = False
         if kind == "breakdown":
             breakdown_refund_prepared = _prepare_breakdown_refund(

@@ -48,6 +48,9 @@ except ImportError:
 _DOMAIN_PACKAGE = (
     __package__ + ".content_domains" if __package__ else "content_domains"
 )
+runtime_observability = import_module(_DOMAIN_PACKAGE + ".runtime_observability")
+channel_manager = import_module(_DOMAIN_PACKAGE + ".channel_manager")
+channel_runtime = import_module(_DOMAIN_PACKAGE + ".channel_runtime")
 egress = import_module(_DOMAIN_PACKAGE + ".egress")
 feature_flags = import_module(_DOMAIN_PACKAGE + ".feature_flags")
 function_registry = import_module(_DOMAIN_PACKAGE + ".function_registry")
@@ -2932,7 +2935,7 @@ def request_logs(limit=200, status="", q="", include_noise=False):
     return out
 
 
-def activity_logs(days=7, limit=200, category="", q="", source="", include_noise=False, offset=0, attributed=False):
+def activity_logs(days=7, limit=200, category="", q="", source="", include_noise=False, offset=0, attributed=False, user=""):
     """任务记录(jobs 库) + HTTP 请求(nginx) 合并成一条时间线，最新在前。
 
     category: '' | ok | fail | running（统一语义：任务 done/error/排队中 ↔ HTTP <400/>=400）
@@ -2944,7 +2947,8 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
     category = str(category or "").strip()
     source = str(source or "").strip()
     merged, message = [], None
-    source_limit = 500
+    source_limit = None
+    user = str(user or "").strip()
 
     if source in ("", "http") and category != "running":
         # 成功/失败下推到采集层，避免"失败行被截断挤掉"
@@ -2976,7 +2980,7 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
             )
 
     if source in ("", "job"):
-        for j in call_logs(days, source_limit)["items"]:
+        for j in call_logs(days, source_limit, user=user, defer_evidence=True)["items"]:
             t = time.localtime(j["created_at"]) if j["created_at"] else None
             key = (t.tm_year, t.tm_mon, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec) if t else (0, 0, 0, 0, 0, 0)
             job_status = str(j.get("status") or "unknown").lower()
@@ -2989,6 +2993,7 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
                 (
                     key,
                     {
+                        "_detail": j,
                         "source": "job",
                         "time": "%02d-%02d %02d:%02d:%02d" % key[1:] if t else "-",
                         "user": j["username"],
@@ -3029,6 +3034,8 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
             merged,
             key=lambda x: (x[1].get("cat") == "running", x[0]),
             reverse=True):
+        if user and str(it.get("user") or "").casefold() != user.casefold():
+            continue
         if category and it["cat"] != category:
             continue
         if attributed and it.get("user") in (None, "", "-"):
@@ -3045,6 +3052,42 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
         matching.append(it)
     total = len(matching)
     items = matching[offset:offset + limit]
+    for item in items:
+        detail = item.pop("_detail", None)
+        if detail is None:
+            continue
+        inputs = detail.pop("_deferred_evidence", None)
+        artifact = detail.pop("_deferred_artifact", None)
+        if inputs is not None:
+            evidence = _job_evidence(inputs[0], inputs[1], allow_remote=False, structured_asset=inputs[2])
+            detail.update({
+                "result_reference": bool(evidence.get("output_reference_present")),
+                "delivery_verified": bool(evidence.get("delivery_verified")),
+                "artifact_check": evidence.get("artifact_check") or "not_recorded",
+                "delivery_detail": evidence.get("delivery_detail") or "",
+            })
+        elif artifact is not None:
+            evidence = _verify_local_artifact(artifact)
+            detail.update({"delivery_verified": bool(evidence.get("delivery_verified")),
+                           "artifact_check": evidence.get("artifact_check") or "not_recorded"})
+        trace = runtime_observability.traces(detail['id'])
+        item['runtime_trace'] = _sanitize_public_admin_payload(trace)
+        managed = channel_manager.task_evidence(detail['id'])
+        if managed:
+            item['channel_version'] = managed['version']
+            item['managed_channel_id'] = managed['channel']
+            if managed.get('provider_id'):
+                detail['provider_task_id'] = managed['provider_id']
+                item['provider_task_id'] = managed['provider_id']
+        if trace:
+            observed = trace[-1]
+            for field in ('provider', 'model'):
+                if observed.get(field):
+                    detail[field] = observed[field]
+                    item[field] = observed[field]
+        detail.update(_task_runtime_record(detail))
+        for field in ("route", "result_reference", "delivery_verified", "artifact_check", "evidence_tone", "evidence_label", "stages"):
+            item[field] = detail.get(field)
     out = {
         "items": items,
         "limit": limit,
@@ -3059,13 +3102,14 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
             "evidence_gaps": sum(
                 item.get("source") == "job"
                 and item.get("evidence_tone") in {"warn", "neutral"}
-                for item in matching
+                for item in items
             ),
             "evidence_unclosed": sum(
                 item.get("source") == "job"
                 and item.get("evidence_tone") != "ok"
-                for item in matching
+                for item in items
             ),
+            "evidence_scope": "page",
         },
         "error_catalog": error_contract.public_catalog(),
     }
@@ -3301,6 +3345,7 @@ def _run_service_monitor_cycle(probe=None, services=None, now=None, record_event
         for action, target, detail in transitions:
             try:
                 _admin_audit("system:health-monitor", action, target, detail)
+                runtime_observability.enqueue(action, target, int(now))
             except sqlite3.Error:
                 pass
     snapshot["summary"] = {
@@ -3367,15 +3412,17 @@ def service_health_monitor():
     if not snapshot.get("last_cycle_at"):
         snapshot = run_service_monitor_cycle(record_events=False)
     snapshot["events"] = service_monitor_events()
+    snapshot["notifications"] = runtime_observability.alert_status()
     return snapshot
 
 
 def service_monitor_loop(stop_event):
     while not stop_event.is_set():
-        try:
-            run_service_monitor_cycle()
-        except Exception:
-            pass
+        for cycle in (run_service_monitor_cycle, channel_runtime.monitor_cycle, runtime_observability.dispatch):
+            try:
+                cycle()
+            except Exception:
+                pass
         stop_event.wait(SERVICE_MONITOR_INTERVAL_SECONDS)
 
 
@@ -6997,6 +7044,19 @@ def job_stats(days=7):
     unmapped_items = _finish_stats(list(unmapped.values()))
     for item in operation_items:
         if isinstance(item.get("latest"), dict):
+            latest = item["latest"]
+            trace = runtime_observability.traces(latest.get("job_id")) if latest.get("job_id") else []
+            if trace:
+                latest["runtime_trace"] = trace
+                for observation in trace:
+                    for field in ("provider", "model"):
+                        if observation.get(field):
+                            latest[field] = observation[field]
+                    if observation.get("host"):
+                        latest["proxy_evidence"] = "%s · %s" % (
+                            "直连" if observation.get("transport") == "direct" else "出口未明确",
+                            observation["host"],
+                        )
             item["latest"] = _sanitize_admin_evidence(item["latest"])
     for item in unmapped_items:
         item["latest_error"] = _sanitize_task_error(item.get("latest_error"))
@@ -7372,7 +7432,7 @@ def _task_runtime_record(item):
     }
 
 
-def _short_drama_provider_call_logs(conn, since, limit):
+def _short_drama_provider_call_logs(conn, since, limit, defer_evidence=False):
     """读取不经过通用 jobs 表的短剧供应商镜头任务。"""
     exists = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' "
@@ -7451,11 +7511,12 @@ def _short_drama_provider_call_logs(conn, since, limit):
             "result_file": result_file,
             "result_url": result_url,
             "_artifact_media_type": "video",
-        })
+        }) if not defer_evidence else {}
         attempt_state = attempt_by_job.get(str(row["id"]), "")
         items.append({
             "id": row["id"],
             "username": row["owner_username"] or "-",
+            "_deferred_artifact": {"result_file": result_file, "result_url": result_url, "_artifact_media_type": "video"} if defer_evidence else None,
             "kind": "short_drama_provider_video",
             "func": _SHORT_DRAMA_PROVIDER_NAMES.get(
                 provider, "短剧 · %s 视频" % provider
@@ -7486,9 +7547,10 @@ def _short_drama_provider_call_logs(conn, since, limit):
     return items
 
 
-def call_logs(days=7, limit=200):
+def call_logs(days=7, limit=200, user="", defer_evidence=False):
+    unlimited = limit is None
     days = max(1, min(int(days or 7), 90))
-    limit = max(1, min(int(limit or 200), 500))
+    limit = -1 if unlimited else max(1, min(int(limit or 200), 500))
     if not JOB_DB.exists():
         return {"days": days, "limit": limit, "items": [], "message": "content_jobs.db not found"}
     since = int(time.time()) - days * 86400
@@ -7539,7 +7601,7 @@ def call_logs(days=7, limit=200):
                        %s AS refunded,
                        %s AS job_error
                FROM jobs
-               WHERE created_at >= ? OR status IN (%s)
+               WHERE (created_at >= ? OR status IN (%s)) AND (? = '' OR username = ? COLLATE NOCASE)
                ORDER BY (status IN (%s)) DESC,created_at DESC,id DESC
                LIMIT ?""" % (
                     submission_sql,
@@ -7549,9 +7611,9 @@ def call_logs(days=7, limit=200):
                     result_sql, refunded_sql, error_sql,
                     running_marks, running_marks,
                ),
-            (since, *running_states, *running_states, limit),
+            (since, *running_states, user, user, *running_states, limit),
         ).fetchall()
-        short_drama_items = _short_drama_provider_call_logs(c, since, limit)
+        short_drama_items = _short_drama_provider_call_logs(c, since, limit, defer_evidence=defer_evidence)
         idempotency_by_job = {}
         idempotency_table = c.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='submission_idempotency'"
@@ -7561,7 +7623,7 @@ def call_logs(days=7, limit=200):
                 """SELECT idem_key,response_json FROM submission_idempotency
                    WHERE updated_at>=? AND response_json IS NOT NULL
                    ORDER BY updated_at DESC LIMIT ?""",
-                (since, max(1000, limit * 10)),
+                (since, -1 if unlimited else max(1000, limit * 10)),
             ).fetchall()
             for claim in claims:
                 try:
@@ -7649,7 +7711,7 @@ def call_logs(days=7, limit=200):
             media_asset,
             allow_remote=False,
             structured_asset=structured_assets.get(int(row["id"])),
-        )
+        ) if not defer_evidence else {}
         correlation_sources = (
             (row["correlation_id"], "payload"),
             (row["submission_key"], "submission"),
@@ -7661,6 +7723,7 @@ def call_logs(days=7, limit=200):
         )
         item = {
                 "id": row["id"],
+                "_deferred_evidence": (evidence_row, media_asset, structured_assets.get(int(row["id"]))) if defer_evidence else None,
                 "username": row["username"] or "-",
                 "kind": kind,
                 "func": func,
@@ -7700,8 +7763,11 @@ def call_logs(days=7, limit=200):
         reverse=True,
     )
     for item in items:
+        if not defer_evidence:
+            item.pop("_deferred_evidence", None)
+            item.pop("_deferred_artifact", None)
         item.update(_task_runtime_record(item))
-    return {"days": days, "limit": limit, "items": items[:limit]}
+    return {"days": days, "limit": limit, "items": items if unlimited else items[:limit]}
 
 
 def user_job_insights(username):
@@ -7885,6 +7951,11 @@ class H(BaseHTTPRequestHandler):
             return
         if path == "/api/admin/health":
             return self._send(200, {"ok": True, "service": "huangque-admin"})
+        if path == "/api/admin/channel-manager":
+            try:
+                return self._send(200, channel_manager.overview())
+            except Exception:
+                return self._send(503, {"detail": "渠道管理存储不可用"})
         if path == "/api/admin/services":
             return self._send(200, {"items": service_status()})
         if path == "/api/admin/health-monitor":
@@ -8063,6 +8134,7 @@ class H(BaseHTTPRequestHandler):
                         (q.get("noise") or ["0"])[0] in ("1", "true"),
                         (q.get("offset") or ["0"])[0],
                         (q.get("attributed") or ["0"])[0] in ("1", "true"),
+                        (q.get("user") or [""])[0],
                     ),
                 )
             except Exception as e:
@@ -8476,6 +8548,21 @@ class H(BaseHTTPRequestHandler):
             except Exception:
                 return self._send(500, {"detail": "保存失败"})
             return self._send(200, {"ok": True, "channel": item})
+        if path.startswith('/api/admin/channel-manager/'):
+            if int(self.headers.get('Content-Length') or 0) > 12*1024*1024:
+                return self._send(413, {'detail':'渠道配置与素材总大小不得超过12MB'})
+            actions = {'save':channel_manager.save, 'mapping':channel_manager.save_mapping,
+                       'rollback':channel_manager.rollback, 'test':channel_runtime.start_test,
+                       'notifications':channel_manager.save_notifications}
+            action = actions.get(path.rsplit('/',1)[-1])
+            if not action:
+                return self._send(404, {'detail':'未知渠道操作'})
+            try:
+                return self._send(200, action(user.get('username') or 'admin', self._body()))
+            except ValueError as exc:
+                return self._send(400, {'detail':str(exc)[:240]})
+            except Exception:
+                return self._send(503, {'detail':'渠道操作未完成，请检查密钥保险箱与存储配置'})
         if path == "/api/admin/features/toggle":
             try:
                 item = save_feature(user.get("username") or "admin", self._body())

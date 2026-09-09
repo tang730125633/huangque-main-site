@@ -443,7 +443,11 @@ def run_job(job_id):
             if claimed.rowcount < 1:
                 return  # 已被别的线程接管或已是终态
             started = True
-        result = gen_banana(payload)
+        if payload.get('_channel_binding'):
+            from content_domains.channel_runtime import run_task
+            result = run_task(payload['_channel_binding'], payload, job_id)
+        else:
+            result = gen_banana(payload)
         if not _set_terminal(job_id, "done", result=result):
             # reaper 已把它判超时并退点：不覆写终态。宁可用户重试，也不能既退点又出图。
             print("[imggen] job %s 完成时已非 running（reaper 判超时在先），丢弃结果" % job_id, flush=True)
