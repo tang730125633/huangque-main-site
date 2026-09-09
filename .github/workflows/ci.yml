@@ -124,6 +124,7 @@ jobs:
             test_timeline_compose.py
             test_video_compose.py
             test_video_compose_editorial.py
+            test_editorial_runtime_release.py
           )
           for test_file in "${tests[@]}"; do
             # These service suites intentionally manipulate sys.path and generic
