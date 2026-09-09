@@ -1873,8 +1873,7 @@ def run_job(job_id):
         except Exception:
             pass
     except Exception as e:
-        if kind in {"sora_video", "xiaole_video"} or (
-                kind == "video" and mode == "lipsync"):
+        if kind in {"sora_video", "xiaole_video", "video"}:
             try:
                 if _domains()[2].recover_paid_video_error(
                         job_id, kind, payload, e, _requeue_running_job):
@@ -2009,9 +2008,7 @@ def reaper():
                     stuck_payload = json.loads(r["payload"] or "{}")
                 except Exception:
                     stuck_payload = {}
-                if r["kind"] in {"sora_video", "xiaole_video"} or (
-                        r["kind"] == "video"
-                        and str(stuck_payload.get("mode") or "") == "lipsync"):
+                if r["kind"] in {"sora_video", "xiaole_video", "video"}:
                     try:
                         video_domain = _domains()[2]
                         if video_domain.recover_paid_video_error(r["id"], r["kind"], stuck_payload,

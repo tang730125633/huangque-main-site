@@ -2596,12 +2596,17 @@ def recover_official_video_paid_job(job_id, error, requeue=None):
 
 
 def recovery_hold_expired(job_id, kind, age, grace):
-    getter = (
-        get_resumable_sora_request if kind == "sora_video"
-        else get_resumable_lipsync_request if kind == "video"
-        else get_resumable_grok_request
-    )
-    recovery = getter(job_id)
+    if kind == "video":
+        recovery = (
+            get_resumable_heygen_talking_request(job_id)
+            or get_resumable_lipsync_request(job_id)
+        )
+    else:
+        getter = (
+            get_resumable_sora_request if kind == "sora_video"
+            else get_resumable_grok_request
+        )
+        recovery = getter(job_id)
     return bool(
         recovery
         and not recovery.get("submission_unknown")
@@ -2625,6 +2630,34 @@ def get_resumable_lipsync_request(job_id):
         "submission_unknown": not bool(row["provider_video_id"]),
         "phase": str(row["phase"] or ""),
         "status": str(row["status"] or ""),
+    }
+
+
+def get_resumable_heygen_talking_request(job_id):
+    """Return a persisted subscription talking-video task for GET-only recovery."""
+    if not job_id:
+        return None
+    with closing(adb()) as connection:
+        row = connection.execute(
+            "SELECT mode,provider_video_id,model,phase,status,image_asset_id "
+            "FROM video_assets WHERE job_id=?",
+            (job_id,),
+        ).fetchone()
+    if not row or str(row["mode"] or "") not in {"text", "audio"}:
+        return None
+    if str(row["model"] or "") != "heygen_mcp_subscription":
+        return None
+    phase = str(row["phase"] or "")
+    if not row["provider_video_id"] or phase not in {
+            "polling_video", "downloading_video",
+            "heygen_subscription_retrying", "heygen_subscription_recovery_required"}:
+        return None
+    return {
+        "request_id": str(row["provider_video_id"]),
+        "provider": "heygen_mcp_subscription",
+        "phase": phase,
+        "status": str(row["status"] or ""),
+        "image_asset_id": row["image_asset_id"],
     }
 
 
@@ -2693,6 +2726,31 @@ def recover_sora_paid_job(job_id, error, requeue=None):
 def recover_paid_video_error(job_id, kind, payload, error, requeue=None,
                              force_requeue=False):
     """Classify paid video failures here so core only owns lifecycle wiring."""
+    mode = str((payload or {}).get("mode") or "").strip().lower()
+    if kind == "video" and mode in {"text", "audio"}:
+        recovery = get_resumable_heygen_talking_request(job_id)
+        if not recovery:
+            return False
+        cause = error
+        retryable = bool(force_requeue)
+        while cause is not None:
+            if isinstance(cause, HeyGenProviderFailed):
+                return False
+            if isinstance(cause, (HeyGenNetworkError, HeyGenStatusUnknownError, TimeoutError)):
+                retryable = True
+            cause = cause.__cause__
+        if recovery.get("phase") == "heygen_subscription_recovery_required":
+            return True
+        if retryable and requeue and requeue(job_id):
+            update_video_asset_phase(
+                job_id, "heygen_subscription_retrying", error=str(error)[:300]
+            )
+        else:
+            update_video_asset_phase(
+                job_id, "heygen_subscription_recovery_required",
+                error=str(error)[:300],
+            )
+        return True
     if kind == "video" and str((payload or {}).get("mode") or "") == "lipsync":
         recovery = get_resumable_lipsync_request(job_id)
         if not recovery or isinstance(error, HeyGenLipsyncProviderFailed):
@@ -4930,6 +4988,10 @@ class HeyGenBilledError(RuntimeError):
     """
 
 
+class HeyGenProviderFailed(RuntimeError):
+    """HeyGen confirmed that an accepted task ended in a failed state."""
+
+
 class HeyGenStatusUnknownError(RuntimeError):
     """HeyGen accepted a paid submission but its status contract is unusable.
 
@@ -5200,7 +5262,7 @@ def _heygen_poll_video(video_id, direct=False, deadline_s=None, mcp=False,
                 ),
                 flush=True,
             )
-            raise RuntimeError("HeyGen视频生成失败: %s" % public_error)
+            raise HeyGenProviderFailed("HeyGen视频生成失败: %s" % public_error)
         time.sleep(HEYGEN_POLL_INTERVAL)
     if consecutive_net_fails:
         raise HeyGenNetworkError("HeyGen状态查询网络持续失败，已保留原video_id，禁止重复提交")
@@ -5553,40 +5615,51 @@ def _download_video_file_direct(url, prefix="vid", *, allowed_hosts=None, max_by
 def generate_heygen_video_subscription(image_file, audio_file, resolution, ratio, motion,
                                         job_id=None, image_asset_id=None):
     """Generate through OAuth/MCP only, billing the web plan and never the API wallet."""
-    image_asset_id = str(image_asset_id or "").strip()
-    image_fp = None if image_asset_id else _resolve_out_file(image_file)
-    audio_fp = _resolve_out_file(audio_file)
-    if (not image_asset_id and not image_fp) or not audio_fp:
-        raise ValueError("视频素材文件不存在")
-    audio_fp = _ensure_heygen_audio_mp3(audio_fp)
-    _heygen_require_subscription_credits()
-    if not image_asset_id:
-        image_asset_id = _heygen_mcp_upload_asset(image_fp)
-    image_input = {"type": "asset_id", "asset_id": image_asset_id}
-    audio_rel = _owned_output_relative(audio_fp)
-    audio_url = public_url(audio_rel, "audio/mpeg", private=True)
-    parsed_audio_url = urllib.parse.urlparse(str(audio_url or ""))
-    if parsed_audio_url.scheme != "https" or not parsed_audio_url.hostname:
-        raise RuntimeError("HeyGen 套餐模式需要可访问的 HTTPS 音频地址，请配置私有 COS 存储")
-    update_video_asset_phase(job_id, "submitting_video", billing_mode="subscription")
-    with heygen_slot("口播套餐"):
-        video_id = _heygen_retry_429(
-            lambda: _heygen_create_video(
-                image_input, None, resolution, ratio, motion,
-                audio_url=audio_url,
-            ),
-            "口播套餐",
+    existing = get_resumable_heygen_talking_request(job_id)
+    image_asset_id = str((existing or {}).get("image_asset_id") or image_asset_id or "").strip()
+    if existing:
+        video_id = existing["request_id"]
+    else:
+        image_fp = None if image_asset_id else _resolve_out_file(image_file)
+        audio_fp = _resolve_out_file(audio_file)
+        if (not image_asset_id and not image_fp) or not audio_fp:
+            raise ValueError("视频素材文件不存在")
+        audio_fp = _ensure_heygen_audio_mp3(audio_fp)
+        _heygen_require_subscription_credits()
+        if not image_asset_id:
+            image_asset_id = _heygen_mcp_upload_asset(image_fp)
+        image_input = {"type": "asset_id", "asset_id": image_asset_id}
+        audio_rel = _owned_output_relative(audio_fp)
+        audio_url = public_url(audio_rel, "audio/mpeg", private=True)
+        parsed_audio_url = urllib.parse.urlparse(str(audio_url or ""))
+        if parsed_audio_url.scheme != "https" or not parsed_audio_url.hostname:
+            raise RuntimeError("HeyGen 套餐模式需要可访问的 HTTPS 音频地址，请配置私有 COS 存储")
+        update_video_asset_phase(
+            job_id, "submitting_video", model="heygen_mcp_subscription"
         )
-        update_video_asset_phase(job_id, "polling_video", provider_video_id=video_id,
-                                 billing_mode="subscription")
+    with heygen_slot("口播套餐"):
+        if not existing:
+            video_id = _heygen_retry_429(
+                lambda: _heygen_create_video(
+                    image_input, None, resolution, ratio, motion,
+                    audio_url=audio_url,
+                ),
+                "口播套餐",
+            )
+            update_video_asset_phase(
+                job_id, "polling_video", provider_video_id=video_id,
+                image_asset_id=image_asset_id, model="heygen_mcp_subscription",
+            )
         try:
             info = _heygen_poll_video(
                 video_id, deadline_s=VIDEO_GEN_DEADLINE, mcp=True,
                 allow_api_fallback=False,
             )
-            update_video_asset_phase(job_id, "downloading_video", provider_video_id=video_id,
-                                     source_video_url=info.get("video_url"),
-                                     billing_mode="subscription")
+            update_video_asset_phase(
+                job_id, "downloading_video", provider_video_id=video_id,
+                source_video_url=info.get("video_url"),
+                model="heygen_mcp_subscription",
+            )
             video_file = _download_video_file_direct(info["video_url"], "heygen")
             cover = _extract_first_frame_cover(video_file)
         except Exception as exc:
@@ -5603,6 +5676,7 @@ def generate_heygen_video_subscription(image_file, audio_file, resolution, ratio
         "duration": info.get("duration"),
         "provider": "heygen_mcp_subscription",
         "billing_mode": "subscription",
+        "model": "heygen_mcp_subscription",
         "image_asset_id": image_asset_id,
     }
     if cover:
@@ -5651,6 +5725,7 @@ def generate_heygen_video_direct(image_file, audio_file, resolution, ratio, moti
         "image_asset_id": image_asset_id, "audio_asset_id": audio_asset_id,
         "source_video_url": info.get("video_url"), "thumbnail_url": info.get("thumbnail_url"),
         "duration": info.get("duration"), "provider": "heygen_direct",
+        "billing_mode": "api",
     }
     if cover:
         ret["image_file"] = cover
@@ -5710,6 +5785,8 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion,
         "source_video_url": info.get("video_url"),
         "thumbnail_url": info.get("thumbnail_url"),
         "duration": info.get("duration"),
+        "provider": "heygen_relay",
+        "billing_mode": "api",
     }
     if cover:
         ret["image_file"] = cover
@@ -6280,6 +6357,9 @@ def gen_video(payload):
         "reference_asset_id": video_result.get("reference_asset_id"),
         "source_video_url": video_result.get("source_video_url"),
         "thumbnail_url": video_result.get("thumbnail_url"), "duration": video_result.get("duration"),
+        "provider": video_result.get("provider"),
+        "billing_mode": video_result.get("billing_mode"),
+        "model": video_result.get("model"),
         "resolution": resolution, "ratio": ratio, "motion": motion,
         "phase": "done",
         "subtitle": subtitle_on,

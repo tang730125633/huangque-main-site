@@ -67,7 +67,17 @@ def reclaim_orphaned_running(
         request_id = None
         provider = None
         if row["kind"] == "video":
-            getter = getattr(domains()[2], "get_resumable_lipsync_request", None)
+            video_domain = domains()[2]
+            try:
+                payload = json.loads(row["payload"] or "{}")
+            except (TypeError, ValueError):
+                payload = {}
+            mode = str(payload.get("mode") or "").strip().lower()
+            getter = (
+                getattr(video_domain, "get_resumable_heygen_talking_request", None)
+                if mode in {"text", "audio"}
+                else getattr(video_domain, "get_resumable_lipsync_request", None)
+            )
             if getter:
                 try:
                     resumable = getter(row["id"])
@@ -79,7 +89,18 @@ def reclaim_orphaned_running(
                                 % row["id"], flush=True,
                             )
                             continue
-                        provider = "HeyGen Lipsync"
+                        if str(resumable.get("phase") or "").endswith(
+                                "_recovery_required"):
+                            logger(
+                                "[startup] HeyGen 任务需人工核对，保留 running job=%s"
+                                % row["id"], flush=True,
+                            )
+                            continue
+                        provider = (
+                            "HeyGen talking"
+                            if mode in {"text", "audio"}
+                            else "HeyGen Lipsync"
+                        )
                         request_id = (
                             resumable.get("request_id")
                             or "idempotent-job-%s" % row["id"]

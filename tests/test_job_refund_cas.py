@@ -248,6 +248,62 @@ class JobRefundCasTests(unittest.TestCase):
         self.assertEqual(self._row(jid)["refunded"], 0)
         self.assertEqual(self.refunds, [])
 
+    def test_reclaim_requeues_subscription_talking_video_without_refund(self):
+        jid = self._insert(30, kind="video", payload={"mode": "text"})
+
+        class _FakeVideo:
+            @staticmethod
+            def get_resumable_heygen_talking_request(job_id):
+                return {
+                    "request_id": "heygen-existing",
+                    "provider": "heygen_mcp_subscription",
+                    "phase": "polling_video",
+                } if job_id == jid else None
+
+        self.core._domains = lambda: (None, type("P", (), {
+            "refund_points": staticmethod(lambda *args, **kwargs: None)
+        }), _FakeVideo)
+        self.assertEqual(self.core.reclaim_orphaned_running(), 1)
+        self.assertEqual(self._row(jid)["status"], "pending")
+        self.assertEqual(self._row(jid)["refunded"], 0)
+        self.assertEqual(self.refunds, [])
+
+    def test_worker_preserves_subscription_talking_video_after_provider_id(self):
+        now = int(time.time())
+        with closing(self.core.jdb()) as connection:
+            cursor = connection.execute(
+                "INSERT INTO jobs(kind,username,cost,status,payload,created_at,updated_at) "
+                "VALUES('video','u',30,'pending',?,?,?)",
+                (json.dumps({"mode": "text"}), now, now),
+            )
+            connection.commit()
+            job_id = cursor.lastrowid
+
+        class _FakeVideo:
+            @staticmethod
+            def recover_paid_video_error(*_args, **_kwargs):
+                return True
+
+            @staticmethod
+            def schedule_unknown_seedance_cleanup(*_args, **_kwargs):
+                return None
+
+        self.core._domains = lambda: (None, type("P", (), {
+            "refund_points": staticmethod(lambda *args, **kwargs: None)
+        }), _FakeVideo)
+
+        def fail(_payload):
+            raise RuntimeError("poll failed")
+
+        with mock.patch.dict(
+                self.core.HANDLERS, {"video": fail}), mock.patch.object(
+                    self.core, "_start_job_heartbeat", return_value=lambda: None):
+            self.core.run_job(job_id)
+
+        self.assertEqual(self._row(job_id)["status"], "running")
+        self.assertEqual(self._row(job_id)["refunded"], 0)
+        self.assertEqual(self.refunds, [])
+
     def test_reclaim_requeues_known_omni_id_without_refund(self):
         jid = self._insert(90, kind="xiaole_video")
 

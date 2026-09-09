@@ -413,6 +413,85 @@ class HeyGenMcpOAuthTests(unittest.TestCase):
         )
         self.assertEqual(result["billing_mode"], "subscription")
 
+    def test_subscription_video_resumes_persisted_id_without_second_create(self):
+        existing = {
+            "request_id": "video-plan-existing",
+            "provider": "heygen_mcp_subscription",
+            "phase": "heygen_subscription_retrying",
+            "image_asset_id": "oauth-image-existing",
+        }
+        with patch.object(video, "get_resumable_heygen_talking_request", return_value=existing), \
+             patch.object(video, "_resolve_out_file") as resolve, \
+             patch.object(video, "_heygen_require_subscription_credits") as credits, \
+             patch.object(video, "_heygen_create_video") as create, \
+             patch.object(video, "_heygen_poll_video", return_value={
+                 "video_url": "https://example/video.mp4", "duration": 8,
+             }) as poll, \
+             patch.object(video, "_download_video_file_direct", return_value="video/out.mp4"), \
+             patch.object(video, "_extract_first_frame_cover", return_value=None), \
+             patch.object(video, "heygen_slot", side_effect=lambda _label: nullcontext()), \
+             patch.object(video, "update_video_asset_phase"):
+            result = video.generate_heygen_video_subscription(
+                "missing.jpg", "missing.mp3", "1080p", "9:16", "medium",
+                job_id=17,
+            )
+        resolve.assert_not_called()
+        credits.assert_not_called()
+        create.assert_not_called()
+        poll.assert_called_once_with(
+            "video-plan-existing", deadline_s=video.VIDEO_GEN_DEADLINE,
+            mcp=True, allow_api_fallback=False,
+        )
+        self.assertEqual(result["provider"], "heygen_mcp_subscription")
+        self.assertEqual(result["video_id"], "video-plan-existing")
+
+    def test_subscription_talking_post_submit_failure_requeues_without_refund(self):
+        error = video.HeyGenBilledError("poll failed")
+        error.__cause__ = video.HeyGenNetworkError("temporary")
+        requeue = Mock(return_value=True)
+        with patch.object(video, "get_resumable_heygen_talking_request", return_value={
+                 "request_id": "video-plan-existing",
+                 "provider": "heygen_mcp_subscription",
+                 "phase": "polling_video",
+             }), patch.object(video, "update_video_asset_phase") as phase:
+            self.assertTrue(video.recover_paid_video_error(
+                17, "video", {"mode": "text"}, error, requeue,
+            ))
+        requeue.assert_called_once_with(17)
+        phase.assert_called_once_with(
+            17, "heygen_subscription_retrying", error=str(error)[:300]
+        )
+
+    def test_subscription_talking_confirmed_provider_failure_can_refund(self):
+        error = video.HeyGenBilledError("provider failed")
+        error.__cause__ = video.HeyGenProviderFailed("failed")
+        with patch.object(video, "get_resumable_heygen_talking_request", return_value={
+                 "request_id": "video-plan-existing",
+                 "provider": "heygen_mcp_subscription",
+                 "phase": "polling_video",
+             }):
+            self.assertFalse(video.recover_paid_video_error(
+                17, "video", {"mode": "text"}, error, Mock(),
+            ))
+
+    def test_subscription_talking_oauth_failure_waits_without_retry_or_refund(self):
+        error = video.HeyGenBilledError("oauth failed")
+        error.__cause__ = video.HeyGenMCPAuthError("expired")
+        requeue = Mock()
+        with patch.object(video, "get_resumable_heygen_talking_request", return_value={
+                 "request_id": "video-plan-existing",
+                 "provider": "heygen_mcp_subscription",
+                 "phase": "polling_video",
+             }), patch.object(video, "update_video_asset_phase") as phase:
+            self.assertTrue(video.recover_paid_video_error(
+                17, "video", {"mode": "audio"}, error, requeue,
+            ))
+        requeue.assert_not_called()
+        phase.assert_called_once_with(
+            17, "heygen_subscription_recovery_required",
+            error=str(error)[:300],
+        )
+
     def test_existing_subscription_avatar_reuses_persisted_image_asset(self):
         avatar = {
             "id": 2, "image_file": "avatar.jpg",
@@ -423,7 +502,10 @@ class HeyGenMcpOAuthTests(unittest.TestCase):
              patch.object(video, "_heygen_mcp_enabled", return_value=True), \
              patch.object(video, "get_video_avatar", return_value=avatar), \
              patch.object(video, "gen_audio", return_value={"file": "audio/a.mp3"}), \
-             patch.object(video, "generate_heygen_video", return_value={"video_id": "v"}) as generate, \
+             patch.object(video, "generate_heygen_video", return_value={
+                 "video_id": "v", "provider": "heygen_mcp_subscription",
+                 "billing_mode": "subscription", "model": "heygen_mcp_subscription",
+             }) as generate, \
              patch.object(video, "update_video_asset_phase"):
             result = video.gen_video({
                 "_username": "owner", "avatar_id": 2, "mode": "text",
@@ -431,6 +513,8 @@ class HeyGenMcpOAuthTests(unittest.TestCase):
             })
         self.assertEqual(result["avatar_id"], 2)
         self.assertEqual(generate.call_args.kwargs["image_asset_id"], "oauth-image-2")
+        self.assertEqual(result["provider"], "heygen_mcp_subscription")
+        self.assertEqual(result["billing_mode"], "subscription")
 
     def test_legacy_subscription_avatar_without_image_asset_fails_before_audio(self):
         avatar = {
