@@ -53,7 +53,7 @@ hq doctor --json
 hq login --json
 hq status --json
 hq capabilities --json
-hq describe ip12-projects --json
+hq describe digital-ip-projects --json
 ```
 
 `hq login` 使用浏览器设备授权。CLI 不接触账号密码或网页 Cookie；8 小时访问令牌会在到期前用 30 天刷新令牌自动轮换，只有刷新令牌过期、撤销、重放、账号停用或密码变更后才需重新登录。凭证在 macOS/Linux 保存到权限为 `0600` 的 `~/.config/hq-cli/credentials.json`，在 Windows 保存到 `%APPDATA%\Huangque\hq-cli\credentials.json` 并由当前 Windows 用户的 DPAPI 加密。`hq status --json` 只显示授权模式及两个到期时间，不显示令牌；`hq logout` 会撤销整台设备的授权。
@@ -94,7 +94,7 @@ hq describe ip12-projects --json
 - `website_operations`、`website_access`：说明网页对应操作和真实执行方式；API 支持的正常用户动作直接调用，密码/支付/浏览器本地动作明确交接。
 - `workflow`、`success_evidence`、`recovery`：约束报价、确认、幂等、轮询和失败恢复。
 
-例如 `ip12-project` 会同时告诉 Agent：先用 `ip12-projects` 取 ID，可用 `ip12-create` 创建、`ip12-message` 更新、`ip12-delete` 删除。删除必须先读取目标并显式确认。
+例如 `digital-ip-project` 会同时告诉 Agent：先用 `digital-ip-projects` 取 ID，可用 `digital-ip-create` 创建、`digital-ip-update` 更新、`digital-ip-delete` 删除。删除必须先读取目标并显式确认。
 
 ```sh
 printf '%s\n' '{"prompt":"一只金色黄雀","provider":"openai","ratio":"1:1","quality":"hd","count":1}' > image.json
@@ -457,7 +457,7 @@ hq run assets --input @assets.json --json
 ## 当前能力
 
 - 账号、点数、权限和渠道目录读取。
-- Hermes IP12 项目、进度、报告与显式确认对话。
+- 数字化 IP 项目、进度与报告。
 - 图片、视频、音频、文案成片和平台素材库模板成片生成与提示词优化；`image-generate` 包含最多 14 张参考图的 Banana nb2/pro，`video-generate` 包含 Sora 2/Pro。
 - 数字 IP 单条文案、本人资产音频与 2–5 个形象批量生成；电影化身开放式和动作模仿生成。
 - 快速图片换装与经典视频换装。

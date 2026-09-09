@@ -188,7 +188,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=a36ab678"></script>
+<script src="cloud-shell.js?v=d0d6179e"></script>
 <script>
 /* 资产库读真实生成历史（生成即自动入库）+ 按模式分类筛选 */
 (function(){
@@ -2093,7 +2093,7 @@
   }
   function load(kind){
     currentLoadKind=kind;
-    var url=kind==='audio'?'/api/gen/audio/assets?limit=120':(kind==='video'?'/api/gen/video/assets?limit=120':(kind==='avatar'?'/api/gen/video/avatars?limit=120':
+    var url=kind==='audio'?'/api/gen/audio/assets?limit=120':(kind==='video'?'/api/gen/video/assets?limit=10':(kind==='avatar'?'/api/gen/video/avatars?limit=120':
       (DOC_KINDS.indexOf(kind)>=0?'/api/gen/assets?limit=120&kind='+encodeURIComponent(kind):'/api/gen/history?limit=120')));
     var fetchUrl=kind==='avatar'?freshUrl(url):url;
     var headers={'Authorization':'Bearer '+tok};

@@ -45,6 +45,7 @@ ALLOWED_PATHS.add(DIRECTOR_BREAKDOWN_QUOTE_PATH)
 DOWNLOAD_PATH = "/api/gen/dl"
 BATCH_DOWNLOAD_PATH = "/api/auth/cli/asset-batch-download"
 VIDEO_IMPORT_PATH = "/api/auth/cli/video-import"
+VIDEO_COMPOSE_IMPORT_PATH = "/api/auth/cli/video-compose-import"
 PROFILE_AVATAR_UPLOAD_PATH = "/api/auth/cli/profile-avatar-upload"
 MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024
 
@@ -383,6 +384,17 @@ def _open_video_import(path):
     )
 
 
+def _open_video_compose_import(path):
+    return _open_media(
+        path, 2 * 1024 * 1024 * 1024,
+        lambda header: _video_mime(header) if _video_mime(header) in {
+            "video/mp4", "video/quicktime"
+        } else "",
+        "talking-head source must be between 1 byte and 2 GiB",
+        "talking-head source must be MP4 or MOV",
+    )
+
+
 def _open_profile_avatar(path):
     return _open_media(
         path, 4 * 1024 * 1024, _image_mime,
@@ -458,7 +470,7 @@ def _upload_media(path, token, upload_path, digest_header, opener, timeout, extr
             IMAGE_UPLOAD_PATH, VIDEO_UPLOAD_PATH, AUDIO_UPLOAD_PATH,
             DIGITAL_HUMAN_MATERIAL_UPLOAD_PATH, DIGITAL_HUMAN_AUDIO_UPLOAD_PATH,
             DIRECTOR_BREAKDOWN_IMAGE_PATH, DIRECTOR_BREAKDOWN_VIDEO_PATH,
-            VIDEO_IMPORT_PATH, PROFILE_AVATAR_UPLOAD_PATH,
+            VIDEO_IMPORT_PATH, VIDEO_COMPOSE_IMPORT_PATH, PROFILE_AVATAR_UPLOAD_PATH,
     } or not digest_header:
         os.close(descriptor)
         raise ValueError("HQ CLI only uploads to fixed main-site endpoints")
@@ -477,6 +489,7 @@ def _upload_media(path, token, upload_path, digest_header, opener, timeout, extr
     }
     digital_human_audio = upload_path == DIGITAL_HUMAN_AUDIO_UPLOAD_PATH
     video_import = upload_path == VIDEO_IMPORT_PATH
+    titled_video_import = upload_path in {VIDEO_IMPORT_PATH, VIDEO_COMPOSE_IMPORT_PATH}
     expected_extra = (
         {"X-HQ-Quote-Token", "X-HQ-Expected-Cost", "Idempotency-Key"}
         if director_upload else {"X-HQ-Run-ID"} if digital_human_audio else set()
@@ -500,8 +513,9 @@ def _upload_media(path, token, upload_path, digest_header, opener, timeout, extr
                 connection.putheader(key, extra_headers[key])
         elif digital_human_audio:
             connection.putheader("X-HQ-Run-ID", extra_headers["X-HQ-Run-ID"])
-        elif video_import:
-            connection.putheader("X-Video-Title", urllib.parse.quote(os.path.basename(path).removesuffix(".mp4"), safe="._-"))
+        elif titled_video_import:
+            title = os.path.splitext(os.path.basename(path))[0]
+            connection.putheader("X-Video-Title", urllib.parse.quote(title, safe="._-"))
         connection.putheader("X-HQ-Confirm", "true")
         connection.putheader("Accept", "application/json")
         connection.putheader("User-Agent", "hq-cli/%s" % __version__)
@@ -553,6 +567,13 @@ def upload_video(path, token, timeout=120):
 def upload_video_import(path, token, timeout=180):
     return _upload_media(
         path, token, VIDEO_IMPORT_PATH, "X-HQ-Video-SHA256", _open_video_import, timeout,
+    )
+
+
+def upload_video_compose_import(path, token, timeout=3600):
+    return _upload_media(
+        path, token, VIDEO_COMPOSE_IMPORT_PATH, "X-HQ-Video-SHA256",
+        _open_video_compose_import, timeout,
     )
 
 

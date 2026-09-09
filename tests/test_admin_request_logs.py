@@ -137,17 +137,7 @@ class RequestLogUserTests(unittest.TestCase):
         dbf = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         dbf.close()
         self.db_path = pathlib.Path(dbf.name)
-        audit = tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False)
-        import json
         import time as _time
-        audit.write(json.dumps({
-            "time": int(_time.time()), "event": "metered_request", "status": 200,
-            "username": "member-a", "role": "member", "method": "POST",
-            "path": "/api/foundation-report/generate", "ip": "10.0.0.8",
-            "detail": "", "duration_ms": 432.1, "request_id": "hermes_req_1234",
-        }) + "\n")
-        audit.close()
-        self.audit_path = pathlib.Path(audit.name)
         c = sqlite3.connect(str(self.db_path))
         c.execute(
             "CREATE TABLE jobs(id INTEGER PRIMARY KEY, username TEXT, kind TEXT,"
@@ -175,18 +165,14 @@ class RequestLogUserTests(unittest.TestCase):
 
         self.old_logs = admin_api.NGINX_ACCESS_LOGS
         self.old_db = admin_api.JOB_DB
-        self.old_hermes_logs = admin_api.HERMES_AUDIT_LOGS
         admin_api.NGINX_ACCESS_LOGS = [self.log_path]
         admin_api.JOB_DB = self.db_path
-        admin_api.HERMES_AUDIT_LOGS = [self.audit_path]
 
     def tearDown(self):
         admin_api.NGINX_ACCESS_LOGS = self.old_logs
         admin_api.JOB_DB = self.old_db
-        admin_api.HERMES_AUDIT_LOGS = self.old_hermes_logs
         self.log_path.unlink(missing_ok=True)
         self.db_path.unlink(missing_ok=True)
-        self.audit_path.unlink(missing_ok=True)
 
     def test_enrichment(self):
         items = {x["path"]: x for x in admin_api.request_logs()["items"]}
@@ -238,7 +224,7 @@ class RequestLogUserTests(unittest.TestCase):
         data = admin_api.activity_logs()
         items = data["items"]
         sources = {x["source"] for x in items}
-        self.assertEqual(sources, {"job", "http", "ip12"})
+        self.assertEqual(sources, {"job", "http"})
         # 任务行：带用户/功能/点数；时间线按时间倒序
         job_rows = [x for x in items if x["source"] == "job"]
         self.assertEqual(job_rows[0]["user"], "tang")
@@ -248,11 +234,6 @@ class RequestLogUserTests(unittest.TestCase):
         self.assertEqual(job_rows[0]["path"], "短剧任务 #shot-job-1")
         times = [x["time"] for x in items]
         self.assertEqual(times, sorted(times, reverse=True))
-        ip12 = next(x for x in items if x["source"] == "ip12")
-        self.assertEqual(ip12["user"], "member-a")
-        self.assertEqual(ip12["func"], "IP12 · 生成初稿 PDF")
-        self.assertAlmostEqual(ip12["duration_sec"], 0.4321)
-        self.assertEqual(ip12["request_id"], "hermes_req_1234")
         self.assertIn("error_catalog", data)
 
     def test_shared_short_drama_job_is_enriched_without_duplicate_activity_row(self):
@@ -487,8 +468,6 @@ class RequestLogUserTests(unittest.TestCase):
         self.assertTrue(only_jobs and all(x["source"] == "job" for x in only_jobs))
         only_http = admin_api.activity_logs(source="http")["items"]
         self.assertTrue(only_http and all(x["source"] == "http" for x in only_http))
-        only_ip12 = admin_api.activity_logs(source="ip12")["items"]
-        self.assertTrue(only_ip12 and all(x["source"] == "ip12" for x in only_ip12))
         # 统一状态：fail = HTTP >=400（本样本 404）
         fails = admin_api.activity_logs(category="fail")["items"]
         self.assertTrue(fails and all(x["cat"] == "fail" for x in fails))
@@ -497,8 +476,6 @@ class RequestLogUserTests(unittest.TestCase):
         # 关键词搜用户名 → 命中任务行
         hit = admin_api.activity_logs(q="tang")["items"]
         self.assertTrue(hit and all("tang" in (x["user"] or "") or "tang" in x["path"] for x in hit))
-        request_hit = admin_api.activity_logs(q="hermes_req_1234")["items"]
-        self.assertEqual([x["source"] for x in request_hit], ["ip12"])
 
     def test_activity_fail_filter_not_crowded_out(self):
         # 404 行不在最新 2 条里；fail 条件下推到采集层后依然能查到

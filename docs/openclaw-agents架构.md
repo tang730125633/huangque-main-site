@@ -186,7 +186,7 @@ ubuntu   2053261  openclaw                                 # .openclaw-visual
 │  │ Leadgen :8090    │     │  │ main (视觉设计)   │ │         │
 │  │ 小探    :8501    │     │  │ 🎨               │ │         │
 │  │ Dify (11容器)    │     │  ├──────────────────┤ │         │
-│  │ Hermes :3000     │     │  │ v1  v2  v3  v4  │ │         │
+│  │ IP12 v4 :8000    │     │  │ v1  v2  v3  v4  │ │         │
 │  └───────────────────┘     │  │ v5  v6  v7  v8  │ │         │
 │                           │  │ v9  v10          │ │         │
 │  ┌─── OpenClaw ─────┐     │  │ model: v4-pro    │ │         │

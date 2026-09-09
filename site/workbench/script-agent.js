@@ -8,7 +8,7 @@
   var LEGACY_STORAGE_KEYS=['hq_director_agent_v1','hq_director_agent_digital_human_v1'];
   var ROUTES={
     script:'/workbench/script.html',digital_human:'/workbench/digital-human-oneclick.html',
-    ip12:'/workbench/ip12.html',assets:'/workbench/assets.html',audio:'/workbench/audio.html',
+    ip12:'/workbench/ip12/',assets:'/workbench/assets.html',audio:'/workbench/audio.html',
     video:'/workbench/video.html',canvas:'/workbench/canvas.html'
   };
   var FOCUS={

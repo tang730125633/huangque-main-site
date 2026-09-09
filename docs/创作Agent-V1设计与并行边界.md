@@ -139,7 +139,7 @@ Creator SQLite 是本功能的画像正本。画像修改作为版本化补充�
 
 ## 并行开发边界
 
-- 不修改同事的 `server/hermes_ip12/**` Agent 实现、Master Agent、SDK Canary 或 PR #1264。
+- IP12 v4 由独立 `hq-ip-agent` 仓库维护，本仓库不保存其运行副本。
 - Creator 不配置 IP12 URL，不调用 IP12 API/CLI，不读取 IP12 Project 或 PDF。
 - Creator Agent 使用独立服务 `huangque-creator-agent`、端口 `8114`、SQLite 和环境文件。
 - 模型固定为官方 `deepseek-v4-flash`，Base URL 为 `https://api.deepseek.com`；Key 使用独立

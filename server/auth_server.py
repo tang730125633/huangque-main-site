@@ -102,6 +102,7 @@ MYSTERY_SHOPPER_USERNAME = os.environ.get("HQ_MYSTERY_SHOPPER_USERNAME", "").str
 MYSTERY_SHOPPER_SIGNER_SECRET = os.environ.get("HQ_MYSTERY_SHOPPER_SIGNER_SECRET", "").strip()
 MYSTERY_SHOPPER_CLI_SCOPES = (
     "profile:read", "ip12:read", "assets:read", "tasks:read", "generation:quote",
+    "assets:upload", "video-compose:read", "video-compose:write",
 )
 VIRTUAL_PAY_RECONCILE_INTERVAL_SECONDS = 60
 VIRTUAL_PAY_RECONCILE_BATCH = 100
@@ -4764,19 +4765,26 @@ class H(BaseHTTPRequestHandler):
             c.commit(); c.close()
 
     def _account_media_upload(self, kind, row, director_breakdown=False,
-                              digital_human_kind="", video_import=False):
+                              digital_human_kind="", video_import=False,
+                              video_compose_import=False):
         label = {"image": "图片", "video": "视频", "audio": "音频"}[kind]
-        max_bytes = (100 * 1024 * 1024 if video_import else ({
-            "image": hq_cli_api.DIRECTOR_BREAKDOWN_IMAGE_MAX_BYTES,
-            "video": hq_cli_api.DIRECTOR_BREAKDOWN_VIDEO_MAX_BYTES,
-        } if director_breakdown else ({
-            "image": 10 * 1024 * 1024,
-            "audio": 30 * 1024 * 1024,
-        } if digital_human_kind else {
-            "image": hq_cli_api.IMAGE_UPLOAD_MAX_BYTES,
-            "video": hq_cli_api.VIDEO_UPLOAD_MAX_BYTES,
-            "audio": hq_cli_api.AUDIO_UPLOAD_MAX_BYTES,
-        }))[kind])
+        if video_compose_import:
+            max_bytes = hq_cli_api.VIDEO_COMPOSE_IMPORT_MAX_BYTES
+        elif video_import:
+            max_bytes = 100 * 1024 * 1024
+        elif director_breakdown:
+            max_bytes = {
+                "image": hq_cli_api.DIRECTOR_BREAKDOWN_IMAGE_MAX_BYTES,
+                "video": hq_cli_api.DIRECTOR_BREAKDOWN_VIDEO_MAX_BYTES,
+            }[kind]
+        elif digital_human_kind:
+            max_bytes = {"image": 10 * 1024 * 1024, "audio": 30 * 1024 * 1024}[kind]
+        else:
+            max_bytes = {
+                "image": hq_cli_api.IMAGE_UPLOAD_MAX_BYTES,
+                "video": hq_cli_api.VIDEO_UPLOAD_MAX_BYTES,
+                "audio": hq_cli_api.AUDIO_UPLOAD_MAX_BYTES,
+            }[kind]
         content_types = {
             "image": {"image/jpeg", "image/png", "image/webp"},
             "video": {"video/mp4", "video/quicktime", "video/webm"},
@@ -4784,15 +4792,21 @@ class H(BaseHTTPRequestHandler):
         }[kind]
         if video_import:
             content_types = {"video/mp4"}
+        elif video_compose_import:
+            content_types = {"video/mp4", "video/quicktime"}
         digest_header = {"image": "X-HQ-Image-SHA256", "video": "X-HQ-Video-SHA256", "audio": "X-HQ-Audio-SHA256"}[kind]
-        slots = (hq_cli_api.DIRECTOR_BREAKDOWN_UPLOAD_SLOTS if director_breakdown else {
-            "image": hq_cli_api.IMAGE_UPLOAD_SLOTS, "video": hq_cli_api.VIDEO_UPLOAD_SLOTS,
-            "audio": hq_cli_api.AUDIO_UPLOAD_SLOTS,
-        }[kind])
+        slots = (hq_cli_api.VIDEO_COMPOSE_IMPORT_SLOTS if video_compose_import else
+                 hq_cli_api.DIRECTOR_BREAKDOWN_UPLOAD_SLOTS if director_breakdown else {
+                     "image": hq_cli_api.IMAGE_UPLOAD_SLOTS,
+                     "video": hq_cli_api.VIDEO_UPLOAD_SLOTS,
+                     "audio": hq_cli_api.AUDIO_UPLOAD_SLOTS,
+                 }[kind])
         proxy = {"image": hq_cli_api.proxy_image_upload, "video": hq_cli_api.proxy_video_upload,
                  "audio": hq_cli_api.proxy_audio_upload}[kind]
         if video_import:
             proxy = hq_cli_api.proxy_video_import
+        elif video_compose_import:
+            proxy = hq_cli_api.proxy_video_compose_import
         if digital_human_kind == "material":
             proxy = hq_cli_api.proxy_digital_human_material_upload
         elif digital_human_kind == "audio":
@@ -4872,7 +4886,7 @@ class H(BaseHTTPRequestHandler):
                     self.rfile, length, token, INTERNAL_TOKEN, content_type,
                     digest, self.headers.get("X-HQ-Run-ID"),
                 )
-            elif video_import:
+            elif video_import or video_compose_import:
                 status, result = proxy(
                     self.rfile, length, token, INTERNAL_TOKEN, content_type, digest,
                     urllib.parse.unquote(self.headers.get("X-Video-Title") or "")[:160],
@@ -4910,6 +4924,15 @@ class H(BaseHTTPRequestHandler):
         if "assets:upload" not in scopes:
             return self._cli_send(403, {"detail": "当前 CLI 授权缺少权限：assets:upload", "code": "insufficient_scope"})
         return self._account_media_upload("video", row, video_import=True)
+
+    def _cli_video_compose_import(self):
+        auth = self._cli_user()
+        if not auth:
+            return self._cli_send(401, {"detail": "CLI 未登录或授权已过期", "code": "cli_unauthorized"})
+        row, scopes = auth
+        if "assets:upload" not in scopes:
+            return self._cli_send(403, {"detail": "当前 CLI 授权缺少权限：assets:upload", "code": "insufficient_scope"})
+        return self._account_media_upload("video", row, video_compose_import=True)
 
     def _cli_profile_avatar_upload(self):
         auth = self._cli_user()
@@ -5362,45 +5385,7 @@ class H(BaseHTTPRequestHandler):
                 if not existing_key:
                     headers["Idempotency-Key"] = idempotency_key
                 plan["headers"] = headers
-            if action == "ip12-message":
-                claim, previous_status = hq_cli_api.begin_action_request(
-                    db, row["username"], action, plan["request_id"], plan["project_id"], plan["request_hash"],
-                )
-                if claim == "conflict":
-                    raise hq_cli_api.CLIAPIError(409, "request_id 已绑定其他输入", "idempotency_conflict")
-                if claim == "in_progress":
-                    raise hq_cli_api.CLIAPIError(409, "该轮对话仍在处理中，请使用相同 request_id 稍后查询", "idempotency_in_progress")
-                if claim == "uncertain":
-                    raise hq_cli_api.CLIAPIError(409, "上次结果未知，请先读取项目再决定是否发起新一轮", "result_unknown")
-                if claim == "busy":
-                    raise hq_cli_api.CLIAPIError(429, "该项目已有一轮 CLI 对话正在处理", "project_busy")
-                if claim == "rate_limited":
-                    raise hq_cli_api.CLIAPIError(429, "IP12 CLI 对话请求过于频繁，请稍后重试", "rate_limited")
-                if claim == "completed":
-                    if previous_status and 200 <= int(previous_status) < 300:
-                        return self._cli_send(200, {
-                            "ok": True, "replayed": True, "project_id": plan["project_id"],
-                            "detail": "该轮已处理；请读取项目取得最新回复和进度。",
-                        })
-                    raise hq_cli_api.CLIAPIError(409, "该轮此前已处理但未成功，请先读取项目", "previous_attempt_completed")
-                try:
-                    status, result = self._cli_proxy(plan, row["username"])
-                except Exception:
-                    hq_cli_api.finish_action_request(
-                        db, row["username"], action, plan["request_id"], uncertain=True,
-                    )
-                    raise
-                hq_cli_api.finish_action_request(
-                    db, row["username"], action, plan["request_id"], http_status=status,
-                )
-                return self._cli_send(status, result)
             status, result = self._cli_proxy(plan, row["username"])
-            if 200 <= status < 300 and action == "ip12-create" and isinstance(result, dict):
-                project = result.get("project") or {}
-                project_id = project.get("id") or result.get("id")
-                if project_id:
-                    result["url"] = (hq_cli_api.PUBLIC_ORIGIN + "/workbench/ip12/?conversation_id="
-                                     + urllib.parse.quote(str(project_id)))
             return self._cli_send(status, result)
         except hq_cli_api.CLIAPIError as exc:
             return self._cli_send(exc.status, {"detail": exc.detail, "code": exc.code})
@@ -6209,6 +6194,8 @@ class H(BaseHTTPRequestHandler):
             return self._cli_profile_avatar_upload()
         if p == "/api/auth/cli/video-import":
             return self._cli_video_import()
+        if p == "/api/auth/cli/video-compose-import":
+            return self._cli_video_compose_import()
         if p == "/api/auth/cli/asset-batch-download":
             if self._content_length_exceeds(64 * 1024):
                 return self._cli_send(413, {"detail": "批量下载请求过大", "code": "request_too_large"})

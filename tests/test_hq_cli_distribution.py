@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "site/downloads/hq/install.sh"
 WINDOWS_INSTALLER = ROOT / "site/downloads/hq/install.ps1"
 WINDOWS_UNINSTALLER = ROOT / "site/downloads/hq/uninstall.ps1"
-VERSION = "0.15.6"
+VERSION = "0.15.8"
 OLD_VERSION = "0.15.4"
 RELEASE = ROOT / ("site/downloads/hq/v" + VERSION)
 WHEEL = RELEASE / ("huangque_hq_cli-%s-py3-none-any.whl" % VERSION)
@@ -169,7 +169,7 @@ class HQCLIDistributionTests(unittest.TestCase):
             self.assertIn("text-video-avatar-import", {
                 item["id"] for item in capabilities["capabilities"]})
             self.assertIn("agent", next(
-                item for item in capabilities["capabilities"] if item["id"] == "ip12-project"
+                item for item in capabilities["capabilities"] if item["id"] == "digital-ip-project"
             ))
             self.assertIn("matrix-template-generate", {
                 item["id"] for item in capabilities["capabilities"]})

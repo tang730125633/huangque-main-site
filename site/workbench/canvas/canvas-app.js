@@ -1890,7 +1890,7 @@
   function followAgentGuide(guide){
     if(!guide) return;
     if(guide.target==='ip12'){
-      location.href='/workbench/ip12.html'+(agentIP12Context?'?project='+encodeURIComponent(agentIP12Context.project_id):'');
+      location.href='/workbench/ip12/'+(agentIP12Context?'?project='+encodeURIComponent(agentIP12Context.project_id):'');
       return;
     }
     var targets={

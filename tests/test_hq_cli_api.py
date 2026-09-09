@@ -188,6 +188,7 @@ class HQCLIAPITests(unittest.TestCase):
             "image-upload", "video-upload", "audio-upload", "director-breakdown-upload",
             "digital-human-oneclick-material-upload", "digital-human-oneclick-audio-upload",
             "dl", "asset-batch-download", "profile-avatar-upload", "video-import",
+            "video-compose-import",
             "creator-agent-background-pdf",
         }, set(actions))
         for action, item in actions.items():
@@ -207,6 +208,9 @@ class HQCLIAPITests(unittest.TestCase):
                 self.assertIn("transport", item)
                 self.assertIn("availability", item)
                 self.assertNotIn("http", json.dumps(item, ensure_ascii=False).lower())
+        compose_import = actions["video-compose-import"]["input_schema"]["properties"]["file"]
+        self.assertEqual(2 * 1024 * 1024 * 1024, compose_import["maxBytes"])
+        self.assertEqual(["video/mp4", "video/quicktime"], compose_import["mimeTypes"])
 
     def test_cli_device_bridge_owns_new_binary_and_video_transports(self):
         upload_token = self._token(["assets:upload"])
@@ -221,6 +225,17 @@ class HQCLIAPITests(unittest.TestCase):
             )
         self.assertEqual((200, 7), (status, payload["asset"]["id"]))
         self.assertEqual("sample", proxy.call_args.args[-1])
+
+        with mock.patch.object(
+                self.auth.hq_cli_api, "proxy_video_compose_import",
+                return_value=(200, {"ok": True, "source_asset_id": 9}),
+        ) as compose_proxy:
+            status, payload = self._raw_request(
+                "/api/auth/cli/video-compose-import", raw, token=upload_token,
+                content_type="video/quicktime", extra_headers={"X-Video-Title": "talking-head"},
+            )
+        self.assertEqual((200, 9), (status, payload["source_asset_id"]))
+        self.assertEqual("talking-head", compose_proxy.call_args.args[-1])
 
         read_token = self._token(["assets:read", "creator-agent:read"])
 
@@ -539,7 +554,7 @@ class HQCLIAPITests(unittest.TestCase):
             {"account_id": account_id, "transport": "shell", "command": "bash -c 'cat /etc/passwd'", "input": {}},
             {"account_id": account_id, "transport": "shell", "command": "hq voices --json; curl https://example.test", "input": {}},
             {"account_id": account_id, "transport": "http", "action": "voices", "input": {}, "url": "https://example.test"},
-            {"account_id": account_id, "transport": "http", "action": "ip12-project", "input": {"project_id": "p1", "account_id": "other"}},
+            {"account_id": account_id, "transport": "http", "action": "digital-ip-project", "input": {"project_id": "p1", "account_id": "other"}},
             {"account_id": "not-an-account", "transport": "http", "action": "voices", "input": {}},
         )
         with mock.patch.object(self.auth.hq_cli_api, "proxy_json") as proxy:
@@ -965,7 +980,10 @@ class HQCLIAPITests(unittest.TestCase):
         return {"X-HQ-Internal-Token": self.auth.INTERNAL_TOKEN}
 
     def test_delegated_cli_token_is_short_lived_hashed_and_least_privilege(self):
-        scopes = ["profile:read", "assets:read", "generation:quote", "generation:submit"]
+        scopes = [
+            "profile:read", "assets:read", "generation:quote", "generation:submit",
+            "assets:upload", "video-compose:read", "video-compose:write",
+        ]
         delegated = self.auth.hq_cli_api.issue_delegated_token(
             self.auth.db, "alice", scopes, 90, now=1000,
         )
@@ -1013,8 +1031,14 @@ class HQCLIAPITests(unittest.TestCase):
                 self.auth.db, "alice", ["profile:read"], 90, now=1000,
             )
 
-    def test_mystery_shopper_signer_is_fixed_short_lived_and_read_quote_only(self):
+    def test_mystery_shopper_signer_is_fixed_short_lived_and_compose_only(self):
         path = "/api/auth/mystery-shopper/cli-token"
+        expected_scopes = [
+            "profile:read", "ip12:read", "assets:read", "tasks:read", "generation:quote",
+            "assets:upload", "video-compose:read", "video-compose:write",
+        ]
+        self.assertEqual(expected_scopes, list(self.auth.MYSTERY_SHOPPER_CLI_SCOPES))
+        self.assertNotIn("generation:submit", self.auth.MYSTERY_SHOPPER_CLI_SCOPES)
         self.assertEqual(403, self._request(path, {})[0])
         headers = {"X-HQ-Mystery-Signer": self.auth.MYSTERY_SHOPPER_SIGNER_SECRET}
         self.assertEqual(400, self._request(
@@ -1203,7 +1227,7 @@ class HQCLIAPITests(unittest.TestCase):
         token = self._token(["ip12:read"])
         with mock.patch.object(self.auth.hq_cli_api, "proxy_json") as proxy:
             status, payload = self._request("/api/auth/cli/action", {
-                "action": "ip12-create", "input": {"title": "blocked"}, "confirm": True,
+                "action": "digital-ip-create", "input": {"title": "blocked"}, "confirm": True,
             }, token=token)
         self.assertEqual(403, status)
         self.assertEqual("insufficient_scope", payload["code"])
@@ -1292,12 +1316,12 @@ class HQCLIAPITests(unittest.TestCase):
 
         with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
             status, payload = self._request("/api/auth/cli/action", {
-                "action": "ip12-projects", "input": {}, "confirm": False,
+                "action": "digital-ip-projects", "input": {}, "confirm": False,
             }, token=token)
         self.assertEqual(200, status)
         self.assertEqual("p1", payload["items"][0]["id"])
-        self.assertEqual(self.auth.hq_cli_api.HERMES_BASE, captured["plan"]["base"])
-        self.assertEqual("/api/conversations", captured["plan"]["path"])
+        self.assertEqual(self.auth.hq_cli_api.CONTENT_BASE, captured["plan"]["base"])
+        self.assertEqual("/api/gen/digital-ip/projects", captured["plan"]["path"])
         self.assertNotEqual(token, captured["web_token"])
         with sqlite3.connect(self.auth.DB) as connection:
             self.assertEqual(0, connection.execute(
@@ -2965,14 +2989,11 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual("insufficient_scope", payload["code"])
 
     def test_server_requires_confirmation_for_external_ai_and_writes(self):
-        token = self._token(["prompt:optimize", "ip12:write", "ip12:chat", "canvas:write", "assets:write",
+        token = self._token(["prompt:optimize", "ip12:write", "canvas:write", "assets:write",
                              "video-compose:write", "digital-presenter:write", "inspiration:write", "leads:write",
                              "short-drama:write"])
         cases = [
             ("prompt-optimize", {"prompt": "portrait", "kind": "image"}),
-            ("ip12-create", {"title": "my project"}),
-            ("ip12-message", {"project_id": "ip_1", "message": "我的客户是餐饮老板", "request_id": "turn-001"}),
-            ("ip12-delete", {"project_id": "ip_1"}),
             ("canvas-create", {"name": "my board"}),
             ("canvas-delete", {"board_id": "cb_1"}),
             ("asset-tags", {"kind": "image", "key": "asset-1", "tags": ["客户案例"]}),
@@ -3001,13 +3022,7 @@ class HQCLIAPITests(unittest.TestCase):
                 self.assertEqual("confirmation_required", payload["code"])
         proxy.assert_not_called()
 
-    def test_ip12_delete_requires_write_scope_and_uses_exact_delete_route(self):
-        plan = self.auth.hq_cli_api.action_plan("ip12-delete", {"project_id": "ip_1"})
-        self.assertEqual("ip12:write", plan["scope"])
-        self.assertEqual("DELETE", plan["method"])
-        self.assertEqual("/api/conversations/ip_1", plan["path"])
-        self.assertIsNone(plan.get("body"))
-
+    def test_asset_delete_uses_exact_route(self):
         asset = self.auth.hq_cli_api.action_plan("asset-delete", {"kind": "video", "id": 9})
         self.assertEqual(("assets:write", "POST"), (asset["scope"], asset["method"]))
         self.assertEqual("/api/gen/asset/delete", asset["path"])
@@ -3030,89 +3045,6 @@ class HQCLIAPITests(unittest.TestCase):
                 "project_id": "compose_" + "a" * 32, "expected_revision": 3,
                 "decisions": {"candidate_" + "b" * 16: "maybe"},
             })
-
-    def test_ip12_message_has_separate_scope_and_fixed_non_streaming_proxy(self):
-        message = "我的客户是餐饮老板\n我想分两段说明"
-        input_body = {"project_id": "ip_1", "message": message, "request_id": "turn-001"}
-        with mock.patch.object(self.auth.hq_cli_api, "proxy_json") as proxy:
-            token = self._token(["ip12:write"])
-            status, payload = self._request("/api/auth/cli/action", {
-                "action": "ip12-message", "input": input_body, "confirm": True,
-            }, token=token)
-            self.assertEqual(403, status)
-            self.assertEqual("insufficient_scope", payload["code"])
-            proxy.assert_not_called()
-
-            token = self._token(["ip12:chat"])
-            proxy.return_value = (200, {"ok": True, "assistant": "继续回答"})
-            status, payload = self._request("/api/auth/cli/action", {
-                "action": "ip12-message", "input": input_body, "confirm": True,
-            }, token=token)
-        self.assertEqual(200, status)
-        self.assertEqual("继续回答", payload["assistant"])
-        plan = proxy.call_args.args[0]
-        self.assertEqual((self.auth.hq_cli_api.HERMES_BASE, "/api/chat-complete", "POST", 290),
-                         (plan["base"], plan["path"], plan["method"], plan["timeout"]))
-        self.assertEqual({"conversation_id": "ip_1", "message": message}, plan["body"])
-        self.assertEqual("turn-001", plan["headers"]["Idempotency-Key"])
-
-        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
-            self.auth.hq_cli_api.action_plan("ip12-message", dict(input_body, message="正常文字\x00非法控制符"))
-
-        status, replay = self._request("/api/auth/cli/action", {
-            "action": "ip12-message", "input": input_body, "confirm": True,
-        }, token=token)
-        self.assertEqual(200, status)
-        self.assertTrue(replay["replayed"])
-        self.assertEqual(1, proxy.call_count)
-        changed = dict(input_body, message="另一条回答")
-        status, conflict = self._request("/api/auth/cli/action", {
-            "action": "ip12-message", "input": changed, "confirm": True,
-        }, token=token)
-        self.assertEqual(409, status)
-        self.assertEqual("idempotency_conflict", conflict["code"])
-
-    def test_ip12_message_blocks_same_project_inflight_and_limits_rate(self):
-        action = "ip12-message"
-        claim = self.auth.hq_cli_api.begin_action_request(
-            self.auth.db, "alice", action, "turn-1", "ip_1", "hash-1", now=100,
-        )
-        self.assertEqual(("new", None), claim)
-        self.assertEqual(("in_progress", None), self.auth.hq_cli_api.begin_action_request(
-            self.auth.db, "alice", action, "turn-1", "ip_1", "hash-1", now=101,
-        ))
-        self.assertEqual(("busy", None), self.auth.hq_cli_api.begin_action_request(
-            self.auth.db, "alice", action, "turn-2", "ip_1", "hash-2", now=102,
-        ))
-        self.auth.hq_cli_api.finish_action_request(self.auth.db, "alice", action, "turn-1", 200, now=103)
-        for number in range(2, 7):
-            self.assertEqual(("new", None), self.auth.hq_cli_api.begin_action_request(
-                self.auth.db, "alice", action, "turn-%s" % number, "ip_%s" % number,
-                "hash-%s" % number, now=104 + number,
-            ))
-            self.auth.hq_cli_api.finish_action_request(
-                self.auth.db, "alice", action, "turn-%s" % number, 200, now=105 + number,
-            )
-        self.assertEqual(("rate_limited", None), self.auth.hq_cli_api.begin_action_request(
-            self.auth.db, "alice", action, "turn-7", "ip_7", "hash-7", now=112,
-        ))
-
-    def test_ip12_message_uncertain_result_blocks_fresh_project_request(self):
-        token = self._token(["ip12:chat"])
-        first = {"project_id": "ip_1", "message": "第一轮回答", "request_id": "turn-001"}
-        second = {"project_id": "ip_1", "message": "第二轮回答", "request_id": "turn-002"}
-        with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=TimeoutError("lost response")) as proxy:
-            status, payload = self._request("/api/auth/cli/action", {
-                "action": "ip12-message", "input": first, "confirm": True,
-            }, token=token)
-            self.assertEqual(500, status)
-            self.assertEqual("cli_internal_error", payload["code"])
-            status, payload = self._request("/api/auth/cli/action", {
-                "action": "ip12-message", "input": second, "confirm": True,
-            }, token=token)
-        self.assertEqual(409, status)
-        self.assertEqual("result_unknown", payload["code"])
-        self.assertEqual(1, proxy.call_count)
 
     def test_asset_offset_reaches_every_backend(self):
         for kind in ("image", "audio", "video"):
