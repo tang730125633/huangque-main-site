@@ -1,0 +1,18 @@
+{
+  "id": "ip-editorial-serif-v1",
+  "name": "口播网感模板",
+  "version": "1.0.0",
+  "plan_schema": "hq.editorial-plan/v1",
+  "renderer": {"name": "hyperframes", "version": "0.8.33"},
+  "input": {"kind": "uploaded_talking_head", "ratio": "9:16", "min_seconds": 3, "max_seconds": 180},
+  "output": {"width": 720, "height": 1280, "fps": 30, "video_codec": "h264", "audio_codec": "aac"},
+  "preserve_original_voice": true,
+  "presenter_always_visible": true,
+  "chinese_font": "SourceHanSerifSC-Heavy.otf",
+  "english_font": "NotoSansSC-Regular.otf",
+  "font_licenses": ["FONT-LICENSE.txt", "ENGLISH-FONT-LICENSE.txt"],
+  "keyword_punch": {"in_seconds": 0.18, "hold_seconds": 0.25, "out_seconds": 0.24, "default_strength": 1.075},
+  "automatic_translation": false,
+  "automatic_deletion": false,
+  "agent_must_supply_verified_bilingual_plan": true
+}

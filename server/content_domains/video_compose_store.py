@@ -265,7 +265,7 @@ def save_analysis(username, project_id, expected_revision, analysis, transcript_
     return get_project(username, project_id)
 
 
-def begin_render(username, project_id, expected_revision):
+def begin_render(username, project_id, expected_revision, render_input=None):
     now = int(time.time())
     with closing(db()) as connection:
         connection.execute("BEGIN IMMEDIATE")
@@ -276,6 +276,13 @@ def begin_render(username, project_id, expected_revision):
         if not row:
             raise ProjectNotFound("一键成片项目不存在")
         if row["status"] in {"rendering", "completed"}:
+            previous = _decode(row["render_input_json"], None)
+            if render_input is not None:
+                started_revision = int(row["revision"]) - (1 if row["status"] == "rendering" else 2)
+                if not started_revision <= int(expected_revision) <= int(row["revision"]):
+                    raise RevisionConflict("项目版本不匹配，请读取原任务")
+            if render_input is not None and previous != render_input:
+                raise RevisionConflict("项目已有不同模板计划，请读取原任务；更换模板请新建项目")
             return _public(row), False
         if int(row["revision"]) != int(expected_revision):
             raise RevisionConflict("项目已更新，请刷新后重试")
@@ -289,6 +296,11 @@ def begin_render(username, project_id, expected_revision):
         ).rowcount
         if changed != 1:
             raise RevisionConflict("项目已更新，请刷新后重试")
+        if render_input is not None:
+            connection.execute(
+                "UPDATE video_compose_projects SET render_input_json=? WHERE id=? AND username=? AND revision=?",
+                (_json(render_input), str(project_id), str(username), revision),
+            )
         _event(connection, project_id, username, "render_started", revision, {})
         connection.commit()
     return get_project(username, project_id), True
@@ -333,7 +345,7 @@ def fail_render(username, project_id, expected_revision, error):
     with closing(db()) as connection:
         connection.execute("BEGIN IMMEDIATE")
         row = connection.execute(
-            "SELECT status,revision FROM video_compose_projects WHERE id=? AND username=?",
+            "SELECT * FROM video_compose_projects WHERE id=? AND username=?",
             (str(project_id), str(username)),
         ).fetchone()
         if not row:

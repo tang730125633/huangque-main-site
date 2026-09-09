@@ -14,6 +14,7 @@ import webbrowser
 
 from . import __version__
 from . import client
+from . import editorial_contract
 from . import mcp_server
 from . import skill_install
 from .catalog import (
@@ -191,6 +192,11 @@ def _validate_video_channel(payload):
 
 
 def _validate(capability, payload):
+    if capability.get("id") == "video-compose-render":
+        try:
+            editorial_contract.validate_selection(payload)
+        except ValueError as error:
+            raise CliError(EXIT_INPUT, "input_error", str(error)) from error
     schema = capability["input_schema"]
     properties = schema["properties"]
     unknown = sorted(set(payload) - set(properties))

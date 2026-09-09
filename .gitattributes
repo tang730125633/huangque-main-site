@@ -35,3 +35,6 @@
 *.dat   binary
 *.zip   binary
 *.pdf   binary
+
+# Preserve the exact hashed vendor bundle, including upstream license whitespace.
+site/assets/one-click/templates/ip-editorial-serif-v1/gsap.min.js -whitespace
