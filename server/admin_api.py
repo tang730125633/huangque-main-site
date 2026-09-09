@@ -6677,7 +6677,9 @@ def _compose_operation_stat(since):
         status = str(row["status"] or "unknown").lower()
         _count_status(
             bucket,
-            status if status in {"completed", "failed", "refunded"} else "running",
+            "running"
+            if status in video_compose_store.PROJECT_ACTIVE_STATES
+            else status,
         )
     latest = rows[0]
     bucket["latest"] = {

@@ -768,6 +768,8 @@ class FunctionRegistryTests(unittest.TestCase):
                 [
                     ("compose-running", "rendering", "", None, old, old + 10),
                     ("compose-deleted", "deleted", "", None, old + 1, old + 11),
+                    ("compose-review", "review_required", "", None, now - 9, now - 4),
+                    ("compose-recent-deleted", "deleted", "", None, now - 8, now - 3),
                 ],
             )
             connection.commit()
@@ -776,7 +778,13 @@ class FunctionRegistryTests(unittest.TestCase):
             item for item in self.admin.job_stats(7)["by_operation"]
             if item["operation"] == "video.one_click.compose"
         )
-        self.assertEqual((operation["total"], operation["done"], operation["running"]), (2, 1, 1))
+        self.assertEqual(
+            (
+                operation["total"], operation["done"], operation["running"],
+                operation["error"], operation["other"],
+            ),
+            (4, 1, 1, 0, 2),
+        )
         self.assertEqual(operation["latest"]["status"], "rendering")
 
     def test_dashboard_includes_provider_only_tasks_refunds_and_deduplicates_shared_jobs(self):
