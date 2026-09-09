@@ -35,11 +35,10 @@ FRONTEND_RATIOS = ["1:1", "9:16", "16:9", "3:4"]
 
 
 class ChannelShutdownTests(unittest.TestCase):
-    def test_zelong2_is_rejected_before_points_are_deducted(self):
-        with self.assertRaisesRegex(ValueError, "泽龙2生图渠道维护中"):
-            image_domain.validate_image_payload({"provider": "zelong2", "prompt": "demo"})
-        with self.assertRaisesRegex(ValueError, "泽龙2生图渠道维护中"):
-            image_domain.gen_image({"provider": "zelong2", "prompt": "demo"})
+    def test_retired_image_apis_are_rejected_before_points_are_deducted(self):
+        for provider in ("xiaole", "zelong", "zelong2"):
+            with self.subTest(provider=provider), self.assertRaisesRegex(ValueError, "API 已下架"):
+                image_domain.validate_image_payload({"provider": provider, "prompt": "demo"})
 
     def test_zelong2_card_is_hidden(self):
         self.assertRegex(BANANA, r'data-engine="zelong2"[^>]*aria-hidden="true"[^>]*display:none')

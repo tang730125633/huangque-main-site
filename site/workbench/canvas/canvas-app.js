@@ -1514,12 +1514,18 @@
     });
     return snap;
   }
+  function normalizeGenerationParams(type,params){
+    params=Object.assign({engine:'seedream',channel:'grok',ratio:'9:16',duration:'5',quality:'hd',title:'',remark:''},params||{});
+    if(type==='gen'&&params.engine==='zelong') params.engine='seedream';
+    if(type==='video'&&params.channel==='micro') params.channel='minimax';
+    return params;
+  }
   function sanitizeTemplateSnap(snap){
     snap=sanitizeShortDramaSnapshot(snap);
     var valid={};
     (snap.nodes||[]).forEach(function(n){
       if(!n||!TYPE[n.type]) return;
-      n.params=Object.assign({engine:'nb2',channel:'grok',ratio:'9:16',duration:'5',quality:'hd',title:'',remark:''},n.params||{});
+      n.params=normalizeGenerationParams(n.type,n.params);
       if(n.type==='shortDrama'){
         n.params=normalizeShortDramaNodeParams(n.params);
         n.outputs={};
@@ -2206,7 +2212,7 @@
     var t=TYPE[type], nextNid=++nid, id=currentBoardScope==='collab'&&collabSync?collabSync.makeNodeId(collabNodeSeed,nextNid):'n'+nextNid;
     if(data&&data.id){ id=data.id; var m=String(id).match(/^n(\d+)$/); if(m) nid=Math.max(nid,parseInt(m[1],10)); }
     var fallback=x==null||y==null?viewportNodePoint():null;
-    var node={ id:id, type:type, x:(x==null?fallback.x:x), y:(y==null?fallback.y:y), width:Number(data&&data.width)||0, height:Number(data&&data.height)||0, collapsed:!!(data&&data.collapsed), params:Object.assign({engine:'nb2',channel:'grok',ratio:'16:9',duration:'5',quality:'hd',title:'',remark:''},(data&&data.params)||{}), outputs:stateApi.cloneSnapshot((data&&data.outputs)||{}), image:(data&&data.image)||null };
+    var node={ id:id, type:type, x:(x==null?fallback.x:x), y:(y==null?fallback.y:y), width:Number(data&&data.width)||0, height:Number(data&&data.height)||0, collapsed:!!(data&&data.collapsed), params:normalizeGenerationParams(type,(data&&data.params)||{ratio:'16:9'}), outputs:stateApi.cloneSnapshot((data&&data.outputs)||{}), image:(data&&data.image)||null };
     if(type==='shortDrama') node.params=normalizeShortDramaNodeParams(node.params);
     if(type==='digitalPresenter') node.params=normalizeDigitalPresenterNodeParams(node.params);
     var el=document.createElement('div'); el.className='nc-node'+(type==='shortDrama'?' nc-node-short-drama':type==='digitalPresenter'?' nc-node-digital-presenter':''); el.style.left=node.x+'px'; el.style.top=node.y+'px';
@@ -2214,12 +2220,12 @@
     if(type==='text') body='<textarea class="nc-in" data-f="text" rows="3" placeholder="输入提示词，作为下游作图的词…"></textarea>';
     if(type==='image') body='<label class="nc-drop" data-f="drop"><input type="file" accept="image/*" data-f="file" style="display:none">点击上传<br>或按 Ctrl+V 粘贴</label>';
     if(type==='reverse') body='<div class="nc-lab">输入：图片 → 输出：提示词</div><button class="nc-go" data-f="run">反推提示词（2点）</button><textarea class="nc-in" data-f="out" rows="3" placeholder="反推结果会出现在这里" style="margin-top:8px;"></textarea>';
-    if(type==='gen') body='<div class="nc-lab">引擎</div><div class="nc-seg" data-f="engine"><span class="nc-chip on" data-v="nb2">纳米香蕉 2</span><span class="nc-chip" data-v="pro">纳米香蕉 Pro</span><span class="nc-chip" data-v="gpt">黄雀引擎 2</span><span class="nc-chip" data-v="zelong">泽龙AI</span></div>'
+    if(type==='gen') body='<div class="nc-lab">引擎</div><div class="nc-seg" data-f="engine"><span class="nc-chip on" data-v="seedream">黄雀引擎 1</span><span class="nc-chip" data-v="gpt">黄雀引擎 2</span><span class="nc-chip" data-v="nb2">纳米香蕉 2</span><span class="nc-chip" data-v="pro">纳米香蕉 Pro</span></div>'
       +'<div class="nc-seg" data-f="ratio"><span class="nc-chip on" data-v="9:16">9:16</span><span class="nc-chip" data-v="1:1">1:1</span><span class="nc-chip" data-v="16:9">16:9</span><span class="nc-chip" data-v="3:4">3:4</span></div>'
       +'<div class="nc-refbar" data-f="refs"><span>参考图 0 张</span><div class="nc-refthumbs"></div></div>'
       +'<textarea class="nc-in" data-f="text" rows="2" placeholder="提示词（也可由上游文本/反推节点连入）"></textarea>'
       +'<button class="nc-go" data-f="run">生成图片</button><div class="nc-drop" data-f="result" style="display:none;"></div>';
-    if(type==='video') body='<div class="nc-lab">模型</div><div class="nc-seg" data-f="channel"><span class="nc-chip on" data-v="grok">果肉视频</span><span class="nc-chip" data-v="micro">豆姐视频</span></div>'
+    if(type==='video') body='<div class="nc-lab">模型</div><div class="nc-seg" data-f="channel"><span class="nc-chip on" data-v="grok">果肉视频</span><span class="nc-chip" data-v="minimax">麦克视频</span></div>'
       +'<div class="nc-seg" data-f="ratio"><span class="nc-chip" data-v="9:16">9:16</span><span class="nc-chip on" data-v="16:9">16:9</span><span class="nc-chip" data-v="1:1">1:1</span></div>'
       +'<div data-f="videoWarn" style="margin-top:8px; font-size:12px; line-height:1.55; color:#b5892f;">果肉视频当前优先建议 16:9（横屏），其余比例暂时大概率失败</div>'
       +'<div class="nc-seg" data-f="duration"><span class="nc-chip on" data-v="5">5s</span><span class="nc-chip" data-v="10">10s</span></div>'

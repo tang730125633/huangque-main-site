@@ -208,8 +208,8 @@ def validate_image_payload(payload):
         if "short_drama_scene_binding" in body:
             banana_body["short_drama_scene_binding"] = body["short_drama_scene_binding"]
         return banana_body
-    if provider == "zelong2":
-        raise ValueError("泽龙2生图渠道维护中，请使用 Seedream 或果肉生图")
+    if provider in {"xiaole", "zelong", "zelong2"}:
+        raise ValueError("该生图 API 已下架，请使用 Seedream 或黄雀引擎 2")
     prompt = (body.get("prompt") or "").strip()
     if not prompt:
         raise ValueError("\u63d0\u793a\u8bcd\u4e0d\u80fd\u4e3a\u7a7a")

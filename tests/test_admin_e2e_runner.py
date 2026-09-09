@@ -280,12 +280,12 @@ class AdminE2ERunnerTests(unittest.TestCase):
                 "public:zh-CN-YunjianNeural",
             )
         for operation, channel in (("canvas.video.grok", "grok"),
-                                   ("canvas.video.micro", "micro")):
+                                   ("canvas.video.minimax", "minimax")):
             video = self.admin._e2e_payload(
                 operation, self.admin.function_registry.e2e_runner(operation)
             )
             self.assertEqual((video["source_page"], video["channel"]), ("canvas", channel))
-            self.assertEqual(video["resolution"], "480p")
+            self.assertEqual(video["resolution"], "2k" if channel == "minimax" else "480p")
 
     def test_text_video_preflight_prices_the_prepared_scene_count(self):
         session = {"token": "qa-token", "account": {
@@ -311,7 +311,7 @@ class AdminE2ERunnerTests(unittest.TestCase):
             "canvas.image.banana.nb2": ("/api/gen/banana", "banana", "nb2"),
             "canvas.image.banana.pro": ("/api/gen/banana", "banana", "pro"),
             "canvas.image.openai": ("/api/gen/image", "openai", None),
-            "canvas.image.zelong": ("/api/gen/image", "zelong", None),
+            "canvas.image.seedream.std": ("/api/gen/image", "seedream", None),
         }
         for operation, (endpoint, provider, model) in expected.items():
             runner = self.admin.function_registry.e2e_runner(operation)

@@ -110,15 +110,18 @@
   }
   function imageRequest(input){
     input=input||{};
-    var engine=String(input.engine||'nb2').toLowerCase(), references=input.references||[];
+    var engine=String(input.engine||'seedream').toLowerCase(), references=input.references||[];
     var body={prompt:String(input.prompt||'').trim(),ratio:input.ratio||'9:16',quality:input.quality||'hd',count:1,source_page:'canvas'};
     function dataPart(value){ value=String(value||''); return value.indexOf(',')>=0?value.split(',')[1]:value; }
-    if(references[0]) body.image=dataPart(references[0]);
-    if(references.length>1) body.images=references.map(dataPart);
-    if(engine==='gpt') body.provider='openai';
-    else if(engine==='zelong') body.provider='zelong';
-    else body.model=engine;
-    return {endpoint:engine==='gpt'||engine==='zelong'?'/api/gen/image':'/api/gen/banana',body:body};
+    if(engine==='gpt'||engine==='seedream'){
+      body.provider=engine==='gpt'?'openai':'seedream';
+      if(engine==='seedream') body.variant='std';
+      if(references.length) body.reference_images=references.map(dataPart);
+      return {endpoint:'/api/gen/image',body:body};
+    }
+    if(references.length) body.images=references.map(dataPart);
+    body.model=engine;
+    return {endpoint:'/api/gen/banana',body:body};
   }
   function videoRequest(input){
     input=input||{};

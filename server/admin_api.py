@@ -264,9 +264,11 @@ KEY_GROUPS = [
      "pool_base_env": [], "pool_base_default": video_minimax_h3.new_task_api_base(),
      "env": ["MINIMAX_API_KEY"], "pool_provider": "minimax"},
     {"key": "zelong", "name": "小乐 AI API", "category": "图片生成",
-     "features": ["图片生成 → 黄雀引擎 2 备用线路"], "env": ["ZELONG_KEY"]},
+     "features": ["历史图片渠道"], "env": ["ZELONG_KEY"],
+     "accepts_new_jobs": False, "replacement": "Seedream / 黄雀引擎 2"},
     {"key": "zelong2", "name": "泽龙 API", "category": "图片生成",
-     "features": ["图片生成 → 泽龙 2 备用线路（维护中）"], "env": ["ZELONG2_KEY"]},
+     "features": ["历史图片渠道"], "env": ["ZELONG2_KEY"],
+     "accepts_new_jobs": False, "replacement": "Seedream / 黄雀引擎 2"},
     {"key": "heygen", "name": "HeyGen API", "category": "数字化 IP / 视频生成",
      "features": ["视频模块 → 电影化身", "视频模块 → 数字人口播", "我的资产 → 数字人形象"],
      "env_base_env": ["HEYGEN_API_BASE"], "env_base_default": "https://api.heygen.com/v3",
@@ -276,7 +278,8 @@ KEY_GROUPS = [
      "env_base_env": ["HEYGEN_RELAY_BASE"], "env_base_default": "",
      "env": ["HEYGEN_RELAY_TOKEN"]},
     {"key": "xiaolevideo", "name": "小乐视频 API", "category": "图片生成 / 视频生成",
-     "features": ["图片生成 → 果肉生图", "视频模块 → 历史兼容线路"], "env": ["XIAOLEVIDEO_API_KEY"]},
+     "features": ["历史图片 / 视频渠道"], "env": ["XIAOLEVIDEO_API_KEY"],
+     "accepts_new_jobs": False, "replacement": "Seedream（图片）/ xAI（视频）"},
     {"key": "runninghub", "name": "RunningHub API", "category": "视频处理",
      "features": ["视频模块 → 换装换背景 · 线路一"], "env": ["RUNNINGHUB_API_KEY", "RUNNINGHUB_KEY"]},
     {"key": "wavespeed", "name": "WaveSpeed API", "category": "视频处理",
@@ -669,6 +672,8 @@ CHANNELS = {
         "name": item["name"],
         "required_env": item["env"],
         "default_config": {"cost": "", "rate_limit": "", "defaults": ""},
+        "accepts_new_jobs": item.get("accepts_new_jobs", True),
+        "replacement": item.get("replacement", ""),
     }
     for item in KEY_GROUPS
 }
@@ -1028,10 +1033,11 @@ def _e2e_payload(operation_id, runner, ready_avatar_ids=None, ready_audio_voice_
             "ratio": str(prefill.get("ratio") or "9:16"),
             "reference_images": references,
         })
-    elif operation_id.startswith("video.minimax."):
+    elif operation_id.startswith("video.minimax.") or operation_id == "canvas.video.minimax":
         payload.update({
             "channel": "minimax", "operation": "generate", "prompt": prompt,
-            "duration": 5, "resolution": "2k", "ratio": "9:16",
+            "duration": int(prefill.get("duration") or 5),
+            "resolution": "2k", "ratio": str(prefill.get("ratio") or "9:16"),
             "reference_images": [resolve(item) for item in prefill.get("reference_images") or []],
         })
     elif operation_id.startswith("video.omni."):
@@ -1932,6 +1938,8 @@ def key_status():
                 "auto_probe": item["key"] in AUTO_KEY_PING_INTERVALS,
                 "probe_interval": AUTO_KEY_PING_INTERVALS.get(item["key"]),
                 "endpoints": ENDPOINT_CATALOG.get(item["key"], []),
+                "accepts_new_jobs": item.get("accepts_new_jobs", True),
+                "replacement": item.get("replacement", ""),
             }
         )
     return items
@@ -3419,9 +3427,11 @@ def load_channels():
             {
                 "key": channel,
                 "name": meta["name"],
-                "enabled": bool(item.get("enabled", True)),
+                "enabled": bool(meta.get("accepts_new_jobs", True) and item.get("enabled", True)),
                 "config": item.get("config") or meta["default_config"],
                 "configured": bool(keys.get(channel, {}).get("configured")),
+                "accepts_new_jobs": meta.get("accepts_new_jobs", True),
+                "replacement": meta.get("replacement", ""),
                 "updated_by": item.get("updated_by"),
                 "updated_at": item.get("updated_at"),
             }
@@ -3487,6 +3497,8 @@ def save_channel(actor, body):
     if channel not in CHANNELS:
         raise ValueError("unknown channel")
     enabled = bool(body.get("enabled"))
+    if enabled and not CHANNELS[channel].get("accepts_new_jobs", True):
+        raise ValueError("该 API 已下架，不能重新开启新接单")
     config = _validate_config(body.get("config") or {})
     reason = str(body.get("reason") or "").strip()[:200]
     now = int(time.time())
