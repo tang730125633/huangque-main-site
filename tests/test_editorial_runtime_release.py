@@ -16,17 +16,21 @@ spec.loader.exec_module(release)
 class FakeRemote:
     """模拟服务器：read_state 返回预设状态；记录 run/put_file/put_dir 调用；可注入失败。"""
 
-    def __init__(self, states=None):
+    def __init__(self, states=None, health_codes=None):
         self.states = dict(states or {})
         self.calls = []
         self.fail_labels = set()
         self.fail_puts = set()
+        self.health_codes = list(health_codes or [])  # 队列逐个返回；空则默认 200
 
     def read_state(self, dest, kind):
         return self.states.get(dest, {"exists": False})
 
     def run(self, command):
         self.calls.append(("run", command))
+        if "api/gen/health" in command:
+            code = self.health_codes.pop(0) if self.health_codes else "200"
+            return subprocess.CompletedProcess([], 0 if code.startswith("2") else 1, code, "")
         return subprocess.CompletedProcess([], 0, "", "")
 
     def run_checked(self, command, label):
@@ -210,14 +214,60 @@ class ClassificationTests(unittest.TestCase):
                             [release.AUTH_CONTRACT, release.CONTENT_CONTRACT,
                              release.TEMPLATE_DEST, release.RUNTIME_ROOT, release.DROPIN_DEST])
 
-    def test_09_health_check_failure_rolls_back(self):
-        remote = FakeRemote(absent_states())
-        remote.fail_labels.add("健康检查 HTTP 2xx")
+    def test_09_health_check_timeout_rolls_back(self):
+        remote = FakeRemote(absent_states(), health_codes=["000"] * 200)
+        txn = release.Transaction(remote, ROOT, health_timeout=0.3, health_interval=0.01)
         with self.assertRaises(release.ReleaseError):
-            release.Transaction(remote, ROOT).run()
+            txn.run()
         assert_rollback(self, remote,
                         [release.AUTH_CONTRACT, release.CONTENT_CONTRACT,
                          release.TEMPLATE_DEST, release.RUNTIME_ROOT, release.DROPIN_DEST])
+        self.assertTrue(any(e.startswith("健康检查") for e in txn.events))
+
+    def test_health_retry_succeeds_after_delayed_start(self):
+        remote = FakeRemote(absent_states(), health_codes=["000", "000", "200"])
+        txn = release.Transaction(remote, ROOT, health_timeout=10, health_interval=0.01)
+        result = txn.run()
+        self.assertEqual(result["result"], "done")
+        health_logs = [e for e in txn.events if e.startswith("健康检查")]
+        self.assertEqual(len(health_logs), 3)
+
+    def test_health_transient_non_2xx_recovers(self):
+        remote = FakeRemote(absent_states(), health_codes=["502", "503", "200"])
+        txn = release.Transaction(remote, ROOT, health_timeout=10, health_interval=0.01)
+        result = txn.run()
+        self.assertEqual(result["result"], "done")
+
+    def test_success_restarts_auth_then_content_exactly_once(self):
+        remote = FakeRemote(absent_states())
+        release.Transaction(remote, ROOT).run()
+        cmds = run_cmds(remote)
+        self.assertEqual(cmds.count("sudo systemctl restart huangque-auth"), 1)
+        self.assertEqual(cmds.count("sudo systemctl restart huangque-content"), 1)
+        self.assertLess(cmds.index("sudo systemctl restart huangque-auth"),
+                        cmds.index("sudo systemctl restart huangque-content"))
+
+    def test_rollback_restores_dropin_if_existed(self):
+        remote = FakeRemote(absent_states())
+        txn = release.Transaction(remote, ROOT)
+        txn.preimage_states = {release.DROPIN_DEST: {"exists": True, "sha256": "ab" * 32,
+                                                     "mode": "0o644", "uid": 0, "gid": 0}}
+        txn.installed = [release.DROPIN_DEST]
+        txn.rollback()
+        cmds = run_cmds(remote)
+        restore = ("sudo cp -a /tmp/.editorial-release-backup/etc/systemd/system/"
+                   "huangque-content.service.d/editorial-runtime.conf " + release.DROPIN_DEST)
+        self.assertIn(restore, cmds)
+        self.assertNotIn("sudo rm -f " + release.DROPIN_DEST, cmds)
+
+    def test_rollback_deletes_dropin_if_absent(self):
+        remote = FakeRemote(absent_states())
+        txn = release.Transaction(remote, ROOT)
+        txn.preimage_states = {release.DROPIN_DEST: {"exists": False}}
+        txn.installed = [release.DROPIN_DEST]
+        txn.rollback()
+        cmds = run_cmds(remote)
+        self.assertIn("sudo rm -f " + release.DROPIN_DEST, cmds)
 
 
 class WhitelistTests(unittest.TestCase):
