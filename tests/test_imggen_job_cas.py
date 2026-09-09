@@ -90,6 +90,21 @@ class ImggenJobCasTests(unittest.TestCase):
         legacy.assert_not_called()
         self.assertEqual(self._row(jid)['status'],'done')
 
+    def test_managed_unknown_submission_stays_running_without_refund(self):
+        jid = self._insert(status='pending')
+        binding = {'id':'channel-one','version':2}
+        with closing(self.m.jdb()) as c:
+            c.execute('UPDATE jobs SET payload=? WHERE id=?',
+                      (json.dumps({'prompt':'test','_channel_binding':binding}),jid))
+            c.commit()
+        with patch('content_domains.channel_runtime.run_task',
+                   side_effect=RuntimeError('submission unknown')), \
+                patch('content_domains.channel_manager.task_recovery_state',
+                      return_value='unknown'):
+            self.m.run_job(jid)
+        self.assertEqual(self._row(jid)['status'],'running')
+        self.assertEqual(self.refunds, [])
+
     def test_banana_submit_binds_quote_charge_and_idempotency(self):
         charges = []
 

@@ -3027,6 +3027,8 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
                 )
             )
 
+    managed_search_ids = channel_manager.search_task_ids(q) if q else set()
+    trace_search_ids = runtime_observability.search_task_ids(q) if q else set()
     matching = []
     # Keep every active task ahead of newer terminal/request rows so pagination
     # cannot hide work that still needs operator attention.
@@ -3040,14 +3042,16 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
             continue
         if attributed and it.get("user") in (None, "", "-"):
             continue
-        if q and all(
-            q.lower() not in str(it.get(field) or "").lower()
+        direct_match = not q or any(
+            q.lower() in str(it.get(field) or "").lower()
             for field in (
                 "path", "user", "func", "request_id", "hq_code", "task_id",
                 "channel", "provider", "route", "model", "provider_task_id",
                 "correlation_id",
             )
-        ):
+        )
+        job_id = str((it.get("_detail") or {}).get("id") or "")
+        if not direct_match and job_id not in managed_search_ids and job_id not in trace_search_ids:
             continue
         matching.append(it)
     total = len(matching)

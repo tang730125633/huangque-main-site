@@ -2,17 +2,13 @@
 import base64
 import io
 import json
-import socket
-import ipaddress
 import time
 import threading
-import urllib.error
 import urllib.parse
-import urllib.request
 import uuid
 from contextlib import closing
 
-from . import channel_manager as store, runtime_observability as trace
+from . import channel_manager as store, runtime_observability as trace, safe_http
 
 
 class OutcomeUnknown(RuntimeError):
@@ -59,25 +55,21 @@ def validate_payload(cfg, payload):
             raise ValueError('Grok 1.5需要参考图')
 
 
-def opener(cfg):
-    proxy = cfg.get('proxy')
-    return urllib.request.build_opener(urllib.request.ProxyHandler({'http':proxy,'https':proxy} if proxy else {}), trace.NoRedirect())
-
-
 def request(cfg, method, path, body=None):
-    req = urllib.request.Request(cfg['base_url']+'/'+path.lstrip('/'),
-        data=json.dumps(body).encode() if body is not None else None, method=method,
-        headers={'Authorization':'Bearer '+cfg['secret'],'Content-Type':'application/json'})
     try:
-        with opener(cfg).open(req, timeout=cfg['timeout']) as response:
-            raw = response.read(8*1024*1024+1)
-            if len(raw)>8*1024*1024:
-                raise ValueError('响应过大')
-            return json.loads(raw)
-    except urllib.error.HTTPError as exc:
-        if method == 'POST' and (exc.code in {408,429} or exc.code>=500):
+        return safe_http.request_json(
+            method, cfg['base_url']+'/'+path.lstrip('/'), body=body,
+            headers={'Authorization':'Bearer '+cfg['secret']},
+            timeout=cfg['timeout'], proxy=cfg.get('proxy') or '',
+        )
+    except safe_http.SafeHttpError as exc:
+        if method == 'POST' and (exc.status in {0,408,429} or exc.status>=500):
             raise OutcomeUnknown('提交结果未知，禁止自动重发') from None
-        raise ProviderError('供应商 HTTP %s' % exc.code) from None
+        if exc.status:
+            raise ProviderError('供应商 HTTP %s' % exc.status) from None
+        if method == 'POST':
+            raise OutcomeUnknown('提交响应未确认，禁止自动重发') from None
+        raise RuntimeError('网络或响应异常：'+type(exc).__name__) from None
     except (OSError, ValueError) as exc:
         if method == 'POST':
             raise OutcomeUnknown('提交响应未确认，禁止自动重发') from None
@@ -85,17 +77,10 @@ def request(cfg, method, path, body=None):
 
 
 def _download(cfg, url):
-    p = urllib.parse.urlsplit(str(url))
-    if p.scheme != 'https' or not p.hostname or p.username or p.password:
-        raise ValueError('供应商产物地址不是有效 HTTPS 地址')
-    for addr in socket.getaddrinfo(p.hostname, p.port or 443):
-        if not ipaddress.ip_address(addr[4][0]).is_global:
-            raise ValueError('产物地址指向非公网网络')
-    with opener(cfg).open(urllib.request.Request(url), timeout=cfg['timeout']) as r:
-        raw = r.read(100*1024*1024+1)
-    if len(raw)>100*1024*1024:
-        raise ValueError('产物超过100MB')
-    return raw
+    return safe_http.request_bytes(
+        'GET', url, timeout=cfg['timeout'], max_bytes=100*1024*1024,
+        proxy=cfg.get('proxy') or '',
+    )
 
 
 def generate(cfg, payload, rid, job_id):
@@ -207,12 +192,13 @@ def execute(rid, payload=None):
                 raise RuntimeError('渠道并发或限流等待超时，尚未提交供应商')
             time.sleep(1)
         if row['kind']=='connection':
-            req = urllib.request.Request(cfg['base_url'],method='HEAD')
             try:
-                with opener(cfg).open(req,timeout=cfg['timeout']):
-                    pass
-            except urllib.error.HTTPError as exc:
-                if not 400<=exc.code<500:
+                safe_http.request_bytes(
+                    'HEAD', cfg['base_url'], timeout=cfg['timeout'],
+                    max_bytes=1024, proxy=cfg.get('proxy') or '',
+                )
+            except safe_http.SafeHttpError as exc:
+                if not 400 <= exc.status < 500:
                     raise
             result, detail = None,'网络连接可达；不代表鉴权或生成成功'
         elif row['kind']=='auth':

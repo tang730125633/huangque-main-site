@@ -1,5 +1,6 @@
 import json
 import os
+import stat
 import tempfile
 import threading
 import unittest
@@ -31,6 +32,27 @@ class ObservabilityTests(unittest.TestCase):
         self.assertNotIn('secret-value', json.dumps(result))
         self.assertEqual(result[0]['error_type'], 'TimeoutError')
         self.assertEqual(telemetry.traces(8), [])
+
+    def test_private_database_is_owner_only(self):
+        path = Path(os.environ['HQ_OBSERVABILITY_DB'])
+        with closing(telemetry.database()):
+            pass
+        if os.name != 'nt':
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+
+    def test_definitive_minimax_rejection_is_not_unknown(self):
+        with self.assertRaises(adapter.MiniMaxRejected):
+            telemetry.call(
+                9, 'provider_submit',
+                lambda: (_ for _ in ()).throw(adapter.MiniMaxRejected('rejected')),
+            )
+        self.assertEqual(telemetry.traces(9)[0]['state'], 'failed')
+
+    def test_runtime_evidence_searches_actual_provider_and_model(self):
+        telemetry.record(10, 'route', 'recorded', provider='Actual Provider',
+                         model='actual-model-v2')
+        self.assertEqual({'10'}, telemetry.search_task_ids('actual-model-v2'))
+        self.assertEqual({'10'}, telemetry.search_task_ids('actual provider'))
 
     def test_generation_records_actual_transport_but_never_claims_delivery(self):
         with patch.object(adapter, '_request_json', return_value={'task_id':'test-order'}), patch.object(adapter, 'query_task', return_value={'task':{'status':'succeeded','content':{'url':'https://files.metaso.cn/result.mp4'}}}):
@@ -100,3 +122,8 @@ class ObservabilityTests(unittest.TestCase):
                     connection.execute('UPDATE alert_outbox SET next_try=0');connection.commit()
                 telemetry.dispatch()
             self.assertEqual(telemetry.alert_status()['counts']['failed'],1)
+
+    def test_private_https_webhook_is_rejected(self):
+        with patch('server.content_domains.safe_http.socket.getaddrinfo',
+                   return_value=[(2, 1, 6, '', ('10.0.0.8', 443))]):
+            self.assertFalse(telemetry.valid_endpoint('https://hooks.example/events'))

@@ -55,12 +55,16 @@ def _crypt(value, decrypt=False):
 
 
 def _url(value, proxy=False):
-    from urllib.parse import urlsplit
+    from .safe_http import validate_target
     value = str(value or '').strip().rstrip('/')
-    p = urlsplit(value)
-    local = p.hostname in {'127.0.0.1', 'localhost', '::1'}
-    if not p.hostname or p.username or p.password or p.query or p.fragment or (p.scheme != 'https' and not (p.scheme == 'http' and (local or proxy))):
-        raise ValueError('地址需为 HTTPS；本机测试允许 HTTP。凭据请使用独立密钥字段')
+    target = validate_target(value, proxy=proxy)
+    if proxy and target.request_target != '/':
+        raise ValueError('代理地址不能包含路径或查询参数')
+    if target.request_target != '/':
+        # Base paths are supported, but query strings would leak into every API path.
+        from urllib.parse import urlsplit
+        if urlsplit(value).query:
+            raise ValueError('基础地址不能包含查询参数')
     return value
 
 
@@ -241,8 +245,17 @@ def reserve(cid, kind, job_id='', snapshot=None):
             used = c.execute("SELECT COUNT(*) n,COALESCE(SUM(reservation),0) cost FROM runs WHERE channel=? AND kind='full' AND started>=?", (cid,start)).fetchone()
             if not cfg['test_cost'] or used['n'] >= cfg['daily_limit'] or used['cost']+cfg['test_cost']>cfg['daily_budget']:
                 raise ValueError('完整测试预算或次数不足，请先配置；失败和未知结果同样占用预算')
-        if kind == 'task' and c.execute("SELECT 1 FROM runs WHERE job_id=? AND kind='task'",(str(job_id),)).fetchone():
-            raise ValueError('该任务已有渠道执行记录，禁止重复提交，请按工单核查')
+        if kind == 'task':
+            existing = c.execute(
+                "SELECT id,channel,version,state FROM runs WHERE job_id=? AND kind='task' "
+                "ORDER BY started DESC LIMIT 1", (str(job_id),),
+            ).fetchone()
+            if existing:
+                if (existing['state'] == 'queued' and existing['channel'] == cid
+                        and int(existing['version']) == int(cfg['version'])):
+                    c.commit()
+                    return existing['id']
+                raise ValueError('该任务已有渠道执行记录，禁止重复提交，请按工单核查')
         pending = c.execute("SELECT COUNT(*) FROM runs WHERE channel=? AND state='queued'",(cid,)).fetchone()[0]
         if pending >= max(1,cfg['queue_limit']):
             raise ValueError('渠道等待队列已满')
@@ -272,8 +285,37 @@ def notification_settings(private=False):
 
 def task_evidence(job_id):
     with closing(db()) as c:
-        row = c.execute("SELECT channel,version,provider_id FROM runs WHERE kind='task' AND job_id=? ORDER BY started DESC LIMIT 1",(str(job_id),)).fetchone()
+        row = c.execute("SELECT channel,version,state,provider_id FROM runs WHERE kind='task' AND job_id=? ORDER BY started DESC LIMIT 1",(str(job_id),)).fetchone()
     return dict(row) if row else {}
+
+
+def task_recovery_state(job_id):
+    """Conservative paid-task recovery state; unreadable evidence is never failure."""
+    try:
+        evidence = task_evidence(job_id)
+        return evidence.get('state') or 'absent'
+    except (OSError, sqlite3.Error):
+        return 'unavailable'
+
+
+def search_task_ids(query):
+    """Find managed tasks by durable provider/channel/version evidence."""
+    needle = '%' + str(query or '').lower() + '%'
+    if needle == '%%':
+        return set()
+    try:
+        with closing(db()) as c:
+            rows = c.execute(
+                "SELECT DISTINCT r.job_id FROM runs r LEFT JOIN versions v "
+                "ON v.channel=r.channel AND v.version=r.version "
+                "WHERE r.kind='task' AND (LOWER(r.provider_id) LIKE ? "
+                "OR LOWER(r.channel) LIKE ? OR LOWER(CAST(r.version AS TEXT)) LIKE ? "
+                "OR LOWER(COALESCE(v.config,'')) LIKE ?)",
+                (needle, needle, needle, needle),
+            ).fetchall()
+        return {str(row[0]) for row in rows if row[0] not in (None, '')}
+    except (OSError, sqlite3.Error):
+        return set()
 
 
 def save_notifications(actor, body):

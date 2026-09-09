@@ -220,6 +220,14 @@ class RequestLogUserTests(unittest.TestCase):
         activity = admin_api.activity_logs(source="job", q="idem-v…1226")
         self.assertEqual([row["task_id"] for row in activity["items"]], ["1226"])
 
+    def test_activity_filter_uses_managed_provider_evidence_before_pagination(self):
+        with mock.patch.object(admin_api.channel_manager, 'search_task_ids',
+                               return_value={'1226'}), \
+                mock.patch.object(admin_api.runtime_observability,
+                                  'search_task_ids', return_value=set()):
+            result = admin_api.activity_logs(source='job', q='provider-only-order')
+        self.assertEqual([row['task_id'] for row in result['items']], ['1226'])
+
     def test_activity_merges_jobs_and_http(self):
         data = admin_api.activity_logs()
         items = data["items"]

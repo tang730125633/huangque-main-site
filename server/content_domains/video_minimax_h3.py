@@ -54,7 +54,7 @@ class CreateOutcomeUnknown(RuntimeError):
 
 
 class MiniMaxRejected(RuntimeError):
-    pass
+    definitive_rejection = True
 
 
 class MiniMaxCredentialRejected(MiniMaxRejected):

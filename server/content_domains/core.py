@@ -1900,6 +1900,16 @@ def run_job(job_id):
                     flush=True,
                 )
                 return
+        if payload.get('_channel_binding'):
+            from . import channel_manager
+            managed_state = channel_manager.task_recovery_state(job_id)
+            if managed_state == 'queued':
+                _requeue_running_job(job_id)
+                return
+            if managed_state in {'running', 'unknown', 'passed', 'unavailable'}:
+                print("[managed-channel] 保留 job#%s 状态=%s，禁止误退款或重发" %
+                      (job_id, managed_state), flush=True)
+                return
         # 生成失败：CAS 抢 error 终态；抢到才记失败资产。退点走幂等(reaper 若已退则跳过)
         # from_states 含 pending：抢 running 那句自己抛异常时任务还停在 pending，只认 running 会不退点
         diagnostics = {}
@@ -2012,6 +2022,14 @@ def reaper():
                     stuck_payload = json.loads(r["payload"] or "{}")
                 except Exception:
                     stuck_payload = {}
+                if stuck_payload.get('_channel_binding'):
+                    from . import channel_manager
+                    managed_state = channel_manager.task_recovery_state(r["id"])
+                    if managed_state == 'queued':
+                        _requeue_running_job(r["id"])
+                        continue
+                    if managed_state in {'running', 'unknown', 'passed', 'unavailable'}:
+                        continue
                 if r["kind"] in {"sora_video", "xiaole_video", "video"}:
                     try:
                         video_domain = _domains()[2]

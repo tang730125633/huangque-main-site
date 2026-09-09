@@ -53,14 +53,39 @@ class ChannelTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             cm.save_mapping('admin',dict(kind='xiaole_video',front='grok',channel=self.ch['id']))
 
-    def test_budget_reserved_even_when_unknown_and_no_duplicate_task(self):
+    def test_budget_reserved_even_when_unknown_and_task_resume_is_idempotent(self):
         rid=cm.reserve(self.ch['id'],'full');cm.finish(rid,'unknown','unknown')
         cm.reserve(self.ch['id'],'full')
         with self.assertRaisesRegex(ValueError,'预算'):
             cm.reserve(self.ch['id'],'full')
-        cm.reserve(self.ch['id'],'task','77')
+        task_rid = cm.reserve(self.ch['id'],'task','77')
+        self.assertEqual(task_rid, cm.reserve(self.ch['id'],'task','77'))
+        cm.finish(task_rid, 'running', 'submitted')
         with self.assertRaisesRegex(ValueError,'重复'):
             cm.reserve(self.ch['id'],'task','77')
+
+    def test_private_provider_and_proxy_addresses_are_rejected(self):
+        for changes in (
+            {'base_url':'https://127.0.0.1/v1'},
+            {'proxy':'http://169.254.169.254:8080'},
+            {'proxy':'https://proxy.example:8443'},
+        ):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                cm.save('admin', dict(self.body, **self.ch, **changes))
+
+    def test_task_recovery_state_is_durable_and_unreadable_is_conservative(self):
+        rid = cm.reserve(self.ch['id'], 'task', '88')
+        self.assertEqual('queued', cm.task_recovery_state('88'))
+        cm.finish(rid, 'unknown', 'uncertain')
+        self.assertEqual('unknown', cm.task_recovery_state('88'))
+        with patch.object(cm, 'db', side_effect=OSError('disk unavailable')):
+            self.assertEqual('unavailable', cm.task_recovery_state('88'))
+
+    def test_managed_evidence_searches_provider_order_and_actual_model(self):
+        rid = cm.reserve(self.ch['id'], 'task', '91')
+        cm.finish(rid, 'running', 'accepted', 'provider-order-xyz')
+        self.assertEqual({'91'}, cm.search_task_ids('provider-order-xyz'))
+        self.assertEqual({'91'}, cm.search_task_ids('test-model'))
 
     def test_concurrent_budget_is_atomic(self):
         def reserve():

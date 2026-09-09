@@ -455,6 +455,16 @@ def run_job(job_id):
         # 出图产物不入统一 assets 表：图片走 jobs.result → /api/gen/history，
         # 那才是 assets.html 图片分类读的数据源。见 assets_store.KIND_STAGE 的注释。
     except Exception as e:
+        if payload.get('_channel_binding'):
+            from content_domains import channel_manager, startup_recovery
+            managed_state = channel_manager.task_recovery_state(job_id)
+            if managed_state == 'queued':
+                startup_recovery.requeue_running_job(jdb, job_id)
+                return
+            if managed_state in {'running', 'unknown', 'passed', 'unavailable'}:
+                print("[imggen-managed-channel] 保留 job#%s 状态=%s，禁止误退款或重发" %
+                      (job_id, managed_state), flush=True)
+                return
         # from_states 含 pending：认领那句 UPDATE 自己抛异常时任务还停在 pending，
         # 只认 running 会导致不退点且 reaper 永远扫不到它
         if _set_terminal(job_id, "error", error=str(e), from_states=("pending", "running")):
