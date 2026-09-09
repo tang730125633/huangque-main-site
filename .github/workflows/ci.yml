@@ -102,6 +102,7 @@ jobs:
             test_admin_request_logs.py
             test_cli_image_uploads.py
             test_cli_media_uploads.py
+            test_creator_agent_model_proxy.py
             test_hq_cli_api.py
             test_hq_cli_channel_catalog.py
             test_hq_cli_content.py

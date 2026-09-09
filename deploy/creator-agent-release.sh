@@ -52,6 +52,7 @@ for file in "$ROOT/server/creator_agent_api.py" "$ROOT/server/creator_agent/__in
             "$ROOT/server/creator_agent/profile_agent.py" \
             "$ROOT/server/creator_agent/profile_pdf.py" \
             "$ROOT/server/creator_agent/model_usage.py" \
+            "$ROOT/server/creator_agent/model_proxy.py" \
             "$ROOT/server/creator_agent/service.py" \
             "$ROOT/deploy/requirements-creator-agent.txt" \
             "$UNIT_SOURCE" "$NGINX_SOURCE"; do
