@@ -28,6 +28,7 @@ from content_domains import video_compose_editorial as editorial
 from content_domains import video_compose_render as renderer
 from content_domains import video_compose_store as store
 import hq_cli_api
+from scripts import check_editorial_process_cleanup as process_cleanup_check
 
 
 def example_plan():
@@ -283,6 +284,17 @@ class WorkspaceTests(unittest.TestCase):
         else:
             process.kill.assert_called_once()
             self.assertEqual(2, process.communicate.call_count)
+
+    def test_linux_browser_socket_temp_path_is_shallow_and_task_owned(self):
+        evidence = pathlib.PurePosixPath('/home/runner/work/_temp/editorial-process-cleanup')
+        suffix = '/com.google.Chrome.vkAUz5/SingletonSocket'
+        old_path = str(evidence / '0-timeout-graceful') + suffix
+        self.assertGreaterEqual(len(old_path.encode()), 108)
+        with mock.patch.object(process_cleanup_check.tempfile, 'TemporaryDirectory') as temp:
+            process_cleanup_check.socket_temp_directory(evidence)
+        temp.assert_called_once_with(prefix='ep-', dir=evidence.parent)
+        new_path = str(evidence.parent / 'ep-12345678') + suffix
+        self.assertLess(len(new_path.encode()), 108)
 
     def test_linux_cleanup_budget_keeps_reaper_and_blocks_new_work(self):
         process = mock.Mock(pid=12345)

@@ -7,12 +7,20 @@ import pathlib
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'server'))
 from content_domains import video_compose_editorial as editorial
+
+
+def socket_temp_directory(evidence_folder):
+    # Chrome puts its Unix-domain SingletonSocket below TMPDIR. Keep runtime
+    # files task-owned but shallow; the descriptive evidence/case path can exceed
+    # Linux's 108-byte sockaddr_un limit once Chrome appends its socket suffix.
+    return tempfile.TemporaryDirectory(prefix='ep-', dir=evidence_folder.parent)
 
 
 def identity(pid):
@@ -74,7 +82,11 @@ def main():
     sentinel = subprocess.Popen([sys.executable, '-B', '-c', 'import time; time.sleep(180)'],
                                 start_new_session=True)
     sentinel_identity = identity(sentinel.pid)
+    socket_temp = None
     try:
+        socket_temp = socket_temp_directory(folder)
+        report['socket_tmpdir'] = socket_temp.name
+        report['socket_tmpdir_removed'] = False
         for index, mode in enumerate(['timeout-graceful', 'timeout-forced', 'timeout-forced',
                                       'exit-success', 'exit-failure']):
             case_dir = folder / f'{index}-{mode}'
@@ -120,29 +132,36 @@ def main():
             observer.start()
             started = time.monotonic()
             outcome = 'success'
-            environment = {**os.environ, 'TMPDIR': str(case_dir), 'TEMP': str(case_dir),
-                           'TMP': str(case_dir), 'DO_NOT_TRACK': '1'}
+            stdout, stderr, exception = b'', b'', None
+            environment = {**os.environ, 'TMPDIR': socket_temp.name, 'TEMP': socket_temp.name,
+                           'TMP': socket_temp.name, 'DO_NOT_TRACK': '1'}
             try:
-                editorial._run_owned([command[0], str(ROOT / 'scripts/editorial_process_fixture.mjs'),
+                completed = editorial._run_owned([command[0], str(ROOT / 'scripts/editorial_process_fixture.mjs'),
                     str(hf_root), browser, str(case_dir), mode], case_dir, environment, 8)
-            except subprocess.TimeoutExpired:
-                outcome = 'timeout'
-            except subprocess.CalledProcessError as error:
-                outcome = 'failure'
-                (case_dir / 'stderr.txt').write_bytes(error.stderr or b'')
+                stdout, stderr = completed.stdout, completed.stderr
+            except Exception as error:
+                outcome = ('timeout' if isinstance(error, subprocess.TimeoutExpired) else
+                           'failure' if isinstance(error, subprocess.CalledProcessError) else 'error')
+                stdout = getattr(error, 'stdout', None) or getattr(error, 'output', None) or b''
+                stderr = getattr(error, 'stderr', None) or b''
+                exception = {'type': type(error).__name__, 'message': str(error),
+                             'returncode': getattr(error, 'returncode', None)}
             finally:
                 stop.set()
                 observer.join(timeout=2)
+                (case_dir / 'stdout.txt').write_bytes(stdout)
+                (case_dir / 'stderr.txt').write_bytes(stderr)
             survivors = [row for row in observed if still_exists(row)]
             result = {'mode': mode, 'outcome': outcome, 'seconds': time.monotonic() - started,
                       'launch': record, 'observed': observed, 'survivors': survivors,
                       'observer_errors': observer_errors,
+                      'exception': exception, 'stderr_tail': stderr.decode('utf-8', errors='replace')[-4000:],
                       'sentinel_alive': still_exists(sentinel_identity)}
             report['cases'].append(result)
             (folder / 'report.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
             try:
                 assert not observer.is_alive() and not observer_errors, result
-                assert record and observed, 'Fixture failed to launch real browser and process tree'
+                assert record and observed, result
                 assert record['versions'] == {'hyperframes': '0.8.33', 'puppeteer-core': '25.10.0',
                                                 '@puppeteer/browsers': '3.2.2'}, record
                 by_pid = {row['pid']: row for row in observed}
@@ -170,10 +189,14 @@ def main():
         report['subsequent_task'] = 'passed'
         report['passed'] = True
         (folder / 'report.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
-        print(json.dumps(report, indent=2))
     finally:
         sentinel.terminate()
         sentinel.wait(timeout=5)
+        if socket_temp is not None:
+            socket_temp.cleanup()
+            report['socket_tmpdir_removed'] = True
+        (folder / 'report.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
+    print(json.dumps(report, indent=2))
 
 
 if __name__ == '__main__':

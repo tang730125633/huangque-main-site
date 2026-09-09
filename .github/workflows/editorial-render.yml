@@ -74,6 +74,7 @@ jobs:
             ${{ runner.temp }}/editorial-process-cleanup/report.json
             ${{ runner.temp }}/editorial-process-cleanup/*/launch.json
             ${{ runner.temp }}/editorial-process-cleanup/*/stderr.txt
+            ${{ runner.temp }}/editorial-process-cleanup/*/stdout.txt
             ${{ runner.temp }}/editorial-layout/report.json
             ${{ runner.temp }}/editorial-layout/measurements.json
             ${{ runner.temp }}/editorial-layout/fixtures.json
