@@ -3675,6 +3675,35 @@ def _is_shared_provider_job(row, generic_rows):
     )
 
 
+def _provider_refund_pending_ids(connection):
+    """Return unique provider attempt ids still awaiting a refund."""
+    exists = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' "
+        "AND name='short_drama_provider_shot_attempts'"
+    ).fetchone()
+    if not exists:
+        return set()
+    columns = {
+        row["name"] for row in connection.execute(
+            "PRAGMA table_info(short_drama_provider_shot_attempts)"
+        )
+    }
+    if "state" not in columns or not ({"job_id", "id"} & columns):
+        return set()
+    if "job_id" in columns and "id" in columns:
+        logical_id = "COALESCE(job_id,id)"
+    else:
+        logical_id = "job_id" if "job_id" in columns else "id"
+    return {
+        str(row["logical_id"])
+        for row in connection.execute(
+            "SELECT %s AS logical_id FROM short_drama_provider_shot_attempts "
+            "WHERE state='refund_pending'" % logical_id
+        ).fetchall()
+        if row["logical_id"] is not None
+    }
+
+
 def _operation_feature_key(kind, channel=""):
     kind = str(kind or "unknown")
     if kind == "xiaole_video":
@@ -6739,9 +6768,14 @@ def _short_drama_shot_operation_stat(since):
         "result_url": artifact.get("result_url") or None,
         "delivery_verified": bool(artifact.get("delivery_verified")),
         "artifact_check": artifact.get("artifact_check") or "not_recorded",
-        "cost": int(row["cost"] or 0), "refund_state": 1 if row["attempt_state"] == "refunded" else 0,
+        "cost": int(row["cost"] or 0), "refund_state": (
+            1 if row["attempt_state"] == "refunded"
+            else 2 if row["attempt_state"] == "refund_pending" else 0
+        ),
         "billing_state": "refunded" if row["attempt_state"] == "refunded" else (
-            "charged" if row["attempt_state"] == "done" else "pending"
+            "refund_pending" if row["attempt_state"] == "refund_pending" else (
+                "charged" if row["attempt_state"] == "done" else "pending"
+            )
         ),
         "balance_state": "consistent" if row["attempt_state"] in {"done", "refunded"} else "pending",
         "error": str(error.get("detail") or "")[:300],
@@ -6796,9 +6830,17 @@ def job_stats(days=7):
                             created_at if not oldest or created_at < oldest else oldest
                         )
                 if "refunded" in columns:
-                    live["refund_pending"] = int(connection.execute(
-                        "SELECT COUNT(*) AS total FROM jobs WHERE COALESCE(refunded,0)=2"
-                    ).fetchone()["total"] or 0)
+                    generic_refund_ids = {
+                        str(row["id"]) for row in connection.execute(
+                            "SELECT id FROM jobs WHERE COALESCE(refunded,0)=2"
+                        ).fetchall()
+                    }
+                    live["refund_pending"] = len(generic_refund_ids)
+                else:
+                    generic_refund_ids = set()
+                live["refund_pending"] += len(
+                    _provider_refund_pending_ids(connection) - generic_refund_ids
+                )
                 refunded_sql = "COALESCE(refunded,0)" if "refunded" in columns else "0"
                 error_sql = "COALESCE(error,'')" if "error" in columns else "''"
                 result_sql = "result" if "result" in columns else "NULL"
@@ -7012,7 +7054,7 @@ def dashboard_stats(days=7):
                 (since, *running_states),
             ).fetchall()
             provider_rows = []
-            provider_refunds = []
+            provider_refund_ids = set()
             if connection.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' "
                     "AND name='short_drama_provider_shot_jobs'").fetchone():
@@ -7023,14 +7065,7 @@ def dashboard_stats(days=7):
                         WHERE created_at>=? OR status IN (%s)""" % running_marks,
                     (since, *running_states),
                 ).fetchall()
-            if connection.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' "
-                    "AND name='short_drama_provider_shot_attempts'").fetchone():
-                provider_refunds = connection.execute(
-                    """SELECT COALESCE(job_id,id) AS logical_id
-                         FROM short_drama_provider_shot_attempts
-                        WHERE state='refund_pending'"""
-                ).fetchall()
+            provider_refund_ids = _provider_refund_pending_ids(connection)
     except sqlite3.Error:
         return out
     by_kind = {}
@@ -7095,10 +7130,7 @@ def dashboard_stats(days=7):
             out["live"]["oldest_running_at"] = (
                 created_at if not oldest or created_at < oldest else oldest
             )
-    out["live"]["refund_pending"] += sum(
-        str(row["logical_id"] or "") not in generic_refund_ids
-        for row in provider_refunds
-    )
+    out["live"]["refund_pending"] += len(provider_refund_ids - generic_refund_ids)
     out["high_failure"] = sorted([
         item for item in _finish_stats(list(by_kind.values()))
         if item["total"] >= 3 and item["failure_rate"] >= 0.5
@@ -7664,7 +7696,13 @@ def call_logs(days=7, limit=200):
         item for item in short_drama_items
         if str(item["id"]) not in matched_short_drama_ids
     )
-    items.sort(key=lambda item: (item["created_at"], str(item["id"])), reverse=True)
+    items.sort(
+        key=lambda item: (
+            str(item.get("status") or "").lower() in _TASK_RUNNING_STATES,
+            item["created_at"], str(item["id"]),
+        ),
+        reverse=True,
+    )
     for item in items:
         item.update(_task_runtime_record(item))
     return {"days": days, "limit": limit, "items": items[:limit]}

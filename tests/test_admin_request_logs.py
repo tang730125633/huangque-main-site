@@ -280,6 +280,42 @@ class RequestLogUserTests(unittest.TestCase):
         self.assertEqual(shared_rows[0]["path_label"], "短剧任务 #1226")
         self.assertTrue(any(item["id"] == "shot-job-1" for item in items))
 
+    def test_old_active_jobs_survive_cross_source_limit(self):
+        import sqlite3
+        import time as _time
+
+        now = int(_time.time())
+        old = now - 8 * 86400
+        connection = sqlite3.connect(str(self.db_path))
+        try:
+            connection.execute(
+                "UPDATE jobs SET status='running',created_at=?,updated_at=? WHERE id=1226",
+                (old, old + 10),
+            )
+            connection.execute(
+                "INSERT INTO jobs(id,username,kind,cost,status,payload,created_at,updated_at) "
+                "VALUES(1305,'tang','image',1,'done','{}',?,?)",
+                (now - 10, now - 5),
+            )
+            connection.execute(
+                "UPDATE short_drama_provider_shot_jobs "
+                "SET status='submitting',created_at=?,updated_at=? WHERE id='shot-job-1'",
+                (old + 1, old + 11),
+            )
+            connection.execute(
+                "INSERT INTO short_drama_provider_shot_jobs VALUES("
+                "'provider-recent','tang','grok','failed',1,?,?, 'shot_10')",
+                (now - 8, now - 4),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        items = admin_api.call_logs(7, 2)["items"]
+
+        self.assertEqual({str(item["id"]) for item in items}, {"1226", "shot-job-1"})
+        self.assertTrue(all(item["status"] == "running" for item in items))
+
     def test_task_runtime_record_exposes_real_route_model_and_unverified_delivery(self):
         import sqlite3
         import time as _time

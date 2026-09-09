@@ -655,6 +655,7 @@ class FunctionRegistryTests(unittest.TestCase):
         now = int(time.time())
         old = now - 8 * 86400
         with closing(sqlite3.connect(self.admin.JOB_DB)) as connection:
+            connection.execute("UPDATE jobs SET refunded=2 WHERE id=1")
             connection.execute(
                 """CREATE TABLE short_drama_provider_shot_jobs(
                     id TEXT PRIMARY KEY,project_id TEXT,owner_username TEXT,
@@ -684,6 +685,13 @@ class FunctionRegistryTests(unittest.TestCase):
                 "INSERT INTO short_drama_provider_shot_attempts VALUES(?,?,?)",
                 ("attempt-recent", "provider-recent", "refund_pending"),
             )
+            connection.executemany(
+                "INSERT INTO short_drama_provider_shot_attempts VALUES(?,?,?)",
+                [
+                    ("attempt-shared", "1", "refund_pending"),
+                    ("attempt-old", "provider-old", "refunded"),
+                ],
+            )
             connection.commit()
 
         stats = self.admin.job_stats(7)
@@ -697,7 +705,8 @@ class FunctionRegistryTests(unittest.TestCase):
         self.assertEqual(stats["live"]["oldest_running_at"], old)
         self.assertEqual(dashboard["live"]["running"], 2)
         self.assertEqual(dashboard["live"]["oldest_running_at"], old)
-        self.assertEqual(dashboard["live"]["refund_pending"], 1)
+        self.assertEqual(stats["live"]["refund_pending"], 2)
+        self.assertEqual(dashboard["live"]["refund_pending"], 2)
         shot = next(
             item for item in stats["by_operation"]
             if item["operation"] == "short_drama.live_action.shot_video"
@@ -710,6 +719,7 @@ class FunctionRegistryTests(unittest.TestCase):
             self.assertNotIn(secret, serialized)
         self.assertIn("provider-old", calls)
         self.assertIn("provider-old", activity)
+        self.assertEqual(calls["provider-old"]["refunded"], 1)
         recent = calls["provider-recent"]
         self.assertEqual(recent["provider_task_id"], "123456…7890")
         self.assertTrue(recent["result_reference"])
