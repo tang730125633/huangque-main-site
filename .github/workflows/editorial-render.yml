@@ -7,9 +7,14 @@ on:
       - 'server/content_domains/editorial_*.py'
       - 'server/content_domains/video_compose*.py'
       - 'scripts/check_editorial_runtime.py'
+      - 'scripts/check_editorial_process_cleanup.py'
+      - 'scripts/editorial_process_fixture.mjs'
+      - 'scripts/check_editorial_layout.py'
+      - 'scripts/check_editorial_layout.mjs'
       - 'site/assets/one-click/templates/ip-editorial-serif-v1/**'
       - 'tools/hyperframes/ip-editorial-serif-v1/**'
       - 'tests/test_video_compose_editorial.py'
+      - 'tests/test_editorial_layout.py'
       - '.github/workflows/editorial-render.yml'
   workflow_dispatch:
 
@@ -50,9 +55,13 @@ jobs:
           echo "VIDEO_COMPOSE_EDITORIAL_RUNTIME=$GITHUB_WORKSPACE/tools/hyperframes/ip-editorial-serif-v1/node_modules/hyperframes" >> "$GITHUB_ENV"
       - name: Offline contract and actual synthetic render
         run: |
-          python -m unittest tests.test_video_compose_editorial -v
+          python -m unittest tests.test_video_compose_editorial tests.test_editorial_layout -v
           python scripts/check_editorial_runtime.py --output-dir "$RUNNER_TEMP/editorial-smoke"
           ffmpeg -v error -ss 1.4 -i "$RUNNER_TEMP/editorial-smoke/smoke.mp4" -frames:v 1 "$RUNNER_TEMP/editorial-smoke/frame.png"
+      - name: Real non-root Linux timeout and orphan cleanup regression
+        run: python scripts/check_editorial_process_cleanup.py --output-dir "$RUNNER_TEMP/editorial-process-cleanup"
+      - name: Real fixed-font English layout boundary regression
+        run: python scripts/check_editorial_layout.py --output-dir "$RUNNER_TEMP/editorial-layout"
       - name: Preserve exact-head synthetic evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -62,5 +71,14 @@ jobs:
             ${{ runner.temp }}/editorial-smoke/report.json
             ${{ runner.temp }}/editorial-smoke/smoke.mp4
             ${{ runner.temp }}/editorial-smoke/frame.png
+            ${{ runner.temp }}/editorial-process-cleanup/report.json
+            ${{ runner.temp }}/editorial-process-cleanup/*/launch.json
+            ${{ runner.temp }}/editorial-process-cleanup/*/stderr.txt
+            ${{ runner.temp }}/editorial-layout/report.json
+            ${{ runner.temp }}/editorial-layout/measurements.json
+            ${{ runner.temp }}/editorial-layout/fixtures.json
+            ${{ runner.temp }}/editorial-layout/*-check.json
+            ${{ runner.temp }}/editorial-layout/*.stderr
+            ${{ runner.temp }}/editorial-layout/*.png
           if-no-files-found: warn
           retention-days: 7

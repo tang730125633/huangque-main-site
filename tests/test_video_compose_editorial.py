@@ -20,6 +20,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "server"))
 from content_domains import editorial_contract as contract
 from content_domains import editorial_markup
+from content_domains import editorial_process_supervisor as supervisor
 from content_domains import video_compose as api
 from content_domains import video_compose_analysis as analysis
 from content_domains import video_compose_asr as asr
@@ -256,7 +257,11 @@ class WorkspaceTests(unittest.TestCase):
 
     def test_timeout_terminates_only_owned_process_tree(self):
         process = mock.Mock(pid=12345, returncode=0)
-        process.communicate.side_effect = [subprocess.TimeoutExpired("render", 1), (b"", b"")]
+        if sys.platform.startswith("linux"):
+            process.returncode = 124
+            process.communicate.return_value = (b"", b"")
+        else:
+            process.communicate.side_effect = [subprocess.TimeoutExpired("render", 1), (b"", b"")]
         process.poll.return_value = None
         with mock.patch.object(editorial.subprocess, "Popen", return_value=process) as popen, \
              mock.patch.object(editorial.os, "killpg", create=True) as killpg, \
@@ -266,11 +271,76 @@ class WorkspaceTests(unittest.TestCase):
             self.assertEqual(["taskkill", "/PID", "12345", "/T", "/F"], taskkill.call_args.args[0])
             killpg.assert_not_called()
         else:
-            killpg.assert_called_once_with(12345, editorial.signal.SIGKILL)
+            self.assertEqual(sys.executable, popen.call_args.args[0][0])
+            self.assertIn("editorial_process_supervisor.py", popen.call_args.args[0][2])
+            self.assertEqual(["1", "--", "node", "render"], popen.call_args.args[0][3:])
+            killpg.assert_not_called()
             self.assertTrue(popen.call_args.kwargs["start_new_session"])
             taskkill.assert_not_called()
-        process.kill.assert_called_once()
-        self.assertEqual(2, process.communicate.call_count)
+        if sys.platform.startswith("linux"):
+            process.kill.assert_not_called()
+            self.assertEqual(1, process.communicate.call_count)
+        else:
+            process.kill.assert_called_once()
+            self.assertEqual(2, process.communicate.call_count)
+
+    def test_linux_cleanup_budget_keeps_reaper_and_blocks_new_work(self):
+        process = mock.Mock(pid=12345)
+        process.communicate.side_effect = subprocess.TimeoutExpired("supervisor", 16)
+        with mock.patch.object(editorial, "_CLEANUP_FAILED", threading.Event()), \
+             mock.patch.object(editorial.subprocess, "Popen", return_value=process) as popen, \
+             mock.patch.object(editorial.threading, "Thread") as thread, \
+             self.assertLogs(editorial.__name__, level="CRITICAL"):
+            with self.assertRaisesRegex(subprocess.SubprocessError, "supervisor retained"):
+                editorial._run_owned_linux(["node", "render"], self.root, {}, 1)
+            with self.assertRaisesRegex(subprocess.SubprocessError, "new work disabled"):
+                editorial._run_owned_linux(["node", "render"], self.root, {}, 1)
+            self.assertEqual(1, popen.call_count)
+            process.kill.assert_not_called()
+            process.terminate.assert_called_once()
+            thread.return_value.start.assert_called_once()
+            with mock.patch.object(editorial.sys, "platform", "linux"), \
+                 self.assertRaisesRegex(ValueError, "暂停新任务"):
+                editorial.runtime_command()
+
+    def test_subreaper_initialization_failure_never_starts_command(self):
+        with mock.patch.object(supervisor, "_enable_subreaper", side_effect=OSError("prctl denied")), \
+             mock.patch.object(supervisor.subprocess, "Popen") as popen:
+            with self.assertRaisesRegex(OSError, "prctl denied"):
+                supervisor.run(["node", "render"], 1)
+            popen.assert_not_called()
+
+    def test_subreaper_procfs_failure_never_starts_command(self):
+        children = mock.Mock()
+        children.read_text.side_effect = PermissionError("procfs denied")
+        with mock.patch.object(supervisor, "_enable_subreaper", return_value=children), \
+             mock.patch.object(supervisor.subprocess, "Popen") as popen:
+            with self.assertRaisesRegex(PermissionError, "procfs denied"):
+                supervisor.run(["node", "render"], 1)
+            popen.assert_not_called()
+
+    def test_prctl_failure_is_not_ignored(self):
+        libc = mock.Mock()
+        libc.prctl.return_value = -1
+        with mock.patch.object(supervisor.sys, "platform", "linux"), \
+             mock.patch.object(supervisor.ctypes, "CDLL", return_value=libc), \
+             mock.patch.object(supervisor.ctypes, "get_errno", return_value=1), \
+             mock.patch.object(supervisor.subprocess, "Popen") as popen:
+            with self.assertRaisesRegex(OSError, "PR_SET_CHILD_SUBREAPER"):
+                supervisor.run(["node", "render"], 1)
+            popen.assert_not_called()
+
+    def test_unexpected_supervisor_death_disables_retries(self):
+        process = mock.Mock(pid=12345, returncode=-9)
+        process.communicate.return_value = (b"", b"")
+        with mock.patch.object(editorial, "_CLEANUP_FAILED", threading.Event()), \
+             mock.patch.object(editorial.subprocess, "Popen", return_value=process) as popen, \
+             self.assertLogs(editorial.__name__, level="CRITICAL"):
+            with self.assertRaises(subprocess.CalledProcessError):
+                editorial._run_owned_linux(["node", "render"], self.root, {}, 1)
+            with self.assertRaisesRegex(subprocess.SubprocessError, "new work disabled"):
+                editorial._run_owned_linux(["node", "render"], self.root, {}, 1)
+            self.assertEqual(1, popen.call_count)
 
 
 class Handler:

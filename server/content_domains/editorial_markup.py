@@ -96,7 +96,48 @@ def make_html(job):
 {''.join(captions)}{''.join(callouts)}
 </div><script>
 window.__timelines=window.__timelines||{{}};
-const tl=gsap.timeline({{paused:true}});
-{chr(10).join(motion)}
-window.__timelines["main"]=tl;
+// Freeze text layout before registering the seekable timeline. Character counts
+// do not predict the width of this bundled proportional font.
+Promise.all([document.fonts.load('400 26px EnglishSans'),
+             document.fonts.load('900 74px EditorialSerif')])
+.then(() => document.fonts.ready).then(() => {{
+  for (const english of document.querySelectorAll('.english')) {{
+    // A temporary probe also works when the framework initially hides clips.
+    const probe=english.cloneNode(true);
+    probe.removeAttribute('id');
+    Object.assign(probe.style,{{position:'fixed',left:'0',top:'0',visibility:'hidden',
+      display:'block',margin:'0',maxWidth:'604px',whiteSpace:'nowrap'}});
+    document.body.appendChild(probe);
+    try {{
+      const text=document.createRange();
+      text.selectNodeContents(probe);
+      if (text.getBoundingClientRect().width > 592) {{
+        // Preserve the original font size where two natural lines suffice;
+        // even an unbroken 58-character token may wrap, never be clipped.
+        Object.assign(probe.style,{{whiteSpace:'normal',overflowWrap:'anywhere',
+          width:'604px',height:'auto',minHeight:'32px',lineHeight:'32px'}});
+        const maximum=parseFloat(english.style.fontSize);
+        let fitted=false;
+        for (let size=maximum; size>=20; size-=0.25) {{
+          probe.style.fontSize=size+'px';
+          if (probe.getBoundingClientRect().height<=64 &&
+              text.getBoundingClientRect().width<=592.5) {{fitted=true;break;}}
+        }}
+        if (!fitted) throw new Error('English caption cannot fit the frozen two-line area');
+        for (const key of ['whiteSpace','overflowWrap','width','height','minHeight','lineHeight','fontSize'])
+          english.style[key]=probe.style[key];
+      }}
+      const height=84+probe.getBoundingClientRect().height+6;
+      english.parentElement.style.height=height+'px';
+      if (english.parentElement.classList.contains('upper')) {{
+        const next=english.parentElement.nextElementSibling;
+        if (next && next.classList.contains('lower'))
+          next.style.top=(934+Math.max(0,height-122))+'px';
+      }}
+    }} finally {{probe.remove();}}
+  }}
+  const tl=gsap.timeline({{paused:true}});
+  {chr(10).join(motion)}
+  window.__timelines["main"]=tl;
+}});
 </script></body></html>'''

@@ -1,16 +1,22 @@
 """Project-bound, private-workspace adapter for the frozen editorial template."""
 import hashlib
 import json
+import logging
 import os
 import pathlib
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
+import threading
 
 from . import editorial_contract as contract
 from . import editorial_markup
 from . import video_compose_media as media
+
+_CLEANUP_FAILED = threading.Event()
+_CLEANUP_BUDGET = 15
 
 ASSET_HASHES = {
     "gsap.min.js": "c174bfce53a729418d57a8ad8625e7247c793a22fef8e2851e3cfa3de9cd8280",
@@ -87,6 +93,8 @@ def project_input(project, body):
 
 def runtime_command():
     """No npx auto-download on a user request; deploy an isolated pinned package first."""
+    if sys.platform.startswith("linux") and _CLEANUP_FAILED.is_set():
+        raise ValueError("口播网感任务进程回收未完成，已暂停新任务；请联系运维检查后恢复")
     root = pathlib.Path(os.environ.get("VIDEO_COMPOSE_EDITORIAL_RUNTIME",
         "/opt/huangque/editorial-hyperframes-0.8.33/node_modules/hyperframes"))
     try:
@@ -114,8 +122,47 @@ def runtime_command():
     return [node, str(target)], browser
 
 
+def _run_owned_linux(command, workspace, environment, timeout):
+    if _CLEANUP_FAILED.is_set():
+        raise subprocess.SubprocessError("editorial cleanup incomplete; new work disabled until operator recovery")
+    supervisor = pathlib.Path(__file__).with_name("editorial_process_supervisor.py")
+    process = subprocess.Popen([sys.executable, "-B", str(supervisor), str(timeout), "--", *command],
+        cwd=workspace, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        start_new_session=True)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout + _CLEANUP_BUDGET)
+    except subprocess.TimeoutExpired as error:
+        # Never kill the subreaper: doing so would orphan detached descendants.
+        # Keep its pipes drained and reap it when the kernel permits cleanup.
+        _CLEANUP_FAILED.set()
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            pass
+        threading.Thread(target=process.communicate, daemon=True,
+                         name="editorial-cleanup-reaper").start()
+        logging.getLogger(__name__).critical(
+            "Editorial cleanup budget exhausted; supervisor pid=%s retained; new editorial work disabled",
+            process.pid)
+        raise subprocess.SubprocessError("editorial cleanup incomplete; supervisor retained and new work disabled") from error
+    if process.returncode == 124:
+        raise subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr)
+    if process.returncode not in {0, 1, 125}:
+        # A killed/crashed supervisor cannot certify ECHILD. Disable retries even
+        # when it exited before the parent-side timeout budget was exhausted.
+        _CLEANUP_FAILED.set()
+        logging.getLogger(__name__).critical(
+            "Editorial supervisor pid=%s exited unexpectedly (%s); new editorial work disabled",
+            process.pid, process.returncode)
+    if process.returncode:
+        raise subprocess.CalledProcessError(process.returncode, command, stdout, stderr)
+    return subprocess.CompletedProcess(command, 0, stdout, stderr)
+
+
 def _run_owned(command, workspace, environment, timeout):
     """Own only this attempt's process tree, including Chrome/FFmpeg on timeout."""
+    if sys.platform.startswith("linux"):
+        return _run_owned_linux(command, workspace, environment, timeout)
     options = {"start_new_session": True} if os.name != "nt" else {
         "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
     process = subprocess.Popen(command, cwd=workspace, env=environment,
