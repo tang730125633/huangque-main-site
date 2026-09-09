@@ -81,6 +81,10 @@ def available():
     return provider_keys.has_candidate("omni")
 
 
+def _api_base(api_base=None):
+    return str(api_base or API_BASE).strip().rstrip("/")
+
+
 def _opener():
     proxy = egress.preferred_proxy()
     handlers = [_SafeRedirectHandler()]
@@ -281,11 +285,11 @@ def _extract_video(response):
     raise GeminiOmniProviderFailed("Gemini Omni 已完成但没有返回视频")
 
 
-def _file_name(uri):
+def _file_name(uri, api_base=None):
     parsed = urllib.parse.urlsplit(uri)
     trusted_hosts = {
         urllib.parse.urlsplit(OFFICIAL_API_BASE).netloc.lower(),
-        urllib.parse.urlsplit(API_BASE).netloc.lower(),
+        urllib.parse.urlsplit(_api_base(api_base)).netloc.lower(),
     }
     if parsed.scheme.lower() != "https" or parsed.netloc.lower() not in trusted_hosts:
         raise RuntimeError("Gemini Omni 返回了非官方视频地址，已拒绝下载")
@@ -295,10 +299,10 @@ def _file_name(uri):
     return match.group(1)
 
 
-def _file_request_url(uri):
-    _file_name(uri)
+def _file_request_url(uri, api_base=None):
+    _file_name(uri, api_base)
     parsed = urllib.parse.urlsplit(uri)
-    base = urllib.parse.urlsplit(API_BASE)
+    base = urllib.parse.urlsplit(_api_base(api_base))
     if parsed.netloc.lower() == base.netloc.lower():
         return uri
     return urllib.parse.urlunsplit((
@@ -312,10 +316,10 @@ def _file_request_url(uri):
 
 def _poll_file(opener, uri, now=None, sleep=None, heartbeat=None,
                job_id=None, interaction_id=None, api_key=None,
-               provider_key_id=None):
+               provider_key_id=None, api_base=None):
     now, sleep = now or time.monotonic, sleep or time.sleep
-    name = _file_name(uri)
-    status_url = API_BASE + "/v1beta/" + name
+    name = _file_name(uri, api_base)
+    status_url = _api_base(api_base) + "/v1beta/" + name
     deadline = now() + TIMEOUT
     last_error = None
     while now() < deadline:
@@ -368,8 +372,8 @@ def _read_limited(response):
     return data
 
 
-def _download_uri(opener, uri, sleep=None, api_key=None):
-    request_url = _file_request_url(uri)
+def _download_uri(opener, uri, sleep=None, api_key=None, api_base=None):
+    request_url = _file_request_url(uri, api_base)
     sleep = sleep or time.sleep
     last = None
     for attempt, delay in enumerate((0, 2, 5, 10)):
@@ -416,13 +420,13 @@ def _probe_duration(data):
 
 def _poll_interaction(opener, interaction_id, initial=None, now=None, sleep=None,
                       heartbeat=None, job_id=None, api_key=None,
-                      provider_key_id=None):
+                      provider_key_id=None, api_base=None):
     """只用 GET 恢复后台任务；取得 id 后绝不再次创建。"""
     now, sleep = now or time.monotonic, sleep or time.sleep
     deadline = now() + TIMEOUT
     current = initial
     last_error = None
-    url = API_BASE + "/v1beta/interactions/" + urllib.parse.quote(
+    url = _api_base(api_base) + "/v1beta/interactions/" + urllib.parse.quote(
         str(interaction_id), safe=""
     )
     while now() < deadline:
@@ -473,15 +477,16 @@ def _poll_interaction(opener, interaction_id, initial=None, now=None, sleep=None
 def _finish_response(opener, response, interaction_id, duration,
                      aspect_ratio, job_id=None, heartbeat=None,
                      now=None, sleep=None, api_key=None,
-                     provider_key_id=None):
+                     provider_key_id=None, api_base=None):
     item = _extract_video(response)
     uri = str(item.get("uri") or "").strip()
     if uri:
         _poll_file(
             opener, uri, now, sleep, heartbeat, job_id, interaction_id,
             api_key, provider_key_id,
+            api_base,
         )
-        video = _download_uri(opener, uri, sleep, api_key)
+        video = _download_uri(opener, uri, sleep, api_key, api_base)
     else:
         video = _decode_inline(item)
     actual_duration = _probe_duration(video)
@@ -504,12 +509,12 @@ def _finish_response(opener, response, interaction_id, duration,
 
 def generate(prompt, reference_images=None, aspect_ratio="16:9", duration=6,
              delivery="uri", job_id=None, heartbeat=None, now=None, sleep=None,
-             api_key=None, provider_key_id=None):
+             api_key=None, provider_key_id=None, api_base=None):
     """生成一次官方 Omni 视频并返回成片字节；付费 POST 永不自动重试。"""
     body = build_request(prompt, reference_images, aspect_ratio, duration, delivery)
     opener = _opener()
     response = _request_json(
-        opener, "POST", API_BASE + "/v1beta/interactions", body,
+        opener, "POST", _api_base(api_base) + "/v1beta/interactions", body,
         timeout=TIMEOUT, api_key=api_key,
     )
     interaction_id = str(response.get("id") or "").strip()
@@ -519,17 +524,17 @@ def generate(prompt, reference_images=None, aspect_ratio="16:9", duration=6,
         )
     completed = _poll_interaction(
         opener, interaction_id, response, now, sleep, heartbeat, job_id,
-        api_key, provider_key_id,
+        api_key, provider_key_id, api_base,
     )
     return _finish_response(
         opener, completed, interaction_id, duration, aspect_ratio,
-        job_id, heartbeat, now, sleep, api_key, provider_key_id,
+        job_id, heartbeat, now, sleep, api_key, provider_key_id, api_base,
     )
 
 
 def resume(interaction_id, duration=6, aspect_ratio="16:9", job_id=None,
            heartbeat=None, now=None, sleep=None, api_key=None,
-           provider_key_id=None):
+           provider_key_id=None, api_base=None):
     """恢复已持久化的后台任务，只执行幂等 GET。"""
     interaction_id = str(interaction_id or "").strip()
     if not interaction_id:
@@ -539,9 +544,9 @@ def resume(interaction_id, duration=6, aspect_ratio="16:9", job_id=None,
     opener = _opener()
     completed = _poll_interaction(
         opener, interaction_id, None, now, sleep, heartbeat, job_id,
-        api_key, provider_key_id,
+        api_key, provider_key_id, api_base,
     )
     return _finish_response(
         opener, completed, interaction_id, duration, aspect_ratio,
-        job_id, heartbeat, now, sleep, api_key, provider_key_id,
+        job_id, heartbeat, now, sleep, api_key, provider_key_id, api_base,
     )

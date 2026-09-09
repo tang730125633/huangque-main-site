@@ -2569,7 +2569,9 @@ def probe_provider_keys(now=None):
             candidate = provider_keys.candidates(
                 item["provider"], preferred_id=key_id,
             )[0]
-            probe = probe_provider_secret(item["provider"], candidate["secret"])
+            probe = probe_provider_secret(
+                item["provider"], candidate["secret"], candidate.get("base_url")
+            )
             if probe.get("ok") or _probe_is_credential_rejection(probe):
                 provider_keys.set_health(
                     key_id,
@@ -2589,7 +2591,7 @@ def probe_provider_keys(now=None):
     return checked
 
 
-def probe_provider_secret(provider, secret):
+def probe_provider_secret(provider, secret, base_url=None):
     """Validate a candidate key with a non-generating authenticated GET."""
     provider = str(provider or "").strip().lower()
     secret = str(secret or "").strip()
@@ -2597,34 +2599,28 @@ def probe_provider_secret(provider, secret):
         raise ValueError("不支持的视频渠道")
     if len(secret) < 8:
         raise ValueError("API 密钥格式无效")
+    base = provider_keys.normalize_base_url(provider, base_url)
     if provider == "xai":
-        base = (_env_value(["XAI_API_BASE"]) or "https://api.x.ai/v1").rstrip("/")
         return _ping_upstream(
             "GET", base + "/models",
             headers={"Authorization": "Bearer " + secret},
             proxy_url=_xai_proxy_url() if "api.x.ai" in base else "",
         )
     if provider == "deepseek":
-        url = _deepseek_models_url()
-        if not url:
-            return {"ok": False, "error": "DeepSeek Base 地址配置无效", "mode": "auth"}
+        probe_base = base[:-len("/responses")] if base.endswith("/responses") else base
+        url = probe_base + "/models"
         return _ping_upstream(
             "GET", url,
             headers={"Authorization": "Bearer " + secret}, proxied=False,
             allow_redirects=False,
         )
     if provider == "sora":
-        base = (_env_value(["OPENAI_BASE"]) or "https://api.openai.com").rstrip("/")
         url = base + "/videos?limit=1" if base.endswith("/v1") else base + "/v1/videos?limit=1"
         return _ping_upstream(
             "GET", url, headers={"Authorization": "Bearer " + secret},
             proxied="api.openai.com" in base,
         )
     if provider == "seedance":
-        base = (
-            _env_value(["ARK_BASE"])
-            or "https://ark.cn-beijing.volces.com/api/v3"
-        ).rstrip("/")
         return _ping_upstream(
             "GET",
             base + "/contents/generations/tasks?page_num=1&page_size=1",
@@ -2632,15 +2628,10 @@ def probe_provider_secret(provider, secret):
             proxied=False,
         )
     if provider == "minimax":
-        base = video_minimax_h3.new_task_api_base()
         return _ping_upstream(
             "GET", base + "/v2/query/video_generation?page_num=1&page_size=1",
             headers={"Authorization": "Bearer " + secret}, proxied=False,
         )
-    base = (
-        _env_value(["GEMINI_OMNI_BASE", "GEMINI_BASE"])
-        or "https://generativelanguage.googleapis.com"
-    ).rstrip("/")
     return _ping_upstream(
         "GET",
         base + "/v1beta/models/gemini-omni-flash-preview",
@@ -2657,6 +2648,7 @@ def provider_key_list():
         return {
             "configured": provider_keys.vault_ready(),
             "items": items,
+            "base_defaults": dict(provider_keys.BASE_URLS),
         }
     except Exception as exc:
         return {"configured": False, "items": [], "detail": str(exc)[:180]}
@@ -2691,12 +2683,15 @@ def add_provider_key(actor, body):
     provider = str(body.get("provider") or "").strip().lower()
     label = str(body.get("label") or "").strip()
     secret = str(body.get("secret") or "").strip()
-    probe = probe_provider_secret(provider, secret)
+    base_url = provider_keys.normalize_base_url(provider, body.get("base_url"))
+    probe = probe_provider_secret(provider, secret, base_url)
     if not probe.get("ok"):
         status = probe.get("http_status")
         suffix = "（HTTP %s）" % status if status else ""
         raise ValueError("API 检测未通过，请更换有效密钥%s" % suffix)
-    item = provider_keys.add_key(provider, label, secret, actor, health=probe)
+    item = provider_keys.add_key(
+        provider, label, secret, actor, health=probe, base_url=base_url
+    )
     _admin_audit(
         actor,
         "provider_key.add",
@@ -2705,6 +2700,7 @@ def add_provider_key(actor, body):
             "provider": item["provider"],
             "label": item["label"],
             "last4": item["last4"],
+            "base_host": urllib.parse.urlsplit(item["base_url"]).netloc,
             "latency_ms": probe.get("latency_ms"),
         },
     )
@@ -2724,7 +2720,9 @@ def test_provider_key(actor, body):
     candidates = provider_keys.candidates(provider, preferred_id=key_id)
     if not candidates:
         raise ValueError("API 密钥不存在")
-    probe = probe_provider_secret(provider, candidates[0]["secret"])
+    probe = probe_provider_secret(
+        provider, candidates[0]["secret"], candidates[0].get("base_url")
+    )
     if key_id != "env":
         if probe.get("ok") or _probe_is_credential_rejection(probe):
             provider_keys.set_health(

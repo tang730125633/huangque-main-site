@@ -7,6 +7,7 @@ import secrets
 import sqlite3
 import threading
 import time
+import urllib.parse
 from contextlib import closing
 from pathlib import Path
 
@@ -21,6 +22,32 @@ ENV_KEYS = {
     "seedance": "ARK_API_KEY",
     "omni": "GEMINI_API_KEY",
     "minimax": "MINIMAX_API_KEY",
+}
+BASE_URLS = {
+    "xai": "https://api.x.ai/v1",
+    "deepseek": "https://api.deepseek.com",
+    "sora": "https://api.openai.com",
+    "seedance": "https://ark.cn-beijing.volces.com/api/v3",
+    "omni": "https://generativelanguage.googleapis.com",
+    "minimax": "https://metaso.cn/api/minimax",
+}
+BASE_URL_ENVS = {
+    "xai": ("XAI_API_BASE",),
+    "deepseek": ("DEEPSEEK_API_BASE",),
+    "sora": ("OPENAI_BASE",),
+    "seedance": ("ARK_BASE",),
+    "omni": ("GEMINI_OMNI_BASE", "GEMINI_BASE"),
+    "minimax": (),
+}
+OFFICIAL_BASE_HOSTS = {
+    "xai": {"api.x.ai"},
+    "deepseek": {"api.deepseek.com"},
+    "sora": {"api.openai.com"},
+    "seedance": {"ark.cn-beijing.volces.com"},
+    "omni": {"generativelanguage.googleapis.com"},
+    # New MiniMax jobs are deliberately pinned to MetaSo. Historical jobs
+    # retain their origin marker and do not use this configurable endpoint.
+    "minimax": {"metaso.cn"},
 }
 DB_PATH = Path(
     os.environ.get(
@@ -38,6 +65,60 @@ _RUNTIME_UNHEALTHY_SECONDS = 300
 
 class KeyStoreUnavailable(RuntimeError):
     pass
+
+
+def _environment_base_url(provider):
+    for name in BASE_URL_ENVS[provider]:
+        value = str(os.environ.get(name) or "").strip()
+        if value:
+            return value
+    return BASE_URLS[provider]
+
+
+def normalize_base_url(provider, value=None):
+    """Validate one immutable provider-line endpoint without making a request."""
+    provider = _provider(provider)
+    supplied = str(value or "").strip()
+    from_environment = not supplied
+    value = str(supplied or _environment_base_url(provider)).strip().rstrip("/")
+    if not value:
+        raise ValueError("Base URL 不能为空")
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.scheme.lower() != "https" or not parsed.hostname:
+        raise ValueError("Base URL 必须是有效的 HTTPS 地址")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("Base URL 不能包含账号、密码、查询参数或片段")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("Base URL 端口无效") from exc
+    if port not in (None, 443):
+        raise ValueError("Base URL 仅允许 HTTPS 443 端口")
+    host = parsed.hostname.rstrip(".").lower()
+    blocked = (
+        host == "localhost"
+        or host.endswith((".localhost", ".local", ".internal"))
+        or host.replace(".", "").isdigit()
+        or ":" in host
+    )
+    if blocked:
+        raise ValueError("Base URL 不允许指向本机、内网或 IP 地址")
+    configured_hosts = {
+        item.strip().rstrip(".").lower()
+        for item in str(os.environ.get("HQ_PROVIDER_BASE_HOST_ALLOWLIST") or "").split(",")
+        if item.strip()
+    }
+    # MiniMax paid submissions intentionally stay on the audited MetaSo route;
+    # a generic custom-host allowlist must not weaken that origin pin.
+    allowed_hosts = OFFICIAL_BASE_HOSTS[provider] | (
+        set() if provider == "minimax" else configured_hosts
+    )
+    # Existing environment files are root-managed deployment configuration.
+    # Preserve them during one-time migration while keeping browser-submitted
+    # custom hosts behind an explicit server allowlist.
+    if not from_environment and host not in allowed_hosts:
+        raise ValueError("Base URL 域名未在服务器允许名单中")
+    return urllib.parse.urlunsplit(("https", parsed.netloc, parsed.path.rstrip("/"), "", ""))
 
 
 def _provider(value):
@@ -69,6 +150,7 @@ def init_db():
                 last4 TEXT NOT NULL,
                 ciphertext BLOB NOT NULL,
                 nonce BLOB NOT NULL,
+                base_url TEXT NOT NULL DEFAULT '',
                 priority INTEGER NOT NULL,
                 state TEXT NOT NULL DEFAULT 'active',
                 health_status TEXT NOT NULL DEFAULT 'unknown',
@@ -95,6 +177,19 @@ def init_db():
         if "last_used_at" not in columns:
             conn.execute(
                 "ALTER TABLE provider_api_keys ADD COLUMN last_used_at INTEGER"
+            )
+        if "base_url" not in columns:
+            conn.execute(
+                "ALTER TABLE provider_api_keys ADD COLUMN base_url TEXT NOT NULL DEFAULT ''"
+            )
+        # Freeze the endpoint for keys created before this column existed.
+        # Doing this in the migration transaction prevents a later env change
+        # from moving an already-paid task to a different upstream origin.
+        for provider in PROVIDERS:
+            conn.execute(
+                """UPDATE provider_api_keys SET base_url=?
+                   WHERE provider=? AND (base_url IS NULL OR base_url='')""",
+                (normalize_base_url(provider), provider),
             )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS provider_api_keys_active "
@@ -167,12 +262,13 @@ def _snapshot_legacy_env_keys():
                     continue
                 key_id = secrets.token_urlsafe(12)
                 ciphertext, nonce = _encrypt(provider, key_id, secret)
+                base_url = normalize_base_url(provider)
                 conn.execute(
                     """INSERT INTO provider_api_keys(
-                        id,provider,label,last4,ciphertext,nonce,priority,state,
+                        id,provider,label,last4,ciphertext,nonce,base_url,priority,state,
                         health_status,last_checked_at,last_latency_ms,last_error,
                         created_by,created_at,updated_at
-                    ) VALUES(?,?,?,?,?,?,0,'active','unknown',NULL,NULL,'',?,?,?)""",
+                    ) VALUES(?,?,?,?,?,?,?,0,'active','unknown',NULL,NULL,'',?,?,?)""",
                     (
                         key_id,
                         provider,
@@ -180,6 +276,7 @@ def _snapshot_legacy_env_keys():
                         secret[-4:],
                         ciphertext,
                         nonce,
+                        base_url,
                         "system-env-migration",
                         now,
                         now,
@@ -203,8 +300,9 @@ def _decrypt(row):
         raise KeyStoreUnavailable("后台密钥无法解密，请检查保险箱配置") from exc
 
 
-def add_key(provider, label, secret, actor, health=None):
+def add_key(provider, label, secret, actor, health=None, base_url=None):
     provider = _provider(provider)
+    base_url = normalize_base_url(provider, base_url)
     label = str(label or "").strip()[:60] or (provider + " 线路")
     secret = str(secret or "").strip()
     if len(secret) < 8 or len(secret) > 4096:
@@ -233,11 +331,12 @@ def add_key(provider, label, secret, actor, health=None):
                 restored_id = row["id"]
                 conn.execute(
                     """UPDATE provider_api_keys
-                       SET label=?,priority=?,state='active',health_status=?,
+                       SET label=?,base_url=?,priority=?,state='active',health_status=?,
                            last_checked_at=?,last_latency_ms=?,last_error='',updated_at=?
                        WHERE id=?""",
                     (
                         label,
+                        base_url,
                         priority,
                         "healthy" if health.get("ok") else "unknown",
                         now if health else None,
@@ -250,10 +349,10 @@ def add_key(provider, label, secret, actor, health=None):
         if restored_id is None:
             conn.execute(
                 """INSERT INTO provider_api_keys(
-                    id,provider,label,last4,ciphertext,nonce,priority,state,
+                    id,provider,label,last4,ciphertext,nonce,base_url,priority,state,
                     health_status,last_checked_at,last_latency_ms,last_error,
                     created_by,created_at,updated_at
-                ) VALUES(?,?,?,?,?,?,?,'active',?,?,?,?,?,?,?)""",
+                ) VALUES(?,?,?,?,?,?,?,?,'active',?,?,?,?,?,?,?)""",
                 (
                     key_id,
                     provider,
@@ -261,6 +360,7 @@ def add_key(provider, label, secret, actor, health=None):
                     secret[-4:],
                     ciphertext,
                     nonce,
+                    base_url,
                     priority,
                     "healthy" if health.get("ok") else "unknown",
                     now if health else None,
@@ -281,6 +381,7 @@ def _public(row):
         "provider": row["provider"],
         "label": row["label"],
         "last4": row["last4"],
+        "base_url": row["base_url"] or normalize_base_url(row["provider"]),
         "priority": row["priority"],
         "state": row["state"],
         "health_status": row["health_status"],
@@ -327,6 +428,7 @@ def list_public():
                     "provider": provider,
                     "label": "服务器环境变量（兼容线路）",
                     "last4": value[-4:],
+                    "base_url": normalize_base_url(provider),
                     "priority": 0,
                     "state": "active",
                     "health_status": "unknown",
@@ -399,7 +501,12 @@ def candidates(provider, preferred_id=None):
         rows = [row for row in rows if row["id"] not in _runtime_blocked_ids()]
     if rows:
         return [
-            {"id": row["id"], "provider": provider, "secret": _decrypt(row)}
+            {
+                "id": row["id"],
+                "provider": provider,
+                "secret": _decrypt(row),
+                "base_url": row["base_url"] or normalize_base_url(provider),
+            }
             for row in rows
         ]
     value = str(os.environ.get(ENV_KEYS[provider]) or "").strip()
@@ -460,7 +567,12 @@ def claim_candidate(provider):
             (now, row["id"]),
         )
         conn.commit()
-    return {"id": row["id"], "provider": provider, "secret": secret}
+    return {
+        "id": row["id"],
+        "provider": provider,
+        "secret": secret,
+        "base_url": row["base_url"] or normalize_base_url(provider),
+    }
 
 
 def reveal_key(key_id):

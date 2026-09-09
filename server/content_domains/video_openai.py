@@ -71,8 +71,8 @@ def available():
     return provider_keys.has_candidate("sora")
 
 
-def _api_base():
-    base = str(OPENAI_BASE or "https://api.openai.com").strip().rstrip("/")
+def _api_base(api_base=None):
+    base = str(api_base or OPENAI_BASE or "https://api.openai.com").strip().rstrip("/")
     if not base:
         raise ValueError("OpenAI 视频接口地址未配置（OPENAI_BASE）")
     if base.endswith("/v1"):
@@ -80,8 +80,8 @@ def _api_base():
     return base + "/v1"
 
 
-def _api_url(path):
-    return _api_base() + "/" + str(path or "").lstrip("/")
+def _api_url(path, api_base=None):
+    return _api_base(api_base) + "/" + str(path or "").lstrip("/")
 
 
 def _opener():
@@ -153,7 +153,7 @@ def _open(opener, request, timeout, api_key=None):
 
 
 def _request_json(opener, method, path, body=None, timeout=90, api_key=None,
-                  content_type=None):
+                  content_type=None, api_base=None):
     api_key = OPENAI_API_KEY if api_key is None else str(api_key).strip()
     if not api_key:
         raise ValueError("OpenAI 视频未配置（OPENAI_API_KEY）")
@@ -167,7 +167,7 @@ def _request_json(opener, method, path, body=None, timeout=90, api_key=None,
         request_headers["Content-Type"] = content_type or "application/json"
         data = body if content_type else json.dumps(body, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
-        _api_url(path), data=data, headers=request_headers, method=method
+        _api_url(path, api_base), data=data, headers=request_headers, method=method
     )
     response = _open(opener, request, timeout, api_key)
     with response:
@@ -207,7 +207,8 @@ def _result(payload, video_id, model, status, seconds, size):
 
 
 def _poll(opener, video_id, model, seconds, size, job_id=None, heartbeat=None,
-          now=None, sleep=None, api_key=None, provider_key_id=None):
+          now=None, sleep=None, api_key=None, provider_key_id=None,
+          api_base=None):
     """Poll an existing video id.  This path never submits a POST."""
     video_id = _required(video_id, " video_id")
     model = _required(model, " model")
@@ -227,6 +228,7 @@ def _poll(opener, video_id, model, seconds, size, job_id=None, heartbeat=None,
                 "/videos/" + urllib.parse.quote(video_id, safe=""),
                 timeout=60,
                 api_key=api_key,
+                api_base=api_base,
             )
             last_transient = None
             transient_attempt = 0
@@ -276,7 +278,7 @@ def _poll(opener, video_id, model, seconds, size, job_id=None, heartbeat=None,
 
 def generate(model, prompt, seconds, size, job_id=None, heartbeat=None,
              now=None, sleep=None, api_key=None, provider_key_id=None,
-             input_reference=None):
+             input_reference=None, api_base=None):
     """Submit exactly one Sora job, persist its id, then poll to completion."""
     model = _required(model, " model")
     prompt = _required(prompt, " prompt")
@@ -299,6 +301,7 @@ def generate(model, prompt, seconds, size, job_id=None, heartbeat=None,
             timeout=120,
             api_key=api_key,
             content_type=content_type,
+            api_base=api_base,
         )
     except CreateRejected:
         raise
@@ -331,11 +334,13 @@ def generate(model, prompt, seconds, size, job_id=None, heartbeat=None,
         sleep=sleep,
         api_key=api_key,
         provider_key_id=provider_key_id,
+        api_base=api_base,
     )
 
 
 def resume(video_id, model, seconds, size, job_id=None, heartbeat=None,
-           now=None, sleep=None, api_key=None, provider_key_id=None):
+           now=None, sleep=None, api_key=None, provider_key_id=None,
+           api_base=None):
     """Resume a paid OpenAI video job using GET requests only."""
     return _poll(
         _opener(),
@@ -349,6 +354,7 @@ def resume(video_id, model, seconds, size, job_id=None, heartbeat=None,
         sleep=sleep,
         api_key=api_key,
         provider_key_id=provider_key_id,
+        api_base=api_base,
     )
 
 
@@ -414,7 +420,8 @@ def _download_once(opener, request, destination, limit, api_key=None):
                 pass
 
 
-def download_content(video_id, destination, max_bytes=None, api_key=None):
+def download_content(video_id, destination, max_bytes=None, api_key=None,
+                     api_base=None):
     """Stream an authenticated MP4 download and atomically replace destination.
 
     The provider task is already complete, so retrying this bounded sequence of
@@ -430,7 +437,10 @@ def download_content(video_id, destination, max_bytes=None, api_key=None):
         raise ValueError("max_bytes 必须大于 0")
 
     request = urllib.request.Request(
-        _api_url("/videos/%s/content" % urllib.parse.quote(video_id, safe="")),
+        _api_url(
+            "/videos/%s/content" % urllib.parse.quote(video_id, safe=""),
+            api_base,
+        ),
         headers={
             "Authorization": "Bearer " + api_key,
             "Accept": "video/mp4,application/octet-stream",

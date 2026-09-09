@@ -81,11 +81,13 @@ def _error_detail(exc, api_key=None):
         return _redact(exc, api_key)
 
 
-def _request_json(opener, method, path, body=None, timeout=90, api_key=None):
+def _request_json(opener, method, path, body=None, timeout=90, api_key=None,
+                  api_base=None):
     api_key = XAI_API_KEY if api_key is None else str(api_key).strip()
     if not api_key:
         raise XaiCredentialError("xAI官方视频未配置（XAI_API_KEY）")
-    url = path if str(path).startswith("http") else XAI_API_BASE + "/" + str(path).lstrip("/")
+    base = str(api_base or XAI_API_BASE).strip().rstrip("/")
+    url = path if str(path).startswith("http") else base + "/" + str(path).lstrip("/")
     headers = {
         "Authorization": "Bearer " + api_key,
         "Accept": "application/json",
@@ -116,7 +118,8 @@ def _request_json(opener, method, path, body=None, timeout=90, api_key=None):
 
 
 def _poll(opener, request_id, model, duration, job_id=None, heartbeat=None,
-          now=None, sleep=None, api_key=None, provider_key_id=None):
+          now=None, sleep=None, api_key=None, provider_key_id=None,
+          api_base=None):
     """轮询已创建的任务；这里只重试 GET，绝不重新提交付费任务。"""
     now = now or time.time
     sleep = sleep or time.sleep
@@ -128,7 +131,7 @@ def _poll(opener, request_id, model, duration, job_id=None, heartbeat=None,
         try:
             result = _request_json(
                 opener, "GET", "/videos/" + urllib.parse.quote(request_id),
-                timeout=60, api_key=api_key,
+                timeout=60, api_key=api_key, api_base=api_base,
             )
             last_transient = None
             transient_attempt = 0
@@ -178,7 +181,7 @@ def _poll(opener, request_id, model, duration, job_id=None, heartbeat=None,
     raise TimeoutError("xAI视频生成超时")
 
 
-def _create(opener, path, payload, sleep=None, api_key=None):
+def _create(opener, path, payload, sleep=None, api_key=None, api_base=None):
     """Retry only definite transient HTTP responses from a paid create call.
 
     Network failures remain single-shot because the provider may have accepted the
@@ -188,7 +191,8 @@ def _create(opener, path, payload, sleep=None, api_key=None):
     for attempt in range(len(CREATE_RETRY_BACKOFF) + 1):
         try:
             return _request_json(
-                opener, "POST", path, payload, timeout=120, api_key=api_key
+                opener, "POST", path, payload, timeout=120, api_key=api_key,
+                api_base=api_base,
             )
         except TransientXaiError as exc:
             if (exc.status_code not in CREATE_RETRY_HTTP_CODES or
@@ -202,20 +206,20 @@ def _create(opener, path, payload, sleep=None, api_key=None):
 
 
 def resume(request_id, model, duration, job_id=None, heartbeat=None, now=None,
-           sleep=None, api_key=None, provider_key_id=None):
+           sleep=None, api_key=None, provider_key_id=None, api_base=None):
     if not str(request_id or "").strip():
         raise ValueError("恢复xAI视频缺少 request_id")
     return _poll(
         _opener(), str(request_id).strip(), model, duration,
         job_id=job_id, heartbeat=heartbeat, now=now, sleep=sleep,
-        api_key=api_key, provider_key_id=provider_key_id,
+        api_key=api_key, provider_key_id=provider_key_id, api_base=api_base,
     )
 
 
 def generate(model, prompt, duration, aspect_ratio, resolution, image_url=None,
              reference_image_urls=None,
              job_id=None, heartbeat=None, now=None, sleep=None, api_key=None,
-             provider_key_id=None):
+             provider_key_id=None, api_base=None):
     """创建 xAI 生成任务并轮询到终态。"""
     duration = int(duration)
     references = [str(url or "").strip() for url in (reference_image_urls or []) if str(url or "").strip()]
@@ -246,7 +250,8 @@ def generate(model, prompt, duration, aspect_ratio, resolution, image_url=None,
 
     try:
         created = _create(
-            opener, "/videos/generations", payload, sleep=sleep, api_key=api_key
+            opener, "/videos/generations", payload, sleep=sleep, api_key=api_key,
+            api_base=api_base,
         )
     except XaiCredentialError as exc:
         raise XaiCreateUnavailableError(str(exc)) from exc
@@ -261,20 +266,21 @@ def generate(model, prompt, duration, aspect_ratio, resolution, image_url=None,
         )
     result = _poll(
         opener, request_id, model, duration, job_id, heartbeat, now, sleep,
-        api_key=api_key, provider_key_id=provider_key_id,
+        api_key=api_key, provider_key_id=provider_key_id, api_base=api_base,
     )
     result["provider_key_id"] = provider_key_id
     return result
 
 
 def edit(model, prompt, video_url, duration, job_id=None, heartbeat=None,
-         now=None, sleep=None, api_key=None, provider_key_id=None):
+         now=None, sleep=None, api_key=None, provider_key_id=None, api_base=None):
     """创建一次 xAI 视频编辑任务；输出时长和比例由输入视频继承。"""
     opener = _opener()
     payload = {"model": model, "prompt": str(prompt or "").strip(), "video": {"url": video_url}}
     try:
         created = _create(
-            opener, "/videos/edits", payload, sleep=sleep, api_key=api_key
+            opener, "/videos/edits", payload, sleep=sleep, api_key=api_key,
+            api_base=api_base,
         )
     except XaiCredentialError as exc:
         raise XaiCreateUnavailableError(str(exc)) from exc
@@ -288,7 +294,7 @@ def edit(model, prompt, video_url, duration, job_id=None, heartbeat=None,
         )
     result = _poll(
         opener, request_id, model, duration, job_id, heartbeat, now, sleep,
-        api_key=api_key, provider_key_id=provider_key_id,
+        api_key=api_key, provider_key_id=provider_key_id, api_base=api_base,
     )
     result["provider_key_id"] = provider_key_id
     return result

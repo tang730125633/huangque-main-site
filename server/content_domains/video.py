@@ -7316,6 +7316,7 @@ def gen_sora_video(payload):
             existing["video_id"], existing.get("model") or model, seconds, size,
             job_id=job_id, heartbeat=sora_heartbeat,
             api_key=candidate["secret"], provider_key_id=candidate["id"],
+            api_base=candidate.get("base_url"),
         )
     else:
         refs = payload.get("reference_images") or []
@@ -7331,6 +7332,7 @@ def gen_sora_video(payload):
                 api_key=selected["secret"],
                 provider_key_id=selected["id"],
                 input_reference=input_reference,
+                api_base=selected.get("base_url"),
             ),
         )
 
@@ -7346,7 +7348,8 @@ def gen_sora_video(payload):
         update_video_asset_phase(job_id, "sora_downloading", provider_video_id=video_id)
     video_file = "video/sora_%s.mp4" % uuid.uuid4().hex
     video_openai.download_content(
-        video_id, _out_path(video_file), api_key=candidate["secret"]
+        video_id, _out_path(video_file), api_key=candidate["secret"],
+        api_base=candidate.get("base_url"),
     )
     video_file = _faststart_video_file(video_file)
     cover = _extract_first_frame_cover(video_file)
@@ -7454,6 +7457,7 @@ def gen_xiaole_video(payload):
                     job_id=job_id, heartbeat=update_video_asset_phase,
                     api_key=candidate["secret"],
                     provider_key_id=candidate["id"],
+                    api_base=candidate.get("base_url"),
                 )
             else:
                 xres = adapter.resume(
@@ -7477,6 +7481,7 @@ def gen_xiaole_video(payload):
                     heartbeat=update_video_asset_phase,
                     api_key=candidate["secret"],
                     provider_key_id=candidate["id"],
+                    api_base=candidate.get("base_url"),
                 )
             xres, candidate = _create_with_provider_key(
                 "xai", job_id, "xai_submitting",
@@ -7495,6 +7500,7 @@ def gen_xiaole_video(payload):
                     job_id=job_id, heartbeat=update_video_asset_phase,
                     api_key=candidate["secret"],
                     provider_key_id=candidate["id"],
+                    api_base=candidate.get("base_url"),
                 )
             xres, candidate = _create_with_provider_key(
                 "xai", job_id, "xai_submitting",
@@ -7553,6 +7559,7 @@ def gen_xiaole_video(payload):
                 job_id=job_id, heartbeat=seedance_heartbeat,
                 api_key=candidate["secret"],
                 provider_key_id=candidate["id"],
+                api_base=candidate.get("base_url"),
             )
         else:
             rendered, candidate = _create_with_provider_key(
@@ -7567,6 +7574,7 @@ def gen_xiaole_video(payload):
                     job_id=job_id, heartbeat=seedance_heartbeat,
                     api_key=selected["secret"],
                     provider_key_id=selected["id"],
+                    api_base=selected.get("base_url"),
                 ),
             )
         source_url = rendered["source_video_url"]
@@ -7728,6 +7736,7 @@ def gen_xiaole_video(payload):
                 job_id=job_id, heartbeat=omni_heartbeat,
                 api_key=candidate["secret"],
                 provider_key_id=candidate["id"],
+                api_base=candidate.get("base_url"),
             )
         else:
             rendered, candidate = _create_with_provider_key(
@@ -7741,6 +7750,7 @@ def gen_xiaole_video(payload):
                     job_id=job_id, heartbeat=omni_heartbeat,
                     api_key=selected["secret"],
                     provider_key_id=selected["id"],
+                    api_base=selected.get("base_url"),
                 ),
             )
         provider_id = rendered.get("request_id")
