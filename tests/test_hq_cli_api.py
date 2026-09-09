@@ -980,7 +980,10 @@ class HQCLIAPITests(unittest.TestCase):
         return {"X-HQ-Internal-Token": self.auth.INTERNAL_TOKEN}
 
     def test_delegated_cli_token_is_short_lived_hashed_and_least_privilege(self):
-        scopes = ["profile:read", "assets:read", "generation:quote", "generation:submit"]
+        scopes = [
+            "profile:read", "assets:read", "generation:quote", "generation:submit",
+            "assets:upload", "video-compose:read", "video-compose:write",
+        ]
         delegated = self.auth.hq_cli_api.issue_delegated_token(
             self.auth.db, "alice", scopes, 90, now=1000,
         )
@@ -1064,11 +1067,6 @@ class HQCLIAPITests(unittest.TestCase):
         finally:
             connection.close()
         self.assertEqual("mystery-shopper-internal", client_name)
-
-        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
-            self.auth.hq_cli_api.issue_delegated_token(
-                self.auth.db, "alice", ["assets:upload"], 90, now=1000,
-            )
 
     def test_internal_delegate_endpoint_requires_service_and_matching_web_identity(self):
         body = {

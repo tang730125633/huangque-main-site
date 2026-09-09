@@ -5883,7 +5883,6 @@ class H(BaseHTTPRequestHandler):
                     db, MYSTERY_SHOPPER_USERNAME,
                     list(MYSTERY_SHOPPER_CLI_SCOPES), 120,
                     client_name="mystery-shopper-internal",
-                    allowed_scopes=MYSTERY_SHOPPER_CLI_SCOPES,
                 )
                 return self._cli_send(200, {
                     **delegated,
