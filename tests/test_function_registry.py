@@ -328,10 +328,10 @@ class FunctionRegistryTests(unittest.TestCase):
         for metadata, operation in (
             ({"source_page": "canvas", "provider": "banana", "model": "pro"}, "canvas.image.banana.pro"),
             ({"source_page": "canvas", "provider": "openai"}, "canvas.image.openai"),
-            ({"source_page": "canvas", "provider": "zelong"}, "canvas.image.zelong"),
+            ({"source_page": "canvas", "provider": "seedream"}, "canvas.image.seedream.std"),
         ):
             self.assertEqual(classify("image", metadata), operation)
-        self.assertEqual(classify("xiaole_video", {"source_page": "canvas", "channel": "micro"}), "canvas.video.micro")
+        self.assertEqual(classify("xiaole_video", {"source_page": "canvas", "channel": "minimax"}), "canvas.video.minimax")
         canvas_video_modes = canvas["functions"][2]["modes"]
         self.assertTrue(all(mode["validation"]["supported"] for mode in canvas_video_modes))
         for style, operation in (("口播", "script.write.spoken"), ("剧情", "script.write.story"), ("种草", "script.write.recommend")):
@@ -505,11 +505,10 @@ class FunctionRegistryTests(unittest.TestCase):
         self.assertTrue(sora["runtime_visible"])
         self.assertFalse(sora["acceptance_health"])
         grok = next(item for item in video["functions"] if item["key"] == "grok")
-        self.assertEqual(grok["selected_alternatives"]["grok_provider"], "xai")
-        self.assertEqual(
-            {item.get("selection_value") for item in grok["dependencies"] if item.get("alternative_group")},
-            {"xai", "xiaole"},
-        )
+        self.assertEqual(grok["selected_alternatives"], {})
+        xai = next(item for item in grok["dependencies"] if item["key"] == "xai")
+        self.assertEqual(xai["requirement"], "required")
+        self.assertNotIn("xiaolevideo", {item["key"] for item in grok["dependencies"]})
 
         stats = self.admin.job_stats(7)
         operations = {item["operation"]: item for item in stats["by_operation"]}

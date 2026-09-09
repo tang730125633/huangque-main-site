@@ -90,7 +90,8 @@ DISABLED_XIAOLE_VIDEO_CHANNELS = set()
 XIAOLE_IMAGE_CHANNELS = {"grok", "micro", "omni", "minimax"}  # 支持参考图（图生视频）的渠道
 XIAOLE_CHANNEL_DURATION = {}
 XIAOLE_MAX_REF = int(os.environ.get("XIAOLEVIDEO_MAX_REF", "7"))  # Grok 图生视频最多参考图数(实测上游pydantic硬上限7张,超过422)
-GROK_VIDEO_PROVIDER = os.environ.get("GROK_VIDEO_PROVIDER", "xai").strip().lower()
+# 小乐视频 API 已下架；保留旧适配器只用于历史诊断，所有新果肉视频固定走 xAI。
+GROK_VIDEO_PROVIDER = "xai"
 XAI_GROK_MODELS = {"grok-imagine-video", "grok-imagine-video-1.5"}
 XAI_GROK_RATIOS = {"1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"}
 XAI_GROK_RESOLUTIONS = {"480p", "720p"}

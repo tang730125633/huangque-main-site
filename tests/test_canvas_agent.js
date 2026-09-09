@@ -72,6 +72,10 @@ assert.ok(app.includes("node._imageSubmissionKey||(node._imageSubmissionKey="));
 assert.ok(app.includes("node._videoSubmissionKey||(node._videoSubmissionKey="));
 assert.ok(app.includes('node.outputs.image=url;'));
 assert.ok(app.includes("setNodeState(node,'done','出图完成'"));
+assert.ok(app.includes("params.engine==='zelong') params.engine='seedream'"));
+assert.ok(app.includes("params.channel==='micro') params.channel='minimax'"));
+assert.ok(app.includes('data-v="seedream">黄雀引擎 1'));
+assert.ok(app.includes('data-v="minimax">麦克视频'));
 
 (async function(){
   const calls = [];
@@ -80,7 +84,7 @@ assert.ok(app.includes("setNodeState(node,'done','出图完成'"));
     ['nb2', '/api/gen/banana', ['model', 'nb2']],
     ['pro', '/api/gen/banana', ['model', 'pro']],
     ['gpt', '/api/gen/image', ['provider', 'openai']],
-    ['zelong', '/api/gen/image', ['provider', 'zelong']],
+    ['seedream', '/api/gen/image', ['provider', 'seedream']],
   ]) {
     const request = agent.imageRequest({engine, prompt: ' 产品主图 ', ratio: '9:16', quality: 'hd', references: ['data:image/png;base64,AAAA']});
     await agent.submitRequest(client, request, 'image-'+engine);
@@ -89,9 +93,10 @@ assert.ok(app.includes("setNodeState(node,'done','出图完成'"));
     assert.equal(call.options.headers['Idempotency-Key'], 'image-'+engine);
     assert.equal(call.options.body.source_page, 'canvas');
     assert.equal(call.options.body[marker[0]], marker[1]);
-    assert.equal(call.options.body.image, 'AAAA');
+    if (engine === 'gpt' || engine === 'seedream') assert.deepEqual(call.options.body.reference_images, ['AAAA']);
+    else assert.deepEqual(call.options.body.images, ['AAAA']);
   }
-  for (const channel of ['grok', 'micro']) {
+  for (const channel of ['grok', 'minimax']) {
     const request = agent.videoRequest({channel, prompt: ' 产品视频 ', duration: '10', ratio: '16:9', references: ['data:image/png;base64,BBBB']});
     await agent.submitRequest(client, request, 'video-'+channel);
     const call = calls.pop();
