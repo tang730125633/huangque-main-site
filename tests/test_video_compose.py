@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import base64
+import hashlib
 import json
 import pathlib
 import queue
@@ -13,6 +14,7 @@ import threading
 import time
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from contextlib import closing
 from http.server import ThreadingHTTPServer
@@ -234,6 +236,25 @@ class VideoComposeAsrTests(unittest.TestCase):
 
 
 class VideoComposeMediaTests(unittest.TestCase):
+    def test_quality_report_covers_frame_streams_silence_and_loudness(self):
+        stderr = b"\n".join([
+            b"[silencedetect] silence_start: 1.000",
+            b"[silencedetect] silence_end: 5.200 | silence_duration: 4.200",
+            b"    I:         -15.0 LUFS",
+            b"    Peak:       -2.0 dBFS",
+        ])
+        completed = subprocess.CompletedProcess([], 0, b"", stderr)
+        with mock.patch.object(media, "probe_media", return_value={
+                "duration_ms": 10000, "width": 1080, "height": 1920,
+                "has_audio": True, "video_codec": "h264", "audio_codec": "aac",
+             }), mock.patch.object(media, "_run", return_value=completed):
+            report = media.inspect_quality("output.mp4")
+        self.assertEqual("failed", report["decision"])
+        self.assertEqual("9:16", report["checks"]["frame"]["aspect_ratio"])
+        self.assertFalse(report["checks"]["silence"]["passed"])
+        self.assertTrue(report["checks"]["loudness"]["passed"])
+        self.assertEqual(4200, report["checks"]["silence"]["longest_ms"])
+
     def test_remaps_source_cues_through_multiple_keep_ranges(self):
         edl = {"keep_ranges": [
             {"source_start_ms": 100, "source_end_ms": 500},
@@ -510,6 +531,38 @@ class VideoComposeHttpTests(unittest.TestCase):
         _, loaded = self.request("GET", "/api/gen/video-compose/projects/%s" % project["id"])
         self.assertEqual(reviewed["project"]["edl"], loaded["project"]["edl"])
 
+    def test_import_route_reaches_video_compose_domain_and_returns_source_asset_id(self):
+        raw = b"\x00\x00\x00\x18ftypisom" + b"talking-head"
+        digest = hashlib.sha256(raw).hexdigest()
+        captured = {}
+
+        class VideoDomain:
+            @staticmethod
+            def import_video_compose_source_asset(username, stream, length, content_type,
+                                                  title, expected_sha256):
+                captured.update({
+                    "username": username, "raw": stream.read(length),
+                    "content_type": content_type, "title": title,
+                    "expected_sha256": expected_sha256,
+                })
+                return {"id": 19, "source_sha256": expected_sha256}
+
+        request = urllib.request.Request(
+            self.base + "/api/gen/video-compose/import", data=raw, method="POST",
+            headers={
+                "Authorization": "Bearer test", "Content-Type": "video/mp4",
+                "X-Video-Title": urllib.parse.quote("第一条口播"),
+                "X-HQ-Video-SHA256": digest,
+            },
+        )
+        with mock.patch.object(core, "_domains", return_value=(None, None, VideoDomain)):
+            with self.opener.open(request, timeout=5) as response:
+                payload = json.loads(response.read())
+        self.assertEqual(19, payload["source_asset_id"])
+        self.assertEqual(raw, captured["raw"])
+        self.assertEqual("第一条口播", captured["title"])
+        self.assertEqual(digest, captured["expected_sha256"])
+
     def test_automatic_analysis_render_and_authenticated_output(self):
         _, created = self.request("POST", "/api/gen/video-compose/projects", {"source_asset_id": 7})
         project = created["project"]
@@ -535,6 +588,10 @@ class VideoComposeHttpTests(unittest.TestCase):
                  {"start_ms": 900, "end_ms": 1600, "duration_ms": 700}
              ]), \
              mock.patch.object(video_compose.media, "build_clean_master", side_effect=build_clean), \
+             mock.patch.object(video_compose.media, "inspect_quality", return_value={
+                 "decision": "passed", "checks": {}, "silence_ranges": [],
+                 "output": {"duration_ms": 2400},
+             }), \
              mock.patch.object(video_compose.renderer, "render", side_effect=render_video) as render_mock:
             _, analyzed = self.request(
                 "POST", "/api/gen/video-compose/projects/%s/analyze-source" % project["id"],

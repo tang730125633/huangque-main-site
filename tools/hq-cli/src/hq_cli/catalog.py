@@ -438,6 +438,17 @@ CAPABILITIES["video-import"] = _upload(
 CAPABILITIES["video-import"]["file_input"].update({
     "maxBytes": 100 * 1024 * 1024, "mimeTypes": ["video/mp4"], "accountActiveMaxFiles": 6,
 })
+CAPABILITIES["video-compose-import"] = _upload(
+    "video-compose-import", "导入口播原片",
+    "把本人指定的 MP4/MOV 口播原片导入视频资产库，返回 source_asset_id 供一键成片使用。",
+    "assets:upload",
+)
+CAPABILITIES["video-compose-import"]["file_input"].update({
+    "maxBytes": 2 * 1024 * 1024 * 1024,
+    "mimeTypes": ["video/mp4", "video/quicktime"],
+    "accountActiveMaxFiles": 6,
+    "accountActiveMaxBytes": 2 * 1024 * 1024 * 1024,
+})
 CAPABILITIES["inspiration-catalog"] = _api(
     "inspiration-catalog", "灵感案例", "inspiration-catalog", "读取主站当前公开的灵感案例。",
     scope="inspiration:read")

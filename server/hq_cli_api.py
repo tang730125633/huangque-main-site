@@ -1778,13 +1778,17 @@ ACTION_CATALOG = tuple(_catalog_entry(action, fields) for action, fields in _ACT
         "video-import", "导入本人 H3 MP4 成片到视频资产库", 100 * 1024 * 1024,
         ["video/mp4"], "/workbench/video",
     ),
+    _account_media_upload_catalog_entry(
+        "video-compose-import", "导入口播原片到视频资产库", 2 * 1024 * 1024 * 1024,
+        ["video/mp4", "video/quicktime"], "/workbench/one-click-video",
+    ),
     _creator_pdf_download_catalog_entry(),
 )
 for _catalog_item in ACTION_CATALOG:
     if _catalog_item["action"] in _FAMILIES:
         _catalog_item["family"] = _FAMILIES[_catalog_item["action"]]
 ACTION_CATALOG_MAP = {item["action"]: item for item in ACTION_CATALOG if item["transport"]["kind"] == "action"}
-ACTION_CATALOG_VERSION = "hq-action-catalog-v8"
+ACTION_CATALOG_VERSION = "hq-action-catalog-v9"
 
 
 def action_catalog(feature_states=None):
@@ -1842,6 +1846,8 @@ IMAGE_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
 IMAGE_UPLOAD_SLOTS = threading.BoundedSemaphore(2)
 VIDEO_UPLOAD_MAX_BYTES = 32 * 1024 * 1024
 VIDEO_UPLOAD_SLOTS = threading.BoundedSemaphore(2)
+VIDEO_COMPOSE_IMPORT_MAX_BYTES = 2 * 1024 * 1024 * 1024
+VIDEO_COMPOSE_IMPORT_SLOTS = threading.BoundedSemaphore(1)
 AUDIO_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
 AUDIO_UPLOAD_SLOTS = threading.BoundedSemaphore(2)
 DIRECTOR_BREAKDOWN_IMAGE_MAX_BYTES = 20 * 1024 * 1024
@@ -2651,14 +2657,14 @@ def proxy_json(plan, web_token, internal_token=""):
 
 
 def _proxy_media_upload(stream, length, web_token, internal_token, content_type, digest,
-                        path, digest_header, label, extra_headers=None):
+                        path, digest_header, label, extra_headers=None, timeout=60):
     display = {"image": "图片", "video": "视频", "audio": "音频"}[label]
     if not internal_token:
         raise CLIAPIError(503, "CLI 内部授权未配置", "not_configured")
     target = urllib.parse.urlsplit(CONTENT_BASE)
     if target.scheme != "http" or target.hostname not in {"127.0.0.1", "localhost"} or target.path not in {"", "/"}:
         raise CLIAPIError(503, "CLI %s上传目标配置不安全" % display, "not_configured")
-    connection = http.client.HTTPConnection(target.hostname, target.port or 80, timeout=60)
+    connection = http.client.HTTPConnection(target.hostname, target.port or 80, timeout=timeout)
     try:
         connection.putrequest("POST", path, skip_accept_encoding=True)
         connection.putheader("Authorization", "Bearer " + web_token)
@@ -2716,6 +2722,16 @@ def proxy_video_import(stream, length, web_token, internal_token, content_type, 
         stream, length, web_token, internal_token, content_type, digest,
         "/api/gen/video/import", "X-HQ-Video-SHA256", "video",
         extra_headers={"X-Video-Title": urllib.parse.quote(str(title or "")[:160], safe="._-")},
+    )
+
+
+def proxy_video_compose_import(stream, length, web_token, internal_token,
+                               content_type, digest, title):
+    return _proxy_media_upload(
+        stream, length, web_token, internal_token, content_type, digest,
+        "/api/gen/video-compose/import", "X-HQ-Video-SHA256", "video",
+        extra_headers={"X-Video-Title": urllib.parse.quote(str(title or "")[:160], safe="._-")},
+        timeout=3600,
     )
 
 

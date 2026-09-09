@@ -4764,19 +4764,26 @@ class H(BaseHTTPRequestHandler):
             c.commit(); c.close()
 
     def _account_media_upload(self, kind, row, director_breakdown=False,
-                              digital_human_kind="", video_import=False):
+                              digital_human_kind="", video_import=False,
+                              video_compose_import=False):
         label = {"image": "图片", "video": "视频", "audio": "音频"}[kind]
-        max_bytes = (100 * 1024 * 1024 if video_import else ({
-            "image": hq_cli_api.DIRECTOR_BREAKDOWN_IMAGE_MAX_BYTES,
-            "video": hq_cli_api.DIRECTOR_BREAKDOWN_VIDEO_MAX_BYTES,
-        } if director_breakdown else ({
-            "image": 10 * 1024 * 1024,
-            "audio": 30 * 1024 * 1024,
-        } if digital_human_kind else {
-            "image": hq_cli_api.IMAGE_UPLOAD_MAX_BYTES,
-            "video": hq_cli_api.VIDEO_UPLOAD_MAX_BYTES,
-            "audio": hq_cli_api.AUDIO_UPLOAD_MAX_BYTES,
-        }))[kind])
+        if video_compose_import:
+            max_bytes = hq_cli_api.VIDEO_COMPOSE_IMPORT_MAX_BYTES
+        elif video_import:
+            max_bytes = 100 * 1024 * 1024
+        elif director_breakdown:
+            max_bytes = {
+                "image": hq_cli_api.DIRECTOR_BREAKDOWN_IMAGE_MAX_BYTES,
+                "video": hq_cli_api.DIRECTOR_BREAKDOWN_VIDEO_MAX_BYTES,
+            }[kind]
+        elif digital_human_kind:
+            max_bytes = {"image": 10 * 1024 * 1024, "audio": 30 * 1024 * 1024}[kind]
+        else:
+            max_bytes = {
+                "image": hq_cli_api.IMAGE_UPLOAD_MAX_BYTES,
+                "video": hq_cli_api.VIDEO_UPLOAD_MAX_BYTES,
+                "audio": hq_cli_api.AUDIO_UPLOAD_MAX_BYTES,
+            }[kind]
         content_types = {
             "image": {"image/jpeg", "image/png", "image/webp"},
             "video": {"video/mp4", "video/quicktime", "video/webm"},
@@ -4784,15 +4791,21 @@ class H(BaseHTTPRequestHandler):
         }[kind]
         if video_import:
             content_types = {"video/mp4"}
+        elif video_compose_import:
+            content_types = {"video/mp4", "video/quicktime"}
         digest_header = {"image": "X-HQ-Image-SHA256", "video": "X-HQ-Video-SHA256", "audio": "X-HQ-Audio-SHA256"}[kind]
-        slots = (hq_cli_api.DIRECTOR_BREAKDOWN_UPLOAD_SLOTS if director_breakdown else {
-            "image": hq_cli_api.IMAGE_UPLOAD_SLOTS, "video": hq_cli_api.VIDEO_UPLOAD_SLOTS,
-            "audio": hq_cli_api.AUDIO_UPLOAD_SLOTS,
-        }[kind])
+        slots = (hq_cli_api.VIDEO_COMPOSE_IMPORT_SLOTS if video_compose_import else
+                 hq_cli_api.DIRECTOR_BREAKDOWN_UPLOAD_SLOTS if director_breakdown else {
+                     "image": hq_cli_api.IMAGE_UPLOAD_SLOTS,
+                     "video": hq_cli_api.VIDEO_UPLOAD_SLOTS,
+                     "audio": hq_cli_api.AUDIO_UPLOAD_SLOTS,
+                 }[kind])
         proxy = {"image": hq_cli_api.proxy_image_upload, "video": hq_cli_api.proxy_video_upload,
                  "audio": hq_cli_api.proxy_audio_upload}[kind]
         if video_import:
             proxy = hq_cli_api.proxy_video_import
+        elif video_compose_import:
+            proxy = hq_cli_api.proxy_video_compose_import
         if digital_human_kind == "material":
             proxy = hq_cli_api.proxy_digital_human_material_upload
         elif digital_human_kind == "audio":
@@ -4872,7 +4885,7 @@ class H(BaseHTTPRequestHandler):
                     self.rfile, length, token, INTERNAL_TOKEN, content_type,
                     digest, self.headers.get("X-HQ-Run-ID"),
                 )
-            elif video_import:
+            elif video_import or video_compose_import:
                 status, result = proxy(
                     self.rfile, length, token, INTERNAL_TOKEN, content_type, digest,
                     urllib.parse.unquote(self.headers.get("X-Video-Title") or "")[:160],
@@ -4910,6 +4923,15 @@ class H(BaseHTTPRequestHandler):
         if "assets:upload" not in scopes:
             return self._cli_send(403, {"detail": "当前 CLI 授权缺少权限：assets:upload", "code": "insufficient_scope"})
         return self._account_media_upload("video", row, video_import=True)
+
+    def _cli_video_compose_import(self):
+        auth = self._cli_user()
+        if not auth:
+            return self._cli_send(401, {"detail": "CLI 未登录或授权已过期", "code": "cli_unauthorized"})
+        row, scopes = auth
+        if "assets:upload" not in scopes:
+            return self._cli_send(403, {"detail": "当前 CLI 授权缺少权限：assets:upload", "code": "insufficient_scope"})
+        return self._account_media_upload("video", row, video_compose_import=True)
 
     def _cli_profile_avatar_upload(self):
         auth = self._cli_user()
@@ -6209,6 +6231,8 @@ class H(BaseHTTPRequestHandler):
             return self._cli_profile_avatar_upload()
         if p == "/api/auth/cli/video-import":
             return self._cli_video_import()
+        if p == "/api/auth/cli/video-compose-import":
+            return self._cli_video_compose_import()
         if p == "/api/auth/cli/asset-batch-download":
             if self._content_length_exceeds(64 * 1024):
                 return self._cli_send(413, {"detail": "批量下载请求过大", "code": "request_too_large"})

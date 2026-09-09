@@ -40,6 +40,7 @@ class H(DigitalPresenterH):
         return video_compose.dispatch_http(
             self, method, core.verify, core._must_change_password, core.adb,
             core._resolve_out_file, core.OUT_DIR,
+            lambda *args: core._domains()[2].import_video_compose_source_asset(*args),
         )
 
     def do_POST(self):

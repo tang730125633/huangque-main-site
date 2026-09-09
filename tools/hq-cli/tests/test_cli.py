@@ -192,7 +192,7 @@ class HqCliTests(unittest.TestCase):
             self.assertEqual(0, code, error)
             self.assertTrue(self.payload(output)["schema"].startswith("hq."))
         code, output, _ = self.invoke(["version"])
-        self.assertEqual("0.15.6", self.payload(output)["cli_version"])
+        self.assertEqual("0.15.7", self.payload(output)["cli_version"])
         self.assertEqual("Huangque main-site CLI", self.payload(output)["product"])
         self.assertEqual("https://huangquechuanmei.com", self.payload(output)["origin"])
 
@@ -227,7 +227,8 @@ class HqCliTests(unittest.TestCase):
         expected = {
             "account", "channels", "ip12-projects", "ip12-project", "ip12-create", "ip12-report", "ip12-message", "ip12-delete",
             "prompt-optimize", "canvas-list", "canvas-get", "canvas-create", "canvas-agent-plan", "canvas-ops", "tasks", "task",
-            "assets", "voices", "image-upload", "video-upload", "asset-favorite", "asset-tags", "asset-delete",
+            "assets", "voices", "image-upload", "video-upload", "video-compose-import",
+            "asset-favorite", "asset-tags", "asset-delete",
             "image-generate", "video-generate", "video-lipsync", "audio-generate",
             "digital-ip-text-generate", "digital-ip-audio-generate", "digital-ip-batch-generate",
             "cinematic-open-generate", "cinematic-motion-generate",
@@ -268,7 +269,7 @@ class HqCliTests(unittest.TestCase):
             "short-drama-completion-readiness", "short-drama-completion",
             "short-drama-completion-confirm",
         }
-        self.assertEqual(248, len(by_id))
+        self.assertEqual(249, len(by_id))
         self.assertTrue(expected <= set(by_id))
         self.assertEqual("download", by_id["dl"]["kind"])
         self.assertEqual("paid", by_id["director-production-start"]["side_effect"])
@@ -1436,11 +1437,14 @@ class HqCliTests(unittest.TestCase):
         self.assertEqual("/api/auth/cli/asset-batch-download", client.BATCH_DOWNLOAD_PATH)
         self.assertEqual("/api/auth/cli/profile-avatar-upload", client.PROFILE_AVATAR_UPLOAD_PATH)
         self.assertEqual("/api/auth/cli/video-import", client.VIDEO_IMPORT_PATH)
+        self.assertEqual("/api/auth/cli/video-compose-import", client.VIDEO_COMPOSE_IMPORT_PATH)
         avatar_path = os.path.join(self.temp.name, "avatar.png")
         video_path = os.path.join(self.temp.name, "h3.mp4")
         for capability, path, target, result in (
             ("profile-avatar-upload", avatar_path, "upload_profile_avatar", {"ok": True, "data": {"url": "/avatar.png"}}),
             ("video-import", video_path, "upload_video_import", {"ok": True, "asset": {"id": 7}}),
+            ("video-compose-import", video_path, "upload_video_compose_import",
+             {"ok": True, "source_asset_id": 9}),
         ):
             with self.subTest(capability=capability), patch.object(client, target) as upload:
                 code, _, _ = self.invoke(["run", capability, "--file", path])

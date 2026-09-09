@@ -188,6 +188,7 @@ class HQCLIAPITests(unittest.TestCase):
             "image-upload", "video-upload", "audio-upload", "director-breakdown-upload",
             "digital-human-oneclick-material-upload", "digital-human-oneclick-audio-upload",
             "dl", "asset-batch-download", "profile-avatar-upload", "video-import",
+            "video-compose-import",
             "creator-agent-background-pdf",
         }, set(actions))
         for action, item in actions.items():
@@ -207,6 +208,9 @@ class HQCLIAPITests(unittest.TestCase):
                 self.assertIn("transport", item)
                 self.assertIn("availability", item)
                 self.assertNotIn("http", json.dumps(item, ensure_ascii=False).lower())
+        compose_import = actions["video-compose-import"]["input_schema"]["properties"]["file"]
+        self.assertEqual(2 * 1024 * 1024 * 1024, compose_import["maxBytes"])
+        self.assertEqual(["video/mp4", "video/quicktime"], compose_import["mimeTypes"])
 
     def test_cli_device_bridge_owns_new_binary_and_video_transports(self):
         upload_token = self._token(["assets:upload"])
@@ -221,6 +225,17 @@ class HQCLIAPITests(unittest.TestCase):
             )
         self.assertEqual((200, 7), (status, payload["asset"]["id"]))
         self.assertEqual("sample", proxy.call_args.args[-1])
+
+        with mock.patch.object(
+                self.auth.hq_cli_api, "proxy_video_compose_import",
+                return_value=(200, {"ok": True, "source_asset_id": 9}),
+        ) as compose_proxy:
+            status, payload = self._raw_request(
+                "/api/auth/cli/video-compose-import", raw, token=upload_token,
+                content_type="video/quicktime", extra_headers={"X-Video-Title": "talking-head"},
+            )
+        self.assertEqual((200, 9), (status, payload["source_asset_id"]))
+        self.assertEqual("talking-head", compose_proxy.call_args.args[-1])
 
         read_token = self._token(["assets:read", "creator-agent:read"])
 
