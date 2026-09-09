@@ -175,6 +175,15 @@ class NginxCspTest(unittest.TestCase):
                 self.assertIn("limit_conn hq_cli_upload_conn 2;", audio_block)
                 self.assertIn('proxy_set_header X-HQ-Internal-Token "";', audio_block)
 
+    def test_cli_action_accepts_inline_image_json_up_to_twenty_megabytes(self):
+        for relative_path in self.CONFIGS:
+            config = self._config(relative_path)
+            with self.subTest(config=relative_path):
+                start = config.index("location = /api/auth/cli/action {")
+                end = config.index("\n    }", start)
+                block = config[start:end]
+                self.assertIn("client_max_body_size 20m;", block)
+
     def test_card_media_upload_has_a_bounded_streaming_route(self):
         config = self._config("deploy/nginx-huangquechuanmei.conf")
         start = config.index("location = /api/auth/card/media {")
