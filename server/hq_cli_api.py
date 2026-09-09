@@ -2305,9 +2305,10 @@ def _normalize_scopes(value):
     return scopes
 
 
-def _normalize_delegated_scopes(value):
+def _normalize_delegated_scopes(value, allowed_scopes=None):
     scopes = _normalize_scopes(value)
-    if any(scope not in DELEGATED_SCOPES for scope in scopes):
+    allowed = DELEGATED_SCOPES if allowed_scopes is None else frozenset(allowed_scopes)
+    if not allowed <= set(SCOPES) or any(scope not in allowed for scope in scopes):
         raise CLIAPIError(400, "包含不允许委托的权限范围")
     return scopes
 
@@ -2466,12 +2467,12 @@ def poll_device(db_factory, body, now=None):
 
 
 def issue_delegated_token(db_factory, username, scopes, ttl, now=None,
-                          client_name="video-agent-internal"):
+                          client_name="video-agent-internal", allowed_scopes=None):
     """Issue a short-lived, least-privilege CLI grant for an authenticated service call."""
     now = int(time.time() if now is None else now)
     username = _string(username, "username", 1, 64)
     client_name = _string(client_name, "client_name", 1, 80)
-    scopes = _normalize_delegated_scopes(scopes)
+    scopes = _normalize_delegated_scopes(scopes, allowed_scopes)
     ttl = _integer(ttl, "ttl_seconds", 60, 300)
     expires_at = now + ttl
     scopes_json = json.dumps(scopes, separators=(",", ":"))
