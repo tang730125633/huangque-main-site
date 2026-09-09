@@ -102,6 +102,7 @@ MYSTERY_SHOPPER_USERNAME = os.environ.get("HQ_MYSTERY_SHOPPER_USERNAME", "").str
 MYSTERY_SHOPPER_SIGNER_SECRET = os.environ.get("HQ_MYSTERY_SHOPPER_SIGNER_SECRET", "").strip()
 MYSTERY_SHOPPER_CLI_SCOPES = (
     "profile:read", "ip12:read", "assets:read", "tasks:read", "generation:quote",
+    "assets:upload", "video-compose:read", "video-compose:write",
 )
 VIRTUAL_PAY_RECONCILE_INTERVAL_SECONDS = 60
 VIRTUAL_PAY_RECONCILE_BATCH = 100
@@ -5882,6 +5883,7 @@ class H(BaseHTTPRequestHandler):
                     db, MYSTERY_SHOPPER_USERNAME,
                     list(MYSTERY_SHOPPER_CLI_SCOPES), 120,
                     client_name="mystery-shopper-internal",
+                    allowed_scopes=MYSTERY_SHOPPER_CLI_SCOPES,
                 )
                 return self._cli_send(200, {
                     **delegated,

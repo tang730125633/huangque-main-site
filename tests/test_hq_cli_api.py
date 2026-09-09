@@ -1028,8 +1028,14 @@ class HQCLIAPITests(unittest.TestCase):
                 self.auth.db, "alice", ["profile:read"], 90, now=1000,
             )
 
-    def test_mystery_shopper_signer_is_fixed_short_lived_and_read_quote_only(self):
+    def test_mystery_shopper_signer_is_fixed_short_lived_and_compose_only(self):
         path = "/api/auth/mystery-shopper/cli-token"
+        expected_scopes = [
+            "profile:read", "ip12:read", "assets:read", "tasks:read", "generation:quote",
+            "assets:upload", "video-compose:read", "video-compose:write",
+        ]
+        self.assertEqual(expected_scopes, list(self.auth.MYSTERY_SHOPPER_CLI_SCOPES))
+        self.assertNotIn("generation:submit", self.auth.MYSTERY_SHOPPER_CLI_SCOPES)
         self.assertEqual(403, self._request(path, {})[0])
         headers = {"X-HQ-Mystery-Signer": self.auth.MYSTERY_SHOPPER_SIGNER_SECRET}
         self.assertEqual(400, self._request(
@@ -1058,6 +1064,11 @@ class HQCLIAPITests(unittest.TestCase):
         finally:
             connection.close()
         self.assertEqual("mystery-shopper-internal", client_name)
+
+        with self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+            self.auth.hq_cli_api.issue_delegated_token(
+                self.auth.db, "alice", ["assets:upload"], 90, now=1000,
+            )
 
     def test_internal_delegate_endpoint_requires_service_and_matching_web_identity(self):
         body = {
