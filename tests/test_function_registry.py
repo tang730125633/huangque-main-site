@@ -679,6 +679,10 @@ class FunctionRegistryTests(unittest.TestCase):
                         "provider-old", "project-1", "alice", "grok",
                         "billing", 12, old, old + 10, "9988776655", "{}", "{}",
                     ),
+                    (
+                        "provider-terminal", "project-1", "alice", "grok",
+                        "succeeded", 12, now - 10, now - 5, "1122334455", "{}", "{}",
+                    ),
                 ],
             )
             connection.execute(
@@ -711,7 +715,8 @@ class FunctionRegistryTests(unittest.TestCase):
             item for item in stats["by_operation"]
             if item["operation"] == "short_drama.live_action.shot_video"
         )
-        self.assertEqual((shot["total"], shot["running"]), (2, 2))
+        self.assertEqual((shot["total"], shot["done"], shot["running"]), (3, 1, 2))
+        self.assertEqual(shot["latest"]["status"], "submit_unknown")
         self.assertEqual(shot["latest"]["provider_task_id"], "123456…7890")
         self.assertIn("q-signature=***", shot["latest"]["result_url"])
         serialized = json.dumps(shot, ensure_ascii=False)
@@ -728,6 +733,11 @@ class FunctionRegistryTests(unittest.TestCase):
         self.assertEqual(activity["provider-recent"]["provider_task_id"], "123456…7890")
         self.assertTrue(activity["provider-recent"]["result_reference"])
         self.assertEqual(activity["provider-recent"]["refunded"], 2)
+        provider_kind = next(item for item in stats["by_kind"] if item["kind"] == "grok_video")
+        self.assertEqual(
+            (provider_kind["total"], provider_kind["done"], provider_kind["running"]),
+            (4, 2, 2),
+        )
 
     def test_stale_submitted_job_remains_in_live_counts(self):
         old = int(time.time()) - 8 * 86400
@@ -748,6 +758,26 @@ class FunctionRegistryTests(unittest.TestCase):
             item for item in detailed["by_kind"] if item["kind"] == "xiaole_video"
         )
         self.assertEqual(stale_kind["running"], 1)
+
+    def test_compose_stats_keep_only_explicit_stale_active_states(self):
+        now = int(time.time())
+        old = now - 8 * 86400
+        with closing(sqlite3.connect(self.admin.VIDEO_COMPOSE_DB)) as connection:
+            connection.executemany(
+                "INSERT INTO video_compose_projects VALUES(?,?,?,?,?,?)",
+                [
+                    ("compose-running", "rendering", "", None, old, old + 10),
+                    ("compose-deleted", "deleted", "", None, old + 1, old + 11),
+                ],
+            )
+            connection.commit()
+
+        operation = next(
+            item for item in self.admin.job_stats(7)["by_operation"]
+            if item["operation"] == "video.one_click.compose"
+        )
+        self.assertEqual((operation["total"], operation["done"], operation["running"]), (2, 1, 1))
+        self.assertEqual(operation["latest"]["status"], "rendering")
 
     def test_dashboard_includes_provider_only_tasks_refunds_and_deduplicates_shared_jobs(self):
         now = int(time.time())

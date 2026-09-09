@@ -55,6 +55,7 @@ provider_keys = import_module(_DOMAIN_PACKAGE + ".provider_keys")
 pricing = import_module(_DOMAIN_PACKAGE + ".pricing")
 error_contract = import_module(_DOMAIN_PACKAGE + ".error_contract")
 video_minimax_h3 = import_module(_DOMAIN_PACKAGE + ".video_minimax_h3")
+video_compose_store = import_module(_DOMAIN_PACKAGE + ".video_compose_store")
 
 
 def _optional_content_domain(name):
@@ -3716,6 +3717,27 @@ def _operation_feature_key(kind, channel=""):
     return kind
 
 
+def _provider_feature_key(provider):
+    return {
+        "minimax_h3": "minimax_h3_video",
+        "minimax": "minimax_h3_video",
+        "grok": "grok_video",
+        "micro": "seedance_video",
+        "omni": "omni_video",
+    }.get(str(provider or "").lower(), "short_drama_provider_video")
+
+
+def _provider_status_bucket(status):
+    status = str(status or "unknown").lower()
+    if status == "succeeded":
+        return "done"
+    if status in {"failed", "canceled"}:
+        return "error"
+    if status in _TASK_RUNNING_STATES:
+        return "running"
+    return status
+
+
 def _count_status(bucket, status, count=1):
     bucket["total"] += count
     if status in _TASK_DONE_STATES:
@@ -6630,17 +6652,23 @@ def _compose_operation_stat(since):
             if not columns:
                 return None, None
             error_sql = "COALESCE(error,'')" if "error" in columns else "''"
+            active_states = sorted(video_compose_store.PROJECT_ACTIVE_STATES)
+            active_marks = ",".join("?" for _ in active_states)
             rows = connection.execute(
                 """SELECT id,status,output_file,output_asset_id,created_at,updated_at,%s AS error
                    FROM video_compose_projects
-                   WHERE created_at>=? OR status NOT IN ('completed','failed','refunded')
-                   ORDER BY created_at DESC""" % error_sql,
-                (since,),
+                   WHERE created_at>=? OR status IN (%s)
+                   ORDER BY created_at DESC""" % (error_sql, active_marks),
+                (since, *active_states),
             ).fetchall()
     except sqlite3.Error:
         return None, "一键成片证据读取失败"
     if not rows:
         return None, None
+    rows.sort(key=lambda row: (
+        str(row["status"] or "").lower() in video_compose_store.PROJECT_ACTIVE_STATES,
+        int(row["created_at"] or 0),
+    ), reverse=True)
     bucket = {
         "operation": "video.one_click.compose", "total": 0, "done": 0,
         "error": 0, "running": 0, "other": 0,
@@ -6701,6 +6729,10 @@ def _character_reference_operation_stat(since):
         return None, "角色标准图证据读取失败"
     if not rows:
         return None, None
+    rows.sort(key=lambda row: (
+        str(row["status"] or "").lower() in {"linked", "ready"},
+        int(row["created_at"] or 0),
+    ), reverse=True)
     bucket = {
         "operation": "short_drama.live_action.character_reference",
         "total": 0, "done": 0, "error": 0, "running": 0, "other": 0,
@@ -6747,6 +6779,10 @@ def _short_drama_shot_operation_stat(since):
         return None, "短剧逐镜证据读取失败"
     if not rows:
         return None, None
+    rows.sort(key=lambda row: (
+        str(row["status"] or "").lower() in _TASK_RUNNING_STATES,
+        int(row["created_at"] or 0),
+    ), reverse=True)
     bucket = {
         "operation": "short_drama.live_action.shot_video",
         "total": 0, "done": 0, "error": 0, "running": 0, "other": 0,
@@ -6797,6 +6833,7 @@ def job_stats(days=7):
     days = max(1, min(int(days or 7), 90))
     since = int(time.time()) - days * 86400
     rows = []
+    provider_rows = []
     evidence_errors = []
     today = {"day": time.strftime("%Y-%m-%d", time.localtime()), "total": 0, "done": 0, "error": 0, "running": 0, "other": 0}
     live = {"running": 0, "oldest_running_at": None, "refund_pending": 0}
@@ -6824,13 +6861,15 @@ def job_stats(days=7):
                 if connection.execute(
                         "SELECT 1 FROM sqlite_master WHERE type='table' "
                         "AND name='short_drama_provider_shot_jobs'").fetchone():
-                    provider_active = connection.execute(
+                    provider_rows = connection.execute(
                         """SELECT id,owner_username AS username,provider,cost,status,created_at
                              FROM short_drama_provider_shot_jobs
-                            WHERE status IN (%s)""" % running_marks,
-                        running_states,
+                            WHERE created_at>=? OR status IN (%s)""" % running_marks,
+                        (since, *running_states),
                     ).fetchall()
-                    for row in provider_active:
+                    for row in provider_rows:
+                        if str(row["status"] or "").lower() not in _TASK_RUNNING_STATES:
+                            continue
                         if _is_shared_provider_job(row, generic_active):
                             continue
                         live["running"] += 1
@@ -6901,6 +6940,10 @@ def job_stats(days=7):
                        ),
                     (since, *running_states),
                 ).fetchall()
+                rows.sort(key=lambda row: (
+                    str(row["status"] or "").lower() in _TASK_RUNNING_STATES,
+                    int(row["created_at"] or 0),
+                ), reverse=True)
         except sqlite3.Error:
             evidence_errors.append("任务证据读取失败")
     by_kind = {}
@@ -6966,6 +7009,33 @@ def job_stats(days=7):
         trend_key = (row["day"], kind, status)
         trend_counts[trend_key] = trend_counts.get(trend_key, 0) + 1
 
+    generic_provider_rows = {
+        str(row["id"]): row for row in rows
+        if str(row["kind"] or "").lower() == "xiaole_video"
+    }
+    provider_total = 0
+    for row in provider_rows:
+        if _is_shared_provider_job(row, generic_provider_rows):
+            continue
+        status = _provider_status_bucket(row["status"])
+        kind = _provider_feature_key(row["provider"])
+        bucket = by_kind.setdefault(kind, {
+            "kind": kind, "total": 0, "done": 0, "error": 0,
+            "running": 0, "other": 0, "sources": [],
+        })
+        source = {"kind": "short_drama_provider_shot", "channel": str(row["provider"] or "")}
+        if source not in bucket["sources"]:
+            bucket["sources"].append(source)
+        _count_status(bucket, status)
+        provider_total += 1
+        created_at = int(row["created_at"] or 0)
+        if time.strftime("%Y-%m-%d", time.localtime(created_at)) == today["day"]:
+            _count_status(today, status)
+        if created_at >= since:
+            day = time.strftime("%Y-%m-%d", time.localtime(created_at))
+            trend_key = (day, kind, status)
+            trend_counts[trend_key] = trend_counts.get(trend_key, 0) + 1
+
     assets, asset_error = _video_asset_evidence(
         [int(row["id"]) for row in latest_rows.values()]
     )
@@ -7019,7 +7089,7 @@ def job_stats(days=7):
     ]
     return {
         "days": days,
-        "total": len(rows),
+        "total": len(rows) + provider_total,
         "today": today,
         "live": live,
         "by_kind": sorted(items, key=lambda x: x["total"], reverse=True),
@@ -7106,30 +7176,14 @@ def dashboard_stats(days=7):
             out["live"]["oldest_running_at"] = created_at if not oldest or created_at < oldest else oldest
         if int(row["refunded"] or 0) == 2:
             out["live"]["refund_pending"] += 1
-    provider_kind = {
-        "minimax_h3": "minimax_h3_video",
-        "grok": "grok_video",
-        "micro": "seedance_video",
-        "omni": "omni_video",
-    }
     for row in provider_rows:
         if _is_shared_provider_job(row, generic_rows):
             continue
-        raw_status = str(row["status"] or "unknown").lower()
-        status = (
-            "done" if raw_status == "succeeded"
-            else "error" if raw_status in {"failed", "canceled"}
-            else "running" if raw_status in {
-                "billing", "queued", "submitting", "running", "submit_unknown",
-            }
-            else raw_status
-        )
+        status = _provider_status_bucket(row["status"])
         created_at = int(row["created_at"] or 0)
         if created_at >= since:
             out["total"] += 1
-            kind = provider_kind.get(
-                str(row["provider"] or "").lower(), "short_drama_provider_video",
-            )
+            kind = _provider_feature_key(row["provider"])
             _count_status(by_kind.setdefault(kind, {
                 "kind": kind,
                 "total": 0, "done": 0, "error": 0, "running": 0, "other": 0,
