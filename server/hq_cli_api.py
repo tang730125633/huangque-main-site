@@ -7,6 +7,7 @@ import http.client
 import json
 import math
 import os
+from content_domains import editorial_contract
 import re
 import secrets
 import threading
@@ -253,7 +254,7 @@ _ACTION_INPUTS = {
     "video-compose-create": ("source_asset_id",),
     "video-compose-analyze": ("project_id", "expected_revision"),
     "video-compose-review": ("project_id", "expected_revision", "decisions"),
-    "video-compose-render": ("project_id", "expected_revision"),
+    "video-compose-render": ("project_id", "expected_revision", "template_id", "editorial_plan"),
     "digital-presenter-capability": (), "digital-presenter-project": ("board_id", "project_id"),
     "digital-presenter-create": ("board_id", "request_id", "title", "script_text", "ratio", "resolution", "voice_key", "target_duration"),
     "digital-presenter-update": ("board_id", "project_id", "revision", "title", "script_text", "ratio", "resolution", "voice_key", "target_duration"),
@@ -980,12 +981,15 @@ _MEDIA_SCHEMAS.update({
     }, "constraints": ["analysis is non-destructive and uses the expected current project revision"]},
     "video-compose-review": {"required": ["project_id", "expected_revision", "decisions"], "properties": {
         "project_id": {"type": "string", "pattern": "^compose_[0-9a-f]{32}$"}, "expected_revision": _INT_ID_SCHEMA,
-        "decisions": {"type": "object", "minProperties": 1, "maxProperties": 200,
+        "decisions": {"type": "object", "minProperties": 0, "maxProperties": 200,
                       "additionalProperties": {"type": "string", "enum": ["keep", "remove"]}},
     }, "constraints": []},
     "video-compose-render": {"required": ["project_id", "expected_revision"], "properties": {
         "project_id": {"type": "string", "pattern": "^compose_[0-9a-f]{32}$"}, "expected_revision": _INT_ID_SCHEMA,
-    }, "constraints": ["render uses the confirmed EDL for this project revision"]},
+        "template_id": editorial_contract.TEMPLATE_SCHEMA,
+        "editorial_plan": editorial_contract.PLAN_SCHEMA,
+    }, "constraints": ["render uses the confirmed EDL for this project revision",
+        "口播网感模板 ip-editorial-serif-v1 requires a complete bilingual editorial_plan; poll project_id, not job_id"]},
     "digital-presenter-capability": {"required": [], "properties": {}, "constraints": []},
     "digital-presenter-project": {"required": ["board_id", "project_id"], "properties": {
         "board_id": _ID_SCHEMA, "project_id": {"type": "string", "pattern": "^dp_[0-9a-f]{32}$"},
@@ -2730,8 +2734,8 @@ def validate_idempotency_key(value):
 
 
 def _video_compose_decisions(value):
-    if not isinstance(value, dict) or not 1 <= len(value) <= 200:
-        raise CLIAPIError(400, "decisions 必须是包含 1-200 项的对象")
+    if not isinstance(value, dict) or len(value) > 200:
+        raise CLIAPIError(400, "decisions 必须是包含 0-200 项的对象；空对象仅适用于无候选片段的项目")
     decisions = {}
     for candidate_id, decision in value.items():
         candidate_id = _matched_string(candidate_id, "候选片段 ID", _VIDEO_COMPOSE_CANDIDATE_RE)
@@ -4136,13 +4140,24 @@ def action_plan(action, value):
         allowed = {"project_id", "expected_revision"}
         if action == "video-compose-review":
             allowed.add("decisions")
-        _strict_object(value, allowed, tuple(allowed))
+        required = tuple(allowed)
+        if action == "video-compose-render":
+            allowed.update({"template_id", "editorial_plan"})
+        _strict_object(value, allowed, required)
         project_id = _matched_string(value["project_id"], "project_id", _VIDEO_COMPOSE_PROJECT_RE)
         body = {"expected_revision": _integer(value["expected_revision"], "expected_revision", 1, 2**63 - 1)}
         suffix = {"video-compose-analyze": "analyze-source", "video-compose-review": "edit-decisions",
                   "video-compose-render": "render"}[action]
         if action == "video-compose-review":
             body["decisions"] = _video_compose_decisions(value["decisions"])
+        if action == "video-compose-render":
+            try:
+                editorial_contract.validate_selection(value)
+            except ValueError as error:
+                raise CLIAPIError(400, str(error)) from error
+            for key in ("template_id", "editorial_plan"):
+                if key in value:
+                    body[key] = value[key]
         return _plan("video-compose:write", "proxy", base=CONTENT_BASE,
                      path="/api/gen/video-compose/projects/%s/%s" % (project_id, suffix),
                      method="POST", body=body, timeout=300 if action != "video-compose-review" else 30)

@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 
 from . import video_compose_media as media
+from . import editorial_contract as editorial
 
 
 BASE = pathlib.Path(__file__).resolve().parents[1]
@@ -69,6 +70,8 @@ def _highlight(text, keywords):
 
 def normalize_template_id(value):
     template_id = str(value or TEMPLATE_ID).strip()
+    if template_id == editorial.TEMPLATE_ID:
+        return template_id
     if template_id not in TEMPLATE_VARIANTS:
         raise RenderError("不支持的剪辑模板")
     return template_id
@@ -310,6 +313,9 @@ def prepare_workspace(clean_video, payload, workspace):
 
 
 def render(clean_video, payload, output_path, timeout=None):
+    if payload.get("template_id") == editorial.TEMPLATE_ID:
+        from . import video_compose_editorial
+        return video_compose_editorial.render(clean_video, payload, output_path, TEMPLATE_ROOT, timeout)
     output_path = pathlib.Path(output_path).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="hq-compose-render-") as directory:

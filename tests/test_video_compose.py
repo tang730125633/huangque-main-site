@@ -159,8 +159,10 @@ class VideoComposeAsrTests(unittest.TestCase):
             "text": "你好", "segments": [{"text": "你好", "start": 1, "end": 2}],
         })
         self.assertEqual([
-            {"text": "你", "start_ms": 1000, "end_ms": 1500, "confidence": None},
-            {"text": "好", "start_ms": 1500, "end_ms": 2000, "confidence": None},
+            {"text": "你", "start_ms": 1000, "end_ms": 1500, "confidence": None,
+             "timing_source": "segment_interpolated"},
+            {"text": "好", "start_ms": 1500, "end_ms": 2000, "confidence": None,
+             "timing_source": "segment_interpolated"},
         ], result["words"])
 
     def test_rejects_empty_asr_response(self):

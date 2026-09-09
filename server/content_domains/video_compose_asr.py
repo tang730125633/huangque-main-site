@@ -113,7 +113,7 @@ def parse_verbose_response(payload):
         end_ms = _milliseconds(item.get("end"))
         if text and end_ms > start_ms:
             words.append({"text": text, "start_ms": start_ms, "end_ms": end_ms,
-                          "confidence": item.get("confidence")})
+                          "confidence": item.get("confidence"), "timing_source": "provider_word"})
     segments = []
     for item in payload.get("segments") or []:
         if not isinstance(item, dict):
@@ -133,7 +133,7 @@ def parse_verbose_response(payload):
                 start_ms = segment["start_ms"] + int(span * index / len(chars))
                 end_ms = segment["start_ms"] + int(span * (index + 1) / len(chars))
                 words.append({"text": char, "start_ms": start_ms, "end_ms": end_ms,
-                              "confidence": None})
+                              "confidence": None, "timing_source": "segment_interpolated"})
     if not words:
         raise AsrError("ASR 没有识别到有效语音")
     return {"text": str(payload.get("text") or "").strip(), "words": words,

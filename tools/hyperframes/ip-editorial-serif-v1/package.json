@@ -1,0 +1,7 @@
+{
+  "name": "huangque-editorial-render-runtime",
+  "private": true,
+  "version": "1.0.0",
+  "engines": {"node": ">=22"},
+  "dependencies": {"hyperframes": "0.8.33"}
+}

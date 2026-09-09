@@ -58,7 +58,7 @@ def normalize_words(words, duration_ms):
     for index, item in enumerate(words):
         if not isinstance(item, dict):
             raise AnalysisError("逐词时间轴第%d项格式无效" % (index + 1))
-        if set(item) - {"text", "start_ms", "end_ms", "confidence"}:
+        if set(item) - {"text", "start_ms", "end_ms", "confidence", "timing_source"}:
             raise AnalysisError("逐词时间轴包含未支持字段")
         text = _normalized_text(item.get("text"))
         if not text:
@@ -76,6 +76,10 @@ def normalize_words(words, duration_ms):
             "end_ms": end_ms,
             "confidence": _confidence(item.get("confidence")),
         })
+        if "timing_source" in item:
+            if item["timing_source"] not in {"provider_word", "segment_interpolated", "user_supplied"}:
+                raise AnalysisError("不支持的时间来源")
+            normalized[-1]["timing_source"] = item["timing_source"]
     return duration_ms, normalized
 
 

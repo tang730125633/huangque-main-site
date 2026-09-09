@@ -5,6 +5,7 @@ import hashlib
 import json
 import pathlib
 import re
+import threading
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
@@ -14,6 +15,8 @@ from . import video_compose_asr as asr
 from . import video_compose_media as media
 from . import video_compose_render as renderer
 from . import video_compose_store as store
+from . import editorial_contract as editorial
+from . import video_compose_editorial
 
 
 BASE_PATH = "/api/gen/video-compose/projects"
@@ -25,6 +28,7 @@ DECISIONS_RE = re.compile(r"^/api/gen/video-compose/projects/(compose_[0-9a-f]{3
 RENDER_RE = re.compile(r"^/api/gen/video-compose/projects/(compose_[0-9a-f]{32})/render$")
 OUTPUT_RE = re.compile(r"^/api/gen/video-compose/projects/(compose_[0-9a-f]{32})/output$")
 _RENDER_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="video-compose")
+_EDITORIAL_SLOTS = threading.BoundedSemaphore(2)
 
 
 def _body(handler):
@@ -136,6 +140,8 @@ def _save_analysis(handler, user, project_id):
     body = _body(handler)
     _only(body, {"expected_revision", "duration_ms", "words"})
     normalized = analysis.detect_candidates(body.get("duration_ms"), body.get("words"))
+    for word in normalized["words"]:
+        word["timing_source"] = "user_supplied"
     project = store.save_analysis(
         user["username"], project_id, _revision(body.get("expected_revision")),
         normalized, analysis.transcript_hash(normalized["duration_ms"], normalized["words"]),
@@ -218,6 +224,9 @@ def _caption_cues(words, edl):
 
 
 def _default_render_input(project, body):
+    editorial.validate_selection(body)
+    if body.get("template_id") == editorial.TEMPLATE_ID:
+        return video_compose_editorial.project_input(project, body)
     cues = _caption_cues(project["words"], project["edl"])
     keywords = ("AI", "人工智能", "自己", "全款", "成交", "增长", "品牌", "流量")
     for cue in cues:
@@ -252,9 +261,10 @@ def _record_output_asset(asset_db_factory, username, output_rel, render_input):
             """INSERT INTO video_assets
                (job_id,username,mode,video_file,video_url,text,resolution,ratio,motion,
                 phase,model,status,error,created_at,updated_at)
-               VALUES(NULL,?,'video_compose',?,NULL,?,'1080p','9:16','template',
+               VALUES(NULL,?,'video_compose',?,NULL,?,?,'9:16','template',
                       'completed',?,'done',NULL,?,?)""",
             (str(username), str(output_rel), title[:8000],
+             "720p" if render_input.get("template_id") == editorial.TEMPLATE_ID else "1080p",
              render_input.get("template_id") or renderer.TEMPLATE_ID, now, now),
         )
         connection.commit()
@@ -264,10 +274,16 @@ def _record_output_asset(asset_db_factory, username, output_rel, render_input):
 def _run_render(username, project_id, expected_revision, render_input,
                 asset_db_factory, source_resolver, out_dir):
     output_asset_id = None
+    is_editorial = render_input["template_id"] == editorial.TEMPLATE_ID
+    clean_path = output_path = None
     try:
         current = store.get_project(username, project_id)
         if current["status"] != "rendering" or current["revision"] != expected_revision:
             return
+        if is_editorial:
+            _, live_revision, _ = _source_asset(asset_db_factory, username, current["source_asset_id"])
+            if live_revision != current["source_revision"]:
+                raise ValueError("原视频资产已变化，请重新创建口播项目")
         source_file = str((current.get("source") or {}).get("video_file") or "").strip()
         source_path = source_resolver(source_file) if source_resolver and source_file else None
         if not source_path:
@@ -275,18 +291,23 @@ def _run_render(username, project_id, expected_revision, render_input,
         owner_hash = hashlib.sha256(username.encode()).hexdigest()[:16]
         folder = pathlib.Path(out_dir) / "video-compose" / owner_hash
         folder.mkdir(parents=True, exist_ok=True)
-        clean_path = folder / (project_id + "-clean.mp4")
+        attempt = "-r%d" % expected_revision if is_editorial else ""
+        clean_path = folder / (project_id + attempt + "-clean.mp4")
         output_path = folder / (
-            project_id + "-" + render_input["template_id"] + ".mp4"
+            project_id + attempt + "-" + render_input["template_id"] + ".mp4"
         )
         media.build_clean_master(source_path, current["edl"], clean_path)
         rendered = renderer.render(clean_path, render_input, output_path)
         quality = media.inspect_quality(output_path)
+        if is_editorial and quality.get("decision") != "passed":
+            raise ValueError("口播网感成片质检未通过，未登记为成功作品")
         quality.update({
             "template_id": rendered["template_id"],
             "template_version": rendered["template_version"],
             "render_log": "ok",
         })
+        if is_editorial:
+            quality["build_manifest"] = rendered.get("build_manifest")
         base = pathlib.Path(out_dir).resolve()
         clean_rel = clean_path.resolve().relative_to(base).as_posix()
         output_rel = output_path.resolve().relative_to(base).as_posix()
@@ -307,6 +328,14 @@ def _run_render(username, project_id, expected_revision, render_input,
                 pass
             raise
     except Exception as error:
+        if is_editorial:
+            for path in (clean_path, output_path):
+                if path is not None:
+                    try:
+                        path.unlink(missing_ok=True)
+                    except OSError:
+                        # Preserve the failed state even if a locked file needs later cleanup.
+                        pass
         try:
             store.fail_render(username, project_id, expected_revision, error)
         except Exception:
@@ -314,12 +343,22 @@ def _run_render(username, project_id, expected_revision, render_input,
         print("[video-compose] %s render failed: %s" % (project_id, str(error)[:220]), flush=True)
 
 
+def _run_editorial_render(*args):
+    try:
+        _run_render(*args)
+    finally:
+        _EDITORIAL_SLOTS.release()
+
+
 def _render_project(handler, user, project_id, asset_db_factory, source_resolver, out_dir):
     body = _body(handler)
-    _only(body, {"expected_revision", "hook", "headlines", "brand", "template_id"})
+    _only(body, {"expected_revision", "hook", "headlines", "brand", "template_id", "editorial_plan"})
     expected_revision = _revision(body.get("expected_revision"))
     current = store.get_project(user["username"], project_id)
-    if current["status"] == "completed" and current.get("output_file"):
+    editorial.validate_selection(body)
+    strict_replay = (body.get("template_id") == editorial.TEMPLATE_ID or
+                    (current.get("render_input") or {}).get("template_id") == editorial.TEMPLATE_ID)
+    if current["status"] == "completed" and current.get("output_file") and not strict_replay:
         return handler._send(200, {
             "project": current,
             "output_url": BASE_PATH + "/" + project_id + "/output",
@@ -327,12 +366,29 @@ def _render_project(handler, user, project_id, asset_db_factory, source_resolver
     if not current.get("edl"):
         raise ValueError("请先确认粗剪方案")
     render_input = _default_render_input(current, body)
-    project, started = store.begin_render(user["username"], project_id, expected_revision)
+    if body.get("template_id") == editorial.TEMPLATE_ID and current["status"] not in {"rendering", "completed"}:
+        video_compose_editorial.verify_assets(renderer.TEMPLATE_ROOT)
+        video_compose_editorial.runtime_command()
+    project, started = store.begin_render(user["username"], project_id, expected_revision,
+        render_input=render_input if strict_replay else None)
     if started:
-        _RENDER_EXECUTOR.submit(
-            _run_render, user["username"], project_id, project["revision"], render_input,
-            asset_db_factory, source_resolver, out_dir,
-        )
+        is_editorial = render_input["template_id"] == editorial.TEMPLATE_ID
+        if is_editorial and not _EDITORIAL_SLOTS.acquire(blocking=False):
+            store.fail_render(user["username"], project_id, project["revision"], "口播网感渲染队列已满，请稍后重试")
+            raise ValueError("口播网感渲染队列已满，请稍后重试")
+        try:
+            _RENDER_EXECUTOR.submit(
+                _run_editorial_render if is_editorial else _run_render,
+                user["username"], project_id, project["revision"], render_input,
+                asset_db_factory, source_resolver, out_dir,
+            )
+        except RuntimeError as error:
+            if is_editorial:
+                _EDITORIAL_SLOTS.release()
+            store.fail_render(user["username"], project_id, project["revision"], "渲染队列不可用，请重试")
+            raise ValueError("渲染队列不可用，请重试") from error
+    if project["status"] == "completed":
+        return handler._send(200, {"project": project, "output_url": BASE_PATH + "/" + project_id + "/output"})
     return handler._send(202, {"project": project, "accepted": True})
 
 

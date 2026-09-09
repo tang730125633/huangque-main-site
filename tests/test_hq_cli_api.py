@@ -382,9 +382,11 @@ class HQCLIAPITests(unittest.TestCase):
         )
 
         catalog_path = Path(__file__).resolve().parents[1] / "tools" / "hq-cli" / "src" / "hq_cli" / "catalog.py"
-        spec = importlib.util.spec_from_file_location("pr1100_hq_cli_catalog", catalog_path)
-        cli_catalog = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(cli_catalog)
+        # The catalog now shares a package-local template contract. Import it as
+        # a package, still asserting this checkout (not an installed CLI) is used.
+        with mock.patch.object(sys, "path", [str(catalog_path.parent.parent), *sys.path]):
+            cli_catalog = importlib.import_module("hq_cli.catalog")
+        self.assertEqual(catalog_path, Path(cli_catalog.__file__).resolve())
         self.assertEqual(rules, cli_catalog.VIDEO_CHANNEL_RULES)
         cli_schema = cli_catalog.CAPABILITIES["video-generate"]["input_schema"]
         server_schema = self.auth.hq_cli_api._MEDIA_SCHEMAS["video-generate"]

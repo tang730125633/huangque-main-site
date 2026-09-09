@@ -1,6 +1,7 @@
 """Machine-readable Huangque main-site capability contract."""
 
 from urllib.parse import urlencode
+from . import editorial_contract
 
 
 ENVIRONMENTS = {"main": "https://huangquechuanmei.com"}
@@ -845,12 +846,14 @@ CAPABILITIES["video-compose-analyze"] = _api(
 CAPABILITIES["video-compose-review"] = _api(
     "video-compose-review", "确认一键成片剪辑", "video-compose-review", "精确确认全部候选片段保留或删除，生成非破坏性 EDL。",
     {"project_id": COMPOSE_PROJECT_ID, "expected_revision": REVISION,
-     "decisions": {"type": "object", "minProperties": 1, "maxProperties": 200,
+     "decisions": {"type": "object", "minProperties": 0, "maxProperties": 200,
                    "additionalProperties": {"type": "string", "enum": ["keep", "remove"]}}},
     ["project_id", "expected_revision", "decisions"], "video-compose:write", "write", True)
 CAPABILITIES["video-compose-render"] = _api(
-    "video-compose-render", "渲染一键成片", "video-compose-render", "按已确认 EDL 使用主站默认模板渲染 MP4，并写入本人视频资产。",
-    {"project_id": COMPOSE_PROJECT_ID, "expected_revision": REVISION},
+    "video-compose-render", "渲染一键成片 / 口播网感模板", "video-compose-render", "按已确认 EDL 渲染 MP4。口播网感模板 ip-editorial-serif-v1 要求完整双语 editorial_plan；保留原声和人物，按 project_id 查询结果。",
+    {"project_id": COMPOSE_PROJECT_ID, "expected_revision": REVISION,
+     "template_id": editorial_contract.TEMPLATE_SCHEMA,
+     "editorial_plan": editorial_contract.PLAN_SCHEMA},
     ["project_id", "expected_revision"], "video-compose:write", "write", True)
 CAPABILITIES["video-compose-delete"] = _api(
     "video-compose-delete", "删除一键成片项目", "video-compose-delete", "删除一个本人一键成片项目；删除前应先读取并核对目标。",
@@ -1988,6 +1991,16 @@ def _attach_agent_guidance():
 
 
 _attach_agent_guidance()
+
+CAPABILITIES["video-compose-render"]["agent"]["workflow"].extend([
+    "用户指定口播网感模板时，固定选择 ip-editorial-serif-v1；先读当前项目和已确认 EDL。",
+    "按原片转写生成短句中英字幕，将关键词真实词级时间映射至剪辑后的成片，形成 editorial_plan。",
+    "绑定当前 transcript_hash、edit_decision_version、expected_revision；不得伪造均分时间为词级时间。",
+    "提交后只用 video-compose-project 查询原 project_id，直到 completed/failed；不要改用通用 task。",
+])
+CAPABILITIES["video-compose-render"]["agent"]["success_evidence"].append(
+    "项目 completed、quality.decision=passed、output_asset_id 和可鉴权读取的 output_url 均存在。"
+)
 
 CAPABILITIES["voice-clone-create"]["agent"]["workflow"].append(
     "提交成功后只调用 voice-clone-status 查询原 slot_id；不要重复创建。"

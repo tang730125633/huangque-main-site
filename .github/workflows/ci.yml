@@ -120,6 +120,8 @@ jobs:
             test_video_gen_deadline.py
             test_video_parameters.py
             test_timeline_compose.py
+            test_video_compose.py
+            test_video_compose_editorial.py
           )
           for test_file in "${tests[@]}"; do
             # These service suites intentionally manipulate sys.path and generic
