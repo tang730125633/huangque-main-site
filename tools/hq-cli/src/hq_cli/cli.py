@@ -440,6 +440,8 @@ def _credentials():
         credentials = client.load_credentials()
         if not credentials:
             raise CliError(EXIT_AUTH, "auth_required", "HQ CLI is not authorized; run `hq login --json`")
+        if client.ACCESS_TOKEN_ENV in os.environ:
+            return credentials
         now = int(time.time())
         access_expires_at = int(credentials.get("access_expires_at") or 0)
         refresh_token = credentials.get("refresh_token") or ""
