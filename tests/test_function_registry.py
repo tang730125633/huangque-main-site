@@ -663,7 +663,7 @@ class FunctionRegistryTests(unittest.TestCase):
             )
             connection.execute(
                 """CREATE TABLE short_drama_provider_shot_attempts(
-                    job_id TEXT,state TEXT)"""
+                    id TEXT PRIMARY KEY,job_id TEXT,state TEXT)"""
             )
             connection.executemany(
                 "INSERT INTO short_drama_provider_shot_jobs VALUES(?,?,?,?,?,?,?,?,?,?,?)",
@@ -680,11 +680,24 @@ class FunctionRegistryTests(unittest.TestCase):
                     ),
                 ],
             )
+            connection.execute(
+                "INSERT INTO short_drama_provider_shot_attempts VALUES(?,?,?)",
+                ("attempt-recent", "provider-recent", "refund_pending"),
+            )
             connection.commit()
 
         stats = self.admin.job_stats(7)
+        dashboard = self.admin.dashboard_stats(7)
+        calls = {str(item["id"]): item for item in self.admin.call_logs(7, 20)["items"]}
+        activity = {
+            str(item["task_id"]): item
+            for item in self.admin.activity_logs(7, 20, source="job")["items"]
+        }
         self.assertEqual(stats["live"]["running"], 2)
         self.assertEqual(stats["live"]["oldest_running_at"], old)
+        self.assertEqual(dashboard["live"]["running"], 2)
+        self.assertEqual(dashboard["live"]["oldest_running_at"], old)
+        self.assertEqual(dashboard["live"]["refund_pending"], 1)
         shot = next(
             item for item in stats["by_operation"]
             if item["operation"] == "short_drama.live_action.shot_video"
@@ -695,6 +708,16 @@ class FunctionRegistryTests(unittest.TestCase):
         serialized = json.dumps(shot, ensure_ascii=False)
         for secret in ("1234567890", "shot-secret", "provider-secret"):
             self.assertNotIn(secret, serialized)
+        self.assertIn("provider-old", calls)
+        self.assertIn("provider-old", activity)
+        recent = calls["provider-recent"]
+        self.assertEqual(recent["provider_task_id"], "123456…7890")
+        self.assertTrue(recent["result_reference"])
+        self.assertEqual(recent["refunded"], 2)
+        self.assertNotIn("provider-secret", json.dumps(recent, ensure_ascii=False))
+        self.assertEqual(activity["provider-recent"]["provider_task_id"], "123456…7890")
+        self.assertTrue(activity["provider-recent"]["result_reference"])
+        self.assertEqual(activity["provider-recent"]["refunded"], 2)
 
     def test_stale_submitted_job_remains_in_live_counts(self):
         old = int(time.time()) - 8 * 86400

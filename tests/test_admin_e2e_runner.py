@@ -785,6 +785,19 @@ class AdminE2ERunnerTests(unittest.TestCase):
             "provider_jobs": {"shot_01": "provider-job-sensitive"},
             "submitted_job_ids": ["submitted-job-sensitive"],
             "quote_token": "quote-secret",
+            "meta": {
+                "access_token": "nested-access-secret",
+                "headers": {
+                    "Authorization": "Bearer nested-auth-secret",
+                    "Cookie": "session=nested-cookie-secret",
+                },
+                "items": [{
+                    "apiKey": "nested-api-secret",
+                    "password": "nested-password-secret",
+                    "q-signature": "nested-signature-secret",
+                    "shot_key": "shot_01",
+                }],
+            },
         }
 
         public = self.admin._public_short_drama_shot_run(item, evidence)
@@ -794,10 +807,15 @@ class AdminE2ERunnerTests(unittest.TestCase):
             "item-secret", "1234567890", "provider-sensitive-task",
             "provider-secret", "url-secret", "provider-job-sensitive",
             "submitted-job-sensitive", "quote-secret",
+            "nested-access-secret", "nested-auth-secret", "nested-cookie-secret",
+            "nested-api-secret", "nested-password-secret", "nested-signature-secret",
         ):
             self.assertNotIn(secret, serialized)
         self.assertIn("123456…7890", serialized)
         self.assertIn("Signature=***", serialized)
+        self.assertEqual(public["evidence"]["meta"]["access_token"], "***")
+        self.assertEqual(public["evidence"]["meta"]["headers"]["Authorization"], "***")
+        self.assertEqual(public["evidence"]["meta"]["items"][0]["shot_key"], "shot_01")
 
     def test_short_drama_preview_finishes_file_and_six_charge_ledger_chain(self):
         run_id = "preview-run"

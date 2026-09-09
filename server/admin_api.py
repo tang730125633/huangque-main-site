@@ -7188,6 +7188,11 @@ _PUBLIC_EXTERNAL_ID_FIELDS = {
 _PUBLIC_EXTERNAL_ID_COLLECTIONS = {
     "provider_jobs", "provider_task_ids", "submitted_job_ids",
 }
+_PUBLIC_SECRET_FIELD_RE = re.compile(
+    r"(?i)(?:^|[_-])(?:api[_-]?key|private[_-]?key|secret[_-]?key|"
+    r"access[_-]?token|refresh[_-]?token|token|secret|password|passwd|pwd|"
+    r"credential|authorization|cookie|signature)(?:$|[_-])"
+)
 
 
 def _sanitize_public_admin_payload(value, field=""):
@@ -7201,11 +7206,16 @@ def _sanitize_public_admin_payload(value, field=""):
                       else _sanitize_public_admin_payload(item, field))
                 for key, item in value.items()
             }
-        return {
-            key: _sanitize_public_admin_payload(item, str(key).lower())
-            for key, item in value.items()
-            if str(key).lower() not in {"quote_token", "quote_tokens"}
-        }
+        public = {}
+        for key, item in value.items():
+            public_key = str(key).lower()
+            if public_key in {"quote_token", "quote_tokens"}:
+                continue
+            if _PUBLIC_SECRET_FIELD_RE.search(public_key):
+                public[key] = "***"
+            else:
+                public[key] = _sanitize_public_admin_payload(item, public_key)
+        return public
     if isinstance(value, (list, tuple)):
         if field in _PUBLIC_EXTERNAL_ID_COLLECTIONS:
             return [_sanitize_task_identifier(item) for item in value]
@@ -7342,15 +7352,51 @@ def _short_drama_provider_call_logs(conn, since, limit):
     ).fetchone()
     if not exists:
         return []
+    columns = {
+        row["name"] for row in conn.execute(
+            "PRAGMA table_info(short_drama_provider_shot_jobs)"
+        )
+    }
+    running_states = sorted(_TASK_RUNNING_STATES)
+    running_marks = ",".join("?" for _ in running_states)
+    shot_key_sql = "shot_key" if "shot_key" in columns else "''"
+    provider_job_sql = "provider_job_id" if "provider_job_id" in columns else "''"
+    result_sql = "result_json" if "result_json" in columns else "'{}'"
+    error_sql = "error_json" if "error_json" in columns else "'{}'"
     rows = conn.execute(
         """SELECT id,owner_username,provider,status,cost,created_at,updated_at,
-                  shot_key
+                  %s AS shot_key,%s AS provider_job_id,
+                  %s AS result_json,%s AS error_json
              FROM short_drama_provider_shot_jobs
-            WHERE created_at >= ?
-            ORDER BY created_at DESC, id DESC
-            LIMIT ?""",
-        (since, limit),
+            WHERE created_at >= ? OR status IN (%s)
+            ORDER BY (status IN (%s)) DESC,created_at DESC,id DESC
+            LIMIT ?""" % (
+                shot_key_sql, provider_job_sql, result_sql, error_sql,
+                running_marks, running_marks,
+            ),
+        (since, *running_states, *running_states, limit),
     ).fetchall()
+    attempt_by_job = {}
+    attempt_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' "
+        "AND name='short_drama_provider_shot_attempts'"
+    ).fetchone()
+    if attempt_table and rows:
+        attempt_columns = {
+            row["name"] for row in conn.execute(
+                "PRAGMA table_info(short_drama_provider_shot_attempts)"
+            )
+        }
+        if {"job_id", "state"}.issubset(attempt_columns):
+            row_marks = ",".join("?" for _ in rows)
+            order_column = "updated_at" if "updated_at" in attempt_columns else "rowid"
+            attempts = conn.execute(
+                "SELECT job_id,state FROM short_drama_provider_shot_attempts "
+                "WHERE job_id IN (%s) ORDER BY %s DESC" % (row_marks, order_column),
+                [str(row["id"]) for row in rows],
+            ).fetchall()
+            for attempt in attempts:
+                attempt_by_job.setdefault(str(attempt["job_id"]), str(attempt["state"] or ""))
     items = []
     for row in rows:
         raw_status = str(row["status"] or "unknown").lower()
@@ -7363,6 +7409,22 @@ def _short_drama_provider_call_logs(conn, since, limit):
         created_at = int(row["created_at"] or 0)
         updated_at = int(row["updated_at"] or 0)
         provider = str(row["provider"] or "unknown").lower()
+        try:
+            result = json.loads(row["result_json"] or "{}")
+        except (json.JSONDecodeError, TypeError, ValueError):
+            result = {}
+        try:
+            error = json.loads(row["error_json"] or "{}")
+        except (json.JSONDecodeError, TypeError, ValueError):
+            error = {"detail": str(row["error_json"] or "")}
+        result_file = str(result.get("file") or "")
+        result_url = str(result.get("url") or "")
+        artifact = _verify_local_artifact({
+            "result_file": result_file,
+            "result_url": result_url,
+            "_artifact_media_type": "video",
+        })
+        attempt_state = attempt_by_job.get(str(row["id"]), "")
         items.append({
             "id": row["id"],
             "username": row["owner_username"] or "-",
@@ -7383,9 +7445,15 @@ def _short_drama_provider_call_logs(conn, since, limit):
             "channel": "",
             "provider": provider,
             "model": "",
-            "provider_task_id": "",
-            "result_reference": False,
-            "refunded": 0,
+            "provider_task_id": str(row["provider_job_id"] or ""),
+            "result_reference": bool(result_file or result_url),
+            "delivery_verified": bool(artifact.get("delivery_verified")),
+            "artifact_check": str(artifact.get("artifact_check") or "not_recorded"),
+            "delivery_detail": str(artifact.get("delivery_detail") or ""),
+            "refunded": 2 if attempt_state == "refund_pending" else (
+                1 if attempt_state == "refunded" else 0
+            ),
+            "error": str(error.get("detail") or error.get("message") or ""),
         })
     return items
 
@@ -7399,6 +7467,8 @@ def call_logs(days=7, limit=200):
     with closing(sqlite3.connect(str(JOB_DB), timeout=10)) as c:
         c.row_factory = sqlite3.Row
         columns = {row["name"] for row in c.execute("PRAGMA table_info(jobs)")}
+        running_states = sorted(_TASK_RUNNING_STATES)
+        running_marks = ",".join("?" for _ in running_states)
         result_sql = "result" if "result" in columns else "NULL"
         refunded_sql = "COALESCE(refunded,0)" if "refunded" in columns else "0"
         error_sql = "COALESCE(error,'')" if "error" in columns else "''"
@@ -7441,16 +7511,17 @@ def call_logs(days=7, limit=200):
                        %s AS refunded,
                        %s AS job_error
                FROM jobs
-               WHERE created_at >= ?
-               ORDER BY created_at DESC, id DESC
+               WHERE created_at >= ? OR status IN (%s)
+               ORDER BY (status IN (%s)) DESC,created_at DESC,id DESC
                LIMIT ?""" % (
                     submission_sql,
                     result_sql, result_sql, result_sql, result_sql, result_sql, result_sql,
                     result_sql, result_sql, result_sql, result_sql, result_sql,
                     result_sql, result_sql, result_sql, result_sql, result_sql,
                     result_sql, refunded_sql, error_sql,
+                    running_marks, running_marks,
                ),
-            (since, limit),
+            (since, *running_states, *running_states, limit),
         ).fetchall()
         short_drama_items = _short_drama_provider_call_logs(c, since, limit)
         idempotency_by_job = {}
