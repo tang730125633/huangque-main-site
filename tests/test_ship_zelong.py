@@ -37,26 +37,6 @@ def baseline_files() -> list[str]:
     return result.stdout.splitlines()
 
 
-def ip12_preview_files() -> list[str]:
-    env = os.environ.copy()
-    env["SHIP_ZELONG_LIB_ONLY"] = "1"
-    result = subprocess.run(
-        [
-            "bash",
-            "-c",
-            'source "$1"; files=(); load_ip12_preview "$(git rev-parse HEAD)"; printf "%s\\n" "${files[@]}"',
-            "_",
-            str(SHIP),
-        ],
-        cwd=ROOT,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-    return result.stdout.splitlines()
-
-
 def unchanged_paths_match(repo: Path, source: str, requested: str, paths: list[str]) -> bool:
     env = os.environ.copy()
     env["SHIP_ZELONG_LIB_ONLY"] = "1"
@@ -177,7 +157,7 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
         restarts = re.findall(r"systemctl restart ([A-Za-z0-9_-]+)", SRC)
         self.assertTrue(restarts)
         self.assertEqual({"huangque-auth", "huangque-content", "huangque-imggen-api",
-                          "huangque-leadgen-api", "hermes-ip12-preview"}, set(restarts))
+                          "huangque-leadgen-api"}, set(restarts))
 
     def test_rejects_non_whitelisted_backend_and_sensitive_paths(self):
         for path in (
@@ -204,13 +184,6 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
             "server/content_api.py": (30, "/home/ubuntu/content-api/content_api.py", "content", 0),
             "server/imggen_api.py": (30, "/home/ubuntu/content-api/imggen_api.py", "imggen", 0),
             "server/leadgen_api.py": (30, "/home/ubuntu/content-api/leadgen_api.py", "leadgen", 0),
-            "server/hermes_ip12/server.py": (20, "/home/ubuntu/hermes-preview/server.py", "hermes", 0),
-            "server/hermes_ip12/templates/index_clean.html": (20, "/home/ubuntu/hermes-preview/templates/index_clean.html", "hermes", 0),
-            "deploy/zelong/run-hermes-ip12-preview.sh": (25, "/home/ubuntu/hermes-preview/run-preview.sh", "hermes", 0),
-            "deploy/zelong/hermes-ip12-preview-requirements.txt": (25, "/home/ubuntu/hermes-preview/preview-requirements.txt", "hermes", 0),
-            "deploy/zelong/hermes-preview-cli": (25, "/home/ubuntu/hermes-preview/bin/hermes-preview-cli", "hermes", 0),
-            "deploy/zelong/nginx-hermes-ip12-preview.conf": (35, "/etc/nginx/snippets/hermes-ip12-preview.conf", "hermes", 0),
-            "deploy/zelong/hermes-ip12-preview.service": (35, "/etc/systemd/system/hermes-ip12-preview.service", "hermes", 1),
             "site/workbench/cloud-shell.js": (40, "/var/www/huangquechuanmei/workbench/cloud-shell.js", "-", 0),
             "site/workbench/video.html": (50, "/var/www/huangquechuanmei/workbench/video.html", "-", 0),
         }
@@ -257,22 +230,6 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
                     capture_output=True,
                 )
                 self.assertEqual(expected, result.returncode)
-        for source_ref, expected in (
-            ("codex/ip12-preview-choice-copy", 0),
-            ("codex/ip12-preview-a.b_1", 0),
-            ("codex/other-preview", 1),
-            ("feature/ip12-preview-test", 1),
-            ("codex/ip12-preview-../bad", 1),
-        ):
-            with self.subTest(preview_ref=source_ref):
-                result = subprocess.run(
-                    ["bash", "-c", 'source "$1"; validate_preview_ref "$2"', "_", str(SHIP), source_ref],
-                    cwd=ROOT,
-                    env={**os.environ, "SHIP_ZELONG_LIB_ONLY": "1"},
-                    text=True,
-                    capture_output=True,
-                )
-                self.assertEqual(expected, result.returncode)
         self.assertIn("--adspower-baseline 只允许 origin/main", SRC)
         self.assertIn('test "$source_set" = 0 || die "--rollback 禁止与 --source 混用"', SRC)
         self.assertIn("拒绝 stale ref 或未 push", SRC)
@@ -288,8 +245,7 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
         )
         # deploy has remote + caller-side checks, and rollback has remote checks;
         # Managed services tolerate the brief nginx 502 startup window.
-        self.assertEqual(13, SRC.count(retry_options))
-        self.assertEqual(3, SRC.count("/workbench/ip12/healthz"))
+        self.assertEqual(10, SRC.count(retry_options))
         self.assertNotIn("curl -fsS --max-time 15", SRC)
         self.assertEqual(
             2,
@@ -310,69 +266,6 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
 
     def test_no_implicit_git_mutation(self):
         self.assertIsNone(re.search(r"\bgit\s+(?:fetch|pull|commit|push)\b", SRC))
-
-    def test_ip12_preview_preset_is_isolated_and_complete(self):
-        files = ip12_preview_files()
-        self.assertIn("server/hermes_ip12/server.py", files)
-        self.assertIn("server/hermes_ip12/prompt.md", files)
-        self.assertIn("server/hermes_ip12/requirements.txt", files)
-        self.assertIn("server/hermes_ip12/templates/index_clean.html", files)
-        self.assertIn("deploy/zelong/hermes-ip12-preview.service", files)
-        self.assertIn("deploy/zelong/hermes-ip12-preview-requirements.txt", files)
-        self.assertIn("deploy/zelong/hermes-preview-cli", files)
-        self.assertIn("deploy/zelong/nginx-hermes-ip12-preview.conf", files)
-        self.assertIn("deploy/zelong/run-hermes-ip12-preview.sh", files)
-        self.assertTrue(all(not path.endswith((".env", ".db")) for path in files))
-        self.assertIn("--ip12-preview 只允许 origin/main", SRC)
-        self.assertIn("--preview-branch 只能与 --ip12-preview 一起使用", SRC)
-        self.assertIn("预览分支不得修改部署脚手架或删除 Agent 文件", SRC)
-        preview_runner = (ROOT / "deploy/zelong/run-hermes-ip12-preview.sh").read_text()
-        self.assertIn("HERMES_ENABLE_INTERNAL_TOOLS=1", preview_runner)
-        self.assertIn('HERMES_PREVIEW_MODEL:-gpt-5.6-terra', preview_runner)
-        self.assertIn('OPENAI_API_KEY', preview_runner)
-        self.assertIn('HERMES_PREVIEW_HTTPS_PROXY:-http://127.0.0.1:10810', preview_runner)
-        self.assertIn('HERMES_PREVIEW_NO_PROXY:-127.0.0.1,localhost,::1', preview_runner)
-        self.assertIn('HERMES_PREVIEW_COGNITIVE_ENGINE:-custom', preview_runner)
-        self.assertIn('HERMES_PREVIEW_AGENTS_SDK_ENABLED:-0', preview_runner)
-        self.assertIn('HERMES_PREVIEW_AGENTS_SDK_CANARY_PROJECT_ID', preview_runner)
-        self.assertIn("tests/fixtures/ip12_semantic_router_cases.json", files)
-        self.assertIn('"agents", "mcp", "openai", "pydantic", "httpx", "socksio"', preview_runner)
-        self.assertIn("InputTokensDetails(cached_tokens=0)", preview_runner)
-        self.assertIn("models_url", preview_runner)
-        self.assertIn("configured Hermes preview model is unavailable", preview_runner)
-        self.assertIn("/home/ubuntu/hermes-preview-deps", preview_runner)
-        self.assertIn("/home/ubuntu/hermes-preview/bin", preview_runner)
-        self.assertIn("missing preview media modules", preview_runner)
-        self.assertIn("missing preview media commands", preview_runner)
-        self.assertIn("missing preview Chromium", preview_runner)
-        self.assertIn("playwright.chromium.launch", preview_runner)
-        self.assertIn("--target /home/ubuntu/hermes-preview-deps", SRC)
-        self.assertIn("-m playwright install chromium", SRC)
-        self.assertIn("ln -sfn hermes-preview-cli", SRC)
-        self.assertIn("python3 -m pip download", SRC)
-        self.assertIn("--platform manylinux_2_28_x86_64", SRC)
-        self.assertIn("async-timeout>=4,<6", SRC)
-        self.assertIn("exceptiongroup>=1.0.2", SRC)
-        self.assertIn("SHIP_ZELONG_WHEELHOUSE", SRC)
-        self.assertIn("SHIP_ZELONG_CHROMIUM_ARCHIVE", SRC)
-        self.assertIn("/home/ubuntu/hermes-preview/.requirements-sha", SRC)
-        self.assertIn("sudo cat /home/ubuntu/hermes-preview/.requirements-sha", SRC)
-        self.assertIn("--no-index --find-links", SRC)
-        self.assertIn("/home/ubuntu/hermes-preview/wheelhouse/", SRC)
-        self.assertIn("chown -R ubuntu:ubuntu", SRC)
-        self.assertIn("archive.extract(member", SRC)
-        self.assertIn("member.external_attr", SRC)
-        self.assertIn("os.chmod", SRC)
-        self.assertIn("sudo test -x \"$browser_path\"", SRC)
-        self.assertIn("-m playwright install-deps chromium", SRC)
-        self.assertIn("/home/ubuntu/hermes-preview/.playwright-system-deps", SRC)
-        self.assertIn("chown ubuntu:ubuntu /home/ubuntu/hermes-preview/.ip12-release-sha", SRC)
-        preview_requirements = (ROOT / "deploy/zelong/hermes-ip12-preview-requirements.txt").read_text()
-        self.assertEqual("-r requirements.txt", preview_requirements.strip())
-        full_requirements = (ROOT / "server/hermes_ip12/requirements.txt").read_text()
-        for dependency in ("Pillow", "playwright", "edge-tts", "faster-whisper", "yt-dlp"):
-            self.assertIn(dependency, full_requirements)
-        self.assertGreaterEqual(SRC.count('get("release_sha", "")'), 2)
 
 
 if __name__ == "__main__":

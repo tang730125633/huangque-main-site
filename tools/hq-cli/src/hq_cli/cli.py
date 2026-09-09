@@ -39,7 +39,7 @@ _QUOTE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{16,4031}\.[A-Fa-f0-9]{64}$")
 REFRESH_EARLY_SECONDS = 5 * 60
 AUTH_LOST_MESSAGE = "授权已失效，请运行 hq login --json"
 LOGIN_SCOPES = [
-    "profile:read", "ip12:read", "ip12:write", "ip12:chat", "prompt:optimize", "canvas:read",
+    "profile:read", "ip12:read", "ip12:write", "prompt:optimize", "canvas:read",
     "canvas:write", "canvas:agent", "canvas:edit", "tasks:read", "assets:read", "assets:write", "assets:upload",
     "generation:quote", "generation:submit",
     "video-compose:read", "video-compose:write", "digital-presenter:read", "digital-presenter:write",
@@ -841,8 +841,7 @@ def main(argv=None):
                 if quote_token:
                     request_body["quote_token"] = quote_token
                 result = _request("/api/auth/cli/action", "POST", request_body,
-                                  credentials["access_token"],
-                                  timeout=310 if capability["id"] == "ip12-message" else 120)
+                                  credentials["access_token"], timeout=120)
             next_actions = list(capability["next_actions"])
             if capability["side_effect"] == "paid" and not args.confirm:
                 if capability["id"] == "director-breakdown-upload":

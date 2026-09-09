@@ -24,20 +24,17 @@ class LoginReturnPathTests(unittest.TestCase):
             self.skipTest("node unavailable")
         helper = self.html[self.html.index("function safeNext"):self.html.index("function enterWorkbench")]
         values = [
-            "/workbench/ip12.html?project=p1&module=2&step=3",
-            "/workbench/ip12-report.html?project=p1",
-            "/workbench/ip12?project=p1&module=2&step=3",
-            "/workbench/ip12-report?project=p1",
+            "/workbench/ip12/?project=p1",
             "/workbench/ip12/",
-            "https://evil.example/workbench/ip12.html",
-            "//evil.example/workbench/ip12.html",
+            "https://evil.example/workbench/ip12/",
+            "//evil.example/workbench/ip12/",
             "/api/gen/digital-ip/projects",
             "javascript:alert(1)",
         ]
         script = 'const location={origin:"https://huangquechuanmei.com"};\n' + helper + \
             "\nconsole.log(JSON.stringify(" + json.dumps(values) + ".map(safeNext)));"
         result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
-        self.assertEqual(json.loads(result.stdout), [values[0], values[1], values[2], values[3], values[4], "", "", "", ""])
+        self.assertEqual(json.loads(result.stdout), [values[0], values[1], "", "", "", ""])
 
 
 if __name__ == "__main__":

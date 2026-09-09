@@ -34,7 +34,7 @@
 
 | 项目 | 路径 | 大小 | 说明 |
 |------|------|------|------|
-| hermes-web | `~/hermes-web/` | 2.1G | Hermes Web 项目 |
+| hq-ip-agent | `~/hq-ip-agent/` | — | IP12 v4 主 Agent 与 12 个子 Agent |
 | dify-proxy | `~/dify-proxy/` | 8K | Dify API 代理 |
 
 ## 关键脚本与配置

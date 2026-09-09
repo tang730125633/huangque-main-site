@@ -192,7 +192,7 @@ class HqCliTests(unittest.TestCase):
             self.assertEqual(0, code, error)
             self.assertTrue(self.payload(output)["schema"].startswith("hq."))
         code, output, _ = self.invoke(["version"])
-        self.assertEqual("0.15.7", self.payload(output)["cli_version"])
+        self.assertEqual("0.15.8", self.payload(output)["cli_version"])
         self.assertEqual("Huangque main-site CLI", self.payload(output)["product"])
         self.assertEqual("https://huangquechuanmei.com", self.payload(output)["origin"])
 
@@ -225,7 +225,7 @@ class HqCliTests(unittest.TestCase):
         _, output, _ = self.invoke(["capabilities"])
         by_id = {item["id"]: item for item in self.payload(output)["capabilities"]}
         expected = {
-            "account", "channels", "ip12-projects", "ip12-project", "ip12-create", "ip12-report", "ip12-message", "ip12-delete",
+            "account", "channels",
             "prompt-optimize", "canvas-list", "canvas-get", "canvas-create", "canvas-agent-plan", "canvas-ops", "tasks", "task",
             "assets", "voices", "image-upload", "video-upload", "video-compose-import",
             "asset-favorite", "asset-tags", "asset-delete",
@@ -269,7 +269,7 @@ class HqCliTests(unittest.TestCase):
             "short-drama-completion-readiness", "short-drama-completion",
             "short-drama-completion-confirm",
         }
-        self.assertEqual(249, len(by_id))
+        self.assertEqual(243, len(by_id))
         self.assertTrue(expected <= set(by_id))
         self.assertEqual("download", by_id["dl"]["kind"])
         self.assertEqual("paid", by_id["director-production-start"]["side_effect"])
@@ -300,18 +300,9 @@ class HqCliTests(unittest.TestCase):
                 <= set(agent["required_inputs"]),
             )
 
-    def test_ip12_resource_has_complete_crud_guidance(self):
+    def test_project_resources_have_complete_crud_guidance(self):
         _, output, _ = self.invoke(["capabilities"])
         by_id = {item["id"]: item for item in self.payload(output)["capabilities"]}
-        operations = by_id["ip12-project"]["agent"]["resource_operations"]
-        self.assertEqual({
-            "list": ["ip12-projects"], "get": ["ip12-project", "ip12-report"],
-            "create": ["ip12-create"], "update": ["ip12-message"],
-            "delete": ["ip12-delete"],
-        }, operations)
-        self.assertEqual([], by_id["ip12-delete"]["agent"]["missing_crud"])
-        self.assertTrue(by_id["ip12-delete"]["confirmation_required"])
-
         asset = by_id["asset-delete"]["agent"]
         self.assertEqual("delete", asset["operation"])
         self.assertEqual("asset", asset["resource"])
@@ -341,7 +332,7 @@ class HqCliTests(unittest.TestCase):
         self.assertIn("image-upload", tryon_inputs["background_upload_id"])
         self.assertIn("video-upload", tryon_inputs["person_video_upload_id"])
         self.assertEqual("server_quote", by_id["image-generate"]["cost"]["kind"])
-        self.assertEqual("hq_device_authorization", by_id["ip12-projects"]["target_auth"])
+        self.assertEqual("hq_device_authorization", by_id["digital-ip-projects"]["target_auth"])
         self.assertEqual("assets:upload", by_id["image-upload"]["required_scope"])
         self.assertEqual(20, by_id["image-upload"]["file_input"]["accountActiveMaxFiles"])
         self.assertEqual(96 * 1024 * 1024, by_id["image-upload"]["file_input"]["accountActiveMaxBytes"])
@@ -801,11 +792,11 @@ class HqCliTests(unittest.TestCase):
     def test_authenticated_read_uses_fixed_action_and_saved_token(self):
         self.authorize()
         with patch("hq_cli.client.request_json", return_value=(200, {"items": [{"id": "p1"}]})) as request:
-            code, output, error = self.invoke(["run", "ip12-projects"])
+            code, output, error = self.invoke(["run", "digital-ip-projects"])
         self.assertEqual(0, code, error)
         self.assertEqual("p1", self.payload(output)["result"]["items"][0]["id"])
         self.assertEqual("/api/auth/cli/action", request.call_args.args[0])
-        self.assertEqual({"action": "ip12-projects", "input": {}, "confirm": False}, request.call_args.kwargs["body"])
+        self.assertEqual({"action": "digital-ip-projects", "input": {}, "confirm": False}, request.call_args.kwargs["body"])
         self.assertEqual("t" * 43, request.call_args.kwargs["token"])
         self.assertEqual(120, request.call_args.kwargs["timeout"])
 
@@ -974,8 +965,6 @@ class HqCliTests(unittest.TestCase):
         self.authorize()
         inputs = {
             "prompt-optimize": b'{"prompt":"better portrait","kind":"image"}',
-            "ip12-create": b'{"title":"My IP"}',
-            "ip12-message": '{"project_id":"ip_1","message":"我的核心客户是本地餐饮老板","request_id":"turn-001"}'.encode(),
             "canvas-create": b'{"name":"Launch","prompt":"first idea"}',
             "canvas-ops": b'{"board_id":"cb_1","base_version":1,"op_id":"hqcli-abcdefghijkl","ops":[{"type":"node.patch","id":"n1","fields":{"x":120}}]}',
             "asset-tags": '{"kind":"image","key":"asset-1","tags":["客户案例"]}'.encode(),
@@ -1023,22 +1012,6 @@ class HqCliTests(unittest.TestCase):
         self.assertEqual(cli.EXIT_INPUT, code)
         self.assertEqual("input_error", self.payload(error)["error"])
         request.assert_not_called()
-
-    def test_confirmed_ip12_message_calls_fixed_action_with_long_timeout(self):
-        self.authorize()
-        with patch("hq_cli.client.request_json", return_value=(200, {"assistant": "继续回答", "state": {}})) as request:
-            code, output, error = self.invoke(
-                ["run", "ip12-message", "--input", "@-", "--confirm"],
-                b'{"project_id":"ip_1","message":"my customer is a restaurant owner","request_id":"turn-001"}',
-            )
-        self.assertEqual(0, code, error)
-        self.assertEqual("继续回答", self.payload(output)["result"]["assistant"])
-        self.assertEqual({
-            "action": "ip12-message",
-            "input": {"project_id": "ip_1", "message": "my customer is a restaurant owner", "request_id": "turn-001"},
-            "confirm": True,
-        }, request.call_args.kwargs["body"])
-        self.assertEqual(310, request.call_args.kwargs["timeout"])
 
     def test_confirmed_canvas_create_calls_server_action(self):
         self.authorize()

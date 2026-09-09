@@ -91,17 +91,19 @@ class NginxCspTest(unittest.TestCase):
         deploy = self._config("deploy/nginx-huangquechuanmei.conf")
         self.assertEqual(deploy.count("proxy_set_header X-Request-ID $request_id;"), 2)
 
-    def test_workbench_ip12_proxies_directly_to_git_managed_hermes(self):
+    def test_workbench_ip12_proxies_only_to_v4_agent(self):
         config = self._config("deploy/nginx-huangquechuanmei.conf")
         self.assertIn(
             "location = /workbench/ip12 { return 301 /workbench/ip12/; }",
             config,
         )
+        root_start = config.index("location = /workbench/ip12/ {")
+        root_end = config.index("\n    }", root_start)
+        self.assertIn("proxy_pass http://127.0.0.1:8000/v4;", config[root_start:root_end])
         start = config.index("location ^~ /workbench/ip12/")
         end = config.index("\n    }", start)
         block = config[start:end]
-        self.assertIn("proxy_pass http://127.0.0.1:3102/;", block)
-        self.assertNotIn("127.0.0.1:3101", block)
+        self.assertIn("proxy_pass http://127.0.0.1:8000/;", block)
         self.assertIn('proxy_set_header Accept-Encoding "";', block)
         self.assertIn("proxy_request_buffering off;", block)
         self.assertIn("proxy_buffering off;", block)
@@ -124,12 +126,8 @@ class NginxCspTest(unittest.TestCase):
         self.assertNotIn("sub_filter \"'/\" \"'/workbench/ip12/\";", block)
         self.assertNotIn("sub_filter '`/' '`/workbench/ip12/';", block)
         self.assertNotIn("auth_basic", block)
-
-    def test_direct_3101_gateway_uses_the_same_flask_service(self):
-        config = self._config("deploy/nginx-hermes-ip12-direct.conf")
-        self.assertIn("listen 3101;", config)
-        self.assertIn("proxy_pass http://127.0.0.1:3102;", config)
-        self.assertIn("client_max_body_size 200m;", config)
+        self.assertNotIn("/hermes-ip12", config)
+        self.assertNotIn("127.0.0.1:3102", config)
 
     def test_cli_image_upload_is_streamed_and_bounded(self):
         for relative_path in self.CONFIGS:
@@ -194,36 +192,6 @@ class NginxCspTest(unittest.TestCase):
         self.assertIn("client_max_body_size 30m;", block)
         self.assertIn("client_body_timeout 90s;", block)
         self.assertIn("limit_conn hq_cli_upload_conn 2;", block)
-
-    def test_hermes_runbook_updates_the_actively_loaded_main_site_config(self):
-        runbook = self._config("deploy/生产环境清单与还原手册.md")
-        release = self._config("deploy/hermes-ip12-release.sh")
-        active = "/etc/nginx/sites-enabled/huangquechuanmei"
-        self.assertIn("deploy/hermes-ip12-release.sh", runbook)
-        self.assertIn(
-            f"NGINX_SITE_ENABLED=\"${{HERMES_NGINX_SITE_ENABLED:-{active}}}\"",
-            release,
-        )
-        self.assertIn(
-            'backup_file "$NGINX_SITE_ENABLED" '
-            "nginx-huangquechuanmei-enabled.conf",
-            release,
-        )
-        self.assertIn(
-            '"$HERMES_RELEASE_DIR/deploy/nginx-huangquechuanmei.conf" '
-            '"$NGINX_SITE_ENABLED"',
-            release,
-        )
-        self.assertIn(
-            'restore_file "$backup/nginx-huangquechuanmei-enabled.conf"',
-            release,
-        )
-        self.assertIn(
-            '"$backup/nginx-huangquechuanmei-enabled.conf.state" '
-            '"$NGINX_SITE_ENABLED"',
-            release,
-        )
-
 
 if __name__ == "__main__":
     unittest.main()

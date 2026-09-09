@@ -190,7 +190,7 @@
   document.querySelectorAll('[data-ip12-brief]').forEach(function(button){button.addEventListener('click',function(){fillIP12Brief(button);});});
   function openIP12(){
     var brief=ip12Brief&&ip12Brief.value.trim();
-    location.href='ip12.html'+(brief?'?brief='+encodeURIComponent(brief):'');
+    location.href='/workbench/ip12/'+(brief?'?brief='+encodeURIComponent(brief):'');
   }
   if(ip12Start)ip12Start.addEventListener('click',openIP12);
   if(ip12Brief)ip12Brief.addEventListener('keydown',function(event){if((event.ctrlKey||event.metaKey)&&event.key==='Enter')openIP12();});
