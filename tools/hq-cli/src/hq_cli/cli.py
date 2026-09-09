@@ -765,6 +765,8 @@ def main(argv=None):
                         upload_kind, uploader = "profile avatar", client.upload_profile_avatar
                     elif args.id == "video-import":
                         upload_kind, uploader = "H3 video", client.upload_video_import
+                    elif args.id == "video-compose-import":
+                        upload_kind, uploader = "talking-head source", client.upload_video_compose_import
                     else:
                         upload_kind, uploader = "image", client.upload_image
                 if uploader is not None:

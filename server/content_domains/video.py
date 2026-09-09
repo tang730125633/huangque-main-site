@@ -51,6 +51,12 @@ VALID_AUDIO_MIMES = {"audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "aud
 VALID_REFERENCE_VIDEO_MIMES = {"video/mp4", "video/quicktime", "video/webm"}
 VIDEO_IMPORT_MAX_BYTES = _env_positive_int("VIDEO_IMPORT_MAX_BYTES", 100 * 1024 * 1024)
 VIDEO_IMPORT_MAX_SECONDS = 15.5  # H3 的 15 秒请求实际会对齐为 362 帧（约 15.083 秒）。
+VIDEO_COMPOSE_IMPORT_MAX_BYTES = _env_positive_int(
+    "VIDEO_COMPOSE_IMPORT_MAX_BYTES", 2 * 1024 * 1024 * 1024
+)
+VIDEO_COMPOSE_IMPORT_MAX_SECONDS = _env_positive_int("VIDEO_COMPOSE_IMPORT_MAX_SECONDS", 10 * 60)
+VIDEO_COMPOSE_IMPORT_CHUNK_BYTES = 1024 * 1024
+VIDEO_COMPOSE_IMPORT_FREE_RESERVE_BYTES = 512 * 1024 * 1024
 VIDEO_BATCH_MAX = 5
 TRYON_MAX_INPUT_SEC = 6   # RunningHub 耗时随输入时长增长，线路一只处理前 6 秒。
 XIAOLE_RATIO_SIZES = {
@@ -2968,6 +2974,118 @@ def import_h3_video_asset(username, raw, content_type="video/mp4", title=""):
         if isinstance(exc, ValueError):
             raise
         raise ValueError("H3 成片导入失败：%s" % str(exc)[:120])
+    finally:
+        if temp_path:
+            try: temp_path.unlink()
+            except OSError: pass
+
+
+def import_video_compose_source_asset(username, stream, length, content_type="video/mp4",
+                                      title="", expected_sha256=""):
+    """Stream an owned talking-head source into video_assets for video-compose."""
+    try:
+        length = int(length)
+    except (TypeError, ValueError):
+        length = 0
+    if not 0 < length <= VIDEO_COMPOSE_IMPORT_MAX_BYTES:
+        raise ValueError("口播原片不能为空且不能超过 %dMB" %
+                         (VIDEO_COMPOSE_IMPORT_MAX_BYTES // 1024 // 1024))
+    mime = str(content_type or "").split(";", 1)[0].strip().lower()
+    if mime not in {"video/mp4", "video/quicktime", "application/octet-stream"}:
+        raise ValueError("口播原片仅支持 MP4、MOV")
+    expected_sha256 = str(expected_sha256 or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+        raise ValueError("口播原片摘要无效")
+
+    VIDEO_OUT_DIR.mkdir(parents=True, exist_ok=True)
+    if shutil.disk_usage(VIDEO_OUT_DIR).free < length + VIDEO_COMPOSE_IMPORT_FREE_RESERVE_BYTES:
+        raise ValueError("服务器存储空间不足，暂时无法导入口播原片")
+    suffix = ".mov" if mime == "video/quicktime" else ".mp4"
+    temp_path = None
+    final_path = None
+    try:
+        digest = hashlib.sha256()
+        with tempfile.NamedTemporaryFile(
+                prefix=".video-compose-source-", suffix=suffix,
+                dir=VIDEO_OUT_DIR, delete=False) as handle:
+            temp_path = pathlib.Path(handle.name)
+            remaining = length
+            while remaining:
+                chunk = stream.read(min(VIDEO_COMPOSE_IMPORT_CHUNK_BYTES, remaining))
+                if not chunk:
+                    raise ValueError("口播原片上传不完整，请重试")
+                handle.write(chunk)
+                digest.update(chunk)
+                remaining -= len(chunk)
+        source_sha256 = digest.hexdigest()
+        if source_sha256 != expected_sha256:
+            raise ValueError("口播原片摘要不匹配，请重新上传")
+        with temp_path.open("rb") as source:
+            header = source.read(12)
+        if len(header) < 12 or header[4:8] != b"ftyp":
+            raise ValueError("文件不是有效的 MP4/MOV")
+
+        video_probe = subprocess.run([
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=width,height:format=duration",
+            "-of", "json", str(temp_path),
+        ], capture_output=True, text=True, timeout=120)
+        audio_probe = subprocess.run([
+            "ffprobe", "-v", "error", "-select_streams", "a:0",
+            "-show_entries", "stream=codec_type", "-of", "json", str(temp_path),
+        ], capture_output=True, text=True, timeout=120)
+        if video_probe.returncode != 0 or audio_probe.returncode != 0:
+            raise ValueError("口播原片无法解析，请确认文件完整")
+        video_info = json.loads(video_probe.stdout or "{}")
+        audio_info = json.loads(audio_probe.stdout or "{}")
+        video_stream = next(iter(video_info.get("streams") or []), None)
+        audio_stream = next(iter(audio_info.get("streams") or []), None)
+        duration = float((video_info.get("format") or {}).get("duration") or 0)
+        width = int((video_stream or {}).get("width") or 0)
+        height = int((video_stream or {}).get("height") or 0)
+        if not video_stream or not width or not height or duration <= 0:
+            raise ValueError("口播原片缺少有效画面或时长")
+        if not audio_stream:
+            raise ValueError("口播原片缺少音频流")
+        if duration > VIDEO_COMPOSE_IMPORT_MAX_SECONDS:
+            raise ValueError("口播原片不能超过 %d 分钟" %
+                             (VIDEO_COMPOSE_IMPORT_MAX_SECONDS // 60))
+
+        owner = hashlib.sha256(str(username).encode("utf-8")).hexdigest()[:12]
+        name = "video_compose_source_%s_%d_%s%s" % (
+            owner, int(time.time()), uuid.uuid4().hex[:10], suffix)
+        final_path = VIDEO_OUT_DIR / name
+        os.replace(temp_path, final_path)
+        temp_path = None
+        rel = "video/" + name
+        video_url = public_url(rel, mime if mime != "application/octet-stream" else "video/mp4", private=True)
+        clean_title = re.sub(r"\s+", " ", str(title or "")).strip()[:120] or "口播原片"
+        record_video_asset(None, username, {
+            "mode": "video_compose_source", "video_file": rel, "video_url": video_url,
+            "text": clean_title, "resolution": "%dx%d" % (width, height),
+            "ratio": "16:9" if width >= height else "9:16",
+            "model": "Original Talking Video", "phase": "completed", "status": "done",
+        })
+        with closing(adb()) as connection:
+            row = connection.execute(
+                "SELECT * FROM video_assets WHERE username=? AND video_file=? LIMIT 1",
+                (username, rel),
+            ).fetchone()
+        asset = dict(row) if row else {
+            "video_file": rel, "video_url": video_url, "status": "done",
+        }
+        asset.update({
+            "duration": duration, "width": width, "height": height,
+            "source_sha256": source_sha256,
+        })
+        return asset
+    except Exception as exc:
+        if final_path:
+            try: final_path.unlink()
+            except OSError: pass
+        if isinstance(exc, ValueError):
+            raise
+        raise ValueError("口播原片导入失败：%s" % str(exc)[:120])
     finally:
         if temp_path:
             try: temp_path.unlink()

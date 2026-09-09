@@ -5,6 +5,7 @@ import hashlib
 import json
 import pathlib
 import re
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 
@@ -16,6 +17,7 @@ from . import video_compose_store as store
 
 
 BASE_PATH = "/api/gen/video-compose/projects"
+IMPORT_PATH = "/api/gen/video-compose/import"
 PROJECT_RE = re.compile(r"^/api/gen/video-compose/projects/(compose_[0-9a-f]{32})$")
 ANALYSIS_RE = re.compile(r"^/api/gen/video-compose/projects/(compose_[0-9a-f]{32})/analysis$")
 SOURCE_ANALYSIS_RE = re.compile(r"^/api/gen/video-compose/projects/(compose_[0-9a-f]{32})/analyze-source$")
@@ -109,6 +111,25 @@ def _create_project(handler, user, asset_db_factory):
         user["username"], source_asset_id, source_revision, snapshot
     )
     return handler._send(201, {"project": project})
+
+
+def _import_source(handler, user, source_importer):
+    if source_importer is None:
+        raise ValueError("口播原片导入通道未配置")
+    try:
+        length = int(handler.headers.get("Content-Length") or 0)
+    except (TypeError, ValueError):
+        length = 0
+    asset = source_importer(
+        user["username"], handler.rfile, length,
+        handler.headers.get("Content-Type"),
+        urllib.parse.unquote(handler.headers.get("X-Video-Title") or "")[:160],
+        handler.headers.get("X-HQ-Video-SHA256") or "",
+    )
+    return handler._send(200, {
+        "ok": True, "asset": asset, "source_asset_id": asset.get("id"),
+        "sha256": asset.get("source_sha256"),
+    })
 
 
 def _save_analysis(handler, user, project_id):
@@ -260,9 +281,12 @@ def _run_render(username, project_id, expected_revision, render_input,
         )
         media.build_clean_master(source_path, current["edl"], clean_path)
         rendered = renderer.render(clean_path, render_input, output_path)
-        quality = {"template_id": rendered["template_id"],
-                   "template_version": rendered["template_version"],
-                   "output": rendered["output"], "render_log": "ok"}
+        quality = media.inspect_quality(output_path)
+        quality.update({
+            "template_id": rendered["template_id"],
+            "template_version": rendered["template_version"],
+            "render_log": "ok",
+        })
         base = pathlib.Path(out_dir).resolve()
         clean_rel = clean_path.resolve().relative_to(base).as_posix()
         output_rel = output_path.resolve().relative_to(base).as_posix()
@@ -351,7 +375,8 @@ def _send_error(handler, error):
     return handler._send(400, {"detail": str(error)[:220]})
 
 
-def dispatch_http(handler, method, verify_token, must_change_password, asset_db_factory, source_resolver=None, out_dir=None):
+def dispatch_http(handler, method, verify_token, must_change_password, asset_db_factory,
+                  source_resolver=None, out_dir=None, source_importer=None):
     path = handler.path.split("?", 1)[0]
     if not path.startswith("/api/gen/video-compose/"):
         return False
@@ -359,6 +384,9 @@ def dispatch_http(handler, method, verify_token, must_change_password, asset_db_
     if not user:
         return True
     try:
+        if method == "POST" and path == IMPORT_PATH:
+            _import_source(handler, user, source_importer)
+            return True
         if method == "POST" and path == BASE_PATH:
             _create_project(handler, user, asset_db_factory)
             return True
