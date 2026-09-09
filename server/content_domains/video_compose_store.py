@@ -18,6 +18,12 @@ PROJECT_STATES = {
     "template_selection_required", "quoted", "confirmed", "rendering",
     "quality_checking", "storing", "completed", "failed", "refunded",
 }
+# States in which the backend is actively doing work. User-review and other
+# resumable workflow states are intentionally not treated as running forever.
+PROJECT_ACTIVE_STATES = {
+    "transcribing", "analyzing_speech", "building_clean_master",
+    "rendering", "quality_checking", "storing",
+}
 
 
 class ProjectNotFound(LookupError):

@@ -515,7 +515,7 @@ class FunctionRegistryTests(unittest.TestCase):
         operations = {item["operation"]: item for item in stats["by_operation"]}
         grok = operations["video.grok.image"]
         self.assertEqual((grok["done"], grok["error"]), (1, 0))
-        self.assertEqual(grok["latest"]["provider_task_id"], "provider-1")
+        self.assertEqual(grok["latest"]["provider_task_id"], "provid…er-1")
         self.assertTrue(grok["latest"]["output_reference_present"])
         self.assertTrue(grok["latest"]["delivery_verified"])
         self.assertEqual(grok["latest"]["artifact_check"], "file_exists")
@@ -524,7 +524,7 @@ class FunctionRegistryTests(unittest.TestCase):
         self.assertEqual(motion["latest"]["billing_state"], "refunded")
         avatar = operations["video.cinematic.avatar"]["latest"]
         self.assertEqual(avatar["result_url"], "https://cdn.example/avatar.jpg")
-        self.assertEqual(avatar["provider_task_id"], "avatar-1")
+        self.assertEqual(avatar["provider_task_id"], "***")
         self.assertIn("video.one_click.compose", operations)
         compose = operations["video.one_click.compose"]["latest"]
         self.assertEqual(compose["business_id_type"], "project_id")
@@ -610,6 +610,225 @@ class FunctionRegistryTests(unittest.TestCase):
         self.assertEqual(summary["today"], stats["today"])
         self.assertEqual(summary["live"], stats["live"])
         self.assertEqual(summary["total"], stats["total"])
+
+    def test_admin_evidence_redacts_external_ids_errors_and_signed_result_urls(self):
+        with closing(sqlite3.connect(self.admin.JOB_DB)) as connection:
+            connection.execute(
+                "UPDATE jobs SET result=?, error=? WHERE id=1",
+                (
+                    json.dumps({
+                        "video_url": "https://private.example/video.mp4?q-signature=result-secret",
+                    }),
+                    "Authorization: Bearer job-secret",
+                ),
+            )
+            connection.execute(
+                "UPDATE jobs SET error=? WHERE id=6",
+                ("Signature=unmapped-secret",),
+            )
+            connection.commit()
+        with closing(sqlite3.connect(self.admin.ASSET_DB)) as connection:
+            connection.execute(
+                "UPDATE video_assets SET provider_video_id=?, video_url=?, error=? WHERE job_id=1",
+                (
+                    "1234567890",
+                    "https://private.example/video.mp4?Signature=asset-secret",
+                    "access_token=asset-error-secret",
+                ),
+            )
+            connection.commit()
+
+        stats = self.admin.job_stats(7)
+        latest = {
+            item["operation"]: item["latest"] for item in stats["by_operation"]
+        }["video.grok.image"]
+        self.assertEqual(latest["provider_task_id"], "123456…7890")
+        self.assertIn("q-signature=***", latest["result_url"])
+        serialized_stats = json.dumps(stats, ensure_ascii=False)
+        for secret in (
+            "result-secret", "asset-secret", "job-secret", "asset-error-secret",
+            "unmapped-secret",
+        ):
+            self.assertNotIn(secret, serialized_stats)
+
+    def test_provider_only_stats_share_live_states_and_public_redaction(self):
+        now = int(time.time())
+        old = now - 8 * 86400
+        with closing(sqlite3.connect(self.admin.JOB_DB)) as connection:
+            connection.execute("UPDATE jobs SET refunded=2 WHERE id=1")
+            connection.execute(
+                """CREATE TABLE short_drama_provider_shot_jobs(
+                    id TEXT PRIMARY KEY,project_id TEXT,owner_username TEXT,
+                    provider TEXT,status TEXT,cost INTEGER,created_at INTEGER,
+                    updated_at INTEGER,provider_job_id TEXT,result_json TEXT,error_json TEXT)"""
+            )
+            connection.execute(
+                """CREATE TABLE short_drama_provider_shot_attempts(
+                    id TEXT PRIMARY KEY,job_id TEXT,state TEXT)"""
+            )
+            connection.executemany(
+                "INSERT INTO short_drama_provider_shot_jobs VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                [
+                    (
+                        "provider-recent", "project-1", "alice", "grok",
+                        "submit_unknown", 12, now - 60, now - 30, "1234567890",
+                        json.dumps({"url": "https://private.example/shot.mp4?q-signature=shot-secret"}),
+                        json.dumps({"detail": "Authorization: Bearer provider-secret"}),
+                    ),
+                    (
+                        "provider-old", "project-1", "alice", "grok",
+                        "billing", 12, old, old + 10, "9988776655", "{}", "{}",
+                    ),
+                    (
+                        "provider-terminal", "project-1", "alice", "grok",
+                        "succeeded", 12, now - 10, now - 5, "1122334455", "{}", "{}",
+                    ),
+                ],
+            )
+            connection.execute(
+                "INSERT INTO short_drama_provider_shot_attempts VALUES(?,?,?)",
+                ("attempt-recent", "provider-recent", "refund_pending"),
+            )
+            connection.executemany(
+                "INSERT INTO short_drama_provider_shot_attempts VALUES(?,?,?)",
+                [
+                    ("attempt-shared", "1", "refund_pending"),
+                    ("attempt-old", "provider-old", "refunded"),
+                ],
+            )
+            connection.commit()
+
+        stats = self.admin.job_stats(7)
+        dashboard = self.admin.dashboard_stats(7)
+        calls = {str(item["id"]): item for item in self.admin.call_logs(7, 20)["items"]}
+        activity = {
+            str(item["task_id"]): item
+            for item in self.admin.activity_logs(7, 20, source="job")["items"]
+        }
+        self.assertEqual(stats["live"]["running"], 2)
+        self.assertEqual(stats["live"]["oldest_running_at"], old)
+        self.assertEqual(dashboard["live"]["running"], 2)
+        self.assertEqual(dashboard["live"]["oldest_running_at"], old)
+        self.assertEqual(stats["live"]["refund_pending"], 2)
+        self.assertEqual(dashboard["live"]["refund_pending"], 2)
+        shot = next(
+            item for item in stats["by_operation"]
+            if item["operation"] == "short_drama.live_action.shot_video"
+        )
+        self.assertEqual((shot["total"], shot["done"], shot["running"]), (3, 1, 2))
+        self.assertEqual(shot["latest"]["status"], "submit_unknown")
+        self.assertEqual(shot["latest"]["provider_task_id"], "123456…7890")
+        self.assertIn("q-signature=***", shot["latest"]["result_url"])
+        serialized = json.dumps(shot, ensure_ascii=False)
+        for secret in ("1234567890", "shot-secret", "provider-secret"):
+            self.assertNotIn(secret, serialized)
+        self.assertIn("provider-old", calls)
+        self.assertIn("provider-old", activity)
+        self.assertEqual(calls["provider-old"]["refunded"], 1)
+        recent = calls["provider-recent"]
+        self.assertEqual(recent["provider_task_id"], "123456…7890")
+        self.assertTrue(recent["result_reference"])
+        self.assertEqual(recent["refunded"], 2)
+        self.assertNotIn("provider-secret", json.dumps(recent, ensure_ascii=False))
+        self.assertEqual(activity["provider-recent"]["provider_task_id"], "123456…7890")
+        self.assertTrue(activity["provider-recent"]["result_reference"])
+        self.assertEqual(activity["provider-recent"]["refunded"], 2)
+        provider_kind = next(item for item in stats["by_kind"] if item["kind"] == "grok_video")
+        self.assertEqual(
+            (provider_kind["total"], provider_kind["done"], provider_kind["running"]),
+            (4, 2, 2),
+        )
+
+    def test_stale_submitted_job_remains_in_live_counts(self):
+        old = int(time.time()) - 8 * 86400
+        with closing(sqlite3.connect(self.admin.JOB_DB)) as connection:
+            connection.execute(
+                "UPDATE jobs SET status='submitted', created_at=?, updated_at=? WHERE id=6",
+                (old, old + 10),
+            )
+            connection.commit()
+
+        detailed = self.admin.job_stats(7)
+        summary = self.admin.dashboard_stats(7)
+        self.assertEqual(detailed["live"]["running"], 1)
+        self.assertEqual(detailed["live"]["oldest_running_at"], old)
+        self.assertEqual(summary["live"]["running"], 1)
+        self.assertEqual(summary["live"]["oldest_running_at"], old)
+        stale_kind = next(
+            item for item in detailed["by_kind"] if item["kind"] == "xiaole_video"
+        )
+        self.assertEqual(stale_kind["running"], 1)
+
+    def test_compose_stats_keep_only_explicit_stale_active_states(self):
+        now = int(time.time())
+        old = now - 8 * 86400
+        with closing(sqlite3.connect(self.admin.VIDEO_COMPOSE_DB)) as connection:
+            connection.executemany(
+                "INSERT INTO video_compose_projects VALUES(?,?,?,?,?,?)",
+                [
+                    ("compose-running", "rendering", "", None, old, old + 10),
+                    ("compose-deleted", "deleted", "", None, old + 1, old + 11),
+                    ("compose-review", "review_required", "", None, now - 9, now - 4),
+                    ("compose-recent-deleted", "deleted", "", None, now - 8, now - 3),
+                ],
+            )
+            connection.commit()
+
+        operation = next(
+            item for item in self.admin.job_stats(7)["by_operation"]
+            if item["operation"] == "video.one_click.compose"
+        )
+        self.assertEqual(
+            (
+                operation["total"], operation["done"], operation["running"],
+                operation["error"], operation["other"],
+            ),
+            (4, 1, 1, 0, 2),
+        )
+        self.assertEqual(operation["latest"]["status"], "rendering")
+
+    def test_dashboard_includes_provider_only_tasks_refunds_and_deduplicates_shared_jobs(self):
+        now = int(time.time())
+        with closing(sqlite3.connect(self.admin.JOB_DB)) as connection:
+            connection.execute("UPDATE jobs SET refunded=2 WHERE id=2")
+            connection.execute(
+                """CREATE TABLE short_drama_provider_shot_jobs(
+                    id TEXT PRIMARY KEY,owner_username TEXT,provider TEXT,
+                    status TEXT,cost INTEGER,created_at INTEGER,updated_at INTEGER)"""
+            )
+            connection.execute(
+                """CREATE TABLE short_drama_provider_shot_attempts(
+                    id TEXT PRIMARY KEY,job_id TEXT,state TEXT)"""
+            )
+            connection.executemany(
+                "INSERT INTO short_drama_provider_shot_jobs VALUES(?,?,?,?,?,?,?)",
+                [
+                    ("provider-running", "alice", "grok", "submitting", 12, now - 70, now - 5),
+                    ("provider-failed-1", "alice", "grok", "failed", 12, now - 60, now - 4),
+                    ("provider-failed-2", "alice", "grok", "failed", 12, now - 50, now - 3),
+                    ("provider-failed-3", "alice", "grok", "canceled", 12, now - 40, now - 2),
+                    ("1", "qa", "grok", "succeeded", 60, now - 30, now - 1),
+                ],
+            )
+            connection.executemany(
+                "INSERT INTO short_drama_provider_shot_attempts VALUES(?,?,?)",
+                [
+                    ("refund-provider", "provider-failed-1", "refund_pending"),
+                    ("refund-shared", "2", "refund_pending"),
+                ],
+            )
+            connection.commit()
+
+        summary = self.admin.dashboard_stats(7)
+
+        # Four provider-only rows are added; id=1 is the same xiaole task already
+        # present in jobs and must not be counted twice.
+        self.assertEqual(summary["total"], 10)
+        self.assertEqual(summary["live"]["running"], 1)
+        # Generic job 2 and provider-only attempt each contribute one unresolved refund.
+        self.assertEqual(summary["live"]["refund_pending"], 2)
+        grok = next(item for item in summary["high_failure"] if item["kind"] == "grok_video")
+        self.assertEqual((grok["total"], grok["done"], grok["error"], grok["running"]), (5, 1, 3, 1))
 
     def test_character_reference_evidence_source_maps_to_customer_operation(self):
         now = int(time.time())
@@ -707,7 +926,7 @@ class FunctionRegistryTests(unittest.TestCase):
         self.assertIn("script.output.image", by_operation)
         self.assertEqual(
             by_operation["image.xiaole.reference"]["latest"]["provider_task_id"],
-            "xiaole-23",
+            "xiaole…e-23",
         )
         banana = by_operation["image.banana.pro.reference"]["latest"]
         self.assertEqual(banana["result_url"], "https://cdn.example/image.png")

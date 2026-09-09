@@ -141,11 +141,13 @@ class RequestLogUserTests(unittest.TestCase):
         c = sqlite3.connect(str(self.db_path))
         c.execute(
             "CREATE TABLE jobs(id INTEGER PRIMARY KEY, username TEXT, kind TEXT,"
-            " cost INTEGER, status TEXT, payload TEXT, created_at INTEGER, updated_at INTEGER)"
+            " cost INTEGER, status TEXT, payload TEXT, created_at INTEGER, updated_at INTEGER,"
+            " result TEXT, refunded INTEGER)"
         )
         now = int(_time.time())
         c.execute(
-            "INSERT INTO jobs VALUES(1226,'tang','xiaole_video',13,'done','{}',?,?)",
+            "INSERT INTO jobs(id,username,kind,cost,status,payload,created_at,updated_at) "
+            "VALUES(1226,'tang','xiaole_video',13,'done','{}',?,?)",
             (now - 100, now - 40),
         )
         c.execute(
@@ -189,6 +191,35 @@ class RequestLogUserTests(unittest.TestCase):
         # 内部字段不外传
         self.assertNotIn("_jid", poll)
 
+    def test_task_links_to_persisted_idempotency_claim(self):
+        import sqlite3
+        import time as _time
+
+        connection = sqlite3.connect(str(self.db_path))
+        try:
+            connection.execute(
+                """CREATE TABLE submission_idempotency(
+                    username TEXT,endpoint TEXT,idem_key TEXT,request_hash TEXT,
+                    response_json TEXT,created_at INTEGER,updated_at INTEGER)"""
+            )
+            connection.execute(
+                "INSERT INTO submission_idempotency VALUES(?,?,?,?,?,?,?)",
+                (
+                    "tang", "/api/gen/video", "idem-visible-1226", "hash",
+                    json.dumps({"job_id": 1226}),
+                    int(_time.time()), int(_time.time()),
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        item = next(x for x in admin_api.call_logs(7, 20)["items"] if x["id"] == 1226)
+        self.assertEqual(item["correlation_id"], "idem-v…1226")
+        self.assertEqual(item["correlation_source"], "idempotency")
+        activity = admin_api.activity_logs(source="job", q="idem-v…1226")
+        self.assertEqual([row["task_id"] for row in activity["items"]], ["1226"])
+
     def test_activity_merges_jobs_and_http(self):
         data = admin_api.activity_logs()
         items = data["items"]
@@ -230,12 +261,214 @@ class RequestLogUserTests(unittest.TestCase):
         self.assertEqual(shared_rows[0]["path_label"], "短剧任务 #1226")
         self.assertTrue(any(item["id"] == "shot-job-1" for item in items))
 
+    def test_old_active_jobs_survive_cross_source_limit(self):
+        import sqlite3
+        import time as _time
+
+        now = int(_time.time())
+        old = now - 8 * 86400
+        connection = sqlite3.connect(str(self.db_path))
+        try:
+            connection.execute(
+                "UPDATE jobs SET status='running',created_at=?,updated_at=? WHERE id=1226",
+                (old, old + 10),
+            )
+            connection.execute(
+                "INSERT INTO jobs(id,username,kind,cost,status,payload,created_at,updated_at) "
+                "VALUES(1305,'tang','image',1,'done','{}',?,?)",
+                (now - 10, now - 5),
+            )
+            connection.execute(
+                "UPDATE short_drama_provider_shot_jobs "
+                "SET status='submitting',created_at=?,updated_at=? WHERE id='shot-job-1'",
+                (old + 1, old + 11),
+            )
+            connection.execute(
+                "INSERT INTO short_drama_provider_shot_jobs VALUES("
+                "'provider-recent','tang','grok','failed',1,?,?, 'shot_10')",
+                (now - 8, now - 4),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        items = admin_api.call_logs(7, 2)["items"]
+        activity = admin_api.activity_logs(7, 2)["items"]
+
+        self.assertEqual({str(item["id"]) for item in items}, {"1226", "shot-job-1"})
+        self.assertTrue(all(item["status"] == "running" for item in items))
+        self.assertEqual(
+            {str(item["task_id"]) for item in activity},
+            {"1226", "shot-job-1"},
+        )
+        self.assertTrue(all(item["cat"] == "running" for item in activity))
+
+    def test_task_runtime_record_distinguishes_refund_states(self):
+        pending = admin_api._task_runtime_record({
+            "id": 1306, "status": "failed", "refunded": 2,
+        })
+        refunded = admin_api._task_runtime_record({
+            "id": 1307, "status": "failed", "refunded": 1,
+        })
+
+        self.assertEqual(pending["evidence_label"], "任务失败 · 退款待确认")
+        self.assertEqual(refunded["evidence_label"], "任务失败 · 已退款")
+        self.assertIn("退款待确认", pending["stages"][3]["detail"])
+        self.assertIn("已退款", refunded["stages"][3]["detail"])
+
+    def test_task_runtime_record_exposes_real_route_model_and_unverified_delivery(self):
+        import sqlite3
+        import time as _time
+
+        now = int(_time.time())
+        connection = sqlite3.connect(str(self.db_path))
+        try:
+            connection.execute(
+                "INSERT INTO jobs(id,username,kind,cost,status,payload,created_at,updated_at,result,refunded) "
+                "VALUES(1300,'member-b','image',8,'done',?,?,?,?,0)",
+                (
+                    json.dumps({"provider": "banana", "model": "nb2", "channel": "banana"}),
+                    now - 30,
+                    now - 10,
+                    json.dumps({"provider_task_id": "provider-abc-123", "image_url": "https://example.invalid/image.png"}),
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        item = next(x for x in admin_api.call_logs(7, 20)["items"] if x["id"] == 1300)
+        self.assertEqual(item["route"], "banana")
+        self.assertEqual(item["model"], "nb2")
+        self.assertEqual(item["provider_task_id"], "provid…-123")
+        self.assertEqual(item["evidence_tone"], "warn")
+        self.assertEqual(item["evidence_label"], "完成 · 成品未核验")
+        self.assertEqual(item["stages"][-1]["state"], "recorded")
+
+        activity = admin_api.activity_logs(source="job", q="nb2")
+        self.assertEqual([row["task_id"] for row in activity["items"]], ["1300"])
+        self.assertEqual(activity["summary"]["evidence_gaps"], 1)
+        self.assertEqual(activity["summary"]["evidence_unclosed"], 1)
+
+    def test_task_list_reuses_delivery_verifier_and_exposes_correlation_id(self):
+        import sqlite3
+        import time as _time
+
+        now = int(_time.time())
+        with tempfile.TemporaryDirectory() as output_dir:
+            output_root = pathlib.Path(output_dir)
+            (output_root / "verified.bin").write_bytes(b"verified-artifact")
+            connection = sqlite3.connect(str(self.db_path))
+            try:
+                connection.execute(
+                    "INSERT INTO jobs(id,username,kind,cost,status,payload,created_at,updated_at,result,refunded) "
+                    "VALUES(1302,'member-c','image',8,'done',?,?,?,?,0)",
+                    (
+                        json.dumps({
+                            "provider": "banana",
+                            "request_id": "request-visible-1302",
+                        }),
+                        now - 20,
+                        now - 5,
+                        json.dumps({"file": "verified.bin"}),
+                    ),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            with mock.patch.object(admin_api, "CONTENT_OUT", output_root):
+                item = next(
+                    x for x in admin_api.call_logs(7, 20)["items"]
+                    if x["id"] == 1302
+                )
+                activity = admin_api.activity_logs(
+                    source="job", q="reques…1302",
+                )
+
+        self.assertTrue(item["delivery_verified"])
+        self.assertEqual(item["artifact_check"], "file_exists")
+        self.assertEqual(item["evidence_tone"], "ok")
+        self.assertEqual(item["evidence_label"], "完成 · 成品已核验")
+        self.assertEqual(item["stages"][-1]["state"], "passed")
+        self.assertEqual(item["correlation_id"], "reques…1302")
+        self.assertEqual([row["task_id"] for row in activity["items"]], ["1302"])
+
+    def test_task_error_summary_redacts_common_secrets(self):
+        record = admin_api._task_runtime_record({
+            "id": 1301,
+            "status": "error",
+            "provider": "example-provider",
+            "error": "upstream token=secret-value unavailable\npassword:another-secret",
+        })
+
+        self.assertEqual(record["evidence_tone"], "fail")
+        self.assertNotIn("secret-value", record["error"])
+        self.assertNotIn("another-secret", record["error"])
+        self.assertIn("token=***", record["error"])
+        self.assertIn("password:***", record["error"])
+        generation = next(stage for stage in record["stages"] if stage["key"] == "generation")
+        self.assertIn("token=***", generation["detail"])
+
+    def test_task_error_summary_redacts_auth_headers_json_and_signed_urls(self):
+        secrets = (
+            "bearer-secret.jwt.value", "basic-secret", "access-secret",
+            "refresh-secret", "credential-secret", "signature-secret",
+            "cos-signature-secret", "cloudfront-signature-secret",
+        )
+        record = admin_api._task_runtime_record({
+            "id": 1303,
+            "status": "error",
+            "error": (
+                "Authorization: Bearer bearer-secret.jwt.value "
+                "authorization=Basic basic-secret "
+                '\"access_token\":\"access-secret\" '
+                "refresh-token=refresh-secret "
+                "url=https://example.invalid/a?X-Amz-Credential=credential-secret"
+                "&X-Amz-Signature=signature-secret"
+                " cos=https://example.invalid/b?q-signature=cos-signature-secret"
+                " cloudfront=https://example.invalid/c?Signature=cloudfront-signature-secret"
+            ),
+        })
+
+        for secret in secrets:
+            self.assertNotIn(secret, record["error"])
+        self.assertIn("Authorization: ***", record["error"])
+        self.assertIn('\"access_token\":***', record["error"])
+        self.assertIn("X-Amz-Signature=***", record["error"])
+        self.assertIn("q-signature=***", record["error"])
+        self.assertIn("Signature=***", record["error"])
+
+    def test_external_task_identifiers_are_masked_but_local_task_ids_remain_searchable(self):
+        self.assertEqual(
+            admin_api._sanitize_task_identifier("task:1304", allow_local_task=True),
+            "task:1304",
+        )
+        self.assertEqual(admin_api._sanitize_task_identifier("task:1304"), "task:1…1304")
+        self.assertEqual(admin_api._sanitize_task_identifier("1234567890"), "123456…7890")
+        self.assertEqual(
+            admin_api._sanitize_task_identifier("provider-sensitive-abcdef"),
+            "provid…cdef",
+        )
+        self.assertEqual(admin_api._sanitize_task_identifier("short"), "***")
+
+        record = admin_api._task_runtime_record({
+            "id": 1304,
+            "status": "running",
+            "provider_task_id": "1234567890",
+            "correlation_id": "9876543210",
+            "correlation_source": "payload",
+        })
+        self.assertEqual(record["provider_task_id"], "123456…7890")
+        self.assertEqual(record["correlation_id"], "987654…3210")
+
     def test_activity_filters(self):
         # source 过滤
         only_jobs = admin_api.activity_logs(source="job")["items"]
         self.assertTrue(only_jobs and all(x["source"] == "job" for x in only_jobs))
         only_http = admin_api.activity_logs(source="http")["items"]
         self.assertTrue(only_http and all(x["source"] == "http" for x in only_http))
+        self.assertEqual(admin_api.activity_logs(source="ip12")["items"], [])
         # 统一状态：fail = HTTP >=400（本样本 404）
         fails = admin_api.activity_logs(category="fail")["items"]
         self.assertTrue(fails and all(x["cat"] == "fail" for x in fails))
@@ -292,6 +525,89 @@ class CatalogAndBalanceTests(unittest.TestCase):
         self.assertEqual(f({"user_data": {"balance": 42, "email": "x"}}), 42)
         self.assertIsNone(f({"data": {"name": "x"}}))
         self.assertIsNone(f({"quota_ok": True}))  # bool 不算余额
+
+
+class ServiceMonitorTests(unittest.TestCase):
+    def setUp(self):
+        dbf = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        dbf.close()
+        self.db_path = pathlib.Path(dbf.name)
+        self.old_db = admin_api.ADMIN_DB
+        self.old_state = dict(admin_api._SERVICE_MONITOR_STATE)
+        admin_api.ADMIN_DB = self.db_path
+        admin_api._SERVICE_MONITOR_STATE.update({
+            "started_at": 0,
+            "last_cycle_at": 0,
+            "last_cycle_duration_ms": 0,
+            "services": [],
+            "acceptance": {},
+        })
+        admin_api.init_db()
+
+    def tearDown(self):
+        admin_api.ADMIN_DB = self.old_db
+        admin_api._SERVICE_MONITOR_STATE.clear()
+        admin_api._SERVICE_MONITOR_STATE.update(self.old_state)
+        self.db_path.unlink(missing_ok=True)
+
+    def test_incident_requires_consecutive_failures_and_records_recovery_once(self):
+        service = {"key": "content", "name": "内容生成服务", "health_url": "http://invalid"}
+        results = [
+            {"key": "content", "name": "内容生成服务", "online": False, "error": "refused"},
+            {"key": "content", "name": "内容生成服务", "online": False, "error": "refused"},
+            {"key": "content", "name": "内容生成服务", "online": False, "error": "refused"},
+            {"key": "content", "name": "内容生成服务", "online": True, "latency_ms": 8},
+        ]
+        probe = mock.Mock(side_effect=results)
+
+        first = admin_api.run_service_monitor_cycle(probe, [service], now=100)
+        second = admin_api.run_service_monitor_cycle(probe, [service], now=160)
+        # 模拟后台重启：内存状态清空后仍从审计记录恢复未关闭异常。
+        admin_api._SERVICE_MONITOR_STATE["services"] = []
+        third = admin_api.run_service_monitor_cycle(probe, [service], now=220)
+        recovered = admin_api.run_service_monitor_cycle(probe, [service], now=280)
+
+        self.assertEqual(first["services"][0]["monitor_status"], "confirming")
+        self.assertEqual(first["summary"]["incidents"], 0)
+        self.assertEqual(second["services"][0]["monitor_status"], "incident")
+        self.assertEqual(third["summary"]["incidents"], 1)
+        self.assertEqual(recovered["services"][0]["monitor_status"], "healthy")
+        self.assertFalse(recovered["summary"]["functional_delivery_verified"])
+        events = admin_api.service_monitor_events()
+        self.assertEqual([item["event"] for item in reversed(events)], ["opened", "recovered"])
+
+    def test_acceptance_freshness_never_runs_paid_validation(self):
+        import sqlite3
+
+        pages = [{
+            "functions": [{
+                "modes": [
+                    {"key": "image.generate", "validation": {"supported": True}},
+                    {"key": "video.generate", "validation": {"supported": True}},
+                    {"key": "local.only", "validation": {"supported": False}},
+                ],
+            }],
+        }]
+        connection = sqlite3.connect(str(self.db_path))
+        try:
+            connection.execute(
+                """INSERT INTO admin_e2e_runs(
+                    run_id,operation_id,status,created_by,created_at,updated_at)
+                   VALUES('fresh-run','image.generate','completed','tester',900,990)"""
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        with mock.patch.object(admin_api.function_registry, "list_pages", return_value=pages):
+            result = admin_api.acceptance_freshness(now=1000)
+        self.assertEqual(result["total"], 2)
+        self.assertEqual(result["fresh"], 1)
+        self.assertEqual(result["due"], 1)
+        fresh = next(item for item in result["items"] if item["operation_id"] == "image.generate")
+        missing = next(item for item in result["items"] if item["operation_id"] == "video.generate")
+        self.assertFalse(fresh["manual_confirmation_required"])
+        self.assertTrue(missing["manual_confirmation_required"])
+        self.assertIn("必须由管理员确认", result["detail"])
 
 
 class KeyPingTests(unittest.TestCase):

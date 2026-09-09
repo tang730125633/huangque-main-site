@@ -323,6 +323,20 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
         self.assertIn("server-notice-", shell)
         self.assertIn("escapeHtml(x.title)", shell)
 
+    def test_admin_login_gate_verifies_server_role_before_loading_dashboard(self):
+        root = Path(__file__).resolve().parents[1]
+        html = (root / "site/admin/index.html").read_text(encoding="utf-8")
+        for marker in (
+            'body class="admin-locked"', 'id="adminLoginForm"',
+            'id="adminUsername"', 'id="adminPassword"',
+            'id="adminAccessDenied"', 'id="adminSwitchAccount"',
+            "authRequest('/api/auth/login'", "authRequest('/api/auth/me')",
+            "authRequest('/api/auth/logout'", "user.role!=='admin'",
+            "state.adminAuthenticated=true", "verifyAdminSession();",
+        ):
+            self.assertIn(marker, html)
+        self.assertNotIn('href="/login?redirect=/admin-console/"', html)
+
     def test_support_layout_uses_sidebar_dashboard_and_customer_drawer(self):
         root = Path(__file__).resolve().parents[1]
         html = (root / "site/admin/index.html").read_text(encoding="utf-8")
@@ -334,19 +348,25 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             'data-module-tab="operations"',
             'data-module-tab="features"', 'data-module-switch="pricing"', 'data-module="dashboard"',
             'data-module="operations"', 'id="operationsBox"', "function renderOperations(data)",
-            "基础运行探针（非功能验收）", "可达 · 仅辅助定位", "不会假绿", "功能运行中心",
+            "基础运行探针（非功能验收）", "可达 · 仅辅助定位", "不会假绿", "功能状态",
             "生产中心", "客户经营", "内容运营", "系统管理", "消息与公告", "灵感案例",
-            'class="ops-workspace"', 'class="ops-catalog"', 'class="ops-selected"', 'class="ops-inspector"',
+            'class="ops-workspace"', 'class="ops-catalog"', 'class="ops-selected"', 'class="ops-selected-head"',
+            'class="ops-decision ', "当前结论", "处理建议", "检查并测试",
             'data-operation-select=', "sidebarModule = {points:'recharge',pricing:'features'}",
             'id="operationsPage"', 'data-operations-page=', "该客户页尚未盘点",
             "开发待归档", "后台生产链测试", "尚无真实接单证据",
             "任务记录了点数，账务台账待核对", "operationsPage:'video'",
             'id="globalUserSearch"', 'id="customerLayer"',
             'id="dashboardServiceState"', 'id="dashboardRefundState"', 'id="dashboardUpdatedAt"',
+            'id="healthMonitorCycle"', 'id="healthIncidentCount"', 'id="acceptanceFreshCount"',
+            "自动任务只检查基础服务与验收时效", "x.correlation_id",
             'id="todayTotal"', 'id="activeJobs"', 'id="failureSummary"', 'id="pendingOrdersSummary"',
-            "function openDashboardJobs(status)", "每 30 秒自动刷新", "今日盯盘",
+            "function openDashboardJobs(status)", "每 15 秒自动刷新", "生产指挥台",
             "/api/admin/dashboard?days=", "function loadDashboard(silent)", "loadDashboard(false)",
             'id="reqAttributed" checked', "el('reqAttributed').checked?'&attributed=1':''",
+            'id="taskSummaryEvidence"', 'class="task-stream"', "function taskStageClass",
+            "完成状态不代表成品已经核验", 'data-ops-section="journey"', 'data-ops-section="tasks"',
+            "else if(state.module==='logs')loadReqLogs(true)",
             "/api/admin/activity?limit=8", "status=fail&attributed=1", "/api/admin/recharge/orders?status=pending",
             "module:'dashboard'", "aria-current", "/workbench/hq-icons-duotone.js",
             'class="side-nav-icon"', "prefers-reduced-motion:reduce",
@@ -393,7 +413,7 @@ class AdminUserInsightsFrontendTests(unittest.TestCase):
             "本次预设测试包", "素材只在服务器私有目录使用", "查看 '+stages.length+' 段证据",
             "/api/admin/e2e/preflight", "测试包已准备 · 待执行",
             "产物已登记 · 私有测试素材不展示",
-            "已暂停 · 最近失败", "已暂停 '+pausedCount+'", "customerVisibleCount",
+            "已暂停 · 最近失败", "pausedCount+' 已暂停", "customerVisibleCount",
             ".ops-e2e-stages{display:grid",
             ".ops-e2e-stage span{min-width:0;overflow-wrap:anywhere",
             '.ops-catalog{position:static;max-height:none}',

@@ -771,6 +771,52 @@ class AdminE2ERunnerTests(unittest.TestCase):
         self.assertEqual(result["provider_jobs"]["shot_01"], "provider-shot-01")
         self.assertEqual(result["submitted_job_ids"], ["provider-shot-01"])
 
+    def test_short_drama_public_evidence_recursively_redacts_external_values(self):
+        item = {
+            "run_id": "run-public-redaction", "status": "failed",
+            "username": "qa-dedicated", "points_before": 100,
+            "error": "Authorization: Bearer item-secret",
+        }
+        evidence = {
+            "provider": "grok", "provider_job_id": "1234567890",
+            "provider_task_id": "provider-sensitive-task",
+            "provider_error": "access_token=provider-secret",
+            "result_url": "https://private.example/shot.mp4?Signature=url-secret",
+            "provider_jobs": {"shot_01": "provider-job-sensitive"},
+            "submitted_job_ids": ["submitted-job-sensitive"],
+            "quote_token": "quote-secret",
+            "meta": {
+                "access_token": "nested-access-secret",
+                "headers": {
+                    "Authorization": "Bearer nested-auth-secret",
+                    "Cookie": "session=nested-cookie-secret",
+                },
+                "items": [{
+                    "apiKey": "nested-api-secret",
+                    "password": "nested-password-secret",
+                    "q-signature": "nested-signature-secret",
+                    "shot_key": "shot_01",
+                }],
+            },
+        }
+
+        public = self.admin._public_short_drama_shot_run(item, evidence)
+        serialized = json.dumps(public, ensure_ascii=False)
+
+        for secret in (
+            "item-secret", "1234567890", "provider-sensitive-task",
+            "provider-secret", "url-secret", "provider-job-sensitive",
+            "submitted-job-sensitive", "quote-secret",
+            "nested-access-secret", "nested-auth-secret", "nested-cookie-secret",
+            "nested-api-secret", "nested-password-secret", "nested-signature-secret",
+        ):
+            self.assertNotIn(secret, serialized)
+        self.assertIn("123456…7890", serialized)
+        self.assertIn("Signature=***", serialized)
+        self.assertEqual(public["evidence"]["meta"]["access_token"], "***")
+        self.assertEqual(public["evidence"]["meta"]["headers"]["Authorization"], "***")
+        self.assertEqual(public["evidence"]["meta"]["items"][0]["shot_key"], "shot_01")
+
     def test_short_drama_preview_finishes_file_and_six_charge_ledger_chain(self):
         run_id = "preview-run"
         job_ids = ["provider-%s" % index for index in range(1, 7)]
@@ -1664,7 +1710,8 @@ class AdminE2ERunnerTests(unittest.TestCase):
             run = self.admin._public_e2e_run(row)
         stages = {stage["key"]: stage for stage in run["stages"]}
         self.assertTrue(all(stage["state"] == "passed" for stage in run["stages"]))
-        self.assertIn("xiaole-201", stages["provider"]["detail"])
+        self.assertIn("xiaole…-201", stages["provider"]["detail"])
+        self.assertNotIn("xiaole-201", stages["provider"]["detail"])
         self.assertEqual(stages["delivery"]["detail"], "文件存在且可解码")
 
     def test_image_placeholder_provider_id_cannot_pass_provider_stage(self):
@@ -1855,6 +1902,22 @@ class AdminE2ERunnerTests(unittest.TestCase):
         request = open_url.call_args.args[0]
         self.assertIn("/api/gen/dl?", request.full_url)
         self.assertEqual(request.get_header("X-hq-internal-token"), "internal-test-token")
+
+    def test_collect_video_list_evidence_never_downloads_remote_artifact(self):
+        with patch.object(self.admin, "_download_proxy_evidence") as download:
+            evidence = self.admin._structured_asset_evidence({
+                "id": 89,
+                "kind": "collect",
+                "collect_mode": "video",
+                "result_json": json.dumps({
+                    "video": {"play_url": "https://example.com/video.mp4"},
+                }),
+            }, allow_remote=False, asset={"id": 11, "kind": "collect", "stage": "material"})
+
+        download.assert_not_called()
+        self.assertFalse(evidence["delivery_verified"])
+        self.assertTrue(evidence["output_reference_present"])
+        self.assertEqual(evidence["artifact_check"], "reference_only")
 
     def test_collect_video_concurrent_check_is_waiting_not_failed(self):
         entered = threading.Event()
