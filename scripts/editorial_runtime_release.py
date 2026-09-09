@@ -315,11 +315,18 @@ class Remote:
 # 事务编排：备份 → 安装 → 校验 → 重启 → 验收；失败完整回滚
 # ---------------------------------------------------------------------------
 class Transaction:
-    def __init__(self, remote, repo_root=ROOT):
+    def __init__(self, remote, repo_root=ROOT, health_timeout=60, health_interval=5):
         self.remote = remote
         self.repo_root = pathlib.Path(repo_root)
         self.installed = []        # 已写入的目标（回滚时按逆序删除/恢复）
+        self.preimage_states = {}  # 事务开始时的真实状态（回滚依据）
+        self.events = []           # 事务日志
+        self.health_timeout = health_timeout
+        self.health_interval = health_interval
         self.backup_dir = "/tmp/.editorial-release-backup"
+
+    def log(self, message):
+        self.events.append(message)
 
     # -- 远端状态 ---------------------------------------------------------
     def current_states(self):
@@ -339,12 +346,20 @@ class Transaction:
                      "gid": state.get("gid"), "sha256": state.get("sha256"),
                      "git_blob": state.get("git_blob"),
                      "symlink": bool(state.get("symlink"))}
-            if state.get("exists") and state.get("sha256") and not state.get("symlink"):
-                self.remote.run_checked(
-                    "sudo cp -a --parents %s %s/ || true"
-                    % (_py(item["dest"]), _py(self.backup_dir)),
-                    "备份已有内容 " + item["dest"])
-                entry["bytes_backed_up"] = True
+            if state.get("exists") and not state.get("symlink"):
+                if item["kind"] == FILE and state.get("sha256"):
+                    self.remote.run_checked(
+                        "sudo cp -a --parents %s %s/"
+                        % (_py(item["dest"]), _py(self.backup_dir)),
+                        "备份已有内容 " + item["dest"])
+                    entry["bytes_backed_up"] = True
+                elif item["kind"] in (TREE, NPM):
+                    safe = item["dest"].lstrip("/").replace("/", "_")
+                    self.remote.run_checked(
+                        "sudo tar -cf %s/%s.tar -C / %s"
+                        % (_py(self.backup_dir), _py(safe), _py(item["dest"].lstrip("/"))),
+                        "备份已有目录 " + item["dest"])
+                    entry["backup_tar"] = safe + ".tar"
             manifest["artifacts"].append(entry)
         manifest_path = _write_temp_json(manifest)
         try:
@@ -445,9 +460,23 @@ class Transaction:
                                 "huangque-content active")
 
     def health_check(self):
-        self.remote.run_checked(
-            "curl -sS -o /dev/null -w '%%{http_code}' --max-time 10 %s | grep -q '^2'"
-            % _py(HEALTH_URL), "健康检查 HTTP 2xx")
+        """轮询健康接口：对连接拒绝/启动中/临时非 2xx 做有限重试，超时才失败。"""
+        deadline = time.time() + self.health_timeout
+        attempt = 0
+        while True:
+            attempt += 1
+            result = self.remote.run(
+                "curl -sS -o /dev/null -w '%%{http_code}' --max-time 10 %s" % _py(HEALTH_URL))
+            code = (result.stdout or "").strip()
+            self.log("健康检查第%d次: code=%s rc=%s"
+                     % (attempt, code or "(空)", result.returncode))
+            if result.returncode == 0 and code.startswith("2"):
+                return
+            if time.time() >= deadline:
+                raise ReleaseError(
+                    "健康检查超时（%d秒内未恢复）: 最后 code=%s"
+                    % (self.health_timeout, code or "(空)"))
+            time.sleep(self.health_interval)
 
     def unauth_check(self):
         self.remote.run_checked(
@@ -456,18 +485,40 @@ class Transaction:
 
     # -- 回滚 -------------------------------------------------------------
     def rollback(self):
+        """依据事务开始时的真实状态回滚：原本存在则恢复，原本不存在则删除。"""
         for dest in reversed(self.installed):
-            if dest == RUNTIME_ROOT or dest.startswith(WEBROOT + "/assets/one-click/templates/"):
-                self.remote.run("sudo rm -rf %s" % _py(dest))
+            pre = self.preimage_states.get(dest, {"exists": False})
+            if pre.get("exists") and not pre.get("symlink"):
+                self._restore_artifact(dest)
+                self.log("回滚恢复: " + dest)
             else:
-                self.remote.run("sudo rm -f %s" % _py(dest))
+                self._delete_artifact(dest)
+                self.log("回滚删除: " + dest)
         self.remote.run("sudo rm -rf %s" % _py(self.backup_dir))
         self.remote.run("sudo systemctl daemon-reload")
         self.remote.run("sudo systemctl restart huangque-auth huangque-content")
 
+    def _delete_artifact(self, dest):
+        if dest == RUNTIME_ROOT or dest.startswith(WEBROOT + "/assets/one-click/templates/"):
+            self.remote.run("sudo rm -rf %s" % _py(dest))
+        else:
+            self.remote.run("sudo rm -f %s" % _py(dest))
+
+    def _restore_artifact(self, dest):
+        if dest == RUNTIME_ROOT or dest.startswith(WEBROOT + "/assets/one-click/templates/"):
+            safe = dest.lstrip("/").replace("/", "_")
+            self.remote.run("sudo rm -rf %s && sudo tar -xf %s/%s.tar -C /"
+                            % (_py(dest), _py(self.backup_dir), _py(safe)))
+        else:
+            rel = dest.lstrip("/")
+            self.remote.run("sudo cp -a %s/%s %s"
+                            % (_py(self.backup_dir), _py(rel), _py(dest)))
+
     # -- 主流程 -------------------------------------------------------------
     def run(self):
-        plan = build_plan(self.repo_root, self.current_states())
+        current = self.current_states()
+        self.preimage_states = current
+        plan = build_plan(self.repo_root, current)
         drifted = [item for item in plan if item["state"] == "drifted"]
         if drifted:
             raise Drifted("发现漂移，拒绝写入/备份/npm/重启: %s"
