@@ -35,7 +35,7 @@ def make_html(job):
         motion.append(f'tl.fromTo("#c{i} .glyph",{{opacity:0,y:7}},{{opacity:1,y:0,duration:0.11,stagger:0.022,ease:"power2.out",immediateRender:false}},{c["start"]});')
     callouts = []
     for i,c in enumerate(job['callouts']):
-        callouts.append(f'<div id="q{i}" class="callout {c["side"]} clip" data-start="{c["start"]}" data-duration="{round(c["end"]-c["start"],4)}" data-track-index="20">{html.escape(c["text"])}</div>')
+        callouts.append(f'<div id="q{i}" class="callout {c["side"]} clip" data-start="{c["start"]}" data-duration="{round(c["end"]-c["start"],4)}" data-track-index="20"><span class="callout-ink">{html.escape(c["text"])}</span></div>')
         motion.append(f'tl.fromTo("#q{i}",{{scale:0.76,opacity:0}},{{scale:1,opacity:1,duration:0.18,ease:"back.out(1.3)",immediateRender:false}},{c["start"]});')
     first = job['camera'][0]['scale']
     motion.append(f'tl.set("#cropA",{{scale:{first},transformOrigin:"52% 38%"}},0);')
@@ -88,6 +88,7 @@ def make_html(job):
 .caption.lower .english{{margin-left:auto}}
 .callout{{position:absolute;top:641px;width:230px;text-align:center;z-index:6;color:#74160e;font-size:52px;line-height:1.5;-webkit-text-stroke:3px #fffdf8;paint-order:stroke fill;text-shadow:0 2px 3px #fffdf899}}
 .callout.left{{left:24px}}.callout.right{{right:24px}}
+.callout-ink{{display:inline-block;white-space:nowrap}}
 </style></head><body>
 <div id="root" data-composition-id="main" data-start="0" data-duration="{duration}" data-width="720" data-height="1280">
 <svg width="0" height="0" style="position:absolute" data-layout-ignore><defs><filter id="horizontalBlur" x="-20%" width="140%" y="0" height="100%"><feGaussianBlur id="streak" stdDeviation="0 0"/></filter></defs></svg>
@@ -103,6 +104,56 @@ window.__timelines=window.__timelines||{{}};
 Promise.all([document.fonts.load('400 26px EnglishSans'),
              document.fonts.load('900 74px EditorialSerif')])
 .then(() => document.fonts.ready).then(() => {{
+  // Measure a hidden copy in the real font/style context, even if the framework
+  // starts this clip hidden. No probe is registered as media or left in output.
+  function withProbe(element, measure) {{
+    const clone=element.cloneNode(true);
+    clone.removeAttribute('id'); clone.classList.remove('clip');
+    for (const node of clone.querySelectorAll('[id]')) node.removeAttribute('id');
+    Object.assign(clone.style,{{visibility:'hidden',display:'block',left:'0',right:'auto',top:'0'}});
+    document.querySelector('#root').appendChild(clone);
+    try {{measure(clone);}} finally {{clone.remove();}}
+  }}
+  const textBounds=element => {{
+    const range=document.createRange(); range.selectNodeContents(element);
+    return range.getBoundingClientRect();
+  }};
+  for (const caption of document.querySelectorAll('.caption')) {{
+    withProbe(caption, clone => {{
+      const line=clone.querySelector('.caption-text');
+      line.style.transform='none';
+      const scale=Math.min(.87,596/Math.max(1,textBounds(line).width));
+      line.style.transform=`scaleX(${{scale}})`;
+      const box=clone.getBoundingClientRect(), ink=textBounds(line);
+      const dx=Math.max(0,box.left-ink.left)+Math.min(0,box.right-ink.right);
+      caption.querySelector('.caption-text').style.transform=`translateX(${{dx}}px) scaleX(${{scale}})`;
+    }});
+  }}
+  // ASCII W and five full-width glyphs can exceed the contract's approximate
+  // width units too. Fit the fixed title/card ink, without changing its content
+  // or overwriting the callout container's animated transform.
+  for (const element of document.querySelectorAll('.title,.callout')) {{
+    withProbe(element, clone => {{
+      const selector=element.classList.contains('title') ? '.title-ink' : '.callout-ink';
+      const originals=element.querySelectorAll(selector);
+      const available=clone.getBoundingClientRect().width-8;
+      clone.querySelectorAll(selector).forEach((ink,index) => {{
+        let scale=selector==='.title-ink' ? .82 : 1;
+        const skew=selector==='.title-ink' ? ' skewX(-6deg)' : '';
+        for (let attempt=0; attempt<3 && textBounds(ink).width>available; attempt++) {{
+          scale*=available/textBounds(ink).width*.995;
+          ink.style.transform=`scaleX(${{scale}})${{skew}}`;
+        }}
+        if (textBounds(ink).width>available+.5) throw new Error('Frozen title/card cannot fit');
+        const owner=clone.getBoundingClientRect(), bounds=textBounds(ink);
+        if (bounds.left<owner.left || bounds.right>owner.right) {{
+          const dx=(owner.left+owner.right-bounds.left-bounds.right)/2;
+          ink.style.transform=`translateX(${{dx}}px) `+ink.style.transform;
+        }}
+        if (ink.style.transform) originals[index].style.transform=ink.style.transform;
+      }});
+    }});
+  }}
   for (const english of document.querySelectorAll('.english')) {{
     // A temporary probe also works when the framework initially hides clips.
     const probe=english.cloneNode(true);

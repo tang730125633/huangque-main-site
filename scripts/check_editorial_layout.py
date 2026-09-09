@@ -24,10 +24,13 @@ CASES = {
     'accent-short': ['Small', 'One person'],
     'mixed-three-pairs': [REPORTED_ENGLISH, 'One person', 'Small', 'W' * 58,
                           'W' * 44, REPORTED_ENGLISH],
+    'ten-accent-glyphs': ['W' * 58, 'W' * 58],
+    'ascii-accent-boundary': ['Small', 'One computer'],
+    'wide-title-callout': ['One person', 'One computer'],
 }
 
 
-def fixture_plan(english):
+def fixture_plan(english, case_name=None):
     # Keep the reviewer's short-English/accent-glyph failure, and a longer
     # sequence whose pairs have different one/two-line combinations.
     accent = english == CASES['accent-short'] or len(english) > 2
@@ -39,12 +42,23 @@ def fixture_plan(english):
         captions = [{'start': round(.2 + i * 4.4 / len(english), 3),
                      'end': round(.2 + (i + 1) * 4.4 / len(english) - .06, 3),
                      'text': '内容有价值', 'en': line} for i, line in enumerate(english)]
-    return {'schema': contract.SCHEMA_ID, 'timebase': 'edited_output',
+    plan = {'schema': contract.SCHEMA_ID, 'timebase': 'edited_output',
         'transcript_hash': 'a' * 64, 'edit_decision_version': 1,
         'title': ['一个人的效率', '让内容更有价值'],
         'captions': captions,
         'keywords': [word], 'camera': [{'at': 0, 'scale': 1, 'transition': 'cut'}],
         'keyword_punches': [{'at': .5, 'word': word, 'strength': 1.075}], 'callouts': []}
+    if case_name in {'ten-accent-glyphs', 'ascii-accent-boundary'}:
+        text = '价值成长未来机会学习' if case_name == 'ten-accent-glyphs' else 'W' * 18
+        plan['keywords'] = [text if case_name == 'ten-accent-glyphs' else 'W' * 9]
+        plan['keyword_punches'] = []
+        for caption in plan['captions']:
+            caption['text'] = text
+    if case_name == 'wide-title-callout':
+        plan['title'] = ['W' * 16, 'W' * 16]
+        plan['callouts'] = [{'start': .5, 'end': 2, 'text': '未来更精彩', 'side': 'left'},
+                            {'start': 2.1, 'end': 4.5, 'text': '未来更精彩', 'side': 'right'}]
+    return plan
 
 
 def main():
@@ -65,7 +79,7 @@ def main():
         'DO_NOT_TRACK': '1', 'TEMP': str(root), 'TMP': str(root), 'TMPDIR': str(root)}
     fixtures = []
     for name, english in CASES.items():
-        plan = contract.validate_plan(fixture_plan(english), 5)
+        plan = contract.validate_plan(fixture_plan(english, name), 5)
         workspace = root / name
         manifest = editorial.prepare_workspace(source, {'editorial_plan': plan,
             'template_id': contract.TEMPLATE_ID, 'duration_ms': 5000}, workspace,
@@ -100,6 +114,8 @@ def main():
         (root / (name + '-check.stderr')).write_bytes(result.stderr)
         if not payload.get('ok') or not payload.get('layout', {}).get('samples'):
             raise AssertionError(name + ': real layout audit did not pass/run')
+        if any(item.get('code') == 'canvas_overflow' for item in payload['layout'].get('findings', [])):
+            raise AssertionError(name + ': canvas overflow warning would still clip the output')
         checks.append({'name': name, 'ok': True, 'html_sha256': fixture['manifest']['html_sha256']})
     report = {'runtime': contract.HYPERFRAMES_VERSION, 'cases': checks,
               'browser_measurements': 'measurements.json', 'result': 'passed'}

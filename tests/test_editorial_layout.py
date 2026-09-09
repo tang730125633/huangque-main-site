@@ -15,8 +15,17 @@ class EditorialLayoutTests(unittest.TestCase):
         self.assertEqual(58, len(CASES['wide-58'][0]))
         for name, english in CASES.items():
             with self.subTest(name=name):
-                self.assertEqual(fixture_plan(english),
-                    editorial_contract.validate_plan(fixture_plan(english), 5))
+                self.assertEqual(fixture_plan(english, name),
+                    editorial_contract.validate_plan(fixture_plan(english, name), 5))
+
+    def test_legal_wide_emphasis_title_and_callouts_have_real_fixtures(self):
+        chinese = fixture_plan(CASES['ten-accent-glyphs'], 'ten-accent-glyphs')
+        self.assertEqual('价值成长未来机会学习', chinese['captions'][0]['text'])
+        ascii_plan = fixture_plan(CASES['ascii-accent-boundary'], 'ascii-accent-boundary')
+        self.assertEqual('W' * 18, ascii_plan['captions'][0]['text'])
+        title = fixture_plan(CASES['wide-title-callout'], 'wide-title-callout')
+        self.assertEqual(['W' * 16, 'W' * 16], title['title'])
+        self.assertEqual(2, len(title['callouts']))
 
     def test_short_accent_and_mixed_pair_regressions_are_not_rejected(self):
         plan = fixture_plan(CASES['accent-short'])

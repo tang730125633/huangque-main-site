@@ -7,6 +7,7 @@ on:
       - 'server/content_domains/editorial_*.py'
       - 'server/content_domains/video_compose*.py'
       - 'scripts/check_editorial_runtime.py'
+      - 'scripts/check_editorial_boundary_render.py'
       - 'scripts/check_editorial_process_cleanup.py'
       - 'scripts/editorial_process_fixture.mjs'
       - 'scripts/check_editorial_layout.py'
@@ -62,6 +63,8 @@ jobs:
         run: python scripts/check_editorial_process_cleanup.py --output-dir "$RUNNER_TEMP/editorial-process-cleanup"
       - name: Real fixed-font English layout boundary regression
         run: python scripts/check_editorial_layout.py --output-dir "$RUNNER_TEMP/editorial-layout"
+      - name: Actual high-quality Chinese boundary renders
+        run: python scripts/check_editorial_boundary_render.py --output-dir "$RUNNER_TEMP/editorial-boundary"
       - name: Preserve exact-head synthetic evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -81,5 +84,13 @@ jobs:
             ${{ runner.temp }}/editorial-layout/*-check.json
             ${{ runner.temp }}/editorial-layout/*.stderr
             ${{ runner.temp }}/editorial-layout/*.png
+            ${{ runner.temp }}/editorial-boundary/report.json
+            ${{ runner.temp }}/editorial-boundary/error*
+            ${{ runner.temp }}/editorial-boundary/*/report.json
+            ${{ runner.temp }}/editorial-boundary/*/plan.json
+            ${{ runner.temp }}/editorial-boundary/*/manifest.json
+            ${{ runner.temp }}/editorial-boundary/*/output.mp4
+            ${{ runner.temp }}/editorial-boundary/*/frame-2.5s.png
+            ${{ runner.temp }}/editorial-boundary/*/error*
           if-no-files-found: warn
           retention-days: 7

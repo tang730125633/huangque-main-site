@@ -56,6 +56,23 @@ try {
         assert.ok(item.box.bottom <= item.caption.bottom, 'English escapes owning caption');
         assert.ok(item.chinese.bottom < item.textBounds.top,
           'Accent Chinese font bounds collide with its own English');
+        assert.ok(item.chinese.left >= item.caption.left - .5 &&
+          item.chinese.right <= item.caption.right + .5,
+          'Chinese glyphs escape their safe caption width');
+      }
+      const otherText = await page.evaluate(() => [...document.querySelectorAll('.title-ink,.callout-ink')]
+        .map(ink => {
+          const range=document.createRange(); range.selectNodeContents(ink);
+          const r=range.getBoundingClientRect();
+          const owner=ink.closest('.title,.callout').getBoundingClientRect();
+          return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,
+            ownerLeft:owner.left,ownerRight:owner.right};
+        }));
+      for (const rect of otherText) {
+        assert.ok(rect.left >= rect.ownerLeft - .5 && rect.right <= rect.ownerRight + .5,
+          fixture.name + ': title/card text escapes its own safe width: ' + JSON.stringify(rect));
+        assert.ok(rect.left >= 0 && rect.right <= 720 && rect.top >= 0 && rect.bottom <= 1280,
+          'Title/card text is clipped by the canvas');
       }
       for (let index = 0; index + 1 < measured.length; index += 2) {
         assert.ok(measured[index].textBounds.bottom < measured[index + 1].chinese.top,
