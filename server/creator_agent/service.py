@@ -34,6 +34,7 @@ from .profile_pdf import ProfilePDFError, profile_pdf_path, render_profile_pdf
 from .model_usage import (
     ModelUsageError, ModelUsageGuard, NullModelUsageGuard,
 )
+from .model_proxy import AccountModelProxy, ModelProxyError, ROUTE as MODEL_PROXY_ROUTE
 from .store import (
     CreatorAgentStore, IdempotencyConflict, QuoteExpired,
     StateConflict, StoreError, STALE_CLAIM_SECONDS,
@@ -201,6 +202,7 @@ class CreatorAgentService:
         self.bridge = bridge
         self.profile_agent = profile_agent
         self.usage_guard = usage_guard or NullModelUsageGuard()
+        self.model_proxy = AccountModelProxy(profile_agent, self.usage_guard)
         self.clock = clock or time.time
         self.profile_pdf_root = pathlib.Path(
             profile_pdf_root or (self.store.path.parent / "profile-pdfs")
@@ -2148,6 +2150,11 @@ class CreatorAgentHandler(BaseHTTPRequestHandler):
         if method == "GET" and path == "/health":
             return self._send(200, self.service.health())
         user = self._user()
+        if method == "POST" and path == MODEL_PROXY_ROUTE:
+            return self.service.model_proxy.stream(
+                self, user, self.service._client_ip(self.headers),
+                self._body(maximum=2 * 1024 * 1024),
+            )
         if method == "GET" and path == "/capability":
             return self._send(200, self.service.capability(user))
         if method == "GET" and path == "/bootstrap":
@@ -2194,6 +2201,8 @@ class CreatorAgentHandler(BaseHTTPRequestHandler):
         try:
             self._handle("POST")
         except APIError as exc:
+            self._send(exc.status, {"detail": exc.detail, "code": exc.code})
+        except ModelProxyError as exc:
             self._send(exc.status, {"detail": exc.detail, "code": exc.code})
         except StoreError:
             self._send(409, {"detail": "页面状态已变化，请刷新后重试", "code": "state_conflict"})

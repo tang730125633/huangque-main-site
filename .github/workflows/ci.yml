@@ -54,6 +54,7 @@ jobs:
       - name: 安装主站回归依赖
         run: |
           python -m pip install -r deploy/requirements-content.txt
+          python -m pip install -r deploy/requirements-creator-agent.txt
 
       - name: 安装编导生产边界测试依赖
         run: python -m pip install cryptography==50.0.1
@@ -102,6 +103,7 @@ jobs:
             test_admin_request_logs.py
             test_cli_image_uploads.py
             test_cli_media_uploads.py
+            test_creator_agent_model_proxy.py
             test_hq_cli_api.py
             test_hq_cli_channel_catalog.py
             test_hq_cli_content.py
