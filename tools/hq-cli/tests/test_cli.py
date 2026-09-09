@@ -192,7 +192,7 @@ class HqCliTests(unittest.TestCase):
             self.assertEqual(0, code, error)
             self.assertTrue(self.payload(output)["schema"].startswith("hq."))
         code, output, _ = self.invoke(["version"])
-        self.assertEqual("0.15.8", self.payload(output)["cli_version"])
+        self.assertEqual("0.15.9", self.payload(output)["cli_version"])
         self.assertEqual("Huangque main-site CLI", self.payload(output)["product"])
         self.assertEqual("https://huangquechuanmei.com", self.payload(output)["origin"])
 
@@ -690,6 +690,15 @@ class HqCliTests(unittest.TestCase):
             credentials = client.load_credentials()
         self.assertEqual(delegated, credentials["access_token"])
         self.assertEqual(disk_before, client.credentials_path().read_bytes())
+
+    def test_environment_access_token_runs_without_local_expiry_metadata(self):
+        delegated = "d" * 43
+        with patch.dict(os.environ, {"HQ_CLI_ACCESS_TOKEN": delegated}), patch(
+                "hq_cli.client.request_json", return_value=(200, {"user": {"username": "agent"}})) as request:
+            code, output, error = self.invoke(["status", "--json"])
+        self.assertEqual(0, code, error)
+        self.assertEqual("agent", self.payload(output)["result"]["user"]["username"])
+        self.assertEqual(delegated, request.call_args.kwargs["token"])
 
     def test_invalid_environment_access_token_fails_closed_without_disk_fallback(self):
         self.authorize()
