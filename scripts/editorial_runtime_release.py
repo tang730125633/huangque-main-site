@@ -346,7 +346,14 @@ class Transaction:
                     "备份已有内容 " + item["dest"])
                 entry["bytes_backed_up"] = True
             manifest["artifacts"].append(entry)
-        self.remote.put_file(_write_temp_json(manifest), self.backup_dir + "/manifest.json")
+        manifest_path = _write_temp_json(manifest)
+        try:
+            self.remote.put_file(manifest_path, self.backup_dir + "/manifest.json")
+        finally:
+            try:
+                os.unlink(manifest_path)
+            except OSError:
+                pass
         return manifest
 
     # -- 安装（每步写文件都记录到 self.installed） -------------------------
@@ -403,10 +410,13 @@ class Transaction:
                 self.remote.run_checked(
                     "cd %s && sudo -u ubuntu npm ci --no-audit --no-fund" % _py(RUNTIME_ROOT),
                     "npm ci 安装 HyperFrames")
-                self.remote.run_checked(
-                    "test \"$(node -p \"require('%s/node_modules/hyperframes/package.json').version\")\" = %s"
-                    % (_py(RUNTIME_ROOT), _py(HYPERFRAMES_VERSION)),
-                    "校验 HyperFrames 版本为 0.8.33")
+                version_check = (
+                    'import json,sys; '
+                    'sys.exit(0 if json.load(open(%s)).get("version") == %s else 1)'
+                    % (json.dumps(RUNTIME_ROOT + "/node_modules/hyperframes/package.json"),
+                       json.dumps(HYPERFRAMES_VERSION)))
+                self.remote.run_checked("python3 -c " + _py(version_check),
+                                        "校验 HyperFrames 版本为 0.8.33")
                 self.installed.append(RUNTIME_ROOT)
 
     def install_dropin(self, plan):
