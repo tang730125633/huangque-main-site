@@ -91,10 +91,20 @@ class TerminationTests(unittest.TestCase):
     def test_concurrent_cancel_keeps_one_audit_record(self):
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=5) as pool:
-            results = list(pool.map(lambda _: self.cancel()['termination'], range(5)))
-        self.assertEqual(len({r['requested_at'] for r in results}), 1)
+            results = list(pool.map(lambda _: self.cancel(), range(5)))
+        self.assertEqual(len({r['termination']['requested_at'] for r in results}), 1)
+        self.assertEqual(sum(1 for r in results if r.get('created')), 1)
         again = termination.request(self.db, 1, 'different', '不同的原因')
+        self.assertFalse(again.get('created'))
         self.assertEqual(again['termination']['actor'], 'operator')
+
+    def test_ended_but_supported_task_reports_concrete_reason(self):
+        self.update()
+        self.assertTrue(jobs_store.set_terminal(self.db, 1, 'done', result={}))
+        with closing(self.db()) as c:
+            described = termination.describe(c, 1)
+        self.assertFalse(described['can_terminate'])
+        self.assertIn('已结束', described['unavailable_reason'])
 
     def test_unsupported_and_recovery_submission_are_truthful(self):
         for payload in ({'mode': 'timeline'}, {'_channel_binding': {'id': 1}}):

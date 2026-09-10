@@ -2314,9 +2314,13 @@ class H(BaseHTTPRequestHandler):
                 if type(job_id) is not int or job_id <= 0:
                     raise ValueError('任务号必须为正整数')
                 result=task_termination.request(jdb,job_id,user['username'],body.get('reason'))
-                with closing(jdb()) as c:
-                    row=c.execute('SELECT username,cost FROM jobs WHERE id=?',(job_id,)).fetchone()
-                threading.Thread(target=_refund_once,args=(job_id,row['username'],row['cost']),daemon=True).start()
+                # 幂等重放不重复启动退款线程：只有本次真正新建了终止记录
+                # 才发起退点（退款本身由 refunded=2 状态机幂等兜底）。
+                if result.get('created'):
+                    with closing(jdb()) as c:
+                        row=c.execute('SELECT username,cost FROM jobs WHERE id=?',(job_id,)).fetchone()
+                    if row is not None and int(row['cost'] or 0)>0:
+                        threading.Thread(target=_refund_once,args=(job_id,row['username'],row['cost']),daemon=True).start()
                 return self._send(200,result)
             except (ValueError,TypeError) as exc:
                 return self._send(400,{'detail':str(exc)})

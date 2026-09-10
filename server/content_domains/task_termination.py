@@ -49,8 +49,14 @@ def describe(c, job_id):
     if info:
         info['platform_state']='stopped' if info['local_stopped_at'] else 'stopping'
         info['refund_state']='not_needed' if int(row['cost'] or 0)<=0 else 'refunded' if row['refunded']==1 else 'pending'
+    if not supported(row):
+        reason='该任务类型尚未接入终止能力'
+    elif row['status'] not in {'pending','running'}:
+        reason='任务已结束，无法终止；请刷新查看最新状态'
+    else:
+        reason=''
     return {'can_terminate':not info and row['status'] in {'pending','running'} and supported(row),
-            'unavailable_reason':'' if supported(row) else '该任务类型尚未接入终止能力',
+            'unavailable_reason':reason,
             'termination':info}
 
 
@@ -65,7 +71,9 @@ def request(db_factory, job_id, actor, reason):
         existing=get(c,job_id)
         if existing:
             c.commit()
-            return describe(c,job_id)
+            result=describe(c,job_id)
+            result['created']=False
+            return result
         row=c.execute('SELECT * FROM jobs WHERE id=?',(job_id,)).fetchone()
         if not row:
             raise ValueError('任务不存在')
@@ -83,7 +91,9 @@ def request(db_factory, job_id, actor, reason):
         c.execute("UPDATE jobs SET status='error',error=?,updated_at=?,refunded=CASE WHEN COALESCE(cost,0)>0 AND COALESCE(refunded,0)=0 THEN 2 ELSE refunded END WHERE id=? AND status IN ('pending','running')",
                   ('管理员终止：'+reason,int(now),job_id))
         c.commit()
-        return describe(c,job_id)
+        result=describe(c,job_id)
+        result['created']=True
+        return result
 
 
 @contextmanager

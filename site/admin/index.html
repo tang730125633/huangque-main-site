@@ -1148,7 +1148,7 @@
     function serverRow(meta,features,scope,baseHost){
       var src=(meta.sources||[]).map(function(s){return '<code>'+esc(s.env)+'</code>'}).join('、')||'未检测到变量';
       var retired=meta.accepts_new_jobs===false;
-      var test=retired?'<span class="pill neutral">历史只读</span>':(meta.pingable?'<button class="mini" data-ping-key="'+esc(meta.key)+'">测试</button> <span data-ping-out="key:'+esc(meta.key)+'"></span>':'<span class="muted">需服务器签名检测</span>');
+      var test=retired?'<span class="pill neutral">停止接新单</span>':(meta.pingable?'<button class="mini" data-ping-key="'+esc(meta.key)+'">测试</button> <span data-ping-out="key:'+esc(meta.key)+'"></span>':'<span class="muted">需服务器签名检测</span>');
       var reveal=meta.configured?'<button class="mini" data-server-key-reveal="'+esc(meta.key)+'" data-last4="'+esc(meta.last4)+'">查看 5 秒</button>':'';
       if(retired)reveal='';
       var label=scope==='图片 / 直连'?'服务器环境变量（图片）':'服务器环境变量（直连）';
