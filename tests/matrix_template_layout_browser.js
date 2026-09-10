@@ -28,8 +28,16 @@ const templates = [
     font_selectable: false,
     variant: `v${String(index + 1).padStart(2, '0')}`,
   })),
+  {
+    id: 'nine-grid-reveal', name: '九宫格开场·全屏展示',
+    description: '九格依次显现，随后切换三段全屏素材',
+    tags: ['HyperFrames', '九宫格'], engine: 'hyperframes',
+    font_mode: 'template_locked', font_selectable: false,
+    variant: 'nine-grid', duration_mode: 'fixed_12',
+    required_visuals: 9, required_visuals_max: 9, bgm_mode: 'bound',
+  },
 ];
-const visibleTemplateIds = referenceIds;
+const visibleTemplateIds = [...referenceIds, 'nine-grid-reveal'];
 const voicePreviewRequests = [];
 
 function silentWav() {
@@ -266,8 +274,9 @@ function hasOverflow(box) {
     if (viewport.fontControlsPresent) throw new Error(`font selector is still visible: ${JSON.stringify(report)}`);
     const voice = viewport.voiceControl;
     if (!voice.initiallyHidden || voice.enabled.panelHidden || voice.enabled.selectedVoice !== 'vip_qa' || voice.enabled.options.join(',') !== 'vip_qa' || voice.enabled.previewDisabled || !voice.enabled.count.startsWith('12 /') || voice.enabled.speed !== '1.7' || voice.enabled.speedLabel !== '1.7x' || !voice.enabled.bgmEnabled || voice.enabled.bgmRowHidden || voice.enabled.bgmVolume !== '35' || voice.enabled.bgmVolumeLabel !== '35%' || voice.enabled.scrollWidth > voice.enabled.clientWidth || voice.enabled.previewRequests.length !== 1 || voice.enabled.previewRequests[0].authorization !== 'Bearer __cookie__' || voice.enabled.objectUrlsCreated !== 1 || voice.enabled.objectUrlsRevoked !== 1) throw new Error(`voiceover control is inaccurate: ${JSON.stringify(voice)}`);
-    if (viewport.cardCount !== 17 || viewport.referenceCount !== 17 || viewport.distinctReferencePreviews !== 17) throw new Error(`template cards are not distinct: ${JSON.stringify(report)}`);
+    if (viewport.cardCount !== 18 || viewport.referenceCount !== 18 || viewport.distinctReferencePreviews !== 18) throw new Error(`template cards are not distinct: ${JSON.stringify(report)}`);
     const expectedCardLabels = referenceIds.map((id, index) => `${index + 1}. 参考排版 ${String(index + 1).padStart(2, '0')}`);
+    expectedCardLabels.push('18. 九宫格开场·全屏展示');
     if (viewport.cardLabels.join('|') !== expectedCardLabels.join('|')) throw new Error(`template card numbering is inaccurate: ${JSON.stringify(viewport.cardLabels)}`);
     const hyperframes = viewport.batchControl.hyperframes;
     const expectedLabels = '1条,2条,3条,4条,5条';

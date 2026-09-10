@@ -3097,9 +3097,10 @@ class MatrixTemplatePageTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertEqual(17, len(re.findall(r"'ref-[0-9]{2}-[a-z0-9-]+'", source)))
-        self.assertIn("cardCount !== 17", source)
-        self.assertIn("referenceCount !== 17", source)
-        self.assertIn("distinctReferencePreviews !== 17", source)
+        self.assertIn("'nine-grid-reveal'", source)
+        self.assertIn("cardCount !== 18", source)
+        self.assertIn("referenceCount !== 18", source)
+        self.assertIn("distinctReferencePreviews !== 18", source)
 
     def test_inline_javascript_parses(self):
         page = (ROOT / "site/workbench/matrix-template.html").read_text(encoding="utf-8")
