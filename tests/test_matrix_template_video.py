@@ -124,6 +124,40 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                     }
         return values
 
+    def templates_with_nine_grid(self):
+        values = self.reference_templates()
+        contract = self.module._SEMANTIC_CONTRACTS[
+            self.module.NINE_GRID_VARIANT
+        ]
+        values.append({
+            "id": self.module.NINE_GRID_TEMPLATE_ID,
+            "name": "九宫格开场·全屏展示",
+            "description": "九格依次显现，随后切换三段全屏素材",
+            "tags": ["HyperFrames", "九宫格"],
+            "engine": "hyperframes",
+            "font_mode": "template_locked",
+            "font_selectable": False,
+            "variant": self.module.NINE_GRID_VARIANT,
+            "duration_mode": "fixed_12",
+            "required_visuals": 9,
+            "required_visuals_max": 9,
+            "bgm_mode": "bound",
+            "semantic_layout": {
+                "version": 1,
+                "max_width_px": 930,
+                "layers": {
+                    layer: {
+                        "font_size_px": metrics[0],
+                        "font_weight": metrics[1],
+                        "max_width_px": metrics[2],
+                        "max_lines": metrics[3],
+                    }
+                    for layer, metrics in contract.items()
+                },
+            },
+        })
+        return values
+
     def test_public_catalog_accepts_transition_counts_but_exposes_only_approved_templates(self):
         response = {"templates": self.templates(), "fonts": [
             {"value": "", "label": "自动搭配", "source": "automatic"},
@@ -256,6 +290,24 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             "max_batch_size": 5,
             "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
         }, self.module.public_batch_capability())
+
+        with mock.patch.object(self.module, "_request", return_value={
+            "templates": self.templates_with_nine_grid(),
+            "max_batch_size": 5,
+            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+        }):
+            with_nine_grid = self.module.public_templates(force=True)
+        self.assertEqual(20, len(with_nine_grid))
+        nine_grid = with_nine_grid[-1]
+        self.assertEqual(self.module.NINE_GRID_TEMPLATE_ID, nine_grid["id"])
+        self.assertEqual("fixed_12", nine_grid["duration_mode"])
+        self.assertEqual(9, nine_grid["required_visuals"])
+        self.assertEqual("bound", nine_grid["bgm_mode"])
+        self.assertEqual(
+            {"font_size_px": 58, "font_weight": 900,
+             "max_width_px": 930, "max_lines": 4},
+            nine_grid["semantic_layout"]["layers"]["bottom2"],
+        )
 
         for partial in (("v02",), ("v02", "v05")):
             with self.subTest(partial=partial), mock.patch.object(
@@ -457,8 +509,8 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         }), self.assertRaisesRegex(RuntimeError, "语义排版|不完整"):
             self.module.public_templates(force=True)
 
-    def test_availability_accepts_two_fifteen_or_nineteen_healthy_templates(self):
-        for count in (2, 15, 19):
+    def test_availability_accepts_supported_catalog_transition_counts(self):
+        for count in (2, 15, 19, 20):
             with self.subTest(count=count), \
                  mock.patch.object(self.module.feature_flags, "is_enabled", return_value=True), \
                  mock.patch.object(
@@ -3339,12 +3391,14 @@ class MatrixTemplatePageTests(unittest.TestCase):
 
     def test_hidden_templates_are_not_rendered_in_the_picker(self):
         result = self.runtime("templateVisibility")
-        self.assertEqual(3, result["count"])
+        self.assertEqual(4, result["count"])
         self.assertNotIn("沉浸强标题", result["html"])
         self.assertNotIn("三段式活动海报", result["html"])
         self.assertIn("1. 默认原生大字", result["html"])
         self.assertIn("2. 极简标题", result["html"])
         self.assertIn("3. 参考模板", result["html"])
+        self.assertIn("4. 九宫格开场·全屏展示", result["html"])
+        self.assertEqual(9, result["html"].count("<i></i>"))
         self.assertEqual("1. 默认原生大字", result["selectedName"])
         self.assertEqual("native-bold", result["active"])
 
