@@ -142,6 +142,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             "required_visuals": 9,
             "required_visuals_max": 9,
             "bgm_mode": "bound",
+            "bgm_optional": True,
             "semantic_layout": {
                 "version": 1,
                 "max_width_px": 930,
@@ -303,6 +304,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         self.assertEqual("fixed_12", nine_grid["duration_mode"])
         self.assertEqual(9, nine_grid["required_visuals"])
         self.assertEqual("bound", nine_grid["bgm_mode"])
+        self.assertIs(nine_grid["bgm_optional"], True)
         self.assertEqual(
             {"font_size_px": 58, "font_weight": 900,
              "max_width_px": 930, "max_lines": 4},
@@ -692,6 +694,61 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             )
         self.assertNotIn("provider", payload)
         self.assertNotIn("prompt", payload)
+
+    def test_nine_grid_preflight_fixes_duration_and_allows_bgm_off(self):
+        template = self.templates_with_nine_grid()[-1]
+        top = "团队8个人，每天产出100条短视频"
+        bottom = "评论区扣888"
+        semantic = {
+            "version": 1,
+            "model": "gpt-4.1-mini",
+            "source_sha256": self.module.matrix_template_semantics._source_sha256(
+                top, bottom,
+            ),
+            "top1_end": top.index("，"),
+            "top_break_after": [top.index("，")],
+            "bottom_break_after": [],
+        }
+        expected = {
+            "top_text": top,
+            "bottom_text": bottom,
+            "template_id": self.module.NINE_GRID_TEMPLATE_ID,
+            "bgm": False,
+            "duration": 12.0,
+            "semantic_layout": semantic,
+        }
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(
+                 self.module, "public_templates", return_value=[template],
+             ), mock.patch.object(
+                 self.module, "_request", return_value={"payload": expected},
+             ) as request:
+            result = self.module.validate_payload(
+                {
+                    "top_text": top,
+                    "bottom_text": bottom,
+                    "template_id": self.module.NINE_GRID_TEMPLATE_ID,
+                    "bgm": False,
+                },
+                "alice", trusted_semantic_layout=semantic,
+            )
+
+        self.assertEqual(expected, result)
+        request.assert_called_once_with(
+            "POST", "/v1/preflight", expected, timeout=10,
+        )
+
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(
+                 self.module, "public_templates", return_value=[template],
+             ), self.assertRaisesRegex(ValueError, "固定为 12 秒"):
+            self.module.validate_payload({
+                "top_text": top,
+                "bottom_text": bottom,
+                "template_id": self.module.NINE_GRID_TEMPLATE_ID,
+                "bgm": False,
+                "duration": 8,
+            }, "alice")
 
     def test_validate_payload_uses_owned_voice_and_keeps_bgm_off_by_default(self):
         from content_domains import audio
@@ -3428,6 +3485,17 @@ class MatrixTemplatePageTests(unittest.TestCase):
             "voice_scope": "personal", "speed": 1.3, "pitch": 0,
             "volume": 0, "delivery": "natural",
         }, result["body"]["voiceover"])
+
+    def test_nine_grid_voiceover_submits_optional_bgm_off(self):
+        result = self.runtime("nineGridVoiceoverSubmission")
+        self.assertEqual("4. 九宫格开场·全屏展示", result["selected"])
+        self.assertEqual(
+            "nine-grid-reveal",
+            result["body"]["template_id"],
+        )
+        self.assertFalse(result["body"]["bgm"])
+        self.assertNotIn("duration", result["body"])
+        self.assertIn("voiceover", result["body"])
 
     def test_voiceover_submission_can_enable_bgm_and_set_volume(self):
         result = self.runtime("voiceoverBgmSubmission")

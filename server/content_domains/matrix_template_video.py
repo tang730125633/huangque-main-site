@@ -344,7 +344,7 @@ def _refresh_catalog(force=False):
                 template["semantic_layout"] = semantic_layout
             for key in (
                 "duration_mode", "required_visuals",
-                "required_visuals_max", "bgm_mode",
+                "required_visuals_max", "bgm_mode", "bgm_optional",
             ):
                 if key in raw:
                     template[key] = raw[key]
@@ -406,6 +406,7 @@ def _refresh_catalog(force=False):
                     or item.get("required_visuals") != 9
                     or item.get("required_visuals_max") != 9
                     or item.get("bgm_mode") != "bound"
+                    or item.get("bgm_optional") is not True
                     or item.get("semantic_layout") is None
                 ):
                     raise RuntimeError("九宫格模板目录不完整")
@@ -559,6 +560,12 @@ def validate_payload(
     bgm = body.get("bgm", False if voiceover else True)
     if not isinstance(bgm, bool):
         raise ValueError("背景音乐设置无效")
+    if (
+        template.get("bgm_mode") == "bound"
+        and template.get("bgm_optional") is not True
+        and not bgm
+    ):
+        raise ValueError("当前模板的背景音乐不可关闭")
     bgm_volume = None
     if "bgm_volume" in body:
         if not voiceover or not bgm:
@@ -576,6 +583,10 @@ def validate_payload(
             raise ValueError("视频时长需要 8-15 秒")
     else:
         duration = None
+    if template.get("duration_mode") == "fixed_12":
+        if duration is not None and abs(duration - 12.0) > 0.001:
+            raise ValueError("当前模板时长固定为 12 秒")
+        duration = 12.0
     candidate = {
         "top_text": top, "bottom_text": bottom,
         "template_id": template_id, "bgm": bgm, "duration": duration,

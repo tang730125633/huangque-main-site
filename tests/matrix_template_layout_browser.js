@@ -35,6 +35,7 @@ const templates = [
     font_mode: 'template_locked', font_selectable: false,
     variant: 'nine-grid', duration_mode: 'fixed_12',
     required_visuals: 9, required_visuals_max: 9, bgm_mode: 'bound',
+    bgm_optional: true,
   },
 ];
 const visibleTemplateIds = [...referenceIds, 'nine-grid-reveal'];
