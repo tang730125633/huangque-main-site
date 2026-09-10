@@ -5,6 +5,8 @@ const test = require('node:test');
 
 const root = path.resolve(__dirname, '..');
 const shell = fs.readFileSync(path.join(root, 'site/workbench/cloud-shell.js'), 'utf8');
+assert.match(shell, /var SHELL_BUILD='20260910-global-recovery-1'/);
+assert.match(shell, /app\.setAttribute\('data-hq-shell-build',SHELL_BUILD\)/);
 const banana = fs.readFileSync(path.join(root, 'site/workbench/banana.html'), 'utf8');
 const video = fs.readFileSync(path.join(root, 'site/workbench/video.html'), 'utf8');
 const audio = fs.readFileSync(path.join(root, 'site/workbench/audio.html'), 'utf8');
@@ -132,13 +134,16 @@ test('point prices are visible and refresh on open pages', () => {
   assert.match(shell, /,30000\)/);
 });
 
-test('secondary account and help destinations live under settings, not the primary sidebar', () => {
+test('available secondary destinations live under settings, not the primary sidebar', () => {
   const nav = shell.match(/var NAV=\[([\s\S]*?)\];/);
   assert.ok(nav, 'cloud-shell.js must define the primary NAV array');
-  for (const route of ['pricing', 'invite', 'tutorials']) {
+  for (const route of ['pricing', 'tutorials']) {
     assert.doesNotMatch(nav[1], new RegExp("\\{k:'" + route + "'"), route);
     assert.match(settings, new RegExp('href="' + route + '\\.html"'), route);
   }
+  assert.doesNotMatch(nav[1], /\{k:'invite'/);
+  assert.doesNotMatch(shell, /href="invite\.html"/);
+  assert.doesNotMatch(settings, /href="invite\.html"/);
   assert.match(nav[1], /\{k:'assets',l:'我的资产'/);
   assert.match(nav[1], /\{k:'settings',l:'通用设置'/);
   assert.match(settings, /账户与帮助/);

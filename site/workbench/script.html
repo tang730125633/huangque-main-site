@@ -348,7 +348,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=5482d257"></script>
+<script src="cloud-shell.js?v=775436f9"></script>
 <script>
 /* 编导页接 /api/gen/copy（format=script）+ /api/gen/breakdown → 脚本/拆解双模式 */
 (function(){
@@ -1287,7 +1287,7 @@
       .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
       .then(function(x){
         if(x.s===401){ _confirmSubmission(copyPending); setBtn(orig,false); if(window.HQ) HQ.login(); return; }
-        if(x.s===402){ _confirmSubmission(copyPending); setBtn(orig,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a></div>'; return; }
+        if(x.s===402){ _confirmSubmission(copyPending); setBtn(orig,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">点数不足</div>'; return; }
         if(!x.d.job_id){
           setBtn(orig,false);
           if(x.d&&x.d.code==='idempotency_in_progress'){
@@ -1435,7 +1435,7 @@
       .then(_readApiResponse)
       .then(function(x){
         if(x.s===401){ _confirmSubmission(breakdownPending); resetBdBtn(); if(window.HQ) HQ.login(); return; }
-        if(x.s===402){ _confirmSubmission(breakdownPending); resetBdBtn(); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a></div>'; return; }
+        if(x.s===402){ _confirmSubmission(breakdownPending); resetBdBtn(); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">点数不足</div>'; return; }
         if(!x.d.job_id){
           resetBdBtn();
           if(x.d&&x.d.code==='idempotency_in_progress'){
@@ -2042,7 +2042,7 @@
       .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
       .then(function(x){
         if(x.s===401){ _confirmSubmission(videoPending); _setGenerateBusy(btn,false); if(window.HQ) HQ.login(); return; }
-        if(x.s===402){ _confirmSubmission(videoPending); _setGenerateBusy(btn,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">点数不足（需要 '+ ((x.d&&(x.d.need||x.d.cost))||'') +' 点）· <a href="recharge.html" style="color:#e7b24c">去充值</a></div>'; return; }
+        if(x.s===402){ _confirmSubmission(videoPending); _setGenerateBusy(btn,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">点数不足（需要 '+ ((x.d&&(x.d.need||x.d.cost))||'') +' 点）</div>'; return; }
         if(!x.d.job_id){ _setGenerateBusy(btn,false); var msg=(x.d&&x.d.detail)||'未知错误';
           if(x.s<500||(x.d&&x.d.operation_terminal===true)) _confirmSubmission(videoPending);
           if(msg.indexOf('形象')>=0||msg.indexOf('人物')>=0) msg+='<br><a href="video.html" style="color:#60a5fa;">→ 去视频页创建形象</a>';
@@ -2195,7 +2195,7 @@
       .then(_readApiResponse)
       .then(function(x){
         if(x.s===401){ _confirmSubmission(imagePending); _setGenerateBusy(btn,false); if(window.HQ) HQ.login(); return; }
-        if(x.s===402){ _confirmSubmission(imagePending); _setGenerateBusy(btn,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a></div>'; return; }
+        if(x.s===402){ _confirmSubmission(imagePending); _setGenerateBusy(btn,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">点数不足</div>'; return; }
         if(!x.d.job_id){
           _setGenerateBusy(btn,false);
           if(x.d&&x.d.code==='idempotency_in_progress'){
