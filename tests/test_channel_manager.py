@@ -45,6 +45,18 @@ class ChannelTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'刷新'):
             cm.save('admin',dict(self.body,**self.ch))
 
+    def test_video_validation_retains_managed_snapshot(self):
+        from server.content_domains import feature_flags, video
+        binding = {'id': 'managed-video', 'version': 3, 'front': 'grok'}
+        captured = {'channel': 'grok', 'prompt': 'demo',
+                    '_channel_binding': binding}
+        with patch.object(cm, 'capture', return_value=captured), \
+                patch.object(feature_flags, 'require_enabled'):
+            result = video.validate_xiaole_video_payload(
+                {'channel': 'grok', 'prompt': 'demo'})
+        self.assertEqual(binding, result['_channel_binding'])
+        self.assertEqual('generate', result['operation'])
+
     def test_untrusted_binding_removed_and_incompatible_rejected(self):
         self.assertNotIn('_channel_binding',cm.capture('copy',{'_channel_binding':self.ch}))
         self.mapping()
@@ -80,6 +92,17 @@ class ChannelTests(unittest.TestCase):
         self.assertEqual('unknown', cm.task_recovery_state('88'))
         with patch.object(cm, 'db', side_effect=OSError('disk unavailable')):
             self.assertEqual('unavailable', cm.task_recovery_state('88'))
+
+    def test_interrupted_running_task_becomes_unknown_once(self):
+        rid = cm.reserve(self.ch['id'], 'task', '89')
+        cm.finish(rid, 'running', 'provider request started', 'provider-89')
+        self.assertEqual('unknown', cm.mark_interrupted_task_unknown(
+            '89', 'worker restarted'))
+        self.assertEqual('unknown', cm.mark_interrupted_task_unknown(
+            '89', 'second recovery pass'))
+        evidence = cm.task_evidence('89')
+        self.assertEqual('unknown', evidence['state'])
+        self.assertEqual('provider-89', evidence['provider_id'])
 
     def test_managed_evidence_searches_provider_order_and_actual_model(self):
         rid = cm.reserve(self.ch['id'], 'task', '91')

@@ -298,6 +298,34 @@ def task_recovery_state(job_id):
         return 'unavailable'
 
 
+def mark_interrupted_task_unknown(job_id, detail):
+    """Atomically preserve an interrupted provider submission for reconciliation."""
+    try:
+        with closing(db()) as c:
+            c.execute('BEGIN IMMEDIATE')
+            row = c.execute(
+                "SELECT id,state FROM runs WHERE kind='task' AND job_id=? "
+                "ORDER BY started DESC LIMIT 1", (str(job_id),),
+            ).fetchone()
+            if not row:
+                c.commit()
+                return 'absent'
+            state = row['state']
+            if state == 'running':
+                now = time.time()
+                changed = c.execute(
+                    "UPDATE runs SET state='unknown',detail=?,updated=?,duration=?-started "
+                    "WHERE id=? AND state='running'",
+                    (str(detail or 'worker interrupted')[:300], now, now, row['id']),
+                ).rowcount
+                if changed:
+                    state = 'unknown'
+            c.commit()
+            return state
+    except (OSError, sqlite3.Error):
+        return 'unavailable'
+
+
 def search_task_ids(query):
     """Find managed tasks by durable provider/channel/version evidence."""
     needle = '%' + str(query or '').lower() + '%'

@@ -3904,6 +3904,43 @@ class ShortDramaStillRouteTests(unittest.TestCase):
         self.assertNotIn("_http_status", replay)
         self.assertEqual(1, create_paid_job.call_count)
 
+    def test_generic_image_submission_persists_managed_snapshot(self):
+        binding = {"id": "managed-image", "version": 5, "front": "front-model"}
+        body = {
+            "provider": "seedream", "model": "front-model",
+            "prompt": "rainy doorway", "ratio": "1:1", "count": 1,
+        }
+        with mock.patch(
+            "content_domains.channel_manager.capture",
+            side_effect=lambda kind, payload: dict(payload, _channel_binding=binding),
+        ) as capture:
+            status, response = self.request(
+                "/api/gen/image", body=body,
+                idempotency_key="managed-image-submit-001",
+            )
+            replay_status, replay = self.request(
+                "/api/gen/image", body=body,
+                idempotency_key="managed-image-submit-001",
+            )
+
+        self.assertEqual((200, 200), (status, replay_status))
+        self.assertEqual(response["job_id"], replay["job_id"])
+        self.assertGreaterEqual(capture.call_count, 1)
+        self.assertTrue(all(call.args[0] == "image" and
+                            call.args[1]["model"] == "front-model"
+                            for call in capture.call_args_list))
+        stored = json.loads(self._jobs()[-1]["payload"])
+        self.assertEqual(binding, stored["_channel_binding"])
+        with closing(core.jdb()) as connection:
+            request_hash = connection.execute(
+                "SELECT request_hash FROM submission_idempotency "
+                "WHERE username=? AND endpoint=? AND idem_key=?",
+                ("alice", "/api/gen/image", "managed-image-submit-001"),
+            ).fetchone()[0]
+        expected_body = image.validate_image_payload(body)
+        self.assertEqual(
+            submission_idempotency._request_hash(expected_body), request_hash)
+
     def test_disabled_xiaole_image_rejects_new_work_before_charge_and_job(self):
         original = core.feature_flags.require_enabled
         def require_enabled(key):

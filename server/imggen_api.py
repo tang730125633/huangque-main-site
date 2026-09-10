@@ -703,12 +703,25 @@ class H(BaseHTTPRequestHandler):
                                             "max_active_jobs": MAX_USER_ACTIVE_JOBS,
                                             "retry_after_ms": 4000, "need": cost})
                 try:
+                    from content_domains import channel_manager
+                    # Idempotency was claimed from the client body above. Only
+                    # now attach the immutable server-owned routing snapshot.
+                    body = channel_manager.capture("image", body)
                     from content_domains import jobs_store
                     jid, points_left = jobs_store.create_paid_job(
                         jdb, _deduct_paid_job, _refund_via_auth, "image", user["username"],
                         cost, body, SERVICE_OWNER,
                         charge_transaction_key=("job-charge:%s:%s:%s" % (
                             user["username"], p, idem_key)) if idem_key else "")
+                except ValueError as e:
+                    submission_idempotency.abort(jdb, user["username"], p, idem_key)
+                    return self._send(400, {"detail": str(e)[:220]})
+                except (OSError, sqlite3.Error) as e:
+                    submission_idempotency.abort(jdb, user["username"], p, idem_key)
+                    return self._send(503, {
+                        "detail": "渠道配置暂不可用，请稍后重试",
+                        "code": "channel_config_unavailable",
+                    })
                 except jobs_store.PaidJobDeductError as e:
                     submission_idempotency.abort(jdb, user["username"], p, idem_key)
                     return self._send(e.status if e.status in (402, 403) else 500,

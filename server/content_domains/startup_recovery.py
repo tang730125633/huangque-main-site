@@ -51,7 +51,9 @@ def reclaim_orphaned_running(
         if isinstance(payload, dict) and payload.get('_channel_binding'):
             try:
                 from . import channel_manager
-                managed_state = channel_manager.task_recovery_state(row["id"])
+                managed_state = channel_manager.mark_interrupted_task_unknown(
+                    row["id"], "业务 worker 重启中断，结果待人工核对",
+                )
             except Exception:
                 managed_state = 'unavailable'
             if managed_state in {'running', 'unknown', 'passed', 'unavailable'}:

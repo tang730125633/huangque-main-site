@@ -42,7 +42,7 @@ class ManagedChannelRecoveryTests(unittest.TestCase):
     def run_recovery(self, state):
         terminal = []
         refunds = []
-        with patch('server.content_domains.channel_manager.task_recovery_state',
+        with patch('server.content_domains.channel_manager.mark_interrupted_task_unknown',
                    return_value=state):
             handled = startup_recovery.reclaim_orphaned_running(
                 jdb=self.jdb, service_owner='content', domains=lambda: (),

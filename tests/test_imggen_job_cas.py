@@ -142,7 +142,13 @@ class ImggenJobCasTests(unittest.TestCase):
             with patch.object(self.m, "verify", return_value={"username": "u", "must_change": False}), \
                  patch.object(self.m.feature_flags, "require_enabled"), \
                  patch.object(self.m, "deduct_points", side_effect=deduct), \
-                 patch.object(self.m, "enqueue_job", return_value=True):
+                 patch.object(self.m, "enqueue_job", return_value=True), \
+                 patch("content_domains.channel_manager.capture",
+                       side_effect=lambda kind, payload: dict(
+                           payload, _channel_binding={
+                               "id": "managed-image", "version": 4,
+                               "front": payload["model"],
+                           })) as capture:
                 first = post()
                 replay = post()
                 conflict = post(prompt="different")
@@ -160,7 +166,14 @@ class ImggenJobCasTests(unittest.TestCase):
         self.assertEqual(changed[1]["code"], "quote_cost_changed")
         self.assertEqual(charges, [("u", 18, "job-charge:u:/api/gen/banana:idem-image-1")])
         with closing(self.m.jdb()) as connection:
-            self.assertEqual(connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 1)
+            rows = connection.execute("SELECT payload FROM jobs").fetchall()
+        self.assertEqual(1, len(rows))
+        stored = json.loads(rows[0][0])
+        self.assertEqual("nb2", stored["_channel_binding"]["front"])
+        self.assertGreaterEqual(capture.call_count, 1)
+        self.assertTrue(all(call.args[0] == "image" and
+                            call.args[1]["model"] == "nb2"
+                            for call in capture.call_args_list))
 
     def test_reaper_wins_then_worker_success_cannot_overwrite(self):
         jid = self._insert(14)

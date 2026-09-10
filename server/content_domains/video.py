@@ -1367,7 +1367,6 @@ def validate_xiaole_video_payload(payload, username=None):
         from . import feature_flags
         feature_flags.require_enabled({'grok':'grok_video','minimax':'minimax_h3_video','omni':'omni_video','micro':'seedance_video'}.get(channel,'xiaole_video'))
         # The runtime uses the managed adapter; retain the frontend identity for pricing.
-        managed.pop('_channel_binding', None)
         managed['operation'] = 'generate'
         return managed
     if channel not in XIAOLE_CHANNEL_MODELS:

@@ -2024,7 +2024,9 @@ def reaper():
                     stuck_payload = {}
                 if stuck_payload.get('_channel_binding'):
                     from . import channel_manager
-                    managed_state = channel_manager.task_recovery_state(r["id"])
+                    managed_state = channel_manager.mark_interrupted_task_unknown(
+                        r["id"], "业务任务心跳超时，Provider 结果待人工核对",
+                    )
                     if managed_state == 'queued':
                         _requeue_running_job(r["id"])
                         continue
@@ -4237,6 +4239,10 @@ class H(BaseHTTPRequestHandler):
                 if not is_still_route and kind not in {
                         "cinematic", "script_to_video", "matrix_template_video"}:
                     request_body = dict(body) if isinstance(body, dict) else body
+                    if isinstance(request_body, dict):
+                        # Server-owned execution snapshots must not alter the
+                        # client's idempotency identity when mappings change.
+                        request_body.pop("_channel_binding", None)
                     if (
                         kind == "xiaole_video"
                         and isinstance(request_body, dict)
@@ -4399,6 +4405,19 @@ class H(BaseHTTPRequestHandler):
                 if (idem_state == "processing" and not is_still_route
                         and not director_copy_submission):
                     return self._send(409, {"detail": "相同请求正在受理，请稍后查询", "code": "idempotency_in_progress", "retry_after_ms": 1000})
+                # Resolve mutable routing only for a genuinely new claim. This
+                # preserves replay of an accepted job if admins later disable or
+                # replace the mapping, while still snapshotting before charge.
+                if (kind == "image" and not is_still_route
+                        and not body.get("short_drama_scene_binding")
+                        and not digital_human_paid_child):
+                    try:
+                        from . import channel_manager
+                        body = channel_manager.capture("image", body)
+                    except ValueError as error:
+                        _idempotency_abort(user["username"], p, idem_key)
+                        _short_drama_domain()._http_error(self, error)
+                        return
                 if kind == "image" and body.get("short_drama_scene_binding"):
                     try:
                         _short_drama_domain().validate_scene_image_binding(
