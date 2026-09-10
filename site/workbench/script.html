@@ -149,7 +149,7 @@
 
         <button id="scGen" class="hv-lift" style="width:100%; height:54px; margin-top:24px; font-size:16px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:14px; cursor:pointer; box-shadow:0 14px 34px -12px rgba(231,178,76,.7); transition:.2s; font-family:inherit; display:flex; align-items:center; justify-content:center; gap:9px;">
           <span class="sc-ico" style="width:19px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 14l.7 1.9L22 17l-2.3.6L19 20l-.7-2.4L16 17l2.3-.5z"/></svg></span>
-          <span id="scGenText">生成脚本（3 点）</span>
+          <span id="scGenText">生成脚本</span>
         </button>
         <div style="text-align:center; margin-top:11px;"><span class="sc-hint">每次生成 1 套 3 分镜脚本 · 失败自动退点</span></div>
       </div>
@@ -170,11 +170,11 @@
         <div style="position:relative; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px; padding:13px 14px;">
           <textarea id="bdUrl" rows="2" placeholder="粘贴抖音/小红书视频链接…（每行一个，可批量≤5条）" style="width:100%; resize:none; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:13.5px; line-height:1.7; font-family:inherit;"></textarea>
         </div>
-        <div id="bdUrlHint" style="margin-top:8px; font-size:11px; color:#5c6b82;">支持抖音、小红书公开视频链接，链接视频最大 200MB；最多 5 条（每行一个，每个链接 20 点）</div>
+        <div id="bdUrlHint" style="margin-top:8px; font-size:11px; color:#5c6b82;">支持抖音、小红书公开视频链接，链接视频最大 200MB；最多 5 条（每行一个）</div>
 
         <button id="bdGen" class="hv-lift" style="width:100%; height:54px; margin-top:18px; font-size:16px; font-weight:700; color:#0f172a; background:linear-gradient(135deg,#93c5fd,#60a5fa); border:none; border-radius:14px; cursor:pointer; box-shadow:0 14px 34px -12px rgba(96,165,250,.55); transition:.2s; font-family:inherit; display:flex; align-items:center; justify-content:center; gap:9px;">
           <span class="sc-ico" style="width:19px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg></span>
-          <span id="bdGenText">开始拆解（20 点）</span>
+          <span id="bdGenText">开始拆解</span>
         </button>
         <div style="text-align:center; margin-top:11px;"><span id="bdActionHint" class="sc-hint">下载 → 抽帧 → 转写 → AI分析 · 约 40-90 秒</span></div>
         </div>
@@ -188,7 +188,7 @@
             <div id="bdLocalImageName" class="sc-hint" style="margin:6px 0 10px;">JPG / PNG / WEBP，最大 20MB</div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;">
               <button id="bdImagePick" class="sc-btn" type="button">选择图片</button>
-              <button id="bdImageReverse" class="sc-btn" type="button" style="color:#111827;background:linear-gradient(135deg,#c4b5fd,#a78bfa);font-weight:700;">反推图片（20 点）</button>
+              <button id="bdImageReverse" class="sc-btn" type="button" style="color:#111827;background:linear-gradient(135deg,#c4b5fd,#a78bfa);font-weight:700;">反推图片</button>
             </div>
           </div>
           <div class="bd-local-row" style="margin-top:10px;">
@@ -196,7 +196,7 @@
             <div id="bdLocalVideoName" class="sc-hint" style="margin:6px 0 10px;">MP4 / MOV / WEBM，最大 200MB、最长 2 分钟</div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;">
               <button id="bdVideoPick" class="sc-btn" type="button">选择视频</button>
-              <button id="bdVideoReverse" class="sc-btn" type="button" style="color:#111827;background:linear-gradient(135deg,#c4b5fd,#a78bfa);font-weight:700;">反推视频（20 点）</button>
+              <button id="bdVideoReverse" class="sc-btn" type="button" style="color:#111827;background:linear-gradient(135deg,#c4b5fd,#a78bfa);font-weight:700;">反推视频</button>
             </div>
           </div>
           <div id="bdLocalStatus" class="sc-hint" style="margin-top:10px;">失败自动退点，结果保存到“我的生成记录”</div>
@@ -348,7 +348,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=d0d6179e"></script>
+<script src="cloud-shell.js?v=5b9a393a"></script>
 <script>
 /* 编导页接 /api/gen/copy（format=script）+ /api/gen/breakdown → 脚本/拆解双模式 */
 (function(){
@@ -387,20 +387,21 @@
       initialBatchHint=batchHint?batchHint.textContent:'';
   var BREAKDOWN_HISTORY_KEY='hq_script_breakdown_history';
   var COPY_POINTS=3, BREAKDOWN_POINTS=20, GROK_DRAMA_RATE=12;
-  var BD_SCENES_LABEL='开始拆解（20 点）';
-  var BD_REVERSE_LABEL='开始反推（20 点）';
+  function billingEnabled(){return window.HQ&&typeof HQ.isPointsBillingEnabled==='function'&&HQ.isPointsBillingEnabled();}
+  var BD_SCENES_LABEL='开始拆解';
+  var BD_REVERSE_LABEL='开始反推';
   if(window.HQ&&HQ.onPricing) HQ.onPricing(function(p){
     COPY_POINTS=p['text.copy']||3;
     BREAKDOWN_POINTS=p['breakdown.item']||20;
     GROK_DRAMA_RATE=p['video.grok.v1.720p']||12;
-    BD_SCENES_LABEL='开始拆解（'+BREAKDOWN_POINTS+' 点）';
-    BD_REVERSE_LABEL='开始反推（'+BREAKDOWN_POINTS+' 点）';
+    BD_SCENES_LABEL='开始拆解'+(billingEnabled()?'（'+BREAKDOWN_POINTS+' 点）':'');
+    BD_REVERSE_LABEL='开始反推'+(billingEnabled()?'（'+BREAKDOWN_POINTS+' 点）':'');
     var copyLabel=document.getElementById('scGenText');
-    if(copyLabel) copyLabel.textContent='生成脚本（'+COPY_POINTS+' 点）';
+    if(copyLabel) copyLabel.textContent='生成脚本'+(billingEnabled()?'（'+COPY_POINTS+' 点）':'');
     var localHint=document.getElementById('bdLocalCostHint');
-    if(localHint) localHint.textContent='单独上传，不经过链接下载；每个文件固定 '+BREAKDOWN_POINTS+' 点';
-    if(bdImageReverse) bdImageReverse.textContent='反推图片（'+BREAKDOWN_POINTS+' 点）';
-    if(bdVideoReverse) bdVideoReverse.textContent='反推视频（'+BREAKDOWN_POINTS+' 点）';
+    if(localHint) localHint.textContent='单独上传，不经过链接下载'+(billingEnabled()?'；每个文件固定 '+BREAKDOWN_POINTS+' 点':'');
+    if(bdImageReverse) bdImageReverse.textContent='反推图片'+(billingEnabled()?'（'+BREAKDOWN_POINTS+' 点）':'');
+    if(bdVideoReverse) bdVideoReverse.textContent='反推视频'+(billingEnabled()?'（'+BREAKDOWN_POINTS+' 点）':'');
     orig=gen.innerHTML;
     syncModeUi();
   });
@@ -706,7 +707,7 @@
     if(panelWrite) panelWrite.style.display=currentMode==='write'?'':'none';
     if(panelBreakdown) panelBreakdown.style.display=currentMode==='breakdown'?'':'none';
     if(bdIntroText) bdIntroText.textContent=reverseMode?'粘贴竞品视频链接，AI 读取关键画面与口播语境，直接反推出可复用的中文提示词':'粘贴竞品视频链接，AI 拆出分镜结构，再沿当前主线生成同款视频';
-    if(bdUrlHint) bdUrlHint.textContent=reverseMode?'支持抖音、小红书公开视频链接，链接视频最大 200MB；提示词反推暂仅支持单条链接（'+BREAKDOWN_POINTS+' 点）':'支持抖音、小红书公开视频链接，链接视频最大 200MB；最多 5 条（每行一个，每个链接 '+BREAKDOWN_POINTS+' 点）';
+    if(bdUrlHint) bdUrlHint.textContent=reverseMode?'支持抖音、小红书公开视频链接，链接视频最大 200MB；提示词反推暂仅支持单条链接'+(billingEnabled()?'（'+BREAKDOWN_POINTS+' 点）':''):'支持抖音、小红书公开视频链接，链接视频最大 200MB；最多 5 条（每行一个'+(billingEnabled()?'，每个链接 '+BREAKDOWN_POINTS+' 点':'')+'）';
     if(bdGenText) bdGenText.textContent=reverseMode?BD_REVERSE_LABEL:BD_SCENES_LABEL;
     if(bdActionHint) bdActionHint.textContent=reverseMode?'下载 → 抽帧 → 转写 → AI反推 · 约 40-90 秒':'下载 → 抽帧 → 转写 → AI分析 · 约 40-90 秒';
     if(previewTitle) previewTitle.textContent=currentMode==='breakdown' ? (reverseMode?'拆解结果 · 提示词反推':'拆解结果 · 分镜预览') : initialPreviewTitle;
@@ -1322,7 +1323,7 @@
     return fetch('/api/auth/me',{credentials:'same-origin',cache:'no-store'}).then(function(r){
       if(r.status===401) throw {login:true,message:'请先登录'};
       return r.json().then(function(d){ if(!r.ok) throw {message:d.detail||'点数检查失败'}; return d; });
-    }).then(function(d){ if(Number(d&&d.user&&d.user.points||0)<BREAKDOWN_POINTS) throw {points:true,message:'点数不足（需要 '+BREAKDOWN_POINTS+' 点）'}; });
+    }).then(function(d){ if(d&&d.points_billing_enabled!==false&&Number(d&&d.user&&d.user.points||0)<BREAKDOWN_POINTS) throw {points:true,message:'点数不足（需要 '+BREAKDOWN_POINTS+' 点）'}; });
   }
   function _videoDuration(file){
     return new Promise(function(resolve,reject){
@@ -1733,7 +1734,7 @@
         ?Number(noAvatarOffer&&noAvatarOffer.duration_costs&&noAvatarOffer.duration_costs[String(selectedDuration)])
         :selectedDuration*10;
       var costText=Number.isInteger(quoted)&&quoted>0?String(quoted):'--';
-      cost.textContent='预计消耗 '+costText+' 点';
+      cost.textContent=billingEnabled()?'预计消耗 '+costText+' 点':'内测期间免费';
       duration.querySelectorAll('[data-reverse-duration]').forEach(function(btn){
         var seconds=Number(btn.getAttribute('data-reverse-duration'));
         var on=seconds===selectedDuration;
@@ -1906,7 +1907,7 @@
   }
   function _confirmDramaVideo(list){
     var duration=_dramaDuration(list), cost=duration*GROK_DRAMA_RATE;
-    return window.confirm('将生成 '+duration+' 秒剧情视频，预计消耗 '+cost+' 点。\n\n确认提交生成吗？');
+    return window.confirm(billingEnabled()?'将生成 '+duration+' 秒剧情视频，预计消耗 '+cost+' 点。\n\n确认提交生成吗？':'将生成 '+duration+' 秒剧情视频。\n\n确认提交生成吗？');
   }
   var ACTIVE_VIDEO_JOB_KEY='hq_script_active_video_job';
   var activeVideoResumeTimer=null;
@@ -2074,9 +2075,9 @@
               _clearActiveVideoJob(x.d.job_id,activeJobOwner);
               var vurl=(d.result&&d.result.video_url)||'';
               var breakdown=x.d.cost_breakdown||{};
-              var costInfo=x.d.cost!=null?' · 消耗 '+x.d.cost+' 点':'';
+              var costInfo=billingEnabled()&&x.d.cost!=null?' · 消耗 '+x.d.cost+' 点':'';
               if(breakdown.material_generate_count||breakdown.material_reused_count){
-                costInfo+='（口播 '+(breakdown.talking||0)+' 点，生图 '+(breakdown.material_images||0)+' 点，复用 '+(breakdown.material_reused_count||0)+' 张）';
+                if(billingEnabled())costInfo+='（口播 '+(breakdown.talking||0)+' 点，生图 '+(breakdown.material_images||0)+' 点，复用 '+(breakdown.material_reused_count||0)+' 张）';
               }
               var successHtml='<div style="padding:24px;text-align:center;margin-bottom:6px;">'
                 +'<div style="font-size:40px;margin-bottom:10px;">✅</div>'
@@ -2311,11 +2312,11 @@
     <button class="sc-opt on" type="button" data-reverse-duration="10" aria-pressed="true" style="font-family:inherit;">10 秒 · 300 点</button>
     <button class="sc-opt" type="button" data-reverse-duration="15" aria-pressed="false" style="font-family:inherit;">15 秒 · 450 点</button>
   </div>
-  <div id="reverseVideoCost" style="text-align:center;color:#e7b24c;font-size:13px;font-weight:600;margin:14px 0;">预计消耗 300 点</div>
+  <div id="reverseVideoCost" style="text-align:center;color:#e7b24c;font-size:13px;font-weight:600;margin:14px 0;">内测期间免费</div>
   <div style="text-align:center;font-size:11.5px;color:#5c6b82;margin-bottom:14px;">没有形象？<a href="video.html" style="color:#60a5fa;">去创建</a></div>
   <button id="reverseVideoConfirm" type="button" style="width:100%;height:46px;border:none;border-radius:12px;cursor:pointer;font-family:inherit;font-size:15px;font-weight:700;color:#111827;background:linear-gradient(135deg,#f4cd72,#e7b24c);">确认生成</button>
 </div>
 </div>
-<script src="script-agent.js?v=cb2dcd34"></script>
+<script src="script-agent.js?v=202e24f6"></script>
 </body>
 </html>

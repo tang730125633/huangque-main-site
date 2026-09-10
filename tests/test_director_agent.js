@@ -306,7 +306,7 @@ assert.ok(source.includes('currentPlan.actions.map(function(action){return apply
 assert.ok(source.includes('health.director_agent_enabled!==true'));
 assert.ok(source.includes("jsonFetch(win,'/api/auth/me')"));
 assert.ok(source.includes('value.owner===username'));
-assert.ok(source.includes("button.textContent='确认生产并扣 '+offer.expected_cost+' 点'"));
+assert.ok(source.includes("button.textContent=billingEnabled()?'确认生产并扣 '+offer.expected_cost+' 点':'确认生产'"));
 assert.ok(source.includes("'/api/gen/director_agent/produce'"));
 assert.ok(source.includes("state.pending_production=null; state.production_offer=null;"));
 assert.ok(source.includes('请核对后重新回复：确认生成。'));

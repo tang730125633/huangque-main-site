@@ -7,7 +7,7 @@ import sqlite3
 import time
 import uuid
 
-from . import short_drama_asset_graph, short_drama_voice
+from . import feature_flags, short_drama_asset_graph, short_drama_voice
 
 
 ASSET_TYPES = {"still"}
@@ -1000,6 +1000,8 @@ def prepare_still_submission(db_factory, username, body, *, require_quote=False,
 def check_production_budget(db_factory, username, project_id, quoted_cost, access=None):
     if type(quoted_cost) is not int or quoted_cost < 0:
         raise ValueError("关键帧报价无效")
+    if not feature_flags.points_billing_enabled():
+        return
     conn = db_factory()
     try:
         conn.row_factory = sqlite3.Row

@@ -13,7 +13,7 @@ import time
 import unicodedata
 import uuid
 
-from . import short_drama_asset_graph, short_drama_prompt_compiler
+from . import feature_flags, short_drama_asset_graph, short_drama_prompt_compiler
 from .core import _file_url
 
 
@@ -1017,7 +1017,8 @@ def prepare_video_quote(db_factory, actor_username, owner_username, body, cost_o
             },
             "point_budget": budget,
             "budget_left": budget_left,
-            "can_submit": budget_left is None or cost <= budget_left,
+            "can_submit": (not feature_flags.points_billing_enabled()
+                           or budget_left is None or cost <= budget_left),
             "spent_points": usage["spent_points"],
             "reserved_points": usage["reserved_points"],
         }
@@ -1122,7 +1123,8 @@ def prepare_video_submission(db_factory, actor_username, owner_username, body,
         usage = _project_point_usage(conn, project["id"])
         budget = int(project["point_budget"] or 0)
         cost = int(quote["cost"])
-        if budget and usage["spent_points"] + usage["reserved_points"] + cost > budget:
+        if (feature_flags.points_billing_enabled() and budget
+                and usage["spent_points"] + usage["reserved_points"] + cost > budget):
             raise PointBudgetExceeded(
                 "short drama point budget is insufficient"
             )

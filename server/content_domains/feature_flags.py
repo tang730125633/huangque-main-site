@@ -21,6 +21,14 @@ _TTL = 5
 
 CATALOG = [
     {
+        "key": "points_billing",
+        "name": "点数结算",
+        "desc": "控制扣点、退款、转赠和新支付入口；关闭时余额不变但任务台账保留",
+        "page": "会员与点数",
+        "service": "auth",
+        "default_enabled": True,
+    },
+    {
         "key": "creator_agent_v1",
         "name": "创作 Agent",
         "desc": "独立对话式创作助手与站内能力调用",
@@ -138,13 +146,15 @@ def _load_rows():
     }
 
 
-def _cached_rows():
+def _cached_rows(fail_closed=False):
     now = time.time()
     if now - _CACHE["loaded_at"] > _TTL:
         try:
             _CACHE["items"] = _load_rows()
         except Exception as e:
             print("[feature_flags] read failed, using safe cache: %s" % e, flush=True)
+            if fail_closed:
+                raise
             items = dict(_CACHE.get("items") or {})
             for key, meta in CATALOG_MAP.items():
                 if not meta.get("default_enabled", True):
@@ -164,6 +174,23 @@ def is_enabled(feature):
         return True
     row = _cached_rows().get(meta["key"])
     return bool(meta.get("default_enabled", True)) if row is None else bool(row.get("enabled"))
+
+
+def is_enabled_fail_closed(feature):
+    """High-risk switches: unknown key or unreadable DB means disabled."""
+    key = str(feature or "").strip()
+    meta = CATALOG_MAP.get(key)
+    if not meta:
+        return False
+    try:
+        row = _cached_rows(fail_closed=True).get(key)
+    except Exception:
+        return False
+    return bool(meta.get("default_enabled", True)) if row is None else bool(row.get("enabled"))
+
+
+def points_billing_enabled():
+    return is_enabled_fail_closed("points_billing")
 
 
 def require_enabled(feature):

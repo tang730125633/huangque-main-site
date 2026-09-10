@@ -18,7 +18,7 @@ SERVER_DIR = str(Path(__file__).resolve().parents[1] / "server")
 if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
 
-from content_domains import core, image, jobs_store, short_drama, short_drama_assembly, short_drama_asset_graph, short_drama_completion, short_drama_conversation, short_drama_production, short_drama_timeline, short_drama_video, short_drama_voice, submission_idempotency, upstream_guard, video
+from content_domains import core, feature_flags, image, jobs_store, short_drama, short_drama_assembly, short_drama_asset_graph, short_drama_completion, short_drama_conversation, short_drama_production, short_drama_timeline, short_drama_video, short_drama_voice, submission_idempotency, upstream_guard, video
 
 
 def _project_payload():
@@ -4442,6 +4442,14 @@ class ShortDramaStillRouteTests(unittest.TestCase):
         self.assertEqual([], self.points.deduct_calls)
         self.assertEqual([], self._jobs())
         self.assertEqual(0, self._idempotency_count())
+
+        with mock.patch.object(feature_flags, "points_billing_enabled", return_value=False):
+            beta_status, _beta = self.request(
+                "/api/gen/short-drama/generate-stills", body=self._body(),
+                idempotency_key="still-beta-budget-001",
+            )
+        self.assertEqual(200, beta_status)
+        self.assertEqual(1, len(self.points.deduct_calls))
 
     def test_association_failure_refund_consumes_quote_and_attempt(self):
         path = "/api/gen/short-drama/generate-stills"

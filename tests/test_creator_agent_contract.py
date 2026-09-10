@@ -65,7 +65,8 @@ class CreatorAgentContractTests(unittest.TestCase):
         self.assertNotIn("data-intent", output)
         self.assertNotIn("确认扣点", output)
         self.assertIn("confirm_payment", self.page)
-        self.assertIn("confirm('确认消耗 ", self.page)
+        self.assertIn("billingEnabled()?'确认消耗 ", self.page)
+        self.assertIn("'确认分别创建平台任务？'", self.page)
 
     def test_feature_switch_is_default_on_but_still_discoverable(self):
         block = self.flags[self.flags.index('"key": "creator_agent_v1"'):]

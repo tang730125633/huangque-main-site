@@ -11,7 +11,7 @@ from . import short_drama_assembly_artifacts as assembly_artifacts
 from . import short_drama_assembly_lipsync as lipsync_assembly
 from . import short_drama_master_audio as master_audio
 from . import short_drama_alignment as subtitle_alignment
-from . import short_drama_asset_graph, short_drama_duration
+from . import feature_flags, short_drama_asset_graph, short_drama_duration
 
 
 ASSEMBLY_STAGES = {"assembly_review", "completed"}
@@ -2004,6 +2004,8 @@ def create_final_quote(
 def _enforce_final_budget(
     conn, project_id, cost, include_cost=True, point_usage=None
 ):
+    if not feature_flags.points_billing_enabled():
+        return
     project = conn.execute(
         "SELECT point_budget FROM short_drama_projects WHERE id=?",
         (project_id,),

@@ -20,7 +20,7 @@ try:
 except ModuleNotFoundError:
     from providers.sound_effects import capability as provider_capability
 
-from . import jobs_store, short_drama_asset_graph
+from . import feature_flags, jobs_store, short_drama_asset_graph
 
 
 ANALYZER_VERSION = "short-drama-sound-design-rules-v1"
@@ -476,6 +476,8 @@ def _quote_items(suggestions):
 
 
 def _check_project_budget(conn, project_id, quoted_cost, point_usage):
+    if not feature_flags.points_billing_enabled():
+        return
     project = conn.execute(
         "SELECT point_budget FROM short_drama_projects "
         "WHERE id=? AND deleted=0", (project_id,),

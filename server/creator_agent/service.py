@@ -1943,12 +1943,16 @@ class CreatorAgentService:
             elif intent == "confirm_plan":
                 batch_id = str(payload.get("batch_id") or flow.get("batch_id") or "")
                 batch = self.quote_batch(user, batch_id, payload.get("expected_revision"))
-                reply = "报价已生成。请核对各平台明细和总价，确认后才会扣点并分别创建任务。"
+                billing_enabled = user.get("points_billing_enabled") is not False
+                reply = ("报价已生成。请核对各平台明细和总价，确认后才会扣点并分别创建任务。"
+                         if billing_enabled else "方案已准备好。确认后会分别创建平台任务。")
                 public = {
                     "kind": "video_quote", "batch": batch,
                     "actions": [
                         {"intent": "adjust_video_platforms", "label": "调整平台"},
-                        {"intent": "confirm_payment", "label": "确认扣点并开始生成", "primary": True},
+                        {"intent": "confirm_payment", "label": (
+                            "确认扣点并开始生成" if billing_enabled else "确认并开始生成"
+                        ), "primary": True},
                     ],
                 }
             elif intent == "confirm_payment":
@@ -1965,12 +1969,16 @@ class CreatorAgentService:
                     batch = self.quote_batch(
                         user, batch_id, payload.get("expected_revision"),
                     )
-                    reply = "原报价已过期或剩余时间不足，已自动重新报价。请再次核对后确认扣点。"
+                    billing_enabled = user.get("points_billing_enabled") is not False
+                    reply = ("原报价已过期或剩余时间不足，已自动重新报价。请再次核对后确认扣点。"
+                             if billing_enabled else "原方案确认已过期，已自动刷新。请再次核对后确认生成。")
                     public = {
                         "kind": "video_quote", "batch": batch,
                         "actions": [
                             {"intent": "adjust_video_platforms", "label": "调整平台"},
-                            {"intent": "confirm_payment", "label": "确认扣点并开始生成", "primary": True},
+                            {"intent": "confirm_payment", "label": (
+                                "确认扣点并开始生成" if billing_enabled else "确认并开始生成"
+                            ), "primary": True},
                         ],
                     }
                 else:

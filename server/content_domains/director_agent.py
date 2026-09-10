@@ -11,6 +11,7 @@ import time
 from urllib.parse import urlparse
 
 from . import director_cli
+from . import feature_flags
 from . import submission_idempotency
 
 
@@ -1594,13 +1595,21 @@ def normalize_model_result(raw, request):
             warnings.append("待确认方案暂未就绪，请补充本次分镜脚本的选题。")
     if prepared_plan is not None:
         summary = prepared_plan["summary"]
-        content = (
-            "方案已准备好：选题“%s”，规格为 %s · %s · %s，预计扣除 %d 点。"
-            "确认信息无误后，请回复：%s。"
-            % (summary["topic"], summary["platform"], summary["style"],
-               summary["duration"], int(prepared_plan["expected_cost"]),
-               CONFIRM_SCRIPT_PROMPT)
-        )
+        if feature_flags.points_billing_enabled():
+            content = (
+                "方案已准备好：选题“%s”，规格为 %s · %s · %s，预计扣除 %d 点。"
+                "确认信息无误后，请回复：%s。"
+                % (summary["topic"], summary["platform"], summary["style"],
+                   summary["duration"], int(prepared_plan["expected_cost"]),
+                   CONFIRM_SCRIPT_PROMPT)
+            )
+        else:
+            content = (
+                "方案已准备好：选题“%s”，规格为 %s · %s · %s。"
+                "内测期间免费；确认信息无误后，请回复：%s。"
+                % (summary["topic"], summary["platform"], summary["style"],
+                   summary["duration"], CONFIRM_SCRIPT_PROMPT)
+            )
     breakdown_offer = None
     if prepare_breakdown_requested:
         breakdown_offer = _breakdown_offer(
@@ -1620,6 +1629,9 @@ def normalize_model_result(raw, request):
                 "%s方案已准备好（%d 条链接），预计扣除 %d 点。确认后由服务端受理并扣点，"
                 "完成后把结果回传到对话。"
                 % (label, count, int(breakdown_offer["expected_cost"]))
+                if feature_flags.points_billing_enabled()
+                else "%s方案已准备好（%d 条链接）。内测期间免费；确认后开始处理。"
+                % (label, count)
             )
         else:
             warnings.append("待确认的拆解方案暂未就绪，请补充抖音或小红书的视频链接。")
@@ -1683,6 +1695,8 @@ def gen_director_agent(payload):
                 "生产确认单已准备好，预计扣除 %d 点。请再次核对价格和参数，"
                 "点击确认后才开始制作。"
                 % int(offer["expected_cost"])
+                if feature_flags.points_billing_enabled()
+                else "生产确认单已准备好。内测期间免费；请再次核对参数，点击确认后开始制作。"
             )
             return _confirmation_result(
                 request, content, production_offer=offer,
@@ -1690,8 +1704,11 @@ def gen_director_agent(payload):
         if state == "price_changed":
             return _confirmation_result(
                 request,
-                "预计价格已更新为 %d 点，原确认已失效。请核对后重新回复：%s。"
-                % (int(confirmation["expected_cost"]), CONFIRM_SCRIPT_PROMPT),
+                ("预计价格已更新为 %d 点，原确认已失效。请核对后重新回复：%s。"
+                 % (int(confirmation["expected_cost"]), CONFIRM_SCRIPT_PROMPT)
+                 if feature_flags.points_billing_enabled()
+                 else "方案已更新，原确认已失效。请核对后重新回复：%s。"
+                 % CONFIRM_SCRIPT_PROMPT),
                 warnings=["价格变化后必须重新发送固定确认文字。"],
             )
         messages = {

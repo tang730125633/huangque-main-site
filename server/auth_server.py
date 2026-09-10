@@ -107,6 +107,13 @@ MYSTERY_SHOPPER_CLI_SCOPES = (
 VIRTUAL_PAY_RECONCILE_INTERVAL_SECONDS = 60
 VIRTUAL_PAY_RECONCILE_BATCH = 100
 VIRTUAL_PAY_RECONCILE_MIN_AGE_SECONDS = 10
+POINTS_BILLING_CREATE_PATHS = frozenset({
+    "/api/auth/points/transfer",
+    "/api/auth/recharge/order",
+    "/api/auth/virtual-pay/order",
+    "/api/auth/wxpay/native",
+    "/api/auth/wxpay/jsapi",
+})
 
 def miniprogram_payments_enabled():
     """Operational kill switch for all mini-program payment order creation."""
@@ -122,6 +129,10 @@ def membership_enforcement_enabled():
     return os.environ.get(MEMBERSHIP_ENFORCEMENT_ENV, "0").strip().lower() in (
         "1", "true", "yes", "on",
     )
+
+
+def points_billing_enabled():
+    return feature_flags.points_billing_enabled()
 
 
 def membership_discount_bps(tier):
@@ -1021,6 +1032,7 @@ def register_miniprogram_card(wx_code, phone, card, device_id, invite_code="", i
     salt = secrets.token_hex(16)
     password_hash = hash_pw(phone, salt)
     attribution = None
+    billing_enabled = points_billing_enabled()
     c = db()
     try:
         c.execute("BEGIN IMMEDIATE")
@@ -1073,7 +1085,7 @@ def register_miniprogram_card(wx_code, phone, card, device_id, invite_code="", i
             journey = business_cards.convert_referral_journey(
                 c, attribution, cur.lastrowid, relation["id"],
             )
-            if journey:
+            if journey and billing_enabled:
                 initial_points = pricing.get_price("invite.card_trial_reward")
                 c.execute("UPDATE users SET points=? WHERE id=?", (initial_points, cur.lastrowid))
         if relation and initial_points > 0:
@@ -2231,7 +2243,7 @@ def _write_audit(c, who_admin, username, delta, before, after, reason, transacti
         (who_admin, username, delta, before, after, (reason or "")[:120], int(time.time()), transaction_key))
 
 
-def deduct_points(username, amount, reason="", transaction_key=""):
+def deduct_points(username, amount, reason="", transaction_key="", apply_balance=True):
     """任务提交时预扣点。reason 形如 'job:collect#1354'，由调用方传入。
 
     在补上审计之前，points_audit 只记录管理员加减点和充值审批 —— 任务扣点/退点完全隐形，
@@ -2264,7 +2276,7 @@ def deduct_points(username, amount, reason="", transaction_key=""):
             c.rollback()
             return None, "not_found"
         before = int(before_row["points"] or 0)
-        if amount:
+        if amount and apply_balance:
             cur = c.execute(
                 "UPDATE users SET points = points - ? WHERE username=? AND points >= ?",
                 (amount, username, amount),
@@ -2287,7 +2299,7 @@ def deduct_points(username, amount, reason="", transaction_key=""):
     finally:
         c.close()
 
-def refund_points(username, amount, reason="", transaction_key=""):
+def refund_points(username, amount, reason="", transaction_key="", apply_balance=True):
     """任务失败/超时后退点；稳定 transaction_key 让重试只入账一次。"""
     amount = int(amount or 0)
     if amount < 0:
@@ -2315,7 +2327,7 @@ def refund_points(username, amount, reason="", transaction_key=""):
             c.rollback()
             return None, "not_found"
         before = int(before_row["points"] or 0)
-        if amount:
+        if amount and apply_balance:
             cur = c.execute("UPDATE users SET points = points + ? WHERE username=?", (amount, username))
             if cur.rowcount != 1:
                 c.rollback()
@@ -5823,6 +5835,11 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         p = self.path.split("?")[0]
+        if p in POINTS_BILLING_CREATE_PATHS and not points_billing_enabled():
+            return self._send(503, {
+                "detail": "内测期间点数、充值和会员购买暂不开放",
+                "code": "points_billing_disabled",
+            })
         if p == "/api/auth/mystery-shopper/cli-token":
             if not MYSTERY_SHOPPER_USERNAME or not MYSTERY_SHOPPER_SIGNER_SECRET:
                 return self._cli_send(503, {
@@ -5871,7 +5888,7 @@ class H(BaseHTTPRequestHandler):
                 if initial_password_change_required(row):
                     return self._send(503, {"detail": "专用 E2E 测试账号仍需修改初始密码"})
                 membership = membership_for_row(row)
-                if membership_enforcement_enabled() and not membership["membership_active"]:
+                if points_billing_enabled() and membership_enforcement_enabled() and not membership["membership_active"]:
                     return self._send(503, {"detail": "专用 E2E 测试账号会员已失效"})
                 token = issue_token(row["username"], c=c, ttl=120, scope="account")
                 c.commit()
@@ -5882,6 +5899,7 @@ class H(BaseHTTPRequestHandler):
                         "username": row["username"],
                         "points": int(row["points"] or 0),
                         "membership_active": membership["membership_active"],
+                        "points_billing_enabled": points_billing_enabled(),
                     },
                     "expires_in": 120,
                 })
@@ -7012,25 +7030,33 @@ class H(BaseHTTPRequestHandler):
             if len(transaction_key) > 160:
                 return self._send(400, {"detail": "transaction_key too long"})
             try:
+                billing_enabled = points_billing_enabled()
                 if p.endswith("/deduct"):
-                    if membership_enforcement_enabled() and not user_has_active_membership(username):
+                    if billing_enabled and membership_enforcement_enabled() and not user_has_active_membership(username):
                         return self._send(403, {
                             "detail": "请先开通会员后再使用该功能",
                             "code": "membership_required",
                             "membership_enforcement_enabled": True,
                         })
-                    points, err = deduct_points(username, amount, reason, transaction_key)
+                    points, err = deduct_points(
+                        username, amount, reason, transaction_key, apply_balance=billing_enabled,
+                    )
                     if err == "transaction_conflict":
                         return self._send(409, {"detail": "transaction_key conflict"})
                     if err == "insufficient":
                         return self._send(402, {"detail": "点数不足", "need": amount})
                 else:
-                    points, err = refund_points(username, amount, reason, transaction_key)
+                    points, err = refund_points(
+                        username, amount, reason, transaction_key, apply_balance=billing_enabled,
+                    )
                     if err == "transaction_conflict":
                         return self._send(409, {"detail": "transaction_key 已用于另一笔退款"})
                 if err == "not_found":
                     return self._send(404, {"detail": "user not found"})
-                return self._send(200, {"ok": True, "points": points["points"], "user": points})
+                return self._send(200, {
+                    "ok": True, "points": points["points"], "user": points,
+                    "billing_enabled": billing_enabled,
+                })
             except Exception:
                 return self._send(500, {"detail": "points update failed"})
         if p == "/api/auth/register":
@@ -8296,9 +8322,13 @@ class H(BaseHTTPRequestHandler):
             finally:
                 c.close()
             user["initial_password"] = initial_password_change_required(row)
+            user["points_billing_enabled"] = points_billing_enabled()
             return self._send(200, {
                 "user": user,
-                "membership_enforcement_enabled": membership_enforcement_enabled(),
+                "membership_enforcement_enabled": (
+                    user["points_billing_enabled"] and membership_enforcement_enabled()
+                ),
+                "points_billing_enabled": user["points_billing_enabled"],
             })
         if p == "/api/auth/friends":
             row = self._user()

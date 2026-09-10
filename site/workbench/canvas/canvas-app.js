@@ -1860,9 +1860,10 @@
       }).join('')+'</div>':'')+(session.plan.warnings||[]).map(function(warning){return '<div class="nc-agent-warning">'+escapeHtml(warning)+'</div>';}).join('')
         +(actions.length?'<button class="nc-agent-apply" type="button" '+(session.applied||!canEditCanvas()?'disabled':'')+'>'+(session.applied?'已应用，可撤销':'确认应用所选操作')+'</button>':'')+'</div>';
     }
-    var quoteText=session.quoteLoading?'正在读取报价…':session.quoteError?session.quoteError:session.quote==null?'报价不可用':('本次 '+session.quote+' 点');
-    var balance=session.points==null?'':('余额 '+session.points+' 点');
-    var insufficient=session.quote!=null&&session.points!=null&&session.points<session.quote;
+    var billingEnabled=!(window.HQ&&typeof window.HQ.isPointsBillingEnabled==='function')||window.HQ.isPointsBillingEnabled();
+    var quoteText=session.quoteLoading?'正在读取报价…':session.quoteError?session.quoteError:session.quote==null?'服务暂不可用':(billingEnabled?'本次 '+session.quote+' 点':'内测期间免费');
+    var balance=billingEnabled&&session.points!=null?('余额 '+session.points+' 点'):'';
+    var insufficient=billingEnabled&&session.quote!=null&&session.points!=null&&session.points<session.quote;
     var starters=!session.messages.length?'<div class="nc-agent-starters">'
       +'<button class="nc-agent-starter" type="button" data-agent-prompt="结合我的 IP12 和当前画布，规划第一条最适合我的短视频内容，并告诉我接下来去哪个页面继续。"><b>结合 IP12 规划</b>从客户资料到第一条内容</button>'
       +'<button class="nc-agent-starter" type="button" data-agent-prompt="帮我搭建一个短视频脚本工作流：先创建脚本，再创建画面和视频生成草稿。"><b>搭建短视频流程</b>脚本、画面到视频草稿</button>'
@@ -1874,7 +1875,7 @@
       +'<div class="nc-agent-compose"><textarea data-agent-input maxlength="2000" placeholder="描述你想完成的内容，或 @ 选中的节点…" '+(session.pending||session.quote==null?'disabled':'')+'>'+escapeHtml(session.draft||'')+'</textarea>'
       +'<div class="nc-agent-quote"><span>'+escapeHtml(quoteText)+'</span><span>'+escapeHtml(balance)+'</span></div>'
       +(session.quoteError?'<button class="nc-agent-apply" type="button" data-agent-retry>重新读取报价</button>':'')
-      +'<button class="nc-agent-submit" type="button" '+(session.pending||session.quote==null||insufficient?'disabled':'')+'>'+(session.pending?'Agent 思考中…':insufficient?'点数不足':session.quote==null?'等待报价':('发送 · '+session.quote+' 点'))+'</button></div></div>';
+      +'<button class="nc-agent-submit" type="button" '+(session.pending||session.quote==null||insufficient?'disabled':'')+'>'+(session.pending?'Agent 思考中…':insufficient?'点数不足':session.quote==null?'等待服务':(billingEnabled?'发送 · '+session.quote+' 点':'发送'))+'</button></div></div>';
     var input=sideBody.querySelector('[data-agent-input]');
     var submit=sideBody.querySelector('.nc-agent-submit');
     if(submit) submit.onclick=function(){ submitAgentTurn(input&&input.value); };

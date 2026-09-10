@@ -13,7 +13,7 @@ import sqlite3
 import time
 import uuid
 
-from . import short_drama_duration, short_drama_storyboard
+from . import feature_flags, short_drama_duration, short_drama_storyboard
 
 
 QUALITY_ROUTES = {"quick_draft", "formal"}
@@ -462,7 +462,8 @@ def _build_plan(project, script_snapshot, quality_route):
     budget = int(project["point_budget"] or 0)
     spent = int(project["spent_points"] or 0)
     available = None if budget == 0 else max(0, budget - spent)
-    over_budget = available is not None and selected["estimated_points"] > available
+    over_budget = (feature_flags.points_billing_enabled() and available is not None
+                   and selected["estimated_points"] > available)
     checks.append({
         "key": "budget",
         "label": "预算",

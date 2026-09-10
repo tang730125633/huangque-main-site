@@ -32,6 +32,7 @@
     "level": "经营",
     "accent": "gold",
     "source": "coming",
+    "billing_only": true,
     "link": "recharge.html"
   },
   {

@@ -59,6 +59,17 @@ class SeedanceReferenceSafetyTests(unittest.TestCase):
         put.assert_not_called()   # 校验阶段不做任何网络上传
         self.assertEqual(refs, body["reference_images"])
 
+    def test_beta_mode_skips_reference_balance_precheck(self):
+        body = {"channel": "micro", "reference_images": ["data:image/png;base64,AA=="]}
+        with patch.object(self.video.feature_flags, "points_billing_enabled", return_value=False):
+            self.assertIsNone(self.video.xiaole_reference_precheck(
+                "xiaole_video", body, 40, known_points=0,
+            ))
+        with patch.object(self.video.feature_flags, "points_billing_enabled", return_value=True):
+            self.assertEqual(402, self.video.xiaole_reference_precheck(
+                "xiaole_video", body, 40, known_points=0,
+            )[0])
+
     def test_stage_seedance_references_uploads_private_and_returns_cos_keys(self):
         refs = [self._seedance_png_data(str(index).encode("ascii")) for index in range(4)]
         patches = self._stage_mocks()

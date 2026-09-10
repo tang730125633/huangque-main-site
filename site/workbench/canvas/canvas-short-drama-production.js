@@ -634,6 +634,9 @@
       return quote;
     }
     function assertProjectBudget(state,cost){
+      if(typeof globalThis!=='undefined'&&globalThis.HQ&&
+        typeof globalThis.HQ.isPointsBillingEnabled==='function'&&
+        !globalThis.HQ.isPointsBillingEnabled()) return;
       if(!state.point_budget) return;
       if(state.spent_points+state.reserved_points+cost<=state.point_budget) return;
       var error=new Error('短剧点数预算不足：请降低批量镜头数或调整项目预算');
