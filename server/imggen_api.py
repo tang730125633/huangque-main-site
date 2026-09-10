@@ -562,6 +562,24 @@ def _pending_job_scanner():
         time.sleep(30)
 
 
+def reclaim_orphaned_running():
+    """Resolve imggen-owned workers interrupted by a service restart."""
+    from content_domains import startup_recovery
+    return startup_recovery.reclaim_orphaned_running(
+        jdb=jdb,
+        service_owner=SERVICE_OWNER,
+        domains=lambda: (),
+        set_terminal=lambda job_id, status, **kwargs: _set_terminal(
+            job_id, status, error=kwargs.get("error"),
+            from_states=("running",),
+        ),
+        refund_once=_refund_once,
+        mark_video_asset_failed=lambda *_args: None,
+        requeue_job=lambda job_id: startup_recovery.requeue_running_job(
+            jdb, job_id),
+    )
+
+
 def start_job_workers():
     for i in range(JOB_WORKERS):
         threading.Thread(target=_job_worker, name="imggen-image-worker-%d" % i, daemon=True).start()
@@ -827,6 +845,7 @@ if __name__ == "__main__":
     pricing.init_db()
     from content_domains import jobs_store
     jobs_store.ensure_owner_column(jdb)   # 必须在 start_job_workers 之前：重排扫描按 owner 过滤
+    reclaim_orphaned_running()
     start_job_workers()
     print("huangque-imggen-api on 127.0.0.1:%d  models=%s workers=%d 单用户生图并发上限=%d"
           % (PORT, MODELS, JOB_WORKERS, MAX_USER_RUNNING_IMAGE))

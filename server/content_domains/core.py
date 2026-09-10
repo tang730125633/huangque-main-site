@@ -4418,6 +4418,12 @@ class H(BaseHTTPRequestHandler):
                         _idempotency_abort(user["username"], p, idem_key)
                         _short_drama_domain()._http_error(self, error)
                         return
+                    except (OSError, sqlite3.Error):
+                        _idempotency_abort(user["username"], p, idem_key)
+                        return self._send(503, {
+                            "detail": "渠道配置暂不可用，请稍后重试",
+                            "code": "channel_config_unavailable",
+                        })
                 if kind == "image" and body.get("short_drama_scene_binding"):
                     try:
                         _short_drama_domain().validate_scene_image_binding(

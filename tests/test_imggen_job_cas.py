@@ -105,6 +105,32 @@ class ImggenJobCasTests(unittest.TestCase):
         self.assertEqual(self._row(jid)['status'],'running')
         self.assertEqual(self.refunds, [])
 
+    def test_startup_marks_interrupted_managed_run_unknown_without_refund(self):
+        jid = self._insert(status='running')
+        binding = {'id': 'channel-one', 'version': 2}
+        with closing(self.m.jdb()) as connection:
+            connection.execute(
+                'UPDATE jobs SET payload=?,owner=? WHERE id=?',
+                (json.dumps({'prompt': 'test', '_channel_binding': binding}),
+                 self.m.SERVICE_OWNER, jid),
+            )
+            connection.commit()
+        channel_path = os.path.join(self.tmp.name, 'channels.db')
+        with patch.dict(os.environ, {'HQ_CHANNEL_DB': channel_path}):
+            from content_domains import channel_manager
+            with closing(channel_manager.db()) as connection:
+                now = time.time()
+                connection.execute(
+                    'INSERT INTO runs VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+                    ('run-one', 'channel-one', 2, 'task', 'running', now, now,
+                     None, 'provider request started', str(jid), 'provider-1', 0),
+                )
+                connection.commit()
+            self.assertEqual(0, self.m.reclaim_orphaned_running())
+            self.assertEqual('unknown', channel_manager.task_recovery_state(jid))
+        self.assertEqual('running', self._row(jid)['status'])
+        self.assertEqual([], self.refunds)
+
     def test_banana_submit_binds_quote_charge_and_idempotency(self):
         charges = []
 
