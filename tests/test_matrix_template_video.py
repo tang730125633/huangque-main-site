@@ -159,6 +159,48 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         })
         return values
 
+    def templates_with_fixed_skill(self):
+        values = self.templates_with_nine_grid()
+        names = {
+            self.module.TRIPLE_STRIP_TEMPLATE_ID: "三横屏开场·光栅快切",
+            self.module.YELLOW_BANNER_TEMPLATE_ID: "黄条标题·变幅冲击",
+        }
+        for template_id in self.module.FIXED_SKILL_TEMPLATE_IDS:
+            fixed = self.module.FIXED_SKILL_TEMPLATE_CONTRACTS[template_id]
+            semantic = self.module._SEMANTIC_CONTRACTS[fixed["variant"]]
+            values.append({
+                "id": template_id,
+                "name": names[template_id],
+                "description": "固定节奏 Skill 模板",
+                "tags": ["HyperFrames", "绑定音乐"],
+                "engine": "hyperframes",
+                "font_mode": "template_locked",
+                "font_selectable": False,
+                "variant": fixed["variant"],
+                "duration_mode": "fixed",
+                "fixed_duration_seconds": fixed["duration"],
+                "required_visuals": fixed["required_visuals"],
+                "required_visuals_max": fixed["required_visuals"],
+                "bgm_mode": "bound",
+                "bgm_optional": True,
+                "semantic_layout": {
+                    "version": 1,
+                    "max_width_px": max(
+                        item[2] for item in semantic.values()
+                    ),
+                    "layers": {
+                        layer: {
+                            "font_size_px": item[0],
+                            "font_weight": item[1],
+                            "max_width_px": item[2],
+                            "max_lines": item[3],
+                        }
+                        for layer, item in semantic.items()
+                    },
+                },
+            })
+        return values
+
     def test_public_catalog_accepts_transition_counts_but_exposes_only_approved_templates(self):
         response = {"templates": self.templates(), "fonts": [
             {"value": "", "label": "自动搭配", "source": "automatic"},
@@ -310,6 +352,29 @@ class MatrixTemplateVideoTests(unittest.TestCase):
              "max_width_px": 930, "max_lines": 4},
             nine_grid["semantic_layout"]["layers"]["bottom2"],
         )
+
+        with mock.patch.object(self.module, "_request", return_value={
+            "templates": self.templates_with_fixed_skill(),
+            "max_batch_size": 5,
+            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+        }):
+            expanded = self.module.public_templates(force=True)
+        self.assertEqual(22, len(expanded))
+        self.assertEqual(
+            list(self.module.FIXED_SKILL_TEMPLATE_IDS),
+            [item["id"] for item in expanded[-2:]],
+        )
+        for template_id in self.module.FIXED_SKILL_TEMPLATE_IDS:
+            item = next(value for value in expanded if value["id"] == template_id)
+            contract = self.module.FIXED_SKILL_TEMPLATE_CONTRACTS[template_id]
+            self.assertEqual("fixed", item["duration_mode"])
+            self.assertEqual(
+                contract["duration"], item["fixed_duration_seconds"],
+            )
+            self.assertEqual(
+                contract["required_visuals"], item["required_visuals"],
+            )
+            self.assertIs(item["bgm_optional"], True)
 
         for partial in (("v02",), ("v02", "v05")):
             with self.subTest(partial=partial), mock.patch.object(
@@ -512,7 +577,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             self.module.public_templates(force=True)
 
     def test_availability_accepts_supported_catalog_transition_counts(self):
-        for count in (2, 15, 19, 20):
+        for count in (2, 15, 19, 20, 22):
             with self.subTest(count=count), \
                  mock.patch.object(self.module.feature_flags, "is_enabled", return_value=True), \
                  mock.patch.object(
@@ -749,6 +814,62 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                 "bgm": False,
                 "duration": 8,
             }, "alice")
+
+    def test_fixed_skill_templates_keep_shared_copy_and_exact_duration(self):
+        templates = self.templates_with_fixed_skill()[-2:]
+        top = "团队8个人，每天产出100条短视频"
+        bottom = "评论区扣888"
+        semantic = {
+            "version": 1,
+            "model": "gpt-4.1-mini",
+            "source_sha256": self.module.matrix_template_semantics._source_sha256(
+                top, bottom,
+            ),
+            "top1_end": top.index("，"),
+            "top_break_after": [top.index("，")],
+            "bottom_break_after": [],
+        }
+        for template in templates:
+            with self.subTest(template=template["id"]):
+                duration = template["fixed_duration_seconds"]
+                expected = {
+                    "top_text": top,
+                    "bottom_text": bottom,
+                    "template_id": template["id"],
+                    "bgm": False,
+                    "duration": duration,
+                    "semantic_layout": semantic,
+                }
+                with mock.patch.object(self.module, "require_available"), \
+                     mock.patch.object(
+                         self.module, "public_templates", return_value=[template],
+                     ), mock.patch.object(
+                         self.module, "_request",
+                         return_value={"payload": expected},
+                     ) as request:
+                    result = self.module.validate_payload(
+                        {
+                            "top_text": top,
+                            "bottom_text": bottom,
+                            "template_id": template["id"],
+                            "bgm": False,
+                        },
+                        "alice", trusted_semantic_layout=semantic,
+                    )
+                self.assertEqual(expected, result)
+                request.assert_called_once_with(
+                    "POST", "/v1/preflight", expected, timeout=10,
+                )
+                with mock.patch.object(self.module, "require_available"), \
+                     mock.patch.object(
+                         self.module, "public_templates", return_value=[template],
+                     ), self.assertRaisesRegex(ValueError, "时长固定为"):
+                    self.module.validate_payload({
+                        "top_text": top,
+                        "bottom_text": bottom,
+                        "template_id": template["id"],
+                        "duration": 8,
+                    }, "alice")
 
     def test_validate_payload_uses_owned_voice_and_keeps_bgm_off_by_default(self):
         from content_domains import audio
@@ -3174,9 +3295,11 @@ class MatrixTemplatePageTests(unittest.TestCase):
         )
         self.assertEqual(17, len(re.findall(r"'ref-[0-9]{2}-[a-z0-9-]+'", source)))
         self.assertIn("'nine-grid-reveal'", source)
-        self.assertIn("cardCount !== 18", source)
-        self.assertIn("referenceCount !== 18", source)
-        self.assertIn("distinctReferencePreviews !== 18", source)
+        self.assertIn("'triple-strip-shutter'", source)
+        self.assertIn("'yellow-banner-zoom'", source)
+        self.assertIn("cardCount !== 20", source)
+        self.assertIn("referenceCount !== 20", source)
+        self.assertIn("distinctReferencePreviews !== 20", source)
 
     def test_inline_javascript_parses(self):
         page = (ROOT / "site/workbench/matrix-template.html").read_text(encoding="utf-8")
@@ -3468,14 +3591,16 @@ class MatrixTemplatePageTests(unittest.TestCase):
 
     def test_hidden_templates_are_not_rendered_in_the_picker(self):
         result = self.runtime("templateVisibility")
-        self.assertEqual(4, result["count"])
+        self.assertEqual(6, result["count"])
         self.assertNotIn("沉浸强标题", result["html"])
         self.assertNotIn("三段式活动海报", result["html"])
         self.assertIn("1. 默认原生大字", result["html"])
         self.assertIn("2. 极简标题", result["html"])
         self.assertIn("3. 参考模板", result["html"])
         self.assertIn("4. 九宫格开场·全屏展示", result["html"])
-        self.assertEqual(9, result["html"].count("<i></i>"))
+        self.assertIn("5. 三横屏开场·光栅快切", result["html"])
+        self.assertIn("6. 黄条标题·变幅冲击", result["html"])
+        self.assertEqual(15, result["html"].count("<i></i>"))
         self.assertEqual("1. 默认原生大字", result["selectedName"])
         self.assertEqual("native-bold", result["active"])
 
@@ -3515,6 +3640,30 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertFalse(result["body"]["bgm"])
         self.assertNotIn("duration", result["body"])
         self.assertIn("voiceover", result["body"])
+
+    def test_fixed_skill_templates_use_the_same_two_copy_inputs(self):
+        result = self.runtime("fixedSkillTemplateSubmission")
+        self.assertEqual(
+            "5. 三横屏开场·光栅快切", result["triple"]["selected"],
+        )
+        self.assertEqual(
+            "6. 黄条标题·变幅冲击", result["yellow"]["selected"],
+        )
+        self.assertEqual(
+            "triple-strip-shutter",
+            result["triple"]["body"]["template_id"],
+        )
+        self.assertEqual(
+            "yellow-banner-zoom",
+            result["yellow"]["body"]["template_id"],
+        )
+        for item in result.values():
+            self.assertEqual(
+                "团队8个人，每天产出100条短视频",
+                item["body"]["top_text"],
+            )
+            self.assertEqual("评论区扣888", item["body"]["bottom_text"])
+            self.assertNotIn("duration", item["body"])
 
     def test_voiceover_submission_can_enable_bgm_and_set_volume(self):
         result = self.runtime("voiceoverBgmSubmission")
