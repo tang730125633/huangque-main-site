@@ -2221,7 +2221,53 @@ class H(BaseHTTPRequestHandler):
             })
             return True
         if not attempt:
-            return False
+            try:
+                state, response, metadata = submission_idempotency.inspect_existing(
+                    jdb, username, endpoint, idem_key, [request_body],
+                )
+            except Exception:
+                self._send(503, {
+                    "detail": "原模板成片提交状态暂不可读",
+                    "code": "reconcile_pending", "retry_after_ms": 3000,
+                })
+                return True
+            if state == "replay":
+                replay = dict(response or {})
+                status = int(replay.pop("_http_status", 200))
+                self._send(status, replay)
+                return True
+            if state == "conflict":
+                self._send(409, {
+                    "detail": "原模板成片提交与当前请求不一致",
+                    "code": "idempotency_conflict",
+                })
+                return True
+            if state == "processing" and (
+                    int(metadata.get("updated_at") or 0)
+                    > int(time.time()) - matrix_template_submission.LEASE_SECONDS):
+                self._send(409, {
+                    "detail": "原提交仍在受理中，请稍后查询",
+                    "code": "idempotency_in_progress", "retry_after_ms": 1000,
+                })
+                return True
+            try:
+                submission_idempotency.abort(
+                    jdb, username, endpoint, idem_key,
+                )
+            except Exception:
+                self._send(503, {
+                    "detail": "原模板成片提交状态暂不可读",
+                    "code": "reconcile_pending", "retry_after_ms": 3000,
+                })
+                return True
+            self._send(404, {
+                "detail": "原提交未进入扣点阶段，请重新生成",
+                "code": "idempotency_not_found",
+                "operation_terminal": True,
+                "accepted": False,
+                "charged": False,
+            })
+            return True
         if (
             attempt.get("kind") != "matrix_template_video"
             or attempt.get("input") != request_body
@@ -4305,6 +4351,10 @@ class H(BaseHTTPRequestHandler):
                 if kind == "sora_video" and not idem_key: raise ValueError("Sora 视频提交必须提供 Idempotency-Key")
                 if kind == "xiaole_video" and str(body.get("channel") or "").lower() in {"micro", "omni", "minimax"} and not idem_key: raise ValueError("官方视频提交必须提供 Idempotency-Key")
             except feature_flags.FeatureDisabled as e:
+                matrix_template_unaccepted = bool(
+                    kind == "matrix_template_video"
+                    and matrix_template_idem_reserved
+                )
                 if still_idem_started:
                     _idempotency_abort(user["username"], p, idem_key)
                 if matrix_template_idem_reserved:
@@ -4315,9 +4365,15 @@ class H(BaseHTTPRequestHandler):
                 if kind == "script_to_video" and isinstance(body, dict) and body.get("pipeline") == "pixelle":
                     disabled["operation_terminal"] = True
                 if kind == "matrix_template_video":
-                    disabled.update({
-                        "code": "feature_disabled", "retry_after_ms": 5000,
-                    })
+                    disabled["code"] = "feature_disabled"
+                    if matrix_template_unaccepted:
+                        disabled.update({
+                            "operation_terminal": True,
+                            "accepted": False,
+                            "charged": False,
+                        })
+                    else:
+                        disabled["retry_after_ms"] = 5000
                 return self._send(503, disabled)
             except digital_human_oneclick.DigitalHumanRequestError as e:
                 return self._send(int(e.status or 400), {
