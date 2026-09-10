@@ -22,11 +22,13 @@ from . import feature_flags, matrix_template_semantics, pricing
 
 
 FEATURE_KEY = "matrix_template_video"
-TRANSITION_TEMPLATE_COUNTS = frozenset({2, 15, 19})
+TRANSITION_TEMPLATE_COUNTS = frozenset({2, 15, 19, 20})
 APPROVED_TEMPLATE_IDS = ("full-overlay-bold", "poster-split")
 REQUIRED_TEMPLATE_IDS = frozenset(APPROVED_TEMPLATE_IDS)
 REFERENCE_TEMPLATE_RE = re.compile(r"ref-[0-9]{2}-[a-z0-9-]{1,48}\Z")
 REFERENCE_TEMPLATE_COUNT = 17
+NINE_GRID_TEMPLATE_ID = "nine-grid-reveal"
+NINE_GRID_VARIANT = "nine-grid"
 API_URL = os.environ.get("MATRIX_TEMPLATE_API_URL", "http://127.0.0.1:8112").rstrip("/")
 API_TOKEN = os.environ.get("MATRIX_TEMPLATE_API_TOKEN", "").strip()
 JOB_TIMEOUT = max(60, min(1800, int(os.environ.get("MATRIX_TEMPLATE_JOB_TIMEOUT", "1200"))))
@@ -192,6 +194,10 @@ _SEMANTIC_CONTRACTS = {
         "top1": (74, 900, 996, 2), "top2": (64, 900, 996, 2),
         "top3": (118, 900, 996, 2), "bottom2": (84, 900, 996, 2),
     },
+    NINE_GRID_VARIANT: {
+        "top1": (82, 900, 800, 4), "top2": (82, 900, 800, 4),
+        "bottom2": (58, 900, 930, 4),
+    },
 }
 _ALL_REFERENCE_VARIANTS = {
     f"v{index:02d}" for index in range(1, 18)
@@ -237,9 +243,10 @@ def _semantic_contract(value, variant):
         raise RuntimeError("HyperFrames 语义排版能力无效")
     layers = value.get("layers")
     expected_layers = _SEMANTIC_CONTRACTS.get(str(variant or ""))
+    expected_max_width = 930 if variant == NINE_GRID_VARIANT else 996
     if (
         value.get("version") != 1
-        or value.get("max_width_px") != 996
+        or value.get("max_width_px") != expected_max_width
         or not isinstance(layers, dict)
         or expected_layers is None
         or set(layers) != set(expected_layers)
@@ -262,7 +269,11 @@ def _semantic_contract(value, variant):
         if actual not in allowed:
             raise RuntimeError("HyperFrames 语义排版能力无效")
         normalized[layer] = {key: int(value) for key, value in item.items()}
-    return {"version": 1, "max_width_px": 996, "layers": normalized}
+    return {
+        "version": 1,
+        "max_width_px": expected_max_width,
+        "layers": normalized,
+    }
 
 
 def _refresh_catalog(force=False):
@@ -313,8 +324,10 @@ def _refresh_catalog(force=False):
                 continue
             if font_mode not in {"selectable", "template_locked"}:
                 continue
-            if engine == "hyperframes" and not re.fullmatch(
-                r"v(?:0[1-9]|1[0-7])", variant
+            if (
+                engine == "hyperframes"
+                and variant != NINE_GRID_VARIANT
+                and not re.fullmatch(r"v(?:0[1-9]|1[0-7])", variant)
             ):
                 continue
             template = {
@@ -329,6 +342,12 @@ def _refresh_catalog(force=False):
             }
             if semantic_layout is not None:
                 template["semantic_layout"] = semantic_layout
+            for key in (
+                "duration_mode", "required_visuals",
+                "required_visuals_max", "bgm_mode", "bgm_optional",
+            ):
+                if key in raw:
+                    template[key] = raw[key]
             templates.append(template)
         template_ids = {item["id"] for item in templates}
         if (
@@ -341,10 +360,14 @@ def _refresh_catalog(force=False):
             item["id"]: item for item in templates
             if item["id"] in REQUIRED_TEMPLATE_IDS
         }
-        if len(templates) == 19:
+        if len(templates) in {19, 20}:
             references = [
                 item for item in templates
                 if REFERENCE_TEMPLATE_RE.fullmatch(item["id"])
+            ]
+            nine_grid = [
+                item for item in templates
+                if item["id"] == NINE_GRID_TEMPLATE_ID
             ]
             semantic_variants = {
                 item["variant"] for item in references
@@ -369,9 +392,28 @@ def _refresh_catalog(force=False):
                     for item in references
                     for layer in item["semantic_layout"]["layers"].values()
                 )
+                or len(nine_grid) != len(templates) - 19
             ):
                 raise RuntimeError("HyperFrames 模板目录不完整")
-            templates = [approved[template_id] for template_id in APPROVED_TEMPLATE_IDS] + references
+            if nine_grid:
+                item = nine_grid[0]
+                if (
+                    item.get("engine") != "hyperframes"
+                    or item.get("font_selectable") is not False
+                    or item.get("font_mode") != "template_locked"
+                    or item.get("variant") != NINE_GRID_VARIANT
+                    or item.get("duration_mode") != "fixed_12"
+                    or item.get("required_visuals") != 9
+                    or item.get("required_visuals_max") != 9
+                    or item.get("bgm_mode") != "bound"
+                    or item.get("bgm_optional") is not True
+                    or item.get("semantic_layout") is None
+                ):
+                    raise RuntimeError("九宫格模板目录不完整")
+            templates = (
+                [approved[template_id] for template_id in APPROVED_TEMPLATE_IDS]
+                + references + nine_grid
+            )
         else:
             templates = [approved[template_id] for template_id in APPROVED_TEMPLATE_IDS]
         fonts = [{"value": "", "label": "自动搭配", "source": "automatic"}]
@@ -518,6 +560,12 @@ def validate_payload(
     bgm = body.get("bgm", False if voiceover else True)
     if not isinstance(bgm, bool):
         raise ValueError("背景音乐设置无效")
+    if (
+        template.get("bgm_mode") == "bound"
+        and template.get("bgm_optional") is not True
+        and not bgm
+    ):
+        raise ValueError("当前模板的背景音乐不可关闭")
     bgm_volume = None
     if "bgm_volume" in body:
         if not voiceover or not bgm:
@@ -535,6 +583,10 @@ def validate_payload(
             raise ValueError("视频时长需要 8-15 秒")
     else:
         duration = None
+    if template.get("duration_mode") == "fixed_12":
+        if duration is not None and abs(duration - 12.0) > 0.001:
+            raise ValueError("当前模板时长固定为 12 秒")
+        duration = 12.0
     candidate = {
         "top_text": top, "bottom_text": bottom,
         "template_id": template_id, "bgm": bgm, "duration": duration,
