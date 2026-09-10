@@ -40,6 +40,8 @@ const templates = [
 ];
 const visibleTemplateIds = [...referenceIds, 'nine-grid-reveal'];
 const voicePreviewRequests = [];
+let dropShellOnce = false;
+let shellRequests = 0;
 
 function silentWav() {
   const sampleRate = 8000;
@@ -56,6 +58,15 @@ function silentWav() {
 const previewAudio = silentWav();
 
 function serve(request, response) {
+  if (request.url.startsWith('/workbench/cloud-shell.js')) {
+    shellRequests += 1;
+    if (dropShellOnce) {
+      dropShellOnce = false;
+      response.setHeader('Content-Type', 'text/javascript; charset=utf-8');
+      response.end('');
+      return;
+    }
+  }
   if (request.url.startsWith('/api/gen/matrix-template/templates')) {
     response.setHeader('Content-Type', 'application/json');
     response.end(JSON.stringify({
@@ -266,12 +277,36 @@ function hasOverflow(box) {
       };
       await page.close();
     }
+    dropShellOnce = true;
+    shellRequests = 0;
+    const recoveryPage = await browser.newPage({viewport: {width: 1440, height: 900}});
+    await recoveryPage.goto(url, {waitUntil: 'networkidle'});
+    await recoveryPage.locator('#hqSideNav').waitFor({state: 'visible'});
+    report.shellRecovery = await recoveryPage.evaluate(() => {
+      const ids = ['topText', 'bottomText', 'batchCount', 'generateBtn'];
+      return {
+        retryScripts: document.querySelectorAll('script[data-hq-shell-recovery="1"]').length,
+        sideNavVisible: document.getElementById('hqSideNav').getBoundingClientRect().width > 0,
+        controlsVisible: ids.every((id) => {
+          const node = document.getElementById(id);
+          const style = getComputedStyle(node);
+          const box = node.getBoundingClientRect();
+          return style.display !== 'none' && style.visibility !== 'hidden'
+            && Number(style.opacity) > 0 && box.width > 0 && box.height > 0;
+        }),
+      };
+    });
+    report.shellRecovery.requests = shellRequests;
+    if (process.env.MATRIX_QA_OUTPUT) {
+      await recoveryPage.screenshot({path: path.join(process.env.MATRIX_QA_OUTPUT, 'matrix-shell-recovery.png')});
+    }
+    await recoveryPage.close();
   } finally {
     await browser.close();
     server.close();
   }
   if (report.desktop.overflow.length || report.mobile.overflow.length) throw new Error(`preview overflow: ${JSON.stringify(report)}`);
-  for (const viewport of Object.values(report)) {
+  for (const viewport of [report.desktop, report.mobile]) {
     if (viewport.fontControlsPresent) throw new Error(`font selector is still visible: ${JSON.stringify(report)}`);
     const voice = viewport.voiceControl;
     if (!voice.initiallyHidden || voice.enabled.panelHidden || voice.enabled.selectedVoice !== 'vip_qa' || voice.enabled.options.join(',') !== 'vip_qa' || voice.enabled.previewDisabled || !voice.enabled.count.startsWith('12 /') || voice.enabled.speed !== '1.7' || voice.enabled.speedLabel !== '1.7x' || !voice.enabled.bgmEnabled || voice.enabled.bgmRowHidden || voice.enabled.bgmVolume !== '35' || voice.enabled.bgmVolumeLabel !== '35%' || voice.enabled.scrollWidth > voice.enabled.clientWidth || voice.enabled.previewRequests.length !== 1 || voice.enabled.previewRequests[0].authorization !== 'Bearer __cookie__' || voice.enabled.objectUrlsCreated !== 1 || voice.enabled.objectUrlsRevoked !== 1) throw new Error(`voiceover control is inaccurate: ${JSON.stringify(voice)}`);
@@ -288,6 +323,7 @@ function hasOverflow(box) {
   }
   const mobile = report.mobile.scroll;
   if (mobile.scrollHeight <= mobile.clientHeight || mobile.scrollTop <= 0 || mobile.top >= mobile.viewport || mobile.bottom <= 0) throw new Error(`mobile preview is unreachable: ${JSON.stringify(mobile)}`);
+  if (report.shellRecovery.requests !== 2 || report.shellRecovery.retryScripts !== 1 || !report.shellRecovery.sideNavVisible || !report.shellRecovery.controlsVisible) throw new Error(`shell recovery failed: ${JSON.stringify(report.shellRecovery)}`);
   process.stdout.write(JSON.stringify(report));
 })().catch(error => {
   console.error(error.stack || error);
