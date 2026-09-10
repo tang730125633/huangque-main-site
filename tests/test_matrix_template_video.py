@@ -3096,6 +3096,18 @@ class MatrixTemplatePageTests(unittest.TestCase):
         )
         self.assertIn("/api/gen/matrix-template/capability", shell)
 
+    def test_page_recovers_when_the_cached_shell_does_not_initialize(self):
+        page = (ROOT / "site/workbench/matrix-template.html").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(".hq-app{height:100vh;position:relative;z-index:1}", page)
+        self.assertIn('id="hqCloudShell"', page)
+        result = self.runtime("shellRecovery")
+        self.assertEqual(1, len(result["retries"]))
+        self.assertEqual("1", result["retries"][0]["marker"])
+        self.assertIn("cloud-shell.js?v=5482d257&recover=", result["retries"][0]["src"])
+        self.assertEqual(0, result["healthyRetries"])
+
     def test_openapi_documents_owned_voiceover_contract(self):
         docs = (ROOT / "docs/api/openapi.json").read_text(encoding="utf-8")
         site = (ROOT / "site/api-docs/openapi.json").read_text(encoding="utf-8")
