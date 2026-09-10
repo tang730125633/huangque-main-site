@@ -372,7 +372,7 @@
     _verifiedUser=verified===true&&username?Object.assign({},user):null;
     syncPointsUi();
     if(_verifiedUser&&!pointsUiEnabled()&&typeof location!=='undefined'&&
-       /\/(?:pricing|recharge)\.html$/.test(location.pathname||'')) location.replace('settings.html');
+       /\/(?:pricing|recharge)(?:\.html)?$/.test(location.pathname||'')) location.replace('settings.html');
     try{ window.dispatchEvent(new CustomEvent('hq:auth-changed',{detail:{username:_verifiedUser?_verifiedUser.username:'',user:verifiedCurrentUser(),verified:!!_verifiedUser}})); }catch(e){}
   }
   function invalidateAuthenticatedUi(){

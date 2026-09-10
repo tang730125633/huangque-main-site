@@ -26,7 +26,7 @@ class AccountMenuUiTest(unittest.TestCase):
     def test_beta_mode_hides_billing_ui_and_redirects_direct_pages(self):
         self.assertIn("data-points-ui", SHELL)
         self.assertIn("hq-points-ui-disabled", SHELL)
-        self.assertIn("/(?:pricing|recharge)\\.html$/.test", SHELL)
+        self.assertIn("/(?:pricing|recharge)(?:\\.html)?$/.test", SHELL)
 
     def test_payment_methods_use_local_brand_icons(self):
         for name in ("wechat", "alipay"):
