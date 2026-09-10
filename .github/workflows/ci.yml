@@ -65,6 +65,11 @@ jobs:
       - name: 检查静态资源版本戳
         run: python scripts/stamp_assets.py --check
 
+      - name: 后台渠道管理与任务证据回归
+        run: |
+          python -m unittest tests.test_channel_manager tests.test_runtime_observability tests.test_managed_channel_http_security tests.test_managed_channel_recovery tests.test_jobs_store tests.test_admin_request_logs tests.test_imggen_job_cas -q
+          node tests/test_admin_task_refresh.js
+
       - name: 编导自然对话与原生产边界回归
         env:
           PYTHONDONTWRITEBYTECODE: "1"

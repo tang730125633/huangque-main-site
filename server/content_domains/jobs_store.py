@@ -318,7 +318,11 @@ def create_paid_jobs(jdb, deduct, refund, kind, username, items, owner, reason_k
                      before_commit=None, charge_transaction_key="", before_charge=None,
                      submission_key=""):
     """一次预扣并原子写入一个或多个任务；失败补偿只维护这一处。"""
-    items = [(int(cost or 0), payload) for cost, payload in items]
+    from .channel_manager import capture
+    try:
+        items = [(int(cost or 0), capture(kind, payload)) for cost, payload in items]
+    except ValueError as exc:
+        raise PaidJobDeductError(400, str(exc)) from exc
     total = sum(cost for cost, _ in items)
     submission_ref = uuid.uuid4().hex
     reason = "job:%s submit:%s" % (reason_kind or kind, submission_ref)
@@ -380,6 +384,8 @@ def create_job_after_charge(jdb, kind, username, cost, payload, owner, before_co
     This intentionally has no billing side effect.  Its caller owns the persisted
     compensation state and must record refund intent before contacting Auth.
     """
+    from .channel_manager import capture
+    payload = capture(kind, payload)
     now = int(time.time())
     with closing(jdb()) as connection:
         try:

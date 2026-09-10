@@ -11,7 +11,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import provider_keys
+from . import provider_keys, runtime_observability as telemetry
 try:
     from providers.short_drama_visual.base import MINIMAX_PROMPT_MAX_CHARACTERS
 except ModuleNotFoundError:  # Imported through the `server` package in tests/tools.
@@ -54,7 +54,7 @@ class CreateOutcomeUnknown(RuntimeError):
 
 
 class MiniMaxRejected(RuntimeError):
-    pass
+    definitive_rejection = True
 
 
 class MiniMaxCredentialRejected(MiniMaxRejected):
@@ -344,7 +344,11 @@ def _poll(opener, task_id, duration, ratio, resolution, job_id=None, heartbeat=N
     last_error = None
     while now() < deadline:
         try:
-            payload = query_task(task_id, api_key, opener, api_base=api_base)
+            payload = telemetry.call(job_id, 'provider_query',
+                lambda: query_task(task_id, api_key, opener, api_base=api_base),
+                provider='minimax', model=MODEL, transport='direct',
+                host=urllib.parse.urlsplit(_api_base(api_base)).hostname,
+                provider_task_id=task_id)
             last_error = None
         except TransientMiniMaxError as exc:
             last_error = exc
@@ -389,19 +393,26 @@ def generate(prompt, reference_images=None, ratio="9:16", duration=5,
              provider_key_id=None, api_base=None):
     body = build_request(prompt, reference_images, ratio, duration, resolution)
     opener = _opener()
-    created = _request_json(opener, "POST", "/v2/video_generation", body,
-                            timeout=120, api_key=api_key, api_base=api_base)
+    created = telemetry.call(job_id, 'provider_submit',
+        lambda: _request_json(opener, "POST", "/v2/video_generation", body,
+                              timeout=120, api_key=api_key, api_base=api_base),
+        provider='minimax', model=MODEL, transport='direct',
+        host=urllib.parse.urlsplit(_api_base(api_base)).hostname)
     task_id = str(created.get("task_id") or "").strip()
     if not task_id:
+        telemetry.record(job_id, 'provider_submit', 'unknown', provider='minimax', model=MODEL,
+                         transport='direct', error_type='CreateOutcomeUnknown')
         raise CreateOutcomeUnknown("麦克视频提交结果未知：未返回任务编号")
+    telemetry.record(job_id, 'provider_accepted', 'recorded', provider='minimax',
+                     model=MODEL, provider_task_id=task_id, transport='direct',
+                     host=urllib.parse.urlsplit(_api_base(api_base)).hostname)
     if heartbeat:
         heartbeat(job_id, "minimax_queued", provider_video_id=task_id,
                   provider_key_id=provider_key_id, model=MODEL, error="")
-    return _poll(
+    return telemetry.call(job_id, 'generation', lambda: _poll(
         opener, task_id, body["duration"], body["ratio"], body["resolution"],
-        job_id, heartbeat, now, sleep, api_key, provider_key_id,
-        api_base,
-    )
+        job_id, heartbeat, now, sleep, api_key, provider_key_id, api_base),
+        provider='minimax', model=MODEL, provider_task_id=task_id, transport='direct')
 
 
 def resume(task_id, duration=5, ratio="9:16", job_id=None, heartbeat=None,
@@ -410,7 +421,7 @@ def resume(task_id, duration=5, ratio="9:16", job_id=None, heartbeat=None,
     task_id = str(task_id or "").strip()
     if not task_id:
         raise ValueError("恢复麦克视频缺少任务编号")
-    return _poll(
+    return telemetry.call(job_id, 'generation_resume', lambda: _poll(
         _opener(), task_id, int(duration), ratio, resolution, job_id, heartbeat,
-        now, sleep, api_key, provider_key_id, api_base,
-    )
+        now, sleep, api_key, provider_key_id, api_base),
+        provider='minimax', model=MODEL, provider_task_id=task_id, transport='direct')
