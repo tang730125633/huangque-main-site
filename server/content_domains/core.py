@@ -2221,7 +2221,53 @@ class H(BaseHTTPRequestHandler):
             })
             return True
         if not attempt:
-            return False
+            try:
+                state, response, metadata = submission_idempotency.inspect_existing(
+                    jdb, username, endpoint, idem_key, [request_body],
+                )
+            except Exception:
+                self._send(503, {
+                    "detail": "原模板成片提交状态暂不可读",
+                    "code": "reconcile_pending", "retry_after_ms": 3000,
+                })
+                return True
+            if state == "replay":
+                replay = dict(response or {})
+                status = int(replay.pop("_http_status", 200))
+                self._send(status, replay)
+                return True
+            if state == "conflict":
+                self._send(409, {
+                    "detail": "原模板成片提交与当前请求不一致",
+                    "code": "idempotency_conflict",
+                })
+                return True
+            if state == "processing" and (
+                    int(metadata.get("updated_at") or 0)
+                    > int(time.time()) - matrix_template_submission.LEASE_SECONDS):
+                self._send(409, {
+                    "detail": "原提交仍在受理中，请稍后查询",
+                    "code": "idempotency_in_progress", "retry_after_ms": 1000,
+                })
+                return True
+            try:
+                submission_idempotency.abort(
+                    jdb, username, endpoint, idem_key,
+                )
+            except Exception:
+                self._send(503, {
+                    "detail": "原模板成片提交状态暂不可读",
+                    "code": "reconcile_pending", "retry_after_ms": 3000,
+                })
+                return True
+            self._send(404, {
+                "detail": "原提交未进入扣点阶段，请重新生成",
+                "code": "idempotency_not_found",
+                "operation_terminal": True,
+                "accepted": False,
+                "charged": False,
+            })
+            return True
         if (
             attempt.get("kind") != "matrix_template_video"
             or attempt.get("input") != request_body
