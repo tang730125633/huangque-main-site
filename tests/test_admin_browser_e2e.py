@@ -162,10 +162,15 @@ class AdminBrowserE2ETests(unittest.TestCase):
         self.assertFalse(self.admin._e2e_run_passed(run))
 
     def test_admin_requires_browser_six_and_backend_eight(self):
-        source = (Path(__file__).resolve().parents[1] / "site/admin/index.html").read_text()
+        source = (Path(__file__).resolve().parents[1] / "site/admin/index.html").read_text(encoding="utf-8")
         self.assertIn("/api/admin/e2e/browser/run", source)
         self.assertIn("完整旅程已验收 · 6/6 + 8/8", source)
         self.assertIn("browser.job_id===run.job_id", source)
+
+    def test_channels_module_has_sidebar_entry(self):
+        source = (Path(__file__).resolve().parents[1] / "site/admin/index.html").read_text(encoding="utf-8")
+        self.assertEqual(source.count('data-module-tab="channels"'), 1)
+        self.assertEqual(source.count('data-module="channels"'), 1)
 
 
 if __name__ == "__main__":
