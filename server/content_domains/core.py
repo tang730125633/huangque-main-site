@@ -4305,6 +4305,10 @@ class H(BaseHTTPRequestHandler):
                 if kind == "sora_video" and not idem_key: raise ValueError("Sora 视频提交必须提供 Idempotency-Key")
                 if kind == "xiaole_video" and str(body.get("channel") or "").lower() in {"micro", "omni", "minimax"} and not idem_key: raise ValueError("官方视频提交必须提供 Idempotency-Key")
             except feature_flags.FeatureDisabled as e:
+                matrix_template_unaccepted = bool(
+                    kind == "matrix_template_video"
+                    and matrix_template_idem_reserved
+                )
                 if still_idem_started:
                     _idempotency_abort(user["username"], p, idem_key)
                 if matrix_template_idem_reserved:
@@ -4315,9 +4319,15 @@ class H(BaseHTTPRequestHandler):
                 if kind == "script_to_video" and isinstance(body, dict) and body.get("pipeline") == "pixelle":
                     disabled["operation_terminal"] = True
                 if kind == "matrix_template_video":
-                    disabled.update({
-                        "code": "feature_disabled", "retry_after_ms": 5000,
-                    })
+                    disabled["code"] = "feature_disabled"
+                    if matrix_template_unaccepted:
+                        disabled.update({
+                            "operation_terminal": True,
+                            "accepted": False,
+                            "charged": False,
+                        })
+                    else:
+                        disabled["retry_after_ms"] = 5000
                 return self._send(503, disabled)
             except digital_human_oneclick.DigitalHumanRequestError as e:
                 return self._send(int(e.status or 400), {

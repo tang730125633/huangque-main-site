@@ -3086,7 +3086,7 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertNotIn(".mt-action:disabled{opacity:.55;cursor:wait}", page)
         self.assertIn("button.disabled=!busy&&!activeTemplate", page)
         self.assertIn("if(!checking&&warnCopy())return", page)
-        self.assertIn("busy?'检查任务状态'", page)
+        self.assertIn("busy||hasPending?'检查任务状态'", page)
         self.assertIn("if(!pending){busy=false;sync();return}", page)
         self.assertIn("checking=busy||!!existing", page)
         self.assertIn("pendingIdentity(current)!==expectedIdentity", page)
@@ -3305,6 +3305,34 @@ class MatrixTemplatePageTests(unittest.TestCase):
         )
         self.assertEqual("/stale-recovered-video", result["src"])
         self.assertNotIn("点击生成", result["status"])
+        self.assertTrue(result["cleared"])
+
+    def test_error_response_with_job_id_switches_to_terminal_poll(self):
+        result = self.runtime("errorResponseWithJobId")
+        self.assertEqual(1, result["posts"])
+        self.assertEqual(1, result["polls"])
+        self.assertEqual("预检失败", result["error"])
+        self.assertEqual("已退款", result["refund"])
+        self.assertTrue(result["cleared"])
+
+    def test_stale_unavailable_submission_pauses_automatic_recovery(self):
+        result = self.runtime("staleUnavailablePause")
+        self.assertEqual(1, result["posts"])
+        self.assertEqual(0, result["polls"])
+        self.assertEqual("needs_attention", result["itemStatus"])
+        self.assertTrue(result["pending"])
+        self.assertEqual(0, result["activeTimers"])
+        self.assertIn("自动确认已暂停", result["status"])
+        self.assertFalse(result["action"]["busy"])
+        self.assertEqual("检查任务状态", result["action"]["text"])
+
+    def test_paused_submission_resumes_once_with_the_same_key(self):
+        result = self.runtime("pausedResume")
+        self.assertEqual(0, result["before"]["posts"])
+        self.assertIn("自动确认已暂停", result["before"]["status"])
+        self.assertEqual(1, result["posts"])
+        self.assertEqual(["matrix-template-paused-key"], result["keys"])
+        self.assertEqual("/paused-recovered-video", result["src"])
         self.assertTrue(result["cleared"])
 
     def test_pending_submission_is_never_replayed_for_another_account(self):
