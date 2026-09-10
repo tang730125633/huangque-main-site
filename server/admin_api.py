@@ -52,6 +52,9 @@ _DOMAIN_PACKAGE = (
 )
 runtime_observability = import_module(_DOMAIN_PACKAGE + ".runtime_observability")
 channel_manager = import_module(_DOMAIN_PACKAGE + ".channel_manager")
+channel_lifecycle = import_module(_DOMAIN_PACKAGE + ".channel_lifecycle")
+channel_parameters = import_module(_DOMAIN_PACKAGE + ".channel_parameters")
+task_termination = import_module(_DOMAIN_PACKAGE + ".task_termination")
 channel_runtime = import_module(_DOMAIN_PACKAGE + ".channel_runtime")
 egress = import_module(_DOMAIN_PACKAGE + ".egress")
 feature_flags = import_module(_DOMAIN_PACKAGE + ".feature_flags")
@@ -2786,6 +2789,21 @@ def provider_key_list():
         return {"configured": False, "items": [], "detail": str(exc)[:180]}
 
 
+def channel_workspace_overview():
+    result = channel_manager.overview()
+    try:
+        with closing(db()) as connection:
+            result['legacy_events'] = [dict(row) for row in connection.execute(
+                "SELECT actor,action,target,created_at AS created FROM admin_audit "
+                "WHERE action LIKE 'provider_key.%' OR action LIKE 'server_key.%' "
+                "OR action LIKE 'heygen.oauth.%' ORDER BY created_at DESC,id DESC LIMIT 50"
+            ).fetchall()]
+    except sqlite3.Error:
+        result['legacy_events'] = []
+        result['legacy_audit_error'] = '现有线路操作记录暂不可读'
+    return result
+
+
 def _admin_audit(actor, action, target, detail, conn=None):
     now = int(time.time())
     values = (
@@ -3221,6 +3239,17 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
         detail.update(_task_runtime_record(detail))
         for field in ("route", "result_reference", "delivery_verified", "artifact_check", "evidence_tone", "evidence_label", "stages"):
             item[field] = detail.get(field)
+    if any(item.get('source') == 'job' for item in items):
+        try:
+            with closing(sqlite3.connect('file:' + JOB_DB.as_posix() + '?mode=ro', uri=True, timeout=5)) as connection:
+                for item in items:
+                    if item.get('source') == 'job':
+                        item.update(task_termination.describe(connection, int(item['task_id'])))
+        except (sqlite3.Error, ValueError, TypeError):
+            for item in items:
+                if item.get('source') == 'job':
+                    item['can_terminate'] = False
+                    item['unavailable_reason'] = '终止状态暂不可读，请稍后刷新'
     out = {
         "items": items,
         "limit": limit,
@@ -8089,7 +8118,7 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "service": "huangque-admin"})
         if path == "/api/admin/channel-manager":
             try:
-                return self._send(200, channel_manager.overview())
+                return self._send(200, channel_workspace_overview())
             except Exception:
                 return self._send(503, {"detail": "渠道管理存储不可用"})
         if path == "/api/admin/services":
@@ -8383,6 +8412,19 @@ class H(BaseHTTPRequestHandler):
         user = self._admin()
         if not user:
             return
+        if path == '/api/admin/tasks/terminate':
+            try:
+                length = int(self.headers.get('Content-Length') or 0)
+                if not 0 < length <= 4096:
+                    raise ValueError('请求体大小无效')
+                body = self._body()
+                if not isinstance(body, dict) or set(body) != {'job_id', 'reason'}:
+                    raise ValueError('请求字段必须为 job_id 和 reason')
+                return self._send(200, _content_e2e_post('/api/gen/admin/tasks/terminate', self._token(), body))
+            except (ValueError, TypeError) as exc:
+                return self._send(400, {'detail': str(exc)})
+            except Exception:
+                return self._send(503, {'detail': '终止结果暂未确认，请刷新任务状态后重试'})
         if path == "/api/admin/heygen-oauth/start":
             try:
                 result = heygen_oauth.begin_authorization(
@@ -8694,7 +8736,12 @@ class H(BaseHTTPRequestHandler):
                 return self._send(413, {'detail':'渠道配置与素材总大小不得超过12MB'})
             actions = {'save':channel_manager.save, 'mapping':channel_manager.save_mapping,
                        'rollback':channel_manager.rollback, 'test':channel_runtime.start_test,
-                       'notifications':channel_manager.save_notifications}
+                       'notifications':channel_manager.save_notifications,
+                       'lifecycle':channel_lifecycle.mutate, 'legacy-lifecycle':channel_lifecycle.mutate_legacy,
+                       'unmap':channel_lifecycle.unmap,
+                       'parameters':channel_parameters.change,
+                       'parameter-preview':channel_parameters.preview,
+                       'parameter-state':lambda actor,body:channel_parameters.admin_state(str(body.get('id') or ''),body.get('profile'))}
             action = actions.get(path.rsplit('/',1)[-1])
             if not action:
                 return self._send(404, {'detail':'未知渠道操作'})

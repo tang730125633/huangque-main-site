@@ -324,6 +324,16 @@
     .server-console:not([hidden]){display:grid;gap:14px;padding:0;border:0;background:transparent;box-shadow:none}.server-command{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:18px;align-items:center;padding:19px 20px;border:1px solid rgba(240,190,85,.2);border-left:3px solid var(--gold);border-radius:9px;background:rgba(23,29,26,.86)}.server-command h2{margin:0;font-size:20px}.server-command p{margin:4px 0 0;color:var(--muted)}.server-live{display:flex;align-items:center;gap:12px;text-align:right}.server-live span{display:block;color:var(--muted);font-size:11px}.server-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));overflow:hidden;border:1px solid var(--line);border-radius:9px;background:rgba(23,29,26,.76)}.server-kpi{padding:13px 15px;border-right:1px solid var(--line)}.server-kpi:last-child{border-right:0}.server-kpi span{display:block;color:var(--muted);font-size:10px}.server-kpi b{display:block;margin-top:2px;font-size:24px;font-variant-numeric:tabular-nums}.server-kpi.attention b{color:var(--error)}.network-rail{padding:16px;border:1px solid var(--line);border-radius:9px;background:rgba(23,29,26,.76)}.network-rail-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:11px}.network-rail-head h3{margin:0;font-size:14px}.network-rail-head span{color:var(--muted);font-size:11px}.network-path{display:grid;grid-template-columns:minmax(0,1fr) 56px minmax(0,1fr);align-items:stretch}.network-arrow{display:grid;place-items:center;color:var(--gold);font-size:22px}.server-network-node{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:11px;align-items:center;padding:13px;border:1px solid var(--line);border-radius:8px;background:#121713}.server-network-node.primary{border-color:rgba(240,190,85,.32)}.network-node-icon,.server-detail-icon{width:34px;height:34px;display:grid;place-items:center;border:1px solid var(--line);border-radius:7px;background:var(--surface2);color:var(--gold)}.network-node-icon svg,.server-detail-icon svg,.server-resource-label svg{width:18px;height:18px}.server-network-node b{display:block}.server-network-node small{display:block;margin-top:2px;color:var(--muted)}.server-state{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:11px;font-weight:800}.server-state:before{content:"";width:7px;height:7px;border-radius:50%;background:var(--muted)}.server-state[data-state="online"]{color:var(--ok)}.server-state[data-state="online"]:before{background:var(--ok);box-shadow:0 0 8px rgba(79,212,126,.42)}.server-state[data-state="warning"]{color:var(--warn)}.server-state[data-state="warning"]:before{background:var(--warn)}.server-state[data-state="offline"]{color:var(--error)}.server-state[data-state="offline"]:before{background:var(--error)}.server-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.server-card{min-width:0;padding:15px;border:1px solid var(--line);border-radius:9px;background:rgba(23,29,26,.86)}.server-card[data-state="warning"]{border-color:rgba(217,155,53,.35)}.server-card[data-state="offline"]{border-color:rgba(224,107,100,.32);opacity:.78}.server-card-head{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:11px;align-items:center;padding-bottom:12px;border-bottom:1px solid var(--line)}.server-card-title{min-width:0}.server-card-title h3{margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:15px}.server-card-title p{margin:2px 0 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:11px}.server-region{color:var(--gold);font-size:12px;font-weight:800}.server-resources{display:grid;gap:10px;padding:13px 0}.server-resource{display:grid;grid-template-columns:82px minmax(0,1fr) 46px;gap:9px;align-items:center}.server-resource-label{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:11px}.server-resource-label svg{width:15px;height:15px}.server-resource b{text-align:right;font-size:11px;font-variant-numeric:tabular-nums}.server-meter{height:7px;overflow:hidden;border:1px solid var(--line);border-radius:6px;background:#0e1310}.server-meter i{display:block;height:100%;border-radius:4px;background:linear-gradient(90deg,var(--primary),var(--gold))}.server-meter i.high{background:linear-gradient(90deg,var(--warn),var(--error))}.server-facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-top:1px solid var(--line)}.server-fact{min-width:0;padding:11px 9px 0;border-right:1px solid var(--line)}.server-fact:first-child{padding-left:0}.server-fact:last-child{padding-right:0;border-right:0}.server-fact span{display:flex;align-items:center;gap:5px;color:var(--muted);font-size:10px}.server-fact span svg{width:14px;height:14px}.server-fact b{display:block;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-variant-numeric:tabular-nums}.server-alert{margin-top:11px;padding:8px 10px;border-left:2px solid var(--warn);background:rgba(217,155,53,.06);color:#f3c979;font-size:11px}.server-empty{grid-column:1/-1}.server-os{display:flex;align-items:center;gap:6px;margin-top:10px;color:var(--muted);font-size:10px}.server-os svg{width:14px;height:14px}
     @media(max-width:900px){.server-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.server-kpi:nth-child(2){border-right:0}.server-kpi:nth-child(-n+2){border-bottom:1px solid var(--line)}.server-grid{grid-template-columns:1fr}}
     @media(max-width:560px){.server-command{grid-template-columns:1fr}.server-live{align-items:stretch;flex-direction:column;text-align:left}.network-path{grid-template-columns:1fr}.network-arrow{height:32px;transform:rotate(90deg)}.server-network-node{grid-template-columns:auto minmax(0,1fr)}.server-network-node .server-state{grid-column:2}.server-facts{grid-template-columns:1fr}.server-fact{padding:9px 0;border-right:0;border-bottom:1px solid var(--line)}.server-fact:last-child{border-bottom:0}.server-resource{grid-template-columns:76px minmax(0,1fr) 42px}}
+.task-stop{float:left;position:relative;z-index:1;margin:7px 16px;padding:5px 12px;background:transparent;color:#f3a39b;border:1px solid #67413d;border-radius:6px;cursor:pointer}
+.task-stop:hover{background:#392522}.task-stop-unavailable{float:left;margin:13px 16px;color:#8a9690;font-size:11px}
+#terminateTaskDialog{width:min(520px,90vw);box-sizing:border-box;background:#151d18;color:#e5eae5;border:1px solid #455046;border-radius:14px;padding:24px}
+#terminateTaskDialog::backdrop{background:#0009}#terminateTaskDialog h2{margin-top:0}#terminateTaskInfo{white-space:pre-line;line-height:1.8;font-size:13px;color:#b6c1b8}
+#terminateTaskDialog textarea{box-sizing:border-box;width:100%;margin:8px 0;background:#0e1511;color:#e5eae5;border:1px solid #455046;border-radius:8px;padding:10px;font:inherit;resize:vertical}
+.termination-note{color:#edc581;font-size:13px;line-height:1.7}.termination-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:16px}.termination-actions button{padding:9px 16px;border-radius:7px;cursor:pointer;border:1px solid #455046;background:#202b23;color:#eee}#terminateTaskSubmit{background:#743f36;border-color:#a15b4f}#terminateTaskSubmit:disabled{opacity:.5;cursor:wait}#terminateTaskError{color:#f3a39b;font-size:13px;min-height:20px}
+/* Unified channel catalog: stable names, wrapped evidence, responsive detail panel. */
+.cm-categories{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0}.cm-categories button.active,[data-cm-tab].active,[data-edit-pane].active{border-color:var(--gold);color:var(--gold);background:rgba(224,180,62,.08)}.cm-categories small{margin-left:7px;color:var(--muted)}
+.cm-row-actions{display:flex;gap:6px;flex-wrap:wrap;min-width:210px}.cm-row-actions button{padding:6px 10px}.cm-row-actions details{padding:6px}.cm-row-actions summary{cursor:pointer;color:var(--muted)}.cm-row-actions details button{margin-top:8px}.cm-lifecycle-dialog{width:min(520px,90vw);background:var(--panel,#151c18);color:var(--text,#e4e9e3);border:1px solid #465148;border-radius:12px;padding:24px}.cm-lifecycle-dialog::backdrop{background:#0009}.cm-lifecycle-dialog textarea{width:100%;box-sizing:border-box;min-height:80px}.cm-lifecycle-dialog p{white-space:pre-line;line-height:1.7}.cm-table-scroll{overflow-x:auto;max-width:100%}.cm-table-scroll table{width:100%;min-width:650px}.cm-table-scroll td{vertical-align:top;white-space:normal;overflow-wrap:anywhere;max-width:350px}.cm-table-scroll td>b{display:block;font-size:14px}.cm-table-scroll small{display:block;color:var(--muted);font-size:11px;margin-top:6px}.cm-evidence{display:inline-block;white-space:normal;line-height:1.6}.cm-evidence.warn{color:#e6c77b}#cmSearch{min-width:200px;flex:1}
+.cm-drawer-open{overflow:hidden}.cm-drawer-layer{position:fixed;inset:0;background:#0008;z-index:1100;display:flex;justify-content:flex-end}.cm-drawer-layer[hidden]{display:none}.cm-drawer{width:min(900px,95vw);height:100%;overflow:auto;background:var(--panel,#121b15);border-left:1px solid var(--line);padding:24px;box-sizing:border-box;box-shadow:-16px 0 60px #0005}.cm-drawer-head{display:flex;justify-content:space-between;align-items:center;gap:20px;position:sticky;top:-24px;background:var(--panel,#121b15);padding:18px 0;z-index:2}.cm-drawer-head h2{overflow-wrap:anywhere}.cm-flow{padding:14px;border:1px solid var(--line);border-radius:8px;line-height:1.8;overflow-wrap:anywhere}.cm-drawer h3{margin-top:24px}.cm-drawer .cm-form{margin-top:0}.cm-drawer .actions{flex-wrap:wrap}.cm-drawer .channel-title{min-width:170px}
 </style>
 </head>
 <body class="admin-locked">
@@ -351,7 +361,6 @@
       <div class="nav-group">
         <div class="nav-label">系统管理</div>
         <button class="side-nav-item" data-module-tab="servers">服务器监控</button>
-        <button class="side-nav-item" data-module-tab="channels">渠道与密钥</button>
         <button class="side-nav-item" data-module-tab="features">接单与定价</button>
         <button class="side-nav-item" data-module-tab="managedChannels">渠道管理</button>
       </div>
@@ -557,14 +566,18 @@
         <div id="operationsDeveloper"></div>
       </section>
       <section class="card span12 module-card" data-module="managedChannels" hidden>
-        <div class="section-head"><div><h2>渠道管理</h2><p class="muted">前台功能 → 模型映射 → 实际渠道 → 执行证据</p></div><div class="actions"><button id="cmReload">刷新</button><button data-module-switch="channels">现有密钥号池</button><button class="primary" id="cmNew">新增渠道</button></div></div>
-        <p class="muted">启用状态与健康度分别显示；改配置仅作用于新任务。统计范围：最近 24 小时。每日测试按北京时间执行。</p>
-        <div id="cmStatus" role="status"></div><div id="cmList"></div>
-        <div id="cmEditor" hidden></div>
-        <div class="section-head"><h3>模型映射</h3><button id="cmMapNew">新增映射</button></div><p class="muted">前台标识使用现有请求的 channel（视频）或 model（图片）。展示名称只作为后台说明，不修改前台页面文案。备用渠道由管理员手动切换。</p><div id="cmMappings"></div><div id="cmMappingEditor" hidden></div>
-        <details class="channel-detail"><summary>通知设置与发送状态</summary><div id="cmNotifications" style="padding:14px"></div></details>
-        <details class="channel-detail" open><summary>最近测试与任务</summary><div id="cmRuns" style="padding:14px"></div></details>
-        <details class="channel-detail"><summary>配置操作记录</summary><div id="cmAudit" style="padding:14px"></div></details>
+        <div class="section-head"><div><h2>渠道管理</h2><p class="muted">按功能找渠道，在详情中配置、测试和排查问题。</p></div><div class="actions"><button id="cmReload">刷新</button><button class="primary" id="cmNew">新增渠道</button></div></div>
+        <nav class="module-subnav" aria-label="渠道管理页面"><button data-cm-tab="catalog" class="active">渠道列表</button><button data-cm-tab="mapping">功能映射</button><button data-cm-tab="health">测试与健康</button><button data-cm-tab="audit">操作记录</button></nav>
+        <div id="cmStatus" role="status"></div>
+        <div data-cm-panel="catalog">
+          <nav id="cmCategories" class="cm-categories" aria-label="功能分类"></nav>
+          <div class="toolbar"><input class="field" id="cmSearch" type="search" aria-label="搜索渠道" placeholder="搜索渠道、供应商、模型或功能"><select id="cmSupplier" aria-label="供应商筛选"></select><select id="cmTransport" aria-label="接入方式"><option value="">全部接入方式</option><option value="official">官方直连</option><option value="relay">中转 API</option><option value="unknown">未标注</option></select><select id="cmState" aria-label="渠道状态"><option value="">全部状态</option><option value="enabled">使用中</option><option value="disabled">已停用</option><option value="attention">需要检查</option><option value="deleted">回收站</option></select><label><input id="cmHistory" type="checkbox"> 包含历史 / 停用</label></div>
+          <p id="cmCount" class="muted" role="status"></p><div id="cmList"></div>
+        </div>
+        <div data-cm-panel="mapping" hidden><div class="section-head"><h3>功能映射</h3><button id="cmMapNew">新增映射</button></div><p class="muted">前台功能 → 请求标识 → 实际渠道与模型。只改变后续任务路由，不改前台展示名称。备用渠道手动切换。</p><div id="cmMappings"></div><p class="muted">现有供应商的固定功能关系在“渠道列表 → 详情”查看；尚未接入托管协议的功能不支持通用映射。</p></div>
+        <div data-cm-panel="health" hidden><h3>测试与健康</h3><p class="muted">连接、鉴权和生成结果分别记录。证据有效期 24 小时；未验证、过期或缺少证据不会显示为通过。统计取最近 24 小时，定时任务使用北京时间。</p><div id="cmHealth"></div><h3>通知设置与发送状态</h3><div id="cmNotifications"></div><h3>最近测试与任务</h3><div id="cmRuns"></div></div>
+        <div data-cm-panel="audit" hidden><h3>配置操作记录</h3><p class="muted">托管渠道版本与映射变更。号池密钥操作沿用现有管理员审计。</p><div id="cmAudit"></div></div>
+        <div id="cmDrawer" class="cm-drawer-layer" hidden><aside class="cm-drawer" role="dialog" aria-modal="true" aria-labelledby="cmDrawerTitle"><div class="cm-drawer-head"><h2 id="cmDrawerTitle">渠道详情</h2><button id="cmDrawerClose" aria-label="关闭渠道详情">关闭</button></div><div id="cmDetail"></div><div id="cmEditor" hidden></div><div id="cmMappingEditor" hidden></div></aside></div>
       </section>
       <section class="card span12 module-card" data-module="channels" hidden>
         <div class="section-head">
@@ -801,6 +814,12 @@
 </div>
 <div class="toast" id="toast"></div>
 <script src="/workbench/hq-icons-duotone.js"></script>
+<link rel="stylesheet" href="/workbench/channel-parameters.css">
+<link rel="stylesheet" href="/admin/channel-parameters.css">
+<script src="/workbench/channel-parameter-controls.js"></script>
+<script src="/admin/channel-parameters.js"></script>
+<script src="/admin/channel-catalog.js"></script>
+<script src="/admin/channel-workspace.js"></script>
 <script src="/admin/channel-manager.js"></script>
 <script>
 (function(){
@@ -1125,21 +1144,11 @@
     providerBaseDefaults=data.base_defaults||providerBaseDefaults;
     loadHeygenOAuthStatus();
     el('providerKeyState').textContent=data.configured?'保险箱已启用':'保险箱未配置';
-    var channelCards=(envItems||[]).map(function(meta){
-      var pool=meta.pool_provider?items.filter(function(k){return k.provider===meta.pool_provider}):[];
-      var evidence=registryRouteEvidence({key:meta.key},state.data||{keys:envItems,provider_keys:data});
-      var retired=meta.accepts_new_jobs===false;
-      var cardState=retired?'warning':(evidence.state==='ok'?'healthy':(evidence.state==='fail'?'missing':'warning'));
-      var features=(meta.features||[]).map(function(x){return '<span>'+esc(x)+'</span>'}).join('');
-      if(retired&&meta.replacement)features+='<span>替代：'+esc(meta.replacement)+'</span>';
-      return '<article class="channel-map-card" role="listitem" data-channel="'+esc(meta.key)+'" data-state="'+cardState+'"><div class="channel-map-title"><b>'+esc(meta.name)+'</b><span class="pill '+(retired?'neutral':evidence.state)+'">'+(retired?'已下架':esc(evidence.label))+'</span></div><div class="channel-map-category">'+esc(meta.category||'API 服务')+'</div><div class="channel-map-features">'+features+'</div><div class="channel-map-meta"><span>接口 '+Number((meta.endpoints||[]).length)+'</span><span>'+(retired?'停止接新单':'线路 '+Number(pool.length+(meta.configured?1:0)))+'</span></div></article>';
-    }).join('');
-    var mapped=(envItems||[]).reduce(function(n,meta){return n+(meta.features||[]).length},0),configuredCount=(envItems||[]).filter(function(meta){return meta.configured||(meta.pool_provider&&items.some(function(k){return k.provider===meta.pool_provider}))}).length;
-    el('channelMap').innerHTML='<div class="channel-map-head"><div><h3>API 渠道关系图</h3><p>黄雀前台功能 → 真实供应商 → 当前线路状态。密钥仍在下方明细中默认脱敏。</p></div><div class="channel-map-stats"><div class="channel-map-stat"><b>'+Number((envItems||[]).length)+'</b><span>供应商渠道</span></div><div class="channel-map-stat"><b>'+configuredCount+'</b><span>已配置</span></div><div class="channel-map-stat"><b>'+mapped+'</b><span>功能映射</span></div></div></div><div class="channel-map-core"><b>黄雀前台产品能力</b><span>统一调度 · 账号权限 · 点数与任务记录</span></div><div class="channel-map-trunk" aria-hidden="true"></div><div class="channel-map-grid" role="list">'+channelCards+'</div>';
+    el('channelMap').innerHTML='';
     function serverRow(meta,features,scope,baseHost){
       var src=(meta.sources||[]).map(function(s){return '<code>'+esc(s.env)+'</code>'}).join('、')||'未检测到变量';
       var retired=meta.accepts_new_jobs===false;
-      var test=retired?'<span class="pill neutral">历史只读</span>':(meta.pingable?'<button class="mini" data-ping-key="'+esc(meta.key)+'">测试</button> <span data-ping-out="key:'+esc(meta.key)+'"></span>':'<span class="muted">需服务器签名检测</span>');
+      var test=retired?'<span class="pill neutral">停止接新单</span>':(meta.pingable?'<button class="mini" data-ping-key="'+esc(meta.key)+'">测试</button> <span data-ping-out="key:'+esc(meta.key)+'"></span>':'<span class="muted">需服务器签名检测</span>');
       var reveal=meta.configured?'<button class="mini" data-server-key-reveal="'+esc(meta.key)+'" data-last4="'+esc(meta.last4)+'">查看 5 秒</button>':'';
       if(retired)reveal='';
       var label=scope==='图片 / 直连'?'服务器环境变量（图片）':'服务器环境变量（直连）';
@@ -1183,6 +1192,24 @@
   }
   function taskStageClass(value){return ['passed','failed','running','recorded'].indexOf(value)>=0?value:'unknown'}
   function taskRawField(label,value,title){return '<div><span>'+esc(label)+'</span><code title="'+esc(title||value||'')+'">'+esc(value||'未采集')+'</code></div>'}
+  function openTaskTermination(x){
+    var dialog=el('terminateTaskDialog');
+    el('terminateTaskInfo').textContent='用户 '+(x.user||'未归属')+' · 任务 #'+x.task_id+' · '+(x.func||'')+'\n当前状态：'+(x.evidence_label||'未采集')+' · 耗时：'+fmtDuration(x.duration_sec||0)+'\n供应商工单：'+(x.provider_task_id||'未采集')+'\n任务点数：'+Number(x.cost||0);
+    el('terminateTaskReason').value='';el('terminateTaskError').textContent='';
+    var submit=el('terminateTaskSubmit');submit.disabled=false;
+    el('terminateTaskForm').onsubmit=function(event){
+      event.preventDefault();if(submit.disabled)return;
+      var reason=el('terminateTaskReason').value.trim();
+      if(reason.length<2){el('terminateTaskError').textContent='请填写至少 2 字的终止原因';return}
+      submit.disabled=true;el('terminateTaskError').textContent='正在提交…';
+      api('/api/admin/tasks/terminate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job_id:Number(x.task_id),reason:reason})})
+        .then(function(){dialog.close();toast('终止请求已记录，请以任务的停止和退款状态为准');loadReqLogs(false)})
+        .catch(function(e){el('terminateTaskError').textContent=e.message})
+        .finally(function(){submit.disabled=false});
+    };
+    el('terminateTaskCancel').onclick=function(){dialog.close()};
+    dialog.showModal();el('terminateTaskReason').focus();
+  }
   function renderTaskCard(x){
       var errorCatalog={};
       var isJob=x.source==='job';
@@ -1190,6 +1217,7 @@
       var type=isJob?'生产任务':'HTTP 请求';
       var tone=isJob?(x.evidence_tone==='fail'?'fail':(x.evidence_tone==='ok'?'ok':(x.evidence_tone==='running'||x.evidence_tone==='warn'?'warn':'neutral'))):(x.cat==='fail'?'fail':'ok');
       var statusLabel=isJob?(x.evidence_label||'任务证据未采集'):('HTTP '+String(x.status_text||'-'));
+      if(x.termination){statusLabel=x.termination.platform_state==='stopped'?'已终止 · 平台已停止':'终止中 · 等待执行退出';tone='neutral'}
       var identity=isJob?('用户 '+String(x.user&&x.user!=='-'?x.user:'未归属')+' · 任务 #'+String(x.task_id||'未采集')):(x.request_id?String(x.request_id).slice(0,16):'无请求号');
       var route=[];
       if(x.user&&x.user!=='-')route.push('<span class="recorded">用户 '+esc(x.user)+'</span>');else route.push('<span>用户未归属</span>');
@@ -1204,6 +1232,10 @@
         if(x.method)route.push('<span>'+esc(x.method)+'</span>');
       }
       var stages=isJob?'<div class="task-stages" aria-label="任务链路">'+(x.stages||[]).map(function(stage){return '<div class="task-stage '+taskStageClass(stage.state)+'" title="'+esc(stage.detail||'')+'">'+esc(stage.name||stage.key)+'</div>'}).join('')+'</div>':'<div class="task-stages"><div class="task-stage '+(x.cat==='fail'?'failed':'passed')+'">请求响应</div><div class="task-stage unknown">业务任务</div><div class="task-stage unknown">供应商</div><div class="task-stage unknown">生成终态</div><div class="task-stage unknown">成品交付</div></div>';
+      if(x.termination){
+        route.push('<span>'+esc(x.termination.remote_state==='not_submitted'?'远端未提交':'远端停止未确认')+'</span>');
+        route.push('<span>'+esc({not_needed:'无需退款',pending:'退款待确认',refunded:'已退款'}[x.termination.refund_state]||'退款状态未知')+'</span>');
+      }
       var detail;
       if(isJob){
         var traces=x.runtime_trace||[], stageNames={provider_submit:'提交供应商',provider_query:'查询供应商结果',generation:'生成处理',generation_resume:'恢复生成查询',download:'下载成品',artifact_download:'下载成品'};
@@ -1232,7 +1264,9 @@
         var errorInfo=errorCatalog[x.hq_code]||{};
         detail='<div class="task-raw">'+taskRawField('请求号',x.request_id)+taskRawField('路径',x.path,x.path)+taskRawField('来源 IP',x.ip,x.ua||x.ip)+taskRawField('错误说明',errorInfo.message||x.hq_code||'无')+'</div>';
       }
-      return '<article class="task-row" data-task-key="'+esc(x.source+':'+(x.task_id||x.request_id||x.time+' '+x.path))+'" data-state="'+esc(x.cat||'unknown')+'"><div class="task-row-main"><div class="task-title"><div class="task-title-top"><span class="pill neutral">'+type+'</span><h3>'+esc(x.func||'未识别功能')+'</h3><span class="pill '+tone+'">'+esc(statusLabel)+'</span></div><small><code>'+esc(identity)+'</code> · '+esc(x.time||'-')+'</small><div class="task-route">'+route.join('')+'</div></div>'+stages+'<div class="task-metrics"><div class="task-metric"><span>处理耗时</span><b>'+(x.duration_sec!=null?esc(fmtDuration(x.duration_sec)):'未采集')+'</b></div><div class="task-metric"><span>任务点数</span><b>'+(x.cost!=null?Number(x.cost).toLocaleString():'-')+'</b></div></div></div><details class="task-evidence"><summary>同一次执行 · '+esc(isJob?'不把完成冒充交付':'原始请求证据')+'</summary>'+detail+'</details></article>';
+      if(x.termination){var t=x.termination;detail='<div class="task-proof-summary"><b>管理员终止记录</b><p>'+esc(t.actor)+' · '+esc(new Date(Number(t.requested_at)*1000).toLocaleString())+' · '+esc(t.reason)+'</p></div>'+detail}
+      var action=isJob&&x.can_terminate?'<button type="button" class="task-stop" data-terminate-task="'+esc(x.task_id)+'">终止任务</button>':(isJob&&x.cat==='running'&&!x.termination?'<span class="task-stop-unavailable">'+esc(x.unavailable_reason||'该任务暂不支持终止')+'</span>':'');
+      return '<article class="task-row" data-task-key="'+esc(x.source+':'+(x.task_id||x.request_id||x.time+' '+x.path))+'" data-state="'+esc(x.cat||'unknown')+'"><div class="task-row-main"><div class="task-title"><div class="task-title-top"><span class="pill neutral">'+type+'</span><h3>'+esc(x.func||'未识别功能')+'</h3><span class="pill '+tone+'">'+esc(statusLabel)+'</span></div><small><code>'+esc(identity)+'</code> · '+esc(x.time||'-')+'</small><div class="task-route">'+route.join('')+'</div></div>'+stages+'<div class="task-metrics"><div class="task-metric"><span>处理耗时</span><b>'+(x.duration_sec!=null?esc(fmtDuration(x.duration_sec)):'未采集')+'</b></div><div class="task-metric"><span>任务点数</span><b>'+(x.cost!=null?Number(x.cost).toLocaleString():'-')+'</b></div></div></div>'+action+'<details class="task-evidence"><summary>同一次执行 · '+esc(isJob?'不把完成冒充交付':'原始请求证据')+'</summary>'+detail+'</details></article>';
   }
   function renderActivity(d){
     var technicalExpanded=new Set(Array.from(el('reqBox').querySelectorAll('.task-technical[open]')).map(function(node){return node.closest('[data-task-key]').getAttribute('data-task-key')}));
@@ -1252,6 +1286,7 @@
     el('reqBox').innerHTML='<div class="task-stream">'+items.map(function(x){return renderTaskCard(x);
     }).join('')+'</div><div class="pager"><button data-req-page="-1" '+(state.reqPage<=1?'disabled':'')+'>上一页</button><span class="pager-info">第 '+state.reqPage+' / '+pages+' 页 · 每页 '+state.reqPageSize+' 条</span><button data-req-page="1" '+(state.reqPage>=pages?'disabled':'')+'>下一页</button></div>';
     Array.from(el('reqBox').querySelectorAll('[data-task-key]')).forEach(function(node){var key=node.getAttribute('data-task-key');if(expanded.has(key))node.querySelector('details').open=true;var technical=node.querySelector('.task-technical');if(technical&&technicalExpanded.has(key))technical.open=true});
+    Array.from(el('reqBox').querySelectorAll('[data-terminate-task]')).forEach(function(btn){btn.onclick=function(){openTaskTermination(items.find(function(x){return String(x.task_id)===btn.getAttribute('data-terminate-task')}))}});
     Array.prototype.forEach.call(el('reqBox').querySelectorAll('[data-req-page]'),function(btn){btn.onclick=function(){state.reqPage+=Number(btn.getAttribute('data-req-page'));loadReqLogs()}});
   }
   function loadReqLogs(silent){
@@ -2321,8 +2356,24 @@
     loadE2EPreflight(selected.mode.key,false);
     if((latestE2EBatch(data,page.key)||{}).status!=='running')loadE2EBatchPreflight(page.key,false);
   }
-  var loadManagedChannels=window.initChannelManager({api:api,esc:esc,el:el,toast:toast,active:function(){return state.module==='managedChannels'}});
+  function channelLegacyCatalog(){return ((state.data||{}).keys||[]).map(function(meta){return Object.assign({},meta,{evidence:registryRouteEvidence({key:meta.key},state.data)})})}
+  function channelLegacyDetail(meta){
+    var box=el('cmLegacyKeys');
+    box.innerHTML='<div class="cm-table-scroll"><table><thead><tr><th>线路与功能</th><th>密钥</th><th>配置</th><th>证据</th><th>操作</th></tr></thead><tbody></tbody></table></div>';
+    var target=box.querySelector('tbody');
+    Array.from(el('channelKeyBox').querySelectorAll('tr[data-channel]')).filter(function(row){return row.getAttribute('data-channel')===meta.key}).forEach(function(row){target.appendChild(row.cloneNode(true))});
+    bindPing('cmLegacyKeys','data-ping-key','key','key');bindProviderKeyActions('cmLegacyKeys','cmLegacyEditorHost');bindSecretRevealActions('cmLegacyKeys');
+    if(meta.key==='heygen'){el('cmLegacyEditorHost').appendChild(el('heygenOAuthBox'));loadHeygenOAuthStatus()}
+    var entries=[];((state.data||{}).function_registry||[]).forEach(function(page){(page.functions||[]).forEach(function(feature){(feature.modes||[]).forEach(function(mode){if(registryActiveDependencies(feature,mode).some(function(dep){return dep.key===meta.key}))entries.push({page:page,feature:feature,mode:mode})})})});
+    el('cmLegacyJourneys').innerHTML=entries.map(function(x){return '<div class="task-proof-line"><b>'+esc(x.page.name+' → '+x.feature.name+' → '+x.mode.name)+'</b><span>'+esc((x.mode.validation||{}).supported?'打开后可准备素材、检查旅程并发起测试':'完整测试尚未接入：'+((x.mode.validation||{}).blocked_reason||'未登记'))+'</span><button data-cm-journey="'+esc(x.mode.key)+'">查看旅程 / 准备素材 / 测试</button></div>'}).join('')||'<p class="muted">尚未登记关联旅程，不能推断功能已完成验收。</p>';
+  }
+  function closeChannelLegacy(){clearSecretWindows();restoreProviderEditor();document.querySelector('[data-module="channels"]').appendChild(el('heygenOAuthBox'))}
+  var loadManagedChannels=window.initChannelManager({api:api,esc:esc,el:el,toast:toast,active:function(){return state.module==='managedChannels'},legacy:channelLegacyCatalog,detail:channelLegacyDetail,closeLegacy:closeChannelLegacy,
+    task:function(id){el('reqSearch').value=id;state.reqPage=1;switchModule('logs')},
+    journey:function(key){var ctx=findOperationContext(key);if(ctx){state.operationsPage=ctx.page.key;state.operationsMode=key;switchModule('operations')}}});
   function switchModule(name){
+    if(name==='channels')name='managedChannels';
+    if(name!=='managedChannels'&&window.closeChannelWorkspace)window.closeChannelWorkspace();
     if(!moduleMeta[name])name='dashboard';
     state.module=name;
     var sidebarName=sidebarModule[name]||name;
@@ -2331,7 +2382,7 @@
     Array.prototype.forEach.call(document.querySelectorAll('[data-module]'), function(card){card.hidden=card.getAttribute('data-module')!==name});
     el('pageTitle').textContent=moduleMeta[name][0];el('pageSubtitle').textContent=moduleMeta[name][1];closeSidebar();
     clearInterval(state.serverTimer);state.serverTimer=null;
-    if(name==='managedChannels'){loadManagedChannels()}
+    if(name==='managedChannels'){if(!state.data)load(false);loadManagedChannels()}
     if(name==='dashboard'){loadDashboard(false)}
     if(name==='servers'){loadServers(false);state.serverTimer=setInterval(function(){if(!document.hidden)loadServers(true)},5000)}
     if(name==='logs'){loadReqLogs()}
@@ -2371,7 +2422,7 @@
     var keys=(d.keys||[]).filter(function(x){return x.configured}).length;
     var poolKeys=((d.provider_keys||{}).items||[]).length;
     el('keyReady').textContent=keys+poolKeys; el('keyTotal').textContent='号池 '+poolKeys+' · 托管 '+keys;
-    renderChannelConsole(d.keys||[],d.provider_keys||{}); renderFeatures(d.features||[]); renderPricing(d.pricing||[]); renderStats(d.stats||{}); renderOperations(d);
+    renderChannelConsole(d.keys||[],d.provider_keys||{}); if(state.module==='managedChannels')loadManagedChannels(); renderFeatures(d.features||[]); renderPricing(d.pricing||[]); renderStats(d.stats||{}); renderOperations(d);
     if(state.operationsChannelMode&&!el('operationsChannelLayer').hidden&&el('providerKeyEditor').hidden)renderOperationsChannelDrawer();
     if(state.module==='operations')setTimeout(function(){probeSelectedOperation(false)},0);
   }
@@ -2499,5 +2550,16 @@
   renderAnnouncementEffect();updateAnnouncementControls();verifyAdminSession();
 })();
 </script>
+<dialog id="terminateTaskDialog" aria-labelledby="terminateTaskTitle">
+  <form id="terminateTaskForm">
+    <h2 id="terminateTaskTitle">终止此任务？</h2>
+    <p id="terminateTaskInfo"></p>
+    <p class="termination-note">排队任务将取消执行；执行中的任务将停止后续处理，等待当前请求退出。已提交供应商的任务无法确认远端停止。已扣任务点数将按原退款流程退还，失败会重试；不会重复退点。终止后无法恢复。</p>
+    <label for="terminateTaskReason">终止原因</label>
+    <textarea id="terminateTaskReason" required minlength="2" maxlength="200" rows="3" placeholder="例如：任务长时间无进展，用户要求取消"></textarea>
+    <div id="terminateTaskError" role="status" aria-live="polite"></div>
+    <div class="termination-actions"><button type="button" id="terminateTaskCancel">返回</button><button type="submit" id="terminateTaskSubmit">确认终止</button></div>
+  </form>
+</dialog>
 </body>
 </html>
