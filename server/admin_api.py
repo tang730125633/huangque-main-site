@@ -4416,10 +4416,12 @@ def _public_e2e_run(row):
             and evidence.get("status") in {"done", "completed"}
             and not character_finalized):
         item["status"] = "failed" if row["status"] == "failed" else "running"
+    billing_bypassed = project_evidence.get("points_billing_enabled") is False
     billing_ok = (
         item.get("points_before") is not None
         and item.get("points_after") is not None
-        and int(item["points_before"]) - int(item["points_after"]) == int(item.get("cost") or 0)
+        and int(item["points_before"]) - int(item["points_after"])
+        == (0 if billing_bypassed else int(item.get("cost") or 0))
     )
     ledger = None
     get_transaction = getattr(points_domain, "get_points_transaction", None)
@@ -4703,10 +4705,11 @@ def start_browser_e2e_run(actor, admin_token, operation_id):
             "/api/auth/admin/e2e/session", admin_token, method="POST", payload={}
         )
         account = session["account"]
+        billing_enabled = account.get("points_billing_enabled") is not False
         prepared = _e2e_prepare_operation(session, operation_id)
-        if not account.get("membership_active"):
+        if billing_enabled and not account.get("membership_active"):
             raise ValueError("专用测试账号会员未生效")
-        if int(account.get("points") or 0) < int(prepared["cost"]):
+        if billing_enabled and int(account.get("points") or 0) < int(prepared["cost"]):
             raise ValueError("专用测试账号点数不足：需要 %s 点，当前 %s 点" % (
                 prepared["cost"], account.get("points") or 0,
             ))
@@ -4720,7 +4723,7 @@ def start_browser_e2e_run(actor, admin_token, operation_id):
         _e2e_project_evidence(run_id, browser={
             "status": "running", "executor": "playwright", "checks": [],
             "passed": 0, "total": 6, "started_at": int(time.time()),
-        })
+        }, points_billing_enabled=billing_enabled)
         thread = threading.Thread(
             target=_run_browser_e2e,
             args=(run_id, admin_token, session, prepared), daemon=True,

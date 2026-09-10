@@ -29,11 +29,15 @@ function createRuntime(fetchImpl) {
     removeItem(key) { values.delete(key); },
   };
   const events = [];
-  const document = { getElementById() { return null; } };
+  const rootClasses = new Set(['hq-points-ui-disabled']);
+  const document = {
+    documentElement: { classList: { toggle(name, on) { on ? rootClasses.add(name) : rootClasses.delete(name); } } },
+    getElementById() { return null; },
+  };
   const window = { dispatchEvent(event) { events.push(event.detail); } };
   function CustomEvent(name, options) { this.type = name; this.detail = options.detail; }
   const source = authBlock[0].replace(/\n\n  \/\/ ===== 点数消费明细$/, '');
-  return new Function('fetch', 'localStorage', 'window', 'CustomEvent', 'document', 'events', `
+  return new Function('fetch', 'localStorage', 'window', 'CustomEvent', 'document', 'events', 'rootClasses', `
     var _accountAvatar='';
     var renderCount=0,closeCount=0,loginCount=0;
     function authHeaders(){return {}}
@@ -53,8 +57,9 @@ function createRuntime(fetchImpl) {
       getLoginCount:()=>loginCount,
       events,
       localStorage,
+      pointsUiHidden:()=>rootClasses.has('hq-points-ui-disabled'),
     };
-  `)(fetchImpl, localStorage, window, CustomEvent, document, events);
+  `)(fetchImpl, localStorage, window, CustomEvent, document, events, rootClasses);
 }
 
 test('verification failures invalidate an already verified account', async () => {
@@ -75,6 +80,18 @@ test('verification failures invalidate an already verified account', async () =>
     next = Promise.resolve(response(200, { user: { username: 'alice', role: 'admin' } }));
     await runtime.refreshPoints();
   }
+});
+
+test('points UI follows the server billing switch', async () => {
+  let enabled = false;
+  const runtime = createRuntime(() => Promise.resolve(response(200, {
+    user: { username: 'alice', role: 'member', points_billing_enabled: enabled },
+  })));
+  await runtime.refreshPoints();
+  assert.equal(runtime.pointsUiHidden(), true);
+  enabled = true;
+  await runtime.refreshPoints();
+  assert.equal(runtime.pointsUiHidden(), false);
 });
 
 test('a stale success cannot overwrite a newer unauthorized result', async () => {

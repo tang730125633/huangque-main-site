@@ -6,6 +6,7 @@
   'use strict';
 
   function text(value){return String(value==null?'':value);}
+  function billingEnabled(){return !(typeof globalThis!=='undefined'&&globalThis.HQ&&typeof globalThis.HQ.isPointsBillingEnabled==='function')||globalThis.HQ.isPointsBillingEnabled();}
   function shotReferenceSelectionPolicy(currentIdentity,previousIdentity,previousTailReady){
     currentIdentity=currentIdentity||{};previousIdentity=previousIdentity||{};
     var currentKey=text(currentIdentity.scene_key).trim(),currentVersion=text(currentIdentity.reference_identity).trim();
@@ -748,7 +749,7 @@
       '<p class="sd-provider-timing-note">剧本镜头为 '+Number(preview.request.timeline_duration_seconds||0)+' 秒；生成服务最低返回 '+Number(preview.request.duration_seconds||0)+' 秒。预览将保留服务实际返回的完整镜头，并按最终实际时长验收。</p>':'';
     var requestMeta=previewForShot&&preview.request?'<small>'+escapeHtml(preview.request.ratio||'')+' · '+escapeHtml(preview.request.resolution||'')+' · '+Number(preview.request.duration_seconds||0)+' 秒</small>':'';
     var result=previewForShot?'<div class="sd-check '+(preview.ready?'pass':'warning')+'"><b>'+escapeHtml(userFacingVideoMessage(preview.message,'预检完成'))+'</b><p>'+escapeHtml(preview.request&&preview.request.prompt||'')+'</p>'+requestMeta+trimNotice+'</div>':'';
-    var quoteHtml=quoteForShot?'<div class="sd-estimate"><strong>'+Number(quote.cost||0)+' 点</strong><span>报价 5 分钟内有效，确认后才扣点</span></div>':'';
+    var quoteHtml=quoteForShot?'<div class="sd-estimate"><strong>'+(billingEnabled()?Number(quote.cost||0)+' 点':'内测免费')+'</strong><span>确认后提交生成任务</span></div>':'';
     var jobDisplay=providerJobDisplay(jobForShot);
     var jobHtml=jobForShot?'<div class="sd-check '+(job.status==='succeeded'?'pass':(['failed','submit_unknown'].indexOf(job.status)>=0?'warning':''))+'" data-provider-job-progress="'+escapeHtml(shotKey)+'"><b>视频任务 · '+escapeHtml(jobDisplay.taskLabel)+'</b><p>'+escapeHtml(userFacingVideoMessage(job.error&&job.error.detail,job.status==='succeeded'?'新视频已生成，可在上方播放器查看。':jobDisplay.label+'，可离开页面。'))+'</p></div>':'';
     var localError=text(providerShotErrors&&providerShotErrors[shotKey]).trim();
@@ -756,8 +757,8 @@
     var blockedByOther=active&&!jobForShot;
     var disabledReason=!canGenerate?(generationReason||'请先确认并锁定当前剧本，再生成镜头视频。'):!providerShot.binding_ready?'请先确认并锁定当前镜头所需角色的标准图。':!sequenceReady?'请先生成上一个镜头，系统会用其结束画面承接当前镜头。':active?'已有视频任务正在处理，请等待任务结束。':'';
     var actions='<button data-action="edit-shot-execution" data-shot-key="'+escapeHtml(shotKey)+'" type="button"'+(canGenerate&&!active?'':' disabled')+'>'+(hasVideo?'调整要求并重新生成':jobForShot&&jobForShot.status==='failed'?'修改要求并重新生成':'编辑镜头生成要求')+'</button><button data-action="provider-preflight" data-shot-key="'+escapeHtml(shotKey)+'" type="button"'+(canGenerate&&providerShot.binding_ready&&sequenceReady&&!active?'':' disabled')+'>'+(hasVideo?'按当前要求免费预检':'免费检查生成参数')+'</button>';
-    if(previewForShot&&preview.ready&&!quoteForShot)actions+='<button data-action="provider-quote" data-shot-key="'+escapeHtml(shotKey)+'" type="button"'+(canGenerate&&!active?'':' disabled')+'>获取付费报价</button>';
-    if(quoteForShot)actions+='<button data-action="provider-start" data-shot-key="'+escapeHtml(shotKey)+'" type="button"'+(canGenerate&&!active?'':' disabled')+'>确认扣 '+Number(quote.cost||0)+' 点并生成</button>';
+    if(previewForShot&&preview.ready&&!quoteForShot)actions+='<button data-action="provider-quote" data-shot-key="'+escapeHtml(shotKey)+'" type="button"'+(canGenerate&&!active?'':' disabled')+'>'+(billingEnabled()?'获取付费报价':'准备生成')+'</button>';
+    if(quoteForShot)actions+='<button data-action="provider-start" data-shot-key="'+escapeHtml(shotKey)+'" type="button"'+(canGenerate&&!active?'':' disabled')+'>'+(billingEnabled()?'确认扣 '+Number(quote.cost||0)+' 点并生成':'确认生成')+'</button>';
     return '<div class="sd-shot-provider-entry expanded">'+toggle+'<section class="sd-shot-provider-panel"><header><div><span>视频生成</span><b>生成服务</b></div><em>预检、报价不扣点</em></header>'+binding+continuityStatus+(blockedByOther?'<div class="sd-check warning"><b>另一个镜头正在生成</b><p>请等待当前任务结束后再提交本镜头，避免重复建单。</p></div>':'')+result+quoteHtml+jobHtml+localErrorHtml+providerFailureRecoveryHtml(jobForShot,{shot:shot,providerShot:providerShot,providerCharacters:poc.characters||[],execution:(autodraft.provider_execution_overrides||{})[shotKey]||{}})+'<div class="sd-shot-provider-actions">'+actions+'</div>'+(disabledReason?'<p class="sd-shot-provider-disabled-reason">'+escapeHtml(disabledReason)+'</p>':'')+'</section></div>';
   }
   function projectReviewHtml(understanding,project){
@@ -808,7 +809,7 @@
     if(!plan)return '<section class="sd-preflight"><span class="sd-stage-label">PR-3 · 制作准备</span><h2>制作前自动体检</h2><p>检查时长、素材、复杂度和预算，并把锁定剧本转换为可执行制作计划。</p><label>制作路线<select id="sdQualityRoute"><option value="quick_draft">单镜头生成 · 768p</option><option value="formal">全片草稿 · 1080p</option></select></label><button data-action="prepare" type="button"'+(canEdit?'':' disabled')+'>生成制作方案</button><p class="sd-free">只估算，不扣点</p></section>';
     var confirmed=current.status==='confirmed',stale=!!preflight.stale;
     var checks=(plan.checks||[]).map(function(item){return '<article class="sd-check '+escapeHtml(item.status)+'"><span>'+escapeHtml(item.status==='pass'?'通过':item.status==='blocker'?'阻塞':'需确认')+'</span><b>'+escapeHtml(item.label)+'</b><p>'+escapeHtml(item.summary)+'</p>'+(item.suggestion?'<small>'+escapeHtml(item.suggestion)+'</small>':'')+'</article>';}).join('');
-    var routeOptions=(plan.route_options||[]).map(function(item){return '<option value="'+escapeHtml(item.key)+'"'+(item.key===plan.quality_route?' selected':'')+'>'+escapeHtml(item.name)+' · '+Number(item.estimated_points)+' 点估算</option>';}).join('');
+    var routeOptions=(plan.route_options||[]).map(function(item){return '<option value="'+escapeHtml(item.key)+'"'+(item.key===plan.quality_route?' selected':'')+'>'+escapeHtml(item.name)+(billingEnabled()?' · '+Number(item.estimated_points)+' 点估算':'')+'</option>';}).join('');
     var acceptance=(plan.required_acceptance||[]).length?'<label class="sd-accept"><input id="sdAcceptAdjustments" type="checkbox"> 我已了解并接受 '+Number(plan.required_acceptance.length)+' 项系统建议</label>':'';
     return '<section class="sd-preflight"><span class="sd-stage-label">PR-3 · 制作准备</span><h2>'+(confirmed?'制作方案已确认':'制作方案 v'+Number(current.version)+' 待确认')+'</h2>'+(stale?'<div class="sd-preflight-stale">剧本或项目规格已变化，请重新体检后再确认。</div>':'')+'<div class="sd-estimate"><strong>'+Number(plan.estimate&&plan.estimate.points||0)+' 点</strong><span>'+escapeHtml(plan.estimate&&plan.estimate.resolution||'')+' · 约 '+Number(plan.estimate&&plan.estimate.minutes||0)+' 分钟</span></div><label>制作路线<select id="sdQualityRoute"'+(confirmed||!canEdit?' disabled':'')+'>'+routeOptions+'</select></label><div class="sd-checks">'+checks+'</div><p class="sd-plan-meta">'+Number(plan.duration&&plan.duration.shots&&plan.duration.shots.length||0)+' 镜 · '+Number(plan.duration&&plan.duration.target_ms||0)/1000+' 秒 · '+Number((plan.assets||[]).length)+' 项推荐素材</p>'+(confirmed?'<div class="sd-confirmed">已锁定制作方案 v'+Number(current.version)+'，下一阶段可据此生成自动草稿。</div>':acceptance+'<button data-action="confirm-plan" class="secondary" type="button"'+(plan.ready&&!stale&&canEdit?'':' disabled')+'>确认制作方案</button><button data-action="prepare" type="button"'+(canEdit?'':' disabled')+'>按当前路线重新体检</button>')+'<p class="sd-free">当前仅为估算，本阶段不扣点</p></section>';
   }
@@ -909,7 +910,7 @@
         '<div class="sd-check pass" id="sdProviderBindingStatus"><b>'+boundCharacters.length+'/'+characters.length+' 个角色已锁定，可开始检查镜头</b><p>人物形象统一由左侧角色卡管理，当前镜头会自动使用对应角色的已锁定形象。</p></div>':
         '<div class="sd-check warning" id="sdProviderBindingStatus"><b>角色形象尚未准备完整</b><p>'+(missingCharacters.length?'未绑定：'+escapeHtml(missingCharacters.map(function(item){return item.name||item.character_key;}).join('、'))+'。':'角色资料仍在加载。')+' 请点击左侧角色卡完成形象生成、选择与锁定。</p></div>';
       var activeCount=activeProviderJobs(autodraft).length;
-      return '<section class="sd-autodraft-actions sd-provider-summary"><span class="sd-stage-label">PR-4 · 视频生成</span><h2>视频生成总览</h2><div class="sd-preflight-stale">'+escapeHtml(userFacingVideoMessage(production.message,'当前不能生成与剧本一致的短剧。'))+'</div>'+qualityWarning+'<div class="sd-estimate"><strong>生成服务</strong><span>'+escapeHtml(providerState)+'</span></div>'+bindingSummary+'<div class="sd-provider-counts"><span><b>'+shots.length+'</b> 个镜头</span><span><b>'+boundCharacters.length+'/'+characters.length+'</b> 角色就绪</span><span><b>'+activeCount+'</b> 个任务处理中</span></div><p>请在左侧“镜头与台词”中点击对应镜头的“生成镜头视频”。预检和报价不扣点，确认生成后才扣点。</p>'+providerJobHtml+'</section>';
+      return '<section class="sd-autodraft-actions sd-provider-summary"><span class="sd-stage-label">PR-4 · 视频生成</span><h2>视频生成总览</h2><div class="sd-preflight-stale">'+escapeHtml(userFacingVideoMessage(production.message,'当前不能生成与剧本一致的短剧。'))+'</div>'+qualityWarning+'<div class="sd-estimate"><strong>生成服务</strong><span>'+escapeHtml(providerState)+'</span></div>'+bindingSummary+'<div class="sd-provider-counts"><span><b>'+shots.length+'</b> 个镜头</span><span><b>'+boundCharacters.length+'/'+characters.length+'</b> 角色就绪</span><span><b>'+activeCount+'</b> 个任务处理中</span></div><p>请在左侧“镜头与台词”中点击对应镜头的“生成镜头视频”。'+(billingEnabled()?'预检和报价不扣点，确认生成后才扣点。':'内测期间免费，确认后提交生成任务。')+'</p>'+providerJobHtml+'</section>';
     }
     if(production.mode==='demo')return '<section class="sd-autodraft-actions"><span class="sd-stage-label">PR-4 · 演示模式</span><h2>生成界面联调示例</h2><p>该模式只验证任务、轮询和播放器，不会根据剧本生成真实画面。</p><div class="sd-estimate"><strong>0 点</strong><span>固定示例 · 不可交付</span></div><button data-action="start-draft" type="button"'+(canEdit?'':' disabled')+'>生成演示草稿</button></section>';
     var assembling=production.mode==='provider_poc'&&production.assembly&&production.assembly.all_ready;
@@ -1036,14 +1037,14 @@
     var stepOneStatus='<div class="sd-refinement-step-status ready"><span>修改后保存，系统会直接完成免费预检。</span></div>';
     var stepTwoStatus=previewForShot?'<div class="sd-refinement-step-status '+(preview.ready?'ready':'warning')+'"><details class="sd-refinement-step-details"><summary>'+escapeHtml(userFacingVideoMessage(preview.message,preview.ready?'参数检查通过':'参数仍需调整'))+'</summary><p>'+escapeHtml(preview.request&&preview.request.prompt||'')+'</p></details></div>':'<div class="sd-refinement-step-status"><span>等待免费检查</span></div>';
     var stepThreeStatus=quoteForShot?'<div class="sd-refinement-step-status ready"><strong>'+Number(quote.cost||0)+' 点</strong><span>5 分钟内有效，确认前不扣点</span></div>':'<div class="sd-refinement-step-status"><span>'+(previewForShot&&preview.ready?'检查已通过，可以获取报价':'预检通过后可获取报价')+'</span></div>';
-    var stepFourStatus=jobForShot?'<div class="sd-refinement-step-status '+(job.status==='succeeded'?'ready':(['failed','submit_unknown','canceled'].indexOf(job.status)>=0?'warning':''))+'" data-provider-job-progress="'+escapeHtml(shotKey)+'"><b>镜头任务 · '+escapeHtml(job.status||'')+' · '+Number(job.progress||0)+'%</b><p>'+escapeHtml(userFacingVideoMessage(job.error&&job.error.detail,job.status==='succeeded'?'候选镜头已生成，请在下方预览并选择。':'任务正在后台处理，可继续查看其他问题镜头。'))+'</p></div>':'<div class="sd-refinement-step-status"><span>'+(quoteForShot?'报价已就绪，确认后才扣点':'等待报价')+'</span></div>';
+    var stepFourStatus=jobForShot?'<div class="sd-refinement-step-status '+(job.status==='succeeded'?'ready':(['failed','submit_unknown','canceled'].indexOf(job.status)>=0?'warning':''))+'" data-provider-job-progress="'+escapeHtml(shotKey)+'"><b>镜头任务 · '+escapeHtml(job.status||'')+' · '+Number(job.progress||0)+'%</b><p>'+escapeHtml(userFacingVideoMessage(job.error&&job.error.detail,job.status==='succeeded'?'候选镜头已生成，请在下方预览并选择。':'任务正在后台处理，可继续查看其他问题镜头。'))+'</p></div>':'<div class="sd-refinement-step-status"><span>'+(quoteForShot?(billingEnabled()?'报价已就绪，确认后才扣点':'方案已就绪，等待确认'):'等待准备')+'</span></div>';
     var blocking=blockedByOther?'<div class="sd-check warning"><b>另一个镜头正在生成</b><p>请等待当前任务结束后再提交本镜头，避免重复建单。</p></div>':'';
     return '<section class="sd-refinement-redo-generation" data-refinement-redo-generation data-shot-key="'+escapeHtml(shotKey)+'"><header><div><span>重新生成当前镜头</span><h4>按顺序完成下面四步</h4><p>所有操作只影响镜头 #'+Number(shot.sort_order||0)+'，原镜头与整片预览会一直保留。</p></div><em>预检、报价不扣点</em></header>'+binding+continuity+blocking+
       '<div class="sd-refinement-redo-steps">'+
         '<article data-provider-step="1"><span>1</span><div><b>修改提示词</b><small>调整画面、动作、运镜、角色和连续性要求。</small></div><button type="button" data-action="edit-shot-execution" data-shot-key="'+escapeHtml(shotKey)+'"'+(canEdit&&!active?'':' disabled')+'>修改提示词与生成要求</button>'+stepOneStatus+'</article>'+
         '<article data-provider-step="2"><span>2</span><div><b>免费检查参数</b><small>检查角色绑定、场景、时长和生成请求，不扣点。</small></div><button type="button" data-action="provider-preflight" data-shot-key="'+escapeHtml(shotKey)+'"'+(readyForPreflight?'':' disabled')+'>免费检查当前镜头</button>'+stepTwoStatus+'</article>'+
-        '<article data-provider-step="3"><span>3</span><div><b>获取报价</b><small>检查通过后获取本次生成费用，报价阶段不扣点。</small></div><button type="button" data-action="provider-quote" data-shot-key="'+escapeHtml(shotKey)+'"'+(readyForQuote?'':' disabled')+'>获取付费报价</button>'+stepThreeStatus+'</article>'+
-        '<article data-provider-step="4"><span>4</span><div><b>确认重新生成</b><small>确认费用后才会扣点，并只生成当前问题镜头。</small></div><button type="button" data-action="provider-start" data-shot-key="'+escapeHtml(shotKey)+'"'+(readyForStart?'':' disabled')+'>'+(quoteForShot?'确认扣 '+Number(quote.cost||0)+' 点并重新生成':'确认并重新生成')+'</button>'+stepFourStatus+'</article>'+
+        '<article data-provider-step="3"><span>3</span><div><b>获取报价</b><small>检查通过后准备本次生成参数。</small></div><button type="button" data-action="provider-quote" data-shot-key="'+escapeHtml(shotKey)+'"'+(readyForQuote?'':' disabled')+'>'+(billingEnabled()?'获取付费报价':'准备生成')+'</button>'+stepThreeStatus+'</article>'+
+        '<article data-provider-step="4"><span>4</span><div><b>确认重新生成</b><small>确认后只生成当前问题镜头。</small></div><button type="button" data-action="provider-start" data-shot-key="'+escapeHtml(shotKey)+'"'+(readyForStart?'':' disabled')+'>'+(quoteForShot?(billingEnabled()?'确认扣 '+Number(quote.cost||0)+' 点并重新生成':'确认重新生成'):'确认并重新生成')+'</button>'+stepFourStatus+'</article>'+
       '</div>'+providerFailureRecoveryHtml(jobForShot,{shot:shot,providerShot:providerShot,providerCharacters:characters,execution:(autodraft.provider_execution_overrides||{})[shotKey]||{}})+'</section>';
   }
   function refinementRedoSummaryHtml(refinement,autodraft,selectedShotKey){
@@ -1128,7 +1129,7 @@
       if(confirmedAssemblyBlocked)return '<section><span class="sd-stage-label">PR-5 · 正式交付</span><h2>'+(confirmedAssembly.available===false?'完整镜头时长暂时无法核对':'请先重新装配完整预览')+'</h2><p>'+(confirmedAssembly.available===false?'当前不能安全报价或创建 2K 任务，请稍后重试。':'当前已确认版本的预览未包含全部镜头，重新装配后需再次验收。')+'</p><button type="button" disabled>正式交付不可用</button></section>';
       if(billing.delivery_enabled!==true)return '<section><span class="sd-stage-label">PR-5 · 正式交付</span><h2>真实 2K 交付暂未启用</h2><p>真实渲染执行器尚未接入，系统不会询价、建单或扣点。</p><button type="button" disabled>正式交付不可用</button><p class="sd-free">精修版本已安全保留，执行器启用后可继续。</p></section>';
       var demo=billing.mode==='development_free',localRender=billing.mode==='local_ffmpeg';
-      return '<section><span class="sd-stage-label">PR-5 · '+(demo?'开发演示':'正式交付')+'</span><h2>精修版本已确认</h2><p>'+(demo?'生成一个复用现有素材的本地流程预览。':localRender?'按已锁定顺序，使用原生 2K 镜头重新合成正式成片；1080p 只是验收草稿。完成后会固化不可变交付快照。':'正式导出前会重新报价并校验确认版本。')+'</p><div class="sd-estimate"><strong>'+Number(billing.formal_cost||0)+' 点</strong><span>'+(demo?'源规格 · 不可交付':'2K · 不可变快照')+'</span></div><button type="button" data-action="start-delivery"'+(canEdit?'':' disabled')+'>'+(demo?'生成免费演示预览':localRender?'导出 2K 正式成片':'询价并生成正式成片')+'</button><p class="sd-free">'+(demo?'本地开发模式：不扣点、不可交付':localRender?'原生 2K 合成：确认后扣点，建单失败自动退款':'按报价扣点，建单失败自动退款')+'</p></section>';
+      return '<section><span class="sd-stage-label">PR-5 · '+(demo?'开发演示':'正式交付')+'</span><h2>精修版本已确认</h2><p>'+(demo?'生成一个复用现有素材的本地流程预览。':localRender?'按已锁定顺序，使用原生 2K 镜头重新合成正式成片；1080p 只是验收草稿。完成后会固化不可变交付快照。':'正式导出前会校验确认版本。')+'</p><div class="sd-estimate"><strong>'+(billingEnabled()?Number(billing.formal_cost||0)+' 点':'内测免费')+'</strong><span>'+(demo?'源规格 · 不可交付':'2K · 不可变快照')+'</span></div><button type="button" data-action="start-delivery"'+(canEdit?'':' disabled')+'>'+(demo?'生成免费演示预览':localRender?'导出 2K 正式成片':'生成正式成片')+'</button><p class="sd-free">'+(demo?'本地开发模式：不可交付':billingEnabled()?(localRender?'原生 2K 合成：确认后扣点，建单失败自动退款':'按报价扣点，建单失败自动退款'):'内测期间免费；建单失败可重试')+'</p></section>';
     }
     var requirements=refinement.acceptance_requirements||{},hasMediaRequirement=Object.prototype.hasOwnProperty.call(requirements,'media'),media=requirements.media||{},mediaReady=media.ready===true||(!hasMediaRequirement&&!groups.preparation.length),assembly=current.assembly_status||{},assemblyBlocked=assembly.available===false||assembly.reassembly_required===true,blocked=issues.length||!mediaReady||assemblyBlocked;
     var silentMode=media.mode==='silent',providerAudioMode=media.mode==='provider_audio';
@@ -1147,8 +1148,8 @@
     var options=shots.map(function(item){return '<option value="'+escapeHtml(item.shot_key)+'"'+(text(item.shot_key)===text(selectedShotKey)?' selected':'')+'>#'+Number(item.sort_order||0)+' · '+escapeHtml(item.scene||item.shot_key)+'</option>';}).join('');
     var active=job&&['billing','queued','submitting','running'].indexOf(job.status)>=0;
     var status=job?'<div class="sd-check '+(job.status==='succeeded'?'pass':'')+'"><b>镜头生成任务 · '+escapeHtml(job.status||'')+' · '+Number(job.progress||0)+'%</b><p>'+escapeHtml(userFacingVideoMessage(job.error&&job.error.detail,'镜头生成完成后，可点击上方“预览并重做这个镜头”重新装配全片。'))+'</p></div>':'';
-    var quoteHtml=quote?'<div class="sd-estimate"><strong>'+Number(quote.cost||0)+' 点</strong><span>确认后才会扣点并提交生成任务</span></div><button data-action="provider-start" type="button"'+(canEdit&&!active?'':' disabled')+'>确认扣点并生成新镜头</button>':'';
-    var previewHtml=preview&&preview.ready?'<div class="sd-check pass"><b>视频生成请求预检通过</b><p>'+escapeHtml(preview.request&&preview.request.prompt||'')+'</p></div>'+(quote?'':'<button data-action="provider-quote" type="button"'+(canEdit&&!active?'':' disabled')+'>获取付费报价</button>'):'';
+    var quoteHtml=quote?'<div class="sd-estimate"><strong>'+(billingEnabled()?Number(quote.cost||0)+' 点':'内测免费')+'</strong><span>确认后提交生成任务</span></div><button data-action="provider-start" type="button"'+(canEdit&&!active?'':' disabled')+'>'+(billingEnabled()?'确认扣点并生成新镜头':'确认生成新镜头')+'</button>':'';
+    var previewHtml=preview&&preview.ready?'<div class="sd-check pass"><b>视频生成请求预检通过</b><p>'+escapeHtml(preview.request&&preview.request.prompt||'')+'</p></div>'+(quote?'':'<button data-action="provider-quote" type="button"'+(canEdit&&!active?'':' disabled')+'>'+(billingEnabled()?'获取付费报价':'准备生成')+'</button>'):'';
     return '<section class="sd-autodraft-actions sd-refinement-provider"><span class="sd-stage-label">PR-5 · 问题镜头重新生成</span><h2>只重新生成当前问题镜头</h2><p>可以反复生成并切换多个候选版本。满意后在左侧问题镜头中点击“采用当前候选镜头”；全部问题处理完后，再统一重新合成完整视频。</p><label>问题镜头<select id="sdProviderShot"'+(shots.length&&!active?'':' disabled')+'>'+options+'</select></label><div class="sd-check" id="sdProviderShotCharacter"><b>正在读取镜头角色</b></div><button data-action="provider-preflight" type="button"'+(canEdit&&shots.length&&!active?'':' disabled')+'>免费检查当前镜头</button>'+previewHtml+quoteHtml+status+'</section>';
   }
   function shellHtml(){
@@ -1402,7 +1403,7 @@
       if(operation.phase==='pending')return '检查生成结果';
       if(operation.phase==='stale')return '按最新资料重新生成';
       if(operation.phase==='success')return '重新生成角色形象图';
-      return '生成角色形象图（按规则扣点）';
+      return billingEnabled()?'生成角色形象图（按规则扣点）':'生成角色形象图';
     }
     function setCharacterImageOperation(characterKey,phase,message,error,active){
       characterImageOperation={character_key:characterKey,phase:phase||'idle',message:message||'',error:!!error,active:!!active};
@@ -2976,7 +2977,7 @@
         if(!quote)return;
         var startShotKey=text(quote.shot&&quote.shot.shot_key);
         var confirmWindow=doc.defaultView;
-        if(confirmWindow&&typeof confirmWindow.confirm==='function'&&!confirmWindow.confirm('确认扣除 '+Number(quote.cost||0)+' 点，生成镜头 '+startShotKey+'？'))return;
+        if(confirmWindow&&typeof confirmWindow.confirm==='function'&&!confirmWindow.confirm(billingEnabled()?'确认扣除 '+Number(quote.cost||0)+' 点，生成镜头 '+startShotKey+'？':'确认生成镜头 '+startShotKey+'？'))return;
         delete providerShotErrors[startShotKey];busy(true);show('',false);
         client.startProviderJob({project_id:projectId,quote_token:quote.quote_token}).then(function(result){
           var nextJobs=providerJobsWithResult(autodraft,result);
@@ -3070,7 +3071,7 @@
         busy(true);show('',false);
         client.deliveryQuote({project_id:projectId,version_id:deliverySource.id}).then(function(quote){
           var confirmWindow=doc.defaultView;
-          if(confirmWindow&&typeof confirmWindow.confirm==='function'&&!confirmWindow.confirm('确认扣除 '+Number(quote.cost||0)+' 点，导出 2K 正式成片？'))return null;
+          if(confirmWindow&&typeof confirmWindow.confirm==='function'&&!confirmWindow.confirm(billingEnabled()?'确认扣除 '+Number(quote.cost||0)+' 点，导出 2K 正式成片？':'确认导出 2K 正式成片？'))return null;
           show('报价 '+Number(quote.cost||0)+' 点，有效期 5 分钟，正在提交正式导出',false);
           return client.startDelivery({project_id:projectId,quote_token:quote.quote_token});
         }).then(function(result){if(!result)return;refinement.current_delivery_job=result;render();schedulePoll();})

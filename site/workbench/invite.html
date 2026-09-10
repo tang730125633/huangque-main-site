@@ -29,7 +29,7 @@
     <div class="panel poster-card"><div class="qr-shell"><div id="qrBox"></div></div><div class="poster-title">扫码注册黄雀 AI</div><div class="poster-note">二维码内容与上方邀请链接一致</div></div>
   </section>
   <section class="stats"><div class="stat"><div class="stat-label">累计绑定</div><div class="stat-value" id="totalBound">--</div></div><div class="stat"><div class="stat-label">今日新增</div><div class="stat-value" id="todayNew">--</div></div><div class="stat"><div class="stat-label">有效邀请</div><div class="stat-value" id="validInvites">--</div></div><div class="stat"><div class="stat-label">一级直邀</div><div class="stat-value" id="directInvites">--</div></div><div class="stat" hidden><div class="stat-label">二级间邀</div><div class="stat-value" id="indirectInvites">--</div></div></section>
-  <section class="panel reward-panel"><div class="reward-summary"><div class="eyebrow">INVITE REWARDS</div><div style="margin-top:7px;font-weight:800">累计邀请奖励</div><div><span class="reward-total" id="rewardTotal">--</span><span class="reward-unit">奖励积分</span></div><div class="reward-note">邀请奖励积分是独立业绩记录，不能用于网站功能消费，也不会进入账户可用点数。</div></div><div class="reward-list" id="rewardRecords"><div class="reward-empty">正在读取奖励记录…</div></div></section>
+  <section class="panel reward-panel" data-points-ui><div class="reward-summary"><div class="eyebrow">INVITE REWARDS</div><div style="margin-top:7px;font-weight:800">累计邀请奖励</div><div><span class="reward-total" id="rewardTotal">--</span><span class="reward-unit">奖励积分</span></div><div class="reward-note">邀请奖励积分是独立业绩记录，不能用于网站功能消费，也不会进入账户可用点数。</div></div><div class="reward-list" id="rewardRecords"><div class="reward-empty">正在读取奖励记录…</div></div></section>
   <section class="panel rule-panel"><div class="rule-title">邀请与会员升级规则</div><div class="rule-sub">被邀请人的最高会员等级由一级邀请人的当前会员等级决定。</div><div class="rule-grid"><div class="rule-item"><b>体验官</b><span>可邀请新用户成为体验官，不能升级为合伙人或发起人。</span></div><div class="rule-item"><b>合伙人</b><span>可邀请新用户成为体验官或合伙人，最高为合伙人。</span></div><div class="rule-item"><b>发起人</b><span>可邀请新用户成为体验官、合伙人或发起人。</span></div></div></section>
   <section class="panel list-panel"><div class="list-head"><div><div class="list-title">邀请用户</div><div class="list-note">每页展示 10 条，累计充值只统计已到账订单</div><div class="level-tabs"><button class="level-tab on" id="levelOne" type="button">一级邀请用户</button><button class="level-tab" id="levelTwo" type="button" hidden>二级邀请用户</button></div></div><button class="btn" id="refreshBtn" type="button">刷新</button></div><div class="table-wrap"><table><thead><tr><th>用户</th><th>会员状态</th><th>账号 ID</th><th>累计充值</th><th>注册时间</th><th>绑定来源</th><th>关系状态</th><th>风控状态</th></tr></thead><tbody id="inviteUsers"></tbody></table><div class="empty" id="emptyState">正在读取邀请记录…</div></div><div class="pager"><button class="btn" id="prevPage" type="button">上一页</button><span class="pager-info" id="pageInfo">第 1 / 1 页</span><button class="btn" id="nextPage" type="button">下一页</button></div></section>
   <div class="notice">邀请资格仅对有效会员开放。会员失效后已有邀请关系和历史数据仍会保留，但不能再绑定新用户；恢复会员后原邀请码可继续使用。邀请奖励按被邀请人的最终会员等级计算，升级时只补差额、不重复叠加。邀请关系不直接发放可消费点数、余额、优惠券、分佣或充值奖励；奖励积分是独立业绩台账，不是网站可用点数。当前仅统计一级直接邀请，二级邀请暂不展示。</div>
@@ -37,7 +37,7 @@
 <canvas id="posterCanvas" width="750" height="1120"></canvas><div class="toast" id="toast"></div>
 <script src="../assets/cloud.js?v=8"></script>
 <script src="qrcode.min.js?v=1"></script>
-<script src="cloud-shell.js?v=d0d6179e"></script>
+<script src="cloud-shell.js?v=5b9a393a"></script>
 <script>
 (function(){
   var code='',link='',qr=null,level=1,page=1,pageSize=10,totalUsers=0;

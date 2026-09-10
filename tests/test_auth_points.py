@@ -29,6 +29,11 @@ class AuthPointsTests(unittest.TestCase):
         self.auth = importlib.reload(auth_server)
         self.auth.DB = os.environ["HQ_TEST_AUTH_DB"]
         self.auth.INTERNAL_TOKEN = "test-internal-token"
+        self.old_feature_db = self.auth.feature_flags.DB_PATH
+        self.auth.feature_flags.DB_PATH = Path(self.tmp.name) / "feature_flags.db"
+        self.auth.feature_flags.invalidate_cache()
+        self.auth.feature_flags.init_db()
+        self.auth.feature_flags.set_enabled("points_billing", True, "test")
         self.auth.init_db()
         c = sqlite3.connect(self.auth.DB)
         try:
@@ -45,6 +50,8 @@ class AuthPointsTests(unittest.TestCase):
             c.close()
 
     def tearDown(self):
+        self.auth.feature_flags.DB_PATH = self.old_feature_db
+        self.auth.feature_flags.invalidate_cache()
         if self.old_db is None:
             os.environ.pop("HQ_TEST_AUTH_DB", None)
         else:
@@ -65,6 +72,34 @@ class AuthPointsTests(unittest.TestCase):
         points, err = self.auth.refund_points("fang", 5)
         self.assertIsNone(err)
         self.assertEqual(points["points"], 15)
+
+    def test_beta_mode_keeps_balance_and_writes_nominal_ledger(self):
+        charged, charge_err = self.auth.deduct_points(
+            "fang", 7, "job:image", "job-charge:beta", apply_balance=False,
+        )
+        refunded, refund_err = self.auth.refund_points(
+            "fang", 7, "job:image failed", "job-refund:beta", apply_balance=False,
+        )
+
+        self.assertIsNone(charge_err)
+        self.assertIsNone(refund_err)
+        self.assertEqual(charged["points"], 10)
+        self.assertEqual(refunded["points"], 10)
+        with self.auth.db() as c:
+            rows = c.execute(
+                "SELECT delta,before_points,after_points FROM points_audit "
+                "WHERE transaction_key IN ('job-charge:beta','job-refund:beta') "
+                "ORDER BY id"
+            ).fetchall()
+        self.assertEqual(
+            [(row["delta"], row["before_points"], row["after_points"]) for row in rows],
+            [(-7, 10, 10), (7, 10, 10)],
+        )
+
+    def test_points_billing_switch_is_fail_closed(self):
+        with patch.object(self.auth.feature_flags, "_cached_rows", side_effect=OSError("db down")):
+            self.assertFalse(self.auth.feature_flags.is_enabled_fail_closed("points_billing"))
+        self.assertFalse(self.auth.feature_flags.is_enabled_fail_closed("unknown-billing-switch"))
 
     def test_public_points_error_preserves_membership_contract(self):
         from content_domains import points
@@ -261,6 +296,58 @@ class AuthPointsTests(unittest.TestCase):
             self.assertEqual(transaction["delta"], -1)
             self.assertEqual(transaction["after_points"], 5)
         finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+
+    def test_http_beta_mode_precedes_membership_gate_and_blocks_new_purchases(self):
+        with self.auth.db() as c:
+            c.execute(
+                "UPDATE users SET membership_tier='',membership_started_at=0,membership_expires_at=0 "
+                "WHERE username='fang'"
+            )
+        server = ThreadingHTTPServer(("127.0.0.1", 0), self.auth.H)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = "http://127.0.0.1:%d" % server.server_address[1]
+        old_enforcement = os.environ.get("HQ_MEMBERSHIP_ENFORCEMENT_ENABLED")
+        os.environ["HQ_MEMBERSHIP_ENFORCEMENT_ENABLED"] = "1"
+        try:
+            with patch.object(self.auth, "points_billing_enabled", return_value=False):
+                for path in ("/api/auth/points/deduct", "/api/auth/points/refund"):
+                    req = urllib.request.Request(
+                        base + path,
+                        data=json.dumps({
+                            "username": "fang", "amount": 4,
+                            "transaction_key": "beta:" + path.rsplit("/", 1)[-1],
+                        }).encode(),
+                        headers={
+                            "Content-Type": "application/json",
+                            "X-HQ-Internal-Token": "test-internal-token",
+                        },
+                        method="POST",
+                    )
+                    with urllib.request.urlopen(req, timeout=3) as response:
+                        data = json.loads(response.read())
+                    self.assertFalse(data["billing_enabled"])
+                    self.assertEqual(data["points"], 10)
+
+                for path in self.auth.POINTS_BILLING_CREATE_PATHS:
+                    req = urllib.request.Request(
+                        base + path,
+                        data=b"{}",
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    )
+                    with self.assertRaises(urllib.error.HTTPError) as ctx:
+                        urllib.request.urlopen(req, timeout=3)
+                    self.assertEqual(ctx.exception.code, 503)
+                    self.assertEqual(json.loads(ctx.exception.read())["code"], "points_billing_disabled")
+        finally:
+            if old_enforcement is None:
+                os.environ.pop("HQ_MEMBERSHIP_ENFORCEMENT_ENABLED", None)
+            else:
+                os.environ["HQ_MEMBERSHIP_ENFORCEMENT_ENABLED"] = old_enforcement
             server.shutdown()
             server.server_close()
             thread.join(timeout=3)

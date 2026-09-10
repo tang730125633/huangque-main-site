@@ -10,6 +10,8 @@ import sqlite3
 import time
 import urllib.parse
 import uuid
+
+from . import feature_flags
 from contextlib import closing
 
 from . import (
@@ -3073,6 +3075,8 @@ def _job_payload(row):
 def check_planning_budget(db_factory, username, project_id, quoted_cost, access=None):
     if type(quoted_cost) is not int or quoted_cost < 0:
         raise ValueError("短剧策划报价无效")
+    if not feature_flags.points_billing_enabled():
+        return
     owner = _project_username_for_access(
         db_factory, username, project_id, access, write=True)
     conn = _connection(db_factory)
@@ -4076,7 +4080,8 @@ def accept_character_reference_attempt(db_factory, prepared, username):
             )
         usage = _project_point_usage(conn, request["project_id"])
         budget = int(project["point_budget"] or 0)
-        if (budget and usage["spent_points"] + usage["reserved_points"]
+        if (feature_flags.points_billing_enabled() and budget
+                and usage["spent_points"] + usage["reserved_points"]
                 + int(prepared["cost"]) > budget):
             raise PointBudgetExceeded(
                 "短剧点数预算不足：已用 %d 点、已预留 %d 点、本次 %d 点、预算 %d 点"
@@ -4396,7 +4401,8 @@ def prepare_character_reference_submission(
         cost = int(cost_of("image", payload))
         usage = _project_point_usage(conn, normalized["project_id"])
         budget = int(project["point_budget"] or 0)
-        if (budget and usage["spent_points"] + usage["reserved_points"] + cost > budget):
+        if (feature_flags.points_billing_enabled() and budget
+                and usage["spent_points"] + usage["reserved_points"] + cost > budget):
             raise PointBudgetExceeded(
                 "短剧点数预算不足：已用 %d 点、已预留 %d 点、本次 %d 点、预算 %d 点"
                 % (usage["spent_points"], usage["reserved_points"], cost, budget)
@@ -4448,7 +4454,8 @@ def record_character_reference_job(connection, prepared, username, job_id):
         raise RevisionConflict("角色资料已更新，请刷新后重新生成")
     usage = _project_point_usage(connection, request["project_id"])
     budget = int(project[2] or 0)
-    if (budget and usage["spent_points"] + usage["reserved_points"]
+    if (feature_flags.points_billing_enabled() and budget
+            and usage["spent_points"] + usage["reserved_points"]
             + int(prepared["cost"]) > budget):
         raise PointBudgetExceeded(
             "短剧点数预算不足：已用 %d 点、已预留 %d 点、本次 %d 点、预算 %d 点"
@@ -6604,7 +6611,8 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
             if callable(points_getter):
                 quote["points_left"] = max(0, int(points_getter(username)))
                 quote["can_submit"] = (
-                    quote["points_left"] >= quote["total_cost"]
+                    not feature_flags.points_billing_enabled()
+                    or quote["points_left"] >= quote["total_cost"]
                 )
             handler._send(200, quote)
         elif method == "POST" and path.endswith("/sound-design/jobs"):
@@ -6657,8 +6665,9 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
             if callable(points_getter):
                 quote["points_left"] = max(0, int(points_getter(username)))
                 quote["can_submit"] = (
-                    quote["can_submit"] and
-                    quote["points_left"] >= quote["total_cost"]
+                    not feature_flags.points_billing_enabled()
+                    or (quote["can_submit"] and
+                        quote["points_left"] >= quote["total_cost"])
                 )
             handler._send(200, quote)
         elif method == "POST" and path.endswith("/subtitle-alignment/jobs"):
@@ -6841,9 +6850,9 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
             if callable(points_getter):
                 quote["points_left"] = max(0, int(points_getter(username)))
                 quote["can_submit"] = (
-                    quote["can_submit"]
-                    and
-                    quote["points_left"] >= quote["total_cost"]
+                    not feature_flags.points_billing_enabled()
+                    or (quote["can_submit"]
+                        and quote["points_left"] >= quote["total_cost"])
                 )
             handler._send(200, quote)
         elif method == "POST" and path.endswith("/video-cast"):
@@ -6953,7 +6962,8 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
                 )
             budget = int(budget_project[0] or 0) if budget_project else 0
             if (
-                budget > 0
+                feature_flags.points_billing_enabled()
+                and budget > 0
                 and usage["spent_points"] + usage["reserved_points"]
                 + final_cost > budget
             ):
@@ -6966,7 +6976,8 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
             if callable(points_getter):
                 result["points_left"] = max(0, int(points_getter(username)))
                 result["can_submit"] = (
-                    result["points_left"] >= result["total_cost"]
+                    not feature_flags.points_billing_enabled()
+                    or result["points_left"] >= result["total_cost"]
                 )
             handler._send(200, result)
         elif method == "POST" and path.endswith("/assembly/export"):

@@ -8,7 +8,7 @@ import time
 import uuid
 from contextlib import closing
 
-from . import short_drama_asset_graph
+from . import feature_flags, short_drama_asset_graph
 
 
 VOICE_STAGES = {
@@ -678,7 +678,8 @@ def prepare_voice_quote(db_factory, actor_username, owner_username, payload, cos
             "total_cost": total,
             "point_budget": budget,
             "budget_left": budget_left,
-            "can_submit": budget_left is None or total <= budget_left,
+            "can_submit": (not feature_flags.points_billing_enabled()
+                           or budget_left is None or total <= budget_left),
             "spent_points": usage["spent_points"],
             "reserved_points": usage["reserved_points"],
             "expires_at": expires_at,
@@ -758,7 +759,8 @@ def prepare_voice_submission(db_factory, actor_username, owner_username, payload
         usage = _project_point_usage(conn, project["id"])
         budget = int(project["point_budget"] or 0)
         cost = int(quote["cost"])
-        if budget and usage["spent_points"] + usage["reserved_points"] + cost > budget:
+        if (feature_flags.points_billing_enabled() and budget
+                and usage["spent_points"] + usage["reserved_points"] + cost > budget):
             raise PointBudgetExceeded(
                 "短剧点数预算不足：已用 %d 点、已预留 %d 点、本次 %d 点、预算 %d 点" %
                 (

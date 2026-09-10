@@ -654,14 +654,14 @@
         <div class="line-switch">
           <div class="label">玩法</div>
           <div class="line-tabs" id="cineModeTabs">
-            <button type="button" class="line-tab active" data-cine-mode="motion"><b>动作模仿</b><span>1 个形象 + 1 段参考视频 → 照着它的动作演 · 10 点/秒</span></button>
+            <button type="button" class="line-tab active" data-cine-mode="motion"><b>动作模仿</b><span>1 个形象 + 1 段参考视频 → 照着它的动作演</span></button>
             <!-- 双人动作模仿：页签已下掉。它在线上是 0 成 2 败 —— 被 HeyGen 的内容审核拦的
                  （网页原话 "Your content was flagged by our moderation system"，而 API 一个字
                  都不给）。中文提示词换过，但【一次都没实测】。与其让用户白等十几分钟再看到
                  「生成失败」，先下掉。
                  CINE_MODES 里的 duo 【保留】—— 后端仍然认这个玩法（只是拒绝提交），
                  实测通过后把 CINEMATIC_DUO_ENABLED=1 打开、把这个页签加回来即可，不用重写。 -->
-            <button type="button" class="line-tab" data-cine-mode="open"><b>开放式生成</b><span>最多 3 个形象 + 自己写画面描述 · 10 点/秒</span></button>
+            <button type="button" class="line-tab" data-cine-mode="open"><b>开放式生成</b><span>最多 3 个形象 + 自己写画面描述</span></button>
           </div>
         </div>
 
@@ -690,7 +690,7 @@
           </div>
           <label id="cineNewAvatarDrop" class="motion-drop" style="margin-top:12px;">
             <input id="cineNewAvatarFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
-            <strong>+ 创建新形象（2 点）</strong>
+            <strong>+ 创建新形象</strong>
             <span>上传一张正脸清晰的照片，约 25 秒建好，之后可反复使用</span>
           </label>
           <div id="cineAvatarStatus" class="faint" style="font-size:11.5px;margin-top:8px;"></div>
@@ -1112,7 +1112,7 @@
 <div id="toast" class="toast"></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=d0d6179e"></script>
+<script src="cloud-shell.js?v=5b9a393a"></script>
 <script src="image-mentions.js?v=20260802f"></script>
 <script src="video-agent-canvas.js?v=4b0819c4"></script>
 <script src="video-agent-session.js?v=1405f34a"></script>
@@ -1125,6 +1125,7 @@
   var talkingBatch=false, talkingBatchItems=[], videoCost=20, videoBatchMax=5, talkingBatchSeq=0;
   var TALKING_BLOCK_SECONDS=30, TALKING_BLOCK_POINTS=30;
   var SEEDANCE_RATE=30, OMNI_RATE=30, MINIMAX_RATE=6, TRYON_SINGLE_POINTS=25, TRYON_DOUBLE_POINTS=40, AVATAR_POINTS=2;
+  function billingEnabled(){return window.HQ&&typeof HQ.isPointsBillingEnabled==='function'&&HQ.isPointsBillingEnabled();}
   var bgmData='', selectedBgmVolume=0.18;
   var selectedSubtitle='off', selectedSubtitleStyle='white', selectedSubtitlePosition='bottom';  // F4 字幕：默认关闭+底部，不勾选时行为与原来一致
   // 电影化身（HeyGen cinematic）：三个玩法共用一套控件，见 CINE_MODES
@@ -1504,7 +1505,7 @@
       if(!meta)return;var type=meta.type||'file',src=canvasPreviewUrls[item.id]||'',preview='';
       if(type==='image'&&src)preview='<button class="canvas-preview-button" type="button" data-canvas-preview="'+esc(item.id)+'" aria-label="查看'+esc(meta.name||'图片素材')+'大图"><img src="'+esc(src)+'" alt=""></button>';else if(type==='video'&&src)preview='<video src="'+esc(src)+'" muted playsinline preload="metadata"></video>';else if(type==='audio'&&src)preview='<audio src="'+esc(src)+'" controls preload="metadata"></audio>';else preview=type==='image'?'▧':(type==='video'?'▶':(type==='audio'?'♪':'＋'));
       var purposeClass=meta.purpose_state==='confirmed'?' confirmed':(meta.purpose_state==='analyzing'?' analyzing':'');
-      var avatarAction=agentAvatarCreationAvailable(meta)?('<button class="canvas-avatar-action" type="button" data-agent-avatar-create="'+esc(item.id)+'" '+(meta.avatar_state==='creating'?'disabled':'')+'>'+(meta.avatar_state==='creating'?'正在创建数字人形象…':('用此图片创建数字人形象（'+AVATAR_POINTS+' 点）'))+'</button>'):'';
+      var avatarAction=agentAvatarCreationAvailable(meta)?('<button class="canvas-avatar-action" type="button" data-agent-avatar-create="'+esc(item.id)+'" '+(meta.avatar_state==='creating'?'disabled':'')+'>'+(meta.avatar_state==='creating'?'正在创建数字人形象…':('用此图片创建数字人形象'+(billingEnabled()?'（'+AVATAR_POINTS+' 点）':'')))+'</button>'):'';
       html+='<article class="canvas-card media-card'+(selected?' selected':'')+(meta.restored?' restored':'')+'" data-canvas-id="'+esc(item.id)+'" tabindex="0" role="group" aria-label="'+esc(meta.name||'素材')+'"'+sizeStyle+'><div class="canvas-card-head"><span class="canvas-card-kind">'+esc(canvasTypeLabel(type).slice(0,1))+'</span><span class="canvas-card-name" title="'+esc(meta.name||'素材')+'">'+esc(meta.name||'素材')+'</span><button class="canvas-material-purpose'+purposeClass+'" type="button" data-material-confirm-open="'+esc(item.id)+'" title="确认或修改素材用途">'+esc(agentMaterialPurposeStatusLabel(meta))+'</button><button class="canvas-card-remove" type="button" data-canvas-remove="'+esc(item.id)+'" aria-label="删除素材">×</button></div><div class="canvas-card-preview">'+preview+'</div><div class="canvas-card-meta" title="'+esc(canvasMetaText(meta))+'">'+esc(canvasMetaText(meta))+'</div>'+avatarAction+(meta.restored&&!meta.upload_id&&!meta.restoring_media&&!meta.media_cached?'<button class="canvas-restored-note" type="button" data-canvas-reselect="'+esc(item.id)+'">请重新选择本地文件</button>':'')+'<button class="canvas-resize-handle" type="button" data-canvas-resize="'+esc(item.id)+'" aria-label="使用方向键调整素材卡片大小"></button></article>';
     });
     html+=renderAgentCanvasTasks();stage.innerHTML=html+'</div>';
@@ -1543,7 +1544,7 @@
   var agentAvatarConfirmOverlay=null;
   function closeAgentAvatarCreationConfirm(){if(!agentAvatarConfirmOverlay)return false;agentAvatarConfirmOverlay.remove();agentAvatarConfirmOverlay=null;return true;}
   function openAgentAvatarCreationConfirm(id){
-    id=agentSafeText(id,64);var meta=agentMaterialMeta.find(function(item){return item&&item.canvas_id===id;});if(!agentAvatarCreationAvailable(meta))return false;closeAgentAvatarCreationConfirm();var overlay=document.createElement('div');overlay.className='canvas-image-preview-overlay';overlay.innerHTML='<div class="canvas-avatar-confirm-box" role="dialog" aria-modal="true" aria-labelledby="avatarCreateConfirmTitle"><h3 id="avatarCreateConfirmTitle">确认创建数字人形象</h3><p>将使用《'+esc(meta.name||'人物图片')+'》创建数字人形象。</p><p class="canvas-avatar-confirm-cost">确认后才会提交任务，预计扣除 '+AVATAR_POINTS+' 点；取消不会提交或扣点。</p><div class="canvas-avatar-confirm-actions"><button type="button" data-avatar-confirm-cancel>取消</button><button class="primary" type="button" data-avatar-confirm-submit>确认创建</button></div></div>';agentAvatarConfirmOverlay=overlay;overlay.onclick=function(e){if(e.target===overlay)closeAgentAvatarCreationConfirm();};overlay.querySelector('[data-avatar-confirm-cancel]').onclick=closeAgentAvatarCreationConfirm;overlay.querySelector('[data-avatar-confirm-submit]').onclick=function(){closeAgentAvatarCreationConfirm();submitAgentAvatarCreation(id);};document.body.appendChild(overlay);setTimeout(function(){var button=overlay.querySelector('[data-avatar-confirm-submit]');if(button)button.focus();},0);return true;
+    id=agentSafeText(id,64);var meta=agentMaterialMeta.find(function(item){return item&&item.canvas_id===id;});if(!agentAvatarCreationAvailable(meta))return false;closeAgentAvatarCreationConfirm();var overlay=document.createElement('div');overlay.className='canvas-image-preview-overlay';overlay.innerHTML='<div class="canvas-avatar-confirm-box" role="dialog" aria-modal="true" aria-labelledby="avatarCreateConfirmTitle"><h3 id="avatarCreateConfirmTitle">确认创建数字人形象</h3><p>将使用《'+esc(meta.name||'人物图片')+'》创建数字人形象。</p><p class="canvas-avatar-confirm-cost">'+(billingEnabled()?'确认后才会提交任务，预计扣除 '+AVATAR_POINTS+' 点；取消不会提交或扣点。':'内测期间免费；确认后才会提交任务。')+'</p><div class="canvas-avatar-confirm-actions"><button type="button" data-avatar-confirm-cancel>取消</button><button class="primary" type="button" data-avatar-confirm-submit>确认创建</button></div></div>';agentAvatarConfirmOverlay=overlay;overlay.onclick=function(e){if(e.target===overlay)closeAgentAvatarCreationConfirm();};overlay.querySelector('[data-avatar-confirm-cancel]').onclick=closeAgentAvatarCreationConfirm;overlay.querySelector('[data-avatar-confirm-submit]').onclick=function(){closeAgentAvatarCreationConfirm();submitAgentAvatarCreation(id);};document.body.appendChild(overlay);setTimeout(function(){var button=overlay.querySelector('[data-avatar-confirm-submit]');if(button)button.focus();},0);return true;
   }
   function requestAgentAvatarCreation(id){
     if(!ensureAgentSessionOwner())return false;id=agentSafeText(id,64);var meta=agentMaterialMeta.find(function(item){return item&&item.canvas_id===id;});if(!agentAvatarCreationAvailable(meta))return false;if(meta.avatar_state==='creating'){toast('数字人形象正在创建');return false;}return openAgentAvatarCreationConfirm(id);
@@ -1729,7 +1730,7 @@
   }
   function agentPendingStatusLabel(status){return {pending:'等待确认',quoted:'等待确认',ready:'等待确认',awaiting_confirmation:'等待确认',pending_confirmation:'等待确认',requires_confirmation:'等待确认',confirming:'正在提交',submitted:'已提交',queued:'已排队',running:'生成中',completed:'已完成',succeeded:'已完成',failed:'提交失败',expired:'已过期',cancelled:'已取消',result_unknown:'结果待核对'}[status]||'等待确认';}
   function agentPendingMeta(action){
-    var values=[];if(action.cost)values.push('预计扣 '+action.cost+' 点');if(action.points)values.push('当前余额 '+action.points+' 点');var stamp=pendingActionExpiresAt(action.expires_at);if(stamp)values.push('有效期至 '+new Date(stamp).toLocaleString());return values;
+    var values=[];if(billingEnabled()&&action.cost)values.push('预计扣 '+action.cost+' 点');if(billingEnabled()&&action.points)values.push('当前余额 '+action.points+' 点');var stamp=pendingActionExpiresAt(action.expires_at);if(stamp)values.push('有效期至 '+new Date(stamp).toLocaleString());return values;
   }
   function scheduleAgentPendingDismiss(action){
     var existing=agentPendingDismissTimers[action.id];if(!isAgentPendingActionDismissible(action)){if(existing){clearTimeout(existing);delete agentPendingDismissTimers[action.id];}return;}if(existing)return;var terminalAt=Number(action.terminal_at)||Date.now();action.terminal_at=terminalAt;agentPendingDismissTimers[action.id]=setTimeout(function(){delete agentPendingDismissTimers[action.id];agentPendingActions=agentPendingActions.filter(function(item){return item.id!==action.id;});delete agentConfirmErrors[action.id];delete agentConfirmKeys[action.id];renderAgentPendingActions();saveAgentSession();},Math.max(0,terminalAt+AGENT_PENDING_ERROR_DISPLAY_MS-Date.now()));
@@ -2010,7 +2011,7 @@
     draft=draft&&typeof draft==='object'?draft:{};var kind=agentSafeText(draft.kind,40),content=agentSafeText(draft.content,2000).trim();if(!messageNode||['script','prompt','story'].indexOf(kind)<0||content.length<4)return false;var existing=canvasTextMaterialByContent(content,'agent'),action=document.createElement('div');action.className='agent-material-action';
     if(existing){action.textContent='✓ 草稿已加入素材工作区';messageNode.appendChild(action);return true;}var button=document.createElement('button');button.type='button';button.textContent='采用为文案素材';button.setAttribute('data-agent-draft-material','');action.appendChild(button);messageNode.appendChild(action);button.onclick=function(){var item=addCanvasTextMaterial(content,'agent');if(item)action.textContent='✓ 草稿已加入素材工作区';};return true;
   }
-  function renderAgentAvatarCreationAction(messageNode,result){var route=agentSafeText(result&&result.recommended_module,40),candidate=agentAvatarCreationCandidate();if(!messageNode||!candidate||['talking','motion','story'].indexOf(route)<0)return false;var action=document.createElement('div');action.className='agent-material-action';var button=document.createElement('button');button.type='button';button.setAttribute('data-agent-avatar-create-chat',candidate.canvas_id);button.textContent=candidate.avatar_state==='creating'?'数字人形象正在创建…':('用这张图片创建数字人形象（'+AVATAR_POINTS+' 点）');button.disabled=candidate.avatar_state==='creating';button.onclick=function(){requestAgentAvatarCreation(candidate.canvas_id);};action.appendChild(button);messageNode.appendChild(action);return true;}
+  function renderAgentAvatarCreationAction(messageNode,result){var route=agentSafeText(result&&result.recommended_module,40),candidate=agentAvatarCreationCandidate();if(!messageNode||!candidate||['talking','motion','story'].indexOf(route)<0)return false;var action=document.createElement('div');action.className='agent-material-action';var button=document.createElement('button');button.type='button';button.setAttribute('data-agent-avatar-create-chat',candidate.canvas_id);button.textContent=candidate.avatar_state==='creating'?'数字人形象正在创建…':('用这张图片创建数字人形象'+(billingEnabled()?'（'+AVATAR_POINTS+' 点）':''));button.disabled=candidate.avatar_state==='creating';button.onclick=function(){requestAgentAvatarCreation(candidate.canvas_id);};action.appendChild(button);messageNode.appendChild(action);return true;}
   function mergeAgentBrief(next){
     if(!next||typeof next!=='object')return;
     Object.keys(next).forEach(function(key){if(next[key]!=null&&String(next[key]).trim())agentBrief[key]=String(next[key]);});
@@ -3031,7 +3032,7 @@
   function updateCineDurationHint(){
     var box=$('cineDurationHint');
     if(!box) return;
-    var cfg=cineCfg(), price='，预计 '+cineCost()+' 点（'+cfg.rate+' 点/秒）';
+    var cfg=cineCfg(), price=billingEnabled()?'，预计 '+cineCost()+' 点（'+cfg.rate+' 点/秒）':'';
     if(selectedCineDuration!=='auto'){
       box.textContent='固定 '+selectedCineDuration+' 秒'+price;
       box.style.color='#5c6b82';
@@ -3039,7 +3040,7 @@
       box.textContent='自适应：跟随第一个参考视频，成片约 '+cineSeconds()+' 秒'+price;
       box.style.color='#2dd4bf';
     }else if(cfg.needRef){
-      box.textContent='自适应：成片长度跟随你上传的参考视频（4~15 秒，超出会截到 15 秒），按实际秒数计费 '+cfg.rate+' 点/秒';
+      box.textContent='自适应：成片长度跟随你上传的参考视频（4~15 秒，超出会截到 15 秒）'+(billingEnabled()?'，按实际秒数计费 '+cfg.rate+' 点/秒':'');
       box.style.color='#5c6b82';
     }else{
       box.textContent='自适应：未上传参考视频，将按 10 秒生成'+price;
@@ -3210,7 +3211,7 @@
       .then(function(res){
         if(res.status===401){setSubmitLock('cinematic',false);setBusy(false);location.href='../login.html?redirect=workbench/video';return;}
         if(!res.data.job_id) throw new Error(res.data.detail||'提交失败');
-        setVideoStatus(cfg.label+'任务已提交（扣 '+res.data.cost+' 点），约 6~9 分钟出片...');
+        setVideoStatus(cfg.label+'任务已提交'+(billingEnabled()?'（扣 '+res.data.cost+' 点）':'')+'，约 6~9 分钟出片...');
         HQ.refreshPoints();
         setTimeout(loadVideoHistory,700);
         // label 跟着玩法走（动作模仿 / 双人动作模仿 / 开放式生成），不再是写死的「AI 剧情视频」
@@ -3325,6 +3326,7 @@
     if(channel==='grok' && grokOperation==='edit'){
       return '果肉视频编辑维护中';
     }
+    if(!billingEnabled()) return '内测期间免费 · 失败后可重新提交';
     if(channel==='micro') return '预计 '+(selectedSeedanceDuration*SEEDANCE_RATE)+' 点（'+SEEDANCE_RATE+' 点/秒 × '+selectedSeedanceDuration+' 秒）'
       +(selectedSeedanceUpscale?' · AI 超清测试期暂不加点，预计多等 2-4 分钟':'')+' · 失败自动退点';
     if(channel==='omni') return '预计 '+(selectedOmniDuration*OMNI_RATE)+' 点（'+OMNI_RATE+' 点/秒 × '+selectedOmniDuration+' 秒）· 失败自动退点';
@@ -3355,8 +3357,8 @@
     SORA_RATES['sora-2-pro:1080p']=p['video.sora.pro.1080p']||210;
     TRYON_SINGLE_POINTS=p['video.tryon.single']||25;TRYON_DOUBLE_POINTS=p['video.tryon.double']||40;
     AVATAR_POINTS=p['avatar.create']||2;
-    document.querySelectorAll('[data-cine-mode]').forEach(function(tab){var mode=tab.dataset.cineMode,cfg=CINE_MODES[mode],span=tab.querySelector('span');if(cfg&&span)span.textContent=(mode==='motion'?'1 个形象 + 1 段参考视频 → 照着它的动作演':mode==='duo'?'2 个形象 + 1 段参考视频 → 双人照着动作演':'最多 3 个形象 + 自己写画面描述')+' · '+cfg.rate+' 点/秒';});
-    var avatarLabel=document.querySelector('.avatar-new strong');if(avatarLabel)avatarLabel.textContent='+ 创建新形象（'+AVATAR_POINTS+' 点）';
+    document.querySelectorAll('[data-cine-mode]').forEach(function(tab){var mode=tab.dataset.cineMode,cfg=CINE_MODES[mode],span=tab.querySelector('span');if(cfg&&span)span.textContent=(mode==='motion'?'1 个形象 + 1 段参考视频 → 照着它的动作演':mode==='duo'?'2 个形象 + 1 段参考视频 → 双人照着动作演':'最多 3 个形象 + 自己写画面描述')+(billingEnabled()?' · '+cfg.rate+' 点/秒':'');});
+    var avatarLabel=document.querySelector('.avatar-new strong');if(avatarLabel)avatarLabel.textContent='+ 创建新形象'+(billingEnabled()?'（'+AVATAR_POINTS+' 点）':'');
     updateVideoCosts();updateChecklist();
   });
   function soraRate(){return SORA_RATES[selectedSoraModel+':'+selectedSoraResolution]||210;}
@@ -3401,11 +3403,11 @@
     var o=$('omniCostNote'); if(o) o.textContent=xiaoleCostNote('omni');
     var mm=$('minimaxCostNote'); if(mm) mm.textContent=xiaoleCostNote('minimax');
     var s=$('soraCostNote');
-    if(s) s.textContent='预计 '+(soraRate()*selectedSoraSeconds)+' 点（'+soraRate()+' 点/秒 × '+selectedSoraSeconds+' 秒）';
+    if(s) s.textContent=billingEnabled()?'预计 '+(soraRate()*selectedSoraSeconds)+' 点（'+soraRate()+' 点/秒 × '+selectedSoraSeconds+' 秒）':'内测期间免费';
     var t=$('tryonCostNote');
     if(t){   // 换装+换背景需同时有衣服图和背景图(与后端 40 判定一致)，否则 25
       var pricey=!!tryonClothesData && !!tryonBackgroundData;
-      t.textContent=(pricey?('换装+换背景 '+TRYON_DOUBLE_POINTS+' 点'):('换装 '+TRYON_SINGLE_POINTS+' 点'))+' · 失败自动退点';
+      t.textContent=(billingEnabled()?(pricey?('换装+换背景 '+TRYON_DOUBLE_POINTS+' 点'):('换装 '+TRYON_SINGLE_POINTS+' 点')):(pricey?'换装+换背景':'换装'))+' · 生成失败可重试';
     }
   }
   function readFileData(file){
@@ -4092,7 +4094,7 @@
         });
         setSubmitLock('talking',false);
         setBusy(false);
-        setVideoStatus('已提交 '+jobs.length+' 条视频任务，共消耗 '+res.data.cost+' 点');
+        setVideoStatus('已提交 '+jobs.length+' 条视频任务'+(billingEnabled()?'，共消耗 '+res.data.cost+' 点':''));
         toast('批量任务已受理');
         setTimeout(loadVideoHistory,500);
         resumeTrackedVideoTask(jobs[0].job_id);
@@ -4369,7 +4371,7 @@
           throw err;
         }
         if(official)clearOfficialVideoRetry(channel);
-        if(statusEl) statusEl.textContent=label+'任务已提交'+(res.data.cost!=null?' · '+res.data.cost+'点':'')+'，生成中...';
+        if(statusEl) statusEl.textContent=label+'任务已提交'+(billingEnabled()&&res.data.cost!=null?' · '+res.data.cost+'点':'')+'，生成中...';
         setTimeout(loadVideoHistory,700);
         trackVideoJob(res.data.job_id,{status:'queued',phase:channel==='omni'?'omni_queued':(channel==='micro'?'seedance_queued':(channel==='minimax'?'minimax_queued':'queued')),label:label,mode:channel,modeLabel:label,ratio:ratio,model:currentModel,resolution:resolution,source_resolution:sourceResolution,upscale:channel==='micro'&&sentPayload.upscale===true,duration:fixedDuration,generate_audio:channel==='micro'?sentPayload.generate_audio:null});
         setSubmitLock('xiaole',false);
@@ -4450,7 +4452,7 @@
           throw err;
         }
         clearSoraRetry();
-        if($('soraStatus')) $('soraStatus').textContent='Sora 任务已提交'+(res.data.cost!=null?' · '+res.data.cost+'点':'')+'，正在生成...';
+        if($('soraStatus')) $('soraStatus').textContent='Sora 任务已提交'+(billingEnabled()&&res.data.cost!=null?' · '+res.data.cost+'点':'')+'，正在生成...';
         setTimeout(loadVideoHistory,700);
         trackVideoJob(res.data.job_id,{status:'queued',phase:'sora_queued',label:selectedSoraModel==='sora-2-pro'?'Sora 2 Pro 视频':'Sora 2 视频',mode:'sora',model:selectedSoraModel,resolution:selectedSoraResolution,duration:selectedSoraSeconds,modeLabel:selectedSoraModel==='sora-2-pro'?'Sora 2 Pro':'Sora 2',ratio:selectedSoraRatio});
         setSubmitLock('sora',false);
