@@ -6,6 +6,7 @@
    ============================================================ */
 (function(){
   "use strict";
+  document.documentElement.classList.add('hq-points-ui-disabled');
   /* --- duotone-mini 图标集（PR: duotone 图标体系）--- */
   /* 黄雀 duotone-mini 图标集 — 功能位用（16-24px）：白线 1.7 + 单一强调色（__ACC__ 占位，渲染时注入），无网点。
      骨架与 assets/icons-duotone/hq_*.svg 同源，是其小尺寸简化变体。 */
@@ -165,6 +166,7 @@
     st.id='hqNavShellStyles';
     st.textContent=
       '.hq-aside{--hq-nav-x:50%;--hq-nav-y:50%;position:relative;isolation:isolate;overflow:hidden;transition:width .16s cubic-bezier(.16,1,.3,1),box-shadow .24s ease}'+
+      '.hq-points-ui-disabled [data-points-ui]{display:none!important}'+
       '.hq-aside:before{content:"";position:absolute;inset:0;z-index:-1;pointer-events:none;background:radial-gradient(170px circle at var(--hq-nav-x) var(--hq-nav-y),rgba(231,178,76,.14),rgba(45,212,191,.035) 42%,transparent 72%);opacity:0;transition:opacity .24s ease}'+
       '.hq-aside.hq-nav-awake{box-shadow:inset -1px 0 rgba(231,178,76,.2),12px 0 34px rgba(0,0,0,.12)!important}'+
       '.hq-aside.hq-nav-awake:before{opacity:1}'+
@@ -294,7 +296,7 @@
         '<div class="hq-brand-copy" style="font-size:17px; font-weight:700; letter-spacing:.4px; white-space:nowrap;">黄雀 <span style="color:#94a4bb; font-weight:400;">AI</span></div></a>'+
       '<nav class="hq-side-nav" style="flex:1; overflow-y:auto; padding:6px 12px; display:flex; flex-direction:column; gap:2px;">'+navHTML(active)+'</nav>'+
       '<div class="hq-side-footer" style="padding:12px 14px; display:flex; flex-direction:column; gap:11px;">'+
-        '<div class="hq-side-points" style="position:relative; padding:15px 16px; border:1px solid rgba(231,178,76,.2); border-radius:14px; background:linear-gradient(150deg, rgba(231,178,76,.1), rgba(231,178,76,.02)); overflow:hidden;">'+
+        '<div class="hq-side-points" data-points-ui style="position:relative; padding:15px 16px; border:1px solid rgba(231,178,76,.2); border-radius:14px; background:linear-gradient(150deg, rgba(231,178,76,.1), rgba(231,178,76,.02)); overflow:hidden;">'+
           '<div style="position:absolute; right:-14px; top:-10px; width:62px; height:62px; color:rgba(231,178,76,.22);">'+icon('coins','62px')+'</div>'+
           '<div style="font-size:12px; color:#94a4bb;">剩余点数</div>'+
           '<div id="hqPointsSide" class="mono" style="font-size:30px; font-weight:700; color:#e7b24c; line-height:1.1; margin:3px 0 9px;">—</div>'+
@@ -360,9 +362,17 @@
   // ===== 服务端验证身份状态 =====
   var _verifiedUser=null,_authVerificationEpoch=0;
   function verifiedCurrentUser(){ return _verifiedUser?Object.assign({},_verifiedUser):null; }
+  function pointsUiEnabled(){ return !!(_verifiedUser&&_verifiedUser.points_billing_enabled); }
+  function syncPointsUi(){
+    var root=document.documentElement;
+    if(root&&root.classList) root.classList.toggle('hq-points-ui-disabled',!pointsUiEnabled());
+  }
   function notifyAuthChanged(user,verified){
     var username=user&&typeof user.username==='string'?user.username:'';
     _verifiedUser=verified===true&&username?Object.assign({},user):null;
+    syncPointsUi();
+    if(_verifiedUser&&!pointsUiEnabled()&&typeof location!=='undefined'&&
+       /\/(?:pricing|recharge)(?:\.html)?$/.test(location.pathname||'')) location.replace('settings.html');
     try{ window.dispatchEvent(new CustomEvent('hq:auth-changed',{detail:{username:_verifiedUser?_verifiedUser.username:'',user:verifiedCurrentUser(),verified:!!_verifiedUser}})); }catch(e){}
   }
   function invalidateAuthenticatedUi(){
@@ -481,6 +491,7 @@
       .finally(function(){ _pointsState.loading=false; });
   }
   function openPointsModal(){
+    if(!pointsUiEnabled()) return;
     ensurePointsModal();
     var ov=document.getElementById('hqPointsOv');
     if(ov) ov.classList.add('on');
@@ -529,7 +540,7 @@
   }
   var _systemNotices=[{
     id:'system-notification-center-v1',kind:'system',title:'通知中心已启用',
-    detail:'生成结果、点数变化和重要系统公告会集中显示在这里。',time:Date.parse('2026-07-10T09:00:00+08:00')
+    detail:'生成结果和重要系统公告会集中显示在这里。',time:Date.parse('2026-07-10T09:00:00+08:00')
   }];
   function noticeStoreKey(){
     var u=currentUser();
@@ -574,7 +585,7 @@
           detail:(x.func||x.kind||'生成任务')+' · 任务 #'+(x.task_id||''),time:Number(x.updated_at||x.created_at||0)*1000,
           href:noticeHref(x,status),action:done?'查看产物':'查看任务',tone:failed?'error':(done?'success':'info')});
       }
-      if(Number(x.cost||0)>0 && enabled('pointsChanges',true)){
+      if(pointsUiEnabled() && Number(x.cost||0)>0 && enabled('pointsChanges',true)){
         items.push({id:'points-'+x.task_id+'-'+(x.refunded?'refund':'cost'),kind:'points',title:x.refunded?'任务点数已退回':'点数已扣除',
           detail:(x.func||x.kind||'生成任务')+' · '+(x.refunded?'退回 ':'消耗 ')+Number(x.cost||0)+' 点',time:Number(x.updated_at||x.created_at||0)*1000,
           action:'查看明细',points:true,tone:x.refunded?'success':'points'});
@@ -639,8 +650,8 @@
     document.head.appendChild(st);
     var ov=document.createElement('div'); ov.className='hqno'; ov.id='hqNoticeOv';
     ov.innerHTML='<section class="hqnd" role="dialog" aria-modal="true" aria-labelledby="hqNoticeTitle">'+
-      '<div class="hqnh"><div style="flex:1;min-width:0;"><div id="hqNoticeTitle" style="font-size:18px;font-weight:800;color:#eaf1fa;">消息中心</div><div style="margin-top:4px;font-size:12px;color:#94a4bb;">任务、点数与站内公告</div></div><button type="button" class="hqna" id="hqNoticeReadAll">全部已读</button><button type="button" class="hqnx" id="hqNoticeClose" aria-label="关闭消息中心">&times;</button></div>'+
-      '<div class="hqnt" role="tablist"><button data-notice-kind="all" class="on">全部</button><button data-notice-kind="task">任务</button><button data-notice-kind="points">点数</button><button data-notice-kind="system">系统</button></div>'+
+      '<div class="hqnh"><div style="flex:1;min-width:0;"><div id="hqNoticeTitle" style="font-size:18px;font-weight:800;color:#eaf1fa;">消息中心</div><div style="margin-top:4px;font-size:12px;color:#94a4bb;">任务结果与站内公告</div></div><button type="button" class="hqna" id="hqNoticeReadAll">全部已读</button><button type="button" class="hqnx" id="hqNoticeClose" aria-label="关闭消息中心">&times;</button></div>'+
+      '<div class="hqnt" role="tablist"><button data-notice-kind="all" class="on">全部</button><button data-notice-kind="task">任务</button><button data-notice-kind="points" data-points-ui>点数</button><button data-notice-kind="system">系统</button></div>'+
       '<div class="hqnl" id="hqNoticeList"><div class="hqne">正在读取通知...</div></div></section>';
     document.body.appendChild(ov);
     ov.addEventListener('click',function(e){ if(e.target===ov) closeNotificationPanel(); });
@@ -1004,6 +1015,7 @@
   var _accountAvatar='';
   function membershipRoleName(user){
     if(user&&user.role==='admin') return '管理员';
+    if(user&&!user.points_billing_enabled) return '内测用户';
     if(!user||!user.membership_active) return '非会员';
     return user.membership_name||({experience:'体验官',partner:'合伙人',initiator:'发起人'}[user.membership_tier])||'会员等级待同步';
   }
@@ -1033,7 +1045,7 @@
     menu.id='hqAccountMenu'; menu.className='hq-account-menu'; menu.setAttribute('role','menu');
     menu.innerHTML='<div class="hq-account-menu-head"><div id="hqAccountMenuName" style="font-size:13px;font-weight:800;color:#eaf1fa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div><div id="hqAccountMenuRole" style="margin-top:3px;font-size:11px;color:#e7b24c;"></div></div>'+
       '<a href="settings.html" role="menuitem">'+icon('gear','16px')+'<span>账户设置</span></a>'+
-      '<a href="recharge.html" role="menuitem">'+icon('coins','16px')+'<span>会员与点数</span></a>'+
+      '<a href="recharge.html" role="menuitem" data-points-ui>'+icon('coins','16px')+'<span>会员与点数</span></a>'+
       '<a href="invite.html" role="menuitem">'+iconDuo('users','16px','#e7b24c')+'<span>邀请中心</span></a>'+
       '<button type="button" class="danger" data-logout="1" role="menuitem">'+icon('logout','16px')+'<span>退出登录</span></button>';
     document.body.appendChild(menu);
@@ -1115,7 +1127,7 @@
   setInterval(function(){fetchPricing().then(function(values){pricingListeners.forEach(function(callback){callback(values)})}).catch(function(){})},30000);
 
   window.addEventListener('storage',handleAuthStorageChange);
-  window.HQ={ icon:icon, nav:NAV, escapeHtml:escapeHtml, escapeAttr:escapeAttr, safeUrl:safeUrl, isAdmin:isAdmin, getVerifiedUser:verifiedCurrentUser, refreshPoints:refreshPoints, refreshNotifications:refreshNotificationBadge, setFriendsBadge:updateFriendsBadge, registerFriendsPanel:registerFriendsPanel, setFriendsPanelExpanded:setFriendsPanelExpanded, openFriendsPanel:openFriendsPanel, login:openLogin, requireLogin:requireLogin, register:openRegister, closeLogin:closeLogin, renderUser:renderUser, onPricing:onPricing, price:price };
+  window.HQ={ icon:icon, nav:NAV, escapeHtml:escapeHtml, escapeAttr:escapeAttr, safeUrl:safeUrl, isAdmin:isAdmin, isPointsBillingEnabled:pointsUiEnabled, getVerifiedUser:verifiedCurrentUser, refreshPoints:refreshPoints, refreshNotifications:refreshNotificationBadge, setFriendsBadge:updateFriendsBadge, registerFriendsPanel:registerFriendsPanel, setFriendsPanelExpanded:setFriendsPanelExpanded, openFriendsPanel:openFriendsPanel, login:openLogin, requireLogin:requireLogin, register:openRegister, closeLogin:closeLogin, renderUser:renderUser, onPricing:onPricing, price:price };
   function _hqInit(){ build(); buildLoginModal(); loadTaskTracker(); }
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',_hqInit); else _hqInit();
 })();

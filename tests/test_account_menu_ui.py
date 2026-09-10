@@ -23,6 +23,11 @@ class AccountMenuUiTest(unittest.TestCase):
         self.assertIn("if(r.status===401){ requireLogin(); return null; }", SHELL)
         self.assertIn("getVerifiedUser:verifiedCurrentUser", SHELL)
 
+    def test_beta_mode_hides_billing_ui_and_redirects_direct_pages(self):
+        self.assertIn("data-points-ui", SHELL)
+        self.assertIn("hq-points-ui-disabled", SHELL)
+        self.assertIn("/(?:pricing|recharge)(?:\\.html)?$/.test", SHELL)
+
     def test_payment_methods_use_local_brand_icons(self):
         for name in ("wechat", "alipay"):
             self.assertIn("../assets/brands/%s.svg" % name, RECHARGE)

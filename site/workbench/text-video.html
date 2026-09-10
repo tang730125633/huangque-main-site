@@ -213,7 +213,7 @@
 </div></div>
 <div id="toast" class="toast"></div>
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=d0d6179e"></script>
+<script src="cloud-shell.js?v=5482d257"></script>
 <script>
 (function(){
   var token='__cookie__',activeBlob='',startedAt=0,pollTimer=0,activeTemplate='',activeMode='generate',activeMaterialSource='ai',templates=[],activeKind='illustration',activeOrientation='portrait',stylesReady=false,voicesReady=false,isBusy=false,busyLabel='正在生成',pendingSceneAvatarId='';
@@ -357,7 +357,7 @@
         throw new Error(response.data.detail||'视频任务提交失败');
       }
       confirmSubmission(pending);
-      var cost=response.data.cost?'，预计扣除 '+response.data.cost+' 点':'';
+      var cost=window.HQ&&typeof window.HQ.isPointsBillingEnabled==='function'&&window.HQ.isPointsBillingEnabled()&&response.data.cost?'，预计扣除 '+response.data.cost+' 点':'';
       setStatus((activeMode==='generate'?'正在根据主题创作中文文案':'正在使用完整文案生成视频')+cost,'running');
       setBusy(true,'正在生成视频');poll(response.data.job_id);
     }).catch(function(error){var message=error.message||'视频任务提交失败';setBusy(false);setFieldError('talkingFinalError',message);setStatus(message,'error');toast(message);});
@@ -366,16 +366,17 @@
     invalidateQuote(false);
     var version=quoteRequestVersion,snapshot=JSON.stringify(payload),controller=typeof AbortController==='function'?new AbortController():null;
     quoteRequestController=controller;isQuoting=true;
-    setBusy(true,'正在获取报价');setStatus('正在计算分镜和价格','running');
+    setBusy(true,'正在准备方案');setStatus('正在计算分镜方案','running');
     fetch('/api/gen/text-video/quote',{method:'POST',headers:authHeaders(true),body:snapshot,signal:controller?controller.signal:undefined}).then(readJson).then(function(response){
       if(!isCurrentQuoteRequest(version,snapshot))return;
       if(response.status===401){location.href='../login.html?redirect=workbench/text-video';return;}
       var quote=response.data||{};
       if(!response.status||response.status>=400||!quote.quote_token||!Number.isFinite(Number(quote.cost))||!Number.isFinite(Number(quote.scene_count)))throw new Error(quote.detail||'报价读取失败');
       if(!isCurrentQuoteRequest(version,snapshot))return;
-      var confirmed=window.confirm('本次将生成 '+Number(quote.scene_count)+' 个分镜，预计扣除 '+Number(quote.cost)+' 点。确认后才会提交并扣点。');
+      var billing=!(window.HQ&&typeof window.HQ.isPointsBillingEnabled==='function')||window.HQ.isPointsBillingEnabled();
+      var confirmed=window.confirm(billing?'本次将生成 '+Number(quote.scene_count)+' 个分镜，预计扣除 '+Number(quote.cost)+' 点。确认后才会提交并扣点。':'本次将生成 '+Number(quote.scene_count)+' 个分镜。确认提交生成吗？');
       if(!isCurrentQuoteRequest(version,snapshot))return;
-      if(!confirmed){setBusy(false);setStatus('已取消提交，未扣点');return;}
+      if(!confirmed){setBusy(false);setStatus(billing?'已取消提交，未扣点':'已取消提交');return;}
       finishQuoteRequest(version);
       payload=Object.assign({},payload,{quote_token:quote.quote_token});submitPaid(payload);
     }).catch(function(error){

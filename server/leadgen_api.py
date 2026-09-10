@@ -288,6 +288,8 @@ def _add_points_direct(username, delta):
     扣点(delta<0)必须带 points >= 需扣数 的条件，否则 MAX(0, ...) 会把余额不足的用户
     硬扣到 0 且静默成功。返回是否真正生效。
     """
+    if not feature_flags.points_billing_enabled():
+        return True
     try:
         with closing(sqlite3.connect(AUTH_DB, timeout=10)) as c:
             if delta < 0:
@@ -715,7 +717,9 @@ class H(BaseHTTPRequestHandler):
             except Exception: page = 1
             if not keyword: return self._send(400, {"detail": "缺少关键词"})
             search_cost = pricing.get_price("collect.search")
-            if get_points(user["username"]) < search_cost: return self._send(402, {"detail": "点数不足", "need": search_cost})
+            if (feature_flags.points_billing_enabled()
+                    and get_points(user["username"]) < search_cost):
+                return self._send(402, {"detail": "点数不足", "need": search_cost})
             try:
                 r = tikhub.search(platform, keyword, page=page, video_only=False)
             except tikhub.TikHubError as e:

@@ -657,6 +657,7 @@
     doc.head.appendChild(style);
   }
   function mount(doc,win,username){
+    function billingEnabled(){return !(win.HQ&&typeof win.HQ.isPointsBillingEnabled==='function')||win.HQ.isPointsBillingEnabled();}
     username=normalizedUsername(username);
     if(!username||(!doc.getElementById('scTopic')&&!doc.getElementById('dhPhotoMode'))||doc.getElementById('hqDirectorAgent')) return null;
     var page=createPageContext(doc).page,isDigitalHuman=page==='digital_human_oneclick';
@@ -712,9 +713,9 @@
       var copy=doc.createElement('div');
       copy.textContent='生产确认\n选题：'+String(summary.topic||'')+
         '\n规格：'+[summary.platform,summary.style,summary.duration].filter(Boolean).join(' · ')+
-        '\n费用：'+offer.expected_cost+' 点（确认后开始制作）';
+        (billingEnabled()?'\n费用：'+offer.expected_cost+' 点（确认后开始制作）':'\n内测期间免费');
       var button=doc.createElement('button'); button.type='button'; button.className='hq-da-confirm';
-      button.textContent='确认生产并扣 '+offer.expected_cost+' 点'; button.disabled=pending;
+      button.textContent=billingEnabled()?'确认生产并扣 '+offer.expected_cost+' 点':'确认生产'; button.disabled=pending;
       button.onclick=function(){confirmProduction(offer);};
       card.appendChild(copy); card.appendChild(button); return card;
     }
@@ -726,9 +727,9 @@
       var copy=doc.createElement('div');
       copy.textContent=String(summary.label||'拆解')+'确认\n链接：'+linkText+
         '\n方式：'+String(summary.tool==='reverse_prompt'?'提示词反推':'分镜拆解')+
-        '\n费用：'+offer.expected_cost+' 点（确认后由服务端受理并扣点）';
+        (billingEnabled()?'\n费用：'+offer.expected_cost+' 点（确认后由服务端受理并扣点）':'\n内测期间免费');
       var button=doc.createElement('button'); button.type='button'; button.className='hq-da-confirm';
-      button.textContent='确认并扣 '+offer.expected_cost+' 点'; button.disabled=pending;
+      button.textContent=billingEnabled()?'确认并扣 '+offer.expected_cost+' 点':'确认并开始'; button.disabled=pending;
       button.onclick=function(){confirmBreakdown(offer);};
       card.appendChild(copy); card.appendChild(button); return card;
     }

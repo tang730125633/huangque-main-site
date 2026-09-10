@@ -31,6 +31,7 @@ from .audio import gen_audio, get_audio_asset, normalize_audio_voice_key
 from .image_mentions import resolve_image_mentions, validate_image_mentions
 from . import (
     cosyvoice,
+    feature_flags,
     pricing,
     provider_keys,
     short_drama_media_sanitize,
@@ -599,6 +600,8 @@ def xiaole_reference_needs_staging(kind, body):
 
 def xiaole_reference_precheck(kind, body, cost, known_points=None):
     """Fast in-memory eligibility hint; atomic deduct remains authoritative."""
+    if not feature_flags.points_billing_enabled():
+        return None
     if not xiaole_reference_needs_staging(kind, body):
         return None
     try:

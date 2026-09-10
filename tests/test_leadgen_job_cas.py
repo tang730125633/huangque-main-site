@@ -77,6 +77,28 @@ class LeadgenJobCasTests(unittest.TestCase):
             row = c.execute("SELECT status,cost,owner FROM jobs WHERE id=?", (jid,)).fetchone()
         self.assertEqual(("pending", 6, "leadgen"), tuple(row))
 
+    def test_beta_mode_never_uses_direct_balance_fallback(self):
+        with mock.patch.object(
+            self.lg.feature_flags, "is_enabled_fail_closed", return_value=False,
+        ), mock.patch.object(
+            self.lg.sqlite3, "connect", side_effect=AssertionError("must not write users.db"),
+        ):
+            self.assertTrue(self.lg._add_points_direct("u", -6))
+
+    def test_beta_mode_search_does_not_precheck_zero_balance(self):
+        handler = object.__new__(self.lg.H)
+        handler.path = "/api/gen/collect/search?platform=douyin&keyword=demo&page=1"
+        handler.headers = {}
+        sent = []
+        handler._send = lambda status, data: sent.append((status, data))
+        with mock.patch.object(self.lg, "verify", return_value={"username": "u"}), \
+                mock.patch.object(self.lg, "get_points", return_value=0), \
+                mock.patch.object(self.lg, "add_points", return_value=True), \
+                mock.patch.object(self.lg.tikhub, "search", return_value={"items": []}), \
+                mock.patch.object(self.lg.feature_flags, "points_billing_enabled", return_value=False):
+            self.lg.H.do_GET(handler)
+        self.assertEqual(200, sent[0][0])
+
     def test_admin_submission_is_idempotent_and_uses_auditable_charge_key(self):
         deductions = []
         self.lg.deduct_points = lambda username, amount, reason="", transaction_key="": (

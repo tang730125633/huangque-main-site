@@ -9,6 +9,7 @@ PAGE = (ROOT / "site/workbench/text-video.html").read_text(encoding="utf-8")
 SHELL = (ROOT / "site/workbench/cloud-shell.js").read_text(encoding="utf-8")
 CORE = (ROOT / "server/content_domains/core.py").read_text(encoding="utf-8")
 FLAGS = (ROOT / "server/content_domains/feature_flags.py").read_text(encoding="utf-8")
+TOOLBOX = (ROOT / "site/workbench/ai-tools.html").read_text(encoding="utf-8")
 
 
 class TextVideoPageTests(unittest.TestCase):
@@ -410,7 +411,7 @@ process.stdout.write(JSON.stringify({first: first.key, retry: retry.key}));
         self.assertIn('"default_enabled": False', FLAGS)
         self.assertIn("/api/gen/text-video/capability", CORE)
         self.assertIn("pixelle_video.require_available()", CORE)
-        self.assertIn("feature:'pixelle_text_video'", SHELL)
+        self.assertIn('data-tool-feature="pixelle_text_video"', TOOLBOX)
         self.assertIn("data-nav-feature", SHELL)
         self.assertIn("if(data&&data.available){item.hidden=false;item.style.display='flex';}", SHELL)
 
@@ -421,8 +422,8 @@ process.stdout.write(JSON.stringify({first: first.key, retry: retry.key}));
         self.assertIn("完整文案", PAGE)
 
     def test_sidebar_exposes_text_video_workspace(self):
-        self.assertIn("{k:'text-video',l:'文案成片',i:'clapper',feature:'pixelle_text_video'}", SHELL)
-        self.assertIn("active==='text-video'", SHELL)
+        self.assertIn('href="text-video.html"', TOOLBOX)
+        self.assertIn("'text-video':1", SHELL)
 
     def test_page_does_not_expose_provider_branding_and_only_uploads_talking_avatars(self):
         self.assertNotIn("Pixelle", PAGE)

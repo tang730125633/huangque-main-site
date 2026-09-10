@@ -75,7 +75,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=d0d6179e"></script>
+<script src="cloud-shell.js?v=5482d257"></script>
 <script>
 (function(){
   "use strict";
@@ -123,6 +123,7 @@
     var no=0, nt=0;
     list.forEach(function(x){
       var c=card(x);
+      if(x.billing_only) c.setAttribute('data-points-ui','');
       if(x.category==='tutorial'){ tu.appendChild(c); nt++; }
       else { ov.appendChild(c); no++; }
     });

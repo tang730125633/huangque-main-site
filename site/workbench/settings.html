@@ -240,7 +240,7 @@
           </form>
           <div class="info-grid">
             <div class="info-cell"><div class="info-label">角色</div><div id="role" class="info-value">--</div></div>
-            <div class="info-cell"><div class="info-label">剩余点数</div><div id="points" class="info-value mono">--</div></div>
+            <div class="info-cell" data-points-ui><div class="info-label">剩余点数</div><div id="points" class="info-value mono">--</div></div>
             <div class="info-cell"><div class="info-label">账号 ID</div><div class="info-value-row"><div id="accountId" class="info-value mono">--</div><button id="copyAccountIdBtn" class="btn info-copy-btn" type="button" disabled>复制</button></div></div>
             <div class="info-cell"><div class="info-label">密码状态</div><div id="mustChange" class="info-value">--</div></div>
           </div>
@@ -359,7 +359,7 @@
             <div class="setting-row"><div class="setting-main"><div class="setting-name">任务完成</div><div class="setting-desc">生成任务完成后显示结果通知。</div></div><label class="switch"><input type="checkbox" data-notice-pref="taskSuccess"><span></span></label></div>
             <div class="setting-row"><div class="setting-main"><div class="setting-name">任务失败</div><div class="setting-desc">任务异常或生成失败时保留提醒。</div></div><label class="switch"><input type="checkbox" data-notice-pref="taskFailure"><span></span></label></div>
             <div class="setting-row"><div class="setting-main"><div class="setting-name">任务进度</div><div class="setting-desc">显示排队与生成中的过程通知。</div></div><label class="switch"><input type="checkbox" data-notice-pref="taskProgress"><span></span></label></div>
-            <div class="setting-row"><div class="setting-main"><div class="setting-name">点数变动</div><div class="setting-desc">扣点和退点记录进入通知中心。</div></div><label class="switch"><input type="checkbox" data-notice-pref="pointsChanges"><span></span></label></div>
+            <div class="setting-row" data-points-ui><div class="setting-main"><div class="setting-name">点数变动</div><div class="setting-desc">扣点和退点记录进入通知中心。</div></div><label class="switch"><input type="checkbox" data-notice-pref="pointsChanges"><span></span></label></div>
             <div class="setting-row"><div class="setting-main"><div class="setting-name">系统公告</div><div class="setting-desc">接收工作台的重要功能和服务消息。</div></div><label class="switch"><input type="checkbox" data-notice-pref="systemNotices"><span></span></label></div>
           </div>
         </div>
@@ -393,18 +393,18 @@
           <div class="settings-card-head">
             <div>
               <div class="settings-card-title">账户与帮助</div>
-              <div class="settings-card-note">管理点数、邀请权益并查看使用教程。</div>
+              <div class="settings-card-note">管理邀请关系并查看使用教程。</div>
             </div>
           </div>
           <nav class="settings-destination-list" aria-label="账户与帮助">
-            <a class="settings-destination" href="pricing.html">
+            <a class="settings-destination" href="pricing.html" data-points-ui>
               <span class="settings-destination-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M9 10.2c0-1.1 1.2-1.9 3-1.9s3 .8 3 1.9-1.2 1.8-3 1.8-3 .8-3 1.9 1.2 1.9 3 1.9 3-.8 3-1.9M12 6.4v11.2"/></svg></span>
               <span class="settings-destination-main"><span class="settings-destination-name">点数价格</span><span class="settings-destination-desc">查看能力消耗、会员价格和充值入口。</span></span>
               <span class="settings-destination-arrow" aria-hidden="true">›</span>
             </a>
             <a class="settings-destination" href="invite.html">
               <span class="settings-destination-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M16 20v-1.5A3.5 3.5 0 0 0 12.5 15h-5A3.5 3.5 0 0 0 4 18.5V20"/><circle cx="10" cy="8" r="3"/><path d="M18 8v6M15 11h6"/></svg></span>
-              <span class="settings-destination-main"><span class="settings-destination-name">邀请中心</span><span class="settings-destination-desc">管理邀请码、邀请关系和奖励记录。</span></span>
+              <span class="settings-destination-main"><span class="settings-destination-name">邀请中心</span><span class="settings-destination-desc">管理邀请码和邀请关系。</span></span>
               <span class="settings-destination-arrow" aria-hidden="true">›</span>
             </a>
             <a class="settings-destination" href="tutorials.html">
@@ -433,7 +433,7 @@
             </button>
             <button class="settings-destination hq-notify-btn" type="button" aria-expanded="false">
               <span class="settings-destination-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg></span>
-              <span class="settings-destination-main"><span class="settings-destination-name">通知中心</span><span class="settings-destination-desc">查看生成结果、点数变化和重要系统公告。</span></span>
+              <span class="settings-destination-main"><span class="settings-destination-name">通知中心</span><span class="settings-destination-desc">查看生成结果和重要系统公告。</span></span>
               <span class="hq-notify-badge" aria-label="0 条未读通知"></span>
               <span class="settings-destination-arrow" aria-hidden="true">›</span>
             </button>
@@ -463,7 +463,7 @@
         </div>
       </section>
 
-      <section id="pointsGiftCard" class="settings-card" hidden>
+      <section id="pointsGiftCard" class="settings-card" data-points-ui hidden>
         <div class="settings-card-body">
           <div class="settings-card-head">
             <div>
@@ -537,7 +537,7 @@
     </div>
   </section>
 </div>
-<div id="giftConfirmModal" class="modal-mask" aria-hidden="true">
+<div id="giftConfirmModal" class="modal-mask" data-points-ui aria-hidden="true">
   <section class="settings-modal" role="dialog" aria-modal="true" aria-labelledby="giftConfirmTitle">
     <div class="settings-modal-head">
       <div>
@@ -580,7 +580,7 @@
   </section>
 </div>
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=d0d6179e"></script>
+<script src="cloud-shell.js?v=5482d257"></script>
 <script>
 (function(){
   var $ = function(id){return document.getElementById(id);};
@@ -726,7 +726,7 @@
   function renderUser(user){
     user = user || {};
     activeUser = user;
-    $('pointsGiftCard').hidden=!canGiftPoints(user);
+    $('pointsGiftCard').hidden=!user.points_billing_enabled||!canGiftPoints(user);
     var localProfile=readJson(accountKey('hq_profile_v1'));
     var name = localProfile.nickname || user.name || user.display_name || user.username || '未命名账号';
     $('displayName').textContent = name;
@@ -1635,7 +1635,7 @@
       renderUser(res.data.user);
       loadReferrer();
       loadFriendState();
-      if(canGiftPoints(res.data.user)) loadGiftHistory(true);
+      if(res.data.user.points_billing_enabled&&canGiftPoints(res.data.user)) loadGiftHistory(true);
       if(window.HQ && typeof window.HQ.refreshPoints === 'function') window.HQ.refreshPoints();
     }).catch(function(e){
       $('accountStatus').textContent = '读取失败';
