@@ -44,6 +44,36 @@ def reclaim_orphaned_running(
 
     handled = requeued = failed = 0
     for row in rows:
+        try:
+            payload = json.loads(row["payload"] or "{}")
+        except (TypeError, ValueError):
+            payload = {}
+        if isinstance(payload, dict) and payload.get('_channel_binding'):
+            try:
+                from . import channel_manager
+                managed_state = channel_manager.mark_interrupted_task_unknown(
+                    row["id"], "业务 worker 重启中断，结果待人工核对",
+                )
+            except Exception:
+                managed_state = 'unavailable'
+            if managed_state in {'running', 'unknown', 'passed', 'unavailable'}:
+                logger(
+                    "[startup] 托管渠道任务状态=%s，保留 running 待核对 job=%s"
+                    % (managed_state, row["id"]), flush=True,
+                )
+                continue
+            if managed_state in {'queued', 'absent'}:
+                try:
+                    won_requeue = requeue_job(row["id"])
+                except Exception as exc:
+                    logger("[startup] 托管渠道任务恢复排队异常 job=%s: %s" %
+                           (row["id"], str(exc)[:200]), flush=True)
+                    continue
+                if won_requeue:
+                    requeued += 1
+                    handled += 1
+                continue
+            # Only a durable managed 'failed' state may enter normal failure/refund.
         if row["kind"] in {
             "short_drama_preview", "short_drama_final", "short_drama_remux"
         }:
@@ -168,10 +198,6 @@ def reclaim_orphaned_running(
                 continue
         elif row["kind"] == "matrix_template_video":
             provider = "Matrix template"
-            try:
-                payload = json.loads(row["payload"] or "{}")
-            except (TypeError, ValueError):
-                payload = {}
             runtime = payload.get("_matrix_runtime") if isinstance(payload, dict) else {}
             if not isinstance(runtime, dict):
                 runtime = {}

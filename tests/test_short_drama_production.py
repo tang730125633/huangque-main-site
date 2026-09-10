@@ -3904,23 +3904,75 @@ class ShortDramaStillRouteTests(unittest.TestCase):
         self.assertNotIn("_http_status", replay)
         self.assertEqual(1, create_paid_job.call_count)
 
-    def test_disabled_xiaole_image_rejects_new_work_before_charge_and_job(self):
-        original = core.feature_flags.require_enabled
-        def require_enabled(key):
-            if key == "image_xiaole":
-                raise core.feature_flags.FeatureDisabled("维护中")
-        core.feature_flags.require_enabled = require_enabled
-        try:
+    def test_generic_image_submission_persists_managed_snapshot(self):
+        binding = {"id": "managed-image", "version": 5, "front": "front-model"}
+        body = {
+            "provider": "seedream", "model": "front-model",
+            "prompt": "rainy doorway", "ratio": "1:1", "count": 1,
+        }
+        with mock.patch(
+            "content_domains.channel_manager.capture",
+            side_effect=lambda kind, payload: dict(payload, _channel_binding=binding),
+        ) as capture:
             status, response = self.request(
-                "/api/gen/image",
-                body={"provider": "xiaole", "prompt": "rainy doorway", "ratio": "1:1"},
-                idempotency_key="disabled-xiaole-new-001",
+                "/api/gen/image", body=body,
+                idempotency_key="managed-image-submit-001",
             )
-        finally:
-            core.feature_flags.require_enabled = original
+            replay_status, replay = self.request(
+                "/api/gen/image", body=body,
+                idempotency_key="managed-image-submit-001",
+            )
+
+        self.assertEqual((200, 200), (status, replay_status))
+        self.assertEqual(response["job_id"], replay["job_id"])
+        self.assertGreaterEqual(capture.call_count, 1)
+        self.assertTrue(all(call.args[0] == "image" and
+                            call.args[1]["model"] == "front-model"
+                            for call in capture.call_args_list))
+        stored = json.loads(self._jobs()[-1]["payload"])
+        self.assertEqual(binding, stored["_channel_binding"])
+        with closing(core.jdb()) as connection:
+            request_hash = connection.execute(
+                "SELECT request_hash FROM submission_idempotency "
+                "WHERE username=? AND endpoint=? AND idem_key=?",
+                ("alice", "/api/gen/image", "managed-image-submit-001"),
+            ).fetchone()[0]
+        expected_body = image.validate_image_payload(body)
+        self.assertEqual(
+            submission_idempotency._request_hash(expected_body), request_hash)
+
+    def test_channel_database_error_aborts_image_idempotency_claim(self):
+        body = {
+            "provider": "seedream", "model": "front-model",
+            "prompt": "rainy doorway", "ratio": "1:1", "count": 1,
+        }
+        with mock.patch(
+            "content_domains.channel_manager.capture",
+            side_effect=sqlite3.OperationalError("database unavailable"),
+        ):
+            status, response = self.request(
+                "/api/gen/image", body=body,
+                idempotency_key="managed-image-db-error-001",
+            )
         self.assertEqual(503, status)
-        self.assertEqual("feature_disabled", response["code"])
-        self.assertIs(response.get("operation_terminal"), True)
+        self.assertEqual("channel_config_unavailable", response["code"])
+        with closing(core.jdb()) as connection:
+            count = connection.execute(
+                "SELECT COUNT(*) FROM submission_idempotency "
+                "WHERE username=? AND endpoint=? AND idem_key=?",
+                ("alice", "/api/gen/image", "managed-image-db-error-001"),
+            ).fetchone()[0]
+        self.assertEqual(0, count)
+        self.assertEqual([], self.points.deduct_calls)
+
+    def test_removed_xiaole_image_rejects_before_charge_and_job(self):
+        status, response = self.request(
+            "/api/gen/image",
+            body={"provider": "xiaole", "prompt": "rainy doorway", "ratio": "1:1"},
+            idempotency_key="removed-xiaole-new-001",
+        )
+        self.assertEqual(400, status)
+        self.assertIn("下架", response["detail"])
         self.assertEqual([], self.points.deduct_calls)
         self.assertEqual([], self._jobs())
         self.assertEqual(0, core._image_job_queue.qsize())
@@ -3976,20 +4028,21 @@ class ShortDramaStillRouteTests(unittest.TestCase):
         self.assertEqual([], self._jobs())
         self.assertEqual(0, core._image_job_queue.qsize())
 
-    def test_disabling_xiaole_preserves_idempotent_replay_of_accepted_job(self):
-        body = {"provider": "xiaole", "prompt": "rainy doorway", "ratio": "1:1"}
+    def test_disabling_banana_preserves_idempotent_replay_of_accepted_job(self):
+        body = {"provider": "banana", "model": "nb2", "prompt": "rainy doorway",
+                "ratio": "1:1", "quality": "std", "count": 1}
         status, accepted = self.request(
-            "/api/gen/image", body=body, idempotency_key="xiaole-replay-after-off-001"
+            "/api/gen/image", body=body, idempotency_key="banana-replay-after-off-001"
         )
         original = core.feature_flags.require_enabled
         def require_enabled(key):
-            if key == "image_xiaole":
+            if key == "banana":
                 raise core.feature_flags.FeatureDisabled("维护中")
         core.feature_flags.require_enabled = require_enabled
         try:
             replay_status, replayed = self.request(
                 "/api/gen/image", body=body,
-                idempotency_key="xiaole-replay-after-off-001",
+                idempotency_key="banana-replay-after-off-001",
             )
         finally:
             core.feature_flags.require_enabled = original
@@ -4047,6 +4100,8 @@ class ShortDramaStillRouteTests(unittest.TestCase):
         with mock.patch.object(
             video, "validate_video_payload",
             side_effect=lambda payload, _username: dict(payload),
+        ), mock.patch.object(
+            video, "require_video_submission_ready",
         ), mock.patch.object(
             video, "record_video_pending_asset",
             side_effect=RuntimeError("asset write failed"),

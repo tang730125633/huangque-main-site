@@ -318,7 +318,10 @@
     @media (max-width:900px){.ops-workspace{grid-template-columns:1fr}.ops-catalog{position:static;max-height:none}.ops-catalog-list{grid-template-columns:repeat(2,minmax(0,1fr))}.ops-selected-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.ops-selected-facts div:nth-child(2){border-right:0}.ops-selected-facts div:nth-child(-n+2){border-bottom:1px solid var(--line)}}
     @media (max-width:680px){.module-card[data-module="operations"]>.ops-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.module-card[data-module="operations"]>.ops-summary .ledger-stat{border-right:1px solid var(--line);border-bottom:1px solid var(--line)}.module-card[data-module="operations"]>.ops-summary .ledger-stat:nth-child(2n){border-right:0}.module-card[data-module="operations"]>.ops-summary .ledger-stat:last-child{grid-column:1/-1;border-right:0;border-bottom:0}.ops-decision{grid-template-columns:1fr}.ops-decision-next{border-top:1px solid var(--line);border-left:0}.ops-primary-actions{display:grid;grid-template-columns:1fr 1fr}.ops-primary-actions .primary{grid-column:1/-1;width:100%}}
     @media (max-width:560px){.ops-catalog-list{grid-template-columns:1fr}.ops-selected-head{padding:16px}.ops-selected-head h3{font-size:19px}.ops-decision,.ops-selected-facts{margin-left:14px;margin-right:14px}.ops-primary-actions{padding-left:14px;padding-right:14px}.ops-technical-panel{padding-left:14px;padding-right:14px}.ops-selected>.ops-inspector-validation,.ops-trust-note{margin-left:14px;margin-right:14px}.ops-section-nav{grid-template-columns:1fr 1fr}}
-  </style>
+
+    .task-proof{padding:0 14px 14px;font-size:12px}.task-proof-summary{padding:12px 14px;background:rgba(255,255,255,.025);border-left:2px solid var(--muted);border-radius:4px}.task-proof-summary p{margin:5px 0 0;line-height:1.6}.task-proof-records{padding:14px 0}.task-proof-line{padding:9px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}.task-proof-line strong{display:block;font-size:11px;font-weight:600}.task-proof-line span{display:block;color:var(--muted);font-size:11px;margin-top:5px;line-height:1.6}.task-proof-missing{margin:10px 0 0;color:var(--muted);font-size:11px;line-height:1.7}.task-technical{border-top:1px solid var(--line)}.task-technical>summary{padding:11px 0 0;color:var(--info);cursor:pointer;font-size:11px}.task-technical .task-raw{padding:12px 0 0}.task-technical .task-raw code{white-space:pre-wrap;overflow-wrap:anywhere}
+    .cm-form{margin:16px 0;padding:18px;border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.025)}.cm-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin:12px 0}.cm-form label{display:block;font-size:12px;color:var(--muted);margin:8px 0}.cm-form .field{display:block;width:100%;margin-top:6px}.cm-form .actions{margin-top:16px}#cmList button{margin:3px}#cmStatus{color:var(--muted);font-size:12px;margin:12px 0}
+</style>
 </head>
 <body class="admin-locked">
 <div class="admin-layout" id="adminLayout">
@@ -345,6 +348,7 @@
       <div class="nav-group">
         <div class="nav-label">系统管理</div>
         <button class="side-nav-item" data-module-tab="features">接单与定价</button>
+        <button class="side-nav-item" data-module-tab="managedChannels">渠道管理</button>
       </div>
     </nav>
     <div class="sidebar-foot"><a href="/api-docs/" target="_blank" rel="noopener">团队接口文档 · 测速</a><a href="/workbench/inspiration.html">返回用户工作台</a></div>
@@ -528,6 +532,16 @@
         </details>
         <div id="operationsBox"><div class="empty">正在汇总功能运行证据…</div></div>
         <div id="operationsDeveloper"></div>
+      </section>
+      <section class="card span12 module-card" data-module="managedChannels" hidden>
+        <div class="section-head"><div><h2>渠道管理</h2><p class="muted">前台功能 → 模型映射 → 实际渠道 → 执行证据</p></div><div class="actions"><button id="cmReload">刷新</button><button data-module-switch="channels">现有密钥号池</button><button class="primary" id="cmNew">新增渠道</button></div></div>
+        <p class="muted">启用状态与健康度分别显示；改配置仅作用于新任务。统计范围：最近 24 小时。每日测试按北京时间执行。</p>
+        <div id="cmStatus" role="status"></div><div id="cmList"></div>
+        <div id="cmEditor" hidden></div>
+        <div class="section-head"><h3>模型映射</h3><button id="cmMapNew">新增映射</button></div><p class="muted">前台标识使用现有请求的 channel（视频）或 model（图片）。展示名称只作为后台说明，不修改前台页面文案。备用渠道由管理员手动切换。</p><div id="cmMappings"></div><div id="cmMappingEditor" hidden></div>
+        <details class="channel-detail"><summary>通知设置与发送状态</summary><div id="cmNotifications" style="padding:14px"></div></details>
+        <details class="channel-detail" open><summary>最近测试与任务</summary><div id="cmRuns" style="padding:14px"></div></details>
+        <details class="channel-detail"><summary>配置操作记录</summary><div id="cmAudit" style="padding:14px"></div></details>
       </section>
       <section class="card span12 module-card" data-module="channels" hidden>
         <div class="section-head">
@@ -715,7 +729,7 @@
           <div class="task-kpi"><span>完成记录</span><b id="taskSummaryDone">-</b></div>
           <div class="task-kpi"><span>进行中</span><b id="taskSummaryRunning">-</b></div>
           <div class="task-kpi attention"><span>失败</span><b id="taskSummaryFailed">-</b></div>
-          <div class="task-kpi caution"><span>证据未闭环</span><b id="taskSummaryEvidence">-</b></div>
+          <div class="task-kpi caution"><span>当前页证据未闭环</span><b id="taskSummaryEvidence">-</b></div>
         </div>
         <div class="task-filter">
           <select id="reqSource">
@@ -729,6 +743,7 @@
             <option value="fail">失败</option>
             <option value="running">进行中</option>
           </select>
+          <input class="field" id="reqUser" type="search" autocomplete="off" aria-label="筛选用户账号" placeholder="用户账号（精确匹配）">
           <input class="field" id="reqSearch" type="search" name="hq_admin_request_search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" aria-label="搜索实时任务" placeholder="任务号 / 关联号 / 用户 / 功能 / 渠道 / 模型 / 供应商任务号">
           <label class="switch"><input type="checkbox" id="reqAttributed" checked> 只看有用户</label>
           <label class="switch"><input type="checkbox" id="reqNoise"> 显示轮询噪音</label>
@@ -763,6 +778,7 @@
 </div>
 <div class="toast" id="toast"></div>
 <script src="/workbench/hq-icons-duotone.js"></script>
+<script src="/admin/channel-manager.js"></script>
 <script>
 (function(){
   var token = '__cookie__';
@@ -795,12 +811,13 @@
     inspirations:['灵感案例','管理首页展示案例与做同款入口'],
     operations:['功能状态','查看各项能力是否可用，以及需要处理的位置'],
     channels:['渠道与密钥','管理 API 线路、号池健康和轮询状态'],
+    managedChannels:['渠道管理','配置实际 API、模型映射、测试和每日巡检'],
     features:['接单与定价 · 功能开关','控制平台能力是否接受新任务'],
     pricing:['接单与定价 · 点数定价','修改客户看到并实际扣除的功能点数']
   };
   var moduleIcons = {
     dashboard:'home',users:'users',logs:'clock',recharge:'coins',points:'trend',invite:'userPlus',
-    announcements:'message',inspirations:'sparkles',operations:'layers',channels:'lock',features:'sliders',pricing:'coins'
+    announcements:'message',inspirations:'sparkles',operations:'layers',channels:'lock',managedChannels:'layers',features:'sliders',pricing:'coins'
   };
   var sidebarModule = {points:'recharge',pricing:'features'};
   el('operationsEnvironment').textContent=/zelong/i.test(location.hostname)?'泽龙测试环境':'当前环境';
@@ -1140,25 +1157,14 @@
   }
   function taskStageClass(value){return ['passed','failed','running','recorded'].indexOf(value)>=0?value:'unknown'}
   function taskRawField(label,value,title){return '<div><span>'+esc(label)+'</span><code title="'+esc(title||value||'')+'">'+esc(value||'未采集')+'</code></div>'}
-  function renderActivity(d){
-    var items=d.items||[],summary=d.summary||{};
-    var errorCatalog={};(d.error_catalog||[]).forEach(function(x){errorCatalog[x.code]=x});
-    var total=Number(d.total||0),pages=Math.max(1,Math.ceil(total/state.reqPageSize));
-    if(state.reqPage>pages){state.reqPage=pages;return loadReqLogs()}
-    el('taskSummaryTotal').textContent=Number(summary.total||0).toLocaleString();
-    el('taskSummaryDone').textContent=Number(summary.done||0).toLocaleString();
-    el('taskSummaryRunning').textContent=Number(summary.running||0).toLocaleString();
-    el('taskSummaryFailed').textContent=Number(summary.failed||0).toLocaleString();
-    el('taskSummaryEvidence').textContent=Number(summary.evidence_unclosed||summary.evidence_gaps||0).toLocaleString();
-    el('reqCount').textContent='第 '+state.reqPage+' / '+pages+' 页 · 共 '+total+' 条';
-    el('reqUpdatedAt').textContent=new Date().toLocaleTimeString()+' · 每 15 秒刷新';
-    if(!items.length){el('reqBox').innerHTML='<div class="empty">'+esc(d.message||'当前筛选没有任务或请求记录')+'</div>';return}
-    el('reqBox').innerHTML='<div class="task-stream">'+items.map(function(x){
+  function renderTaskCard(x){
+      var errorCatalog={};
       var isJob=x.source==='job';
+      if(isJob){var recorded=x.stages||[];x=Object.assign({},x,{stages:[['accepted','业务受理'],['route','选择线路'],['provider','供应商接单'],['generation','生成终态'],['delivery','成品交付']].map(function(pair){return recorded.find(function(t){return t.key===pair[0]})||{key:pair[0],name:pair[1],state:'unknown',detail:'该步骤证据未采集，不推断执行结果'}}).concat(recorded.filter(function(t){return ['accepted','route','provider','generation','delivery'].indexOf(t.key)<0}))})}
       var type=isJob?'生产任务':'HTTP 请求';
       var tone=isJob?(x.evidence_tone==='fail'?'fail':(x.evidence_tone==='ok'?'ok':(x.evidence_tone==='running'||x.evidence_tone==='warn'?'warn':'neutral'))):(x.cat==='fail'?'fail':'ok');
       var statusLabel=isJob?(x.evidence_label||'任务证据未采集'):('HTTP '+String(x.status_text||'-'));
-      var identity=isJob?('任务 #'+String(x.task_id||'未采集')+' · 关联 '+String(x.correlation_id||('task:'+String(x.task_id||'未采集')))):(x.request_id?String(x.request_id).slice(0,16):'无请求号');
+      var identity=isJob?('用户 '+String(x.user&&x.user!=='-'?x.user:'未归属')+' · 任务 #'+String(x.task_id||'未采集')):(x.request_id?String(x.request_id).slice(0,16):'无请求号');
       var route=[];
       if(x.user&&x.user!=='-')route.push('<span class="recorded">用户 '+esc(x.user)+'</span>');else route.push('<span>用户未归属</span>');
       if(isJob){
@@ -1174,25 +1180,75 @@
       var stages=isJob?'<div class="task-stages" aria-label="任务链路">'+(x.stages||[]).map(function(stage){return '<div class="task-stage '+taskStageClass(stage.state)+'" title="'+esc(stage.detail||'')+'">'+esc(stage.name||stage.key)+'</div>'}).join('')+'</div>':'<div class="task-stages"><div class="task-stage '+(x.cat==='fail'?'failed':'passed')+'">请求响应</div><div class="task-stage unknown">业务任务</div><div class="task-stage unknown">供应商</div><div class="task-stage unknown">生成终态</div><div class="task-stage unknown">成品交付</div></div>';
       var detail;
       if(isJob){
-        detail='<div class="task-evidence-grid">'+(x.stages||[]).map(function(stage){return '<div class="task-evidence-card"><b>'+esc(stage.name||stage.key)+' · '+esc(({passed:'有证据',failed:'失败',running:'进行中',recorded:'有记录未核验',unknown:'未采集'})[taskStageClass(stage.state)]||'未采集')+'</b><p>'+esc(stage.detail||'')+'</p></div>'}).join('')+'</div>';
+        var traces=x.runtime_trace||[], stageNames={provider_submit:'提交供应商',provider_query:'查询供应商结果',generation:'生成处理',generation_resume:'恢复生成查询',download:'下载成品',artifact_download:'下载成品'};
+        var stateNames={passed:'已核验',failed:'失败',running:'进行中',recorded:'已记录，未核验',unknown:'结果未知'};
+        var missing=x.stages.filter(function(s){return taskStageClass(s.state)==='unknown'});
+        var known=x.stages.filter(function(s){return taskStageClass(s.state)!=='unknown'});
+        var problem=traces.slice().reverse().find(function(t){return t.state==='failed'||t.error_type});
+        var failedStage=known.find(function(s){return s.state==='failed'});
+        var diagnosis='尚无足够证据定位问题，不能据此判断任务成功或失败。';
+        if(problem){
+          diagnosis=(stageNames[problem.stage]||problem.stage)+(problem.error_type==='TimeoutError'?'超时':'出现异常')+'；'+(problem.state==='failed'?'该步骤已记录失败。':problem.stage==='provider_submit'?'供应商是否接单尚未确认。':'执行结果尚未确认。');
+        }else if(failedStage){diagnosis=(failedStage.name||failedStage.key)+'失败：'+(failedStage.detail||'未采集具体原因')}
+        else if(x.error){diagnosis='任务有错误记录，具体故障步骤尚未确认。'}
+        else if(known.length){diagnosis='当前状态：'+statusLabel+'。请以各步骤的执行证据为准。'}
+        detail='<div class="task-proof"><div class="task-proof-summary"><b>问题说明</b><p>'+esc(diagnosis)+'</p></div><div class="task-proof-records"><b>关键证据</b>';
+        detail+=known.map(function(s){return '<div class="task-proof-line"><strong>'+esc(s.name||s.key)+' · '+esc(stateNames[s.state]||'结果未知')+'</strong><span>'+esc(s.detail||'未采集具体说明')+'</span></div>'}).join('');
+        detail+=traces.map(function(t){var when=t.updated_at?new Date(Number(t.updated_at)*1000).toLocaleString():'时间未采集';return '<div class="task-proof-line"><strong>'+esc(stageNames[t.stage]||t.stage)+' · '+esc(stateNames[t.state]||'结果未知')+'</strong><span>'+esc([when,t.duration_sec==null?'耗时未采集':fmtDuration(t.duration_sec),'实际渠道：'+(t.provider||'未采集'),'实际模型：'+(t.model||'未采集')].join(' · '))+'</span></div>'}).join('');
+        if(!known.length&&!traces.length)detail+='<p class="muted">暂无执行记录</p>';
+        if(missing.length)detail+='<p class="task-proof-missing">尚未采集步骤证据：'+esc(missing.map(function(s){return s.name||s.key}).join('、'))+'。未采集不代表成功或失败。</p>';
+        detail+='</div><details class="task-technical"><summary>技术详情 · 工单号、关联号与原始记录</summary><div class="task-raw">'+taskRawField('供应商',x.provider)+taskRawField('供应商工单号',x.provider_task_id)+taskRawField('关联号',x.correlation_id)+taskRawField('错误信息',x.error)+'</div>';
+        if(x.channel_version)detail+='<div class="task-proof-line">渠道配置版本：v'+esc(x.channel_version)+' · '+esc(x.managed_channel_id)+'</div>';
+        detail+=traces.map(function(t){return '<div class="task-proof-line"><strong>'+esc(t.stage)+' · '+esc(t.state)+'</strong><span>'+esc([t.transport?'网络方式：'+t.transport:'',t.host?'目标主机：'+t.host:'',t.error_type?'异常类型：'+t.error_type:''].filter(Boolean).join(' · ')||'无额外技术记录')+'</span></div>'}).join('');
+        detail+=missing.filter(function(s){return s.detail&&s.detail!=='该步骤证据未采集，不推断执行结果'}).map(function(s){return '<div class="task-proof-line"><strong>'+esc(s.name||s.key)+' · 证据说明</strong><span>'+esc(s.detail)+'</span></div>'}).join('');
+        detail+='</details></div>';
       }else{
         var errorInfo=errorCatalog[x.hq_code]||{};
         detail='<div class="task-raw">'+taskRawField('请求号',x.request_id)+taskRawField('路径',x.path,x.path)+taskRawField('来源 IP',x.ip,x.ua||x.ip)+taskRawField('错误说明',errorInfo.message||x.hq_code||'无')+'</div>';
       }
-      return '<article class="task-row" data-state="'+esc(x.cat||'unknown')+'"><div class="task-row-main"><div class="task-title"><div class="task-title-top"><span class="pill neutral">'+type+'</span><h3>'+esc(x.func||'未识别功能')+'</h3><span class="pill '+tone+'">'+esc(statusLabel)+'</span></div><small><code>'+esc(identity)+'</code> · '+esc(x.time||'-')+'</small><div class="task-route">'+route.join('')+'</div></div>'+stages+'<div class="task-metrics"><div class="task-metric"><span>处理耗时</span><b>'+(x.duration_sec!=null?esc(fmtDuration(x.duration_sec)):'未采集')+'</b></div><div class="task-metric"><span>任务点数</span><b>'+(x.cost!=null?Number(x.cost).toLocaleString():'-')+'</b></div></div></div><details class="task-evidence"><summary>同一次执行 · '+esc(isJob?'不把完成冒充交付':'原始请求证据')+'</summary>'+detail+'</details></article>';
+      return '<article class="task-row" data-task-key="'+esc(x.source+':'+(x.task_id||x.request_id||x.time+' '+x.path))+'" data-state="'+esc(x.cat||'unknown')+'"><div class="task-row-main"><div class="task-title"><div class="task-title-top"><span class="pill neutral">'+type+'</span><h3>'+esc(x.func||'未识别功能')+'</h3><span class="pill '+tone+'">'+esc(statusLabel)+'</span></div><small><code>'+esc(identity)+'</code> · '+esc(x.time||'-')+'</small><div class="task-route">'+route.join('')+'</div></div>'+stages+'<div class="task-metrics"><div class="task-metric"><span>处理耗时</span><b>'+(x.duration_sec!=null?esc(fmtDuration(x.duration_sec)):'未采集')+'</b></div><div class="task-metric"><span>任务点数</span><b>'+(x.cost!=null?Number(x.cost).toLocaleString():'-')+'</b></div></div></div><details class="task-evidence"><summary>同一次执行 · '+esc(isJob?'不把完成冒充交付':'原始请求证据')+'</summary>'+detail+'</details></article>';
+  }
+  function renderActivity(d){
+    var technicalExpanded=new Set(Array.from(el('reqBox').querySelectorAll('.task-technical[open]')).map(function(node){return node.closest('[data-task-key]').getAttribute('data-task-key')}));
+    var expanded=new Set(Array.from(el('reqBox').querySelectorAll('details[open]')).map(function(node){return node.closest('[data-task-key]').getAttribute('data-task-key')}));
+    var items=d.items||[],summary=d.summary||{};
+    var errorCatalog={};(d.error_catalog||[]).forEach(function(x){errorCatalog[x.code]=x});
+    var total=Number(d.total||0),pages=Math.max(1,Math.ceil(total/state.reqPageSize));
+
+    el('taskSummaryTotal').textContent=Number(summary.total||0).toLocaleString();
+    el('taskSummaryDone').textContent=Number(summary.done||0).toLocaleString();
+    el('taskSummaryRunning').textContent=Number(summary.running||0).toLocaleString();
+    el('taskSummaryFailed').textContent=Number(summary.failed||0).toLocaleString();
+    el('taskSummaryEvidence').textContent=Number(summary.evidence_unclosed||summary.evidence_gaps||0).toLocaleString();
+    el('reqCount').textContent='第 '+state.reqPage+' / '+pages+' 页 · 共 '+total+' 条';
+    el('reqUpdatedAt').textContent=new Date().toLocaleTimeString()+' · 每 15 秒刷新';
+    if(!items.length){el('reqBox').innerHTML='<div class="empty">'+esc(d.message||'当前筛选没有任务或请求记录')+'</div>';return}
+    el('reqBox').innerHTML='<div class="task-stream">'+items.map(function(x){return renderTaskCard(x);
     }).join('')+'</div><div class="pager"><button data-req-page="-1" '+(state.reqPage<=1?'disabled':'')+'>上一页</button><span class="pager-info">第 '+state.reqPage+' / '+pages+' 页 · 每页 '+state.reqPageSize+' 条</span><button data-req-page="1" '+(state.reqPage>=pages?'disabled':'')+'>下一页</button></div>';
+    Array.from(el('reqBox').querySelectorAll('[data-task-key]')).forEach(function(node){var key=node.getAttribute('data-task-key');if(expanded.has(key))node.querySelector('details').open=true;var technical=node.querySelector('.task-technical');if(technical&&technicalExpanded.has(key))technical.open=true});
     Array.prototype.forEach.call(el('reqBox').querySelectorAll('[data-req-page]'),function(btn){btn.onclick=function(){state.reqPage+=Number(btn.getAttribute('data-req-page'));loadReqLogs()}});
   }
   function loadReqLogs(silent){
-    if(state.reqLoading)return state.reqPromise||Promise.resolve();
     var q='?limit='+state.reqPageSize+'&offset='+((state.reqPage-1)*state.reqPageSize)+'&days='+encodeURIComponent(state.days)
       +'&source='+encodeURIComponent(el('reqSource').value||'')
       +'&status='+encodeURIComponent(el('reqStatus').value||'')
+      +'&user='+encodeURIComponent(el('reqUser').value.trim())
       +'&q='+encodeURIComponent(el('reqSearch').value||'')
       +(el('reqAttributed').checked?'&attributed=1':'')
       +(el('reqNoise').checked?'&noise=1':'');
-    state.reqLoading=true;if(!silent)el('reqBox').innerHTML='<div class="empty">正在读取真实任务证据…</div>';
-    state.reqPromise=api('/api/admin/activity'+q).then(renderActivity).catch(function(e){if(!silent)el('reqBox').innerHTML='<div class="error">'+esc(e.message)+'</div>';else{el('reqUpdatedAt').textContent='自动刷新失败 · 数据可能已过期';toast('实时任务刷新失败：'+e.message)}}).finally(function(){state.reqLoading=false;state.reqPromise=null});
+    if(state.reqLoading&&state.reqQuery===q)return state.reqPromise;
+    var sequence=(state.reqSequence||0)+1;state.reqSequence=sequence;state.reqQuery=q;state.reqLoading=true;
+    el('reqUpdatedAt').textContent='正在刷新…';
+    state.reqPromise=api('/api/admin/activity'+q).then(function(d){
+      if(sequence!==state.reqSequence)return;
+      state.reqLoading=false;
+      var pages=Math.max(1,Math.ceil(Number(d.total||0)/state.reqPageSize));
+      if(state.reqPage>pages){state.reqPage=pages;return loadReqLogs(false)}
+      renderActivity(d);
+    }).catch(function(e){
+      if(sequence!==state.reqSequence)return;
+      el('reqUpdatedAt').textContent='刷新失败 · 当前显示旧数据';toast('实时任务刷新失败：'+e.message);
+    }).finally(function(){if(sequence===state.reqSequence){state.reqLoading=false;state.reqPromise=null}});
     return state.reqPromise;
   }
   function renderSupportIssues(data){
@@ -2155,6 +2211,21 @@
     Array.prototype.some.call(document.querySelectorAll('['+attr+']'),function(node){if(values.indexOf(node.getAttribute(attr))>=0){target=node;return true}return false});
     if(!target)return;var details=target.closest('details');if(details)details.open=true;target.classList.add('ops-focus');target.scrollIntoView({behavior:'smooth',block:'center'});setTimeout(function(){target.classList.remove('ops-focus')},2400);
   }
+  function operationEvidenceSummary(page,entry,data){
+    var latest=(entry.stat||{}).latest||{},mode=entry.mode,feature=entry.feature;
+    var run=registryE2ERun(mode,data),verified=registryE2EPassed(run),validation=mode.validation||{};
+    var dependencies=registryActiveDependencies(feature,mode).map(function(dep){return dep.role+' · '+dep.key});
+    var cards=[
+      ['用户入口',page.name+' → '+feature.name+' → '+mode.name],
+      ['登记的渠道依赖',dependencies.join('；')||'尚未登记'],
+      ['最近任务实际渠道 / 模型',[latest.channel||latest.provider||'渠道未采集',latest.model||'模型未采集'].join(' / ')],
+      ['网络代理证据',latest.proxy_evidence||'未采集任务级代理证据；渠道连通不代表整条链路通过'],
+      ['最近任务与故障',latest.error||latest.phase||'暂无明确故障步骤记录；请查看任务证据'],
+      ['最近完整验收',verified?fmtTime(run.updated_at||run.created_at)+(registryE2EFresh(run)?' · 24小时内':' · 已过期，需重新验收'):'当前没有八段全部通过的验收记录'],
+      ['E2E 准备情况',validation.supported?((validation.fixture_summary||[]).join('；')||'已登记测试入口')+'；运行前仍需检查素材与预计点数':validation.blocked_reason||'测试入口尚未接入']
+    ];
+    return '<section class="ops-evidence-overview" aria-label="用户旅程与故障定位"><h4>用户旅程与故障定位</h4><p class="muted">入口 → 后端处理 → 代理与供应商 → 生成 → 成品核验 → 交付与账务。以下区分登记信息与实际执行证据。</p><div class="task-evidence-grid">'+cards.map(function(card){return '<div class="task-evidence-card"><b>'+esc(card[0])+'</b><p>'+esc(card[1])+'</p></div>'}).join('')+'</div></section>';
+  }
   function renderOperations(data){
     var pages=(data.function_registry||[]).slice().sort(function(a,b){return Number(a.order||0)-Number(b.order||0)}),stats=data.stats||{},statByOperation={},services={};
     (stats.by_operation||[]).forEach(function(item){statByOperation[item.operation]=item});
@@ -2201,7 +2272,8 @@
     var healthHeading=selected.verdict[0]==='ok'?'可以正常交付':(selected.verdict[0]==='fail'?'当前存在明确故障':(selected.verdict[0]==='neutral'?'任务仍在处理中':'需要进一步确认'));
     var handlingText=selected.verdict[0]==='ok'?'暂时无需处理，继续关注后续自动巡检。':(selected.verdict[0]==='fail'?'优先处理下方定位结果，再重新执行完整测试。':'先查看现有证据；条件齐备后执行一次完整测试。');
     var validationPanel=registryValidationPanel(selected.feature,selected.mode,data,selected.verdict);
-    var selectedPanel='<section class="ops-selected"><div class="ops-selected-head"><div><span>'+esc(selected.feature.name)+'</span><h3>'+esc(selected.mode.name)+'</h3><p>'+esc(selected.feature.desc||page.name)+'</p></div><span class="pill '+selected.verdict[0]+'">'+esc(selected.verdict[1])+'</span></div><div class="ops-decision '+selected.verdict[0]+'" data-ops-overview><div><span>当前结论</span><strong>'+esc(healthHeading)+'</strong><p>'+esc(selected.verdict[2])+'</p></div><div class="ops-decision-next"><span>处理建议</span><b>'+esc(selected.verdict[3])+'</b><p>'+esc(handlingText)+'</p></div></div><dl class="ops-selected-facts"><div><dt>最近证据</dt><dd>'+(latest?esc(fmtTime(latest.updated_at||latest.created_at)):'暂无记录')+'</dd></div><div><dt>近 '+Number(stats.days||state.days)+' 天任务</dt><dd>'+Number((selected.stat||{}).done||0)+' 成 / '+Number((selected.stat||{}).error||0)+' 败</dd></div><div><dt>终态成功率</dt><dd>'+rate+'</dd></div><div><dt>完整验收</dt><dd>'+esc((selected.acceptance||[])[1]||'尚未验收')+'</dd></div></dl><div class="ops-primary-actions"><button class="primary" data-ops-section="evidence">检查并测试</button><button class="mini" data-ops-section="tasks" data-operation-key="'+esc(selected.mode.key)+'">查看任务</button><button class="mini" data-operation-channel-open="'+esc(selected.mode.key)+'">检查线路</button><button class="mini" data-operations-module="features">接单与定价</button></div><nav class="ops-section-nav" aria-label="功能详情入口"><button data-ops-section="overview">当前状态</button><button data-ops-section="journey">处理流程</button><button data-ops-section="tasks" data-operation-key="'+esc(selected.mode.key)+'">最近任务</button><button data-ops-section="evidence">完整测试</button></nav><div class="ops-technical-panel">'+modeCard+'</div>'+(validationPanel?'<details class="ops-inspector-validation" '+(selected.verdict[0]==='fail'?'open':'')+'><summary>完整测试与验收记录</summary>'+validationPanel+'</details>':'')+'<div class="ops-trust-note">绿色只表示同一次执行的所有适用证据均已通过；服务可达或任务完成，不能单独代表交付成功。</div></section>';
+    var journeySummary=operationEvidenceSummary(page,selected,data);
+    var selectedPanel='<section class="ops-selected"><div class="ops-selected-head"><div><span>'+esc(selected.feature.name)+'</span><h3>'+esc(selected.mode.name)+'</h3><p>'+esc(selected.feature.desc||page.name)+'</p></div><span class="pill '+selected.verdict[0]+'">'+esc(selected.verdict[1])+'</span></div><div class="ops-decision '+selected.verdict[0]+'" data-ops-overview><div><span>当前结论</span><strong>'+esc(healthHeading)+'</strong><p>'+esc(selected.verdict[2])+'</p></div><div class="ops-decision-next"><span>处理建议</span><b>'+esc(selected.verdict[3])+'</b><p>'+esc(handlingText)+'</p></div></div><dl class="ops-selected-facts"><div><dt>最近证据</dt><dd>'+(latest?esc(fmtTime(latest.updated_at||latest.created_at)):'暂无记录')+'</dd></div><div><dt>近 '+Number(stats.days||state.days)+' 天任务</dt><dd>'+Number((selected.stat||{}).done||0)+' 成 / '+Number((selected.stat||{}).error||0)+' 败</dd></div><div><dt>终态成功率</dt><dd>'+rate+'</dd></div><div><dt>完整验收</dt><dd>'+esc((selected.acceptance||[])[1]||'尚未验收')+'</dd></div></dl>'+journeySummary+'<div class="ops-primary-actions"><button class="primary" data-ops-section="evidence">检查并测试</button><button class="mini" data-ops-section="tasks" data-operation-key="'+esc(selected.mode.key)+'">查看任务</button><button class="mini" data-operation-channel-open="'+esc(selected.mode.key)+'">检查线路</button><button class="mini" data-operations-module="features">接单与定价</button></div><nav class="ops-section-nav" aria-label="功能详情入口"><button data-ops-section="overview">当前状态</button><button data-ops-section="journey">处理流程</button><button data-ops-section="tasks" data-operation-key="'+esc(selected.mode.key)+'">最近任务</button><button data-ops-section="evidence">完整测试</button></nav><div class="ops-technical-panel">'+modeCard+'</div>'+(validationPanel?'<details class="ops-inspector-validation" '+(selected.verdict[0]==='fail'?'open':'')+'><summary>完整测试与验收记录</summary>'+validationPanel+'</details>':'')+'<div class="ops-trust-note">绿色只表示同一次执行的所有适用证据均已通过；服务可达或任务完成，不能单独代表交付成功。</div></section>';
     el('operationsBox').innerHTML='<section class="ops-workspace" data-operations-page="'+esc(page.key)+'">'+catalogPanel+selectedPanel+'</section>'+browserJourneyPanel;
     el('operationsUpdatedAt').textContent=operationsUpdatedText();
     renderOperationsDeveloper(hiddenFeatures,stats,page.auxiliary_actions||[],page.key);
@@ -2223,6 +2295,7 @@
     loadE2EPreflight(selected.mode.key,false);
     if((latestE2EBatch(data,page.key)||{}).status!=='running')loadE2EBatchPreflight(page.key,false);
   }
+  var loadManagedChannels=window.initChannelManager({api:api,esc:esc,el:el,toast:toast,active:function(){return state.module==='managedChannels'}});
   function switchModule(name){
     if(!moduleMeta[name])name='dashboard';
     state.module=name;
@@ -2231,6 +2304,7 @@
     Array.prototype.forEach.call(document.querySelectorAll('[data-module-switch]'),function(btn){btn.classList.toggle('active',btn.getAttribute('data-module-switch')===name)});
     Array.prototype.forEach.call(document.querySelectorAll('[data-module]'), function(card){card.hidden=card.getAttribute('data-module')!==name});
     el('pageTitle').textContent=moduleMeta[name][0];el('pageSubtitle').textContent=moduleMeta[name][1];closeSidebar();
+    if(name==='managedChannels'){loadManagedChannels()}
     if(name==='dashboard'){loadDashboard(false)}
     if(name==='logs'){loadReqLogs()}
     if(name==='users'){loadUsers()}
@@ -2256,6 +2330,7 @@
     el('healthIncidentCount').textContent=Number(monitorSummary.incidents||0)+' 项'+(Number(monitorSummary.confirming||0)?' · 待复核 '+Number(monitorSummary.confirming):'');el('healthIncidentRow').className='watch-row '+(Number(monitorSummary.incidents||0)?'attention':'good');
     el('acceptanceFreshCount').textContent=Number(acceptance.fresh||0)+' / '+Number(acceptance.total||0)+(Number(acceptance.due||0)?' · 待验 '+Number(acceptance.due):'');el('acceptanceFreshRow').className='watch-row '+(Number(acceptance.due||0)?'attention':'good');
     el('healthMonitorCycle').textContent=monitor.last_cycle_at?'最近检查 '+new Date(Number(monitor.last_cycle_at)*1000).toLocaleTimeString()+' · 每 '+Number(monitor.interval_seconds||60)+' 秒':'等待第一轮基础检查';
+    var notification=monitor.notifications||{},notificationCounts=notification.counts||{};el('healthMonitorCycle').textContent+=' · 告警'+(notification.enabled?'已启用':'未启用')+' · 待发 '+Number(notificationCounts.pending||0)+' / 失败 '+Number(notificationCounts.failed||0)+(notification.error?' · '+notification.error:'');
     var events=monitor.events||[];el('healthMonitorEvents').innerHTML=events.length?events.slice(0,3).map(function(event){var recovered=event.event==='recovered';return '<div class="monitor-event '+(recovered?'recovered':'')+'"><i></i><b>'+esc(event.service||event.service_key||'未知服务')+' · '+(recovered?'已恢复':'异常已确认')+'</b><time>'+esc(event.created_at?new Date(Number(event.created_at)*1000).toLocaleString():'-')+'</time></div>'}).join(''):'<div class="empty">暂无已确认异常或恢复事件</div>';
     el('dashboardUpdatedAt').textContent=new Date(state.overviewUpdatedAt).toLocaleTimeString()+' · 每 15 秒自动刷新';
     if(state.module==='dashboard')loadSupportQueue();
@@ -2326,12 +2401,13 @@
   el('pointsActor').onchange=loadPoints;
   el('pointsDirection').onchange=loadPoints;
   el('pointsUser').onkeydown=function(e){if(e.key==='Enter') loadPoints()};
-  el('reqRefresh').onclick=loadReqLogs;
+  el('reqRefresh').onclick=function(){loadReqLogs(false)};
   el('reqSource').onchange=function(){state.reqPage=1;loadReqLogs()};
   el('reqStatus').onchange=function(){state.reqPage=1;loadReqLogs()};
   el('reqAttributed').onchange=function(){state.reqPage=1;loadReqLogs()};
   el('reqNoise').onchange=function(){state.reqPage=1;loadReqLogs()};
-  el('reqSearch').oninput=function(){clearTimeout(state.reqTimer);state.reqTimer=setTimeout(function(){state.reqPage=1;loadReqLogs()},300)};
+  el('reqUser').oninput=function(){state.reqPage=1;loadReqLogs(false)};
+  el('reqSearch').oninput=function(){state.reqSequence=(state.reqSequence||0)+1;state.reqLoading=false;clearTimeout(state.reqTimer);state.reqTimer=setTimeout(function(){state.reqPage=1;loadReqLogs()},300)};
   el('rechargeRefresh').onclick=loadRecharge;
   el('membershipRechargeSubmit').onclick=rechargeMembership;
   el('rechargeStatus').onchange=loadRecharge;

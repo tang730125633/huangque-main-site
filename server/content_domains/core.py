@@ -1767,7 +1767,11 @@ def run_job(job_id):
         if kind in {"audio", "short_drama_sound_effect", "video", "tryon", "xiaole_video", "sora_video", "leads", "cinematic", "avatar", "breakdown", "short_drama_preview", "short_drama_final", "script_to_video", "matrix_template_video", "director_agent"}:
             payload["_username"] = username   # 少一个 kind，handler 就拿不到用户名/job_id：
             payload["_job_id"] = job_id       # gen_avatar 记不了形象归属，gen_cinematic 查不到用户的形象
-        result = HANDLERS[kind](payload)
+        if payload.get('_channel_binding'):
+            from .channel_runtime import run_task
+            result = run_task(payload['_channel_binding'], payload, job_id)
+        else:
+            result = HANDLERS[kind](payload)
         breakdown_refund_prepared = False
         if kind == "breakdown":
             breakdown_refund_prepared = _prepare_breakdown_refund(
@@ -1896,6 +1900,16 @@ def run_job(job_id):
                     flush=True,
                 )
                 return
+        if payload.get('_channel_binding'):
+            from . import channel_manager
+            managed_state = channel_manager.task_recovery_state(job_id)
+            if managed_state == 'queued':
+                _requeue_running_job(job_id)
+                return
+            if managed_state in {'running', 'unknown', 'passed', 'unavailable'}:
+                print("[managed-channel] 保留 job#%s 状态=%s，禁止误退款或重发" %
+                      (job_id, managed_state), flush=True)
+                return
         # 生成失败：CAS 抢 error 终态；抢到才记失败资产。退点走幂等(reaper 若已退则跳过)
         # from_states 含 pending：抢 running 那句自己抛异常时任务还停在 pending，只认 running 会不退点
         diagnostics = {}
@@ -2008,6 +2022,16 @@ def reaper():
                     stuck_payload = json.loads(r["payload"] or "{}")
                 except Exception:
                     stuck_payload = {}
+                if stuck_payload.get('_channel_binding'):
+                    from . import channel_manager
+                    managed_state = channel_manager.mark_interrupted_task_unknown(
+                        r["id"], "业务任务心跳超时，Provider 结果待人工核对",
+                    )
+                    if managed_state == 'queued':
+                        _requeue_running_job(r["id"])
+                        continue
+                    if managed_state in {'running', 'unknown', 'passed', 'unavailable'}:
+                        continue
                 if r["kind"] in {"sora_video", "xiaole_video", "video"}:
                     try:
                         video_domain = _domains()[2]
@@ -4215,6 +4239,10 @@ class H(BaseHTTPRequestHandler):
                 if not is_still_route and kind not in {
                         "cinematic", "script_to_video", "matrix_template_video"}:
                     request_body = dict(body) if isinstance(body, dict) else body
+                    if isinstance(request_body, dict):
+                        # Server-owned execution snapshots must not alter the
+                        # client's idempotency identity when mappings change.
+                        request_body.pop("_channel_binding", None)
                     if (
                         kind == "xiaole_video"
                         and isinstance(request_body, dict)
@@ -4377,6 +4405,25 @@ class H(BaseHTTPRequestHandler):
                 if (idem_state == "processing" and not is_still_route
                         and not director_copy_submission):
                     return self._send(409, {"detail": "相同请求正在受理，请稍后查询", "code": "idempotency_in_progress", "retry_after_ms": 1000})
+                # Resolve mutable routing only for a genuinely new claim. This
+                # preserves replay of an accepted job if admins later disable or
+                # replace the mapping, while still snapshotting before charge.
+                if (kind == "image" and not is_still_route
+                        and not body.get("short_drama_scene_binding")
+                        and not digital_human_paid_child):
+                    try:
+                        from . import channel_manager
+                        body = channel_manager.capture("image", body)
+                    except ValueError as error:
+                        _idempotency_abort(user["username"], p, idem_key)
+                        _short_drama_domain()._http_error(self, error)
+                        return
+                    except (OSError, sqlite3.Error):
+                        _idempotency_abort(user["username"], p, idem_key)
+                        return self._send(503, {
+                            "detail": "渠道配置暂不可用，请稍后重试",
+                            "code": "channel_config_unavailable",
+                        })
                 if kind == "image" and body.get("short_drama_scene_binding"):
                     try:
                         _short_drama_domain().validate_scene_image_binding(

@@ -443,7 +443,11 @@ def run_job(job_id):
             if claimed.rowcount < 1:
                 return  # 已被别的线程接管或已是终态
             started = True
-        result = gen_banana(payload)
+        if payload.get('_channel_binding'):
+            from content_domains.channel_runtime import run_task
+            result = run_task(payload['_channel_binding'], payload, job_id)
+        else:
+            result = gen_banana(payload)
         if not _set_terminal(job_id, "done", result=result):
             # reaper 已把它判超时并退点：不覆写终态。宁可用户重试，也不能既退点又出图。
             print("[imggen] job %s 完成时已非 running（reaper 判超时在先），丢弃结果" % job_id, flush=True)
@@ -451,6 +455,16 @@ def run_job(job_id):
         # 出图产物不入统一 assets 表：图片走 jobs.result → /api/gen/history，
         # 那才是 assets.html 图片分类读的数据源。见 assets_store.KIND_STAGE 的注释。
     except Exception as e:
+        if payload.get('_channel_binding'):
+            from content_domains import channel_manager, startup_recovery
+            managed_state = channel_manager.task_recovery_state(job_id)
+            if managed_state == 'queued':
+                startup_recovery.requeue_running_job(jdb, job_id)
+                return
+            if managed_state in {'running', 'unknown', 'passed', 'unavailable'}:
+                print("[imggen-managed-channel] 保留 job#%s 状态=%s，禁止误退款或重发" %
+                      (job_id, managed_state), flush=True)
+                return
         # from_states 含 pending：认领那句 UPDATE 自己抛异常时任务还停在 pending，
         # 只认 running 会导致不退点且 reaper 永远扫不到它
         if _set_terminal(job_id, "error", error=str(e), from_states=("pending", "running")):
@@ -546,6 +560,24 @@ def _pending_job_scanner():
         except Exception:
             pass
         time.sleep(30)
+
+
+def reclaim_orphaned_running():
+    """Resolve imggen-owned workers interrupted by a service restart."""
+    from content_domains import startup_recovery
+    return startup_recovery.reclaim_orphaned_running(
+        jdb=jdb,
+        service_owner=SERVICE_OWNER,
+        domains=lambda: (),
+        set_terminal=lambda job_id, status, **kwargs: _set_terminal(
+            job_id, status, error=kwargs.get("error"),
+            from_states=("running",),
+        ),
+        refund_once=_refund_once,
+        mark_video_asset_failed=lambda *_args: None,
+        requeue_job=lambda job_id: startup_recovery.requeue_running_job(
+            jdb, job_id),
+    )
 
 
 def start_job_workers():
@@ -689,12 +721,25 @@ class H(BaseHTTPRequestHandler):
                                             "max_active_jobs": MAX_USER_ACTIVE_JOBS,
                                             "retry_after_ms": 4000, "need": cost})
                 try:
+                    from content_domains import channel_manager
+                    # Idempotency was claimed from the client body above. Only
+                    # now attach the immutable server-owned routing snapshot.
+                    body = channel_manager.capture("image", body)
                     from content_domains import jobs_store
                     jid, points_left = jobs_store.create_paid_job(
                         jdb, _deduct_paid_job, _refund_via_auth, "image", user["username"],
                         cost, body, SERVICE_OWNER,
                         charge_transaction_key=("job-charge:%s:%s:%s" % (
                             user["username"], p, idem_key)) if idem_key else "")
+                except ValueError as e:
+                    submission_idempotency.abort(jdb, user["username"], p, idem_key)
+                    return self._send(400, {"detail": str(e)[:220]})
+                except (OSError, sqlite3.Error) as e:
+                    submission_idempotency.abort(jdb, user["username"], p, idem_key)
+                    return self._send(503, {
+                        "detail": "渠道配置暂不可用，请稍后重试",
+                        "code": "channel_config_unavailable",
+                    })
                 except jobs_store.PaidJobDeductError as e:
                     submission_idempotency.abort(jdb, user["username"], p, idem_key)
                     return self._send(e.status if e.status in (402, 403) else 500,
@@ -800,6 +845,7 @@ if __name__ == "__main__":
     pricing.init_db()
     from content_domains import jobs_store
     jobs_store.ensure_owner_column(jdb)   # 必须在 start_job_workers 之前：重排扫描按 owner 过滤
+    reclaim_orphaned_running()
     start_job_workers()
     print("huangque-imggen-api on 127.0.0.1:%d  models=%s workers=%d 单用户生图并发上限=%d"
           % (PORT, MODELS, JOB_WORKERS, MAX_USER_RUNNING_IMAGE))
