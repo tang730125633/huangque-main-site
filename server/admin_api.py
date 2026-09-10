@@ -10,6 +10,8 @@ read/event routes are consumed by the public gallery.
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from contextlib import closing
 from http import cookies
+import concurrent.futures
+import datetime
 import http.client
 from importlib import import_module
 import base64
@@ -112,6 +114,7 @@ CONTENT_BASE = os.environ.get("CONTENT_BASE", "http://127.0.0.1:8096").rstrip("/
 IMGGEN_BASE = os.environ.get("IMGGEN_BASE", "http://127.0.0.1:8101").rstrip("/")
 LEADGEN_BASE = os.environ.get("LEADGEN_BASE", "http://127.0.0.1:8100").rstrip("/")
 DL_BASE = os.environ.get("DL_BASE", "http://127.0.0.1:8097").rstrip("/")
+KOMARI_BASE_URL = os.environ.get("HQ_KOMARI_BASE_URL", "").strip().rstrip("/")
 AUTH_INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")
 JOB_DB = pathlib.Path(os.environ.get("CONTENT_JOB_DB", str(BASE / "content_jobs.db")))
 ASSET_DB = pathlib.Path(os.environ.get("AUDIO_DB", str(BASE / "audio_assets.db")))
@@ -747,6 +750,132 @@ PROXY_OPENER = (
     if PROXY_URL
     else DIRECT_OPENER
 )
+_KOMARI_CACHE = {"at": 0.0, "value": None}
+_KOMARI_CACHE_LOCK = threading.Lock()
+
+
+def _komari_get(path):
+    if not KOMARI_BASE_URL:
+        raise RuntimeError("服务器监控尚未配置")
+    req = urllib.request.Request(
+        KOMARI_BASE_URL + path,
+        headers={"Accept": "application/json", "User-Agent": "huangque-admin/komari"},
+    )
+    with DIRECT_OPENER.open(req, timeout=3) as response:
+        raw = response.read(2_000_001)
+    if len(raw) > 2_000_000:
+        raise RuntimeError("服务器监控响应过大")
+    payload = json.loads(raw.decode("utf-8"))
+    if payload.get("status") != "success":
+        raise RuntimeError("服务器监控返回失败")
+    return payload.get("data")
+
+
+def _komari_timestamp(value):
+    try:
+        value = re.sub(
+            r"(\.\d{6})\d+(Z|[+-]\d\d:\d\d)$", r"\1\2", str(value or "")
+        )
+        return datetime.datetime.fromisoformat(
+            value.replace("Z", "+00:00")
+        ).timestamp()
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _komari_percent(used, total):
+    total = float(total or 0)
+    return round(max(0.0, min(100.0, float(used or 0) * 100 / total)), 1) if total else 0.0
+
+
+def server_monitor_snapshot(force=False, now=None):
+    now = float(now or time.time())
+    with _KOMARI_CACHE_LOCK:
+        if not force and _KOMARI_CACHE["value"] is not None and time.monotonic() - _KOMARI_CACHE["at"] < 3:
+            return _KOMARI_CACHE["value"]
+
+        nodes = _komari_get("/api/nodes") or []
+
+        def recent(node):
+            path = "/api/recent/" + urllib.parse.quote(
+                str(node.get("uuid") or ""), safe=""
+            )
+            for _ in range(2):
+                try:
+                    records = _komari_get(path) or []
+                    return records[-1] if records else {}
+                except Exception:
+                    continue
+            return {}
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            samples = list(pool.map(recent, nodes))
+
+        items = []
+        for node, sample in zip(nodes, samples):
+            age = now - _komari_timestamp(sample.get("updated_at"))
+            online = bool(sample) and 0 <= age <= 20
+            ram = sample.get("ram") or {}
+            disk = sample.get("disk") or {}
+            network = sample.get("network") or {}
+            cpu = round(float((sample.get("cpu") or {}).get("usage") or 0), 1)
+            memory = _komari_percent(ram.get("used"), ram.get("total") or node.get("mem_total"))
+            disk_usage = _komari_percent(disk.get("used"), disk.get("total") or node.get("disk_total"))
+            alerts = []
+            if online and cpu >= 90:
+                alerts.append("CPU 高负载")
+            if online and memory >= 90:
+                alerts.append("内存紧张")
+            if online and disk_usage >= 90:
+                alerts.append("磁盘空间紧张")
+            name = str(node.get("name") or "未命名节点")
+            role = "primary_network" if name.startswith("Novix") else (
+                "backup_network" if name.startswith("搬瓦工") else "server"
+            )
+            items.append({
+                "name": name,
+                "region": str(node.get("region") or ""),
+                "description": str(node.get("public_remark") or ""),
+                "group": str(node.get("group") or "未分组"),
+                "role": role,
+                "online": online,
+                "status": "offline" if not online else ("warning" if alerts else "online"),
+                "alerts": alerts,
+                "os": str(node.get("os") or "未知系统"),
+                "arch": str(node.get("arch") or ""),
+                "cpu_name": str(node.get("cpu_name") or ""),
+                "cpu_cores": int(node.get("cpu_cores") or 0),
+                "cpu": cpu,
+                "memory": memory,
+                "memory_used": int(ram.get("used") or 0),
+                "memory_total": int(ram.get("total") or node.get("mem_total") or 0),
+                "disk": disk_usage,
+                "disk_used": int(disk.get("used") or 0),
+                "disk_total": int(disk.get("total") or node.get("disk_total") or 0),
+                "network_up": int(network.get("up") or 0),
+                "network_down": int(network.get("down") or 0),
+                "total_up": int(network.get("totalUp") or 0),
+                "total_down": int(network.get("totalDown") or 0),
+                "uptime": int(sample.get("uptime") or 0),
+                "sampled_at": str(sample.get("updated_at") or ""),
+            })
+
+        order = {"primary_network": 0, "backup_network": 1, "server": 2}
+        items.sort(key=lambda item: (order[item["role"]], item["group"], item["name"]))
+        value = {
+            "ok": True,
+            "items": items,
+            "summary": {
+                "total": len(items),
+                "online": sum(item["online"] for item in items),
+                "warning": sum(item["status"] == "warning" for item in items),
+                "offline": sum(not item["online"] for item in items),
+            },
+            "checked_at": int(now),
+            "refresh_interval_seconds": 5,
+        }
+        _KOMARI_CACHE.update({"at": time.monotonic(), "value": value})
+        return value
 
 
 def _xai_proxy_url():
@@ -7967,6 +8096,11 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"items": service_status()})
         if path == "/api/admin/health-monitor":
             return self._send(200, service_health_monitor())
+        if path == "/api/admin/server-monitor":
+            try:
+                return self._send(200, server_monitor_snapshot())
+            except Exception:
+                return self._send(503, {"detail": "服务器监控暂时不可用"})
         if path == "/api/admin/keys":
             return self._send(200, {"items": key_status()})
         if path == "/api/admin/heygen-oauth/status":
