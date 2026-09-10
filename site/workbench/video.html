@@ -423,6 +423,7 @@
 <div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
 
 <div class="hq-app"><div class="hq-content" data-active="video">
+  <section id="publishedChannelParameters" data-kind="xiaole_video" hidden></section>
   <div id="videoWorkspace" class="gVid agent-layout">
     <section id="videoPrimary" class="vid-card vid-main">
       <div class="row">
@@ -4281,6 +4282,7 @@
   try{sourceInspirationId=Number(new URLSearchParams(location.search).get('inspiration')||0);if(sourceInspirationId<1000000)sourceInspirationId=0}catch(e){}
   // 共用现有 xiaole_video 任务外壳；各渠道在后端调用对应 Provider API。
   function submitXiaole(channel){
+    if(window.PublishedChannelParameters?.redirect('xiaole_video',channel))return;
     if(!token){ location.href='../login.html?redirect=workbench/video'; return; }
     if(channel==='omni'&&!omniAvailable){toast(officialVideoHealthKnown?'Omni 测试通道暂未开放':'正在检查 Omni 官方通道');return;}
     if(channel==='micro'&&!seedanceAvailable){toast(officialVideoHealthKnown?'Seedance 测试通道暂未开放':'正在检查 Seedance 官方通道');return;}
@@ -4921,5 +4923,8 @@
   resumeTrackedVideoTask();
 })();
 </script>
+<link rel="stylesheet" href="channel-parameters.css">
+<script src="channel-parameter-controls.js"></script>
+<script src="channel-parameters.js"></script>
 </body>
 </html>

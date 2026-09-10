@@ -1889,6 +1889,10 @@ def run_job(job_id):
                 return
         if kind == "matrix_template_video":
             try:
+                from . import task_termination
+                with closing(jdb()) as connection:
+                    if task_termination.get(connection, job_id):
+                        return
                 from . import matrix_template_video as matrix_template_domain
                 if matrix_template_domain.recover_worker_error(
                         job_id, e, _requeue_running_job):
@@ -1978,6 +1982,12 @@ def run_job(job_id):
     finally:
         if stop_heartbeat:
             stop_heartbeat()   # ⚠️ 必须停 —— 否则每跑一个任务泄漏一个线程，而且它会一直把已终态的任务刷成「活着」
+            if kind == 'matrix_template_video':
+                try:
+                    from . import task_termination
+                    task_termination.acknowledge(jdb, job_id)
+                except Exception:
+                    print('[task-termination] stop acknowledgement pending for job#%s' % job_id, flush=True)
         if is_talking or is_image or is_breakdown:
             try:
                 _recover_pending_jobs()  # 口播/生图/拆解跑完→腾出运行槽，立刻重排排队中的同类(+30s 扫描兜底)
@@ -2286,6 +2296,36 @@ class H(BaseHTTPRequestHandler):
 
     def _do_POST(self):
         p = self.path.split("?")[0]
+        if p == '/api/gen/admin/tasks/terminate':
+            from . import task_termination
+            user=verify(self.headers.get('Authorization','').replace('Bearer ','',1))
+            if not user or user.get('role')!='admin':
+                return self._send(403,{'detail':'需要管理员权限'})
+            if _must_change_password(user):
+                return self._send(403,{'detail':'请先修改初始密码'})
+            try:
+                n=int(self.headers.get('Content-Length') or 0)
+                if n>4096 or n<0:
+                    raise ValueError('请求体过大')
+                body=json.loads(self.rfile.read(n) or b'{}')
+                if not isinstance(body, dict):
+                    raise ValueError('请求必须是 JSON 对象')
+                job_id=body.get('job_id')
+                if type(job_id) is not int or job_id <= 0:
+                    raise ValueError('任务号必须为正整数')
+                result=task_termination.request(jdb,job_id,user['username'],body.get('reason'))
+                # 幂等重放不重复启动退款线程：只有本次真正新建了终止记录
+                # 才发起退点（退款本身由 refunded=2 状态机幂等兜底）。
+                if result.get('created'):
+                    with closing(jdb()) as c:
+                        row=c.execute('SELECT username,cost FROM jobs WHERE id=?',(job_id,)).fetchone()
+                    if row is not None and int(row['cost'] or 0)>0:
+                        threading.Thread(target=_refund_once,args=(job_id,row['username'],row['cost']),daemon=True).start()
+                return self._send(200,result)
+            except (ValueError,TypeError) as exc:
+                return self._send(400,{'detail':str(exc)})
+            except Exception:
+                return self._send(503,{'detail':'终止结果暂未确认，请刷新任务状态后重试'})
         audio_domain, points_domain, video_domain = _domains()
         if p == "/api/gen/internal/submission-reconcile/health":
             if not cli_gateway._internal_auth(self, AUTH_INTERNAL_TOKEN):
@@ -4326,7 +4366,15 @@ class H(BaseHTTPRequestHandler):
                 if still_idem_started: _idempotency_abort(user["username"], p, idem_key)
                 return self._send(503, {"detail": blocked, "code": "upstream_exhausted", "retry_after_ms": 60000})
             is_short_drama = kind == "copy" and isinstance(body, dict) and body.get("format") == "short_drama"
-            cost = points_domain.cost_of(kind, body) if not is_short_drama and not is_still_route else None
+            try:
+                from .channel_parameters import quote as parameter_quote
+                parameter_cost=parameter_quote(kind,body,allow_historical=True) if not is_short_drama and not is_still_route else None
+                if parameter_cost is not None:
+                    cost = parameter_cost
+                else:
+                    cost = points_domain.cost_of(kind, body) if not is_short_drama and not is_still_route else None
+            except ValueError as error:
+                return self._send(400, {'detail':str(error),'code':'parameters_changed'})
             if (kind == "script_to_video" and isinstance(body, dict)
                     and body.get("pipeline") == "pixelle"):
                 from . import pixelle_video as pixelle_video_domain
@@ -4408,12 +4456,12 @@ class H(BaseHTTPRequestHandler):
                 # Resolve mutable routing only for a genuinely new claim. This
                 # preserves replay of an accepted job if admins later disable or
                 # replace the mapping, while still snapshotting before charge.
-                if (kind == "image" and not is_still_route
+                if (kind in {"image", "sora_video"} and not is_still_route
                         and not body.get("short_drama_scene_binding")
                         and not digital_human_paid_child):
                     try:
                         from . import channel_manager
-                        body = channel_manager.capture("image", body)
+                        body = channel_manager.capture(kind, body)
                     except ValueError as error:
                         _idempotency_abort(user["username"], p, idem_key)
                         _short_drama_domain()._http_error(self, error)
@@ -4708,6 +4756,10 @@ class H(BaseHTTPRequestHandler):
         self._send(404, {"detail": "not found"})
     def do_GET(self):
         p = self.path.split("?")[0]
+        if p == '/api/gen/channel-parameters':
+            from .channel_parameters import public_catalog
+            try:return self._send(200,public_catalog())
+            except (OSError,sqlite3.Error):return self._send(503,{'detail':'模型参数暂不可用'})
         audio_domain, points_domain, video_domain = _domains()
         avatar_prefix = "/api/gen/text-video/avatar/"
         if p.startswith(avatar_prefix):

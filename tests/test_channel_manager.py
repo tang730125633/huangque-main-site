@@ -35,6 +35,46 @@ class ChannelTests(unittest.TestCase):
         self.assertNotIn('private-secret',json.dumps(cm.overview()))
         self.assertEqual(cm.version(self.ch['id'],1,True)['secret'],'private-secret')
 
+    def test_supplier_classification_is_versioned_and_validated(self):
+        changed=cm.save('admin',dict(self.body,**self.ch,supplier='中转供应商',connection_type='relay'))
+        current=cm.version(changed['id'])
+        self.assertEqual(current['supplier'],'中转供应商')
+        self.assertEqual(current['connection_type'],'relay')
+        self.assertNotIn('supplier', {k:v for k,v in cm.version(self.ch['id'],1).items() if v})
+        with self.assertRaises(ValueError):
+            cm.save('admin',dict(self.body,connection_type='fake'))
+
+    def test_protocol_change_cannot_break_enabled_mappings(self):
+        self.mapping()
+        with self.assertRaisesRegex(ValueError,'不兼容'):
+            cm.save('admin',dict(self.body,**self.ch,adapter='xai_video'))
+        self.assertEqual(cm.version(self.ch['id'])['adapter'],'openai_image')
+
+    def test_frequent_connection_checks_do_not_displace_auth_or_generation(self):
+        with closing(cm.db()) as c:
+            for i,kind in enumerate(['full','auth','connection','connection','connection','connection']):
+                c.execute('INSERT INTO runs(id,channel,version,kind,state,started,updated) VALUES(?,?,?,?,?,?,?)',
+                          (str(i),self.ch['id'],1,kind,'passed',i+1,i+1))
+            c.commit()
+        checks=cm.overview()['items'][0]['checks']
+        self.assertEqual({r['kind'] for r in checks},{'connection','auth','full'})
+        self.assertEqual(next(r for r in checks if r['kind']=='connection')['updated'],6)
+
+    def test_workspace_audit_excludes_secrets_and_unrelated_operations(self):
+        import server.admin_api as admin
+        with closing(cm.db()) as c:
+            c.execute('CREATE TABLE admin_audit(id INTEGER PRIMARY KEY,actor TEXT,action TEXT,target TEXT,detail TEXT,created_at INTEGER)')
+            c.executemany('INSERT INTO admin_audit VALUES(?,?,?,?,?,?)',[
+                (1,'admin','provider_key.add','key-id','private-secret',1),
+                (2,'admin','inspiration.publish','case-id','private-other',2)])
+            c.commit()
+        with patch.object(admin,'db',cm.db):
+            result=admin.channel_workspace_overview()
+        self.assertEqual(len(result['legacy_events']),1)
+        self.assertEqual(result['legacy_events'][0]['action'],'provider_key.add')
+        self.assertNotIn('private-secret',json.dumps(result))
+        self.assertNotIn('detail',result['legacy_events'][0])
+
     def test_snapshot_and_disable(self):
         self.mapping()
         old = cm.capture('image',{'model':'front-model','prompt':'hello'})

@@ -1365,7 +1365,7 @@ def validate_xiaole_video_payload(payload, username=None):
                if not str(key).startswith("_")}
     channel = str(cleaned.get("channel") or "grok").strip().lower()
     from . import channel_manager
-    managed = channel_manager.capture('xiaole_video', dict(cleaned, channel=channel))
+    managed = channel_manager.capture('xiaole_video', dict(cleaned, channel=channel), preparation=True)
     if managed.get('_channel_binding'):
         from . import feature_flags
         feature_flags.require_enabled({'grok':'grok_video','minimax':'minimax_h3_video','omni':'omni_video','micro':'seedance_video'}.get(channel,'xiaole_video'))

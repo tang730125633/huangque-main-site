@@ -321,6 +321,11 @@ def create_paid_jobs(jdb, deduct, refund, kind, username, items, owner, reason_k
     from .channel_manager import capture
     try:
         items = [(int(cost or 0), capture(kind, payload)) for cost, payload in items]
+        from .channel_parameters import quote
+        for cost,payload in items:
+            expected=quote(kind,payload)
+            if expected is not None and cost!=expected:
+                raise ValueError('参数点数已变化，请重新确认后提交')
     except ValueError as exc:
         raise PaidJobDeductError(400, str(exc)) from exc
     total = sum(cost for cost, _ in items)
@@ -386,6 +391,10 @@ def create_job_after_charge(jdb, kind, username, cost, payload, owner, before_co
     """
     from .channel_manager import capture
     payload = capture(kind, payload)
+    from .channel_parameters import quote
+    expected=quote(kind,payload)
+    if expected is not None and int(cost)!=expected:
+        raise ValueError('参数点数已变化，请重新确认后提交')
     now = int(time.time())
     with closing(jdb()) as connection:
         try:

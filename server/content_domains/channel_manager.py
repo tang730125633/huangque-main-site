@@ -89,7 +89,12 @@ def save(actor, body):
         raise ValueError('请填写渠道名称及实际模型 ID')
     if adapter == 'minimax_h3' and model != 'MiniMax-H3':
         raise ValueError('MiniMax H3 适配器仅支持 MiniMax-H3')
+    supplier = str(body.get('supplier') or '').strip()
+    connection_type = body.get('connection_type') or 'unknown'
+    if len(supplier) > 100 or connection_type not in {'unknown', 'official', 'relay'}:
+        raise ValueError('供应商名称过长或接入方式无效')
     config = dict(name=name, adapter=adapter, model=model, base_url=_url(body.get('base_url')),
+                  supplier=supplier, connection_type=connection_type,
                   proxy=_url(body['proxy'], True) if body.get('proxy') else '',
                   timeout=_number(body, 'timeout', 120, 5, 300),
                   concurrency=int(_number(body, 'concurrency', 2, 1, 32)),
@@ -111,6 +116,20 @@ def save(actor, body):
         old = c.execute('SELECT * FROM channels WHERE id=?', (cid,)).fetchone()
         if old and int(body.get('version', -1)) != old['version']:
             raise ValueError('配置已被修改，请刷新后重试')
+        if old:
+            old_config=json.loads(c.execute('SELECT config FROM versions WHERE channel=? AND version=?',(cid,old['version'])).fetchone()[0])
+            if old_config.get('_lifecycle',{}).get('deleted'):
+                raise ValueError('渠道在回收站，请先恢复后编辑')
+            if old_config.get('_lifecycle'):
+                config['_lifecycle']=old_config['_lifecycle']
+            if old_config.get('parameters'):
+                from .channel_parameters import validate
+                config['parameters']=validate(config,old_config['parameters'])
+            for mapping_row in c.execute('SELECT config FROM mappings'):
+                mapping = json.loads(mapping_row['config'])
+                if (mapping.get('enabled') and cid in {mapping.get('channel'), mapping.get('backup')}
+                        and mapping.get('kind') != ADAPTERS[adapter]['kind']):
+                    raise ValueError('该渠道仍被已启用映射使用，不能更改为不兼容协议；请先调整映射')
         version = old['version'] + 1 if old else 1
         if old and 'reference_images' not in config['fixture']:
             previous = json.loads(c.execute('SELECT config FROM versions WHERE channel=? AND version=?',(cid,old['version'])).fetchone()[0])
@@ -173,27 +192,54 @@ def save_mapping(actor, body):
     config = dict(kind=kind, front=front, label=str(body.get('label') or front)[:100], channel=cid,
                   backup=backup, enabled=body.get('enabled') is True)
     with closing(db()) as c:
+        c.execute('BEGIN IMMEDIATE')
+        for target in filter(None,(cid,backup)):
+            current=c.execute('SELECT version FROM channels WHERE id=?',(target,)).fetchone()
+            if not current:
+                raise ValueError('渠道不存在')
+            target_cfg=json.loads(c.execute('SELECT config FROM versions WHERE channel=? AND version=?',(target,current[0])).fetchone()[0])
+            if target_cfg.get('_lifecycle',{}).get('deleted'):
+                raise ValueError('回收站渠道不能配置映射')
+            if ADAPTERS[target_cfg['adapter']]['kind']!=kind:
+                raise ValueError('渠道能力已变化，请刷新后重试')
         c.execute('INSERT OR REPLACE INTO mappings VALUES(?,?,?,?)', (kind+':'+front, json.dumps(config), actor, time.time()))
         _audit(c, 'mapping.save', kind+':'+front, actor)
         c.commit()
     return config
 
 
-def capture(kind, payload):
+def capture(kind, payload, preparation=False):
     clean = dict(payload)
     clean.pop('_channel_binding', None)  # Never trust a client supplied private snapshot.
+    if preparation and clean.get('parameter_selection'):
+        from .channel_parameters import historical, apply
+        cfg=historical(clean)
+        if ADAPTERS[cfg['adapter']]['kind']!=kind:raise ValueError('参数功能类型不匹配')
+        clean,_=apply(cfg,clean)
+        from .channel_runtime import validate_payload
+        validate_payload(cfg,clean)
+        clean['_channel_binding']={'id':cfg['id'],'version':cfg['version']}
+        return clean
     if kind not in {'image', 'xiaole_video'}:
+        from .channel_lifecycle import require_legacy
+        require_legacy(kind,clean)
         return clean
     front = str(clean.get('channel') if kind == 'xiaole_video' else clean.get('model') or '')
     with closing(db()) as c:
         row = c.execute('SELECT config FROM mappings WHERE selector=?', (kind+':'+front,)).fetchone()
         if not row or not json.loads(row[0]).get('enabled'):
+            if clean.get('parameter_selection'):
+                raise ValueError('功能映射已变化，请刷新参数后重新提交')
+            from .channel_lifecycle import require_legacy
+            require_legacy(kind,clean)
             return clean
         mapping = json.loads(row[0])
         ch = c.execute('SELECT * FROM channels WHERE id=?', (mapping['channel'],)).fetchone()
         if not ch or not ch['enabled']:
             raise ValueError('该功能的主渠道已停用，请管理员切换渠道')
     cfg = version(ch['id'], ch['version'])
+    from .channel_parameters import apply
+    clean, parameter_points = apply(cfg,clean)
     from .channel_runtime import validate_payload
     validate_payload(cfg, clean)
     clean['_channel_binding'] = {'id': ch['id'], 'version': ch['version'], 'front': front}
@@ -208,6 +254,7 @@ def rollback(actor, body):
 
 
 def overview():
+    from .channel_lifecycle import legacy_states, LEGACY_SCOPES
     now = time.time()
     with closing(db()) as c:
         channels = [dict(r) for r in c.execute('SELECT * FROM channels')]
@@ -230,8 +277,13 @@ def overview():
                 channel['health'] = '异常' if problem[0]=='failed' else '结果未知'
             stats = c.execute("SELECT COUNT(*) total,SUM(state='failed') failed,SUM(state='unknown') unknown,AVG(CASE WHEN state IN ('passed','failed','unknown') THEN duration END) avg_duration FROM runs WHERE channel=? AND kind='task' AND started>?", (channel['id'], now-86400)).fetchone()
             channel['stats'] = dict(stats)
-            channel['checks'] = [dict(r) for r in c.execute("SELECT kind,state,updated,detail FROM runs WHERE channel=? AND version=? AND kind!='task' ORDER BY started DESC LIMIT 3", (channel['id'],channel['version']))]
+            channel['checks'] = []
+            for check_kind in ('connection', 'auth', 'full'):
+                check_row = c.execute("SELECT kind,state,updated,detail FROM runs WHERE channel=? AND version=? AND kind=? ORDER BY started DESC,rowid DESC LIMIT 1", (channel['id'],channel['version'],check_kind)).fetchone()
+                if check_row:
+                    channel['checks'].append(dict(check_row))
     return {'items': channels, 'mappings': mappings, 'runs': runs, 'events': events, 'adapters': ADAPTERS,
+            'legacy_controls':legacy_states(), 'legacy_scopes':LEGACY_SCOPES,
             'notifications': notification_settings(), 'timezone':'Asia/Shanghai', 'stats_window':'最近24小时'}
 
 
@@ -240,6 +292,10 @@ def reserve(cid, kind, job_id='', snapshot=None):
     now, rid = time.time(), uuid.uuid4().hex
     with closing(db()) as c:
         c.execute('BEGIN IMMEDIATE')
+        if kind!='task':
+            current=c.execute('SELECT ch.enabled,v.config FROM channels ch JOIN versions v ON v.channel=ch.id AND v.version=ch.version WHERE ch.id=?',(cid,)).fetchone()
+            if not current or not current['enabled'] or json.loads(current['config']).get('_lifecycle',{}).get('deleted'):
+                raise ValueError('渠道已停用或在回收站，不能发起新测试')
         if kind == 'full':
             start = int((now+8*3600)//86400)*86400-8*3600
             used = c.execute("SELECT COUNT(*) n,COALESCE(SUM(reservation),0) cost FROM runs WHERE channel=? AND kind='full' AND started>=?", (cid,start)).fetchone()
