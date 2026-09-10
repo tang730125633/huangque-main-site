@@ -83,14 +83,13 @@ def _download(cfg, url):
     )
 
 
-def generate(cfg, payload, rid, job_id):
-    validate_payload(cfg, payload)
+def build_generation_request(cfg, payload):
+    from .channel_parameters import image_request
+    validate_payload(cfg,payload)
     refs = payload.get('reference_images') or ([] if not payload.get('image') else [payload['image']])
-    adapter = cfg['adapter']
-    metadata = dict(provider=cfg['name'],model=cfg['model'],host=urllib.parse.urlsplit(cfg['base_url']).hostname,
-                    transport='proxy' if cfg.get('proxy') else 'direct')
+    adapter=cfg['adapter']
     if adapter == 'openai_image':
-        body = {'model':cfg['model'],'prompt':payload['prompt'],'n':1,'response_format':'b64_json'}
+        body = image_request(cfg,payload)
         path = '/images/generations'
     elif adapter == 'minimax_h3':
         from .video_minimax_h3 import build_request
@@ -101,6 +100,18 @@ def generate(cfg, payload, rid, job_id):
         if refs:
             body['image'] = {'url':refs[0]}
         path = '/videos/generations'
+    return path,body
+
+
+def generate(cfg, payload, rid, job_id):
+    from .channel_parameters import apply, image_request
+    payload,_=apply(cfg,payload,required=False)
+    validate_payload(cfg, payload)
+    refs = payload.get('reference_images') or ([] if not payload.get('image') else [payload['image']])
+    adapter = cfg['adapter']
+    metadata = dict(provider=cfg['name'],model=cfg['model'],host=urllib.parse.urlsplit(cfg['base_url']).hostname,
+                    transport='proxy' if cfg.get('proxy') else 'direct')
+    path,body=build_generation_request(cfg,payload)
     trace.record(job_id,'route','recorded',**metadata)
     store.finish(rid,'running','提交供应商')
     result = trace.call(job_id,'provider_submit',lambda: request(cfg,'POST',path,body),**metadata)
@@ -137,7 +148,8 @@ def generate(cfg, payload, rid, job_id):
         raw = base64.b64decode(data[0]['b64_json'],validate=True) if data[0].get('b64_json') else _download(cfg,data[0].get('url'))
     from . import core
     media = 'image' if adapter=='openai_image' else 'video'
-    filename = 'channel_'+uuid.uuid4().hex+('.png' if media=='image' else '.mp4')
+    output_format=payload.get('output_format','png') if cfg.get('parameters') else 'png'
+    filename = 'channel_'+uuid.uuid4().hex+('.'+output_format if media=='image' else '.mp4')
     target = core.OUT_DIR / filename
     store.finish(rid,'running','核验成品',provider_id)
     try:
@@ -145,7 +157,10 @@ def generate(cfg, payload, rid, job_id):
             from PIL import Image
             with Image.open(io.BytesIO(raw)) as img:
                 img.load()
-                img.save(target,'PNG')
+                if cfg.get('parameters') and tuple(map(int,payload['size'].split('x')))!=img.size:
+                    raise ValueError('供应商返回图片尺寸与所选尺寸不一致，不能判定交付通过')
+                if output_format=='jpeg':img=img.convert('RGB')
+                img.save(target,{'png':'PNG','jpeg':'JPEG','webp':'WEBP'}[output_format])
         else:
             import subprocess
             target.write_bytes(raw)
@@ -154,7 +169,7 @@ def generate(cfg, payload, rid, job_id):
             if probe.stderr or not any(s.get('codec_type')=='video' and int(s.get('width') or 0)>0 and int(s.get('height') or 0)>0 and str(s.get('nb_read_frames') or '').isdigit() and int(s['nb_read_frames'])>0 for s in streams):
                 raise ValueError('成品帧解码未通过，不能判定视频有效')
         trace.record(job_id,'artifact','passed',provider_task_id=provider_id,**metadata)
-        url = core.public_url(filename,'image/png' if media=='image' else 'video/mp4')
+        url = core.public_url(filename,'image/'+output_format if media=='image' else 'video/mp4')
         trace.record(job_id,'delivery','unknown',**metadata)
         return {'type':media,'file':filename,'url':url,'files':[filename],'urls':[url],'count':1,
                 'mode':'text2img' if media=='image' else 'generate','provider':cfg['name'],'model':cfg['model'],

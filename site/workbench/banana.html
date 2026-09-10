@@ -89,6 +89,7 @@
 <div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
 
 <div class="hq-app"><div class="hq-content" data-active="banana">
+  <section id="publishedChannelParameters" data-kind="image" hidden></section>
   <div class="banana-workspace">
     <header class="banana-workspace-head">
       <div class="workspace-head-left"><div><h1 style="margin:0; font-size:20px; font-weight:700; display:flex; align-items:center; gap:9px;"><img src="../assets/icons/ic_banana.png" alt="" style="width:28px;height:28px;object-fit:contain;flex:none;">图片生成</h1><p style="margin:4px 0 0; font-size:12.5px; color:#94a4bb;">设置参数并查看最新生成结果</p></div></div>
@@ -772,6 +773,7 @@
     return 'image-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,12);
   }
   function submit(payload, label, endpoint){
+    if(window.PublishedChannelParameters?.redirect('image',payload.model||''))return;
     endpoint=endpoint||'/api/gen/image'; lastEndpoint=endpoint; lastLabel=label;
     if(!payload.prompt){ flash('请先输入提示词','#f4708a'); return; }
     if(submitting) return;
@@ -1287,5 +1289,8 @@
   if(bFeishu) bFeishu.onclick=function(){ setNote('飞书推送即将上线（bot 接入阶段）','#f4cd72'); };
 })();
 </script>
+<link rel="stylesheet" href="channel-parameters.css">
+<script src="channel-parameter-controls.js"></script>
+<script src="channel-parameters.js"></script>
 </body>
 </html>

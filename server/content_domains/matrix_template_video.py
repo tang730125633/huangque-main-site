@@ -716,6 +716,8 @@ def _safe_file_url(value):
 
 
 def _remaining_budget(deadline_at, message="模板成片生成超时"):
+    from . import task_termination
+    task_termination.check()
     remaining = float(deadline_at) - time.time()
     if remaining <= 0:
         raise RuntimeError(message)
@@ -723,8 +725,9 @@ def _remaining_budget(deadline_at, message="模板成片生成超时"):
 
 
 def _media_probe(path, timeout=30):
+    from .task_termination import run_process
     try:
-        completed = subprocess.run(
+        completed = run_process(
             [
                 "ffprobe", "-v", "error", "-show_entries",
                 "format=duration:stream=codec_type,codec_name,width,height",
@@ -913,7 +916,8 @@ def _mux_voiceover(
     ])
     try:
         remaining = _remaining_budget(deadline_at)
-        subprocess.run(
+        from .task_termination import run_process
+        run_process(
             command, check=True, capture_output=True,
             timeout=max(1.0, min(float(VOICEOVER_MUX_TIMEOUT), remaining)),
         )
@@ -1185,6 +1189,17 @@ def recover_worker_error(job_id, error, requeue=None):
 
 
 def generate(payload):
+    from . import task_termination
+    raw = dict(payload or {})
+    job_id=raw.get('_job_id')
+    if not str(job_id or '').isdigit() or raw.get('mode')=='timeline':
+        return _generate(payload)
+    from .core import jdb
+    with task_termination.scope(int(job_id),jdb):
+        return _generate(payload)
+
+
+def _generate(payload):
     raw = dict(payload or {})
     if raw.get("mode") == "timeline":
         from . import timeline_compose
@@ -1249,6 +1264,8 @@ def generate(payload):
             request_id=request_id,
             timeout=min(20, _remaining_budget(deadline_at)),
         )
+        from .task_termination import provider_submitted
+        provider_submitted(remote.get('job_id'))
         _remaining_budget(deadline_at)
         remote_id = str(remote.get("job_id") or "")
         if not re.fullmatch(r"[0-9a-f]{32}", remote_id):
@@ -1334,7 +1351,8 @@ def generate(payload):
             raise MatrixTemplateProviderFailed(
                 str(current.get("error") or "模板成片生成失败")[:500]
             )
-        time.sleep(POLL_INTERVAL)
+        from .task_termination import sleep
+        sleep(POLL_INTERVAL)
     raise RuntimeError("模板成片生成超时")
 
 

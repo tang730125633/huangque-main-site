@@ -695,6 +695,12 @@ class H(BaseHTTPRequestHandler):
             cq = body["quality"]
             cn = body["count"]
             cost = pricing.get_price("image.banana.%s.%s" % (mk, cq)) * cn
+            try:
+                from content_domains.channel_parameters import quote
+                parameter_cost=quote('image',body,allow_historical=True)
+                if parameter_cost is not None:cost=parameter_cost
+            except ValueError as error:
+                return self._send(400,{'detail':str(error),'code':'parameters_changed'})
             if cli_gateway.reject_changed_cost(self, cost, INTERNAL_TOKEN):
                 return
             try:

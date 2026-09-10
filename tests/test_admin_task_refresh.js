@@ -3,6 +3,36 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync(require('node:path').join(__dirname, '../site/admin/index.html'), 'utf8');
+test('termination dialog requires reason, blocks double submit and preserves failed input',async()=>{
+  const ids=['terminateTaskDialog','terminateTaskInfo','terminateTaskReason','terminateTaskError','terminateTaskSubmit','terminateTaskForm','terminateTaskCancel'];
+  const nodes=Object.fromEntries(ids.map(id=>[id,{value:'',textContent:'',disabled:false,focus(){},showModal(){this.open=true},close(){this.open=false}}]));
+  let resolveRequest,rejectRequest,requests=[],reloads=0;
+  const c={el:id=>nodes[id],fmtDuration:String,toast:()=>{},loadReqLogs:()=>reloads++,api:(path,options)=>{requests.push({path,body:JSON.parse(options.body)});return new Promise((resolve,reject)=>{resolveRequest=resolve;rejectRequest=reject})}};
+  vm.createContext(c);
+  vm.runInContext(source.slice(source.indexOf('  function openTaskTermination('),source.indexOf('  function renderTaskCard(')),c);
+  c.openTaskTermination({task_id:99,user:'demo',func:'模板成片',cost:5});
+  const submit=()=>nodes.terminateTaskForm.onsubmit({preventDefault(){}});
+  submit();assert.equal(requests.length,0);
+  nodes.terminateTaskReason.value='用户要求取消';submit();submit();assert.equal(requests.length,1);
+  assert.deepEqual(requests[0],{path:'/api/admin/tasks/terminate',body:{job_id:99,reason:'用户要求取消'}});
+  rejectRequest(new Error('暂未确认'));await new Promise(setImmediate);
+  assert.equal(nodes.terminateTaskDialog.open,true);assert.equal(nodes.terminateTaskReason.value,'用户要求取消');
+  assert.equal(nodes.terminateTaskError.textContent,'暂未确认');assert.equal(nodes.terminateTaskSubmit.disabled,false);
+  submit();resolveRequest({});await new Promise(setImmediate);
+  assert.equal(nodes.terminateTaskDialog.open,false);assert.equal(reloads,1);
+});
+test('termination action follows backend capability and preserves unknown remote status',()=>{
+  const c={esc:s=>String(s??'').replace(/</g,'&lt;'),fmtDuration:s=>s+'秒',fmtTime:String,taskStageClass:s=>s,taskRawField:()=>''};
+  vm.createContext(c);
+  vm.runInContext(source.slice(source.indexOf('  function renderTaskCard('),source.indexOf('  function renderActivity(')),c);
+  const base={source:'job',task_id:9,cat:'running',stages:[]};
+  assert.match(c.renderTaskCard({...base,can_terminate:true}),/data-terminate-task="9"/);
+  assert.doesNotMatch(c.renderTaskCard(base),/data-terminate-task=/);
+  const html=c.renderTaskCard({...base,termination:{platform_state:'stopping',remote_state:'unconfirmed',refund_state:'pending',actor:'admin',reason:'<script>',requested_at:1}});
+  assert.match(html,/终止中 · 等待执行退出/);assert.match(html,/远端停止未确认/);
+  assert.match(html,/退款待确认/);assert.match(html,/&lt;script>/);
+  assert.doesNotMatch(html,/data-terminate-task=/);
+});
 function setup() {
   const elements = Object.fromEntries(['reqSource','reqStatus','reqUser','reqSearch','reqAttributed','reqNoise','reqUpdatedAt'].map(id => [id, {value:'',checked:false,textContent:''}]));
   const pending=[], rendered=[];
