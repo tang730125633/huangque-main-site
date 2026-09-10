@@ -3086,7 +3086,7 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertNotIn(".mt-action:disabled{opacity:.55;cursor:wait}", page)
         self.assertIn("button.disabled=!busy&&!activeTemplate", page)
         self.assertIn("if(!checking&&warnCopy())return", page)
-        self.assertIn("busy||hasPending?'检查任务状态'", page)
+        self.assertIn("busy||hasPending?'重新确认结果'", page)
         self.assertIn("if(!pending){busy=false;sync();return}", page)
         self.assertIn("checking=busy||!!existing", page)
         self.assertIn("pendingIdentity(current)!==expectedIdentity", page)
@@ -3212,7 +3212,7 @@ class MatrixTemplatePageTests(unittest.TestCase):
         result = self.runtime("pollFailure")
         self.assertTrue(result["afterFailure"]["busy"])
         self.assertTrue(result["afterFailure"]["enabled"])
-        self.assertEqual("检查任务状态", result["afterFailure"]["text"])
+        self.assertEqual("重新确认结果", result["afterFailure"]["text"])
         self.assertEqual(2, result["polls"])
         self.assertTrue(result["cleared"])
 
@@ -3221,7 +3221,7 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual(1, result["before"]["polls"])
         self.assertTrue(result["before"]["action"]["busy"])
         self.assertTrue(result["before"]["action"]["enabled"])
-        self.assertEqual("检查任务状态", result["before"]["action"]["text"])
+        self.assertEqual("重新确认结果", result["before"]["action"]["text"])
         self.assertFalse(result["before"]["cleared"])
         self.assertEqual(2, result["polls"])
         self.assertEqual("/http-poll-recovered-video", result["src"])
@@ -3286,7 +3286,7 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertNotIn("867 秒", result["afterLoad"]["status"])
         self.assertTrue(result["afterLoad"]["action"]["busy"])
         self.assertTrue(result["afterLoad"]["action"]["enabled"])
-        self.assertEqual("检查任务状态", result["afterLoad"]["action"]["text"])
+        self.assertEqual("重新确认结果", result["afterLoad"]["action"]["text"])
         self.assertEqual(5, result["posts"])
         self.assertEqual(
             ["matrix-template-stable-retry-key"] * 5,
@@ -3324,7 +3324,7 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual(0, result["activeTimers"])
         self.assertIn("自动确认已暂停", result["status"])
         self.assertFalse(result["action"]["busy"])
-        self.assertEqual("检查任务状态", result["action"]["text"])
+        self.assertEqual("重新确认结果", result["action"]["text"])
 
     def test_paused_submission_resumes_once_with_the_same_key(self):
         result = self.runtime("pausedResume")
@@ -3333,6 +3333,17 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual(1, result["posts"])
         self.assertEqual(["matrix-template-paused-key"], result["keys"])
         self.assertEqual("/paused-recovered-video", result["src"])
+        self.assertTrue(result["cleared"])
+
+    def test_paused_uncharged_submission_ends_after_one_confirmation(self):
+        result = self.runtime("pausedUncharged")
+        self.assertEqual(0, result["before"]["posts"])
+        self.assertEqual("重新确认结果", result["before"]["action"]["text"])
+        self.assertEqual(1, result["posts"])
+        self.assertEqual(0, result["polls"])
+        self.assertIn("未进入扣点阶段", result["error"])
+        self.assertEqual("未受理/未扣点", result["refund"])
+        self.assertIn("失败 1 条", result["status"])
         self.assertTrue(result["cleared"])
 
     def test_pending_submission_is_never_replayed_for_another_account(self):
@@ -3660,7 +3671,7 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual("退款处理中", result["before"])
         self.assertTrue(result["beforeAction"]["busy"])
         self.assertTrue(result["beforeAction"]["enabled"])
-        self.assertEqual("检查任务状态", result["beforeAction"]["text"])
+        self.assertEqual("重新确认结果", result["beforeAction"]["text"])
         self.assertEqual("已退款", result["after"])
         self.assertFalse(result["afterAction"]["busy"])
         self.assertTrue(result["afterAction"]["enabled"])
@@ -3673,7 +3684,7 @@ class MatrixTemplatePageTests(unittest.TestCase):
         result = self.runtime("busyActionCheck")
         self.assertTrue(result["before"]["busy"])
         self.assertTrue(result["before"]["enabled"])
-        self.assertEqual("检查任务状态", result["before"]["text"])
+        self.assertEqual("重新确认结果", result["before"]["text"])
         self.assertEqual((1, 1), (
             result["during"]["posts"], result["during"]["polls"],
         ))

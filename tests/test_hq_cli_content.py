@@ -340,6 +340,69 @@ class HQCLIContentTests(unittest.TestCase):
         cost.assert_not_called()
         create.assert_not_called()
 
+    def test_matrix_stale_processing_without_attempt_ends_uncharged_on_submit(self):
+        body = {
+            "top_text": "历史标题", "bottom_text": "历史行动文案",
+            "template_id": "native-bold", "bgm": True,
+        }
+        key = "matrix-stale-processing-submit"
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder, \
+             mock.patch.object(core, "JOB_DB", str(Path(folder) / "jobs.db")), \
+             mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+             mock.patch.object(core, "HANDLERS", {"matrix_template_video": lambda payload: payload}), \
+             mock.patch.object(matrix_template_video, "validate_payload") as validate, \
+             mock.patch.object(core.jobs_store, "create_paid_job") as create:
+            submission_idempotency.begin(
+                core.jdb, "alice", "/api/gen/matrix-template", key, body,
+            )
+            with closing(core.jdb()) as connection:
+                connection.execute(
+                    "UPDATE submission_idempotency SET created_at=0,updated_at=0 "
+                    "WHERE username='alice' AND endpoint='/api/gen/matrix-template' "
+                    "AND idem_key=?",
+                    (key,),
+                )
+                connection.commit()
+            status, result = self._post(
+                "/api/gen/matrix-template", body, expected=5,
+                idempotency_key=key,
+            )
+            state, _ = submission_idempotency.replay_existing(
+                core.jdb, "alice", "/api/gen/matrix-template", key, [body],
+            )
+        self.assertEqual((404, "idempotency_not_found"), (status, result["code"]))
+        self.assertTrue(result["operation_terminal"])
+        self.assertFalse(result["accepted"])
+        self.assertFalse(result["charged"])
+        self.assertEqual("missing", state)
+        self.assertEqual([], self.points.deductions)
+        validate.assert_not_called()
+        create.assert_not_called()
+
+    def test_matrix_fresh_processing_without_attempt_stays_in_progress(self):
+        body = {
+            "top_text": "并发标题", "bottom_text": "并发行动文案",
+            "template_id": "native-bold", "bgm": True,
+        }
+        key = "matrix-fresh-processing-submit"
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder, \
+             mock.patch.object(core, "JOB_DB", str(Path(folder) / "jobs.db")), \
+             mock.patch.object(core, "_domains", return_value=(audio, self.points, video)), \
+             mock.patch.object(core, "HANDLERS", {"matrix_template_video": lambda payload: payload}), \
+             mock.patch.object(matrix_template_video, "validate_payload") as validate, \
+             mock.patch.object(core.jobs_store, "create_paid_job") as create:
+            submission_idempotency.begin(
+                core.jdb, "alice", "/api/gen/matrix-template", key, body,
+            )
+            status, result = self._post(
+                "/api/gen/matrix-template", body, expected=5,
+                idempotency_key=key,
+            )
+        self.assertEqual((409, "idempotency_in_progress"), (status, result["code"]))
+        self.assertEqual([], self.points.deductions)
+        validate.assert_not_called()
+        create.assert_not_called()
+
     def test_matrix_existing_charged_attempt_is_not_misreported_as_unaccepted(self):
         body = {
             "top_text": "历史标题", "bottom_text": "历史行动文案",
