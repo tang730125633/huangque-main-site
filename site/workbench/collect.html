@@ -236,7 +236,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=5482d257"></script>
+<script src="cloud-shell.js?v=775436f9"></script>
 <script>
 (function () {
   'use strict';
@@ -390,7 +390,7 @@
       kwSearch.style.opacity = '1';
       kwSearch.style.pointerEvents = 'auto';
       if (x.s === 401) { HQ.login(); return; }
-      if (x.s === 402) { setNote('点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a>', '#f4708a'); return; }
+      if (x.s === 402) { setNote('点数不足', '#f4708a'); return; }
       renderSearchResults((x.d && x.d.items) || []);
       if (x.d && x.d.points_left != null && window.HQ) window.HQ.refreshPoints();
     })
@@ -501,7 +501,7 @@
       if (x.s === 401) { HQ.login(); return; }
       if (x.s === 402) {
         busy(false); showState('emptyState');
-        setNote('点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a>', '#f4708a');
+        setNote('点数不足', '#f4708a');
         return;
       }
       if (!x.d || !x.d.job_id) {
@@ -770,7 +770,7 @@
           loginErr.login = true;
           throw loginErr;
         }
-        if (x.s === 402) throw new Error('点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a>');
+        if (x.s === 402) throw new Error('点数不足');
         if (!x.d || !x.d.job_id) throw new Error('提交失败：' + ((x.d && x.d.detail) || ''));
         return pollTranscript(x.d.job_id, t0);
       })

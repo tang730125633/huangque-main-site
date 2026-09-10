@@ -6,6 +6,7 @@
    ============================================================ */
 (function(){
   "use strict";
+  var SHELL_BUILD='20260910-global-recovery-1';
   document.documentElement.classList.add('hq-points-ui-disabled');
   /* --- duotone-mini 图标集（PR: duotone 图标体系）--- */
   /* 黄雀 duotone-mini 图标集 — 功能位用（16-24px）：白线 1.7 + 单一强调色（__ACC__ 占位，渲染时注入），无网点。
@@ -282,6 +283,7 @@
     ensureNavStyles();
     var active=content.getAttribute('data-active')||'';
     var app=document.querySelector('.hq-app');
+    app.setAttribute('data-hq-shell-build',SHELL_BUILD);
 
     var aside=document.createElement('aside');
     aside.className='hq-aside';
@@ -300,7 +302,7 @@
           '<div style="position:absolute; right:-14px; top:-10px; width:62px; height:62px; color:rgba(231,178,76,.22);">'+icon('coins','62px')+'</div>'+
           '<div style="font-size:12px; color:#94a4bb;">剩余点数</div>'+
           '<div id="hqPointsSide" class="mono" style="font-size:30px; font-weight:700; color:#e7b24c; line-height:1.1; margin:3px 0 9px;">—</div>'+
-          '<div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;"><a href="recharge.html" style="display:inline-flex; align-items:center; gap:5px; font-size:12.5px; color:#e7b24c; cursor:pointer; font-weight:600;">去充值 <span style="display:flex; width:13px;">'+icon('arrowMini')+'</span></a><button type="button" data-points-detail="1" style="border:0;background:transparent;color:#94a4bb;cursor:pointer;font:700 12.5px inherit;padding:0;">明细</button></div></div>'+
+          '<div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;"><button type="button" data-points-detail="1" style="border:0;background:transparent;color:#94a4bb;cursor:pointer;font:700 12.5px inherit;padding:0;">明细</button></div></div>'+
         '<div id="hqUserCard"></div>'+
       '</div>';
 
@@ -1045,8 +1047,6 @@
     menu.id='hqAccountMenu'; menu.className='hq-account-menu'; menu.setAttribute('role','menu');
     menu.innerHTML='<div class="hq-account-menu-head"><div id="hqAccountMenuName" style="font-size:13px;font-weight:800;color:#eaf1fa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div><div id="hqAccountMenuRole" style="margin-top:3px;font-size:11px;color:#e7b24c;"></div></div>'+
       '<a href="settings.html" role="menuitem">'+icon('gear','16px')+'<span>账户设置</span></a>'+
-      '<a href="recharge.html" role="menuitem" data-points-ui>'+icon('coins','16px')+'<span>会员与点数</span></a>'+
-      '<a href="invite.html" role="menuitem">'+iconDuo('users','16px','#e7b24c')+'<span>邀请中心</span></a>'+
       '<button type="button" class="danger" data-logout="1" role="menuitem">'+icon('logout','16px')+'<span>退出登录</span></button>';
     document.body.appendChild(menu);
     menu.addEventListener('click',function(e){ if(e.target.closest('[data-logout]')) _logout(); });

@@ -121,7 +121,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=5482d257"></script>
+<script src="cloud-shell.js?v=775436f9"></script>
 <script>
 (function(){
   "use strict";
@@ -279,7 +279,7 @@
       .then(function(r){ return r.json().then(function(d){return {s:r.status,d:d};}); })
       .then(function(x){
         if(x.s===401){ HQ.login(); return; }
-        if(x.s===402){ busy(false); setStatus('点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a>','#f4708a'); rows.innerHTML=''; return; }
+        if(x.s===402){ busy(false); setStatus('点数不足','#f4708a'); rows.innerHTML=''; return; }
         if(!x.d.job_id){ busy(false); setStatus('提交失败：'+((x.d&&x.d.detail)||'未知错误'),'#f4708a'); rows.innerHTML=''; return; }
         if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
         localStorage.setItem('hq_active_leads_job', JSON.stringify({id:x.d.job_id, t0:t0, kw:kw}));

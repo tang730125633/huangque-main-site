@@ -3102,10 +3102,17 @@ class MatrixTemplatePageTests(unittest.TestCase):
         )
         self.assertIn(".hq-app{height:100vh;position:relative;z-index:1}", page)
         self.assertIn('id="hqCloudShell"', page)
+        shell_stamp = re.search(
+            r'id="hqCloudShell" src="cloud-shell\.js\?v=([0-9a-f]{8})"', page,
+        )
+        self.assertIsNotNone(shell_stamp)
         result = self.runtime("shellRecovery")
         self.assertEqual(1, len(result["retries"]))
         self.assertEqual("1", result["retries"][0]["marker"])
-        self.assertIn("cloud-shell.js?v=5482d257&recover=", result["retries"][0]["src"])
+        self.assertIn(
+            "cloud-shell.js?v=%s&recover=" % shell_stamp.group(1),
+            result["retries"][0]["src"],
+        )
         self.assertEqual(0, result["healthyRetries"])
 
     def test_openapi_documents_owned_voiceover_contract(self):

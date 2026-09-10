@@ -188,7 +188,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=5482d257"></script>
+<script src="cloud-shell.js?v=775436f9"></script>
 <script>
 /* 资产库读真实生成历史（生成即自动入库）+ 按模式分类筛选 */
 (function(){
@@ -1274,7 +1274,7 @@
     wrap.querySelector('#slotPurchaseCount').textContent=count+'/'+max;
     function setNote(message,color,recharge){
       note.style.color=color||'#5c6b82'; note.textContent=message||'';
-      if(recharge){
+      if(recharge&&window.HQ&&HQ.isPointsBillingEnabled()){
         note.appendChild(document.createTextNode(' · '));
         var link=document.createElement('a'); link.href='recharge.html'; link.textContent='去充值'; link.style.color='#e7b24c'; note.appendChild(link);
       }
