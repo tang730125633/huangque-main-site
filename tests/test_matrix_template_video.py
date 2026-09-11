@@ -208,202 +208,47 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             })
         return values
 
-    def test_public_catalog_accepts_transition_counts_and_removes_legacy_templates(self):
-        response = {"templates": self.templates(), "fonts": [
-            {"value": "", "label": "自动搭配", "source": "automatic"},
-            {"value": "Noto Sans SC", "label": "思源黑体", "source": "bundled"},
-            {"value": "AaHouDiHei", "label": "Aa厚底黑", "source": "private"},
-            {"value": "../bad", "label": "非法", "source": "private"},
-        ]}
+    def test_public_catalog_is_generation_owned_and_sanitized_per_item(self):
+        dynamic = self.reference_templates(include_legacy=False)[0]
+        dynamic.update({
+            "id": "future-template", "variant": "future-layout",
+            "duration_mode": "fixed", "fixed_duration_seconds": 23.5,
+            "required_visuals": 6, "required_visuals_max": 6,
+            "bgm_mode": "bound", "bgm_optional": True,
+        })
+        invalid = dict(dynamic, id="bad-template", variant="bad variant")
+        duplicate = dict(dynamic)
+        response = {
+            "templates": [*self.templates(), dynamic, invalid, duplicate],
+            "fonts": [
+                {"value": "Noto Sans SC", "label": "思源黑体", "source": "bundled"},
+                {"value": "../bad", "label": "非法", "source": "private"},
+            ],
+            "max_batch_size": 5,
+            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+        }
         with mock.patch.object(self.module, "_request", return_value=response):
             values = self.module.public_templates(force=True)
-        self.assertEqual([], values)
+
+        ids = [item["id"] for item in values]
         self.assertEqual(
-            ["", "Noto Sans SC", "AaHouDiHei"],
+            [item["id"] for item in self.templates()] + ["future-template"],
+            ids,
+        )
+        self.assertNotIn("bad-template", ids)
+        self.assertEqual(1, ids.count("future-template"))
+        self.assertEqual(23.5, values[-1]["fixed_duration_seconds"])
+        self.assertEqual(6, values[-1]["required_visuals"])
+        self.assertEqual(
+            ["", "Noto Sans SC"],
             [item["value"] for item in self.module.public_fonts()],
-        )
-        with mock.patch.object(
-            self.module, "_request", return_value={"templates": self.templates()[:-2]}
-        ), \
-             self.assertRaisesRegex(RuntimeError, "不完整"):
-            self.module.public_templates(force=True)
-        missing_required = self.templates()
-        missing_required[-1] = {
-            "id": "replacement-template", "name": "替代模板",
-            "description": "说明", "tags": ["标签"],
-        }
-        with mock.patch.object(
-            self.module, "_request", return_value={"templates": missing_required}
-        ), self.assertRaisesRegex(RuntimeError, "不完整"):
-            self.module.public_templates(force=True)
-
-        with mock.patch.object(self.module, "_request", return_value={
-            "templates": [
-                {"id": "full-overlay-bold", "name": "沉浸强标题"},
-                {"id": "poster-split", "name": "海报切分"},
-            ],
-        }):
-            restricted = self.module.public_templates(force=True)
-        self.assertEqual([], restricted)
-
-        with mock.patch.object(self.module, "_request", return_value={
-            "templates": self.reference_templates(),
-            "max_batch_size": 5,
-            "hyperframes_concurrency": 2,
-            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
-        }):
-            expanded = self.module.public_templates(force=True)
-        self.assertEqual(17, len(expanded))
-        self.assertEqual(17, len([
-            item for item in expanded if item["engine"] == "hyperframes"
-        ]))
-        self.assertTrue(all(
-            item["font_selectable"] is False
-            for item in expanded if item["engine"] == "hyperframes"
-        ))
-        v10 = next(item for item in expanded if item.get("variant") == "v10")
-        self.assertEqual(
-            (85, 65),
-            tuple(
-                v10["semantic_layout"]["layers"][layer]["font_size_px"]
-                for layer in ("top1", "top3")
-            ),
-        )
-        self.assertEqual(
-            {"font_size_px": 80, "font_weight": 400,
-             "max_width_px": 970, "max_lines": 2},
-            v10["semantic_layout"]["layers"]["bottom2"],
-        )
-        v05 = next(item for item in expanded if item.get("variant") == "v05")
-        self.assertEqual(
-            {"font_size_px": 68, "font_weight": 900,
-             "max_width_px": 996, "max_lines": 2},
-            v05["semantic_layout"]["layers"]["top3"],
-        )
-        v04 = next(item for item in expanded if item.get("variant") == "v04")
-        self.assertEqual(
-            {"font_size_px": 80, "font_weight": 900,
-             "max_width_px": 996, "max_lines": 2},
-            v04["semantic_layout"]["layers"]["bottom2"],
-        )
-        transitional_templates = self.reference_templates()
-        next(
-            item for item in transitional_templates
-            if item.get("variant") == "v04"
-        )["semantic_layout"]["layers"]["bottom2"]["font_size_px"] = 60
-        with mock.patch.object(self.module, "_request", return_value={
-            "templates": transitional_templates,
-            "max_batch_size": 5,
-            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
-        }):
-            transitional = self.module.public_templates(force=True)
-        self.assertEqual(
-            60,
-            next(
-                item for item in transitional
-                if item.get("variant") == "v04"
-            )["semantic_layout"]["layers"]["bottom2"]["font_size_px"],
-        )
-        v09 = next(item for item in expanded if item.get("variant") == "v09")
-        self.assertEqual(
-            {"font_size_px": 88, "font_weight": 400,
-             "max_width_px": 996, "max_lines": 2},
-            v09["semantic_layout"]["layers"]["top1"],
-        )
-        v12 = next(item for item in expanded if item.get("variant") == "v12")
-        self.assertEqual(
-            (80, 70),
-            tuple(
-                v12["semantic_layout"]["layers"][layer]["font_size_px"]
-                for layer in ("top1", "top3")
-            ),
-        )
-        v16 = next(item for item in expanded if item.get("variant") == "v16")
-        self.assertEqual(
-            80, v16["semantic_layout"]["layers"]["top1"]["font_size_px"],
-        )
-        self.assertEqual(
-            {f"v{index:02d}" for index in range(1, 18)},
-            {item["variant"] for item in expanded if item["engine"] == "hyperframes"},
-        )
-        self.assertEqual(
-            [f"v{index:02d}" for index in range(1, 18)],
-            [item["variant"] for item in expanded if item.get("semantic_layout")],
         )
         self.assertEqual({
             "max_batch_size": 5,
             "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
         }, self.module.public_batch_capability())
 
-        with mock.patch.object(self.module, "_request", return_value={
-            "templates": self.templates_with_nine_grid(),
-            "max_batch_size": 5,
-            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
-        }):
-            with_nine_grid = self.module.public_templates(force=True)
-        self.assertEqual(18, len(with_nine_grid))
-        nine_grid = with_nine_grid[-1]
-        self.assertEqual(self.module.NINE_GRID_TEMPLATE_ID, nine_grid["id"])
-        self.assertEqual("fixed_12", nine_grid["duration_mode"])
-        self.assertEqual(9, nine_grid["required_visuals"])
-        self.assertEqual("bound", nine_grid["bgm_mode"])
-        self.assertIs(nine_grid["bgm_optional"], True)
-        self.assertEqual(
-            {"font_size_px": 58, "font_weight": 900,
-             "max_width_px": 930, "max_lines": 4},
-            nine_grid["semantic_layout"]["layers"]["bottom2"],
-        )
-
-        with mock.patch.object(self.module, "_request", return_value={
-            "templates": self.templates_with_fixed_skill(),
-            "max_batch_size": 5,
-            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
-        }):
-            expanded = self.module.public_templates(force=True)
-        self.assertEqual(22, len(expanded))
-        self.assertEqual(
-            list(self.module.FIXED_SKILL_TEMPLATE_IDS),
-            [item["id"] for item in expanded[-4:]],
-        )
-        for template_id in self.module.FIXED_SKILL_TEMPLATE_IDS:
-            item = next(value for value in expanded if value["id"] == template_id)
-            contract = self.module.FIXED_SKILL_TEMPLATE_CONTRACTS[template_id]
-            self.assertEqual("fixed", item["duration_mode"])
-            self.assertEqual(
-                contract["duration"], item["fixed_duration_seconds"],
-            )
-            self.assertEqual(
-                contract["required_visuals"], item["required_visuals"],
-            )
-            self.assertIs(item["bgm_optional"], True)
-
-        with mock.patch.object(self.module, "_request", return_value={
-            "templates": self.templates_with_fixed_skill(
-                include_legacy=False,
-            ),
-            "max_batch_size": 5,
-            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
-        }):
-            without_legacy = self.module.public_templates(force=True)
-        self.assertEqual(22, len(without_legacy))
-        self.assertFalse({
-            "full-overlay-bold", "poster-split",
-        } & {item["id"] for item in without_legacy})
-        self.assertEqual(
-            list(self.module.FIXED_SKILL_TEMPLATE_IDS),
-            [item["id"] for item in without_legacy[-4:]],
-        )
-
-        for partial in (("v02",), ("v02", "v05")):
-            with self.subTest(partial=partial), mock.patch.object(
-                self.module, "_request", return_value={
-                    "templates": self.reference_templates(partial),
-                    "max_batch_size": 5,
-                    "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
-                },
-            ), self.assertRaisesRegex(RuntimeError, "语义排版|不完整"):
-                self.module.public_templates(force=True)
-
+    @unittest.skip("superseded by generation-owned generic catalog validation")
     def test_reference_catalog_rejects_missing_v02_unknown_variant_and_drift(self):
         invalid_cases = []
         invalid_cases.append(self.reference_templates(("v05",)))
@@ -466,6 +311,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             ), self.assertRaisesRegex(RuntimeError, "语义排版|不完整"):
                 self.module.public_templates(force=True)
 
+    @unittest.skip("superseded by generation-owned generic catalog validation")
     def test_v09_top1_transition_accepts_only_78_or_88_px(self):
         for font_size in (78, 88):
             templates = self.reference_templates()
@@ -499,6 +345,48 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         }), self.assertRaisesRegex(RuntimeError, "语义排版能力无效"):
             self.module.public_templates(force=True)
 
+    @unittest.skip("superseded by generation-owned generic catalog validation")
+    def test_compact_template_transitions_accept_only_old_or_new_contracts(self):
+        transitions = {
+            ("v01", "bottom2", "max_width_px"): (848, 944),
+            ("v06", "top1", "font_size_px"): (104, 86),
+            ("v08", "top1", "font_size_px"): (92, 86),
+            ("v15", "bottom2", "font_size_px"): (92, 82),
+        }
+        for (variant, layer, field), accepted in transitions.items():
+            for value in accepted:
+                templates = self.reference_templates()
+                next(
+                    item for item in templates if item.get("variant") == variant
+                )["semantic_layout"]["layers"][layer][field] = value
+                with self.subTest(
+                    variant=variant, layer=layer, field=field, value=value,
+                ), mock.patch.object(self.module, "_request", return_value={
+                    "templates": templates,
+                    "max_batch_size": 5,
+                    "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+                }):
+                    values = self.module.public_templates(force=True)
+                    actual = next(
+                        item for item in values if item.get("variant") == variant
+                    )["semantic_layout"]["layers"][layer][field]
+                    self.assertEqual(value, actual)
+
+            drift = self.reference_templates()
+            invalid = min(accepted) + 1
+            next(
+                item for item in drift if item.get("variant") == variant
+            )["semantic_layout"]["layers"][layer][field] = invalid
+            with self.subTest(
+                variant=variant, layer=layer, field=field, value=invalid,
+            ), mock.patch.object(self.module, "_request", return_value={
+                "templates": drift,
+                "max_batch_size": 5,
+                "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+            }), self.assertRaisesRegex(RuntimeError, "语义排版能力无效"):
+                self.module.public_templates(force=True)
+
+    @unittest.skip("superseded by generation-owned generic catalog validation")
     def test_v12_v16_typography_transition_accepts_only_old_or_new_sizes(self):
         transitions = {
             ("v12", "top1"): (72, 80),
@@ -542,6 +430,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             ), self.assertRaisesRegex(RuntimeError, "语义排版能力无效"):
                 self.module.public_templates(force=True)
 
+    @unittest.skip("superseded by generation-owned generic catalog validation")
     def test_v10_typography_transition_accepts_only_old_or_new_sizes(self):
         transitions = {"top1": (70, 85), "top3": (54, 65)}
         for layer, accepted_sizes in transitions.items():
@@ -585,6 +474,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             ), self.assertRaisesRegex(RuntimeError, "语义排版能力无效"):
                 self.module.public_templates(force=True)
 
+    @unittest.skip("superseded by generation-owned generic catalog validation")
     def test_legacy_partial_semantic_catalog_is_rejected(self):
         templates = self.reference_templates(("v02", "v05"))
         with mock.patch.object(self.module, "_request", return_value={
@@ -594,8 +484,49 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         }), self.assertRaisesRegex(RuntimeError, "语义排版|不完整"):
             self.module.public_templates(force=True)
 
-    def test_availability_accepts_supported_catalog_transition_counts(self):
-        for count in (2, 15, 19, 20, 22):
+    def test_invalid_catalog_item_does_not_hide_valid_templates(self):
+        valid = self.reference_templates(include_legacy=False)[0]
+        invalid = json.loads(json.dumps(valid))
+        invalid["id"] = "invalid-template"
+        invalid["semantic_layout"]["layers"]["top1"]["font_size_px"] = 4096
+        with mock.patch.object(self.module, "_request", return_value={
+            "templates": [valid, invalid],
+            "max_batch_size": 5,
+            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+        }):
+            values = self.module.public_templates(force=True)
+        self.assertEqual([valid["id"]], [item["id"] for item in values])
+
+        with mock.patch.object(self.module, "_request", return_value={
+            "templates": [invalid],
+        }), self.assertRaisesRegex(RuntimeError, "模板目录无可用项"):
+            self.module.public_templates(force=True)
+
+    def test_semantic_contract_accepts_generation_values_within_safe_bounds(self):
+        contract = self.reference_templates(include_legacy=False)[0][
+            "semantic_layout"
+        ]
+        contract["layers"]["top1"]["font_size_px"] = 137
+        contract["layers"]["bottom2"]["max_width_px"] = 944
+        normalized = self.module._semantic_contract(contract, "future-layout")
+        self.assertEqual(137, normalized["layers"]["top1"]["font_size_px"])
+        self.assertEqual(944, normalized["layers"]["bottom2"]["max_width_px"])
+
+        for field, invalid in (
+            ("font_size_px", 7),
+            ("font_weight", 1001),
+            ("max_width_px", 4097),
+            ("max_lines", 13),
+        ):
+            drift = json.loads(json.dumps(contract))
+            drift["layers"]["top1"][field] = invalid
+            with self.subTest(field=field), self.assertRaisesRegex(
+                RuntimeError, "语义排版能力无效",
+            ):
+                self.module._semantic_contract(drift, "future-layout")
+
+    def test_availability_accepts_any_nonempty_bounded_provider_catalog(self):
+        for count in (1, 2, 13, 22, 1000):
             with self.subTest(count=count), \
                  mock.patch.object(self.module.feature_flags, "is_enabled", return_value=True), \
                  mock.patch.object(
@@ -605,69 +536,50 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                 self.assertEqual({
                     "enabled": True, "ready": True, "available": True,
                 }, self.module.availability(force=True))
-        for health in ({"ok": True, "templates": 13}, {"ok": False, "templates": 2}):
+        for health in (
+            {"ok": True, "templates": 0},
+            {"ok": True, "templates": 1001},
+            {"ok": False, "templates": 2},
+        ):
             with self.subTest(health=health), \
                  mock.patch.object(self.module.feature_flags, "is_enabled", return_value=True), \
                  mock.patch.object(self.module, "_request", return_value=health):
                 self.assertFalse(self.module.availability(force=True)["ready"])
 
-    def test_catalog_readiness_derives_from_composition_not_hardcoded_counts(self):
-        """模板增减不能再把整条渠道误判成「未就绪」。
+    def test_catalog_readiness_is_provider_owned_not_composition_owned(self):
+        for count in (1, 17, 22, 137, 1000):
+            self.assertTrue(self.module._healthy_template_count(count))
+        for bad in (0, 1001, None, "", "x"):
+            self.assertFalse(self.module._healthy_template_count(bad))
+        self.assertTrue(self.module._catalog_is_complete([{"id": "future"}]))
+        self.assertFalse(self.module._catalog_is_complete([]))
 
-        背景：原来 TRANSITION_TEMPLATE_COUNTS = {2,15,19,20,22,24} 在白名单里写死，
-        加/减一个模板就要同步改主站 + 中转器 + 注释三处，漏一处用户就收到
-        「生成渠道正在繁忙或维护」。2026-09-11 磊哥下线两个老模板（22→20）时差点踩到。
-        现在总数由组成推导：骨架 = 17 ref + 1 九宫格 + len(FIXED_SKILL_TEMPLATE_IDS)。
-        """
-        skeleton = (self.module.REFERENCE_TEMPLATE_COUNT + 1
-                    + len(self.module.FIXED_SKILL_TEMPLATE_IDS))
-        # ① 骨架 + 老模板可有可无（0~2 个）都要判健康；以后再加 fixed-skill，skeleton 自动上移
-        for count in range(skeleton, skeleton + len(self.module.LEGACY_TEMPLATE_IDS) + 1):
-            self.assertTrue(
-                self.module._healthy_template_count(count),
-                "推导出的完整目录总数 %d 应判健康" % count,
-            )
-        # 合法区间必须是**推导**出来的：以后往 FIXED_SKILL_TEMPLATE_IDS 里加模板，
-        # 这个区间自动跟着上移，不需要任何人来改数字。
-        self.assertEqual(
-            set(self.module.COMPLETE_TEMPLATE_COUNTS),
-            set(range(skeleton, skeleton + len(self.module.LEGACY_TEMPLATE_IDS) + 1)),
-            "合法总数区间应由常量推导得出",
-        )
-        # ② 历史过渡态仍然放行
-        for count in (2, 15, 19, 20, 22, 24):
-            self.assertTrue(self.module._healthy_template_count(count),
-                            "历史过渡态 %d 仍应判健康" % count)
-        # ③ 残缺目录仍然要拦（这才是这个检查存在的意义）
-        for bad in (0, 1, 13, None, "", "x"):
-            self.assertFalse(self.module._healthy_template_count(bad),
-                             "残缺/非法总数 %r 必须判不健康" % (bad,))
-
-        # ④ 目录完整性看组成：只有老模板、或 ref 够 17 个，都算完整
-        legacy_only = [{"id": item} for item in self.module.LEGACY_TEMPLATE_IDS]
-        self.assertTrue(self.module._catalog_is_complete(legacy_only), "过渡期只有老模板算完整")
-        refs = self.reference_templates(include_legacy=False)
-        self.assertTrue(self.module._catalog_is_complete(refs),
-                        "17 个 ref 就是骨架，缺九宫格/新模板不算残缺")
-        self.assertTrue(self.module._catalog_is_complete(refs + [{"id": "nine-grid-reveal"}]),
-                        "加了九宫格仍算完整")
-        # ⑤ ref 不够就必须拦
-        self.assertFalse(self.module._catalog_is_complete(refs[:-1]), "少一个 ref 判不完整")
-        self.assertFalse(self.module._catalog_is_complete([{"id": "nine-grid-reveal"}]),
-                         "只有九宫格没有 ref 判不完整")
-
-    def test_transition_catalog_rejects_unapproved_template_submission(self):
-        with mock.patch.object(
-            self.module, "_request", return_value={"templates": self.templates()}
-        ):
-            self.module.public_templates(force=True)
+    def test_submission_accepts_template_selected_from_provider_catalog(self):
+        provider_template = {
+            "id": "provider-owned-template", "name": "生成端模板",
+            "engine": "ffmpeg", "font_mode": "selectable",
+            "font_selectable": True,
+        }
+        expected = {
+            "top_text": "AI 工作流",
+            "bottom_text": "评论区留下关键词",
+            "template_id": provider_template["id"],
+            "bgm": True,
+            "duration": 8.0,
+        }
         with mock.patch.object(self.module, "require_available"), \
-             self.assertRaisesRegex(ValueError, "请选择有效模板"):
-            self.module.validate_payload({
+             mock.patch.object(
+                 self.module, "public_templates",
+                 return_value=[provider_template],
+             ), mock.patch.object(
+                 self.module, "_request", return_value={"payload": expected},
+             ):
+            result = self.module.validate_payload({
                 "top_text": "AI 工作流",
                 "bottom_text": "评论区留下关键词",
-                "template_id": "native-bold",
+                "template_id": provider_template["id"],
             })
+        self.assertEqual(provider_template["id"], result["template_id"])
 
     def test_reference_template_ignores_font_selection(self):
         semantic = {
@@ -1108,6 +1020,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                 "duration": 8,
             }, "alice")
 
+    @unittest.skip("superseded by generation-owned generic catalog validation")
     def test_catalog_accepts_current_five_layer_v07_with_fixed_skill_templates(self):
         templates = self.templates_with_fixed_skill()
         v07 = next(item for item in templates if item.get("variant") == "v07")
@@ -1156,6 +1069,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             )["semantic_layout"]["layers"]),
         )
 
+    @unittest.skip("superseded by generation-owned generic catalog validation")
     def test_catalog_keeps_legacy_v07_rollback_but_rejects_mixed_contract(self):
         templates = self.templates_with_nine_grid()
         v07 = next(item for item in templates if item.get("variant") == "v07")
@@ -3586,8 +3500,8 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertIn("node.scrollHeight>node.clientHeight", page)
         self.assertIn("fitLiveText(el('liveTop'),topSizes[activeTemplate]||34,12)", page)
         self.assertIn("fitLiveText(el('liveBottom'),20,12)", page)
-        self.assertIn("var hiddenTemplateIds={'full-overlay-bold':true,'poster-split':true}", page)
-        self.assertIn("filter(function(item){return item&&!hiddenTemplateIds[item.id]})", page)
+        self.assertNotIn("hiddenTemplateIds", page)
+        self.assertIn("templates=(r.data.templates||[]).filter(Boolean)", page)
         self.assertIn(".mt-action:disabled{opacity:.55;cursor:not-allowed}", page)
         self.assertNotIn(".mt-action:disabled{opacity:.55;cursor:wait}", page)
         self.assertIn("button.disabled=!busy&&!activeTemplate", page)
@@ -4025,26 +3939,26 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual("生成视频 · 5 点", result["complete"]["text"])
         self.assertEqual("", result["complete"]["title"])
 
-    def test_hidden_templates_are_not_rendered_in_the_picker(self):
+    def test_provider_templates_are_rendered_without_main_site_id_filtering(self):
         result = self.runtime("templateVisibility")
-        self.assertEqual(6, result["count"])
-        self.assertNotIn("沉浸强标题", result["html"])
-        self.assertNotIn("三段式活动海报", result["html"])
-        self.assertIn("1. 默认原生大字", result["html"])
-        self.assertIn("2. 极简标题", result["html"])
-        self.assertIn("3. 参考模板", result["html"])
-        self.assertIn("4. 九宫格开场·全屏展示", result["html"])
-        self.assertIn("5. 三横屏开场·光栅快切", result["html"])
-        self.assertIn("6. 黄条标题·变幅冲击", result["html"])
+        self.assertEqual(8, result["count"])
+        self.assertIn("1. 沉浸强标题", result["html"])
+        self.assertIn("2. 三段式活动海报", result["html"])
+        self.assertIn("3. 默认原生大字", result["html"])
+        self.assertIn("4. 极简标题", result["html"])
+        self.assertIn("5. 参考模板", result["html"])
+        self.assertIn("6. 九宫格开场·全屏展示", result["html"])
+        self.assertIn("7. 三横屏开场·光栅快切", result["html"])
+        self.assertIn("8. 黄条标题·变幅冲击", result["html"])
         self.assertEqual(15, result["html"].count("<i></i>"))
-        self.assertEqual("1. 默认原生大字", result["selectedName"])
+        self.assertEqual("3. 默认原生大字", result["selectedName"])
         self.assertEqual("native-bold", result["active"])
 
     def test_pending_hidden_template_still_recovers(self):
         result = self.runtime("hiddenTemplatePendingRecovery")
         self.assertEqual("full-overlay-bold", result["body"]["template_id"])
         self.assertEqual("/hidden-template-video", result["src"])
-        self.assertEqual("native-bold", result["active"])
+        self.assertEqual("full-overlay-bold", result["active"])
         self.assertTrue(result["cleared"])
 
     def test_voiceover_submission_uses_personal_voice_and_disables_bgm(self):
@@ -4068,7 +3982,7 @@ class MatrixTemplatePageTests(unittest.TestCase):
 
     def test_nine_grid_voiceover_submits_optional_bgm_off(self):
         result = self.runtime("nineGridVoiceoverSubmission")
-        self.assertEqual("4. 九宫格开场·全屏展示", result["selected"])
+        self.assertEqual("6. 九宫格开场·全屏展示", result["selected"])
         self.assertEqual(
             "nine-grid-reveal",
             result["body"]["template_id"],
@@ -4080,10 +3994,10 @@ class MatrixTemplatePageTests(unittest.TestCase):
     def test_fixed_skill_templates_use_the_same_two_copy_inputs(self):
         result = self.runtime("fixedSkillTemplateSubmission")
         self.assertEqual(
-            "5. 三横屏开场·光栅快切", result["triple"]["selected"],
+            "7. 三横屏开场·光栅快切", result["triple"]["selected"],
         )
         self.assertEqual(
-            "6. 黄条标题·变幅冲击", result["yellow"]["selected"],
+            "8. 黄条标题·变幅冲击", result["yellow"]["selected"],
         )
         self.assertEqual(
             "triple-strip-shutter",
