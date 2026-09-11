@@ -1355,8 +1355,21 @@ def _download(value, job_id, timeout=240, deadline_at=None):
             read_chunk = getattr(response, "read1", None)
             if not callable(read_chunk):
                 read_chunk = response.read
+            # 终止检查（task_termination.check）每次都会**新开一个数据库连接**再关掉。
+            # 原来每读一块（64KB）就调两次 —— 一个 33MB 的成片要开 1000+ 次连接；
+            # 多条同时交付时数据库锁争抢会把这个循环整个拖慢：实测交付从 20 秒涨到
+            # 200+ 秒，中转器侧日志是「读盘 0.01s、发送 200s」——不是文件或中转器慢，
+            # 是读的这端卡住了，把中转器的发送也拖住（2026-09-12 定位）。
+            # 终止检查不需要那么密，每秒一次足够；socket 超时仍然每块更新（不碰数据库）。
+            checked_at = 0.0
             while True:
-                remaining = min(float(timeout), _remaining_budget(deadline_at))
+                now = time.time()
+                if now - checked_at >= 1.0:
+                    _remaining_budget(deadline_at)
+                    checked_at = now
+                remaining = min(float(timeout), deadline_at - now)
+                if remaining <= 0:
+                    raise RuntimeError("模板成片生成超时")
                 _set_response_timeout(response, remaining)
                 try:
                     chunk = read_chunk(64 * 1024)
@@ -1366,7 +1379,6 @@ def _download(value, job_id, timeout=240, deadline_at=None):
                     except RuntimeError as deadline_error:
                         raise deadline_error from exc
                     raise
-                _remaining_budget(deadline_at)
                 if not chunk:
                     break
                 total += len(chunk)
