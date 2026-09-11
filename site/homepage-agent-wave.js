@@ -3,22 +3,77 @@
 
   const video = document.querySelector('[data-hero-scrub]');
   const story = document.querySelector('[data-agent-wave-story]');
+  const overlay = document.querySelector('[data-agent-wave-overlay]');
+  const overlayContext = overlay?.getContext('2d');
   const beats = [...document.querySelectorAll('[data-agent-beat]')];
   const steps = [...document.querySelectorAll('[data-agent-step]')];
   const indexes = [...document.querySelectorAll('[data-agent-index]')];
   const result = document.querySelector('.agent-wave-result-card');
   const reduced = matchMedia('(prefers-reduced-motion: reduce)');
   const anchors = [[0, 0], [.32, 3.5], [.67, 7.8], [1, 12.1]];
-  const status = { ready: false, mode: 'scroll-scrub', progress: 0, videoTime: 0, chapter: 0 };
+  const status = { ready: false, mode: 'scroll-scrub', progress: 0, videoTime: 0, chapter: 0, overlayPoints: 0 };
   window.__homepageAgentWaveStatus = status;
-  window.__homepageAgentWaveCheck = () => status.ready && video?.readyState >= 1 && !video.autoplay;
+  window.__homepageAgentWaveCheck = () => status.ready && video?.readyState >= 1 && !video.autoplay && overlay?.width > 0 && status.overlayPoints > 0;
 
   if (!video || !story) return;
 
   let targetProgress = 0;
   let progress = 0;
   let frame = 0;
+  let overlayWidth = 0;
+  let overlayHeight = 0;
   const clamp = value => Math.min(1, Math.max(0, value));
+
+  function resizeOverlay() {
+    if (!overlay || !overlayContext) return;
+    const ratio = Math.min(devicePixelRatio || 1, innerWidth < 700 ? 1 : 1.4);
+    overlayWidth = innerWidth;
+    overlayHeight = innerHeight;
+    overlay.width = Math.round(overlayWidth * ratio);
+    overlay.height = Math.round(overlayHeight * ratio);
+    overlayContext.setTransform(ratio, 0, 0, ratio, 0, 0);
+    status.overlayPoints = 3 * (innerWidth < 880 ? 80 : 128);
+  }
+
+  function drawOverlay(now) {
+    if (!overlayContext || !overlayWidth || !overlayHeight) return;
+    overlayContext.clearRect(0, 0, overlayWidth, overlayHeight);
+    overlayContext.globalCompositeOperation = 'screen';
+    const time = reduced.matches ? 0 : now * .001;
+    const mobile = innerWidth < 880;
+    const left = overlayWidth * (mobile ? .18 : .42);
+    const span = overlayWidth * (mobile ? .94 : .66);
+    const count = mobile ? 80 : 128;
+    const waves = [
+      { y: .28, amp: 22, freq: 1.7, speed: .24, phase: 0, color: '220,225,224', alpha: .26, drift: -12 },
+      { y: .5, amp: 18, freq: 2.4, speed: -.18, phase: 1.7, color: '216,164,91', alpha: .2 + progress * .4, drift: 18 },
+      { y: .66, amp: 32, freq: 1.25, speed: .12, phase: 3.1, color: '174,180,178', alpha: .18, drift: 30 },
+    ];
+
+    waves.forEach((wave, waveIndex) => {
+      overlayContext.beginPath();
+      for (let index = 0; index < count; index += 1) {
+        const amount = index / (count - 1);
+        const fade = Math.sin(amount * Math.PI);
+        const x = left + amount * span + Math.sin(time * .16 + amount * 7 + wave.phase) * 8;
+        const y = overlayHeight * wave.y
+          + Math.sin(amount * Math.PI * 2 * wave.freq + time * wave.speed + wave.phase + progress * 2.5) * wave.amp
+          + Math.sin(amount * 19 - time * .12) * 4
+          + wave.drift * progress;
+        if (!index) overlayContext.moveTo(x, y);
+        else overlayContext.lineTo(x, y);
+        overlayContext.fillStyle = `rgba(${wave.color},${wave.alpha * fade})`;
+        const size = 1 + ((index * 17 + waveIndex * 13) % 7) / 5;
+        const jitter = (((index * 13 + waveIndex * 19) % 11) - 5) * .7;
+        overlayContext.fillRect(x, y + jitter, size, size);
+      }
+      overlayContext.strokeStyle = `rgba(${wave.color},${wave.alpha * .1})`;
+      overlayContext.lineWidth = 1;
+      overlayContext.stroke();
+    });
+    overlayContext.globalCompositeOperation = 'source-over';
+    status.overlayPoints = waves.length * count;
+  }
 
   function timeAt(value) {
     for (let index = 1; index < anchors.length; index += 1) {
@@ -65,9 +120,10 @@
     status.videoTime = Number(targetTime.toFixed(3));
   }
 
-  function render() {
+  function render(now = 0) {
     progress += (targetProgress - progress) * (reduced.matches ? 1 : .09);
     sync();
+    drawOverlay(now);
     frame = requestAnimationFrame(render);
   }
 
@@ -86,11 +142,12 @@
   else video.addEventListener('loadedmetadata', markReady, { once: true });
 
   addEventListener('scroll', updateScroll, { passive: true });
-  addEventListener('resize', updateScroll);
+  addEventListener('resize', () => { updateScroll(); resizeOverlay(); });
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) cancelAnimationFrame(frame);
     else frame = requestAnimationFrame(render);
   });
+  resizeOverlay();
   updateScroll();
   frame = requestAnimationFrame(render);
 })();

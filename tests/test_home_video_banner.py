@@ -26,6 +26,7 @@ class HomeVideoBannerTests(unittest.TestCase):
         self.assertIn('<div class="hero-media agent-wave-media" aria-hidden="true">', self.html)
         self.assertIn("agent-wave-h3-2k.mp4", self.html)
         self.assertIn("data-hero-scrub", self.html)
+        self.assertIn("data-agent-wave-overlay", self.html)
         self.assertEqual(self.html.count("<video"), 2)
         self.assertNotIn("hero-moon", self.html)
         self.assertNotIn("moon3d.js", self.html)
@@ -43,6 +44,8 @@ class HomeVideoBannerTests(unittest.TestCase):
         self.assertIn("video.currentTime = targetTime", self.agent_wave)
         self.assertIn("!video.seeking", self.agent_wave)
         self.assertIn("video.pause()", self.agent_wave)
+        self.assertIn("const waves = [", self.agent_wave)
+        self.assertIn("status.overlayPoints = waves.length * count", self.agent_wave)
         self.assertIn("prefers-reduced-motion: reduce", self.agent_wave)
 
     def test_liquid_glass_uses_pointer_driven_highlight(self):
