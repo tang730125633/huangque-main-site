@@ -90,6 +90,13 @@
     const rect = story.getBoundingClientRect();
     const travel = Math.max(1, story.offsetHeight - innerHeight);
     targetProgress = clamp(-rect.top / travel);
+    if (rect.top > 0) {
+      scrubbing = true;
+      status.mode = 'waiting';
+      video.pause();
+      if (video.readyState >= 1 && video.currentTime > .03) video.currentTime = 0;
+      return;
+    }
     if (reduced.matches) {
       scrubbing = true;
       status.mode = 'reduced-motion';
