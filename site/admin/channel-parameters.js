@@ -23,6 +23,7 @@
     if(spec.combinations.some(r=>!Number.isInteger(r.points)||r.points<1||r.points>100000))result.push('每组点数须为 1–100000 的整数');
     if(!spec.combinations.some(r=>r.id===spec.default))result.push('请选择默认组合');
     if(!Number.isInteger(spec.reference_min)||!Number.isInteger(spec.reference_max)||spec.reference_min<0||spec.reference_max<spec.reference_min)result.push('参考图数量范围无效');
+    if(spec.mask&&spec.reference_max<1)result.push('开启局部修图前请把参考图上限设为至少 1 张');
     return [...new Set(result)];
   }
   root.ChannelParameterEditorLogic={rebuild,issues};
@@ -36,7 +37,7 @@
     const refs=()=>env.parameterMappings?.(channel.id)||[];
     function collect(){return {profile:state.capabilities.profile,fields:fieldOrder.map(key=>({key,label:q('[data-label="'+key+'"]').value,visible:q('[data-visible="'+key+'"]').checked})),
       combinations:rows.map(r=>({...r,points:Number(q('[data-points="'+r.id+'"]').value)})),default:q('[name=cpDefault]:checked')?.value,
-      reference_min:Number(q('#cpRefMin').value),reference_max:Number(q('#cpRefMax').value)};}
+      reference_min:Number(q('#cpRefMin').value),reference_max:Number(q('#cpRefMax').value),mask:q('#cpMask')?.checked||false};}
     function remember(){const spec=collect();rows=spec.combinations;state.localDefault=spec.default;return spec}
     function showTab(name){tab=name;host().querySelectorAll('[data-cp-page]').forEach(n=>n.hidden=n.dataset.cpPage!==name);host().querySelectorAll('[data-cp-tab]').forEach(n=>n.setAttribute('aria-selected',String(n.dataset.cpTab===name)));}
     function changed(){dirty=true;q('#cpError').textContent='';sync();preview()}
@@ -65,7 +66,7 @@
     function preview(){
       const spec=collect();
       mount(q('#cpPreview'),spec,c=>{previewChoice=c.id;q('#cpRequest').textContent='尚未校验实际请求。\n'+JSON.stringify({model:channel.model,...c.values,points:c.points},null,2)},previewChoice);
-      q('#cpPreviewSummary').textContent=spec.reference_max?'参考图 '+spec.reference_min+'–'+spec.reference_max+' 张 · 每次 1 个产物':'文字输入 · 每次 1 个产物';
+      q('#cpPreviewSummary').textContent=(spec.reference_max?'参考图 '+spec.reference_min+'–'+spec.reference_max+' 张':'文字输入')+' · 每次 1 个产物'+(spec.mask?' · 支持局部修图（蒙版）':'');
       q('#cpRequest').parentElement.open=false;
     }
     function option(key,v,index,checked){
@@ -88,6 +89,7 @@
           const f=spec?.fields.find(f=>f.key===key),visible=f?.visible!==false;
           return '<section class="cp-parameter-card" data-parameter-group="'+key+'"><div class="cp-card-heading"><h4>'+esc(f?.label||state.labels[key])+'</h4><label class="cp-switch"><input type="checkbox" data-visible="'+key+'" '+(visible?'checked':'')+'><span class="cp-switch-track"></span><span data-mode-label="'+key+'">'+(visible?'用户可选':'固定值')+'</span></label></div><div class="cp-options">'+cap.fields[key].map((v,i)=>option(key,v,i,checked(key,v))).join('')+'</div><details class="cp-more"><summary>更多设置</summary><div class="cp-more-fields"><label>前端显示名称<input data-label="'+key+'" value="'+esc(f?.label||state.labels[key])+'" maxlength="40"></label><button data-move-field="'+key+'" data-direction="-1" aria-label="'+esc(state.labels[key])+'上移">↑ 上移</button><button data-move-field="'+key+'" data-direction="1" aria-label="'+esc(state.labels[key])+'下移">↓ 下移</button></div></details></section>';
         }).join('')+'</div><section class="cp-parameter-card cp-reference-card"><div class="cp-card-heading"><h4>参考图数量</h4><span class="cp-muted">'+(cap.reference_max?'按模型能力限制':'当前协议仅支持文字输入')+'</span></div><div class="cp-reference-fields"><label>最少<input id="cpRefMin" type="number" min="'+cap.reference_min+'" max="'+cap.reference_max+'" value="'+(spec?.reference_min??cap.reference_min)+'" '+(!cap.reference_max?'disabled':'')+'></label><span>—</span><label>最多<input id="cpRefMax" type="number" min="'+cap.reference_min+'" max="'+cap.reference_max+'" value="'+(spec?.reference_max??cap.reference_max)+'" '+(!cap.reference_max?'disabled':'')+'></label><span>张</span></div></section>'+
+        (cap.mask?'<section class="cp-parameter-card cp-reference-card"><div class="cp-card-heading"><h4>局部修图（蒙版）</h4><label class="cp-switch"><input type="checkbox" id="cpMask" '+(spec?.mask?'checked':'')+'><span class="cp-switch-track"></span><span data-mode-label="mask">'+(spec?.mask?'已开启':'已关闭')+'</span></label></div><p class="cp-muted">开启后用户可上传与参考图同尺寸的黑白蒙版，对参考图局部重绘；需要 1 张参考图。</p></section>':'')+
         '<div class="cp-apply-card"><div><strong>更新有效组合</strong><p id="cpSelectionNote"></p></div><div class="cp-apply-controls"><label>新增组合点数<input id="cpBasePoints" type="number" min="1" max="100000" value="20"></label><button id="cpBuild">应用选项</button></div></div>'+
         '<details class="cp-advanced"><summary>高级设置 · 参数协议</summary><label>适配协议<select id="cpProfile">'+cap.profiles.map(p=>'<option value="'+esc(p)+'" '+(p===cap.profile?'selected':'')+'>'+esc(profileNames[p]||p)+'</option>').join('')+'</select></label><p class="cp-note">协议须与实际模型匹配；参数配置不代表供应商已验证。</p></details></section>'+
         '<section id="cpPagePricing" role="tabpanel" aria-labelledby="cpTabPricing" data-cp-page="pricing" hidden><div class="cp-section-intro"><h4>每个组合，明确计价</h4><p>点数为一次任务的总价。视频按选定时长计总价。</p></div><div class="cp-pricing-tools"><input id="cpFilter" type="search" aria-label="筛选参数组合" placeholder="筛选尺寸、画质、格式…"><label>批量点数<input id="cpBatchPoints" type="number" min="1" max="100000" value="20"></label><button id="cpBatch">应用到筛选结果</button></div><p class="cp-muted" id="cpFilteredCount"></p><div id="cpRows" class="cp-table"></div></section>'+
@@ -110,6 +112,7 @@
           if((dirty||pending)&&!confirm('切换协议会清除未保存编辑，继续？')){target.value=state.capabilities.profile;return}
           await open(channel,target.value);return;
         }
+        if(target.id==='cpMask'){q('[data-mode-label="mask"]').textContent=target.checked?'已开启':'已关闭';changed();return}
         const key=target.dataset.choice||target.dataset.visible;
         if(key){
           const choices=[...host().querySelectorAll('[data-choice="'+key+'"]')],mode=q('[data-visible="'+key+'"]');
@@ -157,6 +160,7 @@
             const old=published?.fields.find(x=>x.key===f.key),values=s=>[...new Set((s?.combinations||[]).map(r=>label(f.key,r.values[f.key])))].join(' / ');
             return values(published)!==values(targetSpec)||old?.visible!==f.visible||old?.label!==f.label?f.label+'：'+values(targetSpec)+(f.visible?'（用户可选）':'（固定值）'):null;
           }).filter(Boolean)||[];
+          if(targetSpec?.mask!==published?.mask)changes.push('局部修图（蒙版）：'+(targetSpec?.mask?'开启':'关闭'));
           const summary=(action==='rollback'?'恢复参数版本 v'+b.dataset.parameterRollback+(dirty?'，未保存修改将被丢弃':''):'发布已保存草稿')+'\n组合数量：'+(published?.combinations.length||0)+' → '+(targetSpec?.combinations.length||0)+' 组\n'+(targetSpec?.combinations.length?'点数范围：'+Math.min(...targetSpec.combinations.map(r=>r.points))+'–'+Math.max(...targetSpec.combinations.map(r=>r.points))+' 点\n':'')+changes.join('\n');
           if(!confirm(summary+'\n关联功能：'+(refs().map(m=>(m.label||m.front)+(m.enabled?'':'（未启用）')).join('、')||'暂无映射')+'\n仅影响新请求，旧任务保持原配置。参数配置不代表真实生成测试通过。确认？'))return;
         }

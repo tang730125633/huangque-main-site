@@ -153,15 +153,16 @@ class FunctionRegistryTests(unittest.TestCase):
         video = next(page for page in pages if page["key"] == "video")
         self.assertEqual(
             [feature["name"] for feature in video["functions"]],
-            ["一键成片", "数字化 IP", "电影化身", "换装换背景", "果肉视频生成",
-             "Sora 2", "麦克视频", "Omni 视频", "Seedance 视频"],
+            ["果肉视频生成", "数字化 IP", "电影化身", "换装换背景", "一键成片",
+             "麦克视频", "Seedance 视频", "Sora 2", "Omni 视频"],
         )
         cinematic = next(item for item in video["functions"] if item["key"] == "cinematic")
         self.assertEqual([item["name"] for item in cinematic["modes"]], ["动作模仿", "开放式生成"])
         self.assertEqual(cinematic["shared_steps"][0]["name"], "创建或选择形象")
         self.assertTrue(cinematic["modes"][1]["validation"]["supported"])
         self.assertNotIn("xiaole_video", [item["key"] for item in video["functions"]])
-        one_click = video["functions"][0]["modes"][0]
+        one_click = next(item for item in video["functions"] if item["key"] == "one_click")
+        one_click = one_click["modes"][0]
         self.assertEqual(one_click["evidence_contract"]["acceptance_id_type"], "project_id")
         self.assertIn("provider_task", one_click["evidence_contract"]["not_applicable"])
         self.assertNotIn("balance", one_click["evidence_contract"]["not_applicable"])
@@ -170,10 +171,12 @@ class FunctionRegistryTests(unittest.TestCase):
             one_click["entrypoints"],
         )
         self.assertEqual(one_click["dependencies"][0]["credential_source"], "env")
-        digital_text = video["functions"][1]["modes"][0]
+        digital_ip = next(item for item in video["functions"] if item["key"] == "digital_ip")
+        digital_text = digital_ip["modes"][0]
         cosyvoice = next(item for item in digital_text["dependencies"] if item["key"] == "cosyvoice")
         self.assertEqual(cosyvoice["requirement"], "required")
-        tryon_fast = video["functions"][3]["modes"][0]
+        tryon = next(item for item in video["functions"] if item["key"] == "tryon")
+        tryon_fast = tryon["modes"][0]
         self.assertEqual(next(item for item in tryon_fast["dependencies"] if item["key"] == "cos")["requirement"], "required")
         collect = next(page for page in pages if page["key"] == "collect")
         self.assertEqual(
@@ -499,7 +502,7 @@ class FunctionRegistryTests(unittest.TestCase):
         visible = [item["key"] for item in video["functions"] if item["runtime_visible"]]
         self.assertEqual(
             visible,
-            ["one_click", "digital_ip", "cinematic", "tryon", "grok", "sora", "omni", "seedance"],
+            ["grok", "digital_ip", "cinematic", "tryon", "one_click", "seedance", "sora", "omni"],
         )
         sora = next(item for item in video["functions"] if item["key"] == "sora")
         self.assertTrue(sora["runtime_visible"])

@@ -15,6 +15,52 @@ SIZES={'1024x1024':'1:1','1536x1024':'3:2','1024x1536':'2:3',
        '2048x2048':'1:1','2048x1152':'16:9','1152x2048':'9:16','3840x2160':'16:9','2160x3840':'9:16',
        '2048x1536':'4:3','1536x2048':'3:4'}
 
+# 前台工作台布局：后台可调的渠道顺序与默认渠道。仅控制展示，可用性仍由功能开关决定。
+WORKBENCH_LAYOUT_KEYS = {
+    'video': ['grok', 'talking', 'cinematic', 'tryon', 'minimax', 'micro', 'sora', 'omni'],
+    'image': ['gpt', 'banana', 'seedream', 'xiaole', 'zelong2'],
+}
+DEFAULT_WORKBENCH_LAYOUT = {
+    'video': {'order': list(WORKBENCH_LAYOUT_KEYS['video']), 'default': 'grok'},
+    'image': {'order': list(WORKBENCH_LAYOUT_KEYS['image']), 'default': 'gpt'},
+}
+
+
+def _clean_layout(raw, strict=False):
+    raw = raw if isinstance(raw, dict) else {}
+    result = {}
+    for page, keys in WORKBENCH_LAYOUT_KEYS.items():
+        section = raw.get(page)
+        section = section if isinstance(section, dict) else {}
+        order = [str(x) for x in (section.get('order') or []) if isinstance(x, str)]
+        if strict:
+            if set(order) != set(keys):
+                raise ValueError(page + ' 布局顺序必须包含全部渠道且不能重复')
+        else:
+            order = [k for k in order if k in keys]
+            order += [k for k in keys if k not in order]
+        default = str(section.get('default') or '') if isinstance(section.get('default'), str) else ''
+        if default not in keys:
+            default = order[0] if order else ''
+        result[page] = {'order': order, 'default': default}
+    return result
+
+
+def layout_state():
+    with closing(store.db()) as c:
+        row = c.execute('SELECT value FROM settings WHERE id=4').fetchone()
+    return _clean_layout(json.loads(row[0]) if row else {})
+
+
+def layout_save(actor, body):
+    value = _clean_layout(body.get('layout') if isinstance(body, dict) else {}, strict=True)
+    with closing(store.db()) as c:
+        c.execute('BEGIN IMMEDIATE')
+        c.execute('INSERT OR REPLACE INTO settings VALUES(4,?)', (json.dumps(value, ensure_ascii=False),))
+        store._audit(c, 'layout.save', 'workbench', actor)
+        c.commit()
+    return {'layout': value}
+
 
 def capabilities(cfg,profile=None):
     adapter=cfg['adapter']
@@ -27,7 +73,7 @@ def capabilities(cfg,profile=None):
         if profile=='gpt_image_2':
             if cfg['model'].startswith('gpt-image-1'):raise ValueError('GPT Image 1 系列不能使用 GPT Image 2 的扩展尺寸')
             fields={'size':['1024x1024','1536x1024','1024x1536','2048x2048','2048x1152','1152x2048','3840x2160','2160x3840','2048x1536','1536x2048'],
-                    'quality':['low','medium','high'],'output_format':['png','jpeg','webp']}
+                    'quality':['low','medium','high'],'output_format':['png','jpeg','webp'],'background':['opaque','transparent']}
         elif profile=='gpt_image':
             fields={'size':['1024x1024','1536x1024','1024x1536'],'quality':['low','medium','high'],
                     'output_format':['png','jpeg','webp'],'background':['opaque','transparent']}
@@ -37,15 +83,18 @@ def capabilities(cfg,profile=None):
             fields={'size':['1024x1024'],'quality':['standard'],'output_format':['png']}
         else:raise ValueError('未知图片参数协议')
         if cfg['model']=='dall-e-3' and profile!='dalle3':raise ValueError('DALL-E 3 须选择对应参数协议')
-        return dict(profile=profile,profiles=['gpt_image','gpt_image_2','dalle3','compatible'],fields=fields,reference_min=0,reference_max=0,count=1)
+        editable = profile in {'gpt_image', 'gpt_image_2'}
+        return dict(profile=profile,profiles=['gpt_image','gpt_image_2','dalle3','compatible'],fields=fields,
+                    reference_min=0,reference_max=1 if editable else 0,mask=editable,count=1)
     if adapter=='minimax_h3':
         from .video_minimax_h3 import MODEL
         if cfg['model']!=MODEL:raise ValueError('此协议实际模型固定为 '+MODEL+'，请先修正连接配置')
         return dict(profile='minimax_h3',profiles=['minimax_h3'],fields={'ratio':['9:16','16:9','1:1','4:3','3:4','21:9'],
                     'resolution':['2K'],'duration':list(range(4,16))},reference_min=0,reference_max=5,count=1)
     if adapter=='xai_video':
+        resolutions = ['720p', '1080p'] if cfg['model']=='grok-imagine-video-1.5' else ['720p']
         return dict(profile='xai_video',profiles=['xai_video'],fields={'ratio':['9:16','16:9','1:1'],
-                    'resolution':['720p'],'duration':list(range(1,16))},
+                    'resolution':resolutions,'duration':list(range(1,16))},
                     reference_min=1 if cfg['model']=='grok-imagine-video-1.5' else 0,reference_max=1,count=1)
     raise ValueError('该适配器尚未接入参数配置')
 
@@ -87,7 +136,12 @@ def validate(cfg,spec):
     low=spec.get('reference_min',cap['reference_min']);high=spec.get('reference_max',cap['reference_max'])
     if isinstance(low,bool) or isinstance(high,bool) or not isinstance(low,int) or not isinstance(high,int) or not cap['reference_min']<=low<=high<=cap['reference_max']:
         raise ValueError('参考图数量超出适配器范围')
-    return dict(profile=cap['profile'],fields=clean_fields,combinations=clean,default=spec['default'],reference_min=low,reference_max=high)
+    mask = spec.get('mask') is True
+    if mask:
+        if not cap.get('mask'):raise ValueError('该适配器不支持局部修图（蒙版）')
+        if high < 1:raise ValueError('开启局部修图前请把参考图上限设为至少 1 张')
+    return dict(profile=cap['profile'],fields=clean_fields,combinations=clean,default=spec['default'],
+                reference_min=low,reference_max=high,mask=mask)
 
 
 def drafts(c):
@@ -173,8 +227,9 @@ def public_catalog():
             cfg.update(id=m['channel'],version=ch['version'])
             result.append(dict(kind=m['kind'],front=m['front'],label=m['label'],revision=token(cfg),
                 fields=spec['fields'],combinations=spec['combinations'],default=spec['default'],
-                reference_min=spec['reference_min'],reference_max=spec['reference_max'],count=1))
-    return {'items':result,'refresh_seconds':15}
+                reference_min=spec['reference_min'],reference_max=spec['reference_max'],count=1,
+                mask_enabled=spec.get('mask') is True))
+    return {'items':result,'refresh_seconds':15,'layout':layout_state()}
 
 
 def apply(cfg,payload,required=True):
@@ -229,9 +284,14 @@ def preview(actor,body):
     cfg=store.version(str(body.get('id') or ''))
     if cfg['version']!=body.get('version'):raise ValueError('渠道版本已变化，请刷新后重试')
     spec=validate(cfg,body.get('parameters'));cfg['parameters']=spec
+    ref_count = 1 if spec.get('mask') else spec['reference_min']
     payload=dict(prompt='示例提示词（仅预览，不发起生成）',parameter_selection={'combination':body.get('combination') or spec['default']},
-                 reference_images=['https://example.invalid/reference.png']*spec['reference_min'])
+                 reference_images=['https://example.invalid/reference.png']*ref_count)
+    if spec.get('mask'):
+        payload['mask']='data:image/png;base64,<占位，预览不读取>'
     payload,points=apply(cfg,payload,required=False)
     from .channel_runtime import build_generation_request
-    path,request=build_generation_request(cfg,payload)
-    return dict(path=path,body=request,points=points,validation='参数校验通过；尚未调用供应商，不代表成品验证通过')
+    path,request,files=build_generation_request(cfg,payload,preview=True)
+    summary=dict(path=path,body=request,points=points,validation='参数校验通过；尚未调用供应商，不代表成品验证通过')
+    if files:summary['files']=[dict(name=name,size=len(content) if content else 0) for name,_,content in files]
+    return summary

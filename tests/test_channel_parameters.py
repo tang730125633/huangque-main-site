@@ -182,4 +182,90 @@ class ParameterTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'尺寸不一致'):runtime.generate(cfg,payload,rid,'job')
 
 
+    def test_gpt_image_2_offers_background_reference_and_mask(self):
+        self.ch=cm.save('a',dict(self.body,model='gpt-image-2'))
+        cap=params.capabilities(cm.version(self.ch['id']))
+        self.assertEqual(cap['profile'],'gpt_image_2')
+        self.assertIn('transparent',cap['fields']['background'])
+        self.assertEqual(cap['reference_max'],1);self.assertTrue(cap['mask'])
+
+    def test_mask_draft_requires_reference_capacity(self):
+        self.ch=cm.save('a',dict(self.body,model='gpt-image-2'))
+        spec=self.spec('gpt_image_2');spec['mask']=True;spec['reference_max']=0
+        with self.assertRaisesRegex(ValueError,'局部修图'):self.draft(spec)
+        self.ch=cm.save('b',self.body)
+        spec=self.spec();spec['mask']=True
+        with self.assertRaisesRegex(ValueError,'局部修图'):self.draft(spec)   # compatible 协议不支持蒙版
+
+    def test_gpt_image_2_edits_multipart_with_reference_and_mask(self):
+        self.ch=cm.save('a',dict(self.body,model='gpt-image-2'))
+        self.mapping();spec=self.spec('gpt_image_2');spec['reference_max']=1;spec['mask']=True;self.publish(spec)
+        payload=self.payload()
+        payload['reference_images']=['data:image/png;base64,'+base64.b64encode(b'IMG').decode()]
+        payload['mask']='data:image/png;base64,'+base64.b64encode(b'MASK').decode()
+        captured=cm.capture('image',payload)
+        path,body,files=runtime.build_generation_request(cm.version(self.ch['id']),captured)
+        self.assertEqual(path,'/images/edits')
+        self.assertEqual([f[0] for f in files],['image','mask'])
+        self.assertEqual(files[0][2],b'IMG');self.assertEqual(files[1][2],b'MASK')
+        self.assertEqual(body['size'],'1024x1024');self.assertEqual(body['background'],'opaque')
+        self.assertEqual(body['output_format'],'png');self.assertEqual(body['n'],'1')
+
+    def test_gpt_image_2_reference_without_mask_goes_to_edits(self):
+        self.ch=cm.save('a',dict(self.body,model='gpt-image-2'))
+        self.mapping();spec=self.spec('gpt_image_2');spec['reference_max']=1;self.publish(spec)
+        payload=self.payload();payload['reference_images']=['data:image/png;base64,'+base64.b64encode(b'IMG').decode()]
+        captured=cm.capture('image',payload)
+        path,body,files=runtime.build_generation_request(cm.version(self.ch['id']),captured)
+        self.assertEqual(path,'/images/edits');self.assertEqual([f[0] for f in files],['image'])
+        with self.assertRaisesRegex(ValueError,'蒙版'):
+            runtime.validate_payload(cm.version(self.ch['id']),dict(captured,mask='data:image/png;base64,'+base64.b64encode(b'M').decode()))
+
+    def test_gpt_image_2_transparent_background_rejects_jpeg(self):
+        self.ch=cm.save('a',dict(self.body,model='gpt-image-2'))
+        spec=self.spec('gpt_image_2')
+        spec['combinations'][0]['values'].update(background='transparent',output_format='jpeg')
+        with self.assertRaisesRegex(ValueError,'透明'):
+            self.draft(spec)
+
+    def test_image_preview_lists_edit_files_without_calling_provider(self):
+        self.ch=cm.save('a',dict(self.body,model='gpt-image-2'))
+        spec=self.spec('gpt_image_2');spec['reference_max']=1;spec['mask']=True
+        with patch.object(runtime,'request') as request:
+            result=params.preview('admin',dict(id=self.ch['id'],version=1,parameters=spec))
+        request.assert_not_called()
+        self.assertEqual(result['path'],'/images/edits')
+        self.assertEqual([f['name'] for f in result['files']],['image','mask'])
+
+    def test_xai_video_1080p_only_for_model_1_5(self):
+        self.ch=cm.save('a',dict(self.body,adapter='xai_video',model='grok-imagine-video-1.5'))
+        cap=params.capabilities(cm.version(self.ch['id']))
+        self.assertEqual(set(cap['fields']['resolution']),{'720p','1080p'})
+        payload=dict(prompt='t',resolution='1080p',duration=5,ratio='9:16',
+                     reference_images=['data:image/png;base64,'+base64.b64encode(b'I').decode()])
+        runtime.validate_payload(cm.version(self.ch['id']),payload)   # 1.5 允许 1080p
+        self.ch=cm.save('b',dict(self.body,adapter='xai_video',model='grok-imagine-video'))
+        cap=params.capabilities(cm.version(self.ch['id']))
+        self.assertEqual(set(cap['fields']['resolution']),{'720p'})
+        with self.assertRaisesRegex(ValueError,'分辨率'):
+            runtime.validate_payload(cm.version(self.ch['id']),dict(prompt='t',resolution='1080p',duration=5,ratio='9:16'))
+
+    def test_workbench_layout_defaults_roundtrip_and_strict_save(self):
+        state=params.layout_state()
+        self.assertEqual(state['video']['order'][0],'grok');self.assertEqual(state['image']['default'],'gpt')
+        self.assertIn('layout',params.public_catalog())
+        saved=params.layout_save('admin',{'layout':{'video':{'order':['talking','grok','cinematic','tryon','minimax','micro','sora','omni'],'default':'talking'},'image':{'order':['gpt','banana','seedream','xiaole','zelong2'],'default':'gpt'}}})
+        self.assertEqual(saved['layout']['video']['order'][0],'talking')
+        self.assertEqual(params.layout_state()['video']['default'],'talking')
+        with self.assertRaises(ValueError):
+            params.layout_save('admin',{'layout':{'video':{'order':['grok'],'default':'grok'},'image':{'order':[],'default':''}}})
+
+    def test_grok15_mapping_and_legacy_provider(self):
+        self.ch=cm.save('a',dict(self.body,adapter='xai_video',model='grok-imagine-video-1.5'))
+        cm.save_mapping('admin',dict(kind='xiaole_video',front='grok15',label='果肉视频 1.5',channel=self.ch['id'],enabled=True))
+        self.assertEqual(params.public_catalog()['items'],[])   # 未发布参数不出现在前台目录
+        from server.content_domains import channel_lifecycle
+        self.assertEqual(channel_lifecycle.legacy_provider('xiaole_video',{'channel':'grok15'}),'xai')
+
+
 if __name__=='__main__':unittest.main()

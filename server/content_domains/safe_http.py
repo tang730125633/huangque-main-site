@@ -4,6 +4,7 @@ import ipaddress
 import json
 import socket
 import ssl
+import uuid
 from dataclasses import dataclass
 from urllib.parse import urlsplit, urlunsplit
 
@@ -167,6 +168,34 @@ def request_json(method, url, *, body=None, headers=None, timeout=60,
     if body is not None:
         request_headers.setdefault('Content-Type', 'application/json')
     raw = request_bytes(method, url, body=encoded, headers=request_headers,
+                        timeout=timeout, max_bytes=max_bytes, proxy=proxy)
+    try:
+        value = json.loads(raw or b'{}')
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SafeHttpError('供应商返回的 JSON 无效') from exc
+    if not isinstance(value, dict):
+        raise SafeHttpError('供应商返回的 JSON 必须是对象')
+    return value
+
+
+def request_multipart_json(method, url, *, fields=None, files=None, headers=None,
+                           timeout=60, max_bytes=8 * 1024 * 1024, proxy=''):
+    """multipart/form-data 提交（如图片 edits 的 image/mask），响应按 JSON 解析。"""
+    boundary = '----hq' + uuid.uuid4().hex
+    chunks = []
+    for key, value in (fields or {}).items():
+        chunks.append(
+            ('--%s\r\nContent-Disposition: form-data; name="%s"\r\n\r\n' % (boundary, key)).encode()
+            + str(value).encode() + b'\r\n')
+    for name, filename, content in (files or []):
+        chunks.append(
+            ('--%s\r\nContent-Disposition: form-data; name="%s"; filename="%s"\r\n'
+             'Content-Type: application/octet-stream\r\n\r\n' % (boundary, name, filename)).encode()
+            + content + b'\r\n')
+    chunks.append(('--%s--\r\n' % boundary).encode())
+    request_headers = dict(headers or {})
+    request_headers['Content-Type'] = 'multipart/form-data; boundary=' + boundary
+    raw = request_bytes(method, url, body=b''.join(chunks), headers=request_headers,
                         timeout=timeout, max_bytes=max_bytes, proxy=proxy)
     try:
         value = json.loads(raw or b'{}')

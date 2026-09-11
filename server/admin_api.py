@@ -8741,7 +8741,9 @@ class H(BaseHTTPRequestHandler):
                        'unmap':channel_lifecycle.unmap,
                        'parameters':channel_parameters.change,
                        'parameter-preview':channel_parameters.preview,
-                       'parameter-state':lambda actor,body:channel_parameters.admin_state(str(body.get('id') or ''),body.get('profile'))}
+                       'parameter-state':lambda actor,body:channel_parameters.admin_state(str(body.get('id') or ''),body.get('profile')),
+                       'layout-state':lambda actor,body:channel_parameters.layout_state(),
+                       'layout-save':channel_parameters.layout_save}
             action = actions.get(path.rsplit('/',1)[-1])
             if not action:
                 return self._send(404, {'detail':'未知渠道操作'})

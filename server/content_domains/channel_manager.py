@@ -182,8 +182,8 @@ def version(cid, rev=None, with_secret=False):
 def save_mapping(actor, body):
     kind, front = str(body.get('kind') or ''), str(body.get('front') or '').strip()
     cid, backup = str(body.get('channel') or ''), str(body.get('backup') or '')
-    if kind == 'xiaole_video' and front not in {'grok','minimax','omni','micro'}:
-        raise ValueError('请选择现有视频请求标识 grok、minimax、omni 或 micro；新增前台入口需另行接入价格与权限')
+    if kind == 'xiaole_video' and front not in {'grok','grok15','minimax','omni','micro'}:
+        raise ValueError('请选择现有视频请求标识 grok、grok15、minimax、omni 或 micro；新增前台入口需另行接入价格与权限')
     cfg = version(cid)
     if kind != ADAPTERS[cfg['adapter']]['kind'] or not front or len(front) > 100:
         raise ValueError('功能类型与渠道能力不兼容，或前台标识未填写')
