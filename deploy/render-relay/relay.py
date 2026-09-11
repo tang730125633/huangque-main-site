@@ -296,10 +296,10 @@ class Handler(BaseHTTPRequestHandler):
                     "SELECT COUNT(*) FROM jobs WHERE status='pending'").fetchone()[0]
                 running = conn.execute(
                     "SELECT COUNT(*) FROM jobs WHERE status='running'").fetchone()[0]
-            # templates 必须如实反映上游：黄雀的 availability() 要求
-            # int(health["templates"]) 落在 TRANSITION_TEMPLATE_COUNTS = {2,15,19,20}，
-            # 缺这个字段会被算成 0 而判定整条渠道「未就绪」——正是它导致 Agent
-            # 一直收到「生成渠道正在繁忙或维护」。
+            # templates 必须如实反映上游：黄雀的 availability() 读这个字段判渠道就绪。
+            # 但中转器**不拿模板数当判据** —— 原来写死 `templates in (2,15,19,20,22)`，
+            # 模板一增减就会把整条渠道误判成不可用（2026-09-11 模板数 22→20 就差点踩到）。
+            # 上游健不健康由上游自己在 ok 里说；这里只要求「上游 ok 且确实有模板」。
             templates = 0
             upstream_ok = False
             try:
@@ -309,7 +309,7 @@ class Handler(BaseHTTPRequestHandler):
                 upstream_ok = up.get("ok") is True
             except Exception as exc:
                 print("[render-relay] health upstream failed: %s" % exc, flush=True)
-            ok = upstream_ok and templates in (2, 15, 19, 20, 22)
+            ok = upstream_ok and templates > 0
             return self._send(200 if ok else 503, {
                 "ok": ok, "templates": templates,
                 "worker_alive": True, "worker_count": 1,
