@@ -8,7 +8,7 @@
 视频号(wxapp.tc.qq.com)特殊：直链是加密流，需调 :3001 Isaac64 解密服务(传 decode_key)解成可播放 mp4。
 前端对视频号下载会带 &dk=<decode_key>，代理识别后走解密路径。
 """
-import os, re, json, tempfile, urllib.request, urllib.parse, subprocess, hmac
+import os, re, json, tempfile, time, urllib.request, urllib.parse, subprocess, hmac
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -17,6 +17,7 @@ AUTH_BASE = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095")
 INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")
 AUTH_COOKIE_NAME = os.environ.get("HQ_AUTH_COOKIE_NAME", "hq_session")
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+DL_SLOW_SECONDS = float(os.environ.get("DL_SLOW_SECONDS", "5") or 0)  # 慢转发阈值(秒)
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # 直连，绕过环境代理
 ALLOW = (
     ".zjcdn.com", ".douyinvod.com", ".douyinstatic.com", ".douyinpic.com", ".amemv.com",
@@ -191,16 +192,27 @@ class H(BaseHTTPRequestHandler):
         if clen:
             self.send_header("Content-Length", clen)
         self.end_headers()
+        _t0 = time.monotonic()
+        _read_s = _write_s = 0.0
         try:
             while True:
+                _a = time.monotonic()
                 c = up.read(65536)
+                _b = time.monotonic()
                 if not c:
                     break
                 self.wfile.write(c)
+                _c = time.monotonic()
+                _read_s += _b - _a
+                _write_s += _c - _b
         except Exception:
             pass
         finally:
             up.close()
+        _total = time.monotonic() - _t0
+        if _total >= DL_SLOW_SECONDS:
+            print("[dl] 慢转发 %.1fs %s 上游读%.2fs 发给请求方%.2fs"
+                  % (_total, host, _read_s, _write_s), flush=True)
 
 
 if __name__ == "__main__":

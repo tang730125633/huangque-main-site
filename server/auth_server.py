@@ -107,6 +107,18 @@ MYSTERY_SHOPPER_CLI_SCOPES = (
 VIRTUAL_PAY_RECONCILE_INTERVAL_SECONDS = 60
 VIRTUAL_PAY_RECONCILE_BATCH = 100
 VIRTUAL_PAY_RECONCILE_MIN_AGE_SECONDS = 10
+GROWTH_DISABLED_PREFIXES = (
+    "/api/invite/", "/api/auth/invite/",
+    "/api/auth/card/", "/api/auth/card",
+    "/api/auth/network/",
+    "/api/admin/invite/", "/api/auth/admin/invite/",
+)
+
+
+def _is_growth_request(path):
+    return any(str(path or "").startswith(prefix) for prefix in GROWTH_DISABLED_PREFIXES)
+
+
 POINTS_BILLING_CREATE_PATHS = frozenset({
     "/api/auth/points/transfer",
     "/api/auth/recharge/order",
@@ -5835,6 +5847,11 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         p = self.path.split("?")[0]
+        if _is_growth_request(p) and not feature_flags.growth_program_enabled():
+            return self._send(503, {
+                "detail": "内测期间拉新与奖励活动暂不开放",
+                "code": "growth_program_disabled",
+            })
         if p in POINTS_BILLING_CREATE_PATHS and not points_billing_enabled():
             return self._send(503, {
                 "detail": "内测期间点数、充值和会员购买暂不开放",
@@ -7688,6 +7705,11 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         p = self.path.split("?")[0]
+        if _is_growth_request(p) and not feature_flags.growth_program_enabled():
+            return self._send(503, {
+                "detail": "内测期间拉新与奖励活动暂不开放",
+                "code": "growth_program_disabled",
+            })
         if p in ("/api/auth/points/transfer/recipient", "/api/auth/points/transfers"):
             row = self._user()
             if not row:
