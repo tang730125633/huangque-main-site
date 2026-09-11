@@ -31,6 +31,7 @@ class HomeVideoBannerTests(unittest.TestCase):
         self.assertIn("data-hero-scrub", self.html)
         self.assertIn("data-hero-scrub autoplay muted loop playsinline", self.html)
         self.assertIn("data-agent-wave-overlay", self.html)
+        self.assertIn('<video muted loop playsinline preload="metadata" aria-label="黄雀成片展示">', self.html)
         self.assertLess(self.html.index('<section class="hero" id="top">'), self.html.index("data-agent-wave-story"))
         self.assertEqual(self.html.count("<video"), 4)
         self.assertIn("const heroVideos = [...document.querySelectorAll('#top .hero-media video')];", self.html)
@@ -47,12 +48,11 @@ class HomeVideoBannerTests(unittest.TestCase):
     def test_video_fills_hero_and_respects_reduced_motion(self):
         self.assertIn(".hero-media video{position:absolute;z-index:0;inset:0;width:100%;height:100%;object-fit:cover", self.css)
         self.assertIn(".hero.agent-wave-story", self.css)
-        self.assertIn("video.currentTime = targetTime", self.agent_wave)
-        self.assertIn("!video.seeking", self.agent_wave)
-        self.assertIn("status.mode = 'scroll-scrub'", self.agent_wave)
-        self.assertIn("status.mode = 'ambient-loop'", self.agent_wave)
-        self.assertIn("status.mode = 'waiting'", self.agent_wave)
-        self.assertIn("if (scrubbing && video.readyState", self.agent_wave)
+        self.assertNotIn("video.currentTime = targetTime", self.agent_wave)
+        self.assertIn("status.mode = 'smooth-playback'", self.agent_wave)
+        self.assertIn("mode: 'waiting'", self.agent_wave)
+        self.assertIn("const active = rect.top <= 0 && rect.bottom > innerHeight", self.agent_wave)
+        self.assertIn("resultVideo.pause()", self.agent_wave)
         self.assertIn("const waves = [", self.agent_wave)
         self.assertIn("status.overlayPoints = waves.length * count", self.agent_wave)
         self.assertIn("prefers-reduced-motion: reduce", self.agent_wave)
@@ -94,6 +94,7 @@ class HomeVideoBannerTests(unittest.TestCase):
         self.assertIn("localStorage.setItem('huangque-language', next)", self.html)
         self.assertIn("nav-current-backdrop", self.liquid_glass)
         self.assertIn("key==='nav'&&!navOverHero", self.liquid_glass)
+        self.assertIn("key==='hero'&&!navOverHero", self.liquid_glass)
         self.assertIn(".nav-drawer-layer{position:absolute;top:100%", self.css)
         nav = self.html.split('<header class="site-header">', 1)[1].split("</header>", 1)[0]
         for anchor in ('href="#flow"', 'href="#ip12"', 'href="#agent"', 'href="#video"', 'href="#cli"'):

@@ -63,6 +63,7 @@
       const width=Math.round(canvasRect.width*ratio),height=Math.round(canvasRect.height*ratio);if(canvas.width!==width||canvas.height!==height){canvas.width=width;canvas.height=height;gl.viewport(0,0,width,height);}
       gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT);
       if(key==='nav'&&!navOverHero){status.navBackdrop='current';requestAnimationFrame(render);return;}
+      if(key==='hero'&&!navOverHero){requestAnimationFrame(render);return;}
       if(visible&&video?.readyState>=2&&video.videoWidth&&width&&height){
         if(key==='nav')status.navBackdrop='video';
         gl.uniform1f(uniform.dpr,ratio);gl.uniform1f(uniform.radius,targetRect.height/2);gl.uniform2f(uniform.resolution,canvasRect.width,canvasRect.height);gl.uniform2f(uniform.videoSize,video.videoWidth,video.videoHeight);

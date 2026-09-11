@@ -168,7 +168,7 @@
             <div class="agent-wave-step" data-agent-step="3"><b>04</b><span>交付成片</span><small>DELIVERED</small></div>
           </div>
           <figure class="agent-wave-result-card">
-            <video autoplay muted loop playsinline preload="metadata" aria-label="黄雀成片展示">
+            <video muted loop playsinline preload="metadata" aria-label="黄雀成片展示">
               <source src="/assets/home/hero-banner-monochrome-eye.mp4" type="video/mp4">
             </video>
             <figcaption><span>OUTPUT / VIDEO</span><strong>成片已生成</strong><small>00:08 · 1920 × 1080</small></figcaption>
@@ -615,6 +615,12 @@
     };
     syncHeroVideoMotion();
     reducedMotion.addEventListener?.('change', syncHeroVideoMotion);
+    const heroSection = document.querySelector('#top');
+    const heroVisibilityObserver = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) syncHeroVideoMotion();
+      else heroVideos.forEach(video => video.pause());
+    }, { threshold: .01 });
+    if (heroSection) heroVisibilityObserver.observe(heroSection);
 
     const counters = [...document.querySelectorAll('[data-count]')];
     const counterObserver = new IntersectionObserver(entries => {
@@ -802,7 +808,7 @@
 
   })();
   </script>
-  <script src="/homepage-agent-wave.js?v=a89716ed" defer></script>
+  <script src="/homepage-agent-wave.js?v=23dbb996" defer></script>
   <script src="/homepage-liquid-glass.js?v=20260810-edge1" defer></script>
   <script type="module" src="/homepage-particles.js?v=61695574"></script>
 </body>

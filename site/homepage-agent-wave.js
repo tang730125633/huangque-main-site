@@ -9,9 +9,9 @@
   const steps = [...document.querySelectorAll('[data-agent-step]')];
   const indexes = [...document.querySelectorAll('[data-agent-index]')];
   const result = document.querySelector('.agent-wave-result-card');
+  const resultVideo = result?.querySelector('video');
   const reduced = matchMedia('(prefers-reduced-motion: reduce)');
-  const anchors = [[0, 0], [.32, 3.5], [.67, 7.8], [1, 12.1]];
-  const status = { ready: false, mode: 'ambient-loop', progress: 0, videoTime: 0, chapter: 0, overlayPoints: 0 };
+  const status = { ready: false, mode: 'waiting', progress: 0, videoTime: 0, chapter: 0, overlayPoints: 0 };
   window.__homepageAgentWaveStatus = status;
   window.__homepageAgentWaveCheck = () => status.ready && video?.readyState >= 1 && video.autoplay && overlay?.width > 0 && status.overlayPoints > 0;
 
@@ -20,7 +20,6 @@
   let targetProgress = 0;
   let progress = 0;
   let frame = 0;
-  let scrubbing = false;
   let overlayWidth = 0;
   let overlayHeight = 0;
   const clamp = value => Math.min(1, Math.max(0, value));
@@ -76,43 +75,25 @@
     status.overlayPoints = waves.length * count;
   }
 
-  function timeAt(value) {
-    for (let index = 1; index < anchors.length; index += 1) {
-      const [endProgress, endTime] = anchors[index];
-      if (value > endProgress) continue;
-      const [startProgress, startTime] = anchors[index - 1];
-      return startTime + (endTime - startTime) * (value - startProgress) / (endProgress - startProgress);
-    }
-    return anchors[anchors.length - 1][1];
-  }
-
   function updateScroll() {
     const rect = story.getBoundingClientRect();
     const travel = Math.max(1, story.offsetHeight - innerHeight);
     targetProgress = clamp(-rect.top / travel);
-    if (rect.top > 0) {
-      scrubbing = true;
-      status.mode = 'waiting';
+    const active = rect.top <= 0 && rect.bottom > innerHeight;
+    if (!active) {
+      status.mode = rect.top > 0 ? 'waiting' : 'complete';
       video.pause();
-      if (video.readyState >= 1 && video.currentTime > .03) video.currentTime = 0;
+      if (rect.top > 0 && video.readyState >= 1 && video.currentTime > .03) video.currentTime = 0;
       return;
     }
     if (reduced.matches) {
-      scrubbing = true;
       status.mode = 'reduced-motion';
       progress = targetProgress;
       video.pause();
       return;
     }
-    if (!scrubbing && targetProgress > .012) {
-      scrubbing = true;
-      status.mode = 'scroll-scrub';
-      video.pause();
-    } else if (scrubbing && targetProgress < .002) {
-      scrubbing = false;
-      status.mode = 'ambient-loop';
-      video.play().catch(() => { status.autoplayBlocked = true; });
-    }
+    status.mode = 'smooth-playback';
+    if (video.paused) video.play().catch(() => { status.autoplayBlocked = true; });
   }
 
   function setChapter(chapter) {
@@ -129,18 +110,20 @@
   function sync() {
     const chapter = progress < .32 ? 0 : progress < .67 ? 1 : 2;
     const activeStep = Math.min(3, Math.floor(progress * 4.15));
-    const duration = Number.isFinite(video.duration) ? video.duration : anchors[anchors.length - 1][1];
-    const targetTime = Math.min(timeAt(progress), Math.max(0, duration - .04));
+    const resultVisible = progress > .68;
 
     setChapter(chapter);
     steps.forEach((step, index) => step.classList.toggle('is-active', index <= activeStep));
-    result?.classList.toggle('is-visible', progress > .68);
+    result?.classList.toggle('is-visible', resultVisible);
+    if (resultVideo) {
+      if (resultVisible && !reduced.matches) {
+        if (resultVideo.paused) resultVideo.play().catch(() => {});
+      } else if (!resultVideo.paused) resultVideo.pause();
+    }
     document.documentElement.style.setProperty('--agent-wave-progress', progress.toFixed(4));
     document.documentElement.dataset.agentWaveProgress = progress.toFixed(4);
-    if (scrubbing && video.readyState >= 1 && !video.seeking && Math.abs(video.currentTime - targetTime) > .03) video.currentTime = targetTime;
-    video.dataset.scrubTime = targetTime.toFixed(3);
     status.progress = Number(progress.toFixed(4));
-    status.videoTime = Number(targetTime.toFixed(3));
+    status.videoTime = Number(video.currentTime.toFixed(3));
   }
 
   function render(now = 0) {
@@ -156,8 +139,8 @@
     sync();
     status.ready = true;
     document.documentElement.dataset.agentWaveReady = 'true';
-    if (!scrubbing && !reduced.matches) video.play().catch(() => { status.autoplayBlocked = true; });
-    console.assert(window.__homepageAgentWaveCheck(), 'Homepage Agent Wave scrubbing is incomplete');
+    if (status.mode === 'smooth-playback') video.play().catch(() => { status.autoplayBlocked = true; });
+    console.assert(window.__homepageAgentWaveCheck(), 'Homepage Agent Wave playback is incomplete');
   };
   resizeOverlay();
   updateScroll();
@@ -172,7 +155,7 @@
       video.pause();
     } else {
       frame = requestAnimationFrame(render);
-      if (!scrubbing && !reduced.matches) video.play().catch(() => { status.autoplayBlocked = true; });
+      updateScroll();
     }
   });
   frame = requestAnimationFrame(render);
