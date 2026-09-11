@@ -144,6 +144,34 @@ class LechuangAdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'grok15'):
             cm.save_mapping('admin', dict(kind='xiaole_video', front='grok99', label='x', channel=ch['id'], enabled=True))
 
+    def test_lechuang_media_target_keeps_key_on_provider_host_only(self):
+        ch = self.image_channel()
+        cfg = cm.version(ch['id'], with_secret=True)
+        relative, needs_auth = runtime._lechuang_media_target(cfg, '/api/v1/generations/REQ1/content')
+        self.assertEqual(relative, 'https://api.lechuang.chat/api/v1/generations/REQ1/content')
+        self.assertTrue(needs_auth)
+        same_origin, same_auth = runtime._lechuang_media_target(cfg, 'https://api.lechuang.chat/files/a.png')
+        self.assertTrue(same_auth)
+        cdn, cdn_auth = runtime._lechuang_media_target(cfg, 'https://cdn.example.com/a.png')
+        self.assertEqual(cdn, 'https://cdn.example.com/a.png')
+        self.assertFalse(cdn_auth)   # 第三方 CDN 绝不能带上供应商密钥
+
+    def test_download_lechuang_attaches_auth_only_for_provider_hosts(self):
+        ch = self.image_channel()
+        cfg = cm.version(ch['id'], with_secret=True)
+        calls = []
+
+        def fake_download(cfg_, url, headers=None):
+            calls.append((url, headers))
+            return b'x'
+
+        with patch.object(runtime, '_download', side_effect=fake_download):
+            runtime._download_lechuang(cfg, '/api/v1/generations/REQ9/content')
+            runtime._download_lechuang(cfg, 'https://cdn.example.com/1.png')
+        self.assertEqual(calls[0][0], 'https://api.lechuang.chat/api/v1/generations/REQ9/content')
+        self.assertTrue(calls[0][1]['Authorization'].startswith('Bearer '))
+        self.assertIsNone(calls[1][1])
+
     def test_generate_image_flow_uses_unified_envelope(self):
         ch = self.image_channel()
         cfg = cm.version(ch['id'], with_secret=True)
