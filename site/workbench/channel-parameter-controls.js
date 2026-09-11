@@ -1,8 +1,8 @@
 (function(root){
   const esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   function label(key,value){
-    const labels={quality:{low:'经济',medium:'标准',high:'高品质',standard:'标准',hd:'高清'},background:{opaque:'不透明',transparent:'透明'},output_format:{png:'PNG',jpeg:'JPEG',webp:'WebP'}};
-    const ratios={'1024x1024':'1:1','1536x1024':'3:2','1024x1536':'2:3','1792x1024':'7:4','1024x1792':'4:7','2048x2048':'1:1','2048x1152':'16:9','1152x2048':'9:16','3840x2160':'16:9','2160x3840':'9:16','2048x1536':'4:3','1536x2048':'3:4'};
+    const labels={quality:{low:'经济',medium:'标准',high:'高品质',auto:'自动',standard:'标准',hd:'高清'},background:{opaque:'不透明',transparent:'透明',auto:'自动'},output_format:{png:'PNG',jpeg:'JPEG',webp:'WebP'},resolution:{'480p':'480p · 流畅','720p':'720p · 高清','1080p':'1080p · 超清'}};
+    const ratios={'1024x1024':'1:1','1536x1024':'3:2','1024x1536':'2:3','1792x1024':'7:4','1024x1792':'4:7','2048x2048':'1:1','2048x1152':'16:9','1152x2048':'9:16','3840x2160':'16:9','2160x3840':'9:16','2048x1536':'4:3','1536x2048':'3:4','1024x1280':'4:5','1280x1024':'5:4','1024x768':'4:3','768x1024':'3:4','1280x720':'16:9','720x1280':'9:16'};
     return key==='size'&&ratios[value]?value+' · '+ratios[value]:key==='duration'?value+' 秒':labels[key]?.[value]||value;
   }
   function choose(spec,current,key,value){

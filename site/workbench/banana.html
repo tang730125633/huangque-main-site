@@ -1,9 +1,9 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>作图 · 黄雀 AI 工作台</title>
+<title>浣滃浘 路 榛勯泙 AI 宸ヤ綔鍙?/title>
 <link rel="icon" href="../assets/cloud/logo-bird.png">
 <link rel="stylesheet" href="../assets/fonts/hq-fonts.css">
 <link rel="stylesheet" href="../assets/cloud.css?v=8">
@@ -92,13 +92,13 @@
   <section id="publishedChannelParameters" data-kind="image" hidden></section>
   <div class="banana-workspace">
     <header class="banana-workspace-head">
-      <div class="workspace-head-left"><div><h1 style="margin:0; font-size:20px; font-weight:700; display:flex; align-items:center; gap:9px;"><img src="../assets/icons/ic_banana.png" alt="" style="width:28px;height:28px;object-fit:contain;flex:none;">图片生成</h1><p style="margin:4px 0 0; font-size:12.5px; color:#94a4bb;">设置参数并查看最新生成结果</p></div></div>
+      <div class="workspace-head-left"><div><h1 style="margin:0; font-size:20px; font-weight:700; display:flex; align-items:center; gap:9px;"><img src="../assets/icons/ic_banana.png" alt="" style="width:28px;height:28px;object-fit:contain;flex:none;">鍥剧墖鐢熸垚</h1><p style="margin:4px 0 0; font-size:12.5px; color:#94a4bb;">璁剧疆鍙傛暟骞舵煡鐪嬫渶鏂扮敓鎴愮粨鏋?/p></div></div>
       <div class="workspace-head-divider" aria-hidden="true"></div>
       <div class="workspace-head-right">
-        <div class="result-tabs" role="tablist" aria-label="作品视图">
-          <button id="recentGeneratedTab" class="result-tab on" type="button" role="tab" aria-selected="true" aria-controls="recentGeneratedView">最近生成</button>
-          <button id="recentWorksTab" class="result-tab" type="button" role="tab" aria-selected="false" aria-controls="recentWorksView">最近作品</button>
-          <a class="result-tabs-all" href="assets.html">全部作品</a>
+        <div class="result-tabs" role="tablist" aria-label="浣滃搧瑙嗗浘">
+          <button id="recentGeneratedTab" class="result-tab on" type="button" role="tab" aria-selected="true" aria-controls="recentGeneratedView">鏈€杩戠敓鎴?/button>
+          <button id="recentWorksTab" class="result-tab" type="button" role="tab" aria-selected="false" aria-controls="recentWorksView">鏈€杩戜綔鍝?/button>
+          <a class="result-tabs-all" href="assets.html">鍏ㄩ儴浣滃搧</a>
         </div>
       </div>
     </header>
@@ -110,52 +110,52 @@
 
       <div class="tpl-box">
         <div class="tpl-head">
-          <div><div class="tpl-title">模板即出图</div><div id="tplDesc" class="tpl-sub">选模板，填字段，一键生成可改提示词</div></div>
+          <div><div class="tpl-title">妯℃澘鍗冲嚭鍥?/div><div id="tplDesc" class="tpl-sub">閫夋ā鏉匡紝濉瓧娈碉紝涓€閿敓鎴愬彲鏀规彁绀鸿瘝</div></div>
           <span class="tpl-sub mono" id="tplRatio">9:16</span>
         </div>
-        <div id="tplGrid" class="tpl-grid" aria-label="美业模板"></div>
+        <div id="tplGrid" class="tpl-grid" aria-label="缇庝笟妯℃澘"></div>
         <div class="tpl-fields">
-          <input id="tplBrand" class="tpl-input" maxlength="24" placeholder="品牌/门店" value="仙颜美容">
-          <input id="tplColor" class="tpl-input" maxlength="18" placeholder="主色" value="暖金">
-          <input id="tplSelling" class="tpl-input" maxlength="40" placeholder="卖点" value="科技焕肤 · 毛孔细腻透亮">
-          <input id="tplPrice" class="tpl-input" maxlength="24" placeholder="价格/权益" value="到店立减100">
+          <input id="tplBrand" class="tpl-input" maxlength="24" placeholder="鍝佺墝/闂ㄥ簵" value="浠欓缇庡">
+          <input id="tplColor" class="tpl-input" maxlength="18" placeholder="涓昏壊" value="鏆栭噾">
+          <input id="tplSelling" class="tpl-input" maxlength="40" placeholder="鍗栫偣" value="绉戞妧鐒曡偆 路 姣涘瓟缁嗚吇閫忎寒">
+          <input id="tplPrice" class="tpl-input" maxlength="24" placeholder="浠锋牸/鏉冪泭" value="鍒板簵绔嬪噺100">
         </div>
         <div class="tpl-actions">
-          <button id="tplApply" class="tpl-apply" type="button">套用后编辑</button>
-          <button id="tplGenerate" class="tpl-generate" type="button">按当前数量立即生成</button>
+          <button id="tplApply" class="tpl-apply" type="button">濂楃敤鍚庣紪杈?/button>
+          <button id="tplGenerate" class="tpl-generate" type="button">鎸夊綋鍓嶆暟閲忕珛鍗崇敓鎴?/button>
         </div>
       </div>
 
       <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin:22px 0 9px;">
-        <span style="font-size:13.5px; font-weight:600;">提示词</span>
-        <div style="display:flex; gap:7px;"><button id="bOptimize" type="button" style="padding:5px 10px; font-size:12px; color:#bfc9d8; background:rgba(148,164,187,.06); border:1px solid rgba(148,164,187,.2); border-radius:8px; cursor:pointer; font-family:inherit;">优化提示词</button><button id="luckyBtn" title="不知道写什么？帮你装一条" style="display:flex; align-items:center; gap:5px; padding:5px 11px; font-size:12px; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.24); border-radius:8px; cursor:pointer; font-family:inherit;"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 14l.7 1.9L22 17l-2.3.6L19 20l-.7-2.4L16 17l2.3-.5z"/></svg></span>手气不错</button></div>
+        <span style="font-size:13.5px; font-weight:600;">鎻愮ず璇?/span>
+        <div style="display:flex; gap:7px;"><button id="bOptimize" type="button" style="padding:5px 10px; font-size:12px; color:#bfc9d8; background:rgba(148,164,187,.06); border:1px solid rgba(148,164,187,.2); border-radius:8px; cursor:pointer; font-family:inherit;">浼樺寲鎻愮ず璇?/button><button id="luckyBtn" title="涓嶇煡閬撳啓浠€涔堬紵甯綘瑁呬竴鏉? style="display:flex; align-items:center; gap:5px; padding:5px 11px; font-size:12px; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.24); border-radius:8px; cursor:pointer; font-family:inherit;"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 14l.7 1.9L22 17l-2.3.6L19 20l-.7-2.4L16 17l2.3-.5z"/></svg></span>鎵嬫皵涓嶉敊</button></div>
       </div>
       <div style="position:relative; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px; padding:14px 15px;">
-        <textarea id="bPrompt" rows="3" maxlength="2000" placeholder="例如：输入关键词（如“敏感肌修护海报”），点击“优化提示词”自动补全；您只需略加修改。" style="width:100%; resize:none; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:13.5px; line-height:1.7; font-family:inherit;"></textarea>
-        <div style="display:flex; align-items:center; justify-content:flex-end; gap:12px; font-size:11.5px; color:#5c6b82; margin-top:6px;"><span id="bCount" style="font-family:'JetBrains Mono',monospace;">0 / 2000</span><span id="bClear" style="cursor:pointer;">清空</span></div>
+        <textarea id="bPrompt" rows="3" maxlength="2000" placeholder="渚嬪锛氳緭鍏ュ叧閿瘝锛堝鈥滄晱鎰熻倢淇姢娴锋姤鈥濓級锛岀偣鍑烩€滀紭鍖栨彁绀鸿瘝鈥濊嚜鍔ㄨˉ鍏紱鎮ㄥ彧闇€鐣ュ姞淇敼銆? style="width:100%; resize:none; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:13.5px; line-height:1.7; font-family:inherit;"></textarea>
+        <div style="display:flex; align-items:center; justify-content:flex-end; gap:12px; font-size:11.5px; color:#5c6b82; margin-top:6px;"><span id="bCount" style="font-family:'JetBrains Mono',monospace;">0 / 2000</span><span id="bClear" style="cursor:pointer;">娓呯┖</span></div>
       </div>
 
-      <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">引擎</div>
+      <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">寮曟搸</div>
       <div id="engineRow" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(132px,1fr)); gap:10px;">
-        <div data-engine="gpt" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s; line-height:1.5;"><div style="font-weight:600;">黄雀引擎 2</div><div style="font-size:11px; margin-top:3px; color:#e7b24c;">写实·局部修改·透明底 · <span data-engine-cost="gpt">30点</span> ✦推荐</div></div>
-        <div data-engine="banana" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">纳米香蕉</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">快·中文好 · <span data-engine-cost="banana">25点</span></div></div>
-        <div data-engine="seedream" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">黄雀引擎 1</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">中文字·商用设计 · <span data-engine-cost="seedream">12点</span></div></div>
-        <div data-engine="xiaole" aria-hidden="true" style="display:none; padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">果肉生图</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">写实·稳定 · <span data-engine-cost="xiaole">8点</span></div></div>
-        <div data-engine="zelong2" aria-hidden="true" style="display:none; padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">泽龙2生图</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">专用低成本·纯文生图 · <span data-engine-cost="zelong2">8点</span></div></div>
+        <div data-engine="gpt" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s; line-height:1.5;"><div style="font-weight:600;">榛勯泙寮曟搸 2</div><div style="font-size:11px; margin-top:3px; color:#e7b24c;">鍐欏疄路灞€閮ㄤ慨鏀孤烽€忔槑搴?路 <span data-engine-cost="gpt">30鐐?/span> 鉁︽帹鑽?/div></div>
+        <div data-engine="banana" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">绾崇背棣欒晧</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">蹇蜂腑鏂囧ソ 路 <span data-engine-cost="banana">25鐐?/span></div></div>
+        <div data-engine="seedream" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">榛勯泙寮曟搸 1</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">涓枃瀛椔峰晢鐢ㄨ璁?路 <span data-engine-cost="seedream">12鐐?/span></div></div>
+        <div data-engine="xiaole" aria-hidden="true" style="display:none; padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">鏋滆倝鐢熷浘</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">鍐欏疄路绋冲畾 路 <span data-engine-cost="xiaole">8鐐?/span></div></div>
+        <div data-engine="zelong2" aria-hidden="true" style="display:none; padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">娉介緳2鐢熷浘</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">涓撶敤浣庢垚鏈风函鏂囩敓鍥?路 <span data-engine-cost="zelong2">8鐐?/span></div></div>
       </div>
-      <div id="zelongScopeNote" style="display:none;margin-top:10px;padding:9px 11px;border:1px solid rgba(45,212,191,.24);border-radius:10px;background:rgba(45,212,191,.07);color:#8bded2;font-size:11.5px;line-height:1.5;">泽龙测试服专用通道 · 当前支持纯文生图、1K 方图、标准清晰度、单张生成</div>
-      <!-- Nano Banana 型号子选择：只在选中 Nano Banana 时出现。两档点数不同，切换会重算 -->
+      <div id="zelongScopeNote" style="display:none;margin-top:10px;padding:9px 11px;border:1px solid rgba(45,212,191,.24);border-radius:10px;background:rgba(45,212,191,.07);color:#8bded2;font-size:11.5px;line-height:1.5;">娉介緳娴嬭瘯鏈嶄笓鐢ㄩ€氶亾 路 褰撳墠鏀寔绾枃鐢熷浘銆?K 鏂瑰浘銆佹爣鍑嗘竻鏅板害銆佸崟寮犵敓鎴?/div>
+      <!-- Nano Banana 鍨嬪彿瀛愰€夋嫨锛氬彧鍦ㄩ€変腑 Nano Banana 鏃跺嚭鐜般€備袱妗ｇ偣鏁颁笉鍚岋紝鍒囨崲浼氶噸绠?-->
       <div id="bananaVariantRow" style="display:grid; grid-template-columns:repeat(2,1fr); gap:10px; margin-top:10px;">
-        <div data-variant="nb2" style="padding:9px 10px; text-align:center; font-size:12.5px; border-radius:10px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s; line-height:1.45;"><div style="font-weight:600;">纳米香蕉 2</div><div style="font-size:11px; margin-top:2px;">快 · 约 30-90 秒 · 标15/高25</div></div>
-        <div data-variant="pro" style="padding:9px 10px; text-align:center; font-size:12.5px; border-radius:10px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.45;"><div style="font-weight:600;">纳米香蕉 Pro</div><div style="font-size:11px; margin-top:2px;">最强中文/4K · 约 1-2 分钟 · 标25/高30</div></div>
+        <div data-variant="nb2" style="padding:9px 10px; text-align:center; font-size:12.5px; border-radius:10px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s; line-height:1.45;"><div style="font-weight:600;">绾崇背棣欒晧 2</div><div style="font-size:11px; margin-top:2px;">蹇?路 绾?30-90 绉?路 鏍?5/楂?5</div></div>
+        <div data-variant="pro" style="padding:9px 10px; text-align:center; font-size:12.5px; border-radius:10px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.45;"><div style="font-weight:600;">绾崇背棣欒晧 Pro</div><div style="font-size:11px; margin-top:2px;">鏈€寮轰腑鏂?4K 路 绾?1-2 鍒嗛挓 路 鏍?5/楂?0</div></div>
       </div>
-      <!-- Seedream 型号子选择：只在选中 Seedream 引擎时出现 -->
+      <!-- Seedream 鍨嬪彿瀛愰€夋嫨锛氬彧鍦ㄩ€変腑 Seedream 寮曟搸鏃跺嚭鐜?-->
       <div id="seedreamVariantRow" style="display:none; grid-template-columns:repeat(2,1fr); gap:10px; margin-top:10px;">
-        <div data-variant="std" style="padding:9px 10px; text-align:center; font-size:12.5px; border-radius:10px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s; line-height:1.45;"><div style="font-weight:600;">黄雀引擎 1 标准</div><div style="font-size:11px; margin-top:2px;">约 30-40 秒 · 标8/高12</div></div>
-        <div data-variant="pro" style="padding:9px 10px; text-align:center; font-size:12.5px; border-radius:10px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.45;"><div style="font-weight:600;">黄雀引擎 1 Pro</div><div style="font-size:11px; margin-top:2px;">画质更强 · 约 1.5 分钟 · 标15/高20</div></div>
+        <div data-variant="std" style="padding:9px 10px; text-align:center; font-size:12.5px; border-radius:10px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s; line-height:1.45;"><div style="font-weight:600;">榛勯泙寮曟搸 1 鏍囧噯</div><div style="font-size:11px; margin-top:2px;">绾?30-40 绉?路 鏍?/楂?2</div></div>
+        <div data-variant="pro" style="padding:9px 10px; text-align:center; font-size:12.5px; border-radius:10px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.45;"><div style="font-weight:600;">榛勯泙寮曟搸 1 Pro</div><div style="font-size:11px; margin-top:2px;">鐢昏川鏇村己 路 绾?1.5 鍒嗛挓 路 鏍?5/楂?0</div></div>
       </div>
 
-      <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">比例</div>
+      <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">姣斾緥</div>
       <div id="ratioRow" style="display:grid; grid-template-columns:repeat(4,1fr); gap:10px;">
         <div style="display:flex; align-items:center; justify-content:center; gap:6px; padding:11px 6px; font-size:13px; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s; font-family:'JetBrains Mono',monospace;"><span style="width:9px; height:13px; border:1.4px solid #e7b24c; border-radius:2px;"></span>9:16</div>
         <div style="display:flex; align-items:center; justify-content:center; gap:6px; padding:11px 6px; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; font-family:'JetBrains Mono',monospace;"><span style="width:11px; height:11px; border:1.4px solid #94a4bb; border-radius:2px;"></span>1:1</div>
@@ -165,69 +165,69 @@
 
       <div style="display:grid; grid-template-columns:1fr 1fr; gap:22px; margin-top:22px;">
         <div>
-          <div style="font-size:13.5px; font-weight:600; margin-bottom:10px;">清晰度</div>
+          <div style="font-size:13.5px; font-weight:600; margin-bottom:10px;">娓呮櫚搴?/div>
           <div id="qualityRow" style="display:grid; grid-template-columns:repeat(2,1fr); gap:10px;">
-            <div data-q="std" style="padding:11px 6px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">标准</div>
-            <div data-q="hd" style="padding:11px 6px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s;">高清</div>
+            <div data-q="std" style="padding:11px 6px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">鏍囧噯</div>
+            <div data-q="hd" style="padding:11px 6px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s;">楂樻竻</div>
           </div>
         </div>
         <div>
-          <div style="font-size:13.5px; font-weight:600; margin-bottom:10px;">生成数量</div>
+          <div style="font-size:13.5px; font-weight:600; margin-bottom:10px;">鐢熸垚鏁伴噺</div>
           <div id="countRow" style="display:grid; grid-template-columns:44px 1fr 44px; gap:10px; align-items:center;">
-            <button id="countMinus" type="button" aria-label="减少生成数量" style="height:42px; border-radius:11px; border:1px solid rgba(148,164,187,.14); background:rgba(148,164,187,.05); color:#94a4bb; font-size:22px; line-height:1; cursor:pointer; transition:.16s; font-family:inherit;">-</button>
-            <input id="countInput" type="text" inputmode="numeric" pattern="[0-9]*" value="1" aria-label="生成数量" autocomplete="off" style="height:42px; box-sizing:border-box; border-radius:11px; border:1px solid rgba(231,178,76,.32); background:rgba(231,178,76,.1); color:#e7b24c; text-align:center; font-size:15px; font-weight:700; outline:none; font-family:'JetBrains Mono',monospace;">
-            <button id="countPlus" type="button" aria-label="增加生成数量" style="height:42px; border-radius:11px; border:1px solid rgba(148,164,187,.14); background:rgba(148,164,187,.05); color:#94a4bb; font-size:22px; line-height:1; cursor:pointer; transition:.16s; font-family:inherit;">+</button>
+            <button id="countMinus" type="button" aria-label="鍑忓皯鐢熸垚鏁伴噺" style="height:42px; border-radius:11px; border:1px solid rgba(148,164,187,.14); background:rgba(148,164,187,.05); color:#94a4bb; font-size:22px; line-height:1; cursor:pointer; transition:.16s; font-family:inherit;">-</button>
+            <input id="countInput" type="text" inputmode="numeric" pattern="[0-9]*" value="1" aria-label="鐢熸垚鏁伴噺" autocomplete="off" style="height:42px; box-sizing:border-box; border-radius:11px; border:1px solid rgba(231,178,76,.32); background:rgba(231,178,76,.1); color:#e7b24c; text-align:center; font-size:15px; font-weight:700; outline:none; font-family:'JetBrains Mono',monospace;">
+            <button id="countPlus" type="button" aria-label="澧炲姞鐢熸垚鏁伴噺" style="height:42px; border-radius:11px; border:1px solid rgba(148,164,187,.14); background:rgba(148,164,187,.05); color:#94a4bb; font-size:22px; line-height:1; cursor:pointer; transition:.16s; font-family:inherit;">+</button>
           </div>
         </div>
       </div>
 
-      <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">🔍 提示词反推 <span style="font-size:12px; color:#5c6b82; font-weight:400;">(上传/粘贴一张喜欢的图，AI 反推出提示词)</span></div>
+      <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">馃攳 鎻愮ず璇嶅弽鎺?<span style="font-size:12px; color:#5c6b82; font-weight:400;">(涓婁紶/绮樿创涓€寮犲枩娆㈢殑鍥撅紝AI 鍙嶆帹鍑烘彁绀鸿瘝)</span></div>
       <div style="display:flex; gap:10px; align-items:flex-start;">
-        <label id="revUpBox" tabindex="0" class="hv-gold" style="position:relative; width:66px; height:66px; flex:none; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:5px; border:1px dashed rgba(148,164,187,.26); background:rgba(148,164,187,.04); border-radius:11px; color:#94a4bb; cursor:pointer; overflow:hidden; background-size:cover; background-position:center;"><input id="revFile" type="file" accept="image/*" style="display:none"><span id="revIcon" style="display:flex; width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg></span><span id="revText" style="font-size:10px;">上传/粘贴</span></label>
+        <label id="revUpBox" tabindex="0" class="hv-gold" style="position:relative; width:66px; height:66px; flex:none; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:5px; border:1px dashed rgba(148,164,187,.26); background:rgba(148,164,187,.04); border-radius:11px; color:#94a4bb; cursor:pointer; overflow:hidden; background-size:cover; background-position:center;"><input id="revFile" type="file" accept="image/*" style="display:none"><span id="revIcon" style="display:flex; width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg></span><span id="revText" style="font-size:10px;">涓婁紶/绮樿创</span></label>
         <div style="flex:1;">
-          <button id="revBtn" type="button" style="width:100%; padding:11px; font-size:13px; font-weight:600; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); border-radius:11px; cursor:pointer; font-family:inherit;">反推提示词</button>
-          <div id="revNote" style="font-size:11px; color:#5c6b82; margin-top:6px;">上传或粘贴图片后点这里，AI 生成可编辑的提示词</div>
+          <button id="revBtn" type="button" style="width:100%; padding:11px; font-size:13px; font-weight:600; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); border-radius:11px; cursor:pointer; font-family:inherit;">鍙嶆帹鎻愮ず璇?/button>
+          <div id="revNote" style="font-size:11px; color:#5c6b82; margin-top:6px;">涓婁紶鎴栫矘璐村浘鐗囧悗鐐硅繖閲岋紝AI 鐢熸垚鍙紪杈戠殑鎻愮ず璇?/div>
         </div>
       </div>
       <div id="revResult" style="display:none; margin-top:12px;">
         <textarea id="revPrompt" rows="3" maxlength="600" style="width:100%; box-sizing:border-box; resize:none; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.16); border-radius:10px; color:#eaf1fa; font-size:13px; line-height:1.7; padding:11px; font-family:inherit; outline:none;"></textarea>
         <div style="display:flex; gap:8px; margin-top:8px;">
-          <button id="revFill" type="button" style="flex:1; padding:9px; font-size:12.5px; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); border-radius:9px; cursor:pointer; font-family:inherit;">填入提示词框</button>
-          <button id="revFillImg" type="button" style="flex:1; padding:9px; font-size:12.5px; color:#2bd576; background:rgba(43,213,118,.08); border:1px solid rgba(43,213,118,.28); border-radius:9px; cursor:pointer; font-family:inherit;">连图一起用（图生图）</button>
+          <button id="revFill" type="button" style="flex:1; padding:9px; font-size:12.5px; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); border-radius:9px; cursor:pointer; font-family:inherit;">濉叆鎻愮ず璇嶆</button>
+          <button id="revFillImg" type="button" style="flex:1; padding:9px; font-size:12.5px; color:#2bd576; background:rgba(43,213,118,.08); border:1px solid rgba(43,213,118,.28); border-radius:9px; cursor:pointer; font-family:inherit;">杩炲浘涓€璧风敤锛堝浘鐢熷浘锛?/button>
         </div>
       </div>
 
       <div id="refSection">
-      <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">参考图 <span id="upHint" style="font-size:12px; color:#5c6b82; font-weight:400;">(可选 · 图片编号可点入提示词)</span></div>
+      <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">鍙傝€冨浘 <span id="upHint" style="font-size:12px; color:#5c6b82; font-weight:400;">(鍙€?路 鍥剧墖缂栧彿鍙偣鍏ユ彁绀鸿瘝)</span></div>
       <div style="display:flex; gap:10px;">
-        <label id="upBox" class="hv-gold" style="position:relative; width:66px; height:66px; flex:none; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:5px; border:1px dashed rgba(148,164,187,.26); background:rgba(148,164,187,.04); border-radius:11px; color:#94a4bb; cursor:pointer; transition:.16s; overflow:hidden; background-size:cover; background-position:center;"><input id="upFile" type="file" accept="image/*" multiple style="display:none"><span id="upIcon" style="display:flex; width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg></span><span id="upText" style="font-size:10px;">上传</span></label>
+        <label id="upBox" class="hv-gold" style="position:relative; width:66px; height:66px; flex:none; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:5px; border:1px dashed rgba(148,164,187,.26); background:rgba(148,164,187,.04); border-radius:11px; color:#94a4bb; cursor:pointer; transition:.16s; overflow:hidden; background-size:cover; background-position:center;"><input id="upFile" type="file" accept="image/*" multiple style="display:none"><span id="upIcon" style="display:flex; width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg></span><span id="upText" style="font-size:10px;">涓婁紶</span></label>
       </div>
       </div>
 
-      <button id="bGen" class="hv-lift" style="width:100%; height:54px; margin-top:22px; font-size:16px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:14px; cursor:pointer; box-shadow:0 14px 34px -12px rgba(231,178,76,.7); transition:.2s; font-family:inherit;">立即生成（10 点）</button>
-      <div id="bNote" style="text-align:center; font-size:11.5px; color:#5c6b82; margin-top:11px;">本次预计消耗 <span style="color:#e7b24c; font-family:'JetBrains Mono',monospace;">10</span> 点 · 失败自动退点</div>
+      <button id="bGen" class="hv-lift" style="width:100%; height:54px; margin-top:22px; font-size:16px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:14px; cursor:pointer; box-shadow:0 14px 34px -12px rgba(231,178,76,.7); transition:.2s; font-family:inherit;">绔嬪嵆鐢熸垚锛?0 鐐癸級</button>
+      <div id="bNote" style="text-align:center; font-size:11.5px; color:#5c6b82; margin-top:11px;">鏈棰勮娑堣€?<span style="color:#e7b24c; font-family:'JetBrains Mono',monospace;">10</span> 鐐?路 澶辫触鑷姩閫€鐐?/div>
     </section>
 
-    <div id="workspaceDivider" class="workspace-divider" role="separator" tabindex="0" aria-label="调整设置区和结果区宽度" aria-orientation="vertical" aria-valuemin="35" aria-valuemax="65" aria-valuenow="50"></div>
+    <div id="workspaceDivider" class="workspace-divider" role="separator" tabindex="0" aria-label="璋冩暣璁剧疆鍖哄拰缁撴灉鍖哄搴? aria-orientation="vertical" aria-valuemin="35" aria-valuemax="65" aria-valuenow="50"></div>
 
     <section class="banana-results-pane image-result-panel">
       <div id="recentGeneratedView" class="result-view" role="tabpanel" aria-labelledby="recentGeneratedTab">
       <div class="result-preview">
-        <img id="bResult" src="../assets/meiye_poster.webp" alt="生成结果 · 美业海报" style="display:block; width:100%; aspect-ratio:9/13; object-fit:cover;">
+        <img id="bResult" src="../assets/meiye_poster.webp" alt="鐢熸垚缁撴灉 路 缇庝笟娴锋姤" style="display:block; width:100%; aspect-ratio:9/13; object-fit:cover;">
         <div id="resultRatio" style="position:absolute; top:12px; right:12px; padding:5px 10px; background:rgba(7,11,19,.55); backdrop-filter:blur(6px); border-radius:8px; font-family:'JetBrains Mono',monospace; font-size:11.5px; color:#e7b24c;">9:16</div>
       </div>
       <div id="actRow" style="display:grid; grid-template-columns:repeat(6,1fr); gap:7px; margin-top:14px;">
-        <div class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.8-3.4L23 10M1 14l4.7 4.4A9 9 0 0 0 20.5 15"/></svg></span><span style="font-size:11px; color:#94a4bb;">再生成</span></div>
-        <div class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></span><span style="font-size:11px; color:#94a4bb;">继续改</span></div>
-        <a href="video.html" class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s; text-decoration:none;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M22 8l-6 4 6 4z"/></svg></span><span style="font-size:11px; color:#94a4bb;">转视频</span></a>
-        <div class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/></svg></span><span style="font-size:11px; color:#94a4bb;">发飞书</span></div>
-        <div class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></span><span style="font-size:11px; color:#94a4bb;">下载</span></div>
-        <a href="assets.html" class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s; text-decoration:none;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M3 7a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v6M9 14h6"/></svg></span><span style="font-size:11px; color:#94a4bb;">入库</span></a>
+        <div class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.8-3.4L23 10M1 14l4.7 4.4A9 9 0 0 0 20.5 15"/></svg></span><span style="font-size:11px; color:#94a4bb;">鍐嶇敓鎴?/span></div>
+        <div class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></span><span style="font-size:11px; color:#94a4bb;">缁х画鏀?/span></div>
+        <a href="video.html" class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s; text-decoration:none;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M22 8l-6 4 6 4z"/></svg></span><span style="font-size:11px; color:#94a4bb;">杞棰?/span></a>
+        <div class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/></svg></span><span style="font-size:11px; color:#94a4bb;">鍙戦涔?/span></div>
+        <div class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></span><span style="font-size:11px; color:#94a4bb;">涓嬭浇</span></div>
+        <a href="assets.html" class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s; text-decoration:none;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M3 7a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v6M9 14h6"/></svg></span><span style="font-size:11px; color:#94a4bb;">鍏ュ簱</span></a>
       </div>
       </div>
       <div id="recentWorksView" class="result-view" role="tabpanel" aria-labelledby="recentWorksTab" hidden>
       <div id="recentGrid" class="recent-grid">
-        <div style="grid-column:1/-1; padding:18px 0; text-align:center; font-size:12.5px; color:#5c6b82;">还没有作品，生成第一张吧</div>
+        <div style="grid-column:1/-1; padding:18px 0; text-align:center; font-size:12.5px; color:#5c6b82;">杩樻病鏈変綔鍝侊紝鐢熸垚绗竴寮犲惂</div>
       </div>
       </div>
     </section>
@@ -239,7 +239,7 @@
 <script src="cloud-shell.js?v=775436f9"></script>
 <script src="image-mentions.js?v=20260802f"></script>
 <script>
-/* 作图页接后端能力中心 /api/gen/image + /api/gen/banana，点数后端统一扣。 */
+/* 浣滃浘椤垫帴鍚庣鑳藉姏涓績 /api/gen/image + /api/gen/banana锛岀偣鏁板悗绔粺涓€鎵ｃ€?*/
 (function(){
   var pr=document.getElementById('bPrompt'), gen=document.getElementById('bGen'),
       res=document.getElementById('bResult'), note=document.getElementById('bNote'),
@@ -309,14 +309,10 @@
   if(recentGeneratedTab) recentGeneratedTab.onclick=function(){ setResultView('generated'); };
   if(recentWorksTab) recentWorksTab.onclick=function(){ setResultView('works'); };
   initWorkspaceDivider();
-  // 质量基价(最终=基价×数量)。Nano Banana(nb2/pro) 与 Seedream(seedream_std/seedream_pro) 各自
-  // 两个型号【点数不同】，切换型号必须 updateCost()（bindVariantRow 已带）。
-  // ⚠ 必须与后端逐字一致（有回归测试守着）：nb2/pro/gpt 对 points.IMAGE_BASE_COST，
-  //    seedream_std/seedream_pro 对 points.SEEDREAM_VARIANT_COST。否则前端显示和实际扣点对不上。
-  // gpt 按官方 $30/M image output token 实测折算(1点=0.1元)：标准≈¥0.30~0.37，高清=4倍≈¥1.20~1.50。
-  var COSTBASE={nb2:{std:18,hd:35}, pro:{std:35,hd:44}, gpt:{std:20,hd:35}, seedream_std:{std:8,hd:12}, seedream_pro:{std:15,hd:20}, xiaole:{std:12,hd:16}, zelong2:{std:8,hd:12}};
+  // 璐ㄩ噺鍩轰环(鏈€缁?鍩轰环脳鏁伴噺)銆侼ano Banana(nb2/pro) 涓?Seedream(seedream_std/seedream_pro) 鍚勮嚜
+  // 涓や釜鍨嬪彿銆愮偣鏁颁笉鍚屻€戯紝鍒囨崲鍨嬪彿蹇呴』 updateCost()锛坆indVariantRow 宸插甫锛夈€?  // 鈿?蹇呴』涓庡悗绔€愬瓧涓€鑷达紙鏈夊洖褰掓祴璇曞畧鐫€锛夛細nb2/pro/gpt 瀵?points.IMAGE_BASE_COST锛?  //    seedream_std/seedream_pro 瀵?points.SEEDREAM_VARIANT_COST銆傚惁鍒欏墠绔樉绀哄拰瀹為檯鎵ｇ偣瀵逛笉涓娿€?  // gpt 鎸夊畼鏂?$30/M image output token 瀹炴祴鎶樼畻(1鐐?0.1鍏?锛氭爣鍑嗏増楼0.30~0.37锛岄珮娓?4鍊嶁増楼1.20~1.50銆?  var COSTBASE={nb2:{std:18,hd:35}, pro:{std:35,hd:44}, gpt:{std:20,hd:35}, seedream_std:{std:8,hd:12}, seedream_pro:{std:15,hd:20}, xiaole:{std:12,hd:16}, zelong2:{std:8,hd:12}};
   var reverseCost=2;
-  function reverseButtonLabel(){return window.HQ&&typeof HQ.isPointsBillingEnabled==='function'&&HQ.isPointsBillingEnabled()?'反推提示词（'+reverseCost+' 点）':'反推提示词';}
+  function reverseButtonLabel(){return window.HQ&&typeof HQ.isPointsBillingEnabled==='function'&&HQ.isPointsBillingEnabled()?'鍙嶆帹鎻愮ず璇嶏紙'+reverseCost+' 鐐癸級':'鍙嶆帹鎻愮ず璇?;}
   if(window.HQ&&HQ.onPricing) HQ.onPricing(function(p){
     COSTBASE={
       nb2:{std:p['image.banana.nb2.std']||18,hd:p['image.banana.nb2.hd']||35},
@@ -331,8 +327,7 @@
     var button=document.getElementById('revBtn');if(button&&!button.disabled)button.textContent=reverseButtonLabel();
     updateCost();
   });
-  // 数量上限(中转/循环慢→低)。必须与后端 points.cost_of 的 cap 一致，否则按 N 扣点却只出 cap 张。
-  var ENGINE_MAXN={banana:4, gpt:4, seedream:2, xiaole:2, zelong2:1};
+  // 鏁伴噺涓婇檺(涓浆/寰幆鎱⑩啋浣?銆傚繀椤讳笌鍚庣 points.cost_of 鐨?cap 涓€鑷达紝鍚﹀垯鎸?N 鎵ｇ偣鍗村彧鍑?cap 寮犮€?  var ENGINE_MAXN={banana:4, gpt:4, seedream:2, xiaole:2, zelong2:1};
   var xiaoleCard=document.querySelector('#engineRow [data-engine="xiaole"]');
   function setXiaoleAvailable(enabled){
     if(!xiaoleCard) return;
@@ -351,40 +346,36 @@
     zelongCard.style.display=''; zelongCard.setAttribute('aria-hidden','false');
   }
   var COUNT_OPTIONS=[1,2,4];
-  // 引擎卡 → 计价用的 key。Nano Banana 一张卡两个型号，价格跟型号走。
-  function costKey(eng){ return eng==='banana' ? bananaVariant : (eng==='seedream' ? 'seedream_'+seedreamVariant : eng); }
+  // 寮曟搸鍗?鈫?璁′环鐢ㄧ殑 key銆侼ano Banana 涓€寮犲崱涓や釜鍨嬪彿锛屼环鏍艰窡鍨嬪彿璧般€?  function costKey(eng){ return eng==='banana' ? bananaVariant : (eng==='seedream' ? 'seedream_'+seedreamVariant : eng); }
   var TEMPLATES=[
-    {id:'poster',name:'活动海报',ratio:'9:16',desc:'竖版促销海报，适合朋友圈和门店屏',tpl:'{brand} {selling} 活动海报，{color}主色，高级美业广告质感，主体居中，顶部留白放中文标题，底部价格权益：{price}，柔光皮肤质感，干净排版，9:16竖版，无水印'},
-    {id:'deal',name:'团购套餐',ratio:'3:4',desc:'团购封面，突出套餐与价格权益',tpl:'{brand} 团购套餐封面，核心卖点：{selling}，价格权益：{price}，{color}主色，产品与服务场景同框，醒目价格牌，真实美业门店质感，3:4构图，无水印'},
-    {id:'screen',name:'门店竖屏',ratio:'9:16',desc:'店内屏幕投放，标题醒目、信息少',tpl:'{brand} 门店竖屏广告，{selling}，{color}主色，大标题留白，人物肌肤通透，背景为高级美容院空间，信息简洁，底部突出{price}，9:16竖版，高清商业海报'},
-    {id:'grid',name:'朋友圈九宫格',ratio:'1:1',desc:'九宫格单张素材，可连续出多张',tpl:'{brand} 朋友圈九宫格单张视觉，{selling}，{color}主色，方图构图，中心主体明确，边缘留白可拼接，生活方式美业质感，权益点：{price}，1:1，无水印'},
-    {id:'avatar',name:'数字化 IP 首帧',ratio:'9:16',desc:'口播视频首帧，适合转视频',tpl:'{brand} 数字化 IP 视频首帧，真人主播半身出镜，手持项目卡片，主题：{selling}，{color}主色背景，底部字幕条显示{price}，镜头正面，商业短视频封面质感，9:16竖版'}
+    {id:'poster',name:'娲诲姩娴锋姤',ratio:'9:16',desc:'绔栫増淇冮攢娴锋姤锛岄€傚悎鏈嬪弸鍦堝拰闂ㄥ簵灞?,tpl:'{brand} {selling} 娲诲姩娴锋姤锛寋color}涓昏壊锛岄珮绾х編涓氬箍鍛婅川鎰燂紝涓讳綋灞呬腑锛岄《閮ㄧ暀鐧芥斁涓枃鏍囬锛屽簳閮ㄤ环鏍兼潈鐩婏細{price}锛屾煍鍏夌毊鑲よ川鎰燂紝骞插噣鎺掔増锛?:16绔栫増锛屾棤姘村嵃'},
+    {id:'deal',name:'鍥㈣喘濂楅',ratio:'3:4',desc:'鍥㈣喘灏侀潰锛岀獊鍑哄椁愪笌浠锋牸鏉冪泭',tpl:'{brand} 鍥㈣喘濂楅灏侀潰锛屾牳蹇冨崠鐐癸細{selling}锛屼环鏍兼潈鐩婏細{price}锛寋color}涓昏壊锛屼骇鍝佷笌鏈嶅姟鍦烘櫙鍚屾锛岄啋鐩环鏍肩墝锛岀湡瀹炵編涓氶棬搴楄川鎰燂紝3:4鏋勫浘锛屾棤姘村嵃'},
+    {id:'screen',name:'闂ㄥ簵绔栧睆',ratio:'9:16',desc:'搴楀唴灞忓箷鎶曟斁锛屾爣棰橀啋鐩€佷俊鎭皯',tpl:'{brand} 闂ㄥ簵绔栧睆骞垮憡锛寋selling}锛寋color}涓昏壊锛屽ぇ鏍囬鐣欑櫧锛屼汉鐗╄倢鑲ら€氶€忥紝鑳屾櫙涓洪珮绾х編瀹归櫌绌洪棿锛屼俊鎭畝娲侊紝搴曢儴绐佸嚭{price}锛?:16绔栫増锛岄珮娓呭晢涓氭捣鎶?},
+    {id:'grid',name:'鏈嬪弸鍦堜節瀹牸',ratio:'1:1',desc:'涔濆鏍煎崟寮犵礌鏉愶紝鍙繛缁嚭澶氬紶',tpl:'{brand} 鏈嬪弸鍦堜節瀹牸鍗曞紶瑙嗚锛寋selling}锛寋color}涓昏壊锛屾柟鍥炬瀯鍥撅紝涓績涓讳綋鏄庣‘锛岃竟缂樼暀鐧藉彲鎷兼帴锛岀敓娲绘柟寮忕編涓氳川鎰燂紝鏉冪泭鐐癸細{price}锛?:1锛屾棤姘村嵃'},
+    {id:'avatar',name:'鏁板瓧鍖?IP 棣栧抚',ratio:'9:16',desc:'鍙ｆ挱瑙嗛棣栧抚锛岄€傚悎杞棰?,tpl:'{brand} 鏁板瓧鍖?IP 瑙嗛棣栧抚锛岀湡浜轰富鎾崐韬嚭闀滐紝鎵嬫寔椤圭洰鍗＄墖锛屼富棰橈細{selling}锛寋color}涓昏壊鑳屾櫙锛屽簳閮ㄥ瓧骞曟潯鏄剧ず{price}锛岄暅澶存闈紝鍟嗕笟鐭棰戝皝闈㈣川鎰燂紝9:16绔栫増'}
   ];
   var activeTemplate=TEMPLATES[0];
   function engineCost(eng){ var t=COSTBASE[costKey(eng)]||COSTBASE.nb2; return eng==='zelong2' ? t.std : (t[quality]||t.hd)*count; }
   function costFor(){ return engineCost(engine); }
   function updateEngineCosts(){
     document.querySelectorAll('[data-engine-cost]').forEach(function(x){
-      x.textContent=engineCost(x.getAttribute('data-engine-cost'))+'点';
+      x.textContent=engineCost(x.getAttribute('data-engine-cost'))+'鐐?;
     });
   };
   function tok(){ return '__cookie__'; }
-  function genLabel(){ return '立即生成（'+costFor()+' 点）'; }
+  function genLabel(){ return '绔嬪嵆鐢熸垚锛?+costFor()+' 鐐癸級'; }
   function updateCost(){
     updateEngineCosts();
-    syncGen();                    // 按钮文字交给 syncGen：有任务在跑时要显示「进行中 N」，不能被覆写成静态标签
-    if(activeCount()) return;     // 同理，进度提示优先于「预计消耗」
-    note.innerHTML='本次预计消耗 <span style="color:#e7b24c; font-family:\'JetBrains Mono\',monospace;">'+costFor()+'</span> 点 · 失败自动退点';
+    syncGen();                    // 鎸夐挳鏂囧瓧浜ょ粰 syncGen锛氭湁浠诲姟鍦ㄨ窇鏃惰鏄剧ず銆岃繘琛屼腑 N銆嶏紝涓嶈兘琚鍐欐垚闈欐€佹爣绛?    if(activeCount()) return;     // 鍚岀悊锛岃繘搴︽彁绀轰紭鍏堜簬銆岄璁℃秷鑰椼€?    note.innerHTML='鏈棰勮娑堣€?<span style="color:#e7b24c; font-family:\'JetBrains Mono\',monospace;">'+costFor()+'</span> 鐐?路 澶辫触鑷姩閫€鐐?;
     note.style.color='#5c6b82';
   }
   function setNote(t,c){ note.innerHTML=t; note.style.color=c||'#5c6b82'; }
 
-  // ===== 生图提交保护：一项完成前不开放第二次付费提交 =====
-  // 仍兼容恢复旧版本遗留的多任务记录，但当前页面只允许一个新任务在飞。
-  var MAX_RESTORED_JOBS=3, ACTIVE_KEY='hq_active_jobs';
+  // ===== 鐢熷浘鎻愪氦淇濇姢锛氫竴椤瑰畬鎴愬墠涓嶅紑鏀剧浜屾浠樿垂鎻愪氦 =====
+  // 浠嶅吋瀹规仮澶嶆棫鐗堟湰閬楃暀鐨勫浠诲姟璁板綍锛屼絾褰撳墠椤甸潰鍙厑璁镐竴涓柊浠诲姟鍦ㄩ銆?  var MAX_RESTORED_JOBS=3, ACTIVE_KEY='hq_active_jobs';
   var active={};        // job_id -> {t0, label, iv}
-  var stickyUntil=0;    // 成功/失败提示的保护期，别被 4s 一次的进度刷新盖掉
-  var submitting=false; // POST 往返期间锁住按钮：此时 active 还没登记，连点会多提交、多扣点
+  var stickyUntil=0;    // 鎴愬姛/澶辫触鎻愮ず鐨勪繚鎶ゆ湡锛屽埆琚?4s 涓€娆＄殑杩涘害鍒锋柊鐩栨帀
+  var submitting=false; // POST 寰€杩旀湡闂撮攣浣忔寜閽細姝ゆ椂 active 杩樻病鐧昏锛岃繛鐐逛細澶氭彁浜ゃ€佸鎵ｇ偣
 
   function activeCount(){ return Object.keys(active).length; }
   function flash(t,c){ stickyUntil=Date.now()+8000; setNote(t,c); }
@@ -397,24 +388,23 @@
   function syncGen(){
     var n=activeCount(), lock=(n>0)||submitting;
     gen.disabled=lock; gen.style.pointerEvents=lock?'none':'auto'; gen.style.opacity=lock?'.55':'1';
-    gen.textContent = submitting ? '提交中…' : n ? ('生成中 '+n+' · 请等待完成') : genLabel();
-    // 只在「一张都还没出过」时给结果区打码；恢复旧版遗留任务时也不遮住已有结果。
-    res.style.filter=(n && !lastResultUrl) ? 'blur(3px) brightness(.6)' : 'none';
+    gen.textContent = submitting ? '鎻愪氦涓€? : n ? ('鐢熸垚涓?'+n+' 路 璇风瓑寰呭畬鎴?) : genLabel();
+    // 鍙湪銆屼竴寮犻兘杩樻病鍑鸿繃銆嶆椂缁欑粨鏋滃尯鎵撶爜锛涙仮澶嶆棫鐗堥仐鐣欎换鍔℃椂涔熶笉閬綇宸叉湁缁撴灉銆?    res.style.filter=(n && !lastResultUrl) ? 'blur(3px) brightness(.6)' : 'none';
     ['tplApply','tplGenerate'].forEach(function(id){var b=document.getElementById(id); if(b) b.disabled=lock;});
   }
   function tickNote(){
     if(!activeCount() || Date.now()<stickyUntil) return;
     var parts=[];
     for(var id in active){ var j=active[id];
-      parts.push((j.label||'生成中')+'（'+Math.round((Date.now()-j.t0)/1000)+'s）'); }
-    setNote(parts.join('　·　')+' · 可切去别的页，回来自动接上','#2dd4bf');
+      parts.push((j.label||'鐢熸垚涓?)+'锛?+Math.round((Date.now()-j.t0)/1000)+'s锛?); }
+    setNote(parts.join('銆€路銆€')+' 路 鍙垏鍘诲埆鐨勯〉锛屽洖鏉ヨ嚜鍔ㄦ帴涓?,'#2dd4bf');
   }
   function endJob(id){
     var j=active[id]; if(j&&j.iv) clearInterval(j.iv);
     delete active[id]; saveActive(); syncGen();
   }
 
-  // 引擎选择
+  // 寮曟搸閫夋嫨
   function syncDedicatedScope(on){
     var scope=document.getElementById('zelongScopeNote'), ref=document.getElementById('refSection');
     if(scope) scope.style.display=on?'block':'none';
@@ -440,18 +430,16 @@
     }
     adaptCount();
     syncDedicatedScope(e==='zelong2');
-    // 型号子选择行：各自只在对应引擎下出现
-    var bv=document.getElementById('bananaVariantRow');
+    // 鍨嬪彿瀛愰€夋嫨琛岋細鍚勮嚜鍙湪瀵瑰簲寮曟搸涓嬪嚭鐜?    var bv=document.getElementById('bananaVariantRow');
     if(bv) bv.style.display = (e==='banana') ? 'grid' : 'none';
     var sv=document.getElementById('seedreamVariantRow');
     if(sv) sv.style.display = (e==='seedream') ? 'grid' : 'none';
     if(refImg) showInp(engine==='gpt');
     renderRefs();
-    updateCost();   // Nano Banana 两个型号点数不同，切引擎/切型号都要重算
-  }
+    updateCost();   // Nano Banana 涓や釜鍨嬪彿鐐规暟涓嶅悓锛屽垏寮曟搸/鍒囧瀷鍙烽兘瑕侀噸绠?  }
   document.querySelectorAll('#engineRow > div').forEach(function(c){ c.onclick=function(){ selectEngine(c.getAttribute('data-engine')); }; });
 
-  // 型号子选择：Nano Banana(2/Pro，点数不同) 与 Seedream(标准/Pro，点数同档) 共用这套高亮逻辑
+  // 鍨嬪彿瀛愰€夋嫨锛歂ano Banana(2/Pro锛岀偣鏁颁笉鍚? 涓?Seedream(鏍囧噯/Pro锛岀偣鏁板悓妗? 鍏辩敤杩欏楂樹寒閫昏緫
   function highlightVariant(rowId, v){
     document.querySelectorAll('#'+rowId+' > div').forEach(function(x){
       var on = x.getAttribute('data-variant')===v;
@@ -466,16 +454,14 @@
         var v=c.getAttribute('data-variant');
         highlightVariant(rowId, v);
         onPick(v);
-        updateCost();   // Banana 2→Pro 点数从 25 跳到 30，必须立刻反映在按钮与提示上
+        updateCost();   // Banana 2鈫扨ro 鐐规暟浠?25 璺冲埌 30锛屽繀椤荤珛鍒诲弽鏄犲湪鎸夐挳涓庢彁绀轰笂
       };
     });
   }
   bindVariantRow('bananaVariantRow',  function(v){ bananaVariant=v; });
   bindVariantRow('seedreamVariantRow', function(v){ seedreamVariant=v; });
 
-  // 老链接兼容：script.html 与灵感页仍会带 ?engine=nb2 / ?engine=pro（当时它们是两张独立卡片）。
-  // 现在合成了一张 Nano Banana 卡，必须把这两个值映射成「卡=banana + 型号=nb2/pro」，否则深链静默失效。
-  function selectEngineByKey(key){
+  // 鑰侀摼鎺ュ吋瀹癸細script.html 涓庣伒鎰熼〉浠嶄細甯??engine=nb2 / ?engine=pro锛堝綋鏃跺畠浠槸涓ゅ紶鐙珛鍗＄墖锛夈€?  // 鐜板湪鍚堟垚浜嗕竴寮?Nano Banana 鍗★紝蹇呴』鎶婅繖涓や釜鍊兼槧灏勬垚銆屽崱=banana + 鍨嬪彿=nb2/pro銆嶏紝鍚﹀垯娣遍摼闈欓粯澶辨晥銆?  function selectEngineByKey(key){
     if(!key) return;
     if(key==='nb2' || key==='pro'){
       bananaVariant=key;
@@ -488,7 +474,7 @@
     if(target&&target.getAttribute('aria-hidden')!=='true') selectEngine(key);
   }
 
-  // 清晰度 / 数量 选择(仿 ratioRow 高亮)
+  // 娓呮櫚搴?/ 鏁伴噺 閫夋嫨(浠?ratioRow 楂樹寒)
   function pickIn(rowId, el){
     document.querySelectorAll('#'+rowId+' > div').forEach(function(x){ x.style.color='#94a4bb'; x.style.background='rgba(148,164,187,.05)'; x.style.borderColor='rgba(148,164,187,.14)'; });
     if(el){ el.style.color='#e7b24c'; el.style.background='rgba(231,178,76,.1)'; el.style.borderColor='rgba(231,178,76,.32)'; }
@@ -536,18 +522,18 @@
   }
   function adaptCount(){ syncCount(); }
 
-  adaptCount(); // init: nb2 默认 + 数量上限
+  adaptCount(); // init: nb2 榛樿 + 鏁伴噺涓婇檺
   function detectPromptRatio(text){
-    var src=String(text||'').replace(/[：]/g,':').replace(/[×X]/g,'x').toLowerCase();
+    var src=String(text||'').replace(/[锛歖/g,':').replace(/[脳X]/g,'x').toLowerCase();
     var exact=src.match(/(?:^|[^\d])(9\s*[:x]\s*16|16\s*[:x]\s*9|1\s*[:x]\s*1|3\s*[:x]\s*4|4\s*[:x]\s*5|5\s*[:x]\s*4)(?:[^\d]|$)/);
     if(exact) return exact[1].replace(/\s*/g,'').replace('x',':');
-    if(/方图|方版|1比1|四宫格|九宫格/.test(src)) return '1:1';
-    if(/横版|横构图|横幅/.test(src)) return '16:9';
-    if(/竖版|竖构图|竖幅/.test(src)) return '9:16';
+    if(/鏂瑰浘|鏂圭増|1姣?|鍥涘鏍紎涔濆鏍?.test(src)) return '1:1';
+    if(/妯増|妯瀯鍥緗妯箙/.test(src)) return '16:9';
+    if(/绔栫増|绔栨瀯鍥緗绔栧箙/.test(src)) return '9:16';
     return '';
   }
   var sourceInspirationId=0;
-  // 灵感页「做同款」：从 ?prompt= / ?engine= 预填提示词 + 切引擎，并尽量从提示词里还原比例
+  // 鐏垫劅椤点€屽仛鍚屾銆嶏細浠??prompt= / ?engine= 棰勫～鎻愮ず璇?+ 鍒囧紩鎿庯紝骞跺敖閲忎粠鎻愮ず璇嶉噷杩樺師姣斾緥
   try{ var ip=new URLSearchParams(location.search);
     sourceInspirationId=Number(ip.get('inspiration')||0);if(sourceInspirationId<1000000)sourceInspirationId=0;
     if(ip.get('prefill')==='ip12'){
@@ -556,7 +542,7 @@
         sessionStorage.removeItem('hq_ip12_product_handoff_v1');
         var handoff=JSON.parse(rawHandoff||'null'), handoffAge=handoff?Date.now()-Number(handoff.created_at):Infinity;
         if(handoff&&handoff.version===1&&handoff.target==='image_studio'&&Number.isFinite(handoffAge)&&handoffAge>=0&&handoffAge<=600000&&handoff.prompt){
-          pr.value=String(handoff.prompt).slice(0,2000);pr.dispatchEvent(new Event('input'));pr.focus();setNote('✅ 已带入 IP12 待编辑方案，请检查后再生成','#2bd576');
+          pr.value=String(handoff.prompt).slice(0,2000);pr.dispatchEvent(new Event('input'));pr.focus();setNote('鉁?宸插甫鍏?IP12 寰呯紪杈戞柟妗堬紝璇锋鏌ュ悗鍐嶇敓鎴?,'#2bd576');
         }
       }catch(e){}
     }
@@ -564,38 +550,36 @@
     if(pp){
       pr.value=pp;
       var inferredRatio=detectPromptRatio(pp);
-      // 传 false：不联动模板。用户是从灵感页「做同款」进来的，并没有在用模板，
-      // 让 syncTemplateForRatio 高亮一个他没选的模板卡片（还带出模板说明）会误导。
-      if(inferredRatio) selectRatio(inferredRatio, false);
+      // 浼?false锛氫笉鑱斿姩妯℃澘銆傜敤鎴锋槸浠庣伒鎰熼〉銆屽仛鍚屾銆嶈繘鏉ョ殑锛屽苟娌℃湁鍦ㄧ敤妯℃澘锛?      // 璁?syncTemplateForRatio 楂樹寒涓€涓粬娌￠€夌殑妯℃澘鍗＄墖锛堣繕甯﹀嚭妯℃澘璇存槑锛変細璇銆?      if(inferredRatio) selectRatio(inferredRatio, false);
     }
-    var pe=ip.get('engine'); if(pe) selectEngineByKey(pe);   // 合卡后 nb2/pro 不再是 data-engine，走映射（兼容老深链）
+    var pe=ip.get('engine'); if(pe) selectEngineByKey(pe);   // 鍚堝崱鍚?nb2/pro 涓嶅啀鏄?data-engine锛岃蛋鏄犲皠锛堝吋瀹硅€佹繁閾撅級
   }catch(e){}
 
-  // 手气不错：不知道写啥 → 从灵感提示词库随机装一条进输入框（复用 inspirations.json，随灵感页自动更新）
+  // 鎵嬫皵涓嶉敊锛氫笉鐭ラ亾鍐欏暐 鈫?浠庣伒鎰熸彁绀鸿瘝搴撻殢鏈鸿涓€鏉¤繘杈撳叆妗嗭紙澶嶇敤 inspirations.json锛岄殢鐏垫劅椤佃嚜鍔ㄦ洿鏂帮級
   var optimizeBtn=document.getElementById('bOptimize'), luckyBtn=document.getElementById('luckyBtn'), luckyPool=[], luckyLast=-1;
   if(optimizeBtn) optimizeBtn.onclick=function(){
     var source=(pr.value||'').trim();
-    if(!source){ setNote('先输入几个关键词，再让 AI 帮你补全','#f4708a'); pr.focus(); return; }
-    optimizeBtn.disabled=true; optimizeBtn.textContent='优化中…';
+    if(!source){ setNote('鍏堣緭鍏ュ嚑涓叧閿瘝锛屽啀璁?AI 甯綘琛ュ叏','#f4708a'); pr.focus(); return; }
+    optimizeBtn.disabled=true; optimizeBtn.textContent='浼樺寲涓€?;
     fetch('/api/gen/reverse',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify({action:'optimize',prompt:source,kind:'image'})})
       .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});}).then(function(x){
         if(x.s===401){ HQ.login(); return; }
-        if(!x.d.prompt){ setNote('优化失败：'+((x.d&&x.d.detail)||'请稍后重试'),'#f4708a'); return; }
-        pr.value=x.d.prompt; pr.dispatchEvent(new Event('input')); pr.focus(); setNote('✅ 已优化提示词，可继续微调后生成','#2bd576');
-      }).catch(function(){setNote('网络错误，请稍后重试','#f4708a');}).finally(function(){optimizeBtn.disabled=false; optimizeBtn.textContent='优化提示词';});
+        if(!x.d.prompt){ setNote('浼樺寲澶辫触锛?+((x.d&&x.d.detail)||'璇风◢鍚庨噸璇?),'#f4708a'); return; }
+        pr.value=x.d.prompt; pr.dispatchEvent(new Event('input')); pr.focus(); setNote('鉁?宸蹭紭鍖栨彁绀鸿瘝锛屽彲缁х画寰皟鍚庣敓鎴?,'#2bd576');
+      }).catch(function(){setNote('缃戠粶閿欒锛岃绋嶅悗閲嶈瘯','#f4708a');}).finally(function(){optimizeBtn.disabled=false; optimizeBtn.textContent='浼樺寲鎻愮ず璇?;});
   };
   var LUCKY_FALLBACK=[
-    '科技焕肤 · 逆龄新生，高级感美业海报，金色光效，9:16 竖版，留白标题区，柔光质感，主体居中，适合朋友圈与门店屏投放',
-    '高端护肤精华玻璃瓶特写，暖金光效，大理石台面，满天星与丝绸点缀，顶部留白放标题，杂志级广告质感，无水印，9:16 竖版',
-    '医美水光焕肤项目竖版海报，东方女性水润通透侧脸，清透冷调，左侧留白放标题与功效，高级感，杂志级打光，9:16',
-    '美妆口红产品海报，哑光唇膏立于米色大理石，暖金柔光，干花瓣点缀，顶部留白放中文标题，高级广告质感，9:16 竖版'
+    '绉戞妧鐒曡偆 路 閫嗛緞鏂扮敓锛岄珮绾ф劅缇庝笟娴锋姤锛岄噾鑹插厜鏁堬紝9:16 绔栫増锛岀暀鐧芥爣棰樺尯锛屾煍鍏夎川鎰燂紝涓讳綋灞呬腑锛岄€傚悎鏈嬪弸鍦堜笌闂ㄥ簵灞忔姇鏀?,
+    '楂樼鎶よ偆绮惧崕鐜荤拑鐡剁壒鍐欙紝鏆栭噾鍏夋晥锛屽ぇ鐞嗙煶鍙伴潰锛屾弧澶╂槦涓庝笣缁哥偣缂€锛岄《閮ㄧ暀鐧芥斁鏍囬锛屾潅蹇楃骇骞垮憡璐ㄦ劅锛屾棤姘村嵃锛?:16 绔栫増',
+    '鍖荤編姘村厜鐒曡偆椤圭洰绔栫増娴锋姤锛屼笢鏂瑰コ鎬ф按娑﹂€氶€忎晶鑴革紝娓呴€忓喎璋冿紝宸︿晶鐣欑櫧鏀炬爣棰樹笌鍔熸晥锛岄珮绾ф劅锛屾潅蹇楃骇鎵撳厜锛?:16',
+    '缇庡鍙ｇ孩浜у搧娴锋姤锛屽搼鍏夊攪鑶忕珛浜庣背鑹插ぇ鐞嗙煶锛屾殩閲戞煍鍏夛紝骞茶姳鐡ｇ偣缂€锛岄《閮ㄧ暀鐧芥斁涓枃鏍囬锛岄珮绾у箍鍛婅川鎰燂紝9:16 绔栫増'
   ];
   function fillLucky(){
     var pool=luckyPool.length?luckyPool:LUCKY_FALLBACK;
     if(!pool.length) return;
     var i=0; do{ i=Math.floor(Math.random()*pool.length); }while(pool.length>1 && i===luckyLast);
     luckyLast=i; pr.value=pool[i]; if(typeof updCount==='function') updCount(); try{ pr.focus(); }catch(e){}
-    setNote('✨ 已装入一条示例提示词，可直接生成，也可以改改','#2bd576');
+    setNote('鉁?宸茶鍏ヤ竴鏉＄ず渚嬫彁绀鸿瘝锛屽彲鐩存帴鐢熸垚锛屼篃鍙互鏀规敼','#2bd576');
   }
   if(luckyBtn){
     fetch('inspirations.json',{cache:'no-cache'}).then(function(r){return r.json();}).then(function(d){
@@ -604,14 +588,13 @@
     luckyBtn.onclick=fillLucky;
   }
 
-  // 提示词实时字数 + 真·清空（原来「62 / 500」和「清空」都是死的：不随输入变、点了也没反应）
-  // PROMPT_MAX 必须与 imggen_api.py::validate_banana_payload 的 2000 上限一致，否则 nb2/pro 会被后端拒。
-  var PROMPT_MAX=2000;
+  // 鎻愮ず璇嶅疄鏃跺瓧鏁?+ 鐪熉锋竻绌猴紙鍘熸潵銆?2 / 500銆嶅拰銆屾竻绌恒€嶉兘鏄鐨勶細涓嶉殢杈撳叆鍙樸€佺偣浜嗕篃娌″弽搴旓級
+  // PROMPT_MAX 蹇呴』涓?imggen_api.py::validate_banana_payload 鐨?2000 涓婇檺涓€鑷达紝鍚﹀垯 nb2/pro 浼氳鍚庣鎷掋€?  var PROMPT_MAX=2000;
   var bCount=document.getElementById('bCount'), bClear=document.getElementById('bClear');
   function updCount(){ if(bCount) bCount.textContent=(pr.value||'').length+' / '+PROMPT_MAX; }
   if(pr){ pr.addEventListener('input', updCount); }
   if(bClear){ bClear.onclick=function(){ pr.value=''; updCount(); try{ pr.focus(); }catch(e){} }; }
-  updCount();  // 初始化：按当前内容(默认示例/做同款预填)刷新字数
+  updCount();  // 鍒濆鍖栵細鎸夊綋鍓嶅唴瀹?榛樿绀轰緥/鍋氬悓娆鹃濉?鍒锋柊瀛楁暟
 
   function syncTemplateForRatio(next){
     var match=activeTemplate&&activeTemplate.ratio===next?activeTemplate:
@@ -652,17 +635,17 @@
   }
   function applyTemplate(){
     var data={
-      brand:tplVal('tplBrand','仙颜美容'),
-      color:tplVal('tplColor','暖金'),
-      selling:tplVal('tplSelling','科技焕肤 · 毛孔细腻透亮'),
-      price:tplVal('tplPrice','到店立减100')
+      brand:tplVal('tplBrand','浠欓缇庡'),
+      color:tplVal('tplColor','鏆栭噾'),
+      selling:tplVal('tplSelling','绉戞妧鐒曡偆 路 姣涘瓟缁嗚吇閫忎寒'),
+      price:tplVal('tplPrice','鍒板簵绔嬪噺100')
     };
     var text=activeTemplate.tpl.replace(/\{(\w+)\}/g,function(_,key){return data[key]||'';});
     pr.value=text.slice(0,PROMPT_MAX);
     selectRatio(activeTemplate.ratio);
     selectEngineByKey('nb2');
     updCount();
-    setNote('✅ 已套用「'+activeTemplate.name+'」模板，可继续微调后生成','#2bd576');
+    setNote('鉁?宸插鐢ㄣ€?+activeTemplate.name+'銆嶆ā鏉匡紝鍙户缁井璋冨悗鐢熸垚','#2bd576');
     try{ pr.focus(); }catch(e){}
   }
   renderTemplates();
@@ -673,28 +656,27 @@
     gen.click();
   };
 
-  // 共享：提交 → 轮询 → 显示。任务存 localStorage，切走再回来自动续传（后端不中断）
-  var lastPayload=null,lastLabel='',lastEndpoint='',lastResultUrl=null;
+  // 鍏变韩锛氭彁浜?鈫?杞 鈫?鏄剧ず銆備换鍔″瓨 localStorage锛屽垏璧板啀鍥炴潵鑷姩缁紶锛堝悗绔笉涓柇锛?  var lastPayload=null,lastLabel='',lastEndpoint='',lastResultUrl=null;
   function showUploadRetry(message){
-    setNote((message||'上传失败，请检查网络后重试')+' · <button id="uploadRetryBtn" type="button" style="padding:3px 9px;border:1px solid rgba(244,112,138,.42);border-radius:7px;background:rgba(244,112,138,.1);color:#f4708a;font:inherit;font-size:12px;cursor:pointer;">重新上传</button>','#f4708a');
+    setNote((message||'涓婁紶澶辫触锛岃妫€鏌ョ綉缁滃悗閲嶈瘯')+' 路 <button id="uploadRetryBtn" type="button" style="padding:3px 9px;border:1px solid rgba(244,112,138,.42);border-radius:7px;background:rgba(244,112,138,.1);color:#f4708a;font:inherit;font-size:12px;cursor:pointer;">閲嶆柊涓婁紶</button>','#f4708a');
     var retry=document.getElementById('uploadRetryBtn');
     if(retry) retry.onclick=function(){ if(!submitting&&lastPayload) submit(lastPayload,lastLabel,lastEndpoint); };
   }
-  // gpt-image 内容审核拒绝会返回 HTTP 400，原文对用户无意义 → 给可操作提示
+  // gpt-image 鍐呭瀹℃牳鎷掔粷浼氳繑鍥?HTTP 400锛屽師鏂囧鐢ㄦ埛鏃犳剰涔?鈫?缁欏彲鎿嶄綔鎻愮ず
   function brandedErrorText(value){
     return String(value||'')
-      .replace(/nano[- ]?banana\s*pro/gi,'纳米香蕉 Pro')
-      .replace(/nano[- ]?banana(?:\s*2)?/gi,'纳米香蕉 2')
-      .replace(/seedream\s*pro/gi,'黄雀引擎 1 Pro')
-      .replace(/seedream/gi,'黄雀引擎 1')
-      .replace(/gpt-image-2/gi,'黄雀引擎 2')
-      .replace(/openai/gi,'黄雀引擎 2');
+      .replace(/nano[- ]?banana\s*pro/gi,'绾崇背棣欒晧 Pro')
+      .replace(/nano[- ]?banana(?:\s*2)?/gi,'绾崇背棣欒晧 2')
+      .replace(/seedream\s*pro/gi,'榛勯泙寮曟搸 1 Pro')
+      .replace(/seedream/gi,'榛勯泙寮曟搸 1')
+      .replace(/gpt-image-2/gi,'榛勯泙寮曟搸 2')
+      .replace(/openai/gi,'榛勯泙寮曟搸 2');
   }
   function errMsg(e){
     var s=brandedErrorText(e);
     if(lastEndpoint==='/api/gen/image' && /400|bad request/i.test(s))
-      return '该提示词可能被内容审核拒绝，换个说法，或改用纳米香蕉引擎（对人物/中文更宽松）· 已退点';
-    return '失败：'+s+' · 已退点';
+      return '璇ユ彁绀鸿瘝鍙兘琚唴瀹瑰鏍告嫆缁濓紝鎹釜璇存硶锛屾垨鏀圭敤绾崇背棣欒晧寮曟搸锛堝浜虹墿/涓枃鏇村鏉撅級路 宸查€€鐐?;
+    return '澶辫触锛?+s+' 路 宸查€€鐐?;
   }
   function ratioFromDimensions(width,height){
     if(!width||!height) return '';
@@ -712,7 +694,7 @@
     var measured=ratioFromDimensions(res.naturalWidth,res.naturalHeight);
     if(measured) setResultRatio(measured);
   });
-  // 结果展示：单图走 #bResult；多图(数量>1)在下方渲染缩略图条，点选驱动当前图
+  // 缁撴灉灞曠ず锛氬崟鍥捐蛋 #bResult锛涘鍥?鏁伴噺>1)鍦ㄤ笅鏂规覆鏌撶缉鐣ュ浘鏉★紝鐐归€夐┍鍔ㄥ綋鍓嶅浘
   function showResult(result){
     var us=(result&&result.urls&&result.urls.length)?result.urls:[result.url];
     setResultRatio(result&&result.ratio);
@@ -746,26 +728,26 @@
         var sec=Math.round((Date.now()-t0)/1000);
         if(d.status==='done'){
           endJob(id); showResult(d.result);
-          flash('✅ 出图完成（'+sec+'s）· 点数已更新'+(activeCount()?'，还有 '+activeCount()+' 个在跑':''),'#2bd576');
+          flash('鉁?鍑哄浘瀹屾垚锛?+sec+'s锛壜?鐐规暟宸叉洿鏂?+(activeCount()?'锛岃繕鏈?'+activeCount()+' 涓湪璺?:''),'#2bd576');
           if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
           loadHistory();
         }
         else if(d.status==='error'||d.status==='failed'){ endJob(id); flash(errMsg(d.error||d.detail||d.status||''),'#f4708a'); loadHistory(); }
-        else if(sec>JOB_POLL_TIMEOUT_SEC){ endJob(id); flash('生成仍在处理中，请稍后到资产库查看（'+sec+'s）','#2dd4bf'); loadHistory(); }
+        else if(sec>JOB_POLL_TIMEOUT_SEC){ endJob(id); flash('鐢熸垚浠嶅湪澶勭悊涓紝璇风◢鍚庡埌璧勪骇搴撴煡鐪嬶紙'+sec+'s锛?,'#2dd4bf'); loadHistory(); }
         else tickNote();
       }).catch(function(){
         failures++;
         if(failures===JOB_POLL_SOFT_RETRY_LIMIT){
-          flash('网络波动，正在重试；如长时间无恢复，可刷新页面继续接上任务','#f4708a');
+          flash('缃戠粶娉㈠姩锛屾鍦ㄩ噸璇曪紱濡傞暱鏃堕棿鏃犳仮澶嶏紝鍙埛鏂伴〉闈㈢户缁帴涓婁换鍔?,'#f4708a');
           return;
         }
         if(failures>=JOB_POLL_HARD_RETRY_LIMIT){
           endJob(id);
-          flash('网络异常，任务可能仍在后台生成，请刷新页面继续接上，或稍后到资产库查看','#f4708a');
+          flash('缃戠粶寮傚父锛屼换鍔″彲鑳戒粛鍦ㄥ悗鍙扮敓鎴愶紝璇峰埛鏂伴〉闈㈢户缁帴涓婏紝鎴栫◢鍚庡埌璧勪骇搴撴煡鐪?,'#f4708a');
         }
       });
     },4000);
-    active[id]={t0:t0, label:(label||'生成中').replace(/（.*$/,''), iv:iv};
+    active[id]={t0:t0, label:(label||'鐢熸垚涓?).replace(/锛?*$/,''), iv:iv};
     saveActive(); syncGen();
   }
   function newIdempotencyKey(){
@@ -775,44 +757,43 @@
   function submit(payload, label, endpoint){
     if(window.PublishedChannelParameters?.redirect('image',payload.model||''))return;
     endpoint=endpoint||'/api/gen/image'; lastEndpoint=endpoint; lastLabel=label;
-    if(!payload.prompt){ flash('请先输入提示词','#f4708a'); return; }
+    if(!payload.prompt){ flash('璇峰厛杈撳叆鎻愮ず璇?,'#f4708a'); return; }
     if(submitting) return;
-    if(activeCount()){ flash('已有任务生成中，请等待完成','#f4708a'); return; }
+    if(activeCount()){ flash('宸叉湁浠诲姟鐢熸垚涓紝璇风瓑寰呭畬鎴?,'#f4708a'); return; }
     payload=Object.assign({},payload,{source_page:'banana'});
     if(sourceInspirationId)payload=Object.assign({source_inspiration_id:sourceInspirationId},payload);
     lastPayload=payload; submitting=true; syncGen();
     var hint = endpoint==='/api/gen/banana'
-                 ? (bananaVariant==='pro' ? '纳米香蕉 Pro 约 1-2 分钟' : '纳米香蕉 2 约 30-90 秒')
-             : engine==='seedream' ? (seedreamVariant==='pro' ? '黄雀引擎 1 Pro 约 1.5 分钟' : '黄雀引擎 1 标准约 30-40 秒')
-             : '黄雀引擎 2 高清约 1-2 分钟';
-    flash(label+' · '+hint,'#2dd4bf');
+                 ? (bananaVariant==='pro' ? '绾崇背棣欒晧 Pro 绾?1-2 鍒嗛挓' : '绾崇背棣欒晧 2 绾?30-90 绉?)
+             : engine==='seedream' ? (seedreamVariant==='pro' ? '榛勯泙寮曟搸 1 Pro 绾?1.5 鍒嗛挓' : '榛勯泙寮曟搸 1 鏍囧噯绾?30-40 绉?)
+             : '榛勯泙寮曟搸 2 楂樻竻绾?1-2 鍒嗛挓';
+    flash(label+' 路 '+hint,'#2dd4bf');
     var t0=Date.now(), idemKey=newIdempotencyKey();
     function sendSubmit(attempt){
       var request=payload.image ? requestJsonWithProgress(endpoint,payload,function(pct){
-        setNote('上传素材 '+pct+'% · 请勿关闭页面','#2dd4bf');
+        setNote('涓婁紶绱犳潗 '+pct+'% 路 璇峰嬁鍏抽棴椤甸潰','#2dd4bf');
       },idemKey) : requestJson(endpoint,payload,idemKey);
       request
       .then(function(x){
-        // shutting_down 在后端扣点/建任务之前返回，只有这条明确响应可以安全自动重试。
-        if(x.s===503 && x.d && x.d.code==='shutting_down' && attempt<MAX_SHUTDOWN_RETRIES){
+        // shutting_down 鍦ㄥ悗绔墸鐐?寤轰换鍔′箣鍓嶈繑鍥烇紝鍙湁杩欐潯鏄庣‘鍝嶅簲鍙互瀹夊叏鑷姩閲嶈瘯銆?        if(x.s===503 && x.d && x.d.code==='shutting_down' && attempt<MAX_SHUTDOWN_RETRIES){
           var delay=Math.max(1000,Math.min(10000,parseInt(x.d.retry_after_ms,10)||5000));
-          flash('服务切换中，正在自动重试（'+(attempt+1)+'/'+MAX_SHUTDOWN_RETRIES+'）','#2dd4bf');
+          flash('鏈嶅姟鍒囨崲涓紝姝ｅ湪鑷姩閲嶈瘯锛?+(attempt+1)+'/'+MAX_SHUTDOWN_RETRIES+'锛?,'#2dd4bf');
           setTimeout(function(){ sendSubmit(attempt+1); },delay);
           return;
         }
-        submitting=false;              // 必须在所有分支之前解锁：漏一条路径按钮就永久锁死
+        submitting=false;              // 蹇呴』鍦ㄦ墍鏈夊垎鏀箣鍓嶈В閿侊細婕忎竴鏉¤矾寰勬寜閽氨姘镐箙閿佹
         if(x.s===401){ syncGen(); HQ.login(); return; }
-        if(x.s===402){ syncGen(); flash('点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a>','#f4708a'); return; }
-        if(x.s===413){ syncGen(); flash('图片太大，请压缩后重试','#f4708a'); return; }
-        // 429：后端的提交闸/队列满，点数已退回，直接重试即可
-        if(x.s===429){ syncGen(); flash(brandedErrorText((x.d&&x.d.detail)||'任务太多，请稍后再试')+' · 点数未扣','#f4708a'); return; }
-        if(!x.d.job_id){ syncGen(); flash('提交失败：'+brandedErrorText((x.d&&x.d.detail)||'未知'),'#f4708a'); return; }
-        poll(x.d.job_id, t0, label);   // poll 内部登记 active、存盘、并刷新按钮
+        if(x.s===402){ syncGen(); flash('鐐规暟涓嶈冻 路 <a href="recharge.html" style="color:#e7b24c">鍘诲厖鍊?/a>','#f4708a'); return; }
+        if(x.s===413){ syncGen(); flash('鍥剧墖澶ぇ锛岃鍘嬬缉鍚庨噸璇?,'#f4708a'); return; }
+        // 429锛氬悗绔殑鎻愪氦闂?闃熷垪婊★紝鐐规暟宸查€€鍥烇紝鐩存帴閲嶈瘯鍗冲彲
+        if(x.s===429){ syncGen(); flash(brandedErrorText((x.d&&x.d.detail)||'浠诲姟澶锛岃绋嶅悗鍐嶈瘯')+' 路 鐐规暟鏈墸','#f4708a'); return; }
+        if(!x.d.job_id){ syncGen(); flash('鎻愪氦澶辫触锛?+brandedErrorText((x.d&&x.d.detail)||'鏈煡'),'#f4708a'); return; }
+        poll(x.d.job_id, t0, label);   // poll 鍐呴儴鐧昏 active銆佸瓨鐩樸€佸苟鍒锋柊鎸夐挳
       }).catch(function(error){
         submitting=false; syncGen();
-        if(payload.image&&!error.uploadComplete) showUploadRetry('上传中断，素材和参数已保留');
-        else if(payload.image) flash('上传已完成但响应中断，请先到最近作品确认，避免重复扣点','#f4708a');
-        else flash('网络错误，请重试','#f4708a');
+        if(payload.image&&!error.uploadComplete) showUploadRetry('涓婁紶涓柇锛岀礌鏉愬拰鍙傛暟宸蹭繚鐣?);
+        else if(payload.image) flash('涓婁紶宸插畬鎴愪絾鍝嶅簲涓柇锛岃鍏堝埌鏈€杩戜綔鍝佺‘璁わ紝閬垮厤閲嶅鎵ｇ偣','#f4708a');
+        else flash('缃戠粶閿欒锛岃閲嶈瘯','#f4708a');
       });
     }
     sendSubmit(0);
@@ -820,7 +801,7 @@
 
   function parseJsonResponse(status,text){
     var d={};
-    try{ d=text?JSON.parse(text):{}; }catch(e){ d={detail:(status===413?'图片太大，请压缩后重试':(text||'').replace(/<[^>]+>/g,' ').trim().slice(0,120))}; }
+    try{ d=text?JSON.parse(text):{}; }catch(e){ d={detail:(status===413?'鍥剧墖澶ぇ锛岃鍘嬬缉鍚庨噸璇?:(text||'').replace(/<[^>]+>/g,' ').trim().slice(0,120))}; }
     return {s:status,d:d};
   }
   function requestJson(endpoint,payload){
@@ -848,7 +829,7 @@
     });
   }
 
-  // ===== 参考图上传 → 图生图 / 局部修改（inpaint，gpt-image 专属）=====
+  // ===== 鍙傝€冨浘涓婁紶 鈫?鍥剧敓鍥?/ 灞€閮ㄤ慨鏀癸紙inpaint锛実pt-image 涓撳睘锛?====
   var refImg=null, refW=0, refH=0, inpBtn=null;
   var REF_LIMITS={banana:14,gpt:16,seedream:10,xiaole:4,zelong2:0};
   var upBox=document.getElementById('upBox'), upFile=document.getElementById('upFile'),
@@ -859,13 +840,8 @@
     var s=(dataUrl||'').split(',')[1]||'';
     return Math.floor(s.length*3/4);
   }
-  // 参考图必须保持 PNG：gpt 的「图生图」和「局部修改」都走 /v1/images/edits，
-  // 后端 _multipart 硬编码 Content-Type: image/png，OpenAI edits 也要求真 PNG。
-  // 压成 JPEG 就成了「JPEG 字节贴 PNG 标签」——Ark 按内容嗅探能吃，OpenAI 不保证。
-  // 体积改由尺寸收敛：每轮 0.85 缩放，直到进 REF_MAX_BYTES。
-  // ⚠️ 缩放后的尺寸必须跟 dataUrl 一起回传：setRef 存的 refW/refH 会被 inpaint 画布
-  //    (cv.width=refW) 复用，尺寸对不上就会让 mask 与 image 错位。
-  function shrinkToBudget(cv, maxBytes){
+  // 鍙傝€冨浘蹇呴』淇濇寔 PNG锛歡pt 鐨勩€屽浘鐢熷浘銆嶅拰銆屽眬閮ㄤ慨鏀广€嶉兘璧?/v1/images/edits锛?  // 鍚庣 _multipart 纭紪鐮?Content-Type: image/png锛孫penAI edits 涔熻姹傜湡 PNG銆?  // 鍘嬫垚 JPEG 灏辨垚浜嗐€孞PEG 瀛楄妭璐?PNG 鏍囩銆嶁€斺€擜rk 鎸夊唴瀹瑰梾鎺㈣兘鍚冿紝OpenAI 涓嶄繚璇併€?  // 浣撶Н鏀圭敱灏哄鏀舵暃锛氭瘡杞?0.85 缂╂斁锛岀洿鍒拌繘 REF_MAX_BYTES銆?  // 鈿狅笍 缂╂斁鍚庣殑灏哄蹇呴』璺?dataUrl 涓€璧峰洖浼狅細setRef 瀛樼殑 refW/refH 浼氳 inpaint 鐢诲竷
+  //    (cv.width=refW) 澶嶇敤锛屽昂瀵稿涓嶄笂灏变細璁?mask 涓?image 閿欎綅銆?  function shrinkToBudget(cv, maxBytes){
     maxBytes=maxBytes||REF_MAX_BYTES;
     var out=cv.toDataURL('image/png');
     for(var n=0;n<6 && dataUrlBytes(out)>maxBytes;n++){
@@ -887,14 +863,13 @@
   function insertImageMention(index){
     HQImageMentions.insert(pr,index);
   }
-  // 把一张图片文件/Blob（上传或粘贴）压缩后加入参考图（上传与粘贴共用）
-  function refFromFile(f,done){
+  // 鎶婁竴寮犲浘鐗囨枃浠?Blob锛堜笂浼犳垨绮樿创锛夊帇缂╁悗鍔犲叆鍙傝€冨浘锛堜笂浼犱笌绮樿创鍏辩敤锛?  function refFromFile(f,done){
     if(!f) return;
     var url=URL.createObjectURL(f), im=new Image();
     im.onload=function(){
       var fruit=engine==='xiaole', ref=imageToRefDataUrl(im, fruit?1024:REF_MAX_SIDE, fruit?XIAOLE_REF_MAX_BYTES:REF_MAX_BYTES);
       if(dataUrlBytes(ref.dataUrl)>(fruit?XIAOLE_REF_MAX_BYTES:REF_MAX_BYTES)){
-        setNote('图片仍超过 '+(fruit?'7':'9')+'MB，请压缩或更换图片后重试','#f4708a');
+        setNote('鍥剧墖浠嶈秴杩?'+(fruit?'7':'9')+'MB锛岃鍘嬬缉鎴栨洿鎹㈠浘鐗囧悗閲嶈瘯','#f4708a');
         try{ URL.revokeObjectURL(url); }catch(e){}
         if(done) done();
         return;
@@ -903,19 +878,19 @@
       if(done) done(index);
       try{ URL.revokeObjectURL(url); }catch(e){}
     };
-    im.onerror=function(){ setNote('这张图读取失败，换一张试试','#f4708a'); if(done)done(0); };
+    im.onerror=function(){ setNote('杩欏紶鍥捐鍙栧け璐ワ紝鎹竴寮犺瘯璇?,'#f4708a'); if(done)done(0); };
     im.src=url;
   }
   function addRefFiles(files,index){ index=index||0; if(index>=files.length)return; refFromFile(files[index],function(){addRefFiles(files,index+1);}); }
   if(upFile){ upFile.onchange=function(){ var files=Array.from(upFile.files||[]); upFile.value=''; addRefFiles(files); }; }
-  // 直接在提示词框 Ctrl/⌘+V 粘贴剪贴板图片 → 设为参考图（图生图），不把图当乱码塞进文本
+  // 鐩存帴鍦ㄦ彁绀鸿瘝妗?Ctrl/鈱?V 绮樿创鍓创鏉垮浘鐗?鈫?璁句负鍙傝€冨浘锛堝浘鐢熷浘锛夛紝涓嶆妸鍥惧綋涔辩爜濉炶繘鏂囨湰
   if(pr){ pr.addEventListener('paste', function(e){
     var items=(e.clipboardData&&e.clipboardData.items)||[];
     for(var i=0;i<items.length;i++){
       if(items[i].kind==='file' && items[i].type && items[i].type.indexOf('image/')===0){
         var f=items[i].getAsFile();
         if(f){ var range={start:pr.selectionStart,end:pr.selectionEnd}; e.preventDefault(); refFromFile(f,function(index){
-          if(index){HQImageMentions.insert(pr,index,range);setNote('✅ 已添加参考图并插入 @图片'+index,'#2bd576');} }); return; }
+          if(index){HQImageMentions.insert(pr,index,range);setNote('鉁?宸叉坊鍔犲弬鑰冨浘骞舵彃鍏?@鍥剧墖'+index,'#2bd576');} }); return; }
       }
     }
   }); }
@@ -931,7 +906,7 @@
     });
   }
 
-  // ===== 提示词反推：上传/粘贴图 → Gemini 反推提示词 → 填入提示词框 / 连图做图生图 =====
+  // ===== 鎻愮ず璇嶅弽鎺細涓婁紶/绮樿创鍥?鈫?Gemini 鍙嶆帹鎻愮ず璇?鈫?濉叆鎻愮ず璇嶆 / 杩炲浘鍋氬浘鐢熷浘 =====
   var revImgData=null, revImgUrl=null, revW=0, revH=0;
   var revUpBox=document.getElementById('revUpBox'), revFile=document.getElementById('revFile'),
       revIcon=document.getElementById('revIcon'), revText=document.getElementById('revText'),
@@ -942,14 +917,14 @@
   function revSet(dataUrl,w,h){
     revImgUrl=dataUrl; revImgData=dataUrl.split(',')[1]; revW=w; revH=h;
     if(revUpBox){ revUpBox.style.backgroundImage='url('+dataUrl+')'; revUpBox.style.borderStyle='solid'; revUpBox.style.borderColor='rgba(231,178,76,.5)'; }
-    if(revIcon) revIcon.style.display='none'; if(revText) revText.textContent='已选图';
-    revMsg('已就绪，点「反推提示词」','#5c6b82');
+    if(revIcon) revIcon.style.display='none'; if(revText) revText.textContent='宸查€夊浘';
+    revMsg('宸插氨缁紝鐐广€屽弽鎺ㄦ彁绀鸿瘝銆?,'#5c6b82');
   }
   function revLoad(f){ if(!f) return; var url=URL.createObjectURL(f), im=new Image();
     im.onload=function(){ var ref=imageToRefDataUrl(im,1024);
-      if(dataUrlBytes(ref.dataUrl)>REF_MAX_BYTES){ revMsg('图片仍超过 9MB，请压缩或更换图片','#f4708a'); try{URL.revokeObjectURL(url);}catch(e){} return; }
+      if(dataUrlBytes(ref.dataUrl)>REF_MAX_BYTES){ revMsg('鍥剧墖浠嶈秴杩?9MB锛岃鍘嬬缉鎴栨洿鎹㈠浘鐗?,'#f4708a'); try{URL.revokeObjectURL(url);}catch(e){} return; }
       revSet(ref.dataUrl, ref.width, ref.height); try{URL.revokeObjectURL(url);}catch(e){} };
-    im.onerror=function(){ revMsg('这张图读取失败，换一张','#f4708a'); }; im.src=url;
+    im.onerror=function(){ revMsg('杩欏紶鍥捐鍙栧け璐ワ紝鎹竴寮?,'#f4708a'); }; im.src=url;
   }
   if(revFile) revFile.onchange=function(){ revLoad(revFile.files&&revFile.files[0]); };
   if(revUpBox) revUpBox.addEventListener('paste', function(e){
@@ -957,28 +932,28 @@
     for(var i=0;i<items.length;i++){ if(items[i].kind==='file'&&items[i].type&&items[i].type.indexOf('image/')===0){ var f=items[i].getAsFile(); if(f){ e.preventDefault(); revLoad(f); return; } } }
   });
   if(revBtn) revBtn.onclick=function(){
-    if(!revImgData){ revMsg('请先上传或粘贴一张图片','#f4708a'); return; }
-    revBtn.disabled=true; revBtn.textContent='反推中…'; revMsg('AI 正在看图反推提示词…','#2dd4bf');
+    if(!revImgData){ revMsg('璇峰厛涓婁紶鎴栫矘璐翠竴寮犲浘鐗?,'#f4708a'); return; }
+    revBtn.disabled=true; revBtn.textContent='鍙嶆帹涓€?; revMsg('AI 姝ｅ湪鐪嬪浘鍙嶆帹鎻愮ず璇嶁€?,'#2dd4bf');
     fetch('/api/gen/reverse',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify({image:revImgData})})
       .then(function(r){ return r.json().then(function(d){ return {s:r.status,d:d}; }); })
       .then(function(x){
         revBtn.disabled=false; revBtn.textContent=reverseButtonLabel();
         if(x.s===401){ HQ.login(); return; }
-        if(x.s===402){ revMsg('点数不足 · 去充值','#f4708a'); return; }
-        if(!x.d.prompt){ revMsg('反推失败：'+brandedErrorText((x.d&&x.d.detail)||'未知'),'#f4708a'); return; }
+        if(x.s===402){ revMsg('鐐规暟涓嶈冻 路 鍘诲厖鍊?,'#f4708a'); return; }
+        if(!x.d.prompt){ revMsg('鍙嶆帹澶辫触锛?+brandedErrorText((x.d&&x.d.detail)||'鏈煡'),'#f4708a'); return; }
         revPrompt.value=x.d.prompt; revResult.style.display='block';
-        revMsg('✅ 反推完成，可编辑后填入','#2bd576');
+        revMsg('鉁?鍙嶆帹瀹屾垚锛屽彲缂栬緫鍚庡～鍏?,'#2bd576');
         if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
-      }).catch(function(){ revBtn.disabled=false; revBtn.textContent=reverseButtonLabel(); revMsg('网络错误，请重试','#f4708a'); });
+      }).catch(function(){ revBtn.disabled=false; revBtn.textContent=reverseButtonLabel(); revMsg('缃戠粶閿欒锛岃閲嶈瘯','#f4708a'); });
   };
-  if(revFill) revFill.onclick=function(){ pr.value=revPrompt.value||''; if(typeof updCount==='function') updCount(); try{pr.focus();}catch(e){} setNote('✅ 反推提示词已填入','#2bd576'); };
+  if(revFill) revFill.onclick=function(){ pr.value=revPrompt.value||''; if(typeof updCount==='function') updCount(); try{pr.focus();}catch(e){} setNote('鉁?鍙嶆帹鎻愮ず璇嶅凡濉叆','#2bd576'); };
   if(revFillImg) revFillImg.onclick=function(){ pr.value=revPrompt.value||''; if(typeof updCount==='function') updCount();
     if(revImgUrl && typeof setRef==='function') setRef(revImgUrl, revW, revH);
-    setNote('✅ 提示词+参考图都已带上，点生成即走「图生图」','#2bd576'); };
+    setNote('鉁?鎻愮ず璇?鍙傝€冨浘閮藉凡甯︿笂锛岀偣鐢熸垚鍗宠蛋銆屽浘鐢熷浘銆?,'#2bd576'); };
 
   if(upBox){
     inpBtn=document.createElement('button');
-    inpBtn.id='inpBtn'; inpBtn.textContent='✏️ 局部修改'; inpBtn.style.cssText='display:none; align-items:center; gap:5px; margin-top:10px; padding:7px 13px; font-size:12.5px; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); border-radius:9px; cursor:pointer; font-family:inherit;';
+    inpBtn.id='inpBtn'; inpBtn.textContent='鉁忥笍 灞€閮ㄤ慨鏀?; inpBtn.style.cssText='display:none; align-items:center; gap:5px; margin-top:10px; padding:7px 13px; font-size:12.5px; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); border-radius:9px; cursor:pointer; font-family:inherit;';
     upBox.parentElement.parentElement.insertBefore(inpBtn, upBox.parentElement.nextSibling);
     inpBtn.onclick=openInp;
   }
@@ -990,12 +965,12 @@
       inpModal=document.createElement('div');
       inpModal.style.cssText='position:fixed; inset:0; z-index:9999; background:rgba(5,8,13,.86); backdrop-filter:blur(4px); display:flex; align-items:center; justify-content:center; padding:24px;';
       inpModal.innerHTML='<div style="background:#0d1119; border:1px solid rgba(231,178,76,.22); border-radius:18px; padding:22px; max-width:560px; width:100%; max-height:92vh; overflow:auto;">'
-        +'<div style="font-size:16px; font-weight:700; margin-bottom:4px;">局部修改 · 涂抹要改的区域</div>'
-        +'<div style="font-size:12px; color:#94a4bb; margin-bottom:14px;">用画笔涂掉要替换的部分，在下方写「这块换成什么」，点生成。</div>'
+        +'<div style="font-size:16px; font-weight:700; margin-bottom:4px;">灞€閮ㄤ慨鏀?路 娑傛姽瑕佹敼鐨勫尯鍩?/div>'
+        +'<div style="font-size:12px; color:#94a4bb; margin-bottom:14px;">鐢ㄧ敾绗旀秱鎺夎鏇挎崲鐨勯儴鍒嗭紝鍦ㄤ笅鏂瑰啓銆岃繖鍧楁崲鎴愪粈涔堛€嶏紝鐐圭敓鎴愩€?/div>'
         +'<div id="inpWrap" style="position:relative; line-height:0; border-radius:12px; overflow:hidden; border:1px solid rgba(148,164,187,.18); touch-action:none; cursor:crosshair;"></div>'
-        +'<div style="display:flex; align-items:center; gap:12px; margin:14px 0;"><span style="font-size:12px; color:#94a4bb;">画笔</span><input id="inpBrush" type="range" min="10" max="90" value="42" style="flex:1;"><button id="inpClear" style="font-size:12px; color:#94a4bb; background:rgba(148,164,187,.08); border:1px solid rgba(148,164,187,.16); border-radius:8px; padding:5px 11px; cursor:pointer; font-family:inherit;">清除涂抹</button></div>'
-        +'<textarea id="inpPrompt" rows="2" placeholder="例如：把涂掉的背景换成节日红金氛围" style="width:100%; resize:none; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.16); border-radius:10px; color:#eaf1fa; font-size:13px; padding:10px; font-family:inherit; outline:none; box-sizing:border-box;"></textarea>'
-        +'<div style="display:flex; gap:10px; margin-top:14px;"><button id="inpCancel" style="flex:1; padding:11px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.06); border:1px solid rgba(148,164,187,.16); border-radius:11px; cursor:pointer; font-family:inherit;">取消</button><button id="inpGo" style="flex:2; padding:11px; font-size:14px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:11px; cursor:pointer; font-family:inherit;">生成（涂抹处重绘）</button></div>'
+        +'<div style="display:flex; align-items:center; gap:12px; margin:14px 0;"><span style="font-size:12px; color:#94a4bb;">鐢荤瑪</span><input id="inpBrush" type="range" min="10" max="90" value="42" style="flex:1;"><button id="inpClear" style="font-size:12px; color:#94a4bb; background:rgba(148,164,187,.08); border:1px solid rgba(148,164,187,.16); border-radius:8px; padding:5px 11px; cursor:pointer; font-family:inherit;">娓呴櫎娑傛姽</button></div>'
+        +'<textarea id="inpPrompt" rows="2" placeholder="渚嬪锛氭妸娑傛帀鐨勮儗鏅崲鎴愯妭鏃ョ孩閲戞皼鍥? style="width:100%; resize:none; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.16); border-radius:10px; color:#eaf1fa; font-size:13px; padding:10px; font-family:inherit; outline:none; box-sizing:border-box;"></textarea>'
+        +'<div style="display:flex; gap:10px; margin-top:14px;"><button id="inpCancel" style="flex:1; padding:11px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.06); border:1px solid rgba(148,164,187,.16); border-radius:11px; cursor:pointer; font-family:inherit;">鍙栨秷</button><button id="inpGo" style="flex:2; padding:11px; font-size:14px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:11px; cursor:pointer; font-family:inherit;">鐢熸垚锛堟秱鎶瑰閲嶇粯锛?/button></div>'
         +'</div>';
       document.body.appendChild(inpModal);
     }
@@ -1019,17 +994,17 @@
       m2.fillStyle='#ffffff'; m2.fillRect(0,0,mc.width,mc.height);
       var od=m2.getImageData(0,0,mc.width,mc.height);
       for(var i=0;i<src.length;i+=4){ if(src[i+3]>10){ od.data[i+3]=0; painted++; } }
-      if(painted<50){ alert('请先用画笔涂抹要修改的区域'); return; }
+      if(painted<50){ alert('璇峰厛鐢ㄧ敾绗旀秱鎶硅淇敼鐨勫尯鍩?); return; }
       m2.putImageData(od,0,0);
       var mask=mc.toDataURL('image/png').split(',')[1];
       var ip=(inpModal.querySelector('#inpPrompt').value||'').trim();
       inpModal.style.display='none';
       var payload={prompt:ip, ratio:nearestRatio(), image:refImg, mask:mask, quality:quality};
-      submit(payload, '局部修改中（涂抹处重绘）', '/api/gen/image');
+      submit(payload, '灞€閮ㄤ慨鏀逛腑锛堟秱鎶瑰閲嶇粯锛?, '/api/gen/image');
     };
     inpModal.style.display='flex';
   }
-  // setRef：把一张 PNG dataURL 设为参考图（上传 + 继续改共用）
+  // setRef锛氭妸涓€寮?PNG dataURL 璁句负鍙傝€冨浘锛堜笂浼?+ 缁х画鏀瑰叡鐢級
   function setRef(dataUrl, w, h){
     refImages=[{data:dataUrl.split(',')[1]||dataUrl,url:dataUrl,width:w,height:h}];
     syncFirstRef(); renderRefs();
@@ -1040,52 +1015,48 @@
   }
   function addRef(dataUrl,w,h){
     var limit=refLimit();
-    if(refImages.length>=limit){ setNote('当前引擎最多支持 '+limit+' 张参考图','#f4708a'); return 0; }
+    if(refImages.length>=limit){ setNote('褰撳墠寮曟搸鏈€澶氭敮鎸?'+limit+' 寮犲弬鑰冨浘','#f4708a'); return 0; }
     refImages.push({data:dataUrl.split(',')[1]||dataUrl,url:dataUrl,width:w,height:h});
     syncFirstRef(); renderRefs();
-    setNote('✅ 已添加参考图（'+refImages.length+'/'+limit+'），点“图片'+refImages.length+'”可插入提示词','#2bd576');
+    setNote('鉁?宸叉坊鍔犲弬鑰冨浘锛?+refImages.length+'/'+limit+'锛夛紝鐐光€滃浘鐗?+refImages.length+'鈥濆彲鎻掑叆鎻愮ず璇?,'#2bd576');
     return refImages.length;
   }
   function promptUsesShiftedIndex(index){
-    var found=false; (pr.value||'').replace(/@(?:图片|图)([1-9]\d*)/g,function(_,n){if(Number(n)>=index)found=true;return _;}); return found;
+    var found=false; (pr.value||'').replace(/@(?:鍥剧墖|鍥?([1-9]\d*)/g,function(_,n){if(Number(n)>=index)found=true;return _;}); return found;
   }
   function renderRefs(){
     if(!upBox) return;
     var row=upBox.parentElement, limit=refLimit();
     row.querySelectorAll('.image-ref-thumb').forEach(function(el){el.remove();});
     upBox.style.backgroundImage='none'; upBox.style.borderStyle='dashed'; upBox.style.borderColor='rgba(148,164,187,.26)';
-    if(upIcon)upIcon.style.display='flex'; if(upText)upText.textContent='添加';
-    if(upHint)upHint.textContent='(已选 '+refImages.length+'/'+limit+' 张 · 点图片编号插入 @图片N)';
+    if(upIcon)upIcon.style.display='flex'; if(upText)upText.textContent='娣诲姞';
+    if(upHint)upHint.textContent='(宸查€?'+refImages.length+'/'+limit+' 寮?路 鐐瑰浘鐗囩紪鍙锋彃鍏?@鍥剧墖N)';
     refImages.forEach(function(item,i){
       var box=document.createElement('div'); box.className='image-ref-thumb';
       box.style.cssText='position:relative;width:66px;height:66px;border:1px solid rgba(231,178,76,.5);border-radius:11px;overflow:hidden;background:#070b13;';
-      box.innerHTML='<img src="'+item.url+'" style="width:100%;height:100%;object-fit:cover"><button type="button" data-mention style="position:absolute;left:3px;bottom:3px;border:0;border-radius:5px;background:rgba(7,11,19,.82);color:#e7b24c;font:10px inherit;cursor:pointer;">图片'+(i+1)+'</button><button type="button" data-remove aria-label="删除图片'+(i+1)+'" style="position:absolute;right:3px;top:3px;width:20px;height:20px;border:0;border-radius:50%;background:rgba(7,11,19,.8);color:#fff;cursor:pointer;">×</button>';
+      box.innerHTML='<img src="'+item.url+'" style="width:100%;height:100%;object-fit:cover"><button type="button" data-mention style="position:absolute;left:3px;bottom:3px;border:0;border-radius:5px;background:rgba(7,11,19,.82);color:#e7b24c;font:10px inherit;cursor:pointer;">鍥剧墖'+(i+1)+'</button><button type="button" data-remove aria-label="鍒犻櫎鍥剧墖'+(i+1)+'" style="position:absolute;right:3px;top:3px;width:20px;height:20px;border:0;border-radius:50%;background:rgba(7,11,19,.8);color:#fff;cursor:pointer;">脳</button>';
       box.querySelector('[data-mention]').onclick=function(){insertImageMention(i+1);};
       box.querySelector('[data-remove]').onclick=function(){
-        if(promptUsesShiftedIndex(i+1)){setNote('提示词已引用图片'+(i+1)+'或后续图片，请先删除对应 @图片N','#f4708a');return;}
+        if(promptUsesShiftedIndex(i+1)){setNote('鎻愮ず璇嶅凡寮曠敤鍥剧墖'+(i+1)+'鎴栧悗缁浘鐗囷紝璇峰厛鍒犻櫎瀵瑰簲 @鍥剧墖N','#f4708a');return;}
         refImages.splice(i,1); syncFirstRef(); renderRefs();
       };
       row.insertBefore(box,upBox);
     });
     upBox.style.display=refImages.length>=limit?'none':'flex';
-    if(refImages.length>limit) setNote('当前引擎最多支持 '+limit+' 张参考图，请删减后再生成','#f4708a');
+    if(refImages.length>limit) setNote('褰撳墠寮曟搸鏈€澶氭敮鎸?'+limit+' 寮犲弬鑰冨浘锛岃鍒犲噺鍚庡啀鐢熸垚','#f4708a');
   }
   renderRefs();
 
-  // 灵感页详情弹窗「跟创」带来的粘贴参考图（经 sessionStorage 传递）→ 载入即设为参考图（图生图）
-  try{ var _fcref=sessionStorage.getItem('hq_followcreate_ref');
-    if(_fcref){ sessionStorage.removeItem('hq_followcreate_ref');  // 一次性消费，防下次误带
-      var _fim=new Image();
+  // 鐏垫劅椤佃鎯呭脊绐椼€岃窡鍒涖€嶅甫鏉ョ殑绮樿创鍙傝€冨浘锛堢粡 sessionStorage 浼犻€掞級鈫?杞藉叆鍗宠涓哄弬鑰冨浘锛堝浘鐢熷浘锛?  try{ var _fcref=sessionStorage.getItem('hq_followcreate_ref');
+    if(_fcref){ sessionStorage.removeItem('hq_followcreate_ref');  // 涓€娆℃€ф秷璐癸紝闃蹭笅娆¤甯?      var _fim=new Image();
       _fim.onload=function(){ setRef(_fcref, _fim.width, _fim.height);
-        setNote('✅ 已带入你在灵感页粘贴的参考图 · 改下提示词，点生成即走「图生图」','#2bd576'); };
+        setNote('鉁?宸插甫鍏ヤ綘鍦ㄧ伒鎰熼〉绮樿创鐨勫弬鑰冨浘 路 鏀逛笅鎻愮ず璇嶏紝鐐圭敓鎴愬嵆璧般€屽浘鐢熷浘銆?,'#2bd576'); };
       _fim.src=_fcref;
     }
   }catch(e){}
 
-  // 采集页「转作图」带来的封面图（经 localStorage 传递）→ 载入设为参考图（图生图）。#233:原来 collect 存了 hq_collect_to_banana 但 banana 侧从没读取，图传不过来。
-  try{ var _cb=localStorage.getItem('hq_collect_to_banana');
-    if(_cb){ localStorage.removeItem('hq_collect_to_banana');  // 一次性消费，防下次误带
-      var _cbd=JSON.parse(_cb);
+  // 閲囬泦椤点€岃浆浣滃浘銆嶅甫鏉ョ殑灏侀潰鍥撅紙缁?localStorage 浼犻€掞級鈫?杞藉叆璁句负鍙傝€冨浘锛堝浘鐢熷浘锛夈€?233:鍘熸潵 collect 瀛樹簡 hq_collect_to_banana 浣?banana 渚т粠娌¤鍙栵紝鍥句紶涓嶈繃鏉ャ€?  try{ var _cb=localStorage.getItem('hq_collect_to_banana');
+    if(_cb){ localStorage.removeItem('hq_collect_to_banana');  // 涓€娆℃€ф秷璐癸紝闃蹭笅娆¤甯?      var _cbd=JSON.parse(_cb);
       if(_cbd){
         collectHandoff=_cbd;
         if(_cbd.title && pr && !(pr.value||'').trim()){
@@ -1097,21 +1068,20 @@
         fetch(referenceFetchUrl(_coverUrl),{cache:'no-store',credentials:'same-origin',headers:{'Authorization':'Bearer '+tok()}})
           .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.blob(); })
           .then(function(blob){ refFromFile(blob,function(index){
-            setNote(index?'✅ 已带入采集封面作参考图 · 改下提示词，点生成即走「图生图」':'✅ 已带入标题；封面读取失败，请手动上传参考图',index?'#2bd576':'#f4b740');
+            setNote(index?'鉁?宸插甫鍏ラ噰闆嗗皝闈綔鍙傝€冨浘 路 鏀逛笅鎻愮ず璇嶏紝鐐圭敓鎴愬嵆璧般€屽浘鐢熷浘銆?:'鉁?宸插甫鍏ユ爣棰橈紱灏侀潰璇诲彇澶辫触锛岃鎵嬪姩涓婁紶鍙傝€冨浘',index?'#2bd576':'#f4b740');
           }); })
-          .catch(function(){ setNote('✅ 已带入标题；封面读取失败，请手动上传参考图','#f4b740'); });
+          .catch(function(){ setNote('鉁?宸插甫鍏ユ爣棰橈紱灏侀潰璇诲彇澶辫触锛岃鎵嬪姩涓婁紶鍙傝€冨浘','#f4b740'); });
       }
     }
   }catch(e){}
 
-  // 只有从采集页进入时显示返回入口；把原链接带回，形成可续的双向工作流。
-  function showCollectReturn(){
+  // 鍙湁浠庨噰闆嗛〉杩涘叆鏃舵樉绀鸿繑鍥炲叆鍙ｏ紱鎶婂師閾炬帴甯﹀洖锛屽舰鎴愬彲缁殑鍙屽悜宸ヤ綔娴併€?  function showCollectReturn(){
     if(!collectHandoff || document.getElementById('returnCollectBtn')) return;
     var row=document.getElementById('actRow');
     if(!row || !row.parentNode) return;
     var btn=document.createElement('button');
     btn.id='returnCollectBtn'; btn.type='button'; btn.className='hv-gold';
-    btn.textContent='← 返回采集素材';
+    btn.textContent='鈫?杩斿洖閲囬泦绱犳潗';
     btn.style.cssText='width:100%;margin-top:10px;padding:10px 12px;border:1px solid rgba(231,178,76,.28);border-radius:8px;background:rgba(231,178,76,.08);color:#e7b24c;font:600 13px inherit;cursor:pointer;';
     btn.onclick=function(){
       try{ localStorage.setItem('hq_banana_to_collect',JSON.stringify({
@@ -1124,25 +1094,25 @@
   }
   showCollectReturn();
 
-  // 文生图 / 图生图（有参考图）/ nano banana
+  // 鏂囩敓鍥?/ 鍥剧敓鍥撅紙鏈夊弬鑰冨浘锛? nano banana
   gen.onclick=function(){
     var bp={prompt:(pr.value||'').trim(), ratio:ratio, quality:quality, count:count};
     var usesRef=refImages.length>0&&engine!=='zelong2';
-    if(refImages.length>refLimit()){ setNote('当前引擎最多支持 '+refLimit()+' 张参考图，请删减后再生成','#f4708a'); return; }
+    if(refImages.length>refLimit()){ setNote('褰撳墠寮曟搸鏈€澶氭敮鎸?'+refLimit()+' 寮犲弬鑰冨浘锛岃鍒犲噺鍚庡啀鐢熸垚','#f4708a'); return; }
     if(usesRef) bp.reference_images=refImages.map(function(x){return x.data;});
     if(engine==='gpt' || engine==='xiaole' || engine==='zelong2' || engine==='seedream'){
-      if(engine!=='gpt') bp.provider=engine;              // 果肉/泽龙2/Seedream 各自 provider
-      if(engine==='seedream') bp.variant=seedreamVariant; // 5.0 标准 / 5.0 Pro
-      var lbl = engine==='xiaole' ? '果肉生图 '
-              : engine==='zelong2' ? '泽龙2生图 '
-              : engine==='seedream' ? ('黄雀引擎 1 '+(seedreamVariant==='pro'?'Pro ':'标准 ')) : '';
-      submit(bp, lbl+(usesRef?'多图参考生图中':(engine==='gpt'?'文生图中':'生成中')), '/api/gen/image');
+      if(engine!=='gpt') bp.provider=engine;              // 鏋滆倝/娉介緳2/Seedream 鍚勮嚜 provider
+      if(engine==='seedream') bp.variant=seedreamVariant; // 5.0 鏍囧噯 / 5.0 Pro
+      var lbl = engine==='xiaole' ? '鏋滆倝鐢熷浘 '
+              : engine==='zelong2' ? '娉介緳2鐢熷浘 '
+              : engine==='seedream' ? ('榛勯泙寮曟搸 1 '+(seedreamVariant==='pro'?'Pro ':'鏍囧噯 ')) : '';
+      submit(bp, lbl+(usesRef?'澶氬浘鍙傝€冪敓鍥句腑':(engine==='gpt'?'鏂囩敓鍥句腑':'鐢熸垚涓?)), '/api/gen/image');
     } else {
-      bp.model=bananaVariant;   // 一张卡两个型号：nb2 / pro，后端 /api/gen/banana 按 model 分流
-      submit(bp, (bananaVariant==='pro'?'纳米香蕉 Pro ':'纳米香蕉 2 ')+(usesRef?'多图参考生图中':'生成中'), '/api/gen/banana');
+      bp.model=bananaVariant;   // 涓€寮犲崱涓や釜鍨嬪彿锛歯b2 / pro锛屽悗绔?/api/gen/banana 鎸?model 鍒嗘祦
+      submit(bp, (bananaVariant==='pro'?'绾崇背棣欒晧 Pro ':'绾崇背棣欒晧 2 ')+(usesRef?'澶氬浘鍙傝€冪敓鍥句腑':'鐢熸垚涓?), '/api/gen/banana');
     }
   };
-  // 最近作品：读真实历史（生成即自动入库）
+  // 鏈€杩戜綔鍝侊細璇荤湡瀹炲巻鍙诧紙鐢熸垚鍗宠嚜鍔ㄥ叆搴擄級
   function referenceFetchUrl(url){
     try{
       var parsed=new URL(url,location.href);
@@ -1152,32 +1122,32 @@
   }
   function loadReferenceFromUrl(url){
     selectEngine('gpt');
-    setNote('正在把所选图片载入为参考…','#2dd4bf');
+    setNote('姝ｅ湪鎶婃墍閫夊浘鐗囪浇鍏ヤ负鍙傝€冣€?,'#2dd4bf');
     fetch(referenceFetchUrl(url),{cache:'no-store',credentials:'same-origin',headers:{'Authorization':'Bearer '+tok()}})
       .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.blob(); })
       .then(function(blob){
-        if(!/^image\//.test(blob.type||'')) throw new Error('返回内容不是图片');
+        if(!/^image\//.test(blob.type||'')) throw new Error('杩斿洖鍐呭涓嶆槸鍥剧墖');
         refFromFile(blob,function(){
           pr.scrollIntoView({block:'center'});
-          setNote('已载入图片，请涂抹要修改的区域','#2bd576');
+          setNote('宸茶浇鍏ュ浘鐗囷紝璇锋秱鎶硅淇敼鐨勫尯鍩?,'#2bd576');
           openInp();
         });
       })
-      .catch(function(err){ setNote('继续改：图片读取失败（'+err.message+'）','#f4708a'); });
+      .catch(function(err){ setNote('缁х画鏀癸細鍥剧墖璇诲彇澶辫触锛?+err.message+'锛?,'#f4708a'); });
   }
   function openRecentLightbox(urls,idx){
     if(!urls||!urls.length) return;
     idx=Math.max(0,Math.min(idx||0,urls.length-1));
     var old=document.getElementById('recentModal'); if(old&&old._close) old._close();
     var wrap=document.createElement('div'); wrap.id='recentModal'; wrap.className='recent-modal';
-    var box=document.createElement('div'); box.className='recent-box'; box.setAttribute('role','dialog'); box.setAttribute('aria-modal','true'); box.setAttribute('aria-label','作品预览');
-    var close=document.createElement('button'); close.type='button'; close.className='recent-close'; close.setAttribute('aria-label','关闭'); close.textContent='×';
+    var box=document.createElement('div'); box.className='recent-box'; box.setAttribute('role','dialog'); box.setAttribute('aria-modal','true'); box.setAttribute('aria-label','浣滃搧棰勮');
+    var close=document.createElement('button'); close.type='button'; close.className='recent-close'; close.setAttribute('aria-label','鍏抽棴'); close.textContent='脳';
     var img=document.createElement('img'); img.alt='';
-    var prev=document.createElement('button'); prev.type='button'; prev.className='recent-nav prev'; prev.setAttribute('aria-label','上一张'); prev.textContent='‹';
-    var next=document.createElement('button'); next.type='button'; next.className='recent-nav next'; next.setAttribute('aria-label','下一张'); next.textContent='›';
+    var prev=document.createElement('button'); prev.type='button'; prev.className='recent-nav prev'; prev.setAttribute('aria-label','涓婁竴寮?); prev.textContent='鈥?;
+    var next=document.createElement('button'); next.type='button'; next.className='recent-nav next'; next.setAttribute('aria-label','涓嬩竴寮?); next.textContent='鈥?;
     var foot=document.createElement('div'); foot.className='recent-foot';
     var count=document.createElement('span'); count.className='recent-count';
-    var use=document.createElement('button'); use.type='button'; use.className='recent-use'; use.textContent='用作参考继续编辑';
+    var use=document.createElement('button'); use.type='button'; use.className='recent-use'; use.textContent='鐢ㄤ綔鍙傝€冪户缁紪杈?;
     foot.appendChild(count); foot.appendChild(use);
     var closeModal=function(){ document.removeEventListener('keydown',onKey); wrap.remove(); };
     var onKey=function(e){
@@ -1209,40 +1179,37 @@
   function loadHistory(){
     var grid=document.getElementById('recentGrid'); if(!grid||!tok()) return;
     fetch('/api/gen/history?limit=9&include_failed=1',{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
-      if(!d.items||!d.items.length){grid.innerHTML='<div style="grid-column:1/-1;padding:18px 0;text-align:center;font-size:12.5px;color:#5c6b82;">还没有作品，生成第一张吧</div>';return;}
+      if(!d.items||!d.items.length){grid.innerHTML='<div style="grid-column:1/-1;padding:18px 0;text-align:center;font-size:12.5px;color:#5c6b82;">杩樻病鏈変綔鍝侊紝鐢熸垚绗竴寮犲惂</div>';return;}
       var items=d.items.slice(0,9);
       var urls=items.filter(function(it){return it.url;}).map(function(it){ return it.url; });
       grid.innerHTML=items.map(function(it){
-        if(it.status==='error') return '<div class="recent-failed"><strong>生成失败</strong><p>'+brandedErrorText(it.error||'生成失败').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];})+'</p><button class="recent-delete" type="button" data-job="'+it.job_id+'">删除记录</button></div>';
+        if(it.status==='error') return '<div class="recent-failed"><strong>鐢熸垚澶辫触</strong><p>'+brandedErrorText(it.error||'鐢熸垚澶辫触').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];})+'</p><button class="recent-delete" type="button" data-job="'+it.job_id+'">鍒犻櫎璁板綍</button></div>';
         return '<img src="'+it.url+'" class="hv-lift" data-url="'+it.url+'" style="display:block; width:100%; aspect-ratio:3/4; border-radius:8px; object-fit:cover; cursor:pointer; border:1px solid rgba(148,164,187,.12);">';
       }).join('');
       grid.querySelectorAll('img').forEach(function(im,i){ im.onclick=function(){ openRecentLightbox(urls,i); }; });
       grid.querySelectorAll('.recent-delete').forEach(function(button){button.onclick=function(){
-        if(!confirm('确定删除这条失败记录吗？')) return;
+        if(!confirm('纭畾鍒犻櫎杩欐潯澶辫触璁板綍鍚楋紵')) return;
         button.disabled=true;
         fetch('/api/gen/job/delete',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify({job_id:button.getAttribute('data-job')})})
-          .then(function(r){return r.json().catch(function(){return {};}).then(function(data){if(!r.ok) throw new Error(data.detail||'删除失败');});})
-          .then(loadHistory).catch(function(error){button.disabled=false;flash(error.message||'删除失败','#f4708a');});
+          .then(function(r){return r.json().catch(function(){return {};}).then(function(data){if(!r.ok) throw new Error(data.detail||'鍒犻櫎澶辫触');});})
+          .then(loadHistory).catch(function(error){button.disabled=false;flash(error.message||'鍒犻櫎澶辫触','#f4708a');});
       };});
     }).catch(function(){});
   }
   loadHistory();
-  // 刷新还原：把上次的结果图放回结果区，刷新后也能直接再生成
+  // 鍒锋柊杩樺師锛氭妸涓婃鐨勭粨鏋滃浘鏀惧洖缁撴灉鍖猴紝鍒锋柊鍚庝篃鑳界洿鎺ュ啀鐢熸垚
   try{ var lr0=localStorage.getItem('hq_last_result'); if(lr0){ setResultRatio(localStorage.getItem('hq_last_result_ratio')); res.src=lr0+'?t='+Date.now(); lastResultUrl=lr0; } }catch(e){}
-  // 续传：切回页面时接上所有进行中的任务（后端没中断）。
-  // 兼容旧版的单任务 key：老用户浏览器里可能还存着 hq_active_job，读完即迁移。
-  try{
+  // 缁紶锛氬垏鍥為〉闈㈡椂鎺ヤ笂鎵€鏈夎繘琛屼腑鐨勪换鍔★紙鍚庣娌′腑鏂級銆?  // 鍏煎鏃х増鐨勫崟浠诲姟 key锛氳€佺敤鎴锋祻瑙堝櫒閲屽彲鑳借繕瀛樼潃 hq_active_job锛岃瀹屽嵆杩佺Щ銆?  try{
     var saved=JSON.parse(localStorage.getItem(ACTIVE_KEY)||'[]');
     var legacy=JSON.parse(localStorage.getItem('hq_active_job')||'null');
     if(legacy&&legacy.id){ saved.push(legacy); localStorage.removeItem('hq_active_job'); }
     saved.slice(0,MAX_RESTORED_JOBS).forEach(function(j){ if(j&&j.id) poll(j.id, j.t0||Date.now(), j.label); });
   }catch(e){}
 
-  // 结果区按钮
-  function actBtn(label){ var n=null; document.querySelectorAll('#actRow > *').forEach(function(el){ if(el.textContent.indexOf(label)>=0) n=el; }); return n; }
-  var bRegen=actBtn('再生成'), bEdit=actBtn('继续改'), bVideo=actBtn('转视频'), bFeishu=actBtn('发飞书'), bDl=actBtn('下载'), bStore=actBtn('入库');
-  if(bRegen) bRegen.onclick=function(){ if(!lastPayload){ setNote('先生成一张，再「再生成」','#f4708a'); return; } submit(lastPayload,'重新生成中',lastEndpoint); };
-  if(bEdit) bEdit.onclick=function(){ if(!lastResultUrl){ setNote('先生成一张，再「继续改」','#f4708a'); return; }
+  // 缁撴灉鍖烘寜閽?  function actBtn(label){ var n=null; document.querySelectorAll('#actRow > *').forEach(function(el){ if(el.textContent.indexOf(label)>=0) n=el; }); return n; }
+  var bRegen=actBtn('鍐嶇敓鎴?), bEdit=actBtn('缁х画鏀?), bVideo=actBtn('杞棰?), bFeishu=actBtn('鍙戦涔?), bDl=actBtn('涓嬭浇'), bStore=actBtn('鍏ュ簱');
+  if(bRegen) bRegen.onclick=function(){ if(!lastPayload){ setNote('鍏堢敓鎴愪竴寮狅紝鍐嶃€屽啀鐢熸垚銆?,'#f4708a'); return; } submit(lastPayload,'閲嶆柊鐢熸垚涓?,lastEndpoint); };
+  if(bEdit) bEdit.onclick=function(){ if(!lastResultUrl){ setNote('鍏堢敓鎴愪竴寮狅紝鍐嶃€岀户缁敼銆?,'#f4708a'); return; }
     loadReferenceFromUrl(lastResultUrl);
   };
   if(bVideo) bVideo.onclick=function(e){
@@ -1263,8 +1230,8 @@
     return m ? m[1].toLowerCase() : 'png';
   }
   async function downloadResultImage(){
-    if(!lastResultUrl){ setNote('先生成一张再下载','#f4708a'); return; }
-    setNote('正在准备下载…','#2dd4bf');
+    if(!lastResultUrl){ setNote('鍏堢敓鎴愪竴寮犲啀涓嬭浇','#f4708a'); return; }
+    setNote('姝ｅ湪鍑嗗涓嬭浇鈥?,'#2dd4bf');
     try{
       var r=await fetch(lastResultUrl,{mode:'cors',credentials:'omit',cache:'no-store'});
       if(!r.ok) throw new Error('HTTP '+r.status);
@@ -1278,19 +1245,19 @@
       a.click();
       a.remove();
       setTimeout(function(){ URL.revokeObjectURL(obj); },30000);
-      setNote('✅ 已开始下载','#2bd576');
+      setNote('鉁?宸插紑濮嬩笅杞?,'#2bd576');
     }catch(err){
-      setNote('正在切换后端下载…','#f4cd72');
+      setNote('姝ｅ湪鍒囨崲鍚庣涓嬭浇鈥?,'#f4cd72');
       location.href='/api/gen/dl?url='+encodeURIComponent(lastResultUrl)+'&name='+encodeURIComponent('huangque_'+Date.now());
     }
   }
   if(bDl) bDl.onclick=function(e){ if(e&&e.preventDefault) e.preventDefault(); downloadResultImage(); };
-  if(bStore) bStore.onclick=function(e){ if(e&&e.preventDefault) e.preventDefault(); if(!lastResultUrl){ setNote('先生成一张','#f4708a'); return; } setNote('✅ 生成即自动入库 · <a href="assets.html" style="color:#e7b24c">去「资产」查看</a>','#2bd576'); };
-  if(bFeishu) bFeishu.onclick=function(){ setNote('飞书推送即将上线（bot 接入阶段）','#f4cd72'); };
+  if(bStore) bStore.onclick=function(e){ if(e&&e.preventDefault) e.preventDefault(); if(!lastResultUrl){ setNote('鍏堢敓鎴愪竴寮?,'#f4708a'); return; } setNote('鉁?鐢熸垚鍗宠嚜鍔ㄥ叆搴?路 <a href="assets.html" style="color:#e7b24c">鍘汇€岃祫浜с€嶆煡鐪?/a>','#2bd576'); };
+  if(bFeishu) bFeishu.onclick=function(){ setNote('椋炰功鎺ㄩ€佸嵆灏嗕笂绾匡紙bot 鎺ュ叆闃舵锛?,'#f4cd72'); };
 })();
 </script>
 <link rel="stylesheet" href="/workbench/channel-parameters.css?v=b324c976">
-<script src="/workbench/channel-parameter-controls.js?v=0ad2941b"></script>
+<script src="/workbench/channel-parameter-controls.js?v=8e29d198"></script>
 <script src="/workbench/channel-parameters.js?v=5ec79575"></script>
 </body>
 </html>

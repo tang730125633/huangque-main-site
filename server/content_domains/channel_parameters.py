@@ -13,7 +13,9 @@ LABELS={'size':'图片尺寸','quality':'生成质量','output_format':'文件�
 SIZES={'1024x1024':'1:1','1536x1024':'3:2','1024x1536':'2:3',
        '1792x1024':'7:4','1024x1792':'4:7','256x256':'1:1','512x512':'1:1',
        '2048x2048':'1:1','2048x1152':'16:9','1152x2048':'9:16','3840x2160':'16:9','2160x3840':'9:16',
-       '2048x1536':'4:3','1536x2048':'3:4'}
+       '2048x1536':'4:3','1536x2048':'3:4',
+       '1024x1280':'4:5','1280x1024':'5:4','1024x768':'4:3','768x1024':'3:4',
+       '1280x720':'16:9','720x1280':'9:16'}
 
 # 前台工作台布局：后台可调的渠道顺序与默认渠道。仅控制展示，可用性仍由功能开关决定。
 WORKBENCH_LAYOUT_KEYS = {
@@ -96,6 +98,23 @@ def capabilities(cfg,profile=None):
         return dict(profile='xai_video',profiles=['xai_video'],fields={'ratio':['9:16','16:9','1:1'],
                     'resolution':resolutions,'duration':list(range(1,16))},
                     reference_min=1 if cfg['model']=='grok-imagine-video-1.5' else 0,reference_max=1,count=1)
+    if adapter=='lechuang_image':
+        # 乐创统一生图（gpt-image-2 等）：文生图 + 图生图修图（1..9 参考图），部分线路支持透明底。
+        return dict(profile='lechuang_image',profiles=['lechuang_image'],
+                    fields={'size':['1024x1024','1024x1280','1280x1024','1024x768','768x1024',
+                                    '1280x720','720x1280','1024x1536','1536x1024'],
+                            'quality':['auto','low','medium','high'],
+                            'background':['auto','opaque','transparent']},
+                    reference_min=0,reference_max=9,count=1)
+    if adapter=='lechuang_video':
+        # 乐创统一视频（Grok 1.0 / Grok 1.5）：文生视频 + 图生视频。
+        # Grok 1.0 图生视频最多 7 张参考图；Grok 1.5 单图视频模型最多 1 张。
+        ref_max=1 if cfg['model']=='grok-video-1.5' else 7
+        return dict(profile='lechuang_video',profiles=['lechuang_video'],
+                    fields={'ratio':['9:16','16:9','1:1'],
+                            'resolution':['480p','720p','1080p'],
+                            'duration':list(range(1,16))},
+                    reference_min=0,reference_max=ref_max,count=1)
     raise ValueError('该适配器尚未接入参数配置')
 
 

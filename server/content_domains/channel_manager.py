@@ -13,6 +13,9 @@ ADAPTERS = {
     'openai_image': {'name': 'OpenAI 兼容文生图', 'kind': 'image', 'references': False},
     'minimax_h3': {'name': 'MiniMax H3 视频协议', 'kind': 'xiaole_video', 'references': True},
     'xai_video': {'name': 'Grok 视频协议', 'kind': 'xiaole_video', 'references': True},
+    # 乐创（api.lechuang.chat）统一生成协议：POST /generations，图/视频共用同一入口。
+    'lechuang_image': {'name': '乐创统一生图', 'kind': 'image', 'references': True},
+    'lechuang_video': {'name': '乐创统一视频', 'kind': 'xiaole_video', 'references': True},
 }
 
 
