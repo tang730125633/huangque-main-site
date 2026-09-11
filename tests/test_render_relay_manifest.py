@@ -142,5 +142,82 @@ class RenderRelayManifestTests(unittest.TestCase):
         self.assertEqual(converted, upload.call_args.kwargs["headers"]["X-HQ-Asset-Sha256"])
 
 
+class RelayLoadBalanceTests(unittest.TestCase):
+    """负载均衡：谁空谁先拿，避免一台连着吃好几条把某条挤慢。
+
+    起因（2026-09-12）：三台 GPU 同时接活，一台连吃 3 条，其中一条渲染被挤到 333 秒，
+    而另一台全程闲着。
+    """
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.db = Path(self.dir.name) / "relay.db"
+        conn = sqlite3.connect(self.db)
+        conn.execute("CREATE TABLE jobs(id TEXT PRIMARY KEY, status TEXT, node TEXT)")
+        conn.commit()
+        conn.close()
+        self.relay = load("render_relay_lb", "deploy/render-relay/relay.py")
+        self.relay.DB_PATH = str(self.db)
+        self.relay._LAST_CLAIM.clear()
+        self.relay._NODE_FAIL.clear()
+
+    def tearDown(self):
+        self.relay._LAST_CLAIM.clear()
+        self.dir.cleanup()
+
+    def _running(self, node, count):
+        conn = sqlite3.connect(self.db)
+        for i in range(count):
+            conn.execute("INSERT INTO jobs(id, status, node) VALUES(?, 'running', ?)",
+                         ("%s-%d" % (node, i), node))
+        conn.commit()
+        conn.close()
+
+    def test_busier_node_yields_to_idler(self):
+        self._running("yuelei", 3)
+        now = self.relay._now()
+        self.relay._LAST_CLAIM.update({"yuelei": now, "tang": now})
+        self.assertTrue(self.relay._should_yield_to_idler("yuelei", now),
+                        "手上 3 条、别人 0 条 → 该让位")
+
+    def test_idlest_node_never_yields(self):
+        self._running("yuelei", 3)
+        now = self.relay._now()
+        self.relay._LAST_CLAIM.update({"yuelei": now, "tang": now})
+        self.assertFalse(self.relay._should_yield_to_idler("tang", now),
+                         "最空的那台永远不让，否则会互相让到没人干活")
+
+    def test_equal_load_does_not_yield(self):
+        self._running("tang", 1)
+        self._running("yuelei", 1)
+        now = self.relay._now()
+        self.relay._LAST_CLAIM.update({"tang": now, "yuelei": now})
+        self.assertFalse(self.relay._should_yield_to_idler("tang", now), "负载一样时正常抢")
+
+    def test_single_online_node_does_not_yield(self):
+        self._running("tang", 4)
+        now = self.relay._now()
+        self.relay._LAST_CLAIM["tang"] = now
+        self.assertFalse(self.relay._should_yield_to_idler("tang", now),
+                         "只有自己在线时没什么可让的")
+
+    def test_offline_node_is_not_counted(self):
+        """掉线/摘出池的机器不该被算进分母，否则剩下的节点全都不敢接活。"""
+        self._running("tang", 2)
+        self._running("fang", 0)
+        now = self.relay._now()
+        self.relay._LAST_CLAIM["tang"] = now
+        self.relay._LAST_CLAIM["fang"] = now - self.relay.NODE_ONLINE_SECONDS - 10
+        self.assertFalse(self.relay._should_yield_to_idler("tang", now),
+                         "fang 已掉线，不该拖住 tang")
+
+    def test_database_fault_never_stops_dispatch(self):
+        self.relay.DB_PATH = str(Path(self.dir.name) / "nope.db")
+        now = self.relay._now()
+        self.relay._LAST_CLAIM.update({"tang": now, "yuelei": now})
+        self.assertFalse(self.relay._should_yield_to_idler("tang", now),
+                         "均衡坏了也不能把派活搞停")
+
+
 if __name__ == "__main__":
     unittest.main()
