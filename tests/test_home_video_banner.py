@@ -22,13 +22,18 @@ class HomeVideoBannerTests(unittest.TestCase):
         cls.video = ROOT / "site/assets/home/agent-wave-h3-2k.mp4"
         cls.poster = ROOT / "site/assets/home/agent-wave-h3-2k-poster.jpg"
 
-    def test_video_replaces_moon(self):
+    def test_main_hero_precedes_agent_wave_story(self):
+        self.assertIn('<section class="hero" id="top">', self.html)
+        self.assertIn("hero-banner-monochrome-eye.mp4", self.html)
+        self.assertIn("hero-banner-ancient-courtyard.mp4", self.html)
         self.assertIn('<div class="hero-media agent-wave-media" aria-hidden="true">', self.html)
         self.assertIn("agent-wave-h3-2k.mp4", self.html)
         self.assertIn("data-hero-scrub", self.html)
         self.assertIn("data-hero-scrub autoplay muted loop playsinline", self.html)
         self.assertIn("data-agent-wave-overlay", self.html)
-        self.assertEqual(self.html.count("<video"), 2)
+        self.assertLess(self.html.index('<section class="hero" id="top">'), self.html.index("data-agent-wave-story"))
+        self.assertEqual(self.html.count("<video"), 4)
+        self.assertIn("const heroVideos = [...document.querySelectorAll('#top .hero-media video')];", self.html)
         self.assertNotIn("hero-moon", self.html)
         self.assertNotIn("moon3d.js", self.html)
 
@@ -46,12 +51,14 @@ class HomeVideoBannerTests(unittest.TestCase):
         self.assertIn("!video.seeking", self.agent_wave)
         self.assertIn("status.mode = 'scroll-scrub'", self.agent_wave)
         self.assertIn("status.mode = 'ambient-loop'", self.agent_wave)
+        self.assertIn("status.mode = 'waiting'", self.agent_wave)
         self.assertIn("if (scrubbing && video.readyState", self.agent_wave)
         self.assertIn("const waves = [", self.agent_wave)
         self.assertIn("status.overlayPoints = waves.length * count", self.agent_wave)
         self.assertIn("prefers-reduced-motion: reduce", self.agent_wave)
 
     def test_liquid_glass_uses_pointer_driven_highlight(self):
+        self.assertIn("Huang Que AI Hub", self.html)
         self.assertIn("让 AI", self.html)
         self.assertIn("看见成片", self.html)
         self.assertGreaterEqual(self.html.count("data-liquid-glass"), 5)

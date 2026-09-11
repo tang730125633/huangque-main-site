@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN" class="agent-wave-home">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -109,14 +109,31 @@
   </header>
 
   <main id="main">
-    <section class="hero agent-wave-story" id="top" data-agent-wave-story>
+    <section class="hero" id="top">
+      <div class="hero-media" aria-hidden="true">
+        <video class="hero-video-eye is-active" autoplay muted playsinline preload="metadata">
+          <source src="/assets/home/hero-banner-monochrome-eye.mp4" type="video/mp4">
+        </video>
+        <video class="hero-video-courtyard" muted playsinline preload="metadata">
+          <source src="/assets/home/hero-banner-ancient-courtyard.mp4" type="video/mp4">
+        </video>
+        <canvas class="hero-liquid-glass" data-hero-liquid-glass></canvas>
+      </div>
+      <div class="hero-inner" data-reveal>
+        <h1><span class="line">Huang Que AI Hub</span></h1>
+        <div class="hero-actions">
+          <a class="button button-primary" data-liquid-glass href="/workbench/inspiration">ENTER HUANGQUE <span aria-hidden="true">↗</span></a>
+        </div>
+      </div>
+    </section>
+
+    <section class="hero agent-wave-story" data-agent-wave-story>
       <span class="agent-wave-anchor" id="agent-wave-result" aria-hidden="true"></span>
       <div class="agent-wave-stage">
         <div class="hero-media agent-wave-media" aria-hidden="true">
           <video class="hero-video-agent-wave is-active" data-hero-scrub autoplay muted loop playsinline preload="auto" poster="/assets/home/agent-wave-h3-2k-poster.jpg">
             <source src="/assets/home/agent-wave-h3-2k.mp4" type="video/mp4">
           </video>
-          <canvas class="hero-liquid-glass" data-hero-liquid-glass></canvas>
         </div>
         <canvas class="agent-wave-overlay" data-agent-wave-overlay aria-hidden="true"></canvas>
 
@@ -567,8 +584,7 @@
 
     const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 
-    const heroVideos = [...document.querySelectorAll('.hero-media video')];
-    const scrubHeroVideo = heroVideos.find(video => video.hasAttribute('data-hero-scrub'));
+    const heroVideos = [...document.querySelectorAll('#top .hero-media video')];
     let activeHeroVideo = 0;
     const showNextHeroVideo = () => {
       if (reducedMotion.matches || heroVideos.length < 2) return;
@@ -587,11 +603,6 @@
     const syncHeroVideoMotion = () => {
       if (!heroVideos.length) return;
       heroVideos.forEach(video => video.pause());
-      if (scrubHeroVideo) {
-        heroVideos.forEach(video => video.classList.toggle('is-active', video === scrubHeroVideo));
-        activeHeroVideo = heroVideos.indexOf(scrubHeroVideo);
-        return;
-      }
       if (reducedMotion.matches) {
         heroVideos.forEach((video, index) => {
           video.currentTime = 0;
@@ -791,7 +802,7 @@
 
   })();
   </script>
-  <script src="/homepage-agent-wave.js?v=6ef3e0cb" defer></script>
+  <script src="/homepage-agent-wave.js?v=a89716ed" defer></script>
   <script src="/homepage-liquid-glass.js?v=20260810-edge1" defer></script>
   <script type="module" src="/homepage-particles.js?v=61695574"></script>
 </body>
