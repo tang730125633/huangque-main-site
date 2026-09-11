@@ -3961,6 +3961,99 @@ def _audio_asset_evidence(job_ids):
         return {}, "音频资产证据读取失败"
 
 
+_ARTIFACT_PROBE_CACHE = {}      # (路径, 字节数, mtime_ns) -> 能不能解码
+_ARTIFACT_PROBE_CACHE_MAX = 8000
+
+
+def _artifact_decodable(path, media_type):
+    """成品能不能解码 —— 结果按 (路径, 大小, mtime) 缓存，别每次都真解一遍。
+
+    后台任务列表每 15 秒自动刷新一次，每行都跑一次 ffprobe 子进程会把整个后台拖垮
+    （2026-09-12 实测：200 行里有 6.3 秒全花在 ffprobe 上，浏览器等不及直接断连，
+    表现就是「刷新好慢 / 刷不出来」）。成品落盘后内容不再变，键里带上大小和
+    mtime，文件被重写会自动重新探测。
+    """
+    try:
+        stat = path.stat()
+        key = (str(path), stat.st_size, stat.st_mtime_ns)
+    except OSError:
+        return False
+    if key in _ARTIFACT_PROBE_CACHE:
+        return _ARTIFACT_PROBE_CACHE[key]
+    ok = False
+    if media_type == "image":
+        if PILImage is not None:
+            try:
+                with PILImage.open(path) as image:
+                    image.verify()
+                    ok = bool(image.format)
+            except Exception:
+                ok = False
+    else:
+        try:
+            probe = subprocess.run(
+                ["ffprobe", "-v", "error",
+                 "-select_streams", "a:0" if media_type == "audio" else "v:0",
+                 "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(path)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=12,
+            )
+            ok = probe.returncode == 0 and bool(probe.stdout.strip())
+        except (OSError, subprocess.SubprocessError):
+            ok = False
+    if len(_ARTIFACT_PROBE_CACHE) >= _ARTIFACT_PROBE_CACHE_MAX:
+        _ARTIFACT_PROBE_CACHE.clear()
+    _ARTIFACT_PROBE_CACHE[key] = ok
+    return ok
+
+
+_COS_ARTIFACT_CACHE = {}      # 对象键 -> (检查时刻, 是否通过, artifact_check 值)
+_COS_ARTIFACT_TTL = 120       # 秒：后台列表一次要核验上百条，不缓存会把页面拖垮
+_COS_ARTIFACT_CACHE_MAX = 4000
+
+
+def _verify_cos_artifact(evidence, rel_key):
+    """本地没找到成片时，去 COS 确认对象真的在。
+
+    2026-09-11 交付提速后，无配音的成片不再下载回本地，`video_file` 存的是
+    **COS 对象键**（huangque/render/xxx.mp4）—— 本地当然找不到，但这不等于
+    「成品丢了」。以前这里直接判 missing，后台就把已经交付成功的片子显示成
+    「完成 · 成品核验失败」（2026-09-12 Tang 报的问题）。
+
+    预签名链接是给 GET 签的，用 HEAD 会 403，所以走 GET 只读前 64 字节就关掉，
+    顺带验一下 mp4 文件头。带 2 分钟缓存。
+    """
+    now = time.time()
+    cached = _COS_ARTIFACT_CACHE.get(rel_key)
+    if cached and now - cached[0] < _COS_ARTIFACT_TTL:
+        if cached[1]:
+            evidence.update({"artifact_check": cached[2], "delivery_verified": True})
+            return True
+        return False
+    ok, check = False, ""
+    try:
+        # ⚠️ admin_api.py 是**顶层模块**（不在 content_domains 包里），必须用绝对导入
+        # —— 相对导入 `from . import cos` 会 ImportError 并被下面的 except 吞掉，
+        # 结果永远判 False（2026-09-11 踩过这个坑）。
+        from content_domains import cos as cos_domain
+        if cos_domain.enabled():
+            url = cos_domain.object_url(rel_key, private=True)
+            request = urllib.request.Request(url)
+            with urllib.request.urlopen(request, timeout=15) as response:
+                size = int(response.headers.get("Content-Length") or 0)
+                head = response.read(64)
+            if size > 0:
+                ok = True
+                check = "decodable" if b"ftyp" in head else "file_exists"
+    except Exception:
+        ok = False
+    if len(_COS_ARTIFACT_CACHE) >= _COS_ARTIFACT_CACHE_MAX:
+        _COS_ARTIFACT_CACHE.clear()
+    _COS_ARTIFACT_CACHE[rel_key] = (now, ok, check)
+    if ok:
+        evidence.update({"artifact_check": check, "delivery_verified": True})
+    return ok
+
+
 def _verify_local_artifact(evidence):
     media_type = str(evidence.pop("_artifact_media_type", "") or "").strip().lower()
     result_file = str(evidence.get("result_file") or "").strip()
@@ -3973,35 +4066,25 @@ def _verify_local_artifact(evidence):
         candidate = pathlib.Path(result_file)
         path = (candidate if candidate.is_absolute() else root / candidate).resolve()
         if path == root or root not in path.parents or not path.is_file() or path.stat().st_size <= 0:
+            # 成片可能只在 COS 上（交付提速后 video_file 存的就是 COS 对象键）。
+            # 先问 COS，别把「本地没有」直接判成「核验失败」。
+            if _verify_cos_artifact(evidence, result_file):
+                return evidence
             evidence.update({"artifact_check": "missing", "delivery_verified": False})
         elif media_type == "audio" or path.suffix.lower() in {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}:
-            probe = subprocess.run(
-                ["ffprobe", "-v", "error", "-select_streams", "a:0",
-                 "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(path)],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=12,
-            )
-            ok = probe.returncode == 0 and bool(probe.stdout.strip())
+            ok = _artifact_decodable(path, "audio")
             evidence.update({
                 "artifact_check": "decodable" if ok else "decode_failed",
                 "delivery_verified": ok,
             })
         elif path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
-            ok = False
-            if PILImage is not None:
-                with PILImage.open(path) as image:
-                    image.verify()
-                    ok = bool(image.format)
+            ok = _artifact_decodable(path, "image")
             evidence.update({
                 "artifact_check": "decodable" if ok else "decode_failed",
                 "delivery_verified": ok,
             })
         elif path.suffix.lower() in {".mp4", ".mov", ".webm"}:
-            probe = subprocess.run(
-                ["ffprobe", "-v", "error", "-select_streams", "v:0",
-                 "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(path)],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=12,
-            )
-            ok = probe.returncode == 0 and bool(probe.stdout.strip())
+            ok = _artifact_decodable(path, "video")
             evidence.update({
                 "artifact_check": "decodable" if ok else "decode_failed",
                 "delivery_verified": ok,
@@ -7528,7 +7611,11 @@ def _render_node_of(provider_task_id):
             conn.close()
     except Exception:
         node = ""
-    _render_node_cache[jid] = node
+    if node:
+        # 只缓存**查到的**节点。任务刚提交的那几秒中转器还没派节点（node 为 NULL），
+        # 那时候的「空」绝不能缓存 —— 否则任务已经在 GPU 上跑了，后台还一直显示
+        # 「线路未采集」（2026-09-12 踩过）。
+        _render_node_cache[jid] = node
     return node
 
 
@@ -7879,6 +7966,7 @@ def call_logs(days=7, limit=200, user="", defer_evidence=False):
                       CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.video_url'),json_extract(%s,'$.image_url'),json_extract(%s,'$.url'),json_extract(%s,'$.urls[0]'),'') ELSE '' END AS result_url,
                        CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.video_file'),json_extract(%s,'$.image_file'),json_extract(%s,'$.file'),json_extract(%s,'$.files[0]'),'') ELSE '' END AS result_file,
                        CASE WHEN json_valid(payload) THEN COALESCE(json_extract(payload,'$.template_id'),'') ELSE '' END AS template_id,
+                       CASE WHEN json_valid(payload) THEN COALESCE(json_extract(payload,'$._matrix_runtime.provider_job_id'),'') ELSE '' END AS runtime_job_id,
                        %s AS result_json,
                        %s AS refunded,
                        %s AS job_error
@@ -8021,7 +8109,12 @@ def call_logs(days=7, limit=200, user="", defer_evidence=False):
                 "model": str(row["model"] or ""),
                 "provider_task_id": _sanitize_task_identifier(row["provider_task_id"]),
                 # 未脱敏的中转器任务号：上面那行是脱敏后的值，拿去查 relay.db 查不到。
-                "_render_job_id": str(_row_field(row, "provider_task_id") or "").strip(),
+                # 跑完的看 result；**正在跑的** result 还是空的，单号在
+                # payload._matrix_runtime.provider_job_id 里（runtime_job_id 列）。
+                "_render_job_id": (
+                    str(_row_field(row, "provider_task_id") or "").strip()
+                    or str(_row_field(row, "runtime_job_id") or "").strip()
+                ),
                 # 任务用的模板 id（payload 优先，跑完的看 result）→「模型」列
                 "_template_id": (
                     str(_row_field(row, "template_id") or "").strip()
