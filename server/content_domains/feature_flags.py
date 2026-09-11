@@ -29,6 +29,14 @@ CATALOG = [
         "default_enabled": True,
     },
     {
+        "key": "growth_program",
+        "name": "拉新与奖励",
+        "desc": "邀请、名片、分销网络与邀请奖励。关闭时相关接口一律拒绝，不影响已有数据",
+        "page": "会员与点数",
+        "service": "auth",
+        "default_enabled": False,
+    },
+    {
         "key": "creator_agent_v1",
         "name": "创作 Agent",
         "desc": "独立对话式创作助手与站内能力调用",
@@ -191,6 +199,10 @@ def is_enabled_fail_closed(feature):
 
 def points_billing_enabled():
     return is_enabled_fail_closed("points_billing")
+
+
+def growth_program_enabled():
+    return is_enabled_fail_closed("growth_program")
 
 
 def require_enabled(feature):

@@ -101,6 +101,46 @@ class AuthPointsTests(unittest.TestCase):
             self.assertFalse(self.auth.feature_flags.is_enabled_fail_closed("points_billing"))
         self.assertFalse(self.auth.feature_flags.is_enabled_fail_closed("unknown-billing-switch"))
 
+    def test_growth_program_is_fail_closed_and_blocks_all_growth_prefixes(self):
+        self.assertFalse(self.auth.feature_flags.growth_program_enabled())
+        self.assertFalse(self.auth._is_growth_request("/api/auth/login"))
+        for path in (
+            "/api/invite/code", "/api/auth/invite/reward",
+            "/api/auth/card", "/api/auth/network/team",
+            "/api/admin/invite/list", "/api/auth/admin/invite/update",
+        ):
+            self.assertTrue(self.auth._is_growth_request(path), path)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), self.auth.H)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = "http://127.0.0.1:%d" % server.server_address[1]
+        try:
+            for path, method in (("/api/invite/code", "GET"), ("/api/auth/card", "POST")):
+                request = urllib.request.Request(
+                    base + path,
+                    data=b"{}" if method == "POST" else None,
+                    method=method,
+                )
+                with self.assertRaises(urllib.error.HTTPError) as ctx:
+                    urllib.request.urlopen(request, timeout=3)
+                self.assertEqual(503, ctx.exception.code)
+                self.assertEqual(
+                    "growth_program_disabled",
+                    json.loads(ctx.exception.read())["code"],
+                )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+
+    def test_disabled_billing_has_distinct_error_code(self):
+        self.assertEqual(402, self.auth.error_contract.CATALOG["HQ-BILLING-001"]["status"])
+        self.assertEqual(
+            "HQ-BILLING-002",
+            self.auth.error_contract.LEGACY_CODES["points_billing_disabled"],
+        )
+
     def test_public_points_error_preserves_membership_contract(self):
         from content_domains import points
 

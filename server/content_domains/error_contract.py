@@ -25,6 +25,8 @@ CATALOG = {
     "HQ-SYSTEM-001": {"type": "internal_error", "status": 500, "message": "黄雀服务暂时异常，请稍后再试", "retryable": True},
     "HQ-UPSTREAM-001": {"type": "upstream_error", "status": 502, "message": "生成渠道暂时不可用，请稍后再试", "retryable": True},
     "HQ-UPSTREAM-002": {"type": "upstream_unavailable", "status": 503, "message": "生成渠道正在繁忙或维护，请稍后再试", "retryable": True},
+    "HQ-GROWTH-001": {"type": "growth_program_disabled", "status": 503, "message": "内测期间拉新与奖励活动暂不开放", "retryable": False},
+    "HQ-BILLING-002": {"type": "points_billing_disabled", "status": 503, "message": "内测期间点数、充值和会员购买暂不开放", "retryable": False},
     "HQ-UPSTREAM-003": {"type": "upstream_timeout", "status": 504, "message": "生成渠道响应超时，请稍后查询任务状态", "retryable": True},
 }
 
@@ -39,6 +41,8 @@ LEGACY_CODES = {
     "revision_conflict": "HQ-CONFLICT-001",
     "rate_limited": "HQ-RATE-001",
     "upstream_unavailable": "HQ-UPSTREAM-002",
+    "growth_program_disabled": "HQ-GROWTH-001",
+    "points_billing_disabled": "HQ-BILLING-002",
     "upstream_response_too_large": "HQ-UPSTREAM-001",
     "invalid_upstream_response": "HQ-UPSTREAM-001",
     "content_security_unavailable": "HQ-UPSTREAM-002",
