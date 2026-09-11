@@ -37,8 +37,29 @@ const templates = [
     required_visuals: 9, required_visuals_max: 9, bgm_mode: 'bound',
     bgm_optional: true,
   },
+  {
+    id: 'triple-strip-shutter', name: '三横屏开场·光栅快切',
+    description: '三条横屏同时开场，随后五段全屏光栅快切',
+    tags: ['HyperFrames', '固定节奏'], engine: 'hyperframes',
+    font_mode: 'template_locked', font_selectable: false,
+    variant: 'triple-strip', duration_mode: 'fixed',
+    fixed_duration_seconds: 17.6, required_visuals: 8,
+    required_visuals_max: 8, bgm_mode: 'bound', bgm_optional: true,
+  },
+  {
+    id: 'yellow-banner-zoom', name: '黄条标题·变幅冲击',
+    description: '黄条信息标题与三段素材变幅冲击',
+    tags: ['HyperFrames', '固定节奏'], engine: 'hyperframes',
+    font_mode: 'template_locked', font_selectable: false,
+    variant: 'yellow-banner', duration_mode: 'fixed',
+    fixed_duration_seconds: 302 / 30, required_visuals: 3,
+    required_visuals_max: 3, bgm_mode: 'bound', bgm_optional: true,
+  },
 ];
-const visibleTemplateIds = [...referenceIds, 'nine-grid-reveal'];
+const visibleTemplateIds = [
+  ...referenceIds, 'nine-grid-reveal',
+  'triple-strip-shutter', 'yellow-banner-zoom',
+];
 const voicePreviewRequests = [];
 let dropShellOnce = false;
 let shellRequests = 0;
@@ -310,9 +331,11 @@ function hasOverflow(box) {
     if (viewport.fontControlsPresent) throw new Error(`font selector is still visible: ${JSON.stringify(report)}`);
     const voice = viewport.voiceControl;
     if (!voice.initiallyHidden || voice.enabled.panelHidden || voice.enabled.selectedVoice !== 'vip_qa' || voice.enabled.options.join(',') !== 'vip_qa' || voice.enabled.previewDisabled || !voice.enabled.count.startsWith('12 /') || voice.enabled.speed !== '1.7' || voice.enabled.speedLabel !== '1.7x' || !voice.enabled.bgmEnabled || voice.enabled.bgmRowHidden || voice.enabled.bgmVolume !== '35' || voice.enabled.bgmVolumeLabel !== '35%' || voice.enabled.scrollWidth > voice.enabled.clientWidth || voice.enabled.previewRequests.length !== 1 || voice.enabled.previewRequests[0].authorization !== 'Bearer __cookie__' || voice.enabled.objectUrlsCreated !== 1 || voice.enabled.objectUrlsRevoked !== 1) throw new Error(`voiceover control is inaccurate: ${JSON.stringify(voice)}`);
-    if (viewport.cardCount !== 18 || viewport.referenceCount !== 18 || viewport.distinctReferencePreviews !== 18) throw new Error(`template cards are not distinct: ${JSON.stringify(report)}`);
+    if (viewport.cardCount !== 20 || viewport.referenceCount !== 20 || viewport.distinctReferencePreviews !== 20) throw new Error(`template cards are not distinct: ${JSON.stringify(report)}`);
     const expectedCardLabels = referenceIds.map((id, index) => `${index + 1}. 参考排版 ${String(index + 1).padStart(2, '0')}`);
     expectedCardLabels.push('18. 九宫格开场·全屏展示');
+    expectedCardLabels.push('19. 三横屏开场·光栅快切');
+    expectedCardLabels.push('20. 黄条标题·变幅冲击');
     if (viewport.cardLabels.join('|') !== expectedCardLabels.join('|')) throw new Error(`template card numbering is inaccurate: ${JSON.stringify(viewport.cardLabels)}`);
     const hyperframes = viewport.batchControl.hyperframes;
     const expectedLabels = '1条,2条,3条,4条,5条';

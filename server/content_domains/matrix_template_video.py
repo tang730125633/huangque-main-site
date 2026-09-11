@@ -22,13 +22,32 @@ from . import feature_flags, matrix_template_semantics, pricing
 
 
 FEATURE_KEY = "matrix_template_video"
-TRANSITION_TEMPLATE_COUNTS = frozenset({2, 15, 19, 20})
+TRANSITION_TEMPLATE_COUNTS = frozenset({2, 15, 19, 20, 22})
 APPROVED_TEMPLATE_IDS = ("full-overlay-bold", "poster-split")
 REQUIRED_TEMPLATE_IDS = frozenset(APPROVED_TEMPLATE_IDS)
 REFERENCE_TEMPLATE_RE = re.compile(r"ref-[0-9]{2}-[a-z0-9-]{1,48}\Z")
 REFERENCE_TEMPLATE_COUNT = 17
 NINE_GRID_TEMPLATE_ID = "nine-grid-reveal"
 NINE_GRID_VARIANT = "nine-grid"
+TRIPLE_STRIP_TEMPLATE_ID = "triple-strip-shutter"
+TRIPLE_STRIP_VARIANT = "triple-strip"
+YELLOW_BANNER_TEMPLATE_ID = "yellow-banner-zoom"
+YELLOW_BANNER_VARIANT = "yellow-banner"
+FIXED_SKILL_TEMPLATE_IDS = (
+    TRIPLE_STRIP_TEMPLATE_ID, YELLOW_BANNER_TEMPLATE_ID,
+)
+FIXED_SKILL_TEMPLATE_CONTRACTS = {
+    TRIPLE_STRIP_TEMPLATE_ID: {
+        "variant": TRIPLE_STRIP_VARIANT,
+        "duration": 17.6,
+        "required_visuals": 8,
+    },
+    YELLOW_BANNER_TEMPLATE_ID: {
+        "variant": YELLOW_BANNER_VARIANT,
+        "duration": 302 / 30,
+        "required_visuals": 3,
+    },
+}
 API_URL = os.environ.get("MATRIX_TEMPLATE_API_URL", "http://127.0.0.1:8112").rstrip("/")
 API_TOKEN = os.environ.get("MATRIX_TEMPLATE_API_TOKEN", "").strip()
 JOB_TIMEOUT = max(60, min(1800, int(os.environ.get("MATRIX_TEMPLATE_JOB_TIMEOUT", "1200"))))
@@ -198,6 +217,14 @@ _SEMANTIC_CONTRACTS = {
         "top1": (82, 900, 800, 4), "top2": (82, 900, 800, 4),
         "bottom2": (58, 900, 930, 4),
     },
+    TRIPLE_STRIP_VARIANT: {
+        "top1": (64, 900, 732, 2), "top2": (38, 900, 738, 3),
+        "bottom2": (26, 750, 620, 4),
+    },
+    YELLOW_BANNER_VARIANT: {
+        "top1": (50, 900, 804, 2), "top2": (38, 900, 900, 2),
+        "top3": (38, 900, 900, 2), "bottom2": (32, 750, 787, 4),
+    },
 }
 _ALL_REFERENCE_VARIANTS = {
     f"v{index:02d}" for index in range(1, 18)
@@ -243,7 +270,11 @@ def _semantic_contract(value, variant):
         raise RuntimeError("HyperFrames 语义排版能力无效")
     layers = value.get("layers")
     expected_layers = _SEMANTIC_CONTRACTS.get(str(variant or ""))
-    expected_max_width = 930 if variant == NINE_GRID_VARIANT else 996
+    expected_max_width = {
+        NINE_GRID_VARIANT: 930,
+        TRIPLE_STRIP_VARIANT: 738,
+        YELLOW_BANNER_VARIANT: 900,
+    }.get(variant, 996)
     if (
         value.get("version") != 1
         or value.get("max_width_px") != expected_max_width
@@ -326,7 +357,11 @@ def _refresh_catalog(force=False):
                 continue
             if (
                 engine == "hyperframes"
-                and variant != NINE_GRID_VARIANT
+                and variant not in {
+                    NINE_GRID_VARIANT,
+                    TRIPLE_STRIP_VARIANT,
+                    YELLOW_BANNER_VARIANT,
+                }
                 and not re.fullmatch(r"v(?:0[1-9]|1[0-7])", variant)
             ):
                 continue
@@ -345,6 +380,7 @@ def _refresh_catalog(force=False):
             for key in (
                 "duration_mode", "required_visuals",
                 "required_visuals_max", "bgm_mode", "bgm_optional",
+                "fixed_duration_seconds",
             ):
                 if key in raw:
                     template[key] = raw[key]
@@ -360,7 +396,7 @@ def _refresh_catalog(force=False):
             item["id"]: item for item in templates
             if item["id"] in REQUIRED_TEMPLATE_IDS
         }
-        if len(templates) in {19, 20}:
+        if len(templates) in {19, 20, 22}:
             references = [
                 item for item in templates
                 if REFERENCE_TEMPLATE_RE.fullmatch(item["id"])
@@ -368,6 +404,10 @@ def _refresh_catalog(force=False):
             nine_grid = [
                 item for item in templates
                 if item["id"] == NINE_GRID_TEMPLATE_ID
+            ]
+            fixed_skill = [
+                item for item in templates
+                if item["id"] in FIXED_SKILL_TEMPLATE_IDS
             ]
             semantic_variants = {
                 item["variant"] for item in references
@@ -392,7 +432,8 @@ def _refresh_catalog(force=False):
                     for item in references
                     for layer in item["semantic_layout"]["layers"].values()
                 )
-                or len(nine_grid) != len(templates) - 19
+                or len(nine_grid) != (0 if len(templates) == 19 else 1)
+                or len(fixed_skill) != (2 if len(templates) == 22 else 0)
             ):
                 raise RuntimeError("HyperFrames 模板目录不完整")
             if nine_grid:
@@ -410,9 +451,45 @@ def _refresh_catalog(force=False):
                     or item.get("semantic_layout") is None
                 ):
                     raise RuntimeError("九宫格模板目录不完整")
+            if fixed_skill:
+                by_id = {item["id"]: item for item in fixed_skill}
+                if set(by_id) != set(FIXED_SKILL_TEMPLATE_IDS):
+                    raise RuntimeError("新增 Skill 模板目录不完整")
+                for template_id, contract in FIXED_SKILL_TEMPLATE_CONTRACTS.items():
+                    item = by_id[template_id]
+                    if (
+                        item.get("engine") != "hyperframes"
+                        or item.get("font_selectable") is not False
+                        or item.get("font_mode") != "template_locked"
+                        or item.get("variant") != contract["variant"]
+                        or item.get("duration_mode") != "fixed"
+                        or not isinstance(
+                            item.get("fixed_duration_seconds"), (int, float)
+                        )
+                        or isinstance(item.get("fixed_duration_seconds"), bool)
+                        or abs(
+                            float(item["fixed_duration_seconds"])
+                            - float(contract["duration"])
+                        ) > 1e-9
+                        or item.get("required_visuals")
+                            != contract["required_visuals"]
+                        or item.get("required_visuals_max")
+                            != contract["required_visuals"]
+                        or item.get("bgm_mode") != "bound"
+                        or item.get("bgm_optional") is not True
+                        or item.get("semantic_layout") is None
+                    ):
+                        raise RuntimeError("新增 Skill 模板目录不完整")
             templates = (
                 [approved[template_id] for template_id in APPROVED_TEMPLATE_IDS]
                 + references + nine_grid
+                + ([
+                    next(
+                        item for item in fixed_skill
+                        if item["id"] == template_id
+                    )
+                    for template_id in FIXED_SKILL_TEMPLATE_IDS
+                ] if fixed_skill else [])
             )
         else:
             templates = [approved[template_id] for template_id in APPROVED_TEMPLATE_IDS]
@@ -573,20 +650,36 @@ def validate_payload(
         bgm_volume = _normalize_bgm_volume(body["bgm_volume"])
     elif voiceover and bgm:
         bgm_volume = DEFAULT_VOICEOVER_BGM_VOLUME
+    fixed_duration = None
+    if template.get("duration_mode") == "fixed_12":
+        fixed_duration = 12.0
+    elif template.get("duration_mode") == "fixed":
+        value = template.get("fixed_duration_seconds")
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or not 8 <= float(value) <= 20
+        ):
+            raise RuntimeError("固定模板时长合同无效")
+        fixed_duration = float(value)
     duration = body.get("duration")
     if duration not in (None, ""):
         try:
             duration = float(duration)
         except (TypeError, ValueError) as exc:
             raise ValueError("视频时长设置无效") from exc
-        if duration < 8 or duration > 15:
+        if fixed_duration is not None:
+            if abs(duration - fixed_duration) > 0.001:
+                raise ValueError(
+                    f"当前模板时长固定为 {fixed_duration:g} 秒"
+                )
+        elif duration < 8 or duration > 15:
             raise ValueError("视频时长需要 8-15 秒")
     else:
         duration = None
-    if template.get("duration_mode") == "fixed_12":
-        if duration is not None and abs(duration - 12.0) > 0.001:
-            raise ValueError("当前模板时长固定为 12 秒")
-        duration = 12.0
+    if fixed_duration is not None:
+        duration = fixed_duration
     candidate = {
         "top_text": top, "bottom_text": bottom,
         "template_id": template_id, "bgm": bgm, "duration": duration,
@@ -745,7 +838,15 @@ def validate_payload(
     authoritative_duration = payload.get("duration")
     if (isinstance(authoritative_duration, bool)
             or not isinstance(authoritative_duration, (int, float))
-            or not 8 <= float(authoritative_duration) <= 15):
+            or not math.isfinite(float(authoritative_duration))
+            or (
+                fixed_duration is not None
+                and abs(float(authoritative_duration) - fixed_duration) > 0.001
+            )
+            or (
+                fixed_duration is None
+                and not 8 <= float(authoritative_duration) <= 15
+            )):
         raise RuntimeError("模板成片预检时长无效")
     result = dict(payload, duration=float(authoritative_duration))
     if voiceover:
