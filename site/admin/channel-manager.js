@@ -31,7 +31,7 @@
     const workspace=window.initChannelWorkspace({...env,mapping:editMap,refresh:load,lifecycle});
     const parameterEditor=window.initChannelParameterEditor({...env,workspace,parameterMappings:id=>data.mappings.filter(m=>m.channel===id||m.backup===id)});
     window.closeChannelWorkspace=workspace.close;
-    const labels={passed:'通过',failed:'失败',unknown:'结果未知',queued:'等待中',running:'执行中',blocked:'条件未满足'};
+    const labels={passed:'通过',failed:'失败',unknown:'结果未知',terminated:'已终止',queued:'等待中',running:'执行中',blocked:'条件未满足'};
     const kinds={connection:'连接检测',auth:'鉴权检测',full:'完整生成测试',task:'用户任务'};
     const date=n=>n?new Date(n*1000).toLocaleString():'—';
     const field=(label,name,value,type='text')=>'<label>'+esc(label)+'<input class="field" name="'+name+'" type="'+type+'" value="'+esc(value??'')+'" '+(type==='password'?'autocomplete="new-password"':type==='number'?'step="any"':'')+'></label>';

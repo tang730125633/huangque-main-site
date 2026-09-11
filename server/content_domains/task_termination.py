@@ -8,6 +8,10 @@ from contextlib import closing, contextmanager
 
 _current = contextvars.ContextVar('terminating_task', default=None)
 
+# 托管渠道任务（乐创等统一协议线路）的图片与视频：执行循环统一在 channel_runtime，
+# 排队闸门与供应商轮询两处都有可中断的等待窗口，因此可以安全终止。
+MANAGED_KINDS = {'image', 'xiaole_video', 'sora_video'}
+
 
 class TaskTerminated(RuntimeError):
     pass
@@ -21,6 +25,11 @@ def ensure(c):
         remote_state TEXT NOT NULL)''')
 
 
+def _managed_channel_task(row, payload):
+    """托管渠道任务：走 channel_runtime 的统一执行循环。"""
+    return row['kind'] in MANAGED_KINDS and bool(payload.get('_channel_binding'))
+
+
 def supported(row):
     try:
         payload = json.loads(row['payload'] or '{}')
@@ -28,6 +37,8 @@ def supported(row):
         return False
     if not isinstance(payload, dict):
         return False
+    if _managed_channel_task(row, payload):
+        return True
     return (row['kind']=='matrix_template_video' and payload.get('mode')!='timeline'
             and not payload.get('_channel_binding'))
 
@@ -50,7 +61,7 @@ def describe(c, job_id):
         info['platform_state']='stopped' if info['local_stopped_at'] else 'stopping'
         info['refund_state']='not_needed' if int(row['cost'] or 0)<=0 else 'refunded' if row['refunded']==1 else 'pending'
     if not supported(row):
-        reason='该任务类型尚未接入终止能力'
+        reason='该任务类型尚未接入终止能力（当前支持：模板成片、托管渠道的生图/视频）'
     elif row['status'] not in {'pending','running'}:
         reason='任务已结束，无法终止；请刷新查看最新状态'
     else:
@@ -78,7 +89,7 @@ def request(db_factory, job_id, actor, reason):
         if not row:
             raise ValueError('任务不存在')
         if not supported(row):
-            raise ValueError('当前仅支持普通模板成片任务，其他类型尚未接入')
+            raise ValueError('当前仅支持模板成片与托管渠道生图/视频任务，其他类型尚未接入')
         if row['status'] not in {'pending','running'}:
             raise ValueError('任务已结束，无法终止；请刷新查看最新状态')
         payload=json.loads(row['payload'] or '{}')
