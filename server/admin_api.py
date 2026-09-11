@@ -7611,7 +7611,11 @@ def _render_node_of(provider_task_id):
             conn.close()
     except Exception:
         node = ""
-    _render_node_cache[jid] = node
+    if node:
+        # 只缓存**查到的**节点。任务刚提交的那几秒中转器还没派节点（node 为 NULL），
+        # 那时候的「空」绝不能缓存 —— 否则任务已经在 GPU 上跑了，后台还一直显示
+        # 「线路未采集」（2026-09-12 踩过）。
+        _render_node_cache[jid] = node
     return node
 
 
@@ -7962,6 +7966,7 @@ def call_logs(days=7, limit=200, user="", defer_evidence=False):
                       CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.video_url'),json_extract(%s,'$.image_url'),json_extract(%s,'$.url'),json_extract(%s,'$.urls[0]'),'') ELSE '' END AS result_url,
                        CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.video_file'),json_extract(%s,'$.image_file'),json_extract(%s,'$.file'),json_extract(%s,'$.files[0]'),'') ELSE '' END AS result_file,
                        CASE WHEN json_valid(payload) THEN COALESCE(json_extract(payload,'$.template_id'),'') ELSE '' END AS template_id,
+                       CASE WHEN json_valid(payload) THEN COALESCE(json_extract(payload,'$._matrix_runtime.provider_job_id'),'') ELSE '' END AS runtime_job_id,
                        %s AS result_json,
                        %s AS refunded,
                        %s AS job_error
@@ -8104,7 +8109,12 @@ def call_logs(days=7, limit=200, user="", defer_evidence=False):
                 "model": str(row["model"] or ""),
                 "provider_task_id": _sanitize_task_identifier(row["provider_task_id"]),
                 # 未脱敏的中转器任务号：上面那行是脱敏后的值，拿去查 relay.db 查不到。
-                "_render_job_id": str(_row_field(row, "provider_task_id") or "").strip(),
+                # 跑完的看 result；**正在跑的** result 还是空的，单号在
+                # payload._matrix_runtime.provider_job_id 里（runtime_job_id 列）。
+                "_render_job_id": (
+                    str(_row_field(row, "provider_task_id") or "").strip()
+                    or str(_row_field(row, "runtime_job_id") or "").strip()
+                ),
                 # 任务用的模板 id（payload 优先，跑完的看 result）→「模型」列
                 "_template_id": (
                     str(_row_field(row, "template_id") or "").strip()
