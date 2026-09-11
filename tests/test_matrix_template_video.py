@@ -499,6 +499,46 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         }), self.assertRaisesRegex(RuntimeError, "语义排版能力无效"):
             self.module.public_templates(force=True)
 
+    def test_compact_template_transitions_accept_only_old_or_new_contracts(self):
+        transitions = {
+            ("v01", "bottom2", "max_width_px"): (848, 944),
+            ("v06", "top1", "font_size_px"): (104, 86),
+            ("v08", "top1", "font_size_px"): (92, 86),
+            ("v15", "bottom2", "font_size_px"): (92, 82),
+        }
+        for (variant, layer, field), accepted in transitions.items():
+            for value in accepted:
+                templates = self.reference_templates()
+                next(
+                    item for item in templates if item.get("variant") == variant
+                )["semantic_layout"]["layers"][layer][field] = value
+                with self.subTest(
+                    variant=variant, layer=layer, field=field, value=value,
+                ), mock.patch.object(self.module, "_request", return_value={
+                    "templates": templates,
+                    "max_batch_size": 5,
+                    "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+                }):
+                    values = self.module.public_templates(force=True)
+                    actual = next(
+                        item for item in values if item.get("variant") == variant
+                    )["semantic_layout"]["layers"][layer][field]
+                    self.assertEqual(value, actual)
+
+            drift = self.reference_templates()
+            invalid = min(accepted) + 1
+            next(
+                item for item in drift if item.get("variant") == variant
+            )["semantic_layout"]["layers"][layer][field] = invalid
+            with self.subTest(
+                variant=variant, layer=layer, field=field, value=invalid,
+            ), mock.patch.object(self.module, "_request", return_value={
+                "templates": drift,
+                "max_batch_size": 5,
+                "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+            }), self.assertRaisesRegex(RuntimeError, "语义排版能力无效"):
+                self.module.public_templates(force=True)
+
     def test_v12_v16_typography_transition_accepts_only_old_or_new_sizes(self):
         transitions = {
             ("v12", "top1"): (72, 80),
