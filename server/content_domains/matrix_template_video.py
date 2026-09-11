@@ -768,10 +768,17 @@ def _upload_user_asset(data, sha256, content_type, timeout=120):
         raise RuntimeError("本人素材暂时无法用于模板成片") from exc
 
 
-def _resolve_user_materials(value, username, *, trusted_frozen=False):
+def _resolve_user_materials(
+        value, username, *, trusted_frozen=False, video_only=False):
     materials = _normalize_user_materials(
         value, trusted_frozen=trusted_frozen,
     )
+    if materials and video_only and any(
+            item["media_type"] != "video" for item in materials):
+        raise ValueError(
+            "黄条/三横屏固定动效模板目前只支持视频素材，"
+            "请上传视频或改用 ref 模板"
+        )
     if not materials or trusted_frozen:
         return materials
     resolved = []
@@ -875,6 +882,7 @@ def validate_payload(
     user_materials = _resolve_user_materials(
         body.get("user_materials"), username,
         trusted_frozen=trusted_frozen_execution,
+        video_only=template_id in FIXED_SKILL_TEMPLATE_IDS,
     )
     material_policy = (
         MATERIAL_POLICY_SHARED if allow_shared_materials is not False
