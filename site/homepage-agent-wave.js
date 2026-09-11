@@ -43,7 +43,8 @@
     beats.forEach((beat, index) => beat.classList.toggle('is-active', index === chapter));
     indexes.forEach((item, index) => {
       item.classList.toggle('is-active', index === chapter);
-      item.toggleAttribute('aria-current', index === chapter);
+      if (index === chapter) item.setAttribute('aria-current', 'step');
+      else item.removeAttribute('aria-current');
     });
   }
 
@@ -74,13 +75,15 @@
   video.loop = false;
   video.pause();
   video.addEventListener('play', () => video.pause());
-  video.addEventListener('loadedmetadata', () => {
+  const markReady = () => {
     video.pause();
     sync();
     status.ready = true;
     document.documentElement.dataset.agentWaveReady = 'true';
     console.assert(window.__homepageAgentWaveCheck(), 'Homepage Agent Wave scrubbing is incomplete');
-  }, { once: true });
+  };
+  if (video.readyState >= 1) markReady();
+  else video.addEventListener('loadedmetadata', markReady, { once: true });
 
   addEventListener('scroll', updateScroll, { passive: true });
   addEventListener('resize', updateScroll);
