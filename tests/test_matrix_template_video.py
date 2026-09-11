@@ -2798,6 +2798,46 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         self.assertFalse((Path(temp) / "video" / "matrix_template_slow-job.mp4").exists())
         self.assertFalse((Path(temp) / "video" / "matrix_template_slow-job.mp4.part").exists())
 
+    def test_download_throttles_termination_checks(self):
+        """下载时终止检查必须**节流**，不能每 64KB 查一次。
+
+        每次 check 都会新开一个数据库连接再关掉；一个 33MB 成片 = 1000+ 次。
+        多条同时交付时数据库锁争抢会把这个循环拖垮 —— 实测交付从 20 秒涨到 200+ 秒，
+        中转器侧表现为「读盘 0.01s、发送 200s」（是读的这端卡住，把发送也拖住了）。
+        """
+        chunks = [b"\x00\x00\x00\x18ftyp" + b"x" * (64 * 1024 + 8)] * 200
+
+        class ManyChunks:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read1(self, _size):
+                return chunks.pop(0) if chunks else b""
+
+        opener = mock.Mock()
+        opener.open.return_value = ManyChunks()
+        calls = {"n": 0}
+        import content_domains.task_termination as termination
+
+        with tempfile.TemporaryDirectory() as temp, \
+             mock.patch.object(self.module, "OUT_DIR", Path(temp)), \
+             mock.patch.object(self.module, "_safe_file_url",
+                               return_value="https://example.test/file.mp4"), \
+             mock.patch.object(self.module, "_NO_PROXY", opener), \
+             mock.patch.object(termination, "check",
+                               side_effect=lambda: calls.__setitem__("n", calls["n"] + 1)):
+            self.module._download(
+                "/file.mp4", "throttle-job",
+                timeout=300, deadline_at=time.time() + 300,
+            )
+        self.assertLessEqual(
+            calls["n"], 5,
+            "200 块的下载只该查几次终止状态，实际查了 %d 次（每块一次 = 回归）" % calls["n"],
+        )
+
     def test_download_real_trickle_stream_obeys_wall_clock_deadline(self):
         class TrickleHandler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
