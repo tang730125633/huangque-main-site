@@ -15,6 +15,7 @@
 保证黄雀看到的能力目录与线上完全一致。
 """
 import base64
+import hashlib
 import hmac
 import json
 import os
@@ -93,6 +94,16 @@ def _priority_has_room(now):
     )
 MAX_BODY = 256 * 1024 * 1024
 OUT_DIR = os.environ.get("RELAY_OUT_DIR", "/home/ubuntu/render-relay/out")
+USER_ASSET_DIR = Path(os.environ.get(
+    "RELAY_USER_ASSET_DIR", "/home/ubuntu/render-relay/user-assets"
+))
+USER_ASSET_RETENTION_SECONDS = max(
+    3600, int(os.environ.get("RELAY_USER_ASSET_RETENTION_SECONDS", "259200"))
+)
+USER_ASSET_SUFFIXES = {
+    "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp",
+    "video/mp4": ".mp4", "video/quicktime": ".mov",
+}
 
 # COS 上传片段：复用 content-api 的 cos 模块（凭证只留在中转器上）
 _COS_UPLOAD_SNIPPET = """
@@ -172,6 +183,43 @@ def _cos_url(key):
         COS_BUCKET, os.environ.get("RELAY_COS_REGION", "ap-guangzhou"), key.lstrip("/"))
 
 
+def _valid_sha(value):
+    value = str(value or "").strip().lower()
+    return value if len(value) == 64 and all(c in "0123456789abcdef" for c in value) else ""
+
+
+def _store_user_asset(data, sha, content_type):
+    sha = _valid_sha(sha)
+    content_type = str(content_type or "").split(";")[0].strip().lower()
+    suffix = USER_ASSET_SUFFIXES.get(content_type)
+    if not sha or not suffix or not hmac.compare_digest(hashlib.sha256(data).hexdigest(), sha):
+        raise ValueError("用户素材校验失败")
+    USER_ASSET_DIR.mkdir(parents=True, exist_ok=True)
+    target = USER_ASSET_DIR / (sha + suffix)
+    temporary = USER_ASSET_DIR / (target.name + "." + uuid.uuid4().hex + ".part")
+    try:
+        temporary.write_bytes(data)
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    cutoff = time.time() - USER_ASSET_RETENTION_SECONDS
+    for old in USER_ASSET_DIR.iterdir():
+        if old.is_file() and old.stat().st_mtime < cutoff:
+            old.unlink(missing_ok=True)
+    return target
+
+
+def _find_user_asset(sha):
+    sha = _valid_sha(sha)
+    if not sha:
+        return None, ""
+    for content_type, suffix in USER_ASSET_SUFFIXES.items():
+        path = USER_ASSET_DIR / (sha + suffix)
+        if path.is_file():
+            return path, content_type
+    return None, ""
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "HuangqueRenderRelay/1.0"
 
@@ -209,6 +257,38 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         p = urllib.parse.urlsplit(self.path).path
+
+        if p.startswith("/v1/job-assets/"):
+            if not self._auth(NODE_TOKEN):
+                return self._send(401, {"error": "unauthorized"})
+            parts = p.split("/")
+            if len(parts) != 5:
+                return self._send(404, {"error": "not_found"})
+            job_id, sha = parts[3], _valid_sha(parts[4])
+            node = str(self.headers.get("X-HQ-Node") or "").strip()[:64]
+            with _db() as conn:
+                row = conn.execute(
+                    "SELECT payload,status,node FROM jobs WHERE id=?", (job_id,)
+                ).fetchone()
+            if not row or row["status"] != "running" or row["node"] != node or not sha:
+                return self._send(404, {"error": "not_found"})
+            payload = json.loads(row["payload"] or "{}")
+            allowed = any(
+                isinstance(item, dict) and _valid_sha(item.get("sha256")) == sha
+                for item in payload.get("user_materials") or []
+            )
+            path, content_type = _find_user_asset(sha)
+            if not allowed or path is None:
+                return self._send(404, {"error": "not_found"})
+            size = path.stat().st_size
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(size))
+            self.send_header("Cache-Control", "private, no-store")
+            self.end_headers()
+            with path.open("rb") as handle:
+                shutil.copyfileobj(handle, self.wfile, _STREAM_CHUNK)
+            return
 
         if p == "/health":
             with _db() as conn:
@@ -397,10 +477,15 @@ class Handler(BaseHTTPRequestHandler):
                 req = urllib.request.Request(UPSTREAM + "/v1/user-assets", data=data,
                                              headers=headers, method="POST")
                 with urllib.request.urlopen(req, timeout=120) as resp:
-                    self._send(resp.status, json.loads(resp.read() or b"{}"))
+                    code = resp.status
+                    response = json.loads(resp.read() or b"{}")
+                _store_user_asset(data, headers["X-HQ-Asset-Sha256"], headers["Content-Type"])
+                self._send(code, response)
             except urllib.error.HTTPError as exc:
                 self._send(exc.code, {"error": "upstream_rejected",
                                       "detail": exc.read().decode("utf-8", "replace")[:200]})
+            except ValueError as exc:
+                self._send(400, {"error": "invalid_request", "detail": str(exc)})
             except Exception as exc:
                 self._send(503, {"error": "upstream_failed", "detail": str(exc)[:120]})
             return
