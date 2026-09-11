@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from hq_cli import cli, client
+from hq_cli import catalog, cli, client
 
 
 class HqCliTests(unittest.TestCase):
@@ -192,7 +192,7 @@ class HqCliTests(unittest.TestCase):
             self.assertEqual(0, code, error)
             self.assertTrue(self.payload(output)["schema"].startswith("hq."))
         code, output, _ = self.invoke(["version"])
-        self.assertEqual("0.15.9", self.payload(output)["cli_version"])
+        self.assertEqual("0.15.10", self.payload(output)["cli_version"])
         self.assertEqual("Huangque main-site CLI", self.payload(output)["product"])
         self.assertEqual("https://huangquechuanmei.com", self.payload(output)["origin"])
 
@@ -1087,6 +1087,10 @@ class HqCliTests(unittest.TestCase):
 
     def test_matrix_template_quotes_confirms_and_reuses_exact_input(self):
         self.authorize()
+        item_schema = catalog.CAPABILITIES[
+            "matrix-template-generate"
+        ]["input_schema"]["properties"]["user_materials"]["items"]
+        self.assertEqual(["upload_id", "media_type"], item_schema["required"])
         value = {
             "top_text": "真正拉开差距的不是工具",
             "bottom_text": "评论区留下关键词领取方案",
@@ -1096,6 +1100,11 @@ class HqCliTests(unittest.TestCase):
                 "voice_scope": "personal", "speed": 1.2,
                 "bgm": True, "bgm_volume": 0.35,
             },
+            "user_materials": [
+                {"upload_id": "img_" + "a" * 32, "media_type": "image"},
+                {"upload_id": "vid_" + "b" * 32, "media_type": "video",
+                 "clip_start_seconds": 1.25},
+            ],
         }
         raw = json.dumps(value, ensure_ascii=False).encode("utf-8")
         quote = {
