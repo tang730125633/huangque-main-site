@@ -167,6 +167,8 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         names = {
             self.module.TRIPLE_STRIP_TEMPLATE_ID: "三横屏开场·光栅快切",
             self.module.YELLOW_BANNER_TEMPLATE_ID: "黄条标题·变幅冲击",
+            self.module.FAN_WHIP_TEMPLATE_ID: "三屏旋展甩切·红黄粗体",
+            self.module.BRUSH_PANEL_TEMPLATE_ID: "横屏笔刷分片·上下黑底",
         }
         for template_id in self.module.FIXED_SKILL_TEMPLATE_IDS:
             fixed = self.module.FIXED_SKILL_TEMPLATE_CONTRACTS[template_id]
@@ -356,10 +358,10 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
         }):
             expanded = self.module.public_templates(force=True)
-        self.assertEqual(20, len(expanded))
+        self.assertEqual(22, len(expanded))
         self.assertEqual(
             list(self.module.FIXED_SKILL_TEMPLATE_IDS),
-            [item["id"] for item in expanded[-2:]],
+            [item["id"] for item in expanded[-4:]],
         )
         for template_id in self.module.FIXED_SKILL_TEMPLATE_IDS:
             item = next(value for value in expanded if value["id"] == template_id)
@@ -381,13 +383,13 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
         }):
             without_legacy = self.module.public_templates(force=True)
-        self.assertEqual(20, len(without_legacy))
+        self.assertEqual(22, len(without_legacy))
         self.assertFalse({
             "full-overlay-bold", "poster-split",
         } & {item["id"] for item in without_legacy})
         self.assertEqual(
             list(self.module.FIXED_SKILL_TEMPLATE_IDS),
-            [item["id"] for item in without_legacy[-2:]],
+            [item["id"] for item in without_legacy[-4:]],
         )
 
         for partial in (("v02",), ("v02", "v05")):
@@ -869,7 +871,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         ):
             values = self.module.public_templates(force=True)
 
-        self.assertEqual(20, len(values))
+        self.assertEqual(22, len(values))
         self.assertEqual(
             {"top1", "top2", "top3", "bottom1", "bottom2"},
             set(next(
@@ -3403,9 +3405,9 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertIn("'nine-grid-reveal'", source)
         self.assertIn("'triple-strip-shutter'", source)
         self.assertIn("'yellow-banner-zoom'", source)
-        self.assertIn("cardCount !== 20", source)
-        self.assertIn("referenceCount !== 20", source)
-        self.assertIn("distinctReferencePreviews !== 20", source)
+        self.assertIn("cardCount !== 22", source)
+        self.assertIn("referenceCount !== 22", source)
+        self.assertIn("distinctReferencePreviews !== 22", source)
 
     def test_inline_javascript_parses(self):
         page = (ROOT / "site/workbench/matrix-template.html").read_text(encoding="utf-8")

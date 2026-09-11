@@ -22,7 +22,7 @@ from . import feature_flags, matrix_template_semantics, pricing
 
 
 FEATURE_KEY = "matrix_template_video"
-TRANSITION_TEMPLATE_COUNTS = frozenset({2, 15, 19, 20, 22})
+TRANSITION_TEMPLATE_COUNTS = frozenset({2, 15, 19, 20, 22, 24})
 LEGACY_TEMPLATE_IDS = ("full-overlay-bold", "poster-split")
 REFERENCE_TEMPLATE_RE = re.compile(r"ref-[0-9]{2}-[a-z0-9-]{1,48}\Z")
 REFERENCE_TEMPLATE_COUNT = 17
@@ -32,8 +32,13 @@ TRIPLE_STRIP_TEMPLATE_ID = "triple-strip-shutter"
 TRIPLE_STRIP_VARIANT = "triple-strip"
 YELLOW_BANNER_TEMPLATE_ID = "yellow-banner-zoom"
 YELLOW_BANNER_VARIANT = "yellow-banner"
+FAN_WHIP_TEMPLATE_ID = "fan-whip-static"
+FAN_WHIP_VARIANT = "fan-whip"
+BRUSH_PANEL_TEMPLATE_ID = "brush-panel-transitions"
+BRUSH_PANEL_VARIANT = "brush-panel"
 FIXED_SKILL_TEMPLATE_IDS = (
     TRIPLE_STRIP_TEMPLATE_ID, YELLOW_BANNER_TEMPLATE_ID,
+    FAN_WHIP_TEMPLATE_ID, BRUSH_PANEL_TEMPLATE_ID,
 )
 FIXED_SKILL_TEMPLATE_CONTRACTS = {
     TRIPLE_STRIP_TEMPLATE_ID: {
@@ -45,6 +50,16 @@ FIXED_SKILL_TEMPLATE_CONTRACTS = {
         "variant": YELLOW_BANNER_VARIANT,
         "duration": 302 / 30,
         "required_visuals": 3,
+    },
+    FAN_WHIP_TEMPLATE_ID: {
+        "variant": FAN_WHIP_VARIANT,
+        "duration": 377 / 30,
+        "required_visuals": 5,
+    },
+    BRUSH_PANEL_TEMPLATE_ID: {
+        "variant": BRUSH_PANEL_VARIANT,
+        "duration": 15.133333,
+        "required_visuals": 7,
     },
 }
 API_URL = os.environ.get("MATRIX_TEMPLATE_API_URL", "http://127.0.0.1:8112").rstrip("/")
@@ -225,6 +240,14 @@ _SEMANTIC_CONTRACTS = {
         "top1": (50, 900, 804, 2), "top2": (38, 900, 900, 2),
         "top3": (38, 900, 900, 2), "bottom2": (32, 750, 787, 4),
     },
+    FAN_WHIP_VARIANT: {
+        "top1": (54, 900, 996, 2), "top2": (46, 900, 996, 2),
+        "top3": (38, 900, 996, 2), "bottom2": (42, 900, 996, 4),
+    },
+    BRUSH_PANEL_VARIANT: {
+        "top1": (54, 900, 996, 2), "top2": (46, 900, 996, 2),
+        "top3": (38, 900, 996, 2), "bottom2": (42, 900, 996, 4),
+    },
 }
 _SEMANTIC_CONTRACT_TRANSITIONS = {
     "v07": ({
@@ -376,6 +399,8 @@ def _refresh_catalog(force=False):
                     NINE_GRID_VARIANT,
                     TRIPLE_STRIP_VARIANT,
                     YELLOW_BANNER_VARIANT,
+                    FAN_WHIP_VARIANT,
+                    BRUSH_PANEL_VARIANT,
                 }
                 and not re.fullmatch(r"v(?:0[1-9]|1[0-7])", variant)
             ):
@@ -410,7 +435,7 @@ def _refresh_catalog(force=False):
             item["id"]: item for item in templates
             if item["id"] in LEGACY_TEMPLATE_IDS
         }
-        if len(templates) in {19, 20, 22}:
+        if len(templates) in {19, 20, 22, 24}:
             references = [
                 item for item in templates
                 if REFERENCE_TEMPLATE_RE.fullmatch(item["id"])
@@ -453,7 +478,9 @@ def _refresh_catalog(force=False):
                     (2, 0, 0),
                     (2, 1, 0),
                     (2, 1, 2),
+                    (2, 1, 4),
                     (0, 1, 2),
+                    (0, 1, 4),
                 }
             ):
                 raise RuntimeError("HyperFrames 模板目录不完整")
@@ -474,9 +501,13 @@ def _refresh_catalog(force=False):
                     raise RuntimeError("九宫格模板目录不完整")
             if fixed_skill:
                 by_id = {item["id"]: item for item in fixed_skill}
-                if set(by_id) != set(FIXED_SKILL_TEMPLATE_IDS):
+                if set(by_id) not in (
+                    set(FIXED_SKILL_TEMPLATE_IDS[:2]),
+                    set(FIXED_SKILL_TEMPLATE_IDS),
+                ):
                     raise RuntimeError("新增 Skill 模板目录不完整")
-                for template_id, contract in FIXED_SKILL_TEMPLATE_CONTRACTS.items():
+                for template_id in by_id:
+                    contract = FIXED_SKILL_TEMPLATE_CONTRACTS[template_id]
                     item = by_id[template_id]
                     if (
                         item.get("engine") != "hyperframes"
@@ -513,6 +544,7 @@ def _refresh_catalog(force=False):
                         if item["id"] == template_id
                     )
                     for template_id in FIXED_SKILL_TEMPLATE_IDS
+                    if template_id in by_id
                 ] if fixed_skill else [])
             )
         else:
