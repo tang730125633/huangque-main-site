@@ -11,15 +11,16 @@
   const result = document.querySelector('.agent-wave-result-card');
   const reduced = matchMedia('(prefers-reduced-motion: reduce)');
   const anchors = [[0, 0], [.32, 3.5], [.67, 7.8], [1, 12.1]];
-  const status = { ready: false, mode: 'scroll-scrub', progress: 0, videoTime: 0, chapter: 0, overlayPoints: 0 };
+  const status = { ready: false, mode: 'ambient-loop', progress: 0, videoTime: 0, chapter: 0, overlayPoints: 0 };
   window.__homepageAgentWaveStatus = status;
-  window.__homepageAgentWaveCheck = () => status.ready && video?.readyState >= 1 && !video.autoplay && overlay?.width > 0 && status.overlayPoints > 0;
+  window.__homepageAgentWaveCheck = () => status.ready && video?.readyState >= 1 && video.autoplay && overlay?.width > 0 && status.overlayPoints > 0;
 
   if (!video || !story) return;
 
   let targetProgress = 0;
   let progress = 0;
   let frame = 0;
+  let scrubbing = false;
   let overlayWidth = 0;
   let overlayHeight = 0;
   const clamp = value => Math.min(1, Math.max(0, value));
@@ -89,7 +90,22 @@
     const rect = story.getBoundingClientRect();
     const travel = Math.max(1, story.offsetHeight - innerHeight);
     targetProgress = clamp(-rect.top / travel);
-    if (reduced.matches) progress = targetProgress;
+    if (reduced.matches) {
+      scrubbing = true;
+      status.mode = 'reduced-motion';
+      progress = targetProgress;
+      video.pause();
+      return;
+    }
+    if (!scrubbing && targetProgress > .012) {
+      scrubbing = true;
+      status.mode = 'scroll-scrub';
+      video.pause();
+    } else if (scrubbing && targetProgress < .002) {
+      scrubbing = false;
+      status.mode = 'ambient-loop';
+      video.play().catch(() => { status.autoplayBlocked = true; });
+    }
   }
 
   function setChapter(chapter) {
@@ -114,7 +130,7 @@
     result?.classList.toggle('is-visible', progress > .68);
     document.documentElement.style.setProperty('--agent-wave-progress', progress.toFixed(4));
     document.documentElement.dataset.agentWaveProgress = progress.toFixed(4);
-    if (video.readyState >= 1 && !video.seeking && Math.abs(video.currentTime - targetTime) > .03) video.currentTime = targetTime;
+    if (scrubbing && video.readyState >= 1 && !video.seeking && Math.abs(video.currentTime - targetTime) > .03) video.currentTime = targetTime;
     video.dataset.scrubTime = targetTime.toFixed(3);
     status.progress = Number(progress.toFixed(4));
     status.videoTime = Number(targetTime.toFixed(3));
@@ -127,27 +143,30 @@
     frame = requestAnimationFrame(render);
   }
 
-  video.autoplay = false;
-  video.loop = false;
-  video.pause();
-  video.addEventListener('play', () => video.pause());
+  video.autoplay = true;
+  video.loop = true;
   const markReady = () => {
-    video.pause();
     sync();
     status.ready = true;
     document.documentElement.dataset.agentWaveReady = 'true';
+    if (!scrubbing && !reduced.matches) video.play().catch(() => { status.autoplayBlocked = true; });
     console.assert(window.__homepageAgentWaveCheck(), 'Homepage Agent Wave scrubbing is incomplete');
   };
+  resizeOverlay();
+  updateScroll();
   if (video.readyState >= 1) markReady();
   else video.addEventListener('loadedmetadata', markReady, { once: true });
 
   addEventListener('scroll', updateScroll, { passive: true });
   addEventListener('resize', () => { updateScroll(); resizeOverlay(); });
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) cancelAnimationFrame(frame);
-    else frame = requestAnimationFrame(render);
+    if (document.hidden) {
+      cancelAnimationFrame(frame);
+      video.pause();
+    } else {
+      frame = requestAnimationFrame(render);
+      if (!scrubbing && !reduced.matches) video.play().catch(() => { status.autoplayBlocked = true; });
+    }
   });
-  resizeOverlay();
-  updateScroll();
   frame = requestAnimationFrame(render);
 })();
