@@ -499,6 +499,77 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         }), self.assertRaisesRegex(RuntimeError, "语义排版能力无效"):
             self.module.public_templates(force=True)
 
+    def test_reference_and_motion_minimum_font_contracts_accept_transition(self):
+        updates = {
+            ("v01", "bottom2"): (74, 400, 944, 2),
+            ("v06", "top1"): (86, 900, 996, 2),
+            ("v08", "top1"): (86, 900, 996, 2),
+            ("v15", "bottom2"): (82, 900, 996, 2),
+            (self.module.NINE_GRID_VARIANT, "bottom2"):
+                (58, 900, 930, 10),
+            (self.module.TRIPLE_STRIP_VARIANT, "top2"):
+                (50, 900, 738, 6),
+            (self.module.TRIPLE_STRIP_VARIANT, "bottom2"):
+                (50, 750, 620, 10),
+            (self.module.YELLOW_BANNER_VARIANT, "top2"):
+                (50, 900, 900, 2),
+            (self.module.YELLOW_BANNER_VARIANT, "top3"):
+                (50, 900, 900, 2),
+            (self.module.YELLOW_BANNER_VARIANT, "bottom2"):
+                (50, 750, 787, 5),
+            (self.module.FAN_WHIP_VARIANT, "top2"):
+                (50, 900, 996, 2),
+            (self.module.FAN_WHIP_VARIANT, "top3"):
+                (50, 900, 996, 2),
+            (self.module.FAN_WHIP_VARIANT, "bottom2"):
+                (50, 900, 996, 5),
+            (self.module.BRUSH_PANEL_VARIANT, "top2"):
+                (50, 900, 996, 2),
+            (self.module.BRUSH_PANEL_VARIANT, "top3"):
+                (50, 900, 996, 2),
+            (self.module.BRUSH_PANEL_VARIANT, "bottom2"):
+                (50, 900, 996, 5),
+        }
+        templates = self.templates_with_fixed_skill()
+        by_variant = {
+            item.get("variant"): item for item in templates
+            if item.get("variant")
+        }
+        keys = ("font_size_px", "font_weight", "max_width_px", "max_lines")
+        for (variant, layer), values in updates.items():
+            by_variant[variant]["semantic_layout"]["layers"][layer] = dict(
+                zip(keys, values)
+            )
+
+        with mock.patch.object(self.module, "_request", return_value={
+            "templates": templates,
+            "max_batch_size": 5,
+            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+        }):
+            accepted = self.module.public_templates(force=True)
+        accepted_by_variant = {
+            item.get("variant"): item for item in accepted
+        }
+        for (variant, layer), values in updates.items():
+            self.assertEqual(
+                dict(zip(keys, values)),
+                accepted_by_variant[variant]["semantic_layout"]["layers"][
+                    layer
+                ],
+            )
+
+        invalid = self.templates_with_fixed_skill()
+        next(
+            item for item in invalid
+            if item.get("variant") == self.module.FAN_WHIP_VARIANT
+        )["semantic_layout"]["layers"]["top2"]["font_size_px"] = 49
+        with mock.patch.object(self.module, "_request", return_value={
+            "templates": invalid,
+            "max_batch_size": 5,
+            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+        }), self.assertRaisesRegex(RuntimeError, "语义排版能力无效"):
+            self.module.public_templates(force=True)
+
     def test_v12_v16_typography_transition_accepts_only_old_or_new_sizes(self):
         transitions = {
             ("v12", "top1"): (72, 80),
