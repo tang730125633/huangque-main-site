@@ -829,6 +829,98 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                 "duration": 8,
             }, "alice")
 
+    def test_catalog_accepts_current_five_layer_v07_with_fixed_skill_templates(self):
+        templates = self.templates_with_fixed_skill()
+        v07 = next(item for item in templates if item.get("variant") == "v07")
+        v07["semantic_layout"] = {
+            "version": 1,
+            "max_width_px": 996,
+            "layers": {
+                "top1": {
+                    "font_size_px": 118, "font_weight": 900,
+                    "max_width_px": 996, "max_lines": 2,
+                },
+                "top2": {
+                    "font_size_px": 82, "font_weight": 900,
+                    "max_width_px": 996, "max_lines": 2,
+                },
+                "top3": {
+                    "font_size_px": 51, "font_weight": 900,
+                    "max_width_px": 996, "max_lines": 2,
+                },
+                "bottom1": {
+                    "font_size_px": 57, "font_weight": 900,
+                    "max_width_px": 996, "max_lines": 2,
+                },
+                "bottom2": {
+                    "font_size_px": 86, "font_weight": 900,
+                    "max_width_px": 996, "max_lines": 2,
+                },
+            },
+        }
+
+        with mock.patch.object(
+            self.module, "_request", return_value={
+                "templates": templates,
+                "fonts": [],
+                "max_batch_size": 5,
+                "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+            },
+        ):
+            values = self.module.public_templates(force=True)
+
+        self.assertEqual(22, len(values))
+        self.assertEqual(
+            {"top1", "top2", "top3", "bottom1", "bottom2"},
+            set(next(
+                item for item in values if item.get("variant") == "v07"
+            )["semantic_layout"]["layers"]),
+        )
+
+    def test_catalog_keeps_legacy_v07_rollback_but_rejects_mixed_contract(self):
+        templates = self.templates_with_nine_grid()
+        v07 = next(item for item in templates if item.get("variant") == "v07")
+        legacy = {
+            "version": 1,
+            "max_width_px": 996,
+            "layers": {
+                "top1": {
+                    "font_size_px": 104, "font_weight": 900,
+                    "max_width_px": 996, "max_lines": 2,
+                },
+                "top2": {
+                    "font_size_px": 68, "font_weight": 900,
+                    "max_width_px": 996, "max_lines": 2,
+                },
+                "top3": {
+                    "font_size_px": 62, "font_weight": 900,
+                    "max_width_px": 996, "max_lines": 2,
+                },
+                "bottom2": {
+                    "font_size_px": 84, "font_weight": 900,
+                    "max_width_px": 996, "max_lines": 2,
+                },
+            },
+        }
+        v07["semantic_layout"] = legacy
+        response = {
+            "templates": templates,
+            "fonts": [],
+            "max_batch_size": 5,
+            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+        }
+
+        with mock.patch.object(self.module, "_request", return_value=response):
+            self.assertEqual(20, len(self.module.public_templates(force=True)))
+
+        mixed = json.loads(json.dumps(legacy))
+        mixed["layers"]["top1"]["font_size_px"] = 118
+        v07["semantic_layout"] = mixed
+        with mock.patch.object(
+            self.module, "_request", return_value=response,
+        ), self.assertRaisesRegex(RuntimeError, "语义排版能力无效"):
+            self.module.public_templates(force=True)
+
     def test_fixed_skill_templates_keep_shared_copy_and_exact_duration(self):
         templates = self.templates_with_fixed_skill()[-2:]
         top = "团队8个人，每天产出100条短视频"

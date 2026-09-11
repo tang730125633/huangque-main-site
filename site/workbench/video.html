@@ -449,9 +449,9 @@
               <div class="canvas-toolbox-head"><strong>专业制作工具</strong><button id="videoToolboxClose" type="button" aria-label="关闭工具箱">×</button></div>
               <div class="canvas-toolbox-grid">
                 <button class="video-module-card" type="button" data-video-module="talking"><span class="video-module-icon">说</span><strong>数字人口播</strong><span>人物照片搭配文案或音频。</span></button>
+                <button class="video-module-card" type="button" data-video-module="create"><span class="video-module-icon">生</span><strong>自由生成</strong><span>文字和参考图从零生成视频。</span></button>
                 <button class="video-module-card" type="button" data-video-module="motion"><span class="video-module-icon">演</span><strong>动作模仿</strong><span>参考动作、节奏和运镜表演。</span></button>
                 <button class="video-module-card" type="button" data-video-module="story"><span class="video-module-icon">剧</span><strong>剧情故事</strong><span>人物参考图搭配剧情描述。</span></button>
-                <button class="video-module-card" type="button" data-video-module="create"><span class="video-module-icon">生</span><strong>自由生成</strong><span>文字和参考图从零生成视频。</span></button>
                 <button class="video-module-card" type="button" data-video-module="tryon"><span class="video-module-icon">换</span><strong>换装换背景</strong><span>替换人物服装或场景。</span></button>
                 <a class="video-module-card" href="one-click-video.html" data-video-module="compose"><span class="video-module-icon">成</span><strong>一键成片</strong><span>整理包装已有口播视频。</span></a>
               </div>
@@ -508,14 +508,14 @@
         <button id="agentApplyUpdates" class="agent-apply hidden" type="button">应用 Agent 建议到当前表单</button>
       </section>
       <div class="function-tabs hidden" aria-label="视频功能分页">
-        <button class="function-tab on" type="button" data-function="talking">数字化 IP</button>
+        <button class="function-tab on" type="button" data-function="grok">果肉视频生成</button>
+        <button class="function-tab" type="button" data-function="talking">数字化 IP</button>
         <button class="function-tab" type="button" data-function="cinematic">电影化身</button>
         <button class="function-tab" type="button" data-function="tryon">换装换背景</button>
-        <button class="function-tab" type="button" data-function="grok">果肉视频生成</button>
-        <button class="function-tab" type="button" data-function="sora">Sora 2</button>
         <button class="function-tab hidden" type="button" data-function="minimax" aria-hidden="true">麦克视频</button>
-        <button class="function-tab hidden" type="button" data-function="omni" aria-hidden="true">Omni 视频</button>
         <button class="function-tab hidden" type="button" data-function="micro" aria-hidden="true">Seedance 视频</button>
+        <button class="function-tab hidden" type="button" data-function="sora" aria-hidden="true">Sora 2</button>
+        <button class="function-tab hidden" type="button" data-function="omni" aria-hidden="true">Omni 视频</button>
       </div>
 
       <div id="bgmPanel" class="panel" style="margin-top:14px;">
@@ -863,7 +863,7 @@
         </div>
         <div class="panel grok-generate-only" style="margin-top:12px;">
           <div class="faint" style="font-size:12px;margin-bottom:8px;">画面比例 <span style="color:#5c6b82;">· xAI 官方支持</span></div>
-          <div class="seg" style="grid-template-columns:repeat(4,1fr);"><button data-grok-ratio="9:16">9:16</button><button class="on" data-grok-ratio="16:9">16:9</button><button data-grok-ratio="1:1">1:1</button><button data-grok-ratio="4:3">4:3</button><button data-grok-ratio="3:4">3:4</button><button data-grok-ratio="3:2">3:2</button><button data-grok-ratio="2:3">2:3</button></div>
+          <div class="seg" style="grid-template-columns:repeat(4,1fr);"><button class="on" data-grok-ratio="9:16">9:16</button><button data-grok-ratio="16:9">16:9</button><button data-grok-ratio="1:1">1:1</button><button data-grok-ratio="4:3">4:3</button><button data-grok-ratio="3:4">3:4</button><button data-grok-ratio="3:2">3:2</button><button data-grok-ratio="2:3">2:3</button></div>
         </div>
         <div class="panel grok-generate-only" style="margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:12px;">
           <div><div class="faint" style="font-size:12px;margin-bottom:8px;">生成时长</div><div class="seg" style="grid-template-columns:repeat(3,1fr);"><button data-grok-duration="5">5秒</button><button class="on" data-grok-duration="10">10秒</button><button data-grok-duration="15">15秒</button></div></div>
@@ -1121,7 +1121,7 @@
 <script>
 (function(){
   var token='__cookie__';
-  var videoFunction='talking', mode='text', voiceTab='public', selectedVoice='S_d21F8OR62', activePreview=null, activePreviewBtn=null;
+  var videoFunction='grok', mode='text', voiceTab='public', selectedVoice='S_d21F8OR62', activePreview=null, activePreviewBtn=null;
   var imageData='', imagePreview='', audioData='', selectedAssetAudio=null, assetAudiosLoaded=false, selectedResolution='1080p', selectedRatio='9:16', selectedMotion='medium';
   var talkingBatch=false, talkingBatchItems=[], videoCost=20, videoBatchMax=5, talkingBatchSeq=0;
   var TALKING_BLOCK_SECONDS=30, TALKING_BLOCK_POINTS=30;
@@ -1193,7 +1193,7 @@
     {name:'产品展示',   text:CINE_IDENTITY+'手持产品面向镜头介绍，纯色背景，柔和布光，特写与中景切换，广告片质感'},
     {name:'多人同框',   text:CINE_IDENTITY+'两人并肩站立面向镜头交谈，互动自然，室内暖光，纪录片质感'}
   ];
-  var selectedGrokRatio='16:9', selectedGrokDuration=10, selectedGrokResolution='720p', selectedGrokModel='grok-imagine-video';
+  var selectedGrokRatio='9:16', selectedGrokDuration=10, selectedGrokResolution='720p', selectedGrokModel='grok-imagine-video';
   var grokOperation='generate', grokEditVideoData='', grokEditDuration=0;
   var selectedSoraModel='sora-2', selectedSoraRatio='16:9', selectedSoraSeconds=12, selectedSoraResolution='720p';
   var soraAvailable=false, soraHealthKnown=false, maxActiveSoraVideo=1;
@@ -1306,7 +1306,7 @@
     scrollAgentToLatest({force:true,behavior:'auto'});
   }
   function openVideoWorkbench(route){
-    route=route||AGENT_TASKS.talking;
+    route=route||AGENT_TASKS.create;
     if(route.href){location.href=route.href;return route;}
     var effective=agentRouting.activateRoute(route,{healthKnown:officialVideoHealthKnown,minimaxAvailable:minimaxAvailable,fallback:AGENT_TASKS.create,onFunction:updateFunction,onCineMode:applyCineMode});
     if(effective!==route){
@@ -2609,7 +2609,7 @@
     var select=$('historyChannelFilter'); if(!select) return;
     var channels={};
     (items||[]).forEach(function(x){var info=videoChannelInfo(x);channels[info.key]=info.label;});
-    var order=['talking','cinematic','video_compose','tryon','grok','sora','minimax','omni','micro'];
+    var order=['grok','talking','cinematic','video_compose','tryon','minimax','micro','sora','omni'];
     select.innerHTML='<option value="all">全部渠道</option>';
     Object.keys(channels).sort(function(a,b){
       var ai=order.indexOf(a),bi=order.indexOf(b);
@@ -3515,11 +3515,11 @@
       seedanceUpscaleAvailable=d.seedance_upscale_enabled===true;
       officialVideoHealthKnown=true;
       updateOfficialVideoControls();
-      [['omni',omniAvailable],['micro',seedanceAvailable],['minimax',minimaxAvailable]].forEach(function(pair){
+      [['sora',soraAvailable],['omni',omniAvailable],['micro',seedanceAvailable],['minimax',minimaxAvailable]].forEach(function(pair){
         var tab=document.querySelector('[data-function="'+pair[0]+'"]');
         if(tab){tab.classList.toggle('hidden',!pair[1]);tab.setAttribute('aria-hidden',pair[1]?'false':'true');}
       });
-      if((videoFunction==='omni'&&!omniAvailable)||(videoFunction==='micro'&&!seedanceAvailable)||(videoFunction==='minimax'&&!minimaxAvailable)) updateFunction('talking');
+      if((videoFunction==='sora'&&!soraAvailable)||(videoFunction==='omni'&&!omniAvailable)||(videoFunction==='micro'&&!seedanceAvailable)||(videoFunction==='minimax'&&!minimaxAvailable)) updateFunction('grok');
       if(isFinite(cost)&&cost>0) videoCost=Math.round(cost);
       if(isFinite(limit)&&limit>0) videoBatchMax=Math.min(5,Math.round(limit));
       if(isFinite(xiaoleCap)&&xiaoleCap>0) maxActiveXiaoleVideo=Math.round(xiaoleCap);
@@ -3550,7 +3550,7 @@
     updateChecklist();
   }
   function updateFunction(next){
-    videoFunction=next||'talking';
+    videoFunction=next||'grok';
     if($('bgmPanel')) $('bgmPanel').classList.toggle('hidden',videoFunction!=='talking');
     document.querySelectorAll('[data-function]').forEach(function(b){b.classList.toggle('on',b.dataset.function===videoFunction);});
     $('talkingPanel').classList.toggle('hidden',videoFunction!=='talking');
@@ -4638,7 +4638,7 @@
   bindVideoTaskSync();
   $('scriptText').dispatchEvent(new Event('input'));
   var videoHealthReady=loadTalkingLimits();
-  updateFunction('talking');
+  updateFunction('grok');
   syncVideoGenerateButtons();
   // F7 联动：资产页视频「重生成」跳转过来时，读 localStorage 预填(一次性)
   var _prefillVoice='';
@@ -4921,10 +4921,12 @@
   loadVoices();
   loadVideoHistory();
   resumeTrackedVideoTask();
+  // 后台「前台布局」配置通过 channel-parameters.js 应用：暴露切换函数供其调用
+  window.HQVideoWorkbench={updateFunction:updateFunction};
 })();
 </script>
-<link rel="stylesheet" href="/workbench/channel-parameters.css?v=2ce0ce8b">
-<script src="/workbench/channel-parameter-controls.js?v=0ad2941b"></script>
-<script src="/workbench/channel-parameters.js?v=90b11c98"></script>
+<link rel="stylesheet" href="/workbench/channel-parameters.css?v=b324c976">
+<script src="/workbench/channel-parameter-controls.js?v=8e29d198"></script>
+<script src="/workbench/channel-parameters.js?v=2f5158cd"></script>
 </body>
 </html>

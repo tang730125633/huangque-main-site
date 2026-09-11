@@ -8,7 +8,8 @@ HTML = (ROOT / "site/workbench/video.html").read_text(encoding="utf-8")
 
 class SoraVideoUiTests(unittest.TestCase):
     def test_user_can_open_a_visible_sora_panel(self):
-        self.assertIn('class="function-tab" type="button" data-function="sora"', HTML)
+        # Sora 默认隐藏，后台功能开关开启且通道可用时由健康检查显示（见 test_xiaole_video）
+        self.assertIn('class="function-tab hidden" type="button" data-function="sora"', HTML)
         self.assertIn('id="soraPanel"', HTML)
         self.assertIn('id="soraPrompt"', HTML)
         self.assertIn('id="soraGenerateBtn"', HTML)

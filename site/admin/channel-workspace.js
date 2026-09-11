@@ -1,7 +1,10 @@
 (function(){
   window.initChannelWorkspace=function(env){
-    const {el,esc}=env,C=window.ChannelCatalog;
+    const {el,esc}=env,C=window.ChannelCatalog,api=env.api;
     let data={},rows=[],tab='catalog',selected=null,returnFocus=null;
+    let layoutLoading=false;
+    const LAYOUT_NAMES={video:{grok:'果肉视频生成',talking:'数字化 IP',cinematic:'电影化身',tryon:'换装换背景',minimax:'麦克视频',micro:'Seedance 视频',sora:'Sora 2',omni:'Omni 视频'},
+      image:{gpt:'黄雀引擎 2',banana:'纳米香蕉',seedream:'黄雀引擎 1',xiaole:'果肉生图',zelong2:'泽龙2生图'}};
     const filters={category:'all',q:'',supplier:'',transport:'',status:'',history:false};
     const date=n=>n?new Date(n*1000).toLocaleString():'未采集';
     const table=(head,body)=>'<div class="cm-table-scroll"><table><thead><tr>'+head.map(h=>'<th>'+esc(h)+'</th>').join('')+'</tr></thead><tbody>'+body.join('')+'</tbody></table></div>';
@@ -16,7 +19,37 @@
       const remove=c.source==='managed'?action('delete','移入回收站'):'<span class="muted">内置线路不可删除</span>';
       return '<div class="cm-row-actions">'+button(c)+edit+modelButton+(c.source==='managed'?'<button data-parameters="'+esc(c.id)+'">参数</button>':'')+toggle+'<details><summary>更多</summary>'+remove+'</details></div>';
     }
-    function showTab(name){tab=name;document.querySelectorAll('[data-cm-panel]').forEach(n=>n.hidden=n.dataset.cmPanel!==name);document.querySelectorAll('[data-cm-tab]').forEach(n=>{n.classList.toggle('active',n.dataset.cmTab===name);n.setAttribute('aria-pressed',String(n.dataset.cmTab===name))})}
+    function showTab(name){tab=name;document.querySelectorAll('[data-cm-panel]').forEach(n=>n.hidden=n.dataset.cmPanel!==name);document.querySelectorAll('[data-cm-tab]').forEach(n=>{n.classList.toggle('active',n.dataset.cmTab===name);n.setAttribute('aria-pressed',String(n.dataset.cmTab===name))});if(name==='layout')loadLayout()}
+    function renderLayout(state){
+      const host=el('cmLayout');if(!host)return;
+      const layout=state||{};
+      const page=key=>{
+        const cfg=layout[key]||{},order=cfg.order||[],def=cfg.default||(order[0]||'');
+        return '<div class="cm-layout-page"><h4>'+(key==='video'?'视频页':'图片页')+'</h4><p class="muted">用上移/下移调整渠道顺序，单选默认渠道。保存后用户页面 15 秒内自动应用；可用性仍由功能开关控制。</p><div class="cm-layout-list">'+order.map((k,i)=>'<div class="cm-layout-row" data-layout-row="'+key+':'+k+'"><button type="button" data-layout-move="'+key+':'+k+':-1" '+(i===0?'disabled':'')+' aria-label="上移 '+esc(LAYOUT_NAMES[key]?.[k]||k)+'">↑</button><button type="button" data-layout-move="'+key+':'+k+':1" '+(i===order.length-1?'disabled':'')+' aria-label="下移 '+esc(LAYOUT_NAMES[key]?.[k]||k)+'">↓</button><span>'+esc(LAYOUT_NAMES[key]?.[k]||k)+'</span><label><input type="radio" name="layoutDefault_'+key+'" value="'+esc(k)+'" '+(def===k?'checked':'')+'> 默认</label></div>').join('')+'</div></div>';
+      };
+      host.innerHTML='<div class="section-head"><h3>前台布局（渠道顺序与默认）</h3><button type="button" id="cmLayoutSave" class="primary">保存布局</button></div>'+page('video')+page('image')+'<p id="cmLayoutStatus" role="status"></p>';
+      host.querySelector('#cmLayoutSave').onclick=async e=>{
+        const btn=e.currentTarget,status=el('cmLayoutStatus');btn.disabled=true;status.textContent='';
+        const collect=key=>{
+          const rows=[...host.querySelectorAll('[data-layout-row]')].filter(r=>r.dataset.layoutRow.startsWith(key+':')).map(r=>r.dataset.layoutRow.slice(key.length+1));
+          const def=host.querySelector('input[name="layoutDefault_'+key+'"]:checked')?.value;
+          return {order:rows,default:def};
+        };
+        try{
+          await api('/api/admin/channel-manager/layout-save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({layout:{video:collect('video'),image:collect('image')}})});
+          status.textContent='已保存；用户页面将在 15 秒内应用新布局。';toast('前台布局已保存');
+        }catch(error){status.textContent=error.message}
+        finally{btn.disabled=false}
+      };
+    }
+    async function loadLayout(){
+      if(layoutLoading)return;layoutLoading=true;
+      try{
+        const result=await api('/api/admin/channel-manager/layout-state',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+        renderLayout(result.layout||{});
+      }catch(error){const host=el('cmLayout');if(host)host.innerHTML='<p class="muted">'+esc(error.message)+'</p>'}
+      finally{layoutLoading=false}
+    }
     function list(){
       const visible=C.filter(rows,filters);
       el('cmCount').textContent=visible.length+' / '+rows.length+' 个渠道 · 历史或停用 '+rows.filter(c=>c.retired).length+' 个';
@@ -61,6 +94,20 @@
     function editor(title){closeGuard=null;el('cmEditor').oninput=null;el('cmEditor').onchange=null;el('cmEditor').onclick=null;if(el('cmDrawer').hidden)shell(title);el('cmDrawerTitle').textContent=title;el('cmDetail').hidden=true}
     const root=document.querySelector('[data-module="managedChannels"]');
     root.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;
+      if(b.dataset.layoutMove){
+        const parts=b.dataset.layoutMove.split(':'),page=parts[0],key=parts[1],dir=Number(parts[2]);
+        const row=el('cmLayout').querySelector('[data-layout-row="'+page+':'+key+'"]');
+        if(!row)return;
+        const parent=row.parentElement,sibling=dir<0?row.previousElementSibling:row.nextElementSibling&&row.nextElementSibling.nextElementSibling;
+        if(dir<0&&!row.previousElementSibling)return;
+        if(dir>0&&!row.nextElementSibling)return;
+        parent.insertBefore(row,sibling);
+        [...parent.querySelectorAll('[data-layout-row]')].forEach((r,i)=>{
+          r.querySelector('[data-layout-move$=":-1"]').disabled=i===0;
+          r.querySelector('[data-layout-move$=":1"]').disabled=i===parent.children.length-1;
+        });
+        return;
+      }
       if(b.dataset.cmTab)showTab(b.dataset.cmTab);
       if(b.dataset.cmCategory){filters.category=b.dataset.cmCategory;list()}
       if(b.dataset.cmDetail)open(b.dataset.cmDetail);
