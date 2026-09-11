@@ -611,6 +611,51 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                  mock.patch.object(self.module, "_request", return_value=health):
                 self.assertFalse(self.module.availability(force=True)["ready"])
 
+    def test_catalog_readiness_derives_from_composition_not_hardcoded_counts(self):
+        """模板增减不能再把整条渠道误判成「未就绪」。
+
+        背景：原来 TRANSITION_TEMPLATE_COUNTS = {2,15,19,20,22,24} 在白名单里写死，
+        加/减一个模板就要同步改主站 + 中转器 + 注释三处，漏一处用户就收到
+        「生成渠道正在繁忙或维护」。2026-09-11 磊哥下线两个老模板（22→20）时差点踩到。
+        现在总数由组成推导：骨架 = 17 ref + 1 九宫格 + len(FIXED_SKILL_TEMPLATE_IDS)。
+        """
+        skeleton = (self.module.REFERENCE_TEMPLATE_COUNT + 1
+                    + len(self.module.FIXED_SKILL_TEMPLATE_IDS))
+        # ① 骨架 + 老模板可有可无（0~2 个）都要判健康；以后再加 fixed-skill，skeleton 自动上移
+        for count in range(skeleton, skeleton + len(self.module.LEGACY_TEMPLATE_IDS) + 1):
+            self.assertTrue(
+                self.module._healthy_template_count(count),
+                "推导出的完整目录总数 %d 应判健康" % count,
+            )
+        # 合法区间必须是**推导**出来的：以后往 FIXED_SKILL_TEMPLATE_IDS 里加模板，
+        # 这个区间自动跟着上移，不需要任何人来改数字。
+        self.assertEqual(
+            set(self.module.COMPLETE_TEMPLATE_COUNTS),
+            set(range(skeleton, skeleton + len(self.module.LEGACY_TEMPLATE_IDS) + 1)),
+            "合法总数区间应由常量推导得出",
+        )
+        # ② 历史过渡态仍然放行
+        for count in (2, 15, 19, 20, 22, 24):
+            self.assertTrue(self.module._healthy_template_count(count),
+                            "历史过渡态 %d 仍应判健康" % count)
+        # ③ 残缺目录仍然要拦（这才是这个检查存在的意义）
+        for bad in (0, 1, 13, None, "", "x"):
+            self.assertFalse(self.module._healthy_template_count(bad),
+                             "残缺/非法总数 %r 必须判不健康" % (bad,))
+
+        # ④ 目录完整性看组成：只有老模板、或 ref 够 17 个，都算完整
+        legacy_only = [{"id": item} for item in self.module.LEGACY_TEMPLATE_IDS]
+        self.assertTrue(self.module._catalog_is_complete(legacy_only), "过渡期只有老模板算完整")
+        refs = self.reference_templates(include_legacy=False)
+        self.assertTrue(self.module._catalog_is_complete(refs),
+                        "17 个 ref 就是骨架，缺九宫格/新模板不算残缺")
+        self.assertTrue(self.module._catalog_is_complete(refs + [{"id": "nine-grid-reveal"}]),
+                        "加了九宫格仍算完整")
+        # ⑤ ref 不够就必须拦
+        self.assertFalse(self.module._catalog_is_complete(refs[:-1]), "少一个 ref 判不完整")
+        self.assertFalse(self.module._catalog_is_complete([{"id": "nine-grid-reveal"}]),
+                         "只有九宫格没有 ref 判不完整")
+
     def test_transition_catalog_rejects_unapproved_template_submission(self):
         with mock.patch.object(
             self.module, "_request", return_value={"templates": self.templates()}

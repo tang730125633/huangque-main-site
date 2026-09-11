@@ -22,7 +22,17 @@ from . import feature_flags, matrix_template_semantics, pricing
 
 
 FEATURE_KEY = "matrix_template_video"
-TRANSITION_TEMPLATE_COUNTS = frozenset({2, 15, 19, 20, 22, 24})
+# 目录完整性**看组成，不看总数**。
+#
+# 原来只有一个写死的数字白名单 TRANSITION_TEMPLATE_COUNTS = {2,15,19,20,22,24}，
+# 而且在三处各写了一份（这里 / 中转器 relay.py 的 /health / 代码注释），三份还不一致
+# ——中转器那份漏了 24，模板数真到 24 时它会返回 503，而主站认为 24 合法，**造成假性故障**。
+# 每加/减一个模板都得同步改这几处，漏一处整条渠道就被误判成「未就绪」，
+# 用户收到「生成渠道正在繁忙或维护」。2026-09-11 磊哥下线两个老模板（22→20）时就差点踩到。
+#
+# 现在总数由**组成**推导：17 个 ref + 1 个九宫格 + 2 个 fixed-skill 是骨架，
+# 老模板可有可无。以后加减模板不用再改数字。
+TRANSITION_TEMPLATE_COUNTS = frozenset({2, 15, 19, 20, 22, 24})  # 历史过渡态，保留兼容
 LEGACY_TEMPLATE_IDS = ("full-overlay-bold", "poster-split")
 REFERENCE_TEMPLATE_RE = re.compile(r"ref-[0-9]{2}-[a-z0-9-]{1,48}\Z")
 REFERENCE_TEMPLATE_COUNT = 17
@@ -40,6 +50,47 @@ FIXED_SKILL_TEMPLATE_IDS = (
     TRIPLE_STRIP_TEMPLATE_ID, YELLOW_BANNER_TEMPLATE_ID,
     FAN_WHIP_TEMPLATE_ID, BRUSH_PANEL_TEMPLATE_ID,
 )
+# 完整目录的合法总数由**组成**推导，不再手写：骨架 + 0~2 个老模板（老模板开关在上游
+# legacy_templates_enabled）。加了新模板这里自动跟上，不需要改代码。
+_SKELETON_COUNT = REFERENCE_TEMPLATE_COUNT + 1 + len(FIXED_SKILL_TEMPLATE_IDS)
+COMPLETE_TEMPLATE_COUNTS = frozenset(
+    range(_SKELETON_COUNT, _SKELETON_COUNT + len(LEGACY_TEMPLATE_IDS) + 1)
+)
+
+
+def _healthy_template_count(count) -> bool:
+    """目录总数是否落在已知的健康形态里。
+
+    过渡期老状态（TRANSITION_TEMPLATE_COUNTS）或「骨架 + 老模板可有可无」的推导区间
+    （COMPLETE_TEMPLATE_COUNTS）都算健康。**加减模板不用改这里。**
+    """
+    try:
+        count = int(count or 0)
+    except (TypeError, ValueError):
+        return False
+    return count in TRANSITION_TEMPLATE_COUNTS or count in COMPLETE_TEMPLATE_COUNTS
+
+
+def _catalog_is_complete(templates) -> bool:
+    """看**组成**判断目录是否完整（总数会随模板增减而变，组成不会）。
+
+    硬要求只有一条：**ref 模板 >= 17 个**（骨架）。九宫格和 fixed-skill 是后来
+    分期加上去的，老目录没有它们同样算完整 —— 不能因为"少了一类新模板"就把
+    整条渠道判死。过渡期只有老 ffmpeg 模板也算合法（上游还没上新目录）。
+    """
+    items = list(templates or [])
+    if len(items) in TRANSITION_TEMPLATE_COUNTS:
+        return True  # 历史过渡态，保留兼容
+    ids = {str(item.get("id") or "") for item in items}
+    if ids and ids <= set(LEGACY_TEMPLATE_IDS):
+        return True
+    references = [
+        item for item in items
+        if REFERENCE_TEMPLATE_RE.fullmatch(str(item.get("id") or ""))
+    ]
+    return len(references) >= REFERENCE_TEMPLATE_COUNT
+
+
 FIXED_SKILL_TEMPLATE_CONTRACTS = {
     TRIPLE_STRIP_TEMPLATE_ID: {
         "variant": TRIPLE_STRIP_VARIANT,
@@ -149,7 +200,7 @@ def availability(force=False):
         health = _request("GET", "/health", timeout=5)
         ready = (
             health.get("ok") is True
-            and int(health.get("templates") or 0) in TRANSITION_TEMPLATE_COUNTS
+            and _healthy_template_count(health.get("templates"))
         )
     except Exception:
         ready = False
@@ -431,7 +482,7 @@ def _refresh_catalog(force=False):
             templates.append(template)
         template_ids = {item["id"] for item in templates}
         if (
-            len(templates) not in TRANSITION_TEMPLATE_COUNTS
+            not _catalog_is_complete(templates)
             or len(template_ids) != len(templates)
         ):
             raise RuntimeError("模板目录不完整")
@@ -439,7 +490,9 @@ def _refresh_catalog(force=False):
             item["id"]: item for item in templates
             if item["id"] in LEGACY_TEMPLATE_IDS
         }
-        if len(templates) in {19, 20, 22, 24}:
+        # 只有「装得下完整骨架」的目录才做严格形状校验（保留过渡期容错）。
+        # 17 ref + 2 老模板 = 19，正好等于原来写死的 {19,20,22,24}，但这里是从常量推导的。
+        if len(templates) >= REFERENCE_TEMPLATE_COUNT + len(LEGACY_TEMPLATE_IDS):
             references = [
                 item for item in templates
                 if REFERENCE_TEMPLATE_RE.fullmatch(item["id"])
