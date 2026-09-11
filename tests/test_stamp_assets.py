@@ -37,6 +37,25 @@ stamp_assets = _load()
 
 
 class AssetRegistryTests(unittest.TestCase):
+    def test_channel_dependencies_use_matching_versions_on_every_consumer(self):
+        assets = {a.name: a for a in stamp_assets.SITE_ASSETS}
+        for name in ("admin/channel-manager.js", "admin/channel-catalog.js",
+                     "admin/channel-workspace.js", "admin/channel-parameters.js",
+                     "admin/channel-parameters.css", "workbench/channel-parameter-controls.js",
+                     "workbench/channel-parameters.css", "workbench/channel-parameters.js"):
+            self.assertIn(name, assets)
+            asset = assets[name]
+            for page in asset.html_files():
+                content = page.read_bytes()
+                match = asset.pattern.search(content)
+                self.assertIsNotNone(match, str(page))
+                self.assertEqual(match.group(2), asset.stamp().encode(), str(page))
+                self.assertNotIn((asset.reference + '"').encode(), content)
+            sample = ('<script src="' + asset.reference + '?v=old"></script>').encode()
+            updated, count = asset.rewrite(sample, asset.stamp())
+            self.assertEqual(count, 1)
+            self.assertNotEqual(updated, sample)
+
     def test_theme_assets_are_registered(self):
         """新增的共享资源必须进 ASSETS，否则戳永远不变。"""
         names = {a.name for a in stamp_assets.ASSETS}
