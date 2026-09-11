@@ -149,6 +149,14 @@ ASSETS = (
 )
 
 SITE_ASSETS = (
+    *(SiteAsset("admin/" + name, "/admin/" + name, ("admin/index.html",))
+      for name in ("channel-manager.js", "channel-catalog.js", "channel-workspace.js",
+                   "channel-parameters.js", "channel-parameters.css")),
+    *(SiteAsset("workbench/" + name, "/workbench/" + name,
+                ("admin/index.html", "workbench/banana.html", "workbench/video.html"))
+      for name in ("channel-parameter-controls.js", "channel-parameters.css")),
+    SiteAsset("workbench/channel-parameters.js", "/workbench/channel-parameters.js",
+              ("workbench/banana.html", "workbench/video.html")),
     SiteAsset(
         "homepage.css",
         "/homepage.css",
