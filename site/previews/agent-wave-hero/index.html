@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="黄雀 AI Agent Wave 首页视觉原型">
+  <title>黄雀 AI · Agent Wave</title>
+  <link rel="stylesheet" href="./style.css?v=1">
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+
+  <header class="topbar">
+    <a class="brand" href="#top" aria-label="黄雀 AI 首页">
+      <span class="brand-mark">雀</span>
+      <span><strong>黄雀</strong><small>HUANGQUE AI</small></span>
+    </a>
+    <nav aria-label="主导航">
+      <a href="#top">Agent</a>
+      <a href="#result">成片</a>
+      <a href="/workbench/inspiration">工作台</a>
+    </nav>
+    <a class="nav-action" href="/workbench/inspiration">ENTER ↗</a>
+  </header>
+
+  <main id="main">
+    <section class="story" id="top" data-wave-story>
+      <span class="scroll-anchor" id="result" aria-hidden="true"></span>
+      <div class="stage">
+        <canvas class="wave" data-agent-wave aria-hidden="true"></canvas>
+        <div class="grain" aria-hidden="true"></div>
+        <div class="copy-stack">
+          <article class="beat is-active" data-beat="0">
+            <p class="kicker"><span></span>HUANGQUE AGENT · 01</p>
+            <h1>让 AI<br>不只会聊天。</h1>
+            <p>黄雀把你的素材、目标与工具组织成一条真正会向前推进的生产链路。</p>
+            <div class="actions">
+              <a class="button primary" href="#result">观看执行过程</a>
+              <a class="button secondary" href="/workbench/inspiration">进入工作台 ↗</a>
+            </div>
+          </article>
+
+          <article class="beat" data-beat="1">
+            <p class="kicker"><span></span>VISIBLE EXECUTION · 02</p>
+            <h2>调用工具。<br>推进任务。</h2>
+            <p>每一步都有状态，每一次失败都有回写。你看到的不是一句承诺，而是正在发生的执行。</p>
+          </article>
+
+          <article class="beat" data-beat="2">
+            <p class="kicker"><span></span>DELIVERABLE · 03</p>
+            <h2>最后，<br><em>看见成片。</em></h2>
+            <p>从输入素材到可播放结果，黄雀把 Agent 的价值落在一份可以查看、交付和验收的作品上。</p>
+          </article>
+        </div>
+
+        <aside class="execution" aria-label="Agent 执行状态">
+          <header>
+            <span><i></i>AGENT RUNNING</span>
+            <code>HQ · 001</code>
+          </header>
+          <div class="steps">
+            <div class="step is-active" data-step="0"><b>01</b><span>读取素材</span><small>INPUT READY</small></div>
+            <div class="step" data-step="1"><b>02</b><span>规划镜头</span><small>STRUCTURING</small></div>
+            <div class="step" data-step="2"><b>03</b><span>调用工具</span><small>EXECUTING</small></div>
+            <div class="step" data-step="3"><b>04</b><span>交付成片</span><small>DELIVERED</small></div>
+          </div>
+          <figure class="result-card">
+            <video autoplay muted loop playsinline preload="metadata" aria-label="黄雀成片展示">
+              <source src="../../assets/home/hero-banner-monochrome-eye.mp4" type="video/mp4">
+            </video>
+            <figcaption><span>OUTPUT / VIDEO</span><strong>成片已生成</strong><small>00:08 · 1920 × 1080</small></figcaption>
+          </figure>
+          <div class="progress"><span></span></div>
+        </aside>
+
+        <ol class="story-index" aria-label="当前叙事章节">
+          <li class="is-active" data-index="0"><span>01</span>理解</li>
+          <li data-index="1"><span>02</span>执行</li>
+          <li data-index="2"><span>03</span>交付</li>
+        </ol>
+        <p class="scroll-cue">SCROLL TO RUN <span></span></p>
+      </div>
+    </section>
+
+    <section class="closing">
+      <p>HUANGQUE AI · AGENTIC MEDIA SYSTEM</p>
+      <h2>从一个想法，<br>到一支可以播放的作品。</h2>
+      <a href="/workbench/inspiration">开始一次创作 <span>↗</span></a>
+    </section>
+  </main>
+
+  <script src="./experience.js?v=1" defer></script>
+</body>
+</html>
