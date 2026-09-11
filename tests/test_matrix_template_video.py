@@ -542,6 +542,66 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             ), self.assertRaisesRegex(RuntimeError, "语义排版能力无效"):
                 self.module.public_templates(force=True)
 
+    def test_pr189_copy_capacity_transition_accepts_only_old_or_new_metrics(self):
+        transitions = {
+            ("v01", "bottom2"): (
+                (74, 400, 848, 2), (74, 400, 944, 2),
+            ),
+            ("v06", "top1"): (
+                (104, 900, 996, 2), (86, 900, 996, 2),
+            ),
+            ("v08", "top1"): (
+                (92, 900, 996, 2), (86, 900, 996, 2),
+            ),
+            ("v15", "bottom2"): (
+                (92, 900, 996, 2), (82, 900, 996, 2),
+            ),
+        }
+
+        for generation in (0, 1):
+            templates = self.reference_templates()
+            for (variant, layer), accepted in transitions.items():
+                item = next(
+                    value for value in templates
+                    if value.get("variant") == variant
+                )["semantic_layout"]["layers"][layer]
+                metrics = accepted[generation]
+                item.update({
+                    "font_size_px": metrics[0],
+                    "font_weight": metrics[1],
+                    "max_width_px": metrics[2],
+                    "max_lines": metrics[3],
+                })
+            with self.subTest(generation=generation), mock.patch.object(
+                self.module, "_request", return_value={
+                    "templates": templates,
+                    "max_batch_size": 5,
+                    "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+                },
+            ):
+                values = self.module.public_templates(force=True)
+            by_variant = {item.get("variant"): item for item in values}
+            for (variant, layer), accepted in transitions.items():
+                item = by_variant[variant]["semantic_layout"]["layers"][layer]
+                self.assertEqual(
+                    accepted[generation],
+                    (
+                        item["font_size_px"], item["font_weight"],
+                        item["max_width_px"], item["max_lines"],
+                    ),
+                )
+
+        drift = self.reference_templates()
+        next(
+            item for item in drift if item.get("variant") == "v01"
+        )["semantic_layout"]["layers"]["bottom2"]["max_width_px"] = 943
+        with mock.patch.object(self.module, "_request", return_value={
+            "templates": drift,
+            "max_batch_size": 5,
+            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+        }), self.assertRaisesRegex(RuntimeError, "语义排版能力无效"):
+            self.module.public_templates(force=True)
+
     def test_v10_typography_transition_accepts_only_old_or_new_sizes(self):
         transitions = {"top1": (70, 85), "top3": (54, 65)}
         for layer, accepted_sizes in transitions.items():
