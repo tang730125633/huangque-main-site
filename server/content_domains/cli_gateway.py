@@ -402,7 +402,10 @@ def handle_quote(handler, path, verify, must_change_password, is_shutting_down,
         elif kind == "matrix_template_video":
             from . import matrix_template_video
             payload = matrix_template_video.validate_payload(
-                payload, user["username"])
+                payload, user["username"],
+                allow_shared_materials=(
+                    matrix_template_video.shared_materials_allowed(user)
+                ))
         else:
             raise ValueError("CLI 报价不支持该生成类型")
         feature_flags.require_enabled(

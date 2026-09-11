@@ -2865,11 +2865,43 @@ def _matrix_template_voiceover(value):
     return result, bgm, bgm_volume
 
 
+_MATRIX_TEMPLATE_USER_MATERIAL_FIELDS = frozenset(
+    {"upload_id", "media_type", "clip_start_seconds"}
+)
+
+
+def _matrix_template_user_materials(value):
+    if not isinstance(value, list) or not 1 <= len(value) <= 20:
+        raise CLIAPIError(400, "user_materials 需要包含 1-20 个素材")
+    result = []
+    for index, item in enumerate(value):
+        label = "user_materials[%d]" % index
+        if not isinstance(item, dict):
+            raise CLIAPIError(400, label + " 必须是对象")
+        unknown = sorted(set(item) - _MATRIX_TEMPLATE_USER_MATERIAL_FIELDS)
+        if unknown:
+            raise CLIAPIError(400, label + " 不支持的参数：" + unknown[0])
+        if "upload_id" not in item:
+            raise CLIAPIError(400, label + " 缺少参数：upload_id")
+        entry = {
+            "upload_id": _string(item["upload_id"], label + ".upload_id", 1, 180),
+            "media_type": _enum(
+                item.get("media_type"), label + ".media_type", ("image", "video")
+            ),
+        }
+        if "clip_start_seconds" in item:
+            entry["clip_start_seconds"] = _number(
+                item["clip_start_seconds"], label + ".clip_start_seconds", 0, 3600
+            )
+        result.append(entry)
+    return result
+
+
 def _matrix_template_payload(value):
     _strict_object(
         value, {
             "top_text", "bottom_text", "template_id", "font_family",
-            "voiceover",
+            "voiceover", "user_materials",
         },
         ("top_text", "bottom_text", "template_id"),
     )
@@ -2894,6 +2926,10 @@ def _matrix_template_payload(value):
         result["bgm"] = bgm
         if bgm:
             result["bgm_volume"] = bgm_volume
+    if "user_materials" in value:
+        result["user_materials"] = _matrix_template_user_materials(
+            value["user_materials"]
+        )
     return result
 
 
@@ -2901,7 +2937,7 @@ def _matrix_template_batch_payload(value):
     _strict_object(
         value, {
             "top_text", "bottom_text", "template_id", "font_family",
-            "voiceover", "count",
+            "voiceover", "user_materials", "count",
         },
         ("top_text", "bottom_text", "template_id", "count"),
     )
