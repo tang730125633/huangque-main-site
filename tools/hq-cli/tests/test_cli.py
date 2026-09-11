@@ -192,7 +192,7 @@ class HqCliTests(unittest.TestCase):
             self.assertEqual(0, code, error)
             self.assertTrue(self.payload(output)["schema"].startswith("hq."))
         code, output, _ = self.invoke(["version"])
-        self.assertEqual("0.15.10", self.payload(output)["cli_version"])
+        self.assertEqual("0.15.11", self.payload(output)["cli_version"])
         self.assertEqual("Huangque main-site CLI", self.payload(output)["product"])
         self.assertEqual("https://huangquechuanmei.com", self.payload(output)["origin"])
 
