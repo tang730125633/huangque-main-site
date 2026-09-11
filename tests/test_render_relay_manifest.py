@@ -1,6 +1,7 @@
 import importlib.util
 import hashlib
 import json
+import os
 import sqlite3
 import tempfile
 import threading
@@ -9,6 +10,7 @@ import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -109,6 +111,35 @@ class RenderRelayManifestTests(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
                 thread.join(timeout=5)
+
+    def test_poller_converts_user_images_before_local_render(self):
+        env = {
+            "NODE_RELAY_URL": "https://relay.test",
+            "NODE_RELAY_TOKEN": "node-token",
+            "NODE_LOCAL_TOKEN": "local-token",
+        }
+        with mock.patch.dict(os.environ, env):
+            poller = load("render_node_image", "deploy/render-relay/node_poller.py")
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.headers.get.return_value = "image/jpeg"
+        response.read.return_value = b"image"
+        payload = {
+            "duration": 8.0,
+            "user_materials": [{"sha256": "a" * 64, "media_type": "image"}],
+        }
+        with mock.patch.object(
+            poller.urllib.request, "urlopen", return_value=response,
+        ), mock.patch.object(
+            poller, "_image_to_video", return_value=b"converted-video",
+        ), mock.patch.object(poller, "_call") as upload:
+            poller.sync_user_assets(payload, "b" * 32)
+        converted = hashlib.sha256(b"converted-video").hexdigest()
+        self.assertEqual({
+            "sha256": converted, "media_type": "video", "clip_start_seconds": 0,
+        }, payload["user_materials"][0])
+        self.assertEqual("video/mp4", upload.call_args.kwargs["headers"]["Content-Type"])
+        self.assertEqual(converted, upload.call_args.kwargs["headers"]["X-HQ-Asset-Sha256"])
 
 
 if __name__ == "__main__":

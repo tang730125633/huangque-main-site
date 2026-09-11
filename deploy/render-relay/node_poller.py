@@ -5,9 +5,13 @@
 循环：向中转器取任务 → 交给本机渲染服务 → 等完成 → 把成品回传中转器。
 全部是出站请求，节点在 NAT 后也能工作。
 """
+import hashlib
 import json
+import math
 import os
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -74,6 +78,34 @@ def run_local(payload, job_id=""):
     return None, "本机渲染超时"
 
 
+def _image_to_video(data, content_type, duration):
+    suffix = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}.get(
+        str(content_type or "").lower()
+    )
+    seconds = float(duration or 0)
+    if not suffix or not math.isfinite(seconds) or not 7 <= seconds <= 20:
+        raise RuntimeError("用户图片转视频参数无效")
+    frames = math.ceil((seconds + 0.2) * 30)
+    with tempfile.TemporaryDirectory(prefix="hq-user-image-") as temp:
+        source = os.path.join(temp, "source" + suffix)
+        output = os.path.join(temp, "clip.mp4")
+        with open(source, "wb") as handle:
+            handle.write(data)
+        process = subprocess.run([
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+            "-loop", "1", "-i", source, "-map", "0:v:0", "-an", "-vf",
+            "scale=1080:1920:force_original_aspect_ratio=increase,"
+            "crop=1080:1920,setsar=1,fps=30,format=yuv420p",
+            "-frames:v", str(frames), "-c:v", "libx264", "-preset", "fast",
+            "-crf", "18", "-pix_fmt", "yuv420p", "-threads", "2",
+            "-map_metadata", "-1", "-movflags", "+faststart", output,
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=120)
+        if process.returncode or not os.path.isfile(output) or os.path.getsize(output) < 1024:
+            raise RuntimeError("用户图片转视频失败")
+        with open(output, "rb") as handle:
+            return handle.read()
+
+
 def sync_user_assets(payload, job_id):
     """把本任务引用的用户素材从中转器拉到当前渲染节点。"""
     for item in payload.get("user_materials") or []:
@@ -87,6 +119,13 @@ def sync_user_assets(payload, job_id):
         with urllib.request.urlopen(req, timeout=120) as resp:
             content_type = (resp.headers.get("Content-Type") or "").split(";")[0]
             data = resp.read()
+        if item.get("media_type") == "image":
+            data = _image_to_video(data, content_type, payload.get("duration"))
+            sha = hashlib.sha256(data).hexdigest()
+            content_type = "video/mp4"
+            item.update({
+                "sha256": sha, "media_type": "video", "clip_start_seconds": 0,
+            })
         _call(
             LOCAL + "/v1/user-assets", LOCAL_TOKEN, "POST", raw=data,
             headers={"Content-Type": content_type, "X-HQ-Asset-Sha256": sha},
