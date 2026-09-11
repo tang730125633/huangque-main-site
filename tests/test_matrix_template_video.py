@@ -864,6 +864,82 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         upload.assert_not_called()
         request.assert_not_called()
 
+    def test_reference_duration_expands_to_fit_all_user_materials(self):
+        template = next(
+            item for item in self.reference_templates()
+            if item["id"] == "ref-06-fixture-06"
+        )
+        template["required_visuals_max"] = 5
+        top = "用户素材自动拆分"
+        bottom = "按模板画面位生成"
+        semantic = {
+            "version": 1,
+            "model": "gpt-4.1-mini",
+            "source_sha256": self.module.matrix_template_semantics._source_sha256(
+                top, bottom,
+            ),
+            "top1_end": len(top) - 1,
+            "top_break_after": [],
+            "bottom_break_after": [],
+        }
+        materials = [{
+            "upload_id": "img_" + str(index) * 32,
+            "media_type": "image" if index % 2 else "video",
+        } for index in range(1, 6)]
+
+        def read(item, _username):
+            content_type = (
+                "image/png" if item["media_type"] == "image" else "video/mp4"
+            )
+            return item["upload_id"].encode(), content_type
+
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(self.module, "public_templates", return_value=[template]), \
+             mock.patch.object(self.module, "_read_user_upload", side_effect=read), \
+             mock.patch.object(self.module, "_upload_user_asset") as upload, \
+             mock.patch.object(
+                 self.module, "_request",
+                 side_effect=lambda _method, _path, body, **_kwargs: {"payload": body},
+             ) as request:
+            result = self.module.validate_payload({
+                "top_text": top,
+                "bottom_text": bottom,
+                "template_id": template["id"],
+                "user_materials": materials,
+            }, "alice", trusted_semantic_layout=semantic,
+               allow_shared_materials=False)
+
+        self.assertEqual(15.0, result["duration"])
+        self.assertEqual(5, len(result["user_materials"]))
+        self.assertEqual(5, upload.call_count)
+        self.assertEqual(15.0, request.call_args.args[2]["duration"])
+
+    def test_template_capacity_rejects_excess_before_upload(self):
+        template = next(
+            item for item in self.reference_templates()
+            if item["id"] == "ref-06-fixture-06"
+        )
+        template["required_visuals_max"] = 5
+        materials = [{
+            "upload_id": "img_" + str(index) * 32,
+            "media_type": "image",
+        } for index in range(1, 7)]
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(self.module, "public_templates", return_value=[template]), \
+             mock.patch.object(self.module, "_read_user_upload") as read, \
+             mock.patch.object(self.module, "_upload_user_asset") as upload, \
+             mock.patch.object(self.module, "_request") as request, \
+             self.assertRaisesRegex(ValueError, "最多使用 5 份素材"):
+            self.module.validate_payload({
+                "top_text": "用户素材自动拆分",
+                "bottom_text": "按模板画面位生成",
+                "template_id": template["id"],
+                "user_materials": materials,
+            }, "alice", allow_shared_materials=False)
+        read.assert_not_called()
+        upload.assert_not_called()
+        request.assert_not_called()
+
     def test_shared_material_access_is_staff_or_explicit_account_only(self):
         self.assertTrue(self.module.shared_materials_allowed({"role": "admin"}))
         self.assertFalse(self.module.shared_materials_allowed({
