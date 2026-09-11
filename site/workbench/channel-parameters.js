@@ -3,9 +3,10 @@
   const {esc,mount}=window.ChannelParameterControls,kind=host.dataset.kind;
   const legacy=document.querySelector(kind==='image'?'.banana-workspace':'#videoWorkspace');if(legacy)legacy.setAttribute('data-channel-legacy','');
   let showLegacy=false,billingEnabled=false;
-  // 视频页托管多个功能（数字人口播、剧情、换装等），平台配置面板只在用户提交托管渠道时接管，
-  // 否则会在打开页面时把整个工作台替换掉。图片页本身只有作图一件事，首屏即用托管面板。
-  let managedActive=kind==='image';
+  // 两个工作台都以各自的原生界面为首屏：图片页的托管线路已内嵌为「乐创 · Image 2」引擎卡，
+  // 视频页提交托管渠道时再由 redirect 接管。平台面板不再默认顶掉工作台，
+  // 只在“命中托管映射提交”或“存在待确认提交”时出现。
+  let managedActive=false;
   let items=[],current=null,controls=null,busy=false,owner='',pending=null,pollTimer=null,ready=false,fetching=false;
   let layoutApplied=false;
   host.className='cp-panel';
