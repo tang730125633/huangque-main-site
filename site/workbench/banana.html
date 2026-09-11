@@ -184,10 +184,32 @@
       </div>
       </div>
 
-      <!-- 乐创托管线路：选中「乐创 · Image 2」时显示。参数与点数来自后台已发布的参数契约。 -->
+      <!-- 乐创托管线路：选中「乐创 · Image 2」时显示。沿用其他引擎的卡片行布局，
+           选项与点数来自后台已发布的参数契约（组合编号 + 版本号提交）。 -->
       <div id="lechuangParamRows" hidden style="margin-top:22px;">
-        <div id="lechuangControls" class="cp-fields"></div>
-        <p id="lechuangHint" style="font-size:11.5px;color:#5c6b82;margin:10px 0 0;line-height:1.6;">乐创线路：每组参数对应固定点数，提交前会再确认；上传参考图自动切换为局部修图；每次出一张。</p>
+        <div style="font-size:13.5px; font-weight:600; margin:0 0 10px;">比例</div>
+        <div id="lechuangRatioRow" style="display:grid; grid-template-columns:repeat(4,1fr); gap:10px;"></div>
+        <div id="lechuangExtraWrap" hidden>
+          <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">更多比例</div>
+          <div id="lechuangRatioMoreRow" style="display:grid; grid-template-columns:repeat(4,1fr); gap:10px;"></div>
+        </div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:22px; margin-top:22px;">
+          <div>
+            <div style="font-size:13.5px; font-weight:600; margin-bottom:10px;">清晰度</div>
+            <div id="lechuangQualityRow" style="display:grid; grid-template-columns:repeat(2,1fr); gap:10px;"></div>
+          </div>
+          <div>
+            <div style="font-size:13.5px; font-weight:600; margin-bottom:10px;">生成数量</div>
+            <div id="lechuangCountRow" style="display:grid; grid-template-columns:44px 1fr 44px; gap:10px; align-items:center;">
+              <button type="button" disabled aria-label="乐创每次出一张" style="height:42px; border-radius:11px; border:1px solid rgba(148,164,187,.14); background:rgba(148,164,187,.05); color:#5c6b82; font-size:22px; line-height:1; cursor:not-allowed; font-family:inherit;">-</button>
+              <input id="lechuangCountInput" type="text" value="1" readonly aria-label="生成数量固定为一张" style="height:42px; box-sizing:border-box; border-radius:11px; border:1px solid rgba(148,164,187,.14); background:rgba(148,164,187,.05); color:#94a4bb; text-align:center; font-size:15px; font-weight:700; outline:none; font-family:'JetBrains Mono',monospace;">
+              <button type="button" disabled aria-label="乐创每次出一张" style="height:42px; border-radius:11px; border:1px solid rgba(148,164,187,.14); background:rgba(148,164,187,.05); color:#5c6b82; font-size:22px; line-height:1; cursor:not-allowed; font-family:inherit;">+</button>
+            </div>
+          </div>
+        </div>
+        <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">背景</div>
+        <div id="lechuangBackgroundRow" style="display:grid; grid-template-columns:repeat(2,1fr); gap:10px;"></div>
+        <p id="lechuangHint" style="font-size:11.5px;color:#5c6b82;margin:14px 0 0;line-height:1.6;"></p>
         <p id="lechuangUnavailable" hidden style="font-size:11.5px;color:#f4b740;margin:10px 0 0;">乐创线路暂未开放（后台未启用功能映射或未发布参数）。</p>
       </div>
 
@@ -362,9 +384,14 @@
   }
   var COUNT_OPTIONS=[1,2,4];
   // 乐创托管线路：以一张引擎卡接入老工作台，参数与点数来自后台已发布的参数契约。
-  // 选中的组合编号 + 契约版本号提交给服务端；服务端按契约取值计价，客户端改不了价格。
+  // 参数区沿用其他引擎的卡片行布局（比例 / 清晰度 / 生成数量 / 背景），选中值再解析成契约里的合法组合，
+  // 只把「组合编号 + 契约版本」提交给服务端；服务端按契约取值计价，客户端改不了价格。
   var LECHUANG_FRONT='gpt-image-2';
-  var lechuangItem=null, lechuangControls=null;
+  var LECHUANG_RATIO_SIZES={'9:16':'720x1280','1:1':'1024x1024','16:9':'1280x720','3:4':'768x1024','4:5':'1024x1280','5:4':'1280x1024','4:3':'1024x768','2:3':'1024x1536','3:2':'1536x1024'};
+  var LECHUANG_PRIMARY_RATIOS=['9:16','1:1','16:9','3:4'];
+  var LECHUANG_QUALITY_LABELS={auto:'自动',low:'经济',medium:'标准',high:'高品质'};
+  var LECHUANG_BACKGROUND_LABELS={auto:'自动',opaque:'不透明',transparent:'透明底'};
+  var lechuangItem=null, lechuangChoice=null, lechuangWanted=null;
   function hqLechuangPick(items){
     var list=Array.isArray(items)?items.filter(function(x){return x&&x.kind==='image';}):[];
     var exact=list.filter(function(x){return x.front===LECHUANG_FRONT;});
@@ -378,7 +405,57 @@
     if(refs&&refs.length) payload.reference_images=refs;
     return payload;
   }
-  window.HQBananaLechuang={pickItem:hqLechuangPick,buildPayload:hqLechuangPayload};
+  function hqRatioOfSize(size){
+    var found='';
+    Object.keys(LECHUANG_RATIO_SIZES).forEach(function(r){ if(LECHUANG_RATIO_SIZES[r]===size) found=r; });
+    return found;
+  }
+  // 从契约组合里推导出可选项：比例（按尺寸换算）、清晰度、背景；顺序沿用老界面的习惯顺序。
+  function hqLechuangFacets(item){
+    var combos=(item&&item.combinations)||[];
+    var sizes=[],qualities=[],backgrounds=[];
+    combos.forEach(function(c){
+      var v=c.values||{};
+      if(v.size&&sizes.indexOf(v.size)<0) sizes.push(v.size);
+      if(v.quality&&qualities.indexOf(v.quality)<0) qualities.push(v.quality);
+      if(v.background&&backgrounds.indexOf(v.background)<0) backgrounds.push(v.background);
+    });
+    var ratios=[],unknownSizes=[];
+    sizes.forEach(function(s){ var r=hqRatioOfSize(s); if(!r){unknownSizes.push(s);return;} if(ratios.indexOf(r)<0) ratios.push(r); });
+    ratios.sort(function(a,b){ var ia=LECHUANG_PRIMARY_RATIOS.indexOf(a),ib=LECHUANG_PRIMARY_RATIOS.indexOf(b);
+      if(ia>=0&&ib>=0) return ia-ib; if(ia>=0) return -1; if(ib>=0) return 1; return 0; });
+    var qualityOrder=['auto','low','medium','high'];
+    qualities.sort(function(a,b){ return qualityOrder.indexOf(a)-qualityOrder.indexOf(b); });
+    var backgroundOrder=['auto','opaque','transparent'];
+    backgrounds.sort(function(a,b){ return backgroundOrder.indexOf(a)-backgroundOrder.indexOf(b); });
+    return {ratios:ratios,primary:ratios.filter(function(r){return LECHUANG_PRIMARY_RATIOS.indexOf(r)>=0;}),
+            extra:ratios.filter(function(r){return LECHUANG_PRIMARY_RATIOS.indexOf(r)<0;}),
+            qualities:qualities,backgrounds:backgrounds,unknownSizes:unknownSizes,
+            sizesForRatio:function(ratio){ return LECHUANG_RATIO_SIZES[ratio]||''; }};
+  }
+  // 选中值 → 契约组合：优先完全匹配，其次匹配更多当前选择（与共享控件同一套联动思路）
+  function hqChooseCombination(item,wanted){
+    var combos=(item&&item.combinations)||[];
+    if(!combos.length) return null;
+    var keys=Object.keys(wanted||{}).filter(function(k){return wanted[k];});
+    var matches=combos.filter(function(c){
+      return keys.every(function(k){ return String((c.values||{})[k])===String(wanted[k]); });
+    });
+    if(matches.length) return matches[0];
+    var best=null,bestScore=-1;
+    combos.forEach(function(c){
+      var score=keys.filter(function(k){ return String((c.values||{})[k])===String(wanted[k]); }).length;
+      if(score>bestScore){ bestScore=score; best=c; }
+    });
+    return best||combos[0];
+  }
+  function hqWantedFromChoice(choice){
+    var v=(choice&&choice.values)||{};
+    return {size:v.size||'',quality:v.quality||'',background:v.background||''};
+  }
+  window.HQBananaLechuang={pickItem:hqLechuangPick,buildPayload:hqLechuangPayload,
+                           facets:hqLechuangFacets,choose:hqChooseCombination,
+                           wantedFromChoice:hqWantedFromChoice,ratioOfSize:hqRatioOfSize};
   function lechuangDefaultPoints(){
     if(!lechuangItem) return 0;
     var combos=lechuangItem.combinations||[];
@@ -388,22 +465,72 @@
   function syncLechuangCard(){
     var node=document.querySelector('[data-engine-cost="lechuang"]');
     if(!node) return;
-    var points=lechuangControls?Number((lechuangControls.value()||{}).points)||0:lechuangDefaultPoints();
+    var points=lechuangChoice?Number(lechuangChoice.points)||0:lechuangDefaultPoints();
     node.textContent=points?points+'点':'—';
   }
-  function mountLechuang(){
-    var host=document.getElementById('lechuangControls');
-    if(!host||!lechuangItem||!window.ChannelParameterControls) return;
-    if(lechuangControls&&host.getAttribute('data-revision')===String(lechuangItem.revision)) return;
-    host.setAttribute('data-revision',String(lechuangItem.revision));
-    lechuangControls=window.ChannelParameterControls.mount(host,lechuangItem,function(){updateCost()},null,{});
+  // 卡片行：与老引擎的行标记保持一致（同一套内联样式与高亮规则）
+  function hqRatioCard(ratio,on){
+    return '<div data-lc-ratio="'+ratio+'" style="display:flex; align-items:center; justify-content:center; gap:6px; padding:11px 6px; font-size:13px; border-radius:11px; cursor:pointer; transition:.16s; font-family:\'JetBrains Mono\',monospace; color:'+(on?'#e7b24c':'#94a4bb')+'; background:'+(on?'rgba(231,178,76,.1)':'rgba(148,164,187,.05)')+'; border:1px solid '+(on?'rgba(231,178,76,.32)':'rgba(148,164,187,.14)')+';">'+ratio+'</div>';
+  }
+  function hqPlainCard(attr,value,label,on){
+    return '<div '+attr+'="'+value+'" style="padding:11px 6px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; transition:.16s; color:'+(on?'#e7b24c':'#94a4bb')+'; background:'+(on?'rgba(231,178,76,.1)':'rgba(148,164,187,.05)')+'; border:1px solid '+(on?'rgba(231,178,76,.32)':'rgba(148,164,187,.14)')+';">'+label+'</div>';
+  }
+  function renderLechuangRows(){
+    if(!lechuangItem) return;
+    var f=hqLechuangFacets(lechuangItem);
+    if(!lechuangWanted||!lechuangChoice){
+      var defCombo=(lechuangItem.combinations||[]).filter(function(c){return c.id===lechuangItem.default;})[0]||(lechuangItem.combinations||[])[0];
+      lechuangChoice=defCombo||null;
+      lechuangWanted=hqWantedFromChoice(defCombo);
+    }
+    var wanted=lechuangWanted;
+    var ratio=hqRatioOfSize(wanted.size)||f.ratios[0]||'';
+    var primary=document.getElementById('lechuangRatioRow');
+    if(primary) primary.innerHTML=f.primary.map(function(r){return hqRatioCard(r,r===ratio);}).join('');
+    var extraWrap=document.getElementById('lechuangExtraWrap'), extra=document.getElementById('lechuangRatioMoreRow');
+    if(extraWrap&&extra){
+      extraWrap.hidden=!f.extra.length;
+      extra.innerHTML=f.extra.map(function(r){return hqRatioCard(r,r===ratio);}).join('');
+    }
+    var quality=document.getElementById('lechuangQualityRow');
+    if(quality) quality.innerHTML=f.qualities.map(function(q){return hqPlainCard('data-lc-quality',q,(LECHUANG_QUALITY_LABELS[q]||q),q===wanted.quality);}).join('');
+    var background=document.getElementById('lechuangBackgroundRow');
+    if(background) background.innerHTML=f.backgrounds.map(function(b){return hqPlainCard('data-lc-background',b,(LECHUANG_BACKGROUND_LABELS[b]||b),b===wanted.background);}).join('');
+    var hint=document.getElementById('lechuangHint');
+    if(hint) hint.textContent='乐创线路：'+(lechuangChoice?lechuangChoice.points+' 点 · ':'')+'每次出一张；上传参考图自动切换为局部修图'+(wanted.background==='transparent'?'；当前为透明底':'')+'。';
+    lechuangControls={value:function(){return lechuangChoice;}};
+    syncLechuangCard();
+  }
+  // 切换某一项：解析出最近的合法组合并回填其他项（后台改了组合也能自动收敛）
+  function pickLechuang(key,value){
+    if(!lechuangItem) return;
+    var next=Object.assign({},lechuangWanted||{});
+    if(key==='ratio'){ next.size=LECHUANG_RATIO_SIZES[value]||next.size; }
+    else next[key]=value;
+    lechuangChoice=hqChooseCombination(lechuangItem,next);
+    lechuangWanted=hqWantedFromChoice(lechuangChoice);
+    renderLechuangRows();
     updateCost();
+  }
+  function bindLechuangRows(){
+    var box=document.getElementById('lechuangParamRows');
+    if(!box||box._bound) return;
+    box._bound=true;
+    box.addEventListener('click',function(e){
+      var node=e.target.closest('[data-lc-ratio],[data-lc-quality],[data-lc-background]');
+      if(!node) return;
+      if(node.hasAttribute('data-lc-ratio')) return pickLechuang('ratio',node.getAttribute('data-lc-ratio'));
+      if(node.hasAttribute('data-lc-quality')) return pickLechuang('quality',node.getAttribute('data-lc-quality'));
+      pickLechuang('background',node.getAttribute('data-lc-background'));
+    });
   }
   function loadLechuangLine(){
     fetch('/api/gen/channel-parameters',{cache:'no-store',credentials:'same-origin'})
       .then(function(r){ return r.ok?r.json():null; })
       .then(function(d){
-        lechuangItem=hqLechuangPick(d&&d.items);
+        var next=hqLechuangPick(d&&d.items);
+        var changed=!lechuangItem||!next||lechuangItem.revision!==next.revision;
+        lechuangItem=next;
         var ok=!!lechuangItem;
         var card=document.querySelector('#engineRow [data-engine="lechuang"]');
         if(card){ card.style.display=ok?'':'none'; card.setAttribute('aria-hidden',ok?'false':'true'); }
@@ -411,9 +538,15 @@
         if(hint) hint.hidden=ok;
         var hint2=document.getElementById('lechuangHint');
         if(hint2) hint2.hidden=!ok;
-        if(!ok&&engine==='lechuang') selectEngine('gpt');
-        if(ok){ mountLechuang(); syncLechuangCard(); }
-        else if(lechuangControls){ lechuangControls=null; }
+        if(!ok){
+          lechuangChoice=null; lechuangWanted=null; lechuangControls=null;
+          if(engine==='lechuang') selectEngine('gpt');
+        }else{
+          if(changed){ lechuangWanted=null; lechuangChoice=null; }
+          bindLechuangRows();
+          renderLechuangRows();
+        }
+        syncLechuangCard();
         updateCost();
       })
       .catch(function(){});
@@ -525,7 +658,7 @@
     if(legacyRows) legacyRows.hidden = isLechuang;
     var lcRows=document.getElementById('lechuangParamRows');
     if(lcRows) lcRows.hidden = !isLechuang;
-    if(isLechuang){ count=1; mountLechuang(); }
+    if(isLechuang){ count=1; bindLechuangRows(); renderLechuangRows(); }
     if(refImg) showInp(engine==='gpt'||isLechuang);
     renderRefs();
     updateCost();   // Nano Banana 两个型号点数不同，切引擎/切型号都要重算；乐创点数取自参数组合
