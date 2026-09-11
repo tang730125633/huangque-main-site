@@ -74,6 +74,26 @@ def run_local(payload, job_id=""):
     return None, "本机渲染超时"
 
 
+def sync_user_assets(payload, job_id):
+    """把本任务引用的用户素材从中转器拉到当前渲染节点。"""
+    for item in payload.get("user_materials") or []:
+        sha = str(item.get("sha256") or "").strip().lower()
+        if len(sha) != 64 or any(c not in "0123456789abcdef" for c in sha):
+            raise RuntimeError("任务包含无效的用户素材校验值")
+        req = urllib.request.Request(
+            RELAY + "/v1/job-assets/" + job_id + "/" + sha,
+            headers={"Authorization": "Bearer " + NODE_TOKEN, "X-HQ-Node": NODE_NAME},
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            content_type = (resp.headers.get("Content-Type") or "").split(";")[0]
+            data = resp.read()
+        _call(
+            LOCAL + "/v1/user-assets", LOCAL_TOKEN, "POST", raw=data,
+            headers={"Content-Type": content_type, "X-HQ-Asset-Sha256": sha},
+            timeout=120,
+        )
+
+
 def report(job_id, ok, result=None, error=None):
     _call(RELAY + "/v1/report", NODE_TOKEN, "POST",
           body={"job_id": job_id, "ok": ok, "result": result, "error": error}, timeout=30)
@@ -107,6 +127,7 @@ def worker(slot):
         print("[poller] #%d 领取 %s template=%s" % (slot, jid, payload.get("template_id")), flush=True)
         started = time.time()
         try:
+            sync_user_assets(payload, jid)
             result, error = run_local(payload, jid)
             if error:
                 print("[poller] #%d 渲染失败 %s: %s" % (slot, jid, error[:150]), flush=True)
