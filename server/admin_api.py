@@ -7476,6 +7476,94 @@ def _sanitize_public_admin_payload(value, field=""):
     return value
 
 
+_RENDER_NODE_LABEL = {
+    "fang": "渲染线路 · 方哥服务器（CPU）",
+    "tang": "渲染线路 · tang（RTX 3060）",
+    "yuelei": "渲染线路 · yuelei（RTX 3060）",
+}
+_RENDER_NODE_DB = os.environ.get(
+    "RELAY_DB_PATH", "/home/ubuntu/render-relay/relay.db")
+_render_node_cache = {}          # 中转器 job id -> node；任务归属不会变，可长期缓存
+
+_MATRIX_TEMPLATE_NAMES = {}      # 模板 id -> 中文名
+_MATRIX_TEMPLATE_NAMES_AT = 0.0
+
+
+def _render_node_of(provider_task_id):
+    """模板成片的实际渲染节点：查中转器 relay.db 的 node 字段。
+
+    provider_task_id 就是中转器的 job id（两库同机）。纯读、带缓存、
+    任何异常一律返回空串 —— 查不到不影响后台其它任何展示。
+    """
+    jid = str(provider_task_id or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{32}", jid):
+        return ""
+    if jid in _render_node_cache:
+        return _render_node_cache[jid]
+    node = ""
+    try:
+        conn = sqlite3.connect(
+            "file:%s?mode=ro" % _RENDER_NODE_DB, uri=True, timeout=3)
+        try:
+            row = conn.execute(
+                "SELECT node FROM jobs WHERE id=?", (jid,)).fetchone()
+            node = str((row[0] if row else "") or "").strip()
+        finally:
+            conn.close()
+    except Exception:
+        node = ""
+    _render_node_cache[jid] = node
+    return node
+
+
+def _row_field(row, key):
+    """从 sqlite3.Row 里取一列；这一列没被这条查询选出来就返回空串。
+
+    后台有好几条查询喂同一个 item 构造函数，取的列不完全一样 ——
+    直接 row["x"] 会在缺列时抛 IndexError（2026-09-11 踩过）。
+    """
+    try:
+        return row[key]
+    except (IndexError, KeyError):
+        return ""
+
+
+def _result_template_id(result_json):
+    """从任务的 result JSON 里取模板 id（模板成片才有）。"""
+    try:
+        value = json.loads(result_json or "{}")
+    except (TypeError, ValueError):
+        return ""
+    if not isinstance(value, dict):
+        return ""
+    return str(value.get("template_id") or "").strip()
+
+
+def _matrix_template_label(template_id):
+    """后台「模型」列给模板成片显示用的模板简称。
+
+    优先显示模板中文名（如「成都绿描边手写」）；目录暂时取不到就退回模板 id。
+    任何异常都不抛 —— 这一列填不出来也不该拖垮后台。
+    """
+    global _MATRIX_TEMPLATE_NAMES_AT
+    tid = str(template_id or "").strip()
+    if not tid:
+        return ""
+    now = time.time()
+    if not _MATRIX_TEMPLATE_NAMES or now - _MATRIX_TEMPLATE_NAMES_AT > 300:
+        try:
+            from content_domains import matrix_template_video as _mv
+            _MATRIX_TEMPLATE_NAMES.clear()
+            _MATRIX_TEMPLATE_NAMES.update({
+                str(t.get("id") or ""): str(t.get("name") or "")
+                for t in _mv.public_templates()
+            })
+            _MATRIX_TEMPLATE_NAMES_AT = now
+        except Exception:
+            pass
+    return (_MATRIX_TEMPLATE_NAMES.get(tid) or tid)[:24]
+
+
 def _task_runtime_record(item):
     """Return the single task-observability interface used by admin list views.
 
@@ -7485,8 +7573,20 @@ def _task_runtime_record(item):
     remain an explicitly triggered acceptance action.
     """
     status = str(item.get("status") or "unknown").lower()
-    route = str(item.get("provider") or item.get("channel") or "").strip()
     model = str(item.get("model") or "").strip()
+    route = str(item.get("provider") or item.get("channel") or "").strip()
+    if not model:
+        # 模板成片的「模型」＝它用的那个模板（2026-09-11 Tang 要求）
+        model = _matrix_template_label(item.get("_template_id"))
+    if not route:
+        # 模板成片的「选择线路」＝实际渲染节点（中转器 relay.db 的 node）。
+        # ⚠️ 必须用**未脱敏**的 _render_job_id：上面的 provider_task_id 已被
+        # _sanitize_task_identifier 打成 "b153d9…e01e"，拿去查库查不到。
+        _node_name = _render_node_of(
+            item.get("_render_job_id") or item.get("provider_task_id"))
+        if _node_name:
+            route = _RENDER_NODE_LABEL.get(
+                _node_name, "渲染线路 · " + _node_name)
     provider_task_id = _sanitize_task_identifier(item.get("provider_task_id"))
     result_reference = bool(item.get("result_reference"))
     delivery_verified = bool(item.get("delivery_verified"))
@@ -7762,6 +7862,7 @@ def call_logs(days=7, limit=200, user="", defer_evidence=False):
                       CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.provider_task_id'),json_extract(%s,'$.request_id'),json_extract(%s,'$.provider_video_id'),json_extract(%s,'$.video_id'),json_extract(%s,'$.provider_avatar_id'),'') ELSE '' END AS provider_task_id,
                       CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.video_url'),json_extract(%s,'$.image_url'),json_extract(%s,'$.url'),json_extract(%s,'$.urls[0]'),'') ELSE '' END AS result_url,
                        CASE WHEN json_valid(%s) THEN COALESCE(json_extract(%s,'$.video_file'),json_extract(%s,'$.image_file'),json_extract(%s,'$.file'),json_extract(%s,'$.files[0]'),'') ELSE '' END AS result_file,
+                       CASE WHEN json_valid(payload) THEN COALESCE(json_extract(payload,'$.template_id'),'') ELSE '' END AS template_id,
                        %s AS result_json,
                        %s AS refunded,
                        %s AS job_error
@@ -7903,6 +8004,13 @@ def call_logs(days=7, limit=200, user="", defer_evidence=False):
                 "provider": str(row["provider"] or ""),
                 "model": str(row["model"] or ""),
                 "provider_task_id": _sanitize_task_identifier(row["provider_task_id"]),
+                # 未脱敏的中转器任务号：上面那行是脱敏后的值，拿去查 relay.db 查不到。
+                "_render_job_id": str(_row_field(row, "provider_task_id") or "").strip(),
+                # 任务用的模板 id（payload 优先，跑完的看 result）→「模型」列
+                "_template_id": (
+                    str(_row_field(row, "template_id") or "").strip()
+                    or _result_template_id(_row_field(row, "result_json"))
+                ),
                 "result_reference": bool(evidence.get("output_reference_present")),
                 "delivery_verified": bool(evidence.get("delivery_verified")),
                 "artifact_check": str(evidence.get("artifact_check") or "not_recorded"),
