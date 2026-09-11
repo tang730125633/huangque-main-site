@@ -396,9 +396,11 @@ def generate(top: str, bottom: str, contract: dict, *, previous=None,
     }
 
 
-def cache_key(top: str, bottom: str, template_id: str, contract: dict) -> str:
+def cache_key(top: str, bottom: str, _template_id: str, _contract: dict) -> str:
+    # Boundaries are text-derived; resolve() still validates every reuse
+    # against the target template before returning it.
     payload = json.dumps(
-        [VERSION, MODEL, REPAIR_MODEL, template_id, top, bottom, contract],
+        [VERSION, MODEL, REPAIR_MODEL, top, bottom],
         ensure_ascii=False, sort_keys=True, separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()

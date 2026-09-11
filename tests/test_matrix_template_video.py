@@ -1925,6 +1925,80 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                 ))
                 self.assertEqual(1, generate.call_count)
 
+    def test_semantic_cache_reuses_text_across_templates_after_target_validation(self):
+        semantics = self.module.matrix_template_semantics
+        semantics._CACHE.clear()
+        top = "需求是不是刚需客户会不会复购 市场能不能长期增长"
+        bottom = "感兴趣留下666"
+        accepted = {
+            "version": 1,
+            "model": "gpt-4.1",
+            "source_sha256": semantics._source_sha256(top, bottom),
+            "top1_end": 6,
+            "top_break_after": [4, 6, 11, 14, 19],
+            "bottom_break_after": [2],
+        }
+        repaired = dict(accepted, bottom_break_after=[2, 5])
+        first_contract = {"layers": {"top1": {"font_size_px": 70}}}
+        second_contract = {"layers": {"top1": {"font_size_px": 88}}}
+
+        with mock.patch.object(
+            semantics, "generate", return_value=accepted,
+        ) as generate:
+            value, marker = semantics.resolve(
+                top, bottom, "ref-01", first_contract,
+                lambda candidate: (candidate == accepted, "first"),
+            )
+        self.assertEqual(accepted, value)
+        self.assertEqual("first", marker)
+        self.assertEqual(1, generate.call_count)
+        self.assertEqual(
+            semantics.cache_key(top, bottom, "ref-01", first_contract),
+            semantics.cache_key(top, bottom, "ref-09", second_contract),
+        )
+
+        with mock.patch.object(
+            semantics, "generate",
+            side_effect=AssertionError("accepted cache must avoid AI"),
+        ) as generate:
+            value, marker = semantics.resolve(
+                top, bottom, "ref-09", second_contract,
+                lambda candidate: (candidate == accepted, "second"),
+            )
+        self.assertEqual(accepted, value)
+        self.assertEqual("second", marker)
+        generate.assert_not_called()
+
+        calls = []
+
+        def generate_repair(
+            _top, _bottom, _contract, *, previous=None,
+            feedback="", model=None, repair=False,
+        ):
+            calls.append((previous, feedback, model, repair))
+            return repaired
+
+        def reject_cached(candidate):
+            return (
+                (True, "repaired") if candidate == repaired
+                else (False, "目标模板仍放不下")
+            )
+
+        with mock.patch.object(
+            semantics, "generate", side_effect=generate_repair,
+        ):
+            value, marker = semantics.resolve(
+                top, bottom, "tight-template", {"layers": {}},
+                reject_cached,
+            )
+        self.assertEqual(repaired, value)
+        self.assertEqual("repaired", marker)
+        self.assertEqual(1, len(calls))
+        self.assertEqual(accepted, calls[0][0])
+        self.assertTrue(calls[0][1])
+        self.assertEqual(semantics.REPAIR_MODEL, calls[0][2])
+        self.assertTrue(calls[0][3])
+
     def test_semantic_normalization_rejects_critical_or_expanded_changes(self):
         template = next(
             item for item in self.reference_templates()
