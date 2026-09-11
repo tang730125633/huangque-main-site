@@ -3,6 +3,9 @@
   const {esc,mount}=window.ChannelParameterControls,kind=host.dataset.kind;
   const legacy=document.querySelector(kind==='image'?'.banana-workspace':'#videoWorkspace');if(legacy)legacy.setAttribute('data-channel-legacy','');
   let showLegacy=false,billingEnabled=false;
+  // 视频页托管多个功能（数字人口播、剧情、换装等），平台配置面板只在用户提交托管渠道时接管，
+  // 否则会在打开页面时把整个工作台替换掉。图片页本身只有作图一件事，首屏即用托管面板。
+  let managedActive=kind==='image';
   let items=[],current=null,controls=null,busy=false,owner='',pending=null,pollTimer=null,ready=false,fetching=false;
   let layoutApplied=false;
   host.className='cp-panel';
@@ -30,6 +33,7 @@
     }catch(error){}
   }
   function render(){
+    if(!managedActive){if(legacy)legacy.hidden=false;host.hidden=true;host.innerHTML='';return}
     const previous=current;current=items.find(i=>i.front===previous?.front)||items[0];
     if(!current&&!pending){if(legacy)legacy.hidden=false;host.hidden=!previous;host.textContent=previous?'当前模型已停用或映射已变更，请稍后刷新。':'';return}
     host.hidden=false;
@@ -127,9 +131,9 @@
   }
   window.PublishedChannelParameters={redirect:(k,front)=>{
     if(k!==kind)return false;const found=items.find(i=>i.front===front);if(!found)return false;
-    showLegacy=false;current=found;render();host.scrollIntoView({behavior:'smooth'});note('该模型已启用新的参数配置，请在此选择参数并提交。');return true;
+    managedActive=true;showLegacy=false;current=found;render();host.scrollIntoView({behavior:'smooth',block:'start'});note('该模型已启用新的参数配置，请在此选择参数并提交。');return true;
   }};
-  (async()=>{try{owner=await identity();pending=JSON.parse(sessionStorage.getItem(storageKey())||'null')}catch(e){}await load();if(pending){if(host.hidden)render();sync();if(pending.job_id)poll()}})();
+  (async()=>{try{owner=await identity();pending=JSON.parse(sessionStorage.getItem(storageKey())||'null')}catch(e){}await load();if(pending){managedActive=true;render();sync();if(pending.job_id)poll()}})();
   window.addEventListener('hq:auth-changed',event=>{billingEnabled=event.detail?.verified===true&&event.detail?.user?.points_billing_enabled===true;sync()});
   setInterval(()=>{if(!document.hidden)load()},15000);
 })();

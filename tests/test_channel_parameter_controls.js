@@ -32,3 +32,12 @@ test('billing disabled hides point price without changing the authoritative comb
 test('all added browser scripts parse',()=>{
   for(const file of ['site/workbench/channel-parameters.js','site/admin/channel-parameters.js','site/workbench/channel-parameter-controls.js'])new vm.Script(fs.readFileSync(path.join(__dirname,'..',file),'utf8'));
 });
+test('video workbench stays visible until a managed channel actually takes over',()=>{
+  const source=fs.readFileSync(path.join(__dirname,'../site/workbench/channel-parameters.js'),'utf8');
+  // 视频页托管多个功能：平台配置面板默认不接管，否则打开页面就只剩模型面板
+  assert.match(source,/let managedActive=kind==='image'/);
+  assert.match(source,/if\(!managedActive\)\{if\(legacy\)legacy\.hidden=false;host\.hidden=true;host\.innerHTML=''/);
+  assert.match(source,/managedActive=true;showLegacy=false;current=found;render\(\)/);
+  // 待确认的提交需要重新展示面板
+  assert.match(source,/if\(pending\)\{managedActive=true;render\(\)/);
+});
