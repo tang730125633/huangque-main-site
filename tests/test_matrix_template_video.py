@@ -72,13 +72,13 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         templates[-1]["id"] = "poster-split"
         return templates
 
-    def reference_templates(self, semantic_variants=None):
+    def reference_templates(self, semantic_variants=None, include_legacy=True):
         if semantic_variants is None:
             semantic_variants = tuple(sorted(self.module._ALL_REFERENCE_VARIANTS))
         legacy_contract = set(semantic_variants) in (
             {"v02"}, {"v02", "v05"},
         )
-        values = [
+        legacy = [
             {
                 "id": "full-overlay-bold", "name": "沉浸强标题",
                 "engine": "ffmpeg", "font_mode": "selectable",
@@ -89,7 +89,8 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                 "engine": "ffmpeg", "font_mode": "selectable",
                 "font_selectable": True,
             },
-        ] + [{
+        ] if include_legacy else []
+        values = legacy + [{
             "id": f"ref-{index:02d}-fixture-{index:02d}",
             "name": f"参考模板 {index}",
             "description": "固定字体模板",
@@ -124,8 +125,8 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                     }
         return values
 
-    def templates_with_nine_grid(self):
-        values = self.reference_templates()
+    def templates_with_nine_grid(self, include_legacy=True):
+        values = self.reference_templates(include_legacy=include_legacy)
         contract = self.module._SEMANTIC_CONTRACTS[
             self.module.NINE_GRID_VARIANT
         ]
@@ -159,8 +160,10 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         })
         return values
 
-    def templates_with_fixed_skill(self):
-        values = self.templates_with_nine_grid()
+    def templates_with_fixed_skill(self, include_legacy=True):
+        values = self.templates_with_nine_grid(
+            include_legacy=include_legacy,
+        )
         names = {
             self.module.TRIPLE_STRIP_TEMPLATE_ID: "三横屏开场·光栅快切",
             self.module.YELLOW_BANNER_TEMPLATE_ID: "黄条标题·变幅冲击",
@@ -201,7 +204,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             })
         return values
 
-    def test_public_catalog_accepts_transition_counts_but_exposes_only_approved_templates(self):
+    def test_public_catalog_accepts_transition_counts_and_removes_legacy_templates(self):
         response = {"templates": self.templates(), "fonts": [
             {"value": "", "label": "自动搭配", "source": "automatic"},
             {"value": "Noto Sans SC", "label": "思源黑体", "source": "bundled"},
@@ -210,10 +213,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         ]}
         with mock.patch.object(self.module, "_request", return_value=response):
             values = self.module.public_templates(force=True)
-        self.assertEqual(
-            ["full-overlay-bold", "poster-split"],
-            [item["id"] for item in values],
-        )
+        self.assertEqual([], values)
         self.assertEqual(
             ["", "Noto Sans SC", "AaHouDiHei"],
             [item["value"] for item in self.module.public_fonts()],
@@ -240,10 +240,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             ],
         }):
             restricted = self.module.public_templates(force=True)
-        self.assertEqual(
-            ["full-overlay-bold", "poster-split"],
-            [item["id"] for item in restricted],
-        )
+        self.assertEqual([], restricted)
 
         with mock.patch.object(self.module, "_request", return_value={
             "templates": self.reference_templates(),
@@ -252,7 +249,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
         }):
             expanded = self.module.public_templates(force=True)
-        self.assertEqual(19, len(expanded))
+        self.assertEqual(17, len(expanded))
         self.assertEqual(17, len([
             item for item in expanded if item["engine"] == "hyperframes"
         ]))
@@ -340,7 +337,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
         }):
             with_nine_grid = self.module.public_templates(force=True)
-        self.assertEqual(20, len(with_nine_grid))
+        self.assertEqual(18, len(with_nine_grid))
         nine_grid = with_nine_grid[-1]
         self.assertEqual(self.module.NINE_GRID_TEMPLATE_ID, nine_grid["id"])
         self.assertEqual("fixed_12", nine_grid["duration_mode"])
@@ -359,7 +356,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
         }):
             expanded = self.module.public_templates(force=True)
-        self.assertEqual(22, len(expanded))
+        self.assertEqual(20, len(expanded))
         self.assertEqual(
             list(self.module.FIXED_SKILL_TEMPLATE_IDS),
             [item["id"] for item in expanded[-2:]],
@@ -375,6 +372,23 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                 contract["required_visuals"], item["required_visuals"],
             )
             self.assertIs(item["bgm_optional"], True)
+
+        with mock.patch.object(self.module, "_request", return_value={
+            "templates": self.templates_with_fixed_skill(
+                include_legacy=False,
+            ),
+            "max_batch_size": 5,
+            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+        }):
+            without_legacy = self.module.public_templates(force=True)
+        self.assertEqual(20, len(without_legacy))
+        self.assertFalse({
+            "full-overlay-bold", "poster-split",
+        } & {item["id"] for item in without_legacy})
+        self.assertEqual(
+            list(self.module.FIXED_SKILL_TEMPLATE_IDS),
+            [item["id"] for item in without_legacy[-2:]],
+        )
 
         for partial in (("v02",), ("v02", "v05")):
             with self.subTest(partial=partial), mock.patch.object(

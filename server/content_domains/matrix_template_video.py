@@ -23,8 +23,7 @@ from . import feature_flags, matrix_template_semantics, pricing
 
 FEATURE_KEY = "matrix_template_video"
 TRANSITION_TEMPLATE_COUNTS = frozenset({2, 15, 19, 20, 22})
-APPROVED_TEMPLATE_IDS = ("full-overlay-bold", "poster-split")
-REQUIRED_TEMPLATE_IDS = frozenset(APPROVED_TEMPLATE_IDS)
+LEGACY_TEMPLATE_IDS = ("full-overlay-bold", "poster-split")
 REFERENCE_TEMPLATE_RE = re.compile(r"ref-[0-9]{2}-[a-z0-9-]{1,48}\Z")
 REFERENCE_TEMPLATE_COUNT = 17
 NINE_GRID_TEMPLATE_ID = "nine-grid-reveal"
@@ -389,12 +388,11 @@ def _refresh_catalog(force=False):
         if (
             len(templates) not in TRANSITION_TEMPLATE_COUNTS
             or len(template_ids) != len(templates)
-            or not REQUIRED_TEMPLATE_IDS.issubset(template_ids)
         ):
             raise RuntimeError("模板目录不完整")
-        approved = {
+        legacy = {
             item["id"]: item for item in templates
-            if item["id"] in REQUIRED_TEMPLATE_IDS
+            if item["id"] in LEGACY_TEMPLATE_IDS
         }
         if len(templates) in {19, 20, 22}:
             references = [
@@ -409,6 +407,9 @@ def _refresh_catalog(force=False):
                 item for item in templates
                 if item["id"] in FIXED_SKILL_TEMPLATE_IDS
             ]
+            catalog_shape = (
+                len(legacy), len(nine_grid), len(fixed_skill),
+            )
             semantic_variants = {
                 item["variant"] for item in references
                 if item.get("semantic_layout")
@@ -432,8 +433,12 @@ def _refresh_catalog(force=False):
                     for item in references
                     for layer in item["semantic_layout"]["layers"].values()
                 )
-                or len(nine_grid) != (0 if len(templates) == 19 else 1)
-                or len(fixed_skill) != (2 if len(templates) == 22 else 0)
+                or catalog_shape not in {
+                    (2, 0, 0),
+                    (2, 1, 0),
+                    (2, 1, 2),
+                    (0, 1, 2),
+                }
             ):
                 raise RuntimeError("HyperFrames 模板目录不完整")
             if nine_grid:
@@ -481,7 +486,10 @@ def _refresh_catalog(force=False):
                     ):
                         raise RuntimeError("新增 Skill 模板目录不完整")
             templates = (
-                [approved[template_id] for template_id in APPROVED_TEMPLATE_IDS]
+                [
+                    legacy[template_id] for template_id in LEGACY_TEMPLATE_IDS
+                    if template_id in legacy
+                ]
                 + references + nine_grid
                 + ([
                     next(
@@ -492,7 +500,15 @@ def _refresh_catalog(force=False):
                 ] if fixed_skill else [])
             )
         else:
-            templates = [approved[template_id] for template_id in APPROVED_TEMPLATE_IDS]
+            if set(legacy) != set(LEGACY_TEMPLATE_IDS):
+                raise RuntimeError("模板目录不完整")
+            templates = [
+                legacy[template_id] for template_id in LEGACY_TEMPLATE_IDS
+            ]
+        templates = [
+            item for item in templates
+            if item["id"] not in LEGACY_TEMPLATE_IDS
+        ]
         fonts = [{"value": "", "label": "自动搭配", "source": "automatic"}]
         seen = {""}
         for raw in response.get("fonts") or []:
@@ -617,9 +633,13 @@ def validate_payload(
         raise ValueError("顶部标题需要 2-60 个字符")
     if not 2 <= len(bottom) <= 80:
         raise ValueError("底部行动文案需要 2-80 个字符")
-    template_id = str(body.get("template_id") or APPROVED_TEMPLATE_IDS[0])
+    templates = public_templates()
+    template_id = str(
+        body.get("template_id")
+        or (templates[0]["id"] if templates else "")
+    )
     template = next(
-        (item for item in public_templates() if item["id"] == template_id), None
+        (item for item in templates if item["id"] == template_id), None
     )
     if template is None:
         raise ValueError("请选择有效模板")
