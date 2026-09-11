@@ -776,7 +776,7 @@ def _resolve_user_materials(
     if materials and video_only and any(
             item["media_type"] != "video" for item in materials):
         raise ValueError(
-            "黄条/三横屏固定动效模板目前只支持视频素材，"
+            "固定节奏动效模板目前只支持视频素材，"
             "请上传视频或改用 ref 模板"
         )
     if not materials or trusted_frozen:
