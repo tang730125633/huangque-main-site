@@ -879,6 +879,23 @@ def validate_payload(
         duration = None
     if fixed_duration is not None:
         duration = fixed_duration
+    raw_user_materials = body.get("user_materials")
+    user_material_count = (
+        len(raw_user_materials) if isinstance(raw_user_materials, list) else 0
+    )
+    maximum_visuals = template.get("required_visuals_max")
+    if (
+        1 <= user_material_count <= 20
+        and not isinstance(maximum_visuals, bool)
+        and isinstance(maximum_visuals, int)
+        and user_material_count > maximum_visuals
+    ):
+        raise ValueError(
+            f"当前模板最多使用 {maximum_visuals} 份素材，"
+            "请减少素材或改用更多画面位的模板"
+        )
+    if user_material_count and REFERENCE_TEMPLATE_RE.fullmatch(template_id):
+        duration = max(float(duration or 8), user_material_count * 3.0)
     user_materials = _resolve_user_materials(
         body.get("user_materials"), username,
         trusted_frozen=trusted_frozen_execution,
