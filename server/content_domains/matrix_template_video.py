@@ -481,7 +481,8 @@ def _refresh_catalog(force=False):
             fixed_duration = template.get("fixed_duration_seconds")
             if (
                 duration_mode not in {
-                    None, "fixed", "fixed_12", "random_integer_7_15",
+                    None, "fixed", "fixed_12",
+                    "random_integer_7_15", "random_integer_8_15",
                 }
                 or (
                     required_visuals is not None
@@ -871,7 +872,9 @@ def validate_payload(
     if (
         user_material_count
         and (
-            template.get("duration_mode") == "random_integer_7_15"
+            template.get("duration_mode") in {
+                "random_integer_7_15", "random_integer_8_15",
+            }
             or (
                 template.get("duration_mode") is None
                 and REFERENCE_TEMPLATE_RE.fullmatch(template_id)

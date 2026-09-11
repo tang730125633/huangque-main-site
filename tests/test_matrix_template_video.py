@@ -248,6 +248,22 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
         }, self.module.public_batch_capability())
 
+    def test_provider_dynamic_duration_mode_is_accepted(self):
+        template = self.reference_templates(include_legacy=False)[0]
+        template.update({
+            "duration_mode": "random_integer_8_15",
+            "required_visuals": 3,
+            "required_visuals_max": 5,
+        })
+        with mock.patch.object(self.module, "_request", return_value={
+            "templates": [template],
+            "max_batch_size": 5,
+            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+        }):
+            values = self.module.public_templates(force=True)
+        self.assertEqual([template["id"]], [item["id"] for item in values])
+        self.assertEqual("random_integer_8_15", values[0]["duration_mode"])
+
     @unittest.skip("superseded by generation-owned generic catalog validation")
     def test_reference_catalog_rejects_missing_v02_unknown_variant_and_drift(self):
         invalid_cases = []
