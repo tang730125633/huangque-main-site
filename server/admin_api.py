@@ -2796,12 +2796,28 @@ def channel_workspace_overview():
             result['legacy_events'] = [dict(row) for row in connection.execute(
                 "SELECT actor,action,target,created_at AS created FROM admin_audit "
                 "WHERE action LIKE 'provider_key.%' OR action LIKE 'server_key.%' "
-                "OR action LIKE 'heygen.oauth.%' ORDER BY created_at DESC,id DESC LIMIT 50"
+                "OR action LIKE 'heygen.oauth.%' OR action LIKE 'channel.secret.%' "
+                "ORDER BY created_at DESC,id DESC LIMIT 50"
             ).fetchall()]
     except sqlite3.Error:
         result['legacy_events'] = []
         result['legacy_audit_error'] = '现有线路操作记录暂不可读'
     return result
+
+
+def reveal_channel_secret(actor, body):
+    """管理员按需查看渠道密钥明文；每次调用必写审计，前端 5 秒后自行隐藏。"""
+    cid = str(body.get('id') or '').strip()
+    if not cid:
+        raise ValueError('缺少渠道编号')
+    cfg = channel_manager.version(cid, with_secret=True)
+    _admin_audit(actor, 'channel.secret.reveal', cid, {
+        'channel': str(cfg.get('name') or '')[:80],
+    })
+    return {
+        'ok': True, 'id': cid, 'name': cfg.get('name'),
+        'secret': str(cfg.get('secret') or ''), 'expires_in': 5,
+    }
 
 
 def _admin_audit(actor, action, target, detail, conn=None):
@@ -8743,7 +8759,8 @@ class H(BaseHTTPRequestHandler):
                        'parameter-preview':channel_parameters.preview,
                        'parameter-state':lambda actor,body:channel_parameters.admin_state(str(body.get('id') or ''),body.get('profile')),
                        'layout-state':lambda actor,body:channel_parameters.layout_state(),
-                       'layout-save':channel_parameters.layout_save}
+                       'layout-save':channel_parameters.layout_save,
+                       'secret-reveal':reveal_channel_secret}
             action = actions.get(path.rsplit('/',1)[-1])
             if not action:
                 return self._send(404, {'detail':'未知渠道操作'})
